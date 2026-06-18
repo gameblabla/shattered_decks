@@ -4477,15 +4477,14 @@ static void draw_map_pyramid_3d(int f)
         int flip;
         float depth;
     } PyramidFace;
-    /* Stone tile (3) on every face so the pyramid reads as distinct masonry
-       against the gold/brown sand checkerboard.  flip is a per-face property
-       so the texture orientation does not swap when the depth sort reorders
-       the faces during camera orbit. */
+    /* Gold tile (1) on every face for a classic desert pyramid.  flip is a
+       per-face property so the texture orientation does not swap when the
+       depth sort reorders the faces during camera orbit. */
     PyramidFace faces[4] = {
-        {a, b, 3, 0, 0.0f},
-        {b, c, 3, 1, 0.0f},
-        {c, d, 3, 0, 0.0f},
-        {d, a, 3, 1, 0.0f}
+        {a, b, 1, 0, 0.0f},
+        {b, c, 1, 1, 0.0f},
+        {c, d, 1, 0, 0.0f},
+        {d, a, 1, 1, 0.0f}
     };
     for (int rz = 0; rz < 4; ++rz) {
         float z0 = -3.7f + (float)rz * 1.85f;
@@ -4498,11 +4497,6 @@ static void draw_map_pyramid_3d(int f)
                              v3(x1, -0.07f, z1), v3(x0, -0.07f, z1), tile);
         }
     }
-
-    /* Solid dark base slab just above the ground so no background bleeds
-       through the bottom edge of the pyramid faces. */
-    draw_quad3d(cam, v3(-1.78f, -0.06f, -1.78f), v3(1.78f, -0.06f, -1.78f),
-                     v3(1.78f, -0.06f, 1.78f), v3(-1.78f, -0.06f, 1.78f), 0);
 
     for (int i = 0; i < 4; ++i) {
         ScreenPt p0 = project_point(cam, faces[i].p0);
@@ -4519,34 +4513,19 @@ static void draw_map_pyramid_3d(int f)
             }
         }
     }
-    /* Solid backing pass: fill each face with a dark colour using an inclusive
-       edge test so adjacent faces overlap by ~1px and no sky bleeds through
-       the shared ridges.  The textured pass is drawn on top. */
+    /* Solid backing pass: fill each face with a gold-dark colour using an
+       inclusive edge test so adjacent faces overlap by ~1px and no sky
+       bleeds through the shared ridges.  The textured pass is drawn on top,
+       and draw_tri3d_tile already draws 1px gold-dark edge outlines. */
     for (int i = 0; i < 4; ++i) {
         ScreenPt p0 = project_point(cam, faces[i].p0);
         ScreenPt p1 = project_point(cam, faces[i].p1);
         ScreenPt p2 = project_point(cam, apex);
-        fill_tri_inclusive(p0, p1, p2, IDX_DARK_BROWN);
+        fill_tri_inclusive(p0, p1, p2, IDX_GOLD_DARK);
     }
     for (int i = 0; i < 4; ++i) draw_tri3d_tile(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip);
 
-    /* Draw 2px-thick ridge lines (base corners to apex) and base edges after
-       the textured faces.  The separately-rasterized face triangles leave
-       1-pixel gaps along shared ridges; the thick overlap lines cover them. */
     ScreenPt peak = project_point(cam, apex);
-    Vec3 base_corners[4] = {a, b, c, d};
-    for (int i = 0; i < 4; ++i) {
-        ScreenPt p0 = project_point(cam, base_corners[i]);
-        ScreenPt p1 = project_point(cam, base_corners[(i + 1) % 4]);
-        if (p0.ok && peak.ok) {
-            line_i(p0.x, p0.y, peak.x, peak.y, IDX_GOLD_DARK);
-            line_i(p0.x + 1, p0.y, peak.x + 1, peak.y, IDX_GOLD_DARK);
-        }
-        if (p0.ok && p1.ok) {
-            line_i(p0.x, p0.y, p1.x, p1.y, IDX_GOLD_DARK);
-            line_i(p0.x, p0.y + 1, p1.x, p1.y + 1, IDX_GOLD_DARK);
-        }
-    }
     if (peak.ok) put_px(peak.x, peak.y, IDX_GOLD_HI);
 }
 

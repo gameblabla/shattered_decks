@@ -40,7 +40,7 @@ Use this file as the first stop when you need to change behavior. It is written 
 ## Behavior Map
 
 - Story mode:
-  - Pyramid scene uses `draw_map_pyramid_3d`. Faces use stone tile (3) for contrast with the gold/brown sand, per-face `flip` prevents texture swimming during camera orbit, `fill_tri_inclusive` backings cover ridge gaps, and a dark base slab closes the ground seam. The old 2D screen-space diamond shadow was removed.
+  - Pyramid scene uses `draw_map_pyramid_3d`. Faces use gold tile (1) for a desert pyramid look, per-face `flip` prevents texture swimming during camera orbit, `fill_tri_inclusive` backings cover ridge gaps, and the old 2D screen-space diamond shadow was removed.
   - Save text overflow is handled in `draw_story_save_screen`.
   - Dialog wrapping uses `draw_wrapped_text_small_box`.
 
