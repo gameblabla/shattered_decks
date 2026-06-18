@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <math.h>
 #include <ctype.h>
 
 #include "defines.h"
@@ -19,13 +18,18 @@
 #define H 240
 #define BOARD_COLS 5
 #define BOARD_ROWS 4
-#define FIELD_X0 -3.05f
-#define FIELD_X1  3.05f
-#define FIELD_Z0 -2.55f
-#define FIELD_Z1  2.55f
-#define FIELD_Y   0.0f
-#define FIELD_THICK -0.42f
-#define CFX_PI 3.14159265358979323846f
+#define Q8_SHIFT 8
+#define Q8_ONE   (1 << Q8_SHIFT)
+#define Q8_HALF  (1 << (Q8_SHIFT - 1))
+#define Q8_FROM_INT(v) ((int32_t)((v) << Q8_SHIFT))
+#define Q8_FRAC(n, d) ((int32_t)(((n) * Q8_ONE + ((d) / 2)) / (d)))
+#define FIELD_X0 (-781)   /* -3.05 in Q8.8 */
+#define FIELD_X1 ( 781)   /*  3.05 in Q8.8 */
+#define FIELD_Z0 (-653)   /* -2.55 in Q8.8 */
+#define FIELD_Z1 ( 653)   /*  2.55 in Q8.8 */
+#define FIELD_Y  (0)
+#define FIELD_THICK (-108) /* -0.42 in Q8.8 */
+#define CFX_PI_Q8 804
 #define TITLE_SEQUENCE_FRAMES 310
 #define DUEL_TOTAL_FRAMES 2696
 #define DUEL_OPENING_END 150
@@ -129,73 +133,123 @@ static int field_card_def(int owner, int slot);
 /* Small vector/camera utilities. The actual textured quad rasterization is   */
 /* Cascade FX's renderer3d; these functions only provide a PC/headless camera. */
 
-typedef struct { float x, y, z; } Vec3;
-typedef struct { Vec3 eye, target, up; float focal; } Camera;
-typedef struct { int x, y; float depth; int ok; } ScreenPt;
+typedef struct { int32_t x, y, z; } Vec3;
+typedef struct { Vec3 eye, target, up; int32_t focal; } Camera;
+typedef struct { int x, y; int32_t depth; int ok; } ScreenPt;
 
 static void draw_late_field_cards(Camera cam, int f);
 
-static Vec3 v3(float x, float y, float z) { Vec3 r = {x,y,z}; return r; }
-static Vec3 vsub(Vec3 a, Vec3 b) { return v3(a.x-b.x, a.y-b.y, a.z-b.z); }
-static Vec3 vscale(Vec3 a, float s) { return v3(a.x*s, a.y*s, a.z*s); }
-static float vdot(Vec3 a, Vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
-static Vec3 vcross(Vec3 a, Vec3 b) { return v3(a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x); }
-static Vec3 vnorm(Vec3 a) { float l = sqrtf(vdot(a,a)); return l > 0.0001f ? vscale(a, 1.0f/l) : v3(0,0,1); }
-
-static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
-static float smoothstepf(float t) { t = clampf(t, 0.0f, 1.0f); return t*t*(3.0f - 2.0f*t); }
-static float ps1step(float t)
+static int32_t q8_mul(int32_t a, int32_t b) { return (int32_t)((a * b) >> Q8_SHIFT); }
+static int32_t q8_div(int32_t a, int32_t b) { return b ? (int32_t)((a << Q8_SHIFT) / b) : 0; }
+static int32_t q8_clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static int32_t q8_smoothstep(int32_t t)
 {
-    /* PS1-era camera interpolation.  60 steps gives smooth motion at 60fps
-       while keeping the subtle stepped look. */
-    t = smoothstepf(t);
-    return floorf(t * 60.0f + 0.5f) / 60.0f;
+    t = q8_clamp(t, 0, Q8_ONE);
+    return q8_mul(q8_mul(t, t), Q8_FROM_INT(3) - q8_mul(Q8_FROM_INT(2), t));
+}
+static int32_t q8_ratio(int n, int d)
+{
+    if (d <= 0) return 0;
+    return q8_clamp((int32_t)((n * Q8_ONE + d / 2) / d), 0, Q8_ONE);
+}
+static int32_t q8_smooth_ratio(int n, int d) { return q8_smoothstep(q8_ratio(n, d)); }
+static int32_t q8_ps1step(int32_t t)
+{
+    t = q8_smoothstep(t);
+    return (int32_t)(((t * 60 + Q8_HALF) / Q8_ONE) * Q8_ONE / 60);
+}
+static int lerp_i(int a, int b, int32_t t) { return a + (int)(((b - a) * t + Q8_HALF) >> Q8_SHIFT); }
+static int32_t q8_lerp(int32_t a, int32_t b, int32_t t) { return a + q8_mul(b - a, t); }
+
+static const int16_t q8_sin_quarter[65] = {
+    0,6,13,19,25,31,38,44,50,56,62,68,74,80,86,92,98,
+    104,109,115,121,126,132,137,142,147,152,157,162,167,
+    172,177,181,185,190,194,198,202,206,209,213,216,220,
+    223,226,229,231,234,237,239,241,243,245,247,248,250,
+    251,252,253,254,255,255,256,256,256
+};
+
+static int32_t q8_sin_turn(int32_t a)
+{
+    int idx = (int)((a & 0xffff) >> 8);
+    int quad = idx >> 6;
+    int off = idx & 63;
+    int32_t v = (quad & 1) ? q8_sin_quarter[64 - off] : q8_sin_quarter[off];
+    return (quad >= 2) ? -v : v;
+}
+static int32_t q8_cos_turn(int32_t a) { return q8_sin_turn(a + 0x4000); }
+static int32_t q8_sin_pi(int32_t t) { return q8_sin_turn(t << 7); }
+static int32_t q8_sin_rad(int32_t radians) { return q8_sin_turn((int32_t)((radians * 32768) / CFX_PI_Q8)); }
+static int32_t q8_cos_rad(int32_t radians) { return q8_cos_turn((int32_t)((radians * 32768) / CFX_PI_Q8)); }
+
+static uint32_t isqrt_u32(uint32_t x)
+{
+    uint32_t op = x, res = 0, one = 1u << 30;
+    while (one > op) one >>= 2;
+    while (one != 0) {
+        if (op >= res + one) { op -= res + one; res = (res >> 1) + one; }
+        else res >>= 1;
+        one >>= 2;
+    }
+    return res;
 }
 
-static Camera make_camera(Vec3 eye, Vec3 target, Vec3 up, float focal)
+static Vec3 v3(int32_t x, int32_t y, int32_t z) { Vec3 r = {x,y,z}; return r; }
+static Vec3 vsub(Vec3 a, Vec3 b) { return v3(a.x-b.x, a.y-b.y, a.z-b.z); }
+static Vec3 vscale(Vec3 a, int32_t s) { return v3(q8_mul(a.x,s), q8_mul(a.y,s), q8_mul(a.z,s)); }
+static int32_t vdot(Vec3 a, Vec3 b) { return q8_mul(a.x,b.x) + q8_mul(a.y,b.y) + q8_mul(a.z,b.z); }
+static Vec3 vcross(Vec3 a, Vec3 b) { return v3(q8_mul(a.y,b.z)-q8_mul(a.z,b.y), q8_mul(a.z,b.x)-q8_mul(a.x,b.z), q8_mul(a.x,b.y)-q8_mul(a.y,b.x)); }
+static Vec3 vnorm(Vec3 a)
+{
+    int32_t d = vdot(a, a);
+    uint32_t len = isqrt_u32((uint32_t)(d > 0 ? d : 0) << Q8_SHIFT);
+    return len > 1 ? vscale(a, q8_div(Q8_ONE, (int32_t)len)) : v3(0,0,Q8_ONE);
+}
+
+static Camera make_camera(Vec3 eye, Vec3 target, Vec3 up, int32_t focal)
 {
     Camera c; c.eye = eye; c.target = target; c.up = up; c.focal = focal; return c;
 }
 
-static Camera lerp_camera(Camera a, Camera b, float t)
+static Camera lerp_camera(Camera a, Camera b, int32_t t)
 {
-    t = smoothstepf(t);
+    t = q8_smoothstep(t);
     Camera c;
-    c.eye = v3(a.eye.x + (b.eye.x - a.eye.x) * t,
-               a.eye.y + (b.eye.y - a.eye.y) * t,
-               a.eye.z + (b.eye.z - a.eye.z) * t);
-    c.target = v3(a.target.x + (b.target.x - a.target.x) * t,
-                  a.target.y + (b.target.y - a.target.y) * t,
-                  a.target.z + (b.target.z - a.target.z) * t);
-    c.up = vnorm(v3(a.up.x + (b.up.x - a.up.x) * t,
-                   a.up.y + (b.up.y - a.up.y) * t,
-                   a.up.z + (b.up.z - a.up.z) * t));
-    c.focal = a.focal + (b.focal - a.focal) * t;
+    c.eye = v3(q8_lerp(a.eye.x, b.eye.x, t),
+               q8_lerp(a.eye.y, b.eye.y, t),
+               q8_lerp(a.eye.z, b.eye.z, t));
+    c.target = v3(q8_lerp(a.target.x, b.target.x, t),
+                  q8_lerp(a.target.y, b.target.y, t),
+                  q8_lerp(a.target.z, b.target.z, t));
+    c.up = vnorm(v3(q8_lerp(a.up.x, b.up.x, t),
+                   q8_lerp(a.up.y, b.up.y, t),
+                   q8_lerp(a.up.z, b.up.z, t)));
+    c.focal = q8_lerp(a.focal, b.focal, t);
     return c;
 }
 
 static Camera player_camera(void)
 {
-    return make_camera(v3(0.0f, 2.45f, 5.05f), v3(0.0f, 0.0f, -0.25f), v3(0,1,0), 148.0f);
+    return make_camera(v3(0, Q8_FRAC(245,100), Q8_FRAC(505,100)), v3(0, 0, -Q8_FRAC(25,100)), v3(0,Q8_ONE,0), Q8_FROM_INT(148));
 }
 
 static Camera enemy_camera(void)
 {
-    return make_camera(v3(0.0f, 2.45f, -5.05f), v3(0.0f, 0.0f, 0.25f), v3(0,1,0), 148.0f);
+    return make_camera(v3(0, Q8_FRAC(245,100), -Q8_FRAC(505,100)), v3(0, 0, Q8_FRAC(25,100)), v3(0,Q8_ONE,0), Q8_FROM_INT(148));
 }
 
 static Camera top_camera(void)
 {
     /* FM-style tactical top view: closer than the first headless pass,
        so the board fills the 256x240 screen instead of looking like a minimap. */
-    return make_camera(v3(0.0f, 5.02f, 0.05f), v3(0.0f, 0.0f, 0.0f), v3(0,0,-1), 202.0f);
+    return make_camera(v3(0, Q8_FRAC(502,100), Q8_FRAC(5,100)), v3(0, 0, 0), v3(0,0,-Q8_ONE), Q8_FROM_INT(202));
 }
 
 static Camera placement_camera(void)
 {
     /* Slight perspective during the card fly-in: still readable as a top placement
        view, but with the front edge visible like the PS1 reference. */
-    return make_camera(v3(0.0f, 4.55f, 2.15f), v3(0.0f, 0.0f, 0.18f), v3(0,1,0), 164.0f);
+    return make_camera(v3(0, Q8_FRAC(455,100), Q8_FRAC(215,100)), v3(0, 0, Q8_FRAC(18,100)), v3(0,Q8_ONE,0), Q8_FROM_INT(164));
 }
 
 static Camera enemy_placement_camera(void)
@@ -203,20 +257,20 @@ static Camera enemy_placement_camera(void)
     /* Opponent placement must stay from COM's side. Earlier builds used the
        player placement camera here, which made the card appear to jump/swap
        to the wrong side of the field during the 00:06-00:07 beat. */
-    return make_camera(v3(0.0f, 4.55f, -2.15f), v3(0.0f, 0.0f, -0.18f), v3(0,1,0), 164.0f);
+    return make_camera(v3(0, Q8_FRAC(455,100), -Q8_FRAC(215,100)), v3(0, 0, -Q8_FRAC(18,100)), v3(0,Q8_ONE,0), Q8_FROM_INT(164));
 }
 
 static Camera battle_top_camera(void)
 {
     /* Player-oriented tactical/battle view. */
-    return make_camera(v3(0.0f, 5.05f, 0.03f), v3(0.0f, 0.0f, 0.0f), v3(0,0,-1), 196.0f);
+    return make_camera(v3(0, Q8_FRAC(505,100), Q8_FRAC(3,100)), v3(0, 0, 0), v3(0,0,-Q8_ONE), Q8_FROM_INT(196));
 }
 
 static Camera enemy_battle_top_camera(void)
 {
     /* COM-oriented tactical/battle view. This preserves opponent POV instead of
        flipping to the player side during the 00:06-00:07 COM placement/attack. */
-    return make_camera(v3(0.0f, 5.05f, -0.03f), v3(0.0f, 0.0f, 0.0f), v3(0,0,1), 196.0f);
+    return make_camera(v3(0, Q8_FRAC(505,100), -Q8_FRAC(3,100)), v3(0, 0, 0), v3(0,0,Q8_ONE), Q8_FROM_INT(196));
 }
 
 static Camera side_battle_camera(int attacker_row)
@@ -226,26 +280,27 @@ static Camera side_battle_camera(int attacker_row)
 
 static Camera opening_camera(int f)
 {
-    float t = ps1step(((float)f - 18.0f) / 66.0f);
-    float angle = -0.92f + 0.92f * t;
-    float radius = 7.15f - 2.05f * t;
-    float y = 3.45f - 1.00f * t;
-    return make_camera(v3(sinf(angle)*radius, y, cosf(angle)*radius), v3(0.0f,0.0f,-0.15f), v3(0,1,0), 142.0f + 6.0f*t);
+    int32_t t = q8_ps1step(q8_ratio(f - 18, 66));
+    int32_t angle = -Q8_FRAC(92,100) + q8_mul(Q8_FRAC(92,100), t);
+    int32_t radius = Q8_FRAC(715,100) - q8_mul(Q8_FRAC(205,100), t);
+    int32_t y = Q8_FRAC(345,100) - t;
+    return make_camera(v3(q8_mul(q8_sin_rad(angle), radius), y, q8_mul(q8_cos_rad(angle), radius)), v3(0,0,-Q8_FRAC(15,100)), v3(0,Q8_ONE,0), Q8_FROM_INT(142) + q8_mul(Q8_FROM_INT(6), t));
 }
 
 static Camera turn_camera(int f, int start, int end, int to_enemy)
 {
-    float t = ps1step(((float)f - (float)start) / (float)(end - start));
-    float a0 = to_enemy ? 0.0f : CFX_PI;
-    float a1 = to_enemy ? CFX_PI : 0.0f;
-    float a = a0 + (a1 - a0) * t;
-    float radius = 5.35f + 0.90f * sinf(t * CFX_PI);
-    float y = 2.45f + 0.85f * sinf(t * CFX_PI);
-    return make_camera(v3(sinf(a)*radius, y, cosf(a)*radius), v3(0,0,0), v3(0,1,0), 148.0f);
+    int32_t t = q8_ps1step(q8_ratio(f - start, end - start));
+    int32_t a0 = to_enemy ? 0 : CFX_PI_Q8;
+    int32_t a1 = to_enemy ? CFX_PI_Q8 : 0;
+    int32_t a = q8_lerp(a0, a1, t);
+    int32_t st = q8_sin_pi(t);
+    int32_t radius = Q8_FRAC(535,100) + q8_mul(Q8_FRAC(90,100), st);
+    int32_t y = Q8_FRAC(245,100) + q8_mul(Q8_FRAC(85,100), st);
+    return make_camera(v3(q8_mul(q8_sin_rad(a), radius), y, q8_mul(q8_cos_rad(a), radius)), v3(0,0,0), v3(0,Q8_ONE,0), Q8_FROM_INT(148));
 }
 
-static float col_x0(int c);
-static float row_z0(int r);
+static int32_t col_x0(int c);
+static int32_t row_z0(int r);
 
 static ScreenPt project_point(Camera cam, Vec3 p)
 {
@@ -253,14 +308,14 @@ static ScreenPt project_point(Camera cam, Vec3 p)
     Vec3 right = vnorm(vcross(fwd, cam.up));
     Vec3 up = vcross(right, fwd);
     Vec3 rel = vsub(p, cam.eye);
-    float cx = vdot(rel, right);
-    float cy = vdot(rel, up);
-    float cz = vdot(rel, fwd);
+    int32_t cx = vdot(rel, right);
+    int32_t cy = vdot(rel, up);
+    int32_t cz = vdot(rel, fwd);
     ScreenPt s;
     s.depth = cz;
-    if (cz <= 0.05f) { s.x = s.y = 0; s.ok = 0; return s; }
-    s.x = (int)(W * 0.5f + (cx / cz) * cam.focal);
-    s.y = (int)(H * 0.50f - (cy / cz) * cam.focal);
+    if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
+    s.x = W / 2 + (int)(q8_mul(q8_div(cx, cz), cam.focal) >> Q8_SHIFT);
+    s.y = H / 2 - (int)(q8_mul(q8_div(cy, cz), cam.focal) >> Q8_SHIFT);
     s.ok = 1;
     return s;
 }
@@ -285,22 +340,22 @@ static int field_side_tile_for_cell(int c, int r)
     return 4;
 }
 
-static void draw_field_wall_z(Camera cam, float z, int r_for_tile)
+static void draw_field_wall_z(Camera cam, int32_t z, int r_for_tile)
 {
     int c;
     for (c = 0; c < BOARD_COLS; ++c) {
-        float x0 = col_x0(c), x1 = col_x0(c + 1);
+        int32_t x0 = col_x0(c), x1 = col_x0(c + 1);
         int tile = field_side_tile_for_cell(c, r_for_tile);
         draw_quad3d(cam, v3(x0, FIELD_Y, z), v3(x1, FIELD_Y, z),
                          v3(x1, FIELD_THICK, z), v3(x0, FIELD_THICK, z), tile);
     }
 }
 
-static void draw_field_wall_x(Camera cam, float x, int c_for_tile)
+static void draw_field_wall_x(Camera cam, int32_t x, int c_for_tile)
 {
     int r;
     for (r = 0; r < BOARD_ROWS; ++r) {
-        float z0 = row_z0(r), z1 = row_z0(r + 1);
+        int32_t z0 = row_z0(r), z1 = row_z0(r + 1);
         int tile = field_side_tile_for_cell(c_for_tile, r);
         draw_quad3d(cam, v3(x, FIELD_Y, z0), v3(x, FIELD_Y, z1),
                          v3(x, FIELD_THICK, z1), v3(x, FIELD_THICK, z0), tile);
@@ -315,9 +370,9 @@ static void draw_field_slab_sides(Camera cam)
        walls in cell-sized segments so every side face gets a local UV mapping.
        With no z-buffer, draw the far edge first and the camera-facing edge last
        so side-wall corners do not overwrite the visible front wall. */
-    if (cam.eye.z >= 0.0f) {
+    if (cam.eye.z >= 0) {
         draw_field_wall_z(cam, FIELD_Z0, 0);
-        if (cam.eye.x >= 0.0f) {
+        if (cam.eye.x >= 0) {
             draw_field_wall_x(cam, FIELD_X0, 0);
             draw_field_wall_x(cam, FIELD_X1, BOARD_COLS - 1);
         } else {
@@ -327,7 +382,7 @@ static void draw_field_slab_sides(Camera cam)
         draw_field_wall_z(cam, FIELD_Z1, BOARD_ROWS - 1);
     } else {
         draw_field_wall_z(cam, FIELD_Z1, BOARD_ROWS - 1);
-        if (cam.eye.x >= 0.0f) {
+        if (cam.eye.x >= 0) {
             draw_field_wall_x(cam, FIELD_X0, 0);
             draw_field_wall_x(cam, FIELD_X1, BOARD_COLS - 1);
         } else {
@@ -744,12 +799,13 @@ static void draw_big_battle_card_flip(int id, int x, int y, int frame, int durat
 {
     if (frame < 0) frame = 0;
     if (frame >= duration) frame = duration - 1;
-    float t = (float)frame / (float)(duration - 1);
-    float half = t < 0.5f ? (t * 2.0f) : ((t - 0.5f) * 2.0f);
-    int showing_back = t < 0.5f;
+    int32_t t = q8_ratio(frame, duration - 1);
+    int32_t half = t < Q8_HALF ? t * 2 : (t - Q8_HALF) * 2;
+    int showing_back = t < Q8_HALF;
     int w;
-    if (showing_back) w = (int)(120.0f * (1.0f - smoothstepf(half)) + 5.0f * smoothstepf(half));
-    else              w = (int)(5.0f   * (1.0f - smoothstepf(half)) + 120.0f * smoothstepf(half));
+    half = q8_smoothstep(half);
+    if (showing_back) w = lerp_i(120, 5, half);
+    else              w = lerp_i(5, 120, half);
     if (w < 4) w = 4;
     int x2 = x + (120 - w) / 2;
     draw_big_battle_card_rect(id, x2, y, w, 160, showing_back);
@@ -783,8 +839,8 @@ static void draw_player_hand(int f, int selected)
         int y = hand_y();
         int x = x0;
         if (f < 116) {
-            float t = smoothstepf(((float)f - (84.0f + i * 4.0f)) / 12.0f);
-            x = (int)((1.0f - t) * 272.0f + t * (float)x0);
+            int32_t t = q8_smooth_ratio(f - (84 + i * 4), 12);
+            x = lerp_i(272, x0, t);
         }
         if (i == g_player_hide_index) continue;
         if (((f >= 150 && f < 176) || (f >= 475 && f < 505) || (f >= 910 && f < 930)) && i == selected) continue;
@@ -801,7 +857,7 @@ static void draw_player_hand_draw_sequence(int f, int start, int selected)
        clearer than v11 so the draw is legible in the full-match video. */
     int draw_slots[2] = {0, 4};
     int reveal_cursor = (f >= start + 76);
-    int yoff = (int)(92.0f * (1.0f - smoothstepf(((float)f - (float)start) / 30.0f)));
+    int yoff = lerp_i(92, 0, q8_smooth_ratio(f - start, 30));
 
     if (f >= start + 20 && f < start + 78) draw_text_small(211, 142 + yoff / 3, "DRAW", IDX_GOLD_HI, IDX_BLACK);
 
@@ -812,9 +868,9 @@ static void draw_player_hand_draw_sequence(int f, int start, int selected)
         int visible = 1;
         for (int d = 0; d < 2; ++d) {
             if (i == draw_slots[d]) {
-                float t = smoothstepf(((float)f - (float)(start + 24 + d * 20)) / 24.0f);
-                if (t <= 0.0f) visible = 0;
-                x = (int)((1.0f - t) * 282.0f + t * (float)x0);
+                int32_t t = q8_smooth_ratio(f - (start + 24 + d * 20), 24);
+                if (t <= 0) visible = 0;
+                x = lerp_i(282, x0, t);
             }
         }
         if (!visible) continue;
@@ -840,13 +896,13 @@ static void draw_enemy_hand(int f, int selected, int reveal_one)
 
 static void draw_enemy_hand_draw_sequence(int f, int start, int selected)
 {
-    int yoff = (int)(92.0f * (1.0f - smoothstepf(((float)f - (float)start) / 30.0f))) + g_enemy_hand_offset_y;
+    int yoff = lerp_i(92, 0, q8_smooth_ratio(f - start, 30)) + g_enemy_hand_offset_y;
     if (f >= start + 14 && f < start + 70) draw_text_small(211, 142 + yoff / 3, "DRAW", IDX_GOLD_HI, IDX_BLACK);
     for (int i = 0; i < 5; ++i) {
         int x0 = 12 + i * 48;
-        float t = smoothstepf(((float)f - (float)(start + i * 6)) / 20.0f);
-        if (t <= 0.0f) continue;
-        int x = (int)((1.0f - t) * 282.0f + t * (float)x0);
+        int32_t t = q8_smooth_ratio(f - (start + i * 6), 20);
+        if (t <= 0) continue;
+        int x = lerp_i(282, x0, t);
         int y = 154 + yoff;
         draw_card_sprite(0, x, y, 36, 49, 1);
         if (f >= start + 42 && i == selected) draw_red_cursor(x, y, 36, 49);
@@ -856,12 +912,12 @@ static void draw_enemy_hand_draw_sequence(int f, int start, int selected)
 /* ------------------------------------------------------------------------- */
 /* Board rendering and board-card placement. */
 
-static float col_xf(float c) { return FIELD_X0 + (FIELD_X1 - FIELD_X0) * c / (float)BOARD_COLS; }
-static float row_zf(float r) { return FIELD_Z0 + (FIELD_Z1 - FIELD_Z0) * r / (float)BOARD_ROWS; }
-static float col_x0(int c) { return col_xf((float)c); }
-static float row_z0(int r) { return row_zf((float)r); }
-static float zone_cx(int c) { return (col_x0(c) + col_x0(c+1)) * 0.5f; }
-static float zone_cz(int r) { return (row_z0(r) + row_z0(r+1)) * 0.5f; }
+static int32_t col_xq(int32_t c) { return FIELD_X0 + (int32_t)(((FIELD_X1 - FIELD_X0) * c) / (BOARD_COLS * Q8_ONE)); }
+static int32_t row_zq(int32_t r) { return FIELD_Z0 + (int32_t)(((FIELD_Z1 - FIELD_Z0) * r) / (BOARD_ROWS * Q8_ONE)); }
+static int32_t col_x0(int c) { return col_xq(Q8_FROM_INT(c)); }
+static int32_t row_z0(int r) { return row_zq(Q8_FROM_INT(r)); }
+static int32_t zone_cx(int c) { return (col_x0(c) + col_x0(c+1)) / 2; }
+static int32_t zone_cz(int r) { return (row_z0(r) + row_z0(r+1)) / 2; }
 
 static void draw_grid_line(Camera cam, Vec3 a, Vec3 b, uint8_t c)
 {
@@ -889,8 +945,8 @@ static void render_board(Camera cam)
 
     for (int r = 0; r < BOARD_ROWS; ++r) {
         for (int c = 0; c < BOARD_COLS; ++c) {
-            float x0 = col_x0(c), x1 = col_x0(c+1);
-            float z0 = row_z0(r), z1 = row_z0(r+1);
+            int32_t x0 = col_x0(c), x1 = col_x0(c+1);
+            int32_t z0 = row_z0(r), z1 = row_z0(r+1);
             /* Deliberately obvious PS1-era checker pattern: one bright gold tile,
                then one darker brown/gold tile. The prior two gold variants were
                too close and read as a flat texture instead of a board. */
@@ -899,17 +955,17 @@ static void render_board(Camera cam)
         }
     }
 
-    for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line(cam, v3(col_x0(c),0.03f,FIELD_Z0), v3(col_x0(c),0.03f,FIELD_Z1), IDX_DARK_BROWN);
-    for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line(cam, v3(FIELD_X0,0.03f,row_z0(r)), v3(FIELD_X1,0.03f,row_z0(r)), IDX_DARK_BROWN);
+    for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line(cam, v3(col_x0(c),Q8_FRAC(3,100),FIELD_Z0), v3(col_x0(c),Q8_FRAC(3,100),FIELD_Z1), IDX_DARK_BROWN);
+    for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line(cam, v3(FIELD_X0,Q8_FRAC(3,100),row_z0(r)), v3(FIELD_X1,Q8_FRAC(3,100),row_z0(r)), IDX_DARK_BROWN);
 
     /* faint central Egyptian mark */
-    ScreenPt a = project_point(cam, v3(-0.55f,0.05f,-0.50f));
-    ScreenPt b = project_point(cam, v3(0.00f,0.05f,0.25f));
-    ScreenPt c = project_point(cam, v3(0.55f,0.05f,-0.50f));
+    ScreenPt a = project_point(cam, v3(-Q8_FRAC(55,100),Q8_FRAC(5,100),-Q8_FRAC(50,100)));
+    ScreenPt b = project_point(cam, v3(0,Q8_FRAC(5,100),Q8_FRAC(25,100)));
+    ScreenPt c = project_point(cam, v3(Q8_FRAC(55,100),Q8_FRAC(5,100),-Q8_FRAC(50,100)));
     if (a.ok && b.ok && c.ok) { line_i(a.x,a.y,b.x,b.y,IDX_GOLD_DARK); line_i(b.x,b.y,c.x,c.y,IDX_GOLD_DARK); }
 }
 
-typedef struct { float x, y, u, v; } TexV;
+typedef struct { int x, y, u, v; } TexV;
 
 static uint8_t g_gray_lut[256];
 static int g_gray_lut_ready = 0;
@@ -951,27 +1007,28 @@ static uint8_t gray_card_px(uint8_t src)
 
 static void draw_textured_tri_ex(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c, int gray)
 {
-    float minx_f = fminf(a.x, fminf(b.x, c.x));
-    float maxx_f = fmaxf(a.x, fmaxf(b.x, c.x));
-    float miny_f = fminf(a.y, fminf(b.y, c.y));
-    float maxy_f = fmaxf(a.y, fmaxf(b.y, c.y));
-    int minx = (int)floorf(minx_f); if (minx < 0) minx = 0;
-    int maxx = (int)ceilf(maxx_f);  if (maxx >= W) maxx = W - 1;
-    int miny = (int)floorf(miny_f); if (miny < 0) miny = 0;
-    int maxy = (int)ceilf(maxy_f);  if (maxy >= H) maxy = H - 1;
-    float den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
-    if (fabsf(den) < 0.0001f) return;
+    int minx = a.x < b.x ? (a.x < c.x ? a.x : c.x) : (b.x < c.x ? b.x : c.x);
+    int maxx = a.x > b.x ? (a.x > c.x ? a.x : c.x) : (b.x > c.x ? b.x : c.x);
+    int miny = a.y < b.y ? (a.y < c.y ? a.y : c.y) : (b.y < c.y ? b.y : c.y);
+    int maxy = a.y > b.y ? (a.y > c.y ? a.y : c.y) : (b.y > c.y ? b.y : c.y);
+    int den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if (den == 0) return;
+    if (minx < 0) minx = 0;
+    if (maxx >= W) maxx = W - 1;
+    if (miny < 0) miny = 0;
+    if (maxy >= H) maxy = H - 1;
     for (int y = miny; y <= maxy; ++y) {
         for (int x = minx; x <= maxx; ++x) {
-            float px = (float)x + 0.5f, py = (float)y + 0.5f;
-            float wa = ((b.y - c.y) * (px - c.x) + (c.x - b.x) * (py - c.y)) / den;
-            float wb = ((c.y - a.y) * (px - c.x) + (a.x - c.x) * (py - c.y)) / den;
-            float wc = 1.0f - wa - wb;
-            if (wa >= -0.001f && wb >= -0.001f && wc >= -0.001f) {
-                float u = wa * a.u + wb * b.u + wc * c.u;
-                float v = wa * a.v + wb * b.v + wc * c.v;
-                int sx = (int)(u * (float)(sw - 1) + 0.5f);
-                int sy = (int)(v * (float)(sh - 1) + 0.5f);
+            int px2 = x * 2 + 1, py2 = y * 2 + 1;
+            int wa2 = (b.y - c.y) * (px2 - c.x * 2) + (c.x - b.x) * (py2 - c.y * 2);
+            int wb2 = (c.y - a.y) * (px2 - c.x * 2) + (a.x - c.x) * (py2 - c.y * 2);
+            int wc2 = den * 2 - wa2 - wb2;
+            if ((den > 0 && wa2 >= 0 && wb2 >= 0 && wc2 >= 0) ||
+                (den < 0 && wa2 <= 0 && wb2 <= 0 && wc2 <= 0)) {
+                int u = (wa2 * a.u + wb2 * b.u + wc2 * c.u) / (den * 2);
+                int v = (wa2 * a.v + wb2 * b.v + wc2 * c.v) / (den * 2);
+                int sx = (u * (sw - 1) + Q8_HALF) >> Q8_SHIFT;
+                int sy = (v * (sh - 1) + Q8_HALF) >> Q8_SHIFT;
                 if (sx < 0) sx = 0;
                 if (sx >= sw) sx = sw - 1;
                 if (sy < 0) sy = 0;
@@ -995,9 +1052,9 @@ static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int fl
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
     const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
-    TexV ta = {(float)pa.x, (float)pa.y, flip_u ? 1.0f : 0.0f, 1.0f};
-    TexV tb = {(float)pb.x, (float)pb.y, flip_u ? 0.0f : 1.0f, 1.0f};
-    TexV tc = {(float)pc.x, (float)pc.y, 0.5f, 0.0f};
+    TexV ta = {pa.x, pa.y, flip_u ? Q8_ONE : 0, Q8_ONE};
+    TexV tb = {pb.x, pb.y, flip_u ? 0 : Q8_ONE, Q8_ONE};
+    TexV tc = {pc.x, pc.y, Q8_HALF, 0};
     draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, ta, tb, tc);
     line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
     line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_DARK);
@@ -1019,34 +1076,34 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
     int sw = WAIFU_TEX_TILE_SIZE, sh = WAIFU_TEX_TILE_SIZE;
     int minx, maxx, miny, maxy;
-    float den;
-    minx = (int)floorf(fminf((float)pa.x, fminf((float)pb.x, (float)pc.x)));
-    maxx = (int)ceilf(fmaxf((float)pa.x, fmaxf((float)pb.x, (float)pc.x)));
-    miny = (int)floorf(fminf((float)pa.y, fminf((float)pb.y, (float)pc.y)));
-    maxy = (int)ceilf(fmaxf((float)pa.y, fmaxf((float)pb.y, (float)pc.y)));
+    int den;
+    minx = pa.x < pb.x ? (pa.x < pc.x ? pa.x : pc.x) : (pb.x < pc.x ? pb.x : pc.x);
+    maxx = pa.x > pb.x ? (pa.x > pc.x ? pa.x : pc.x) : (pb.x > pc.x ? pb.x : pc.x);
+    miny = pa.y < pb.y ? (pa.y < pc.y ? pa.y : pc.y) : (pb.y < pc.y ? pb.y : pc.y);
+    maxy = pa.y > pb.y ? (pa.y > pc.y ? pa.y : pc.y) : (pb.y > pc.y ? pb.y : pc.y);
     if (minx < 0) minx = 0;
     if (miny < 0) miny = 0;
     if (maxx >= W) maxx = W - 1;
     if (maxy >= H) maxy = H - 1;
-    den = ((float)pb.y - (float)pc.y) * ((float)pa.x - (float)pc.x) + ((float)pc.x - (float)pb.x) * ((float)pa.y - (float)pc.y);
-    if (fabsf(den) < 0.0001f) return;
+    den = (pb.y - pc.y) * (pa.x - pc.x) + (pc.x - pb.x) * (pa.y - pc.y);
+    if (den == 0) return;
     for (int y = miny; y <= maxy; ++y) {
         for (int x = minx; x <= maxx; ++x) {
-            float px = (float)x + 0.5f, py = (float)y + 0.5f;
-            float wa = (((float)pb.y - (float)pc.y) * (px - (float)pc.x) + ((float)pc.x - (float)pb.x) * (py - (float)pc.y)) / den;
-            float wb = (((float)pc.y - (float)pa.y) * (px - (float)pc.x) + ((float)pa.x - (float)pc.x) * (py - (float)pc.y)) / den;
-            float wc = 1.0f - wa - wb;
-            if (wa >= -0.001f && wb >= -0.001f && wc >= -0.001f) {
-                float width = wa + wb;
-                float v = width;
-                float vt = v * (float)rows;
-                vt = vt - floorf(vt);
-                float u = width > 0.001f ? wa / width : 0.5f;
-                if (flip_u) u = 1.0f - u;
-                float ut = u * (float)cols;
-                ut = ut - floorf(ut);
-                int sx = (int)(ut * (float)(sw - 1) + 0.5f);
-                int sy = (int)((1.0f - vt) * (float)(sh - 1) + 0.5f);
+            int px2 = x * 2 + 1, py2 = y * 2 + 1;
+            int wa2 = (pb.y - pc.y) * (px2 - pc.x * 2) + (pc.x - pb.x) * (py2 - pc.y * 2);
+            int wb2 = (pc.y - pa.y) * (px2 - pc.x * 2) + (pa.x - pc.x) * (py2 - pc.y * 2);
+            int wc2 = den * 2 - wa2 - wb2;
+            if ((den > 0 && wa2 >= 0 && wb2 >= 0 && wc2 >= 0) ||
+                (den < 0 && wa2 <= 0 && wb2 <= 0 && wc2 <= 0)) {
+                int width = wa2 + wb2;
+                int abs_width = width < 0 ? -width : width;
+                int vq = (width * Q8_ONE) / (den * 2);
+                int vt = (vq * rows) & (Q8_ONE - 1);
+                int uq = abs_width > 0 ? (wa2 * Q8_ONE) / width : Q8_HALF;
+                if (flip_u) uq = Q8_ONE - uq;
+                int ut = (uq * cols) & (Q8_ONE - 1);
+                int sx = (ut * (sw - 1) + Q8_HALF) >> Q8_SHIFT;
+                int sy = ((Q8_ONE - vt) * (sh - 1) + Q8_HALF) >> Q8_SHIFT;
                 if (sx < 0) sx = 0;
                 if (sx >= sw) sx = sw - 1;
                 if (sy < 0) sy = 0;
@@ -1065,10 +1122,10 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
                                         int gray)
 {
     if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
-    TexV a = {(float)p0.x, (float)p0.y, 0.0f, 0.0f};
-    TexV b = {(float)p1.x, (float)p1.y, 1.0f, 0.0f};
-    TexV c = {(float)p2.x, (float)p2.y, 1.0f, 1.0f};
-    TexV d = {(float)p3.x, (float)p3.y, 0.0f, 1.0f};
+    TexV a = {p0.x, p0.y, 0, 0};
+    TexV b = {p1.x, p1.y, Q8_ONE, 0};
+    TexV c = {p2.x, p2.y, Q8_ONE, Q8_ONE};
+    TexV d = {p3.x, p3.y, 0, Q8_ONE};
     draw_textured_tri_ex(src, sw, sh, a, b, c, gray);
     draw_textured_tri_ex(src, sw, sh, a, c, d, gray);
     line_i(p0.x,p0.y,p1.x,p1.y, gray ? IDX_DIM : IDX_CARD_RIM);
@@ -1095,10 +1152,10 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
        In defense position the card is rotated 90 degrees; swap the quad's
        half-extents so the 38x54 texture keeps its aspect ratio instead of
        stretching when the UVs are rotated. */
-    float cx = zone_cx(col), cz = zone_cz(row);
-    float hw = defense ? 0.50f : 0.36f;
-    float hz = defense ? 0.36f : 0.50f;
-    float y = 0.115f;
+    int32_t cx = zone_cx(col), cz = zone_cz(row);
+    int32_t hw = defense ? Q8_FRAC(50,100) : Q8_FRAC(36,100);
+    int32_t hz = defense ? Q8_FRAC(36,100) : Q8_FRAC(50,100);
+    int32_t y = Q8_FRAC(115,1000);
     const uint8_t *tex = back ? waifu_card_back : (is_support_card(card_id) ? waifu_support_face : card_face_ptr(card_id));
     ScreenPt p0 = project_point(cam, v3(cx - hw, y, cz - hz));
     ScreenPt p1 = project_point(cam, v3(cx + hw, y, cz - hz));
@@ -1125,14 +1182,14 @@ static void draw_board_card(Camera cam, int col, int row, int card_id, int back)
     draw_board_card_ex(cam, col, row, card_id, back, 0);
 }
 
-static void draw_zone_cursor_f(Camera cam, float col, float row)
+static void draw_zone_cursor_q(Camera cam, int32_t col, int32_t row)
 {
-    float x0 = col_xf(col), x1 = col_xf(col + 1.0f);
-    float z0 = row_zf(row), z1 = row_zf(row + 1.0f);
-    ScreenPt p0 = project_point(cam, v3(x0,0.10f,z0));
-    ScreenPt p1 = project_point(cam, v3(x1,0.10f,z0));
-    ScreenPt p2 = project_point(cam, v3(x1,0.10f,z1));
-    ScreenPt p3 = project_point(cam, v3(x0,0.10f,z1));
+    int32_t x0 = col_xq(col), x1 = col_xq(col + Q8_ONE);
+    int32_t z0 = row_zq(row), z1 = row_zq(row + Q8_ONE);
+    ScreenPt p0 = project_point(cam, v3(x0,Q8_FRAC(10,100),z0));
+    ScreenPt p1 = project_point(cam, v3(x1,Q8_FRAC(10,100),z0));
+    ScreenPt p2 = project_point(cam, v3(x1,Q8_FRAC(10,100),z1));
+    ScreenPt p3 = project_point(cam, v3(x0,Q8_FRAC(10,100),z1));
     if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
     line_i(p0.x,p0.y,p1.x,p1.y,IDX_RED); line_i(p1.x,p1.y,p2.x,p2.y,IDX_RED);
     line_i(p2.x,p2.y,p3.x,p3.y,IDX_RED); line_i(p3.x,p3.y,p0.x,p0.y,IDX_RED);
@@ -1141,21 +1198,21 @@ static void draw_zone_cursor_f(Camera cam, float col, float row)
 
 static void draw_zone_cursor(Camera cam, int col, int row)
 {
-    draw_zone_cursor_f(cam, (float)col, (float)row);
+    draw_zone_cursor_q(cam, Q8_FROM_INT(col), Q8_FROM_INT(row));
 }
 
 static void draw_top_selector_cursor(Camera cam)
 {
-    float t = smoothstepf((float)g_b_top_cursor_anim / 8.0f);
-    float col = (float)g_b_top_prev_col + ((float)g_b_top_col - (float)g_b_top_prev_col) * t;
-    float row = (float)g_b_top_prev_row + ((float)g_b_top_row - (float)g_b_top_prev_row) * t;
-    draw_zone_cursor_f(cam, col, row);
+    int32_t t = q8_smooth_ratio(g_b_top_cursor_anim, 8);
+    int32_t col = Q8_FROM_INT(g_b_top_prev_col) + q8_mul(Q8_FROM_INT(g_b_top_col - g_b_top_prev_col), t);
+    int32_t row = Q8_FROM_INT(g_b_top_prev_row) + q8_mul(Q8_FROM_INT(g_b_top_row - g_b_top_prev_row), t);
+    draw_zone_cursor_q(cam, col, row);
     if (g_b_top_cursor_anim < 8) ++g_b_top_cursor_anim;
 }
 
 static void draw_flying_card(Camera cam, int card_id, int hand_index, int target_col, int target_row, int frame, int start, int end, int back)
 {
-    float t = clampf(((float)frame - (float)start) / (float)(end - start), 0.0f, 1.0f);
+    int32_t t = q8_ratio(frame - start, end - start);
     int flip_to_back = (back == 2);
     int render_back = flip_to_back ? 0 : back;
     /* PS1-style placement beat: card jumps out of the hand, hangs large at
@@ -1166,33 +1223,33 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
     int midx = 104, midy = 82;
     int midw = 48, midh = 66;
 
-    ScreenPt dst = project_point(cam, v3(zone_cx(target_col), 0.10f, zone_cz(target_row)));
+    ScreenPt dst = project_point(cam, v3(zone_cx(target_col), Q8_FRAC(10,100), zone_cz(target_row)));
     if (!dst.ok) return;
     int dx = dst.x - 14, dy = dst.y - 20;
 
     int x, y, w, h;
-    if (t < 0.28f) {
-        float a = smoothstepf(t / 0.28f);
-        x = (int)((1.0f-a) * (float)sx + a * (float)midx);
-        y = (int)((1.0f-a) * (float)sy + a * (float)midy);
-        w = (int)((1.0f-a) * 38.0f + a * (float)midw);
-        h = (int)((1.0f-a) * 50.0f + a * (float)midh);
-    } else if (t < 0.50f) {
-        float a = (t - 0.28f) / 0.22f;
+    if (t < Q8_FRAC(28,100)) {
+        int32_t a = q8_smoothstep(q8_div(t, Q8_FRAC(28,100)));
+        x = lerp_i(sx, midx, a);
+        y = lerp_i(sy, midy, a);
+        w = lerp_i(38, midw, a);
+        h = lerp_i(50, midh, a);
+    } else if (t < Q8_HALF) {
+        int32_t a = q8_div(t - Q8_FRAC(28,100), Q8_FRAC(22,100));
         x = midx;
-        y = midy - (int)(5.0f * sinf(a * CFX_PI));
+        y = midy - (int)q8_mul(Q8_FROM_INT(5), q8_sin_pi(a));
         w = midw;
         h = midh;
-    } else if (t < 0.86f) {
-        float a = smoothstepf((t - 0.50f) / 0.36f);
-        int bob = (int)(-14.0f * sinf(a * CFX_PI));
-        x = (int)((1.0f-a) * (float)midx + a * (float)dx);
-        y = (int)((1.0f-a) * (float)midy + a * (float)dy) + bob;
-        w = (int)((1.0f-a) * (float)midw + a * 28.0f);
-        h = (int)((1.0f-a) * (float)midh + a * 39.0f);
+    } else if (t < Q8_FRAC(86,100)) {
+        int32_t a = q8_smoothstep(q8_div(t - Q8_HALF, Q8_FRAC(36,100)));
+        int bob = -(int)q8_mul(Q8_FROM_INT(14), q8_sin_pi(a));
+        x = lerp_i(midx, dx, a);
+        y = lerp_i(midy, dy, a) + bob;
+        w = lerp_i(midw, 28, a);
+        h = lerp_i(midh, 39, a);
     } else {
-        float a = smoothstepf((t - 0.86f) / 0.14f);
-        int snap = (int)(4.0f * sinf(a * CFX_PI));
+        int32_t a = q8_smoothstep(q8_div(t - Q8_FRAC(86,100), Q8_FRAC(14,100)));
+        int snap = (int)q8_mul(Q8_FROM_INT(4), q8_sin_pi(a));
         x = dx;
         y = dy - snap;
         w = 28;
@@ -1200,16 +1257,17 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
     }
 
     if (flip_to_back) {
-        if (t < 0.28f) {
+        if (t < Q8_FRAC(28,100)) {
             render_back = 0;
-        } else if (t < 0.50f) {
-            float ft = (t - 0.28f) / 0.22f;
-            float half = ft < 0.5f ? (ft * 2.0f) : ((ft - 0.5f) * 2.0f);
+        } else if (t < Q8_HALF) {
+            int32_t ft = q8_div(t - Q8_FRAC(28,100), Q8_FRAC(22,100));
+            int32_t half = ft < Q8_HALF ? (ft * 2) : ((ft - Q8_HALF) * 2);
             int old_w = w;
             int flip_w;
-            render_back = ft >= 0.5f;
-            if (ft < 0.5f) flip_w = (int)((float)old_w * (1.0f - smoothstepf(half)) + 4.0f * smoothstepf(half));
-            else          flip_w = (int)(4.0f * (1.0f - smoothstepf(half)) + (float)old_w * smoothstepf(half));
+            half = q8_smoothstep(half);
+            render_back = ft >= Q8_HALF;
+            if (ft < Q8_HALF) flip_w = lerp_i(old_w, 4, half);
+            else              flip_w = lerp_i(4, old_w, half);
             if (flip_w < 4) flip_w = 4;
             x += (old_w - flip_w) / 2;
             w = flip_w;
@@ -1221,8 +1279,8 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
     /* soft black shadow under the flying card */
     rect_fill(x+3, y+h-2, w, 4, IDX_BLACK);
     draw_card_sprite(card_id, x, y, w, h, render_back);
-    if (flip_to_back && t >= 0.38f && t < 0.42f) rect_fill(x + w / 2 - 1, y + 2, 2, h - 4, IDX_WHITE);
-    if (t > 0.78f) {
+    if (flip_to_back && t >= Q8_FRAC(38,100) && t < Q8_FRAC(42,100)) rect_fill(x + w / 2 - 1, y + 2, 2, h - 4, IDX_WHITE);
+    if (t > Q8_FRAC(78,100)) {
         rect_outline(x-2,y-2,w+4,h+4,IDX_GOLD_HI);
         if (((frame - start) & 3) < 2) rect_outline(x-4,y-4,w+8,h+8,IDX_WHITE);
     }
@@ -1396,16 +1454,16 @@ static int calc_battle_delta(int atk_id, int def_id, int defender_in_defense)
     return atk - defv;
 }
 
-static void apply_black_dither_fade(float visible)
+static void apply_black_dither_fade(int32_t visible)
 {
-    visible = clampf(visible, 0.0f, 1.0f);
+    visible = q8_clamp(visible, 0, Q8_ONE);
     static const uint8_t bayer[8][8] = {
         { 0,48,12,60, 3,51,15,63}, {32,16,44,28,35,19,47,31},
         { 8,56, 4,52,11,59, 7,55}, {40,24,36,20,43,27,39,23},
         { 2,50,14,62, 1,49,13,61}, {34,18,46,30,33,17,45,29},
         {10,58, 6,54, 9,57, 5,53}, {42,26,38,22,41,25,37,21}
     };
-    int threshold = (int)((1.0f - visible) * 64.0f + 0.5f);
+    int threshold = (int)(((Q8_ONE - visible) * 64 + Q8_HALF) >> Q8_SHIFT);
     if (threshold <= 0) return;
     if (threshold >= 64) { clear_screen(IDX_BLACK); return; }
     for (int y = 0; y < H; ++y) {
@@ -1420,8 +1478,8 @@ static void apply_black_dither_fade(float visible)
    SCREEN_TRANSITION(f, 24, draw_a(f), draw_b()) */
 #define SCREEN_TRANSITION(f, half, from_call, to_call) \
     do { \
-        if ((f) < (half)) { from_call; apply_black_dither_fade(1.0f - (float)(f) / (float)(half)); } \
-        else { int _st_local = (f) - (half); (void)_st_local; to_call; apply_black_dither_fade((float)_st_local / (float)(half)); } \
+        if ((f) < (half)) { from_call; apply_black_dither_fade(Q8_ONE - q8_ratio((f), (half))); } \
+        else { int _st_local = (f) - (half); (void)_st_local; to_call; apply_black_dither_fade(q8_ratio(_st_local, (half))); } \
     } while (0)
 
 static void draw_field_pair_for_battle(Camera cam, int atk_col, int atk_row, int atk_id, int atk_back,
@@ -1492,9 +1550,9 @@ static void draw_battle_cutin_event_ex(int f, int start,
     int burn_dur = BATTLE_BURN_DUR;
 
     if (local < slide_dur) {
-        float e = smoothstepf((float)local / (float)slide_dur);
-        int ax0 = (int)((1.0f-e)*(-128.0f) + e*(float)ax);
-        int dx0 = (int)((1.0f-e)*(264.0f) + e*(float)dx);
+        int32_t e = q8_smooth_ratio(local, slide_dur);
+        int ax0 = lerp_i(-128, ax, e);
+        int dx0 = lerp_i(264, dx, e);
         draw_cutin_battle_card(atk_id, ax0, ay, atk_back, 1);
         draw_cutin_battle_card(def_id, dx0, dy, def_back, 0);
     } else if (atk_back && local < def_flip_start) {
@@ -1517,11 +1575,11 @@ static void draw_battle_cutin_event_ex(int f, int start,
         if (local < ram_start + ram_dur) {
             /* Attacker rams the defender. The card moves right, contacts, then
                eases back. No slash overlay is used. */
-            float t = (float)(local - ram_start) / (float)ram_dur;
-            float lunge;
-            if (t < 0.62f) lunge = smoothstepf(t / 0.62f);
-            else lunge = 1.0f - smoothstepf((t - 0.62f) / 0.38f) * 0.72f;
-            atk_x = ax + (int)(46.0f * lunge);
+            int32_t t = q8_ratio(local - ram_start, ram_dur);
+            int32_t lunge;
+            if (t < Q8_FRAC(62,100)) lunge = q8_smoothstep(q8_div(t, Q8_FRAC(62,100)));
+            else lunge = Q8_ONE - q8_mul(q8_smoothstep(q8_div(t - Q8_FRAC(62,100), Q8_FRAC(38,100))), Q8_FRAC(72,100));
+            atk_x = ax + (int)q8_mul(Q8_FROM_INT(46), lunge);
             if (local >= ram_contact && local < ram_contact + 24) {
                 flash_defender = 1;
                 /* v15: if the attacking card is the stronger card, the opposing
@@ -1536,11 +1594,11 @@ static void draw_battle_cutin_event_ex(int f, int start,
             /* Defender counter-rams only when the defender is actually stronger.
                v15 missed the outcome guard here, so in the attacker-wins case
                the target briefly lunged back before burning. */
-            float t = (float)(local - counter_start) / (float)counter_dur;
-            float lunge;
-            if (t < 0.62f) lunge = smoothstepf(t / 0.62f);
-            else lunge = 1.0f - smoothstepf((t - 0.62f) / 0.38f) * 0.68f;
-            def_x = dx - (int)(46.0f * lunge);
+            int32_t t = q8_ratio(local - counter_start, counter_dur);
+            int32_t lunge;
+            if (t < Q8_FRAC(62,100)) lunge = q8_smoothstep(q8_div(t, Q8_FRAC(62,100)));
+            else lunge = Q8_ONE - q8_mul(q8_smoothstep(q8_div(t - Q8_FRAC(62,100), Q8_FRAC(38,100))), Q8_FRAC(68,100));
+            def_x = dx - (int)q8_mul(Q8_FROM_INT(46), lunge);
             if (local >= counter_start + 20) {
                 flash_attacker = 1;
                 int q = local - (counter_start + 20);
@@ -1694,7 +1752,7 @@ static void draw_result_screen(int f, const char *msg)
 {
     int local = f - 1750;
     if (local < 0) local = 0;
-    float t = smoothstepf((float)local / 90.0f);
+    int32_t t = q8_smooth_ratio(local, 90);
     Camera cam = lerp_camera(battle_top_camera(), player_camera(), t);
     render_board(cam);
     draw_late_field_cards(cam, f);
@@ -1702,17 +1760,17 @@ static void draw_result_screen(int f, const char *msg)
     /* Reference-style finish: the UI leaves the screen first, then only the
        3D field and surviving cards remain while the large result text appears. */
     if (local < 70) {
-        float e = smoothstepf((float)local / 70.0f);
-        draw_hud_offset((int)(-76.0f * e), 0, (int)(92.0f * e), 0);
-        draw_bottom_info_offset(player_summon_id, "WIN", (int)(44.0f * e));
+        int32_t e = q8_smooth_ratio(local, 70);
+        draw_hud_offset(-(int)q8_mul(Q8_FROM_INT(76), e), 0, (int)q8_mul(Q8_FROM_INT(92), e), 0);
+        draw_bottom_info_offset(player_summon_id, "WIN", (int)q8_mul(Q8_FROM_INT(44), e));
     }
 
     if (local >= 50) {
-        float e = smoothstepf(((float)local - 50.0f) / 42.0f);
-        int scale = (local < 92) ? 2 + (e > 0.55f ? 1 : 0) : 3;
+        int32_t e = q8_smooth_ratio(local - 50, 42);
+        int scale = (local < 92) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
         int tw = (int)strlen(msg) * 8 * scale;
         int x = (W - tw) / 2;
-        int y = 100 - (int)(10.0f * (1.0f - e));
+        int y = 100 - (int)q8_mul(Q8_FROM_INT(10), Q8_ONE - e);
         if (((local / 6) & 1) == 0) draw_text_scaled(x + 1, y + 1, msg, scale, IDX_WHITE, IDX_BLACK);
         draw_text_scaled(x, y, msg, scale, IDX_GOLD_HI, IDX_BLACK);
     }
@@ -1795,19 +1853,19 @@ static void draw_victory_screen(int f)
         draw_result_screen(f, result_text);
     } else if (local < 205) {
         draw_result_screen(f, result_text);
-        apply_black_dither_fade(1.0f - ((float)local - 150.0f) / 55.0f);
+        apply_black_dither_fade(Q8_ONE - q8_ratio(local - 150, 55));
     } else if (local < 475) {
         draw_tally_screen(f, result >= 0);
-        if (local < 245) apply_black_dither_fade(((float)local - 205.0f) / 40.0f);
+        if (local < 245) apply_black_dither_fade(q8_ratio(local - 205, 40));
     } else if (local < 535) {
         draw_tally_screen(f, result >= 0);
-        apply_black_dither_fade(1.0f - ((float)local - 475.0f) / 60.0f);
+        apply_black_dither_fade(Q8_ONE - q8_ratio(local - 475, 60));
     } else {
         int rf = local - 535;
         draw_title_background();
         draw_title_logo();
         draw_title_prompt(rf);
-        if (rf < 45) apply_black_dither_fade((float)rf / 45.0f);
+        if (rf < 45) apply_black_dither_fade(q8_ratio(rf, 45));
     }
 }
 
@@ -1877,15 +1935,15 @@ static void render_title_sequence(int f)
         draw_title_background();
         draw_title_logo();
         draw_title_prompt(f);
-        if (f < 30) apply_black_dither_fade((float)f / 30.0f);
-        else if (f >= 138) apply_black_dither_fade(1.0f - ((float)f - 138.0f) / 30.0f);
+        if (f < 30) apply_black_dither_fade(q8_ratio(f, 30));
+        else if (f >= 138) apply_black_dither_fade(Q8_ONE - q8_ratio(f - 138, 30));
     } else if (f < 245) {
         int sel = (f < 220) ? 0 : 1;
         draw_menu_screen(sel);
-        if (f < 198) apply_black_dither_fade(((float)f - 168.0f) / 30.0f);
+        if (f < 198) apply_black_dither_fade(q8_ratio(f - 168, 30));
     } else if (f < 285) {
         draw_menu_screen(1);
-        apply_black_dither_fade(1.0f - ((float)f - 245.0f) / 40.0f);
+        apply_black_dither_fade(Q8_ONE - q8_ratio(f - 245, 40));
     } else {
         clear_screen(IDX_BLACK);
     }
@@ -1920,12 +1978,12 @@ static void draw_card_preview_screen(int f)
     int local = f - DUEL_OPENING_END;
     clear_screen(IDX_BLACK);
     int id = hand_ids[0];
-    float in_t = smoothstepf((float)local / 24.0f);
-    float out_t = local > 96 ? smoothstepf(((float)local - 96.0f) / 24.0f) : 0.0f;
-    float vis = in_t * (1.0f - out_t);
-    if (vis <= 0.0f) return;
+    int32_t in_t = q8_smooth_ratio(local, 24);
+    int32_t out_t = local > 96 ? q8_smooth_ratio(local - 96, 24) : 0;
+    int32_t vis = q8_mul(in_t, Q8_ONE - out_t);
+    if (vis <= 0) return;
 
-    int card_x = (int)(-126.0f * (1.0f - vis) + 9.0f * vis);
+    int card_x = lerp_i(-126, 9, vis);
     int card_y = 36;
     draw_big_battle_card(id, card_x, card_y, 0);
 
@@ -1954,7 +2012,7 @@ static void draw_card_preview_screen(int f)
     if (((local / 16) & 1) == 0) draw_text_small(74, 223, "B: BACK", IDX_WHITE, IDX_BLACK);
 
     if (local < 24) apply_black_dither_fade(vis);
-    else if (local > 96) apply_black_dither_fade(1.0f - out_t);
+    else if (local > 96) apply_black_dither_fade(Q8_ONE - out_t);
 }
 
 static void render_duel_opening_frame(int f)
@@ -1962,12 +2020,11 @@ static void render_duel_opening_frame(int f)
     clear_screen(IDX_BLACK);
     if (f < 16) return;
     int lf = f - 16;
-    float ft = (float)lf / (float)(DUEL_OPENING_END - 16);
-    if (ft > 1.0f) ft = 1.0f;
-    Camera cam = opening_camera(18 + (int)(66.0f * smoothstepf(ft)));
+    int32_t ft = q8_ratio(lf, DUEL_OPENING_END - 16);
+    Camera cam = opening_camera(18 + (int)q8_mul(Q8_FROM_INT(66), q8_smoothstep(ft)));
     render_board(cam);
     /* Longer fade-in: the field slowly resolves out of black before the hand UI. */
-    apply_black_dither_fade(smoothstepf(ft));
+    apply_black_dither_fade(q8_smoothstep(ft));
     if (f > 40) draw_hud();
 }
 
@@ -2008,9 +2065,9 @@ static void render_late_match_frame(int f)
         cam = player_camera(); show_hand = 1; selected = 4;
     } else if (f < 505) {
         cam = placement_camera(); show_hand = 1; selected = 4; player_fly = 1;
-        player_hand_offset = (int)(92.0f * smoothstepf(((float)f - 475.0f) / 30.0f));
+        player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 475, 30));
     } else if (f < 525) {
-        cam = lerp_camera(placement_camera(), battle_top_camera(), ((float)f - 505.0f) / 20.0f);
+        cam = lerp_camera(placement_camera(), battle_top_camera(), q8_ratio(f - 505, 20));
     } else if (f < 545) {
         cam = battle_top_camera();
     } else if (f < 720) {
@@ -2029,9 +2086,9 @@ static void render_late_match_frame(int f)
         cam = turn_camera(f, 845, 890, 1);
     } else if (f < 920) {
         cam = enemy_placement_camera(); show_enemy_hand = 1; selected = 3; enemy_fly = 1; enemy_draw_sequence = 1;
-        enemy_hand_offset = (int)(92.0f * smoothstepf(((float)f - 890.0f) / 30.0f));
+        enemy_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 890, 30));
     } else if (f < 940) {
-        cam = lerp_camera(enemy_placement_camera(), enemy_battle_top_camera(), ((float)f - 920.0f) / 20.0f);
+        cam = lerp_camera(enemy_placement_camera(), enemy_battle_top_camera(), q8_ratio(f - 920, 20));
     } else if (f < 960) {
         cam = enemy_battle_top_camera();
     } else if (f < 1135) {
@@ -2050,9 +2107,9 @@ static void render_late_match_frame(int f)
         cam = player_camera(); selected = 0; draw_sequence = 1;
     } else if (f < 1415) {
         cam = placement_camera(); show_hand = 1; selected = 0; player_fly = 2;
-        player_hand_offset = (int)(92.0f * smoothstepf(((float)f - 1385.0f) / 30.0f));
+        player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 1385, 30));
     } else if (f < 1450) {
-        cam = lerp_camera(placement_camera(), battle_top_camera(), ((float)f - 1415.0f) / 35.0f);
+        cam = lerp_camera(placement_camera(), battle_top_camera(), q8_ratio(f - 1415, 35));
     } else if (f < 1625) {
         g_battle_late_frame = f;
         draw_battle_cutin_event(f, 1450,
@@ -2114,9 +2171,9 @@ static void render_late_match_frame(int f)
     else if (f >= 845 && f < 1215) draw_bottom_info(28, "COM");
     else draw_bottom_info(player_summon_id, "FINAL");
 
-    if (f >= 800 && f < 845) apply_black_dither_fade(((float)f - 800.0f) / 45.0f);
-    if (f >= 1215 && f < 1260) apply_black_dither_fade(((float)f - 1215.0f) / 45.0f);
-    if (f >= 1705 && f < 1750) apply_black_dither_fade(((float)f - 1705.0f) / 45.0f);
+    if (f >= 800 && f < 845) apply_black_dither_fade(q8_ratio(f - 800, 45));
+    if (f >= 1215 && f < 1260) apply_black_dither_fade(q8_ratio(f - 1215, 45));
+    if (f >= 1705 && f < 1750) apply_black_dither_fade(q8_ratio(f - 1705, 45));
 }
 
 static void render_duel_script_frame(int f)
@@ -2136,7 +2193,7 @@ static void render_duel_script_frame(int f)
         draw_zone_cursor(cam, PLAYER_CARD_COL, PLAYER_CARD_ROW);
         draw_hud();
         draw_bottom_info(player_summon_id, "REVEALED");
-        apply_black_dither_fade(((float)f - 900.0f) / 40.0f);
+        apply_black_dither_fade(q8_ratio(f - 900, 40));
         return;
     }
     if (f >= 940) { render_late_match_frame(f - 550); return; }
@@ -2159,26 +2216,26 @@ static void render_duel_script_frame(int f)
         cam = player_camera(); show_hand = 1; selected = 0;
     } else if (f < 154) {
         /* UP from hand: smooth camera lift into tactical top view. */
-        cam = lerp_camera(player_camera(), top_camera(), ((float)f - 132.0f) / 22.0f);
-        show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = (int)(92.0f * smoothstepf(((float)f - 132.0f) / 22.0f));
+        cam = lerp_camera(player_camera(), top_camera(), q8_ratio(f - 132, 22));
+        show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 132, 22));
     } else if (f < 176) {
         cam = top_camera(); show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = 92;
     } else if (f < 198) {
         /* DOWN from spell/trap/top field: smooth return to hand. */
-        cam = lerp_camera(top_camera(), player_camera(), ((float)f - 176.0f) / 22.0f);
-        show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = (int)(92.0f * (1.0f - smoothstepf(((float)f - 176.0f) / 22.0f)));
+        cam = lerp_camera(top_camera(), player_camera(), q8_ratio(f - 176, 22));
+        show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), Q8_ONE - q8_smooth_ratio(f - 176, 22));
     } else if (f < 220) {
         cam = player_camera(); show_hand = 1; selected = 0;
     } else if (f < 248) {
         /* Second UP: move to the monster placement target. */
-        cam = lerp_camera(player_camera(), placement_camera(), ((float)f - 220.0f) / 28.0f);
-        show_hand = 1; selected = -1; top_mode = 1; player_hand_offset = (int)(92.0f * smoothstepf(((float)f - 220.0f) / 28.0f));
+        cam = lerp_camera(player_camera(), placement_camera(), q8_ratio(f - 220, 28));
+        show_hand = 1; selected = -1; top_mode = 1; player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 220, 28));
     } else if (f < 286) {
         cam = placement_camera(); show_hand = 1; selected = -1; top_mode = 1; player_hand_offset = 92;
     } else if (f < 316) {
         /* After placement, switch into tactical top view instead of snapping
            straight back to the hand camera. */
-        cam = lerp_camera(placement_camera(), battle_top_camera(), ((float)f - 286.0f) / 30.0f);
+        cam = lerp_camera(placement_camera(), battle_top_camera(), q8_ratio(f - 286, 30));
         show_hand = 1; selected = -1; show_player_card = 1; top_mode = 1; player_hand_offset = 92;
     } else if (f < 344) {
         cam = battle_top_camera(); show_player_card = 1; top_mode = 1;
@@ -2193,12 +2250,12 @@ static void render_duel_script_frame(int f)
     } else if (f < 446) {
         cam = enemy_camera(); show_enemy_hand = 1; selected = 2; show_player_card = 1; enemy_draw_sequence = 1;
     } else if (f < 472) {
-        cam = lerp_camera(enemy_camera(), enemy_placement_camera(), ((float)f - 446.0f) / 26.0f);
-        show_enemy_hand = 1; selected = -1; show_player_card = 1; enemy_hand_offset = (int)(92.0f * smoothstepf(((float)f - 446.0f) / 26.0f));
+        cam = lerp_camera(enemy_camera(), enemy_placement_camera(), q8_ratio(f - 446, 26));
+        show_enemy_hand = 1; selected = -1; show_player_card = 1; enemy_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 446, 26));
     } else if (f < 506) {
         cam = enemy_placement_camera(); show_enemy_hand = 1; selected = -1; show_player_card = 1; enemy_hand_offset = 92;
     } else if (f < 536) {
-        cam = lerp_camera(enemy_placement_camera(), enemy_battle_top_camera(), ((float)f - 506.0f) / 30.0f);
+        cam = lerp_camera(enemy_placement_camera(), enemy_battle_top_camera(), q8_ratio(f - 506, 30));
         show_player_card = 1; show_enemy_card = 1; top_mode = 1;
     } else if (f < 554) {
         cam = enemy_battle_top_camera(); show_player_card = 1; show_enemy_card = 1; top_mode = 1;
@@ -3274,8 +3331,8 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
         int x0 = hand_final_x(i);
         int x = x0;
         if (f < 48) {
-            float t = smoothstepf(((float)f - (float)(i * 5)) / 18.0f);
-            x = (int)((1.0f - t) * 282.0f + t * (float)x0);
+            int32_t t = q8_smooth_ratio(f - i * 5, 18);
+            x = lerp_i(282, x0, t);
         }
         if (g_i_player_used[i]) continue;
         draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
@@ -3297,8 +3354,8 @@ static void draw_interactive_com_hand(int f, int selected, int yoff)
         int x0 = hand_final_x(i);
         int x = x0;
         if (f < 60) {
-            float t = smoothstepf(((float)f - (float)(i * 5)) / 18.0f);
-            x = (int)((1.0f - t) * 282.0f + t * (float)x0);
+            int32_t t = q8_smooth_ratio(f - i * 5, 18);
+            x = lerp_i(282, x0, t);
         }
         if (g_i_com_used[i]) continue;
         draw_hand_card_sprite(g_i_com_hand[i], x, y, 38, 50, 1);
@@ -3598,13 +3655,13 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     }
     if (atk_back) local -= flip_dur;
     if (local < 24) {
-        float e = smoothstepf((float)local / 24.0f);
-        card_x = (int)((1.0f - e) * ((g_b_battle_atk_owner == 0) ? -128.0f : 264.0f) + e * (float)ax);
+        int32_t e = q8_smooth_ratio(local, 24);
+        card_x = lerp_i((g_b_battle_atk_owner == 0) ? -128 : 264, ax, e);
     } else if (local < 64) {
-        float t = (float)(local - 24) / 40.0f;
-        float lunge = (t < 0.62f) ? smoothstepf(t / 0.62f) : 1.0f - smoothstepf((t - 0.62f) / 0.38f);
+        int32_t t = q8_ratio(local - 24, 40);
+        int32_t lunge = (t < Q8_FRAC(62,100)) ? q8_smoothstep(q8_div(t, Q8_FRAC(62,100))) : Q8_ONE - q8_smoothstep(q8_div(t - Q8_FRAC(62,100), Q8_FRAC(38,100)));
         int dir = (g_b_battle_atk_owner == 0) ? 1 : -1;
-        card_x = ax + (int)(64.0f * lunge) * dir;
+        card_x = ax + (int)q8_mul(Q8_FROM_INT(64), lunge) * dir;
     }
     draw_cutin_battle_card(atk_id, card_x, ay, 0, 1);
     if (local >= 45 && local < 78) draw_direct_attack_slash(target_x, target_y, local - 45, g_b_battle_atk_owner);
@@ -3659,33 +3716,33 @@ static void draw_post_battle_return(int attacker_owner, int f, int focus_slot, i
     const int fade_frames = 8;
     Camera from = side_battle_camera(attacker_owner == 0 ? PLAYER_CARD_ROW : ENEMY_CARD_ROW);
     Camera to = (attacker_owner == 0) ? battle_top_camera() : enemy_battle_top_camera();
-    Camera cam = lerp_camera(from, to, (float)f / (float)settle_frames);
+    Camera cam = lerp_camera(from, to, q8_ratio(f, settle_frames));
     render_board(cam);
     draw_interactive_field_cards(cam);
     draw_hud();
     if (attacker_owner == 0 && focus_slot >= 0) draw_bottom_info_field(0, focus_slot, mode ? mode : "FIELD");
     if (focus_slot >= 0) draw_zone_cursor(cam, focus_slot, attacker_owner == 0 ? PLAYER_CARD_ROW : ENEMY_CARD_ROW);
-    if (f < fade_frames) apply_black_dither_fade((float)f / (float)fade_frames);
+    if (f < fade_frames) apply_black_dither_fade(q8_ratio(f, fade_frames));
 }
 
 static void draw_interactive_result(void)
 {
     int local = g_b_phase_frame;
     const char *msg = g_b_result < 0 ? "YOU LOSE" : "YOU WIN";
-    Camera cam = lerp_camera(battle_top_camera(), player_camera(), smoothstepf((float)local / 90.0f));
+    Camera cam = lerp_camera(battle_top_camera(), player_camera(), q8_smooth_ratio(local, 90));
     render_board(cam);
     draw_interactive_field_cards(cam);
     if (local < 70) {
-        float e = smoothstepf((float)local / 70.0f);
-        draw_hud_offset((int)(-76.0f * e), 0, (int)(92.0f * e), 0);
-        draw_bottom_info_offset(first_live_player_slot() >= 0 ? g_i_player_field[first_live_player_slot()] : hand_ids[0], "RESULT", (int)(44.0f * e));
+        int32_t e = q8_smooth_ratio(local, 70);
+        draw_hud_offset(-(int)q8_mul(Q8_FROM_INT(76), e), 0, (int)q8_mul(Q8_FROM_INT(92), e), 0);
+        draw_bottom_info_offset(first_live_player_slot() >= 0 ? g_i_player_field[first_live_player_slot()] : hand_ids[0], "RESULT", (int)q8_mul(Q8_FROM_INT(44), e));
     }
     if (local >= 50) {
-        float e = smoothstepf(((float)local - 50.0f) / 42.0f);
-        int scale = (local < 92) ? 2 + (e > 0.55f ? 1 : 0) : 3;
+        int32_t e = q8_smooth_ratio(local - 50, 42);
+        int scale = (local < 92) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
         int tw = (int)strlen(msg) * 8 * scale;
         int x = (W - tw) / 2;
-        int y = 100 - (int)(10.0f * (1.0f - e));
+        int y = 100 - (int)q8_mul(Q8_FROM_INT(10), Q8_ONE - e);
         draw_text_scaled(x, y, msg, scale, g_b_result < 0 ? IDX_RED : IDX_GOLD_HI, IDX_BLACK);
     }
 }
@@ -3770,15 +3827,15 @@ static int is_recent_draw_slot(int slot)
 static void draw_player_hand_turn_draw(int f, int selected)
 {
     int i;
-    int yoff = (int)(92.0f * (1.0f - smoothstepf((float)f / 36.0f)));
+    int yoff = (int)q8_mul(Q8_FROM_INT(92), Q8_ONE - q8_smooth_ratio(f, 36));
     int y = 154 + yoff;
     for (i = 0; i < I_HAND; ++i) {
         int x0 = hand_final_x(i);
         int x = x0;
         int d = is_recent_draw_slot(i);
         if (d >= 0) {
-            float t = smoothstepf(((float)f - 20.0f - (float)(d * 12)) / 24.0f);
-            x = (int)((1.0f - t) * 282.0f + t * (float)x0);
+            int32_t t = q8_smooth_ratio(f - 20 - d * 12, 24);
+            x = lerp_i(282, x0, t);
         }
         if (g_i_player_used[i]) continue;
         draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
@@ -3860,10 +3917,10 @@ static void finish_player_equip(void)
     set_battle_phase(IB_PLAYER_TOP);
 }
 
-static void draw_equip_stat_line_centered(int y, const char *label, int from, int to, float t)
+static void draw_equip_stat_line_centered(int y, const char *label, int from, int to, int32_t t)
 {
     char line[32];
-    int value = from + (int)((float)(to - from) * smoothstepf(t) + 0.5f);
+    int value = from + (int)(((to - from) * q8_smoothstep(t) + Q8_HALF) >> Q8_SHIFT);
     snprintf(line, sizeof(line), "%s %04d", label, value);
     draw_text((W - text_px_width(line, 1)) / 2, y, line, stat_delta_color(to - from), IDX_BLACK);
 }
@@ -3881,18 +3938,18 @@ static void draw_player_equip_target(void)
 static void draw_player_equip_anim(void)
 {
     int f = g_b_phase_frame;
-    float t = smoothstepf((float)f / 120.0f);
+    int32_t t = q8_smooth_ratio(f, 120);
     int reveal = (!g_b_equip_target_faceup && f < 48);
-    float merge_t = smoothstepf(((float)f - 42.0f) / 54.0f);
-    float vanish_t = smoothstepf(((float)f - 76.0f) / 34.0f);
-    int card_w = (int)((1.0f - vanish_t) * 92.0f + vanish_t * 38.0f);
-    int card_h = (int)((1.0f - vanish_t) * 126.0f + vanish_t * 52.0f);
+    int32_t merge_t = q8_smooth_ratio(f - 42, 54);
+    int32_t vanish_t = q8_smooth_ratio(f - 76, 34);
+    int card_w = lerp_i(92, 38, vanish_t);
+    int card_h = lerp_i(126, 52, vanish_t);
     int target_x = 68;
     int target_y = 22;
     int target_cx = target_x + 60;
     int target_cy = target_y + 80;
-    int card_x = (int)((1.0f - merge_t) * 26.0f + merge_t * (float)(target_cx - card_w / 2));
-    int card_y = (int)((1.0f - merge_t) * 36.0f + merge_t * (float)(target_cy - card_h / 2));
+    int card_x = lerp_i(26, target_cx - card_w / 2, merge_t);
+    int card_y = lerp_i(36, target_cy - card_h / 2, merge_t);
     int atk_to = g_b_equip_base_atk + g_b_equip_pending_atk;
     int def_to = g_b_equip_base_def + g_b_equip_pending_def;
 
@@ -3912,8 +3969,10 @@ static void draw_player_equip_anim(void)
     }
 
     for (int i = 0; i < 18; ++i) {
-        int cx = target_cx + (int)(sinf((float)(f + i * 13) * 0.11f) * (18.0f + (float)(i % 5) * 5.0f));
-        int cy = target_cy + (int)(cosf((float)(f + i * 17) * 0.09f) * (18.0f + (float)(i % 4) * 3.0f));
+        int32_t ax = (int32_t)((f + i * 13) * Q8_FRAC(11,100));
+        int32_t ay = (int32_t)((f + i * 17) * Q8_FRAC(9,100));
+        int cx = target_cx + (int)q8_mul(q8_sin_rad(ax), Q8_FROM_INT(18 + (i % 5) * 5));
+        int cy = target_cy + (int)q8_mul(q8_cos_rad(ay), Q8_FROM_INT(18 + (i % 4) * 3));
         draw_disc(cx, cy, 1 + (i % 3), (i & 1) ? IDX_GREEN : IDX_WHITE);
     }
     if (f >= 92 && f < 108) rect_fill(0, 0, W, H, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
@@ -3981,7 +4040,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_interactive_base(placement_camera());
         draw_zone_cursor(placement_camera(), g_b_place_slot, PLAYER_CARD_ROW);
         draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, PLAYER_CARD_ROW, g_b_phase_frame, 0, 48, 2);
-        draw_interactive_player_hand(999, g_b_place_hand, (int)(92.0f * smoothstepf((float)g_b_phase_frame / 38.0f)), 1);
+        draw_interactive_player_hand(999, g_b_place_hand, (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(g_b_phase_frame, 38)), 1);
         draw_bottom_info(g_b_place_card, "PLACE");
         if (g_b_phase_frame >= 48) {
             g_i_player_field[g_b_place_slot] = g_b_place_card;
@@ -4140,7 +4199,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_interactive_base(enemy_placement_camera());
         draw_zone_cursor(enemy_placement_camera(), g_b_place_slot, ENEMY_CARD_ROW);
         draw_flying_card(enemy_placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, ENEMY_CARD_ROW, g_b_phase_frame, 0, 48, 1);
-        draw_interactive_com_hand(999, g_b_place_hand, (int)(82.0f * smoothstepf((float)g_b_phase_frame / 38.0f)));
+        draw_interactive_com_hand(999, g_b_place_hand, (int)q8_mul(Q8_FROM_INT(82), q8_smooth_ratio(g_b_phase_frame, 38)));
         if (g_b_phase_frame >= 48) {
             g_i_com_field[g_b_place_slot] = g_b_place_card;
             g_i_com_faceup[g_b_place_slot] = 0;
@@ -4194,7 +4253,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 yoff = 44;
             } else if (g_b_phase_frame < 58) {
                 int t = g_b_phase_frame - 40;
-                yoff = (int)(44.0f * (1.0f - smoothstepf((float)t / 18.0f)));
+                yoff = (int)q8_mul(Q8_FROM_INT(44), Q8_ONE - q8_smooth_ratio(t, 18));
             }
             if (g_b_phase_frame >= 40) {
                 int card = first_live_com_slot() >= 0 ? g_i_com_field[first_live_com_slot()] : hand_ids[0];
@@ -4350,8 +4409,8 @@ static void draw_story_name_entry(void)
     draw_text_small(34, 166, "LEFT/RIGHT SLOT", IDX_WHITE, IDX_BLACK);
     draw_text_small(34, 180, "UP/DOWN GLYPH", IDX_WHITE, IDX_BLACK);
     draw_text_small(34, 194, "A NEXT   RUN DREAM", IDX_GOLD_HI, IDX_BLACK);
-    if (!g_story_name_to_intro && g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade((float)g_i_frame / 24.0f);
-    if (g_story_name_to_intro) apply_black_dither_fade(1.0f - clampf((float)g_i_frame / 20.0f, 0.0f, 1.0f));
+    if (!g_story_name_to_intro && g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
+    if (g_story_name_to_intro) apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame, 20));
 }
 
 static void draw_blue_gradient_box(int x, int y, int w, int h)
@@ -4389,7 +4448,7 @@ static void draw_story_intro_screen(int f)
     draw_text_small(18, 181, "SERENA", IDX_GOLD_HI, IDX_BLACK);
     draw_wrapped_text_small_box(18, 196, 218, 3, 10, story_intro_lines[line], IDX_WHITE, IDX_BLACK);
     if (((f / 18) & 1) == 0) draw_text_small(198, 216, "A/RUN", IDX_WHITE, IDX_BLACK);
-    if (f >= 0 && f < 24) apply_black_dither_fade((float)f / 24.0f);
+    if (f >= 0 && f < 24) apply_black_dither_fade(q8_ratio(f, 24));
 }
 
 
@@ -4414,8 +4473,8 @@ static void draw_oldschool_fire(int f)
 {
     for (int y = 72; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
-            int wave = (int)(10.0f * sinf((float)(x + f * 3) * 0.055f) +
-                             7.0f * sinf((float)(x * 3 - f * 2) * 0.039f));
+            int wave = (int)q8_mul(Q8_FROM_INT(10), q8_sin_rad((x + f * 3) * Q8_FRAC(55,1000))) +
+                       (int)q8_mul(Q8_FROM_INT(7), q8_sin_rad((x * 3 - f * 2) * Q8_FRAC(39,1000)));
             int noise = ((x * 23 + y * 17 + f * 11) ^ ((x + f) * 7) ^ ((y - f) * 13)) & 31;
             int rise = (H - y) / 2;
             int base = (y - 88 + wave) + noise - rise;
@@ -4535,20 +4594,15 @@ static void draw_deck_editor(void)
 
 static Camera story_map_camera(int f)
 {
-    float a = -0.38f + 0.10f * sinf((float)f * 0.025f);
-    return make_camera(v3(sinf(a) * 5.6f, 2.75f, cosf(a) * 5.6f),
-                       v3(0.0f, 0.55f, 0.0f), v3(0,1,0), 132.0f);
+    int32_t a = -Q8_FRAC(38,100) + q8_mul(Q8_FRAC(10,100), q8_sin_rad(f * Q8_FRAC(25,1000)));
+    return make_camera(v3(q8_mul(q8_sin_rad(a), Q8_FRAC(56,10)), Q8_FRAC(275,100), q8_mul(q8_cos_rad(a), Q8_FRAC(56,10))),
+                       v3(0, Q8_FRAC(55,100), 0), v3(0,Q8_ONE,0), Q8_FROM_INT(132));
 }
-
-/* ---- Q8.8 fixed-point helpers (no 64-bit) ---- */
-#define Q8_ONE   (1 << 8)
 
 /* PS1-style scanline floor renderer: inverse-projects each scanline to the
    floor plane, derives UVs from world XZ, and tiles the texture with modulo
-   wrapping.  Per-scanline ray-plane intersection uses the existing float
-   camera basis (same precision as project_point); per-pixel UV stepping
-   and texture sampling is pure Q8.8 fixed point — no 64-bit. */
-static void draw_floor_tiled(Camera cam, float floor_y, int tile_a, int tile_b, float tile_size)
+   wrapping.  All math is Q8.8 fixed point and 32-bit integer only. */
+static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size)
 {
     Vec3 ffwd = vnorm(vsub(cam.target, cam.eye));
     Vec3 fright = vnorm(vcross(ffwd, cam.up));
@@ -4556,39 +4610,36 @@ static void draw_floor_tiled(Camera cam, float floor_y, int tile_a, int tile_b, 
 
     int tw = WAIFU_TEX_TILE_SIZE;
     const uint8_t *atlas = waifu_texture_atlas;
-    /* Q8.8 conversion constants for the per-pixel UV sampling. */
-    int32_t tile_size_q8 = (int32_t)(tile_size * 256.0f);
 
     for (int y = 0; y < H; ++y) {
-        /* Per-scanline ray-plane intersection in float (matches project_point). */
-        float dy = ((float)(H / 2) - (float)y - 0.5f) / cam.focal;
-        float ray_y = fup.y * dy + ffwd.y;
-        if (ray_y >= -0.0001f) continue;
-        float t = (floor_y - cam.eye.y) / ray_y;
-        if (t <= 0.01f) continue;
+        int32_t dy = q8_div(Q8_FROM_INT(H / 2 - y) - Q8_HALF, cam.focal);
+        int32_t ray_y = q8_mul(fup.y, dy) + ffwd.y;
+        if (ray_y >= 0) continue;
+        int32_t t = q8_div(floor_y - cam.eye.y, ray_y);
+        if (t <= Q8_FRAC(1,100)) continue;
 
-        float dx_l = (0.0f - (float)(W / 2)) / cam.focal;
-        float dx_r = ((float)(W - 1) - (float)(W / 2)) / cam.focal;
+        int32_t dx_l = q8_div(-Q8_FROM_INT(W / 2), cam.focal);
+        int32_t dx_r = q8_div(Q8_FROM_INT(W - 1 - W / 2), cam.focal);
 
-        float wl_x = cam.eye.x + t * (fright.x * dx_l + ffwd.x);
-        float wl_z = cam.eye.z + t * (fright.z * dx_l + ffwd.z);
-        float wr_x = cam.eye.x + t * (fright.x * dx_r + ffwd.x);
-        float wr_z = cam.eye.z + t * (fright.z * dx_r + ffwd.z);
+        int32_t wl_x = cam.eye.x + q8_mul(t, q8_mul(fright.x, dx_l) + ffwd.x);
+        int32_t wl_z = cam.eye.z + q8_mul(t, q8_mul(fright.z, dx_l) + ffwd.z);
+        int32_t wr_x = cam.eye.x + q8_mul(t, q8_mul(fright.x, dx_r) + ffwd.x);
+        int32_t wr_z = cam.eye.z + q8_mul(t, q8_mul(fright.z, dx_r) + ffwd.z);
 
-        float u = wl_x / tile_size;
-        float v = wl_z / tile_size;
-        float du = (wr_x - wl_x) / tile_size / (float)(W - 1);
-        float dv = (wr_z - wl_z) / tile_size / (float)(W - 1);
+        int32_t u = q8_div(wl_x, tile_size);
+        int32_t v = q8_div(wl_z, tile_size);
+        int32_t du = q8_div(wr_x - wl_x, tile_size) / (W - 1);
+        int32_t dv = q8_div(wr_z - wl_z, tile_size) / (W - 1);
 
         for (int x = 0; x < W; ++x) {
-            int iu = (int)floorf(u);
-            int iv = (int)floorf(v);
-            float fu = u - (float)iu;
-            float fv = v - (float)iv;
+            int iu = u >> Q8_SHIFT;
+            int iv = v >> Q8_SHIFT;
+            int fu = u & (Q8_ONE - 1);
+            int fv = v & (Q8_ONE - 1);
             int tile = ((iu + iv) & 1) ? tile_b : tile_a;
             const uint8_t *src = atlas + (size_t)tile * tw * tw;
-            int sx = (int)(fu * (float)(tw - 1) + 0.5f);
-            int sy = (int)(fv * (float)(tw - 1) + 0.5f);
+            int sx = (fu * (tw - 1) + Q8_HALF) >> Q8_SHIFT;
+            int sy = (fv * (tw - 1) + Q8_HALF) >> Q8_SHIFT;
             put_px(x, y, src[sy * tw + sx]);
             u += du;
             v += dv;
@@ -4599,30 +4650,30 @@ static void draw_floor_tiled(Camera cam, float floor_y, int tile_a, int tile_b, 
 static void draw_map_pyramid_3d(int f)
 {
     Camera cam = story_map_camera(f);
-    Vec3 apex = v3(0.0f, 2.15f, 0.0f);
-    Vec3 a = v3(-1.75f, 0.0f, -1.75f);
-    Vec3 b = v3( 1.75f, 0.0f, -1.75f);
-    Vec3 c = v3( 1.75f, 0.0f,  1.75f);
-    Vec3 d = v3(-1.75f, 0.0f,  1.75f);
+    Vec3 apex = v3(0, Q8_FRAC(215,100), 0);
+    Vec3 a = v3(-Q8_FRAC(175,100), 0, -Q8_FRAC(175,100));
+    Vec3 b = v3( Q8_FRAC(175,100), 0, -Q8_FRAC(175,100));
+    Vec3 c = v3( Q8_FRAC(175,100), 0,  Q8_FRAC(175,100));
+    Vec3 d = v3(-Q8_FRAC(175,100), 0,  Q8_FRAC(175,100));
     typedef struct PyramidFace {
         Vec3 p0, p1;
         int tile;
         int flip;
-        float depth;
+        int32_t depth;
     } PyramidFace;
     PyramidFace faces[4] = {
-        {a, b, 1, 0, 0.0f},
-        {b, c, 1, 1, 0.0f},
-        {c, d, 1, 0, 0.0f},
-        {d, a, 1, 1, 0.0f}
+        {a, b, 1, 0, 0},
+        {b, c, 1, 1, 0},
+        {c, d, 1, 0, 0},
+        {d, a, 1, 1, 0}
     };
-    draw_floor_tiled(cam, -0.07f, 1, 5, 1.76f);
+    draw_floor_tiled(cam, -Q8_FRAC(7,100), 1, 5, Q8_FRAC(176,100));
 
     for (int i = 0; i < 4; ++i) {
         ScreenPt p0 = project_point(cam, faces[i].p0);
         ScreenPt p1 = project_point(cam, faces[i].p1);
         ScreenPt p2 = project_point(cam, apex);
-        faces[i].depth = (p0.depth + p1.depth + p2.depth) / 3.0f;
+        faces[i].depth = (p0.depth + p1.depth + p2.depth) / 3;
     }
     for (int i = 0; i < 3; ++i) {
         for (int j = i + 1; j < 4; ++j) {
@@ -4657,29 +4708,29 @@ static StorySceneKind story_scene_kind(void)
 
 static Camera story_temple_camera(int f)
 {
-    float a = -0.30f + 0.08f * sinf((float)f * 0.022f);
-    return make_camera(v3(sinf(a) * 5.2f, 2.4f, cosf(a) * 5.2f),
-                       v3(0.0f, 0.7f, 0.0f), v3(0,1,0), 132.0f);
+    int32_t a = -Q8_FRAC(30,100) + q8_mul(Q8_FRAC(8,100), q8_sin_rad(f * Q8_FRAC(22,1000)));
+    return make_camera(v3(q8_mul(q8_sin_rad(a), Q8_FRAC(52,10)), Q8_FRAC(24,10), q8_mul(q8_cos_rad(a), Q8_FRAC(52,10))),
+                       v3(0, Q8_FRAC(7,10), 0), v3(0,Q8_ONE,0), Q8_FROM_INT(132));
 }
 
 static void draw_map_temple_3d(int f)
 {
     Camera cam = story_temple_camera(f);
-    draw_floor_tiled(cam, -0.07f, 3, 3, 1.6f);
+    draw_floor_tiled(cam, -Q8_FRAC(7,100), 3, 3, Q8_FRAC(16,10));
     /* Temple pillars: four rows of columns forming a corridor. */
-    float pillar_y0 = 0.0f, pillar_y1 = 2.6f;
+    int32_t pillar_y0 = 0, pillar_y1 = Q8_FRAC(26,10);
     for (int row = 0; row < 3; ++row) {
-        float pz = -2.5f + (float)row * 2.0f;
+        int32_t pz = -Q8_FRAC(25,10) + Q8_FROM_INT(row * 2);
         for (int side = 0; side < 2; ++side) {
-            float px = side ? 2.2f : -2.2f;
-            Vec3 b0 = v3(px - 0.35f, pillar_y0, pz - 0.35f);
-            Vec3 b1 = v3(px + 0.35f, pillar_y0, pz - 0.35f);
-            Vec3 b2 = v3(px + 0.35f, pillar_y0, pz + 0.35f);
-            Vec3 b3 = v3(px - 0.35f, pillar_y0, pz + 0.35f);
-            Vec3 t0 = v3(px - 0.35f, pillar_y1, pz - 0.35f);
-            Vec3 t1 = v3(px + 0.35f, pillar_y1, pz - 0.35f);
-            Vec3 t2 = v3(px + 0.35f, pillar_y1, pz + 0.35f);
-            Vec3 t3 = v3(px - 0.35f, pillar_y1, pz + 0.35f);
+            int32_t px = side ? Q8_FRAC(22,10) : -Q8_FRAC(22,10);
+            Vec3 b0 = v3(px - Q8_FRAC(35,100), pillar_y0, pz - Q8_FRAC(35,100));
+            Vec3 b1 = v3(px + Q8_FRAC(35,100), pillar_y0, pz - Q8_FRAC(35,100));
+            Vec3 b2 = v3(px + Q8_FRAC(35,100), pillar_y0, pz + Q8_FRAC(35,100));
+            Vec3 b3 = v3(px - Q8_FRAC(35,100), pillar_y0, pz + Q8_FRAC(35,100));
+            Vec3 t0 = v3(px - Q8_FRAC(35,100), pillar_y1, pz - Q8_FRAC(35,100));
+            Vec3 t1 = v3(px + Q8_FRAC(35,100), pillar_y1, pz - Q8_FRAC(35,100));
+            Vec3 t2 = v3(px + Q8_FRAC(35,100), pillar_y1, pz + Q8_FRAC(35,100));
+            Vec3 t3 = v3(px - Q8_FRAC(35,100), pillar_y1, pz + Q8_FRAC(35,100));
             /* Front and back faces */
             draw_quad3d(cam, b0, b1, t1, t0, 3);
             draw_quad3d(cam, b3, b2, t2, t3, 3);
@@ -4693,23 +4744,23 @@ static void draw_map_temple_3d(int f)
 
 static Camera story_volcano_camera(int f)
 {
-    float a = -0.35f + 0.09f * sinf((float)f * 0.024f);
-    return make_camera(v3(sinf(a) * 5.8f, 2.9f, cosf(a) * 5.8f),
-                       v3(0.0f, 0.5f, 0.0f), v3(0,1,0), 132.0f);
+    int32_t a = -Q8_FRAC(35,100) + q8_mul(Q8_FRAC(9,100), q8_sin_rad(f * Q8_FRAC(24,1000)));
+    return make_camera(v3(q8_mul(q8_sin_rad(a), Q8_FRAC(58,10)), Q8_FRAC(29,10), q8_mul(q8_cos_rad(a), Q8_FRAC(58,10))),
+                       v3(0, Q8_FRAC(5,10), 0), v3(0,Q8_ONE,0), Q8_FROM_INT(132));
 }
 
 static void draw_map_volcano_3d(int f)
 {
     Camera cam = story_volcano_camera(f);
-    draw_floor_tiled(cam, -0.07f, 5, 5, 1.76f);
+    draw_floor_tiled(cam, -Q8_FRAC(7,100), 5, 5, Q8_FRAC(176,100));
     /* Volcano cone: steep triangular faces like the pyramid but wider and
        darker, with a glowing crater rim. */
-    Vec3 apex_v = v3(0.0f, 3.2f, 0.0f);
-    Vec3 a = v3(-2.6f, 0.0f, -2.6f);
-    Vec3 b = v3( 2.6f, 0.0f, -2.6f);
-    Vec3 c = v3( 2.6f, 0.0f,  2.6f);
-    Vec3 d = v3(-2.6f, 0.0f,  2.6f);
-    typedef struct { Vec3 p0, p1; int flip; float depth; } VFace;
+    Vec3 apex_v = v3(0, Q8_FRAC(32,10), 0);
+    Vec3 a = v3(-Q8_FRAC(26,10), 0, -Q8_FRAC(26,10));
+    Vec3 b = v3( Q8_FRAC(26,10), 0, -Q8_FRAC(26,10));
+    Vec3 c = v3( Q8_FRAC(26,10), 0,  Q8_FRAC(26,10));
+    Vec3 d = v3(-Q8_FRAC(26,10), 0,  Q8_FRAC(26,10));
+    typedef struct { Vec3 p0, p1; int flip; int32_t depth; } VFace;
     VFace vf[4] = {
         {a, b, 0, 0}, {b, c, 1, 0}, {c, d, 0, 0}, {d, a, 1, 0}
     };
@@ -4717,7 +4768,7 @@ static void draw_map_volcano_3d(int f)
         ScreenPt p0 = project_point(cam, vf[i].p0);
         ScreenPt p1 = project_point(cam, vf[i].p1);
         ScreenPt p2 = project_point(cam, apex_v);
-        vf[i].depth = (p0.depth + p1.depth + p2.depth) / 3.0f;
+        vf[i].depth = (p0.depth + p1.depth + p2.depth) / 3;
     }
     for (int i = 0; i < 3; ++i)
         for (int j = i + 1; j < 4; ++j)
@@ -4737,23 +4788,23 @@ static void draw_map_volcano_3d(int f)
 
 static Camera story_void_camera(int f)
 {
-    float a = -0.25f + 0.06f * sinf((float)f * 0.020f);
-    return make_camera(v3(sinf(a) * 4.8f, 2.2f, cosf(a) * 4.8f),
-                       v3(0.0f, 0.8f, 0.0f), v3(0,1,0), 128.0f);
+    int32_t a = -Q8_FRAC(25,100) + q8_mul(Q8_FRAC(6,100), q8_sin_rad(f * Q8_FRAC(20,1000)));
+    return make_camera(v3(q8_mul(q8_sin_rad(a), Q8_FRAC(48,10)), Q8_FRAC(22,10), q8_mul(q8_cos_rad(a), Q8_FRAC(48,10))),
+                       v3(0, Q8_FRAC(8,10), 0), v3(0,Q8_ONE,0), Q8_FROM_INT(128));
 }
 
 static void draw_map_void_3d(int f)
 {
     Camera cam = story_void_camera(f);
     /* Void background: deep black with stars (drawn by sky function). */
-    draw_floor_tiled(cam, -0.07f, 0, 0, 1.6f);
+    draw_floor_tiled(cam, -Q8_FRAC(7,100), 0, 0, Q8_FRAC(16,10));
     /* Floating crystals: small rotating diamonds hovering above the platform. */
     for (int ci = 0; ci < 5; ++ci) {
-        float ang = (float)f * 0.03f + (float)ci * 1.26f;
-        float cx = sinf(ang) * 2.5f;
-        float cz = cosf(ang) * 2.5f;
-        float cy = 1.6f + 0.4f * sinf((float)f * 0.05f + (float)ci);
-        float s = 0.35f;
+        int32_t ang = f * Q8_FRAC(3,100) + ci * Q8_FRAC(126,100);
+        int32_t cx = q8_mul(q8_sin_rad(ang), Q8_FRAC(25,10));
+        int32_t cz = q8_mul(q8_cos_rad(ang), Q8_FRAC(25,10));
+        int32_t cy = Q8_FRAC(16,10) + q8_mul(Q8_FRAC(4,10), q8_sin_rad(f * Q8_FRAC(5,100) + Q8_FROM_INT(ci)));
+        int32_t s = Q8_FRAC(35,100);
         Vec3 top = v3(cx, cy + s, cz);
         Vec3 bot = v3(cx, cy - s, cz);
         Vec3 lft = v3(cx - s, cy, cz);
@@ -4883,7 +4934,7 @@ static void draw_story_map_screen_content(int f)
 static void draw_story_map_screen(int f)
 {
     draw_story_map_screen_content(f);
-    if (f >= 0 && f < 24) apply_black_dither_fade((float)f / 24.0f);
+    if (f >= 0 && f < 24) apply_black_dither_fade(q8_ratio(f, 24));
 }static void draw_story_plaza_scene_content(void);
 
 static void draw_story_to_plaza_transition(int f)
@@ -4971,7 +5022,7 @@ static void draw_story_plaza_scene_content(void)
 static void draw_story_plaza_scene(void)
 {
     draw_story_plaza_scene_content();
-    if (g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade((float)g_i_frame / 24.0f);
+    if (g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
 }
 
 static void story_return_to_map_after_duel(void)
@@ -5012,7 +5063,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_title_background();
         draw_title_logo();
         draw_title_prompt(g_i_frame);
-        if (g_i_frame < 30) apply_black_dither_fade((float)g_i_frame / 30.0f);
+        if (g_i_frame < 30) apply_black_dither_fade(q8_ratio(g_i_frame, 30));
         if (press_b) {
             load_story_to_map();
         } else if (press_start || press_a) {
