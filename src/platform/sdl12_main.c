@@ -97,6 +97,7 @@ static void poll_input(WaifuFmInput *input, int *running)
                 case SDLK_LCTRL: input->a = down; break;
                 case SDLK_LALT: input->b = down; break;
                 case SDLK_SPACE: input->start = down; break;
+                case SDLK_TAB: input->tab = down; break;
                 default: break;
             }
         }
@@ -119,6 +120,7 @@ static void input_or_button(WaifuFmInput *in, const char *tok)
     else if (!strcmp(buf, "A") || !strcmp(buf, "LCTRL") || !strcmp(buf, "CTRL")) in->a = 1;
     else if (!strcmp(buf, "B") || !strcmp(buf, "LALT") || !strcmp(buf, "ALT")) in->b = 1;
     else if (!strcmp(buf, "START") || !strcmp(buf, "RUN") || !strcmp(buf, "SPACE")) in->start = 1;
+    else if (!strcmp(buf, "TAB") || !strcmp(buf, "BUTTON4") || !strcmp(buf, "BTN4") || !strcmp(buf, "4")) in->tab = 1;
 }
 
 static void input_or_button_list(WaifuFmInput *in, const char *tok)
@@ -186,6 +188,7 @@ static WaifuFmInput input_for_frame_from_events(int frame, const CommandEvent *e
             in.a |= events[i].input.a;
             in.b |= events[i].input.b;
             in.start |= events[i].input.start;
+            in.tab |= events[i].input.tab;
         }
     }
     return in;
@@ -212,6 +215,7 @@ static void inject_command_input_as_sdl_events(const WaifuFmInput *prev, const W
     push_key_transition(SDLK_LCTRL, prev->a, now->a);
     push_key_transition(SDLK_LALT, prev->b, now->b);
     push_key_transition(SDLK_SPACE, prev->start, now->start);
+    push_key_transition(SDLK_TAB, prev->tab, now->tab);
 }
 
 int main(int argc, char **argv)

@@ -1,0 +1,12 @@
+# Regression: new story starts with zero storage, and button 4/TAB switches deck editor tabs.
+60 2 START
+95 2 UP
+110 2 A
+145 2 START
+185 2 A
+225 2 A
+265 2 A
+305 2 A
+345 2 A
+385 2 A
+430 2 TAB

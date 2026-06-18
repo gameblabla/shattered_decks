@@ -19,6 +19,7 @@ typedef struct WaifuFmInput {
     int a;      /* LCTRL */
     int b;      /* LALT */
     int start;  /* SPACE */
+    int tab;    /* TAB / button 4 */
 } WaifuFmInput;
 
 void waifu_fm_init(void);

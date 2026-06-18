@@ -911,6 +911,22 @@ static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b
     draw_textured_tri_ex(src, sw, sh, a, b, c, 0);
 }
 
+static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int flip_u)
+{
+    ScreenPt pa = project_point(cam, a), pb = project_point(cam, b), pc = project_point(cam, c);
+    if (!pa.ok || !pb.ok || !pc.ok) return;
+    if (tile < 0) tile = 0;
+    if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
+    const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
+    TexV ta = {(float)pa.x, (float)pa.y, flip_u ? 1.0f : 0.0f, 1.0f};
+    TexV tb = {(float)pb.x, (float)pb.y, flip_u ? 0.0f : 1.0f, 1.0f};
+    TexV tc = {(float)pc.x, (float)pc.y, 0.5f, 0.0f};
+    draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, ta, tb, tc);
+    line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
+    line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_DARK);
+    line_i(pc.x, pc.y, pa.x, pa.y, IDX_GOLD_DARK);
+}
+
 static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
                                         ScreenPt p0, ScreenPt p1, ScreenPt p2, ScreenPt p3,
                                         int gray)
@@ -2108,6 +2124,8 @@ typedef enum WaifuBattlePhase {
     IB_PLAYER_TOP,
     IB_CARD_PREVIEW,
     IB_PLAYER_PLACE,
+    IB_PLAYER_EQUIP_TARGET,
+    IB_PLAYER_EQUIP_ANIM,
     IB_PLAYER_BATTLE,
     IB_PLAYER_RETURN_TOP,
     IB_TURN_TO_COM,
@@ -2142,6 +2160,15 @@ static int g_b_selected_com_slot = 0;
 static int g_b_place_hand = -1;
 static int g_b_place_slot = -1;
 static int g_b_place_card = -1;
+static int g_b_equip_hand = -1;
+static int g_b_equip_slot = -1;
+static int g_b_equip_card = CARD_NONE;
+static int g_b_equip_target_card = CARD_NONE;
+static int g_b_equip_target_faceup = 1;
+static int g_b_equip_base_atk = 0;
+static int g_b_equip_base_def = 0;
+static int g_b_equip_pending_atk = 0;
+static int g_b_equip_pending_def = 0;
 static int g_b_battle_atk_slot = -1;
 static int g_b_battle_def_slot = -1;
 static int g_b_battle_atk_owner = 0; /* 0 player, 1 COM */
@@ -2162,8 +2189,12 @@ static int g_i_com_hand[I_HAND];
 static int g_i_com_used[I_HAND];
 static int g_i_player_field[I_FIELD];
 static int g_i_player_faceup[I_FIELD];
+static int g_i_player_atk_bonus[I_FIELD];
+static int g_i_player_def_bonus[I_FIELD];
 static int g_i_com_field[I_FIELD];
 static int g_i_com_faceup[I_FIELD];
+static int g_i_com_atk_bonus[I_FIELD];
+static int g_i_com_def_bonus[I_FIELD];
 static int g_i_player_attacked[I_FIELD];
 static int g_i_com_attacked[I_FIELD];
 static int g_b_draw_slots[I_HAND];
@@ -2201,6 +2232,7 @@ static int g_deck_tab = 0; /* 0 deck, 1 storage */
 static int g_deck_cursor = 0;
 static int g_deck_scroll[2] = {0, 0};
 static int g_deck_flash = 0;
+static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
 
 #define STORY_MAX_DUELS 4
@@ -2250,6 +2282,45 @@ static int first_live_com_slot(void)
     int i;
     for (i = 0; i < I_FIELD; ++i) if (g_i_com_field[i] >= 0) return i;
     return -1;
+}
+
+static int card_base_atk(int id)
+{
+    return is_monster_card(id) ? (int)waifu_card_atk[id] : 0;
+}
+
+static int card_base_def(int id)
+{
+    return is_monster_card(id) ? (int)waifu_card_def[id] : 0;
+}
+
+static int field_card_atk(int owner, int slot)
+{
+    int id;
+    if (slot < 0 || slot >= I_FIELD) return 0;
+    id = owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot];
+    if (!is_monster_card(id)) return 0;
+    return card_base_atk(id) + (owner == 0 ? g_i_player_atk_bonus[slot] : g_i_com_atk_bonus[slot]);
+}
+
+static int field_card_def(int owner, int slot)
+{
+    int id;
+    if (slot < 0 || slot >= I_FIELD) return 0;
+    id = owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot];
+    if (!is_monster_card(id)) return 0;
+    return card_base_def(id) + (owner == 0 ? g_i_player_def_bonus[slot] : g_i_com_def_bonus[slot]);
+}
+
+static int equip_atk_bonus(int card_id)
+{
+    (void)card_id;
+    return 500;
+}
+
+static int equip_def_bonus(int card_id)
+{
+    return support_card_kind(card_id) == 0 ? 300 : 0;
 }
 
 
@@ -2424,30 +2495,36 @@ static void generate_story_starter_deck(void)
     g_story_support_count = 0;
     g_story_deck_count = STORY_DECK_SIZE;
 
-    /* Guaranteed opening profile: one strong monster, two matching weak monsters,
-       one equip card, and one support card. The rest is random but weighted
-       toward duplicate weak monsters and starter support, like an early story deck. */
+    for (int i = 0; i < STORY_DECK_SIZE; ++i) g_story_player_deck[i] = CARD_NONE;
+
+    /* Guaranteed opening profile, but every card still obeys the four-copy
+       deck construction rule. */
     g_story_player_deck[idx++] = strong;
     g_story_player_deck[idx++] = weak;
     g_story_player_deck[idx++] = weak;
     g_story_player_deck[idx++] = SUPPORT_EQUIP_CARD_ID;
     g_story_player_deck[idx++] = SUPPORT_GUARD_CARD_ID + (story_prng_next(&seed) % 3);
 
-    for (; idx < STORY_DECK_SIZE; ++idx) {
+    while (idx < STORY_DECK_SIZE) {
         int roll = story_prng_next(&seed) % 100;
+        int card;
         if (roll < 34) {
-            g_story_player_deck[idx] = weak;
+            card = weak;
         } else if (roll < 48) {
-            g_story_player_deck[idx] = weak_pool[story_prng_next(&seed) % (int)(sizeof(weak_pool) / sizeof(weak_pool[0]))];
+            card = weak_pool[story_prng_next(&seed) % (int)(sizeof(weak_pool) / sizeof(weak_pool[0]))];
         } else if (roll < 62) {
-            g_story_player_deck[idx] = SUPPORT_EQUIP_CARD_ID;
+            card = SUPPORT_EQUIP_CARD_ID;
         } else if (roll < 82) {
-            g_story_player_deck[idx] = WAIFU_CARD_COUNT + (story_prng_next(&seed) % SUPPORT_CARD_VARIANTS);
+            card = WAIFU_CARD_COUNT + (story_prng_next(&seed) % SUPPORT_CARD_VARIANTS);
         } else {
             int mid = story_prng_next(&seed) % WAIFU_CARD_COUNT;
             if (mid == strong) mid = (mid + 5) % WAIFU_CARD_COUNT;
-            g_story_player_deck[idx] = mid;
+            card = mid;
         }
+        int copies = 0;
+        for (int j = 0; j < idx; ++j) if (g_story_player_deck[j] == card) ++copies;
+        if (copies >= 4) continue;
+        g_story_player_deck[idx++] = card;
     }
     story_shuffle_tail(5, &seed);
     g_story_player_deck_pos = 0;
@@ -2461,22 +2538,8 @@ static void generate_story_starter_deck(void)
 
 static void generate_story_storage_pool(void)
 {
-    int seed = story_hash_name() ^ 0x5a5a35;
-    int weak_pool[] = {29, 20, 23, 34, 19, 43, 30, 6};
-    int strong_pool[] = {37, 40, 33, 28, 8, 14};
-    g_story_storage_count = 52;
-    for (int i = 0; i < g_story_storage_count; ++i) {
-        int roll = story_prng_next(&seed) % 100;
-        if (roll < 48) {
-            g_story_storage[i] = weak_pool[story_prng_next(&seed) % (int)(sizeof(weak_pool)/sizeof(weak_pool[0]))];
-        } else if (roll < 66) {
-            g_story_storage[i] = story_prng_next(&seed) % WAIFU_CARD_COUNT;
-        } else if (roll < 78) {
-            g_story_storage[i] = strong_pool[story_prng_next(&seed) % (int)(sizeof(strong_pool)/sizeof(strong_pool[0]))];
-        } else {
-            g_story_storage[i] = WAIFU_CARD_COUNT + (story_prng_next(&seed) % SUPPORT_CARD_VARIANTS);
-        }
-    }
+    for (int i = 0; i < STORY_STORAGE_SIZE; ++i) g_story_storage[i] = CARD_NONE;
+    g_story_storage_count = 0;
 }
 
 static void reset_story_deck_editor(void)
@@ -2486,7 +2549,31 @@ static void reset_story_deck_editor(void)
     g_deck_scroll[0] = 0;
     g_deck_scroll[1] = 0;
     g_deck_flash = 0;
+    g_deck_flash_reason = 0;
     g_deck_preview_card = CARD_NONE;
+}
+
+static int story_deck_card_count(int card)
+{
+    int n = 0;
+    for (int i = 0; i < g_story_deck_count; ++i) if (g_story_player_deck[i] == card) ++n;
+    return n;
+}
+
+static int story_deck_can_add_card(int card)
+{
+    return story_deck_card_count(card) < 4;
+}
+
+static int story_deck_max_card_copies(void)
+{
+    int max = 0;
+    for (int i = 0; i < g_story_deck_count; ++i) {
+        int n = 0;
+        for (int j = 0; j < g_story_deck_count; ++j) if (g_story_player_deck[j] == g_story_player_deck[i]) ++n;
+        if (n > max) max = n;
+    }
+    return max;
 }
 
 static int *deck_editor_active_array(void)
@@ -2560,6 +2647,42 @@ static void recalc_story_deck_counts(void)
         if (g_story_player_deck[i] == SUPPORT_EQUIP_CARD_ID) ++g_story_equip_count;
         else if (is_support_card(g_story_player_deck[i])) ++g_story_support_count;
     }
+}
+
+static void sanitize_story_deck_copy_limit(void)
+{
+    int i = 0;
+    while (i < g_story_deck_count) {
+        int copies = 0;
+        for (int j = 0; j <= i; ++j) if (g_story_player_deck[j] == g_story_player_deck[i]) ++copies;
+        if (copies > 4) {
+            int card = g_story_player_deck[i];
+            remove_card_at(g_story_player_deck, &g_story_deck_count, i);
+            append_card_to(g_story_storage, &g_story_storage_count, STORY_STORAGE_SIZE, card);
+        } else {
+            ++i;
+        }
+    }
+}
+
+static int story_reward_drop_card(void)
+{
+    int seed = story_hash_name() ^ (g_story_duel_index * 131 + g_b_turns * 17 + g_b_cards_used * 29 + 0x2468);
+    int strong_pool[] = {37, 40, 33, 28, 8, 14};
+    int roll = story_prng_next(&seed) % 100;
+    if (roll == 0) {
+        return strong_pool[story_prng_next(&seed) % (int)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
+    }
+    if (roll < 11) {
+        return SUPPORT_EQUIP_CARD_ID;
+    }
+    return story_prng_next(&seed) % WAIFU_CARD_COUNT;
+}
+
+static void award_story_win_drop(void)
+{
+    if (g_story_storage_count >= STORY_STORAGE_SIZE) return;
+    append_card_to(g_story_storage, &g_story_storage_count, STORY_STORAGE_SIZE, story_reward_drop_card());
 }
 
 static int story_save_exists(void)
@@ -2643,6 +2766,7 @@ static int read_story_save(void)
     g_story_saved_flash = 0;
     g_story_editor_from_pyramid = 0;
     reset_story_deck_editor();
+    sanitize_story_deck_copy_limit();
     recalc_story_deck_counts();
     init_battle_state();
     return 1;
@@ -2671,11 +2795,13 @@ static void deck_editor_move_selected_card(void)
         remove_card_at(g_story_player_deck, &g_story_deck_count, g_deck_cursor);
         append_card_to(g_story_storage, &g_story_storage_count, STORY_STORAGE_SIZE, card);
     } else {
-        if (g_story_deck_count >= STORY_DECK_SIZE) { g_deck_flash = 50; return; }
+        if (g_story_deck_count >= STORY_DECK_SIZE) { g_deck_flash = 50; g_deck_flash_reason = 0; return; }
         card = g_story_storage[g_deck_cursor];
+        if (!story_deck_can_add_card(card)) { g_deck_flash = 50; g_deck_flash_reason = 1; return; }
         remove_card_at(g_story_storage, &g_story_storage_count, g_deck_cursor);
         append_card_to(g_story_player_deck, &g_story_deck_count, STORY_DECK_SIZE, card);
     }
+    g_deck_flash_reason = 0;
     recalc_story_deck_counts();
     deck_editor_clamp_cursor();
 }
@@ -2746,8 +2872,12 @@ static void init_battle_state(void)
     for (i = 0; i < I_FIELD; ++i) {
         g_i_player_field[i] = CARD_NONE;
         g_i_player_faceup[i] = 1;
+        g_i_player_atk_bonus[i] = 0;
+        g_i_player_def_bonus[i] = 0;
         g_i_com_field[i] = CARD_NONE;
         g_i_com_faceup[i] = 1;
+        g_i_com_atk_bonus[i] = 0;
+        g_i_com_def_bonus[i] = 0;
         g_i_player_attacked[i] = 0;
         g_i_com_attacked[i] = 0;
     }
@@ -2764,6 +2894,15 @@ static void init_battle_state(void)
     g_b_place_hand = -1;
     g_b_place_slot = -1;
     g_b_place_card = -1;
+    g_b_equip_hand = -1;
+    g_b_equip_slot = -1;
+    g_b_equip_card = CARD_NONE;
+    g_b_equip_target_card = CARD_NONE;
+    g_b_equip_target_faceup = 1;
+    g_b_equip_base_atk = 0;
+    g_b_equip_base_def = 0;
+    g_b_equip_pending_atk = 0;
+    g_b_equip_pending_def = 0;
     clear_battle_snapshot();
     g_b_battle_atk_owner = 0;
     g_b_battle_outcome = BATTLE_DESTROY_DEFENDER;
@@ -2858,7 +2997,9 @@ static void draw_interactive_common(Camera cam, int bottom_card, const char *bot
     render_board(cam);
     draw_interactive_field_cards(cam);
     draw_hud();
-    if (bottom_card >= 0) draw_bottom_info(bottom_card, bottom_mode ? bottom_mode : "CARD");
+    if (bottom_card >= 0 && (!bottom_mode || strcmp(bottom_mode, "COM") != 0)) {
+        draw_bottom_info(bottom_card, bottom_mode ? bottom_mode : "CARD");
+    }
 }
 
 static void draw_preview_stat_line(int x, int y, const char *label, unsigned value)
@@ -2938,7 +3079,7 @@ static int defender_battle_value(int defender_owner, int slot)
     /* No explicit position system exists yet. Face-down monsters are treated as
        defensive until revealed. Face-up monsters battle with ATK, so equal-ATK
        collisions destroy both as in Forbidden Memories-style attack battles. */
-    return faceup ? (int)waifu_card_atk[id] : (int)waifu_card_def[id];
+    return faceup ? field_card_atk(defender_owner, slot) : field_card_def(defender_owner, slot);
 }
 
 static void prepare_battle(int attacker_owner, int attacker_slot, int defender_slot)
@@ -2953,13 +3094,13 @@ static void prepare_battle(int attacker_owner, int attacker_slot, int defender_s
         def_id = g_i_com_field[defender_slot];
         g_b_battle_atk_back = 0;
         g_b_battle_def_back = !g_i_com_faceup[defender_slot];
-        delta = (int)waifu_card_atk[atk_id] - defender_battle_value(1, defender_slot);
+        delta = field_card_atk(0, attacker_slot) - defender_battle_value(1, defender_slot);
     } else {
         atk_id = g_i_com_field[attacker_slot];
         def_id = g_i_player_field[defender_slot];
         g_b_battle_atk_back = 0;
         g_b_battle_def_back = !g_i_player_faceup[defender_slot];
-        delta = (int)waifu_card_atk[atk_id] - defender_battle_value(0, defender_slot);
+        delta = field_card_atk(1, attacker_slot) - defender_battle_value(0, defender_slot);
     }
     g_b_battle_atk_card = atk_id;
     g_b_battle_def_card = def_id;
@@ -2988,7 +3129,7 @@ static void prepare_direct_attack(int attacker_owner, int attacker_slot)
         if (def >= 0) { prepare_battle(1, attacker_slot, def); return; }
     }
     int atk_id = (attacker_owner == 0) ? g_i_player_field[attacker_slot] : g_i_com_field[attacker_slot];
-    int dmg = (int)waifu_card_atk[atk_id];
+    int dmg = field_card_atk(attacker_owner, attacker_slot);
     g_b_battle_atk_owner = attacker_owner;
     g_b_battle_atk_slot = attacker_slot;
     g_b_battle_def_slot = -1;
@@ -3004,8 +3145,6 @@ static void prepare_direct_attack(int attacker_owner, int attacker_slot)
 
 static void resolve_battle(void)
 {
-    int atk_id = g_b_battle_atk_card;
-
     if (g_b_battle_atk_owner == 0 && g_b_battle_atk_slot >= 0) {
         g_i_player_attacked[g_b_battle_atk_slot] = 1;
         g_i_player_faceup[g_b_battle_atk_slot] = 1;
@@ -3020,51 +3159,67 @@ static void resolve_battle(void)
         else g_you_lp -= g_b_direct_damage;
     } else if (g_b_battle_atk_owner == 0) {
         if (g_b_battle_outcome == BATTLE_DESTROY_DEFENDER) {
-            int delta = (int)waifu_card_atk[atk_id] - defender_battle_value(1, g_b_battle_def_slot);
+            int delta = field_card_atk(0, g_b_battle_atk_slot) - defender_battle_value(1, g_b_battle_def_slot);
             if (delta < 0) delta = 0;
             g_com_lp -= delta;
             g_i_com_field[g_b_battle_def_slot] = CARD_NONE;
             g_i_com_faceup[g_b_battle_def_slot] = 1;
             g_i_com_attacked[g_b_battle_def_slot] = 0;
+            g_i_com_atk_bonus[g_b_battle_def_slot] = 0;
+            g_i_com_def_bonus[g_b_battle_def_slot] = 0;
         } else if (g_b_battle_outcome == BATTLE_DESTROY_ATTACKER) {
-            int delta = defender_battle_value(1, g_b_battle_def_slot) - (int)waifu_card_atk[atk_id];
+            int delta = defender_battle_value(1, g_b_battle_def_slot) - field_card_atk(0, g_b_battle_atk_slot);
             if (delta < 0) delta = 0;
             g_you_lp -= delta;
             g_i_player_field[g_b_battle_atk_slot] = CARD_NONE;
             g_i_player_faceup[g_b_battle_atk_slot] = 1;
             g_i_player_attacked[g_b_battle_atk_slot] = 0;
+            g_i_player_atk_bonus[g_b_battle_atk_slot] = 0;
+            g_i_player_def_bonus[g_b_battle_atk_slot] = 0;
             g_i_com_faceup[g_b_battle_def_slot] = 1;
         } else if (g_b_battle_outcome == BATTLE_DESTROY_BOTH) {
             g_i_player_field[g_b_battle_atk_slot] = CARD_NONE;
             g_i_player_faceup[g_b_battle_atk_slot] = 1;
             g_i_player_attacked[g_b_battle_atk_slot] = 0;
+            g_i_player_atk_bonus[g_b_battle_atk_slot] = 0;
+            g_i_player_def_bonus[g_b_battle_atk_slot] = 0;
             g_i_com_field[g_b_battle_def_slot] = CARD_NONE;
             g_i_com_faceup[g_b_battle_def_slot] = 1;
             g_i_com_attacked[g_b_battle_def_slot] = 0;
+            g_i_com_atk_bonus[g_b_battle_def_slot] = 0;
+            g_i_com_def_bonus[g_b_battle_def_slot] = 0;
         }
     } else {
         if (g_b_battle_outcome == BATTLE_DESTROY_DEFENDER) {
-            int delta = (int)waifu_card_atk[atk_id] - defender_battle_value(0, g_b_battle_def_slot);
+            int delta = field_card_atk(1, g_b_battle_atk_slot) - defender_battle_value(0, g_b_battle_def_slot);
             if (delta < 0) delta = 0;
             g_you_lp -= delta;
             g_i_player_field[g_b_battle_def_slot] = CARD_NONE;
             g_i_player_faceup[g_b_battle_def_slot] = 1;
             g_i_player_attacked[g_b_battle_def_slot] = 0;
+            g_i_player_atk_bonus[g_b_battle_def_slot] = 0;
+            g_i_player_def_bonus[g_b_battle_def_slot] = 0;
         } else if (g_b_battle_outcome == BATTLE_DESTROY_ATTACKER) {
-            int delta = defender_battle_value(0, g_b_battle_def_slot) - (int)waifu_card_atk[atk_id];
+            int delta = defender_battle_value(0, g_b_battle_def_slot) - field_card_atk(1, g_b_battle_atk_slot);
             if (delta < 0) delta = 0;
             g_com_lp -= delta;
             g_i_com_field[g_b_battle_atk_slot] = CARD_NONE;
             g_i_com_faceup[g_b_battle_atk_slot] = 1;
             g_i_com_attacked[g_b_battle_atk_slot] = 0;
+            g_i_com_atk_bonus[g_b_battle_atk_slot] = 0;
+            g_i_com_def_bonus[g_b_battle_atk_slot] = 0;
             g_i_player_faceup[g_b_battle_def_slot] = 1;
         } else if (g_b_battle_outcome == BATTLE_DESTROY_BOTH) {
             g_i_com_field[g_b_battle_atk_slot] = CARD_NONE;
             g_i_com_faceup[g_b_battle_atk_slot] = 1;
             g_i_com_attacked[g_b_battle_atk_slot] = 0;
+            g_i_com_atk_bonus[g_b_battle_atk_slot] = 0;
+            g_i_com_def_bonus[g_b_battle_atk_slot] = 0;
             g_i_player_field[g_b_battle_def_slot] = CARD_NONE;
             g_i_player_faceup[g_b_battle_def_slot] = 1;
             g_i_player_attacked[g_b_battle_def_slot] = 0;
+            g_i_player_atk_bonus[g_b_battle_def_slot] = 0;
+            g_i_player_def_bonus[g_b_battle_def_slot] = 0;
         }
     }
     if (g_you_lp <= 0) { g_you_lp = 0; g_b_result = -1; set_battle_phase(IB_RESULT); }
@@ -3158,7 +3313,7 @@ static void draw_post_battle_return(int attacker_owner, int f, int focus_slot, i
     render_board(cam);
     draw_interactive_field_cards(cam);
     draw_hud();
-    if (bottom_card >= 0) draw_bottom_info(bottom_card, mode ? mode : "FIELD");
+    if (attacker_owner == 0 && bottom_card >= 0) draw_bottom_info(bottom_card, mode ? mode : "FIELD");
     if (focus_slot >= 0) draw_zone_cursor(cam, focus_slot, attacker_owner == 0 ? PLAYER_CARD_ROW : ENEMY_CARD_ROW);
     if (f < fade_frames) apply_black_dither_fade((float)f / (float)fade_frames);
 }
@@ -3308,6 +3463,88 @@ static int current_battle_anim_frames(void)
     return 16 + burn_start + BATTLE_BURN_DUR + 8;
 }
 
+static void start_player_equip(int hand_slot, int target_slot)
+{
+    if (hand_slot < 0 || hand_slot >= I_HAND || target_slot < 0 || target_slot >= I_FIELD) return;
+    if (!is_support_card(g_i_player_hand[hand_slot]) || !is_monster_card(g_i_player_field[target_slot])) return;
+
+    g_b_equip_hand = hand_slot;
+    g_b_equip_slot = target_slot;
+    g_b_equip_card = g_i_player_hand[hand_slot];
+    g_b_equip_target_card = g_i_player_field[target_slot];
+    g_b_equip_target_faceup = g_i_player_faceup[target_slot];
+    g_b_equip_base_atk = field_card_atk(0, target_slot);
+    g_b_equip_base_def = field_card_def(0, target_slot);
+    g_b_equip_pending_atk = equip_atk_bonus(g_b_equip_card);
+    g_b_equip_pending_def = equip_def_bonus(g_b_equip_card);
+    g_i_player_field[target_slot] = CARD_NONE;
+    g_i_player_faceup[target_slot] = 1;
+    g_i_player_used[hand_slot] = 1;
+    set_battle_phase(IB_PLAYER_EQUIP_ANIM);
+}
+
+static void finish_player_equip(void)
+{
+    if (g_b_equip_slot < 0 || g_b_equip_slot >= I_FIELD) return;
+    g_i_player_field[g_b_equip_slot] = g_b_equip_target_card;
+    g_i_player_faceup[g_b_equip_slot] = g_b_equip_target_faceup;
+    g_i_player_atk_bonus[g_b_equip_slot] += g_b_equip_pending_atk;
+    g_i_player_def_bonus[g_b_equip_slot] += g_b_equip_pending_def;
+    g_b_cards_used++;
+    g_b_selected_player_slot = g_b_equip_slot;
+    g_b_selected_hand = next_live_hand_index(g_b_equip_hand, 1);
+    g_b_equip_hand = -1;
+    g_b_equip_slot = -1;
+    g_b_equip_card = CARD_NONE;
+    g_b_equip_target_card = CARD_NONE;
+    set_battle_phase(IB_PLAYER_TOP);
+}
+
+static void draw_equip_stat_line(int x, int y, const char *label, int from, int to, float t)
+{
+    char line[32];
+    int value = from + (int)((float)(to - from) * smoothstepf(t) + 0.5f);
+    snprintf(line, sizeof(line), "%s %04d", label, value);
+    draw_text(x, y, line, IDX_GOLD_HI, IDX_BLACK);
+}
+
+static void draw_player_equip_target(void)
+{
+    Camera cam = battle_top_camera();
+    int slot = selected_or_first_live_player_slot();
+    draw_interactive_common(cam, g_i_player_hand[g_b_equip_hand], "EQUIP");
+    if (slot >= 0) draw_zone_cursor(cam, slot, PLAYER_CARD_ROW);
+    draw_text_small(70, 191, "SELECT EQUIP TARGET", IDX_GOLD_HI, IDX_BLACK);
+}
+
+static void draw_player_equip_anim(void)
+{
+    int f = g_b_phase_frame;
+    float t = smoothstepf((float)f / 120.0f);
+    int card_x = 18 + (int)(22.0f * sinf(t * CFX_PI));
+    int target_x = 118 - (int)(18.0f * sinf(t * CFX_PI));
+    int atk_to = g_b_equip_base_atk + g_b_equip_pending_atk;
+    int def_to = g_b_equip_base_def + g_b_equip_pending_def;
+
+    clear_screen(IDX_BLACK);
+    for (int y = 0; y < H; ++y) {
+        uint8_t c = (y & 8) ? IDX_UI_DARK : IDX_BLACK;
+        hline(0, 255, y, c);
+    }
+    draw_support_sprite(card_x, 34, 96, 132);
+    draw_big_battle_card(g_b_equip_target_card, target_x, 28, !g_b_equip_target_faceup);
+
+    for (int i = 0; i < 18; ++i) {
+        int cx = 128 + (int)(sinf((float)(f + i * 13) * 0.11f) * (16.0f + (float)(i % 5) * 4.0f));
+        int cy = 91 + (int)(cosf((float)(f + i * 17) * 0.09f) * (18.0f + (float)(i % 4) * 3.0f));
+        draw_disc(cx, cy, 1 + (i % 3), (i & 1) ? IDX_GOLD_HI : IDX_WHITE);
+    }
+    if ((f & 4) == 0) rect_outline(112, 24, 128, 168, IDX_WHITE);
+    draw_centered_text(9, "EQUIP POWER", IDX_GOLD_HI, IDX_BLACK);
+    draw_equip_stat_line(45, 190, "ATK", g_b_equip_base_atk, atk_to, t);
+    draw_equip_stat_line(45, 208, "DEF", g_b_equip_base_def, def_to, t);
+}
+
 static void step_battle_interactive(const WaifuFmInput *input, int press_up, int press_down, int press_left, int press_right, int press_a, int press_b, int press_start)
 {
     int slot, atk_slot, def_slot, view_slot;
@@ -3327,9 +3564,12 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (press_a && !g_i_player_used[g_b_selected_hand]) {
             int selected_card = g_i_player_hand[g_b_selected_hand];
             if (is_support_card(selected_card)) {
-                g_i_player_used[g_b_selected_hand] = 1;
-                g_b_cards_used++;
-                g_b_selected_hand = next_live_hand_index(g_b_selected_hand, 1);
+                int target = selected_or_first_live_player_slot();
+                if (target >= 0) {
+                    g_b_equip_hand = g_b_selected_hand;
+                    g_b_selected_player_slot = target;
+                    set_battle_phase(IB_PLAYER_EQUIP_TARGET);
+                }
                 break;
             }
             slot = first_free_player_slot();
@@ -3360,12 +3600,33 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (g_b_phase_frame >= 48) {
             g_i_player_field[g_b_place_slot] = g_b_place_card;
             g_i_player_faceup[g_b_place_slot] = 0;
+            g_i_player_atk_bonus[g_b_place_slot] = 0;
+            g_i_player_def_bonus[g_b_place_slot] = 0;
             g_i_player_used[g_b_place_hand] = 1;
             g_b_player_monster_played_this_turn = 1;
             g_b_cards_used++;
             g_b_selected_player_slot = g_b_place_slot;
             set_battle_phase(IB_PLAYER_TOP);
         }
+        break;
+
+    case IB_PLAYER_EQUIP_TARGET:
+        if (press_down || press_b) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); break; }
+        if (press_left) g_b_selected_player_slot = next_live_player_slot_from(g_b_selected_player_slot, -1);
+        if (press_right) g_b_selected_player_slot = next_live_player_slot_from(g_b_selected_player_slot, 1);
+        if (press_a) {
+            int target = selected_or_first_live_player_slot();
+            if (target >= 0) {
+                start_player_equip(g_b_equip_hand, target);
+                break;
+            }
+        }
+        draw_player_equip_target();
+        break;
+
+    case IB_PLAYER_EQUIP_ANIM:
+        draw_player_equip_anim();
+        if (g_b_phase_frame >= 120) finish_player_equip();
         break;
 
     case IB_PLAYER_TOP:
@@ -3441,6 +3702,8 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (g_b_phase_frame >= 48) {
             g_i_com_field[g_b_place_slot] = g_b_place_card;
             g_i_com_faceup[g_b_place_slot] = 0;
+            g_i_com_atk_bonus[g_b_place_slot] = 0;
+            g_i_com_def_bonus[g_b_place_slot] = 0;
             g_i_com_used[g_b_place_hand] = 1;
             g_b_com_monster_played_this_turn = 1;
             clear_battle_snapshot();
@@ -3799,9 +4062,11 @@ static void draw_deck_editor(void)
         }
     }
     if (g_deck_flash > 0 && ((g_deck_flash / 8) & 1) == 0) {
-        draw_centered_text(181, g_story_deck_count == STORY_DECK_SIZE ? "DECK IS FULL" : "DECK MUST BE 40", IDX_RED, IDX_BLACK);
+        const char *msg = g_deck_flash_reason == 1 ? "MAX 4 COPIES" :
+            (g_story_deck_count == STORY_DECK_SIZE ? "DECK IS FULL" : "DECK MUST BE 40");
+        draw_centered_text(181, msg, IDX_RED, IDX_BLACK);
     }
-    draw_text_small(15, 226, "A MOVE  B CHECK  UP TAB  RUN", IDX_WHITE, IDX_BLACK);
+    draw_text_small(15, 226, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
 }
 
 
@@ -3820,17 +4085,44 @@ static void draw_map_pyramid_3d(int f)
     Vec3 b = v3( 1.75f, 0.0f, -1.75f);
     Vec3 c = v3( 1.75f, 0.0f,  1.75f);
     Vec3 d = v3(-1.75f, 0.0f,  1.75f);
-    (void)f;
-    draw_quad3d(cam, v3(-5.0f,-0.08f,-3.2f), v3(5.0f,-0.08f,-3.2f), v3(5.0f,-0.08f,3.4f), v3(-5.0f,-0.08f,3.4f), 4);
-    /* Degenerate quads form four textured triangle faces.  Back faces first,
-       then front/near faces, giving a stable software-rendered 3D pyramid. */
-    draw_quad3d(cam, a, b, apex, apex, 5);
-    draw_quad3d(cam, b, c, apex, apex, 1);
-    draw_quad3d(cam, c, d, apex, apex, 5);
-    draw_quad3d(cam, d, a, apex, apex, 1);
+    typedef struct PyramidFace {
+        Vec3 p0, p1;
+        int tile;
+        float depth;
+    } PyramidFace;
+    PyramidFace faces[4] = {
+        {a, b, 5, 0.0f},
+        {b, c, 1, 0.0f},
+        {c, d, 5, 0.0f},
+        {d, a, 1, 0.0f}
+    };
+
+    ScreenPt base = project_point(cam, v3(0, 0.0f, 0));
+    if (base.ok) {
+        for (int yy = -5; yy <= 5; ++yy) {
+            int hw = 38 - abs(yy) * 4;
+            hline(base.x - hw, base.x + hw, base.y + 9 + yy, IDX_DARK_BROWN);
+        }
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        ScreenPt p0 = project_point(cam, faces[i].p0);
+        ScreenPt p1 = project_point(cam, faces[i].p1);
+        ScreenPt p2 = project_point(cam, apex);
+        faces[i].depth = (p0.depth + p1.depth + p2.depth) / 3.0f;
+    }
+    for (int i = 0; i < 3; ++i) {
+        for (int j = i + 1; j < 4; ++j) {
+            if (faces[i].depth < faces[j].depth) {
+                PyramidFace tmp = faces[i];
+                faces[i] = faces[j];
+                faces[j] = tmp;
+            }
+        }
+    }
+    for (int i = 0; i < 4; ++i) draw_tri3d_tile(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, i & 1);
 
     ScreenPt peak = project_point(cam, apex);
-    ScreenPt base = project_point(cam, v3(0, 0.0f, 0));
     if (peak.ok && base.ok) {
         line_i(peak.x, peak.y, base.x, base.y, IDX_GOLD_DARK);
         put_px(peak.x, peak.y, IDX_GOLD_HI);
@@ -3901,7 +4193,7 @@ static void draw_story_save_screen(void)
         draw_centered_text(118, "The memory seal is broken.", IDX_WHITE, IDX_BLACK);
     } else if (g_story_save_status > 0) {
         draw_centered_text(95, "PROGRESS SAVED", IDX_GOLD_HI, IDX_BLACK);
-        draw_centered_text(118, "The pyramid remembers Serena.", IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(57, 115, 143, 2, 10, "The pyramid remembers Serena.", IDX_WHITE, IDX_BLACK);
     } else {
         draw_centered_text(95, "NO SAVE DATA", IDX_RED, IDX_BLACK);
         draw_centered_text(118, "Nothing is written yet.", IDX_WHITE, IDX_BLACK);
@@ -3936,7 +4228,10 @@ static void draw_story_plaza_scene(void)
 
 static void story_return_to_map_after_duel(void)
 {
-    if (g_b_result >= 0 && g_story_duel_index < STORY_MAX_DUELS - 1) ++g_story_duel_index;
+    if (g_b_result >= 0) {
+        award_story_win_drop();
+        if (g_story_duel_index < STORY_MAX_DUELS - 1) ++g_story_duel_index;
+    }
     g_story_battle_active = 0;
     g_story_map_cursor = 1;
     g_i_state = WAIFU_I_STORY_MAP;
@@ -3948,7 +4243,7 @@ static void story_return_to_map_after_duel(void)
 void waifu_fm_step(const WaifuFmInput *input)
 {
     WaifuFmInput zero;
-    int press_up, press_down, press_left, press_right, press_a, press_b, press_start;
+    int press_up, press_down, press_left, press_right, press_a, press_b, press_start, press_tab;
 
     waifu_fm_init();
     memset(&zero, 0, sizeof(zero));
@@ -3961,6 +4256,7 @@ void waifu_fm_step(const WaifuFmInput *input)
     press_a = input_pressed(input->a, g_prev_input.a);
     press_b = input_pressed(input->b, g_prev_input.b);
     press_start = input_pressed(input->start, g_prev_input.start);
+    press_tab = input_pressed(input->tab, g_prev_input.tab);
 
     switch (g_i_state) {
     case WAIFU_I_TITLE:
@@ -4132,6 +4428,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_EDITOR:
+        if (press_tab) deck_editor_switch_tab();
         if (press_left) deck_editor_move_cursor(-1, 0);
         if (press_right) deck_editor_move_cursor(1, 0);
         if (press_up) deck_editor_move_cursor(0, -1);
@@ -4210,6 +4507,7 @@ static void input_or_button(WaifuFmInput *in, const char *tok)
     else if (!strcmp(buf, "A") || !strcmp(buf, "LCTRL") || !strcmp(buf, "CTRL")) in->a = 1;
     else if (!strcmp(buf, "B") || !strcmp(buf, "LALT") || !strcmp(buf, "ALT")) in->b = 1;
     else if (!strcmp(buf, "START") || !strcmp(buf, "RUN") || !strcmp(buf, "SPACE")) in->start = 1;
+    else if (!strcmp(buf, "TAB") || !strcmp(buf, "BUTTON4") || !strcmp(buf, "BTN4") || !strcmp(buf, "4")) in->tab = 1;
 }
 
 
@@ -4280,6 +4578,7 @@ static WaifuFmInput input_for_frame_from_events(int frame, const CommandEvent *e
             in.a |= events[i].input.a;
             in.b |= events[i].input.b;
             in.start |= events[i].input.start;
+            in.tab |= events[i].input.tab;
         }
     }
     return in;
@@ -4369,13 +4668,15 @@ int main(int argc, char **argv)
         printf("player_faceup0=%d com_field0=%d com_faceup0=%d player_attacked0=%d com_attacked0=%d ",
                g_i_player_faceup[0], g_i_com_field[0], g_i_com_faceup[0],
                g_i_player_attacked[0], g_i_com_attacked[0]);
+        printf("player_atk0=%d player_def0=%d player_atk_bonus0=%d player_def_bonus0=%d ",
+               field_card_atk(0, 0), field_card_def(0, 0), g_i_player_atk_bonus[0], g_i_player_def_bonus[0]);
         printf("player_monster_played=%d com_monster_played=%d result=%d ",
                g_b_player_monster_played_this_turn, g_b_com_monster_played_this_turn, g_b_result);
         printf("istate=%d story=%d story_line=%d story_fire_line=%d story_name=%s story_strong=%d story_weak=%d story_equips=%d story_supports=%d ",
                (int)g_i_state, g_story_battle_active, g_story_intro_line, g_story_fire_line, g_story_name,
                g_story_strong_card, g_story_weak_card, g_story_equip_count, g_story_support_count);
-        printf("deck_count=%d storage_count=%d deck_tab=%d deck_cursor=%d story_duel=%d map_cursor=%d pyramid_cursor=%d plaza_line=%d editor_from_pyramid=%d save_status=%d save_exists=%d opponent=%s ",
-               g_story_deck_count, g_story_storage_count, g_deck_tab, g_deck_cursor,
+        printf("deck_count=%d storage_count=%d max_deck_copies=%d deck_tab=%d deck_cursor=%d story_duel=%d map_cursor=%d pyramid_cursor=%d plaza_line=%d editor_from_pyramid=%d save_status=%d save_exists=%d opponent=%s ",
+               g_story_deck_count, g_story_storage_count, story_deck_max_card_copies(), g_deck_tab, g_deck_cursor,
                g_story_duel_index, g_story_map_cursor, g_story_pyramid_cursor, g_story_plaza_line,
                g_story_editor_from_pyramid, g_story_save_status, story_save_exists(), story_opponent_name());
         printf("hand0=%d hand1=%d hand2=%d hand3=%d hand4=%d deck_pos=%d deck_left=%d\n",
