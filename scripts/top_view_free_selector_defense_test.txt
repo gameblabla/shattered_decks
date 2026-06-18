@@ -1,0 +1,10 @@
+# Regression: tactical top-view selector can move through empty zones freely,
+# then return to a player monster and use button 4/TAB to toggle defense.
+60 2 START
+100 2 A
+270 2 A
+340 2 RIGHT
+370 2 UP
+400 2 LEFT
+430 2 DOWN
+460 2 TAB

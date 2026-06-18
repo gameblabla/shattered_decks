@@ -60,6 +60,13 @@ static const int PLAYER_CARD2_COL = 1;
 static const int ENEMY_CARD2_COL = 1;
 static const int PLAYER_CARD3_COL = 2;
 
+static int g_b_top_col = 0;
+static int g_b_top_row = PLAYER_CARD_ROW;
+static int g_b_top_prev_col = 0;
+static int g_b_top_prev_row = PLAYER_CARD_ROW;
+static int g_b_top_cursor_anim = 8;
+static int g_b_attack_attacker_slot = -1;
+
 #define BATTLE_BURN_DUR 52
 #define BATTLE_BURN_VANISH_FRAMES 44
 #define SUPPORT_EQUIP_CARD_ID   (WAIFU_CARD_COUNT + 0)
@@ -846,8 +853,10 @@ static void draw_enemy_hand_draw_sequence(int f, int start, int selected)
 /* ------------------------------------------------------------------------- */
 /* Board rendering and board-card placement. */
 
-static float col_x0(int c) { return FIELD_X0 + (FIELD_X1 - FIELD_X0) * (float)c / (float)BOARD_COLS; }
-static float row_z0(int r) { return FIELD_Z0 + (FIELD_Z1 - FIELD_Z0) * (float)r / (float)BOARD_ROWS; }
+static float col_xf(float c) { return FIELD_X0 + (FIELD_X1 - FIELD_X0) * c / (float)BOARD_COLS; }
+static float row_zf(float r) { return FIELD_Z0 + (FIELD_Z1 - FIELD_Z0) * r / (float)BOARD_ROWS; }
+static float col_x0(int c) { return col_xf((float)c); }
+static float row_z0(int r) { return row_zf((float)r); }
 static float zone_cx(int c) { return (col_x0(c) + col_x0(c+1)) * 0.5f; }
 static float zone_cz(int r) { return (row_z0(r) + row_z0(r+1)) * 0.5f; }
 
@@ -1053,10 +1062,10 @@ static void draw_board_card(Camera cam, int col, int row, int card_id, int back)
     draw_board_card_ex(cam, col, row, card_id, back, 0);
 }
 
-static void draw_zone_cursor(Camera cam, int col, int row)
+static void draw_zone_cursor_f(Camera cam, float col, float row)
 {
-    float x0 = col_x0(col), x1 = col_x0(col+1);
-    float z0 = row_z0(row), z1 = row_z0(row+1);
+    float x0 = col_xf(col), x1 = col_xf(col + 1.0f);
+    float z0 = row_zf(row), z1 = row_zf(row + 1.0f);
     ScreenPt p0 = project_point(cam, v3(x0,0.10f,z0));
     ScreenPt p1 = project_point(cam, v3(x1,0.10f,z0));
     ScreenPt p2 = project_point(cam, v3(x1,0.10f,z1));
@@ -1065,6 +1074,20 @@ static void draw_zone_cursor(Camera cam, int col, int row)
     line_i(p0.x,p0.y,p1.x,p1.y,IDX_RED); line_i(p1.x,p1.y,p2.x,p2.y,IDX_RED);
     line_i(p2.x,p2.y,p3.x,p3.y,IDX_RED); line_i(p3.x,p3.y,p0.x,p0.y,IDX_RED);
     line_i(p0.x+1,p0.y,p1.x+1,p1.y,IDX_RED); line_i(p3.x+1,p3.y,p2.x+1,p2.y,IDX_RED);
+}
+
+static void draw_zone_cursor(Camera cam, int col, int row)
+{
+    draw_zone_cursor_f(cam, (float)col, (float)row);
+}
+
+static void draw_top_selector_cursor(Camera cam)
+{
+    float t = smoothstepf((float)g_b_top_cursor_anim / 8.0f);
+    float col = (float)g_b_top_prev_col + ((float)g_b_top_col - (float)g_b_top_prev_col) * t;
+    float row = (float)g_b_top_prev_row + ((float)g_b_top_row - (float)g_b_top_prev_row) * t;
+    draw_zone_cursor_f(cam, col, row);
+    if (g_b_top_cursor_anim < 8) ++g_b_top_cursor_anim;
 }
 
 static void draw_flying_card(Camera cam, int card_id, int hand_index, int target_col, int target_row, int frame, int start, int end, int back)
@@ -2391,6 +2414,44 @@ static int first_live_com_slot(void)
     return -1;
 }
 
+static void set_top_selector(int col, int row)
+{
+    if (col < 0) col = 0;
+    if (col >= BOARD_COLS) col = BOARD_COLS - 1;
+    if (row < 0) row = 0;
+    if (row >= BOARD_ROWS) row = BOARD_ROWS - 1;
+    if (g_b_top_col != col || g_b_top_row != row) {
+        g_b_top_prev_col = g_b_top_col;
+        g_b_top_prev_row = g_b_top_row;
+        g_b_top_cursor_anim = 0;
+    } else {
+        g_b_top_prev_col = col;
+        g_b_top_prev_row = row;
+        g_b_top_cursor_anim = 8;
+    }
+    g_b_top_col = col;
+    g_b_top_row = row;
+    if (row == PLAYER_CARD_ROW) g_b_selected_player_slot = col;
+    if (row == ENEMY_CARD_ROW) g_b_selected_com_slot = col;
+}
+
+static void move_top_selector(int dx, int dy)
+{
+    set_top_selector(g_b_top_col + dx, g_b_top_row + dy);
+}
+
+static int top_selector_player_monster_slot(void)
+{
+    if (g_b_top_row != PLAYER_CARD_ROW || g_b_top_col < 0 || g_b_top_col >= I_FIELD) return -1;
+    return g_i_player_field[g_b_top_col] >= 0 ? g_b_top_col : -1;
+}
+
+static int top_selector_com_monster_slot(void)
+{
+    if (g_b_top_row != ENEMY_CARD_ROW || g_b_top_col < 0 || g_b_top_col >= I_FIELD) return -1;
+    return g_i_com_field[g_b_top_col] >= 0 ? g_b_top_col : -1;
+}
+
 static int card_base_atk(int id)
 {
     return is_monster_card(id) ? (int)waifu_card_atk[id] : 0;
@@ -2425,6 +2486,35 @@ static void draw_bottom_info_field(int owner, int slot, const char *mode)
     if (slot < 0 || slot >= I_FIELD) return;
     card_id = owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot];
     draw_bottom_info_offset_ex(card_id, mode, 0, field_card_atk(owner, slot), field_card_def(owner, slot));
+}
+
+static void draw_bottom_empty_field(const char *mode)
+{
+    char line[48];
+    int base = 205;
+    rect_fill(0, base, 256, 35, IDX_UI_TEAL);
+    hline(0,255,base,IDX_WHITE); hline(0,255,base+1,IDX_UI_LIGHT); hline(0,255,base+2,IDX_DIM);
+    for (int y = base+4; y < base+35; y += 3) hline(0,255,y,IDX_UI_TEAL2);
+    snprintf(line, sizeof(line), "%s C%d R%d", mode ? mode : "FIELD", g_b_top_col + 1, g_b_top_row + 1);
+    draw_text(6, base+6, line, IDX_DIM, IDX_BLACK);
+    draw_text_small(6, base+21, "EMPTY ZONE", IDX_WHITE, IDX_BLACK);
+}
+
+static void draw_bottom_info_top_selector(const char *mode)
+{
+    if (g_b_top_col < 0 || g_b_top_col >= I_FIELD) {
+        draw_bottom_empty_field(mode);
+        return;
+    }
+    if (g_b_top_row == PLAYER_CARD_ROW && g_i_player_field[g_b_top_col] >= 0) {
+        draw_bottom_info_field(0, g_b_top_col, mode ? mode : "FIELD");
+    } else if (g_b_top_row == ENEMY_CARD_ROW && g_i_com_field[g_b_top_col] >= 0) {
+        draw_bottom_info_field(1, g_b_top_col, mode ? mode : "TARGET");
+    } else if (g_b_top_row == PLAYER_CARD_ROW + 1 && g_i_player_equip_field[g_b_top_col] >= 0) {
+        draw_bottom_info(g_i_player_equip_field[g_b_top_col], mode ? mode : "EQUIP");
+    } else {
+        draw_bottom_empty_field(mode);
+    }
 }
 
 static int field_card_defense_position(int owner, int slot)
@@ -2468,49 +2558,6 @@ static int selected_or_first_live_player_slot(void)
     return first_live_player_slot();
 }
 
-static int next_live_player_slot_from(int cur, int dir)
-{
-    int i;
-    if (cur < 0 || cur >= I_FIELD) cur = first_live_player_slot();
-    for (i = 0; i < I_FIELD; ++i) {
-        cur = (cur + dir + I_FIELD) % I_FIELD;
-        if (g_i_player_field[cur] >= 0) return cur;
-    }
-    return first_live_player_slot();
-}
-
-static int next_live_com_slot_from(int cur, int dir)
-{
-    int i;
-    if (cur < 0 || cur >= I_FIELD) cur = first_live_com_slot();
-    for (i = 0; i < I_FIELD; ++i) {
-        cur = (cur + dir + I_FIELD) % I_FIELD;
-        if (g_i_com_field[cur] >= 0) return cur;
-    }
-    return first_live_com_slot();
-}
-
-
-static int next_attackable_player_slot_from(int cur, int dir)
-{
-    int i;
-    if (cur < 0 || cur >= I_FIELD) cur = first_live_player_slot();
-    for (i = 0; i < I_FIELD; ++i) {
-        cur = (cur + dir + I_FIELD) % I_FIELD;
-        if (g_i_player_field[cur] >= 0 && !g_i_player_attacked[cur]) return cur;
-    }
-    return -1;
-}
-
-static int selected_or_first_attackable_player_slot(void)
-{
-    if (g_b_selected_player_slot >= 0 && g_b_selected_player_slot < I_FIELD &&
-        g_i_player_field[g_b_selected_player_slot] >= 0 && !g_i_player_attacked[g_b_selected_player_slot]) {
-        return g_b_selected_player_slot;
-    }
-    return next_attackable_player_slot_from(-1, 1);
-}
-
 static int first_attackable_com_slot(void)
 {
     int i;
@@ -2518,11 +2565,6 @@ static int first_attackable_com_slot(void)
         if (g_i_com_field[i] >= 0 && !g_i_com_attacked[i]) return i;
     }
     return -1;
-}
-
-static int player_has_attackable(void)
-{
-    return next_attackable_player_slot_from(-1, 1) >= 0;
 }
 
 static int player_first_turn_attack_locked(void)
@@ -3038,6 +3080,12 @@ static void init_battle_state(void)
     g_b_selected_hand = 0;
     g_b_selected_player_slot = 0;
     g_b_selected_com_slot = 0;
+    g_b_top_col = 0;
+    g_b_top_row = PLAYER_CARD_ROW;
+    g_b_top_prev_col = 0;
+    g_b_top_prev_row = PLAYER_CARD_ROW;
+    g_b_top_cursor_anim = 8;
+    g_b_attack_attacker_slot = -1;
     g_b_place_hand = -1;
     g_b_place_slot = -1;
     g_b_place_card = -1;
@@ -3688,6 +3736,7 @@ static void finish_player_equip(void)
     }
     g_b_cards_used++;
     g_b_selected_player_slot = g_b_equip_slot;
+    set_top_selector(g_b_equip_slot, PLAYER_CARD_ROW);
     g_b_selected_hand = next_live_hand_index(g_b_equip_hand, 1);
     g_b_equip_hand = -1;
     g_b_equip_slot = -1;
@@ -3697,22 +3746,22 @@ static void finish_player_equip(void)
     set_battle_phase(IB_PLAYER_TOP);
 }
 
-static void draw_equip_stat_line(int x, int y, const char *label, int from, int to, float t)
+static void draw_equip_stat_line_centered(int y, const char *label, int from, int to, float t)
 {
     char line[32];
     int value = from + (int)((float)(to - from) * smoothstepf(t) + 0.5f);
     snprintf(line, sizeof(line), "%s %04d", label, value);
-    draw_text(x, y, line, stat_delta_color(to - from), IDX_BLACK);
+    draw_text((W - text_px_width(line, 1)) / 2, y, line, stat_delta_color(to - from), IDX_BLACK);
 }
 
 static void draw_player_equip_target(void)
 {
     Camera cam = battle_top_camera();
-    int slot = selected_or_first_live_player_slot();
     draw_interactive_base(cam);
-    if (slot >= 0) draw_zone_cursor(cam, slot, PLAYER_CARD_ROW);
+    draw_top_selector_cursor(cam);
     draw_text_small(70, 191, "SELECT EQUIP TARGET", IDX_GOLD_HI, IDX_BLACK);
-    draw_bottom_info(g_i_player_hand[g_b_equip_hand], "EQUIP");
+    if (top_selector_player_monster_slot() >= 0) draw_bottom_info_top_selector("EQUIP");
+    else draw_bottom_info(g_i_player_hand[g_b_equip_hand], "EQUIP");
 }
 
 static void draw_player_equip_anim(void)
@@ -3722,11 +3771,14 @@ static void draw_player_equip_anim(void)
     int reveal = (!g_b_equip_target_faceup && f < 48);
     float merge_t = smoothstepf(((float)f - 42.0f) / 54.0f);
     float vanish_t = smoothstepf(((float)f - 76.0f) / 34.0f);
-    int card_x = (int)((1.0f - merge_t) * 26.0f + merge_t * 97.0f);
-    int card_y = (int)((1.0f - merge_t) * 36.0f + merge_t * 40.0f);
     int card_w = (int)((1.0f - vanish_t) * 92.0f + vanish_t * 38.0f);
     int card_h = (int)((1.0f - vanish_t) * 126.0f + vanish_t * 52.0f);
-    int target_x = 92;
+    int target_x = 68;
+    int target_y = 22;
+    int target_cx = target_x + 60;
+    int target_cy = target_y + 80;
+    int card_x = (int)((1.0f - merge_t) * 26.0f + merge_t * (float)(target_cx - card_w / 2));
+    int card_y = (int)((1.0f - merge_t) * 36.0f + merge_t * (float)(target_cy - card_h / 2));
     int atk_to = g_b_equip_base_atk + g_b_equip_pending_atk;
     int def_to = g_b_equip_base_def + g_b_equip_pending_def;
 
@@ -3736,25 +3788,25 @@ static void draw_player_equip_anim(void)
         hline(0, 255, y, c);
     }
     if (reveal) {
-        draw_big_battle_card_flip(g_b_equip_target_card, target_x, 28, f, 48);
+        draw_big_battle_card_flip(g_b_equip_target_card, target_x, target_y, f, 48);
     } else {
         if (f < 110) {
             rect_fill(card_x + 5, card_y + 6, card_w, card_h, IDX_BLACK);
             draw_support_sprite(card_x, card_y, card_w, card_h);
         }
-        draw_big_battle_card(g_b_equip_target_card, target_x, 28, 0);
+        draw_big_battle_card(g_b_equip_target_card, target_x, target_y, 0);
     }
 
     for (int i = 0; i < 18; ++i) {
-        int cx = 128 + (int)(sinf((float)(f + i * 13) * 0.11f) * (18.0f + (float)(i % 5) * 5.0f));
-        int cy = 91 + (int)(cosf((float)(f + i * 17) * 0.09f) * (18.0f + (float)(i % 4) * 3.0f));
+        int cx = target_cx + (int)(sinf((float)(f + i * 13) * 0.11f) * (18.0f + (float)(i % 5) * 5.0f));
+        int cy = target_cy + (int)(cosf((float)(f + i * 17) * 0.09f) * (18.0f + (float)(i % 4) * 3.0f));
         draw_disc(cx, cy, 1 + (i % 3), (i & 1) ? IDX_GREEN : IDX_WHITE);
     }
     if (f >= 92 && f < 108) rect_fill(0, 0, W, H, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
-    if ((f & 4) == 0) rect_outline(88, 24, 128, 168, IDX_WHITE);
+    if ((f & 4) == 0) rect_outline(target_x - 4, target_y - 4, 128, 168, IDX_WHITE);
     draw_centered_text(9, "EQUIP POWER", IDX_GOLD_HI, IDX_BLACK);
-    draw_equip_stat_line(45, 190, "ATK", g_b_equip_base_atk, atk_to, t);
-    draw_equip_stat_line(45, 208, "DEF", g_b_equip_base_def, def_to, t);
+    draw_equip_stat_line_centered(190, "ATK", g_b_equip_base_atk, atk_to, t);
+    draw_equip_stat_line_centered(208, "DEF", g_b_equip_base_def, def_to, t);
 }
 
 static void step_battle_interactive(const WaifuFmInput *input, int press_up, int press_down, int press_left, int press_right, int press_a, int press_b, int press_start, int press_tab)
@@ -3772,7 +3824,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (press_left) g_b_selected_hand = next_live_hand_index(g_b_selected_hand, -1);
         if (press_right) g_b_selected_hand = next_live_hand_index(g_b_selected_hand, 1);
         if (press_b) { set_battle_phase(IB_CARD_PREVIEW); break; }
-        if (press_up) { set_battle_phase(IB_PLAYER_TOP); break; }
+        if (press_up) { set_top_selector(g_b_selected_player_slot, PLAYER_CARD_ROW); g_b_attack_attacker_slot = -1; set_battle_phase(IB_PLAYER_TOP); break; }
         if (press_a && !g_i_player_used[g_b_selected_hand]) {
             int selected_card = g_i_player_hand[g_b_selected_hand];
             if (is_support_card(selected_card)) {
@@ -3780,6 +3832,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 if (target >= 0 && first_free_player_equip_slot() >= 0) {
                     g_b_equip_hand = g_b_selected_hand;
                     g_b_selected_player_slot = target;
+                    set_top_selector(target, PLAYER_CARD_ROW);
                     set_battle_phase(IB_PLAYER_EQUIP_TARGET);
                 }
                 break;
@@ -3793,7 +3846,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 break;
             }
         }
-        if (press_start) { clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
+        if (press_start) { g_b_attack_attacker_slot = -1; clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
         draw_interactive_base(player_camera());
         draw_interactive_player_hand(g_b_player_hand_intro_pending ? g_b_phase_frame : 999, g_b_selected_hand, 0, 0);
         draw_bottom_info(g_i_player_hand[g_b_selected_hand], "HAND");
@@ -3821,16 +3874,19 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             g_b_player_monster_played_this_turn = 1;
             g_b_cards_used++;
             g_b_selected_player_slot = g_b_place_slot;
+            set_top_selector(g_b_place_slot, PLAYER_CARD_ROW);
             set_battle_phase(IB_PLAYER_TOP);
         }
         break;
 
     case IB_PLAYER_EQUIP_TARGET:
-        if (press_down || press_b) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); break; }
-        if (press_left) g_b_selected_player_slot = next_live_player_slot_from(g_b_selected_player_slot, -1);
-        if (press_right) g_b_selected_player_slot = next_live_player_slot_from(g_b_selected_player_slot, 1);
+        if (press_b) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); break; }
+        if (press_left) move_top_selector(-1, 0);
+        if (press_right) move_top_selector(1, 0);
+        if (press_up) move_top_selector(0, -1);
+        if (press_down) move_top_selector(0, 1);
         if (press_a) {
-            int target = selected_or_first_live_player_slot();
+            int target = top_selector_player_monster_slot();
             if (target >= 0) {
                 start_player_equip(g_b_equip_hand, target);
                 break;
@@ -3845,29 +3901,57 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_PLAYER_TOP:
-        if (press_down) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); break; }
-        if (press_left) g_b_selected_player_slot = next_attackable_player_slot_from(g_b_selected_player_slot, -1);
-        if (press_right) g_b_selected_player_slot = next_attackable_player_slot_from(g_b_selected_player_slot, 1);
-        atk_slot = selected_or_first_attackable_player_slot();
-        def_slot = first_live_com_slot();
-        if (press_tab && atk_slot >= 0 && !g_i_player_attacked[atk_slot]) {
+        if (press_left) move_top_selector(-1, 0);
+        if (press_right) move_top_selector(1, 0);
+        if (press_up) move_top_selector(0, -1);
+        if (press_down) {
+            if (g_b_top_row < BOARD_ROWS - 1) move_top_selector(0, 1);
+            else { g_b_player_hand_intro_pending = 0; g_b_attack_attacker_slot = -1; set_battle_phase(IB_PLAYER_HAND); break; }
+        }
+        if (press_b) g_b_attack_attacker_slot = -1;
+        atk_slot = top_selector_player_monster_slot();
+        def_slot = top_selector_com_monster_slot();
+        if (g_b_attack_attacker_slot >= 0) {
+            if (g_i_player_field[g_b_attack_attacker_slot] < 0 || g_i_player_attacked[g_b_attack_attacker_slot]) {
+                g_b_attack_attacker_slot = -1;
+            } else if (press_a && !player_first_turn_attack_locked()) {
+                if (count_live_com_monsters() > 0) {
+                    if (def_slot >= 0) {
+                        prepare_battle(0, g_b_attack_attacker_slot, def_slot);
+                        g_b_attack_attacker_slot = -1;
+                        break;
+                    }
+                } else {
+                    prepare_direct_attack(0, g_b_attack_attacker_slot);
+                    g_b_attack_attacker_slot = -1;
+                    break;
+                }
+            }
+        } else if (press_tab && atk_slot >= 0 && !g_i_player_attacked[atk_slot]) {
             g_i_player_faceup[atk_slot] = 1;
             g_i_player_defense[atk_slot] = !g_i_player_defense[atk_slot];
-        }
-        if (press_a && atk_slot >= 0 && !player_first_turn_attack_locked()) {
+        } else if (press_a && atk_slot >= 0 && !g_i_player_attacked[atk_slot] && !player_first_turn_attack_locked()) {
             g_b_selected_player_slot = atk_slot;
-            if (count_live_com_monsters() > 0 && def_slot >= 0) prepare_battle(0, atk_slot, def_slot);
-            else if (count_live_com_monsters() == 0) prepare_direct_attack(0, atk_slot);
-            break;
+            if (count_live_com_monsters() > 0) {
+                g_b_attack_attacker_slot = atk_slot;
+                def_slot = first_live_com_slot();
+                set_top_selector(def_slot >= 0 ? def_slot : 0, ENEMY_CARD_ROW);
+            } else {
+                prepare_direct_attack(0, atk_slot);
+                break;
+            }
         }
-        if (press_start) { clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
-        view_slot = (atk_slot >= 0) ? atk_slot : selected_or_first_live_player_slot();
+        if (press_start) { g_b_attack_attacker_slot = -1; clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
+        view_slot = top_selector_player_monster_slot();
         draw_interactive_base(battle_top_camera());
-        if (atk_slot >= 0) draw_zone_cursor(battle_top_camera(), atk_slot, PLAYER_CARD_ROW);
-        if (view_slot >= 0) {
-            draw_bottom_info_field(0, view_slot, player_first_turn_attack_locked() ? "NO ATK" : (atk_slot >= 0 ? (g_i_player_defense[view_slot] ? "DEF" : "FIELD") : "USED"));
+        if (g_b_attack_attacker_slot >= 0) draw_zone_cursor(battle_top_camera(), g_b_attack_attacker_slot, PLAYER_CARD_ROW);
+        draw_top_selector_cursor(battle_top_camera());
+        if (g_b_attack_attacker_slot >= 0) {
+            draw_bottom_info_top_selector("TARGET");
+        } else if (view_slot >= 0) {
+            draw_bottom_info_field(0, view_slot, player_first_turn_attack_locked() ? "NO ATK" : (g_i_player_attacked[view_slot] ? "USED" : (g_i_player_defense[view_slot] ? "DEF" : "FIELD")));
         } else {
-            draw_bottom_info(g_i_player_hand[g_b_selected_hand], player_first_turn_attack_locked() ? "NO ATK" : "USED");
+            draw_bottom_info_top_selector(player_first_turn_attack_locked() ? "NO ATK" : "FIELD");
         }
         break;
 
@@ -3884,7 +3968,11 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_post_battle_return(0, g_b_phase_frame, atk_slot,
                                 atk_slot >= 0 ? g_i_player_field[atk_slot] : hand_ids[0],
                                 atk_slot >= 0 && g_i_player_attacked[atk_slot] ? "USED" : "FIELD");
-        if (g_b_phase_frame >= 24) set_battle_phase(IB_PLAYER_TOP);
+        if (g_b_phase_frame >= 24) {
+            if (atk_slot >= 0) set_top_selector(atk_slot, PLAYER_CARD_ROW);
+            g_b_attack_attacker_slot = -1;
+            set_battle_phase(IB_PLAYER_TOP);
+        }
         break;
 
     case IB_TURN_TO_COM:
@@ -4956,8 +5044,9 @@ int main(int argc, char **argv)
                field_card_atk(0, 0), field_card_def(0, 0), g_i_player_atk_bonus[0], g_i_player_def_bonus[0]);
         printf("player_equip0=%d player_equip_target0=%d ",
                g_i_player_equip_field[0], g_i_player_equip_target[0]);
-        printf("player_monster_played=%d com_monster_played=%d result=%d ",
-               g_b_player_monster_played_this_turn, g_b_com_monster_played_this_turn, g_b_result);
+        printf("player_monster_played=%d com_monster_played=%d result=%d top_col=%d top_row=%d attack_target=%d ",
+               g_b_player_monster_played_this_turn, g_b_com_monster_played_this_turn, g_b_result,
+               g_b_top_col, g_b_top_row, g_b_attack_attacker_slot);
         printf("istate=%d story=%d story_line=%d story_fire_line=%d story_name=%s story_strong=%d story_weak=%d story_equips=%d story_supports=%d ",
                (int)g_i_state, g_story_battle_active, g_story_intro_line, g_story_fire_line, g_story_name,
                g_story_strong_card, g_story_weak_card, g_story_equip_count, g_story_support_count);

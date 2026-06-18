@@ -75,6 +75,7 @@ The v27 validation compared the SDL-dumped frames with the headless-dumped frame
 - LCTRL: confirm / A
 - LALT: back / B / card preview exit
 - SPACE: Run / Start / pass turn
+- TAB: button 4 / toggle defense position in top view
 - ESC: quit SDL frontend
 
 ## Notes
