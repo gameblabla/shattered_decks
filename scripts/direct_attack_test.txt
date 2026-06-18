@@ -1,0 +1,5 @@
+# Place the default player card, then direct attack before COM controls a monster.
+60 2 START
+100 2 A
+270 2 A
+330 2 A

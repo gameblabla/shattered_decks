@@ -1,0 +1,7 @@
+# Select Voltara, place it, pass, then let COM place Witch and attack it.
+60 2 START
+100 2 A
+260 2 RIGHT
+270 2 RIGHT
+285 2 A
+345 2 START
