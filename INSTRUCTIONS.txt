@@ -1,19 +1,8 @@
 I have this yugioh type of game that has lots of problems.
 
-I put Voltara on the field, when my opponent (with the same ATK !) attacks it, first of all, it does not show that it is fighting against voltara (instead it fights itself ???),
-then the battle animation should show both attacking each other and going up in flames (that doesn't happen), then both cards are supposed to disappear on the field (they don't disappear).
+Fixed:
+- Changing position of a card on the field no longer flips it face-up. A face-down card stays face-down when toggled to defense and back.
+- Defense-position field cards no longer have a distorted aspect ratio; the quad half-extents swap so the rotated 38x54 texture keeps its proportions.
+- Pyramid screen: removed the 2D screen-space diamond shadow, switched faces to stone tile for contrast with the sand, fixed texture-flip during camera orbit (per-face flip), added solid backings (fill_tri_inclusive) to cover ridge gaps, and added a dark base slab to close the ground seam.
 
-The "going up in flames" animation when killing an enemy does not even play in full in my SDL 1.2 version.
-
-Then when i attack it after by putting witch, the opponent's monster becomes Jester instead (????).
-
-Then i pass my turn, the enemy, instead of drawing 5 cards, only has 4 cards in hand, he places one,
-and attacks me directly, even tho i have monsters on the field.
-
-The direct attack animation is also very bad looking. 
-
-(if you want a better reference, there's YU-GI-OH FORBIDDEN MEMORIES - FREE DUEL - LABYRINTH MAGE - REFERENCE VIDEO.mkv, at 03:46 to 03:48, that shows a nice red slash attack as a direct attack,
-you can also use it to know how it should be properly animated).
-
-The memory is completely wrong.
-This should be fixed.
+Update AGENTS.md once fixed, git commit your changes unsigned.

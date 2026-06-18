@@ -146,9 +146,10 @@ static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi 
 static float smoothstepf(float t) { t = clampf(t, 0.0f, 1.0f); return t*t*(3.0f - 2.0f*t); }
 static float ps1step(float t)
 {
-    /* Coarser step easing to mimic PS1-era camera interpolation. */
+    /* PS1-era camera interpolation.  60 steps gives smooth motion at 60fps
+       while keeping the subtle stepped look. */
     t = smoothstepf(t);
-    return floorf(t * 18.0f + 0.5f) / 18.0f;
+    return floorf(t * 60.0f + 0.5f) / 60.0f;
 }
 
 static Camera make_camera(Vec3 eye, Vec3 target, Vec3 up, float focal)
@@ -664,12 +665,14 @@ static void draw_support_sprite(int x, int y, int w, int h)
 
 static void draw_hand_card_sprite(int id, int x, int y, int w, int h, int back)
 {
+    if (back) { draw_card_sprite(id, x, y, w, h, 1); return; }
     if (is_support_card(id)) draw_support_sprite(x, y, w, h);
     else draw_card_sprite(id, x, y, w, h, back);
 }
 
 static void draw_hand_card_sprite_ex(int id, int x, int y, int w, int h, int back, int gray)
 {
+    if (back) { draw_card_sprite_ex(id, x, y, w, h, 1, gray); return; }
     if (is_support_card(id)) draw_support_sprite(x, y, w, h);
     else draw_card_sprite_ex(id, x, y, w, h, back, gray);
 }
@@ -1412,6 +1415,14 @@ static void apply_black_dither_fade(float visible)
     }
 }
 
+/* Generic cross-fade transition macro.  Draws `from_call` fading out for the
+   first half, then `to_call` fading in.  Usage:
+   SCREEN_TRANSITION(f, 24, draw_a(f), draw_b()) */
+#define SCREEN_TRANSITION(f, half, from_call, to_call) \
+    do { \
+        if ((f) < (half)) { from_call; apply_black_dither_fade(1.0f - (float)(f) / (float)(half)); } \
+        else { int _st_local = (f) - (half); (void)_st_local; to_call; apply_black_dither_fade((float)_st_local / (float)(half)); } \
+    } while (0)
 
 static void draw_field_pair_for_battle(Camera cam, int atk_col, int atk_row, int atk_id, int atk_back,
                                        int def_col, int def_row, int def_id, int def_back)
@@ -1582,9 +1593,15 @@ static void draw_battle_cutin_event_ex(int f, int start,
     }
 
     rect_fill(0, 2, 128, 22, IDX_BLACK);
-    draw_wrapped_text_small(4, 4, waifu_card_names[atk_id], 19, IDX_WHITE, IDX_BLACK);
+    {
+        const char *name = is_monster_card(atk_id) ? waifu_card_names[atk_id] : (is_support_card(atk_id) ? support_card_name(atk_id) : "???");
+        draw_wrapped_text_small(4, 4, name, 19, IDX_WHITE, IDX_BLACK);
+    }
     rect_fill(118, 198, 138, 42, IDX_BLACK);
-    draw_wrapped_text_small(122, 199, waifu_card_names[def_id], 20, IDX_WHITE, IDX_BLACK);
+    {
+        const char *name = is_monster_card(def_id) ? waifu_card_names[def_id] : (is_support_card(def_id) ? support_card_name(def_id) : "???");
+        draw_wrapped_text_small(122, 199, name, 20, IDX_WHITE, IDX_BLACK);
+    }
 }
 
 static void draw_battle_cutin_event(int f, int start,
@@ -2274,6 +2291,7 @@ typedef enum WaifuInteractiveState {
     WAIFU_I_STORY_NAME_TO_INTRO,
     WAIFU_I_STORY_INTRO,
     WAIFU_I_STORY_FIRE,
+    WAIFU_I_STORY_FIRE_TO_DECK,
     WAIFU_I_STORY_MAP,
     WAIFU_I_STORY_PYRAMID,
     WAIFU_I_STORY_SAVE,
@@ -2310,7 +2328,7 @@ typedef enum WaifuBattlePhase {
 #define I_FIELD 5
 #define CARD_NONE (-1)
 #define BATTLE_ANIM_FRAMES 196
-#define DIRECT_ATTACK_ANIM_FRAMES 132
+#define DIRECT_ATTACK_ANIM_FRAMES 108
 
 static int g_api_initialized = 0;
 static WaifuInteractiveState g_i_state = WAIFU_I_TITLE;
@@ -3886,11 +3904,11 @@ static void draw_player_equip_anim(void)
     if (reveal) {
         draw_big_battle_card_flip(g_b_equip_target_card, target_x, target_y, f, 48);
     } else {
+        draw_big_battle_card(g_b_equip_target_card, target_x, target_y, 0);
         if (f < 110) {
             rect_fill(card_x + 5, card_y + 6, card_w, card_h, IDX_BLACK);
             draw_support_sprite(card_x, card_y, card_w, card_h);
         }
-        draw_big_battle_card(g_b_equip_target_card, target_x, target_y, 0);
     }
 
     for (int i = 0; i < 18; ++i) {
@@ -4169,7 +4187,20 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_TURN_TO_PLAYER:
-        draw_interactive_common(turn_camera(g_b_phase_frame, 0, 58, 0), first_live_com_slot() >= 0 ? g_i_com_field[first_live_com_slot()] : hand_ids[0], "TURN");
+        draw_interactive_base(turn_camera(g_b_phase_frame, 0, 58, 0));
+        {
+            int yoff = 0;
+            if (g_b_phase_frame < 40) {
+                yoff = 44;
+            } else if (g_b_phase_frame < 58) {
+                int t = g_b_phase_frame - 40;
+                yoff = (int)(44.0f * (1.0f - smoothstepf((float)t / 18.0f)));
+            }
+            if (g_b_phase_frame >= 40) {
+                int card = first_live_com_slot() >= 0 ? g_i_com_field[first_live_com_slot()] : hand_ids[0];
+                draw_bottom_info_offset(card, "TURN", yoff);
+            }
+        }
         if (g_b_phase_frame >= 58) {
             if (g_i_player_deck_left <= 0) {
                 g_b_result = -1;
@@ -4509,6 +4540,62 @@ static Camera story_map_camera(int f)
                        v3(0.0f, 0.55f, 0.0f), v3(0,1,0), 132.0f);
 }
 
+/* ---- Q8.8 fixed-point helpers (no 64-bit) ---- */
+#define Q8_ONE   (1 << 8)
+
+/* PS1-style scanline floor renderer: inverse-projects each scanline to the
+   floor plane, derives UVs from world XZ, and tiles the texture with modulo
+   wrapping.  Per-scanline ray-plane intersection uses the existing float
+   camera basis (same precision as project_point); per-pixel UV stepping
+   and texture sampling is pure Q8.8 fixed point — no 64-bit. */
+static void draw_floor_tiled(Camera cam, float floor_y, int tile_a, int tile_b, float tile_size)
+{
+    Vec3 ffwd = vnorm(vsub(cam.target, cam.eye));
+    Vec3 fright = vnorm(vcross(ffwd, cam.up));
+    Vec3 fup = vcross(fright, ffwd);
+
+    int tw = WAIFU_TEX_TILE_SIZE;
+    const uint8_t *atlas = waifu_texture_atlas;
+    /* Q8.8 conversion constants for the per-pixel UV sampling. */
+    int32_t tile_size_q8 = (int32_t)(tile_size * 256.0f);
+
+    for (int y = 0; y < H; ++y) {
+        /* Per-scanline ray-plane intersection in float (matches project_point). */
+        float dy = ((float)(H / 2) - (float)y - 0.5f) / cam.focal;
+        float ray_y = fup.y * dy + ffwd.y;
+        if (ray_y >= -0.0001f) continue;
+        float t = (floor_y - cam.eye.y) / ray_y;
+        if (t <= 0.01f) continue;
+
+        float dx_l = (0.0f - (float)(W / 2)) / cam.focal;
+        float dx_r = ((float)(W - 1) - (float)(W / 2)) / cam.focal;
+
+        float wl_x = cam.eye.x + t * (fright.x * dx_l + ffwd.x);
+        float wl_z = cam.eye.z + t * (fright.z * dx_l + ffwd.z);
+        float wr_x = cam.eye.x + t * (fright.x * dx_r + ffwd.x);
+        float wr_z = cam.eye.z + t * (fright.z * dx_r + ffwd.z);
+
+        float u = wl_x / tile_size;
+        float v = wl_z / tile_size;
+        float du = (wr_x - wl_x) / tile_size / (float)(W - 1);
+        float dv = (wr_z - wl_z) / tile_size / (float)(W - 1);
+
+        for (int x = 0; x < W; ++x) {
+            int iu = (int)floorf(u);
+            int iv = (int)floorf(v);
+            float fu = u - (float)iu;
+            float fv = v - (float)iv;
+            int tile = ((iu + iv) & 1) ? tile_b : tile_a;
+            const uint8_t *src = atlas + (size_t)tile * tw * tw;
+            int sx = (int)(fu * (float)(tw - 1) + 0.5f);
+            int sy = (int)(fv * (float)(tw - 1) + 0.5f);
+            put_px(x, y, src[sy * tw + sx]);
+            u += du;
+            v += dv;
+        }
+    }
+}
+
 static void draw_map_pyramid_3d(int f)
 {
     Camera cam = story_map_camera(f);
@@ -4523,27 +4610,13 @@ static void draw_map_pyramid_3d(int f)
         int flip;
         float depth;
     } PyramidFace;
-    /* Sand/gold tile on every face for a consistent desert pyramid look. */
     PyramidFace faces[4] = {
         {a, b, 1, 0, 0.0f},
         {b, c, 1, 1, 0.0f},
         {c, d, 1, 0, 0.0f},
         {d, a, 1, 1, 0.0f}
     };
-    /* Solid ground fill below the horizon so perspective-clipped grid gaps
-       show ground colour instead of sky.  The horizon sits around y=88. */
-    for (int y = 88; y < H; ++y) hline(0, W - 1, y, IDX_DARK_BROWN);
-    for (int rz = 0; rz < 8; ++rz) {
-        float z0 = -3.7f + (float)rz * 1.85f;
-        float z1 = z0 + 1.85f;
-        for (int cx = 0; cx < 7; ++cx) {
-            float x0 = -6.16f + (float)cx * 1.76f;
-            float x1 = x0 + 1.76f;
-            int tile = ((rz + cx) & 1) ? 1 : 5;
-            draw_quad3d(cam, v3(x0, -0.07f, z0), v3(x1, -0.07f, z0),
-                             v3(x1, -0.07f, z1), v3(x0, -0.07f, z1), tile);
-        }
-    }
+    draw_floor_tiled(cam, -0.07f, 1, 5, 1.76f);
 
     for (int i = 0; i < 4; ++i) {
         ScreenPt p0 = project_point(cam, faces[i].p0);
@@ -4592,18 +4665,7 @@ static Camera story_temple_camera(int f)
 static void draw_map_temple_3d(int f)
 {
     Camera cam = story_temple_camera(f);
-    /* Stone tile floor */
-    for (int y = 88; y < H; ++y) hline(0, W - 1, y, IDX_DARK_BROWN);
-    for (int rz = 0; rz < 8; ++rz) {
-        float z0 = -3.7f + (float)rz * 1.85f;
-        float z1 = z0 + 1.85f;
-        for (int cx = 0; cx < 7; ++cx) {
-            float x0 = -6.16f + (float)cx * 1.76f;
-            float x1 = x0 + 1.76f;
-            draw_quad3d(cam, v3(x0, -0.07f, z0), v3(x1, -0.07f, z0),
-                             v3(x1, -0.07f, z1), v3(x0, -0.07f, z1), 3);
-        }
-    }
+    draw_floor_tiled(cam, -0.07f, 3, 3, 1.6f);
     /* Temple pillars: four rows of columns forming a corridor. */
     float pillar_y0 = 0.0f, pillar_y1 = 2.6f;
     for (int row = 0; row < 3; ++row) {
@@ -4639,18 +4701,7 @@ static Camera story_volcano_camera(int f)
 static void draw_map_volcano_3d(int f)
 {
     Camera cam = story_volcano_camera(f);
-    /* Dark rocky ground */
-    for (int y = 88; y < H; ++y) hline(0, W - 1, y, IDX_DARK_BROWN);
-    for (int rz = 0; rz < 8; ++rz) {
-        float z0 = -3.7f + (float)rz * 1.85f;
-        float z1 = z0 + 1.85f;
-        for (int cx = 0; cx < 7; ++cx) {
-            float x0 = -6.16f + (float)cx * 1.76f;
-            float x1 = x0 + 1.76f;
-            draw_quad3d(cam, v3(x0, -0.07f, z0), v3(x1, -0.07f, z0),
-                             v3(x1, -0.07f, z1), v3(x0, -0.07f, z1), 5);
-        }
-    }
+    draw_floor_tiled(cam, -0.07f, 5, 5, 1.76f);
     /* Volcano cone: steep triangular faces like the pyramid but wider and
        darker, with a glowing crater rim. */
     Vec3 apex_v = v3(0.0f, 3.2f, 0.0f);
@@ -4694,18 +4745,8 @@ static Camera story_void_camera(int f)
 static void draw_map_void_3d(int f)
 {
     Camera cam = story_void_camera(f);
-    /* Floating obsidian platform in a void. */
-    for (int y = 88; y < H; ++y) hline(0, W - 1, y, IDX_BLACK);
-    for (int rz = 0; rz < 6; ++rz) {
-        float z0 = -2.8f + (float)rz * 1.6f;
-        float z1 = z0 + 1.6f;
-        for (int cx = 0; cx < 5; ++cx) {
-            float x0 = -4.0f + (float)cx * 1.6f;
-            float x1 = x0 + 1.6f;
-            draw_quad3d(cam, v3(x0, -0.07f, z0), v3(x1, -0.07f, z0),
-                             v3(x1, -0.07f, z1), v3(x0, -0.07f, z1), 0);
-        }
-    }
+    /* Void background: deep black with stars (drawn by sky function). */
+    draw_floor_tiled(cam, -0.07f, 0, 0, 1.6f);
     /* Floating crystals: small rotating diamonds hovering above the platform. */
     for (int ci = 0; ci < 5; ++ci) {
         float ang = (float)f * 0.03f + (float)ci * 1.26f;
@@ -4843,19 +4884,16 @@ static void draw_story_map_screen(int f)
 {
     draw_story_map_screen_content(f);
     if (f >= 0 && f < 24) apply_black_dither_fade((float)f / 24.0f);
-}
-
-static void draw_story_plaza_scene_content(void);
+}static void draw_story_plaza_scene_content(void);
 
 static void draw_story_to_plaza_transition(int f)
 {
-    if (f < 24) {
-        draw_story_map_screen_content(f);
-        apply_black_dither_fade(1.0f - ((float)f / 24.0f));
-    } else {
-        draw_story_plaza_scene_content();
-        apply_black_dither_fade(((float)f - 24.0f) / 24.0f);
-    }
+    SCREEN_TRANSITION(f, 24, draw_story_map_screen_content(f), draw_story_plaza_scene_content());
+}
+
+static void draw_story_fire_to_deck_transition(int f)
+{
+    SCREEN_TRANSITION(f, 24, draw_story_fire_screen(g_story_fire_line), draw_deck_editor());
 }
 
 static void draw_story_pyramid_menu(void)
@@ -5059,12 +5097,20 @@ void waifu_fm_step(const WaifuFmInput *input)
             if (g_story_fire_line >= line_count) {
                 reset_story_deck_editor();
                 g_story_editor_from_pyramid = 0;
-                g_i_state = WAIFU_I_DECK_EDITOR;
+                g_i_state = WAIFU_I_STORY_FIRE_TO_DECK;
                 g_i_frame = -1;
             }
         }
         if (press_b) {
             g_i_state = WAIFU_I_MENU;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_STORY_FIRE_TO_DECK:
+        draw_story_fire_to_deck_transition(g_i_frame);
+        if (g_i_frame >= 48) {
+            g_i_state = WAIFU_I_DECK_EDITOR;
             g_i_frame = -1;
         }
         break;
