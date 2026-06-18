@@ -145,6 +145,17 @@ static int32_t q8_mul(int32_t a, int32_t b) { return (int32_t)((a * b) >> Q8_SHI
 static int32_t q8_div(int32_t a, int32_t b) { return b ? (int32_t)((a * Q8_ONE) / b) : 0; }
 static int32_t q8_clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static int q16_floor_to_int(int32_t v) { return v >= 0 ? (int)(v / 65536) : -(int)(((-v) + 65535) / 65536); }
+static int32_t q16_div_q8(int32_t n, int32_t d)
+{
+    int sign = 1;
+    int32_t whole, rem;
+    if (!d) return 0;
+    if (n < 0) { n = -n; sign = -sign; }
+    if (d < 0) { d = -d; sign = -sign; }
+    whole = n / d;
+    rem = n - whole * d;
+    return sign * (whole * 65536 + (rem * 65536) / d);
+}
 static int32_t q8_smoothstep(int32_t t)
 {
     t = q8_clamp(t, 0, Q8_ONE);
@@ -173,13 +184,22 @@ static const int16_t q8_sin_quarter[65] = {
     251,252,253,254,255,255,256,256,256
 };
 
-static int32_t q8_sin_turn(int32_t a)
+static int32_t q8_sin_turn_sample(int idx)
 {
-    int idx = (int)((a & 0xffff) >> 8);
+    idx &= 255;
     int quad = idx >> 6;
     int off = idx & 63;
     int32_t v = (quad & 1) ? q8_sin_quarter[64 - off] : q8_sin_quarter[off];
     return (quad >= 2) ? -v : v;
+}
+
+static int32_t q8_sin_turn(int32_t a)
+{
+    int idx = (int)((a & 0xffff) >> 8);
+    int frac = (int)(a & 255);
+    int32_t v0 = q8_sin_turn_sample(idx);
+    int32_t v1 = q8_sin_turn_sample(idx + 1);
+    return v0 + (((v1 - v0) * frac + 128) / 256);
 }
 static int32_t q8_cos_turn(int32_t a) { return q8_sin_turn(a + 0x4000); }
 static int32_t q8_sin_pi(int32_t t) { return q8_sin_turn(t << 7); }
@@ -324,10 +344,20 @@ static ScreenPt project_point(Camera cam, Vec3 p)
     return s;
 }
 
-static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
+static int project_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
+                          ScreenPt *pa, ScreenPt *pb, ScreenPt *pc, ScreenPt *pd)
 {
-    ScreenPt pa = project_point(cam, a), pb = project_point(cam, b), pc = project_point(cam, c), pd = project_point(cam, d);
-    if (!pa.ok || !pb.ok || !pc.ok || !pd.ok) return;
+    *pa = project_point(cam, a);
+    *pb = project_point(cam, b);
+    *pc = project_point(cam, c);
+    *pd = project_point(cam, d);
+    return pa->ok && pb->ok && pc->ok && pd->ok;
+}
+
+static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
+{
+    ScreenPt pa, pb, pc, pd;
+    if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
     const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
@@ -337,6 +367,28 @@ static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
     TexV t3 = {pd.x, pd.y, 0, Q8_ONE};
     draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, t0, t1, t2);
     draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, t0, t2, t3);
+}
+
+static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
+{
+    ScreenPt pa, pb, pc, pd;
+    if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
+    if (tile < 0) tile = 0;
+    if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
+    const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
+    int ax = pa.x < 0 ? 0 : (pa.x >= W ? W - 1 : pa.x);
+    int ay = pa.y < 0 ? 0 : (pa.y >= H ? H - 1 : pa.y);
+    int bx = pb.x < 0 ? 0 : (pb.x >= W ? W - 1 : pb.x);
+    int by = pb.y < 0 ? 0 : (pb.y >= H ? H - 1 : pb.y);
+    int cx = pc.x < 0 ? 0 : (pc.x >= W ? W - 1 : pc.x);
+    int cy = pc.y < 0 ? 0 : (pc.y >= H ? H - 1 : pc.y);
+    int dx = pd.x < 0 ? 0 : (pd.x >= W ? W - 1 : pd.x);
+    int dy = pd.y < 0 ? 0 : (pd.y >= H ? H - 1 : pd.y);
+    Point2D p0 = {(DEFAULT_INT)ax, (DEFAULT_INT)ay, 0, 0};
+    Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
+    Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
+    Point2D p3 = {(DEFAULT_INT)dx, (DEFAULT_INT)dy, 0, uvmax};
+    cfx_renderer3d_draw_quad(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 }
 
 static int field_side_tile_for_cell(int c, int r)
@@ -353,8 +405,8 @@ static void draw_field_wall_z(Camera cam, int32_t z, int r_for_tile)
     for (c = 0; c < BOARD_COLS; ++c) {
         int32_t x0 = col_x0(c), x1 = col_x0(c + 1);
         int tile = field_side_tile_for_cell(c, r_for_tile);
-        draw_quad3d(cam, v3(x0, FIELD_Y, z), v3(x1, FIELD_Y, z),
-                         v3(x1, FIELD_THICK, z), v3(x0, FIELD_THICK, z), tile);
+        draw_quad3d_safe(cam, v3(x0, FIELD_Y, z), v3(x1, FIELD_Y, z),
+                              v3(x1, FIELD_THICK, z), v3(x0, FIELD_THICK, z), tile);
     }
 }
 
@@ -364,8 +416,8 @@ static void draw_field_wall_x(Camera cam, int32_t x, int c_for_tile)
     for (r = 0; r < BOARD_ROWS; ++r) {
         int32_t z0 = row_z0(r), z1 = row_z0(r + 1);
         int tile = field_side_tile_for_cell(c_for_tile, r);
-        draw_quad3d(cam, v3(x, FIELD_Y, z0), v3(x, FIELD_Y, z1),
-                         v3(x, FIELD_THICK, z1), v3(x, FIELD_THICK, z0), tile);
+        draw_quad3d_safe(cam, v3(x, FIELD_Y, z0), v3(x, FIELD_Y, z1),
+                              v3(x, FIELD_THICK, z1), v3(x, FIELD_THICK, z0), tile);
     }
 }
 
@@ -4631,10 +4683,10 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
         int32_t wr_x = cam.eye.x + q8_mul(t, q8_mul(fright.x, dx_r) + ffwd.x);
         int32_t wr_z = cam.eye.z + q8_mul(t, q8_mul(fright.z, dx_r) + ffwd.z);
 
-        int32_t u = q8_div(wl_x, tile_size) * Q8_ONE;
-        int32_t v = q8_div(wl_z, tile_size) * Q8_ONE;
-        int32_t du = (q8_div(wr_x - wl_x, tile_size) * Q8_ONE) / (W - 1);
-        int32_t dv = (q8_div(wr_z - wl_z, tile_size) * Q8_ONE) / (W - 1);
+        int32_t u = q16_div_q8(wl_x, tile_size);
+        int32_t v = q16_div_q8(wl_z, tile_size);
+        int32_t du = q16_div_q8(wr_x - wl_x, tile_size) / (W - 1);
+        int32_t dv = q16_div_q8(wr_z - wl_z, tile_size) / (W - 1);
 
         for (int x = 0; x < W; ++x) {
             int iu = q16_floor_to_int(u);
@@ -4737,12 +4789,12 @@ static void draw_map_temple_3d(int f)
             Vec3 t2 = v3(px + Q8_FRAC(35,100), pillar_y1, pz + Q8_FRAC(35,100));
             Vec3 t3 = v3(px - Q8_FRAC(35,100), pillar_y1, pz + Q8_FRAC(35,100));
             /* Front and back faces */
-            draw_quad3d(cam, b0, b1, t1, t0, 3);
-            draw_quad3d(cam, b3, b2, t2, t3, 3);
-            draw_quad3d(cam, b1, b2, t2, t1, 3);
-            draw_quad3d(cam, b0, b3, t3, t0, 3);
+            draw_quad3d_safe(cam, b0, b1, t1, t0, 3);
+            draw_quad3d_safe(cam, b3, b2, t2, t3, 3);
+            draw_quad3d_safe(cam, b1, b2, t2, t1, 3);
+            draw_quad3d_safe(cam, b0, b3, t3, t0, 3);
             /* Capital top */
-            draw_quad3d(cam, t0, t1, t2, t3, 3);
+            draw_quad3d_safe(cam, t0, t1, t2, t3, 3);
         }
     }
 }
