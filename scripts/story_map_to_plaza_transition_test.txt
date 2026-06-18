@@ -1,0 +1,5 @@
+# Regression: quick-load to the story map, select Plaza, and exercise the
+# map-to-plaza fade transition path.
+60 2 B
+130 2 DOWN
+150 2 A

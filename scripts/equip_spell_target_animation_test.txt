@@ -1,5 +1,5 @@
-# Regression: equip/support card targets a player monster, leaves the field during
-# the cut-in, then returns the monster with ATK/DEF bonuses after the 120-frame animation.
+# Regression: equip/support card targets a face-down player monster, leaves the field
+# during the cut-in, then returns face-up with ATK/DEF bonuses and an occupied equip slot.
 60 2 START
 95 2 UP
 110 2 A
