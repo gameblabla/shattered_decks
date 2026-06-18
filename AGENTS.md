@@ -14,7 +14,7 @@ Use this file as the first stop when you need to change behavior. It is written 
   - Deck editor: `draw_deck_editor` around 4329, `deck_editor_move_selected_card` around 2972, `reset_story_deck_editor` around 2730.
   - Story deck/storage generation: `generate_story_starter_deck` around 2668, `generate_story_storage_pool` around 2724, `sanitize_story_deck_copy_limit` around 2837, `story_reward_drop_card` / `award_story_win_drop` around 2853.
   - Battle flow: `step_battle_interactive` around 3812, `prepare_battle` around 3291, `prepare_direct_attack` around 3329, `resolve_battle` around 3364, `draw_interactive_common` around 3195, `draw_bottom_info_offset` around 585.
-  - Tactical top-view selector: globals near the field row constants, smooth cursor drawing around `draw_top_selector_cursor` near line 1084, selector movement helpers around line 2417, and free-field / attack-target handling inside `IB_PLAYER_TOP` in `step_battle_interactive`.
+  - Tactical top-view selector: globals near the field row constants, smooth cursor drawing around `draw_top_selector_cursor` near line 1084, selector movement helpers around line 2417, and free-field / attack-target handling inside `IB_PLAYER_TOP` in `step_battle_interactive`. `top_selector_preview_card` (around line 2455) backs the B-button field card check, which runs in the `IB_FIELD_CARD_PREVIEW` phase next to `IB_CARD_PREVIEW`.
   - Equip/support handling: `start_player_equip` around 3703, `finish_player_equip` around 3726, `draw_player_equip_target` around 3757, `draw_player_equip_anim` around 3767, equip phase handling inside `step_battle_interactive`.
   - Headless scripts / state dump: `waifu_fm_step` around 4595, `load_command_file` around 4907, `main` around 4959.
 
@@ -54,6 +54,7 @@ Use this file as the first stop when you need to change behavior. It is written 
   - Equip cards have a separate target-select phase and animation phase.
   - Tactical top-view movement uses `g_b_top_col` / `g_b_top_row` and can select empty zones. Press A on a player monster to enter attack-target mode; target selection then confirms the chosen COM monster instead of always using the first live defender.
   - Button 4/TAB toggles the selected player monster into or out of defense position from top view.
+  - B from top view checks the card under the cursor (player monster, opponent monster, or player equip row) via `IB_FIELD_CARD_PREVIEW`, reusing the hand card preview. B in attack-target mode still cancels targeting instead. `top_selector_preview_card()` resolves the cursor card; `g_b_preview_card_id` carries it into the preview phase.
 
 ## Editing Rules
 
@@ -92,6 +93,7 @@ Prefer script-based headless checks when possible:
 - `scripts/deck_editor_button4_storage_test.txt`
 - `scripts/equip_spell_target_animation_test.txt`
 - `scripts/top_view_free_selector_defense_test.txt`
+- `scripts/top_view_field_card_check_test.txt`
 - `scripts/story_map_to_plaza_transition_test.txt`
 - Existing story/battle scripts under `scripts/`
 

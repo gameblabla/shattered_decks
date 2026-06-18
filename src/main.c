@@ -2229,6 +2229,7 @@ typedef enum WaifuBattlePhase {
     IB_PLAYER_HAND,
     IB_PLAYER_TOP,
     IB_CARD_PREVIEW,
+    IB_FIELD_CARD_PREVIEW,
     IB_PLAYER_PLACE,
     IB_PLAYER_EQUIP_TARGET,
     IB_PLAYER_EQUIP_ANIM,
@@ -2263,6 +2264,7 @@ static int g_b_phase_frame = 0;
 static int g_b_selected_hand = 0;
 static int g_b_selected_player_slot = 0;
 static int g_b_selected_com_slot = 0;
+static int g_b_preview_card_id = CARD_NONE;
 static int g_b_place_hand = -1;
 static int g_b_place_slot = -1;
 static int g_b_place_card = -1;
@@ -2450,6 +2452,21 @@ static int top_selector_com_monster_slot(void)
 {
     if (g_b_top_row != ENEMY_CARD_ROW || g_b_top_col < 0 || g_b_top_col >= I_FIELD) return -1;
     return g_i_com_field[g_b_top_col] >= 0 ? g_b_top_col : -1;
+}
+
+/* Card id under the tactical top-view selector for any occupied zone (player
+   monster, opponent monster, or player equip row), or -1 when the zone is
+   empty. Used by the B-button card check from top view. */
+static int top_selector_preview_card(void)
+{
+    if (g_b_top_col < 0 || g_b_top_col >= I_FIELD) return -1;
+    if (g_b_top_row == PLAYER_CARD_ROW && g_i_player_field[g_b_top_col] >= 0)
+        return g_i_player_field[g_b_top_col];
+    if (g_b_top_row == ENEMY_CARD_ROW && g_i_com_field[g_b_top_col] >= 0)
+        return g_i_com_field[g_b_top_col];
+    if (g_b_top_row == PLAYER_CARD_ROW + 1 && g_i_player_equip_field[g_b_top_col] >= 0)
+        return g_i_player_equip_field[g_b_top_col];
+    return -1;
 }
 
 static int card_base_atk(int id)
@@ -3858,6 +3875,11 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (press_b || press_a || press_start) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); }
         break;
 
+    case IB_FIELD_CARD_PREVIEW:
+        draw_interactive_card_preview(g_b_preview_card_id, g_b_phase_frame);
+        if (press_b || press_a || press_start) { set_battle_phase(IB_PLAYER_TOP); }
+        break;
+
     case IB_PLAYER_PLACE:
         draw_interactive_base(placement_camera());
         draw_zone_cursor(placement_camera(), g_b_place_slot, PLAYER_CARD_ROW);
@@ -3908,7 +3930,21 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             if (g_b_top_row < BOARD_ROWS - 1) move_top_selector(0, 1);
             else { g_b_player_hand_intro_pending = 0; g_b_attack_attacker_slot = -1; set_battle_phase(IB_PLAYER_HAND); break; }
         }
-        if (press_b) g_b_attack_attacker_slot = -1;
+        if (press_b) {
+            if (g_b_attack_attacker_slot >= 0) {
+                /* B cancels attack-target selection and returns to free movement. */
+                g_b_attack_attacker_slot = -1;
+            } else {
+                /* B checks the card under the top-view cursor, mirroring the
+                   hand card check. Empty zones are ignored. */
+                int preview_id = top_selector_preview_card();
+                if (preview_id >= 0) {
+                    g_b_preview_card_id = preview_id;
+                    set_battle_phase(IB_FIELD_CARD_PREVIEW);
+                    break;
+                }
+            }
+        }
         atk_slot = top_selector_player_monster_slot();
         def_slot = top_selector_com_monster_slot();
         if (g_b_attack_attacker_slot >= 0) {
@@ -5044,9 +5080,9 @@ int main(int argc, char **argv)
                field_card_atk(0, 0), field_card_def(0, 0), g_i_player_atk_bonus[0], g_i_player_def_bonus[0]);
         printf("player_equip0=%d player_equip_target0=%d ",
                g_i_player_equip_field[0], g_i_player_equip_target[0]);
-        printf("player_monster_played=%d com_monster_played=%d result=%d top_col=%d top_row=%d attack_target=%d ",
-               g_b_player_monster_played_this_turn, g_b_com_monster_played_this_turn, g_b_result,
-               g_b_top_col, g_b_top_row, g_b_attack_attacker_slot);
+        printf("player_monster_played=%d com_monster_played=%d result=%d top_col=%d top_row=%d attack_target=%d preview_card=%d ",
+                g_b_player_monster_played_this_turn, g_b_com_monster_played_this_turn, g_b_result,
+                g_b_top_col, g_b_top_row, g_b_attack_attacker_slot, g_b_preview_card_id);
         printf("istate=%d story=%d story_line=%d story_fire_line=%d story_name=%s story_strong=%d story_weak=%d story_equips=%d story_supports=%d ",
                (int)g_i_state, g_story_battle_active, g_story_intro_line, g_story_fire_line, g_story_name,
                g_story_strong_card, g_story_weak_card, g_story_equip_count, g_story_support_count);

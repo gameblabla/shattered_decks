@@ -1,0 +1,9 @@
+# Regression: B button checks the field card under the tactical top-view
+# cursor, mirroring the hand card check. Place a monster, enter top view,
+# open the field card preview with B, then close it with B and return to
+# the top-view selector on the same monster.
+60 2 START
+100 2 A
+270 2 A
+340 2 B
+380 2 B
