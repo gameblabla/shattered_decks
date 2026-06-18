@@ -985,18 +985,18 @@ static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b
     draw_textured_tri_ex(src, sw, sh, a, b, c, 0);
 }
 
-/* Flat-filled triangle with an inclusive edge test (>= -0.5 instead of the
-   textured renderer's >= -0.001).  Used as a solid backing behind textured
-   face triangles so that 1-pixel rasterization gaps along shared ridges
-   show the backing colour instead of the background sky. */
-static void fill_tri_inclusive(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color)
+/* Textured triangle with an inclusive edge test (>= -0.5 instead of the
+   regular renderer's >= -0.001).  Adjacent faces sharing a ridge both
+   claim the edge pixels, so no background bleeds through and no flat
+   backing fill is needed. */
+static void draw_textured_tri_inclusive(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c)
 {
     int minx, maxx, miny, maxy;
     float den;
-    minx = a.x; if (b.x < minx) minx = b.x; if (c.x < minx) minx = c.x;
-    maxx = a.x; if (b.x > maxx) maxx = b.x; if (c.x > maxx) maxx = c.x;
-    miny = a.y; if (b.y < miny) miny = b.y; if (c.y < miny) miny = c.y;
-    maxy = a.y; if (b.y > maxy) maxy = b.y; if (c.y > maxy) maxy = c.y;
+    minx = (int)floorf(fminf(a.x, fminf(b.x, c.x)));
+    maxx = (int)ceilf(fmaxf(a.x, fmaxf(b.x, c.x)));
+    miny = (int)floorf(fminf(a.y, fminf(b.y, c.y)));
+    maxy = (int)ceilf(fmaxf(a.y, fmaxf(b.y, c.y)));
     minx -= 1; maxx += 1; miny -= 1; maxy += 1;
     if (minx < 0) minx = 0;
     if (miny < 0) miny = 0;
@@ -1010,13 +1010,25 @@ static void fill_tri_inclusive(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color
             float wa = ((b.y - c.y) * (px - c.x) + (c.x - b.x) * (py - c.y)) / den;
             float wb = ((c.y - a.y) * (px - c.x) + (a.x - c.x) * (py - c.y)) / den;
             float wc = 1.0f - wa - wb;
-            if (wa >= -0.5f && wb >= -0.5f && wc >= -0.5f)
-                put_px(x, y, color);
+            if (wa >= -0.5f && wb >= -0.5f && wc >= -0.5f) {
+                float u = wa * a.u + wb * b.u + wc * c.u;
+                float v = wa * a.v + wb * b.v + wc * c.v;
+                int sx = (int)(u * (float)(sw - 1) + 0.5f);
+                int sy = (int)(v * (float)(sh - 1) + 0.5f);
+                if (sx < 0) sx = 0;
+                if (sx >= sw) sx = sw - 1;
+                if (sy < 0) sy = 0;
+                if (sy >= sh) sy = sh - 1;
+                put_px(x, y, src[sy * sw + sx]);
+            }
         }
     }
 }
 
-static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int flip_u)
+/* Inclusive variant for pyramid faces: uses draw_textured_tri_inclusive so
+   adjacent faces overlap ~1px along shared ridges with no sky bleed and no
+   flat backing fill. */
+static void draw_tri3d_tile_inclusive(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int flip_u)
 {
     ScreenPt pa = project_point(cam, a), pb = project_point(cam, b), pc = project_point(cam, c);
     if (!pa.ok || !pb.ok || !pc.ok) return;
@@ -1026,7 +1038,7 @@ static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int fl
     TexV ta = {(float)pa.x, (float)pa.y, flip_u ? 1.0f : 0.0f, 1.0f};
     TexV tb = {(float)pb.x, (float)pb.y, flip_u ? 0.0f : 1.0f, 1.0f};
     TexV tc = {(float)pc.x, (float)pc.y, 0.5f, 0.0f};
-    draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, ta, tb, tc);
+    draw_textured_tri_inclusive(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, ta, tb, tc);
     line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
     line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_DARK);
     line_i(pc.x, pc.y, pa.x, pa.y, IDX_GOLD_DARK);
@@ -4513,17 +4525,11 @@ static void draw_map_pyramid_3d(int f)
             }
         }
     }
-    /* Solid backing pass: fill each face with a gold-dark colour using an
-       inclusive edge test so adjacent faces overlap by ~1px and no sky
-       bleeds through the shared ridges.  The textured pass is drawn on top,
-       and draw_tri3d_tile already draws 1px gold-dark edge outlines. */
-    for (int i = 0; i < 4; ++i) {
-        ScreenPt p0 = project_point(cam, faces[i].p0);
-        ScreenPt p1 = project_point(cam, faces[i].p1);
-        ScreenPt p2 = project_point(cam, apex);
-        fill_tri_inclusive(p0, p1, p2, IDX_GOLD_DARK);
-    }
-    for (int i = 0; i < 4; ++i) draw_tri3d_tile(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip);
+    /* Each face is drawn as a single inclusive textured triangle so adjacent
+       faces overlap ~1px along shared ridges with no sky bleed and no flat
+       backing fill.  draw_tri3d_tile_inclusive also draws 1px gold-dark edge
+       outlines for clean ridges. */
+    for (int i = 0; i < 4; ++i) draw_tri3d_tile_inclusive(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip);
 
     ScreenPt peak = project_point(cam, apex);
     if (peak.ok) put_px(peak.x, peak.y, IDX_GOLD_HI);
