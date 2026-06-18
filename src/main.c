@@ -21,7 +21,7 @@
 #define Q8_SHIFT 8
 #define Q8_ONE   (1 << Q8_SHIFT)
 #define Q8_HALF  (1 << (Q8_SHIFT - 1))
-#define Q8_FROM_INT(v) ((int32_t)((v) << Q8_SHIFT))
+#define Q8_FROM_INT(v) ((int32_t)(v) * Q8_ONE)
 #define Q8_FRAC(n, d) ((int32_t)(((n) * Q8_ONE + ((d) / 2)) / (d)))
 #define FIELD_X0 (-781)   /* -3.05 in Q8.8 */
 #define FIELD_X1 ( 781)   /*  3.05 in Q8.8 */
@@ -136,12 +136,15 @@ static int field_card_def(int owner, int slot);
 typedef struct { int32_t x, y, z; } Vec3;
 typedef struct { Vec3 eye, target, up; int32_t focal; } Camera;
 typedef struct { int x, y; int32_t depth; int ok; } ScreenPt;
+typedef struct { int x, y, u, v; } TexV;
 
 static void draw_late_field_cards(Camera cam, int f);
+static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c);
 
 static int32_t q8_mul(int32_t a, int32_t b) { return (int32_t)((a * b) >> Q8_SHIFT); }
-static int32_t q8_div(int32_t a, int32_t b) { return b ? (int32_t)((a << Q8_SHIFT) / b) : 0; }
+static int32_t q8_div(int32_t a, int32_t b) { return b ? (int32_t)((a * Q8_ONE) / b) : 0; }
 static int32_t q8_clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static int q16_floor_to_int(int32_t v) { return v >= 0 ? (int)(v / 65536) : -(int)(((-v) + 65535) / 65536); }
 static int32_t q8_smoothstep(int32_t t)
 {
     t = q8_clamp(t, 0, Q8_ONE);
@@ -158,7 +161,8 @@ static int32_t q8_ps1step(int32_t t)
     t = q8_smoothstep(t);
     return (int32_t)(((t * 60 + Q8_HALF) / Q8_ONE) * Q8_ONE / 60);
 }
-static int lerp_i(int a, int b, int32_t t) { return a + (int)(((b - a) * t + Q8_HALF) >> Q8_SHIFT); }
+static int q8_to_int(int32_t v) { return v >= 0 ? (int)(v >> Q8_SHIFT) : -(int)((-v) >> Q8_SHIFT); }
+static int lerp_i(int a, int b, int32_t t) { return q8_to_int(Q8_FROM_INT(a) + q8_mul(Q8_FROM_INT(b - a), t)); }
 static int32_t q8_lerp(int32_t a, int32_t b, int32_t t) { return a + q8_mul(b - a, t); }
 
 static const int16_t q8_sin_quarter[65] = {
@@ -314,8 +318,8 @@ static ScreenPt project_point(Camera cam, Vec3 p)
     ScreenPt s;
     s.depth = cz;
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
-    s.x = W / 2 + (int)(q8_mul(q8_div(cx, cz), cam.focal) >> Q8_SHIFT);
-    s.y = H / 2 - (int)(q8_mul(q8_div(cy, cz), cam.focal) >> Q8_SHIFT);
+    s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), cam.focal));
+    s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), cam.focal));
     s.ok = 1;
     return s;
 }
@@ -324,12 +328,15 @@ static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
 {
     ScreenPt pa = project_point(cam, a), pb = project_point(cam, b), pc = project_point(cam, c), pd = project_point(cam, d);
     if (!pa.ok || !pb.ok || !pc.ok || !pd.ok) return;
-    const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
-    Point2D p0 = {(DEFAULT_INT)pa.x, (DEFAULT_INT)pa.y, 0, 0};
-    Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, uvmax, 0};
-    Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uvmax, uvmax};
-    Point2D p3 = {(DEFAULT_INT)pd.x, (DEFAULT_INT)pd.y, 0, uvmax};
-    cfx_renderer3d_draw_quad(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
+    if (tile < 0) tile = 0;
+    if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
+    const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
+    TexV t0 = {pa.x, pa.y, 0, 0};
+    TexV t1 = {pb.x, pb.y, Q8_ONE, 0};
+    TexV t2 = {pc.x, pc.y, Q8_ONE, Q8_ONE};
+    TexV t3 = {pd.x, pd.y, 0, Q8_ONE};
+    draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, t0, t1, t2);
+    draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, t0, t2, t3);
 }
 
 static int field_side_tile_for_cell(int c, int r)
@@ -965,8 +972,6 @@ static void render_board(Camera cam)
     if (a.ok && b.ok && c.ok) { line_i(a.x,a.y,b.x,b.y,IDX_GOLD_DARK); line_i(b.x,b.y,c.x,c.y,IDX_GOLD_DARK); }
 }
 
-typedef struct { int x, y, u, v; } TexV;
-
 static uint8_t g_gray_lut[256];
 static int g_gray_lut_ready = 0;
 
@@ -1237,19 +1242,19 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
     } else if (t < Q8_HALF) {
         int32_t a = q8_div(t - Q8_FRAC(28,100), Q8_FRAC(22,100));
         x = midx;
-        y = midy - (int)q8_mul(Q8_FROM_INT(5), q8_sin_pi(a));
+        y = midy - q8_to_int(q8_mul(Q8_FROM_INT(5), q8_sin_pi(a)));
         w = midw;
         h = midh;
     } else if (t < Q8_FRAC(86,100)) {
         int32_t a = q8_smoothstep(q8_div(t - Q8_HALF, Q8_FRAC(36,100)));
-        int bob = -(int)q8_mul(Q8_FROM_INT(14), q8_sin_pi(a));
+        int bob = -q8_to_int(q8_mul(Q8_FROM_INT(14), q8_sin_pi(a)));
         x = lerp_i(midx, dx, a);
         y = lerp_i(midy, dy, a) + bob;
         w = lerp_i(midw, 28, a);
         h = lerp_i(midh, 39, a);
     } else {
         int32_t a = q8_smoothstep(q8_div(t - Q8_FRAC(86,100), Q8_FRAC(14,100)));
-        int snap = (int)q8_mul(Q8_FROM_INT(4), q8_sin_pi(a));
+        int snap = q8_to_int(q8_mul(Q8_FROM_INT(4), q8_sin_pi(a)));
         x = dx;
         y = dy - snap;
         w = 28;
@@ -1579,7 +1584,7 @@ static void draw_battle_cutin_event_ex(int f, int start,
             int32_t lunge;
             if (t < Q8_FRAC(62,100)) lunge = q8_smoothstep(q8_div(t, Q8_FRAC(62,100)));
             else lunge = Q8_ONE - q8_mul(q8_smoothstep(q8_div(t - Q8_FRAC(62,100), Q8_FRAC(38,100))), Q8_FRAC(72,100));
-            atk_x = ax + (int)q8_mul(Q8_FROM_INT(46), lunge);
+            atk_x = ax + q8_to_int(q8_mul(Q8_FROM_INT(46), lunge));
             if (local >= ram_contact && local < ram_contact + 24) {
                 flash_defender = 1;
                 /* v15: if the attacking card is the stronger card, the opposing
@@ -1598,7 +1603,7 @@ static void draw_battle_cutin_event_ex(int f, int start,
             int32_t lunge;
             if (t < Q8_FRAC(62,100)) lunge = q8_smoothstep(q8_div(t, Q8_FRAC(62,100)));
             else lunge = Q8_ONE - q8_mul(q8_smoothstep(q8_div(t - Q8_FRAC(62,100), Q8_FRAC(38,100))), Q8_FRAC(68,100));
-            def_x = dx - (int)q8_mul(Q8_FROM_INT(46), lunge);
+            def_x = dx - q8_to_int(q8_mul(Q8_FROM_INT(46), lunge));
             if (local >= counter_start + 20) {
                 flash_attacker = 1;
                 int q = local - (counter_start + 20);
@@ -1761,8 +1766,8 @@ static void draw_result_screen(int f, const char *msg)
        3D field and surviving cards remain while the large result text appears. */
     if (local < 70) {
         int32_t e = q8_smooth_ratio(local, 70);
-        draw_hud_offset(-(int)q8_mul(Q8_FROM_INT(76), e), 0, (int)q8_mul(Q8_FROM_INT(92), e), 0);
-        draw_bottom_info_offset(player_summon_id, "WIN", (int)q8_mul(Q8_FROM_INT(44), e));
+        draw_hud_offset(-q8_to_int(q8_mul(Q8_FROM_INT(76), e)), 0, q8_to_int(q8_mul(Q8_FROM_INT(92), e)), 0);
+        draw_bottom_info_offset(player_summon_id, "WIN", q8_to_int(q8_mul(Q8_FROM_INT(44), e)));
     }
 
     if (local >= 50) {
@@ -1770,7 +1775,7 @@ static void draw_result_screen(int f, const char *msg)
         int scale = (local < 92) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
         int tw = (int)strlen(msg) * 8 * scale;
         int x = (W - tw) / 2;
-        int y = 100 - (int)q8_mul(Q8_FROM_INT(10), Q8_ONE - e);
+        int y = 100 - q8_to_int(q8_mul(Q8_FROM_INT(10), Q8_ONE - e));
         if (((local / 6) & 1) == 0) draw_text_scaled(x + 1, y + 1, msg, scale, IDX_WHITE, IDX_BLACK);
         draw_text_scaled(x, y, msg, scale, IDX_GOLD_HI, IDX_BLACK);
     }
@@ -2021,7 +2026,7 @@ static void render_duel_opening_frame(int f)
     if (f < 16) return;
     int lf = f - 16;
     int32_t ft = q8_ratio(lf, DUEL_OPENING_END - 16);
-    Camera cam = opening_camera(18 + (int)q8_mul(Q8_FROM_INT(66), q8_smoothstep(ft)));
+    Camera cam = opening_camera(18 + q8_to_int(q8_mul(Q8_FROM_INT(66), q8_smoothstep(ft))));
     render_board(cam);
     /* Longer fade-in: the field slowly resolves out of black before the hand UI. */
     apply_black_dither_fade(q8_smoothstep(ft));
@@ -2065,7 +2070,7 @@ static void render_late_match_frame(int f)
         cam = player_camera(); show_hand = 1; selected = 4;
     } else if (f < 505) {
         cam = placement_camera(); show_hand = 1; selected = 4; player_fly = 1;
-        player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 475, 30));
+        player_hand_offset = q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 475, 30)));
     } else if (f < 525) {
         cam = lerp_camera(placement_camera(), battle_top_camera(), q8_ratio(f - 505, 20));
     } else if (f < 545) {
@@ -2086,7 +2091,7 @@ static void render_late_match_frame(int f)
         cam = turn_camera(f, 845, 890, 1);
     } else if (f < 920) {
         cam = enemy_placement_camera(); show_enemy_hand = 1; selected = 3; enemy_fly = 1; enemy_draw_sequence = 1;
-        enemy_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 890, 30));
+        enemy_hand_offset = q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 890, 30)));
     } else if (f < 940) {
         cam = lerp_camera(enemy_placement_camera(), enemy_battle_top_camera(), q8_ratio(f - 920, 20));
     } else if (f < 960) {
@@ -2107,7 +2112,7 @@ static void render_late_match_frame(int f)
         cam = player_camera(); selected = 0; draw_sequence = 1;
     } else if (f < 1415) {
         cam = placement_camera(); show_hand = 1; selected = 0; player_fly = 2;
-        player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 1385, 30));
+        player_hand_offset = q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 1385, 30)));
     } else if (f < 1450) {
         cam = lerp_camera(placement_camera(), battle_top_camera(), q8_ratio(f - 1415, 35));
     } else if (f < 1625) {
@@ -2217,19 +2222,19 @@ static void render_duel_script_frame(int f)
     } else if (f < 154) {
         /* UP from hand: smooth camera lift into tactical top view. */
         cam = lerp_camera(player_camera(), top_camera(), q8_ratio(f - 132, 22));
-        show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 132, 22));
+        show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 132, 22)));
     } else if (f < 176) {
         cam = top_camera(); show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = 92;
     } else if (f < 198) {
         /* DOWN from spell/trap/top field: smooth return to hand. */
         cam = lerp_camera(top_camera(), player_camera(), q8_ratio(f - 176, 22));
-        show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), Q8_ONE - q8_smooth_ratio(f - 176, 22));
+        show_hand = 1; selected = -1; top_mode = 1; support_demo_cursor = 1; player_hand_offset = q8_to_int(q8_mul(Q8_FROM_INT(92), Q8_ONE - q8_smooth_ratio(f - 176, 22)));
     } else if (f < 220) {
         cam = player_camera(); show_hand = 1; selected = 0;
     } else if (f < 248) {
         /* Second UP: move to the monster placement target. */
         cam = lerp_camera(player_camera(), placement_camera(), q8_ratio(f - 220, 28));
-        show_hand = 1; selected = -1; top_mode = 1; player_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 220, 28));
+        show_hand = 1; selected = -1; top_mode = 1; player_hand_offset = q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 220, 28)));
     } else if (f < 286) {
         cam = placement_camera(); show_hand = 1; selected = -1; top_mode = 1; player_hand_offset = 92;
     } else if (f < 316) {
@@ -2251,7 +2256,7 @@ static void render_duel_script_frame(int f)
         cam = enemy_camera(); show_enemy_hand = 1; selected = 2; show_player_card = 1; enemy_draw_sequence = 1;
     } else if (f < 472) {
         cam = lerp_camera(enemy_camera(), enemy_placement_camera(), q8_ratio(f - 446, 26));
-        show_enemy_hand = 1; selected = -1; show_player_card = 1; enemy_hand_offset = (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 446, 26));
+        show_enemy_hand = 1; selected = -1; show_player_card = 1; enemy_hand_offset = q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(f - 446, 26)));
     } else if (f < 506) {
         cam = enemy_placement_camera(); show_enemy_hand = 1; selected = -1; show_player_card = 1; enemy_hand_offset = 92;
     } else if (f < 536) {
@@ -3661,7 +3666,7 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
         int32_t t = q8_ratio(local - 24, 40);
         int32_t lunge = (t < Q8_FRAC(62,100)) ? q8_smoothstep(q8_div(t, Q8_FRAC(62,100))) : Q8_ONE - q8_smoothstep(q8_div(t - Q8_FRAC(62,100), Q8_FRAC(38,100)));
         int dir = (g_b_battle_atk_owner == 0) ? 1 : -1;
-        card_x = ax + (int)q8_mul(Q8_FROM_INT(64), lunge) * dir;
+        card_x = ax + q8_to_int(q8_mul(Q8_FROM_INT(64), lunge)) * dir;
     }
     draw_cutin_battle_card(atk_id, card_x, ay, 0, 1);
     if (local >= 45 && local < 78) draw_direct_attack_slash(target_x, target_y, local - 45, g_b_battle_atk_owner);
@@ -3734,15 +3739,15 @@ static void draw_interactive_result(void)
     draw_interactive_field_cards(cam);
     if (local < 70) {
         int32_t e = q8_smooth_ratio(local, 70);
-        draw_hud_offset(-(int)q8_mul(Q8_FROM_INT(76), e), 0, (int)q8_mul(Q8_FROM_INT(92), e), 0);
-        draw_bottom_info_offset(first_live_player_slot() >= 0 ? g_i_player_field[first_live_player_slot()] : hand_ids[0], "RESULT", (int)q8_mul(Q8_FROM_INT(44), e));
+        draw_hud_offset(-q8_to_int(q8_mul(Q8_FROM_INT(76), e)), 0, q8_to_int(q8_mul(Q8_FROM_INT(92), e)), 0);
+        draw_bottom_info_offset(first_live_player_slot() >= 0 ? g_i_player_field[first_live_player_slot()] : hand_ids[0], "RESULT", q8_to_int(q8_mul(Q8_FROM_INT(44), e)));
     }
     if (local >= 50) {
         int32_t e = q8_smooth_ratio(local - 50, 42);
         int scale = (local < 92) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
         int tw = (int)strlen(msg) * 8 * scale;
         int x = (W - tw) / 2;
-        int y = 100 - (int)q8_mul(Q8_FROM_INT(10), Q8_ONE - e);
+        int y = 100 - q8_to_int(q8_mul(Q8_FROM_INT(10), Q8_ONE - e));
         draw_text_scaled(x, y, msg, scale, g_b_result < 0 ? IDX_RED : IDX_GOLD_HI, IDX_BLACK);
     }
 }
@@ -3827,7 +3832,7 @@ static int is_recent_draw_slot(int slot)
 static void draw_player_hand_turn_draw(int f, int selected)
 {
     int i;
-    int yoff = (int)q8_mul(Q8_FROM_INT(92), Q8_ONE - q8_smooth_ratio(f, 36));
+    int yoff = q8_to_int(q8_mul(Q8_FROM_INT(92), Q8_ONE - q8_smooth_ratio(f, 36)));
     int y = 154 + yoff;
     for (i = 0; i < I_HAND; ++i) {
         int x0 = hand_final_x(i);
@@ -3971,8 +3976,8 @@ static void draw_player_equip_anim(void)
     for (int i = 0; i < 18; ++i) {
         int32_t ax = (int32_t)((f + i * 13) * Q8_FRAC(11,100));
         int32_t ay = (int32_t)((f + i * 17) * Q8_FRAC(9,100));
-        int cx = target_cx + (int)q8_mul(q8_sin_rad(ax), Q8_FROM_INT(18 + (i % 5) * 5));
-        int cy = target_cy + (int)q8_mul(q8_cos_rad(ay), Q8_FROM_INT(18 + (i % 4) * 3));
+        int cx = target_cx + q8_to_int(q8_mul(q8_sin_rad(ax), Q8_FROM_INT(18 + (i % 5) * 5)));
+        int cy = target_cy + q8_to_int(q8_mul(q8_cos_rad(ay), Q8_FROM_INT(18 + (i % 4) * 3)));
         draw_disc(cx, cy, 1 + (i % 3), (i & 1) ? IDX_GREEN : IDX_WHITE);
     }
     if (f >= 92 && f < 108) rect_fill(0, 0, W, H, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
@@ -4040,7 +4045,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_interactive_base(placement_camera());
         draw_zone_cursor(placement_camera(), g_b_place_slot, PLAYER_CARD_ROW);
         draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, PLAYER_CARD_ROW, g_b_phase_frame, 0, 48, 2);
-        draw_interactive_player_hand(999, g_b_place_hand, (int)q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(g_b_phase_frame, 38)), 1);
+        draw_interactive_player_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(g_b_phase_frame, 38))), 1);
         draw_bottom_info(g_b_place_card, "PLACE");
         if (g_b_phase_frame >= 48) {
             g_i_player_field[g_b_place_slot] = g_b_place_card;
@@ -4199,7 +4204,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_interactive_base(enemy_placement_camera());
         draw_zone_cursor(enemy_placement_camera(), g_b_place_slot, ENEMY_CARD_ROW);
         draw_flying_card(enemy_placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, ENEMY_CARD_ROW, g_b_phase_frame, 0, 48, 1);
-        draw_interactive_com_hand(999, g_b_place_hand, (int)q8_mul(Q8_FROM_INT(82), q8_smooth_ratio(g_b_phase_frame, 38)));
+        draw_interactive_com_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(82), q8_smooth_ratio(g_b_phase_frame, 38))));
         if (g_b_phase_frame >= 48) {
             g_i_com_field[g_b_place_slot] = g_b_place_card;
             g_i_com_faceup[g_b_place_slot] = 0;
@@ -4253,7 +4258,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 yoff = 44;
             } else if (g_b_phase_frame < 58) {
                 int t = g_b_phase_frame - 40;
-                yoff = (int)q8_mul(Q8_FROM_INT(44), Q8_ONE - q8_smooth_ratio(t, 18));
+                yoff = q8_to_int(q8_mul(Q8_FROM_INT(44), Q8_ONE - q8_smooth_ratio(t, 18)));
             }
             if (g_b_phase_frame >= 40) {
                 int card = first_live_com_slot() >= 0 ? g_i_com_field[first_live_com_slot()] : hand_ids[0];
@@ -4473,8 +4478,8 @@ static void draw_oldschool_fire(int f)
 {
     for (int y = 72; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
-            int wave = (int)q8_mul(Q8_FROM_INT(10), q8_sin_rad((x + f * 3) * Q8_FRAC(55,1000))) +
-                       (int)q8_mul(Q8_FROM_INT(7), q8_sin_rad((x * 3 - f * 2) * Q8_FRAC(39,1000)));
+            int wave = q8_to_int(q8_mul(Q8_FROM_INT(10), q8_sin_rad((x + f * 3) * Q8_FRAC(55,1000)))) +
+                       q8_to_int(q8_mul(Q8_FROM_INT(7), q8_sin_rad((x * 3 - f * 2) * Q8_FRAC(39,1000))));
             int noise = ((x * 23 + y * 17 + f * 11) ^ ((x + f) * 7) ^ ((y - f) * 13)) & 31;
             int rise = (H - y) / 2;
             int base = (y - 88 + wave) + noise - rise;
@@ -4626,20 +4631,20 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
         int32_t wr_x = cam.eye.x + q8_mul(t, q8_mul(fright.x, dx_r) + ffwd.x);
         int32_t wr_z = cam.eye.z + q8_mul(t, q8_mul(fright.z, dx_r) + ffwd.z);
 
-        int32_t u = q8_div(wl_x, tile_size);
-        int32_t v = q8_div(wl_z, tile_size);
-        int32_t du = q8_div(wr_x - wl_x, tile_size) / (W - 1);
-        int32_t dv = q8_div(wr_z - wl_z, tile_size) / (W - 1);
+        int32_t u = q8_div(wl_x, tile_size) * Q8_ONE;
+        int32_t v = q8_div(wl_z, tile_size) * Q8_ONE;
+        int32_t du = (q8_div(wr_x - wl_x, tile_size) * Q8_ONE) / (W - 1);
+        int32_t dv = (q8_div(wr_z - wl_z, tile_size) * Q8_ONE) / (W - 1);
 
         for (int x = 0; x < W; ++x) {
-            int iu = u >> Q8_SHIFT;
-            int iv = v >> Q8_SHIFT;
-            int fu = u & (Q8_ONE - 1);
-            int fv = v & (Q8_ONE - 1);
+            int iu = q16_floor_to_int(u);
+            int iv = q16_floor_to_int(v);
+            int fu = (int)(u - (int32_t)iu * 65536);
+            int fv = (int)(v - (int32_t)iv * 65536);
             int tile = ((iu + iv) & 1) ? tile_b : tile_a;
             const uint8_t *src = atlas + (size_t)tile * tw * tw;
-            int sx = (fu * (tw - 1) + Q8_HALF) >> Q8_SHIFT;
-            int sy = (fv * (tw - 1) + Q8_HALF) >> Q8_SHIFT;
+            int sx = (fu * (tw - 1) + 0x8000) >> 16;
+            int sy = (fv * (tw - 1) + 0x8000) >> 16;
             put_px(x, y, src[sy * tw + sx]);
             u += du;
             v += dv;
