@@ -643,7 +643,45 @@ static void render_board(Camera cam)
 
 typedef struct { float x, y, u, v; } TexV;
 
-static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c)
+static uint8_t g_gray_lut[256];
+static int g_gray_lut_ready = 0;
+
+static void init_gray_lut(void)
+{
+    int i, j;
+    if (g_gray_lut_ready) return;
+    for (i = 0; i < 256; ++i) {
+        int r = waifu_palette_rgb[i * 3 + 0];
+        int g = waifu_palette_rgb[i * 3 + 1];
+        int b = waifu_palette_rgb[i * 3 + 2];
+        int lum = (r * 30 + g * 59 + b * 11) / 100;
+        int target = (lum * 58) / 100;
+        int best = IDX_DIM;
+        int best_score = 0x7fffffff;
+        for (j = 0; j < 256; ++j) {
+            int rr = waifu_palette_rgb[j * 3 + 0];
+            int gg = waifu_palette_rgb[j * 3 + 1];
+            int bb = waifu_palette_rgb[j * 3 + 2];
+            int jr = rr - target;
+            int jg = gg - target;
+            int jb = bb - target;
+            int chroma = abs(rr - gg) + abs(gg - bb) + abs(bb - rr);
+            int score = jr * jr + jg * jg + jb * jb + chroma * 3;
+            if (score < best_score) { best_score = score; best = j; }
+        }
+        g_gray_lut[i] = (uint8_t)best;
+    }
+    g_gray_lut[IDX_BLACK] = IDX_BLACK;
+    g_gray_lut_ready = 1;
+}
+
+static uint8_t gray_card_px(uint8_t src)
+{
+    if (!g_gray_lut_ready) init_gray_lut();
+    return g_gray_lut[src];
+}
+
+static void draw_textured_tri_ex(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c, int gray)
 {
     float minx_f = fminf(a.x, fminf(b.x, c.x));
     float maxx_f = fmaxf(a.x, fmaxf(b.x, c.x));
@@ -670,29 +708,46 @@ static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b
                 if (sx >= sw) sx = sw - 1;
                 if (sy < 0) sy = 0;
                 if (sy >= sh) sy = sh - 1;
-                put_px(x, y, src[sy * sw + sx]);
+                uint8_t pix = src[sy * sw + sx];
+                put_px(x, y, gray ? (((x + y) & 1) ? gray_card_px(pix) : pix) : pix);
             }
         }
     }
 }
 
-static void draw_projected_card_quad(const uint8_t *src, int sw, int sh,
-                                     ScreenPt p0, ScreenPt p1, ScreenPt p2, ScreenPt p3)
+static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c)
+{
+    draw_textured_tri_ex(src, sw, sh, a, b, c, 0);
+}
+
+static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
+                                        ScreenPt p0, ScreenPt p1, ScreenPt p2, ScreenPt p3,
+                                        int gray)
 {
     if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
     TexV a = {(float)p0.x, (float)p0.y, 0.0f, 0.0f};
     TexV b = {(float)p1.x, (float)p1.y, 1.0f, 0.0f};
     TexV c = {(float)p2.x, (float)p2.y, 1.0f, 1.0f};
     TexV d = {(float)p3.x, (float)p3.y, 0.0f, 1.0f};
-    draw_textured_tri(src, sw, sh, a, b, c);
-    draw_textured_tri(src, sw, sh, a, c, d);
-    line_i(p0.x,p0.y,p1.x,p1.y,IDX_CARD_RIM);
-    line_i(p1.x,p1.y,p2.x,p2.y,IDX_CARD_RIM);
-    line_i(p2.x,p2.y,p3.x,p3.y,IDX_CARD_RIM);
-    line_i(p3.x,p3.y,p0.x,p0.y,IDX_CARD_RIM);
+    draw_textured_tri_ex(src, sw, sh, a, b, c, gray);
+    draw_textured_tri_ex(src, sw, sh, a, c, d, gray);
+    line_i(p0.x,p0.y,p1.x,p1.y, gray ? IDX_DIM : IDX_CARD_RIM);
+    line_i(p1.x,p1.y,p2.x,p2.y, gray ? IDX_DIM : IDX_CARD_RIM);
+    line_i(p2.x,p2.y,p3.x,p3.y, gray ? IDX_DIM : IDX_CARD_RIM);
+    line_i(p3.x,p3.y,p0.x,p0.y, gray ? IDX_DIM : IDX_CARD_RIM);
+    if (gray) {
+        line_i(p0.x,p0.y,p2.x,p2.y,IDX_DIM);
+        line_i(p1.x,p1.y,p3.x,p3.y,IDX_DIM);
+    }
 }
 
-static void draw_board_card(Camera cam, int col, int row, int card_id, int back)
+static void draw_projected_card_quad(const uint8_t *src, int sw, int sh,
+                                     ScreenPt p0, ScreenPt p1, ScreenPt p2, ScreenPt p3)
+{
+    draw_projected_card_quad_ex(src, sw, sh, p0, p1, p2, p3, 0);
+}
+
+static void draw_board_card_ex(Camera cam, int col, int row, int card_id, int back, int gray)
 {
     /* Real flat textured field card: project the four card corners on the 3D
        board plane and affine-map the 38x54 indexed card texture into the quad.
@@ -707,8 +762,13 @@ static void draw_board_card(Camera cam, int col, int row, int card_id, int back)
     ScreenPt p3 = project_point(cam, v3(cx - hw, y, cz + hz));
     /* Player-side cards face YOU. COM-side cards are rotated 180 degrees on
        the board plane so they face the opponent instead of always facing YOU. */
-    if (row <= 1) draw_projected_card_quad(tex, WAIFU_CARD_W, WAIFU_CARD_H, p2, p3, p0, p1);
-    else          draw_projected_card_quad(tex, WAIFU_CARD_W, WAIFU_CARD_H, p0, p1, p2, p3);
+    if (row <= 1) draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p2, p3, p0, p1, gray);
+    else          draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p0, p1, p2, p3, gray);
+}
+
+static void draw_board_card(Camera cam, int col, int row, int card_id, int back)
+{
+    draw_board_card_ex(cam, col, row, card_id, back, 0);
 }
 
 static void draw_zone_cursor(Camera cam, int col, int row)
@@ -728,6 +788,8 @@ static void draw_zone_cursor(Camera cam, int col, int row)
 static void draw_flying_card(Camera cam, int card_id, int hand_index, int target_col, int target_row, int frame, int start, int end, int back)
 {
     float t = clampf(((float)frame - (float)start) / (float)(end - start), 0.0f, 1.0f);
+    int flip_to_back = (back == 2);
+    int render_back = flip_to_back ? 0 : back;
     /* PS1-style placement beat: card jumps out of the hand, hangs large at
        center, glides over the selected slot, then snaps down with a landing
        flash. The actual field state is committed only after this completes. */
@@ -769,9 +831,29 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
         h = 39;
     }
 
+    if (flip_to_back) {
+        if (t < 0.28f) {
+            render_back = 0;
+        } else if (t < 0.50f) {
+            float ft = (t - 0.28f) / 0.22f;
+            float half = ft < 0.5f ? (ft * 2.0f) : ((ft - 0.5f) * 2.0f);
+            int old_w = w;
+            int flip_w;
+            render_back = ft >= 0.5f;
+            if (ft < 0.5f) flip_w = (int)((float)old_w * (1.0f - smoothstepf(half)) + 4.0f * smoothstepf(half));
+            else          flip_w = (int)(4.0f * (1.0f - smoothstepf(half)) + (float)old_w * smoothstepf(half));
+            if (flip_w < 4) flip_w = 4;
+            x += (old_w - flip_w) / 2;
+            w = flip_w;
+        } else {
+            render_back = 1;
+        }
+    }
+
     /* soft black shadow under the flying card */
     rect_fill(x+3, y+h-2, w, 4, IDX_BLACK);
-    draw_card_sprite(card_id, x, y, w, h, back);
+    draw_card_sprite(card_id, x, y, w, h, render_back);
+    if (flip_to_back && t >= 0.38f && t < 0.42f) rect_fill(x + w / 2 - 1, y + 2, 2, h - 4, IDX_WHITE);
     if (t > 0.78f) {
         rect_outline(x-2,y-2,w+4,h+4,IDX_GOLD_HI);
         if (((frame - start) & 3) < 2) rect_outline(x-4,y-4,w+8,h+8,IDX_WHITE);
@@ -1992,6 +2074,14 @@ static int player_has_attackable(void)
     return next_attackable_player_slot_from(-1, 1) >= 0;
 }
 
+static int player_first_turn_attack_locked(void)
+{
+    /* Yu-Gi-Oh-style rule: the player who opens the duel cannot attack during
+       their first turn. COM may still attack on its first turn after the opener
+       passes, so this guard is player-side only. */
+    return g_b_turns <= 1;
+}
+
 static void clear_player_attacks(void)
 {
     int i;
@@ -2089,10 +2179,10 @@ static void draw_interactive_field_cards(Camera cam)
 {
     int i;
     for (i = 0; i < I_FIELD; ++i) {
-        if (g_i_com_field[i] >= 0) draw_board_card(cam, i, ENEMY_CARD_ROW, g_i_com_field[i], !g_i_com_faceup[i]);
+        if (g_i_com_field[i] >= 0) draw_board_card_ex(cam, i, ENEMY_CARD_ROW, g_i_com_field[i], !g_i_com_faceup[i], g_i_com_attacked[i]);
     }
     for (i = 0; i < I_FIELD; ++i) {
-        if (g_i_player_field[i] >= 0) draw_board_card(cam, i, PLAYER_CARD_ROW, g_i_player_field[i], !g_i_player_faceup[i]);
+        if (g_i_player_field[i] >= 0) draw_board_card_ex(cam, i, PLAYER_CARD_ROW, g_i_player_field[i], !g_i_player_faceup[i], g_i_player_attacked[i]);
     }
 }
 
@@ -2190,6 +2280,7 @@ static int defender_battle_value(int defender_owner, int slot)
 static void prepare_battle(int attacker_owner, int attacker_slot, int defender_slot)
 {
     int atk_id, def_id, delta;
+    if (attacker_owner == 0 && player_first_turn_attack_locked()) return;
     g_b_battle_atk_owner = attacker_owner;
     g_b_battle_atk_slot = attacker_slot;
     g_b_battle_def_slot = defender_slot;
@@ -2218,6 +2309,8 @@ static void prepare_battle(int attacker_owner, int attacker_slot, int defender_s
 
 static void prepare_direct_attack(int attacker_owner, int attacker_slot)
 {
+    if (attacker_owner == 0 && player_first_turn_attack_locked()) return;
+
     /* Hard rule: direct attacks are illegal while the opponent controls any
        live monster. Guard this here as well as in the phase logic so neither
        SDL/live input nor command playback can enter an invalid direct attack
@@ -2249,8 +2342,14 @@ static void resolve_battle(void)
 {
     int atk_id = g_b_battle_atk_card;
 
-    if (g_b_battle_atk_owner == 0 && g_b_battle_atk_slot >= 0) g_i_player_attacked[g_b_battle_atk_slot] = 1;
-    if (g_b_battle_atk_owner == 1 && g_b_battle_atk_slot >= 0) g_i_com_attacked[g_b_battle_atk_slot] = 1;
+    if (g_b_battle_atk_owner == 0 && g_b_battle_atk_slot >= 0) {
+        g_i_player_attacked[g_b_battle_atk_slot] = 1;
+        g_i_player_faceup[g_b_battle_atk_slot] = 1;
+    }
+    if (g_b_battle_atk_owner == 1 && g_b_battle_atk_slot >= 0) {
+        g_i_com_attacked[g_b_battle_atk_slot] = 1;
+        g_i_com_faceup[g_b_battle_atk_slot] = 1;
+    }
 
     if (g_b_battle_outcome == BATTLE_DIRECT_ATTACK) {
         if (g_b_battle_atk_owner == 0) g_com_lp -= g_b_direct_damage;
@@ -2270,6 +2369,7 @@ static void resolve_battle(void)
             g_i_player_field[g_b_battle_atk_slot] = CARD_NONE;
             g_i_player_faceup[g_b_battle_atk_slot] = 1;
             g_i_player_attacked[g_b_battle_atk_slot] = 0;
+            g_i_com_faceup[g_b_battle_def_slot] = 1;
         } else if (g_b_battle_outcome == BATTLE_DESTROY_BOTH) {
             g_i_player_field[g_b_battle_atk_slot] = CARD_NONE;
             g_i_player_faceup[g_b_battle_atk_slot] = 1;
@@ -2483,7 +2583,7 @@ static void draw_player_hand_turn_draw(int f, int selected)
 
 static void step_battle_interactive(const WaifuFmInput *input, int press_up, int press_down, int press_left, int press_right, int press_a, int press_b, int press_start)
 {
-    int slot, atk_slot, def_slot;
+    int slot, atk_slot, def_slot, view_slot;
     (void)input;
 
     switch (g_b_phase) {
@@ -2521,11 +2621,11 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     case IB_PLAYER_PLACE:
         draw_interactive_common(placement_camera(), g_b_place_card, "PLACE");
         draw_zone_cursor(placement_camera(), g_b_place_slot, PLAYER_CARD_ROW);
-        draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, PLAYER_CARD_ROW, g_b_phase_frame, 0, 38, 0);
+        draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, PLAYER_CARD_ROW, g_b_phase_frame, 0, 48, 2);
         draw_interactive_player_hand(999, g_b_place_hand, (int)(92.0f * smoothstepf((float)g_b_phase_frame / 38.0f)), 1);
-        if (g_b_phase_frame >= 38) {
+        if (g_b_phase_frame >= 48) {
             g_i_player_field[g_b_place_slot] = g_b_place_card;
-            g_i_player_faceup[g_b_place_slot] = 1;
+            g_i_player_faceup[g_b_place_slot] = 0;
             g_i_player_used[g_b_place_hand] = 1;
             g_b_cards_used++;
             g_b_selected_player_slot = g_b_place_slot;
@@ -2539,14 +2639,17 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (press_right) g_b_selected_player_slot = next_attackable_player_slot_from(g_b_selected_player_slot, 1);
         atk_slot = selected_or_first_attackable_player_slot();
         def_slot = first_live_com_slot();
-        if (press_a && atk_slot >= 0) {
+        if (press_a && atk_slot >= 0 && !player_first_turn_attack_locked()) {
             g_b_selected_player_slot = atk_slot;
             if (count_live_com_monsters() > 0 && def_slot >= 0) prepare_battle(0, atk_slot, def_slot);
             else if (count_live_com_monsters() == 0) prepare_direct_attack(0, atk_slot);
             break;
         }
         if (press_start) { clear_com_attacks(); set_battle_phase(IB_TURN_TO_COM); break; }
-        draw_interactive_common(battle_top_camera(), atk_slot >= 0 ? g_i_player_field[atk_slot] : g_i_player_hand[g_b_selected_hand], "FIELD");
+        view_slot = (atk_slot >= 0) ? atk_slot : selected_or_first_live_player_slot();
+        draw_interactive_common(battle_top_camera(),
+                                view_slot >= 0 ? g_i_player_field[view_slot] : g_i_player_hand[g_b_selected_hand],
+                                player_first_turn_attack_locked() ? "NO ATK" : (atk_slot >= 0 ? "FIELD" : "USED"));
         if (atk_slot >= 0) draw_zone_cursor(battle_top_camera(), atk_slot, PLAYER_CARD_ROW);
         break;
 
@@ -2597,11 +2700,11 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     case IB_COM_PLACE:
         draw_interactive_common(enemy_placement_camera(), g_b_place_card, "COM");
         draw_zone_cursor(enemy_placement_camera(), g_b_place_slot, ENEMY_CARD_ROW);
-        draw_flying_card(enemy_placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, ENEMY_CARD_ROW, g_b_phase_frame, 0, 38, 0);
+        draw_flying_card(enemy_placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, ENEMY_CARD_ROW, g_b_phase_frame, 0, 48, 2);
         draw_interactive_com_hand(999, g_b_place_hand, (int)(82.0f * smoothstepf((float)g_b_phase_frame / 38.0f)));
-        if (g_b_phase_frame >= 38) {
+        if (g_b_phase_frame >= 48) {
             g_i_com_field[g_b_place_slot] = g_b_place_card;
-            g_i_com_faceup[g_b_place_slot] = 1;
+            g_i_com_faceup[g_b_place_slot] = 0;
             g_i_com_used[g_b_place_hand] = 1;
             clear_battle_snapshot();
             set_battle_phase(IB_COM_BATTLE);
@@ -2902,6 +3005,7 @@ int main(int argc, char **argv)
     const char *record_mkv = NULL;
     const char *commands_path = NULL;
     int no_png = 0;
+    int dump_state = 0;
     CommandEvent events[MAX_COMMAND_EVENTS];
     int event_count = 0;
     int f;
@@ -2915,6 +3019,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--commands") && i + 1 < argc) commands_path = argv[++i];
         else if (!strcmp(argv[i], "--record-mkv") && i + 1 < argc) record_mkv = argv[++i];
         else if (!strcmp(argv[i], "--no-png")) no_png = 1;
+        else if (!strcmp(argv[i], "--dump-state")) dump_state = 1;
         else if (!strcmp(argv[i], "--deckout-demo")) g_force_deckout_demo = 1;
         else if (!strcmp(argv[i], "--lp-loss-demo")) g_force_lp_loss_demo = 1;
     }
@@ -2965,6 +3070,13 @@ int main(int argc, char **argv)
             return 1;
         }
         printf("wrote %s (%d ZMBV MKV frames at 256x240)\n", record_mkv, frames);
+    }
+    if (dump_state) {
+        printf("STATE frame=%d phase=%d phase_frame=%d turns=%d you_lp=%d com_lp=%d ",
+               frames, (int)g_b_phase, g_b_phase_frame, g_b_turns, g_you_lp, g_com_lp);
+        printf("player_field0=%d player_faceup0=%d com_field0=%d com_faceup0=%d player_attacked0=%d com_attacked0=%d result=%d\n",
+               g_i_player_field[0], g_i_player_faceup[0], g_i_com_field[0], g_i_com_faceup[0],
+               g_i_player_attacked[0], g_i_com_attacked[0], g_b_result);
     }
     return 0;
 }
