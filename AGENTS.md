@@ -10,7 +10,7 @@ Use this file as the first stop when you need to change behavior. It is written 
 
 - [src/main.c](/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/src/main.c:1)
   - Story scenes: `draw_story_intro_screen` around line 4232, `draw_story_fire_screen` around 4300, `draw_story_map_screen` around 4497, `draw_story_pyramid_menu` around 4516, `draw_story_save_screen` around 4531, `draw_story_plaza_scene` around 4575.
-  - Pyramid 3D: `draw_map_pyramid_3d` around 4396.
+  - Pyramid 3D: `draw_map_pyramid_3d` around 4466. Gap-covering solid backings: `fill_tri_inclusive` around 992.
   - Deck editor: `draw_deck_editor` around 4329, `deck_editor_move_selected_card` around 2972, `reset_story_deck_editor` around 2730.
   - Story deck/storage generation: `generate_story_starter_deck` around 2668, `generate_story_storage_pool` around 2724, `sanitize_story_deck_copy_limit` around 2837, `story_reward_drop_card` / `award_story_win_drop` around 2853.
   - Battle flow: `step_battle_interactive` around 3812, `prepare_battle` around 3291, `prepare_direct_attack` around 3329, `resolve_battle` around 3364, `draw_interactive_common` around 3195, `draw_bottom_info_offset` around 585.
@@ -40,7 +40,7 @@ Use this file as the first stop when you need to change behavior. It is written 
 ## Behavior Map
 
 - Story mode:
-  - Pyramid scene uses `draw_map_pyramid_3d`.
+  - Pyramid scene uses `draw_map_pyramid_3d`. Faces use stone tile (3) for contrast with the gold/brown sand, per-face `flip` prevents texture swimming during camera orbit, `fill_tri_inclusive` backings cover ridge gaps, and a dark base slab closes the ground seam. The old 2D screen-space diamond shadow was removed.
   - Save text overflow is handled in `draw_story_save_screen`.
   - Dialog wrapping uses `draw_wrapped_text_small_box`.
 
@@ -53,7 +53,8 @@ Use this file as the first stop when you need to change behavior. It is written 
   - Opponent-turn bottom HUD is suppressed by `draw_interactive_common` / `draw_post_battle_return`.
   - Equip cards have a separate target-select phase and animation phase.
   - Tactical top-view movement uses `g_b_top_col` / `g_b_top_row` and can select empty zones. Press A on a player monster to enter attack-target mode; target selection then confirms the chosen COM monster instead of always using the first live defender.
-  - Button 4/TAB toggles the selected player monster into or out of defense position from top view.
+  - Button 4/TAB toggles the selected player monster into or out of defense position from top view. Position toggle no longer flips the card face-up; a face-down card stays face-down when rotated.
+  - Defense-position field cards swap the quad half-extents in `draw_board_card_state` so the rotated 38x54 texture keeps its aspect ratio instead of stretching.
   - B from top view checks the card under the cursor (player monster, opponent monster, or player equip row) via `IB_FIELD_CARD_PREVIEW`, reusing the hand card preview. B in attack-target mode still cancels targeting instead. `top_selector_preview_card()` resolves the cursor card; `g_b_preview_card_id` carries it into the preview phase.
 
 ## Editing Rules
@@ -94,6 +95,7 @@ Prefer script-based headless checks when possible:
 - `scripts/equip_spell_target_animation_test.txt`
 - `scripts/top_view_free_selector_defense_test.txt`
 - `scripts/top_view_field_card_check_test.txt`
+- `scripts/position_toggle_no_faceup_test.txt`
 - `scripts/story_map_to_plaza_transition_test.txt`
 - Existing story/battle scripts under `scripts/`
 

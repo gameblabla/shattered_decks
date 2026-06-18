@@ -985,6 +985,37 @@ static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b
     draw_textured_tri_ex(src, sw, sh, a, b, c, 0);
 }
 
+/* Flat-filled triangle with an inclusive edge test (>= -0.5 instead of the
+   textured renderer's >= -0.001).  Used as a solid backing behind textured
+   face triangles so that 1-pixel rasterization gaps along shared ridges
+   show the backing colour instead of the background sky. */
+static void fill_tri_inclusive(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color)
+{
+    int minx, maxx, miny, maxy;
+    float den;
+    minx = a.x; if (b.x < minx) minx = b.x; if (c.x < minx) minx = c.x;
+    maxx = a.x; if (b.x > maxx) maxx = b.x; if (c.x > maxx) maxx = c.x;
+    miny = a.y; if (b.y < miny) miny = b.y; if (c.y < miny) miny = c.y;
+    maxy = a.y; if (b.y > maxy) maxy = b.y; if (c.y > maxy) maxy = c.y;
+    minx -= 1; maxx += 1; miny -= 1; maxy += 1;
+    if (minx < 0) minx = 0;
+    if (miny < 0) miny = 0;
+    if (maxx >= W) maxx = W - 1;
+    if (maxy >= H) maxy = H - 1;
+    den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if (fabsf(den) < 0.0001f) return;
+    for (int y = miny; y <= maxy; ++y) {
+        for (int x = minx; x <= maxx; ++x) {
+            float px = (float)x + 0.5f, py = (float)y + 0.5f;
+            float wa = ((b.y - c.y) * (px - c.x) + (c.x - b.x) * (py - c.y)) / den;
+            float wb = ((c.y - a.y) * (px - c.x) + (a.x - c.x) * (py - c.y)) / den;
+            float wc = 1.0f - wa - wb;
+            if (wa >= -0.5f && wb >= -0.5f && wc >= -0.5f)
+                put_px(x, y, color);
+        }
+    }
+}
+
 static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int flip_u)
 {
     ScreenPt pa = project_point(cam, a), pb = project_point(cam, b), pc = project_point(cam, c);
@@ -1032,9 +1063,13 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
 {
     /* Real flat textured field card: project the four card corners on the 3D
        board plane and affine-map the 38x54 indexed card texture into the quad.
-       This replaces the old billboard sprite so cards now lie on the field. */
+       This replaces the old billboard sprite so cards now lie on the field.
+       In defense position the card is rotated 90 degrees; swap the quad's
+       half-extents so the 38x54 texture keeps its aspect ratio instead of
+       stretching when the UVs are rotated. */
     float cx = zone_cx(col), cz = zone_cz(row);
-    float hw = 0.36f, hz = 0.50f;
+    float hw = defense ? 0.50f : 0.36f;
+    float hz = defense ? 0.36f : 0.50f;
     float y = 0.115f;
     const uint8_t *tex = back ? waifu_card_back : (is_support_card(card_id) ? waifu_support_face : card_face_ptr(card_id));
     ScreenPt p0 = project_point(cam, v3(cx - hw, y, cz - hz));
@@ -3964,7 +3999,6 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 }
             }
         } else if (press_tab && atk_slot >= 0 && !g_i_player_attacked[atk_slot]) {
-            g_i_player_faceup[atk_slot] = 1;
             g_i_player_defense[atk_slot] = !g_i_player_defense[atk_slot];
         } else if (press_a && atk_slot >= 0 && !g_i_player_attacked[atk_slot] && !player_first_turn_attack_locked()) {
             g_b_selected_player_slot = atk_slot;
@@ -4440,13 +4474,18 @@ static void draw_map_pyramid_3d(int f)
     typedef struct PyramidFace {
         Vec3 p0, p1;
         int tile;
+        int flip;
         float depth;
     } PyramidFace;
+    /* Stone tile (3) on every face so the pyramid reads as distinct masonry
+       against the gold/brown sand checkerboard.  flip is a per-face property
+       so the texture orientation does not swap when the depth sort reorders
+       the faces during camera orbit. */
     PyramidFace faces[4] = {
-        {a, b, 5, 0.0f},
-        {b, c, 1, 0.0f},
-        {c, d, 5, 0.0f},
-        {d, a, 1, 0.0f}
+        {a, b, 3, 0, 0.0f},
+        {b, c, 3, 1, 0.0f},
+        {c, d, 3, 0, 0.0f},
+        {d, a, 3, 1, 0.0f}
     };
     for (int rz = 0; rz < 4; ++rz) {
         float z0 = -3.7f + (float)rz * 1.85f;
@@ -4460,13 +4499,10 @@ static void draw_map_pyramid_3d(int f)
         }
     }
 
-    ScreenPt base = project_point(cam, v3(0, 0.0f, 0));
-    if (base.ok) {
-        for (int yy = -5; yy <= 5; ++yy) {
-            int hw = 38 - abs(yy) * 4;
-            hline(base.x - hw, base.x + hw, base.y + 9 + yy, IDX_DARK_BROWN);
-        }
-    }
+    /* Solid dark base slab just above the ground so no background bleeds
+       through the bottom edge of the pyramid faces. */
+    draw_quad3d(cam, v3(-1.78f, -0.06f, -1.78f), v3(1.78f, -0.06f, -1.78f),
+                     v3(1.78f, -0.06f, 1.78f), v3(-1.78f, -0.06f, 1.78f), 0);
 
     for (int i = 0; i < 4; ++i) {
         ScreenPt p0 = project_point(cam, faces[i].p0);
@@ -4483,13 +4519,35 @@ static void draw_map_pyramid_3d(int f)
             }
         }
     }
-    for (int i = 0; i < 4; ++i) draw_tri3d_tile(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, i & 1);
-
-    ScreenPt peak = project_point(cam, apex);
-    if (peak.ok && base.ok) {
-        line_i(peak.x, peak.y, base.x, base.y, IDX_GOLD_DARK);
-        put_px(peak.x, peak.y, IDX_GOLD_HI);
+    /* Solid backing pass: fill each face with a dark colour using an inclusive
+       edge test so adjacent faces overlap by ~1px and no sky bleeds through
+       the shared ridges.  The textured pass is drawn on top. */
+    for (int i = 0; i < 4; ++i) {
+        ScreenPt p0 = project_point(cam, faces[i].p0);
+        ScreenPt p1 = project_point(cam, faces[i].p1);
+        ScreenPt p2 = project_point(cam, apex);
+        fill_tri_inclusive(p0, p1, p2, IDX_DARK_BROWN);
     }
+    for (int i = 0; i < 4; ++i) draw_tri3d_tile(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip);
+
+    /* Draw 2px-thick ridge lines (base corners to apex) and base edges after
+       the textured faces.  The separately-rasterized face triangles leave
+       1-pixel gaps along shared ridges; the thick overlap lines cover them. */
+    ScreenPt peak = project_point(cam, apex);
+    Vec3 base_corners[4] = {a, b, c, d};
+    for (int i = 0; i < 4; ++i) {
+        ScreenPt p0 = project_point(cam, base_corners[i]);
+        ScreenPt p1 = project_point(cam, base_corners[(i + 1) % 4]);
+        if (p0.ok && peak.ok) {
+            line_i(p0.x, p0.y, peak.x, peak.y, IDX_GOLD_DARK);
+            line_i(p0.x + 1, p0.y, peak.x + 1, peak.y, IDX_GOLD_DARK);
+        }
+        if (p0.ok && p1.ok) {
+            line_i(p0.x, p0.y, p1.x, p1.y, IDX_GOLD_DARK);
+            line_i(p0.x, p0.y + 1, p1.x, p1.y + 1, IDX_GOLD_DARK);
+        }
+    }
+    if (peak.ok) put_px(peak.x, peak.y, IDX_GOLD_HI);
 }
 
 static void draw_desert_sky(void)

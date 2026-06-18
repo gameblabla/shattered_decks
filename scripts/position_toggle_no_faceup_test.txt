@@ -1,0 +1,9 @@
+# Regression: TAB position toggle must not flip a face-down card face-up.
+# Place a monster (face-down), toggle to defense, toggle back to attack.
+# The card must remain face-down (faceup=0) throughout, and defense must
+# return to 0 after the second toggle.
+60 2 START
+100 2 A
+270 2 A
+340 2 TAB
+400 2 TAB
