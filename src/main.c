@@ -1001,6 +1001,62 @@ static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int fl
     line_i(pc.x, pc.y, pa.x, pa.y, IDX_GOLD_DARK);
 }
 
+/* Pyramid face renderer: tiles the texture in multiple rows and columns
+   across the triangular face instead of stretching one tile into the
+   whole triangle.  base0/base1 are the bottom corners, apex is the top.
+   rows = number of texture repeats base-to-apex, cols = repeats across
+   the base width.  This produces stacked brick courses like real masonry
+   instead of a single distorted square. */
+static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 apex_v, int tile, int flip_u, int rows, int cols)
+{
+    ScreenPt pa = project_point(cam, base0), pb = project_point(cam, base1), pc = project_point(cam, apex_v);
+    if (!pa.ok || !pb.ok || !pc.ok) return;
+    if (tile < 0) tile = 0;
+    if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
+    const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
+    int sw = WAIFU_TEX_TILE_SIZE, sh = WAIFU_TEX_TILE_SIZE;
+    int minx, maxx, miny, maxy;
+    float den;
+    minx = (int)floorf(fminf((float)pa.x, fminf((float)pb.x, (float)pc.x)));
+    maxx = (int)ceilf(fmaxf((float)pa.x, fmaxf((float)pb.x, (float)pc.x)));
+    miny = (int)floorf(fminf((float)pa.y, fminf((float)pb.y, (float)pc.y)));
+    maxy = (int)ceilf(fmaxf((float)pa.y, fmaxf((float)pb.y, (float)pc.y)));
+    if (minx < 0) minx = 0;
+    if (miny < 0) miny = 0;
+    if (maxx >= W) maxx = W - 1;
+    if (maxy >= H) maxy = H - 1;
+    den = ((float)pb.y - (float)pc.y) * ((float)pa.x - (float)pc.x) + ((float)pc.x - (float)pb.x) * ((float)pa.y - (float)pc.y);
+    if (fabsf(den) < 0.0001f) return;
+    for (int y = miny; y <= maxy; ++y) {
+        for (int x = minx; x <= maxx; ++x) {
+            float px = (float)x + 0.5f, py = (float)y + 0.5f;
+            float wa = (((float)pb.y - (float)pc.y) * (px - (float)pc.x) + ((float)pc.x - (float)pb.x) * (py - (float)pc.y)) / den;
+            float wb = (((float)pc.y - (float)pa.y) * (px - (float)pc.x) + ((float)pa.x - (float)pc.x) * (py - (float)pc.y)) / den;
+            float wc = 1.0f - wa - wb;
+            if (wa >= -0.001f && wb >= -0.001f && wc >= -0.001f) {
+                float width = wa + wb;
+                float v = width;
+                float vt = v * (float)rows;
+                vt = vt - floorf(vt);
+                float u = width > 0.001f ? wa / width : 0.5f;
+                if (flip_u) u = 1.0f - u;
+                float ut = u * (float)cols;
+                ut = ut - floorf(ut);
+                int sx = (int)(ut * (float)(sw - 1) + 0.5f);
+                int sy = (int)((1.0f - vt) * (float)(sh - 1) + 0.5f);
+                if (sx < 0) sx = 0;
+                if (sx >= sw) sx = sw - 1;
+                if (sy < 0) sy = 0;
+                if (sy >= sh) sy = sh - 1;
+                put_px(x, y, src[sy * sw + sx]);
+            }
+        }
+    }
+    line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
+    line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_DARK);
+    line_i(pc.x, pc.y, pa.x, pa.y, IDX_GOLD_DARK);
+}
+
 static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
                                         ScreenPt p0, ScreenPt p1, ScreenPt p2, ScreenPt p3,
                                         int gray)
@@ -4481,7 +4537,7 @@ static void draw_map_pyramid_3d(int f)
             }
         }
     }
-    for (int i = 0; i < 4; ++i) draw_tri3d_tile(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip);
+    for (int i = 0; i < 4; ++i) draw_tri3d_pyramid_face(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip, 5, 3);
 
     ScreenPt peak = project_point(cam, apex);
     if (peak.ok) put_px(peak.x, peak.y, IDX_GOLD_HI);

@@ -10,7 +10,7 @@ Use this file as the first stop when you need to change behavior. It is written 
 
 - [src/main.c](/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/src/main.c:1)
   - Story scenes: `draw_story_intro_screen` around line 4232, `draw_story_fire_screen` around 4300, `draw_story_map_screen` around 4497, `draw_story_pyramid_menu` around 4516, `draw_story_save_screen` around 4531, `draw_story_plaza_scene` around 4575.
-  - Pyramid 3D: `draw_map_pyramid_3d` around 4435.
+  - Pyramid 3D: `draw_map_pyramid_3d` around 4435. Tiled face renderer: `draw_tri3d_pyramid_face` around 1004.
   - Deck editor: `draw_deck_editor` around 4329, `deck_editor_move_selected_card` around 2972, `reset_story_deck_editor` around 2730.
   - Story deck/storage generation: `generate_story_starter_deck` around 2668, `generate_story_storage_pool` around 2724, `sanitize_story_deck_copy_limit` around 2837, `story_reward_drop_card` / `award_story_win_drop` around 2853.
   - Battle flow: `step_battle_interactive` around 3812, `prepare_battle` around 3291, `prepare_direct_attack` around 3329, `resolve_battle` around 3364, `draw_interactive_common` around 3195, `draw_bottom_info_offset` around 585.
@@ -40,7 +40,7 @@ Use this file as the first stop when you need to change behavior. It is written 
 ## Behavior Map
 
 - Story mode:
-  - Pyramid scene uses `draw_map_pyramid_3d`. Faces use gold/brown tiles (1/5), per-face `flip` prevents texture swimming during camera orbit, `draw_tri3d_tile` draws 1px gold-dark ridge outlines that cover any rasterization gaps with no sky bleed and no flat backing fill, and the old 2D screen-space diamond shadow and peak-to-base seam line were removed.
+  - Pyramid scene uses `draw_map_pyramid_3d`. Faces use gold/brown tiles (1/5), per-face `flip` prevents texture swimming during camera orbit, `draw_tri3d_pyramid_face` tiles the texture in 5 rows x 3 columns across each triangular face (stacked brick courses instead of stretching one square tile), `draw_tri3d_tile` draws 1px gold-dark ridge outlines that cover any rasterization gaps with no sky bleed and no flat backing fill, and the old 2D screen-space diamond shadow and peak-to-base seam line were removed.
   - Save text overflow is handled in `draw_story_save_screen`.
   - Dialog wrapping uses `draw_wrapped_text_small_box`.
 
