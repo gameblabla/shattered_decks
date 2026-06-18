@@ -29,6 +29,8 @@
 #define FIELD_Z1 ( 653)   /*  2.55 in Q8.8 */
 #define FIELD_Y  (0)
 #define FIELD_THICK (-108) /* -0.42 in Q8.8 */
+#define FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16 (Q8_FROM_INT(4) << Q8_SHIFT)
+#define FLOOR_SAMPLE_CACHE_SLOTS 2
 #define CFX_PI_Q8 804
 #define TITLE_SEQUENCE_FRAMES 310
 #define DUEL_TOTAL_FRAMES 2696
@@ -137,6 +139,11 @@ typedef struct { int32_t x, y, z; } Vec3;
 typedef struct { Vec3 eye, target, up; int32_t focal; } Camera;
 typedef struct { int x, y; int32_t depth; int ok; } ScreenPt;
 typedef struct { int x, y, u, v; } TexV;
+typedef struct {
+    int32_t tile_size;
+    int32_t period_q16;
+    uint8_t sample[FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16];
+} FloorSampleCache;
 
 static void draw_late_field_cards(Camera cam, int f);
 static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c);
@@ -144,18 +151,6 @@ static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b
 static int32_t q8_mul(int32_t a, int32_t b) { return (int32_t)((a * b) >> Q8_SHIFT); }
 static int32_t q8_div(int32_t a, int32_t b) { return b ? (int32_t)((a * Q8_ONE) / b) : 0; }
 static int32_t q8_clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : (v > hi ? hi : v); }
-static int q16_floor_to_int(int32_t v) { return v >= 0 ? (int)(v / 65536) : -(int)(((-v) + 65535) / 65536); }
-static int32_t q16_div_q8(int32_t n, int32_t d)
-{
-    int sign = 1;
-    int32_t whole, rem;
-    if (!d) return 0;
-    if (n < 0) { n = -n; sign = -sign; }
-    if (d < 0) { d = -d; sign = -sign; }
-    whole = n / d;
-    rem = n - whole * d;
-    return sign * (whole * 65536 + (rem * 65536) / d);
-}
 static int32_t q8_smoothstep(int32_t t)
 {
     t = q8_clamp(t, 0, Q8_ONE);
@@ -175,6 +170,89 @@ static int32_t q8_ps1step(int32_t t)
 static int q8_to_int(int32_t v) { return v >= 0 ? (int)(v >> Q8_SHIFT) : -(int)((-v) >> Q8_SHIFT); }
 static int lerp_i(int a, int b, int32_t t) { return q8_to_int(Q8_FROM_INT(a) + q8_mul(Q8_FROM_INT(b - a), t)); }
 static int32_t q8_lerp(int32_t a, int32_t b, int32_t t) { return a + q8_mul(b - a, t); }
+
+static FloorSampleCache g_floor_sample_cache[FLOOR_SAMPLE_CACHE_SLOTS];
+static uint8_t g_repeat_texel_q8[Q8_ONE];
+static int g_repeat_texel_q8_ready = 0;
+
+static void init_repeat_texel_q8(void)
+{
+    int tex = 0;
+    int acc = Q8_HALF;
+    int step = WAIFU_TEX_TILE_SIZE - 1;
+    int max_tex = WAIFU_TEX_TILE_SIZE - 2;
+    if (g_repeat_texel_q8_ready) return;
+    for (int i = 0; i < Q8_ONE; ++i) {
+        while (acc >= Q8_ONE) {
+            acc -= Q8_ONE;
+            if (tex < max_tex) ++tex;
+        }
+        g_repeat_texel_q8[i] = (uint8_t)tex;
+        acc += step;
+    }
+    g_repeat_texel_q8_ready = 1;
+}
+
+static int repeat_texel_from_q8(int phase)
+{
+    init_repeat_texel_q8();
+    return g_repeat_texel_q8[phase & (Q8_ONE - 1)];
+}
+
+static int32_t wrap_floor_sample_phase(int32_t phase, int32_t period)
+{
+    int32_t coarse = period << 4;
+    if (period <= 0) return 0;
+    while (phase < 0) {
+        if (phase <= -coarse) phase += coarse;
+        else phase += period;
+    }
+    while (phase >= period) {
+        if (phase >= coarse) phase -= coarse;
+        else phase -= period;
+    }
+    return phase;
+}
+
+static void build_floor_sample_cache(FloorSampleCache *cache, int32_t tile_size)
+{
+    int32_t tile_q16 = tile_size << Q8_SHIFT;
+    int32_t period_q16 = tile_q16 + tile_q16;
+    int step = WAIFU_TEX_TILE_SIZE - 1;
+    int max_tex = WAIFU_TEX_TILE_SIZE - 1;
+    if (period_q16 > FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16) period_q16 = FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16;
+    cache->tile_size = tile_size;
+    cache->period_q16 = period_q16;
+    for (int tile = 0; tile < 2; ++tile) {
+        int tex = 0;
+        int32_t acc = tile_q16 / 2;
+        int32_t base = tile ? tile_q16 : 0;
+        int32_t limit = tile_q16;
+        if (base + limit > period_q16) limit = period_q16 - base;
+        for (int32_t rem = 0; rem < limit; ++rem) {
+            int32_t idx = base + rem;
+            while (acc >= tile_q16) {
+                acc -= tile_q16;
+                if (tex < max_tex) ++tex;
+            }
+            cache->sample[idx] = (uint8_t)((tile << 5) | tex);
+            acc += step;
+        }
+    }
+}
+
+static FloorSampleCache *floor_sample_cache_for(int32_t tile_size)
+{
+    int free_slot = -1;
+    if (tile_size <= 0 || (tile_size << (Q8_SHIFT + 1)) > FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16) return NULL;
+    for (int i = 0; i < FLOOR_SAMPLE_CACHE_SLOTS; ++i) {
+        if (g_floor_sample_cache[i].tile_size == tile_size) return &g_floor_sample_cache[i];
+        if (free_slot < 0 && g_floor_sample_cache[i].tile_size == 0) free_slot = i;
+    }
+    if (free_slot < 0) free_slot = 0;
+    build_floor_sample_cache(&g_floor_sample_cache[free_slot], tile_size);
+    return &g_floor_sample_cache[free_slot];
+}
 
 static const int16_t q8_sin_quarter[65] = {
     0,6,13,19,25,31,38,44,50,56,62,68,74,80,86,92,98,
@@ -1159,8 +1237,8 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
                 int uq = abs_width > 0 ? (wa2 * Q8_ONE) / width : Q8_HALF;
                 if (flip_u) uq = Q8_ONE - uq;
                 int ut = (uq * cols) & (Q8_ONE - 1);
-                int sx = (ut * (sw - 1) + Q8_HALF) >> Q8_SHIFT;
-                int sy = ((Q8_ONE - vt) * (sh - 1) + Q8_HALF) >> Q8_SHIFT;
+                int sx = repeat_texel_from_q8(ut);
+                int sy = repeat_texel_from_q8(Q8_ONE - 1 - vt);
                 if (sx < 0) sx = 0;
                 if (sx >= sw) sx = sw - 1;
                 if (sy < 0) sy = 0;
@@ -4667,6 +4745,8 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
 
     int tw = WAIFU_TEX_TILE_SIZE;
     const uint8_t *atlas = waifu_texture_atlas;
+    FloorSampleCache *sample_cache = floor_sample_cache_for(tile_size);
+    if (!sample_cache) return;
 
     for (int y = 0; y < H; ++y) {
         int32_t dy = q8_div(Q8_FROM_INT(H / 2 - y) - Q8_HALF, cam.focal);
@@ -4683,23 +4763,21 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
         int32_t wr_x = cam.eye.x + q8_mul(t, q8_mul(fright.x, dx_r) + ffwd.x);
         int32_t wr_z = cam.eye.z + q8_mul(t, q8_mul(fright.z, dx_r) + ffwd.z);
 
-        int32_t u = q16_div_q8(wl_x, tile_size);
-        int32_t v = q16_div_q8(wl_z, tile_size);
-        int32_t du = q16_div_q8(wr_x - wl_x, tile_size) / (W - 1);
-        int32_t dv = q16_div_q8(wr_z - wl_z, tile_size) / (W - 1);
+        int32_t px = wrap_floor_sample_phase(wl_x << Q8_SHIFT, sample_cache->period_q16);
+        int32_t pz = wrap_floor_sample_phase(wl_z << Q8_SHIFT, sample_cache->period_q16);
+        int32_t dx = ((wr_x - wl_x) << Q8_SHIFT) / (W - 1);
+        int32_t dz = ((wr_z - wl_z) << Q8_SHIFT) / (W - 1);
 
         for (int x = 0; x < W; ++x) {
-            int iu = q16_floor_to_int(u);
-            int iv = q16_floor_to_int(v);
-            int fu = (int)(u - (int32_t)iu * 65536);
-            int fv = (int)(v - (int32_t)iv * 65536);
-            int tile = ((iu + iv) & 1) ? tile_b : tile_a;
+            uint8_t ux = sample_cache->sample[px];
+            uint8_t vz = sample_cache->sample[pz];
+            int tile = ((ux ^ vz) & 32) ? tile_b : tile_a;
             const uint8_t *src = atlas + (size_t)tile * tw * tw;
-            int sx = (fu * (tw - 1) + 0x8000) >> 16;
-            int sy = (fv * (tw - 1) + 0x8000) >> 16;
+            int sx = ux & 31;
+            int sy = vz & 31;
             put_px(x, y, src[sy * tw + sx]);
-            u += du;
-            v += dv;
+            px = wrap_floor_sample_phase(px + dx, sample_cache->period_q16);
+            pz = wrap_floor_sample_phase(pz + dz, sample_cache->period_q16);
         }
     }
 }
