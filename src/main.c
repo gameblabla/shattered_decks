@@ -2412,7 +2412,7 @@ static int g_deck_flash = 0;
 static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
 
-#define STORY_MAX_DUELS 4
+#define STORY_MAX_DUELS 8
 static int g_story_duel_index = 0;
 static int g_story_map_cursor = 0;     /* 0 pyramid, 1 plaza */
 static int g_story_pyramid_cursor = 0; /* 0 save, 1 editor, 2 back */
@@ -3081,21 +3081,38 @@ static const char *story_opponent_name(void)
     case 0: return "DREAM SHADE";
     case 1: return "PLAZA NOVICE";
     case 2: return "TEMPLE ADEPT";
-    default: return "SPHINX GUARDIAN";
+    case 3: return "SAND REAVER";
+    case 4: return "BURNING SOUL";
+    case 5: return "VOID WALKER";
+    case 6: return "SPHINX GUARDIAN";
+    default: return "THE DEMON";
     }
+}
+
+static int story_opponent_is_boss(void)
+{
+    return g_story_duel_index == 4 || g_story_duel_index == 6 || g_story_duel_index == 7;
 }
 
 static int story_opponent_card_at(int duel, int pos)
 {
-    static const int dream[]  = {20, 23, 29, 34, 19, 30, 6, 43, 29, 20};
-    static const int plaza[]  = {12, 15, 22, 29, 36, 6, 19, 23, 30, 34};
-    static const int adept[]  = {28, 33, 37, 15, 22, 40, 12, 36, 8, 14};
-    static const int sphinx[] = {33, 37, 40, 28, 14, 8, 36, 22, 12, 15};
+    static const int dream[]    = {20, 23, 29, 34, 19, 30, 6, 43, 29, 20};
+    static const int plaza[]    = {12, 15, 22, 29, 36, 6, 19, 23, 30, 34};
+    static const int adept[]    = {28, 33, 37, 15, 22, 40, 12, 36, 8, 14};
+    static const int reaver[]   = {37, 40, 8, 14, 28, 33, 12, 36, 22, 15};
+    static const int burning[]  = {8, 37, 40, 14, 28, 33, 36, 22, 12, 15};
+    static const int void_w[]   = {40, 37, 8, 28, 14, 33, 36, 22, 12, 15};
+    static const int sphinx[]   = {33, 37, 40, 28, 14, 8, 36, 22, 12, 15};
+    static const int demon[]    = {8, 37, 40, 28, 14, 33, 36, 22, 12, 15};
     const int *pool = dream;
     int count = (int)(sizeof(dream) / sizeof(dream[0]));
     if (duel == 1) { pool = plaza; count = (int)(sizeof(plaza) / sizeof(plaza[0])); }
     else if (duel == 2) { pool = adept; count = (int)(sizeof(adept) / sizeof(adept[0])); }
-    else if (duel >= 3) { pool = sphinx; count = (int)(sizeof(sphinx) / sizeof(sphinx[0])); }
+    else if (duel == 3) { pool = reaver; count = (int)(sizeof(reaver) / sizeof(reaver[0])); }
+    else if (duel == 4) { pool = burning; count = (int)(sizeof(burning) / sizeof(burning[0])); }
+    else if (duel == 5) { pool = void_w; count = (int)(sizeof(void_w) / sizeof(void_w[0])); }
+    else if (duel == 6) { pool = sphinx; count = (int)(sizeof(sphinx) / sizeof(sphinx[0])); }
+    else if (duel >= 7) { pool = demon; count = (int)(sizeof(demon) / sizeof(demon[0])); }
     return pool[pos % count];
 }
 
@@ -3213,6 +3230,8 @@ static void init_story_battle_state(void)
     g_i_com_deck_left = STORY_DECK_SIZE - I_HAND;
     g_b_deck_seed = (story_hash_name() + g_story_duel_index * 97) % 997;
     if (g_b_deck_seed <= 0) g_b_deck_seed = 17;
+    /* Bosses have higher LP. */
+    if (story_opponent_is_boss()) g_com_lp = 10000;
 }
 
 static void draw_interactive_field_cards(Camera cam)
@@ -4345,6 +4364,8 @@ static void draw_story_intro_screen(int f)
 
 static const char *story_fire_lines[] = {
     "SERENA... THE DREAM HAS TEETH.",
+    "EIGHT GUARDIANS STAND BETWEEN YOU AND THE TRUTH.",
+    "BEAT THEM ALL, AND I WILL WAIT FOR YOU IN THE VOID.",
     "YOU ARE GOING TO BURN IN HELL."
 };
 
@@ -4509,11 +4530,14 @@ static void draw_map_pyramid_3d(int f)
         {c, d, 1, 0, 0.0f},
         {d, a, 1, 1, 0.0f}
     };
-    for (int rz = 0; rz < 4; ++rz) {
+    /* Solid ground fill below the horizon so perspective-clipped grid gaps
+       show ground colour instead of sky.  The horizon sits around y=88. */
+    for (int y = 88; y < H; ++y) hline(0, W - 1, y, IDX_DARK_BROWN);
+    for (int rz = 0; rz < 8; ++rz) {
         float z0 = -3.7f + (float)rz * 1.85f;
         float z1 = z0 + 1.85f;
-        for (int cx = 0; cx < 5; ++cx) {
-            float x0 = -4.4f + (float)cx * 1.76f;
+        for (int cx = 0; cx < 7; ++cx) {
+            float x0 = -6.16f + (float)cx * 1.76f;
             float x1 = x0 + 1.76f;
             int tile = ((rz + cx) & 1) ? 1 : 5;
             draw_quad3d(cam, v3(x0, -0.07f, z0), v3(x1, -0.07f, z0),
@@ -4542,6 +4566,174 @@ static void draw_map_pyramid_3d(int f)
     if (peak.ok) put_px(peak.x, peak.y, IDX_GOLD_HI);
 }
 
+/* Story scene kinds: which 3D environment to show on the map screen. */
+typedef enum {
+    STORY_SCENE_DESERT = 0,
+    STORY_SCENE_TEMPLE,
+    STORY_SCENE_VOLCANO,
+    STORY_SCENE_VOID
+} StorySceneKind;
+
+static StorySceneKind story_scene_kind(void)
+{
+    if (g_story_duel_index >= 7) return STORY_SCENE_VOID;
+    if (g_story_duel_index >= 5) return STORY_SCENE_VOLCANO;
+    if (g_story_duel_index >= 2) return STORY_SCENE_TEMPLE;
+    return STORY_SCENE_DESERT;
+}
+
+static Camera story_temple_camera(int f)
+{
+    float a = -0.30f + 0.08f * sinf((float)f * 0.022f);
+    return make_camera(v3(sinf(a) * 5.2f, 2.4f, cosf(a) * 5.2f),
+                       v3(0.0f, 0.7f, 0.0f), v3(0,1,0), 132.0f);
+}
+
+static void draw_map_temple_3d(int f)
+{
+    Camera cam = story_temple_camera(f);
+    /* Stone tile floor */
+    for (int y = 88; y < H; ++y) hline(0, W - 1, y, IDX_DARK_BROWN);
+    for (int rz = 0; rz < 8; ++rz) {
+        float z0 = -3.7f + (float)rz * 1.85f;
+        float z1 = z0 + 1.85f;
+        for (int cx = 0; cx < 7; ++cx) {
+            float x0 = -6.16f + (float)cx * 1.76f;
+            float x1 = x0 + 1.76f;
+            draw_quad3d(cam, v3(x0, -0.07f, z0), v3(x1, -0.07f, z0),
+                             v3(x1, -0.07f, z1), v3(x0, -0.07f, z1), 3);
+        }
+    }
+    /* Temple pillars: four rows of columns forming a corridor. */
+    float pillar_y0 = 0.0f, pillar_y1 = 2.6f;
+    for (int row = 0; row < 3; ++row) {
+        float pz = -2.5f + (float)row * 2.0f;
+        for (int side = 0; side < 2; ++side) {
+            float px = side ? 2.2f : -2.2f;
+            Vec3 b0 = v3(px - 0.35f, pillar_y0, pz - 0.35f);
+            Vec3 b1 = v3(px + 0.35f, pillar_y0, pz - 0.35f);
+            Vec3 b2 = v3(px + 0.35f, pillar_y0, pz + 0.35f);
+            Vec3 b3 = v3(px - 0.35f, pillar_y0, pz + 0.35f);
+            Vec3 t0 = v3(px - 0.35f, pillar_y1, pz - 0.35f);
+            Vec3 t1 = v3(px + 0.35f, pillar_y1, pz - 0.35f);
+            Vec3 t2 = v3(px + 0.35f, pillar_y1, pz + 0.35f);
+            Vec3 t3 = v3(px - 0.35f, pillar_y1, pz + 0.35f);
+            /* Front and back faces */
+            draw_quad3d(cam, b0, b1, t1, t0, 3);
+            draw_quad3d(cam, b3, b2, t2, t3, 3);
+            draw_quad3d(cam, b1, b2, t2, t1, 3);
+            draw_quad3d(cam, b0, b3, t3, t0, 3);
+            /* Capital top */
+            draw_quad3d(cam, t0, t1, t2, t3, 3);
+        }
+    }
+}
+
+static Camera story_volcano_camera(int f)
+{
+    float a = -0.35f + 0.09f * sinf((float)f * 0.024f);
+    return make_camera(v3(sinf(a) * 5.8f, 2.9f, cosf(a) * 5.8f),
+                       v3(0.0f, 0.5f, 0.0f), v3(0,1,0), 132.0f);
+}
+
+static void draw_map_volcano_3d(int f)
+{
+    Camera cam = story_volcano_camera(f);
+    /* Dark rocky ground */
+    for (int y = 88; y < H; ++y) hline(0, W - 1, y, IDX_DARK_BROWN);
+    for (int rz = 0; rz < 8; ++rz) {
+        float z0 = -3.7f + (float)rz * 1.85f;
+        float z1 = z0 + 1.85f;
+        for (int cx = 0; cx < 7; ++cx) {
+            float x0 = -6.16f + (float)cx * 1.76f;
+            float x1 = x0 + 1.76f;
+            draw_quad3d(cam, v3(x0, -0.07f, z0), v3(x1, -0.07f, z0),
+                             v3(x1, -0.07f, z1), v3(x0, -0.07f, z1), 5);
+        }
+    }
+    /* Volcano cone: steep triangular faces like the pyramid but wider and
+       darker, with a glowing crater rim. */
+    Vec3 apex_v = v3(0.0f, 3.2f, 0.0f);
+    Vec3 a = v3(-2.6f, 0.0f, -2.6f);
+    Vec3 b = v3( 2.6f, 0.0f, -2.6f);
+    Vec3 c = v3( 2.6f, 0.0f,  2.6f);
+    Vec3 d = v3(-2.6f, 0.0f,  2.6f);
+    typedef struct { Vec3 p0, p1; int flip; float depth; } VFace;
+    VFace vf[4] = {
+        {a, b, 0, 0}, {b, c, 1, 0}, {c, d, 0, 0}, {d, a, 1, 0}
+    };
+    for (int i = 0; i < 4; ++i) {
+        ScreenPt p0 = project_point(cam, vf[i].p0);
+        ScreenPt p1 = project_point(cam, vf[i].p1);
+        ScreenPt p2 = project_point(cam, apex_v);
+        vf[i].depth = (p0.depth + p1.depth + p2.depth) / 3.0f;
+    }
+    for (int i = 0; i < 3; ++i)
+        for (int j = i + 1; j < 4; ++j)
+            if (vf[i].depth < vf[j].depth) { VFace t = vf[i]; vf[i] = vf[j]; vf[j] = t; }
+    for (int i = 0; i < 4; ++i)
+        draw_tri3d_pyramid_face(cam, vf[i].p0, vf[i].p1, apex_v, 5, vf[i].flip, 6, 4);
+    /* Glowing crater: pulsing red/orange circle at the peak. */
+    ScreenPt peak = project_point(cam, apex_v);
+    if (peak.ok) {
+        int pulse = 2 + ((f / 8) & 3);
+        for (int dy = -pulse; dy <= pulse; ++dy)
+            for (int dx = -pulse; dx <= pulse; ++dx)
+                if (dx*dx + dy*dy <= pulse*pulse)
+                    put_px(peak.x + dx, peak.y + dy, ((f/4)&1) ? IDX_FLAME1 : IDX_RED);
+    }
+}
+
+static Camera story_void_camera(int f)
+{
+    float a = -0.25f + 0.06f * sinf((float)f * 0.020f);
+    return make_camera(v3(sinf(a) * 4.8f, 2.2f, cosf(a) * 4.8f),
+                       v3(0.0f, 0.8f, 0.0f), v3(0,1,0), 128.0f);
+}
+
+static void draw_map_void_3d(int f)
+{
+    Camera cam = story_void_camera(f);
+    /* Floating obsidian platform in a void. */
+    for (int y = 88; y < H; ++y) hline(0, W - 1, y, IDX_BLACK);
+    for (int rz = 0; rz < 6; ++rz) {
+        float z0 = -2.8f + (float)rz * 1.6f;
+        float z1 = z0 + 1.6f;
+        for (int cx = 0; cx < 5; ++cx) {
+            float x0 = -4.0f + (float)cx * 1.6f;
+            float x1 = x0 + 1.6f;
+            draw_quad3d(cam, v3(x0, -0.07f, z0), v3(x1, -0.07f, z0),
+                             v3(x1, -0.07f, z1), v3(x0, -0.07f, z1), 0);
+        }
+    }
+    /* Floating crystals: small rotating diamonds hovering above the platform. */
+    for (int ci = 0; ci < 5; ++ci) {
+        float ang = (float)f * 0.03f + (float)ci * 1.26f;
+        float cx = sinf(ang) * 2.5f;
+        float cz = cosf(ang) * 2.5f;
+        float cy = 1.6f + 0.4f * sinf((float)f * 0.05f + (float)ci);
+        float s = 0.35f;
+        Vec3 top = v3(cx, cy + s, cz);
+        Vec3 bot = v3(cx, cy - s, cz);
+        Vec3 lft = v3(cx - s, cy, cz);
+        Vec3 rgt = v3(cx + s, cy, cz);
+        Vec3 fwd = v3(cx, cy, cz - s);
+        Vec3 bck = v3(cx, cy, cz + s);
+        uint8_t cc = (ci & 1) ? IDX_UI_BLUE : IDX_FLAME1;
+        ScreenPt st = project_point(cam, top), sb = project_point(cam, bot);
+        ScreenPt sl = project_point(cam, lft), sr = project_point(cam, rgt);
+        ScreenPt sf = project_point(cam, fwd), sk = project_point(cam, bck);
+        if (st.ok && sl.ok && sr.ok) {
+            line_i(sl.x, sl.y, st.x, st.y, cc); line_i(sr.x, sr.y, st.x, st.y, cc);
+            line_i(sl.x, sl.y, sb.x, sb.y, cc); line_i(sr.x, sr.y, sb.x, sb.y, cc);
+        }
+        if (st.ok && sf.ok && sk.ok) {
+            line_i(sf.x, sf.y, st.x, st.y, cc); line_i(sk.x, sk.y, st.x, st.y, cc);
+            line_i(sf.x, sf.y, sb.x, sb.y, cc); line_i(sk.x, sk.y, sb.x, sb.y, cc);
+        }
+    }
+}
+
 static void draw_desert_sky(void)
 {
     for (int y = 0; y < H; ++y) {
@@ -4554,28 +4746,95 @@ static void draw_desert_sky(void)
     }
 }
 
+static void draw_temple_sky(void)
+{
+    for (int y = 0; y < H; ++y) {
+        uint8_t c = y < 40 ? IDX_UI_BLUE : (y < 80 ? IDX_UI_TEAL : (y < 120 ? IDX_DIM : IDX_DARK_BROWN));
+        hline(0, 255, y, c);
+    }
+}
+
+static void draw_volcano_sky(void)
+{
+    for (int y = 0; y < H; ++y) {
+        uint8_t c = y < 45 ? IDX_BLACK : (y < 85 ? IDX_RED : (y < 120 ? IDX_FLAME3 : IDX_DARK_BROWN));
+        hline(0, 255, y, c);
+    }
+    /* Embers drifting upward. */
+    for (int i = 0; i < 40; ++i) {
+        int x = (i * 53 + 17) & 255;
+        int y = 120 - ((i * 31 + 7) & 63);
+        put_px(x, y, (i & 1) ? IDX_FLAME1 : IDX_GOLD_HI);
+    }
+}
+
+static void draw_void_sky(void)
+{
+    for (int y = 0; y < H; ++y) hline(0, 255, y, IDX_BLACK);
+    /* Stars. */
+    for (int i = 0; i < 60; ++i) {
+        int x = (i * 67 + 13) & 255;
+        int y = (i * 41 + 5) & 127;
+        put_px(x, y, (i & 3) ? IDX_DIM : IDX_WHITE);
+    }
+}
+
+static void draw_story_sky(void)
+{
+    switch (story_scene_kind()) {
+    case STORY_SCENE_TEMPLE:  draw_temple_sky();  break;
+    case STORY_SCENE_VOLCANO: draw_volcano_sky(); break;
+    case STORY_SCENE_VOID:    draw_void_sky();    break;
+    default:                  draw_desert_sky();  break;
+    }
+}
+
+static void draw_story_scene_3d(int f)
+{
+    switch (story_scene_kind()) {
+    case STORY_SCENE_TEMPLE:  draw_map_temple_3d(f);  break;
+    case STORY_SCENE_VOLCANO: draw_map_volcano_3d(f); break;
+    case STORY_SCENE_VOID:    draw_map_void_3d(f);    break;
+    default:                  draw_map_pyramid_3d(f); break;
+    }
+}
+
+static const char *story_scene_name(void)
+{
+    switch (story_scene_kind()) {
+    case STORY_SCENE_TEMPLE:  return "STONE TEMPLE";
+    case STORY_SCENE_VOLCANO: return "EMBER CRATER";
+    case STORY_SCENE_VOID:    return "THE VOID";
+    default:                  return "DESERT ROAD";
+    }
+}
+
 static void draw_story_map_screen_content(int f)
 {
     char line[96];
-    draw_desert_sky();
-    draw_map_pyramid_3d(f);
+    draw_story_sky();
+    draw_story_scene_3d(f);
     draw_panel_rect(6, 6, 105, 35, IDX_UI_DARK);
-    draw_text_small(12, 13, "STORY MAP", IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small(12, 13, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);
     snprintf(line, sizeof(line), "DUEL %d/%d", g_story_duel_index + 1, STORY_MAX_DUELS);
     draw_text_small(12, 27, line, IDX_WHITE, IDX_BLACK);
 
     draw_panel_rect(126, 146, 121, 76, IDX_UI_DARK);
     draw_text_small(135, 155, "DESTINATION", IDX_GOLD_HI, IDX_BLACK);
-    draw_text(143, 174, "PYRAMID", g_story_map_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(143, 194, "PLAZA", g_story_map_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(143, 174, "SANCTUM", g_story_map_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(143, 194, "BATTLE", g_story_map_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     if (g_story_map_cursor == 0) draw_text(132, 174, ">", IDX_RED, IDX_BLACK);
     else draw_text(132, 194, ">", IDX_RED, IDX_BLACK);
 
     draw_panel_rect(8, 181, 108, 41, IDX_UI_DARK);
     if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
-        draw_wrapped_text_small_box(16, 190, 91, 3, 9, "The final guardian waits beyond the plaza.", IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(16, 190, 91, 3, 9, "The demon waits in the void. This is the final duel.", IDX_WHITE, IDX_BLACK);
+    } else if (story_opponent_is_boss()) {
+        snprintf(line, sizeof(line), "A boss: %s. Prepare well.", story_opponent_name());
+        draw_wrapped_text_small_box(16, 190, 91, 3, 9, line, IDX_RED, IDX_BLACK);
     } else {
-        draw_wrapped_text_small_box(16, 190, 91, 3, 9, "Go to the plaza to continue Serena's story.", IDX_WHITE, IDX_BLACK);
+        snprintf(line, sizeof(line), "Next: %s awaits.", story_opponent_name());
+        draw_wrapped_text_small_box(16, 190, 91, 3, 9, line, IDX_WHITE, IDX_BLACK);
     }
     draw_text_small(11, 226, "A/RUN SELECT", IDX_WHITE, IDX_BLACK);
 }
@@ -4602,11 +4861,11 @@ static void draw_story_to_plaza_transition(int f)
 static void draw_story_pyramid_menu(void)
 {
     clear_screen(IDX_BLACK);
-    draw_desert_sky();
-    draw_map_pyramid_3d(g_i_frame);
+    draw_story_sky();
+    draw_story_scene_3d(g_i_frame);
     draw_panel_rect(34, 46, 188, 130, IDX_UI_DARK);
-    draw_centered_text(57, "PYRAMID SANCTUM", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(48, 75, 158, 3, 10, "Inside the stone shadow, Serena can prepare before returning to the dream.", IDX_WHITE, IDX_BLACK);
+    draw_centered_text(57, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
+    draw_wrapped_text_small_box(48, 75, 158, 3, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
     draw_text(72, 114, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(72, 134, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(72, 154, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
@@ -4617,15 +4876,15 @@ static void draw_story_pyramid_menu(void)
 static void draw_story_save_screen(void)
 {
     clear_screen(IDX_BLACK);
-    draw_desert_sky();
-    draw_map_pyramid_3d(g_i_frame);
+    draw_story_sky();
+    draw_story_scene_3d(g_i_frame);
     draw_panel_rect(31, 78, 194, 82, IDX_UI_DARK);
     if (g_story_save_status < 0) {
         draw_centered_text(95, "SAVE FAILED", IDX_RED, IDX_BLACK);
         draw_centered_text(118, "The memory seal is broken.", IDX_WHITE, IDX_BLACK);
     } else if (g_story_save_status > 0) {
         draw_centered_text(95, "PROGRESS SAVED", IDX_GOLD_HI, IDX_BLACK);
-        draw_wrapped_text_small_box(57, 115, 143, 2, 10, "The pyramid remembers Serena.", IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(57, 115, 143, 2, 10, "The sanctum remembers Serena.", IDX_WHITE, IDX_BLACK);
     } else {
         draw_centered_text(95, "NO SAVE DATA", IDX_RED, IDX_BLACK);
         draw_centered_text(118, "Nothing is written yet.", IDX_WHITE, IDX_BLACK);
@@ -4633,28 +4892,41 @@ static void draw_story_save_screen(void)
     if (((g_i_frame / 16) & 1) == 0) draw_centered_text(143, "A/RUN/B BACK", IDX_WHITE, IDX_BLACK);
 }
 
-static const char *story_plaza_lines[] = {
-    "The plaza wakes beneath the dream sun.",
-    "A duelist blocks Serena's path and raises a weathered deck.",
-    "In this city, memory is won one duel at a time."
-};
+static const char *story_battle_intro_lines(void)
+{
+    switch (g_story_duel_index) {
+    case 0: return "The dream shifts. A shade rises from the sand.";
+    case 1: return "The plaza bustles, but one duelist blocks the path.";
+    case 2: return "Stone columns tower above. An adept tests Serena.";
+    case 3: return "The sandstorm parts. A reaver grins behind her veil.";
+    case 4: return "The crater glows. A burning soul rises from the lava.";
+    case 5: return "Reality fractures. Something walks the void between dreams.";
+    case 6: return "The ancient guardian awakens. The sphinx does not blink.";
+    default: return "THE DEMON. It remembers Serena. This ends now.";
+    }
+}
 
 static void draw_story_plaza_scene_content(void)
 {
-    int line_count = (int)(sizeof(story_plaza_lines) / sizeof(story_plaza_lines[0]));
     int line = g_story_plaza_line;
     if (line < 0) line = 0;
-    if (line >= line_count) line = line_count - 1;
+    if (line > 2) line = 2;
     clear_screen(IDX_BLACK);
-    for (int y = 0; y < H; ++y) hline(0, 255, y, y < 118 ? IDX_GOLD_DARK : IDX_DARK_BROWN);
-    for (int x = 0; x < W; x += 32) {
-        rect_fill(x + 6, 92, 16, 62, IDX_STONE);
-        rect_outline(x + 6, 92, 16, 62, IDX_STONE_HI);
-    }
-    draw_centered_text(35, "DREAM PLAZA", IDX_GOLD_HI, IDX_BLACK);
+    draw_story_sky();
+    draw_story_scene_3d(g_i_frame);
+    draw_centered_text(35, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);
     draw_panel_rect(8, 171, 240, 58, IDX_UI_DARK);
     draw_text_small(18, 181, "SERENA", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(18, 196, 218, 3, 10, story_plaza_lines[line], IDX_WHITE, IDX_BLACK);
+    if (line == 0) {
+        draw_wrapped_text_small_box(18, 196, 218, 3, 10, story_battle_intro_lines(), IDX_WHITE, IDX_BLACK);
+    } else if (line == 1) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%s stands ready. %sLP: %d.", story_opponent_name(),
+                 story_opponent_is_boss() ? "BOSS " : "", story_opponent_is_boss() ? 10000 : 8000);
+        draw_wrapped_text_small_box(18, 196, 218, 3, 10, buf, story_opponent_is_boss() ? IDX_RED : IDX_WHITE, IDX_BLACK);
+    } else {
+        draw_wrapped_text_small_box(18, 196, 218, 3, 10, "Serena raises her deck. The duel begins.", IDX_WHITE, IDX_BLACK);
+    }
     if (((g_i_frame / 18) & 1) == 0) draw_text_small(198, 216, "A/RUN", IDX_WHITE, IDX_BLACK);
 }
 
@@ -4862,9 +5134,8 @@ void waifu_fm_step(const WaifuFmInput *input)
     case WAIFU_I_STORY_PLAZA:
         draw_story_plaza_scene();
         if (press_a || press_start) {
-            int line_count = (int)(sizeof(story_plaza_lines) / sizeof(story_plaza_lines[0]));
             ++g_story_plaza_line;
-            if (g_story_plaza_line >= line_count) {
+            if (g_story_plaza_line >= 3) {
                 if (g_story_deck_count == STORY_DECK_SIZE) {
                     recalc_story_deck_counts();
                     init_story_battle_state();

@@ -40,7 +40,10 @@ Use this file as the first stop when you need to change behavior. It is written 
 ## Behavior Map
 
 - Story mode:
-  - Pyramid scene uses `draw_map_pyramid_3d`. Faces use gold tile (1) on all sides for a sand/yellow desert look, per-face `flip` prevents texture swimming during camera orbit, `draw_tri3d_pyramid_face` tiles the texture in 5 rows x 3 columns across each triangular face (stacked brick courses instead of stretching one square tile), `draw_tri3d_tile` draws 1px gold-dark ridge outlines that cover any rasterization gaps with no sky bleed and no flat backing fill, and the old 2D screen-space diamond shadow and peak-to-base seam line were removed.
+  - Extended to 8 duels (`STORY_MAX_DUELS`). Opponents: DREAM SHADE, PLAZA NOVICE, TEMPLE ADEPT, SAND REAVER, BURNING SOUL (boss), VOID WALKER, SPHINX GUARDIAN (boss), THE DEMON (final boss). Bosses have 10000 LP (`story_opponent_is_boss`).
+  - Four 3D environments selected by `story_scene_kind()` based on duel progress: DESERT (pyramid, `draw_map_pyramid_3d`), TEMPLE (stone pillars, `draw_map_temple_3d`), VOLCANO (cone with glowing crater, `draw_map_volcano_3d`), VOID (floating obsidian platform with crystals, `draw_map_void_3d`). Each has its own sky function via `draw_story_sky`.
+  - Pyramid faces use gold tile (1) on all sides, per-face `flip` prevents texture swimming, `draw_tri3d_pyramid_face` tiles the texture in 5 rows x 3 columns (stacked brick courses). Ground grid extended to 8x7 with solid fill below the horizon to prevent sky bleed.
+  - The fire intro has 4 lines describing the 8-guardian gauntlet.
   - Save text overflow is handled in `draw_story_save_screen`.
   - Dialog wrapping uses `draw_wrapped_text_small_box`.
 
