@@ -59,6 +59,9 @@ static const int PLAYER_CARD2_COL = 1;
 static const int ENEMY_CARD2_COL = 1;
 static const int PLAYER_CARD3_COL = 2;
 
+#define BATTLE_BURN_DUR 52
+#define BATTLE_BURN_VANISH_FRAMES 44
+
 static int is_support_card(int card_id)
 {
     /* The generated deck currently contains monster ids 0..WAIFU_CARD_COUNT-1.
@@ -936,7 +939,7 @@ static void draw_big_battle_card_burning(int id, int x, int y, int back, int bur
        kept emitting random bursts after the card had already vanished, which
        read as an off-center explosion. This version only draws fire while the
        remaining visible card area exists. */
-    const int vanish_frames = 32; /* v20: faster burn wipe; no long post-vanish hold */
+    const int vanish_frames = BATTLE_BURN_VANISH_FRAMES;
     if (burn_frame >= vanish_frames) return;
 
     draw_big_battle_card(id, x, y, back);
@@ -1137,7 +1140,7 @@ static void draw_battle_cutin_event_ex(int f, int start,
     int burn_start = (outcome == BATTLE_DESTROY_ATTACKER) ? (counter_start + counter_dur + 18)
                                                           : (ram_start + ram_dur + 30);
     if (outcome == BATTLE_DESTROY_BOTH) burn_start = ram_start + ram_dur + 22;
-    int burn_dur = 38; /* v20: halve the wait after the monster disappears */
+    int burn_dur = BATTLE_BURN_DUR;
 
     if (local < slide_dur) {
         float e = smoothstepf((float)local / (float)slide_dur);
@@ -1947,6 +1950,7 @@ typedef enum WaifuBattlePhase {
 #define I_FIELD 5
 #define CARD_NONE (-1)
 #define BATTLE_ANIM_FRAMES 196
+#define DIRECT_ATTACK_ANIM_FRAMES 132
 
 static int g_api_initialized = 0;
 static WaifuInteractiveState g_i_state = WAIFU_I_TITLE;
@@ -2462,7 +2466,10 @@ static void resolve_battle(void)
 static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row, int atk_back)
 {
     int local = f;
-    int ax = (g_b_battle_atk_owner == 0) ? 28 : 148;
+    /* Match the normal monster-battle card lanes. The previous direct-attack
+       lanes were shifted inward, so the attacker appeared too far right/left
+       before and after the lunge. */
+    int ax = (g_b_battle_atk_owner == 0) ? 4 : 132;
     int ay = 36;
     int target_x = (g_b_battle_atk_owner == 0) ? 154 : 28;
     int target_y = 36;
@@ -2482,7 +2489,7 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
         card_x = (int)((1.0f - e) * ((g_b_battle_atk_owner == 0) ? -128.0f : 264.0f) + e * (float)ax);
     } else if (local < 64) {
         float t = (float)(local - 24) / 40.0f;
-        float lunge = (t < 0.62f) ? smoothstepf(t / 0.62f) : 1.0f - smoothstepf((t - 0.62f) / 0.38f) * 0.72f;
+        float lunge = (t < 0.62f) ? smoothstepf(t / 0.62f) : 1.0f - smoothstepf((t - 0.62f) / 0.38f);
         int dir = (g_b_battle_atk_owner == 0) ? 1 : -1;
         card_x = ax + (int)(64.0f * lunge) * dir;
     }
@@ -2633,6 +2640,33 @@ static void draw_player_hand_turn_draw(int f, int selected)
     }
 }
 
+static int current_battle_anim_frames(void)
+{
+    if (g_b_battle_outcome == BATTLE_DIRECT_ATTACK) return DIRECT_ATTACK_ANIM_FRAMES;
+
+    const int slide_dur = 18;
+    const int flip_dur = 48;
+    const int pause_after_reveal = 10;
+    const int ram_dur = 34;
+    const int counter_dur = 34;
+    int reveal_end = g_b_battle_def_back ? (slide_dur + flip_dur) : slide_dur;
+    int ram_start = reveal_end + pause_after_reveal;
+    int burn_start;
+
+    if (g_b_battle_outcome == BATTLE_DESTROY_ATTACKER) {
+        int counter_start = ram_start + ram_dur + 16;
+        burn_start = counter_start + counter_dur + 18;
+    } else {
+        burn_start = ram_start + ram_dur + 30;
+        if (g_b_battle_outcome == BATTLE_DESTROY_BOTH) burn_start = ram_start + ram_dur + 22;
+    }
+
+    /* +16 accounts for the tactical prelude before draw_battle_cutin_event_ex()
+       starts its local cut-in clock. +8 leaves a brief final settle without
+       terminating the upward burn wipe mid-effect. */
+    return 16 + burn_start + BATTLE_BURN_DUR + 8;
+}
+
 static void step_battle_interactive(const WaifuFmInput *input, int press_up, int press_down, int press_left, int press_right, int press_a, int press_b, int press_start)
 {
     int slot, atk_slot, def_slot, view_slot;
@@ -2715,7 +2749,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_PLAYER_BATTLE:
         draw_interactive_battle();
-        if (g_b_phase_frame >= BATTLE_ANIM_FRAMES) {
+        if (g_b_phase_frame >= current_battle_anim_frames()) {
             resolve_battle();
             if (g_b_phase == IB_PLAYER_BATTLE) set_battle_phase(IB_PLAYER_RETURN_TOP);
         }
@@ -2785,7 +2819,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             }
         }
         draw_interactive_battle();
-        if (g_b_phase_frame >= BATTLE_ANIM_FRAMES) {
+        if (g_b_phase_frame >= current_battle_anim_frames()) {
             resolve_battle();
             if (g_b_phase == IB_COM_BATTLE) set_battle_phase(IB_COM_RETURN);
         }

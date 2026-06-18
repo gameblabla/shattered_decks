@@ -1,0 +1,9 @@
+# Regression: after COM's monster destroys itself against the face-down defender,
+# enter player field view and perform a direct attack. This verifies the direct
+# attack returns to its battle-lane X and resolves without the long old pause.
+60 2 START
+100 2 A
+270 2 A
+340 2 START
+980 2 UP
+1010 2 A

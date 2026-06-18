@@ -1,0 +1,6 @@
+# Regression: player places a face-down defender, passes, then COM attacks it.
+# COM's weaker monster must finish its upward burn animation before the battle resolves.
+60 2 START
+100 2 A
+270 2 A
+340 2 START
