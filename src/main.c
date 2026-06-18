@@ -985,50 +985,7 @@ static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b
     draw_textured_tri_ex(src, sw, sh, a, b, c, 0);
 }
 
-/* Textured triangle with an inclusive edge test (>= -0.5 instead of the
-   regular renderer's >= -0.001).  Adjacent faces sharing a ridge both
-   claim the edge pixels, so no background bleeds through and no flat
-   backing fill is needed. */
-static void draw_textured_tri_inclusive(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c)
-{
-    int minx, maxx, miny, maxy;
-    float den;
-    minx = (int)floorf(fminf(a.x, fminf(b.x, c.x)));
-    maxx = (int)ceilf(fmaxf(a.x, fmaxf(b.x, c.x)));
-    miny = (int)floorf(fminf(a.y, fminf(b.y, c.y)));
-    maxy = (int)ceilf(fmaxf(a.y, fmaxf(b.y, c.y)));
-    minx -= 1; maxx += 1; miny -= 1; maxy += 1;
-    if (minx < 0) minx = 0;
-    if (miny < 0) miny = 0;
-    if (maxx >= W) maxx = W - 1;
-    if (maxy >= H) maxy = H - 1;
-    den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
-    if (fabsf(den) < 0.0001f) return;
-    for (int y = miny; y <= maxy; ++y) {
-        for (int x = minx; x <= maxx; ++x) {
-            float px = (float)x + 0.5f, py = (float)y + 0.5f;
-            float wa = ((b.y - c.y) * (px - c.x) + (c.x - b.x) * (py - c.y)) / den;
-            float wb = ((c.y - a.y) * (px - c.x) + (a.x - c.x) * (py - c.y)) / den;
-            float wc = 1.0f - wa - wb;
-            if (wa >= -0.5f && wb >= -0.5f && wc >= -0.5f) {
-                float u = wa * a.u + wb * b.u + wc * c.u;
-                float v = wa * a.v + wb * b.v + wc * c.v;
-                int sx = (int)(u * (float)(sw - 1) + 0.5f);
-                int sy = (int)(v * (float)(sh - 1) + 0.5f);
-                if (sx < 0) sx = 0;
-                if (sx >= sw) sx = sw - 1;
-                if (sy < 0) sy = 0;
-                if (sy >= sh) sy = sh - 1;
-                put_px(x, y, src[sy * sw + sx]);
-            }
-        }
-    }
-}
-
-/* Inclusive variant for pyramid faces: uses draw_textured_tri_inclusive so
-   adjacent faces overlap ~1px along shared ridges with no sky bleed and no
-   flat backing fill. */
-static void draw_tri3d_tile_inclusive(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int flip_u)
+static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int flip_u)
 {
     ScreenPt pa = project_point(cam, a), pb = project_point(cam, b), pc = project_point(cam, c);
     if (!pa.ok || !pb.ok || !pc.ok) return;
@@ -1038,7 +995,7 @@ static void draw_tri3d_tile_inclusive(Camera cam, Vec3 a, Vec3 b, Vec3 c, int ti
     TexV ta = {(float)pa.x, (float)pa.y, flip_u ? 1.0f : 0.0f, 1.0f};
     TexV tb = {(float)pb.x, (float)pb.y, flip_u ? 0.0f : 1.0f, 1.0f};
     TexV tc = {(float)pc.x, (float)pc.y, 0.5f, 0.0f};
-    draw_textured_tri_inclusive(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, ta, tb, tc);
+    draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, ta, tb, tc);
     line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
     line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_DARK);
     line_i(pc.x, pc.y, pa.x, pa.y, IDX_GOLD_DARK);
@@ -4489,13 +4446,12 @@ static void draw_map_pyramid_3d(int f)
         int flip;
         float depth;
     } PyramidFace;
-    /* Gold tile (1) on every face for a classic desert pyramid.  flip is a
-       per-face property so the texture orientation does not swap when the
-       depth sort reorders the faces during camera orbit. */
+    /* flip is stored per-face so the texture orientation does not change
+       when the depth sort reorders the array during camera orbit. */
     PyramidFace faces[4] = {
-        {a, b, 1, 0, 0.0f},
+        {a, b, 5, 0, 0.0f},
         {b, c, 1, 1, 0.0f},
-        {c, d, 1, 0, 0.0f},
+        {c, d, 5, 0, 0.0f},
         {d, a, 1, 1, 0.0f}
     };
     for (int rz = 0; rz < 4; ++rz) {
@@ -4525,11 +4481,7 @@ static void draw_map_pyramid_3d(int f)
             }
         }
     }
-    /* Each face is drawn as a single inclusive textured triangle so adjacent
-       faces overlap ~1px along shared ridges with no sky bleed and no flat
-       backing fill.  draw_tri3d_tile_inclusive also draws 1px gold-dark edge
-       outlines for clean ridges. */
-    for (int i = 0; i < 4; ++i) draw_tri3d_tile_inclusive(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip);
+    for (int i = 0; i < 4; ++i) draw_tri3d_tile(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip);
 
     ScreenPt peak = project_point(cam, apex);
     if (peak.ok) put_px(peak.x, peak.y, IDX_GOLD_HI);
