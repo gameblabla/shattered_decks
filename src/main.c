@@ -4502,12 +4502,11 @@ static void draw_map_pyramid_3d(int f)
         int flip;
         float depth;
     } PyramidFace;
-    /* flip is stored per-face so the texture orientation does not change
-       when the depth sort reorders the array during camera orbit. */
+    /* Sand/gold tile on every face for a consistent desert pyramid look. */
     PyramidFace faces[4] = {
-        {a, b, 5, 0, 0.0f},
+        {a, b, 1, 0, 0.0f},
         {b, c, 1, 1, 0.0f},
-        {c, d, 5, 0, 0.0f},
+        {c, d, 1, 0, 0.0f},
         {d, a, 1, 1, 0.0f}
     };
     for (int rz = 0; rz < 4; ++rz) {
