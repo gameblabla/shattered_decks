@@ -1,0 +1,6 @@
+# Regression: place first monster, attempt to attack on the opening player turn, then wait.
+# Expected with the first-turn attack lock: COM LP remains 8000 and player_attacked0 remains 0.
+60 2 START
+100 2 A
+270 2 A
+330 2 A

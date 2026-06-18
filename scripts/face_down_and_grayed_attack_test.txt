@@ -1,0 +1,8 @@
+# Regression: first summon must commit face-down; after the opening turn passes,
+# the surviving player card attacks directly and must be marked as spent/grayed.
+60 2 START
+100 2 A
+270 2 A
+340 2 START
+906 2 UP
+940 2 A

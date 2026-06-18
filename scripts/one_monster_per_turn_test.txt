@@ -1,0 +1,9 @@
+# Regression: player may place only one monster during a turn.
+# Place first monster, return to hand, select another monster, attempt to place it.
+# Expected: only field slot 0 is occupied; slots 1-4 remain empty.
+60 2 START
+100 2 A
+270 2 A
+335 2 DOWN
+360 2 RIGHT
+390 2 A

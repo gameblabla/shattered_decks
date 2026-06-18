@@ -59,6 +59,20 @@ static const int PLAYER_CARD2_COL = 1;
 static const int ENEMY_CARD2_COL = 1;
 static const int PLAYER_CARD3_COL = 2;
 
+static int is_support_card(int card_id)
+{
+    /* The generated deck currently contains monster ids 0..WAIFU_CARD_COUNT-1.
+       Reserving ids above that range for support cards lets the input/state
+       rules enforce a one-monster-per-turn limit without ever consuming that
+       limit when support cards are added to a hand. */
+    return card_id >= WAIFU_CARD_COUNT;
+}
+
+static int is_monster_card(int card_id)
+{
+    return card_id >= 0 && card_id < WAIFU_CARD_COUNT;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Small vector/camera utilities. The actual textured quad rasterization is   */
 /* Cascade FX's renderer3d; these functions only provide a PC/headless camera. */
@@ -359,6 +373,13 @@ static void draw_bottom_info_offset(int card_id, const char *mode, int yoff)
     hline(0,255,base,IDX_WHITE); hline(0,255,base+1,IDX_UI_LIGHT); hline(0,255,base+2,IDX_DIM);
     for (int y = base+4; y < base+35; y += 3) hline(0,255,y,IDX_UI_TEAL2);
     char line[64];
+    if (is_support_card(card_id)) {
+        draw_text(6, base+6, "SUPPORT CARD", IDX_WHITE, IDX_BLACK);
+        draw_text_small(6, base+21, "MAGIC / SUPPORT", IDX_WHITE, IDX_BLACK);
+        draw_text_small(188, base+21, "USE", IDX_GOLD_HI, IDX_BLACK);
+        return;
+    }
+    if (!is_monster_card(card_id)) return;
     snprintf(line, sizeof(line), "%.24s", waifu_card_names[card_id]);
     draw_text(6, base+6, line, IDX_WHITE, IDX_BLACK);
     snprintf(line, sizeof(line), "%s / %s", waifu_card_attr[card_id], waifu_card_tribe[card_id]);
@@ -415,6 +436,12 @@ static void draw_support_sprite(int x, int y, int w, int h)
 {
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
     draw_card_raw(waifu_support_face, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
+}
+
+static void draw_hand_card_sprite(int id, int x, int y, int w, int h, int back)
+{
+    if (is_support_card(id)) draw_support_sprite(x, y, w, h);
+    else draw_card_sprite(id, x, y, w, h, back);
 }
 
 static void draw_big_battle_card(int id, int x, int y, int back)
@@ -1966,8 +1993,20 @@ static int g_b_player_hand_intro_pending = 1;
 static int g_b_direct_damage = 0;
 static int g_i_player_deck_left = 35;
 static int g_i_com_deck_left = 35;
+static int g_b_player_monster_played_this_turn = 0;
+static int g_b_com_monster_played_this_turn = 0;
 
 static int input_pressed(int now, int prev) { return now && !prev; }
+
+static int player_can_place_monster(void)
+{
+    return !g_b_player_monster_played_this_turn;
+}
+
+static int com_can_place_monster(void)
+{
+    return !g_b_com_monster_played_this_turn;
+}
 
 static int next_live_hand_index(int cur, int dir)
 {
@@ -2173,6 +2212,8 @@ static void init_battle_state(void)
     g_b_turns = 1;
     g_b_cards_used = 0;
     g_b_deck_seed = 17;
+    g_b_player_monster_played_this_turn = 0;
+    g_b_com_monster_played_this_turn = 0;
 }
 
 static void draw_interactive_field_cards(Camera cam)
@@ -2198,7 +2239,7 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
             x = (int)((1.0f - t) * 282.0f + t * (float)x0);
         }
         if (g_i_player_used[i]) continue;
-        draw_card_sprite(g_i_player_hand[i], x, y, 38, 50, 0);
+        draw_hand_card_sprite(g_i_player_hand[i], x, y, 38, 50, 0);
         if (!suppress_cursor && i == selected) draw_red_cursor(x, y, 38, 50);
     }
 }
@@ -2220,7 +2261,7 @@ static void draw_interactive_com_hand(int f, int selected, int yoff)
             x = (int)((1.0f - t) * 282.0f + t * (float)x0);
         }
         if (g_i_com_used[i]) continue;
-        draw_card_sprite(g_i_com_hand[i], x, y, 38, 50, 1);
+        draw_hand_card_sprite(g_i_com_hand[i], x, y, 38, 50, 1);
         if (i == selected) draw_red_cursor(x, y, 38, 50);
     }
 }
@@ -2236,6 +2277,17 @@ static void draw_interactive_common(Camera cam, int bottom_card, const char *bot
 static void draw_interactive_card_preview(int card_id, int f)
 {
     clear_screen(IDX_BLACK);
+    if (is_support_card(card_id)) {
+        draw_card_raw(waifu_support_face, WAIFU_CARD_W, WAIFU_CARD_H, 34, 45, 76, 108);
+        draw_text_small(136, 22, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK);
+        draw_wrapped_text_small(136, 48, "Support card", 20, IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small(136, 74, "Does not use", 20, IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small(136, 92, "your monster", 20, IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small(136, 110, "placement.", 20, IDX_WHITE, IDX_BLACK);
+        if (((f / 16) & 1) == 0) draw_text_small(74, 223, "B: BACK", IDX_WHITE, IDX_BLACK);
+        return;
+    }
+    if (!is_monster_card(card_id)) return;
     draw_big_battle_card(card_id, 8, 36, 0);
     int tx = 136;
     int y = 22;
@@ -2576,7 +2628,7 @@ static void draw_player_hand_turn_draw(int f, int selected)
             x = (int)((1.0f - t) * 282.0f + t * (float)x0);
         }
         if (g_i_player_used[i]) continue;
-        draw_card_sprite(g_i_player_hand[i], x, y, 38, 50, 0);
+        draw_hand_card_sprite(g_i_player_hand[i], x, y, 38, 50, 0);
         if (f >= 64 && i == selected) draw_red_cursor(x, y, 38, 50);
     }
 }
@@ -2597,17 +2649,24 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (press_right) g_b_selected_hand = next_live_hand_index(g_b_selected_hand, 1);
         if (press_b) { set_battle_phase(IB_CARD_PREVIEW); break; }
         if (press_up) { set_battle_phase(IB_PLAYER_TOP); break; }
-        if (press_a) {
+        if (press_a && !g_i_player_used[g_b_selected_hand]) {
+            int selected_card = g_i_player_hand[g_b_selected_hand];
+            if (is_support_card(selected_card)) {
+                g_i_player_used[g_b_selected_hand] = 1;
+                g_b_cards_used++;
+                g_b_selected_hand = next_live_hand_index(g_b_selected_hand, 1);
+                break;
+            }
             slot = first_free_player_slot();
-            if (slot >= 0 && !g_i_player_used[g_b_selected_hand]) {
+            if (slot >= 0 && player_can_place_monster()) {
                 g_b_place_hand = g_b_selected_hand;
                 g_b_place_slot = slot;
-                g_b_place_card = g_i_player_hand[g_b_selected_hand];
+                g_b_place_card = selected_card;
                 set_battle_phase(IB_PLAYER_PLACE);
                 break;
             }
         }
-        if (press_start) { clear_com_attacks(); set_battle_phase(IB_TURN_TO_COM); break; }
+        if (press_start) { clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
         draw_interactive_common(player_camera(), g_i_player_hand[g_b_selected_hand], "HAND");
         draw_interactive_player_hand(g_b_player_hand_intro_pending ? g_b_phase_frame : 999, g_b_selected_hand, 0, 0);
         if (g_b_phase_frame >= 48) g_b_player_hand_intro_pending = 0;
@@ -2627,6 +2686,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             g_i_player_field[g_b_place_slot] = g_b_place_card;
             g_i_player_faceup[g_b_place_slot] = 0;
             g_i_player_used[g_b_place_hand] = 1;
+            g_b_player_monster_played_this_turn = 1;
             g_b_cards_used++;
             g_b_selected_player_slot = g_b_place_slot;
             set_battle_phase(IB_PLAYER_TOP);
@@ -2645,7 +2705,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             else if (count_live_com_monsters() == 0) prepare_direct_attack(0, atk_slot);
             break;
         }
-        if (press_start) { clear_com_attacks(); set_battle_phase(IB_TURN_TO_COM); break; }
+        if (press_start) { clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
         view_slot = (atk_slot >= 0) ? atk_slot : selected_or_first_live_player_slot();
         draw_interactive_common(battle_top_camera(),
                                 view_slot >= 0 ? g_i_player_field[view_slot] : g_i_player_hand[g_b_selected_hand],
@@ -2685,7 +2745,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             int h = 0;
             while (h < I_HAND && g_i_com_used[h]) h++;
             slot = first_free_com_slot();
-            if (h < I_HAND && slot >= 0) {
+            if (h < I_HAND && slot >= 0 && com_can_place_monster()) {
                 g_b_place_hand = h;
                 g_b_place_slot = slot;
                 g_b_place_card = g_i_com_hand[h];
@@ -2706,6 +2766,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             g_i_com_field[g_b_place_slot] = g_b_place_card;
             g_i_com_faceup[g_b_place_slot] = 0;
             g_i_com_used[g_b_place_hand] = 1;
+            g_b_com_monster_played_this_turn = 1;
             clear_battle_snapshot();
             set_battle_phase(IB_COM_BATTLE);
         }
@@ -2735,6 +2796,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (first_live_com_slot() >= 0) draw_zone_cursor(enemy_battle_top_camera(), first_live_com_slot(), ENEMY_CARD_ROW);
         if (g_b_phase_frame >= 45) {
             clear_player_attacks();
+            g_b_player_monster_played_this_turn = 0;
             g_b_turns++;
             set_battle_phase(IB_TURN_TO_PLAYER);
         }
@@ -3074,9 +3136,13 @@ int main(int argc, char **argv)
     if (dump_state) {
         printf("STATE frame=%d phase=%d phase_frame=%d turns=%d you_lp=%d com_lp=%d ",
                frames, (int)g_b_phase, g_b_phase_frame, g_b_turns, g_you_lp, g_com_lp);
-        printf("player_field0=%d player_faceup0=%d com_field0=%d com_faceup0=%d player_attacked0=%d com_attacked0=%d result=%d\n",
-               g_i_player_field[0], g_i_player_faceup[0], g_i_com_field[0], g_i_com_faceup[0],
-               g_i_player_attacked[0], g_i_com_attacked[0], g_b_result);
+        printf("player_field0=%d player_field1=%d player_field2=%d player_field3=%d player_field4=%d ",
+               g_i_player_field[0], g_i_player_field[1], g_i_player_field[2], g_i_player_field[3], g_i_player_field[4]);
+        printf("player_faceup0=%d com_field0=%d com_faceup0=%d player_attacked0=%d com_attacked0=%d ",
+               g_i_player_faceup[0], g_i_com_field[0], g_i_com_faceup[0],
+               g_i_player_attacked[0], g_i_com_attacked[0]);
+        printf("player_monster_played=%d com_monster_played=%d result=%d\n",
+               g_b_player_monster_played_this_turn, g_b_com_monster_played_this_turn, g_b_result);
     }
     return 0;
 }
