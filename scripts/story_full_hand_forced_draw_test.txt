@@ -1,0 +1,15 @@
+# Regression: in story duel, pass with a full unused hand. The next player
+# draw must replace/drop hand slot 0, advance Serena's deck by one, and not let
+# COM consume Serena's story deck while drawing.
+60 2 START
+95 2 UP
+110 2 A
+145 2 START
+185 2 A
+225 2 A
+265 2 A
+305 2 A
+345 2 A
+385 2 A
+430 2 START
+720 2 START

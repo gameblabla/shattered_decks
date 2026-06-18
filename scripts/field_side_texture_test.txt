@@ -1,0 +1,13 @@
+# Title -> Story Mode -> name accept -> intro -> demon fire scene -> deck editor -> first dream duel.
+# Used for visual inspection of the 3D board side-wall texture mapping.
+60 2 START
+95 2 UP
+110 2 A
+145 2 START
+185 2 A
+225 2 A
+265 2 A
+305 2 A
+345 2 A
+385 2 A
+430 2 START

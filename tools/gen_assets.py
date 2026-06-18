@@ -179,13 +179,30 @@ def tile_stone():
     for x in [6,17,26]: d.line([x,0,x,31], fill=(32,26,22))
     return img
 
-def tile_green_side():
-    img=Image.new('RGB',(TILE,TILE),(15,76,40)); d=ImageDraw.Draw(img)
+def tile_side_wall():
+    # Vertical edge material for the 3D board slab.  Keep it low-contrast and
+    # mostly horizontal so it reads as the side of the field, not as another
+    # playable checker tile.
+    img=Image.new('RGB',(TILE,TILE),(70,37,13)); d=ImageDraw.Draw(img)
     for y in range(TILE):
-        shade=20+y*2
-        d.line([0,y,31,y], fill=(9, max(40,100-y*2), 35))
-    d.rectangle([3,6,28,25], outline=(160,120,30))
-    d.line([6,21,26,8], fill=(26,110,48))
+        t = y / float(TILE - 1)
+        base = int(102 - 50 * t)
+        img_line = (base, max(22, int(60 - 34 * t)), max(7, int(18 - 9 * t)))
+        d.line([0,y,31,y], fill=img_line)
+    # top bevel and dark lower lip
+    d.line([0,0,31,0], fill=(214,146,45))
+    d.line([0,1,31,1], fill=(154,83,23))
+    d.line([0,30,31,30], fill=(28,10,4))
+    d.line([0,31,31,31], fill=(12,4,2))
+    # subtle block seams; these must be straight and local when the wall is
+    # drawn in cell-sized segments.
+    for x in [7,16,25]:
+        d.line([x,3,x,28], fill=(44,18,6))
+        if x + 1 < TILE:
+            d.line([x+1,3,x+1,28], fill=(118,62,17))
+    for y in [10,20]:
+        d.line([1,y,30,y], fill=(49,20,6))
+        d.line([1,y+1,30,y+1], fill=(111,58,17))
     return img
 
 def tile_dark(): return Image.new('RGB',(TILE,TILE),(0,0,0))
@@ -200,7 +217,7 @@ def tile_brown():
 card_faces_rgb=[draw_card_face(*m) for m in CARD_META]
 support_rgb=draw_support_face()
 back_rgb=draw_card_back()
-tex_rgb=[tile_dark(),tile_gold(0),tile_gold(1),tile_stone(),tile_green_side(),tile_brown(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
+tex_rgb=[tile_dark(),tile_gold(0),tile_gold(1),tile_stone(),tile_side_wall(),tile_brown(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
 # master swatches heavily weighted so UI colors survive
 swatches=[]
 for c in BASE_COLORS.values():

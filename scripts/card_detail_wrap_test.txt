@@ -1,0 +1,8 @@
+# Open battle mode, select the longest starting-hand name (Aurumelia), and open card details.
+60 2 START
+100 2 A
+280 2 RIGHT
+300 2 RIGHT
+320 2 RIGHT
+340 2 RIGHT
+360 2 B

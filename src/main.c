@@ -61,13 +61,51 @@ static const int PLAYER_CARD3_COL = 2;
 
 #define BATTLE_BURN_DUR 52
 #define BATTLE_BURN_VANISH_FRAMES 44
+#define SUPPORT_EQUIP_CARD_ID   (WAIFU_CARD_COUNT + 0)
+#define SUPPORT_GUARD_CARD_ID   (WAIFU_CARD_COUNT + 1)
+#define SUPPORT_DRAW_CARD_ID    (WAIFU_CARD_COUNT + 2)
+#define SUPPORT_HEAL_CARD_ID    (WAIFU_CARD_COUNT + 3)
+#define SUPPORT_CARD_VARIANTS   4
+
+static int support_card_kind(int card_id)
+{
+    if (card_id < WAIFU_CARD_COUNT) return 0;
+    return (card_id - WAIFU_CARD_COUNT) % SUPPORT_CARD_VARIANTS;
+}
+
+static const char *support_card_name(int card_id)
+{
+    switch (support_card_kind(card_id)) {
+    case 0: return "BRONZE EQUIP";
+    case 1: return "DESERT GUARD";
+    case 2: return "ANCIENT DRAW";
+    default: return "OASIS LIGHT";
+    }
+}
+
+static const char *support_card_type(int card_id)
+{
+    switch (support_card_kind(card_id)) {
+    case 0: return "Equip / Support";
+    case 1: return "Guard / Support";
+    case 2: return "Draw / Support";
+    default: return "Heal / Support";
+    }
+}
+
+static const char *support_card_effect(int card_id)
+{
+    switch (support_card_kind(card_id)) {
+    case 0: return "Equip card. Use from hand; does not count as your one monster placement.";
+    case 1: return "Support card. A defensive charm for the starter deck.";
+    case 2: return "Support card. A small draw charm for Serena's first dream duel.";
+    default: return "Support card. A small life charm for the starter deck.";
+    }
+}
 
 static int is_support_card(int card_id)
 {
-    /* The generated deck currently contains monster ids 0..WAIFU_CARD_COUNT-1.
-       Reserving ids above that range for support cards lets the input/state
-       rules enforce a one-monster-per-turn limit without ever consuming that
-       limit when support cards are added to a hand. */
+    /* Support and equip cards live above the generated monster id range. */
     return card_id >= WAIFU_CARD_COUNT;
 }
 
@@ -194,6 +232,9 @@ static Camera turn_camera(int f, int start, int end, int to_enemy)
     return make_camera(v3(sinf(a)*radius, y, cosf(a)*radius), v3(0,0,0), v3(0,1,0), 148.0f);
 }
 
+static float col_x0(int c);
+static float row_z0(int r);
+
 static ScreenPt project_point(Camera cam, Vec3 p)
 {
     Vec3 fwd = vnorm(vsub(cam.target, cam.eye));
@@ -222,6 +263,67 @@ static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
     Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uvmax, uvmax};
     Point2D p3 = {(DEFAULT_INT)pd.x, (DEFAULT_INT)pd.y, 0, uvmax};
     cfx_renderer3d_draw_quad(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
+}
+
+static int field_side_tile_for_cell(int c, int r)
+{
+    (void)c; (void)r;
+    /* Dedicated side-wall material.  The wall is segmented per board cell, so
+       this texture repeats locally instead of stretching across the full edge. */
+    return 4;
+}
+
+static void draw_field_wall_z(Camera cam, float z, int r_for_tile)
+{
+    int c;
+    for (c = 0; c < BOARD_COLS; ++c) {
+        float x0 = col_x0(c), x1 = col_x0(c + 1);
+        int tile = field_side_tile_for_cell(c, r_for_tile);
+        draw_quad3d(cam, v3(x0, FIELD_Y, z), v3(x1, FIELD_Y, z),
+                         v3(x1, FIELD_THICK, z), v3(x0, FIELD_THICK, z), tile);
+    }
+}
+
+static void draw_field_wall_x(Camera cam, float x, int c_for_tile)
+{
+    int r;
+    for (r = 0; r < BOARD_ROWS; ++r) {
+        float z0 = row_z0(r), z1 = row_z0(r + 1);
+        int tile = field_side_tile_for_cell(c_for_tile, r);
+        draw_quad3d(cam, v3(x, FIELD_Y, z0), v3(x, FIELD_Y, z1),
+                         v3(x, FIELD_THICK, z1), v3(x, FIELD_THICK, z0), tile);
+    }
+}
+
+static void draw_field_slab_sides(Camera cam)
+{
+    /* The old renderer drew each slab side as one long textured quad.  Because
+       draw_quad3d maps one 32x32 tile over the entire quad, the side texture was
+       stretched across the full board edge and looked badly skewed.  Draw the
+       walls in cell-sized segments so every side face gets a local UV mapping.
+       With no z-buffer, draw the far edge first and the camera-facing edge last
+       so side-wall corners do not overwrite the visible front wall. */
+    if (cam.eye.z >= 0.0f) {
+        draw_field_wall_z(cam, FIELD_Z0, 0);
+        if (cam.eye.x >= 0.0f) {
+            draw_field_wall_x(cam, FIELD_X0, 0);
+            draw_field_wall_x(cam, FIELD_X1, BOARD_COLS - 1);
+        } else {
+            draw_field_wall_x(cam, FIELD_X1, BOARD_COLS - 1);
+            draw_field_wall_x(cam, FIELD_X0, 0);
+        }
+        draw_field_wall_z(cam, FIELD_Z1, BOARD_ROWS - 1);
+    } else {
+        draw_field_wall_z(cam, FIELD_Z1, BOARD_ROWS - 1);
+        if (cam.eye.x >= 0.0f) {
+            draw_field_wall_x(cam, FIELD_X0, 0);
+            draw_field_wall_x(cam, FIELD_X1, BOARD_COLS - 1);
+        } else {
+            draw_field_wall_x(cam, FIELD_X1, BOARD_COLS - 1);
+            draw_field_wall_x(cam, FIELD_X0, 0);
+        }
+        draw_field_wall_z(cam, FIELD_Z0, 0);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -322,6 +424,69 @@ static void draw_text_small_n(int x, int y, const char *s, int n, uint8_t fg, ui
     draw_text_small(x, y, buf, fg, shadow);
 }
 
+static void draw_text_small_ellipsis(int x, int y, const char *s, int max_chars, uint8_t fg, uint8_t shadow)
+{
+    char buf[64];
+    int len = s ? (int)strlen(s) : 0;
+    if (max_chars < 1) return;
+    if (max_chars > 63) max_chars = 63;
+    if (len <= max_chars) { draw_text_small(x, y, s ? s : "", fg, shadow); return; }
+    if (max_chars <= 3) {
+        int i;
+        for (i = 0; i < max_chars; ++i) buf[i] = '.';
+        buf[max_chars] = '\0';
+    } else {
+        memcpy(buf, s, (size_t)(max_chars - 3));
+        buf[max_chars - 3] = '.';
+        buf[max_chars - 2] = '.';
+        buf[max_chars - 1] = '.';
+        buf[max_chars] = '\0';
+    }
+    draw_text_small(x, y, buf, fg, shadow);
+}
+
+static int draw_wrapped_text_small_box(int x, int y, int max_w, int max_lines, int line_gap, const char *s, uint8_t fg, uint8_t shadow)
+{
+    const char *p = s ? s : "";
+    int max_chars;
+    int lines = 0;
+    if (max_w < 7 || max_lines <= 0) return 0;
+    max_chars = max_w / 7;
+    if (max_chars < 1) max_chars = 1;
+    if (max_chars > 60) max_chars = 60;
+
+    while (*p && lines < max_lines) {
+        int len, n, split = -1;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (!*p) break;
+        len = (int)strlen(p);
+        if (len <= max_chars) {
+            draw_text_small(x, y + lines * line_gap, p, fg, shadow);
+            ++lines;
+            break;
+        }
+
+        for (int i = max_chars - 1; i > 0; --i) {
+            char c = p[i];
+            if (c == ' ' || c == '/' || c == ',' || c == '-') {
+                split = i + ((c == '/' || c == ',' || c == '-') ? 1 : 0);
+                break;
+            }
+        }
+        n = (split > 0) ? split : max_chars;
+        if (lines == max_lines - 1) {
+            draw_text_small_ellipsis(x, y + lines * line_gap, p, max_chars, fg, shadow);
+            ++lines;
+            break;
+        }
+        draw_text_small_n(x, y + lines * line_gap, p, n, fg, shadow);
+        p += n;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        ++lines;
+    }
+    return lines;
+}
+
 static void draw_wrapped_text_small(int x, int y, const char *s, int max_chars, uint8_t fg, uint8_t shadow)
 {
     int len = (int)strlen(s);
@@ -377,8 +542,11 @@ static void draw_bottom_info_offset(int card_id, const char *mode, int yoff)
     for (int y = base+4; y < base+35; y += 3) hline(0,255,y,IDX_UI_TEAL2);
     char line[64];
     if (is_support_card(card_id)) {
-        draw_text(6, base+6, "SUPPORT CARD", IDX_WHITE, IDX_BLACK);
-        draw_text_small(6, base+21, "MAGIC / SUPPORT", IDX_WHITE, IDX_BLACK);
+        char support_line[64];
+        snprintf(support_line, sizeof(support_line), "%.24s", support_card_name(card_id));
+        draw_text(6, base+6, support_line, IDX_WHITE, IDX_BLACK);
+        snprintf(support_line, sizeof(support_line), "%.31s", support_card_type(card_id));
+        draw_text_small(6, base+21, support_line, IDX_WHITE, IDX_BLACK);
         draw_text_small(188, base+21, "USE", IDX_GOLD_HI, IDX_BLACK);
         return;
     }
@@ -640,14 +808,7 @@ static void render_board(Camera cam)
     clear_screen(IDX_BLACK);
 
     /* slab sides first */
-    draw_quad3d(cam, v3(FIELD_X0, FIELD_Y, FIELD_Z1), v3(FIELD_X1, FIELD_Y, FIELD_Z1),
-                     v3(FIELD_X1, FIELD_THICK, FIELD_Z1), v3(FIELD_X0, FIELD_THICK, FIELD_Z1), 3);
-    draw_quad3d(cam, v3(FIELD_X1, FIELD_Y, FIELD_Z0), v3(FIELD_X1, FIELD_Y, FIELD_Z1),
-                     v3(FIELD_X1, FIELD_THICK, FIELD_Z1), v3(FIELD_X1, FIELD_THICK, FIELD_Z0), 4);
-    draw_quad3d(cam, v3(FIELD_X0, FIELD_Y, FIELD_Z0), v3(FIELD_X0, FIELD_Y, FIELD_Z1),
-                     v3(FIELD_X0, FIELD_THICK, FIELD_Z1), v3(FIELD_X0, FIELD_THICK, FIELD_Z0), 3);
-    draw_quad3d(cam, v3(FIELD_X0, FIELD_Y, FIELD_Z0), v3(FIELD_X1, FIELD_Y, FIELD_Z0),
-                     v3(FIELD_X1, FIELD_THICK, FIELD_Z0), v3(FIELD_X0, FIELD_THICK, FIELD_Z0), 5);
+    draw_field_slab_sides(cam);
 
     for (int r = 0; r < BOARD_ROWS; ++r) {
         for (int c = 0; c < BOARD_COLS; ++c) {
@@ -1330,6 +1491,7 @@ static void draw_centered_text_scaled(int y, const char *s, int scale, uint8_t f
 static void draw_title_background(void);
 static void draw_title_logo(void);
 static void draw_title_prompt(int f);
+static int story_save_exists(void);
 
 static void draw_result_screen(int f, const char *msg)
 {
@@ -1489,21 +1651,26 @@ static void draw_title_logo(void)
 static void draw_title_prompt(int f)
 {
     if (((f / 24) & 1) == 0) {
-        draw_centered_text(190, "PUSH RUN TO START", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(190, story_save_exists() ? "RUN START   B LOAD" : "PUSH RUN TO START", IDX_WHITE, IDX_BLACK);
     }
 }
 
 static void draw_menu_screen(int selected)
 {
+    int has_save = story_save_exists();
+    const char *help = "RANDOM DECK / FREE DUEL";
     draw_title_background();
     draw_title_logo();
-    rect_fill(43, 131, 170, 55, IDX_BLACK);
-    draw_panel_rect(45, 133, 166, 51, IDX_UI_DARK);
-    draw_text(76, 146, "STORY MODE", selected == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(76, 166, "BATTLE MODE", selected == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    int ay = selected == 0 ? 150 : 170;
-    for (int r = 0; r < 7; ++r) hline(58, 58+r, ay-3+r, IDX_RED);
-    draw_text_small(64, 207, selected == 0 ? "STORY MODE: STUB" : "RANDOM DECK / FREE DUEL", IDX_WHITE, IDX_BLACK);
+    rect_fill(39, 124, 178, 75, IDX_BLACK);
+    draw_panel_rect(41, 126, 174, 71, IDX_UI_DARK);
+    draw_text(72, 139, "STORY MODE", selected == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(72, 159, "BATTLE MODE", selected == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(72, 179, "LOAD STORY", selected == 2 ? (has_save ? IDX_GOLD_HI : IDX_DIM) : (has_save ? IDX_WHITE : IDX_DIM), IDX_BLACK);
+    int ay = selected == 0 ? 143 : (selected == 1 ? 163 : 183);
+    for (int r = 0; r < 7; ++r) hline(54, 54+r, ay-3+r, IDX_RED);
+    if (selected == 0) help = "ENTER NAME / FIRST DREAM";
+    else if (selected == 2) help = has_save ? "RESUME SAVED STORY" : "NO SAVE FILE FOUND";
+    draw_text_small(55, 207, help, has_save || selected != 2 ? IDX_WHITE : IDX_RED, IDX_BLACK);
 }
 
 static void render_title_sequence(int f)
@@ -1923,7 +2090,15 @@ static void write_showcase(const char *out_dir)
 typedef enum WaifuInteractiveState {
     WAIFU_I_TITLE = 0,
     WAIFU_I_MENU,
-    WAIFU_I_STORY_STUB,
+    WAIFU_I_STORY_NAME,
+    WAIFU_I_STORY_INTRO,
+    WAIFU_I_STORY_FIRE,
+    WAIFU_I_STORY_MAP,
+    WAIFU_I_STORY_PYRAMID,
+    WAIFU_I_STORY_SAVE,
+    WAIFU_I_STORY_PLAZA,
+    WAIFU_I_DECK_EDITOR,
+    WAIFU_I_DECK_PREVIEW,
     WAIFU_I_BATTLE
 } WaifuInteractiveState;
 
@@ -1999,6 +2174,47 @@ static int g_i_player_deck_left = 35;
 static int g_i_com_deck_left = 35;
 static int g_b_player_monster_played_this_turn = 0;
 static int g_b_com_monster_played_this_turn = 0;
+
+#define STORY_NAME_LEN 6
+#define STORY_DECK_SIZE 40
+#define STORY_SAVE_PATH "waifu_story.sav"
+static int g_story_battle_active = 0;
+static char g_story_name[STORY_NAME_LEN + 1] = "SERENA";
+static int g_story_name_pos = 0;
+static int g_story_intro_line = 0;
+static int g_story_player_deck[STORY_DECK_SIZE];
+static int g_story_player_deck_pos = 0;
+static int g_story_strong_card = 37;
+static int g_story_weak_card = 29;
+static int g_story_equip_count = 0;
+static int g_story_support_count = 0;
+
+#define STORY_STORAGE_SIZE 64
+#define DECK_GRID_COLS 6
+#define DECK_GRID_ROWS 3
+#define DECK_VISIBLE_CARDS (DECK_GRID_COLS * DECK_GRID_ROWS)
+static int g_story_storage[STORY_STORAGE_SIZE];
+static int g_story_deck_count = STORY_DECK_SIZE;
+static int g_story_storage_count = 0;
+static int g_story_fire_line = 0;
+static int g_deck_tab = 0; /* 0 deck, 1 storage */
+static int g_deck_cursor = 0;
+static int g_deck_scroll[2] = {0, 0};
+static int g_deck_flash = 0;
+static int g_deck_preview_card = CARD_NONE;
+
+#define STORY_MAX_DUELS 4
+static int g_story_duel_index = 0;
+static int g_story_map_cursor = 0;     /* 0 pyramid, 1 plaza */
+static int g_story_pyramid_cursor = 0; /* 0 save, 1 editor, 2 back */
+static int g_story_plaza_line = 0;
+static int g_story_saved_flash = 0;
+static int g_story_com_draw_pos = 0;
+static int g_story_editor_from_pyramid = 0;
+static int g_story_save_status = 0; /* 1 saved/loaded, -1 failed/no save */
+
+static void story_return_to_map_after_duel(void);
+static void init_battle_state(void);
 
 static int input_pressed(int now, int prev) { return now && !prev; }
 
@@ -2168,16 +2384,359 @@ static void set_battle_phase(WaifuBattlePhase phase)
     g_b_phase_frame = 0;
 }
 
-static int next_draw_id(void)
+static int story_hash_name(void)
+{
+    int h = 216;
+    for (int i = 0; i < STORY_NAME_LEN; ++i) h = (h * 33 + (unsigned char)g_story_name[i]) & 0x7fffffff;
+    return h ? h : 17;
+}
+
+static int story_prng_next(int *seed)
+{
+    uint32_t v = (uint32_t)(*seed);
+    v = v * 1103515245u + 12345u;
+    *seed = (int)(v & 0x7fffffffu);
+    return *seed;
+}
+
+static void story_shuffle_tail(int start, int *seed)
+{
+    for (int i = STORY_DECK_SIZE - 1; i > start; --i) {
+        int j = start + (story_prng_next(seed) % (i - start + 1));
+        int tmp = g_story_player_deck[i];
+        g_story_player_deck[i] = g_story_player_deck[j];
+        g_story_player_deck[j] = tmp;
+    }
+}
+
+static void generate_story_starter_deck(void)
+{
+    int seed = story_hash_name();
+    int strong_pool[] = {37, 40, 33, 28, 8, 14};
+    int weak_pool[] = {29, 20, 23, 34, 19, 43, 30, 6};
+    int strong = strong_pool[story_prng_next(&seed) % (int)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
+    int weak = weak_pool[story_prng_next(&seed) % (int)(sizeof(weak_pool) / sizeof(weak_pool[0]))];
+    int idx = 0;
+
+    g_story_strong_card = strong;
+    g_story_weak_card = weak;
+    g_story_equip_count = 0;
+    g_story_support_count = 0;
+    g_story_deck_count = STORY_DECK_SIZE;
+
+    /* Guaranteed opening profile: one strong monster, two matching weak monsters,
+       one equip card, and one support card. The rest is random but weighted
+       toward duplicate weak monsters and starter support, like an early story deck. */
+    g_story_player_deck[idx++] = strong;
+    g_story_player_deck[idx++] = weak;
+    g_story_player_deck[idx++] = weak;
+    g_story_player_deck[idx++] = SUPPORT_EQUIP_CARD_ID;
+    g_story_player_deck[idx++] = SUPPORT_GUARD_CARD_ID + (story_prng_next(&seed) % 3);
+
+    for (; idx < STORY_DECK_SIZE; ++idx) {
+        int roll = story_prng_next(&seed) % 100;
+        if (roll < 34) {
+            g_story_player_deck[idx] = weak;
+        } else if (roll < 48) {
+            g_story_player_deck[idx] = weak_pool[story_prng_next(&seed) % (int)(sizeof(weak_pool) / sizeof(weak_pool[0]))];
+        } else if (roll < 62) {
+            g_story_player_deck[idx] = SUPPORT_EQUIP_CARD_ID;
+        } else if (roll < 82) {
+            g_story_player_deck[idx] = WAIFU_CARD_COUNT + (story_prng_next(&seed) % SUPPORT_CARD_VARIANTS);
+        } else {
+            int mid = story_prng_next(&seed) % WAIFU_CARD_COUNT;
+            if (mid == strong) mid = (mid + 5) % WAIFU_CARD_COUNT;
+            g_story_player_deck[idx] = mid;
+        }
+    }
+    story_shuffle_tail(5, &seed);
+    g_story_player_deck_pos = 0;
+
+    for (idx = 0; idx < STORY_DECK_SIZE; ++idx) {
+        if (g_story_player_deck[idx] == SUPPORT_EQUIP_CARD_ID) ++g_story_equip_count;
+        else if (is_support_card(g_story_player_deck[idx])) ++g_story_support_count;
+    }
+}
+
+
+static void generate_story_storage_pool(void)
+{
+    int seed = story_hash_name() ^ 0x5a5a35;
+    int weak_pool[] = {29, 20, 23, 34, 19, 43, 30, 6};
+    int strong_pool[] = {37, 40, 33, 28, 8, 14};
+    g_story_storage_count = 52;
+    for (int i = 0; i < g_story_storage_count; ++i) {
+        int roll = story_prng_next(&seed) % 100;
+        if (roll < 48) {
+            g_story_storage[i] = weak_pool[story_prng_next(&seed) % (int)(sizeof(weak_pool)/sizeof(weak_pool[0]))];
+        } else if (roll < 66) {
+            g_story_storage[i] = story_prng_next(&seed) % WAIFU_CARD_COUNT;
+        } else if (roll < 78) {
+            g_story_storage[i] = strong_pool[story_prng_next(&seed) % (int)(sizeof(strong_pool)/sizeof(strong_pool[0]))];
+        } else {
+            g_story_storage[i] = WAIFU_CARD_COUNT + (story_prng_next(&seed) % SUPPORT_CARD_VARIANTS);
+        }
+    }
+}
+
+static void reset_story_deck_editor(void)
+{
+    g_deck_tab = 0;
+    g_deck_cursor = 0;
+    g_deck_scroll[0] = 0;
+    g_deck_scroll[1] = 0;
+    g_deck_flash = 0;
+    g_deck_preview_card = CARD_NONE;
+}
+
+static int *deck_editor_active_array(void)
+{
+    return g_deck_tab ? g_story_storage : g_story_player_deck;
+}
+
+static int deck_editor_active_count(void)
+{
+    return g_deck_tab ? g_story_storage_count : g_story_deck_count;
+}
+
+static void deck_editor_clamp_cursor(void)
+{
+    int count = deck_editor_active_count();
+    int *scroll = &g_deck_scroll[g_deck_tab];
+    if (count <= 0) {
+        g_deck_cursor = 0;
+        *scroll = 0;
+        return;
+    }
+    if (g_deck_cursor < 0) g_deck_cursor = 0;
+    if (g_deck_cursor >= count) g_deck_cursor = count - 1;
+    if (*scroll < 0) *scroll = 0;
+    if (g_deck_cursor < *scroll) *scroll = g_deck_cursor;
+    if (g_deck_cursor >= *scroll + DECK_VISIBLE_CARDS) *scroll = g_deck_cursor - DECK_VISIBLE_CARDS + 1;
+    if (*scroll > count - 1) *scroll = count - 1;
+}
+
+static void deck_editor_switch_tab(void)
+{
+    g_deck_tab ^= 1;
+    deck_editor_clamp_cursor();
+}
+
+static void deck_editor_move_cursor(int dx, int dy)
+{
+    int count = deck_editor_active_count();
+    if (count <= 0) { deck_editor_switch_tab(); return; }
+    if (dy < 0 && g_deck_cursor < DECK_GRID_COLS) {
+        deck_editor_switch_tab();
+        return;
+    }
+    if (dy > 0) g_deck_cursor += DECK_GRID_COLS;
+    if (dy < 0) g_deck_cursor -= DECK_GRID_COLS;
+    if (dx != 0) g_deck_cursor += dx;
+    if (g_deck_cursor < 0) g_deck_cursor = count - 1;
+    if (g_deck_cursor >= count) g_deck_cursor = 0;
+    deck_editor_clamp_cursor();
+}
+
+static void remove_card_at(int *arr, int *count, int idx)
+{
+    if (!arr || !count || idx < 0 || idx >= *count) return;
+    for (int i = idx; i < *count - 1; ++i) arr[i] = arr[i + 1];
+    --(*count);
+}
+
+static void append_card_to(int *arr, int *count, int max_count, int card)
+{
+    if (!arr || !count || *count >= max_count) return;
+    arr[*count] = card;
+    ++(*count);
+}
+
+static void recalc_story_deck_counts(void)
+{
+    g_story_equip_count = 0;
+    g_story_support_count = 0;
+    for (int i = 0; i < g_story_deck_count; ++i) {
+        if (g_story_player_deck[i] == SUPPORT_EQUIP_CARD_ID) ++g_story_equip_count;
+        else if (is_support_card(g_story_player_deck[i])) ++g_story_support_count;
+    }
+}
+
+static int story_save_exists(void)
+{
+    FILE *fp = fopen(STORY_SAVE_PATH, "r");
+    if (!fp) return 0;
+    fclose(fp);
+    return 1;
+}
+
+static int write_story_save(void)
+{
+    FILE *fp = fopen(STORY_SAVE_PATH, "w");
+    if (!fp) return 0;
+
+    fprintf(fp, "WAIFU_STORY_SAVE_V1\n");
+    fprintf(fp, "name %s\n", g_story_name);
+    fprintf(fp, "duel %d\n", g_story_duel_index);
+    fprintf(fp, "map %d pyramid %d plaza %d\n", g_story_map_cursor, g_story_pyramid_cursor, g_story_plaza_line);
+    fprintf(fp, "deck_count %d storage_count %d\n", g_story_deck_count, g_story_storage_count);
+    fprintf(fp, "deck");
+    for (int i = 0; i < g_story_deck_count; ++i) fprintf(fp, " %d", g_story_player_deck[i]);
+    fprintf(fp, "\n");
+    fprintf(fp, "storage");
+    for (int i = 0; i < g_story_storage_count; ++i) fprintf(fp, " %d", g_story_storage[i]);
+    fprintf(fp, "\n");
+
+    if (fclose(fp) != 0) return 0;
+    return 1;
+}
+
+static int read_story_save(void)
+{
+    FILE *fp = fopen(STORY_SAVE_PATH, "r");
+    char magic[64];
+    char key[64];
+    char saved_name[64];
+    char tok1[64];
+    char tok2[64];
+    int duel = 0, map_cursor = 0, pyramid_cursor = 0, plaza_line = 0;
+    int deck_count = 0, storage_count = 0;
+
+    if (!fp) return 0;
+    if (fscanf(fp, "%63s", magic) != 1 || strcmp(magic, "WAIFU_STORY_SAVE_V1") != 0) { fclose(fp); return 0; }
+    if (fscanf(fp, "%63s %63s", key, saved_name) != 2 || strcmp(key, "name") != 0) { fclose(fp); return 0; }
+    if (fscanf(fp, "%63s %d", key, &duel) != 2 || strcmp(key, "duel") != 0) { fclose(fp); return 0; }
+    if (fscanf(fp, "%63s %d %63s %d %63s %d", key, &map_cursor, tok1, &pyramid_cursor, tok2, &plaza_line) != 6 ||
+        strcmp(key, "map") != 0 || strcmp(tok1, "pyramid") != 0 || strcmp(tok2, "plaza") != 0) { fclose(fp); return 0; }
+    if (fscanf(fp, "%63s %d %63s %d", key, &deck_count, tok1, &storage_count) != 4 ||
+        strcmp(key, "deck_count") != 0 || strcmp(tok1, "storage_count") != 0) { fclose(fp); return 0; }
+    if (deck_count < 0 || deck_count > STORY_DECK_SIZE || storage_count < 0 || storage_count > STORY_STORAGE_SIZE) { fclose(fp); return 0; }
+
+    if (fscanf(fp, "%63s", key) != 1 || strcmp(key, "deck") != 0) { fclose(fp); return 0; }
+    for (int i = 0; i < deck_count; ++i) { if (fscanf(fp, "%d", &g_story_player_deck[i]) != 1) { fclose(fp); return 0; } }
+    if (fscanf(fp, "%63s", key) != 1 || strcmp(key, "storage") != 0) { fclose(fp); return 0; }
+    for (int i = 0; i < storage_count; ++i) { if (fscanf(fp, "%d", &g_story_storage[i]) != 1) { fclose(fp); return 0; } }
+    fclose(fp);
+
+    memset(g_story_name, 0, sizeof(g_story_name));
+    strncpy(g_story_name, saved_name, STORY_NAME_LEN);
+    for (int i = 0; i < STORY_NAME_LEN; ++i) {
+        if (g_story_name[i] < 'A' || g_story_name[i] > 'Z') g_story_name[i] = 'A';
+    }
+    g_story_name[STORY_NAME_LEN] = '\0';
+    g_story_duel_index = duel;
+    if (g_story_duel_index < 0) g_story_duel_index = 0;
+    if (g_story_duel_index >= STORY_MAX_DUELS) g_story_duel_index = STORY_MAX_DUELS - 1;
+    g_story_map_cursor = map_cursor ? 1 : 0;
+    g_story_pyramid_cursor = pyramid_cursor;
+    if (g_story_pyramid_cursor < 0 || g_story_pyramid_cursor > 2) g_story_pyramid_cursor = 0;
+    g_story_plaza_line = plaza_line;
+    if (g_story_plaza_line < 0) g_story_plaza_line = 0;
+    g_story_deck_count = deck_count;
+    g_story_storage_count = storage_count;
+    g_story_player_deck_pos = 0;
+    if (g_story_deck_count > 0) g_story_strong_card = g_story_player_deck[0];
+    if (g_story_deck_count > 1) g_story_weak_card = g_story_player_deck[1];
+    g_story_battle_active = 0;
+    g_story_intro_line = 0;
+    g_story_fire_line = 0;
+    g_story_saved_flash = 0;
+    g_story_editor_from_pyramid = 0;
+    reset_story_deck_editor();
+    recalc_story_deck_counts();
+    init_battle_state();
+    return 1;
+}
+
+static int load_story_to_map(void)
+{
+    if (!read_story_save()) {
+        g_story_save_status = -1;
+        return 0;
+    }
+    g_story_save_status = 1;
+    g_i_state = WAIFU_I_STORY_MAP;
+    g_i_frame = -1;
+    return 1;
+}
+
+static void deck_editor_move_selected_card(void)
+{
+    int count = deck_editor_active_count();
+    int card;
+    if (count <= 0) { g_deck_flash = 50; return; }
+    if (g_deck_tab == 0) {
+        if (g_story_storage_count >= STORY_STORAGE_SIZE) { g_deck_flash = 50; return; }
+        card = g_story_player_deck[g_deck_cursor];
+        remove_card_at(g_story_player_deck, &g_story_deck_count, g_deck_cursor);
+        append_card_to(g_story_storage, &g_story_storage_count, STORY_STORAGE_SIZE, card);
+    } else {
+        if (g_story_deck_count >= STORY_DECK_SIZE) { g_deck_flash = 50; return; }
+        card = g_story_storage[g_deck_cursor];
+        remove_card_at(g_story_storage, &g_story_storage_count, g_deck_cursor);
+        append_card_to(g_story_player_deck, &g_story_deck_count, STORY_DECK_SIZE, card);
+    }
+    recalc_story_deck_counts();
+    deck_editor_clamp_cursor();
+}
+
+static int next_random_draw_id(void)
 {
     int id = g_b_deck_seed % WAIFU_CARD_COUNT;
     g_b_deck_seed = (g_b_deck_seed * 13 + 7) % 997;
     return id;
 }
 
+static const char *story_opponent_name(void)
+{
+    switch (g_story_duel_index) {
+    case 0: return "DREAM SHADE";
+    case 1: return "PLAZA NOVICE";
+    case 2: return "TEMPLE ADEPT";
+    default: return "SPHINX GUARDIAN";
+    }
+}
+
+static int story_opponent_card_at(int duel, int pos)
+{
+    static const int dream[]  = {20, 23, 29, 34, 19, 30, 6, 43, 29, 20};
+    static const int plaza[]  = {12, 15, 22, 29, 36, 6, 19, 23, 30, 34};
+    static const int adept[]  = {28, 33, 37, 15, 22, 40, 12, 36, 8, 14};
+    static const int sphinx[] = {33, 37, 40, 28, 14, 8, 36, 22, 12, 15};
+    const int *pool = dream;
+    int count = (int)(sizeof(dream) / sizeof(dream[0]));
+    if (duel == 1) { pool = plaza; count = (int)(sizeof(plaza) / sizeof(plaza[0])); }
+    else if (duel == 2) { pool = adept; count = (int)(sizeof(adept) / sizeof(adept[0])); }
+    else if (duel >= 3) { pool = sphinx; count = (int)(sizeof(sphinx) / sizeof(sphinx[0])); }
+    return pool[pos % count];
+}
+
+static int next_story_com_draw_id(void)
+{
+    int card = story_opponent_card_at(g_story_duel_index, g_story_com_draw_pos++);
+    if (g_story_duel_index >= 2 && (g_story_com_draw_pos % 7) == 0) card = SUPPORT_EQUIP_CARD_ID;
+    return card;
+}
+
+static int next_draw_id(void)
+{
+    if (g_story_battle_active && g_story_player_deck_pos < g_story_deck_count) {
+        return g_story_player_deck[g_story_player_deck_pos++];
+    }
+    return next_random_draw_id();
+}
+
+static int next_com_draw_id(void)
+{
+    /* COM draws must never consume Serena's story/player deck. */
+    if (g_story_battle_active) return next_story_com_draw_id();
+    return next_random_draw_id();
+}
+
 static void init_battle_state(void)
 {
     int i;
+    g_story_battle_active = 0;
     for (i = 0; i < I_HAND; ++i) {
         g_i_player_hand[i] = hand_ids[i];
         g_i_player_used[i] = 0;
@@ -2218,6 +2777,30 @@ static void init_battle_state(void)
     g_b_deck_seed = 17;
     g_b_player_monster_played_this_turn = 0;
     g_b_com_monster_played_this_turn = 0;
+}
+
+static void init_story_battle_state(void)
+{
+    if (g_story_deck_count != STORY_DECK_SIZE) {
+        generate_story_starter_deck();
+        generate_story_storage_pool();
+    }
+    init_battle_state();
+    g_story_battle_active = 1;
+    g_story_player_deck_pos = 0;
+    for (int i = 0; i < I_HAND; ++i) {
+        g_i_player_hand[i] = next_draw_id();
+        g_i_player_used[i] = 0;
+    }
+    g_i_player_deck_left = g_story_deck_count - I_HAND;
+    g_story_com_draw_pos = 0;
+    for (int i = 0; i < I_HAND; ++i) {
+        g_i_com_hand[i] = next_story_com_draw_id();
+        g_i_com_used[i] = 0;
+    }
+    g_i_com_deck_left = STORY_DECK_SIZE - I_HAND;
+    g_b_deck_seed = (story_hash_name() + g_story_duel_index * 97) % 997;
+    if (g_b_deck_seed <= 0) g_b_deck_seed = 17;
 }
 
 static void draw_interactive_field_cards(Camera cam)
@@ -2278,39 +2861,64 @@ static void draw_interactive_common(Camera cam, int bottom_card, const char *bot
     if (bottom_card >= 0) draw_bottom_info(bottom_card, bottom_mode ? bottom_mode : "CARD");
 }
 
+static void draw_preview_stat_line(int x, int y, const char *label, unsigned value)
+{
+    char line[32];
+    snprintf(line, sizeof(line), "%s %u", label, value);
+    draw_text_small(x, y, line, IDX_GOLD_HI, IDX_BLACK);
+}
+
 static void draw_interactive_card_preview(int card_id, int f)
 {
+    int tx = 136;
+    int maxw = 112;
+    int y = 17;
+    int lines;
+    char line[128];
     clear_screen(IDX_BLACK);
+
+    /* Card-check/detail view: keep the full-size card display on the left,
+       while wrapping the right column by pixel width so names, type lines and
+       lore stay inside the 256x240 screen. */
+    draw_panel_rect(2, 10, 252, 218, IDX_UI_DARK);
+
     if (is_support_card(card_id)) {
-        draw_card_raw(waifu_support_face, WAIFU_CARD_W, WAIFU_CARD_H, 34, 45, 76, 108);
-        draw_text_small(136, 22, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK);
-        draw_wrapped_text_small(136, 48, "Support card", 20, IDX_WHITE, IDX_BLACK);
-        draw_wrapped_text_small(136, 74, "Does not use", 20, IDX_WHITE, IDX_BLACK);
-        draw_wrapped_text_small(136, 92, "your monster", 20, IDX_WHITE, IDX_BLACK);
-        draw_wrapped_text_small(136, 110, "placement.", 20, IDX_WHITE, IDX_BLACK);
-        if (((f / 16) & 1) == 0) draw_text_small(74, 223, "B: BACK", IDX_WHITE, IDX_BLACK);
+        rect_fill(11, 40, 120, 160, IDX_BLACK);
+        draw_card_raw(waifu_support_face, WAIFU_CARD_W, WAIFU_CARD_H, 8, 36, 120, 160);
+        rect_outline(7, 35, 122, 162, IDX_GOLD_HI);
+        draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
+        lines = draw_wrapped_text_small_box(tx, y, maxw, 3, 10, support_card_name(card_id), IDX_WHITE, IDX_BLACK);
+        y += lines * 10 + 7;
+        draw_text_small(tx, y, "TYPE", IDX_GOLD_HI, IDX_BLACK); y += 11;
+        lines = draw_wrapped_text_small_box(tx, y, maxw, 2, 10, support_card_type(card_id), IDX_WHITE, IDX_BLACK);
+        y += lines * 10 + 7;
+        draw_text_small(tx, y, "EFFECT", IDX_GOLD_HI, IDX_BLACK); y += 11;
+        draw_wrapped_text_small_box(tx, y, maxw, 6, 10, support_card_effect(card_id), IDX_WHITE, IDX_BLACK);
+        if (((f / 16) & 1) == 0) draw_text_small(74, 218, "B: BACK", IDX_WHITE, IDX_BLACK);
         return;
     }
+
     if (!is_monster_card(card_id)) return;
     draw_big_battle_card(card_id, 8, 36, 0);
-    int tx = 136;
-    int y = 22;
-    char line[64];
+
     draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
-    draw_wrapped_text_small(tx, y, waifu_card_names[card_id], 20, IDX_WHITE, IDX_BLACK); y += 24;
+    lines = draw_wrapped_text_small_box(tx, y, maxw, 4, 10, waifu_card_names[card_id], IDX_WHITE, IDX_BLACK);
+    y += lines * 10 + 6;
     draw_stars_line(tx, y, card_star_count(card_id)); y += 13;
+
     snprintf(line, sizeof(line), "%s / %s", waifu_card_attr[card_id], waifu_card_tribe[card_id]);
-    draw_wrapped_text_small(tx, y, line, 20, IDX_WHITE, IDX_BLACK); y += 20;
+    lines = draw_wrapped_text_small_box(tx, y, maxw, 3, 10, line, IDX_WHITE, IDX_BLACK);
+    y += lines * 10 + 7;
+
     draw_text_small(tx, y, "LORE", IDX_GOLD_HI, IDX_BLACK); y += 11;
-    draw_wrapped_text_small(tx, y, "A duel maiden whose", 20, IDX_WHITE, IDX_BLACK); y += 18;
-    snprintf(line, sizeof(line), "%s force shapes", waifu_card_attr[card_id]);
-    draw_wrapped_text_small(tx, y, line, 20, IDX_WHITE, IDX_BLACK); y += 18;
-    draw_wrapped_text_small(tx, y, "the shattered field.", 20, IDX_WHITE, IDX_BLACK);
-    snprintf(line, sizeof(line), "ATK %u", (unsigned)waifu_card_atk[card_id]);
-    draw_text_small(tx, 197, line, IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "DEF %u", (unsigned)waifu_card_def[card_id]);
-    draw_text_small(tx, 209, line, IDX_GOLD_HI, IDX_BLACK);
-    if (((f / 16) & 1) == 0) draw_text_small(74, 223, "B: BACK", IDX_WHITE, IDX_BLACK);
+    snprintf(line, sizeof(line), "A duel maiden whose %s force shapes the shattered field.", waifu_card_attr[card_id]);
+    lines = draw_wrapped_text_small_box(tx, y, maxw, 5, 10, line, IDX_WHITE, IDX_BLACK);
+    y += lines * 10 + 7;
+
+    if (y < 194) y = 194;
+    draw_preview_stat_line(tx, y, "ATK", (unsigned)waifu_card_atk[card_id]);
+    draw_preview_stat_line(tx, y + 12, "DEF", (unsigned)waifu_card_def[card_id]);
+    if (((f / 16) & 1) == 0) draw_text_small(74, 218, "B: BACK", IDX_WHITE, IDX_BLACK);
 }
 
 
@@ -2540,6 +3148,21 @@ static void draw_interactive_battle(void)
                                g_b_damage_text, g_b_battle_outcome);
 }
 
+static void draw_post_battle_return(int attacker_owner, int f, int focus_slot, int bottom_card, const char *mode)
+{
+    const int settle_frames = 20;
+    const int fade_frames = 8;
+    Camera from = side_battle_camera(attacker_owner == 0 ? PLAYER_CARD_ROW : ENEMY_CARD_ROW);
+    Camera to = (attacker_owner == 0) ? battle_top_camera() : enemy_battle_top_camera();
+    Camera cam = lerp_camera(from, to, (float)f / (float)settle_frames);
+    render_board(cam);
+    draw_interactive_field_cards(cam);
+    draw_hud();
+    if (bottom_card >= 0) draw_bottom_info(bottom_card, mode ? mode : "FIELD");
+    if (focus_slot >= 0) draw_zone_cursor(cam, focus_slot, attacker_owner == 0 ? PLAYER_CARD_ROW : ENEMY_CARD_ROW);
+    if (f < fade_frames) apply_black_dither_fade((float)f / (float)fade_frames);
+}
+
 static void draw_interactive_result(void)
 {
     int local = g_b_phase_frame;
@@ -2579,7 +3202,7 @@ static void draw_interactive_tally(void)
     snprintf(line, sizeof(line), "%d", g_i_player_deck_left); draw_text(55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK); draw_text(176, 130, line, IDX_GOLD_HI, IDX_BLACK);
     snprintf(line, sizeof(line), "%d", score); draw_text(55, 148, "SCORE", IDX_WHITE, IDX_BLACK); draw_text(152, 148, line, IDX_GOLD_HI, IDX_BLACK);
     snprintf(line, sizeof(line), "RANK %c", rank); draw_centered_text_scaled(170, line, 2, IDX_GOLD_HI, IDX_BLACK);
-    draw_text_small(50, 210, "RUN: RETURN TO TITLE", IDX_WHITE, IDX_BLACK);
+    draw_text_small(50, 210, g_story_battle_active ? "RUN: RETURN TO MAP" : "RUN: RETURN TO TITLE", IDX_WHITE, IDX_BLACK);
 }
 
 static int draw_replacement_cards_to_hand(void)
@@ -2588,6 +3211,11 @@ static int draw_replacement_cards_to_hand(void)
     g_b_draw_count = 0;
     for (i = 0; i < I_HAND; ++i) g_b_draw_slots[i] = -1;
     if (g_i_player_deck_left <= 0) return 0;
+
+    /* Draw into every spent/empty hand slot first.  If the player ended the
+       turn with a completely full live hand, the turn draw must still happen:
+       slot 0 is discarded/replaced by the drawn card.  This prevents full-hand
+       stalling where the deck never advances and deck-out can be avoided. */
     for (i = 0; i < I_HAND; ++i) {
         if (g_i_player_used[i]) {
             if (g_i_player_deck_left <= 0) return g_b_draw_count > 0;
@@ -2597,20 +3225,33 @@ static int draw_replacement_cards_to_hand(void)
             g_b_draw_slots[g_b_draw_count++] = i;
         }
     }
-    return 1;
+    if (g_b_draw_count == 0 && g_i_player_deck_left > 0) {
+        g_i_player_hand[0] = next_draw_id();
+        g_i_player_used[0] = 0;
+        --g_i_player_deck_left;
+        g_b_draw_slots[g_b_draw_count++] = 0;
+    }
+    return g_b_draw_count > 0;
 }
 
 static void draw_replacement_cards_to_com_hand(void)
 {
     int i;
+    int drew = 0;
     if (g_i_com_deck_left <= 0) return;
     for (i = 0; i < I_HAND; ++i) {
         if (g_i_com_used[i]) {
             if (g_i_com_deck_left <= 0) return;
-            g_i_com_hand[i] = next_draw_id();
+            g_i_com_hand[i] = next_com_draw_id();
             g_i_com_used[i] = 0;
             --g_i_com_deck_left;
+            drew = 1;
         }
+    }
+    if (!drew && g_i_com_deck_left > 0) {
+        g_i_com_hand[0] = next_com_draw_id();
+        g_i_com_used[0] = 0;
+        --g_i_com_deck_left;
     }
 }
 
@@ -2757,9 +3398,10 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_PLAYER_RETURN_TOP:
         atk_slot = selected_or_first_live_player_slot();
-        draw_interactive_common(battle_top_camera(), atk_slot >= 0 ? g_i_player_field[atk_slot] : hand_ids[0], "FIELD");
-        if (atk_slot >= 0) draw_zone_cursor(battle_top_camera(), atk_slot, PLAYER_CARD_ROW);
-        if (g_b_phase_frame >= 35) set_battle_phase(IB_PLAYER_TOP);
+        draw_post_battle_return(0, g_b_phase_frame, atk_slot,
+                                atk_slot >= 0 ? g_i_player_field[atk_slot] : hand_ids[0],
+                                atk_slot >= 0 && g_i_player_attacked[atk_slot] ? "USED" : "FIELD");
+        if (g_b_phase_frame >= 24) set_battle_phase(IB_PLAYER_TOP);
         break;
 
     case IB_TURN_TO_COM:
@@ -2826,9 +3468,11 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_COM_RETURN:
-        draw_interactive_common(enemy_battle_top_camera(), first_live_com_slot() >= 0 ? g_i_com_field[first_live_com_slot()] : hand_ids[0], "COM");
-        if (first_live_com_slot() >= 0) draw_zone_cursor(enemy_battle_top_camera(), first_live_com_slot(), ENEMY_CARD_ROW);
-        if (g_b_phase_frame >= 45) {
+        atk_slot = first_live_com_slot();
+        draw_post_battle_return(1, g_b_phase_frame, atk_slot,
+                                atk_slot >= 0 ? g_i_com_field[atk_slot] : hand_ids[0],
+                                "COM");
+        if (g_b_phase_frame >= 30) {
             clear_player_attacks();
             g_b_player_monster_played_this_turn = 0;
             g_b_turns++;
@@ -2864,9 +3508,13 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     case IB_TALLY:
         draw_interactive_tally();
         if (press_start || press_a) {
-            g_i_state = WAIFU_I_TITLE;
-            g_i_frame = 0;
-            init_battle_state();
+            if (g_story_battle_active) {
+                story_return_to_map_after_duel();
+            } else {
+                g_i_state = WAIFU_I_TITLE;
+                g_i_frame = 0;
+                init_battle_state();
+            }
         }
         break;
     }
@@ -2914,15 +3562,388 @@ void waifu_fm_render_scripted_frame(int frame)
     render_frame(frame);
 }
 
-static void draw_story_stub_screen(void)
+static const char story_name_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+static int story_name_char_index(char c)
 {
-    draw_title_background();
-    draw_title_logo();
-    draw_panel_rect(31, 124, 194, 64, IDX_UI_DARK);
-    draw_centered_text(139, "STORY MODE", IDX_GOLD_HI, IDX_BLACK);
-    draw_centered_text(157, "NOT IMPLEMENTED", IDX_WHITE, IDX_BLACK);
-    draw_centered_text(177, "LALT: BACK", IDX_WHITE, IDX_BLACK);
+    for (int i = 0; story_name_chars[i]; ++i) if (story_name_chars[i] == c) return i;
+    return 0;
 }
+
+static void reset_story_entry(void)
+{
+    memcpy(g_story_name, "SERENA", STORY_NAME_LEN + 1);
+    g_story_name_pos = 0;
+    g_story_intro_line = 0;
+    g_story_fire_line = 0;
+    g_story_duel_index = 0;
+    g_story_map_cursor = 0;
+    g_story_pyramid_cursor = 0;
+    g_story_plaza_line = 0;
+    g_story_saved_flash = 0;
+    g_story_editor_from_pyramid = 0;
+    g_story_save_status = 0;
+    generate_story_starter_deck();
+    generate_story_storage_pool();
+    reset_story_deck_editor();
+}
+
+static void draw_egyptian_corner(int x, int y, int flip)
+{
+    for (int i = 0; i < 18; ++i) {
+        int xx = flip ? x - i : x + i;
+        hline(xx, xx, y + i / 3, IDX_GOLD_DARK);
+        if ((i & 3) == 0) put_px(xx, y + 8 + (i / 2), IDX_GOLD_HI);
+    }
+}
+
+static void draw_story_name_entry(void)
+{
+    char buf[32];
+    clear_screen(IDX_BLACK);
+    for (int y = 0; y < H; ++y) {
+        uint8_t c = (y & 8) ? IDX_DARK_BROWN : IDX_BLACK;
+        if (y < 36 || y > 204) hline(0, 255, y, c);
+    }
+    draw_panel_rect(20, 29, 216, 180, IDX_UI_DARK);
+    draw_egyptian_corner(31, 42, 0);
+    draw_egyptian_corner(224, 42, 1);
+    draw_centered_text_scaled(47, "NAME ENTRY", 1, IDX_GOLD_HI, IDX_BLACK);
+    draw_centered_text(66, "SCRIBE OF THE NILE", IDX_WHITE, IDX_BLACK);
+
+    rect_fill(46, 92, 164, 38, IDX_BLACK);
+    rect_outline(46, 92, 164, 38, IDX_GOLD_HI);
+    for (int i = 0; i < STORY_NAME_LEN; ++i) {
+        int x = 61 + i * 23;
+        char ch[2] = { g_story_name[i], 0 };
+        if (i == g_story_name_pos) {
+            rect_fill(x - 4, 99, 19, 21, IDX_DARK_BROWN);
+            rect_outline(x - 5, 98, 21, 23, IDX_GOLD_HI);
+        }
+        draw_text(x, 104, ch, i == g_story_name_pos ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+        hline(x - 2, x + 10, 121, IDX_UI_LIGHT);
+    }
+
+    snprintf(buf, sizeof(buf), "LETTER %c", g_story_name[g_story_name_pos]);
+    draw_centered_text(143, buf, IDX_WHITE, IDX_BLACK);
+    draw_text_small(34, 166, "LEFT/RIGHT SLOT", IDX_WHITE, IDX_BLACK);
+    draw_text_small(34, 180, "UP/DOWN GLYPH", IDX_WHITE, IDX_BLACK);
+    draw_text_small(34, 194, "A NEXT   RUN DREAM", IDX_GOLD_HI, IDX_BLACK);
+}
+
+static void draw_blue_gradient_box(int x, int y, int w, int h)
+{
+    for (int yy = 0; yy < h; ++yy) {
+        uint8_t c;
+        if (yy < h / 3) c = IDX_UI_BLUE;
+        else if (yy < (h * 2) / 3) c = IDX_UI_TEAL;
+        else c = IDX_UI_DARK;
+        hline(x, x + w - 1, y + yy, c);
+    }
+    rect_outline(x, y, w, h, IDX_WHITE);
+    rect_outline(x + 1, y + 1, w - 2, h - 2, IDX_UI_LIGHT);
+}
+
+static const char *story_intro_lines[] = {
+    "I remember the gold dust on the market stones.",
+    "I remember the cards calling my name from a sealed box.",
+    "Every night, the same black river opens under my feet.",
+    "Tonight, I dream my first duel again."
+};
+
+static void draw_story_intro_screen(int f)
+{
+    int line_count = (int)(sizeof(story_intro_lines) / sizeof(story_intro_lines[0]));
+    int line = g_story_intro_line;
+    if (line < 0) line = 0;
+    if (line >= line_count) line = line_count - 1;
+
+    clear_screen(IDX_BLACK);
+    if ((f & 32) == 0) {
+        for (int i = 0; i < 24; ++i) put_px(116 + ((i * 17 + f) & 23), 38 + ((i * 11) & 31), IDX_DIM);
+    }
+    draw_blue_gradient_box(8, 171, 240, 58);
+    draw_text_small(18, 181, "SERENA", IDX_GOLD_HI, IDX_BLACK);
+    draw_wrapped_text_small_box(18, 196, 218, 3, 10, story_intro_lines[line], IDX_WHITE, IDX_BLACK);
+    if (((f / 18) & 1) == 0) draw_text_small(198, 216, "A/RUN", IDX_WHITE, IDX_BLACK);
+}
+
+
+static const char *story_fire_lines[] = {
+    "SERENA... THE DREAM HAS TEETH.",
+    "YOU ARE GOING TO BURN IN HELL."
+};
+
+static uint8_t fire_color_from_intensity(int v)
+{
+    if (v > 45) return IDX_GOLD_HI;
+    if (v > 34) return IDX_FLAME1;
+    if (v > 23) return IDX_FLAME2;
+    if (v > 13) return IDX_FLAME3;
+    if (v > 5) return IDX_RED;
+    return IDX_BLACK;
+}
+
+static void draw_oldschool_fire(int f)
+{
+    for (int y = 72; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            int wave = (int)(10.0f * sinf((float)(x + f * 3) * 0.055f) +
+                             7.0f * sinf((float)(x * 3 - f * 2) * 0.039f));
+            int noise = ((x * 23 + y * 17 + f * 11) ^ ((x + f) * 7) ^ ((y - f) * 13)) & 31;
+            int rise = (H - y) / 2;
+            int base = (y - 88 + wave) + noise - rise;
+            if (base < 0) base = 0;
+            put_px(x, y, fire_color_from_intensity(base));
+        }
+    }
+}
+
+static void draw_demon_face(int f)
+{
+    int cx = 128;
+    int cy = 72;
+    /* Horns */
+    for (int i = 0; i < 28; ++i) {
+        line_i(cx - 25, cy - 3, cx - 62 + i / 2, cy - 31 + i, IDX_RED);
+        line_i(cx + 25, cy - 3, cx + 62 - i / 2, cy - 31 + i, IDX_RED);
+    }
+    rect_fill(cx - 36, cy - 10, 72, 47, IDX_BLACK);
+    rect_outline(cx - 36, cy - 10, 72, 47, IDX_RED);
+    rect_fill(cx - 23, cy + 5, 15, 7, ((f / 8) & 1) ? IDX_FLAME1 : IDX_GOLD_HI);
+    rect_fill(cx + 8, cy + 5, 15, 7, ((f / 8) & 1) ? IDX_FLAME1 : IDX_GOLD_HI);
+    line_i(cx - 20, cy + 26, cx - 4, cy + 20, IDX_FLAME2);
+    line_i(cx - 4, cy + 20, cx + 4, cy + 20, IDX_FLAME2);
+    line_i(cx + 4, cy + 20, cx + 20, cy + 26, IDX_FLAME2);
+    draw_centered_text(26, "THE DEMON", IDX_RED, IDX_BLACK);
+}
+
+static void draw_story_fire_screen(int f)
+{
+    int line_count = (int)(sizeof(story_fire_lines) / sizeof(story_fire_lines[0]));
+    int line = g_story_fire_line;
+    if (line < 0) line = 0;
+    if (line >= line_count) line = line_count - 1;
+    clear_screen(IDX_BLACK);
+    draw_oldschool_fire(f);
+    draw_demon_face(f);
+    draw_panel_rect(8, 172, 240, 57, IDX_UI_DARK);
+    draw_text_small(18, 183, "DEMON", IDX_RED, IDX_BLACK);
+    draw_wrapped_text_small_box(18, 198, 218, 3, 10, story_fire_lines[line], IDX_WHITE, IDX_BLACK);
+    if (((f / 16) & 1) == 0) draw_text_small(197, 216, "A/RUN", IDX_WHITE, IDX_BLACK);
+}
+
+static const char *deck_editor_card_name(int id)
+{
+    return is_support_card(id) ? support_card_name(id) : waifu_card_names[id];
+}
+
+static void draw_deck_editor_icon(int card, int x, int y, int selected)
+{
+    draw_hand_card_sprite(card, x, y, 26, 34, 0);
+    if (selected) {
+        rect_outline(x - 2, y - 2, 30, 38, IDX_RED);
+        rect_outline(x - 3, y - 3, 32, 40, IDX_UI_RED);
+    }
+}
+
+static void draw_deck_editor(void)
+{
+    char line[96];
+    int count = deck_editor_active_count();
+    int *arr = deck_editor_active_array();
+    int scroll = g_deck_scroll[g_deck_tab];
+    int selected_card = (count > 0 && g_deck_cursor < count) ? arr[g_deck_cursor] : CARD_NONE;
+
+    clear_screen(IDX_BLACK);
+    for (int y = 0; y < H; ++y) {
+        uint8_t c = (y < 28) ? IDX_DARK_BROWN : ((y & 8) ? IDX_UI_DARK : IDX_BLACK);
+        hline(0, 255, y, c);
+    }
+    draw_panel_rect(4, 4, 248, 232, IDX_UI_DARK);
+    draw_centered_text(12, "DECK EDITOR", IDX_GOLD_HI, IDX_BLACK);
+
+    rect_fill(14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_DARK : IDX_BLACK);
+    rect_outline(14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_HI : IDX_DIM);
+    snprintf(line, sizeof(line), "DECK %02d/40", g_story_deck_count);
+    draw_text_small(22, 31, line, g_deck_tab == 0 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
+
+    rect_fill(140, 27, 102, 14, g_deck_tab == 1 ? IDX_GOLD_DARK : IDX_BLACK);
+    rect_outline(140, 27, 102, 14, g_deck_tab == 1 ? IDX_GOLD_HI : IDX_DIM);
+    snprintf(line, sizeof(line), "STORAGE %02d", g_story_storage_count);
+    draw_text_small(148, 31, line, g_deck_tab == 1 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
+
+    if (count <= 0) {
+        draw_centered_text(105, "EMPTY", IDX_DIM, IDX_BLACK);
+    } else {
+        for (int i = 0; i < DECK_VISIBLE_CARDS; ++i) {
+            int idx = scroll + i;
+            if (idx >= count) break;
+            int col = i % DECK_GRID_COLS;
+            int row = i / DECK_GRID_COLS;
+            int x = 14 + col * 40;
+            int y = 50 + row * 45;
+            draw_deck_editor_icon(arr[idx], x, y, idx == g_deck_cursor);
+        }
+    }
+
+    rect_fill(9, 190, 238, 36, IDX_BLACK);
+    rect_outline(9, 190, 238, 36, IDX_UI_LIGHT);
+    if (selected_card >= 0) {
+        draw_text_small_ellipsis(15, 196, deck_editor_card_name(selected_card), 25, IDX_WHITE, IDX_BLACK);
+        if (is_support_card(selected_card)) {
+            draw_text_small_ellipsis(15, 208, support_card_type(selected_card), 23, IDX_GOLD_HI, IDX_BLACK);
+        } else {
+            snprintf(line, sizeof(line), "ATK %u DEF %u", (unsigned)waifu_card_atk[selected_card], (unsigned)waifu_card_def[selected_card]);
+            draw_text_small(15, 208, line, IDX_GOLD_HI, IDX_BLACK);
+        }
+    }
+    if (g_deck_flash > 0 && ((g_deck_flash / 8) & 1) == 0) {
+        draw_centered_text(181, g_story_deck_count == STORY_DECK_SIZE ? "DECK IS FULL" : "DECK MUST BE 40", IDX_RED, IDX_BLACK);
+    }
+    draw_text_small(15, 226, "A MOVE  B CHECK  UP TAB  RUN", IDX_WHITE, IDX_BLACK);
+}
+
+
+static Camera story_map_camera(int f)
+{
+    float a = -0.38f + 0.10f * sinf((float)f * 0.025f);
+    return make_camera(v3(sinf(a) * 5.6f, 2.75f, cosf(a) * 5.6f),
+                       v3(0.0f, 0.55f, 0.0f), v3(0,1,0), 132.0f);
+}
+
+static void draw_map_pyramid_3d(int f)
+{
+    Camera cam = story_map_camera(f);
+    Vec3 apex = v3(0.0f, 2.15f, 0.0f);
+    Vec3 a = v3(-1.75f, 0.0f, -1.75f);
+    Vec3 b = v3( 1.75f, 0.0f, -1.75f);
+    Vec3 c = v3( 1.75f, 0.0f,  1.75f);
+    Vec3 d = v3(-1.75f, 0.0f,  1.75f);
+    (void)f;
+    draw_quad3d(cam, v3(-5.0f,-0.08f,-3.2f), v3(5.0f,-0.08f,-3.2f), v3(5.0f,-0.08f,3.4f), v3(-5.0f,-0.08f,3.4f), 4);
+    /* Degenerate quads form four textured triangle faces.  Back faces first,
+       then front/near faces, giving a stable software-rendered 3D pyramid. */
+    draw_quad3d(cam, a, b, apex, apex, 5);
+    draw_quad3d(cam, b, c, apex, apex, 1);
+    draw_quad3d(cam, c, d, apex, apex, 5);
+    draw_quad3d(cam, d, a, apex, apex, 1);
+
+    ScreenPt peak = project_point(cam, apex);
+    ScreenPt base = project_point(cam, v3(0, 0.0f, 0));
+    if (peak.ok && base.ok) {
+        line_i(peak.x, peak.y, base.x, base.y, IDX_GOLD_DARK);
+        put_px(peak.x, peak.y, IDX_GOLD_HI);
+    }
+}
+
+static void draw_desert_sky(void)
+{
+    for (int y = 0; y < H; ++y) {
+        uint8_t c = y < 52 ? IDX_UI_BLUE : (y < 93 ? IDX_UI_TEAL : (y < 143 ? IDX_GOLD_DARK : IDX_DARK_BROWN));
+        hline(0, 255, y, c);
+    }
+    for (int x = 0; x < W; x += 6) {
+        int yy = 142 + ((x * 13) & 7);
+        hline(x, x + 5 < 255 ? x + 5 : 255, yy, IDX_GOLD_HI);
+    }
+}
+
+static void draw_story_map_screen(int f)
+{
+    char line[96];
+    draw_desert_sky();
+    draw_map_pyramid_3d(f);
+    draw_panel_rect(6, 6, 105, 35, IDX_UI_DARK);
+    draw_text_small(12, 13, "STORY MAP", IDX_GOLD_HI, IDX_BLACK);
+    snprintf(line, sizeof(line), "DUEL %d/%d", g_story_duel_index + 1, STORY_MAX_DUELS);
+    draw_text_small(12, 27, line, IDX_WHITE, IDX_BLACK);
+
+    draw_panel_rect(126, 146, 121, 76, IDX_UI_DARK);
+    draw_text_small(135, 155, "DESTINATION", IDX_GOLD_HI, IDX_BLACK);
+    draw_text(143, 174, "PYRAMID", g_story_map_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(143, 194, "PLAZA", g_story_map_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    if (g_story_map_cursor == 0) draw_text(132, 174, ">", IDX_RED, IDX_BLACK);
+    else draw_text(132, 194, ">", IDX_RED, IDX_BLACK);
+
+    draw_panel_rect(8, 181, 108, 41, IDX_UI_DARK);
+    if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
+        draw_wrapped_text_small_box(16, 190, 91, 3, 9, "The final guardian waits beyond the plaza.", IDX_WHITE, IDX_BLACK);
+    } else {
+        draw_wrapped_text_small_box(16, 190, 91, 3, 9, "Go to the plaza to continue Serena's story.", IDX_WHITE, IDX_BLACK);
+    }
+    draw_text_small(11, 226, "A/RUN SELECT", IDX_WHITE, IDX_BLACK);
+}
+
+static void draw_story_pyramid_menu(void)
+{
+    clear_screen(IDX_BLACK);
+    draw_desert_sky();
+    draw_map_pyramid_3d(g_i_frame);
+    draw_panel_rect(34, 46, 188, 130, IDX_UI_DARK);
+    draw_centered_text(57, "PYRAMID SANCTUM", IDX_GOLD_HI, IDX_BLACK);
+    draw_wrapped_text_small_box(48, 75, 158, 3, 10, "Inside the stone shadow, Serena can prepare before returning to the dream.", IDX_WHITE, IDX_BLACK);
+    draw_text(72, 114, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(72, 134, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(72, 154, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(58, 114 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
+    draw_text_small(49, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
+}
+
+static void draw_story_save_screen(void)
+{
+    clear_screen(IDX_BLACK);
+    draw_desert_sky();
+    draw_map_pyramid_3d(g_i_frame);
+    draw_panel_rect(31, 78, 194, 82, IDX_UI_DARK);
+    if (g_story_save_status < 0) {
+        draw_centered_text(95, "SAVE FAILED", IDX_RED, IDX_BLACK);
+        draw_centered_text(118, "The memory seal is broken.", IDX_WHITE, IDX_BLACK);
+    } else if (g_story_save_status > 0) {
+        draw_centered_text(95, "PROGRESS SAVED", IDX_GOLD_HI, IDX_BLACK);
+        draw_centered_text(118, "The pyramid remembers Serena.", IDX_WHITE, IDX_BLACK);
+    } else {
+        draw_centered_text(95, "NO SAVE DATA", IDX_RED, IDX_BLACK);
+        draw_centered_text(118, "Nothing is written yet.", IDX_WHITE, IDX_BLACK);
+    }
+    if (((g_i_frame / 16) & 1) == 0) draw_centered_text(143, "A/RUN/B BACK", IDX_WHITE, IDX_BLACK);
+}
+
+static const char *story_plaza_lines[] = {
+    "The plaza wakes beneath the dream sun.",
+    "A duelist blocks Serena's path and raises a weathered deck.",
+    "In this city, memory is won one duel at a time."
+};
+
+static void draw_story_plaza_scene(void)
+{
+    int line_count = (int)(sizeof(story_plaza_lines) / sizeof(story_plaza_lines[0]));
+    int line = g_story_plaza_line;
+    if (line < 0) line = 0;
+    if (line >= line_count) line = line_count - 1;
+    clear_screen(IDX_BLACK);
+    for (int y = 0; y < H; ++y) hline(0, 255, y, y < 118 ? IDX_GOLD_DARK : IDX_DARK_BROWN);
+    for (int x = 0; x < W; x += 32) {
+        rect_fill(x + 6, 92, 16, 62, IDX_STONE);
+        rect_outline(x + 6, 92, 16, 62, IDX_STONE_HI);
+    }
+    draw_centered_text(35, "DREAM PLAZA", IDX_GOLD_HI, IDX_BLACK);
+    draw_panel_rect(8, 171, 240, 58, IDX_UI_DARK);
+    draw_text_small(18, 181, "SERENA", IDX_GOLD_HI, IDX_BLACK);
+    draw_wrapped_text_small_box(18, 196, 218, 3, 10, story_plaza_lines[line], IDX_WHITE, IDX_BLACK);
+    if (((g_i_frame / 18) & 1) == 0) draw_text_small(198, 216, "A/RUN", IDX_WHITE, IDX_BLACK);
+}
+
+static void story_return_to_map_after_duel(void)
+{
+    if (g_b_result >= 0 && g_story_duel_index < STORY_MAX_DUELS - 1) ++g_story_duel_index;
+    g_story_battle_active = 0;
+    g_story_map_cursor = 1;
+    g_i_state = WAIFU_I_STORY_MAP;
+    g_i_frame = -1;
+    init_battle_state();
+}
+
 
 void waifu_fm_step(const WaifuFmInput *input)
 {
@@ -2948,31 +3969,204 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_title_logo();
         draw_title_prompt(g_i_frame);
         if (g_i_frame < 30) apply_black_dither_fade((float)g_i_frame / 30.0f);
-        if (press_start || press_a) {
+        if (press_b) {
+            load_story_to_map();
+        } else if (press_start || press_a) {
             g_i_state = WAIFU_I_MENU;
             g_i_frame = -1;
         }
         break;
 
     case WAIFU_I_MENU:
-        if (press_up || press_down) g_i_menu_selected ^= 1;
+        if (press_up) g_i_menu_selected = (g_i_menu_selected + 2) % 3;
+        if (press_down) g_i_menu_selected = (g_i_menu_selected + 1) % 3;
         draw_menu_screen(g_i_menu_selected);
         if (press_start || press_a) {
             if (g_i_menu_selected == 0) {
-                g_i_state = WAIFU_I_STORY_STUB;
+                reset_story_entry();
+                g_i_state = WAIFU_I_STORY_NAME;
                 g_i_frame = -1;
-            } else {
+            } else if (g_i_menu_selected == 1) {
                 g_i_state = WAIFU_I_BATTLE;
                 init_battle_state();
                 g_i_frame = -1;
+            } else {
+                if (!load_story_to_map()) g_deck_flash = 60;
             }
         }
         break;
 
-    case WAIFU_I_STORY_STUB:
-        draw_story_stub_screen();
-        if (press_b || press_start) {
+    case WAIFU_I_STORY_NAME:
+        if (press_left) g_story_name_pos = (g_story_name_pos + STORY_NAME_LEN - 1) % STORY_NAME_LEN;
+        if (press_right || press_a) g_story_name_pos = (g_story_name_pos + 1) % STORY_NAME_LEN;
+        if (press_up || press_down) {
+            int idx = story_name_char_index(g_story_name[g_story_name_pos]);
+            int count = (int)strlen(story_name_chars);
+            idx = (idx + (press_up ? 1 : count - 1)) % count;
+            g_story_name[g_story_name_pos] = story_name_chars[idx];
+        }
+        draw_story_name_entry();
+        if (press_b) {
             g_i_state = WAIFU_I_MENU;
+            g_i_frame = -1;
+        } else if (press_start) {
+            g_story_intro_line = 0;
+            g_i_state = WAIFU_I_STORY_INTRO;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_STORY_INTRO:
+        draw_story_intro_screen(g_i_frame);
+        if (press_a || press_start) {
+            int line_count = (int)(sizeof(story_intro_lines) / sizeof(story_intro_lines[0]));
+            ++g_story_intro_line;
+            if (g_story_intro_line >= line_count) {
+                g_story_fire_line = 0;
+                g_i_state = WAIFU_I_STORY_FIRE;
+                g_i_frame = -1;
+            }
+        }
+        if (press_b) {
+            g_i_state = WAIFU_I_MENU;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_STORY_FIRE:
+        draw_story_fire_screen(g_i_frame);
+        if (press_a || press_start) {
+            int line_count = (int)(sizeof(story_fire_lines) / sizeof(story_fire_lines[0]));
+            ++g_story_fire_line;
+            if (g_story_fire_line >= line_count) {
+                reset_story_deck_editor();
+                g_story_editor_from_pyramid = 0;
+                g_i_state = WAIFU_I_DECK_EDITOR;
+                g_i_frame = -1;
+            }
+        }
+        if (press_b) {
+            g_i_state = WAIFU_I_MENU;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_STORY_MAP:
+        if (press_left || press_right || press_up || press_down) g_story_map_cursor ^= 1;
+        draw_story_map_screen(g_i_frame);
+        if (press_a || press_start) {
+            if (g_story_map_cursor == 0) {
+                g_story_pyramid_cursor = 0;
+                g_i_state = WAIFU_I_STORY_PYRAMID;
+                g_i_frame = -1;
+            } else {
+                g_story_plaza_line = 0;
+                g_i_state = WAIFU_I_STORY_PLAZA;
+                g_i_frame = -1;
+            }
+        }
+        if (press_b) {
+            g_i_state = WAIFU_I_MENU;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_STORY_PYRAMID:
+        if (press_up) g_story_pyramid_cursor = (g_story_pyramid_cursor + 2) % 3;
+        if (press_down) g_story_pyramid_cursor = (g_story_pyramid_cursor + 1) % 3;
+        draw_story_pyramid_menu();
+        if (press_a || press_start) {
+            if (g_story_pyramid_cursor == 0) {
+                g_story_saved_flash = 60;
+                g_story_save_status = write_story_save() ? 1 : -1;
+                g_i_state = WAIFU_I_STORY_SAVE;
+                g_i_frame = -1;
+            } else if (g_story_pyramid_cursor == 1) {
+                reset_story_deck_editor();
+                g_story_editor_from_pyramid = 1;
+                g_i_state = WAIFU_I_DECK_EDITOR;
+                g_i_frame = -1;
+            } else {
+                g_i_state = WAIFU_I_STORY_MAP;
+                g_i_frame = -1;
+            }
+        }
+        if (press_b) {
+            g_i_state = WAIFU_I_STORY_MAP;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_STORY_SAVE:
+        draw_story_save_screen();
+        if (press_a || press_b || press_start || g_i_frame > 90) {
+            g_i_state = WAIFU_I_STORY_PYRAMID;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_STORY_PLAZA:
+        draw_story_plaza_scene();
+        if (press_a || press_start) {
+            int line_count = (int)(sizeof(story_plaza_lines) / sizeof(story_plaza_lines[0]));
+            ++g_story_plaza_line;
+            if (g_story_plaza_line >= line_count) {
+                if (g_story_deck_count == STORY_DECK_SIZE) {
+                    recalc_story_deck_counts();
+                    init_story_battle_state();
+                    g_i_state = WAIFU_I_BATTLE;
+                    g_i_frame = -1;
+                } else {
+                    g_deck_flash = 60;
+                    reset_story_deck_editor();
+                    g_story_editor_from_pyramid = 0;
+                    g_i_state = WAIFU_I_DECK_EDITOR;
+                    g_i_frame = -1;
+                }
+            }
+        }
+        if (press_b) {
+            g_i_state = WAIFU_I_STORY_MAP;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_DECK_EDITOR:
+        if (press_left) deck_editor_move_cursor(-1, 0);
+        if (press_right) deck_editor_move_cursor(1, 0);
+        if (press_up) deck_editor_move_cursor(0, -1);
+        if (press_down) deck_editor_move_cursor(0, 1);
+        if (press_a) deck_editor_move_selected_card();
+        if (press_b && deck_editor_active_count() > 0) {
+            int *arr = deck_editor_active_array();
+            g_deck_preview_card = arr[g_deck_cursor];
+            g_i_state = WAIFU_I_DECK_PREVIEW;
+            g_i_frame = -1;
+        }
+        if (press_start) {
+            if (g_story_deck_count == STORY_DECK_SIZE) {
+                recalc_story_deck_counts();
+                if (g_story_editor_from_pyramid && g_story_duel_index > 0) {
+                    g_story_editor_from_pyramid = 0;
+                    g_i_state = WAIFU_I_STORY_PYRAMID;
+                    g_i_frame = -1;
+                } else {
+                    init_story_battle_state();
+                    g_i_state = WAIFU_I_BATTLE;
+                    g_i_frame = -1;
+                }
+            } else {
+                g_deck_flash = 60;
+            }
+        }
+        if (g_deck_flash > 0) --g_deck_flash;
+        draw_deck_editor();
+        break;
+
+    case WAIFU_I_DECK_PREVIEW:
+        draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
+        if (press_b || press_a || press_start) {
+            g_i_state = WAIFU_I_DECK_EDITOR;
             g_i_frame = -1;
         }
         break;
@@ -3175,8 +4369,18 @@ int main(int argc, char **argv)
         printf("player_faceup0=%d com_field0=%d com_faceup0=%d player_attacked0=%d com_attacked0=%d ",
                g_i_player_faceup[0], g_i_com_field[0], g_i_com_faceup[0],
                g_i_player_attacked[0], g_i_com_attacked[0]);
-        printf("player_monster_played=%d com_monster_played=%d result=%d\n",
+        printf("player_monster_played=%d com_monster_played=%d result=%d ",
                g_b_player_monster_played_this_turn, g_b_com_monster_played_this_turn, g_b_result);
+        printf("istate=%d story=%d story_line=%d story_fire_line=%d story_name=%s story_strong=%d story_weak=%d story_equips=%d story_supports=%d ",
+               (int)g_i_state, g_story_battle_active, g_story_intro_line, g_story_fire_line, g_story_name,
+               g_story_strong_card, g_story_weak_card, g_story_equip_count, g_story_support_count);
+        printf("deck_count=%d storage_count=%d deck_tab=%d deck_cursor=%d story_duel=%d map_cursor=%d pyramid_cursor=%d plaza_line=%d editor_from_pyramid=%d save_status=%d save_exists=%d opponent=%s ",
+               g_story_deck_count, g_story_storage_count, g_deck_tab, g_deck_cursor,
+               g_story_duel_index, g_story_map_cursor, g_story_pyramid_cursor, g_story_plaza_line,
+               g_story_editor_from_pyramid, g_story_save_status, story_save_exists(), story_opponent_name());
+        printf("hand0=%d hand1=%d hand2=%d hand3=%d hand4=%d deck_pos=%d deck_left=%d\n",
+               g_i_player_hand[0], g_i_player_hand[1], g_i_player_hand[2], g_i_player_hand[3], g_i_player_hand[4],
+               g_story_player_deck_pos, g_i_player_deck_left);
     }
     return 0;
 }

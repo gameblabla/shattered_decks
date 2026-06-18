@@ -1,0 +1,35 @@
+# Complete first story duel, then navigate from map/plaza to Pyramid save.
+60 2 START
+95 2 UP
+110 2 A
+145 2 START
+185 2 A
+225 2 A
+265 2 A
+305 2 A
+345 2 A
+385 2 A
+430 2 B
+520 2 B
+570 2 START
+760 2 RIGHT
+780 2 A
+900 2 START
+1480 2 LEFT
+1500 2 A
+1570 2 A
+1840 2 START
+2590 2 UP
+2610 2 A
+2840 2 START
+3590 2 UP
+3610 2 A
+3840 2 START
+4690 2 UP
+4710 2 A
+# Leave tally to story map; if we accidentally enter plaza, back out, choose pyramid, then save.
+5640 2 A
+5720 2 B
+5780 2 UP
+5840 2 A
+5900 2 A

@@ -1,0 +1,5 @@
+# Place a defender, pass, let COM attack, then capture the fast return transition.
+60 2 START
+100 2 A
+270 2 A
+340 2 START

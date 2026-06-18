@@ -1,0 +1,17 @@
+# Reach deck editor, remove a card, confirm duel start is blocked at 39,
+# switch to storage, add one card back, then start the duel.
+60 2 START
+95 2 UP
+110 2 A
+145 2 START
+185 2 A
+225 2 A
+265 2 A
+305 2 A
+345 2 A
+385 2 A
+440 2 A
+470 2 START
+500 2 UP
+530 2 A
+570 2 START

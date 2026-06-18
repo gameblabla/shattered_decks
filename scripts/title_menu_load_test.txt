@@ -1,0 +1,4 @@
+# Open title menu, move from Battle Mode to Load Story, and load.
+60 2 START
+100 2 DOWN
+140 2 A

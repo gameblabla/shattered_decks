@@ -1,6 +1,19 @@
-# Shattered Decks — C/headless + SDL 1.2 build v27
+# Shattered Decks — C/headless + SDL 1.2 build v29
 
 This package contains the platform-agnostic game core, the headless recorder/command backend, and an SDL 1.2 interactive frontend using a 256x240 8-bpp framebuffer.
+
+## v29 fixes
+
+- Added a one-monster-placement-per-turn rule for the player battle flow.
+- Support-card use is explicitly exempt from the monster placement limit.
+- Added `scripts/one_monster_per_turn_test.txt`, a headless regression script that places one monster, returns to hand, and attempts an illegal second monster placement during the same turn.
+- Extended `--dump-state` to include all five player monster zones and summon-limit flags for regression checks.
+
+## v28 fixes
+
+- Fixed first-turn attack legality: the opening player turn can no longer start a battle or direct attack.
+- Added `scripts/first_turn_attack_lock_test.txt`, a headless regression script that places a monster and attempts a first-turn direct attack.
+- Added `--dump-state` to the headless runner for deterministic regression checks of LP, turn, field, and attack-flag state.
 
 ## v27 fixes
 

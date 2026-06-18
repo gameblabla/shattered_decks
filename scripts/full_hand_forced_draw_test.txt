@@ -1,0 +1,6 @@
+# Regression: pass with a full unused hand. At the next player draw,
+# the draw must still happen by dropping/replacing hand slot 0.
+# Expected after frame 1000: hand0 is no longer 40 and deck_left is 34.
+60 2 START
+100 2 A
+330 2 START
