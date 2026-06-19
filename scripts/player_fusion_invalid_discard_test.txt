@@ -1,8 +1,10 @@
-# Regression: invalid DOWN fusion attempts are allowed; on failure the last
-# selected monster is placed if a monster zone is free.
+# Regression: invalid DOWN fusion attempts are allowed. Confirming with A now
+# opens the field-zone selector first; A on an empty zone starts the failed
+# fusion animation and places the last selected monster in that chosen zone.
 60 2 START
 100 2 A
 270 2 DOWN
 290 2 RIGHT
 310 2 DOWN
 330 2 A
+360 2 A

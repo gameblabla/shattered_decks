@@ -1,0 +1,1 @@
+# Uses --ai-demo-scenario multi-attack. No manual input is required.

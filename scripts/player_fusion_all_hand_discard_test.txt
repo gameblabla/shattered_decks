@@ -1,5 +1,6 @@
-# Regression: the fusion/discard selector can mark every live hand card, then
-# A confirms the invalid combination and discards all five after the animation.
+# Regression: the fusion/discard selector can mark every live hand card. A then
+# opens the field-zone selector; A on the selected zone starts the invalid fusion
+# animation and applies the chosen-zone failure fallback.
 60 2 START
 100 2 A
 270 2 DOWN
@@ -12,3 +13,4 @@
 410 2 RIGHT
 430 2 DOWN
 450 2 A
+480 2 A

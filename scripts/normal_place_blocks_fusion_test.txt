@@ -1,0 +1,12 @@
+# Regression: after the player places a monster, DOWN must not queue fusion
+# materials and A must not start a fusion or place another monster during that
+# same turn. The one monster action has already been consumed.
+60 2 START
+100 2 A
+270 2 A
+340 2 DOWN
+370 2 RIGHT
+400 2 DOWN
+430 2 RIGHT
+460 2 DOWN
+490 2 A

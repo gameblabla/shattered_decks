@@ -1,0 +1,1 @@
+# Uses --ai-demo-scenario defense-guard. No manual input is required.

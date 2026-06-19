@@ -1,0 +1,11 @@
+# Regression: a successful fusion result must enter the selected player monster
+# zone face-up. This queues Voltara + Galatea, confirms the selected field zone,
+# and expects player_field0=33 with player_faceup0=1 after the animation.
+60 2 START
+100 2 A
+270 2 RIGHT
+290 2 DOWN
+310 2 RIGHT
+330 2 DOWN
+350 2 A
+380 2 A

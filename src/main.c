@@ -13,6 +13,7 @@
 #include "title_asset.h"
 #include "zmbv_mkv.h"
 #include "game_api.h"
+#include "ai.h"
 
 #define W 256
 #define H 240
@@ -2628,6 +2629,7 @@ typedef enum WaifuBattlePhase {
     IB_PLAYER_PLACE,
     IB_PLAYER_EQUIP_TARGET,
     IB_PLAYER_EQUIP_ANIM,
+    IB_PLAYER_FUSION_TARGET,
     IB_PLAYER_FUSION_ANIM,
     IB_PLAYER_BATTLE,
     IB_PLAYER_RETURN_TOP,
@@ -2645,6 +2647,8 @@ typedef enum WaifuBattlePhase {
 
 #define I_HAND 5
 #define I_FIELD 5
+#define FUSION_MAX_MATERIALS (I_HAND + 1)
+#define FUSION_FIELD_SLOT (-2)
 #define CARD_NONE (-1)
 #define BATTLE_ANIM_FRAMES 196
 #define DIRECT_ATTACK_ANIM_FRAMES 108
@@ -2664,14 +2668,18 @@ static int g_b_selected_com_slot = 0;
 static int g_b_preview_card_id = CARD_NONE;
 static int g_b_fusion_hand_slots[I_HAND] = {-1, -1, -1, -1, -1};
 static int g_b_fusion_count = 0;
-static int g_b_fusion_anim_slots[I_HAND] = {-1, -1, -1, -1, -1};
-static int g_b_fusion_anim_cards[I_HAND] = {CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE};
+static int g_b_fusion_target_slot = -1;
+static int g_b_fusion_anim_slots[FUSION_MAX_MATERIALS] = {-1, -1, -1, -1, -1, -1};
+static int g_b_fusion_anim_cards[FUSION_MAX_MATERIALS] = {CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE};
 static int g_b_fusion_anim_count = 0;
 static int g_b_fusion_anim_result = CARD_NONE;
 static int g_b_fusion_anim_success = 0;
+static int g_b_fusion_anim_target_slot = -1;
+static int g_b_fusion_anim_has_field_card = 0;
 static int g_b_place_hand = -1;
 static int g_b_place_slot = -1;
 static int g_b_place_card = -1;
+static int g_b_place_defense = 0;
 static int g_b_equip_owner = 0; /* 0 player, 1 COM */
 static int g_b_equip_hand = -1;
 static int g_b_equip_slot = -1;
@@ -2891,8 +2899,11 @@ static const StoryOpponentInfo *story_opponent_info(void)
     return &g_story_opponents[idx];
 }
 
+static int story_opponent_card_at(int duel, int pos);
 static void story_return_to_map_after_duel(void);
 static void init_battle_state(void);
+static int first_free_com_slot(void);
+static int first_free_com_equip_slot(void);
 
 static void draw_cutin_battle_card(int id, int x, int y, int back, int attacker_card)
 {
@@ -2916,6 +2927,11 @@ static int player_can_place_monster(void)
     return !g_b_player_monster_played_this_turn;
 }
 
+static int player_can_start_fusion(void)
+{
+    return player_can_place_monster() && !g_b_player_fused_this_turn;
+}
+
 static int com_can_place_monster(void)
 {
     return !g_b_com_monster_played_this_turn;
@@ -2936,6 +2952,7 @@ static void clear_player_fusion_queue(void)
     int i;
     for (i = 0; i < I_HAND; ++i) g_b_fusion_hand_slots[i] = -1;
     g_b_fusion_count = 0;
+    g_b_fusion_target_slot = -1;
 }
 
 static int player_fusion_order_for_slot(int slot)
@@ -2971,25 +2988,40 @@ static int try_queue_player_fusion_slot(int slot)
     return g_b_fusion_count;
 }
 
-static int prepare_player_fusion_anim(void)
+static int prepare_player_fusion_anim(int target_slot)
 {
     int i;
+    int out = 0;
     int current;
     int success = 0;
+    int field_card = CARD_NONE;
     if (g_b_fusion_count <= 0) return 0;
-    for (i = 0; i < I_HAND; ++i) {
+    if (target_slot < 0 || target_slot >= I_FIELD) return 0;
+
+    for (i = 0; i < FUSION_MAX_MATERIALS; ++i) {
         g_b_fusion_anim_slots[i] = -1;
         g_b_fusion_anim_cards[i] = CARD_NONE;
     }
 
-    g_b_fusion_anim_count = g_b_fusion_count;
+    field_card = g_i_player_field[target_slot];
+    g_b_fusion_anim_target_slot = target_slot;
+    g_b_fusion_anim_has_field_card = is_monster_card(field_card);
+    if (g_b_fusion_anim_has_field_card) {
+        g_b_fusion_anim_slots[out] = FUSION_FIELD_SLOT;
+        g_b_fusion_anim_cards[out] = field_card;
+        ++out;
+    }
+
     for (i = 0; i < g_b_fusion_count; ++i) {
         int slot = g_b_fusion_hand_slots[i];
         if (slot < 0 || slot >= I_HAND || g_i_player_used[slot]) return 0;
-        g_b_fusion_anim_slots[i] = slot;
-        g_b_fusion_anim_cards[i] = g_i_player_hand[slot];
+        if (out >= FUSION_MAX_MATERIALS) return 0;
+        g_b_fusion_anim_slots[out] = slot;
+        g_b_fusion_anim_cards[out] = g_i_player_hand[slot];
+        ++out;
     }
 
+    g_b_fusion_anim_count = out;
     current = g_b_fusion_anim_cards[0];
     if (g_b_fusion_anim_count >= 2 && is_monster_card(current)) {
         success = 1;
@@ -3132,6 +3164,69 @@ static int field_card_def(int owner, int slot)
     id = owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot];
     if (!is_monster_card(id)) return 0;
     return card_base_def(id) + (owner == 0 ? g_i_player_def_bonus[slot] : g_i_com_def_bonus[slot]);
+}
+
+static int normal_com_deck_card_at(int pos)
+{
+    return com_hand_ids[pos % I_HAND];
+}
+
+static int com_deck_face_down_attack_threshold(void)
+{
+    int cards[STORY_DECK_SIZE];
+    int count = 0;
+    int i, j;
+    int deck_count = g_story_battle_active ? STORY_DECK_SIZE : I_HAND;
+
+    for (i = 0; i < deck_count && count < STORY_DECK_SIZE; ++i) {
+        int id = g_story_battle_active ? story_opponent_card_at(g_story_duel_index, i) : normal_com_deck_card_at(i);
+        if (is_monster_card(id)) cards[count++] = card_base_atk(id);
+    }
+    if (count <= 0) return 1800;
+    for (i = 1; i < count; ++i) {
+        int v = cards[i];
+        j = i - 1;
+        while (j >= 0 && cards[j] > v) { cards[j + 1] = cards[j]; --j; }
+        cards[j + 1] = v;
+    }
+    /* Sufficiently strong means roughly the upper third of the current COM deck.
+       The AI will not gamble weak cards into face-down attack-position monsters. */
+    return cards[(count * 2) / 3];
+}
+
+static void fill_ai_card_view(WaifuAiCardView *dst, int card_id, int used, int faceup, int defense, int attacked, int atk, int def)
+{
+    dst->card_id = card_id;
+    dst->used = used;
+    dst->faceup = faceup;
+    dst->defense = defense;
+    dst->attacked = attacked;
+    dst->atk = atk;
+    dst->def = def;
+}
+
+static void build_com_ai_state(WaifuAiState *state)
+{
+    int i;
+    memset(state, 0, sizeof(*state));
+    state->card_count = WAIFU_CARD_COUNT;
+    state->you_lp = g_you_lp;
+    state->com_lp = g_com_lp;
+    state->com_can_place_monster = com_can_place_monster();
+    state->free_com_slot = first_free_com_slot();
+    state->free_com_equip_slot = first_free_com_equip_slot();
+    state->first_com_equip_target = first_live_com_monster_slot();
+    state->deck_attack_threshold = com_deck_face_down_attack_threshold();
+    for (i = 0; i < I_FIELD; ++i) {
+        fill_ai_card_view(&state->player_field[i], g_i_player_field[i], 0, g_i_player_faceup[i], g_i_player_defense[i], g_i_player_attacked[i], field_card_atk(0, i), field_card_def(0, i));
+        fill_ai_card_view(&state->com_field[i], g_i_com_field[i], 0, g_i_com_faceup[i], g_i_com_defense[i], g_i_com_attacked[i], field_card_atk(1, i), field_card_def(1, i));
+    }
+    for (i = 0; i < I_HAND; ++i) {
+        int id = g_i_com_hand[i];
+        fill_ai_card_view(&state->com_hand[i], id, g_i_com_used[i], 1, 0, 0,
+                          is_monster_card(id) ? card_base_atk(id) : 0,
+                          is_monster_card(id) ? card_base_def(id) : 0);
+    }
 }
 
 static void draw_bottom_info_field(int owner, int slot, const char *mode)
@@ -3770,19 +3865,15 @@ static void init_battle_state(void)
     g_b_selected_player_slot = 0;
     g_b_selected_com_slot = 0;
     clear_player_fusion_queue();
-    g_b_fusion_anim_slots[0] = -1;
-    g_b_fusion_anim_slots[1] = -1;
-    g_b_fusion_anim_cards[0] = CARD_NONE;
-    g_b_fusion_anim_cards[1] = CARD_NONE;
-    g_b_fusion_anim_cards[2] = CARD_NONE;
-    g_b_fusion_anim_cards[3] = CARD_NONE;
-    g_b_fusion_anim_cards[4] = CARD_NONE;
-    g_b_fusion_anim_slots[2] = -1;
-    g_b_fusion_anim_slots[3] = -1;
-    g_b_fusion_anim_slots[4] = -1;
+    for (i = 0; i < FUSION_MAX_MATERIALS; ++i) {
+        g_b_fusion_anim_slots[i] = -1;
+        g_b_fusion_anim_cards[i] = CARD_NONE;
+    }
     g_b_fusion_anim_count = 0;
     g_b_fusion_anim_result = CARD_NONE;
     g_b_fusion_anim_success = 0;
+    g_b_fusion_anim_target_slot = -1;
+    g_b_fusion_anim_has_field_card = 0;
     g_b_top_col = 0;
     g_b_top_row = PLAYER_CARD_ROW;
     g_b_top_prev_col = 0;
@@ -3792,6 +3883,7 @@ static void init_battle_state(void)
     g_b_place_hand = -1;
     g_b_place_slot = -1;
     g_b_place_card = -1;
+    g_b_place_defense = 0;
     g_b_equip_hand = -1;
     g_b_equip_slot = -1;
     g_b_equip_zone_slot = -1;
@@ -4610,21 +4702,95 @@ static void draw_player_equip_anim(void)
 static void reset_player_fusion_anim(void)
 {
     int i;
-    for (i = 0; i < I_HAND; ++i) {
+    for (i = 0; i < FUSION_MAX_MATERIALS; ++i) {
         g_b_fusion_anim_slots[i] = -1;
         g_b_fusion_anim_cards[i] = CARD_NONE;
     }
     g_b_fusion_anim_count = 0;
     g_b_fusion_anim_result = CARD_NONE;
     g_b_fusion_anim_success = 0;
+    g_b_fusion_anim_target_slot = -1;
+    g_b_fusion_anim_has_field_card = 0;
 }
 
 static int failed_fusion_can_place_last_card(void)
 {
     int last_card;
+    int target = g_b_fusion_anim_target_slot;
     if (g_b_fusion_anim_count <= 0) return 0;
+    if (g_b_fusion_anim_has_field_card) return 0;
+    if (target < 0 || target >= I_FIELD) return 0;
+    if (g_i_player_field[target] >= 0) return 0;
     last_card = g_b_fusion_anim_cards[g_b_fusion_anim_count - 1];
-    return is_monster_card(last_card) && first_free_player_slot() >= 0;
+    return is_monster_card(last_card);
+}
+
+static void draw_player_fusion_target(void)
+{
+    int slot = g_b_top_col;
+    int occupied = (slot >= 0 && slot < I_FIELD && is_monster_card(g_i_player_field[slot]));
+    int empty_blocked = (!occupied && !player_can_place_monster());
+    Camera cam = battle_top_camera();
+
+    draw_interactive_base(cam);
+    draw_top_selector_cursor(cam);
+    draw_text_small(empty_blocked ? 63 : 60, 191,
+                    empty_blocked ? "SELECT OCCUPIED ZONE" : "SELECT FUSION ZONE",
+                    IDX_GOLD_HI, IDX_BLACK);
+    if (occupied) {
+        draw_bottom_info_field(0, slot, "FUSE");
+    } else {
+        draw_bottom_empty_field(empty_blocked ? "FIELD CARD" : "FUSE");
+    }
+}
+
+static void fusion_field_card_rect(Camera cam, int target_slot, int *x, int *y, int *w, int *h)
+{
+    ScreenPt dst = project_point(cam, v3(zone_cx(target_slot), Q8_FRAC(10,100), zone_cz(PLAYER_CARD_ROW)));
+    if (!dst.ok) {
+        *x = 114;
+        *y = 126;
+    } else {
+        *x = dst.x - 14;
+        *y = dst.y - 20;
+    }
+    *w = 28;
+    *h = 39;
+}
+
+static void draw_fusion_landing_card(Camera cam, int card_id, int sx, int sy, int sw, int sh,
+                                     int target_slot, int local_frame, int face_down)
+{
+    int dx, dy, dw, dh;
+    int32_t t = q8_smooth_ratio(local_frame, 48);
+    int bob = -q8_to_int(q8_mul(Q8_FROM_INT(18), q8_sin_pi(t)));
+    int x, y, w, h;
+    fusion_field_card_rect(cam, target_slot, &dx, &dy, &dw, &dh);
+    x = lerp_i(sx, dx, t);
+    y = lerp_i(sy, dy, t) + bob;
+    w = lerp_i(sw, dw, t);
+    h = lerp_i(sh, dh, t);
+    rect_fill(x + 3, y + h - 2, w, 4, IDX_BLACK);
+    draw_card_sprite(card_id, x, y, w, h, face_down);
+    if (local_frame > 34) {
+        rect_outline(x - 2, y - 2, w + 4, h + 4, IDX_GOLD_HI);
+        if ((local_frame & 4) == 0) rect_outline(x - 4, y - 4, w + 8, h + 8, IDX_WHITE);
+    }
+}
+
+static void draw_failed_fusion_dropped_materials(int count, int last_index, int first_target_x, int local_frame)
+{
+    int i;
+    int32_t fall_t = q8_smooth_ratio(local_frame, 48);
+    for (i = 0; i < count; ++i) {
+        int x, y, wobble;
+        if (i == last_index) continue;
+        if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT) continue;
+        wobble = q8_to_int(q8_mul(Q8_FROM_INT(10), q8_sin_rad((local_frame * 7 + i * 37) * Q8_FRAC(8,100))));
+        x = first_target_x + i * 34 + wobble;
+        y = lerp_i(82, 258, fall_t) + i * 6;
+        if (y < H + 52) draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, y, 38, 50, 0);
+    }
 }
 
 static void draw_player_fusion_anim(void)
@@ -4636,12 +4802,45 @@ static void draw_player_fusion_anim(void)
     int w = lerp_i(38, 42, merge_t);
     int h = lerp_i(50, 56, merge_t);
     int count = g_b_fusion_anim_count;
-    int spread = count > 1 ? (count - 1) * 34 : 0;
-    int first_target_x = 128 - spread / 2 - w / 2;
+    int spread;
+    int first_target_x;
     int pulse = (f & 4) ? IDX_GOLD_HI : IDX_WHITE;
     int i;
     if (count < 1) count = 1;
-    if (count > I_HAND) count = I_HAND;
+    if (count > FUSION_MAX_MATERIALS) count = FUSION_MAX_MATERIALS;
+    spread = count > 1 ? (count - 1) * 34 : 0;
+    first_target_x = 128 - spread / 2 - w / 2;
+
+    if (f >= 116) {
+        Camera cam = placement_camera();
+        int target_slot = g_b_fusion_anim_target_slot;
+        int local = f - 116;
+        draw_interactive_base(cam);
+        if (target_slot >= 0 && target_slot < I_FIELD) draw_zone_cursor(cam, target_slot, PLAYER_CARD_ROW);
+        if (g_b_fusion_anim_success) {
+            draw_fusion_landing_card(cam, g_b_fusion_anim_result, 101, 74, 54, 72, target_slot, local, 0);
+            draw_centered_text(191, "FUSION SUCCESS", IDX_GREEN, IDX_BLACK);
+            draw_centered_text(205, "PLACING RESULT", IDX_WHITE, IDX_BLACK);
+        } else if (failed_fusion_can_place_last_card()) {
+            int last_index = g_b_fusion_anim_count - 1;
+            int last_x = first_target_x + last_index * 34;
+            draw_failed_fusion_dropped_materials(count, last_index, first_target_x, local);
+            draw_fusion_landing_card(cam, g_b_fusion_anim_cards[last_index], last_x, 82, 38, 50, target_slot, local, 1);
+            draw_centered_text(191, "FUSION FAILED", IDX_RED, IDX_BLACK);
+            draw_centered_text(205, "LAST CARD PLACED", IDX_WHITE, IDX_BLACK);
+        } else {
+            int32_t fall_t = q8_smooth_ratio(local, 48);
+            for (i = 0; i < count; ++i) {
+                int x = first_target_x + i * 34;
+                int y = lerp_i(82, 258, fall_t) + i * 6;
+                if (y < H + 52) draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, y, 38, 50, 0);
+                if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT && y < H + 52) draw_text_small(x + 5, y + 53, "FLD", IDX_GOLD_HI, IDX_BLACK);
+            }
+            draw_centered_text(191, "FUSION FAILED", IDX_RED, IDX_BLACK);
+            draw_centered_text(205, "CARDS DISCARDED", IDX_WHITE, IDX_BLACK);
+        }
+        return;
+    }
 
     clear_screen(IDX_BLACK);
     for (int y = 0; y < H; ++y) hline(0, 255, y, (y & 8) ? IDX_UI_DARK : IDX_BLACK);
@@ -4655,6 +4854,7 @@ static void draw_player_fusion_anim(void)
             int tx = first_target_x + i * 34;
             int x = lerp_i(sx, tx, merge_t);
             draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, cy, w, h, 0);
+            if (slot == FUSION_FIELD_SLOT) draw_text_small(x + 5, cy + h + 3, "FLD", IDX_GOLD_HI, IDX_BLACK);
         }
         for (i = 0; i < 18; ++i) {
             int px = 128 + q8_to_int(q8_mul(q8_sin_rad((f * 5 + i * 29) * Q8_FRAC(8,100)), Q8_FROM_INT(44)));
@@ -4676,6 +4876,7 @@ static void draw_player_fusion_anim(void)
         for (i = 0; i < count; ++i) {
             int x = first_target_x + i * 34;
             draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, ly, 38, 50, 0);
+            if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT) draw_text_small(x + 5, ly + 53, "FLD", IDX_GOLD_HI, IDX_BLACK);
         }
         line_i(92, 85, 164, 132, IDX_RED);
         line_i(164, 85, 92, 132, IDX_RED);
@@ -4689,42 +4890,57 @@ static void draw_player_fusion_anim(void)
 static void finish_player_fusion_anim(void)
 {
     int i;
-    int first_slot = g_b_fusion_anim_slots[0];
+    int target_slot = g_b_fusion_anim_target_slot;
     int placed_slot = -1;
+    int used_hand_count = 0;
     int success = g_b_fusion_anim_success && is_monster_card(g_b_fusion_anim_result);
     clear_player_fusion_queue();
 
     if (g_b_fusion_anim_count > 0) {
-        if (success && first_slot >= 0 && first_slot < I_HAND) {
-            g_i_player_hand[first_slot] = g_b_fusion_anim_result;
-            for (i = 1; i < g_b_fusion_anim_count; ++i) {
-                int slot = g_b_fusion_anim_slots[i];
-                if (slot >= 0 && slot < I_HAND) g_i_player_used[slot] = 1;
-            }
-            g_b_selected_hand = first_slot;
+        if (success && target_slot >= 0 && target_slot < I_FIELD) {
+            clear_monster_slot(0, target_slot);
+            placed_slot = target_slot;
+            g_i_player_field[placed_slot] = g_b_fusion_anim_result;
+            g_i_player_faceup[placed_slot] = 1;
+            g_i_player_defense[placed_slot] = 0;
+            g_i_player_attacked[placed_slot] = 0;
+            g_i_player_atk_bonus[placed_slot] = 0;
+            g_i_player_def_bonus[placed_slot] = 0;
+            g_b_player_monster_played_this_turn = 1;
+            g_b_selected_player_slot = placed_slot;
+            set_top_selector(placed_slot, PLAYER_CARD_ROW);
         } else {
             int last_index = g_b_fusion_anim_count - 1;
             int last_card = g_b_fusion_anim_cards[last_index];
-            int free_slot = is_monster_card(last_card) ? first_free_player_slot() : -1;
-            if (free_slot >= 0) {
-                placed_slot = free_slot;
+            if (g_b_fusion_anim_has_field_card && target_slot >= 0 && target_slot < I_FIELD) {
+                clear_monster_slot(0, target_slot);
+                placed_slot = target_slot;
+                g_b_selected_player_slot = target_slot;
+                set_top_selector(target_slot, PLAYER_CARD_ROW);
+            } else if (failed_fusion_can_place_last_card()) {
+                placed_slot = target_slot;
                 g_i_player_field[placed_slot] = last_card;
                 g_i_player_faceup[placed_slot] = 0;
                 g_i_player_defense[placed_slot] = 0;
+                g_i_player_attacked[placed_slot] = 0;
                 g_i_player_atk_bonus[placed_slot] = 0;
                 g_i_player_def_bonus[placed_slot] = 0;
                 g_b_player_monster_played_this_turn = 1;
                 g_b_selected_player_slot = placed_slot;
                 set_top_selector(placed_slot, PLAYER_CARD_ROW);
             }
-            for (i = 0; i < g_b_fusion_anim_count; ++i) {
-                int slot = g_b_fusion_anim_slots[i];
-                if (slot >= 0 && slot < I_HAND) g_i_player_used[slot] = 1;
-            }
-            g_b_selected_hand = next_live_hand_index(g_b_selected_hand, 1);
         }
-        g_b_cards_used += g_b_fusion_anim_count;
+        for (i = 0; i < g_b_fusion_anim_count; ++i) {
+            int slot = g_b_fusion_anim_slots[i];
+            if (slot >= 0 && slot < I_HAND) {
+                g_i_player_used[slot] = 1;
+                ++used_hand_count;
+            }
+        }
+        g_b_selected_hand = next_live_hand_index(g_b_selected_hand, 1);
+        g_b_cards_used += used_hand_count;
         g_b_player_fused_this_turn = 1;
+        g_b_player_monster_played_this_turn = 1;
     }
 
     reset_player_fusion_anim();
@@ -4745,18 +4961,21 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     case IB_PLAYER_HAND:
         if (press_left) g_b_selected_hand = next_live_hand_index(g_b_selected_hand, -1);
         if (press_right) g_b_selected_hand = next_live_hand_index(g_b_selected_hand, 1);
-        if (press_down && !g_b_player_fused_this_turn) {
+        if (press_down && player_can_start_fusion()) {
             try_queue_player_fusion_slot(g_b_selected_hand);
             g_b_player_hand_intro_pending = 0;
         }
         if (press_b) { set_battle_phase(IB_CARD_PREVIEW); break; }
         if (press_up) { clear_player_fusion_queue(); set_top_selector(g_b_selected_player_slot, PLAYER_CARD_ROW); g_b_attack_attacker_slot = -1; set_battle_phase(IB_PLAYER_TOP); break; }
-        if (press_a && g_b_fusion_count > 0 && !g_b_player_fused_this_turn) {
-            if (prepare_player_fusion_anim()) {
-                set_battle_phase(IB_PLAYER_FUSION_ANIM);
-                break;
-            }
-            clear_player_fusion_queue();
+        if (press_a && g_b_fusion_count > 0 && player_can_start_fusion()) {
+            int target = player_can_place_monster() ? first_free_player_slot() : -1;
+            if (target < 0) target = selected_or_first_live_player_slot();
+            if (target < 0) target = 0;
+            g_b_fusion_target_slot = target;
+            g_b_player_hand_intro_pending = 0;
+            set_top_selector(target, PLAYER_CARD_ROW);
+            set_battle_phase(IB_PLAYER_FUSION_TARGET);
+            break;
         }
         if (press_a && !g_i_player_used[g_b_selected_hand]) {
             int selected_card = g_i_player_hand[g_b_selected_hand];
@@ -4777,6 +4996,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 g_b_place_hand = g_b_selected_hand;
                 g_b_place_slot = slot;
                 g_b_place_card = selected_card;
+                g_b_place_defense = 0;
                 set_battle_phase(IB_PLAYER_PLACE);
                 break;
             }
@@ -4841,9 +5061,30 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (g_b_phase_frame >= 120) finish_equip();
         break;
 
+    case IB_PLAYER_FUSION_TARGET:
+        if (press_b) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); break; }
+        if (press_left) move_top_selector(-1, 0);
+        if (press_right) move_top_selector(1, 0);
+        if (g_b_top_row != PLAYER_CARD_ROW) set_top_selector(g_b_top_col, PLAYER_CARD_ROW);
+        g_b_fusion_target_slot = g_b_top_col;
+        if (press_a) {
+            int target = g_b_top_col;
+            if (target >= 0 && target < I_FIELD && player_can_start_fusion()) {
+                if (prepare_player_fusion_anim(target)) {
+                    set_battle_phase(IB_PLAYER_FUSION_ANIM);
+                    break;
+                }
+                clear_player_fusion_queue();
+                set_battle_phase(IB_PLAYER_HAND);
+                break;
+            }
+        }
+        draw_player_fusion_target();
+        break;
+
     case IB_PLAYER_FUSION_ANIM:
         draw_player_fusion_anim();
-        if (g_b_phase_frame >= 116) finish_player_fusion_anim();
+        if (g_b_phase_frame >= 166) finish_player_fusion_anim();
         break;
 
     case IB_PLAYER_TOP:
@@ -4948,22 +5189,21 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         g_b_selected_com_slot = (g_b_phase_frame / 14) % I_HAND;
         draw_interactive_com_hand(g_b_phase_frame, g_b_selected_com_slot, 0);
         if (g_b_phase_frame >= 70) {
-            int equip_h = first_unused_com_support_hand();
-            int equip_target = first_live_com_monster_slot();
-            if (equip_h >= 0 && equip_target >= 0 && first_free_com_equip_slot() >= 0) {
-                start_com_equip(equip_h, equip_target);
+            WaifuAiState ai_state;
+            WaifuAiAction ai_action;
+            build_com_ai_state(&ai_state);
+            ai_action = waifu_ai_choose_com_select(&ai_state);
+            if (ai_action.kind == WAIFU_AI_ACTION_PLAY_SUPPORT) {
+                start_com_equip(ai_action.hand_slot, ai_action.field_slot);
+            } else if (ai_action.kind == WAIFU_AI_ACTION_PLACE_MONSTER) {
+                g_b_place_hand = ai_action.hand_slot;
+                g_b_place_slot = ai_action.field_slot;
+                g_b_place_card = g_i_com_hand[ai_action.hand_slot];
+                g_b_place_defense = ai_action.defense_position;
+                set_battle_phase(IB_COM_PLACE);
             } else {
-                int h = first_unused_com_monster_hand();
-                slot = first_free_com_slot();
-                if (h >= 0 && slot >= 0 && com_can_place_monster()) {
-                    g_b_place_hand = h;
-                    g_b_place_slot = slot;
-                    g_b_place_card = g_i_com_hand[h];
-                    set_battle_phase(IB_COM_PLACE);
-                } else {
-                    clear_battle_snapshot();
-                    set_battle_phase(IB_COM_BATTLE);
-                }
+                clear_battle_snapshot();
+                set_battle_phase(IB_COM_BATTLE);
             }
         }
         break;
@@ -4977,7 +5217,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             if (!is_monster_card(g_b_place_card)) { clear_battle_snapshot(); set_battle_phase(IB_COM_BATTLE); break; }
             g_i_com_field[g_b_place_slot] = g_b_place_card;
             g_i_com_faceup[g_b_place_slot] = 0;
-            g_i_com_defense[g_b_place_slot] = 0;
+            g_i_com_defense[g_b_place_slot] = g_b_place_defense ? 1 : 0;
             g_i_com_atk_bonus[g_b_place_slot] = 0;
             g_i_com_def_bonus[g_b_place_slot] = 0;
             g_i_com_used[g_b_place_hand] = 1;
@@ -5001,11 +5241,32 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_COM_BATTLE:
         if (g_b_battle_atk_card < 0) {
-            atk_slot = first_attackable_com_slot();
-            def_slot = first_live_player_slot();
-            if (atk_slot >= 0) {
-                if (count_live_player_monsters() > 0 && def_slot >= 0) prepare_battle(1, atk_slot, def_slot);
-                else if (count_live_player_monsters() == 0) prepare_direct_attack(1, atk_slot);
+            WaifuAiState ai_state;
+            WaifuAiAction ai_action;
+            build_com_ai_state(&ai_state);
+            ai_action = waifu_ai_choose_com_battle(&ai_state);
+            if (ai_action.kind == WAIFU_AI_ACTION_ATTACK_MONSTER) {
+                prepare_battle(1, ai_action.attacker_slot, ai_action.defender_slot);
+            } else if (ai_action.kind == WAIFU_AI_ACTION_ATTACK_DIRECT) {
+                prepare_direct_attack(1, ai_action.attacker_slot);
+            } else if (ai_action.kind == WAIFU_AI_ACTION_SET_DEFENSE) {
+                if (ai_action.field_slot >= 0 && ai_action.field_slot < I_FIELD) {
+                    g_i_com_defense[ai_action.field_slot] = 1;
+                    g_b_selected_com_slot = ai_action.field_slot;
+                }
+                draw_interactive_common(enemy_battle_top_camera(),
+                                        ai_action.field_slot >= 0 ? g_i_com_field[ai_action.field_slot] : hand_ids[0],
+                                        "DEF");
+                break;
+            } else if (ai_action.kind == WAIFU_AI_ACTION_SET_ATTACK) {
+                if (ai_action.field_slot >= 0 && ai_action.field_slot < I_FIELD) {
+                    g_i_com_defense[ai_action.field_slot] = 0;
+                    g_b_selected_com_slot = ai_action.field_slot;
+                }
+                draw_interactive_common(enemy_battle_top_camera(),
+                                        ai_action.field_slot >= 0 ? g_i_com_field[ai_action.field_slot] : hand_ids[0],
+                                        "ATK");
+                break;
             } else {
                 set_battle_phase(IB_COM_RETURN);
                 break;
@@ -5014,7 +5275,10 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_interactive_battle();
         if (g_b_phase_frame >= current_battle_anim_frames()) {
             resolve_battle();
-            if (g_b_phase == IB_COM_BATTLE) set_battle_phase(IB_COM_RETURN);
+            if (g_b_phase == IB_COM_BATTLE) {
+                clear_battle_snapshot();
+                set_battle_phase(IB_COM_BATTLE);
+            }
         }
         break;
 
@@ -6246,6 +6510,68 @@ static void debug_jump_to_story_cutscene(int duel_index)
     g_i_frame = 0;
 }
 
+static void debug_put_player_monster(int slot, int card, int faceup, int defense)
+{
+    if (slot < 0 || slot >= I_FIELD) return;
+    g_i_player_field[slot] = card;
+    g_i_player_faceup[slot] = faceup;
+    g_i_player_defense[slot] = defense;
+    g_i_player_attacked[slot] = 0;
+    g_i_player_atk_bonus[slot] = 0;
+    g_i_player_def_bonus[slot] = 0;
+}
+
+static void debug_put_com_monster(int slot, int card, int faceup, int defense)
+{
+    if (slot < 0 || slot >= I_FIELD) return;
+    g_i_com_field[slot] = card;
+    g_i_com_faceup[slot] = faceup;
+    g_i_com_defense[slot] = defense;
+    g_i_com_attacked[slot] = 0;
+    g_i_com_atk_bonus[slot] = 0;
+    g_i_com_def_bonus[slot] = 0;
+}
+
+static void debug_setup_ai_demo_scenario(const char *name)
+{
+    int i;
+    waifu_fm_reset_interactive();
+    for (i = 0; i < I_FIELD; ++i) {
+        clear_monster_slot(0, i);
+        clear_monster_slot(1, i);
+    }
+    for (i = 0; i < I_HAND; ++i) {
+        g_i_player_used[i] = 1;
+        g_i_com_used[i] = 1;
+    }
+    g_i_state = WAIFU_I_BATTLE;
+    g_i_frame = 0;
+    g_b_turns = 2;
+    g_b_phase_frame = 0;
+    g_b_com_monster_played_this_turn = 1;
+    g_b_player_monster_played_this_turn = 0;
+    g_b_player_fused_this_turn = 0;
+    clear_battle_snapshot();
+
+    if (!strcmp(name, "direct-switch")) {
+        debug_put_com_monster(0, 15, 0, 1); /* 1500 ATK, starts in defense. */
+        debug_put_com_monster(1, 22, 0, 1); /* 1600 ATK, starts in defense. */
+        debug_put_com_monster(2, 36, 0, 1); /* 2300 ATK, starts in defense. */
+        g_b_phase = IB_COM_BATTLE;
+    } else if (!strcmp(name, "defense-guard")) {
+        debug_put_player_monster(0, 40, 0, 0); /* Face-down attack-position threat. */
+        debug_put_com_monster(0, 15, 0, 0);    /* Below deck-strength threshold. */
+        g_b_phase = IB_COM_BATTLE;
+    } else {
+        debug_put_player_monster(0, 15, 0, 0); /* Face-down attack-position target. */
+        debug_put_player_monster(1, 22, 0, 0); /* Another face-down attacker. */
+        debug_put_com_monster(0, 37, 0, 0);    /* Strong face-down attacker. */
+        debug_put_com_monster(1, 40, 0, 0);    /* Strong face-down attacker. */
+        debug_put_com_monster(2, 36, 0, 0);    /* Strong enough for its deck. */
+        g_b_phase = IB_COM_BATTLE;
+    }
+}
+
 int main(int argc, char **argv)
 {
     int frames = 3600;
@@ -6258,6 +6584,7 @@ int main(int argc, char **argv)
     int no_png = 0;
     int dump_state = 0;
     int story_cutscene_preview = -1;
+    const char *ai_demo_scenario = NULL;
     CommandEvent events[MAX_COMMAND_EVENTS];
     int event_count = 0;
     int f;
@@ -6273,6 +6600,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--no-png")) no_png = 1;
         else if (!strcmp(argv[i], "--dump-state")) dump_state = 1;
         else if (!strcmp(argv[i], "--story-cutscene-preview") && i + 1 < argc) story_cutscene_preview = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--ai-demo-scenario") && i + 1 < argc) ai_demo_scenario = argv[++i];
         else if (!strcmp(argv[i], "--deckout-demo")) g_force_deckout_demo = 1;
         else if (!strcmp(argv[i], "--lp-loss-demo")) g_force_lp_loss_demo = 1;
     }
@@ -6304,6 +6632,7 @@ int main(int argc, char **argv)
     if (!no_png) ensure_dir(out_dir);
     waifu_fm_reset_interactive();
     if (story_cutscene_preview >= 0) debug_jump_to_story_cutscene(story_cutscene_preview);
+    if (ai_demo_scenario) debug_setup_ai_demo_scenario(ai_demo_scenario);
     for (f = 0; f < frames; ++f) {
         if (scripted_render) {
             render_frame(f);
@@ -6330,9 +6659,10 @@ int main(int argc, char **argv)
                frames, (int)g_b_phase, g_b_phase_frame, g_b_turns, g_you_lp, g_com_lp);
         printf("player_field0=%d player_field1=%d player_field2=%d player_field3=%d player_field4=%d ",
                g_i_player_field[0], g_i_player_field[1], g_i_player_field[2], g_i_player_field[3], g_i_player_field[4]);
-        printf("player_faceup0=%d player_defense0=%d com_field0=%d com_faceup0=%d player_attacked0=%d com_attacked0=%d ",
-               g_i_player_faceup[0], g_i_player_defense[0], g_i_com_field[0], g_i_com_faceup[0],
-               g_i_player_attacked[0], g_i_com_attacked[0]);
+        printf("player_faceup0=%d player_defense0=%d com_field0=%d com_field1=%d com_field2=%d com_faceup0=%d com_defense0=%d com_defense1=%d com_defense2=%d player_attacked0=%d com_attacked0=%d com_attacked1=%d com_attacked2=%d ",
+               g_i_player_faceup[0], g_i_player_defense[0], g_i_com_field[0], g_i_com_field[1], g_i_com_field[2], g_i_com_faceup[0],
+               g_i_com_defense[0], g_i_com_defense[1], g_i_com_defense[2],
+               g_i_player_attacked[0], g_i_com_attacked[0], g_i_com_attacked[1], g_i_com_attacked[2]);
         printf("player_atk0=%d player_def0=%d player_atk_bonus0=%d player_def_bonus0=%d ",
                field_card_atk(0, 0), field_card_def(0, 0), g_i_player_atk_bonus[0], g_i_player_def_bonus[0]);
         printf("player_equip0=%d player_equip_target0=%d com_equip0=%d com_equip_target0=%d ",

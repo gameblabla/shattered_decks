@@ -1,0 +1,16 @@
+# Regression: occupied-zone fusion is allowed only when the player's monster
+# placement/fusion action is still unused for the turn. This script places
+# Galatea, sets it to defense so it survives COM's turn, then fuses Voltara from
+# hand with that field Galatea on the next player turn, overwriting the same
+# field zone with Petra.
+60 2 START
+100 2 A
+270 2 RIGHT
+290 2 A
+350 2 TAB
+380 2 START
+1040 2 RIGHT
+1070 2 DOWN
+1100 2 A
+1130 2 LEFT
+1160 2 A

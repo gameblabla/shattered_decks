@@ -1,5 +1,6 @@
-# Regression: DOWN queues two hand monsters for fusion. Galatea + Voltara
-# fuses into Petra, then A places the fused monster.
+# Regression: DOWN queues two hand monsters for fusion. Confirming with A now
+# opens the player field-zone selector first; A on the selected zone starts the
+# fusion and places the result onto that chosen field zone.
 60 2 START
 100 2 A
 270 2 RIGHT
@@ -7,4 +8,4 @@
 310 2 RIGHT
 330 2 DOWN
 350 2 A
-500 2 A
+380 2 A

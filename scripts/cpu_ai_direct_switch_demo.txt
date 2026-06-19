@@ -1,0 +1,1 @@
+# Uses --ai-demo-scenario direct-switch. No manual input is required.
