@@ -1,0 +1,3 @@
+# Regression: headless/regression builds use a fixed prefilled battle deck.
+# Run with: ./waifu_fm_headless --frames 1 --commands scripts/headless_prefilled_deck_test.txt --no-png --dump-state
+# Expected opening hand in headless: 40,12,9,41,37 and deck_left=35.

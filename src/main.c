@@ -14,6 +14,7 @@
 #include "zmbv_mkv.h"
 #include "game_api.h"
 #include "ai.h"
+#include "deck.h"
 
 #define W 256
 #define H 240
@@ -2709,7 +2710,6 @@ static char g_b_damage_text[16] = "0";
 static int g_b_result = 0;
 static int g_b_turns = 1;
 static int g_b_cards_used = 0;
-static int g_b_deck_seed = 17;
 static int g_b_player_fused_this_turn = 0;
 
 static int g_i_player_hand[I_HAND];
@@ -2738,6 +2738,13 @@ static int g_b_player_hand_intro_pending = 1;
 static int g_b_direct_damage = 0;
 static int g_i_player_deck_left = 35;
 static int g_i_com_deck_left = 35;
+static WaifuDeck g_i_player_deck;
+static WaifuDeck g_i_com_deck;
+static WaifuDeckRng g_i_deck_rng;
+static int g_i_deck_rng_seeded = 0;
+#ifdef WAIFU_FM_HEADLESS_TESTS
+static int g_i_headless_draw_seed = 17;
+#endif
 static int g_b_player_monster_played_this_turn = 0;
 static int g_b_com_monster_played_this_turn = 0;
 
@@ -2776,7 +2783,6 @@ static int g_story_map_cursor = 0;     /* 0 pyramid, 1 plaza */
 static int g_story_pyramid_cursor = 0; /* 0 save, 1 editor, 2 back */
 static int g_story_plaza_line = 0;
 static int g_story_saved_flash = 0;
-static int g_story_com_draw_pos = 0;
 static int g_story_editor_from_pyramid = 0;
 static int g_story_save_status = 0; /* 1 saved/loaded, -1 failed/no save */
 
@@ -2899,7 +2905,6 @@ static const StoryOpponentInfo *story_opponent_info(void)
     return &g_story_opponents[idx];
 }
 
-static int story_opponent_card_at(int duel, int pos);
 static void story_return_to_map_after_duel(void);
 static void init_battle_state(void);
 static int first_free_com_slot(void);
@@ -3166,21 +3171,21 @@ static int field_card_def(int owner, int slot)
     return card_base_def(id) + (owner == 0 ? g_i_player_def_bonus[slot] : g_i_com_def_bonus[slot]);
 }
 
-static int normal_com_deck_card_at(int pos)
-{
-    return com_hand_ids[pos % I_HAND];
-}
-
 static int com_deck_face_down_attack_threshold(void)
 {
-    int cards[STORY_DECK_SIZE];
+    int cards[WAIFU_DECK_SIZE];
     int count = 0;
     int i, j;
-    int deck_count = g_story_battle_active ? STORY_DECK_SIZE : I_HAND;
 
-    for (i = 0; i < deck_count && count < STORY_DECK_SIZE; ++i) {
-        int id = g_story_battle_active ? story_opponent_card_at(g_story_duel_index, i) : normal_com_deck_card_at(i);
+    for (i = 0; i < g_i_com_deck.count && count < WAIFU_DECK_SIZE; ++i) {
+        int id = g_i_com_deck.cards[i];
         if (is_monster_card(id)) cards[count++] = card_base_atk(id);
+    }
+    for (i = 0; i < I_FIELD && count < WAIFU_DECK_SIZE; ++i) {
+        if (is_monster_card(g_i_com_field[i])) cards[count++] = card_base_atk(g_i_com_field[i]);
+    }
+    for (i = 0; i < I_HAND && count < WAIFU_DECK_SIZE; ++i) {
+        if (!g_i_com_used[i] && is_monster_card(g_i_com_hand[i])) cards[count++] = card_base_atk(g_i_com_hand[i]);
     }
     if (count <= 0) return 1800;
     for (i = 1; i < count; ++i) {
@@ -3434,9 +3439,37 @@ static void story_shuffle_tail(int start, int *seed)
     }
 }
 
+static void ensure_battle_deck_rng_seeded(void)
+{
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    if (!g_i_deck_rng_seeded) {
+        waifu_deck_rng_seed(&g_i_deck_rng, 17u);
+        g_i_deck_rng_seeded = 1;
+    }
+#else
+    if (!g_i_deck_rng_seeded) {
+        waifu_deck_rng_seed(&g_i_deck_rng, waifu_deck_runtime_seed(0x5743464du));
+        g_i_deck_rng_seeded = 1;
+    }
+#endif
+}
+
+static void sync_battle_deck_counts(void)
+{
+    g_i_player_deck_left = waifu_deck_remaining(&g_i_player_deck);
+    g_i_com_deck_left = waifu_deck_remaining(&g_i_com_deck);
+    if (g_story_battle_active) g_story_player_deck_pos = g_i_player_deck.pos;
+}
+
+
 static void generate_story_starter_deck(void)
 {
+#ifdef WAIFU_FM_HEADLESS_TESTS
     int seed = story_hash_name();
+#else
+    int seed = (int)(waifu_deck_runtime_seed((uint32_t)story_hash_name()) & 0x7fffffffu);
+    if (seed == 0) seed = 17;
+#endif
     int strong_pool[] = {37, 40, 33, 28, 8, 14, 48, 49, 54, 55, 56};
     int weak_pool[] = {29, 20, 23, 34, 19, 43, 30, 6, 45, 50, 51, 53};
     int strong = strong_pool[story_prng_next(&seed) % (int)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
@@ -3621,16 +3654,30 @@ static void sanitize_story_deck_copy_limit(void)
 
 static int story_reward_drop_card(void)
 {
+#ifdef WAIFU_FM_HEADLESS_TESTS
     int seed = story_hash_name() ^ (g_story_duel_index * 131 + g_b_turns * 17 + g_b_cards_used * 29 + 0x2468);
-    int strong_pool[] = {37, 40, 33, 28, 8, 14, 48, 49, 54, 55, 56};
     int roll = story_prng_next(&seed) % 100;
+#else
+    int roll;
+    ensure_battle_deck_rng_seeded();
+    roll = (int)(waifu_deck_rng_next(&g_i_deck_rng) % 100u);
+#endif
+    int strong_pool[] = {37, 40, 33, 28, 8, 14, 48, 49, 54, 55, 56};
     if (roll == 0) {
+#ifdef WAIFU_FM_HEADLESS_TESTS
         return strong_pool[story_prng_next(&seed) % (int)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
+#else
+        return strong_pool[waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
+#endif
     }
     if (roll < 11) {
         return SUPPORT_EQUIP_CARD_ID;
     }
+#ifdef WAIFU_FM_HEADLESS_TESTS
     return story_prng_next(&seed) % WAIFU_CARD_COUNT;
+#else
+    return (int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT);
+#endif
 }
 
 static void award_story_win_drop(void)
@@ -3760,13 +3807,6 @@ static void deck_editor_move_selected_card(void)
     deck_editor_clamp_cursor();
 }
 
-static int next_random_draw_id(void)
-{
-    int id = g_b_deck_seed % WAIFU_CARD_COUNT;
-    g_b_deck_seed = (g_b_deck_seed * 13 + 7) % 997;
-    return id;
-}
-
 static const char *story_opponent_name(void)
 {
     return story_opponent_info()->name;
@@ -3782,60 +3822,79 @@ static int story_opponent_is_boss(void)
     return story_opponent_info()->boss;
 }
 
-static int story_opponent_card_at(int duel, int pos)
+#ifdef WAIFU_FM_HEADLESS_TESTS
+static int next_headless_lcg_draw_id(void)
 {
-    static const int dream[]    = {20, 23, 29, 34, 19, 30, 6, 43, 45, 50, 51, 53};
-    static const int plaza[]    = {12, 15, 22, 29, 36, 6, 19, 23, 30, 34, 50, 52, 53};
-    static const int adept[]    = {28, 33, 37, 15, 22, 40, 12, 36, 8, 14, 49, 54, 55};
-    static const int reaver[]   = {37, 40, 8, 14, 28, 33, 12, 36, 22, 15, 44, 51, 52, 57};
-    static const int burning[]  = {8, 37, 40, 14, 28, 33, 36, 22, 12, 15, 44, 47, 51};
-    static const int void_w[]   = {40, 37, 8, 28, 14, 33, 36, 22, 12, 15, 47, 54, 57};
-    static const int sphinx[]   = {33, 37, 40, 28, 14, 8, 36, 22, 12, 15, 48, 49, 55, 56};
-    static const int demon[]    = {8, 37, 40, 28, 14, 33, 36, 22, 12, 15, 44, 47, 49, 57};
-    const int *pool = dream;
-    int count = (int)(sizeof(dream) / sizeof(dream[0]));
-    if (duel == 1) { pool = plaza; count = (int)(sizeof(plaza) / sizeof(plaza[0])); }
-    else if (duel == 2) { pool = adept; count = (int)(sizeof(adept) / sizeof(adept[0])); }
-    else if (duel == 3) { pool = reaver; count = (int)(sizeof(reaver) / sizeof(reaver[0])); }
-    else if (duel == 4) { pool = burning; count = (int)(sizeof(burning) / sizeof(burning[0])); }
-    else if (duel == 5) { pool = void_w; count = (int)(sizeof(void_w) / sizeof(void_w[0])); }
-    else if (duel == 6) { pool = sphinx; count = (int)(sizeof(sphinx) / sizeof(sphinx[0])); }
-    else if (duel >= 7) { pool = demon; count = (int)(sizeof(demon) / sizeof(demon[0])); }
-    return pool[pos % count];
+    int id = g_i_headless_draw_seed % WAIFU_CARD_COUNT;
+    g_i_headless_draw_seed = (g_i_headless_draw_seed * 13 + 7) % 997;
+    return id;
 }
-
-static int next_story_com_draw_id(void)
-{
-    int card = story_opponent_card_at(g_story_duel_index, g_story_com_draw_pos++);
-    if (g_story_duel_index >= 2 && (g_story_com_draw_pos % 7) == 0) card = SUPPORT_EQUIP_CARD_ID;
-    return card;
-}
+#endif
 
 static int next_draw_id(void)
 {
-    if (g_story_battle_active && g_story_player_deck_pos < g_story_deck_count) {
-        return g_story_player_deck[g_story_player_deck_pos++];
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    if (!g_story_battle_active) {
+        if (g_i_player_deck_left > 0) --g_i_player_deck_left;
+        return next_headless_lcg_draw_id();
     }
-    return next_random_draw_id();
+#endif
+    int card = waifu_deck_draw(&g_i_player_deck);
+    sync_battle_deck_counts();
+    if (card >= 0) return card;
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    return hand_ids[0];
+#else
+    return (int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT);
+#endif
 }
 
 static int next_com_draw_id(void)
 {
-    /* COM draws must never consume Serena's story/player deck. */
-    if (g_story_battle_active) return next_story_com_draw_id();
-    return next_random_draw_id();
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    if (!g_story_battle_active) {
+        if (g_i_com_deck_left > 0) --g_i_com_deck_left;
+        return next_headless_lcg_draw_id();
+    }
+#endif
+    int card = waifu_deck_draw(&g_i_com_deck);
+    sync_battle_deck_counts();
+    if (card >= 0) return card;
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    return com_hand_ids[0];
+#else
+    return (int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT);
+#endif
 }
 
 static void init_battle_state(void)
 {
     int i;
     g_story_battle_active = 0;
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    g_i_headless_draw_seed = 17;
+#endif
+    ensure_battle_deck_rng_seeded();
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    waifu_deck_build_headless_battle(&g_i_player_deck, hand_ids, 17);
+    waifu_deck_build_headless_battle(&g_i_com_deck, com_hand_ids, 73);
     for (i = 0; i < I_HAND; ++i) {
         g_i_player_hand[i] = hand_ids[i];
         g_i_player_used[i] = 0;
         g_i_com_hand[i] = com_hand_ids[i];
         g_i_com_used[i] = 0;
     }
+#else
+    waifu_deck_build_random(&g_i_player_deck, &g_i_deck_rng, 0);
+    waifu_deck_build_random(&g_i_com_deck, &g_i_deck_rng, 1);
+    for (i = 0; i < I_HAND; ++i) {
+        g_i_player_hand[i] = waifu_deck_draw(&g_i_player_deck);
+        g_i_player_used[i] = 0;
+        g_i_com_hand[i] = waifu_deck_draw(&g_i_com_deck);
+        g_i_com_used[i] = 0;
+    }
+#endif
+    sync_battle_deck_counts();
     for (i = 0; i < I_FIELD; ++i) {
         g_i_player_field[i] = CARD_NONE;
         g_i_player_faceup[i] = 1;
@@ -3856,8 +3915,7 @@ static void init_battle_state(void)
     }
     g_you_lp = 8000;
     g_com_lp = 8000;
-    g_i_player_deck_left = 35;
-    g_i_com_deck_left = 35;
+    sync_battle_deck_counts();
     g_b_phase = IB_OPENING;
     g_b_frame = 0;
     g_b_phase_frame = 0;
@@ -3904,7 +3962,6 @@ static void init_battle_state(void)
     g_b_result = 0;
     g_b_turns = 1;
     g_b_cards_used = 0;
-    g_b_deck_seed = 17;
     g_b_player_monster_played_this_turn = 0;
     g_b_com_monster_played_this_turn = 0;
     g_b_player_fused_this_turn = 0;
@@ -3919,19 +3976,23 @@ static void init_story_battle_state(void)
     init_battle_state();
     g_story_battle_active = 1;
     g_story_player_deck_pos = 0;
+    ensure_battle_deck_rng_seeded();
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    waifu_deck_build_from_list(&g_i_player_deck, g_story_player_deck, g_story_deck_count, &g_i_deck_rng, 0);
+    waifu_deck_build_opponent_story(&g_i_com_deck, g_story_duel_index, &g_i_deck_rng, 0);
+#else
+    waifu_deck_build_from_list(&g_i_player_deck, g_story_player_deck, g_story_deck_count, &g_i_deck_rng, 1);
+    waifu_deck_build_opponent_story(&g_i_com_deck, g_story_duel_index, &g_i_deck_rng, 1);
+#endif
     for (int i = 0; i < I_HAND; ++i) {
         g_i_player_hand[i] = next_draw_id();
         g_i_player_used[i] = 0;
     }
-    g_i_player_deck_left = g_story_deck_count - I_HAND;
-    g_story_com_draw_pos = 0;
     for (int i = 0; i < I_HAND; ++i) {
-        g_i_com_hand[i] = next_story_com_draw_id();
+        g_i_com_hand[i] = next_com_draw_id();
         g_i_com_used[i] = 0;
     }
-    g_i_com_deck_left = STORY_DECK_SIZE - I_HAND;
-    g_b_deck_seed = (story_hash_name() + g_story_duel_index * 97) % 997;
-    if (g_b_deck_seed <= 0) g_b_deck_seed = 17;
+    sync_battle_deck_counts();
     /* Bosses have higher LP. */
     if (story_opponent_is_boss()) g_com_lp = 10000;
 }
@@ -4464,14 +4525,12 @@ static int draw_replacement_cards_to_hand(void)
             if (g_i_player_deck_left <= 0) return g_b_draw_count > 0;
             g_i_player_hand[i] = next_draw_id();
             g_i_player_used[i] = 0;
-            --g_i_player_deck_left;
             g_b_draw_slots[g_b_draw_count++] = i;
         }
     }
     if (g_b_draw_count == 0 && g_i_player_deck_left > 0) {
         g_i_player_hand[0] = next_draw_id();
         g_i_player_used[0] = 0;
-        --g_i_player_deck_left;
         g_b_draw_slots[g_b_draw_count++] = 0;
     }
     return g_b_draw_count > 0;
@@ -4487,14 +4546,12 @@ static void draw_replacement_cards_to_com_hand(void)
             if (g_i_com_deck_left <= 0) return;
             g_i_com_hand[i] = next_com_draw_id();
             g_i_com_used[i] = 0;
-            --g_i_com_deck_left;
             drew = 1;
         }
     }
     if (!drew && g_i_com_deck_left > 0) {
         g_i_com_hand[0] = next_com_draw_id();
         g_i_com_used[0] = 0;
-        --g_i_com_deck_left;
     }
 }
 
@@ -4718,9 +4775,7 @@ static int failed_fusion_can_place_last_card(void)
     int last_card;
     int target = g_b_fusion_anim_target_slot;
     if (g_b_fusion_anim_count <= 0) return 0;
-    if (g_b_fusion_anim_has_field_card) return 0;
     if (target < 0 || target >= I_FIELD) return 0;
-    if (g_i_player_field[target] >= 0) return 0;
     last_card = g_b_fusion_anim_cards[g_b_fusion_anim_count - 1];
     return is_monster_card(last_card);
 }
@@ -4785,11 +4840,13 @@ static void draw_failed_fusion_dropped_materials(int count, int last_index, int 
     for (i = 0; i < count; ++i) {
         int x, y, wobble;
         if (i == last_index) continue;
-        if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT) continue;
         wobble = q8_to_int(q8_mul(Q8_FROM_INT(10), q8_sin_rad((local_frame * 7 + i * 37) * Q8_FRAC(8,100))));
         x = first_target_x + i * 34 + wobble;
         y = lerp_i(82, 258, fall_t) + i * 6;
-        if (y < H + 52) draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, y, 38, 50, 0);
+        if (y < H + 52) {
+            draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, y, 38, 50, 0);
+            if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT) draw_text_small(x + 5, y + 53, "FLD", IDX_GOLD_HI, IDX_BLACK);
+        }
     }
 }
 
@@ -4815,7 +4872,30 @@ static void draw_player_fusion_anim(void)
         Camera cam = placement_camera();
         int target_slot = g_b_fusion_anim_target_slot;
         int local = f - 116;
-        draw_interactive_base(cam);
+        if (!g_b_fusion_anim_success && g_b_fusion_anim_has_field_card &&
+            target_slot >= 0 && target_slot < I_FIELD) {
+            int saved_field = g_i_player_field[target_slot];
+            int saved_faceup = g_i_player_faceup[target_slot];
+            int saved_defense = g_i_player_defense[target_slot];
+            int saved_attacked = g_i_player_attacked[target_slot];
+            int saved_atk_bonus = g_i_player_atk_bonus[target_slot];
+            int saved_def_bonus = g_i_player_def_bonus[target_slot];
+            g_i_player_field[target_slot] = CARD_NONE;
+            g_i_player_faceup[target_slot] = 1;
+            g_i_player_defense[target_slot] = 0;
+            g_i_player_attacked[target_slot] = 0;
+            g_i_player_atk_bonus[target_slot] = 0;
+            g_i_player_def_bonus[target_slot] = 0;
+            draw_interactive_base(cam);
+            g_i_player_field[target_slot] = saved_field;
+            g_i_player_faceup[target_slot] = saved_faceup;
+            g_i_player_defense[target_slot] = saved_defense;
+            g_i_player_attacked[target_slot] = saved_attacked;
+            g_i_player_atk_bonus[target_slot] = saved_atk_bonus;
+            g_i_player_def_bonus[target_slot] = saved_def_bonus;
+        } else {
+            draw_interactive_base(cam);
+        }
         if (target_slot >= 0 && target_slot < I_FIELD) draw_zone_cursor(cam, target_slot, PLAYER_CARD_ROW);
         if (g_b_fusion_anim_success) {
             draw_fusion_landing_card(cam, g_b_fusion_anim_result, 101, 74, 54, 72, target_slot, local, 0);
@@ -4825,7 +4905,7 @@ static void draw_player_fusion_anim(void)
             int last_index = g_b_fusion_anim_count - 1;
             int last_x = first_target_x + last_index * 34;
             draw_failed_fusion_dropped_materials(count, last_index, first_target_x, local);
-            draw_fusion_landing_card(cam, g_b_fusion_anim_cards[last_index], last_x, 82, 38, 50, target_slot, local, 1);
+            draw_fusion_landing_card(cam, g_b_fusion_anim_cards[last_index], last_x, 82, 38, 50, target_slot, local, 0);
             draw_centered_text(191, "FUSION FAILED", IDX_RED, IDX_BLACK);
             draw_centered_text(205, "LAST CARD PLACED", IDX_WHITE, IDX_BLACK);
         } else {
@@ -4912,15 +4992,11 @@ static void finish_player_fusion_anim(void)
         } else {
             int last_index = g_b_fusion_anim_count - 1;
             int last_card = g_b_fusion_anim_cards[last_index];
-            if (g_b_fusion_anim_has_field_card && target_slot >= 0 && target_slot < I_FIELD) {
+            if (failed_fusion_can_place_last_card()) {
                 clear_monster_slot(0, target_slot);
                 placed_slot = target_slot;
-                g_b_selected_player_slot = target_slot;
-                set_top_selector(target_slot, PLAYER_CARD_ROW);
-            } else if (failed_fusion_can_place_last_card()) {
-                placed_slot = target_slot;
                 g_i_player_field[placed_slot] = last_card;
-                g_i_player_faceup[placed_slot] = 0;
+                g_i_player_faceup[placed_slot] = 1;
                 g_i_player_defense[placed_slot] = 0;
                 g_i_player_attacked[placed_slot] = 0;
                 g_i_player_atk_bonus[placed_slot] = 0;
@@ -4928,6 +5004,11 @@ static void finish_player_fusion_anim(void)
                 g_b_player_monster_played_this_turn = 1;
                 g_b_selected_player_slot = placed_slot;
                 set_top_selector(placed_slot, PLAYER_CARD_ROW);
+            } else if (g_b_fusion_anim_has_field_card && target_slot >= 0 && target_slot < I_FIELD) {
+                clear_monster_slot(0, target_slot);
+                placed_slot = target_slot;
+                g_b_selected_player_slot = target_slot;
+                set_top_selector(target_slot, PLAYER_CARD_ROW);
             }
         }
         for (i = 0; i < g_b_fusion_anim_count; ++i) {

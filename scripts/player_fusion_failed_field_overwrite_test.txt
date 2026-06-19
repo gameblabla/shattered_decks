@@ -1,0 +1,13 @@
+# Regression: when a fusion targets an occupied player field slot and fails,
+# the existing field monster is discarded, but the last hand material in the
+# fusion chain is placed into that same selected field slot face-up.
+60 2 START
+100 2 A
+270 2 RIGHT
+290 2 A
+350 2 TAB
+380 2 START
+1040 2 DOWN
+1070 2 A
+1090 2 LEFT
+1120 2 A
