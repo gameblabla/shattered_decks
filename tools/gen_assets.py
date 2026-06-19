@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from PIL import Image, ImageDraw, ImageOps, ImageFilter
+from PIL import Image, ImageDraw, ImageOps, ImageFilter, ImageChops
 from pathlib import Path
 import math, os, re
 
@@ -14,6 +14,9 @@ OUT = ROOT/'src/generated/waifu_assets.h'
 CARD_W, CARD_H = 38, 54
 BIG_W, BIG_H = 112, 112
 TILE = 32
+PORTRAIT_W, PORTRAIT_H = 124, 200
+PORTRAIT_DIR = ROOT/'assets/source/story_portraits'
+STORY_PORTRAITS = ['serena.png','opponent_0.png','opponent_1.png','opponent_2.png','opponent_3.png','opponent_4.png']
 
 CARD_META = [
   ('Abstract_beast','Nyxara, Abstract Chimera','Fiend','Dark',1900,1600),
@@ -60,6 +63,20 @@ CARD_META = [
   ('Witch','Morganna, Night Witch','Spellcaster','Dark',1900,1700),
   ('Yokai','Yuzuki, Yokai Shade','Fiend','Dark',2000,1800),
   ('insect_bomb','Bombella, Hive Grenadier','Insect','Fire',1000,1000),
+  ('Demonic','Lethara, Abyss Harbinger','Fiend','Dark',2450,1850),
+  ('Eel','Neridia, Coil Siren','Aqua','Water',1700,1600),
+  ('Elec_Wolf','Raikora, Storm Wolf','Thunder','Light',2100,1500),
+  ('GhostGirl','Yumiko, Phantom Heiress','Zombie','Dark',2000,1800),
+  ('InsectQueenWoman','Vesparia, Royal Broodmother','Insect','Earth',2350,2100),
+  ('MagesticDragon','Aurelith, Majestic Dragon','Dragon','Light',2800,2400),
+  ('Owl_woman','Noctavia, Owl Oracle','Winged Beast','Wind',1650,1900),
+  ('Pumpkin','Pumpkira, Lantern Witch','Plant','Fire',1750,1450),
+  ('Shark','Selachia, Razorfin Diva','Fish','Water',1900,1400),
+  ('Street','Rika, Street Duelist','Warrior','Earth',1600,1200),
+  ('ThinBlueDragon','Cyanthra, Azure Serpent','Dragon','Water',2250,1700),
+  ('Unicorn','Elysera, Moon Unicorn','Beast','Light',2000,2200),
+  ('WhiteWhale','Belugaia, White Whale','Sea Serpent','Water',2100,2300),
+  ('ZombieWoman','Morbella, Mummy Queen','Zombie','Dark',2150,2000),
 ]
 
 BASE_COLORS = {
@@ -80,23 +97,67 @@ def find_image(card_id):
         if p.exists(): return p
     raise FileNotFoundError(card_id)
 
+def card_content_bbox(img):
+    # Source images are not guaranteed to be 1:1. Some also carry transparent
+    # or flat-color margins. Trim only those safe borders before fitting so the
+    # card conversion never produces black bars or empty letterbox space.
+    rgba = img.convert('RGBA')
+    alpha = rgba.getchannel('A')
+    if alpha.getextrema()[0] < 255:
+        bbox = alpha.point(lambda p: 255 if p > 8 else 0).getbbox()
+        if bbox:
+            return bbox
+    rgb = img.convert('RGB')
+    bg = Image.new('RGB', rgb.size, rgb.getpixel((0, 0)))
+    diff = ImageChops.difference(rgb, bg).convert('L')
+    bbox = diff.point(lambda p: 255 if p > 8 else 0).getbbox()
+    if bbox:
+        l, t, r, b = bbox
+        mx = max(1, (r - l) // 30)
+        my = max(1, (b - t) // 30)
+        return (max(0, l - mx), max(0, t - my), min(img.width, r + mx), min(img.height, b + my))
+    return (0, 0, img.width, img.height)
+
+def prepared_card_source(img):
+    return img.crop(card_content_bbox(img)).convert('RGB')
+
 def cover(img, size):
-    return ImageOps.fit(img.convert('RGB'), size, method=Image.Resampling.BILINEAR, centering=(0.5,0.45))
+    # Fill the square battle-art target by cropping rather than padding. This
+    # deliberately avoids black bars on portrait/tall monster sources.
+    return ImageOps.fit(prepared_card_source(img), size, method=Image.Resampling.BILINEAR, centering=(0.5,0.45))
 
 def card_thumb_crop(img, size):
     # Hand/field thumbnails should emphasize the face/upper torso region.
-    # Keep battle/full-size art unchanged; only the tiny card-face thumbnail
-    # uses this top-middle crop before downscaling.
-    img = img.convert('RGB')
+    # Fit from the trimmed source and crop to fill the thumbnail, never pad.
+    return ImageOps.fit(prepared_card_source(img), size, method=Image.Resampling.BILINEAR, centering=(0.5,0.36))
+
+
+def fit_story_portrait(img, size=(PORTRAIT_W, PORTRAIT_H)):
+    img = img.convert('RGBA')
+    bbox = img.getbbox()
+    if bbox:
+        img = img.crop(bbox)
     w, h = img.size
-    crop_w = int(w * 0.62)
-    crop_h = int(h * 0.62)
-    left = max(0, (w - crop_w) // 2)
-    top = max(0, int(h * 0.06))
-    if top + crop_h > h:
-        top = max(0, h - crop_h)
-    crop = img.crop((left, top, left + crop_w, top + crop_h))
-    return ImageOps.fit(crop, size, method=Image.Resampling.BILINEAR, centering=(0.5,0.40))
+    # For dialogue scenes, emphasize the upper body and hands instead of the
+    # full standing figure so the visible portion above the bottom text box is
+    # expressive once the portrait is pinned to the screen bottom.
+    top = int(h * 0.01)
+    bottom = max(top + 1, int(h * 0.80))
+    left = int(w * 0.05)
+    right = max(left + 1, int(w * 0.95))
+    img = img.crop((left, top, right, bottom))
+    bg = Image.new('RGBA', size, (0,0,0,0))
+    art = ImageOps.contain(img, (int(size[0] * 1.02), int(size[1] * 1.02)), method=Image.Resampling.BILINEAR)
+    x = (size[0] - art.width) // 2
+    y = size[1] - art.height
+    bg.alpha_composite(art, (x, y))
+    return bg
+
+def load_story_portraits_rgba():
+    portraits = []
+    for fn in STORY_PORTRAITS:
+        portraits.append(fit_story_portrait(Image.open(PORTRAIT_DIR / fn)))
+    return portraits
 
 def draw_card_face(card_id, name, tribe, attr, atk, deff):
     img = Image.new('RGB', (CARD_W,CARD_H), (51,32,14))
@@ -156,17 +217,69 @@ def draw_card_back():
     return img
 
 def tile_gold(variant=0):
-    img=Image.new('RGB',(TILE,TILE),(190,111,18)); d=ImageDraw.Draw(img)
+    img=Image.new('RGB',(TILE,TILE),(190,111,18))
     for y in range(TILE):
         for x in range(TILE):
-            v=(x*3+y*5+variant*19)%37
-            base=(196+v,126+v//2,22)
-            if ((x+y+variant*3)//7)%2==0: base=(220+v//2,160+v//2,42)
+            # Keep the gold board texture free of baked-in borders or hard
+            # diagonals. Those strokes were being projected with the normal
+            # per-cell two-triangle renderer and read as texture seams,
+            # especially on the bright yellow tile.  Use only soft periodic
+            # variation here; the board grid is responsible for tile borders.
+            diag=(x+y+variant*9)&31
+            wave=16-abs(diag-16)
+            grain=(x*5+y*3+variant*17)&15
+            r=194+wave*2+grain
+            g=124+wave+grain//2
+            b=22+wave//4
+            if ((x*2+y+variant*7)&31) < 9:
+                r += 16; g += 18; b += 7
+            base=(r,g,b)
             img.putpixel((x,y), tuple(min(255,c) for c in base))
-    d.line([0,0,31,0], fill=(250,219,75)); d.line([0,0,0,31], fill=(247,203,63))
-    d.line([31,0,31,31], fill=(72,34,12)); d.line([0,31,31,31], fill=(72,34,12))
-    d.line([4,0,31,25], fill=(151,74,16))
-    d.line([0,27,26,0], fill=(245,197,50))
+    return img
+
+def tile_sand():
+    img=Image.new('RGB',(TILE,TILE),(198,162,96))
+    for y in range(TILE):
+        for x in range(TILE):
+            # Desert ground needs more visible texture than the board tiles:
+            # layered dune ripples, granular noise, and a few pebble specks,
+            # while still remaining seamless when tiled over the full 3D map.
+            grain = ((x*13 + y*9) ^ (x*7 + y*5) ^ (x*y*3)) & 15
+            ripple_a = 16 - abs(((x + y*2) & 31) - 16)
+            ripple_b = 16 - abs((((x*3) - y*2) & 31) - 16)
+            ripple_c = 16 - abs((((x*5) + y) & 31) - 16)
+            dune = (ripple_a*3 + ripple_b*2 + ripple_c*2) // 7
+            shade = dune - 8
+
+            # fine wind streaks and granular breakup
+            streak = 0
+            streak_phase = (x*3 + y*5) & 31
+            if streak_phase < 4:
+                streak = 8 - streak_phase*2
+            elif streak_phase > 27:
+                streak = -(streak_phase - 27) * 2
+
+            micro = grain - 7
+            r = 198 + shade*3 + streak + micro
+            g = 162 + shade*2 + streak//2 + micro//2
+            b = 96 + shade + streak//3
+
+            # sparse pebbles / darker flecks to stop the floor reading as flat.
+            pebble = ((x*11 + y*17 + x*y) & 63)
+            if pebble == 0:
+                r -= 26; g -= 22; b -= 14
+            elif pebble in (1, 2):
+                r += 14; g += 10; b += 4
+
+            # small lighter sand clusters.
+            patch = ((x*5 - y*3) & 31)
+            if 9 <= patch <= 12:
+                r += 8; g += 6
+
+            r=max(0, min(255, r))
+            g=max(0, min(255, g))
+            b=max(0, min(255, b))
+            img.putpixel((x,y), (r,g,b))
     return img
 
 def tile_stone():
@@ -213,16 +326,62 @@ def tile_brown():
     for x in range(0,TILE,8): d.line([x,0,x,31], fill=(100,42,10))
     return img
 
+def tile_volcanic_ground():
+    img = Image.new('RGB', (TILE, TILE), (74, 39, 22))
+    for y in range(TILE):
+        for x in range(TILE):
+            grain = ((x*9 + y*11) ^ (x*3 + y*5) ^ (x*y)) & 15
+            crack = ((x*5 - y*3) & 31)
+            ridge = 16 - abs((((x*2) + y*3) & 31) - 16)
+            shade = ridge - 8 + grain//2
+            r = 82 + shade*2 + grain
+            g = 46 + shade + grain//2
+            b = 27 + shade//2
+            if crack in (0,1):
+                r -= 26; g -= 18; b -= 12
+            elif crack in (14,15,16):
+                r += 10; g += 5
+            ember = ((x*13 + y*7 + x*y*2) & 63)
+            if ember == 0:
+                r += 26; g += 9; b += 2
+            img.putpixel((x,y), (max(0,min(255,r)), max(0,min(255,g)), max(0,min(255,b))))
+    return img
+
+def tile_volcanic_slope():
+    img = Image.new('RGB', (TILE, TILE), (92, 47, 28))
+    for y in range(TILE):
+        for x in range(TILE):
+            band = 16 - abs((((x*3) + (y*5)) & 31) - 16)
+            grain = ((x*7 + y*13) ^ (x*y*5)) & 15
+            r = 96 + band*2 + grain
+            g = 52 + band + grain//2
+            b = 30 + band//2
+            # Jagged obsidian-like seams.
+            seam = ((x*4 - y*3) & 31)
+            if seam in (0,1,2):
+                r -= 28; g -= 20; b -= 16
+            elif seam in (15,16):
+                r += 12; g += 6; b += 1
+            # Sparse glowing fissures.
+            fissure = ((x*11 + y*17 + x*y) & 127)
+            if fissure == 0:
+                r += 34; g += 14; b += 3
+            elif fissure == 1:
+                r += 18; g += 8
+            img.putpixel((x,y), (max(0,min(255,r)), max(0,min(255,g)), max(0,min(255,b))))
+    return img
+
 # Make master palette image.
 card_faces_rgb=[draw_card_face(*m) for m in CARD_META]
 support_rgb=draw_support_face()
 back_rgb=draw_card_back()
-tex_rgb=[tile_dark(),tile_gold(0),tile_gold(1),tile_stone(),tile_side_wall(),tile_brown(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
+tex_rgb=[tile_dark(),tile_gold(0),tile_sand(),tile_stone(),tile_side_wall(),tile_brown(),tile_volcanic_ground(),tile_volcanic_slope(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
+story_portraits_rgba=load_story_portraits_rgba()
 # master swatches heavily weighted so UI colors survive
 swatches=[]
 for c in BASE_COLORS.values():
     swatches += [c]*64
-for im in card_faces_rgb + [support_rgb,back_rgb] + tex_rgb:
+for im in card_faces_rgb + [support_rgb,back_rgb] + tex_rgb + [p.convert('RGB') for p in story_portraits_rgba]:
     small=im.resize((max(1,im.width//2), max(1,im.height//2)), Image.Resampling.BILINEAR)
     swatches.extend(list(small.getdata()))
 master=Image.new('RGB',(256, max(1, math.ceil(len(swatches)/256))))
@@ -254,6 +413,8 @@ q_big_art=[qbytes(im) for im in big_art_rgb]
 q_support=qbytes(support_rgb)
 q_back=qbytes(back_rgb)
 q_tex=[qbytes(im) for im in tex_rgb]
+q_story_portraits=[qbytes(im.convert('RGB')) for im in story_portraits_rgba]
+q_story_portrait_masks=[bytes([255 if px[3] >= 16 else 0 for px in im.getdata()]) for im in story_portraits_rgba]
 
 # Constants for named palette slots.
 idx = {name:nearest_idx(rgb) for name,rgb in BASE_COLORS.items()}
@@ -263,7 +424,7 @@ OUT.parent.mkdir(parents=True, exist_ok=True)
 with open(OUT,'w') as f:
     f.write('/* Generated by tools/gen_assets.py. 256x240 indexed assets. */\n')
     f.write('#ifndef WAIFU_ASSETS_H\n#define WAIFU_ASSETS_H\n#include <stdint.h>\n')
-    f.write(f'#define WAIFU_CARD_COUNT {len(CARD_META)}\n#define WAIFU_CARD_W {CARD_W}\n#define WAIFU_CARD_H {CARD_H}\n#define WAIFU_BIG_W {BIG_W}\n#define WAIFU_BIG_H {BIG_H}\n#define WAIFU_TEX_TILE_SIZE {TILE}\n#define WAIFU_TEX_TILE_COUNT 7\n')
+    f.write(f'#define WAIFU_CARD_COUNT {len(CARD_META)}\n#define WAIFU_CARD_W {CARD_W}\n#define WAIFU_CARD_H {CARD_H}\n#define WAIFU_BIG_W {BIG_W}\n#define WAIFU_BIG_H {BIG_H}\n#define WAIFU_TEX_TILE_SIZE {TILE}\n#define WAIFU_TEX_TILE_COUNT {len(tex_rgb)}\n#define WAIFU_STORY_PORTRAIT_COUNT {len(STORY_PORTRAITS)}\n#define WAIFU_STORY_PORTRAIT_W {PORTRAIT_W}\n#define WAIFU_STORY_PORTRAIT_H {PORTRAIT_H}\n')
     for name,val in idx.items():
         f.write(f'#define IDX_{name} {val}\n')
     def array(name, data, width=16):
@@ -274,6 +435,8 @@ with open(OUT,'w') as f:
     array('waifu_palette_rgb', bytes(palette), 18)
     # texture atlas concatenated
     array('waifu_texture_atlas', b''.join(q_tex), 16)
+    array('waifu_story_portraits', b''.join(q_story_portraits), 16)
+    array('waifu_story_portrait_mask', b''.join(q_story_portrait_masks), 16)
     # cards as flat array
     array('waifu_card_faces', b''.join(q_cards), 16)
     array('waifu_big_art', b''.join(q_big_art), 16)
