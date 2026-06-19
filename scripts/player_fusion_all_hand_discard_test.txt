@@ -1,0 +1,14 @@
+# Regression: the fusion/discard selector can mark every live hand card, then
+# A confirms the invalid combination and discards all five after the animation.
+60 2 START
+100 2 A
+270 2 DOWN
+290 2 RIGHT
+310 2 DOWN
+330 2 RIGHT
+350 2 DOWN
+370 2 RIGHT
+390 2 DOWN
+410 2 RIGHT
+430 2 DOWN
+450 2 A

@@ -1,0 +1,8 @@
+# Regression: invalid DOWN fusion attempts are allowed and discard both
+# selected hand cards after the failure animation.
+60 2 START
+100 2 A
+270 2 DOWN
+290 2 RIGHT
+310 2 DOWN
+330 2 A
