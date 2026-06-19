@@ -1,5 +1,5 @@
-# Regression: invalid DOWN fusion attempts are allowed and discard both
-# selected hand cards after the failure animation.
+# Regression: invalid DOWN fusion attempts are allowed; on failure the last
+# selected monster is placed if a monster zone is free.
 60 2 START
 100 2 A
 270 2 DOWN

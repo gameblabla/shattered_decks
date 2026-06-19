@@ -4619,6 +4619,14 @@ static void reset_player_fusion_anim(void)
     g_b_fusion_anim_success = 0;
 }
 
+static int failed_fusion_can_place_last_card(void)
+{
+    int last_card;
+    if (g_b_fusion_anim_count <= 0) return 0;
+    last_card = g_b_fusion_anim_cards[g_b_fusion_anim_count - 1];
+    return is_monster_card(last_card) && first_free_player_slot() >= 0;
+}
+
 static void draw_player_fusion_anim(void)
 {
     int f = g_b_phase_frame;
@@ -4674,7 +4682,7 @@ static void draw_player_fusion_anim(void)
         line_i(93, 85, 165, 132, IDX_BLACK);
         line_i(165, 85, 93, 132, IDX_BLACK);
         draw_centered_text(166, "FUSION FAILED", IDX_RED, IDX_BLACK);
-        draw_centered_text(181, "CARDS DISCARDED", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(181, failed_fusion_can_place_last_card() ? "LAST CARD PLACED" : "CARDS DISCARDED", IDX_WHITE, IDX_BLACK);
     }
 }
 
@@ -4682,6 +4690,7 @@ static void finish_player_fusion_anim(void)
 {
     int i;
     int first_slot = g_b_fusion_anim_slots[0];
+    int placed_slot = -1;
     int success = g_b_fusion_anim_success && is_monster_card(g_b_fusion_anim_result);
     clear_player_fusion_queue();
 
@@ -4694,6 +4703,20 @@ static void finish_player_fusion_anim(void)
             }
             g_b_selected_hand = first_slot;
         } else {
+            int last_index = g_b_fusion_anim_count - 1;
+            int last_card = g_b_fusion_anim_cards[last_index];
+            int free_slot = is_monster_card(last_card) ? first_free_player_slot() : -1;
+            if (free_slot >= 0) {
+                placed_slot = free_slot;
+                g_i_player_field[placed_slot] = last_card;
+                g_i_player_faceup[placed_slot] = 0;
+                g_i_player_defense[placed_slot] = 0;
+                g_i_player_atk_bonus[placed_slot] = 0;
+                g_i_player_def_bonus[placed_slot] = 0;
+                g_b_player_monster_played_this_turn = 1;
+                g_b_selected_player_slot = placed_slot;
+                set_top_selector(placed_slot, PLAYER_CARD_ROW);
+            }
             for (i = 0; i < g_b_fusion_anim_count; ++i) {
                 int slot = g_b_fusion_anim_slots[i];
                 if (slot >= 0 && slot < I_HAND) g_i_player_used[slot] = 1;
@@ -4705,7 +4728,7 @@ static void finish_player_fusion_anim(void)
     }
 
     reset_player_fusion_anim();
-    set_battle_phase(IB_PLAYER_HAND);
+    set_battle_phase(placed_slot >= 0 ? IB_PLAYER_TOP : IB_PLAYER_HAND);
 }
 
 static void step_battle_interactive(const WaifuFmInput *input, int press_up, int press_down, int press_left, int press_right, int press_a, int press_b, int press_start, int press_tab)
