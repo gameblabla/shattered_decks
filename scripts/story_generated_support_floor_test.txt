@@ -1,0 +1,4 @@
+# Enter Story Mode and stop on the name-entry screen after the generated starter deck is created.
+60 2 START
+95 2 UP
+110 2 A

@@ -82,6 +82,8 @@ static int g_b_attack_attacker_slot = -1;
 #define SUPPORT_DRAW_CARD_ID    (WAIFU_CARD_COUNT + 2)
 #define SUPPORT_HEAL_CARD_ID    (WAIFU_CARD_COUNT + 3)
 #define SUPPORT_CARD_VARIANTS   4
+#define STORY_MIN_SUPPORT_CARDS 9
+#define STORY_MIN_EQUIP_CARDS   3
 
 static int support_card_kind(int card_id)
 {
@@ -165,6 +167,8 @@ static int fusion_result_for_cards(int a, int b)
 
 static int field_card_atk(int owner, int slot);
 static int field_card_def(int owner, int slot);
+static int equip_atk_bonus(int card_id);
+static int equip_def_bonus(int card_id);
 
 /* ------------------------------------------------------------------------- */
 /* Small vector/camera utilities. The actual textured quad rasterization is   */
@@ -2672,9 +2676,16 @@ static int g_b_fusion_count = 0;
 static int g_b_fusion_target_slot = -1;
 static int g_b_fusion_anim_slots[FUSION_MAX_MATERIALS] = {-1, -1, -1, -1, -1, -1};
 static int g_b_fusion_anim_cards[FUSION_MAX_MATERIALS] = {CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE};
+static int g_b_fusion_anim_material_kept[FUSION_MAX_MATERIALS] = {0, 0, 0, 0, 0, 0};
 static int g_b_fusion_anim_count = 0;
 static int g_b_fusion_anim_result = CARD_NONE;
 static int g_b_fusion_anim_success = 0;
+static int g_b_fusion_anim_final_card = CARD_NONE;
+static int g_b_fusion_anim_final_atk_bonus = 0;
+static int g_b_fusion_anim_final_def_bonus = 0;
+static int g_b_fusion_anim_final_equips[I_FIELD] = {CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE};
+static int g_b_fusion_anim_final_equip_count = 0;
+static int g_b_fusion_anim_final_source_index = -1;
 static int g_b_fusion_anim_target_slot = -1;
 static int g_b_fusion_anim_has_field_card = 0;
 static int g_b_place_hand = -1;
@@ -2993,20 +3004,85 @@ static int try_queue_player_fusion_slot(int slot)
     return g_b_fusion_count;
 }
 
-static int prepare_player_fusion_anim(int target_slot)
+static int fusion_material_is_equip(int card_id)
+{
+    /* Battle support cards already use the equip flow when played normally.
+       Fusion chains should treat those same cards as ordered equip material. */
+    return is_support_card(card_id);
+}
+
+static void fusion_append_equip_card(int equip_card, int equip_src,
+                                     int equips[I_FIELD], int equip_srcs[I_FIELD], int *equip_count,
+                                     int *atk_bonus, int *def_bonus)
+{
+    if (!fusion_material_is_equip(equip_card)) return;
+    if (*equip_count < I_FIELD) {
+        equips[*equip_count] = equip_card;
+        equip_srcs[*equip_count] = equip_src;
+        ++(*equip_count);
+    }
+    *atk_bonus += equip_atk_bonus(equip_card);
+    *def_bonus += equip_def_bonus(equip_card);
+}
+
+static void fusion_copy_player_field_equips(int target_slot,
+                                            int equips[I_FIELD], int equip_srcs[I_FIELD], int *equip_count)
 {
     int i;
+    for (i = 0; i < I_FIELD; ++i) {
+        if (g_i_player_equip_target[i] == target_slot && fusion_material_is_equip(g_i_player_equip_field[i]) && *equip_count < I_FIELD) {
+            equips[*equip_count] = g_i_player_equip_field[i];
+            equip_srcs[*equip_count] = -1;
+            ++(*equip_count);
+        }
+    }
+}
+
+static void fusion_clear_local_equips(int equips[I_FIELD], int equip_srcs[I_FIELD], int *equip_count)
+{
+    int i;
+    for (i = 0; i < I_FIELD; ++i) {
+        equips[i] = CARD_NONE;
+        equip_srcs[i] = -1;
+    }
+    *equip_count = 0;
+}
+
+static int prepare_player_fusion_anim(int target_slot)
+{
+    int i, j;
     int out = 0;
-    int current;
-    int success = 0;
     int field_card = CARD_NONE;
+    int current = CARD_NONE;
+    int current_source = -1;
+    int current_from_fusion = 0;
+    int current_atk_bonus = 0;
+    int current_def_bonus = 0;
+    int current_equips[I_FIELD];
+    int current_equip_srcs[I_FIELD];
+    int current_equip_count = 0;
+    int pending_equips[I_FIELD];
+    int pending_equip_srcs[I_FIELD];
+    int pending_equip_count = 0;
+    int performed_fusion = 0;
+    int failed_pair = 0;
     if (g_b_fusion_count <= 0) return 0;
     if (target_slot < 0 || target_slot >= I_FIELD) return 0;
+
+    fusion_clear_local_equips(current_equips, current_equip_srcs, &current_equip_count);
+    fusion_clear_local_equips(pending_equips, pending_equip_srcs, &pending_equip_count);
 
     for (i = 0; i < FUSION_MAX_MATERIALS; ++i) {
         g_b_fusion_anim_slots[i] = -1;
         g_b_fusion_anim_cards[i] = CARD_NONE;
+        g_b_fusion_anim_material_kept[i] = 0;
     }
+    for (i = 0; i < I_FIELD; ++i) g_b_fusion_anim_final_equips[i] = CARD_NONE;
+    g_b_fusion_anim_final_card = CARD_NONE;
+    g_b_fusion_anim_final_atk_bonus = 0;
+    g_b_fusion_anim_final_def_bonus = 0;
+    g_b_fusion_anim_final_equip_count = 0;
+    g_b_fusion_anim_final_source_index = -1;
 
     field_card = g_i_player_field[target_slot];
     g_b_fusion_anim_target_slot = target_slot;
@@ -3027,22 +3103,81 @@ static int prepare_player_fusion_anim(int target_slot)
     }
 
     g_b_fusion_anim_count = out;
-    current = g_b_fusion_anim_cards[0];
-    if (g_b_fusion_anim_count >= 2 && is_monster_card(current)) {
-        success = 1;
-        for (i = 1; i < g_b_fusion_anim_count; ++i) {
-            int next = g_b_fusion_anim_cards[i];
-            int fused = fusion_result_for_cards(current, next);
-            if (!is_monster_card(fused)) {
-                success = 0;
-                break;
+
+    for (i = 0; i < g_b_fusion_anim_count; ++i) {
+        int card = g_b_fusion_anim_cards[i];
+        if (fusion_material_is_equip(card)) {
+            if (is_monster_card(current)) {
+                fusion_append_equip_card(card, i, current_equips, current_equip_srcs, &current_equip_count,
+                                         &current_atk_bonus, &current_def_bonus);
+            } else if (pending_equip_count < I_FIELD) {
+                pending_equips[pending_equip_count] = card;
+                pending_equip_srcs[pending_equip_count] = i;
+                ++pending_equip_count;
             }
-            current = fused;
+            continue;
+        }
+        if (!is_monster_card(card)) continue;
+
+        if (!is_monster_card(current)) {
+            current = card;
+            current_source = i;
+            current_from_fusion = 0;
+            current_atk_bonus = 0;
+            current_def_bonus = 0;
+            fusion_clear_local_equips(current_equips, current_equip_srcs, &current_equip_count);
+            if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT) {
+                current_atk_bonus = g_i_player_atk_bonus[target_slot];
+                current_def_bonus = g_i_player_def_bonus[target_slot];
+                fusion_copy_player_field_equips(target_slot, current_equips, current_equip_srcs, &current_equip_count);
+            }
+            for (j = 0; j < pending_equip_count; ++j) {
+                fusion_append_equip_card(pending_equips[j], pending_equip_srcs[j],
+                                         current_equips, current_equip_srcs, &current_equip_count,
+                                         &current_atk_bonus, &current_def_bonus);
+            }
+            fusion_clear_local_equips(pending_equips, pending_equip_srcs, &pending_equip_count);
+        } else {
+            int fused = fusion_result_for_cards(current, card);
+            if (is_monster_card(fused)) {
+                current = fused;
+                current_source = -1;
+                current_from_fusion = 1;
+                current_atk_bonus = 0;
+                current_def_bonus = 0;
+                fusion_clear_local_equips(current_equips, current_equip_srcs, &current_equip_count);
+                performed_fusion = 1;
+            } else {
+                current = card;
+                current_source = i;
+                current_from_fusion = 0;
+                current_atk_bonus = 0;
+                current_def_bonus = 0;
+                fusion_clear_local_equips(current_equips, current_equip_srcs, &current_equip_count);
+                failed_pair = 1;
+            }
         }
     }
 
-    g_b_fusion_anim_result = success ? current : CARD_NONE;
-    g_b_fusion_anim_success = success;
+    if (is_monster_card(current)) {
+        g_b_fusion_anim_final_card = current;
+        g_b_fusion_anim_final_atk_bonus = current_atk_bonus;
+        g_b_fusion_anim_final_def_bonus = current_def_bonus;
+        g_b_fusion_anim_final_equip_count = current_equip_count;
+        g_b_fusion_anim_final_source_index = current_source;
+        for (i = 0; i < current_equip_count; ++i) {
+            g_b_fusion_anim_final_equips[i] = current_equips[i];
+            if (current_equip_srcs[i] >= 0 && current_equip_srcs[i] < FUSION_MAX_MATERIALS) {
+                g_b_fusion_anim_material_kept[current_equip_srcs[i]] = 1;
+            }
+        }
+        if (!current_from_fusion && current_source >= 0 && current_source < FUSION_MAX_MATERIALS) {
+            g_b_fusion_anim_material_kept[current_source] = 1;
+        }
+    }
+
+    g_b_fusion_anim_success = (performed_fusion && !failed_pair && is_monster_card(current));
+    g_b_fusion_anim_result = g_b_fusion_anim_success ? current : CARD_NONE;
     return 1;
 }
 
@@ -3462,6 +3597,78 @@ static void sync_battle_deck_counts(void)
 }
 
 
+static void recalc_story_deck_counts(void);
+
+static int story_prefix_card_count(int count, int card)
+{
+    int n = 0;
+    if (count > STORY_DECK_SIZE) count = STORY_DECK_SIZE;
+    for (int i = 0; i < count; ++i) if (g_story_player_deck[i] == card) ++n;
+    return n;
+}
+
+static int story_prefix_support_count(int count)
+{
+    int n = 0;
+    if (count > STORY_DECK_SIZE) count = STORY_DECK_SIZE;
+    for (int i = 0; i < count; ++i) if (is_support_card(g_story_player_deck[i])) ++n;
+    return n;
+}
+
+static int story_append_limited_card(int *idx, int card)
+{
+    if (!idx || *idx >= STORY_DECK_SIZE || card < 0) return 0;
+    if (story_prefix_card_count(*idx, card) >= 4) return 0;
+    g_story_player_deck[(*idx)++] = card;
+    return 1;
+}
+
+static void story_append_guaranteed_supports(int *idx, int *seed)
+{
+    int support_pack[STORY_MIN_SUPPORT_CARDS] = {
+        SUPPORT_EQUIP_CARD_ID, SUPPORT_EQUIP_CARD_ID, SUPPORT_EQUIP_CARD_ID,
+        SUPPORT_GUARD_CARD_ID, SUPPORT_GUARD_CARD_ID,
+        SUPPORT_DRAW_CARD_ID, SUPPORT_DRAW_CARD_ID,
+        SUPPORT_HEAL_CARD_ID, SUPPORT_HEAL_CARD_ID
+    };
+    for (int i = STORY_MIN_SUPPORT_CARDS - 1; i > 0; --i) {
+        int j = story_prng_next(seed) % (i + 1);
+        int tmp = support_pack[i];
+        support_pack[i] = support_pack[j];
+        support_pack[j] = tmp;
+    }
+    for (int i = 0; i < STORY_MIN_SUPPORT_CARDS; ++i) {
+        (void)story_append_limited_card(idx, support_pack[i]);
+    }
+}
+
+static void story_repair_generated_support_floor(int *seed)
+{
+    int support_total = story_prefix_support_count(g_story_deck_count);
+    int equip_total = story_prefix_card_count(g_story_deck_count, SUPPORT_EQUIP_CARD_ID);
+    int safety = 0;
+    while ((support_total < STORY_MIN_SUPPORT_CARDS || equip_total < STORY_MIN_EQUIP_CARDS) && safety++ < STORY_DECK_SIZE * 4) {
+        int replace = 5 + (story_prng_next(seed) % (STORY_DECK_SIZE - 5));
+        int new_card;
+        if (is_support_card(g_story_player_deck[replace])) continue;
+        new_card = (equip_total < STORY_MIN_EQUIP_CARDS) ? SUPPORT_EQUIP_CARD_ID
+                 : (WAIFU_CARD_COUNT + (story_prng_next(seed) % SUPPORT_CARD_VARIANTS));
+        if (story_prefix_card_count(g_story_deck_count, new_card) >= 4) {
+            for (int kind = 0; kind < SUPPORT_CARD_VARIANTS; ++kind) {
+                int candidate = WAIFU_CARD_COUNT + kind;
+                if (story_prefix_card_count(g_story_deck_count, candidate) < 4) {
+                    new_card = candidate;
+                    break;
+                }
+            }
+        }
+        if (story_prefix_card_count(g_story_deck_count, new_card) >= 4) break;
+        g_story_player_deck[replace] = new_card;
+        support_total = story_prefix_support_count(g_story_deck_count);
+        equip_total = story_prefix_card_count(g_story_deck_count, SUPPORT_EQUIP_CARD_ID);
+    }
+}
+
 static void generate_story_starter_deck(void)
 {
 #ifdef WAIFU_FM_HEADLESS_TESTS
@@ -3484,13 +3691,13 @@ static void generate_story_starter_deck(void)
 
     for (int i = 0; i < STORY_DECK_SIZE; ++i) g_story_player_deck[i] = CARD_NONE;
 
-    /* Guaranteed opening profile, but every card still obeys the four-copy
-       deck construction rule. */
-    g_story_player_deck[idx++] = strong;
-    g_story_player_deck[idx++] = weak;
-    g_story_player_deck[idx++] = weak;
-    g_story_player_deck[idx++] = SUPPORT_EQUIP_CARD_ID;
-    g_story_player_deck[idx++] = SUPPORT_GUARD_CARD_ID + (story_prng_next(&seed) % 3);
+    /* Guaranteed opening profile, while the support pack ensures story-mode
+       generated decks cannot roll with too few spells. The pack is shuffled so
+       the exact support mix near the top of the deck still varies. */
+    (void)story_append_limited_card(&idx, strong);
+    (void)story_append_limited_card(&idx, weak);
+    (void)story_append_limited_card(&idx, weak);
+    story_append_guaranteed_supports(&idx, &seed);
 
     while (idx < STORY_DECK_SIZE) {
         int roll = story_prng_next(&seed) % 100;
@@ -3508,20 +3715,14 @@ static void generate_story_starter_deck(void)
             if (mid == strong) mid = (mid + 5) % WAIFU_CARD_COUNT;
             card = mid;
         }
-        int copies = 0;
-        for (int j = 0; j < idx; ++j) if (g_story_player_deck[j] == card) ++copies;
-        if (copies >= 4) continue;
-        g_story_player_deck[idx++] = card;
+        (void)story_append_limited_card(&idx, card);
     }
+    story_repair_generated_support_floor(&seed);
     story_shuffle_tail(5, &seed);
     g_story_player_deck_pos = 0;
 
-    for (idx = 0; idx < STORY_DECK_SIZE; ++idx) {
-        if (g_story_player_deck[idx] == SUPPORT_EQUIP_CARD_ID) ++g_story_equip_count;
-        else if (is_support_card(g_story_player_deck[idx])) ++g_story_support_count;
-    }
+    recalc_story_deck_counts();
 }
-
 
 static void generate_story_storage_pool(void)
 {
@@ -3926,10 +4127,17 @@ static void init_battle_state(void)
     for (i = 0; i < FUSION_MAX_MATERIALS; ++i) {
         g_b_fusion_anim_slots[i] = -1;
         g_b_fusion_anim_cards[i] = CARD_NONE;
+        g_b_fusion_anim_material_kept[i] = 0;
     }
     g_b_fusion_anim_count = 0;
     g_b_fusion_anim_result = CARD_NONE;
     g_b_fusion_anim_success = 0;
+    g_b_fusion_anim_final_card = CARD_NONE;
+    g_b_fusion_anim_final_atk_bonus = 0;
+    g_b_fusion_anim_final_def_bonus = 0;
+    for (i = 0; i < I_FIELD; ++i) g_b_fusion_anim_final_equips[i] = CARD_NONE;
+    g_b_fusion_anim_final_equip_count = 0;
+    g_b_fusion_anim_final_source_index = -1;
     g_b_fusion_anim_target_slot = -1;
     g_b_fusion_anim_has_field_card = 0;
     g_b_top_col = 0;
@@ -4762,22 +4970,27 @@ static void reset_player_fusion_anim(void)
     for (i = 0; i < FUSION_MAX_MATERIALS; ++i) {
         g_b_fusion_anim_slots[i] = -1;
         g_b_fusion_anim_cards[i] = CARD_NONE;
+        g_b_fusion_anim_material_kept[i] = 0;
     }
     g_b_fusion_anim_count = 0;
     g_b_fusion_anim_result = CARD_NONE;
     g_b_fusion_anim_success = 0;
+    g_b_fusion_anim_final_card = CARD_NONE;
+    g_b_fusion_anim_final_atk_bonus = 0;
+    g_b_fusion_anim_final_def_bonus = 0;
+    for (i = 0; i < I_FIELD; ++i) g_b_fusion_anim_final_equips[i] = CARD_NONE;
+    g_b_fusion_anim_final_equip_count = 0;
+    g_b_fusion_anim_final_source_index = -1;
     g_b_fusion_anim_target_slot = -1;
     g_b_fusion_anim_has_field_card = 0;
 }
 
 static int failed_fusion_can_place_last_card(void)
 {
-    int last_card;
     int target = g_b_fusion_anim_target_slot;
     if (g_b_fusion_anim_count <= 0) return 0;
     if (target < 0 || target >= I_FIELD) return 0;
-    last_card = g_b_fusion_anim_cards[g_b_fusion_anim_count - 1];
-    return is_monster_card(last_card);
+    return !g_b_fusion_anim_success && is_monster_card(g_b_fusion_anim_final_card);
 }
 
 static void draw_player_fusion_target(void)
@@ -4833,13 +5046,13 @@ static void draw_fusion_landing_card(Camera cam, int card_id, int sx, int sy, in
     }
 }
 
-static void draw_failed_fusion_dropped_materials(int count, int last_index, int first_target_x, int local_frame)
+static void draw_failed_fusion_dropped_materials(int count, int first_target_x, int local_frame)
 {
     int i;
     int32_t fall_t = q8_smooth_ratio(local_frame, 48);
     for (i = 0; i < count; ++i) {
         int x, y, wobble;
-        if (i == last_index) continue;
+        if (g_b_fusion_anim_material_kept[i]) continue;
         wobble = q8_to_int(q8_mul(Q8_FROM_INT(10), q8_sin_rad((local_frame * 7 + i * 37) * Q8_FRAC(8,100))));
         x = first_target_x + i * 34 + wobble;
         y = lerp_i(82, 258, fall_t) + i * 6;
@@ -4902,12 +5115,12 @@ static void draw_player_fusion_anim(void)
             draw_centered_text(191, "FUSION SUCCESS", IDX_GREEN, IDX_BLACK);
             draw_centered_text(205, "PLACING RESULT", IDX_WHITE, IDX_BLACK);
         } else if (failed_fusion_can_place_last_card()) {
-            int last_index = g_b_fusion_anim_count - 1;
-            int last_x = first_target_x + last_index * 34;
-            draw_failed_fusion_dropped_materials(count, last_index, first_target_x, local);
-            draw_fusion_landing_card(cam, g_b_fusion_anim_cards[last_index], last_x, 82, 38, 50, target_slot, local, 0);
+            int final_index = g_b_fusion_anim_final_source_index;
+            int final_x = (final_index >= 0) ? first_target_x + final_index * 34 : 101;
+            draw_failed_fusion_dropped_materials(count, first_target_x, local);
+            draw_fusion_landing_card(cam, g_b_fusion_anim_final_card, final_x, 82, 38, 50, target_slot, local, 0);
             draw_centered_text(191, "FUSION FAILED", IDX_RED, IDX_BLACK);
-            draw_centered_text(205, "LAST CARD PLACED", IDX_WHITE, IDX_BLACK);
+            draw_centered_text(205, g_b_fusion_anim_final_equip_count > 0 ? "EQUIP APPLIED" : "LAST CARD PLACED", IDX_WHITE, IDX_BLACK);
         } else {
             int32_t fall_t = q8_smooth_ratio(local, 48);
             for (i = 0; i < count; ++i) {
@@ -4967,49 +5180,48 @@ static void draw_player_fusion_anim(void)
     }
 }
 
+
+static void attach_player_fusion_final_equips(int target_slot)
+{
+    int i;
+    g_i_player_atk_bonus[target_slot] = 0;
+    g_i_player_def_bonus[target_slot] = 0;
+    for (i = 0; i < g_b_fusion_anim_final_equip_count; ++i) {
+        int equip_card = g_b_fusion_anim_final_equips[i];
+        int equip_slot = first_free_player_equip_slot();
+        if (!fusion_material_is_equip(equip_card) || equip_slot < 0) continue;
+        g_i_player_equip_field[equip_slot] = equip_card;
+        g_i_player_equip_target[equip_slot] = target_slot;
+        g_i_player_atk_bonus[target_slot] += equip_atk_bonus(equip_card);
+        g_i_player_def_bonus[target_slot] += equip_def_bonus(equip_card);
+    }
+}
+
 static void finish_player_fusion_anim(void)
 {
     int i;
     int target_slot = g_b_fusion_anim_target_slot;
     int placed_slot = -1;
     int used_hand_count = 0;
-    int success = g_b_fusion_anim_success && is_monster_card(g_b_fusion_anim_result);
     clear_player_fusion_queue();
 
     if (g_b_fusion_anim_count > 0) {
-        if (success && target_slot >= 0 && target_slot < I_FIELD) {
+        if (target_slot >= 0 && target_slot < I_FIELD && is_monster_card(g_b_fusion_anim_final_card)) {
             clear_monster_slot(0, target_slot);
             placed_slot = target_slot;
-            g_i_player_field[placed_slot] = g_b_fusion_anim_result;
+            g_i_player_field[placed_slot] = g_b_fusion_anim_final_card;
             g_i_player_faceup[placed_slot] = 1;
             g_i_player_defense[placed_slot] = 0;
             g_i_player_attacked[placed_slot] = 0;
-            g_i_player_atk_bonus[placed_slot] = 0;
-            g_i_player_def_bonus[placed_slot] = 0;
+            attach_player_fusion_final_equips(placed_slot);
             g_b_player_monster_played_this_turn = 1;
             g_b_selected_player_slot = placed_slot;
             set_top_selector(placed_slot, PLAYER_CARD_ROW);
-        } else {
-            int last_index = g_b_fusion_anim_count - 1;
-            int last_card = g_b_fusion_anim_cards[last_index];
-            if (failed_fusion_can_place_last_card()) {
-                clear_monster_slot(0, target_slot);
-                placed_slot = target_slot;
-                g_i_player_field[placed_slot] = last_card;
-                g_i_player_faceup[placed_slot] = 1;
-                g_i_player_defense[placed_slot] = 0;
-                g_i_player_attacked[placed_slot] = 0;
-                g_i_player_atk_bonus[placed_slot] = 0;
-                g_i_player_def_bonus[placed_slot] = 0;
-                g_b_player_monster_played_this_turn = 1;
-                g_b_selected_player_slot = placed_slot;
-                set_top_selector(placed_slot, PLAYER_CARD_ROW);
-            } else if (g_b_fusion_anim_has_field_card && target_slot >= 0 && target_slot < I_FIELD) {
-                clear_monster_slot(0, target_slot);
-                placed_slot = target_slot;
-                g_b_selected_player_slot = target_slot;
-                set_top_selector(target_slot, PLAYER_CARD_ROW);
-            }
+        } else if (g_b_fusion_anim_has_field_card && target_slot >= 0 && target_slot < I_FIELD) {
+            clear_monster_slot(0, target_slot);
+            placed_slot = target_slot;
+            g_b_selected_player_slot = target_slot;
+            set_top_selector(target_slot, PLAYER_CARD_ROW);
         }
         for (i = 0; i < g_b_fusion_anim_count; ++i) {
             int slot = g_b_fusion_anim_slots[i];
@@ -5690,6 +5902,10 @@ static void draw_deck_editor(void)
     snprintf(line, sizeof(line), "STORAGE %02d", g_story_storage_count);
     draw_text_small(148, 31, line, g_deck_tab == 1 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
 
+    recalc_story_deck_counts();
+    snprintf(line, sizeof(line), "SUPPORT %02d  EQ %02d", g_story_support_count + g_story_equip_count, g_story_equip_count);
+    draw_text_small(76, 43, line, IDX_GOLD_HI, IDX_BLACK);
+
     if (count <= 0) {
         draw_centered_text(105, "EMPTY", IDX_DIM, IDX_BLACK);
     } else {
@@ -6049,11 +6265,6 @@ static void draw_story_map_screen_content(int f)
     char line[96];
     draw_story_sky();
     draw_story_scene_3d(f);
-    draw_panel_rect(6, 6, 105, 35, IDX_UI_DARK);
-    draw_text_small(12, 13, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "DUEL %d/%d", g_story_duel_index + 1, STORY_MAX_DUELS);
-    draw_text_small(12, 27, line, IDX_WHITE, IDX_BLACK);
-
     draw_panel_rect(126, 146, 121, 76, IDX_UI_DARK);
     draw_text_small(135, 155, "DESTINATION", IDX_GOLD_HI, IDX_BLACK);
     draw_text(143, 174, "SANCTUM", g_story_map_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
@@ -6613,6 +6824,74 @@ static void debug_put_com_monster(int slot, int card, int faceup, int defense)
     g_i_com_def_bonus[slot] = 0;
 }
 
+static void debug_setup_fusion_equip_scenario(const char *name)
+{
+    int i;
+    waifu_fm_reset_interactive();
+    for (i = 0; i < I_FIELD; ++i) {
+        clear_monster_slot(0, i);
+        clear_monster_slot(1, i);
+        g_i_player_equip_field[i] = CARD_NONE;
+        g_i_player_equip_target[i] = -1;
+    }
+    for (i = 0; i < I_HAND; ++i) {
+        g_i_player_hand[i] = 0;
+        g_i_player_used[i] = 1;
+        g_i_com_used[i] = 1;
+    }
+
+    if (!strcmp(name, "equips-only")) {
+        g_i_player_hand[0] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_hand[1] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_used[0] = 0;
+        g_i_player_used[1] = 0;
+    } else if (!strcmp(name, "equip-last")) {
+        g_i_player_hand[0] = 12; /* Galatea. */
+        g_i_player_hand[1] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_used[0] = 0;
+        g_i_player_used[1] = 0;
+    } else if (!strcmp(name, "equip-first")) {
+        g_i_player_hand[0] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_hand[1] = 12; /* Galatea. */
+        g_i_player_used[0] = 0;
+        g_i_player_used[1] = 0;
+    } else if (!strcmp(name, "equip-first-two-monsters")) {
+        g_i_player_hand[0] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_hand[1] = 12; /* Galatea gets the equip, then is discarded on failed pair. */
+        g_i_player_hand[2] = 15; /* Mirelle remains. */
+        g_i_player_used[0] = 0;
+        g_i_player_used[1] = 0;
+        g_i_player_used[2] = 0;
+    } else if (!strcmp(name, "fusion-then-equip")) {
+        g_i_player_hand[0] = 12; /* Galatea. */
+        g_i_player_hand[1] = 9;  /* Voltara -> Petra. */
+        g_i_player_hand[2] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_used[0] = 0;
+        g_i_player_used[1] = 0;
+        g_i_player_used[2] = 0;
+    } else {
+        g_i_player_hand[0] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_hand[1] = 12;
+        g_i_player_used[0] = 0;
+        g_i_player_used[1] = 0;
+    }
+
+    g_i_state = WAIFU_I_BATTLE;
+    g_i_frame = 0;
+    g_b_phase = IB_PLAYER_HAND;
+    g_b_phase_frame = 60;
+    g_b_player_hand_intro_pending = 0;
+    g_b_selected_hand = 0;
+    g_b_selected_player_slot = 0;
+    g_b_top_col = 0;
+    g_b_top_row = PLAYER_CARD_ROW;
+    g_b_player_monster_played_this_turn = 0;
+    g_b_player_fused_this_turn = 0;
+    g_b_com_monster_played_this_turn = 0;
+    clear_player_fusion_queue();
+    clear_battle_snapshot();
+}
+
 static void debug_setup_ai_demo_scenario(const char *name)
 {
     int i;
@@ -6666,6 +6945,7 @@ int main(int argc, char **argv)
     int dump_state = 0;
     int story_cutscene_preview = -1;
     const char *ai_demo_scenario = NULL;
+    const char *fusion_equip_scenario = NULL;
     CommandEvent events[MAX_COMMAND_EVENTS];
     int event_count = 0;
     int f;
@@ -6682,6 +6962,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--dump-state")) dump_state = 1;
         else if (!strcmp(argv[i], "--story-cutscene-preview") && i + 1 < argc) story_cutscene_preview = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--ai-demo-scenario") && i + 1 < argc) ai_demo_scenario = argv[++i];
+        else if (!strcmp(argv[i], "--fusion-equip-scenario") && i + 1 < argc) fusion_equip_scenario = argv[++i];
         else if (!strcmp(argv[i], "--deckout-demo")) g_force_deckout_demo = 1;
         else if (!strcmp(argv[i], "--lp-loss-demo")) g_force_lp_loss_demo = 1;
     }
@@ -6713,6 +6994,7 @@ int main(int argc, char **argv)
     if (!no_png) ensure_dir(out_dir);
     waifu_fm_reset_interactive();
     if (story_cutscene_preview >= 0) debug_jump_to_story_cutscene(story_cutscene_preview);
+    if (fusion_equip_scenario) debug_setup_fusion_equip_scenario(fusion_equip_scenario);
     if (ai_demo_scenario) debug_setup_ai_demo_scenario(ai_demo_scenario);
     for (f = 0; f < frames; ++f) {
         if (scripted_render) {
@@ -6751,9 +7033,10 @@ int main(int argc, char **argv)
         printf("player_monster_played=%d player_fused=%d com_monster_played=%d result=%d top_col=%d top_row=%d attack_target=%d preview_card=%d ",
                 g_b_player_monster_played_this_turn, g_b_player_fused_this_turn, g_b_com_monster_played_this_turn, g_b_result,
                 g_b_top_col, g_b_top_row, g_b_attack_attacker_slot, g_b_preview_card_id);
-        printf("istate=%d story=%d story_line=%d story_fire_line=%d story_name=%s story_strong=%d story_weak=%d story_equips=%d story_supports=%d ",
+        printf("istate=%d story=%d story_line=%d story_fire_line=%d story_name=%s story_strong=%d story_weak=%d story_equips=%d story_supports=%d story_total_supports=%d ",
                (int)g_i_state, g_story_battle_active, g_story_intro_line, g_story_fire_line, g_story_name,
-               g_story_strong_card, g_story_weak_card, g_story_equip_count, g_story_support_count);
+               g_story_strong_card, g_story_weak_card, g_story_equip_count, g_story_support_count,
+               g_story_equip_count + g_story_support_count);
         printf("deck_count=%d storage_count=%d max_deck_copies=%d deck_tab=%d deck_cursor=%d story_duel=%d map_cursor=%d pyramid_cursor=%d plaza_line=%d editor_from_pyramid=%d save_status=%d save_exists=%d opponent=%s ",
                g_story_deck_count, g_story_storage_count, story_deck_max_card_copies(), g_deck_tab, g_deck_cursor,
                g_story_duel_index, g_story_map_cursor, g_story_pyramid_cursor, g_story_plaza_line,

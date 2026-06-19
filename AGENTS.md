@@ -16,6 +16,7 @@ Use this file as the first stop when you need to change behavior. It is written 
   - Battle flow: `step_battle_interactive` around 3812, `prepare_battle` around 3291, `prepare_direct_attack` around 3329, `resolve_battle` around 3364, `draw_interactive_common` around 3195, `draw_bottom_info_offset` around 585.
   - Tactical top-view selector: globals near the field row constants, smooth cursor drawing around `draw_top_selector_cursor` near line 1084, selector movement helpers around line 2417, and free-field / attack-target handling inside `IB_PLAYER_TOP` in `step_battle_interactive`. `top_selector_preview_card` (around line 2455) backs the B-button field card check, which runs in the `IB_FIELD_CARD_PREVIEW` phase next to `IB_CARD_PREVIEW`.
   - Equip/support handling: `start_player_equip` around 3703, `finish_player_equip` around 3726, `draw_player_equip_target` around 3757, `draw_player_equip_anim` around 3767, equip phase handling inside `step_battle_interactive`.
+  - Player fusion handling: `clear_player_fusion_queue`, `try_queue_player_fusion_slot`, and `prepare_player_fusion_anim` near the hand/fusion helpers; `IB_PLAYER_FUSION_TARGET` and `IB_PLAYER_FUSION_ANIM` cases inside `step_battle_interactive`; `finish_player_fusion_anim` writes the final result to the selected player field zone.
   - Headless scripts / state dump: `waifu_fm_step` around 4595, `load_command_file` around 4907, `main` around 4959.
 
 - [src/game/game_api.h](/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/src/game/game_api.h:1)
@@ -59,6 +60,7 @@ Use this file as the first stop when you need to change behavior. It is written 
   - Button 4/TAB toggles the selected player monster into or out of defense position from top view. Position toggle no longer flips the card face-up; a face-down card stays face-down when rotated.
   - Defense-position field cards swap the quad half-extents in `draw_board_card_state` so the rotated 38x54 texture keeps its aspect ratio instead of stretching.
   - B from top view checks the card under the cursor (player monster, opponent monster, or player equip row) via `IB_FIELD_CARD_PREVIEW`, reusing the hand card preview. B in attack-target mode still cancels targeting instead. `top_selector_preview_card()` resolves the cursor card; `g_b_preview_card_id` carries it into the preview phase.
+  - Fusion confirmation is two-step: DOWN queues hand materials, A enters `IB_PLAYER_FUSION_TARGET`, then A on a player monster zone starts the fusion animation. Empty zones place the hand-fusion result there; occupied zones prepend that field monster as material and overwrite the same zone with the result. Empty zones are blocked when the one-monster placement limit has already been used, but occupied-zone transformation remains available.
 
 ## Editing Rules
 
@@ -98,6 +100,7 @@ Prefer script-based headless checks when possible:
 - `scripts/equip_spell_target_animation_test.txt`
 - `scripts/top_view_free_selector_defense_test.txt`
 - `scripts/top_view_field_card_check_test.txt`
+- `scripts/player_fusion_field_overwrite_test.txt`
 - `scripts/position_toggle_no_faceup_test.txt`
 - `scripts/story_map_to_plaza_transition_test.txt`
 - Existing story/battle scripts under `scripts/`

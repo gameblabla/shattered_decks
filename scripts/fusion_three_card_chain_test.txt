@@ -1,0 +1,8 @@
+# Queue hand0, hand1, hand2, confirm fusion, select field0.
+0 2 DOWN
+18 2 RIGHT
+36 2 DOWN
+54 2 RIGHT
+72 2 DOWN
+90 2 A
+108 2 A

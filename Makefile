@@ -1,8 +1,8 @@
 CC ?= gcc
 CFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -DPLATFORM=5 -DBY16=1 -DHARDWARE_DIV=1
 INCLUDES = -Isrc/engine -Isrc/generated -Isrc/record -Isrc/game
-HEADLESS_SRCS = src/main.c src/engine/renderer3d.c src/engine/common.c src/engine/bmp_writer.c src/record/zmbv_mkv.c
-SDL12_SRCS = src/platform/sdl12_main.c src/main.c src/engine/renderer3d.c src/engine/common.c src/engine/bmp_writer.c
+HEADLESS_SRCS = src/main.c src/game/ai.c src/game/deck.c src/engine/renderer3d.c src/engine/common.c src/engine/bmp_writer.c src/record/zmbv_mkv.c
+SDL12_SRCS = src/platform/sdl12_main.c src/main.c src/game/ai.c src/game/deck.c src/engine/renderer3d.c src/engine/common.c src/engine/bmp_writer.c
 TARGET = waifu_fm_headless
 SDL12_TARGET = waifu_fm_sdl12
 SDL_CONFIG ?= sdl-config
@@ -15,12 +15,12 @@ assets:
 	python3 tools/gen_assets.py
 	python3 tools/gen_title_asset.py
 
-$(TARGET): $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/game/game_api.h
-	$(CC) $(CFLAGS) $(INCLUDES) $(HEADLESS_SRCS) -lm -lz -o $@
+$(TARGET): $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/game/game_api.h src/game/ai.h src/game/deck.h
+	$(CC) $(CFLAGS) -DWAIFU_FM_HEADLESS_TESTS $(INCLUDES) $(HEADLESS_SRCS) -lm -lz -o $@
 
 sdl12: $(SDL12_TARGET)
 
-$(SDL12_TARGET): $(SDL12_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/game/game_api.h
+$(SDL12_TARGET): $(SDL12_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/game/game_api.h src/game/ai.h src/game/deck.h
 	$(CC) $(CFLAGS) -DWAIFU_FM_NO_HEADLESS_MAIN $(INCLUDES) $(SDL_CFLAGS) $(SDL12_SRCS) $(SDL_LIBS) -lm -lz -o $@
 
 run: $(TARGET)
