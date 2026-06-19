@@ -233,6 +233,7 @@ int main(int argc, char **argv)
     const char *commands_path = NULL;
     const char *out_dir = NULL;
     int i;
+    WaifuFmPaletteId last_palette = (WaifuFmPaletteId)-1;
 
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--commands") && i + 1 < argc) commands_path = argv[++i];
@@ -281,6 +282,7 @@ int main(int argc, char **argv)
     waifu_fm_init();
     waifu_fm_reset_interactive();
     set_sdl_palette(screen);
+    last_palette = waifu_fm_palette_id();
 
     while (running) {
         const Uint32 start_ticks = SDL_GetTicks();
@@ -294,6 +296,10 @@ int main(int argc, char **argv)
 
         poll_input(&input, &running);
         waifu_fm_step(&input);
+        if (waifu_fm_palette_id() != last_palette) {
+            set_sdl_palette(screen);
+            last_palette = waifu_fm_palette_id();
+        }
         copy_framebuffer_to_surface(screen);
         SDL_Flip(screen);
 

@@ -15,6 +15,7 @@
 #include "game_api.h"
 #include "ai.h"
 #include "deck.h"
+#include "palette.h"
 
 #define W 256
 #define H 240
@@ -2158,8 +2159,10 @@ static void draw_centered_text_scaled(int y, const char *s, int scale, uint8_t f
 
 static void draw_title_background(void)
 {
-    /* v18: no title/prompt blue bars. The image is shown cleanly; only the
-       menu itself uses a blue panel. */
+    /* The title/menu screen uses its own 256-color palette.  Text and UI
+       routines keep using the normal IDX_* slots; those slots are preserved
+       in title_screen_palette_rgb so the text remains visually identical. */
+    waifu_fm_use_title_palette();
     draw_card_raw(title_screen_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, W, H);
 }
 
@@ -2309,6 +2312,7 @@ static void render_duel_frame(int f)
 
 static void render_frame(int f)
 {
+    waifu_fm_use_common_palette();
     if (f < TITLE_SEQUENCE_FRAMES) {
         render_title_sequence(f);
         return;
@@ -2584,7 +2588,7 @@ static void write_frame_png(const char *out_dir, int f)
 {
     char path[512];
     snprintf(path, sizeof(path), "%s/frame_%05d.png", out_dir, f);
-    cfx_write_png8(path, framebuffer, W, H, waifu_palette_rgb);
+    cfx_write_png8(path, framebuffer, W, H, waifu_fm_palette_rgb());
 }
 
 static void write_showcase(const char *out_dir)
@@ -2595,7 +2599,7 @@ static void write_showcase(const char *out_dir)
     for (size_t i = 0; i < sizeof(frames)/sizeof(frames[0]); ++i) {
         render_frame(frames[i]);
         snprintf(path, sizeof(path), "%s/show_%02zu_f%03d.png", out_dir, i, frames[i]);
-        cfx_write_png8(path, framebuffer, W, H, waifu_palette_rgb);
+        cfx_write_png8(path, framebuffer, W, H, waifu_fm_palette_rgb());
     }
 }
 
@@ -5655,6 +5659,7 @@ void waifu_fm_init(void)
     cfx_renderer3d_set_texture_atlas(&renderer, waifu_texture_atlas,
                                       WAIFU_TEX_TILE_SIZE,
                                       WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
+    waifu_fm_use_common_palette();
     g_api_initialized = 1;
 }
 
@@ -5665,16 +5670,12 @@ void waifu_fm_reset_interactive(void)
     g_i_menu_selected = 1;
     memset(&g_prev_input, 0, sizeof(g_prev_input));
     init_battle_state();
+    waifu_fm_use_common_palette();
 }
 
 uint8_t *waifu_fm_framebuffer(void)
 {
     return framebuffer;
-}
-
-const uint8_t *waifu_fm_palette_rgb(void)
-{
-    return waifu_palette_rgb;
 }
 
 void waifu_fm_render_scripted_frame(int frame)
@@ -6423,6 +6424,7 @@ void waifu_fm_step(const WaifuFmInput *input)
     int press_up, press_down, press_left, press_right, press_a, press_b, press_start, press_tab;
 
     waifu_fm_init();
+    waifu_fm_use_common_palette();
     memset(&zero, 0, sizeof(zero));
     if (!input) input = &zero;
 
@@ -7003,7 +7005,7 @@ int main(int argc, char **argv)
             WaifuFmInput in = input_for_frame_from_events(f, events, event_count);
             waifu_fm_step(&in);
         }
-        if (rec && !zmbv_mkv_add_indexed_frame(rec, framebuffer, waifu_palette_rgb, (uint64_t)f)) {
+        if (rec && !zmbv_mkv_add_indexed_frame(rec, framebuffer, waifu_fm_palette_rgb(), (uint64_t)f)) {
             fprintf(stderr, "record-mkv frame %d failed: %s\n", f, zmbv_mkv_error(rec));
             zmbv_mkv_abort(rec);
             return 1;

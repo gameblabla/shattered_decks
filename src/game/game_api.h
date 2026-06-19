@@ -11,6 +11,11 @@ extern "C" {
 #define WAIFU_FM_HEIGHT 240
 #define WAIFU_FM_FPS 60
 
+typedef enum WaifuFmPaletteId {
+    WAIFU_FM_PALETTE_COMMON = 0,
+    WAIFU_FM_PALETTE_TITLE = 1
+} WaifuFmPaletteId;
+
 typedef struct WaifuFmInput {
     int up;
     int down;
@@ -28,6 +33,8 @@ void waifu_fm_step(const WaifuFmInput *input);
 void waifu_fm_render_scripted_frame(int frame);
 uint8_t *waifu_fm_framebuffer(void);
 const uint8_t *waifu_fm_palette_rgb(void);
+const uint8_t *waifu_fm_palette_rgb_for_id(WaifuFmPaletteId id);
+WaifuFmPaletteId waifu_fm_palette_id(void);
 
 #ifdef __cplusplus
 }
