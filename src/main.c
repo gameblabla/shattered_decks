@@ -3846,14 +3846,13 @@ static void draw_interactive_card_preview(int card_id, int f)
 
 static int defender_is_passive_position(int defender_owner, int slot)
 {
-    int faceup;
     int id;
     if (slot < 0 || slot >= I_FIELD) return 0;
     id = defender_owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot];
     if (!is_monster_card(id)) return 1;
-    faceup = defender_owner == 0 ? g_i_player_faceup[slot] : g_i_com_faceup[slot];
-    /* Face-down monsters resolve as passive DEF-value defenders. */
-    return !faceup || field_card_defense_position(defender_owner, slot);
+    /* Defense-position monsters are passive. Face-down attack-position
+       monsters still reveal and battle with ATK. */
+    return field_card_defense_position(defender_owner, slot);
 }
 
 static int defender_battle_value(int defender_owner, int slot)
@@ -3891,9 +3890,9 @@ static BattleCalc calc_battle_state(int attacker_owner, int attacker_slot, int d
         if (bc.delta > 0) {
             bc.outcome = BATTLE_DESTROY_DEFENDER;
         } else if (bc.delta < 0) {
-            /* A defense-position or face-down defender does not counter-attack
+            /* A defense-position or non-monster defender does not counter-attack
                and cannot destroy the attacking monster. The attacker only takes
-               battle damage equal to the DEF gap. */
+               battle damage equal to the passive value gap. */
             bc.outcome = BATTLE_NO_DESTROY;
             bc.damage = -bc.delta;
             bc.damage_owner = attacker_owner;
