@@ -2910,6 +2910,13 @@ static int first_live_com_monster_slot(void)
     return -1;
 }
 
+static int first_live_player_monster_slot(void)
+{
+    int i;
+    for (i = 0; i < I_FIELD; ++i) if (is_monster_card(g_i_player_field[i])) return i;
+    return -1;
+}
+
 static int first_unused_com_support_hand(void)
 {
     int i;
@@ -2953,7 +2960,7 @@ static void move_top_selector(int dx, int dy)
 static int top_selector_player_monster_slot(void)
 {
     if (g_b_top_row != PLAYER_CARD_ROW || g_b_top_col < 0 || g_b_top_col >= I_FIELD) return -1;
-    return g_i_player_field[g_b_top_col] >= 0 ? g_b_top_col : -1;
+    return is_monster_card(g_i_player_field[g_b_top_col]) ? g_b_top_col : -1;
 }
 
 static int top_selector_com_monster_slot(void)
@@ -3081,10 +3088,10 @@ static int count_live_com_monsters(void)
 static int selected_or_first_live_player_slot(void)
 {
     if (g_b_selected_player_slot >= 0 && g_b_selected_player_slot < I_FIELD &&
-        g_i_player_field[g_b_selected_player_slot] >= 0) {
+        is_monster_card(g_i_player_field[g_b_selected_player_slot])) {
         return g_b_selected_player_slot;
     }
-    return first_live_player_slot();
+    return first_live_player_monster_slot();
 }
 
 static int first_attackable_com_slot(void)
@@ -3840,7 +3847,10 @@ static void draw_interactive_card_preview(int card_id, int f)
 static int defender_is_passive_position(int defender_owner, int slot)
 {
     int faceup;
+    int id;
     if (slot < 0 || slot >= I_FIELD) return 0;
+    id = defender_owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot];
+    if (!is_monster_card(id)) return 1;
     faceup = defender_owner == 0 ? g_i_player_faceup[slot] : g_i_com_faceup[slot];
     /* Face-down monsters resolve as passive DEF-value defenders. */
     return !faceup || field_card_defense_position(defender_owner, slot);
@@ -3852,6 +3862,7 @@ static int defender_battle_value(int defender_owner, int slot)
     if (slot < 0 || slot >= I_FIELD) return 0;
     id = defender_owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot];
     if (id < 0) return 0;
+    if (!is_monster_card(id)) return 0;
     if (defender_is_passive_position(defender_owner, slot)) return field_card_def(defender_owner, slot);
     return field_card_atk(defender_owner, slot);
 }
@@ -3917,6 +3928,8 @@ static void prepare_battle(int attacker_owner, int attacker_slot, int defender_s
     if (field_card_defense_position(attacker_owner, attacker_slot)) return;
 
     defender_owner = attacker_owner ? 0 : 1;
+    def_id = defender_owner == 0 ? g_i_player_field[defender_slot] : g_i_com_field[defender_slot];
+    if (def_id < 0) return;
     bc = calc_battle_state(attacker_owner, attacker_slot, defender_owner, defender_slot);
 
     g_b_battle_atk_owner = attacker_owner;
@@ -4682,7 +4695,14 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             g_i_com_used[g_b_place_hand] = 1;
             g_b_com_monster_played_this_turn = 1;
             clear_battle_snapshot();
-            set_battle_phase(IB_COM_BATTLE);
+            {
+                int equip_h = first_unused_com_support_hand();
+                if (equip_h >= 0 && first_free_com_equip_slot() >= 0) {
+                    start_com_equip(equip_h, g_b_place_slot);
+                } else {
+                    set_battle_phase(IB_COM_BATTLE);
+                }
+            }
         }
         break;
 
