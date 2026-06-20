@@ -4025,7 +4025,12 @@ typedef enum WaifuBattlePhase {
     IB_TURN_TO_PLAYER,
     IB_PLAYER_DRAW,
     IB_RESULT,
-    IB_TALLY
+    IB_TALLY,
+    /* Appended at the end so existing g_b_phase values (e.g. in saved states)
+       keep their numbering.  Smooth camera lift from the hand view up to the
+       tactical top view, and the reverse descent back down to the hand. */
+    IB_PLAYER_HAND_TO_TOP,
+    IB_PLAYER_TOP_TO_HAND
 } WaifuBattlePhase;
 
 #define I_HAND 5
@@ -6976,7 +6981,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             g_b_player_hand_intro_pending = 0;
         }
         if (press_b) { set_battle_phase(IB_CARD_PREVIEW); break; }
-        if (press_up) { clear_player_fusion_queue(); set_top_selector(g_b_selected_player_slot, PLAYER_CARD_ROW); g_b_attack_attacker_slot = -1; set_battle_phase(IB_PLAYER_TOP); break; }
+        if (press_up) { clear_player_fusion_queue(); set_top_selector(g_b_selected_player_slot, PLAYER_CARD_ROW); g_b_attack_attacker_slot = -1; g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND_TO_TOP); break; }
         if (press_a && g_b_fusion_count > 0 && player_can_start_fusion()) {
             int target = player_can_place_monster() ? first_free_player_slot() : -1;
             if (target < 0) target = selected_or_first_live_player_slot();
@@ -7017,6 +7022,33 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_bottom_info(g_i_player_hand[g_b_selected_hand], "HAND");
         if (g_b_phase_frame >= 48) g_b_player_hand_intro_pending = 0;
         break;
+
+    case IB_PLAYER_HAND_TO_TOP: {
+        /* Smooth camera lift from the perspective hand view up to the tactical
+           top view, instead of an instant cut.  The board camera eases from
+           player_camera() to battle_top_camera() while the hand slides off the
+           bottom of the screen. */
+        int dur = WAIFU_PCFX_RETURN_FRAMES;
+        int32_t t = q8_ratio(g_b_phase_frame, dur);
+        int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), q8_smooth_ratio(g_b_phase_frame, dur)));
+        draw_interactive_base(lerp_camera(player_camera(), battle_top_camera(), t));
+        draw_interactive_player_hand(999, g_b_selected_hand, hand_off, 1);
+        if (battle_animation_event_complete(dur)) set_battle_phase(IB_PLAYER_TOP);
+        break;
+    }
+
+    case IB_PLAYER_TOP_TO_HAND: {
+        /* Reverse of IB_PLAYER_HAND_TO_TOP: the camera eases back down from the
+           tactical top view to the perspective hand view while the hand slides
+           up from the bottom of the screen into place. */
+        int dur = WAIFU_PCFX_RETURN_FRAMES;
+        int32_t t = q8_ratio(g_b_phase_frame, dur);
+        int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), Q8_ONE - q8_smooth_ratio(g_b_phase_frame, dur)));
+        draw_interactive_base(lerp_camera(battle_top_camera(), player_camera(), t));
+        draw_interactive_player_hand(999, g_b_selected_hand, hand_off, 1);
+        if (battle_animation_event_complete(dur)) set_battle_phase(IB_PLAYER_HAND);
+        break;
+    }
 
     case IB_CARD_PREVIEW:
         draw_interactive_card_preview(g_i_player_hand[g_b_selected_hand], g_b_phase_frame);
@@ -7104,7 +7136,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (press_up) move_top_selector(0, -1);
         if (press_down) {
             if (g_b_top_row < BOARD_ROWS - 1) move_top_selector(0, 1);
-            else { g_b_player_hand_intro_pending = 0; g_b_attack_attacker_slot = -1; set_battle_phase(IB_PLAYER_HAND); break; }
+            else { g_b_player_hand_intro_pending = 0; g_b_attack_attacker_slot = -1; set_battle_phase(IB_PLAYER_TOP_TO_HAND); break; }
         }
         if (press_b) {
             if (g_b_attack_attacker_slot >= 0) {
