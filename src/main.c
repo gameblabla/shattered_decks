@@ -2978,6 +2978,12 @@ static void apply_black_dither_fade(int32_t visible)
 #define WAIFU_TITLE_FADE_FRAMES 4
 #endif
 
+/* Frames at the tail of a title/menu fade-out that are presented as an opaque
+   8bpp black frame instead of the VDC dither fade.  This hides the one-frame
+   bottom-edge mixer artifact during the 16M-KING -> 8bpp mode switch while
+   still letting the VDC fade play across the bulk of the transition. */
+#define WAIFU_TITLE_FADE_BLACK_TAIL 4
+
 static void draw_field_pair_for_battle(Camera cam, int atk_col, int atk_row, int atk_id, int atk_back,
                                        int def_col, int def_row, int def_id, int def_back)
 {
@@ -3547,8 +3553,10 @@ static void draw_menu_fadeout_event(int selected, int f)
        near-black dither frames can expose a one-frame bottom-edge artifact on
        the hardware/emulator mixer while switching away from 16M KING mode.
        Finish the fade under an opaque common black frame before requesting
-       cards/story assets; no title pixels are presented after this point. */
-    if (f >= WAIFU_TITLE_FADE_FRAMES - 42) {
+       cards/story assets; no title pixels are presented after this point.
+       Only the final WAIFU_TITLE_FADE_BLACK_TAIL frames are black-held so the
+       VDC fade actually plays out across the rest of the transition. */
+    if (f >= WAIFU_TITLE_FADE_FRAMES - WAIFU_TITLE_FADE_BLACK_TAIL) {
         draw_transition_black_hold_frame();
         return;
     }

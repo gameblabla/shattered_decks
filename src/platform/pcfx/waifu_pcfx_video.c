@@ -913,10 +913,12 @@ static void pcfx_vdc_overlay_fill_fade_level(int level)
         uint16_t row_tile = tile;
         /* The PC-FX mixer can leak a stale bottom scanline during the title/menu
            16M -> 8bpp mode transition while a sparse dither tile is in front.
-           Keep the lowest visible tile row opaque black whenever any fade mask
-           is active; the gameplay-visible transition still fades normally, but
-           the bottom edge cannot expose a previous KING CG page for one frame. */
-        if (level > 0 && row >= 29) row_tile = (uint16_t)(WAIFU_PCFX_VDC_FADE_TILE_BASE + 16);
+           Keep the lowest visible tile row opaque black, but only once the fade
+           is already near-black: forcing it at every level made the bottom edge
+           visibly pop to solid black mid-fade.  Gating it to the top fade levels
+           keeps the fade uniform while still covering the mode-switch frame
+           (which always finishes the fade at level 16). */
+        if (level >= 15 && row >= 29) row_tile = (uint16_t)(WAIFU_PCFX_VDC_FADE_TILE_BASE + 16);
         eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
         for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, row_tile);
         eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
@@ -1171,6 +1173,20 @@ static void set_king_16m_title_video(void)
     eris_tetsu_set_king_palette(0, 0, 0, 0);
     eris_tetsu_set_rainbow_palette(0);
 
+    eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
+                              TETSU_COLORS_256, TETSU_COLORS_16,
+                              1, 0, 1, 0, 0, 0, 0);
+
+    /* Bring the opaque VDC black mask up BEFORE switching KING BG0 into 16M
+       mode.  The 16M title page shares KRAM word offset 0 with the 8bpp page,
+       so flipping to 16M while the previous 8bpp/loading frame is still resident
+       (the title is not uploaded until later in this same present) shows one
+       frame of that data reinterpreted as YUV garbage: a pink wash with a
+       diagonal mode-switch seam.  Masking first hides the switch entirely. */
+    eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
+    eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
+    pcfx_vdc_overlay_init(&g_video);
+
     eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
     eris_king_set_bg_mode(KING_BGMODE_16M, 0, 0, 0);
     pcfx_king_set_bg_kram_page_inline(0);
@@ -1192,14 +1208,6 @@ static void set_king_16m_title_video(void)
     eris_king_set_scroll(KING_BG0SUB, 0, 0);
     eris_king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
     eris_king_set_bg_size(KING_BG0SUB, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
-
-    eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
-                              TETSU_COLORS_256, TETSU_COLORS_16,
-                              1, 0, 1, 0, 0, 0, 0);
-
-    eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
-    eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
-    pcfx_vdc_overlay_init(&g_video);
 }
 
 static void pcfx_title_clip_dirty_rect(const WaifuFmDirtyRect *rect, int *out_x, int *out_y, int *out_w, int *out_h)
