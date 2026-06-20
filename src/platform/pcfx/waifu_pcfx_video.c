@@ -1494,6 +1494,14 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
     if (!video) return;
     pcfx_vdc_overlay_force_black(video);
     if (video->mode == WAIFU_PCFX_VIDEO_MODE_TITLE_HICOLOR) pcfx_title_blackout_pages(video);
+    /* Clear the 8bpp KING pages to opaque black BEFORE pointing the display at
+       them.  pcfx_title_blackout_pages fills KRAM word offset 0 with 16M-black
+       YUV (0x0101/0x8080); the 8bpp page reads that same KRAM back as an index
+       stripe pattern.  set_king_8bpp_video switches the display mid-scan, so if
+       the visible page still holds that pattern the bottom scanlines show one
+       frame of white stripes before the post-switch clear would land.  Clearing
+       first guarantees the displayed page is black across the mode switch. */
+    waifu_pcfx_video_clear_black(video);
     set_king_8bpp_video();
     /* Re-assert the black VDC mask after the VDC mode registers are touched. */
     pcfx_vdc_overlay_force_black(video);
@@ -1507,7 +1515,6 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
     video->have_base_yuv = 0;
     video->active_palette = (WaifuFmPaletteId)-1;
     video->active_fade_q8 = -1;
-    waifu_pcfx_video_clear_black(video);
     if (video->vdc_overlay_ready) {
         /* Defer clearing the front VDC black mask until at least one 8bpp black
            KING page has had a vblank to become authoritative.  Clearing it in
