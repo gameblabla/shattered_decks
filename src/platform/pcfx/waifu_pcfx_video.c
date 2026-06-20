@@ -1416,7 +1416,7 @@ static WAIFU_PCFX_COLD void pcfx_present_title_16m(WaifuPcfxVideo *video, const 
     video->have_last_frame = 1;
 }
 
-static void set_king_8bpp_video(void)
+static void set_king_8bpp_video(int display_page)
 {
     /* Keep the front VDC overlay intact until the new 8bpp KING page has been
        cleared.  Clearing it here exposes the previous 16M title surface for a
@@ -1442,7 +1442,11 @@ static void set_king_8bpp_video(void)
     eris_king_disable_microprogram();
     eris_king_write_microprogram(g_king_microprog, 0, 16);
     eris_king_enable_microprogram();
-    pcfx_king_set_bg0_page_inline(0);
+    /* Point the display at the caller-selected page directly as the BG mode
+       becomes 8bpp.  The transition uses the second 8bpp page (which aliases no
+       16M title CG page) so the visible page is clean black across the mid-scan
+       16M -> 8bpp switch. */
+    pcfx_king_set_bg0_page_inline(page_bat_offset(display_page));
     eris_king_set_scroll(KING_BG0, 0, 0);
     eris_king_set_scroll(KING_BG0SUB, 0, 0);
     eris_king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
@@ -1494,15 +1498,18 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
     if (!video) return;
     pcfx_vdc_overlay_force_black(video);
     if (video->mode == WAIFU_PCFX_VIDEO_MODE_TITLE_HICOLOR) pcfx_title_blackout_pages(video);
-    /* Clear the 8bpp KING pages to opaque black BEFORE pointing the display at
-       them.  pcfx_title_blackout_pages fills KRAM word offset 0 with 16M-black
-       YUV (0x0101/0x8080); the 8bpp page reads that same KRAM back as an index
-       stripe pattern.  set_king_8bpp_video switches the display mid-scan, so if
-       the visible page still holds that pattern the bottom scanlines show one
-       frame of white stripes before the post-switch clear would land.  Clearing
-       first guarantees the displayed page is black across the mode switch. */
-    waifu_pcfx_video_clear_black(video);
-    set_king_8bpp_video();
+    /* The 16M->8bpp mode switch happens mid-scan, and KRAM word offset 0 is
+       shared by 8bpp page 0 and 16M title CG page 0.  No single value is black
+       in both interpretations (16M-black 0x0101/0x8080 reads as an 8bpp index
+       stripe pattern; 8bpp-black 0xFFFF reads as bright 16M), so a page at
+       offset 0 always shows a stripe band or a white line on the switch frame.
+       Instead, keep offset 0 as 16M-black (from pcfx_title_blackout_pages) and
+       display the SECOND 8bpp page (offset PAGE_STRIDE_WORDS), which aliases no
+       16M CG page.  Whichever layer a scanline samples across the switch -- the
+       old 16M surface at offset 0, or the new 8bpp page -- it reads black. */
+    king_seek_write_words(WAIFU_PCFX_PAGE_STRIDE_WORDS);
+    king_kram_fill_words(WAIFU_PCFX_BLACK_WORD, WAIFU_PCFX_PAGE_STRIDE_WORDS);
+    set_king_8bpp_video(1);
     /* Re-assert the black VDC mask after the VDC mode registers are touched. */
     pcfx_vdc_overlay_force_black(video);
     video->mode = WAIFU_PCFX_VIDEO_MODE_KING_8BPP;
@@ -1515,6 +1522,16 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
     video->have_base_yuv = 0;
     video->active_palette = (WaifuFmPaletteId)-1;
     video->active_fade_q8 = -1;
+    /* Front is the freshly cleared second page; the next present uploads a real
+       frame into page 0 (whose KRAM still holds 16M-black/stripe bytes) before
+       it is ever displayed, so force its shadow invalid. */
+    video->front_page = 1;
+    video->back_page = 0;
+#if WAIFU_PCFX_DIRTY_PRESENT
+    memset(video->page_shadow[1], IDX_BLACK, WAIFU_PCFX_FRAME_BYTES);
+    video->page_shadow_valid[1] = 1;
+    video->page_shadow_valid[0] = 0;
+#endif
     if (video->vdc_overlay_ready) {
         /* Defer clearing the front VDC black mask until at least one 8bpp black
            KING page has had a vblank to become authoritative.  Clearing it in
