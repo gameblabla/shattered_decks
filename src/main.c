@@ -3,6 +3,15 @@
 #include <stdint.h>
 #include <string.h>
 #include <ctype.h>
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+#include <sys/time.h>
+#endif
+
+#if defined(WAIFU_ASSET_USE_CDROM)
+#define WAIFU_ASSET_EXTERNAL_TITLE_IMAGE 1
+#define WAIFU_ASSET_EXTERNAL_STORY_PORTRAITS 1
+#define WAIFU_ASSET_EXTERNAL_CARD_IMAGES 1
+#endif
 
 #include "defines.h"
 #include "common.h"
@@ -11,11 +20,18 @@
 #include "font_menudata.h"
 #include "waifu_assets.h"
 #include "title_asset.h"
+#ifndef WAIFU_FM_NO_HEADLESS_MAIN
 #include "zmbv_mkv.h"
+#endif
 #include "game_api.h"
 #include "ai.h"
 #include "deck.h"
 #include "palette.h"
+#include "sounds.h"
+#include "assets.h"
+#ifdef WAIFU_FM_PCFX
+#include "waifu_pcfx_video.h"
+#endif
 
 #define W 256
 #define H 240
@@ -37,11 +53,64 @@
 #define CFX_PI_Q8 804
 #define TITLE_SEQUENCE_FRAMES 310
 #define DUEL_TOTAL_FRAMES 2696
+#ifdef WAIFU_FM_PCFX
+#define DUEL_OPENING_END 72
+#define WAIFU_PCFX_PLACE_FRAMES 12
+#define WAIFU_PCFX_PLACE_SETTLE_FRAMES 10
+#define WAIFU_PCFX_TURN_FRAMES 12
+#define WAIFU_PCFX_SELECT_FRAMES 16
+#define WAIFU_PCFX_RETURN_FRAMES 12
+#define WAIFU_PCFX_DRAW_FRAMES 18
+#define WAIFU_HAND_INTRO_FRAMES 18
+#define WAIFU_EQUIP_ANIM_FRAMES 36
+#define WAIFU_FUSION_ANIM_FRAMES 74
+#define WAIFU_BATTLE_PRELUDE_FRAMES 8
+#define WAIFU_BATTLE_SLIDE_FRAMES 8
+#define WAIFU_BATTLE_FLIP_FRAMES 8
+#define WAIFU_BATTLE_REVEAL_PAUSE_FRAMES 1
+#define WAIFU_BATTLE_RAM_FRAMES 10
+#define WAIFU_BATTLE_COUNTER_GAP_FRAMES 5
+#define WAIFU_BATTLE_BURN_DELAY_FRAMES 8
+#define WAIFU_BATTLE_FINAL_SETTLE_FRAMES 3
+#define WAIFU_DIRECT_SLIDE_FRAMES 8
+#define WAIFU_DIRECT_LUNGE_FRAMES 12
+#define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES 8
+#else
 #define DUEL_OPENING_END 150
+#define WAIFU_PCFX_PLACE_FRAMES 48
+#define WAIFU_PCFX_PLACE_SETTLE_FRAMES 38
+#define WAIFU_PCFX_TURN_FRAMES 58
+#define WAIFU_PCFX_SELECT_FRAMES 70
+#define WAIFU_PCFX_RETURN_FRAMES 30
+#define WAIFU_PCFX_DRAW_FRAMES 84
+#define WAIFU_HAND_INTRO_FRAMES 60
+#define WAIFU_EQUIP_ANIM_FRAMES 120
+#define WAIFU_FUSION_ANIM_FRAMES 166
+#define WAIFU_BATTLE_PRELUDE_FRAMES 16
+#define WAIFU_BATTLE_SLIDE_FRAMES 18
+#define WAIFU_BATTLE_FLIP_FRAMES 32
+#define WAIFU_BATTLE_REVEAL_PAUSE_FRAMES 6
+#define WAIFU_BATTLE_RAM_FRAMES 34
+#define WAIFU_BATTLE_COUNTER_GAP_FRAMES 16
+#define WAIFU_BATTLE_BURN_DELAY_FRAMES 30
+#define WAIFU_BATTLE_FINAL_SETTLE_FRAMES 8
+#define WAIFU_DIRECT_SLIDE_FRAMES 24
+#define WAIFU_DIRECT_LUNGE_FRAMES 40
+#define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES 38
+#endif
 #define DUEL_PREVIEW_END 270
 #define DUEL_SCRIPT_OFFSET (DUEL_PREVIEW_END - 84)
 
+#ifdef WAIFU_FM_PCFX
+static uint8_t framebuffer[W * H] __attribute__((aligned(4)));
+#else
 static uint8_t framebuffer[W * H];
+#endif
+static uint32_t g_frame_dirty_serial = 0;
+static int g_frame_dirty_full = 0;
+static int g_frame_dirty_count = 0;
+static WaifuFmDirtyRect g_frame_dirty_rects[WAIFU_FM_MAX_DIRTY_RECTS];
+static int g_video_fade_visible_q8 = Q8_ONE;
 static CfxRenderer3D renderer;
 static int g_you_lp = 8000;
 static int g_com_lp = 8000;
@@ -54,6 +123,96 @@ static int g_battle_late_frame = -1;
 static int g_force_deckout_demo = 0;
 static int g_force_lp_loss_demo = 0;
 static int g_story_name_to_intro = 0;
+
+static void frame_dirty_reset(void)
+{
+    g_frame_dirty_full = 0;
+    g_frame_dirty_count = 0;
+}
+
+static void frame_mark_full_dirty(void)
+{
+    g_frame_dirty_full = 1;
+    g_frame_dirty_count = 0;
+    ++g_frame_dirty_serial;
+}
+
+static void frame_mark_dirty_rect(int x, int y, int w, int h)
+{
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w;
+    int y1 = y + h;
+    if (w <= 0 || h <= 0 || g_frame_dirty_full) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+    if (x0 >= x1 || y0 >= y1) return;
+    if (g_frame_dirty_count >= WAIFU_FM_MAX_DIRTY_RECTS) {
+        frame_mark_full_dirty();
+        return;
+    }
+    g_frame_dirty_rects[g_frame_dirty_count].x = (uint16_t)x0;
+    g_frame_dirty_rects[g_frame_dirty_count].y = (uint16_t)y0;
+    g_frame_dirty_rects[g_frame_dirty_count].w = (uint16_t)(x1 - x0);
+    g_frame_dirty_rects[g_frame_dirty_count].h = (uint16_t)(y1 - y0);
+    ++g_frame_dirty_count;
+    ++g_frame_dirty_serial;
+}
+
+
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+static int g_profile_render_enabled = 0;
+static unsigned long long g_profile_board_cache_hits = 0;
+static unsigned long long g_profile_board_cache_misses = 0;
+static unsigned long long g_profile_board_cache_copy_us = 0;
+static unsigned long long g_profile_board_cache_render_us = 0;
+static unsigned long long g_profile_hand_calls = 0;
+static unsigned long long g_profile_hand_total_us = 0;
+static unsigned long long g_profile_hand_card_draws = 0;
+static unsigned long long g_profile_hand_card_us = 0;
+static unsigned long long g_profile_card2d_fast_calls = 0;
+static unsigned long long g_profile_card2d_generic_calls = 0;
+static unsigned long long g_profile_ui_fast_fill_calls = 0;
+
+static unsigned long long profile_now_us(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (unsigned long long)tv.tv_sec * 1000000ull + (unsigned long long)tv.tv_usec;
+}
+
+#define PROFILE_HAND_CARD_DRAW(call_expr) \
+    do { \
+        if (g_profile_render_enabled) { \
+            unsigned long long _profile_t0 = profile_now_us(); \
+            call_expr; \
+            g_profile_hand_card_us += profile_now_us() - _profile_t0; \
+            g_profile_hand_card_draws++; \
+        } else { \
+            call_expr; \
+        } \
+    } while (0)
+#define PROFILE_HAND_BEGIN() unsigned long long _profile_hand_t0 = g_profile_render_enabled ? profile_now_us() : 0
+#define PROFILE_HAND_END() \
+    do { \
+        if (g_profile_render_enabled) { \
+            g_profile_hand_total_us += profile_now_us() - _profile_hand_t0; \
+            g_profile_hand_calls++; \
+        } \
+    } while (0)
+#define PROFILE_CARD2D_FAST() do { if (g_profile_render_enabled) g_profile_card2d_fast_calls++; } while (0)
+#define PROFILE_CARD2D_GENERIC() do { if (g_profile_render_enabled) g_profile_card2d_generic_calls++; } while (0)
+#define PROFILE_UI_FAST_FILL() do { if (g_profile_render_enabled) g_profile_ui_fast_fill_calls++; } while (0)
+#else
+#define PROFILE_HAND_CARD_DRAW(call_expr) do { call_expr; } while (0)
+#define PROFILE_HAND_BEGIN() do { } while (0)
+#define PROFILE_HAND_END() do { } while (0)
+#define PROFILE_CARD2D_FAST() do { } while (0)
+#define PROFILE_CARD2D_GENERIC() do { } while (0)
+#define PROFILE_UI_FAST_FILL() do { } while (0)
+#endif
 
 /* Demo card choices. The IDs are generated from the uploaded waifu-card set. */
 static const int hand_ids[5] = {40, 12, 9, 41, 37}; /* White dragon, Golem, Voltara, Witch, Gold Dragon */
@@ -70,14 +229,19 @@ static const int ENEMY_CARD2_COL = 1;
 static const int PLAYER_CARD3_COL = 2;
 
 static int g_b_top_col = 0;
-static int g_b_top_row = PLAYER_CARD_ROW;
+static int g_b_top_row = 2;
 static int g_b_top_prev_col = 0;
-static int g_b_top_prev_row = PLAYER_CARD_ROW;
+static int g_b_top_prev_row = 2;
 static int g_b_top_cursor_anim = 8;
 static int g_b_attack_attacker_slot = -1;
 
+#ifdef WAIFU_FM_PCFX
+#define BATTLE_BURN_DUR 12
+#define BATTLE_BURN_VANISH_FRAMES 10
+#else
 #define BATTLE_BURN_DUR 52
 #define BATTLE_BURN_VANISH_FRAMES 44
+#endif
 #define SUPPORT_EQUIP_CARD_ID   (WAIFU_CARD_COUNT + 0)
 #define SUPPORT_GUARD_CARD_ID   (WAIFU_CARD_COUNT + 1)
 #define SUPPORT_DRAW_CARD_ID    (WAIFU_CARD_COUNT + 2)
@@ -177,6 +341,23 @@ static int equip_def_bonus(int card_id);
 
 typedef struct { int32_t x, y, z; } Vec3;
 typedef struct { Vec3 eye, target, up; int32_t focal; } Camera;
+
+static uint8_t g_board_bg_cache[W * H];
+static Camera g_board_bg_cache_cam;
+static int g_board_bg_cache_valid = 0;
+
+static int camera_equal(Camera a, Camera b)
+{
+    return a.eye.x == b.eye.x && a.eye.y == b.eye.y && a.eye.z == b.eye.z &&
+           a.target.x == b.target.x && a.target.y == b.target.y && a.target.z == b.target.z &&
+           a.up.x == b.up.x && a.up.y == b.up.y && a.up.z == b.up.z &&
+           a.focal == b.focal;
+}
+
+static void invalidate_board_bg_cache(void)
+{
+    g_board_bg_cache_valid = 0;
+}
 typedef struct { int x, y; int32_t depth; int ok; } ScreenPt;
 typedef struct { int x, y, u, v; } TexV;
 typedef struct {
@@ -189,7 +370,49 @@ static void draw_late_field_cards(Camera cam, int f);
 static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c);
 
 static int32_t q8_mul(int32_t a, int32_t b) { return (int32_t)((a * b) >> Q8_SHIFT); }
-static int32_t q8_div(int32_t a, int32_t b) { return b ? (int32_t)((a * Q8_ONE) / b) : 0; }
+static const uint16_t q8_recip_q8_u16[257] = {
+    0, 256, 128, 85, 64, 51, 43, 37, 32, 28, 26, 23, 21, 20, 18, 17,
+    16, 15, 14, 13, 13, 12, 12, 11, 11, 10, 10, 9, 9, 9, 9, 8,
+    8, 8, 8, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1
+};
+
+static int32_t div_toward_zero_i32(int32_t n, int32_t b)
+{
+    if (!b) return 0;
+    uint8_t neg = 0;
+    if (n < 0) { n = -n; neg ^= 1; }
+    if (b < 0) { b = -b; neg ^= 1; }
+    uint32_t un = (uint32_t)n;
+    uint32_t ud = (uint32_t)b;
+    uint32_t q;
+    if (ud == 1u) {
+        q = un;
+    } else {
+        uint32_t scaled = ud;
+        uint16_t shift = 0;
+        while (scaled > 256u) { scaled = (scaled + 1u) >> 1; ++shift; }
+        q = ((un * (uint32_t)q8_recip_q8_u16[scaled]) >> (8 + shift));
+        uint32_t prod = q * ud;
+        while (prod > un) { --q; prod -= ud; }
+        while ((uint32_t)(un - prod) >= ud) { ++q; prod += ud; }
+    }
+    return neg ? -(int32_t)q : (int32_t)q;
+}
+static int32_t q8_div(int32_t a, int32_t b) { return b ? div_toward_zero_i32(a * Q8_ONE, b) : 0; }
 static int32_t q8_clamp(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static int32_t q8_smoothstep(int32_t t)
 {
@@ -462,6 +685,40 @@ static ScreenPt project_point(Camera cam, Vec3 p)
     return s;
 }
 
+typedef struct CameraBasis {
+    Vec3 eye;
+    Vec3 fwd;
+    Vec3 right;
+    Vec3 up;
+    int32_t focal;
+} CameraBasis;
+
+static CameraBasis make_camera_basis(Camera cam)
+{
+    CameraBasis b;
+    b.eye = cam.eye;
+    b.fwd = vnorm(vsub(cam.target, cam.eye));
+    b.right = vnorm(vcross(b.fwd, cam.up));
+    b.up = vcross(b.right, b.fwd);
+    b.focal = cam.focal;
+    return b;
+}
+
+static ScreenPt project_point_basis(const CameraBasis *b, Vec3 p)
+{
+    Vec3 rel = vsub(p, b->eye);
+    int32_t cx = vdot(rel, b->right);
+    int32_t cy = vdot(rel, b->up);
+    int32_t cz = vdot(rel, b->fwd);
+    ScreenPt s;
+    s.depth = cz;
+    if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
+    s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal));
+    s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal));
+    s.ok = 1;
+    return s;
+}
+
 static int project_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
                           ScreenPt *pa, ScreenPt *pb, ScreenPt *pc, ScreenPt *pd)
 {
@@ -506,8 +763,99 @@ static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
     Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
     Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
     Point2D p3 = {(DEFAULT_INT)dx, (DEFAULT_INT)dy, 0, uvmax};
+#if defined(WAIFU_FM_PCFX)
+    cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
+#else
     cfx_renderer3d_draw_quad(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
+#endif
 }
+
+static int field_side_tile_for_cell(int c, int r);
+
+static void draw_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, ScreenPt pd, int tile)
+{
+    if (!pa.ok || !pb.ok || !pc.ok || !pd.ok) return;
+    if (tile < 0) tile = 0;
+    if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
+    const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
+    int ax = pa.x < 0 ? 0 : (pa.x >= W ? W - 1 : pa.x);
+    int ay = pa.y < 0 ? 0 : (pa.y >= H ? H - 1 : pa.y);
+    int bx = pb.x < 0 ? 0 : (pb.x >= W ? W - 1 : pb.x);
+    int by = pb.y < 0 ? 0 : (pb.y >= H ? H - 1 : pb.y);
+    int cx = pc.x < 0 ? 0 : (pc.x >= W ? W - 1 : pc.x);
+    int cy = pc.y < 0 ? 0 : (pc.y >= H ? H - 1 : pc.y);
+    int dx = pd.x < 0 ? 0 : (pd.x >= W ? W - 1 : pd.x);
+    int dy = pd.y < 0 ? 0 : (pd.y >= H ? H - 1 : pd.y);
+    Point2D p0 = {(DEFAULT_INT)ax, (DEFAULT_INT)ay, 0, 0};
+    Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
+    Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
+    Point2D p3 = {(DEFAULT_INT)dx, (DEFAULT_INT)dy, 0, uvmax};
+    cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
+}
+
+typedef struct BoardProjected {
+    ScreenPt top[BOARD_ROWS + 1][BOARD_COLS + 1];
+    ScreenPt bottom_z0[BOARD_COLS + 1];
+    ScreenPt bottom_z1[BOARD_COLS + 1];
+    ScreenPt bottom_x0[BOARD_ROWS + 1];
+    ScreenPt bottom_x1[BOARD_ROWS + 1];
+} BoardProjected;
+
+static void build_board_projected(Camera cam, BoardProjected *bp)
+{
+    CameraBasis basis = make_camera_basis(cam);
+    for (int r = 0; r <= BOARD_ROWS; ++r) {
+        for (int c = 0; c <= BOARD_COLS; ++c) {
+            bp->top[r][c] = project_point_basis(&basis, v3(col_x0(c), FIELD_Y, row_z0(r)));
+        }
+    }
+    for (int c = 0; c <= BOARD_COLS; ++c) {
+        bp->bottom_z0[c] = project_point_basis(&basis, v3(col_x0(c), FIELD_THICK, FIELD_Z0));
+        bp->bottom_z1[c] = project_point_basis(&basis, v3(col_x0(c), FIELD_THICK, FIELD_Z1));
+    }
+    for (int r = 0; r <= BOARD_ROWS; ++r) {
+        bp->bottom_x0[r] = project_point_basis(&basis, v3(FIELD_X0, FIELD_THICK, row_z0(r)));
+        bp->bottom_x1[r] = project_point_basis(&basis, v3(FIELD_X1, FIELD_THICK, row_z0(r)));
+    }
+}
+
+static void draw_field_slab_sides_fast(Camera cam, const BoardProjected *bp)
+{
+    if (cam.eye.z >= 0) {
+        for (int c = 0; c < BOARD_COLS; ++c)
+            draw_quad3d_fast_projected(bp->top[0][c], bp->top[0][c+1], bp->bottom_z0[c+1], bp->bottom_z0[c], field_side_tile_for_cell(c, 0));
+        if (cam.eye.x >= 0) {
+            for (int r = 0; r < BOARD_ROWS; ++r)
+                draw_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
+            for (int r = 0; r < BOARD_ROWS; ++r)
+                draw_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
+        } else {
+            for (int r = 0; r < BOARD_ROWS; ++r)
+                draw_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
+            for (int r = 0; r < BOARD_ROWS; ++r)
+                draw_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
+        }
+        for (int c = 0; c < BOARD_COLS; ++c)
+            draw_quad3d_fast_projected(bp->top[BOARD_ROWS][c], bp->top[BOARD_ROWS][c+1], bp->bottom_z1[c+1], bp->bottom_z1[c], field_side_tile_for_cell(c, BOARD_ROWS - 1));
+    } else {
+        for (int c = 0; c < BOARD_COLS; ++c)
+            draw_quad3d_fast_projected(bp->top[BOARD_ROWS][c], bp->top[BOARD_ROWS][c+1], bp->bottom_z1[c+1], bp->bottom_z1[c], field_side_tile_for_cell(c, BOARD_ROWS - 1));
+        if (cam.eye.x >= 0) {
+            for (int r = 0; r < BOARD_ROWS; ++r)
+                draw_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
+            for (int r = 0; r < BOARD_ROWS; ++r)
+                draw_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
+        } else {
+            for (int r = 0; r < BOARD_ROWS; ++r)
+                draw_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
+            for (int r = 0; r < BOARD_ROWS; ++r)
+                draw_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
+        }
+        for (int c = 0; c < BOARD_COLS; ++c)
+            draw_quad3d_fast_projected(bp->top[0][c], bp->top[0][c+1], bp->bottom_z0[c+1], bp->bottom_z0[c], field_side_tile_for_cell(c, 0));
+    }
+}
+
 
 static int field_side_tile_for_cell(int c, int r)
 {
@@ -573,7 +921,106 @@ static void draw_field_slab_sides(Camera cam)
 /* ------------------------------------------------------------------------- */
 /* 2D drawing */
 
-static void clear_screen(uint8_t c) { memset(framebuffer, c, sizeof(framebuffer)); }
+static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
+{
+    if (count <= 0) return;
+#if defined(WAIFU_FM_PCFX)
+    uint32_t n = (uint32_t)count;
+    uint32_t v = (uint32_t)c;
+    uint32_t groups;
+    __asm__ volatile (
+        "mov %[n],%[groups]\n"
+        "shr 3,%[groups]\n"
+        "cmp 0,%[groups]\n"
+        "be 2f\n"
+        "1:\n"
+        "st.b %[v],0[%[dst]]\n"
+        "st.b %[v],1[%[dst]]\n"
+        "st.b %[v],2[%[dst]]\n"
+        "st.b %[v],3[%[dst]]\n"
+        "st.b %[v],4[%[dst]]\n"
+        "st.b %[v],5[%[dst]]\n"
+        "st.b %[v],6[%[dst]]\n"
+        "st.b %[v],7[%[dst]]\n"
+        "add 8,%[dst]\n"
+        "add -1,%[groups]\n"
+        "bne 1b\n"
+        "2:\n"
+        "andi 7,%[n],%[n]\n"
+        "cmp 0,%[n]\n"
+        "be 4f\n"
+        "3:\n"
+        "st.b %[v],0[%[dst]]\n"
+        "add 1,%[dst]\n"
+        "add -1,%[n]\n"
+        "bne 3b\n"
+        "4:\n"
+        : [dst] "+r" (dst), [n] "+r" (n), [groups] "=&r" (groups)
+        : [v] "r" (v)
+        : "memory");
+    PROFILE_UI_FAST_FILL();
+#else
+    memset(dst, c, (size_t)count);
+#endif
+}
+
+static void clear_screen(uint8_t c) { fill_u8_fast(framebuffer, (int)sizeof(framebuffer), c); }
+
+static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
+{
+    if (count <= 0) return;
+#if defined(WAIFU_FM_PCFX)
+    uint32_t n = (uint32_t)count;
+    uint32_t groups;
+    /* Framebuffer/cache copies are aligned and large.  Keep the body compact:
+       32 bytes per loop, eight ld.w/st.w pairs, well under the 1 KiB V810
+       I-cache while avoiding a slow byte copy or unknown libc memcpy. */
+    __asm__ volatile (
+        "mov %[n],%[groups]\n"
+        "shr 5,%[groups]\n"
+        "cmp 0,%[groups]\n"
+        "be 2f\n"
+        "1:\n"
+        "ld.w 0[%[src]],r10\n"
+        "st.w r10,0[%[dst]]\n"
+        "ld.w 4[%[src]],r10\n"
+        "st.w r10,4[%[dst]]\n"
+        "ld.w 8[%[src]],r10\n"
+        "st.w r10,8[%[dst]]\n"
+        "ld.w 12[%[src]],r10\n"
+        "st.w r10,12[%[dst]]\n"
+        "ld.w 16[%[src]],r10\n"
+        "st.w r10,16[%[dst]]\n"
+        "ld.w 20[%[src]],r10\n"
+        "st.w r10,20[%[dst]]\n"
+        "ld.w 24[%[src]],r10\n"
+        "st.w r10,24[%[dst]]\n"
+        "ld.w 28[%[src]],r10\n"
+        "st.w r10,28[%[dst]]\n"
+        "addi 32,%[src],%[src]\n"
+        "addi 32,%[dst],%[dst]\n"
+        "add -1,%[groups]\n"
+        "bne 1b\n"
+        "2:\n"
+        "andi 31,%[n],%[n]\n"
+        "cmp 0,%[n]\n"
+        "be 4f\n"
+        "3:\n"
+        "ld.b 0[%[src]],r10\n"
+        "st.b r10,0[%[dst]]\n"
+        "add 1,%[src]\n"
+        "add 1,%[dst]\n"
+        "add -1,%[n]\n"
+        "bne 3b\n"
+        "4:\n"
+        : [dst] "+r" (dst), [src] "+r" (src), [n] "+r" (n), [groups] "=&r" (groups)
+        :
+        : "r10", "memory");
+#else
+    memcpy(dst, src, (size_t)count);
+#endif
+}
+
 
 static void put_px(int x, int y, uint8_t c)
 {
@@ -587,12 +1034,27 @@ static void hline(int x0, int x1, int y, uint8_t c)
     if (x1 < 0 || x0 >= W) return;
     if (x0 < 0) x0 = 0;
     if (x1 >= W) x1 = W - 1;
-    memset(framebuffer + y * W + x0, c, (size_t)(x1 - x0 + 1));
+    fill_u8_fast(framebuffer + y * W + x0, x1 - x0 + 1, c);
 }
 
 static void rect_fill(int x, int y, int w, int h, uint8_t c)
 {
-    for (int yy = y; yy < y+h; ++yy) hline(x, x+w-1, yy, c);
+    if (w <= 0 || h <= 0) return;
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w - 1;
+    int y1 = y + h - 1;
+    if (x1 < 0 || y1 < 0 || x0 >= W || y0 >= H) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= W) x1 = W - 1;
+    if (y1 >= H) y1 = H - 1;
+    int count = x1 - x0 + 1;
+    uint8_t *dst = framebuffer + y0 * W + x0;
+    for (int yy = y0; yy <= y1; ++yy) {
+        fill_u8_fast(dst, count, c);
+        dst += W;
+    }
 }
 
 static void rect_outline(int x, int y, int w, int h, uint8_t c)
@@ -689,37 +1151,6 @@ static void draw_text_small_ellipsis(int x, int y, const char *s, int max_chars,
     draw_text_small(x, y, buf, fg, shadow);
 }
 
-static void draw_text_small_right(int right_x, int y, const char *s, uint8_t fg, uint8_t shadow)
-{
-    int len = s ? (int)strlen(s) : 0;
-    int w = len * 7;
-    draw_text_small(right_x - w, y, s ? s : "", fg, shadow);
-}
-
-static void draw_text_small_ellipsis_right(int right_x, int y, const char *s, int max_chars, uint8_t fg, uint8_t shadow)
-{
-    char buf[64];
-    int len = s ? (int)strlen(s) : 0;
-    if (max_chars < 1) return;
-    if (max_chars > 63) max_chars = 63;
-    if (len <= max_chars) {
-        draw_text_small_right(right_x, y, s ? s : "", fg, shadow);
-        return;
-    }
-    if (max_chars <= 3) {
-        int i;
-        for (i = 0; i < max_chars; ++i) buf[i] = '.';
-        buf[max_chars] = '\0';
-    } else {
-        memcpy(buf, s, (size_t)(max_chars - 3));
-        buf[max_chars - 3] = '.';
-        buf[max_chars - 2] = '.';
-        buf[max_chars - 1] = '.';
-        buf[max_chars] = '\0';
-    }
-    draw_text_small_right(right_x, y, buf, fg, shadow);
-}
-
 static int draw_wrapped_text_small_box(int x, int y, int max_w, int max_lines, int line_gap, const char *s, uint8_t fg, uint8_t shadow)
 {
     const char *p = s ? s : "";
@@ -800,9 +1231,9 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
 static void draw_story_portrait(int portrait_id, int x, int y)
 {
     if (portrait_id < 0 || portrait_id >= WAIFU_STORY_PORTRAIT_COUNT) return;
-    int size = WAIFU_STORY_PORTRAIT_W * WAIFU_STORY_PORTRAIT_H;
-    const uint8_t *pix = waifu_story_portraits + portrait_id * size;
-    const uint8_t *mask = waifu_story_portrait_mask + portrait_id * size;
+    const uint8_t *pix = waifu_assets_story_portrait_pixels(portrait_id);
+    const uint8_t *mask = waifu_assets_story_portrait_mask(portrait_id);
+    if (!pix || !mask) return;
     draw_masked_bitmap(pix, mask, WAIFU_STORY_PORTRAIT_W, WAIFU_STORY_PORTRAIT_H, x, y);
 }
 
@@ -821,12 +1252,9 @@ static void draw_story_dialog_box(const char *speaker, const char *subhead, cons
     draw_wrapped_text_small_box(10, box_y + 25, W - 20, 4, 10, text, IDX_WHITE, IDX_BLACK);
 }
 
-static void draw_story_nameplate_right(const char *name, const char *title, uint8_t name_color)
-{
-    draw_panel_rect(108, 8, 140, 28, IDX_UI_DARK);
-    draw_text_small_ellipsis_right(240, 14, name, 18, name_color, IDX_BLACK);
-    if (title && *title) draw_text_small_ellipsis_right(240, 23, title, 18, IDX_UI_LIGHT, IDX_BLACK);
-}
+static void fmt_i32_dec(char *dst, int dst_size, int value);
+static void fmt_lp4(char out[5], int value);
+static void fmt_prefixed_i32(char *dst, int dst_size, char prefix, int value);
 
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
 {
@@ -838,13 +1266,13 @@ static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
     draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
     draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
-    snprintf(lpbuf, sizeof(lpbuf), "%4d", g_com_lp);
+    fmt_lp4(lpbuf, g_com_lp);
     draw_text_small(209 + lp_ox, 9 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 
     draw_panel_rect(177 + lp_ox, 23 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 25 + lp_oy, 23, 8, IDX_UI_RED);
     draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
-    snprintf(lpbuf, sizeof(lpbuf), "%4d", g_you_lp);
+    fmt_lp4(lpbuf, g_you_lp);
     draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 }
 
@@ -860,6 +1288,179 @@ static uint8_t stat_delta_color(int delta)
     return IDX_WHITE;
 }
 
+static void fmt_u32_dec(char *dst, int dst_size, unsigned value)
+{
+    char tmp[10];
+    int n = 0;
+    int i;
+    if (dst_size <= 0) return;
+    if (value == 0) {
+        if (dst_size > 1) { dst[0] = '0'; dst[1] = '\0'; }
+        else dst[0] = '\0';
+        return;
+    }
+    while (value && n < (int)sizeof(tmp)) {
+        tmp[n++] = (char)('0' + (value % 10));
+        value /= 10;
+    }
+    for (i = 0; i < n && i + 1 < dst_size; ++i) dst[i] = tmp[n - 1 - i];
+    dst[i] = '\0';
+}
+
+static void fmt_i32_dec(char *dst, int dst_size, int value)
+{
+    unsigned u;
+    if (dst_size <= 0) return;
+    if (value < 0) {
+        dst[0] = '-';
+        if (value == (int)0x80000000u) u = 2147483648u;
+        else u = (unsigned)(-value);
+        fmt_u32_dec(dst + 1, dst_size - 1, u);
+    } else {
+        fmt_u32_dec(dst, dst_size, (unsigned)value);
+    }
+}
+
+static void fmt_lp4(char out[5], int value)
+{
+    char tmp[12];
+    int len = 0;
+    int pad;
+    fmt_i32_dec(tmp, (int)sizeof(tmp), value);
+    while (tmp[len]) ++len;
+    if (len > 4) {
+        out[0] = tmp[len - 4]; out[1] = tmp[len - 3]; out[2] = tmp[len - 2]; out[3] = tmp[len - 1]; out[4] = '\0';
+        return;
+    }
+    for (pad = 0; pad < 4 - len; ++pad) out[pad] = ' ';
+    for (int i = 0; i < len; ++i) out[pad + i] = tmp[i];
+    out[4] = '\0';
+}
+
+static void fmt_prefixed_i32(char *dst, int dst_size, char prefix, int value)
+{
+    if (dst_size <= 0) return;
+    if (dst_size == 1) { dst[0] = '\0'; return; }
+    dst[0] = prefix;
+    fmt_i32_dec(dst + 1, dst_size - 1, value);
+}
+
+static int waifu_cstrlen(const char *s)
+{
+    int n = 0;
+    if (!s) return 0;
+    while (s[n]) ++n;
+    return n;
+}
+
+static void waifu_str_copy(char *dst, int dst_size, const char *src)
+{
+    int i = 0;
+    if (dst_size <= 0) return;
+    if (!src) src = "";
+    while (src[i] && i + 1 < dst_size) { dst[i] = src[i]; ++i; }
+    dst[i] = '\0';
+}
+
+static void waifu_str_copy_n(char *dst, int dst_size, const char *src, int max_chars)
+{
+    int i = 0;
+    if (dst_size <= 0) return;
+    if (!src || max_chars <= 0) { dst[0] = '\0'; return; }
+    while (src[i] && i < max_chars && i + 1 < dst_size) { dst[i] = src[i]; ++i; }
+    dst[i] = '\0';
+}
+
+static void waifu_str_cat(char *dst, int dst_size, const char *src)
+{
+    int d = 0;
+    if (dst_size <= 0) return;
+    while (d < dst_size && dst[d]) ++d;
+    if (d >= dst_size) { dst[dst_size - 1] = '\0'; return; }
+    if (!src) src = "";
+    while (*src && d + 1 < dst_size) dst[d++] = *src++;
+    dst[d] = '\0';
+}
+
+static void waifu_str_cat_char(char *dst, int dst_size, char c)
+{
+    int d = 0;
+    if (dst_size <= 0) return;
+    while (d < dst_size && dst[d]) ++d;
+    if (d + 1 >= dst_size) { dst[dst_size - 1] = '\0'; return; }
+    dst[d++] = c;
+    dst[d] = '\0';
+}
+
+static void waifu_str_cat_i32(char *dst, int dst_size, int value)
+{
+    char tmp[16];
+    fmt_i32_dec(tmp, (int)sizeof(tmp), value);
+    waifu_str_cat(dst, dst_size, tmp);
+}
+
+static void waifu_str_cat_u32(char *dst, int dst_size, unsigned value)
+{
+    char tmp[16];
+    fmt_u32_dec(tmp, (int)sizeof(tmp), value);
+    waifu_str_cat(dst, dst_size, tmp);
+}
+
+static void waifu_str_cat_u32_z2(char *dst, int dst_size, unsigned value)
+{
+    char tmp[16];
+    if (value < 10u) waifu_str_cat_char(dst, dst_size, '0');
+    fmt_u32_dec(tmp, (int)sizeof(tmp), value);
+    waifu_str_cat(dst, dst_size, tmp);
+}
+
+static void waifu_str_cat_u32_z4(char *dst, int dst_size, unsigned value)
+{
+    char tmp[16];
+    int len, pad;
+    fmt_u32_dec(tmp, (int)sizeof(tmp), value);
+    len = waifu_cstrlen(tmp);
+    for (pad = len; pad < 4; ++pad) waifu_str_cat_char(dst, dst_size, '0');
+    waifu_str_cat(dst, dst_size, tmp);
+}
+
+static void waifu_str_cat_u32_zw(char *dst, int dst_size, unsigned value, int width)
+{
+    char tmp[16];
+    int len, pad;
+    fmt_u32_dec(tmp, (int)sizeof(tmp), value);
+    len = waifu_cstrlen(tmp);
+    for (pad = len; pad < width; ++pad) waifu_str_cat_char(dst, dst_size, '0');
+    waifu_str_cat(dst, dst_size, tmp);
+}
+
+static void fmt_join2(char *dst, int dst_size, const char *a, const char *sep, const char *b)
+{
+    if (dst_size <= 0) return;
+    dst[0] = '\0';
+    waifu_str_cat(dst, dst_size, a);
+    waifu_str_cat(dst, dst_size, sep);
+    waifu_str_cat(dst, dst_size, b);
+}
+
+static void fmt_label_u32(char *dst, int dst_size, const char *label, unsigned value)
+{
+    if (dst_size <= 0) return;
+    dst[0] = '\0';
+    waifu_str_cat(dst, dst_size, label);
+    waifu_str_cat_char(dst, dst_size, ' ');
+    waifu_str_cat_u32(dst, dst_size, value);
+}
+
+static void fmt_label_i32(char *dst, int dst_size, const char *label, int value)
+{
+    if (dst_size <= 0) return;
+    dst[0] = '\0';
+    waifu_str_cat(dst, dst_size, label);
+    waifu_str_cat_char(dst, dst_size, ' ');
+    waifu_str_cat_i32(dst, dst_size, value);
+}
+
 static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, int atk, int defv)
 {
     (void)mode;
@@ -870,23 +1471,23 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     char line[64];
     if (is_support_card(card_id)) {
         char support_line[64];
-        snprintf(support_line, sizeof(support_line), "%.24s", support_card_name(card_id));
+        waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_name(card_id), 24);
         draw_text(6, base+6, support_line, IDX_WHITE, IDX_BLACK);
-        snprintf(support_line, sizeof(support_line), "%.31s", support_card_type(card_id));
+        waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_type(card_id), 31);
         draw_text_small(6, base+21, support_line, IDX_WHITE, IDX_BLACK);
         draw_text_small(188, base+21, "USE", IDX_GOLD_HI, IDX_BLACK);
         return;
     }
     if (!is_monster_card(card_id)) return;
-    snprintf(line, sizeof(line), "%.24s", waifu_card_names[card_id]);
+    waifu_str_copy_n(line, (int)sizeof(line), waifu_card_names[card_id], 24);
     draw_text(6, base+6, line, IDX_WHITE, IDX_BLACK);
-    snprintf(line, sizeof(line), "%s / %s", waifu_card_attr[card_id], waifu_card_tribe[card_id]);
+    fmt_join2(line, (int)sizeof(line), waifu_card_attr[card_id], " / ", waifu_card_tribe[card_id]);
     draw_text_small(6, base+21, line, IDX_WHITE, IDX_BLACK);
     if (atk < 0) atk = (int)waifu_card_atk[card_id];
     if (defv < 0) defv = (int)waifu_card_def[card_id];
-    snprintf(line, sizeof(line), "x%d", atk);
+    fmt_prefixed_i32(line, (int)sizeof(line), 'x', atk);
     draw_text_small(215, base+15, line, stat_delta_color(atk - (int)waifu_card_atk[card_id]), IDX_BLACK);
-    snprintf(line, sizeof(line), "%d", defv);
+    fmt_i32_dec(line, (int)sizeof(line), defv);
     draw_text_small(221, base+26, line, stat_delta_color(defv - (int)waifu_card_def[card_id]), IDX_BLACK);
     rect_outline(215,base+25,6,6,IDX_WHITE);
 }
@@ -903,11 +1504,457 @@ static void draw_bottom_info(int card_id, const char *mode)
 
 static void draw_bottom_info_field(int owner, int slot, const char *mode);
 
-static uint8_t gray_card_px(uint8_t src);
+static uint8_t g_gray_lut[256];
+static int g_gray_lut_ready = 0;
+
+static void init_gray_lut(void)
+{
+    int i, j;
+    if (g_gray_lut_ready) return;
+    for (i = 0; i < 256; ++i) {
+        int r = waifu_palette_rgb[i * 3 + 0];
+        int g = waifu_palette_rgb[i * 3 + 1];
+        int b = waifu_palette_rgb[i * 3 + 2];
+        int lum = (r * 30 + g * 59 + b * 11) / 100;
+        int target = (lum * 58) / 100;
+        int best = IDX_DIM;
+        int best_score = 0x7fffffff;
+        for (j = 0; j < 256; ++j) {
+            int rr = waifu_palette_rgb[j * 3 + 0];
+            int gg = waifu_palette_rgb[j * 3 + 1];
+            int bb = waifu_palette_rgb[j * 3 + 2];
+            int jr = rr - target;
+            int jg = gg - target;
+            int jb = bb - target;
+            int chroma = abs(rr - gg) + abs(gg - bb) + abs(bb - rr);
+            int score = jr * jr + jg * jg + jb * jb + chroma * 3;
+            if (score < best_score) { best_score = score; best = j; }
+        }
+        g_gray_lut[i] = (uint8_t)best;
+    }
+    g_gray_lut[IDX_BLACK] = IDX_BLACK;
+    g_gray_lut_ready = 1;
+}
+
+static uint8_t gray_card_px(uint8_t src)
+{
+    if (!g_gray_lut_ready) init_gray_lut();
+    return g_gray_lut[src];
+}
+
+static inline uint8_t gray_card_dither_px(uint8_t src, int x, int y)
+{
+    /* Used-card rendering is intentionally a half-tone over the original card,
+       not a full grayscale replacement.  Hand cards and projected field cards
+       both use this same screen-space checker so the "one monster/action used"
+       state remains readable while still looking spent. */
+    return ((x ^ y) & 1) ? gray_card_px(src) : src;
+}
+
+static const uint8_t g_card_ymap_38x50[50] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52 };
+static const uint8_t g_card_ymap_36x49[49] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44, 45, 46, 47, 48, 49, 50, 51, 52 };
+static const uint8_t g_card_xmap_36[36] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36 };
+
+static uint8_t g_card_xmap_100[100];
+static uint8_t g_card_ymap_112[112];
+static uint8_t g_card_xmap_112[112];
+static uint8_t g_card_ymap_136[136];
+static uint8_t g_card_xmap_120[120];
+static uint8_t g_card_ymap_160[160];
+static int g_card_scale_maps_ready = 0;
+
+static void init_card_scale_map(uint8_t *map, int dst_n, int src_n)
+{
+    int i;
+    for (i = 0; i < dst_n; ++i) map[i] = (uint8_t)((i * src_n) / dst_n);
+}
+
+static void init_card_scale_maps(void)
+{
+    if (g_card_scale_maps_ready) return;
+    init_card_scale_map(g_card_xmap_100, 100, WAIFU_CARD_W);
+    init_card_scale_map(g_card_xmap_112, 112, WAIFU_CARD_W);
+    init_card_scale_map(g_card_ymap_112, 112, WAIFU_CARD_H);
+    init_card_scale_map(g_card_ymap_136, 136, WAIFU_CARD_H);
+    init_card_scale_map(g_card_xmap_120, 120, WAIFU_CARD_W);
+    init_card_scale_map(g_card_ymap_160, 160, WAIFU_CARD_H);
+    g_card_scale_maps_ready = 1;
+}
+
+static inline int rect_fully_visible(int x, int y, int w, int h)
+{
+    return x >= 0 && y >= 0 && x + w <= W && y + h <= H;
+}
+
+#if defined(WAIFU_FM_PCFX)
+static inline __attribute__((always_inline)) void pcfx_blit_row38_v810(const uint8_t *src, uint8_t *dst)
+{
+    uint32_t t;
+    __asm__ volatile (
+        "ld.b 0[%[src]],%[t]\n"
+        "st.b %[t],0[%[dst]]\n"
+        "ld.b 1[%[src]],%[t]\n"
+        "st.b %[t],1[%[dst]]\n"
+        "ld.b 2[%[src]],%[t]\n"
+        "st.b %[t],2[%[dst]]\n"
+        "ld.b 3[%[src]],%[t]\n"
+        "st.b %[t],3[%[dst]]\n"
+        "ld.b 4[%[src]],%[t]\n"
+        "st.b %[t],4[%[dst]]\n"
+        "ld.b 5[%[src]],%[t]\n"
+        "st.b %[t],5[%[dst]]\n"
+        "ld.b 6[%[src]],%[t]\n"
+        "st.b %[t],6[%[dst]]\n"
+        "ld.b 7[%[src]],%[t]\n"
+        "st.b %[t],7[%[dst]]\n"
+        "ld.b 8[%[src]],%[t]\n"
+        "st.b %[t],8[%[dst]]\n"
+        "ld.b 9[%[src]],%[t]\n"
+        "st.b %[t],9[%[dst]]\n"
+        "ld.b 10[%[src]],%[t]\n"
+        "st.b %[t],10[%[dst]]\n"
+        "ld.b 11[%[src]],%[t]\n"
+        "st.b %[t],11[%[dst]]\n"
+        "ld.b 12[%[src]],%[t]\n"
+        "st.b %[t],12[%[dst]]\n"
+        "ld.b 13[%[src]],%[t]\n"
+        "st.b %[t],13[%[dst]]\n"
+        "ld.b 14[%[src]],%[t]\n"
+        "st.b %[t],14[%[dst]]\n"
+        "ld.b 15[%[src]],%[t]\n"
+        "st.b %[t],15[%[dst]]\n"
+        "ld.b 16[%[src]],%[t]\n"
+        "st.b %[t],16[%[dst]]\n"
+        "ld.b 17[%[src]],%[t]\n"
+        "st.b %[t],17[%[dst]]\n"
+        "ld.b 18[%[src]],%[t]\n"
+        "st.b %[t],18[%[dst]]\n"
+        "ld.b 19[%[src]],%[t]\n"
+        "st.b %[t],19[%[dst]]\n"
+        "ld.b 20[%[src]],%[t]\n"
+        "st.b %[t],20[%[dst]]\n"
+        "ld.b 21[%[src]],%[t]\n"
+        "st.b %[t],21[%[dst]]\n"
+        "ld.b 22[%[src]],%[t]\n"
+        "st.b %[t],22[%[dst]]\n"
+        "ld.b 23[%[src]],%[t]\n"
+        "st.b %[t],23[%[dst]]\n"
+        "ld.b 24[%[src]],%[t]\n"
+        "st.b %[t],24[%[dst]]\n"
+        "ld.b 25[%[src]],%[t]\n"
+        "st.b %[t],25[%[dst]]\n"
+        "ld.b 26[%[src]],%[t]\n"
+        "st.b %[t],26[%[dst]]\n"
+        "ld.b 27[%[src]],%[t]\n"
+        "st.b %[t],27[%[dst]]\n"
+        "ld.b 28[%[src]],%[t]\n"
+        "st.b %[t],28[%[dst]]\n"
+        "ld.b 29[%[src]],%[t]\n"
+        "st.b %[t],29[%[dst]]\n"
+        "ld.b 30[%[src]],%[t]\n"
+        "st.b %[t],30[%[dst]]\n"
+        "ld.b 31[%[src]],%[t]\n"
+        "st.b %[t],31[%[dst]]\n"
+        "ld.b 32[%[src]],%[t]\n"
+        "st.b %[t],32[%[dst]]\n"
+        "ld.b 33[%[src]],%[t]\n"
+        "st.b %[t],33[%[dst]]\n"
+        "ld.b 34[%[src]],%[t]\n"
+        "st.b %[t],34[%[dst]]\n"
+        "ld.b 35[%[src]],%[t]\n"
+        "st.b %[t],35[%[dst]]\n"
+        "ld.b 36[%[src]],%[t]\n"
+        "st.b %[t],36[%[dst]]\n"
+        "ld.b 37[%[src]],%[t]\n"
+        "st.b %[t],37[%[dst]]\n"
+        : [t] "=&r" (t)
+        : [src] "r" (src), [dst] "r" (dst)
+        : "memory");
+}
+
+static inline __attribute__((always_inline)) void pcfx_blit_row38_to36_v810(const uint8_t *src, uint8_t *dst)
+{
+    uint32_t t;
+    __asm__ volatile (
+        "ld.b 0[%[src]],%[t]\n"
+        "st.b %[t],0[%[dst]]\n"
+        "ld.b 1[%[src]],%[t]\n"
+        "st.b %[t],1[%[dst]]\n"
+        "ld.b 2[%[src]],%[t]\n"
+        "st.b %[t],2[%[dst]]\n"
+        "ld.b 3[%[src]],%[t]\n"
+        "st.b %[t],3[%[dst]]\n"
+        "ld.b 4[%[src]],%[t]\n"
+        "st.b %[t],4[%[dst]]\n"
+        "ld.b 5[%[src]],%[t]\n"
+        "st.b %[t],5[%[dst]]\n"
+        "ld.b 6[%[src]],%[t]\n"
+        "st.b %[t],6[%[dst]]\n"
+        "ld.b 7[%[src]],%[t]\n"
+        "st.b %[t],7[%[dst]]\n"
+        "ld.b 8[%[src]],%[t]\n"
+        "st.b %[t],8[%[dst]]\n"
+        "ld.b 9[%[src]],%[t]\n"
+        "st.b %[t],9[%[dst]]\n"
+        "ld.b 10[%[src]],%[t]\n"
+        "st.b %[t],10[%[dst]]\n"
+        "ld.b 11[%[src]],%[t]\n"
+        "st.b %[t],11[%[dst]]\n"
+        "ld.b 12[%[src]],%[t]\n"
+        "st.b %[t],12[%[dst]]\n"
+        "ld.b 13[%[src]],%[t]\n"
+        "st.b %[t],13[%[dst]]\n"
+        "ld.b 14[%[src]],%[t]\n"
+        "st.b %[t],14[%[dst]]\n"
+        "ld.b 15[%[src]],%[t]\n"
+        "st.b %[t],15[%[dst]]\n"
+        "ld.b 16[%[src]],%[t]\n"
+        "st.b %[t],16[%[dst]]\n"
+        "ld.b 17[%[src]],%[t]\n"
+        "st.b %[t],17[%[dst]]\n"
+        "ld.b 19[%[src]],%[t]\n"
+        "st.b %[t],18[%[dst]]\n"
+        "ld.b 20[%[src]],%[t]\n"
+        "st.b %[t],19[%[dst]]\n"
+        "ld.b 21[%[src]],%[t]\n"
+        "st.b %[t],20[%[dst]]\n"
+        "ld.b 22[%[src]],%[t]\n"
+        "st.b %[t],21[%[dst]]\n"
+        "ld.b 23[%[src]],%[t]\n"
+        "st.b %[t],22[%[dst]]\n"
+        "ld.b 24[%[src]],%[t]\n"
+        "st.b %[t],23[%[dst]]\n"
+        "ld.b 25[%[src]],%[t]\n"
+        "st.b %[t],24[%[dst]]\n"
+        "ld.b 26[%[src]],%[t]\n"
+        "st.b %[t],25[%[dst]]\n"
+        "ld.b 27[%[src]],%[t]\n"
+        "st.b %[t],26[%[dst]]\n"
+        "ld.b 28[%[src]],%[t]\n"
+        "st.b %[t],27[%[dst]]\n"
+        "ld.b 29[%[src]],%[t]\n"
+        "st.b %[t],28[%[dst]]\n"
+        "ld.b 30[%[src]],%[t]\n"
+        "st.b %[t],29[%[dst]]\n"
+        "ld.b 31[%[src]],%[t]\n"
+        "st.b %[t],30[%[dst]]\n"
+        "ld.b 32[%[src]],%[t]\n"
+        "st.b %[t],31[%[dst]]\n"
+        "ld.b 33[%[src]],%[t]\n"
+        "st.b %[t],32[%[dst]]\n"
+        "ld.b 34[%[src]],%[t]\n"
+        "st.b %[t],33[%[dst]]\n"
+        "ld.b 35[%[src]],%[t]\n"
+        "st.b %[t],34[%[dst]]\n"
+        "ld.b 36[%[src]],%[t]\n"
+        "st.b %[t],35[%[dst]]\n"
+        : [t] "=&r" (t)
+        : [src] "r" (src), [dst] "r" (dst)
+        : "memory");
+}
+static inline __attribute__((always_inline)) void pcfx_blit_row_mapped_v810(const uint8_t *src, uint8_t *dst, const uint8_t *xmap, int count)
+{
+    uint32_t groups = (uint32_t)count >> 2;
+    uint32_t tail = (uint32_t)count & 3u;
+    uint32_t idx, t, addr;
+    __asm__ volatile (
+        "cmp 0,%[groups]\n"
+        "be 2f\n"
+        "1:\n"
+        "ld.b 0[%[xmap]],%[idx]\n"
+        "add %[src],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],0[%[dst]]\n"
+        "ld.b 1[%[xmap]],%[idx]\n"
+        "add %[src],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],1[%[dst]]\n"
+        "ld.b 2[%[xmap]],%[idx]\n"
+        "add %[src],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],2[%[dst]]\n"
+        "ld.b 3[%[xmap]],%[idx]\n"
+        "add %[src],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],3[%[dst]]\n"
+        "add 4,%[xmap]\n"
+        "add 4,%[dst]\n"
+        "add -1,%[groups]\n"
+        "bne 1b\n"
+        "2:\n"
+        "cmp 0,%[tail]\n"
+        "be 4f\n"
+        "3:\n"
+        "ld.b 0[%[xmap]],%[idx]\n"
+        "add %[src],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],0[%[dst]]\n"
+        "add 1,%[xmap]\n"
+        "add 1,%[dst]\n"
+        "add -1,%[tail]\n"
+        "bne 3b\n"
+        "4:\n"
+        : [dst] "+r" (dst), [xmap] "+r" (xmap), [groups] "+r" (groups), [tail] "+r" (tail),
+          [idx] "=&r" (idx), [t] "=&r" (t), [addr] "=&r" (addr)
+        : [src] "r" (src)
+        : "memory");
+    (void)addr;
+}
+
+static inline __attribute__((always_inline)) void pcfx_blit_row_gray_v810(const uint8_t *src, uint8_t *dst, const uint8_t *lut, int count)
+{
+    uint32_t groups = (uint32_t)count >> 2;
+    uint32_t tail = (uint32_t)count & 3u;
+    uint32_t idx, t;
+    __asm__ volatile (
+        "cmp 0,%[groups]\n"
+        "be 2f\n"
+        "1:\n"
+        "ld.b 0[%[src]],%[idx]\n"
+        "add %[lut],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],0[%[dst]]\n"
+        "ld.b 1[%[src]],%[idx]\n"
+        "add %[lut],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],1[%[dst]]\n"
+        "ld.b 2[%[src]],%[idx]\n"
+        "add %[lut],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],2[%[dst]]\n"
+        "ld.b 3[%[src]],%[idx]\n"
+        "add %[lut],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],3[%[dst]]\n"
+        "add 4,%[src]\n"
+        "add 4,%[dst]\n"
+        "add -1,%[groups]\n"
+        "bne 1b\n"
+        "2:\n"
+        "cmp 0,%[tail]\n"
+        "be 4f\n"
+        "3:\n"
+        "ld.b 0[%[src]],%[idx]\n"
+        "add %[lut],%[idx]\n"
+        "ld.b 0[%[idx]],%[t]\n"
+        "st.b %[t],0[%[dst]]\n"
+        "add 1,%[src]\n"
+        "add 1,%[dst]\n"
+        "add -1,%[tail]\n"
+        "bne 3b\n"
+        "4:\n"
+        : [src] "+r" (src), [dst] "+r" (dst), [groups] "+r" (groups), [tail] "+r" (tail),
+          [idx] "=&r" (idx), [t] "=&r" (t)
+        : [lut] "r" (lut)
+        : "memory");
+}
+
+#endif
+
+static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
+{
+    uint8_t *dst = framebuffer + y * W + x;
+    int yy;
+    for (yy = 0; yy < 50; ++yy) {
+        const uint8_t *srow = src + (int)g_card_ymap_38x50[yy] * WAIFU_CARD_W;
+#if defined(WAIFU_FM_PCFX)
+        pcfx_blit_row38_v810(srow, dst);
+#else
+        memcpy(dst, srow, 38);
+#endif
+        dst += W;
+    }
+}
+
+static void blit_card_36x49_fast(const uint8_t *src, int x, int y)
+{
+    uint8_t *dst = framebuffer + y * W + x;
+    int yy;
+    for (yy = 0; yy < 49; ++yy) {
+        const uint8_t *srow = src + (int)g_card_ymap_36x49[yy] * WAIFU_CARD_W;
+#if defined(WAIFU_FM_PCFX)
+        pcfx_blit_row38_to36_v810(srow, dst);
+#else
+        int xx;
+        for (xx = 0; xx < 36; ++xx) dst[xx] = srow[g_card_xmap_36[xx]];
+#endif
+        dst += W;
+    }
+}
+
+static void blit_card_38x50_gray_fast(const uint8_t *src, int x, int y)
+{
+    uint8_t *dst = framebuffer + y * W + x;
+    int yy;
+    if (!g_gray_lut_ready) init_gray_lut();
+    for (yy = 0; yy < 50; ++yy) {
+        const uint8_t *srow = src + (int)g_card_ymap_38x50[yy] * WAIFU_CARD_W;
+#if defined(WAIFU_FM_PCFX)
+        pcfx_blit_row_gray_v810(srow, dst, g_gray_lut, 38);
+#else
+        int xx;
+        for (xx = 0; xx < 38; ++xx) dst[xx] = g_gray_lut[srow[xx]];
+#endif
+        dst += W;
+    }
+}
+
+static void blit_card_mapped_fast(const uint8_t *src, int x, int y, int dw, int dh, const uint8_t *xmap, const uint8_t *ymap)
+{
+    uint8_t *dst = framebuffer + y * W + x;
+    int yy;
+    for (yy = 0; yy < dh; ++yy) {
+        const uint8_t *srow = src + (int)ymap[yy] * WAIFU_CARD_W;
+#if defined(WAIFU_FM_PCFX)
+        pcfx_blit_row_mapped_v810(srow, dst, xmap, dw);
+#else
+        int xx;
+        for (xx = 0; xx < dw; ++xx) dst[xx] = srow[xmap[xx]];
+#endif
+        dst += W;
+    }
+}
+
+static int try_draw_card_raw_fast(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh, int gray)
+{
+    if (!src || sw != WAIFU_CARD_W || sh != WAIFU_CARD_H) return 0;
+    if (dw == 38 && dh == 50 && rect_fully_visible(x, y, 38, 50)) {
+        if (gray) return 0; /* use generic dithered gray path */
+        blit_card_38x50_fast(src, x, y);
+        PROFILE_CARD2D_FAST();
+        return 1;
+    }
+    if (!gray && dw == 36 && dh == 49 && rect_fully_visible(x, y, 36, 49)) {
+        blit_card_36x49_fast(src, x, y);
+        PROFILE_CARD2D_FAST();
+        return 1;
+    }
+    if (!gray && rect_fully_visible(x, y, dw, dh)) {
+        init_card_scale_maps();
+        if (dw == 112 && dh == 112) {
+            blit_card_mapped_fast(src, x, y, 112, 112, g_card_xmap_112, g_card_ymap_112);
+            PROFILE_CARD2D_FAST();
+            return 1;
+        }
+        if (dw == 100 && dh == 136) {
+            blit_card_mapped_fast(src, x, y, 100, 136, g_card_xmap_100, g_card_ymap_136);
+            PROFILE_CARD2D_FAST();
+            return 1;
+        }
+        if (dw == 120 && dh == 160) {
+            blit_card_mapped_fast(src, x, y, 120, 160, g_card_xmap_120, g_card_ymap_160);
+            PROFILE_CARD2D_FAST();
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
-    if (dw <= 0 || dh <= 0) return;
+    if (!src || dw <= 0 || dh <= 0) return;
+    if (try_draw_card_raw_fast(src, sw, sh, x, y, dw, dh, 0)) return;
+    PROFILE_CARD2D_GENERIC();
     for (int yy = 0; yy < dh; ++yy) {
         int sy = (yy * sh) / dh;
         int dy = y + yy;
@@ -923,7 +1970,9 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
 
 static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
-    if (dw <= 0 || dh <= 0) return;
+    if (!src || dw <= 0 || dh <= 0) return;
+    if (try_draw_card_raw_fast(src, sw, sh, x, y, dw, dh, 1)) return;
+    PROFILE_CARD2D_GENERIC();
     for (int yy = 0; yy < dh; ++yy) {
         int sy = (yy * sh) / dh;
         int dy = y + yy;
@@ -932,34 +1981,139 @@ static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y,
             int sx = (xx * sw) / dw;
             int dx = x + xx;
             if ((unsigned)dx >= W) continue;
-            framebuffer[dy * W + dx] = gray_card_px(src[sy * sw + sx]);
+            framebuffer[dy * W + dx] = gray_card_dither_px(src[sy * sw + sx], dx, dy);
         }
     }
+}
+
+
+static const uint8_t *card_big_art_ptr(int id);
+
+static void blit_art112_fast(const uint8_t *src, int x, int y)
+{
+    if (!src || !rect_fully_visible(x, y, WAIFU_BIG_W, WAIFU_BIG_H)) return;
+    uint8_t *dst = framebuffer + y * W + x;
+#if defined(WAIFU_FM_PCFX)
+    for (int yy = 0; yy < WAIFU_BIG_H; ++yy) {
+        const uint8_t *sp = src + yy * WAIFU_BIG_W;
+        uint8_t *dp = dst;
+        uint32_t loops = WAIFU_BIG_W >> 5;
+        uint32_t tail_words = (WAIFU_BIG_W & 31u) >> 2;
+        uint32_t a, b, c, d, e, f, g, h;
+        __asm__ volatile (
+            "cmp 0,%[loops]\n"
+            "be 2f\n"
+            "1:\n"
+            "ld.w 0[%[sp]],%[a]\n"
+            "ld.w 4[%[sp]],%[b]\n"
+            "ld.w 8[%[sp]],%[c]\n"
+            "ld.w 12[%[sp]],%[d]\n"
+            "ld.w 16[%[sp]],%[e]\n"
+            "ld.w 20[%[sp]],%[f]\n"
+            "ld.w 24[%[sp]],%[g]\n"
+            "ld.w 28[%[sp]],%[h]\n"
+            "st.w %[a],0[%[dp]]\n"
+            "st.w %[b],4[%[dp]]\n"
+            "st.w %[c],8[%[dp]]\n"
+            "st.w %[d],12[%[dp]]\n"
+            "st.w %[e],16[%[dp]]\n"
+            "st.w %[f],20[%[dp]]\n"
+            "st.w %[g],24[%[dp]]\n"
+            "st.w %[h],28[%[dp]]\n"
+            "addi 32,%[sp],%[sp]\n"
+            "addi 32,%[dp],%[dp]\n"
+            "add -1,%[loops]\n"
+            "bne 1b\n"
+            "2:\n"
+            "cmp 0,%[tail_words]\n"
+            "be 4f\n"
+            "3:\n"
+            "ld.w 0[%[sp]],%[a]\n"
+            "st.w %[a],0[%[dp]]\n"
+            "add 4,%[sp]\n"
+            "add 4,%[dp]\n"
+            "add -1,%[tail_words]\n"
+            "bne 3b\n"
+            "4:\n"
+            : [sp] "+r" (sp), [dp] "+r" (dp), [loops] "+r" (loops), [tail_words] "+r" (tail_words),
+              [a] "=&r" (a), [b] "=&r" (b), [c] "=&r" (c), [d] "=&r" (d),
+              [e] "=&r" (e), [f] "=&r" (f), [g] "=&r" (g), [h] "=&r" (h)
+            :
+            : "memory");
+        dst += W;
+    }
+#else
+    for (int yy = 0; yy < WAIFU_BIG_H; ++yy) {
+        const uint8_t *srow = src + yy * WAIFU_BIG_W;
+        uint8_t *drow = dst;
+        for (int xx = 0; xx < WAIFU_BIG_W; ++xx) drow[xx] = srow[xx];
+        dst += W;
+    }
+#endif
+}
+
+static void draw_big_art_112_note(const uint8_t *src, WaifuBigArtKind kind, int card_id, int x, int y)
+{
+    if (!src) return;
+    if (rect_fully_visible(x, y, WAIFU_BIG_W, WAIFU_BIG_H)) {
+        blit_art112_fast(src, x, y);
+        waifu_assets_note_big_art_draw(kind, card_id, x, y);
+        PROFILE_CARD2D_FAST();
+        return;
+    }
+    draw_card_raw(src, WAIFU_BIG_W, WAIFU_BIG_H, x, y, WAIFU_BIG_W, WAIFU_BIG_H);
+}
+
+static void draw_card_big_art_112(int card_id, int x, int y)
+{
+    draw_big_art_112_note(card_big_art_ptr(card_id), WAIFU_BIG_ART_CARD, card_id, x, y);
+}
+
+static void draw_support_big_art_112(int x, int y)
+{
+    draw_big_art_112_note(waifu_assets_support_big_art(), WAIFU_BIG_ART_SUPPORT, -1, x, y);
+}
+
+static void draw_big_art_scaled_note(const uint8_t *src, WaifuBigArtKind kind, int card_id, int x, int y, int w, int h)
+{
+    if (!src || w <= 0 || h <= 0) return;
+    if (w == WAIFU_BIG_W && h == WAIFU_BIG_H) { draw_big_art_112_note(src, kind, card_id, x, y); return; }
+    draw_card_raw(src, WAIFU_BIG_W, WAIFU_BIG_H, x, y, w, h);
+}
+
+static void draw_card_big_art_scaled(int card_id, int x, int y, int w, int h)
+{
+    draw_big_art_scaled_note(card_big_art_ptr(card_id), WAIFU_BIG_ART_CARD, card_id, x, y, w, h);
+}
+
+static void draw_support_big_art_scaled(int x, int y, int w, int h)
+{
+    draw_big_art_scaled_note(waifu_assets_support_big_art(), WAIFU_BIG_ART_SUPPORT, -1, x, y, w, h);
 }
 
 static const uint8_t *card_face_ptr(int id)
 {
     if (id < 0) id = 0;
     if (id >= WAIFU_CARD_COUNT) id = WAIFU_CARD_COUNT - 1;
-    return waifu_card_faces + ((size_t)id * WAIFU_CARD_W * WAIFU_CARD_H);
+    return waifu_assets_card_face(id);
 }
 
-static const uint8_t *big_art_ptr(int id)
+static const uint8_t *card_big_art_ptr(int id)
 {
     if (id < 0) id = 0;
     if (id >= WAIFU_CARD_COUNT) id = WAIFU_CARD_COUNT - 1;
-    return waifu_big_art + ((size_t)id * WAIFU_BIG_W * WAIFU_BIG_H);
+    return waifu_assets_card_big_art(id);
 }
 
 static void draw_card_sprite(int id, int x, int y, int w, int h, int back)
 {
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
-    draw_card_raw(back ? waifu_card_back : card_face_ptr(id), WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
+    draw_card_raw(back ? waifu_assets_card_back() : card_face_ptr(id), WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
 }
 
 static void draw_card_sprite_ex(int id, int x, int y, int w, int h, int back, int gray)
 {
-    const uint8_t *src = back ? waifu_card_back : card_face_ptr(id);
+    const uint8_t *src = back ? waifu_assets_card_back() : card_face_ptr(id);
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
     if (gray) draw_card_raw_gray(src, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
     else draw_card_raw(src, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
@@ -968,7 +2122,7 @@ static void draw_card_sprite_ex(int id, int x, int y, int w, int h, int back, in
 static void draw_support_sprite(int x, int y, int w, int h)
 {
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
-    draw_card_raw(waifu_support_face, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
+    draw_card_raw(waifu_assets_support_face(), WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
 }
 
 static void draw_hand_card_sprite(int id, int x, int y, int w, int h, int back)
@@ -997,22 +2151,22 @@ static void draw_big_battle_card_stats(int id, int x, int y, int back, int atk, 
     rect_outline(x+1, y+1, w-2, h-2, IDX_GOLD_DARK);
     rect_fill(x+4, y+4, w-8, h-8, IDX_CARD_GOLD);
     if (back) {
-        draw_card_raw(waifu_card_back, WAIFU_CARD_W, WAIFU_CARD_H, x+4, y+4, w-8, h-8);
+        draw_card_raw(waifu_assets_card_back(), WAIFU_CARD_W, WAIFU_CARD_H, x+4, y+4, w-8, h-8);
         return;
     }
     if (is_support_card(id)) {
         /* Support/equip cards can appear in battle reveals only if bad/stale
            state puts them in a monster zone. Draw the support art and no
            ATK/DEF/stat strings; they are treated as 0/0 non-attackers. */
-        draw_card_raw(waifu_support_face, WAIFU_CARD_W, WAIFU_CARD_H, x+10, y+12, 100, 136);
-        rect_outline(x+9, y+11, 102, 138, IDX_CARD_RIM);
+        draw_support_big_art_scaled(x+4, y+6, 112, 112);
+        rect_outline(x+3, y+5, 114, 114, IDX_CARD_RIM);
         return;
     }
     if (!is_monster_card(id)) {
-        draw_card_raw(waifu_card_back, WAIFU_CARD_W, WAIFU_CARD_H, x+4, y+4, w-8, h-8);
+        draw_card_raw(waifu_assets_card_back(), WAIFU_CARD_W, WAIFU_CARD_H, x+4, y+4, w-8, h-8);
         return;
     }
-    draw_card_raw(big_art_ptr(id), WAIFU_BIG_W, WAIFU_BIG_H, x+4, y+6, 112, 112);
+    draw_card_big_art_112(id, x+4, y+6);
     rect_outline(x+3, y+5, 114, 114, IDX_CARD_RIM);
     rect_fill(x+5, y+123, 110, 28, IDX_DARK_BROWN);
     rect_outline(x+5, y+123, 110, 28, IDX_GOLD_DARK);
@@ -1020,9 +2174,9 @@ static void draw_big_battle_card_stats(int id, int x, int y, int back, int atk, 
         char stats[32];
         if (atk < 0) atk = (int)waifu_card_atk[id];
         if (defv < 0) defv = (int)waifu_card_def[id];
-        snprintf(stats, sizeof(stats), "A%d", atk);
+        fmt_prefixed_i32(stats, (int)sizeof(stats), 'A', atk);
         draw_text_small(x+9, y+128, stats, stat_delta_color(atk - (int)waifu_card_atk[id]), IDX_BLACK);
-        snprintf(stats, sizeof(stats), "D%d", defv);
+        fmt_prefixed_i32(stats, (int)sizeof(stats), 'D', defv);
         draw_text_small(x+55, y+128, stats, stat_delta_color(defv - (int)waifu_card_def[id]), IDX_BLACK);
         draw_text_small(x+9, y+140, waifu_card_tribe[id], IDX_WHITE, IDX_BLACK);
     }
@@ -1045,14 +2199,41 @@ static void draw_big_battle_card_rect(int id, int x, int y, int w, int h, int ba
     rect_outline(x, y, w, h, IDX_GOLD_HI);
     if (w > 8 && h > 14) {
         if (back) {
-            draw_card_raw(waifu_card_back, WAIFU_CARD_W, WAIFU_CARD_H, x+3, y+3, w-6, h-6);
+            draw_card_raw(waifu_assets_card_back(), WAIFU_CARD_W, WAIFU_CARD_H, x+3, y+3, w-6, h-6);
         } else {
             rect_fill(x+3, y+3, w-6, h-6, IDX_CARD_GOLD);
             int art_w = w - 8;
             int art_h = h > 134 ? 112 : h - 20;
             if (art_w < 1) art_w = 1;
             if (art_h < 1) art_h = 1;
-            draw_card_raw(big_art_ptr(id), WAIFU_BIG_W, WAIFU_BIG_H, x+4, y+6, art_w, art_h);
+#ifdef WAIFU_FM_PCFX
+            /* The face-down reveal was spending most of the visible flip in
+               repeated scaled big-art reads/rasterization.  Show a cheap gold
+               card-face silhouette while the card is still edge-on, then snap
+               to the normal 112x112 direct-art path near full width.  This
+               matches the already-fast equip-card reveal path and keeps SCSI/CD
+               misses out of the moving part of the animation. */
+            if (w < 120) {
+                int cx = x + w / 2;
+                rect_fill(x + 4, y + 6, w - 8, art_h, IDX_DARK_BROWN);
+                rect_outline(x + 4, y + 6, w - 8, art_h, IDX_GOLD_DARK);
+                if (w > 20) {
+                    hline(x + 8, x + w - 9, y + 24, IDX_GOLD_HI);
+                    hline(x + 8, x + w - 9, y + 88, IDX_GOLD_HI);
+                } else {
+                    for (int yy = y + 10; yy <= y + art_h + 3; ++yy) put_px(cx, yy, IDX_GOLD_HI);
+                }
+            } else {
+                draw_card_big_art_scaled(id, x+4, y+6, art_w, art_h);
+            }
+#else
+            if (w < 92) {
+                rect_fill(x + 4, y + 6, w - 8, art_h, IDX_DARK_BROWN);
+                rect_outline(x + 4, y + 6, w - 8, art_h, IDX_GOLD_DARK);
+            } else {
+                draw_card_big_art_scaled(id, x+4, y+6, art_w, art_h);
+            }
+#endif
         }
     } else {
         rect_fill(x, y, w, h, IDX_WHITE);
@@ -1098,6 +2279,7 @@ static int hand_y(void) { return 154 + g_player_hand_offset_y; }
 
 static void draw_player_hand(int f, int selected)
 {
+    PROFILE_HAND_BEGIN();
     for (int i = 0; i < 5; ++i) {
         int x0 = hand_final_x(i);
         int y = hand_y();
@@ -1108,14 +2290,16 @@ static void draw_player_hand(int f, int selected)
         }
         if (i == g_player_hide_index) continue;
         if (((f >= 150 && f < 176) || (f >= 475 && f < 505) || (f >= 910 && f < 930)) && i == selected) continue;
-        if (i == 2) draw_support_sprite(x, y+1, 38, 50);
-        else draw_card_sprite(hand_ids[i], x, y, 38, 50, 0);
+        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(x, y+1, 38, 50));
+        else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, 38, 50, 0));
         if (!g_suppress_hand_cursor && i == selected && f >= 102) draw_red_cursor(x, y, 38, 50);
     }
+    PROFILE_HAND_END();
 }
 
 static void draw_player_hand_draw_sequence(int f, int start, int selected)
 {
+    PROFILE_HAND_BEGIN();
     /* FM-like turn-start restoration: the row scrolls up, then replacement
        cards visibly draw from the right edge.  This is deliberately slower and
        clearer than v11 so the draw is legible in the full-match video. */
@@ -1138,28 +2322,32 @@ static void draw_player_hand_draw_sequence(int f, int start, int selected)
             }
         }
         if (!visible) continue;
-        if (i == 2) draw_support_sprite(x, y+1, 38, 50);
-        else draw_card_sprite(hand_ids[i], x, y, 38, 50, 0);
+        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(x, y+1, 38, 50));
+        else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, 38, 50, 0));
         if (reveal_cursor && i == selected) draw_red_cursor(x, y, 38, 50);
     }
+    PROFILE_HAND_END();
 }
 
 static void draw_enemy_hand(int f, int selected, int reveal_one)
 {
+    PROFILE_HAND_BEGIN();
     (void)reveal_one;
     for (int i = 0; i < 5; ++i) {
         int x = 12 + i * 48;
         int y = 154 + g_enemy_hand_offset_y;
         if (i == g_enemy_hide_index) continue;
         if (((f >= 256 && f < 278) || (f >= 675 && f < 705)) && i == selected) continue;
-        draw_card_sprite(0, x, y, 36, 49, 1);
+        PROFILE_HAND_CARD_DRAW(draw_card_sprite(0, x, y, 36, 49, 1));
         if (!g_suppress_hand_cursor && i == selected) draw_red_cursor(x, y, 36, 49);
     }
+    PROFILE_HAND_END();
 }
 
 
 static void draw_enemy_hand_draw_sequence(int f, int start, int selected)
 {
+    PROFILE_HAND_BEGIN();
     int yoff = lerp_i(92, 0, q8_smooth_ratio(f - start, 30)) + g_enemy_hand_offset_y;
     if (f >= start + 14 && f < start + 70) draw_text_small(211, 142 + yoff / 3, "DRAW", IDX_GOLD_HI, IDX_BLACK);
     for (int i = 0; i < 5; ++i) {
@@ -1168,16 +2356,17 @@ static void draw_enemy_hand_draw_sequence(int f, int start, int selected)
         if (t <= 0) continue;
         int x = lerp_i(282, x0, t);
         int y = 154 + yoff;
-        draw_card_sprite(0, x, y, 36, 49, 1);
+        PROFILE_HAND_CARD_DRAW(draw_card_sprite(0, x, y, 36, 49, 1));
         if (f >= start + 42 && i == selected) draw_red_cursor(x, y, 36, 49);
     }
+    PROFILE_HAND_END();
 }
 
 /* ------------------------------------------------------------------------- */
 /* Board rendering and board-card placement. */
 
-static int32_t col_xq(int32_t c) { return FIELD_X0 + (int32_t)(((FIELD_X1 - FIELD_X0) * c) / (BOARD_COLS * Q8_ONE)); }
-static int32_t row_zq(int32_t r) { return FIELD_Z0 + (int32_t)(((FIELD_Z1 - FIELD_Z0) * r) / (BOARD_ROWS * Q8_ONE)); }
+static int32_t col_xq(int32_t c) { return FIELD_X0 + div_toward_zero_i32((FIELD_X1 - FIELD_X0) * c, (BOARD_COLS * Q8_ONE)); }
+static int32_t row_zq(int32_t r) { return FIELD_Z0 + div_toward_zero_i32((FIELD_Z1 - FIELD_Z0) * r, (BOARD_ROWS * Q8_ONE)); }
 static int32_t col_x0(int c) { return col_xq(Q8_FROM_INT(c)); }
 static int32_t row_z0(int r) { return row_zq(Q8_FROM_INT(r)); }
 static int32_t zone_cx(int c) { return (col_x0(c) + col_x0(c+1)) / 2; }
@@ -1192,6 +2381,14 @@ static void draw_grid_line(Camera cam, Vec3 a, Vec3 b, uint8_t c)
     }
 }
 
+static void draw_grid_line_projected(ScreenPt pa, ScreenPt pb, uint8_t c)
+{
+    if (pa.ok && pb.ok) {
+        line_i(pa.x, pa.y, pb.x, pb.y, c);
+        line_i(pa.x, pa.y+1, pb.x, pb.y+1, IDX_DARK_BROWN);
+    }
+}
+
 static void render_board(Camera cam)
 {
     /* Every 3D field frame must start from a clean black framebuffer.
@@ -1199,11 +2396,12 @@ static void render_board(Camera cam)
        interactive field renderer only drew board geometry and UI, leaving
        untouched black-space pixels from the previous frame. Headless PNG
        tests were less likely to show it because most scripted paths cleared
-       before calling render_board(). Clearing here makes the core renderer
+       before calling render_board_cached(). Clearing here makes the core renderer
        platform-agnostic and guarantees both SDL and headless produce the same
        full framebuffer. */
     clear_screen(IDX_BLACK);
 
+#if !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
     /* slab sides first */
     draw_field_slab_sides(cam);
 
@@ -1218,9 +2416,26 @@ static void render_board(Camera cam)
             draw_quad3d(cam, v3(x0, FIELD_Y, z0), v3(x1, FIELD_Y, z0), v3(x1, FIELD_Y, z1), v3(x0, FIELD_Y, z1), tile);
         }
     }
+#else
+    BoardProjected bp;
+    build_board_projected(cam, &bp);
+    draw_field_slab_sides_fast(cam, &bp);
 
+    for (int r = 0; r < BOARD_ROWS; ++r) {
+        for (int c = 0; c < BOARD_COLS; ++c) {
+            int tile = ((r + c) & 1) ? 5 : 1;
+            draw_quad3d_fast_projected(bp.top[r][c], bp.top[r][c+1], bp.top[r+1][c+1], bp.top[r+1][c], tile);
+        }
+    }
+#endif
+
+#if !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
     for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line(cam, v3(col_x0(c),Q8_FRAC(3,100),FIELD_Z0), v3(col_x0(c),Q8_FRAC(3,100),FIELD_Z1), IDX_DARK_BROWN);
     for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line(cam, v3(FIELD_X0,Q8_FRAC(3,100),row_z0(r)), v3(FIELD_X1,Q8_FRAC(3,100),row_z0(r)), IDX_DARK_BROWN);
+#else
+    for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line_projected(bp.top[0][c], bp.top[BOARD_ROWS][c], IDX_DARK_BROWN);
+    for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line_projected(bp.top[r][0], bp.top[r][BOARD_COLS], IDX_DARK_BROWN);
+#endif
 
     /* faint central Egyptian mark */
     ScreenPt a = project_point(cam, v3(-Q8_FRAC(55,100),Q8_FRAC(5,100),-Q8_FRAC(50,100)));
@@ -1229,42 +2444,42 @@ static void render_board(Camera cam)
     if (a.ok && b.ok && c.ok) { line_i(a.x,a.y,b.x,b.y,IDX_GOLD_DARK); line_i(b.x,b.y,c.x,c.y,IDX_GOLD_DARK); }
 }
 
-static uint8_t g_gray_lut[256];
-static int g_gray_lut_ready = 0;
-
-static void init_gray_lut(void)
+static void render_board_cached(Camera cam)
 {
-    int i, j;
-    if (g_gray_lut_ready) return;
-    for (i = 0; i < 256; ++i) {
-        int r = waifu_palette_rgb[i * 3 + 0];
-        int g = waifu_palette_rgb[i * 3 + 1];
-        int b = waifu_palette_rgb[i * 3 + 2];
-        int lum = (r * 30 + g * 59 + b * 11) / 100;
-        int target = (lum * 58) / 100;
-        int best = IDX_DIM;
-        int best_score = 0x7fffffff;
-        for (j = 0; j < 256; ++j) {
-            int rr = waifu_palette_rgb[j * 3 + 0];
-            int gg = waifu_palette_rgb[j * 3 + 1];
-            int bb = waifu_palette_rgb[j * 3 + 2];
-            int jr = rr - target;
-            int jg = gg - target;
-            int jb = bb - target;
-            int chroma = abs(rr - gg) + abs(gg - bb) + abs(bb - rr);
-            int score = jr * jr + jg * jg + jb * jb + chroma * 3;
-            if (score < best_score) { best_score = score; best = j; }
+#if defined(WAIFU_BG_CACHE_DISABLE)
+    render_board(cam);
+#else
+    if (g_board_bg_cache_valid && camera_equal(g_board_bg_cache_cam, cam)) {
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+        unsigned long long _profile_t0 = g_profile_render_enabled ? profile_now_us() : 0;
+#endif
+        copy_u8_fast(framebuffer, g_board_bg_cache, (int)sizeof(g_board_bg_cache));
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+        if (g_profile_render_enabled) {
+            g_profile_board_cache_copy_us += profile_now_us() - _profile_t0;
+            g_profile_board_cache_hits++;
         }
-        g_gray_lut[i] = (uint8_t)best;
+#endif
+        return;
     }
-    g_gray_lut[IDX_BLACK] = IDX_BLACK;
-    g_gray_lut_ready = 1;
-}
-
-static uint8_t gray_card_px(uint8_t src)
-{
-    if (!g_gray_lut_ready) init_gray_lut();
-    return g_gray_lut[src];
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+    unsigned long long _profile_render_t0 = g_profile_render_enabled ? profile_now_us() : 0;
+#endif
+    render_board(cam);
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+    if (g_profile_render_enabled) {
+        g_profile_board_cache_render_us += profile_now_us() - _profile_render_t0;
+        g_profile_board_cache_misses++;
+        _profile_render_t0 = profile_now_us();
+    }
+#endif
+    copy_u8_fast(g_board_bg_cache, framebuffer, (int)sizeof(g_board_bg_cache));
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+    if (g_profile_render_enabled) g_profile_board_cache_copy_us += profile_now_us() - _profile_render_t0;
+#endif
+    g_board_bg_cache_cam = cam;
+    g_board_bg_cache_valid = 1;
+#endif
 }
 
 static void draw_textured_tri_ex(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c, int gray)
@@ -1296,7 +2511,7 @@ static void draw_textured_tri_ex(const uint8_t *src, int sw, int sh, TexV a, Tex
                 if (sy < 0) sy = 0;
                 if (sy >= sh) sy = sh - 1;
                 uint8_t pix = src[sy * sw + sx];
-                put_px(x, y, gray ? (((x + y) & 1) ? gray_card_px(pix) : pix) : pix);
+                put_px(x, y, gray ? gray_card_dither_px(pix, x, y) : pix);
             }
         }
     }
@@ -1418,7 +2633,7 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
     int32_t hw = defense ? Q8_FRAC(50,100) : Q8_FRAC(36,100);
     int32_t hz = defense ? Q8_FRAC(36,100) : Q8_FRAC(50,100);
     int32_t y = Q8_FRAC(115,1000);
-    const uint8_t *tex = back ? waifu_card_back : (is_support_card(card_id) ? waifu_support_face : card_face_ptr(card_id));
+    const uint8_t *tex = back ? waifu_assets_card_back() : (is_support_card(card_id) ? waifu_assets_support_face() : card_face_ptr(card_id));
     ScreenPt p0 = project_point(cam, v3(cx - hw, y, cz - hz));
     ScreenPt p1 = project_point(cam, v3(cx + hw, y, cz - hz));
     ScreenPt p2 = project_point(cam, v3(cx + hw, y, cz + hz));
@@ -1719,6 +2934,13 @@ static int calc_battle_delta(int atk_id, int def_id, int defender_in_defense)
 static void apply_black_dither_fade(int32_t visible)
 {
     visible = q8_clamp(visible, 0, Q8_ONE);
+#ifdef WAIFU_FM_PCFX
+    /* PC-FX: do not dither-walk the whole 256x240 framebuffer for fades.
+       The platform layer applies this as a 256-entry palette fade, which is
+       visually close enough and much cheaper on V810/KING. */
+    if ((int)visible < g_video_fade_visible_q8) g_video_fade_visible_q8 = (int)visible;
+    return;
+#endif
     static const uint8_t bayer[8][8] = {
         { 0,48,12,60, 3,51,15,63}, {32,16,44,28,35,19,47,31},
         { 8,56, 4,52,11,59, 7,55}, {40,24,36,20,43,27,39,23},
@@ -1744,10 +2966,22 @@ static void apply_black_dither_fade(int32_t visible)
         else { int _st_local = (f) - (half); (void)_st_local; to_call; apply_black_dither_fade(q8_ratio(_st_local, (half))); } \
     } while (0)
 
+#ifdef WAIFU_FM_PCFX
+#define WAIFU_FAST_TRANSITION_HALF_FRAMES 18
+#else
+#define WAIFU_FAST_TRANSITION_HALF_FRAMES 24
+#endif
+
+#ifdef WAIFU_FM_PCFX
+#define WAIFU_TITLE_FADE_FRAMES 36
+#else
+#define WAIFU_TITLE_FADE_FRAMES 4
+#endif
+
 static void draw_field_pair_for_battle(Camera cam, int atk_col, int atk_row, int atk_id, int atk_back,
                                        int def_col, int def_row, int def_id, int def_back)
 {
-    render_board(cam);
+    render_board_cached(cam);
     if (g_battle_late_frame >= 0) {
         /* Late battles must keep every already-summoned field card visible in
            the tactical prelude. v13 only drew the attacker/target pair, causing
@@ -1785,30 +3019,30 @@ static void draw_battle_cutin_event_ex(int f, int start,
     /* Battle begins in tactical top view. Only the active card is outlined; no
        hand-selection arrow is shown during placement/top mode. Face-down cards
        are not revealed on the 3D field here. */
-    if (local0 < 16) {
+    if (local0 < WAIFU_BATTLE_PRELUDE_FRAMES) {
         Camera cam = side_battle_camera(atk_row);
         draw_field_pair_for_battle(cam, atk_col, atk_row, atk_id, atk_back,
                                         def_col, def_row, def_id, def_back);
         return;
     }
 
-    int local = local0 - 16;
+    int local = local0 - WAIFU_BATTLE_PRELUDE_FRAMES;
     const int ax = 4, ay = 33, dx = 132, dy = 33;
-    const int slide_dur = 18;
+    const int slide_dur = WAIFU_BATTLE_SLIDE_FRAMES;
     const int atk_flip_start = slide_dur;
-    const int flip_dur = 48;
+    const int flip_dur = WAIFU_BATTLE_FLIP_FRAMES;
     const int def_flip_start = atk_flip_start + (atk_back ? flip_dur : 0);
     int reveal_end = def_flip_start + (def_back ? flip_dur : 0);
-    int pause_after_reveal = 10;
+    int pause_after_reveal = WAIFU_BATTLE_REVEAL_PAUSE_FRAMES;
     int ram_start = reveal_end + pause_after_reveal;
-    int ram_dur = 34;
-    int ram_contact = ram_start + 22;
-    int counter_start = ram_start + ram_dur + 16;
-    int counter_dur = 34;
-    int hit_hold_start = (outcome == BATTLE_DESTROY_ATTACKER) ? (counter_start + 20) : ram_contact;
-    int burn_start = (outcome == BATTLE_DESTROY_ATTACKER) ? (counter_start + counter_dur + 18)
-                                                          : (ram_start + ram_dur + 30);
-    if (outcome == BATTLE_DESTROY_BOTH) burn_start = ram_start + ram_dur + 22;
+    int ram_dur = WAIFU_BATTLE_RAM_FRAMES;
+    int ram_contact = ram_start + ((ram_dur * 65 + 50) / 100);
+    int counter_start = ram_start + ram_dur + WAIFU_BATTLE_COUNTER_GAP_FRAMES;
+    int counter_dur = WAIFU_BATTLE_RAM_FRAMES;
+    int hit_hold_start = (outcome == BATTLE_DESTROY_ATTACKER) ? (counter_start + ((counter_dur * 60 + 50) / 100)) : ram_contact;
+    int burn_start = (outcome == BATTLE_DESTROY_ATTACKER) ? (counter_start + counter_dur + WAIFU_BATTLE_COUNTER_GAP_FRAMES)
+                                                          : (ram_start + ram_dur + WAIFU_BATTLE_BURN_DELAY_FRAMES);
+    if (outcome == BATTLE_DESTROY_BOTH) burn_start = ram_start + ram_dur + (WAIFU_BATTLE_BURN_DELAY_FRAMES / 2);
     int burn_dur = BATTLE_BURN_DUR;
 
     if (local < slide_dur) {
@@ -1947,7 +3181,7 @@ static void draw_battle_cutin(int f)
        attacker. Damage uses ATK-vs-DEF: 1500 - 2100 = -600. */
     int delta = calc_battle_delta(enemy_summon_id, player_summon_id, 1);
     char dmg[16];
-    snprintf(dmg, sizeof(dmg), "%d", delta);
+    fmt_i32_dec(dmg, (int)sizeof(dmg), delta);
     draw_battle_cutin_event_ex(f, 554,
         enemy_summon_id, player_summon_id,
         ENEMY_CARD_COL, ENEMY_CARD_ROW, 0,
@@ -2021,7 +3255,7 @@ static void draw_result_screen(int f, const char *msg)
     if (local < 0) local = 0;
     int32_t t = q8_smooth_ratio(local, 90);
     Camera cam = lerp_camera(battle_top_camera(), player_camera(), t);
-    render_board(cam);
+    render_board_cached(cam);
     draw_late_field_cards(cam, f);
 
     /* Reference-style finish: the UI leaves the screen first, then only the
@@ -2089,20 +3323,20 @@ static void draw_tally_screen(int f, int won)
 
     draw_text(55, 74, "RESULT", IDX_WHITE, IDX_BLACK);
     draw_text(150, 74, won ? "WIN" : "LOSE", won ? IDX_GOLD_HI : IDX_RED, IDX_BLACK);
-    snprintf(line, sizeof(line), "%d", lp_left);
+    fmt_i32_dec(line, (int)sizeof(line), lp_left);
     draw_text(55, 94, "LP LEFT", IDX_WHITE, IDX_BLACK);
     draw_text(160, 94, line, IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "%d", cards_used);
+    fmt_i32_dec(line, (int)sizeof(line), cards_used);
     draw_text(55, 112, "CARDS USED", IDX_WHITE, IDX_BLACK);
     draw_text(176, 112, line, IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "%d", deck_left);
+    fmt_i32_dec(line, (int)sizeof(line), deck_left);
     draw_text(55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK);
     draw_text(176, 130, line, IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "%d", score);
+    fmt_i32_dec(line, (int)sizeof(line), score);
     draw_text(55, 148, "SCORE", IDX_WHITE, IDX_BLACK);
     draw_text(152, 148, line, IDX_GOLD_HI, IDX_BLACK);
 
-    snprintf(line, sizeof(line), "RANK %c", rank);
+    waifu_str_copy(line, (int)sizeof(line), "RANK "); waifu_str_cat_char(line, (int)sizeof(line), rank);
     draw_centered_text_scaled(170, line, 2, IDX_GOLD_HI, IDX_BLACK);
     draw_text_small(50, 210, "PRESS RUN: RETURN TO TITLE", IDX_WHITE, IDX_BLACK);
 }
@@ -2132,7 +3366,7 @@ static void draw_victory_screen(int f)
         draw_title_background();
         draw_title_logo();
         draw_title_prompt(rf);
-        if (rf < 45) apply_black_dither_fade(q8_ratio(rf, 45));
+        if (rf < 6) apply_black_dither_fade(q8_ratio(rf, 6));
     }
 }
 
@@ -2157,13 +3391,85 @@ static void draw_centered_text_scaled(int y, const char *s, int scale, uint8_t f
     draw_text_scaled(x, y, s, scale, fg, shadow);
 }
 
+#ifdef WAIFU_FM_PCFX
+#define TITLE_PROMPT_DIRTY_X 48
+#define TITLE_PROMPT_DIRTY_Y 188
+#define TITLE_PROMPT_DIRTY_W 160
+#define TITLE_PROMPT_DIRTY_H 14
+#define TITLE_MENU_DIRTY_X 32
+#define TITLE_MENU_DIRTY_Y 120
+#define TITLE_MENU_DIRTY_W 192
+#define TITLE_MENU_DIRTY_H 100
+#define TITLE_MENU_LIST_DIRTY_X 50
+#define TITLE_MENU_LIST_DIRTY_Y 136
+#define TITLE_MENU_LIST_DIRTY_W 156
+#define TITLE_MENU_LIST_DIRTY_H 58
+#define TITLE_MENU_HELP_DIRTY_X 48
+#define TITLE_MENU_HELP_DIRTY_Y 204
+#define TITLE_MENU_HELP_DIRTY_W 168
+#define TITLE_MENU_HELP_DIRTY_H 16
+
+static void restore_title_rect(int x, int y, int w, int h)
+{
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w;
+    int y1 = y + h;
+    const uint8_t *title_img;
+
+    if (w <= 0 || h <= 0) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    title_img = waifu_assets_title_screen_img();
+    if (!title_img) {
+        rect_fill(x0, y0, x1 - x0, y1 - y0, IDX_BLACK);
+        return;
+    }
+
+    for (int yy = y0; yy < y1; ++yy) {
+        copy_u8_fast(framebuffer + yy * W + x0,
+                     title_img + yy * TITLE_SCREEN_W + x0,
+                     x1 - x0);
+    }
+}
+#endif
+
+static void draw_asset_loading_screen(void)
+{
+    char line[40];
+    waifu_fm_use_common_palette();
+    clear_screen(IDX_BLACK);
+    draw_centered_text(102, "LOADING...", IDX_WHITE, IDX_BLACK);
+    waifu_str_copy(line, (int)sizeof(line), waifu_assets_loading_label()); waifu_str_cat_char(line, (int)sizeof(line), ' '); waifu_str_cat_i32(line, (int)sizeof(line), waifu_assets_loading_percent()); waifu_str_cat_char(line, (int)sizeof(line), '%');
+    draw_centered_text(119, line, IDX_UI_LIGHT, IDX_BLACK);
+}
+
+static void draw_transition_black_hold_frame(void)
+{
+    /* Terminal title/menu fade frame.  Use the common 8bpp path and a full
+       black framebuffer before entering loading or battle.  On PC-FX this
+       prevents the old 16M title KING surface from being re-presented for one
+       frame while the video backend changes modes. */
+    waifu_fm_use_common_palette();
+    clear_screen(IDX_BLACK);
+    frame_mark_full_dirty();
+}
+
 static void draw_title_background(void)
 {
     /* The title/menu screen uses its own 256-color palette.  Text and UI
        routines keep using the normal IDX_* slots; those slots are preserved
        in title_screen_palette_rgb so the text remains visually identical. */
     waifu_fm_use_title_palette();
-    draw_card_raw(title_screen_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, W, H);
+    {
+        const uint8_t *title_img = waifu_assets_title_screen_img();
+        if (title_img) draw_card_raw(title_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, W, H);
+        else clear_screen(IDX_BLACK);
+    }
 }
 
 static void draw_title_logo(void)
@@ -2179,12 +3485,10 @@ static void draw_title_prompt(int f)
     }
 }
 
-static void draw_menu_screen(int selected)
+static void draw_menu_overlay(int selected)
 {
     int has_save = story_save_exists();
     const char *help = "RANDOM DECK / FREE DUEL";
-    draw_title_background();
-    draw_title_logo();
     rect_fill(39, 124, 178, 75, IDX_BLACK);
     draw_panel_rect(41, 126, 174, 71, IDX_UI_DARK);
     draw_text(72, 139, "STORY MODE", selected == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
@@ -2197,6 +3501,64 @@ static void draw_menu_screen(int selected)
     draw_text_small(55, 207, help, has_save || selected != 2 ? IDX_WHITE : IDX_RED, IDX_BLACK);
 }
 
+static void draw_menu_screen(int selected)
+{
+    draw_title_background();
+    draw_title_logo();
+    draw_menu_overlay(selected);
+}
+
+#ifdef WAIFU_FM_PCFX
+static void draw_title_full_event(int f)
+{
+    (void)f;
+    clear_screen(IDX_BLACK);
+    draw_title_background();
+    draw_title_logo();
+    /* PC-FX keeps the mutable prompt/menu on the VDC overlay layer.
+       Do not burn it into the 16M KING surface; that surface must remain
+       static so blink/menu events cannot corrupt YUV KRAM. */
+    frame_mark_full_dirty();
+}
+
+static void draw_title_prompt_event(int f)
+{
+    (void)f;
+    /* VDC overlay handles prompt blinking; KING 16M is untouched. */
+}
+
+static void draw_menu_screen_event(int selected, int full_redraw)
+{
+    if (full_redraw) {
+        draw_title_full_event(0);
+    } else {
+        waifu_fm_use_title_palette();
+    }
+    /* Menu text is a VDC overlay.  The 16M KING page stays unchanged,
+       preventing the pink intermediate YUV writes seen during cursor moves. */
+    waifu_pcfx_video_overlay_menu(selected, story_save_exists());
+}
+#endif
+
+static void draw_menu_fadeout_event(int selected, int f)
+{
+#ifdef WAIFU_FM_PCFX
+    /* The VDC dither fade covers the title/menu cleanly, but the last few
+       near-black dither frames can expose a one-frame bottom-edge artifact on
+       the hardware/emulator mixer while switching away from 16M KING mode.
+       Finish the fade under an opaque common black frame before requesting
+       cards/story assets; no title pixels are presented after this point. */
+    if (f >= WAIFU_TITLE_FADE_FRAMES - 42) {
+        draw_transition_black_hold_frame();
+        return;
+    }
+    draw_menu_screen_event(selected, f <= 0);
+#else
+    draw_menu_screen(selected);
+#endif
+    apply_black_dither_fade(Q8_ONE - q8_ratio(f, WAIFU_TITLE_FADE_FRAMES));
+}
+
 static void render_title_sequence(int f)
 {
     clear_screen(IDX_BLACK);
@@ -2204,15 +3566,15 @@ static void render_title_sequence(int f)
         draw_title_background();
         draw_title_logo();
         draw_title_prompt(f);
-        if (f < 30) apply_black_dither_fade(q8_ratio(f, 30));
-        else if (f >= 138) apply_black_dither_fade(Q8_ONE - q8_ratio(f - 138, 30));
+        if (f < WAIFU_TITLE_FADE_FRAMES) apply_black_dither_fade(q8_ratio(f, WAIFU_TITLE_FADE_FRAMES));
+        else if (f >= 168 - WAIFU_TITLE_FADE_FRAMES) apply_black_dither_fade(Q8_ONE - q8_ratio(f - (168 - WAIFU_TITLE_FADE_FRAMES), WAIFU_TITLE_FADE_FRAMES));
     } else if (f < 245) {
         int sel = (f < 220) ? 0 : 1;
         draw_menu_screen(sel);
-        if (f < 198) apply_black_dither_fade(q8_ratio(f - 168, 30));
+        if (f < 168 + WAIFU_TITLE_FADE_FRAMES) apply_black_dither_fade(q8_ratio(f - 168, WAIFU_TITLE_FADE_FRAMES));
     } else if (f < 285) {
         draw_menu_screen(1);
-        apply_black_dither_fade(Q8_ONE - q8_ratio(f - 245, 40));
+        apply_black_dither_fade(Q8_ONE - q8_ratio(f - 275, 10));
     } else {
         clear_screen(IDX_BLACK);
     }
@@ -2263,20 +3625,20 @@ static void draw_card_preview_screen(int f)
     draw_stars_line(tx, y, card_star_count(id)); y += 13;
 
     char line[64];
-    snprintf(line, sizeof(line), "%s / %s", waifu_card_attr[id], waifu_card_tribe[id]);
+    fmt_join2(line, (int)sizeof(line), waifu_card_attr[id], " / ", waifu_card_tribe[id]);
     draw_wrapped_text_small(tx, y, line, 20, IDX_WHITE, IDX_BLACK); y += 20;
 
     draw_text_small(tx, y, "LORE", IDX_GOLD_HI, IDX_BLACK); y += 11;
     draw_wrapped_text_small(tx, y, "A wandering duel maiden", 20, IDX_WHITE, IDX_BLACK); y += 18;
-    snprintf(line, sizeof(line), "of %s power. Her", waifu_card_attr[id]);
+    waifu_str_copy(line, (int)sizeof(line), "of "); waifu_str_cat(line, (int)sizeof(line), waifu_card_attr[id]); waifu_str_cat(line, (int)sizeof(line), " power. Her");
     draw_wrapped_text_small(tx, y, line, 20, IDX_WHITE, IDX_BLACK); y += 18;
-    snprintf(line, sizeof(line), "%s style breaks", waifu_card_tribe[id]);
+    waifu_str_copy(line, (int)sizeof(line), waifu_card_tribe[id]); waifu_str_cat(line, (int)sizeof(line), " style breaks");
     draw_wrapped_text_small(tx, y, line, 20, IDX_WHITE, IDX_BLACK); y += 18;
     draw_wrapped_text_small(tx, y, "weak field lines.", 20, IDX_WHITE, IDX_BLACK); y += 18;
 
-    snprintf(line, sizeof(line), "ATK %u", (unsigned)waifu_card_atk[id]);
+    fmt_label_u32(line, (int)sizeof(line), "ATK", (unsigned)waifu_card_atk[id]);
     draw_text_small(tx, 197, line, IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "DEF %u", (unsigned)waifu_card_def[id]);
+    fmt_label_u32(line, (int)sizeof(line), "DEF", (unsigned)waifu_card_def[id]);
     draw_text_small(tx, 209, line, IDX_GOLD_HI, IDX_BLACK);
     if (((local / 16) & 1) == 0) draw_text_small(74, 223, "B: BACK", IDX_WHITE, IDX_BLACK);
 
@@ -2291,7 +3653,7 @@ static void render_duel_opening_frame(int f)
     int lf = f - 16;
     int32_t ft = q8_ratio(lf, DUEL_OPENING_END - 16);
     Camera cam = opening_camera(18 + q8_to_int(q8_mul(Q8_FROM_INT(66), q8_smoothstep(ft))));
-    render_board(cam);
+    render_board_cached(cam);
     /* Longer fade-in: the field slowly resolves out of black before the hand UI. */
     apply_black_dither_fade(q8_smoothstep(ft));
     if (f > 40) draw_hud();
@@ -2395,7 +3757,7 @@ static void render_late_match_frame(int f)
         return;
     }
 
-    render_board(cam);
+    render_board_cached(cam);
     draw_late_field_cards(cam, f);
 
     if (f >= 505 && f < 545) {
@@ -2458,7 +3820,7 @@ static void render_duel_script_frame(int f)
     if (f >= 554 && f < 900) { draw_battle_cutin(f); return; }
     if (f >= 900 && f < 940) {
         Camera cam = enemy_battle_top_camera();
-        render_board(cam);
+        render_board_cached(cam);
         draw_board_card(cam, PLAYER_CARD_COL, PLAYER_CARD_ROW, player_summon_id, 0);
         draw_zone_cursor(cam, PLAYER_CARD_COL, PLAYER_CARD_ROW);
         draw_hud();
@@ -2531,7 +3893,7 @@ static void render_duel_script_frame(int f)
         cam = enemy_battle_top_camera(); show_player_card = 1; show_enemy_card = 1; top_mode = 1;
     }
 
-    render_board(cam);
+    render_board_cached(cam);
 
     if (show_player_card) draw_board_card(cam, PLAYER_CARD_COL, PLAYER_CARD_ROW, player_summon_id, 1);
     if (show_enemy_card) draw_board_card(cam, ENEMY_CARD_COL, ENEMY_CARD_ROW, enemy_summon_id, 0);
@@ -2580,14 +3942,14 @@ static void render_duel_script_frame(int f)
 static void ensure_dir(const char *out_dir)
 {
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", out_dir);
+    waifu_str_copy(cmd, (int)sizeof(cmd), "mkdir -p '"); waifu_str_cat(cmd, (int)sizeof(cmd), out_dir); waifu_str_cat_char(cmd, (int)sizeof(cmd), '\'');
     system(cmd);
 }
 
 static void write_frame_png(const char *out_dir, int f)
 {
     char path[512];
-    snprintf(path, sizeof(path), "%s/frame_%05d.png", out_dir, f);
+    waifu_str_copy(path, (int)sizeof(path), out_dir); waifu_str_cat(path, (int)sizeof(path), "/frame_"); waifu_str_cat_u32_zw(path, (int)sizeof(path), (unsigned)f, 5); waifu_str_cat(path, (int)sizeof(path), ".png");
     cfx_write_png8(path, framebuffer, W, H, waifu_fm_palette_rgb());
 }
 
@@ -2598,7 +3960,7 @@ static void write_showcase(const char *out_dir)
     ensure_dir(out_dir);
     for (size_t i = 0; i < sizeof(frames)/sizeof(frames[0]); ++i) {
         render_frame(frames[i]);
-        snprintf(path, sizeof(path), "%s/show_%02zu_f%03d.png", out_dir, i, frames[i]);
+        waifu_str_copy(path, (int)sizeof(path), out_dir); waifu_str_cat(path, (int)sizeof(path), "/show_"); waifu_str_cat_u32_z2(path, (int)sizeof(path), (unsigned)i); waifu_str_cat(path, (int)sizeof(path), "_f"); waifu_str_cat_u32_zw(path, (int)sizeof(path), (unsigned)frames[i], 3); waifu_str_cat(path, (int)sizeof(path), ".png");
         cfx_write_png8(path, framebuffer, W, H, waifu_fm_palette_rgb());
     }
 }
@@ -2613,7 +3975,10 @@ static void write_showcase(const char *out_dir)
 
 typedef enum WaifuInteractiveState {
     WAIFU_I_TITLE = 0,
+    WAIFU_I_TITLE_TO_MENU,
     WAIFU_I_MENU,
+    WAIFU_I_MENU_TO_STORY,
+    WAIFU_I_MENU_TO_BATTLE,
     WAIFU_I_STORY_NAME,
     WAIFU_I_STORY_NAME_TO_INTRO,
     WAIFU_I_STORY_INTRO,
@@ -2626,7 +3991,8 @@ typedef enum WaifuInteractiveState {
     WAIFU_I_STORY_PLAZA,
     WAIFU_I_DECK_EDITOR,
     WAIFU_I_DECK_PREVIEW,
-    WAIFU_I_BATTLE
+    WAIFU_I_BATTLE,
+    WAIFU_I_LOADING_ASSETS
 } WaifuInteractiveState;
 
 typedef enum WaifuBattlePhase {
@@ -2659,13 +4025,19 @@ typedef enum WaifuBattlePhase {
 #define FUSION_MAX_MATERIALS (I_HAND + 1)
 #define FUSION_FIELD_SLOT (-2)
 #define CARD_NONE (-1)
+#ifdef WAIFU_FM_PCFX
+#define BATTLE_ANIM_FRAMES 48
+#define DIRECT_ATTACK_ANIM_FRAMES 36
+#else
 #define BATTLE_ANIM_FRAMES 196
 #define DIRECT_ATTACK_ANIM_FRAMES 108
+#endif
 
 static int g_api_initialized = 0;
 static WaifuInteractiveState g_i_state = WAIFU_I_TITLE;
+static WaifuInteractiveState g_i_loading_target = WAIFU_I_TITLE;
 static int g_i_frame = 0;
-static int g_i_menu_selected = 1;
+static int g_i_menu_selected = 0;
 static WaifuFmInput g_prev_input;
 
 static WaifuBattlePhase g_b_phase = IB_OPENING;
@@ -2776,6 +4148,64 @@ static int g_story_strong_card = 37;
 static int g_story_weak_card = 29;
 static int g_story_equip_count = 0;
 static int g_story_support_count = 0;
+
+/* Static PC-FX battle views are far more expensive than cursor/text overlays.
+   Cache board+field-cards+HUD composites and keep card-check's large art panel
+   stable; volatile cursor/help text is drawn after restoring the cached pixels. */
+typedef struct WaifuBattleBaseCache {
+    int valid;
+    Camera cam;
+    uint32_t key;
+    uint8_t pixels[W * H];
+} WaifuBattleBaseCache;
+
+static WaifuBattleBaseCache g_b_base_cache;
+static uint8_t g_card_preview_cache[W * H];
+static int g_card_preview_cache_valid = 0;
+static int g_card_preview_cache_id = CARD_NONE;
+
+static void invalidate_battle_composite_cache(void)
+{
+    g_b_base_cache.valid = 0;
+    g_card_preview_cache_valid = 0;
+    g_card_preview_cache_id = CARD_NONE;
+}
+
+static uint32_t waifu_hash_step_u32(uint32_t h, uint32_t v)
+{
+    h ^= v;
+    h *= 16777619u;
+    return h;
+}
+
+static uint32_t battle_base_visual_key(void)
+{
+    uint32_t h = 2166136261u;
+    int i;
+    h = waifu_hash_step_u32(h, (uint32_t)g_you_lp);
+    h = waifu_hash_step_u32(h, (uint32_t)g_com_lp);
+    h = waifu_hash_step_u32(h, (uint32_t)g_i_player_deck_left);
+    h = waifu_hash_step_u32(h, (uint32_t)g_i_com_deck_left);
+    for (i = 0; i < I_FIELD; ++i) {
+        h = waifu_hash_step_u32(h, (uint32_t)(g_i_com_equip_field[i] + 2));
+        h = waifu_hash_step_u32(h, (uint32_t)(g_i_com_equip_target[i] + 2));
+        h = waifu_hash_step_u32(h, (uint32_t)(g_i_com_field[i] + 2));
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_com_faceup[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_com_defense[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_com_attacked[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_com_atk_bonus[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_com_def_bonus[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)(g_i_player_field[i] + 2));
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_player_faceup[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_player_defense[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_player_attacked[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_player_atk_bonus[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)g_i_player_def_bonus[i]);
+        h = waifu_hash_step_u32(h, (uint32_t)(g_i_player_equip_field[i] + 2));
+        h = waifu_hash_step_u32(h, (uint32_t)(g_i_player_equip_target[i] + 2));
+    }
+    return h;
+}
 
 #define STORY_STORAGE_SIZE 64
 #define DECK_GRID_COLS 6
@@ -3388,7 +4818,7 @@ static void draw_bottom_empty_field(const char *mode)
     rect_fill(0, base, 256, 35, IDX_UI_TEAL);
     hline(0,255,base,IDX_WHITE); hline(0,255,base+1,IDX_UI_LIGHT); hline(0,255,base+2,IDX_DIM);
     for (int y = base+4; y < base+35; y += 3) hline(0,255,y,IDX_UI_TEAL2);
-    snprintf(line, sizeof(line), "%s C%d R%d", mode ? mode : "FIELD", g_b_top_col + 1, g_b_top_row + 1);
+    waifu_str_copy(line, (int)sizeof(line), mode ? mode : "FIELD"); waifu_str_cat(line, (int)sizeof(line), " C"); waifu_str_cat_i32(line, (int)sizeof(line), g_b_top_col + 1); waifu_str_cat(line, (int)sizeof(line), " R"); waifu_str_cat_i32(line, (int)sizeof(line), g_b_top_row + 1);
     draw_text(6, base+6, line, IDX_DIM, IDX_BLACK);
     draw_text_small(6, base+21, "EMPTY ZONE", IDX_WHITE, IDX_BLACK);
 }
@@ -3547,10 +4977,18 @@ static void clear_battle_snapshot(void)
     g_b_direct_damage = 0;
 }
 
+static void update_music_for_current_state(void);
+
 static void set_battle_phase(WaifuBattlePhase phase)
 {
+    WaifuBattlePhase prev = g_b_phase;
     g_b_phase = phase;
     g_b_phase_frame = 0;
+    if (phase != prev) {
+        if (phase == IB_TURN_TO_COM || phase == IB_TURN_TO_PLAYER) waifu_sound_play(WAIFU_SOUND_TURN_PASSED);
+        if (phase == IB_RESULT && g_b_result < 0) waifu_sound_play(WAIFU_SOUND_YOU_LOST);
+    }
+    update_music_for_current_state();
 }
 
 static int story_hash_name(void)
@@ -3891,6 +5329,27 @@ static void award_story_win_drop(void)
     append_card_to(g_story_storage, &g_story_storage_count, STORY_STORAGE_SIZE, story_reward_drop_card());
 }
 
+#ifdef WAIFU_FM_PCFX
+/* PC-FX save/load is intentionally stubbed. Durable backup-RAM/CD-block
+   handling should be implemented as a platform service later; for now the
+   console build does not claim that story saves exist or were written. */
+static int story_save_exists(void)
+{
+    return 0;
+}
+
+static int write_story_save(void)
+{
+    g_story_save_status = -1;
+    return 0;
+}
+
+static int read_story_save(void)
+{
+    return 0;
+}
+#else
+
 static int story_save_exists(void)
 {
     FILE *fp = fopen(STORY_SAVE_PATH, "r");
@@ -3977,6 +5436,7 @@ static int read_story_save(void)
     init_battle_state();
     return 1;
 }
+#endif
 
 static int load_story_to_map(void)
 {
@@ -4017,15 +5477,156 @@ static const char *story_opponent_name(void)
     return story_opponent_info()->name;
 }
 
-static const char *story_opponent_title(void)
-{
-    return story_opponent_info()->title;
-}
-
 static int story_opponent_is_boss(void)
 {
     return story_opponent_info()->boss;
 }
+
+static void request_story_duel_assets(void)
+{
+    waifu_assets_request_story_duel(story_opponent_info()->portrait_id);
+}
+
+static void enter_state_after_assets(WaifuInteractiveState target)
+{
+    g_i_loading_target = target;
+    if (waifu_assets_needs_loading_screen()) {
+        g_i_state = WAIFU_I_LOADING_ASSETS;
+    } else {
+        g_i_state = target;
+    }
+    g_i_frame = -1;
+}
+
+static void enter_title_after_assets(void)
+{
+    waifu_assets_request_title();
+    enter_state_after_assets(WAIFU_I_TITLE);
+}
+
+static void enter_menu_after_assets(void)
+{
+    /* Start on STORY MODE so the standard verification path RUN, DOWN, A
+       deterministically enters BATTLE MODE. */
+    g_i_menu_selected = 0;
+    waifu_assets_request_title();
+    enter_state_after_assets(WAIFU_I_MENU);
+}
+
+static void enter_title_to_menu_fade(void)
+{
+    /* RUN/A on the title should reveal the title-backed menu immediately.
+       Fade-to-black is reserved for actually leaving the title/menu scene
+       into story or battle content. */
+    enter_menu_after_assets();
+}
+
+static void enter_menu_to_story_fade(void)
+{
+    g_i_state = WAIFU_I_MENU_TO_STORY;
+    g_i_frame = -1;
+}
+
+static void enter_menu_to_battle_fade(void)
+{
+    g_i_state = WAIFU_I_MENU_TO_BATTLE;
+    g_i_frame = -1;
+}
+
+static void enter_story_intro_after_assets(void)
+{
+    waifu_assets_request_story_intro();
+    enter_state_after_assets(WAIFU_I_STORY_INTRO);
+}
+
+static void enter_story_plaza_after_assets(void)
+{
+    request_story_duel_assets();
+    enter_state_after_assets(WAIFU_I_STORY_PLAZA);
+}
+
+static void enter_deck_editor_after_assets(void)
+{
+    waifu_assets_request_cards();
+    enter_state_after_assets(WAIFU_I_DECK_EDITOR);
+}
+
+static void add_battle_prewarm_id(int *ids, int *count, int cap, int card_id)
+{
+    if (!ids || !count || *count >= cap) return;
+    if (card_id < 0) return;
+    for (int i = 0; i < *count; ++i) {
+        if (ids[i] == card_id) return;
+    }
+    ids[(*count)++] = card_id;
+}
+
+static void request_battle_cards_for_known_decks(void)
+{
+    int ids[(I_HAND * 2) + (WAIFU_DECK_SIZE * 2)];
+    int count = 0;
+    int cap = (int)(sizeof(ids) / sizeof(ids[0]));
+
+    /* These decks/hands are already fixed by init_battle_state() or
+       init_story_battle_state().  Stage likely full-art reveals during the
+       black loading screen instead of accepting a CD/SCSI miss during the flip
+       animation.  Current hands are highest priority, then near-future draw
+       order from each deck. */
+    for (int i = 0; i < I_HAND; ++i) add_battle_prewarm_id(ids, &count, cap, g_i_player_hand[i]);
+    for (int i = 0; i < I_HAND; ++i) add_battle_prewarm_id(ids, &count, cap, g_i_com_hand[i]);
+    for (int i = g_i_player_deck.pos; i < g_i_player_deck.count; ++i) add_battle_prewarm_id(ids, &count, cap, g_i_player_deck.cards[i]);
+    for (int i = g_i_com_deck.pos; i < g_i_com_deck.count; ++i) add_battle_prewarm_id(ids, &count, cap, g_i_com_deck.cards[i]);
+
+    waifu_assets_request_cards_for_list(ids, count);
+}
+
+static void enter_battle_after_assets(void)
+{
+    request_battle_cards_for_known_decks();
+    enter_state_after_assets(WAIFU_I_BATTLE);
+}
+
+static WaifuMusicTrack story_battle_music_track(void)
+{
+    if (!g_story_battle_active) return WAIFU_MUSIC_RANDOM_BATTLE;
+    if (g_story_duel_index >= STORY_MAX_DUELS - 1) return WAIFU_MUSIC_FINAL_BOSS;
+    if (story_opponent_is_boss() || g_story_duel_index == STORY_MAX_DUELS - 2) return WAIFU_MUSIC_BOSS;
+    return WAIFU_MUSIC_RANDOM_BATTLE;
+}
+
+static WaifuMusicTrack music_track_for_current_state(void)
+{
+    switch (g_i_state) {
+    case WAIFU_I_LOADING_ASSETS:
+        return WAIFU_MUSIC_NONE;
+    case WAIFU_I_TITLE:
+    case WAIFU_I_TITLE_TO_MENU:
+    case WAIFU_I_MENU:
+    case WAIFU_I_MENU_TO_STORY:
+    case WAIFU_I_MENU_TO_BATTLE:
+        return WAIFU_MUSIC_TITLE;
+    case WAIFU_I_STORY_NAME:
+    case WAIFU_I_STORY_NAME_TO_INTRO:
+    case WAIFU_I_STORY_INTRO:
+    case WAIFU_I_STORY_FIRE:
+    case WAIFU_I_STORY_FIRE_TO_DECK:
+        return WAIFU_MUSIC_OPENING_DREAM;
+    case WAIFU_I_DECK_EDITOR:
+    case WAIFU_I_DECK_PREVIEW:
+        return WAIFU_MUSIC_DECK_EDITOR;
+    case WAIFU_I_BATTLE:
+        if (g_b_phase == IB_RESULT || g_b_phase == IB_TALLY) return WAIFU_MUSIC_RESULTS;
+        return story_battle_music_track();
+    default:
+        return WAIFU_MUSIC_NONE;
+    }
+}
+
+static void update_music_for_current_state(void)
+{
+    waifu_sound_set_music(music_track_for_current_state());
+}
+
 
 #ifdef WAIFU_FM_HEADLESS_TESTS
 static int next_headless_lcg_draw_id(void)
@@ -4177,6 +5778,7 @@ static void init_battle_state(void)
     g_b_player_monster_played_this_turn = 0;
     g_b_com_monster_played_this_turn = 0;
     g_b_player_fused_this_turn = 0;
+    invalidate_battle_composite_cache();
 }
 
 static void init_story_battle_state(void)
@@ -4228,6 +5830,7 @@ static void draw_interactive_field_cards(Camera cam)
 
 static void draw_interactive_player_hand(int f, int selected, int yoff, int suppress_cursor)
 {
+    PROFILE_HAND_BEGIN();
     int i;
     int y = 154 + yoff;
     for (i = 0; i < I_HAND; ++i) {
@@ -4238,8 +5841,8 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
             x = lerp_i(282, x0, t);
         }
         if (g_i_player_used[i]) continue;
-        draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
-                                 is_monster_card(g_i_player_hand[i]) && !player_can_place_monster());
+        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
+                                 is_monster_card(g_i_player_hand[i]) && !player_can_place_monster()));
         if (!suppress_cursor && i == selected) draw_red_cursor(x, y, 38, 50);
         if (!suppress_cursor) {
             int order = player_fusion_order_for_slot(i);
@@ -4253,10 +5856,12 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
             }
         }
     }
+    PROFILE_HAND_END();
 }
 
 static void draw_interactive_com_hand(int f, int selected, int yoff)
 {
+    PROFILE_HAND_BEGIN();
     int i;
     /* SDL/live play uses the same convention as the player view: the active
        duelist's hand is presented along the lower edge. Earlier SDL builds put
@@ -4267,41 +5872,54 @@ static void draw_interactive_com_hand(int f, int selected, int yoff)
     for (i = 0; i < I_HAND; ++i) {
         int x0 = hand_final_x(i);
         int x = x0;
-        if (f < 60) {
-            int32_t t = q8_smooth_ratio(f - i * 5, 18);
+        if (f < WAIFU_HAND_INTRO_FRAMES) {
+            int delay = (WAIFU_HAND_INTRO_FRAMES * i) / 12;
+            int dur = WAIFU_HAND_INTRO_FRAMES / 3;
+            if (dur < 4) dur = 4;
+            int32_t t = q8_smooth_ratio(f - delay, dur);
             x = lerp_i(282, x0, t);
         }
         if (g_i_com_used[i]) continue;
-        draw_hand_card_sprite(g_i_com_hand[i], x, y, 38, 50, 1);
+        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite(g_i_com_hand[i], x, y, 38, 50, 1));
         if (i == selected) draw_red_cursor(x, y, 38, 50);
     }
+    PROFILE_HAND_END();
+}
+
+static void draw_interactive_base(Camera cam)
+{
+    uint32_t key = battle_base_visual_key();
+    if (g_b_base_cache.valid && g_b_base_cache.key == key && camera_equal(g_b_base_cache.cam, cam)) {
+        copy_u8_fast(framebuffer, g_b_base_cache.pixels, (int)sizeof(g_b_base_cache.pixels));
+        return;
+    }
+
+    render_board_cached(cam);
+    draw_interactive_field_cards(cam);
+    draw_hud();
+
+    copy_u8_fast(g_b_base_cache.pixels, framebuffer, (int)sizeof(g_b_base_cache.pixels));
+    g_b_base_cache.cam = cam;
+    g_b_base_cache.key = key;
+    g_b_base_cache.valid = 1;
 }
 
 static void draw_interactive_common(Camera cam, int bottom_card, const char *bottom_mode)
 {
-    render_board(cam);
-    draw_interactive_field_cards(cam);
-    draw_hud();
+    draw_interactive_base(cam);
     if (bottom_card >= 0 && (!bottom_mode || strcmp(bottom_mode, "COM") != 0)) {
         draw_bottom_info(bottom_card, bottom_mode ? bottom_mode : "CARD");
     }
 }
 
-static void draw_interactive_base(Camera cam)
-{
-    render_board(cam);
-    draw_interactive_field_cards(cam);
-    draw_hud();
-}
-
 static void draw_preview_stat_line(int x, int y, const char *label, unsigned value)
 {
     char line[32];
-    snprintf(line, sizeof(line), "%s %u", label, value);
+    fmt_label_u32(line, (int)sizeof(line), label, value);
     draw_text_small(x, y, line, IDX_GOLD_HI, IDX_BLACK);
 }
 
-static void draw_interactive_card_preview(int card_id, int f)
+static void render_interactive_card_preview_static(int card_id)
 {
     int tx = 136;
     int maxw = 112;
@@ -4310,14 +5928,11 @@ static void draw_interactive_card_preview(int card_id, int f)
     char line[128];
     clear_screen(IDX_BLACK);
 
-    /* Card-check/detail view: keep the full-size card display on the left,
-       while wrapping the right column by pixel width so names, type lines and
-       lore stay inside the 256x240 screen. */
     draw_panel_rect(2, 10, 252, 218, IDX_UI_DARK);
 
     if (is_support_card(card_id)) {
         rect_fill(11, 40, 120, 160, IDX_BLACK);
-        draw_card_raw(waifu_support_face, WAIFU_CARD_W, WAIFU_CARD_H, 8, 36, 120, 160);
+        draw_support_big_art_scaled(12, 42, 112, 112);
         rect_outline(7, 35, 122, 162, IDX_GOLD_HI);
         draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
         lines = draw_wrapped_text_small_box(tx, y, maxw, 3, 10, support_card_name(card_id), IDX_WHITE, IDX_BLACK);
@@ -4327,7 +5942,6 @@ static void draw_interactive_card_preview(int card_id, int f)
         y += lines * 10 + 7;
         draw_text_small(tx, y, "EFFECT", IDX_GOLD_HI, IDX_BLACK); y += 11;
         draw_wrapped_text_small_box(tx, y, maxw, 6, 10, support_card_effect(card_id), IDX_WHITE, IDX_BLACK);
-        if (((f / 16) & 1) == 0) draw_text_small(74, 218, "B: BACK", IDX_WHITE, IDX_BLACK);
         return;
     }
 
@@ -4339,20 +5953,46 @@ static void draw_interactive_card_preview(int card_id, int f)
     y += lines * 10 + 6;
     draw_stars_line(tx, y, card_star_count(card_id)); y += 13;
 
-    snprintf(line, sizeof(line), "%s / %s", waifu_card_attr[card_id], waifu_card_tribe[card_id]);
+    fmt_join2(line, (int)sizeof(line), waifu_card_attr[card_id], " / ", waifu_card_tribe[card_id]);
     lines = draw_wrapped_text_small_box(tx, y, maxw, 3, 10, line, IDX_WHITE, IDX_BLACK);
     y += lines * 10 + 7;
 
     draw_text_small(tx, y, "LORE", IDX_GOLD_HI, IDX_BLACK); y += 11;
-    snprintf(line, sizeof(line), "A duel maiden whose %s force shapes the shattered field.", waifu_card_attr[card_id]);
+    waifu_str_copy(line, (int)sizeof(line), "A duel maiden whose "); waifu_str_cat(line, (int)sizeof(line), waifu_card_attr[card_id]); waifu_str_cat(line, (int)sizeof(line), " force shapes the shattered field.");
     lines = draw_wrapped_text_small_box(tx, y, maxw, 5, 10, line, IDX_WHITE, IDX_BLACK);
     y += lines * 10 + 7;
 
     if (y < 194) y = 194;
     draw_preview_stat_line(tx, y, "ATK", (unsigned)waifu_card_atk[card_id]);
     draw_preview_stat_line(tx, y + 12, "DEF", (unsigned)waifu_card_def[card_id]);
+}
+
+static void draw_interactive_card_preview(int card_id, int f)
+{
+    waifu_fm_use_common_palette();
+    if (!g_card_preview_cache_valid || g_card_preview_cache_id != card_id) {
+        render_interactive_card_preview_static(card_id);
+        copy_u8_fast(g_card_preview_cache, framebuffer, (int)sizeof(g_card_preview_cache));
+        g_card_preview_cache_valid = 1;
+        g_card_preview_cache_id = card_id;
+    } else {
+        copy_u8_fast(framebuffer, g_card_preview_cache, (int)sizeof(g_card_preview_cache));
+#if defined(WAIFU_FM_PCFX)
+        /* The cached framebuffer copy skips the original draw_big_art_* call.
+           Re-emit the direct-big-art draw marker so the PC-FX presenter keeps
+           both KING pages' block-aligned card-art regions coherent without
+           re-rendering or reloading the static card-check panel. */
+        if (is_support_card(card_id)) {
+            waifu_assets_note_big_art_draw(WAIFU_BIG_ART_SUPPORT, -1, 12, 42);
+        } else if (is_monster_card(card_id)) {
+            waifu_assets_note_big_art_draw(WAIFU_BIG_ART_CARD, card_id, 12, 42);
+        }
+#endif
+    }
+
     if (((f / 16) & 1) == 0) draw_text_small(74, 218, "B: BACK", IDX_WHITE, IDX_BLACK);
 }
+
 
 
 static int defender_is_passive_position(int defender_owner, int slot)
@@ -4469,7 +6109,13 @@ static void prepare_battle(int attacker_owner, int attacker_slot, int defender_s
     g_b_battle_damage = bc.damage;
     g_b_battle_damage_owner = bc.damage_owner;
     g_b_battle_outcome = bc.outcome;
-    snprintf(g_b_damage_text, sizeof(g_b_damage_text), "%d", bc.damage);
+    fmt_i32_dec(g_b_damage_text, (int)sizeof(g_b_damage_text), bc.damage);
+    /* Pull big art into the small CD/SCSI cache before the battle cut-in starts.
+       This keeps the reveal animation event-driven and prevents the first
+       face-up frame from stalling on an art cache miss. */
+    (void)card_big_art_ptr(atk_id);
+    (void)card_big_art_ptr(def_id);
+    waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
     set_battle_phase(attacker_owner == 0 ? IB_PLAYER_BATTLE : IB_COM_BATTLE);
 }
 
@@ -4507,8 +6153,10 @@ static void prepare_direct_attack(int attacker_owner, int attacker_slot)
     g_b_battle_atk_back = attacker_owner == 0 ? !g_i_player_faceup[attacker_slot] : !g_i_com_faceup[attacker_slot];
     g_b_battle_def_back = 0;
     g_b_direct_damage = dmg;
-    snprintf(g_b_damage_text, sizeof(g_b_damage_text), "-%d", dmg);
+    waifu_str_copy(g_b_damage_text, (int)sizeof(g_b_damage_text), "-"); waifu_str_cat_i32(g_b_damage_text, (int)sizeof(g_b_damage_text), dmg);
     g_b_battle_outcome = BATTLE_DIRECT_ATTACK;
+    (void)card_big_art_ptr(atk_id);
+    waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
     set_battle_phase(attacker_owner == 0 ? IB_PLAYER_BATTLE : IB_COM_BATTLE);
 }
 
@@ -4562,10 +6210,13 @@ static void resolve_battle(void)
         reveal_monster_slot(defender_owner, g_b_battle_def_slot);
 
         if (g_b_battle_outcome == BATTLE_DESTROY_DEFENDER) {
+            waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
             clear_monster_slot(defender_owner, g_b_battle_def_slot);
         } else if (g_b_battle_outcome == BATTLE_DESTROY_ATTACKER) {
+            waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
             clear_monster_slot(attacker_owner, g_b_battle_atk_slot);
         } else if (g_b_battle_outcome == BATTLE_DESTROY_BOTH) {
+            waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
             clear_monster_slot(attacker_owner, g_b_battle_atk_slot);
             clear_monster_slot(defender_owner, g_b_battle_def_slot);
         }
@@ -4583,7 +6234,7 @@ static void resolve_battle(void)
 static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row, int atk_back)
 {
     int local = f;
-    const int flip_dur = 48;
+    const int flip_dur = WAIFU_BATTLE_FLIP_FRAMES;
     /* Match the normal monster-battle card lanes. The previous direct-attack
        lanes were shifted inward, so the attacker appeared too far right/left
        before and after the lunge. */
@@ -4593,32 +6244,38 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     int target_y = 36;
     int card_x = ax;
     clear_screen(IDX_BLACK);
-    if (local < 16) {
+    if (local < WAIFU_BATTLE_PRELUDE_FRAMES) {
         Camera cam = side_battle_camera(atk_row);
-        render_board(cam);
-        draw_interactive_field_cards(cam);
+        draw_interactive_base(cam);
         draw_zone_cursor(cam, atk_col, atk_row);
-        draw_hud();
         return;
     }
-    local -= 16;
+    local -= WAIFU_BATTLE_PRELUDE_FRAMES;
     if (atk_back && local < flip_dur) {
         draw_big_battle_card_flip(atk_id, ax, ay, local, flip_dur);
         return;
     }
     if (atk_back) local -= flip_dur;
-    if (local < 24) {
-        int32_t e = q8_smooth_ratio(local, 24);
+    if (local < WAIFU_DIRECT_SLIDE_FRAMES) {
+        int32_t e = q8_smooth_ratio(local, WAIFU_DIRECT_SLIDE_FRAMES);
         card_x = lerp_i((g_b_battle_atk_owner == 0) ? -128 : 264, ax, e);
-    } else if (local < 64) {
-        int32_t t = q8_ratio(local - 24, 40);
+    } else if (local < WAIFU_DIRECT_SLIDE_FRAMES + WAIFU_DIRECT_LUNGE_FRAMES) {
+        int32_t t = q8_ratio(local - WAIFU_DIRECT_SLIDE_FRAMES, WAIFU_DIRECT_LUNGE_FRAMES);
         int32_t lunge = (t < Q8_FRAC(62,100)) ? q8_smoothstep(q8_div(t, Q8_FRAC(62,100))) : Q8_ONE - q8_smoothstep(q8_div(t - Q8_FRAC(62,100), Q8_FRAC(38,100)));
         int dir = (g_b_battle_atk_owner == 0) ? 1 : -1;
         card_x = ax + q8_to_int(q8_mul(Q8_FROM_INT(64), lunge)) * dir;
     }
     draw_cutin_battle_card(atk_id, card_x, ay, 0, 1);
-    if (local >= 45 && local < 78) draw_direct_attack_slash(target_x, target_y, local - 45, g_b_battle_atk_owner);
-    if (local >= 62 && local < 100) draw_centered_damage_text_in_card(target_x - 20, 36, g_b_damage_text);
+    {
+        int slash_start = WAIFU_DIRECT_SLIDE_FRAMES + (WAIFU_DIRECT_LUNGE_FRAMES / 2);
+        int damage_start = WAIFU_DIRECT_SLIDE_FRAMES + WAIFU_DIRECT_LUNGE_FRAMES - 2;
+        if (local >= slash_start && local < slash_start + WAIFU_DIRECT_DAMAGE_HOLD_FRAMES) {
+            draw_direct_attack_slash(target_x, target_y, local - slash_start, g_b_battle_atk_owner);
+        }
+        if (local >= damage_start && local < damage_start + WAIFU_DIRECT_DAMAGE_HOLD_FRAMES) {
+            draw_centered_damage_text_in_card(target_x - 20, 36, g_b_damage_text);
+        }
+    }
 }
 
 static void draw_interactive_battle(void)
@@ -4645,12 +6302,10 @@ static void draw_interactive_battle(void)
         def_col = g_b_battle_def_slot; def_row = PLAYER_CARD_ROW; def_back = g_b_battle_def_back;
     }
 
-    if (g_b_phase_frame < 16) {
+    if (g_b_phase_frame < WAIFU_BATTLE_PRELUDE_FRAMES) {
         prelude_cam = side_battle_camera(atk_row);
-        render_board(prelude_cam);
-        draw_interactive_field_cards(prelude_cam);
+        draw_interactive_base(prelude_cam);
         draw_zone_cursor(prelude_cam, atk_col, atk_row);
-        draw_hud();
         return;
     }
 
@@ -4670,7 +6325,7 @@ static void draw_post_battle_return(int attacker_owner, int f, int focus_slot, i
     Camera from = side_battle_camera(attacker_owner == 0 ? PLAYER_CARD_ROW : ENEMY_CARD_ROW);
     Camera to = (attacker_owner == 0) ? battle_top_camera() : enemy_battle_top_camera();
     Camera cam = lerp_camera(from, to, q8_ratio(f, settle_frames));
-    render_board(cam);
+    render_board_cached(cam);
     draw_interactive_field_cards(cam);
     draw_hud();
     if (attacker_owner == 0 && focus_slot >= 0) draw_bottom_info_field(0, focus_slot, mode ? mode : "FIELD");
@@ -4683,7 +6338,7 @@ static void draw_interactive_result(void)
     int local = g_b_phase_frame;
     const char *msg = g_b_result < 0 ? "YOU LOSE" : "YOU WIN";
     Camera cam = lerp_camera(battle_top_camera(), player_camera(), q8_smooth_ratio(local, 90));
-    render_board(cam);
+    render_board_cached(cam);
     draw_interactive_field_cards(cam);
     if (local < 70) {
         int32_t e = q8_smooth_ratio(local, 70);
@@ -4712,11 +6367,11 @@ static void draw_interactive_tally(void)
     char line[64];
     draw_text(55, 74, "RESULT", IDX_WHITE, IDX_BLACK);
     draw_text(150, 74, won ? "WIN" : "LOSE", won ? IDX_GOLD_HI : IDX_RED, IDX_BLACK);
-    snprintf(line, sizeof(line), "%d", won ? g_you_lp : 0); draw_text(55, 94, "LP LEFT", IDX_WHITE, IDX_BLACK); draw_text(160, 94, line, IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "%d", g_b_cards_used); draw_text(55, 112, "CARDS USED", IDX_WHITE, IDX_BLACK); draw_text(176, 112, line, IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "%d", g_i_player_deck_left); draw_text(55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK); draw_text(176, 130, line, IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "%d", score); draw_text(55, 148, "SCORE", IDX_WHITE, IDX_BLACK); draw_text(152, 148, line, IDX_GOLD_HI, IDX_BLACK);
-    snprintf(line, sizeof(line), "RANK %c", rank); draw_centered_text_scaled(170, line, 2, IDX_GOLD_HI, IDX_BLACK);
+    fmt_i32_dec(line, (int)sizeof(line), won ? g_you_lp : 0); draw_text(55, 94, "LP LEFT", IDX_WHITE, IDX_BLACK); draw_text(160, 94, line, IDX_GOLD_HI, IDX_BLACK);
+    fmt_i32_dec(line, (int)sizeof(line), g_b_cards_used); draw_text(55, 112, "CARDS USED", IDX_WHITE, IDX_BLACK); draw_text(176, 112, line, IDX_GOLD_HI, IDX_BLACK);
+    fmt_i32_dec(line, (int)sizeof(line), g_i_player_deck_left); draw_text(55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK); draw_text(176, 130, line, IDX_GOLD_HI, IDX_BLACK);
+    fmt_i32_dec(line, (int)sizeof(line), score); draw_text(55, 148, "SCORE", IDX_WHITE, IDX_BLACK); draw_text(152, 148, line, IDX_GOLD_HI, IDX_BLACK);
+    waifu_str_copy(line, (int)sizeof(line), "RANK "); waifu_str_cat_char(line, (int)sizeof(line), rank); draw_centered_text_scaled(170, line, 2, IDX_GOLD_HI, IDX_BLACK);
     draw_text_small(50, 210, g_story_battle_active ? "RUN: RETURN TO MAP" : "RUN: RETURN TO TITLE", IDX_WHITE, IDX_BLACK);
 }
 
@@ -4776,50 +6431,66 @@ static int is_recent_draw_slot(int slot)
 
 static void draw_player_hand_turn_draw(int f, int selected)
 {
+    PROFILE_HAND_BEGIN();
     int i;
-    int yoff = q8_to_int(q8_mul(Q8_FROM_INT(92), Q8_ONE - q8_smooth_ratio(f, 36)));
+    int yoff = q8_to_int(q8_mul(Q8_FROM_INT(92), Q8_ONE - q8_smooth_ratio(f, WAIFU_PCFX_DRAW_FRAMES)));
     int y = 154 + yoff;
     for (i = 0; i < I_HAND; ++i) {
         int x0 = hand_final_x(i);
         int x = x0;
         int d = is_recent_draw_slot(i);
         if (d >= 0) {
-            int32_t t = q8_smooth_ratio(f - 20 - d * 12, 24);
+            int start = (WAIFU_PCFX_DRAW_FRAMES * 2) / 9 + d * ((WAIFU_PCFX_DRAW_FRAMES + 4) / 8);
+            int dur = (WAIFU_PCFX_DRAW_FRAMES * 4) / 9;
+            if (dur < 4) dur = 4;
+            int32_t t = q8_smooth_ratio(f - start, dur);
             x = lerp_i(282, x0, t);
         }
         if (g_i_player_used[i]) continue;
-        draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
-                                 is_monster_card(g_i_player_hand[i]) && !player_can_place_monster());
-        if (f >= 64 && i == selected) draw_red_cursor(x, y, 38, 50);
+        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
+                                 is_monster_card(g_i_player_hand[i]) && !player_can_place_monster()));
+        if (f >= WAIFU_PCFX_DRAW_FRAMES && i == selected) draw_red_cursor(x, y, 38, 50);
     }
+    PROFILE_HAND_END();
 }
 
 static int current_battle_anim_frames(void)
 {
-    if (g_b_battle_outcome == BATTLE_DIRECT_ATTACK) return DIRECT_ATTACK_ANIM_FRAMES + (g_b_battle_atk_back ? 48 : 0);
+    if (g_b_battle_outcome == BATTLE_DIRECT_ATTACK) {
+        return WAIFU_BATTLE_PRELUDE_FRAMES +
+               (g_b_battle_atk_back ? WAIFU_BATTLE_FLIP_FRAMES : 0) +
+               WAIFU_DIRECT_SLIDE_FRAMES + WAIFU_DIRECT_LUNGE_FRAMES +
+               WAIFU_DIRECT_DAMAGE_HOLD_FRAMES + WAIFU_BATTLE_FINAL_SETTLE_FRAMES;
+    }
 
-    const int slide_dur = 18;
-    const int flip_dur = 48;
-    const int pause_after_reveal = 10;
-    const int ram_dur = 34;
-    const int counter_dur = 34;
+    const int slide_dur = WAIFU_BATTLE_SLIDE_FRAMES;
+    const int flip_dur = WAIFU_BATTLE_FLIP_FRAMES;
+    const int pause_after_reveal = WAIFU_BATTLE_REVEAL_PAUSE_FRAMES;
+    const int ram_dur = WAIFU_BATTLE_RAM_FRAMES;
+    const int counter_dur = WAIFU_BATTLE_RAM_FRAMES;
     int reveal_end = slide_dur + (g_b_battle_atk_back ? flip_dur : 0) + (g_b_battle_def_back ? flip_dur : 0);
     int ram_start = reveal_end + pause_after_reveal;
     int burn_start;
 
     if (g_b_battle_outcome == BATTLE_DESTROY_ATTACKER) {
-        int counter_start = ram_start + ram_dur + 16;
-        burn_start = counter_start + counter_dur + 18;
+        int counter_start = ram_start + ram_dur + WAIFU_BATTLE_COUNTER_GAP_FRAMES;
+        burn_start = counter_start + counter_dur + WAIFU_BATTLE_COUNTER_GAP_FRAMES;
     } else {
-        burn_start = ram_start + ram_dur + 30;
-        if (g_b_battle_outcome == BATTLE_DESTROY_BOTH) burn_start = ram_start + ram_dur + 22;
+        burn_start = ram_start + ram_dur + WAIFU_BATTLE_BURN_DELAY_FRAMES;
+        if (g_b_battle_outcome == BATTLE_DESTROY_BOTH) burn_start = ram_start + ram_dur + (WAIFU_BATTLE_BURN_DELAY_FRAMES / 2);
     }
 
-    /* +16 accounts for the tactical prelude before draw_battle_cutin_event_ex()
-       starts its local cut-in clock. +8 leaves a brief final settle without
-       terminating the upward burn wipe mid-effect. */
-    return 16 + burn_start + BATTLE_BURN_DUR + 8;
+    return WAIFU_BATTLE_PRELUDE_FRAMES + burn_start + BATTLE_BURN_DUR + WAIFU_BATTLE_FINAL_SETTLE_FRAMES;
 }
+
+static int battle_animation_event_complete(int end_frame)
+{
+    /* Progression is gated by each animation's own completion event.  The PC-FX
+       build no longer uses separate shortened delay counters that can advance
+       gameplay while the draw routine is still mid-flip/mid-flight. */
+    return g_b_phase_frame >= end_frame;
+}
+
 
 static void start_equip(int owner, int hand_slot, int target_slot)
 {
@@ -4843,6 +6514,11 @@ static void start_equip(int owner, int hand_slot, int target_slot)
     g_b_equip_base_def = field_card_def(owner, target_slot);
     g_b_equip_pending_atk = equip_atk_bonus(g_b_equip_card);
     g_b_equip_pending_def = equip_def_bonus(g_b_equip_card);
+    /* Pre-cache both visible pieces before the equip animation starts.  The
+       support/equip art is normally already loaded during battle startup; the
+       target card may be newly revealed or evicted, so force its big-art slot
+       here rather than stalling on the first full-art animation frame. */
+    (void)card_big_art_ptr(target_card);
     if (owner == 0) {
         g_i_player_field[target_slot] = CARD_NONE;
         g_i_player_faceup[target_slot] = 1;
@@ -4893,6 +6569,7 @@ static void finish_equip(void)
         }
     }
     g_b_cards_used++;
+    waifu_sound_play(WAIFU_SOUND_CARD_PLACED);
     g_b_equip_owner = 0;
     g_b_equip_hand = -1;
     g_b_equip_slot = -1;
@@ -4907,13 +6584,18 @@ static void draw_equip_stat_line_centered(int y, const char *label, int from, in
 {
     char line[32];
     int value = from + (int)(((to - from) * q8_smoothstep(t) + Q8_HALF) >> Q8_SHIFT);
-    snprintf(line, sizeof(line), "%s %04d", label, value);
+    waifu_str_copy(line, (int)sizeof(line), label); waifu_str_cat_char(line, (int)sizeof(line), ' '); waifu_str_cat_u32_z4(line, (int)sizeof(line), (unsigned)value);
     draw_text((W - text_px_width(line, 1)) / 2, y, line, stat_delta_color(to - from), IDX_BLACK);
 }
 
 static void draw_player_equip_target(void)
 {
     Camera cam = battle_top_camera();
+    int warm_slot = top_selector_player_monster_slot();
+    if (warm_slot >= 0) {
+        int warm_card = g_i_player_field[warm_slot];
+        if (is_monster_card(warm_card)) (void)card_big_art_ptr(warm_card);
+    }
     draw_interactive_base(cam);
     draw_top_selector_cursor(cam);
     draw_text_small(70, 191, "SELECT EQUIP TARGET", IDX_GOLD_HI, IDX_BLACK);
@@ -4924,10 +6606,22 @@ static void draw_player_equip_target(void)
 static void draw_player_equip_anim(void)
 {
     int f = g_b_phase_frame;
-    int32_t t = q8_smooth_ratio(f, 120);
-    int reveal = (!g_b_equip_target_faceup && f < 48);
-    int32_t merge_t = q8_smooth_ratio(f - 42, 54);
-    int32_t vanish_t = q8_smooth_ratio(f - 76, 34);
+    int32_t t = q8_smooth_ratio(f, WAIFU_EQUIP_ANIM_FRAMES);
+#ifdef WAIFU_FM_PCFX
+    int reveal_frames = WAIFU_BATTLE_FLIP_FRAMES;
+#else
+    int reveal_frames = (WAIFU_EQUIP_ANIM_FRAMES * 2) / 5;
+#endif
+    int merge_start = (WAIFU_EQUIP_ANIM_FRAMES * 7) / 20;
+    int merge_frames = (WAIFU_EQUIP_ANIM_FRAMES * 9) / 20;
+    int vanish_start = (WAIFU_EQUIP_ANIM_FRAMES * 19) / 30;
+    int vanish_frames = WAIFU_EQUIP_ANIM_FRAMES - vanish_start;
+    if (reveal_frames < 4) reveal_frames = 4;
+    if (merge_frames < 4) merge_frames = 4;
+    if (vanish_frames < 4) vanish_frames = 4;
+    int reveal = (!g_b_equip_target_faceup && f < reveal_frames);
+    int32_t merge_t = q8_smooth_ratio(f - merge_start, merge_frames);
+    int32_t vanish_t = q8_smooth_ratio(f - vanish_start, vanish_frames);
     int card_w = lerp_i(92, 38, vanish_t);
     int card_h = lerp_i(126, 52, vanish_t);
     int target_x = 68;
@@ -4945,10 +6639,10 @@ static void draw_player_equip_anim(void)
         hline(0, 255, y, c);
     }
     if (reveal) {
-        draw_big_battle_card_flip(g_b_equip_target_card, target_x, target_y, f, 48);
+        draw_big_battle_card_flip(g_b_equip_target_card, target_x, target_y, f, reveal_frames);
     } else {
         draw_big_battle_card(g_b_equip_target_card, target_x, target_y, 0);
-        if (f < 110) {
+        if (f < WAIFU_EQUIP_ANIM_FRAMES - 3) {
             rect_fill(card_x + 5, card_y + 6, card_w, card_h, IDX_BLACK);
             draw_support_sprite(card_x, card_y, card_w, card_h);
         }
@@ -4961,7 +6655,7 @@ static void draw_player_equip_anim(void)
         int cy = target_cy + q8_to_int(q8_mul(q8_cos_rad(ay), Q8_FROM_INT(18 + (i % 4) * 3)));
         draw_disc(cx, cy, 1 + (i % 3), (i & 1) ? IDX_GREEN : IDX_WHITE);
     }
-    if (f >= 92 && f < 108) rect_fill(0, 0, W, H, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
+    if (f >= (WAIFU_EQUIP_ANIM_FRAMES * 23) / 30 && f < (WAIFU_EQUIP_ANIM_FRAMES * 9) / 10) rect_fill(0, 0, W, H, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
     if ((f & 4) == 0) rect_outline(target_x - 4, target_y - 4, 128, 168, IDX_WHITE);
     draw_centered_text(9, "EQUIP POWER", IDX_GOLD_HI, IDX_BLACK);
     draw_equip_stat_line_centered(190, "ATK", g_b_equip_base_atk, atk_to, t);
@@ -5070,8 +6764,15 @@ static void draw_failed_fusion_dropped_materials(int count, int first_target_x, 
 static void draw_player_fusion_anim(void)
 {
     int f = g_b_phase_frame;
-    int32_t merge_t = q8_smooth_ratio(f, 56);
-    int32_t reveal_t = q8_smooth_ratio(f - 70, 24);
+    int fusion_merge_end = (WAIFU_FUSION_ANIM_FRAMES * 34) / 100;
+    int fusion_flash_start = (WAIFU_FUSION_ANIM_FRAMES * 42) / 100;
+    int fusion_flash_end = (WAIFU_FUSION_ANIM_FRAMES * 52) / 100;
+    int fusion_reveal_start = fusion_flash_end;
+    int fusion_landing_start = (WAIFU_FUSION_ANIM_FRAMES * 70) / 100;
+    if (fusion_merge_end < 8) fusion_merge_end = 8;
+    if (fusion_flash_end <= fusion_flash_start) fusion_flash_end = fusion_flash_start + 4;
+    int32_t merge_t = q8_smooth_ratio(f, fusion_merge_end);
+    int32_t reveal_t = q8_smooth_ratio(f - fusion_reveal_start, (WAIFU_FUSION_ANIM_FRAMES * 14) / 100 + 4);
     int cy = lerp_i(154, 74, merge_t);
     int w = lerp_i(38, 42, merge_t);
     int h = lerp_i(50, 56, merge_t);
@@ -5085,10 +6786,10 @@ static void draw_player_fusion_anim(void)
     spread = count > 1 ? (count - 1) * 34 : 0;
     first_target_x = 128 - spread / 2 - w / 2;
 
-    if (f >= 116) {
+    if (f >= fusion_landing_start) {
         Camera cam = placement_camera();
         int target_slot = g_b_fusion_anim_target_slot;
-        int local = f - 116;
+        int local = f - fusion_landing_start;
         if (!g_b_fusion_anim_success && g_b_fusion_anim_has_field_card &&
             target_slot >= 0 && target_slot < I_FIELD) {
             int saved_field = g_i_player_field[target_slot];
@@ -5144,7 +6845,7 @@ static void draw_player_fusion_anim(void)
     draw_panel_rect(20, 26, 216, 178, IDX_UI_DARK);
     draw_centered_text(39, "FUSION", IDX_GOLD_HI, IDX_BLACK);
 
-    if (f < 70) {
+    if (f < fusion_flash_start) {
         for (i = 0; i < count; ++i) {
             int slot = g_b_fusion_anim_slots[i];
             int sx = slot >= 0 ? hand_final_x(slot) : hand_final_x(i);
@@ -5158,7 +6859,7 @@ static void draw_player_fusion_anim(void)
             int py = 103 + q8_to_int(q8_mul(q8_cos_rad((f * 7 + i * 31) * Q8_FRAC(8,100)), Q8_FROM_INT(22)));
             draw_disc(px, py, 1 + (i % 2), (i & 1) ? IDX_GREEN : IDX_GOLD_HI);
         }
-    } else if (f < 86) {
+    } else if (f < fusion_flash_end) {
         rect_fill(0, 0, W, H, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
     } else if (g_b_fusion_anim_success) {
         int rw = lerp_i(70, 54, reveal_t);
@@ -5207,6 +6908,7 @@ static void finish_player_fusion_anim(void)
     int target_slot = g_b_fusion_anim_target_slot;
     int placed_slot = -1;
     int used_hand_count = 0;
+    int discarded_material = 0;
     clear_player_fusion_queue();
 
     if (g_b_fusion_anim_count > 0) {
@@ -5229,6 +6931,7 @@ static void finish_player_fusion_anim(void)
         }
         for (i = 0; i < g_b_fusion_anim_count; ++i) {
             int slot = g_b_fusion_anim_slots[i];
+            if (!g_b_fusion_anim_material_kept[i]) discarded_material = 1;
             if (slot >= 0 && slot < I_HAND) {
                 g_i_player_used[slot] = 1;
                 ++used_hand_count;
@@ -5238,6 +6941,8 @@ static void finish_player_fusion_anim(void)
         g_b_cards_used += used_hand_count;
         g_b_player_fused_this_turn = 1;
         g_b_player_monster_played_this_turn = 1;
+        if (discarded_material) waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
+        if (placed_slot >= 0) waifu_sound_play(WAIFU_SOUND_CARD_PLACED);
     }
 
     reset_player_fusion_anim();
@@ -5318,10 +7023,10 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     case IB_PLAYER_PLACE:
         draw_interactive_base(placement_camera());
         draw_zone_cursor(placement_camera(), g_b_place_slot, PLAYER_CARD_ROW);
-        draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, PLAYER_CARD_ROW, g_b_phase_frame, 0, 48, 2);
-        draw_interactive_player_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(g_b_phase_frame, 38))), 1);
+        draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, PLAYER_CARD_ROW, g_b_phase_frame, 0, WAIFU_PCFX_PLACE_FRAMES, 2);
+        draw_interactive_player_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(g_b_phase_frame, WAIFU_PCFX_PLACE_SETTLE_FRAMES))), 1);
         draw_bottom_info(g_b_place_card, "PLACE");
-        if (g_b_phase_frame >= 48) {
+        if (battle_animation_event_complete(WAIFU_PCFX_PLACE_FRAMES)) {
             if (!is_monster_card(g_b_place_card)) { g_i_player_used[g_b_place_hand] = 1; set_battle_phase(IB_PLAYER_HAND); break; }
             g_i_player_field[g_b_place_slot] = g_b_place_card;
             g_i_player_faceup[g_b_place_slot] = 0;
@@ -5333,6 +7038,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             g_b_cards_used++;
             g_b_selected_player_slot = g_b_place_slot;
             set_top_selector(g_b_place_slot, PLAYER_CARD_ROW);
+            waifu_sound_play(WAIFU_SOUND_CARD_PLACED);
             set_battle_phase(IB_PLAYER_TOP);
         }
         break;
@@ -5355,7 +7061,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_PLAYER_EQUIP_ANIM:
         draw_player_equip_anim();
-        if (g_b_phase_frame >= 120) finish_equip();
+        if (battle_animation_event_complete(WAIFU_EQUIP_ANIM_FRAMES)) finish_equip();
         break;
 
     case IB_PLAYER_FUSION_TARGET:
@@ -5381,7 +7087,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_PLAYER_FUSION_ANIM:
         draw_player_fusion_anim();
-        if (g_b_phase_frame >= 166) finish_player_fusion_anim();
+        if (battle_animation_event_complete(WAIFU_FUSION_ANIM_FRAMES)) finish_player_fusion_anim();
         break;
 
     case IB_PLAYER_TOP:
@@ -5454,7 +7160,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_PLAYER_BATTLE:
         draw_interactive_battle();
-        if (g_b_phase_frame >= current_battle_anim_frames()) {
+        if (battle_animation_event_complete(current_battle_anim_frames())) {
             resolve_battle();
             if (g_b_phase == IB_PLAYER_BATTLE) set_battle_phase(IB_PLAYER_RETURN_TOP);
         }
@@ -5465,7 +7171,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_post_battle_return(0, g_b_phase_frame, atk_slot,
                                 atk_slot >= 0 ? g_i_player_field[atk_slot] : hand_ids[0],
                                 atk_slot >= 0 && g_i_player_attacked[atk_slot] ? "USED" : "FIELD");
-        if (g_b_phase_frame >= 24) {
+        if (battle_animation_event_complete(WAIFU_PCFX_RETURN_FRAMES)) {
             if (atk_slot >= 0) set_top_selector(atk_slot, PLAYER_CARD_ROW);
             g_b_attack_attacker_slot = -1;
             set_battle_phase(IB_PLAYER_TOP);
@@ -5473,8 +7179,8 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_TURN_TO_COM:
-        draw_interactive_base(turn_camera(g_b_phase_frame, 0, 58, 1));
-        if (g_b_phase_frame >= 58) {
+        draw_interactive_base(turn_camera(g_b_phase_frame, 0, WAIFU_PCFX_TURN_FRAMES, 1));
+        if (battle_animation_event_complete(WAIFU_PCFX_TURN_FRAMES)) {
             draw_replacement_cards_to_com_hand();
             g_b_selected_com_slot = 0;
             set_battle_phase(IB_COM_SELECT);
@@ -5483,9 +7189,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_COM_SELECT:
         draw_interactive_common(enemy_camera(), first_live_com_slot() >= 0 ? g_i_com_field[first_live_com_slot()] : g_i_com_hand[0], "COM");
-        g_b_selected_com_slot = (g_b_phase_frame / 14) % I_HAND;
+        g_b_selected_com_slot = (g_b_phase_frame / 4) % I_HAND;
         draw_interactive_com_hand(g_b_phase_frame, g_b_selected_com_slot, 0);
-        if (g_b_phase_frame >= 70) {
+        if (battle_animation_event_complete(WAIFU_PCFX_SELECT_FRAMES)) {
             WaifuAiState ai_state;
             WaifuAiAction ai_action;
             build_com_ai_state(&ai_state);
@@ -5508,9 +7214,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     case IB_COM_PLACE:
         draw_interactive_base(enemy_placement_camera());
         draw_zone_cursor(enemy_placement_camera(), g_b_place_slot, ENEMY_CARD_ROW);
-        draw_flying_card(enemy_placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, ENEMY_CARD_ROW, g_b_phase_frame, 0, 48, 1);
-        draw_interactive_com_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(82), q8_smooth_ratio(g_b_phase_frame, 38))));
-        if (g_b_phase_frame >= 48) {
+        draw_flying_card(enemy_placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, ENEMY_CARD_ROW, g_b_phase_frame, 0, WAIFU_PCFX_PLACE_FRAMES, 1);
+        draw_interactive_com_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(82), q8_smooth_ratio(g_b_phase_frame, WAIFU_PCFX_PLACE_SETTLE_FRAMES))));
+        if (battle_animation_event_complete(WAIFU_PCFX_PLACE_FRAMES)) {
             if (!is_monster_card(g_b_place_card)) { clear_battle_snapshot(); set_battle_phase(IB_COM_BATTLE); break; }
             g_i_com_field[g_b_place_slot] = g_b_place_card;
             g_i_com_faceup[g_b_place_slot] = 0;
@@ -5519,6 +7225,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             g_i_com_def_bonus[g_b_place_slot] = 0;
             g_i_com_used[g_b_place_hand] = 1;
             g_b_com_monster_played_this_turn = 1;
+            waifu_sound_play(WAIFU_SOUND_CARD_PLACED);
             clear_battle_snapshot();
             {
                 int equip_h = first_unused_com_support_hand();
@@ -5533,7 +7240,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_COM_EQUIP_ANIM:
         draw_player_equip_anim();
-        if (g_b_phase_frame >= 120) finish_equip();
+        if (battle_animation_event_complete(WAIFU_EQUIP_ANIM_FRAMES)) finish_equip();
         break;
 
     case IB_COM_BATTLE:
@@ -5570,7 +7277,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             }
         }
         draw_interactive_battle();
-        if (g_b_phase_frame >= current_battle_anim_frames()) {
+        if (battle_animation_event_complete(current_battle_anim_frames())) {
             resolve_battle();
             if (g_b_phase == IB_COM_BATTLE) {
                 clear_battle_snapshot();
@@ -5584,7 +7291,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_post_battle_return(1, g_b_phase_frame, atk_slot,
                                 atk_slot >= 0 ? g_i_com_field[atk_slot] : hand_ids[0],
                                 "COM");
-        if (g_b_phase_frame >= 30) {
+        if (battle_animation_event_complete(WAIFU_PCFX_RETURN_FRAMES)) {
             clear_player_attacks();
             g_b_player_monster_played_this_turn = 0;
             g_b_player_fused_this_turn = 0;
@@ -5594,21 +7301,21 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_TURN_TO_PLAYER:
-        draw_interactive_base(turn_camera(g_b_phase_frame, 0, 58, 0));
+        draw_interactive_base(turn_camera(g_b_phase_frame, 0, WAIFU_PCFX_TURN_FRAMES, 0));
         {
             int yoff = 0;
-            if (g_b_phase_frame < 40) {
+            if (g_b_phase_frame < WAIFU_PCFX_TURN_FRAMES / 2) {
                 yoff = 44;
-            } else if (g_b_phase_frame < 58) {
-                int t = g_b_phase_frame - 40;
-                yoff = q8_to_int(q8_mul(Q8_FROM_INT(44), Q8_ONE - q8_smooth_ratio(t, 18)));
+            } else if (g_b_phase_frame < WAIFU_PCFX_TURN_FRAMES) {
+                int t = g_b_phase_frame - WAIFU_PCFX_TURN_FRAMES / 2;
+                yoff = q8_to_int(q8_mul(Q8_FROM_INT(44), Q8_ONE - q8_smooth_ratio(t, WAIFU_PCFX_TURN_FRAMES / 2)));
             }
-            if (g_b_phase_frame >= 40) {
+            if (g_b_phase_frame >= WAIFU_PCFX_TURN_FRAMES / 2) {
                 int card = first_live_com_slot() >= 0 ? g_i_com_field[first_live_com_slot()] : hand_ids[0];
                 draw_bottom_info_offset(card, "TURN", yoff);
             }
         }
-        if (g_b_phase_frame >= 58) {
+        if (battle_animation_event_complete(WAIFU_PCFX_TURN_FRAMES)) {
             if (g_i_player_deck_left <= 0) {
                 g_b_result = -1;
                 set_battle_phase(IB_RESULT);
@@ -5622,9 +7329,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     case IB_PLAYER_DRAW:
         draw_interactive_base(player_camera());
         draw_player_hand_turn_draw(g_b_phase_frame, g_b_selected_hand);
-        if (g_b_phase_frame < 64 && g_b_draw_count > 0) draw_text_small(211, 142, "DRAW", IDX_GOLD_HI, IDX_BLACK);
+        if (g_b_phase_frame < WAIFU_PCFX_DRAW_FRAMES && g_b_draw_count > 0) draw_text_small(211, 142, "DRAW", IDX_GOLD_HI, IDX_BLACK);
         draw_bottom_info(g_i_player_hand[g_b_selected_hand], "DRAW");
-        if (g_b_phase_frame >= 84) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); }
+        if (battle_animation_event_complete(WAIFU_PCFX_DRAW_FRAMES)) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); }
         break;
 
     case IB_RESULT:
@@ -5638,9 +7345,8 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             if (g_story_battle_active) {
                 story_return_to_map_after_duel();
             } else {
-                g_i_state = WAIFU_I_TITLE;
-                g_i_frame = 0;
                 init_battle_state();
+                enter_title_after_assets();
             }
         }
         break;
@@ -5659,23 +7365,95 @@ void waifu_fm_init(void)
     cfx_renderer3d_set_texture_atlas(&renderer, waifu_texture_atlas,
                                       WAIFU_TEX_TILE_SIZE,
                                       WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
+    invalidate_board_bg_cache();
+    invalidate_battle_composite_cache();
+    waifu_assets_init();
+    waifu_assets_request_title();
+    if (waifu_assets_needs_loading_screen()) {
+        g_i_loading_target = WAIFU_I_TITLE;
+        g_i_state = WAIFU_I_LOADING_ASSETS;
+        g_i_frame = 0;
+    }
     waifu_fm_use_common_palette();
+    waifu_sound_init();
+    update_music_for_current_state();
     g_api_initialized = 1;
 }
 
 void waifu_fm_reset_interactive(void)
 {
-    g_i_state = WAIFU_I_TITLE;
+    waifu_assets_reset();
+    waifu_assets_request_title();
+    g_i_loading_target = WAIFU_I_TITLE;
+    g_i_state = waifu_assets_needs_loading_screen() ? WAIFU_I_LOADING_ASSETS : WAIFU_I_TITLE;
     g_i_frame = 0;
-    g_i_menu_selected = 1;
+    g_i_menu_selected = 0;
     memset(&g_prev_input, 0, sizeof(g_prev_input));
+    waifu_sound_reset();
+    update_music_for_current_state();
     init_battle_state();
     waifu_fm_use_common_palette();
+    invalidate_board_bg_cache();
+    invalidate_battle_composite_cache();
 }
 
 uint8_t *waifu_fm_framebuffer(void)
 {
     return framebuffer;
+}
+
+uint32_t waifu_fm_frame_dirty_serial(void)
+{
+    return g_frame_dirty_serial;
+}
+
+int waifu_fm_frame_dirty_full(void)
+{
+    return g_frame_dirty_full;
+}
+
+int waifu_fm_frame_dirty_rects(WaifuFmDirtyRect *out_rects, int max_rects)
+{
+    int n = g_frame_dirty_count;
+    if (!out_rects || max_rects <= 0) return n;
+    if (n > max_rects) n = max_rects;
+    for (int i = 0; i < n; ++i) out_rects[i] = g_frame_dirty_rects[i];
+    return n;
+}
+
+int waifu_fm_video_fade_q8(void)
+{
+    return g_video_fade_visible_q8;
+}
+
+int waifu_fm_audio_sample_rate(void)
+{
+    return waifu_sound_sample_rate();
+}
+
+int waifu_fm_audio_channels(void)
+{
+    return waifu_sound_channels();
+}
+
+int waifu_fm_audio_samples_per_frame(void)
+{
+    return waifu_sound_samples_per_frame();
+}
+
+void waifu_fm_audio_mix_s16(int16_t *dst, int frames)
+{
+    waifu_sound_mix_s16(dst, frames);
+}
+
+WaifuFmMusicTrack waifu_fm_audio_music_track(void)
+{
+    return (WaifuFmMusicTrack)waifu_sound_music_track();
+}
+
+const char *waifu_fm_audio_music_name(void)
+{
+    return waifu_sound_music_name(waifu_sound_music_track());
 }
 
 void waifu_fm_render_scripted_frame(int frame)
@@ -5749,7 +7527,7 @@ static void draw_story_name_entry(void)
         hline(x - 2, x + 10, 121, IDX_UI_LIGHT);
     }
 
-    snprintf(buf, sizeof(buf), "LETTER %c", g_story_name[g_story_name_pos]);
+    waifu_str_copy(buf, (int)sizeof(buf), "LETTER "); waifu_str_cat_char(buf, (int)sizeof(buf), g_story_name[g_story_name_pos]);
     draw_centered_text(143, buf, IDX_WHITE, IDX_BLACK);
     draw_text_small(34, 166, "LEFT/RIGHT SLOT", IDX_WHITE, IDX_BLACK);
     draw_text_small(34, 180, "UP/DOWN GLYPH", IDX_WHITE, IDX_BLACK);
@@ -5791,7 +7569,7 @@ static void draw_story_intro_screen(int f)
         for (int i = 0; i < 24; ++i) put_px(116 + ((i * 17 + f) & 23), 38 + ((i * 11) & 31), IDX_DIM);
     }
     px = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 10, 10, f);
-    draw_story_portrait(STORY_PORTRAIT_SERENA, px, H - WAIFU_STORY_PORTRAIT_H + 10);
+    draw_story_portrait(STORY_PORTRAIT_SERENA, px, H - WAIFU_STORY_PORTRAIT_H - 20);
     draw_story_dialog_box("SERENA", "THE SHARDS WHISPER", story_intro_lines[line], IDX_GOLD_HI, f);
     if (f >= 0 && f < 24) apply_black_dither_fade(q8_ratio(f, 24));
 }
@@ -5895,16 +7673,16 @@ static void draw_deck_editor(void)
 
     rect_fill(14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_DARK : IDX_BLACK);
     rect_outline(14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_HI : IDX_DIM);
-    snprintf(line, sizeof(line), "DECK %02d/40", g_story_deck_count);
+    waifu_str_copy(line, (int)sizeof(line), "DECK "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_deck_count); waifu_str_cat(line, (int)sizeof(line), "/40");
     draw_text_small(22, 31, line, g_deck_tab == 0 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
 
     rect_fill(140, 27, 102, 14, g_deck_tab == 1 ? IDX_GOLD_DARK : IDX_BLACK);
     rect_outline(140, 27, 102, 14, g_deck_tab == 1 ? IDX_GOLD_HI : IDX_DIM);
-    snprintf(line, sizeof(line), "STORAGE %02d", g_story_storage_count);
+    waifu_str_copy(line, (int)sizeof(line), "STORAGE "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_storage_count);
     draw_text_small(148, 31, line, g_deck_tab == 1 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
 
     recalc_story_deck_counts();
-    snprintf(line, sizeof(line), "SUPPORT %02d  EQ %02d", g_story_support_count + g_story_equip_count, g_story_equip_count);
+    waifu_str_copy(line, (int)sizeof(line), "SUPPORT "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)(g_story_support_count + g_story_equip_count)); waifu_str_cat(line, (int)sizeof(line), "  EQ "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_equip_count);
     draw_text_small(76, 43, line, IDX_GOLD_HI, IDX_BLACK);
 
     if (count <= 0) {
@@ -5928,7 +7706,7 @@ static void draw_deck_editor(void)
         if (is_support_card(selected_card)) {
             draw_text_small_ellipsis(15, 208, support_card_type(selected_card), 23, IDX_GOLD_HI, IDX_BLACK);
         } else {
-            snprintf(line, sizeof(line), "ATK %u DEF %u", (unsigned)waifu_card_atk[selected_card], (unsigned)waifu_card_def[selected_card]);
+            fmt_label_u32(line, (int)sizeof(line), "ATK", (unsigned)waifu_card_atk[selected_card]); waifu_str_cat(line, (int)sizeof(line), " DEF "); waifu_str_cat_u32(line, (int)sizeof(line), (unsigned)waifu_card_def[selected_card]);
             draw_text_small(15, 208, line, IDX_GOLD_HI, IDX_BLACK);
         }
     }
@@ -6277,10 +8055,10 @@ static void draw_story_map_screen_content(int f)
     if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
         draw_wrapped_text_small_box(16, 190, 91, 3, 9, "The demon waits in the void. This is the final duel.", IDX_WHITE, IDX_BLACK);
     } else if (story_opponent_is_boss()) {
-        snprintf(line, sizeof(line), "A boss: %s. Prepare well.", story_opponent_name());
+        waifu_str_copy(line, (int)sizeof(line), "A boss: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), ". Prepare well.");
         draw_wrapped_text_small_box(16, 190, 91, 3, 9, line, IDX_RED, IDX_BLACK);
     } else {
-        snprintf(line, sizeof(line), "Next: %s awaits.", story_opponent_name());
+        waifu_str_copy(line, (int)sizeof(line), "Next: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), " awaits.");
         draw_wrapped_text_small_box(16, 190, 91, 3, 9, line, IDX_WHITE, IDX_BLACK);
     }
     draw_text_small(11, 226, "A/RUN SELECT", IDX_WHITE, IDX_BLACK);
@@ -6294,12 +8072,12 @@ static void draw_story_map_screen(int f)
 
 static void draw_story_to_plaza_transition(int f)
 {
-    SCREEN_TRANSITION(f, 24, draw_story_map_screen_content(f), draw_story_plaza_scene_content());
+    SCREEN_TRANSITION(f, WAIFU_FAST_TRANSITION_HALF_FRAMES, draw_story_map_screen_content(f), draw_story_plaza_scene_content());
 }
 
 static void draw_story_fire_to_deck_transition(int f)
 {
-    SCREEN_TRANSITION(f, 24, draw_story_fire_screen(g_story_fire_line), draw_deck_editor());
+    SCREEN_TRANSITION(f, WAIFU_FAST_TRANSITION_HALF_FRAMES, draw_story_fire_screen(g_story_fire_line), draw_deck_editor());
 }
 
 static void draw_story_pyramid_menu(void)
@@ -6379,8 +8157,6 @@ static void draw_story_plaza_scene_content(void)
     opp_y = H - WAIFU_STORY_PORTRAIT_H - 14;
     draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
     draw_story_portrait(opp->portrait_id, opp_x, opp_y);
-    draw_story_nameplate_right(story_opponent_name(), story_opponent_title(), story_opponent_is_boss() ? IDX_RED : IDX_WHITE);
-
     if (dialog[line].speaker == STORY_SPK_OPPONENT) {
         speaker = opp->name;
         speaker_color = story_opponent_is_boss() ? IDX_RED : IDX_GOLD_HI;
@@ -6424,7 +8200,11 @@ void waifu_fm_step(const WaifuFmInput *input)
     int press_up, press_down, press_left, press_right, press_a, press_b, press_start, press_tab;
 
     waifu_fm_init();
+    waifu_assets_big_art_draw_queue_reset();
+    frame_dirty_reset();
+    g_video_fade_visible_q8 = Q8_ONE;
     waifu_fm_use_common_palette();
+    update_music_for_current_state();
     memset(&zero, 0, sizeof(zero));
     if (!input) input = &zero;
 
@@ -6437,37 +8217,100 @@ void waifu_fm_step(const WaifuFmInput *input)
     press_start = input_pressed(input->start, g_prev_input.start);
     press_tab = input_pressed(input->tab, g_prev_input.tab);
 
+    if (press_up || press_down || press_left || press_right) waifu_sound_play(WAIFU_SOUND_SELECT);
+    if (press_a || press_start) waifu_sound_play(WAIFU_SOUND_CONFIRM);
+    if (press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
+
     switch (g_i_state) {
-    case WAIFU_I_TITLE:
-        clear_screen(IDX_BLACK);
-        draw_title_background();
-        draw_title_logo();
-        draw_title_prompt(g_i_frame);
-        if (g_i_frame < 30) apply_black_dither_fade(q8_ratio(g_i_frame, 30));
-        if (press_b) {
-            load_story_to_map();
-        } else if (press_start || press_a) {
-            g_i_state = WAIFU_I_MENU;
+    case WAIFU_I_LOADING_ASSETS:
+        draw_asset_loading_screen();
+        if (g_i_frame >= 24 && waifu_assets_load_step()) {
+            g_i_state = g_i_loading_target;
             g_i_frame = -1;
         }
         break;
 
+    case WAIFU_I_TITLE:
+#ifdef WAIFU_FM_PCFX
+        /* PC-FX title runs as a static 16M KING surface with the mutable
+           prompt on the front VDC layer.  Blink changes now update only BAT
+           entries/tiles during vblank; KING KRAM is not touched. */
+        if (g_i_frame == 0) {
+            draw_title_full_event(0);
+        } else {
+            waifu_fm_use_title_palette();
+        }
+        waifu_pcfx_video_overlay_title_prompt(((g_i_frame / 24) & 1) == 0, story_save_exists());
+#else
+        clear_screen(IDX_BLACK);
+        draw_title_background();
+        draw_title_logo();
+        draw_title_prompt(g_i_frame);
+#endif
+        if (g_i_frame < WAIFU_TITLE_FADE_FRAMES) apply_black_dither_fade(q8_ratio(g_i_frame, WAIFU_TITLE_FADE_FRAMES));
+        if (press_b) {
+            load_story_to_map();
+        } else if (press_start || press_a) {
+            enter_title_to_menu_fade();
+        }
+        break;
+
+    case WAIFU_I_TITLE_TO_MENU:
+        /* Compatibility fallback only.  The normal title RUN path now goes
+           straight to MENU, without a black fade. */
+        enter_menu_after_assets();
+        break;
+
     case WAIFU_I_MENU:
+#ifdef WAIFU_FM_PCFX
+    {
+        int old_menu_selected = g_i_menu_selected;
+#endif
         if (press_up) g_i_menu_selected = (g_i_menu_selected + 2) % 3;
         if (press_down) g_i_menu_selected = (g_i_menu_selected + 1) % 3;
+#ifdef WAIFU_FM_PCFX
+        if (g_i_frame <= 0 || old_menu_selected != g_i_menu_selected) {
+            draw_menu_screen_event(g_i_menu_selected, g_i_frame <= 0);
+        } else {
+            waifu_fm_use_title_palette();
+        }
+    }
+#else
         draw_menu_screen(g_i_menu_selected);
+#endif
         if (press_start || press_a) {
             if (g_i_menu_selected == 0) {
                 reset_story_entry();
-                g_i_state = WAIFU_I_STORY_NAME;
-                g_i_frame = -1;
+                enter_menu_to_story_fade();
             } else if (g_i_menu_selected == 1) {
-                g_i_state = WAIFU_I_BATTLE;
                 init_battle_state();
-                g_i_frame = -1;
+                enter_menu_to_battle_fade();
             } else {
                 if (!load_story_to_map()) g_deck_flash = 60;
             }
+        }
+        break;
+
+    case WAIFU_I_MENU_TO_STORY:
+        if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES + 4) {
+            draw_transition_black_hold_frame();
+            g_i_state = WAIFU_I_STORY_NAME;
+            g_i_frame = -1;
+        } else if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES) {
+            draw_transition_black_hold_frame();
+        } else {
+            draw_menu_fadeout_event(g_i_menu_selected, g_i_frame);
+        }
+        break;
+
+    case WAIFU_I_MENU_TO_BATTLE:
+        if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES + 4) {
+            draw_transition_black_hold_frame();
+            enter_battle_after_assets();
+        } else if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES) {
+            draw_transition_black_hold_frame();
+        } else {
+            draw_menu_fadeout_event(g_i_menu_selected, g_i_frame);
         }
         break;
 
@@ -6483,8 +8326,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         }
         draw_story_name_entry();
         if (press_b) {
-            g_i_state = WAIFU_I_MENU;
-            g_i_frame = -1;
+            enter_menu_after_assets();
         } else if (press_start) {
             g_story_name_to_intro = 1;
             g_i_state = WAIFU_I_STORY_NAME_TO_INTRO;
@@ -6498,8 +8340,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         if (g_i_frame >= 20) {
             g_story_name_to_intro = 0;
             g_story_intro_line = 0;
-            g_i_state = WAIFU_I_STORY_INTRO;
-            g_i_frame = -1;
+            enter_story_intro_after_assets();
         }
         break;
 
@@ -6515,8 +8356,7 @@ void waifu_fm_step(const WaifuFmInput *input)
             }
         }
         if (press_b) {
-            g_i_state = WAIFU_I_MENU;
-            g_i_frame = -1;
+            enter_menu_after_assets();
         }
         break;
 
@@ -6533,16 +8373,14 @@ void waifu_fm_step(const WaifuFmInput *input)
             }
         }
         if (press_b) {
-            g_i_state = WAIFU_I_MENU;
-            g_i_frame = -1;
+            enter_menu_after_assets();
         }
         break;
 
     case WAIFU_I_STORY_FIRE_TO_DECK:
         draw_story_fire_to_deck_transition(g_i_frame);
-        if (g_i_frame >= 48) {
-            g_i_state = WAIFU_I_DECK_EDITOR;
-            g_i_frame = -1;
+        if (g_i_frame >= WAIFU_FAST_TRANSITION_HALF_FRAMES * 2) {
+            enter_deck_editor_after_assets();
         }
         break;
 
@@ -6561,8 +8399,7 @@ void waifu_fm_step(const WaifuFmInput *input)
             }
         }
         if (press_b) {
-            g_i_state = WAIFU_I_MENU;
-            g_i_frame = -1;
+            enter_menu_after_assets();
         }
         break;
 
@@ -6579,8 +8416,7 @@ void waifu_fm_step(const WaifuFmInput *input)
             } else if (g_story_pyramid_cursor == 1) {
                 reset_story_deck_editor();
                 g_story_editor_from_pyramid = 1;
-                g_i_state = WAIFU_I_DECK_EDITOR;
-                g_i_frame = -1;
+                enter_deck_editor_after_assets();
             } else {
                 g_i_state = WAIFU_I_STORY_MAP;
                 g_i_frame = -1;
@@ -6602,9 +8438,8 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     case WAIFU_I_STORY_TO_PLAZA:
         draw_story_to_plaza_transition(g_i_frame);
-        if (g_i_frame >= 48) {
-            g_i_state = WAIFU_I_STORY_PLAZA;
-            g_i_frame = 24;
+        if (g_i_frame >= WAIFU_FAST_TRANSITION_HALF_FRAMES * 2) {
+            enter_story_plaza_after_assets();
         }
         break;
 
@@ -6615,18 +8450,10 @@ void waifu_fm_step(const WaifuFmInput *input)
             story_dialogue_for_duel(g_story_duel_index, &line_count);
             ++g_story_plaza_line;
             if (g_story_plaza_line >= line_count) {
-                if (g_story_deck_count == STORY_DECK_SIZE) {
-                    recalc_story_deck_counts();
-                    init_story_battle_state();
-                    g_i_state = WAIFU_I_BATTLE;
-                    g_i_frame = -1;
-                } else {
-                    g_deck_flash = 60;
-                    reset_story_deck_editor();
-                    g_story_editor_from_pyramid = 0;
-                    g_i_state = WAIFU_I_DECK_EDITOR;
-                    g_i_frame = -1;
-                }
+                reset_story_deck_editor();
+                g_story_editor_from_pyramid = 0;
+                g_deck_flash = (g_story_deck_count == STORY_DECK_SIZE) ? 0 : 60;
+                enter_deck_editor_after_assets();
             }
         }
         if (press_b) {
@@ -6657,8 +8484,7 @@ void waifu_fm_step(const WaifuFmInput *input)
                     g_i_frame = -1;
                 } else {
                     init_story_battle_state();
-                    g_i_state = WAIFU_I_BATTLE;
-                    g_i_frame = -1;
+                    enter_battle_after_assets();
                 }
             } else {
                 g_deck_flash = 60;
@@ -6677,6 +8503,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_BATTLE:
+        waifu_fm_use_common_palette();
         step_battle_interactive(input, press_up, press_down, press_left, press_right, press_a, press_b, press_start, press_tab);
         if (press_b && g_b_phase != IB_CARD_PREVIEW && g_b_phase != IB_TALLY && g_b_phase_frame > 12) {
             /* Back is only a local action inside battle screens; no hidden auto-quit. */
@@ -6684,6 +8511,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
     }
 
+    update_music_for_current_state();
     g_prev_input = *input;
     ++g_i_frame;
 }
@@ -6800,8 +8628,84 @@ static void debug_jump_to_story_cutscene(int duel_index)
     g_story_duel_index = duel_index;
     g_story_map_cursor = 1;
     g_story_plaza_line = 0;
-    g_i_state = WAIFU_I_STORY_PLAZA;
+    request_story_duel_assets();
+    enter_state_after_assets(WAIFU_I_STORY_PLAZA);
+}
+
+static void debug_setup_music_demo_state(const char *name)
+{
+    waifu_fm_reset_interactive();
+    if (!name) return;
+    if (!strcmp(name, "title")) {
+        g_i_state = WAIFU_I_TITLE;
+    } else if (!strcmp(name, "opening-dream") || !strcmp(name, "dream")) {
+        g_story_intro_line = 0;
+        g_i_state = WAIFU_I_STORY_INTRO;
+    } else if (!strcmp(name, "deck-editor") || !strcmp(name, "editor")) {
+        generate_story_starter_deck();
+        generate_story_storage_pool();
+        reset_story_deck_editor();
+        g_story_editor_from_pyramid = 0;
+        g_i_state = WAIFU_I_DECK_EDITOR;
+    } else if (!strcmp(name, "random-battle") || !strcmp(name, "battle")) {
+        init_battle_state();
+        g_story_battle_active = 0;
+        g_i_state = WAIFU_I_BATTLE;
+    } else if (!strcmp(name, "boss")) {
+        init_battle_state();
+        g_story_battle_active = 1;
+        g_story_duel_index = STORY_MAX_DUELS - 2;
+        g_i_state = WAIFU_I_BATTLE;
+    } else if (!strcmp(name, "final-boss") || !strcmp(name, "final")) {
+        init_battle_state();
+        g_story_battle_active = 1;
+        g_story_duel_index = STORY_MAX_DUELS - 1;
+        g_i_state = WAIFU_I_BATTLE;
+    } else if (!strcmp(name, "results") || !strcmp(name, "result")) {
+        init_battle_state();
+        g_story_battle_active = 0;
+        g_i_state = WAIFU_I_BATTLE;
+        g_b_result = 1;
+        g_b_phase = IB_TALLY;
+        g_b_phase_frame = 0;
+    }
     g_i_frame = 0;
+    update_music_for_current_state();
+}
+
+static void debug_setup_asset_load_demo(const char *name)
+{
+    if (!name) return;
+    waifu_assets_reset();
+    if (!strcmp(name, "title")) {
+        waifu_assets_request_title();
+        enter_state_after_assets(WAIFU_I_TITLE);
+    } else if (!strcmp(name, "story-intro") || !strcmp(name, "intro")) {
+        g_story_intro_line = 0;
+        waifu_assets_request_story_intro();
+        enter_state_after_assets(WAIFU_I_STORY_INTRO);
+    } else if (!strncmp(name, "story-duel", 10) || !strncmp(name, "duel", 4)) {
+        const char *suffix = !strncmp(name, "story-duel", 10) ? name + 10 : name + 4;
+        int duel = (*suffix == '-' || *suffix == '_') ? atoi(suffix + 1) : atoi(suffix);
+        if (duel < 0) duel = 0;
+        if (duel >= STORY_MAX_DUELS) duel = STORY_MAX_DUELS - 1;
+        g_story_duel_index = duel;
+        g_story_plaza_line = 0;
+        request_story_duel_assets();
+        enter_state_after_assets(WAIFU_I_STORY_PLAZA);
+    } else if (!strcmp(name, "deck-editor") || !strcmp(name, "cards")) {
+        generate_story_starter_deck();
+        generate_story_storage_pool();
+        reset_story_deck_editor();
+        g_story_editor_from_pyramid = 0;
+        waifu_assets_request_cards();
+        enter_state_after_assets(WAIFU_I_DECK_EDITOR);
+    } else if (!strcmp(name, "battle")) {
+        init_battle_state();
+        request_battle_cards_for_known_decks();
+        enter_state_after_assets(WAIFU_I_BATTLE);
+    }
+    update_music_for_current_state();
 }
 
 static void debug_put_player_monster(int slot, int card, int faceup, int defense)
@@ -6842,7 +8746,11 @@ static void debug_setup_fusion_equip_scenario(const char *name)
         g_i_com_used[i] = 1;
     }
 
-    if (!strcmp(name, "equips-only")) {
+    if (!strcmp(name, "equip-reveal")) {
+        g_i_player_hand[0] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_used[0] = 0;
+        debug_put_player_monster(0, 12, 0, 0);
+    } else if (!strcmp(name, "equips-only")) {
         g_i_player_hand[0] = SUPPORT_EQUIP_CARD_ID;
         g_i_player_hand[1] = SUPPORT_EQUIP_CARD_ID;
         g_i_player_used[0] = 0;
@@ -6892,6 +8800,9 @@ static void debug_setup_fusion_equip_scenario(const char *name)
     g_b_com_monster_played_this_turn = 0;
     clear_player_fusion_queue();
     clear_battle_snapshot();
+    if (!strcmp(name, "equip-reveal")) {
+        start_equip(0, 0, 0);
+    }
 }
 
 static void debug_setup_ai_demo_scenario(const char *name)
@@ -6915,7 +8826,18 @@ static void debug_setup_ai_demo_scenario(const char *name)
     g_b_player_fused_this_turn = 0;
     clear_battle_snapshot();
 
-    if (!strcmp(name, "direct-switch")) {
+    if (!strcmp(name, "field-used-dither")) {
+        debug_put_player_monster(0, 15, 1, 0);
+        debug_put_player_monster(1, 22, 1, 0);
+        debug_put_player_monster(2, 36, 1, 0);
+        g_i_player_attacked[0] = 1;
+        g_i_player_attacked[1] = 1;
+        g_i_player_attacked[2] = 0;
+        g_b_selected_player_slot = 1;
+        g_b_top_col = 1;
+        g_b_top_row = PLAYER_CARD_ROW;
+        g_b_phase = IB_PLAYER_TOP;
+    } else if (!strcmp(name, "direct-switch")) {
         debug_put_com_monster(0, 15, 0, 1); /* 1500 ATK, starts in defense. */
         debug_put_com_monster(1, 22, 0, 1); /* 1600 ATK, starts in defense. */
         debug_put_com_monster(2, 36, 0, 1); /* 2300 ATK, starts in defense. */
@@ -6942,12 +8864,15 @@ int main(int argc, char **argv)
     int scripted_render = 0;
     const char *out_dir = "headless_frames";
     const char *record_mkv = NULL;
+    const char *record_wav = NULL;
     const char *commands_path = NULL;
     int no_png = 0;
     int dump_state = 0;
     int story_cutscene_preview = -1;
     const char *ai_demo_scenario = NULL;
     const char *fusion_equip_scenario = NULL;
+    const char *music_demo_state = NULL;
+    const char *asset_load_demo = NULL;
     CommandEvent events[MAX_COMMAND_EVENTS];
     int event_count = 0;
     int f;
@@ -6960,11 +8885,17 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--scripted-render")) scripted_render = 1;
         else if (!strcmp(argv[i], "--commands") && i + 1 < argc) commands_path = argv[++i];
         else if (!strcmp(argv[i], "--record-mkv") && i + 1 < argc) record_mkv = argv[++i];
+        else if (!strcmp(argv[i], "--record-wav") && i + 1 < argc) record_wav = argv[++i];
         else if (!strcmp(argv[i], "--no-png")) no_png = 1;
         else if (!strcmp(argv[i], "--dump-state")) dump_state = 1;
         else if (!strcmp(argv[i], "--story-cutscene-preview") && i + 1 < argc) story_cutscene_preview = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--ai-demo-scenario") && i + 1 < argc) ai_demo_scenario = argv[++i];
         else if (!strcmp(argv[i], "--fusion-equip-scenario") && i + 1 < argc) fusion_equip_scenario = argv[++i];
+        else if (!strcmp(argv[i], "--music-demo-state") && i + 1 < argc) music_demo_state = argv[++i];
+        else if (!strcmp(argv[i], "--asset-load-demo") && i + 1 < argc) asset_load_demo = argv[++i];
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+        else if (!strcmp(argv[i], "--profile-render")) g_profile_render_enabled = 1;
+#endif
         else if (!strcmp(argv[i], "--deckout-demo")) g_force_deckout_demo = 1;
         else if (!strcmp(argv[i], "--lp-loss-demo")) g_force_lp_loss_demo = 1;
     }
@@ -6984,6 +8915,9 @@ int main(int argc, char **argv)
     }
 
     zmbv_mkv_recorder_t *rec = NULL;
+    WaifuSoundWavWriter wav;
+    int wav_open = 0;
+    int16_t audio_frame[WAIFU_SOUND_SAMPLES_PER_FRAME * WAIFU_SOUND_CHANNELS];
     if (record_mkv) {
         char err[256] = {0};
         rec = zmbv_mkv_open(record_mkv, W, H, 60, 1, err, sizeof(err));
@@ -6992,12 +8926,22 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+    if (record_wav) {
+        if (!waifu_sound_wav_open(&wav, record_wav)) {
+            fprintf(stderr, "record-wav failed: %s\n", record_wav);
+            if (rec) zmbv_mkv_abort(rec);
+            return 1;
+        }
+        wav_open = 1;
+    }
 
     if (!no_png) ensure_dir(out_dir);
     waifu_fm_reset_interactive();
     if (story_cutscene_preview >= 0) debug_jump_to_story_cutscene(story_cutscene_preview);
     if (fusion_equip_scenario) debug_setup_fusion_equip_scenario(fusion_equip_scenario);
     if (ai_demo_scenario) debug_setup_ai_demo_scenario(ai_demo_scenario);
+    if (music_demo_state) debug_setup_music_demo_state(music_demo_state);
+    if (asset_load_demo) debug_setup_asset_load_demo(asset_load_demo);
     for (f = 0; f < frames; ++f) {
         if (scripted_render) {
             render_frame(f);
@@ -7011,6 +8955,23 @@ int main(int argc, char **argv)
             return 1;
         }
         if (!no_png && (f % dump_every) == 0) write_frame_png(out_dir, f);
+        if (wav_open) {
+            waifu_fm_audio_mix_s16(audio_frame, WAIFU_SOUND_SAMPLES_PER_FRAME);
+            if (!waifu_sound_wav_write(&wav, audio_frame, WAIFU_SOUND_SAMPLES_PER_FRAME)) {
+                fprintf(stderr, "record-wav write failed at frame %d\n", f);
+                waifu_sound_wav_abort(&wav);
+                if (rec) zmbv_mkv_abort(rec);
+                return 1;
+            }
+        }
+    }
+    if (wav_open) {
+        if (!waifu_sound_wav_close(&wav)) {
+            fprintf(stderr, "record-wav close failed\n");
+            if (rec) zmbv_mkv_abort(rec);
+            return 1;
+        }
+        printf("wrote %s (%d Hz stereo PCM, %d frames)\n", record_wav, WAIFU_SOUND_SAMPLE_RATE, frames);
     }
     if (rec) {
         if (!zmbv_mkv_close(rec)) {
@@ -7020,8 +8981,8 @@ int main(int argc, char **argv)
         printf("wrote %s (%d ZMBV MKV frames at 256x240)\n", record_mkv, frames);
     }
     if (dump_state) {
-        printf("STATE frame=%d phase=%d phase_frame=%d turns=%d you_lp=%d com_lp=%d ",
-               frames, (int)g_b_phase, g_b_phase_frame, g_b_turns, g_you_lp, g_com_lp);
+        printf("STATE frame=%d state=%d music=%s music_id=%d phase=%d phase_frame=%d turns=%d you_lp=%d com_lp=%d ",
+               frames, (int)g_i_state, waifu_fm_audio_music_name(), (int)waifu_fm_audio_music_track(), (int)g_b_phase, g_b_phase_frame, g_b_turns, g_you_lp, g_com_lp);
         printf("player_field0=%d player_field1=%d player_field2=%d player_field3=%d player_field4=%d ",
                g_i_player_field[0], g_i_player_field[1], g_i_player_field[2], g_i_player_field[3], g_i_player_field[4]);
         printf("player_faceup0=%d player_defense0=%d com_field0=%d com_field1=%d com_field2=%d com_faceup0=%d com_defense0=%d com_defense1=%d com_defense2=%d player_attacked0=%d com_attacked0=%d com_attacked1=%d com_attacked2=%d ",
@@ -7043,12 +9004,39 @@ int main(int argc, char **argv)
                g_story_deck_count, g_story_storage_count, story_deck_max_card_copies(), g_deck_tab, g_deck_cursor,
                g_story_duel_index, g_story_map_cursor, g_story_pyramid_cursor, g_story_plaza_line,
                g_story_editor_from_pyramid, g_story_save_status, story_save_exists(), story_opponent_name());
+        printf("asset_backend=%s asset_req=%s asset_ready=%d title_ready=%d cards_ready=%d serena_ready=%d opp_ready=%d asset_ram=%lu asset_high=%lu asset_budget=%lu asset_budget_ok=%d ",
+               waifu_assets_backend_name(), waifu_assets_request_name(waifu_assets_pending_request()),
+               waifu_assets_ready(), waifu_assets_title_ready(), waifu_assets_cards_ready(),
+               waifu_assets_story_portrait_ready(STORY_PORTRAIT_SERENA),
+               waifu_assets_story_portrait_ready(story_opponent_info()->portrait_id),
+               (unsigned long)waifu_assets_ram_used_bytes(),
+               (unsigned long)waifu_assets_ram_high_water_bytes(),
+               (unsigned long)waifu_assets_ram_budget_bytes(),
+               waifu_assets_ram_budget_ok());
         printf("hand0=%d hand1=%d hand2=%d hand3=%d hand4=%d used0=%d used1=%d used2=%d used3=%d used4=%d fusion_count=%d fusion0=%d fusion1=%d fusion2=%d fusion3=%d fusion4=%d deck_pos=%d deck_left=%d\n",
                g_i_player_hand[0], g_i_player_hand[1], g_i_player_hand[2], g_i_player_hand[3], g_i_player_hand[4],
                g_i_player_used[0], g_i_player_used[1], g_i_player_used[2], g_i_player_used[3], g_i_player_used[4],
                g_b_fusion_count, g_b_fusion_hand_slots[0], g_b_fusion_hand_slots[1], g_b_fusion_hand_slots[2], g_b_fusion_hand_slots[3], g_b_fusion_hand_slots[4],
                g_story_player_deck_pos, g_i_player_deck_left);
     }
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+    if (g_profile_render_enabled) {
+        double hand_avg_us = g_profile_hand_calls ? (double)g_profile_hand_total_us / (double)g_profile_hand_calls : 0.0;
+        double hand_card_avg_us = g_profile_hand_card_draws ? (double)g_profile_hand_card_us / (double)g_profile_hand_card_draws : 0.0;
+        double cards_per_hand = g_profile_hand_calls ? (double)g_profile_hand_card_draws / (double)g_profile_hand_calls : 0.0;
+        double board_hit_copy_avg_us = g_profile_board_cache_hits ? (double)g_profile_board_cache_copy_us / (double)(g_profile_board_cache_hits + g_profile_board_cache_misses) : 0.0;
+        double board_miss_render_avg_us = g_profile_board_cache_misses ? (double)g_profile_board_cache_render_us / (double)g_profile_board_cache_misses : 0.0;
+        printf("PROFILE_RENDER board_cache_hits=%llu board_cache_misses=%llu board_render_us=%llu board_copy_us=%llu board_miss_render_avg_us=%.2f board_copy_avg_us=%.2f ",
+               g_profile_board_cache_hits, g_profile_board_cache_misses,
+               g_profile_board_cache_render_us, g_profile_board_cache_copy_us,
+               board_miss_render_avg_us, board_hit_copy_avg_us);
+        printf("hand_calls=%llu hand_total_us=%llu hand_avg_us=%.2f hand_card_draws=%llu hand_card_us=%llu hand_card_avg_us=%.2f cards_per_hand=%.2f ",
+               g_profile_hand_calls, g_profile_hand_total_us, hand_avg_us,
+               g_profile_hand_card_draws, g_profile_hand_card_us, hand_card_avg_us, cards_per_hand);
+        printf("card2d_fast=%llu card2d_generic=%llu ui_fast_fills=%llu\n",
+               g_profile_card2d_fast_calls, g_profile_card2d_generic_calls, g_profile_ui_fast_fill_calls);
+    }
+#endif
     return 0;
 }
 #endif /* WAIFU_FM_NO_HEADLESS_MAIN */

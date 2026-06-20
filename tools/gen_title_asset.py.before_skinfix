@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Regenerate title assets.
+
+The normal PC/headless title uses an RGB-optimized indexed image and RGB
+palette.  NEC PC-FX cannot display arbitrary RGB888 palette colors; VCE entries
+are Y8U4V4.  If the RGB palette is converted after quantization, the title art
+keeps indices chosen for colors the hardware cannot represent, producing color
+noise and posterized skin/sky.  Therefore this tool also emits a PC-FX-specific
+indexed title image and PC-FX-native YUV palette.  The gameplay code still sees
+one title-screen asset API; the PC-FX CD backend maps the title blob to the
+PC-FX-specific external file.
+"""
+from pathlib import Path
+import re
+from PIL import Image, ImageOps
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / 'assets/source/title/titlescreen_shardsofcards.png'
+PAL_HEADER = ROOT / 'src/generated/waifu_assets.h'
+OUT = ROOT / 'src/generated/title_asset.h'
+W, H = 256, 240
+
+
+def parse_common_assets(path: Path):
+    text = path.read_text()
+    m = re.search(r'static const uint8_t waifu_palette_rgb\[\]\s*=\s*\{(.*?)\};', text, re.S)
+    if not m:
+        raise RuntimeError('Could not find waifu_palette_rgb[] in waifu_assets.h. Run tools/gen_assets.py first.')
+    nums = [int(x) for x in re.findall(r'\d+', m.group(1))]
+    if len(nums) < 768:
+        raise RuntimeError(f'Palette has {len(nums)} values, expected 768')
+    common = [(nums[i], nums[i + 1], nums[i + 2]) for i in range(0, 768, 3)]
+    idx_values = [int(v) for v in re.findall(r'^#define\s+IDX_[A-Z0-9_]+\s+(\d+)\s*$', text, re.M)]
+    reserved = {i for i in idx_values if 0 <= i < 256}
+    return common, reserved
+
+
+def clamp(v, lo=0, hi=255):
+    return lo if v < lo else hi if v > hi else v
+
+
+def yuv_to_rgb(y: int, u4: int, v4: int):
+    u = (u4 << 4) - 128
+    v = (v4 << 4) - 128
+    r = int(round(y - 0.000039457070707 * u + 1.139827967171717 * v))
+    g = int(round(y - 0.394610164141414 * u - 0.580500315656566 * v))
+    b = int(round(y + 2.031999684343434 * u - 0.000481376262626 * v))
+    return (clamp(r), clamp(g), clamp(b))
+
+
+def rgb888_to_pcfx_yuv(rgb):
+    r, g, b = rgb
+    best_err = 10**18
+    best = (0, 8, 8)
+    for u4 in range(16):
+        u = (u4 << 4) - 128
+        for v4 in range(16):
+            v = (v4 << 4) - 128
+            ro = -0.000039457070707 * u + 1.139827967171717 * v
+            go = -0.394610164141414 * u - 0.580500315656566 * v
+            bo = 2.031999684343434 * u - 0.000481376262626 * v
+            y = int(round((2 * (r - ro) + 4 * (g - go) + (b - bo)) / 7.0))
+            y = clamp(y)
+            rr, gg, bb = yuv_to_rgb(y, u4, v4)
+            dr = rr - r; dg = gg - g; db = bb - b
+            err = 2 * dr * dr + 4 * dg * dg + db * db
+            if err < best_err:
+                best_err = err
+                best = (y, u4, v4)
+    y, u4, v4 = best
+    return (y << 8) | (u4 << 4) | v4
+
+
+def nearest_idx(rgb, pal, candidates):
+    r, g, b = rgb
+    best, bd = 0, 10**12
+    for i in candidates:
+        pr, pg, pb = pal[i]
+        d = (pr - r) * (pr - r) + (pg - g) * (pg - g) + (pb - b) * (pb - b)
+        if d < bd:
+            best, bd = i, d
+    return best
+
+
+def quantize_title_palette(img: Image.Image, color_count: int):
+    # Pillow's MEDIANCUT path gives a compact source-specific palette while
+    # keeping generation deterministic for regression builds.
+    q = img.quantize(colors=max(1, min(256, color_count)), method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    raw = q.getpalette()[:color_count * 3]
+    colors = []
+    for i in range(0, len(raw), 3):
+        if i + 2 < len(raw):
+            colors.append((raw[i], raw[i + 1], raw[i + 2]))
+    if not colors:
+        colors = [(0, 0, 0)]
+    return colors
+
+
+def assign_pixels_to_palette(img: Image.Image, pal, candidates):
+    return [nearest_idx(px, pal, candidates) for px in img.getdata()]
+
+
+def build_pcfx_title(img: Image.Image, common, reserved, free_slots):
+    # Initial centers from the RGB title palette, then Lloyd refine in RGB space
+    # while snapping every center to the nearest PC-FX-representable YUV color.
+    centers = quantize_title_palette(img, len(free_slots))
+    centers = (centers + [centers[-1]])[:len(free_slots)]
+    pixels = list(img.getdata())
+
+    def snap(rgb):
+        w = rgb888_to_pcfx_yuv(rgb)
+        return w, yuv_to_rgb((w >> 8) & 255, (w >> 4) & 15, w & 15)
+
+    yuv_centers = []
+    rgb_centers = []
+    for c in centers:
+        w, rr = snap(c)
+        yuv_centers.append(w)
+        rgb_centers.append(rr)
+
+    # A small fixed iteration count is deterministic and cheap for 61k pixels.
+    for _ in range(6):
+        sums = [[0, 0, 0, 0] for _ in rgb_centers]
+        for r, g, b in pixels:
+            best = 0; bd = 10**12
+            for i, (pr, pg, pb) in enumerate(rgb_centers):
+                d = 2 * (pr - r) * (pr - r) + 4 * (pg - g) * (pg - g) + (pb - b) * (pb - b)
+                if d < bd:
+                    best = i; bd = d
+            s = sums[best]
+            s[0] += r; s[1] += g; s[2] += b; s[3] += 1
+        changed = False
+        for i, s in enumerate(sums):
+            if s[3]:
+                mean = (s[0] // s[3], s[1] // s[3], s[2] // s[3])
+                w, rr = snap(mean)
+                if w != yuv_centers[i]:
+                    changed = True
+                yuv_centers[i] = w
+                rgb_centers[i] = rr
+        if not changed:
+            break
+
+    pcfx_yuv = [rgb888_to_pcfx_yuv(common[i]) for i in range(256)]
+    pcfx_rgb = [yuv_to_rgb((pcfx_yuv[i] >> 8) & 255, (pcfx_yuv[i] >> 4) & 15, pcfx_yuv[i] & 15) for i in range(256)]
+    for n, slot in enumerate(free_slots):
+        pcfx_yuv[slot] = yuv_centers[n]
+        pcfx_rgb[slot] = rgb_centers[n]
+
+    pcfx_data = assign_pixels_to_palette(img, pcfx_rgb, free_slots)
+    return pcfx_yuv, pcfx_data
+
+
+def main():
+    if not SRC.exists():
+        raise FileNotFoundError(SRC)
+    if not PAL_HEADER.exists():
+        raise FileNotFoundError(PAL_HEADER)
+
+    common, reserved = parse_common_assets(PAL_HEADER)
+    free_slots = [i for i in range(256) if i not in reserved]
+    if not free_slots:
+        raise RuntimeError('No non-IDX palette slots left for title art')
+
+    img = ImageOps.fit(Image.open(SRC).convert('RGB'), (W, H), method=Image.Resampling.BILINEAR, centering=(0.5, 0.5))
+    title_colors = quantize_title_palette(img, len(free_slots))
+
+    # Start with the common palette so every reserved text/UI slot is identical.
+    # Non-reserved slots are then replaced with title-art colors.
+    title_pal = list(common)
+    for n, slot in enumerate(free_slots):
+        title_pal[slot] = title_colors[n % len(title_colors)]
+
+    # Do not allow the normal title bitmap to use reserved IDX_* slots; they are
+    # stable for runtime text/panel drawing only.
+    data = assign_pixels_to_palette(img, title_pal, free_slots)
+
+    pcfx_yuv, pcfx_data = build_pcfx_title(img, common, reserved, free_slots)
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    with OUT.open('w') as f:
+        f.write('#ifndef TITLE_ASSET_H\n#define TITLE_ASSET_H\n\n')
+        f.write('#include <stdint.h>\n\n')
+        f.write('#define TITLE_SCREEN_W 256\n#define TITLE_SCREEN_H 240\n')
+        f.write('static const uint8_t title_screen_palette_rgb[256 * 3] = {\n')
+        flat_pal = [v for rgb in title_pal for v in rgb]
+        for i in range(0, len(flat_pal), 18):
+            f.write('    ' + ','.join(str(v) for v in flat_pal[i:i + 18]) + ',\n')
+        f.write('};\n')
+        f.write('static const uint16_t title_screen_palette_pcfx_yuv[256] = {\n')
+        for i in range(0, len(pcfx_yuv), 12):
+            f.write('    ' + ','.join(f'0x{v:04x}' for v in pcfx_yuv[i:i + 12]) + ',\n')
+        f.write('};\n')
+        f.write('#ifndef WAIFU_ASSET_EXTERNAL_TITLE_IMAGE\n')
+        f.write('static const uint8_t title_screen_img[TITLE_SCREEN_W * TITLE_SCREEN_H] = {\n')
+        for i in range(0, len(data), 32):
+            f.write('    ' + ','.join(str(v) for v in data[i:i + 32]) + ',\n')
+        f.write('};\n')
+        f.write('#endif /* WAIFU_ASSET_EXTERNAL_TITLE_IMAGE */\n\n#endif\n')
+    bin_out = ROOT / 'assets/generated'
+    bin_out.mkdir(parents=True, exist_ok=True)
+    (bin_out / 'title_screen_img.bin').write_bytes(bytes(data))
+    (bin_out / 'title_screen_pcfx_img.bin').write_bytes(bytes(pcfx_data))
+    print(f'wrote {OUT} with {len(free_slots)} title-art palette slots and {len(reserved)} preserved IDX slots')
+    print('wrote assets/generated/title_screen_img.bin and title_screen_pcfx_img.bin')
+
+
+if __name__ == '__main__':
+    main()

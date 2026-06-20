@@ -155,7 +155,178 @@ static uint8_t tex_row_lut_ready;
 #endif
 
 static inline int32_t cfx_abs_i32(int32_t v) { return v < 0 ? -v : v; }
-static inline int32_t cfx_div_toward_zero(int32_t n, int16_t d) { return n / d; }
+
+static const uint16_t cfx_recip_q15_u8[257] = {
+    0, 32768, 16384, 10922, 8192, 6553, 5461, 4681, 4096, 3640, 3276, 2978, 2730, 2520, 2340, 2184,
+    2048, 1927, 1820, 1724, 1638, 1560, 1489, 1424, 1365, 1310, 1260, 1213, 1170, 1129, 1092, 1057,
+    1024, 992, 963, 936, 910, 885, 862, 840, 819, 799, 780, 762, 744, 728, 712, 697,
+    682, 668, 655, 642, 630, 618, 606, 595, 585, 574, 564, 555, 546, 537, 528, 520,
+    512, 504, 496, 489, 481, 474, 468, 461, 455, 448, 442, 436, 431, 425, 420, 414,
+    409, 404, 399, 394, 390, 385, 381, 376, 372, 368, 364, 360, 356, 352, 348, 344,
+    341, 337, 334, 330, 327, 324, 321, 318, 315, 312, 309, 306, 303, 300, 297, 295,
+    292, 289, 287, 284, 282, 280, 277, 275, 273, 270, 268, 266, 264, 262, 260, 258,
+    256, 254, 252, 250, 248, 246, 244, 242, 240, 239, 237, 235, 234, 232, 230, 229,
+    227, 225, 224, 222, 221, 219, 218, 217, 215, 214, 212, 211, 210, 208, 207, 206,
+    204, 203, 202, 201, 199, 198, 197, 196, 195, 193, 192, 191, 190, 189, 188, 187,
+    186, 185, 184, 183, 182, 181, 180, 179, 178, 177, 176, 175, 174, 173, 172, 171,
+    170, 169, 168, 168, 167, 166, 165, 164, 163, 163, 162, 161, 160, 159, 159, 158,
+    157, 156, 156, 155, 154, 153, 153, 152, 151, 151, 150, 149, 148, 148, 147, 146,
+    146, 145, 144, 144, 143, 143, 142, 141, 141, 140, 140, 139, 138, 138, 137, 137,
+    136, 135, 135, 134, 134, 133, 133, 132, 132, 131, 131, 130, 130, 129, 129, 128,
+    128
+};
+
+static const uint32_t cfx_recip_q24_u8[257] = {
+    0, 16777216, 8388608, 5592405, 4194304, 3355443, 2796203, 2396745,
+    2097152, 1864135, 1677722, 1525201, 1398101, 1290555, 1198373, 1118481,
+    1048576, 986895, 932068, 883011, 838861, 798915, 762601, 729444,
+    699051, 671089, 645278, 621378, 599186, 578525, 559241, 541201,
+    524288, 508400, 493448, 479349, 466034, 453438, 441506, 430185,
+    419430, 409200, 399458, 390168, 381300, 372827, 364722, 356962,
+    349525, 342392, 335544, 328965, 322639, 316551, 310689, 305040,
+    299593, 294337, 289262, 284360, 279620, 275036, 270600, 266305,
+    262144, 258111, 254200, 250406, 246724, 243148, 239675, 236299,
+    233017, 229825, 226719, 223696, 220753, 217886, 215093, 212370,
+    209715, 207126, 204600, 202135, 199729, 197379, 195084, 192842,
+    190650, 188508, 186414, 184365, 182361, 180400, 178481, 176602,
+    174763, 172961, 171196, 169467, 167772, 166111, 164483, 162886,
+    161319, 159783, 158276, 156796, 155345, 153919, 152520, 151146,
+    149797, 148471, 147169, 145889, 144631, 143395, 142180, 140985,
+    139810, 138655, 137518, 136400, 135300, 134218, 133153, 132104,
+    131072, 130056, 129056, 128070, 127100, 126144, 125203, 124276,
+    123362, 122461, 121574, 120699, 119837, 118987, 118149, 117323,
+    116508, 115705, 114912, 114131, 113360, 112599, 111848, 111107,
+    110376, 109655, 108943, 108240, 107546, 106861, 106185, 105517,
+    104858, 104206, 103563, 102928, 102300, 101680, 101068, 100462,
+    99864, 99273, 98690, 98112, 97542, 96978, 96421, 95870,
+    95325, 94787, 94254, 93727, 93207, 92692, 92183, 91679,
+    91181, 90688, 90200, 89718, 89241, 88768, 88301, 87839,
+    87381, 86929, 86480, 86037, 85598, 85164, 84733, 84308,
+    83886, 83469, 83056, 82646, 82241, 81840, 81443, 81049,
+    80660, 80274, 79892, 79513, 79138, 78766, 78398, 78034,
+    77672, 77314, 76960, 76608, 76260, 75915, 75573, 75234,
+    74898, 74565, 74235, 73908, 73584, 73263, 72944, 72629,
+    72316, 72005, 71698, 71392, 71090, 70790, 70493, 70198,
+    69905, 69615, 69327, 69042, 68759, 68478, 68200, 67924,
+    67650, 67378, 67109, 66841, 66576, 66313, 66052, 65793,
+    65536
+};
+
+static inline int32_t cfx_fast_div_tz_i32_u16_q15(int32_t n, uint16_t d)
+{
+    if (d == 0) return 0;
+    if (d == 1) return n;
+    if (d > 256) {
+        /* Fast board path only uses screen-sized spans/edges.  Clamp rather
+           than falling back to DIV so the V810 hot renderer remains division-free. */
+        d = 256;
+    }
+    uint32_t a;
+    uint8_t neg = 0;
+    if (n < 0) {
+        neg = 1;
+        a = (uint32_t)(-n);
+    } else {
+        a = (uint32_t)n;
+    }
+    uint32_t q = (a * (uint32_t)cfx_recip_q15_u8[d]) >> 15;
+    return neg ? -(int32_t)q : (int32_t)q;
+}
+
+static const uint16_t cfx_recip_q8_u16[257] = {
+    0, 256, 128, 85, 64, 51, 43, 37, 32, 28, 26, 23, 21, 20, 18, 17,
+    16, 15, 14, 13, 13, 12, 12, 11, 11, 10, 10, 9, 9, 9, 9, 8,
+    8, 8, 8, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 5,
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1
+};
+
+static inline int32_t cfx_div_toward_zero(int32_t n, int16_t d)
+{
+    if (d == 0) return 0;
+    uint8_t neg = 0;
+    if (n < 0) { n = -n; neg ^= 1; }
+    if (d < 0) { d = (int16_t)-d; neg ^= 1; }
+    uint16_t ud = (uint16_t)d;
+    uint32_t un = (uint32_t)n;
+    uint32_t q;
+    if (ud == 1) {
+        q = un;
+    } else if (ud <= 256u) {
+        if ((un & 0xffffu) == 0u && (un >> 16) <= 255u) {
+            q = (((un >> 16) * cfx_recip_q24_u8[ud]) >> 8);
+        } else if ((un & 0xffu) == 0u && (un >> 8) <= 511u) {
+            q = (((un >> 8) * cfx_recip_q24_u8[ud]) >> 16);
+        } else if (un <= 131071u) {
+            q = ((un * (uint32_t)cfx_recip_q15_u8[ud]) >> 15);
+        } else {
+            q = ((un * (uint32_t)cfx_recip_q8_u16[ud]) >> 8);
+        }
+    } else {
+        uint16_t scaled = ud;
+        uint16_t shift = 0;
+        while (scaled > 256u) { scaled = (uint16_t)((scaled + 1u) >> 1); ++shift; }
+        q = ((un * (uint32_t)cfx_recip_q8_u16[scaled]) >> (8 + shift));
+    }
+
+    /* Reciprocal estimate, then exact toward-zero correction.  The estimate is
+       already within a few units for renderer denominators, so this is still
+       cheaper than V810 DIV in the hot 3D setup while producing the old PC pixels. */
+    uint32_t prod = q * (uint32_t)ud;
+    while (prod > un) {
+        --q;
+        prod -= (uint32_t)ud;
+    }
+    while ((uint32_t)(un - prod) >= (uint32_t)ud) {
+        ++q;
+        prod += (uint32_t)ud;
+    }
+    return neg ? -(int32_t)q : (int32_t)q;
+}
+
+static inline int32_t cfx_div_toward_zero_i32d(int32_t n, int32_t d)
+{
+    if (d == 0) return 0;
+    uint8_t neg = 0;
+    if (n < 0) { n = -n; neg ^= 1; }
+    if (d < 0) { d = -d; neg ^= 1; }
+    uint32_t ud = (uint32_t)d;
+    uint32_t un = (uint32_t)n;
+    uint32_t q;
+    if (ud == 1u) {
+        q = un;
+    } else if (ud <= 256u) {
+        q = (uint32_t)cfx_div_toward_zero((int32_t)un, (int16_t)ud);
+    } else {
+        uint32_t scaled = ud;
+        uint16_t shift = 0;
+        while (scaled > 256u) { scaled = (scaled + 1u) >> 1; ++shift; }
+        q = ((un * (uint32_t)cfx_recip_q8_u16[scaled]) >> (8 + shift));
+        uint32_t prod = q * ud;
+        while (prod > un) {
+            --q;
+            prod -= ud;
+        }
+        while ((uint32_t)(un - prod) >= ud) {
+            ++q;
+            prod += ud;
+        }
+    }
+    return neg ? -(int32_t)q : (int32_t)q;
+}
+
 static inline int32_t cfx_int_to_fixed(int32_t x) { return x << CFX_GEOM_FIXED_SHIFT; }
 static inline uint16_t cfx_pack_tex_state(uint8_t u, uint8_t v) { return (uint16_t)(((uint16_t)v << 8) | (uint16_t)u); }
 static inline int16_t cfx_pack_tex_step_linear(int8_t du, int8_t dv)
@@ -1965,6 +2136,192 @@ static void cfx_draw_textured_quad_scanline(const CfxRenderer3DState *renderer,
         }
     }
 }
+
+#endif
+
+static inline uint16_t cfx_q8_to_q44(DEFAULT_INT q8)
+{
+    /* Source cube UVs are overwhelmingly exact tile endpoints.  Preserve the
+       same endpoint mapping while avoiding V810 division in the common title
+       cube path. */
+    if (q8 <= 0) return 0;
+    if (q8 >= (31 << 8)) return 255;
+    int32_t scaled = cfx_div_toward_zero_i32d((int32_t)q8 * 255, (31 << 8));
+    if (scaled < 0) scaled = 0;
+    if (scaled > 255) scaled = 255;
+    return (uint16_t)scaled;
+}
+
+static inline CfxVertexIn cfx_make_vertex(const Point2D *p)
+{
+    CfxVertexIn v;
+    v.x = (int16_t)p->x;
+    v.y = (int16_t)p->y;
+    v.u = cfx_q8_to_q44(p->u);
+    v.v = cfx_q8_to_q44(p->v);
+    return v;
+}
+
+static inline CfxVertexIn cfx_make_vertex_endpoint(const Point2D *p)
+{
+    CfxVertexIn v;
+    v.x = (int16_t)p->x;
+    v.y = (int16_t)p->y;
+    v.u = (p->u <= 0) ? 0u : 255u;
+    v.v = (p->v <= 0) ? 0u : 255u;
+    return v;
+}
+
+#if CFX_RENDERER_DIRECT_RECT
+typedef struct {
+    int16_t y_start;
+    int16_t y_end;
+    int32_t x;      /* 8.8 */
+    int32_t u;      /* 8.8, but source coordinate uses upper byte */
+    int32_t v;
+    int32_t x_step;
+    int32_t u_step;
+    int32_t v_step;
+} CfxFastQuadEdge;
+
+static void cfx_fast_quad_build_edge(CfxFastQuadEdge *edge, const CfxVertexIn *a, const CfxVertexIn *b)
+{
+    int16_t dy = (int16_t)(b->y - a->y);
+    if (dy == 0) {
+        edge->y_start = a->y;
+        edge->y_end = a->y;
+        edge->x = ((int32_t)a->x) << CFX_GEOM_FIXED_SHIFT;
+        edge->u = ((int32_t)a->u) << 8;
+        edge->v = ((int32_t)a->v) << 8;
+        edge->x_step = edge->u_step = edge->v_step = 0;
+        return;
+    }
+
+    if (dy > 0) {
+        edge->y_start = a->y;
+        edge->y_end = b->y;
+        edge->x = ((int32_t)a->x) << CFX_GEOM_FIXED_SHIFT;
+        edge->u = ((int32_t)a->u) << 8;
+        edge->v = ((int32_t)a->v) << 8;
+        edge->x_step = cfx_fast_div_tz_i32_u16_q15(((int32_t)b->x - (int32_t)a->x) << CFX_GEOM_FIXED_SHIFT, (uint16_t)dy);
+        edge->u_step = cfx_fast_div_tz_i32_u16_q15(((int32_t)b->u - (int32_t)a->u) << 8, (uint16_t)dy);
+        edge->v_step = cfx_fast_div_tz_i32_u16_q15(((int32_t)b->v - (int32_t)a->v) << 8, (uint16_t)dy);
+    } else {
+        dy = (int16_t)-dy;
+        edge->y_start = b->y;
+        edge->y_end = a->y;
+        edge->x = ((int32_t)b->x) << CFX_GEOM_FIXED_SHIFT;
+        edge->u = ((int32_t)b->u) << 8;
+        edge->v = ((int32_t)b->v) << 8;
+        edge->x_step = cfx_fast_div_tz_i32_u16_q15(((int32_t)a->x - (int32_t)b->x) << CFX_GEOM_FIXED_SHIFT, (uint16_t)dy);
+        edge->u_step = cfx_fast_div_tz_i32_u16_q15(((int32_t)a->u - (int32_t)b->u) << 8, (uint16_t)dy);
+        edge->v_step = cfx_fast_div_tz_i32_u16_q15(((int32_t)a->v - (int32_t)b->v) << 8, (uint16_t)dy);
+    }
+}
+
+static uint8_t cfx_draw_textured_quad_fast_affine_direct(const CfxRenderer3DState *renderer,
+                                                         const uint8_t *tile,
+                                                         CfxVertexIn p0, CfxVertexIn p1,
+                                                         CfxVertexIn p2, CfxVertexIn p3)
+{
+    CfxVertexIn points[4] = { p0, p1, p2, p3 };
+    CfxFastQuadEdge edges[4];
+    int16_t min_y = points[0].y;
+    int16_t max_y = points[0].y;
+
+    for (int i = 1; i < 4; ++i) {
+        if (points[i].y < min_y) min_y = points[i].y;
+        if (points[i].y > max_y) max_y = points[i].y;
+    }
+    if (min_y == max_y) return 1;
+
+    cfx_fast_quad_build_edge(&edges[0], &points[0], &points[1]);
+    cfx_fast_quad_build_edge(&edges[1], &points[1], &points[2]);
+    cfx_fast_quad_build_edge(&edges[2], &points[2], &points[3]);
+    cfx_fast_quad_build_edge(&edges[3], &points[3], &points[0]);
+
+    if (min_y < 0) {
+        int16_t skip = (int16_t)-min_y;
+        for (int i = 0; i < 4; ++i) {
+            if (edges[i].y_start < 0 && edges[i].y_end > 0) {
+                edges[i].x += edges[i].x_step * skip;
+                edges[i].u += edges[i].u_step * skip;
+                edges[i].v += edges[i].v_step * skip;
+                edges[i].y_start = 0;
+            }
+        }
+        min_y = 0;
+    }
+    if (max_y > renderer->height) max_y = (int16_t)renderer->height;
+
+    for (int16_t y = min_y; y < max_y; ++y) {
+        int16_t count = 0;
+        int32_t xs_fp[2];
+        int32_t us_fp[2];
+        int32_t vs_fp[2];
+
+        for (int i = 0; i < 4; ++i) {
+            CfxFastQuadEdge *e = &edges[i];
+            if (y >= e->y_start && y < e->y_end) {
+                if (count < 2) {
+                    xs_fp[count] = e->x;
+                    us_fp[count] = e->u;
+                    vs_fp[count] = e->v;
+                    ++count;
+                }
+                e->x += e->x_step;
+                e->u += e->u_step;
+                e->v += e->v_step;
+            }
+        }
+        if (count < 2) continue;
+        if (xs_fp[0] > xs_fp[1]) {
+            int32_t tx = xs_fp[0]; xs_fp[0] = xs_fp[1]; xs_fp[1] = tx;
+            int32_t tu = us_fp[0]; us_fp[0] = us_fp[1]; us_fp[1] = tu;
+            int32_t tv = vs_fp[0]; vs_fp[0] = vs_fp[1]; vs_fp[1] = tv;
+        }
+
+        int16_t x_start = (int16_t)((xs_fp[0] + ((1 << CFX_GEOM_FIXED_SHIFT) - 1)) >> CFX_GEOM_FIXED_SHIFT);
+        int16_t x_end = (int16_t)(xs_fp[1] >> CFX_GEOM_FIXED_SHIFT);
+        int16_t span = (int16_t)(x_end - x_start + 1);
+        if (span <= 0) continue;
+
+        uint16_t denom = (uint16_t)((span > 256) ? 256 : span);
+        int32_t du_fp = cfx_fast_div_tz_i32_u16_q15(us_fp[1] - us_fp[0], denom);
+        int32_t dv_fp = cfx_fast_div_tz_i32_u16_q15(vs_fp[1] - vs_fp[0], denom);
+        int8_t step_u = (int8_t)(du_fp >> 8);
+        int8_t step_v = (int8_t)(dv_fp >> 8);
+        uint16_t tex_state = cfx_pack_tex_state((uint8_t)(us_fp[0] >> 8), (uint8_t)(vs_fp[0] >> 8));
+        cfx_draw_span_direct_tile(renderer, tile, y, x_start, span, tex_state, step_u, step_v);
+    }
+    return 1;
+}
+
+uint8_t cfx_renderer3d_draw_quad_fast_affine(CfxRenderer3D *renderer,
+                                             const Point2D *p0, const Point2D *p1,
+                                             const Point2D *p2, const Point2D *p3,
+                                             DEFAULT_INT tetromino_type)
+{
+    CfxRenderer3DState *state = cfx_state(renderer);
+    if (!state->framebuffer || !state->texture_atlas) return 0;
+    if (tetromino_type < 0) tetromino_type = 0;
+    if (tetromino_type >= CFX_TEXTURE_TILE_COUNT) tetromino_type = CFX_TEXTURE_TILE_COUNT - 1;
+    const uint8_t *tile = state->texture_atlas + ((int32_t)tetromino_type * state->tile_stride_bytes);
+    CfxVertexIn v0 = cfx_make_vertex_endpoint(p0);
+    CfxVertexIn v1 = cfx_make_vertex_endpoint(p1);
+    CfxVertexIn v2 = cfx_make_vertex_endpoint(p2);
+    CfxVertexIn v3 = cfx_make_vertex_endpoint(p3);
+    return cfx_draw_textured_quad_fast_affine_direct(state, tile, v0, v1, v2, v3);
+}
+#else
+uint8_t cfx_renderer3d_draw_quad_fast_affine(CfxRenderer3D *renderer,
+                                             const Point2D *p0, const Point2D *p1,
+                                             const Point2D *p2, const Point2D *p3,
+                                             DEFAULT_INT tetromino_type)
+{
+    cfx_renderer3d_draw_quad(renderer, p0, p1, p2, p3, tetromino_type);
+    return 1;
+}
 #endif
 
 static void cfx_draw_textured_triangle(const CfxRenderer3DState *renderer,
@@ -2026,8 +2383,8 @@ static void cfx_draw_textured_triangle(const CfxRenderer3DState *renderer,
 
     int32_t num_u = (int32_t)temp * ((int32_t)p3.u - (int32_t)p1.u) + cfx_int_to_fixed((int32_t)p1.u - (int32_t)p2.u);
     int32_t num_v = (int32_t)temp * ((int32_t)p3.v - (int32_t)p1.v) + cfx_int_to_fixed((int32_t)p1.v - (int32_t)p2.v);
-    int8_t span_step_u = (int8_t)(int16_t)(num_u / longest);
-    int8_t span_step_v = (int8_t)(int16_t)(num_v / longest);
+    int8_t span_step_u = (int8_t)(int16_t)cfx_div_toward_zero_i32d(num_u, longest);
+    int8_t span_step_v = (int8_t)(int16_t)cfx_div_toward_zero_i32d(num_v, longest);
     int16_t span_step_linear = cfx_pack_tex_step_linear(span_step_u, span_step_v);
 
     for (;;) {
@@ -2073,27 +2430,39 @@ static void cfx_draw_textured_triangle(const CfxRenderer3DState *renderer,
     }
 }
 
-static inline uint16_t cfx_q8_to_q44(DEFAULT_INT q8)
-{
-    /* Source cube UVs are overwhelmingly exact tile endpoints.  Preserve the
-       same endpoint mapping while avoiding V810 division in the common title
-       cube path. */
-    if (q8 <= 0) return 0;
-    if (q8 >= (31 << 8)) return 255;
-    int32_t scaled = ((int32_t)q8 * 255) / (31 << 8);
-    if (scaled < 0) scaled = 0;
-    if (scaled > 255) scaled = 255;
-    return (uint16_t)scaled;
-}
 
-static inline CfxVertexIn cfx_make_vertex(const Point2D *p)
+void cfx_renderer3d_draw_quad_board(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type)
 {
-    CfxVertexIn v;
-    v.x = (int16_t)p->x;
-    v.y = (int16_t)p->y;
-    v.u = cfx_q8_to_q44(p->u);
-    v.v = cfx_q8_to_q44(p->v);
-    return v;
+#if CFX_RENDERER_DIRECT_GENERIC_TILE && CFX_RENDERER_DIRECT_RECT
+    CfxRenderer3DState *state = cfx_state(renderer);
+    if (!state->framebuffer || !state->texture_atlas) {
+        return;
+    }
+
+    if (tetromino_type < 0) {
+        tetromino_type = 0;
+    } else if (tetromino_type >= CFX_TEXTURE_TILE_COUNT) {
+        tetromino_type = CFX_TEXTURE_TILE_COUNT - 1;
+    }
+
+    const uint8_t *tile = state->texture_atlas + ((int32_t)tetromino_type * state->tile_stride_bytes);
+    CfxVertexIn v0 = cfx_make_vertex(p0);
+    CfxVertexIn v1 = cfx_make_vertex(p1);
+    CfxVertexIn v2 = cfx_make_vertex(p2);
+    CfxVertexIn v3 = cfx_make_vertex(p3);
+
+    /* Board-cache quads are already clipped/projected by src/main.c and are
+       rendered into a CPU background buffer, not live KING KRAM.  Bypass the
+       generic cfx_renderer3d_draw_quad() decision tree: no axis-rect probe,
+       no single-tile LUT rebuild, no cold scanline/direct-KRAM branches.  The
+       triangle rasterizer is still the old exact one, so PC-FX board pixels
+       remain equivalent to the generic path while the V810 I-cache sees a much
+       smaller per-quad front end. */
+    cfx_draw_textured_triangle(state, tile, v0, v1, v2);
+    cfx_draw_textured_triangle(state, tile, v0, v2, v3);
+#else
+    cfx_renderer3d_draw_quad(renderer, p0, p1, p2, p3, tetromino_type);
+#endif
 }
 
 void cfx_renderer3d_draw_quad(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type)
@@ -2149,7 +2518,7 @@ void cfx_renderer3d_draw_quad(CfxRenderer3D *renderer, const Point2D *p0, const 
     (void)tile;
 #endif
 
-#if CFX_RENDERER_QUAD_SCANLINE
+#if CFX_RENDERER_QUAD_SCANLINE && CFX_RENDERER_DIRECT_KRAM
     if (cfx_renderer3d_direct_kram_active(state)) {
         cfx_draw_textured_quad_scanline(state, v0, v1, v2, v3);
         return;

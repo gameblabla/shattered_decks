@@ -1,0 +1,388 @@
+/*
+    pcfxtools -- a set of tools for NEC PC-FX development and reverse-engineering
+    pcfx-cdlink; .cue and .bin generator.
+
+Copyright (C) 2011        Alex Marshall "trap15" <trap15@raidenii.net>
+Copyright (C) 2007        Ryphecha / Mednafen
+Additional append/lbaheader support for non-RAM CD assets, 2026.
+
+# This code is licensed to you under the terms of the MIT license;
+# see file LICENSE or http://www.opensource.org/licenses/mit-license.php
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <string.h>
+#include <ctype.h>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#endif
+
+#define SECTOR_SIZE 2048u
+#define BOOT_SECTORS 2u
+#define MIN_DISC_SECTORS (75u * 4u)
+#define MAX_APPEND_FILES 256
+
+uint32_t le32(uint32_t i)
+{
+    i = ntohl(i);
+    i = ((i & 0xFF000000) >> 24) |
+        ((i & 0x00FF0000) >>  8) |
+        ((i & 0x0000FF00) <<  8) |
+        ((i & 0x000000FF) << 24);
+    return i;
+}
+
+uint16_t le16(uint16_t i)
+{
+    i = ntohs(i);
+    i = ((i & 0xFF00) >> 8) |
+        ((i & 0x00FF) << 8);
+    return i;
+}
+
+struct {
+    char        header[0x10];
+    char        unk[0x7F0];
+    char        title[0x20];
+    uint32_t    sect_off;
+    uint32_t    sect_count;
+    uint32_t    prog_off;
+    uint32_t    prog_point;
+    char        maker_id[4];
+    char        maker_name[60];
+    uint32_t    volume_no;
+    uint16_t    version;
+    uint16_t    country;
+    char        date[8];
+    char        pad[0x380];
+    char        udata[0x400];
+} __attribute__((packed)) BootHeader = {
+    .header = "PC-FX:Hu_CD-ROM ",
+    .unk = {
+#include "boot.h"
+    },
+    .title = "",
+    .sect_off = 0,
+    .sect_count = 0,
+    .prog_off = 0,
+    .prog_point = 0,
+    .maker_id = "N/A",
+    .maker_name = "pcfx-cdlink",
+    .volume_no = 0,
+    .version = 0x0100,
+    .country = 1,
+    .date = "20XX0131",
+    .pad = { 0, },
+    .udata = { 0, }
+};
+
+typedef struct {
+    char path[512];
+    uint32_t lba;
+    uint32_t sectors;
+    uint64_t size;
+} CdFile;
+
+static uint32_t sectors_for_size(uint64_t size)
+{
+    return (uint32_t)((size + (SECTOR_SIZE - 1u)) / SECTOR_SIZE);
+}
+
+static int file_size(const char *path, uint64_t *out_size)
+{
+    struct stat st;
+    if(stat(path, &st) != 0) {
+        perror(path);
+        return -1;
+    }
+    *out_size = (uint64_t)st.st_size;
+    return 0;
+}
+
+static void trim_eol(char *s)
+{
+    int i = (int)strlen(s) - 1;
+    while(i >= 0 && (s[i] == '\n' || s[i] == '\r' || s[i] == ' ' || s[i] == '\t')) {
+        s[i--] = 0;
+    }
+}
+
+static void copy_field(char *dst, size_t dst_size, const char *src)
+{
+    snprintf(dst, dst_size, "%s", src);
+    trim_eol(dst);
+    if(dst_size > 0) dst[dst_size - 1] = 0;
+}
+
+static void cleanup_name(const char *input, char *out, size_t out_size)
+{
+    size_t j = 0;
+    size_t i;
+    for(i = 0; input[i] && j + 1 < out_size; i++) {
+        unsigned char c = (unsigned char)input[i];
+        if(!isalnum(c)) c = '_';
+        out[j++] = (char)toupper(c);
+    }
+    out[j] = 0;
+}
+
+static int write_zeroes(FILE *out_fp, uint64_t count)
+{
+    static const unsigned char zero[SECTOR_SIZE] = {0};
+    while(count > 0) {
+        size_t chunk = count > sizeof(zero) ? sizeof(zero) : (size_t)count;
+        if(fwrite(zero, 1, chunk, out_fp) != chunk) {
+            perror("writing zero padding");
+            return -1;
+        }
+        count -= chunk;
+    }
+    return 0;
+}
+
+static int write_file_padded(FILE *out_fp, const char *path, uint32_t sectors_to_write)
+{
+    unsigned char buf[32768];
+    FILE *in_fp = fopen(path, "rb");
+    uint64_t written = 0;
+    uint64_t target = (uint64_t)sectors_to_write * SECTOR_SIZE;
+    if(!in_fp) {
+        perror(path);
+        return -1;
+    }
+    for(;;) {
+        size_t got = fread(buf, 1, sizeof(buf), in_fp);
+        if(got > 0) {
+            if(written + got > target) got = (size_t)(target - written);
+            if(got > 0 && fwrite(buf, 1, got, out_fp) != got) {
+                perror("writing file data");
+                fclose(in_fp);
+                return -1;
+            }
+            written += got;
+            if(written == target) break;
+        }
+        if(got < sizeof(buf)) {
+            if(ferror(in_fp)) {
+                perror("reading file data");
+                fclose(in_fp);
+                return -1;
+            }
+            break;
+        }
+    }
+    fclose(in_fp);
+    if(written < target) {
+        if(write_zeroes(out_fp, target - written) != 0) return -1;
+    }
+    return 0;
+}
+
+static int write_lba_header(const char *path, CdFile *files, int file_count)
+{
+    int i;
+    FILE *hfp = fopen(path, "wb");
+    if(!hfp) {
+        perror(path);
+        return -1;
+    }
+    fprintf(hfp, "#ifndef _BINCAT_OUTPUT_H_\n#define _BINCAT_OUTPUT_H_\n\ntypedef enum {\n");
+    for(i = 0; i < file_count; i++) {
+        char clean[768];
+        cleanup_name(files[i].path, clean, sizeof(clean));
+        fprintf(hfp, "\tBINARY_LBA_%s = %u,\n", clean, files[i].lba);
+    }
+    fprintf(hfp, "} bincat_lbas;\n#endif\n\n");
+    fclose(hfp);
+    return 0;
+}
+
+int main(int argc, char *argv[])
+{
+    if(argc < 3) {
+        printf("Usage: %s input.txt outfiles\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    FILE* fp = fopen(argv[1], "r");
+    if(fp == NULL) {
+        perror("Opening input list");
+        return EXIT_FAILURE;
+    }
+
+    char tmpbuf[1024];
+    char binname[512] = "\0";
+    char lbaheader[512] = "\0";
+    int binblocks = 0;
+    CdFile files[MAX_APPEND_FILES + 1];
+    int file_count = 0;
+    int append_count = 0;
+
+    while(fgets(tmpbuf, sizeof(tmpbuf), fp) != NULL) {
+        trim_eol(tmpbuf);
+        if(tmpbuf[0] == 0 || tmpbuf[0] == '#') continue;
+        if(memcmp(tmpbuf, "binary ", 7) == 0) {
+            copy_field(binname, sizeof(binname), tmpbuf + 7);
+        } else if(memcmp(tmpbuf, "blocks ", 7) == 0) {
+            binblocks = atoi(tmpbuf + 7);
+        } else if(memcmp(tmpbuf, "append ", 7) == 0 || memcmp(tmpbuf, "asset ", 6) == 0) {
+            const char *path = (tmpbuf[0] == 'a' && tmpbuf[1] == 'p') ? tmpbuf + 7 : tmpbuf + 6;
+            if(append_count >= MAX_APPEND_FILES) {
+                fprintf(stderr, "Too many append/asset files; max %d\n", MAX_APPEND_FILES);
+                fclose(fp);
+                return EXIT_FAILURE;
+            }
+            copy_field(files[1 + append_count].path, sizeof(files[1 + append_count].path), path);
+            append_count++;
+        } else if(memcmp(tmpbuf, "lbaheader ", 10) == 0) {
+            copy_field(lbaheader, sizeof(lbaheader), tmpbuf + 10);
+        } else if(memcmp(tmpbuf, "name ", 5) == 0) {
+            copy_field(BootHeader.title, 0x20, tmpbuf + 5);
+            BootHeader.title[0x1F] = 0;
+        } else if(memcmp(tmpbuf, "makerid ", 8) == 0) {
+            copy_field(BootHeader.maker_id, 4, tmpbuf + 8);
+            BootHeader.maker_id[3] = 0;
+        } else if(memcmp(tmpbuf, "maker ", 6) == 0) {
+            copy_field(BootHeader.maker_name, 60, tmpbuf + 6);
+            BootHeader.maker_name[59] = 0;
+        } else if(memcmp(tmpbuf, "date ", 5) == 0) {
+            copy_field(BootHeader.date, 8, tmpbuf + 5);
+        } else if(memcmp(tmpbuf, "country ", 8) == 0) {
+            BootHeader.country = atoi(tmpbuf + 8);
+        } else if(memcmp(tmpbuf, "version ", 8) == 0) {
+            BootHeader.version = atoi(tmpbuf + 8);
+        } else {
+            fprintf(stderr, "Warning: unknown directive ignored: %s\n", tmpbuf);
+        }
+    }
+    fclose(fp);
+
+    if(binname[0] == 0) {
+        fprintf(stderr, "No binary name\n");
+        return EXIT_FAILURE;
+    }
+
+    snprintf(files[0].path, sizeof(files[0].path), "%s", binname);
+    file_count = append_count + 1;
+
+    int i;
+    for(i = 0; i < file_count; i++) {
+        if(file_size(files[i].path, &files[i].size) != 0) return EXIT_FAILURE;
+        files[i].sectors = sectors_for_size(files[i].size);
+    }
+
+    if(binblocks == 0)
+        binblocks = (int)files[0].sectors;
+    if((uint32_t)binblocks < files[0].sectors) {
+        fprintf(stderr, "blocks %d is smaller than boot binary sector size %u\n", binblocks, files[0].sectors);
+        return EXIT_FAILURE;
+    }
+    files[0].sectors = (uint32_t)binblocks;
+
+    uint32_t cur_lba = BOOT_SECTORS;
+    for(i = 0; i < file_count; i++) {
+        files[i].lba = cur_lba;
+        cur_lba += files[i].sectors;
+    }
+
+    uint32_t sector_offset = BOOT_SECTORS;
+    uint32_t sector_count = (uint32_t)binblocks;
+    uint32_t prog_offset = 0x8000;
+    uint32_t prog_point = 0x8000;
+
+    printf("Boot program size: %llu bytes, %u sectors loaded to RAM\n",
+           (unsigned long long)files[0].size, sector_count);
+    if(file_count > 1) {
+        printf("External CD assets: %d files, %u sectors not loaded by boot header\n",
+               file_count - 1, cur_lba - BOOT_SECTORS - sector_count);
+    }
+    int32_t sh_size = (1024 * 2048) - ((int32_t)sector_count * 2048) - 0x8000 - 2048;
+    if(sh_size < 0) {
+        fprintf(stderr, "Program size is too large\n");
+        return EXIT_FAILURE;
+    }
+    printf("Stack+heap Free Space: %d\n", sh_size);
+
+    BootHeader.sect_off = le32(sector_offset);
+    BootHeader.sect_count = le32(sector_count);
+    BootHeader.prog_off = le32(prog_offset);
+    BootHeader.prog_point = le32(prog_point);
+    BootHeader.volume_no = le32(BootHeader.volume_no);
+    BootHeader.version = le16(BootHeader.version);
+    BootHeader.country = le16(BootHeader.country);
+
+    char *obinname = malloc(strlen(argv[2]) + 5);
+    sprintf(obinname, "%s.bin", argv[2]);
+    FILE *out_fp = fopen(obinname, "wb");
+    if(!out_fp) {
+        perror("Error opening output file");
+        free(obinname);
+        return EXIT_FAILURE;
+    }
+
+    if(fwrite(&BootHeader, 1, sizeof(BootHeader), out_fp) != sizeof(BootHeader)) {
+        perror("writing boot header");
+        fclose(out_fp);
+        free(obinname);
+        return EXIT_FAILURE;
+    }
+
+    for(i = 0; i < file_count; i++) {
+        printf("LBA %u: %s (%llu bytes, %u sectors)%s\n",
+               files[i].lba, files[i].path, (unsigned long long)files[i].size,
+               files[i].sectors, i == 0 ? " [boot-load]" : "");
+        if(write_file_padded(out_fp, files[i].path, files[i].sectors) != 0) {
+            fclose(out_fp);
+            free(obinname);
+            return EXIT_FAILURE;
+        }
+    }
+
+    uint32_t total_sectors = cur_lba;
+    if(total_sectors < MIN_DISC_SECTORS) {
+        uint32_t pad_sectors = MIN_DISC_SECTORS - total_sectors;
+        if(write_zeroes(out_fp, (uint64_t)pad_sectors * SECTOR_SIZE) != 0) {
+            fclose(out_fp);
+            free(obinname);
+            return EXIT_FAILURE;
+        }
+        total_sectors = MIN_DISC_SECTORS;
+    }
+    fclose(out_fp);
+
+    if(lbaheader[0]) {
+        if(write_lba_header(lbaheader, files, file_count) != 0) {
+            free(obinname);
+            return EXIT_FAILURE;
+        }
+        printf("Wrote LBA header: %s\n", lbaheader);
+    }
+
+    char *cuename = malloc(strlen(argv[2]) + 5);
+    sprintf(cuename, "%s.cue", argv[2]);
+    fp = fopen(cuename, "wb");
+    if(!fp) {
+        perror("Error opening cue file");
+        free(cuename);
+        free(obinname);
+        return EXIT_FAILURE;
+    }
+    fprintf(fp, "FILE \"%s\" BINARY\n", obinname);
+    fprintf(fp, "  TRACK 01 MODE1/2048\n");
+    fprintf(fp, "    INDEX 01 00:00:00\n");
+    fclose(fp);
+    free(cuename);
+    free(obinname);
+
+    printf("Total disc sectors: %u\n", total_sectors);
+    printf("Done. Boot header sect_count excludes append/asset files.\n");
+    return EXIT_SUCCESS;
+}

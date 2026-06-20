@@ -1,5 +1,10 @@
 #include "palette.h"
 
+#if defined(WAIFU_ASSET_USE_CDROM)
+#define WAIFU_ASSET_EXTERNAL_TITLE_IMAGE 1
+#define WAIFU_ASSET_EXTERNAL_STORY_PORTRAITS 1
+#endif
+
 #include "waifu_assets.h"
 #include "title_asset.h"
 

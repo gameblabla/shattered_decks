@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+from pathlib import Path
+import re
+
+ROOT = Path(__file__).resolve().parents[1]
+COMMON = ROOT / 'src/generated/waifu_assets.h'
+TITLE = ROOT / 'src/generated/title_asset.h'
+OUT = ROOT / 'src/generated/pcfx_palette_assets.h'
+LEVELS = 65
+
+def parse_array(path, name):
+    text = path.read_text()
+    m = re.search(r'static const uint8_t\s+' + re.escape(name) + r'[^=]*=\s*\{(.*?)\};', text, re.S)
+    if not m:
+        raise SystemExit(f'missing {name} in {path}')
+    body = re.sub(r'/\*.*?\*/', '', m.group(1), flags=re.S)
+    nums = [int(x,0) for x in re.findall(r'0x[0-9a-fA-F]+|\d+', body)]
+    if len(nums) != 256*3:
+        raise SystemExit(f'{name} length {len(nums)}')
+    return nums
+
+def clamp(v, lo, hi):
+    return lo if v < lo else hi if v > hi else v
+
+def rgb888_to_pcfx_yuv(r,g,b):
+    best_err = 0x7fffffff
+    best_y=0; best_u4=8; best_v4=8
+    for u4 in range(16):
+        u = (u4 << 4) - 128
+        for v4 in range(16):
+            v = (v4 << 4) - 128
+            ro = (0 * u + 1167 * v) // 1024
+            go = (-404 * u - 594 * v) // 1024
+            bo = (2081 * u - 1 * v) // 1024
+            y = (2*(r-ro) + 4*(g-go) + (b-bo) + 3)//7
+            y = clamp(y,0,255)
+            rr = clamp(y+ro,0,255); gg = clamp(y+go,0,255); bb = clamp(y+bo,0,255)
+            dr=rr-r; dg=gg-g; db=bb-b
+            err = 2*dr*dr + 4*dg*dg + db*db
+            if err < best_err:
+                best_err = err; best_y=y; best_u4=u4; best_v4=v4
+    return (best_y << 8) | (best_u4 << 4) | best_v4
+
+def fade_level_to_q8(level):
+    return (level * 256 + ((LEVELS - 1)//2)) // (LEVELS - 1)
+
+def build(pal):
+    black_idx = 255
+    neutral_black = 0x0088
+    out=[]
+    for level in range(LEVELS):
+        q8 = fade_level_to_q8(level)
+        row=[]
+        for i in range(256):
+            if i == black_idx or q8 <= 0:
+                yuv = neutral_black
+            elif q8 >= 256:
+                yuv = rgb888_to_pcfx_yuv(pal[i*3],pal[i*3+1],pal[i*3+2])
+            else:
+                yuv = rgb888_to_pcfx_yuv((pal[i*3]*q8+128)>>8,(pal[i*3+1]*q8+128)>>8,(pal[i*3+2]*q8+128)>>8)
+            row.append(yuv)
+        row[black_idx]=neutral_black
+        out.append(row)
+    return out
+
+def emit():
+    common=parse_array(COMMON,'waifu_palette_rgb')
+    title=parse_array(TITLE,'title_screen_palette_rgb')
+    tables=[build(common),build(title)]
+    with OUT.open('w') as f:
+        f.write('#ifndef WAIFU_PCFX_PALETTE_ASSETS_H\n#define WAIFU_PCFX_PALETTE_ASSETS_H\n\n#include <stdint.h>\n\n')
+        f.write(f'#define WAIFU_PCFX_FADE_LEVELS {LEVELS}\n')
+        f.write('static const uint16_t waifu_pcfx_palette_fade_lut[2][WAIFU_PCFX_FADE_LEVELS][256] = {\n')
+        for pi,table in enumerate(tables):
+            f.write('  {\n')
+            for row in table:
+                f.write('    {')
+                for i,v in enumerate(row):
+                    if i%12==0: f.write('\n      ')
+                    f.write(f'0x{v:04x},')
+                f.write('\n    },\n')
+            f.write('  },\n')
+        f.write('};\n\n#endif /* WAIFU_PCFX_PALETTE_ASSETS_H */\n')
+
+if __name__=='__main__':
+    emit()

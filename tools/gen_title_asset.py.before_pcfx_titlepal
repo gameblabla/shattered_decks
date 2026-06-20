@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Regenerate src/generated/title_asset.h from assets/source/title/titlescreen_shardsofcards.png.
+
+The title/menu art uses a separate 256-color palette from the in-game card/UI
+palette.  All generated IDX_* slots from waifu_assets.h are copied into the
+same indices in the title palette so existing text and panel drawing routines
+remain visually identical when they are drawn over the title screen.
+"""
+from pathlib import Path
+import re
+from PIL import Image, ImageOps
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / 'assets/source/title/titlescreen_shardsofcards.png'
+PAL_HEADER = ROOT / 'src/generated/waifu_assets.h'
+OUT = ROOT / 'src/generated/title_asset.h'
+W, H = 256, 240
+
+
+def parse_common_assets(path: Path):
+    text = path.read_text()
+    m = re.search(r'static const uint8_t waifu_palette_rgb\[\]\s*=\s*\{(.*?)\};', text, re.S)
+    if not m:
+        raise RuntimeError('Could not find waifu_palette_rgb[] in waifu_assets.h. Run tools/gen_assets.py first.')
+    nums = [int(x) for x in re.findall(r'\d+', m.group(1))]
+    if len(nums) < 768:
+        raise RuntimeError(f'Palette has {len(nums)} values, expected 768')
+    common = [(nums[i], nums[i + 1], nums[i + 2]) for i in range(0, 768, 3)]
+    idx_values = [int(v) for v in re.findall(r'^#define\s+IDX_[A-Z0-9_]+\s+(\d+)\s*$', text, re.M)]
+    reserved = {i for i in idx_values if 0 <= i < 256}
+    return common, reserved
+
+
+def nearest_idx(rgb, pal, candidates):
+    r, g, b = rgb
+    best, bd = 0, 10**12
+    for i in candidates:
+        pr, pg, pb = pal[i]
+        d = (pr - r) * (pr - r) + (pg - g) * (pg - g) + (pb - b) * (pb - b)
+        if d < bd:
+            best, bd = i, d
+    return best
+
+
+def quantize_title_palette(img: Image.Image, color_count: int):
+    # Pillow's MEDIANCUT path gives a compact source-specific palette while
+    # keeping generation deterministic for regression builds.
+    q = img.quantize(colors=max(1, min(256, color_count)), method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    raw = q.getpalette()[:color_count * 3]
+    colors = []
+    for i in range(0, len(raw), 3):
+        if i + 2 < len(raw):
+            colors.append((raw[i], raw[i + 1], raw[i + 2]))
+    if not colors:
+        colors = [(0, 0, 0)]
+    return colors
+
+
+def main():
+    if not SRC.exists():
+        raise FileNotFoundError(SRC)
+    if not PAL_HEADER.exists():
+        raise FileNotFoundError(PAL_HEADER)
+
+    common, reserved = parse_common_assets(PAL_HEADER)
+    free_slots = [i for i in range(256) if i not in reserved]
+    if not free_slots:
+        raise RuntimeError('No non-IDX palette slots left for title art')
+
+    img = ImageOps.fit(Image.open(SRC).convert('RGB'), (W, H), method=Image.Resampling.BILINEAR, centering=(0.5, 0.5))
+    title_colors = quantize_title_palette(img, len(free_slots))
+
+    # Start with the common palette so every reserved text/UI slot is identical.
+    # Non-reserved slots are then replaced with title-art colors.
+    title_pal = list(common)
+    for n, slot in enumerate(free_slots):
+        title_pal[slot] = title_colors[n % len(title_colors)]
+
+    # Do not allow the title bitmap to use reserved IDX_* slots; they are kept
+    # stable for runtime text/panel drawing only.
+    data = [nearest_idx(px, title_pal, free_slots) for px in img.getdata()]
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    with OUT.open('w') as f:
+        f.write('#ifndef TITLE_ASSET_H\n#define TITLE_ASSET_H\n\n')
+        f.write('#include <stdint.h>\n\n')
+        f.write('#define TITLE_SCREEN_W 256\n#define TITLE_SCREEN_H 240\n')
+        f.write('static const uint8_t title_screen_palette_rgb[256 * 3] = {\n')
+        flat_pal = [v for rgb in title_pal for v in rgb]
+        for i in range(0, len(flat_pal), 18):
+            f.write('    ' + ','.join(str(v) for v in flat_pal[i:i + 18]) + ',\n')
+        f.write('};\n')
+        f.write('#ifndef WAIFU_ASSET_EXTERNAL_TITLE_IMAGE\n')
+        f.write('static const uint8_t title_screen_img[TITLE_SCREEN_W * TITLE_SCREEN_H] = {\n')
+        for i in range(0, len(data), 32):
+            f.write('    ' + ','.join(str(v) for v in data[i:i + 32]) + ',\n')
+        f.write('};\n')
+        f.write('#endif /* WAIFU_ASSET_EXTERNAL_TITLE_IMAGE */\n\n#endif\n')
+    bin_out = ROOT / 'assets/generated'
+    bin_out.mkdir(parents=True, exist_ok=True)
+    (bin_out / 'title_screen_img.bin').write_bytes(bytes(data))
+    print(f'wrote {OUT} with {len(free_slots)} title-art palette slots and {len(reserved)} preserved IDX slots')
+
+
+if __name__ == '__main__':
+    main()

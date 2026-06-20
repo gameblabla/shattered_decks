@@ -12,6 +12,47 @@
 
 #define MAX_COMMAND_EVENTS 4096
 
+static int g_audio_open = 0;
+
+static void sdl_audio_callback(void *userdata, Uint8 *stream, int len)
+{
+    int bytes_per_frame = waifu_fm_audio_channels() * (int)sizeof(int16_t);
+    int frames = bytes_per_frame > 0 ? len / bytes_per_frame : 0;
+    (void)userdata;
+    if (frames > 0) waifu_fm_audio_mix_s16((int16_t *)stream, frames);
+    if (frames * bytes_per_frame < len) memset(stream + frames * bytes_per_frame, 0, len - frames * bytes_per_frame);
+}
+
+static int open_sdl_audio(void)
+{
+    SDL_AudioSpec want;
+    SDL_AudioSpec have;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+        fprintf(stderr, "SDL audio init failed: %s\n", SDL_GetError());
+        return 0;
+    }
+    memset(&want, 0, sizeof(want));
+    memset(&have, 0, sizeof(have));
+    want.freq = waifu_fm_audio_sample_rate();
+    want.format = AUDIO_S16SYS;
+    want.channels = (Uint8)waifu_fm_audio_channels();
+    want.samples = 1024;
+    want.callback = sdl_audio_callback;
+    if (SDL_OpenAudio(&want, &have) < 0) {
+        fprintf(stderr, "SDL_OpenAudio failed: %s\n", SDL_GetError());
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return 0;
+    }
+    if (have.format != AUDIO_S16SYS || have.channels != want.channels || have.freq != want.freq) {
+        fprintf(stderr, "SDL_OpenAudio got unsupported format; audio disabled\n");
+        SDL_CloseAudio();
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        return 0;
+    }
+    SDL_PauseAudio(0);
+    return 1;
+}
+
 typedef struct CommandEvent {
     int start;
     int duration;
@@ -281,6 +322,7 @@ int main(int argc, char **argv)
     memset(&prev_script_input, 0, sizeof(prev_script_input));
     waifu_fm_init();
     waifu_fm_reset_interactive();
+    g_audio_open = open_sdl_audio();
     set_sdl_palette(screen);
     last_palette = waifu_fm_palette_id();
 
@@ -295,7 +337,9 @@ int main(int argc, char **argv)
         }
 
         poll_input(&input, &running);
+        if (g_audio_open) SDL_LockAudio();
         waifu_fm_step(&input);
+        if (g_audio_open) SDL_UnlockAudio();
         if (waifu_fm_palette_id() != last_palette) {
             set_sdl_palette(screen);
             last_palette = waifu_fm_palette_id();
@@ -310,6 +354,11 @@ int main(int argc, char **argv)
 
         elapsed = SDL_GetTicks() - start_ticks;
         if (!no_delay && elapsed < 16) SDL_Delay(16 - elapsed);
+    }
+
+    if (g_audio_open) {
+        SDL_CloseAudio();
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
     }
 
     return 0;

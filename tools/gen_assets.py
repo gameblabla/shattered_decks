@@ -373,7 +373,11 @@ def tile_volcanic_slope():
 
 # Make master palette image.
 card_faces_rgb=[draw_card_face(*m) for m in CARD_META]
+# Full-size 112x112 battle/check art.  This is separate from the 38x54
+# gameplay card face so detail screens never upscale the tiny thumbnail.
+big_card_rgb=[cover(Image.open(find_image(m[0])), (BIG_W, BIG_H)).filter(ImageFilter.SHARPEN) for m in CARD_META]
 support_rgb=draw_support_face()
+support_big_rgb=ImageOps.fit(support_rgb.resize((BIG_W, BIG_H), Image.Resampling.NEAREST), (BIG_W, BIG_H), method=Image.Resampling.NEAREST)
 back_rgb=draw_card_back()
 tex_rgb=[tile_dark(),tile_gold(0),tile_sand(),tile_stone(),tile_side_wall(),tile_brown(),tile_volcanic_ground(),tile_volcanic_slope(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
 story_portraits_rgba=load_story_portraits_rgba()
@@ -381,7 +385,7 @@ story_portraits_rgba=load_story_portraits_rgba()
 swatches=[]
 for c in BASE_COLORS.values():
     swatches += [c]*64
-for im in card_faces_rgb + [support_rgb,back_rgb] + tex_rgb + [p.convert('RGB') for p in story_portraits_rgba]:
+for im in card_faces_rgb + big_card_rgb + [support_rgb,support_big_rgb,back_rgb] + tex_rgb + [p.convert('RGB') for p in story_portraits_rgba]:
     small=im.resize((max(1,im.width//2), max(1,im.height//2)), Image.Resampling.BILINEAR)
     swatches.extend(list(small.getdata()))
 master=Image.new('RGB',(256, max(1, math.ceil(len(swatches)/256))))
@@ -402,15 +406,9 @@ def qbytes(im):
     return bytes(im.convert('RGB').quantize(palette=pal_img, dither=Image.Dither.NONE).tobytes())
 
 q_cards=[qbytes(im) for im in card_faces_rgb]
-# 112x112 battle-window images from the original source art. These are used only
-# by the black battle cut-in so the duel cards do not look like tiny field sprites.
-big_art_rgb=[]
-for card_id, *_ in CARD_META:
-    art = cover(Image.open(find_image(card_id)), (BIG_W, BIG_H))
-    art = art.filter(ImageFilter.SHARPEN)
-    big_art_rgb.append(art)
-q_big_art=[qbytes(im) for im in big_art_rgb]
+q_big_cards=[qbytes(im) for im in big_card_rgb]
 q_support=qbytes(support_rgb)
+q_support_big=qbytes(support_big_rgb)
 q_back=qbytes(back_rgb)
 q_tex=[qbytes(im) for im in tex_rgb]
 q_story_portraits=[qbytes(im.convert('RGB')) for im in story_portraits_rgba]
@@ -435,13 +433,19 @@ with open(OUT,'w') as f:
     array('waifu_palette_rgb', bytes(palette), 18)
     # texture atlas concatenated
     array('waifu_texture_atlas', b''.join(q_tex), 16)
+    f.write('#ifndef WAIFU_ASSET_EXTERNAL_STORY_PORTRAITS\n')
     array('waifu_story_portraits', b''.join(q_story_portraits), 16)
     array('waifu_story_portrait_mask', b''.join(q_story_portrait_masks), 16)
-    # cards as flat array
+    f.write('#endif /* WAIFU_ASSET_EXTERNAL_STORY_PORTRAITS */\n')
+    # cards as flat array. CD-ROM/low-RAM builds externalize these blobs and
+    # stage them only when entering deck editor/battle.
+    f.write('#ifndef WAIFU_ASSET_EXTERNAL_CARD_IMAGES\n')
     array('waifu_card_faces', b''.join(q_cards), 16)
-    array('waifu_big_art', b''.join(q_big_art), 16)
+    array('waifu_big_card_art', b''.join(q_big_cards), 16)
     array('waifu_card_back', q_back, 16)
     array('waifu_support_face', q_support, 16)
+    array('waifu_support_big_art', q_support_big, 16)
+    f.write('#endif /* WAIFU_ASSET_EXTERNAL_CARD_IMAGES */\n')
     f.write('static const char *waifu_card_names[WAIFU_CARD_COUNT] = {\n')
     for _,name,_,_,_,_ in CARD_META:
         f.write('    "'+name.replace('"','\\"')+'",\n')
@@ -459,4 +463,27 @@ with open(OUT,'w') as f:
     f.write('static const uint16_t waifu_card_def[WAIFU_CARD_COUNT] = {')
     f.write(','.join(str(deff) for *_,atk,deff in CARD_META)); f.write('};\n')
     f.write('#endif\n')
+
+BIN_OUT = ROOT/'assets/generated'
+BIN_OUT.mkdir(parents=True, exist_ok=True)
+(BIN_OUT/'story_portraits.bin').write_bytes(b''.join(q_story_portraits))
+(BIN_OUT/'story_portrait_mask.bin').write_bytes(b''.join(q_story_portrait_masks))
+(BIN_OUT/'card_faces.bin').write_bytes(b''.join(q_cards))
+big_blob = b''.join(q_big_cards)
+(BIN_OUT/'card_big_art.bin').write_bytes(big_blob)
+# PC-FX CD path: each 112x112 art entry is padded to whole 2048-byte
+# sectors so the CD reader can load one entry with a single sector read into
+# a small staging slot. The first 112*112 bytes are the art; the tail is unused.
+_sector = 2048
+_big_one = BIG_W * BIG_H
+_big_slot = ((_big_one + _sector - 1) // _sector) * _sector
+padded = bytearray()
+for art in q_big_cards:
+    padded.extend(art)
+    padded.extend(bytes(_big_slot - len(art)))
+(BIN_OUT/'card_big_art_cd.bin').write_bytes(bytes(padded))
+(BIN_OUT/'card_back.bin').write_bytes(q_back)
+(BIN_OUT/'support_face.bin').write_bytes(q_support)
+(BIN_OUT/'support_big_art.bin').write_bytes(q_support_big)
+(BIN_OUT/'support_big_art_cd.bin').write_bytes(q_support_big + bytes(_big_slot - len(q_support_big)))
 print('generated', OUT, 'cards', len(CARD_META), 'palette idx black', idx['BLACK'])

@@ -1,0 +1,127 @@
+# Source-only NEC PC-FX port build file.
+# Requires a local V810/liberis toolchain; no binary toolchain is bundled here.
+
+PREFIX ?= v810
+V810GCC ?= /opt/v810
+CC := $(PREFIX)-gcc
+AS := $(PREFIX)-as
+LD := $(PREFIX)-ld
+OBJCOPY := $(PREFIX)-objcopy
+PCFX_CDLINK ?= tools/pcfxtools/pcfx-cdlink
+HOSTCC ?= gcc
+
+PCFX_TARGET ?= waifupcfx
+CDOUT ?= waifupcfx
+
+INCLUDES := \
+  -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated -Isrc/platform/pcfx \
+  -I$(V810GCC)/include -I$(V810GCC)/$(PREFIX)/include
+
+CFLAGS ?= -O2 -fomit-frame-pointer -fno-builtin -ffunction-sections -fdata-sections -Werror=vla -Wall -Wextra -std=gnu99 -mv810 -mprolog-function -msda=0
+PCFX_ASSET_MODE ?= cart
+ifeq ($(PCFX_ASSET_MODE),cdrom)
+CFLAGS += -DPLATFORM=1 -DWAIFU_FM_PCFX -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_USE_CDROM -DWAIFU_ASSET_NO_STDIO $(INCLUDES)
+ifeq ($(wildcard lbas.h),lbas.h)
+CFLAGS += -DWAIFU_HAVE_GENERATED_LBAS
+endif
+else
+CFLAGS += -DPLATFORM=1 -DWAIFU_FM_PCFX -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_USE_CART_ROM -DWAIFU_ASSET_NO_STDIO $(INCLUDES)
+endif
+LDFLAGS ?= -L$(V810GCC)/lib -L$(V810GCC)/$(PREFIX)/lib -L$(V810GCC)/lib/gcc/$(PREFIX)/4.9.4 $(V810GCC)/$(PREFIX)/lib/crt0.o --gc-sections
+LIBS ?= -leris -lc -lsim -lnosys -lgcc
+
+PCFX_SRCS_C := \
+  src/platform/pcfx/pcfx_main.c \
+  src/platform/pcfx/waifu_pcfx_video.c \
+  src/platform/pcfx/waifu_pcfx_input.c \
+  src/platform/pcfx/waifu_pcfx_audio.c \
+  src/platform/pcfx/waifu_pcfx_cdrom.c \
+  src/main.c \
+  src/game/ai.c \
+  src/game/deck.c \
+  src/game/palette.c \
+  src/game/sounds.c \
+  src/game/assets.c \
+  src/engine/renderer3d.c \
+  src/engine/common.c
+PCFX_SRCS_S := src/platform/pcfx/fastking.s
+
+CD_ASSETS := \
+  assets/generated/title_screen_pcfx_img.bin \
+  assets/generated/title_screen_pcfx_yuv422.bin \
+  assets/generated/story_portraits.bin \
+  assets/generated/story_portrait_mask.bin \
+  assets/generated/card_faces.bin \
+  assets/generated/card_big_art_cd.bin \
+  assets/generated/card_back.bin \
+  assets/generated/support_face.bin \
+  assets/generated/support_big_art_cd.bin
+
+OBJDIR := build/pcfx
+ELF_TARGET := $(OBJDIR)/$(PCFX_TARGET).elf
+BIN_TARGET := $(OBJDIR)/$(PCFX_TARGET).program.bin
+MAP_TARGET := $(OBJDIR)/$(PCFX_TARGET).map
+PCFX_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(PCFX_SRCS_C)) $(patsubst %.s,$(OBJDIR)/%.o,$(PCFX_SRCS_S))
+
+.PHONY: all program clean clean-build clean-output cd toolchain-check pcfxtools
+
+all: cd
+
+program: toolchain-check $(ELF_TARGET) $(BIN_TARGET)
+
+toolchain-check:
+	@command -v $(CC) >/dev/null || { echo "missing $(CC) (install V810/liberis toolchain and set V810GCC)"; exit 1; }
+	@command -v $(AS) >/dev/null || { echo "missing $(AS)"; exit 1; }
+	@command -v $(LD) >/dev/null || { echo "missing $(LD)"; exit 1; }
+	@command -v $(OBJCOPY) >/dev/null || { echo "missing $(OBJCOPY)"; exit 1; }
+
+$(PCFX_CDLINK): tools/pcfxtools/pcfx-cdlink.c tools/pcfxtools/boot.h
+	$(MAKE) -C tools/pcfxtools CC=$(HOSTCC) pcfx-cdlink
+
+pcfxtools: $(PCFX_CDLINK)
+
+$(OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJDIR)/%.o: %.s
+	@mkdir -p $(dir $@)
+	$(AS) $< -o $@
+
+$(ELF_TARGET): $(PCFX_OBJS)
+	$(LD) $(LDFLAGS) $(PCFX_OBJS) $(LIBS) -o $@ -Map $(MAP_TARGET)
+
+$(BIN_TARGET): $(ELF_TARGET)
+	$(OBJCOPY) -O binary $< $@
+
+$(OBJDIR)/cdlink.generated.txt: $(BIN_TARGET)
+	@mkdir -p $(dir $@)
+	@{ \
+		echo "binary $(BIN_TARGET)"; \
+		echo "lbaheader lbas.h"; \
+		echo "name Waifu FM"; \
+		echo "maker ChatGPT"; \
+		echo "country JP"; \
+		echo "version 01"; \
+		echo "date 20260619"; \
+		for f in $(CD_ASSETS); do echo "append $$f"; done; \
+	} > $@
+
+clean-output:
+	rm -f $(CDOUT).cue $(CDOUT).bin lbas.h
+
+cd: clean-output toolchain-check $(PCFX_CDLINK) $(CD_ASSETS)
+	$(MAKE) -f Makefile.pcfx clean-build PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX) PCFX_CDLINK=$(PCFX_CDLINK) HOSTCC=$(HOSTCC)
+	$(MAKE) -f Makefile.pcfx program PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
+	$(MAKE) -f Makefile.pcfx $(OBJDIR)/cdlink.generated.txt PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
+	$(PCFX_CDLINK) $(OBJDIR)/cdlink.generated.txt $(CDOUT)
+	$(MAKE) -f Makefile.pcfx clean-build PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX) PCFX_CDLINK=$(PCFX_CDLINK) HOSTCC=$(HOSTCC)
+	$(MAKE) -f Makefile.pcfx program PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
+	$(MAKE) -f Makefile.pcfx $(OBJDIR)/cdlink.generated.txt PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
+	$(PCFX_CDLINK) $(OBJDIR)/cdlink.generated.txt $(CDOUT)
+
+clean-build:
+	rm -rf $(OBJDIR) out.bin
+
+clean:
+	rm -rf $(OBJDIR) $(CDOUT).cue $(CDOUT).bin out.bin lbas.h
