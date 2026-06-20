@@ -2436,12 +2436,6 @@ static void render_board(Camera cam)
     for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line_projected(bp.top[0][c], bp.top[BOARD_ROWS][c], IDX_DARK_BROWN);
     for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line_projected(bp.top[r][0], bp.top[r][BOARD_COLS], IDX_DARK_BROWN);
 #endif
-
-    /* faint central Egyptian mark */
-    ScreenPt a = project_point(cam, v3(-Q8_FRAC(55,100),Q8_FRAC(5,100),-Q8_FRAC(50,100)));
-    ScreenPt b = project_point(cam, v3(0,Q8_FRAC(5,100),Q8_FRAC(25,100)));
-    ScreenPt c = project_point(cam, v3(Q8_FRAC(55,100),Q8_FRAC(5,100),-Q8_FRAC(50,100)));
-    if (a.ok && b.ok && c.ok) { line_i(a.x,a.y,b.x,b.y,IDX_GOLD_DARK); line_i(b.x,b.y,c.x,c.y,IDX_GOLD_DARK); }
 }
 
 static void render_board_cached(Camera cam)
