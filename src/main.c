@@ -672,6 +672,21 @@ static Camera turn_camera(int f, int start, int end, int to_enemy)
 static int32_t col_x0(int c);
 static int32_t row_z0(int r);
 
+/* Clamp a projected screen coordinate to a bounded range.  A vertex that lands
+   just in front of the camera (small cz, large lateral offset) projects via
+   cx/cz to a coordinate in the millions.  line_i() is an unclipped Bresenham, so
+   such a coordinate makes it loop ~millions of times (put_px silently drops the
+   out-of-bounds writes) and the whole game hangs.  On/near-screen geometry is far
+   below this bound and unaffected; only degenerate near-singularity projections
+   are clamped. */
+#define WAIFU_PROJ_BOUND 4096
+static inline int clamp_proj_coord(int v)
+{
+    if (v < -WAIFU_PROJ_BOUND) return -WAIFU_PROJ_BOUND;
+    if (v > WAIFU_PROJ_BOUND) return WAIFU_PROJ_BOUND;
+    return v;
+}
+
 static ScreenPt project_point(Camera cam, Vec3 p)
 {
     Vec3 fwd = vnorm(vsub(cam.target, cam.eye));
@@ -684,8 +699,8 @@ static ScreenPt project_point(Camera cam, Vec3 p)
     ScreenPt s;
     s.depth = cz;
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
-    s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), cam.focal));
-    s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), cam.focal));
+    s.x = clamp_proj_coord(W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), cam.focal)));
+    s.y = clamp_proj_coord(H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), cam.focal)));
     s.ok = 1;
     return s;
 }
@@ -718,8 +733,8 @@ static ScreenPt project_point_basis(const CameraBasis *b, Vec3 p)
     ScreenPt s;
     s.depth = cz;
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
-    s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal));
-    s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal));
+    s.x = clamp_proj_coord(W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal)));
+    s.y = clamp_proj_coord(H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal)));
     s.ok = 1;
     return s;
 }
