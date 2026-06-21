@@ -2540,59 +2540,65 @@ static void cfx_board_tri(uint8_t *fb, int W, int H, const uint8_t *tile,
     int x2, int y2, int32_t U2, int32_t V2)
 {
     int t; int32_t tU;
-    /* keep projected coords bounded so the 16.16 edge math can't overflow;
-       only near-singular projections reach the clamp, and those are skip-worthy */
-    if (x0 < -4096) x0 = -4096; else if (x0 > 4096) x0 = 4096;
-    if (x1 < -4096) x1 = -4096; else if (x1 > 4096) x1 = 4096;
-    if (x2 < -4096) x2 = -4096; else if (x2 > 4096) x2 = 4096;
-    if (y0 < -2048) y0 = -2048; else if (y0 > 2048) y0 = 2048;
-    if (y1 < -2048) y1 = -2048; else if (y1 > 2048) y1 = 2048;
-    if (y2 < -2048) y2 = -2048; else if (y2 > 2048) y2 = 2048;
+    /* GENEROUS bound (well outside the 256x240 screen): real on- and moderately
+       off-screen geometry (slab walls whose bottom corners fall below the screen
+       on a low/perspective camera) is far inside this, so it is NOT distorted.
+       Only pathological near-singularity projections (coords in the millions) get
+       bounded, just enough that the per-pixel u/v fits int32.  The edge walk uses
+       64-bit math and skips off-screen scanlines, so an off-screen corner draws
+       the correct on-screen slab edge instead of garbage. */
+    if (x0 < -16384) x0 = -16384; else if (x0 > 16384) x0 = 16384;
+    if (x1 < -16384) x1 = -16384; else if (x1 > 16384) x1 = 16384;
+    if (x2 < -16384) x2 = -16384; else if (x2 > 16384) x2 = 16384;
+    if (y0 < -16384) y0 = -16384; else if (y0 > 16384) y0 = 16384;
+    if (y1 < -16384) y1 = -16384; else if (y1 > 16384) y1 = 16384;
+    if (y2 < -16384) y2 = -16384; else if (y2 > 16384) y2 = 16384;
     if (y0 > y1) { t=x0;x0=x1;x1=t; t=y0;y0=y1;y1=t; tU=U0;U0=U1;U1=tU; tU=V0;V0=V1;V1=tU; }
     if (y0 > y2) { t=x0;x0=x2;x2=t; t=y0;y0=y2;y2=t; tU=U0;U0=U2;U2=tU; tU=V0;V0=V2;V2=tU; }
     if (y1 > y2) { t=x1;x1=x2;x2=t; t=y1;y1=y2;y2=t; tU=U1;U1=U2;U2=tU; tU=V1;V1=V2;V2=tU; }
     if (y2 <= y0) return;
     {
-        int dy02 = y2 - y0, dy01 = y1 - y0, dy12 = y2 - y1;
-        int det = (x1 - x0) * dy02 - (x2 - x0) * dy01;
-        int gUx, gVx, gUy, gVy, half, y;
-        int32_t xl_long, dxl_long;
+        long long dy02 = y2 - y0, dy01 = y1 - y0, dy12 = y2 - y1;
+        long long det = (long long)(x1 - x0) * dy02 - (long long)(x2 - x0) * dy01;
+        int gUx, gVx, gUy, gVy, half;
+        long long dxl_long;
         if (det == 0) return;
-        gUx = cfx_board_clampg(((U1 - U0) * dy02 - (U2 - U0) * dy01) / det);
-        gVx = cfx_board_clampg(((V1 - V0) * dy02 - (V2 - V0) * dy01) / det);
-        gUy = cfx_board_clampg(((U2 - U0) * (x1 - x0) - (U1 - U0) * (x2 - x0)) / det);
-        gVy = cfx_board_clampg(((V2 - V0) * (x1 - x0) - (V1 - V0) * (x2 - x0)) / det);
-        xl_long = (int32_t)x0 << 16;
-        dxl_long = ((int32_t)(x2 - x0) << 16) / dy02;
-        y = y0;
+        gUx = cfx_board_clampg((int)(((long long)(U1 - U0) * dy02 - (long long)(U2 - U0) * dy01) / det));
+        gVx = cfx_board_clampg((int)(((long long)(V1 - V0) * dy02 - (long long)(V2 - V0) * dy01) / det));
+        gUy = cfx_board_clampg((int)(((long long)(U2 - U0) * (x1 - x0) - (long long)(U1 - U0) * (x2 - x0)) / det));
+        gVy = cfx_board_clampg((int)(((long long)(V2 - V0) * (x1 - x0) - (long long)(V1 - V0) * (x2 - x0)) / det));
+        dxl_long = (((long long)(x2 - x0)) << 16) / dy02;
         for (half = 0; half < 2; ++half) {
-            int yend; int32_t xl_short, dxl_short;
+            int hy0, hy1, sy, ey, y;
+            long long xs_short, d_short, xl, xs;
             if (half == 0) {
                 if (dy01 == 0) continue;
-                yend = y1; xl_short = (int32_t)x0 << 16;
-                dxl_short = ((int32_t)(x1 - x0) << 16) / dy01;
+                hy0 = y0; hy1 = y1; xs_short = (long long)x0 << 16;
+                d_short = (((long long)(x1 - x0)) << 16) / dy01;
             } else {
-                if (dy12 == 0) break;
-                yend = y2; xl_short = (int32_t)x1 << 16;
-                dxl_short = ((int32_t)(x2 - x1) << 16) / dy12;
-                xl_long = ((int32_t)x0 << 16) + dxl_long * (y1 - y0);
+                if (dy12 == 0) continue;
+                hy0 = y1; hy1 = y2; xs_short = (long long)x1 << 16;
+                d_short = (((long long)(x2 - x1)) << 16) / dy12;
             }
-            for (; y < yend; ++y) {
-                if (y >= 0 && y < H) {
-                    int xa = (int)(xl_long >> 16);
-                    int xb = (int)(xl_short >> 16);
-                    int left = xa < xb ? xa : xb;
-                    int right = xa < xb ? xb : xa;
-                    if (left < 0) left = 0;
-                    if (right >= W) right = W - 1;
-                    if (left <= right) {
-                        int32_t U = U0 + (int32_t)(left - x0) * gUx + (int32_t)(y - y0) * gUy;
-                        int32_t V = V0 + (int32_t)(left - x0) * gVx + (int32_t)(y - y0) * gVy;
-                        cfx_board_fill(fb + (int32_t)y * W + left, right - left + 1, U, V, gUx, gVx, tile);
-                    }
+            sy = hy0 < 0 ? 0 : hy0;        /* skip off-screen scanlines directly */
+            ey = hy1 > H ? H : hy1;
+            if (sy >= ey) continue;
+            xl = ((long long)x0 << 16) + dxl_long * (long long)(sy - y0);
+            xs = xs_short + d_short * (long long)(sy - hy0);
+            for (y = sy; y < ey; ++y) {
+                int xa = (int)(xl >> 16);
+                int xb = (int)(xs >> 16);
+                int left = xa < xb ? xa : xb;
+                int right = xa < xb ? xb : xa;
+                if (left < 0) left = 0;
+                if (right >= W) right = W - 1;
+                if (left <= right) {
+                    int32_t U = U0 + (int32_t)(left - x0) * gUx + (int32_t)(y - y0) * gUy;
+                    int32_t V = V0 + (int32_t)(left - x0) * gVx + (int32_t)(y - y0) * gVy;
+                    cfx_board_fill(fb + (int32_t)y * W + left, right - left + 1, U, V, gUx, gVx, tile);
                 }
-                xl_long += dxl_long;
-                xl_short += dxl_short;
+                xl += dxl_long;
+                xs += d_short;
             }
         }
     }

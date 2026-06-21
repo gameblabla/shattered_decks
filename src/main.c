@@ -882,19 +882,17 @@ static void draw_wall_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
 #if defined(WAIFU_FM_PCFX)
     {
+        /* Pass the TRUE projected corners (do NOT clamp them to the screen rect):
+           on a low/perspective camera (result screen, story duels) the wall's
+           bottom corners project below the screen, and clamping them to y=H-1
+           pulled the triangle into jagged spikes.  cfx_board_tri clips per scanline
+           and bounds the edge math internally, so off-screen corners render the
+           correct on-screen slab edge. */
         const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
-        int ax = pa.x < 0 ? 0 : (pa.x >= W ? W - 1 : pa.x);
-        int ay = pa.y < 0 ? 0 : (pa.y >= H ? H - 1 : pa.y);
-        int bx = pb.x < 0 ? 0 : (pb.x >= W ? W - 1 : pb.x);
-        int by = pb.y < 0 ? 0 : (pb.y >= H ? H - 1 : pb.y);
-        int cx = pc.x < 0 ? 0 : (pc.x >= W ? W - 1 : pc.x);
-        int cy = pc.y < 0 ? 0 : (pc.y >= H ? H - 1 : pc.y);
-        int dx = pd.x < 0 ? 0 : (pd.x >= W ? W - 1 : pd.x);
-        int dy = pd.y < 0 ? 0 : (pd.y >= H ? H - 1 : pd.y);
-        Point2D p0 = {(DEFAULT_INT)ax, (DEFAULT_INT)ay, 0, 0};
-        Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
-        Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
-        Point2D p3 = {(DEFAULT_INT)dx, (DEFAULT_INT)dy, 0, uvmax};
+        Point2D p0 = {(DEFAULT_INT)pa.x, (DEFAULT_INT)pa.y, 0, 0};
+        Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, uvmax, 0};
+        Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uvmax, uvmax};
+        Point2D p3 = {(DEFAULT_INT)pd.x, (DEFAULT_INT)pd.y, 0, uvmax};
         cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
     }
 #else
