@@ -672,21 +672,6 @@ static Camera turn_camera(int f, int start, int end, int to_enemy)
 static int32_t col_x0(int c);
 static int32_t row_z0(int r);
 
-/* Clamp a projected screen coordinate to a bounded range.  A vertex that lands
-   just in front of the camera (small cz, large lateral offset) projects via
-   cx/cz to a coordinate in the millions.  line_i() is an unclipped Bresenham, so
-   such a coordinate makes it loop ~millions of times (put_px silently drops the
-   out-of-bounds writes) and the whole game hangs.  On/near-screen geometry is far
-   below this bound and unaffected; only degenerate near-singularity projections
-   are clamped. */
-#define WAIFU_PROJ_BOUND 4096
-static inline int clamp_proj_coord(int v)
-{
-    if (v < -WAIFU_PROJ_BOUND) return -WAIFU_PROJ_BOUND;
-    if (v > WAIFU_PROJ_BOUND) return WAIFU_PROJ_BOUND;
-    return v;
-}
-
 static ScreenPt project_point(Camera cam, Vec3 p)
 {
     Vec3 fwd = vnorm(vsub(cam.target, cam.eye));
@@ -699,8 +684,8 @@ static ScreenPt project_point(Camera cam, Vec3 p)
     ScreenPt s;
     s.depth = cz;
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
-    s.x = clamp_proj_coord(W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), cam.focal)));
-    s.y = clamp_proj_coord(H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), cam.focal)));
+    s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), cam.focal));
+    s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), cam.focal));
     s.ok = 1;
     return s;
 }
@@ -733,8 +718,8 @@ static ScreenPt project_point_basis(const CameraBasis *b, Vec3 p)
     ScreenPt s;
     s.depth = cz;
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
-    s.x = clamp_proj_coord(W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal)));
-    s.y = clamp_proj_coord(H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal)));
+    s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal));
+    s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal));
     s.ok = 1;
     return s;
 }
@@ -1125,15 +1110,45 @@ static void rect_outline(int x, int y, int w, int h, uint8_t c)
 
 static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
 {
-    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-    for (;;) {
-        put_px(x0,y0,c);
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 >= dy) { err += dy; x0 += sx; }
-        if (e2 <= dx) { err += dx; y0 += sy; }
+    /* Clip the segment to the screen rect FIRST (Liang-Barsky, 64-bit so it
+       survives huge inputs).  A projected vertex just in front of the camera
+       (small cz, large cx/cz) can land at a coordinate in the millions; the old
+       unclipped Bresenham then looped ~millions of times -- put_px() silently
+       drops out-of-bounds writes, so it just spun forever and hung the game
+       (repro: COM equips a monster then attacks).  After clipping the loop only
+       walks the on-screen span. */
+    long long ax = x0, ay = y0, dx = (long long)x1 - x0, dy = (long long)y1 - y0;
+    if (dx == 0 && dy == 0) { put_px(x0, y0, c); return; }
+    {
+        long long t0 = 0, t1 = 1LL << 16;
+        long long p[4] = { -dx, dx, -dy, dy };
+        long long q[4] = { ax, (long long)(W - 1) - ax, ay, (long long)(H - 1) - ay };
+        int i;
+        for (i = 0; i < 4; ++i) {
+            if (p[i] == 0) { if (q[i] < 0) return; continue; }
+            {
+                long long r = (q[i] * (1LL << 16)) / p[i];
+                if (p[i] < 0) { if (r > t1) return; if (r > t0) t0 = r; }
+                else          { if (r < t0) return; if (r < t1) t1 = r; }
+            }
+        }
+        if (t0 > t1) return;
+        x0 = (int)(ax + (dx * t0) / (1LL << 16));
+        y0 = (int)(ay + (dy * t0) / (1LL << 16));
+        x1 = (int)(ax + (dx * t1) / (1LL << 16));
+        y1 = (int)(ay + (dy * t1) / (1LL << 16));
+    }
+    {
+        int adx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+        int ady = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+        int err = adx + ady;
+        for (;;) {
+            put_px(x0, y0, c);
+            if (x0 == x1 && y0 == y1) break;
+            int e2 = 2 * err;
+            if (e2 >= ady) { err += ady; x0 += sx; }
+            if (e2 <= adx) { err += adx; y0 += sy; }
+        }
     }
 }
 
