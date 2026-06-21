@@ -106,3 +106,15 @@ Prefer script-based headless checks when possible:
 - Existing story/battle scripts under `scripts/`
 
 Use `--dump-state` for deterministic state checks instead of image-only checks when the behavior is logic-heavy.
+
+## PC-FX Presentation (KRAM / page flip)
+
+[src/platform/pcfx/waifu_pcfx_video.c](/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/src/platform/pcfx/waifu_pcfx_video.c:1) owns how the 256x240 8bpp CPU framebuffer reaches KING KRAM and the screen.
+
+- The game renders the whole composited frame (3D board + field cards + HUD + text) into the single CPU framebuffer (`waifu_fm_framebuffer()`); KRAM is not CPU-addressable, so 2D primitives cannot draw to it directly. `waifu_pcfx_video_present_8bpp` then streams that framebuffer to the hidden KRAM page and flips BG0 to it (`pcfx_king_set_bg0_page_inline` + `front_page`/`back_page`) for tear-free double buffering.
+- All KRAM writes in the present hot path are inline `out.h` (no fastking jal/rts). `pcfx_kram_write_frame_inline` is the full-frame writer (one seek + a 16-byte-unrolled byte-swapping stream); `pcfx_kram_upload_rect_bytes_inline` / `pcfx_kram_clear_rect_black_inline` are the per-rect inline writers. The framebuffer is little-endian byte order and KING wants the bytes swapped within each 16-bit word, so every writer byte-swaps. `fastking.s` (`king_kram_write_buffer*`) now only backs cold paths (16M title upload, `clear_black`) and the non-`__v810__` host fallback.
+- `WAIFU_PCFX_DIRTY_PRESENT` (default 1) keeps two `page_shadow` mirrors and uploads only changed 16px bands. This is a speed optimization, not a software back buffer: a full 256x240 KRAM upload is ~30k `out.h` (near a whole frame's budget), so the diff is what keeps partially-changed frames (cursor blink, HUD tick) cheap. Set it to 0 only to force a full inline upload every changed frame (simpler, but slower on partial frames).
+- Direct big-art rects are composited into the framebuffer too; the dirty scanner just skips re-checking those blocks. A full-frame upload is therefore always complete.
+- 3D renderer board pixels still go through the CPU framebuffer (the disabled `CFX_RENDERER_DIRECT_KRAM` board-to-KRAM path in `renderer3d.c` cannot composite with the overlapping 2D UI). The remaining per-frame cost is `render_board` re-running on animation/transition frames (unique camera each frame), which no KRAM-write change addresses; see the memory note `pcfx-3d-renderer-perf-state`.
+
+Verify PC-FX present changes by booting the new CD fresh (a `.mcr`/state snapshot bakes in the *old* program code, so it will not exercise rebuilt binaries): see `pcfx-build-and-capture` memory. Boot ~1100 frames to the title, then drive `START` / `DOWN` / `A` to reach a duel.

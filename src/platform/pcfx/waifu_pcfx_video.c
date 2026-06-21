@@ -29,6 +29,14 @@
 #define WAIFU_PCFX_16M_BLACK_UV 0x8080u
 #define WAIFU_PCFX_BLACK_WORD ((uint16_t)((IDX_BLACK << 8) | IDX_BLACK))
 #ifndef WAIFU_PCFX_DIRTY_PRESENT
+/* Present path: render once to the CPU framebuffer, then stream it to the hidden
+   KRAM page with the inline out.h writer (no fastking jal/rts) and flip BG0 to
+   it for tear-free double buffering.  The page_shadow[2] mirrors are NOT a second
+   software back buffer for buffering's sake -- they let the presenter diff the
+   new frame against what each KRAM page already holds and upload only the changed
+   16px bands.  A full 256x240 KRAM upload is ~30k out.h (close to a whole frame's
+   budget), so this diff is the main thing keeping partially-changed frames cheap;
+   it stays on.  Set to 0 to force a full inline upload every changed frame. */
 #define WAIFU_PCFX_DIRTY_PRESENT 1
 #endif
 #define WAIFU_PCFX_DIRTY_FULL_THRESHOLD_BYTES (WAIFU_PCFX_FRAME_BYTES * 3 / 4)
@@ -48,7 +56,9 @@
 static uint16_t g_king_microprog[16];
 static const WaifuBigArtDraw *g_pcfx_direct_big_art_draws = 0;
 static int g_pcfx_direct_big_art_draw_count = 0;
+#if WAIFU_PCFX_DIRTY_PRESENT
 static int g_pcfx_dirty_scan_y = 0;
+#endif
 static uint16_t g_title16m_composite[WAIFU_PCFX_TITLE_16M_WORDS] __attribute__((aligned(4)));
 
 static inline __attribute__((always_inline)) int pcfx_block16_is_direct_big_art(int y, int block)
@@ -511,7 +521,89 @@ static inline __attribute__((always_inline)) void pcfx_kram_upload_rect_bytes_in
     king_kram_upload_rect_256_bytes(src_arg, page_word_offset_arg, x0_arg, y0_arg, row_bytes_arg, rows_arg);
 #endif
 }
+#endif /* WAIFU_PCFX_DIRTY_PRESENT (carved out: the full-frame presenter below is always built) */
 
+/* Inline full-frame presenter.  The visible 256x240 8bpp frame is contiguous in
+   a KING BG page (CPU row pitch 256 bytes == KRAM row pitch 128 words), so the
+   whole frame is one seek + one streamed run.  This is the inline equivalent of
+   fastking's _king_kram_write_buffer_bytes_at: one out.w address select, then a
+   16-byte-unrolled byte-swapping out.h stream with no jal/rts in the hot loop.
+   FRAME_BYTES (61440) is a multiple of 16 so the unrolled body covers it exactly. */
+static inline __attribute__((always_inline)) void pcfx_kram_write_frame_inline(const uint8_t *framebuffer, int page_word_offset_arg)
+{
+#if defined(__v810__)
+    const uint8_t *src = framebuffer;
+    const uint8_t *src_end = framebuffer + WAIFU_PCFX_FRAME_BYTES;
+    uint32_t word_addr = (uint32_t)page_word_offset_arg | (1u << 18);
+    uint32_t reg, data, t1, t2, t3;
+    __asm__ volatile (
+        "movea 13,r0,%[reg]\n"
+        "out.h %[reg],0x600[r0]\n"
+        "out.w %[addr],0x604[r0]\n"
+        "movea 14,r0,%[reg]\n"
+        "out.h %[reg],0x600[r0]\n"
+        "1:\n"
+        "ld.w 0[%[src]],%[data]\n"
+        "mov %[data],%[t1]\n"
+        "shr 8,%[t1]\n"
+        "mov %[data],%[t2]\n"
+        "andi 255,%[t1],%[t3]\n"
+        "shl 8,%[t2]\n"
+        "andi 65280,%[t1],%[t1]\n"
+        "shr 24,%[data]\n"
+        "or %[t2],%[t3]\n"
+        "or %[data],%[t1]\n"
+        "out.h %[t3],0x604[r0]\n"
+        "out.h %[t1],0x604[r0]\n"
+        "ld.w 4[%[src]],%[data]\n"
+        "mov %[data],%[t1]\n"
+        "shr 8,%[t1]\n"
+        "mov %[data],%[t2]\n"
+        "andi 255,%[t1],%[t3]\n"
+        "shl 8,%[t2]\n"
+        "andi 65280,%[t1],%[t1]\n"
+        "shr 24,%[data]\n"
+        "or %[t2],%[t3]\n"
+        "or %[data],%[t1]\n"
+        "out.h %[t3],0x604[r0]\n"
+        "out.h %[t1],0x604[r0]\n"
+        "ld.w 8[%[src]],%[data]\n"
+        "mov %[data],%[t1]\n"
+        "shr 8,%[t1]\n"
+        "mov %[data],%[t2]\n"
+        "andi 255,%[t1],%[t3]\n"
+        "shl 8,%[t2]\n"
+        "andi 65280,%[t1],%[t1]\n"
+        "shr 24,%[data]\n"
+        "or %[t2],%[t3]\n"
+        "or %[data],%[t1]\n"
+        "out.h %[t3],0x604[r0]\n"
+        "out.h %[t1],0x604[r0]\n"
+        "ld.w 12[%[src]],%[data]\n"
+        "mov %[data],%[t1]\n"
+        "shr 8,%[t1]\n"
+        "mov %[data],%[t2]\n"
+        "andi 255,%[t1],%[t3]\n"
+        "shl 8,%[t2]\n"
+        "andi 65280,%[t1],%[t1]\n"
+        "shr 24,%[data]\n"
+        "or %[t2],%[t3]\n"
+        "or %[data],%[t1]\n"
+        "out.h %[t3],0x604[r0]\n"
+        "out.h %[t1],0x604[r0]\n"
+        "addi 16,%[src],%[src]\n"
+        "cmp %[end],%[src]\n"
+        "bl 1b\n"
+        : [src] "+r" (src), [reg] "=&r" (reg), [data] "=&r" (data),
+          [t1] "=&r" (t1), [t2] "=&r" (t2), [t3] "=&r" (t3)
+        : [addr] "r" (word_addr), [end] "r" (src_end)
+        : "memory");
+#else
+    king_kram_write_buffer_bytes_at((void *)framebuffer, WAIFU_PCFX_FRAME_BYTES, page_word_offset_arg);
+#endif
+}
+
+#if WAIFU_PCFX_DIRTY_PRESENT
 static inline __attribute__((always_inline)) void pcfx_kram_clear_rect_black_inline(int page_word_offset_arg, int x0_arg, int y0_arg, int width_bytes_arg, int rows_arg)
 {
 #if defined(__v810__)
@@ -1644,7 +1736,7 @@ void waifu_pcfx_video_clear_black(WaifuPcfxVideo *video)
 #if WAIFU_PCFX_DIRTY_PRESENT
 static WAIFU_PCFX_COLD void pcfx_present_full_upload(WaifuPcfxVideo *video, const uint8_t *framebuffer, uint8_t *shadow)
 {
-    king_kram_write_buffer_bytes_at((void *)framebuffer, WAIFU_PCFX_FRAME_BYTES, page_word_offset(video->back_page));
+    pcfx_kram_write_frame_inline(framebuffer, page_word_offset(video->back_page));
     pcfx_copy_bytes_inline(shadow, framebuffer, WAIFU_PCFX_FRAME_BYTES);
     video->page_shadow_valid[video->back_page] = 1;
 }
@@ -1720,10 +1812,10 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
 
     /* Framebuffer is 256x240 packed 8bpp.  KING 8bpp CG data is byte-ordered
        like a big-endian pair inside each 16-bit KRAM word, while the V810 and
-       CPU framebuffer are little-endian byte arrays.  Use the byte-swapping
-       unrolled uploader; the plain word uploader produces swapped/mispaired
-       palette indices and visibly wrong colors. */
-    king_kram_write_buffer_bytes_at((void *)framebuffer, WAIFU_PCFX_FRAME_BYTES, page_word_offset(video->back_page));
+       CPU framebuffer are little-endian byte arrays.  Stream it straight to the
+       hidden KRAM page with the inline byte-swapping writer (no fastking jal/rts
+       in the present hot path); the BG0 page flip below then makes it visible. */
+    pcfx_kram_write_frame_inline(framebuffer, page_word_offset(video->back_page));
 #endif
 
     pcfx_king_set_bg0_page_inline(page_bat_offset(video->back_page));
