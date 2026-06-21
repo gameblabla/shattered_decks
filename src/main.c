@@ -7312,30 +7312,35 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (g_b_battle_atk_card < 0) {
             WaifuAiState ai_state;
             WaifuAiAction ai_action;
-            build_com_ai_state(&ai_state);
-            ai_action = waifu_ai_choose_com_battle(&ai_state);
+            int set_guard = 0;
+            /* Position switches (ATK<->DEF) are pure bookkeeping. Resolve any of
+               them silently within this frame instead of drawing a dedicated
+               top-down beat: a one-frame cut to enemy_battle_top_camera() looked
+               like an unwanted screen transition whenever COM rotated a monster
+               to defense. Keep consulting the AI until it wants to attack or end
+               the turn; the new position shows up on the normal turn-end view. */
+            for (;;) {
+                build_com_ai_state(&ai_state);
+                ai_action = waifu_ai_choose_com_battle(&ai_state);
+                if (ai_action.kind == WAIFU_AI_ACTION_SET_DEFENSE) {
+                    if (ai_action.field_slot >= 0 && ai_action.field_slot < I_FIELD) {
+                        g_i_com_defense[ai_action.field_slot] = 1;
+                        g_b_selected_com_slot = ai_action.field_slot;
+                    }
+                } else if (ai_action.kind == WAIFU_AI_ACTION_SET_ATTACK) {
+                    if (ai_action.field_slot >= 0 && ai_action.field_slot < I_FIELD) {
+                        g_i_com_defense[ai_action.field_slot] = 0;
+                        g_b_selected_com_slot = ai_action.field_slot;
+                    }
+                } else {
+                    break;
+                }
+                if (++set_guard >= I_FIELD * 2) break;
+            }
             if (ai_action.kind == WAIFU_AI_ACTION_ATTACK_MONSTER) {
                 prepare_battle(1, ai_action.attacker_slot, ai_action.defender_slot);
             } else if (ai_action.kind == WAIFU_AI_ACTION_ATTACK_DIRECT) {
                 prepare_direct_attack(1, ai_action.attacker_slot);
-            } else if (ai_action.kind == WAIFU_AI_ACTION_SET_DEFENSE) {
-                if (ai_action.field_slot >= 0 && ai_action.field_slot < I_FIELD) {
-                    g_i_com_defense[ai_action.field_slot] = 1;
-                    g_b_selected_com_slot = ai_action.field_slot;
-                }
-                draw_interactive_common(enemy_battle_top_camera(),
-                                        ai_action.field_slot >= 0 ? g_i_com_field[ai_action.field_slot] : hand_ids[0],
-                                        "DEF");
-                break;
-            } else if (ai_action.kind == WAIFU_AI_ACTION_SET_ATTACK) {
-                if (ai_action.field_slot >= 0 && ai_action.field_slot < I_FIELD) {
-                    g_i_com_defense[ai_action.field_slot] = 0;
-                    g_b_selected_com_slot = ai_action.field_slot;
-                }
-                draw_interactive_common(enemy_battle_top_camera(),
-                                        ai_action.field_slot >= 0 ? g_i_com_field[ai_action.field_slot] : hand_ids[0],
-                                        "ATK");
-                break;
             } else {
                 set_battle_phase(IB_COM_RETURN);
                 break;
@@ -8172,7 +8177,17 @@ static void draw_story_to_plaza_transition(int f)
 
 static void draw_story_fire_to_deck_transition(int f)
 {
-    SCREEN_TRANSITION(f, WAIFU_FAST_TRANSITION_HALF_FRAMES, draw_story_fire_screen(g_story_fire_line), draw_deck_editor());
+    /* Fade the fire scene out to black, then HOLD black for the second half.
+       Do NOT reveal the deck editor here: the deck screen must only appear
+       after the LOADING screen (entered via enter_deck_editor_after_assets()
+       once this transition finishes).  Fading the deck editor in here made it
+       flash for a few frames before LOADING ran. */
+    if (f < WAIFU_FAST_TRANSITION_HALF_FRAMES) {
+        draw_story_fire_screen(g_story_fire_line);
+        apply_black_dither_fade(Q8_ONE - q8_ratio(f, WAIFU_FAST_TRANSITION_HALF_FRAMES));
+    } else {
+        clear_screen(IDX_BLACK);
+    }
 }
 
 static void draw_story_pyramid_menu(void)

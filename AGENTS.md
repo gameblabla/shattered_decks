@@ -44,7 +44,8 @@ Use this file as the first stop when you need to change behavior. It is written 
   - Extended to 8 duels (`STORY_MAX_DUELS`). Opponents: DREAM SHADE, PLAZA NOVICE, TEMPLE ADEPT, SAND REAVER, BURNING SOUL (boss), VOID WALKER, SPHINX GUARDIAN (boss), THE DEMON (final boss). Bosses have 10000 LP (`story_opponent_is_boss`).
   - Four 3D environments selected by `story_scene_kind()` based on duel progress: DESERT (pyramid, `draw_map_pyramid_3d`), TEMPLE (stone pillars, `draw_map_temple_3d`), VOLCANO (cone with glowing crater, `draw_map_volcano_3d`), VOID (floating obsidian platform with crystals, `draw_map_void_3d`). Each has its own sky function via `draw_story_sky`.
   - Pyramid faces use gold tile (1) on all sides, per-face `flip` prevents texture swimming, `draw_tri3d_pyramid_face` tiles the texture in 5 rows x 3 columns (stacked brick courses). Ground grid extended to 8x7 with solid fill below the horizon to prevent sky bleed.
-  - The fire intro has 4 lines describing the 8-guardian gauntlet.
+  - The fire intro has 4 lines describing the 8-guardian gauntlet (spoken by THE DEMON).
+  - `draw_story_fire_to_deck_transition` fades the fire scene out to black and then HOLDS black for its second half; it must NOT draw `draw_deck_editor()` during the transition. The deck editor only appears after the LOADING screen (entered via `enter_deck_editor_after_assets()` once the transition completes). Cross-fading the deck editor in here made the deck screen flash for a few frames before LOADING ran.
   - Save text overflow is handled in `draw_story_save_screen`.
   - Dialog wrapping uses `draw_wrapped_text_small_box`.
 
@@ -61,6 +62,7 @@ Use this file as the first stop when you need to change behavior. It is written 
   - Defense-position field cards swap the quad half-extents in `draw_board_card_state` so the rotated 38x54 texture keeps its aspect ratio instead of stretching.
   - B from top view checks the card under the cursor (player monster, opponent monster, or player equip row) via `IB_FIELD_CARD_PREVIEW`, reusing the hand card preview. B in attack-target mode still cancels targeting instead. `top_selector_preview_card()` resolves the cursor card; `g_b_preview_card_id` carries it into the preview phase.
   - Fusion confirmation is two-step: DOWN queues hand materials, A enters `IB_PLAYER_FUSION_TARGET`, then A on a player monster zone starts the fusion animation. Empty zones place the hand-fusion result there; occupied zones prepend that field monster as material and overwrite the same zone with the result. Empty zones are blocked when the one-monster placement limit has already been used, but occupied-zone transformation remains available.
+  - COM position switches (`WAIFU_AI_ACTION_SET_DEFENSE` / `WAIFU_AI_ACTION_SET_ATTACK`) are now resolved silently inside `IB_COM_BATTLE`: a `for(;;)` loop applies any number of ATK<->DEF flips within a single frame (guarded by `set_guard >= I_FIELD * 2`) before the COM either attacks or ends the turn. Previously each flip drew a one-frame beat with `enemy_battle_top_camera()`, which read as an unwanted screen cut/transition whenever the opponent rotated a monster to defense. The new position shows up on the normal turn-end view, with no dedicated camera move.
 
 ## Editing Rules
 
