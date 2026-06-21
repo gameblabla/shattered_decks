@@ -60,6 +60,10 @@
 #define WAIFU_PCFX_TURN_FRAMES 12
 #define WAIFU_PCFX_SELECT_FRAMES 16
 #define WAIFU_PCFX_RETURN_FRAMES 12
+/* Hand<->top camera lift. Each frame is a full board re-render (~11 vblanks on
+   V810), so the transition cannot be made smooth -- fewer steps just make it
+   shorter/snappier instead of a long choppy slide. */
+#define WAIFU_PCFX_HANDTOP_FRAMES 7
 #define WAIFU_PCFX_DRAW_FRAMES 18
 #define WAIFU_HAND_INTRO_FRAMES 18
 #define WAIFU_EQUIP_ANIM_FRAMES 36
@@ -82,6 +86,7 @@
 #define WAIFU_PCFX_TURN_FRAMES 58
 #define WAIFU_PCFX_SELECT_FRAMES 70
 #define WAIFU_PCFX_RETURN_FRAMES 30
+#define WAIFU_PCFX_HANDTOP_FRAMES 18
 #define WAIFU_PCFX_DRAW_FRAMES 84
 #define WAIFU_HAND_INTRO_FRAMES 60
 #define WAIFU_EQUIP_ANIM_FRAMES 120
@@ -7061,7 +7066,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
            top view, instead of an instant cut.  The board camera eases from
            player_camera() to battle_top_camera() while the hand slides off the
            bottom of the screen. */
-        int dur = WAIFU_PCFX_RETURN_FRAMES;
+        int dur = WAIFU_PCFX_HANDTOP_FRAMES;
         int32_t t = q8_ratio(g_b_phase_frame, dur);
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), q8_smooth_ratio(g_b_phase_frame, dur)));
         draw_interactive_base(lerp_camera(player_camera(), battle_top_camera(), t));
@@ -7074,7 +7079,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         /* Reverse of IB_PLAYER_HAND_TO_TOP: the camera eases back down from the
            tactical top view to the perspective hand view while the hand slides
            up from the bottom of the screen into place. */
-        int dur = WAIFU_PCFX_RETURN_FRAMES;
+        int dur = WAIFU_PCFX_HANDTOP_FRAMES;
         int32_t t = q8_ratio(g_b_phase_frame, dur);
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), Q8_ONE - q8_smooth_ratio(g_b_phase_frame, dur)));
         draw_interactive_base(lerp_camera(battle_top_camera(), player_camera(), t));
