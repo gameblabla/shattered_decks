@@ -2735,6 +2735,14 @@ static void draw_zone_cursor_q(Camera cam, int32_t col, int32_t row)
     ScreenPt p2 = project_point(cam, v3(x1,Q8_FRAC(10,100),z1));
     ScreenPt p3 = project_point(cam, v3(x0,Q8_FRAC(10,100),z1));
     if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
+    /* Keep the cursor visible: far/upper zones (especially enemy rows) can project
+       off the top of the top-down view, leaving the player targeting "blind".
+       Clamp the box corners to the screen so a cursor is always drawn (at the edge
+       if the zone is off-screen).  On-screen zones are unchanged (already in range). */
+    p0.x = p0.x < 0 ? 0 : (p0.x >= W ? W - 1 : p0.x); p0.y = p0.y < 0 ? 0 : (p0.y >= H ? H - 1 : p0.y);
+    p1.x = p1.x < 0 ? 0 : (p1.x >= W ? W - 1 : p1.x); p1.y = p1.y < 0 ? 0 : (p1.y >= H ? H - 1 : p1.y);
+    p2.x = p2.x < 0 ? 0 : (p2.x >= W ? W - 1 : p2.x); p2.y = p2.y < 0 ? 0 : (p2.y >= H ? H - 1 : p2.y);
+    p3.x = p3.x < 0 ? 0 : (p3.x >= W ? W - 1 : p3.x); p3.y = p3.y < 0 ? 0 : (p3.y >= H ? H - 1 : p3.y);
     line_i(p0.x,p0.y,p1.x,p1.y,IDX_RED); line_i(p1.x,p1.y,p2.x,p2.y,IDX_RED);
     line_i(p2.x,p2.y,p3.x,p3.y,IDX_RED); line_i(p3.x,p3.y,p0.x,p0.y,IDX_RED);
     line_i(p0.x+1,p0.y,p1.x+1,p1.y,IDX_RED); line_i(p3.x+1,p3.y,p2.x+1,p2.y,IDX_RED);
