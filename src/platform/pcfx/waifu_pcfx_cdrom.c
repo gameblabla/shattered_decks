@@ -135,17 +135,26 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
     while (bytes > 0) {
         uint32_t lba = base_lba + (uint32_t)(offset / PCFX_CD_SECTOR_SIZE);
         size_t sector_off = offset & (PCFX_CD_SECTOR_SIZE - 1u);
-        size_t chunk = PCFX_CD_SECTOR_SIZE - sector_off;
-        if (chunk > bytes) chunk = bytes;
-        if (sector_off == 0 && chunk == PCFX_CD_SECTOR_SIZE) {
-            if (!eris_cd_read(lba, out, PCFX_CD_SECTOR_SIZE)) return 0;
+        if (sector_off == 0 && bytes >= PCFX_CD_SECTOR_SIZE) {
+            /* Read every whole sector that remains in ONE multi-sector command
+               rather than looping one sector at a time.  Single-sector reads have
+               heavy per-command latency on PC-FX CD; the old loop turned a
+               ~18 KiB story portrait into ~10 separate reads (and the pixels +
+               mask pair into ~20), which is the long Serena-load stall. */
+            size_t whole = bytes & ~((size_t)PCFX_CD_SECTOR_SIZE - 1u);
+            if (!eris_cd_read(lba, out, (uint32_t)whole)) return 0;
+            out += whole;
+            offset += whole;
+            bytes -= whole;
         } else {
+            size_t chunk = PCFX_CD_SECTOR_SIZE - sector_off;
+            if (chunk > bytes) chunk = bytes;
             if (!eris_cd_read(lba, g_cd_sector_scratch, PCFX_CD_SECTOR_SIZE)) return 0;
             memcpy(out, g_cd_sector_scratch + sector_off, chunk);
+            out += chunk;
+            offset += chunk;
+            bytes -= chunk;
         }
-        out += chunk;
-        offset += chunk;
-        bytes -= chunk;
     }
     return 1;
 }

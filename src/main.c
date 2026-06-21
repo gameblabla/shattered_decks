@@ -7647,48 +7647,79 @@ static const char *story_fire_lines[] = {
     "YOU ARE GOING TO BURN IN HELL."
 };
 
-static uint8_t fire_color_from_intensity(int v)
+/* Propagation ("doom") fire.  The previous fire evaluated two q8_sin_rad plus
+   several q8 muls for every one of ~43k pixels each frame, which is what made the
+   story fire screen sluggish on V810.  This version keeps a half-resolution
+   intensity buffer and advances it with a few integer ops per cell (xorshift RNG,
+   subtract a small random decay, pull from a random neighbour below), then blits
+   it 2x to the framebuffer through a colour LUT.  Cheaper and looks more like
+   real flames.  (The present path already page-flips; a full-screen animation
+   still needs a full KRAM upload each frame, which is unavoidable.) */
+#define FIRE_Y0 40
+#define FIRE_FW (W / 2)
+#define FIRE_FH ((H - FIRE_Y0) / 2)
+#define FIRE_MAXI 32
+static uint8_t g_fire_buf[FIRE_FW * FIRE_FH];
+static uint32_t g_fire_rng = 0x2545f491u;
+
+static const uint8_t g_fire_lut[FIRE_MAXI + 1] = {
+    IDX_BLACK,
+    IDX_RED, IDX_RED, IDX_RED, IDX_RED, IDX_RED, IDX_RED,
+    IDX_FLAME3, IDX_FLAME3, IDX_FLAME3, IDX_FLAME3, IDX_FLAME3, IDX_FLAME3, IDX_FLAME3,
+    IDX_FLAME2, IDX_FLAME2, IDX_FLAME2, IDX_FLAME2, IDX_FLAME2, IDX_FLAME2, IDX_FLAME2, IDX_FLAME2,
+    IDX_FLAME1, IDX_FLAME1, IDX_FLAME1, IDX_FLAME1, IDX_FLAME1, IDX_FLAME1,
+    IDX_GOLD_HI, IDX_GOLD_HI, IDX_GOLD_HI, IDX_GOLD_HI, IDX_GOLD_HI
+};
+
+static inline uint32_t fire_rng_next(void)
 {
-    if (v > 45) return IDX_GOLD_HI;
-    if (v > 34) return IDX_FLAME1;
-    if (v > 23) return IDX_FLAME2;
-    if (v > 13) return IDX_FLAME3;
-    if (v > 5) return IDX_RED;
-    return IDX_BLACK;
+    uint32_t r = g_fire_rng;
+    r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+    g_fire_rng = r;
+    return r;
 }
 
 static void draw_oldschool_fire(int f)
 {
-    for (int y = 72; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            int wave = q8_to_int(q8_mul(Q8_FROM_INT(10), q8_sin_rad((x + f * 3) * Q8_FRAC(55,1000)))) +
-                       q8_to_int(q8_mul(Q8_FROM_INT(7), q8_sin_rad((x * 3 - f * 2) * Q8_FRAC(39,1000))));
-            int noise = ((x * 23 + y * 17 + f * 11) ^ ((x + f) * 7) ^ ((y - f) * 13)) & 31;
-            int rise = (H - y) / 2;
-            int base = (y - 88 + wave) + noise - rise;
-            if (base < 0) base = 0;
-            put_px(x, y, fire_color_from_intensity(base));
+    (void)f;
+    uint8_t *bottom = g_fire_buf + (FIRE_FH - 1) * FIRE_FW;
+    int x, y;
+
+    /* Hot, flickering base row. */
+    for (x = 0; x < FIRE_FW; ++x) {
+        uint32_t r = fire_rng_next();
+        bottom[x] = (uint8_t)((r & 7) ? FIRE_MAXI : (FIRE_MAXI - 8));
+    }
+
+    /* Propagate upward: each cell is a random lower neighbour minus a little decay. */
+    for (y = FIRE_FH - 2; y >= 0; --y) {
+        uint8_t *row = g_fire_buf + y * FIRE_FW;
+        const uint8_t *below = row + FIRE_FW;
+        for (x = 0; x < FIRE_FW; ++x) {
+            uint32_t r = fire_rng_next();
+            int dx = (int)(r & 3) - 1;        /* -1, 0, 1, then 2 -> clamp to 0 */
+            int sx;
+            int v;
+            if (dx > 1) dx = 0;
+            sx = x + dx;
+            if (sx < 0) sx = 0; else if (sx >= FIRE_FW) sx = FIRE_FW - 1;
+            v = (int)below[sx] - (int)((r >> 2) & 1);
+            row[x] = (uint8_t)(v < 0 ? 0 : v);
         }
     }
-}
 
-static void draw_demon_face(int f)
-{
-    int cx = 128;
-    int cy = 72;
-    /* Horns */
-    for (int i = 0; i < 28; ++i) {
-        line_i(cx - 25, cy - 3, cx - 62 + i / 2, cy - 31 + i, IDX_RED);
-        line_i(cx + 25, cy - 3, cx + 62 - i / 2, cy - 31 + i, IDX_RED);
+    /* Blit half-res intensity to the framebuffer (2x) via the colour LUT. */
+    for (y = 0; y < FIRE_FH; ++y) {
+        const uint8_t *src = g_fire_buf + y * FIRE_FW;
+        uint8_t *d0 = framebuffer + (FIRE_Y0 + y * 2) * W;
+        uint8_t *d1 = d0 + W;
+        for (x = 0; x < FIRE_FW; ++x) {
+            uint8_t c = g_fire_lut[src[x]];
+            int fx = x * 2;
+            d0[fx] = c; d0[fx + 1] = c;
+            d1[fx] = c; d1[fx + 1] = c;
+        }
     }
-    rect_fill(cx - 36, cy - 10, 72, 47, IDX_BLACK);
-    rect_outline(cx - 36, cy - 10, 72, 47, IDX_RED);
-    rect_fill(cx - 23, cy + 5, 15, 7, ((f / 8) & 1) ? IDX_FLAME1 : IDX_GOLD_HI);
-    rect_fill(cx + 8, cy + 5, 15, 7, ((f / 8) & 1) ? IDX_FLAME1 : IDX_GOLD_HI);
-    line_i(cx - 20, cy + 26, cx - 4, cy + 20, IDX_FLAME2);
-    line_i(cx - 4, cy + 20, cx + 4, cy + 20, IDX_FLAME2);
-    line_i(cx + 4, cy + 20, cx + 20, cy + 26, IDX_FLAME2);
-    draw_centered_text(26, "THE DEMON", IDX_RED, IDX_BLACK);
 }
 
 static void draw_story_fire_screen(int f)
@@ -7699,7 +7730,6 @@ static void draw_story_fire_screen(int f)
     if (line >= line_count) line = line_count - 1;
     clear_screen(IDX_BLACK);
     draw_oldschool_fire(f);
-    draw_demon_face(f);
     draw_panel_rect(8, 172, 240, 57, IDX_UI_DARK);
     draw_text_small(18, 183, "DEMON", IDX_RED, IDX_BLACK);
     draw_wrapped_text_small_box(18, 198, 218, 3, 10, story_fire_lines[line], IDX_WHITE, IDX_BLACK);
