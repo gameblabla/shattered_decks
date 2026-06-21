@@ -56,23 +56,7 @@
 static uint16_t g_king_microprog[16];
 static const WaifuBigArtDraw *g_pcfx_direct_big_art_draws = 0;
 static int g_pcfx_direct_big_art_draw_count = 0;
-#if WAIFU_PCFX_DIRTY_PRESENT
-static int g_pcfx_dirty_scan_y = 0;
-#endif
 static uint16_t g_title16m_composite[WAIFU_PCFX_TITLE_16M_WORDS] __attribute__((aligned(4)));
-
-static inline __attribute__((always_inline)) int pcfx_block16_is_direct_big_art(int y, int block)
-{
-    int x0 = block * WAIFU_PCFX_DIRTY_BLOCK_W;
-    int x1 = x0 + WAIFU_PCFX_DIRTY_BLOCK_W;
-    for (int i = 0; i < g_pcfx_direct_big_art_draw_count; ++i) {
-        const WaifuBigArtDraw *d = &g_pcfx_direct_big_art_draws[i];
-        if (y < d->y || y >= d->y + WAIFU_BIG_H) continue;
-        if (x1 <= d->x || x0 >= d->x + WAIFU_BIG_W) continue;
-        return 1;
-    }
-    return 0;
-}
 
 struct WaifuPcfxVideo {
     int front_page;
@@ -331,7 +315,6 @@ typedef struct PcfxDirtyPlanStats {
 
 static inline __attribute__((always_inline)) int pcfx_block16_dirty(const uint8_t *cur, const uint8_t *old, int block)
 {
-    if (pcfx_block16_is_direct_big_art(g_pcfx_dirty_scan_y, block)) return 0;
     const uint32_t *a = (const uint32_t *)(cur + block * WAIFU_PCFX_DIRTY_BLOCK_W);
     const uint32_t *b = (const uint32_t *)(old + block * WAIFU_PCFX_DIRTY_BLOCK_W);
     return (a[0] != b[0]) | (a[1] != b[1]) | (a[2] != b[2]) | (a[3] != b[3]);
@@ -374,7 +357,6 @@ static WAIFU_PCFX_NOINLINE PcfxDirtyPlanStats pcfx_dirty_plan_stats(const uint8_
     for (int y = 0; y < WAIFU_PCFX_H; ++y) {
         const uint8_t *a = cur + y * WAIFU_PCFX_W;
         const uint8_t *b = old + y * WAIFU_PCFX_W;
-        g_pcfx_dirty_scan_y = y;
         int rc = pcfx_dirty_collect_row_runs(a, b, runs);
         stats.row_runs += rc;
         for (int i = 0; i < rc; ++i) {
@@ -756,7 +738,6 @@ static WAIFU_PCFX_NOINLINE void pcfx_present_dirty_bands(uint8_t *shadow, const 
 
     for (int y = 0; y < WAIFU_PCFX_H; ++y) {
         for (int i = 0; i < active_count; ++i) active[i].matched = 0;
-        g_pcfx_dirty_scan_y = y;
         int run_count = pcfx_dirty_collect_row_runs(framebuffer + y * WAIFU_PCFX_W,
                                                     shadow + y * WAIFU_PCFX_W,
                                                     runs);
