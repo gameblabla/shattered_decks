@@ -870,13 +870,53 @@ static int field_side_tile_for_cell(int c, int r)
     return 4;
 }
 
+/* Slab-wall quad.  Unlike draw_quad3d (floor) this does NOT clamp the projected
+   corners to the screen: on PC-FX the compact cfx_board_tri clips per scanline,
+   so the walls share the single hot board rasterizer with the floor (I-cache
+   locality) and need no separate clipping path. */
+static void draw_wall_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
+{
+    ScreenPt pa, pb, pc, pd;
+    if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
+    if (tile < 0) tile = 0;
+    if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
+#if defined(WAIFU_FM_PCFX)
+    {
+        const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
+        int ax = pa.x < 0 ? 0 : (pa.x >= W ? W - 1 : pa.x);
+        int ay = pa.y < 0 ? 0 : (pa.y >= H ? H - 1 : pa.y);
+        int bx = pb.x < 0 ? 0 : (pb.x >= W ? W - 1 : pb.x);
+        int by = pb.y < 0 ? 0 : (pb.y >= H ? H - 1 : pb.y);
+        int cx = pc.x < 0 ? 0 : (pc.x >= W ? W - 1 : pc.x);
+        int cy = pc.y < 0 ? 0 : (pc.y >= H ? H - 1 : pc.y);
+        int dx = pd.x < 0 ? 0 : (pd.x >= W ? W - 1 : pd.x);
+        int dy = pd.y < 0 ? 0 : (pd.y >= H ? H - 1 : pd.y);
+        Point2D p0 = {(DEFAULT_INT)ax, (DEFAULT_INT)ay, 0, 0};
+        Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
+        Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
+        Point2D p3 = {(DEFAULT_INT)dx, (DEFAULT_INT)dy, 0, uvmax};
+        cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
+    }
+#else
+    {
+        const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
+        TexV t0 = {pa.x, pa.y, 0, 0};
+        TexV t1 = {pb.x, pb.y, Q8_ONE, 0};
+        TexV t2 = {pc.x, pc.y, Q8_ONE, Q8_ONE};
+        TexV t3 = {pd.x, pd.y, 0, Q8_ONE};
+        draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, t0, t1, t2);
+        draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, t0, t2, t3);
+    }
+#endif
+}
+
 static void draw_field_wall_z(Camera cam, int32_t z, int r_for_tile)
 {
     int c;
     for (c = 0; c < BOARD_COLS; ++c) {
         int32_t x0 = col_x0(c), x1 = col_x0(c + 1);
         int tile = field_side_tile_for_cell(c, r_for_tile);
-        draw_quad3d_safe(cam, v3(x0, FIELD_Y, z), v3(x1, FIELD_Y, z),
+        draw_wall_quad3d(cam, v3(x0, FIELD_Y, z), v3(x1, FIELD_Y, z),
                               v3(x1, FIELD_THICK, z), v3(x0, FIELD_THICK, z), tile);
     }
 }
@@ -887,7 +927,7 @@ static void draw_field_wall_x(Camera cam, int32_t x, int c_for_tile)
     for (r = 0; r < BOARD_ROWS; ++r) {
         int32_t z0 = row_z0(r), z1 = row_z0(r + 1);
         int tile = field_side_tile_for_cell(c_for_tile, r);
-        draw_quad3d_safe(cam, v3(x, FIELD_Y, z0), v3(x, FIELD_Y, z1),
+        draw_wall_quad3d(cam, v3(x, FIELD_Y, z0), v3(x, FIELD_Y, z1),
                               v3(x, FIELD_THICK, z1), v3(x, FIELD_THICK, z0), tile);
     }
 }

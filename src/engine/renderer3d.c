@@ -2487,6 +2487,118 @@ static void cfx_draw_textured_triangle(const CfxRenderer3DState *renderer,
 }
 
 
+#if CFX_RENDERER_DIRECT_GENERIC_TILE && CFX_RENDERER_DIRECT_RECT
+/* ---- Compact affine board triangle rasterizer ---------------------------
+   One small self-contained routine for the battle board (floor + slab walls).
+   The whole hot path fits the V810 1KB I-cache, so re-rendering the board's
+   ~68 triangles every animation frame no longer thrashes the cache against the
+   2.4KB generic triangle/span machinery -- that I-cache miss storm was the
+   board's real per-frame cost.  Perspective lives in the projected vertices;
+   texturing is affine (per-triangle constant gradient, what the board used
+   before).  u/v are Q8 texels (cell corners 0 and 31<<8).  Clips per scanline
+   (Y range + X clamp), so off-screen wall quads need no separate clip path.
+   32x32 pitch-32 tiles only. */
+#define CFX_BOARD_GCLAMP (64 << 8)
+static inline int32_t cfx_board_clampg(int32_t g)
+{
+    if (g > CFX_BOARD_GCLAMP) return CFX_BOARD_GCLAMP;
+    if (g < -CFX_BOARD_GCLAMP) return -CFX_BOARD_GCLAMP;
+    return g;
+}
+
+static inline __attribute__((always_inline)) void cfx_board_fill(uint8_t *dst, int n,
+        int32_t u, int32_t v, int32_t du, int32_t dv, const uint8_t *tile)
+{
+    if (n <= 0) return;
+#if CFX_RENDERER_USE_V810_ASM
+    {
+        uint32_t c0, ru, rv;
+        __asm__ volatile (
+            "1:\n"
+            "mov %[v],%[rv]\n" "shr 3,%[rv]\n" "andi 0x3e0,%[rv],%[rv]\n"
+            "mov %[u],%[ru]\n" "shr 8,%[ru]\n" "andi 0x1f,%[ru],%[ru]\n"
+            "add %[rv],%[ru]\n" "add %[tile],%[ru]\n" "ld.b 0[%[ru]],%[c0]\n"
+            "st.b %[c0],0[%[dst]]\n"
+            "add %[du],%[u]\n" "add %[dv],%[v]\n"
+            "add 1,%[dst]\n" "add -1,%[n]\n" "bne 1b\n"
+            : [dst] "+r" (dst), [n] "+r" (n), [u] "+r" (u), [v] "+r" (v),
+              [c0] "=&r" (c0), [ru] "=&r" (ru), [rv] "=&r" (rv)
+            : [du] "r" (du), [dv] "r" (dv), [tile] "r" (tile)
+            : "memory");
+    }
+#else
+    while (n-- > 0) {
+        *dst++ = tile[(((uint32_t)v >> 3) & 0x3e0) | (((uint32_t)u >> 8) & 0x1f)];
+        u += du; v += dv;
+    }
+#endif
+}
+
+static void cfx_board_tri(uint8_t *fb, int W, int H, const uint8_t *tile,
+    int x0, int y0, int32_t U0, int32_t V0,
+    int x1, int y1, int32_t U1, int32_t V1,
+    int x2, int y2, int32_t U2, int32_t V2)
+{
+    int t; int32_t tU;
+    /* keep projected coords bounded so the 16.16 edge math can't overflow;
+       only near-singular projections reach the clamp, and those are skip-worthy */
+    if (x0 < -4096) x0 = -4096; else if (x0 > 4096) x0 = 4096;
+    if (x1 < -4096) x1 = -4096; else if (x1 > 4096) x1 = 4096;
+    if (x2 < -4096) x2 = -4096; else if (x2 > 4096) x2 = 4096;
+    if (y0 < -2048) y0 = -2048; else if (y0 > 2048) y0 = 2048;
+    if (y1 < -2048) y1 = -2048; else if (y1 > 2048) y1 = 2048;
+    if (y2 < -2048) y2 = -2048; else if (y2 > 2048) y2 = 2048;
+    if (y0 > y1) { t=x0;x0=x1;x1=t; t=y0;y0=y1;y1=t; tU=U0;U0=U1;U1=tU; tU=V0;V0=V1;V1=tU; }
+    if (y0 > y2) { t=x0;x0=x2;x2=t; t=y0;y0=y2;y2=t; tU=U0;U0=U2;U2=tU; tU=V0;V0=V2;V2=tU; }
+    if (y1 > y2) { t=x1;x1=x2;x2=t; t=y1;y1=y2;y2=t; tU=U1;U1=U2;U2=tU; tU=V1;V1=V2;V2=tU; }
+    if (y2 <= y0) return;
+    {
+        int dy02 = y2 - y0, dy01 = y1 - y0, dy12 = y2 - y1;
+        int det = (x1 - x0) * dy02 - (x2 - x0) * dy01;
+        int gUx, gVx, gUy, gVy, half, y;
+        int32_t xl_long, dxl_long;
+        if (det == 0) return;
+        gUx = cfx_board_clampg(((U1 - U0) * dy02 - (U2 - U0) * dy01) / det);
+        gVx = cfx_board_clampg(((V1 - V0) * dy02 - (V2 - V0) * dy01) / det);
+        gUy = cfx_board_clampg(((U2 - U0) * (x1 - x0) - (U1 - U0) * (x2 - x0)) / det);
+        gVy = cfx_board_clampg(((V2 - V0) * (x1 - x0) - (V1 - V0) * (x2 - x0)) / det);
+        xl_long = (int32_t)x0 << 16;
+        dxl_long = ((int32_t)(x2 - x0) << 16) / dy02;
+        y = y0;
+        for (half = 0; half < 2; ++half) {
+            int yend; int32_t xl_short, dxl_short;
+            if (half == 0) {
+                if (dy01 == 0) continue;
+                yend = y1; xl_short = (int32_t)x0 << 16;
+                dxl_short = ((int32_t)(x1 - x0) << 16) / dy01;
+            } else {
+                if (dy12 == 0) break;
+                yend = y2; xl_short = (int32_t)x1 << 16;
+                dxl_short = ((int32_t)(x2 - x1) << 16) / dy12;
+                xl_long = ((int32_t)x0 << 16) + dxl_long * (y1 - y0);
+            }
+            for (; y < yend; ++y) {
+                if (y >= 0 && y < H) {
+                    int xa = (int)(xl_long >> 16);
+                    int xb = (int)(xl_short >> 16);
+                    int left = xa < xb ? xa : xb;
+                    int right = xa < xb ? xb : xa;
+                    if (left < 0) left = 0;
+                    if (right >= W) right = W - 1;
+                    if (left <= right) {
+                        int32_t U = U0 + (int32_t)(left - x0) * gUx + (int32_t)(y - y0) * gUy;
+                        int32_t V = V0 + (int32_t)(left - x0) * gVx + (int32_t)(y - y0) * gVy;
+                        cfx_board_fill(fb + (int32_t)y * W + left, right - left + 1, U, V, gUx, gVx, tile);
+                    }
+                }
+                xl_long += dxl_long;
+                xl_short += dxl_short;
+            }
+        }
+    }
+}
+#endif
+
 void cfx_renderer3d_draw_quad_board(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type)
 {
 #if CFX_RENDERER_DIRECT_GENERIC_TILE && CFX_RENDERER_DIRECT_RECT
@@ -2501,21 +2613,19 @@ void cfx_renderer3d_draw_quad_board(CfxRenderer3D *renderer, const Point2D *p0, 
         tetromino_type = CFX_TEXTURE_TILE_COUNT - 1;
     }
 
-    const uint8_t *tile = state->texture_atlas + ((int32_t)tetromino_type * state->tile_stride_bytes);
-    CfxVertexIn v0 = cfx_make_vertex(p0);
-    CfxVertexIn v1 = cfx_make_vertex(p1);
-    CfxVertexIn v2 = cfx_make_vertex(p2);
-    CfxVertexIn v3 = cfx_make_vertex(p3);
-
-    /* Board-cache quads are already clipped/projected by src/main.c and are
-       rendered into a CPU background buffer, not live KING KRAM.  Bypass the
-       generic cfx_renderer3d_draw_quad() decision tree: no axis-rect probe,
-       no single-tile LUT rebuild, no cold scanline/direct-KRAM branches.  The
-       triangle rasterizer is still the old exact one, so PC-FX board pixels
-       remain equivalent to the generic path while the V810 I-cache sees a much
-       smaller per-quad front end. */
-    cfx_draw_textured_triangle(state, tile, v0, v1, v2);
-    cfx_draw_textured_triangle(state, tile, v0, v2, v3);
+    {
+        const uint8_t *tile = state->texture_atlas + ((int32_t)tetromino_type * state->tile_stride_bytes);
+        uint8_t *fb = state->framebuffer;
+        int W = (int)state->width, H = (int)state->height;
+        cfx_board_tri(fb, W, H, tile,
+                      (int)p0->x, (int)p0->y, (int32_t)p0->u, (int32_t)p0->v,
+                      (int)p1->x, (int)p1->y, (int32_t)p1->u, (int32_t)p1->v,
+                      (int)p2->x, (int)p2->y, (int32_t)p2->u, (int32_t)p2->v);
+        cfx_board_tri(fb, W, H, tile,
+                      (int)p0->x, (int)p0->y, (int32_t)p0->u, (int32_t)p0->v,
+                      (int)p2->x, (int)p2->y, (int32_t)p2->u, (int32_t)p2->v,
+                      (int)p3->x, (int)p3->y, (int32_t)p3->u, (int32_t)p3->v);
+    }
 #else
     cfx_renderer3d_draw_quad(renderer, p0, p1, p2, p3, tetromino_type);
 #endif
