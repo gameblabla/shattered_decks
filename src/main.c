@@ -2488,25 +2488,57 @@ static void draw_textured_tri_ex(const uint8_t *src, int sw, int sh, TexV a, Tex
     if (maxx >= W) maxx = W - 1;
     if (miny < 0) miny = 0;
     if (maxy >= H) maxy = H - 1;
+
+    /* Barycentric edge functions (wa2/wb2/wc2) are linear in x/y, so step them
+       incrementally instead of recomputing per pixel.  U/V are likewise an
+       affine function of position, so the two per-pixel divisions become one
+       division per scanline plus a fixed-point (Q16) add per pixel.  Pixel
+       coverage (the inside test) is bit-identical to the old per-pixel form;
+       the floor that used the slow main.c rasterizer for its slab walls drops
+       from two DIVs per filled pixel to two per row. */
+    int two_den = den * 2;
+    int dwa_dx = (b.y - c.y) * 2;
+    int dwb_dx = (c.y - a.y) * 2;
+    int dwc_dx = -dwa_dx - dwb_dx;
+    int dnum_u_dx = dwa_dx * a.u + dwb_dx * b.u + dwc_dx * c.u;
+    int dnum_v_dx = dwa_dx * a.v + dwb_dx * b.v + dwc_dx * c.v;
+    int ustep = (int)(((long long)dnum_u_dx << 16) / two_den);
+    int vstep = (int)(((long long)dnum_v_dx << 16) / two_den);
+    int swm1 = sw - 1, shm1 = sh - 1;
+
     for (int y = miny; y <= maxy; ++y) {
+        int py2 = y * 2 + 1;
+        int base = minx * 2 + 1 - c.x * 2;
+        int wa2 = (b.y - c.y) * base + (c.x - b.x) * (py2 - c.y * 2);
+        int wb2 = (c.y - a.y) * base + (a.x - c.x) * (py2 - c.y * 2);
+        int wc2 = two_den - wa2 - wb2;
+        /* Seed with a 32-bit divide (matches the old per-pixel u/v exactly at the
+           row start), then add the precomputed Q16 step per pixel. */
+        int ufix = ((wa2 * a.u + wb2 * b.u + wc2 * c.u) / two_den) << 16;
+        int vfix = ((wa2 * a.v + wb2 * b.v + wc2 * c.v) / two_den) << 16;
+        int inspan = 0;
         for (int x = minx; x <= maxx; ++x) {
-            int px2 = x * 2 + 1, py2 = y * 2 + 1;
-            int wa2 = (b.y - c.y) * (px2 - c.x * 2) + (c.x - b.x) * (py2 - c.y * 2);
-            int wb2 = (c.y - a.y) * (px2 - c.x * 2) + (a.x - c.x) * (py2 - c.y * 2);
-            int wc2 = den * 2 - wa2 - wb2;
             if ((den > 0 && wa2 >= 0 && wb2 >= 0 && wc2 >= 0) ||
                 (den < 0 && wa2 <= 0 && wb2 <= 0 && wc2 <= 0)) {
-                int u = (wa2 * a.u + wb2 * b.u + wc2 * c.u) / (den * 2);
-                int v = (wa2 * a.v + wb2 * b.v + wc2 * c.v) / (den * 2);
-                int sx = (u * (sw - 1) + Q8_HALF) >> Q8_SHIFT;
-                int sy = (v * (sh - 1) + Q8_HALF) >> Q8_SHIFT;
+                int u = ufix >> 16;
+                int v = vfix >> 16;
+                int sx = (u * swm1 + Q8_HALF) >> Q8_SHIFT;
+                int sy = (v * shm1 + Q8_HALF) >> Q8_SHIFT;
                 if (sx < 0) sx = 0;
                 if (sx >= sw) sx = sw - 1;
                 if (sy < 0) sy = 0;
                 if (sy >= sh) sy = sh - 1;
                 uint8_t pix = src[sy * sw + sx];
                 put_px(x, y, gray ? gray_card_dither_px(pix, x, y) : pix);
+                inspan = 1;
+            } else if (inspan) {
+                /* Convex triangle: the inside region of a scanline is one
+                   contiguous span, so once we leave it the rest of the box row
+                   is outside.  Skips the trailing empty bounding-box pixels. */
+                break;
             }
+            wa2 += dwa_dx; wb2 += dwb_dx; wc2 += dwc_dx;
+            ufix += ustep; vfix += vstep;
         }
     }
 }

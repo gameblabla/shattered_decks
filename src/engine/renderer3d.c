@@ -1806,6 +1806,51 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
     }
 }
 
+#if CFX_RENDERER_USE_V810_ASM && CFX_RENDERER_DIRECT_RECT
+/* Compact affine direct-tile inner loop for the perspective board floor
+   (32x32 source, pitch 32).  This is the hot per-pixel path: the previous C
+   loop recomputed a full 2-D texel address per pixel and, together with the
+   branch-heavy span/triangle code around it, overran the 1 KiB V810 I-cache.
+   Here the whole pixel-pair body is a handful of fixed instructions with no
+   branches, no KRAM probe and no LUT, so it stays resident in I-cache.
+
+   Pixel-identical to cfx_fetch_direct_texel(): texel offset is
+   ((v>>3)&31)*32 + ((u>>3)&31), expressed as ((v<<2)&0x3e0) | ((u>>3)&0x1f).
+   u/v run as 32-bit accumulators; the &0x3e0 / &0x1f masks make the high bits
+   irrelevant, so no per-step 8-bit wrap is needed.  Two pixels per ST.H, left
+   pixel in the high byte to match the KING byte order. */
+static inline __attribute__((always_inline)) void cfx_draw_board_pair_nowrap(
+    uint16_t *dst, uint16_t pairs, uint8_t *up, uint8_t *vp,
+    int8_t step_u, int8_t step_v, const uint8_t *tile)
+{
+    uint32_t u = *up;
+    uint32_t v = *vp;
+    uint32_t su = (uint32_t)(int32_t)step_u;
+    uint32_t sv = (uint32_t)(int32_t)step_v;
+    uint32_t c0, c1, ru, rv;
+    if (pairs) {
+        __asm__ volatile (
+            "1:\n"
+            "mov %[v],%[rv]\n" "shl 2,%[rv]\n" "andi 0x3e0,%[rv],%[rv]\n"
+            "mov %[u],%[ru]\n" "shr 3,%[ru]\n" "andi 0x1f,%[ru],%[ru]\n"
+            "add %[rv],%[ru]\n" "add %[tile],%[ru]\n" "ld.b 0[%[ru]],%[c0]\n"
+            "add %[su],%[u]\n" "add %[sv],%[v]\n"
+            "mov %[v],%[rv]\n" "shl 2,%[rv]\n" "andi 0x3e0,%[rv],%[rv]\n"
+            "mov %[u],%[ru]\n" "shr 3,%[ru]\n" "andi 0x1f,%[ru],%[ru]\n"
+            "add %[rv],%[ru]\n" "add %[tile],%[ru]\n" "ld.b 0[%[ru]],%[c1]\n"
+            "add %[su],%[u]\n" "add %[sv],%[v]\n"
+            "shl 8,%[c0]\n" "or %[c1],%[c0]\n" "st.h %[c0],0[%[dst]]\n"
+            "add 2,%[dst]\n" "add -1,%[pairs]\n" "bne 1b\n"
+            : [dst] "+r" (dst), [pairs] "+r" (pairs), [u] "+r" (u), [v] "+r" (v),
+              [c0] "=&r" (c0), [c1] "=&r" (c1), [ru] "=&r" (ru), [rv] "=&r" (rv)
+            : [su] "r" (su), [sv] "r" (sv), [tile] "r" (tile)
+            : "memory");
+    }
+    *up = (uint8_t)u;
+    *vp = (uint8_t)v;
+}
+#endif
+
 static inline void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t *tile,
                                              int16_t y, int16_t xs, int16_t span,
                                              uint16_t tex_state, int8_t step_u, int8_t step_v)
@@ -1897,6 +1942,17 @@ static inline void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer,
         --span;
     }
 
+#if CFX_RENDERER_USE_V810_ASM && CFX_RENDERER_DIRECT_RECT
+    /* Fast affine inner loop for the perspective board floor.  Only the 32x32,
+       pitch-32 tiles used by the board match the hardcoded shift layout; any
+       other geometry falls through to the portable C loop below. */
+    if (span >= 2 && CFX_TEX_SIZE == 32 && renderer->tile_pitch_bytes == 32) {
+        uint16_t pairs = (uint16_t)(span >> 1);
+        cfx_draw_board_pair_nowrap(dst, pairs, &u, &v, step_u, step_v, tile);
+        dst += pairs;
+        span = (int16_t)(span - (int16_t)(pairs << 1));
+    } else
+#endif
     while (span >= 2) {
         uint8_t c0 = cfx_fetch_direct_texel(renderer, tile, u, v);
         u = (uint8_t)(u + (uint8_t)step_u);
