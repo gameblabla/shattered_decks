@@ -42,7 +42,15 @@
 #define WAIFU_PCFX_DIRTY_FULL_THRESHOLD_BYTES (WAIFU_PCFX_FRAME_BYTES * 3 / 4)
 #define WAIFU_PCFX_DIRTY_BLOCK_W 16
 #define WAIFU_PCFX_DIRTY_BLOCKS_X (WAIFU_PCFX_W / WAIFU_PCFX_DIRTY_BLOCK_W)
+/* A single row can yield up to BLOCKS_X runs when dirty blocks alternate
+   black / non-black (e.g. a swirl/portal effect over a black background). */
 #define WAIFU_PCFX_DIRTY_MAX_ROW_RUNS WAIFU_PCFX_DIRTY_BLOCKS_X
+/* While merging runs into vertical bands, the active table transiently holds the
+   previous row's bands plus this row's new runs before unmatched bands are
+   flushed, i.e. up to 2*BLOCKS_X.  Sizing the table for that worst case keeps
+   the merge from dropping runs (a dropped run never uploads, leaving the hidden
+   page stale -> page-flip shows black/garbage during such frames). */
+#define WAIFU_PCFX_DIRTY_MAX_BANDS (WAIFU_PCFX_DIRTY_BLOCKS_X * 2)
 #define WAIFU_PCFX_DIRTY_MAX_TOTAL_RUNS 1024
 
 #if defined(__GNUC__)
@@ -54,8 +62,6 @@
 #endif
 
 static uint16_t g_king_microprog[16];
-static const WaifuBigArtDraw *g_pcfx_direct_big_art_draws = 0;
-static int g_pcfx_direct_big_art_draw_count = 0;
 static uint16_t g_title16m_composite[WAIFU_PCFX_TITLE_16M_WORDS] __attribute__((aligned(4)));
 
 struct WaifuPcfxVideo {
@@ -670,48 +676,6 @@ static inline __attribute__((always_inline)) void pcfx_shadow_copy_rect(uint8_t 
 }
 
 
-static int pcfx_shadow_rect_equals(const uint8_t *shadow, const uint8_t *framebuffer, int x0, int y0, int width, int rows)
-{
-    const uint8_t *s = shadow + y0 * WAIFU_PCFX_W + x0;
-    const uint8_t *f = framebuffer + y0 * WAIFU_PCFX_W + x0;
-    for (int y = 0; y < rows; ++y) {
-        if (memcmp(s, f, (size_t)width) != 0) return 0;
-        s += WAIFU_PCFX_W;
-        f += WAIFU_PCFX_W;
-    }
-    return 1;
-}
-
-static WAIFU_PCFX_COLD void pcfx_upload_direct_big_art_rects(uint8_t *shadow, const uint8_t *framebuffer, int page_word_offset_value)
-{
-    for (int i = 0; i < g_pcfx_direct_big_art_draw_count; ++i) {
-        const WaifuBigArtDraw *d = &g_pcfx_direct_big_art_draws[i];
-        if (d->x < 0 || d->y < 0 || d->x + WAIFU_BIG_W > WAIFU_PCFX_W || d->y + WAIFU_BIG_H > WAIFU_PCFX_H) continue;
-
-        /* The dirty scanner suppresses complete 16-pixel horizontal blocks that
-           intersect the direct big-art draw.  The upload must therefore cover
-           the same block-aligned area, not only the 112x112 art pixels.  The
-           old exact-rect upload left the card frame/nearby pixels in the
-           skipped edge blocks stale, and odd x positions also misaligned KING
-           byte pairs.  Block-aligning the upload keeps KRAM writes even, 16-byte
-           streamed, and congruent with the skipped dirty blocks. */
-        int x0 = (d->x / WAIFU_PCFX_DIRTY_BLOCK_W) * WAIFU_PCFX_DIRTY_BLOCK_W;
-        int x1 = ((d->x + WAIFU_BIG_W + WAIFU_PCFX_DIRTY_BLOCK_W - 1) / WAIFU_PCFX_DIRTY_BLOCK_W) * WAIFU_PCFX_DIRTY_BLOCK_W;
-        if (x0 < 0) x0 = 0;
-        if (x1 > WAIFU_PCFX_W) x1 = WAIFU_PCFX_W;
-        int width = x1 - x0;
-        if (width <= 0) continue;
-
-        /* Static card-check screens draw the same large card for many frames.
-           Once both hidden/display pages have the same aligned card rectangle,
-           do not re-stream it.  Any battle flash, burn, damage text, or card
-           movement changes the CPU framebuffer rectangle and forces an upload. */
-        if (pcfx_shadow_rect_equals(shadow, framebuffer, x0, d->y, width, WAIFU_BIG_H)) continue;
-        pcfx_kram_upload_rect_bytes_inline(framebuffer, page_word_offset_value, x0, d->y, width, WAIFU_BIG_H);
-        pcfx_shadow_copy_rect(shadow, framebuffer, x0, d->y, width, WAIFU_BIG_H);
-    }
-}
-
 static inline __attribute__((always_inline)) void pcfx_flush_dirty_band(uint8_t *shadow, const uint8_t *framebuffer,
                                   int page_word_offset_value, const PcfxDirtyBand *band)
 {
@@ -731,10 +695,10 @@ static inline __attribute__((always_inline)) void pcfx_flush_dirty_band(uint8_t 
 
 static WAIFU_PCFX_NOINLINE void pcfx_present_dirty_bands(uint8_t *shadow, const uint8_t *framebuffer, int page_word_offset_value)
 {
-    PcfxDirtyBand active[WAIFU_PCFX_DIRTY_MAX_ROW_RUNS];
+    PcfxDirtyBand active[WAIFU_PCFX_DIRTY_MAX_BANDS];
     PcfxDirtyRun runs[WAIFU_PCFX_DIRTY_MAX_ROW_RUNS];
     int active_count = 0;
-    for (int i = 0; i < WAIFU_PCFX_DIRTY_MAX_ROW_RUNS; ++i) active[i].used = 0;
+    for (int i = 0; i < WAIFU_PCFX_DIRTY_MAX_BANDS; ++i) active[i].used = 0;
 
     for (int y = 0; y < WAIFU_PCFX_H; ++y) {
         for (int i = 0; i < active_count; ++i) active[i].matched = 0;
@@ -755,7 +719,7 @@ static WAIFU_PCFX_NOINLINE void pcfx_present_dirty_bands(uint8_t *shadow, const 
             if (found >= 0) {
                 active[found].y1 = (uint8_t)y;
                 active[found].matched = 1;
-            } else if (active_count < WAIFU_PCFX_DIRTY_MAX_ROW_RUNS) {
+            } else if (active_count < WAIFU_PCFX_DIRTY_MAX_BANDS) {
                 PcfxDirtyBand *b = &active[active_count++];
                 b->x0b = runs[r].x0b;
                 b->x1b = runs[r].x1b;
@@ -764,6 +728,20 @@ static WAIFU_PCFX_NOINLINE void pcfx_present_dirty_bands(uint8_t *shadow, const 
                 b->y1 = (uint8_t)y;
                 b->used = 1;
                 b->matched = 1;
+            } else {
+                /* Active-band table full (should not happen given the 2*BLOCKS_X
+                   sizing, but never drop a run: a dropped run leaves the hidden
+                   page stale and the flip shows black/garbage).  Flush it now as
+                   a single-row band. */
+                PcfxDirtyBand one;
+                one.x0b = runs[r].x0b;
+                one.x1b = runs[r].x1b;
+                one.black = runs[r].black;
+                one.y0 = (uint8_t)y;
+                one.y1 = (uint8_t)y;
+                one.used = 1;
+                one.matched = 1;
+                pcfx_flush_dirty_band(shadow, framebuffer, page_word_offset_value, &one);
             }
         }
 
@@ -1750,19 +1728,13 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
 #if WAIFU_PCFX_DIRTY_PRESENT
     int upload_full = 0;
     uint8_t *shadow = video->page_shadow[video->back_page];
-    g_pcfx_direct_big_art_draws = waifu_assets_big_art_draws();
-    g_pcfx_direct_big_art_draw_count = waifu_assets_big_art_draw_count();
 
     if (!video->page_shadow_valid[video->back_page]) {
         upload_full = 1;
     } else {
         PcfxDirtyPlanStats dirty_stats = pcfx_dirty_plan_stats(framebuffer, shadow);
         if (dirty_stats.dirty_blocks == 0) {
-            /* The hidden page already contains this frame, except that direct
-               big-art overlays are deliberately skipped by the dirty scanner. */
-            if (g_pcfx_direct_big_art_draw_count > 0) {
-                pcfx_upload_direct_big_art_rects(shadow, framebuffer, page_word_offset(video->back_page));
-            }
+            /* The hidden page already holds this exact frame; just flip to it. */
             pcfx_king_set_bg0_page_inline(page_bat_offset(video->back_page));
             video->front_page = video->back_page;
             video->back_page ^= 1;
@@ -1779,9 +1751,6 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
         pcfx_present_full_upload(video, framebuffer, shadow);
     } else {
         pcfx_present_dirty_bands(shadow, framebuffer, page_word_offset(video->back_page));
-    }
-    if (g_pcfx_direct_big_art_draw_count > 0) {
-        pcfx_upload_direct_big_art_rects(shadow, framebuffer, page_word_offset(video->back_page));
     }
 #else
     uint32_t frame_sum;
