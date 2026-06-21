@@ -4024,7 +4024,12 @@ typedef enum WaifuBattlePhase {
        keep their numbering.  Smooth camera lift from the hand view up to the
        tactical top view, and the reverse descent back down to the hand. */
     IB_PLAYER_HAND_TO_TOP,
-    IB_PLAYER_TOP_TO_HAND
+    IB_PLAYER_TOP_TO_HAND,
+    /* COM beat between landing a monster and equipping it: hold on the field so
+       the just-placed monster is visible in the top view, then cycle the COM
+       hand and settle the (face-down) cursor on the equip card before the equip
+       animation runs. */
+    IB_COM_EQUIP_SELECT
 } WaifuBattlePhase;
 
 #define I_HAND 5
@@ -4075,6 +4080,7 @@ static int g_b_place_hand = -1;
 static int g_b_place_slot = -1;
 static int g_b_place_card = -1;
 static int g_b_place_defense = 0;
+static int g_b_com_equip_pending_hand = -1;
 static int g_b_equip_owner = 0; /* 0 player, 1 COM */
 static int g_b_equip_hand = -1;
 static int g_b_equip_slot = -1;
@@ -5762,6 +5768,7 @@ static void init_battle_state(void)
     g_b_place_slot = -1;
     g_b_place_card = -1;
     g_b_place_defense = 0;
+    g_b_com_equip_pending_hand = -1;
     g_b_equip_hand = -1;
     g_b_equip_slot = -1;
     g_b_equip_zone_slot = -1;
@@ -7264,13 +7271,37 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             {
                 int equip_h = first_unused_com_support_hand();
                 if (equip_h >= 0 && first_free_com_equip_slot() >= 0) {
-                    start_com_equip(equip_h, g_b_place_slot);
+                    /* Don't snap straight into the equip animation: let the
+                       just-landed monster show on the field, then have COM
+                       visually pick the equip card first (IB_COM_EQUIP_SELECT). */
+                    g_b_com_equip_pending_hand = equip_h;
+                    set_battle_phase(IB_COM_EQUIP_SELECT);
                 } else {
                     set_battle_phase(IB_COM_BATTLE);
                 }
             }
         }
         break;
+
+    case IB_COM_EQUIP_SELECT: {
+        int equip_h = g_b_com_equip_pending_hand;
+        int settle = WAIFU_PCFX_SELECT_FRAMES - (WAIFU_PCFX_SELECT_FRAMES / 4);
+        int sel = (g_b_phase_frame < settle) ? (g_b_phase_frame / 4) % I_HAND : equip_h;
+        draw_interactive_common(enemy_camera(),
+                                g_i_com_field[g_b_place_slot] >= 0 ? g_i_com_field[g_b_place_slot] : g_i_com_hand[0],
+                                "COM");
+        draw_interactive_com_hand(g_b_phase_frame, sel, 0);
+        if (battle_animation_event_complete(WAIFU_PCFX_SELECT_FRAMES)) {
+            g_b_com_equip_pending_hand = -1;
+            if (equip_h >= 0 && first_free_com_equip_slot() >= 0 &&
+                is_support_card(g_i_com_hand[equip_h])) {
+                start_com_equip(equip_h, g_b_place_slot);
+            } else {
+                set_battle_phase(IB_COM_BATTLE);
+            }
+        }
+        break;
+    }
 
     case IB_COM_EQUIP_ANIM:
         draw_player_equip_anim();
