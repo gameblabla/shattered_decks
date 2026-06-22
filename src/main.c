@@ -31,6 +31,8 @@
 #include "assets.h"
 #ifdef WAIFU_FM_PCFX
 #include "waifu_pcfx_video.h"
+#include <eris/bkupmem.h>
+#include "pcfx_bkupfat.h"
 #endif
 
 #define W 256
@@ -5440,24 +5442,185 @@ static void award_story_win_drop(void)
 }
 
 #ifdef WAIFU_FM_PCFX
-/* PC-FX save/load is intentionally stubbed. Durable backup-RAM/CD-block
-   handling should be implemented as a platform service later; for now the
-   console build does not claim that story saves exist or were written. */
+
+/* -----------------------------------------------------------------------
+ * PC-FX BackupRAM / ExBackupRAM save via FAT12 API.
+ * Folder: /WAIFCARD   File: /WAIFCARD/SAVE.DAT
+ * Tries internal BackupRAM first; falls back to external ExBackupRAM.
+ * ----------------------------------------------------------------------- */
+
+/* Binary save layout (123 bytes total):
+ *   0-3   "WAIF" magic
+ *   4     version 0x01
+ *   5-10  name[6]  (A-Z)
+ *   11    duel_index
+ *   12    map_cursor
+ *   13    pyramid_cursor
+ *   14    plaza_line (u8, clamped)
+ *   15    deck_count
+ *   16    storage_count
+ *   17-56 deck[40]    (u8: 0=CARD_NONE, n=card_id+1)
+ *   57-120 storage[64] (u8: same encoding)
+ *   121-122 checksum u16 LE (sum of bytes 0..120)
+ */
+#define WAIFU_SAVE_FOLDER  "/WAIFCARD"
+#define WAIFU_SAVE_FILE    "/WAIFCARD/SAVE.DAT"
+#define WAIFU_SAVE_VERSION 0x01u
+#define WAIFU_SAVE_SIZE    123u
+
+static u8 g_bkup_vol[BKUPFAT_VOL_SIZE];
+
+/* Cache for story_save_exists(): -1=unchecked, 0=no, 1=yes.
+ * eris_bkupmem_read is a 32 KB byte-by-byte hardware copy (~6 ms on V810
+ * at 21 MHz) so we must not call it every frame from the title screen. */
+static int g_save_exists_cached = -1;
+
+static u8 save_encode_card(int id)
+{
+    return (id < 0) ? 0u : (u8)(id + 1);
+}
+
+static int save_decode_card(u8 b)
+{
+    return (b == 0u) ? CARD_NONE : (int)(b - 1u);
+}
+
+static void save_build_blob(u8 *buf)
+{
+    int i;
+    u16 cksum = 0;
+    buf[0] = 'W'; buf[1] = 'A'; buf[2] = 'I'; buf[3] = 'F';
+    buf[4] = WAIFU_SAVE_VERSION;
+    for (i = 0; i < STORY_NAME_LEN; ++i) buf[5 + i] = (u8)g_story_name[i];
+    buf[11] = (u8)g_story_duel_index;
+    buf[12] = (u8)g_story_map_cursor;
+    buf[13] = (u8)g_story_pyramid_cursor;
+    buf[14] = (u8)(g_story_plaza_line & 0xFF);
+    buf[15] = (u8)g_story_deck_count;
+    buf[16] = (u8)g_story_storage_count;
+    for (i = 0; i < STORY_DECK_SIZE; ++i) buf[17 + i] = save_encode_card(g_story_player_deck[i]);
+    for (i = 0; i < STORY_STORAGE_SIZE; ++i) buf[57 + i] = save_encode_card(g_story_storage[i]);
+    for (i = 0; i < 121; ++i) cksum = (u16)(cksum + buf[i]);
+    buf[121] = (u8)(cksum & 0xFFu);
+    buf[122] = (u8)(cksum >> 8);
+}
+
+static int save_parse_blob(const u8 *buf, u32 len)
+{
+    int i;
+    u16 cksum = 0, stored;
+    if (len < WAIFU_SAVE_SIZE) return 0;
+    if (buf[0] != 'W' || buf[1] != 'A' || buf[2] != 'I' || buf[3] != 'F') return 0;
+    if (buf[4] != WAIFU_SAVE_VERSION) return 0;
+    for (i = 0; i < 121; ++i) cksum = (u16)(cksum + buf[i]);
+    stored = (u16)buf[121] | ((u16)buf[122] << 8);
+    if (cksum != stored) return 0;
+
+    for (i = 0; i < STORY_NAME_LEN; ++i) {
+        char c = (char)buf[5 + i];
+        g_story_name[i] = (c >= 'A' && c <= 'Z') ? c : 'A';
+    }
+    g_story_name[STORY_NAME_LEN] = '\0';
+    g_story_duel_index = (int)buf[11];
+    if (g_story_duel_index < 0) g_story_duel_index = 0;
+    if (g_story_duel_index >= STORY_MAX_DUELS) g_story_duel_index = STORY_MAX_DUELS - 1;
+    g_story_map_cursor = buf[12] ? 1 : 0;
+    g_story_pyramid_cursor = (int)buf[13];
+    if (g_story_pyramid_cursor < 0 || g_story_pyramid_cursor > 2) g_story_pyramid_cursor = 0;
+    g_story_plaza_line = (int)buf[14];
+    if (g_story_plaza_line < 0) g_story_plaza_line = 0;
+    g_story_deck_count = (int)buf[15];
+    if (g_story_deck_count < 0 || g_story_deck_count > STORY_DECK_SIZE) g_story_deck_count = 0;
+    g_story_storage_count = (int)buf[16];
+    if (g_story_storage_count < 0 || g_story_storage_count > STORY_STORAGE_SIZE) g_story_storage_count = 0;
+    for (i = 0; i < STORY_DECK_SIZE; ++i) g_story_player_deck[i] = save_decode_card(buf[17 + i]);
+    for (i = 0; i < STORY_STORAGE_SIZE; ++i) g_story_storage[i] = save_decode_card(buf[57 + i]);
+    g_story_player_deck_pos = 0;
+    if (g_story_deck_count > 0) g_story_strong_card = g_story_player_deck[0];
+    if (g_story_deck_count > 1) g_story_weak_card = g_story_player_deck[1];
+    g_story_battle_active = 0;
+    g_story_intro_line = 0;
+    g_story_fire_line = 0;
+    g_story_saved_flash = 0;
+    g_story_editor_from_pyramid = 0;
+    reset_story_deck_editor();
+    sanitize_story_deck_copy_limit();
+    recalc_story_deck_counts();
+    init_battle_state();
+    return 1;
+}
+
+static int bkup_try_save_vol(int ext)
+{
+    bkupfat_t fs;
+    u8 blob[WAIFU_SAVE_SIZE];
+    bkupfat_device_t dev = ext ? BKUPFAT_DEVICE_EXTERNAL : BKUPFAT_DEVICE_INTERNAL;
+    int rc;
+
+    eris_bkupmem_read(ext, g_bkup_vol, 0, BKUPFAT_VOL_SIZE);
+    if (!bkupfat_is_valid_device(g_bkup_vol, BKUPFAT_VOL_SIZE, dev)) {
+        if (bkupfat_format_device(g_bkup_vol, BKUPFAT_VOL_SIZE, dev) != BKUPFAT_OK) return 0;
+    }
+    if (bkupfat_mount_device(&fs, g_bkup_vol, BKUPFAT_VOL_SIZE, dev) != BKUPFAT_OK) return 0;
+    rc = bkupfat_create_folder(&fs, WAIFU_SAVE_FOLDER);
+    if (rc != BKUPFAT_OK && rc != BKUPFAT_ERR_ALREADY_EXISTS) return 0;
+    save_build_blob(blob);
+    if (bkupfat_create_file(&fs, WAIFU_SAVE_FILE, blob, WAIFU_SAVE_SIZE, BKUPFAT_WRITE_OVERWRITE) != BKUPFAT_OK) return 0;
+    eris_bkupmem_write(ext, g_bkup_vol, 0, BKUPFAT_VOL_SIZE);
+    return 1;
+}
+
+static int bkup_try_exists_vol(int ext)
+{
+    bkupfat_t fs;
+    u8 attr;
+    u32 size;
+    bkupfat_device_t dev = ext ? BKUPFAT_DEVICE_EXTERNAL : BKUPFAT_DEVICE_INTERNAL;
+
+    eris_bkupmem_read(ext, g_bkup_vol, 0, BKUPFAT_VOL_SIZE);
+    if (!bkupfat_is_valid_device(g_bkup_vol, BKUPFAT_VOL_SIZE, dev)) return 0;
+    if (bkupfat_mount_device(&fs, g_bkup_vol, BKUPFAT_VOL_SIZE, dev) != BKUPFAT_OK) return 0;
+    return bkupfat_exists(&fs, WAIFU_SAVE_FILE, &attr, &size) == BKUPFAT_OK;
+}
+
+static int bkup_try_load_vol(int ext)
+{
+    bkupfat_t fs;
+    u8 blob[WAIFU_SAVE_SIZE + 8u];
+    u32 loaded_len = 0;
+    bkupfat_device_t dev = ext ? BKUPFAT_DEVICE_EXTERNAL : BKUPFAT_DEVICE_INTERNAL;
+
+    eris_bkupmem_read(ext, g_bkup_vol, 0, BKUPFAT_VOL_SIZE);
+    if (!bkupfat_is_valid_device(g_bkup_vol, BKUPFAT_VOL_SIZE, dev)) return 0;
+    if (bkupfat_mount_device(&fs, g_bkup_vol, BKUPFAT_VOL_SIZE, dev) != BKUPFAT_OK) return 0;
+    if (bkupfat_read_file(&fs, WAIFU_SAVE_FILE, blob, sizeof(blob), &loaded_len) != BKUPFAT_OK) return 0;
+    return save_parse_blob(blob, loaded_len);
+}
+
 static int story_save_exists(void)
 {
-    return 0;
+    if (g_save_exists_cached >= 0) return g_save_exists_cached;
+    eris_bkupmem_set_access(1, 1);
+    g_save_exists_cached = (bkup_try_exists_vol(0) || bkup_try_exists_vol(1)) ? 1 : 0;
+    return g_save_exists_cached;
 }
 
 static int write_story_save(void)
 {
     g_story_save_status = -1;
+    eris_bkupmem_set_access(1, 1);
+    if (bkup_try_save_vol(0)) { g_save_exists_cached = 1; return 1; }
+    if (bkup_try_save_vol(1)) { g_save_exists_cached = 1; return 1; }
     return 0;
 }
 
 static int read_story_save(void)
 {
-    return 0;
+    eris_bkupmem_set_access(1, 1);
+    if (bkup_try_load_vol(0)) return 1;
+    return bkup_try_load_vol(1);
 }
+
 #else
 
 static int story_save_exists(void)
