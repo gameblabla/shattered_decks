@@ -4093,7 +4093,11 @@ typedef enum WaifuInteractiveState {
     WAIFU_I_DECK_EDITOR,
     WAIFU_I_DECK_PREVIEW,
     WAIFU_I_BATTLE,
-    WAIFU_I_LOADING_ASSETS
+    WAIFU_I_LOADING_ASSETS,
+#ifdef WAIFU_FM_PCFX
+    /* PC-FX only: pick which backup device (internal / FX-BMP) to load from. */
+    WAIFU_I_STORY_LOAD_DEVICE,
+#endif
 } WaifuInteractiveState;
 
 typedef enum WaifuBattlePhase {
@@ -4149,6 +4153,9 @@ static WaifuInteractiveState g_i_state = WAIFU_I_TITLE;
 static WaifuInteractiveState g_i_loading_target = WAIFU_I_TITLE;
 static int g_i_frame = 0;
 static int g_i_menu_selected = 0;
+#ifdef WAIFU_FM_PCFX
+static int g_i_load_device_sel = 0; /* 0 internal, 1 FX-BMP, 2 back */
+#endif
 static WaifuFmInput g_prev_input;
 
 static WaifuBattlePhase g_b_phase = IB_OPENING;
@@ -5470,10 +5477,11 @@ static void award_story_win_drop(void)
 
 static u8 g_bkup_vol[BKUPFAT_VOL_SIZE];
 
-/* Cache for story_save_exists(): -1=unchecked, 0=no, 1=yes.
+/* Per-device cache for story_save_exists(): index 0 = internal BackupRAM,
+ * 1 = external ExBackupRAM/FX-BMP.  -1=unchecked, 0=no, 1=yes.
  * eris_bkupmem_read is a 32 KB byte-by-byte hardware copy (~6 ms on V810
- * at 21 MHz) so we must not call it every frame from the title screen. */
-static int g_save_exists_cached = -1;
+ * at 21 MHz) so we must not call it every frame from the title/menu. */
+static int g_save_exists_cached[2] = { -1, -1 };
 
 static u8 save_encode_card(int id)
 {
@@ -5597,28 +5605,41 @@ static int bkup_try_load_vol(int ext)
     return save_parse_blob(blob, loaded_len);
 }
 
+/* Per-device existence check (ext: 0=internal, 1=external/FX-BMP), cached. */
+static int story_save_exists_device(int ext)
+{
+    int idx = ext ? 1 : 0;
+    if (g_save_exists_cached[idx] >= 0) return g_save_exists_cached[idx];
+    eris_bkupmem_set_access(1, 1);
+    g_save_exists_cached[idx] = bkup_try_exists_vol(ext) ? 1 : 0;
+    return g_save_exists_cached[idx];
+}
+
 static int story_save_exists(void)
 {
-    if (g_save_exists_cached >= 0) return g_save_exists_cached;
+    return (story_save_exists_device(0) || story_save_exists_device(1)) ? 1 : 0;
+}
+
+/* Per-device load (ext: 0=internal, 1=external/FX-BMP). */
+static int read_story_save_device(int ext)
+{
     eris_bkupmem_set_access(1, 1);
-    g_save_exists_cached = (bkup_try_exists_vol(0) || bkup_try_exists_vol(1)) ? 1 : 0;
-    return g_save_exists_cached;
+    return bkup_try_load_vol(ext);
 }
 
 static int write_story_save(void)
 {
     g_story_save_status = -1;
     eris_bkupmem_set_access(1, 1);
-    if (bkup_try_save_vol(0)) { g_save_exists_cached = 1; return 1; }
-    if (bkup_try_save_vol(1)) { g_save_exists_cached = 1; return 1; }
+    if (bkup_try_save_vol(0)) { g_save_exists_cached[0] = 1; return 1; }
+    if (bkup_try_save_vol(1)) { g_save_exists_cached[1] = 1; return 1; }
     return 0;
 }
 
 static int read_story_save(void)
 {
-    eris_bkupmem_set_access(1, 1);
-    if (bkup_try_load_vol(0)) return 1;
-    return bkup_try_load_vol(1);
+    if (read_story_save_device(0)) return 1;
+    return read_story_save_device(1);
 }
 
 #else
@@ -5721,6 +5742,35 @@ static int load_story_to_map(void)
     g_i_state = WAIFU_I_STORY_MAP;
     g_i_frame = -1;
     return 1;
+}
+
+#ifdef WAIFU_FM_PCFX
+/* PC-FX: load from one specific backup device (ext: 0=internal, 1=FX-BMP). */
+static int load_story_device_to_map(int ext)
+{
+    if (!read_story_save_device(ext)) {
+        g_story_save_status = -1;
+        return 0;
+    }
+    g_story_save_status = 1;
+    g_i_state = WAIFU_I_STORY_MAP;
+    g_i_frame = -1;
+    return 1;
+}
+#endif
+
+/* "Begin loading a story save" action.  The platform decides how: on PC-FX
+   the player picks a backup device (internal / FX-BMP); on other ports there
+   is a single save file, so it loads directly. */
+static void begin_story_load(void)
+{
+#ifdef WAIFU_FM_PCFX
+    g_i_load_device_sel = 0;
+    g_i_state = WAIFU_I_STORY_LOAD_DEVICE;
+    g_i_frame = -1;
+#else
+    if (!load_story_to_map()) g_deck_flash = 60;
+#endif
 }
 
 static void deck_editor_move_selected_card(void)
@@ -8619,7 +8669,7 @@ void waifu_fm_step(const WaifuFmInput *input)
 #endif
         if (g_i_frame < WAIFU_TITLE_FADE_FRAMES) apply_black_dither_fade(q8_ratio(g_i_frame, WAIFU_TITLE_FADE_FRAMES));
         if (press_b) {
-            load_story_to_map();
+            if (story_save_exists()) begin_story_load();
         } else if (press_start || press_a) {
             enter_title_to_menu_fade();
         }
@@ -8656,7 +8706,7 @@ void waifu_fm_step(const WaifuFmInput *input)
                 init_battle_state();
                 enter_menu_to_battle_fade();
             } else {
-                if (!load_story_to_map()) g_deck_flash = 60;
+                begin_story_load();
             }
         }
         break;
@@ -8683,6 +8733,45 @@ void waifu_fm_step(const WaifuFmInput *input)
             draw_menu_fadeout_event(g_i_menu_selected, g_i_frame);
         }
         break;
+
+#ifdef WAIFU_FM_PCFX
+    case WAIFU_I_STORY_LOAD_DEVICE:
+    {
+        /* Device picker stays on the static 16M title surface; the menu text
+           is drawn on the front VDC overlay layer, like the main menu. */
+        int internal_has = story_save_exists_device(0);
+        int external_has = story_save_exists_device(1);
+        if (press_up) g_i_load_device_sel = (g_i_load_device_sel + 2) % 3;
+        if (press_down) g_i_load_device_sel = (g_i_load_device_sel + 1) % 3;
+        waifu_fm_use_title_palette();
+        waifu_pcfx_video_overlay_load_menu(g_i_load_device_sel, internal_has, external_has);
+        if (press_a || press_start) {
+            if (g_i_load_device_sel == 2) {
+                /* BACK: return to the standard menu. */
+                g_i_state = WAIFU_I_MENU;
+                g_i_frame = -1;
+            } else {
+                int ext = g_i_load_device_sel; /* 0 internal, 1 external */
+                int has = ext ? external_has : internal_has;
+                if (has) {
+                    waifu_pcfx_video_overlay_clear();
+                    if (!load_story_device_to_map(ext)) {
+                        /* Read failed unexpectedly; fall back to the menu. */
+                        g_i_state = WAIFU_I_MENU;
+                        g_i_frame = -1;
+                    }
+                }
+                /* No save on the chosen device: stay so the player can pick
+                   the other one or BACK. */
+            }
+        }
+        if (press_b) {
+            g_i_state = WAIFU_I_MENU;
+            g_i_frame = -1;
+        }
+        break;
+    }
+#endif
 
     case WAIFU_I_STORY_NAME:
         g_story_name_to_intro = 0;

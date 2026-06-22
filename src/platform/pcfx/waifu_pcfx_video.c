@@ -869,7 +869,8 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 typedef enum WaifuPcfxOverlayMode {
     WAIFU_PCFX_OVERLAY_OFF = 0,
     WAIFU_PCFX_OVERLAY_TITLE_PROMPT = 1,
-    WAIFU_PCFX_OVERLAY_MENU = 2
+    WAIFU_PCFX_OVERLAY_MENU = 2,
+    WAIFU_PCFX_OVERLAY_LOAD_DEVICE = 3
 } WaifuPcfxOverlayMode;
 
 static WaifuPcfxOverlayMode g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_OFF;
@@ -877,6 +878,9 @@ static WaifuPcfxOverlayMode g_vdc_overlay_applied_mode = WAIFU_PCFX_OVERLAY_OFF;
 static int g_vdc_overlay_prompt_visible = 0;
 static int g_vdc_overlay_has_save = 0;
 static int g_vdc_overlay_menu_selected = 1;
+static int g_vdc_overlay_load_selected = 0;
+static int g_vdc_overlay_load_internal_has = 0;
+static int g_vdc_overlay_load_external_has = 0;
 /* 0 = no black overlay, 16 = fully black.  This is deliberately platform-local:
    the core only exposes visible_q8, and the PC-FX presenter decides how to hide
    its 16M KING surface without touching KRAM. */
@@ -1174,6 +1178,29 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
             pcfx_vdc_overlay_print(6, 25, "RANDOM DECK / FREE DUEL", 26);
         }
         break;
+
+    case WAIFU_PCFX_OVERLAY_LOAD_DEVICE:
+        pcfx_vdc_overlay_clear_rect(4, 15, 28, 13);
+        pcfx_vdc_overlay_print(9, 16, "LOAD FROM", 16);
+        pcfx_vdc_overlay_print(7, 18,
+            g_vdc_overlay_load_selected == 0
+                ? (g_vdc_overlay_load_internal_has ? "> INTERNAL" : "> INTERNAL  --")
+                : (g_vdc_overlay_load_internal_has ? "  INTERNAL" : "  INTERNAL  --"), 16);
+        pcfx_vdc_overlay_print(7, 20,
+            g_vdc_overlay_load_selected == 1
+                ? (g_vdc_overlay_load_external_has ? "> FX-BMP" : "> FX-BMP  --")
+                : (g_vdc_overlay_load_external_has ? "  FX-BMP" : "  FX-BMP  --"), 16);
+        pcfx_vdc_overlay_print(7, 22, g_vdc_overlay_load_selected == 2 ? "> BACK" : "  BACK", 16);
+        if (g_vdc_overlay_load_selected == 0) {
+            pcfx_vdc_overlay_print(6, 25,
+                g_vdc_overlay_load_internal_has ? "INTERNAL BACKUP RAM" : "NO SAVE ON INTERNAL", 26);
+        } else if (g_vdc_overlay_load_selected == 1) {
+            pcfx_vdc_overlay_print(6, 25,
+                g_vdc_overlay_load_external_has ? "EXTERNAL FX-BMP CARD" : "NO SAVE ON FX-BMP", 26);
+        } else {
+            pcfx_vdc_overlay_print(6, 25, "RETURN TO MENU", 26);
+        }
+        break;
     }
 
     g_vdc_overlay_dirty = 0;
@@ -1204,6 +1231,24 @@ void waifu_pcfx_video_overlay_menu(int selected, int has_save)
         g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_MENU;
         g_vdc_overlay_menu_selected = selected;
         g_vdc_overlay_has_save = has_save;
+        g_vdc_overlay_dirty = 1;
+    }
+}
+
+void waifu_pcfx_video_overlay_load_menu(int selected, int internal_has_save, int external_has_save)
+{
+    if (selected < 0) selected = 0;
+    if (selected > 2) selected = 2;
+    internal_has_save = internal_has_save ? 1 : 0;
+    external_has_save = external_has_save ? 1 : 0;
+    if (g_vdc_overlay_mode != WAIFU_PCFX_OVERLAY_LOAD_DEVICE ||
+        g_vdc_overlay_load_selected != selected ||
+        g_vdc_overlay_load_internal_has != internal_has_save ||
+        g_vdc_overlay_load_external_has != external_has_save) {
+        g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_LOAD_DEVICE;
+        g_vdc_overlay_load_selected = selected;
+        g_vdc_overlay_load_internal_has = internal_has_save;
+        g_vdc_overlay_load_external_has = external_has_save;
         g_vdc_overlay_dirty = 1;
     }
 }
