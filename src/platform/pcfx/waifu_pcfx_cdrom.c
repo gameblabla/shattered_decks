@@ -88,10 +88,39 @@ static uint32_t blob_lba(WaifuAssetBlobId blob)
     }
 }
 
+/* ROOT-CAUSE FIX for the pervasive PC-FX "SCSI freeze" (equip->battle and others).
+   The KING chip multiplexes ONE IRQ line to the V810 across CD/SCSI, ADPCM, DMA and
+   the raster/vsync interrupt.  The KING SCSI "phase-mismatch" CD interrupt (control
+   register 2, bit 1) is left ENABLED by the BIOS boot loader.  liberis does CD reads
+   by POLLING and latches the phase-match register (reg 3) to BUS_FREE, so while a
+   read walks the command/data-in phases the bus phase != reg3 and CDInterrupt is
+   asserted; it normally de-asserts when the bus returns to BUS_FREE, but if a read
+   does not drain cleanly it stays asserted.  A stuck CDInterrupt holds the shared
+   KING IRQ line high, so the BIOS KING handler never advances the raster/vsync path
+   and the BIOS vsync frame counter (RAM 0x1F1E20) stops -- the BIOS "wait for vsync"
+   routine (0xfff04c82) then spins forever (verified by BIOS disassembly + the stuck
+   EIPC).  The game never uses this interrupt, so clearing reg 2 (bit 1 low) acks the
+   stuck CDInterrupt AND disables the mismatch IRQ for good.  Reproduces on hardware. */
+static inline void scsi_clear_phase_irq(void)
+{
+    __asm__ volatile (
+        "out.h %[two],0x600[r0]\n"
+        "out.h r0,0x604[r0]\n"
+        :: [two] "r" (2) : "memory");
+}
+
+static uint32_t cd_read(uint32_t lba, uint8_t *buf, uint32_t bytes)
+{
+    uint32_t r = eris_cd_read(lba, buf, bytes);
+    scsi_clear_phase_irq();
+    return r;
+}
+
 WaifuPcfxCdrom *waifu_pcfx_cdrom_create(void)
 {
     g_cdrom.last_track = 0;
     eris_cd_reset();
+    scsi_clear_phase_irq();
     return &g_cdrom;
 }
 
@@ -129,7 +158,7 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
        transfer into the small RAM art slot instead of seven per-sector calls. */
     if (((offset | bytes) & (PCFX_CD_SECTOR_SIZE - 1u)) == 0) {
         uint32_t lba = base_lba + (uint32_t)(offset / PCFX_CD_SECTOR_SIZE);
-        return eris_cd_read(lba, out, (uint32_t)bytes) != 0;
+        return cd_read(lba, out, (uint32_t)bytes) != 0;
     }
 
     while (bytes > 0) {
@@ -142,14 +171,14 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
                ~18 KiB story portrait into ~10 separate reads (and the pixels +
                mask pair into ~20), which is the long Serena-load stall. */
             size_t whole = bytes & ~((size_t)PCFX_CD_SECTOR_SIZE - 1u);
-            if (!eris_cd_read(lba, out, (uint32_t)whole)) return 0;
+            if (!cd_read(lba, out, (uint32_t)whole)) return 0;
             out += whole;
             offset += whole;
             bytes -= whole;
         } else {
             size_t chunk = PCFX_CD_SECTOR_SIZE - sector_off;
             if (chunk > bytes) chunk = bytes;
-            if (!eris_cd_read(lba, g_cd_sector_scratch, PCFX_CD_SECTOR_SIZE)) return 0;
+            if (!cd_read(lba, g_cd_sector_scratch, PCFX_CD_SECTOR_SIZE)) return 0;
             memcpy(out, g_cd_sector_scratch + sector_off, chunk);
             out += chunk;
             offset += chunk;
