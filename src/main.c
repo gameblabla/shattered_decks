@@ -686,6 +686,8 @@ static ScreenPt project_point(Camera cam, Vec3 p)
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
     s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), cam.focal));
     s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), cam.focal));
+    if (s.x < -8192) s.x = -8192; else if (s.x > 8192) s.x = 8192;
+    if (s.y < -8192) s.y = -8192; else if (s.y > 8192) s.y = 8192;
     s.ok = 1;
     return s;
 }
@@ -720,6 +722,12 @@ static ScreenPt project_point_basis(const CameraBasis *b, Vec3 p)
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
     s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal));
     s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal));
+    /* Near-singularity vertices (tiny cz) overflow q8_mul into garbage screen
+       coords in the millions; bound them so no downstream consumer (board, cards,
+       lines) is ever fed a wild value -- the same +-8192 bound cfx_board_tri uses,
+       so real on/off-screen geometry is unchanged. */
+    if (s.x < -8192) s.x = -8192; else if (s.x > 8192) s.x = 8192;
+    if (s.y < -8192) s.y = -8192; else if (s.y > 8192) s.y = 8192;
     s.ok = 1;
     return s;
 }
@@ -2555,6 +2563,14 @@ static void draw_textured_tri_ex(const uint8_t *src, int sw, int sh, TexV a, Tex
     int maxx = a.x > b.x ? (a.x > c.x ? a.x : c.x) : (b.x > c.x ? b.x : c.x);
     int miny = a.y < b.y ? (a.y < c.y ? a.y : c.y) : (b.y < c.y ? b.y : c.y);
     int maxy = a.y > b.y ? (a.y > c.y ? a.y : c.y) : (b.y > c.y ? b.y : c.y);
+    /* A vertex projected just in front of the camera (tiny cz) lands at a screen
+       coord in the millions; the edge/barycentric products below then overflow
+       int32 and `den` can wrap to a value whose `*2` is 0, making the per-pixel
+       divide trap -> the V810 jumps to the BIOS exception handler and hangs (repro:
+       COM equips a monster then the equip card / monster is drawn at a grazing
+       camera).  A real card spans far less than the screen, so any corner this far
+       out is a degenerate near-singularity projection: skip it. */
+    if (minx < -8192 || maxx > 8192 || miny < -8192 || maxy > 8192) return;
     int den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
     if (den == 0) return;
     if (minx < 0) minx = 0;
