@@ -5933,6 +5933,13 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_STORY_INTRO:
     case WAIFU_I_STORY_FIRE:
     case WAIFU_I_STORY_FIRE_TO_DECK:
+    /* Sanctum map and the surrounding story hub (pyramid/plaza/save) share the
+       overworld theme so navigation has continuous music. */
+    case WAIFU_I_STORY_MAP:
+    case WAIFU_I_STORY_PYRAMID:
+    case WAIFU_I_STORY_SAVE:
+    case WAIFU_I_STORY_TO_PLAZA:
+    case WAIFU_I_STORY_PLAZA:
         return WAIFU_MUSIC_OPENING_DREAM;
     case WAIFU_I_DECK_EDITOR:
     case WAIFU_I_DECK_PREVIEW:

@@ -91,19 +91,24 @@ void waifu_pcfx_audio_pump(WaifuPcfxAudio *audio)
     if (!audio) return;
 
     seq = waifu_pcfx_cd_read_seq();
-    if (seq != audio->last_read_seq) {
-        /* A CD data load happened during this frame; it has stopped any CD-DA.
-           Wait until a frame passes with no further reads before (re)starting,
-           so we don't fight an in-progress multi-sector load. */
-        audio->last_read_seq = seq;
-        return;
-    }
 
+    /* Silence requested (e.g. loading screen): force-stop CD-DA immediately,
+       without deferring behind in-flight reads.  Issued once (active_track
+       guards it) so we don't spam SCSI commands into an ongoing load. */
     if (audio->desired_track == 0) {
         if (audio->active_track != 0) {
             waifu_pcfx_cdda_stop();
             audio->active_track = 0;
         }
+        audio->last_read_seq = seq;
+        return;
+    }
+
+    if (seq != audio->last_read_seq) {
+        /* A CD data load happened during this frame; it has stopped any CD-DA.
+           Wait until a frame passes with no further reads before (re)starting,
+           so we don't fight an in-progress multi-sector load. */
+        audio->last_read_seq = seq;
         return;
     }
 
