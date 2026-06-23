@@ -2648,46 +2648,60 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     if (den == 0) return;
     /* Backface cull.  The pyramid is convex, so its back faces are fully occluded
        by the front faces and contribute nothing to the final image -- skipping
-       them is pixel-identical and roughly HALVES the rasterized pixels (the real
-       cost here was overdraw, not the arithmetic).  Front faces share one winding
-       sign; the back faces have den < 0. */
+       them is pixel-identical and roughly HALVES the rasterized pixels.  Front
+       faces share one winding sign; the back faces have den < 0. */
     if (den < 0) return;
     init_repeat_texel_q8();
     {
-    /* Edge functions wa2/wb2 are affine in screen (x,y): seed once per row, step
-       by a constant per x -- no per-pixel multiplies for the weights.  v = width/
-       (2*den) is affine too, so a precomputed 32-bit reciprocal makes it a
-       multiply (width <= 2*den inside, so width*inv fits int32).  u = wa2/width
-       stays a divide (a genuine ratio -> the full-width-per-course look).  Texel
-       LUT is inlined and the framebuffer row is written directly. */
+    /* Fully incremental affine textured triangle (envmap drawTriangle method): the
+       barycentric weights wa2/wb2 AND the texture coords u/v are linear in screen
+       (x,y), so they are seeded once and advanced with pure ADDS -- there is no
+       per-pixel divide and no per-pixel multiply.  DIV and MUL are both very slow
+       on the V810, so the only divides left are the 6 per-face gradient/seed
+       setups (4 faces/frame -> negligible).  u/v are kept in 16.16 so the per-step
+       truncation cannot drift a visible amount across a ~90px face.  The texture
+       is the repeating brick LUT, so affine mapping is visually equivalent to the
+       old rational one. */
     const int den2 = den * 2;
-    const int inv2den = (int)(((int64_t)Q8_ONE << 16) / den2);
     const int Aa = pb.y - pc.y, Ba = pc.x - pb.x;
     const int Ab = pc.y - pa.y, Bb = pa.x - pc.x;
-    const int step_a = Aa * 2, step_b = Ab * 2;
+    const int Ac = -(Aa + Ab), Bc = -(Ba + Bb);
+    const int step_a = Aa * 2, step_b = Ab * 2;     /* wa2/wb2 per-x */
+    const int rstep_a = Ba * 2, rstep_b = Bb * 2;   /* wa2/wb2 per-y */
     const int two_pcx = pc.x * 2, two_pcy = pc.y * 2;
     const uint8_t *rep = g_repeat_texel_q8;
+    /* Texture coords at a(base0), b(base1), c(apex) in 16.16; one repeat = 1<<16. */
+    const int U0 = flip_u ? (cols << 16) : 0;
+    const int U1 = flip_u ? 0 : (cols << 16);
+    const int U2 = (cols << 16) >> 1;
+    const int V0 = 0, V1 = 0, V2 = rows << 16;
+    /* Per-pixel/per-row gradients (16.16): the divides happen here, once per face. */
+    const int du_dx = (int)((2LL*Aa*U0 + 2LL*Ab*U1 + 2LL*Ac*U2) / den2);
+    const int du_dy = (int)((2LL*Ba*U0 + 2LL*Bb*U1 + 2LL*Bc*U2) / den2);
+    const int dv_dx = (int)((2LL*Aa*V0 + 2LL*Ab*V1 + 2LL*Ac*V2) / den2);
+    const int dv_dy = (int)((2LL*Ba*V0 + 2LL*Bb*V1 + 2LL*Bc*V2) / den2);
+    /* Seed weights and tex coords at the top-left of the bounding box. */
+    int dxc0 = (minx * 2 + 1) - two_pcx;
+    int dyc0 = (miny * 2 + 1) - two_pcy;
+    int wa2_row = Aa * dxc0 + Ba * dyc0;
+    int wb2_row = Ab * dxc0 + Bb * dyc0;
+    int wc2_row = den2 - wa2_row - wb2_row;
+    int u_row = (int)(((int64_t)wa2_row*U0 + (int64_t)wb2_row*U1 + (int64_t)wc2_row*U2) / den2);
+    int v_row = (int)(((int64_t)wa2_row*V0 + (int64_t)wb2_row*V1 + (int64_t)wc2_row*V2) / den2);
     (void)sh;
     for (int y = miny; y <= maxy; ++y) {
-        int dyc = (y * 2 + 1) - two_pcy;
-        int dxc = (minx * 2 + 1) - two_pcx;
-        int wa2 = Aa * dxc + Ba * dyc;
-        int wb2 = Ab * dxc + Bb * dyc;
+        int wa2 = wa2_row, wb2 = wb2_row;
+        int u = u_row, v = v_row;
         uint8_t *prow = framebuffer + y * W;
         for (int x = minx; x <= maxx; ++x) {
-            int width = wa2 + wb2;
-            if (wa2 >= 0 && wb2 >= 0 && (den2 - width) >= 0) {
-                int vq = (width * inv2den) >> 16;
-                int vt = (vq * rows) & (Q8_ONE - 1);
-                int uq = width != 0 ? (wa2 * Q8_ONE) / width : Q8_HALF;
-                if (flip_u) uq = Q8_ONE - uq;
-                int ut = (uq * cols) & (Q8_ONE - 1);
-                /* rep[] yields 0..sw-2, always a valid texel column/row. */
-                prow[x] = src[rep[(Q8_ONE - 1 - vt) & (Q8_ONE - 1)] * sw + rep[ut]];
+            if (wa2 >= 0 && wb2 >= 0 && (den2 - wa2 - wb2) >= 0) {
+                prow[x] = src[rep[(v >> 8) & (Q8_ONE - 1)] * sw + rep[(u >> 8) & (Q8_ONE - 1)]];
             }
-            wa2 += step_a;
-            wb2 += step_b;
+            wa2 += step_a; wb2 += step_b;
+            u += du_dx;     v += dv_dx;
         }
+        wa2_row += rstep_a; wb2_row += rstep_b;
+        u_row += du_dy;     v_row += dv_dy;
     }
     }
     line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
