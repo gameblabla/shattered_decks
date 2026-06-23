@@ -3580,7 +3580,7 @@ static void draw_title_logo(void)
 static void draw_title_prompt(int f)
 {
     if (((f / 24) & 1) == 0) {
-        draw_centered_text(190, story_save_exists() ? "RUN START   B LOAD" : "PUSH RUN TO START", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(190, "PRESS RUN TO START", IDX_WHITE, IDX_BLACK);
     }
 }
 
@@ -8668,9 +8668,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_title_prompt(g_i_frame);
 #endif
         if (g_i_frame < WAIFU_TITLE_FADE_FRAMES) apply_black_dither_fade(q8_ratio(g_i_frame, WAIFU_TITLE_FADE_FRAMES));
-        if (press_b) {
-            if (story_save_exists()) begin_story_load();
-        } else if (press_start || press_a) {
+        if (press_start || press_a) {
             enter_title_to_menu_fade();
         }
         break;

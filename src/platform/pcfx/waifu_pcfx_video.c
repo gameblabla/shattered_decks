@@ -1159,8 +1159,7 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
     case WAIFU_PCFX_OVERLAY_TITLE_PROMPT:
         pcfx_vdc_overlay_clear_rect(6, 23, 24, 3);
         if (g_vdc_overlay_prompt_visible) {
-            pcfx_vdc_overlay_print(7, 23,
-                g_vdc_overlay_has_save ? "RUN START   B LOAD" : "PUSH RUN TO START", 22);
+            pcfx_vdc_overlay_print(7, 23, "PRESS RUN TO START", 22);
         }
         break;
 
