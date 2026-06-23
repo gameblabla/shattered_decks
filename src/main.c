@@ -471,16 +471,13 @@ static int repeat_texel_from_q8(int phase)
 
 static int32_t wrap_floor_sample_phase(int32_t phase, int32_t period)
 {
-    int32_t coarse = period << 4;
+    /* O(1) wrap into [0, period).  The old version looped subtracting the
+       period; near the horizon one screen pixel spans many tiles (huge dx),
+       so that looped dozens of times PER PIXEL and dominated the story-map
+       floor cost.  A single hardware modulo replaces the whole loop. */
     if (period <= 0) return 0;
-    while (phase < 0) {
-        if (phase <= -coarse) phase += coarse;
-        else phase += period;
-    }
-    while (phase >= period) {
-        if (phase >= coarse) phase -= coarse;
-        else phase -= period;
-    }
+    phase %= period;
+    if (phase < 0) phase += period;
     return phase;
 }
 
@@ -8172,21 +8169,29 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
         int32_t wr_x = cam.eye.x + q8_mul(t, q8_mul(fright.x, dx_r) + ffwd.x);
         int32_t wr_z = cam.eye.z + q8_mul(t, q8_mul(fright.z, dx_r) + ffwd.z);
 
-        int32_t px = wrap_floor_sample_phase(wl_x << Q8_SHIFT, sample_cache->period_q16);
-        int32_t pz = wrap_floor_sample_phase(wl_z << Q8_SHIFT, sample_cache->period_q16);
+        int32_t period = sample_cache->period_q16;
+        const uint8_t *samp = sample_cache->sample;
+        uint8_t *row = framebuffer + y * W;
+        int32_t px = wrap_floor_sample_phase(wl_x << Q8_SHIFT, period);
+        int32_t pz = wrap_floor_sample_phase(wl_z << Q8_SHIFT, period);
         int32_t dx = ((wr_x - wl_x) << Q8_SHIFT) / (W - 1);
         int32_t dz = ((wr_z - wl_z) << Q8_SHIFT) / (W - 1);
+        /* Reduce the per-pixel phase step into [0, period) ONCE per row.  The
+           sample LUT is periodic, so px only matters mod period; pre-reducing the
+           step makes the per-pixel wrap a single compare+subtract instead of two
+           hardware divides.  Also write the framebuffer directly: x in [0,W) and
+           y is in range, so put_px's bounds test is redundant. */
+        dx %= period; if (dx < 0) dx += period;
+        dz %= period; if (dz < 0) dz += period;
 
         for (int x = 0; x < W; ++x) {
-            uint8_t ux = sample_cache->sample[px];
-            uint8_t vz = sample_cache->sample[pz];
+            uint8_t ux = samp[px];
+            uint8_t vz = samp[pz];
             int tile = ((ux ^ vz) & 32) ? tile_b : tile_a;
             const uint8_t *src = atlas + (size_t)tile * tw * tw;
-            int sx = ux & 31;
-            int sy = vz & 31;
-            put_px(x, y, src[sy * tw + sx]);
-            px = wrap_floor_sample_phase(px + dx, sample_cache->period_q16);
-            pz = wrap_floor_sample_phase(pz + dz, sample_cache->period_q16);
+            row[x] = src[(vz & 31) * tw + (ux & 31)];
+            px += dx; if (px >= period) px -= period;
+            pz += dz; if (pz >= period) pz -= period;
         }
     }
 }
@@ -8428,12 +8433,19 @@ static void draw_void_sky(void)
 
 static void draw_story_sky(void)
 {
+#ifdef WAIFU_FM_PCFX
+    /* PC-FX: skip the per-row gradient sky.  It is purely background behind the
+       pyramid/floor and will be replaced by a hardware VDC background layer;
+       for now just clear to black so only the floor + pyramid cost remains. */
+    clear_screen(IDX_BLACK);
+#else
     switch (story_scene_kind()) {
     case STORY_SCENE_TEMPLE:  draw_temple_sky();  break;
     case STORY_SCENE_VOLCANO: draw_volcano_sky(); break;
     case STORY_SCENE_VOID:    draw_void_sky();    break;
     default:                  draw_desert_sky();  break;
     }
+#endif
 }
 
 static void draw_story_scene_3d(int f)
