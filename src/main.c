@@ -2680,7 +2680,9 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     const int du_dy = (int)((2LL*Ba*U0 + 2LL*Bb*U1 + 2LL*Bc*U2) / den2);
     const int dv_dx = (int)((2LL*Aa*V0 + 2LL*Ab*V1 + 2LL*Ac*V2) / den2);
     const int dv_dy = (int)((2LL*Ba*V0 + 2LL*Bb*V1 + 2LL*Bc*V2) / den2);
-    /* Seed weights and tex coords at the top-left of the bounding box. */
+    const int step_c = -(step_a + step_b);          /* wc2 per-x */
+    const int rstep_c = -(rstep_a + rstep_b);        /* wc2 per-y */
+    /* Seed weights and tex coords at the left of the bounding box, row = miny. */
     int dxc0 = (minx * 2 + 1) - two_pcx;
     int dyc0 = (miny * 2 + 1) - two_pcy;
     int wa2_row = Aa * dxc0 + Ba * dyc0;
@@ -2688,20 +2690,41 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     int wc2_row = den2 - wa2_row - wb2_row;
     int u_row = (int)(((int64_t)wa2_row*U0 + (int64_t)wb2_row*U1 + (int64_t)wc2_row*U2) / den2);
     int v_row = (int)(((int64_t)wa2_row*V0 + (int64_t)wb2_row*V1 + (int64_t)wc2_row*V2) / den2);
+    /* Per-scanline span: instead of testing every bounding-box pixel, compute the
+       x where each edge crosses zero and intersect the half-planes to get [xL,xR],
+       then fill only that run.  The crossings move by a constant per row, so they
+       are tracked incrementally in 16.16 -- no per-scanline or per-pixel divide
+       (only the per-edge setup divides below).  Edges with a zero x-step are
+       horizontal: they either pass (row-value >= 0) or reject the whole scanline. */
+    int64_t xa16 = 0, xb16 = 0, xc16 = 0, dxa = 0, dxb = 0, dxc = 0;
+    if (step_a) { xa16 = ((int64_t)minx << 16) - (((int64_t)wa2_row) << 16) / step_a; dxa = -(((int64_t)rstep_a) << 16) / step_a; }
+    if (step_b) { xb16 = ((int64_t)minx << 16) - (((int64_t)wb2_row) << 16) / step_b; dxb = -(((int64_t)rstep_b) << 16) / step_b; }
+    if (step_c) { xc16 = ((int64_t)minx << 16) - (((int64_t)wc2_row) << 16) / step_c; dxc = -(((int64_t)rstep_c) << 16) / step_c; }
     (void)sh;
     for (int y = miny; y <= maxy; ++y) {
-        int wa2 = wa2_row, wb2 = wb2_row;
-        int u = u_row, v = v_row;
-        uint8_t *prow = framebuffer + y * W;
-        for (int x = minx; x <= maxx; ++x) {
-            if (wa2 >= 0 && wb2 >= 0 && (den2 - wa2 - wb2) >= 0) {
+        int xL = minx, xR = maxx, empty = 0;
+        if (step_a > 0) { int xe = (int)((xa16 + 0xFFFF) >> 16); if (xe > xL) xL = xe; }
+        else if (step_a < 0) { int xe = (int)(xa16 >> 16); if (xe < xR) xR = xe; }
+        else if (wa2_row < 0) empty = 1;
+        if (step_b > 0) { int xe = (int)((xb16 + 0xFFFF) >> 16); if (xe > xL) xL = xe; }
+        else if (step_b < 0) { int xe = (int)(xb16 >> 16); if (xe < xR) xR = xe; }
+        else if (wb2_row < 0) empty = 1;
+        if (step_c > 0) { int xe = (int)((xc16 + 0xFFFF) >> 16); if (xe > xL) xL = xe; }
+        else if (step_c < 0) { int xe = (int)(xc16 >> 16); if (xe < xR) xR = xe; }
+        else if (wc2_row < 0) empty = 1;
+
+        if (!empty && xL <= xR) {
+            int u = u_row + du_dx * (xL - minx);
+            int v = v_row + dv_dx * (xL - minx);
+            uint8_t *prow = framebuffer + y * W;
+            for (int x = xL; x <= xR; ++x) {
                 prow[x] = src[rep[(v >> 8) & (Q8_ONE - 1)] * sw + rep[(u >> 8) & (Q8_ONE - 1)]];
+                u += du_dx; v += dv_dx;
             }
-            wa2 += step_a; wb2 += step_b;
-            u += du_dx;     v += dv_dx;
         }
-        wa2_row += rstep_a; wb2_row += rstep_b;
-        u_row += du_dy;     v_row += dv_dy;
+        wa2_row += rstep_a; wb2_row += rstep_b; wc2_row += rstep_c;
+        u_row += du_dy; v_row += dv_dy;
+        xa16 += dxa; xb16 += dxb; xc16 += dxc;
     }
     }
     line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
