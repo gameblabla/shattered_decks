@@ -8145,6 +8145,13 @@ static Camera story_map_camera(int f)
    wrapping.  All math is Q8.8 fixed point and 32-bit integer only. */
 static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size)
 {
+#ifdef WAIFU_FM_PCFX
+    /* Floor disabled on PC-FX: the KING software floor (per-pixel 230KB-LUT reads
+       through KING I/O with wait states) is too slow.  Evaluating a hardware
+       ground layer (KING affine BG / VDC) instead; background is black for now. */
+    (void)cam; (void)floor_y; (void)tile_a; (void)tile_b; (void)tile_size;
+    return;
+#else
     Vec3 ffwd = vnorm(vsub(cam.target, cam.eye));
     Vec3 fright = vnorm(vcross(ffwd, cam.up));
     Vec3 fup = vcross(fright, ffwd);
@@ -8194,6 +8201,7 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
             pz += dz; if (pz >= period) pz -= period;
         }
     }
+#endif /* WAIFU_FM_PCFX */
 }
 
 static void draw_map_pyramid_3d(int f)
