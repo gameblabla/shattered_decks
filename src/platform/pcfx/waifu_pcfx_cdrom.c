@@ -109,10 +109,20 @@ static inline void scsi_clear_phase_irq(void)
         :: [two] "r" (2) : "memory");
 }
 
+static volatile uint32_t g_cd_read_seq = 0;
+
+uint32_t waifu_pcfx_cd_read_seq(void)
+{
+    return g_cd_read_seq;
+}
+
 static uint32_t cd_read(uint32_t lba, uint8_t *buf, uint32_t bytes)
 {
     uint32_t r = eris_cd_read(lba, buf, bytes);
     scsi_clear_phase_irq();
+    /* A data read leaves the drive's CD-DA engine stopped; record that so the
+       audio layer can restart music once the load settles. */
+    g_cd_read_seq++;
     return r;
 }
 
@@ -188,13 +198,51 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
     return 1;
 }
 
-void waifu_pcfx_cdrom_play_cdda_stub(WaifuPcfxCdrom *cdrom, int track, int loop)
+/* Spin-wait required between the two halves of a CDDA play command pair.
+   Without it the second SCSI command races the first and the drive ignores it. */
+#define WAIFU_CDDA_WAIT_CYCLES 0x800
+
+static void cdda_wait(void)
 {
-    if (cdrom) cdrom->last_track = track;
-    (void)loop;
+    int n = WAIFU_CDDA_WAIT_CYCLES;
+    while (n-- > 0) {
+        __asm__ volatile ("nop\nnop\nnop\nnop" ::: "memory");
+    }
 }
 
-void waifu_pcfx_cdrom_stop_cdda_stub(WaifuPcfxCdrom *cdrom)
+void waifu_pcfx_cdda_play(uint8_t start_track, uint8_t end_track, uint8_t loop)
 {
-    if (cdrom) cdrom->last_track = 0;
+    uint8_t cmd[10];
+
+    /* 0xD8: set starting track */
+    __builtin_memset(cmd, 0, sizeof(cmd));
+    cmd[0] = 0xD8;
+    cmd[2] = start_track;
+    cmd[9] = 0x80;
+    eris_low_scsi_command(cmd, 10);
+    cdda_wait();
+    eris_low_scsi_status();
+
+    /* 0xD9: set ending track and loop mode, then start playback */
+    __builtin_memset(cmd, 0, sizeof(cmd));
+    cmd[0] = 0xD9;
+    cmd[1] = loop;
+    cmd[2] = end_track;
+    cmd[9] = 0x80;
+    eris_low_scsi_command(cmd, 10);
+    cdda_wait();
+    eris_low_scsi_status();
+
+    scsi_clear_phase_irq();
+}
+
+void waifu_pcfx_cdda_stop(void)
+{
+    /* Play track 0 with no-loop silences the drive. */
+    waifu_pcfx_cdda_play(0, 0, WAIFU_CDDA_NORMAL);
+}
+
+void waifu_pcfx_cdda_set_volume(uint8_t left, uint8_t right)
+{
+    eris_low_cdda_set_volume(left, right);
 }

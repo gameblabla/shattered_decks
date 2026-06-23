@@ -24,6 +24,9 @@ CFLAGS += -DPLATFORM=1 -DWAIFU_FM_PCFX -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET
 ifeq ($(wildcard lbas.h),lbas.h)
 CFLAGS += -DWAIFU_HAVE_GENERATED_LBAS
 endif
+ifeq ($(wildcard cdda_tracks.h),cdda_tracks.h)
+CFLAGS += -DWAIFU_HAVE_CDDA_TRACKS
+endif
 else
 CFLAGS += -DPLATFORM=1 -DWAIFU_FM_PCFX -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_USE_CART_ROM -DWAIFU_ASSET_NO_STDIO $(INCLUDES)
 endif
@@ -100,6 +103,7 @@ $(OBJDIR)/cdlink.generated.txt: $(BIN_TARGET)
 	@{ \
 		echo "binary $(BIN_TARGET)"; \
 		echo "lbaheader lbas.h"; \
+		echo "cddaheader cdda_tracks.h"; \
 		echo "name Waifu FM"; \
 		echo "maker ChatGPT"; \
 		echo "country JP"; \
@@ -109,13 +113,17 @@ $(OBJDIR)/cdlink.generated.txt: $(BIN_TARGET)
 	} > $@
 
 clean-output:
-	rm -f $(CDOUT).cue $(CDOUT).bin lbas.h
+	rm -f $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin lbas.h cdda_tracks.h
 
 cd: clean-output toolchain-check $(PCFX_CDLINK) $(CD_ASSETS)
+	# Pass 1: build without lbas.h/cdda_tracks.h, run cdlink to generate both headers
+	#         and convert WAV tracks to raw CD-audio bins.
 	$(MAKE) -f Makefile.pcfx clean-build PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX) PCFX_CDLINK=$(PCFX_CDLINK) HOSTCC=$(HOSTCC)
 	$(MAKE) -f Makefile.pcfx program PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
 	$(MAKE) -f Makefile.pcfx $(OBJDIR)/cdlink.generated.txt PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
 	$(PCFX_CDLINK) $(OBJDIR)/cdlink.generated.txt $(CDOUT)
+	# Pass 2: rebuild with lbas.h + cdda_tracks.h so LBA/CDDA constants are baked in.
+	#         pcfx-cdlink skips WAV reconversion (bins are newer than source WAVs).
 	$(MAKE) -f Makefile.pcfx clean-build PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX) PCFX_CDLINK=$(PCFX_CDLINK) HOSTCC=$(HOSTCC)
 	$(MAKE) -f Makefile.pcfx program PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
 	$(MAKE) -f Makefile.pcfx $(OBJDIR)/cdlink.generated.txt PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
@@ -125,4 +133,4 @@ clean-build:
 	rm -rf $(OBJDIR) out.bin
 
 clean:
-	rm -rf $(OBJDIR) $(CDOUT).cue $(CDOUT).bin out.bin lbas.h
+	rm -rf $(OBJDIR) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin out.bin lbas.h cdda_tracks.h

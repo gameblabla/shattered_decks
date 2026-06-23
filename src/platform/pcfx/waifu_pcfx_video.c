@@ -1184,12 +1184,12 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
         pcfx_vdc_overlay_print(9, 16, "LOAD FROM", 16);
         pcfx_vdc_overlay_print(7, 18,
             g_vdc_overlay_load_selected == 0
-                ? (g_vdc_overlay_load_internal_has ? "> INTERNAL" : "> INTERNAL  --")
-                : (g_vdc_overlay_load_internal_has ? "  INTERNAL" : "  INTERNAL  --"), 16);
+                ? (g_vdc_overlay_load_internal_has ? "> INTERNAL    " : "> INTERNAL  --")
+                : (g_vdc_overlay_load_internal_has ? "  INTERNAL    " : "  INTERNAL  --"), 16);
         pcfx_vdc_overlay_print(7, 20,
             g_vdc_overlay_load_selected == 1
-                ? (g_vdc_overlay_load_external_has ? "> FX-BMP" : "> FX-BMP  --")
-                : (g_vdc_overlay_load_external_has ? "  FX-BMP" : "  FX-BMP  --"), 16);
+                ? (g_vdc_overlay_load_external_has ? "> FX-BMP    " : "> FX-BMP  --")
+                : (g_vdc_overlay_load_external_has ? "  FX-BMP    " : "  FX-BMP  --"), 16);
         pcfx_vdc_overlay_print(7, 22, g_vdc_overlay_load_selected == 2 ? "> BACK" : "  BACK", 16);
         if (g_vdc_overlay_load_selected == 0) {
             pcfx_vdc_overlay_print(6, 25,
