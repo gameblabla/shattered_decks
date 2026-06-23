@@ -2646,30 +2646,49 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     if (maxy >= H) maxy = H - 1;
     den = (pb.y - pc.y) * (pa.x - pc.x) + (pc.x - pb.x) * (pa.y - pc.y);
     if (den == 0) return;
+    /* Backface cull.  The pyramid is convex, so its back faces are fully occluded
+       by the front faces and contribute nothing to the final image -- skipping
+       them is pixel-identical and roughly HALVES the rasterized pixels (the real
+       cost here was overdraw, not the arithmetic).  Front faces share one winding
+       sign; the back faces have den < 0. */
+    if (den < 0) return;
+    init_repeat_texel_q8();
+    {
+    /* Edge functions wa2/wb2 are affine in screen (x,y): seed once per row, step
+       by a constant per x -- no per-pixel multiplies for the weights.  v = width/
+       (2*den) is affine too, so a precomputed 32-bit reciprocal makes it a
+       multiply (width <= 2*den inside, so width*inv fits int32).  u = wa2/width
+       stays a divide (a genuine ratio -> the full-width-per-course look).  Texel
+       LUT is inlined and the framebuffer row is written directly. */
+    const int den2 = den * 2;
+    const int inv2den = (int)(((int64_t)Q8_ONE << 16) / den2);
+    const int Aa = pb.y - pc.y, Ba = pc.x - pb.x;
+    const int Ab = pc.y - pa.y, Bb = pa.x - pc.x;
+    const int step_a = Aa * 2, step_b = Ab * 2;
+    const int two_pcx = pc.x * 2, two_pcy = pc.y * 2;
+    const uint8_t *rep = g_repeat_texel_q8;
+    (void)sh;
     for (int y = miny; y <= maxy; ++y) {
+        int dyc = (y * 2 + 1) - two_pcy;
+        int dxc = (minx * 2 + 1) - two_pcx;
+        int wa2 = Aa * dxc + Ba * dyc;
+        int wb2 = Ab * dxc + Bb * dyc;
+        uint8_t *prow = framebuffer + y * W;
         for (int x = minx; x <= maxx; ++x) {
-            int px2 = x * 2 + 1, py2 = y * 2 + 1;
-            int wa2 = (pb.y - pc.y) * (px2 - pc.x * 2) + (pc.x - pb.x) * (py2 - pc.y * 2);
-            int wb2 = (pc.y - pa.y) * (px2 - pc.x * 2) + (pa.x - pc.x) * (py2 - pc.y * 2);
-            int wc2 = den * 2 - wa2 - wb2;
-            if ((den > 0 && wa2 >= 0 && wb2 >= 0 && wc2 >= 0) ||
-                (den < 0 && wa2 <= 0 && wb2 <= 0 && wc2 <= 0)) {
-                int width = wa2 + wb2;
-                int abs_width = width < 0 ? -width : width;
-                int vq = (width * Q8_ONE) / (den * 2);
+            int width = wa2 + wb2;
+            if (wa2 >= 0 && wb2 >= 0 && (den2 - width) >= 0) {
+                int vq = (width * inv2den) >> 16;
                 int vt = (vq * rows) & (Q8_ONE - 1);
-                int uq = abs_width > 0 ? (wa2 * Q8_ONE) / width : Q8_HALF;
+                int uq = width != 0 ? (wa2 * Q8_ONE) / width : Q8_HALF;
                 if (flip_u) uq = Q8_ONE - uq;
                 int ut = (uq * cols) & (Q8_ONE - 1);
-                int sx = repeat_texel_from_q8(ut);
-                int sy = repeat_texel_from_q8(Q8_ONE - 1 - vt);
-                if (sx < 0) sx = 0;
-                if (sx >= sw) sx = sw - 1;
-                if (sy < 0) sy = 0;
-                if (sy >= sh) sy = sh - 1;
-                put_px(x, y, src[sy * sw + sx]);
+                /* rep[] yields 0..sw-2, always a valid texel column/row. */
+                prow[x] = src[rep[(Q8_ONE - 1 - vt) & (Q8_ONE - 1)] * sw + rep[ut]];
             }
+            wa2 += step_a;
+            wb2 += step_b;
         }
+    }
     }
     line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
     line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_DARK);
