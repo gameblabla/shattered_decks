@@ -1084,7 +1084,6 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_PAL_RED   0x04
 #define WAIFU_PCFX_VDC_PAL_PANEL 0x05
 #define WAIFU_PCFX_VDC_PAL_EDGE  0x06
-#define WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK 0x110
 #define WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL 0x111
 #define WAIFU_PCFX_VDC_SANCTUM_TILE_EDGE  0x112
 /* Fade tiles live immediately after the 64x32 BAT so tile 0 remains unusable
@@ -1311,7 +1310,6 @@ static void pcfx_vdc_sanctum_upload_solid_tile(uint16_t tile, uint16_t vdc0_row,
 
 static void pcfx_vdc_sanctum_upload_tiles(void)
 {
-    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK, 0x0000, 0x0000);
     pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL, 0xffff, 0x0000);
     pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_EDGE, 0xffff, 0xffff);
 }
@@ -1338,9 +1336,9 @@ static void pcfx_vdc_sanctum_clear_all(void)
 {
     for (int row = 0; row < WAIFU_PCFX_VDC_MAP_H; ++row) {
         eris_low_sup_set_vram_write(VDC_CHIP_0, row * WAIFU_PCFX_VDC_MAP_W);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_BLANK_TILE);
         eris_low_sup_set_vram_write(VDC_CHIP_1, row * WAIFU_PCFX_VDC_MAP_W);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK | 0x8000));
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
     }
 }
 
@@ -1511,10 +1509,12 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
     pcfx_rainbow_setup();
     pcfx_rainbow_start_transfer();
     g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
-    eris_tetsu_set_priorities(7, 7, 6, 0, 0, 0, 5);
+    eris_king_set_bg_prio(KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+    eris_king_set_bg_mode(KING_BGMODE_NONE, 0, 0, 0);
+    eris_tetsu_set_priorities(7, 7, 0, 0, 0, 0, 6);
     eris_tetsu_set_video_mode(TETSU_LINES_263, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_16, TETSU_COLORS_16,
-                              1, 1, 1, 0, 0, 0, 1);
+                              1, 1, 0, 0, 0, 0, 1);
     g_sanctum_active = 1;
 }
 
@@ -1525,7 +1525,16 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
     pcfx_vdc_restore_overlay_palette();
     pcfx_rainbow_write_reg16(0x40, 0x0000);
     g_king_page_setting_extra = 0;
+    eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+    eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
     eris_tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
+    eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
+                              TETSU_COLORS_256, TETSU_COLORS_16,
+                              1, 0, 1, 0, 0, 0, 0);
+#if WAIFU_PCFX_DIRTY_PRESENT
+    video->page_shadow_valid[0] = 0;
+    video->page_shadow_valid[1] = 0;
+#endif
     video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
     g_sanctum_active = 0;
 }
@@ -2166,10 +2175,11 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
                                g_sanctum_value, g_sanctum_blink_visible);
         g_sanctum_requested = 0;
         g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
-    } else {
-        pcfx_vdc_apply_requested_background(video, g_vdc_bg_requested);
-        g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+        video->have_last_frame = 0;
+        return;
     }
+    pcfx_vdc_apply_requested_background(video, g_vdc_bg_requested);
+    g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
 
 #if WAIFU_PCFX_DIRTY_PRESENT
     int upload_full = 0;
