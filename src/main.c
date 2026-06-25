@@ -5284,6 +5284,40 @@ static void set_battle_phase(WaifuBattlePhase phase)
     update_music_for_current_state();
 }
 
+static int battle_phase_accepts_player_input(void)
+{
+    switch (g_b_phase) {
+    case IB_PLAYER_HAND:
+    case IB_CARD_PREVIEW:
+    case IB_FIELD_CARD_PREVIEW:
+    case IB_PLAYER_EQUIP_TARGET:
+    case IB_PLAYER_FUSION_TARGET:
+    case IB_PLAYER_TOP:
+        return 1;
+    case IB_TALLY:
+        return g_b_phase_frame >= 20;
+    default:
+        return 0;
+    }
+}
+
+static void suppress_battle_input_if_locked(int *press_up, int *press_down,
+                                            int *press_left, int *press_right,
+                                            int *press_a, int *press_b,
+                                            int *press_start, int *press_tab)
+{
+    if (g_i_state != WAIFU_I_BATTLE) return;
+    if (battle_phase_accepts_player_input()) return;
+    *press_up = 0;
+    *press_down = 0;
+    *press_left = 0;
+    *press_right = 0;
+    *press_a = 0;
+    *press_b = 0;
+    *press_start = 0;
+    *press_tab = 0;
+}
+
 static int story_hash_name(void)
 {
     int h = 216;
@@ -9126,6 +9160,9 @@ void waifu_fm_step(const WaifuFmInput *input)
     press_b = input_pressed(input->b, g_prev_input.b);
     press_start = input_pressed(input->start, g_prev_input.start);
     press_tab = input_pressed(input->tab, g_prev_input.tab);
+
+    suppress_battle_input_if_locked(&press_up, &press_down, &press_left, &press_right,
+                                    &press_a, &press_b, &press_start, &press_tab);
 
     if (press_up || press_down || press_left || press_right) waifu_sound_play(WAIFU_SOUND_SELECT);
 #ifdef WAIFU_FM_PCFX
