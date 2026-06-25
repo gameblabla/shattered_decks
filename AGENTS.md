@@ -44,6 +44,7 @@ Use this file as the first stop when you need to change behavior. It is written 
   - Extended to 8 duels (`STORY_MAX_DUELS`). Opponents: DREAM SHADE, PLAZA NOVICE, TEMPLE ADEPT, SAND REAVER, BURNING SOUL (boss), VOID WALKER, SPHINX GUARDIAN (boss), THE DEMON (final boss). Bosses have 10000 LP (`story_opponent_is_boss`).
   - Four 3D environments selected by `story_scene_kind()` based on duel progress: DESERT (pyramid, `draw_map_pyramid_3d`), TEMPLE (stone pillars, `draw_map_temple_3d`), VOLCANO (cone with glowing crater, `draw_map_volcano_3d`), VOID (floating obsidian platform with crystals, `draw_map_void_3d`). Each has its own sky function via `draw_story_sky`.
   - Pyramid faces use gold tile (1) on all sides, per-face `flip` prevents texture swimming, `draw_tri3d_pyramid_face` tiles the texture in 5 rows x 3 columns (stacked brick courses). Ground grid extended to 8x7 with solid fill below the horizon to prevent sky bleed.
+  - PC-FX story pyramid/volcano faces must not be culled by screen-space winding inside `draw_tri3d_pyramid_face`: the painter-sorted face order already handles occlusion, and projected winding can flip by camera/base-edge order and make the pyramid disappear.
   - The fire intro has 4 lines describing the 8-guardian gauntlet (spoken by THE DEMON).
   - `draw_story_fire_to_deck_transition` fades the fire scene out to black and then HOLDS black for its second half; it must NOT draw `draw_deck_editor()` during the transition. The deck editor only appears after the LOADING screen (entered via `enter_deck_editor_after_assets()` once the transition completes). Cross-fading the deck editor in here made the deck screen flash for a few frames before LOADING ran.
   - Save text overflow is handled in `draw_story_save_screen`.
@@ -121,3 +122,10 @@ Use `--dump-state` for deterministic state checks instead of image-only checks w
 - 3D renderer board pixels still go through the CPU framebuffer (the disabled `CFX_RENDERER_DIRECT_KRAM` board-to-KRAM path in `renderer3d.c` cannot composite with the overlapping 2D UI). The remaining per-frame cost is `render_board` re-running on animation/transition frames (unique camera each frame), which no KRAM-write change addresses; see the memory note `pcfx-3d-renderer-perf-state`.
 
 Verify PC-FX present changes by booting the new CD fresh (a `.mcr`/state snapshot bakes in the *old* program code, so it will not exercise rebuilt binaries): see `pcfx-build-and-capture` memory. Boot ~1100 frames to the title, then drive `START` / `DOWN` / `A` to reach a duel.
+
+## PC-FX Audio
+
+- Title CD-DA is intentionally delayed until the title state has actually rendered after asset loading; `WAIFU_I_LOADING_ASSETS` remains silent so the title track does not start under the LOADING frame and get stopped by the title CD read.
+- `WAIFU_I_STORY_LOAD_DEVICE` is title-backed UI and keeps `WAIFU_MUSIC_TITLE`; entering Load Story must not request silence or stop CD-DA. The device picker is drawn as a VDC overlay on the title image.
+- PC-FX gameplay SFX for card placed, card drawn, turn passed, and direct/slash hits are SoundBox PSG scripts in `src/platform/pcfx/waifu_pcfx_audio.c`; keep them PSG-only unless a future task explicitly switches an effect to ADPCM/PCM.
+- PSG voices carry a hard max-age guard in addition to per-step durations, so a confirm/menu effect cannot leave a SoundBox channel latched until another effect stops it.

@@ -2732,11 +2732,9 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     if (maxy >= H) maxy = H - 1;
     den = (pb.y - pc.y) * (pa.x - pc.x) + (pc.x - pb.x) * (pa.y - pc.y);
     if (den == 0) return;
-    /* Backface cull.  The pyramid is convex, so its back faces are fully occluded
-       by the front faces and contribute nothing to the final image -- skipping
-       them is pixel-identical and roughly HALVES the rasterized pixels.  Front
-       faces share one winding sign; the back faces have den < 0. */
-    if (den < 0) return;
+    /* Do not screen-winding cull here.  The story pyramid/volcano face order is
+       already painter-sorted, and the projected winding flips with camera angle
+       and base-edge order on PC-FX, which can reject every visible face. */
     init_repeat_texel_q8();
     {
     /* Fully incremental affine textured triangle (envmap drawTriangle method): the
@@ -6075,10 +6073,15 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_LOADING_ASSETS:
         return WAIFU_MUSIC_NONE;
     case WAIFU_I_TITLE:
+        if (g_i_frame < 0 || !waifu_assets_title_ready()) return WAIFU_MUSIC_NONE;
+        return WAIFU_MUSIC_TITLE;
     case WAIFU_I_TITLE_TO_MENU:
     case WAIFU_I_MENU:
     case WAIFU_I_MENU_TO_STORY:
     case WAIFU_I_MENU_TO_BATTLE:
+#ifdef WAIFU_FM_PCFX
+    case WAIFU_I_STORY_LOAD_DEVICE:
+#endif
         return WAIFU_MUSIC_TITLE;
     case WAIFU_I_STORY_NAME:
     case WAIFU_I_STORY_NAME_TO_INTRO:

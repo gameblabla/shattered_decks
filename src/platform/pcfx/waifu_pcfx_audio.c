@@ -52,7 +52,7 @@ static WaifuPcfxAudio g_audio;
 #define WAIFU_PCFX_CDDA_BASE_VOLUME 56u   /* Slight music trim; 63 is full-scale. */
 #define WAIFU_PCFX_CDDA_DUCK_VOLUME 38u   /* Temporary SFX duck, not a global music cut. */
 #define WAIFU_PCFX_CDDA_DUCK_SHORT 24u
-#define WAIFU_PCFX_CDDA_DUCK_LONG  132u
+#define WAIFU_PCFX_CDDA_DUCK_LONG  58u
 static uint8_t g_cdda_mix_volume = 255u;
 static uint8_t g_cdda_duck_frames = 0u;
 static uint8_t g_turn_jingle_guard_frames = 0u;
@@ -130,6 +130,8 @@ typedef struct WaifuPcfxPsgVoice {
     uint8_t noise;
     uint8_t noise0;
     uint8_t noise1;
+    uint16_t age;
+    uint16_t max_age;
     uint16_t period0;
     uint16_t period1;
 } WaifuPcfxPsgVoice;
@@ -278,40 +280,43 @@ static const WaifuPcfxPsgStep g_sfx_cancel_b[] = {
 };
 
 static const WaifuPcfxPsgStep g_sfx_card_place_thump[] = {
-    PSG_TONE(PSG_WAVE_PLUCK, 2, 520, 360, 23, 18, 15, 15),
-    PSG_TONE(PSG_WAVE_PULSE, 5, 300, 155, 18, 0,  15, 15)
+    PSG_TONE(PSG_WAVE_PLUCK, 1, 740, 420, 29, 24, 15, 15),
+    PSG_TONE(PSG_WAVE_PULSE, 3, 360, 190, 24, 9,  15, 15),
+    PSG_TONE(PSG_WAVE_SOFT,  4, 190, 120, 9,  0,  15, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_card_place_air[] = {
-    PSG_NOISE(2, 5,  9,  18, 11, 14, 13),
-    PSG_NOISE(5, 9, 18,  11, 0,  14, 13)
+    PSG_NOISE(1, 2,  7,  26, 20, 15, 14),
+    PSG_NOISE(3, 7, 16,  20, 6,  15, 14),
+    PSG_NOISE(3, 16, 25, 6,  0,  15, 14)
 };
 static const WaifuPcfxPsgStep g_sfx_card_place_spark[] = {
-    PSG_TONE(PSG_WAVE_BELL, 2, 1760, 1760, 10, 8,  12, 15),
-    PSG_TONE(PSG_WAVE_BELL, 2, 2340, 2340, 8,  6,  12, 15),
-    PSG_TONE(PSG_WAVE_BELL, 5, 3120, 2800, 6,  0,  12, 15)
+    PSG_TONE(PSG_WAVE_THIN, 1, 2100, 2500, 16, 12, 11, 15),
+    PSG_TONE(PSG_WAVE_BELL, 3, 3150, 2400, 12, 5,  11, 15),
+    PSG_TONE(PSG_WAVE_BELL, 4, 4200, 3300, 5,  0,  11, 15)
 };
 
 /* sfx_039-style card draw: paper scrape/noise attack, high flutter, then a
    short rising card glint.  This is intentionally hot in the mix: the prior
    table was technically present but masked by CD-DA. */
 static const WaifuPcfxPsgStep g_sfx_card_draw_noise_a[] = {
-    PSG_NOISE(3,  2,  9, 31, 28, 15, 15),
-    PSG_NOISE(7,  9, 24, 28, 10, 15, 15),
-    PSG_NOISE(4, 24, 14, 10,  0, 15, 15)
+    PSG_NOISE(2,  1,  6, 31, 29, 15, 15),
+    PSG_NOISE(5,  6, 18, 29, 14, 15, 15),
+    PSG_NOISE(5, 18, 29, 14,  0, 15, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_card_draw_noise_b[] = {
-    PSG_NOISE(2,  4, 12, 27, 22, 11, 15),
-    PSG_NOISE(6, 12, 27, 22,  6, 11, 15)
+    PSG_NOISE(2,  4, 10, 27, 23, 10, 15),
+    PSG_NOISE(4, 10, 24, 23,  7, 10, 15),
+    PSG_NOISE(4, 24, 14,  7,  0, 10, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_card_draw_tone[] = {
-    PSG_TONE(PSG_WAVE_THIN,  2, 2600, 3000, 31, 25, 15, 12),
-    PSG_TONE(PSG_WAVE_PLUCK, 5, 1560, 2150, 25, 16, 15, 12),
-    PSG_TONE(PSG_WAVE_BELL,  9, 3000, 4100, 18,  0, 15, 12)
+    PSG_TONE(PSG_WAVE_THIN,  2, 3400, 4300, 26, 21, 15, 11),
+    PSG_TONE(PSG_WAVE_PLUCK, 4, 1800, 2450, 21, 13, 15, 11),
+    PSG_TONE(PSG_WAVE_BELL,  7, 2600, 3900, 13,  0, 15, 11)
 };
 static const WaifuPcfxPsgStep g_sfx_card_draw_tone_b[] = {
-    PSG_TONE(PSG_WAVE_METAL, 2, 1040, 1280, 26, 20, 12, 15),
-    PSG_TONE(PSG_WAVE_THIN,  5, 2080, 2600, 20, 10, 12, 15),
-    PSG_TONE(PSG_WAVE_BELL,  9, 4160, 3320, 10,  0, 12, 15)
+    PSG_TONE(PSG_WAVE_METAL, 2, 1180, 1580, 22, 17, 11, 15),
+    PSG_TONE(PSG_WAVE_THIN,  4, 2360, 3180, 17,  8, 11, 15),
+    PSG_TONE(PSG_WAVE_BELL,  7, 4720, 3600, 8,   0, 11, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_card_draw_tail[] = {
     PSG_TONE(PSG_WAVE_BELL,  5, 3920, 3300, 20, 10, 10, 15),
@@ -335,82 +340,70 @@ static const WaifuPcfxPsgStep g_sfx_card_destroy_shard[] = {
     PSG_TONE(PSG_WAVE_METAL, 7, 2500, 1200, 8,  0,  9,  15)
 };
 
-/* Attack impact: deliberately lower-pitched than the old laser.  The hit has a
-   low thud, saw/metal pitch drop, and noise transient so it reads under CD-DA. */
+/* Slash/impact: PSG-only sword-style whoosh plus metal hit, replacing the old
+   laser-like direct-attack transient. */
 static const WaifuPcfxPsgStep g_sfx_laser_main[] = {
-    PSG_TONE(PSG_WAVE_PULSE, 2, 240, 190, 28, 24, 15, 15),
-    PSG_TONE(PSG_WAVE_METAL, 6, 880, 360, 24, 12, 15, 15),
-    PSG_TONE(PSG_WAVE_SAW,   8, 360, 120, 12, 0,  15, 15)
+    PSG_TONE(PSG_WAVE_METAL, 2, 3200, 2100, 18, 16, 15, 12),
+    PSG_TONE(PSG_WAVE_SAW,   5, 1900,  620, 24, 13, 15, 12),
+    PSG_TONE(PSG_WAVE_PULSE, 5,  240,  150, 13,  0, 15, 12)
 };
 static const WaifuPcfxPsgStep g_sfx_laser_side[] = {
-    PSG_TONE(PSG_WAVE_PLUCK, 2, 1200, 780, 18, 14,  9, 15),
-    PSG_TONE(PSG_WAVE_METAL, 6,  780, 260, 14,  6,  9, 15),
-    PSG_TONE(PSG_WAVE_THIN,  5, 2300, 900,  6,  0,  9, 15)
+    PSG_TONE(PSG_WAVE_THIN,  2, 5200, 3600, 20, 12,  9, 15),
+    PSG_TONE(PSG_WAVE_METAL, 4, 2600,  980, 12,  5,  9, 15),
+    PSG_TONE(PSG_WAVE_BELL,  6, 1800,  720,  5,  0,  9, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_laser_noise[] = {
-    PSG_NOISE(2,  2,  8,  21, 17, 15, 12),
-    PSG_NOISE(6,  8, 22, 17, 0,  15, 12)
+    PSG_NOISE(2,  1, 10,  28, 22, 15, 11),
+    PSG_NOISE(5, 10, 27,  22,  0, 15, 11)
 };
 
 static const WaifuPcfxPsgStep g_sfx_direct_hit_tone[] = {
-    PSG_TONE(PSG_WAVE_PULSE, 2, 180, 140, 30, 24, 15, 15),
-    PSG_TONE(PSG_WAVE_METAL, 5, 720, 300, 22, 10, 15, 15),
-    PSG_TONE(PSG_WAVE_SAW,   7, 300, 150, 10, 0,  15, 15)
+    PSG_TONE(PSG_WAVE_METAL, 1, 4200, 2600, 31, 24, 15, 15),
+    PSG_TONE(PSG_WAVE_PULSE, 3,  220,  150, 28, 17, 15, 15),
+    PSG_TONE(PSG_WAVE_SAW,   6,  760,  210, 17, 0,  15, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_direct_hit_noise[] = {
-    PSG_NOISE(2,  1, 10,  24, 17, 15, 15),
-    PSG_NOISE(5, 10, 24, 17, 0,  15, 15)
+    PSG_NOISE(1,  1,  7,  31, 27, 15, 15),
+    PSG_NOISE(5,  7, 24,  27, 0,  15, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_direct_hit_spark[] = {
-    PSG_TONE(PSG_WAVE_THIN,  3, 2600, 1500, 10, 4,  10, 15),
-    PSG_TONE(PSG_WAVE_BELL,  7, 1500,  760, 4,  0,  10, 15)
+    PSG_TONE(PSG_WAVE_THIN,  2, 5200, 3100, 14, 7,  10, 15),
+    PSG_TONE(PSG_WAVE_BELL,  5, 3100, 1300, 7,  0,  10, 15)
 };
 
-/* Two-second turn-pass PSG jingle, around 120 frames at the 60 Hz audio pump.
-   The previous jingle existed but was too low against full-scale CD-DA.  These
-   voices are brighter and near full PSG volume, with a short CD-DA duck while
-   the jingle is active. */
+/* Turn-pass PSG jingle: compact bright arpeggio with a short CD-DA duck, closer
+   to the supplied TurnPassed.wav cadence than the old long droning chord. */
 static const WaifuPcfxPsgStep g_sfx_turn_a[] = {
-    PSG_TONE(PSG_WAVE_PLUCK, 10, 392, 392, 31, 25, 15, 15),
-    PSG_TONE(PSG_WAVE_PLUCK, 10, 523, 523, 30, 24, 15, 15),
-    PSG_TONE(PSG_WAVE_PLUCK, 10, 659, 659, 30, 24, 15, 15),
-    PSG_TONE(PSG_WAVE_PLUCK, 10, 784, 784, 29, 22, 15, 15),
-    PSG_TONE(PSG_WAVE_BELL,  20, 1047, 1175, 28, 16, 15, 15),
-    PSG_TONE(PSG_WAVE_BELL,  20, 1319, 1568, 22,  8, 15, 15),
-    PSG_TONE(PSG_WAVE_SOFT,  40,  784,  784, 10,  0, 15, 15)
+    PSG_TONE(PSG_WAVE_BELL,  6,  784,  988, 28, 22, 15, 15),
+    PSG_TONE(PSG_WAVE_BELL,  8, 1175, 1568, 30, 23, 15, 15),
+    PSG_TONE(PSG_WAVE_PLUCK, 8, 1568, 1976, 26, 14, 15, 15),
+    PSG_TONE(PSG_WAVE_SOFT, 22, 1175,  988, 12,  0, 15, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_turn_b[] = {
-    PSG_TONE(PSG_WAVE_SOFT,  10, 196, 196, 24, 20, 15, 13),
-    PSG_TONE(PSG_WAVE_SOFT,  10, 262, 262, 24, 20, 15, 13),
-    PSG_TONE(PSG_WAVE_SOFT,  10, 330, 330, 23, 18, 15, 13),
-    PSG_TONE(PSG_WAVE_SOFT,  10, 392, 392, 22, 17, 15, 13),
-    PSG_TONE(PSG_WAVE_BELL,  20, 523, 587, 20, 10, 15, 13),
-    PSG_TONE(PSG_WAVE_BELL,  20, 659, 784, 14,  0, 15, 13),
-    PSG_TONE(PSG_WAVE_SOFT,  40, 392, 392,  8,  0, 15, 13)
+    PSG_TONE(PSG_WAVE_SOFT,  6, 392, 494, 22, 18, 15, 13),
+    PSG_TONE(PSG_WAVE_SOFT,  8, 587, 784, 24, 18, 15, 13),
+    PSG_TONE(PSG_WAVE_BELL,  8, 784, 988, 18,  8, 15, 13),
+    PSG_TONE(PSG_WAVE_SOFT, 22, 587, 494,  8,  0, 15, 13)
 };
 static const WaifuPcfxPsgStep g_sfx_turn_c[] = {
-    PSG_TONE(PSG_WAVE_TRIANGLE, 30,  98,  98, 24, 21, 15, 15),
-    PSG_TONE(PSG_WAVE_TRIANGLE, 30, 131, 131, 22, 18, 15, 15),
-    PSG_TONE(PSG_WAVE_TRIANGLE, 30, 165, 165, 18, 12, 15, 15),
-    PSG_TONE(PSG_WAVE_TRIANGLE, 30, 196, 196, 12,  0, 15, 15)
+    PSG_TONE(PSG_WAVE_TRIANGLE, 14, 196, 247, 20, 17, 15, 15),
+    PSG_TONE(PSG_WAVE_TRIANGLE, 14, 294, 392, 18, 10, 15, 15),
+    PSG_TONE(PSG_WAVE_TRIANGLE, 18, 247, 196, 10,  0, 15, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_turn_d[] = {
-    PSG_TONE(PSG_WAVE_BELL,  15, 1568, 1760, 24, 14, 11, 15),
-    PSG_TONE(PSG_WAVE_BELL,  15, 2093, 2349, 21, 12, 11, 15),
-    PSG_TONE(PSG_WAVE_BELL,  15, 2637, 3136, 18,  8, 11, 15),
-    PSG_TONE(PSG_WAVE_BELL,  75, 3136, 2093,  8,  0, 11, 15)
+    PSG_TONE(PSG_WAVE_THIN,  3, 3136, 3951, 22, 14, 11, 15),
+    PSG_TONE(PSG_WAVE_BELL,  9, 3951, 5274, 16,  6, 11, 15),
+    PSG_TONE(PSG_WAVE_SOFT, 34, 2637, 1976,  6,  0, 11, 15)
 };
 static const WaifuPcfxPsgStep g_sfx_turn_e[] = {
-    PSG_TONE(PSG_WAVE_THIN,  12, 3136, 3951, 20, 10, 15, 10),
-    PSG_TONE(PSG_WAVE_BELL,  18, 3951, 5274, 18,  8, 15, 10),
-    PSG_TONE(PSG_WAVE_THIN,  24, 5274, 3136, 12,  4, 15, 10),
-    PSG_TONE(PSG_WAVE_SOFT,  66, 2637, 2637,  4,  0, 15, 10)
+    PSG_TONE(PSG_WAVE_THIN,  4, 2637, 3520, 18, 10, 15, 10),
+    PSG_TONE(PSG_WAVE_BELL, 10, 3520, 4699, 14,  5, 15, 10),
+    PSG_TONE(PSG_WAVE_SOFT, 32, 2349, 1760,  5,  0, 15, 10)
 };
 static const WaifuPcfxPsgStep g_sfx_turn_f[] = {
-    PSG_TONE(PSG_WAVE_BELL,  20, 2349, 2637, 18,  9, 10, 15),
-    PSG_TONE(PSG_WAVE_BELL,  20, 3136, 3951, 16,  8, 10, 15),
-    PSG_TONE(PSG_WAVE_BELL,  20, 3951, 5274, 14,  5, 10, 15),
-    PSG_TONE(PSG_WAVE_SOFT,  60, 1976, 1976,  5,  0, 10, 15)
+    PSG_TONE(PSG_WAVE_BELL,  8, 1976, 2637, 16,  9, 10, 15),
+    PSG_TONE(PSG_WAVE_BELL, 12, 2637, 3951, 12,  4, 10, 15),
+    PSG_TONE(PSG_WAVE_SOFT, 26, 1976, 1568,  4,  0, 10, 15)
 };
 
 static const WaifuPcfxPsgStep g_sfx_lost_a[] = {
@@ -444,6 +437,17 @@ static void psg_configure_current_step(WaifuPcfxPsgVoice *v)
     }
 }
 
+static uint16_t psg_sequence_max_age(const WaifuPcfxPsgStep *steps, uint8_t step_count)
+{
+    uint16_t total = 0;
+    uint8_t i;
+    if (!steps || step_count == 0) return 1;
+    for (i = 0; i < step_count; ++i) {
+        total = (uint16_t)(total + (steps[i].duration ? steps[i].duration : 1u));
+    }
+    return (uint16_t)(total + 2u);
+}
+
 static void psg_start_sequence(int slot, uint8_t ch,
                                const WaifuPcfxPsgStep *steps, uint8_t step_count)
 {
@@ -458,6 +462,8 @@ static void psg_start_sequence(int slot, uint8_t ch,
     v->step_count = step_count;
     v->steps = steps;
     v->loaded_wave = 255u;
+    v->age = 0;
+    v->max_age = psg_sequence_max_age(steps, step_count);
     psg_channel_off(ch);
     psg_configure_current_step(v);
 }
@@ -476,6 +482,11 @@ static void waifu_pcfx_sfx_pump_psg(void)
         WaifuPcfxPsgVoice *v = &g_psg_voices[i];
         uint8_t vol;
         if (!v->active) continue;
+        if (v->age++ >= v->max_age) {
+            psg_channel_off(v->channel);
+            v->active = 0;
+            continue;
+        }
         while (v->active && v->frame >= v->duration) {
             ++v->step_index;
             if (v->step_index >= v->step_count) {
