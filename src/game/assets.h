@@ -67,6 +67,10 @@ typedef enum WaifuBigArtKind {
     WAIFU_BIG_ART_SUPPORT = 1
 } WaifuBigArtKind;
 
+#ifndef WAIFU_ASSET_BIG_ART_DRAW_MAX
+#define WAIFU_ASSET_BIG_ART_DRAW_MAX 8
+#endif
+
 typedef struct WaifuBigArtDraw {
     WaifuBigArtKind kind;
     int card_id;
@@ -132,6 +136,20 @@ const uint8_t *waifu_assets_story_portrait_pixels(int portrait_id);
 const uint8_t *waifu_assets_story_portrait_mask(int portrait_id);
 const uint8_t *waifu_assets_card_face(int card_id);
 const uint8_t *waifu_assets_card_big_art(int card_id);
+/* Non-blocking large-art cache probes.  CD-ROM builds return NULL on a miss;
+ * they never issue a CD/SCSI read.  Presenters use these to upload known-resident
+ * card art directly to hardware without risking a frame-time stall. */
+const uint8_t *waifu_assets_card_big_art_cached(int card_id);
+const uint8_t *waifu_assets_support_big_art_cached(void);
+const uint8_t *waifu_assets_big_art_cached(WaifuBigArtKind kind, int card_id);
+int waifu_assets_big_art_cache_loaded_count(void);
+int waifu_assets_big_art_cache_slot_count(void);
+int waifu_assets_big_art_cache_contains(int card_id);
+int waifu_assets_support_big_art_loaded(void);
+#if defined(WAIFU_FM_HEADLESS_TESTS)
+unsigned long waifu_assets_debug_platform_read_count(void);
+void waifu_assets_debug_reset_platform_read_count(void);
+#endif
 const uint8_t *waifu_assets_card_back(void);
 const uint8_t *waifu_assets_support_face(void);
 const uint8_t *waifu_assets_support_big_art(void);

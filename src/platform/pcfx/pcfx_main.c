@@ -7,10 +7,10 @@
 
 int main(void)
 {
+    WaifuPcfxCdrom *cdrom = waifu_pcfx_cdrom_create();
     WaifuPcfxVideo *video = waifu_pcfx_video_create();
     WaifuPcfxInput *input = waifu_pcfx_input_create();
     WaifuPcfxAudio *audio = waifu_pcfx_audio_create();
-    WaifuPcfxCdrom *cdrom = waifu_pcfx_cdrom_create();
     WaifuFmMusicTrack last_music = WAIFU_FM_MUSIC_NONE;
 
     (void)cdrom;
@@ -22,15 +22,15 @@ int main(void)
         waifu_pcfx_input_poll(input, &in);
         waifu_fm_step(&in);
 
+        waifu_pcfx_video_present_8bpp(video, waifu_fm_framebuffer(), waifu_fm_palette_rgb(), waifu_fm_palette_id());
+        waifu_pcfx_video_wait_vblank(video);
+
         WaifuFmMusicTrack music = waifu_fm_audio_music_track();
         if (music != last_music) {
             waifu_pcfx_audio_set_music(audio, music);
             last_music = music;
         }
         waifu_pcfx_audio_pump(audio);
-
-        waifu_pcfx_video_present_8bpp(video, waifu_fm_framebuffer(), waifu_fm_palette_rgb(), waifu_fm_palette_id());
-        waifu_pcfx_video_wait_vblank(video);
     }
 
     /* Not reached on console. */

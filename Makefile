@@ -15,6 +15,7 @@ assets:
 	python3 tools/gen_assets.py
 	python3 tools/gen_title_asset.py
 	python3 tools/gen_sound_assets.py
+	python3 tools/gen_pcfx_sfx_adpcm.py
 
 $(TARGET): $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/generated/sound_assets.h src/game/game_api.h src/game/ai.h src/game/deck.h src/game/palette.h src/game/sounds.h src/game/assets.h
 	$(CC) $(CFLAGS) -DWAIFU_FM_HEADLESS_TESTS $(INCLUDES) $(HEADLESS_SRCS) -lm -lz -o $@
@@ -46,8 +47,17 @@ record-demo: $(TARGET)
 showcase: $(TARGET)
 	./$(TARGET) --showcase --out showcase_frames
 
+regression-story: headless-cdrom-assets-2mb
+	./scripts/story_save_duels_regression.sh
+
+regression-card-check: headless-cdrom-assets-2mb
+	./waifu_fm_headless_cdrom_2mb --regression-card-check-cache --frames 1 --no-png
+
+regression-result-music: headless-cdrom-assets-2mb
+	./waifu_fm_headless_cdrom_2mb --regression-result-music --frames 1 --no-png
+
 clean:
 	rm -f $(TARGET) $(SDL12_TARGET)
 	rm -rf headless_frames showcase_frames out_frames *.mkv *.mp4
 
-.PHONY: all assets run record-demo showcase sdl12 headless-cdrom-assets headless-cdrom-assets-2mb headless-cdrom-assets-large headless-cart-assets clean
+.PHONY: all assets run record-demo showcase sdl12 headless-cdrom-assets headless-cdrom-assets-2mb headless-cdrom-assets-large headless-cart-assets regression-story regression-card-check regression-result-music clean

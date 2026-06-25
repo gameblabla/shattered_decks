@@ -2562,42 +2562,73 @@ static void cfx_board_tri(uint8_t *fb, int W, int H, const uint8_t *tile,
     {
         int dy02 = y2 - y0, dy01 = y1 - y0, dy12 = y2 - y1;
         int det = (x1 - x0) * dy02 - (x2 - x0) * dy01;
-        int gUx, gVx, gUy, gVy, half, y;
+        int gUx, gVx, half, y;
         int32_t xl, dxl, xs, dxs;
+        int32_t ul, dul, vl, dvl, us, dus, vs, dvs;
         if (det == 0) return;
-        gUx = cfx_board_clampg(((U1 - U0) * dy02 - (U2 - U0) * dy01) / det);
-        gVx = cfx_board_clampg(((V1 - V0) * dy02 - (V2 - V0) * dy01) / det);
-        gUy = cfx_board_clampg(((U2 - U0) * (x1 - x0) - (U1 - U0) * (x2 - x0)) / det);
-        gVy = cfx_board_clampg(((V2 - V0) * (x1 - x0) - (V1 - V0) * (x2 - x0)) / det);
+
+        /* PC-FX hot path: keep V810 DIV out of the board renderer and keep MUL
+           out of the scanline loop.  The old version evaluated
+
+               U = U0 + (x - x0) * gUx + (y - y0) * gUy
+
+           for every row, which costs 4 MUL per emitted scanline on top of 7
+           hardware divides per triangle.  This is the same affine idea as the
+           envmap triangle code: do setup once, then march x/u/v edges with ADDs
+           and fill spans with ADDs.  cfx_div_toward_zero_i32d uses reciprocal
+           multiply/correction, so the compiled board path has no V810 DIV. */
+        gUx = cfx_board_clampg(cfx_div_toward_zero_i32d((U1 - U0) * dy02 - (U2 - U0) * dy01, det));
+        gVx = cfx_board_clampg(cfx_div_toward_zero_i32d((V1 - V0) * dy02 - (V2 - V0) * dy01, det));
         xl = (int32_t)x0 << 16;
-        dxl = ((int32_t)(x2 - x0) << 16) / dy02;
+        dxl = cfx_div_toward_zero_i32d((int32_t)(x2 - x0) << 16, dy02);
+        ul = U0 << 16; vl = V0 << 16;
+        dul = cfx_div_toward_zero_i32d((U2 - U0) << 16, dy02);
+        dvl = cfx_div_toward_zero_i32d((V2 - V0) << 16, dy02);
         y = y0;
         for (half = 0; half < 2; ++half) {
             int yend;
             if (half == 0) {
                 if (dy01 == 0) continue;
-                yend = y1; xs = (int32_t)x0 << 16; dxs = ((int32_t)(x1 - x0) << 16) / dy01;
+                yend = y1;
+                xs = (int32_t)x0 << 16;
+                us = U0 << 16; vs = V0 << 16;
+                dxs = cfx_div_toward_zero_i32d((int32_t)(x1 - x0) << 16, dy01);
+                dus = cfx_div_toward_zero_i32d((U1 - U0) << 16, dy01);
+                dvs = cfx_div_toward_zero_i32d((V1 - V0) << 16, dy01);
             } else {
                 if (dy12 == 0) break;
-                yend = y2; xs = (int32_t)x1 << 16; dxs = ((int32_t)(x2 - x1) << 16) / dy12;
+                yend = y2;
+                xs = (int32_t)x1 << 16;
+                us = U1 << 16; vs = V1 << 16;
+                dxs = cfx_div_toward_zero_i32d((int32_t)(x2 - x1) << 16, dy12);
+                dus = cfx_div_toward_zero_i32d((U2 - U1) << 16, dy12);
+                dvs = cfx_div_toward_zero_i32d((V2 - V1) << 16, dy12);
             }
             for (; y < yend; ++y) {
                 if (y >= H) return;            /* below screen: nothing left to draw */
                 if (y >= 0) {
                     int xa = (int)(xl >> 16);
                     int xb = (int)(xs >> 16);
-                    int left = xa < xb ? xa : xb;
-                    int right = xa < xb ? xb : xa;
+                    int use_long_left = (xa < xb);
+                    int edge_left = use_long_left ? xa : xb;
+                    int edge_right = use_long_left ? xb : xa;
+                    int left = edge_left;
+                    int right = edge_right;
                     if (left < 0) left = 0;
                     if (right >= W) right = W - 1;
                     if (left <= right) {
-                        int32_t U = U0 + (int32_t)(left - x0) * gUx + (int32_t)(y - y0) * gUy;
-                        int32_t V = V0 + (int32_t)(left - x0) * gVx + (int32_t)(y - y0) * gVy;
-                        cfx_board_fill(fb + (int32_t)y * W + left, right - left + 1, U, V, gUx, gVx, tile);
+                        int32_t U = (use_long_left ? ul : us) >> 16;
+                        int32_t V = (use_long_left ? vl : vs) >> 16;
+                        if (left != edge_left) {
+                            U += (int32_t)(left - edge_left) * gUx;
+                            V += (int32_t)(left - edge_left) * gVx;
+                        }
+                        cfx_board_fill(fb + ((W == 256) ? ((int32_t)y << 8) : (int32_t)y * W) + left,
+                                       right - left + 1, U, V, gUx, gVx, tile);
                     }
                 }
-                xl += dxl;
-                xs += dxs;
+                xl += dxl; ul += dul; vl += dvl;
+                xs += dxs; us += dus; vs += dvs;
             }
         }
     }

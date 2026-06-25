@@ -1,5 +1,6 @@
 #include "waifu_pcfx_cdrom.h"
 #include "assets.h"
+#include "title_asset.h"
 
 #include <string.h>
 #include <eris/cd.h>
@@ -52,8 +53,28 @@
 #ifndef BINARY_LBA_ASSETS_GENERATED_SUPPORT_BIG_ART_CD_BIN
 #define BINARY_LBA_ASSETS_GENERATED_SUPPORT_BIG_ART_CD_BIN 0
 #endif
+#ifndef BINARY_LBA_ASSETS_GENERATED_SFX_ADPCM_BIN
+#define BINARY_LBA_ASSETS_GENERATED_SFX_ADPCM_BIN 0
+#endif
+
 
 #define PCFX_CD_SECTOR_SIZE 2048u
+
+/* KING PageSetting register layout, matching liberis
+   eris_king_set_kram_pages(scsi,bg,rainbow,adpcm):
+
+      bits  7..0   SCSI KRAM page
+      bits 15..8   BG KRAM page
+      bits 23..16  RAINBOW KRAM page
+      bits 31..24  ADPCM KRAM page
+
+   The previous ADPCM SFX pass used 0x0100 for ADPCM page 1.  That is actually
+   BG page 1, so it left the KING background displaying/reading the ADPCM
+   physical page and broke in-game card rendering. */
+#define WAIFU_PCFX_KRAM_PAGESETTING_SCSI1   0x00000001u
+#define WAIFU_PCFX_KRAM_PAGESETTING_BG1     0x00000100u
+#define WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1  0x01000000u
+
 
 struct WaifuPcfxCdrom {
     int last_track;
@@ -109,6 +130,18 @@ static inline void scsi_clear_phase_irq(void)
         :: [two] "r" (2) : "memory");
 }
 
+static inline void king_set_page_setting(uint32_t page_setting)
+{
+    uint32_t reg;
+    __asm__ volatile (
+        "movea 15,r0,%[reg]\n"
+        "out.h %[reg],0x600[r0]\n"
+        "out.w %[ps],0x604[r0]\n"
+        : [reg] "=&r" (reg)
+        : [ps] "r" (page_setting)
+        : "memory");
+}
+
 static volatile uint32_t g_cd_read_seq = 0;
 
 uint32_t waifu_pcfx_cd_read_seq(void)
@@ -124,6 +157,48 @@ static uint32_t cd_read(uint32_t lba, uint8_t *buf, uint32_t bytes)
        audio layer can restart music once the load settles. */
     g_cd_read_seq++;
     return r;
+}
+
+static int cd_read_kram_on_page(uint32_t lba, uint32_t kram_addr, uint32_t bytes, int scsi_page1)
+{
+    uint32_t ps;
+    if (!lba || !bytes) return 0;
+
+    ps = WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1;
+    if (scsi_page1) ps |= WAIFU_PCFX_KRAM_PAGESETTING_SCSI1;
+    king_set_page_setting(ps);
+    eris_cd_read_kram(lba, kram_addr, bytes);
+    scsi_clear_phase_irq();
+    /* Leave ADPCM fetching from physical page 1; video will OR this bit into
+       its BG page flips as well. */
+    king_set_page_setting(WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1);
+
+    /* A direct SCSI->KRAM DMA is still a CD data read and stops CD-DA.
+       Bump the same sequence counter so the audio pump starts/restarts only
+       after the DMA has completed and the bus has settled. */
+    g_cd_read_seq++;
+    return 1;
+}
+
+static int cd_read_kram(uint32_t lba, uint32_t kram_addr, uint32_t bytes)
+{
+    return cd_read_kram_on_page(lba, kram_addr, bytes, 0);
+}
+
+int waifu_pcfx_cdrom_read_title_yuv422_to_kram(uint32_t kram_addr, size_t bytes)
+{
+    uint32_t base_lba = blob_lba(WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV422);
+    if (!base_lba) return 0;
+    if (bytes == 0) bytes = (size_t)TITLE_SCREEN_W * 256u * 2u;
+    return cd_read_kram(base_lba, kram_addr, (uint32_t)bytes);
+}
+
+int waifu_pcfx_cdrom_read_sfx_adpcm_to_kram(uint32_t kram_addr, size_t bytes)
+{
+    if (!BINARY_LBA_ASSETS_GENERATED_SFX_ADPCM_BIN || bytes == 0) return 0;
+    /* ADPCM samples live on KING physical page 1. */
+    return cd_read_kram_on_page(BINARY_LBA_ASSETS_GENERATED_SFX_ADPCM_BIN,
+                                kram_addr, (uint32_t)bytes, 1);
 }
 
 WaifuPcfxCdrom *waifu_pcfx_cdrom_create(void)
@@ -210,11 +285,19 @@ static void cdda_wait(void)
     }
 }
 
-void waifu_pcfx_cdda_play(uint8_t start_track, uint8_t end_track, uint8_t loop)
+void waifu_pcfx_cdda_play(uint8_t start_track, uint8_t end_track, uint8_t mode)
 {
     uint8_t cmd[10];
 
-    /* 0xD8: set starting track */
+    if (start_track == 0 || end_track == 0) {
+        waifu_pcfx_cdda_stop();
+        return;
+    }
+
+    /* 0xD8/SAPSP: set the start position by track and leave playback paused.
+       Track numbers here are BCD-compatible for the game disc's <= 9 CD-DA
+       tracks.  cmd[1] bit 0 deliberately stays clear; D9/SAPEP below starts
+       the actual playback after the end position is installed. */
     __builtin_memset(cmd, 0, sizeof(cmd));
     cmd[0] = 0xD8;
     cmd[2] = start_track;
@@ -223,10 +306,14 @@ void waifu_pcfx_cdda_play(uint8_t start_track, uint8_t end_track, uint8_t loop)
     cdda_wait();
     eris_low_scsi_status();
 
-    /* 0xD9: set ending track and loop mode, then start playback */
+    /* 0xD9/SAPEP: set the exclusive end position and playback mode.
+       In the PC-FX CD model, cdb[1] & 7 == 0 is silent, 4 is loop, and any
+       other nonzero value is normal play.  The end track is an end POSITION,
+       so a single-track play must pass the following track (or leadout), not
+       the same track. */
     __builtin_memset(cmd, 0, sizeof(cmd));
     cmd[0] = 0xD9;
-    cmd[1] = loop;
+    cmd[1] = mode;
     cmd[2] = end_track;
     cmd[9] = 0x80;
     eris_low_scsi_command(cmd, 10);
@@ -238,8 +325,15 @@ void waifu_pcfx_cdda_play(uint8_t start_track, uint8_t end_track, uint8_t loop)
 
 void waifu_pcfx_cdda_stop(void)
 {
-    /* Play track 0 with no-loop silences the drive. */
-    waifu_pcfx_cdda_play(0, 0, WAIFU_CDDA_NORMAL);
+    uint8_t cmd[10];
+    /* NEC pause/still command.  The old track-0 D8/D9 sequence is invalid in
+       track-address mode and may leave the previous CD-DA track audible. */
+    __builtin_memset(cmd, 0, sizeof(cmd));
+    cmd[0] = 0xDA;
+    eris_low_scsi_command(cmd, 10);
+    cdda_wait();
+    eris_low_scsi_status();
+    scsi_clear_phase_irq();
 }
 
 void waifu_pcfx_cdda_set_volume(uint8_t left, uint8_t right)

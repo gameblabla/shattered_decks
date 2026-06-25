@@ -19,6 +19,11 @@ SRC = ROOT / 'assets/source/title/titlescreen_shardsofcards.png'
 PAL_HEADER = ROOT / 'src/generated/waifu_assets.h'
 OUT = ROOT / 'src/generated/title_asset.h'
 W, H = 256, 240
+# The PC-FX 16M title layer is scrolled down by four rows at runtime to avoid
+# the hardware/mixer sampling wrapped hidden rows at the top.  The full 256-row
+# CD/KRAM blob is therefore pre-shifted so visible scanlines still map to the
+# original 256x240 source image exactly.
+TITLE_PCFX_16M_SCROLL_Y = 4
 
 
 def parse_common_assets(path: Path):
@@ -343,6 +348,67 @@ def build_pcfx_title_yuv422_16m(img: Image.Image):
     return out
 
 
+
+def bake_pcfx_title_logo(img: Image.Image, title_pal, idx_black: int, idx_white: int, idx_gold_hi: int):
+    """Bake the static title logo into the PC-FX direct-KRAM 16M asset.
+
+    Runtime PC-FX title/menu changes are VDC-only; the KING title surface is
+    uploaded once from CD to KRAM and is never rebuilt in CPU RAM.  The logo
+    therefore belongs in the disc image, not in a transient framebuffer.
+    """
+    font_header = ROOT / 'src/engine/font_menudata.h'
+    text = font_header.read_text()
+    font = [int(x, 16) for x in re.findall(r'0x([0-9A-Fa-f]{2})', text)]
+    pix = img.load()
+
+    def rect_fill(x, y, w, h, rgb):
+        x0 = max(0, x); y0 = max(0, y)
+        x1 = min(W, x + w); y1 = min(H, y + h)
+        for yy in range(y0, y1):
+            for xx in range(x0, x1):
+                pix[xx, yy] = rgb
+
+    def draw_text_scaled(x, y, msg, scale, fg_idx, shadow_idx):
+        fg = title_pal[fg_idx]
+        shadow = title_pal[shadow_idx]
+        cx = x
+        for ch in msg:
+            code = ord(ch) & 0x7f
+            for yy in range(8):
+                row = font[code * 8 + yy]
+                for xx in range(8):
+                    if row & (1 << (7 - xx)):
+                        rect_fill(cx + xx * scale + 2, y + yy * scale + 2, scale, scale, shadow)
+                        rect_fill(cx + xx * scale, y + yy * scale, scale, scale, fg)
+            cx += 8 * scale
+
+    def draw_centered(y, msg, scale, fg_idx, shadow_idx):
+        draw_text_scaled((W - len(msg) * 8 * scale) // 2, y, msg, scale, fg_idx, shadow_idx)
+
+    draw_centered(20, 'SHATTERED', 2, idx_gold_hi, idx_black)
+    draw_centered(38, 'DECKS', 2, idx_white, idx_black)
+
+
+def pad_pcfx_16m_page(words):
+    """Pad/shift visible 256x240 16M words to a full 256x256 KING page.
+
+    Runtime scrolls the KING 16M title layer down by TITLE_PCFX_16M_SCROLL_Y
+    scanlines.  Store source row 0 at KRAM row scroll_y, so the 240 visible
+    screen rows sample source rows 0..239 rather than source rows 4..239 plus
+    repeated padding at the bottom.
+    """
+    if len(words) != W * H:
+        raise RuntimeError(f'expected {W*H} visible 16M words, got {len(words)}')
+    out = []
+    for dst_y in range(256):
+        src_y = dst_y - TITLE_PCFX_16M_SCROLL_Y
+        if src_y < 0:
+            src_y = 0
+        elif src_y >= H:
+            src_y = H - 1
+        out.extend(words[src_y * W:(src_y + 1) * W])
+    return out
+
 def main():
     if not SRC.exists():
         raise FileNotFoundError(SRC)
@@ -350,6 +416,7 @@ def main():
         raise FileNotFoundError(PAL_HEADER)
 
     common, reserved = parse_common_assets(PAL_HEADER)
+    idx_defs = {name: int(value) for name, value in re.findall(r'^#define\s+(IDX_[A-Z0-9_]+)\s+(\d+)\s*$', PAL_HEADER.read_text(), re.M)}
     free_slots = [i for i in range(256) if i not in reserved]
     if not free_slots:
         raise RuntimeError('No non-IDX palette slots left for title art')
@@ -372,7 +439,10 @@ def main():
     pcfx_yuv = [rgb888_to_pcfx_yuv(c) for c in title_pal]
     pcfx_data = list(data)
     pcfx_yuv16 = build_pcfx_title_yuv16(img)
-    pcfx_yuv422 = build_pcfx_title_yuv422_16m(img)
+    pcfx_16m_img = img.copy()
+    bake_pcfx_title_logo(pcfx_16m_img, title_pal, idx_defs['IDX_BLACK'], idx_defs['IDX_WHITE'], idx_defs['IDX_GOLD_HI'])
+    pcfx_yuv422 = build_pcfx_title_yuv422_16m(pcfx_16m_img)
+    pcfx_yuv422_kram = pad_pcfx_16m_page(pcfx_yuv422)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open('w') as f:
@@ -412,7 +482,7 @@ def main():
         yuv16_bytes.append((w >> 8) & 0xff)
     (bin_out / 'title_screen_pcfx_yuv16.bin').write_bytes(bytes(yuv16_bytes))
     yuv422_bytes = bytearray()
-    for w in pcfx_yuv422:
+    for w in pcfx_yuv422_kram:
         yuv422_bytes.append(w & 0xff)
         yuv422_bytes.append((w >> 8) & 0xff)
     (bin_out / 'title_screen_pcfx_yuv422.bin').write_bytes(bytes(yuv422_bytes))

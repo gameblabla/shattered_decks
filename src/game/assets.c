@@ -28,7 +28,14 @@
 #endif
 
 #ifndef WAIFU_ASSET_RAM_BUDGET
+#if defined(WAIFU_FM_PCFX)
+/* PC-FX has enough main RAM to keep the full monster big-art cache resident.
+   The old 512 KiB budget forced a 16-slot LRU cache, which caused CD misses
+   during repeated duel/card-preview paths. */
+#define WAIFU_ASSET_RAM_BUDGET (2u * 1024u * 1024u)
+#else
 #define WAIFU_ASSET_RAM_BUDGET (512u * 1024u)
+#endif
 #endif
 
 #define TITLE_BYTES ((size_t)TITLE_SCREEN_W * (size_t)TITLE_SCREEN_H)
@@ -40,11 +47,15 @@
 #define CARD_BIG_ONE_BYTES ((size_t)WAIFU_BIG_W * (size_t)WAIFU_BIG_H)
 #define PCFX_CD_SECTOR_BYTES 2048u
 #define CARD_BIG_CD_SLOT_BYTES (((CARD_BIG_ONE_BYTES + (size_t)PCFX_CD_SECTOR_BYTES - 1u) / (size_t)PCFX_CD_SECTOR_BYTES) * (size_t)PCFX_CD_SECTOR_BYTES)
+#define CARD_BIG_CACHE_SLOT_BYTES CARD_BIG_ONE_BYTES
 #define CARD_BIG_FACE_BYTES ((size_t)WAIFU_CARD_COUNT * CARD_BIG_ONE_BYTES)
 
-#define WAIFU_ASSET_BIG_ART_DRAW_MAX 8
 static WaifuBigArtDraw g_big_art_draws[WAIFU_ASSET_BIG_ART_DRAW_MAX];
 static int g_big_art_draw_count = 0;
+
+#if defined(WAIFU_FM_HEADLESS_TESTS)
+static unsigned long g_debug_platform_read_count = 0;
+#endif
 
 #ifndef WAIFU_ASSET_NO_STDIO
 static const char *blob_path(WaifuAssetBlobId blob)
@@ -78,10 +89,22 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
     FILE *fp;
     size_t got;
     if (!path || !dst) return 0;
+#if defined(WAIFU_FM_HEADLESS_TESTS)
+    ++g_debug_platform_read_count;
+#endif
     fp = fopen(path, "rb");
     if (!fp) return 0;
     if (fseek(fp, (long)offset, SEEK_SET) != 0) { fclose(fp); return 0; }
     got = fread(dst, 1, bytes, fp);
+    if (got < bytes && feof(fp)) {
+        /* Host CD-ROM emulation sometimes requests a sector-rounded slice from
+           a file whose stored payload is not sector padded.  Real PC-FX CD reads
+           can safely over-read into the next sector; for stdio tests, zero-fill
+           the harmless tail so the same staged-load path can be validated. */
+        memset((uint8_t *)dst + got, 0, bytes - got);
+        fclose(fp);
+        return 1;
+    }
     fclose(fp);
     return got == bytes;
 #endif
@@ -97,6 +120,18 @@ static int read_blob_platform(WaifuAssetBlobId blob, uint8_t *dst, size_t bytes)
 {
     return read_blob_slice_platform(blob, dst, 0, bytes);
 }
+
+#if defined(WAIFU_FM_HEADLESS_TESTS)
+unsigned long waifu_assets_debug_platform_read_count(void)
+{
+    return g_debug_platform_read_count;
+}
+
+void waifu_assets_debug_reset_platform_read_count(void)
+{
+    g_debug_platform_read_count = 0;
+}
+#endif
 
 void waifu_assets_big_art_draw_queue_reset(void)
 {
@@ -128,34 +163,29 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
 {
     if (!out) return 0;
     if (kind == WAIFU_BIG_ART_SUPPORT) {
-#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
-        out->blob = WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD;
-        out->offset = 0;
-        out->bytes = CARD_BIG_CD_SLOT_BYTES;
-#else
         out->blob = WAIFU_ASSET_BLOB_SUPPORT_BIG_ART;
         out->offset = 0;
         out->bytes = CARD_BIG_ONE_BYTES;
-#endif
         return 1;
     }
     if (card_id < 0) card_id = 0;
     if (card_id >= WAIFU_CARD_COUNT) card_id = WAIFU_CARD_COUNT - 1;
-#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
-    out->blob = WAIFU_ASSET_BLOB_CARD_BIG_ART_CD;
-    out->offset = (size_t)card_id * CARD_BIG_CD_SLOT_BYTES;
-    out->bytes = CARD_BIG_CD_SLOT_BYTES;
-#else
     out->blob = WAIFU_ASSET_BLOB_CARD_BIG_ART;
     out->offset = (size_t)card_id * CARD_BIG_ONE_BYTES;
     out->bytes = CARD_BIG_ONE_BYTES;
-#endif
     return 1;
 }
 #define CARD_EXTRA_BYTES (CARD_ONE_BYTES * 2u)
 #define CARDS_TOTAL_BYTES (CARD_FACE_BYTES + CARD_EXTRA_BYTES)
 #ifndef WAIFU_ASSET_BIG_CACHE_SLOTS
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+/* Keep every monster's 112x112 big art resident.  Runtime prewarm still filters
+   duplicates and support cards, so battle loads read the unique cards from both
+   decks once and later duels reuse the cache instead of thrashing a small LRU. */
+#define WAIFU_ASSET_BIG_CACHE_SLOTS WAIFU_CARD_COUNT
+#else
 #define WAIFU_ASSET_BIG_CACHE_SLOTS 16
+#endif
 #endif
 #define PORTRAIT_ONE_BYTES ((size_t)WAIFU_STORY_PORTRAIT_W * (size_t)WAIFU_STORY_PORTRAIT_H)
 #define PORTRAIT_SLOT_BYTES (PORTRAIT_ONE_BYTES * 2u)
@@ -163,9 +193,16 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
 
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
 #define STORY_TWO_PORTRAIT_BYTES ((size_t)PORTRAIT_SLOT_COUNT * PORTRAIT_SLOT_BYTES)
-#define CARD_BIG_CACHE_BYTES ((size_t)WAIFU_ASSET_BIG_CACHE_SLOTS * CARD_BIG_CD_SLOT_BYTES + CARD_BIG_CD_SLOT_BYTES)
+#define CARD_BIG_CACHE_BYTES ((size_t)WAIFU_ASSET_BIG_CACHE_SLOTS * CARD_BIG_CACHE_SLOT_BYTES + CARD_BIG_CACHE_SLOT_BYTES)
 #define ASSET_STAGE_A_BYTES ((CARDS_TOTAL_BYTES > STORY_TWO_PORTRAIT_BYTES) ? CARDS_TOTAL_BYTES : STORY_TWO_PORTRAIT_BYTES)
+#if defined(WAIFU_FM_PCFX)
+/* PC-FX title pixels are CD/SCSI-DMA'd directly into KING KRAM.  Do not reserve
+   title staging RAM; the title framebuffer is never used as a CPU-resident
+   working set on PC-FX. */
+#define ASSET_BASE_STAGE_BYTES ASSET_STAGE_A_BYTES
+#else
 #define ASSET_BASE_STAGE_BYTES ((ASSET_STAGE_A_BYTES > TITLE_TOTAL_BYTES) ? ASSET_STAGE_A_BYTES : TITLE_TOTAL_BYTES)
+#endif
 #define ASSET_STAGE_BYTES (ASSET_BASE_STAGE_BYTES + CARD_BIG_CACHE_BYTES)
 static uint8_t g_asset_stage_ram[ASSET_STAGE_BYTES] __attribute__((aligned(4)));
 static int g_story_portrait_slot_id[PORTRAIT_SLOT_COUNT] = {-1, -1};
@@ -178,14 +215,16 @@ static int g_ready = 1;
 static size_t g_ram_used = 0;
 static size_t g_ram_high_water = 0;
 
+#if !defined(WAIFU_FM_PCFX)
 static uint8_t *stage_title_ptr(void) { return g_asset_stage_ram; }
 static uint8_t *stage_title64_ptr(void) { return g_asset_stage_ram + TITLE_BYTES; }
 static uint8_t *stage_title16m_ptr(void) { return g_asset_stage_ram + TITLE_BYTES; }
+#endif
 static uint8_t *stage_card_faces_ptr(void) { return g_asset_stage_ram; }
 static uint8_t *stage_card_back_ptr(void) { return g_asset_stage_ram + CARD_FACE_BYTES; }
 static uint8_t *stage_support_face_ptr(void) { return g_asset_stage_ram + CARD_FACE_BYTES + CARD_ONE_BYTES; }
-static uint8_t *stage_big_cache_ptr(int slot) { return g_asset_stage_ram + ASSET_BASE_STAGE_BYTES + ((size_t)slot * CARD_BIG_CD_SLOT_BYTES); }
-static uint8_t *stage_support_big_ptr(void) { return g_asset_stage_ram + ASSET_BASE_STAGE_BYTES + ((size_t)WAIFU_ASSET_BIG_CACHE_SLOTS * CARD_BIG_CD_SLOT_BYTES); }
+static uint8_t *stage_big_cache_ptr(int slot) { return g_asset_stage_ram + ASSET_BASE_STAGE_BYTES + ((size_t)slot * CARD_BIG_CACHE_SLOT_BYTES); }
+static uint8_t *stage_support_big_ptr(void) { return g_asset_stage_ram + ASSET_BASE_STAGE_BYTES + ((size_t)WAIFU_ASSET_BIG_CACHE_SLOTS * CARD_BIG_CACHE_SLOT_BYTES); }
 static int g_big_cache_card_id[WAIFU_ASSET_BIG_CACHE_SLOTS];
 static unsigned g_big_cache_stamp[WAIFU_ASSET_BIG_CACHE_SLOTS];
 static unsigned g_big_cache_clock = 1;
@@ -193,6 +232,10 @@ static int g_support_big_loaded = 0;
 static int g_prewarm_big_card_ids[WAIFU_ASSET_BIG_CACHE_SLOTS];
 static int g_prewarm_big_card_count = 0;
 static int g_prewarm_support_big = 0;
+static int g_prewarm_all_big_cards = 0;
+static int find_big_cache_slot(int card_id);
+static int big_cache_loaded_count(void);
+static void prewarm_list_add_all_monster_big_art(void);
 static uint8_t *stage_portrait_pixels_ptr(int slot) { return g_asset_stage_ram + ((size_t)slot * PORTRAIT_SLOT_BYTES); }
 static uint8_t *stage_portrait_mask_ptr(int slot) { return stage_portrait_pixels_ptr(slot) + PORTRAIT_ONE_BYTES; }
 #endif
@@ -229,6 +272,7 @@ void waifu_assets_init(void)
     g_support_big_loaded = 0;
     g_prewarm_big_card_count = 0;
     g_prewarm_support_big = 0;
+    g_prewarm_all_big_cards = 0;
 #endif
 }
 
@@ -328,8 +372,10 @@ static void evict_title(void)
 {
     if (g_title_loaded) {
         g_title_loaded = 0;
+#if !defined(WAIFU_FM_PCFX)
         if (g_ram_used >= TITLE_TOTAL_BYTES) g_ram_used -= TITLE_TOTAL_BYTES;
         else g_ram_used = 0;
+#endif
     }
 }
 
@@ -340,19 +386,11 @@ static void evict_cards(void)
         if (g_ram_used >= CARDS_TOTAL_BYTES) g_ram_used -= CARDS_TOTAL_BYTES;
         else g_ram_used = 0;
     }
-    for (int i = 0; i < WAIFU_ASSET_BIG_CACHE_SLOTS; ++i) {
-        if (g_big_cache_card_id[i] >= 0) {
-            if (g_ram_used >= CARD_BIG_CD_SLOT_BYTES) g_ram_used -= CARD_BIG_CD_SLOT_BYTES;
-            else g_ram_used = 0;
-        }
-        g_big_cache_card_id[i] = -1;
-        g_big_cache_stamp[i] = 0;
-    }
-    if (g_support_big_loaded) {
-        if (g_ram_used >= CARD_BIG_CD_SLOT_BYTES) g_ram_used -= CARD_BIG_CD_SLOT_BYTES;
-        else g_ram_used = 0;
-        g_support_big_loaded = 0;
-    }
+    /* Deliberately do not evict g_big_cache_card_id[] or support big art here.
+       Those live after ASSET_BASE_STAGE_BYTES, outside the title/portrait/card
+       working-set overlay.  Keeping them resident makes the big-art cache global
+       for the whole game session and lets story/random battles reuse card art
+       already loaded by earlier duels or deck previews. */
 }
 
 static void evict_portraits(void)
@@ -438,6 +476,7 @@ static void prewarm_list_clear(void)
     for (int i = 0; i < WAIFU_ASSET_BIG_CACHE_SLOTS; ++i) g_prewarm_big_card_ids[i] = -1;
     g_prewarm_big_card_count = 0;
     g_prewarm_support_big = 0;
+    g_prewarm_all_big_cards = 0;
 }
 
 static int prewarm_list_contains(int card_id)
@@ -452,12 +491,26 @@ static void prewarm_list_add_card(int card_id)
 {
     if (card_id < 0) return;
     if (card_id >= WAIFU_CARD_COUNT) {
-        g_prewarm_support_big = 1;
+        if (!g_support_big_loaded) g_prewarm_support_big = 1;
         return;
     }
+    if (find_big_cache_slot(card_id) >= 0) return;
     if (g_prewarm_big_card_count >= WAIFU_ASSET_BIG_CACHE_SLOTS) return;
     if (prewarm_list_contains(card_id)) return;
     g_prewarm_big_card_ids[g_prewarm_big_card_count++] = card_id;
+}
+
+static void prewarm_list_add_all_monster_big_art(void)
+{
+    /* The PC-FX card-check and battle-reveal paths must not synchronously read
+       from CD while rendering.  The expanded cache can hold every monster big-art
+       image, so the first card working-set load fills any missing full-size art
+       once; later duels/deck previews reuse the same resident cache. */
+    if (WAIFU_ASSET_BIG_CACHE_SLOTS < WAIFU_CARD_COUNT) return;
+    if (big_cache_loaded_count() < WAIFU_CARD_COUNT) g_prewarm_all_big_cards = 1;
+    for (int card_id = 0; card_id < WAIFU_CARD_COUNT; ++card_id) {
+        prewarm_list_add_card(card_id);
+    }
 }
 #endif
 
@@ -465,11 +518,18 @@ void waifu_assets_request_cards(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
     prewarm_list_clear();
+    prewarm_list_add_all_monster_big_art();
+    if (!g_support_big_loaded) g_prewarm_support_big = 1;
     g_requested_portrait_id[0] = -1;
     g_requested_portrait_id[1] = -1;
     evict_title();
     evict_portraits();
-    if (g_cards_loaded) { g_pending_request = WAIFU_ASSET_REQUEST_NONE; g_ready = 1; return; }
+    if (g_cards_loaded) {
+        g_pending_request = (g_prewarm_big_card_count > 0 || (g_prewarm_support_big && !g_support_big_loaded)) ? WAIFU_ASSET_REQUEST_CARDS : WAIFU_ASSET_REQUEST_NONE;
+        g_load_step = 3;
+        g_ready = (g_pending_request == WAIFU_ASSET_REQUEST_NONE);
+        return;
+    }
     start_request(WAIFU_ASSET_REQUEST_CARDS);
 #endif
 }
@@ -481,6 +541,7 @@ void waifu_assets_request_cards_for_list(const int *card_ids, int count)
     if (card_ids && count > 0) {
         for (int i = 0; i < count; ++i) prewarm_list_add_card(card_ids[i]);
     }
+    prewarm_list_add_all_monster_big_art();
     /* Support/equip big art is a common mid-animation miss; stage it with the
        normal card working set so the reveal path never blocks on CD. */
     g_prewarm_support_big = 1;
@@ -552,6 +613,7 @@ static void add_ram_used(size_t bytes)
 }
 
 static const uint8_t *load_big_card_art_cached(int card_id);
+static int load_all_big_card_art_cached(void);
 
 static int load_requested_portrait_slot(int slot)
 {
@@ -575,10 +637,19 @@ int waifu_assets_load_step(void)
     switch (g_pending_request) {
     case WAIFU_ASSET_REQUEST_TITLE:
         if (g_load_step == 0) {
+#if defined(WAIFU_FM_PCFX)
+            /* PC-FX title pixels are not staged in CPU RAM.  The 16M title
+               image is uploaded once from CD directly into KING KRAM by the
+               PC-FX video backend while the VDC fade layer is still black;
+               prompt/menu/fade changes then touch only VDC VRAM. */
+            g_title_loaded = 1;
+            note_high_water(g_ram_used);
+#else
             if (!cd_read_blob(WAIFU_ASSET_BLOB_TITLE_SCREEN, stage_title_ptr(), TITLE_BYTES)) return 0;
             if (!cd_read_blob(WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV422, stage_title16m_ptr(), TITLE_16M_BYTES)) return 0;
             g_title_loaded = 1;
             add_ram_used(TITLE_TOTAL_BYTES);
+#endif
             ++g_load_step;
             g_ready = 1;
             g_pending_request = WAIFU_ASSET_REQUEST_NONE;
@@ -618,11 +689,16 @@ int waifu_assets_load_step(void)
         }
         if (g_load_step == 3) {
             if (g_prewarm_support_big && !g_support_big_loaded) {
-                if (!cd_read_blob(WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD, stage_support_big_ptr(), CARD_BIG_CD_SLOT_BYTES)) return 0;
+                if (!cd_read_blob(WAIFU_ASSET_BLOB_SUPPORT_BIG_ART, stage_support_big_ptr(), CARD_BIG_ONE_BYTES)) return 0;
                 g_support_big_loaded = 1;
-                add_ram_used(CARD_BIG_CD_SLOT_BYTES);
+                add_ram_used(CARD_BIG_CACHE_SLOT_BYTES);
             }
             ++g_load_step;
+            return 0;
+        }
+        if (g_load_step == 4 && g_prewarm_all_big_cards) {
+            if (!load_all_big_card_art_cached()) return 0;
+            g_load_step = 4 + g_prewarm_big_card_count;
             return 0;
         }
         if (g_load_step >= 4 && g_load_step < 4 + g_prewarm_big_card_count) {
@@ -721,7 +797,11 @@ int waifu_assets_story_portrait_ready(int portrait_id)
 const uint8_t *waifu_assets_title_screen_img(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+#if defined(WAIFU_FM_PCFX)
+    return NULL;
+#else
     return g_title_loaded ? stage_title_ptr() : NULL;
+#endif
 #else
     return title_screen_img;
 #endif
@@ -730,7 +810,11 @@ const uint8_t *waifu_assets_title_screen_img(void)
 const uint16_t *waifu_assets_title_screen_pcfx_yuv16(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+#if defined(WAIFU_FM_PCFX)
+    return NULL;
+#else
     return g_title_loaded ? (const uint16_t *)stage_title64_ptr() : NULL;
+#endif
 #else
 #ifdef WAIFU_ASSET_EXTERNAL_TITLE_IMAGE
     return NULL;
@@ -743,7 +827,11 @@ const uint16_t *waifu_assets_title_screen_pcfx_yuv16(void)
 const uint16_t *waifu_assets_title_screen_pcfx_yuv422(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+#if defined(WAIFU_FM_PCFX)
+    return NULL;
+#else
     return g_title_loaded ? (const uint16_t *)stage_title16m_ptr() : NULL;
+#endif
 #else
 #ifdef WAIFU_ASSET_EXTERNAL_TITLE_IMAGE
     return NULL;
@@ -789,6 +877,15 @@ static int find_big_cache_slot(int card_id)
     return -1;
 }
 
+static int big_cache_loaded_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < WAIFU_ASSET_BIG_CACHE_SLOTS; ++i) {
+        if (g_big_cache_card_id[i] >= 0) ++n;
+    }
+    return n;
+}
+
 static int choose_big_cache_slot(void)
 {
     int best = 0;
@@ -800,14 +897,30 @@ static int choose_big_cache_slot(void)
     return best;
 }
 
+static int load_all_big_card_art_cached(void)
+{
+    int before = big_cache_loaded_count();
+    size_t bytes = (size_t)WAIFU_CARD_COUNT * CARD_BIG_ONE_BYTES;
+    if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_CARD_BIG_ART, stage_big_cache_ptr(0), 0, bytes)) return 0;
+    for (int card_id = 0; card_id < WAIFU_CARD_COUNT; ++card_id) {
+        g_big_cache_card_id[card_id] = card_id;
+        g_big_cache_stamp[card_id] = g_big_cache_clock++;
+        if (g_big_cache_clock == 0) g_big_cache_clock = 1;
+    }
+    if (before < WAIFU_CARD_COUNT) {
+        add_ram_used((size_t)(WAIFU_CARD_COUNT - before) * CARD_BIG_CACHE_SLOT_BYTES);
+    }
+    return 1;
+}
+
 static const uint8_t *load_big_card_art_cached(int card_id)
 {
     int slot = find_big_cache_slot(card_id);
     if (slot < 0) {
-        size_t off = (size_t)card_id * CARD_BIG_CD_SLOT_BYTES;
+        size_t off = (size_t)card_id * CARD_BIG_ONE_BYTES;
         slot = choose_big_cache_slot();
-        if (g_big_cache_card_id[slot] < 0) add_ram_used(CARD_BIG_CD_SLOT_BYTES);
-        if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_CARD_BIG_ART_CD, stage_big_cache_ptr(slot), off, CARD_BIG_CD_SLOT_BYTES)) return NULL;
+        if (g_big_cache_card_id[slot] < 0) add_ram_used(CARD_BIG_CACHE_SLOT_BYTES);
+        if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_CARD_BIG_ART, stage_big_cache_ptr(slot), off, CARD_BIG_ONE_BYTES)) return NULL;
         g_big_cache_card_id[slot] = card_id;
     }
     g_big_cache_stamp[slot] = g_big_cache_clock++;
@@ -841,6 +954,68 @@ const uint8_t *waifu_assets_card_big_art(int card_id)
 #endif
 }
 
+const uint8_t *waifu_assets_card_big_art_cached(int card_id)
+{
+    if (card_id < 0 || card_id >= WAIFU_CARD_COUNT) return NULL;
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+    {
+        int slot = find_big_cache_slot(card_id);
+        if (slot < 0) return NULL;
+        return stage_big_cache_ptr(slot);
+    }
+#else
+    return waifu_big_card_art + ((size_t)card_id * CARD_BIG_ONE_BYTES);
+#endif
+}
+
+const uint8_t *waifu_assets_support_big_art_cached(void)
+{
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+    return g_support_big_loaded ? stage_support_big_ptr() : NULL;
+#else
+    return waifu_support_big_art;
+#endif
+}
+
+const uint8_t *waifu_assets_big_art_cached(WaifuBigArtKind kind, int card_id)
+{
+    if (kind == WAIFU_BIG_ART_SUPPORT) return waifu_assets_support_big_art_cached();
+    return waifu_assets_card_big_art_cached(card_id);
+}
+
+int waifu_assets_big_art_cache_loaded_count(void)
+{
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+    return big_cache_loaded_count();
+#else
+    return WAIFU_CARD_COUNT;
+#endif
+}
+
+int waifu_assets_big_art_cache_slot_count(void)
+{
+    return WAIFU_ASSET_BIG_CACHE_SLOTS;
+}
+
+int waifu_assets_big_art_cache_contains(int card_id)
+{
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+    if (card_id < 0 || card_id >= WAIFU_CARD_COUNT) return 0;
+    return find_big_cache_slot(card_id) >= 0;
+#else
+    return card_id >= 0 && card_id < WAIFU_CARD_COUNT;
+#endif
+}
+
+int waifu_assets_support_big_art_loaded(void)
+{
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+    return g_support_big_loaded;
+#else
+    return 1;
+#endif
+}
+
 const uint8_t *waifu_assets_card_back(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
@@ -864,9 +1039,9 @@ const uint8_t *waifu_assets_support_big_art(void)
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
     if (!g_cards_loaded) return NULL;
     if (!g_support_big_loaded) {
-        if (!cd_read_blob(WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD, stage_support_big_ptr(), CARD_BIG_CD_SLOT_BYTES)) return NULL;
+        if (!cd_read_blob(WAIFU_ASSET_BLOB_SUPPORT_BIG_ART, stage_support_big_ptr(), CARD_BIG_ONE_BYTES)) return NULL;
         g_support_big_loaded = 1;
-        add_ram_used(CARD_BIG_CD_SLOT_BYTES);
+        add_ram_used(CARD_BIG_CACHE_SLOT_BYTES);
     }
     return stage_support_big_ptr();
 #else

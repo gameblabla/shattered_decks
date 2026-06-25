@@ -52,6 +52,13 @@
 #define FIELD_THICK (-108) /* -0.42 in Q8.8 */
 #define FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16 (Q8_FROM_INT(4) << Q8_SHIFT)
 #define FLOOR_SAMPLE_CACHE_SLOTS 2
+#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+/* PC-FX: render the battle board through the pre-projected quad path.  The
+   generic path reprojects every cell corner and wall corner independently;
+   the fast path projects the shared grid once and draws the same 32x32 tile
+   quads with the compact affine renderer. */
+#define WAIFU_BOARD_FAST_AFFINE_ENABLE 1
+#endif
 #define CFX_PI_Q8 804
 #define TITLE_SEQUENCE_FRAMES 310
 #define DUEL_TOTAL_FRAMES 2696
@@ -62,10 +69,15 @@
 #define WAIFU_PCFX_TURN_FRAMES 12
 #define WAIFU_PCFX_SELECT_FRAMES 16
 #define WAIFU_PCFX_RETURN_FRAMES 12
-/* Hand<->top camera lift. Each frame is a full board re-render (~11 vblanks on
-   V810), so the transition cannot be made smooth -- fewer steps just make it
-   shorter/snappier instead of a long choppy slide. */
-#define WAIFU_PCFX_HANDTOP_FRAMES 7
+/* Hand<->top camera lift.  PC-FX uses cached 3D camera keyframes so the
+   board still moves through real perspective steps without re-rendering a
+   unique camera every transition frame. */
+#define WAIFU_PCFX_HANDTOP_FRAMES 8
+#define WAIFU_PCFX_HANDTOP_ANCHORS 5
+#define WAIFU_RESULT_UI_CLEAR_FRAMES 32
+#define WAIFU_RESULT_MUSIC_LEAD_FRAMES 8
+#define WAIFU_RESULT_ANIM_START_FRAMES (WAIFU_RESULT_UI_CLEAR_FRAMES + WAIFU_RESULT_MUSIC_LEAD_FRAMES)
+#define WAIFU_RESULT_TOTAL_FRAMES (WAIFU_RESULT_ANIM_START_FRAMES + WAIFU_PCFX_HANDTOP_FRAMES + 96)
 #define WAIFU_PCFX_DRAW_FRAMES 18
 #define WAIFU_HAND_INTRO_FRAMES 18
 #define WAIFU_EQUIP_ANIM_FRAMES 36
@@ -89,6 +101,10 @@
 #define WAIFU_PCFX_SELECT_FRAMES 70
 #define WAIFU_PCFX_RETURN_FRAMES 30
 #define WAIFU_PCFX_HANDTOP_FRAMES 18
+#define WAIFU_RESULT_UI_CLEAR_FRAMES 50
+#define WAIFU_RESULT_MUSIC_LEAD_FRAMES 12
+#define WAIFU_RESULT_ANIM_START_FRAMES (WAIFU_RESULT_UI_CLEAR_FRAMES + WAIFU_RESULT_MUSIC_LEAD_FRAMES)
+#define WAIFU_RESULT_TOTAL_FRAMES (WAIFU_RESULT_ANIM_START_FRAMES + WAIFU_PCFX_HANDTOP_FRAMES + 130)
 #define WAIFU_PCFX_DRAW_FRAMES 84
 #define WAIFU_HAND_INTRO_FRAMES 60
 #define WAIFU_EQUIP_ANIM_FRAMES 120
@@ -747,6 +763,22 @@ static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
     if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
+#if defined(WAIFU_FM_PCFX)
+    /* Stone-temple pillar quads used to go through draw_textured_tri(), which
+       evaluates barycentric texture coordinates with per-pixel MUL/DIV.  The
+       PC-FX map objects use the same 32x32 atlas tiles as the in-game board, so
+       route them through the compact affine board rasterizer instead: projection
+       is unchanged, but the fill path is edge-stepped and division-free in the
+       hot loops. */
+    {
+        const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
+        Point2D p0 = {(DEFAULT_INT)pa.x, (DEFAULT_INT)pa.y, 0, 0};
+        Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, uvmax, 0};
+        Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uvmax, uvmax};
+        Point2D p3 = {(DEFAULT_INT)pd.x, (DEFAULT_INT)pd.y, 0, uvmax};
+        cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
+    }
+#else
     const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
     TexV t0 = {pa.x, pa.y, 0, 0};
     TexV t1 = {pb.x, pb.y, Q8_ONE, 0};
@@ -754,6 +786,7 @@ static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
     TexV t3 = {pd.x, pd.y, 0, Q8_ONE};
     draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, t0, t1, t2);
     draw_textured_tri(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, t0, t2, t3);
+#endif
 }
 
 static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
@@ -805,6 +838,32 @@ static void draw_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, Sc
     cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 }
 
+static void draw_wall_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, ScreenPt pd, int tile)
+{
+    if (!pa.ok || !pb.ok || !pc.ok || !pd.ok) return;
+    if (tile < 0) tile = 0;
+    if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
+    const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
+    /* Slab-wall corners may project slightly outside the viewport.  Hard
+       clamping to 0..W-1 / 0..H-1 folds the lower-left table side into a visible
+       notch; passing the raw +-8192 guard coords is too slow for the compact
+       affine quad walker.  Keep a small off-screen apron instead: the span
+       drawer clips the actual pixels, while the wall edges retain their slope. */
+#define WALL_APRON_X 64
+#define WALL_APRON_Y 16
+#define WALL_CLAMP_X(v) ((v) < -WALL_APRON_X ? -WALL_APRON_X : ((v) >= W + WALL_APRON_X ? W + WALL_APRON_X - 1 : (v)))
+#define WALL_CLAMP_Y(v) ((v) < -WALL_APRON_Y ? -WALL_APRON_Y : ((v) >= H + WALL_APRON_Y ? H + WALL_APRON_Y - 1 : (v)))
+    Point2D p0 = {(DEFAULT_INT)WALL_CLAMP_X(pa.x), (DEFAULT_INT)WALL_CLAMP_Y(pa.y), 0, 0};
+    Point2D p1 = {(DEFAULT_INT)WALL_CLAMP_X(pb.x), (DEFAULT_INT)WALL_CLAMP_Y(pb.y), uvmax, 0};
+    Point2D p2 = {(DEFAULT_INT)WALL_CLAMP_X(pc.x), (DEFAULT_INT)WALL_CLAMP_Y(pc.y), uvmax, uvmax};
+    Point2D p3 = {(DEFAULT_INT)WALL_CLAMP_X(pd.x), (DEFAULT_INT)WALL_CLAMP_Y(pd.y), 0, uvmax};
+#undef WALL_CLAMP_Y
+#undef WALL_CLAMP_X
+#undef WALL_APRON_Y
+#undef WALL_APRON_X
+    cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
+}
+
 typedef struct BoardProjected {
     ScreenPt top[BOARD_ROWS + 1][BOARD_COLS + 1];
     ScreenPt bottom_z0[BOARD_COLS + 1];
@@ -833,38 +892,39 @@ static void build_board_projected(Camera cam, BoardProjected *bp)
 
 static void draw_field_slab_sides_fast(Camera cam, const BoardProjected *bp)
 {
+    /* Only the camera-facing Z wall is externally visible once the board top is
+       drawn; the far Z wall is fully hidden by the top surface but still cost 5
+       textured quads.  Keep both X walls because the centered battle cameras can
+       see both side lips.  This keeps the table textured, trims dead work, and
+       avoids the old lower-left corner fold caused by screen-clamped wall verts. */
     if (cam.eye.z >= 0) {
-        for (int c = 0; c < BOARD_COLS; ++c)
-            draw_quad3d_fast_projected(bp->top[0][c], bp->top[0][c+1], bp->bottom_z0[c+1], bp->bottom_z0[c], field_side_tile_for_cell(c, 0));
         if (cam.eye.x >= 0) {
             for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
+                draw_wall_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
             for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
+                draw_wall_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
         } else {
             for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
+                draw_wall_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
             for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
+                draw_wall_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
         }
         for (int c = 0; c < BOARD_COLS; ++c)
-            draw_quad3d_fast_projected(bp->top[BOARD_ROWS][c], bp->top[BOARD_ROWS][c+1], bp->bottom_z1[c+1], bp->bottom_z1[c], field_side_tile_for_cell(c, BOARD_ROWS - 1));
+            draw_wall_quad3d_fast_projected(bp->top[BOARD_ROWS][c], bp->top[BOARD_ROWS][c+1], bp->bottom_z1[c+1], bp->bottom_z1[c], field_side_tile_for_cell(c, BOARD_ROWS - 1));
     } else {
-        for (int c = 0; c < BOARD_COLS; ++c)
-            draw_quad3d_fast_projected(bp->top[BOARD_ROWS][c], bp->top[BOARD_ROWS][c+1], bp->bottom_z1[c+1], bp->bottom_z1[c], field_side_tile_for_cell(c, BOARD_ROWS - 1));
         if (cam.eye.x >= 0) {
             for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
+                draw_wall_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
             for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
+                draw_wall_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
         } else {
             for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
+                draw_wall_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
             for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
+                draw_wall_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
         }
         for (int c = 0; c < BOARD_COLS; ++c)
-            draw_quad3d_fast_projected(bp->top[0][c], bp->top[0][c+1], bp->bottom_z0[c+1], bp->bottom_z0[c], field_side_tile_for_cell(c, 0));
+            draw_wall_quad3d_fast_projected(bp->top[0][c], bp->top[0][c+1], bp->bottom_z0[c+1], bp->bottom_z0[c], field_side_tile_for_cell(c, 0));
     }
 }
 
@@ -1885,24 +1945,30 @@ static inline __attribute__((always_inline)) void pcfx_blit_row_gray_v810(const 
 {
     uint32_t groups = (uint32_t)count >> 2;
     uint32_t tail = (uint32_t)count & 3u;
-    uint32_t idx, t;
+    uint32_t sp, dp, idx, t;
     __asm__ volatile (
+        "mov %[src_in],%[src]\n"
+        "mov %[dst_in],%[dst]\n"
         "cmp 0,%[groups]\n"
         "be 2f\n"
         "1:\n"
         "ld.b 0[%[src]],%[idx]\n"
+        "andi 255,%[idx],%[idx]\n"
         "add %[lut],%[idx]\n"
         "ld.b 0[%[idx]],%[t]\n"
         "st.b %[t],0[%[dst]]\n"
         "ld.b 1[%[src]],%[idx]\n"
+        "andi 255,%[idx],%[idx]\n"
         "add %[lut],%[idx]\n"
         "ld.b 0[%[idx]],%[t]\n"
         "st.b %[t],1[%[dst]]\n"
         "ld.b 2[%[src]],%[idx]\n"
+        "andi 255,%[idx],%[idx]\n"
         "add %[lut],%[idx]\n"
         "ld.b 0[%[idx]],%[t]\n"
         "st.b %[t],2[%[dst]]\n"
         "ld.b 3[%[src]],%[idx]\n"
+        "andi 255,%[idx],%[idx]\n"
         "add %[lut],%[idx]\n"
         "ld.b 0[%[idx]],%[t]\n"
         "st.b %[t],3[%[dst]]\n"
@@ -1915,6 +1981,7 @@ static inline __attribute__((always_inline)) void pcfx_blit_row_gray_v810(const 
         "be 4f\n"
         "3:\n"
         "ld.b 0[%[src]],%[idx]\n"
+        "andi 255,%[idx],%[idx]\n"
         "add %[lut],%[idx]\n"
         "ld.b 0[%[idx]],%[t]\n"
         "st.b %[t],0[%[dst]]\n"
@@ -1923,11 +1990,12 @@ static inline __attribute__((always_inline)) void pcfx_blit_row_gray_v810(const 
         "add -1,%[tail]\n"
         "bne 3b\n"
         "4:\n"
-        : [src] "+r" (src), [dst] "+r" (dst), [groups] "+r" (groups), [tail] "+r" (tail),
+        : [src] "=&r" (sp), [dst] "=&r" (dp), [groups] "+r" (groups), [tail] "+r" (tail),
           [idx] "=&r" (idx), [t] "=&r" (t)
-        : [lut] "r" (lut)
+        : [src_in] "r" (src), [dst_in] "r" (dst), [lut] "r" (lut)
         : "memory");
 }
+
 
 #endif
 
@@ -1952,12 +2020,8 @@ static void blit_card_36x49_fast(const uint8_t *src, int x, int y)
     int yy;
     for (yy = 0; yy < 49; ++yy) {
         const uint8_t *srow = src + (int)g_card_ymap_36x49[yy] * WAIFU_CARD_W;
-#if defined(WAIFU_FM_PCFX)
-        pcfx_blit_row38_to36_v810(srow, dst);
-#else
         int xx;
         for (xx = 0; xx < 36; ++xx) dst[xx] = srow[g_card_xmap_36[xx]];
-#endif
         dst += W;
     }
 }
@@ -1985,12 +2049,8 @@ static void blit_card_mapped_fast(const uint8_t *src, int x, int y, int dw, int 
     int yy;
     for (yy = 0; yy < dh; ++yy) {
         const uint8_t *srow = src + (int)ymap[yy] * WAIFU_CARD_W;
-#if defined(WAIFU_FM_PCFX)
-        pcfx_blit_row_mapped_v810(srow, dst, xmap, dw);
-#else
         int xx;
         for (xx = 0; xx < dw; ++xx) dst[xx] = srow[xmap[xx]];
-#endif
         dst += W;
     }
 }
@@ -2068,68 +2128,76 @@ static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y,
 
 
 static const uint8_t *card_big_art_ptr(int id);
+static const uint8_t *support_big_art_ptr(void);
+static int g_big_art_direct_note_suppressed = 0;
 
 static void blit_art112_fast(const uint8_t *src, int x, int y)
 {
     if (!src || !rect_fully_visible(x, y, WAIFU_BIG_W, WAIFU_BIG_H)) return;
     uint8_t *dst = framebuffer + y * W + x;
 #if defined(WAIFU_FM_PCFX)
-    for (int yy = 0; yy < WAIFU_BIG_H; ++yy) {
-        const uint8_t *sp = src + yy * WAIFU_BIG_W;
-        uint8_t *dp = dst;
-        uint32_t loops = WAIFU_BIG_W >> 5;
-        uint32_t tail_words = (WAIFU_BIG_W & 31u) >> 2;
-        uint32_t a, b, c, d, e, f, g, h;
-        __asm__ volatile (
-            "cmp 0,%[loops]\n"
-            "be 2f\n"
-            "1:\n"
-            "ld.w 0[%[sp]],%[a]\n"
-            "ld.w 4[%[sp]],%[b]\n"
-            "ld.w 8[%[sp]],%[c]\n"
-            "ld.w 12[%[sp]],%[d]\n"
-            "ld.w 16[%[sp]],%[e]\n"
-            "ld.w 20[%[sp]],%[f]\n"
-            "ld.w 24[%[sp]],%[g]\n"
-            "ld.w 28[%[sp]],%[h]\n"
-            "st.w %[a],0[%[dp]]\n"
-            "st.w %[b],4[%[dp]]\n"
-            "st.w %[c],8[%[dp]]\n"
-            "st.w %[d],12[%[dp]]\n"
-            "st.w %[e],16[%[dp]]\n"
-            "st.w %[f],20[%[dp]]\n"
-            "st.w %[g],24[%[dp]]\n"
-            "st.w %[h],28[%[dp]]\n"
-            "addi 32,%[sp],%[sp]\n"
-            "addi 32,%[dp],%[dp]\n"
-            "add -1,%[loops]\n"
-            "bne 1b\n"
-            "2:\n"
-            "cmp 0,%[tail_words]\n"
-            "be 4f\n"
-            "3:\n"
-            "ld.w 0[%[sp]],%[a]\n"
-            "st.w %[a],0[%[dp]]\n"
-            "add 4,%[sp]\n"
-            "add 4,%[dp]\n"
-            "add -1,%[tail_words]\n"
-            "bne 3b\n"
-            "4:\n"
-            : [sp] "+r" (sp), [dp] "+r" (dp), [loops] "+r" (loops), [tail_words] "+r" (tail_words),
-              [a] "=&r" (a), [b] "=&r" (b), [c] "=&r" (c), [d] "=&r" (d),
-              [e] "=&r" (e), [f] "=&r" (f), [g] "=&r" (g), [h] "=&r" (h)
-            :
-            : "memory");
-        dst += W;
+    /* The V810 word-copy path is only safe when both the source and destination
+       are 32-bit aligned.  Battle cut-ins can shake/lunge cards by two-pixel
+       increments, so keep the fast path for aligned static positions and use a
+       byte-exact row copy for moving or otherwise unaligned frames. */
+    if ((((uintptr_t)src | (uintptr_t)dst) & 3u) == 0u) {
+        for (int yy = 0; yy < WAIFU_BIG_H; ++yy) {
+            const uint8_t *sp = src + yy * WAIFU_BIG_W;
+            uint8_t *dp = dst;
+            uint32_t loops = WAIFU_BIG_W >> 5;
+            uint32_t tail_words = (WAIFU_BIG_W & 31u) >> 2;
+            uint32_t a, b, c, d, e, f, g, h;
+            __asm__ volatile (
+                "cmp 0,%[loops]\n"
+                "be 2f\n"
+                "1:\n"
+                "ld.w 0[%[sp]],%[a]\n"
+                "ld.w 4[%[sp]],%[b]\n"
+                "ld.w 8[%[sp]],%[c]\n"
+                "ld.w 12[%[sp]],%[d]\n"
+                "ld.w 16[%[sp]],%[e]\n"
+                "ld.w 20[%[sp]],%[f]\n"
+                "ld.w 24[%[sp]],%[g]\n"
+                "ld.w 28[%[sp]],%[h]\n"
+                "st.w %[a],0[%[dp]]\n"
+                "st.w %[b],4[%[dp]]\n"
+                "st.w %[c],8[%[dp]]\n"
+                "st.w %[d],12[%[dp]]\n"
+                "st.w %[e],16[%[dp]]\n"
+                "st.w %[f],20[%[dp]]\n"
+                "st.w %[g],24[%[dp]]\n"
+                "st.w %[h],28[%[dp]]\n"
+                "addi 32,%[sp],%[sp]\n"
+                "addi 32,%[dp],%[dp]\n"
+                "add -1,%[loops]\n"
+                "bne 1b\n"
+                "2:\n"
+                "cmp 0,%[tail_words]\n"
+                "be 4f\n"
+                "3:\n"
+                "ld.w 0[%[sp]],%[a]\n"
+                "st.w %[a],0[%[dp]]\n"
+                "add 4,%[sp]\n"
+                "add 4,%[dp]\n"
+                "add -1,%[tail_words]\n"
+                "bne 3b\n"
+                "4:\n"
+                : [sp] "+r" (sp), [dp] "+r" (dp), [loops] "+r" (loops), [tail_words] "+r" (tail_words),
+                  [a] "=&r" (a), [b] "=&r" (b), [c] "=&r" (c), [d] "=&r" (d),
+                  [e] "=&r" (e), [f] "=&r" (f), [g] "=&r" (g), [h] "=&r" (h)
+                :
+                : "memory");
+            dst += W;
+        }
+        return;
     }
-#else
+#endif
     for (int yy = 0; yy < WAIFU_BIG_H; ++yy) {
         const uint8_t *srow = src + yy * WAIFU_BIG_W;
         uint8_t *drow = dst;
         for (int xx = 0; xx < WAIFU_BIG_W; ++xx) drow[xx] = srow[xx];
         dst += W;
     }
-#endif
 }
 
 static void draw_big_art_112_note(const uint8_t *src, WaifuBigArtKind kind, int card_id, int x, int y)
@@ -2137,7 +2205,9 @@ static void draw_big_art_112_note(const uint8_t *src, WaifuBigArtKind kind, int 
     if (!src) return;
     if (rect_fully_visible(x, y, WAIFU_BIG_W, WAIFU_BIG_H)) {
         blit_art112_fast(src, x, y);
-        waifu_assets_note_big_art_draw(kind, card_id, x, y);
+        if (!g_big_art_direct_note_suppressed) {
+            waifu_assets_note_big_art_draw(kind, card_id, x, y);
+        }
         PROFILE_CARD2D_FAST();
         return;
     }
@@ -2151,7 +2221,7 @@ static void draw_card_big_art_112(int card_id, int x, int y)
 
 static void draw_support_big_art_112(int x, int y)
 {
-    draw_big_art_112_note(waifu_assets_support_big_art(), WAIFU_BIG_ART_SUPPORT, -1, x, y);
+    draw_big_art_112_note(support_big_art_ptr(), WAIFU_BIG_ART_SUPPORT, -1, x, y);
 }
 
 static void draw_big_art_scaled_note(const uint8_t *src, WaifuBigArtKind kind, int card_id, int x, int y, int w, int h)
@@ -2168,7 +2238,7 @@ static void draw_card_big_art_scaled(int card_id, int x, int y, int w, int h)
 
 static void draw_support_big_art_scaled(int x, int y, int w, int h)
 {
-    draw_big_art_scaled_note(waifu_assets_support_big_art(), WAIFU_BIG_ART_SUPPORT, -1, x, y, w, h);
+    draw_big_art_scaled_note(support_big_art_ptr(), WAIFU_BIG_ART_SUPPORT, -1, x, y, w, h);
 }
 
 static const uint8_t *card_face_ptr(int id)
@@ -2182,7 +2252,23 @@ static const uint8_t *card_big_art_ptr(int id)
 {
     if (id < 0) id = 0;
     if (id >= WAIFU_CARD_COUNT) id = WAIFU_CARD_COUNT - 1;
+#if defined(WAIFU_FM_PCFX)
+    /* Rendering must never issue a synchronous CD/SCSI read.  Full-size card
+       art is loaded by the asset-loading state and then reused from the global
+       big-art cache; on an unexpected miss, draw the frame/text only. */
+    return waifu_assets_card_big_art_cached(id);
+#else
     return waifu_assets_card_big_art(id);
+#endif
+}
+
+static const uint8_t *support_big_art_ptr(void)
+{
+#if defined(WAIFU_FM_PCFX)
+    return waifu_assets_support_big_art_cached();
+#else
+    return waifu_assets_support_big_art();
+#endif
 }
 
 static void draw_card_sprite(int id, int x, int y, int w, int h, int back)
@@ -3196,6 +3282,12 @@ static void draw_battle_cutin_event_ex(int f, int start,
                                                           : (ram_start + ram_dur + WAIFU_BATTLE_BURN_DELAY_FRAMES);
     if (outcome == BATTLE_DESTROY_BOTH) burn_start = ram_start + ram_dur + (WAIFU_BATTLE_BURN_DELAY_FRAMES / 2);
     int burn_dur = BATTLE_BURN_DUR;
+
+    /* SFX are tied to the visible cut-in beats, not to battle resolution. */
+    if (local == ram_start) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
+    if (outcome == BATTLE_DESTROY_ATTACKER && local == counter_start) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
+    if ((outcome == BATTLE_DESTROY_DEFENDER || outcome == BATTLE_DESTROY_ATTACKER || outcome == BATTLE_DESTROY_BOTH) &&
+        local == burn_start) waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
 
     if (local < slide_dur) {
         int32_t e = q8_smooth_ratio(local, slide_dur);
@@ -4332,15 +4424,22 @@ typedef struct WaifuBattleBaseCache {
 } WaifuBattleBaseCache;
 
 static WaifuBattleBaseCache g_b_base_cache;
-static uint8_t g_card_preview_cache[W * H];
-static int g_card_preview_cache_valid = 0;
-static int g_card_preview_cache_id = CARD_NONE;
+#if defined(WAIFU_FM_PCFX)
+static WaifuBattleBaseCache g_b_base_cache_top;
+/* Cached camera keyframes for the hand<->top lift.  Endpoints reuse the normal
+   hand and top base caches; only the true in-between camera bases live here. */
+static WaifuBattleBaseCache g_b_handtop_mid_cache[WAIFU_PCFX_HANDTOP_ANCHORS - 2];
+static int g_b_handtop_prewarm_index = 0;
+#endif
 
 static void invalidate_battle_composite_cache(void)
 {
     g_b_base_cache.valid = 0;
-    g_card_preview_cache_valid = 0;
-    g_card_preview_cache_id = CARD_NONE;
+#if defined(WAIFU_FM_PCFX)
+    g_b_base_cache_top.valid = 0;
+    for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS - 2; ++i) g_b_handtop_mid_cache[i].valid = 0;
+    g_b_handtop_prewarm_index = 0;
+#endif
 }
 
 static uint32_t waifu_hash_step_u32(uint32_t h, uint32_t v)
@@ -5158,7 +5257,7 @@ static void set_battle_phase(WaifuBattlePhase phase)
     g_b_phase_frame = 0;
     if (phase != prev) {
         if (phase == IB_TURN_TO_COM || phase == IB_TURN_TO_PLAYER) waifu_sound_play(WAIFU_SOUND_TURN_PASSED);
-        if (phase == IB_RESULT && g_b_result < 0) waifu_sound_play(WAIFU_SOUND_YOU_LOST);
+        /* Loss jingle is CD-DA on PC-FX and a music track on host; no PCM SFX. */
     }
     update_music_for_current_state();
 }
@@ -5998,7 +6097,15 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_DECK_PREVIEW:
         return WAIFU_MUSIC_DECK_EDITOR;
     case WAIFU_I_BATTLE:
-        if (g_b_phase == IB_RESULT || g_b_phase == IB_TALLY) return WAIFU_MUSIC_RESULTS;
+        if (g_b_phase == IB_TALLY) return (g_b_result < 0) ? WAIFU_MUSIC_LOST : WAIFU_MUSIC_RESULTS;
+        if (g_b_phase == IB_RESULT) {
+            /* Result music intentionally starts only after the frozen-field UI
+               clear phase.  set_battle_phase(IB_RESULT) therefore leaves the
+               current battle CD-DA running; the result drawer kicks this update
+               at WAIFU_RESULT_UI_CLEAR_FRAMES. */
+            if (g_b_phase_frame < WAIFU_RESULT_UI_CLEAR_FRAMES) return story_battle_music_track();
+            return (g_b_result < 0) ? WAIFU_MUSIC_LOST : WAIFU_MUSIC_RESULTS;
+        }
         return story_battle_music_track();
     default:
         return WAIFU_MUSIC_NONE;
@@ -6270,22 +6377,163 @@ static void draw_interactive_com_hand(int f, int selected, int yoff)
     PROFILE_HAND_END();
 }
 
+#if defined(WAIFU_FM_PCFX)
+static Camera pcfx_handtop_anchor_camera(int anchor)
+{
+    if (anchor <= 0) return player_camera();
+    if (anchor >= WAIFU_PCFX_HANDTOP_ANCHORS - 1) return battle_top_camera();
+    return lerp_camera(player_camera(), battle_top_camera(), q8_ratio(anchor, WAIFU_PCFX_HANDTOP_ANCHORS - 1));
+}
+
+static int pcfx_handtop_anchor_for_frame(int frame, int dur)
+{
+    if (frame <= 0) return 0;
+    if (frame >= dur) return WAIFU_PCFX_HANDTOP_ANCHORS - 1;
+    /* Quantize a smooth camera lift onto cached real-3D keyframes.  The hand and
+       cursor overlays still move every logic frame; only the expensive base
+       perspective is stepped through a small cacheable set. */
+    return (frame * (WAIFU_PCFX_HANDTOP_ANCHORS - 1) + dur / 2) / dur;
+}
+
+static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
+{
+    int anchor = pcfx_handtop_anchor_for_frame(frame, dur);
+    if (!to_top) anchor = WAIFU_PCFX_HANDTOP_ANCHORS - 1 - anchor;
+    return pcfx_handtop_anchor_camera(anchor);
+}
+#else
+static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
+{
+    int32_t t = q8_ratio(frame, dur);
+    return to_top ? lerp_camera(player_camera(), battle_top_camera(), t)
+                  : lerp_camera(battle_top_camera(), player_camera(), t);
+}
+#endif
+
+#if defined(WAIFU_FM_PCFX)
+static int pcfx_handtop_anchor_index_for_camera(Camera cam)
+{
+    for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS; ++i) {
+        if (camera_equal(cam, pcfx_handtop_anchor_camera(i))) return i;
+    }
+    return -1;
+}
+
+static WaifuBattleBaseCache *pcfx_handtop_cache_for_anchor(int anchor)
+{
+    if (anchor <= 0) return &g_b_base_cache;
+    if (anchor >= WAIFU_PCFX_HANDTOP_ANCHORS - 1) return &g_b_base_cache_top;
+    return &g_b_handtop_mid_cache[anchor - 1];
+}
+#endif
+
+static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
+{
+#if defined(WAIFU_FM_PCFX)
+    int anchor = pcfx_handtop_anchor_index_for_camera(cam);
+    if (anchor >= 0) return pcfx_handtop_cache_for_anchor(anchor);
+    if (camera_equal(cam, battle_top_camera())) return &g_b_base_cache_top;
+#endif
+    (void)cam;
+    return &g_b_base_cache;
+}
+
+static int battle_base_cache_restore(Camera cam, uint32_t key)
+{
+    WaifuBattleBaseCache *primary = battle_base_cache_for_camera(cam);
+    if (primary->valid && primary->key == key && camera_equal(primary->cam, cam)) {
+        copy_u8_fast(framebuffer, primary->pixels, (int)sizeof(primary->pixels));
+        return 1;
+    }
+#if defined(WAIFU_FM_PCFX)
+    /* The secondary top-view cache is used to remove the UP transition's first
+       board miss.  Also check the normal slot so older paths remain compatible
+       if it happens to contain the requested camera. */
+    if (primary != &g_b_base_cache && g_b_base_cache.valid &&
+        g_b_base_cache.key == key && camera_equal(g_b_base_cache.cam, cam)) {
+        copy_u8_fast(framebuffer, g_b_base_cache.pixels, (int)sizeof(g_b_base_cache.pixels));
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+static void battle_base_cache_store(Camera cam, uint32_t key)
+{
+    WaifuBattleBaseCache *cache = battle_base_cache_for_camera(cam);
+    copy_u8_fast(cache->pixels, framebuffer, (int)sizeof(cache->pixels));
+    cache->cam = cam;
+    cache->key = key;
+    cache->valid = 1;
+}
+
 static void draw_interactive_base(Camera cam)
 {
     uint32_t key = battle_base_visual_key();
-    if (g_b_base_cache.valid && g_b_base_cache.key == key && camera_equal(g_b_base_cache.cam, cam)) {
-        copy_u8_fast(framebuffer, g_b_base_cache.pixels, (int)sizeof(g_b_base_cache.pixels));
-        return;
-    }
+    if (battle_base_cache_restore(cam, key)) return;
 
     render_board_cached(cam);
     draw_interactive_field_cards(cam);
     draw_hud();
 
-    copy_u8_fast(g_b_base_cache.pixels, framebuffer, (int)sizeof(g_b_base_cache.pixels));
-    g_b_base_cache.cam = cam;
-    g_b_base_cache.key = key;
-    g_b_base_cache.valid = 1;
+    battle_base_cache_store(cam, key);
+}
+
+#if defined(WAIFU_FM_PCFX)
+static void prewarm_interactive_base(Camera cam)
+{
+    uint32_t key = battle_base_visual_key();
+    WaifuBattleBaseCache *cache = battle_base_cache_for_camera(cam);
+    if (cache->valid && cache->key == key && camera_equal(cache->cam, cam)) return;
+    render_board_cached(cam);
+    draw_interactive_field_cards(cam);
+    draw_hud();
+    battle_base_cache_store(cam, key);
+}
+
+static void prewarm_handtop_transition_bases(void)
+{
+    uint32_t key = battle_base_visual_key();
+    /* Prewarm one missing hand->top keyframe per hand-idle frame.  This keeps
+       steady hand view responsive after the short warmup and lets pressing UP
+       play a smooth cached camera lift instead of a hard cut or repeated board
+       re-renders.  Prefer the top endpoint first so the transition can always
+       finish on a cache hit, then fill the intermediate perspectives. */
+    for (int tries = 0; tries < WAIFU_PCFX_HANDTOP_ANCHORS; ++tries) {
+        int seq = g_b_handtop_prewarm_index++ % WAIFU_PCFX_HANDTOP_ANCHORS;
+        int anchor = (seq == 0) ? (WAIFU_PCFX_HANDTOP_ANCHORS - 1) : (seq - 1);
+        Camera cam = pcfx_handtop_anchor_camera(anchor);
+        WaifuBattleBaseCache *cache = pcfx_handtop_cache_for_anchor(anchor);
+        if (!(cache->valid && cache->key == key && camera_equal(cache->cam, cam))) {
+            prewarm_interactive_base(cam);
+            return;
+        }
+    }
+}
+#endif
+
+static void draw_interactive_field_base_no_hud(Camera cam)
+{
+    render_board_cached(cam);
+    draw_interactive_field_cards(cam);
+}
+
+static int result_focus_card_id(void)
+{
+    int slot = first_live_player_slot();
+    if (slot >= 0) return g_i_player_field[slot];
+    if (g_b_selected_hand >= 0 && g_b_selected_hand < I_HAND) return g_i_player_hand[g_b_selected_hand];
+    return hand_ids[0];
+}
+
+static void draw_player_handtop_transition_shared(int frame, int dur, int to_top,
+                                                  int hand_yoff, int draw_hand,
+                                                  int draw_hud)
+{
+    Camera cam = player_handtop_transition_camera(frame, dur, to_top);
+    if (draw_hud) draw_interactive_base(cam);
+    else draw_interactive_field_base_no_hud(cam);
+    if (draw_hand) draw_interactive_player_hand(999, g_b_selected_hand, hand_yoff, 1);
 }
 
 static void draw_interactive_common(Camera cam, int bottom_card, const char *bottom_mode)
@@ -6354,26 +6602,24 @@ static void render_interactive_card_preview_static(int card_id)
 static void draw_interactive_card_preview(int card_id, int f)
 {
     waifu_fm_use_common_palette();
-    if (!g_card_preview_cache_valid || g_card_preview_cache_id != card_id) {
-        render_interactive_card_preview_static(card_id);
-        copy_u8_fast(g_card_preview_cache, framebuffer, (int)sizeof(g_card_preview_cache));
-        g_card_preview_cache_valid = 1;
-        g_card_preview_cache_id = card_id;
-    } else {
-        copy_u8_fast(framebuffer, g_card_preview_cache, (int)sizeof(g_card_preview_cache));
+    /* Render the card-check panel directly each frame on PC-FX.  The previous
+       full-frame preview cache cost 60 KiB of RAM and, combined with the expanded
+       all-card big-art cache, left too little headroom; long waits on the preview
+       could corrupt the cached panel/art.  Big art is already RAM-resident, so
+       this path performs no CD reads. */
 #if defined(WAIFU_FM_PCFX)
-        /* The cached framebuffer copy skips the original draw_big_art_* call.
-           Re-emit the direct-big-art draw marker so the PC-FX presenter keeps
-           both KING pages' block-aligned card-art regions coherent without
-           re-rendering or reloading the static card-check panel. */
-        if (is_support_card(card_id)) {
-            waifu_assets_note_big_art_draw(WAIFU_BIG_ART_SUPPORT, -1, 12, 42);
-        } else if (is_monster_card(card_id)) {
-            waifu_assets_note_big_art_draw(WAIFU_BIG_ART_CARD, card_id, 12, 42);
-        }
+    /* The card-check panel is a static inspect screen, not an animation reveal.
+       Do not route its 112x112 art through the presenter's direct-KRAM big-art
+       bypass: on memory-tight PC-FX builds that path can leave the two KING
+       pages' shadows out of phase if the panel is held for a long time.  Render
+       the art into the normal framebuffer and let the dirty presenter upload it
+       once from the framebuffer, then only the blinking B prompt changes. */
+    ++g_big_art_direct_note_suppressed;
+    render_interactive_card_preview_static(card_id);
+    --g_big_art_direct_note_suppressed;
+#else
+    render_interactive_card_preview_static(card_id);
 #endif
-    }
-
     if (((f / 16) & 1) == 0) draw_text_small(74, 218, "B: BACK", IDX_WHITE, IDX_BLACK);
 }
 
@@ -6499,7 +6745,6 @@ static void prepare_battle(int attacker_owner, int attacker_slot, int defender_s
        face-up frame from stalling on an art cache miss. */
     (void)card_big_art_ptr(atk_id);
     (void)card_big_art_ptr(def_id);
-    waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
     set_battle_phase(attacker_owner == 0 ? IB_PLAYER_BATTLE : IB_COM_BATTLE);
 }
 
@@ -6540,7 +6785,6 @@ static void prepare_direct_attack(int attacker_owner, int attacker_slot)
     waifu_str_copy(g_b_damage_text, (int)sizeof(g_b_damage_text), "-"); waifu_str_cat_i32(g_b_damage_text, (int)sizeof(g_b_damage_text), dmg);
     g_b_battle_outcome = BATTLE_DIRECT_ATTACK;
     (void)card_big_art_ptr(atk_id);
-    waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
     set_battle_phase(attacker_owner == 0 ? IB_PLAYER_BATTLE : IB_COM_BATTLE);
 }
 
@@ -6594,13 +6838,10 @@ static void resolve_battle(void)
         reveal_monster_slot(defender_owner, g_b_battle_def_slot);
 
         if (g_b_battle_outcome == BATTLE_DESTROY_DEFENDER) {
-            waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
             clear_monster_slot(defender_owner, g_b_battle_def_slot);
         } else if (g_b_battle_outcome == BATTLE_DESTROY_ATTACKER) {
-            waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
             clear_monster_slot(attacker_owner, g_b_battle_atk_slot);
         } else if (g_b_battle_outcome == BATTLE_DESTROY_BOTH) {
-            waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
             clear_monster_slot(attacker_owner, g_b_battle_atk_slot);
             clear_monster_slot(defender_owner, g_b_battle_def_slot);
         }
@@ -6640,6 +6881,11 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
         return;
     }
     if (atk_back) local -= flip_dur;
+    if (local == WAIFU_DIRECT_SLIDE_FRAMES) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
+    {
+        int hit_frame = WAIFU_DIRECT_SLIDE_FRAMES + (WAIFU_DIRECT_LUNGE_FRAMES / 2);
+        if (local == hit_frame) waifu_sound_play(WAIFU_SOUND_DIRECT_HIT);
+    }
     if (local < WAIFU_DIRECT_SLIDE_FRAMES) {
         int32_t e = q8_smooth_ratio(local, WAIFU_DIRECT_SLIDE_FRAMES);
         card_x = lerp_i((g_b_battle_atk_owner == 0) ? -128 : 264, ax, e);
@@ -6721,21 +6967,52 @@ static void draw_interactive_result(void)
 {
     int local = g_b_phase_frame;
     const char *msg = g_b_result < 0 ? "YOU LOSE" : "YOU WIN";
-    Camera cam = lerp_camera(battle_top_camera(), player_camera(), q8_smooth_ratio(local, 90));
-    render_board_cached(cam);
-    draw_interactive_field_cards(cam);
-    if (local < 70) {
-        int32_t e = q8_smooth_ratio(local, 70);
-        draw_hud_offset(-q8_to_int(q8_mul(Q8_FROM_INT(76), e)), 0, q8_to_int(q8_mul(Q8_FROM_INT(92), e)), 0);
-        draw_bottom_info_offset(first_live_player_slot() >= 0 ? g_i_player_field[first_live_player_slot()] : hand_ids[0], "RESULT", q8_to_int(q8_mul(Q8_FROM_INT(44), e)));
+    const int card_id = result_focus_card_id();
+
+    if (local == WAIFU_RESULT_UI_CLEAR_FRAMES) update_music_for_current_state();
+
+    if (local < WAIFU_RESULT_UI_CLEAR_FRAMES) {
+        int32_t e = q8_smooth_ratio(local, WAIFU_RESULT_UI_CLEAR_FRAMES);
+        int hud_field_x = -q8_to_int(q8_mul(Q8_FROM_INT(86), e));
+        int hud_lp_x = q8_to_int(q8_mul(Q8_FROM_INT(92), e));
+        int bottom_y = q8_to_int(q8_mul(Q8_FROM_INT(52), e));
+        int hand_y = q8_to_int(q8_mul(Q8_FROM_INT(126), e));
+
+        /* Freeze the 3D field immediately after the battle cut-in.  Only the
+           overlays move: HUD panels slide outward, the bottom info plate and
+           the hand leave through the bottom edge. */
+        draw_interactive_field_base_no_hud(battle_top_camera());
+        draw_hud_offset(hud_field_x, 0, hud_lp_x, 0);
+        draw_bottom_info_offset(card_id, "RESULT", bottom_y);
+        draw_interactive_player_hand(999, g_b_selected_hand, hand_y, 1);
+        return;
     }
-    if (local >= 50) {
-        int32_t e = q8_smooth_ratio(local - 50, 42);
-        int scale = (local < 92) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
-        int tw = (int)strlen(msg) * 8 * scale;
-        int x = (W - tw) / 2;
-        int y = 100 - q8_to_int(q8_mul(Q8_FROM_INT(10), Q8_ONE - e));
-        draw_text_scaled(x, y, msg, scale, g_b_result < 0 ? IDX_RED : IDX_GOLD_HI, IDX_BLACK);
+
+    if (local < WAIFU_RESULT_ANIM_START_FRAMES) {
+        /* Result CD-DA has started; hold the cleaned field briefly so the music
+           lead-in is perceptible before the camera move begins. */
+        draw_interactive_field_base_no_hud(battle_top_camera());
+        return;
+    }
+
+    {
+        int anim = local - WAIFU_RESULT_ANIM_START_FRAMES;
+        int clamped_anim = anim;
+        if (clamped_anim > WAIFU_PCFX_HANDTOP_FRAMES) clamped_anim = WAIFU_PCFX_HANDTOP_FRAMES;
+        /* Use the same top->hand camera/keyframe helper as the normal DOWN path,
+           but keep the result overlays cleared instead of reintroducing battle
+           HUD panels. */
+        draw_player_handtop_transition_shared(clamped_anim, WAIFU_PCFX_HANDTOP_FRAMES,
+                                              0, 0, 0, 0);
+        if (anim >= WAIFU_PCFX_HANDTOP_FRAMES + 8) {
+            int text_f = anim - WAIFU_PCFX_HANDTOP_FRAMES - 8;
+            int32_t e = q8_smooth_ratio(text_f, 42);
+            int scale = (text_f < 42) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
+            int tw = (int)strlen(msg) * 8 * scale;
+            int x = (W - tw) / 2;
+            int y = 100 - q8_to_int(q8_mul(Q8_FROM_INT(10), Q8_ONE - e));
+            draw_text_scaled(x, y, msg, scale, g_b_result < 0 ? IDX_RED : IDX_GOLD_HI, IDX_BLACK);
+        }
     }
 }
 
@@ -6773,7 +7050,10 @@ static int draw_replacement_cards_to_hand(void)
        stalling where the deck never advances and deck-out can be avoided. */
     for (i = 0; i < I_HAND; ++i) {
         if (g_i_player_used[i]) {
-            if (g_i_player_deck_left <= 0) return g_b_draw_count > 0;
+            if (g_i_player_deck_left <= 0) {
+                if (g_b_draw_count > 0) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
+                return g_b_draw_count > 0;
+            }
             g_i_player_hand[i] = next_draw_id();
             g_i_player_used[i] = 0;
             g_b_draw_slots[g_b_draw_count++] = i;
@@ -6784,6 +7064,7 @@ static int draw_replacement_cards_to_hand(void)
         g_i_player_used[0] = 0;
         g_b_draw_slots[g_b_draw_count++] = 0;
     }
+    if (g_b_draw_count > 0) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
     return g_b_draw_count > 0;
 }
 
@@ -6794,7 +7075,10 @@ static void draw_replacement_cards_to_com_hand(void)
     if (g_i_com_deck_left <= 0) return;
     for (i = 0; i < I_HAND; ++i) {
         if (g_i_com_used[i]) {
-            if (g_i_com_deck_left <= 0) return;
+            if (g_i_com_deck_left <= 0) {
+                if (drew) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
+                return;
+            }
             g_i_com_hand[i] = next_com_draw_id();
             g_i_com_used[i] = 0;
             drew = 1;
@@ -6803,7 +7087,9 @@ static void draw_replacement_cards_to_com_hand(void)
     if (!drew && g_i_com_deck_left > 0) {
         g_i_com_hand[0] = next_com_draw_id();
         g_i_com_used[0] = 0;
+        drew = 1;
     }
+    if (drew) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
 }
 
 static int is_recent_draw_slot(int slot)
@@ -7388,6 +7674,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             }
         }
         if (press_start) { clear_player_fusion_queue(); g_b_attack_attacker_slot = -1; clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
+#if defined(WAIFU_FM_PCFX)
+        prewarm_handtop_transition_bases();
+#endif
         draw_interactive_base(player_camera());
         draw_interactive_player_hand(g_b_player_hand_intro_pending ? g_b_phase_frame : 999, g_b_selected_hand, 0, 0);
         draw_bottom_info(g_i_player_hand[g_b_selected_hand], "HAND");
@@ -7395,28 +7684,25 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_PLAYER_HAND_TO_TOP: {
-        /* Smooth camera lift from the perspective hand view up to the tactical
-           top view, instead of an instant cut.  The board camera eases from
-           player_camera() to battle_top_camera() while the hand slides off the
-           bottom of the screen. */
+        /* PC-FX transition fast path without the hard cut: use cached 3D camera
+           keyframes along the hand->top lift.  The board changes through real
+           intermediate perspectives, while the hand overlay slides every logic
+           frame.  This avoids the original cache-miss storm without snapping
+           immediately to the top camera. */
         int dur = WAIFU_PCFX_HANDTOP_FRAMES;
-        int32_t t = q8_ratio(g_b_phase_frame, dur);
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), q8_smooth_ratio(g_b_phase_frame, dur)));
-        draw_interactive_base(lerp_camera(player_camera(), battle_top_camera(), t));
-        draw_interactive_player_hand(999, g_b_selected_hand, hand_off, 1);
+        draw_player_handtop_transition_shared(g_b_phase_frame, dur, 1, hand_off, 1, 1);
         if (battle_animation_event_complete(dur)) set_battle_phase(IB_PLAYER_TOP);
         break;
     }
 
     case IB_PLAYER_TOP_TO_HAND: {
-        /* Reverse of IB_PLAYER_HAND_TO_TOP: the camera eases back down from the
-           tactical top view to the perspective hand view while the hand slides
-           up from the bottom of the screen into place. */
+        /* Reverse path uses the same cached camera keyframes in reverse order,
+           so returning to hand is also smooth without re-rendering a unique
+           3D board for every logic frame. */
         int dur = WAIFU_PCFX_HANDTOP_FRAMES;
-        int32_t t = q8_ratio(g_b_phase_frame, dur);
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), Q8_ONE - q8_smooth_ratio(g_b_phase_frame, dur)));
-        draw_interactive_base(lerp_camera(battle_top_camera(), player_camera(), t));
-        draw_interactive_player_hand(999, g_b_selected_hand, hand_off, 1);
+        draw_player_handtop_transition_shared(g_b_phase_frame, dur, 0, hand_off, 1, 1);
         if (battle_animation_event_complete(dur)) set_battle_phase(IB_PLAYER_HAND);
         break;
     }
@@ -7776,7 +8062,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_RESULT:
         draw_interactive_result();
-        if (g_b_phase_frame >= 170) set_battle_phase(IB_TALLY);
+        if (g_b_phase_frame >= WAIFU_RESULT_TOTAL_FRAMES) set_battle_phase(IB_TALLY);
         break;
 
     case IB_TALLY:
@@ -8697,6 +8983,7 @@ static void story_return_to_map_after_duel(void)
 }
 
 
+
 void waifu_fm_step(const WaifuFmInput *input)
 {
     WaifuFmInput zero;
@@ -8721,8 +9008,8 @@ void waifu_fm_step(const WaifuFmInput *input)
     press_tab = input_pressed(input->tab, g_prev_input.tab);
 
     if (press_up || press_down || press_left || press_right) waifu_sound_play(WAIFU_SOUND_SELECT);
-    if (press_a || press_start) waifu_sound_play(WAIFU_SOUND_CONFIRM);
-    if (press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
+    if (press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
+    if (press_start || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
 
     switch (g_i_state) {
     case WAIFU_I_LOADING_ASSETS:
@@ -9208,10 +9495,276 @@ static void debug_setup_music_demo_state(const char *name)
         g_b_result = 1;
         g_b_phase = IB_TALLY;
         g_b_phase_frame = 0;
+    } else if (!strcmp(name, "result-sequence") || !strcmp(name, "victory-sequence")) {
+        init_battle_state();
+        g_story_battle_active = 0;
+        g_i_state = WAIFU_I_BATTLE;
+        g_i_player_field[0] = 12; g_i_player_faceup[0] = 1; g_i_player_used[0] = 0;
+        g_i_player_field[2] = 37; g_i_player_faceup[2] = 1; g_i_player_used[2] = 0;
+        g_i_com_field[1] = 15; g_i_com_faceup[1] = 1; g_i_com_used[1] = 0;
+        g_i_com_field[3] = 28; g_i_com_faceup[3] = 1; g_i_com_used[3] = 0;
+        g_b_selected_hand = 0;
+        g_b_result = 1;
+        set_battle_phase(IB_RESULT);
     }
     g_i_frame = 0;
     update_music_for_current_state();
 }
+
+
+#ifdef WAIFU_FM_HEADLESS_TESTS
+static uint32_t debug_story_persistent_hash(void)
+{
+    uint32_t h = 0x53544f52u; /* "STOR" */
+    h = waifu_hash_step_u32(h, (uint32_t)g_story_duel_index);
+    h = waifu_hash_step_u32(h, (uint32_t)g_story_map_cursor);
+    h = waifu_hash_step_u32(h, (uint32_t)g_story_pyramid_cursor);
+    h = waifu_hash_step_u32(h, (uint32_t)g_story_plaza_line);
+    h = waifu_hash_step_u32(h, (uint32_t)g_story_deck_count);
+    h = waifu_hash_step_u32(h, (uint32_t)g_story_storage_count);
+    for (int i = 0; i < STORY_NAME_LEN; ++i) h = waifu_hash_step_u32(h, (uint32_t)(unsigned char)g_story_name[i]);
+    for (int i = 0; i < g_story_deck_count; ++i) h = waifu_hash_step_u32(h, (uint32_t)(g_story_player_deck[i] + 2));
+    for (int i = 0; i < g_story_storage_count; ++i) h = waifu_hash_step_u32(h, (uint32_t)(g_story_storage[i] + 2));
+    return h;
+}
+
+static void debug_prepare_story_save_fixture(void)
+{
+    int i;
+    generate_story_starter_deck();
+    generate_story_storage_pool();
+    memset(g_story_name, 0, sizeof(g_story_name));
+    strncpy(g_story_name, "SAVEOK", STORY_NAME_LEN);
+    g_story_name[STORY_NAME_LEN] = '\0';
+    g_story_duel_index = 3;
+    g_story_map_cursor = 1;
+    g_story_pyramid_cursor = 2;
+    g_story_plaza_line = 5;
+    g_story_deck_count = STORY_DECK_SIZE;
+    g_story_storage_count = 9;
+    for (i = 0; i < STORY_DECK_SIZE; ++i) g_story_player_deck[i] = (i * 7 + 3) % WAIFU_CARD_COUNT;
+    for (i = 0; i < g_story_storage_count; ++i) g_story_storage[i] = (i * 11 + 5) % WAIFU_CARD_COUNT;
+    sanitize_story_deck_copy_limit();
+    recalc_story_deck_counts();
+}
+
+static int debug_regression_story_save_roundtrip(void)
+{
+#ifndef WAIFU_FM_PCFX
+    uint32_t before_hash, after_hash;
+    remove(STORY_SAVE_PATH);
+    waifu_fm_reset_interactive();
+    debug_prepare_story_save_fixture();
+    before_hash = debug_story_persistent_hash();
+    if (!write_story_save()) {
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: write_story_save failed\n");
+        return 1;
+    }
+    if (!story_save_exists()) {
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: save_exists false after write\n");
+        return 1;
+    }
+    memset(g_story_name, 0, sizeof(g_story_name));
+    g_story_duel_index = 0;
+    g_story_map_cursor = 0;
+    g_story_pyramid_cursor = 0;
+    g_story_plaza_line = 0;
+    g_story_deck_count = 0;
+    g_story_storage_count = 0;
+    memset(g_story_player_deck, 0, sizeof(g_story_player_deck));
+    memset(g_story_storage, 0, sizeof(g_story_storage));
+    if (!read_story_save()) {
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: read_story_save failed\n");
+        return 1;
+    }
+    after_hash = debug_story_persistent_hash();
+    if (before_hash != after_hash) {
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: hash mismatch before=%08x after=%08x\n",
+                (unsigned)before_hash, (unsigned)after_hash);
+        return 1;
+    }
+    if (g_story_battle_active != 0 || g_story_duel_index != 3 ||
+        g_story_map_cursor != 1 || g_story_pyramid_cursor != 2 || g_story_plaza_line != 5 ||
+        g_story_deck_count != STORY_DECK_SIZE || g_story_storage_count != 9) {
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: bad loaded state state=%d story=%d duel=%d map=%d pyramid=%d plaza=%d deck=%d storage=%d\n",
+                (int)g_i_state, g_story_battle_active, g_story_duel_index, g_story_map_cursor,
+                g_story_pyramid_cursor, g_story_plaza_line, g_story_deck_count, g_story_storage_count);
+        return 1;
+    }
+    if (!load_story_to_map() || g_i_state != WAIFU_I_STORY_MAP || g_story_save_status != 1) {
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: load_story_to_map state=%d status=%d\n",
+                (int)g_i_state, g_story_save_status);
+        return 1;
+    }
+    printf("REGRESSION story_save_roundtrip OK hash=%08x duel=%d deck=%d storage=%d save_exists=%d\n",
+           (unsigned)after_hash, g_story_duel_index, g_story_deck_count, g_story_storage_count,
+           story_save_exists());
+    return 0;
+#else
+    fprintf(stderr, "REGRESSION story_save_roundtrip SKIP: use PC-FX BackupRAM smoke for WAIFU_FM_PCFX builds\n");
+    return 0;
+#endif
+}
+
+static int debug_regression_story_duel_loads(void)
+{
+    int prev_loaded = 0;
+    int ok = 1;
+    waifu_fm_reset_interactive();
+    waifu_assets_reset();
+    generate_story_starter_deck();
+    generate_story_storage_pool();
+    for (int duel = 0; duel < STORY_MAX_DUELS; ++duel) {
+        int guard;
+        g_story_duel_index = duel;
+        g_story_map_cursor = 1;
+        g_story_plaza_line = 0;
+        g_story_battle_active = 0;
+        init_story_battle_state();
+        enter_battle_after_assets();
+        for (guard = 0; guard < 720 && (g_i_state == WAIFU_I_LOADING_ASSETS || !waifu_assets_ready()); ++guard) {
+            WaifuFmInput in;
+            memset(&in, 0, sizeof(in));
+            waifu_fm_step(&in);
+        }
+        for (int settle = 0; settle < 8; ++settle) {
+            WaifuFmInput in;
+            memset(&in, 0, sizeof(in));
+            waifu_fm_step(&in);
+        }
+        if (g_i_state != WAIFU_I_BATTLE || !waifu_assets_ready() || !waifu_assets_ram_budget_ok() ||
+            !g_story_battle_active || g_story_duel_index != duel || g_story_deck_count != STORY_DECK_SIZE ||
+            g_i_com_deck.count <= 0 || g_i_player_deck.count <= 0 ||
+            waifu_assets_big_art_cache_loaded_count() < prev_loaded) {
+            fprintf(stderr, "REGRESSION story_duel_loads FAIL duel=%d state=%d ready=%d budget_ok=%d story=%d loaded=%d prev=%d pdeck=%d cdeck=%d\n",
+                    duel, (int)g_i_state, waifu_assets_ready(), waifu_assets_ram_budget_ok(),
+                    g_story_battle_active, waifu_assets_big_art_cache_loaded_count(), prev_loaded,
+                    g_i_player_deck.count, g_i_com_deck.count);
+            ok = 0;
+            break;
+        }
+        prev_loaded = waifu_assets_big_art_cache_loaded_count();
+        printf("REGRESSION story_duel_loads duel=%d opponent=%s state=%d phase=%d cache=%d/%d ram=%lu high=%lu lp=%d OK\n",
+               duel, story_opponent_name(), (int)g_i_state, (int)g_b_phase,
+               waifu_assets_big_art_cache_loaded_count(), waifu_assets_big_art_cache_slot_count(),
+               (unsigned long)waifu_assets_ram_used_bytes(),
+               (unsigned long)waifu_assets_ram_high_water_bytes(), g_com_lp);
+    }
+    if (!ok) return 1;
+    printf("REGRESSION story_duel_loads OK duels=%d final_cache=%d/%d high=%lu budget=%lu\n",
+           STORY_MAX_DUELS,
+           waifu_assets_big_art_cache_loaded_count(), waifu_assets_big_art_cache_slot_count(),
+           (unsigned long)waifu_assets_ram_high_water_bytes(),
+           (unsigned long)waifu_assets_ram_budget_bytes());
+    return 0;
+}
+
+static int debug_regression_card_check_cache_no_cd(void)
+{
+#if defined(WAIFU_ASSET_USE_CDROM)
+    WaifuFmInput in;
+    unsigned long reads_after_load;
+    unsigned long reads_after_preview;
+    int guard;
+
+    memset(&in, 0, sizeof(in));
+    waifu_fm_reset_interactive();
+    waifu_assets_reset();
+    init_battle_state();
+    request_battle_cards_for_known_decks();
+    enter_state_after_assets(WAIFU_I_BATTLE);
+    for (guard = 0; guard < 1800 && (g_i_state == WAIFU_I_LOADING_ASSETS || !waifu_assets_ready()); ++guard) {
+        waifu_fm_step(&in);
+    }
+    if (g_i_state != WAIFU_I_BATTLE || !waifu_assets_ready()) {
+        fprintf(stderr, "REGRESSION card_check_cache_no_cd FAIL: battle did not finish loading state=%d ready=%d guard=%d\n",
+                (int)g_i_state, waifu_assets_ready(), guard);
+        return 1;
+    }
+    if (waifu_assets_big_art_cache_loaded_count() < WAIFU_CARD_COUNT ||
+        !waifu_assets_support_big_art_loaded()) {
+        fprintf(stderr, "REGRESSION card_check_cache_no_cd FAIL: cache incomplete cards=%d/%d support=%d\n",
+                waifu_assets_big_art_cache_loaded_count(), WAIFU_CARD_COUNT,
+                waifu_assets_support_big_art_loaded());
+        return 1;
+    }
+
+    waifu_assets_debug_reset_platform_read_count();
+    set_battle_phase(IB_CARD_PREVIEW);
+    g_b_selected_hand = next_live_hand_index(0, 1);
+    for (int f = 0; f < 90; ++f) {
+        waifu_fm_step(&in);
+    }
+    reads_after_load = waifu_assets_debug_platform_read_count();
+
+    /* Also hit a card that is not guaranteed to be in the current hand/decks,
+       mirroring fusion/story preview misses.  It must already be resident after
+       the all-monster prewarm, so repeated card-check rendering cannot touch CD. */
+    g_deck_preview_card = WAIFU_CARD_COUNT - 1;
+    g_i_state = WAIFU_I_DECK_PREVIEW;
+    g_i_frame = -1;
+    for (int f = 0; f < 90; ++f) {
+        waifu_fm_step(&in);
+    }
+    reads_after_preview = waifu_assets_debug_platform_read_count();
+
+    if (reads_after_preview != 0 || reads_after_load != 0) {
+        fprintf(stderr, "REGRESSION card_check_cache_no_cd FAIL: card-check render performed CD reads hand=%lu total=%lu\n",
+                reads_after_load, reads_after_preview);
+        return 1;
+    }
+    printf("REGRESSION card_check_cache_no_cd OK cache=%d/%d support=%d cd_reads_during_preview=%lu\n",
+           waifu_assets_big_art_cache_loaded_count(), waifu_assets_big_art_cache_slot_count(),
+           waifu_assets_support_big_art_loaded(), reads_after_preview);
+    return 0;
+#else
+    printf("REGRESSION card_check_cache_no_cd SKIP: CD-ROM asset backend not enabled\n");
+    return 0;
+#endif
+}
+
+static int debug_regression_result_music_tracks(void)
+{
+    waifu_fm_reset_interactive();
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+
+    g_b_result = 1;
+    set_battle_phase(IB_RESULT);
+    if (waifu_sound_music_track() != WAIFU_MUSIC_RANDOM_BATTLE) {
+        fprintf(stderr, "REGRESSION result_music_tracks FAIL: victory preclear music=%d\n",
+                (int)waifu_sound_music_track());
+        return 1;
+    }
+    g_b_phase_frame = WAIFU_RESULT_UI_CLEAR_FRAMES;
+    update_music_for_current_state();
+    if (waifu_sound_music_track() != WAIFU_MUSIC_RESULTS) {
+        fprintf(stderr, "REGRESSION result_music_tracks FAIL: victory music=%d\n",
+                (int)waifu_sound_music_track());
+        return 1;
+    }
+
+    g_b_result = -1;
+    set_battle_phase(IB_RESULT);
+    if (waifu_sound_music_track() != WAIFU_MUSIC_RANDOM_BATTLE) {
+        fprintf(stderr, "REGRESSION result_music_tracks FAIL: loss preclear music=%d\n",
+                (int)waifu_sound_music_track());
+        return 1;
+    }
+    g_b_phase_frame = WAIFU_RESULT_UI_CLEAR_FRAMES;
+    update_music_for_current_state();
+    if (waifu_sound_music_track() != WAIFU_MUSIC_LOST) {
+        fprintf(stderr, "REGRESSION result_music_tracks FAIL: loss music=%d\n",
+                (int)waifu_sound_music_track());
+        return 1;
+    }
+
+    printf("REGRESSION result_music_tracks OK preclear=%d victory=%d loss=%d\n",
+           (int)WAIFU_MUSIC_RANDOM_BATTLE, (int)WAIFU_MUSIC_RESULTS, (int)WAIFU_MUSIC_LOST);
+    return 0;
+}
+
+#endif /* WAIFU_FM_HEADLESS_TESTS */
 
 static void debug_setup_asset_load_demo(const char *name)
 {
@@ -9413,6 +9966,10 @@ int main(int argc, char **argv)
     const char *fusion_equip_scenario = NULL;
     const char *music_demo_state = NULL;
     const char *asset_load_demo = NULL;
+    int regression_story_save = 0;
+    int regression_story_duels = 0;
+    int regression_card_check = 0;
+    int regression_result_music = 0;
     CommandEvent events[MAX_COMMAND_EVENTS];
     int event_count = 0;
     int f;
@@ -9433,6 +9990,13 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--fusion-equip-scenario") && i + 1 < argc) fusion_equip_scenario = argv[++i];
         else if (!strcmp(argv[i], "--music-demo-state") && i + 1 < argc) music_demo_state = argv[++i];
         else if (!strcmp(argv[i], "--asset-load-demo") && i + 1 < argc) asset_load_demo = argv[++i];
+#ifdef WAIFU_FM_HEADLESS_TESTS
+        else if (!strcmp(argv[i], "--regression-story-save")) regression_story_save = 1;
+        else if (!strcmp(argv[i], "--regression-story-duels")) regression_story_duels = 1;
+        else if (!strcmp(argv[i], "--regression-card-check-cache")) regression_card_check = 1;
+        else if (!strcmp(argv[i], "--regression-result-music")) regression_result_music = 1;
+        else if (!strcmp(argv[i], "--regression-story-all")) { regression_story_save = 1; regression_story_duels = 1; regression_card_check = 1; regression_result_music = 1; }
+#endif
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
         else if (!strcmp(argv[i], "--profile-render")) g_profile_render_enabled = 1;
 #endif
@@ -9443,6 +10007,17 @@ int main(int argc, char **argv)
     if (dump_every < 1) dump_every = 1;
 
     waifu_fm_init();
+
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music) {
+        int rc = 0;
+        if (regression_story_save) rc |= debug_regression_story_save_roundtrip();
+        if (regression_story_duels) rc |= debug_regression_story_duel_loads();
+        if (regression_card_check) rc |= debug_regression_card_check_cache_no_cd();
+        if (regression_result_music) rc |= debug_regression_result_music_tracks();
+        return rc ? 1 : 0;
+    }
+#endif
 
     if (showcase) {
         write_showcase(out_dir);
@@ -9544,7 +10119,7 @@ int main(int argc, char **argv)
                g_story_deck_count, g_story_storage_count, story_deck_max_card_copies(), g_deck_tab, g_deck_cursor,
                g_story_duel_index, g_story_map_cursor, g_story_pyramid_cursor, g_story_plaza_line,
                g_story_editor_from_pyramid, g_story_save_status, story_save_exists(), story_opponent_name());
-        printf("asset_backend=%s asset_req=%s asset_ready=%d title_ready=%d cards_ready=%d serena_ready=%d opp_ready=%d asset_ram=%lu asset_high=%lu asset_budget=%lu asset_budget_ok=%d ",
+        printf("asset_backend=%s asset_req=%s asset_ready=%d title_ready=%d cards_ready=%d serena_ready=%d opp_ready=%d asset_ram=%lu asset_high=%lu asset_budget=%lu asset_budget_ok=%d bigcache_loaded=%d bigcache_slots=%d ",
                waifu_assets_backend_name(), waifu_assets_request_name(waifu_assets_pending_request()),
                waifu_assets_ready(), waifu_assets_title_ready(), waifu_assets_cards_ready(),
                waifu_assets_story_portrait_ready(STORY_PORTRAIT_SERENA),
@@ -9552,7 +10127,9 @@ int main(int argc, char **argv)
                (unsigned long)waifu_assets_ram_used_bytes(),
                (unsigned long)waifu_assets_ram_high_water_bytes(),
                (unsigned long)waifu_assets_ram_budget_bytes(),
-               waifu_assets_ram_budget_ok());
+               waifu_assets_ram_budget_ok(),
+               waifu_assets_big_art_cache_loaded_count(),
+               waifu_assets_big_art_cache_slot_count());
         printf("hand0=%d hand1=%d hand2=%d hand3=%d hand4=%d used0=%d used1=%d used2=%d used3=%d used4=%d fusion_count=%d fusion0=%d fusion1=%d fusion2=%d fusion3=%d fusion4=%d deck_pos=%d deck_left=%d\n",
                g_i_player_hand[0], g_i_player_hand[1], g_i_player_hand[2], g_i_player_hand[3], g_i_player_hand[4],
                g_i_player_used[0], g_i_player_used[1], g_i_player_used[2], g_i_player_used[3], g_i_player_used[4],

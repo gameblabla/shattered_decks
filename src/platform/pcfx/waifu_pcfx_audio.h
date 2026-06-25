@@ -14,6 +14,8 @@ void waifu_pcfx_audio_destroy(WaifuPcfxAudio *audio);
 void waifu_pcfx_audio_set_music(WaifuPcfxAudio *audio, WaifuFmMusicTrack track);
 void waifu_pcfx_audio_pump(WaifuPcfxAudio *audio);
 void waifu_pcfx_audio_stop_all(WaifuPcfxAudio *audio);
+int waifu_pcfx_adpcm_samples_load(void);
+void waifu_pcfx_adpcm_sample_play(int effect);
 
 #ifdef __cplusplus
 }

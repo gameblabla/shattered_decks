@@ -2,6 +2,8 @@
 import os, wave, textwrap
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'assets', 'sounds')
+if not os.path.exists(os.path.join(SRC, 'Select.wav')):
+    SRC = os.path.join(ROOT, 'sounds')
 OUT = os.path.join(ROOT, 'src', 'generated', 'sound_assets.h')
 SOUNDS = [
     ('SELECT', 'Select.wav'),
@@ -10,7 +12,8 @@ SOUNDS = [
     ('CARD_PLACED', 'CardPlaced.wav'),
     ('CARD_DESTROYED', 'CardDestroyed.wav'),
     ('TURN_PASSED', 'TurnPassed.wav'),
-    ('YOU_LOST', 'Youlost.wav'),
+    # Youlost is PC-FX CD-DA now; keep enum slot silent in PCM table.
+    ('YOU_LOST', None),
     ('LASER_SHOOT', 'laserShoot.wav'),
 ]
 
@@ -41,6 +44,9 @@ def main():
         f.write('#define WAIFU_SOUND_ASSET_RATE 44100\n\n')
         lengths = []
         for name, filename in SOUNDS:
+            if filename is None:
+                lengths.append((name, 0))
+                continue
             data = read_wav(os.path.join(SRC, filename))
             lengths.append((name, len(data)))
             emit_array(f, name, data)
@@ -50,7 +56,10 @@ def main():
         f.write('} WaifuSoundAsset;\n\n')
         f.write('static const WaifuSoundAsset waifu_sound_assets[] = {\n')
         for name, length in lengths:
-            f.write(f'    {{ {ident(name)}_pcm, {length} }},\n')
+            if length <= 0:
+                f.write('    { 0, 0 },\n')
+            else:
+                f.write(f'    {{ {ident(name)}_pcm, {length} }},\n')
         f.write('};\n\n')
         f.write('#endif /* WAIFU_FM_SOUND_ASSETS_H */\n')
 

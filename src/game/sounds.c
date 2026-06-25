@@ -2,7 +2,9 @@
 
 #include <string.h>
 
+#if !defined(WAIFU_FM_PCFX)
 #include "sound_assets.h"
+#endif
 
 #define WAIFU_SOUND_MAX_VOICES 16
 #define WAIFU_SOUND_MASTER_NUM 3
@@ -11,6 +13,10 @@
 #define WAIFU_SOUND_SFX_GAIN_DEN 1
 #define WAIFU_SOUND_MUSIC_GAIN_NUM 1
 #define WAIFU_SOUND_MUSIC_GAIN_DEN 2
+
+#if defined(WAIFU_FM_PCFX)
+extern void waifu_pcfx_sfx_play(int effect);
+#endif
 
 typedef struct WaifuSoundVoice {
     int active;
@@ -29,6 +35,25 @@ static int16_t clamp_s16(int v)
     return (int16_t)v;
 }
 
+#if defined(WAIFU_FM_PCFX)
+static int asset_count(void)
+{
+    return WAIFU_SOUND_EFFECT_COUNT;
+}
+
+static int asset_length(WaifuSoundEffect effect)
+{
+    (void)effect;
+    return 0;
+}
+
+static int16_t asset_sample_s16(WaifuSoundEffect effect, int pos)
+{
+    (void)effect;
+    (void)pos;
+    return 0;
+}
+#else
 static int asset_count(void)
 {
     return (int)(sizeof(waifu_sound_assets) / sizeof(waifu_sound_assets[0]));
@@ -51,6 +76,8 @@ static int asset_length(WaifuSoundEffect effect)
     return waifu_sound_assets[(int)effect].frame_count;
 }
 
+#endif
+
 typedef struct WaifuMusicPattern {
     const uint16_t *notes;
     int note_count;
@@ -66,6 +93,7 @@ static const uint16_t music_boss_notes[]         = {196, 196, 233, 196, 262, 233
 static const uint16_t music_final_boss_notes[]   = {147, 196, 147, 220, 165, 247, 196, 294};
 static const uint16_t music_random_battle_notes[]= {392, 440, 494, 587, 494, 440, 392, 330};
 static const uint16_t music_results_notes[]      = {523, 659, 784, 1047, 784, 659, 587, 523};
+static const uint16_t music_lost_notes[]         = {220, 196, 165, 147, 131, 147, 165, 196};
 
 static const WaifuMusicPattern *music_pattern_for_track(WaifuMusicTrack track)
 {
@@ -76,6 +104,7 @@ static const WaifuMusicPattern *music_pattern_for_track(WaifuMusicTrack track)
     static const WaifuMusicPattern final_boss = {music_final_boss_notes,    8, WAIFU_SOUND_SAMPLE_RATE / 8, 1300, 1};
     static const WaifuMusicPattern battle     = {music_random_battle_notes, 8, WAIFU_SOUND_SAMPLE_RATE / 7, 1000, 2};
     static const WaifuMusicPattern results    = {music_results_notes,       8, WAIFU_SOUND_SAMPLE_RATE / 4,  900, 2};
+    static const WaifuMusicPattern lost       = {music_lost_notes,          8, WAIFU_SOUND_SAMPLE_RATE / 4,  900, 3};
     switch (track) {
     case WAIFU_MUSIC_TITLE: return &title;
     case WAIFU_MUSIC_OPENING_DREAM: return &dream;
@@ -84,6 +113,7 @@ static const WaifuMusicPattern *music_pattern_for_track(WaifuMusicTrack track)
     case WAIFU_MUSIC_FINAL_BOSS: return &final_boss;
     case WAIFU_MUSIC_RANDOM_BATTLE: return &battle;
     case WAIFU_MUSIC_RESULTS: return &results;
+    case WAIFU_MUSIC_LOST: return &lost;
     default: return NULL;
     }
 }
@@ -163,12 +193,17 @@ const char *waifu_sound_music_name(WaifuMusicTrack track)
     case WAIFU_MUSIC_FINAL_BOSS: return "final_boss";
     case WAIFU_MUSIC_RANDOM_BATTLE: return "random_battle";
     case WAIFU_MUSIC_RESULTS: return "results";
+    case WAIFU_MUSIC_LOST: return "lost";
     default: return "none";
     }
 }
 
 void waifu_sound_play(WaifuSoundEffect effect)
 {
+#if defined(WAIFU_FM_PCFX)
+    if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return;
+    waifu_pcfx_sfx_play((int)effect);
+#else
     int i;
     int best = -1;
     if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return;
@@ -193,6 +228,7 @@ void waifu_sound_play(WaifuSoundEffect effect)
     g_voices[best].active = 1;
     g_voices[best].effect = effect;
     g_voices[best].pos = 0;
+#endif
 }
 
 void waifu_sound_mix_s16(int16_t *dst, int frames)
@@ -235,7 +271,9 @@ const char *waifu_sound_effect_name(WaifuSoundEffect effect)
     case WAIFU_SOUND_CARD_DESTROYED: return "CardDestroyed";
     case WAIFU_SOUND_TURN_PASSED: return "TurnPassed";
     case WAIFU_SOUND_YOU_LOST: return "Youlost";
-    case WAIFU_SOUND_LASER_SHOOT: return "laserShoot";
+    case WAIFU_SOUND_LASER_SHOOT: return "AttackImpact";
+    case WAIFU_SOUND_DIRECT_HIT: return "DirectHit";
+    case WAIFU_SOUND_CARD_DRAWN: return "CardDrawn";
     default: return "Unknown";
     }
 }
