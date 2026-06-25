@@ -123,7 +123,7 @@ $(OBJDIR)/cdlink.generated.txt: $(BIN_TARGET)
 	} > $@
 
 clean-output:
-	rm -f $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin lbas.h cdda_tracks.h
+	rm -f $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin waifupcfx_pyramid.cue lbas.h cdda_tracks.h
 
 cd: clean-output toolchain-check $(PCFX_CDLINK) $(CD_ASSETS)
 	# Pass 1: build without lbas.h/cdda_tracks.h, run cdlink to generate both headers
@@ -138,9 +138,9 @@ cd: clean-output toolchain-check $(PCFX_CDLINK) $(CD_ASSETS)
 	$(MAKE) -f Makefile.pcfx program PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
 	$(MAKE) -f Makefile.pcfx $(OBJDIR)/cdlink.generated.txt PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
 	$(PCFX_CDLINK) $(OBJDIR)/cdlink.generated.txt $(CDOUT)
-
+	
 clean-build:
 	rm -rf $(OBJDIR) out.bin
 
 clean:
-	rm -rf $(OBJDIR) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin out.bin lbas.h cdda_tracks.h
+	rm -rf $(OBJDIR) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin waifupcfx_pyramid.cue out.bin lbas.h cdda_tracks.h

@@ -2732,9 +2732,11 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     if (maxy >= H) maxy = H - 1;
     den = (pb.y - pc.y) * (pa.x - pc.x) + (pc.x - pb.x) * (pa.y - pc.y);
     if (den == 0) return;
-    /* Do not screen-winding cull here.  The story pyramid/volcano face order is
-       already painter-sorted, and the projected winding flips with camera angle
-       and base-edge order on PC-FX, which can reject every visible face. */
+    /* Backface cull.  The pyramid is convex, so its back faces are fully occluded
+       by the front faces and contribute nothing to the final image -- skipping
+       them is pixel-identical and roughly HALVES the rasterized pixels.  Front
+       faces share one winding sign; the back faces have den < 0. */
+    if (den < 0) return;
     init_repeat_texel_q8();
     {
     /* Fully incremental affine textured triangle (envmap drawTriangle method): the
@@ -3690,17 +3692,6 @@ static void draw_asset_loading_screen(void)
     draw_centered_text(119, line, IDX_UI_LIGHT, IDX_BLACK);
 }
 
-#ifdef WAIFU_FM_PCFX
-static void draw_pcfx_backup_loading_screen(void)
-{
-    waifu_fm_use_common_palette();
-    clear_screen(IDX_BLACK);
-    draw_centered_text(102, "LOADING...", IDX_WHITE, IDX_BLACK);
-    draw_centered_text(119, "BACKUP RAM", IDX_UI_LIGHT, IDX_BLACK);
-    frame_mark_full_dirty();
-}
-#endif
-
 static void draw_transition_black_hold_frame(void)
 {
     /* Terminal title/menu fade frame.  Use the common 8bpp path and a full
@@ -4251,7 +4242,6 @@ typedef enum WaifuInteractiveState {
 #ifdef WAIFU_FM_PCFX
     /* PC-FX only: pick which backup device (internal / FX-BMP) to load from. */
     WAIFU_I_STORY_LOAD_DEVICE,
-    WAIFU_I_STORY_LOAD_TO_MAP,
 #endif
 } WaifuInteractiveState;
 
@@ -4310,7 +4300,6 @@ static int g_i_frame = 0;
 static int g_i_menu_selected = 0;
 #ifdef WAIFU_FM_PCFX
 static int g_i_load_device_sel = 0; /* 0 internal, 1 FX-BMP, 2 back */
-static int g_i_load_device_pending = 0;
 #endif
 static WaifuFmInput g_prev_input;
 
@@ -5929,19 +5918,8 @@ static void begin_story_load(void)
 {
 #ifdef WAIFU_FM_PCFX
     g_i_load_device_sel = 0;
-    g_i_load_device_pending = 0;
-    if (story_save_exists_device(0)) {
-        waifu_pcfx_video_overlay_clear();
-        g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
-        g_i_frame = -1;
-    } else if (story_save_exists_device(1)) {
-        g_i_load_device_pending = 1;
-        waifu_pcfx_video_overlay_clear();
-        g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
-        g_i_frame = -1;
-    } else {
-        g_story_save_status = -1;
-    }
+    g_i_state = WAIFU_I_STORY_LOAD_DEVICE;
+    g_i_frame = -1;
 #else
     if (!load_story_to_map()) g_deck_flash = 60;
 #endif
@@ -6091,21 +6069,56 @@ static WaifuMusicTrack story_battle_music_track(void)
     return WAIFU_MUSIC_RANDOM_BATTLE;
 }
 
+static WaifuMusicTrack music_track_for_loading_target(void)
+{
+#ifdef WAIFU_FM_PCFX
+    /* CD data reads stop CD-DA on PC-FX, but asking for WAIFU_MUSIC_NONE during
+       a loading/interstitial state makes the audio layer issue a real STOP and
+       can leave the drive silent after the load.  Keep the intended destination
+       music armed instead; the CD-DA pump will restart it once reads settle. */
+    switch (g_i_loading_target) {
+    case WAIFU_I_TITLE:
+    case WAIFU_I_TITLE_TO_MENU:
+    case WAIFU_I_MENU:
+    case WAIFU_I_MENU_TO_STORY:
+    case WAIFU_I_MENU_TO_BATTLE:
+    case WAIFU_I_STORY_LOAD_DEVICE:
+        return WAIFU_MUSIC_TITLE;
+    case WAIFU_I_STORY_NAME:
+    case WAIFU_I_STORY_NAME_TO_INTRO:
+    case WAIFU_I_STORY_INTRO:
+    case WAIFU_I_STORY_FIRE:
+    case WAIFU_I_STORY_FIRE_TO_DECK:
+    case WAIFU_I_STORY_MAP:
+    case WAIFU_I_STORY_PYRAMID:
+    case WAIFU_I_STORY_SAVE:
+    case WAIFU_I_STORY_TO_PLAZA:
+    case WAIFU_I_STORY_PLAZA:
+        return WAIFU_MUSIC_OPENING_DREAM;
+    case WAIFU_I_DECK_EDITOR:
+    case WAIFU_I_DECK_PREVIEW:
+        return WAIFU_MUSIC_DECK_EDITOR;
+    case WAIFU_I_BATTLE:
+        return story_battle_music_track();
+    default:
+        return waifu_sound_music_track();
+    }
+#else
+    return WAIFU_MUSIC_NONE;
+#endif
+}
+
 static WaifuMusicTrack music_track_for_current_state(void)
 {
     switch (g_i_state) {
     case WAIFU_I_LOADING_ASSETS:
-        return WAIFU_MUSIC_NONE;
+        return music_track_for_loading_target();
     case WAIFU_I_TITLE:
-        if (g_i_frame < 0 || !waifu_assets_title_ready()) return WAIFU_MUSIC_NONE;
-        return WAIFU_MUSIC_TITLE;
     case WAIFU_I_TITLE_TO_MENU:
     case WAIFU_I_MENU:
     case WAIFU_I_MENU_TO_STORY:
     case WAIFU_I_MENU_TO_BATTLE:
 #ifdef WAIFU_FM_PCFX
-    case WAIFU_I_STORY_LOAD_TO_MAP:
-        return WAIFU_MUSIC_NONE;
     case WAIFU_I_STORY_LOAD_DEVICE:
 #endif
         return WAIFU_MUSIC_TITLE;
@@ -8903,14 +8916,14 @@ static void draw_story_pyramid_menu(void)
     clear_screen(IDX_BLACK);
     draw_story_sky();
     draw_story_scene_3d(g_i_frame);
-    draw_panel_rect(126, 46, 121, 156, IDX_UI_DARK);
-    draw_text(158, 57, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(136, 78, 100, 4, 9, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
-    draw_text(151, 132, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(151, 152, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(151, 172, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(137, 132 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
-    draw_text_small(11, 226, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
+    draw_panel_rect(34, 46, 188, 130, IDX_UI_DARK);
+    draw_centered_text(57, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
+    draw_wrapped_text_small_box(48, 75, 158, 3, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
+    draw_text(72, 114, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(72, 134, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(72, 154, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(58, 114 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
+    draw_text_small(49, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_story_save_screen(void)
@@ -9017,10 +9030,6 @@ void waifu_fm_step(const WaifuFmInput *input)
 {
     WaifuFmInput zero;
     int press_up, press_down, press_left, press_right, press_a, press_b, press_start, press_tab;
-#ifdef WAIFU_FM_PCFX
-    int suppress_confirm_sound = 0;
-    int suppress_confirm_alt_sound = 0;
-#endif
 
     waifu_fm_init();
     waifu_assets_big_art_draw_queue_reset();
@@ -9040,25 +9049,21 @@ void waifu_fm_step(const WaifuFmInput *input)
     press_start = input_pressed(input->start, g_prev_input.start);
     press_tab = input_pressed(input->tab, g_prev_input.tab);
 
-#ifdef WAIFU_FM_PCFX
-    if (g_i_state == WAIFU_I_STORY_LOAD_DEVICE && press_a && g_i_load_device_sel != 2) {
-        suppress_confirm_sound = 1;
-    }
-    if (g_i_state == WAIFU_I_STORY_LOAD_DEVICE && press_start && g_i_load_device_sel != 2) {
-        suppress_confirm_alt_sound = 1;
-    }
-#endif
     if (press_up || press_down || press_left || press_right) waifu_sound_play(WAIFU_SOUND_SELECT);
-    if (press_a
 #ifdef WAIFU_FM_PCFX
-        && !suppress_confirm_sound
+    /* RUN/START on the title is the same user intent as A: confirm/start the
+       game.  Route it to the 037-style confirm PSG effect, not the 038-style
+       exit/cancel effect. */
+    if (g_i_state == WAIFU_I_TITLE && (press_a || press_start)) {
+        waifu_sound_play(WAIFU_SOUND_CONFIRM);
+    } else {
+        if (press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
+        if (press_start || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
+    }
+#else
+    if (press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
+    if (press_start || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
 #endif
-    ) waifu_sound_play(WAIFU_SOUND_CONFIRM);
-    if ((press_start || press_b || press_tab)
-#ifdef WAIFU_FM_PCFX
-        && !suppress_confirm_alt_sound
-#endif
-    ) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
 
     switch (g_i_state) {
     case WAIFU_I_LOADING_ASSETS:
@@ -9099,28 +9104,23 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_MENU:
-    {
 #ifdef WAIFU_FM_PCFX
-        int pcfx_load_confirm_level = 0;
+    {
         int old_menu_selected = g_i_menu_selected;
 #endif
         if (press_up) g_i_menu_selected = (g_i_menu_selected + 2) % 3;
         if (press_down) g_i_menu_selected = (g_i_menu_selected + 1) % 3;
 #ifdef WAIFU_FM_PCFX
-        pcfx_load_confirm_level = (g_i_menu_selected == 2 && (input->a || input->start));
         if (g_i_frame <= 0 || old_menu_selected != g_i_menu_selected) {
             draw_menu_screen_event(g_i_menu_selected, g_i_frame <= 0);
         } else {
             waifu_fm_use_title_palette();
         }
+    }
 #else
         draw_menu_screen(g_i_menu_selected);
 #endif
-        if (press_start || press_a
-#ifdef WAIFU_FM_PCFX
-            || pcfx_load_confirm_level
-#endif
-        ) {
+        if (press_start || press_a) {
             if (g_i_menu_selected == 0) {
                 reset_story_entry();
                 enter_menu_to_story_fade();
@@ -9131,7 +9131,6 @@ void waifu_fm_step(const WaifuFmInput *input)
                 begin_story_load();
             }
         }
-    }
         break;
 
     case WAIFU_I_MENU_TO_STORY:
@@ -9164,15 +9163,11 @@ void waifu_fm_step(const WaifuFmInput *input)
            is drawn on the front VDC overlay layer, like the main menu. */
         int internal_has = story_save_exists_device(0);
         int external_has = story_save_exists_device(1);
-        int load_device_confirm = press_a || press_start;
         if (press_up) g_i_load_device_sel = (g_i_load_device_sel + 2) % 3;
         if (press_down) g_i_load_device_sel = (g_i_load_device_sel + 1) % 3;
         waifu_fm_use_title_palette();
         waifu_pcfx_video_overlay_load_menu(g_i_load_device_sel, internal_has, external_has);
-        if (!load_device_confirm && g_i_frame >= 8 && (input->a || input->start)) {
-            load_device_confirm = 1;
-        }
-        if (load_device_confirm) {
+        if (press_a || press_start) {
             if (g_i_load_device_sel == 2) {
                 /* BACK: return to the standard menu. */
                 g_i_state = WAIFU_I_MENU;
@@ -9181,10 +9176,12 @@ void waifu_fm_step(const WaifuFmInput *input)
                 int ext = g_i_load_device_sel; /* 0 internal, 1 external */
                 int has = ext ? external_has : internal_has;
                 if (has) {
-                    g_i_load_device_pending = ext;
                     waifu_pcfx_video_overlay_clear();
-                    g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
-                    g_i_frame = -1;
+                    if (!load_story_device_to_map(ext)) {
+                        /* Read failed unexpectedly; fall back to the menu. */
+                        g_i_state = WAIFU_I_MENU;
+                        g_i_frame = -1;
+                    }
                 }
                 /* No save on the chosen device: stay so the player can pick
                    the other one or BACK. */
@@ -9196,16 +9193,6 @@ void waifu_fm_step(const WaifuFmInput *input)
         }
         break;
     }
-
-    case WAIFU_I_STORY_LOAD_TO_MAP:
-        draw_pcfx_backup_loading_screen();
-        if (g_i_frame >= 8) {
-            int ext = g_i_load_device_pending;
-            if (!load_story_device_to_map(ext)) {
-                enter_menu_after_assets();
-            }
-        }
-        break;
 #endif
 
     case WAIFU_I_STORY_NAME:

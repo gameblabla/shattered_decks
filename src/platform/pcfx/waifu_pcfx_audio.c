@@ -45,7 +45,7 @@ struct WaifuPcfxAudio {
     uint8_t active_loop;             /* loop mode of the active play command */
     uint32_t active_seq;             /* cd-read seq at the moment we started it */
     uint32_t last_read_seq;          /* cd-read seq seen on the previous pump */
-    uint8_t silence_stop_frames;     /* force STOP briefly after entering silence */
+    uint8_t silence_stop_frames;     /* short CD-DA STOP retry after entering true silence */
 };
 
 static WaifuPcfxAudio g_audio;
@@ -630,14 +630,17 @@ void waifu_pcfx_sfx_play(int effect)
 
     switch ((WaifuSoundEffect)effect) {
     case WAIFU_SOUND_SELECT:
+        waifu_pcfx_cdda_request_duck(10u);
         psg_start_sequence(0, 0, g_sfx_select_a, PSG_COUNT(g_sfx_select_a));
         psg_start_sequence(1, 1, g_sfx_select_b, PSG_COUNT(g_sfx_select_b));
         break;
     case WAIFU_SOUND_CONFIRM:
+        waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
         psg_start_sequence(0, 0, g_sfx_confirm_a, PSG_COUNT(g_sfx_confirm_a));
         psg_start_sequence(1, 1, g_sfx_confirm_b, PSG_COUNT(g_sfx_confirm_b));
         break;
     case WAIFU_SOUND_CONFIRM_ALT:
+        waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
         psg_start_sequence(0, 0, g_sfx_cancel_a, PSG_COUNT(g_sfx_cancel_a));
         psg_start_sequence(1, 1, g_sfx_cancel_b, PSG_COUNT(g_sfx_cancel_b));
         break;
@@ -736,6 +739,7 @@ WaifuPcfxAudio *waifu_pcfx_audio_create(void)
     g_audio.active_loop = WAIFU_CDDA_LOOP;
     g_audio.active_seq = 0;
     g_audio.last_read_seq = waifu_pcfx_cd_read_seq();
+    g_audio.silence_stop_frames = 0;
     g_cdda_duck_frames = 0;
     g_turn_jingle_guard_frames = 0;
     g_cdda_mix_volume = 255u;
@@ -775,15 +779,17 @@ void waifu_pcfx_audio_pump(WaifuPcfxAudio *audio)
     waifu_pcfx_sfx_pump_psg();
     waifu_pcfx_cdda_pump_mix_volume();
 
-    /* Silence requested (e.g. loading screen): force-stop CD-DA and PSG
-       immediately, without deferring behind in-flight reads.  The short forced
-       STOP burst also covers emulator/state cases where the drive is playing
-       but active_track is not in sync yet. */
+    /* True silence requested: retry CD-DA pause briefly, but do not stop PSG.
+       Some BIOS/emulator states can leave the drive audible even when our
+       active_track mirror is already zero.  Conversely, stopping PSG here cuts
+       the title/menu confirm effects on the following frame, so this branch is
+       CD-DA-only.  Loading states that should keep or resume music no longer
+       map to WAIFU_MUSIC_NONE in src/main.c. */
     if (audio->desired_track == 0) {
-        waifu_pcfx_psg_stop_all();
         if (audio->active_track != 0 || audio->silence_stop_frames) {
             waifu_pcfx_cdda_stop();
             audio->active_track = 0;
+            audio->active_seq = seq;
             if (audio->silence_stop_frames) --audio->silence_stop_frames;
         }
         audio->last_read_seq = seq;
@@ -811,6 +817,7 @@ void waifu_pcfx_audio_pump(WaifuPcfxAudio *audio)
         audio->active_track = audio->desired_track;
         audio->active_loop = audio->desired_loop;
         audio->active_seq = seq;
+        audio->silence_stop_frames = 0;
     }
 }
 
