@@ -8946,6 +8946,19 @@ static void draw_story_scene_3d(int f)
     }
 }
 
+static void draw_story_sanctum_background(int centered_panel)
+{
+#ifdef WAIFU_FM_PCFX
+    waifu_pcfx_video_request_vdc_background(
+        centered_panel ? WAIFU_PCFX_VDC_BG_SANCTUM_SAVE : WAIFU_PCFX_VDC_BG_SANCTUM);
+    clear_screen(IDX_BLACK);
+#else
+    (void)centered_panel;
+    draw_story_sky();
+    draw_story_scene_3d(g_i_frame);
+#endif
+}
+
 static const char *story_scene_name(void)
 {
     switch (story_scene_kind()) {
@@ -9009,9 +9022,7 @@ static void draw_story_fire_to_deck_transition(int f)
 
 static void draw_story_pyramid_menu(void)
 {
-    clear_screen(IDX_BLACK);
-    draw_story_sky();
-    draw_story_scene_3d(g_i_frame);
+    draw_story_sanctum_background(0);
     draw_panel_rect(132, 42, 116, 138, IDX_UI_DARK);
     draw_text(158, 55, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
     draw_wrapped_text_small_box(143, 76, 92, 4, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
@@ -9024,9 +9035,7 @@ static void draw_story_pyramid_menu(void)
 
 static void draw_story_save_screen(void)
 {
-    clear_screen(IDX_BLACK);
-    draw_story_sky();
-    draw_story_scene_3d(g_i_frame);
+    draw_story_sanctum_background(1);
     draw_panel_rect(31, 78, 194, 82, IDX_UI_DARK);
     if (g_story_save_status < 0) {
         draw_centered_text(95, "SAVE FAILED", IDX_RED, IDX_BLACK);
@@ -9044,9 +9053,7 @@ static void draw_story_save_screen(void)
 #ifdef WAIFU_FM_PCFX
 static void draw_story_save_device_screen(void)
 {
-    clear_screen(IDX_BLACK);
-    draw_story_sky();
-    draw_story_scene_3d(g_i_frame);
+    draw_story_sanctum_background(0);
     draw_panel_rect(132, 54, 116, 116, IDX_UI_DARK);
     draw_text(157, 68, "SAVE TO", IDX_GOLD_HI, IDX_BLACK);
     draw_text(154, 104, "INTERNAL", g_i_save_device_sel == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);

@@ -1081,10 +1081,16 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_PAL_WHITE 0x02
 #define WAIFU_PCFX_VDC_PAL_GOLD  0x03
 #define WAIFU_PCFX_VDC_PAL_RED   0x04
+#define WAIFU_PCFX_VDC_SANCTUM_TILE_SKY     0x110
+#define WAIFU_PCFX_VDC_SANCTUM_TILE_SAND    0x111
+#define WAIFU_PCFX_VDC_SANCTUM_TILE_HORIZON 0x112
+#define WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK   0x113
 /* Fade tiles live immediately after the 64x32 BAT so tile 0 remains unusable
    for transparent blanks.  Each level is a screen-space black dither mask. */
 #define WAIFU_PCFX_VDC_FADE_TILE_BASE 0x080
 #define WAIFU_PCFX_VDC_FADE_LEVELS 17
+
+static WaifuPcfxVdcBackground g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
 
 typedef enum WaifuPcfxOverlayMode {
     WAIFU_PCFX_OVERLAY_OFF = 0,
@@ -1271,6 +1277,138 @@ static void pcfx_vdc_overlay_clear_rect(int tx, int ty, int w, int h)
 static void pcfx_vdc_overlay_clear_all(void)
 {
     pcfx_vdc_overlay_clear_rect(0, 0, WAIFU_PCFX_VDC_MAP_W, WAIFU_PCFX_VDC_MAP_H);
+}
+
+static void pcfx_vdc_sanctum_clear_rect(int tx, int ty, int w, int h)
+{
+    if (tx < 0) { w += tx; tx = 0; }
+    if (ty < 0) { h += ty; ty = 0; }
+    if (tx + w > WAIFU_PCFX_VDC_MAP_W) w = WAIFU_PCFX_VDC_MAP_W - tx;
+    if (ty + h > WAIFU_PCFX_VDC_MAP_H) h = WAIFU_PCFX_VDC_MAP_H - ty;
+    if (w <= 0 || h <= 0) return;
+
+    for (int row = 0; row < h; ++row) {
+        int addr = (ty + row) * WAIFU_PCFX_VDC_MAP_W + tx;
+        eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
+        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK);
+        eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
+        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK);
+    }
+}
+
+static void pcfx_vdc_restore_overlay_palette(void)
+{
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_BLACK, 0x0088);
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_WHITE, 0xE088);
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_GOLD,  0xB468);
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_RED,   0x5F0F);
+}
+
+static void pcfx_vdc_sanctum_upload_solid_tile(uint16_t tile, uint16_t vdc0_row)
+{
+    eris_low_sup_set_vram_write(VDC_CHIP_0, tile * 16);
+    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_0, vdc0_row);
+    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
+
+    eris_low_sup_set_vram_write(VDC_CHIP_1, tile * 16);
+    for (int row = 0; row < 16; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
+}
+
+static void pcfx_vdc_sanctum_upload_tiles(void)
+{
+    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_SKY, 0x00ff);
+    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_SAND, 0xff00);
+    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_HORIZON, 0xffff);
+    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK, 0x0000);
+}
+
+static void pcfx_vdc_sanctum_set_palette(void)
+{
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_BLACK, rgb888_to_pcfx_yuv(72, 162, 231));
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_WHITE, rgb888_to_pcfx_yuv(207, 169, 95));
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_GOLD,  rgb888_to_pcfx_yuv(234, 205, 137));
+}
+
+static void pcfx_vdc_sanctum_fill_map(WaifuPcfxVdcBackground bg)
+{
+    pcfx_vdc_sanctum_set_palette();
+
+    for (int row = 0; row < WAIFU_PCFX_VDC_MAP_H; ++row) {
+        uint16_t tile = WAIFU_PCFX_VDC_SANCTUM_TILE_SAND;
+        if (row < 14) tile = WAIFU_PCFX_VDC_SANCTUM_TILE_SKY;
+        else if (row == 14) tile = WAIFU_PCFX_VDC_SANCTUM_TILE_HORIZON;
+
+        eris_low_sup_set_vram_write(VDC_CHIP_0, row * WAIFU_PCFX_VDC_MAP_W);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, tile);
+        eris_low_sup_set_vram_write(VDC_CHIP_1, row * WAIFU_PCFX_VDC_MAP_W);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) {
+            eris_low_sup_vram_write(VDC_CHIP_1, 0);
+        }
+    }
+
+    /* VDC is mixed in front for this 2D background, so punch transparent tile
+       windows wherever the CPU framebuffer draws opaque menu panels and text. */
+    if (bg == WAIFU_PCFX_VDC_BG_SANCTUM_SAVE) {
+        pcfx_vdc_sanctum_clear_rect(3, 8, 26, 14);
+    } else {
+        pcfx_vdc_sanctum_clear_rect(14, 4, 18, 19);
+        pcfx_vdc_sanctum_clear_rect(15, 24, 17, 6);
+    }
+}
+
+static void pcfx_vdc_apply_sanctum_background(WaifuPcfxVideo *video, WaifuPcfxVdcBackground bg)
+{
+    if (!video) return;
+    if (video->vdc_bg == bg) {
+        pcfx_vdc_sanctum_set_palette();
+        eris_tetsu_set_priorities(7, 0, 6, 0, 0, 0, 0);
+        return;
+    }
+
+    video->vdc_overlay_ready = 0;
+    video->vdc_overlay_shutdown_countdown = 0;
+    g_vdc_overlay_dirty = 0;
+    g_vdc_overlay_applied_mode = WAIFU_PCFX_OVERLAY_OFF;
+    g_vdc_overlay_applied_fade_level = -1;
+
+    eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
+    eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
+    eris_low_sup_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
+    eris_low_sup_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
+    eris_low_sup_set_scroll(VDC_CHIP_0, 0, 0);
+    eris_low_sup_set_scroll(VDC_CHIP_1, 0, 0);
+    eris_low_sup_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+    eris_low_sup_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+    eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
+    eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
+
+    pcfx_vdc_sanctum_upload_tiles();
+    pcfx_vdc_sanctum_fill_map(bg);
+    eris_tetsu_set_priorities(7, 0, 6, 0, 0, 0, 0);
+    video->vdc_bg = bg;
+}
+
+static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
+{
+    if (!video || video->vdc_bg == WAIFU_PCFX_VDC_BG_NONE) return;
+    pcfx_vdc_sanctum_clear_rect(0, 0, WAIFU_PCFX_VDC_MAP_W, WAIFU_PCFX_VDC_MAP_H);
+    pcfx_vdc_restore_overlay_palette();
+    eris_tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
+    video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
+}
+
+static void pcfx_vdc_apply_requested_background(WaifuPcfxVideo *video, WaifuPcfxVdcBackground bg)
+{
+    if (!video) return;
+    switch (bg) {
+    case WAIFU_PCFX_VDC_BG_SANCTUM:
+    case WAIFU_PCFX_VDC_BG_SANCTUM_SAVE:
+        pcfx_vdc_apply_sanctum_background(video, bg);
+        break;
+    default:
+        pcfx_vdc_clear_background(video);
+        break;
+    }
 }
 
 static void pcfx_vdc_overlay_print(int tx, int ty, const char *str, int max_len)
@@ -1708,6 +1846,8 @@ void waifu_pcfx_video_destroy(WaifuPcfxVideo *video)
 void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
 {
     if (!video) return;
+    g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+    video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
     pcfx_vdc_overlay_force_black(video);
     if (video->mode == WAIFU_PCFX_VIDEO_MODE_TITLE_HICOLOR) pcfx_title_blackout_pages(video);
     /* The 16M->8bpp mode switch happens mid-scan, and KRAM word offset 0 is
@@ -1756,10 +1896,12 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
 void waifu_pcfx_video_use_vdc_background(WaifuPcfxVideo *video, WaifuPcfxVdcBackground bg)
 {
     if (!video) return;
-    video->vdc_bg = bg;
-    /* Hook point for converted HuC6270 VDC backgrounds.  The source package
-       includes Cascade FX's generator in tools/cascade_fx.  The first port keeps
-       this opaque to avoid coupling the game core to a specific VDC asset set. */
+    pcfx_vdc_apply_requested_background(video, bg);
+}
+
+void waifu_pcfx_video_request_vdc_background(WaifuPcfxVdcBackground bg)
+{
+    g_vdc_bg_requested = bg;
 }
 
 static int fade_q8_to_level(int fade_q8)
@@ -1882,6 +2024,8 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
     if (video->active_palette != palette_id || video->active_fade_q8 != fade_level) {
         pcfx_present_update_palette_if_needed(video, rgb, palette_id, fade_q8);
     }
+    pcfx_vdc_apply_requested_background(video, g_vdc_bg_requested);
+    g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
 
 #if WAIFU_PCFX_DIRTY_PRESENT
     int upload_full = 0;
