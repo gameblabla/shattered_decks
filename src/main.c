@@ -4248,6 +4248,9 @@ typedef enum WaifuInteractiveState {
     WAIFU_I_STORY_MAP,
     WAIFU_I_STORY_PYRAMID,
     WAIFU_I_STORY_SAVE,
+#ifdef WAIFU_FM_PCFX
+    WAIFU_I_STORY_SAVE_DEVICE,
+#endif
     WAIFU_I_STORY_TO_PLAZA,
     WAIFU_I_STORY_PLAZA,
     WAIFU_I_DECK_EDITOR,
@@ -4317,6 +4320,7 @@ static int g_i_frame = 0;
 static int g_i_menu_selected = 0;
 #ifdef WAIFU_FM_PCFX
 static int g_i_load_device_sel = 0; /* 0 internal, 1 FX-BMP, 2 back */
+static int g_i_save_device_sel = 0; /* 0 internal, 1 FX-BMP, 2 back */
 static int g_i_load_pending_device = 0;
 #endif
 static WaifuFmInput g_prev_input;
@@ -5797,12 +5801,20 @@ static int read_story_save_device(int ext)
     return bkup_try_load_vol(ext);
 }
 
+/* Per-device save (ext: 0=internal, 1=external/FX-BMP). */
+static int write_story_save_device(int ext)
+{
+    int idx = ext ? 1 : 0;
+    eris_bkupmem_set_access(1, 1);
+    if (bkup_try_save_vol(ext)) { g_save_exists_cached[idx] = 1; return 1; }
+    return 0;
+}
+
 static int write_story_save(void)
 {
     g_story_save_status = -1;
-    eris_bkupmem_set_access(1, 1);
-    if (bkup_try_save_vol(0)) { g_save_exists_cached[0] = 1; return 1; }
-    if (bkup_try_save_vol(1)) { g_save_exists_cached[1] = 1; return 1; }
+    if (write_story_save_device(0)) return 1;
+    if (write_story_save_device(1)) return 1;
     return 0;
 }
 
@@ -5935,12 +5947,14 @@ static int load_story_device_to_map(int ext)
 static void begin_story_load(void)
 {
 #ifdef WAIFU_FM_PCFX
-    if (story_save_exists_device(0)) {
+    int internal_has = story_save_exists_device(0);
+    int external_has = story_save_exists_device(1);
+    if (internal_has && !external_has) {
         g_i_load_pending_device = 0;
         waifu_pcfx_video_overlay_clear();
         g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
         g_i_frame = -1;
-    } else if (story_save_exists_device(1)) {
+    } else if (external_has && !internal_has) {
         g_i_load_pending_device = 1;
         waifu_pcfx_video_overlay_clear();
         g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
@@ -6124,6 +6138,9 @@ static WaifuMusicTrack music_track_for_loading_target(void)
     case WAIFU_I_STORY_MAP:
     case WAIFU_I_STORY_PYRAMID:
     case WAIFU_I_STORY_SAVE:
+#ifdef WAIFU_FM_PCFX
+    case WAIFU_I_STORY_SAVE_DEVICE:
+#endif
     case WAIFU_I_STORY_TO_PLAZA:
     case WAIFU_I_STORY_PLAZA:
         return WAIFU_MUSIC_OPENING_DREAM;
@@ -6168,6 +6185,9 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_STORY_MAP:
     case WAIFU_I_STORY_PYRAMID:
     case WAIFU_I_STORY_SAVE:
+#ifdef WAIFU_FM_PCFX
+    case WAIFU_I_STORY_SAVE_DEVICE:
+#endif
     case WAIFU_I_STORY_TO_PLAZA:
     case WAIFU_I_STORY_PLAZA:
         return WAIFU_MUSIC_OPENING_DREAM;
@@ -8981,6 +9001,22 @@ static void draw_story_save_screen(void)
     if (((g_i_frame / 16) & 1) == 0) draw_centered_text(143, "A/RUN/B BACK", IDX_WHITE, IDX_BLACK);
 }
 
+#ifdef WAIFU_FM_PCFX
+static void draw_story_save_device_screen(void)
+{
+    clear_screen(IDX_BLACK);
+    draw_story_sky();
+    draw_story_scene_3d(g_i_frame);
+    draw_panel_rect(132, 54, 116, 116, IDX_UI_DARK);
+    draw_text(157, 68, "SAVE TO", IDX_GOLD_HI, IDX_BLACK);
+    draw_text(154, 104, "INTERNAL", g_i_save_device_sel == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(154, 124, "FX-BMP", g_i_save_device_sel == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(154, 144, "BACK", g_i_save_device_sel == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(142, 104 + g_i_save_device_sel * 20, ">", IDX_RED, IDX_BLACK);
+    draw_text_small(128, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
+}
+#endif
+
 static const char *story_battle_intro_lines(void)
 {
     switch (g_story_duel_index) {
@@ -9101,6 +9137,8 @@ void waifu_fm_step(const WaifuFmInput *input)
     } else if (g_i_state == WAIFU_I_STORY_LOAD_DEVICE && (press_a || press_start) && g_i_load_device_sel != 2) {
         /* Same as the direct Load Story row: loading a chosen backup device is
            silent. */
+    } else if (g_i_state == WAIFU_I_STORY_SAVE_DEVICE && (press_a || press_start) && g_i_save_device_sel == 2) {
+        waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
     } else {
         if (press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
         if (press_start || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
@@ -9221,12 +9259,10 @@ void waifu_fm_step(const WaifuFmInput *input)
                 int ext = g_i_load_device_sel; /* 0 internal, 1 external */
                 int has = ext ? external_has : internal_has;
                 if (has) {
+                    g_i_load_pending_device = ext;
                     waifu_pcfx_video_overlay_clear();
-                    if (!load_story_device_to_map(ext)) {
-                        /* Read failed unexpectedly; fall back to the menu. */
-                        g_i_state = WAIFU_I_MENU;
-                        g_i_frame = -1;
-                    }
+                    g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
+                    g_i_frame = -1;
                 }
                 /* No save on the chosen device: stay so the player can pick
                    the other one or BACK. */
@@ -9351,10 +9387,16 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_story_pyramid_menu();
         if (press_a || press_start) {
             if (g_story_pyramid_cursor == 0) {
+#ifdef WAIFU_FM_PCFX
+                g_i_save_device_sel = 0;
+                g_i_state = WAIFU_I_STORY_SAVE_DEVICE;
+                g_i_frame = -1;
+#else
                 g_story_saved_flash = 60;
                 g_story_save_status = write_story_save() ? 1 : -1;
                 g_i_state = WAIFU_I_STORY_SAVE;
                 g_i_frame = -1;
+#endif
             } else if (g_story_pyramid_cursor == 1) {
                 reset_story_deck_editor();
                 g_story_editor_from_pyramid = 1;
@@ -9369,6 +9411,29 @@ void waifu_fm_step(const WaifuFmInput *input)
             g_i_frame = -1;
         }
         break;
+
+#ifdef WAIFU_FM_PCFX
+    case WAIFU_I_STORY_SAVE_DEVICE:
+        if (press_up) g_i_save_device_sel = (g_i_save_device_sel + 2) % 3;
+        if (press_down) g_i_save_device_sel = (g_i_save_device_sel + 1) % 3;
+        draw_story_save_device_screen();
+        if (press_a || press_start) {
+            if (g_i_save_device_sel == 2) {
+                g_i_state = WAIFU_I_STORY_PYRAMID;
+                g_i_frame = -1;
+            } else {
+                g_story_saved_flash = 60;
+                g_story_save_status = write_story_save_device(g_i_save_device_sel) ? 1 : -1;
+                g_i_state = WAIFU_I_STORY_SAVE;
+                g_i_frame = -1;
+            }
+        }
+        if (press_b) {
+            g_i_state = WAIFU_I_STORY_PYRAMID;
+            g_i_frame = -1;
+        }
+        break;
+#endif
 
     case WAIFU_I_STORY_SAVE:
         draw_story_save_screen();
