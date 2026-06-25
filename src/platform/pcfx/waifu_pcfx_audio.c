@@ -45,6 +45,7 @@ struct WaifuPcfxAudio {
     uint8_t active_loop;             /* loop mode of the active play command */
     uint32_t active_seq;             /* cd-read seq at the moment we started it */
     uint32_t last_read_seq;          /* cd-read seq seen on the previous pump */
+    uint8_t silence_stop_frames;     /* force STOP briefly after entering silence */
 };
 
 static WaifuPcfxAudio g_audio;
@@ -137,6 +138,7 @@ typedef struct WaifuPcfxPsgVoice {
 } WaifuPcfxPsgVoice;
 
 static WaifuPcfxPsgVoice g_psg_voices[WAIFU_PCFX_PSG_SFX_VOICES];
+static uint8_t g_psg_off_guard[WAIFU_PCFX_PSG_CHANNELS];
 static int g_adpcm_loaded = 0;
 
 static const uint8_t g_psg_wave_square[32] = {
@@ -223,9 +225,13 @@ static uint8_t lerp_u8(uint8_t a, uint8_t b, uint8_t frame, uint8_t duration)
 
 static void psg_channel_off(uint8_t ch)
 {
+    if (ch >= WAIFU_PCFX_PSG_CHANNELS) return;
     eris_low_psg_set_channel(ch);
     eris_low_psg_set_noise(0, 0);
+    eris_low_psg_set_freq(0);
+    eris_low_psg_set_balance(0, 0);
     eris_low_psg_set_volume(0, 0, 0);
+    g_psg_off_guard[ch] = 4u;
 }
 
 static void psg_load_wave(uint8_t ch, const uint8_t *wave)
@@ -456,6 +462,7 @@ static void psg_start_sequence(int slot, uint8_t ch,
     if (ch >= WAIFU_PCFX_PSG_CHANNELS) return;
     if (!steps || step_count == 0) return;
     v = &g_psg_voices[slot];
+    g_psg_off_guard[ch] = 0u;
     v->active = 1;
     v->channel = ch;
     v->step_index = 0;
@@ -509,6 +516,16 @@ static void waifu_pcfx_sfx_pump_psg(void)
         }
         eris_low_psg_set_volume(vol, vol ? 1 : 0, 0);
         ++v->frame;
+    }
+    for (i = 0; i < WAIFU_PCFX_PSG_CHANNELS; ++i) {
+        if (g_psg_off_guard[i]) {
+            eris_low_psg_set_channel((uint8_t)i);
+            eris_low_psg_set_noise(0, 0);
+            eris_low_psg_set_freq(0);
+            eris_low_psg_set_balance(0, 0);
+            eris_low_psg_set_volume(0, 0, 0);
+            --g_psg_off_guard[i];
+        }
     }
 }
 
@@ -743,6 +760,7 @@ void waifu_pcfx_audio_set_music(WaifuPcfxAudio *audio, WaifuFmMusicTrack track)
        CD-DA again immediately.  This also handles re-arming after a load. */
     audio->desired_track = music_to_cdda_track(track);
     audio->desired_loop = music_to_cdda_loop(track);
+    if (audio->desired_track == 0) audio->silence_stop_frames = 10u;
 }
 
 /* Issue/refresh CD-DA playback to match desired_track, but only when CD reads
@@ -757,13 +775,16 @@ void waifu_pcfx_audio_pump(WaifuPcfxAudio *audio)
     waifu_pcfx_sfx_pump_psg();
     waifu_pcfx_cdda_pump_mix_volume();
 
-    /* Silence requested (e.g. loading screen): force-stop CD-DA immediately,
-       without deferring behind in-flight reads.  Issued once (active_track
-       guards it) so we don't spam SCSI commands into an ongoing load. */
+    /* Silence requested (e.g. loading screen): force-stop CD-DA and PSG
+       immediately, without deferring behind in-flight reads.  The short forced
+       STOP burst also covers emulator/state cases where the drive is playing
+       but active_track is not in sync yet. */
     if (audio->desired_track == 0) {
-        if (audio->active_track != 0) {
+        waifu_pcfx_psg_stop_all();
+        if (audio->active_track != 0 || audio->silence_stop_frames) {
             waifu_pcfx_cdda_stop();
             audio->active_track = 0;
+            if (audio->silence_stop_frames) --audio->silence_stop_frames;
         }
         audio->last_read_seq = seq;
         return;
@@ -801,6 +822,7 @@ void waifu_pcfx_audio_stop_all(WaifuPcfxAudio *audio)
     audio->desired_loop = WAIFU_CDDA_LOOP;
     audio->active_track = 0;
     audio->active_loop = WAIFU_CDDA_LOOP;
+    audio->silence_stop_frames = 10u;
     g_cdda_duck_frames = 0;
     g_turn_jingle_guard_frames = 0;
     waifu_pcfx_cdda_apply_mix_volume(WAIFU_PCFX_CDDA_BASE_VOLUME);

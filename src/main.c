@@ -3690,6 +3690,17 @@ static void draw_asset_loading_screen(void)
     draw_centered_text(119, line, IDX_UI_LIGHT, IDX_BLACK);
 }
 
+#ifdef WAIFU_FM_PCFX
+static void draw_pcfx_backup_loading_screen(void)
+{
+    waifu_fm_use_common_palette();
+    clear_screen(IDX_BLACK);
+    draw_centered_text(102, "LOADING...", IDX_WHITE, IDX_BLACK);
+    draw_centered_text(119, "BACKUP RAM", IDX_UI_LIGHT, IDX_BLACK);
+    frame_mark_full_dirty();
+}
+#endif
+
 static void draw_transition_black_hold_frame(void)
 {
     /* Terminal title/menu fade frame.  Use the common 8bpp path and a full
@@ -5919,8 +5930,18 @@ static void begin_story_load(void)
 #ifdef WAIFU_FM_PCFX
     g_i_load_device_sel = 0;
     g_i_load_device_pending = 0;
-    g_i_state = WAIFU_I_STORY_LOAD_DEVICE;
-    g_i_frame = -1;
+    if (story_save_exists_device(0)) {
+        waifu_pcfx_video_overlay_clear();
+        g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
+        g_i_frame = -1;
+    } else if (story_save_exists_device(1)) {
+        g_i_load_device_pending = 1;
+        waifu_pcfx_video_overlay_clear();
+        g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
+        g_i_frame = -1;
+    } else {
+        g_story_save_status = -1;
+    }
 #else
     if (!load_story_to_map()) g_deck_flash = 60;
 #endif
@@ -9078,23 +9099,28 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_MENU:
-#ifdef WAIFU_FM_PCFX
     {
+#ifdef WAIFU_FM_PCFX
+        int pcfx_load_confirm_level = 0;
         int old_menu_selected = g_i_menu_selected;
 #endif
         if (press_up) g_i_menu_selected = (g_i_menu_selected + 2) % 3;
         if (press_down) g_i_menu_selected = (g_i_menu_selected + 1) % 3;
 #ifdef WAIFU_FM_PCFX
+        pcfx_load_confirm_level = (g_i_menu_selected == 2 && (input->a || input->start));
         if (g_i_frame <= 0 || old_menu_selected != g_i_menu_selected) {
             draw_menu_screen_event(g_i_menu_selected, g_i_frame <= 0);
         } else {
             waifu_fm_use_title_palette();
         }
-    }
 #else
         draw_menu_screen(g_i_menu_selected);
 #endif
-        if (press_start || press_a) {
+        if (press_start || press_a
+#ifdef WAIFU_FM_PCFX
+            || pcfx_load_confirm_level
+#endif
+        ) {
             if (g_i_menu_selected == 0) {
                 reset_story_entry();
                 enter_menu_to_story_fade();
@@ -9105,6 +9131,7 @@ void waifu_fm_step(const WaifuFmInput *input)
                 begin_story_load();
             }
         }
+    }
         break;
 
     case WAIFU_I_MENU_TO_STORY:
@@ -9137,11 +9164,15 @@ void waifu_fm_step(const WaifuFmInput *input)
            is drawn on the front VDC overlay layer, like the main menu. */
         int internal_has = story_save_exists_device(0);
         int external_has = story_save_exists_device(1);
+        int load_device_confirm = press_a || press_start;
         if (press_up) g_i_load_device_sel = (g_i_load_device_sel + 2) % 3;
         if (press_down) g_i_load_device_sel = (g_i_load_device_sel + 1) % 3;
         waifu_fm_use_title_palette();
         waifu_pcfx_video_overlay_load_menu(g_i_load_device_sel, internal_has, external_has);
-        if (press_a || press_start) {
+        if (!load_device_confirm && g_i_frame >= 8 && (input->a || input->start)) {
+            load_device_confirm = 1;
+        }
+        if (load_device_confirm) {
             if (g_i_load_device_sel == 2) {
                 /* BACK: return to the standard menu. */
                 g_i_state = WAIFU_I_MENU;
@@ -9167,12 +9198,11 @@ void waifu_fm_step(const WaifuFmInput *input)
     }
 
     case WAIFU_I_STORY_LOAD_TO_MAP:
-        draw_transition_black_hold_frame();
+        draw_pcfx_backup_loading_screen();
         if (g_i_frame >= 8) {
             int ext = g_i_load_device_pending;
             if (!load_story_device_to_map(ext)) {
-                g_i_state = WAIFU_I_MENU;
-                g_i_frame = -1;
+                enter_menu_after_assets();
             }
         }
         break;
