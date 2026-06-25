@@ -138,7 +138,11 @@ cd: clean-output toolchain-check $(PCFX_CDLINK) $(CD_ASSETS)
 	$(MAKE) -f Makefile.pcfx program PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
 	$(MAKE) -f Makefile.pcfx $(OBJDIR)/cdlink.generated.txt PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
 	$(PCFX_CDLINK) $(OBJDIR)/cdlink.generated.txt $(CDOUT)
-	
+	# Compatibility cue name for existing pyramid-save SRAM files.  Some PC-FX
+	# frontends key BackupRAM sidecars from the .cue basename; a save named
+	# waifupcfx_pyramid.cue.srm will now load without renaming the binary track.
+	cp $(CDOUT).cue waifupcfx_pyramid.cue
+
 clean-build:
 	rm -rf $(OBJDIR) out.bin
 

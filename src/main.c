@@ -9359,14 +9359,16 @@ void waifu_fm_step(const WaifuFmInput *input)
         if (press_start) {
             if (g_story_deck_count == STORY_DECK_SIZE) {
                 recalc_story_deck_counts();
-                if (g_story_editor_from_pyramid && g_story_duel_index > 0) {
-                    g_story_editor_from_pyramid = 0;
-                    g_i_state = WAIFU_I_STORY_PYRAMID;
-                    g_i_frame = -1;
-                } else {
-                    init_story_battle_state();
-                    enter_battle_after_assets();
-                }
+                /* START from the story deck editor must always commit the
+                   current deck and enter the next story duel.  Older PC-FX
+                   builds treated the Sanctum editor as a pure edit-only
+                   screen for later duels and returned to the pyramid menu; if
+                   the player then entered battle through another path, the
+                   duel could be started as a non-story battle and the result
+                   flow would fall back to the title screen. */
+                g_story_editor_from_pyramid = 0;
+                init_story_battle_state();
+                enter_battle_after_assets();
             } else {
                 g_deck_flash = 60;
             }
@@ -9713,6 +9715,61 @@ static int debug_regression_story_duel_loads(void)
     return 0;
 }
 
+
+static int debug_regression_sanctum_editor_battle_entry(void)
+{
+    WaifuFmInput in;
+    int guard;
+
+    memset(&in, 0, sizeof(in));
+    waifu_fm_reset_interactive();
+    waifu_assets_reset();
+    generate_story_starter_deck();
+    generate_story_storage_pool();
+    reset_story_deck_editor();
+
+    g_story_duel_index = 1;
+    g_story_map_cursor = 0;
+    g_story_pyramid_cursor = 1;
+    g_story_editor_from_pyramid = 1;
+    g_story_battle_active = 0;
+    g_i_state = WAIFU_I_DECK_EDITOR;
+    g_i_frame = 0;
+
+    in.start = 1;
+    waifu_fm_step(&in);
+    memset(&in, 0, sizeof(in));
+    for (guard = 0; guard < 900 && (g_i_state == WAIFU_I_LOADING_ASSETS || !waifu_assets_ready()); ++guard) {
+        waifu_fm_step(&in);
+    }
+    for (int settle = 0; settle < 4; ++settle) waifu_fm_step(&in);
+
+    if (g_i_state != WAIFU_I_BATTLE || !g_story_battle_active || g_story_editor_from_pyramid ||
+        g_story_duel_index != 1 || g_i_player_deck.count <= 0 || g_i_com_deck.count <= 0) {
+        fprintf(stderr, "REGRESSION sanctum_editor_battle_entry FAIL: state=%d story=%d from_pyr=%d duel=%d ready=%d pdeck=%d cdeck=%d guard=%d\n",
+                (int)g_i_state, g_story_battle_active, g_story_editor_from_pyramid,
+                g_story_duel_index, waifu_assets_ready(), g_i_player_deck.count, g_i_com_deck.count, guard);
+        return 1;
+    }
+
+    g_b_result = 1;
+    g_b_phase = IB_TALLY;
+    g_b_phase_frame = 20;
+    memset(&in, 0, sizeof(in));
+    in.start = 1;
+    waifu_fm_step(&in);
+
+    if (g_i_state == WAIFU_I_TITLE || g_i_state == WAIFU_I_MENU || g_story_battle_active || g_story_duel_index != 2) {
+        fprintf(stderr, "REGRESSION sanctum_editor_battle_entry FAIL: result returned to bad state=%d story=%d duel=%d\n",
+                (int)g_i_state, g_story_battle_active, g_story_duel_index);
+        return 1;
+    }
+
+    printf("REGRESSION sanctum_editor_battle_entry OK state=%d duel=%d story=%d\n",
+           (int)g_i_state, g_story_duel_index, g_story_battle_active);
+    return 0;
+}
+
 static int debug_regression_card_check_cache_no_cd(void)
 {
 #if defined(WAIFU_ASSET_USE_CDROM)
@@ -10024,6 +10081,7 @@ int main(int argc, char **argv)
     int regression_story_duels = 0;
     int regression_card_check = 0;
     int regression_result_music = 0;
+    int regression_sanctum_entry = 0;
     CommandEvent events[MAX_COMMAND_EVENTS];
     int event_count = 0;
     int f;
@@ -10049,7 +10107,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--regression-story-duels")) regression_story_duels = 1;
         else if (!strcmp(argv[i], "--regression-card-check-cache")) regression_card_check = 1;
         else if (!strcmp(argv[i], "--regression-result-music")) regression_result_music = 1;
-        else if (!strcmp(argv[i], "--regression-story-all")) { regression_story_save = 1; regression_story_duels = 1; regression_card_check = 1; regression_result_music = 1; }
+        else if (!strcmp(argv[i], "--regression-sanctum-entry")) regression_sanctum_entry = 1;
+        else if (!strcmp(argv[i], "--regression-story-all")) { regression_story_save = 1; regression_story_duels = 1; regression_card_check = 1; regression_result_music = 1; regression_sanctum_entry = 1; }
 #endif
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
         else if (!strcmp(argv[i], "--profile-render")) g_profile_render_enabled = 1;
@@ -10063,12 +10122,13 @@ int main(int argc, char **argv)
     waifu_fm_init();
 
 #ifdef WAIFU_FM_HEADLESS_TESTS
-    if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music) {
+    if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music || regression_sanctum_entry) {
         int rc = 0;
         if (regression_story_save) rc |= debug_regression_story_save_roundtrip();
         if (regression_story_duels) rc |= debug_regression_story_duel_loads();
         if (regression_card_check) rc |= debug_regression_card_check_cache_no_cd();
         if (regression_result_music) rc |= debug_regression_result_music_tracks();
+        if (regression_sanctum_entry) rc |= debug_regression_sanctum_editor_battle_entry();
         return rc ? 1 : 0;
     }
 #endif
