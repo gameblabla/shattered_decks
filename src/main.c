@@ -2721,7 +2721,15 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
     int sw = WAIFU_TEX_TILE_SIZE, sh = WAIFU_TEX_TILE_SIZE;
     int minx, maxx, miny, maxy;
-    int den;
+    int den = (pb.y - pc.y) * (pa.x - pc.x) + (pc.x - pb.x) * (pa.y - pc.y);
+    if (den < 0) {
+        ScreenPt t = pa;
+        pa = pb;
+        pb = t;
+        flip_u = !flip_u;
+        den = (pb.y - pc.y) * (pa.x - pc.x) + (pc.x - pb.x) * (pa.y - pc.y);
+    }
+    if (den == 0) return;
     minx = pa.x < pb.x ? (pa.x < pc.x ? pa.x : pc.x) : (pb.x < pc.x ? pb.x : pc.x);
     maxx = pa.x > pb.x ? (pa.x > pc.x ? pa.x : pc.x) : (pb.x > pc.x ? pb.x : pc.x);
     miny = pa.y < pb.y ? (pa.y < pc.y ? pa.y : pc.y) : (pb.y < pc.y ? pb.y : pc.y);
@@ -2730,13 +2738,9 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     if (miny < 0) miny = 0;
     if (maxx >= W) maxx = W - 1;
     if (maxy >= H) maxy = H - 1;
-    den = (pb.y - pc.y) * (pa.x - pc.x) + (pc.x - pb.x) * (pa.y - pc.y);
-    if (den == 0) return;
-    /* Backface cull.  The pyramid is convex, so its back faces are fully occluded
-       by the front faces and contribute nothing to the final image -- skipping
-       them is pixel-identical and roughly HALVES the rasterized pixels.  Front
-       faces share one winding sign; the back faces have den < 0. */
-    if (den < 0) return;
+    /* Projected winding can flip by camera/base-edge order.  Normalize it here
+       and leave occlusion to the caller's painter-sorted face order; otherwise
+       the PC-FX map can cull every visible pyramid face. */
     init_repeat_texel_q8();
     {
     /* Fully incremental affine textured triangle (envmap drawTriangle method): the
@@ -3692,6 +3696,17 @@ static void draw_asset_loading_screen(void)
     draw_centered_text(119, line, IDX_UI_LIGHT, IDX_BLACK);
 }
 
+#ifdef WAIFU_FM_PCFX
+static void draw_backup_loading_screen(void)
+{
+    waifu_fm_use_common_palette();
+    clear_screen(IDX_BLACK);
+    draw_centered_text(96, "BACKUP RAM", IDX_GOLD_HI, IDX_BLACK);
+    draw_centered_text(116, "LOADING...", IDX_WHITE, IDX_BLACK);
+    frame_mark_full_dirty();
+}
+#endif
+
 static void draw_transition_black_hold_frame(void)
 {
     /* Terminal title/menu fade frame.  Use the common 8bpp path and a full
@@ -4242,6 +4257,8 @@ typedef enum WaifuInteractiveState {
 #ifdef WAIFU_FM_PCFX
     /* PC-FX only: pick which backup device (internal / FX-BMP) to load from. */
     WAIFU_I_STORY_LOAD_DEVICE,
+    /* PC-FX only: visible backup-RAM load handoff before drawing the 3D map. */
+    WAIFU_I_STORY_LOAD_TO_MAP,
 #endif
 } WaifuInteractiveState;
 
@@ -4300,6 +4317,7 @@ static int g_i_frame = 0;
 static int g_i_menu_selected = 0;
 #ifdef WAIFU_FM_PCFX
 static int g_i_load_device_sel = 0; /* 0 internal, 1 FX-BMP, 2 back */
+static int g_i_load_pending_device = 0;
 #endif
 static WaifuFmInput g_prev_input;
 
@@ -5912,14 +5930,26 @@ static int load_story_device_to_map(int ext)
 #endif
 
 /* "Begin loading a story save" action.  The platform decides how: on PC-FX
-   the player picks a backup device (internal / FX-BMP); on other ports there
-   is a single save file, so it loads directly. */
+   internal Backup RAM is the normal source with FX-BMP as fallback; on other
+   ports there is a single save file, so it loads directly. */
 static void begin_story_load(void)
 {
 #ifdef WAIFU_FM_PCFX
-    g_i_load_device_sel = 0;
-    g_i_state = WAIFU_I_STORY_LOAD_DEVICE;
-    g_i_frame = -1;
+    if (story_save_exists_device(0)) {
+        g_i_load_pending_device = 0;
+        waifu_pcfx_video_overlay_clear();
+        g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
+        g_i_frame = -1;
+    } else if (story_save_exists_device(1)) {
+        g_i_load_pending_device = 1;
+        waifu_pcfx_video_overlay_clear();
+        g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
+        g_i_frame = -1;
+    } else {
+        g_i_load_device_sel = 0;
+        g_i_state = WAIFU_I_STORY_LOAD_DEVICE;
+        g_i_frame = -1;
+    }
 #else
     if (!load_story_to_map()) g_deck_flash = 60;
 #endif
@@ -6084,6 +6114,8 @@ static WaifuMusicTrack music_track_for_loading_target(void)
     case WAIFU_I_MENU_TO_BATTLE:
     case WAIFU_I_STORY_LOAD_DEVICE:
         return WAIFU_MUSIC_TITLE;
+    case WAIFU_I_STORY_LOAD_TO_MAP:
+        return WAIFU_MUSIC_NONE;
     case WAIFU_I_STORY_NAME:
     case WAIFU_I_STORY_NAME_TO_INTRO:
     case WAIFU_I_STORY_INTRO:
@@ -6122,6 +6154,10 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_STORY_LOAD_DEVICE:
 #endif
         return WAIFU_MUSIC_TITLE;
+#ifdef WAIFU_FM_PCFX
+    case WAIFU_I_STORY_LOAD_TO_MAP:
+        return WAIFU_MUSIC_NONE;
+#endif
     case WAIFU_I_STORY_NAME:
     case WAIFU_I_STORY_NAME_TO_INTRO:
     case WAIFU_I_STORY_INTRO:
@@ -8916,14 +8952,14 @@ static void draw_story_pyramid_menu(void)
     clear_screen(IDX_BLACK);
     draw_story_sky();
     draw_story_scene_3d(g_i_frame);
-    draw_panel_rect(34, 46, 188, 130, IDX_UI_DARK);
-    draw_centered_text(57, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(48, 75, 158, 3, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
-    draw_text(72, 114, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(72, 134, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(72, 154, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(58, 114 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
-    draw_text_small(49, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
+    draw_panel_rect(132, 42, 116, 138, IDX_UI_DARK);
+    draw_text(158, 55, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
+    draw_wrapped_text_small_box(143, 76, 92, 4, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
+    draw_text(154, 124, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(154, 144, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(154, 164, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(142, 124 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
+    draw_text_small(128, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_story_save_screen(void)
@@ -9056,6 +9092,15 @@ void waifu_fm_step(const WaifuFmInput *input)
        exit/cancel effect. */
     if (g_i_state == WAIFU_I_TITLE && (press_a || press_start)) {
         waifu_sound_play(WAIFU_SOUND_CONFIRM);
+    } else if (g_i_state == WAIFU_I_MENU && g_i_menu_selected == 2 && (press_a || press_start)) {
+        /* Load Story enters BackupRAM I/O; keep this path silent so a menu
+           confirm PSG cannot latch while the title overlay and backup state
+           are being torn down. */
+    } else if (g_i_state == WAIFU_I_STORY_LOAD_DEVICE && (press_a || press_start) && g_i_load_device_sel == 2) {
+        waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
+    } else if (g_i_state == WAIFU_I_STORY_LOAD_DEVICE && (press_a || press_start) && g_i_load_device_sel != 2) {
+        /* Same as the direct Load Story row: loading a chosen backup device is
+           silent. */
     } else {
         if (press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
         if (press_start || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
@@ -9193,6 +9238,22 @@ void waifu_fm_step(const WaifuFmInput *input)
         }
         break;
     }
+
+    case WAIFU_I_STORY_LOAD_TO_MAP:
+        waifu_pcfx_video_overlay_clear();
+        draw_backup_loading_screen();
+        if (g_i_frame >= 8) {
+            if (!load_story_device_to_map(g_i_load_pending_device)) {
+                int fallback = g_i_load_pending_device ? 0 : 1;
+                if (!story_save_exists_device(fallback) ||
+                    !load_story_device_to_map(fallback)) {
+                    g_story_save_status = -1;
+                    g_i_state = WAIFU_I_MENU;
+                    g_i_frame = -1;
+                }
+            }
+        }
+        break;
 #endif
 
     case WAIFU_I_STORY_NAME:
