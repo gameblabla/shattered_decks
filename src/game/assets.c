@@ -659,8 +659,9 @@ int waifu_assets_load_step(void)
     case WAIFU_ASSET_REQUEST_STORY_INTRO:
     case WAIFU_ASSET_REQUEST_STORY_DUEL:
         if (g_load_step < PORTRAIT_SLOT_COUNT) {
-            int slot = g_load_step++;
+            int slot = g_load_step;
             if (!load_requested_portrait_slot(slot)) return 0;
+            ++g_load_step;
             if (g_load_step >= PORTRAIT_SLOT_COUNT) {
                 g_ready = 1;
                 g_pending_request = WAIFU_ASSET_REQUEST_NONE;

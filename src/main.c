@@ -6006,6 +6006,12 @@ static void request_story_duel_assets(void)
     waifu_assets_request_story_duel(story_opponent_info()->portrait_id);
 }
 
+static int story_duel_portraits_ready(void)
+{
+    return waifu_assets_story_portrait_ready(STORY_PORTRAIT_SERENA) &&
+           waifu_assets_story_portrait_ready(story_opponent_info()->portrait_id);
+}
+
 static void enter_state_after_assets(WaifuInteractiveState target)
 {
     g_i_loading_target = target;
@@ -9150,8 +9156,17 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     switch (g_i_state) {
     case WAIFU_I_LOADING_ASSETS:
+        if (g_i_loading_target == WAIFU_I_STORY_PLAZA &&
+            waifu_assets_ready() && !story_duel_portraits_ready()) {
+            request_story_duel_assets();
+        }
         draw_asset_loading_screen();
         if (g_i_frame >= 24 && waifu_assets_load_step()) {
+            if (g_i_loading_target == WAIFU_I_STORY_PLAZA &&
+                !story_duel_portraits_ready()) {
+                request_story_duel_assets();
+                break;
+            }
             g_i_state = g_i_loading_target;
             g_i_frame = -1;
         }
@@ -9451,6 +9466,11 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_STORY_PLAZA:
+        if (!story_duel_portraits_ready()) {
+            enter_story_plaza_after_assets();
+            draw_asset_loading_screen();
+            break;
+        }
         draw_story_plaza_scene();
         if (press_a || press_start) {
             int line_count = 0;
