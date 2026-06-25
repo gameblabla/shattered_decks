@@ -13,6 +13,7 @@
 #include "pcfx_palette_assets.h"
 #include "waifu_pcfx_cdrom.h"
 #include "title_asset.h"
+#include "rainbow_bg_assets.h"
 #include "font_menudata.h"
 
 #define WAIFU_PCFX_W WAIFU_FM_WIDTH
@@ -33,6 +34,7 @@
 #define WAIFU_PCFX_16M_BLACK_Y 0x0101u
 #define WAIFU_PCFX_16M_BLACK_UV 0x8080u
 #define WAIFU_PCFX_BLACK_WORD ((uint16_t)((IDX_BLACK << 8) | IDX_BLACK))
+#define WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1 0x00001000u
 #ifndef WAIFU_PCFX_DIRTY_PRESENT
 /* Present path: render once to the CPU framebuffer, then stream it to the hidden
    KRAM page with the inline out.h writer (no fastking jal/rts) and flip BG0 to
@@ -76,6 +78,7 @@
 #endif
 
 static uint16_t g_king_microprog[16];
+static uint32_t g_king_page_setting_extra;
 
 struct WaifuPcfxVideo {
     int front_page;
@@ -255,12 +258,10 @@ static inline __attribute__((always_inline)) void pcfx_king_set_bg_kram_page_inl
 {
 #if defined(__v810__)
     uint32_t reg;
-    uint32_t ps = 0x01000000u | (page ? 0x00000100u : 0u);
-    /* KING PageSetting layout matches liberis eris_king_set_kram_pages():
-       byte0=SCSI, byte1=BG, byte2=RAINBOW, byte3=ADPCM.  Keep ADPCM on
-       physical page 1, but only select BG physical page 1 when the renderer
-       explicitly asks for it.  Do not use 0x0100 as ADPCM -- that is BG page 1
-       and corrupts the in-game card/BG plane. */
+    uint32_t ps = 0x01000000u | g_king_page_setting_extra | (page ? 0x00000100u : 0u);
+    /* Preserve ADPCM page 1 and any active RAINBOW page selection while flipping
+       the KING BG page.  pcfxemu's RAINBOW page bit is 0x1000; clearing it here
+       makes sanctum stills decode from the wrong KRAM page. */
     __asm__ volatile (
         "movea 15,r0,%[reg]\n"
         "out.h %[reg],0x600[r0]\n"
@@ -269,7 +270,7 @@ static inline __attribute__((always_inline)) void pcfx_king_set_bg_kram_page_inl
         : [ps] "r" (ps)
         : "memory");
 #else
-    eris_king_set_kram_pages(0, page ? 1 : 0, 0, 1);
+    eris_king_set_kram_pages(0, page ? 1 : 0, g_king_page_setting_extra ? 1 : 0, 1);
 #endif
 }
 
@@ -1081,16 +1082,24 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_PAL_WHITE 0x02
 #define WAIFU_PCFX_VDC_PAL_GOLD  0x03
 #define WAIFU_PCFX_VDC_PAL_RED   0x04
-#define WAIFU_PCFX_VDC_SANCTUM_TILE_SKY     0x110
-#define WAIFU_PCFX_VDC_SANCTUM_TILE_SAND    0x111
-#define WAIFU_PCFX_VDC_SANCTUM_TILE_HORIZON 0x112
-#define WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK   0x113
+#define WAIFU_PCFX_VDC_PAL_PANEL 0x05
+#define WAIFU_PCFX_VDC_PAL_EDGE  0x06
+#define WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK 0x110
+#define WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL 0x111
+#define WAIFU_PCFX_VDC_SANCTUM_TILE_EDGE  0x112
 /* Fade tiles live immediately after the 64x32 BAT so tile 0 remains unusable
    for transparent blanks.  Each level is a screen-space black dither mask. */
 #define WAIFU_PCFX_VDC_FADE_TILE_BASE 0x080
 #define WAIFU_PCFX_VDC_FADE_LEVELS 17
 
 static WaifuPcfxVdcBackground g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+static int g_sanctum_requested;
+static int g_sanctum_active;
+static int g_sanctum_loaded_backdrop = -1;
+static WaifuPcfxSanctumBackdrop g_sanctum_backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_DESERT;
+static WaifuPcfxSanctumOverlay g_sanctum_overlay = WAIFU_PCFX_SANCTUM_OVERLAY_MENU;
+static int g_sanctum_value;
+static int g_sanctum_blink_visible = 1;
 
 typedef enum WaifuPcfxOverlayMode {
     WAIFU_PCFX_OVERLAY_OFF = 0,
@@ -1279,7 +1288,63 @@ static void pcfx_vdc_overlay_clear_all(void)
     pcfx_vdc_overlay_clear_rect(0, 0, WAIFU_PCFX_VDC_MAP_W, WAIFU_PCFX_VDC_MAP_H);
 }
 
-static void pcfx_vdc_sanctum_clear_rect(int tx, int ty, int w, int h)
+static void pcfx_vdc_restore_overlay_palette(void)
+{
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_BLACK, 0x0088);
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_WHITE, 0xE088);
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_GOLD,  0xB468);
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_RED,   0x5F0F);
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_PANEL, rgb888_to_pcfx_yuv(12, 18, 28));
+    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_EDGE,  rgb888_to_pcfx_yuv(210, 172, 90));
+}
+
+static void pcfx_vdc_sanctum_upload_solid_tile(uint16_t tile, uint16_t vdc0_row, uint16_t vdc1_row)
+{
+    eris_low_sup_set_vram_write(VDC_CHIP_0, tile * 16);
+    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_0, vdc0_row);
+    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
+
+    eris_low_sup_set_vram_write(VDC_CHIP_1, tile * 16);
+    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, vdc1_row);
+    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
+}
+
+static void pcfx_vdc_sanctum_upload_tiles(void)
+{
+    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK, 0x0000, 0x0000);
+    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL, 0xffff, 0x0000);
+    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_EDGE, 0xffff, 0xffff);
+}
+
+static uint32_t pcfx_rainbow_bytes_for_backdrop(WaifuPcfxSanctumBackdrop backdrop)
+{
+    switch (backdrop) {
+    case WAIFU_PCFX_SANCTUM_BACKDROP_STONE: return WAIFU_PCFX_RAINBOW_STONE_BYTES;
+    case WAIFU_PCFX_SANCTUM_BACKDROP_EMBER: return WAIFU_PCFX_RAINBOW_EMBER_BYTES;
+    default: return WAIFU_PCFX_RAINBOW_DESERT_BYTES;
+    }
+}
+
+static WaifuPcfxRainbowBgAsset pcfx_rainbow_asset_for_backdrop(WaifuPcfxSanctumBackdrop backdrop)
+{
+    switch (backdrop) {
+    case WAIFU_PCFX_SANCTUM_BACKDROP_STONE: return WAIFU_PCFX_RAINBOW_BG_STONE;
+    case WAIFU_PCFX_SANCTUM_BACKDROP_EMBER: return WAIFU_PCFX_RAINBOW_BG_EMBER;
+    default: return WAIFU_PCFX_RAINBOW_BG_DESERT;
+    }
+}
+
+static void pcfx_vdc_sanctum_clear_all(void)
+{
+    for (int row = 0; row < WAIFU_PCFX_VDC_MAP_H; ++row) {
+        eris_low_sup_set_vram_write(VDC_CHIP_0, row * WAIFU_PCFX_VDC_MAP_W);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK);
+        eris_low_sup_set_vram_write(VDC_CHIP_1, row * WAIFU_PCFX_VDC_MAP_W);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK | 0x8000));
+    }
+}
+
+static void pcfx_vdc_sanctum_panel(int tx, int ty, int w, int h)
 {
     if (tx < 0) { w += tx; tx = 0; }
     if (ty < 0) { h += ty; ty = 0; }
@@ -1289,80 +1354,137 @@ static void pcfx_vdc_sanctum_clear_rect(int tx, int ty, int w, int h)
 
     for (int row = 0; row < h; ++row) {
         int addr = (ty + row) * WAIFU_PCFX_VDC_MAP_W + tx;
+        int edge_row = (row == 0 || row == h - 1);
         eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
-        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK);
-        eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
-        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK);
-    }
-}
-
-static void pcfx_vdc_restore_overlay_palette(void)
-{
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_BLACK, 0x0088);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_WHITE, 0xE088);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_GOLD,  0xB468);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_RED,   0x5F0F);
-}
-
-static void pcfx_vdc_sanctum_upload_solid_tile(uint16_t tile, uint16_t vdc0_row)
-{
-    eris_low_sup_set_vram_write(VDC_CHIP_0, tile * 16);
-    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_0, vdc0_row);
-    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
-
-    eris_low_sup_set_vram_write(VDC_CHIP_1, tile * 16);
-    for (int row = 0; row < 16; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
-}
-
-static void pcfx_vdc_sanctum_upload_tiles(void)
-{
-    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_SKY, 0x00ff);
-    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_SAND, 0xff00);
-    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_HORIZON, 0xffff);
-    pcfx_vdc_sanctum_upload_solid_tile(WAIFU_PCFX_VDC_SANCTUM_TILE_BLANK, 0x0000);
-}
-
-static void pcfx_vdc_sanctum_set_palette(void)
-{
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_BLACK, rgb888_to_pcfx_yuv(72, 162, 231));
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_WHITE, rgb888_to_pcfx_yuv(207, 169, 95));
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_GOLD,  rgb888_to_pcfx_yuv(234, 205, 137));
-}
-
-static void pcfx_vdc_sanctum_fill_map(WaifuPcfxVdcBackground bg)
-{
-    pcfx_vdc_sanctum_set_palette();
-
-    for (int row = 0; row < WAIFU_PCFX_VDC_MAP_H; ++row) {
-        uint16_t tile = WAIFU_PCFX_VDC_SANCTUM_TILE_SAND;
-        if (row < 14) tile = WAIFU_PCFX_VDC_SANCTUM_TILE_SKY;
-        else if (row == 14) tile = WAIFU_PCFX_VDC_SANCTUM_TILE_HORIZON;
-
-        eris_low_sup_set_vram_write(VDC_CHIP_0, row * WAIFU_PCFX_VDC_MAP_W);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, tile);
-        eris_low_sup_set_vram_write(VDC_CHIP_1, row * WAIFU_PCFX_VDC_MAP_W);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) {
-            eris_low_sup_vram_write(VDC_CHIP_1, 0);
+        for (int col = 0; col < w; ++col) {
+            int edge_col = (col == 0 || col == w - 1);
+            eris_low_sup_vram_write(VDC_CHIP_0, (edge_row || edge_col) ? WAIFU_PCFX_VDC_SANCTUM_TILE_EDGE : WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL);
         }
-    }
-
-    /* VDC is mixed in front for this 2D background, so punch transparent tile
-       windows wherever the CPU framebuffer draws opaque menu panels and text. */
-    if (bg == WAIFU_PCFX_VDC_BG_SANCTUM_SAVE) {
-        pcfx_vdc_sanctum_clear_rect(3, 8, 26, 14);
-    } else {
-        pcfx_vdc_sanctum_clear_rect(14, 4, 18, 19);
-        pcfx_vdc_sanctum_clear_rect(15, 24, 17, 6);
+        eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
+        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
     }
 }
 
-static void pcfx_vdc_apply_sanctum_background(WaifuPcfxVideo *video, WaifuPcfxVdcBackground bg)
+static void pcfx_vdc_sanctum_print(int tx, int ty, const char *str, int max_len)
+{
+    int len;
+    if (!str || max_len <= 0) return;
+    if (tx < 0 || ty < 0 || tx >= WAIFU_PCFX_VDC_MAP_W || ty >= WAIFU_PCFX_VDC_MAP_H) return;
+    if (max_len > WAIFU_PCFX_VDC_MAP_W - tx) max_len = WAIFU_PCFX_VDC_MAP_W - tx;
+    len = pcfx_strlen_limited(str, max_len);
+
+    eris_low_sup_set_vram_write(VDC_CHIP_0, ty * WAIFU_PCFX_VDC_MAP_W + tx);
+    for (int i = 0; i < max_len; ++i) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL);
+    eris_low_sup_set_vram_write(VDC_CHIP_1, ty * WAIFU_PCFX_VDC_MAP_W + tx);
+    for (int i = 0; i < max_len; ++i) {
+        unsigned char ch = (i < len) ? (unsigned char)str[i] : (unsigned char)' ';
+        uint16_t tile = WAIFU_PCFX_VDC_BLANK_TILE;
+        if (ch >= WAIFU_PCFX_VDC_FONT_FIRST && ch <= WAIFU_PCFX_VDC_FONT_LAST) {
+            tile = (uint16_t)(WAIFU_PCFX_VDC_FONT_TILE_BASE + (ch - WAIFU_PCFX_VDC_FONT_FIRST));
+        }
+        eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
+    }
+}
+
+static void pcfx_rainbow_write_reg16(uint16_t reg, uint16_t value)
+{
+#if defined(__v810__)
+    __asm__ volatile (
+        "out.h %[reg],0x600[r0]\n"
+        "out.h %[value],0x604[r0]\n"
+        :
+        : [reg] "r" (reg), [value] "r" (value)
+        : "memory");
+#else
+    (void)reg;
+    (void)value;
+#endif
+}
+
+static void pcfx_rainbow_setup(void)
+{
+#if defined(__v810__)
+    uint16_t zero = 0;
+    __asm__ volatile (
+        "out.h %[zero],0x200[r0]\n"
+        "out.h %[zero],0x202[r0]\n"
+        "movea -128,r0,r10\n"
+        "out.h r10,0x208[r0]\n"
+        "out.h %[zero],0x20c[r0]\n"
+        "out.h %[zero],0x210[r0]\n"
+        "out.h %[zero],0x214[r0]\n"
+        "movea 1,r0,r10\n"
+        "out.h r10,0x204[r0]\n"
+        :
+        : [zero] "r" (zero)
+        : "r10", "memory");
+#endif
+}
+
+static void pcfx_rainbow_start_transfer(void)
+{
+    pcfx_rainbow_write_reg16(0x40, 0x0000);
+    pcfx_rainbow_write_reg16(0x41, (uint16_t)WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR);
+    pcfx_rainbow_write_reg16(0x42, (uint16_t)WAIFU_PCFX_RAINBOW_BG_TRANSFER_START);
+    pcfx_rainbow_write_reg16(0x43, (uint16_t)WAIFU_PCFX_RAINBOW_BG_BLOCK_COUNT);
+    pcfx_rainbow_write_reg16(0x44, 0x0000);
+    pcfx_rainbow_write_reg16(0x40, 0x0001);
+}
+
+static void pcfx_vdc_sanctum_draw_overlay(WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
+{
+    pcfx_vdc_sanctum_clear_all();
+    switch (overlay) {
+    case WAIFU_PCFX_SANCTUM_OVERLAY_SAVE:
+        pcfx_vdc_sanctum_panel(4, 10, 24, 10);
+        if (value < 0) {
+            pcfx_vdc_sanctum_print(10, 12, "SAVE FAILED", 12);
+            pcfx_vdc_sanctum_print(6, 15, "The memory seal is", 20);
+            pcfx_vdc_sanctum_print(10, 16, "broken.", 8);
+        } else if (value > 0) {
+            pcfx_vdc_sanctum_print(8, 12, "PROGRESS SAVED", 15);
+            pcfx_vdc_sanctum_print(6, 15, "The sanctum remembers", 21);
+            pcfx_vdc_sanctum_print(12, 16, "Serena.", 8);
+        } else {
+            pcfx_vdc_sanctum_print(10, 12, "NO SAVE DATA", 12);
+            pcfx_vdc_sanctum_print(7, 15, "Nothing is written", 18);
+            pcfx_vdc_sanctum_print(12, 16, "yet.", 5);
+        }
+        if (blink_visible) pcfx_vdc_sanctum_print(10, 18, "A/RUN/B BACK", 13);
+        break;
+    case WAIFU_PCFX_SANCTUM_OVERLAY_SAVE_DEVICE:
+        pcfx_vdc_sanctum_panel(16, 6, 15, 15);
+        pcfx_vdc_sanctum_print(20, 8, "SAVE TO", 8);
+        pcfx_vdc_sanctum_print(18, 12, value == 0 ? "> INTERNAL" : "  INTERNAL", 11);
+        pcfx_vdc_sanctum_print(18, 14, value == 1 ? "> FX-BMP" : "  FX-BMP", 9);
+        pcfx_vdc_sanctum_print(18, 16, value == 2 ? "> BACK" : "  BACK", 7);
+        pcfx_vdc_sanctum_print(16, 25, "A/RUN SELECT  B BACK", 22);
+        break;
+    case WAIFU_PCFX_SANCTUM_OVERLAY_MENU:
+    default:
+        pcfx_vdc_sanctum_panel(16, 5, 15, 18);
+        pcfx_vdc_sanctum_print(19, 7, "SANCTUM", 8);
+        pcfx_vdc_sanctum_print(18, 10, "A place of rest.", 16);
+        pcfx_vdc_sanctum_print(18, 11, "Serena can", 11);
+        pcfx_vdc_sanctum_print(18, 12, "prepare before", 14);
+        pcfx_vdc_sanctum_print(18, 13, "the next duel.", 14);
+        pcfx_vdc_sanctum_print(18, 16, value == 0 ? "> SAVE" : "  SAVE", 7);
+        pcfx_vdc_sanctum_print(18, 18, value == 1 ? "> DECK EDITOR" : "  DECK EDITOR", 14);
+        pcfx_vdc_sanctum_print(18, 20, value == 2 ? "> BACK" : "  BACK", 7);
+        pcfx_vdc_sanctum_print(16, 25, "A/RUN SELECT  B BACK", 22);
+        break;
+    }
+}
+
+static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdrop backdrop,
+                                   WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
 {
     if (!video) return;
-    if (video->vdc_bg == bg) {
-        pcfx_vdc_sanctum_set_palette();
-        eris_tetsu_set_priorities(7, 0, 6, 0, 0, 0, 0);
-        return;
+    if (g_sanctum_loaded_backdrop != (int)backdrop) {
+        waifu_pcfx_cdrom_read_rainbow_bg_to_kram(pcfx_rainbow_asset_for_backdrop(backdrop),
+                                                 WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR,
+                                                 pcfx_rainbow_bytes_for_backdrop(backdrop));
+        g_sanctum_loaded_backdrop = (int)backdrop;
     }
 
     video->vdc_overlay_ready = 0;
@@ -1382,33 +1504,36 @@ static void pcfx_vdc_apply_sanctum_background(WaifuPcfxVideo *video, WaifuPcfxVd
     eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
     eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
 
+    pcfx_vdc_restore_overlay_palette();
     pcfx_vdc_sanctum_upload_tiles();
-    pcfx_vdc_sanctum_fill_map(bg);
-    eris_tetsu_set_priorities(7, 0, 6, 0, 0, 0, 0);
-    video->vdc_bg = bg;
+    pcfx_vdc_overlay_upload_font();
+    pcfx_vdc_sanctum_draw_overlay(overlay, value, blink_visible);
+    pcfx_rainbow_setup();
+    pcfx_rainbow_start_transfer();
+    g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
+    eris_tetsu_set_priorities(7, 7, 6, 0, 0, 0, 5);
+    eris_tetsu_set_video_mode(TETSU_LINES_263, 0, TETSU_DOTCLOCK_5MHz,
+                              TETSU_COLORS_16, TETSU_COLORS_16,
+                              1, 1, 1, 0, 0, 0, 1);
+    g_sanctum_active = 1;
 }
 
 static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
 {
-    if (!video || video->vdc_bg == WAIFU_PCFX_VDC_BG_NONE) return;
-    pcfx_vdc_sanctum_clear_rect(0, 0, WAIFU_PCFX_VDC_MAP_W, WAIFU_PCFX_VDC_MAP_H);
+    if (!video || (!g_sanctum_active && video->vdc_bg == WAIFU_PCFX_VDC_BG_NONE)) return;
+    pcfx_vdc_sanctum_clear_all();
     pcfx_vdc_restore_overlay_palette();
+    pcfx_rainbow_write_reg16(0x40, 0x0000);
+    g_king_page_setting_extra = 0;
     eris_tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
     video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
+    g_sanctum_active = 0;
 }
 
 static void pcfx_vdc_apply_requested_background(WaifuPcfxVideo *video, WaifuPcfxVdcBackground bg)
 {
     if (!video) return;
-    switch (bg) {
-    case WAIFU_PCFX_VDC_BG_SANCTUM:
-    case WAIFU_PCFX_VDC_BG_SANCTUM_SAVE:
-        pcfx_vdc_apply_sanctum_background(video, bg);
-        break;
-    default:
-        pcfx_vdc_clear_background(video);
-        break;
-    }
+    if (bg == WAIFU_PCFX_VDC_BG_NONE) pcfx_vdc_clear_background(video);
 }
 
 static void pcfx_vdc_overlay_print(int tx, int ty, const char *str, int max_len)
@@ -1847,6 +1972,9 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
 {
     if (!video) return;
     g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+    g_sanctum_requested = 0;
+    g_sanctum_active = 0;
+    g_king_page_setting_extra = 0;
     video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
     pcfx_vdc_overlay_force_black(video);
     if (video->mode == WAIFU_PCFX_VIDEO_MODE_TITLE_HICOLOR) pcfx_title_blackout_pages(video);
@@ -1902,6 +2030,15 @@ void waifu_pcfx_video_use_vdc_background(WaifuPcfxVideo *video, WaifuPcfxVdcBack
 void waifu_pcfx_video_request_vdc_background(WaifuPcfxVdcBackground bg)
 {
     g_vdc_bg_requested = bg;
+}
+
+void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
+{
+    g_sanctum_backdrop = backdrop;
+    g_sanctum_overlay = overlay;
+    g_sanctum_value = value;
+    g_sanctum_blink_visible = blink_visible ? 1 : 0;
+    g_sanctum_requested = 1;
 }
 
 static int fade_q8_to_level(int fade_q8)
@@ -2024,8 +2161,15 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
     if (video->active_palette != palette_id || video->active_fade_q8 != fade_level) {
         pcfx_present_update_palette_if_needed(video, rgb, palette_id, fade_q8);
     }
-    pcfx_vdc_apply_requested_background(video, g_vdc_bg_requested);
-    g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+    if (g_sanctum_requested) {
+        pcfx_vdc_apply_sanctum(video, g_sanctum_backdrop, g_sanctum_overlay,
+                               g_sanctum_value, g_sanctum_blink_visible);
+        g_sanctum_requested = 0;
+        g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+    } else {
+        pcfx_vdc_apply_requested_background(video, g_vdc_bg_requested);
+        g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+    }
 
 #if WAIFU_PCFX_DIRTY_PRESENT
     int upload_full = 0;

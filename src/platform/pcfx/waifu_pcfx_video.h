@@ -18,16 +18,27 @@ typedef enum WaifuPcfxVideoMode {
 typedef enum WaifuPcfxVdcBackground {
     WAIFU_PCFX_VDC_BG_NONE = 0,
     WAIFU_PCFX_VDC_BG_TITLE,
-    WAIFU_PCFX_VDC_BG_GAME_3D,
-    WAIFU_PCFX_VDC_BG_SANCTUM,
-    WAIFU_PCFX_VDC_BG_SANCTUM_SAVE
+    WAIFU_PCFX_VDC_BG_GAME_3D
 } WaifuPcfxVdcBackground;
+
+typedef enum WaifuPcfxSanctumBackdrop {
+    WAIFU_PCFX_SANCTUM_BACKDROP_DESERT = 0,
+    WAIFU_PCFX_SANCTUM_BACKDROP_STONE = 1,
+    WAIFU_PCFX_SANCTUM_BACKDROP_EMBER = 2
+} WaifuPcfxSanctumBackdrop;
+
+typedef enum WaifuPcfxSanctumOverlay {
+    WAIFU_PCFX_SANCTUM_OVERLAY_MENU = 0,
+    WAIFU_PCFX_SANCTUM_OVERLAY_SAVE = 1,
+    WAIFU_PCFX_SANCTUM_OVERLAY_SAVE_DEVICE = 2
+} WaifuPcfxSanctumOverlay;
 
 WaifuPcfxVideo *waifu_pcfx_video_create(void);
 void waifu_pcfx_video_destroy(WaifuPcfxVideo *video);
 void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video);
 void waifu_pcfx_video_use_vdc_background(WaifuPcfxVideo *video, WaifuPcfxVdcBackground bg);
 void waifu_pcfx_video_request_vdc_background(WaifuPcfxVdcBackground bg);
+void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible);
 void waifu_pcfx_video_set_palette_rgb(WaifuPcfxVideo *video, const uint8_t *rgb, WaifuFmPaletteId palette_id);
 void waifu_pcfx_video_set_palette_rgb_fade(WaifuPcfxVideo *video, const uint8_t *rgb, WaifuFmPaletteId palette_id, int fade_q8);
 void waifu_pcfx_video_clear_black(WaifuPcfxVideo *video);

@@ -8946,17 +8946,22 @@ static void draw_story_scene_3d(int f)
     }
 }
 
-static void draw_story_sanctum_background(int centered_panel)
-{
 #ifdef WAIFU_FM_PCFX
-    waifu_pcfx_video_request_vdc_background(
-        centered_panel ? WAIFU_PCFX_VDC_BG_SANCTUM_SAVE : WAIFU_PCFX_VDC_BG_SANCTUM);
-    clear_screen(IDX_BLACK);
-#else
-    (void)centered_panel;
+static WaifuPcfxSanctumBackdrop story_pcfx_sanctum_backdrop(void)
+{
+    switch (story_scene_kind()) {
+    case STORY_SCENE_TEMPLE:  return WAIFU_PCFX_SANCTUM_BACKDROP_STONE;
+    case STORY_SCENE_VOLCANO: return WAIFU_PCFX_SANCTUM_BACKDROP_EMBER;
+    case STORY_SCENE_VOID:    return WAIFU_PCFX_SANCTUM_BACKDROP_EMBER;
+    default:                  return WAIFU_PCFX_SANCTUM_BACKDROP_DESERT;
+    }
+}
+#endif
+
+static void draw_story_sanctum_background(void)
+{
     draw_story_sky();
     draw_story_scene_3d(g_i_frame);
-#endif
 }
 
 static const char *story_scene_name(void)
@@ -9022,7 +9027,14 @@ static void draw_story_fire_to_deck_transition(int f)
 
 static void draw_story_pyramid_menu(void)
 {
-    draw_story_sanctum_background(0);
+#ifdef WAIFU_FM_PCFX
+    waifu_pcfx_video_request_sanctum(story_pcfx_sanctum_backdrop(),
+                                     WAIFU_PCFX_SANCTUM_OVERLAY_MENU,
+                                     g_story_pyramid_cursor, 1);
+    clear_screen(0);
+    return;
+#endif
+    draw_story_sanctum_background();
     draw_panel_rect(132, 42, 116, 138, IDX_UI_DARK);
     draw_text(158, 55, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
     draw_wrapped_text_small_box(143, 76, 92, 4, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
@@ -9035,7 +9047,15 @@ static void draw_story_pyramid_menu(void)
 
 static void draw_story_save_screen(void)
 {
-    draw_story_sanctum_background(1);
+#ifdef WAIFU_FM_PCFX
+    waifu_pcfx_video_request_sanctum(story_pcfx_sanctum_backdrop(),
+                                     WAIFU_PCFX_SANCTUM_OVERLAY_SAVE,
+                                     g_story_save_status,
+                                     ((g_i_frame / 16) & 1) == 0);
+    clear_screen(0);
+    return;
+#endif
+    draw_story_sanctum_background();
     draw_panel_rect(31, 78, 194, 82, IDX_UI_DARK);
     if (g_story_save_status < 0) {
         draw_centered_text(95, "SAVE FAILED", IDX_RED, IDX_BLACK);
@@ -9053,14 +9073,10 @@ static void draw_story_save_screen(void)
 #ifdef WAIFU_FM_PCFX
 static void draw_story_save_device_screen(void)
 {
-    draw_story_sanctum_background(0);
-    draw_panel_rect(132, 54, 116, 116, IDX_UI_DARK);
-    draw_text(157, 68, "SAVE TO", IDX_GOLD_HI, IDX_BLACK);
-    draw_text(154, 104, "INTERNAL", g_i_save_device_sel == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(154, 124, "FX-BMP", g_i_save_device_sel == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(154, 144, "BACK", g_i_save_device_sel == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(142, 104 + g_i_save_device_sel * 20, ">", IDX_RED, IDX_BLACK);
-    draw_text_small(128, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
+    waifu_pcfx_video_request_sanctum(story_pcfx_sanctum_backdrop(),
+                                     WAIFU_PCFX_SANCTUM_OVERLAY_SAVE_DEVICE,
+                                     g_i_save_device_sel, 1);
+    clear_screen(0);
 }
 #endif
 

@@ -17,6 +17,12 @@ typedef enum WaifuPcfxCdAssetId {
     WAIFU_PCFX_CD_ASSET_STORY_PORTRAITS
 } WaifuPcfxCdAssetId;
 
+typedef enum WaifuPcfxRainbowBgAsset {
+    WAIFU_PCFX_RAINBOW_BG_DESERT = 0,
+    WAIFU_PCFX_RAINBOW_BG_STONE = 1,
+    WAIFU_PCFX_RAINBOW_BG_EMBER = 2
+} WaifuPcfxRainbowBgAsset;
+
 WaifuPcfxCdrom *waifu_pcfx_cdrom_create(void);
 void waifu_pcfx_cdrom_destroy(WaifuPcfxCdrom *cdrom);
 int waifu_pcfx_cdrom_read_asset(WaifuPcfxCdrom *cdrom, WaifuPcfxCdAssetId asset, void *dst, size_t dst_size);
@@ -38,6 +44,7 @@ uint32_t waifu_pcfx_cd_read_seq(void);
  * KRAM word address, matching liberis eris_cd_read_kram(). */
 int waifu_pcfx_cdrom_read_title_yuv422_to_kram(uint32_t kram_addr, size_t bytes);
 int waifu_pcfx_cdrom_read_sfx_adpcm_to_kram(uint32_t kram_addr, size_t bytes);
+int waifu_pcfx_cdrom_read_rainbow_bg_to_kram(WaifuPcfxRainbowBgAsset asset, uint32_t kram_addr, size_t bytes);
 
 #ifdef __cplusplus
 }

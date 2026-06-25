@@ -1,6 +1,7 @@
 #include "waifu_pcfx_cdrom.h"
 #include "assets.h"
 #include "title_asset.h"
+#include "rainbow_bg_assets.h"
 
 #include <string.h>
 #include <eris/cd.h>
@@ -56,23 +57,26 @@
 #ifndef BINARY_LBA_ASSETS_GENERATED_SFX_ADPCM_BIN
 #define BINARY_LBA_ASSETS_GENERATED_SFX_ADPCM_BIN 0
 #endif
+#ifndef BINARY_LBA_ASSETS_GENERATED_RAINBOW_DESERT_BIN
+#define BINARY_LBA_ASSETS_GENERATED_RAINBOW_DESERT_BIN 0
+#endif
+#ifndef BINARY_LBA_ASSETS_GENERATED_RAINBOW_STONE_BIN
+#define BINARY_LBA_ASSETS_GENERATED_RAINBOW_STONE_BIN 0
+#endif
+#ifndef BINARY_LBA_ASSETS_GENERATED_RAINBOW_EMBER_BIN
+#define BINARY_LBA_ASSETS_GENERATED_RAINBOW_EMBER_BIN 0
+#endif
 
 
 #define PCFX_CD_SECTOR_SIZE 2048u
 
-/* KING PageSetting register layout, matching liberis
-   eris_king_set_kram_pages(scsi,bg,rainbow,adpcm):
-
-      bits  7..0   SCSI KRAM page
-      bits 15..8   BG KRAM page
-      bits 23..16  RAINBOW KRAM page
-      bits 31..24  ADPCM KRAM page
-
-   The previous ADPCM SFX pass used 0x0100 for ADPCM page 1.  That is actually
-   BG page 1, so it left the KING background displaying/reading the ADPCM
-   physical page and broke in-game card rendering. */
+/* KING PageSetting register layout follows the pcfxemu/HuC6272 behavior used
+   by the test target.  DMA selects page 1 with bit 0; RAINBOW selects page 1
+   with bit 12.  The existing video/ADPCM paths keep their historical BG/ADPCM
+   bits, but the RAINBOW stream must preserve bit 12 or the decoder reads page 0. */
 #define WAIFU_PCFX_KRAM_PAGESETTING_SCSI1   0x00000001u
 #define WAIFU_PCFX_KRAM_PAGESETTING_BG1     0x00000100u
+#define WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1 0x00001000u
 #define WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1  0x01000000u
 
 
@@ -180,6 +184,20 @@ static int cd_read_kram_on_page(uint32_t lba, uint32_t kram_addr, uint32_t bytes
     return 1;
 }
 
+static int cd_read_kram_with_page_setting(uint32_t lba, uint32_t kram_addr, uint32_t bytes,
+                                          uint32_t dma_page_setting, uint32_t restore_page_setting)
+{
+    if (!lba || !bytes) return 0;
+
+    king_set_page_setting(dma_page_setting);
+    eris_cd_read_kram(lba, kram_addr, bytes);
+    scsi_clear_phase_irq();
+    king_set_page_setting(restore_page_setting);
+
+    g_cd_read_seq++;
+    return 1;
+}
+
 static int cd_read_kram(uint32_t lba, uint32_t kram_addr, uint32_t bytes)
 {
     return cd_read_kram_on_page(lba, kram_addr, bytes, 0);
@@ -199,6 +217,32 @@ int waifu_pcfx_cdrom_read_sfx_adpcm_to_kram(uint32_t kram_addr, size_t bytes)
     /* ADPCM samples live on KING physical page 1. */
     return cd_read_kram_on_page(BINARY_LBA_ASSETS_GENERATED_SFX_ADPCM_BIN,
                                 kram_addr, (uint32_t)bytes, 1);
+}
+
+int waifu_pcfx_cdrom_read_rainbow_bg_to_kram(WaifuPcfxRainbowBgAsset asset, uint32_t kram_addr, size_t bytes)
+{
+    uint32_t lba = 0;
+    switch (asset) {
+    case WAIFU_PCFX_RAINBOW_BG_STONE:
+        lba = BINARY_LBA_ASSETS_GENERATED_RAINBOW_STONE_BIN;
+        if (bytes == 0) bytes = WAIFU_PCFX_RAINBOW_STONE_BYTES;
+        break;
+    case WAIFU_PCFX_RAINBOW_BG_EMBER:
+        lba = BINARY_LBA_ASSETS_GENERATED_RAINBOW_EMBER_BIN;
+        if (bytes == 0) bytes = WAIFU_PCFX_RAINBOW_EMBER_BYTES;
+        break;
+    case WAIFU_PCFX_RAINBOW_BG_DESERT:
+    default:
+        lba = BINARY_LBA_ASSETS_GENERATED_RAINBOW_DESERT_BIN;
+        if (bytes == 0) bytes = WAIFU_PCFX_RAINBOW_DESERT_BYTES;
+        break;
+    }
+    return cd_read_kram_with_page_setting(
+        lba,
+        kram_addr,
+        (uint32_t)bytes,
+        WAIFU_PCFX_KRAM_PAGESETTING_SCSI1 | WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1 | WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1,
+        WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1 | WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1);
 }
 
 WaifuPcfxCdrom *waifu_pcfx_cdrom_create(void)
