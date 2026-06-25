@@ -4240,6 +4240,7 @@ typedef enum WaifuInteractiveState {
 #ifdef WAIFU_FM_PCFX
     /* PC-FX only: pick which backup device (internal / FX-BMP) to load from. */
     WAIFU_I_STORY_LOAD_DEVICE,
+    WAIFU_I_STORY_LOAD_TO_MAP,
 #endif
 } WaifuInteractiveState;
 
@@ -4298,6 +4299,7 @@ static int g_i_frame = 0;
 static int g_i_menu_selected = 0;
 #ifdef WAIFU_FM_PCFX
 static int g_i_load_device_sel = 0; /* 0 internal, 1 FX-BMP, 2 back */
+static int g_i_load_device_pending = 0;
 #endif
 static WaifuFmInput g_prev_input;
 
@@ -5916,6 +5918,7 @@ static void begin_story_load(void)
 {
 #ifdef WAIFU_FM_PCFX
     g_i_load_device_sel = 0;
+    g_i_load_device_pending = 0;
     g_i_state = WAIFU_I_STORY_LOAD_DEVICE;
     g_i_frame = -1;
 #else
@@ -6080,6 +6083,8 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_MENU_TO_STORY:
     case WAIFU_I_MENU_TO_BATTLE:
 #ifdef WAIFU_FM_PCFX
+    case WAIFU_I_STORY_LOAD_TO_MAP:
+        return WAIFU_MUSIC_NONE;
     case WAIFU_I_STORY_LOAD_DEVICE:
 #endif
         return WAIFU_MUSIC_TITLE;
@@ -8877,14 +8882,14 @@ static void draw_story_pyramid_menu(void)
     clear_screen(IDX_BLACK);
     draw_story_sky();
     draw_story_scene_3d(g_i_frame);
-    draw_panel_rect(34, 46, 188, 130, IDX_UI_DARK);
-    draw_centered_text(57, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(48, 75, 158, 3, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
-    draw_text(72, 114, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(72, 134, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(72, 154, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(58, 114 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
-    draw_text_small(49, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
+    draw_panel_rect(126, 46, 121, 156, IDX_UI_DARK);
+    draw_text(158, 57, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
+    draw_wrapped_text_small_box(136, 78, 100, 4, 9, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
+    draw_text(151, 132, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 152, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 172, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(137, 132 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
+    draw_text_small(11, 226, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_story_save_screen(void)
@@ -8991,6 +8996,10 @@ void waifu_fm_step(const WaifuFmInput *input)
 {
     WaifuFmInput zero;
     int press_up, press_down, press_left, press_right, press_a, press_b, press_start, press_tab;
+#ifdef WAIFU_FM_PCFX
+    int suppress_confirm_sound = 0;
+    int suppress_confirm_alt_sound = 0;
+#endif
 
     waifu_fm_init();
     waifu_assets_big_art_draw_queue_reset();
@@ -9010,9 +9019,25 @@ void waifu_fm_step(const WaifuFmInput *input)
     press_start = input_pressed(input->start, g_prev_input.start);
     press_tab = input_pressed(input->tab, g_prev_input.tab);
 
+#ifdef WAIFU_FM_PCFX
+    if (g_i_state == WAIFU_I_STORY_LOAD_DEVICE && press_a && g_i_load_device_sel != 2) {
+        suppress_confirm_sound = 1;
+    }
+    if (g_i_state == WAIFU_I_STORY_LOAD_DEVICE && press_start && g_i_load_device_sel != 2) {
+        suppress_confirm_alt_sound = 1;
+    }
+#endif
     if (press_up || press_down || press_left || press_right) waifu_sound_play(WAIFU_SOUND_SELECT);
-    if (press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
-    if (press_start || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
+    if (press_a
+#ifdef WAIFU_FM_PCFX
+        && !suppress_confirm_sound
+#endif
+    ) waifu_sound_play(WAIFU_SOUND_CONFIRM);
+    if ((press_start || press_b || press_tab)
+#ifdef WAIFU_FM_PCFX
+        && !suppress_confirm_alt_sound
+#endif
+    ) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
 
     switch (g_i_state) {
     case WAIFU_I_LOADING_ASSETS:
@@ -9125,12 +9150,10 @@ void waifu_fm_step(const WaifuFmInput *input)
                 int ext = g_i_load_device_sel; /* 0 internal, 1 external */
                 int has = ext ? external_has : internal_has;
                 if (has) {
+                    g_i_load_device_pending = ext;
                     waifu_pcfx_video_overlay_clear();
-                    if (!load_story_device_to_map(ext)) {
-                        /* Read failed unexpectedly; fall back to the menu. */
-                        g_i_state = WAIFU_I_MENU;
-                        g_i_frame = -1;
-                    }
+                    g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
+                    g_i_frame = -1;
                 }
                 /* No save on the chosen device: stay so the player can pick
                    the other one or BACK. */
@@ -9142,6 +9165,17 @@ void waifu_fm_step(const WaifuFmInput *input)
         }
         break;
     }
+
+    case WAIFU_I_STORY_LOAD_TO_MAP:
+        draw_transition_black_hold_frame();
+        if (g_i_frame >= 8) {
+            int ext = g_i_load_device_pending;
+            if (!load_story_device_to_map(ext)) {
+                g_i_state = WAIFU_I_MENU;
+                g_i_frame = -1;
+            }
+        }
+        break;
 #endif
 
     case WAIFU_I_STORY_NAME:
