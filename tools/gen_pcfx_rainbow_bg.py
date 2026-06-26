@@ -344,7 +344,7 @@ def encode_frame(path, quality):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--quality", type=int, default=100)
+    parser.add_argument("--quality", type=int, default=95)
     parser.add_argument("--header", required=True)
     parser.add_argument("triples", nargs="+", help="input.png output.bin SYMBOL triplets")
     args = parser.parse_args()
@@ -368,7 +368,7 @@ def main():
         "#define WAIFU_PCFX_RAINBOW_BG_ASSETS_H",
         "",
         "#define WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR 0u",
-        "#define WAIFU_PCFX_RAINBOW_BG_TRANSFER_START 0u",
+        "#define WAIFU_PCFX_RAINBOW_BG_TRANSFER_START 6u",
         "#define WAIFU_PCFX_RAINBOW_BG_BLOCK_COUNT 15u",
     ]
     for sym, size in records:

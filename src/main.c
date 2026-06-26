@@ -6701,9 +6701,11 @@ static void render_interactive_card_preview_static(int card_id)
     draw_panel_rect(2, 10, 252, 218, IDX_UI_DARK);
 
     if (is_support_card(card_id)) {
-        rect_fill(11, 40, 120, 160, IDX_BLACK);
-        draw_support_big_art_scaled(12, 42, 112, 112);
-        rect_outline(7, 35, 122, 162, IDX_GOLD_HI);
+        tx = 140;
+        maxw = 108;
+        rect_fill(7, 36, 128, 160, IDX_BLACK);
+        draw_support_big_art_scaled(7, 40, 128, 128);
+        rect_outline(5, 34, 132, 164, IDX_GOLD_HI);
         draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
         lines = draw_wrapped_text_small_box(tx, y, maxw, 3, 10, support_card_name(card_id), IDX_WHITE, IDX_BLACK);
         y += lines * 10 + 7;

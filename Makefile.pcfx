@@ -112,7 +112,7 @@ $(OBJDIR)/%.o: %.s
 
 $(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): tools/gen_pcfx_rainbow_bg.py assets/source/bg/desert.png assets/source/bg/stone.png assets/source/bg/ember.png
 	@mkdir -p assets/generated src/generated
-	python3 tools/gen_pcfx_rainbow_bg.py --quality 100 --header $(RAINBOW_BG_HEADER) \
+	python3 tools/gen_pcfx_rainbow_bg.py --quality 95 --header $(RAINBOW_BG_HEADER) \
 		assets/source/bg/desert.png assets/generated/rainbow_desert.bin WAIFU_PCFX_RAINBOW_DESERT \
 		assets/source/bg/stone.png assets/generated/rainbow_stone.bin WAIFU_PCFX_RAINBOW_STONE \
 		assets/source/bg/ember.png assets/generated/rainbow_ember.bin WAIFU_PCFX_RAINBOW_EMBER

@@ -1078,6 +1078,8 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_FONT_LAST  0x7f
 #define WAIFU_PCFX_VDC_MAP_W 64
 #define WAIFU_PCFX_VDC_MAP_H 32
+#define WAIFU_PCFX_VDC_PALETTE_OFFSET 128
+#define WAIFU_PCFX_VDC_PALETTE_BASE (WAIFU_PCFX_VDC_PALETTE_OFFSET * 2)
 #define WAIFU_PCFX_VDC_PAL_BLACK 0x01
 #define WAIFU_PCFX_VDC_PAL_WHITE 0x02
 #define WAIFU_PCFX_VDC_PAL_GOLD  0x03
@@ -1292,14 +1294,25 @@ static void pcfx_vdc_overlay_clear_all(void)
     pcfx_vdc_overlay_clear_rect(0, 0, WAIFU_PCFX_VDC_MAP_W, WAIFU_PCFX_VDC_MAP_H);
 }
 
+static void pcfx_vdc_select_overlay_palette(void)
+{
+    eris_tetsu_set_7up_palette(WAIFU_PCFX_VDC_PALETTE_OFFSET, WAIFU_PCFX_VDC_PALETTE_OFFSET);
+}
+
+static uint16_t pcfx_vdc_palette_entry(uint16_t index)
+{
+    return (uint16_t)(WAIFU_PCFX_VDC_PALETTE_BASE + index);
+}
+
 static void pcfx_vdc_restore_overlay_palette(void)
 {
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_BLACK, 0x0088);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_WHITE, 0xE088);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_GOLD,  0xB468);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_RED,   0x5F0F);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_PANEL, rgb888_to_pcfx_yuv(12, 18, 28));
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_EDGE,  rgb888_to_pcfx_yuv(210, 172, 90));
+    pcfx_vdc_select_overlay_palette();
+    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_BLACK), 0x0088);
+    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_WHITE), 0xE088);
+    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_GOLD),  0xB468);
+    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_RED),   0x5F0F);
+    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_PANEL), rgb888_to_pcfx_yuv(12, 18, 28));
+    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_EDGE),  rgb888_to_pcfx_yuv(210, 172, 90));
 }
 
 static void pcfx_vdc_sanctum_upload_solid_tile(uint16_t tile, uint16_t vdc0_row, uint16_t vdc1_row)
@@ -1516,6 +1529,7 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
     eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
     eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
 
+    pcfx_vdc_select_overlay_palette();
     pcfx_vdc_restore_overlay_palette();
     pcfx_vdc_sanctum_upload_tiles();
     pcfx_vdc_overlay_upload_font();
@@ -1573,7 +1587,11 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
         eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
         eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
         pcfx_king_set_bg0_page_inline(page_bat_offset(0));
-        eris_tetsu_set_priorities(1, 1, 7, 0, 0, 0, 6);
+        /* The RAINBOW still itself cannot be palette-faded, so the fade mask
+           is drawn by VDC tiles.  Keep VDC in front of both KING BG0 and
+           RAINBOW; transparent VDC tile pixels still let the scene show
+           normally once the fade level reaches zero. */
+        eris_tetsu_set_priorities(7, 7, 6, 0, 0, 0, 5);
         eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                                   TETSU_COLORS_16, TETSU_COLORS_16,
                                   1, 1, 1, 0, 0, 0, 1);
@@ -1600,6 +1618,7 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
     eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_256, TETSU_COLORS_16,
                               1, 0, 1, 0, 0, 0, 0);
+    eris_tetsu_set_7up_palette(0, 0);
 #if WAIFU_PCFX_DIRTY_PRESENT
     video->page_shadow_valid[0] = 0;
     video->page_shadow_valid[1] = 0;
@@ -1612,6 +1631,8 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
     g_vdc_overlay_applied_fade_level = -1;
     g_sanctum_active = 0;
     g_rainbow_backdrop_active = 0;
+    video->active_palette = (WaifuFmPaletteId)-1;
+    video->active_fade_q8 = -1;
     video->front_page = 0;
     video->back_page = 1;
 }
@@ -1664,10 +1685,7 @@ static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video)
     eris_low_sup_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
     eris_low_sup_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
 
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_BLACK, 0x0088);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_WHITE, 0xE088);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_GOLD,  0xB468);
-    eris_tetsu_set_palette(WAIFU_PCFX_VDC_PAL_RED,   0x5F0F);
+    pcfx_vdc_restore_overlay_palette();
 
     pcfx_vdc_overlay_upload_fade_tiles();
     pcfx_vdc_overlay_upload_font();
@@ -1833,7 +1851,7 @@ static void set_king_16m_title_video(void)
 {
     /* VDC BG must be in front of KING BG0 for prompt/menu text. */
     eris_tetsu_set_priorities(7, 0, 6, 0, 0, 0, 0);
-    eris_tetsu_set_7up_palette(0, 0);
+    pcfx_vdc_select_overlay_palette();
     eris_tetsu_set_king_palette(0, 0, 0, 0);
     eris_tetsu_set_rainbow_palette(0);
 
@@ -1983,7 +2001,7 @@ static void set_king_8bpp_video(int display_page)
        cleared.  Clearing it here exposes the previous 16M title surface for a
        frame during title/menu -> loading/battle mode switches. */
     eris_tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
-    eris_tetsu_set_7up_palette(0, 0);
+    pcfx_vdc_select_overlay_palette();
     /* KING palette offsets are stored as 8-bit values in two-color units in
        the VCE.  Use palette bank 0 for the 8bpp page path and upload the same
        RGB-derived entries there.  Passing 256 wrapped through the low byte on
@@ -2174,7 +2192,6 @@ void waifu_pcfx_video_set_palette_rgb_fade(WaifuPcfxVideo *video, const uint8_t 
         for (int i = 0; i < 256; ++i) {
             uint16_t yuv = row[i];
             eris_tetsu_set_palette((uint16_t)i, yuv);
-            eris_tetsu_set_palette((uint16_t)(256 + i), yuv);
         }
     } else {
         if (!video->have_base_yuv || video->active_palette != palette_id) {
@@ -2191,13 +2208,11 @@ void waifu_pcfx_video_set_palette_rgb_fade(WaifuPcfxVideo *video, const uint8_t 
                 yuv = rgb888_to_pcfx_yuv((uint8_t)r, (uint8_t)g, (uint8_t)b);
             }
             eris_tetsu_set_palette((uint16_t)i, yuv);
-            eris_tetsu_set_palette((uint16_t)(256 + i), yuv);
         }
         video->have_base_yuv = 1;
     }
 
     eris_tetsu_set_palette((uint16_t)IDX_BLACK, WAIFU_PCFX_NEUTRAL_BLACK);
-    eris_tetsu_set_palette((uint16_t)(256 + IDX_BLACK), WAIFU_PCFX_NEUTRAL_BLACK);
     video->active_palette = palette_id;
     video->active_fade_q8 = level;
 }
