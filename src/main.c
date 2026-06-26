@@ -6351,6 +6351,7 @@ static void init_battle_state(void)
 {
     int i;
     g_story_battle_active = 0;
+    waifu_fm_use_common_palette();
 #ifdef WAIFU_FM_HEADLESS_TESTS
     g_i_headless_draw_seed = 17;
 #endif
@@ -6491,7 +6492,7 @@ static void init_story_battle_state(void)
     }
     sync_battle_deck_counts();
     /* Bosses have higher LP. */
-    if (story_opponent_is_boss()) g_com_lp = 10000;
+    if (story_opponent_is_boss()) g_com_lp = 9999;
 }
 
 static void draw_interactive_field_cards(Camera cam)
@@ -10139,6 +10140,11 @@ static int debug_regression_story_duel_loads(void)
         g_story_plaza_line = 0;
         g_story_battle_active = 0;
         init_story_battle_state();
+        if (waifu_fm_palette_id() != WAIFU_FM_PALETTE_COMMON) {
+            fprintf(stderr, "REGRESSION story_duel_loads FAIL palette duel=%d got=%d expected=%d\n",
+                    duel, (int)waifu_fm_palette_id(), (int)WAIFU_FM_PALETTE_COMMON);
+            return 1;
+        }
         enter_battle_after_assets();
         for (guard = 0; guard < 720 && (g_i_state == WAIFU_I_LOADING_ASSETS || !waifu_assets_ready()); ++guard) {
             WaifuFmInput in;
