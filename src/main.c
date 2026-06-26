@@ -4551,6 +4551,7 @@ static int g_story_duel_index = 0;
 static int g_story_map_cursor = 0;     /* 0 pyramid, 1 plaza */
 static int g_story_pyramid_cursor = 0; /* 0 save, 1 editor, 2 back */
 static int g_story_plaza_line = 0;
+static int g_story_ending_line = 0;
 static int g_story_saved_flash = 0;
 static int g_story_editor_from_pyramid = 0;
 static int g_story_save_status = 0; /* 1 saved/loaded, -1 failed/no save */
@@ -8511,6 +8512,7 @@ static void reset_story_entry(void)
     g_story_map_cursor = 0;
     g_story_pyramid_cursor = 0;
     g_story_plaza_line = 0;
+    g_story_ending_line = 0;
     g_story_name_to_intro = 0;
     g_story_saved_flash = 0;
     g_story_editor_from_pyramid = 0;
@@ -9306,26 +9308,37 @@ static void draw_story_plaza_scene(void)
     if (g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
 }
 
-#define STORY_ENDING_IMAGE_FRAMES 420
 #define STORY_ENDING_CREDITS_FRAMES 300
+
+static const char *story_ending_lines[] = {
+    "The last shard is silent. No enemy answers its call.",
+    "I finally defeated them. The ones who turned dreams into chains.",
+    "The deck is whole again. Every stolen card has found its way home.",
+    "When morning comes, I will carry these cards beyond the ruins."
+};
+
+static int story_ending_line_count(void)
+{
+    return (int)(sizeof(story_ending_lines) / sizeof(story_ending_lines[0]));
+}
 
 static void draw_story_ending_screen(void)
 {
+    int line_count = story_ending_line_count();
+    int line = g_story_ending_line;
+    if (line < 0) line = 0;
+    if (line >= line_count) line = line_count - 1;
 #ifdef WAIFU_FM_PCFX
     clear_screen(IDX_BLACK);
     waifu_fm_use_ending_palette();
-    waifu_pcfx_video_overlay_ending_story();
+    waifu_pcfx_video_overlay_ending_story(line, ((g_i_frame / 16) & 1) == 0);
 #else
     clear_screen(IDX_BLACK);
-    draw_centered_text(76, "SERENA WINS", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(38, 106, 180, 4, 10,
-        "The last shard is silent. Serena has finally defeated the enemies who haunted her, and the deck is whole again.",
-        IDX_WHITE, IDX_BLACK);
+    draw_text_small(10, 180, "SERENA", IDX_GOLD_HI, IDX_BLACK);
+    draw_wrapped_text_small_box(10, 198, W - 20, 4, 10, story_ending_lines[line], IDX_WHITE, IDX_BLACK);
+    if (((g_i_frame / 16) & 1) == 0) draw_centered_text(226, "A/RUN CONTINUE", IDX_WHITE, IDX_BLACK);
 #endif
     if (g_i_frame >= 0 && g_i_frame < 36) apply_black_dither_fade(q8_ratio(g_i_frame, 36));
-    if (g_i_frame >= STORY_ENDING_IMAGE_FRAMES - 36) {
-        apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame - (STORY_ENDING_IMAGE_FRAMES - 36), 36));
-    }
 }
 
 static void draw_story_ending_credits_screen(void)
@@ -9353,6 +9366,7 @@ static void story_return_to_map_after_duel(void)
         award_story_win_drop();
         if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
             g_story_battle_active = 0;
+            g_story_ending_line = 0;
             g_i_state = WAIFU_I_STORY_ENDING;
             g_i_frame = -1;
             init_battle_state();
@@ -9761,9 +9775,14 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     case WAIFU_I_STORY_ENDING:
         draw_story_ending_screen();
-        if (press_a || press_start || g_i_frame >= STORY_ENDING_IMAGE_FRAMES) {
-            g_i_state = WAIFU_I_STORY_ENDING_CREDITS;
-            g_i_frame = -1;
+        if (press_a || press_start) {
+            ++g_story_ending_line;
+            if (g_story_ending_line >= story_ending_line_count()) {
+                g_i_state = WAIFU_I_STORY_ENDING_CREDITS;
+                g_i_frame = -1;
+            } else {
+                g_i_frame = -1;
+            }
         }
         break;
 
@@ -9988,6 +10007,7 @@ static void debug_setup_music_demo_state(const char *name)
         g_b_phase = IB_TALLY;
         g_b_phase_frame = 0;
     } else if (!strcmp(name, "ending")) {
+        g_story_ending_line = 0;
         g_i_state = WAIFU_I_STORY_ENDING;
     } else if (!strcmp(name, "ending-credits") || !strcmp(name, "credits")) {
         g_i_state = WAIFU_I_STORY_ENDING_CREDITS;

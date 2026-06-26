@@ -1078,6 +1078,7 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_FONT_LAST  0x7f
 #define WAIFU_PCFX_VDC_MAP_W 64
 #define WAIFU_PCFX_VDC_MAP_H 32
+#define WAIFU_PCFX_VDC_VISIBLE_W 32
 #define WAIFU_PCFX_VDC_PALETTE_BASE 256
 #define WAIFU_PCFX_VDC_PAL_BLACK 0x01
 #define WAIFU_PCFX_VDC_PAL_WHITE 0x02
@@ -1118,6 +1119,8 @@ static WaifuPcfxOverlayMode g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_OFF;
 static WaifuPcfxOverlayMode g_vdc_overlay_applied_mode = WAIFU_PCFX_OVERLAY_OFF;
 static int g_vdc_overlay_prompt_visible = 0;
 static int g_vdc_overlay_has_save = 0;
+static int g_vdc_overlay_ending_page = 0;
+static int g_vdc_overlay_ending_prompt_visible = 1;
 static int g_vdc_overlay_menu_selected = 1;
 static int g_vdc_overlay_load_selected = 0;
 static int g_vdc_overlay_load_internal_has = 0;
@@ -1677,8 +1680,8 @@ static void pcfx_vdc_overlay_print(int tx, int ty, const char *str, int max_len)
 
 static void pcfx_vdc_overlay_print_centered(int ty, const char *str)
 {
-    int len = pcfx_strlen_limited(str, WAIFU_PCFX_VDC_MAP_W);
-    pcfx_vdc_overlay_print((WAIFU_PCFX_VDC_MAP_W - len) / 2, ty, str, len);
+    int len = pcfx_strlen_limited(str, WAIFU_PCFX_VDC_VISIBLE_W);
+    pcfx_vdc_overlay_print((WAIFU_PCFX_VDC_VISIBLE_W - len) / 2, ty, str, len);
 }
 
 static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video)
@@ -1798,11 +1801,33 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
         break;
 
     case WAIFU_PCFX_OVERLAY_ENDING_STORY:
-        pcfx_vdc_overlay_clear_rect(1, 19, 30, 8);
-        pcfx_vdc_overlay_print_centered(20, "THE LAST SHARD IS SILENT.");
-        pcfx_vdc_overlay_print_centered(22, "SERENA HAS FINALLY DEFEATED");
-        pcfx_vdc_overlay_print_centered(23, "THE ENEMIES WHO HAUNTED HER.");
-        pcfx_vdc_overlay_print_centered(25, "THE DECK IS WHOLE AGAIN.");
+        pcfx_vdc_overlay_clear_rect(0, 18, WAIFU_PCFX_VDC_VISIBLE_W, 10);
+        pcfx_vdc_overlay_print(2, 19, "SERENA", 6);
+        switch (g_vdc_overlay_ending_page) {
+        case 1:
+            pcfx_vdc_overlay_print(2, 21, "I FINALLY DEFEATED THEM.", 28);
+            pcfx_vdc_overlay_print(2, 22, "THE ONES WHO TURNED DREAMS", 28);
+            pcfx_vdc_overlay_print(2, 23, "INTO CHAINS.", 28);
+            break;
+        case 2:
+            pcfx_vdc_overlay_print(2, 21, "THE DECK IS WHOLE AGAIN.", 28);
+            pcfx_vdc_overlay_print(2, 22, "EVERY STOLEN CARD HAS", 28);
+            pcfx_vdc_overlay_print(2, 23, "FOUND ITS WAY HOME.", 28);
+            break;
+        case 3:
+            pcfx_vdc_overlay_print(2, 21, "WHEN MORNING COMES, I WILL", 28);
+            pcfx_vdc_overlay_print(2, 22, "CARRY THESE CARDS BEYOND", 28);
+            pcfx_vdc_overlay_print(2, 23, "THE RUINS.", 28);
+            break;
+        case 0:
+        default:
+            pcfx_vdc_overlay_print(2, 21, "THE LAST SHARD IS SILENT.", 28);
+            pcfx_vdc_overlay_print(2, 22, "NO ENEMY ANSWERS ITS CALL.", 28);
+            break;
+        }
+        if (g_vdc_overlay_ending_prompt_visible) {
+            pcfx_vdc_overlay_print_centered(26, "A/RUN CONTINUE");
+        }
         break;
 
     case WAIFU_PCFX_OVERLAY_ENDING_CREDITS:
@@ -1864,10 +1889,17 @@ void waifu_pcfx_video_overlay_load_menu(int selected, int internal_has_save, int
     }
 }
 
-void waifu_pcfx_video_overlay_ending_story(void)
+void waifu_pcfx_video_overlay_ending_story(int page, int prompt_visible)
 {
-    if (g_vdc_overlay_mode != WAIFU_PCFX_OVERLAY_ENDING_STORY) {
+    if (page < 0) page = 0;
+    if (page > 3) page = 3;
+    prompt_visible = prompt_visible ? 1 : 0;
+    if (g_vdc_overlay_mode != WAIFU_PCFX_OVERLAY_ENDING_STORY ||
+        g_vdc_overlay_ending_page != page ||
+        g_vdc_overlay_ending_prompt_visible != prompt_visible) {
         g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_ENDING_STORY;
+        g_vdc_overlay_ending_page = page;
+        g_vdc_overlay_ending_prompt_visible = prompt_visible;
         g_vdc_overlay_dirty = 1;
     }
 }

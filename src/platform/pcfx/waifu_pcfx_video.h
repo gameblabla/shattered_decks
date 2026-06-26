@@ -50,7 +50,7 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video);
 void waifu_pcfx_video_overlay_title_prompt(int visible, int has_save);
 void waifu_pcfx_video_overlay_menu(int selected, int has_save);
 void waifu_pcfx_video_overlay_load_menu(int selected, int internal_has_save, int external_has_save);
-void waifu_pcfx_video_overlay_ending_story(void);
+void waifu_pcfx_video_overlay_ending_story(int page, int prompt_visible);
 void waifu_pcfx_video_overlay_ending_credits(void);
 void waifu_pcfx_video_overlay_clear(void);
 
