@@ -66,6 +66,9 @@
 #ifndef BINARY_LBA_ASSETS_GENERATED_RAINBOW_EMBER_BIN
 #define BINARY_LBA_ASSETS_GENERATED_RAINBOW_EMBER_BIN 0
 #endif
+#ifndef BINARY_LBA_ASSETS_GENERATED_RAINBOW_SKY_BIN
+#define BINARY_LBA_ASSETS_GENERATED_RAINBOW_SKY_BIN 0
+#endif
 
 
 #define PCFX_CD_SECTOR_SIZE 2048u
@@ -230,6 +233,10 @@ int waifu_pcfx_cdrom_read_rainbow_bg_to_kram(WaifuPcfxRainbowBgAsset asset, uint
     case WAIFU_PCFX_RAINBOW_BG_EMBER:
         lba = BINARY_LBA_ASSETS_GENERATED_RAINBOW_EMBER_BIN;
         if (bytes == 0) bytes = WAIFU_PCFX_RAINBOW_EMBER_BYTES;
+        break;
+    case WAIFU_PCFX_RAINBOW_BG_SKY:
+        lba = BINARY_LBA_ASSETS_GENERATED_RAINBOW_SKY_BIN;
+        if (bytes == 0) bytes = WAIFU_PCFX_RAINBOW_SKY_BYTES;
         break;
     case WAIFU_PCFX_RAINBOW_BG_DESERT:
     default:

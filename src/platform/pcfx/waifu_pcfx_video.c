@@ -1078,10 +1078,6 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_FONT_LAST  0x7f
 #define WAIFU_PCFX_VDC_MAP_W 64
 #define WAIFU_PCFX_VDC_MAP_H 32
-/* VDC palette selection is encoded in two-color units, while palette writes
-   below use absolute VCE entries.  Offset 128 selects entry base 256, keeping
-   overlay/fade colors out of KING's low 8bpp game palette. */
-#define WAIFU_PCFX_VDC_PALETTE_OFFSET 128
 #define WAIFU_PCFX_VDC_PALETTE_BASE 256
 #define WAIFU_PCFX_VDC_PAL_BLACK 0x01
 #define WAIFU_PCFX_VDC_PAL_WHITE 0x02
@@ -1299,7 +1295,7 @@ static void pcfx_vdc_overlay_clear_all(void)
 
 static void pcfx_vdc_select_overlay_palette(void)
 {
-    eris_tetsu_set_7up_palette(WAIFU_PCFX_VDC_PALETTE_OFFSET, WAIFU_PCFX_VDC_PALETTE_OFFSET);
+    eris_tetsu_set_7up_palette(WAIFU_PCFX_VDC_PALETTE_BASE, WAIFU_PCFX_VDC_PALETTE_BASE);
 }
 
 static uint16_t pcfx_vdc_palette_entry(uint16_t index)
@@ -1340,6 +1336,7 @@ static uint32_t pcfx_rainbow_bytes_for_backdrop(WaifuPcfxSanctumBackdrop backdro
     switch (backdrop) {
     case WAIFU_PCFX_SANCTUM_BACKDROP_STONE: return WAIFU_PCFX_RAINBOW_STONE_BYTES;
     case WAIFU_PCFX_SANCTUM_BACKDROP_EMBER: return WAIFU_PCFX_RAINBOW_EMBER_BYTES;
+    case WAIFU_PCFX_SANCTUM_BACKDROP_SKY: return WAIFU_PCFX_RAINBOW_SKY_BYTES;
     default: return WAIFU_PCFX_RAINBOW_DESERT_BYTES;
     }
 }
@@ -1349,6 +1346,7 @@ static WaifuPcfxRainbowBgAsset pcfx_rainbow_asset_for_backdrop(WaifuPcfxSanctumB
     switch (backdrop) {
     case WAIFU_PCFX_SANCTUM_BACKDROP_STONE: return WAIFU_PCFX_RAINBOW_BG_STONE;
     case WAIFU_PCFX_SANCTUM_BACKDROP_EMBER: return WAIFU_PCFX_RAINBOW_BG_EMBER;
+    case WAIFU_PCFX_SANCTUM_BACKDROP_SKY: return WAIFU_PCFX_RAINBOW_BG_SKY;
     default: return WAIFU_PCFX_RAINBOW_BG_DESERT;
     }
 }

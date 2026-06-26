@@ -24,7 +24,8 @@ typedef enum WaifuPcfxVdcBackground {
 typedef enum WaifuPcfxSanctumBackdrop {
     WAIFU_PCFX_SANCTUM_BACKDROP_DESERT = 0,
     WAIFU_PCFX_SANCTUM_BACKDROP_STONE = 1,
-    WAIFU_PCFX_SANCTUM_BACKDROP_EMBER = 2
+    WAIFU_PCFX_SANCTUM_BACKDROP_EMBER = 2,
+    WAIFU_PCFX_SANCTUM_BACKDROP_SKY = 3
 } WaifuPcfxSanctumBackdrop;
 
 typedef enum WaifuPcfxSanctumOverlay {

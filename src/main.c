@@ -8757,9 +8757,9 @@ static void draw_map_temple_3d(int f)
 {
     Camera cam = story_temple_camera(f);
     draw_floor_tiled(cam, -Q8_FRAC(7,100), 3, 3, Q8_FRAC(16,10));
-    /* Temple pillars: four rows of columns forming a corridor. */
+    /* Temple pillars: two rows of columns forming a corridor. */
     int32_t pillar_y0 = 0, pillar_y1 = Q8_FRAC(26,10);
-    for (int row = 0; row < 3; ++row) {
+    for (int row = 0; row < 2; ++row) {
         int32_t pz = -Q8_FRAC(25,10) + Q8_FROM_INT(row * 2);
         for (int side = 0; side < 2; ++side) {
             int32_t px = side ? Q8_FRAC(22,10) : -Q8_FRAC(22,10);
@@ -8956,7 +8956,7 @@ static WaifuPcfxSanctumBackdrop story_pcfx_sanctum_backdrop(void)
     switch (story_scene_kind()) {
     case STORY_SCENE_TEMPLE:  return WAIFU_PCFX_SANCTUM_BACKDROP_STONE;
     case STORY_SCENE_VOLCANO: return WAIFU_PCFX_SANCTUM_BACKDROP_EMBER;
-    case STORY_SCENE_VOID:    return WAIFU_PCFX_SANCTUM_BACKDROP_EMBER;
+    case STORY_SCENE_VOID:    return WAIFU_PCFX_SANCTUM_BACKDROP_SKY;
     default:                  return WAIFU_PCFX_SANCTUM_BACKDROP_DESERT;
     }
 }

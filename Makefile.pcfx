@@ -56,6 +56,7 @@ CD_ASSETS := \
   assets/generated/rainbow_desert.bin \
   assets/generated/rainbow_stone.bin \
   assets/generated/rainbow_ember.bin \
+  assets/generated/rainbow_sky.bin \
   assets/generated/story_portraits.bin \
   assets/generated/story_portrait_mask.bin \
   assets/generated/card_faces.bin \
@@ -70,7 +71,8 @@ RAINBOW_BG_HEADER := src/generated/rainbow_bg_assets.h
 RAINBOW_BG_STREAMS := \
   assets/generated/rainbow_desert.bin \
   assets/generated/rainbow_stone.bin \
-  assets/generated/rainbow_ember.bin
+  assets/generated/rainbow_ember.bin \
+  assets/generated/rainbow_sky.bin
 ELF_TARGET := $(OBJDIR)/$(PCFX_TARGET).elf
 BIN_TARGET := $(OBJDIR)/$(PCFX_TARGET).program.bin
 MAP_TARGET := $(OBJDIR)/$(PCFX_TARGET).map
@@ -110,12 +112,13 @@ $(OBJDIR)/%.o: %.s
 	@mkdir -p $(dir $@)
 	$(AS) $< -o $@
 
-$(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): tools/gen_pcfx_rainbow_bg.py assets/source/bg/desert.png assets/source/bg/stone.png assets/source/bg/ember.png
+$(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): tools/gen_pcfx_rainbow_bg.py assets/source/bg/desert.png assets/source/bg/stone.png assets/source/bg/ember.png assets/source/bg/sky.png
 	@mkdir -p assets/generated src/generated
 	python3 tools/gen_pcfx_rainbow_bg.py --quality 95 --header $(RAINBOW_BG_HEADER) \
 		assets/source/bg/desert.png assets/generated/rainbow_desert.bin WAIFU_PCFX_RAINBOW_DESERT \
 		assets/source/bg/stone.png assets/generated/rainbow_stone.bin WAIFU_PCFX_RAINBOW_STONE \
-		assets/source/bg/ember.png assets/generated/rainbow_ember.bin WAIFU_PCFX_RAINBOW_EMBER
+		assets/source/bg/ember.png assets/generated/rainbow_ember.bin WAIFU_PCFX_RAINBOW_EMBER \
+		assets/source/bg/sky.png assets/generated/rainbow_sky.bin WAIFU_PCFX_RAINBOW_SKY
 
 $(OBJDIR)/src/platform/pcfx/waifu_pcfx_video.o: $(RAINBOW_BG_HEADER)
 $(OBJDIR)/src/platform/pcfx/waifu_pcfx_cdrom.o: $(RAINBOW_BG_HEADER)

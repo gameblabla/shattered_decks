@@ -20,7 +20,8 @@ typedef enum WaifuPcfxCdAssetId {
 typedef enum WaifuPcfxRainbowBgAsset {
     WAIFU_PCFX_RAINBOW_BG_DESERT = 0,
     WAIFU_PCFX_RAINBOW_BG_STONE = 1,
-    WAIFU_PCFX_RAINBOW_BG_EMBER = 2
+    WAIFU_PCFX_RAINBOW_BG_EMBER = 2,
+    WAIFU_PCFX_RAINBOW_BG_SKY = 3
 } WaifuPcfxRainbowBgAsset;
 
 WaifuPcfxCdrom *waifu_pcfx_cdrom_create(void);
