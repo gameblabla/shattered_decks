@@ -8919,13 +8919,15 @@ static void draw_void_sky(void)
     }
 }
 
+#ifdef WAIFU_FM_PCFX
+static WaifuPcfxSanctumBackdrop story_pcfx_sanctum_backdrop(void);
+#endif
+
 static void draw_story_sky(void)
 {
 #ifdef WAIFU_FM_PCFX
-    /* PC-FX: skip the per-row gradient sky.  It is purely background behind the
-       pyramid/floor and will be replaced by a hardware VDC background layer;
-       for now just clear to black so only the floor + pyramid cost remains. */
-    clear_screen(IDX_BLACK);
+    waifu_pcfx_video_request_rainbow_backdrop(story_pcfx_sanctum_backdrop());
+    clear_screen(0);
 #else
     switch (story_scene_kind()) {
     case STORY_SCENE_TEMPLE:  draw_temple_sky();  break;

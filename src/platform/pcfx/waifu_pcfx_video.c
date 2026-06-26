@@ -1092,6 +1092,10 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_FADE_LEVELS 17
 
 static WaifuPcfxVdcBackground g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+static int g_rainbow_backdrop_requested;
+static int g_rainbow_backdrop_active;
+static int g_rainbow_transfer_armed;
+static WaifuPcfxSanctumBackdrop g_rainbow_backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_DESERT;
 static int g_sanctum_requested;
 static int g_sanctum_active;
 static int g_sanctum_loaded_backdrop = -1;
@@ -1427,6 +1431,13 @@ static void pcfx_rainbow_start_transfer(void)
     pcfx_rainbow_write_reg16(0x43, (uint16_t)WAIFU_PCFX_RAINBOW_BG_BLOCK_COUNT);
     pcfx_rainbow_write_reg16(0x44, 0x0000);
     pcfx_rainbow_write_reg16(0x40, 0x0001);
+    g_rainbow_transfer_armed = 1;
+}
+
+static void pcfx_rainbow_stop_transfer(void)
+{
+    pcfx_rainbow_write_reg16(0x40, 0x0000);
+    g_rainbow_transfer_armed = 0;
 }
 
 static void pcfx_vdc_sanctum_draw_overlay(WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
@@ -1477,8 +1488,10 @@ static void pcfx_vdc_sanctum_draw_overlay(WaifuPcfxSanctumOverlay overlay, int v
 static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdrop backdrop,
                                    WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
 {
+    int backdrop_changed;
     if (!video) return;
-    if (g_sanctum_loaded_backdrop != (int)backdrop) {
+    backdrop_changed = (g_sanctum_loaded_backdrop != (int)backdrop);
+    if (backdrop_changed) {
         waifu_pcfx_cdrom_read_rainbow_bg_to_kram(pcfx_rainbow_asset_for_backdrop(backdrop),
                                                  WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR,
                                                  pcfx_rainbow_bytes_for_backdrop(backdrop));
@@ -1506,8 +1519,10 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
     pcfx_vdc_sanctum_upload_tiles();
     pcfx_vdc_overlay_upload_font();
     pcfx_vdc_sanctum_draw_overlay(overlay, value, blink_visible);
-    pcfx_rainbow_setup();
-    pcfx_rainbow_start_transfer();
+    if (!g_sanctum_active || backdrop_changed || !g_rainbow_transfer_armed) {
+        pcfx_rainbow_setup();
+        pcfx_rainbow_start_transfer();
+    }
     g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
     eris_king_set_bg_prio(KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
     eris_king_set_bg_mode(KING_BGMODE_NONE, 0, 0, 0);
@@ -1518,12 +1533,66 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
     g_sanctum_active = 1;
 }
 
+static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdrop backdrop)
+{
+    int backdrop_changed;
+    if (!video) return;
+    backdrop_changed = (g_sanctum_loaded_backdrop != (int)backdrop);
+    if (backdrop_changed) {
+        waifu_pcfx_cdrom_read_rainbow_bg_to_kram(pcfx_rainbow_asset_for_backdrop(backdrop),
+                                                 WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR,
+                                                 pcfx_rainbow_bytes_for_backdrop(backdrop));
+        g_sanctum_loaded_backdrop = (int)backdrop;
+    }
+
+    if (!g_rainbow_backdrop_active || backdrop_changed) {
+        video->front_page = 0;
+        video->back_page = 0;
+        video->have_last_frame = 0;
+#if WAIFU_PCFX_DIRTY_PRESENT
+        video->page_shadow_valid[0] = 0;
+        video->page_shadow_valid[1] = 0;
+#endif
+    }
+
+    g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
+    pcfx_king_set_bg_kram_page_inline(0);
+    if (!g_rainbow_backdrop_active || backdrop_changed) {
+        eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
+        eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
+        eris_low_sup_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
+        eris_low_sup_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
+        eris_low_sup_set_scroll(VDC_CHIP_0, 0, 0);
+        eris_low_sup_set_scroll(VDC_CHIP_1, 0, 0);
+        eris_low_sup_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+        eris_low_sup_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+        eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
+        eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
+        pcfx_vdc_restore_overlay_palette();
+        pcfx_vdc_overlay_upload_font();
+        pcfx_vdc_sanctum_clear_all();
+        eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+        eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
+        pcfx_king_set_bg0_page_inline(page_bat_offset(0));
+        eris_tetsu_set_priorities(1, 1, 7, 0, 0, 0, 6);
+        eris_tetsu_set_video_mode(TETSU_LINES_263, 0, TETSU_DOTCLOCK_5MHz,
+                                  TETSU_COLORS_16, TETSU_COLORS_16,
+                                  1, 1, 1, 0, 0, 0, 1);
+    }
+    if (!g_rainbow_backdrop_active || backdrop_changed || !g_rainbow_transfer_armed) {
+        pcfx_rainbow_setup();
+        pcfx_rainbow_start_transfer();
+    }
+    g_rainbow_backdrop_active = 1;
+    g_sanctum_active = 0;
+}
+
 static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
 {
-    if (!video || (!g_sanctum_active && video->vdc_bg == WAIFU_PCFX_VDC_BG_NONE)) return;
+    if (!video || (!g_sanctum_active && !g_rainbow_backdrop_active && video->vdc_bg == WAIFU_PCFX_VDC_BG_NONE)) return;
     pcfx_vdc_sanctum_clear_all();
     pcfx_vdc_restore_overlay_palette();
-    pcfx_rainbow_write_reg16(0x40, 0x0000);
+    pcfx_rainbow_stop_transfer();
     g_king_page_setting_extra = 0;
     eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
     eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
@@ -1537,6 +1606,9 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
 #endif
     video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
     g_sanctum_active = 0;
+    g_rainbow_backdrop_active = 0;
+    video->front_page = 0;
+    video->back_page = 1;
 }
 
 static void pcfx_vdc_apply_requested_background(WaifuPcfxVideo *video, WaifuPcfxVdcBackground bg)
@@ -1981,9 +2053,12 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
 {
     if (!video) return;
     g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+    g_rainbow_backdrop_requested = 0;
+    g_rainbow_backdrop_active = 0;
     g_sanctum_requested = 0;
     g_sanctum_active = 0;
     g_king_page_setting_extra = 0;
+    pcfx_rainbow_stop_transfer();
     video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
     pcfx_vdc_overlay_force_black(video);
     if (video->mode == WAIFU_PCFX_VIDEO_MODE_TITLE_HICOLOR) pcfx_title_blackout_pages(video);
@@ -2039,6 +2114,12 @@ void waifu_pcfx_video_use_vdc_background(WaifuPcfxVideo *video, WaifuPcfxVdcBack
 void waifu_pcfx_video_request_vdc_background(WaifuPcfxVdcBackground bg)
 {
     g_vdc_bg_requested = bg;
+}
+
+void waifu_pcfx_video_request_rainbow_backdrop(WaifuPcfxSanctumBackdrop backdrop)
+{
+    g_rainbow_backdrop = backdrop;
+    g_rainbow_backdrop_requested = 1;
 }
 
 void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
@@ -2157,6 +2238,7 @@ static WAIFU_PCFX_COLD void pcfx_present_update_palette_if_needed(WaifuPcfxVideo
 
 void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebuffer, const uint8_t *rgb, WaifuFmPaletteId palette_id)
 {
+    int applied_rainbow_backdrop = 0;
     if (!video || !framebuffer) return;
     if (palette_id == WAIFU_FM_PALETTE_TITLE) {
         pcfx_present_title_16m(video, framebuffer);
@@ -2174,12 +2256,29 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
         pcfx_vdc_apply_sanctum(video, g_sanctum_backdrop, g_sanctum_overlay,
                                g_sanctum_value, g_sanctum_blink_visible);
         g_sanctum_requested = 0;
+        g_rainbow_backdrop_requested = 0;
         g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
         video->have_last_frame = 0;
         return;
     }
-    pcfx_vdc_apply_requested_background(video, g_vdc_bg_requested);
+    if (g_rainbow_backdrop_requested) {
+        pcfx_apply_rainbow_backdrop(video, g_rainbow_backdrop);
+        g_rainbow_backdrop_requested = 0;
+        g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+        applied_rainbow_backdrop = 1;
+    } else if (g_rainbow_backdrop_active) {
+        pcfx_vdc_clear_background(video);
+    }
+    if (!applied_rainbow_backdrop) {
+        pcfx_vdc_apply_requested_background(video, g_vdc_bg_requested);
+    }
     g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
+
+    if (g_rainbow_backdrop_active) {
+        video->front_page = 0;
+        video->back_page = 0;
+        pcfx_king_set_bg_kram_page_inline(0);
+    }
 
 #if WAIFU_PCFX_DIRTY_PRESENT
     int upload_full = 0;
@@ -2212,7 +2311,7 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
             /* The hidden page already holds this exact frame; just flip to it. */
             pcfx_king_set_bg0_page_inline(page_bat_offset(video->back_page));
             video->front_page = video->back_page;
-            video->back_page ^= 1;
+            if (!g_rainbow_backdrop_active) video->back_page ^= 1;
             video->have_last_frame = 1;
             return;
         }
@@ -2248,7 +2347,7 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
 
     pcfx_king_set_bg0_page_inline(page_bat_offset(video->back_page));
     video->front_page = video->back_page;
-    video->back_page ^= 1;
+    if (!g_rainbow_backdrop_active) video->back_page ^= 1;
 #if !WAIFU_PCFX_DIRTY_PRESENT
     video->last_frame_sum = frame_sum;
     video->last_frame_mix = frame_mix;

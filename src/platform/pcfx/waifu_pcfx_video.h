@@ -38,6 +38,7 @@ void waifu_pcfx_video_destroy(WaifuPcfxVideo *video);
 void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video);
 void waifu_pcfx_video_use_vdc_background(WaifuPcfxVideo *video, WaifuPcfxVdcBackground bg);
 void waifu_pcfx_video_request_vdc_background(WaifuPcfxVdcBackground bg);
+void waifu_pcfx_video_request_rainbow_backdrop(WaifuPcfxSanctumBackdrop backdrop);
 void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible);
 void waifu_pcfx_video_set_palette_rgb(WaifuPcfxVideo *video, const uint8_t *rgb, WaifuFmPaletteId palette_id);
 void waifu_pcfx_video_set_palette_rgb_fade(WaifuPcfxVideo *video, const uint8_t *rgb, WaifuFmPaletteId palette_id, int fade_q8);
