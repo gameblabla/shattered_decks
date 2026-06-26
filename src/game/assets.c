@@ -8,6 +8,7 @@
 
 #if defined(WAIFU_ASSET_USE_CDROM)
 #define WAIFU_ASSET_EXTERNAL_TITLE_IMAGE 1
+#define WAIFU_ASSET_EXTERNAL_ENDING_IMAGE 1
 #define WAIFU_ASSET_EXTERNAL_STORY_PORTRAITS 1
 #define WAIFU_ASSET_EXTERNAL_CARD_IMAGES 1
 #endif
@@ -64,6 +65,7 @@ static const char *blob_path(WaifuAssetBlobId blob)
     case WAIFU_ASSET_BLOB_TITLE_SCREEN: return "assets/generated/title_screen_img.bin";
     case WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV16: return "assets/generated/title_screen_pcfx_yuv16.bin";
     case WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV422: return "assets/generated/title_screen_pcfx_yuv422.bin";
+    case WAIFU_ASSET_BLOB_ENDING_SCREEN_PCFX_YUV422: return "assets/generated/ending_screen_pcfx_yuv422.bin";
     case WAIFU_ASSET_BLOB_STORY_PORTRAITS: return "assets/generated/story_portraits.bin";
     case WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK: return "assets/generated/story_portrait_mask.bin";
     case WAIFU_ASSET_BLOB_CARD_FACES: return "assets/generated/card_faces.bin";
@@ -839,6 +841,15 @@ const uint16_t *waifu_assets_title_screen_pcfx_yuv422(void)
 #else
     return title_screen_pcfx_yuv422;
 #endif
+#endif
+}
+
+const uint16_t *waifu_assets_ending_screen_pcfx_yuv422(void)
+{
+#ifdef WAIFU_ASSET_EXTERNAL_ENDING_IMAGE
+    return NULL;
+#else
+    return ending_screen_pcfx_yuv422;
 #endif
 }
 

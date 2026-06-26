@@ -1109,7 +1109,9 @@ typedef enum WaifuPcfxOverlayMode {
     WAIFU_PCFX_OVERLAY_OFF = 0,
     WAIFU_PCFX_OVERLAY_TITLE_PROMPT = 1,
     WAIFU_PCFX_OVERLAY_MENU = 2,
-    WAIFU_PCFX_OVERLAY_LOAD_DEVICE = 3
+    WAIFU_PCFX_OVERLAY_LOAD_DEVICE = 3,
+    WAIFU_PCFX_OVERLAY_ENDING_STORY = 4,
+    WAIFU_PCFX_OVERLAY_ENDING_CREDITS = 5
 } WaifuPcfxOverlayMode;
 
 static WaifuPcfxOverlayMode g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_OFF;
@@ -1673,6 +1675,12 @@ static void pcfx_vdc_overlay_print(int tx, int ty, const char *str, int max_len)
     }
 }
 
+static void pcfx_vdc_overlay_print_centered(int ty, const char *str)
+{
+    int len = pcfx_strlen_limited(str, WAIFU_PCFX_VDC_MAP_W);
+    pcfx_vdc_overlay_print((WAIFU_PCFX_VDC_MAP_W - len) / 2, ty, str, len);
+}
+
 static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video)
 {
     if (!video) return;
@@ -1788,6 +1796,22 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
             pcfx_vdc_overlay_print(6, 25, "RETURN TO MENU", 26);
         }
         break;
+
+    case WAIFU_PCFX_OVERLAY_ENDING_STORY:
+        pcfx_vdc_overlay_clear_rect(1, 19, 30, 8);
+        pcfx_vdc_overlay_print_centered(20, "THE LAST SHARD IS SILENT.");
+        pcfx_vdc_overlay_print_centered(22, "SERENA HAS FINALLY DEFEATED");
+        pcfx_vdc_overlay_print_centered(23, "THE ENEMIES WHO HAUNTED HER.");
+        pcfx_vdc_overlay_print_centered(25, "THE DECK IS WHOLE AGAIN.");
+        break;
+
+    case WAIFU_PCFX_OVERLAY_ENDING_CREDITS:
+        pcfx_vdc_overlay_clear_all();
+        pcfx_vdc_overlay_print_centered(10, "THANK YOU FOR PLAYING.");
+        pcfx_vdc_overlay_print_centered(13, "SHATTERED DECKS.");
+        pcfx_vdc_overlay_print_centered(16, "A GAME BY GAMEBLABLA.");
+        pcfx_vdc_overlay_print_centered(19, "(C) 2026");
+        break;
     }
 
     g_vdc_overlay_dirty = 0;
@@ -1836,6 +1860,22 @@ void waifu_pcfx_video_overlay_load_menu(int selected, int internal_has_save, int
         g_vdc_overlay_load_selected = selected;
         g_vdc_overlay_load_internal_has = internal_has_save;
         g_vdc_overlay_load_external_has = external_has_save;
+        g_vdc_overlay_dirty = 1;
+    }
+}
+
+void waifu_pcfx_video_overlay_ending_story(void)
+{
+    if (g_vdc_overlay_mode != WAIFU_PCFX_OVERLAY_ENDING_STORY) {
+        g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_ENDING_STORY;
+        g_vdc_overlay_dirty = 1;
+    }
+}
+
+void waifu_pcfx_video_overlay_ending_credits(void)
+{
+    if (g_vdc_overlay_mode != WAIFU_PCFX_OVERLAY_ENDING_CREDITS) {
+        g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_ENDING_CREDITS;
         g_vdc_overlay_dirty = 1;
     }
 }
@@ -1938,6 +1978,31 @@ static WAIFU_PCFX_COLD int pcfx_title_upload_full_16m_direct_cd(int page)
 #endif
 }
 
+static WAIFU_PCFX_COLD int pcfx_ending_upload_full_16m_direct_cd(int page)
+{
+#if defined(WAIFU_ASSET_USE_CDROM)
+    return waifu_pcfx_cdrom_read_ending_yuv422_to_kram(title16m_page_word_offset(page),
+                                                       WAIFU_PCFX_TITLE_16M_KRAM_WORDS * 2u);
+#else
+    (void)page;
+    return 0;
+#endif
+}
+
+static WAIFU_PCFX_COLD void pcfx_upload_black_16m_page(int page)
+{
+    uint32_t page_base = title16m_page_word_offset(page);
+    static uint16_t black_row[WAIFU_PCFX_W];
+    for (int x = 0; x < WAIFU_PCFX_W; x += 2) {
+        black_row[x] = WAIFU_PCFX_16M_BLACK_Y;
+        black_row[x + 1] = WAIFU_PCFX_16M_BLACK_UV;
+    }
+    king_seek_write_words(page_base);
+    for (int row = 0; row < WAIFU_PCFX_TITLE_16M_KRAM_ROWS; ++row) {
+        king_kram_write_buffer((void *)black_row, WAIFU_PCFX_W * 2);
+    }
+}
+
 static WAIFU_PCFX_COLD void pcfx_title_blackout_pages(WaifuPcfxVideo *video)
 {
     /* Do not rewrite the title KING surface on exit.  The title image is a
@@ -1977,7 +2042,7 @@ static WAIFU_PCFX_COLD void pcfx_present_title_16m(WaifuPcfxVideo *video, const 
 
     pcfx_vdc_overlay_set_fade_q8(waifu_fm_video_fade_q8());
 
-    need_upload = reconfigure || !video->title16m_page_valid[0];
+    need_upload = reconfigure || video->active_palette != WAIFU_FM_PALETTE_TITLE || !video->title16m_page_valid[0];
     if (need_upload) {
         int ok = pcfx_title_upload_full_16m_direct_cd(0);
         if (!ok) {
@@ -1989,6 +2054,58 @@ static WAIFU_PCFX_COLD void pcfx_present_title_16m(WaifuPcfxVideo *video, const 
         }
         if (ok) {
             video->title16m_page_valid[0] = 1;
+            video->active_palette = WAIFU_FM_PALETTE_TITLE;
+            video->front_page = 0;
+            video->back_page = 0;
+            video->have_last_frame = 1;
+        }
+    }
+}
+
+static WAIFU_PCFX_COLD void pcfx_present_ending_16m(WaifuPcfxVideo *video, int black)
+{
+    int reconfigure;
+    int need_upload;
+    WaifuFmPaletteId target = black ? WAIFU_FM_PALETTE_ENDING_BLACK : WAIFU_FM_PALETTE_ENDING;
+
+    if (!video) return;
+
+    reconfigure = (!video->initialized || video->mode != WAIFU_PCFX_VIDEO_MODE_TITLE_HICOLOR);
+    if (reconfigure) {
+        set_king_16m_title_video();
+        pcfx_king_set_bg_kram_page_inline(0);
+        pcfx_king_set_bg0_page_inline(title16m_bg_cg_page(0));
+        video->mode = WAIFU_PCFX_VIDEO_MODE_TITLE_HICOLOR;
+        video->initialized = 1;
+        video->active_palette = (WaifuFmPaletteId)-1;
+        video->active_fade_q8 = -1;
+        video->front_page = 0;
+        video->back_page = 0;
+        video->pending_title_page_flip = 0;
+        video->title16m_page_valid[0] = 0;
+        video->title16m_page_valid[1] = 0;
+    }
+
+    pcfx_vdc_overlay_set_fade_q8(waifu_fm_video_fade_q8());
+
+    need_upload = reconfigure || video->active_palette != target || !video->title16m_page_valid[0];
+    if (need_upload) {
+        int ok = 1;
+        if (black) {
+            pcfx_upload_black_16m_page(0);
+        } else {
+            ok = pcfx_ending_upload_full_16m_direct_cd(0);
+            if (!ok) {
+                const uint16_t *ending_yuv422 = waifu_assets_ending_screen_pcfx_yuv422();
+                if (ending_yuv422) {
+                    pcfx_title_upload_full_16m_from_ram(0, ending_yuv422);
+                    ok = 1;
+                }
+            }
+        }
+        if (ok) {
+            video->title16m_page_valid[0] = 1;
+            video->active_palette = target;
             video->front_page = 0;
             video->back_page = 0;
             video->have_last_frame = 1;
@@ -2263,6 +2380,14 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
     if (!video || !framebuffer) return;
     if (palette_id == WAIFU_FM_PALETTE_TITLE) {
         pcfx_present_title_16m(video, framebuffer);
+        return;
+    }
+    if (palette_id == WAIFU_FM_PALETTE_ENDING) {
+        pcfx_present_ending_16m(video, 0);
+        return;
+    }
+    if (palette_id == WAIFU_FM_PALETTE_ENDING_BLACK) {
+        pcfx_present_ending_16m(video, 1);
         return;
     }
     if (!video->initialized || video->mode != WAIFU_PCFX_VIDEO_MODE_KING_8BPP) {

@@ -16,6 +16,7 @@ from PIL import Image, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'assets/source/title/titlescreen_shardsofcards.png'
+SRC_ENDING = ROOT / 'assets/source/ending/ending.png'
 PAL_HEADER = ROOT / 'src/generated/waifu_assets.h'
 OUT = ROOT / 'src/generated/title_asset.h'
 W, H = 256, 240
@@ -412,6 +413,8 @@ def pad_pcfx_16m_page(words):
 def main():
     if not SRC.exists():
         raise FileNotFoundError(SRC)
+    if not SRC_ENDING.exists():
+        raise FileNotFoundError(SRC_ENDING)
     if not PAL_HEADER.exists():
         raise FileNotFoundError(PAL_HEADER)
 
@@ -443,6 +446,9 @@ def main():
     bake_pcfx_title_logo(pcfx_16m_img, title_pal, idx_defs['IDX_BLACK'], idx_defs['IDX_WHITE'], idx_defs['IDX_GOLD_HI'])
     pcfx_yuv422 = build_pcfx_title_yuv422_16m(pcfx_16m_img)
     pcfx_yuv422_kram = pad_pcfx_16m_page(pcfx_yuv422)
+    ending_img = ImageOps.fit(Image.open(SRC_ENDING).convert('RGB'), (W, H), method=Image.Resampling.BILINEAR, centering=(0.5, 0.5))
+    ending_yuv422 = build_pcfx_title_yuv422_16m(ending_img)
+    ending_yuv422_kram = pad_pcfx_16m_page(ending_yuv422)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open('w') as f:
@@ -471,7 +477,13 @@ def main():
         for i in range(0, len(pcfx_yuv422), 12):
             f.write('    ' + ','.join(f'0x{v:04x}' for v in pcfx_yuv422[i:i + 12]) + ',\n')
         f.write('};\n')
-        f.write('#endif /* WAIFU_ASSET_EXTERNAL_TITLE_IMAGE */\n\n#endif\n')
+        f.write('#endif /* WAIFU_ASSET_EXTERNAL_TITLE_IMAGE */\n\n')
+        f.write('#ifndef WAIFU_ASSET_EXTERNAL_ENDING_IMAGE\n')
+        f.write('static const uint16_t ending_screen_pcfx_yuv422[TITLE_SCREEN_W * TITLE_SCREEN_H] = {\n')
+        for i in range(0, len(ending_yuv422), 12):
+            f.write('    ' + ','.join(f'0x{v:04x}' for v in ending_yuv422[i:i + 12]) + ',\n')
+        f.write('};\n')
+        f.write('#endif /* WAIFU_ASSET_EXTERNAL_ENDING_IMAGE */\n\n#endif\n')
     bin_out = ROOT / 'assets/generated'
     bin_out.mkdir(parents=True, exist_ok=True)
     (bin_out / 'title_screen_img.bin').write_bytes(bytes(data))
@@ -486,8 +498,13 @@ def main():
         yuv422_bytes.append(w & 0xff)
         yuv422_bytes.append((w >> 8) & 0xff)
     (bin_out / 'title_screen_pcfx_yuv422.bin').write_bytes(bytes(yuv422_bytes))
+    ending_yuv422_bytes = bytearray()
+    for w in ending_yuv422_kram:
+        ending_yuv422_bytes.append(w & 0xff)
+        ending_yuv422_bytes.append((w >> 8) & 0xff)
+    (bin_out / 'ending_screen_pcfx_yuv422.bin').write_bytes(bytes(ending_yuv422_bytes))
     print(f'wrote {OUT} with {len(free_slots)} title-art palette slots and {len(reserved)} preserved IDX slots')
-    print('wrote assets/generated/title_screen_img.bin, title_screen_pcfx_img.bin, title_screen_pcfx_yuv16.bin, and title_screen_pcfx_yuv422.bin')
+    print('wrote assets/generated/title_screen_img.bin, title_screen_pcfx_img.bin, title_screen_pcfx_yuv16.bin, title_screen_pcfx_yuv422.bin, and ending_screen_pcfx_yuv422.bin')
 
 
 if __name__ == '__main__':

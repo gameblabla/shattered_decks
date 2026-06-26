@@ -41,7 +41,8 @@ Use this file as the first stop when you need to change behavior. It is written 
 ## Behavior Map
 
 - Story mode:
-  - Extended to 8 duels (`STORY_MAX_DUELS`). Opponents: DREAM SHADE, PLAZA NOVICE, TEMPLE ADEPT, SAND REAVER, BURNING SOUL (boss), VOID WALKER, SPHINX GUARDIAN (boss), THE DEMON (final boss). Bosses have 10000 LP (`story_opponent_is_boss`).
+  - Runs 5 duels (`STORY_MAX_DUELS`). Opponents: KASEM, ANPU, RAHOTEP, NADIRA, ISYRA. ISYRA is the final boss (`story_opponent_is_boss`).
+  - Winning the fifth duel no longer returns to the map. It enters `WAIFU_I_STORY_ENDING`, shows `assets/source/ending/ending.png`, advances to `WAIFU_I_STORY_ENDING_CREDITS`, then returns to the title. PC-FX presents the ending image as a direct 16M/YUV422 KING surface from `assets/generated/ending_screen_pcfx_yuv422.bin`; ending narration and credits are VDC overlay text with the same white glyph / black outline style as the title. Do not convert the PC-FX ending image to an 8bpp palette screen.
   - Four 3D environments selected by `story_scene_kind()` based on duel progress: DESERT (pyramid, `draw_map_pyramid_3d`), TEMPLE (stone pillars, `draw_map_temple_3d`), VOLCANO (cone with glowing crater, `draw_map_volcano_3d`), VOID (floating obsidian platform with crystals, `draw_map_void_3d`). Each has its own sky function via `draw_story_sky`.
   - Pyramid faces use gold tile (1) on all sides, per-face `flip` prevents texture swimming, `draw_tri3d_pyramid_face` tiles the texture in 5 rows x 3 columns (stacked brick courses). Ground grid extended to 8x7 with solid fill below the horizon to prevent sky bleed.
   - PC-FX story pyramid/volcano faces must not be culled by screen-space winding inside `draw_tri3d_pyramid_face`: normalize negative projected winding and leave occlusion to the painter-sorted face order, or the pyramid can disappear.

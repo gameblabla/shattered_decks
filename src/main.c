@@ -9,6 +9,7 @@
 
 #if defined(WAIFU_ASSET_USE_CDROM)
 #define WAIFU_ASSET_EXTERNAL_TITLE_IMAGE 1
+#define WAIFU_ASSET_EXTERNAL_ENDING_IMAGE 1
 #define WAIFU_ASSET_EXTERNAL_STORY_PORTRAITS 1
 #define WAIFU_ASSET_EXTERNAL_CARD_IMAGES 1
 #endif
@@ -4268,6 +4269,8 @@ typedef enum WaifuInteractiveState {
 #endif
     WAIFU_I_STORY_TO_PLAZA,
     WAIFU_I_STORY_PLAZA,
+    WAIFU_I_STORY_ENDING,
+    WAIFU_I_STORY_ENDING_CREDITS,
     WAIFU_I_DECK_EDITOR,
     WAIFU_I_DECK_PREVIEW,
     WAIFU_I_BATTLE,
@@ -6219,7 +6222,10 @@ static WaifuMusicTrack music_track_for_loading_target(void)
 #endif
     case WAIFU_I_STORY_TO_PLAZA:
     case WAIFU_I_STORY_PLAZA:
+    case WAIFU_I_STORY_ENDING:
         return WAIFU_MUSIC_OPENING_DREAM;
+    case WAIFU_I_STORY_ENDING_CREDITS:
+        return WAIFU_MUSIC_NONE;
     case WAIFU_I_DECK_EDITOR:
     case WAIFU_I_DECK_PREVIEW:
         return WAIFU_MUSIC_DECK_EDITOR;
@@ -6266,7 +6272,10 @@ static WaifuMusicTrack music_track_for_current_state(void)
 #endif
     case WAIFU_I_STORY_TO_PLAZA:
     case WAIFU_I_STORY_PLAZA:
+    case WAIFU_I_STORY_ENDING:
         return WAIFU_MUSIC_OPENING_DREAM;
+    case WAIFU_I_STORY_ENDING_CREDITS:
+        return WAIFU_MUSIC_NONE;
     case WAIFU_I_DECK_EDITOR:
     case WAIFU_I_DECK_PREVIEW:
         return WAIFU_MUSIC_DECK_EDITOR;
@@ -9297,11 +9306,59 @@ static void draw_story_plaza_scene(void)
     if (g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
 }
 
+#define STORY_ENDING_IMAGE_FRAMES 420
+#define STORY_ENDING_CREDITS_FRAMES 300
+
+static void draw_story_ending_screen(void)
+{
+#ifdef WAIFU_FM_PCFX
+    clear_screen(IDX_BLACK);
+    waifu_fm_use_ending_palette();
+    waifu_pcfx_video_overlay_ending_story();
+#else
+    clear_screen(IDX_BLACK);
+    draw_centered_text(76, "SERENA WINS", IDX_GOLD_HI, IDX_BLACK);
+    draw_wrapped_text_small_box(38, 106, 180, 4, 10,
+        "The last shard is silent. Serena has finally defeated the enemies who haunted her, and the deck is whole again.",
+        IDX_WHITE, IDX_BLACK);
+#endif
+    if (g_i_frame >= 0 && g_i_frame < 36) apply_black_dither_fade(q8_ratio(g_i_frame, 36));
+    if (g_i_frame >= STORY_ENDING_IMAGE_FRAMES - 36) {
+        apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame - (STORY_ENDING_IMAGE_FRAMES - 36), 36));
+    }
+}
+
+static void draw_story_ending_credits_screen(void)
+{
+#ifdef WAIFU_FM_PCFX
+    clear_screen(IDX_BLACK);
+    waifu_fm_use_ending_black_palette();
+    waifu_pcfx_video_overlay_ending_credits();
+#else
+    clear_screen(IDX_BLACK);
+    draw_centered_text(82, "THANK YOU FOR PLAYING.", IDX_WHITE, IDX_BLACK);
+    draw_centered_text(112, "SHATTERED DECKS.", IDX_WHITE, IDX_BLACK);
+    draw_centered_text(142, "A GAME BY GAMEBLABLA.", IDX_WHITE, IDX_BLACK);
+    draw_centered_text(172, "(C) 2026", IDX_WHITE, IDX_BLACK);
+#endif
+    if (g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
+    if (g_i_frame >= STORY_ENDING_CREDITS_FRAMES - 36) {
+        apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame - (STORY_ENDING_CREDITS_FRAMES - 36), 36));
+    }
+}
+
 static void story_return_to_map_after_duel(void)
 {
     if (g_b_result >= 0) {
         award_story_win_drop();
-        if (g_story_duel_index < STORY_MAX_DUELS - 1) ++g_story_duel_index;
+        if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
+            g_story_battle_active = 0;
+            g_i_state = WAIFU_I_STORY_ENDING;
+            g_i_frame = -1;
+            init_battle_state();
+            return;
+        }
+        ++g_story_duel_index;
     }
     g_story_battle_active = 0;
     g_story_map_cursor = 1;
@@ -9702,6 +9759,24 @@ void waifu_fm_step(const WaifuFmInput *input)
         }
         break;
 
+    case WAIFU_I_STORY_ENDING:
+        draw_story_ending_screen();
+        if (press_a || press_start || g_i_frame >= STORY_ENDING_IMAGE_FRAMES) {
+            g_i_state = WAIFU_I_STORY_ENDING_CREDITS;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_STORY_ENDING_CREDITS:
+        draw_story_ending_credits_screen();
+        if (press_a || press_start || g_i_frame >= STORY_ENDING_CREDITS_FRAMES) {
+#ifdef WAIFU_FM_PCFX
+            waifu_pcfx_video_overlay_clear();
+#endif
+            enter_title_after_assets();
+        }
+        break;
+
     case WAIFU_I_DECK_EDITOR:
         if (press_tab) deck_editor_switch_tab();
         if (press_left) deck_editor_move_cursor(-1, 0);
@@ -9912,6 +9987,10 @@ static void debug_setup_music_demo_state(const char *name)
         g_b_result = 1;
         g_b_phase = IB_TALLY;
         g_b_phase_frame = 0;
+    } else if (!strcmp(name, "ending")) {
+        g_i_state = WAIFU_I_STORY_ENDING;
+    } else if (!strcmp(name, "ending-credits") || !strcmp(name, "credits")) {
+        g_i_state = WAIFU_I_STORY_ENDING_CREDITS;
     } else if (!strcmp(name, "result-sequence") || !strcmp(name, "victory-sequence")) {
         init_battle_state();
         g_story_battle_active = 0;

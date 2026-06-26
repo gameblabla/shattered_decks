@@ -53,6 +53,7 @@ PCFX_SRCS_S := src/platform/pcfx/fastking.s
 CD_ASSETS := \
   assets/generated/title_screen_pcfx_img.bin \
   assets/generated/title_screen_pcfx_yuv422.bin \
+  assets/generated/ending_screen_pcfx_yuv422.bin \
   assets/generated/rainbow_desert.bin \
   assets/generated/rainbow_stone.bin \
   assets/generated/rainbow_ember.bin \

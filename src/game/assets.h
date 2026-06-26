@@ -51,6 +51,7 @@ typedef enum WaifuAssetBlobId {
     WAIFU_ASSET_BLOB_TITLE_SCREEN = 0,
     WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV16,
     WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV422,
+    WAIFU_ASSET_BLOB_ENDING_SCREEN_PCFX_YUV422,
     WAIFU_ASSET_BLOB_STORY_PORTRAITS,
     WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK,
     WAIFU_ASSET_BLOB_CARD_FACES,
@@ -132,6 +133,7 @@ int waifu_assets_story_portrait_ready(int portrait_id);
 const uint8_t *waifu_assets_title_screen_img(void);
 const uint16_t *waifu_assets_title_screen_pcfx_yuv16(void);
 const uint16_t *waifu_assets_title_screen_pcfx_yuv422(void);
+const uint16_t *waifu_assets_ending_screen_pcfx_yuv422(void);
 const uint8_t *waifu_assets_story_portrait_pixels(int portrait_id);
 const uint8_t *waifu_assets_story_portrait_mask(int portrait_id);
 const uint8_t *waifu_assets_card_face(int card_id);

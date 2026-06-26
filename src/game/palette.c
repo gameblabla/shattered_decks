@@ -12,7 +12,11 @@ static WaifuFmPaletteId g_active_palette_id = WAIFU_FM_PALETTE_COMMON;
 
 void waifu_fm_use_palette(WaifuFmPaletteId id)
 {
-    if (id != WAIFU_FM_PALETTE_TITLE) id = WAIFU_FM_PALETTE_COMMON;
+    if (id != WAIFU_FM_PALETTE_TITLE &&
+        id != WAIFU_FM_PALETTE_ENDING &&
+        id != WAIFU_FM_PALETTE_ENDING_BLACK) {
+        id = WAIFU_FM_PALETTE_COMMON;
+    }
     g_active_palette_id = id;
 }
 
@@ -24,6 +28,16 @@ void waifu_fm_use_common_palette(void)
 void waifu_fm_use_title_palette(void)
 {
     waifu_fm_use_palette(WAIFU_FM_PALETTE_TITLE);
+}
+
+void waifu_fm_use_ending_palette(void)
+{
+    waifu_fm_use_palette(WAIFU_FM_PALETTE_ENDING);
+}
+
+void waifu_fm_use_ending_black_palette(void)
+{
+    waifu_fm_use_palette(WAIFU_FM_PALETTE_ENDING_BLACK);
 }
 
 WaifuFmPaletteId waifu_fm_palette_id(void)

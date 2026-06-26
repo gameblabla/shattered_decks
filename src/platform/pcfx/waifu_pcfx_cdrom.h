@@ -44,6 +44,7 @@ uint32_t waifu_pcfx_cd_read_seq(void);
 /* Blocking CD/SCSI DMA directly into KING KRAM.  kram_addr is the KING
  * KRAM word address, matching liberis eris_cd_read_kram(). */
 int waifu_pcfx_cdrom_read_title_yuv422_to_kram(uint32_t kram_addr, size_t bytes);
+int waifu_pcfx_cdrom_read_ending_yuv422_to_kram(uint32_t kram_addr, size_t bytes);
 int waifu_pcfx_cdrom_read_sfx_adpcm_to_kram(uint32_t kram_addr, size_t bytes);
 int waifu_pcfx_cdrom_read_rainbow_bg_to_kram(WaifuPcfxRainbowBgAsset asset, uint32_t kram_addr, size_t bytes);
 

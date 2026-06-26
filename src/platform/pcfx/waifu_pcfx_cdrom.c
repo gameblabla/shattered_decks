@@ -27,6 +27,9 @@
 #ifndef BINARY_LBA_ASSETS_GENERATED_TITLE_SCREEN_PCFX_YUV422_BIN
 #define BINARY_LBA_ASSETS_GENERATED_TITLE_SCREEN_PCFX_YUV422_BIN 0
 #endif
+#ifndef BINARY_LBA_ASSETS_GENERATED_ENDING_SCREEN_PCFX_YUV422_BIN
+#define BINARY_LBA_ASSETS_GENERATED_ENDING_SCREEN_PCFX_YUV422_BIN 0
+#endif
 #ifndef BINARY_LBA_ASSETS_GENERATED_STORY_PORTRAITS_BIN
 #define BINARY_LBA_ASSETS_GENERATED_STORY_PORTRAITS_BIN 0
 #endif
@@ -103,6 +106,8 @@ static uint32_t blob_lba(WaifuAssetBlobId blob)
         return BINARY_LBA_ASSETS_GENERATED_TITLE_SCREEN_PCFX_YUV16_BIN;
     case WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV422:
         return BINARY_LBA_ASSETS_GENERATED_TITLE_SCREEN_PCFX_YUV422_BIN;
+    case WAIFU_ASSET_BLOB_ENDING_SCREEN_PCFX_YUV422:
+        return BINARY_LBA_ASSETS_GENERATED_ENDING_SCREEN_PCFX_YUV422_BIN;
     case WAIFU_ASSET_BLOB_STORY_PORTRAITS: return BINARY_LBA_ASSETS_GENERATED_STORY_PORTRAITS_BIN;
     case WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK: return BINARY_LBA_ASSETS_GENERATED_STORY_PORTRAIT_MASK_BIN;
     case WAIFU_ASSET_BLOB_CARD_FACES: return BINARY_LBA_ASSETS_GENERATED_CARD_FACES_BIN;
@@ -209,6 +214,14 @@ static int cd_read_kram(uint32_t lba, uint32_t kram_addr, uint32_t bytes)
 int waifu_pcfx_cdrom_read_title_yuv422_to_kram(uint32_t kram_addr, size_t bytes)
 {
     uint32_t base_lba = blob_lba(WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV422);
+    if (!base_lba) return 0;
+    if (bytes == 0) bytes = (size_t)TITLE_SCREEN_W * 256u * 2u;
+    return cd_read_kram(base_lba, kram_addr, (uint32_t)bytes);
+}
+
+int waifu_pcfx_cdrom_read_ending_yuv422_to_kram(uint32_t kram_addr, size_t bytes)
+{
+    uint32_t base_lba = blob_lba(WAIFU_ASSET_BLOB_ENDING_SCREEN_PCFX_YUV422);
     if (!base_lba) return 0;
     if (bytes == 0) bytes = (size_t)TITLE_SCREEN_W * 256u * 2u;
     return cd_read_kram(base_lba, kram_addr, (uint32_t)bytes);
