@@ -50,6 +50,30 @@ PCFX_SRCS_C := \
   src/engine/common.c
 PCFX_SRCS_S := src/platform/pcfx/fastking.s
 
+ASSET_GEN_FILES := \
+  src/generated/waifu_assets.h \
+  assets/generated/story_portraits.bin \
+  assets/generated/story_portrait_mask.bin \
+  assets/generated/card_faces.bin \
+  assets/generated/card_big_art.bin \
+  assets/generated/card_big_art_cd.bin \
+  assets/generated/card_back.bin \
+  assets/generated/support_face.bin \
+  assets/generated/support_big_art.bin \
+  assets/generated/support_big_art_cd.bin
+
+PCFX_SFX_FILES := \
+  src/generated/pcfx_sfx_adpcm.h \
+  assets/generated/sfx_adpcm.bin
+
+TITLE_ASSET_FILES := \
+  src/generated/title_asset.h \
+  assets/generated/title_screen_img.bin \
+  assets/generated/title_screen_pcfx_img.bin \
+  assets/generated/title_screen_pcfx_yuv16.bin \
+  assets/generated/title_screen_pcfx_yuv422.bin \
+  assets/generated/ending_screen_pcfx_yuv422.bin
+
 CD_ASSETS := \
   assets/generated/title_screen_pcfx_img.bin \
   assets/generated/title_screen_pcfx_yuv422.bin \
@@ -79,7 +103,9 @@ BIN_TARGET := $(OBJDIR)/$(PCFX_TARGET).program.bin
 MAP_TARGET := $(OBJDIR)/$(PCFX_TARGET).map
 PCFX_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(PCFX_SRCS_C)) $(patsubst %.s,$(OBJDIR)/%.o,$(PCFX_SRCS_S))
 
-.PHONY: all program clean clean-build clean-output cd toolchain-check pcfxtools regression-pcfx-hand-card regression-pcfx-battle-card regression-pcfx-battle-card-stripe
+.PHONY: all program clean clean-build clean-output cd toolchain-check pcfxtools regression-pcfx-hand-card regression-pcfx-battle-card regression-pcfx-battle-card-stripe FORCE
+
+FORCE:
 
 all: cd
 
@@ -113,7 +139,19 @@ $(OBJDIR)/%.o: %.s
 	@mkdir -p $(dir $@)
 	$(AS) $< -o $@
 
-$(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): tools/gen_pcfx_rainbow_bg.py assets/source/bg/desert.png assets/source/bg/stone.png assets/source/bg/ember.png assets/source/bg/sky.png
+$(ASSET_GEN_FILES): FORCE tools/gen_assets.py
+	@mkdir -p assets/generated src/generated
+	python3 tools/gen_assets.py
+
+$(PCFX_SFX_FILES): FORCE tools/gen_pcfx_sfx_adpcm.py
+	@mkdir -p assets/generated src/generated
+	python3 tools/gen_pcfx_sfx_adpcm.py
+
+$(TITLE_ASSET_FILES): FORCE tools/gen_title_asset.py src/generated/waifu_assets.h
+	@mkdir -p assets/generated src/generated
+	python3 tools/gen_title_asset.py
+
+$(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): FORCE tools/gen_pcfx_rainbow_bg.py assets/source/bg/desert.png assets/source/bg/stone.png assets/source/bg/ember.png assets/source/bg/sky.png
 	@mkdir -p assets/generated src/generated
 	python3 tools/gen_pcfx_rainbow_bg.py --quality 95 --header $(RAINBOW_BG_HEADER) \
 		assets/source/bg/desert.png assets/generated/rainbow_desert.bin WAIFU_PCFX_RAINBOW_DESERT \
@@ -147,7 +185,7 @@ $(OBJDIR)/cdlink.generated.txt: $(BIN_TARGET)
 clean-output:
 	rm -f $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin waifupcfx_pyramid.cue lbas.h cdda_tracks.h
 
-cd: clean-output toolchain-check $(PCFX_CDLINK) $(CD_ASSETS)
+cd: clean-output toolchain-check $(PCFX_CDLINK) $(ASSET_GEN_FILES) $(PCFX_SFX_FILES) $(TITLE_ASSET_FILES) $(CD_ASSETS)
 	# Pass 1: build without lbas.h/cdda_tracks.h, run cdlink to generate both headers
 	#         and convert WAV tracks to raw CD-audio bins.
 	$(MAKE) -f Makefile.pcfx clean-build PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX) PCFX_CDLINK=$(PCFX_CDLINK) HOSTCC=$(HOSTCC)
