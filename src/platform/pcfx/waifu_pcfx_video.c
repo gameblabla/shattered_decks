@@ -1125,6 +1125,7 @@ static int g_vdc_overlay_load_external_has = 0;
 static int g_vdc_overlay_fade_level = 16;
 static int g_vdc_overlay_applied_fade_level = -1;
 static int g_vdc_overlay_dirty = 1;
+static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video);
 static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video);
 
 static int pcfx_strlen_limited(const char *s, int max_len)
@@ -1527,7 +1528,7 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
     eris_king_set_bg_prio(KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
     eris_king_set_bg_mode(KING_BGMODE_NONE, 0, 0, 0);
     eris_tetsu_set_priorities(7, 7, 0, 0, 0, 0, 6);
-    eris_tetsu_set_video_mode(TETSU_LINES_263, 0, TETSU_DOTCLOCK_5MHz,
+    eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_16, TETSU_COLORS_16,
                               1, 1, 0, 0, 0, 0, 1);
     g_sanctum_active = 1;
@@ -1568,14 +1569,12 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
         eris_low_sup_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
         eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
         eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
-        pcfx_vdc_restore_overlay_palette();
-        pcfx_vdc_overlay_upload_font();
-        pcfx_vdc_sanctum_clear_all();
+        pcfx_vdc_overlay_init(video);
         eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
         eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
         pcfx_king_set_bg0_page_inline(page_bat_offset(0));
         eris_tetsu_set_priorities(1, 1, 7, 0, 0, 0, 6);
-        eris_tetsu_set_video_mode(TETSU_LINES_263, 0, TETSU_DOTCLOCK_5MHz,
+        eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                                   TETSU_COLORS_16, TETSU_COLORS_16,
                                   1, 1, 1, 0, 0, 0, 1);
     }
@@ -1594,6 +1593,7 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
     pcfx_vdc_restore_overlay_palette();
     pcfx_rainbow_stop_transfer();
     g_king_page_setting_extra = 0;
+    pcfx_king_set_bg_kram_page_inline(0);
     eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
     eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
     eris_tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
@@ -1605,6 +1605,11 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
     video->page_shadow_valid[1] = 0;
 #endif
     video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
+    video->vdc_overlay_ready = 0;
+    video->vdc_overlay_shutdown_countdown = 0;
+    g_vdc_overlay_dirty = 0;
+    g_vdc_overlay_applied_mode = WAIFU_PCFX_OVERLAY_OFF;
+    g_vdc_overlay_applied_fade_level = -1;
     g_sanctum_active = 0;
     g_rainbow_backdrop_active = 0;
     video->front_page = 0;
@@ -2275,6 +2280,7 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
     g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
 
     if (g_rainbow_backdrop_active) {
+        pcfx_vdc_overlay_set_fade_q8(fade_q8);
         video->front_page = 0;
         video->back_page = 0;
         pcfx_king_set_bg_kram_page_inline(0);
