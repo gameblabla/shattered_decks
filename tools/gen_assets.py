@@ -5,12 +5,15 @@ import math, os, re
 
 ROOT = Path(__file__).resolve().parents[1]
 CARD_DIR = ROOT/'assets/source/cards'
+CARD_DATA = CARD_DIR/'card_data.txt'
 if not CARD_DIR.exists():
     # Development fallback used by this ChatGPT build environment. The generated
     # header is committed, so the distributed package does not require these PNGs.
     alt = Path('/mnt/data/card_game_unzip/cards')
     if alt.exists(): CARD_DIR = alt
 OUT = ROOT/'src/generated/waifu_assets.h'
+CARD_IDS_OUT = ROOT/'src/game/card_ids.h'
+DECK_POOLS_OUT = ROOT/'src/generated/deck_pools.h'
 CARD_W, CARD_H = 38, 54
 BIG_W, BIG_H = 112, 112
 TILE = 32
@@ -18,67 +21,52 @@ PORTRAIT_W, PORTRAIT_H = 124, 200
 PORTRAIT_DIR = ROOT/'assets/source/story_portraits'
 STORY_PORTRAITS = ['serena.png','opponent_0.png','opponent_1.png','opponent_2.png','opponent_3.png','opponent_4.png']
 
-CARD_META = [
-  ('Abstract_beast','Nyxara, Abstract Chimera','Fiend','Dark',1900,1600),
-  ('Bee_woman','Melora, Honeyblade Muse','Insect','Wind',1450,1200),
-  ('Beetle','Carmina, Scarab Knight','Insect','Earth',1650,1900),
-  ('Cabaret','Vivienne, Velvet Stage','Spellcaster','Dark',1600,1300),
-  ('Carnivore_plant','Rosaria, Thorn Diva','Plant','Earth',1700,1500),
-  ('Cobra','Serphea, Cobra Enchantress','Reptile','Dark',1800,1200),
-  ('Cocinelle','Luminelle, Ladybird Page','Insect','Wind',1200,1800),
-  ('Crow','Ravenna, Nightwing Idol','Winged Beast','Dark',1500,1250),
-  ('Dragon','Dracona, Crimson Wyrm','Dragon','Fire',2400,2000),
-  ('Electric','Voltara, Storm Siren','Thunder','Light',1900,1400),
-  ('Falcon','Arienne, Falcon Herald','Winged Beast','Wind',1750,1400),
-  ('Fox_Egypt','Nefra, Desert Fox Oracle','Beast','Light',1800,1650),
-  ('Golem_Idol','Galatea, Golem Idol','Rock','Earth',1600,2300),
-  ('Insect_Soldier','Vespara, Insect Lancer','Insect','Earth',1700,1600),
-  ('Insect_queen','Aurelia, Hive Empress','Insect','Earth',2200,1900),
-  ('Jester','Mirelle, Moonlit Jester','Fiend','Dark',1500,1700),
-  ('JetFighter','Celeste, Jet Valkyrie','Machine','Wind',1850,1500),
-  ('Mage_skeleton','Ossaria, Bone Mage','Spellcaster','Dark',1700,2100),
-  ('Mermaid_machine','Marielle, Chrome Mermaid','Machine','Water',1800,1800),
-  ('Parrot','Lorie, Parrot Minstrel','Winged Beast','Wind',1150,900),
-  ('Penguin','Pina, Frost Penguin','Aqua','Water',950,1400),
-  ('Pretty_snake','Saphira, Serpent Belle','Reptile','Water',1550,1350),
-  ('Priestess','Elenia, Sun Priestess','Spellcaster','Light',1600,2000),
-  ('Rat','Rattina, Alley Scout','Beast','Earth',900,700),
-  ('Reptile','Vespera, Scale Duelist','Reptile','Earth',1450,1700),
-  ('Scarab','Khepri, Jewel Scarab','Insect','Earth',1300,1600),
-  ('Scorpion','Scorpia, Venom Dancer','Insect','Dark',1600,1500),
-  ('Sea_Serpent','Thalassa, Sea Serpent','Sea Serpent','Water',2000,1700),
-  ('Skull_Queen','Mortessa, Skull Queen','Zombie','Dark',2300,2100),
-  ('Slime','Lumia, Slime Oracle','Aqua','Water',800,2000),
-  ('Snake','Nagae, Coil Familiar','Reptile','Earth',1200,1000),
-  ('Sphinx','Sakhmet, Sphinx Guardian','Beast','Light',2100,2500),
-  ('Squid_tentacles','Calamaria, Tentacle Siren','Aqua','Water',1400,1800),
-  ('Stone_Dragon','Petra, Stone Dragon','Dragon','Earth',2200,2600),
-  ('Stone_Tablet_Woman','Menat, Tablet Keeper','Rock','Light',1100,2200),
-  ('Turtle','Chelonia, Tide Shell','Aqua','Water',1000,2200),
-  ('Tyranno','Tyranna, Raptor Queen','Dinosaur','Earth',2300,1800),
-  ('Ultimate_Gold_Dragon','Aurumelia, Ultimate Gold Dragon','Dragon','Light',3000,2500),
-  ('Warrior','Brienne, Blade Duelist','Warrior','Earth',1800,1600),
-  ('Water_Element','Ondina, Water Element','Aqua','Water',1800,2200),
-  ('White_dragon','Albathia, White Dragon','Dragon','Light',2600,2100),
-  ('Witch','Morganna, Night Witch','Spellcaster','Dark',1900,1700),
-  ('Yokai','Yuzuki, Yokai Shade','Fiend','Dark',2000,1800),
-  ('insect_bomb','Bombella, Hive Grenadier','Insect','Fire',1000,1000),
-  ('Demonic','Lethara, Abyss Harbinger','Fiend','Dark',2450,1850),
-  ('Eel','Neridia, Coil Siren','Aqua','Water',1700,1600),
-  ('Elec_Wolf','Raikora, Storm Wolf','Thunder','Light',2100,1500),
-  ('GhostGirl','Yumiko, Phantom Heiress','Zombie','Dark',2000,1800),
-  ('InsectQueenWoman','Vesparia, Royal Broodmother','Insect','Earth',2350,2100),
-  ('MagesticDragon','Aurelith, Majestic Dragon','Dragon','Light',2800,2400),
-  ('Owl_woman','Noctavia, Owl Oracle','Winged Beast','Wind',1650,1900),
-  ('Pumpkin','Pumpkira, Lantern Witch','Plant','Fire',1750,1450),
-  ('Shark','Selachia, Razorfin Diva','Fish','Water',1900,1400),
-  ('Street','Rika, Street Duelist','Warrior','Earth',1600,1200),
-  ('ThinBlueDragon','Cyanthra, Azure Serpent','Dragon','Water',2250,1700),
-  ('Unicorn','Elysera, Moon Unicorn','Beast','Light',2000,2200),
-  ('WhiteWhale','Belugaia, White Whale','Sea Serpent','Water',2100,2300),
-  ('ZombieWoman','Morbella, Mummy Queen','Zombie','Dark',2150,2000),
-  ('AngelFishwoman','Seraphina, Angel Fishwoman','Fish','Water',3200,2600),
-]
+def card_macro(asset_id):
+    s = re.sub(r'[^A-Za-z0-9]+', '_', asset_id).upper()
+    s = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', asset_id).upper()
+    s = re.sub(r'[^A-Z0-9]+', '_', s).strip('_')
+    return 'WAIFU_CARD_ID_' + s
+
+def c_string(s):
+    return s.replace('\\', '\\\\').replace('"', '\\"')
+
+def parse_card_data(path):
+    cards = []
+    pools = {}
+    seen_cards = set()
+    if not path.exists():
+        raise FileNotFoundError(path)
+    for lineno, raw in enumerate(path.read_text().splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = [p.strip() for p in line.split('|')]
+        kind = parts[0]
+        if kind == 'card':
+            if len(parts) != 8:
+                raise SystemExit(f'{path}:{lineno}: card rows need 8 fields')
+            asset_id, name, tribe, attr, atk, deff, desc = parts[1:]
+            if asset_id in seen_cards:
+                raise SystemExit(f'{path}:{lineno}: duplicate card {asset_id}')
+            seen_cards.add(asset_id)
+            cards.append((asset_id, name, tribe, attr, int(atk), int(deff), desc))
+        elif kind == 'pool':
+            if len(parts) != 3:
+                raise SystemExit(f'{path}:{lineno}: pool rows need 3 fields')
+            pool_name = parts[1]
+            if pool_name in pools:
+                raise SystemExit(f'{path}:{lineno}: duplicate pool {pool_name}')
+            pools[pool_name] = [p.strip() for p in parts[2].split(',') if p.strip()]
+        else:
+            raise SystemExit(f'{path}:{lineno}: unknown row kind {kind}')
+    card_ids = {card[0]: i for i, card in enumerate(cards)}
+    for pool_name, entries in pools.items():
+        for entry in entries:
+            if entry not in card_ids:
+                raise SystemExit(f'{path}: pool {pool_name} references unknown card {entry}')
+    return cards, pools, card_ids
+
+CARD_META, CARD_POOLS, CARD_ID_BY_ASSET = parse_card_data(CARD_DATA)
 
 BASE_COLORS = {
     'BLACK': (0,0,0), 'WHITE': (232,232,224), 'DIM': (48,48,55),
@@ -373,7 +361,7 @@ def tile_volcanic_slope():
     return img
 
 # Make master palette image.
-card_faces_rgb=[draw_card_face(*m) for m in CARD_META]
+card_faces_rgb=[draw_card_face(*m[:6]) for m in CARD_META]
 # Full-size 112x112 battle/check art.  This is separate from the 38x54
 # gameplay card face so detail screens never upscale the tiny thumbnail.
 big_card_rgb=[cover(Image.open(find_image(m[0])), (BIG_W, BIG_H)).filter(ImageFilter.SHARPEN) for m in CARD_META]
@@ -473,22 +461,74 @@ with open(OUT,'w') as f:
     array('waifu_support_big_art', q_support_big, 16)
     f.write('#endif /* WAIFU_ASSET_EXTERNAL_CARD_IMAGES */\n')
     f.write('static const char *waifu_card_names[WAIFU_CARD_COUNT] = {\n')
-    for _,name,_,_,_,_ in CARD_META:
+    for _,name,_,_,_,_,_ in CARD_META:
         f.write('    "'+name.replace('"','\\"')+'",\n')
     f.write('};\n')
     f.write('static const char *waifu_card_attr[WAIFU_CARD_COUNT] = {\n')
-    for _,_,_,attr,_,_ in CARD_META:
+    for _,_,_,attr,_,_,_ in CARD_META:
         f.write('    "'+attr+'",\n')
     f.write('};\n')
     f.write('static const char *waifu_card_tribe[WAIFU_CARD_COUNT] = {\n')
-    for _,_,tribe,_,_,_ in CARD_META:
+    for _,_,tribe,_,_,_,_ in CARD_META:
         f.write('    "'+tribe+'",\n')
     f.write('};\n')
+    f.write('static const char *waifu_card_desc[WAIFU_CARD_COUNT] = {\n')
+    for *_,desc in CARD_META:
+        f.write('    "'+c_string(desc)+'",\n')
+    f.write('};\n')
     f.write('static const uint16_t waifu_card_atk[WAIFU_CARD_COUNT] = {')
-    f.write(','.join(str(atk) for *_,atk,deff in CARD_META)); f.write('};\n')
+    f.write(','.join(str(card[4]) for card in CARD_META)); f.write('};\n')
     f.write('static const uint16_t waifu_card_def[WAIFU_CARD_COUNT] = {')
-    f.write(','.join(str(deff) for *_,atk,deff in CARD_META)); f.write('};\n')
+    f.write(','.join(str(card[5]) for card in CARD_META)); f.write('};\n')
     f.write('#endif\n')
+
+CARD_IDS_OUT.parent.mkdir(parents=True, exist_ok=True)
+with CARD_IDS_OUT.open('w', newline='\n') as f:
+    f.write('/* Generated by tools/gen_assets.py from assets/source/cards/card_data.txt. */\n')
+    f.write('#ifndef WAIFU_FM_CARD_IDS_H\n#define WAIFU_FM_CARD_IDS_H\n\n')
+    for i, card in enumerate(CARD_META):
+        f.write(f'#define {card_macro(card[0])} {i}\n')
+    f.write('\n#endif /* WAIFU_FM_CARD_IDS_H */\n')
+
+def emit_pool_header_array(f, pool_name):
+    symbol = 'waifu_' + pool_name + '_pool'
+    entries = CARD_POOLS[pool_name]
+    f.write(f'static const int {symbol}[] = {{\n')
+    for i, asset_id in enumerate(entries):
+        sep = ',' if i + 1 < len(entries) else ''
+        f.write(f'    {card_macro(asset_id)}{sep}\n')
+    f.write('};\n')
+    f.write(f'#define {symbol.upper()}_COUNT ((int)(sizeof({symbol}) / sizeof({symbol}[0])))\n\n')
+
+DECK_POOLS_OUT.parent.mkdir(parents=True, exist_ok=True)
+with DECK_POOLS_OUT.open('w', newline='\n') as f:
+    f.write('/* Generated by tools/gen_assets.py from assets/source/cards/card_data.txt. */\n')
+    f.write('#ifndef WAIFU_FM_DECK_POOLS_H\n#define WAIFU_FM_DECK_POOLS_H\n\n')
+    f.write('#include "card_ids.h"\n\n')
+    for pool_name in [
+        'random_strong', 'random_mid', 'random_weak',
+        'story_starter_strong', 'story_starter_weak', 'story_reward_strong',
+        'opponent_dream', 'opponent_plaza', 'opponent_adept', 'opponent_reaver',
+        'opponent_burning', 'opponent_void', 'opponent_sphinx', 'opponent_demon',
+    ]:
+        if pool_name not in CARD_POOLS:
+            raise SystemExit(f'missing pool {pool_name} in {CARD_DATA}')
+        emit_pool_header_array(f, pool_name)
+    f.write('static const int *waifu_opponent_story_pools[] = {\n')
+    for pool_name in [
+        'opponent_dream', 'opponent_plaza', 'opponent_adept', 'opponent_reaver',
+        'opponent_burning', 'opponent_void', 'opponent_sphinx', 'opponent_demon',
+    ]:
+        f.write(f'    waifu_{pool_name}_pool,\n')
+    f.write('};\n')
+    f.write('static const int waifu_opponent_story_pool_counts[] = {\n')
+    for pool_name in [
+        'opponent_dream', 'opponent_plaza', 'opponent_adept', 'opponent_reaver',
+        'opponent_burning', 'opponent_void', 'opponent_sphinx', 'opponent_demon',
+    ]:
+        f.write(f'    WAIFU_{pool_name.upper()}_POOL_COUNT,\n')
+    f.write('};\n\n')
+    f.write('#endif /* WAIFU_FM_DECK_POOLS_H */\n')
 
 BIN_OUT = ROOT/'assets/generated'
 BIN_OUT.mkdir(parents=True, exist_ok=True)

@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "waifu_assets.h"
+#include "card_ids.h"
 
 #ifdef __cplusplus
 extern "C" {

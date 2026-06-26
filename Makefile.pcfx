@@ -50,8 +50,16 @@ PCFX_SRCS_C := \
   src/engine/common.c
 PCFX_SRCS_S := src/platform/pcfx/fastking.s
 
+CARD_SOURCE_FILES := $(shell find assets/source/cards -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
+STORY_PORTRAIT_FILES := $(shell find assets/source/story_portraits -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
+SFX_SOURCE_FILES := $(shell find sounds assets/sounds -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
+TITLE_SOURCE_FILES := assets/source/title/titlescreen_shardsofcards.png assets/source/ending/ending.png
+RAINBOW_SOURCE_FILES := assets/source/bg/desert.png assets/source/bg/stone.png assets/source/bg/ember.png assets/source/bg/sky.png
+
 ASSET_GEN_FILES := \
+  src/game/card_ids.h \
   src/generated/waifu_assets.h \
+  src/generated/deck_pools.h \
   assets/generated/story_portraits.bin \
   assets/generated/story_portrait_mask.bin \
   assets/generated/card_faces.bin \
@@ -106,9 +114,7 @@ BIN_TARGET := $(OBJDIR)/$(PCFX_TARGET).program.bin
 MAP_TARGET := $(OBJDIR)/$(PCFX_TARGET).map
 PCFX_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(PCFX_SRCS_C)) $(patsubst %.s,$(OBJDIR)/%.o,$(PCFX_SRCS_S))
 
-.PHONY: all program clean clean-build clean-output cd toolchain-check pcfxtools regression-pcfx-hand-card regression-pcfx-battle-card regression-pcfx-battle-card-stripe FORCE
-
-FORCE:
+.PHONY: all program clean clean-build clean-output cd toolchain-check pcfxtools regression-pcfx-hand-card regression-pcfx-battle-card regression-pcfx-battle-card-stripe
 
 all: cd
 
@@ -142,23 +148,23 @@ $(OBJDIR)/%.o: %.s
 	@mkdir -p $(dir $@)
 	$(AS) $< -o $@
 
-$(ASSET_GEN_FILES): FORCE tools/gen_assets.py
+$(ASSET_GEN_FILES): tools/gen_assets.py $(CARD_SOURCE_FILES) $(STORY_PORTRAIT_FILES)
 	@mkdir -p assets/generated src/generated
 	python3 tools/gen_assets.py
 
-$(PCFX_SFX_FILES): FORCE tools/gen_pcfx_sfx_adpcm.py
+$(PCFX_SFX_FILES): tools/gen_pcfx_sfx_adpcm.py $(SFX_SOURCE_FILES)
 	@mkdir -p assets/generated src/generated
 	python3 tools/gen_pcfx_sfx_adpcm.py
 
-$(PCFX_PALETTE_FILES): FORCE tools/gen_pcfx_palette_assets.py src/generated/waifu_assets.h src/generated/title_asset.h
+$(PCFX_PALETTE_FILES): tools/gen_pcfx_palette_assets.py src/generated/waifu_assets.h src/generated/title_asset.h
 	@mkdir -p src/generated
 	python3 tools/gen_pcfx_palette_assets.py
 
-$(TITLE_ASSET_FILES): FORCE tools/gen_title_asset.py src/generated/waifu_assets.h
+$(TITLE_ASSET_FILES): tools/gen_title_asset.py src/generated/waifu_assets.h $(TITLE_SOURCE_FILES)
 	@mkdir -p assets/generated src/generated
 	python3 tools/gen_title_asset.py
 
-$(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): FORCE tools/gen_pcfx_rainbow_bg.py assets/source/bg/desert.png assets/source/bg/stone.png assets/source/bg/ember.png assets/source/bg/sky.png
+$(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): tools/gen_pcfx_rainbow_bg.py $(RAINBOW_SOURCE_FILES)
 	@mkdir -p assets/generated src/generated
 	python3 tools/gen_pcfx_rainbow_bg.py --quality 95 --header $(RAINBOW_BG_HEADER) \
 		assets/source/bg/desert.png assets/generated/rainbow_desert.bin WAIFU_PCFX_RAINBOW_DESERT \

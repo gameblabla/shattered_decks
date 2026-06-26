@@ -156,6 +156,53 @@ static uint8_t tex_row_lut_ready;
 
 static inline int32_t cfx_abs_i32(int32_t v) { return v < 0 ? -v : v; }
 
+#define CFX_DIV_CORRECTION_LIMIT 8u
+
+static inline uint32_t cfx_abs_i32_u32(int32_t v)
+{
+    return (v < 0) ? ((uint32_t)(-(v + 1)) + 1u) : (uint32_t)v;
+}
+
+static inline int32_t cfx_div_apply_sign(uint32_t q, uint8_t neg)
+{
+    if (!neg) {
+        return (q > 0x7fffffffu) ? (int32_t)0x7fffffffu : (int32_t)q;
+    }
+    if (q >= 0x80000000u) {
+        return (int32_t)0x80000000u;
+    }
+    return -(int32_t)q;
+}
+
+static inline uint32_t cfx_div_refine_u32(uint32_t un, uint32_t ud, uint32_t q)
+{
+    uint32_t prod;
+    uint32_t corrections = 0;
+
+    if (ud == 0u) return 0u;
+    if (ud == 1u) return un;
+    if (q != 0u && ud > (0xffffffffu / q)) {
+        return un / ud;
+    }
+
+    prod = q * ud;
+    while (prod > un) {
+        if (corrections++ >= CFX_DIV_CORRECTION_LIMIT) {
+            return un / ud;
+        }
+        --q;
+        prod -= ud;
+    }
+    while ((uint32_t)(un - prod) >= ud) {
+        if (corrections++ >= CFX_DIV_CORRECTION_LIMIT || prod > 0xffffffffu - ud) {
+            return un / ud;
+        }
+        ++q;
+        prod += ud;
+    }
+    return q;
+}
+
 static const uint16_t cfx_recip_q15_u8[257] = {
     0, 32768, 16384, 10922, 8192, 6553, 5461, 4681, 4096, 3640, 3276, 2978, 2730, 2520, 2340, 2184,
     2048, 1927, 1820, 1724, 1638, 1560, 1489, 1424, 1365, 1310, 1260, 1213, 1170, 1129, 1092, 1057,
@@ -257,10 +304,10 @@ static inline int32_t cfx_div_toward_zero(int32_t n, int16_t d)
 {
     if (d == 0) return 0;
     uint8_t neg = 0;
-    if (n < 0) { n = -n; neg ^= 1; }
-    if (d < 0) { d = (int16_t)-d; neg ^= 1; }
-    uint16_t ud = (uint16_t)d;
-    uint32_t un = (uint32_t)n;
+    uint32_t un = cfx_abs_i32_u32(n);
+    if (n < 0) neg ^= 1;
+    uint32_t ud = (d < 0) ? (uint32_t)(-(int32_t)d) : (uint32_t)d;
+    if (d < 0) neg ^= 1;
     uint32_t q;
     if (ud == 1) {
         q = un;
@@ -275,35 +322,28 @@ static inline int32_t cfx_div_toward_zero(int32_t n, int16_t d)
             q = ((un * (uint32_t)cfx_recip_q8_u16[ud]) >> 8);
         }
     } else {
-        uint16_t scaled = ud;
+        uint32_t scaled = ud;
         uint16_t shift = 0;
         while (scaled > 256u) { scaled = (uint16_t)((scaled + 1u) >> 1); ++shift; }
         q = ((un * (uint32_t)cfx_recip_q8_u16[scaled]) >> (8 + shift));
     }
 
-    /* Reciprocal estimate, then exact toward-zero correction.  The estimate is
-       already within a few units for renderer denominators, so this is still
-       cheaper than V810 DIV in the hot 3D setup while producing the old PC pixels. */
-    uint32_t prod = q * (uint32_t)ud;
-    while (prod > un) {
-        --q;
-        prod -= (uint32_t)ud;
-    }
-    while ((uint32_t)(un - prod) >= (uint32_t)ud) {
-        ++q;
-        prod += (uint32_t)ud;
-    }
-    return neg ? -(int32_t)q : (int32_t)q;
+    /* Reciprocal estimate, then exact toward-zero correction.  Bad projection
+       inputs can make the estimate much farther off than the normal board
+       range; cap the correction loop and fall back to a real 32-bit divide so
+       PC-FX cannot park in this helper for whole frames. */
+    q = cfx_div_refine_u32(un, (uint32_t)ud, q);
+    return cfx_div_apply_sign(q, neg);
 }
 
 static inline int32_t cfx_div_toward_zero_i32d(int32_t n, int32_t d)
 {
     if (d == 0) return 0;
     uint8_t neg = 0;
-    if (n < 0) { n = -n; neg ^= 1; }
-    if (d < 0) { d = -d; neg ^= 1; }
-    uint32_t ud = (uint32_t)d;
-    uint32_t un = (uint32_t)n;
+    uint32_t un = cfx_abs_i32_u32(n);
+    uint32_t ud = cfx_abs_i32_u32(d);
+    if (n < 0) neg ^= 1;
+    if (d < 0) neg ^= 1;
     uint32_t q;
     if (ud == 1u) {
         q = un;
@@ -314,17 +354,9 @@ static inline int32_t cfx_div_toward_zero_i32d(int32_t n, int32_t d)
         uint16_t shift = 0;
         while (scaled > 256u) { scaled = (scaled + 1u) >> 1; ++shift; }
         q = ((un * (uint32_t)cfx_recip_q8_u16[scaled]) >> (8 + shift));
-        uint32_t prod = q * ud;
-        while (prod > un) {
-            --q;
-            prod -= ud;
-        }
-        while ((uint32_t)(un - prod) >= ud) {
-            ++q;
-            prod += ud;
-        }
     }
-    return neg ? -(int32_t)q : (int32_t)q;
+    q = cfx_div_refine_u32(un, ud, q);
+    return cfx_div_apply_sign(q, neg);
 }
 
 static inline int32_t cfx_int_to_fixed(int32_t x) { return x << CFX_GEOM_FIXED_SHIFT; }
@@ -2575,8 +2607,9 @@ static void cfx_board_tri(uint8_t *fb, int W, int H, const uint8_t *tile,
            for every row, which costs 4 MUL per emitted scanline on top of 7
            hardware divides per triangle.  This is the same affine idea as the
            envmap triangle code: do setup once, then march x/u/v edges with ADDs
-           and fill spans with ADDs.  cfx_div_toward_zero_i32d uses reciprocal
-           multiply/correction, so the compiled board path has no V810 DIV. */
+           and fill spans with ADDs.  cfx_div_toward_zero_i32d still uses the
+           reciprocal path for normal board geometry, but falls back to exact
+           division if projection inputs make the correction too large. */
         gUx = cfx_board_clampg(cfx_div_toward_zero_i32d((U1 - U0) * dy02 - (U2 - U0) * dy01, det));
         gVx = cfx_board_clampg(cfx_div_toward_zero_i32d((V1 - V0) * dy02 - (V2 - V0) * dy01, det));
         xl = (int32_t)x0 << 16;

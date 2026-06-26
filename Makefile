@@ -17,25 +17,25 @@ assets:
 	python3 tools/gen_sound_assets.py
 	python3 tools/gen_pcfx_sfx_adpcm.py
 
-$(TARGET): $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/generated/sound_assets.h src/game/game_api.h src/game/ai.h src/game/deck.h src/game/palette.h src/game/sounds.h src/game/assets.h
+$(TARGET): $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/deck_pools.h src/generated/title_asset.h src/generated/sound_assets.h src/game/card_ids.h src/game/game_api.h src/game/ai.h src/game/deck.h src/game/palette.h src/game/sounds.h src/game/assets.h
 	$(CC) $(CFLAGS) -DWAIFU_FM_HEADLESS_TESTS $(INCLUDES) $(HEADLESS_SRCS) -lm -lz -o $@
 
-headless-cdrom-assets: $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/generated/sound_assets.h src/game/assets.h assets/generated/title_screen_img.bin assets/generated/ending_screen_pcfx_yuv422.bin assets/generated/story_portraits.bin assets/generated/story_portrait_mask.bin assets/generated/card_faces.bin assets/generated/card_big_art.bin assets/generated/card_back.bin assets/generated/support_face.bin assets/generated/support_big_art.bin
+headless-cdrom-assets: $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/deck_pools.h src/generated/title_asset.h src/generated/sound_assets.h src/game/card_ids.h src/game/assets.h assets/generated/title_screen_img.bin assets/generated/ending_screen_pcfx_yuv422.bin assets/generated/story_portraits.bin assets/generated/story_portrait_mask.bin assets/generated/card_faces.bin assets/generated/card_big_art.bin assets/generated/card_back.bin assets/generated/support_face.bin assets/generated/support_big_art.bin
 	$(CC) $(CFLAGS) -DWAIFU_FM_HEADLESS_TESTS -DWAIFU_ASSET_USE_CDROM -DWAIFU_ASSET_EXTERNAL_TITLE_IMAGE -DWAIFU_ASSET_EXTERNAL_STORY_PORTRAITS $(INCLUDES) $(HEADLESS_SRCS) -lm -lz -o waifu_fm_headless_cdrom
 
 
-headless-cdrom-assets-2mb: $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/generated/sound_assets.h src/game/assets.h assets/generated/title_screen_img.bin assets/generated/ending_screen_pcfx_yuv422.bin assets/generated/story_portraits.bin assets/generated/story_portrait_mask.bin assets/generated/card_faces.bin assets/generated/card_big_art.bin assets/generated/card_back.bin assets/generated/support_face.bin assets/generated/support_big_art.bin
+headless-cdrom-assets-2mb: $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/deck_pools.h src/generated/title_asset.h src/generated/sound_assets.h src/game/card_ids.h src/game/assets.h assets/generated/title_screen_img.bin assets/generated/ending_screen_pcfx_yuv422.bin assets/generated/story_portraits.bin assets/generated/story_portrait_mask.bin assets/generated/card_faces.bin assets/generated/card_big_art.bin assets/generated/card_back.bin assets/generated/support_face.bin assets/generated/support_big_art.bin
 	$(CC) $(CFLAGS) -DWAIFU_FM_HEADLESS_TESTS -DWAIFU_ASSET_USE_CDROM -DWAIFU_ASSET_RAM_BUDGET=2097152 $(INCLUDES) $(HEADLESS_SRCS) -lm -lz -o waifu_fm_headless_cdrom_2mb
 
-headless-cdrom-assets-large: $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/generated/sound_assets.h src/game/assets.h assets/generated/title_screen_img.bin assets/generated/ending_screen_pcfx_yuv422.bin assets/generated/story_portraits.bin assets/generated/story_portrait_mask.bin assets/generated/card_faces.bin assets/generated/card_big_art.bin assets/generated/card_back.bin assets/generated/support_face.bin assets/generated/support_big_art.bin
+headless-cdrom-assets-large: $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/deck_pools.h src/generated/title_asset.h src/generated/sound_assets.h src/game/card_ids.h src/game/assets.h assets/generated/title_screen_img.bin assets/generated/ending_screen_pcfx_yuv422.bin assets/generated/story_portraits.bin assets/generated/story_portrait_mask.bin assets/generated/card_faces.bin assets/generated/card_big_art.bin assets/generated/card_back.bin assets/generated/support_face.bin assets/generated/support_big_art.bin
 	$(CC) $(CFLAGS) -DWAIFU_FM_HEADLESS_TESTS -DWAIFU_ASSET_USE_CDROM -DWAIFU_ASSET_RAM_BUDGET=4194304 $(INCLUDES) $(HEADLESS_SRCS) -lm -lz -o waifu_fm_headless_cdrom_large
 
-headless-cart-assets: $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/generated/sound_assets.h src/game/assets.h
+headless-cart-assets: $(HEADLESS_SRCS) src/generated/waifu_assets.h src/generated/deck_pools.h src/generated/title_asset.h src/game/card_ids.h src/game/assets.h
 	$(CC) $(CFLAGS) -DWAIFU_FM_HEADLESS_TESTS -DWAIFU_ASSET_USE_CART_ROM $(INCLUDES) $(HEADLESS_SRCS) -lm -lz -o waifu_fm_headless_cart
 
 sdl12: $(SDL12_TARGET)
 
-$(SDL12_TARGET): $(SDL12_SRCS) src/generated/waifu_assets.h src/generated/title_asset.h src/generated/sound_assets.h src/game/game_api.h src/game/ai.h src/game/deck.h src/game/palette.h src/game/sounds.h src/game/assets.h
+$(SDL12_TARGET): $(SDL12_SRCS) src/generated/waifu_assets.h src/generated/deck_pools.h src/generated/title_asset.h src/generated/sound_assets.h src/game/card_ids.h src/game/game_api.h src/game/ai.h src/game/deck.h src/game/palette.h src/game/sounds.h src/game/assets.h
 	$(CC) $(CFLAGS) -DWAIFU_FM_NO_HEADLESS_MAIN $(INCLUDES) $(SDL_CFLAGS) $(SDL12_SRCS) $(SDL_LIBS) -lm -lz -o $@
 
 run: $(TARGET)

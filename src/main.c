@@ -27,6 +27,7 @@
 #include "game_api.h"
 #include "ai.h"
 #include "deck.h"
+#include "deck_pools.h"
 #include "palette.h"
 #include "sounds.h"
 #include "assets.h"
@@ -275,8 +276,6 @@ static int g_b_attack_attacker_slot = -1;
 #define SUPPORT_CARD_VARIANTS   5
 #define STORY_MIN_SUPPORT_CARDS 9
 #define STORY_MIN_EQUIP_CARDS   3
-#define ANGEL_FISHWOMAN_CARD_ID (WAIFU_CARD_COUNT - 1)
-
 static int support_card_kind(int card_id)
 {
     if (card_id < WAIFU_CARD_COUNT) return 0;
@@ -344,18 +343,18 @@ typedef struct FusionRule {
 } FusionRule;
 
 static const FusionRule g_fusion_rules[] = {
-    {6, 1, 14},    /* Luminelle + Melora -> Aurelia */
-    {6, 24, 14},   /* Luminelle + Vespera -> Aurelia */
-    {19, 20, 50},  /* Lorie + Pina -> Noctavia */
-    {23, 29, 32},  /* Rattina + Lumia -> Calamaria */
-    {30, 7, 5},    /* Nagae + Ravenna -> Serphea */
-    {12, 9, 33},   /* Galatea + Voltara -> Petra */
-    {15, 22, 17},  /* Mirelle + Elenia -> Ossaria */
-    {35, 24, 52},  /* Chelonia + Vespera -> Selachia */
-    {41, 20, 51},  /* Morganna + Pina -> Pumpkira */
-    {43, 13, 48},  /* Bombella + Vespara -> Vesparia */
-    {46, 7, 42},   /* Raikora + Ravenna -> Yuzuki */
-    {53, 1, 38},   /* Rika + Melora -> Brienne */
+    {WAIFU_CARD_ID_COCINELLE, WAIFU_CARD_ID_BEE_WOMAN, WAIFU_CARD_ID_INSECT_QUEEN},
+    {WAIFU_CARD_ID_COCINELLE, WAIFU_CARD_ID_REPTILE, WAIFU_CARD_ID_INSECT_QUEEN},
+    {WAIFU_CARD_ID_PARROT, WAIFU_CARD_ID_PENGUIN, WAIFU_CARD_ID_OWL_WOMAN},
+    {WAIFU_CARD_ID_RAT, WAIFU_CARD_ID_SLIME, WAIFU_CARD_ID_SQUID_TENTACLES},
+    {WAIFU_CARD_ID_SNAKE, WAIFU_CARD_ID_CROW, WAIFU_CARD_ID_COBRA},
+    {WAIFU_CARD_ID_GOLEM_IDOL, WAIFU_CARD_ID_ELECTRIC, WAIFU_CARD_ID_STONE_DRAGON},
+    {WAIFU_CARD_ID_JESTER, WAIFU_CARD_ID_PRIESTESS, WAIFU_CARD_ID_MAGE_SKELETON},
+    {WAIFU_CARD_ID_TURTLE, WAIFU_CARD_ID_REPTILE, WAIFU_CARD_ID_SHARK},
+    {WAIFU_CARD_ID_WITCH, WAIFU_CARD_ID_PENGUIN, WAIFU_CARD_ID_PUMPKIN},
+    {WAIFU_CARD_ID_INSECT_BOMB, WAIFU_CARD_ID_INSECT_SOLDIER, WAIFU_CARD_ID_INSECT_QUEEN_WOMAN},
+    {WAIFU_CARD_ID_ELEC_WOLF, WAIFU_CARD_ID_CROW, WAIFU_CARD_ID_YOKAI},
+    {WAIFU_CARD_ID_STREET, WAIFU_CARD_ID_BEE_WOMAN, WAIFU_CARD_ID_WARRIOR},
 };
 
 static int fusion_result_for_cards(int a, int b)
@@ -370,7 +369,7 @@ static int fusion_result_for_cards(int a, int b)
     if (is_monster_card(a) && is_monster_card(b) &&
         strcmp(waifu_card_attr[a], "Water") == 0 &&
         strcmp(waifu_card_attr[b], "Water") == 0) {
-        return ANGEL_FISHWOMAN_CARD_ID;
+        return WAIFU_CARD_ID_ANGEL_FISHWOMAN;
     }
     return -1;
 }
@@ -3912,12 +3911,7 @@ static void draw_card_preview_screen(int f)
     draw_wrapped_text_small(tx, y, line, 20, IDX_WHITE, IDX_BLACK); y += 20;
 
     draw_text_small(tx, y, "LORE", IDX_GOLD_HI, IDX_BLACK); y += 11;
-    draw_wrapped_text_small(tx, y, "A wandering duel maiden", 20, IDX_WHITE, IDX_BLACK); y += 18;
-    waifu_str_copy(line, (int)sizeof(line), "of "); waifu_str_cat(line, (int)sizeof(line), waifu_card_attr[id]); waifu_str_cat(line, (int)sizeof(line), " power. Her");
-    draw_wrapped_text_small(tx, y, line, 20, IDX_WHITE, IDX_BLACK); y += 18;
-    waifu_str_copy(line, (int)sizeof(line), waifu_card_tribe[id]); waifu_str_cat(line, (int)sizeof(line), " style breaks");
-    draw_wrapped_text_small(tx, y, line, 20, IDX_WHITE, IDX_BLACK); y += 18;
-    draw_wrapped_text_small(tx, y, "weak field lines.", 20, IDX_WHITE, IDX_BLACK); y += 18;
+    draw_wrapped_text_small(tx, y, waifu_card_desc[id], 20, IDX_WHITE, IDX_BLACK); y += 54;
 
     fmt_label_u32(line, (int)sizeof(line), "ATK", (unsigned)waifu_card_atk[id]);
     draw_text_small(tx, 197, line, IDX_GOLD_HI, IDX_BLACK);
@@ -5497,10 +5491,8 @@ static void generate_story_starter_deck(void)
     int seed = (int)(waifu_deck_runtime_seed((uint32_t)story_hash_name()) & 0x7fffffffu);
     if (seed == 0) seed = 17;
 #endif
-    int strong_pool[] = {37, 40, 33, 28, 8, 14, 48, 49, 54, 55, 56};
-    int weak_pool[] = {29, 20, 23, 34, 19, 43, 30, 6, 45, 50, 51, 53};
-    int strong = strong_pool[story_prng_next(&seed) % (int)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
-    int weak = weak_pool[story_prng_next(&seed) % (int)(sizeof(weak_pool) / sizeof(weak_pool[0]))];
+    int strong = waifu_story_starter_strong_pool[story_prng_next(&seed) % WAIFU_STORY_STARTER_STRONG_POOL_COUNT];
+    int weak = waifu_story_starter_weak_pool[story_prng_next(&seed) % WAIFU_STORY_STARTER_WEAK_POOL_COUNT];
     int idx = 0;
 
     g_story_strong_card = strong;
@@ -5525,7 +5517,7 @@ static void generate_story_starter_deck(void)
         if (roll < 34) {
             card = weak;
         } else if (roll < 48) {
-            card = weak_pool[story_prng_next(&seed) % (int)(sizeof(weak_pool) / sizeof(weak_pool[0]))];
+            card = waifu_story_starter_weak_pool[story_prng_next(&seed) % WAIFU_STORY_STARTER_WEAK_POOL_COUNT];
         } else if (roll < 62) {
             card = SUPPORT_EQUIP_CARD_ID;
         } else if (roll < 82) {
@@ -5683,12 +5675,11 @@ static int story_reward_drop_card(void)
     ensure_battle_deck_rng_seeded();
     roll = (int)(waifu_deck_rng_next(&g_i_deck_rng) % 100u);
 #endif
-    int strong_pool[] = {37, 40, 33, 28, 8, 14, 48, 49, 54, 55, 56};
     if (roll == 0) {
 #ifdef WAIFU_FM_HEADLESS_TESTS
-        return strong_pool[story_prng_next(&seed) % (int)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
+        return waifu_story_reward_strong_pool[story_prng_next(&seed) % WAIFU_STORY_REWARD_STRONG_POOL_COUNT];
 #else
-        return strong_pool[waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
+        return waifu_story_reward_strong_pool[waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_STORY_REWARD_STRONG_POOL_COUNT];
 #endif
     }
     if (roll < 11) {
@@ -6797,8 +6788,7 @@ static void render_interactive_card_preview_static(int card_id)
     y += lines * 10 + 7;
 
     draw_text_small(tx, y, "LORE", IDX_GOLD_HI, IDX_BLACK); y += 11;
-    waifu_str_copy(line, (int)sizeof(line), "A duel maiden whose "); waifu_str_cat(line, (int)sizeof(line), waifu_card_attr[card_id]); waifu_str_cat(line, (int)sizeof(line), " force shapes the shattered field.");
-    lines = draw_wrapped_text_small_box(tx, y, maxw, 5, 10, line, IDX_WHITE, IDX_BLACK);
+    lines = draw_wrapped_text_small_box(tx, y, maxw, 5, 10, waifu_card_desc[card_id], IDX_WHITE, IDX_BLACK);
     y += lines * 10 + 7;
 
     if (y < 194) y = 194;
@@ -10413,16 +10403,19 @@ static int debug_regression_thunder_support(void)
     waifu_deck_build_opponent_story(&deck, STORY_MAX_DUELS - 1, &rng, 0);
     for (int i = 0; i < deck.count; ++i) {
         if (deck.cards[i] == SUPPORT_THUNDER_CARD_ID) ++thunder_count[2];
-        if (deck.cards[i] == ANGEL_FISHWOMAN_CARD_ID) ++final_angel_count;
+        if (deck.cards[i] == WAIFU_CARD_ID_ANGEL_FISHWOMAN) ++final_angel_count;
     }
     if (thunder_count[0] != 0 || thunder_count[1] != 3 || thunder_count[2] != 3) {
         fprintf(stderr, "REGRESSION thunder_support FAIL: deck thunder counts prefinal=%d final2=%d final=%d\n",
                 thunder_count[0], thunder_count[1], thunder_count[2]);
         return 1;
     }
-    if (final_angel_count <= 0 || fusion_result_for_cards(20, 29) != ANGEL_FISHWOMAN_CARD_ID) {
+    if (final_angel_count <= 0 ||
+        fusion_result_for_cards(WAIFU_CARD_ID_PENGUIN, WAIFU_CARD_ID_SLIME) != WAIFU_CARD_ID_ANGEL_FISHWOMAN) {
         fprintf(stderr, "REGRESSION thunder_support FAIL: angel final_count=%d water_fusion=%d expected=%d\n",
-                final_angel_count, fusion_result_for_cards(20, 29), ANGEL_FISHWOMAN_CARD_ID);
+                final_angel_count,
+                fusion_result_for_cards(WAIFU_CARD_ID_PENGUIN, WAIFU_CARD_ID_SLIME),
+                WAIFU_CARD_ID_ANGEL_FISHWOMAN);
         return 1;
     }
 

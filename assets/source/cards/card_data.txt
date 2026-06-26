@@ -1,0 +1,78 @@
+# Cards:
+# card|asset_id|display_name|tribe|attr|atk|def|description
+card|Abstract_beast|Nyxara, Abstract Chimera|Fiend|Dark|1900|1600|A shifting dark chimera that punishes careless attacks.
+card|Bee_woman|Melora, Honeyblade Muse|Insect|Wind|1450|1200|A quick wind insect duelist with precise swarm strikes.
+card|Beetle|Carmina, Scarab Knight|Insect|Earth|1650|1900|A sturdy earth insect knight built for holding the line.
+card|Cabaret|Vivienne, Velvet Stage|Spellcaster|Dark|1600|1300|A dark spellcaster who turns the field into a stage.
+card|Carnivore_plant|Rosaria, Thorn Diva|Plant|Earth|1700|1500|An earth plant attacker wrapped in hungry vines.
+card|Cobra|Serphea, Cobra Enchantress|Reptile|Dark|1800|1200|A dark reptile whose venomous rhythm breaks guards.
+card|Cocinelle|Luminelle, Ladybird Page|Insect|Wind|1200|1800|A small wind insect that fuses into stronger swarm queens.
+card|Crow|Ravenna, Nightwing Idol|Winged Beast|Dark|1500|1250|A dark winged beast that dives from blind angles.
+card|Dragon|Dracona, Crimson Wyrm|Dragon|Fire|2400|2000|A fire dragon with direct, overwhelming pressure.
+card|Electric|Voltara, Storm Siren|Thunder|Light|1900|1400|A light thunder monster that charges fusion circuits.
+card|Falcon|Arienne, Falcon Herald|Winged Beast|Wind|1750|1400|A fast wind scout that keeps pressure in the air.
+card|Fox_Egypt|Nefra, Desert Fox Oracle|Beast|Light|1800|1650|A light beast oracle from the desert ruins.
+card|Golem_Idol|Galatea, Golem Idol|Rock|Earth|1600|2300|A durable earth idol with excellent defense.
+card|Insect_Soldier|Vespara, Insect Lancer|Insect|Earth|1700|1600|An earth insect soldier that supports swarm fusions.
+card|Insect_queen|Aurelia, Hive Empress|Insect|Earth|2200|1900|A commanding earth insect queen with balanced power.
+card|Jester|Mirelle, Moonlit Jester|Fiend|Dark|1500|1700|A dark fiend whose tricks open spellcaster fusions.
+card|JetFighter|Celeste, Jet Valkyrie|Machine|Wind|1850|1500|A wind machine built for fast field control.
+card|Mage_skeleton|Ossaria, Bone Mage|Spellcaster|Dark|1700|2100|A dark spellcaster raised from buried magic.
+card|Mermaid_machine|Marielle, Chrome Mermaid|Machine|Water|1800|1800|A water machine with balanced offense and defense.
+card|Parrot|Lorie, Parrot Minstrel|Winged Beast|Wind|1150|900|A light-footed wind bird that starts avian fusions.
+card|Penguin|Pina, Frost Penguin|Aqua|Water|950|1400|A defensive water monster with fusion potential.
+card|Pretty_snake|Saphira, Serpent Belle|Reptile|Water|1550|1350|A water reptile that slips through weak formations.
+card|Priestess|Elenia, Sun Priestess|Spellcaster|Light|1600|2000|A light spellcaster who anchors defensive plays.
+card|Rat|Rattina, Alley Scout|Beast|Earth|900|700|A weak earth beast that can become stronger material.
+card|Reptile|Vespera, Scale Duelist|Reptile|Earth|1450|1700|An earth reptile with useful insect fusion lines.
+card|Scarab|Khepri, Jewel Scarab|Insect|Earth|1300|1600|A defensive earth insect with steady pressure.
+card|Scorpion|Scorpia, Venom Dancer|Insect|Dark|1600|1500|A dark insect that threatens fragile monsters.
+card|Sea_Serpent|Thalassa, Sea Serpent|Sea Serpent|Water|2000|1700|A water serpent that dominates mid-power duels.
+card|Skull_Queen|Mortessa, Skull Queen|Zombie|Dark|2300|2100|A dark zombie queen with brutal late-game force.
+card|Slime|Lumia, Slime Oracle|Aqua|Water|800|2000|A defensive water body that fuses into sea power.
+card|Snake|Nagae, Coil Familiar|Reptile|Earth|1200|1000|An earth reptile familiar used in tricky fusions.
+card|Sphinx|Sakhmet, Sphinx Guardian|Beast|Light|2100|2500|A light beast guardian with high defense.
+card|Squid_tentacles|Calamaria, Tentacle Siren|Aqua|Water|1400|1800|A water siren born from beast and slime fusion.
+card|Stone_Dragon|Petra, Stone Dragon|Dragon|Earth|2200|2600|An earth dragon with a massive defensive shell.
+card|Stone_Tablet_Woman|Menat, Tablet Keeper|Rock|Light|1100|2200|A light rock guardian suited to survival.
+card|Turtle|Chelonia, Tide Shell|Aqua|Water|1000|2200|A sturdy water monster with shark fusion routes.
+card|Tyranno|Tyranna, Raptor Queen|Dinosaur|Earth|2300|1800|An earth dinosaur that hits hard and fast.
+card|Ultimate_Gold_Dragon|Aurumelia, Ultimate Gold Dragon|Dragon|Light|3000|2500|A legendary light dragon with overwhelming attack.
+card|Warrior|Brienne, Blade Duelist|Warrior|Earth|1800|1600|An earth warrior created from streetwise fusion.
+card|Water_Element|Ondina, Water Element|Aqua|Water|1800|2200|A water spirit with reliable defensive power.
+card|White_dragon|Albathia, White Dragon|Dragon|Light|2600|2100|A light dragon that leads elite decks.
+card|Witch|Morganna, Night Witch|Spellcaster|Dark|1900|1700|A dark spellcaster who turns frost into flame.
+card|Yokai|Yuzuki, Yokai Shade|Fiend|Dark|2000|1800|A dark fiend born from storm and shadow.
+card|insect_bomb|Bombella, Hive Grenadier|Insect|Fire|1000|1000|A fire insect that can trigger queen fusions.
+card|Demonic|Lethara, Abyss Harbinger|Fiend|Dark|2450|1850|A dark fiend with boss-tier pressure.
+card|Eel|Neridia, Coil Siren|Aqua|Water|1700|1600|A water aqua monster that keeps tempo steady.
+card|Elec_Wolf|Raikora, Storm Wolf|Thunder|Light|2100|1500|A light thunder beast that sparks shadow fusion.
+card|GhostGirl|Yumiko, Phantom Heiress|Zombie|Dark|2000|1800|A dark zombie with strong story-opponent value.
+card|InsectQueenWoman|Vesparia, Royal Broodmother|Insect|Earth|2350|2100|A royal earth insect with high combat stats.
+card|MagesticDragon|Aurelith, Majestic Dragon|Dragon|Light|2800|2400|A majestic light dragon fit for final duels.
+card|Owl_woman|Noctavia, Owl Oracle|Winged Beast|Wind|1650|1900|A wind oracle created by bird and frost fusion.
+card|Pumpkin|Pumpkira, Lantern Witch|Plant|Fire|1750|1450|A fire plant witch grown from strange magic.
+card|Shark|Selachia, Razorfin Diva|Fish|Water|1900|1400|A water fish monster with sharp attack lines.
+card|Street|Rika, Street Duelist|Warrior|Earth|1600|1200|An earth warrior with practical fusion utility.
+card|ThinBlueDragon|Cyanthra, Azure Serpent|Dragon|Water|2250|1700|A water dragon that bridges sea and sky.
+card|Unicorn|Elysera, Moon Unicorn|Beast|Light|2000|2200|A light beast with balanced elite stats.
+card|WhiteWhale|Belugaia, White Whale|Sea Serpent|Water|2100|2300|A water sea serpent with heavy defense.
+card|ZombieWoman|Morbella, Mummy Queen|Zombie|Dark|2150|2000|A dark zombie ruler for advanced decks.
+card|AngelFishwoman|Seraphina, Angel Fishwoman|Fish|Water|3200|2600|The strongest water guardian; two Water monsters can fuse into her.
+
+# Pools:
+# pool|name|asset_id,asset_id,...
+pool|random_strong|AngelFishwoman,Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale,Demonic,Sea_Serpent
+pool|random_mid|Abstract_beast,Beetle,Cobra,Electric,Falcon,Fox_Egypt,JetFighter,Mage_skeleton,Mermaid_machine,Pretty_snake,Reptile,Scarab,Scorpion,Snake,Squid_tentacles,Warrior,Water_Element,Witch,Yokai,Eel,Elec_Wolf,GhostGirl,Owl_woman,Pumpkin,Shark,Street,ZombieWoman
+pool|random_weak|Cocinelle,Crow,Golem_Idol,Jester,Parrot,Penguin,Priestess,Rat,Slime,Stone_Tablet_Woman,Turtle,insect_bomb
+pool|story_starter_strong|Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale
+pool|story_starter_weak|Slime,Penguin,Rat,Stone_Tablet_Woman,Parrot,insect_bomb,Snake,Cocinelle,Eel,Owl_woman,Pumpkin,Street
+pool|story_reward_strong|Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale
+pool|opponent_dream|Penguin,Rat,Slime,Stone_Tablet_Woman,Parrot,Snake,Cocinelle,insect_bomb,Eel,Owl_woman,Pumpkin,Street
+pool|opponent_plaza|Golem_Idol,Jester,Priestess,Slime,Tyranno,Cocinelle,Parrot,Rat,Snake,Stone_Tablet_Woman,Owl_woman,Shark,Street
+pool|opponent_adept|Skull_Queen,Stone_Dragon,Ultimate_Gold_Dragon,Jester,Priestess,White_dragon,Golem_Idol,Tyranno,Dragon,Insect_queen,MagesticDragon,ThinBlueDragon,Unicorn
+pool|opponent_reaver|Ultimate_Gold_Dragon,White_dragon,Dragon,Insect_queen,Skull_Queen,Stone_Dragon,Golem_Idol,Tyranno,Priestess,Jester,Demonic,Pumpkin,Shark,ZombieWoman
+pool|opponent_burning|AngelFishwoman,Dragon,Ultimate_Gold_Dragon,White_dragon,Insect_queen,Skull_Queen,Stone_Dragon,Tyranno,Priestess,Golem_Idol,Jester,Demonic,GhostGirl,Pumpkin
+pool|opponent_void|White_dragon,Ultimate_Gold_Dragon,Dragon,Skull_Queen,Insect_queen,Stone_Dragon,Tyranno,Priestess,Golem_Idol,Jester,GhostGirl,ThinBlueDragon,ZombieWoman
+pool|opponent_sphinx|Stone_Dragon,Ultimate_Gold_Dragon,White_dragon,Skull_Queen,Insect_queen,Dragon,Tyranno,Priestess,Golem_Idol,Jester,InsectQueenWoman,MagesticDragon,Unicorn,WhiteWhale
+pool|opponent_demon|Dragon,Ultimate_Gold_Dragon,White_dragon,Skull_Queen,Insect_queen,Stone_Dragon,Tyranno,Priestess,Golem_Idol,Jester,Demonic,GhostGirl,MagesticDragon,ZombieWoman

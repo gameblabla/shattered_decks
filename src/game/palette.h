@@ -13,6 +13,7 @@ void waifu_fm_use_title_palette(void);
 void waifu_fm_use_ending_palette(void);
 void waifu_fm_use_ending_black_palette(void);
 void waifu_fm_use_dialogue_palette(void);
+WaifuFmPaletteId waifu_fm_palette_id(void);
 
 #ifdef __cplusplus
 }

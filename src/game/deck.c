@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define WAIFU_ANGEL_FISHWOMAN_CARD_ID (WAIFU_CARD_COUNT - 1)
+#include "deck_pools.h"
 
 static int deck_card_is_valid(int card)
 {
@@ -93,9 +93,6 @@ void waifu_deck_shuffle(WaifuDeck *deck, WaifuDeckRng *rng)
 
 void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bias)
 {
-    static const int strong_pool[] = {WAIFU_ANGEL_FISHWOMAN_CARD_ID, 37, 40, 33, 28, 8, 14, 48, 49, 54, 55, 56, 44, 27};
-    static const int mid_pool[] = {0, 2, 5, 9, 10, 11, 16, 17, 18, 21, 24, 25, 26, 30, 32, 38, 39, 41, 42, 45, 46, 47, 50, 51, 52, 53, 57};
-    static const int weak_pool[] = {6, 7, 12, 15, 19, 20, 22, 23, 29, 34, 35, 43};
     int guard = 0;
 
     waifu_deck_clear(deck);
@@ -107,11 +104,11 @@ void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bi
         if (roll < 16u) {
             card = WAIFU_CARD_COUNT + (int)(waifu_deck_rng_next(rng) % WAIFU_SUPPORT_STANDARD_CARD_VARIANTS);
         } else if (roll < (uint32_t)(strength_bias ? 50 : 34)) {
-            card = strong_pool[waifu_deck_rng_next(rng) % (uint32_t)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
+            card = waifu_random_strong_pool[waifu_deck_rng_next(rng) % (uint32_t)WAIFU_RANDOM_STRONG_POOL_COUNT];
         } else if (roll < 82u) {
-            card = mid_pool[waifu_deck_rng_next(rng) % (uint32_t)(sizeof(mid_pool) / sizeof(mid_pool[0]))];
+            card = waifu_random_mid_pool[waifu_deck_rng_next(rng) % (uint32_t)WAIFU_RANDOM_MID_POOL_COUNT];
         } else {
-            card = weak_pool[waifu_deck_rng_next(rng) % (uint32_t)(sizeof(weak_pool) / sizeof(weak_pool[0]))];
+            card = waifu_random_weak_pool[waifu_deck_rng_next(rng) % (uint32_t)WAIFU_RANDOM_WEAK_POOL_COUNT];
         }
         (void)deck_append_limited(deck, card, 4);
     }
@@ -142,23 +139,15 @@ void waifu_deck_build_from_list(WaifuDeck *deck, const int *cards, int count, Wa
 
 static int opponent_story_card_at(int duel, int pos)
 {
-    static const int dream[]    = {20, 23, 29, 34, 19, 30, 6, 43, 45, 50, 51, 53};
-    static const int plaza[]    = {12, 15, 22, 29, 36, 6, 19, 23, 30, 34, 50, 52, 53};
-    static const int adept[]    = {28, 33, 37, 15, 22, 40, 12, 36, 8, 14, 49, 54, 55};
-    static const int reaver[]   = {37, 40, 8, 14, 28, 33, 12, 36, 22, 15, 44, 51, 52, 57};
-    static const int burning[]  = {WAIFU_ANGEL_FISHWOMAN_CARD_ID, 8, 37, 40, 14, 28, 33, 36, 22, 12, 15, 44, 47, 51};
-    static const int void_w[]   = {40, 37, 8, 28, 14, 33, 36, 22, 12, 15, 47, 54, 57};
-    static const int sphinx[]   = {33, 37, 40, 28, 14, 8, 36, 22, 12, 15, 48, 49, 55, 56};
-    static const int demon[]    = {8, 37, 40, 28, 14, 33, 36, 22, 12, 15, 44, 47, 49, 57};
-    const int *pool = dream;
-    int count = (int)(sizeof(dream) / sizeof(dream[0]));
-    if (duel == 1) { pool = plaza; count = (int)(sizeof(plaza) / sizeof(plaza[0])); }
-    else if (duel == 2) { pool = adept; count = (int)(sizeof(adept) / sizeof(adept[0])); }
-    else if (duel == 3) { pool = reaver; count = (int)(sizeof(reaver) / sizeof(reaver[0])); }
-    else if (duel == 4) { pool = burning; count = (int)(sizeof(burning) / sizeof(burning[0])); }
-    else if (duel == 5) { pool = void_w; count = (int)(sizeof(void_w) / sizeof(void_w[0])); }
-    else if (duel == 6) { pool = sphinx; count = (int)(sizeof(sphinx) / sizeof(sphinx[0])); }
-    else if (duel >= 7) { pool = demon; count = (int)(sizeof(demon) / sizeof(demon[0])); }
+    int pool_index = duel;
+    const int *pool;
+    int count;
+    if (pool_index < 0) pool_index = 0;
+    if (pool_index >= (int)(sizeof(waifu_opponent_story_pools) / sizeof(waifu_opponent_story_pools[0]))) {
+        pool_index = (int)(sizeof(waifu_opponent_story_pools) / sizeof(waifu_opponent_story_pools[0])) - 1;
+    }
+    pool = waifu_opponent_story_pools[pool_index];
+    count = waifu_opponent_story_pool_counts[pool_index];
     return pool[pos % count];
 }
 
