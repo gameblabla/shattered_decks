@@ -47,6 +47,19 @@ static int player_has_monsters(const WaifuAiState *s)
     return 0;
 }
 
+static int player_field_warrants_thunder(const WaifuAiState *s)
+{
+    int i;
+    int live = 0;
+    for (i = 0; i < WAIFU_AI_FIELD; ++i) {
+        const WaifuAiCardView *c = &s->player_field[i];
+        if (!is_monster(s, c->card_id)) continue;
+        ++live;
+        if (c->atk > 2000) return 1;
+    }
+    return live >= 2;
+}
+
 static int strongest_player_attack_atk(const WaifuAiState *s)
 {
     int i;
@@ -185,7 +198,7 @@ WaifuAiAction waifu_ai_choose_com_select(const WaifuAiState *s)
     int h;
     if (!s) return a;
 
-    if (player_has_monsters(s)) {
+    if (player_field_warrants_thunder(s)) {
         for (i = 0; i < WAIFU_AI_HAND; ++i) {
             if (!s->com_hand[i].used && is_thunder_support(s, s->com_hand[i].card_id)) {
                 a.kind = WAIFU_AI_ACTION_PLAY_SUPPORT;

@@ -376,6 +376,7 @@ static int fusion_result_for_cards(int a, int b)
 
 static int field_card_atk(int owner, int slot);
 static int field_card_def(int owner, int slot);
+static int story_water_field_active(void);
 static int equip_atk_bonus(int card_id);
 static int equip_def_bonus(int card_id);
 
@@ -1422,7 +1423,7 @@ static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
     char lpbuf[16];
     draw_panel_rect(6 + field_ox, 7 + field_oy, 49, 29, IDX_UI_DARK);
     draw_text_small(11 + field_ox, 11 + field_oy, "FIELD", IDX_WHITE, IDX_BLACK);
-    draw_text(21 + field_ox, 23 + field_oy, "MARE", IDX_WHITE, IDX_BLACK);
+    draw_text(11 + field_ox, 23 + field_oy, story_water_field_active() ? "WATER" : "MARE", IDX_WHITE, IDX_BLACK);
 
     draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
@@ -5052,13 +5053,34 @@ static int card_base_def(int id)
     return is_monster_card(id) ? (int)waifu_card_def[id] : 0;
 }
 
+static int story_water_field_active(void)
+{
+    return g_story_battle_active && g_story_duel_index >= STORY_MAX_DUELS - 1;
+}
+
+static int story_water_field_bonus(int id)
+{
+    if (!story_water_field_active() || !is_monster_card(id)) return 0;
+    if (!strcmp(waifu_card_attr[id], "Water") ||
+        !strcmp(waifu_card_tribe[id], "Fish") ||
+        !strcmp(waifu_card_tribe[id], "Aqua")) {
+        return 500;
+    }
+    if (!strcmp(waifu_card_attr[id], "Fire") ||
+        !strcmp(waifu_card_tribe[id], "Insect")) {
+        return -500;
+    }
+    return 0;
+}
+
 static int field_card_atk(int owner, int slot)
 {
     int id;
     if (slot < 0 || slot >= I_FIELD) return 0;
     id = owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot];
     if (!is_monster_card(id)) return 0;
-    return card_base_atk(id) + (owner == 0 ? g_i_player_atk_bonus[slot] : g_i_com_atk_bonus[slot]);
+    return card_base_atk(id) + story_water_field_bonus(id) +
+           (owner == 0 ? g_i_player_atk_bonus[slot] : g_i_com_atk_bonus[slot]);
 }
 
 static int field_card_def(int owner, int slot)
@@ -5067,7 +5089,8 @@ static int field_card_def(int owner, int slot)
     if (slot < 0 || slot >= I_FIELD) return 0;
     id = owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot];
     if (!is_monster_card(id)) return 0;
-    return card_base_def(id) + (owner == 0 ? g_i_player_def_bonus[slot] : g_i_com_def_bonus[slot]);
+    return card_base_def(id) + story_water_field_bonus(id) +
+           (owner == 0 ? g_i_player_def_bonus[slot] : g_i_com_def_bonus[slot]);
 }
 
 static int com_deck_face_down_attack_threshold(void)
@@ -6198,45 +6221,11 @@ static WaifuMusicTrack story_battle_music_track(void)
 static WaifuMusicTrack music_track_for_loading_target(void)
 {
 #ifdef WAIFU_FM_PCFX
-    /* CD data reads stop CD-DA on PC-FX, but asking for WAIFU_MUSIC_NONE during
-       a loading/interstitial state makes the audio layer issue a real STOP and
-       can leave the drive silent after the load.  Keep the intended destination
-       music armed instead; the CD-DA pump will restart it once reads settle. */
-    switch (g_i_loading_target) {
-    case WAIFU_I_TITLE:
-    case WAIFU_I_TITLE_TO_MENU:
-    case WAIFU_I_MENU:
-    case WAIFU_I_MENU_TO_STORY:
-    case WAIFU_I_MENU_TO_BATTLE:
-    case WAIFU_I_STORY_LOAD_DEVICE:
-        return WAIFU_MUSIC_TITLE;
-    case WAIFU_I_STORY_LOAD_TO_MAP:
-        return WAIFU_MUSIC_NONE;
-    case WAIFU_I_STORY_NAME:
-    case WAIFU_I_STORY_NAME_TO_INTRO:
-    case WAIFU_I_STORY_INTRO:
-    case WAIFU_I_STORY_FIRE:
-    case WAIFU_I_STORY_FIRE_TO_DECK:
-    case WAIFU_I_STORY_MAP:
-    case WAIFU_I_STORY_PYRAMID:
-    case WAIFU_I_STORY_SAVE:
-#ifdef WAIFU_FM_PCFX
-    case WAIFU_I_STORY_SAVE_DEVICE:
-#endif
-    case WAIFU_I_STORY_TO_PLAZA:
-    case WAIFU_I_STORY_PLAZA:
-    case WAIFU_I_STORY_ENDING:
-        return WAIFU_MUSIC_OPENING_DREAM;
-    case WAIFU_I_STORY_ENDING_CREDITS:
-        return WAIFU_MUSIC_NONE;
-    case WAIFU_I_DECK_EDITOR:
-    case WAIFU_I_DECK_PREVIEW:
-        return WAIFU_MUSIC_DECK_EDITOR;
-    case WAIFU_I_BATTLE:
-        return story_battle_music_track();
-    default:
-        return waifu_sound_music_track();
-    }
+    (void)g_i_loading_target;
+    /* CD data reads stop CD-DA on PC-FX.  Do not start the destination track
+       during a black/loading asset handoff; the real state requests it after
+       loading completes, avoiding an audible start-stop-start interruption. */
+    return WAIFU_MUSIC_NONE;
 #else
     return WAIFU_MUSIC_NONE;
 #endif
@@ -9332,6 +9321,7 @@ static void draw_story_plaza_scene(void)
 
 #define STORY_ENDING_CREDITS_FRAMES 300
 #define STORY_ENDING_TEXT_ERASE_FRAMES 36
+#define STORY_ENDING_TEXT_TYPE_FRAME_SPAN 72
 
 static const char *story_ending_lines[] = {
     "The last shard is silent. No enemy answers its call.",
@@ -9345,31 +9335,57 @@ static int story_ending_line_count(void)
     return (int)(sizeof(story_ending_lines) / sizeof(story_ending_lines[0]));
 }
 
+static int story_ending_line_visible_chars(int line)
+{
+    int len;
+    int visible;
+    if (line < 0) line = 0;
+    if (line >= story_ending_line_count()) line = story_ending_line_count() - 1;
+    len = (int)strlen(story_ending_lines[line]);
+    if (g_story_ending_erasing && g_i_frame >= 0) {
+        visible = len - q8_to_int(q8_mul(Q8_FROM_INT(len), q8_ratio(g_i_frame, STORY_ENDING_TEXT_ERASE_FRAMES)));
+    } else {
+        visible = q8_to_int(q8_mul(Q8_FROM_INT(len), q8_ratio(g_i_frame + 1, STORY_ENDING_TEXT_TYPE_FRAME_SPAN)));
+    }
+    if (visible < 0) visible = 0;
+    if (visible > len) visible = len;
+    return visible;
+}
+
+static int story_ending_line_fully_typed(void)
+{
+    int line = g_story_ending_line;
+    if (line < 0) line = 0;
+    if (line >= story_ending_line_count()) line = story_ending_line_count() - 1;
+    return story_ending_line_visible_chars(line) >= (int)strlen(story_ending_lines[line]);
+}
+
 static void draw_story_ending_screen(void)
 {
     int line_count = story_ending_line_count();
     int line = g_story_ending_line;
-    int visible_chars = 255;
+    int visible_chars;
+    int fully_typed;
     if (line < 0) line = 0;
     if (line >= line_count) line = line_count - 1;
-    if (g_story_ending_erasing && g_i_frame >= 0) {
-        int len = (int)strlen(story_ending_lines[line]);
-        visible_chars = len - q8_to_int(q8_mul(Q8_FROM_INT(len), q8_ratio(g_i_frame, STORY_ENDING_TEXT_ERASE_FRAMES)));
-        if (visible_chars < 0) visible_chars = 0;
-    }
+    visible_chars = story_ending_line_visible_chars(line);
+    fully_typed = !g_story_ending_erasing && story_ending_line_fully_typed();
+#ifndef WAIFU_FM_PCFX
+    (void)fully_typed;
+#endif
 #ifdef WAIFU_FM_PCFX
     clear_screen(IDX_BLACK);
     waifu_fm_use_ending_palette();
-    waifu_pcfx_video_overlay_ending_story(line, !g_story_ending_erasing && ((g_i_frame / 16) & 1) == 0, visible_chars);
+    waifu_pcfx_video_overlay_ending_story(line, fully_typed && ((g_i_frame / 16) & 1) == 0, visible_chars);
 #else
     clear_screen(IDX_BLACK);
-    draw_text_small(10, 180, "SERENA", IDX_GOLD_HI, IDX_BLACK);
+    //draw_text_small(10, 180, "SERENA", IDX_GOLD_HI, IDX_BLACK);
     {
         char visible_line[160];
         waifu_str_copy_n(visible_line, (int)sizeof(visible_line), story_ending_lines[line], visible_chars);
         draw_wrapped_text_small_box(10, 198, W - 20, 4, 10, visible_line, IDX_WHITE, IDX_BLACK);
     }
-    if (!g_story_ending_erasing && ((g_i_frame / 16) & 1) == 0) draw_centered_text(226, "A/RUN CONTINUE", IDX_WHITE, IDX_BLACK);
+    //if (!g_story_ending_erasing && ((g_i_frame / 16) & 1) == 0) draw_centered_text(226, "A/RUN CONTINUE", IDX_WHITE, IDX_BLACK);
 #endif
 }
 
@@ -9822,8 +9838,12 @@ void waifu_fm_step(const WaifuFmInput *input)
                 g_i_frame = -1;
             }
         } else if (press_a || press_start) {
-            g_story_ending_erasing = 1;
-            g_i_frame = -1;
+            if (!story_ending_line_fully_typed()) {
+                g_i_frame = STORY_ENDING_TEXT_TYPE_FRAME_SPAN;
+            } else {
+                g_story_ending_erasing = 1;
+                g_i_frame = -1;
+            }
         }
         break;
 
@@ -10393,6 +10413,7 @@ static int debug_regression_thunder_support(void)
     WaifuDeckRng rng;
     int thunder_count[3] = {0, 0, 0};
     int final_angel_count = 0;
+    int final_opening_thunder = 0;
     int guard;
 
     waifu_deck_rng_seed(&rng, 123u);
@@ -10405,9 +10426,17 @@ static int debug_regression_thunder_support(void)
         if (deck.cards[i] == SUPPORT_THUNDER_CARD_ID) ++thunder_count[2];
         if (deck.cards[i] == WAIFU_CARD_ID_ANGEL_FISHWOMAN) ++final_angel_count;
     }
+    waifu_deck_build_opponent_story(&deck, STORY_MAX_DUELS - 1, &rng, 1);
+    for (int i = 0; i < 5 && i < deck.count; ++i) {
+        if (deck.cards[i] == SUPPORT_THUNDER_CARD_ID) final_opening_thunder = 1;
+    }
     if (thunder_count[0] != 0 || thunder_count[1] != 3 || thunder_count[2] != 3) {
         fprintf(stderr, "REGRESSION thunder_support FAIL: deck thunder counts prefinal=%d final2=%d final=%d\n",
                 thunder_count[0], thunder_count[1], thunder_count[2]);
+        return 1;
+    }
+    if (!final_opening_thunder) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: final opening hand has no thunder\n");
         return 1;
     }
     if (final_angel_count <= 0 ||
@@ -10443,6 +10472,23 @@ static int debug_regression_thunder_support(void)
     g_i_player_attacked[0] = 0;
     g_i_player_atk_bonus[0] = 0;
     g_i_player_def_bonus[0] = 0;
+    build_com_ai_state(&ai_state);
+    ai_action = waifu_ai_choose_com_select(&ai_state);
+    if (ai_action.kind == WAIFU_AI_ACTION_PLAY_SUPPORT) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: AI used thunder against one weak monster\n");
+        return 1;
+    }
+
+    g_i_player_field[0] = WAIFU_CARD_ID_ULTIMATE_GOLD_DRAGON;
+    build_com_ai_state(&ai_state);
+    ai_action = waifu_ai_choose_com_select(&ai_state);
+    if (ai_action.kind != WAIFU_AI_ACTION_PLAY_SUPPORT || ai_action.hand_slot != 0) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: AI skipped thunder against one strong monster kind=%d hand=%d\n",
+                (int)ai_action.kind, ai_action.hand_slot);
+        return 1;
+    }
+
+    g_i_player_field[0] = 15;
     g_i_player_field[2] = 22;
     g_i_player_faceup[2] = 0;
     g_i_player_defense[2] = 1;
@@ -10472,8 +10518,28 @@ static int debug_regression_thunder_support(void)
         return 1;
     }
 
-    printf("REGRESSION thunder_support OK deck_counts=%d/%d/%d angel=%d guard=%d\n",
-           thunder_count[0], thunder_count[1], thunder_count[2], final_angel_count, guard);
+    g_story_battle_active = 1;
+    g_story_duel_index = STORY_MAX_DUELS - 1;
+    g_i_player_field[0] = WAIFU_CARD_ID_WATER_ELEMENT;
+    g_i_player_atk_bonus[0] = 0;
+    g_i_player_def_bonus[0] = 0;
+    g_i_player_field[1] = WAIFU_CARD_ID_INSECT_SOLDIER;
+    g_i_player_atk_bonus[1] = 0;
+    g_i_player_def_bonus[1] = 0;
+    g_i_player_field[2] = WAIFU_CARD_ID_INSECT_BOMB;
+    g_i_player_atk_bonus[2] = 0;
+    g_i_player_def_bonus[2] = 0;
+    if (field_card_atk(0, 0) != card_base_atk(WAIFU_CARD_ID_WATER_ELEMENT) + 500 ||
+        field_card_def(0, 0) != card_base_def(WAIFU_CARD_ID_WATER_ELEMENT) + 500 ||
+        field_card_atk(0, 1) != card_base_atk(WAIFU_CARD_ID_INSECT_SOLDIER) - 500 ||
+        field_card_def(0, 2) != card_base_def(WAIFU_CARD_ID_INSECT_BOMB) - 500) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: water field stats water=%d/%d insect=%d fire_insect_def=%d\n",
+                field_card_atk(0, 0), field_card_def(0, 0), field_card_atk(0, 1), field_card_def(0, 2));
+        return 1;
+    }
+
+    printf("REGRESSION thunder_support OK deck_counts=%d/%d/%d opening=%d angel=%d guard=%d\n",
+           thunder_count[0], thunder_count[1], thunder_count[2], final_opening_thunder, final_angel_count, guard);
     return 0;
 }
 

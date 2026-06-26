@@ -161,6 +161,20 @@ void waifu_deck_build_opponent_story(WaifuDeck *deck, int duel_index, WaifuDeckR
         deck->cards[deck->count++] = card;
     }
     if (shuffle && rng) waifu_deck_shuffle(deck, rng);
+    if (duel_index >= 4 && deck->count >= 5) {
+        int opening_has_thunder = 0;
+        int thunder_pos = -1;
+        for (int i = 0; i < deck->count; ++i) {
+            if (deck->cards[i] != WAIFU_SUPPORT_THUNDER_CARD_ID) continue;
+            if (i < 5) opening_has_thunder = 1;
+            else if (thunder_pos < 0) thunder_pos = i;
+        }
+        if (!opening_has_thunder && thunder_pos >= 0) {
+            int tmp = deck->cards[0];
+            deck->cards[0] = deck->cards[thunder_pos];
+            deck->cards[thunder_pos] = tmp;
+        }
+    }
 }
 
 #ifdef WAIFU_FM_HEADLESS_TESTS
