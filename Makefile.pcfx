@@ -66,6 +66,9 @@ PCFX_SFX_FILES := \
   src/generated/pcfx_sfx_adpcm.h \
   assets/generated/sfx_adpcm.bin
 
+PCFX_PALETTE_FILES := \
+  src/generated/pcfx_palette_assets.h
+
 TITLE_ASSET_FILES := \
   src/generated/title_asset.h \
   assets/generated/title_screen_img.bin \
@@ -147,6 +150,10 @@ $(PCFX_SFX_FILES): FORCE tools/gen_pcfx_sfx_adpcm.py
 	@mkdir -p assets/generated src/generated
 	python3 tools/gen_pcfx_sfx_adpcm.py
 
+$(PCFX_PALETTE_FILES): FORCE tools/gen_pcfx_palette_assets.py src/generated/waifu_assets.h src/generated/title_asset.h
+	@mkdir -p src/generated
+	python3 tools/gen_pcfx_palette_assets.py
+
 $(TITLE_ASSET_FILES): FORCE tools/gen_title_asset.py src/generated/waifu_assets.h
 	@mkdir -p assets/generated src/generated
 	python3 tools/gen_title_asset.py
@@ -160,6 +167,7 @@ $(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): FORCE tools/gen_pcfx_rainbow_bg.py a
 		assets/source/bg/sky.png assets/generated/rainbow_sky.bin WAIFU_PCFX_RAINBOW_SKY
 
 $(OBJDIR)/src/platform/pcfx/waifu_pcfx_video.o: $(RAINBOW_BG_HEADER)
+$(OBJDIR)/src/platform/pcfx/waifu_pcfx_video.o: $(PCFX_PALETTE_FILES)
 $(OBJDIR)/src/platform/pcfx/waifu_pcfx_cdrom.o: $(RAINBOW_BG_HEADER)
 
 $(ELF_TARGET): $(PCFX_OBJS)
@@ -185,7 +193,7 @@ $(OBJDIR)/cdlink.generated.txt: $(BIN_TARGET)
 clean-output:
 	rm -f $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin waifupcfx_pyramid.cue lbas.h cdda_tracks.h
 
-cd: clean-output toolchain-check $(PCFX_CDLINK) $(ASSET_GEN_FILES) $(PCFX_SFX_FILES) $(TITLE_ASSET_FILES) $(CD_ASSETS)
+cd: clean-output toolchain-check $(PCFX_CDLINK) $(ASSET_GEN_FILES) $(PCFX_SFX_FILES) $(TITLE_ASSET_FILES) $(PCFX_PALETTE_FILES) $(CD_ASSETS)
 	# Pass 1: build without lbas.h/cdda_tracks.h, run cdlink to generate both headers
 	#         and convert WAV tracks to raw CD-audio bins.
 	$(MAKE) -f Makefile.pcfx clean-build PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX) PCFX_CDLINK=$(PCFX_CDLINK) HOSTCC=$(HOSTCC)

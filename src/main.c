@@ -8595,6 +8595,7 @@ static void draw_story_intro_screen(int f)
     if (line < 0) line = 0;
     if (line >= line_count) line = line_count - 1;
 
+    waifu_fm_use_dialogue_palette();
     clear_screen(IDX_BLACK);
     if ((f & 32) == 0) {
         for (int i = 0; i < 24; ++i) put_px(116 + ((i * 17 + f) & 23), 38 + ((i * 11) & 31), IDX_DIM);
@@ -9271,6 +9272,7 @@ static void draw_story_plaza_scene_content(void)
     if (line_count <= 0) line_count = 1;
     if (line >= line_count) line = line_count - 1;
 
+    waifu_fm_use_dialogue_palette();
     clear_screen(IDX_BLACK);
     draw_story_sky();
     draw_story_scene_3d(g_i_frame);

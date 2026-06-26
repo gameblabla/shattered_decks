@@ -103,17 +103,18 @@ def build_from_yuv(words):
 
 def emit():
     common=parse_u8_array(COMMON,'waifu_palette_rgb',256*3)
+    dialogue=parse_u8_array(COMMON,'waifu_dialogue_palette_rgb',256*3)
     title_yuv=parse_u16_array(TITLE,'title_screen_palette_pcfx_yuv',256)
     if title_yuv is None:
         title=parse_u8_array(TITLE,'title_screen_palette_rgb',256*3)
         title_table=build_from_rgb(title)
     else:
         title_table=build_from_yuv(title_yuv)
-    tables=[build_from_rgb(common),title_table]
+    tables=[build_from_rgb(common),title_table,build_from_rgb(dialogue)]
     with OUT.open('w') as f:
         f.write('#ifndef WAIFU_PCFX_PALETTE_ASSETS_H\n#define WAIFU_PCFX_PALETTE_ASSETS_H\n\n#include <stdint.h>\n\n')
         f.write(f'#define WAIFU_PCFX_FADE_LEVELS {LEVELS}\n')
-        f.write('static const uint16_t waifu_pcfx_palette_fade_lut[2][WAIFU_PCFX_FADE_LEVELS][256] = {\n')
+        f.write('static const uint16_t waifu_pcfx_palette_fade_lut[3][WAIFU_PCFX_FADE_LEVELS][256] = {\n')
         for table in tables:
             f.write('  {\n')
             for row in table:

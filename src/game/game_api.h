@@ -15,7 +15,8 @@ typedef enum WaifuFmPaletteId {
     WAIFU_FM_PALETTE_COMMON = 0,
     WAIFU_FM_PALETTE_TITLE = 1,
     WAIFU_FM_PALETTE_ENDING = 2,
-    WAIFU_FM_PALETTE_ENDING_BLACK = 3
+    WAIFU_FM_PALETTE_ENDING_BLACK = 3,
+    WAIFU_FM_PALETTE_DIALOGUE = 4
 } WaifuFmPaletteId;
 
 typedef enum WaifuFmMusicTrack {

@@ -14,7 +14,8 @@ void waifu_fm_use_palette(WaifuFmPaletteId id)
 {
     if (id != WAIFU_FM_PALETTE_TITLE &&
         id != WAIFU_FM_PALETTE_ENDING &&
-        id != WAIFU_FM_PALETTE_ENDING_BLACK) {
+        id != WAIFU_FM_PALETTE_ENDING_BLACK &&
+        id != WAIFU_FM_PALETTE_DIALOGUE) {
         id = WAIFU_FM_PALETTE_COMMON;
     }
     g_active_palette_id = id;
@@ -40,6 +41,11 @@ void waifu_fm_use_ending_black_palette(void)
     waifu_fm_use_palette(WAIFU_FM_PALETTE_ENDING_BLACK);
 }
 
+void waifu_fm_use_dialogue_palette(void)
+{
+    waifu_fm_use_palette(WAIFU_FM_PALETTE_DIALOGUE);
+}
+
 WaifuFmPaletteId waifu_fm_palette_id(void)
 {
     return g_active_palette_id;
@@ -47,7 +53,9 @@ WaifuFmPaletteId waifu_fm_palette_id(void)
 
 const uint8_t *waifu_fm_palette_rgb_for_id(WaifuFmPaletteId id)
 {
-    return (id == WAIFU_FM_PALETTE_TITLE) ? title_screen_palette_rgb : waifu_palette_rgb;
+    if (id == WAIFU_FM_PALETTE_TITLE) return title_screen_palette_rgb;
+    if (id == WAIFU_FM_PALETTE_DIALOGUE) return waifu_dialogue_palette_rgb;
+    return waifu_palette_rgb;
 }
 
 const uint8_t *waifu_fm_palette_rgb(void)

@@ -2311,7 +2311,9 @@ static int fade_q8_to_level(int fade_q8)
 
 static int pcfx_palette_table_index(WaifuFmPaletteId palette_id)
 {
-    return (palette_id == WAIFU_FM_PALETTE_TITLE) ? 1 : 0;
+    if (palette_id == WAIFU_FM_PALETTE_TITLE) return 1;
+    if (palette_id == WAIFU_FM_PALETTE_DIALOGUE) return 2;
+    return 0;
 }
 
 static void waifu_pcfx_video_rebuild_base_palette(WaifuPcfxVideo *video, const uint8_t *rgb)
@@ -2337,7 +2339,9 @@ void waifu_pcfx_video_set_palette_rgb_fade(WaifuPcfxVideo *video, const uint8_t 
     int level = fade_q8_to_level(fade_q8);
     if (video->active_palette == palette_id && video->active_fade_q8 == level) return;
 
-    if (palette_id == WAIFU_FM_PALETTE_COMMON || palette_id == WAIFU_FM_PALETTE_TITLE) {
+    if (palette_id == WAIFU_FM_PALETTE_COMMON ||
+        palette_id == WAIFU_FM_PALETTE_TITLE ||
+        palette_id == WAIFU_FM_PALETTE_DIALOGUE) {
         const uint16_t *row = waifu_pcfx_palette_fade_lut[pcfx_palette_table_index(palette_id)][level];
         for (int i = 0; i < 256; ++i) {
             uint16_t yuv = row[i];

@@ -381,19 +381,23 @@ support_big_rgb=ImageOps.fit(support_rgb.resize((BIG_W, BIG_H), Image.Resampling
 back_rgb=draw_card_back()
 tex_rgb=[tile_dark(),tile_gold(0),tile_sand(),tile_stone(),tile_side_wall(),tile_brown(),tile_volcanic_ground(),tile_volcanic_slope(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
 story_portraits_rgba=load_story_portraits_rgba()
-# master swatches heavily weighted so UI colors survive
-swatches=[]
-for c in BASE_COLORS.values():
-    swatches += [c]*64
-for im in card_faces_rgb + big_card_rgb + [support_rgb,support_big_rgb,back_rgb] + tex_rgb + [p.convert('RGB') for p in story_portraits_rgba]:
-    small=im.resize((max(1,im.width//2), max(1,im.height//2)), Image.Resampling.BILINEAR)
-    swatches.extend(list(small.getdata()))
-master=Image.new('RGB',(256, max(1, math.ceil(len(swatches)/256))))
-master.putdata(swatches + [(0,0,0)]*(master.width*master.height-len(swatches)))
-pal_img=master.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
-palette=pal_img.getpalette()[:768]
-# force black-ish index discovery via nearest, not necessarily index 0.
-def nearest_idx(rgb):
+
+def build_palette_image(images):
+    # Master swatches are heavily weighted so UI colors survive quantization.
+    swatches=[]
+    for c in BASE_COLORS.values():
+        swatches += [c]*64
+    for im in images:
+        small=im.resize((max(1,im.width//2), max(1,im.height//2)), Image.Resampling.BILINEAR)
+        swatches.extend(list(small.getdata()))
+    master=Image.new('RGB',(256, max(1, math.ceil(len(swatches)/256))))
+    master.putdata(swatches + [(0,0,0)]*(master.width*master.height-len(swatches)))
+    pal=master.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    palette=pal.getpalette()[:768]
+    palette += [0] * (768 - len(palette))
+    return pal, palette
+
+def nearest_idx_in_palette(palette, rgb):
     best=0; bd=10**9
     for i in range(256):
         pr,pg,pb=palette[i*3:i*3+3]
@@ -402,8 +406,31 @@ def nearest_idx(rgb):
             best=i; bd=d
     return best
 
+def apply_base_colors(pal_img, palette, idx_map):
+    for name,rgb in BASE_COLORS.items():
+        i = idx_map[name] * 3
+        palette[i:i+3] = list(rgb)
+    pal_img.putpalette(palette)
+
+common_palette_images = card_faces_rgb + big_card_rgb + [support_rgb,support_big_rgb,back_rgb] + tex_rgb
+dialogue_palette_images = [p.convert('RGB') for p in story_portraits_rgba]
+pal_img,palette=build_palette_image(common_palette_images)
+dialogue_pal_img,dialogue_palette=build_palette_image(dialogue_palette_images)
+
+# Constants for named palette slots. Keep one shared set of indexes and stamp
+# those exact RGB values into every runtime palette so UI/text colors are stable.
+idx = {name:nearest_idx_in_palette(palette, rgb) for name,rgb in BASE_COLORS.items()}
+apply_base_colors(pal_img, palette, idx)
+apply_base_colors(dialogue_pal_img, dialogue_palette, idx)
+
+def qbytes_with_palette(im, quant_palette):
+    return bytes(im.convert('RGB').quantize(palette=quant_palette, dither=Image.Dither.NONE).tobytes())
+
 def qbytes(im):
-    return bytes(im.convert('RGB').quantize(palette=pal_img, dither=Image.Dither.NONE).tobytes())
+    return qbytes_with_palette(im, pal_img)
+
+def qbytes_dialogue(im):
+    return qbytes_with_palette(im, dialogue_pal_img)
 
 q_cards=[qbytes(im) for im in card_faces_rgb]
 q_big_cards=[qbytes(im) for im in big_card_rgb]
@@ -411,11 +438,8 @@ q_support=qbytes(support_rgb)
 q_support_big=qbytes(support_big_rgb)
 q_back=qbytes(back_rgb)
 q_tex=[qbytes(im) for im in tex_rgb]
-q_story_portraits=[qbytes(im.convert('RGB')) for im in story_portraits_rgba]
+q_story_portraits=[qbytes_dialogue(im.convert('RGB')) for im in story_portraits_rgba]
 q_story_portrait_masks=[bytes([255 if px[3] >= 16 else 0 for px in im.getdata()]) for im in story_portraits_rgba]
-
-# Constants for named palette slots.
-idx = {name:nearest_idx(rgb) for name,rgb in BASE_COLORS.items()}
 
 # write header
 OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -431,6 +455,7 @@ with open(OUT,'w') as f:
             f.write('    '+','.join(str(b) for b in data[i:i+width])+',\n')
         f.write('};\n')
     array('waifu_palette_rgb', bytes(palette), 18)
+    array('waifu_dialogue_palette_rgb', bytes(dialogue_palette), 18)
     # texture atlas concatenated
     array('waifu_texture_atlas', b''.join(q_tex), 16)
     f.write('#ifndef WAIFU_ASSET_EXTERNAL_STORY_PORTRAITS\n')
