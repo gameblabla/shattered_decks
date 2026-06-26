@@ -6218,24 +6218,11 @@ static WaifuMusicTrack story_battle_music_track(void)
     return WAIFU_MUSIC_RANDOM_BATTLE;
 }
 
-static WaifuMusicTrack music_track_for_loading_target(void)
-{
-#ifdef WAIFU_FM_PCFX
-    (void)g_i_loading_target;
-    /* CD data reads stop CD-DA on PC-FX.  Do not start the destination track
-       during a black/loading asset handoff; the real state requests it after
-       loading completes, avoiding an audible start-stop-start interruption. */
-    return WAIFU_MUSIC_NONE;
-#else
-    return WAIFU_MUSIC_NONE;
-#endif
-}
-
 static WaifuMusicTrack music_track_for_current_state(void)
 {
     switch (g_i_state) {
     case WAIFU_I_LOADING_ASSETS:
-        return music_track_for_loading_target();
+        return WAIFU_MUSIC_NONE;
     case WAIFU_I_TITLE:
     case WAIFU_I_TITLE_TO_MENU:
     case WAIFU_I_MENU:
