@@ -9029,36 +9029,21 @@ static void draw_story_fire_to_deck_transition(int f)
 
 static void draw_story_pyramid_menu(void)
 {
-#ifdef WAIFU_FM_PCFX
-    waifu_pcfx_video_request_sanctum(story_pcfx_sanctum_backdrop(),
-                                     WAIFU_PCFX_SANCTUM_OVERLAY_MENU,
-                                     g_story_pyramid_cursor, 1);
-    clear_screen(0);
-    return;
-#endif
     draw_story_sanctum_background();
-    draw_panel_rect(132, 42, 116, 138, IDX_UI_DARK);
+    draw_blue_gradient_box(126, 42, 122, 148);
     draw_text(158, 55, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(143, 76, 92, 4, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
-    draw_text(154, 124, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(154, 144, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(154, 164, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(142, 124 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
+    draw_wrapped_text_small_box(138, 76, 99, 4, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
+    draw_text(151, 124, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 144, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 164, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(139, 124 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
     draw_text_small(128, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_story_save_screen(void)
 {
-#ifdef WAIFU_FM_PCFX
-    waifu_pcfx_video_request_sanctum(story_pcfx_sanctum_backdrop(),
-                                     WAIFU_PCFX_SANCTUM_OVERLAY_SAVE,
-                                     g_story_save_status,
-                                     ((g_i_frame / 16) & 1) == 0);
-    clear_screen(0);
-    return;
-#endif
     draw_story_sanctum_background();
-    draw_panel_rect(31, 78, 194, 82, IDX_UI_DARK);
+    draw_blue_gradient_box(31, 78, 194, 82);
     if (g_story_save_status < 0) {
         draw_centered_text(95, "SAVE FAILED", IDX_RED, IDX_BLACK);
         draw_centered_text(118, "The memory seal is broken.", IDX_WHITE, IDX_BLACK);
@@ -9075,10 +9060,13 @@ static void draw_story_save_screen(void)
 #ifdef WAIFU_FM_PCFX
 static void draw_story_save_device_screen(void)
 {
-    waifu_pcfx_video_request_sanctum(story_pcfx_sanctum_backdrop(),
-                                     WAIFU_PCFX_SANCTUM_OVERLAY_SAVE_DEVICE,
-                                     g_i_save_device_sel, 1);
-    clear_screen(0);
+    draw_story_sanctum_background();
+    draw_blue_gradient_box(126, 54, 122, 132);
+    draw_text(161, 70, "SAVE TO", IDX_GOLD_HI, IDX_BLACK);
+    draw_text(151, 106, g_i_save_device_sel == 0 ? "> INTERNAL" : "  INTERNAL", g_i_save_device_sel == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 126, g_i_save_device_sel == 1 ? "> FX-BMP" : "  FX-BMP", g_i_save_device_sel == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 146, g_i_save_device_sel == 2 ? "> BACK" : "  BACK", g_i_save_device_sel == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text_small(128, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
 }
 #endif
 
@@ -9479,11 +9467,13 @@ void waifu_fm_step(const WaifuFmInput *input)
                 g_story_editor_from_pyramid = 1;
                 enter_deck_editor_after_assets();
             } else {
+                g_story_map_cursor = 0;
                 g_i_state = WAIFU_I_STORY_MAP;
                 g_i_frame = -1;
             }
         }
         if (press_b) {
+            g_story_map_cursor = 0;
             g_i_state = WAIFU_I_STORY_MAP;
             g_i_frame = -1;
         }
@@ -9567,13 +9557,15 @@ void waifu_fm_step(const WaifuFmInput *input)
         if (press_start) {
             if (g_story_deck_count == STORY_DECK_SIZE) {
                 recalc_story_deck_counts();
-                /* START from the story deck editor must always commit the
-                   current deck and enter the next story duel.  Older PC-FX
-                   builds treated the Sanctum editor as a pure edit-only
-                   screen for later duels and returned to the pyramid menu; if
-                   the player then entered battle through another path, the
-                   duel could be started as a non-story battle and the result
-                   flow would fall back to the title screen. */
+                if (g_story_editor_from_pyramid) {
+                    g_i_state = WAIFU_I_STORY_PYRAMID;
+                    g_i_frame = -1;
+                    g_story_editor_from_pyramid = 0;
+                    break;
+                }
+                /* Story-dialogue deck editing commits the deck and starts the
+                   next duel; sanctum editing above is pure maintenance and
+                   returns to the sanctum menu. */
                 g_story_editor_from_pyramid = 0;
                 init_story_battle_state();
                 enter_battle_after_assets();
