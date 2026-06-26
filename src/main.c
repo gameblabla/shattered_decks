@@ -5318,6 +5318,14 @@ static void suppress_battle_input_if_locked(int *press_up, int *press_down,
     *press_tab = 0;
 }
 
+static int start_press_plays_ui_sound(void)
+{
+    if (g_i_state == WAIFU_I_DECK_EDITOR || g_i_state == WAIFU_I_DECK_PREVIEW) return 0;
+    if (g_i_state == WAIFU_I_BATTLE &&
+        (g_b_phase == IB_RESULT || g_b_phase == IB_TALLY)) return 0;
+    return 1;
+}
+
 static int story_hash_name(void)
 {
     int h = 216;
@@ -9204,11 +9212,11 @@ void waifu_fm_step(const WaifuFmInput *input)
         waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
     } else {
         if (press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
-        if (press_start || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
+        if ((press_start && start_press_plays_ui_sound()) || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
     }
 #else
     if (press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
-    if (press_start || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
+    if ((press_start && start_press_plays_ui_sound()) || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
 #endif
 
     switch (g_i_state) {
