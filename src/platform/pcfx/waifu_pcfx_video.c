@@ -47,12 +47,10 @@
 #define WAIFU_PCFX_DIRTY_PRESENT 1
 #endif
 #ifndef WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
-/* Directly stream cached 112x112 big-card art to KING KRAM when its art
-   window is 16-pixel aligned.  For the normal battle lanes/motion, which can
-   place art at half-block offsets, stream the enclosing 16-pixel-aligned
-   framebuffer envelope instead so the presenter always moves whole edge
-   blocks and never falls back to small unaligned edge uploads. */
-#define WAIFU_PCFX_DIRECT_BIG_ART_ENABLE 1
+/* Keep big-card art in the same CPU-framebuffer dirty-band path as every other
+   pixel.  The separate direct uploader can desync page_shadow from KING KRAM,
+   leaving large card/portrait windows blank or stale after page flips. */
+#define WAIFU_PCFX_DIRECT_BIG_ART_ENABLE 0
 #endif
 
 #define WAIFU_PCFX_DIRTY_FULL_THRESHOLD_BYTES (WAIFU_PCFX_FRAME_BYTES * 3 / 4)
@@ -817,6 +815,7 @@ typedef struct PcfxDirectBigArt {
     int pitch;
 } PcfxDirectBigArt;
 
+#if WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
 static int pcfx_big_art_matches_framebuffer(const uint8_t *src, const uint8_t *framebuffer, int x, int y)
 {
     for (int yy = 0; yy < WAIFU_BIG_H; ++yy) {
@@ -895,6 +894,7 @@ static void pcfx_upload_direct_big_art(const PcfxDirectBigArt *arts, int count, 
                                                   arts[i].width, WAIFU_BIG_H, arts[i].pitch);
     }
 }
+#endif
 
 
 static inline __attribute__((always_inline)) void pcfx_flush_dirty_band(uint8_t *shadow, const uint8_t *framebuffer,
@@ -1078,8 +1078,11 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_FONT_LAST  0x7f
 #define WAIFU_PCFX_VDC_MAP_W 64
 #define WAIFU_PCFX_VDC_MAP_H 32
-#define WAIFU_PCFX_VDC_PALETTE_OFFSET 256
-#define WAIFU_PCFX_VDC_PALETTE_BASE WAIFU_PCFX_VDC_PALETTE_OFFSET
+/* VDC palette selection is encoded in two-color units, while palette writes
+   below use absolute VCE entries.  Offset 128 selects entry base 256, keeping
+   overlay/fade colors out of KING's low 8bpp game palette. */
+#define WAIFU_PCFX_VDC_PALETTE_OFFSET 128
+#define WAIFU_PCFX_VDC_PALETTE_BASE 256
 #define WAIFU_PCFX_VDC_PAL_BLACK 0x01
 #define WAIFU_PCFX_VDC_PAL_WHITE 0x02
 #define WAIFU_PCFX_VDC_PAL_GOLD  0x03
@@ -2304,8 +2307,10 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
 #if WAIFU_PCFX_DIRTY_PRESENT
     int upload_full = 0;
     uint8_t *shadow = video->page_shadow[video->back_page];
+#if WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
     PcfxDirectBigArt direct_art[WAIFU_ASSET_BIG_ART_DRAW_MAX];
     int direct_art_count = 0;
+#endif
 
     if (!video->page_shadow_valid[video->back_page]) {
         upload_full = 1;
@@ -2319,9 +2324,6 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
 #if WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
         direct_art_count = pcfx_collect_direct_big_art(direct_art, WAIFU_ASSET_BIG_ART_DRAW_MAX, framebuffer);
         if (direct_art_count > 0) pcfx_prime_shadow_for_direct_big_art(shadow, framebuffer, direct_art, direct_art_count);
-#else
-        (void)direct_art;
-        (void)direct_art_count;
 #endif
 
         PcfxDirtyPlanStats dirty_stats = pcfx_dirty_plan_stats(framebuffer, shadow);
