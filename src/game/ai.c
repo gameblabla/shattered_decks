@@ -22,6 +22,22 @@ static int is_support(const WaifuAiState *s, int card_id)
     return card_id >= s->card_count;
 }
 
+static int support_kind(const WaifuAiState *s, int card_id)
+{
+    if (!is_support(s, card_id)) return -1;
+    return card_id - s->card_count;
+}
+
+static int is_thunder_support(const WaifuAiState *s, int card_id)
+{
+    return support_kind(s, card_id) == 4;
+}
+
+static int is_equip_support(const WaifuAiState *s, int card_id)
+{
+    return is_support(s, card_id) && !is_thunder_support(s, card_id);
+}
+
 static int player_has_monsters(const WaifuAiState *s)
 {
     int i;
@@ -169,9 +185,20 @@ WaifuAiAction waifu_ai_choose_com_select(const WaifuAiState *s)
     int h;
     if (!s) return a;
 
+    if (player_has_monsters(s)) {
+        for (i = 0; i < WAIFU_AI_HAND; ++i) {
+            if (!s->com_hand[i].used && is_thunder_support(s, s->com_hand[i].card_id)) {
+                a.kind = WAIFU_AI_ACTION_PLAY_SUPPORT;
+                a.hand_slot = i;
+                a.field_slot = -1;
+                return a;
+            }
+        }
+    }
+
     if (s->free_com_equip_slot >= 0 && s->first_com_equip_target >= 0) {
         for (i = 0; i < WAIFU_AI_HAND; ++i) {
-            if (!s->com_hand[i].used && is_support(s, s->com_hand[i].card_id)) {
+            if (!s->com_hand[i].used && is_equip_support(s, s->com_hand[i].card_id)) {
                 a.kind = WAIFU_AI_ACTION_PLAY_SUPPORT;
                 a.hand_slot = i;
                 a.field_slot = s->first_com_equip_target;

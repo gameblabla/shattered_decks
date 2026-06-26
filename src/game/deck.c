@@ -103,7 +103,7 @@ void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bi
         uint32_t roll = waifu_deck_rng_next(rng) % 100u;
         int card;
         if (roll < 16u) {
-            card = WAIFU_CARD_COUNT + (int)(waifu_deck_rng_next(rng) % WAIFU_SUPPORT_CARD_VARIANTS);
+            card = WAIFU_CARD_COUNT + (int)(waifu_deck_rng_next(rng) % WAIFU_SUPPORT_STANDARD_CARD_VARIANTS);
         } else if (roll < (uint32_t)(strength_bias ? 50 : 34)) {
             card = strong_pool[waifu_deck_rng_next(rng) % (uint32_t)(sizeof(strong_pool) / sizeof(strong_pool[0]))];
         } else if (roll < 82u) {
@@ -165,7 +165,8 @@ void waifu_deck_build_opponent_story(WaifuDeck *deck, int duel_index, WaifuDeckR
     waifu_deck_clear(deck);
     for (int i = 0; i < WAIFU_DECK_SIZE; ++i) {
         int card = opponent_story_card_at(duel_index, i);
-        if (duel_index >= 2 && ((i + 1) % 7) == 0) card = WAIFU_SUPPORT_EQUIP_CARD_ID;
+        if (duel_index >= 3 && i == 4) card = WAIFU_SUPPORT_THUNDER_CARD_ID;
+        else if (duel_index >= 2 && ((i + 1) % 7) == 0) card = WAIFU_SUPPORT_EQUIP_CARD_ID;
         deck->cards[deck->count++] = card;
     }
     if (shuffle && rng) waifu_deck_shuffle(deck, rng);
