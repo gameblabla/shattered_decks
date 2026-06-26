@@ -9011,7 +9011,12 @@ static void draw_story_map_screen(int f)
 
 static void draw_story_to_plaza_transition(int f)
 {
-    SCREEN_TRANSITION(f, WAIFU_FAST_TRANSITION_HALF_FRAMES, draw_story_map_screen_content(f), draw_story_plaza_scene_content());
+    if (f < WAIFU_FAST_TRANSITION_HALF_FRAMES) {
+        draw_story_map_screen_content(f);
+        apply_black_dither_fade(Q8_ONE - q8_ratio(f, WAIFU_FAST_TRANSITION_HALF_FRAMES));
+    } else {
+        clear_screen(IDX_BLACK);
+    }
 }
 
 static void draw_story_fire_to_deck_transition(int f)
