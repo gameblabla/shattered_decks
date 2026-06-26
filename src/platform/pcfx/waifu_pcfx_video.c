@@ -1121,6 +1121,7 @@ static int g_vdc_overlay_prompt_visible = 0;
 static int g_vdc_overlay_has_save = 0;
 static int g_vdc_overlay_ending_page = 0;
 static int g_vdc_overlay_ending_prompt_visible = 1;
+static int g_vdc_overlay_ending_visible_chars = 255;
 static int g_vdc_overlay_menu_selected = 1;
 static int g_vdc_overlay_load_selected = 0;
 static int g_vdc_overlay_load_internal_has = 0;
@@ -1684,6 +1685,21 @@ static void pcfx_vdc_overlay_print_centered(int ty, const char *str)
     pcfx_vdc_overlay_print((WAIFU_PCFX_VDC_VISIBLE_W - len) / 2, ty, str, len);
 }
 
+static void pcfx_vdc_overlay_print_story_line(int tx, int ty, const char *str, int max_len, int *visible_chars)
+{
+    int len;
+    if (!visible_chars) return;
+    if (*visible_chars <= 0) {
+        pcfx_vdc_overlay_print(tx, ty, "", max_len);
+        return;
+    }
+    len = pcfx_strlen_limited(str, max_len);
+    if (len > *visible_chars) len = *visible_chars;
+    pcfx_vdc_overlay_print(tx, ty, str, len);
+    if (max_len > len) pcfx_vdc_overlay_print(tx + len, ty, "", max_len - len);
+    *visible_chars -= len;
+}
+
 static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video)
 {
     if (!video) return;
@@ -1801,34 +1817,37 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
         break;
 
     case WAIFU_PCFX_OVERLAY_ENDING_STORY:
+    {
+        int visible_chars = g_vdc_overlay_ending_visible_chars;
         pcfx_vdc_overlay_clear_rect(0, 18, WAIFU_PCFX_VDC_VISIBLE_W, 10);
-        pcfx_vdc_overlay_print(2, 19, "SERENA", 6);
+        if (visible_chars > 0) pcfx_vdc_overlay_print(2, 19, "SERENA", 6);
         switch (g_vdc_overlay_ending_page) {
         case 1:
-            pcfx_vdc_overlay_print(2, 21, "I FINALLY DEFEATED THEM.", 28);
-            pcfx_vdc_overlay_print(2, 22, "THE ONES WHO TURNED DREAMS", 28);
-            pcfx_vdc_overlay_print(2, 23, "INTO CHAINS.", 28);
+            pcfx_vdc_overlay_print_story_line(2, 21, "I FINALLY DEFEATED THEM.", 28, &visible_chars);
+            pcfx_vdc_overlay_print_story_line(2, 22, "THE ONES WHO TURNED DREAMS", 28, &visible_chars);
+            pcfx_vdc_overlay_print_story_line(2, 23, "INTO CHAINS.", 28, &visible_chars);
             break;
         case 2:
-            pcfx_vdc_overlay_print(2, 21, "THE DECK IS WHOLE AGAIN.", 28);
-            pcfx_vdc_overlay_print(2, 22, "EVERY STOLEN CARD HAS", 28);
-            pcfx_vdc_overlay_print(2, 23, "FOUND ITS WAY HOME.", 28);
+            pcfx_vdc_overlay_print_story_line(2, 21, "THE DECK IS WHOLE AGAIN.", 28, &visible_chars);
+            pcfx_vdc_overlay_print_story_line(2, 22, "EVERY STOLEN CARD HAS", 28, &visible_chars);
+            pcfx_vdc_overlay_print_story_line(2, 23, "FOUND ITS WAY HOME.", 28, &visible_chars);
             break;
         case 3:
-            pcfx_vdc_overlay_print(2, 21, "WHEN MORNING COMES, I WILL", 28);
-            pcfx_vdc_overlay_print(2, 22, "CARRY THESE CARDS BEYOND", 28);
-            pcfx_vdc_overlay_print(2, 23, "THE RUINS.", 28);
+            pcfx_vdc_overlay_print_story_line(2, 21, "WHEN MORNING COMES, I WILL", 28, &visible_chars);
+            pcfx_vdc_overlay_print_story_line(2, 22, "CARRY THESE CARDS BEYOND", 28, &visible_chars);
+            pcfx_vdc_overlay_print_story_line(2, 23, "THE RUINS.", 28, &visible_chars);
             break;
         case 0:
         default:
-            pcfx_vdc_overlay_print(2, 21, "THE LAST SHARD IS SILENT.", 28);
-            pcfx_vdc_overlay_print(2, 22, "NO ENEMY ANSWERS ITS CALL.", 28);
+            pcfx_vdc_overlay_print_story_line(2, 21, "THE LAST SHARD IS SILENT.", 28, &visible_chars);
+            pcfx_vdc_overlay_print_story_line(2, 22, "NO ENEMY ANSWERS ITS CALL.", 28, &visible_chars);
             break;
         }
-        if (g_vdc_overlay_ending_prompt_visible) {
+        if (g_vdc_overlay_ending_visible_chars > 0 && g_vdc_overlay_ending_prompt_visible) {
             pcfx_vdc_overlay_print_centered(26, "A/RUN CONTINUE");
         }
         break;
+    }
 
     case WAIFU_PCFX_OVERLAY_ENDING_CREDITS:
         pcfx_vdc_overlay_clear_all();
@@ -1889,17 +1908,21 @@ void waifu_pcfx_video_overlay_load_menu(int selected, int internal_has_save, int
     }
 }
 
-void waifu_pcfx_video_overlay_ending_story(int page, int prompt_visible)
+void waifu_pcfx_video_overlay_ending_story(int page, int prompt_visible, int visible_chars)
 {
     if (page < 0) page = 0;
     if (page > 3) page = 3;
     prompt_visible = prompt_visible ? 1 : 0;
+    if (visible_chars < 0) visible_chars = 0;
+    if (visible_chars > 255) visible_chars = 255;
     if (g_vdc_overlay_mode != WAIFU_PCFX_OVERLAY_ENDING_STORY ||
         g_vdc_overlay_ending_page != page ||
-        g_vdc_overlay_ending_prompt_visible != prompt_visible) {
+        g_vdc_overlay_ending_prompt_visible != prompt_visible ||
+        g_vdc_overlay_ending_visible_chars != visible_chars) {
         g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_ENDING_STORY;
         g_vdc_overlay_ending_page = page;
         g_vdc_overlay_ending_prompt_visible = prompt_visible;
+        g_vdc_overlay_ending_visible_chars = visible_chars;
         g_vdc_overlay_dirty = 1;
     }
 }

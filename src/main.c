@@ -275,6 +275,7 @@ static int g_b_attack_attacker_slot = -1;
 #define SUPPORT_CARD_VARIANTS   5
 #define STORY_MIN_SUPPORT_CARDS 9
 #define STORY_MIN_EQUIP_CARDS   3
+#define ANGEL_FISHWOMAN_CARD_ID (WAIFU_CARD_COUNT - 1)
 
 static int support_card_kind(int card_id)
 {
@@ -365,6 +366,11 @@ static int fusion_result_for_cards(int a, int b)
             (g_fusion_rules[i].a == b && g_fusion_rules[i].b == a)) {
             return g_fusion_rules[i].result;
         }
+    }
+    if (is_monster_card(a) && is_monster_card(b) &&
+        strcmp(waifu_card_attr[a], "Water") == 0 &&
+        strcmp(waifu_card_attr[b], "Water") == 0) {
+        return ANGEL_FISHWOMAN_CARD_ID;
     }
     return -1;
 }
@@ -4366,6 +4372,7 @@ static int g_b_fusion_anim_material_kept[FUSION_MAX_MATERIALS] = {0, 0, 0, 0, 0,
 static int g_b_fusion_anim_count = 0;
 static int g_b_fusion_anim_result = CARD_NONE;
 static int g_b_fusion_anim_success = 0;
+static int g_b_fusion_anim_equip_only = 0;
 static int g_b_fusion_anim_final_card = CARD_NONE;
 static int g_b_fusion_anim_final_atk_bonus = 0;
 static int g_b_fusion_anim_final_def_bonus = 0;
@@ -4552,6 +4559,7 @@ static int g_story_map_cursor = 0;     /* 0 pyramid, 1 plaza */
 static int g_story_pyramid_cursor = 0; /* 0 save, 1 editor, 2 back */
 static int g_story_plaza_line = 0;
 static int g_story_ending_line = 0;
+static int g_story_ending_erasing = 0;
 static int g_story_saved_flash = 0;
 static int g_story_editor_from_pyramid = 0;
 static int g_story_save_status = 0; /* 1 saved/loaded, -1 failed/no save */
@@ -4842,6 +4850,7 @@ static int prepare_player_fusion_anim(int target_slot)
     g_b_fusion_anim_final_def_bonus = 0;
     g_b_fusion_anim_final_equip_count = 0;
     g_b_fusion_anim_final_source_index = -1;
+    g_b_fusion_anim_equip_only = 0;
 
     field_card = g_i_player_field[target_slot];
     g_b_fusion_anim_target_slot = target_slot;
@@ -4936,6 +4945,8 @@ static int prepare_player_fusion_anim(int target_slot)
     }
 
     g_b_fusion_anim_success = (performed_fusion && !failed_pair && is_monster_card(current));
+    g_b_fusion_anim_equip_only = (!performed_fusion && !failed_pair &&
+                                  is_monster_card(current) && current_equip_count > 0);
     g_b_fusion_anim_result = g_b_fusion_anim_success ? current : CARD_NONE;
     return 1;
 }
@@ -6412,6 +6423,7 @@ static void init_battle_state(void)
     g_b_fusion_anim_count = 0;
     g_b_fusion_anim_result = CARD_NONE;
     g_b_fusion_anim_success = 0;
+    g_b_fusion_anim_equip_only = 0;
     g_b_fusion_anim_final_card = CARD_NONE;
     g_b_fusion_anim_final_atk_bonus = 0;
     g_b_fusion_anim_final_def_bonus = 0;
@@ -7248,11 +7260,22 @@ static void draw_interactive_battle(void)
 
 static void draw_post_battle_return(int attacker_owner, int f, int focus_slot, int bottom_card, const char *mode)
 {
+#ifdef WAIFU_FM_PCFX
+    const int settle_frames = 1;
+    const int fade_frames = 4;
+#else
     const int settle_frames = 20;
     const int fade_frames = 8;
+#endif
     Camera from = side_battle_camera(attacker_owner == 0 ? PLAYER_CARD_ROW : ENEMY_CARD_ROW);
     Camera to = (attacker_owner == 0) ? battle_top_camera() : enemy_battle_top_camera();
+#ifdef WAIFU_FM_PCFX
+    Camera cam = to;
+    (void)from;
+    (void)settle_frames;
+#else
     Camera cam = lerp_camera(from, to, q8_ratio(f, settle_frames));
+#endif
     render_board_cached(cam);
     draw_interactive_field_cards(cam);
     draw_hud();
@@ -7582,16 +7605,12 @@ static void draw_player_equip_anim(void)
 #endif
     int merge_start = (WAIFU_EQUIP_ANIM_FRAMES * 7) / 20;
     int merge_frames = (WAIFU_EQUIP_ANIM_FRAMES * 9) / 20;
-    int vanish_start = (WAIFU_EQUIP_ANIM_FRAMES * 19) / 30;
-    int vanish_frames = WAIFU_EQUIP_ANIM_FRAMES - vanish_start;
     if (reveal_frames < 4) reveal_frames = 4;
     if (merge_frames < 4) merge_frames = 4;
-    if (vanish_frames < 4) vanish_frames = 4;
     int reveal = (!g_b_equip_target_faceup && f < reveal_frames);
     int32_t merge_t = q8_smooth_ratio(f - merge_start, merge_frames);
-    int32_t vanish_t = q8_smooth_ratio(f - vanish_start, vanish_frames);
-    int card_w = lerp_i(92, 38, vanish_t);
-    int card_h = lerp_i(126, 52, vanish_t);
+    int card_w = WAIFU_CARD_W;
+    int card_h = WAIFU_CARD_H;
     int target_x = 68;
     int target_y = 22;
     int target_cx = target_x + 60;
@@ -7602,10 +7621,6 @@ static void draw_player_equip_anim(void)
     int def_to = g_b_equip_base_def + g_b_equip_pending_def;
 
     clear_screen(IDX_BLACK);
-    for (int y = 0; y < H; ++y) {
-        uint8_t c = (y & 8) ? IDX_UI_DARK : IDX_BLACK;
-        hline(0, 255, y, c);
-    }
     if (reveal) {
         draw_big_battle_card_flip(g_b_equip_target_card, target_x, target_y, f, reveal_frames);
     } else {
@@ -7792,8 +7807,13 @@ static void draw_player_fusion_anim(void)
             int final_x = (final_index >= 0) ? first_target_x + final_index * 34 : 101;
             draw_failed_fusion_dropped_materials(count, first_target_x, local);
             draw_fusion_landing_card(cam, g_b_fusion_anim_final_card, final_x, 82, 38, 50, target_slot, local, 0);
-            draw_centered_text(191, "FUSION FAILED", IDX_RED, IDX_BLACK);
-            draw_centered_text(205, g_b_fusion_anim_final_equip_count > 0 ? "EQUIP APPLIED" : "LAST CARD PLACED", IDX_WHITE, IDX_BLACK);
+            if (g_b_fusion_anim_equip_only) {
+                draw_centered_text(191, "EQUIP APPLIED", IDX_GREEN, IDX_BLACK);
+                draw_centered_text(205, "PLACING CARD", IDX_WHITE, IDX_BLACK);
+            } else {
+                draw_centered_text(191, "FUSION FAILED", IDX_RED, IDX_BLACK);
+                draw_centered_text(205, g_b_fusion_anim_final_equip_count > 0 ? "EQUIP APPLIED" : "LAST CARD PLACED", IDX_WHITE, IDX_BLACK);
+            }
         } else {
             int32_t fall_t = q8_smooth_ratio(local, 48);
             for (i = 0; i < count; ++i) {
@@ -7837,6 +7857,14 @@ static void draw_player_fusion_anim(void)
         draw_hand_card_sprite(g_b_fusion_anim_result, rx, ry, rw, rh, 0);
         if ((f & 4) == 0) rect_outline(rx - 4, ry - 4, rw + 8, rh + 8, pulse);
         draw_centered_text(166, "FUSION SUCCESS", IDX_GREEN, IDX_BLACK);
+    } else if (g_b_fusion_anim_equip_only) {
+        int ly = 82;
+        for (i = 0; i < count; ++i) {
+            int x = first_target_x + i * 34;
+            draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, ly, 38, 50, 0);
+        }
+        draw_centered_text(166, "EQUIP APPLIED", IDX_GREEN, IDX_BLACK);
+        draw_centered_text(181, "PLACING CARD", IDX_WHITE, IDX_BLACK);
     } else {
         int ly = 82;
         for (i = 0; i < count; ++i) {
@@ -8514,6 +8542,7 @@ static void reset_story_entry(void)
     g_story_pyramid_cursor = 0;
     g_story_plaza_line = 0;
     g_story_ending_line = 0;
+    g_story_ending_erasing = 0;
     g_story_name_to_intro = 0;
     g_story_saved_flash = 0;
     g_story_editor_from_pyramid = 0;
@@ -9312,6 +9341,7 @@ static void draw_story_plaza_scene(void)
 }
 
 #define STORY_ENDING_CREDITS_FRAMES 300
+#define STORY_ENDING_TEXT_ERASE_FRAMES 36
 
 static const char *story_ending_lines[] = {
     "The last shard is silent. No enemy answers its call.",
@@ -9329,19 +9359,28 @@ static void draw_story_ending_screen(void)
 {
     int line_count = story_ending_line_count();
     int line = g_story_ending_line;
+    int visible_chars = 255;
     if (line < 0) line = 0;
     if (line >= line_count) line = line_count - 1;
+    if (g_story_ending_erasing && g_i_frame >= 0) {
+        int len = (int)strlen(story_ending_lines[line]);
+        visible_chars = len - q8_to_int(q8_mul(Q8_FROM_INT(len), q8_ratio(g_i_frame, STORY_ENDING_TEXT_ERASE_FRAMES)));
+        if (visible_chars < 0) visible_chars = 0;
+    }
 #ifdef WAIFU_FM_PCFX
     clear_screen(IDX_BLACK);
     waifu_fm_use_ending_palette();
-    waifu_pcfx_video_overlay_ending_story(line, ((g_i_frame / 16) & 1) == 0);
+    waifu_pcfx_video_overlay_ending_story(line, !g_story_ending_erasing && ((g_i_frame / 16) & 1) == 0, visible_chars);
 #else
     clear_screen(IDX_BLACK);
     draw_text_small(10, 180, "SERENA", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(10, 198, W - 20, 4, 10, story_ending_lines[line], IDX_WHITE, IDX_BLACK);
-    if (((g_i_frame / 16) & 1) == 0) draw_centered_text(226, "A/RUN CONTINUE", IDX_WHITE, IDX_BLACK);
+    {
+        char visible_line[160];
+        waifu_str_copy_n(visible_line, (int)sizeof(visible_line), story_ending_lines[line], visible_chars);
+        draw_wrapped_text_small_box(10, 198, W - 20, 4, 10, visible_line, IDX_WHITE, IDX_BLACK);
+    }
+    if (!g_story_ending_erasing && ((g_i_frame / 16) & 1) == 0) draw_centered_text(226, "A/RUN CONTINUE", IDX_WHITE, IDX_BLACK);
 #endif
-    if (g_i_frame >= 0 && g_i_frame < 36) apply_black_dither_fade(q8_ratio(g_i_frame, 36));
 }
 
 static void draw_story_ending_credits_screen(void)
@@ -9370,6 +9409,7 @@ static void story_return_to_map_after_duel(void)
         if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
             g_story_battle_active = 0;
             g_story_ending_line = 0;
+            g_story_ending_erasing = 0;
             g_i_state = WAIFU_I_STORY_ENDING;
             g_i_frame = -1;
             init_battle_state();
@@ -9412,12 +9452,16 @@ void waifu_fm_step(const WaifuFmInput *input)
     suppress_battle_input_if_locked(&press_up, &press_down, &press_left, &press_right,
                                     &press_a, &press_b, &press_start, &press_tab);
 
-    if (press_up || press_down || press_left || press_right) waifu_sound_play(WAIFU_SOUND_SELECT);
+    int suppress_ui_sfx = (g_i_state == WAIFU_I_STORY_ENDING ||
+                           g_i_state == WAIFU_I_STORY_ENDING_CREDITS);
+    if (!suppress_ui_sfx && (press_up || press_down || press_left || press_right)) waifu_sound_play(WAIFU_SOUND_SELECT);
 #ifdef WAIFU_FM_PCFX
     /* RUN/START on the title is the same user intent as A: confirm/start the
        game.  Route it to the 037-style confirm PSG effect, not the 038-style
        exit/cancel effect. */
-    if (g_i_state == WAIFU_I_TITLE && (press_a || press_start)) {
+    if (suppress_ui_sfx) {
+        /* Ending text advances silently. */
+    } else if (g_i_state == WAIFU_I_TITLE && (press_a || press_start)) {
         waifu_sound_play(WAIFU_SOUND_CONFIRM);
     } else if (g_i_state == WAIFU_I_MENU && g_i_menu_selected == 2 && (press_a || press_start)) {
         /* Load Story enters BackupRAM I/O; keep this path silent so a menu
@@ -9435,8 +9479,8 @@ void waifu_fm_step(const WaifuFmInput *input)
         if ((press_start && start_press_plays_ui_sound()) || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
     }
 #else
-    if (press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
-    if ((press_start && start_press_plays_ui_sound()) || press_b || press_tab) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
+    if (!suppress_ui_sfx && press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
+    if (!suppress_ui_sfx && ((press_start && start_press_plays_ui_sound()) || press_b || press_tab)) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
 #endif
 
     switch (g_i_state) {
@@ -9778,14 +9822,18 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     case WAIFU_I_STORY_ENDING:
         draw_story_ending_screen();
-        if (press_a || press_start) {
-            ++g_story_ending_line;
-            if (g_story_ending_line >= story_ending_line_count()) {
-                g_i_state = WAIFU_I_STORY_ENDING_CREDITS;
-                g_i_frame = -1;
-            } else {
+        if (g_story_ending_erasing) {
+            if (g_i_frame >= STORY_ENDING_TEXT_ERASE_FRAMES) {
+                g_story_ending_erasing = 0;
+                ++g_story_ending_line;
+                if (g_story_ending_line >= story_ending_line_count()) {
+                    g_i_state = WAIFU_I_STORY_ENDING_CREDITS;
+                }
                 g_i_frame = -1;
             }
+        } else if (press_a || press_start) {
+            g_story_ending_erasing = 1;
+            g_i_frame = -1;
         }
         break;
 
@@ -10011,6 +10059,7 @@ static void debug_setup_music_demo_state(const char *name)
         g_b_phase_frame = 0;
     } else if (!strcmp(name, "ending")) {
         g_story_ending_line = 0;
+        g_story_ending_erasing = 0;
         g_i_state = WAIFU_I_STORY_ENDING;
     } else if (!strcmp(name, "ending-credits") || !strcmp(name, "credits")) {
         g_i_state = WAIFU_I_STORY_ENDING_CREDITS;
@@ -10066,6 +10115,8 @@ static void debug_prepare_story_save_fixture(void)
     sanitize_story_deck_copy_limit();
     recalc_story_deck_counts();
 }
+
+static void debug_setup_fusion_equip_scenario(const char *name);
 
 static int debug_regression_story_save_roundtrip(void)
 {
@@ -10351,6 +10402,7 @@ static int debug_regression_thunder_support(void)
     WaifuDeck deck;
     WaifuDeckRng rng;
     int thunder_count[3] = {0, 0, 0};
+    int final_angel_count = 0;
     int guard;
 
     waifu_deck_rng_seed(&rng, 123u);
@@ -10359,10 +10411,18 @@ static int debug_regression_thunder_support(void)
     waifu_deck_build_opponent_story(&deck, STORY_MAX_DUELS - 2, &rng, 0);
     for (int i = 0; i < deck.count; ++i) if (deck.cards[i] == SUPPORT_THUNDER_CARD_ID) ++thunder_count[1];
     waifu_deck_build_opponent_story(&deck, STORY_MAX_DUELS - 1, &rng, 0);
-    for (int i = 0; i < deck.count; ++i) if (deck.cards[i] == SUPPORT_THUNDER_CARD_ID) ++thunder_count[2];
-    if (thunder_count[0] != 0 || thunder_count[1] != 1 || thunder_count[2] != 1) {
+    for (int i = 0; i < deck.count; ++i) {
+        if (deck.cards[i] == SUPPORT_THUNDER_CARD_ID) ++thunder_count[2];
+        if (deck.cards[i] == ANGEL_FISHWOMAN_CARD_ID) ++final_angel_count;
+    }
+    if (thunder_count[0] != 0 || thunder_count[1] != 3 || thunder_count[2] != 3) {
         fprintf(stderr, "REGRESSION thunder_support FAIL: deck thunder counts prefinal=%d final2=%d final=%d\n",
                 thunder_count[0], thunder_count[1], thunder_count[2]);
+        return 1;
+    }
+    if (final_angel_count <= 0 || fusion_result_for_cards(20, 29) != ANGEL_FISHWOMAN_CARD_ID) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: angel final_count=%d water_fusion=%d expected=%d\n",
+                final_angel_count, fusion_result_for_cards(20, 29), ANGEL_FISHWOMAN_CARD_ID);
         return 1;
     }
 
@@ -10419,8 +10479,39 @@ static int debug_regression_thunder_support(void)
         return 1;
     }
 
-    printf("REGRESSION thunder_support OK deck_counts=%d/%d/%d guard=%d\n",
-           thunder_count[0], thunder_count[1], thunder_count[2], guard);
+    printf("REGRESSION thunder_support OK deck_counts=%d/%d/%d angel=%d guard=%d\n",
+           thunder_count[0], thunder_count[1], thunder_count[2], final_angel_count, guard);
+    return 0;
+}
+
+static int debug_regression_fusion_equip_only(void)
+{
+    debug_setup_fusion_equip_scenario("equip-last");
+    if (try_queue_player_fusion_slot(0) != 1 || try_queue_player_fusion_slot(1) != 2) {
+        fprintf(stderr, "REGRESSION fusion_equip_only FAIL: queue_count=%d\n", g_b_fusion_count);
+        return 1;
+    }
+    if (!prepare_player_fusion_anim(0)) {
+        fprintf(stderr, "REGRESSION fusion_equip_only FAIL: prepare failed\n");
+        return 1;
+    }
+    if (!g_b_fusion_anim_equip_only || g_b_fusion_anim_success ||
+        g_b_fusion_anim_final_card != 12 || g_b_fusion_anim_final_equip_count != 1) {
+        fprintf(stderr, "REGRESSION fusion_equip_only FAIL: equip_only=%d success=%d final=%d equips=%d\n",
+                g_b_fusion_anim_equip_only, g_b_fusion_anim_success,
+                g_b_fusion_anim_final_card, g_b_fusion_anim_final_equip_count);
+        return 1;
+    }
+    finish_player_fusion_anim();
+    if (g_i_player_field[0] != 12 || g_i_player_equip_field[0] != SUPPORT_EQUIP_CARD_ID ||
+        g_i_player_equip_target[0] != 0 || g_i_player_atk_bonus[0] != equip_atk_bonus(SUPPORT_EQUIP_CARD_ID)) {
+        fprintf(stderr, "REGRESSION fusion_equip_only FAIL: field=%d equip=%d target=%d atk_bonus=%d\n",
+                g_i_player_field[0], g_i_player_equip_field[0],
+                g_i_player_equip_target[0], g_i_player_atk_bonus[0]);
+        return 1;
+    }
+    printf("REGRESSION fusion_equip_only OK field=%d equip=%d atk_bonus=%d\n",
+           g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0]);
     return 0;
 }
 
@@ -10632,6 +10723,7 @@ int main(int argc, char **argv)
     int regression_result_music = 0;
     int regression_sanctum_entry = 0;
     int regression_thunder_support = 0;
+    int regression_fusion_equip = 0;
     CommandEvent events[MAX_COMMAND_EVENTS];
     int event_count = 0;
     int f;
@@ -10659,7 +10751,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--regression-result-music")) regression_result_music = 1;
         else if (!strcmp(argv[i], "--regression-sanctum-entry")) regression_sanctum_entry = 1;
         else if (!strcmp(argv[i], "--regression-thunder-support")) regression_thunder_support = 1;
-        else if (!strcmp(argv[i], "--regression-story-all")) { regression_story_save = 1; regression_story_duels = 1; regression_card_check = 1; regression_result_music = 1; regression_sanctum_entry = 1; regression_thunder_support = 1; }
+        else if (!strcmp(argv[i], "--regression-fusion-equip")) regression_fusion_equip = 1;
+        else if (!strcmp(argv[i], "--regression-story-all")) { regression_story_save = 1; regression_story_duels = 1; regression_card_check = 1; regression_result_music = 1; regression_sanctum_entry = 1; regression_thunder_support = 1; regression_fusion_equip = 1; }
 #endif
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
         else if (!strcmp(argv[i], "--profile-render")) g_profile_render_enabled = 1;
@@ -10673,7 +10766,7 @@ int main(int argc, char **argv)
     waifu_fm_init();
 
 #ifdef WAIFU_FM_HEADLESS_TESTS
-    if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music || regression_sanctum_entry || regression_thunder_support) {
+    if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music || regression_sanctum_entry || regression_thunder_support || regression_fusion_equip) {
         int rc = 0;
         if (regression_story_save) rc |= debug_regression_story_save_roundtrip();
         if (regression_story_duels) rc |= debug_regression_story_duel_loads();
@@ -10681,6 +10774,7 @@ int main(int argc, char **argv)
         if (regression_result_music) rc |= debug_regression_result_music_tracks();
         if (regression_sanctum_entry) rc |= debug_regression_sanctum_editor_battle_entry();
         if (regression_thunder_support) rc |= debug_regression_thunder_support();
+        if (regression_fusion_equip) rc |= debug_regression_fusion_equip_only();
         return rc ? 1 : 0;
     }
 #endif

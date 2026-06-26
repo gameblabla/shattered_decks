@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#define WAIFU_ANGEL_FISHWOMAN_CARD_ID (WAIFU_CARD_COUNT - 1)
+
 static int deck_card_is_valid(int card)
 {
     return card >= 0 && card < WAIFU_CARD_COUNT + WAIFU_SUPPORT_CARD_VARIANTS;
@@ -91,7 +93,7 @@ void waifu_deck_shuffle(WaifuDeck *deck, WaifuDeckRng *rng)
 
 void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bias)
 {
-    static const int strong_pool[] = {37, 40, 33, 28, 8, 14, 48, 49, 54, 55, 56, 44, 27};
+    static const int strong_pool[] = {WAIFU_ANGEL_FISHWOMAN_CARD_ID, 37, 40, 33, 28, 8, 14, 48, 49, 54, 55, 56, 44, 27};
     static const int mid_pool[] = {0, 2, 5, 9, 10, 11, 16, 17, 18, 21, 24, 25, 26, 30, 32, 38, 39, 41, 42, 45, 46, 47, 50, 51, 52, 53, 57};
     static const int weak_pool[] = {6, 7, 12, 15, 19, 20, 22, 23, 29, 34, 35, 43};
     int guard = 0;
@@ -144,7 +146,7 @@ static int opponent_story_card_at(int duel, int pos)
     static const int plaza[]    = {12, 15, 22, 29, 36, 6, 19, 23, 30, 34, 50, 52, 53};
     static const int adept[]    = {28, 33, 37, 15, 22, 40, 12, 36, 8, 14, 49, 54, 55};
     static const int reaver[]   = {37, 40, 8, 14, 28, 33, 12, 36, 22, 15, 44, 51, 52, 57};
-    static const int burning[]  = {8, 37, 40, 14, 28, 33, 36, 22, 12, 15, 44, 47, 51};
+    static const int burning[]  = {WAIFU_ANGEL_FISHWOMAN_CARD_ID, 8, 37, 40, 14, 28, 33, 36, 22, 12, 15, 44, 47, 51};
     static const int void_w[]   = {40, 37, 8, 28, 14, 33, 36, 22, 12, 15, 47, 54, 57};
     static const int sphinx[]   = {33, 37, 40, 28, 14, 8, 36, 22, 12, 15, 48, 49, 55, 56};
     static const int demon[]    = {8, 37, 40, 28, 14, 33, 36, 22, 12, 15, 44, 47, 49, 57};
@@ -165,7 +167,7 @@ void waifu_deck_build_opponent_story(WaifuDeck *deck, int duel_index, WaifuDeckR
     waifu_deck_clear(deck);
     for (int i = 0; i < WAIFU_DECK_SIZE; ++i) {
         int card = opponent_story_card_at(duel_index, i);
-        if (duel_index >= 3 && i == 4) card = WAIFU_SUPPORT_THUNDER_CARD_ID;
+        if (duel_index >= 3 && (i == 2 || i == 4 || i == 8)) card = WAIFU_SUPPORT_THUNDER_CARD_ID;
         else if (duel_index >= 2 && ((i + 1) % 7) == 0) card = WAIFU_SUPPORT_EQUIP_CARD_ID;
         deck->cards[deck->count++] = card;
     }

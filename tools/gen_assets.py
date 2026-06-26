@@ -77,6 +77,7 @@ CARD_META = [
   ('Unicorn','Elysera, Moon Unicorn','Beast','Light',2000,2200),
   ('WhiteWhale','Belugaia, White Whale','Sea Serpent','Water',2100,2300),
   ('ZombieWoman','Morbella, Mummy Queen','Zombie','Dark',2150,2000),
+  ('AngelFishwoman','Seraphina, Angel Fishwoman','Fish','Water',3200,2600),
 ]
 
 BASE_COLORS = {
