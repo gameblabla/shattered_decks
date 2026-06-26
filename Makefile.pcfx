@@ -53,7 +53,6 @@ PCFX_SRCS_S := src/platform/pcfx/fastking.s
 CD_ASSETS := \
   assets/generated/title_screen_pcfx_img.bin \
   assets/generated/title_screen_pcfx_yuv422.bin \
-  assets/generated/ending_screen_pcfx_yuv422.bin \
   assets/generated/rainbow_desert.bin \
   assets/generated/rainbow_stone.bin \
   assets/generated/rainbow_ember.bin \
@@ -65,7 +64,8 @@ CD_ASSETS := \
   assets/generated/card_back.bin \
   assets/generated/support_face.bin \
   assets/generated/support_big_art.bin \
-  assets/generated/sfx_adpcm.bin
+  assets/generated/sfx_adpcm.bin \
+  assets/generated/ending_screen_pcfx_yuv422.bin
 
 OBJDIR := build/pcfx
 RAINBOW_BG_HEADER := src/generated/rainbow_bg_assets.h
@@ -156,6 +156,13 @@ cd: clean-output toolchain-check $(PCFX_CDLINK) $(CD_ASSETS)
 	$(PCFX_CDLINK) $(OBJDIR)/cdlink.generated.txt $(CDOUT)
 	# Pass 2: rebuild with lbas.h + cdda_tracks.h so LBA/CDDA constants are baked in.
 	#         pcfx-cdlink skips WAV reconversion (bins are newer than source WAVs).
+	$(MAKE) -f Makefile.pcfx clean-build PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX) PCFX_CDLINK=$(PCFX_CDLINK) HOSTCC=$(HOSTCC)
+	$(MAKE) -f Makefile.pcfx program PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
+	$(MAKE) -f Makefile.pcfx $(OBJDIR)/cdlink.generated.txt PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
+	$(PCFX_CDLINK) $(OBJDIR)/cdlink.generated.txt $(CDOUT)
+	# Pass 3: rebuild once more with the pass-2 LBA table.  Enabling generated
+	#         LBA/CDDA constants can change the boot binary by a sector; the
+	#         final image must use the same LBA table that was baked into it.
 	$(MAKE) -f Makefile.pcfx clean-build PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX) PCFX_CDLINK=$(PCFX_CDLINK) HOSTCC=$(HOSTCC)
 	$(MAKE) -f Makefile.pcfx program PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)
 	$(MAKE) -f Makefile.pcfx $(OBJDIR)/cdlink.generated.txt PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX)

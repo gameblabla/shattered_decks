@@ -161,6 +161,11 @@ uint32_t waifu_pcfx_cd_read_seq(void)
     return g_cd_read_seq;
 }
 
+static uint32_t cd_round_sector_bytes_u32(uint32_t bytes)
+{
+    return (bytes + (PCFX_CD_SECTOR_SIZE - 1u)) & ~(PCFX_CD_SECTOR_SIZE - 1u);
+}
+
 static uint32_t cd_read(uint32_t lba, uint8_t *buf, uint32_t bytes)
 {
     uint32_t r = eris_cd_read(lba, buf, bytes);
@@ -175,6 +180,7 @@ static int cd_read_kram_on_page(uint32_t lba, uint32_t kram_addr, uint32_t bytes
 {
     uint32_t ps;
     if (!lba || !bytes) return 0;
+    bytes = cd_round_sector_bytes_u32(bytes);
 
     ps = WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1;
     if (scsi_page1) ps |= WAIFU_PCFX_KRAM_PAGESETTING_SCSI1;
@@ -196,6 +202,7 @@ static int cd_read_kram_with_page_setting(uint32_t lba, uint32_t kram_addr, uint
                                           uint32_t dma_page_setting, uint32_t restore_page_setting)
 {
     if (!lba || !bytes) return 0;
+    bytes = cd_round_sector_bytes_u32(bytes);
 
     king_set_page_setting(dma_page_setting);
     eris_cd_read_kram(lba, kram_addr, bytes);
