@@ -18,7 +18,10 @@ static const int waifu_random_strong_pool[] = {
     WAIFU_CARD_ID_UNICORN,
     WAIFU_CARD_ID_WHITE_WHALE,
     WAIFU_CARD_ID_DEMONIC,
-    WAIFU_CARD_ID_SEA_SERPENT
+    WAIFU_CARD_ID_SEA_SERPENT,
+    WAIFU_CARD_ID_SWORD_FISH,
+    WAIFU_CARD_ID_SWORDSWOMAN,
+    WAIFU_CARD_ID_TIGER_WOMAN
 };
 #define WAIFU_RANDOM_STRONG_POOL_COUNT ((int)(sizeof(waifu_random_strong_pool) / sizeof(waifu_random_strong_pool[0])))
 
@@ -49,7 +52,10 @@ static const int waifu_random_mid_pool[] = {
     WAIFU_CARD_ID_PUMPKIN,
     WAIFU_CARD_ID_SHARK,
     WAIFU_CARD_ID_STREET,
-    WAIFU_CARD_ID_ZOMBIE_WOMAN
+    WAIFU_CARD_ID_ZOMBIE_WOMAN,
+    WAIFU_CARD_ID_ALCHEMIST_FISH,
+    WAIFU_CARD_ID_CRCODILE_WOMAN,
+    WAIFU_CARD_ID_JELLYFISH
 };
 #define WAIFU_RANDOM_MID_POOL_COUNT ((int)(sizeof(waifu_random_mid_pool) / sizeof(waifu_random_mid_pool[0])))
 
@@ -111,7 +117,10 @@ static const int waifu_story_reward_strong_pool[] = {
     WAIFU_CARD_ID_MAGESTIC_DRAGON,
     WAIFU_CARD_ID_THIN_BLUE_DRAGON,
     WAIFU_CARD_ID_UNICORN,
-    WAIFU_CARD_ID_WHITE_WHALE
+    WAIFU_CARD_ID_WHITE_WHALE,
+    WAIFU_CARD_ID_SWORD_FISH,
+    WAIFU_CARD_ID_SWORDSWOMAN,
+    WAIFU_CARD_ID_TIGER_WOMAN
 };
 #define WAIFU_STORY_REWARD_STRONG_POOL_COUNT ((int)(sizeof(waifu_story_reward_strong_pool) / sizeof(waifu_story_reward_strong_pool[0])))
 
@@ -144,7 +153,9 @@ static const int waifu_opponent_plaza_pool[] = {
     WAIFU_CARD_ID_STONE_TABLET_WOMAN,
     WAIFU_CARD_ID_OWL_WOMAN,
     WAIFU_CARD_ID_SHARK,
-    WAIFU_CARD_ID_STREET
+    WAIFU_CARD_ID_STREET,
+    WAIFU_CARD_ID_ALCHEMIST_FISH,
+    WAIFU_CARD_ID_JELLYFISH
 };
 #define WAIFU_OPPONENT_PLAZA_POOL_COUNT ((int)(sizeof(waifu_opponent_plaza_pool) / sizeof(waifu_opponent_plaza_pool[0])))
 
@@ -161,7 +172,10 @@ static const int waifu_opponent_adept_pool[] = {
     WAIFU_CARD_ID_INSECT_QUEEN,
     WAIFU_CARD_ID_MAGESTIC_DRAGON,
     WAIFU_CARD_ID_THIN_BLUE_DRAGON,
-    WAIFU_CARD_ID_UNICORN
+    WAIFU_CARD_ID_UNICORN,
+    WAIFU_CARD_ID_CRCODILE_WOMAN,
+    WAIFU_CARD_ID_SWORD_FISH,
+    WAIFU_CARD_ID_TIGER_WOMAN
 };
 #define WAIFU_OPPONENT_ADEPT_POOL_COUNT ((int)(sizeof(waifu_opponent_adept_pool) / sizeof(waifu_opponent_adept_pool[0])))
 
@@ -179,7 +193,11 @@ static const int waifu_opponent_reaver_pool[] = {
     WAIFU_CARD_ID_DEMONIC,
     WAIFU_CARD_ID_PUMPKIN,
     WAIFU_CARD_ID_SHARK,
-    WAIFU_CARD_ID_ZOMBIE_WOMAN
+    WAIFU_CARD_ID_ZOMBIE_WOMAN,
+    WAIFU_CARD_ID_CRCODILE_WOMAN,
+    WAIFU_CARD_ID_SWORD_FISH,
+    WAIFU_CARD_ID_SWORDSWOMAN,
+    WAIFU_CARD_ID_TIGER_WOMAN
 };
 #define WAIFU_OPPONENT_REAVER_POOL_COUNT ((int)(sizeof(waifu_opponent_reaver_pool) / sizeof(waifu_opponent_reaver_pool[0])))
 
@@ -197,7 +215,9 @@ static const int waifu_opponent_burning_pool[] = {
     WAIFU_CARD_ID_JESTER,
     WAIFU_CARD_ID_DEMONIC,
     WAIFU_CARD_ID_GHOST_GIRL,
-    WAIFU_CARD_ID_PUMPKIN
+    WAIFU_CARD_ID_PUMPKIN,
+    WAIFU_CARD_ID_SWORDSWOMAN,
+    WAIFU_CARD_ID_TIGER_WOMAN
 };
 #define WAIFU_OPPONENT_BURNING_POOL_COUNT ((int)(sizeof(waifu_opponent_burning_pool) / sizeof(waifu_opponent_burning_pool[0])))
 
@@ -214,7 +234,8 @@ static const int waifu_opponent_void_pool[] = {
     WAIFU_CARD_ID_JESTER,
     WAIFU_CARD_ID_GHOST_GIRL,
     WAIFU_CARD_ID_THIN_BLUE_DRAGON,
-    WAIFU_CARD_ID_ZOMBIE_WOMAN
+    WAIFU_CARD_ID_ZOMBIE_WOMAN,
+    WAIFU_CARD_ID_SWORDSWOMAN
 };
 #define WAIFU_OPPONENT_VOID_POOL_COUNT ((int)(sizeof(waifu_opponent_void_pool) / sizeof(waifu_opponent_void_pool[0])))
 
@@ -232,7 +253,9 @@ static const int waifu_opponent_sphinx_pool[] = {
     WAIFU_CARD_ID_INSECT_QUEEN_WOMAN,
     WAIFU_CARD_ID_MAGESTIC_DRAGON,
     WAIFU_CARD_ID_UNICORN,
-    WAIFU_CARD_ID_WHITE_WHALE
+    WAIFU_CARD_ID_WHITE_WHALE,
+    WAIFU_CARD_ID_SWORD_FISH,
+    WAIFU_CARD_ID_TIGER_WOMAN
 };
 #define WAIFU_OPPONENT_SPHINX_POOL_COUNT ((int)(sizeof(waifu_opponent_sphinx_pool) / sizeof(waifu_opponent_sphinx_pool[0])))
 
@@ -250,7 +273,8 @@ static const int waifu_opponent_demon_pool[] = {
     WAIFU_CARD_ID_DEMONIC,
     WAIFU_CARD_ID_GHOST_GIRL,
     WAIFU_CARD_ID_MAGESTIC_DRAGON,
-    WAIFU_CARD_ID_ZOMBIE_WOMAN
+    WAIFU_CARD_ID_ZOMBIE_WOMAN,
+    WAIFU_CARD_ID_SWORDSWOMAN
 };
 #define WAIFU_OPPONENT_DEMON_POOL_COUNT ((int)(sizeof(waifu_opponent_demon_pool) / sizeof(waifu_opponent_demon_pool[0])))
 
