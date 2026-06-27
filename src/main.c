@@ -308,10 +308,10 @@ static const char *support_card_effect(int card_id)
 {
     switch (support_card_kind(card_id)) {
     case 0: return "Equip card. Use from hand; does not count as your one monster placement.";
-    case 1: return "Support card. A defensive charm for the starter deck.";
-    case 2: return "Support card. A small draw charm for Serena's first dream duel.";
-    case 4: return "Support card. Destroys every monster on the player's field.";
-    default: return "Support card. A small life charm for the starter deck.";
+    case 1: return "Equip card. Raises DEF by 800 and does not raise ATK.";
+    case 2: return "Support card. Draw 1 card from your deck.";
+    case 4: return "Support card. Destroys every monster on the opponent's field.";
+    default: return "Support card. Restore 1000 LP.";
     }
 }
 
@@ -326,9 +326,25 @@ static int is_thunder_support_card(int card_id)
     return support_card_kind(card_id) == 4;
 }
 
+static int is_guard_support_card(int card_id)
+{
+    return is_support_card(card_id) && support_card_kind(card_id) == 1;
+}
+
+static int is_draw_support_card(int card_id)
+{
+    return is_support_card(card_id) && support_card_kind(card_id) == 2;
+}
+
+static int is_heal_support_card(int card_id)
+{
+    return is_support_card(card_id) && support_card_kind(card_id) == 3;
+}
+
 static int is_equip_support_card(int card_id)
 {
-    return is_support_card(card_id) && !is_thunder_support_card(card_id);
+    return is_support_card(card_id) &&
+           (support_card_kind(card_id) == 0 || support_card_kind(card_id) == 1);
 }
 
 static int is_monster_card(int card_id)
@@ -4344,7 +4360,8 @@ typedef enum WaifuBattlePhase {
        hand and settle the (face-down) cursor on the equip card before the equip
        animation runs. */
     IB_COM_EQUIP_SELECT,
-    IB_COM_THUNDER_ANIM
+    IB_COM_THUNDER_ANIM,
+    IB_PLAYER_SUPPORT_ANIM
 } WaifuBattlePhase;
 
 #define I_HAND 5
@@ -4365,6 +4382,11 @@ typedef enum WaifuBattlePhase {
 #define WAIFU_THUNDER_FADE_FRAMES 20
 #define WAIFU_THUNDER_TARGET_GAP_FRAMES 10
 #endif
+#define WAIFU_SUPPORT_REVEAL_FRAMES WAIFU_THUNDER_CARD_FRAMES
+#define WAIFU_SUPPORT_TEXT_FRAMES 38
+#define WAIFU_SUPPORT_HEAL_AMOUNT 1000
+#define WAIFU_FUSION_LANDING_FRAMES 56
+#define WAIFU_FUSION_LANDING_HOLD_FRAMES 8
 
 static int g_api_initialized = 0;
 static WaifuInteractiveState g_i_state = WAIFU_I_TITLE;
@@ -4426,6 +4448,11 @@ static int g_b_thunder_slots[I_FIELD] = {-1, -1, -1, -1, -1};
 static int g_b_thunder_cards[I_FIELD] = {CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE};
 static int g_b_thunder_backs[I_FIELD] = {0, 0, 0, 0, 0};
 static int g_b_thunder_count = 0;
+static int g_b_support_hand = -1;
+static int g_b_support_card = CARD_NONE;
+static int g_b_support_kind = -1;
+static int g_b_support_lp_from = 0;
+static int g_b_support_lp_to = 0;
 static int g_b_battle_atk_slot = -1;
 static int g_b_battle_def_slot = -1;
 static int g_b_battle_atk_owner = 0; /* 0 player, 1 COM */
@@ -4797,9 +4824,11 @@ static int try_queue_player_fusion_slot(int slot)
 
 static int fusion_material_is_equip(int card_id)
 {
-    /* Battle support cards already use the equip flow when played normally.
-       Fusion chains should treat those same cards as ordered equip material. */
-    return is_support_card(card_id);
+    /* Only support cards that use the equip flow normally should become
+       ordered equip material in fusion chains.  One-shot supports keep their
+       normal hand-only behavior and are discarded if forced into a failed
+       fusion chain. */
+    return is_equip_support_card(card_id);
 }
 
 static void fusion_append_equip_card(int equip_card, int equip_src,
@@ -5232,12 +5261,13 @@ static int field_card_defense_position(int owner, int slot)
 
 static int equip_atk_bonus(int card_id)
 {
-    (void)card_id;
+    if (is_guard_support_card(card_id)) return 0;
     return 500;
 }
 
 static int equip_def_bonus(int card_id)
 {
+    if (is_guard_support_card(card_id)) return 800;
     return support_card_kind(card_id) == 0 ? 300 : 0;
 }
 
@@ -6474,6 +6504,11 @@ static void init_battle_state(void)
     g_b_thunder_card = CARD_NONE;
     g_b_thunder_owner = 1;
     g_b_thunder_count = 0;
+    g_b_support_hand = -1;
+    g_b_support_card = CARD_NONE;
+    g_b_support_kind = -1;
+    g_b_support_lp_from = 0;
+    g_b_support_lp_to = 0;
     for (i = 0; i < I_FIELD; ++i) {
         g_b_thunder_slots[i] = -1;
         g_b_thunder_cards[i] = CARD_NONE;
@@ -7176,6 +7211,89 @@ static void draw_com_thunder_anim(void)
     }
 }
 
+static int player_support_total_frames(void)
+{
+    return WAIFU_SUPPORT_REVEAL_FRAMES + WAIFU_SUPPORT_TEXT_FRAMES;
+}
+
+static void start_player_one_shot_support(int hand_slot)
+{
+    int card;
+    if (hand_slot < 0 || hand_slot >= I_HAND) return;
+    if (g_i_player_used[hand_slot]) return;
+    card = g_i_player_hand[hand_slot];
+    if (!is_draw_support_card(card) && !is_heal_support_card(card)) return;
+    if (is_draw_support_card(card) && g_i_player_deck_left <= 0) return;
+
+    g_b_support_hand = hand_slot;
+    g_b_support_card = card;
+    g_b_support_kind = support_card_kind(card);
+    g_b_support_lp_from = g_you_lp;
+    g_b_support_lp_to = is_heal_support_card(card) ? g_you_lp + WAIFU_SUPPORT_HEAL_AMOUNT : g_you_lp;
+    g_i_player_used[hand_slot] = 1;
+    clear_player_fusion_queue();
+    (void)support_big_art_ptr();
+    set_battle_phase(IB_PLAYER_SUPPORT_ANIM);
+}
+
+static void finish_player_one_shot_support(void)
+{
+    int hand = g_b_support_hand;
+    int kind = g_b_support_kind;
+    if (hand >= 0 && hand < I_HAND) {
+        if (kind == 2 && g_i_player_deck_left > 0) {
+            g_i_player_hand[hand] = next_draw_id();
+            g_i_player_used[hand] = 0;
+            g_b_selected_hand = hand;
+            waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
+        } else if (kind == 3) {
+            g_you_lp = g_b_support_lp_to;
+            g_b_selected_hand = next_live_hand_index(hand, 1);
+            waifu_sound_play(WAIFU_SOUND_CARD_PLACED);
+        }
+    }
+    g_b_cards_used++;
+    g_b_support_hand = -1;
+    g_b_support_card = CARD_NONE;
+    g_b_support_kind = -1;
+    g_b_support_lp_from = 0;
+    g_b_support_lp_to = 0;
+    clear_battle_snapshot();
+    invalidate_battle_composite_cache();
+    set_battle_phase(IB_PLAYER_HAND);
+}
+
+static void draw_player_one_shot_support_anim(void)
+{
+    int f = g_b_phase_frame;
+    int reveal = WAIFU_SUPPORT_REVEAL_FRAMES;
+    clear_screen(IDX_BLACK);
+    draw_support_big_art_112(72, 32);
+    draw_centered_text(154, support_card_name(g_b_support_card), IDX_GOLD_HI, IDX_BLACK);
+    if (f < reveal) {
+        if (f >= reveal - WAIFU_THUNDER_FADE_FRAMES) {
+            apply_black_dither_fade(Q8_ONE - q8_ratio(f - (reveal - WAIFU_THUNDER_FADE_FRAMES),
+                                                      WAIFU_THUNDER_FADE_FRAMES));
+        }
+        return;
+    }
+    if (g_b_support_kind == 2) {
+        draw_centered_text(184, "DRAW 1 CARD", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(205, "FROM YOUR DECK", IDX_WHITE, IDX_BLACK);
+    } else if (g_b_support_kind == 3) {
+        char line[48];
+        int32_t t = q8_smooth_ratio(f - reveal, WAIFU_SUPPORT_TEXT_FRAMES);
+        int lp = g_b_support_lp_from +
+                 (int)(((g_b_support_lp_to - g_b_support_lp_from) * q8_smoothstep(t) + Q8_HALF) >> Q8_SHIFT);
+        waifu_str_copy(line, (int)sizeof(line), "LP ");
+        waifu_str_cat_i32(line, (int)sizeof(line), g_b_support_lp_from);
+        waifu_str_cat(line, (int)sizeof(line), " > ");
+        waifu_str_cat_i32(line, (int)sizeof(line), lp);
+        draw_centered_text(188, line, IDX_GREEN, IDX_BLACK);
+        draw_centered_text(207, "LIFE RESTORED", IDX_WHITE, IDX_BLACK);
+    }
+}
+
 static void reveal_monster_slot(int owner, int slot)
 {
     if (slot < 0 || slot >= I_FIELD) return;
@@ -7726,6 +7844,16 @@ static int failed_fusion_can_place_last_card(void)
     return !g_b_fusion_anim_success && is_monster_card(g_b_fusion_anim_final_card);
 }
 
+static int fusion_landing_start_frame(void)
+{
+    return (WAIFU_FUSION_ANIM_FRAMES * 70) / 100;
+}
+
+static int fusion_total_frames(void)
+{
+    return fusion_landing_start_frame() + WAIFU_FUSION_LANDING_FRAMES + WAIFU_FUSION_LANDING_HOLD_FRAMES;
+}
+
 static void draw_player_fusion_target(void)
 {
     int slot = g_b_top_col;
@@ -7763,17 +7891,19 @@ static void draw_fusion_landing_card(Camera cam, int card_id, int sx, int sy, in
                                      int target_slot, int local_frame, int face_down)
 {
     int dx, dy, dw, dh;
-    int32_t t = q8_smooth_ratio(local_frame, 48);
+    int32_t t = q8_smooth_ratio(local_frame, WAIFU_FUSION_LANDING_FRAMES);
     int bob = -q8_to_int(q8_mul(Q8_FROM_INT(18), q8_sin_pi(t)));
     int x, y, w, h;
+    (void)sw;
+    (void)sh;
     fusion_field_card_rect(cam, target_slot, &dx, &dy, &dw, &dh);
     x = lerp_i(sx, dx, t);
     y = lerp_i(sy, dy, t) + bob;
-    w = lerp_i(sw, dw, t);
-    h = lerp_i(sh, dh, t);
+    w = dw;
+    h = dh;
     rect_fill(x + 3, y + h - 2, w, 4, IDX_BLACK);
     draw_card_sprite(card_id, x, y, w, h, face_down);
-    if (local_frame > 34) {
+    if (local_frame > (WAIFU_FUSION_LANDING_FRAMES * 7) / 10) {
         rect_outline(x - 2, y - 2, w + 4, h + 4, IDX_GOLD_HI);
         if ((local_frame & 4) == 0) rect_outline(x - 4, y - 4, w + 8, h + 8, IDX_WHITE);
     }
@@ -7782,7 +7912,7 @@ static void draw_fusion_landing_card(Camera cam, int card_id, int sx, int sy, in
 static void draw_failed_fusion_dropped_materials(int count, int first_target_x, int local_frame)
 {
     int i;
-    int32_t fall_t = q8_smooth_ratio(local_frame, 48);
+    int32_t fall_t = q8_smooth_ratio(local_frame, WAIFU_FUSION_LANDING_FRAMES);
     for (i = 0; i < count; ++i) {
         int x, y, wobble;
         if (g_b_fusion_anim_material_kept[i]) continue;
@@ -7803,14 +7933,14 @@ static void draw_player_fusion_anim(void)
     int fusion_flash_start = (WAIFU_FUSION_ANIM_FRAMES * 42) / 100;
     int fusion_flash_end = (WAIFU_FUSION_ANIM_FRAMES * 52) / 100;
     int fusion_reveal_start = fusion_flash_end;
-    int fusion_landing_start = (WAIFU_FUSION_ANIM_FRAMES * 70) / 100;
+    int fusion_landing_start = fusion_landing_start_frame();
     if (fusion_merge_end < 8) fusion_merge_end = 8;
     if (fusion_flash_end <= fusion_flash_start) fusion_flash_end = fusion_flash_start + 4;
     int32_t merge_t = q8_smooth_ratio(f, fusion_merge_end);
     int32_t reveal_t = q8_smooth_ratio(f - fusion_reveal_start, (WAIFU_FUSION_ANIM_FRAMES * 14) / 100 + 4);
     int cy = lerp_i(154, 74, merge_t);
-    int w = lerp_i(38, 42, merge_t);
-    int h = lerp_i(50, 56, merge_t);
+    int w = 38;
+    int h = 50;
     int count = g_b_fusion_anim_count;
     int spread;
     int first_target_x;
@@ -7867,7 +7997,7 @@ static void draw_player_fusion_anim(void)
                 draw_centered_text(205, g_b_fusion_anim_final_equip_count > 0 ? "EQUIP APPLIED" : "LAST CARD PLACED", IDX_WHITE, IDX_BLACK);
             }
         } else {
-            int32_t fall_t = q8_smooth_ratio(local, 48);
+            int32_t fall_t = q8_smooth_ratio(local, WAIFU_FUSION_LANDING_FRAMES);
             for (i = 0; i < count; ++i) {
                 int x = first_target_x + i * 34;
                 int y = lerp_i(82, 258, fall_t) + i * 6;
@@ -7902,10 +8032,10 @@ static void draw_player_fusion_anim(void)
     } else if (f < fusion_flash_end) {
         rect_fill(0, 0, W, H, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
     } else if (g_b_fusion_anim_success) {
-        int rw = lerp_i(70, 54, reveal_t);
-        int rh = lerp_i(92, 72, reveal_t);
+        int rw = 38;
+        int rh = 50;
         int rx = 128 - rw / 2;
-        int ry = lerp_i(58, 74, reveal_t);
+        int ry = lerp_i(72, 82, reveal_t);
         draw_hand_card_sprite(g_b_fusion_anim_result, rx, ry, rw, rh, 0);
         if ((f & 4) == 0) rect_outline(rx - 4, ry - 4, rw + 8, rh + 8, pulse);
         draw_centered_text(166, "FUSION SUCCESS", IDX_GREEN, IDX_BLACK);
@@ -8037,6 +8167,14 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                         g_b_player_hand_intro_pending = 0;
                         start_player_thunder(g_b_selected_hand);
                     }
+                } else if (is_draw_support_card(selected_card)) {
+                    if (g_i_player_deck_left > 0) {
+                        g_b_player_hand_intro_pending = 0;
+                        start_player_one_shot_support(g_b_selected_hand);
+                    }
+                } else if (is_heal_support_card(selected_card)) {
+                    g_b_player_hand_intro_pending = 0;
+                    start_player_one_shot_support(g_b_selected_hand);
                 } else if (is_equip_support_card(selected_card) && target >= 0 && first_free_player_equip_slot() >= 0) {
                     clear_player_fusion_queue();
                     g_b_equip_hand = g_b_selected_hand;
@@ -8169,7 +8307,12 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_PLAYER_FUSION_ANIM:
         draw_player_fusion_anim();
-        if (battle_animation_event_complete(WAIFU_FUSION_ANIM_FRAMES)) finish_player_fusion_anim();
+        if (battle_animation_event_complete(fusion_total_frames())) finish_player_fusion_anim();
+        break;
+
+    case IB_PLAYER_SUPPORT_ANIM:
+        draw_player_one_shot_support_anim();
+        if (battle_animation_event_complete(player_support_total_frames())) finish_player_one_shot_support();
         break;
 
     case IB_PLAYER_TOP:
@@ -10695,6 +10838,72 @@ static int debug_regression_thunder_support(void)
         is_monster_card(g_i_com_field[2]) || count_live_com_monsters() != 0) {
         fprintf(stderr, "REGRESSION thunder_support FAIL: player after phase=%d guard=%d c0=%d c2=%d live=%d\n",
                 (int)g_b_phase, guard, g_i_com_field[0], g_i_com_field[2], count_live_com_monsters());
+        return 1;
+    }
+
+    if (!is_equip_support_card(SUPPORT_GUARD_CARD_ID) ||
+        is_equip_support_card(SUPPORT_DRAW_CARD_ID) ||
+        is_equip_support_card(SUPPORT_HEAL_CARD_ID) ||
+        equip_atk_bonus(SUPPORT_GUARD_CARD_ID) != 0 ||
+        equip_def_bonus(SUPPORT_GUARD_CARD_ID) != 800) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: support kinds guard_equip=%d draw_equip=%d heal_equip=%d guard_bonus=%d/%d\n",
+                is_equip_support_card(SUPPORT_GUARD_CARD_ID),
+                is_equip_support_card(SUPPORT_DRAW_CARD_ID),
+                is_equip_support_card(SUPPORT_HEAL_CARD_ID),
+                equip_atk_bonus(SUPPORT_GUARD_CARD_ID),
+                equip_def_bonus(SUPPORT_GUARD_CARD_ID));
+        return 1;
+    }
+
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+    g_b_phase = IB_PLAYER_HAND;
+    g_you_lp = 7000;
+    g_i_player_hand[0] = SUPPORT_HEAL_CARD_ID;
+    g_i_player_used[0] = 0;
+    start_player_one_shot_support(0);
+    if (g_b_phase != IB_PLAYER_SUPPORT_ANIM || !g_i_player_used[0]) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: heal start phase=%d used=%d\n",
+                (int)g_b_phase, g_i_player_used[0]);
+        return 1;
+    }
+    for (guard = 0; guard < 180 && g_b_phase == IB_PLAYER_SUPPORT_ANIM; ++guard) waifu_fm_step(&in);
+    if (g_b_phase == IB_PLAYER_SUPPORT_ANIM || g_you_lp != 8000 || !g_i_player_used[0]) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: heal after phase=%d lp=%d used=%d guard=%d\n",
+                (int)g_b_phase, g_you_lp, g_i_player_used[0], guard);
+        return 1;
+    }
+
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+    g_b_phase = IB_PLAYER_HAND;
+    g_i_player_hand[0] = SUPPORT_DRAW_CARD_ID;
+    g_i_player_used[0] = 0;
+    g_i_player_deck_left = 1;
+    start_player_one_shot_support(0);
+    if (g_b_phase != IB_PLAYER_SUPPORT_ANIM || !g_i_player_used[0]) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: draw start phase=%d used=%d\n",
+                (int)g_b_phase, g_i_player_used[0]);
+        return 1;
+    }
+    for (guard = 0; guard < 180 && g_b_phase == IB_PLAYER_SUPPORT_ANIM; ++guard) waifu_fm_step(&in);
+    if (g_b_phase == IB_PLAYER_SUPPORT_ANIM || g_i_player_hand[0] == SUPPORT_DRAW_CARD_ID ||
+        g_i_player_used[0] || g_i_player_deck_left != 0) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: draw after phase=%d hand=%d used=%d deck=%d guard=%d\n",
+                (int)g_b_phase, g_i_player_hand[0], g_i_player_used[0], g_i_player_deck_left, guard);
+        return 1;
+    }
+
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+    g_b_phase = IB_PLAYER_HAND;
+    g_i_player_hand[0] = SUPPORT_DRAW_CARD_ID;
+    g_i_player_used[0] = 0;
+    g_i_player_deck_left = 0;
+    start_player_one_shot_support(0);
+    if (g_b_phase == IB_PLAYER_SUPPORT_ANIM || g_i_player_used[0]) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: draw empty deck phase=%d used=%d\n",
+                (int)g_b_phase, g_i_player_used[0]);
         return 1;
     }
 

@@ -35,7 +35,8 @@ static int is_thunder_support(const WaifuAiState *s, int card_id)
 
 static int is_equip_support(const WaifuAiState *s, int card_id)
 {
-    return is_support(s, card_id) && !is_thunder_support(s, card_id);
+    int kind = support_kind(s, card_id);
+    return kind == 0 || kind == 1;
 }
 
 static int player_has_monsters(const WaifuAiState *s)
