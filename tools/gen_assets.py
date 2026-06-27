@@ -427,6 +427,20 @@ q_support=qbytes(support_rgb)
 q_support_big=qbytes(support_big_rgb)
 q_back=qbytes(back_rgb)
 q_tex=[qbytes(im) for im in tex_rgb]
+
+# Keep the 3D texture atlas identical between the common and dialogue palettes.
+# The story-dialogue (plaza) scene renders the same pyramid/sky geometry as the
+# map and sanctum, but switches to the dialogue palette so the portraits look
+# right.  The texture atlas is quantized against the COMMON palette, so under
+# the dialogue palette those same indices map to portrait colors and the pyramid
+# texture visibly shifts hue between the map and the dialogue.  Reserve exactly
+# the palette indices the texture atlas uses to their common-palette RGB, then
+# re-quantize the portraits around the reserved slots so the pyramid is stable.
+tex_reserved_indices = sorted(set(b''.join(q_tex)))
+for _i in tex_reserved_indices:
+    dialogue_palette[_i*3:_i*3+3] = palette[_i*3:_i*3+3]
+dialogue_pal_img.putpalette(dialogue_palette)
+
 q_story_portraits=[qbytes_dialogue(im.convert('RGB')) for im in story_portraits_rgba]
 q_story_portrait_masks=[bytes([255 if px[3] >= 16 else 0 for px in im.getdata()]) for im in story_portraits_rgba]
 

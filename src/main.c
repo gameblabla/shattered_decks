@@ -3209,10 +3209,18 @@ static void apply_black_dither_fade(int32_t visible)
 {
     visible = q8_clamp(visible, 0, Q8_ONE);
 #ifdef WAIFU_FM_PCFX
-    /* PC-FX: do not dither-walk the whole 256x240 framebuffer for fades.
-       The platform layer applies this as a 256-entry palette fade, which is
+    /* PC-FX: do not dither-walk the whole 256x240 framebuffer for partial fades.
+       The platform layer applies those as a 256-entry palette fade, which is
        visually close enough and much cheaper on V810/KING. */
     if ((int)visible < g_video_fade_visible_q8) g_video_fade_visible_q8 = (int)visible;
+    /* But when the fade is fully black, clear the framebuffer to black too --
+       exactly like the host dither path below (threshold >= 64).  A palette-only
+       black leaves the faded-out scene sitting in the framebuffer; the next
+       state restores the palette to full before its own first frame is fully
+       uploaded, so that stale scene flashes "fully lit for one frame before
+       black".  Clearing here makes every fade-to-black end on a genuinely
+       cleared framebuffer, the same common path the host already uses. */
+    if ((int)visible <= 0) clear_screen(IDX_BLACK);
     return;
 #endif
     static const uint8_t bayer[8][8] = {
@@ -4608,6 +4616,7 @@ static int g_deck_preview_card = CARD_NONE;
 static int g_story_duel_index = 0;
 static int g_story_map_cursor = 0;     /* 0 pyramid, 1 plaza */
 static int g_story_pyramid_cursor = 0; /* 0 save, 1 editor, 2 back */
+static int g_story_scene_anim_frame = 0; /* free-running story 3D sway frame */
 static int g_story_plaza_line = 0;
 static int g_story_ending_line = 0;
 static int g_story_ending_erasing = 0;
@@ -7544,6 +7553,10 @@ static int draw_replacement_cards_to_hand(void)
        turn with a completely full live hand, the turn draw must still happen:
        slot 0 is discarded/replaced by the drawn card.  This prevents full-hand
        stalling where the deck never advances and deck-out can be avoided. */
+    /* Note: the CARD_DRAWN SFX is NOT played here.  This runs on the silent
+       turn-flip transition frame; instead the draw sound is staggered per drawn
+       card inside the IB_PLAYER_DRAW animation (play_turn_draw_sfx), in sync with
+       each card sliding off the deck, mirroring the opening-hand deal. */
     for (i = 0; i < I_HAND; ++i) {
         if (g_i_player_used[i]) {
             if (g_i_player_deck_left <= 0) {
@@ -7551,14 +7564,12 @@ static int draw_replacement_cards_to_hand(void)
             }
             g_i_player_hand[i] = next_draw_id();
             g_i_player_used[i] = 0;
-            waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
             g_b_draw_slots[g_b_draw_count++] = i;
         }
     }
     if (g_b_draw_count == 0 && g_i_player_deck_left > 0) {
         g_i_player_hand[0] = next_draw_id();
         g_i_player_used[0] = 0;
-        waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
         g_b_draw_slots[g_b_draw_count++] = 0;
     }
     return g_b_draw_count > 0;
@@ -7590,24 +7601,49 @@ static int is_recent_draw_slot(int slot)
     return -1;
 }
 
+/* Frame at which the drawn card in draw-order index `d` begins its slide off
+   the deck.  Shared by the visual (draw_player_hand_turn_draw) and the audio
+   (play_turn_draw_sfx) so the CARD_DRAWN SFX lands exactly as the card appears. */
+static int turn_draw_slide_start(int d)
+{
+    return (WAIFU_PCFX_DRAW_FRAMES * 2) / 9 + d * ((WAIFU_PCFX_DRAW_FRAMES + 4) / 8);
+}
+
+/* Play the draw SFX once per newly drawn card, staggered to match the slide-in,
+   like the staggered opening-hand deal (play_player_hand_intro_draw_sfx). */
+static void play_turn_draw_sfx(int f)
+{
+    int i;
+    for (i = 0; i < g_b_draw_count; ++i) {
+        if (f == turn_draw_slide_start(i)) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
+    }
+}
+
 static void draw_player_hand_turn_draw(int f, int selected)
 {
     PROFILE_HAND_BEGIN();
     int i;
-    int yoff = q8_to_int(q8_mul(Q8_FROM_INT(92), Q8_ONE - q8_smooth_ratio(f, WAIFU_PCFX_DRAW_FRAMES)));
-    int y = 154 + yoff;
+    /* The kept cards rise quickly back into place (the hand returning after the
+       turn-flip camera), then settle.  The newly drawn card(s) slide in from the
+       deck off the right edge so the draw itself is clearly visible, instead of
+       the whole hand sliding up as one block (which read like a re-deal). */
+    int rise = q8_to_int(q8_mul(Q8_FROM_INT(92),
+                  Q8_ONE - q8_smooth_ratio(f, (WAIFU_PCFX_DRAW_FRAMES + 1) / 2)));
     for (i = 0; i < I_HAND; ++i) {
         int x0 = hand_final_x(i);
         int x = x0;
+        int y = 154;
         int d = is_recent_draw_slot(i);
+        if (g_i_player_used[i]) continue;
         if (d >= 0) {
-            int start = (WAIFU_PCFX_DRAW_FRAMES * 2) / 9 + d * ((WAIFU_PCFX_DRAW_FRAMES + 4) / 8);
+            int start = turn_draw_slide_start(d);
             int dur = (WAIFU_PCFX_DRAW_FRAMES * 4) / 9;
             if (dur < 4) dur = 4;
             int32_t t = q8_smooth_ratio(f - start, dur);
             x = lerp_i(282, x0, t);
+        } else {
+            y = 154 + rise;
         }
-        if (g_i_player_used[i]) continue;
         PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
                                  is_monster_card(g_i_player_hand[i]) && !player_can_place_monster()));
         if (f >= WAIFU_PCFX_DRAW_FRAMES && i == selected) draw_red_cursor(x, y, 38, 50);
@@ -8594,6 +8630,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_PLAYER_DRAW:
+        play_turn_draw_sfx(g_b_phase_frame);
         draw_interactive_base(player_camera());
         draw_player_hand_turn_draw(g_b_phase_frame, g_b_selected_hand);
         if (g_b_phase_frame < WAIFU_PCFX_DRAW_FRAMES && g_b_draw_count > 0) draw_text_small(211, 142, "DRAW", IDX_GOLD_HI, IDX_BLACK);
@@ -9374,8 +9411,12 @@ static WaifuPcfxSanctumBackdrop story_pcfx_sanctum_backdrop(void)
 
 static void draw_story_sanctum_background(void)
 {
+    /* Use the free-running ambient frame, not g_i_frame: the sanctum menu, save
+       status, and save-device screens each reset g_i_frame to 0 on entry, which
+       made the 3D scene visibly snap/reset behind the panels.  A continuous
+       frame keeps the scene steady across those sub-screens. */
     draw_story_sky();
-    draw_story_scene_3d(g_i_frame);
+    draw_story_scene_3d(g_story_scene_anim_frame);
 }
 
 static const char *story_scene_name(void)
@@ -9419,7 +9460,7 @@ static void draw_story_map_screen(int f)
     if (f >= 0 && f < 24) apply_black_dither_fade(q8_ratio(f, 24));
 }
 
-static void draw_story_plaza_scene_content(void);
+static void draw_story_plaza_scene_content(int anim_frame);
 
 static void transition_draw_story_map_source(int frame, void *ctx)
 {
@@ -9510,7 +9551,13 @@ static const char *story_battle_intro_lines(void)
     }
 }
 
-static void draw_story_plaza_scene_content(void)
+/* Animation frame used to freeze the story-dialogue scene (3D camera sway and
+   the portrait slide-in) while it fades to black.  A fade transition resets
+   g_i_frame to 0, which otherwise made the portraits visibly slide in again and
+   the camera snap back -- the scene must hold its last live pose instead. */
+static int g_story_plaza_freeze_frame = 0;
+
+static void draw_story_plaza_scene_content(int anim_frame)
 {
     int line = g_story_plaza_line;
     int line_count = 0;
@@ -9528,12 +9575,12 @@ static void draw_story_plaza_scene_content(void)
     waifu_fm_use_dialogue_palette();
     clear_screen(IDX_BLACK);
     draw_story_sky();
-    draw_story_scene_3d(g_i_frame);
+    draw_story_scene_3d(anim_frame);
     draw_panel_rect(8, 8, 102, 18, IDX_UI_DARK);
     draw_text_small(14, 14, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);
 
-    serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2, g_i_frame);
-    opp_x = story_slide_x(W + 14, W - WAIFU_STORY_PORTRAIT_W - 2, g_i_frame);
+    serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2, anim_frame);
+    opp_x = story_slide_x(W + 14, W - WAIFU_STORY_PORTRAIT_W - 2, anim_frame);
     /* Raise portraits so their hands and upper torsos read more naturally,
        while leaving the textbox directly over their lower bodies. */
     serena_y = H - WAIFU_STORY_PORTRAIT_H - 20;
@@ -9554,12 +9601,12 @@ static void draw_story_plaza_scene_content(void)
         subhead = opp->title;
     }
 
-    draw_story_dialog_box(speaker, subhead, dialog[line].text, speaker_color, g_i_frame);
+    draw_story_dialog_box(speaker, subhead, dialog[line].text, speaker_color, anim_frame);
 }
 
 static void draw_story_plaza_scene(void)
 {
-    draw_story_plaza_scene_content();
+    draw_story_plaza_scene_content(g_i_frame);
     if (g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
 }
 
@@ -9567,7 +9614,9 @@ static void transition_draw_story_plaza_source(int frame, void *ctx)
 {
     (void)frame;
     (void)ctx;
-    draw_story_plaza_scene_content();
+    /* Freeze-frame: render the scene at its last live frame so the portraits
+       and 3D camera hold still under the fade instead of re-sliding from zero. */
+    draw_story_plaza_scene_content(g_story_plaza_freeze_frame);
 }
 
 #define STORY_ENDING_CREDITS_FRAMES 300
@@ -9692,6 +9741,12 @@ void waifu_fm_step(const WaifuFmInput *input)
     waifu_assets_big_art_draw_queue_reset();
     frame_dirty_reset();
     g_video_fade_visible_q8 = Q8_ONE;
+    /* Free-running ambient frame for the story 3D sanctum/scene sway.  Unlike
+       g_i_frame it never resets on a state change, so opening a sanctum
+       sub-screen (SAVE, save-device, deck editor) no longer snaps the camera
+       back to its start pose -- the scene holds its motion instead of visibly
+       resetting. */
+    ++g_story_scene_anim_frame;
     waifu_fm_use_common_palette();
     update_music_for_current_state();
     memset(&zero, 0, sizeof(zero));
@@ -10073,6 +10128,8 @@ void waifu_fm_step(const WaifuFmInput *input)
                 reset_story_deck_editor();
                 g_story_editor_from_pyramid = 0;
                 g_deck_flash = (g_story_deck_count == STORY_DECK_SIZE) ? 0 : 60;
+                /* Hold the scene at this last live frame through the fade. */
+                g_story_plaza_freeze_frame = g_i_frame;
                 g_i_state = WAIFU_I_STORY_PLAZA_TO_DECK;
                 g_i_frame = -1;
             }

@@ -2288,6 +2288,13 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
     video->page_shadow_valid[1] = 1;
     video->page_shadow_valid[0] = 0;
 #endif
+    /* Entering 8bpp gameplay means the title/menu/load/ending VDC overlay is
+       gone for good.  Force the overlay *intent* back to OFF here, not just the
+       applied state: otherwise a later RAINBOW story-map fade re-runs
+       pcfx_vdc_overlay_flush() at fade level 0 with the stale MENU mode and
+       re-prints "SELECT MODE / STORY MODE / ..." into the VDC BAT, leaking the
+       title menu text over the pyramid map (the VDC remnant glitch). */
+    g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_OFF;
     if (video->vdc_overlay_ready) {
         /* Defer clearing the front VDC black mask until at least one 8bpp black
            KING page has had a vblank to become authoritative.  Clearing it in
