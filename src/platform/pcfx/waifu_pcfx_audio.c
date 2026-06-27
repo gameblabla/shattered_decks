@@ -762,10 +762,12 @@ WaifuPcfxAudio *waifu_pcfx_audio_create(void)
     g_audio.active_loop = WAIFU_CDDA_LOOP;
     g_audio.active_seq = 0;
     g_audio.last_read_seq = waifu_pcfx_cd_read_seq();
-    g_audio.silence_stop_frames = 0;
+    g_audio.silence_stop_frames = 10u;
     g_cdda_duck_frames = 0;
     g_turn_jingle_guard_frames = 0;
-    g_cdda_mix_volume = 255u;
+    g_cdda_mix_volume = 0u;
+    waifu_pcfx_cdda_set_volume(0, 0);
+    waifu_pcfx_cdda_stop();
     waifu_pcfx_cdda_apply_mix_volume(WAIFU_PCFX_CDDA_BASE_VOLUME);
     waifu_pcfx_sfx_init();
     g_audio.last_read_seq = waifu_pcfx_cd_read_seq();

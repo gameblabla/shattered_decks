@@ -1,4 +1,5 @@
 #include "game_api.h"
+#include "assets.h"
 #include "waifu_pcfx_audio.h"
 #include "waifu_pcfx_cdrom.h"
 #include "waifu_pcfx_input.h"
@@ -26,6 +27,13 @@ int main(void)
         waifu_pcfx_video_wait_vblank(video);
 
         WaifuFmMusicTrack music = waifu_fm_audio_music_track();
+        if (music == WAIFU_FM_MUSIC_TITLE && !waifu_assets_title_ready()) {
+            /* Returning to the title evicts battle/story assets and reloads title
+               data from CD.  Keep CD-DA silent until that load is complete so the
+               drive cannot start a short wrong-track burst before the first real
+               title frame. */
+            music = WAIFU_FM_MUSIC_NONE;
+        }
         if (music != last_music) {
             waifu_pcfx_audio_set_music(audio, music);
             last_music = music;

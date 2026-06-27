@@ -4413,6 +4413,7 @@ static int g_b_battle_outcome = BATTLE_DESTROY_DEFENDER;
 static int g_b_battle_damage = 0;
 static int g_b_battle_damage_owner = -1; /* 0 player, 1 COM, -1 none */
 static char g_b_damage_text[16] = "0";
+static int g_b_com_return_fade = 0;
 static int g_b_result = 0;
 static int g_b_turns = 1;
 static int g_b_cards_used = 0;
@@ -6381,6 +6382,7 @@ static void init_battle_state(void)
     g_b_selected_hand = 0;
     g_b_selected_player_slot = 0;
     g_b_selected_com_slot = 0;
+    g_b_com_return_fade = 0;
     clear_player_fusion_queue();
     for (i = 0; i < FUSION_MAX_MATERIALS; ++i) {
         g_b_fusion_anim_slots[i] = -1;
@@ -7224,8 +7226,9 @@ static void draw_interactive_battle(void)
                                g_b_damage_text, g_b_battle_outcome);
 }
 
-static void draw_post_battle_return(int attacker_owner, int f, int focus_slot, int bottom_card, const char *mode)
+static void draw_post_battle_return(int attacker_owner, int f, int focus_slot, int bottom_card, const char *mode, int fade_in)
 {
+    (void)bottom_card;
 #ifdef WAIFU_FM_PCFX
     const int settle_frames = 1;
     const int fade_frames = 4;
@@ -7247,7 +7250,7 @@ static void draw_post_battle_return(int attacker_owner, int f, int focus_slot, i
     draw_hud();
     if (attacker_owner == 0 && focus_slot >= 0) draw_bottom_info_field(0, focus_slot, mode ? mode : "FIELD");
     if (focus_slot >= 0) draw_zone_cursor(cam, focus_slot, attacker_owner == 0 ? PLAYER_CARD_ROW : ENEMY_CARD_ROW);
-    if (f < fade_frames) apply_black_dither_fade(q8_ratio(f, fade_frames));
+    if (fade_in && f < fade_frames) apply_black_dither_fade(q8_ratio(f, fade_frames));
 }
 
 static void draw_interactive_result(void)
@@ -8159,7 +8162,8 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         atk_slot = selected_or_first_live_player_slot();
         draw_post_battle_return(0, g_b_phase_frame, atk_slot,
                                 atk_slot >= 0 ? g_i_player_field[atk_slot] : hand_ids[0],
-                                atk_slot >= 0 && g_i_player_attacked[atk_slot] ? "USED" : "FIELD");
+                                atk_slot >= 0 && g_i_player_attacked[atk_slot] ? "USED" : "FIELD",
+                                1);
         if (battle_animation_event_complete(WAIFU_PCFX_RETURN_FRAMES)) {
             if (atk_slot >= 0) set_top_selector(atk_slot, PLAYER_CARD_ROW);
             g_b_attack_attacker_slot = -1;
@@ -8172,6 +8176,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (battle_animation_event_complete(WAIFU_PCFX_TURN_FRAMES)) {
             draw_replacement_cards_to_com_hand();
             g_b_selected_com_slot = 0;
+            g_b_com_return_fade = 0;
             set_battle_phase(IB_COM_SELECT);
         }
         break;
@@ -8293,8 +8298,10 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 if (++set_guard >= I_FIELD * 2) break;
             }
             if (ai_action.kind == WAIFU_AI_ACTION_ATTACK_MONSTER) {
+                g_b_com_return_fade = 1;
                 prepare_battle(1, ai_action.attacker_slot, ai_action.defender_slot);
             } else if (ai_action.kind == WAIFU_AI_ACTION_ATTACK_DIRECT) {
+                g_b_com_return_fade = 1;
                 prepare_direct_attack(1, ai_action.attacker_slot);
             } else {
                 set_battle_phase(IB_COM_RETURN);
@@ -8315,8 +8322,10 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         atk_slot = first_live_com_slot();
         draw_post_battle_return(1, g_b_phase_frame, atk_slot,
                                 atk_slot >= 0 ? g_i_com_field[atk_slot] : hand_ids[0],
-                                "COM");
+                                "COM",
+                                g_b_com_return_fade);
         if (battle_animation_event_complete(WAIFU_PCFX_RETURN_FRAMES)) {
+            g_b_com_return_fade = 0;
             clear_player_attacks();
             g_b_player_monster_played_this_turn = 0;
             g_b_player_fused_this_turn = 0;
