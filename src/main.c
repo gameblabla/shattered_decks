@@ -4887,6 +4887,35 @@ static void fusion_clear_local_equips(int equips[I_FIELD], int equip_srcs[I_FIEL
     *equip_count = 0;
 }
 
+/* When a fusion (or a failed pair) replaces the current monster, drop the
+   consumed monster's field-copied equips (src == -1) but KEEP the equip cards
+   the player explicitly DOWN-selected into the chain (src >= 0): those are
+   meant to land on the final summoned monster regardless of where they sit in
+   the chain.  Without this, an equip queued before a later fusion in the chain
+   was silently discarded (equipped to neither the fused monster nor the field).
+   Recomputes the running atk/def bonus from the kept equips. */
+static void fusion_keep_hand_equips(int equips[I_FIELD], int equip_srcs[I_FIELD], int *equip_count,
+                                    int *atk_bonus, int *def_bonus)
+{
+    int i, out = 0;
+    *atk_bonus = 0;
+    *def_bonus = 0;
+    for (i = 0; i < *equip_count; ++i) {
+        if (equip_srcs[i] >= 0 && fusion_material_is_equip(equips[i])) {
+            equips[out] = equips[i];
+            equip_srcs[out] = equip_srcs[i];
+            *atk_bonus += equip_atk_bonus(equips[i]);
+            *def_bonus += equip_def_bonus(equips[i]);
+            ++out;
+        }
+    }
+    for (i = out; i < I_FIELD; ++i) {
+        equips[i] = CARD_NONE;
+        equip_srcs[i] = -1;
+    }
+    *equip_count = out;
+}
+
 static int prepare_player_fusion_anim(int target_slot)
 {
     int i, j;
@@ -4983,17 +5012,16 @@ static int prepare_player_fusion_anim(int target_slot)
                 current = fused;
                 current_source = -1;
                 current_from_fusion = 1;
-                current_atk_bonus = 0;
-                current_def_bonus = 0;
-                fusion_clear_local_equips(current_equips, current_equip_srcs, &current_equip_count);
+                /* Keep player-selected chain equips on the fused result. */
+                fusion_keep_hand_equips(current_equips, current_equip_srcs, &current_equip_count,
+                                        &current_atk_bonus, &current_def_bonus);
                 performed_fusion = 1;
             } else {
                 current = card;
                 current_source = i;
                 current_from_fusion = 0;
-                current_atk_bonus = 0;
-                current_def_bonus = 0;
-                fusion_clear_local_equips(current_equips, current_equip_srcs, &current_equip_count);
+                fusion_keep_hand_equips(current_equips, current_equip_srcs, &current_equip_count,
+                                        &current_atk_bonus, &current_def_bonus);
                 failed_pair = 1;
             }
         }
@@ -11036,6 +11064,121 @@ static int debug_regression_fusion_equip_only(void)
     }
     printf("REGRESSION fusion_equip_only OK field=%d equip=%d atk_bonus=%d\n",
            g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0]);
+
+    /* Successful fusion (two monsters) with an equip LAST in the chain: the
+       equip must end up on the fused monster, not vanish. */
+    debug_setup_fusion_equip_scenario("fusion-then-equip");
+    if (try_queue_player_fusion_slot(0) != 1 || try_queue_player_fusion_slot(1) != 2 ||
+        try_queue_player_fusion_slot(2) != 3) {
+        fprintf(stderr, "REGRESSION fusion_then_equip FAIL: queue_count=%d\n", g_b_fusion_count);
+        return 1;
+    }
+    if (!prepare_player_fusion_anim(0)) {
+        fprintf(stderr, "REGRESSION fusion_then_equip FAIL: prepare failed\n");
+        return 1;
+    }
+    if (!g_b_fusion_anim_success || g_b_fusion_anim_equip_only ||
+        g_b_fusion_anim_final_card != WAIFU_CARD_ID_STONE_DRAGON ||
+        g_b_fusion_anim_final_equip_count != 1) {
+        fprintf(stderr, "REGRESSION fusion_then_equip FAIL: success=%d equip_only=%d final=%d equips=%d\n",
+                g_b_fusion_anim_success, g_b_fusion_anim_equip_only,
+                g_b_fusion_anim_final_card, g_b_fusion_anim_final_equip_count);
+        return 1;
+    }
+    finish_player_fusion_anim();
+    if (g_i_player_field[0] != WAIFU_CARD_ID_STONE_DRAGON ||
+        g_i_player_equip_field[0] != SUPPORT_EQUIP_CARD_ID ||
+        g_i_player_equip_target[0] != 0 ||
+        g_i_player_atk_bonus[0] != equip_atk_bonus(SUPPORT_EQUIP_CARD_ID)) {
+        fprintf(stderr, "REGRESSION fusion_then_equip FAIL: field=%d equip=%d target=%d atk_bonus=%d\n",
+                g_i_player_field[0], g_i_player_equip_field[0],
+                g_i_player_equip_target[0], g_i_player_atk_bonus[0]);
+        return 1;
+    }
+    printf("REGRESSION fusion_then_equip OK field=%d equip=%d atk_bonus=%d\n",
+           g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0]);
+
+    /* Occupied-zone fusion (field monster prepended as material) with an equip
+       LAST in the hand chain: field GOLEM_IDOL(12) + hand ELECTRIC(9) fuse into
+       STONE_DRAGON(33), and the trailing equip must land on the result. */
+    {
+        int k;
+        debug_setup_fusion_equip_scenario("fusion-then-equip");
+        for (k = 0; k < I_HAND; ++k) g_i_player_used[k] = 1;
+        g_i_player_field[0] = WAIFU_CARD_ID_GOLEM_IDOL;
+        g_i_player_faceup[0] = 1;
+        g_i_player_defense[0] = 0;
+        g_i_player_atk_bonus[0] = 0;
+        g_i_player_def_bonus[0] = 0;
+        g_i_player_hand[0] = WAIFU_CARD_ID_ELECTRIC;
+        g_i_player_hand[1] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_used[0] = 0;
+        g_i_player_used[1] = 0;
+        g_b_player_monster_played_this_turn = 1;
+        clear_player_fusion_queue();
+        if (try_queue_player_fusion_slot(0) != 1 || try_queue_player_fusion_slot(1) != 2) {
+            fprintf(stderr, "REGRESSION fusion_occupied_equip FAIL: queue_count=%d\n", g_b_fusion_count);
+            return 1;
+        }
+        if (!prepare_player_fusion_anim(0)) {
+            fprintf(stderr, "REGRESSION fusion_occupied_equip FAIL: prepare failed\n");
+            return 1;
+        }
+        if (g_b_fusion_anim_final_card != WAIFU_CARD_ID_STONE_DRAGON ||
+            g_b_fusion_anim_final_equip_count != 1) {
+            fprintf(stderr, "REGRESSION fusion_occupied_equip FAIL: final=%d equips=%d success=%d\n",
+                    g_b_fusion_anim_final_card, g_b_fusion_anim_final_equip_count, g_b_fusion_anim_success);
+            return 1;
+        }
+        finish_player_fusion_anim();
+        if (g_i_player_field[0] != WAIFU_CARD_ID_STONE_DRAGON ||
+            g_i_player_equip_field[0] != SUPPORT_EQUIP_CARD_ID ||
+            g_i_player_equip_target[0] != 0) {
+            fprintf(stderr, "REGRESSION fusion_occupied_equip FAIL: field=%d equip=%d target=%d\n",
+                    g_i_player_field[0], g_i_player_equip_field[0], g_i_player_equip_target[0]);
+            return 1;
+        }
+        printf("REGRESSION fusion_occupied_equip OK field=%d equip=%d atk_bonus=%d\n",
+               g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0]);
+    }
+
+    /* Equip queued BEFORE a later fusion in the chain (chain order
+       monster, equip, monster): the fusion used to clear the just-added equip,
+       so a successful summon dropped the equip entirely.  It must now survive
+       the fusion and land on the result. */
+    {
+        debug_setup_fusion_equip_scenario("fusion-then-equip"); /* hand [12, 9, equip] */
+        clear_player_fusion_queue();
+        if (try_queue_player_fusion_slot(0) != 1 ||   /* GOLEM_IDOL */
+            try_queue_player_fusion_slot(2) != 2 ||   /* equip (middle of chain) */
+            try_queue_player_fusion_slot(1) != 3) {   /* ELECTRIC -> fuses after equip */
+            fprintf(stderr, "REGRESSION fusion_equip_mid FAIL: queue_count=%d\n", g_b_fusion_count);
+            return 1;
+        }
+        if (!prepare_player_fusion_anim(0)) {
+            fprintf(stderr, "REGRESSION fusion_equip_mid FAIL: prepare failed\n");
+            return 1;
+        }
+        if (!g_b_fusion_anim_success ||
+            g_b_fusion_anim_final_card != WAIFU_CARD_ID_STONE_DRAGON ||
+            g_b_fusion_anim_final_equip_count != 1) {
+            fprintf(stderr, "REGRESSION fusion_equip_mid FAIL: success=%d final=%d equips=%d\n",
+                    g_b_fusion_anim_success, g_b_fusion_anim_final_card, g_b_fusion_anim_final_equip_count);
+            return 1;
+        }
+        finish_player_fusion_anim();
+        if (g_i_player_field[0] != WAIFU_CARD_ID_STONE_DRAGON ||
+            g_i_player_equip_field[0] != SUPPORT_EQUIP_CARD_ID ||
+            g_i_player_equip_target[0] != 0 ||
+            g_i_player_atk_bonus[0] != equip_atk_bonus(SUPPORT_EQUIP_CARD_ID)) {
+            fprintf(stderr, "REGRESSION fusion_equip_mid FAIL: field=%d equip=%d target=%d atk_bonus=%d\n",
+                    g_i_player_field[0], g_i_player_equip_field[0],
+                    g_i_player_equip_target[0], g_i_player_atk_bonus[0]);
+            return 1;
+        }
+        printf("REGRESSION fusion_equip_mid OK field=%d equip=%d atk_bonus=%d\n",
+               g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0]);
+    }
     return 0;
 }
 
