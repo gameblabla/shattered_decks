@@ -639,6 +639,8 @@ void waifu_pcfx_adpcm_sample_play(int effect)
     king_reg_h(0x58u, (uint16_t)(start >> 8));
     king_reg_w(0x59u, end);
     eris_low_adpcm_set_volume(0, volume, volume);
+    eris_low_adpcm_set_volume(1, volume, volume);
+    
     play = (uint16_t)(1u | 4u); /* ch0 + 16 kHz rate bits */
     king_reg_h(0x50u, play);
 }
@@ -658,38 +660,40 @@ static void waifu_pcfx_sfx_init(void)
     waifu_pcfx_adpcm_samples_load();
 }
 
+/* Audio lowering / Audio ducking */
+
 void waifu_pcfx_sfx_play(int effect)
 {
     if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return;
 
     switch ((WaifuSoundEffect)effect) {
     case WAIFU_SOUND_SELECT:
-        waifu_pcfx_cdda_request_duck(10u);
+       //waifu_pcfx_cdda_request_duck(10u);
         break;
     case WAIFU_SOUND_CONFIRM:
-        waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
+        //waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
         break;
     case WAIFU_SOUND_CONFIRM_ALT:
-        waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
+        //waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
         break;
     case WAIFU_SOUND_CARD_PLACED:
-        waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
+        //waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
         break;
     case WAIFU_SOUND_CARD_DESTROYED:
-        waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
+        //waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
         break;
     case WAIFU_SOUND_TURN_PASSED:
         waifu_pcfx_cdda_request_duck(84u);
         g_turn_jingle_guard_frames = 84u;
         break;
     case WAIFU_SOUND_LASER_SHOOT:
-        waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
+        //waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
         break;
     case WAIFU_SOUND_DIRECT_HIT:
-        waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
+        //waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
         break;
     case WAIFU_SOUND_CARD_DRAWN:
-        waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
+        //waifu_pcfx_cdda_request_duck(WAIFU_PCFX_CDDA_DUCK_SHORT);
         break;
     case WAIFU_SOUND_YOU_LOST:
         break;

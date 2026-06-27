@@ -6,6 +6,38 @@
 
 #include "deck_pools.h"
 
+static uint32_t deck_rotl32(uint32_t v, unsigned n)
+{
+    return (v << n) | (v >> (32u - n));
+}
+
+static uint32_t deck_mix32(uint32_t v)
+{
+    v ^= v >> 16;
+    v *= 0x7feb352du;
+    v ^= v >> 15;
+    v *= 0x846ca68bu;
+    v ^= v >> 16;
+    return v;
+}
+
+#if defined(WAIFU_FM_PCFX)
+static uint32_t pcfx_entropy_seed_material(void)
+{
+    uint32_t vce = 0u;
+    uint32_t timer = 0u;
+#if defined(__v810__)
+    __asm__ volatile (
+        "in.h 0x300[r0],%[vce]\n"
+        "in.h 0xfc0[r0],%[timer]\n"
+        : [vce] "=r" (vce), [timer] "=r" (timer)
+        :
+        : "memory");
+#endif
+    return (vce & 0xffffu) ^ deck_rotl32(timer & 0xffffu, 7);
+}
+#endif
+
 static int deck_card_is_valid(int card)
 {
     return card >= 0 && card < WAIFU_CARD_COUNT + WAIFU_SUPPORT_CARD_VARIANTS;
@@ -33,6 +65,11 @@ uint32_t waifu_deck_runtime_seed(uint32_t salt)
     uint32_t s = salt ^ (uint32_t)time(NULL) ^ ((uint32_t)clock() << 11);
     s ^= (uint32_t)(stack_mix >> 4);
     s ^= (uint32_t)(stack_mix >> 19);
+#if defined(WAIFU_FM_PCFX)
+    s ^= pcfx_entropy_seed_material();
+    s = deck_rotl32(s, 7) ^ pcfx_entropy_seed_material();
+#endif
+    s = deck_mix32(s);
     if (s == 0u) s = 0x6d2b79f5u;
     return s;
 }
@@ -97,6 +134,9 @@ void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bi
 
     waifu_deck_clear(deck);
     if (!rng) return;
+    for (int i = 0; i < 3; ++i) {
+        (void)deck_append_limited(deck, WAIFU_SUPPORT_THUNDER_CARD_ID, 3);
+    }
 
     while (deck->count < WAIFU_DECK_SIZE && guard++ < 5000) {
         uint32_t roll = waifu_deck_rng_next(rng) % 100u;
@@ -184,6 +224,9 @@ void waifu_deck_build_headless_battle(WaifuDeck *deck, const int opening[5], int
     waifu_deck_clear(deck);
     if (!opening) return;
     for (int i = 0; i < 5 && deck->count < WAIFU_DECK_SIZE; ++i) deck->cards[deck->count++] = opening[i];
+    for (int i = 0; i < 3 && deck->count < WAIFU_DECK_SIZE; ++i) {
+        deck->cards[deck->count++] = WAIFU_SUPPORT_THUNDER_CARD_ID;
+    }
     waifu_deck_rng_seed(&rng, (uint32_t)(seed ? seed : 17));
     while (deck->count < WAIFU_DECK_SIZE) {
         int card = (int)(waifu_deck_rng_next(&rng) % (uint32_t)WAIFU_CARD_COUNT);

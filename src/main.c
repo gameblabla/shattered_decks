@@ -3512,6 +3512,9 @@ static void draw_title_background(void);
 static void draw_title_logo(void);
 static void draw_title_prompt(int f);
 static int story_save_exists(void);
+#ifdef WAIFU_FM_PCFX
+static int story_save_exists_device(int ext);
+#endif
 
 static void draw_result_screen(int f, const char *msg)
 {
@@ -3734,6 +3737,24 @@ static void draw_transition_black_hold_frame(void)
     frame_mark_full_dirty();
 }
 
+typedef void (*WaifuFadeSourceFn)(int frame, void *ctx);
+
+static int draw_fade_to_black_transition(int frame, int fade_frames, int hold_frames,
+                                         WaifuFadeSourceFn source, void *ctx)
+{
+    if (frame < 0) frame = 0;
+    if (fade_frames < 1) fade_frames = 1;
+    if (hold_frames < 0) hold_frames = 0;
+    if (frame < fade_frames) {
+        if (source) source(frame, ctx);
+        else clear_screen(IDX_BLACK);
+        apply_black_dither_fade(Q8_ONE - q8_ratio(frame, fade_frames));
+    } else {
+        draw_transition_black_hold_frame();
+    }
+    return frame >= fade_frames + hold_frames;
+}
+
 static void draw_title_background(void)
 {
     /* The title/menu screen uses its own 256-color palette.  Text and UI
@@ -3815,19 +3836,28 @@ static void draw_menu_screen_event(int selected, int full_redraw)
 }
 #endif
 
-static void draw_menu_fadeout_event(int selected, int f)
+static void transition_draw_menu_source(int frame, void *ctx)
 {
-    if (f < 0) f = 0;
+    int selected = ctx ? *(int *)ctx : 0;
+    (void)frame;
 #ifdef WAIFU_FM_PCFX
-    /* Keep the whole fade on the already-present title/menu VDC overlay.
-       Switching to the common 8bpp black path happens only after the overlay
-       is fully opaque, so the 16M title surface cannot reappear mid-transition. */
     draw_menu_screen_event(selected, 0);
 #else
     draw_menu_screen(selected);
 #endif
-    apply_black_dither_fade(Q8_ONE - q8_ratio(f, WAIFU_TITLE_FADE_FRAMES));
 }
+
+#ifdef WAIFU_FM_PCFX
+static void transition_draw_load_device_source(int frame, void *ctx)
+{
+    int selected = ctx ? *(int *)ctx : 0;
+    (void)frame;
+    waifu_fm_use_title_palette();
+    waifu_pcfx_video_overlay_load_menu(selected,
+                                       story_save_exists_device(0),
+                                       story_save_exists_device(1));
+}
+#endif
 
 static void render_title_sequence(int f)
 {
@@ -4244,6 +4274,7 @@ typedef enum WaifuInteractiveState {
     WAIFU_I_MENU,
     WAIFU_I_MENU_TO_STORY,
     WAIFU_I_MENU_TO_BATTLE,
+    WAIFU_I_MENU_TO_LOAD,
     WAIFU_I_STORY_NAME,
     WAIFU_I_STORY_NAME_TO_INTRO,
     WAIFU_I_STORY_INTRO,
@@ -4254,13 +4285,17 @@ typedef enum WaifuInteractiveState {
     WAIFU_I_STORY_SAVE,
 #ifdef WAIFU_FM_PCFX
     WAIFU_I_STORY_SAVE_DEVICE,
+    WAIFU_I_STORY_LOAD_DEVICE_TO_MAP,
 #endif
     WAIFU_I_STORY_TO_PLAZA,
     WAIFU_I_STORY_PLAZA,
+    WAIFU_I_STORY_PLAZA_TO_DECK,
     WAIFU_I_STORY_ENDING,
     WAIFU_I_STORY_ENDING_CREDITS,
     WAIFU_I_DECK_EDITOR,
     WAIFU_I_DECK_PREVIEW,
+    WAIFU_I_DECK_EDITOR_TO_PYRAMID,
+    WAIFU_I_DECK_EDITOR_TO_BATTLE,
     WAIFU_I_BATTLE,
     WAIFU_I_LOADING_ASSETS,
 #ifdef WAIFU_FM_PCFX
@@ -5055,7 +5090,7 @@ static int story_water_field_bonus(int id)
         return 500;
     }
     if (!strcmp(waifu_card_attr[id], "Fire") ||
-        !strcmp(waifu_card_tribe[id], "Insect")) {
+        !strcmp(waifu_card_tribe[id], "Insect") || !strcmp(waifu_card_tribe[id], "Machine")) {
         return -500;
     }
     return 0;
@@ -6145,6 +6180,21 @@ static void enter_menu_to_battle_fade(void)
     g_i_frame = -1;
 }
 
+static void enter_menu_to_load_fade(void)
+{
+    g_i_state = WAIFU_I_MENU_TO_LOAD;
+    g_i_frame = -1;
+}
+
+#ifdef WAIFU_FM_PCFX
+static void enter_load_device_to_map_fade(int device)
+{
+    g_i_load_pending_device = device;
+    g_i_state = WAIFU_I_STORY_LOAD_DEVICE_TO_MAP;
+    g_i_frame = -1;
+}
+#endif
+
 static void enter_story_intro_after_assets(void)
 {
     waifu_assets_request_story_intro();
@@ -6216,8 +6266,10 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_MENU:
     case WAIFU_I_MENU_TO_STORY:
     case WAIFU_I_MENU_TO_BATTLE:
+    case WAIFU_I_MENU_TO_LOAD:
 #ifdef WAIFU_FM_PCFX
     case WAIFU_I_STORY_LOAD_DEVICE:
+    case WAIFU_I_STORY_LOAD_DEVICE_TO_MAP:
 #endif
         return WAIFU_MUSIC_TITLE;
 #ifdef WAIFU_FM_PCFX
@@ -6239,12 +6291,15 @@ static WaifuMusicTrack music_track_for_current_state(void)
 #endif
     case WAIFU_I_STORY_TO_PLAZA:
     case WAIFU_I_STORY_PLAZA:
+    case WAIFU_I_STORY_PLAZA_TO_DECK:
     case WAIFU_I_STORY_ENDING:
         return WAIFU_MUSIC_OPENING_DREAM;
     case WAIFU_I_STORY_ENDING_CREDITS:
         return WAIFU_MUSIC_NONE;
     case WAIFU_I_DECK_EDITOR:
     case WAIFU_I_DECK_PREVIEW:
+    case WAIFU_I_DECK_EDITOR_TO_PYRAMID:
+    case WAIFU_I_DECK_EDITOR_TO_BATTLE:
         return WAIFU_MUSIC_DECK_EDITOR;
     case WAIFU_I_BATTLE:
         if (g_b_phase == IB_TALLY) return (g_b_result < 0) ? WAIFU_MUSIC_LOST : WAIFU_MUSIC_RESULTS;
@@ -8779,6 +8834,12 @@ static void draw_deck_editor(void)
     draw_text_small(15, 226, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
 }
 
+static void transition_draw_deck_editor_source(int frame, void *ctx)
+{
+    (void)frame;
+    (void)ctx;
+    draw_deck_editor();
+}
 
 static Camera story_map_camera(int f)
 {
@@ -9172,16 +9233,28 @@ static void draw_story_map_screen(int f)
 {
     draw_story_map_screen_content(f);
     if (f >= 0 && f < 24) apply_black_dither_fade(q8_ratio(f, 24));
-}static void draw_story_plaza_scene_content(void);
+}
+
+static void draw_story_plaza_scene_content(void);
+
+static void transition_draw_story_map_source(int frame, void *ctx)
+{
+    (void)ctx;
+    draw_story_map_screen_content(frame);
+}
 
 static void draw_story_to_plaza_transition(int f)
 {
-    if (f < WAIFU_FAST_TRANSITION_HALF_FRAMES) {
-        draw_story_map_screen_content(f);
-        apply_black_dither_fade(Q8_ONE - q8_ratio(f, WAIFU_FAST_TRANSITION_HALF_FRAMES));
-    } else {
-        clear_screen(IDX_BLACK);
-    }
+    draw_fade_to_black_transition(f, WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                  WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                  transition_draw_story_map_source, NULL);
+}
+
+static void transition_draw_story_fire_source(int frame, void *ctx)
+{
+    (void)frame;
+    (void)ctx;
+    draw_story_fire_screen(g_story_fire_line);
 }
 
 static void draw_story_fire_to_deck_transition(int f)
@@ -9191,12 +9264,9 @@ static void draw_story_fire_to_deck_transition(int f)
        after the LOADING screen (entered via enter_deck_editor_after_assets()
        once this transition finishes).  Fading the deck editor in here made it
        flash for a few frames before LOADING ran. */
-    if (f < WAIFU_FAST_TRANSITION_HALF_FRAMES) {
-        draw_story_fire_screen(g_story_fire_line);
-        apply_black_dither_fade(Q8_ONE - q8_ratio(f, WAIFU_FAST_TRANSITION_HALF_FRAMES));
-    } else {
-        clear_screen(IDX_BLACK);
-    }
+    draw_fade_to_black_transition(f, WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                  WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                  transition_draw_story_fire_source, NULL);
 }
 
 static void draw_story_pyramid_menu(void)
@@ -9307,6 +9377,13 @@ static void draw_story_plaza_scene(void)
 {
     draw_story_plaza_scene_content();
     if (g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
+}
+
+static void transition_draw_story_plaza_source(int frame, void *ctx)
+{
+    (void)frame;
+    (void)ctx;
+    draw_story_plaza_scene_content();
 }
 
 #define STORY_ENDING_CREDITS_FRAMES 300
@@ -9550,32 +9627,31 @@ void waifu_fm_step(const WaifuFmInput *input)
             } else if (g_i_menu_selected == 1) {
                 enter_menu_to_battle_fade();
             } else {
-                begin_story_load();
+                enter_menu_to_load_fade();
             }
         }
         break;
 
     case WAIFU_I_MENU_TO_STORY:
-        if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES + 4) {
-            draw_transition_black_hold_frame();
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES, 4,
+                                          transition_draw_menu_source, &g_i_menu_selected)) {
             g_i_state = WAIFU_I_STORY_NAME;
             g_i_frame = -1;
-        } else if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES) {
-            draw_transition_black_hold_frame();
-        } else {
-            draw_menu_fadeout_event(g_i_menu_selected, g_i_frame);
         }
         break;
 
     case WAIFU_I_MENU_TO_BATTLE:
-        if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES + 4) {
-            draw_transition_black_hold_frame();
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES, 4,
+                                          transition_draw_menu_source, &g_i_menu_selected)) {
             init_battle_state();
             enter_battle_after_assets();
-        } else if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES) {
-            draw_transition_black_hold_frame();
-        } else {
-            draw_menu_fadeout_event(g_i_menu_selected, g_i_frame);
+        }
+        break;
+
+    case WAIFU_I_MENU_TO_LOAD:
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES, 4,
+                                          transition_draw_menu_source, &g_i_menu_selected)) {
+            begin_story_load();
         }
         break;
 
@@ -9599,10 +9675,7 @@ void waifu_fm_step(const WaifuFmInput *input)
                 int ext = g_i_load_device_sel; /* 0 internal, 1 external */
                 int has = ext ? external_has : internal_has;
                 if (has) {
-                    g_i_load_pending_device = ext;
-                    waifu_pcfx_video_overlay_clear();
-                    g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
-                    g_i_frame = -1;
+                    enter_load_device_to_map_fade(ext);
                 }
                 /* No save on the chosen device: stay so the player can pick
                    the other one or BACK. */
@@ -9614,6 +9687,15 @@ void waifu_fm_step(const WaifuFmInput *input)
         }
         break;
     }
+
+    case WAIFU_I_STORY_LOAD_DEVICE_TO_MAP:
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES, 4,
+                                          transition_draw_load_device_source, &g_i_load_device_sel)) {
+            waifu_pcfx_video_overlay_clear();
+            g_i_state = WAIFU_I_STORY_LOAD_TO_MAP;
+            g_i_frame = -1;
+        }
+        break;
 
     case WAIFU_I_STORY_LOAD_TO_MAP:
         waifu_pcfx_video_overlay_clear();
@@ -9807,12 +9889,21 @@ void waifu_fm_step(const WaifuFmInput *input)
                 reset_story_deck_editor();
                 g_story_editor_from_pyramid = 0;
                 g_deck_flash = (g_story_deck_count == STORY_DECK_SIZE) ? 0 : 60;
-                enter_deck_editor_after_assets();
+                g_i_state = WAIFU_I_STORY_PLAZA_TO_DECK;
+                g_i_frame = -1;
             }
         }
         if (press_b) {
             g_i_state = WAIFU_I_STORY_MAP;
             g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_STORY_PLAZA_TO_DECK:
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                          WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                          transition_draw_story_plaza_source, NULL)) {
+            enter_deck_editor_after_assets();
         }
         break;
 
@@ -9864,23 +9955,41 @@ void waifu_fm_step(const WaifuFmInput *input)
             if (g_story_deck_count == STORY_DECK_SIZE) {
                 recalc_story_deck_counts();
                 if (g_story_editor_from_pyramid) {
-                    g_i_state = WAIFU_I_STORY_PYRAMID;
+                    g_i_state = WAIFU_I_DECK_EDITOR_TO_PYRAMID;
                     g_i_frame = -1;
-                    g_story_editor_from_pyramid = 0;
                     break;
                 }
                 /* Story-dialogue deck editing commits the deck and starts the
                    next duel; sanctum editing above is pure maintenance and
                    returns to the sanctum menu. */
                 g_story_editor_from_pyramid = 0;
-                init_story_battle_state();
-                enter_battle_after_assets();
+                g_i_state = WAIFU_I_DECK_EDITOR_TO_BATTLE;
+                g_i_frame = -1;
             } else {
                 g_deck_flash = 60;
             }
         }
         if (g_deck_flash > 0) --g_deck_flash;
         draw_deck_editor();
+        break;
+
+    case WAIFU_I_DECK_EDITOR_TO_PYRAMID:
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                          WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                          transition_draw_deck_editor_source, NULL)) {
+            g_story_editor_from_pyramid = 0;
+            g_i_state = WAIFU_I_STORY_PYRAMID;
+            g_i_frame = -1;
+        }
+        break;
+
+    case WAIFU_I_DECK_EDITOR_TO_BATTLE:
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                          WAIFU_FAST_TRANSITION_HALF_FRAMES,
+                                          transition_draw_deck_editor_source, NULL)) {
+            init_story_battle_state();
+            enter_battle_after_assets();
+        }
         break;
 
     case WAIFU_I_DECK_PREVIEW:
@@ -10404,6 +10513,8 @@ static int debug_regression_thunder_support(void)
     int thunder_count[3] = {0, 0, 0};
     int final_angel_count = 0;
     int final_opening_thunder = 0;
+    int random_player_thunder = 0;
+    int random_com_thunder = 0;
     int guard;
 
     waifu_deck_rng_seed(&rng, 123u);
@@ -10441,6 +10552,17 @@ static int debug_regression_thunder_support(void)
     memset(&in, 0, sizeof(in));
     waifu_fm_reset_interactive();
     init_battle_state();
+    for (int i = 0; i < g_i_player_deck.count; ++i) {
+        if (g_i_player_deck.cards[i] == SUPPORT_THUNDER_CARD_ID) ++random_player_thunder;
+    }
+    for (int i = 0; i < g_i_com_deck.count; ++i) {
+        if (g_i_com_deck.cards[i] == SUPPORT_THUNDER_CARD_ID) ++random_com_thunder;
+    }
+    if (random_player_thunder != 3 || random_com_thunder != 3) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: random thunder counts player=%d com=%d\n",
+                random_player_thunder, random_com_thunder);
+        return 1;
+    }
     g_i_state = WAIFU_I_BATTLE;
     g_b_phase = IB_COM_SELECT;
     for (int i = 0; i < I_HAND; ++i) {
