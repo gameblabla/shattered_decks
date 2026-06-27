@@ -34,8 +34,13 @@ int main(void)
             /* Returning to the title evicts battle/story assets and reloads title
                data from CD.  Keep CD-DA silent until the title is loaded,
                presented through the title path, and fully faded in so the drive
-               cannot start a short burst under loading/black frames. */
-            music = WAIFU_FM_MUSIC_NONE;
+               cannot start a short burst under loading/black frames.
+
+               If title CD-DA is already playing, keep it alive during title/menu
+               fade-out.  Stopping CD-DA issues SCSI commands, and doing that
+               during the visible fade makes Battle Mode selection visibly stall
+               before loading has even started. */
+            if (last_music != WAIFU_FM_MUSIC_TITLE) music = WAIFU_FM_MUSIC_NONE;
         }
         if (music != last_music) {
             waifu_pcfx_audio_set_music(audio, music);
