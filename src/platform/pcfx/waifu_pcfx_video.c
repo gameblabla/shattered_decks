@@ -1088,8 +1088,10 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_PAL_EDGE  0x06
 #define WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL 0x111
 #define WAIFU_PCFX_VDC_SANCTUM_TILE_EDGE  0x112
-/* Fade tiles live immediately after the 64x32 BAT so tile 0 remains unusable
-   for transparent blanks.  Each level is a screen-space black dither mask. */
+/* Fade tile lives immediately after the 64x32 BAT so tile 0 remains unusable
+   for transparent blanks.  The BAT is filled once, then fade steps update only
+   this tile's pattern so title/menu fades do not spend frames rewriting both
+   VDC maps. */
 #define WAIFU_PCFX_VDC_FADE_TILE_BASE 0x080
 #define WAIFU_PCFX_VDC_FADE_LEVELS 17
 
@@ -1131,6 +1133,7 @@ static int g_vdc_overlay_load_external_has = 0;
    its 16M KING surface without touching KRAM. */
 static int g_vdc_overlay_fade_level = 16;
 static int g_vdc_overlay_applied_fade_level = -1;
+static int g_vdc_overlay_fade_map_active = 0;
 static int g_vdc_overlay_dirty = 1;
 static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video);
 static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video);
@@ -1187,44 +1190,31 @@ static uint8_t pcfx_vdc_fade_pattern_row(int level, int row)
     return bits;
 }
 
-static void pcfx_vdc_overlay_upload_fade_tiles(void)
+static void pcfx_vdc_overlay_upload_fade_tile(int level)
 {
-    eris_low_sup_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_FADE_TILE_BASE * 16);
-    for (int level = 0; level < WAIFU_PCFX_VDC_FADE_LEVELS; ++level) {
-        for (int row = 0; row < 16; ++row) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
-    }
-
-    eris_low_sup_set_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_FADE_TILE_BASE * 16);
-    for (int level = 0; level < WAIFU_PCFX_VDC_FADE_LEVELS; ++level) {
-        for (int row = 0; row < 8; ++row) {
-            eris_low_sup_vram_write(VDC_CHIP_1, pcfx_vdc_fade_pattern_row(level, row));
-        }
-        for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
-    }
-}
-
-static void pcfx_vdc_overlay_fill_fade_level(int level)
-{
-    uint16_t tile;
     if (level < 0) level = 0;
     if (level > 16) level = 16;
-    tile = (uint16_t)(WAIFU_PCFX_VDC_FADE_TILE_BASE + level);
+    eris_low_sup_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_FADE_TILE_BASE * 16);
+    for (int row = 0; row < 16; ++row) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
+
+    eris_low_sup_set_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_FADE_TILE_BASE * 16);
+    for (int row = 0; row < 8; ++row) {
+        eris_low_sup_vram_write(VDC_CHIP_1, pcfx_vdc_fade_pattern_row(level, row));
+    }
+    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
+}
+
+static void pcfx_vdc_overlay_fill_fade_map(void)
+{
+    uint16_t tile = (uint16_t)WAIFU_PCFX_VDC_FADE_TILE_BASE;
     for (int row = 0; row < WAIFU_PCFX_VDC_MAP_H; ++row) {
         int addr = row * WAIFU_PCFX_VDC_MAP_W;
-        uint16_t row_tile = tile;
-        /* The PC-FX mixer can leak a stale bottom scanline during the title/menu
-           16M -> 8bpp mode transition while a sparse dither tile is in front.
-           Keep the lowest visible tile row opaque black, but only once the fade
-           is already near-black: forcing it at every level made the bottom edge
-           visibly pop to solid black mid-fade.  Gating it to the top fade levels
-           keeps the fade uniform while still covering the mode-switch frame
-           (which always finishes the fade at level 16). */
-        if (level >= 15 && row >= 29) row_tile = (uint16_t)(WAIFU_PCFX_VDC_FADE_TILE_BASE + 16);
         eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, row_tile);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, tile);
         eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(row_tile | 0x8000));
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
     }
+    g_vdc_overlay_fade_map_active = 1;
 }
 
 static void pcfx_vdc_overlay_set_fade_q8(int visible_q8)
@@ -1715,14 +1705,14 @@ static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video)
 
     pcfx_vdc_restore_overlay_palette();
 
-    pcfx_vdc_overlay_upload_fade_tiles();
+    pcfx_vdc_overlay_upload_fade_tile(16);
     pcfx_vdc_overlay_upload_font();
     /* Start covered.  The first title frame may require a full 16M KRAM upload;
        keeping an opaque VDC black mask in front prevents any one-frame reveal
        of uninitialized or partially uploaded KING data. */
     g_vdc_overlay_fade_level = 16;
     g_vdc_overlay_applied_fade_level = -1;
-    pcfx_vdc_overlay_fill_fade_level(16);
+    pcfx_vdc_overlay_fill_fade_map();
     eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
     eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
 
@@ -1738,6 +1728,7 @@ static void pcfx_vdc_overlay_shutdown(WaifuPcfxVideo *video)
     video->vdc_overlay_ready = 0;
     g_vdc_overlay_applied_mode = WAIFU_PCFX_OVERLAY_OFF;
     g_vdc_overlay_applied_fade_level = -1;
+    g_vdc_overlay_fade_map_active = 0;
 }
 
 static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
@@ -1748,12 +1739,16 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
         /* Fade masks are authoritative for the whole VDC overlay while active.
            Suppress text during the fade so prompt/menu glyph tiles cannot punch
            transparent holes through the black dither mask. */
-        if (g_vdc_overlay_applied_fade_level != g_vdc_overlay_fade_level ||
+        if (!g_vdc_overlay_fade_map_active ||
+            g_vdc_overlay_applied_fade_level <= 0 ||
             g_vdc_overlay_applied_mode != g_vdc_overlay_mode) {
-            pcfx_vdc_overlay_fill_fade_level(g_vdc_overlay_fade_level);
-            g_vdc_overlay_applied_fade_level = g_vdc_overlay_fade_level;
-            g_vdc_overlay_applied_mode = g_vdc_overlay_mode;
+            pcfx_vdc_overlay_fill_fade_map();
         }
+        if (g_vdc_overlay_applied_fade_level != g_vdc_overlay_fade_level) {
+            pcfx_vdc_overlay_upload_fade_tile(g_vdc_overlay_fade_level);
+        }
+        g_vdc_overlay_applied_fade_level = g_vdc_overlay_fade_level;
+        g_vdc_overlay_applied_mode = g_vdc_overlay_mode;
         g_vdc_overlay_dirty = 0;
         return;
     }
@@ -1763,6 +1758,7 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
         pcfx_vdc_overlay_clear_all();
         g_vdc_overlay_applied_fade_level = 0;
         g_vdc_overlay_applied_mode = g_vdc_overlay_mode;
+        g_vdc_overlay_fade_map_active = 0;
     }
 
     switch (g_vdc_overlay_mode) {

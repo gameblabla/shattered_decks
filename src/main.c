@@ -3841,7 +3841,11 @@ static void transition_draw_menu_source(int frame, void *ctx)
     int selected = ctx ? *(int *)ctx : 0;
     (void)frame;
 #ifdef WAIFU_FM_PCFX
-    draw_menu_screen_event(selected, 0);
+    /* The menu overlay is already resident from the menu frame that accepted
+       A/RUN.  During fade, only advance the fade mask; redrawing the VDC menu
+       here makes PC-FX fade timing hitch before asset loading starts. */
+    (void)selected;
+    waifu_fm_use_title_palette();
 #else
     draw_menu_screen(selected);
 #endif
@@ -3852,10 +3856,11 @@ static void transition_draw_load_device_source(int frame, void *ctx)
 {
     int selected = ctx ? *(int *)ctx : 0;
     (void)frame;
+    (void)selected;
+    /* The load-device picker overlay is already on the VDC layer.  Leave it in
+       place and fade over it instead of rewriting backup status text each
+       transition frame. */
     waifu_fm_use_title_palette();
-    waifu_pcfx_video_overlay_load_menu(selected,
-                                       story_save_exists_device(0),
-                                       story_save_exists_device(1));
 }
 #endif
 
@@ -4416,6 +4421,7 @@ static int g_b_equip_pending_atk = 0;
 static int g_b_equip_pending_def = 0;
 static int g_b_thunder_hand = -1;
 static int g_b_thunder_card = CARD_NONE;
+static int g_b_thunder_owner = 1; /* 0 player, 1 COM */
 static int g_b_thunder_slots[I_FIELD] = {-1, -1, -1, -1, -1};
 static int g_b_thunder_cards[I_FIELD] = {CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE};
 static int g_b_thunder_backs[I_FIELD] = {0, 0, 0, 0, 0};
@@ -6466,6 +6472,7 @@ static void init_battle_state(void)
     g_b_equip_pending_def = 0;
     g_b_thunder_hand = -1;
     g_b_thunder_card = CARD_NONE;
+    g_b_thunder_owner = 1;
     g_b_thunder_count = 0;
     for (i = 0; i < I_FIELD; ++i) {
         g_b_thunder_slots[i] = -1;
@@ -7053,16 +7060,20 @@ static int thunder_total_frames(void)
     return thunder_intro_frames() + g_b_thunder_count * thunder_target_frames() + WAIFU_THUNDER_TARGET_GAP_FRAMES;
 }
 
-static void start_com_thunder(int hand_slot)
+static void start_thunder(int owner, int hand_slot)
 {
     int i;
+    int target_owner = owner ? 0 : 1;
+    int *hand = owner ? g_i_com_hand : g_i_player_hand;
+    int *used = owner ? g_i_com_used : g_i_player_used;
     if (hand_slot < 0 || hand_slot >= I_HAND) return;
-    if (g_i_com_used[hand_slot]) return;
-    if (!is_thunder_support_card(g_i_com_hand[hand_slot])) return;
-    if (count_live_player_monsters() <= 0) return;
+    if (used[hand_slot]) return;
+    if (!is_thunder_support_card(hand[hand_slot])) return;
+    if ((target_owner ? count_live_com_monsters() : count_live_player_monsters()) <= 0) return;
 
     g_b_thunder_hand = hand_slot;
-    g_b_thunder_card = g_i_com_hand[hand_slot];
+    g_b_thunder_card = hand[hand_slot];
+    g_b_thunder_owner = owner ? 1 : 0;
     g_b_thunder_count = 0;
     for (i = 0; i < I_FIELD; ++i) {
         g_b_thunder_slots[i] = -1;
@@ -7070,39 +7081,61 @@ static void start_com_thunder(int hand_slot)
         g_b_thunder_backs[i] = 0;
     }
     for (i = 0; i < I_FIELD; ++i) {
-        if (is_monster_card(g_i_player_field[i]) && g_b_thunder_count < I_FIELD) {
+        int card = target_owner ? g_i_com_field[i] : g_i_player_field[i];
+        if (is_monster_card(card) && g_b_thunder_count < I_FIELD) {
             int out = g_b_thunder_count++;
             g_b_thunder_slots[out] = i;
-            g_b_thunder_cards[out] = g_i_player_field[i];
-            g_b_thunder_backs[out] = !g_i_player_faceup[i];
-            (void)card_big_art_ptr(g_i_player_field[i]);
+            g_b_thunder_cards[out] = card;
+            g_b_thunder_backs[out] = target_owner ? !g_i_com_faceup[i] : !g_i_player_faceup[i];
+            (void)card_big_art_ptr(card);
         }
     }
     if (g_b_thunder_count <= 0) return;
     (void)support_big_art_ptr();
-    g_i_com_used[hand_slot] = 1;
+    used[hand_slot] = 1;
     clear_battle_snapshot();
     set_battle_phase(IB_COM_THUNDER_ANIM);
 }
 
-static void finish_com_thunder(void)
+static void start_com_thunder(int hand_slot)
+{
+    start_thunder(1, hand_slot);
+}
+
+static void start_player_thunder(int hand_slot)
+{
+    start_thunder(0, hand_slot);
+}
+
+static void finish_thunder(void)
 {
     int i;
+    int owner = g_b_thunder_owner;
+    int target_owner = owner ? 0 : 1;
     for (i = 0; i < g_b_thunder_count; ++i) {
         int slot = g_b_thunder_slots[i];
-        if (slot >= 0 && slot < I_FIELD && is_monster_card(g_i_player_field[slot])) {
-            clear_monster_slot(0, slot);
+        int card = (target_owner == 0 && slot >= 0 && slot < I_FIELD) ? g_i_player_field[slot] :
+                   (target_owner == 1 && slot >= 0 && slot < I_FIELD) ? g_i_com_field[slot] : CARD_NONE;
+        if (is_monster_card(card)) {
+            clear_monster_slot(target_owner, slot);
         }
     }
     g_b_cards_used++;
-    g_b_selected_player_slot = selected_or_first_live_player_slot();
-    if (g_b_selected_player_slot < 0) g_b_selected_player_slot = 0;
+    if (owner == 0) {
+        g_b_selected_player_slot = selected_or_first_live_player_slot();
+        if (g_b_selected_player_slot < 0) g_b_selected_player_slot = 0;
+        set_top_selector(g_b_selected_player_slot, PLAYER_CARD_ROW);
+    } else {
+        g_b_selected_player_slot = selected_or_first_live_player_slot();
+        if (g_b_selected_player_slot < 0) g_b_selected_player_slot = 0;
+    }
     g_b_thunder_hand = -1;
     g_b_thunder_card = CARD_NONE;
     g_b_thunder_count = 0;
+    g_b_thunder_owner = 1;
     clear_battle_snapshot();
     invalidate_battle_composite_cache();
-    set_battle_phase(IB_COM_BATTLE);
+    set_battle_phase(owner == 0 ? IB_PLAYER_TOP : IB_COM_BATTLE);
 }
 
 static void draw_com_thunder_anim(void)
@@ -7117,7 +7150,9 @@ static void draw_com_thunder_anim(void)
         int fade_start = WAIFU_THUNDER_CARD_FRAMES;
         draw_support_big_art_scaled(card_x, card_y, 128, 128);
         draw_centered_text(174, "THUNDER", IDX_GOLD_HI, IDX_BLACK);
-        draw_wrapped_text_small(54, 194, "ALL PLAYER MONSTERS", 25, IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small(54, 194,
+                                g_b_thunder_owner == 0 ? "ALL COM MONSTERS" : "ALL PLAYER MONSTERS",
+                                25, IDX_WHITE, IDX_BLACK);
         if (f >= fade_start) {
             apply_black_dither_fade(Q8_ONE - q8_ratio(f - fade_start, WAIFU_THUNDER_FADE_FRAMES));
         }
@@ -7996,7 +8031,13 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             int selected_card = g_i_player_hand[g_b_selected_hand];
             if (is_support_card(selected_card)) {
                 int target = selected_or_first_live_player_slot();
-                if (is_equip_support_card(selected_card) && target >= 0 && first_free_player_equip_slot() >= 0) {
+                if (is_thunder_support_card(selected_card)) {
+                    if (count_live_com_monsters() > 0) {
+                        clear_player_fusion_queue();
+                        g_b_player_hand_intro_pending = 0;
+                        start_player_thunder(g_b_selected_hand);
+                    }
+                } else if (is_equip_support_card(selected_card) && target >= 0 && first_free_player_equip_slot() >= 0) {
                     clear_player_fusion_queue();
                     g_b_equip_hand = g_b_selected_hand;
                     g_b_selected_player_slot = target;
@@ -8314,7 +8355,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_COM_THUNDER_ANIM:
         draw_com_thunder_anim();
-        if (battle_animation_event_complete(thunder_total_frames())) finish_com_thunder();
+        if (battle_animation_event_complete(thunder_total_frames())) finish_thunder();
         break;
 
     case IB_COM_BATTLE:
@@ -10627,6 +10668,33 @@ static int debug_regression_thunder_support(void)
         is_monster_card(g_i_player_field[2]) || count_live_player_monsters() != 0) {
         fprintf(stderr, "REGRESSION thunder_support FAIL: after phase=%d guard=%d p0=%d p2=%d live=%d\n",
                 (int)g_b_phase, guard, g_i_player_field[0], g_i_player_field[2], count_live_player_monsters());
+        return 1;
+    }
+
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+    g_b_phase = IB_PLAYER_HAND;
+    g_i_player_hand[0] = SUPPORT_THUNDER_CARD_ID;
+    g_i_player_used[0] = 0;
+    g_i_com_field[0] = WAIFU_CARD_ID_ULTIMATE_GOLD_DRAGON;
+    g_i_com_faceup[0] = 1;
+    g_i_com_field[2] = WAIFU_CARD_ID_INSECT_SOLDIER;
+    g_i_com_faceup[2] = 0;
+    g_b_selected_hand = 0;
+    start_player_thunder(0);
+    if (g_b_phase != IB_COM_THUNDER_ANIM || g_b_thunder_owner != 0 ||
+        g_b_thunder_count != 2 || !g_i_player_used[0]) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: player start phase=%d owner=%d count=%d used=%d\n",
+                (int)g_b_phase, g_b_thunder_owner, g_b_thunder_count, g_i_player_used[0]);
+        return 1;
+    }
+    for (guard = 0; guard < 240 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) {
+        waifu_fm_step(&in);
+    }
+    if (g_b_phase == IB_COM_THUNDER_ANIM || is_monster_card(g_i_com_field[0]) ||
+        is_monster_card(g_i_com_field[2]) || count_live_com_monsters() != 0) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: player after phase=%d guard=%d c0=%d c2=%d live=%d\n",
+                (int)g_b_phase, guard, g_i_com_field[0], g_i_com_field[2], count_live_com_monsters());
         return 1;
     }
 
