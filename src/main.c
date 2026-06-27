@@ -3758,6 +3758,16 @@ static void draw_transition_black_hold_frame(void)
        frame while the video backend changes modes. */
     waifu_fm_use_common_palette();
     clear_screen(IDX_BLACK);
+    /* Hold the palette fully black for the whole black-hold, do NOT let it snap
+       back to full brightness here.  The PC-FX palette write lands on the VCE
+       immediately, but the cleared (black) framebuffer only reaches the screen
+       on the next KRAM page flip -- so resetting the fade to full while the
+       displayed page still holds the just-dimmed scene flashes it fully lit for
+       one frame before black.  Keeping the fade at 0 means the palette stays
+       black until the black framebuffer is actually shown.  This is the common
+       fade-to-black exit used by deck-editor, story fire/plaza, and menu
+       transitions, so the fix covers all of them. */
+    apply_black_dither_fade(0);
     frame_mark_full_dirty();
 }
 
@@ -7249,12 +7259,21 @@ static void finish_player_one_shot_support(void)
 {
     int hand = g_b_support_hand;
     int kind = g_b_support_kind;
+    int next_phase = IB_PLAYER_HAND;
     if (hand >= 0 && hand < I_HAND) {
         if (kind == 2 && g_i_player_deck_left > 0) {
+            int i;
             g_i_player_hand[hand] = next_draw_id();
             g_i_player_used[hand] = 0;
             g_b_selected_hand = hand;
-            waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
+            /* Ancient Draw: show the card being drawn off the deck via the same
+               IB_PLAYER_DRAW slide + staggered CARD_DRAWN SFX as a turn draw,
+               instead of snapping the new card straight into the hand. */
+            clear_player_fusion_queue();
+            g_b_draw_count = 0;
+            for (i = 0; i < I_HAND; ++i) g_b_draw_slots[i] = -1;
+            g_b_draw_slots[g_b_draw_count++] = hand;
+            next_phase = IB_PLAYER_DRAW;
         } else if (kind == 3) {
             g_you_lp = g_b_support_lp_to;
             g_b_selected_hand = next_live_hand_index(hand, 1);
@@ -7269,7 +7288,7 @@ static void finish_player_one_shot_support(void)
     g_b_support_lp_to = 0;
     clear_battle_snapshot();
     invalidate_battle_composite_cache();
-    set_battle_phase(IB_PLAYER_HAND);
+    set_battle_phase(next_phase);
 }
 
 static void draw_player_one_shot_support_anim(void)
