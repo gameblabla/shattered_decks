@@ -1448,13 +1448,13 @@ static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
     rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
     draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
     fmt_lp5(lpbuf, g_com_lp);
-    draw_text_small(209 + 8 + lp_ox, 9 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small(209 + lp_ox, 9 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 
     draw_panel_rect(177 + lp_ox, 23 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 25 + lp_oy, 23, 8, IDX_UI_RED);
     draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
     fmt_lp5(lpbuf, g_you_lp);
-    draw_text_small(209 + 8 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 }
 
 static void draw_hud(void)
@@ -3816,6 +3816,7 @@ static void draw_title_prompt(int f)
     if (((f / 24) & 1) == 0) {
         draw_centered_text(190, "PRESS RUN TO START", IDX_WHITE, IDX_BLACK);
     }
+    draw_centered_text(202, "(C) 2026 GAMEBLABLA", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_menu_overlay(int selected)
@@ -4758,6 +4759,7 @@ static const StoryOpponentInfo *story_opponent_info(void)
 
 static void story_return_to_map_after_duel(void);
 static void init_battle_state(void);
+static int selected_or_first_live_player_slot(void);
 static int first_free_com_slot(void);
 static int first_free_com_equip_slot(void);
 
@@ -4785,7 +4787,20 @@ static int player_can_place_monster(void)
 
 static int player_can_start_fusion(void)
 {
-    return player_can_place_monster() && !g_b_player_fused_this_turn;
+    return !g_b_player_fused_this_turn;
+}
+
+static int player_can_fusion_to_slot(int slot)
+{
+    if (slot < 0 || slot >= I_FIELD) return 0;
+    if (is_monster_card(g_i_player_field[slot])) return player_can_start_fusion();
+    return player_can_start_fusion() && player_can_place_monster();
+}
+
+static int player_hand_monster_blocked(void)
+{
+    return !player_can_place_monster() &&
+           (!player_can_start_fusion() || selected_or_first_live_player_slot() < 0);
 }
 
 static int com_can_place_monster(void)
@@ -5577,12 +5592,54 @@ static void ensure_battle_deck_rng_seeded(void)
 #endif
 }
 
+static void reseed_battle_deck_rng_for_game(uint32_t salt)
+{
+#ifdef WAIFU_FM_HEADLESS_TESTS
+    ensure_battle_deck_rng_seeded();
+#else
+    waifu_deck_rng_seed(&g_i_deck_rng, waifu_deck_runtime_seed(salt));
+    g_i_deck_rng_seeded = 1;
+#endif
+}
+
 static void sync_battle_deck_counts(void)
 {
     g_i_player_deck_left = waifu_deck_remaining(&g_i_player_deck);
     g_i_com_deck_left = waifu_deck_remaining(&g_i_com_deck);
     if (g_story_battle_active) g_story_player_deck_pos = g_i_player_deck.pos;
 }
+
+#ifndef WAIFU_FM_HEADLESS_TESTS
+static void cut_deck_by(WaifuDeck *deck, int cut)
+{
+    int tmp[WAIFU_DECK_SIZE];
+    int i;
+    if (!deck || deck->count <= 1) return;
+    cut %= deck->count;
+    if (cut < 0) cut += deck->count;
+    if (cut == 0) return;
+    for (i = 0; i < deck->count; ++i) tmp[i] = deck->cards[(i + cut) % deck->count];
+    for (i = 0; i < deck->count; ++i) deck->cards[i] = tmp[i];
+    deck->pos = 0;
+}
+
+static void randomize_battle_opening_decks(uint32_t salt)
+{
+    for (int pass = 0; pass < 4; ++pass) {
+        WaifuDeckRng local_rng;
+        uint32_t seed = waifu_deck_runtime_seed(salt ^
+                                                ((uint32_t)g_i_frame << 1) ^
+                                                ((uint32_t)g_story_scene_anim_frame << 9) ^
+                                                ((uint32_t)pass * 0x9e3779b9u) ^
+                                                waifu_deck_rng_next(&g_i_deck_rng));
+        waifu_deck_rng_seed(&local_rng, seed);
+        waifu_deck_shuffle(&g_i_player_deck, &local_rng);
+        cut_deck_by(&g_i_player_deck, (int)(waifu_deck_rng_next(&local_rng) % WAIFU_DECK_SIZE));
+        waifu_deck_shuffle(&g_i_com_deck, &local_rng);
+        cut_deck_by(&g_i_com_deck, (int)(waifu_deck_rng_next(&local_rng) % WAIFU_DECK_SIZE));
+    }
+}
+#endif
 
 
 static void recalc_story_deck_counts(void);
@@ -5657,6 +5714,28 @@ static void story_repair_generated_support_floor(int *seed)
     }
 }
 
+/* Starting playthrough decks must not contain any monster stronger than this. */
+#define STORY_STARTER_MAX_MONSTER_ATK 2000
+
+/* Pick a random monster whose ATK is within [min_atk, STORY_STARTER_MAX_MONSTER_ATK].
+   Used so the generated starter deck never rolls a high-ATK boss monster. */
+static int story_pick_capped_monster(int *seed, int min_atk)
+{
+    int fallback = -1;
+    for (int tries = 0; tries < 64; ++tries) {
+        int card = (int)(story_prng_next(seed) % WAIFU_CARD_COUNT);
+        int a = (int)waifu_card_atk[card];
+        if (a > STORY_STARTER_MAX_MONSTER_ATK) continue;
+        if (a >= min_atk) return card;
+        if (fallback < 0) fallback = card;
+    }
+    if (fallback >= 0) return fallback;
+    for (int card = 0; card < WAIFU_CARD_COUNT; ++card) {
+        if ((int)waifu_card_atk[card] <= STORY_STARTER_MAX_MONSTER_ATK) return card;
+    }
+    return 0;
+}
+
 static void generate_story_starter_deck(void)
 {
 #ifdef WAIFU_FM_HEADLESS_TESTS
@@ -5665,7 +5744,8 @@ static void generate_story_starter_deck(void)
     int seed = (int)(waifu_deck_runtime_seed((uint32_t)story_hash_name()) & 0x7fffffffu);
     if (seed == 0) seed = 17;
 #endif
-    int strong = waifu_story_starter_strong_pool[story_prng_next(&seed) % WAIFU_STORY_STARTER_STRONG_POOL_COUNT];
+    /* Keep the opener a capable monster, but capped so it never exceeds 2000 ATK. */
+    int strong = story_pick_capped_monster(&seed, 1700);
     int weak = waifu_story_starter_weak_pool[story_prng_next(&seed) % WAIFU_STORY_STARTER_WEAK_POOL_COUNT];
     int idx = 0;
 
@@ -5697,9 +5777,7 @@ static void generate_story_starter_deck(void)
         } else if (roll < 82) {
             card = WAIFU_CARD_COUNT + (story_prng_next(&seed) % SUPPORT_STANDARD_CARD_VARIANTS);
         } else {
-            int mid = story_prng_next(&seed) % WAIFU_CARD_COUNT;
-            if (mid == strong) mid = (mid + 5) % WAIFU_CARD_COUNT;
-            card = mid;
+            card = story_pick_capped_monster(&seed, 0);
         }
         (void)story_append_limited_card(&idx, card);
     }
@@ -6504,7 +6582,7 @@ static void init_battle_state(void)
 #ifdef WAIFU_FM_HEADLESS_TESTS
     g_i_headless_draw_seed = 17;
 #endif
-    ensure_battle_deck_rng_seeded();
+    reseed_battle_deck_rng_for_game(0x4241544cu ^ (uint32_t)g_i_frame ^ ((uint32_t)g_b_turns << 12));
 #ifdef WAIFU_FM_HEADLESS_TESTS
     waifu_deck_build_headless_battle(&g_i_player_deck, hand_ids, 17);
     waifu_deck_build_headless_battle(&g_i_com_deck, com_hand_ids, 73);
@@ -6517,6 +6595,7 @@ static void init_battle_state(void)
 #else
     waifu_deck_build_random(&g_i_player_deck, &g_i_deck_rng, 0);
     waifu_deck_build_random(&g_i_com_deck, &g_i_deck_rng, 1);
+    randomize_battle_opening_decks(0x52414e44u);
     for (i = 0; i < I_HAND; ++i) {
         g_i_player_hand[i] = waifu_deck_draw(&g_i_player_deck);
         g_i_player_used[i] = 0;
@@ -6631,13 +6710,16 @@ static void init_story_battle_state(void)
     init_battle_state();
     g_story_battle_active = 1;
     g_story_player_deck_pos = 0;
-    ensure_battle_deck_rng_seeded();
+    reseed_battle_deck_rng_for_game(0x53544f52u ^ (uint32_t)story_hash_name() ^
+                                    ((uint32_t)g_story_duel_index << 16) ^ (uint32_t)g_i_frame);
 #ifdef WAIFU_FM_HEADLESS_TESTS
     waifu_deck_build_from_list(&g_i_player_deck, g_story_player_deck, g_story_deck_count, &g_i_deck_rng, 0);
     waifu_deck_build_opponent_story(&g_i_com_deck, g_story_duel_index, &g_i_deck_rng, 0);
 #else
     waifu_deck_build_from_list(&g_i_player_deck, g_story_player_deck, g_story_deck_count, &g_i_deck_rng, 1);
     waifu_deck_build_opponent_story(&g_i_com_deck, g_story_duel_index, &g_i_deck_rng, 1);
+    randomize_battle_opening_decks(0x53544f52u ^ (uint32_t)story_hash_name() ^
+                                   ((uint32_t)g_story_duel_index << 16));
 #endif
     for (int i = 0; i < I_HAND; ++i) {
         g_i_player_hand[i] = next_draw_id();
@@ -6683,7 +6765,7 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
         }
         if (g_i_player_used[i]) continue;
         PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
-                                 is_monster_card(g_i_player_hand[i]) && !player_can_place_monster()));
+                                 is_monster_card(g_i_player_hand[i]) && player_hand_monster_blocked()));
         if (!suppress_cursor && i == selected) draw_red_cursor(x, y, 38, 50);
         if (!suppress_cursor) {
             int order = player_fusion_order_for_slot(i);
@@ -7737,7 +7819,7 @@ static void draw_player_hand_turn_draw(int f, int selected)
             y = 154 + rise;
         }
         PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
-                                 is_monster_card(g_i_player_hand[i]) && !player_can_place_monster()));
+                                 is_monster_card(g_i_player_hand[i]) && player_hand_monster_blocked()));
         if (f >= WAIFU_PCFX_DRAW_FRAMES && i == selected) draw_red_cursor(x, y, 38, 50);
     }
     PROFILE_HAND_END();
@@ -8420,7 +8502,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         g_b_fusion_target_slot = g_b_top_col;
         if (press_a) {
             int target = g_b_top_col;
-            if (target >= 0 && target < I_FIELD && player_can_start_fusion()) {
+            if (player_can_fusion_to_slot(target)) {
                 if (prepare_player_fusion_anim(target)) {
                     set_battle_phase(IB_PLAYER_FUSION_ANIM);
                     break;
@@ -11187,6 +11269,11 @@ static int debug_regression_fusion_equip_only(void)
         g_i_player_used[1] = 0;
         g_b_player_monster_played_this_turn = 1;
         clear_player_fusion_queue();
+        if (!player_can_fusion_to_slot(0) || player_can_fusion_to_slot(1)) {
+            fprintf(stderr, "REGRESSION fusion_occupied_equip FAIL: target gates occupied=%d empty=%d\n",
+                    player_can_fusion_to_slot(0), player_can_fusion_to_slot(1));
+            return 1;
+        }
         if (try_queue_player_fusion_slot(0) != 1 || try_queue_player_fusion_slot(1) != 2) {
             fprintf(stderr, "REGRESSION fusion_occupied_equip FAIL: queue_count=%d\n", g_b_fusion_count);
             return 1;

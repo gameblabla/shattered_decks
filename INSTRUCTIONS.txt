@@ -5,8 +5,6 @@ use pcfx-headless to run the game (you can start first with headless executable 
 
 The following is still unfixed.
 
-❯ I want you to make the fusion for Seraphina a bit different = She can only be gotten if fused with 2 WATER monsters that have 2000 ATK equal or higher. 2250 + 1750 does not work to get seraphina. Also, if you fuse instead two water monsters below 2000 ATK, you instead get a 2000 ATK water monster.
-
-> For sanctum screen, apply horizontal scroll to RAINBOW using the rainbow horizontall scroll register (see pcfxemu/ for context)
+> For sanctum screen, apply horizontal scroll to RAINBOW using the rainbow horizontall scroll register to scroll alongside movement for 3D object back and forth. (see pcfxemu/ for context)
 
 Update AGENTS.md once fixed, git commit your changes unsigned.

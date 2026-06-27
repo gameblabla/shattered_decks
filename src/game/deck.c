@@ -61,13 +61,22 @@ static int deck_append_limited(WaifuDeck *deck, int card, int max_copies)
 
 uint32_t waifu_deck_runtime_seed(uint32_t salt)
 {
+    static uint32_t runtime_seed_counter = 0u;
     uintptr_t stack_mix = (uintptr_t)&salt;
-    uint32_t s = salt ^ (uint32_t)time(NULL) ^ ((uint32_t)clock() << 11);
+    uintptr_t code_mix = (uintptr_t)&waifu_deck_runtime_seed;
+    uint32_t s = salt ^ 0xa5f1523du;
+    s ^= (uint32_t)time(NULL);
+    s ^= deck_rotl32((uint32_t)clock(), 11);
+    s ^= deck_mix32(++runtime_seed_counter + 0x9e3779b9u);
     s ^= (uint32_t)(stack_mix >> 4);
     s ^= (uint32_t)(stack_mix >> 19);
+    s ^= (uint32_t)(code_mix >> 3);
+    s ^= (uint32_t)(code_mix >> 17);
 #if defined(WAIFU_FM_PCFX)
-    s ^= pcfx_entropy_seed_material();
-    s = deck_rotl32(s, 7) ^ pcfx_entropy_seed_material();
+    for (int i = 0; i < 8; ++i) {
+        s ^= pcfx_entropy_seed_material() + 0x9e3779b9u + (uint32_t)i;
+        s = deck_rotl32(s, 7) ^ deck_mix32(s + pcfx_entropy_seed_material());
+    }
 #endif
     s = deck_mix32(s);
     if (s == 0u) s = 0x6d2b79f5u;
