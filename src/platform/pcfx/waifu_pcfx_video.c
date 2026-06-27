@@ -1099,6 +1099,8 @@ static WaifuPcfxVdcBackground g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
 static int g_rainbow_backdrop_requested;
 static int g_rainbow_backdrop_active;
 static int g_rainbow_transfer_armed;
+static int g_rainbow_hscroll;
+static int g_rainbow_hscroll_requested;
 static WaifuPcfxSanctumBackdrop g_rainbow_backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_DESERT;
 static int g_sanctum_requested;
 static int g_sanctum_active;
@@ -1418,19 +1420,35 @@ static void pcfx_rainbow_setup(void)
 {
 #if defined(__v810__)
     uint16_t zero = 0;
+    uint16_t control = 3;
     __asm__ volatile (
-        "out.h %[zero],0x200[r0]\n"
-        "out.h %[zero],0x202[r0]\n"
+        "out.b %[zero],0x200[r0]\n"
+        "out.b %[zero],0x202[r0]\n"
         "movea -128,r0,r10\n"
         "out.h r10,0x208[r0]\n"
         "out.h %[zero],0x20c[r0]\n"
         "out.h %[zero],0x210[r0]\n"
         "out.h %[zero],0x214[r0]\n"
-        "movea 1,r0,r10\n"
-        "out.h r10,0x204[r0]\n"
+        "out.h %[control],0x204[r0]\n"
         :
-        : [zero] "r" (zero)
+        : [zero] "r" (zero), [control] "r" (control)
         : "r10", "memory");
+#endif
+}
+
+static void pcfx_rainbow_set_hscroll(int hscroll)
+{
+#if defined(__v810__)
+    uint16_t lo = (uint16_t)(hscroll & 0xff);
+    uint16_t hi = (uint16_t)((hscroll >> 8) & 0x01);
+    __asm__ volatile (
+        "out.b %[lo],0x200[r0]\n"
+        "out.b %[hi],0x202[r0]\n"
+        :
+        : [lo] "r" (lo), [hi] "r" (hi)
+        : "memory");
+#else
+    (void)hscroll;
 #endif
 }
 
@@ -1535,6 +1553,7 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
         pcfx_rainbow_setup();
         pcfx_rainbow_start_transfer();
     }
+    pcfx_rainbow_set_hscroll(g_rainbow_hscroll_requested ? g_rainbow_hscroll : 0);
     g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
     eris_king_set_bg_prio(KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
     eris_king_set_bg_mode(KING_BGMODE_NONE, 0, 0, 0);
@@ -1597,6 +1616,7 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
         pcfx_rainbow_setup();
         pcfx_rainbow_start_transfer();
     }
+    pcfx_rainbow_set_hscroll(g_rainbow_hscroll_requested ? g_rainbow_hscroll : 0);
     g_rainbow_backdrop_active = 1;
     g_sanctum_active = 0;
 }
@@ -2319,6 +2339,14 @@ void waifu_pcfx_video_request_rainbow_backdrop(WaifuPcfxSanctumBackdrop backdrop
 {
     g_rainbow_backdrop = backdrop;
     g_rainbow_backdrop_requested = 1;
+    g_rainbow_hscroll = 0;
+    g_rainbow_hscroll_requested = 1;
+}
+
+void waifu_pcfx_video_request_rainbow_hscroll(int hscroll)
+{
+    g_rainbow_hscroll = hscroll & 0x01ff;
+    g_rainbow_hscroll_requested = 1;
 }
 
 void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)

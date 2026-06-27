@@ -1434,7 +1434,7 @@ static void draw_story_dialog_box(const char *speaker, const char *subhead, cons
 }
 
 static void fmt_i32_dec(char *dst, int dst_size, int value);
-static void fmt_lp4(char out[5], int value);
+static void fmt_lp5(char out[6], int value);
 static void fmt_prefixed_i32(char *dst, int dst_size, char prefix, int value);
 
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
@@ -1447,14 +1447,14 @@ static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
     draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
     draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
-    fmt_lp4(lpbuf, g_com_lp);
-    draw_text_small(209 + lp_ox, 9 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
+    fmt_lp5(lpbuf, g_com_lp);
+    draw_text_small(209 + 8 + lp_ox, 9 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 
     draw_panel_rect(177 + lp_ox, 23 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 25 + lp_oy, 23, 8, IDX_UI_RED);
     draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
-    fmt_lp4(lpbuf, g_you_lp);
-    draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
+    fmt_lp5(lpbuf, g_you_lp);
+    draw_text_small(209 + 8 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 }
 
 static void draw_hud(void)
@@ -1502,20 +1502,20 @@ static void fmt_i32_dec(char *dst, int dst_size, int value)
     }
 }
 
-static void fmt_lp4(char out[5], int value)
+static void fmt_lp5(char out[6], int value)
 {
     char tmp[12];
     int len = 0;
     int pad;
     fmt_i32_dec(tmp, (int)sizeof(tmp), value);
     while (tmp[len]) ++len;
-    if (len > 4) {
-        out[0] = tmp[len - 4]; out[1] = tmp[len - 3]; out[2] = tmp[len - 2]; out[3] = tmp[len - 1]; out[4] = '\0';
+    if (len > 5) {
+        out[0] = tmp[len - 5]; out[1] = tmp[len - 4]; out[2] = tmp[len - 3]; out[3] = tmp[len - 2]; out[4] = tmp[len - 1]; out[5] = '\0';
         return;
     }
-    for (pad = 0; pad < 4 - len; ++pad) out[pad] = ' ';
+    for (pad = 0; pad < 5 - len; ++pad) out[pad] = ' ';
     for (int i = 0; i < len; ++i) out[pad + i] = tmp[i];
-    out[4] = '\0';
+    out[5] = '\0';
 }
 
 static void fmt_prefixed_i32(char *dst, int dst_size, char prefix, int value)
@@ -4919,11 +4919,44 @@ static void fusion_keep_hand_equips(int equips[I_FIELD], int equip_srcs[I_FIELD]
     *equip_count = out;
 }
 
+static int player_fusion_should_resolve_hand_before_field(int field_card)
+{
+    int i;
+    int current = CARD_NONE;
+    int performed_fusion = 0;
+    int failed_pair = 0;
+    if (!is_monster_card(field_card)) return 0;
+
+    for (i = 0; i < g_b_fusion_count; ++i) {
+        int slot = g_b_fusion_hand_slots[i];
+        int card;
+        if (slot < 0 || slot >= I_HAND || g_i_player_used[slot]) return 0;
+        card = g_i_player_hand[slot];
+        if (!is_monster_card(card)) continue;
+        if (!is_monster_card(current)) {
+            current = card;
+        } else {
+            int fused = fusion_result_for_cards(current, card);
+            if (is_monster_card(fused)) {
+                current = fused;
+                performed_fusion = 1;
+            } else {
+                current = card;
+                failed_pair = 1;
+            }
+        }
+    }
+
+    return performed_fusion && !failed_pair && is_monster_card(current) &&
+           is_monster_card(fusion_result_for_cards(current, field_card));
+}
+
 static int prepare_player_fusion_anim(int target_slot)
 {
     int i, j;
     int out = 0;
     int field_card = CARD_NONE;
+    int hand_before_field = 0;
     int current = CARD_NONE;
     int current_source = -1;
     int current_from_fusion = 0;
@@ -4960,6 +4993,9 @@ static int prepare_player_fusion_anim(int target_slot)
     g_b_fusion_anim_target_slot = target_slot;
     g_b_fusion_anim_has_field_card = is_monster_card(field_card);
     if (g_b_fusion_anim_has_field_card) {
+        hand_before_field = player_fusion_should_resolve_hand_before_field(field_card);
+    }
+    if (g_b_fusion_anim_has_field_card && !hand_before_field) {
         g_b_fusion_anim_slots[out] = FUSION_FIELD_SLOT;
         g_b_fusion_anim_cards[out] = field_card;
         ++out;
@@ -4971,6 +5007,12 @@ static int prepare_player_fusion_anim(int target_slot)
         if (out >= FUSION_MAX_MATERIALS) return 0;
         g_b_fusion_anim_slots[out] = slot;
         g_b_fusion_anim_cards[out] = g_i_player_hand[slot];
+        ++out;
+    }
+    if (g_b_fusion_anim_has_field_card && hand_before_field) {
+        if (out >= FUSION_MAX_MATERIALS) return 0;
+        g_b_fusion_anim_slots[out] = FUSION_FIELD_SLOT;
+        g_b_fusion_anim_cards[out] = field_card;
         ++out;
     }
 
@@ -9420,14 +9462,17 @@ static void draw_void_sky(void)
 
 #ifdef WAIFU_FM_PCFX
 static WaifuPcfxSanctumBackdrop story_pcfx_sanctum_backdrop(void);
+static int story_pcfx_rainbow_hscroll(int f);
 #endif
 
-static void draw_story_sky(void)
+static void draw_story_sky(int f)
 {
 #ifdef WAIFU_FM_PCFX
     waifu_pcfx_video_request_rainbow_backdrop(story_pcfx_sanctum_backdrop());
+    waifu_pcfx_video_request_rainbow_hscroll(story_pcfx_rainbow_hscroll(f));
     clear_screen(0);
 #else
+    (void)f;
     switch (story_scene_kind()) {
     case STORY_SCENE_TEMPLE:  draw_temple_sky();  break;
     case STORY_SCENE_VOLCANO: draw_volcano_sky(); break;
@@ -9457,6 +9502,18 @@ static WaifuPcfxSanctumBackdrop story_pcfx_sanctum_backdrop(void)
     default:                  return WAIFU_PCFX_SANCTUM_BACKDROP_DESERT;
     }
 }
+
+static int story_pcfx_rainbow_hscroll(int f)
+{
+    int32_t phase;
+    switch (story_scene_kind()) {
+    case STORY_SCENE_TEMPLE:  phase = f * Q8_FRAC(22,1000); break;
+    case STORY_SCENE_VOLCANO: phase = f * Q8_FRAC(24,1000); break;
+    case STORY_SCENE_VOID:    phase = f * Q8_FRAC(20,1000); break;
+    default:                  phase = f * Q8_FRAC(25,1000); break;
+    }
+    return q8_to_int(q8_mul(Q8_FROM_INT(4), q8_sin_rad(phase))) & 0x01ff;
+}
 #endif
 
 static void draw_story_sanctum_background(void)
@@ -9465,7 +9522,7 @@ static void draw_story_sanctum_background(void)
        status, and save-device screens each reset g_i_frame to 0 on entry, which
        made the 3D scene visibly snap/reset behind the panels.  A continuous
        frame keeps the scene steady across those sub-screens. */
-    draw_story_sky();
+    draw_story_sky(g_story_scene_anim_frame);
     draw_story_scene_3d(g_story_scene_anim_frame);
 }
 
@@ -9482,7 +9539,7 @@ static const char *story_scene_name(void)
 static void draw_story_map_screen_content(int f)
 {
     char line[96];
-    draw_story_sky();
+    draw_story_sky(f);
     draw_story_scene_3d(f);
     draw_panel_rect(126, 146, 121, 76, IDX_UI_DARK);
     draw_text_small(135, 155, "DESTINATION", IDX_GOLD_HI, IDX_BLACK);
@@ -9624,7 +9681,7 @@ static void draw_story_plaza_scene_content(int anim_frame)
 
     waifu_fm_use_dialogue_palette();
     clear_screen(IDX_BLACK);
-    draw_story_sky();
+    draw_story_sky(anim_frame);
     draw_story_scene_3d(anim_frame);
     draw_panel_rect(8, 8, 102, 18, IDX_UI_DARK);
     draw_text_small(14, 14, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);
@@ -11154,6 +11211,52 @@ static int debug_regression_fusion_equip_only(void)
         }
         printf("REGRESSION fusion_occupied_equip OK field=%d equip=%d atk_bonus=%d\n",
                g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0]);
+    }
+
+    /* Occupied-zone chain fusion: two weak WATER hand monsters first assemble
+       into Thalassa, then combine with the field Thalassa into Seraphina. */
+    {
+        int k;
+        debug_setup_fusion_equip_scenario("fusion-then-equip");
+        for (k = 0; k < I_HAND; ++k) g_i_player_used[k] = 1;
+        g_i_player_field[0] = WAIFU_CARD_ID_SEA_SERPENT;
+        g_i_player_faceup[0] = 1;
+        g_i_player_defense[0] = 0;
+        g_i_player_atk_bonus[0] = 0;
+        g_i_player_def_bonus[0] = 0;
+        g_i_player_hand[0] = WAIFU_CARD_ID_PENGUIN;
+        g_i_player_hand[1] = WAIFU_CARD_ID_SLIME;
+        g_i_player_used[0] = 0;
+        g_i_player_used[1] = 0;
+        g_b_player_monster_played_this_turn = 1;
+        clear_player_fusion_queue();
+        if (try_queue_player_fusion_slot(0) != 1 || try_queue_player_fusion_slot(1) != 2) {
+            fprintf(stderr, "REGRESSION fusion_occupied_thalassa_chain FAIL: queue_count=%d\n", g_b_fusion_count);
+            return 1;
+        }
+        if (!prepare_player_fusion_anim(0)) {
+            fprintf(stderr, "REGRESSION fusion_occupied_thalassa_chain FAIL: prepare failed\n");
+            return 1;
+        }
+        if (!g_b_fusion_anim_success ||
+            g_b_fusion_anim_final_card != WAIFU_CARD_ID_ANGEL_FISHWOMAN) {
+            fprintf(stderr, "REGRESSION fusion_occupied_thalassa_chain FAIL: success=%d final=%d expected=%d\n",
+                    g_b_fusion_anim_success,
+                    g_b_fusion_anim_final_card,
+                    WAIFU_CARD_ID_ANGEL_FISHWOMAN);
+            return 1;
+        }
+        finish_player_fusion_anim();
+        if (g_i_player_field[0] != WAIFU_CARD_ID_ANGEL_FISHWOMAN ||
+            !g_i_player_used[0] || !g_i_player_used[1]) {
+            fprintf(stderr, "REGRESSION fusion_occupied_thalassa_chain FAIL: field=%d used=%d/%d expected=%d\n",
+                    g_i_player_field[0],
+                    g_i_player_used[0],
+                    g_i_player_used[1],
+                    WAIFU_CARD_ID_ANGEL_FISHWOMAN);
+            return 1;
+        }
+        printf("REGRESSION fusion_occupied_thalassa_chain OK field=%d\n", g_i_player_field[0]);
     }
 
     /* Equip queued BEFORE a later fusion in the chain (chain order
