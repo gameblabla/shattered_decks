@@ -1,8 +1,12 @@
 I have this yugioh type of game that has lots of problems.
+The game is headless,SDL 1.2 but also supports PC-FX, use pcfx_headless for testing the game headless on the .cue file.
 
-Fixed:
-- Changing position of a card on the field no longer flips it face-up. A face-down card stays face-down when toggled to defense and back.
-- Defense-position field cards no longer have a distorted aspect ratio; the quad half-extents swap so the rotated 38x54 texture keeps its proportions.
-- Pyramid screen: removed the 2D screen-space diamond shadow, switched faces to stone tile for contrast with the sand, fixed texture-flip during camera orbit (per-face flip), added solid backings (fill_tri_inclusive) to cover ridge gaps, and added a dark base slab to close the ground seam.
+use pcfx-headless to run the game (you can start first with headless executable for pc etc...).
+
+The following is still unfixed.
+
+❯ I want you to make the fusion for Seraphina a bit different = She can only be gotten if fused with 2 WATER monsters that have 2000 ATK equal or higher. 2250 + 1750 does not work to get seraphina. Also, if you fuse instead two water monsters below 2000 ATK, you instead get a 2000 ATK water monster.
+
+> For sanctum screen, apply horizontal scroll to RAINBOW using the rainbow horizontall scroll register (see pcfxemu/ for context)
 
 Update AGENTS.md once fixed, git commit your changes unsigned.

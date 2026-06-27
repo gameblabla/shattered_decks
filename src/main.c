@@ -385,7 +385,10 @@ static int fusion_result_for_cards(int a, int b)
     if (is_monster_card(a) && is_monster_card(b) &&
         strcmp(waifu_card_attr[a], "Water") == 0 &&
         strcmp(waifu_card_attr[b], "Water") == 0) {
-        return WAIFU_CARD_ID_ANGEL_FISHWOMAN;
+        int atk_a = (int)waifu_card_atk[a];
+        int atk_b = (int)waifu_card_atk[b];
+        if (atk_a >= 2000 && atk_b >= 2000) return WAIFU_CARD_ID_ANGEL_FISHWOMAN;
+        if (atk_a < 2000 && atk_b < 2000) return WAIFU_CARD_ID_SEA_SERPENT;
     }
     return -1;
 }
@@ -10801,6 +10804,9 @@ static int debug_regression_thunder_support(void)
     int thunder_count[3] = {0, 0, 0};
     int final_angel_count = 0;
     int final_opening_thunder = 0;
+    int weak_water_fusion = 0;
+    int mixed_water_fusion = 0;
+    int strong_water_fusion = 0;
     int random_player_thunder = 0;
     int random_com_thunder = 0;
     int guard;
@@ -10828,11 +10834,19 @@ static int debug_regression_thunder_support(void)
         fprintf(stderr, "REGRESSION thunder_support FAIL: final opening hand has no thunder\n");
         return 1;
     }
+    weak_water_fusion = fusion_result_for_cards(WAIFU_CARD_ID_PENGUIN, WAIFU_CARD_ID_SLIME);
+    mixed_water_fusion = fusion_result_for_cards(WAIFU_CARD_ID_THIN_BLUE_DRAGON, WAIFU_CARD_ID_EEL);
+    strong_water_fusion = fusion_result_for_cards(WAIFU_CARD_ID_SEA_SERPENT, WAIFU_CARD_ID_THIN_BLUE_DRAGON);
     if (final_angel_count <= 0 ||
-        fusion_result_for_cards(WAIFU_CARD_ID_PENGUIN, WAIFU_CARD_ID_SLIME) != WAIFU_CARD_ID_ANGEL_FISHWOMAN) {
-        fprintf(stderr, "REGRESSION thunder_support FAIL: angel final_count=%d water_fusion=%d expected=%d\n",
+        weak_water_fusion != WAIFU_CARD_ID_SEA_SERPENT ||
+        mixed_water_fusion != -1 ||
+        strong_water_fusion != WAIFU_CARD_ID_ANGEL_FISHWOMAN) {
+        fprintf(stderr, "REGRESSION thunder_support FAIL: angel final_count=%d weak_water=%d expected=%d mixed_water=%d expected=-1 strong_water=%d expected=%d\n",
                 final_angel_count,
-                fusion_result_for_cards(WAIFU_CARD_ID_PENGUIN, WAIFU_CARD_ID_SLIME),
+                weak_water_fusion,
+                WAIFU_CARD_ID_SEA_SERPENT,
+                mixed_water_fusion,
+                strong_water_fusion,
                 WAIFU_CARD_ID_ANGEL_FISHWOMAN);
         return 1;
     }

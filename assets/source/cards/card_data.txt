@@ -58,7 +58,7 @@ card|ThinBlueDragon|Cyanthra, Azure Serpent|Dragon|Water|2250|1700|A water drago
 card|Unicorn|Elysera, Moon Unicorn|Beast|Light|2000|2200|A light beast with balanced elite stats.
 card|WhiteWhale|Belugaia, White Whale|Sea Serpent|Water|2100|2300|A water sea serpent with heavy defense.
 card|ZombieWoman|Morbella, Mummy Queen|Zombie|Dark|2150|2000|A dark zombie ruler for advanced decks.
-card|AngelFishwoman|Seraphina, Angel Fishwoman|Fish|Water|3200|2600|The strongest water guardian; two Water monsters can fuse into her.
+card|AngelFishwoman|Seraphina, Angel Fishwoman|Fish|Water|3200|2600|The strongest water guardian; two strong Water monsters can fuse into her.
 
 # Pools:
 # pool|name|asset_id,asset_id,...

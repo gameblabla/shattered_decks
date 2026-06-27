@@ -74431,7 +74431,7 @@ static const char *waifu_card_desc[WAIFU_CARD_COUNT] = {
     "A light beast with balanced elite stats.",
     "A water sea serpent with heavy defense.",
     "A dark zombie ruler for advanced decks.",
-    "The strongest water guardian; two Water monsters can fuse into her.",
+    "The strongest water guardian; two strong Water monsters can fuse into her.",
 };
 static const uint16_t waifu_card_atk[WAIFU_CARD_COUNT] = {1900,1450,1650,1600,1700,1800,1200,1500,2400,1900,1750,1800,1600,1700,2200,1500,1850,1700,1800,1150,950,1550,1600,900,1450,1300,1600,2000,2300,800,1200,2100,1400,2200,1100,1000,2300,3000,1800,1800,2600,1900,2000,1000,2450,1700,2100,2000,2350,2800,1650,1750,1900,1600,2250,2000,2100,2150,3200};
 static const uint16_t waifu_card_def[WAIFU_CARD_COUNT] = {1600,1200,1900,1300,1500,1200,1800,1250,2000,1400,1400,1650,2300,1600,1900,1700,1500,2100,1800,900,1400,1350,2000,700,1700,1600,1500,1700,2100,2000,1000,2500,1800,2600,2200,2200,1800,2500,1600,2200,2100,1700,1800,1000,1850,1600,1500,1800,2100,2400,1900,1450,1400,1200,1700,2200,2300,2000,2600};
