@@ -5,9 +5,10 @@
 #include <stdint.h>
 
 #define WAIFU_PCFX_SFX_ADPCM_RATE 16000
-#define WAIFU_PCFX_SFX_ADPCM_BANK_BYTES 32768u
-#define WAIFU_PCFX_SFX_ADPCM_BANK_WORDS 16384u
-#define WAIFU_PCFX_SFX_ADPCM_KRAM_BASE_WORD 0u
+#define WAIFU_PCFX_SFX_ADPCM_BANK_BYTES 40960u
+#define WAIFU_PCFX_SFX_ADPCM_BANK_WORDS 20480u
+#define WAIFU_PCFX_SFX_ADPCM_KRAM_BASE_WORD 0x20000u
+#define WAIFU_PCFX_SFX_ADPCM_META_COUNT 10u
 
 typedef struct WaifuPcfxSfxAdpcmMeta {
     uint32_t start_word;
@@ -23,7 +24,9 @@ static const WaifuPcfxSfxAdpcmMeta waifu_pcfx_sfx_adpcm_meta[] = {
     /* 4: CARD_DESTROYED */ { 5376u, 3816u, 58u },
     /* 5: TURN_PASSED */ { 9216u, 5952u, 50u },
     /* 6: YOU_LOST */ { 0u, 0u, 0u },
-    /* 7: LASER_SHOOT */ { 15360u, 279u, 56u },
+    /* 7: LASER_SHOOT */ { 15360u, 1072u, 56u },
+    /* 8: DIRECT_HIT */ { 16640u, 1072u, 56u },
+    /* 9: CARD_DRAWN */ { 17920u, 1858u, 54u },
 };
 
 #endif /* WAIFU_PCFX_SFX_ADPCM_H */

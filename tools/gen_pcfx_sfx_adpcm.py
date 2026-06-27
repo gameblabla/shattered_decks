@@ -21,9 +21,12 @@ SRC_RATE = 44100
 DST_RATE = 16000
 ALIGN_WORDS = 256
 ALIGN_BYTES = ALIGN_WORDS * 2
+# RAINBOW stills and the 8bpp/16M frame surfaces also live in KING KRAM page 1.
+# Keep ADPCM above those regions and aligned to the hardware start register's
+# 256-word granularity so video/RAINBOW reloads cannot overwrite resident SFX.
+KRAM_BASE_WORD = 0x20000
 
-# Must match WaifuSoundEffect enum order.  YOU_LOST is intentionally omitted:
-# result-loss audio is CD-DA, not an in-game SFX sample.
+# Must match WaifuSoundEffect enum order in src/game/sounds.h.
 SOUNDS = [
     ("SELECT", "Select.wav", 44),
     ("CONFIRM", "Confirm.wav", 54),
@@ -32,7 +35,9 @@ SOUNDS = [
     ("CARD_DESTROYED", "CardDestroyed.wav", 58),
     ("TURN_PASSED", "TurnPassed.wav", 50),
     ("YOU_LOST", None, 0),
-    ("LASER_SHOOT", "laserShoot.wav", 56),
+    ("LASER_SHOOT", "SlashAttack.wav", 56),
+    ("DIRECT_HIT", "SlashAttack.wav", 56),
+    ("CARD_DRAWN", "CardDrawn.wav", 54),
 ]
 
 STEP_SIZES = [
@@ -151,7 +156,8 @@ def main() -> int:
         f.write(f"#define WAIFU_PCFX_SFX_ADPCM_RATE {DST_RATE}\n")
         f.write(f"#define WAIFU_PCFX_SFX_ADPCM_BANK_BYTES {len(bank)}u\n")
         f.write(f"#define WAIFU_PCFX_SFX_ADPCM_BANK_WORDS {len(bank)//2}u\n")
-        f.write("#define WAIFU_PCFX_SFX_ADPCM_KRAM_BASE_WORD 0u\n\n")
+        f.write(f"#define WAIFU_PCFX_SFX_ADPCM_KRAM_BASE_WORD 0x{KRAM_BASE_WORD:04X}u\n")
+        f.write(f"#define WAIFU_PCFX_SFX_ADPCM_META_COUNT {len(SOUNDS)}u\n\n")
         f.write("typedef struct WaifuPcfxSfxAdpcmMeta {\n")
         f.write("    uint32_t start_word;\n")
         f.write("    uint32_t word_count;\n")

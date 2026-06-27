@@ -27,11 +27,14 @@ int main(void)
         waifu_pcfx_video_wait_vblank(video);
 
         WaifuFmMusicTrack music = waifu_fm_audio_music_track();
-        if (music == WAIFU_FM_MUSIC_TITLE && !waifu_assets_title_ready()) {
+        if (music == WAIFU_FM_MUSIC_TITLE &&
+            (!waifu_assets_title_ready() ||
+             waifu_fm_palette_id() != WAIFU_FM_PALETTE_TITLE ||
+             waifu_fm_video_fade_q8() < 256)) {
             /* Returning to the title evicts battle/story assets and reloads title
-               data from CD.  Keep CD-DA silent until that load is complete so the
-               drive cannot start a short wrong-track burst before the first real
-               title frame. */
+               data from CD.  Keep CD-DA silent until the title is loaded,
+               presented through the title path, and fully faded in so the drive
+               cannot start a short burst under loading/black frames. */
             music = WAIFU_FM_MUSIC_NONE;
         }
         if (music != last_music) {

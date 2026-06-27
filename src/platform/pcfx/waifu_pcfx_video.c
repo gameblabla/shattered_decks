@@ -256,10 +256,10 @@ static inline __attribute__((always_inline)) void pcfx_king_set_bg_kram_page_inl
 {
 #if defined(__v810__)
     uint32_t reg;
-    uint32_t ps = 0x01000000u | g_king_page_setting_extra | (page ? 0x00000100u : 0u);
+    uint32_t ps = 0x00000100u | g_king_page_setting_extra | (page ? 0x00000010u : 0u);
     /* Preserve ADPCM page 1 and any active RAINBOW page selection while flipping
-       the KING BG page.  pcfxemu's RAINBOW page bit is 0x1000; clearing it here
-       makes sanctum stills decode from the wrong KRAM page. */
+       the KING BG page.  pcfxemu's ADPCM page bit is 0x100 and RAINBOW page bit
+       is 0x1000; clearing either makes those decoders read page 0. */
     __asm__ volatile (
         "movea 15,r0,%[reg]\n"
         "out.h %[reg],0x600[r0]\n"

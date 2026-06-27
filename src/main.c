@@ -3236,12 +3236,6 @@ static void apply_black_dither_fade(int32_t visible)
 #define WAIFU_TITLE_FADE_FRAMES 4
 #endif
 
-/* Frames at the tail of a title/menu fade-out that are presented as an opaque
-   8bpp black frame instead of the VDC dither fade.  This hides the one-frame
-   bottom-edge mixer artifact during the 16M-KING -> 8bpp mode switch while
-   still letting the VDC fade play across the bulk of the transition. */
-#define WAIFU_TITLE_FADE_BLACK_TAIL 4
-
 static void draw_field_pair_for_battle(Camera cam, int atk_col, int atk_row, int atk_id, int atk_back,
                                        int def_col, int def_row, int def_id, int def_back)
 {
@@ -3823,19 +3817,12 @@ static void draw_menu_screen_event(int selected, int full_redraw)
 
 static void draw_menu_fadeout_event(int selected, int f)
 {
+    if (f < 0) f = 0;
 #ifdef WAIFU_FM_PCFX
-    /* The VDC dither fade covers the title/menu cleanly, but the last few
-       near-black dither frames can expose a one-frame bottom-edge artifact on
-       the hardware/emulator mixer while switching away from 16M KING mode.
-       Finish the fade under an opaque common black frame before requesting
-       cards/story assets; no title pixels are presented after this point.
-       Only the final WAIFU_TITLE_FADE_BLACK_TAIL frames are black-held so the
-       VDC fade actually plays out across the rest of the transition. */
-    if (f >= WAIFU_TITLE_FADE_FRAMES - WAIFU_TITLE_FADE_BLACK_TAIL) {
-        draw_transition_black_hold_frame();
-        return;
-    }
-    draw_menu_screen_event(selected, f <= 0);
+    /* Keep the whole fade on the already-present title/menu VDC overlay.
+       Switching to the common 8bpp black path happens only after the overlay
+       is fully opaque, so the 16M title surface cannot reappear mid-transition. */
+    draw_menu_screen_event(selected, 0);
 #else
     draw_menu_screen(selected);
 #endif
@@ -6524,6 +6511,17 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
     PROFILE_HAND_END();
 }
 
+static void play_player_hand_intro_draw_sfx(void)
+{
+    int i;
+    if (!g_b_player_hand_intro_pending) return;
+    for (i = 0; i < I_HAND; ++i) {
+        if (!g_i_player_used[i] && g_b_phase_frame == 1 + i * 5) {
+            waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
+        }
+    }
+}
+
 static void draw_interactive_com_hand(int f, int selected, int yoff)
 {
     PROFILE_HAND_BEGIN();
@@ -7341,20 +7339,20 @@ static int draw_replacement_cards_to_hand(void)
     for (i = 0; i < I_HAND; ++i) {
         if (g_i_player_used[i]) {
             if (g_i_player_deck_left <= 0) {
-                if (g_b_draw_count > 0) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
                 return g_b_draw_count > 0;
             }
             g_i_player_hand[i] = next_draw_id();
             g_i_player_used[i] = 0;
+            waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
             g_b_draw_slots[g_b_draw_count++] = i;
         }
     }
     if (g_b_draw_count == 0 && g_i_player_deck_left > 0) {
         g_i_player_hand[0] = next_draw_id();
         g_i_player_used[0] = 0;
+        waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
         g_b_draw_slots[g_b_draw_count++] = 0;
     }
-    if (g_b_draw_count > 0) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
     return g_b_draw_count > 0;
 }
 
@@ -7365,10 +7363,7 @@ static void draw_replacement_cards_to_com_hand(void)
     if (g_i_com_deck_left <= 0) return;
     for (i = 0; i < I_HAND; ++i) {
         if (g_i_com_used[i]) {
-            if (g_i_com_deck_left <= 0) {
-                if (drew) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
-                return;
-            }
+            if (g_i_com_deck_left <= 0) return;
             g_i_com_hand[i] = next_com_draw_id();
             g_i_com_used[i] = 0;
             drew = 1;
@@ -7377,9 +7372,7 @@ static void draw_replacement_cards_to_com_hand(void)
     if (!drew && g_i_com_deck_left > 0) {
         g_i_com_hand[0] = next_com_draw_id();
         g_i_com_used[0] = 0;
-        drew = 1;
     }
-    if (drew) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
 }
 
 static int is_recent_draw_slot(int slot)
@@ -7972,6 +7965,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 #if defined(WAIFU_FM_PCFX)
         prewarm_handtop_transition_bases();
 #endif
+        play_player_hand_intro_draw_sfx();
         draw_interactive_base(player_camera());
         draw_interactive_player_hand(g_b_player_hand_intro_pending ? g_b_phase_frame : 999, g_b_selected_hand, 0, 0);
         draw_bottom_info(g_i_player_hand[g_b_selected_hand], "HAND");
@@ -9554,7 +9548,6 @@ void waifu_fm_step(const WaifuFmInput *input)
                 reset_story_entry();
                 enter_menu_to_story_fade();
             } else if (g_i_menu_selected == 1) {
-                init_battle_state();
                 enter_menu_to_battle_fade();
             } else {
                 begin_story_load();
@@ -9577,6 +9570,7 @@ void waifu_fm_step(const WaifuFmInput *input)
     case WAIFU_I_MENU_TO_BATTLE:
         if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES + 4) {
             draw_transition_black_hold_frame();
+            init_battle_state();
             enter_battle_after_assets();
         } else if (g_i_frame >= WAIFU_TITLE_FADE_FRAMES) {
             draw_transition_black_hold_frame();
