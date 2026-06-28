@@ -33,8 +33,7 @@
 #include "assets.h"
 #ifdef WAIFU_FM_PCFX
 #include "waifu_pcfx_video.h"
-#include <eris/bkupmem.h>
-#include "pcfx_bkupfat.h"
+#include "pcfx_biosfs.h"
 #endif
 
 #define W 256
@@ -4518,6 +4517,10 @@ static int g_b_thunder_count = 0;
    Thunder card): it targets only the attacking COM monster and returns to the
    COM battle phase (the attack is cancelled) instead of ending a turn. */
 static int g_b_trap_counter_active = 0;
+/* Field slot holding the player's face-down set Trap that the current auto-trap
+   burst is firing from (-1 if the trap was triggered straight out of hand). The
+   slot is cleared when the trap resolves. */
+static int g_b_trap_field_slot = -1;
 static int g_b_support_hand = -1;
 static int g_b_support_card = CARD_NONE;
 static int g_b_support_kind = -1;
@@ -4586,6 +4589,35 @@ static int g_b_com_monster_played_this_turn = 0;
 static int g_story_battle_active = 0;
 static char g_story_name[STORY_NAME_LEN + 1] = "SERENA";
 static int g_story_name_pos = 0;
+
+/* Substitute the player's chosen name in place of the default "Serena"/"SERENA"
+   in story prose, returning a pointer to a rotating static buffer so several
+   substituted strings can be live in a single draw call. */
+static const char *story_subst_name(const char *templ)
+{
+    static char bufs[2][256];
+    static int which = 0;
+    char *out;
+    int o = 0;
+    int i = 0;
+    if (!templ) return "";
+    out = bufs[which];
+    which ^= 1;
+    while (templ[i] && o + 1 < (int)sizeof(bufs[0])) {
+        if ((templ[i] == 'S' && templ[i+1] == 'e' && templ[i+2] == 'r' &&
+             templ[i+3] == 'e' && templ[i+4] == 'n' && templ[i+5] == 'a') ||
+            (templ[i] == 'S' && templ[i+1] == 'E' && templ[i+2] == 'R' &&
+             templ[i+3] == 'E' && templ[i+4] == 'N' && templ[i+5] == 'A')) {
+            int n = 0;
+            while (g_story_name[n] && o + 1 < (int)sizeof(bufs[0])) out[o++] = g_story_name[n++];
+            i += 6;
+        } else {
+            out[o++] = templ[i++];
+        }
+    }
+    out[o] = '\0';
+    return out;
+}
 static int g_story_intro_line = 0;
 static int g_story_player_deck[STORY_DECK_SIZE];
 static int g_story_player_deck_pos = 0;
@@ -5905,6 +5937,7 @@ static void deck_editor_clamp_cursor(void)
 {
     int count = deck_editor_active_count();
     int *scroll = &g_deck_scroll[g_deck_tab];
+    int cur_row, scroll_row, max_scroll_row;
     if (count <= 0) {
         g_deck_cursor = 0;
         *scroll = 0;
@@ -5912,10 +5945,18 @@ static void deck_editor_clamp_cursor(void)
     }
     if (g_deck_cursor < 0) g_deck_cursor = 0;
     if (g_deck_cursor >= count) g_deck_cursor = count - 1;
-    if (*scroll < 0) *scroll = 0;
-    if (g_deck_cursor < *scroll) *scroll = g_deck_cursor;
-    if (g_deck_cursor >= *scroll + DECK_VISIBLE_CARDS) *scroll = g_deck_cursor - DECK_VISIBLE_CARDS + 1;
-    if (*scroll > count - 1) *scroll = count - 1;
+    /* Scroll in whole-row steps so the grid columns stay aligned: a per-card
+       scroll offset would shift every card sideways and make the cursor appear
+       in a different column than the one it logically occupies. */
+    cur_row = g_deck_cursor / DECK_GRID_COLS;
+    scroll_row = *scroll / DECK_GRID_COLS;
+    if (cur_row < scroll_row) scroll_row = cur_row;
+    if (cur_row >= scroll_row + DECK_GRID_ROWS) scroll_row = cur_row - DECK_GRID_ROWS + 1;
+    if (scroll_row < 0) scroll_row = 0;
+    max_scroll_row = (count - 1) / DECK_GRID_COLS - DECK_GRID_ROWS + 1;
+    if (max_scroll_row < 0) max_scroll_row = 0;
+    if (scroll_row > max_scroll_row) scroll_row = max_scroll_row;
+    *scroll = scroll_row * DECK_GRID_COLS;
 }
 
 static void deck_editor_switch_tab(void)
@@ -5928,15 +5969,26 @@ static void deck_editor_move_cursor(int dx, int dy)
 {
     int count = deck_editor_active_count();
     if (count <= 0) { deck_editor_switch_tab(); return; }
-    if (dy < 0 && g_deck_cursor < DECK_GRID_COLS) {
-        deck_editor_switch_tab();
-        return;
+    if (dy < 0) {
+        if (g_deck_cursor < DECK_GRID_COLS) { deck_editor_switch_tab(); return; }
+        g_deck_cursor -= DECK_GRID_COLS;
+    } else if (dy > 0) {
+        int target = g_deck_cursor + DECK_GRID_COLS;
+        if (target < count) {
+            g_deck_cursor = target;
+        } else if (g_deck_cursor < count - 1) {
+            /* The last row is only partially filled and the slot directly below
+               the cursor is empty: drop onto the last existing card (which sits
+               further left) instead of wrapping away to the top-right. */
+            g_deck_cursor = count - 1;
+        }
+        /* else: already on the last card, stay put. */
     }
-    if (dy > 0) g_deck_cursor += DECK_GRID_COLS;
-    if (dy < 0) g_deck_cursor -= DECK_GRID_COLS;
-    if (dx != 0) g_deck_cursor += dx;
-    if (g_deck_cursor < 0) g_deck_cursor = count - 1;
-    if (g_deck_cursor >= count) g_deck_cursor = 0;
+    if (dx != 0) {
+        g_deck_cursor += dx;
+        if (g_deck_cursor < 0) g_deck_cursor = count - 1;
+        if (g_deck_cursor >= count) g_deck_cursor = 0;
+    }
     deck_editor_clamp_cursor();
 }
 
@@ -6037,8 +6089,12 @@ static void award_story_win_drop(void)
 #ifdef WAIFU_FM_PCFX
 
 /* -----------------------------------------------------------------------
- * PC-FX BackupRAM / ExBackupRAM save via FAT12 API.
- * Folder: /WAIFCARD   File: /WAIFCARD/SAVE.DAT
+ * PC-FX BackupRAM / ExBackupRAM save via the BIOS filesystem layer.
+ * Folder: WAIFCARD   File: WAIFCARD/SAVE.DAT
+ * Internal BackupRAM is mounted at /SRAM, external ExBackupRAM/FX-BMP at
+ * /CARD.  Folder/file creation, writes, reads and close/commit all go
+ * through the BIOS filesystem dispatcher (see pcfx_biosfs.c); we no longer
+ * touch BackupRAM hardware directly or mutate FAT structures app-side.
  * Tries internal BackupRAM first; falls back to external ExBackupRAM.
  * ----------------------------------------------------------------------- */
 
@@ -6056,18 +6112,37 @@ static void award_story_win_drop(void)
  *   57-120 storage[64] (u8: same encoding)
  *   121-122 checksum u16 LE (sum of bytes 0..120)
  */
-#define WAIFU_SAVE_FOLDER  "/WAIFCARD"
-#define WAIFU_SAVE_FILE    "/WAIFCARD/SAVE.DAT"
-#define WAIFU_SAVE_VERSION 0x01u
-#define WAIFU_SAVE_SIZE    123u
+#define WAIFU_SAVE_DIR_INT   PCFX_BIOSFS_PATH_INTERNAL "/WAIFCARD"
+#define WAIFU_SAVE_FILE_INT  PCFX_BIOSFS_PATH_INTERNAL "/WAIFCARD/SAVE.DAT"
+#define WAIFU_SAVE_DIR_EXT   PCFX_BIOSFS_PATH_EXTERNAL "/WAIFCARD"
+#define WAIFU_SAVE_FILE_EXT  PCFX_BIOSFS_PATH_EXTERNAL "/WAIFCARD/SAVE.DAT"
+#define WAIFU_SAVE_VERSION   0x01u
+#define WAIFU_SAVE_SIZE      123u
 
-static u8 g_bkup_vol[BKUPFAT_VOL_SIZE];
+/* Working heap handed to the BIOS filesystem dispatcher.  The BIOS operates
+ * on the memory-mapped BackupRAM in place, so this only holds its internal
+ * scratch (open-file table, path buffers).  Kept to the size of the former
+ * 32 KB volume staging buffer so RAM use is unchanged. */
+static u8 g_biosfs_heap[0x8000];
+static int g_biosfs_ready = 0;
 
 /* Per-device cache for story_save_exists(): index 0 = internal BackupRAM,
- * 1 = external ExBackupRAM/FX-BMP.  -1=unchecked, 0=no, 1=yes.
- * eris_bkupmem_read is a 32 KB byte-by-byte hardware copy (~6 ms on V810
- * at 21 MHz) so we must not call it every frame from the title/menu. */
+ * 1 = external ExBackupRAM/FX-BMP.  -1=unchecked, 0=no, 1=yes.  Probing a
+ * device walks the BIOS filesystem, so we cache it rather than do it every
+ * frame from the title/menu. */
 static int g_save_exists_cached[2] = { -1, -1 };
+
+static const char *waifu_save_dir(int ext)  { return ext ? WAIFU_SAVE_DIR_EXT  : WAIFU_SAVE_DIR_INT;  }
+static const char *waifu_save_file(int ext) { return ext ? WAIFU_SAVE_FILE_EXT : WAIFU_SAVE_FILE_INT; }
+
+/* Initialise the BIOS filesystem dispatcher once before first use. */
+static int waifu_biosfs_ensure(void)
+{
+    if (g_biosfs_ready) return 1;
+    if (pcfx_biosfs_init(g_biosfs_heap, (u32)sizeof(g_biosfs_heap)) < 0) return 0;
+    g_biosfs_ready = 1;
+    return 1;
+}
 
 static u8 save_encode_card(int id)
 {
@@ -6149,48 +6224,37 @@ static int save_parse_blob(const u8 *buf, u32 len)
 
 static int bkup_try_save_vol(int ext)
 {
-    bkupfat_t fs;
     u8 blob[WAIFU_SAVE_SIZE];
-    bkupfat_device_t dev = ext ? BKUPFAT_DEVICE_EXTERNAL : BKUPFAT_DEVICE_INTERNAL;
     int rc;
 
-    eris_bkupmem_read(ext, g_bkup_vol, 0, BKUPFAT_VOL_SIZE);
-    if (!bkupfat_is_valid_device(g_bkup_vol, BKUPFAT_VOL_SIZE, dev)) {
-        if (bkupfat_format_device(g_bkup_vol, BKUPFAT_VOL_SIZE, dev) != BKUPFAT_OK) return 0;
-    }
-    if (bkupfat_mount_device(&fs, g_bkup_vol, BKUPFAT_VOL_SIZE, dev) != BKUPFAT_OK) return 0;
-    rc = bkupfat_create_folder(&fs, WAIFU_SAVE_FOLDER);
-    if (rc != BKUPFAT_OK && rc != BKUPFAT_ERR_ALREADY_EXISTS) return 0;
+    if (!waifu_biosfs_ensure()) return 0;
+    /* Create the save folder; tolerate it already existing. */
+    rc = pcfx_biosfs_mkdir(waifu_save_dir(ext));
+    if (rc < 0 && rc != PCFX_BIOSFS_ERR_ALREADY_EXISTS) return 0;
     save_build_blob(blob);
-    if (bkupfat_create_file(&fs, WAIFU_SAVE_FILE, blob, WAIFU_SAVE_SIZE, BKUPFAT_WRITE_OVERWRITE) != BKUPFAT_OK) return 0;
-    eris_bkupmem_write(ext, g_bkup_vol, 0, BKUPFAT_VOL_SIZE);
+    /* save_file opens with CREATE|TRUNCATE|WRITE and commits on close. */
+    if (pcfx_biosfs_save_file(waifu_save_file(ext), blob, WAIFU_SAVE_SIZE) < 0) return 0;
     return 1;
 }
 
 static int bkup_try_exists_vol(int ext)
 {
-    bkupfat_t fs;
-    u8 attr;
-    u32 size;
-    bkupfat_device_t dev = ext ? BKUPFAT_DEVICE_EXTERNAL : BKUPFAT_DEVICE_INTERNAL;
+    int fd;
 
-    eris_bkupmem_read(ext, g_bkup_vol, 0, BKUPFAT_VOL_SIZE);
-    if (!bkupfat_is_valid_device(g_bkup_vol, BKUPFAT_VOL_SIZE, dev)) return 0;
-    if (bkupfat_mount_device(&fs, g_bkup_vol, BKUPFAT_VOL_SIZE, dev) != BKUPFAT_OK) return 0;
-    return bkupfat_exists(&fs, WAIFU_SAVE_FILE, &attr, &size) == BKUPFAT_OK;
+    if (!waifu_biosfs_ensure()) return 0;
+    fd = pcfx_biosfs_open(waifu_save_file(ext), PCFX_BIOSFS_OPEN_READ);
+    if (fd < 0) return 0;
+    pcfx_biosfs_close(fd);
+    return 1;
 }
 
 static int bkup_try_load_vol(int ext)
 {
-    bkupfat_t fs;
     u8 blob[WAIFU_SAVE_SIZE + 8u];
     u32 loaded_len = 0;
-    bkupfat_device_t dev = ext ? BKUPFAT_DEVICE_EXTERNAL : BKUPFAT_DEVICE_INTERNAL;
 
-    eris_bkupmem_read(ext, g_bkup_vol, 0, BKUPFAT_VOL_SIZE);
-    if (!bkupfat_is_valid_device(g_bkup_vol, BKUPFAT_VOL_SIZE, dev)) return 0;
-    if (bkupfat_mount_device(&fs, g_bkup_vol, BKUPFAT_VOL_SIZE, dev) != BKUPFAT_OK) return 0;
-    if (bkupfat_read_file(&fs, WAIFU_SAVE_FILE, blob, sizeof(blob), &loaded_len) != BKUPFAT_OK) return 0;
+    if (!waifu_biosfs_ensure()) return 0;
+    if (pcfx_biosfs_load_file(waifu_save_file(ext), blob, (u32)sizeof(blob), &loaded_len) < 0) return 0;
     return save_parse_blob(blob, loaded_len);
 }
 
@@ -6199,7 +6263,6 @@ static int story_save_exists_device(int ext)
 {
     int idx = ext ? 1 : 0;
     if (g_save_exists_cached[idx] >= 0) return g_save_exists_cached[idx];
-    eris_bkupmem_set_access(1, 1);
     g_save_exists_cached[idx] = bkup_try_exists_vol(ext) ? 1 : 0;
     return g_save_exists_cached[idx];
 }
@@ -6212,7 +6275,6 @@ static int story_save_exists(void)
 /* Per-device load (ext: 0=internal, 1=external/FX-BMP). */
 static int read_story_save_device(int ext)
 {
-    eris_bkupmem_set_access(1, 1);
     return bkup_try_load_vol(ext);
 }
 
@@ -6220,7 +6282,6 @@ static int read_story_save_device(int ext)
 static int write_story_save_device(int ext)
 {
     int idx = ext ? 1 : 0;
-    eris_bkupmem_set_access(1, 1);
     if (bkup_try_save_vol(ext)) { g_save_exists_cached[idx] = 1; return 1; }
     return 0;
 }
@@ -6772,6 +6833,7 @@ static void init_battle_state(void)
     g_b_thunder_owner = 1;
     g_b_thunder_count = 0;
     g_b_trap_counter_active = 0;
+    g_b_trap_field_slot = -1;
     g_b_support_hand = -1;
     g_b_support_card = CARD_NONE;
     g_b_support_kind = -1;
@@ -6844,7 +6906,9 @@ static void draw_interactive_field_cards(Camera cam)
         if (g_i_player_field[i] >= 0) draw_board_card_state(cam, i, PLAYER_CARD_ROW, g_i_player_field[i], !g_i_player_faceup[i], g_i_player_attacked[i], g_i_player_defense[i]);
     }
     for (i = 0; i < I_FIELD; ++i) {
-        if (g_i_player_equip_field[i] >= 0) draw_board_card_ex(cam, i, PLAYER_CARD_ROW + 1, g_i_player_equip_field[i], 0, 0);
+        if (g_i_player_equip_field[i] >= 0)
+            draw_board_card_ex(cam, i, PLAYER_CARD_ROW + 1, g_i_player_equip_field[i],
+                               is_trap_support_card(g_i_player_equip_field[i]) ? 1 : 0, 0);
     }
 }
 
@@ -7433,16 +7497,29 @@ static void start_player_thunder(int hand_slot)
 static int try_trigger_player_trap(int com_attacker_slot)
 {
     int hand_slot = -1;
+    int field_slot = -1;
+    int trap_card = CARD_NONE;
     int i;
     if (com_attacker_slot < 0 || com_attacker_slot >= I_FIELD) return 0;
     if (!is_monster_card(g_i_com_field[com_attacker_slot])) return 0;
-    for (i = 0; i < I_HAND; ++i) {
-        if (!g_i_player_used[i] && is_trap_support_card(g_i_player_hand[i])) { hand_slot = i; break; }
+    /* A face-down Trap set on the support row fires first; otherwise fall back
+       to a Trap still held in the hand (it auto-activates either way). */
+    for (i = 0; i < I_FIELD; ++i) {
+        if (is_trap_support_card(g_i_player_equip_field[i])) { field_slot = i; break; }
     }
-    if (hand_slot < 0) return 0;
+    if (field_slot >= 0) {
+        trap_card = g_i_player_equip_field[field_slot];
+    } else {
+        for (i = 0; i < I_HAND; ++i) {
+            if (!g_i_player_used[i] && is_trap_support_card(g_i_player_hand[i])) { hand_slot = i; break; }
+        }
+        if (hand_slot < 0) return 0;
+        trap_card = g_i_player_hand[hand_slot];
+    }
 
     g_b_thunder_hand = hand_slot;
-    g_b_thunder_card = g_i_player_hand[hand_slot];
+    g_b_trap_field_slot = field_slot;
+    g_b_thunder_card = trap_card;
     g_b_thunder_owner = 0; /* player reacts */
     g_b_trap_counter_active = 1;
     for (i = 0; i < I_FIELD; ++i) {
@@ -7458,7 +7535,7 @@ static int try_trigger_player_trap(int com_attacker_slot)
     g_b_thunder_count = 1;
     (void)card_big_art_ptr(g_b_thunder_cards[0]);
     (void)support_big_art_ptr();
-    g_i_player_used[hand_slot] = 1;
+    if (hand_slot >= 0) g_i_player_used[hand_slot] = 1;
     clear_battle_snapshot();
     set_battle_phase(IB_COM_THUNDER_ANIM);
     return 1;
@@ -7487,6 +7564,11 @@ static void finish_thunder(void)
         g_b_selected_player_slot = selected_or_first_live_player_slot();
         if (g_b_selected_player_slot < 0) g_b_selected_player_slot = 0;
     }
+    if (is_trap && g_b_trap_field_slot >= 0 && g_b_trap_field_slot < I_FIELD) {
+        g_i_player_equip_field[g_b_trap_field_slot] = CARD_NONE;
+        g_i_player_equip_target[g_b_trap_field_slot] = -1;
+    }
+    g_b_trap_field_slot = -1;
     g_b_thunder_hand = -1;
     g_b_thunder_card = CARD_NONE;
     g_b_thunder_count = 0;
@@ -8553,6 +8635,19 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                     g_b_selected_player_slot = target;
                     set_top_selector(target, PLAYER_CARD_ROW);
                     set_battle_phase(IB_PLAYER_EQUIP_TARGET);
+                } else if (is_trap_support_card(selected_card)) {
+                    /* Set the Trap face-down on the support (equip) row; it
+                       auto-fires when a COM monster declares an attack. */
+                    int free_slot = first_free_player_equip_slot();
+                    if (free_slot >= 0) {
+                        clear_player_fusion_queue();
+                        g_i_player_equip_field[free_slot] = selected_card;
+                        g_i_player_equip_target[free_slot] = -1;
+                        g_i_player_used[g_b_selected_hand] = 1;
+                        g_b_cards_used++;
+                        g_b_player_hand_intro_pending = 0;
+                        waifu_sound_play(WAIFU_SOUND_CARD_PLACED);
+                    }
                 }
                 break;
             }
@@ -9214,7 +9309,7 @@ static void draw_story_intro_screen(int f)
     }
     px = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 10, 10, f);
     draw_story_portrait(STORY_PORTRAIT_SERENA, px, H - WAIFU_STORY_PORTRAIT_H - 20);
-    draw_story_dialog_box("SERENA", "THE SHARDS WHISPER", story_intro_lines[line], IDX_GOLD_HI, f);
+    draw_story_dialog_box(g_story_name, "THE SHARDS WHISPER", story_intro_lines[line], IDX_GOLD_HI, f);
     if (f >= 0 && f < 24) apply_black_dither_fade(q8_ratio(f, 24));
 }
 
@@ -9311,7 +9406,7 @@ static void draw_story_fire_screen(int f)
     draw_oldschool_fire(f);
     draw_panel_rect(8, 172, 240, 57, IDX_UI_DARK);
     draw_text_small(18, 183, "DEMON", IDX_RED, IDX_BLACK);
-    draw_wrapped_text_small_box(18, 198, 218, 3, 10, story_fire_lines[line], IDX_WHITE, IDX_BLACK);
+    draw_wrapped_text_small_box(18, 198, 218, 3, 10, story_subst_name(story_fire_lines[line]), IDX_WHITE, IDX_BLACK);
     if (((f / 16) & 1) == 0) draw_text_small(197, 216, "A/RUN", IDX_WHITE, IDX_BLACK);
 }
 
@@ -9871,7 +9966,7 @@ static void draw_story_pyramid_menu(void)
     draw_story_sanctum_background();
     draw_blue_gradient_box(126, 42, 122, 148);
     draw_text(158, 55, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(138, 76, 99, 4, 10, "A place of rest. Serena can prepare before the next duel.", IDX_WHITE, IDX_BLACK);
+    draw_wrapped_text_small_box(138, 76, 99, 4, 10, story_subst_name("A place of rest. Serena can prepare before the next duel."), IDX_WHITE, IDX_BLACK);
     draw_text(151, 124, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(151, 144, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(151, 164, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
@@ -9887,7 +9982,7 @@ static void draw_story_save_screen(void)
         draw_centered_text(118, "The memory seal is broken.", IDX_WHITE, IDX_BLACK);
     } else if (g_story_save_status > 0) {
         draw_centered_text(95, "PROGRESS SAVED", IDX_GOLD_HI, IDX_BLACK);
-        draw_wrapped_text_small_box(57, 115, 143, 2, 10, "The sanctum remembers Serena.", IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(57, 115, 143, 2, 10, story_subst_name("The sanctum remembers Serena."), IDX_WHITE, IDX_BLACK);
     } else {
         draw_centered_text(95, "NO SAVE DATA", IDX_RED, IDX_BLACK);
         draw_centered_text(118, "Nothing is written yet.", IDX_WHITE, IDX_BLACK);
@@ -9913,12 +10008,12 @@ static const char *story_battle_intro_lines(void)
     switch (g_story_duel_index) {
     case 0: return "The dream shifts. A shade rises from the sand.";
     case 1: return "The plaza bustles, but one duelist blocks the path.";
-    case 2: return "Stone columns tower above. An adept tests Serena.";
+    case 2: return story_subst_name("Stone columns tower above. An adept tests Serena.");
     case 3: return "The sandstorm parts. A reaver grins behind her veil.";
     case 4: return "The crater glows. A burning soul rises from the lava.";
     case 5: return "Reality fractures. Something walks the void between dreams.";
     case 6: return "The ancient guardian awakens. The sphinx does not blink.";
-    default: return "THE DEMON. It remembers Serena. This ends now.";
+    default: return story_subst_name("THE DEMON. It remembers Serena. This ends now.");
     }
 }
 
@@ -9935,7 +10030,7 @@ static void draw_story_plaza_scene_content(int anim_frame)
     const StoryDialogueLine *dialog = story_dialogue_for_duel(g_story_duel_index, &line_count);
     const StoryOpponentInfo *opp = story_opponent_info();
     int serena_x, opp_x, serena_y, opp_y;
-    const char *speaker = "SERENA";
+    const char *speaker = g_story_name;
     const char *subhead = opp->title;
     uint8_t speaker_color = IDX_GOLD_HI;
 
@@ -9967,12 +10062,12 @@ static void draw_story_plaza_scene_content(int anim_frame)
         speaker_color = IDX_UI_LIGHT;
         subhead = story_scene_name();
     } else {
-        speaker = "SERENA";
+        speaker = g_story_name;
         speaker_color = IDX_GOLD_HI;
         subhead = opp->title;
     }
 
-    draw_story_dialog_box(speaker, subhead, dialog[line].text, speaker_color, anim_frame);
+    draw_story_dialog_box(speaker, subhead, story_subst_name(dialog[line].text), speaker_color, anim_frame);
 }
 
 static void draw_story_plaza_scene(void)
@@ -10047,7 +10142,7 @@ static void draw_story_ending_screen(void)
 #ifdef WAIFU_FM_PCFX
     clear_screen(IDX_BLACK);
     waifu_fm_use_ending_palette();
-    waifu_pcfx_video_overlay_ending_story(line, fully_typed && ((g_i_frame / 16) & 1) == 0, visible_chars);
+    waifu_pcfx_video_overlay_ending_story(g_story_name, line, fully_typed && ((g_i_frame / 16) & 1) == 0, visible_chars);
 #else
     clear_screen(IDX_BLACK);
     //draw_text_small(10, 180, "SERENA", IDX_GOLD_HI, IDX_BLACK);

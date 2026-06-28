@@ -40,6 +40,7 @@ PCFX_SRCS_C := \
   src/platform/pcfx/waifu_pcfx_audio.c \
   src/platform/pcfx/waifu_pcfx_cdrom.c \
   src/platform/pcfx/pcfx_bkupfat.c \
+  src/platform/pcfx/pcfx_biosfs.c \
   src/main.c \
   src/game/ai.c \
   src/game/deck.c \
@@ -48,7 +49,7 @@ PCFX_SRCS_C := \
   src/game/assets.c \
   src/engine/renderer3d.c \
   src/engine/common.c
-PCFX_SRCS_S := src/platform/pcfx/fastking.s
+PCFX_SRCS_S := src/platform/pcfx/fastking.s src/platform/pcfx/pcfx_biosfs_asm.s
 
 CARD_SOURCE_FILES := $(shell find assets/source/cards -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
 STORY_PORTRAIT_FILES := $(shell find assets/source/story_portraits -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
