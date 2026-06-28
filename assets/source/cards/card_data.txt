@@ -65,20 +65,27 @@ card|Jellyfish|Medusielle, Drift Phantom|Aqua|Water|1350|1750|An ethereal water 
 card|SwordFish|Marynelle, Swordfish Lance|Fish|Water|2050|1600|A water fish knight who skewers opponents with a living lance.
 card|Swordswoman|Valyria, Dark Bladestorm|Warrior|Dark|2400|1900|A dark warrior whose greatsword tears through armor and hope alike.
 card|TigerWoman|Razara, Tiger Queen|Beast|Earth|2100|1750|A fierce earth beast queen whose claws rend steel and stone.
+card|OctoPus_Sea_Sorceress|Ondessa, Tidal Sorceress|Spellcaster|Water|2300|1900|A water sorceress whose crimson tentacles drag foes into the deep.
+card|BlueGirlUnicorn|Celestine, Storm Unicorn|Beast|Light|1900|1600|A light beast crowned with a horn that crackles with chained lightning.
+card|GargoyleGirl|Grimalde, Gargoyle Sovereign|Rock|Dark|3500|1100|A living statue of dark stone with a crushing assault but brittle guard.
+card|BlackDinoGirl|Obsidira, Black Saurian|Dinosaur|Fire|2400|1500|A fire dinosaur clad in obsidian scales that erupts from molten ground.
+card|CastleSorceress|Morgath, Castle Sorceress|Spellcaster|Dark|2600|2100|A dark spellcaster who commands a haunted citadel from the shadows.
+card|SkeletonMage|Calavera, Bone Sovereign|Zombie|Dark|2050|1850|A dark zombie mage who weaves bone and ash into deadly spells.
+card|MechaUltimateDragon|Tyrael, Mecha Ultimate Dragon|Machine|Light|4250|2500|The final guardian: a three-headed mechanical dragon of overwhelming might.
 
 # Pools:
 # pool|name|asset_id,asset_id,...
-pool|random_strong|AngelFishwoman,Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale,Demonic,Sea_Serpent,SwordFish,Swordswoman,TigerWoman
-pool|random_mid|Abstract_beast,Beetle,Cobra,Electric,Falcon,Fox_Egypt,JetFighter,Mage_skeleton,Mermaid_machine,Pretty_snake,Reptile,Scarab,Scorpion,Snake,Squid_tentacles,Warrior,Water_Element,Witch,Yokai,Eel,Elec_Wolf,GhostGirl,Owl_woman,Pumpkin,Shark,Street,ZombieWoman,Alchemist_Fish,Crcodile_Woman,Jellyfish
+pool|random_strong|AngelFishwoman,Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale,Demonic,Sea_Serpent,SwordFish,Swordswoman,TigerWoman,OctoPus_Sea_Sorceress,CastleSorceress,BlackDinoGirl
+pool|random_mid|Abstract_beast,Beetle,Cobra,Electric,Falcon,Fox_Egypt,JetFighter,Mage_skeleton,Mermaid_machine,Pretty_snake,Reptile,Scarab,Scorpion,Snake,Squid_tentacles,Warrior,Water_Element,Witch,Yokai,Eel,Elec_Wolf,GhostGirl,Owl_woman,Pumpkin,Shark,Street,ZombieWoman,Alchemist_Fish,Crcodile_Woman,Jellyfish,BlueGirlUnicorn,SkeletonMage
 pool|random_weak|Cocinelle,Crow,Golem_Idol,Jester,Parrot,Penguin,Priestess,Rat,Slime,Stone_Tablet_Woman,Turtle,insect_bomb
 pool|story_starter_strong|Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale
 pool|story_starter_weak|Slime,Penguin,Rat,Stone_Tablet_Woman,Parrot,insect_bomb,Snake,Cocinelle,Eel,Owl_woman,Pumpkin,Street
-pool|story_reward_strong|Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale,SwordFish,Swordswoman,TigerWoman
+pool|story_reward_strong|Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale,SwordFish,Swordswoman,TigerWoman,OctoPus_Sea_Sorceress,CastleSorceress,BlackDinoGirl
 pool|opponent_dream|Penguin,Rat,Slime,Stone_Tablet_Woman,Parrot,Snake,Cocinelle,insect_bomb,Eel,Owl_woman,Pumpkin,Street
 pool|opponent_plaza|Golem_Idol,Jester,Priestess,Slime,Tyranno,Cocinelle,Parrot,Rat,Snake,Stone_Tablet_Woman,Owl_woman,Shark,Street,Alchemist_Fish,Jellyfish
 pool|opponent_adept|Skull_Queen,Stone_Dragon,Ultimate_Gold_Dragon,Jester,Priestess,White_dragon,Golem_Idol,Tyranno,Dragon,Insect_queen,MagesticDragon,ThinBlueDragon,Unicorn,Crcodile_Woman,SwordFish,TigerWoman
-pool|opponent_reaver|Ultimate_Gold_Dragon,White_dragon,Dragon,Insect_queen,Skull_Queen,Stone_Dragon,Golem_Idol,Tyranno,Priestess,Jester,Demonic,Pumpkin,Shark,ZombieWoman,Crcodile_Woman,SwordFish,Swordswoman,TigerWoman
-pool|opponent_burning|AngelFishwoman,Dragon,Ultimate_Gold_Dragon,White_dragon,Insect_queen,Skull_Queen,Stone_Dragon,Tyranno,Priestess,Golem_Idol,Jester,Demonic,GhostGirl,Pumpkin,Swordswoman,TigerWoman
+pool|opponent_reaver|Ultimate_Gold_Dragon,White_dragon,Dragon,Insect_queen,Skull_Queen,Stone_Dragon,Golem_Idol,Tyranno,Priestess,Jester,Demonic,Pumpkin,Shark,ZombieWoman,Crcodile_Woman,SwordFish,Swordswoman,TigerWoman,SkeletonMage,BlueGirlUnicorn
+pool|opponent_burning|AngelFishwoman,Dragon,Ultimate_Gold_Dragon,White_dragon,Insect_queen,Skull_Queen,Stone_Dragon,Tyranno,Priestess,Golem_Idol,Jester,Demonic,GhostGirl,Pumpkin,Swordswoman,TigerWoman,OctoPus_Sea_Sorceress,CastleSorceress,BlackDinoGirl
 pool|opponent_void|White_dragon,Ultimate_Gold_Dragon,Dragon,Skull_Queen,Insect_queen,Stone_Dragon,Tyranno,Priestess,Golem_Idol,Jester,GhostGirl,ThinBlueDragon,ZombieWoman,Swordswoman
 pool|opponent_sphinx|Stone_Dragon,Ultimate_Gold_Dragon,White_dragon,Skull_Queen,Insect_queen,Dragon,Tyranno,Priestess,Golem_Idol,Jester,InsectQueenWoman,MagesticDragon,Unicorn,WhiteWhale,SwordFish,TigerWoman
 pool|opponent_demon|Dragon,Ultimate_Gold_Dragon,White_dragon,Skull_Queen,Insect_queen,Stone_Dragon,Tyranno,Priestess,Golem_Idol,Jester,Demonic,GhostGirl,MagesticDragon,ZombieWoman,Swordswoman

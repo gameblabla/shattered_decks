@@ -5917,6 +5917,14 @@ static void sanitize_story_deck_copy_limit(void)
     }
 }
 
+/* Cards that must never come out of a generic reward roll; each has a
+ * single scripted source (see deck.c deck_card_is_restricted). */
+static int reward_card_is_restricted(int card)
+{
+    return card == WAIFU_CARD_ID_MECHA_ULTIMATE_DRAGON ||
+           card == WAIFU_CARD_ID_GARGOYLE_GIRL;
+}
+
 static int story_reward_drop_card(void)
 {
 #ifdef WAIFU_FM_HEADLESS_TESTS
@@ -5927,6 +5935,15 @@ static int story_reward_drop_card(void)
     ensure_battle_deck_rng_seeded();
     roll = (int)(waifu_deck_rng_next(&g_i_deck_rng) % 100u);
 #endif
+    /* Gargoyle Girl: a 1% drop, and only after beating the second-to-last
+       opponent. This is the only way the player can obtain her. */
+    if (g_story_duel_index == STORY_MAX_DUELS - 2) {
+#ifdef WAIFU_FM_HEADLESS_TESTS
+        if ((story_prng_next(&seed) % 100) == 0) return WAIFU_CARD_ID_GARGOYLE_GIRL;
+#else
+        if ((waifu_deck_rng_next(&g_i_deck_rng) % 100u) == 0u) return WAIFU_CARD_ID_GARGOYLE_GIRL;
+#endif
+    }
     if (roll == 0) {
 #ifdef WAIFU_FM_HEADLESS_TESTS
         return waifu_story_reward_strong_pool[story_prng_next(&seed) % WAIFU_STORY_REWARD_STRONG_POOL_COUNT];
@@ -5937,11 +5954,15 @@ static int story_reward_drop_card(void)
     if (roll < 11) {
         return SUPPORT_EQUIP_CARD_ID;
     }
+    for (int tries = 0; tries < 64; ++tries) {
 #ifdef WAIFU_FM_HEADLESS_TESTS
-    return story_prng_next(&seed) % WAIFU_CARD_COUNT;
+        int card = story_prng_next(&seed) % WAIFU_CARD_COUNT;
 #else
-    return (int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT);
+        int card = (int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT);
 #endif
+        if (!reward_card_is_restricted(card)) return card;
+    }
+    return WAIFU_CARD_ID_RAT;
 }
 
 static void award_story_win_drop(void)

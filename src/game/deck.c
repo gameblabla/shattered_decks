@@ -43,6 +43,16 @@ static int deck_card_is_valid(int card)
     return card >= 0 && card < WAIFU_CARD_COUNT + WAIFU_SUPPORT_CARD_VARIANTS;
 }
 
+/* Cards the player must never obtain or face outside their scripted spot:
+ * Mecha Ultimate Dragon belongs only to the final boss (3 copies), and
+ * Gargoyle Girl is a rare reward against the second-to-last opponent only.
+ * They are excluded from every random-by-index draw. */
+static int deck_card_is_restricted(int card)
+{
+    return card == WAIFU_CARD_ID_MECHA_ULTIMATE_DRAGON ||
+           card == WAIFU_CARD_ID_GARGOYLE_GIRL;
+}
+
 static int deck_card_copy_count(const WaifuDeck *deck, int card)
 {
     int n = 0;
@@ -165,9 +175,11 @@ void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bi
     guard = 0;
     while (deck->count < WAIFU_DECK_SIZE && guard++ < 5000) {
         int card = (int)(waifu_deck_rng_next(rng) % (uint32_t)WAIFU_CARD_COUNT);
+        if (deck_card_is_restricted(card)) continue;
         (void)deck_append_limited(deck, card, 4);
     }
     for (int card = 0; deck->count < WAIFU_DECK_SIZE && card < WAIFU_CARD_COUNT; ++card) {
+        if (deck_card_is_restricted(card)) continue;
         while (deck->count < WAIFU_DECK_SIZE && deck_append_limited(deck, card, 4)) {
             ;
         }
@@ -205,7 +217,10 @@ void waifu_deck_build_opponent_story(WaifuDeck *deck, int duel_index, WaifuDeckR
     waifu_deck_clear(deck);
     for (int i = 0; i < WAIFU_DECK_SIZE; ++i) {
         int card = opponent_story_card_at(duel_index, i);
-        if (duel_index >= 3 && (i == 2 || i == 4 || i == 8)) card = WAIFU_SUPPORT_THUNDER_CARD_ID;
+        /* The final boss (and only the final boss) fields 3 Mecha Ultimate
+         * Dragons; this is the sole place that card exists in the game. */
+        if (duel_index >= 4 && (i == 0 || i == 10 || i == 16)) card = WAIFU_CARD_ID_MECHA_ULTIMATE_DRAGON;
+        else if (duel_index >= 3 && (i == 2 || i == 4 || i == 8)) card = WAIFU_SUPPORT_THUNDER_CARD_ID;
         else if (duel_index >= 2 && ((i + 1) % 7) == 0) card = WAIFU_SUPPORT_EQUIP_CARD_ID;
         deck->cards[deck->count++] = card;
     }
