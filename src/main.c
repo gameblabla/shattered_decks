@@ -272,8 +272,12 @@ static int g_b_attack_attacker_slot = -1;
 #define SUPPORT_DRAW_CARD_ID    (WAIFU_CARD_COUNT + 2)
 #define SUPPORT_HEAL_CARD_ID    (WAIFU_CARD_COUNT + 3)
 #define SUPPORT_THUNDER_CARD_ID (WAIFU_CARD_COUNT + 4)
+#define SUPPORT_TRAP_CARD_ID    (WAIFU_CARD_COUNT + 5)
 #define SUPPORT_STANDARD_CARD_VARIANTS 4
-#define SUPPORT_CARD_VARIANTS   5
+#define SUPPORT_CARD_VARIANTS   6
+/* Common-palette violet accents used to mark the purple Trap card. */
+#define IDX_PURPLE    139
+#define IDX_PURPLE_HI 46
 #define STORY_MIN_SUPPORT_CARDS 9
 #define STORY_MIN_EQUIP_CARDS   3
 static int support_card_kind(int card_id)
@@ -289,6 +293,7 @@ static const char *support_card_name(int card_id)
     case 1: return "DESERT GUARD";
     case 2: return "ANCIENT DRAW";
     case 4: return "THUNDER";
+    case 5: return "MIRROR VEIL";
     default: return "OASIS LIGHT";
     }
 }
@@ -300,6 +305,7 @@ static const char *support_card_type(int card_id)
     case 1: return "Guard / Support";
     case 2: return "Draw / Support";
     case 4: return "Storm / Support";
+    case 5: return "Trap / Purple";
     default: return "Heal / Support";
     }
 }
@@ -311,6 +317,7 @@ static const char *support_card_effect(int card_id)
     case 1: return "Equip card. Raises DEF by 800 and does not raise ATK.";
     case 2: return "Support card. Draw 1 card from your deck.";
     case 4: return "Support card. Destroys every monster on the opponent's field.";
+    case 5: return "Trap card. Auto-activates when a monster attacks you: it destroys that attacker and cancels the attack before the battle step.";
     default: return "Support card. Restore 1000 LP.";
     }
 }
@@ -324,6 +331,11 @@ static int is_support_card(int card_id)
 static int is_thunder_support_card(int card_id)
 {
     return support_card_kind(card_id) == 4;
+}
+
+static int is_trap_support_card(int card_id)
+{
+    return is_support_card(card_id) && support_card_kind(card_id) == 5;
 }
 
 static int is_guard_support_card(int card_id)
@@ -4470,6 +4482,11 @@ static int g_b_thunder_slots[I_FIELD] = {-1, -1, -1, -1, -1};
 static int g_b_thunder_cards[I_FIELD] = {CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE, CARD_NONE};
 static int g_b_thunder_backs[I_FIELD] = {0, 0, 0, 0, 0};
 static int g_b_thunder_count = 0;
+/* When set, the destruction burst currently playing is the player's auto Trap
+   reacting to a COM attack (it reuses the thunder burn animation but is not a
+   Thunder card): it targets only the attacking COM monster and returns to the
+   COM battle phase (the attack is cancelled) instead of ending a turn. */
+static int g_b_trap_counter_active = 0;
 static int g_b_support_hand = -1;
 static int g_b_support_card = CARD_NONE;
 static int g_b_support_kind = -1;
@@ -5764,6 +5781,15 @@ static void generate_story_starter_deck(void)
     (void)story_append_limited_card(&idx, weak);
     (void)story_append_limited_card(&idx, weak);
     story_append_guaranteed_supports(&idx, &seed);
+    /* Always seed at least one purple Trap, occasionally more: 60% one, 35% two,
+       5% three. The player therefore always starts with the auto-counter card. */
+    {
+        int trap_roll = story_prng_next(&seed) % 100;
+        int trap_count = (trap_roll < 60) ? 1 : (trap_roll < 95) ? 2 : 3;
+        for (int t = 0; t < trap_count; ++t) {
+            (void)story_append_limited_card(&idx, SUPPORT_TRAP_CARD_ID);
+        }
+    }
 
     while (idx < STORY_DECK_SIZE) {
         int roll = story_prng_next(&seed) % 100;
@@ -5936,7 +5962,7 @@ static int story_reward_drop_card(void)
     roll = (int)(waifu_deck_rng_next(&g_i_deck_rng) % 100u);
 #endif
     /* Gargoyle Girl: a 1% drop, and only after beating the second-to-last
-       opponent. This is the only way the player can obtain her. */
+     * opponent. This is the only way the player can obtain her. */
     if (g_story_duel_index == STORY_MAX_DUELS - 2) {
 #ifdef WAIFU_FM_HEADLESS_TESTS
         if ((story_prng_next(&seed) % 100) == 0) return WAIFU_CARD_ID_GARGOYLE_GIRL;
@@ -6696,6 +6722,7 @@ static void init_battle_state(void)
     g_b_thunder_card = CARD_NONE;
     g_b_thunder_owner = 1;
     g_b_thunder_count = 0;
+    g_b_trap_counter_active = 0;
     g_b_support_hand = -1;
     g_b_support_card = CARD_NONE;
     g_b_support_kind = -1;
@@ -7161,12 +7188,17 @@ static BattleCalc calc_battle_state(int attacker_owner, int attacker_slot, int d
     return bc;
 }
 
+static int try_trigger_player_trap(int com_attacker_slot);
+
 static void prepare_battle(int attacker_owner, int attacker_slot, int defender_slot)
 {
     int atk_id, def_id, defender_owner;
     BattleCalc bc;
     if (attacker_owner == 0 && player_first_turn_attack_locked()) return;
     if (attacker_slot < 0 || attacker_slot >= I_FIELD || defender_slot < 0 || defender_slot >= I_FIELD) return;
+    /* COM declared an attack on the player: the player's auto-trap (if held)
+       fires first, destroying the attacker and cancelling the attack. */
+    if (attacker_owner == 1 && try_trigger_player_trap(attacker_slot)) return;
     atk_id = attacker_owner == 0 ? g_i_player_field[attacker_slot] : g_i_com_field[attacker_slot];
     if (!is_monster_card(atk_id)) return;
     /* Monsters in defense position cannot initiate attacks. */
@@ -7220,6 +7252,9 @@ static void prepare_direct_attack(int attacker_owner, int attacker_slot)
     if (attacker_slot < 0 || attacker_slot >= I_FIELD) return;
     if (field_card_defense_position(attacker_owner, attacker_slot)) return;
     if (!is_monster_card(attacker_owner == 0 ? g_i_player_field[attacker_slot] : g_i_com_field[attacker_slot])) return;
+    /* A COM direct attack on the player's life points is cancelled by the
+       auto-trap as well, destroying the attacking monster. */
+    if (attacker_owner == 1 && try_trigger_player_trap(attacker_slot)) return;
 
     /* Hard rule: direct attacks are illegal while the opponent controls any
        live monster. Guard this here as well as in the phase logic so neither
@@ -7337,9 +7372,49 @@ static void start_player_thunder(int hand_slot)
     start_thunder(0, hand_slot);
 }
 
+/* Auto-fire the player's purple Trap card against a declared COM attack.
+   Returns 1 if a trap was held and triggered (the caller must then abort the
+   normal attack: the trap destroys the attacker before the battle step, so no
+   reveal or damage happens). The trap targets only the attacking COM monster
+   and reuses the thunder destruction animation. */
+static int try_trigger_player_trap(int com_attacker_slot)
+{
+    int hand_slot = -1;
+    int i;
+    if (com_attacker_slot < 0 || com_attacker_slot >= I_FIELD) return 0;
+    if (!is_monster_card(g_i_com_field[com_attacker_slot])) return 0;
+    for (i = 0; i < I_HAND; ++i) {
+        if (!g_i_player_used[i] && is_trap_support_card(g_i_player_hand[i])) { hand_slot = i; break; }
+    }
+    if (hand_slot < 0) return 0;
+
+    g_b_thunder_hand = hand_slot;
+    g_b_thunder_card = g_i_player_hand[hand_slot];
+    g_b_thunder_owner = 0; /* player reacts */
+    g_b_trap_counter_active = 1;
+    for (i = 0; i < I_FIELD; ++i) {
+        g_b_thunder_slots[i] = -1;
+        g_b_thunder_cards[i] = CARD_NONE;
+        g_b_thunder_backs[i] = 0;
+    }
+    g_b_thunder_slots[0] = com_attacker_slot;
+    g_b_thunder_cards[0] = g_i_com_field[com_attacker_slot];
+    /* Show the attacker burning in whatever state it was in: a face-down
+       attacker is destroyed without ever being flipped face up. */
+    g_b_thunder_backs[0] = !g_i_com_faceup[com_attacker_slot];
+    g_b_thunder_count = 1;
+    (void)card_big_art_ptr(g_b_thunder_cards[0]);
+    (void)support_big_art_ptr();
+    g_i_player_used[hand_slot] = 1;
+    clear_battle_snapshot();
+    set_battle_phase(IB_COM_THUNDER_ANIM);
+    return 1;
+}
+
 static void finish_thunder(void)
 {
     int i;
+    int is_trap = g_b_trap_counter_active;
     int owner = g_b_thunder_owner;
     int target_owner = owner ? 0 : 1;
     for (i = 0; i < g_b_thunder_count; ++i) {
@@ -7363,9 +7438,14 @@ static void finish_thunder(void)
     g_b_thunder_card = CARD_NONE;
     g_b_thunder_count = 0;
     g_b_thunder_owner = 1;
+    g_b_trap_counter_active = 0;
     clear_battle_snapshot();
     invalidate_battle_composite_cache();
-    set_battle_phase(owner == 0 ? IB_PLAYER_TOP : IB_COM_BATTLE);
+    /* A trap cancelled a COM attack: hand control back to the COM battle loop so
+       it can act with its remaining monsters or end its turn. Otherwise this was
+       a normal thunder play and returns to that player's turn. */
+    if (is_trap) set_battle_phase(IB_COM_BATTLE);
+    else set_battle_phase(owner == 0 ? IB_PLAYER_TOP : IB_COM_BATTLE);
 }
 
 static void draw_com_thunder_anim(void)
@@ -7376,12 +7456,19 @@ static void draw_com_thunder_anim(void)
     int card_y = 35;
     clear_screen(IDX_BLACK);
 
+    {
+    int is_trap = g_b_trap_counter_active;
+    const char *title = is_trap ? "MIRROR VEIL" : "THUNDER";
+    int title_col = is_trap ? IDX_PURPLE_HI : IDX_GOLD_HI;
+
     if (f < intro) {
         int fade_start = WAIFU_THUNDER_CARD_FRAMES;
         draw_support_big_art_scaled(card_x, card_y, 128, 128);
-        draw_centered_text(174, "THUNDER", IDX_GOLD_HI, IDX_BLACK);
+        if (is_trap) rect_outline(card_x - 2, card_y - 2, 132, 132, IDX_PURPLE);
+        draw_centered_text(174, title, title_col, IDX_BLACK);
         draw_wrapped_text_small(54, 194,
-                                g_b_thunder_owner == 0 ? "ALL COM MONSTERS" : "ALL PLAYER MONSTERS",
+                                is_trap ? "TRAP: DESTROY ATTACKER" :
+                                (g_b_thunder_owner == 0 ? "ALL COM MONSTERS" : "ALL PLAYER MONSTERS"),
                                 25, IDX_WHITE, IDX_BLACK);
         if (f >= fade_start) {
             apply_black_dither_fade(Q8_ONE - q8_ratio(f - fade_start, WAIFU_THUNDER_FADE_FRAMES));
@@ -7398,11 +7485,12 @@ static void draw_com_thunder_anim(void)
             int id = g_b_thunder_cards[idx];
             int back = g_b_thunder_backs[idx];
             if (seg == 0) waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
-            draw_centered_text(8, "THUNDER", IDX_GOLD_HI, IDX_BLACK);
+            draw_centered_text(8, title, title_col, IDX_BLACK);
             if (seg < BATTLE_BURN_DUR) {
                 draw_big_battle_card_burning(id, 68, 38, back, seg);
             }
         }
+    }
     }
 }
 
@@ -11210,6 +11298,182 @@ static int debug_regression_thunder_support(void)
     return 0;
 }
 
+static int debug_regression_trap_counter(void)
+{
+    WaifuFmInput in;
+    int guard;
+    int lp_before;
+    int starter_traps = 0;
+    memset(&in, 0, sizeof(in));
+
+    /* The purple Trap is a distinct support kind that is never an equip/draw/
+       heal/thunder, and the player's generated starter deck seeds exactly one. */
+    if (!is_trap_support_card(SUPPORT_TRAP_CARD_ID) ||
+        is_thunder_support_card(SUPPORT_TRAP_CARD_ID) ||
+        is_equip_support_card(SUPPORT_TRAP_CARD_ID) ||
+        is_draw_support_card(SUPPORT_TRAP_CARD_ID) ||
+        is_heal_support_card(SUPPORT_TRAP_CARD_ID)) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: trap kind classification wrong kind=%d\n",
+                support_card_kind(SUPPORT_TRAP_CARD_ID));
+        return 1;
+    }
+    waifu_str_copy(g_story_name, (int)sizeof(g_story_name), "SERENA");
+    generate_story_starter_deck();
+    for (int i = 0; i < g_story_deck_count; ++i) {
+        if (g_story_player_deck[i] == SUPPORT_TRAP_CARD_ID) ++starter_traps;
+    }
+    if (starter_traps < 1 || starter_traps > 3) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: starter deck trap count=%d (expected 1..3)\n", starter_traps);
+        return 1;
+    }
+
+    /* The starter deck always holds at least one Trap, and the count follows a
+       60%/35%/5% split for 1/2/3 traps. Sample many generated decks (the seed is
+       derived from the player name) and check the distribution and bounds. */
+    {
+        const int samples = 4000;
+        int dist[4] = {0, 0, 0, 0};
+        char name[STORY_NAME_LEN + 1];
+        for (int s = 0; s < samples; ++s) {
+            int traps = 0;
+            unsigned v = (unsigned)s * 2654435761u + 12345u;
+            for (int n = 0; n < STORY_NAME_LEN; ++n) {
+                name[n] = (char)('A' + (v % 26u));
+                v = v / 26u + (unsigned)(s + n) * 7919u;
+            }
+            name[STORY_NAME_LEN] = '\0';
+            waifu_str_copy(g_story_name, (int)sizeof(g_story_name), name);
+            generate_story_starter_deck();
+            for (int i = 0; i < g_story_deck_count; ++i) {
+                if (g_story_player_deck[i] == SUPPORT_TRAP_CARD_ID) ++traps;
+            }
+            if (traps < 1 || traps > 3) {
+                fprintf(stderr, "REGRESSION trap_counter FAIL: sampled deck has %d traps (expected 1..3)\n", traps);
+                return 1;
+            }
+            ++dist[traps];
+        }
+        /* Expected ~2400/1400/200; allow wide bands for hash non-uniformity. */
+        if (dist[1] < samples * 52 / 100 || dist[1] > samples * 68 / 100 ||
+            dist[2] < samples * 27 / 100 || dist[2] > samples * 43 / 100 ||
+            dist[3] < samples *  2 / 100 || dist[3] > samples * 10 / 100) {
+            fprintf(stderr, "REGRESSION trap_counter FAIL: trap distribution 1=%d 2=%d 3=%d of %d\n",
+                    dist[1], dist[2], dist[3], samples);
+            return 1;
+        }
+    }
+    waifu_str_copy(g_story_name, (int)sizeof(g_story_name), "SERENA");
+
+    /* --- Scenario 1: COM attacks a face-down player monster. The trap fires
+       before the battle step: COM attacker is destroyed, the player's face-down
+       defender is never revealed, no damage is dealt, control returns to COM. */
+    waifu_fm_reset_interactive();
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+    for (int i = 0; i < I_FIELD; ++i) { clear_monster_slot(0, i); clear_monster_slot(1, i); }
+    for (int i = 0; i < I_HAND; ++i) { g_i_player_used[i] = 1; g_i_com_used[i] = 1; }
+    g_b_phase = IB_COM_BATTLE;
+    g_b_turns = 2;
+    g_you_lp = 8000;
+    clear_battle_snapshot();
+    g_i_com_field[0] = WAIFU_CARD_ID_ULTIMATE_GOLD_DRAGON;
+    g_i_com_faceup[0] = 1;
+    g_i_com_defense[0] = 0;
+    g_i_com_attacked[0] = 0;
+    g_i_player_field[0] = WAIFU_CARD_ID_INSECT_SOLDIER;
+    g_i_player_faceup[0] = 0;   /* face-down: must stay hidden */
+    g_i_player_defense[0] = 1;
+    g_i_player_hand[0] = SUPPORT_TRAP_CARD_ID;
+    g_i_player_used[0] = 0;
+    lp_before = g_you_lp;
+
+    prepare_battle(1, 0, 0);
+    if (g_b_phase != IB_COM_THUNDER_ANIM || !g_b_trap_counter_active ||
+        g_b_thunder_count != 1 || g_b_thunder_owner != 0 ||
+        g_b_thunder_slots[0] != 0 || !g_i_player_used[0]) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: trap not armed phase=%d trap=%d count=%d owner=%d slot=%d used=%d\n",
+                (int)g_b_phase, g_b_trap_counter_active, g_b_thunder_count, g_b_thunder_owner,
+                g_b_thunder_slots[0], g_i_player_used[0]);
+        return 1;
+    }
+    for (guard = 0; guard < 240 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) waifu_fm_step(&in);
+    if (g_b_phase != IB_COM_BATTLE || is_monster_card(g_i_com_field[0]) ||
+        !is_monster_card(g_i_player_field[0]) || g_i_player_faceup[0] != 0 ||
+        g_you_lp != lp_before || g_b_trap_counter_active) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: after melee phase=%d com0=%d p0=%d p0_faceup=%d lp=%d/%d guard=%d\n",
+                (int)g_b_phase, g_i_com_field[0], g_i_player_field[0], g_i_player_faceup[0],
+                g_you_lp, lp_before, guard);
+        return 1;
+    }
+
+    /* --- Scenario 2: COM direct attack on the player's life points. The trap
+       still fires and destroys the attacker; the player takes no damage. */
+    waifu_fm_reset_interactive();
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+    for (int i = 0; i < I_FIELD; ++i) { clear_monster_slot(0, i); clear_monster_slot(1, i); }
+    for (int i = 0; i < I_HAND; ++i) { g_i_player_used[i] = 1; g_i_com_used[i] = 1; }
+    g_b_phase = IB_COM_BATTLE;
+    g_you_lp = 8000;
+    clear_battle_snapshot();
+    g_i_com_field[1] = WAIFU_CARD_ID_DRAGON;
+    g_i_com_faceup[1] = 1;
+    g_i_com_defense[1] = 0;
+    g_i_com_attacked[1] = 0;
+    g_i_player_hand[3] = SUPPORT_TRAP_CARD_ID;
+    g_i_player_used[3] = 0;
+    lp_before = g_you_lp;
+
+    prepare_direct_attack(1, 1);
+    if (g_b_phase != IB_COM_THUNDER_ANIM || !g_b_trap_counter_active || !g_i_player_used[3]) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: direct trap not armed phase=%d trap=%d used=%d\n",
+                (int)g_b_phase, g_b_trap_counter_active, g_i_player_used[3]);
+        return 1;
+    }
+    for (guard = 0; guard < 240 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) waifu_fm_step(&in);
+    if (g_b_phase != IB_COM_BATTLE || is_monster_card(g_i_com_field[1]) || g_you_lp != lp_before) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: after direct phase=%d com1=%d lp=%d/%d guard=%d\n",
+                (int)g_b_phase, g_i_com_field[1], g_you_lp, lp_before, guard);
+        return 1;
+    }
+
+    /* --- Scenario 3: no trap in hand. A COM attack must resolve as a normal
+       battle (the trap must not fire and the attacker survives the cut-in). */
+    waifu_fm_reset_interactive();
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+    for (int i = 0; i < I_FIELD; ++i) { clear_monster_slot(0, i); clear_monster_slot(1, i); }
+    for (int i = 0; i < I_HAND; ++i) { g_i_player_used[i] = 1; g_i_com_used[i] = 1; }
+    g_b_phase = IB_COM_BATTLE;
+    g_you_lp = 8000;
+    clear_battle_snapshot();
+    g_i_com_field[0] = WAIFU_CARD_ID_DRAGON;        /* 2400 ATK */
+    g_i_com_faceup[0] = 1;
+    g_i_com_defense[0] = 0;
+    g_i_com_attacked[0] = 0;
+    g_i_player_field[0] = WAIFU_CARD_ID_RAT;        /* 900 ATK, face-up */
+    g_i_player_faceup[0] = 1;
+    g_i_player_defense[0] = 0;
+    lp_before = g_you_lp;
+
+    prepare_battle(1, 0, 0);
+    if (g_b_phase != IB_COM_BATTLE || g_b_trap_counter_active) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: no-trap attack diverted phase=%d trap=%d\n",
+                (int)g_b_phase, g_b_trap_counter_active);
+        return 1;
+    }
+    for (guard = 0; guard < 600 && g_b_phase == IB_COM_BATTLE && g_b_battle_atk_card >= 0; ++guard) {
+        waifu_fm_step(&in);
+    }
+    if (is_monster_card(g_i_com_field[0]) == 0) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: no-trap attacker wrongly destroyed guard=%d\n", guard);
+        return 1;
+    }
+
+    printf("REGRESSION trap_counter OK starter_traps=%d\n", starter_traps);
+    return 0;
+}
+
 static int debug_regression_fusion_equip_only(void)
 {
     debug_setup_fusion_equip_scenario("equip-last");
@@ -11615,6 +11879,7 @@ int main(int argc, char **argv)
     int regression_result_music = 0;
     int regression_sanctum_entry = 0;
     int regression_thunder_support = 0;
+    int regression_trap_counter = 0;
     int regression_fusion_equip = 0;
     CommandEvent events[MAX_COMMAND_EVENTS];
     int event_count = 0;
@@ -11643,8 +11908,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--regression-result-music")) regression_result_music = 1;
         else if (!strcmp(argv[i], "--regression-sanctum-entry")) regression_sanctum_entry = 1;
         else if (!strcmp(argv[i], "--regression-thunder-support")) regression_thunder_support = 1;
+        else if (!strcmp(argv[i], "--regression-trap-counter")) regression_trap_counter = 1;
         else if (!strcmp(argv[i], "--regression-fusion-equip")) regression_fusion_equip = 1;
-        else if (!strcmp(argv[i], "--regression-story-all")) { regression_story_save = 1; regression_story_duels = 1; regression_card_check = 1; regression_result_music = 1; regression_sanctum_entry = 1; regression_thunder_support = 1; regression_fusion_equip = 1; }
+        else if (!strcmp(argv[i], "--regression-story-all")) { regression_story_save = 1; regression_story_duels = 1; regression_card_check = 1; regression_result_music = 1; regression_sanctum_entry = 1; regression_thunder_support = 1; regression_trap_counter = 1; regression_fusion_equip = 1; }
 #endif
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
         else if (!strcmp(argv[i], "--profile-render")) g_profile_render_enabled = 1;
@@ -11658,7 +11924,7 @@ int main(int argc, char **argv)
     waifu_fm_init();
 
 #ifdef WAIFU_FM_HEADLESS_TESTS
-    if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music || regression_sanctum_entry || regression_thunder_support || regression_fusion_equip) {
+    if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music || regression_sanctum_entry || regression_thunder_support || regression_trap_counter || regression_fusion_equip) {
         int rc = 0;
         if (regression_story_save) rc |= debug_regression_story_save_roundtrip();
         if (regression_story_duels) rc |= debug_regression_story_duel_loads();
@@ -11666,6 +11932,7 @@ int main(int argc, char **argv)
         if (regression_result_music) rc |= debug_regression_result_music_tracks();
         if (regression_sanctum_entry) rc |= debug_regression_sanctum_editor_battle_entry();
         if (regression_thunder_support) rc |= debug_regression_thunder_support();
+        if (regression_trap_counter) rc |= debug_regression_trap_counter();
         if (regression_fusion_equip) rc |= debug_regression_fusion_equip_only();
         return rc ? 1 : 0;
     }
