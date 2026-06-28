@@ -43,15 +43,25 @@ static int deck_card_is_valid(int card)
     return card >= 0 && card < WAIFU_CARD_COUNT + WAIFU_SUPPORT_CARD_VARIANTS;
 }
 
-/* Cards the player must never obtain or face outside their scripted spot:
- * Mecha Ultimate Dragon belongs only to the final boss (3 copies), and
- * Gargoyle Girl is a rare reward against the second-to-last opponent only.
- * They are excluded from every random-by-index draw. */
+/* Cards that are scripted in story mode: Mecha Ultimate Dragon belongs only to
+ * the final boss (3 copies) and Gargoyle Girl is a rare reward against the
+ * second-to-last opponent only.  They stay out of the plain random-by-index
+ * draw so story decks/rewards never leak them, but free (non-story) random
+ * battle does make them obtainable -- see waifu_deck_random_rare_pool. */
 static int deck_card_is_restricted(int card)
 {
     return card == WAIFU_CARD_ID_MECHA_ULTIMATE_DRAGON ||
            card == WAIFU_CARD_ID_GARGOYLE_GIRL;
 }
+
+/* Normally boss-only / rare-reward cards that are nonetheless allowed to show
+ * up in free random battle decks (story restrictions are unaffected). */
+static const int waifu_deck_random_rare_pool[] = {
+    WAIFU_CARD_ID_MECHA_ULTIMATE_DRAGON,
+    WAIFU_CARD_ID_GARGOYLE_GIRL
+};
+#define WAIFU_DECK_RANDOM_RARE_POOL_COUNT \
+    ((int)(sizeof(waifu_deck_random_rare_pool) / sizeof(waifu_deck_random_rare_pool[0])))
 
 static int deck_card_copy_count(const WaifuDeck *deck, int card)
 {
@@ -163,13 +173,19 @@ void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bi
         if (roll < 16u) {
             card = WAIFU_CARD_COUNT + (int)(waifu_deck_rng_next(rng) % WAIFU_SUPPORT_STANDARD_CARD_VARIANTS);
         } else if (roll < (uint32_t)(strength_bias ? 50 : 34)) {
-            card = waifu_random_strong_pool[waifu_deck_rng_next(rng) % (uint32_t)WAIFU_RANDOM_STRONG_POOL_COUNT];
+            /* Within the strong tier, occasionally surface a normally boss-only
+               rare so free random battle decks can field them. */
+            if ((waifu_deck_rng_next(rng) % 12u) == 0u)
+                card = waifu_deck_random_rare_pool[waifu_deck_rng_next(rng) % (uint32_t)WAIFU_DECK_RANDOM_RARE_POOL_COUNT];
+            else
+                card = waifu_random_strong_pool[waifu_deck_rng_next(rng) % (uint32_t)WAIFU_RANDOM_STRONG_POOL_COUNT];
         } else if (roll < 82u) {
             card = waifu_random_mid_pool[waifu_deck_rng_next(rng) % (uint32_t)WAIFU_RANDOM_MID_POOL_COUNT];
         } else {
             card = waifu_random_weak_pool[waifu_deck_rng_next(rng) % (uint32_t)WAIFU_RANDOM_WEAK_POOL_COUNT];
         }
-        (void)deck_append_limited(deck, card, 4);
+        /* Keep boss-only rares scarce even when they roll: at most one copy. */
+        (void)deck_append_limited(deck, card, deck_card_is_restricted(card) ? 1 : 4);
     }
 
     guard = 0;
