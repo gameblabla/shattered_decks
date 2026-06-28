@@ -1,5 +1,10 @@
 # Shattered Decks
 
+
+![titlescreen of Shaterred Decks](https://github.com/gameblabla/shattered_decks/blob/main/screenshots/title_waifu.png?raw=true)
+![Ingame screenshot for Shaterred Decks](https://github.com/gameblabla/shattered_decks/blob/main/screenshots/waifu_ingame.png?raw=true)
+
+
 Shattered Decks is a card homebrew game for the NEC PC-FX, inspired by Forbidden Memories except with monsters based on anime women.
 
 The story follows Serena through a desert dreamscape of forgotten courts, sanctums, mirages, gates, and burning ruins. 
