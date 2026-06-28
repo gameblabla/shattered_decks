@@ -178,16 +178,58 @@ def draw_card_face(card_id, name, tribe, attr, atk, deff):
         d.ellipse([x,5,x+1,6], fill=(170,24,18))
     return img
 
+def draw_support_emblem(size):
+    """Colorful arcane sigil used as the inner 'art' of support/trap cards."""
+    em = Image.new('RGB', (size, size), (16, 26, 48))
+    d = ImageDraw.Draw(em)
+    cx = (size - 1) / 2.0
+    cy = (size - 1) / 2.0
+    spoke_cols = [(96,224,255),(255,214,96),(120,210,255),
+                  (255,170,90),(150,255,170),(210,240,255)]
+    rmax = size * 0.46
+    lw = max(1, size // 18)
+    n = 12
+    for k in range(n):
+        ang = math.pi * 2 * k / n
+        x2 = cx + math.cos(ang) * rmax
+        y2 = cy + math.sin(ang) * rmax
+        d.line([cx, cy, x2, y2], fill=spoke_cols[k % len(spoke_cols)], width=lw)
+    ring_cols = [(255,214,96),(96,224,255),(255,170,90)]
+    for i, rr in enumerate([0.22, 0.34, 0.45]):
+        r = size * rr
+        for t in range(max(1, size // 40)):
+            d.ellipse([cx-r+t, cy-r+t, cx+r-t, cy+r-t], outline=ring_cols[i % len(ring_cols)])
+    gr = max(2, int(size * 0.14))
+    d.ellipse([cx-gr-1, cy-gr-1, cx+gr+1, cy+gr+1], fill=(20,30,60))
+    d.ellipse([cx-gr, cy-gr, cx+gr, cy+gr], fill=(120,210,255))
+    hl = max(1, gr // 2)
+    d.ellipse([cx-hl, cy-hl, cx+hl, cy+hl], fill=(255,255,255))
+    return em
+
 def draw_support_face():
-    img = Image.new('RGB', (CARD_W,CARD_H), (9,65,31))
+    # Support/trap cards use the same bevelled card frame as monsters, but in a
+    # distinct arcane-blue colour with a colourful sigil in the art window.
+    img = Image.new('RGB', (CARD_W,CARD_H), (12,26,44))
     d = ImageDraw.Draw(img)
-    d.rectangle([1,0,CARD_W-2,CARD_H-1], fill=(24,151,75))
-    d.rectangle([3,3,CARD_W-4,CARD_H-4], fill=(8,96,48))
-    d.rectangle([5,7,CARD_W-6,35], fill=(30,20,50))
-    for i in range(5):
-        d.arc([7+i,7+i,CARD_W-8-i,35-i], 20+i*8, 310-i*5, fill=(202,188,255), width=1)
-    d.rectangle([5,40,CARD_W-6,49], fill=(18,72,38))
-    d.text((8,41), 'MAG', fill=(230,240,230))
+    d.rectangle([1,0,CARD_W-2,CARD_H-1], fill=(60,150,208))
+    d.rectangle([2,2,CARD_W-3,CARD_H-3], fill=(14,40,66))
+    d.rectangle([3,3,CARD_W-4,CARD_H-4], fill=(38,108,164))
+    # type strip
+    d.rectangle([4,4,CARD_W-5,7], fill=(120,196,232))
+    # art window with the colourful sigil
+    img.paste(draw_support_emblem(30), (4,9))
+    d.rectangle([4,9,33,38], outline=(10,28,46))
+    # stat/text strip
+    d.rectangle([4,40,33,50], fill=(120,190,222))
+    d.rectangle([5,41,32,49], fill=(22,46,70))
+    d.line([7,43,14,43], fill=(150,220,245))
+    d.line([7,46,15,46], fill=(150,220,245))
+    d.line([21,43,30,43], fill=(150,220,245))
+    d.line([20,46,30,46], fill=(150,220,245))
+    # gem dots along the type strip
+    for s in range(4):
+        x = 5 + s*3
+        d.ellipse([x,5,x+1,6], fill=(248,236,140))
     return img
 
 def draw_card_back():
@@ -366,7 +408,9 @@ card_faces_rgb=[draw_card_face(*m[:6]) for m in CARD_META]
 # gameplay card face so detail screens never upscale the tiny thumbnail.
 big_card_rgb=[cover(Image.open(find_image(m[0])), (BIG_W, BIG_H)).filter(ImageFilter.SHARPEN) for m in CARD_META]
 support_rgb=draw_support_face()
-support_big_rgb=ImageOps.fit(support_rgb.resize((BIG_W, BIG_H), Image.Resampling.NEAREST), (BIG_W, BIG_H), method=Image.Resampling.NEAREST)
+# Big art window is the inner sigil only (the card frame is drawn by the C code),
+# rendered crisply at full size rather than upscaled from the 38x54 face.
+support_big_rgb=draw_support_emblem(BIG_W)
 back_rgb=draw_card_back()
 tex_rgb=[tile_dark(),tile_gold(0),tile_sand(),tile_stone(),tile_side_wall(),tile_brown(),tile_volcanic_ground(),tile_volcanic_slope(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
 story_portraits_rgba=load_story_portraits_rgba()

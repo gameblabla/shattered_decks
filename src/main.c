@@ -275,9 +275,14 @@ static int g_b_attack_attacker_slot = -1;
 #define SUPPORT_TRAP_CARD_ID    (WAIFU_CARD_COUNT + 5)
 #define SUPPORT_STANDARD_CARD_VARIANTS 4
 #define SUPPORT_CARD_VARIANTS   6
-/* Common-palette violet accents used to mark the purple Trap card. */
-#define IDX_PURPLE    139
-#define IDX_PURPLE_HI 46
+/* Common-palette blue accents matching the standard support card frame. */
+#define IDX_SUPPORT_FRAME    IDX_BLUE_WHITE
+#define IDX_SUPPORT_FRAME_HI IDX_UI_BLUE
+/* Trap cards share the support layout but in a violet frame so they read as a
+   distinct card type while standard support cards stay blue. */
+#define IDX_TRAP_FRAME       137
+#define IDX_TRAP_FRAME_HI    47
+#define IDX_TRAP_FRAME_DK    145
 #define STORY_MIN_SUPPORT_CARDS 9
 #define STORY_MIN_EQUIP_CARDS   3
 static int support_card_kind(int card_id)
@@ -305,7 +310,7 @@ static const char *support_card_type(int card_id)
     case 1: return "Guard / Support";
     case 2: return "Draw / Support";
     case 4: return "Storm / Support";
-    case 5: return "Trap / Purple";
+    case 5: return "Trap / Counter";
     default: return "Heal / Support";
     }
 }
@@ -2338,23 +2343,43 @@ static void draw_card_sprite_ex(int id, int x, int y, int w, int h, int back, in
     else draw_card_raw(src, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
 }
 
-static void draw_support_sprite(int x, int y, int w, int h)
+/* Recolour the baked blue support frame to violet for Trap cards, leaving the
+   inner art window (the sigil) untouched. Rectangles mirror the baked support
+   face layout (WAIFU_CARD_W x WAIFU_CARD_H) scaled to the destination. */
+static void draw_trap_frame_overlay(int x, int y, int w, int h)
+{
+#define TRAP_MX(v) (x + (v) * w / WAIFU_CARD_W)
+#define TRAP_MY(v) (y + (v) * h / WAIFU_CARD_H)
+    rect_outline(TRAP_MX(1), TRAP_MY(0), TRAP_MX(37) - TRAP_MX(1), TRAP_MY(54) - TRAP_MY(0), IDX_TRAP_FRAME_HI);
+    rect_outline(TRAP_MX(2), TRAP_MY(2), TRAP_MX(36) - TRAP_MX(2), TRAP_MY(52) - TRAP_MY(2), IDX_TRAP_FRAME_DK);
+    rect_outline(TRAP_MX(3), TRAP_MY(3), TRAP_MX(35) - TRAP_MX(3), TRAP_MY(51) - TRAP_MY(3), IDX_TRAP_FRAME);
+    /* type strip */
+    rect_fill(TRAP_MX(4), TRAP_MY(4), TRAP_MX(34) - TRAP_MX(4), TRAP_MY(8) - TRAP_MY(4), IDX_TRAP_FRAME);
+    /* lower stat/text strip */
+    rect_fill(TRAP_MX(4), TRAP_MY(40), TRAP_MX(34) - TRAP_MX(4), TRAP_MY(50) - TRAP_MY(40), IDX_TRAP_FRAME);
+    rect_fill(TRAP_MX(5), TRAP_MY(41), TRAP_MX(33) - TRAP_MX(5), TRAP_MY(49) - TRAP_MY(41), IDX_TRAP_FRAME_DK);
+#undef TRAP_MX
+#undef TRAP_MY
+}
+
+static void draw_support_sprite(int id, int x, int y, int w, int h)
 {
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
     draw_card_raw(waifu_assets_support_face(), WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
+    if (is_trap_support_card(id)) draw_trap_frame_overlay(x, y, w, h);
 }
 
 static void draw_hand_card_sprite(int id, int x, int y, int w, int h, int back)
 {
     if (back) { draw_card_sprite(id, x, y, w, h, 1); return; }
-    if (is_support_card(id)) draw_support_sprite(x, y, w, h);
+    if (is_support_card(id)) draw_support_sprite(id, x, y, w, h);
     else draw_card_sprite(id, x, y, w, h, back);
 }
 
 static void draw_hand_card_sprite_ex(int id, int x, int y, int w, int h, int back, int gray)
 {
     if (back) { draw_card_sprite_ex(id, x, y, w, h, 1, gray); return; }
-    if (is_support_card(id)) draw_support_sprite(x, y, w, h);
+    if (is_support_card(id)) draw_support_sprite(id, x, y, w, h);
     else draw_card_sprite_ex(id, x, y, w, h, back, gray);
 }
 
@@ -2375,10 +2400,16 @@ static void draw_big_battle_card_stats(int id, int x, int y, int back, int atk, 
     }
     if (is_support_card(id)) {
         /* Support/equip cards can appear in battle reveals only if bad/stale
-           state puts them in a monster zone. Draw the support art and no
-           ATK/DEF/stat strings; they are treated as 0/0 non-attackers. */
-        draw_support_big_art_scaled(x+4, y+6, 112, 112);
-        rect_outline(x+3, y+5, 114, 114, IDX_CARD_RIM);
+           state puts them in a monster zone. Draw the support art with the
+           support card's distinct blue frame and no ATK/DEF/stat strings;
+           they are treated as 0/0 non-attackers. */
+        {
+            int trap = is_trap_support_card(id);
+            rect_outline(x, y, w, h, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
+            rect_outline(x+1, y+1, w-2, h-2, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
+            draw_support_big_art_scaled(x+4, y+6, 112, 112);
+            rect_outline(x+3, y+5, 114, 114, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
+        }
         return;
     }
     if (!is_monster_card(id)) {
@@ -2509,7 +2540,7 @@ static void draw_player_hand(int f, int selected)
         }
         if (i == g_player_hide_index) continue;
         if (((f >= 150 && f < 176) || (f >= 475 && f < 505) || (f >= 910 && f < 930)) && i == selected) continue;
-        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(x, y+1, 38, 50));
+        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(SUPPORT_EQUIP_CARD_ID, x, y+1, 38, 50));
         else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, 38, 50, 0));
         if (!g_suppress_hand_cursor && i == selected && f >= 102) draw_red_cursor(x, y, 38, 50);
     }
@@ -2541,7 +2572,7 @@ static void draw_player_hand_draw_sequence(int f, int start, int selected)
             }
         }
         if (!visible) continue;
-        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(x, y+1, 38, 50));
+        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(SUPPORT_EQUIP_CARD_ID, x, y+1, 38, 50));
         else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, 38, 50, 0));
         if (reveal_cursor && i == selected) draw_red_cursor(x, y, 38, 50);
     }
@@ -4644,7 +4675,13 @@ static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
 
 #define STORY_MAX_DUELS 5
+/* g_story_duel_index is the *currently selected* duel -- the opponent that will
+   be (or is being) fought.  g_story_progress is the persistent furthest duel the
+   player has unlocked: the frontier.  Beating the frontier advances progress;
+   the player may also re-select and replay any already-cleared opponent in
+   [0, g_story_progress] from the sanctum map without changing progress. */
 static int g_story_duel_index = 0;
+static int g_story_progress = 0;
 static int g_story_map_cursor = 0;     /* 0 pyramid, 1 plaza */
 static int g_story_pyramid_cursor = 0; /* 0 save, 1 editor, 2 back */
 static int g_story_scene_anim_frame = 0; /* free-running story 3D sway frame */
@@ -6009,7 +6046,7 @@ static void award_story_win_drop(void)
  *   0-3   "WAIF" magic
  *   4     version 0x01
  *   5-10  name[6]  (A-Z)
- *   11    duel_index
+ *   11    story_progress (furthest unlocked duel / frontier)
  *   12    map_cursor
  *   13    pyramid_cursor
  *   14    plaza_line (u8, clamped)
@@ -6049,7 +6086,7 @@ static void save_build_blob(u8 *buf)
     buf[0] = 'W'; buf[1] = 'A'; buf[2] = 'I'; buf[3] = 'F';
     buf[4] = WAIFU_SAVE_VERSION;
     for (i = 0; i < STORY_NAME_LEN; ++i) buf[5 + i] = (u8)g_story_name[i];
-    buf[11] = (u8)g_story_duel_index;
+    buf[11] = (u8)g_story_progress;
     buf[12] = (u8)g_story_map_cursor;
     buf[13] = (u8)g_story_pyramid_cursor;
     buf[14] = (u8)(g_story_plaza_line & 0xFF);
@@ -6078,9 +6115,12 @@ static int save_parse_blob(const u8 *buf, u32 len)
         g_story_name[i] = (c >= 'A' && c <= 'Z') ? c : 'A';
     }
     g_story_name[STORY_NAME_LEN] = '\0';
-    g_story_duel_index = (int)buf[11];
-    if (g_story_duel_index < 0) g_story_duel_index = 0;
-    if (g_story_duel_index >= STORY_MAX_DUELS) g_story_duel_index = STORY_MAX_DUELS - 1;
+    g_story_progress = (int)buf[11];
+    if (g_story_progress < 0) g_story_progress = 0;
+    if (g_story_progress >= STORY_MAX_DUELS) g_story_progress = STORY_MAX_DUELS - 1;
+    /* Default the map selection to the frontier; the player can step back to an
+       earlier opponent from the sanctum. */
+    g_story_duel_index = g_story_progress;
     g_story_map_cursor = buf[12] ? 1 : 0;
     g_story_pyramid_cursor = (int)buf[13];
     if (g_story_pyramid_cursor < 0 || g_story_pyramid_cursor > 2) g_story_pyramid_cursor = 0;
@@ -6216,7 +6256,7 @@ static int write_story_save(void)
 
     fprintf(fp, "WAIFU_STORY_SAVE_V1\n");
     fprintf(fp, "name %s\n", g_story_name);
-    fprintf(fp, "duel %d\n", g_story_duel_index);
+    fprintf(fp, "duel %d\n", g_story_progress);
     fprintf(fp, "map %d pyramid %d plaza %d\n", g_story_map_cursor, g_story_pyramid_cursor, g_story_plaza_line);
     fprintf(fp, "deck_count %d storage_count %d\n", g_story_deck_count, g_story_storage_count);
     fprintf(fp, "deck");
@@ -6263,9 +6303,10 @@ static int read_story_save(void)
         if (g_story_name[i] < 'A' || g_story_name[i] > 'Z') g_story_name[i] = 'A';
     }
     g_story_name[STORY_NAME_LEN] = '\0';
-    g_story_duel_index = duel;
-    if (g_story_duel_index < 0) g_story_duel_index = 0;
-    if (g_story_duel_index >= STORY_MAX_DUELS) g_story_duel_index = STORY_MAX_DUELS - 1;
+    g_story_progress = duel;
+    if (g_story_progress < 0) g_story_progress = 0;
+    if (g_story_progress >= STORY_MAX_DUELS) g_story_progress = STORY_MAX_DUELS - 1;
+    g_story_duel_index = g_story_progress;
     g_story_map_cursor = map_cursor ? 1 : 0;
     g_story_pyramid_cursor = pyramid_cursor;
     if (g_story_pyramid_cursor < 0 || g_story_pyramid_cursor > 2) g_story_pyramid_cursor = 0;
@@ -7056,9 +7097,13 @@ static void render_interactive_card_preview_static(int card_id)
     if (is_support_card(card_id)) {
         tx = 140;
         maxw = 108;
-        rect_fill(7, 36, 128, 160, IDX_BLACK);
-        draw_support_big_art_scaled(7, 40, 128, 128);
-        rect_outline(5, 34, 132, 164, IDX_GOLD_HI);
+        {
+            int trap = is_trap_support_card(card_id);
+            rect_fill(7, 36, 128, 160, IDX_BLACK);
+            draw_support_big_art_scaled(7, 40, 128, 128);
+            rect_outline(5, 34, 132, 164, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
+            rect_outline(6, 35, 130, 162, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
+        }
         draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
         lines = draw_wrapped_text_small_box(tx, y, maxw, 3, 10, support_card_name(card_id), IDX_WHITE, IDX_BLACK);
         y += lines * 10 + 7;
@@ -7459,12 +7504,12 @@ static void draw_com_thunder_anim(void)
     {
     int is_trap = g_b_trap_counter_active;
     const char *title = is_trap ? "MIRROR VEIL" : "THUNDER";
-    int title_col = is_trap ? IDX_PURPLE_HI : IDX_GOLD_HI;
+    int title_col = is_trap ? IDX_TRAP_FRAME_HI : IDX_GOLD_HI;
 
     if (f < intro) {
         int fade_start = WAIFU_THUNDER_CARD_FRAMES;
         draw_support_big_art_scaled(card_x, card_y, 128, 128);
-        if (is_trap) rect_outline(card_x - 2, card_y - 2, 132, 132, IDX_PURPLE);
+        if (is_trap) rect_outline(card_x - 2, card_y - 2, 132, 132, IDX_TRAP_FRAME);
         draw_centered_text(174, title, title_col, IDX_BLACK);
         draw_wrapped_text_small(54, 194,
                                 is_trap ? "TRAP: DESTROY ATTACKER" :
@@ -8116,7 +8161,7 @@ static void draw_player_equip_anim(void)
         draw_big_battle_card(g_b_equip_target_card, target_x, target_y, 0);
         if (f < WAIFU_EQUIP_ANIM_FRAMES - 3) {
             rect_fill(card_x + 5, card_y + 6, card_w, card_h, IDX_BLACK);
-            draw_support_sprite(card_x, card_y, card_w, card_h);
+            draw_support_sprite(g_b_equip_card, card_x, card_y, card_w, card_h);
         }
     }
 
@@ -9066,6 +9111,7 @@ static void reset_story_entry(void)
     g_story_intro_line = 0;
     g_story_fire_line = 0;
     g_story_duel_index = 0;
+    g_story_progress = 0;
     g_story_map_cursor = 0;
     g_story_pyramid_cursor = 0;
     g_story_plaza_line = 0;
@@ -9470,9 +9516,11 @@ typedef enum {
 
 static StorySceneKind story_scene_kind(void)
 {
-    if (g_story_duel_index >= 4) return STORY_SCENE_VOID;
-    if (g_story_duel_index >= 3) return STORY_SCENE_VOLCANO;
-    if (g_story_duel_index >= 2) return STORY_SCENE_TEMPLE;
+    /* The sanctum hub reflects how far Serena has travelled (the frontier), not
+       whichever earlier opponent she may have selected to rematch. */
+    if (g_story_progress >= 4) return STORY_SCENE_VOID;
+    if (g_story_progress >= 3) return STORY_SCENE_VOLCANO;
+    if (g_story_progress >= 2) return STORY_SCENE_TEMPLE;
     return STORY_SCENE_DESERT;
 }
 
@@ -9738,9 +9786,24 @@ static void draw_story_map_screen_content(int f)
     draw_text(143, 194, "BATTLE", g_story_map_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     if (g_story_map_cursor == 0) draw_text(132, 174, ">", IDX_RED, IDX_BLACK);
     else draw_text(132, 194, ">", IDX_RED, IDX_BLACK);
+    /* Earlier opponents are unlocked: show that BATTLE can cycle foes and which
+       one is currently picked (FOE n/total). */
+    if (g_story_progress > 0) {
+        char foe[24];
+        if (g_story_map_cursor == 1) draw_text_small(204, 196, "< >", IDX_GOLD_HI, IDX_BLACK);
+        waifu_str_copy(foe, (int)sizeof(foe), "FOE ");
+        waifu_str_cat_i32(foe, (int)sizeof(foe), g_story_duel_index + 1);
+        waifu_str_cat(foe, (int)sizeof(foe), "/");
+        waifu_str_cat_i32(foe, (int)sizeof(foe), g_story_progress + 1);
+        draw_text_small(135, 210, foe, IDX_WHITE, IDX_BLACK);
+    }
 
     draw_panel_rect(8, 181, 108, 41, IDX_UI_DARK);
-    if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
+    if (g_story_duel_index < g_story_progress) {
+        /* Selecting an already-cleared opponent: a rematch. */
+        waifu_str_copy(line, (int)sizeof(line), "Rematch: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), ".");
+        draw_wrapped_text_small_box(16, 190, 91, 3, 9, line, IDX_GOLD_HI, IDX_BLACK);
+    } else if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
         draw_wrapped_text_small_box(16, 190, 91, 3, 9, "The demon waits in the void. This is the final duel.", IDX_WHITE, IDX_BLACK);
     } else if (story_opponent_is_boss()) {
         waifu_str_copy(line, (int)sizeof(line), "A boss: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), ". Prepare well.");
@@ -9749,7 +9812,10 @@ static void draw_story_map_screen_content(int f)
         waifu_str_copy(line, (int)sizeof(line), "Next: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), " awaits.");
         draw_wrapped_text_small_box(16, 190, 91, 3, 9, line, IDX_WHITE, IDX_BLACK);
     }
-    draw_text_small(11, 226, "A/RUN SELECT", IDX_WHITE, IDX_BLACK);
+    if (g_story_map_cursor == 1 && g_story_progress > 0)
+        draw_text_small(11, 226, "A/RUN GO  L/R FOE", IDX_WHITE, IDX_BLACK);
+    else
+        draw_text_small(11, 226, "A/RUN SELECT", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_story_map_screen(int f)
@@ -9802,7 +9868,7 @@ static void draw_story_pyramid_menu(void)
     draw_text(151, 144, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(151, 164, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(139, 124 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
-    draw_text_small(128, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
+    //draw_text_small(128, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_story_save_screen(void)
@@ -10009,17 +10075,26 @@ static void draw_story_ending_credits_screen(void)
 static void story_return_to_map_after_duel(void)
 {
     if (g_b_result >= 0) {
+        /* A win always grants a reward drop, whether it is a fresh duel or a
+           rematch against an already-cleared opponent. */
         award_story_win_drop();
-        if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
-            g_story_battle_active = 0;
-            g_story_ending_line = 0;
-            g_story_ending_erasing = 0;
-            g_i_state = WAIFU_I_STORY_ENDING;
-            g_i_frame = -1;
-            init_battle_state();
-            return;
+        /* Only beating the frontier duel advances the story.  Rematching an
+           earlier opponent (duel_index < progress) leaves progress untouched. */
+        if (g_story_duel_index >= g_story_progress) {
+            if (g_story_progress >= STORY_MAX_DUELS - 1) {
+                /* The final duel was the frontier: clearing it ends the story. */
+                g_story_battle_active = 0;
+                g_story_ending_line = 0;
+                g_story_ending_erasing = 0;
+                g_i_state = WAIFU_I_STORY_ENDING;
+                g_i_frame = -1;
+                init_battle_state();
+                return;
+            }
+            ++g_story_progress;
+            /* Move the selection forward to the newly unlocked opponent. */
+            g_story_duel_index = g_story_progress;
         }
-        ++g_story_duel_index;
     }
     g_story_battle_active = 0;
     g_story_map_cursor = 1;
@@ -10322,7 +10397,17 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_STORY_MAP:
-        if (press_left || press_right || press_up || press_down) g_story_map_cursor ^= 1;
+        if (press_up || press_down) g_story_map_cursor ^= 1;
+        /* Keep the selection inside the unlocked range. */
+        if (g_story_duel_index > g_story_progress) g_story_duel_index = g_story_progress;
+        if (g_story_duel_index < 0) g_story_duel_index = 0;
+        /* On the BATTLE row, LEFT/RIGHT picks which unlocked opponent to face:
+           the frontier or any earlier opponent for a rematch. */
+        if (g_story_map_cursor == 1 && g_story_progress > 0) {
+            int span = g_story_progress + 1;
+            if (press_left)  g_story_duel_index = (g_story_duel_index + span - 1) % span;
+            if (press_right) g_story_duel_index = (g_story_duel_index + 1) % span;
+        }
         draw_story_map_screen(g_i_frame);
         if (press_a || press_start) {
             if (g_story_map_cursor == 0) {
@@ -10663,6 +10748,7 @@ static void debug_jump_to_story_cutscene(int duel_index)
     if (duel_index < 0) duel_index = 0;
     if (duel_index >= STORY_MAX_DUELS) duel_index = STORY_MAX_DUELS - 1;
     g_story_duel_index = duel_index;
+    if (g_story_progress < duel_index) g_story_progress = duel_index;
     g_story_map_cursor = 1;
     g_story_plaza_line = 0;
     request_story_duel_assets();
@@ -10753,6 +10839,7 @@ static void debug_prepare_story_save_fixture(void)
     strncpy(g_story_name, "SAVEOK", STORY_NAME_LEN);
     g_story_name[STORY_NAME_LEN] = '\0';
     g_story_duel_index = 3;
+    g_story_progress = 3;
     g_story_map_cursor = 1;
     g_story_pyramid_cursor = 2;
     g_story_plaza_line = 5;
@@ -10784,6 +10871,7 @@ static int debug_regression_story_save_roundtrip(void)
     }
     memset(g_story_name, 0, sizeof(g_story_name));
     g_story_duel_index = 0;
+    g_story_progress = 0;
     g_story_map_cursor = 0;
     g_story_pyramid_cursor = 0;
     g_story_plaza_line = 0;
@@ -10801,11 +10889,11 @@ static int debug_regression_story_save_roundtrip(void)
                 (unsigned)before_hash, (unsigned)after_hash);
         return 1;
     }
-    if (g_story_battle_active != 0 || g_story_duel_index != 3 ||
+    if (g_story_battle_active != 0 || g_story_duel_index != 3 || g_story_progress != 3 ||
         g_story_map_cursor != 1 || g_story_pyramid_cursor != 2 || g_story_plaza_line != 5 ||
         g_story_deck_count != STORY_DECK_SIZE || g_story_storage_count != 9) {
-        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: bad loaded state state=%d story=%d duel=%d map=%d pyramid=%d plaza=%d deck=%d storage=%d\n",
-                (int)g_i_state, g_story_battle_active, g_story_duel_index, g_story_map_cursor,
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: bad loaded state state=%d story=%d duel=%d progress=%d map=%d pyramid=%d plaza=%d deck=%d storage=%d\n",
+                (int)g_i_state, g_story_battle_active, g_story_duel_index, g_story_progress, g_story_map_cursor,
                 g_story_pyramid_cursor, g_story_plaza_line, g_story_deck_count, g_story_storage_count);
         return 1;
     }
@@ -10896,6 +10984,7 @@ static int debug_regression_sanctum_editor_battle_entry(void)
     reset_story_deck_editor();
 
     g_story_duel_index = 1;
+    g_story_progress = 1;
     g_story_map_cursor = 0;
     g_story_pyramid_cursor = 1;
     g_story_editor_from_pyramid = 1;
@@ -10926,14 +11015,114 @@ static int debug_regression_sanctum_editor_battle_entry(void)
     in.start = 1;
     waifu_fm_step(&in);
 
-    if (g_i_state == WAIFU_I_TITLE || g_i_state == WAIFU_I_MENU || g_story_battle_active || g_story_duel_index != 2) {
-        fprintf(stderr, "REGRESSION sanctum_editor_battle_entry FAIL: result returned to bad state=%d story=%d duel=%d\n",
-                (int)g_i_state, g_story_battle_active, g_story_duel_index);
+    if (g_i_state == WAIFU_I_TITLE || g_i_state == WAIFU_I_MENU || g_story_battle_active ||
+        g_story_duel_index != 2 || g_story_progress != 2) {
+        fprintf(stderr, "REGRESSION sanctum_editor_battle_entry FAIL: result returned to bad state=%d story=%d duel=%d progress=%d\n",
+                (int)g_i_state, g_story_battle_active, g_story_duel_index, g_story_progress);
         return 1;
     }
 
-    printf("REGRESSION sanctum_editor_battle_entry OK state=%d duel=%d story=%d\n",
-           (int)g_i_state, g_story_duel_index, g_story_battle_active);
+    printf("REGRESSION sanctum_editor_battle_entry OK state=%d duel=%d progress=%d story=%d\n",
+           (int)g_i_state, g_story_duel_index, g_story_progress, g_story_battle_active);
+    return 0;
+}
+
+/* Replaying previous opponents: beating the frontier advances the story, but a
+   rematch against an already-cleared opponent still pays a reward without moving
+   progress, and the sanctum map lets the player cycle through unlocked foes. */
+static int debug_regression_story_rematch(void)
+{
+    WaifuFmInput in;
+    int storage_before;
+
+    waifu_fm_reset_interactive();
+    waifu_assets_reset();
+    generate_story_starter_deck();
+    generate_story_storage_pool();
+
+    /* Frontier win advances progress and moves the selection forward. */
+    g_story_progress = 0;
+    g_story_duel_index = 0;
+    g_story_battle_active = 1;
+    g_b_result = 1;
+    story_return_to_map_after_duel();
+    if (g_story_progress != 1 || g_story_duel_index != 1 ||
+        g_i_state != WAIFU_I_STORY_MAP || g_story_battle_active) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: frontier win progress=%d duel=%d state=%d active=%d\n",
+                g_story_progress, g_story_duel_index, (int)g_i_state, g_story_battle_active);
+        return 1;
+    }
+
+    /* Sanctum map: on the BATTLE row, LEFT/RIGHT cycles unlocked foes [0,progress]. */
+    g_story_progress = 3;
+    g_story_duel_index = 3;
+    g_story_map_cursor = 1;
+    g_i_state = WAIFU_I_STORY_MAP;
+    g_i_frame = 0;
+    memset(&in, 0, sizeof(in));
+    in.right = 1; waifu_fm_step(&in);             /* 3 -> wrap to 0 */
+    if (g_story_duel_index != 0) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: right-wrap duel=%d\n", g_story_duel_index);
+        return 1;
+    }
+    /* A neutral frame is required between presses: held buttons are not edges. */
+    memset(&in, 0, sizeof(in)); waifu_fm_step(&in);
+    in.left = 1; waifu_fm_step(&in);              /* 0 -> wrap to 3 */
+    if (g_story_duel_index != 3) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: left-wrap duel=%d\n", g_story_duel_index);
+        return 1;
+    }
+    memset(&in, 0, sizeof(in)); waifu_fm_step(&in);
+    in.left = 1; waifu_fm_step(&in);              /* 3 -> 2 */
+    if (g_story_duel_index != 2) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: left-step duel=%d\n", g_story_duel_index);
+        return 1;
+    }
+
+    /* Rematch win: reward granted, progress unchanged. */
+    g_story_storage_count = 0;
+    storage_before = g_story_storage_count;
+    g_story_progress = 3;
+    g_story_duel_index = 1;
+    g_story_battle_active = 1;
+    g_b_result = 1;
+    story_return_to_map_after_duel();
+    if (g_story_progress != 3 || g_i_state != WAIFU_I_STORY_MAP || g_story_battle_active) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: rematch progress=%d state=%d active=%d\n",
+                g_story_progress, (int)g_i_state, g_story_battle_active);
+        return 1;
+    }
+    if (g_story_storage_count <= storage_before) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: rematch gave no reward storage=%d before=%d\n",
+                g_story_storage_count, storage_before);
+        return 1;
+    }
+
+    /* Losing a rematch keeps progress and the selected foe (so it can be retried). */
+    g_story_progress = 3;
+    g_story_duel_index = 1;
+    g_story_battle_active = 1;
+    g_b_result = -1;
+    story_return_to_map_after_duel();
+    if (g_story_progress != 3 || g_story_duel_index != 1 || g_i_state != WAIFU_I_STORY_MAP) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: loss progress=%d duel=%d state=%d\n",
+                g_story_progress, g_story_duel_index, (int)g_i_state);
+        return 1;
+    }
+
+    /* Clearing the final frontier triggers the ending rather than the map. */
+    g_story_progress = STORY_MAX_DUELS - 1;
+    g_story_duel_index = STORY_MAX_DUELS - 1;
+    g_story_battle_active = 1;
+    g_b_result = 1;
+    story_return_to_map_after_duel();
+    if (g_i_state != WAIFU_I_STORY_ENDING || g_story_battle_active) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: final win state=%d active=%d\n",
+                (int)g_i_state, g_story_battle_active);
+        return 1;
+    }
+
+    printf("REGRESSION story_rematch OK frontier+rematch+loss+ending\n");
     return 0;
 }
 
@@ -11690,6 +11879,7 @@ static void debug_setup_asset_load_demo(const char *name)
         if (duel < 0) duel = 0;
         if (duel >= STORY_MAX_DUELS) duel = STORY_MAX_DUELS - 1;
         g_story_duel_index = duel;
+        if (g_story_progress < duel) g_story_progress = duel;
         g_story_plaza_line = 0;
         request_story_duel_assets();
         enter_state_after_assets(WAIFU_I_STORY_PLAZA);
@@ -11878,6 +12068,7 @@ int main(int argc, char **argv)
     int regression_card_check = 0;
     int regression_result_music = 0;
     int regression_sanctum_entry = 0;
+    int regression_story_rematch = 0;
     int regression_thunder_support = 0;
     int regression_trap_counter = 0;
     int regression_fusion_equip = 0;
@@ -11907,10 +12098,11 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--regression-card-check-cache")) regression_card_check = 1;
         else if (!strcmp(argv[i], "--regression-result-music")) regression_result_music = 1;
         else if (!strcmp(argv[i], "--regression-sanctum-entry")) regression_sanctum_entry = 1;
+        else if (!strcmp(argv[i], "--regression-story-rematch")) regression_story_rematch = 1;
         else if (!strcmp(argv[i], "--regression-thunder-support")) regression_thunder_support = 1;
         else if (!strcmp(argv[i], "--regression-trap-counter")) regression_trap_counter = 1;
         else if (!strcmp(argv[i], "--regression-fusion-equip")) regression_fusion_equip = 1;
-        else if (!strcmp(argv[i], "--regression-story-all")) { regression_story_save = 1; regression_story_duels = 1; regression_card_check = 1; regression_result_music = 1; regression_sanctum_entry = 1; regression_thunder_support = 1; regression_trap_counter = 1; regression_fusion_equip = 1; }
+        else if (!strcmp(argv[i], "--regression-story-all")) { regression_story_save = 1; regression_story_duels = 1; regression_card_check = 1; regression_result_music = 1; regression_sanctum_entry = 1; regression_story_rematch = 1; regression_thunder_support = 1; regression_trap_counter = 1; regression_fusion_equip = 1; }
 #endif
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
         else if (!strcmp(argv[i], "--profile-render")) g_profile_render_enabled = 1;
@@ -11924,13 +12116,14 @@ int main(int argc, char **argv)
     waifu_fm_init();
 
 #ifdef WAIFU_FM_HEADLESS_TESTS
-    if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music || regression_sanctum_entry || regression_thunder_support || regression_trap_counter || regression_fusion_equip) {
+    if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music || regression_sanctum_entry || regression_story_rematch || regression_thunder_support || regression_trap_counter || regression_fusion_equip) {
         int rc = 0;
         if (regression_story_save) rc |= debug_regression_story_save_roundtrip();
         if (regression_story_duels) rc |= debug_regression_story_duel_loads();
         if (regression_card_check) rc |= debug_regression_card_check_cache_no_cd();
         if (regression_result_music) rc |= debug_regression_result_music_tracks();
         if (regression_sanctum_entry) rc |= debug_regression_sanctum_editor_battle_entry();
+        if (regression_story_rematch) rc |= debug_regression_story_rematch();
         if (regression_thunder_support) rc |= debug_regression_thunder_support();
         if (regression_trap_counter) rc |= debug_regression_trap_counter();
         if (regression_fusion_equip) rc |= debug_regression_fusion_equip_only();

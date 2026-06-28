@@ -1792,7 +1792,7 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
         if (g_vdc_overlay_prompt_visible) {
             pcfx_vdc_overlay_print(7, 23, "PRESS RUN TO START", 22);
         }
-        pcfx_vdc_overlay_print_centered(24, "(C) 2026 GAMEBLABLA");
+        pcfx_vdc_overlay_print_centered(25, "(C) 2026 GAMEBLABLA");
         break;
 
     case WAIFU_PCFX_OVERLAY_MENU:
