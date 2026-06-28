@@ -1126,6 +1126,8 @@ static int g_vdc_overlay_has_save = 0;
 static int g_vdc_overlay_ending_page = 0;
 static int g_vdc_overlay_ending_prompt_visible = 1;
 static int g_vdc_overlay_ending_visible_chars = 255;
+static char g_vdc_overlay_ending_name[8] = "SERENA";
+static int g_vdc_overlay_ending_name_len = 6;
 static int g_vdc_overlay_menu_selected = 1;
 static int g_vdc_overlay_load_selected = 0;
 static int g_vdc_overlay_load_internal_has = 0;
@@ -1509,7 +1511,6 @@ static void pcfx_vdc_sanctum_draw_overlay(WaifuPcfxSanctumOverlay overlay, int v
         pcfx_vdc_sanctum_print(18, 16, value == 0 ? "> SAVE" : "  SAVE", 7);
         pcfx_vdc_sanctum_print(18, 18, value == 1 ? "> DECK EDITOR" : "  DECK EDITOR", 14);
         pcfx_vdc_sanctum_print(18, 20, value == 2 ? "> BACK" : "  BACK", 7);
-        pcfx_vdc_sanctum_print(16, 25, "A/RUN SELECT  B BACK", 22);
         break;
     }
 }
@@ -1837,7 +1838,7 @@ static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video)
     {
         int visible_chars = g_vdc_overlay_ending_visible_chars;
         pcfx_vdc_overlay_clear_rect(0, 18, WAIFU_PCFX_VDC_VISIBLE_W, 10);
-        if (visible_chars > 0) pcfx_vdc_overlay_print(2, 19, "SERENA", 6);
+        if (visible_chars > 0) pcfx_vdc_overlay_print(2, 19, g_vdc_overlay_ending_name, g_vdc_overlay_ending_name_len);
         switch (g_vdc_overlay_ending_page) {
         case 1:
             pcfx_vdc_overlay_print_story_line(2, 21, "I FINALLY DEFEATED THEM.", 28, &visible_chars);
@@ -1925,21 +1926,38 @@ void waifu_pcfx_video_overlay_load_menu(int selected, int internal_has_save, int
     }
 }
 
-void waifu_pcfx_video_overlay_ending_story(int page, int prompt_visible, int visible_chars)
+void waifu_pcfx_video_overlay_ending_story(const char *name, int page, int prompt_visible, int visible_chars)
 {
+    char name_buf[8];
+    int name_len = 0;
     if (page < 0) page = 0;
     if (page > 3) page = 3;
     prompt_visible = prompt_visible ? 1 : 0;
     if (visible_chars < 0) visible_chars = 0;
     if (visible_chars > 255) visible_chars = 255;
+    if (name) {
+        while (name_len < (int)sizeof(name_buf) - 1 && name[name_len]) {
+            name_buf[name_len] = name[name_len];
+            ++name_len;
+        }
+    }
+    if (name_len == 0) {
+        name_buf[0] = 'S'; name_buf[1] = 'E'; name_buf[2] = 'R'; name_buf[3] = 'E';
+        name_buf[4] = 'N'; name_buf[5] = 'A'; name_len = 6;
+    }
+    name_buf[name_len] = '\0';
     if (g_vdc_overlay_mode != WAIFU_PCFX_OVERLAY_ENDING_STORY ||
         g_vdc_overlay_ending_page != page ||
         g_vdc_overlay_ending_prompt_visible != prompt_visible ||
-        g_vdc_overlay_ending_visible_chars != visible_chars) {
+        g_vdc_overlay_ending_visible_chars != visible_chars ||
+        g_vdc_overlay_ending_name_len != name_len ||
+        memcmp(g_vdc_overlay_ending_name, name_buf, (size_t)name_len) != 0) {
         g_vdc_overlay_mode = WAIFU_PCFX_OVERLAY_ENDING_STORY;
         g_vdc_overlay_ending_page = page;
         g_vdc_overlay_ending_prompt_visible = prompt_visible;
         g_vdc_overlay_ending_visible_chars = visible_chars;
+        memcpy(g_vdc_overlay_ending_name, name_buf, (size_t)(name_len + 1));
+        g_vdc_overlay_ending_name_len = name_len;
         g_vdc_overlay_dirty = 1;
     }
 }

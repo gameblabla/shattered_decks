@@ -99,16 +99,31 @@ static int defender_passive(const WaifuAiCardView *defender)
     return defender->defense;
 }
 
-static int can_attack_known_target_without_loss(const WaifuAiCardView *attacker, const WaifuAiCardView *defender)
+/* Life points the COM attacker would lose in this battle. A passive (defense)
+   defender never destroys the attacker, it only deals the value gap when it is
+   the stronger body; an attack-position defender deals the gap the same way. */
+static int com_attack_self_damage(const WaifuAiCardView *attacker, const WaifuAiCardView *defender)
 {
     int value = defender_passive(defender) ? defender->def : defender->atk;
-    return attacker->atk >= value;
+    return attacker->atk < value ? value - attacker->atk : 0;
 }
 
-static int can_attack_face_down_attack_target(const WaifuAiState *s, const WaifuAiCardView *attacker, const WaifuAiCardView *defender)
+/* Every live player monster sits in defense position and at least one of them is
+   face-down: rather than stalling behind its own line, the COM should probe the
+   wall by swinging into a hidden defender. */
+static int player_wall_all_defense_face_down(const WaifuAiState *s)
 {
-    (void)defender;
-    return attacker->atk >= s->deck_attack_threshold;
+    int i;
+    int live = 0;
+    int face_down_defense = 0;
+    for (i = 0; i < WAIFU_AI_FIELD; ++i) {
+        const WaifuAiCardView *p = &s->player_field[i];
+        if (!is_monster(s, p->card_id)) continue;
+        ++live;
+        if (!p->defense) return 0; /* an attack-position card breaks the wall */
+        if (!p->faceup) face_down_defense = 1;
+    }
+    return live > 0 && face_down_defense;
 }
 
 static int target_score(const WaifuAiCardView *attacker, const WaifuAiCardView *defender)
@@ -128,22 +143,42 @@ static int choose_attack_target(const WaifuAiState *s, int attacker_slot)
     int i;
     int best_slot = -1;
     int best_score = -999999;
+    int probe_wall;
     if (attacker_slot < 0 || attacker_slot >= WAIFU_AI_FIELD) return -1;
     attacker = &s->com_field[attacker_slot];
     if (!is_monster(s, attacker->card_id) || attacker->defense || attacker->attacked) return -1;
 
+    probe_wall = player_wall_all_defense_face_down(s);
+
     for (i = 0; i < WAIFU_AI_FIELD; ++i) {
         const WaifuAiCardView *defender = &s->player_field[i];
+        int value;
         int legal = 0;
         int score;
         if (!is_monster(s, defender->card_id)) continue;
-        if (!defender->faceup && !defender->defense) {
-            legal = can_attack_face_down_attack_target(s, attacker, defender);
+        /* Never walk into certain defeat: skip any attack whose self-inflicted
+           battle damage would wipe out the COM's remaining life points. */
+        if (com_attack_self_damage(attacker, defender) >= s->com_lp) continue;
+
+        value = defender_passive(defender) ? defender->def : defender->atk;
+        if (defender_passive(defender)) {
+            /* Defense wall: worth it when the swing destroys the defender, or as
+               a probe into a hidden card when the whole line is face-down. */
+            if (attacker->atk > value) legal = 1;
+            else if (probe_wall && !defender->faceup) legal = 1;
+        } else if (!defender->faceup) {
+            /* Face-down attack-position card: swing with a body big enough to be
+               worth the gamble, or one that already beats the revealed stats. */
+            legal = attacker->atk >= s->deck_attack_threshold || attacker->atk >= value;
         } else {
-            legal = can_attack_known_target_without_loss(attacker, defender);
+            /* Known attack-position card: attack when we at least trade evenly
+               (self-damage is already bounded non-lethal above). */
+            legal = attacker->atk >= value;
         }
         if (!legal) continue;
+
         score = target_score(attacker, defender);
+        if (probe_wall && defender_passive(defender) && !defender->faceup) score += 300;
         if (score > best_score) {
             best_score = score;
             best_slot = i;
