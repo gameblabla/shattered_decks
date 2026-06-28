@@ -39,7 +39,6 @@ PCFX_SRCS_C := \
   src/platform/pcfx/waifu_pcfx_input.c \
   src/platform/pcfx/waifu_pcfx_audio.c \
   src/platform/pcfx/waifu_pcfx_cdrom.c \
-  src/platform/pcfx/pcfx_bkupfat.c \
   src/platform/pcfx/pcfx_biosfs.c \
   src/main.c \
   src/game/ai.c \
