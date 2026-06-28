@@ -4493,6 +4493,9 @@ static int g_b_place_hand = -1;
 static int g_b_place_slot = -1;
 static int g_b_place_card = -1;
 static int g_b_place_defense = 0;
+/* When set, the IB_PLAYER_PLACE flying-card animation is setting a face-down
+   Trap onto the support row instead of summoning a monster. */
+static int g_b_place_trap = 0;
 static int g_b_com_equip_pending_hand = -1;
 static int g_b_equip_owner = 0; /* 0 player, 1 COM */
 static int g_b_equip_hand = -1;
@@ -6817,6 +6820,7 @@ static void init_battle_state(void)
     g_b_place_slot = -1;
     g_b_place_card = -1;
     g_b_place_defense = 0;
+    g_b_place_trap = 0;
     g_b_com_equip_pending_hand = -1;
     g_b_equip_hand = -1;
     g_b_equip_slot = -1;
@@ -7697,11 +7701,11 @@ static void draw_player_one_shot_support_anim(void)
     clear_screen(IDX_BLACK);
     draw_support_big_art_112(72, 32);
     draw_centered_text(154, support_card_name(g_b_support_card), IDX_GOLD_HI, IDX_BLACK);
+    /* The card and its effect text share one scene: keep the card fully visible
+       the whole time and let the text appear over it.  Do not dip to black in
+       between -- a fade belongs only on the transition to the next scene (e.g.
+       the IB_PLAYER_DRAW slide that follows an Ancient Draw). */
     if (f < reveal) {
-        if (f >= reveal - WAIFU_THUNDER_FADE_FRAMES) {
-            apply_black_dither_fade(Q8_ONE - q8_ratio(f - (reveal - WAIFU_THUNDER_FADE_FRAMES),
-                                                      WAIFU_THUNDER_FADE_FRAMES));
-        }
         return;
     }
     if (g_b_support_kind == 2) {
@@ -8637,16 +8641,20 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                     set_battle_phase(IB_PLAYER_EQUIP_TARGET);
                 } else if (is_trap_support_card(selected_card)) {
                     /* Set the Trap face-down on the support (equip) row; it
-                       auto-fires when a COM monster declares an attack. */
+                       auto-fires when a COM monster declares an attack.  Run the
+                       same flying-card placement animation as a monster summon
+                       (back=2 flips it face-down on landing) instead of snapping
+                       it straight onto the field. */
                     int free_slot = first_free_player_equip_slot();
                     if (free_slot >= 0) {
                         clear_player_fusion_queue();
-                        g_i_player_equip_field[free_slot] = selected_card;
-                        g_i_player_equip_target[free_slot] = -1;
-                        g_i_player_used[g_b_selected_hand] = 1;
-                        g_b_cards_used++;
+                        g_b_place_hand = g_b_selected_hand;
+                        g_b_place_slot = free_slot;
+                        g_b_place_card = selected_card;
+                        g_b_place_defense = 0;
+                        g_b_place_trap = 1;
                         g_b_player_hand_intro_pending = 0;
-                        waifu_sound_play(WAIFU_SOUND_CARD_PLACED);
+                        set_battle_phase(IB_PLAYER_PLACE);
                     }
                 }
                 break;
@@ -8658,6 +8666,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 g_b_place_slot = slot;
                 g_b_place_card = selected_card;
                 g_b_place_defense = 0;
+                g_b_place_trap = 0;
                 set_battle_phase(IB_PLAYER_PLACE);
                 break;
             }
@@ -8707,13 +8716,24 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (press_b || press_a || press_start) { set_battle_phase(IB_PLAYER_TOP); }
         break;
 
-    case IB_PLAYER_PLACE:
+    case IB_PLAYER_PLACE: {
+        int place_row = g_b_place_trap ? (PLAYER_CARD_ROW + 1) : PLAYER_CARD_ROW;
         draw_interactive_base(placement_camera());
-        draw_zone_cursor(placement_camera(), g_b_place_slot, PLAYER_CARD_ROW);
-        draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, PLAYER_CARD_ROW, g_b_phase_frame, 0, WAIFU_PCFX_PLACE_FRAMES, 2);
+        draw_zone_cursor(placement_camera(), g_b_place_slot, place_row);
+        draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, place_row, g_b_phase_frame, 0, WAIFU_PCFX_PLACE_FRAMES, 2);
         draw_interactive_player_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(g_b_phase_frame, WAIFU_PCFX_PLACE_SETTLE_FRAMES))), 1);
-        draw_bottom_info(g_b_place_card, "PLACE");
+        draw_bottom_info(g_b_place_card, g_b_place_trap ? "SET" : "PLACE");
         if (battle_animation_event_complete(WAIFU_PCFX_PLACE_FRAMES)) {
+            if (g_b_place_trap) {
+                g_i_player_equip_field[g_b_place_slot] = g_b_place_card;
+                g_i_player_equip_target[g_b_place_slot] = -1;
+                g_i_player_used[g_b_place_hand] = 1;
+                g_b_cards_used++;
+                g_b_place_trap = 0;
+                waifu_sound_play(WAIFU_SOUND_CARD_PLACED);
+                set_battle_phase(IB_PLAYER_HAND);
+                break;
+            }
             if (!is_monster_card(g_b_place_card)) { g_i_player_used[g_b_place_hand] = 1; set_battle_phase(IB_PLAYER_HAND); break; }
             g_i_player_field[g_b_place_slot] = g_b_place_card;
             g_i_player_faceup[g_b_place_slot] = 0;
@@ -8729,6 +8749,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             set_battle_phase(IB_PLAYER_TOP);
         }
         break;
+    }
 
     case IB_PLAYER_EQUIP_TARGET:
         if (press_b) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); break; }
