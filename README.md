@@ -1,11 +1,6 @@
 # Shattered Decks
 
 Shattered Decks is a card homebrew game for the NEC PC-FX, inspired by Forbidden Memories except with monsters based on anime women.
-You play as Serena, Serena remembers three things:
-
-gold dust on the market stones,
-a sealed box of cards calling her name,
-and a black river opening beneath her feet every night.
 
 The story follows Serena through a desert dreamscape of forgotten courts, sanctums, mirages, gates, and burning ruins. 
 Her deck is tied to the Twilight Seal, a chain once used to close the Gate Beneath the Sands. If the seal is claimed by the abyss first, the old ruins will open again.
