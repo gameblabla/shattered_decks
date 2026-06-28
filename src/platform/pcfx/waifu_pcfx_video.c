@@ -1498,7 +1498,6 @@ static void pcfx_vdc_sanctum_draw_overlay(WaifuPcfxSanctumOverlay overlay, int v
         pcfx_vdc_sanctum_print(18, 12, value == 0 ? "> INTERNAL" : "  INTERNAL", 11);
         pcfx_vdc_sanctum_print(18, 14, value == 1 ? "> FX-BMP" : "  FX-BMP", 9);
         pcfx_vdc_sanctum_print(18, 16, value == 2 ? "> BACK" : "  BACK", 7);
-        pcfx_vdc_sanctum_print(16, 25, "A/RUN SELECT  B BACK", 22);
         break;
     case WAIFU_PCFX_SANCTUM_OVERLAY_MENU:
     default:

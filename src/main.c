@@ -4425,7 +4425,10 @@ typedef enum WaifuBattlePhase {
        animation runs. */
     IB_COM_EQUIP_SELECT,
     IB_COM_THUNDER_ANIM,
-    IB_PLAYER_SUPPORT_ANIM
+    IB_PLAYER_SUPPORT_ANIM,
+    /* Story-win reward reveal shown after the victory tally: displays the card
+       the player just earned before returning to the sanctum map. */
+    IB_REWARD
 } WaifuBattlePhase;
 
 #define I_HAND 5
@@ -4546,6 +4549,9 @@ static int g_b_battle_damage_owner = -1; /* 0 player, 1 COM, -1 none */
 static char g_b_damage_text[16] = "0";
 static int g_b_com_return_fade = 0;
 static int g_b_result = 0;
+/* Card earned for a story win, computed once at the victory tally so the reward
+   reveal and the storage award show the same card.  CARD_NONE when unset. */
+static int g_b_reward_card = CARD_NONE;
 static int g_b_turns = 1;
 static int g_b_cards_used = 0;
 static int g_b_player_fused_this_turn = 0;
@@ -5611,6 +5617,9 @@ static int battle_phase_accepts_player_input(void)
         return 1;
     case IB_TALLY:
         return g_b_phase_frame >= 20;
+    case IB_REWARD:
+        /* Brief lock so the earned card is actually seen before RUN dismisses it. */
+        return g_b_phase_frame >= 6;
     default:
         return 0;
     }
@@ -6043,50 +6052,71 @@ static int reward_card_is_restricted(int card)
            card == WAIFU_CARD_ID_GARGOYLE_GIRL;
 }
 
-static int story_reward_drop_card(void)
+/* Battle grade of the duel that just ended, used to scale the reward odds. */
+static char current_battle_rank(void)
 {
+    int won = g_b_result >= 0;
+    int score = 0;
+    return battle_rank_from_stats(won, won ? g_you_lp : 0, g_b_cards_used, g_b_turns, &score);
+}
+
+/* Roll a story win reward whose quality scales with the battle rank.  strong_pm
+ * is the per-mille chance of a rare/strong card, equip_pm the chance of an equip
+ * support; the remainder is a common monster.  The 1% strong base (B rank)
+ * doubles to 2% at S and is 1.5% at A; C is halved and D yields no rare drop. */
+static int story_reward_drop_card_ranked(char rank)
+{
+    int strong_pm, equip_pm;
+    uint32_t roll;
+    int tries;
+
+    switch (rank) {
+    case 'S': strong_pm = 20; equip_pm = 150; break;
+    case 'A': strong_pm = 15; equip_pm = 120; break;
+    case 'B': strong_pm = 10; equip_pm = 100; break;
+    case 'C': strong_pm =  5; equip_pm =  60; break;
+    default:  strong_pm =  0; equip_pm =  30; break; /* D and below: no rare */
+    }
+
 #ifdef WAIFU_FM_HEADLESS_TESTS
     int seed = story_hash_name() ^ (g_story_duel_index * 131 + g_b_turns * 17 + g_b_cards_used * 29 + 0x2468);
-    int roll = story_prng_next(&seed) % 100;
+    #define REWARD_RNG() ((uint32_t)story_prng_next(&seed))
 #else
-    int roll;
     ensure_battle_deck_rng_seeded();
-    roll = (int)(waifu_deck_rng_next(&g_i_deck_rng) % 100u);
+    #define REWARD_RNG() (waifu_deck_rng_next(&g_i_deck_rng))
 #endif
-    /* Gargoyle Girl: a 1% drop, and only after beating the second-to-last
-     * opponent. This is the only way the player can obtain her. */
-    if (g_story_duel_index == STORY_MAX_DUELS - 2) {
-#ifdef WAIFU_FM_HEADLESS_TESTS
-        if ((story_prng_next(&seed) % 100) == 0) return WAIFU_CARD_ID_GARGOYLE_GIRL;
-#else
-        if ((waifu_deck_rng_next(&g_i_deck_rng) % 100u) == 0u) return WAIFU_CARD_ID_GARGOYLE_GIRL;
-#endif
+
+    /* Gargoyle Girl: still only obtainable after the second-to-last opponent,
+     * now at the same rank-scaled rare odds (so a D-rank win never yields her). */
+    if (g_story_duel_index == STORY_MAX_DUELS - 2 && strong_pm > 0 &&
+        (REWARD_RNG() % 1000u) < (uint32_t)strong_pm) {
+        return WAIFU_CARD_ID_GARGOYLE_GIRL;
     }
-    if (roll == 0) {
-#ifdef WAIFU_FM_HEADLESS_TESTS
-        return waifu_story_reward_strong_pool[story_prng_next(&seed) % WAIFU_STORY_REWARD_STRONG_POOL_COUNT];
-#else
-        return waifu_story_reward_strong_pool[waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_STORY_REWARD_STRONG_POOL_COUNT];
-#endif
+
+    roll = REWARD_RNG() % 1000u;
+    if ((int)roll < strong_pm) {
+        return waifu_story_reward_strong_pool[REWARD_RNG() % (uint32_t)WAIFU_STORY_REWARD_STRONG_POOL_COUNT];
     }
-    if (roll < 11) {
+    if ((int)roll < strong_pm + equip_pm) {
         return SUPPORT_EQUIP_CARD_ID;
     }
-    for (int tries = 0; tries < 64; ++tries) {
-#ifdef WAIFU_FM_HEADLESS_TESTS
-        int card = story_prng_next(&seed) % WAIFU_CARD_COUNT;
-#else
-        int card = (int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT);
-#endif
+    for (tries = 0; tries < 64; ++tries) {
+        int card = (int)(REWARD_RNG() % (uint32_t)WAIFU_CARD_COUNT);
         if (!reward_card_is_restricted(card)) return card;
     }
+    #undef REWARD_RNG
     return WAIFU_CARD_ID_RAT;
 }
 
 static void award_story_win_drop(void)
 {
+    int card = g_b_reward_card;
+    /* Use the card already revealed on the victory screen; fall back to a fresh
+       rank-scaled roll when awarded outside the interactive flow (e.g. tests). */
+    if (card == CARD_NONE) card = story_reward_drop_card_ranked(current_battle_rank());
+    g_b_reward_card = CARD_NONE;
     if (g_story_storage_count >= STORY_STORAGE_SIZE) return;
-    append_card_to(g_story_storage, &g_story_storage_count, STORY_STORAGE_SIZE, story_reward_drop_card());
+    append_card_to(g_story_storage, &g_story_storage_count, STORY_STORAGE_SIZE, card);
 }
 
 #ifdef WAIFU_FM_PCFX
@@ -6669,6 +6699,7 @@ static WaifuMusicTrack music_track_for_current_state(void)
         return WAIFU_MUSIC_DECK_EDITOR;
     case WAIFU_I_BATTLE:
         if (g_b_phase == IB_TALLY) return (g_b_result < 0) ? WAIFU_MUSIC_LOST : WAIFU_MUSIC_RESULTS;
+        if (g_b_phase == IB_REWARD) return WAIFU_MUSIC_RESULTS;
         if (g_b_phase == IB_RESULT) {
             /* Result music intentionally starts only after the frozen-field UI
                clear phase.  set_battle_phase(IB_RESULT) therefore leaves the
@@ -6856,6 +6887,7 @@ static void init_battle_state(void)
     for (i = 0; i < I_HAND; ++i) g_b_draw_slots[i] = -1;
     strcpy(g_b_damage_text, "0");
     g_b_result = 0;
+    g_b_reward_card = CARD_NONE;
     g_b_turns = 1;
     g_b_cards_used = 0;
     g_b_player_monster_played_this_turn = 0;
@@ -7960,7 +7992,45 @@ static void draw_interactive_tally(void)
     fmt_i32_dec(line, (int)sizeof(line), g_i_player_deck_left); draw_text(55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK); draw_text(176, 130, line, IDX_GOLD_HI, IDX_BLACK);
     fmt_i32_dec(line, (int)sizeof(line), score); draw_text(55, 148, "SCORE", IDX_WHITE, IDX_BLACK); draw_text(152, 148, line, IDX_GOLD_HI, IDX_BLACK);
     waifu_str_copy(line, (int)sizeof(line), "RANK "); waifu_str_cat_char(line, (int)sizeof(line), rank); draw_centered_text_scaled(170, line, 2, IDX_GOLD_HI, IDX_BLACK);
-    draw_text_small(50, 210, g_story_battle_active ? "RUN: RETURN TO MAP" : "RUN: RETURN TO TITLE", IDX_WHITE, IDX_BLACK);
+    draw_text_small(50, 210, (g_story_battle_active && won) ? "RUN: CLAIM REWARD" :
+                              (g_story_battle_active ? "RUN: RETURN TO MAP" : "RUN: RETURN TO TITLE"),
+                    IDX_WHITE, IDX_BLACK);
+}
+
+/* Story-win reward reveal: shows the card the player just earned (already rolled
+   into g_b_reward_card at the tally) before it is added to storage. */
+static void draw_interactive_reward(void)
+{
+    int card = g_b_reward_card;
+    const char *name;
+    waifu_fm_use_common_palette();
+    clear_screen(IDX_BLACK);
+    draw_panel_rect(31, 18, 194, 200, IDX_UI_DARK);
+    draw_centered_text_scaled(26, "CARD WON!", 1, IDX_GOLD_HI, IDX_BLACK);
+    hline(45, 210, 44, IDX_UI_LIGHT);
+
+#if defined(WAIFU_FM_PCFX)
+    /* Static held screen: render big art through the framebuffer, not the
+       presenter's direct-KRAM bypass (see draw_interactive_card_preview). */
+    ++g_big_art_direct_note_suppressed;
+#endif
+    if (is_support_card(card)) {
+        int trap = is_trap_support_card(card);
+        draw_support_big_art_112(72, 54);
+        rect_outline(71, 53, 114, 114, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
+        rect_outline(72, 54, 112, 112, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
+    } else if (is_monster_card(card)) {
+        draw_card_big_art_112(card, 72, 54);
+    }
+#if defined(WAIFU_FM_PCFX)
+    --g_big_art_direct_note_suppressed;
+#endif
+
+    name = is_support_card(card) ? support_card_name(card)
+         : (is_monster_card(card) ? waifu_card_names[card] : "???");
+    draw_centered_text(174, name, IDX_WHITE, IDX_BLACK);
+    draw_centered_text(191, "ADDED TO STORAGE", IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small(88, 202, "RUN: CONTINUE", IDX_WHITE, IDX_BLACK);
 }
 
 static int draw_replacement_cards_to_hand(void)
@@ -9096,15 +9166,27 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_TALLY:
+        /* Roll the rank-scaled story reward once, here, so the reveal screen and
+           the storage award (committed in story_return_to_map_after_duel) agree. */
+        if (g_story_battle_active && g_b_result >= 0 && g_b_reward_card == CARD_NONE) {
+            g_b_reward_card = story_reward_drop_card_ranked(current_battle_rank());
+        }
         draw_interactive_tally();
         if (press_start || press_a) {
-            if (g_story_battle_active) {
-                story_return_to_map_after_duel();
+            if (g_story_battle_active && g_b_result >= 0) {
+                set_battle_phase(IB_REWARD);   /* show the earned card first */
+            } else if (g_story_battle_active) {
+                story_return_to_map_after_duel(); /* loss: no reward */
             } else {
                 init_battle_state();
                 enter_title_after_assets();
             }
         }
+        break;
+
+    case IB_REWARD:
+        draw_interactive_reward();
+        if (press_start || press_a) story_return_to_map_after_duel();
         break;
     }
 
@@ -10020,7 +10102,6 @@ static void draw_story_save_device_screen(void)
     draw_text(151, 106, g_i_save_device_sel == 0 ? "> INTERNAL" : "  INTERNAL", g_i_save_device_sel == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(151, 126, g_i_save_device_sel == 1 ? "> FX-BMP" : "  FX-BMP", g_i_save_device_sel == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(151, 146, g_i_save_device_sel == 2 ? "> BACK" : "  BACK", g_i_save_device_sel == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text_small(128, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
 }
 #endif
 
@@ -10916,6 +10997,24 @@ static void debug_setup_music_demo_state(const char *name)
         g_b_result = 1;
         g_b_phase = IB_TALLY;
         g_b_phase_frame = 0;
+    } else if (!strcmp(name, "reward")) {
+        init_battle_state();
+        g_story_battle_active = 1;
+        g_story_duel_index = 1;
+        g_i_state = WAIFU_I_BATTLE;
+        g_b_result = 1;
+        g_b_reward_card = WAIFU_CARD_ID_GARGOYLE_GIRL;
+        g_b_phase = IB_REWARD;
+        g_b_phase_frame = 10;
+    } else if (!strcmp(name, "reward-support")) {
+        init_battle_state();
+        g_story_battle_active = 1;
+        g_story_duel_index = 1;
+        g_i_state = WAIFU_I_BATTLE;
+        g_b_result = 1;
+        g_b_reward_card = SUPPORT_EQUIP_CARD_ID;
+        g_b_phase = IB_REWARD;
+        g_b_phase_frame = 10;
     } else if (!strcmp(name, "ending")) {
         g_story_ending_line = 0;
         g_story_ending_erasing = 0;
@@ -11162,7 +11261,13 @@ static int debug_regression_sanctum_editor_battle_entry(void)
     g_b_phase_frame = 20;
     memset(&in, 0, sizeof(in));
     in.start = 1;
-    waifu_fm_step(&in);
+    waifu_fm_step(&in);                       /* tally -> reward reveal */
+    if (g_b_phase == IB_REWARD) {             /* claim the earned card, then continue */
+        int rf;
+        memset(&in, 0, sizeof(in));
+        for (rf = 0; rf < 10; ++rf) waifu_fm_step(&in); /* release START, pass reveal lock */
+        in.start = 1; waifu_fm_step(&in);               /* reward -> map */
+    }
 
     if (g_i_state == WAIFU_I_TITLE || g_i_state == WAIFU_I_MENU || g_story_battle_active ||
         g_story_duel_index != 2 || g_story_progress != 2) {
