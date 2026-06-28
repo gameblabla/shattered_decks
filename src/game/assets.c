@@ -190,7 +190,15 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
 #endif
 #endif
 #define PORTRAIT_ONE_BYTES ((size_t)WAIFU_STORY_PORTRAIT_W * (size_t)WAIFU_STORY_PORTRAIT_H)
-#define PORTRAIT_SLOT_BYTES (PORTRAIT_ONE_BYTES * 2u)
+#ifndef WAIFU_STORY_PORTRAIT_CD_STRIDE
+#define WAIFU_STORY_PORTRAIT_CD_STRIDE ((WAIFU_STORY_PORTRAIT_W * WAIFU_STORY_PORTRAIT_H + PCFX_CD_SECTOR_BYTES - 1u) & ~(PCFX_CD_SECTOR_BYTES - 1u))
+#endif
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+#define PORTRAIT_PLANE_BYTES ((size_t)WAIFU_STORY_PORTRAIT_CD_STRIDE)
+#else
+#define PORTRAIT_PLANE_BYTES PORTRAIT_ONE_BYTES
+#endif
+#define PORTRAIT_SLOT_BYTES (PORTRAIT_PLANE_BYTES * 2u)
 #define PORTRAIT_SLOT_COUNT 2
 
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
@@ -239,7 +247,7 @@ static int find_big_cache_slot(int card_id);
 static int big_cache_loaded_count(void);
 static void prewarm_list_add_all_monster_big_art(void);
 static uint8_t *stage_portrait_pixels_ptr(int slot) { return g_asset_stage_ram + ((size_t)slot * PORTRAIT_SLOT_BYTES); }
-static uint8_t *stage_portrait_mask_ptr(int slot) { return stage_portrait_pixels_ptr(slot) + PORTRAIT_ONE_BYTES; }
+static uint8_t *stage_portrait_mask_ptr(int slot) { return stage_portrait_pixels_ptr(slot) + PORTRAIT_PLANE_BYTES; }
 #endif
 
 static void note_high_water(size_t used)
@@ -623,9 +631,9 @@ static int load_requested_portrait_slot(int slot)
     size_t off;
     if (portrait_id < 0) return 1;
     if (portrait_id >= WAIFU_STORY_PORTRAIT_COUNT) return 0;
-    off = (size_t)portrait_id * PORTRAIT_ONE_BYTES;
-    if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAITS, stage_portrait_pixels_ptr(slot), off, PORTRAIT_ONE_BYTES)) return 0;
-    if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK, stage_portrait_mask_ptr(slot), off, PORTRAIT_ONE_BYTES)) return 0;
+    off = (size_t)portrait_id * PORTRAIT_PLANE_BYTES;
+    if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAITS, stage_portrait_pixels_ptr(slot), off, PORTRAIT_PLANE_BYTES)) return 0;
+    if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK, stage_portrait_mask_ptr(slot), off, PORTRAIT_PLANE_BYTES)) return 0;
     g_story_portrait_slot_id[slot] = portrait_id;
     add_ram_used(PORTRAIT_SLOT_BYTES);
     return 1;
