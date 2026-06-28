@@ -6542,6 +6542,14 @@ static void enter_battle_after_assets(void)
     enter_state_after_assets(WAIFU_I_BATTLE);
 }
 
+static void init_story_battle_state(void);
+
+static void enter_story_battle_after_assets(void)
+{
+    init_story_battle_state();
+    enter_battle_after_assets();
+}
+
 static WaifuMusicTrack story_battle_music_track(void)
 {
     if (!g_story_battle_active) return WAIFU_MUSIC_RANDOM_BATTLE;
@@ -9868,7 +9876,6 @@ static void draw_story_pyramid_menu(void)
     draw_text(151, 144, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(151, 164, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(139, 124 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
-    //draw_text_small(128, 202, "A/RUN SELECT   B BACK", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_story_save_screen(void)
@@ -10414,6 +10421,8 @@ void waifu_fm_step(const WaifuFmInput *input)
                 g_story_pyramid_cursor = 0;
                 g_i_state = WAIFU_I_STORY_PYRAMID;
                 g_i_frame = -1;
+            } else if (g_story_duel_index < g_story_progress) {
+                enter_story_battle_after_assets();
             } else {
                 g_story_plaza_line = 0;
                 g_i_state = WAIFU_I_STORY_TO_PLAZA;
@@ -10995,16 +11004,40 @@ static int debug_regression_sanctum_editor_battle_entry(void)
     in.start = 1;
     waifu_fm_step(&in);
     memset(&in, 0, sizeof(in));
-    for (guard = 0; guard < 900 && (g_i_state == WAIFU_I_LOADING_ASSETS || !waifu_assets_ready()); ++guard) {
+    for (guard = 0; guard < 120 && g_i_state == WAIFU_I_DECK_EDITOR_TO_PYRAMID; ++guard) {
+        waifu_fm_step(&in);
+    }
+
+    if (g_i_state != WAIFU_I_STORY_PYRAMID || g_story_battle_active || g_story_editor_from_pyramid ||
+        g_story_duel_index != 1 || g_story_progress != 1) {
+        fprintf(stderr, "REGRESSION sanctum_editor_battle_entry FAIL: sanctum return state=%d story=%d from_pyr=%d duel=%d progress=%d guard=%d\n",
+                (int)g_i_state, g_story_battle_active, g_story_editor_from_pyramid,
+                g_story_duel_index, g_story_progress, guard);
+        return 1;
+    }
+
+    g_story_editor_from_pyramid = 0;
+    g_story_battle_active = 0;
+    g_i_state = WAIFU_I_DECK_EDITOR;
+    g_i_frame = 0;
+
+    in.start = 1;
+    waifu_fm_step(&in);
+    memset(&in, 0, sizeof(in));
+    for (guard = 0; guard < 900 && (g_i_state == WAIFU_I_DECK_EDITOR_TO_BATTLE ||
+                                    g_i_state == WAIFU_I_LOADING_ASSETS ||
+                                    !waifu_assets_ready()); ++guard) {
         waifu_fm_step(&in);
     }
     for (int settle = 0; settle < 4; ++settle) waifu_fm_step(&in);
 
     if (g_i_state != WAIFU_I_BATTLE || !g_story_battle_active || g_story_editor_from_pyramid ||
-        g_story_duel_index != 1 || g_i_player_deck.count <= 0 || g_i_com_deck.count <= 0) {
-        fprintf(stderr, "REGRESSION sanctum_editor_battle_entry FAIL: state=%d story=%d from_pyr=%d duel=%d ready=%d pdeck=%d cdeck=%d guard=%d\n",
+        g_story_duel_index != 1 || g_story_progress != 1 ||
+        g_i_player_deck.count <= 0 || g_i_com_deck.count <= 0) {
+        fprintf(stderr, "REGRESSION sanctum_editor_battle_entry FAIL: story entry state=%d story=%d from_pyr=%d duel=%d progress=%d ready=%d pdeck=%d cdeck=%d guard=%d\n",
                 (int)g_i_state, g_story_battle_active, g_story_editor_from_pyramid,
-                g_story_duel_index, waifu_assets_ready(), g_i_player_deck.count, g_i_com_deck.count, guard);
+                g_story_duel_index, g_story_progress, waifu_assets_ready(),
+                g_i_player_deck.count, g_i_com_deck.count, guard);
         return 1;
     }
 
@@ -11076,6 +11109,18 @@ static int debug_regression_story_rematch(void)
     in.left = 1; waifu_fm_step(&in);              /* 3 -> 2 */
     if (g_story_duel_index != 2) {
         fprintf(stderr, "REGRESSION story_rematch FAIL: left-step duel=%d\n", g_story_duel_index);
+        return 1;
+    }
+    memset(&in, 0, sizeof(in)); waifu_fm_step(&in);
+    in.start = 1; waifu_fm_step(&in);
+    memset(&in, 0, sizeof(in));
+    for (int guard = 0; guard < 900 && (g_i_state == WAIFU_I_LOADING_ASSETS || !waifu_assets_ready()); ++guard) {
+        waifu_fm_step(&in);
+    }
+    if (g_i_state != WAIFU_I_BATTLE || !g_story_battle_active ||
+        g_story_duel_index != 2 || g_story_progress != 3) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: rematch entry state=%d active=%d duel=%d progress=%d ready=%d\n",
+                (int)g_i_state, g_story_battle_active, g_story_duel_index, g_story_progress, waifu_assets_ready());
         return 1;
     }
 
@@ -11487,6 +11532,27 @@ static int debug_regression_thunder_support(void)
     return 0;
 }
 
+static int debug_regression_prepare_battle_cards(const char *label)
+{
+    WaifuFmInput in;
+    int guard;
+
+    memset(&in, 0, sizeof(in));
+    waifu_fm_reset_interactive();
+    init_battle_state();
+    request_battle_cards_for_known_decks();
+    enter_state_after_assets(WAIFU_I_BATTLE);
+    for (guard = 0; guard < 1800 && g_i_state == WAIFU_I_LOADING_ASSETS; ++guard) {
+        waifu_fm_step(&in);
+    }
+    if (g_i_state != WAIFU_I_BATTLE || !waifu_assets_ready()) {
+        fprintf(stderr, "REGRESSION %s FAIL: card assets not ready state=%d ready=%d guard=%d\n",
+                label, (int)g_i_state, waifu_assets_ready(), guard);
+        return 0;
+    }
+    return 1;
+}
+
 static int debug_regression_trap_counter(void)
 {
     WaifuFmInput in;
@@ -11556,8 +11622,7 @@ static int debug_regression_trap_counter(void)
     /* --- Scenario 1: COM attacks a face-down player monster. The trap fires
        before the battle step: COM attacker is destroyed, the player's face-down
        defender is never revealed, no damage is dealt, control returns to COM. */
-    waifu_fm_reset_interactive();
-    init_battle_state();
+    if (!debug_regression_prepare_battle_cards("trap_counter")) return 1;
     g_i_state = WAIFU_I_BATTLE;
     for (int i = 0; i < I_FIELD; ++i) { clear_monster_slot(0, i); clear_monster_slot(1, i); }
     for (int i = 0; i < I_HAND; ++i) { g_i_player_used[i] = 1; g_i_com_used[i] = 1; }
@@ -11597,8 +11662,7 @@ static int debug_regression_trap_counter(void)
 
     /* --- Scenario 2: COM direct attack on the player's life points. The trap
        still fires and destroys the attacker; the player takes no damage. */
-    waifu_fm_reset_interactive();
-    init_battle_state();
+    if (!debug_regression_prepare_battle_cards("trap_counter")) return 1;
     g_i_state = WAIFU_I_BATTLE;
     for (int i = 0; i < I_FIELD; ++i) { clear_monster_slot(0, i); clear_monster_slot(1, i); }
     for (int i = 0; i < I_HAND; ++i) { g_i_player_used[i] = 1; g_i_com_used[i] = 1; }
@@ -11628,8 +11692,7 @@ static int debug_regression_trap_counter(void)
 
     /* --- Scenario 3: no trap in hand. A COM attack must resolve as a normal
        battle (the trap must not fire and the attacker survives the cut-in). */
-    waifu_fm_reset_interactive();
-    init_battle_state();
+    if (!debug_regression_prepare_battle_cards("trap_counter")) return 1;
     g_i_state = WAIFU_I_BATTLE;
     for (int i = 0; i < I_FIELD; ++i) { clear_monster_slot(0, i); clear_monster_slot(1, i); }
     for (int i = 0; i < I_HAND; ++i) { g_i_player_used[i] = 1; g_i_com_used[i] = 1; }
