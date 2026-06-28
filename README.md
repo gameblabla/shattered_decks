@@ -14,7 +14,7 @@ Her deck is tied to the Twilight Seal, a chain once used to close the Gate Benea
 
 The exact physical labels depend on the platform backend, but the game logic uses the following abstract inputs:
 
-# Input	General use
+# Controls
 D-pad / arrows	
 Move cursor, select menu entries, move field selector.
 
