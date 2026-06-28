@@ -39,8 +39,8 @@
 #ifndef CDDA_TRACK_VICTORY
 #define CDDA_TRACK_VICTORY 0
 #endif
-#ifndef CDDA_TRACK_YOULOST
-#define CDDA_TRACK_YOULOST 0
+#ifndef CDDA_TRACK_FAIL
+#define CDDA_TRACK_FAIL 0
 #endif
 
 struct WaifuPcfxAudio {
@@ -717,7 +717,7 @@ static uint8_t music_to_cdda_track(WaifuFmMusicTrack track)
     case WAIFU_FM_MUSIC_FINAL_BOSS:   return CDDA_TRACK_FINALBOSS;
     case WAIFU_FM_MUSIC_RANDOM_BATTLE:return CDDA_TRACK_BATTLE;
     case WAIFU_FM_MUSIC_RESULTS:      return CDDA_TRACK_VICTORY;
-    case WAIFU_FM_MUSIC_LOST:         return CDDA_TRACK_YOULOST;
+    case WAIFU_FM_MUSIC_LOST:         return CDDA_TRACK_FAIL;
     default:                          return 0;
     }
 }
