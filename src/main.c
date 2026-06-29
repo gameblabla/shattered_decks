@@ -1,8 +1,14 @@
-#include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+/* stdio/stdlib/ctype are used only by the headless runner + regression harness
+   (the headless platform's tooling, below the WAIFU_FM_NO_HEADLESS_MAIN guard).
+   The common game code has no stdio dependency, so a ROM/RAM target that defines
+   WAIFU_FM_NO_HEADLESS_MAIN compiles main.c without pulling any file/stdio API. */
+#ifndef WAIFU_FM_NO_HEADLESS_MAIN
+#include <stdio.h>
+#include <stdlib.h>
 #include <ctype.h>
+#endif
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
 #include <sys/time.h>
 #endif
@@ -146,6 +152,12 @@ static int g_battle_late_frame = -1;
 static int g_force_deckout_demo = 0;
 static int g_force_lp_loss_demo = 0;
 static int g_story_name_to_intro = 0;
+
+/* Local integer abs so the common game code does not depend on <stdlib.h>. */
+static int i_abs(int v)
+{
+    return v < 0 ? -v : v;
+}
 
 static void frame_dirty_reset(void)
 {
@@ -1260,8 +1272,8 @@ static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
         y1 = (int)(ay + (dy * t1) / (1LL << 16));
     }
     {
-        int adx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-        int ady = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+        int adx = i_abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+        int ady = -i_abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
         int err = adx + ady;
         for (;;) {
             put_px(x0, y0, c);
@@ -1722,7 +1734,7 @@ static void init_gray_lut(void)
             int jr = rr - target;
             int jg = gg - target;
             int jb = bb - target;
-            int chroma = abs(rr - gg) + abs(gg - bb) + abs(bb - rr);
+            int chroma = i_abs(rr - gg) + i_abs(gg - bb) + i_abs(bb - rr);
             int score = jr * jr + jg * jg + jb * jb + chroma * 3;
             if (score < best_score) { best_score = score; best = j; }
         }
@@ -3208,7 +3220,7 @@ static void draw_direct_attack_slash(int target_x, int target_y, int frame, int 
     uint8_t core = (frame & 2) ? IDX_WHITE : IDX_RED;
 
     for (int off = -3; off <= 3; ++off) {
-        uint8_t c = (off == 0) ? core : ((abs(off) <= 2) ? IDX_RED : IDX_FLAME3);
+        uint8_t c = (off == 0) ? core : ((i_abs(off) <= 2) ? IDX_RED : IDX_FLAME3);
         line_i(x0, y0 + off, x1, y1 + off, c);
         line_i(x0 - dir * 2, y0 + off, x1 - dir * 2, y1 + off, c);
     }
@@ -4300,6 +4312,9 @@ static void render_duel_script_frame(int f)
     else if (f >= 506) draw_bottom_info(player_summon_id, "BATTLE");
 }
 
+#ifndef WAIFU_FM_NO_HEADLESS_MAIN
+/* PNG/showcase dump helpers are part of the headless runner tooling and use the
+   host filesystem; they are excluded from non-headless (game) builds. */
 static void ensure_dir(const char *out_dir)
 {
     char cmd[512];
@@ -4325,6 +4340,7 @@ static void write_showcase(const char *out_dir)
         cfx_write_png8(path, framebuffer, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, waifu_fm_palette_rgb());
     }
 }
+#endif /* !WAIFU_FM_NO_HEADLESS_MAIN */
 
 
 
