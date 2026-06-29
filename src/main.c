@@ -37,8 +37,10 @@
 #include "pcfx_biosfs.h"
 #endif
 
-#define W 256
-#define H 240
+/* Single source of truth for the framebuffer size: cfx_screen_config.h via
+   game_api.h. Keep W/H as the short in-file aliases the 2D layout code uses. */
+#define W WAIFU_FM_WIDTH
+#define H WAIFU_FM_HEIGHT
 #define BOARD_COLS 5
 #define BOARD_ROWS 4
 #define Q8_SHIFT 8
