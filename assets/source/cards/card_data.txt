@@ -81,7 +81,7 @@ pool|random_weak|Cocinelle,Crow,Golem_Idol,Jester,Parrot,Penguin,Priestess,Rat,S
 pool|story_starter_strong|Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale
 pool|story_starter_weak|Slime,Penguin,Rat,Stone_Tablet_Woman,Parrot,insect_bomb,Snake,Cocinelle,Eel,Owl_woman,Pumpkin,Street
 pool|story_reward_strong|Ultimate_Gold_Dragon,White_dragon,Stone_Dragon,Skull_Queen,Dragon,Insect_queen,InsectQueenWoman,MagesticDragon,ThinBlueDragon,Unicorn,WhiteWhale,SwordFish,Swordswoman,TigerWoman,OctoPus_Sea_Sorceress,CastleSorceress,BlackDinoGirl
-pool|opponent_dream|Penguin,Rat,Slime,Stone_Tablet_Woman,Parrot,Snake,Cocinelle,insect_bomb,Eel,Owl_woman,Pumpkin,Street
+pool|opponent_dream|Penguin,Rat,Slime,Pretty_snake,Parrot,Snake,Cocinelle,insect_bomb,Eel,Owl_woman,Pumpkin,Street
 pool|opponent_plaza|Golem_Idol,Jester,Priestess,Slime,Tyranno,Cocinelle,Parrot,Rat,Snake,Stone_Tablet_Woman,Owl_woman,Shark,Street,Alchemist_Fish,Jellyfish
 pool|opponent_adept|Skull_Queen,Stone_Dragon,Ultimate_Gold_Dragon,Jester,Priestess,White_dragon,Golem_Idol,Tyranno,Dragon,Insect_queen,MagesticDragon,ThinBlueDragon,Unicorn,Crcodile_Woman,SwordFish,TigerWoman
 pool|opponent_reaver|Ultimate_Gold_Dragon,White_dragon,Dragon,Insect_queen,Skull_Queen,Stone_Dragon,Golem_Idol,Tyranno,Priestess,Jester,Demonic,Pumpkin,Shark,ZombieWoman,Crcodile_Woman,SwordFish,Swordswoman,TigerWoman,SkeletonMage,BlueGirlUnicorn

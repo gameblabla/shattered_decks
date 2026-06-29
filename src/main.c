@@ -318,7 +318,7 @@ static const char *support_card_effect(int card_id)
 {
     switch (support_card_kind(card_id)) {
     case 0: return "Equip card. Use from hand; does not count as your one monster placement.";
-    case 1: return "Equip card. Raises DEF by 800 and does not raise ATK.";
+    case 1: return "Equip card. Raises ATK by 250 and DEF by 800.";
     case 2: return "Support card. Draw 1 card from your deck.";
     case 4: return "Support card. Destroys every monster on the opponent's field.";
     case 5: return "Trap card. Auto-activates when a monster attacks you: it destroys that attacker and cancels the attack before the battle step.";
@@ -4882,7 +4882,11 @@ static int player_can_place_monster(void)
 
 static int player_can_start_fusion(void)
 {
-    return !g_b_player_fused_this_turn;
+    /* A fusion summon (including occupied-zone transforms) counts as the turn's
+       single monster action: once a monster has been Set OR fused this turn, no
+       further fusion may start. Placement and fusion are mutually exclusive so
+       the player can only commit one monster to the field per turn. */
+    return !g_b_player_fused_this_turn && !g_b_player_monster_played_this_turn;
 }
 
 static int player_can_fusion_to_slot(int slot)
@@ -5436,6 +5440,18 @@ static void draw_bottom_empty_field(const char *mode)
     draw_text_small(6, base+21, "EMPTY ZONE", IDX_WHITE, IDX_BLACK);
 }
 
+/* Hidden info for a face-down monster: never reveal name / attribute / stats. */
+static void draw_bottom_info_facedown(const char *mode)
+{
+    int base = 205;
+    rect_fill(0, base, 256, 35, IDX_UI_TEAL);
+    hline(0,255,base,IDX_WHITE); hline(0,255,base+1,IDX_UI_LIGHT); hline(0,255,base+2,IDX_DIM);
+    for (int y = base+4; y < base+35; y += 3) hline(0,255,y,IDX_UI_TEAL2);
+    draw_text(6, base+6, "SET MONSTER", IDX_WHITE, IDX_BLACK);
+    draw_text_small(6, base+21, "FACE-DOWN / HIDDEN", IDX_WHITE, IDX_BLACK);
+    if (mode) draw_text_small(188, base+21, mode, IDX_GOLD_HI, IDX_BLACK);
+}
+
 static void draw_bottom_info_top_selector(const char *mode)
 {
     if (g_b_top_col < 0 || g_b_top_col >= I_FIELD) {
@@ -5445,7 +5461,8 @@ static void draw_bottom_info_top_selector(const char *mode)
     if (g_b_top_row == PLAYER_CARD_ROW && g_i_player_field[g_b_top_col] >= 0) {
         draw_bottom_info_field(0, g_b_top_col, mode ? mode : "FIELD");
     } else if (g_b_top_row == ENEMY_CARD_ROW && g_i_com_field[g_b_top_col] >= 0) {
-        draw_bottom_info_field(1, g_b_top_col, mode ? mode : "TARGET");
+        if (!g_i_com_faceup[g_b_top_col]) draw_bottom_info_facedown(mode ? mode : "TARGET");
+        else draw_bottom_info_field(1, g_b_top_col, mode ? mode : "TARGET");
     } else if (g_b_top_row == ENEMY_CARD_ROW - 1 && g_i_com_equip_field[g_b_top_col] >= 0) {
         draw_bottom_info(g_i_com_equip_field[g_b_top_col], mode ? mode : "EQUIP");
     } else if (g_b_top_row == PLAYER_CARD_ROW + 1 && g_i_player_equip_field[g_b_top_col] >= 0) {
@@ -5463,7 +5480,7 @@ static int field_card_defense_position(int owner, int slot)
 
 static int equip_atk_bonus(int card_id)
 {
-    if (is_guard_support_card(card_id)) return 0;
+    if (is_guard_support_card(card_id)) return 250;
     return 500;
 }
 
@@ -8003,6 +8020,11 @@ static void draw_interactive_reward(void)
 {
     int card = g_b_reward_card;
     const char *name;
+    /* The earned card is revealed with the same face-down -> flip-up turn the
+       battle cut-in uses, then settles into the static reward art. Support-card
+       rewards (which the static path frames specially) skip the scaled flip. */
+    int flip_dur = WAIFU_BATTLE_FLIP_FRAMES;
+    int flipping = is_monster_card(card) && g_b_phase_frame < flip_dur;
     waifu_fm_use_common_palette();
     clear_screen(IDX_BLACK);
     draw_panel_rect(31, 18, 194, 200, IDX_UI_DARK);
@@ -8014,7 +8036,9 @@ static void draw_interactive_reward(void)
        presenter's direct-KRAM bypass (see draw_interactive_card_preview). */
     ++g_big_art_direct_note_suppressed;
 #endif
-    if (is_support_card(card)) {
+    if (flipping) {
+        draw_big_battle_card_flip(card, 68, 46, g_b_phase_frame, flip_dur);
+    } else if (is_support_card(card)) {
         int trap = is_trap_support_card(card);
         draw_support_big_art_112(72, 54);
         rect_outline(71, 53, 114, 114, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
@@ -8025,6 +8049,8 @@ static void draw_interactive_reward(void)
 #if defined(WAIFU_FM_PCFX)
     --g_big_art_direct_note_suppressed;
 #endif
+
+    if (flipping) return; /* hold the name/prompt until the card has flipped up */
 
     name = is_support_card(card) ? support_card_name(card)
          : (is_monster_card(card) ? waifu_card_names[card] : "???");
@@ -11005,7 +11031,7 @@ static void debug_setup_music_demo_state(const char *name)
         g_b_result = 1;
         g_b_reward_card = WAIFU_CARD_ID_GARGOYLE_GIRL;
         g_b_phase = IB_REWARD;
-        g_b_phase_frame = 10;
+        g_b_phase_frame = 0; /* start at 0 so the face-down -> flip-up reveal plays */
     } else if (!strcmp(name, "reward-support")) {
         init_battle_state();
         g_story_battle_active = 1;
@@ -11665,7 +11691,7 @@ static int debug_regression_thunder_support(void)
     if (!is_equip_support_card(SUPPORT_GUARD_CARD_ID) ||
         is_equip_support_card(SUPPORT_DRAW_CARD_ID) ||
         is_equip_support_card(SUPPORT_HEAL_CARD_ID) ||
-        equip_atk_bonus(SUPPORT_GUARD_CARD_ID) != 0 ||
+        equip_atk_bonus(SUPPORT_GUARD_CARD_ID) != 250 ||
         equip_def_bonus(SUPPORT_GUARD_CARD_ID) != 800) {
         fprintf(stderr, "REGRESSION thunder_support FAIL: support kinds guard_equip=%d draw_equip=%d heal_equip=%d guard_bonus=%d/%d\n",
                 is_equip_support_card(SUPPORT_GUARD_CARD_ID),
@@ -12027,11 +12053,16 @@ static int debug_regression_fusion_equip_only(void)
         g_i_player_used[1] = 0;
         g_b_player_monster_played_this_turn = 1;
         clear_player_fusion_queue();
-        if (!player_can_fusion_to_slot(0) || player_can_fusion_to_slot(1)) {
+        /* One monster action per turn: after a Set, neither occupied-zone
+           transforms nor empty-zone summons may start. */
+        if (player_can_fusion_to_slot(0) || player_can_fusion_to_slot(1)) {
             fprintf(stderr, "REGRESSION fusion_occupied_equip FAIL: target gates occupied=%d empty=%d\n",
                     player_can_fusion_to_slot(0), player_can_fusion_to_slot(1));
             return 1;
         }
+        /* The fusion mechanic itself (equip lands on the result) is exercised on
+           a fresh turn where the monster action has not yet been used. */
+        g_b_player_monster_played_this_turn = 0;
         if (try_queue_player_fusion_slot(0) != 1 || try_queue_player_fusion_slot(1) != 2) {
             fprintf(stderr, "REGRESSION fusion_occupied_equip FAIL: queue_count=%d\n", g_b_fusion_count);
             return 1;
@@ -12073,7 +12104,7 @@ static int debug_regression_fusion_equip_only(void)
         g_i_player_hand[1] = WAIFU_CARD_ID_SLIME;
         g_i_player_used[0] = 0;
         g_i_player_used[1] = 0;
-        g_b_player_monster_played_this_turn = 1;
+        g_b_player_monster_played_this_turn = 0;
         clear_player_fusion_queue();
         if (try_queue_player_fusion_slot(0) != 1 || try_queue_player_fusion_slot(1) != 2) {
             fprintf(stderr, "REGRESSION fusion_occupied_thalassa_chain FAIL: queue_count=%d\n", g_b_fusion_count);
