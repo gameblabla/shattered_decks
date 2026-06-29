@@ -44,6 +44,30 @@ int waifu_platform_storage_write(const char *name, const void *data, int len);
  * (>= 0), or -1 if the blob could not be opened. */
 int waifu_platform_storage_read(const char *name, void *data, int max_len);
 
+/* ---- Background layer -----------------------------------------------------
+ * Some platforms can present a scrolling background *behind* the game's
+ * framebuffer using dedicated hardware (PC-FX RAINBOW). Platforms without one
+ * composite the background into the framebuffer themselves (the host software
+ * sky). The common scene code expresses its intent with a platform-agnostic
+ * kind + horizontal scroll, and lets the platform decide how to realize it.
+ */
+typedef enum WaifuBackgroundKind {
+    WAIFU_BACKGROUND_NONE = 0,
+    WAIFU_BACKGROUND_DESERT,
+    WAIFU_BACKGROUND_STONE,
+    WAIFU_BACKGROUND_EMBER,
+    WAIFU_BACKGROUND_SKY
+} WaifuBackgroundKind;
+
+/* Requests a background layer for this frame.
+ *   returns 1: the platform presented `kind` on a dedicated hardware layer;
+ *              the caller should leave the framebuffer background transparent.
+ *   returns 0: the platform has no hardware background layer; the caller should
+ *              composite the background into the framebuffer itself.
+ * The host returns 0 today, but the seam is in place so a host background layer
+ * can later present `kind`/`hscroll` and return 1 without touching game code. */
+int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll);
+
 #ifdef __cplusplus
 }
 #endif

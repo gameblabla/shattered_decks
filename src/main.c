@@ -9992,26 +9992,43 @@ static void draw_void_sky(void)
     }
 }
 
-#ifdef WAIFU_FM_PCFX
-static WaifuPcfxSanctumBackdrop story_pcfx_sanctum_backdrop(void);
-static int story_pcfx_rainbow_hscroll(int f);
-#endif
+static WaifuBackgroundKind story_background_kind(void)
+{
+    switch (story_scene_kind()) {
+    case STORY_SCENE_TEMPLE:  return WAIFU_BACKGROUND_STONE;
+    case STORY_SCENE_VOLCANO: return WAIFU_BACKGROUND_EMBER;
+    case STORY_SCENE_VOID:    return WAIFU_BACKGROUND_SKY;
+    default:                  return WAIFU_BACKGROUND_DESERT;
+    }
+}
+
+static int story_background_hscroll(int f)
+{
+    int32_t phase;
+    switch (story_scene_kind()) {
+    case STORY_SCENE_TEMPLE:  phase = f * Q8_FRAC(22,1000); break;
+    case STORY_SCENE_VOLCANO: phase = f * Q8_FRAC(24,1000); break;
+    case STORY_SCENE_VOID:    phase = f * Q8_FRAC(20,1000); break;
+    default:                  phase = f * Q8_FRAC(25,1000); break;
+    }
+    return q8_to_int(q8_mul(Q8_FROM_INT(4), q8_sin_rad(phase))) & 0x01ff;
+}
 
 static void draw_story_sky(int f)
 {
-#ifdef WAIFU_FM_PCFX
-    waifu_pcfx_video_request_rainbow_backdrop(story_pcfx_sanctum_backdrop());
-    waifu_pcfx_video_request_rainbow_hscroll(story_pcfx_rainbow_hscroll(f));
-    clear_screen(0);
-#else
-    (void)f;
+    /* Ask the platform for a hardware background layer (PC-FX RAINBOW). If it
+       presents one, leave the framebuffer transparent for it to show through;
+       otherwise composite the sky into the framebuffer in software. */
+    if (waifu_platform_background_request(story_background_kind(), story_background_hscroll(f))) {
+        clear_screen(0);
+        return;
+    }
     switch (story_scene_kind()) {
     case STORY_SCENE_TEMPLE:  draw_temple_sky();  break;
     case STORY_SCENE_VOLCANO: draw_volcano_sky(); break;
     case STORY_SCENE_VOID:    draw_void_sky();    break;
     default:                  draw_desert_sky();  break;
     }
-#endif
 }
 
 static void draw_story_scene_3d(int f)
@@ -10023,30 +10040,6 @@ static void draw_story_scene_3d(int f)
     default:                  draw_map_pyramid_3d(f); break;
     }
 }
-
-#ifdef WAIFU_FM_PCFX
-static WaifuPcfxSanctumBackdrop story_pcfx_sanctum_backdrop(void)
-{
-    switch (story_scene_kind()) {
-    case STORY_SCENE_TEMPLE:  return WAIFU_PCFX_SANCTUM_BACKDROP_STONE;
-    case STORY_SCENE_VOLCANO: return WAIFU_PCFX_SANCTUM_BACKDROP_EMBER;
-    case STORY_SCENE_VOID:    return WAIFU_PCFX_SANCTUM_BACKDROP_SKY;
-    default:                  return WAIFU_PCFX_SANCTUM_BACKDROP_DESERT;
-    }
-}
-
-static int story_pcfx_rainbow_hscroll(int f)
-{
-    int32_t phase;
-    switch (story_scene_kind()) {
-    case STORY_SCENE_TEMPLE:  phase = f * Q8_FRAC(22,1000); break;
-    case STORY_SCENE_VOLCANO: phase = f * Q8_FRAC(24,1000); break;
-    case STORY_SCENE_VOID:    phase = f * Q8_FRAC(20,1000); break;
-    default:                  phase = f * Q8_FRAC(25,1000); break;
-    }
-    return q8_to_int(q8_mul(Q8_FROM_INT(4), q8_sin_rad(phase))) & 0x01ff;
-}
-#endif
 
 static void draw_story_sanctum_background(void)
 {

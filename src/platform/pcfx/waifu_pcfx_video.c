@@ -10,6 +10,7 @@
 #include <string.h>
 #include "waifu_assets.h"
 #include "assets.h"
+#include "platform.h"
 #include "pcfx_palette_assets.h"
 #include "waifu_pcfx_cdrom.h"
 #include "title_asset.h"
@@ -2365,6 +2366,23 @@ void waifu_pcfx_video_request_rainbow_hscroll(int hscroll)
 {
     g_rainbow_hscroll = hscroll & 0x01ff;
     g_rainbow_hscroll_requested = 1;
+}
+
+/* Platform background seam: present the requested scene background on the
+   hardware RAINBOW layer. Returns 1 so the common scene code leaves the
+   framebuffer background transparent for the RAINBOW layer to show through. */
+int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
+{
+    WaifuPcfxSanctumBackdrop backdrop;
+    switch (kind) {
+    case WAIFU_BACKGROUND_STONE: backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_STONE; break;
+    case WAIFU_BACKGROUND_EMBER: backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_EMBER; break;
+    case WAIFU_BACKGROUND_SKY:   backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_SKY;   break;
+    default:                     backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_DESERT; break;
+    }
+    waifu_pcfx_video_request_rainbow_backdrop(backdrop);
+    waifu_pcfx_video_request_rainbow_hscroll(hscroll);
+    return 1;
 }
 
 void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)

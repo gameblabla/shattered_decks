@@ -1,8 +1,8 @@
 CC ?= gcc
 CFLAGS ?= -O2 -std=c99 -Wall -Wextra -Wno-unused-parameter -DPLATFORM=5 -DBY16=1 -DHARDWARE_DIV=1
 INCLUDES = -Isrc/engine -Isrc/generated -Isrc/record -Isrc/game
-HEADLESS_SRCS = src/main.c src/game/ai.c src/game/deck.c src/game/palette.c src/game/sounds.c src/game/assets.c src/engine/renderer3d.c src/engine/common.c src/engine/bmp_writer.c src/platform/host_storage.c src/platform/host_assets.c src/record/zmbv_mkv.c
-SDL12_SRCS = src/platform/sdl12_main.c src/main.c src/game/ai.c src/game/deck.c src/game/palette.c src/game/sounds.c src/game/assets.c src/engine/renderer3d.c src/engine/common.c src/engine/bmp_writer.c src/platform/host_storage.c src/platform/host_assets.c
+HEADLESS_SRCS = src/main.c src/game/ai.c src/game/deck.c src/game/palette.c src/game/sounds.c src/game/assets.c src/engine/renderer3d.c src/engine/common.c src/engine/bmp_writer.c src/platform/host_storage.c src/platform/host_assets.c src/platform/host_video.c src/record/zmbv_mkv.c
+SDL12_SRCS = src/platform/sdl12_main.c src/main.c src/game/ai.c src/game/deck.c src/game/palette.c src/game/sounds.c src/game/assets.c src/engine/renderer3d.c src/engine/common.c src/engine/bmp_writer.c src/platform/host_storage.c src/platform/host_assets.c src/platform/host_video.c
 TARGET = waifu_fm_headless
 SDL12_TARGET = waifu_fm_sdl12
 SDL_CONFIG ?= sdl-config
