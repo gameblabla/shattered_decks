@@ -4724,7 +4724,7 @@ static int g_deck_preview_card = CARD_NONE;
 static int g_story_duel_index = 0;
 static int g_story_progress = 0;
 static int g_story_map_cursor = 0;     /* 0 pyramid, 1 plaza */
-static int g_story_pyramid_cursor = 0; /* 0 save, 1 editor, 2 back */
+static int g_story_pyramid_cursor = 0; /* 0 save, 1 editor, 2 quit (to title), 3 back */
 static int g_story_scene_anim_frame = 0; /* free-running story 3D sway frame */
 static int g_story_plaza_line = 0;
 static int g_story_ending_line = 0;
@@ -6248,7 +6248,7 @@ static int save_parse_blob(const u8 *buf, u32 len)
     g_story_duel_index = g_story_progress;
     g_story_map_cursor = buf[12] ? 1 : 0;
     g_story_pyramid_cursor = (int)buf[13];
-    if (g_story_pyramid_cursor < 0 || g_story_pyramid_cursor > 2) g_story_pyramid_cursor = 0;
+    if (g_story_pyramid_cursor < 0 || g_story_pyramid_cursor > 3) g_story_pyramid_cursor = 0;
     g_story_plaza_line = (int)buf[14];
     if (g_story_plaza_line < 0) g_story_plaza_line = 0;
     g_story_deck_count = (int)buf[15];
@@ -6420,7 +6420,7 @@ static int read_story_save(void)
     g_story_duel_index = g_story_progress;
     g_story_map_cursor = map_cursor ? 1 : 0;
     g_story_pyramid_cursor = pyramid_cursor;
-    if (g_story_pyramid_cursor < 0 || g_story_pyramid_cursor > 2) g_story_pyramid_cursor = 0;
+    if (g_story_pyramid_cursor < 0 || g_story_pyramid_cursor > 3) g_story_pyramid_cursor = 0;
     g_story_plaza_line = plaza_line;
     if (g_story_plaza_line < 0) g_story_plaza_line = 0;
     g_story_deck_count = deck_count;
@@ -10093,13 +10093,14 @@ static void draw_story_fire_to_deck_transition(int f)
 static void draw_story_pyramid_menu(void)
 {
     draw_story_sanctum_background();
-    draw_blue_gradient_box(126, 42, 122, 148);
+    draw_blue_gradient_box(126, 42, 122, 160);
     draw_text(158, 55, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
     draw_wrapped_text_small_box(138, 76, 99, 4, 10, story_subst_name("A place of rest. Serena can prepare before the next duel."), IDX_WHITE, IDX_BLACK);
-    draw_text(151, 124, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(151, 144, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(151, 164, "BACK", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(139, 124 + g_story_pyramid_cursor * 20, ">", IDX_RED, IDX_BLACK);
+    draw_text(151, 122, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 140, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 158, "QUIT", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 176, "BACK", g_story_pyramid_cursor == 3 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(139, 122 + g_story_pyramid_cursor * 18, ">", IDX_RED, IDX_BLACK);
 }
 
 static void draw_story_save_screen(void)
@@ -10658,8 +10659,8 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_STORY_PYRAMID:
-        if (press_up) g_story_pyramid_cursor = (g_story_pyramid_cursor + 2) % 3;
-        if (press_down) g_story_pyramid_cursor = (g_story_pyramid_cursor + 1) % 3;
+        if (press_up) g_story_pyramid_cursor = (g_story_pyramid_cursor + 3) % 4;
+        if (press_down) g_story_pyramid_cursor = (g_story_pyramid_cursor + 1) % 4;
         draw_story_pyramid_menu();
         if (press_a || press_start) {
             if (g_story_pyramid_cursor == 0) {
@@ -10677,6 +10678,14 @@ void waifu_fm_step(const WaifuFmInput *input)
                 reset_story_deck_editor();
                 g_story_editor_from_pyramid = 1;
                 enter_deck_editor_after_assets();
+            } else if (g_story_pyramid_cursor == 2) {
+                /* QUIT: abandon the story session and return to the title. */
+#ifdef WAIFU_FM_PCFX
+                waifu_pcfx_video_overlay_clear();
+#endif
+                g_story_battle_active = 0;
+                g_story_pyramid_cursor = 0;
+                enter_title_after_assets();
             } else {
                 g_story_map_cursor = 0;
                 g_i_state = WAIFU_I_STORY_MAP;
