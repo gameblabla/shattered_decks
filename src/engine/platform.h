@@ -117,6 +117,14 @@ int waifu_platform_text_overlay(WaifuTextOverlayKind kind, const WaifuTextOverla
 /* Clears any hardware text overlay. A no-op where there is no hardware layer. */
 void waifu_platform_text_overlay_clear(void);
 
+/* Returns 1 if UI panels are presented on a hardware text layer (so the
+ * framebuffer background need only be (re)composed when it actually changes,
+ * and panel text is refreshed without touching the framebuffer), or 0 if panels
+ * are software-composited into the framebuffer every frame. Lets a draw site
+ * pick the right redraw strategy without #ifdef; the value is constant per
+ * platform so the branch is trivially predicted. */
+int waifu_platform_text_overlay_is_hardware(void);
+
 #ifdef __cplusplus
 }
 #endif

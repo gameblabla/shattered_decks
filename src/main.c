@@ -3883,51 +3883,33 @@ static void draw_menu_screen(int selected)
     draw_menu_overlay(selected);
 }
 
-#ifdef WAIFU_FM_PCFX
+/* Composes the static title/menu background (image + logo) into the framebuffer
+   and marks the frame fully dirty. On a hardware-text platform this is done only
+   on entry / selection change so the resident KING 16M surface and VDC overlay
+   are not rewritten every frame; software platforms call it as part of their
+   per-frame redraw. */
 static void draw_title_full_event(int f)
 {
     (void)f;
     clear_screen(IDX_BLACK);
     draw_title_background();
     draw_title_logo();
-    /* PC-FX keeps the mutable prompt/menu on the VDC overlay layer.
-       Do not burn it into the 16M KING surface; that surface must remain
-       static so blink/menu events cannot corrupt YUV KRAM. */
     frame_mark_full_dirty();
 }
-
-static void draw_title_prompt_event(int f)
-{
-    (void)f;
-    /* VDC overlay handles prompt blinking; KING 16M is untouched. */
-}
-
-static void draw_menu_screen_event(int selected, int full_redraw)
-{
-    if (full_redraw) {
-        draw_title_full_event(0);
-    } else {
-        waifu_fm_use_title_palette();
-    }
-    /* Menu text is a VDC overlay.  The 16M KING page stays unchanged,
-       preventing the pink intermediate YUV writes seen during cursor moves. */
-    waifu_pcfx_video_overlay_menu(selected, story_save_exists());
-}
-#endif
 
 static void transition_draw_menu_source(int frame, void *ctx)
 {
     int selected = ctx ? *(int *)ctx : 0;
     (void)frame;
-#ifdef WAIFU_FM_PCFX
-    /* The menu overlay is already resident from the menu frame that accepted
-       A/RUN.  During fade, only advance the fade mask; redrawing the VDC menu
-       here makes PC-FX fade timing hitch before asset loading starts. */
-    (void)selected;
-    waifu_fm_use_title_palette();
-#else
-    draw_menu_screen(selected);
-#endif
+    if (waifu_platform_text_overlay_is_hardware()) {
+        /* The menu overlay is already resident on the hardware text layer.
+           During the fade, only advance the fade mask; redrawing it here makes
+           PC-FX fade timing hitch before asset loading starts. */
+        (void)selected;
+        waifu_fm_use_title_palette();
+    } else {
+        draw_menu_screen(selected);
+    }
 }
 
 #ifdef WAIFU_FM_PCFX
@@ -10480,22 +10462,24 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_TITLE:
-#ifdef WAIFU_FM_PCFX
-        /* PC-FX title runs as a static 16M KING surface with the mutable
-           prompt on the front VDC layer.  Blink changes now update only BAT
-           entries/tiles during vblank; KING KRAM is not touched. */
-        if (g_i_frame == 0) {
-            draw_title_full_event(0);
+    {
+        WaifuTextOverlayParams ov = {0};
+        ov.prompt_visible = ((g_i_frame / 24) & 1) == 0;
+        ov.has_save = story_save_exists();
+        if (waifu_platform_text_overlay_is_hardware()) {
+            /* Title runs as a static (KING 16M) surface with the mutable prompt
+               on the hardware text layer. Blink changes touch only the overlay;
+               the resident surface is composed once on entry. */
+            if (g_i_frame == 0) draw_title_full_event(0);
+            else waifu_fm_use_title_palette();
+            waifu_platform_text_overlay(WAIFU_TEXT_OVERLAY_TITLE_PROMPT, &ov);
         } else {
-            waifu_fm_use_title_palette();
+            clear_screen(IDX_BLACK);
+            draw_title_background();
+            draw_title_logo();
+            draw_title_prompt(g_i_frame);
         }
-        waifu_pcfx_video_overlay_title_prompt(((g_i_frame / 24) & 1) == 0, story_save_exists());
-#else
-        clear_screen(IDX_BLACK);
-        draw_title_background();
-        draw_title_logo();
-        draw_title_prompt(g_i_frame);
-#endif
+    }
         if (g_i_frame < WAIFU_TITLE_FADE_FRAMES) apply_black_dither_fade(q8_ratio(g_i_frame, WAIFU_TITLE_FADE_FRAMES));
         if (press_start || press_a) {
             enter_title_to_menu_fade();
@@ -10509,22 +10493,26 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_MENU:
-#ifdef WAIFU_FM_PCFX
     {
         int old_menu_selected = g_i_menu_selected;
-#endif
         if (press_up) g_i_menu_selected = (g_i_menu_selected + 2) % 3;
         if (press_down) g_i_menu_selected = (g_i_menu_selected + 1) % 3;
-#ifdef WAIFU_FM_PCFX
-        if (g_i_frame <= 0 || old_menu_selected != g_i_menu_selected) {
-            draw_menu_screen_event(g_i_menu_selected, g_i_frame <= 0);
+        if (waifu_platform_text_overlay_is_hardware()) {
+            /* Menu text lives on the hardware overlay; recompose the resident
+               background only on entry or when the selection changed. */
+            WaifuTextOverlayParams ov = {0};
+            ov.selected = g_i_menu_selected;
+            ov.has_save = story_save_exists();
+            if (g_i_frame <= 0 || old_menu_selected != g_i_menu_selected) {
+                draw_title_full_event(0);
+            } else {
+                waifu_fm_use_title_palette();
+            }
+            waifu_platform_text_overlay(WAIFU_TEXT_OVERLAY_MENU, &ov);
         } else {
-            waifu_fm_use_title_palette();
+            draw_menu_screen(g_i_menu_selected);
         }
     }
-#else
-        draw_menu_screen(g_i_menu_selected);
-#endif
         if (press_start || press_a) {
             if (g_i_menu_selected == 0) {
                 reset_story_entry();

@@ -31,3 +31,8 @@ int waifu_platform_text_overlay(WaifuTextOverlayKind kind, const WaifuTextOverla
 void waifu_platform_text_overlay_clear(void)
 {
 }
+
+int waifu_platform_text_overlay_is_hardware(void)
+{
+    return 0;
+}

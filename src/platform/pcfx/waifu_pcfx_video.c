@@ -2417,6 +2417,11 @@ void waifu_platform_text_overlay_clear(void)
     waifu_pcfx_video_overlay_clear();
 }
 
+int waifu_platform_text_overlay_is_hardware(void)
+{
+    return 1;
+}
+
 void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
 {
     g_sanctum_backdrop = backdrop;
