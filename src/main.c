@@ -15,6 +15,7 @@
 #endif
 
 #include "defines.h"
+#include "platform.h"
 #include "common.h"
 #include "renderer3d.h"
 #include "bmp_writer.h"
@@ -6354,59 +6355,119 @@ static int read_story_save(void)
 
 static int story_save_exists(void)
 {
-    FILE *fp = fopen(STORY_SAVE_PATH, "r");
-    if (!fp) return 0;
-    fclose(fp);
+    return waifu_platform_storage_exists(STORY_SAVE_PATH);
+}
+
+/* Whitespace tokenizer over an in-memory save blob. Keeps the host save format
+ * identical to the original fscanf-based reader while depending only on the
+ * platform storage seam (no stdio in common game code). */
+typedef struct StorySaveScan {
+    const char *p;
+    const char *end;
+} StorySaveScan;
+
+static int story_save_next_token(StorySaveScan *s, char *out, int out_size)
+{
+    int n = 0;
+    while (s->p < s->end && (*s->p == ' ' || *s->p == '\n' || *s->p == '\r' || *s->p == '\t')) s->p++;
+    if (s->p >= s->end) { if (out_size > 0) out[0] = '\0'; return 0; }
+    while (s->p < s->end && !(*s->p == ' ' || *s->p == '\n' || *s->p == '\r' || *s->p == '\t')) {
+        if (n < out_size - 1) out[n++] = *s->p;
+        s->p++;
+    }
+    if (out_size > 0) out[n] = '\0';
+    return n > 0;
+}
+
+static int story_save_expect(StorySaveScan *s, const char *expect)
+{
+    char tok[64];
+    if (!story_save_next_token(s, tok, (int)sizeof(tok))) return 0;
+    return strcmp(tok, expect) == 0;
+}
+
+static int story_save_next_int(StorySaveScan *s, int *out)
+{
+    char tok[64];
+    int i = 0, sign = 1, val = 0;
+    if (!story_save_next_token(s, tok, (int)sizeof(tok))) return 0;
+    if (tok[0] == '-') { sign = -1; i = 1; }
+    if (tok[i] == '\0') return 0;
+    for (; tok[i]; ++i) {
+        if (tok[i] < '0' || tok[i] > '9') return 0;
+        val = val * 10 + (tok[i] - '0');
+    }
+    *out = val * sign;
     return 1;
 }
 
 static int write_story_save(void)
 {
-    FILE *fp = fopen(STORY_SAVE_PATH, "w");
-    if (!fp) return 0;
+    char buf[4096];
+    int len, i;
 
-    fprintf(fp, "WAIFU_STORY_SAVE_V1\n");
-    fprintf(fp, "name %s\n", g_story_name);
-    fprintf(fp, "duel %d\n", g_story_progress);
-    fprintf(fp, "map %d pyramid %d plaza %d\n", g_story_map_cursor, g_story_pyramid_cursor, g_story_plaza_line);
-    fprintf(fp, "deck_count %d storage_count %d\n", g_story_deck_count, g_story_storage_count);
-    fprintf(fp, "deck");
-    for (int i = 0; i < g_story_deck_count; ++i) fprintf(fp, " %d", g_story_player_deck[i]);
-    fprintf(fp, "\n");
-    fprintf(fp, "storage");
-    for (int i = 0; i < g_story_storage_count; ++i) fprintf(fp, " %d", g_story_storage[i]);
-    fprintf(fp, "\n");
+    buf[0] = '\0';
+    waifu_str_cat(buf, (int)sizeof(buf), "WAIFU_STORY_SAVE_V1\n");
+    waifu_str_cat(buf, (int)sizeof(buf), "name ");
+    waifu_str_cat(buf, (int)sizeof(buf), g_story_name);
+    waifu_str_cat(buf, (int)sizeof(buf), "\nduel ");
+    waifu_str_cat_i32(buf, (int)sizeof(buf), g_story_progress);
+    waifu_str_cat(buf, (int)sizeof(buf), "\nmap ");
+    waifu_str_cat_i32(buf, (int)sizeof(buf), g_story_map_cursor);
+    waifu_str_cat(buf, (int)sizeof(buf), " pyramid ");
+    waifu_str_cat_i32(buf, (int)sizeof(buf), g_story_pyramid_cursor);
+    waifu_str_cat(buf, (int)sizeof(buf), " plaza ");
+    waifu_str_cat_i32(buf, (int)sizeof(buf), g_story_plaza_line);
+    waifu_str_cat(buf, (int)sizeof(buf), "\ndeck_count ");
+    waifu_str_cat_i32(buf, (int)sizeof(buf), g_story_deck_count);
+    waifu_str_cat(buf, (int)sizeof(buf), " storage_count ");
+    waifu_str_cat_i32(buf, (int)sizeof(buf), g_story_storage_count);
+    waifu_str_cat(buf, (int)sizeof(buf), "\ndeck");
+    for (i = 0; i < g_story_deck_count; ++i) {
+        waifu_str_cat_char(buf, (int)sizeof(buf), ' ');
+        waifu_str_cat_i32(buf, (int)sizeof(buf), g_story_player_deck[i]);
+    }
+    waifu_str_cat(buf, (int)sizeof(buf), "\nstorage");
+    for (i = 0; i < g_story_storage_count; ++i) {
+        waifu_str_cat_char(buf, (int)sizeof(buf), ' ');
+        waifu_str_cat_i32(buf, (int)sizeof(buf), g_story_storage[i]);
+    }
+    waifu_str_cat(buf, (int)sizeof(buf), "\n");
 
-    if (fclose(fp) != 0) return 0;
-    return 1;
+    len = (int)strlen(buf);
+    return waifu_platform_storage_write(STORY_SAVE_PATH, buf, len) == len;
 }
 
 static int read_story_save(void)
 {
-    FILE *fp = fopen(STORY_SAVE_PATH, "r");
-    char magic[64];
-    char key[64];
+    char buf[4096];
+    StorySaveScan sc;
     char saved_name[64];
-    char tok1[64];
-    char tok2[64];
     int duel = 0, map_cursor = 0, pyramid_cursor = 0, plaza_line = 0;
     int deck_count = 0, storage_count = 0;
+    int n, i;
 
-    if (!fp) return 0;
-    if (fscanf(fp, "%63s", magic) != 1 || strcmp(magic, "WAIFU_STORY_SAVE_V1") != 0) { fclose(fp); return 0; }
-    if (fscanf(fp, "%63s %63s", key, saved_name) != 2 || strcmp(key, "name") != 0) { fclose(fp); return 0; }
-    if (fscanf(fp, "%63s %d", key, &duel) != 2 || strcmp(key, "duel") != 0) { fclose(fp); return 0; }
-    if (fscanf(fp, "%63s %d %63s %d %63s %d", key, &map_cursor, tok1, &pyramid_cursor, tok2, &plaza_line) != 6 ||
-        strcmp(key, "map") != 0 || strcmp(tok1, "pyramid") != 0 || strcmp(tok2, "plaza") != 0) { fclose(fp); return 0; }
-    if (fscanf(fp, "%63s %d %63s %d", key, &deck_count, tok1, &storage_count) != 4 ||
-        strcmp(key, "deck_count") != 0 || strcmp(tok1, "storage_count") != 0) { fclose(fp); return 0; }
-    if (deck_count < 0 || deck_count > STORY_DECK_SIZE || storage_count < 0 || storage_count > STORY_STORAGE_SIZE) { fclose(fp); return 0; }
+    n = waifu_platform_storage_read(STORY_SAVE_PATH, buf, (int)sizeof(buf) - 1);
+    if (n < 0) return 0;
+    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
+    buf[n] = '\0';
+    sc.p = buf;
+    sc.end = buf + n;
 
-    if (fscanf(fp, "%63s", key) != 1 || strcmp(key, "deck") != 0) { fclose(fp); return 0; }
-    for (int i = 0; i < deck_count; ++i) { if (fscanf(fp, "%d", &g_story_player_deck[i]) != 1) { fclose(fp); return 0; } }
-    if (fscanf(fp, "%63s", key) != 1 || strcmp(key, "storage") != 0) { fclose(fp); return 0; }
-    for (int i = 0; i < storage_count; ++i) { if (fscanf(fp, "%d", &g_story_storage[i]) != 1) { fclose(fp); return 0; } }
-    fclose(fp);
+    if (!story_save_expect(&sc, "WAIFU_STORY_SAVE_V1")) return 0;
+    if (!story_save_expect(&sc, "name") || !story_save_next_token(&sc, saved_name, (int)sizeof(saved_name))) return 0;
+    if (!story_save_expect(&sc, "duel") || !story_save_next_int(&sc, &duel)) return 0;
+    if (!story_save_expect(&sc, "map") || !story_save_next_int(&sc, &map_cursor)) return 0;
+    if (!story_save_expect(&sc, "pyramid") || !story_save_next_int(&sc, &pyramid_cursor)) return 0;
+    if (!story_save_expect(&sc, "plaza") || !story_save_next_int(&sc, &plaza_line)) return 0;
+    if (!story_save_expect(&sc, "deck_count") || !story_save_next_int(&sc, &deck_count)) return 0;
+    if (!story_save_expect(&sc, "storage_count") || !story_save_next_int(&sc, &storage_count)) return 0;
+    if (deck_count < 0 || deck_count > STORY_DECK_SIZE || storage_count < 0 || storage_count > STORY_STORAGE_SIZE) return 0;
+
+    if (!story_save_expect(&sc, "deck")) return 0;
+    for (i = 0; i < deck_count; ++i) { if (!story_save_next_int(&sc, &g_story_player_deck[i])) return 0; }
+    if (!story_save_expect(&sc, "storage")) return 0;
+    for (i = 0; i < storage_count; ++i) { if (!story_save_next_int(&sc, &g_story_storage[i])) return 0; }
 
     memset(g_story_name, 0, sizeof(g_story_name));
     strncpy(g_story_name, saved_name, STORY_NAME_LEN);
