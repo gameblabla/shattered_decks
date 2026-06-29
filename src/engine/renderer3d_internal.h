@@ -145,6 +145,15 @@ static inline uint8_t cfx_fetch_direct_row_texel(const uint8_t *row, uint8_t u)
    backend), so this is the renderer's cross-TU boundary on the hot draw path. */
 void cfx_draw_span(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, int16_t span,
                    uint16_t tex_state, int16_t tex_step_linear, int8_t step_u, int8_t step_v);
+/* Per-row emit for the quad-scanline walker, in fixed-point UV. The backend
+   internally picks the direct-VRAM path or the normal span, so the core never
+   references the platform's direct-VRAM (KRAM) concept. */
+void cfx_draw_span_quad_fp(const CfxRenderer3DState *renderer, int16_t y, int16_t x_start, int16_t span,
+                           int32_t u_start, int32_t v_start, int32_t du_fp, int32_t dv_fp);
+/* 0 if this render does not target a live direct-VRAM page (always 0 on
+   backends without one), letting the core choose the rasterization path with no
+   platform ifdefs. */
+uint8_t cfx_renderer3d_direct_kram_active(const CfxRenderer3DState *renderer);
 void cfx_board_fill(uint8_t *dst, int n,
                     int32_t u, int32_t v, int32_t du, int32_t dv, const uint8_t *tile);
 #if CFX_RENDERER_DIRECT_RECT

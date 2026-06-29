@@ -11,12 +11,21 @@ extern int cfx_pcfx_current_kram_page_word_offset;
 extern void eris_king_set_kram_write(uint32_t addr, int incr);
 #endif
 
-#if CFX_RENDERER_DIRECT_KRAM
-static inline __attribute__((always_inline)) uint8_t cfx_renderer3d_direct_kram_active(const CfxRenderer3DState *renderer)
+/* Whether this render targets the live direct-VRAM (KRAM) page. The shared core
+   calls this to pick the direct-VRAM rasterization path; it is always defined
+   (0 on backends without a direct-VRAM path) so the core needs no DIRECT_KRAM
+   ifdefs. */
+uint8_t cfx_renderer3d_direct_kram_active(const CfxRenderer3DState *renderer)
 {
+#if CFX_RENDERER_DIRECT_KRAM
     return (uint8_t)(renderer->framebuffer == cfx_game_framebuffer());
+#else
+    (void)renderer;
+    return 0;
+#endif
 }
 
+#if CFX_RENDERER_DIRECT_KRAM
 static inline __attribute__((always_inline)) void cfx_pcfx_kram_select_data_register(void)
 {
     __asm__ volatile (
@@ -1390,5 +1399,27 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
 #if CFX_RENDERER_DIRECT_KRAM
         if (direct_kram) cfx_pcfx_kram_write_word(*dst);
 #endif
+    }
+}
+
+/* Per-row emit for the textured-quad scanline walker: chooses the direct-VRAM
+   exact-FP path on platforms with a live KRAM page, else the normal LUT span.
+   Keeps the DIRECT_KRAM choice out of the shared core (renderer3d.c). */
+void cfx_draw_span_quad_fp(const CfxRenderer3DState *renderer, int16_t y, int16_t x_start, int16_t span,
+                           int32_t u_start, int32_t v_start, int32_t du_fp, int32_t dv_fp)
+{
+#if CFX_RENDERER_DIRECT_KRAM
+    if (cfx_renderer3d_direct_kram_active(renderer)) {
+        cfx_draw_span_kram_fp_exact(renderer, y, x_start, span, u_start, v_start, du_fp, dv_fp);
+        return;
+    }
+#endif
+    {
+        int8_t du = (int8_t)(du_fp >> CFX_QUAD_UV_SHIFT);
+        int8_t dv = (int8_t)(dv_fp >> CFX_QUAD_UV_SHIFT);
+        uint16_t tex_state = cfx_pack_tex_state(cfx_clamp_u8_i32(u_start >> CFX_QUAD_UV_SHIFT),
+                                                cfx_clamp_u8_i32(v_start >> CFX_QUAD_UV_SHIFT));
+        int16_t tex_step_linear = cfx_pack_tex_step_linear(du, dv);
+        cfx_draw_span(renderer, y, x_start, span, tex_state, tex_step_linear, du, dv);
     }
 }

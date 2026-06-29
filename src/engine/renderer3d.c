@@ -673,13 +673,6 @@ static void cfx_draw_textured_quad_scanline(const CfxRenderer3DState *renderer,
     cfx_quad_build_edge(&edges[2], &points[2], &points[3]);
     cfx_quad_build_edge(&edges[3], &points[3], &points[0]);
 
-#if CFX_RENDERER_DIRECT_KRAM
-    const uint8_t direct_kram = cfx_renderer3d_direct_kram_active(renderer);
-#else
-    const uint8_t direct_kram = 0;
-#endif
-
-
     if (min_y < 0) {
         int16_t skip = (int16_t)-min_y;
         for (int i = 0; i < 4; ++i) {
@@ -736,19 +729,7 @@ static void cfx_draw_textured_quad_scanline(const CfxRenderer3DState *renderer,
         int32_t pixel_offset_fp = (((int32_t)x_start << CFX_GEOM_FIXED_SHIFT) + (1 << (CFX_GEOM_FIXED_SHIFT - 1))) - xs_fp[0];
         int32_t u_start = us[0] + ((du_fp * pixel_offset_fp) >> CFX_GEOM_FIXED_SHIFT);
         int32_t v_start = vs[0] + ((dv_fp * pixel_offset_fp) >> CFX_GEOM_FIXED_SHIFT);
-#if CFX_RENDERER_DIRECT_KRAM
-        if (direct_kram) {
-            cfx_draw_span_kram_fp_exact(renderer, y, x_start, span, u_start, v_start, du_fp, dv_fp);
-        } else
-#endif
-        {
-            int8_t du = (int8_t)(du_fp >> CFX_QUAD_UV_SHIFT);
-            int8_t dv = (int8_t)(dv_fp >> CFX_QUAD_UV_SHIFT);
-            uint16_t tex_state = cfx_pack_tex_state(cfx_clamp_u8_i32(u_start >> CFX_QUAD_UV_SHIFT),
-                                                    cfx_clamp_u8_i32(v_start >> CFX_QUAD_UV_SHIFT));
-            int16_t tex_step_linear = cfx_pack_tex_step_linear(du, dv);
-            cfx_draw_span(renderer, y, x_start, span, tex_state, tex_step_linear, du, dv);
-        }
+        cfx_draw_span_quad_fp(renderer, y, x_start, span, u_start, v_start, du_fp, dv_fp);
     }
 }
 
@@ -1233,9 +1214,7 @@ void cfx_renderer3d_draw_quad(CfxRenderer3D *renderer, const Point2D *p0, const 
        instead of rebuilding the single expanded 64 KiB texture LUT whenever the
        tetromino color changes.  Keep the direct-KING live-piece path on the
        older LUT/FP-exact path to avoid touching foreground timing/edges. */
-#if CFX_RENDERER_DIRECT_KRAM
     if (!cfx_renderer3d_direct_kram_active(state))
-#endif
     {
         cfx_draw_textured_triangle(state, tile, v0, v1, v2);
         cfx_draw_textured_triangle(state, tile, v0, v2, v3);
@@ -1253,7 +1232,7 @@ void cfx_renderer3d_draw_quad(CfxRenderer3D *renderer, const Point2D *p0, const 
     (void)tile;
 #endif
 
-#if CFX_RENDERER_QUAD_SCANLINE && CFX_RENDERER_DIRECT_KRAM
+#if CFX_RENDERER_QUAD_SCANLINE
     if (cfx_renderer3d_direct_kram_active(state)) {
         cfx_draw_textured_quad_scanline(state, v0, v1, v2, v3);
         return;
