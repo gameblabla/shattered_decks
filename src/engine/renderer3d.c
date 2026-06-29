@@ -1,10 +1,4 @@
-#include "renderer3d.h"
-#include "renderer3d_port.h"
-#include <stddef.h>
-
-#ifndef CFX_RENDERER_DIRECT_KRAM
-#define CFX_RENDERER_DIRECT_KRAM 0
-#endif
+#include "renderer3d_internal.h"
 
 #if CFX_RENDERER_DIRECT_KRAM
 extern uint8_t *cfx_game_framebuffer(void);
@@ -12,40 +6,6 @@ extern int cfx_pcfx_current_page_word_offset(void);
 extern int cfx_pcfx_current_kram_page_word_offset;
 extern void eris_king_set_kram_write(uint32_t addr, int incr);
 #endif
-
-#ifndef CFX_RENDERER_DIRECT_ROW_LUT
-#define CFX_RENDERER_DIRECT_ROW_LUT 0
-#endif
-
-#ifndef CFX_RENDERER_QUAD_SCANLINE
-#define CFX_RENDERER_QUAD_SCANLINE 0
-#endif
-
-#ifndef CFX_RENDERER_DIRECT_GENERIC_TILE
-#define CFX_RENDERER_DIRECT_GENERIC_TILE 0
-#endif
-
-#define CFX_TEX_SIZE CFX_TEXTURE_TILE_SIZE
-#define CFX_TEX_MASK (CFX_TEX_SIZE - 1)
-#define CFX_FIXED_POINT_SHIFT ((CFX_TEX_SIZE == 32) ? 3 : 4)
-#define CFX_GEOM_FIXED_SHIFT 8
-#define CFX_QUAD_UV_SHIFT 8
-#define CFX_EDGE_UV_SHIFT 16
-#define CFX_MAX_TEXTURE_TILES 7
-
-typedef struct {
-    uint8_t *framebuffer;
-    const uint8_t *texture_atlas;
-    DEFAULT_INT width;
-    DEFAULT_INT height;
-    DEFAULT_INT tile_pitch_bytes;
-    DEFAULT_INT tile_stride_bytes;
-} CfxRenderer3DState;
-
-static inline CfxRenderer3DState *cfx_state(CfxRenderer3D *renderer)
-{
-    return (CfxRenderer3DState *)(void *)renderer->opaque;
-}
 
 #if CFX_RENDERER_DIRECT_KRAM
 static inline __attribute__((always_inline)) uint8_t cfx_renderer3d_direct_kram_active(const CfxRenderer3DState *renderer)
@@ -133,14 +93,14 @@ typedef struct {
 static uint8_t tex_lut[1u << 16] __attribute__((aligned(16)));
 #if CFX_RENDERER_MULTI_LUT
 static uint8_t tex_lut_tiles[CFX_MAX_TEXTURE_TILES][1u << 16] __attribute__((aligned(16)));
-static const uint8_t *active_tex_lut = tex_lut_tiles[0];
+const uint8_t *active_tex_lut = tex_lut_tiles[0];
 static const uint8_t *tex_lut_tiles_source_atlas;
 static DEFAULT_INT tex_lut_tiles_source_pitch;
 static DEFAULT_INT tex_lut_tiles_source_stride;
 static uint8_t tex_lut_tiles_ready;
 static uint8_t tex_lut_tile_ready[CFX_MAX_TEXTURE_TILES];
 #else
-static const uint8_t *active_tex_lut = tex_lut;
+const uint8_t *active_tex_lut = tex_lut;
 #endif
 static const uint8_t *tex_lut_source_tile;
 static DEFAULT_INT tex_lut_source_pitch;
@@ -154,14 +114,7 @@ static DEFAULT_INT tex_row_lut_source_stride;
 static uint8_t tex_row_lut_ready;
 #endif
 
-static inline int32_t cfx_abs_i32(int32_t v) { return v < 0 ? -v : v; }
-
 #define CFX_DIV_CORRECTION_LIMIT 8u
-
-static inline uint32_t cfx_abs_i32_u32(int32_t v)
-{
-    return (v < 0) ? ((uint32_t)(-(v + 1)) + 1u) : (uint32_t)v;
-}
 
 static inline int32_t cfx_div_apply_sign(uint32_t q, uint8_t neg)
 {
@@ -359,26 +312,6 @@ static inline int32_t cfx_div_toward_zero_i32d(int32_t n, int32_t d)
     return cfx_div_apply_sign(q, neg);
 }
 
-static inline int32_t cfx_int_to_fixed(int32_t x) { return x << CFX_GEOM_FIXED_SHIFT; }
-static inline uint16_t cfx_pack_tex_state(uint8_t u, uint8_t v) { return (uint16_t)(((uint16_t)v << 8) | (uint16_t)u); }
-static inline int16_t cfx_pack_tex_step_linear(int8_t du, int8_t dv)
-{
-    return (int16_t)(((int16_t)dv << 8) + (int16_t)du);
-}
-
-static inline uint16_t cfx_advance_tex_state(uint16_t state, int8_t du, int8_t dv)
-{
-    uint8_t u = (uint8_t)((uint8_t)state + (uint8_t)du);
-    uint8_t v = (uint8_t)((uint8_t)(state >> 8) + (uint8_t)dv);
-    return cfx_pack_tex_state(u, v);
-}
-
-static inline uint16_t cfx_advance_tex_state_n(uint16_t state, int8_t du, int8_t dv, uint16_t count)
-{
-    uint8_t u = (uint8_t)((uint8_t)state + (uint8_t)((int16_t)du * (int16_t)count));
-    uint8_t v = (uint8_t)((uint8_t)(state >> 8) + (uint8_t)((int16_t)dv * (int16_t)count));
-    return cfx_pack_tex_state(u, v);
-}
 
 static void cfx_fill_lut_from_tile(const CfxRenderer3DState *renderer, const uint8_t *tile, uint8_t *lut)
 {
@@ -565,42 +498,6 @@ void cfx_renderer3d_set_texture_atlas(CfxRenderer3D *renderer, const void *atlas
     tex_lut_tiles_source_atlas = NULL;
     cfx_renderer3d_prebuild_pcfx_tile_luts(state);
 #endif
-}
-
-static inline void cfx_put_even_pixel_word(uint16_t *word, uint8_t color)
-{
-    *word = (uint16_t)((*word & 0x00ffu) | ((uint16_t)color << 8));
-}
-
-static inline void cfx_put_odd_pixel_word(uint16_t *word, uint8_t color)
-{
-    *word = (uint16_t)((*word & 0xff00u) | (uint16_t)color);
-}
-
-
-static inline uint16_t cfx_pack_pixel_pair(uint8_t left, uint8_t right)
-{
-    return (uint16_t)(((uint16_t)left << 8) | (uint16_t)right);
-}
-
-static inline uint8_t cfx_fetch_texel(uint16_t state)
-{
-    return active_tex_lut[state];
-}
-
-
-static inline uint8_t cfx_clamp_u8_i32(int32_t v)
-{
-    if (v < 0) return 0;
-    if (v > 255) return 255;
-    return (uint8_t)v;
-}
-
-static inline uint8_t cfx_fetch_texel_fp(int32_t u_fp, int32_t v_fp)
-{
-    return cfx_fetch_texel(cfx_pack_tex_state(
-        cfx_clamp_u8_i32(u_fp >> CFX_QUAD_UV_SHIFT),
-        cfx_clamp_u8_i32(v_fp >> CFX_QUAD_UV_SHIFT)));
 }
 
 static inline __attribute__((always_inline)) void cfx_draw_scanline_fast_8(uint8_t *dst, uint16_t length, uint16_t tex_state, uint16_t tex_step)
