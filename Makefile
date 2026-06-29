@@ -57,7 +57,25 @@ regression-result-music: headless-cdrom-assets-2mb
 	./waifu_fm_headless_cdrom_2mb --regression-result-music --frames 1 --no-png
 
 clean:
-	rm -f $(TARGET) $(SDL12_TARGET)
+	rm -f $(TARGET) $(SDL12_TARGET) $(DIST_NAME).zip
 	rm -rf headless_frames showcase_frames out_frames *.mkv *.mp4
 
-.PHONY: all assets run record-demo showcase sdl12 headless-cdrom-assets headless-cdrom-assets-2mb headless-cdrom-assets-large headless-cart-assets regression-story regression-card-check regression-result-music clean
+# Self-contained source distribution: everything needed to build from source
+# (headless, SDL 1.2, and the PC-FX port, the latter also needing an external
+# V810/liberis toolchain). Generated headers/bins under src/generated and
+# assets/generated are included so a build needs no Python/PIL; run
+# `make assets` to regenerate them. Build artifacts, the local toolchain, ROMs,
+# emulators, captures and saves are excluded.
+DIST_NAME ?= waifu_card_game_src
+dist:
+	rm -f $(DIST_NAME).zip
+	zip -r -q $(DIST_NAME).zip \
+	  src tools assets Music sounds scripts third_party docs \
+	  Makefile Makefile.pcfx README.md AGENTS.md INSTRUCTIONS.txt \
+	  -x '*/build/*' 'build/*' '*.o' '*.a' \
+	  -x 'third_party/*/examples/*' \
+	  -x '*.zip' '*.mkv' '*.mp4' \
+	  -x '*/.git/*' '*/__pycache__/*' '*/headless_frames/*' '*/showcase_frames/*' '*/out_frames/*'
+	@echo "wrote $(DIST_NAME).zip ($$(du -h $(DIST_NAME).zip | cut -f1))"
+
+.PHONY: all assets run record-demo showcase sdl12 headless-cdrom-assets headless-cdrom-assets-2mb headless-cdrom-assets-large headless-cart-assets regression-story regression-card-check regression-result-music dist clean
