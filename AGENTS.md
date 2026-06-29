@@ -31,6 +31,11 @@ Use this file as the first stop when you need to change behavior. It is written 
   - `make` builds headless.
   - `make sdl12` builds the SDL frontend.
 
+- Resolution config (all of PC-FX / SDL / headless):
+  - `src/engine/cfx_screen_config.h` `WAIFU_FM_WIDTH` / `WAIFU_FM_HEIGHT` are the single source of truth (default 256x240). `game_api.h` and `main.c` derive `W`/`H` from these; no other file hardcodes the screen size.
+  - Full-screen 2D art (title + ending) is resolution-driven: edit the two numbers, then `make assets` (host) — `tools/gen_title_asset.py` reads the resolution, sets `TITLE_SCREEN_W/H`, and picks the matching source PNG. Selection order: canonical `assets/source/title/title_<W>x<H>.png` & `assets/source/ending/ending_<W>x<H>.png`, then the explicit `RESOLUTION_TITLE`/`RESOLUTION_ENDING` maps in that script, then the default. Sources exist for 256x240, 320x240, 384x240, 640x400, 640x480, 704x480, 704x512. Add a resolution by dropping in `title_<W>x<H>.png`/`ending<W>x<H>.png` (or a map entry).
+  - 256x240 keeps the original shipped title (`titlescreen_shardsofcards.png`) for a byte-identical default; `ending.png` was renamed to `ending256x240.png` (same image). PC-FX 16M title KRAM padding still assumes 256-row pages — non-256 heights on real PC-FX hardware need VCE/KING mode work beyond asset generation. Card/portrait sprites are fixed-size and do not vary by resolution.
+
 - [README.md](/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/README.md:1)
   - Build and run notes.
   - Existing regression coverage and historical behavior notes.
