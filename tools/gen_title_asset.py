@@ -15,11 +15,71 @@ import re
 from PIL import Image, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / 'assets/source/title/titlescreen_shardsofcards.png'
-SRC_ENDING = ROOT / 'assets/source/ending/ending.png'
 PAL_HEADER = ROOT / 'src/generated/waifu_assets.h'
 OUT = ROOT / 'src/generated/title_asset.h'
-W, H = 256, 240
+SCREEN_CONFIG = ROOT / 'src/engine/cfx_screen_config.h'
+TITLE_DIR = ROOT / 'assets/source/title'
+ENDING_DIR = ROOT / 'assets/source/ending'
+
+
+def read_screen_resolution():
+    """The single source of truth for the build resolution is
+    src/engine/cfx_screen_config.h (WAIFU_FM_WIDTH / WAIFU_FM_HEIGHT). Changing
+    those two numbers retargets the whole build, including which full-screen 2D
+    source art is baked here."""
+    text = SCREEN_CONFIG.read_text()
+    def macro(name, default):
+        m = re.search(r'^#define\s+' + name + r'\s+(\d+)', text, re.M)
+        return int(m.group(1)) if m else default
+    return macro('WAIFU_FM_WIDTH', 256), macro('WAIFU_FM_HEIGHT', 240)
+
+
+W, H = read_screen_resolution()
+
+# Per-resolution full-screen source art. The build resolution (above) picks the
+# row; to add a resolution, drop in art named <base>_<W>x<H>.png (auto-detected
+# below) or add an explicit entry here. Filenames are relative to their dir.
+# 256x240 keeps the original shipped title art for byte-stable default builds.
+RESOLUTION_TITLE = {
+    (256, 240): 'titlescreen_shardsofcards.png',
+    (320, 240): 'title_320.png',
+    (384, 240): 'title_384x240.png',
+    (640, 400): 'title_640x400.png',
+    (640, 480): 'title_640x480.png',
+    (704, 480): 'title_704x480.png',
+    (704, 512): 'title_704PAL.png',
+}
+RESOLUTION_ENDING = {
+    (256, 240): 'ending256x240.png',
+    (320, 240): 'ending320x240.png',
+    (384, 240): 'ending384x240.png',
+    (640, 400): 'ending640x400.png',
+    (640, 480): 'ending640x480.png',
+    (704, 480): 'ending704x480.png',
+    (704, 512): 'ending704x512.png',
+}
+
+
+def pick_source(kind, directory, explicit_map, default_name):
+    """Resolve a full-screen source image for the current (W, H).
+    Order: canonical <kind>_<W>x<H>.png, then <kind><W>x<H>.png, then the
+    explicit map, then the default. Any chosen image is fit to (W, H)."""
+    for cand in ('%s_%dx%d.png' % (kind, W, H), '%s%dx%d.png' % (kind, W, H)):
+        p = directory / cand
+        if p.exists():
+            return p
+    mapped = explicit_map.get((W, H))
+    if mapped and (directory / mapped).exists():
+        return directory / mapped
+    if default_name and (directory / default_name).exists():
+        return directory / default_name
+    raise FileNotFoundError(
+        '%s art for %dx%d not found in %s. Add %s_%dx%d.png or an entry in '
+        'gen_title_asset.py.' % (kind, W, H, directory, kind, W, H))
+
+
+SRC = pick_source('title', TITLE_DIR, RESOLUTION_TITLE, 'titlescreen_shardsofcards.png')
+SRC_ENDING = pick_source('ending', ENDING_DIR, RESOLUTION_ENDING, None)
 # The PC-FX 16M title layer is scrolled down by four rows at runtime to avoid
 # the hardware/mixer sampling wrapped hidden rows at the top.  The full 256-row
 # CD/KRAM blob is therefore pre-shifted so visible scanlines still map to the
@@ -463,7 +523,7 @@ def main():
     with OUT.open('w') as f:
         f.write('#ifndef TITLE_ASSET_H\n#define TITLE_ASSET_H\n\n')
         f.write('#include <stdint.h>\n\n')
-        f.write('#define TITLE_SCREEN_W 256\n#define TITLE_SCREEN_H 240\n')
+        f.write('#define TITLE_SCREEN_W %d\n#define TITLE_SCREEN_H %d\n' % (W, H))
         f.write('static const uint8_t title_screen_palette_rgb[256 * 3] = {\n')
         flat_pal = [v for rgb in title_pal for v in rgb]
         for i in range(0, len(flat_pal), 18):

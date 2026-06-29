@@ -54,7 +54,11 @@ PCFX_SRCS_S := src/platform/pcfx/fastking.s src/platform/pcfx/pcfx_biosfs_asm.s
 CARD_SOURCE_FILES := $(shell find assets/source/cards -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
 STORY_PORTRAIT_FILES := $(shell find assets/source/story_portraits -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
 SFX_SOURCE_FILES := $(shell find sounds assets/sounds -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
-TITLE_SOURCE_FILES := assets/source/title/titlescreen_shardsofcards.png assets/source/ending/ending.png
+# Full-screen title/ending art is resolution-driven: gen_title_asset.py reads
+# the build resolution from src/engine/cfx_screen_config.h and selects the
+# matching per-resolution source PNG. Depend on the config + whatever source art
+# exists so a resolution change (or art edit) retriggers regeneration.
+TITLE_SOURCE_FILES := src/engine/cfx_screen_config.h $(wildcard assets/source/title/*.png assets/source/ending/*.png)
 RAINBOW_SOURCE_FILES := assets/source/bg/desert.png assets/source/bg/stone.png assets/source/bg/ember.png assets/source/bg/sky.png
 
 ASSET_GEN_FILES := \
