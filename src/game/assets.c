@@ -852,6 +852,15 @@ const uint16_t *waifu_assets_title_screen_pcfx_yuv422(void)
 #endif
 }
 
+const uint8_t *waifu_assets_ending_screen_img(void)
+{
+#ifdef WAIFU_ASSET_EXTERNAL_ENDING_IMAGE
+    return NULL;
+#else
+    return ending_screen_img;
+#endif
+}
+
 const uint16_t *waifu_assets_ending_screen_pcfx_yuv422(void)
 {
 #ifdef WAIFU_ASSET_EXTERNAL_ENDING_IMAGE

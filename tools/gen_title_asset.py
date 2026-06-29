@@ -450,6 +450,15 @@ def main():
     ending_yuv422 = build_pcfx_title_yuv422_16m(ending_img)
     ending_yuv422_kram = pad_pcfx_16m_page(ending_yuv422)
 
+    # Host/headless indexed ending image with its own 256-color palette, built
+    # the same way as the title (common reserved IDX_* slots preserved so text
+    # stays legible, free slots filled with ending-art colors).
+    ending_colors = quantize_title_palette(ending_img, len(free_slots))
+    ending_pal = list(common)
+    for n, slot in enumerate(free_slots):
+        ending_pal[slot] = ending_colors[n % len(ending_colors)]
+    ending_data = assign_pixels_to_palette(ending_img, ending_pal, free_slots)
+
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open('w') as f:
         f.write('#ifndef TITLE_ASSET_H\n#define TITLE_ASSET_H\n\n')
@@ -478,7 +487,16 @@ def main():
             f.write('    ' + ','.join(f'0x{v:04x}' for v in pcfx_yuv422[i:i + 12]) + ',\n')
         f.write('};\n')
         f.write('#endif /* WAIFU_ASSET_EXTERNAL_TITLE_IMAGE */\n\n')
+        f.write('static const uint8_t ending_screen_palette_rgb[256 * 3] = {\n')
+        flat_epal = [v for rgb in ending_pal for v in rgb]
+        for i in range(0, len(flat_epal), 18):
+            f.write('    ' + ','.join(str(v) for v in flat_epal[i:i + 18]) + ',\n')
+        f.write('};\n')
         f.write('#ifndef WAIFU_ASSET_EXTERNAL_ENDING_IMAGE\n')
+        f.write('static const uint8_t ending_screen_img[TITLE_SCREEN_W * TITLE_SCREEN_H] = {\n')
+        for i in range(0, len(ending_data), 32):
+            f.write('    ' + ','.join(str(v) for v in ending_data[i:i + 32]) + ',\n')
+        f.write('};\n')
         f.write('static const uint16_t ending_screen_pcfx_yuv422[TITLE_SCREEN_W * TITLE_SCREEN_H] = {\n')
         for i in range(0, len(ending_yuv422), 12):
             f.write('    ' + ','.join(f'0x{v:04x}' for v in ending_yuv422[i:i + 12]) + ',\n')

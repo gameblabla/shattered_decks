@@ -54,6 +54,7 @@ WaifuFmPaletteId waifu_fm_palette_id(void)
 const uint8_t *waifu_fm_palette_rgb_for_id(WaifuFmPaletteId id)
 {
     if (id == WAIFU_FM_PALETTE_TITLE) return title_screen_palette_rgb;
+    if (id == WAIFU_FM_PALETTE_ENDING) return ending_screen_palette_rgb;
     if (id == WAIFU_FM_PALETTE_DIALOGUE) return waifu_dialogue_palette_rgb;
     return waifu_palette_rgb;
 }

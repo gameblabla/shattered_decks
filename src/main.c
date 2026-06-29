@@ -10273,7 +10273,12 @@ static void draw_story_ending_screen(void)
     waifu_fm_use_ending_palette();
     waifu_pcfx_video_overlay_ending_story(g_story_name, line, fully_typed && ((g_i_frame / 16) & 1) == 0, visible_chars);
 #else
-    clear_screen(IDX_BLACK);
+    waifu_fm_use_ending_palette();
+    {
+        const uint8_t *ending_img = waifu_assets_ending_screen_img();
+        if (ending_img) draw_card_raw(ending_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, W, H);
+        else clear_screen(IDX_BLACK);
+    }
     //draw_text_small(10, 180, "SERENA", IDX_GOLD_HI, IDX_BLACK);
     {
         char visible_line[160];
