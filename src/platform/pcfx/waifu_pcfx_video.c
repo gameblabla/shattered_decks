@@ -2385,6 +2385,38 @@ int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
     return 1;
 }
 
+/* Platform text seam: present whole-screen UI panels on the VDC hardware text
+   overlay. Returns 1 (handled in hardware) so the common code skips its
+   software text fallback. */
+int waifu_platform_text_overlay(WaifuTextOverlayKind kind, const WaifuTextOverlayParams *params)
+{
+    WaifuTextOverlayParams empty = {0};
+    const WaifuTextOverlayParams *p = params ? params : &empty;
+    switch (kind) {
+    case WAIFU_TEXT_OVERLAY_TITLE_PROMPT:
+        waifu_pcfx_video_overlay_title_prompt(p->prompt_visible, p->has_save);
+        return 1;
+    case WAIFU_TEXT_OVERLAY_MENU:
+        waifu_pcfx_video_overlay_menu(p->selected, p->has_save);
+        return 1;
+    case WAIFU_TEXT_OVERLAY_LOAD_MENU:
+        waifu_pcfx_video_overlay_load_menu(p->selected, p->internal_has_save, p->external_has_save);
+        return 1;
+    case WAIFU_TEXT_OVERLAY_ENDING_STORY:
+        waifu_pcfx_video_overlay_ending_story(p->name, p->page, p->prompt_visible, p->visible_chars);
+        return 1;
+    case WAIFU_TEXT_OVERLAY_ENDING_CREDITS:
+        waifu_pcfx_video_overlay_ending_credits();
+        return 1;
+    }
+    return 0;
+}
+
+void waifu_platform_text_overlay_clear(void)
+{
+    waifu_pcfx_video_overlay_clear();
+}
+
 void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
 {
     g_sanctum_backdrop = backdrop;

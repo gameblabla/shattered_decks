@@ -68,6 +68,55 @@ typedef enum WaifuBackgroundKind {
  * can later present `kind`/`hscroll` and return 1 without touching game code. */
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll);
 
+/* ---- Text: software + hardware --------------------------------------------
+ * UI text is rendered two complementary ways, and a single platform may use
+ * BOTH at once (PC-FX does):
+ *
+ *   - SOFTWARE text: glyphs composited straight into the CPU framebuffer
+ *     (the draw_text* family in the common code). Available on every platform;
+ *     used for in-scene HUD, card stats, etc. It needs no seam — it is just
+ *     common code writing pixels, so it stays maximally fast (no indirection).
+ *
+ *   - HARDWARE text: a dedicated text/overlay layer that sits above the
+ *     framebuffer and is untouched by 2D/3D redraws (PC-FX VDC tile overlay).
+ *     Whole-screen UI panels that live on such a layer are requested through
+ *     the seam below. One call presents an entire panel (no per-glyph
+ *     indirection), so it is cheap and platform agnostic.
+ *
+ * A panel-drawing site asks the platform to present the panel on its hardware
+ * text layer; if there is none, the platform returns 0 and the SAME site
+ * composites the panel with the software text API instead. This keeps both
+ * text paths first-class and composable without #ifdef at the call site.
+ */
+typedef enum WaifuTextOverlayKind {
+    WAIFU_TEXT_OVERLAY_TITLE_PROMPT = 0,
+    WAIFU_TEXT_OVERLAY_MENU,
+    WAIFU_TEXT_OVERLAY_LOAD_MENU,
+    WAIFU_TEXT_OVERLAY_ENDING_STORY,
+    WAIFU_TEXT_OVERLAY_ENDING_CREDITS
+} WaifuTextOverlayKind;
+
+typedef struct WaifuTextOverlayParams {
+    int selected;            /* menu/load cursor index */
+    int has_save;            /* title/menu: a save exists */
+    int internal_has_save;   /* load menu: internal device has a save */
+    int external_has_save;   /* load menu: external device has a save */
+    int page;                /* ending story: narration page */
+    int prompt_visible;      /* title/ending: blink-visible prompt flag */
+    int visible_chars;       /* ending story: typewriter character count */
+    const char *name;        /* ending story: protagonist name */
+} WaifuTextOverlayParams;
+
+/* Presents a whole-screen UI panel on the platform's hardware text layer.
+ * Returns 1 if it was presented in hardware (the caller must NOT also software-
+ * draw the panel), or 0 if there is no hardware text layer (the caller renders
+ * the panel with the software text API). `params` may be NULL for kinds that
+ * take none. */
+int waifu_platform_text_overlay(WaifuTextOverlayKind kind, const WaifuTextOverlayParams *params);
+
+/* Clears any hardware text overlay. A no-op where there is no hardware layer. */
+void waifu_platform_text_overlay_clear(void);
+
 #ifdef __cplusplus
 }
 #endif

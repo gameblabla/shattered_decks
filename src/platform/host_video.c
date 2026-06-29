@@ -18,3 +18,16 @@ int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
     (void)hscroll;
     return 0;
 }
+
+/* The host has no hardware text layer, so every UI panel is rendered with the
+   software text API by the caller. Returning 0 selects that software path. */
+int waifu_platform_text_overlay(WaifuTextOverlayKind kind, const WaifuTextOverlayParams *params)
+{
+    (void)kind;
+    (void)params;
+    return 0;
+}
+
+void waifu_platform_text_overlay_clear(void)
+{
+}

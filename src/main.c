@@ -10317,43 +10317,48 @@ static void draw_story_ending_screen(void)
     if (line >= line_count) line = line_count - 1;
     visible_chars = story_ending_line_visible_chars(line);
     fully_typed = !g_story_ending_erasing && story_ending_line_fully_typed();
-#ifndef WAIFU_FM_PCFX
-    (void)fully_typed;
-#endif
-#ifdef WAIFU_FM_PCFX
-    clear_screen(IDX_BLACK);
+
     waifu_fm_use_ending_palette();
-    waifu_pcfx_video_overlay_ending_story(g_story_name, line, fully_typed && ((g_i_frame / 16) & 1) == 0, visible_chars);
-#else
-    waifu_fm_use_ending_palette();
+
+    {
+        WaifuTextOverlayParams ov = {0};
+        ov.name = g_story_name;
+        ov.page = line;
+        ov.prompt_visible = fully_typed && ((g_i_frame / 16) & 1) == 0;
+        ov.visible_chars = visible_chars;
+        if (waifu_platform_text_overlay(WAIFU_TEXT_OVERLAY_ENDING_STORY, &ov)) {
+            /* Hardware text layer carries the narration; framebuffer stays black. */
+            clear_screen(IDX_BLACK);
+            return;
+        }
+    }
+
+    /* Software path: ending artwork with the narration composited as text. */
     {
         const uint8_t *ending_img = waifu_assets_ending_screen_img();
         if (ending_img) draw_card_raw(ending_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
         else clear_screen(IDX_BLACK);
     }
-    //draw_text_small(10, 180, "SERENA", IDX_GOLD_HI, IDX_BLACK);
     {
         char visible_line[160];
         waifu_str_copy_n(visible_line, (int)sizeof(visible_line), story_ending_lines[line], visible_chars);
         draw_wrapped_text_small_box(10, 198, WAIFU_FM_WIDTH - 20, 4, 10, visible_line, IDX_WHITE, IDX_BLACK);
     }
-    //if (!g_story_ending_erasing && ((g_i_frame / 16) & 1) == 0) draw_centered_text(226, "A/RUN CONTINUE", IDX_WHITE, IDX_BLACK);
-#endif
 }
 
 static void draw_story_ending_credits_screen(void)
 {
-#ifdef WAIFU_FM_PCFX
-    clear_screen(IDX_BLACK);
-    waifu_fm_use_ending_black_palette();
-    waifu_pcfx_video_overlay_ending_credits();
-#else
-    clear_screen(IDX_BLACK);
-    draw_centered_text(82, "THANK YOU FOR PLAYING.", IDX_WHITE, IDX_BLACK);
-    draw_centered_text(112, "SHATTERED DECKS.", IDX_WHITE, IDX_BLACK);
-    draw_centered_text(142, "A GAME BY GAMEBLABLA.", IDX_WHITE, IDX_BLACK);
-    draw_centered_text(172, "(C) 2026", IDX_WHITE, IDX_BLACK);
-#endif
+    if (waifu_platform_text_overlay(WAIFU_TEXT_OVERLAY_ENDING_CREDITS, 0)) {
+        /* Hardware text layer carries the credits over a black framebuffer. */
+        clear_screen(IDX_BLACK);
+        waifu_fm_use_ending_black_palette();
+    } else {
+        clear_screen(IDX_BLACK);
+        draw_centered_text(82, "THANK YOU FOR PLAYING.", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(112, "SHATTERED DECKS.", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(142, "A GAME BY GAMEBLABLA.", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(172, "(C) 2026", IDX_WHITE, IDX_BLACK);
+    }
     if (g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
     if (g_i_frame >= STORY_ENDING_CREDITS_FRAMES - 36) {
         apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame - (STORY_ENDING_CREDITS_FRAMES - 36), 36));
