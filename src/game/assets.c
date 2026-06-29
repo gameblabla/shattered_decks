@@ -2,9 +2,6 @@
 
 #include <stddef.h>
 #include <string.h>
-#ifndef WAIFU_ASSET_NO_STDIO
-#include <stdio.h>
-#endif
 
 #if defined(WAIFU_ASSET_USE_CDROM)
 #define WAIFU_ASSET_EXTERNAL_TITLE_IMAGE 1
@@ -54,64 +51,10 @@
 static WaifuBigArtDraw g_big_art_draws[WAIFU_ASSET_BIG_ART_DRAW_MAX];
 static int g_big_art_draw_count = 0;
 
-#if defined(WAIFU_FM_HEADLESS_TESTS)
-static unsigned long g_debug_platform_read_count = 0;
-#endif
-
-#ifndef WAIFU_ASSET_NO_STDIO
-static const char *blob_path(WaifuAssetBlobId blob)
-{
-    switch (blob) {
-    case WAIFU_ASSET_BLOB_TITLE_SCREEN: return "assets/generated/title_screen_img.bin";
-    case WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV16: return "assets/generated/title_screen_pcfx_yuv16.bin";
-    case WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV422: return "assets/generated/title_screen_pcfx_yuv422.bin";
-    case WAIFU_ASSET_BLOB_ENDING_SCREEN_PCFX_YUV422: return "assets/generated/ending_screen_pcfx_yuv422.bin";
-    case WAIFU_ASSET_BLOB_STORY_PORTRAITS: return "assets/generated/story_portraits.bin";
-    case WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK: return "assets/generated/story_portrait_mask.bin";
-    case WAIFU_ASSET_BLOB_CARD_FACES: return "assets/generated/card_faces.bin";
-    case WAIFU_ASSET_BLOB_CARD_BIG_ART: return "assets/generated/card_big_art.bin";
-    case WAIFU_ASSET_BLOB_CARD_BIG_ART_CD: return "assets/generated/card_big_art_cd.bin";
-    case WAIFU_ASSET_BLOB_CARD_BACK: return "assets/generated/card_back.bin";
-    case WAIFU_ASSET_BLOB_SUPPORT_FACE: return "assets/generated/support_face.bin";
-    case WAIFU_ASSET_BLOB_SUPPORT_BIG_ART: return "assets/generated/support_big_art.bin";
-    case WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD: return "assets/generated/support_big_art_cd.bin";
-    default: return NULL;
-    }
-}
-#endif
-
-#if !defined(WAIFU_FM_PCFX)
-int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size_t offset, size_t bytes)
-{
-#ifdef WAIFU_ASSET_NO_STDIO
-    (void)blob; (void)dst; (void)offset; (void)bytes;
-    return 0;
-#else
-    const char *path = blob_path(blob);
-    FILE *fp;
-    size_t got;
-    if (!path || !dst) return 0;
-#if defined(WAIFU_FM_HEADLESS_TESTS)
-    ++g_debug_platform_read_count;
-#endif
-    fp = fopen(path, "rb");
-    if (!fp) return 0;
-    if (fseek(fp, (long)offset, SEEK_SET) != 0) { fclose(fp); return 0; }
-    got = fread(dst, 1, bytes, fp);
-    if (got < bytes && feof(fp)) {
-        /* Host CD-ROM emulation sometimes requests a sector-rounded slice from
-           a file whose stored payload is not sector padded.  Real PC-FX CD reads
-           can safely over-read into the next sector; for stdio tests, zero-fill
-           the harmless tail so the same staged-load path can be validated. */
-        memset((uint8_t *)dst + got, 0, bytes - got);
-        fclose(fp);
-        return 1;
-    }
-    fclose(fp);
-    return got == bytes;
-#endif
-}
-#endif
+/* The raw blob backend lives in a per-platform translation unit and is reached
+   only through waifu_assets_platform_read_blob_slice() (host_assets.c on the
+   host; waifu_pcfx_cdrom.c on PC-FX; a ROM/RAM reader elsewhere). This keeps
+   stdio and any file/device API out of the common asset code below. */
 
 static int read_blob_slice_platform(WaifuAssetBlobId blob, uint8_t *dst, size_t offset, size_t bytes)
 {
@@ -122,18 +65,6 @@ static int read_blob_platform(WaifuAssetBlobId blob, uint8_t *dst, size_t bytes)
 {
     return read_blob_slice_platform(blob, dst, 0, bytes);
 }
-
-#if defined(WAIFU_FM_HEADLESS_TESTS)
-unsigned long waifu_assets_debug_platform_read_count(void)
-{
-    return g_debug_platform_read_count;
-}
-
-void waifu_assets_debug_reset_platform_read_count(void)
-{
-    g_debug_platform_read_count = 0;
-}
-#endif
 
 void waifu_assets_big_art_draw_queue_reset(void)
 {
