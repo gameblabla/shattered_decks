@@ -1,6 +1,7 @@
 #include "sounds.h"
 
 #include <string.h>
+#include <stdlib.h>
 
 #if !defined(WAIFU_FM_PCFX)
 #include "sound_assets.h"
@@ -34,6 +35,205 @@ static int16_t clamp_s16(int v)
     if (v < -32768) return -32768;
     return (int16_t)v;
 }
+
+#if !defined(WAIFU_FM_PCFX)
+/* ---------------------------------------------------------------------------
+ * Streamed music playback.
+ *
+ * The music tracks live on disk as ordinary WAV files in Music/. They are far
+ * too large to embed, so they are streamed a few KB at a time straight through
+ * the existing software mixer (no SDL_mixer). The reader is plain stdio + a
+ * small ring of bytes, so it is platform agnostic; only the PC-FX build (which
+ * uses CD-DA hardware for music) compiles it out.
+ *
+ * Source frames are converted to signed-16 stereo and resampled to the mixer
+ * rate with a fixed-point (.16) phase accumulator (nearest-neighbour, which is
+ * inaudible here and avoids any floating point). Tracks loop seamlessly.
+ * ------------------------------------------------------------------------- */
+#define WAIFU_MUSIC_READ_BUF 8192
+
+typedef struct WaifuMusicStream {
+    FILE *fp;
+    long data_start;       /* byte offset of the WAV data chunk */
+    long data_bytes;       /* size of the data chunk */
+    long data_pos;         /* bytes consumed from the data chunk */
+    int src_rate;
+    int src_channels;
+    int src_bits;          /* 8 (unsigned) or 16 (signed) */
+    uint32_t step;         /* source frames per output frame, .16 fixed point */
+    uint32_t acc;          /* fractional resample position, .16 */
+    int cur_l, cur_r;      /* current source frame (s16 range) */
+    int have_cur;
+    unsigned char buf[WAIFU_MUSIC_READ_BUF];
+    int buf_len;
+    int buf_pos;
+} WaifuMusicStream;
+
+static WaifuMusicStream g_music_stream;
+
+static uint16_t rd_le16(const unsigned char *p)
+{
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+static uint32_t rd_le32(const unsigned char *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static const char *music_track_path(WaifuMusicTrack track)
+{
+    /* Several states share a track when no dedicated file exists yet. */
+    switch (track) {
+    case WAIFU_MUSIC_TITLE:         return "Music/Titlescreen_MoonlitCipher.wav";
+    case WAIFU_MUSIC_OPENING_DREAM: return "Music/Overworld.wav";
+    case WAIFU_MUSIC_DECK_EDITOR:   return "Music/Overworld.wav";
+    case WAIFU_MUSIC_BOSS:          return "Music/Boss.wav";
+    case WAIFU_MUSIC_FINAL_BOSS:    return "Music/FinalBoss.wav";
+    case WAIFU_MUSIC_RANDOM_BATTLE: return "Music/Battle.wav";
+    case WAIFU_MUSIC_RESULTS:       return "Music/Victory.wav";
+    case WAIFU_MUSIC_LOST:          return "Music/Fail.wav";
+    default:                        return NULL;
+    }
+}
+
+static void music_stream_close(WaifuMusicStream *st)
+{
+    if (st->fp) fclose(st->fp);
+    memset(st, 0, sizeof(*st));
+}
+
+static int music_stream_open(WaifuMusicStream *st, const char *path)
+{
+    unsigned char hdr[8];
+    int fmt_ok = 0;
+    FILE *fp;
+    const char *dir = getenv("WAIFU_MUSIC_DIR");
+
+    memset(st, 0, sizeof(*st));
+    if (!path) return 0;
+
+    fp = NULL;
+    if (dir && dir[0]) {
+        /* Allow overriding just the directory; path is "Music/<file>". */
+        const char *base = strrchr(path, '/');
+        char buf[512];
+        base = base ? base + 1 : path;
+        if (snprintf(buf, sizeof(buf), "%s/%s", dir, base) < (int)sizeof(buf))
+            fp = fopen(buf, "rb");
+    }
+    if (!fp) fp = fopen(path, "rb");
+    if (!fp) return 0;
+
+    if (fread(hdr, 1, 8, fp) != 8 || memcmp(hdr, "RIFF", 4) != 0) {
+        fclose(fp);
+        return 0;
+    }
+    if (fread(hdr, 1, 4, fp) != 4 || memcmp(hdr, "WAVE", 4) != 0) {
+        fclose(fp);
+        return 0;
+    }
+    /* Walk the chunk list for 'fmt ' and 'data'. */
+    while (fread(hdr, 1, 8, fp) == 8) {
+        uint32_t csz = rd_le32(hdr + 4);
+        if (memcmp(hdr, "fmt ", 4) == 0) {
+            unsigned char fmt[16];
+            if (csz < 16 || fread(fmt, 1, 16, fp) != 16) break;
+            if (rd_le16(fmt) != 1) break;           /* PCM only */
+            st->src_channels = rd_le16(fmt + 2);
+            st->src_rate     = (int)rd_le32(fmt + 4);
+            st->src_bits     = rd_le16(fmt + 14);
+            fmt_ok = 1;
+            if (csz > 16) fseek(fp, (long)(csz - 16), SEEK_CUR);
+        } else if (memcmp(hdr, "data", 4) == 0) {
+            st->data_start = ftell(fp);
+            st->data_bytes = (long)csz;
+            break;
+        } else {
+            fseek(fp, (long)(csz + (csz & 1u)), SEEK_CUR);
+        }
+    }
+    if (!fmt_ok || st->data_start == 0 || st->data_bytes <= 0 ||
+        (st->src_bits != 8 && st->src_bits != 16) ||
+        st->src_channels < 1 || st->src_rate <= 0) {
+        fclose(fp);
+        memset(st, 0, sizeof(*st));
+        return 0;
+    }
+    st->fp = fp;
+    st->step = (uint32_t)(((uint64_t)st->src_rate << 16) / WAIFU_SOUND_SAMPLE_RATE);
+    if (st->step == 0) st->step = 1;
+    return 1;
+}
+
+/* Pull n bytes from the data chunk, looping back to data_start at EOF. */
+static void music_read_bytes(WaifuMusicStream *st, unsigned char *out, int n)
+{
+    int got = 0;
+    while (got < n) {
+        if (st->buf_pos >= st->buf_len) {
+            long remain = st->data_bytes - st->data_pos;
+            int want = WAIFU_MUSIC_READ_BUF;
+            if (remain <= 0) {
+                fseek(st->fp, st->data_start, SEEK_SET);
+                st->data_pos = 0;
+                remain = st->data_bytes;
+            }
+            if ((long)want > remain) want = (int)remain;
+            st->buf_len = (int)fread(st->buf, 1, (size_t)want, st->fp);
+            st->buf_pos = 0;
+            if (st->buf_len <= 0) {
+                /* Read failure: emit silence and bail out. */
+                memset(out + got, 0, (size_t)(n - got));
+                return;
+            }
+            st->data_pos += st->buf_len;
+        }
+        out[got++] = st->buf[st->buf_pos++];
+    }
+}
+
+static void music_read_src_frame(WaifuMusicStream *st, int *l, int *r)
+{
+    unsigned char raw[8];
+    int bytes = (st->src_bits / 8) * st->src_channels;
+    if (bytes > (int)sizeof(raw)) bytes = (int)sizeof(raw);
+    music_read_bytes(st, raw, bytes);
+    if (st->src_bits == 16) {
+        int s0 = (int16_t)rd_le16(raw);
+        if (st->src_channels >= 2) {
+            *l = s0;
+            *r = (int16_t)rd_le16(raw + 2);
+        } else {
+            *l = *r = s0;
+        }
+    } else { /* unsigned 8-bit */
+        int s0 = ((int)raw[0] - 128) << 8;
+        if (st->src_channels >= 2) {
+            *l = s0;
+            *r = ((int)raw[1] - 128) << 8;
+        } else {
+            *l = *r = s0;
+        }
+    }
+}
+
+static void music_next_frame(WaifuMusicStream *st, int *l, int *r)
+{
+    if (!st->have_cur) {
+        music_read_src_frame(st, &st->cur_l, &st->cur_r);
+        st->have_cur = 1;
+    }
+    *l = st->cur_l;
+    *r = st->cur_r;
+    st->acc += st->step;
+    while (st->acc >= 0x10000u) {
+        st->acc -= 0x10000u;
+        music_read_src_frame(st, &st->cur_l, &st->cur_r);
+    }
+}
+#endif /* !WAIFU_FM_PCFX */
 
 #if defined(WAIFU_FM_PCFX)
 static int asset_count(void)
@@ -78,6 +278,9 @@ static int asset_length(WaifuSoundEffect effect)
 
 #endif
 
+#if defined(WAIFU_FM_PCFX)
+/* PSG-style placeholder music generator. Only the PC-FX build still references
+   this; host/headless stream real WAV music through the mixer instead. */
 typedef struct WaifuMusicPattern {
     const uint16_t *notes;
     int note_count;
@@ -154,12 +357,16 @@ static int16_t placeholder_music_sample(void)
     if (((pos / (uint32_t)(p->ticks_per_note * 2)) & 1u) != 0u) s = (s * 3) / 4;
     return (int16_t)s;
 }
+#endif /* WAIFU_FM_PCFX */
 
 void waifu_sound_init(void)
 {
     memset(g_voices, 0, sizeof(g_voices));
     g_music_track = WAIFU_MUSIC_NONE;
     g_music_pos = 0;
+#if !defined(WAIFU_FM_PCFX)
+    music_stream_close(&g_music_stream);
+#endif
 }
 
 void waifu_sound_reset(void)
@@ -167,6 +374,9 @@ void waifu_sound_reset(void)
     memset(g_voices, 0, sizeof(g_voices));
     g_music_track = WAIFU_MUSIC_NONE;
     g_music_pos = 0;
+#if !defined(WAIFU_FM_PCFX)
+    music_stream_close(&g_music_stream);
+#endif
 }
 
 void waifu_sound_set_music(WaifuMusicTrack track)
@@ -175,6 +385,11 @@ void waifu_sound_set_music(WaifuMusicTrack track)
     if (g_music_track != track) {
         g_music_track = track;
         g_music_pos = 0;
+#if !defined(WAIFU_FM_PCFX)
+        music_stream_close(&g_music_stream);
+        if (track != WAIFU_MUSIC_NONE)
+            music_stream_open(&g_music_stream, music_track_path(track));
+#endif
     }
 }
 
@@ -236,10 +451,28 @@ void waifu_sound_mix_s16(int16_t *dst, int frames)
     int f, ch;
     if (!dst || frames <= 0) return;
     for (f = 0; f < frames; ++f) {
-        int mix = 0;
-        int music = placeholder_music_sample();
+        int left = 0, right = 0;
+        int sfx = 0;
         int i;
-        mix += (music * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
+
+        /* Music: streamed stereo on host/headless, PSG placeholder on PC-FX
+           (whose real music is CD-DA and never reaches this mixer). */
+#if defined(WAIFU_FM_PCFX)
+        {
+            int music = placeholder_music_sample();
+            left  += (music * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
+            right += (music * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
+        }
+#else
+        if (g_music_stream.fp) {
+            int ml = 0, mr = 0;
+            music_next_frame(&g_music_stream, &ml, &mr);
+            left  += (ml * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
+            right += (mr * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
+        }
+#endif
+
+        /* Sound effects are mono and play centred on both channels. */
         for (i = 0; i < WAIFU_SOUND_MAX_VOICES; ++i) {
             if (g_voices[i].active) {
                 int len = asset_length(g_voices[i].effect);
@@ -247,13 +480,26 @@ void waifu_sound_mix_s16(int16_t *dst, int frames)
                     g_voices[i].active = 0;
                 } else {
                     int s = asset_sample_s16(g_voices[i].effect, g_voices[i].pos++);
-                    mix += (s * WAIFU_SOUND_SFX_GAIN_NUM) / WAIFU_SOUND_SFX_GAIN_DEN;
+                    sfx += (s * WAIFU_SOUND_SFX_GAIN_NUM) / WAIFU_SOUND_SFX_GAIN_DEN;
                     if (g_voices[i].pos >= len) g_voices[i].active = 0;
                 }
             }
         }
-        mix = (mix * WAIFU_SOUND_MASTER_NUM) / WAIFU_SOUND_MASTER_DEN;
-        for (ch = 0; ch < WAIFU_SOUND_CHANNELS; ++ch) dst[f * WAIFU_SOUND_CHANNELS + ch] = clamp_s16(mix);
+        left  += sfx;
+        right += sfx;
+
+        left  = (left  * WAIFU_SOUND_MASTER_NUM) / WAIFU_SOUND_MASTER_DEN;
+        right = (right * WAIFU_SOUND_MASTER_NUM) / WAIFU_SOUND_MASTER_DEN;
+
+        if (WAIFU_SOUND_CHANNELS >= 2) {
+            dst[f * WAIFU_SOUND_CHANNELS + 0] = clamp_s16(left);
+            dst[f * WAIFU_SOUND_CHANNELS + 1] = clamp_s16(right);
+            for (ch = 2; ch < WAIFU_SOUND_CHANNELS; ++ch)
+                dst[f * WAIFU_SOUND_CHANNELS + ch] = clamp_s16(left);
+        } else {
+            for (ch = 0; ch < WAIFU_SOUND_CHANNELS; ++ch)
+                dst[f * WAIFU_SOUND_CHANNELS + ch] = clamp_s16((left + right) / 2);
+        }
     }
 }
 
