@@ -47,6 +47,7 @@ PCFX_SRCS_C := \
   src/game/sounds.c \
   src/game/assets.c \
   src/engine/renderer3d.c \
+  src/engine/renderer3d_pcfx.c \
   src/engine/common.c
 PCFX_SRCS_S := src/platform/pcfx/fastking.s src/platform/pcfx/pcfx_biosfs_asm.s
 
@@ -114,7 +115,7 @@ BIN_TARGET := $(OBJDIR)/$(PCFX_TARGET).program.bin
 MAP_TARGET := $(OBJDIR)/$(PCFX_TARGET).map
 PCFX_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(PCFX_SRCS_C)) $(patsubst %.s,$(OBJDIR)/%.o,$(PCFX_SRCS_S))
 
-.PHONY: all program clean clean-build clean-output cd toolchain-check pcfxtools regression-pcfx-hand-card regression-pcfx-battle-card regression-pcfx-battle-card-stripe
+.PHONY: all program clean clean-build clean-output cd zip toolchain-check pcfxtools regression-pcfx-hand-card regression-pcfx-battle-card regression-pcfx-battle-card-stripe
 
 all: cd
 
@@ -227,5 +228,15 @@ cd: clean-output toolchain-check $(PCFX_CDLINK) $(ASSET_GEN_FILES) $(PCFX_SFX_FI
 clean-build:
 	rm -rf $(OBJDIR) out.bin
 
+# Package the runnable CD image (data track + cue + CDDA audio tracks) into a
+# single distributable zip.  Builds the image first so the package is fresh.
+ZIP_NAME ?= ShatteredDecks_PCFX_gbb_2026.zip
+
+zip: cd
+	@command -v zip >/dev/null || { echo "missing 'zip' tool"; exit 1; }
+	rm -f $(ZIP_NAME)
+	zip -j $(ZIP_NAME) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin
+	@echo "Packaged $(ZIP_NAME)"
+
 clean:
-	rm -rf $(OBJDIR) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin waifupcfx_pyramid.cue out.bin lbas.h cdda_tracks.h
+	rm -rf $(OBJDIR) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin waifupcfx_pyramid.cue out.bin lbas.h cdda_tracks.h $(ZIP_NAME)

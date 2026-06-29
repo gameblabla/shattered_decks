@@ -123,4 +123,17 @@ static inline uint8_t cfx_fetch_texel_fp(int32_t u_fp, int32_t v_fp)
         cfx_clamp_u8_i32(v_fp >> CFX_QUAD_UV_SHIFT)));
 }
 
+/* ---- span fillers: defined in the active backend TU ----------------------
+   The core (renderer3d.c) walks geometry/edges and calls these once per
+   scanline row; the per-pixel loop lives inside them (inlined within the
+   backend), so this is the renderer's cross-TU boundary on the hot draw path. */
+void cfx_draw_span(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, int16_t span,
+                   uint16_t tex_state, int16_t tex_step_linear, int8_t step_u, int8_t step_v);
+void cfx_board_fill(uint8_t *dst, int n,
+                    int32_t u, int32_t v, int32_t du, int32_t dv, const uint8_t *tile);
+#if CFX_RENDERER_DIRECT_KRAM
+void cfx_draw_span_kram_fp_exact(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, int16_t span,
+                                 int32_t u_fp, int32_t v_fp, int32_t du_fp, int32_t dv_fp);
+#endif
+
 #endif /* CFX_RENDERER3D_INTERNAL_H */
