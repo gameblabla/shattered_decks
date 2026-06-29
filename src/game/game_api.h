@@ -3,18 +3,14 @@
 
 #include <stdint.h>
 
-/* Screen dimensions have a single authoritative source in the engine layer
-   (cfx_screen_config.h). The public API names below derive from it so changing
-   the resolution there updates the whole build; nothing redefines the literal
-   width/height independently. */
+/* WAIFU_FM_WIDTH / WAIFU_FM_HEIGHT are the single authoritative framebuffer
+   dimensions, defined once in the engine-layer cfx_screen_config.h. */
 #include "cfx_screen_config.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define WAIFU_FM_WIDTH SCREEN_WIDTH
-#define WAIFU_FM_HEIGHT SCREEN_HEIGHT
 #define WAIFU_FM_FPS 60
 
 typedef enum WaifuFmPaletteId {

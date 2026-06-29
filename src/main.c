@@ -37,10 +37,6 @@
 #include "pcfx_biosfs.h"
 #endif
 
-/* Single source of truth for the framebuffer size: cfx_screen_config.h via
-   game_api.h. Keep W/H as the short in-file aliases the 2D layout code uses. */
-#define W WAIFU_FM_WIDTH
-#define H WAIFU_FM_HEIGHT
 #define BOARD_COLS 5
 #define BOARD_ROWS 4
 #define Q8_SHIFT 8
@@ -129,9 +125,9 @@
 #define DUEL_SCRIPT_OFFSET (DUEL_PREVIEW_END - 84)
 
 #ifdef WAIFU_FM_PCFX
-static uint8_t framebuffer[W * H] __attribute__((aligned(4)));
+static uint8_t framebuffer[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT] __attribute__((aligned(4)));
 #else
-static uint8_t framebuffer[W * H];
+static uint8_t framebuffer[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 #endif
 static uint32_t g_frame_dirty_serial = 0;
 static int g_frame_dirty_full = 0;
@@ -173,8 +169,8 @@ static void frame_mark_dirty_rect(int x, int y, int w, int h)
     if (w <= 0 || h <= 0 || g_frame_dirty_full) return;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    if (x1 > W) x1 = W;
-    if (y1 > H) y1 = H;
+    if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+    if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
     if (x0 >= x1 || y0 >= y1) return;
     if (g_frame_dirty_count >= WAIFU_FM_MAX_DIRTY_RECTS) {
         frame_mark_full_dirty();
@@ -425,7 +421,7 @@ static int equip_def_bonus(int card_id);
 typedef struct { int32_t x, y, z; } Vec3;
 typedef struct { Vec3 eye, target, up; int32_t focal; } Camera;
 
-static uint8_t g_board_bg_cache[W * H];
+static uint8_t g_board_bg_cache[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 static Camera g_board_bg_cache_cam;
 static int g_board_bg_cache_valid = 0;
 
@@ -759,8 +755,8 @@ static ScreenPt project_point(Camera cam, Vec3 p)
     ScreenPt s;
     s.depth = cz;
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
-    s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), cam.focal));
-    s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), cam.focal));
+    s.x = WAIFU_FM_WIDTH / 2 + q8_to_int(q8_mul(q8_div(cx, cz), cam.focal));
+    s.y = WAIFU_FM_HEIGHT / 2 - q8_to_int(q8_mul(q8_div(cy, cz), cam.focal));
     if (s.x < -8192) s.x = -8192; else if (s.x > 8192) s.x = 8192;
     if (s.y < -8192) s.y = -8192; else if (s.y > 8192) s.y = 8192;
     s.ok = 1;
@@ -795,8 +791,8 @@ static ScreenPt project_point_basis(const CameraBasis *b, Vec3 p)
     ScreenPt s;
     s.depth = cz;
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
-    s.x = W / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal));
-    s.y = H / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal));
+    s.x = WAIFU_FM_WIDTH / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal));
+    s.y = WAIFU_FM_HEIGHT / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal));
     /* Near-singularity vertices (tiny cz) overflow q8_mul into garbage screen
        coords in the millions; bound them so no downstream consumer (board, cards,
        lines) is ever fed a wild value -- the same +-8192 bound cfx_board_tri uses,
@@ -856,14 +852,14 @@ static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
     const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
-    int ax = pa.x < 0 ? 0 : (pa.x >= W ? W - 1 : pa.x);
-    int ay = pa.y < 0 ? 0 : (pa.y >= H ? H - 1 : pa.y);
-    int bx = pb.x < 0 ? 0 : (pb.x >= W ? W - 1 : pb.x);
-    int by = pb.y < 0 ? 0 : (pb.y >= H ? H - 1 : pb.y);
-    int cx = pc.x < 0 ? 0 : (pc.x >= W ? W - 1 : pc.x);
-    int cy = pc.y < 0 ? 0 : (pc.y >= H ? H - 1 : pc.y);
-    int dx = pd.x < 0 ? 0 : (pd.x >= W ? W - 1 : pd.x);
-    int dy = pd.y < 0 ? 0 : (pd.y >= H ? H - 1 : pd.y);
+    int ax = pa.x < 0 ? 0 : (pa.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : pa.x);
+    int ay = pa.y < 0 ? 0 : (pa.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : pa.y);
+    int bx = pb.x < 0 ? 0 : (pb.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : pb.x);
+    int by = pb.y < 0 ? 0 : (pb.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : pb.y);
+    int cx = pc.x < 0 ? 0 : (pc.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : pc.x);
+    int cy = pc.y < 0 ? 0 : (pc.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : pc.y);
+    int dx = pd.x < 0 ? 0 : (pd.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : pd.x);
+    int dy = pd.y < 0 ? 0 : (pd.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : pd.y);
     Point2D p0 = {(DEFAULT_INT)ax, (DEFAULT_INT)ay, 0, 0};
     Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
     Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
@@ -883,14 +879,14 @@ static void draw_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, Sc
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
     const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
-    int ax = pa.x < 0 ? 0 : (pa.x >= W ? W - 1 : pa.x);
-    int ay = pa.y < 0 ? 0 : (pa.y >= H ? H - 1 : pa.y);
-    int bx = pb.x < 0 ? 0 : (pb.x >= W ? W - 1 : pb.x);
-    int by = pb.y < 0 ? 0 : (pb.y >= H ? H - 1 : pb.y);
-    int cx = pc.x < 0 ? 0 : (pc.x >= W ? W - 1 : pc.x);
-    int cy = pc.y < 0 ? 0 : (pc.y >= H ? H - 1 : pc.y);
-    int dx = pd.x < 0 ? 0 : (pd.x >= W ? W - 1 : pd.x);
-    int dy = pd.y < 0 ? 0 : (pd.y >= H ? H - 1 : pd.y);
+    int ax = pa.x < 0 ? 0 : (pa.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : pa.x);
+    int ay = pa.y < 0 ? 0 : (pa.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : pa.y);
+    int bx = pb.x < 0 ? 0 : (pb.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : pb.x);
+    int by = pb.y < 0 ? 0 : (pb.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : pb.y);
+    int cx = pc.x < 0 ? 0 : (pc.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : pc.x);
+    int cy = pc.y < 0 ? 0 : (pc.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : pc.y);
+    int dx = pd.x < 0 ? 0 : (pd.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : pd.x);
+    int dy = pd.y < 0 ? 0 : (pd.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : pd.y);
     Point2D p0 = {(DEFAULT_INT)ax, (DEFAULT_INT)ay, 0, 0};
     Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
     Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
@@ -905,14 +901,14 @@ static void draw_wall_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt p
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
     const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
     /* Slab-wall corners may project slightly outside the viewport.  Hard
-       clamping to 0..W-1 / 0..H-1 folds the lower-left table side into a visible
+       clamping to 0..WAIFU_FM_WIDTH-1 / 0..WAIFU_FM_HEIGHT-1 folds the lower-left table side into a visible
        notch; passing the raw +-8192 guard coords is too slow for the compact
        affine quad walker.  Keep a small off-screen apron instead: the span
        drawer clips the actual pixels, while the wall edges retain their slope. */
 #define WALL_APRON_X 64
 #define WALL_APRON_Y 16
-#define WALL_CLAMP_X(v) ((v) < -WALL_APRON_X ? -WALL_APRON_X : ((v) >= W + WALL_APRON_X ? W + WALL_APRON_X - 1 : (v)))
-#define WALL_CLAMP_Y(v) ((v) < -WALL_APRON_Y ? -WALL_APRON_Y : ((v) >= H + WALL_APRON_Y ? H + WALL_APRON_Y - 1 : (v)))
+#define WALL_CLAMP_X(v) ((v) < -WALL_APRON_X ? -WALL_APRON_X : ((v) >= WAIFU_FM_WIDTH + WALL_APRON_X ? WAIFU_FM_WIDTH + WALL_APRON_X - 1 : (v)))
+#define WALL_CLAMP_Y(v) ((v) < -WALL_APRON_Y ? -WALL_APRON_Y : ((v) >= WAIFU_FM_HEIGHT + WALL_APRON_Y ? WAIFU_FM_HEIGHT + WALL_APRON_Y - 1 : (v)))
     Point2D p0 = {(DEFAULT_INT)WALL_CLAMP_X(pa.x), (DEFAULT_INT)WALL_CLAMP_Y(pa.y), 0, 0};
     Point2D p1 = {(DEFAULT_INT)WALL_CLAMP_X(pb.x), (DEFAULT_INT)WALL_CLAMP_Y(pb.y), uvmax, 0};
     Point2D p2 = {(DEFAULT_INT)WALL_CLAMP_X(pc.x), (DEFAULT_INT)WALL_CLAMP_Y(pc.y), uvmax, uvmax};
@@ -1011,7 +1007,7 @@ static void draw_wall_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
     {
         /* Pass the TRUE projected corners (do NOT clamp them to the screen rect):
            on a low/perspective camera (result screen, story duels) the wall's
-           bottom corners project below the screen, and clamping them to y=H-1
+           bottom corners project below the screen, and clamping them to y=WAIFU_FM_HEIGHT-1
            pulled the triangle into jagged spikes.  cfx_board_tri clips per scanline
            and bounds the edge math internally, so off-screen corners render the
            correct on-screen slab edge. */
@@ -1194,17 +1190,17 @@ static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
 
 static void put_px(int x, int y, uint8_t c)
 {
-    if ((unsigned)x < W && (unsigned)y < H) framebuffer[y * W + x] = c;
+    if ((unsigned)x < WAIFU_FM_WIDTH && (unsigned)y < WAIFU_FM_HEIGHT) framebuffer[y * WAIFU_FM_WIDTH + x] = c;
 }
 
 static void hline(int x0, int x1, int y, uint8_t c)
 {
-    if ((unsigned)y >= H) return;
+    if ((unsigned)y >= WAIFU_FM_HEIGHT) return;
     if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
-    if (x1 < 0 || x0 >= W) return;
+    if (x1 < 0 || x0 >= WAIFU_FM_WIDTH) return;
     if (x0 < 0) x0 = 0;
-    if (x1 >= W) x1 = W - 1;
-    fill_u8_fast(framebuffer + y * W + x0, x1 - x0 + 1, c);
+    if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;
+    fill_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0, x1 - x0 + 1, c);
 }
 
 static void rect_fill(int x, int y, int w, int h, uint8_t c)
@@ -1214,16 +1210,16 @@ static void rect_fill(int x, int y, int w, int h, uint8_t c)
     int y0 = y;
     int x1 = x + w - 1;
     int y1 = y + h - 1;
-    if (x1 < 0 || y1 < 0 || x0 >= W || y0 >= H) return;
+    if (x1 < 0 || y1 < 0 || x0 >= WAIFU_FM_WIDTH || y0 >= WAIFU_FM_HEIGHT) return;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    if (x1 >= W) x1 = W - 1;
-    if (y1 >= H) y1 = H - 1;
+    if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;
+    if (y1 >= WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT - 1;
     int count = x1 - x0 + 1;
-    uint8_t *dst = framebuffer + y0 * W + x0;
+    uint8_t *dst = framebuffer + y0 * WAIFU_FM_WIDTH + x0;
     for (int yy = y0; yy <= y1; ++yy) {
         fill_u8_fast(dst, count, c);
-        dst += W;
+        dst += WAIFU_FM_WIDTH;
     }
 }
 
@@ -1247,7 +1243,7 @@ static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
     {
         long long t0 = 0, t1 = 1LL << 16;
         long long p[4] = { -dx, dx, -dy, dy };
-        long long q[4] = { ax, (long long)(W - 1) - ax, ay, (long long)(H - 1) - ay };
+        long long q[4] = { ax, (long long)(WAIFU_FM_WIDTH - 1) - ax, ay, (long long)(WAIFU_FM_HEIGHT - 1) - ay };
         int i;
         for (i = 0; i < 4; ++i) {
             if (p[i] == 0) { if (q[i] < 0) return; continue; }
@@ -1300,7 +1296,7 @@ static void draw_text(int x, int y, const char *s, uint8_t fg, uint8_t shadow)
 static void draw_text_small(int x, int y, const char *s, uint8_t fg, uint8_t shadow)
 {
     /* Compact HUD text, but draw all 8 glyph columns. Earlier builds rendered
-       only 6 columns, which clipped wide glyphs such as M and W whenever they
+       only 6 columns, which clipped wide glyphs such as M and WAIFU_FM_WIDTH whenever they
        appeared at the end of a word. Use a 7-pixel advance for PS1-style tight
        spacing while preserving the complete glyph bitmap. */
     for (; *s; ++s) {
@@ -1418,10 +1414,10 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
 {
     for (int yy = 0; yy < sh; ++yy) {
         int dy = y + yy;
-        if ((unsigned)dy >= H) continue;
+        if ((unsigned)dy >= WAIFU_FM_HEIGHT) continue;
         for (int xx = 0; xx < sw; ++xx) {
             int dx = x + xx;
-            if ((unsigned)dx >= W) continue;
+            if ((unsigned)dx >= WAIFU_FM_WIDTH) continue;
             int idx = yy * sw + xx;
             if (mask[idx]) put_px(dx, dy, pix[idx]);
         }
@@ -1444,12 +1440,12 @@ static int story_slide_x(int from_x, int to_x, int frame)
 
 static void draw_story_dialog_box(const char *speaker, const char *subhead, const char *text, uint8_t speaker_color, int f)
 {
-    int box_y = H - 66;
+    int box_y = WAIFU_FM_HEIGHT - 66;
     (void)f;
-    draw_panel_rect(0, box_y, W, 66, IDX_UI_DARK);
+    draw_panel_rect(0, box_y, WAIFU_FM_WIDTH, 66, IDX_UI_DARK);
     draw_text_small(10, box_y + 10, speaker, speaker_color, IDX_BLACK);
     if (subhead && *subhead) draw_text_small_ellipsis(108, box_y + 10, subhead, 20, IDX_UI_LIGHT, IDX_BLACK);
-    draw_wrapped_text_small_box(10, box_y + 25, W - 20, 4, 10, text, IDX_WHITE, IDX_BLACK);
+    draw_wrapped_text_small_box(10, box_y + 25, WAIFU_FM_WIDTH - 20, 4, 10, text, IDX_WHITE, IDX_BLACK);
 }
 
 static void fmt_i32_dec(char *dst, int dst_size, int value);
@@ -1783,7 +1779,7 @@ static void init_card_scale_maps(void)
 
 static inline int rect_fully_visible(int x, int y, int w, int h)
 {
-    return x >= 0 && y >= 0 && x + w <= W && y + h <= H;
+    return x >= 0 && y >= 0 && x + w <= WAIFU_FM_WIDTH && y + h <= WAIFU_FM_HEIGHT;
 }
 
 #if defined(WAIFU_FM_PCFX)
@@ -2061,7 +2057,7 @@ static inline __attribute__((always_inline)) void pcfx_blit_row_gray_v810(const 
 
 static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
 {
-    uint8_t *dst = framebuffer + y * W + x;
+    uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
     int yy;
     for (yy = 0; yy < 50; ++yy) {
         const uint8_t *srow = src + (int)g_card_ymap_38x50[yy] * WAIFU_CARD_W;
@@ -2070,25 +2066,25 @@ static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
 #else
         memcpy(dst, srow, 38);
 #endif
-        dst += W;
+        dst += WAIFU_FM_WIDTH;
     }
 }
 
 static void blit_card_36x49_fast(const uint8_t *src, int x, int y)
 {
-    uint8_t *dst = framebuffer + y * W + x;
+    uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
     int yy;
     for (yy = 0; yy < 49; ++yy) {
         const uint8_t *srow = src + (int)g_card_ymap_36x49[yy] * WAIFU_CARD_W;
         int xx;
         for (xx = 0; xx < 36; ++xx) dst[xx] = srow[g_card_xmap_36[xx]];
-        dst += W;
+        dst += WAIFU_FM_WIDTH;
     }
 }
 
 static void blit_card_38x50_gray_fast(const uint8_t *src, int x, int y)
 {
-    uint8_t *dst = framebuffer + y * W + x;
+    uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
     int yy;
     if (!g_gray_lut_ready) init_gray_lut();
     for (yy = 0; yy < 50; ++yy) {
@@ -2099,19 +2095,19 @@ static void blit_card_38x50_gray_fast(const uint8_t *src, int x, int y)
         int xx;
         for (xx = 0; xx < 38; ++xx) dst[xx] = g_gray_lut[srow[xx]];
 #endif
-        dst += W;
+        dst += WAIFU_FM_WIDTH;
     }
 }
 
 static void blit_card_mapped_fast(const uint8_t *src, int x, int y, int dw, int dh, const uint8_t *xmap, const uint8_t *ymap)
 {
-    uint8_t *dst = framebuffer + y * W + x;
+    uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
     int yy;
     for (yy = 0; yy < dh; ++yy) {
         const uint8_t *srow = src + (int)ymap[yy] * WAIFU_CARD_W;
         int xx;
         for (xx = 0; xx < dw; ++xx) dst[xx] = srow[xmap[xx]];
-        dst += W;
+        dst += WAIFU_FM_WIDTH;
     }
 }
 
@@ -2158,12 +2154,12 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
     for (int yy = 0; yy < dh; ++yy) {
         int sy = (yy * sh) / dh;
         int dy = y + yy;
-        if ((unsigned)dy >= H) continue;
+        if ((unsigned)dy >= WAIFU_FM_HEIGHT) continue;
         for (int xx = 0; xx < dw; ++xx) {
             int sx = (xx * sw) / dw;
             int dx = x + xx;
-            if ((unsigned)dx >= W) continue;
-            framebuffer[dy * W + dx] = src[sy * sw + sx];
+            if ((unsigned)dx >= WAIFU_FM_WIDTH) continue;
+            framebuffer[dy * WAIFU_FM_WIDTH + dx] = src[sy * sw + sx];
         }
     }
 }
@@ -2176,12 +2172,12 @@ static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y,
     for (int yy = 0; yy < dh; ++yy) {
         int sy = (yy * sh) / dh;
         int dy = y + yy;
-        if ((unsigned)dy >= H) continue;
+        if ((unsigned)dy >= WAIFU_FM_HEIGHT) continue;
         for (int xx = 0; xx < dw; ++xx) {
             int sx = (xx * sw) / dw;
             int dx = x + xx;
-            if ((unsigned)dx >= W) continue;
-            framebuffer[dy * W + dx] = gray_card_dither_px(src[sy * sw + sx], dx, dy);
+            if ((unsigned)dx >= WAIFU_FM_WIDTH) continue;
+            framebuffer[dy * WAIFU_FM_WIDTH + dx] = gray_card_dither_px(src[sy * sw + sx], dx, dy);
         }
     }
 }
@@ -2194,7 +2190,7 @@ static int g_big_art_direct_note_suppressed = 0;
 static void blit_art112_fast(const uint8_t *src, int x, int y)
 {
     if (!src || !rect_fully_visible(x, y, WAIFU_BIG_W, WAIFU_BIG_H)) return;
-    uint8_t *dst = framebuffer + y * W + x;
+    uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
 #if defined(WAIFU_FM_PCFX)
     /* The V810 word-copy path is only safe when both the source and destination
        are 32-bit aligned.  Battle cut-ins can shake/lunge cards by two-pixel
@@ -2247,7 +2243,7 @@ static void blit_art112_fast(const uint8_t *src, int x, int y)
                   [e] "=&r" (e), [f] "=&r" (f), [g] "=&r" (g), [h] "=&r" (h)
                 :
                 : "memory");
-            dst += W;
+            dst += WAIFU_FM_WIDTH;
         }
         return;
     }
@@ -2256,7 +2252,7 @@ static void blit_art112_fast(const uint8_t *src, int x, int y)
         const uint8_t *srow = src + yy * WAIFU_BIG_W;
         uint8_t *drow = dst;
         for (int xx = 0; xx < WAIFU_BIG_W; ++xx) drow[xx] = srow[xx];
-        dst += W;
+        dst += WAIFU_FM_WIDTH;
     }
 }
 
@@ -2745,9 +2741,9 @@ static void draw_textured_tri_ex(const uint8_t *src, int sw, int sh, TexV a, Tex
     int den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
     if (den == 0) return;
     if (minx < 0) minx = 0;
-    if (maxx >= W) maxx = W - 1;
+    if (maxx >= WAIFU_FM_WIDTH) maxx = WAIFU_FM_WIDTH - 1;
     if (miny < 0) miny = 0;
-    if (maxy >= H) maxy = H - 1;
+    if (maxy >= WAIFU_FM_HEIGHT) maxy = WAIFU_FM_HEIGHT - 1;
     for (int y = miny; y <= maxy; ++y) {
         for (int x = minx; x <= maxx; ++x) {
             int px2 = x * 2 + 1, py2 = y * 2 + 1;
@@ -2822,8 +2818,8 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     maxy = pa.y > pb.y ? (pa.y > pc.y ? pa.y : pc.y) : (pb.y > pc.y ? pb.y : pc.y);
     if (minx < 0) minx = 0;
     if (miny < 0) miny = 0;
-    if (maxx >= W) maxx = W - 1;
-    if (maxy >= H) maxy = H - 1;
+    if (maxx >= WAIFU_FM_WIDTH) maxx = WAIFU_FM_WIDTH - 1;
+    if (maxy >= WAIFU_FM_HEIGHT) maxy = WAIFU_FM_HEIGHT - 1;
     /* Projected winding can flip by camera/base-edge order.  Normalize it here
        and leave occlusion to the caller's painter-sorted face order; otherwise
        the PC-FX map can cull every visible pyramid face. */
@@ -2892,7 +2888,7 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
         if (!empty && xL <= xR) {
             int u = u_row + du_dx * (xL - minx);
             int v = v_row + dv_dx * (xL - minx);
-            uint8_t *prow = framebuffer + y * W;
+            uint8_t *prow = framebuffer + y * WAIFU_FM_WIDTH;
             for (int x = xL; x <= xR; ++x) {
                 prow[x] = src[rep[(v >> 8) & (Q8_ONE - 1)] * sw + rep[(u >> 8) & (Q8_ONE - 1)]];
                 u += du_dx; v += dv_dx;
@@ -2986,10 +2982,10 @@ static void draw_zone_cursor_q(Camera cam, int32_t col, int32_t row)
        off the top of the top-down view, leaving the player targeting "blind".
        Clamp the box corners to the screen so a cursor is always drawn (at the edge
        if the zone is off-screen).  On-screen zones are unchanged (already in range). */
-    p0.x = p0.x < 0 ? 0 : (p0.x >= W ? W - 1 : p0.x); p0.y = p0.y < 0 ? 0 : (p0.y >= H ? H - 1 : p0.y);
-    p1.x = p1.x < 0 ? 0 : (p1.x >= W ? W - 1 : p1.x); p1.y = p1.y < 0 ? 0 : (p1.y >= H ? H - 1 : p1.y);
-    p2.x = p2.x < 0 ? 0 : (p2.x >= W ? W - 1 : p2.x); p2.y = p2.y < 0 ? 0 : (p2.y >= H ? H - 1 : p2.y);
-    p3.x = p3.x < 0 ? 0 : (p3.x >= W ? W - 1 : p3.x); p3.y = p3.y < 0 ? 0 : (p3.y >= H ? H - 1 : p3.y);
+    p0.x = p0.x < 0 ? 0 : (p0.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p0.x); p0.y = p0.y < 0 ? 0 : (p0.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p0.y);
+    p1.x = p1.x < 0 ? 0 : (p1.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p1.x); p1.y = p1.y < 0 ? 0 : (p1.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p1.y);
+    p2.x = p2.x < 0 ? 0 : (p2.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p2.x); p2.y = p2.y < 0 ? 0 : (p2.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p2.y);
+    p3.x = p3.x < 0 ? 0 : (p3.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p3.x); p3.y = p3.y < 0 ? 0 : (p3.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p3.y);
     line_i(p0.x,p0.y,p1.x,p1.y,IDX_RED); line_i(p1.x,p1.y,p2.x,p2.y,IDX_RED);
     line_i(p2.x,p2.y,p3.x,p3.y,IDX_RED); line_i(p3.x,p3.y,p0.x,p0.y,IDX_RED);
     line_i(p0.x+1,p0.y,p1.x+1,p1.y,IDX_RED); line_i(p3.x+1,p3.y,p2.x+1,p2.y,IDX_RED);
@@ -3280,9 +3276,9 @@ static void apply_black_dither_fade(int32_t visible)
     int threshold = (int)(((Q8_ONE - visible) * 64 + Q8_HALF) >> Q8_SHIFT);
     if (threshold <= 0) return;
     if (threshold >= 64) { clear_screen(IDX_BLACK); return; }
-    for (int y = 0; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            if (bayer[y & 7][x & 7] < threshold) framebuffer[y * W + x] = IDX_BLACK;
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+        for (int x = 0; x < WAIFU_FM_WIDTH; ++x) {
+            if (bayer[y & 7][x & 7] < threshold) framebuffer[y * WAIFU_FM_WIDTH + x] = IDX_BLACK;
         }
     }
 }
@@ -3609,7 +3605,7 @@ static void draw_result_screen(int f, const char *msg)
         int32_t e = q8_smooth_ratio(local - 50, 42);
         int scale = (local < 92) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
         int tw = (int)strlen(msg) * 8 * scale;
-        int x = (W - tw) / 2;
+        int x = (WAIFU_FM_WIDTH - tw) / 2;
         int y = 100 - q8_to_int(q8_mul(Q8_FROM_INT(10), Q8_ONE - e));
         if (((local / 6) & 1) == 0) draw_text_scaled(x + 1, y + 1, msg, scale, IDX_WHITE, IDX_BLACK);
         draw_text_scaled(x, y, msg, scale, IDX_GOLD_HI, IDX_BLACK);
@@ -3720,13 +3716,13 @@ static int text_px_width(const char *s, int scale)
 
 static void draw_centered_text(int y, const char *s, uint8_t fg, uint8_t shadow)
 {
-    int x = (W - ((int)strlen(s) * 8)) / 2;
+    int x = (WAIFU_FM_WIDTH - ((int)strlen(s) * 8)) / 2;
     draw_text(x, y, s, fg, shadow);
 }
 
 static void draw_centered_text_scaled(int y, const char *s, int scale, uint8_t fg, uint8_t shadow)
 {
-    int x = (W - text_px_width(s, scale)) / 2;
+    int x = (WAIFU_FM_WIDTH - text_px_width(s, scale)) / 2;
     draw_text_scaled(x, y, s, scale, fg, shadow);
 }
 
@@ -3759,8 +3755,8 @@ static void restore_title_rect(int x, int y, int w, int h)
     if (w <= 0 || h <= 0) return;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    if (x1 > W) x1 = W;
-    if (y1 > H) y1 = H;
+    if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+    if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
     if (x0 >= x1 || y0 >= y1) return;
 
     title_img = waifu_assets_title_screen_img();
@@ -3770,7 +3766,7 @@ static void restore_title_rect(int x, int y, int w, int h)
     }
 
     for (int yy = y0; yy < y1; ++yy) {
-        copy_u8_fast(framebuffer + yy * W + x0,
+        copy_u8_fast(framebuffer + yy * WAIFU_FM_WIDTH + x0,
                      title_img + yy * TITLE_SCREEN_W + x0,
                      x1 - x0);
     }
@@ -3845,7 +3841,7 @@ static void draw_title_background(void)
     waifu_fm_use_title_palette();
     {
         const uint8_t *title_img = waifu_assets_title_screen_img();
-        if (title_img) draw_card_raw(title_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, W, H);
+        if (title_img) draw_card_raw(title_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
         else clear_screen(IDX_BLACK);
     }
 }
@@ -4333,7 +4329,7 @@ static void write_frame_png(const char *out_dir, int f)
 {
     char path[512];
     waifu_str_copy(path, (int)sizeof(path), out_dir); waifu_str_cat(path, (int)sizeof(path), "/frame_"); waifu_str_cat_u32_zw(path, (int)sizeof(path), (unsigned)f, 5); waifu_str_cat(path, (int)sizeof(path), ".png");
-    cfx_write_png8(path, framebuffer, W, H, waifu_fm_palette_rgb());
+    cfx_write_png8(path, framebuffer, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, waifu_fm_palette_rgb());
 }
 
 static void write_showcase(const char *out_dir)
@@ -4344,7 +4340,7 @@ static void write_showcase(const char *out_dir)
     for (size_t i = 0; i < sizeof(frames)/sizeof(frames[0]); ++i) {
         render_frame(frames[i]);
         waifu_str_copy(path, (int)sizeof(path), out_dir); waifu_str_cat(path, (int)sizeof(path), "/show_"); waifu_str_cat_u32_z2(path, (int)sizeof(path), (unsigned)i); waifu_str_cat(path, (int)sizeof(path), "_f"); waifu_str_cat_u32_zw(path, (int)sizeof(path), (unsigned)frames[i], 3); waifu_str_cat(path, (int)sizeof(path), ".png");
-        cfx_write_png8(path, framebuffer, W, H, waifu_fm_palette_rgb());
+        cfx_write_png8(path, framebuffer, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, waifu_fm_palette_rgb());
     }
 }
 
@@ -4645,7 +4641,7 @@ typedef struct WaifuBattleBaseCache {
     int valid;
     Camera cam;
     uint32_t key;
-    uint8_t pixels[W * H];
+    uint8_t pixels[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 } WaifuBattleBaseCache;
 
 static WaifuBattleBaseCache g_b_base_cache;
@@ -6211,7 +6207,7 @@ static void save_build_blob(u8 *buf)
 {
     int i;
     u16 cksum = 0;
-    buf[0] = 'W'; buf[1] = 'A'; buf[2] = 'I'; buf[3] = 'F';
+    buf[0] = 'WAIFU_FM_WIDTH'; buf[1] = 'A'; buf[2] = 'I'; buf[3] = 'F';
     buf[4] = WAIFU_SAVE_VERSION;
     for (i = 0; i < STORY_NAME_LEN; ++i) buf[5 + i] = (u8)g_story_name[i];
     buf[11] = (u8)g_story_progress;
@@ -6232,7 +6228,7 @@ static int save_parse_blob(const u8 *buf, u32 len)
     int i;
     u16 cksum = 0, stored;
     if (len < WAIFU_SAVE_SIZE) return 0;
-    if (buf[0] != 'W' || buf[1] != 'A' || buf[2] != 'I' || buf[3] != 'F') return 0;
+    if (buf[0] != 'WAIFU_FM_WIDTH' || buf[1] != 'A' || buf[2] != 'I' || buf[3] != 'F') return 0;
     if (buf[4] != WAIFU_SAVE_VERSION) return 0;
     for (i = 0; i < 121; ++i) cksum = (u16)(cksum + buf[i]);
     stored = (u16)buf[121] | ((u16)buf[122] << 8);
@@ -8048,7 +8044,7 @@ static void draw_interactive_result(void)
             int32_t e = q8_smooth_ratio(text_f, 42);
             int scale = (text_f < 42) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
             int tw = (int)strlen(msg) * 8 * scale;
-            int x = (W - tw) / 2;
+            int x = (WAIFU_FM_WIDTH - tw) / 2;
             int y = 100 - q8_to_int(q8_mul(Q8_FROM_INT(10), Q8_ONE - e));
             draw_text_scaled(x, y, msg, scale, g_b_result < 0 ? IDX_RED : IDX_GOLD_HI, IDX_BLACK);
         }
@@ -8363,7 +8359,7 @@ static void draw_equip_stat_line_centered(int y, const char *label, int from, in
     char line[32];
     int value = from + (int)(((to - from) * q8_smoothstep(t) + Q8_HALF) >> Q8_SHIFT);
     waifu_str_copy(line, (int)sizeof(line), label); waifu_str_cat_char(line, (int)sizeof(line), ' '); waifu_str_cat_u32_z4(line, (int)sizeof(line), (unsigned)value);
-    draw_text((W - text_px_width(line, 1)) / 2, y, line, stat_delta_color(to - from), IDX_BLACK);
+    draw_text((WAIFU_FM_WIDTH - text_px_width(line, 1)) / 2, y, line, stat_delta_color(to - from), IDX_BLACK);
 }
 
 static void draw_player_equip_target(void)
@@ -8425,7 +8421,7 @@ static void draw_player_equip_anim(void)
         int cy = target_cy + q8_to_int(q8_mul(q8_cos_rad(ay), Q8_FROM_INT(18 + (i % 4) * 3)));
         draw_disc(cx, cy, 1 + (i % 3), (i & 1) ? IDX_GREEN : IDX_WHITE);
     }
-    if (f >= (WAIFU_EQUIP_ANIM_FRAMES * 23) / 30 && f < (WAIFU_EQUIP_ANIM_FRAMES * 9) / 10) rect_fill(0, 0, W, H, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
+    if (f >= (WAIFU_EQUIP_ANIM_FRAMES * 23) / 30 && f < (WAIFU_EQUIP_ANIM_FRAMES * 9) / 10) rect_fill(0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
     if ((f & 4) == 0) rect_outline(target_x - 4, target_y - 4, 128, 168, IDX_WHITE);
     draw_centered_text(9, "EQUIP POWER", IDX_GOLD_HI, IDX_BLACK);
     draw_equip_stat_line_centered(190, "ATK", g_b_equip_base_atk, atk_to, t);
@@ -8536,7 +8532,7 @@ static void draw_failed_fusion_dropped_materials(int count, int first_target_x, 
         wobble = q8_to_int(q8_mul(Q8_FROM_INT(10), q8_sin_rad((local_frame * 7 + i * 37) * Q8_FRAC(8,100))));
         x = first_target_x + i * 34 + wobble;
         y = lerp_i(82, 258, fall_t) + i * 6;
-        if (y < H + 52) {
+        if (y < WAIFU_FM_HEIGHT + 52) {
             draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, y, 38, 50, 0);
             if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT) draw_text_small(x + 5, y + 53, "FLD", IDX_GOLD_HI, IDX_BLACK);
         }
@@ -8618,8 +8614,8 @@ static void draw_player_fusion_anim(void)
             for (i = 0; i < count; ++i) {
                 int x = first_target_x + i * 34;
                 int y = lerp_i(82, 258, fall_t) + i * 6;
-                if (y < H + 52) draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, y, 38, 50, 0);
-                if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT && y < H + 52) draw_text_small(x + 5, y + 53, "FLD", IDX_GOLD_HI, IDX_BLACK);
+                if (y < WAIFU_FM_HEIGHT + 52) draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, y, 38, 50, 0);
+                if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT && y < WAIFU_FM_HEIGHT + 52) draw_text_small(x + 5, y + 53, "FLD", IDX_GOLD_HI, IDX_BLACK);
             }
             draw_centered_text(191, "FUSION FAILED", IDX_RED, IDX_BLACK);
             draw_centered_text(205, "CARDS DISCARDED", IDX_WHITE, IDX_BLACK);
@@ -8628,7 +8624,7 @@ static void draw_player_fusion_anim(void)
     }
 
     clear_screen(IDX_BLACK);
-    for (int y = 0; y < H; ++y) hline(0, 255, y, (y & 8) ? IDX_UI_DARK : IDX_BLACK);
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) hline(0, 255, y, (y & 8) ? IDX_UI_DARK : IDX_BLACK);
     draw_panel_rect(20, 26, 216, 178, IDX_UI_DARK);
     draw_centered_text(39, "FUSION", IDX_GOLD_HI, IDX_BLACK);
 
@@ -8647,7 +8643,7 @@ static void draw_player_fusion_anim(void)
             draw_disc(px, py, 1 + (i % 2), (i & 1) ? IDX_GREEN : IDX_GOLD_HI);
         }
     } else if (f < fusion_flash_end) {
-        rect_fill(0, 0, W, H, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
+        rect_fill(0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
     } else if (g_b_fusion_anim_success) {
         int rw = 38;
         int rh = 50;
@@ -9287,7 +9283,7 @@ void waifu_fm_init(void)
 {
     if (g_api_initialized) return;
     initDivs();
-    CfxRenderer3DConfig cfg = { framebuffer, (DEFAULT_INT)W, (DEFAULT_INT)H };
+    CfxRenderer3DConfig cfg = { framebuffer, (DEFAULT_INT)WAIFU_FM_WIDTH, (DEFAULT_INT)WAIFU_FM_HEIGHT };
     cfx_renderer3d_init(&renderer, &cfg);
     cfx_renderer3d_set_texture_atlas(&renderer, waifu_texture_atlas,
                                       WAIFU_TEX_TILE_SIZE,
@@ -9434,7 +9430,7 @@ static void draw_story_name_entry(void)
 {
     char buf[32];
     clear_screen(IDX_BLACK);
-    for (int y = 0; y < H; ++y) {
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = (y & 8) ? IDX_DARK_BROWN : IDX_BLACK;
         if (y < 36 || y > 204) hline(0, 255, y, c);
     }
@@ -9500,7 +9496,7 @@ static void draw_story_intro_screen(int f)
         for (int i = 0; i < 24; ++i) put_px(116 + ((i * 17 + f) & 23), 38 + ((i * 11) & 31), IDX_DIM);
     }
     px = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 10, 10, f);
-    draw_story_portrait(STORY_PORTRAIT_SERENA, px, H - WAIFU_STORY_PORTRAIT_H - 20);
+    draw_story_portrait(STORY_PORTRAIT_SERENA, px, WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20);
     draw_story_dialog_box(g_story_name, "THE SHARDS WHISPER", story_intro_lines[line], IDX_GOLD_HI, f);
     if (f >= 0 && f < 24) apply_black_dither_fade(q8_ratio(f, 24));
 }
@@ -9522,8 +9518,8 @@ static const char *story_fire_lines[] = {
    real flames.  (The present path already page-flips; a full-screen animation
    still needs a full KRAM upload each frame, which is unavoidable.) */
 #define FIRE_Y0 40
-#define FIRE_FW (W / 2)
-#define FIRE_FH ((H - FIRE_Y0) / 2)
+#define FIRE_FW (WAIFU_FM_WIDTH / 2)
+#define FIRE_FH ((WAIFU_FM_HEIGHT - FIRE_Y0) / 2)
 #define FIRE_MAXI 32
 static uint8_t g_fire_buf[FIRE_FW * FIRE_FH];
 static uint32_t g_fire_rng = 0x2545f491u;
@@ -9577,8 +9573,8 @@ static void draw_oldschool_fire(int f)
     /* Blit half-res intensity to the framebuffer (2x) via the colour LUT. */
     for (y = 0; y < FIRE_FH; ++y) {
         const uint8_t *src = g_fire_buf + y * FIRE_FW;
-        uint8_t *d0 = framebuffer + (FIRE_Y0 + y * 2) * W;
-        uint8_t *d1 = d0 + W;
+        uint8_t *d0 = framebuffer + (FIRE_Y0 + y * 2) * WAIFU_FM_WIDTH;
+        uint8_t *d1 = d0 + WAIFU_FM_WIDTH;
         for (x = 0; x < FIRE_FW; ++x) {
             uint8_t c = g_fire_lut[src[x]];
             int fx = x * 2;
@@ -9625,7 +9621,7 @@ static void draw_deck_editor(void)
     int selected_card = (count > 0 && g_deck_cursor < count) ? arr[g_deck_cursor] : CARD_NONE;
 
     clear_screen(IDX_BLACK);
-    for (int y = 0; y < H; ++y) {
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = (y < 28) ? IDX_DARK_BROWN : ((y & 8) ? IDX_UI_DARK : IDX_BLACK);
         hline(0, 255, y, c);
     }
@@ -9714,15 +9710,15 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
     FloorSampleCache *sample_cache = floor_sample_cache_for(tile_size);
     if (!sample_cache) return;
 
-    for (int y = 0; y < H; ++y) {
-        int32_t dy = q8_div(Q8_FROM_INT(H / 2 - y) - Q8_HALF, cam.focal);
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+        int32_t dy = q8_div(Q8_FROM_INT(WAIFU_FM_HEIGHT / 2 - y) - Q8_HALF, cam.focal);
         int32_t ray_y = q8_mul(fup.y, dy) + ffwd.y;
         if (ray_y >= 0) continue;
         int32_t t = q8_div(floor_y - cam.eye.y, ray_y);
         if (t <= Q8_FRAC(1,100)) continue;
 
-        int32_t dx_l = q8_div(-Q8_FROM_INT(W / 2), cam.focal);
-        int32_t dx_r = q8_div(Q8_FROM_INT(W - 1 - W / 2), cam.focal);
+        int32_t dx_l = q8_div(-Q8_FROM_INT(WAIFU_FM_WIDTH / 2), cam.focal);
+        int32_t dx_r = q8_div(Q8_FROM_INT(WAIFU_FM_WIDTH - 1 - WAIFU_FM_WIDTH / 2), cam.focal);
 
         int32_t wl_x = cam.eye.x + q8_mul(t, q8_mul(fright.x, dx_l) + ffwd.x);
         int32_t wl_z = cam.eye.z + q8_mul(t, q8_mul(fright.z, dx_l) + ffwd.z);
@@ -9731,20 +9727,20 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
 
         int32_t period = sample_cache->period_q16;
         const uint8_t *samp = sample_cache->sample;
-        uint8_t *row = framebuffer + y * W;
+        uint8_t *row = framebuffer + y * WAIFU_FM_WIDTH;
         int32_t px = wrap_floor_sample_phase(wl_x << Q8_SHIFT, period);
         int32_t pz = wrap_floor_sample_phase(wl_z << Q8_SHIFT, period);
-        int32_t dx = ((wr_x - wl_x) << Q8_SHIFT) / (W - 1);
-        int32_t dz = ((wr_z - wl_z) << Q8_SHIFT) / (W - 1);
+        int32_t dx = ((wr_x - wl_x) << Q8_SHIFT) / (WAIFU_FM_WIDTH - 1);
+        int32_t dz = ((wr_z - wl_z) << Q8_SHIFT) / (WAIFU_FM_WIDTH - 1);
         /* Reduce the per-pixel phase step into [0, period) ONCE per row.  The
            sample LUT is periodic, so px only matters mod period; pre-reducing the
            step makes the per-pixel wrap a single compare+subtract instead of two
-           hardware divides.  Also write the framebuffer directly: x in [0,W) and
+           hardware divides.  Also write the framebuffer directly: x in [0,WAIFU_FM_WIDTH) and
            y is in range, so put_px's bounds test is redundant. */
         dx %= period; if (dx < 0) dx += period;
         dz %= period; if (dz < 0) dz += period;
 
-        for (int x = 0; x < W; ++x) {
+        for (int x = 0; x < WAIFU_FM_WIDTH; ++x) {
             uint8_t ux = samp[px];
             uint8_t vz = samp[pz];
             int tile = ((ux ^ vz) & 32) ? tile_b : tile_a;
@@ -9951,11 +9947,11 @@ static void draw_map_void_3d(int f)
 
 static void draw_desert_sky(void)
 {
-    for (int y = 0; y < H; ++y) {
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = y < 52 ? IDX_UI_BLUE : (y < 93 ? IDX_UI_TEAL : (y < 143 ? IDX_GOLD_DARK : IDX_DARK_BROWN));
         hline(0, 255, y, c);
     }
-    for (int x = 0; x < W; x += 6) {
+    for (int x = 0; x < WAIFU_FM_WIDTH; x += 6) {
         int yy = 142 + ((x * 13) & 7);
         hline(x, x + 5 < 255 ? x + 5 : 255, yy, IDX_GOLD_HI);
     }
@@ -9963,7 +9959,7 @@ static void draw_desert_sky(void)
 
 static void draw_temple_sky(void)
 {
-    for (int y = 0; y < H; ++y) {
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = y < 40 ? IDX_UI_BLUE : (y < 80 ? IDX_UI_TEAL : (y < 120 ? IDX_DIM : IDX_DARK_BROWN));
         hline(0, 255, y, c);
     }
@@ -9971,7 +9967,7 @@ static void draw_temple_sky(void)
 
 static void draw_volcano_sky(void)
 {
-    for (int y = 0; y < H; ++y) {
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = y < 45 ? IDX_BLACK : (y < 85 ? IDX_RED : (y < 120 ? IDX_FLAME3 : IDX_DARK_BROWN));
         hline(0, 255, y, c);
     }
@@ -9985,7 +9981,7 @@ static void draw_volcano_sky(void)
 
 static void draw_void_sky(void)
 {
-    for (int y = 0; y < H; ++y) hline(0, 255, y, IDX_BLACK);
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) hline(0, 255, y, IDX_BLACK);
     /* Stars. */
     for (int i = 0; i < 60; ++i) {
         int x = (i * 67 + 13) & 255;
@@ -10231,11 +10227,11 @@ static void draw_story_plaza_scene_content(int anim_frame)
     draw_text_small(14, 14, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);
 
     serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2, anim_frame);
-    opp_x = story_slide_x(W + 14, W - WAIFU_STORY_PORTRAIT_W - 2, anim_frame);
+    opp_x = story_slide_x(WAIFU_FM_WIDTH + 14, WAIFU_FM_WIDTH - WAIFU_STORY_PORTRAIT_W - 2, anim_frame);
     /* Raise portraits so their hands and upper torsos read more naturally,
        while leaving the textbox directly over their lower bodies. */
-    serena_y = H - WAIFU_STORY_PORTRAIT_H - 20;
-    opp_y = H - WAIFU_STORY_PORTRAIT_H - 14;
+    serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20;
+    opp_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 14;
     draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
     draw_story_portrait(opp->portrait_id, opp_x, opp_y);
     if (dialog[line].speaker == STORY_SPK_OPPONENT) {
@@ -10332,14 +10328,14 @@ static void draw_story_ending_screen(void)
     waifu_fm_use_ending_palette();
     {
         const uint8_t *ending_img = waifu_assets_ending_screen_img();
-        if (ending_img) draw_card_raw(ending_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, W, H);
+        if (ending_img) draw_card_raw(ending_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
         else clear_screen(IDX_BLACK);
     }
     //draw_text_small(10, 180, "SERENA", IDX_GOLD_HI, IDX_BLACK);
     {
         char visible_line[160];
         waifu_str_copy_n(visible_line, (int)sizeof(visible_line), story_ending_lines[line], visible_chars);
-        draw_wrapped_text_small_box(10, 198, W - 20, 4, 10, visible_line, IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(10, 198, WAIFU_FM_WIDTH - 20, 4, 10, visible_line, IDX_WHITE, IDX_BLACK);
     }
     //if (!g_story_ending_erasing && ((g_i_frame / 16) & 1) == 0) draw_centered_text(226, "A/RUN CONTINUE", IDX_WHITE, IDX_BLACK);
 #endif
@@ -12532,7 +12528,7 @@ int main(int argc, char **argv)
     int16_t audio_frame[WAIFU_SOUND_SAMPLES_PER_FRAME * WAIFU_SOUND_CHANNELS];
     if (record_mkv) {
         char err[256] = {0};
-        rec = zmbv_mkv_open(record_mkv, W, H, 60, 1, err, sizeof(err));
+        rec = zmbv_mkv_open(record_mkv, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, 60, 1, err, sizeof(err));
         if (!rec) {
             fprintf(stderr, "record-mkv failed: %s\n", err[0] ? err : "unknown error");
             return 1;

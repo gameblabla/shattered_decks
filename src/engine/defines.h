@@ -20,12 +20,12 @@
     #define Division(numerator, denominator) (((numerator) * divTab[(denominator) + DIV_TAB_HALF]) >> DIV_TAB_SHIFT)
 #endif
 
-#define SCREEN_WIDTH_HALF (SCREEN_WIDTH / 2)
-#define SCREEN_HEIGHT_HALF (SCREEN_HEIGHT / 2)
+#define SCREEN_WIDTH_HALF (WAIFU_FM_WIDTH / 2)
+#define SCREEN_HEIGHT_HALF (WAIFU_FM_HEIGHT / 2)
 
-// Scaling factors as fixed-point values
-#define SCALE_FACTOR_X (INT_TO_FIXED(SCREEN_WIDTH) / BASE_SCREEN_WIDTH)
-#define SCALE_FACTOR_Y (INT_TO_FIXED(SCREEN_HEIGHT) / BASE_SCREEN_HEIGHT)
+// Scaling factors as fixed-point values (design resolution == actual today)
+#define SCALE_FACTOR_X (INT_TO_FIXED(WAIFU_FM_WIDTH) / WAIFU_FM_WIDTH)
+#define SCALE_FACTOR_Y (INT_TO_FIXED(WAIFU_FM_HEIGHT) / WAIFU_FM_HEIGHT)
 
 // Game settings
 #define GRID_WIDTH 12
