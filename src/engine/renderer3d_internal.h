@@ -123,6 +123,22 @@ static inline uint8_t cfx_fetch_texel_fp(int32_t u_fp, int32_t v_fp)
         cfx_clamp_u8_i32(v_fp >> CFX_QUAD_UV_SHIFT)));
 }
 
+/* Direct-tile texel fetch helpers, shared by the axis-rect entry points (core)
+   and the direct-tile span filler (backend). */
+#if CFX_RENDERER_DIRECT_RECT
+static inline uint8_t cfx_fetch_direct_texel(const CfxRenderer3DState *renderer, const uint8_t *tile, uint8_t u, uint8_t v)
+{
+    return tile[(((uint16_t)(v >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK) *
+                 (uint16_t)renderer->tile_pitch_bytes) +
+                ((uint16_t)(u >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK)];
+}
+
+static inline uint8_t cfx_fetch_direct_row_texel(const uint8_t *row, uint8_t u)
+{
+    return row[(uint16_t)(u >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK];
+}
+#endif
+
 /* ---- span fillers: defined in the active backend TU ----------------------
    The core (renderer3d.c) walks geometry/edges and calls these once per
    scanline row; the per-pixel loop lives inside them (inlined within the
@@ -131,6 +147,11 @@ void cfx_draw_span(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, in
                    uint16_t tex_state, int16_t tex_step_linear, int8_t step_u, int8_t step_v);
 void cfx_board_fill(uint8_t *dst, int n,
                     int32_t u, int32_t v, int32_t du, int32_t dv, const uint8_t *tile);
+#if CFX_RENDERER_DIRECT_RECT
+void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t *tile,
+                               int16_t y, int16_t xs, int16_t span,
+                               uint16_t tex_state, int8_t step_u, int8_t step_v);
+#endif
 #if CFX_RENDERER_DIRECT_KRAM
 void cfx_draw_span_kram_fp_exact(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, int16_t span,
                                  int32_t u_fp, int32_t v_fp, int32_t du_fp, int32_t dv_fp);

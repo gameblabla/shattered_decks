@@ -889,3 +889,506 @@ void cfx_board_fill(uint8_t *dst, int n,
     }
 #endif
 }
+
+/* Direct-tile (axis-aligned) span fillers + row-LUT helpers. */
+#if CFX_RENDERER_DIRECT_ROW_LUT
+static inline __attribute__((always_inline)) uint8_t cfx_u_span_can_linear(uint16_t pixels, uint8_t u, int8_t step_u)
+{
+    if (pixels <= 1) return 1;
+    int32_t last = (int32_t)pixels - 1;
+    int32_t end = (int32_t)u + ((int32_t)step_u * last);
+    return (uint8_t)(end >= 0 && end <= 255);
+}
+
+#if CFX_RENDERER_USE_V810_ASM
+static inline __attribute__((always_inline)) void cfx_draw_row_lut_pair_pcfx_nowrap(uint16_t *dst, uint16_t pairs, const uint8_t *src, int16_t step)
+{
+    uint32_t c0;
+    uint32_t c1;
+    uint32_t c2;
+    uint32_t c3;
+    uint16_t groups = (uint16_t)(pairs >> 1);
+    uint16_t rem = (uint16_t)(pairs & 1u);
+
+    if (groups) {
+        __asm__ volatile (
+            "1:\n"
+            "ld.b 0[%[src]],%[c0]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c1]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c2]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c3]\n"
+            "add %[step],%[src]\n"
+            "shl 8,%[c0]\n"
+            "or %[c1],%[c0]\n"
+            "st.h %[c0],0[%[dst]]\n"
+            "shl 8,%[c2]\n"
+            "or %[c3],%[c2]\n"
+            "st.h %[c2],2[%[dst]]\n"
+            "add 4,%[dst]\n"
+            "add -1,%[groups]\n"
+            "bne 1b\n"
+            : [dst] "+r" (dst), [src] "+r" (src), [groups] "+r" (groups),
+              [c0] "=&r" (c0), [c1] "=&r" (c1), [c2] "=&r" (c2), [c3] "=&r" (c3)
+            : [step] "r" ((int32_t)step)
+            : "memory");
+    }
+
+    if (rem) {
+        __asm__ volatile (
+            "ld.b 0[%[src]],%[c0]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c1]\n"
+            "shl 8,%[c0]\n"
+            "or %[c1],%[c0]\n"
+            "st.h %[c0],0[%[dst]]\n"
+            : [dst] "+r" (dst), [src] "+r" (src),
+              [c0] "=&r" (c0), [c1] "=&r" (c1)
+            : [step] "r" ((int32_t)step)
+            : "memory");
+    }
+}
+#endif
+
+#if CFX_RENDERER_DIRECT_KRAM && CFX_RENDERER_USE_V810_ASM
+static inline __attribute__((always_inline)) void cfx_draw_row_lut_pair_pcfx_kram_nowrap(uint16_t pairs, const uint8_t *src, int16_t step)
+{
+    uint32_t c0;
+    uint32_t c1;
+    uint32_t c2;
+    uint32_t c3;
+    uint32_t c4;
+    uint32_t c5;
+    uint32_t c6;
+    uint32_t c7;
+    uint16_t groups = (uint16_t)(pairs >> 2);
+    uint16_t rem = (uint16_t)(pairs & 3u);
+
+    if (groups) {
+        __asm__ volatile (
+            "1:\n"
+            "ld.b 0[%[src]],%[c0]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c1]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c2]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c3]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c4]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c5]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c6]\n"
+            "add %[step],%[src]\n"
+            "ld.b 0[%[src]],%[c7]\n"
+            "add %[step],%[src]\n"
+            "shl 8,%[c0]\n"
+            "or %[c1],%[c0]\n"
+            "out.h %[c0],0x604[r0]\n"
+            "shl 8,%[c2]\n"
+            "or %[c3],%[c2]\n"
+            "out.h %[c2],0x604[r0]\n"
+            "shl 8,%[c4]\n"
+            "or %[c5],%[c4]\n"
+            "out.h %[c4],0x604[r0]\n"
+            "shl 8,%[c6]\n"
+            "or %[c7],%[c6]\n"
+            "out.h %[c6],0x604[r0]\n"
+            "add -1,%[groups]\n"
+            "bne 1b\n"
+            : [src] "+r" (src), [groups] "+r" (groups),
+              [c0] "=&r" (c0), [c1] "=&r" (c1), [c2] "=&r" (c2), [c3] "=&r" (c3),
+              [c4] "=&r" (c4), [c5] "=&r" (c5), [c6] "=&r" (c6), [c7] "=&r" (c7)
+            : [step] "r" ((int32_t)step)
+            : "memory");
+    }
+
+    while (rem-- > 0) {
+        uint8_t a = *src;
+        src += step;
+        uint8_t b = *src;
+        src += step;
+        cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(a, b));
+    }
+}
+
+#endif
+
+static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row_lut(
+    uint16_t *dst, int16_t xs, int16_t span, const uint8_t *row, uint8_t u, int8_t step_u
+#if CFX_RENDERER_DIRECT_KRAM
+    , uint8_t direct_kram
+#endif
+)
+{
+#if CFX_RENDERER_DIRECT_KRAM
+    if (direct_kram) {
+        if (xs & 1) {
+            {
+                uint8_t edge = row[u];
+                cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+            }
+            u = (uint8_t)(u + (uint8_t)step_u);
+            --span;
+        }
+        if (span >= 2) {
+            uint16_t pairs = (uint16_t)(span >> 1);
+#if CFX_RENDERER_USE_V810_ASM
+            if (cfx_u_span_can_linear((uint16_t)(pairs << 1), u, step_u)) {
+                cfx_draw_row_lut_pair_pcfx_kram_nowrap(pairs, row + u, (int16_t)step_u);
+                u = (uint8_t)(u + (uint8_t)((int16_t)step_u * (int16_t)(pairs << 1)));
+                span = (int16_t)(span - (int16_t)(pairs << 1));
+            } else
+#endif
+            {
+                while (pairs-- > 0) {
+                    uint8_t c0 = row[u];
+                    u = (uint8_t)(u + (uint8_t)step_u);
+                    uint8_t c1 = row[u];
+                    u = (uint8_t)(u + (uint8_t)step_u);
+                    cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
+                    span = (int16_t)(span - 2);
+                }
+            }
+        }
+        if (span > 0) {
+            {
+            uint8_t edge = row[u];
+            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+        }
+        }
+        return;
+    }
+#endif
+    if (xs & 1) {
+        cfx_put_odd_pixel_word(dst, row[u]);
+        u = (uint8_t)(u + (uint8_t)step_u);
+        ++dst;
+        --span;
+    }
+
+    if (span >= 2) {
+        uint16_t pairs = (uint16_t)(span >> 1);
+#if CFX_RENDERER_USE_V810_ASM
+        if (cfx_u_span_can_linear((uint16_t)(pairs << 1), u, step_u)) {
+            cfx_draw_row_lut_pair_pcfx_nowrap(dst, pairs, row + u, (int16_t)step_u);
+            u = (uint8_t)(u + (uint8_t)((int16_t)step_u * (int16_t)(pairs << 1)));
+            dst += pairs;
+            span = (int16_t)(span - (int16_t)(pairs << 1));
+        } else
+#endif
+        {
+            while (pairs-- > 0) {
+                uint8_t c0 = row[u];
+                u = (uint8_t)(u + (uint8_t)step_u);
+                uint8_t c1 = row[u];
+                u = (uint8_t)(u + (uint8_t)step_u);
+                *dst++ = cfx_pack_pixel_pair(c0, c1);
+                span = (int16_t)(span - 2);
+            }
+        }
+    }
+
+    if (span > 0) {
+        cfx_put_even_pixel_word(dst, row[u]);
+    }
+}
+#endif
+
+static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
+    const CfxRenderer3DState *renderer, const uint8_t *tile, int16_t y, int16_t xs, int16_t span,
+    uint16_t tex_state, int8_t step_u)
+{
+    uint8_t u = (uint8_t)tex_state;
+    const uint8_t v = (uint8_t)(tex_state >> 8);
+    const uint8_t *row = tile + (((uint16_t)(v >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK) *
+                                 (uint16_t)renderer->tile_pitch_bytes);
+    uint16_t *dst = (uint16_t *)renderer->framebuffer + ((int32_t)y * (renderer->width >> 1)) + (xs >> 1);
+#if CFX_RENDERER_DIRECT_KRAM
+    uint8_t direct_kram = cfx_renderer3d_direct_kram_active(renderer);
+    if (direct_kram) {
+        cfx_pcfx_kram_seek_frame_word(((int32_t)y * (renderer->width >> 1)) + (xs >> 1));
+    }
+#endif
+
+#if CFX_RENDERER_DIRECT_ROW_LUT
+    const uint8_t *row_lut = cfx_renderer3d_direct_row_lut(renderer, tile, v);
+    if (row_lut) {
+        cfx_draw_span_direct_tile_row_lut(dst, xs, span, row_lut, u, step_u
+#if CFX_RENDERER_DIRECT_KRAM
+            , direct_kram
+#endif
+        );
+        return;
+    }
+#endif
+
+#if CFX_RENDERER_DIRECT_KRAM
+    if (direct_kram) {
+        if (xs & 1) {
+            {
+            uint8_t edge = cfx_fetch_direct_row_texel(row, u);
+            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+        }
+            u = (uint8_t)(u + (uint8_t)step_u);
+            --span;
+        }
+        while (span >= 4) {
+            const uint8_t c0 = cfx_fetch_direct_row_texel(row, u);
+            u = (uint8_t)(u + (uint8_t)step_u);
+            const uint8_t c1 = cfx_fetch_direct_row_texel(row, u);
+            u = (uint8_t)(u + (uint8_t)step_u);
+            const uint8_t c2 = cfx_fetch_direct_row_texel(row, u);
+            u = (uint8_t)(u + (uint8_t)step_u);
+            const uint8_t c3 = cfx_fetch_direct_row_texel(row, u);
+            u = (uint8_t)(u + (uint8_t)step_u);
+            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
+            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c2, c3));
+            span = (int16_t)(span - 4);
+        }
+        if (span >= 2) {
+            const uint8_t c0 = cfx_fetch_direct_row_texel(row, u);
+            u = (uint8_t)(u + (uint8_t)step_u);
+            const uint8_t c1 = cfx_fetch_direct_row_texel(row, u);
+            u = (uint8_t)(u + (uint8_t)step_u);
+            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
+            span = (int16_t)(span - 2);
+        }
+        if (span > 0) {
+            {
+            uint8_t edge = cfx_fetch_direct_row_texel(row, u);
+            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+        }
+        }
+        return;
+    }
+#endif
+
+    if (xs & 1) {
+        cfx_put_odd_pixel_word(dst, cfx_fetch_direct_row_texel(row, u));
+#if CFX_RENDERER_DIRECT_KRAM
+        if (direct_kram) cfx_pcfx_kram_write_word(*dst);
+#endif
+        u = (uint8_t)(u + (uint8_t)step_u);
+        ++dst;
+        --span;
+    }
+
+    while (span >= 4) {
+        const uint8_t c0 = cfx_fetch_direct_row_texel(row, u);
+        u = (uint8_t)(u + (uint8_t)step_u);
+        const uint8_t c1 = cfx_fetch_direct_row_texel(row, u);
+        u = (uint8_t)(u + (uint8_t)step_u);
+        const uint8_t c2 = cfx_fetch_direct_row_texel(row, u);
+        u = (uint8_t)(u + (uint8_t)step_u);
+        const uint8_t c3 = cfx_fetch_direct_row_texel(row, u);
+        u = (uint8_t)(u + (uint8_t)step_u);
+        dst[0] = cfx_pack_pixel_pair(c0, c1);
+        dst[1] = cfx_pack_pixel_pair(c2, c3);
+#if CFX_RENDERER_DIRECT_KRAM
+        if (direct_kram) {
+            cfx_pcfx_kram_write_word(dst[0]);
+            cfx_pcfx_kram_write_word(dst[1]);
+        }
+#endif
+        dst += 2;
+        span = (int16_t)(span - 4);
+    }
+
+    if (span >= 2) {
+        const uint8_t c0 = cfx_fetch_direct_row_texel(row, u);
+        u = (uint8_t)(u + (uint8_t)step_u);
+        const uint8_t c1 = cfx_fetch_direct_row_texel(row, u);
+        u = (uint8_t)(u + (uint8_t)step_u);
+        {
+            uint16_t packed = cfx_pack_pixel_pair(c0, c1);
+            *dst++ = packed;
+#if CFX_RENDERER_DIRECT_KRAM
+            if (direct_kram) cfx_pcfx_kram_write_word(packed);
+#endif
+        }
+        span = (int16_t)(span - 2);
+    }
+
+    if (span > 0) {
+        cfx_put_even_pixel_word(dst, cfx_fetch_direct_row_texel(row, u));
+#if CFX_RENDERER_DIRECT_KRAM
+        if (direct_kram) cfx_pcfx_kram_write_word(*dst);
+#endif
+    }
+}
+
+#if CFX_RENDERER_USE_V810_ASM && CFX_RENDERER_DIRECT_RECT
+/* Compact affine direct-tile inner loop for the perspective board floor
+   (32x32 source, pitch 32).  This is the hot per-pixel path: the previous C
+   loop recomputed a full 2-D texel address per pixel and, together with the
+   branch-heavy span/triangle code around it, overran the 1 KiB V810 I-cache.
+   Here the whole pixel-pair body is a handful of fixed instructions with no
+   branches, no KRAM probe and no LUT, so it stays resident in I-cache.
+
+   Pixel-identical to cfx_fetch_direct_texel(): texel offset is
+   ((v>>3)&31)*32 + ((u>>3)&31), expressed as ((v<<2)&0x3e0) | ((u>>3)&0x1f).
+   u/v run as 32-bit accumulators; the &0x3e0 / &0x1f masks make the high bits
+   irrelevant, so no per-step 8-bit wrap is needed.  Two pixels per ST.H, left
+   pixel in the high byte to match the KING byte order. */
+static inline __attribute__((always_inline)) void cfx_draw_board_pair_nowrap(
+    uint16_t *dst, uint16_t pairs, uint8_t *up, uint8_t *vp,
+    int8_t step_u, int8_t step_v, const uint8_t *tile)
+{
+    uint32_t u = *up;
+    uint32_t v = *vp;
+    uint32_t su = (uint32_t)(int32_t)step_u;
+    uint32_t sv = (uint32_t)(int32_t)step_v;
+    uint32_t c0, c1, ru, rv;
+    if (pairs) {
+        __asm__ volatile (
+            "1:\n"
+            "mov %[v],%[rv]\n" "shl 2,%[rv]\n" "andi 0x3e0,%[rv],%[rv]\n"
+            "mov %[u],%[ru]\n" "shr 3,%[ru]\n" "andi 0x1f,%[ru],%[ru]\n"
+            "add %[rv],%[ru]\n" "add %[tile],%[ru]\n" "ld.b 0[%[ru]],%[c0]\n"
+            "add %[su],%[u]\n" "add %[sv],%[v]\n"
+            "mov %[v],%[rv]\n" "shl 2,%[rv]\n" "andi 0x3e0,%[rv],%[rv]\n"
+            "mov %[u],%[ru]\n" "shr 3,%[ru]\n" "andi 0x1f,%[ru],%[ru]\n"
+            "add %[rv],%[ru]\n" "add %[tile],%[ru]\n" "ld.b 0[%[ru]],%[c1]\n"
+            "add %[su],%[u]\n" "add %[sv],%[v]\n"
+            "shl 8,%[c0]\n" "or %[c1],%[c0]\n" "st.h %[c0],0[%[dst]]\n"
+            "add 2,%[dst]\n" "add -1,%[pairs]\n" "bne 1b\n"
+            : [dst] "+r" (dst), [pairs] "+r" (pairs), [u] "+r" (u), [v] "+r" (v),
+              [c0] "=&r" (c0), [c1] "=&r" (c1), [ru] "=&r" (ru), [rv] "=&r" (rv)
+            : [su] "r" (su), [sv] "r" (sv), [tile] "r" (tile)
+            : "memory");
+    }
+    *up = (uint8_t)u;
+    *vp = (uint8_t)v;
+}
+#endif
+
+void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t *tile,
+                                             int16_t y, int16_t xs, int16_t span,
+                                             uint16_t tex_state, int8_t step_u, int8_t step_v)
+{
+    if (span <= 0 || y < 0 || y >= renderer->height) {
+        return;
+    }
+
+    if (xs < 0) {
+        int16_t skip = (int16_t)-xs;
+        if (skip >= span) {
+            return;
+        }
+        tex_state = cfx_advance_tex_state_n(tex_state, step_u, step_v, (uint16_t)skip);
+        span = (int16_t)(span - skip);
+        xs = 0;
+    }
+
+    if (xs >= renderer->width) {
+        return;
+    }
+
+    if ((int32_t)xs + span > renderer->width) {
+        span = (int16_t)(renderer->width - xs);
+    }
+
+    if (span <= 0) {
+        return;
+    }
+
+    /* Axis-aligned block faces have a constant V across each row.  Keep this
+       path separate so the PC-FX/V810 hot loop only shifts U, loads from a
+       single 16-byte source row, packs two pixels, and stores one KING word.
+       The old direct path recomputed the 2-D texel address for every pixel. */
+    if (step_v == 0) {
+        cfx_draw_span_direct_tile_row(renderer, tile, y, xs, span, tex_state, step_u);
+        return;
+    }
+
+    uint8_t u = (uint8_t)tex_state;
+    uint8_t v = (uint8_t)(tex_state >> 8);
+    uint16_t *dst = (uint16_t *)renderer->framebuffer + ((int32_t)y * (renderer->width >> 1)) + (xs >> 1);
+#if CFX_RENDERER_DIRECT_KRAM
+    uint8_t direct_kram = cfx_renderer3d_direct_kram_active(renderer);
+    if (direct_kram) {
+        cfx_pcfx_kram_seek_frame_word(((int32_t)y * (renderer->width >> 1)) + (xs >> 1));
+    }
+#endif
+
+#if CFX_RENDERER_DIRECT_KRAM
+    if (direct_kram) {
+        if (xs & 1) {
+            {
+            uint8_t edge = cfx_fetch_direct_texel(renderer, tile, u, v);
+            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+        }
+            u = (uint8_t)(u + (uint8_t)step_u);
+            v = (uint8_t)(v + (uint8_t)step_v);
+            --span;
+        }
+        while (span >= 2) {
+            uint8_t c0 = cfx_fetch_direct_texel(renderer, tile, u, v);
+            u = (uint8_t)(u + (uint8_t)step_u);
+            v = (uint8_t)(v + (uint8_t)step_v);
+            uint8_t c1 = cfx_fetch_direct_texel(renderer, tile, u, v);
+            u = (uint8_t)(u + (uint8_t)step_u);
+            v = (uint8_t)(v + (uint8_t)step_v);
+            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
+            span = (int16_t)(span - 2);
+        }
+        if (span > 0) {
+            {
+            uint8_t edge = cfx_fetch_direct_texel(renderer, tile, u, v);
+            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+        }
+        }
+        return;
+    }
+#endif
+
+    if (xs & 1) {
+        cfx_put_odd_pixel_word(dst, cfx_fetch_direct_texel(renderer, tile, u, v));
+#if CFX_RENDERER_DIRECT_KRAM
+        if (direct_kram) cfx_pcfx_kram_write_word(*dst);
+#endif
+        u = (uint8_t)(u + (uint8_t)step_u);
+        v = (uint8_t)(v + (uint8_t)step_v);
+        ++dst;
+        --span;
+    }
+
+#if CFX_RENDERER_USE_V810_ASM && CFX_RENDERER_DIRECT_RECT
+    /* Fast affine inner loop for the perspective board floor.  Only the 32x32,
+       pitch-32 tiles used by the board match the hardcoded shift layout; any
+       other geometry falls through to the portable C loop below. */
+    if (span >= 2 && CFX_TEX_SIZE == 32 && renderer->tile_pitch_bytes == 32) {
+        uint16_t pairs = (uint16_t)(span >> 1);
+        cfx_draw_board_pair_nowrap(dst, pairs, &u, &v, step_u, step_v, tile);
+        dst += pairs;
+        span = (int16_t)(span - (int16_t)(pairs << 1));
+    } else
+#endif
+    while (span >= 2) {
+        uint8_t c0 = cfx_fetch_direct_texel(renderer, tile, u, v);
+        u = (uint8_t)(u + (uint8_t)step_u);
+        v = (uint8_t)(v + (uint8_t)step_v);
+        uint8_t c1 = cfx_fetch_direct_texel(renderer, tile, u, v);
+        u = (uint8_t)(u + (uint8_t)step_u);
+        v = (uint8_t)(v + (uint8_t)step_v);
+        {
+            uint16_t packed = cfx_pack_pixel_pair(c0, c1);
+            *dst++ = packed;
+#if CFX_RENDERER_DIRECT_KRAM
+            if (direct_kram) cfx_pcfx_kram_write_word(packed);
+#endif
+        }
+        span = (int16_t)(span - 2);
+    }
+
+    if (span > 0) {
+        cfx_put_even_pixel_word(dst, cfx_fetch_direct_texel(renderer, tile, u, v));
+#if CFX_RENDERER_DIRECT_KRAM
+        if (direct_kram) cfx_pcfx_kram_write_word(*dst);
+#endif
+    }
+}
