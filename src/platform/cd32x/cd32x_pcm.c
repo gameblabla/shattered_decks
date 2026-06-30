@@ -25,6 +25,7 @@
 #define BLK_PAD   (32u + 255u)
 #define BLK_SHIFT 8u
 #define CD32X_PCM_SFX_CHANNELS 4u
+#define CD32X_SFX_LOOP_SILENCE_BYTES WAIFU_CD32X_SFX_PCM_LOOP_SILENCE_BYTES
 
 static const uint8_t loop_markers[32] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -232,7 +233,9 @@ int cd32x_pcm_sfx_play(int effect)
     pcm_set_ctrl((uint8_t)(0xC0u + ch));
     pcm_set_off(ch);
     pcm_set_start(m->start_block, 0);
-    pcm_set_loop((uint16_t)(((uint16_t)m->start_block << BLK_SHIFT) + m->length));
+    pcm_set_loop((uint16_t)(((uint16_t)m->start_block << BLK_SHIFT) +
+                            m->length -
+                            (m->length > CD32X_SFX_LOOP_SILENCE_BYTES ? CD32X_SFX_LOOP_SILENCE_BYTES : 0u)));
     pcm_set_freq(WAIFU_CD32X_SFX_PCM_FREQ_DELTA);
     pcm_set_env(m->volume);
     pcm_set_pan(128u);
@@ -241,28 +244,29 @@ int cd32x_pcm_sfx_play(int effect)
 }
 
 /* ---- RF5C164 streamed music ------------------------------------------------
-   SFX occupies the low ~47 KiB of wave RAM; music uses a 16128-byte ring above
-   it (byte 0xC000 = block 192) on channel 4, with a 0xFF loop-end marker at
-   0xFF00 so the chip wraps the ring continuously.  Each vblank tick the
-   supervisor copies the next clip bytes into the ring ahead of the play head
-   (open-loop: play and write both advance ~RATE/60 bytes/tick).  The clip is
-   already RF5C164 sign/magnitude bytes in PRG RAM, so the refill is a raw copy.
-   Writing wave RAM briefly suspends RF5C164 output, so refills are kept to one
-   small burst per vblank. */
+   SFX occupies the low generated block range of wave RAM; music uses the
+   remaining high RAM on channel 4 with a 0xFF loop-end marker at 0xFF00 so the
+   chip wraps the ring continuously.  Each vblank tick the supervisor copies the
+   next PRG-RAM chunk bytes into the ring ahead of the play head (open-loop: play
+   and write both advance ~RATE/60 bytes/tick).  When a chunk has been fully
+   queued into the ring, the supervisor can overwrite the PRG-RAM source buffer
+   with the next CD chunk while the RF5C164 drains the queued ring audio. */
 #define CD32X_MUSIC_CHANNEL    4u
-#define CD32X_MUSIC_RING_BASE  0xC000u
-#define CD32X_MUSIC_RING_BYTES 0x3F00u                                  /* 16128 */
-#define CD32X_MUSIC_RING_BLOCK (CD32X_MUSIC_RING_BASE >> 8)             /* 192 */
-#define CD32X_MUSIC_MARKER_OFF (CD32X_MUSIC_RING_BASE + CD32X_MUSIC_RING_BYTES)
+#define CD32X_MUSIC_RING_BLOCK WAIFU_CD32X_SFX_PCM_USED_BLOCKS
+#define CD32X_MUSIC_RING_BASE  (CD32X_MUSIC_RING_BLOCK << 8)
+#define CD32X_MUSIC_MARKER_OFF 0xFF00u
+#define CD32X_MUSIC_RING_BYTES (CD32X_MUSIC_MARKER_OFF - CD32X_MUSIC_RING_BASE)
 #define CD32X_MUSIC_TICK_BYTES 184u                                     /* 11025/60 */
 #define CD32X_MUSIC_VOLUME     0xC0u
+#define CD32X_MUSIC_LEAD_GUARD 1024u
 
-static int8_t  g_music_clip[WAIFU_CD32X_MUSIC_PCM_MAX_BYTES];
+static int8_t  g_music_clip[WAIFU_CD32X_MUSIC_PCM_MAX_CHUNK_BYTES];
 static uint32_t g_music_clip_len;
 static uint32_t g_music_clip_pos;
 static uint16_t g_music_write_off;
 static uint32_t g_music_last_tick;
 static uint8_t  g_music_playing;
+static uint8_t  g_music_need_chunk;
 
 int8_t *cd32x_music_clip_buffer(void) { return g_music_clip; }
 uint32_t cd32x_music_clip_capacity(void) { return (uint32_t)sizeof(g_music_clip); }
@@ -270,7 +274,10 @@ uint32_t cd32x_music_clip_capacity(void) { return (uint32_t)sizeof(g_music_clip)
 static void music_write_ring(uint32_t n)
 {
     uint16_t off = g_music_write_off;
-    if (g_music_clip_len == 0) return;
+    if (g_music_clip_len == 0 || g_music_clip_pos >= g_music_clip_len) {
+        g_music_need_chunk = g_music_playing != 0u;
+        return;
+    }
     if (n > CD32X_MUSIC_RING_BYTES) n = CD32X_MUSIC_RING_BYTES;
     while (n > 0u) {
         uint32_t ring_room = (uint32_t)(CD32X_MUSIC_RING_BYTES - off);
@@ -283,21 +290,27 @@ static void music_write_ring(uint32_t n)
         off = (uint16_t)(off + chunk);
         if (off >= CD32X_MUSIC_RING_BYTES) off = 0u;
         g_music_clip_pos += chunk;
-        if (g_music_clip_pos >= g_music_clip_len) g_music_clip_pos = 0u;
         n -= chunk;
+        if (g_music_clip_pos >= g_music_clip_len) {
+            g_music_need_chunk = 1u;
+            break;
+        }
     }
     g_music_write_off = off;
 }
 
-void cd32x_music_start(uint32_t clip_bytes)
+void cd32x_music_start(uint32_t chunk_bytes)
 {
     static const uint8_t marker = 0xFFu;
-    if (clip_bytes < 2u) return;
+    uint32_t lead;
+    if (chunk_bytes < 2u) return;
+    if (chunk_bytes > (uint32_t)sizeof(g_music_clip)) chunk_bytes = (uint32_t)sizeof(g_music_clip);
 
     cd32x_music_stop();
 
-    g_music_clip_len = clip_bytes - 1u;     /* drop the file's trailing marker */
+    g_music_clip_len = chunk_bytes;
     g_music_clip_pos = 0u;
+    g_music_need_chunk = 0u;
     g_music_write_off = 0u;
     music_write_ring(CD32X_MUSIC_RING_BYTES);                 /* prime whole ring */
     pcm_cpy(CD32X_MUSIC_MARKER_OFF, &marker, 1u, 0u);         /* loop-end marker */
@@ -310,15 +323,33 @@ void cd32x_music_start(uint32_t clip_bytes)
     pcm_set_env(CD32X_MUSIC_VOLUME);
     pcm_set_pan(128u);
 
-    /* Lead the play head (which starts at ring base) by half the ring so a card
-       read that stalls the refill for a few frames does not underrun.  The ring
-       is already fully primed, so the next writes begin halfway through it and
-       replay the same source offset until the writer wraps to fresh samples. */
-    g_music_write_off = CD32X_MUSIC_RING_BYTES / 2u;
-    g_music_clip_pos = CD32X_MUSIC_RING_BYTES / 2u;
+    /* The ring is already fully primed.  Start rewriting near the far end of
+       the ring so CD reads have almost the whole RF5C164 ring as stall margin. */
+    lead = CD32X_MUSIC_RING_BYTES > CD32X_MUSIC_LEAD_GUARD
+        ? CD32X_MUSIC_RING_BYTES - CD32X_MUSIC_LEAD_GUARD
+        : CD32X_MUSIC_RING_BYTES / 2u;
+    if (lead >= g_music_clip_len) lead = g_music_clip_len - 1u;
+    g_music_write_off = (uint16_t)lead;
+    g_music_clip_pos = lead;
     g_music_last_tick = GET_TICKS;
     g_music_playing = 1u;
     pcm_set_on(CD32X_MUSIC_CHANNEL);
+}
+
+void cd32x_music_supply_chunk(uint32_t chunk_bytes)
+{
+    if (!g_music_playing) return;
+    if (chunk_bytes < 1u) return;
+    if (chunk_bytes > (uint32_t)sizeof(g_music_clip)) chunk_bytes = (uint32_t)sizeof(g_music_clip);
+    g_music_clip_len = chunk_bytes;
+    g_music_clip_pos = 0u;
+    g_music_need_chunk = 0u;
+    g_music_last_tick = GET_TICKS;
+}
+
+int cd32x_music_needs_chunk(void)
+{
+    return g_music_playing && g_music_need_chunk;
 }
 
 void cd32x_music_stop(void)
@@ -327,6 +358,7 @@ void cd32x_music_stop(void)
     pcm_set_off(CD32X_MUSIC_CHANNEL);
     g_music_playing = 0u;
     g_music_clip_len = 0u;
+    g_music_need_chunk = 0u;
 }
 
 void cd32x_music_pump(void)

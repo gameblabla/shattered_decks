@@ -8,7 +8,8 @@ if not os.path.exists(os.path.join(SRC, 'Select.wav')):
     SRC = os.path.join(ROOT, 'sounds')
 OUT_H = os.path.join(ROOT, 'src', 'generated', 'cd32x_sfx_pcm.h')
 OUT_BIN = os.path.join(ROOT, 'assets', 'generated', 'cd32x_sfx_pcm.bin')
-RATE = 11025
+RATE = 8000
+LOOP_SILENCE_BYTES = 16
 # RF5C164 frequency delta for RATE.  BlastEm models Sega CD PCM at
 # 50 MHz / (4 * 384), with cur_ptr advancing by delta / 2048 per output sample.
 SCD_MASTER_CLOCK = 50000000
@@ -52,7 +53,7 @@ def resample_u8_to_s8(data, src_rate=44100, dst_rate=RATE):
         if s < -127: s = -127
         elif s > 126: s = 126
         out.append(s & 0xFF)
-    out.extend([0] * 16)
+    out.extend([0] * LOOP_SILENCE_BYTES)
     return out
 
 def main():
@@ -93,6 +94,7 @@ def main():
         f.write(f'#define WAIFU_CD32X_SFX_PCM_RATE {RATE}u\n')
         f.write('#define WAIFU_CD32X_SFX_PCM_META_COUNT 10u\n')
         f.write(f'#define WAIFU_CD32X_SFX_PCM_FREQ_DELTA 0x{FREQ_DELTA:04X}u\n')
+        f.write(f'#define WAIFU_CD32X_SFX_PCM_LOOP_SILENCE_BYTES {LOOP_SILENCE_BYTES}u\n')
         f.write(f'#define WAIFU_CD32X_SFX_PCM_USED_BLOCKS {next_block}u\n')
         f.write(f'#define WAIFU_CD32X_SFX_PCM_BANK_BYTES {len(blob)}u\n')
         f.write('typedef struct WaifuCd32xSfxPcmMeta {\n')

@@ -30,14 +30,15 @@ void cd32x_pcm_sfx_init_from_bank(const int8_t *bank, uint32_t bank_bytes);
 int cd32x_pcm_sfx_ready(void);
 int cd32x_pcm_sfx_play(int effect);
 
-/* RF5C164 streamed music.  The clip (already RF5C164 sign/magnitude bytes) lives
-   in Sub-CPU PRG RAM; the supervisor refills a small wave-RAM ring from it each
-   vblank tick so deck-editor / in-duel music plays from PCM with the CD free for
-   card streaming.  cd32x_music_clip_buffer() is the PRG-RAM staging the loader
-   reads the clip file into. */
+/* RF5C164 streamed music.  One already-converted sign/magnitude chunk at a time
+   lives in Sub-CPU PRG RAM; the supervisor refills a wave-RAM ring from it each
+   vblank tick.  When the PRG chunk has been fully queued into wave RAM,
+   cd32x_music_needs_chunk() asks the supervisor to load the next CD chunk. */
 int8_t *cd32x_music_clip_buffer(void);
 uint32_t cd32x_music_clip_capacity(void);
-void cd32x_music_start(uint32_t clip_bytes);
+void cd32x_music_start(uint32_t chunk_bytes);
+void cd32x_music_supply_chunk(uint32_t chunk_bytes);
+int cd32x_music_needs_chunk(void);
 void cd32x_music_stop(void);
 void cd32x_music_pump(void);
 

@@ -96,6 +96,24 @@ static const Cd32xBlobInfo *cd32x_blob_info(int blob)
 static int g_face_atlas_resident = 0;
 static void cd32x_invalidate_face_atlas(void) { g_face_atlas_resident = 0; }
 
+static int g_cd32x_cwd = -1;
+
+static int cd32x_set_asset_cwd(void)
+{
+    if (g_cd32x_cwd == 0) return 0;
+    if (set_cwd("/ASSETS") < 0) return -1;
+    g_cd32x_cwd = 0;
+    return 0;
+}
+
+static int cd32x_set_music_cwd(void)
+{
+    if (g_cd32x_cwd == 1) return 0;
+    if (set_cwd("/MUSIC") < 0) return -1;
+    g_cd32x_cwd = 1;
+    return 0;
+}
+
 
 static void cd32x_force_md_h40(void)
 {
@@ -199,6 +217,9 @@ static int g_cd32x_cdda_initialized;
 static int g_cd32x_cdda_track = -1;
 static int g_cd32x_cdda_loop = 0;
 static int g_cd32x_cdda_playing = 0;
+static const char *g_cd32x_pcm_music_stem = 0;
+static int g_cd32x_pcm_music_chunks = 0;
+static int g_cd32x_pcm_music_next_chunk = 0;
 
 static void cd32x_ensure_cdda_initialized(void)
 {
@@ -241,6 +262,11 @@ static void cd32x_cdda_resume_after_read(void)
     }
 }
 
+static void cd32x_before_cd_read(void)
+{
+    cd32x_music_pump();
+}
+
 /* The whole CARD_FACES.BIN atlas (~144 KiB) is loaded into the Word-RAM staging
    window once and kept resident, so each face is served by a pure Word-RAM slide
    + CPY with no CD access.  The old behaviour re-loaded the entire atlas through
@@ -263,6 +289,11 @@ static void cd32x_service_card_face_request(int card_id, int words, char *word_r
     }
 
     if (!g_face_atlas_resident) {
+        if (cd32x_set_asset_cwd() < 0) {
+            cd32x_fail_cd_request(-1);
+            return;
+        }
+        cd32x_before_cd_read();
         rc = load_file((char *)"CARD_FACES.BIN", word_ram);
         if (rc < 0) {
             cd32x_fail_cd_request(rc);
@@ -310,6 +341,11 @@ static void cd32x_service_card_big_request(int card_id, int words, char *word_ra
     chunk_card = card_id % CD32X_CARD_BIG_CHUNK_CARDS;
     byte_offset = chunk_card * CD32X_CARD_BIG_CD_SLOT_BYTES;
     filename[7] = (char)('0' + chunk_id);
+    if (cd32x_set_asset_cwd() < 0) {
+        cd32x_fail_cd_request(-1);
+        return;
+    }
+    cd32x_before_cd_read();
     rc = load_file(filename, word_ram);
     if (rc < 0) {
         cd32x_fail_cd_request(rc);
@@ -343,6 +379,11 @@ static void cd32x_service_portrait_request(int portrait_id, int words, int mask,
     /* Portrait planes are only ~156 KiB each, so load the whole plane through
        the proven BIOS path and slide the requested record to the transfer
        window.  Raw read_cd slices can hang if story-map CD-DA is still active. */
+    if (cd32x_set_asset_cwd() < 0) {
+        cd32x_fail_cd_request(-1);
+        return;
+    }
+    cd32x_before_cd_read();
     rc = load_file((char *)filename, word_ram);
     if (rc < 0) {
         cd32x_fail_cd_request(rc);
@@ -357,41 +398,111 @@ static void cd32x_service_portrait_request(int portrait_id, int words, int mask,
     cd32x_transfer_word_ram_to_32x(words);
 }
 
-/* Load one in-duel / deck-editor theme clip from CD into the Sub-CPU PRG-RAM
-   music buffer and start the RF5C164 stream.  The clip goes to PRG RAM, not Word
-   RAM, so it does not disturb the resident card-face atlas.  Card data is read
-   from a quiet drive afterwards (these screens run no CD-DA). */
+static void cd32x_music_chunk_filename(char *out, const char *stem, int chunk)
+{
+    int i = 0;
+    while (stem && *stem && i < 6) out[i++] = *stem++;
+    out[i++] = (char)('0' + ((chunk / 10) % 10));
+    out[i++] = (char)('0' + (chunk % 10));
+    out[i++] = '.';
+    out[i++] = 'B';
+    out[i++] = 'I';
+    out[i++] = 'N';
+    out[i] = 0;
+}
+
+static int cd32x_music_theme_info(int theme_id, const char **stem, int *chunks)
+{
+    switch (theme_id) {
+    case WAIFU_CD32X_MUSIC_DECK_EDITOR_ID:
+        *stem = WAIFU_CD32X_MUSIC_DECK_EDITOR_STEM;
+        *chunks = WAIFU_CD32X_MUSIC_DECK_EDITOR_CHUNKS;
+        return 1;
+    case WAIFU_CD32X_MUSIC_BATTLE_ID:
+        *stem = WAIFU_CD32X_MUSIC_BATTLE_STEM;
+        *chunks = WAIFU_CD32X_MUSIC_BATTLE_CHUNKS;
+        return 1;
+    case WAIFU_CD32X_MUSIC_BOSS_ID:
+        *stem = WAIFU_CD32X_MUSIC_BOSS_STEM;
+        *chunks = WAIFU_CD32X_MUSIC_BOSS_CHUNKS;
+        return 1;
+    case WAIFU_CD32X_MUSIC_FINAL_BOSS_ID:
+        *stem = WAIFU_CD32X_MUSIC_FINAL_BOSS_STEM;
+        *chunks = WAIFU_CD32X_MUSIC_FINAL_BOSS_CHUNKS;
+        return 1;
+    default:
+        *stem = 0;
+        *chunks = 0;
+        return 0;
+    }
+}
+
+static int cd32x_load_music_chunk(const char *stem, int chunk, char *word_ram)
+{
+    char filename[16];
+    int rc;
+    cd32x_music_chunk_filename(filename, stem, chunk);
+    if (cd32x_set_music_cwd() < 0) return -1;
+    cd32x_before_cd_read();
+    rc = load_file(filename, word_ram);
+    if (rc < 0) return rc;
+    if ((uint32_t)rc > cd32x_music_clip_capacity()) rc = (int)cd32x_music_clip_capacity();
+    if (rc <= 0) return -1;
+    memcpy(cd32x_music_clip_buffer(), word_ram, rc);
+    return rc;
+}
+
+static void cd32x_clear_music_stream(void)
+{
+    cd32x_music_stop();
+    g_cd32x_pcm_music_stem = 0;
+    g_cd32x_pcm_music_chunks = 0;
+    g_cd32x_pcm_music_next_chunk = 0;
+}
+
+/* Load the first in-duel / deck-editor theme chunk from CD into the Sub-CPU
+   PRG-RAM music source buffer and start the RF5C164 ring.  Later chunks are
+   loaded by cd32x_music_stream_pump() when the current source chunk has been
+   queued into wave RAM.  The chunk load uses Word RAM only as a temporary CD
+   staging buffer, so card art keeps its existing chunked transfer semantics. */
 static int cd32x_start_music(int theme_id)
 {
     char *word_ram = (char *)0x0C0000;
-    const char *file;
-    int bytes;
+    const char *stem;
+    int chunks;
     int rc;
 
-    switch (theme_id) {
-    case WAIFU_CD32X_MUSIC_DECK_EDITOR_ID:
-        file = WAIFU_CD32X_MUSIC_DECK_EDITOR_FILE; bytes = WAIFU_CD32X_MUSIC_DECK_EDITOR_BYTES; break;
-    case WAIFU_CD32X_MUSIC_BATTLE_ID:
-        file = WAIFU_CD32X_MUSIC_BATTLE_FILE; bytes = WAIFU_CD32X_MUSIC_BATTLE_BYTES; break;
-    case WAIFU_CD32X_MUSIC_BOSS_ID:
-        file = WAIFU_CD32X_MUSIC_BOSS_FILE; bytes = WAIFU_CD32X_MUSIC_BOSS_BYTES; break;
-    case WAIFU_CD32X_MUSIC_FINAL_BOSS_ID:
-        file = WAIFU_CD32X_MUSIC_FINAL_BOSS_FILE; bytes = WAIFU_CD32X_MUSIC_FINAL_BOSS_BYTES; break;
-    default:
-        cd32x_music_stop();
+    if (!cd32x_music_theme_info(theme_id, &stem, &chunks)) {
+        cd32x_clear_music_stream();
         return 0;
     }
-    if ((uint32_t)bytes > cd32x_music_clip_capacity()) bytes = (int)cd32x_music_clip_capacity();
+    if (chunks <= 0) return -1;
 
-    cd32x_music_stop();
+    cd32x_clear_music_stream();
     cd32x_invalidate_face_atlas();
-    rc = load_file((char *)file, word_ram);
+    rc = cd32x_load_music_chunk(stem, 0, word_ram);
     if (rc < 0) return rc;
-    if (rc < bytes) bytes = rc;
-    if (bytes <= 1) return -1;
-    memcpy(cd32x_music_clip_buffer(), word_ram, bytes);
-    cd32x_music_start((uint32_t)bytes);
+    cd32x_music_start((uint32_t)rc);
+    g_cd32x_pcm_music_stem = stem;
+    g_cd32x_pcm_music_chunks = chunks;
+    g_cd32x_pcm_music_next_chunk = chunks > 1 ? 1 : 0;
     return 0;
+}
+
+static void cd32x_music_stream_pump(void)
+{
+    char *word_ram = (char *)0x0C0000;
+    int rc;
+    if (!g_cd32x_pcm_music_stem || g_cd32x_pcm_music_chunks <= 0) return;
+    if (!cd32x_music_needs_chunk()) return;
+    cd32x_invalidate_face_atlas();
+    rc = cd32x_load_music_chunk(g_cd32x_pcm_music_stem, g_cd32x_pcm_music_next_chunk, word_ram);
+    if (rc <= 0) return;
+    cd32x_music_supply_chunk((uint32_t)rc);
+    ++g_cd32x_pcm_music_next_chunk;
+    if (g_cd32x_pcm_music_next_chunk >= g_cd32x_pcm_music_chunks) {
+        g_cd32x_pcm_music_next_chunk = 0;
+    }
 }
 
 static void cd32x_service_cd_request(void)
@@ -422,7 +533,7 @@ static void cd32x_service_cd_request(void)
         return;
     }
     if (cmd == CD32X_MD_CMD_PCM_MUSIC_STOP) {
-        cd32x_music_stop();
+        cd32x_clear_music_stream();
         cd32x_finish_md_request(0);
         return;
     }
@@ -462,6 +573,11 @@ static void cd32x_service_cd_request(void)
     }
     cd32x_invalidate_face_atlas();
 
+    if (cd32x_set_asset_cwd() < 0) {
+        cd32x_fail_cd_request(-1);
+        return;
+    }
+    cd32x_before_cd_read();
     rc = load_file((char *)info->filename, word_ram);
     if (rc < 0) {
         cd32x_fail_cd_request(rc);
@@ -485,9 +601,10 @@ int main(void)
     cd32x_put_status("Waifu FM CD32X", TEXT_WHITE, 12, 2);
     cd32x_put_status("Initializing CD...", TEXT_GREEN, 10, 4);
     init_cd();
-    set_cwd("/ASSETS");
+    cd32x_set_asset_cwd();
 
     cd32x_put_status("Loading PCM SFX...", TEXT_GREEN, 9, 5);
+    cd32x_set_asset_cwd();
     rc = load_file((char *)"SFX_PCM.BIN", word_ram);
     if (rc > 0) {
         cd32x_pcm_sfx_init_from_bank((const int8_t *)word_ram, (uint32_t)rc);
@@ -518,6 +635,7 @@ int main(void)
     for (;;) {
         cd32x_service_cd_request();
         cd32x_music_pump();
+        cd32x_music_stream_pump();
     }
 
     return 0;

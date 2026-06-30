@@ -4,11 +4,12 @@
 
 #include <stdint.h>
 
-#define WAIFU_CD32X_SFX_PCM_RATE 11025u
+#define WAIFU_CD32X_SFX_PCM_RATE 8000u
 #define WAIFU_CD32X_SFX_PCM_META_COUNT 10u
-#define WAIFU_CD32X_SFX_PCM_FREQ_DELTA 0x02B6u
-#define WAIFU_CD32X_SFX_PCM_USED_BLOCKS 191u
-#define WAIFU_CD32X_SFX_PCM_BANK_BYTES 47815u
+#define WAIFU_CD32X_SFX_PCM_FREQ_DELTA 0x01F7u
+#define WAIFU_CD32X_SFX_PCM_LOOP_SILENCE_BYTES 16u
+#define WAIFU_CD32X_SFX_PCM_USED_BLOCKS 141u
+#define WAIFU_CD32X_SFX_PCM_BANK_BYTES 34730u
 typedef struct WaifuCd32xSfxPcmMeta {
     uint32_t offset;
     uint16_t length;
@@ -17,16 +18,16 @@ typedef struct WaifuCd32xSfxPcmMeta {
 } WaifuCd32xSfxPcmMeta;
 
 static const WaifuCd32xSfxPcmMeta waifu_cd32x_sfx_pcm_meta[] = {
-    { 0u, 426u, 0u, 232u },
-    { 426u, 5905u, 2u, 232u },
-    { 6332u, 1836u, 26u, 232u },
-    { 8168u, 5025u, 34u, 232u },
-    { 13194u, 10424u, 54u, 216u },
-    { 23618u, 16311u, 95u, 216u },
+    { 0u, 313u, 0u, 232u },
+    { 314u, 4289u, 2u, 232u },
+    { 4604u, 1337u, 19u, 232u },
+    { 5942u, 3650u, 25u, 232u },
+    { 9592u, 7568u, 40u, 216u },
+    { 17160u, 11840u, 70u, 216u },
     { 0, 0, 0, 0 },
-    { 39930u, 2859u, 159u, 216u },
-    { 39930u, 2859u, 159u, 216u },
-    { 42790u, 5025u, 171u, 232u },
+    { 29000u, 2079u, 117u, 216u },
+    { 29000u, 2079u, 117u, 216u },
+    { 31080u, 3650u, 126u, 232u },
 };
 
 #endif /* WAIFU_CD32X_SFX_PCM_H */
