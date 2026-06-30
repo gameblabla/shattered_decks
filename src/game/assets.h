@@ -131,6 +131,7 @@ int waifu_assets_cards_ready(void);
 int waifu_assets_story_portrait_ready(int portrait_id);
 
 const uint8_t *waifu_assets_title_screen_img(void);
+void waifu_assets_title_screen_dims(int *w, int *h);
 const uint16_t *waifu_assets_title_screen_pcfx_yuv16(void);
 const uint16_t *waifu_assets_title_screen_pcfx_yuv422(void);
 const uint8_t *waifu_assets_ending_screen_img(void);

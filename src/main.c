@@ -42,6 +42,9 @@
 #include "waifu_pcfx_video.h"
 #include "pcfx_biosfs.h"
 #endif
+#ifdef WAIFU_FM_CD32X
+#include "waifu_cd32x_video.h"
+#endif
 
 #define BOARD_COLS 5
 #define BOARD_ROWS 4
@@ -58,8 +61,8 @@
 #define FIELD_THICK (-108) /* -0.42 in Q8.8 */
 #define FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16 (Q8_FROM_INT(4) << Q8_SHIFT)
 #define FLOOR_SAMPLE_CACHE_SLOTS 2
-#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
-/* PC-FX: render the battle board through the pre-projected quad path.  The
+#if (defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)) && !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+/* PC-FX/CD32X: render the battle board through the pre-projected quad path.  The
    generic path reprojects every cell corner and wall corner independently;
    the fast path projects the shared grid once and draws the same 32x32 tile
    quads with the compact affine renderer. */
@@ -130,8 +133,20 @@
 #define DUEL_PREVIEW_END 270
 #define DUEL_SCRIPT_OFFSET (DUEL_PREVIEW_END - 84)
 
-#ifdef WAIFU_FM_PCFX
-static uint8_t framebuffer[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT] __attribute__((aligned(4)));
+/* Responsive battle-UI offsets.  Both reduce to 0 at the 256-wide layout (PC-FX
+   and the 256x240 builds), so those screens are byte-for-byte unchanged; on a
+   wider framebuffer (e.g. CD32X 320) they push the right-edge LP panel to the
+   edge and re-center the card hand in the extra horizontal space. */
+#define WAIFU_UI_EXTRA_W   (WAIFU_FM_WIDTH - 256)
+#define WAIFU_UI_CENTER_DX ((WAIFU_FM_WIDTH - 256) / 2)
+
+#if defined(WAIFU_FM_CD32X)
+/* CD32X renders the common 8bpp surface directly into the inactive 32X VDP
+   framebuffer page. This avoids spending 75 KiB of SH-2 SDRAM on a shadow
+   framebuffer before the asset/card-art caches are considered. */
+static uint8_t *const framebuffer = (uint8_t *)WAIFU_CD32X_FRAMEBUFFER_PIXELS;
+#elif defined(WAIFU_FM_PCFX)
+static uint8_t framebuffer[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT] __attribute__((aligned(16)));
 #else
 static uint8_t framebuffer[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 #endif
@@ -433,9 +448,11 @@ static int equip_def_bonus(int card_id);
 typedef struct { int32_t x, y, z; } Vec3;
 typedef struct { Vec3 eye, target, up; int32_t focal; } Camera;
 
+#if !defined(WAIFU_BG_CACHE_DISABLE)
 static uint8_t g_board_bg_cache[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 static Camera g_board_bg_cache_cam;
 static int g_board_bg_cache_valid = 0;
+#endif
 
 static int camera_equal(Camera a, Camera b)
 {
@@ -447,15 +464,19 @@ static int camera_equal(Camera a, Camera b)
 
 static void invalidate_board_bg_cache(void)
 {
+#if !defined(WAIFU_BG_CACHE_DISABLE)
     g_board_bg_cache_valid = 0;
+#endif
 }
 typedef struct { int x, y; int32_t depth; int ok; } ScreenPt;
 typedef struct { int x, y, u, v; } TexV;
+#if !defined(WAIFU_FLOOR_SAMPLE_CACHE_DISABLE)
 typedef struct {
     int32_t tile_size;
     int32_t period_q16;
     uint8_t sample[FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16];
 } FloorSampleCache;
+#endif
 
 static void draw_late_field_cards(Camera cam, int f);
 static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c);
@@ -525,7 +546,9 @@ static int q8_to_int(int32_t v) { return v >= 0 ? (int)(v >> Q8_SHIFT) : -(int)(
 static int lerp_i(int a, int b, int32_t t) { return q8_to_int(Q8_FROM_INT(a) + q8_mul(Q8_FROM_INT(b - a), t)); }
 static int32_t q8_lerp(int32_t a, int32_t b, int32_t t) { return a + q8_mul(b - a, t); }
 
+#if !defined(WAIFU_FLOOR_SAMPLE_CACHE_DISABLE)
 static FloorSampleCache g_floor_sample_cache[FLOOR_SAMPLE_CACHE_SLOTS];
+#endif
 static uint8_t g_repeat_texel_q8[Q8_ONE];
 static int g_repeat_texel_q8_ready = 0;
 
@@ -565,6 +588,7 @@ static int32_t wrap_floor_sample_phase(int32_t phase, int32_t period)
     return phase;
 }
 
+#if !defined(WAIFU_FLOOR_SAMPLE_CACHE_DISABLE)
 static void build_floor_sample_cache(FloorSampleCache *cache, int32_t tile_size)
 {
     int32_t tile_q16 = tile_size << Q8_SHIFT;
@@ -604,6 +628,27 @@ static FloorSampleCache *floor_sample_cache_for(int32_t tile_size)
     build_floor_sample_cache(&g_floor_sample_cache[free_slot], tile_size);
     return &g_floor_sample_cache[free_slot];
 }
+
+#else
+static uint8_t floor_sample_direct(int32_t phase_q16, int32_t tile_size)
+{
+    int32_t tile_q16 = tile_size << Q8_SHIFT;
+    int32_t period_q16 = tile_q16 + tile_q16;
+    int32_t p;
+    int tile;
+    int32_t local;
+    int tex;
+
+    if (tile_q16 <= 0) return 0;
+    p = wrap_floor_sample_phase(phase_q16, period_q16);
+    tile = (p >= tile_q16) ? 1 : 0;
+    local = tile ? (p - tile_q16) : p;
+    tex = (int)(((int64_t)local * (WAIFU_TEX_TILE_SIZE - 1)) / tile_q16);
+    if (tex < 0) tex = 0;
+    if (tex >= WAIFU_TEX_TILE_SIZE) tex = WAIFU_TEX_TILE_SIZE - 1;
+    return (uint8_t)((tile << 5) | tex);
+}
+#endif
 
 static const int16_t q8_sin_quarter[65] = {
     0,6,13,19,25,31,38,44,50,56,62,68,74,80,86,92,98,
@@ -1142,7 +1187,7 @@ static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
 #endif
 }
 
-static void clear_screen(uint8_t c) { fill_u8_fast(framebuffer, (int)sizeof(framebuffer), c); }
+static void clear_screen(uint8_t c) { fill_u8_fast(framebuffer, WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT, c); }
 
 static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
 {
@@ -1471,6 +1516,9 @@ static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
     draw_text_small(11 + field_ox, 11 + field_oy, "FIELD", IDX_WHITE, IDX_BLACK);
     draw_text(11 + field_ox, 23 + field_oy, story_water_field_active() ? "WATER" : "MARE", IDX_WHITE, IDX_BLACK);
 
+    /* Anchor the LP panel to the right edge: shifts right by the extra width on
+       wider framebuffers, stays put on the 256-wide layout. */
+    lp_ox += WAIFU_UI_EXTRA_W;
     draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
     draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
@@ -1673,9 +1721,9 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
 {
     (void)mode;
     int base = 205 + yoff;
-    rect_fill(0, base, 256, 35, IDX_UI_TEAL);
-    hline(0,255,base,IDX_WHITE); hline(0,255,base+1,IDX_UI_LIGHT); hline(0,255,base+2,IDX_DIM);
-    for (int y = base+4; y < base+35; y += 3) hline(0,255,y,IDX_UI_TEAL2);
+    rect_fill(0, base, WAIFU_FM_WIDTH, 35, IDX_UI_TEAL);
+    hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
+    for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
     char line[64];
     if (is_support_card(card_id)) {
         char support_line[64];
@@ -2534,7 +2582,7 @@ static void draw_red_cursor(int x, int y, int w, int h)
     }
 }
 
-static int hand_final_x(int i) { return 12 + i * 47; }
+static int hand_final_x(int i) { return WAIFU_UI_CENTER_DX + 12 + i * 47; }
 static int hand_y(void) { return 154 + g_player_hand_offset_y; }
 
 static void draw_player_hand(int f, int selected)
@@ -2546,7 +2594,7 @@ static void draw_player_hand(int f, int selected)
         int x = x0;
         if (f < 116) {
             int32_t t = q8_smooth_ratio(f - (84 + i * 4), 12);
-            x = lerp_i(272, x0, t);
+            x = lerp_i(272 + WAIFU_UI_EXTRA_W, x0, t);
         }
         if (i == g_player_hide_index) continue;
         if (((f >= 150 && f < 176) || (f >= 475 && f < 505) || (f >= 910 && f < 930)) && i == selected) continue;
@@ -2567,7 +2615,7 @@ static void draw_player_hand_draw_sequence(int f, int start, int selected)
     int reveal_cursor = (f >= start + 76);
     int yoff = lerp_i(92, 0, q8_smooth_ratio(f - start, 30));
 
-    if (f >= start + 20 && f < start + 78) draw_text_small(211, 142 + yoff / 3, "DRAW", IDX_GOLD_HI, IDX_BLACK);
+    if (f >= start + 20 && f < start + 78) draw_text_small(211 + WAIFU_UI_CENTER_DX, 142 + yoff / 3, "DRAW", IDX_GOLD_HI, IDX_BLACK);
 
     for (int i = 0; i < 5; ++i) {
         int x0 = hand_final_x(i);
@@ -2578,7 +2626,7 @@ static void draw_player_hand_draw_sequence(int f, int start, int selected)
             if (i == draw_slots[d]) {
                 int32_t t = q8_smooth_ratio(f - (start + 24 + d * 20), 24);
                 if (t <= 0) visible = 0;
-                x = lerp_i(282, x0, t);
+                x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
             }
         }
         if (!visible) continue;
@@ -2594,7 +2642,7 @@ static void draw_enemy_hand(int f, int selected, int reveal_one)
     PROFILE_HAND_BEGIN();
     (void)reveal_one;
     for (int i = 0; i < 5; ++i) {
-        int x = 12 + i * 48;
+        int x = WAIFU_UI_CENTER_DX + 12 + i * 48;
         int y = 154 + g_enemy_hand_offset_y;
         if (i == g_enemy_hide_index) continue;
         if (((f >= 256 && f < 278) || (f >= 675 && f < 705)) && i == selected) continue;
@@ -2609,12 +2657,12 @@ static void draw_enemy_hand_draw_sequence(int f, int start, int selected)
 {
     PROFILE_HAND_BEGIN();
     int yoff = lerp_i(92, 0, q8_smooth_ratio(f - start, 30)) + g_enemy_hand_offset_y;
-    if (f >= start + 14 && f < start + 70) draw_text_small(211, 142 + yoff / 3, "DRAW", IDX_GOLD_HI, IDX_BLACK);
+    if (f >= start + 14 && f < start + 70) draw_text_small(211 + WAIFU_UI_CENTER_DX, 142 + yoff / 3, "DRAW", IDX_GOLD_HI, IDX_BLACK);
     for (int i = 0; i < 5; ++i) {
-        int x0 = 12 + i * 48;
+        int x0 = WAIFU_UI_CENTER_DX + 12 + i * 48;
         int32_t t = q8_smooth_ratio(f - (start + i * 6), 20);
         if (t <= 0) continue;
-        int x = lerp_i(282, x0, t);
+        int x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
         int y = 154 + yoff;
         PROFILE_HAND_CARD_DRAW(draw_card_sprite(0, x, y, 36, 49, 1));
         if (f >= start + 42 && i == selected) draw_red_cursor(x, y, 36, 49);
@@ -3264,19 +3312,20 @@ static int calc_battle_delta(int atk_id, int def_id, int defender_in_defense)
 static void apply_black_dither_fade(int32_t visible)
 {
     visible = q8_clamp(visible, 0, Q8_ONE);
-#ifdef WAIFU_FM_PCFX
-    /* PC-FX: do not dither-walk the whole 256x240 framebuffer for partial fades.
-       The platform layer applies those as a 256-entry palette fade, which is
-       visually close enough and much cheaper on V810/KING. */
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+    /* PC-FX/CD32X: do not dither-walk the framebuffer for partial fades.
+       These targets apply fade as palette intensity.  CD32X in particular can
+       present the title as a direct 32X framebuffer surface, so the host-style
+       black dither would touch the wrong path and leave the visible title
+       unfaded. */
     if ((int)visible < g_video_fade_visible_q8) g_video_fade_visible_q8 = (int)visible;
-    /* But when the fade is fully black, clear the framebuffer to black too --
-       exactly like the host dither path below (threshold >= 64).  A palette-only
-       black leaves the faded-out scene sitting in the framebuffer; the next
-       state restores the palette to full before its own first frame is fully
-       uploaded, so that stale scene flashes "fully lit for one frame before
-       black".  Clearing here makes every fade-to-black end on a genuinely
-       cleared framebuffer, the same common path the host already uses. */
+#if defined(WAIFU_FM_PCFX)
+    /* PC-FX still clears at full black to avoid a one-frame stale KING surface
+       flash when the following state restores full palette intensity.  CD32X
+       does not do this here: its title surface is already resident in the 32X
+       framebuffer pages and must survive the fully-black first title frame. */
     if ((int)visible <= 0) clear_screen(IDX_BLACK);
+#endif
     return;
 #endif
     static const uint8_t bayer[8][8] = {
@@ -3853,8 +3902,11 @@ static void draw_title_background(void)
     waifu_fm_use_title_palette();
     {
         const uint8_t *title_img = waifu_assets_title_screen_img();
-        if (title_img) draw_card_raw(title_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
-        else clear_screen(IDX_BLACK);
+        if (title_img) {
+            int tw = TITLE_SCREEN_W, th = TITLE_SCREEN_H;
+            waifu_assets_title_screen_dims(&tw, &th);
+            draw_card_raw(title_img, tw, th, 0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
+        } else clear_screen(IDX_BLACK);
     }
 }
 
@@ -4642,6 +4694,7 @@ typedef struct WaifuBattleBaseCache {
     uint8_t pixels[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 } WaifuBattleBaseCache;
 
+#if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
 static WaifuBattleBaseCache g_b_base_cache;
 #if defined(WAIFU_FM_PCFX)
 static WaifuBattleBaseCache g_b_base_cache_top;
@@ -4650,14 +4703,17 @@ static WaifuBattleBaseCache g_b_base_cache_top;
 static WaifuBattleBaseCache g_b_handtop_mid_cache[WAIFU_PCFX_HANDTOP_ANCHORS - 2];
 static int g_b_handtop_prewarm_index = 0;
 #endif
+#endif
 
 static void invalidate_battle_composite_cache(void)
 {
+#if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
     g_b_base_cache.valid = 0;
 #if defined(WAIFU_FM_PCFX)
     g_b_base_cache_top.valid = 0;
     for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS - 2; ++i) g_b_handtop_mid_cache[i].valid = 0;
     g_b_handtop_prewarm_index = 0;
+#endif
 #endif
 }
 
@@ -5429,9 +5485,9 @@ static void draw_bottom_empty_field(const char *mode)
 {
     char line[48];
     int base = 205;
-    rect_fill(0, base, 256, 35, IDX_UI_TEAL);
-    hline(0,255,base,IDX_WHITE); hline(0,255,base+1,IDX_UI_LIGHT); hline(0,255,base+2,IDX_DIM);
-    for (int y = base+4; y < base+35; y += 3) hline(0,255,y,IDX_UI_TEAL2);
+    rect_fill(0, base, WAIFU_FM_WIDTH, 35, IDX_UI_TEAL);
+    hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
+    for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
     waifu_str_copy(line, (int)sizeof(line), mode ? mode : "FIELD"); waifu_str_cat(line, (int)sizeof(line), " C"); waifu_str_cat_i32(line, (int)sizeof(line), g_b_top_col + 1); waifu_str_cat(line, (int)sizeof(line), " R"); waifu_str_cat_i32(line, (int)sizeof(line), g_b_top_row + 1);
     draw_text(6, base+6, line, IDX_DIM, IDX_BLACK);
     draw_text_small(6, base+21, "EMPTY ZONE", IDX_WHITE, IDX_BLACK);
@@ -5441,9 +5497,9 @@ static void draw_bottom_empty_field(const char *mode)
 static void draw_bottom_info_facedown(const char *mode)
 {
     int base = 205;
-    rect_fill(0, base, 256, 35, IDX_UI_TEAL);
-    hline(0,255,base,IDX_WHITE); hline(0,255,base+1,IDX_UI_LIGHT); hline(0,255,base+2,IDX_DIM);
-    for (int y = base+4; y < base+35; y += 3) hline(0,255,y,IDX_UI_TEAL2);
+    rect_fill(0, base, WAIFU_FM_WIDTH, 35, IDX_UI_TEAL);
+    hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
+    for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
     draw_text(6, base+6, "SET MONSTER", IDX_WHITE, IDX_BLACK);
     draw_text_small(6, base+21, "FACE-DOWN / HIDDEN", IDX_WHITE, IDX_BLACK);
     if (mode) draw_text_small(188, base+21, mode, IDX_GOLD_HI, IDX_BLACK);
@@ -7032,7 +7088,7 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
         int x = x0;
         if (f < 48) {
             int32_t t = q8_smooth_ratio(f - i * 5, 18);
-            x = lerp_i(282, x0, t);
+            x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
         }
         if (g_i_player_used[i]) continue;
         PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
@@ -7082,7 +7138,7 @@ static void draw_interactive_com_hand(int f, int selected, int yoff)
             int dur = WAIFU_HAND_INTRO_FRAMES / 3;
             if (dur < 4) dur = 4;
             int32_t t = q8_smooth_ratio(f - delay, dur);
-            x = lerp_i(282, x0, t);
+            x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
         }
         if (g_i_com_used[i]) continue;
         PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite(g_i_com_hand[i], x, y, 38, 50, 1));
@@ -7124,6 +7180,7 @@ static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
 }
 #endif
 
+#if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
 #if defined(WAIFU_FM_PCFX)
 static int pcfx_handtop_anchor_index_for_camera(Camera cam)
 {
@@ -7180,20 +7237,27 @@ static void battle_base_cache_store(Camera cam, uint32_t key)
     cache->key = key;
     cache->valid = 1;
 }
+#endif /* !WAIFU_BATTLE_BASE_CACHE_DISABLE */
 
 static void draw_interactive_base(Camera cam)
 {
     uint32_t key = battle_base_visual_key();
+#if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
     if (battle_base_cache_restore(cam, key)) return;
+#else
+    (void)key;
+#endif
 
     render_board_cached(cam);
     draw_interactive_field_cards(cam);
     draw_hud();
 
+#if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
     battle_base_cache_store(cam, key);
+#endif
 }
 
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
 static void prewarm_interactive_base(Camera cam)
 {
     uint32_t key = battle_base_visual_key();
@@ -8215,7 +8279,7 @@ static void draw_player_hand_turn_draw(int f, int selected)
             int dur = (WAIFU_PCFX_DRAW_FRAMES * 4) / 9;
             if (dur < 4) dur = 4;
             int32_t t = q8_smooth_ratio(f - start, dur);
-            x = lerp_i(282, x0, t);
+            x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
         } else {
             y = 154 + rise;
         }
@@ -9316,6 +9380,12 @@ void waifu_fm_reset_interactive(void)
     waifu_fm_use_common_palette();
     invalidate_board_bg_cache();
     invalidate_battle_composite_cache();
+#ifdef CD32X_DEBUG_AUTOBATTLE
+    /* Throwaway headless-iteration shortcut: jump straight into a Battle-Mode
+       duel so captures reach gameplay in ~11k frames instead of ~34k.  Remove
+       before finalizing. */
+    enter_battle_after_assets();
+#endif
 }
 
 uint8_t *waifu_fm_framebuffer(void)
@@ -9705,8 +9775,13 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
 
     int tw = WAIFU_TEX_TILE_SIZE;
     const uint8_t *atlas = waifu_texture_atlas;
+#if !defined(WAIFU_FLOOR_SAMPLE_CACHE_DISABLE)
     FloorSampleCache *sample_cache = floor_sample_cache_for(tile_size);
     if (!sample_cache) return;
+#else
+    int32_t direct_period = tile_size << (Q8_SHIFT + 1);
+    if (direct_period <= 0) return;
+#endif
 
     for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         int32_t dy = q8_div(Q8_FROM_INT(WAIFU_FM_HEIGHT / 2 - y) - Q8_HALF, cam.focal);
@@ -9723,8 +9798,12 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
         int32_t wr_x = cam.eye.x + q8_mul(t, q8_mul(fright.x, dx_r) + ffwd.x);
         int32_t wr_z = cam.eye.z + q8_mul(t, q8_mul(fright.z, dx_r) + ffwd.z);
 
+#if !defined(WAIFU_FLOOR_SAMPLE_CACHE_DISABLE)
         int32_t period = sample_cache->period_q16;
         const uint8_t *samp = sample_cache->sample;
+#else
+        int32_t period = direct_period;
+#endif
         uint8_t *row = framebuffer + y * WAIFU_FM_WIDTH;
         int32_t px = wrap_floor_sample_phase(wl_x << Q8_SHIFT, period);
         int32_t pz = wrap_floor_sample_phase(wl_z << Q8_SHIFT, period);
@@ -9739,8 +9818,13 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
         dz %= period; if (dz < 0) dz += period;
 
         for (int x = 0; x < WAIFU_FM_WIDTH; ++x) {
+#if !defined(WAIFU_FLOOR_SAMPLE_CACHE_DISABLE)
             uint8_t ux = samp[px];
             uint8_t vz = samp[pz];
+#else
+            uint8_t ux = floor_sample_direct(px, tile_size);
+            uint8_t vz = floor_sample_direct(pz, tile_size);
+#endif
             int tile = ((ux ^ vz) & 32) ? tile_b : tile_a;
             const uint8_t *src = atlas + (size_t)tile * tw * tw;
             row[x] = src[(vz & 31) * tw + (ux & 31)];

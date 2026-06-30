@@ -1,0 +1,250 @@
+# Source-only Sega CD 32X port build file.
+# Requires the complete Sega m68k/sh-elf toolchain.  Do not run until all
+# sega_32x_cd_toolchain.tar.xz parts have been provided and unpacked.
+
+GENDEV ?= /opt/toolchains/sega
+ROOTDIR ?= $(GENDEV)
+LDSCRIPTSDIR ?= $(ROOTDIR)/ldscripts
+BOOTBLOCKDIR ?= $(ROOTDIR)/bootblocks
+BOOTBLOCK ?= $(BOOTBLOCKDIR)/US_BOOT.BIN
+
+M68K_PREFIX ?= $(ROOTDIR)/m68k-elf/bin/m68k-elf-
+SH2_PREFIX ?= $(ROOTDIR)/sh-elf/bin/sh-elf-
+M68K_CC := $(M68K_PREFIX)gcc
+M68K_AS := $(M68K_PREFIX)as
+M68K_OBJCOPY := $(M68K_PREFIX)objcopy
+M68K_GCC_LIBDIR := $(dir $(shell $(M68K_CC) -print-libgcc-file-name 2>/dev/null))
+SH2_CC := $(SH2_PREFIX)gcc
+SH2_AS := $(SH2_PREFIX)as
+SH2_OBJCOPY := $(SH2_PREFIX)objcopy
+SH2_GCC_LIBDIR := $(dir $(shell $(SH2_CC) -print-libgcc-file-name 2>/dev/null))
+
+CD32X_ISO_WRITER ?= $(if $(wildcard tools/cd32x_iso/bin/genisoimage),tools/cd32x_iso/bin/genisoimage,python3 tools/cd32x_iso/make_cd_iso.py)
+GENISOIMAGE ?= $(CD32X_ISO_WRITER)
+DD ?= dd
+RM = rm -rf
+
+CD32X_TARGET ?= waifucd32x
+CD32X_TITLE ?= WAIFUCD32X
+CD32X_OUT ?= $(CD32X_TARGET)
+CD32X_ASSET_MODE ?= cdrom
+
+OBJDIR := build/cd32x
+SH2_OBJDIR := $(OBJDIR)/sh2
+M68K_OBJDIR := $(OBJDIR)/m68k
+CDROOT := $(OBJDIR)/cdroot
+CDDA_DIR := $(OBJDIR)/cdda
+CDDA_STAMP := $(CDDA_DIR)/.prepared
+
+SH2_INCLUDES := -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated -Isrc/platform/cd32x \
+  -I$(ROOTDIR)/sh-elf/include -I$(ROOTDIR)/sh-elf/sh-elf/include
+M68K_INCLUDES := -I. -Isrc/generated -Isrc/platform/cd32x \
+  -I$(ROOTDIR)/m68k-elf/include -I$(ROOTDIR)/m68k-elf/m68k-elf/include
+
+SH2_CFLAGS_BASE ?= -m2 -mb -Os -Wall -Wextra -Wno-unused-parameter -Werror=vla -std=gnu99 -fomit-frame-pointer -fno-builtin -ffunction-sections -fdata-sections -D__32X__ -DPLATFORM=7 -DBY16=1 -DHARDWARE_DIV=1 -DWAIFU_FM_CD32X -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_NO_STDIO -DWAIFU_ASSET_BIG_CACHE_SLOTS=1 -DWAIFU_ASSET_RAM_BUDGET=196608 -DWAIFU_BG_CACHE_DISABLE -DWAIFU_BATTLE_BASE_CACHE_DISABLE -DWAIFU_FLOOR_SAMPLE_CACHE_DISABLE
+ifeq ($(CD32X_ASSET_MODE),cdrom)
+SH2_CFLAGS := $(SH2_CFLAGS_BASE) -DWAIFU_ASSET_USE_CDROM $(SH2_INCLUDES) $(EXTRA_CFLAGS)
+else
+SH2_CFLAGS := $(SH2_CFLAGS_BASE) -DWAIFU_ASSET_USE_CART_ROM $(SH2_INCLUDES) $(EXTRA_CFLAGS)
+endif
+SH2_ASFLAGS ?= --big
+SH2_LDFLAGS ?= -T src/platform/cd32x/mars-cd.ld -Wl,-Map=$(SH2_OBJDIR)/$(CD32X_TARGET).sh2.map -nostdlib -Wl,--gc-sections
+SH2_LIBPATH := -L$(SH2_GCC_LIBDIR)
+SH2_LIBS ?= $(SH2_LIBPATH) -lgcc -lgcc-Os-4-200
+
+M68K_CFLAGS ?= -m68000 -Os -fno-builtin -Wall -Wextra -Wno-unused-parameter -fomit-frame-pointer $(M68K_INCLUDES)
+M68K_HWFLAGS ?= -m68000 -Os -fno-builtin -Wall -Wextra -Wno-unused-parameter -fomit-frame-pointer $(M68K_INCLUDES)
+M68K_ASFLAGS ?= -m68000 --register-prefix-optional
+M68K_LDFLAGS ?= -T $(LDSCRIPTSDIR)/cd.ld -Wl,-Map=$(M68K_OBJDIR)/$(CD32X_TARGET).m68k.map -nostdlib
+M68K_LIBPATH := -L$(M68K_GCC_LIBDIR)
+M68K_LIBS ?= $(M68K_LIBPATH) -lgcc
+
+CD32X_SH2_SRCS_C := \
+  src/platform/cd32x/cd32x_sh2_main.c \
+  src/platform/cd32x/waifu_cd32x_video.c \
+  src/platform/cd32x/waifu_cd32x_input.c \
+  src/platform/cd32x/waifu_cd32x_audio.c \
+  src/platform/cd32x/waifu_cd32x_cdrom.c \
+  src/platform/cd32x/waifu_cd32x_storage.c \
+  src/platform/cd32x/waifu_cd32x_runtime.c \
+  src/main.c \
+  src/game/ai.c \
+  src/game/deck.c \
+  src/game/palette.c \
+  src/game/sounds.c \
+  src/game/assets.c \
+  src/engine/renderer3d.c \
+  src/engine/renderer3d_cd32x.c \
+  src/engine/common.c
+CD32X_SH2_SRCS_S := src/platform/cd32x/cd32x_crt0.s
+
+CD32X_M68K_SRCS_C := src/platform/cd32x/cd32x_boot_main.c \
+  src/platform/cd32x/cd32x_md_runtime.c \
+  src/platform/cd32x/cd32x_pcm.c
+CD32X_M68K_SRCS_S := \
+  src/platform/cd32x/cd32x_md_crt0.s \
+  src/platform/cd32x/cd32x_md_iface.s \
+  src/platform/cd32x/cd32x_files.s \
+  src/platform/cd32x/cd32x_cdda.s
+
+CD_ASSETS := \
+  assets/generated/cd32x_title_screen_img.bin \
+  assets/generated/story_portraits.bin \
+  assets/generated/story_portrait_mask.bin \
+  assets/generated/card_faces.bin \
+  assets/generated/card_big_art.bin \
+  assets/generated/card_big_art_cd.bin \
+  assets/generated/card_back.bin \
+  assets/generated/support_face.bin \
+  assets/generated/support_big_art.bin \
+  assets/generated/support_big_art_cd.bin \
+  assets/generated/cd32x_sfx_pcm.bin
+
+CDDA_WAVS := \
+  Music/Titlescreen_MoonlitCipher.wav \
+  Music/Overworld.wav \
+  Music/Battle.wav \
+  Music/Boss.wav \
+  Music/FinalBoss.wav \
+  Music/Victory.wav \
+  Music/Fail.wav
+CDDA_TRACK_FILES := \
+  $(CDDA_DIR)/TRACK02_TITLESCREEN_MOONLITCIPHER.WAV \
+  $(CDDA_DIR)/TRACK03_OVERWORLD.WAV \
+  $(CDDA_DIR)/TRACK04_BATTLE.WAV \
+  $(CDDA_DIR)/TRACK05_BOSS.WAV \
+  $(CDDA_DIR)/TRACK06_FINALBOSS.WAV \
+  $(CDDA_DIR)/TRACK07_VICTORY.WAV \
+  $(CDDA_DIR)/TRACK08_FAIL.WAV
+
+SH2_ELF := $(SH2_OBJDIR)/$(CD32X_TARGET).sh2.elf
+SH2_BIN := $(SH2_OBJDIR)/$(CD32X_TARGET).sh2.bin
+M68K_ELF := $(M68K_OBJDIR)/$(CD32X_TARGET).m68k.elf
+M68K_BIN := $(M68K_OBJDIR)/$(CD32X_TARGET).m68k.bin
+ISO := $(CD32X_OUT).iso
+CUE := $(CD32X_OUT).cue
+
+SH2_OBJS := $(patsubst %.c,$(SH2_OBJDIR)/%.o,$(CD32X_SH2_SRCS_C)) $(patsubst %.s,$(SH2_OBJDIR)/%.o,$(CD32X_SH2_SRCS_S))
+M68K_OBJS_C := $(patsubst %.c,$(M68K_OBJDIR)/%.o,$(CD32X_M68K_SRCS_C))
+M68K_OBJS_S := $(patsubst %.s,$(M68K_OBJDIR)/%.o,$(CD32X_M68K_SRCS_S))
+M68K_CRT0_OBJ := $(M68K_OBJDIR)/src/platform/cd32x/cd32x_md_crt0.o
+M68K_OBJS := $(M68K_CRT0_OBJ) $(filter-out $(M68K_CRT0_OBJ),$(M68K_OBJS_S)) $(M68K_OBJS_C)
+
+.PHONY: all program cd cue clean clean-build clean-output toolchain-check layout iso-tools
+
+all: cue
+
+program: toolchain-check $(M68K_BIN)
+
+layout:
+	@echo "CD32X tree is staged.  Build/test intentionally not run until the complete toolchain is available."
+	@echo "ISO writer:   $(GENISOIMAGE)"
+	@echo "SH2 sources:  $(words $(CD32X_SH2_SRCS_C)) C, $(words $(CD32X_SH2_SRCS_S)) asm"
+	@echo "M68K sources: $(words $(CD32X_M68K_SRCS_C)) C, $(words $(CD32X_M68K_SRCS_S)) asm"
+
+iso-tools:
+	./tools/cd32x_iso/build_cdrkit_genisoimage.sh
+
+toolchain-check:
+	@command -v $(M68K_CC) >/dev/null || { echo "missing $(M68K_CC)"; exit 1; }
+	@command -v $(M68K_AS) >/dev/null || { echo "missing $(M68K_AS)"; exit 1; }
+	@command -v $(M68K_OBJCOPY) >/dev/null || { echo "missing $(M68K_OBJCOPY)"; exit 1; }
+	@command -v $(SH2_CC) >/dev/null || { echo "missing $(SH2_CC)"; exit 1; }
+	@command -v $(SH2_AS) >/dev/null || { echo "missing $(SH2_AS)"; exit 1; }
+	@command -v $(SH2_OBJCOPY) >/dev/null || { echo "missing $(SH2_OBJCOPY)"; exit 1; }
+
+$(SH2_OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(SH2_CC) $(SH2_CFLAGS) -c $< -o $@
+
+$(SH2_OBJDIR)/%.o: %.s
+	@mkdir -p $(dir $@)
+	$(SH2_AS) $(SH2_ASFLAGS) $(SH2_INCLUDES) $< -o $@
+
+$(M68K_OBJDIR)/src/platform/cd32x/cd32x_boot_main.o: src/platform/cd32x/cd32x_boot_main.c
+	@mkdir -p $(dir $@)
+	$(M68K_CC) $(M68K_HWFLAGS) -c $< -o $@
+
+$(M68K_OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(M68K_CC) $(M68K_CFLAGS) -c $< -o $@
+
+$(M68K_OBJDIR)/%.o: %.s $(SH2_BIN)
+	@mkdir -p $(dir $@)
+	$(M68K_AS) $(M68K_ASFLAGS) $(M68K_INCLUDES) $< -o $@
+
+$(SH2_ELF): $(SH2_OBJS)
+	$(SH2_CC) $(SH2_LDFLAGS) $(SH2_OBJS) $(SH2_LIBS) -o $@
+
+$(SH2_BIN): $(SH2_ELF)
+	$(SH2_OBJCOPY) -O binary $< $(SH2_OBJDIR)/temp.sh2.bin
+	$(DD) if=$(SH2_OBJDIR)/temp.sh2.bin of=$@ bs=16 conv=sync
+
+$(M68K_ELF): $(SH2_BIN) $(M68K_OBJS)
+	$(M68K_CC) $(M68K_LDFLAGS) $(M68K_OBJS) $(M68K_LIBS) -o $@
+
+$(M68K_BIN): $(M68K_ELF)
+	$(M68K_OBJCOPY) -O binary $< $(M68K_OBJDIR)/temp.m68k.bin
+	$(DD) if=$(M68K_OBJDIR)/temp.m68k.bin of=$@ bs=2048 conv=sync
+
+
+assets/generated/cd32x_title_screen_img.bin src/generated/cd32x_title_asset.h: tools/gen_cd32x_title_asset.py assets/source/title/title_320.png src/generated/waifu_assets.h
+	python3 tools/gen_cd32x_title_asset.py
+
+assets/generated/cd32x_sfx_pcm.bin src/generated/cd32x_sfx_pcm.h: tools/gen_cd32x_sfx_pcm.py
+	python3 tools/gen_cd32x_sfx_pcm.py
+
+$(M68K_OBJDIR)/src/platform/cd32x/cd32x_pcm.o: src/generated/cd32x_sfx_pcm.h
+
+$(CDROOT): $(M68K_BIN) $(CD_ASSETS)
+	$(RM) $(CDROOT)
+	mkdir -p $(CDROOT)/ASSETS
+	cp $(M68K_BIN) $(CDROOT)/APP.BIN
+	cp assets/generated/cd32x_title_screen_img.bin $(CDROOT)/ASSETS/TITLE_SCREEN_IMG.BIN
+	cp assets/generated/story_portraits.bin $(CDROOT)/ASSETS/STORY_PORTRAITS.BIN
+	cp assets/generated/story_portrait_mask.bin $(CDROOT)/ASSETS/STORY_PORTRAIT_MASK.BIN
+	cp assets/generated/card_faces.bin $(CDROOT)/ASSETS/CARD_FACES.BIN
+	python3 tools/cd32x_assets/split_card_faces.py assets/generated/card_faces.bin $(CDROOT)/ASSETS
+	cp assets/generated/card_big_art.bin $(CDROOT)/ASSETS/CARD_BIG_ART.BIN
+	cp assets/generated/card_big_art_cd.bin $(CDROOT)/ASSETS/CARD_BIG_ART_CD.BIN
+	cp assets/generated/card_back.bin $(CDROOT)/ASSETS/CARD_BACK.BIN
+	cp assets/generated/support_face.bin $(CDROOT)/ASSETS/SUPPORT_FACE.BIN
+	cp assets/generated/support_big_art.bin $(CDROOT)/ASSETS/SUPPORT_BIG_ART.BIN
+	cp assets/generated/support_big_art_cd.bin $(CDROOT)/ASSETS/SUPPORT_BIG_ART_CD.BIN
+	cp assets/generated/cd32x_sfx_pcm.bin $(CDROOT)/ASSETS/SFX_PCM.BIN
+
+cd: $(ISO)
+
+$(ISO): $(CDROOT)
+	$(GENISOIMAGE) -sysid "SEGA SEGACD" -volid "$(CD32X_TITLE)" -generic-boot $(BOOTBLOCK) -full-iso9660-filenames -o $@ $(CDROOT)
+
+cue: $(CUE)
+
+$(CDDA_STAMP): $(CDDA_WAVS) tools/cd32x_audio/prepare_cdda_wavs.py
+	rm -rf $(CDDA_DIR)
+	python3 tools/cd32x_audio/prepare_cdda_wavs.py $(CDDA_DIR) $(CDDA_WAVS)
+	touch $@
+
+$(CUE): $(ISO) $(CDDA_STAMP)
+	@{ \
+	  echo 'FILE "$(ISO)" BINARY'; \
+	  echo '  TRACK 01 MODE1/2048'; \
+	  echo '    INDEX 01 00:00:00'; \
+	  n=2; \
+	  for wav in $(CDDA_TRACK_FILES); do \
+	    printf 'FILE "%s" WAVE\n' "$$wav"; \
+	    printf '  TRACK %02d AUDIO\n' "$$n"; \
+	    echo '    PREGAP 00:02:00'; \
+	    echo '    INDEX 01 00:00:00'; \
+	    n=$$((n+1)); \
+	  done; \
+	} > $@
+	@echo "wrote $(CUE)"
+
+clean-output:
+	$(RM) $(ISO) $(CUE)
+
+clean-build:
+	$(RM) $(OBJDIR)
+
+clean: clean-build clean-output

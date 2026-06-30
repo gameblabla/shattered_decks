@@ -13,6 +13,12 @@
 #include "waifu_assets.h"
 #include "title_asset.h"
 
+#if defined(WAIFU_FM_CD32X)
+#include "waifu_cd32x_memory.h"
+#include "waifu_cd32x_video.h"
+#include "cd32x_title_asset.h"
+#endif
+
 #define WAIFU_ASSET_KIND_COMPILED 0
 #define WAIFU_ASSET_KIND_CART_ROM 1
 #define WAIFU_ASSET_KIND_CDROM 2
@@ -36,7 +42,14 @@
 #endif
 #endif
 
-#define TITLE_BYTES ((size_t)TITLE_SCREEN_W * (size_t)TITLE_SCREEN_H)
+#if defined(WAIFU_FM_CD32X)
+#define WAIFU_TITLE_ASSET_W CD32X_TITLE_SCREEN_W
+#define WAIFU_TITLE_ASSET_H CD32X_TITLE_SCREEN_H
+#else
+#define WAIFU_TITLE_ASSET_W TITLE_SCREEN_W
+#define WAIFU_TITLE_ASSET_H TITLE_SCREEN_H
+#endif
+#define TITLE_BYTES ((size_t)WAIFU_TITLE_ASSET_W * (size_t)WAIFU_TITLE_ASSET_H)
 #define TITLE_64K_BYTES (TITLE_BYTES * 2u)
 #define TITLE_16M_BYTES (TITLE_BYTES * 2u)
 #define TITLE_TOTAL_BYTES (TITLE_BYTES + TITLE_16M_BYTES)
@@ -109,7 +122,16 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
     return 1;
 }
 #define CARD_EXTRA_BYTES (CARD_ONE_BYTES * 2u)
-#define CARDS_TOTAL_BYTES (CARD_FACE_BYTES + CARD_EXTRA_BYTES)
+#if defined(WAIFU_FM_CD32X)
+/* CD32X cannot keep the full 72-card face atlas (~144 KiB) resident in 32X
+   SDRAM without overrunning into the stack.  Card faces are streamed per-card
+   into a small LRU staged in the asset arena. */
+#define CD32X_CARD_FACE_CACHE_SLOTS 8
+#define CARD_FACE_STAGE_BYTES ((size_t)CD32X_CARD_FACE_CACHE_SLOTS * CARD_ONE_BYTES)
+#else
+#define CARD_FACE_STAGE_BYTES CARD_FACE_BYTES
+#endif
+#define CARDS_TOTAL_BYTES (CARD_FACE_STAGE_BYTES + CARD_EXTRA_BYTES)
 #ifndef WAIFU_ASSET_BIG_CACHE_SLOTS
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
 /* Keep every monster's 112x112 big art resident.  Runtime prewarm still filters
@@ -141,11 +163,20 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
    title staging RAM; the title framebuffer is never used as a CPU-resident
    working set on PC-FX. */
 #define ASSET_BASE_STAGE_BYTES ASSET_STAGE_A_BYTES
+#elif defined(WAIFU_FM_CD32X)
+/* CD32X displays only the 8bpp title plane.  Keep the PC-FX 16M title staging
+   out of the 32X SDRAM arena without changing PC-FX/headless behavior. */
+#define ASSET_BASE_STAGE_BYTES ((ASSET_STAGE_A_BYTES > TITLE_BYTES) ? ASSET_STAGE_A_BYTES : TITLE_BYTES)
 #else
 #define ASSET_BASE_STAGE_BYTES ((ASSET_STAGE_A_BYTES > TITLE_TOTAL_BYTES) ? ASSET_STAGE_A_BYTES : TITLE_TOTAL_BYTES)
 #endif
 #define ASSET_STAGE_BYTES (ASSET_BASE_STAGE_BYTES + CARD_BIG_CACHE_BYTES)
+#if defined(WAIFU_FM_CD32X)
+typedef char WaifuCd32xAssetStageFits[(ASSET_STAGE_BYTES <= WAIFU_CD32X_ASSET_ARENA_BYTES) ? 1 : -1];
+#define g_asset_stage_ram (waifu_cd32x_asset_arena())
+#else
 static uint8_t g_asset_stage_ram[ASSET_STAGE_BYTES] __attribute__((aligned(4)));
+#endif
 static int g_story_portrait_slot_id[PORTRAIT_SLOT_COUNT] = {-1, -1};
 static int g_requested_portrait_id[PORTRAIT_SLOT_COUNT] = {-1, -1};
 static int g_title_loaded = 0;
@@ -157,13 +188,30 @@ static size_t g_ram_used = 0;
 static size_t g_ram_high_water = 0;
 
 #if !defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_CD32X)
+/* CD32X keeps the title resident in the (otherwise idle on title/menu) asset
+   arena so the software full-redraw path can re-blit it into the framebuffer
+   every frame -- the 32X page-flips each frame, so only a fully redrawn frame
+   avoids the per-frame stale-page flash. */
+static uint8_t *stage_title_ptr(void) { return g_asset_stage_ram; }
+static uint8_t *stage_title64_ptr(void) { return NULL; }
+static uint8_t *stage_title16m_ptr(void) { return NULL; }
+#else
 static uint8_t *stage_title_ptr(void) { return g_asset_stage_ram; }
 static uint8_t *stage_title64_ptr(void) { return g_asset_stage_ram + TITLE_BYTES; }
 static uint8_t *stage_title16m_ptr(void) { return g_asset_stage_ram + TITLE_BYTES; }
 #endif
+#endif
 static uint8_t *stage_card_faces_ptr(void) { return g_asset_stage_ram; }
-static uint8_t *stage_card_back_ptr(void) { return g_asset_stage_ram + CARD_FACE_BYTES; }
-static uint8_t *stage_support_face_ptr(void) { return g_asset_stage_ram + CARD_FACE_BYTES + CARD_ONE_BYTES; }
+static uint8_t *stage_card_back_ptr(void) { return g_asset_stage_ram + CARD_FACE_STAGE_BYTES; }
+static uint8_t *stage_support_face_ptr(void) { return g_asset_stage_ram + CARD_FACE_STAGE_BYTES + CARD_ONE_BYTES; }
+#if defined(WAIFU_FM_CD32X)
+static uint8_t *stage_card_face_cache_slot_ptr(int slot) { return g_asset_stage_ram + ((size_t)slot * CARD_ONE_BYTES); }
+static int g_cd32x_face_cache_card_id[CD32X_CARD_FACE_CACHE_SLOTS];
+static unsigned g_cd32x_face_cache_stamp[CD32X_CARD_FACE_CACHE_SLOTS];
+static unsigned g_cd32x_face_cache_clock = 1;
+static void cd32x_card_face_cache_reset(void);
+#endif
 static uint8_t *stage_big_cache_ptr(int slot) { return g_asset_stage_ram + ASSET_BASE_STAGE_BYTES + ((size_t)slot * CARD_BIG_CACHE_SLOT_BYTES); }
 static uint8_t *stage_support_big_ptr(void) { return g_asset_stage_ram + ASSET_BASE_STAGE_BYTES + ((size_t)WAIFU_ASSET_BIG_CACHE_SLOTS * CARD_BIG_CACHE_SLOT_BYTES); }
 static int g_big_cache_card_id[WAIFU_ASSET_BIG_CACHE_SLOTS];
@@ -430,6 +478,15 @@ static int prewarm_list_contains(int card_id)
 
 static void prewarm_list_add_card(int card_id)
 {
+#if defined(WAIFU_FM_CD32X)
+    /* CD32X does not yet have offset-aware big-art streaming (the resident
+       supervisor only services start-aligned blobs plus the per-card face
+       slices).  Keep battle loading bounded to the small-card working set and
+       support art rather than blocking forever on CARD_BIG_ART offset slices.
+       PC-FX/headless retain the normal prewarm/cache behavior. */
+    (void)card_id;
+    return;
+#else
     if (card_id < 0) return;
     if (card_id >= WAIFU_CARD_COUNT) {
         if (!g_support_big_loaded) g_prewarm_support_big = 1;
@@ -439,6 +496,7 @@ static void prewarm_list_add_card(int card_id)
     if (g_prewarm_big_card_count >= WAIFU_ASSET_BIG_CACHE_SLOTS) return;
     if (prewarm_list_contains(card_id)) return;
     g_prewarm_big_card_ids[g_prewarm_big_card_count++] = card_id;
+#endif
 }
 
 static void prewarm_list_add_all_monster_big_art(void)
@@ -587,9 +645,14 @@ int waifu_assets_load_step(void)
             note_high_water(g_ram_used);
 #else
             if (!cd_read_blob(WAIFU_ASSET_BLOB_TITLE_SCREEN, stage_title_ptr(), TITLE_BYTES)) return 0;
+#if !defined(WAIFU_FM_CD32X)
             if (!cd_read_blob(WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV422, stage_title16m_ptr(), TITLE_16M_BYTES)) return 0;
-            g_title_loaded = 1;
             add_ram_used(TITLE_TOTAL_BYTES);
+#else
+            /* CD32X streams the title directly to 32X framebuffer pages, not
+               to SH-2 SDRAM, so it should not count against asset RAM. */
+#endif
+            g_title_loaded = 1;
 #endif
             ++g_load_step;
             g_ready = 1;
@@ -613,17 +676,35 @@ int waifu_assets_load_step(void)
         break;
     case WAIFU_ASSET_REQUEST_CARDS:
         if (g_load_step == 0) {
+#if defined(WAIFU_FM_CD32X)
+            /* CD32X streams card faces per-card into the LRU on demand (see
+               waifu_assets_card_face); nothing to preload -- just reset cache. */
+            cd32x_card_face_cache_reset();
+#else
             if (!cd_read_blob_padded_from_start(WAIFU_ASSET_BLOB_CARD_FACES, stage_card_faces_ptr(), CARD_FACE_BYTES)) return 0;
+#endif
             ++g_load_step;
             return 0;
         }
         if (g_load_step == 1) {
+#if defined(WAIFU_FM_CD32X)
+            /* CARD_BACK.BIN is 2052 bytes (38x54), just over one sector.  PC-FX
+               can safely sector-pad this read into its larger staging arena, but
+               CD32X keeps card back/support face tightly packed in the 32X SDRAM
+               arena.  Read the exact file size here. */
+            if (!cd_read_blob(WAIFU_ASSET_BLOB_CARD_BACK, stage_card_back_ptr(), CARD_ONE_BYTES)) return 0;
+#else
             if (!cd_read_blob_padded_from_start(WAIFU_ASSET_BLOB_CARD_BACK, stage_card_back_ptr(), CARD_ONE_BYTES)) return 0;
+#endif
             ++g_load_step;
             return 0;
         }
         if (g_load_step == 2) {
+#if defined(WAIFU_FM_CD32X)
+            if (!cd_read_blob(WAIFU_ASSET_BLOB_SUPPORT_FACE, stage_support_face_ptr(), CARD_ONE_BYTES)) return 0;
+#else
             if (!cd_read_blob_padded_from_start(WAIFU_ASSET_BLOB_SUPPORT_FACE, stage_support_face_ptr(), CARD_ONE_BYTES)) return 0;
+#endif
             ++g_load_step;
             g_cards_loaded = 1;
             add_ram_used(CARDS_TOTAL_BYTES);
@@ -736,6 +817,12 @@ int waifu_assets_story_portrait_ready(int portrait_id)
 #endif
 }
 
+void waifu_assets_title_screen_dims(int *w, int *h)
+{
+    if (w) *w = WAIFU_TITLE_ASSET_W;
+    if (h) *h = WAIFU_TITLE_ASSET_H;
+}
+
 const uint8_t *waifu_assets_title_screen_img(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
@@ -752,7 +839,7 @@ const uint8_t *waifu_assets_title_screen_img(void)
 const uint16_t *waifu_assets_title_screen_pcfx_yuv16(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
     return NULL;
 #else
     return g_title_loaded ? (const uint16_t *)stage_title64_ptr() : NULL;
@@ -769,7 +856,7 @@ const uint16_t *waifu_assets_title_screen_pcfx_yuv16(void)
 const uint16_t *waifu_assets_title_screen_pcfx_yuv422(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
     return NULL;
 #else
     return g_title_loaded ? (const uint16_t *)stage_title16m_ptr() : NULL;
@@ -857,8 +944,42 @@ static int choose_big_cache_slot(void)
     return best;
 }
 
+#if defined(WAIFU_FM_CD32X)
+static void cd32x_card_face_cache_reset(void)
+{
+    for (int i = 0; i < CD32X_CARD_FACE_CACHE_SLOTS; ++i) {
+        g_cd32x_face_cache_card_id[i] = -1;
+        g_cd32x_face_cache_stamp[i] = 0;
+    }
+    g_cd32x_face_cache_clock = 1;
+}
+
+static int cd32x_find_card_face_slot(int card_id)
+{
+    for (int i = 0; i < CD32X_CARD_FACE_CACHE_SLOTS; ++i) {
+        if (g_cd32x_face_cache_card_id[i] == card_id) return i;
+    }
+    return -1;
+}
+
+static int cd32x_choose_card_face_slot(void)
+{
+    int best = 0;
+    unsigned best_stamp = g_cd32x_face_cache_stamp[0];
+    for (int i = 0; i < CD32X_CARD_FACE_CACHE_SLOTS; ++i) {
+        if (g_cd32x_face_cache_card_id[i] < 0) return i;
+        if (g_cd32x_face_cache_stamp[i] < best_stamp) {
+            best = i;
+            best_stamp = g_cd32x_face_cache_stamp[i];
+        }
+    }
+    return best;
+}
+#endif
+
 static int load_all_big_card_art_cached(void)
 {
+#if WAIFU_ASSET_BIG_CACHE_SLOTS >= WAIFU_CARD_COUNT
     int before = big_cache_loaded_count();
     size_t bytes = (size_t)WAIFU_CARD_COUNT * CARD_BIG_ONE_BYTES;
     if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_CARD_BIG_ART, stage_big_cache_ptr(0), 0, bytes)) return 0;
@@ -871,6 +992,13 @@ static int load_all_big_card_art_cached(void)
         add_ram_used((size_t)(WAIFU_CARD_COUNT - before) * CARD_BIG_CACHE_SLOT_BYTES);
     }
     return 1;
+#else
+    /* CD32X and other constrained CD builds keep the same LRU API but cannot
+       reserve a full-card big-art cache.  A request to prewarm every card is
+       treated as a no-op; individual card art remains demand-streamed through
+       load_big_card_art_cached() and the small slot count selected by the port. */
+    return 1;
+#endif
 }
 
 static const uint8_t *load_big_card_art_cached(int card_id)
@@ -895,7 +1023,29 @@ const uint8_t *waifu_assets_card_face(int card_id)
     if (card_id >= WAIFU_CARD_COUNT) card_id = WAIFU_CARD_COUNT - 1;
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
     if (!g_cards_loaded) return NULL;
+#if defined(WAIFU_FM_CD32X)
+    {
+        int slot = cd32x_find_card_face_slot(card_id);
+        uint8_t *ptr;
+        if (slot < 0) {
+            slot = cd32x_choose_card_face_slot();
+            ptr = stage_card_face_cache_slot_ptr(slot);
+            if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_CARD_FACES,
+                                    ptr,
+                                    (size_t)card_id * CARD_ONE_BYTES,
+                                    CARD_ONE_BYTES)) {
+                g_cd32x_face_cache_card_id[slot] = -1;
+                return NULL;
+            }
+            g_cd32x_face_cache_card_id[slot] = card_id;
+        }
+        g_cd32x_face_cache_stamp[slot] = g_cd32x_face_cache_clock++;
+        if (g_cd32x_face_cache_clock == 0) g_cd32x_face_cache_clock = 1;
+        return stage_card_face_cache_slot_ptr(slot);
+    }
+#else
     return stage_card_faces_ptr() + ((size_t)card_id * CARD_ONE_BYTES);
+#endif
 #else
     return waifu_card_faces + ((size_t)card_id * CARD_ONE_BYTES);
 #endif
