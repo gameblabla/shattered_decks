@@ -86,6 +86,12 @@ static const Cd32xBlobInfo *cd32x_blob_info(int blob)
     return 0;
 }
 
+/* See cd32x_service_card_face_request: the CARD_FACES.BIN atlas stays resident
+   in the Word-RAM staging window between face requests.  Any other Word-RAM
+   write clobbers it, so those paths reset this so the next face reloads it. */
+static int g_face_atlas_resident = 0;
+static void cd32x_invalidate_face_atlas(void) { g_face_atlas_resident = 0; }
+
 
 static void cd32x_force_md_h40(void)
 {
@@ -107,6 +113,7 @@ static void cd32x_delay(int frames)
 static void cd32x_put_status(const char *text, int color, int x, int y)
 {
     char *word_ram = (char *)0x0C0000;
+    cd32x_invalidate_face_atlas();
     strncpy(word_ram, text, 255);
     word_ram[255] = 0;
     switch_banks();
@@ -155,6 +162,7 @@ static void cd32x_service_md_fade_request(void)
     char *word_ram = (char *)0x0C0000;
     unsigned short *pal = (unsigned short *)word_ram;
     unsigned fade_q8 = (unsigned)do_md_cmd2(MD_CMD_GET_COMM32X, 2, 2);
+    cd32x_invalidate_face_atlas();
     if (fade_q8 > 256u) fade_q8 = 256u;
 
     /* Palette groups used by the resident MD text plane:
@@ -229,6 +237,17 @@ static void cd32x_cdda_resume_after_read(void)
     }
 }
 
+/* The whole CARD_FACES.BIN atlas (~144 KiB) is loaded into the Word-RAM staging
+   window once and kept resident, so each face is served by a pure Word-RAM slide
+   + CPY with no CD access.  The old behaviour re-loaded the entire atlas through
+   the BIOS for every single face (a ~144 KiB read each time), which made every
+   first-time face render do a full-atlas CD load — the deck editor and the board
+   could spend many seconds loading faces one at a time.  Any other Word-RAM user
+   (big art, portraits, fade palette, status text, generic blob, SFX) overwrites
+   the staging window, so each of those calls cd32x_invalidate_face_atlas() and
+   the next face reloads the atlas once.  The resident path re-acquires Sub-CPU
+   ownership of the Word-RAM bank before the slide, mirroring the bank state a
+   fresh load_file would have left. */
 static void cd32x_service_card_face_request(int card_id, int words, char *word_ram)
 {
     int byte_offset;
@@ -239,15 +258,17 @@ static void cd32x_service_card_face_request(int card_id, int words, char *word_r
         return;
     }
 
-    /* Serve one card face by loading the whole face atlas through the proven CD
-       BIOS load_file path (the raw read_cd/LBA path could hang on some BIOS
-       implementations), then sliding the requested card to the start of the
-       Word-RAM transfer window.  CARD_FACES.BIN (~144 KiB) fits in the 256 KiB
-       2M Word RAM staging buffer. */
-    rc = load_file((char *)"CARD_FACES.BIN", word_ram);
-    if (rc < 0) {
-        cd32x_fail_cd_request(rc);
-        return;
+    if (!g_face_atlas_resident) {
+        rc = load_file((char *)"CARD_FACES.BIN", word_ram);
+        if (rc < 0) {
+            cd32x_fail_cd_request(rc);
+            return;
+        }
+        g_face_atlas_resident = 1;     /* load_file leaves the bank Sub-CPU owned */
+    } else {
+        /* The previous face request ended with the Main-CPU owning the bank for
+           its CPY; hand it back to the Sub-CPU so the slide can read the atlas. */
+        switch_banks();
     }
 
     byte_offset = card_id * CD32X_CARD_ONE_BYTES;
@@ -308,6 +329,7 @@ static void cd32x_service_card_big_request(int card_id, int words, char *word_ra
         cd32x_fail_cd_request(-1);
         return;
     }
+    cd32x_invalidate_face_atlas();
 
     rc = cd32x_read_file_slice("CARD_BIG_ART_CD.BIN",
                                card_id * CD32X_CARD_BIG_CD_SLOT_BYTES,
@@ -329,6 +351,7 @@ static void cd32x_service_portrait_request(int portrait_id, int words, int mask,
         cd32x_fail_cd_request(-1);
         return;
     }
+    cd32x_invalidate_face_atlas();
 
     rc = cd32x_read_file_slice(filename,
                                portrait_id * CD32X_STORY_PORTRAIT_CD_STRIDE,
@@ -397,6 +420,7 @@ static void cd32x_service_cd_request(void)
         cd32x_fail_cd_request(-1);
         return;
     }
+    cd32x_invalidate_face_atlas();
 
     rc = load_file((char *)info->filename, word_ram);
     if (rc < 0) {
