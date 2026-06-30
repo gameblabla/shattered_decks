@@ -5,6 +5,7 @@
  * and 320x240 8bpp framebuffer presentation. */
 #include "waifu_cd32x_video.h"
 #include "cd32x_32x.h"
+#include "assets.h"
 #include "platform.h"
 #include "waifu_assets.h"
 #include "cd32x_title_asset.h"
@@ -40,6 +41,11 @@ struct WaifuCd32xVideo {
 };
 
 static WaifuCd32xVideo g_video;
+static int g_cd32x_overlay_kind = -1;
+static int g_cd32x_overlay_base_pages_remaining = 0;
+
+static void cd32x_put_px_back(int x, int y, uint8_t c);
+static void cd32x_fill_rect_back(int x, int y, int w, int h, uint8_t c);
 
 static int cd32x_request_md_palette_fade(int fade_q8)
 {
@@ -97,6 +103,45 @@ static void cd32x_clear_back_pixels(uint8_t c)
     fb16 += WAIFU_CD32X_LINE_TABLE_WORDS;
     for (int i = 0; i < (WAIFU_CD32X_W * WAIFU_CD32X_H) / 2; ++i) {
         fb16[i] = pair;
+    }
+}
+
+static void cd32x_restore_title_rect_back(int x, int y, int w, int h)
+{
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w;
+    int y1 = y + h;
+    int tw = CD32X_TITLE_SCREEN_W;
+    int th = CD32X_TITLE_SCREEN_H;
+    const uint8_t *title = waifu_assets_title_screen_img();
+
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > WAIFU_CD32X_W) x1 = WAIFU_CD32X_W;
+    if (y1 > WAIFU_CD32X_H) y1 = WAIFU_CD32X_H;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    waifu_assets_title_screen_dims(&tw, &th);
+    if (!title || tw != WAIFU_CD32X_W || th != WAIFU_CD32X_H) {
+        cd32x_fill_rect_back(x0, y0, x1 - x0, y1 - y0, IDX_BLACK);
+        return;
+    }
+
+    for (int yy = y0; yy < y1; ++yy) {
+        const uint8_t *src = title + (uint32_t)yy * WAIFU_CD32X_W + x0;
+        int xx = x0;
+        if (xx & 1) {
+            cd32x_put_px_back(xx, yy, *src++);
+            ++xx;
+        }
+        volatile uint16_t *dst = &MARS_FRAMEBUFFER + ((WAIFU_CD32X_FB_BYTE_OFFSET + yy * WAIFU_CD32X_W + xx) >> 1);
+        while (xx + 1 < x1) {
+            *dst++ = (uint16_t)(((uint16_t)src[0] << 8) | src[1]);
+            src += 2;
+            xx += 2;
+        }
+        if (xx < x1) cd32x_put_px_back(xx, yy, *src);
     }
 }
 
@@ -227,15 +272,31 @@ static void cd32x_draw_title_logo_both(void)
     cd32x_draw_text_centered_both(38, "DECKS", 2, IDX_WHITE, IDX_BLACK);
 }
 
+static void cd32x_overlay_begin(WaifuTextOverlayKind kind)
+{
+    if (g_cd32x_overlay_kind != (int)kind) {
+        g_cd32x_overlay_kind = (int)kind;
+        g_cd32x_overlay_base_pages_remaining = 2;
+    }
+}
+
+static void cd32x_restore_title_base_if_needed(void)
+{
+    if (g_cd32x_overlay_base_pages_remaining <= 0) return;
+    cd32x_restore_title_rect_back(0, 0, WAIFU_CD32X_W, WAIFU_CD32X_H);
+    cd32x_draw_title_logo_both();
+    --g_cd32x_overlay_base_pages_remaining;
+}
+
 static void cd32x_draw_title_prompt_both(int prompt_visible, int has_save)
 {
-    (void)prompt_visible;
     (void)has_save;
-    cd32x_draw_title_logo_both();
-    /* Keep the prompt resident instead of blinking it.  Without a separate
-       hardware text plane, hiding it would require reloading/restoring title
-       pixels under the glyph cells. */
-    cd32x_draw_text_centered_both(190, "PRESS RUN TO START", 1, IDX_WHITE, IDX_BLACK);
+    cd32x_overlay_begin(WAIFU_TEXT_OVERLAY_TITLE_PROMPT);
+    cd32x_restore_title_base_if_needed();
+    cd32x_restore_title_rect_back(0, 184, WAIFU_CD32X_W, 36);
+    if (prompt_visible) {
+        cd32x_draw_text_centered_both(190, "PRESS RUN TO START", 1, IDX_WHITE, IDX_BLACK);
+    }
     cd32x_draw_text_centered_both(208, "(C) 2026 GAMEBLABLA", 1, IDX_WHITE, IDX_BLACK);
 }
 
@@ -243,6 +304,8 @@ static void cd32x_draw_menu_both(int selected, int has_save)
 {
     int ox = (WAIFU_CD32X_W - 256) / 2;
     const char *help = "RANDOM DECK / FREE DUEL";
+    cd32x_overlay_begin(WAIFU_TEXT_OVERLAY_MENU);
+    cd32x_restore_title_base_if_needed();
     cd32x_draw_title_logo_both();
     cd32x_fill_rect_back(ox + 39, 124, 178, 75, IDX_BLACK);
     cd32x_draw_panel_rect_both(ox + 41, 126, 174, 71, IDX_UI_DARK);
@@ -286,6 +349,8 @@ void waifu_cd32x_video_destroy(WaifuCd32xVideo *video)
 void waifu_cd32x_video_begin_8bpp(WaifuCd32xVideo *video)
 {
     (void)video;
+    g_cd32x_overlay_kind = -1;
+    g_cd32x_overlay_base_pages_remaining = 0;
     MARS_VDP_DISPMODE = (uint16_t)(MARS_240_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
 }
 
@@ -327,16 +392,18 @@ void waifu_cd32x_video_commit_title_upload(void)
 void waifu_cd32x_video_present_8bpp(WaifuCd32xVideo *video, const uint8_t *framebuffer, const uint8_t *rgb, WaifuFmPaletteId palette_id, int fade_q8)
 {
     /* The 32X CPU-visible framebuffer window always targets the current back
-       page.  Keep flipping, but make the current back page self-contained every
-       frame: line table first, then the complete software-rendered pixels.
-       Title/menu are intentionally not treated as one-shot hardware overlays on
-       this target. */
+       page.  Common CD32X rendering uses that window as its framebuffer, so the
+       normal present path only needs to refresh the line table and palette
+       before the vblank flip.  Keep the copy fallback for callers that provide
+       a separate host-side buffer. */
     volatile uint16_t *dst16 = &MARS_FRAMEBUFFER;
     int y;
     if (!video || !framebuffer) return;
     waifu_cd32x_video_set_palette_rgb(video, rgb, palette_id, fade_q8);
 
     cd32x_write_back_line_table();
+    if (framebuffer == (const uint8_t *)(uintptr_t)WAIFU_CD32X_FRAMEBUFFER_PIXELS) return;
+
     dst16 += WAIFU_CD32X_LINE_TABLE_WORDS;
     for (y = 0; y < WAIFU_CD32X_H; ++y) {
         const uint8_t *src = framebuffer + y * WAIFU_CD32X_W;
@@ -378,14 +445,15 @@ int waifu_platform_text_overlay(WaifuTextOverlayKind kind, const WaifuTextOverla
 
 void waifu_platform_text_overlay_clear(void)
 {
+    g_cd32x_overlay_kind = -1;
+    g_cd32x_overlay_base_pages_remaining = 0;
 }
 
 int waifu_platform_text_overlay_is_hardware(void)
 {
     /* CD32X page-flips the framebuffer every frame, so a screen composed only
-       on entry lands in just one physical page and flashes.  Drive the
-       title/menu through the software full-redraw path instead (the title is
-       kept resident in the asset arena), so present_8bpp repacks a complete
-       frame into the back page every frame. */
-    return 0;
+       on entry lands in just one physical page and flashes.  The CD32X overlay
+       path warms both pages after each title/menu mode change, then restores
+       only the small mutable prompt/menu areas from the resident title asset. */
+    return 1;
 }

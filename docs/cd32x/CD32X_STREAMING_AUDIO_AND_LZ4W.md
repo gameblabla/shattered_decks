@@ -189,14 +189,17 @@ separate future track; CD32X should use RF5C164.
    and deck card-check previews prewarm the selected monster before entering the
    preview state; CD32X rendering uses cached-only 112x112 art so a missed prewarm
    drops art for the frame instead of issuing a render-time CD read.
-   **Related presentation fix:** the 32X video backend no longer treats title/menu
-   as a one-shot hardware overlay. It follows Blastem's `32x_video.c` model:
-   framebuffer writes target the current `back` page, FS swaps `front`/`back`,
-   and `0x24020000` is overwrite mode for the same back page rather than a second
-   CPU-addressable framebuffer. `present_8bpp` therefore writes a fresh line table
-   plus the complete 320x240 pixel payload to the current back page before every
-   flip. This is separate from card cache memory, but it fixes black/stale-page
-   flashes caused by one physical page being shown without a valid line table.
+   **Related presentation fix:** the 32X video backend follows Blastem's
+   `32x_video.c` model: framebuffer writes target the current `back` page, FS
+   swaps `front`/`back`, and `0x24020000` is overwrite mode for the same back page
+   rather than a second CPU-addressable framebuffer. Common CD32X drawing renders
+   directly into that current back page, so `present_8bpp` refreshes the line
+   table/palette and avoids repack-copying the framebuffer onto itself. Title/menu
+   use the CD32X hardware-overlay hook, but the backend warms both flipped pages
+   after each title/menu mode change and restores only the prompt/menu rectangles
+   from the resident title asset. This is separate from card cache memory, but it
+   fixes black/stale-page flashes without making title fade/blink spend a full
+   320x240 copy every frame.
 2. **RF5C164 music streaming, CD idle.** Stream one deck-editor theme from a
    preloaded Word-RAM buffer (CD quiet) to validate the double-buffer/refill and
    quality before adding CD contention.
