@@ -108,7 +108,7 @@ WaifuCd32xAudio *waifu_cd32x_audio_create(void)
 {
     memset(&g_audio, 0, sizeof(g_audio));
     g_audio.active_pcm_theme = CD32X_PCM_THEME_NONE;
-    waifu_cd32x_cdda_stop();
+    (void)waifu_cd32x_cdda_stop();
     return &g_audio;
 }
 
@@ -133,9 +133,11 @@ static void cd32x_audio_try_apply_music(WaifuCd32xAudio *audio)
     }
     if (pcm_theme != CD32X_PCM_THEME_NONE) {
         if (audio->active_cdda_track != CD32X_TRACK_NONE) {
-            waifu_cd32x_cdda_stop();
-            audio->active_cdda_track = CD32X_TRACK_NONE;
-            audio->active_loop = 0;
+            if (waifu_cd32x_cdda_stop()) {
+                audio->active_cdda_track = CD32X_TRACK_NONE;
+                audio->active_loop = 0;
+            }
+            if (audio->active_cdda_track != CD32X_TRACK_NONE) return;
         }
         return;
     }
@@ -145,9 +147,10 @@ static void cd32x_audio_try_apply_music(WaifuCd32xAudio *audio)
     if (cdda_track == audio->active_cdda_track && loop == audio->active_loop) return;
 
     if (cdda_track == CD32X_TRACK_NONE) {
-        waifu_cd32x_cdda_stop();
-        audio->active_cdda_track = CD32X_TRACK_NONE;
-        audio->active_loop = 0;
+        if (waifu_cd32x_cdda_stop()) {
+            audio->active_cdda_track = CD32X_TRACK_NONE;
+            audio->active_loop = 0;
+        }
     } else if (waifu_cd32x_cdda_play(cdda_track, loop)) {
         audio->active_cdda_track = cdda_track;
         audio->active_loop = loop;

@@ -3,8 +3,8 @@
  * The low-level sample loader/register helpers follow RaycastDemo's pcm.c
  * model: samples are copied to PCM wave RAM as sign/magnitude bytes and the
  * channel start/loop registers point at 256-byte blocks.  The game-specific
- * layer below preloads a compact 11.025 kHz SFX bank and plays one-shots on
- * four PCM channels under SH-2 command control. */
+ * layer below keeps SFX and streamed music on disjoint RF5C164 channels and
+ * disjoint wave-RAM regions so a one-shot cannot trample music playback state. */
 #include <stdint.h>
 #include "cd32x_pcm.h"
 #include "cd32x_sfx_pcm.h"
@@ -24,8 +24,30 @@
 
 #define BLK_PAD   (32u + 255u)
 #define BLK_SHIFT 8u
+
+#define CD32X_PCM_MUSIC_CHANNEL 4u
+#define CD32X_PCM_SFX_FIRST_CHANNEL 0u
 #define CD32X_PCM_SFX_CHANNELS 4u
+#define CD32X_PCM_SFX_LAST_CHANNEL (CD32X_PCM_SFX_FIRST_CHANNEL + CD32X_PCM_SFX_CHANNELS - 1u)
 #define CD32X_SFX_LOOP_SILENCE_BYTES WAIFU_CD32X_SFX_PCM_LOOP_SILENCE_BYTES
+#define CD32X_SFX_WAVE_BLOCKS WAIFU_CD32X_SFX_PCM_USED_BLOCKS
+#define CD32X_SFX_WAVE_BASE_BLOCK (0x100u - CD32X_SFX_WAVE_BLOCKS)
+#define CD32X_SFX_WAVE_BASE (CD32X_SFX_WAVE_BASE_BLOCK << BLK_SHIFT)
+
+#define CD32X_MUSIC_RING_BLOCK 0u
+#define CD32X_MUSIC_RING_BASE  (CD32X_MUSIC_RING_BLOCK << BLK_SHIFT)
+#define CD32X_MUSIC_MARKER_OFF ((CD32X_SFX_WAVE_BASE_BLOCK - 1u) << BLK_SHIFT)
+#define CD32X_MUSIC_RING_BYTES (CD32X_MUSIC_MARKER_OFF - CD32X_MUSIC_RING_BASE)
+
+#if CD32X_SFX_WAVE_BLOCKS >= 0x100u
+#error "CD32X RF5C164 SFX bank does not fit in wave RAM"
+#endif
+#if CD32X_PCM_MUSIC_CHANNEL >= CD32X_PCM_SFX_FIRST_CHANNEL && CD32X_PCM_MUSIC_CHANNEL <= CD32X_PCM_SFX_LAST_CHANNEL
+#error "CD32X RF5C164 music channel overlaps SFX channel range"
+#endif
+#if CD32X_MUSIC_MARKER_OFF >= CD32X_SFX_WAVE_BASE
+#error "CD32X RF5C164 music ring overlaps SFX wave-RAM slot"
+#endif
 
 static const uint8_t loop_markers[32] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -220,7 +242,8 @@ void cd32x_pcm_sfx_init_from_bank(const int8_t *bank, uint32_t bank_bytes)
     for (i = 0; i < WAIFU_CD32X_SFX_PCM_META_COUNT; ++i) {
         const WaifuCd32xSfxPcmMeta *m = &waifu_cd32x_sfx_pcm_meta[i];
         if (m->length) {
-            pcm_load_samples(m->start_block, bank + m->offset, m->length);
+            pcm_load_samples((uint8_t)(CD32X_SFX_WAVE_BASE_BLOCK + m->start_block),
+                             bank + m->offset, m->length);
         }
     }
 
@@ -243,7 +266,7 @@ int cd32x_pcm_sfx_play(int effect)
     m = &waifu_cd32x_sfx_pcm_meta[effect];
     if (!m->length) return -1;
 
-    ch = g_cd32x_pcm_next_channel;
+    ch = (uint8_t)(CD32X_PCM_SFX_FIRST_CHANNEL + g_cd32x_pcm_next_channel);
     g_cd32x_pcm_next_channel = (uint8_t)((g_cd32x_pcm_next_channel + 1u) % CD32X_PCM_SFX_CHANNELS);
 
     /* The INT2 music pump also drives the PCM control register; lock it out for
@@ -251,53 +274,73 @@ int cd32x_pcm_sfx_play(int effect)
     sr = cd32x_irq_lock();
     pcm_set_ctrl((uint8_t)(0xC0u + ch));
     pcm_set_off(ch);
-    pcm_set_start(m->start_block, 0);
-    pcm_set_loop((uint16_t)(((uint16_t)m->start_block << BLK_SHIFT) +
+    pcm_set_start((uint8_t)(CD32X_SFX_WAVE_BASE_BLOCK + m->start_block), 0);
+    pcm_set_loop((uint16_t)(CD32X_SFX_WAVE_BASE +
+                            ((uint16_t)m->start_block << BLK_SHIFT) +
                             m->length -
                             (m->length > CD32X_SFX_LOOP_SILENCE_BYTES ? CD32X_SFX_LOOP_SILENCE_BYTES : 0u)));
     pcm_set_freq(WAIFU_CD32X_SFX_PCM_FREQ_DELTA);
     pcm_set_env(m->volume);
     pcm_set_pan(128u);
     pcm_set_on(ch);
+    pcm_set_ctrl((uint8_t)(0xC0u + CD32X_PCM_MUSIC_CHANNEL));
     cd32x_irq_unlock(sr);
     return 0;
 }
 
 /* ---- RF5C164 streamed music ------------------------------------------------
-   SFX occupies the low generated block range of wave RAM; music uses the
-   remaining high RAM on channel 4 with a 0xFF loop-end marker at 0xFF00 so the
-   chip wraps the ring continuously.
+   SFX samples are preloaded once into the top of wave RAM and play on channels
+   0-3.  Music uses the lower wave-RAM span on channel 4 with a 0xFF loop-end
+   marker just below the SFX bank, so a one-shot only touches channel registers
+   and cannot stall the music refill with a large wave-RAM copy.
 
-   The ring is refilled OPEN-LOOP, paced by GET_TICKS (the Main-CPU vblank tick
-   counter in the gate-array comm regs, which keeps counting while the Sub-CPU is
-   blocked in a BIOS CD read).  The refill is driven from the Sub-CPU INT2/vblank
-   handler (see cd32x_md_iface.s int2_handler) so it keeps running *during* the
-   blocking load_file reads that the main loop cannot service -- that, not any
-   clock freeze, is why music used to stall while cards streamed.  (A closed-loop
-   variant that read the RF5C164 channel play pointer worked in BlastEm but not on
-   hardware -- the address read registers are unreliable here -- so the play head
-   is not read; write and play simply run at the same ~RATE/60 bytes/tick.)
-   When a source chunk has been fully queued, cd32x_music_needs_chunk() asks the
-   supervisor to load the next CD chunk into the PRG-RAM source buffer. */
-#define CD32X_MUSIC_CHANNEL    4u
-#define CD32X_MUSIC_RING_BLOCK WAIFU_CD32X_SFX_PCM_USED_BLOCKS
-#define CD32X_MUSIC_RING_BASE  (CD32X_MUSIC_RING_BLOCK << 8)
-#define CD32X_MUSIC_MARKER_OFF 0xFF00u
-#define CD32X_MUSIC_RING_BYTES (CD32X_MUSIC_MARKER_OFF - CD32X_MUSIC_RING_BASE)
-#define CD32X_MUSIC_TICK_BYTES 184u                                     /* 11025/60 */
+   Refill is hybrid closed-loop/open-loop.  The normal path reads the RF5C164
+   play address and tops the ring up to a near-full lead, matching the classic
+   Sega CD PCM half-buffer pattern and BlastEm's RF5C164 model.  Some hardware
+   setups have returned stale play-address reads, so repeated identical reads
+   fall back to GET_TICKS-paced refill instead of wedging the stream on one
+   ringful.  When a source chunk has been fully queued, cd32x_music_needs_chunk()
+   asks the supervisor to load the next CD chunk into the PRG-RAM source buffer. */
+#define CD32X_MUSIC_CHANNEL    CD32X_PCM_MUSIC_CHANNEL
+#define CD32X_MUSIC_TICK_BYTES ((WAIFU_CD32X_MUSIC_PCM_RATE + 59u) / 60u)
 #define CD32X_MUSIC_VOLUME     0xC0u
 #define CD32X_MUSIC_LEAD_GUARD 1024u
+#define CD32X_MUSIC_STALE_READ_LIMIT 3u
+
+/* RF5C164 channel-4 playback-address read registers.  The channel constants in
+   this file are zero-based, so channel 4 maps to the chip's CH5 readback pair. */
+#define PCM_PLAY_LO *((volatile uint8_t *)0xFF0031)
+#define PCM_PLAY_HI *((volatile uint8_t *)0xFF0033)
 
 static int8_t  g_music_clip[WAIFU_CD32X_MUSIC_PCM_MAX_CHUNK_BYTES];
 static uint32_t g_music_clip_len;
 static uint32_t g_music_clip_pos;
 static uint16_t g_music_write_off;
 static uint32_t g_music_last_tick;
+static uint16_t g_music_last_play_off;
 static uint8_t  g_music_playing;
 static uint8_t  g_music_need_chunk;
+static uint8_t  g_music_have_play_off;
+static uint8_t  g_music_stale_play_reads;
 
 int8_t *cd32x_music_clip_buffer(void) { return g_music_clip; }
 uint32_t cd32x_music_clip_capacity(void) { return (uint32_t)sizeof(g_music_clip); }
+
+static uint16_t music_read_play_off(void)
+{
+    uint16_t addr;
+    PCM_CTRL = (uint8_t)(0xC0u | CD32X_MUSIC_CHANNEL);
+    pcm_delay();
+    addr = (uint16_t)(((uint16_t)PCM_PLAY_HI << 8) | (uint16_t)PCM_PLAY_LO);
+#if CD32X_MUSIC_RING_BASE != 0
+    if (addr < (uint16_t)CD32X_MUSIC_RING_BASE) return 0u;
+#endif
+    addr = (uint16_t)(addr - (uint16_t)CD32X_MUSIC_RING_BASE);
+    if (addr >= (uint16_t)CD32X_MUSIC_RING_BYTES) {
+        addr = (uint16_t)(CD32X_MUSIC_RING_BYTES - 1u);
+    }
+    return addr;
+}
 
 static void music_write_ring(uint32_t n)
 {
@@ -342,6 +385,9 @@ void cd32x_music_start(uint32_t chunk_bytes)
     g_music_clip_pos = 0u;
     g_music_need_chunk = 0u;
     g_music_write_off = 0u;
+    g_music_have_play_off = 0u;
+    g_music_stale_play_reads = 0u;
+    g_music_last_play_off = 0u;
     music_write_ring(CD32X_MUSIC_RING_BYTES);                 /* prime whole ring */
     pcm_cpy(CD32X_MUSIC_MARKER_OFF, &marker, 1u, 0u);         /* loop-end marker */
 
@@ -379,6 +425,7 @@ void cd32x_music_supply_chunk(uint32_t chunk_bytes)
     g_music_clip_len = chunk_bytes;
     g_music_clip_pos = 0u;
     g_music_need_chunk = 0u;
+    g_music_stale_play_reads = 0u;
     cd32x_irq_unlock(sr);
 }
 
@@ -396,20 +443,59 @@ void cd32x_music_stop(void)
     g_music_playing = 0u;
     g_music_clip_len = 0u;
     g_music_need_chunk = 0u;
+    g_music_have_play_off = 0u;
+    g_music_stale_play_reads = 0u;
     cd32x_irq_unlock(sr);
 }
 
-/* Called from the Sub-CPU INT2/vblank handler (and once from cd32x_music_start
-   while INT2 is locked).  Advances the ring write head by the number of bytes
-   the chip has consumed since the last tick.  Running from the vblank IRQ keeps
-   the ring fed even while the main loop is blocked inside a BIOS load_file. */
-void cd32x_music_pump(void)
+static void music_pump_locked(void)
 {
     uint32_t now, delta;
+    uint16_t play, write, fill, target;
+    uint8_t use_closed_loop;
     if (!g_music_playing) return;
-    now = GET_TICKS;
-    delta = now - g_music_last_tick;
-    if (delta == 0u) return;
-    g_music_last_tick = now;
-    music_write_ring(delta * CD32X_MUSIC_TICK_BYTES);
+
+    play = music_read_play_off();
+    if (g_music_have_play_off && play == g_music_last_play_off) {
+        if (g_music_stale_play_reads < 255u) ++g_music_stale_play_reads;
+    } else {
+        g_music_have_play_off = 1u;
+        g_music_stale_play_reads = 0u;
+        g_music_last_play_off = play;
+    }
+
+    use_closed_loop = g_music_stale_play_reads < CD32X_MUSIC_STALE_READ_LIMIT;
+    if (use_closed_loop) {
+        write = g_music_write_off;
+        fill = (write >= play)
+            ? (uint16_t)(write - play)
+            : (uint16_t)(CD32X_MUSIC_RING_BYTES - (uint16_t)(play - write));
+        target = (uint16_t)(CD32X_MUSIC_RING_BYTES - CD32X_MUSIC_LEAD_GUARD);
+        if (fill < target) {
+            music_write_ring((uint32_t)(target - fill));
+        }
+    } else {
+        now = GET_TICKS;
+        delta = now - g_music_last_tick;
+        if (delta != 0u) {
+            music_write_ring(delta * CD32X_MUSIC_TICK_BYTES);
+        }
+    }
+    g_music_last_tick = GET_TICKS;
+}
+
+/* Called from the Sub-CPU INT2/vblank handler. */
+void cd32x_music_pump(void)
+{
+    music_pump_locked();
+}
+
+/* Called by main-context supervisor code immediately before a blocking CD read.
+   It tops the RF5C164 ring up while the source chunk is still available, giving
+   the card/portrait load the largest possible no-CD audio cushion. */
+void cd32x_music_prime_for_cd_read(void)
+{
+    uint16_t sr = cd32x_irq_lock();
+    music_pump_locked();
+    cd32x_irq_unlock(sr);
 }

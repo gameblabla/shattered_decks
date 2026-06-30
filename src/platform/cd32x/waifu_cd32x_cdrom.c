@@ -279,9 +279,11 @@ int waifu_cd32x_cdda_play(uint8_t track, uint8_t loop)
     return 0;
 }
 
-void waifu_cd32x_cdda_stop(void)
+int waifu_cd32x_cdda_stop(void)
 {
     if (cd32x_supervisor_request(CD32X_MD_CMD_CDDA_STOP, 0, 0, 1)) {
         g_cdrom.last_cdda_track = 0;
+        return 1;
     }
+    return 0;
 }

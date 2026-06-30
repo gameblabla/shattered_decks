@@ -41,6 +41,7 @@ void cd32x_music_supply_chunk(uint32_t chunk_bytes);
 int cd32x_music_needs_chunk(void);
 void cd32x_music_stop(void);
 void cd32x_music_pump(void);
+void cd32x_music_prime_for_cd_read(void);
 
 #ifdef __cplusplus
 }

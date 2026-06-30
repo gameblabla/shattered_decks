@@ -48,6 +48,8 @@ extern void cd32x_bios_cdda_stop(void);
 #define CD32X_CARD_SINGLE_COUNT                    WAIFU_CARD_COUNT
 #define CD32X_CARD_ONE_BYTES                       (WAIFU_CARD_W * WAIFU_CARD_H)
 #define CD32X_CARD_ONE_WORDS                       (CD32X_CARD_ONE_BYTES / 2)
+#define CD32X_CARD_FACE_CHUNK_BYTES                32768
+#define CD32X_CARD_FACE_CHUNK_COUNT                5
 #define CD32X_CARD_BIG_ONE_BYTES                   (WAIFU_BIG_W * WAIFU_BIG_H)
 #define CD32X_CARD_BIG_ONE_WORDS                   (CD32X_CARD_BIG_ONE_BYTES / 2)
 #define CD32X_CD_SECTOR_BYTES                      2048
@@ -93,11 +95,13 @@ static const Cd32xBlobInfo *cd32x_blob_info(int blob)
     return 0;
 }
 
-/* See cd32x_service_card_face_request: the CARD_FACES.BIN atlas stays resident
+/* See cd32x_service_card_face_request: one CARD_FACE_n.BIN chunk stays resident
    in the Word-RAM staging window between face requests.  Any other Word-RAM
-   write clobbers it, so those paths reset this so the next face reloads it. */
-static int g_face_atlas_resident = 0;
-static void cd32x_invalidate_face_atlas(void) { g_face_atlas_resident = 0; }
+   write clobbers it, so those paths reset this so the next face reloads only
+   the needed 32 KiB chunk instead of the whole 145 KiB face atlas. */
+static int g_face_chunk_resident = -1;
+static int8_t g_face_card_scratch[CD32X_CARD_ONE_BYTES];
+static void cd32x_invalidate_face_atlas(void) { g_face_chunk_resident = -1; }
 
 static int g_cd32x_cwd = -1;
 
@@ -267,26 +271,60 @@ static void cd32x_cdda_resume_after_read(void)
 
 static void cd32x_before_cd_read(void)
 {
-    /* The RF5C164 ring is now refilled from the Sub-CPU INT2/vblank handler, so
-       it keeps streaming through the blocking load_file below without the main
-       loop pumping it (pumping here too would race the INT2 pump on the shared
-       stream state).  Kept as a hook in case a pre-read action is needed later. */
+    /* Top the RF5C164 wave-RAM ring up before the BIOS owns the CD for a card or
+       portrait read.  The INT2 pump continues normal vblank refills, but this
+       gives blocking reads the largest possible buffered-audio cushion. */
+    cd32x_music_prime_for_cd_read();
 }
 
-/* The whole CARD_FACES.BIN atlas (~144 KiB) is loaded into the Word-RAM staging
-   window once and kept resident, so each face is served by a pure Word-RAM slide
-   + CPY with no CD access.  The old behaviour re-loaded the entire atlas through
-   the BIOS for every single face (a ~144 KiB read each time), which made every
-   first-time face render do a full-atlas CD load — the deck editor and the board
-   could spend many seconds loading faces one at a time.  Any other Word-RAM user
-   (big art, portraits, fade palette, status text, generic blob, SFX) overwrites
-   the staging window, so each of those calls cd32x_invalidate_face_atlas() and
-   the next face reloads the atlas once.  The resident path re-acquires Sub-CPU
-   ownership of the Word-RAM bank before the slide, mirroring the bank state a
-   fresh load_file would have left. */
+static void cd32x_card_face_chunk_filename(char *out, int chunk_id)
+{
+    out[0] = 'C'; out[1] = 'A'; out[2] = 'R'; out[3] = 'D';
+    out[4] = '_'; out[5] = 'F'; out[6] = 'A'; out[7] = 'C';
+    out[8] = 'E'; out[9] = '_';
+    out[10] = (char)('0' + chunk_id);
+    out[11] = '.'; out[12] = 'B'; out[13] = 'I'; out[14] = 'N'; out[15] = 0;
+}
+
+static int cd32x_load_card_face_chunk(int chunk_id, char *word_ram)
+{
+    char filename[16];
+    int rc;
+    if (chunk_id < 0 || chunk_id >= CD32X_CARD_FACE_CHUNK_COUNT) return -1;
+    if (g_face_chunk_resident == chunk_id) {
+        /* The previous CPY handed this Word-RAM bank to the MD/32X side; switch
+           it back so the Sub-CPU can read the resident chunk. */
+        switch_banks();
+        return 0;
+    }
+    if (g_face_chunk_resident >= 0) {
+        /* Same reason as above, but a new chunk must be loaded over it. */
+        switch_banks();
+    }
+    if (cd32x_set_asset_cwd() < 0) return -1;
+    cd32x_card_face_chunk_filename(filename, chunk_id);
+    cd32x_before_cd_read();
+    rc = load_file(filename, word_ram);
+    if (rc < 0) {
+        g_face_chunk_resident = -1;
+        return rc;
+    }
+    g_face_chunk_resident = chunk_id;     /* load_file leaves the bank Sub-CPU owned */
+    return rc;
+}
+
+/* Single-card face requests used to load CARD_FACES.BIN (~145 KiB) the first
+   time a hand/field card rendered.  That looked like a hang right before the
+   opening cards appeared.  Serve the card from the 32 KiB split chunk files
+   instead, with a scratch copy because the 2052-byte card records are not
+   aligned to the 32 KiB file boundary. */
 static void cd32x_service_card_face_request(int card_id, int words, char *word_ram)
 {
-    int byte_offset;
+    int global_offset;
+    int chunk_id;
+    int chunk_off;
+    int remaining;
+    int copied;
     int rc;
 
     if (card_id < 0 || card_id >= CD32X_CARD_SINGLE_COUNT || words != CD32X_CARD_ONE_WORDS) {
@@ -294,26 +332,33 @@ static void cd32x_service_card_face_request(int card_id, int words, char *word_r
         return;
     }
 
-    if (!g_face_atlas_resident) {
-        if (cd32x_set_asset_cwd() < 0) {
-            cd32x_fail_cd_request(-1);
-            return;
-        }
-        cd32x_before_cd_read();
-        rc = load_file((char *)"CARD_FACES.BIN", word_ram);
+    global_offset = card_id * CD32X_CARD_ONE_BYTES;
+    chunk_id = global_offset / CD32X_CARD_FACE_CHUNK_BYTES;
+    chunk_off = global_offset % CD32X_CARD_FACE_CHUNK_BYTES;
+    remaining = CD32X_CARD_ONE_BYTES;
+    copied = 0;
+
+    while (remaining > 0) {
+        int available = CD32X_CARD_FACE_CHUNK_BYTES - chunk_off;
+        int n = remaining < available ? remaining : available;
+        rc = cd32x_load_card_face_chunk(chunk_id, word_ram);
         if (rc < 0) {
             cd32x_fail_cd_request(rc);
             return;
         }
-        g_face_atlas_resident = 1;     /* load_file leaves the bank Sub-CPU owned */
-    } else {
-        /* The previous face request ended with the Main-CPU owning the bank for
-           its CPY; hand it back to the Sub-CPU so the slide can read the atlas. */
-        switch_banks();
+        if (chunk_off < 0 || chunk_off + n > rc) {
+            cd32x_fail_cd_request(-1);
+            return;
+        }
+        memcpy(g_face_card_scratch + copied, word_ram + chunk_off, n);
+        copied += n;
+        remaining -= n;
+        ++chunk_id;
+        chunk_off = 0;
+        if (remaining > 0) g_face_chunk_resident = -1;
     }
 
-    byte_offset = card_id * CD32X_CARD_ONE_BYTES;
-    memcpy(word_ram, word_ram + byte_offset, CD32X_CARD_ONE_BYTES);
+    memcpy(word_ram, g_face_card_scratch, CD32X_CARD_ONE_BYTES);
     switch_banks();
     rc = do_md_cmd2(MD_CMD_CPY_TO_32X, 0x200000, words);
     if (rc < 0) cd32x_fail_cd_request(rc);
