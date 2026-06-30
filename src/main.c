@@ -139,6 +139,17 @@
    edge and re-center the card hand in the extra horizontal space. */
 #define WAIFU_UI_EXTRA_W   (WAIFU_FM_WIDTH - 256)
 #define WAIFU_UI_CENTER_DX ((WAIFU_FM_WIDTH - 256) / 2)
+#define WAIFU_UI_EXTRA_H   (WAIFU_FM_HEIGHT - 240)
+#define WAIFU_UI_BOTTOM_Y(y) ((y) + WAIFU_UI_EXTRA_H)
+#define WAIFU_BOTTOM_INFO_Y (WAIFU_FM_HEIGHT - 35)
+#define WAIFU_HAND_Y_BASE (WAIFU_BOTTOM_INFO_Y - 51)
+#define WAIFU_BATTLE_CARD_W 120
+#define WAIFU_BATTLE_CARD_H 160
+#define WAIFU_BATTLE_CARD_X0 (WAIFU_UI_CENTER_DX + 4)
+#define WAIFU_BATTLE_CARD_X1 (WAIFU_UI_CENTER_DX + 132)
+#define WAIFU_BATTLE_CARD_Y (((WAIFU_FM_HEIGHT - 202) < 33) ? (WAIFU_FM_HEIGHT - 202) : 33)
+#define WAIFU_SINGLE_BATTLE_CARD_X ((WAIFU_FM_WIDTH - WAIFU_BATTLE_CARD_W) / 2)
+#define WAIFU_BIG_ART_128_X ((WAIFU_FM_WIDTH - 128) / 2)
 
 #if defined(WAIFU_FM_CD32X)
 /* CD32X renders the common 8bpp surface directly into the inactive 32X VDP
@@ -1720,7 +1731,7 @@ static void fmt_label_i32(char *dst, int dst_size, const char *label, int value)
 static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, int atk, int defv)
 {
     (void)mode;
-    int base = 205 + yoff;
+    int base = WAIFU_BOTTOM_INFO_Y + yoff;
     rect_fill(0, base, WAIFU_FM_WIDTH, 35, IDX_UI_TEAL);
     hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
     for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
@@ -1731,7 +1742,7 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
         draw_text(6, base+6, support_line, IDX_WHITE, IDX_BLACK);
         waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_type(card_id), 31);
         draw_text_small(6, base+21, support_line, IDX_WHITE, IDX_BLACK);
-        draw_text_small(188, base+21, "USE", IDX_GOLD_HI, IDX_BLACK);
+        draw_text_small(WAIFU_FM_WIDTH - 68, base+21, "USE", IDX_GOLD_HI, IDX_BLACK);
         return;
     }
     if (!is_monster_card(card_id)) return;
@@ -1742,10 +1753,10 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     if (atk < 0) atk = (int)waifu_card_atk[card_id];
     if (defv < 0) defv = (int)waifu_card_def[card_id];
     fmt_prefixed_i32(line, (int)sizeof(line), 'x', atk);
-    draw_text_small(215, base+15, line, stat_delta_color(atk - (int)waifu_card_atk[card_id]), IDX_BLACK);
+    draw_text_small(WAIFU_FM_WIDTH - 41, base+15, line, stat_delta_color(atk - (int)waifu_card_atk[card_id]), IDX_BLACK);
     fmt_i32_dec(line, (int)sizeof(line), defv);
-    draw_text_small(221, base+26, line, stat_delta_color(defv - (int)waifu_card_def[card_id]), IDX_BLACK);
-    rect_outline(215,base+25,6,6,IDX_WHITE);
+    draw_text_small(WAIFU_FM_WIDTH - 35, base+26, line, stat_delta_color(defv - (int)waifu_card_def[card_id]), IDX_BLACK);
+    rect_outline(WAIFU_FM_WIDTH - 41,base+25,6,6,IDX_WHITE);
 }
 
 static void draw_bottom_info_offset(int card_id, const char *mode, int yoff)
@@ -2623,7 +2634,7 @@ static void draw_red_cursor(int x, int y, int w, int h)
 }
 
 static int hand_final_x(int i) { return WAIFU_UI_CENTER_DX + 12 + i * 47; }
-static int hand_y(void) { return 154 + g_player_hand_offset_y; }
+static int hand_y(void) { return WAIFU_HAND_Y_BASE + g_player_hand_offset_y; }
 
 static void draw_player_hand(int f, int selected)
 {
@@ -2659,7 +2670,7 @@ static void draw_player_hand_draw_sequence(int f, int start, int selected)
 
     for (int i = 0; i < 5; ++i) {
         int x0 = hand_final_x(i);
-        int y = 154 + yoff;
+        int y = WAIFU_HAND_Y_BASE + yoff;
         int x = x0;
         int visible = 1;
         for (int d = 0; d < 2; ++d) {
@@ -2683,7 +2694,7 @@ static void draw_enemy_hand(int f, int selected, int reveal_one)
     (void)reveal_one;
     for (int i = 0; i < 5; ++i) {
         int x = WAIFU_UI_CENTER_DX + 12 + i * 48;
-        int y = 154 + g_enemy_hand_offset_y;
+        int y = WAIFU_HAND_Y_BASE + g_enemy_hand_offset_y;
         if (i == g_enemy_hide_index) continue;
         if (((f >= 256 && f < 278) || (f >= 675 && f < 705)) && i == selected) continue;
         PROFILE_HAND_CARD_DRAW(draw_card_sprite(0, x, y, 36, 49, 1));
@@ -2703,7 +2714,7 @@ static void draw_enemy_hand_draw_sequence(int f, int start, int selected)
         int32_t t = q8_smooth_ratio(f - (start + i * 6), 20);
         if (t <= 0) continue;
         int x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
-        int y = 154 + yoff;
+        int y = WAIFU_HAND_Y_BASE + yoff;
         PROFILE_HAND_CARD_DRAW(draw_card_sprite(0, x, y, 36, 49, 1));
         if (f >= start + 42 && i == selected) draw_red_cursor(x, y, 36, 49);
     }
@@ -3227,7 +3238,7 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
        center, glides over the selected slot, then snaps down with a landing
        flash. The actual field state is committed only after this completes. */
     int sx = hand_final_x(hand_index);
-    int sy = 154 + ((target_row <= 1) ? g_enemy_hand_offset_y : g_player_hand_offset_y) - 2;
+    int sy = WAIFU_HAND_Y_BASE + ((target_row <= 1) ? g_enemy_hand_offset_y : g_player_hand_offset_y) - 2;
     int midx = 104, midy = 82;
     int midw = 48, midh = 66;
 
@@ -3336,7 +3347,7 @@ static void draw_flames(int x, int y, int w, int h, int frame)
 static void draw_disc(int cx, int cy, int r, uint8_t c);
 static void draw_big_battle_card_burning(int id, int x, int y, int back, int burn_frame)
 {
-    const int w = 120, h = 160;
+    const int w = WAIFU_BATTLE_CARD_W, h = WAIFU_BATTLE_CARD_H;
     if (burn_frame < 0) burn_frame = 0;
 
     /* The card must visibly disappear into flames, then stop. Earlier builds
@@ -3567,7 +3578,8 @@ static void draw_battle_cutin_event_ex(int f, int start,
     }
 
     int local = local0 - WAIFU_BATTLE_PRELUDE_FRAMES;
-    const int ax = 4, ay = 33, dx = 132, dy = 33;
+    const int ax = WAIFU_BATTLE_CARD_X0, ay = WAIFU_BATTLE_CARD_Y;
+    const int dx = WAIFU_BATTLE_CARD_X1, dy = WAIFU_BATTLE_CARD_Y;
     const int slide_dur = WAIFU_BATTLE_SLIDE_FRAMES;
     const int atk_flip_start = slide_dur;
     const int flip_dur = WAIFU_BATTLE_FLIP_FRAMES;
@@ -3593,8 +3605,8 @@ static void draw_battle_cutin_event_ex(int f, int start,
 
     if (local < slide_dur) {
         int32_t e = q8_smooth_ratio(local, slide_dur);
-        int ax0 = lerp_i(-128, ax, e);
-        int dx0 = lerp_i(264, dx, e);
+        int ax0 = lerp_i(-WAIFU_BATTLE_CARD_W, ax, e);
+        int dx0 = lerp_i(WAIFU_FM_WIDTH + 8, dx, e);
         draw_cutin_battle_card(atk_id, ax0, ay, atk_back, 1);
         draw_cutin_battle_card(def_id, dx0, dy, def_back, 0);
     } else if (atk_back && local < def_flip_start) {
@@ -3702,10 +3714,10 @@ static void draw_battle_cutin_event_ex(int f, int start,
         const char *name = is_monster_card(atk_id) ? waifu_card_names[atk_id] : (is_support_card(atk_id) ? support_card_name(atk_id) : "???");
         draw_wrapped_text_small(4, 4, name, 19, IDX_WHITE, IDX_BLACK);
     }
-    rect_fill(118, 198, 138, 42, IDX_BLACK);
+    rect_fill(WAIFU_FM_WIDTH - 138, WAIFU_FM_HEIGHT - 42, 138, 42, IDX_BLACK);
     {
         const char *name = is_monster_card(def_id) ? waifu_card_names[def_id] : (is_support_card(def_id) ? support_card_name(def_id) : "???");
-        draw_wrapped_text_small(122, 199, name, 20, IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small(WAIFU_FM_WIDTH - 134, WAIFU_FM_HEIGHT - 41, name, 20, IDX_WHITE, IDX_BLACK);
     }
 }
 
@@ -3856,11 +3868,12 @@ static char battle_rank_from_stats(int won, int lp_left, int cards_used, int tur
 
 static void draw_tally_screen(int f, int won)
 {
+    int ox = WAIFU_UI_CENTER_DX;
     (void)f;
     clear_screen(IDX_BLACK);
-    draw_panel_rect(31, 24, 194, 178, IDX_UI_DARK);
+    draw_panel_rect(ox + 31, 24, 194, 178, IDX_UI_DARK);
     draw_centered_text_scaled(37, won ? "DUEL VICTORY" : "DUEL DEFEAT", 1, won ? IDX_GOLD_HI : IDX_RED, IDX_BLACK);
-    hline(45, 210, 56, IDX_UI_LIGHT);
+    hline(ox + 45, ox + 210, 56, IDX_UI_LIGHT);
 
     int cards_used = 4;
     int turns = 3;
@@ -3870,24 +3883,24 @@ static void draw_tally_screen(int f, int won)
     char rank = battle_rank_from_stats(won, lp_left, cards_used, turns, &score);
     char line[64];
 
-    draw_text(55, 74, "RESULT", IDX_WHITE, IDX_BLACK);
-    draw_text(150, 74, won ? "WIN" : "LOSE", won ? IDX_GOLD_HI : IDX_RED, IDX_BLACK);
+    draw_text(ox + 55, 74, "RESULT", IDX_WHITE, IDX_BLACK);
+    draw_text(ox + 150, 74, won ? "WIN" : "LOSE", won ? IDX_GOLD_HI : IDX_RED, IDX_BLACK);
     fmt_i32_dec(line, (int)sizeof(line), lp_left);
-    draw_text(55, 94, "LP LEFT", IDX_WHITE, IDX_BLACK);
-    draw_text(160, 94, line, IDX_GOLD_HI, IDX_BLACK);
+    draw_text(ox + 55, 94, "LP LEFT", IDX_WHITE, IDX_BLACK);
+    draw_text(ox + 160, 94, line, IDX_GOLD_HI, IDX_BLACK);
     fmt_i32_dec(line, (int)sizeof(line), cards_used);
-    draw_text(55, 112, "CARDS USED", IDX_WHITE, IDX_BLACK);
-    draw_text(176, 112, line, IDX_GOLD_HI, IDX_BLACK);
+    draw_text(ox + 55, 112, "CARDS USED", IDX_WHITE, IDX_BLACK);
+    draw_text(ox + 176, 112, line, IDX_GOLD_HI, IDX_BLACK);
     fmt_i32_dec(line, (int)sizeof(line), deck_left);
-    draw_text(55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK);
-    draw_text(176, 130, line, IDX_GOLD_HI, IDX_BLACK);
+    draw_text(ox + 55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK);
+    draw_text(ox + 176, 130, line, IDX_GOLD_HI, IDX_BLACK);
     fmt_i32_dec(line, (int)sizeof(line), score);
-    draw_text(55, 148, "SCORE", IDX_WHITE, IDX_BLACK);
-    draw_text(152, 148, line, IDX_GOLD_HI, IDX_BLACK);
+    draw_text(ox + 55, 148, "SCORE", IDX_WHITE, IDX_BLACK);
+    draw_text(ox + 152, 148, line, IDX_GOLD_HI, IDX_BLACK);
 
     waifu_str_copy(line, (int)sizeof(line), "RANK "); waifu_str_cat_char(line, (int)sizeof(line), rank);
     draw_centered_text_scaled(170, line, 2, IDX_GOLD_HI, IDX_BLACK);
-    draw_text_small(50, 210, "PRESS RUN: RETURN TO TITLE", IDX_WHITE, IDX_BLACK);
+    draw_text_small(ox + 50, WAIFU_UI_BOTTOM_Y(210), "PRESS RUN: RETURN TO TITLE", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_victory_screen(int f)
@@ -4197,11 +4210,11 @@ static void draw_card_preview_screen(int f)
     int32_t vis = q8_mul(in_t, Q8_ONE - out_t);
     if (vis <= 0) return;
 
-    int card_x = lerp_i(-126, 9, vis);
-    int card_y = 36;
+    int card_x = lerp_i(-126, WAIFU_UI_CENTER_DX + 9, vis);
+    int card_y = WAIFU_BATTLE_CARD_Y;
     draw_big_battle_card(id, card_x, card_y, 0);
 
-    int tx = 136;
+    int tx = WAIFU_UI_CENTER_DX + 136;
     int y = 24;
     draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
     draw_wrapped_text_small(tx, y, waifu_card_names[id], 20, IDX_WHITE, IDX_BLACK); y += 24;
@@ -4215,10 +4228,10 @@ static void draw_card_preview_screen(int f)
     draw_wrapped_text_small(tx, y, waifu_card_desc[id], 20, IDX_WHITE, IDX_BLACK); y += 54;
 
     fmt_label_u32(line, (int)sizeof(line), "ATK", (unsigned)waifu_card_atk[id]);
-    draw_text_small(tx, 197, line, IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small(tx, WAIFU_UI_BOTTOM_Y(197), line, IDX_GOLD_HI, IDX_BLACK);
     fmt_label_u32(line, (int)sizeof(line), "DEF", (unsigned)waifu_card_def[id]);
-    draw_text_small(tx, 209, line, IDX_GOLD_HI, IDX_BLACK);
-    if (((local / 16) & 1) == 0) draw_text_small(74, 223, "B: BACK", IDX_WHITE, IDX_BLACK);
+    draw_text_small(tx, WAIFU_UI_BOTTOM_Y(209), line, IDX_GOLD_HI, IDX_BLACK);
+    if (((local / 16) & 1) == 0) draw_text_small((WAIFU_FM_WIDTH - 56) / 2, WAIFU_FM_HEIGHT - 17, "B: BACK", IDX_WHITE, IDX_BLACK);
 
     if (local < 24) apply_black_dither_fade(vis);
     else if (local > 96) apply_black_dither_fade(Q8_ONE - out_t);
@@ -5637,7 +5650,7 @@ static void draw_bottom_info_field(int owner, int slot, const char *mode)
 static void draw_bottom_empty_field(const char *mode)
 {
     char line[48];
-    int base = 205;
+    int base = WAIFU_BOTTOM_INFO_Y;
     rect_fill(0, base, WAIFU_FM_WIDTH, 35, IDX_UI_TEAL);
     hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
     for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
@@ -5649,13 +5662,13 @@ static void draw_bottom_empty_field(const char *mode)
 /* Hidden info for a face-down monster: never reveal name / attribute / stats. */
 static void draw_bottom_info_facedown(const char *mode)
 {
-    int base = 205;
+    int base = WAIFU_BOTTOM_INFO_Y;
     rect_fill(0, base, WAIFU_FM_WIDTH, 35, IDX_UI_TEAL);
     hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
     for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
     draw_text(6, base+6, "SET MONSTER", IDX_WHITE, IDX_BLACK);
     draw_text_small(6, base+21, "FACE-DOWN / HIDDEN", IDX_WHITE, IDX_BLACK);
-    if (mode) draw_text_small(188, base+21, mode, IDX_GOLD_HI, IDX_BLACK);
+    if (mode) draw_text_small(WAIFU_FM_WIDTH - 68, base+21, mode, IDX_GOLD_HI, IDX_BLACK);
 }
 
 static void draw_bottom_info_top_selector(const char *mode)
@@ -6944,7 +6957,15 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_TITLE_TO_MENU:
     case WAIFU_I_MENU:
     case WAIFU_I_MENU_TO_STORY:
+#ifdef WAIFU_FM_CD32X
     case WAIFU_I_MENU_TO_BATTLE:
+        /* CD32X must have title CD-DA fully stopped before battle card assets
+           start loading.  Stopping during the short black fade gives the
+           supervisor multiple frames to accept/retry the stop command. */
+        return WAIFU_MUSIC_NONE;
+#else
+    case WAIFU_I_MENU_TO_BATTLE:
+#endif
     case WAIFU_I_MENU_TO_LOAD:
 #ifdef WAIFU_FM_PCFX
     case WAIFU_I_STORY_LOAD_DEVICE:
@@ -7235,7 +7256,7 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
 {
     PROFILE_HAND_BEGIN();
     int i;
-    int y = 154 + yoff;
+    int y = WAIFU_HAND_Y_BASE + yoff;
     for (i = 0; i < I_HAND; ++i) {
         int x0 = hand_final_x(i);
         int x = x0;
@@ -7282,7 +7303,7 @@ static void draw_interactive_com_hand(int f, int selected, int yoff)
        COM's hand at the top of the screen while also using a COM-facing camera,
        which made the opponent turn look upside-down and unlike the headless
        scripted presentation. */
-    int y = 154 + yoff;
+    int y = WAIFU_HAND_Y_BASE + yoff;
     for (i = 0; i < I_HAND; ++i) {
         int x0 = hand_final_x(i);
         int x = x0;
@@ -7484,24 +7505,27 @@ static void draw_preview_stat_line(int x, int y, const char *label, unsigned val
 
 static void render_interactive_card_preview_static(int card_id)
 {
-    int tx = 136;
-    int maxw = 112;
+    int art_x = WAIFU_UI_CENTER_DX + 8;
+    int tx = art_x + 128;
+    int maxw = WAIFU_FM_WIDTH - tx - 10;
     int y = 17;
     int lines;
     char line[128];
     clear_screen(IDX_BLACK);
 
-    draw_panel_rect(2, 10, 252, 218, IDX_UI_DARK);
+    if (maxw < 96) maxw = 96;
+    draw_panel_rect(2, 10, WAIFU_FM_WIDTH - 4, WAIFU_FM_HEIGHT - 22, IDX_UI_DARK);
 
     if (is_support_card(card_id)) {
-        tx = 140;
-        maxw = 108;
+        tx = art_x + 132;
+        maxw = WAIFU_FM_WIDTH - tx - 10;
+        if (maxw < 96) maxw = 96;
         {
             int trap = is_trap_support_card(card_id);
-            rect_fill(7, 36, 128, 160, IDX_BLACK);
-            draw_support_big_art_scaled(7, 40, 128, 128);
-            rect_outline(5, 34, 132, 164, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
-            rect_outline(6, 35, 130, 162, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
+            rect_fill(art_x - 1, 36, 128, 160, IDX_BLACK);
+            draw_support_big_art_scaled(art_x - 1, 40, 128, 128);
+            rect_outline(art_x - 3, 34, 132, 164, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
+            rect_outline(art_x - 2, 35, 130, 162, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
         }
         draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
         lines = draw_wrapped_text_small_box(tx, y, maxw, 3, 10, support_card_name(card_id), IDX_WHITE, IDX_BLACK);
@@ -7515,7 +7539,7 @@ static void render_interactive_card_preview_static(int card_id)
     }
 
     if (!is_monster_card(card_id)) return;
-    draw_big_battle_card(card_id, 8, 36, 0);
+    draw_big_battle_card(card_id, art_x, WAIFU_BATTLE_CARD_Y, 0);
 
     draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
     lines = draw_wrapped_text_small_box(tx, y, maxw, 4, 10, waifu_card_names[card_id], IDX_WHITE, IDX_BLACK);
@@ -7530,7 +7554,7 @@ static void render_interactive_card_preview_static(int card_id)
     lines = draw_wrapped_text_small_box(tx, y, maxw, 5, 10, waifu_card_desc[card_id], IDX_WHITE, IDX_BLACK);
     y += lines * 10 + 7;
 
-    if (y < 194) y = 194;
+    if (y < WAIFU_UI_BOTTOM_Y(194)) y = WAIFU_UI_BOTTOM_Y(194);
     draw_preview_stat_line(tx, y, "ATK", (unsigned)waifu_card_atk[card_id]);
     draw_preview_stat_line(tx, y + 12, "DEF", (unsigned)waifu_card_def[card_id]);
 }
@@ -7556,7 +7580,7 @@ static void draw_interactive_card_preview(int card_id, int f)
 #else
     render_interactive_card_preview_static(card_id);
 #endif
-    if (((f / 16) & 1) == 0) draw_text_small(74, 218, "B: BACK", IDX_WHITE, IDX_BLACK);
+    if (((f / 16) & 1) == 0) draw_text_small((WAIFU_FM_WIDTH - 56) / 2, WAIFU_FM_HEIGHT - 17, "B: BACK", IDX_WHITE, IDX_BLACK);
 }
 
 
@@ -7922,7 +7946,7 @@ static void draw_com_thunder_anim(void)
 {
     int f = g_b_phase_frame;
     int intro = thunder_intro_frames();
-    int card_x = 64;
+    int card_x = WAIFU_BIG_ART_128_X;
     int card_y = 35;
     clear_screen(IDX_BLACK);
 
@@ -7935,8 +7959,8 @@ static void draw_com_thunder_anim(void)
         int fade_start = WAIFU_THUNDER_CARD_FRAMES;
         draw_support_big_art_scaled(card_x, card_y, 128, 128);
         if (is_trap) rect_outline(card_x - 2, card_y - 2, 132, 132, IDX_TRAP_FRAME);
-        draw_centered_text(174, title, title_col, IDX_BLACK);
-        draw_wrapped_text_small(54, 194,
+        draw_centered_text(WAIFU_UI_BOTTOM_Y(174), title, title_col, IDX_BLACK);
+        draw_wrapped_text_small((WAIFU_FM_WIDTH - 200) / 2, WAIFU_UI_BOTTOM_Y(194),
                                 is_trap ? "TRAP: DESTROY ATTACKER" :
                                 (g_b_thunder_owner == 0 ? "ALL COM MONSTERS" : "ALL PLAYER MONSTERS"),
                                 25, IDX_WHITE, IDX_BLACK);
@@ -7957,7 +7981,7 @@ static void draw_com_thunder_anim(void)
             if (seg == 0) waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
             draw_centered_text(8, title, title_col, IDX_BLACK);
             if (seg < BATTLE_BURN_DUR) {
-                draw_big_battle_card_burning(id, 68, 38, back, seg);
+                draw_big_battle_card_burning(id, WAIFU_SINGLE_BATTLE_CARD_X, WAIFU_BATTLE_CARD_Y, back, seg);
             }
         }
     }
@@ -8030,8 +8054,8 @@ static void draw_player_one_shot_support_anim(void)
     int f = g_b_phase_frame;
     int reveal = WAIFU_SUPPORT_REVEAL_FRAMES;
     clear_screen(IDX_BLACK);
-    draw_support_big_art_112(72, 32);
-    draw_centered_text(154, support_card_name(g_b_support_card), IDX_GOLD_HI, IDX_BLACK);
+    draw_support_big_art_112((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2, WAIFU_UI_BOTTOM_Y(32));
+    draw_centered_text(WAIFU_UI_BOTTOM_Y(154), support_card_name(g_b_support_card), IDX_GOLD_HI, IDX_BLACK);
     /* The card and its effect text share one scene: keep the card fully visible
        the whole time and let the text appear over it.  Do not dip to black in
        between -- a fade belongs only on the transition to the next scene (e.g.
@@ -8040,8 +8064,8 @@ static void draw_player_one_shot_support_anim(void)
         return;
     }
     if (g_b_support_kind == 2) {
-        draw_centered_text(184, "DRAW 1 CARD", IDX_WHITE, IDX_BLACK);
-        draw_centered_text(205, "FROM YOUR DECK", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(WAIFU_UI_BOTTOM_Y(184), "DRAW 1 CARD", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(WAIFU_UI_BOTTOM_Y(205), "FROM YOUR DECK", IDX_WHITE, IDX_BLACK);
     } else if (g_b_support_kind == 3) {
         char line[48];
         int32_t t = q8_smooth_ratio(f - reveal, WAIFU_SUPPORT_TEXT_FRAMES);
@@ -8051,8 +8075,8 @@ static void draw_player_one_shot_support_anim(void)
         waifu_str_cat_i32(line, (int)sizeof(line), g_b_support_lp_from);
         waifu_str_cat(line, (int)sizeof(line), " > ");
         waifu_str_cat_i32(line, (int)sizeof(line), lp);
-        draw_centered_text(188, line, IDX_GREEN, IDX_BLACK);
-        draw_centered_text(207, "LIFE RESTORED", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(WAIFU_UI_BOTTOM_Y(188), line, IDX_GREEN, IDX_BLACK);
+        draw_centered_text(WAIFU_UI_BOTTOM_Y(207), "LIFE RESTORED", IDX_WHITE, IDX_BLACK);
     }
 }
 
@@ -8109,10 +8133,10 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     /* Match the normal monster-battle card lanes. The previous direct-attack
        lanes were shifted inward, so the attacker appeared too far right/left
        before and after the lunge. */
-    int ax = (g_b_battle_atk_owner == 0) ? 4 : 132;
-    int ay = 36;
-    int target_x = (g_b_battle_atk_owner == 0) ? 154 : 28;
-    int target_y = 36;
+    int ax = (g_b_battle_atk_owner == 0) ? WAIFU_BATTLE_CARD_X0 : WAIFU_BATTLE_CARD_X1;
+    int ay = WAIFU_BATTLE_CARD_Y;
+    int target_x = (g_b_battle_atk_owner == 0) ? (WAIFU_BATTLE_CARD_X1 + 22) : (WAIFU_BATTLE_CARD_X0 + 24);
+    int target_y = WAIFU_BATTLE_CARD_Y;
     int card_x = ax;
     clear_screen(IDX_BLACK);
     if (local < WAIFU_BATTLE_PRELUDE_FRAMES) {
@@ -8134,7 +8158,7 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     }
     if (local < WAIFU_DIRECT_SLIDE_FRAMES) {
         int32_t e = q8_smooth_ratio(local, WAIFU_DIRECT_SLIDE_FRAMES);
-        card_x = lerp_i((g_b_battle_atk_owner == 0) ? -128 : 264, ax, e);
+        card_x = lerp_i((g_b_battle_atk_owner == 0) ? -WAIFU_BATTLE_CARD_W : WAIFU_FM_WIDTH + 8, ax, e);
     } else if (local < WAIFU_DIRECT_SLIDE_FRAMES + WAIFU_DIRECT_LUNGE_FRAMES) {
         int32_t t = q8_ratio(local - WAIFU_DIRECT_SLIDE_FRAMES, WAIFU_DIRECT_LUNGE_FRAMES);
         int32_t lunge = (t < Q8_FRAC(62,100)) ? q8_smoothstep(q8_div(t, Q8_FRAC(62,100))) : Q8_ONE - q8_smoothstep(q8_div(t - Q8_FRAC(62,100), Q8_FRAC(38,100)));
@@ -8277,21 +8301,22 @@ static void draw_interactive_result(void)
 static void draw_interactive_tally(void)
 {
     int won = g_b_result >= 0;
+    int ox = WAIFU_UI_CENTER_DX;
     clear_screen(IDX_BLACK);
-    draw_panel_rect(31, 24, 194, 178, IDX_UI_DARK);
+    draw_panel_rect(ox + 31, 24, 194, 178, IDX_UI_DARK);
     draw_centered_text_scaled(37, won ? "DUEL VICTORY" : "DUEL DEFEAT", 1, won ? IDX_GOLD_HI : IDX_RED, IDX_BLACK);
-    hline(45, 210, 56, IDX_UI_LIGHT);
+    hline(ox + 45, ox + 210, 56, IDX_UI_LIGHT);
     int score = 0;
     char rank = battle_rank_from_stats(won, won ? g_you_lp : 0, g_b_cards_used, g_b_turns, &score);
     char line[64];
-    draw_text(55, 74, "RESULT", IDX_WHITE, IDX_BLACK);
-    draw_text(150, 74, won ? "WIN" : "LOSE", won ? IDX_GOLD_HI : IDX_RED, IDX_BLACK);
-    fmt_i32_dec(line, (int)sizeof(line), won ? g_you_lp : 0); draw_text(55, 94, "LP LEFT", IDX_WHITE, IDX_BLACK); draw_text(160, 94, line, IDX_GOLD_HI, IDX_BLACK);
-    fmt_i32_dec(line, (int)sizeof(line), g_b_cards_used); draw_text(55, 112, "CARDS USED", IDX_WHITE, IDX_BLACK); draw_text(176, 112, line, IDX_GOLD_HI, IDX_BLACK);
-    fmt_i32_dec(line, (int)sizeof(line), g_i_player_deck_left); draw_text(55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK); draw_text(176, 130, line, IDX_GOLD_HI, IDX_BLACK);
-    fmt_i32_dec(line, (int)sizeof(line), score); draw_text(55, 148, "SCORE", IDX_WHITE, IDX_BLACK); draw_text(152, 148, line, IDX_GOLD_HI, IDX_BLACK);
+    draw_text(ox + 55, 74, "RESULT", IDX_WHITE, IDX_BLACK);
+    draw_text(ox + 150, 74, won ? "WIN" : "LOSE", won ? IDX_GOLD_HI : IDX_RED, IDX_BLACK);
+    fmt_i32_dec(line, (int)sizeof(line), won ? g_you_lp : 0); draw_text(ox + 55, 94, "LP LEFT", IDX_WHITE, IDX_BLACK); draw_text(ox + 160, 94, line, IDX_GOLD_HI, IDX_BLACK);
+    fmt_i32_dec(line, (int)sizeof(line), g_b_cards_used); draw_text(ox + 55, 112, "CARDS USED", IDX_WHITE, IDX_BLACK); draw_text(ox + 176, 112, line, IDX_GOLD_HI, IDX_BLACK);
+    fmt_i32_dec(line, (int)sizeof(line), g_i_player_deck_left); draw_text(ox + 55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK); draw_text(ox + 176, 130, line, IDX_GOLD_HI, IDX_BLACK);
+    fmt_i32_dec(line, (int)sizeof(line), score); draw_text(ox + 55, 148, "SCORE", IDX_WHITE, IDX_BLACK); draw_text(ox + 152, 148, line, IDX_GOLD_HI, IDX_BLACK);
     waifu_str_copy(line, (int)sizeof(line), "RANK "); waifu_str_cat_char(line, (int)sizeof(line), rank); draw_centered_text_scaled(170, line, 2, IDX_GOLD_HI, IDX_BLACK);
-    draw_text_small(50, 210, (g_story_battle_active && won) ? "RUN: CLAIM REWARD" :
+    draw_text_small(WAIFU_UI_CENTER_DX + 50, WAIFU_UI_BOTTOM_Y(210), (g_story_battle_active && won) ? "RUN: CLAIM REWARD" :
                               (g_story_battle_active ? "RUN: RETURN TO MAP" : "RUN: RETURN TO TITLE"),
                     IDX_WHITE, IDX_BLACK);
 }
@@ -8309,9 +8334,9 @@ static void draw_interactive_reward(void)
     int flipping = is_monster_card(card) && g_b_phase_frame < flip_dur;
     waifu_fm_use_common_palette();
     clear_screen(IDX_BLACK);
-    draw_panel_rect(31, 18, 194, 200, IDX_UI_DARK);
+    draw_panel_rect(WAIFU_UI_CENTER_DX + 31, 18, 194, WAIFU_FM_HEIGHT - 40, IDX_UI_DARK);
     draw_centered_text_scaled(26, "CARD WON!", 1, IDX_GOLD_HI, IDX_BLACK);
-    hline(45, 210, 44, IDX_UI_LIGHT);
+    hline(WAIFU_UI_CENTER_DX + 45, WAIFU_UI_CENTER_DX + 210, 44, IDX_UI_LIGHT);
 
 #if defined(WAIFU_FM_PCFX)
     /* Static held screen: render big art through the framebuffer, not the
@@ -8319,14 +8344,14 @@ static void draw_interactive_reward(void)
     ++g_big_art_direct_note_suppressed;
 #endif
     if (flipping) {
-        draw_big_battle_card_flip(card, 68, 46, g_b_phase_frame, flip_dur);
+        draw_big_battle_card_flip(card, WAIFU_SINGLE_BATTLE_CARD_X, WAIFU_BATTLE_CARD_Y, g_b_phase_frame, flip_dur);
     } else if (is_support_card(card)) {
         int trap = is_trap_support_card(card);
-        draw_support_big_art_112(72, 54);
-        rect_outline(71, 53, 114, 114, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
-        rect_outline(72, 54, 112, 112, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
+        draw_support_big_art_112((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2, WAIFU_UI_BOTTOM_Y(54));
+        rect_outline((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2 - 1, WAIFU_UI_BOTTOM_Y(53), 114, 114, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
+        rect_outline((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2, WAIFU_UI_BOTTOM_Y(54), 112, 112, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
     } else if (is_monster_card(card)) {
-        draw_card_big_art_112(card, 72, 54);
+        draw_card_big_art_112(card, (WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2, WAIFU_UI_BOTTOM_Y(54));
     }
 #if defined(WAIFU_FM_PCFX)
     --g_big_art_direct_note_suppressed;
@@ -8336,9 +8361,9 @@ static void draw_interactive_reward(void)
 
     name = is_support_card(card) ? support_card_name(card)
          : (is_monster_card(card) ? waifu_card_names[card] : "???");
-    draw_centered_text(174, name, IDX_WHITE, IDX_BLACK);
-    draw_centered_text(191, "ADDED TO STORAGE", IDX_GOLD_HI, IDX_BLACK);
-    draw_text_small(88, 202, "RUN: CONTINUE", IDX_WHITE, IDX_BLACK);
+    draw_centered_text(WAIFU_UI_BOTTOM_Y(174), name, IDX_WHITE, IDX_BLACK);
+    draw_centered_text(WAIFU_UI_BOTTOM_Y(191), "ADDED TO STORAGE", IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small((WAIFU_FM_WIDTH - 13 * 8) / 2, WAIFU_UI_BOTTOM_Y(202), "RUN: CONTINUE", IDX_WHITE, IDX_BLACK);
 }
 
 static int draw_replacement_cards_to_hand(void)
@@ -8432,7 +8457,7 @@ static void draw_player_hand_turn_draw(int f, int selected)
     for (i = 0; i < I_HAND; ++i) {
         int x0 = hand_final_x(i);
         int x = x0;
-        int y = 154;
+        int y = WAIFU_HAND_Y_BASE;
         int d = is_recent_draw_slot(i);
         if (g_i_player_used[i]) continue;
         if (d >= 0) {
@@ -8442,7 +8467,7 @@ static void draw_player_hand_turn_draw(int f, int selected)
             int32_t t = q8_smooth_ratio(f - start, dur);
             x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
         } else {
-            y = 154 + rise;
+            y = WAIFU_HAND_Y_BASE + rise;
         }
         PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
                                  is_monster_card(g_i_player_hand[i]) && player_hand_monster_blocked()));
@@ -8595,7 +8620,7 @@ static void draw_player_equip_target(void)
     }
     draw_interactive_base(cam);
     draw_top_selector_cursor(cam);
-    draw_text_small(70, 191, "SELECT EQUIP TARGET", IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small((WAIFU_FM_WIDTH - 19 * 6) / 2, WAIFU_UI_BOTTOM_Y(191), "SELECT EQUIP TARGET", IDX_GOLD_HI, IDX_BLACK);
     if (top_selector_player_monster_slot() >= 0) draw_bottom_info_top_selector("EQUIP");
     else draw_bottom_info(g_i_player_hand[g_b_equip_hand], "EQUIP");
 }
@@ -8617,8 +8642,8 @@ static void draw_player_equip_anim(void)
     int32_t merge_t = q8_smooth_ratio(f - merge_start, merge_frames);
     int card_w = WAIFU_CARD_W;
     int card_h = WAIFU_CARD_H;
-    int target_x = 68;
-    int target_y = 22;
+    int target_x = WAIFU_SINGLE_BATTLE_CARD_X;
+    int target_y = WAIFU_BATTLE_CARD_Y;
     int target_cx = target_x + 60;
     int target_cy = target_y + 80;
     int card_x = lerp_i(26, target_cx - card_w / 2, merge_t);
@@ -8647,8 +8672,8 @@ static void draw_player_equip_anim(void)
     if (f >= (WAIFU_EQUIP_ANIM_FRAMES * 23) / 30 && f < (WAIFU_EQUIP_ANIM_FRAMES * 9) / 10) rect_fill(0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
     if ((f & 4) == 0) rect_outline(target_x - 4, target_y - 4, 128, 168, IDX_WHITE);
     draw_centered_text(9, "EQUIP POWER", IDX_GOLD_HI, IDX_BLACK);
-    draw_equip_stat_line_centered(190, "ATK", g_b_equip_base_atk, atk_to, t);
-    draw_equip_stat_line_centered(208, "DEF", g_b_equip_base_def, def_to, t);
+    draw_equip_stat_line_centered(WAIFU_UI_BOTTOM_Y(190), "ATK", g_b_equip_base_atk, atk_to, t);
+    draw_equip_stat_line_centered(WAIFU_UI_BOTTOM_Y(208), "DEF", g_b_equip_base_def, def_to, t);
 }
 
 static void reset_player_fusion_anim(void)
@@ -8774,7 +8799,7 @@ static void draw_player_fusion_anim(void)
     if (fusion_flash_end <= fusion_flash_start) fusion_flash_end = fusion_flash_start + 4;
     int32_t merge_t = q8_smooth_ratio(f, fusion_merge_end);
     int32_t reveal_t = q8_smooth_ratio(f - fusion_reveal_start, (WAIFU_FUSION_ANIM_FRAMES * 14) / 100 + 4);
-    int cy = lerp_i(154, 74, merge_t);
+    int cy = lerp_i(WAIFU_HAND_Y_BASE, 74, merge_t);
     int w = 38;
     int h = 50;
     int count = g_b_fusion_anim_count;
@@ -8818,19 +8843,19 @@ static void draw_player_fusion_anim(void)
         if (target_slot >= 0 && target_slot < I_FIELD) draw_zone_cursor(cam, target_slot, PLAYER_CARD_ROW);
         if (g_b_fusion_anim_success) {
             draw_fusion_landing_card(cam, g_b_fusion_anim_result, 101, 74, 54, 72, target_slot, local, 0);
-            draw_centered_text(191, "FUSION SUCCESS", IDX_GREEN, IDX_BLACK);
-            draw_centered_text(205, "PLACING RESULT", IDX_WHITE, IDX_BLACK);
+            draw_centered_text(WAIFU_UI_BOTTOM_Y(191), "FUSION SUCCESS", IDX_GREEN, IDX_BLACK);
+            draw_centered_text(WAIFU_UI_BOTTOM_Y(205), "PLACING RESULT", IDX_WHITE, IDX_BLACK);
         } else if (failed_fusion_can_place_last_card()) {
             int final_index = g_b_fusion_anim_final_source_index;
             int final_x = (final_index >= 0) ? first_target_x + final_index * 34 : 101;
             draw_failed_fusion_dropped_materials(count, first_target_x, local);
             draw_fusion_landing_card(cam, g_b_fusion_anim_final_card, final_x, 82, 38, 50, target_slot, local, 0);
             if (g_b_fusion_anim_equip_only) {
-                draw_centered_text(191, "EQUIP APPLIED", IDX_GREEN, IDX_BLACK);
-                draw_centered_text(205, "PLACING CARD", IDX_WHITE, IDX_BLACK);
+                draw_centered_text(WAIFU_UI_BOTTOM_Y(191), "EQUIP APPLIED", IDX_GREEN, IDX_BLACK);
+                draw_centered_text(WAIFU_UI_BOTTOM_Y(205), "PLACING CARD", IDX_WHITE, IDX_BLACK);
             } else {
-                draw_centered_text(191, "FUSION FAILED", IDX_RED, IDX_BLACK);
-                draw_centered_text(205, g_b_fusion_anim_final_equip_count > 0 ? "EQUIP APPLIED" : "LAST CARD PLACED", IDX_WHITE, IDX_BLACK);
+                draw_centered_text(WAIFU_UI_BOTTOM_Y(191), "FUSION FAILED", IDX_RED, IDX_BLACK);
+                draw_centered_text(WAIFU_UI_BOTTOM_Y(205), g_b_fusion_anim_final_equip_count > 0 ? "EQUIP APPLIED" : "LAST CARD PLACED", IDX_WHITE, IDX_BLACK);
             }
         } else {
             int32_t fall_t = q8_smooth_ratio(local, WAIFU_FUSION_LANDING_FRAMES);
@@ -8840,14 +8865,14 @@ static void draw_player_fusion_anim(void)
                 if (y < WAIFU_FM_HEIGHT + 52) draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, y, 38, 50, 0);
                 if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT && y < WAIFU_FM_HEIGHT + 52) draw_text_small(x + 5, y + 53, "FLD", IDX_GOLD_HI, IDX_BLACK);
             }
-            draw_centered_text(191, "FUSION FAILED", IDX_RED, IDX_BLACK);
-            draw_centered_text(205, "CARDS DISCARDED", IDX_WHITE, IDX_BLACK);
+            draw_centered_text(WAIFU_UI_BOTTOM_Y(191), "FUSION FAILED", IDX_RED, IDX_BLACK);
+            draw_centered_text(WAIFU_UI_BOTTOM_Y(205), "CARDS DISCARDED", IDX_WHITE, IDX_BLACK);
         }
         return;
     }
 
     clear_screen(IDX_BLACK);
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) hline(0, 255, y, (y & 8) ? IDX_UI_DARK : IDX_BLACK);
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) hline(0, WAIFU_FM_WIDTH - 1, y, (y & 8) ? IDX_UI_DARK : IDX_BLACK);
     draw_panel_rect(20, 26, 216, 178, IDX_UI_DARK);
     draw_centered_text(39, "FUSION", IDX_GOLD_HI, IDX_BLACK);
 
@@ -9538,24 +9563,25 @@ void waifu_fm_init(void)
 void waifu_fm_reset_interactive(void)
 {
     waifu_assets_reset();
+    g_i_menu_selected = 0;
+    memset(&g_prev_input, 0, sizeof(g_prev_input));
+    waifu_sound_reset();
+    init_battle_state();
+    invalidate_board_bg_cache();
+    invalidate_battle_composite_cache();
+#ifdef CD32X_DEBUG_AUTOBATTLE
+    /* Throwaway CD32X iteration shortcut: skip title/menu asset requests and
+       boot straight into a Battle-Mode duel through the normal card-loading
+       path.  Build with EXTRA_CFLAGS=-DCD32X_DEBUG_AUTOBATTLE. */
+    enter_battle_after_assets();
+#else
     waifu_assets_request_title();
     g_i_loading_target = WAIFU_I_TITLE;
     g_i_state = waifu_assets_needs_loading_screen() ? WAIFU_I_LOADING_ASSETS : WAIFU_I_TITLE;
     g_i_frame = 0;
-    g_i_menu_selected = 0;
-    memset(&g_prev_input, 0, sizeof(g_prev_input));
-    waifu_sound_reset();
-    update_music_for_current_state();
-    init_battle_state();
-    waifu_fm_use_common_palette();
-    invalidate_board_bg_cache();
-    invalidate_battle_composite_cache();
-#ifdef CD32X_DEBUG_AUTOBATTLE
-    /* Throwaway headless-iteration shortcut: jump straight into a Battle-Mode
-       duel so captures reach gameplay in ~11k frames instead of ~34k.  Remove
-       before finalizing. */
-    enter_battle_after_assets();
 #endif
+    waifu_fm_use_common_palette();
+    update_music_for_current_state();
 }
 
 uint8_t *waifu_fm_framebuffer(void)
@@ -9670,7 +9696,7 @@ static void draw_story_name_entry(void)
     clear_screen(IDX_BLACK);
     for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = (y & 8) ? IDX_DARK_BROWN : IDX_BLACK;
-        if (y < 36 || y > 204) hline(0, 255, y, c);
+        if (y < 36 || y > WAIFU_UI_BOTTOM_Y(204)) hline(0, WAIFU_FM_WIDTH - 1, y, c);
     }
     draw_panel_rect(20, 29, 216, 180, IDX_UI_DARK);
     draw_egyptian_corner(31, 42, 0);
@@ -9830,10 +9856,10 @@ static void draw_story_fire_screen(int f)
     if (line >= line_count) line = line_count - 1;
     clear_screen(IDX_BLACK);
     draw_oldschool_fire(f);
-    draw_panel_rect(8, 172, 240, 57, IDX_UI_DARK);
-    draw_text_small(18, 183, "DEMON", IDX_RED, IDX_BLACK);
-    draw_wrapped_text_small_box(18, 198, 218, 3, 10, story_subst_name(story_fire_lines[line]), IDX_WHITE, IDX_BLACK);
-    if (((f / 16) & 1) == 0) draw_text_small(197, 216, "A/RUN", IDX_WHITE, IDX_BLACK);
+    draw_panel_rect(8, WAIFU_UI_BOTTOM_Y(172), WAIFU_FM_WIDTH - 16, 57, IDX_UI_DARK);
+    draw_text_small(18, WAIFU_UI_BOTTOM_Y(183), "DEMON", IDX_RED, IDX_BLACK);
+    draw_wrapped_text_small_box(18, WAIFU_UI_BOTTOM_Y(198), WAIFU_FM_WIDTH - 38, 3, 10, story_subst_name(story_fire_lines[line]), IDX_WHITE, IDX_BLACK);
+    if (((f / 16) & 1) == 0) draw_text_small(WAIFU_FM_WIDTH - 59, WAIFU_FM_HEIGHT - 24, "A/RUN", IDX_WHITE, IDX_BLACK);
 }
 
 static const char *deck_editor_card_name(int id)
@@ -9861,9 +9887,9 @@ static void draw_deck_editor(void)
     clear_screen(IDX_BLACK);
     for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = (y < 28) ? IDX_DARK_BROWN : ((y & 8) ? IDX_UI_DARK : IDX_BLACK);
-        hline(0, 255, y, c);
+        hline(0, WAIFU_FM_WIDTH - 1, y, c);
     }
-    draw_panel_rect(4, 4, 248, 232, IDX_UI_DARK);
+    draw_panel_rect(4, 4, WAIFU_FM_WIDTH - 8, WAIFU_FM_HEIGHT - 8, IDX_UI_DARK);
     draw_centered_text(12, "DECK EDITOR", IDX_GOLD_HI, IDX_BLACK);
 
     rect_fill(14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_DARK : IDX_BLACK);
@@ -9894,23 +9920,23 @@ static void draw_deck_editor(void)
         }
     }
 
-    rect_fill(9, 190, 238, 36, IDX_BLACK);
-    rect_outline(9, 190, 238, 36, IDX_UI_LIGHT);
+    rect_fill(9, WAIFU_UI_BOTTOM_Y(190), WAIFU_FM_WIDTH - 18, 36, IDX_BLACK);
+    rect_outline(9, WAIFU_UI_BOTTOM_Y(190), WAIFU_FM_WIDTH - 18, 36, IDX_UI_LIGHT);
     if (selected_card >= 0) {
-        draw_text_small_ellipsis(15, 196, deck_editor_card_name(selected_card), 25, IDX_WHITE, IDX_BLACK);
+        draw_text_small_ellipsis(15, WAIFU_UI_BOTTOM_Y(196), deck_editor_card_name(selected_card), 25, IDX_WHITE, IDX_BLACK);
         if (is_support_card(selected_card)) {
-            draw_text_small_ellipsis(15, 208, support_card_type(selected_card), 23, IDX_GOLD_HI, IDX_BLACK);
+            draw_text_small_ellipsis(15, WAIFU_UI_BOTTOM_Y(208), support_card_type(selected_card), 23, IDX_GOLD_HI, IDX_BLACK);
         } else {
             fmt_label_u32(line, (int)sizeof(line), "ATK", (unsigned)waifu_card_atk[selected_card]); waifu_str_cat(line, (int)sizeof(line), " DEF "); waifu_str_cat_u32(line, (int)sizeof(line), (unsigned)waifu_card_def[selected_card]);
-            draw_text_small(15, 208, line, IDX_GOLD_HI, IDX_BLACK);
+            draw_text_small(15, WAIFU_UI_BOTTOM_Y(208), line, IDX_GOLD_HI, IDX_BLACK);
         }
     }
     if (g_deck_flash > 0 && ((g_deck_flash / 8) & 1) == 0) {
         const char *msg = g_deck_flash_reason == 1 ? "MAX 4 COPIES" :
             (g_story_deck_count == STORY_DECK_SIZE ? "DECK IS FULL" : "DECK MUST BE 40");
-        draw_centered_text(181, msg, IDX_RED, IDX_BLACK);
+        draw_centered_text(WAIFU_UI_BOTTOM_Y(181), msg, IDX_RED, IDX_BLACK);
     }
-    draw_text_small(15, 226, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
+    draw_text_small(15, WAIFU_FM_HEIGHT - 14, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
 }
 
 static void transition_draw_deck_editor_source(int frame, void *ctx)
@@ -10201,11 +10227,11 @@ static void draw_desert_sky(void)
 {
     for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = y < 52 ? IDX_UI_BLUE : (y < 93 ? IDX_UI_TEAL : (y < 143 ? IDX_GOLD_DARK : IDX_DARK_BROWN));
-        hline(0, 255, y, c);
+        hline(0, WAIFU_FM_WIDTH - 1, y, c);
     }
     for (int x = 0; x < WAIFU_FM_WIDTH; x += 6) {
         int yy = 142 + ((x * 13) & 7);
-        hline(x, x + 5 < 255 ? x + 5 : 255, yy, IDX_GOLD_HI);
+        hline(x, x + 5 < WAIFU_FM_WIDTH ? x + 5 : WAIFU_FM_WIDTH - 1, yy, IDX_GOLD_HI);
     }
 }
 
@@ -10213,7 +10239,7 @@ static void draw_temple_sky(void)
 {
     for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = y < 40 ? IDX_UI_BLUE : (y < 80 ? IDX_UI_TEAL : (y < 120 ? IDX_DIM : IDX_DARK_BROWN));
-        hline(0, 255, y, c);
+        hline(0, WAIFU_FM_WIDTH - 1, y, c);
     }
 }
 
@@ -10221,11 +10247,11 @@ static void draw_volcano_sky(void)
 {
     for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = y < 45 ? IDX_BLACK : (y < 85 ? IDX_RED : (y < 120 ? IDX_FLAME3 : IDX_DARK_BROWN));
-        hline(0, 255, y, c);
+        hline(0, WAIFU_FM_WIDTH - 1, y, c);
     }
     /* Embers drifting upward. */
     for (int i = 0; i < 40; ++i) {
-        int x = (i * 53 + 17) & 255;
+        int x = (i * 53 + 17) % WAIFU_FM_WIDTH;
         int y = 120 - ((i * 31 + 7) & 63);
         put_px(x, y, (i & 1) ? IDX_FLAME1 : IDX_GOLD_HI);
     }
@@ -10233,10 +10259,10 @@ static void draw_volcano_sky(void)
 
 static void draw_void_sky(void)
 {
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) hline(0, 255, y, IDX_BLACK);
+    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) hline(0, WAIFU_FM_WIDTH - 1, y, IDX_BLACK);
     /* Stars. */
     for (int i = 0; i < 60; ++i) {
-        int x = (i * 67 + 13) & 255;
+        int x = (i * 67 + 13) % WAIFU_FM_WIDTH;
         int y = (i * 41 + 5) & 127;
         put_px(x, y, (i & 3) ? IDX_DIM : IDX_WHITE);
     }
@@ -10316,42 +10342,42 @@ static void draw_story_map_screen_content(int f)
     char line[96];
     draw_story_sky(f);
     draw_story_scene_3d(f);
-    draw_panel_rect(126, 146, 121, 76, IDX_UI_DARK);
-    draw_text_small(135, 155, "DESTINATION", IDX_GOLD_HI, IDX_BLACK);
-    draw_text(143, 174, "SANCTUM", g_story_map_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(143, 194, "BATTLE", g_story_map_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    if (g_story_map_cursor == 0) draw_text(132, 174, ">", IDX_RED, IDX_BLACK);
-    else draw_text(132, 194, ">", IDX_RED, IDX_BLACK);
+    draw_panel_rect(WAIFU_FM_WIDTH - 130, WAIFU_UI_BOTTOM_Y(146), 121, 76, IDX_UI_DARK);
+    draw_text_small(WAIFU_FM_WIDTH - 121, WAIFU_UI_BOTTOM_Y(155), "DESTINATION", IDX_GOLD_HI, IDX_BLACK);
+    draw_text(WAIFU_FM_WIDTH - 113, WAIFU_UI_BOTTOM_Y(174), "SANCTUM", g_story_map_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(WAIFU_FM_WIDTH - 113, WAIFU_UI_BOTTOM_Y(194), "BATTLE", g_story_map_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    if (g_story_map_cursor == 0) draw_text(WAIFU_FM_WIDTH - 124, WAIFU_UI_BOTTOM_Y(174), ">", IDX_RED, IDX_BLACK);
+    else draw_text(WAIFU_FM_WIDTH - 124, WAIFU_UI_BOTTOM_Y(194), ">", IDX_RED, IDX_BLACK);
     /* Earlier opponents are unlocked: show that BATTLE can cycle foes and which
        one is currently picked (FOE n/total). */
     if (g_story_progress > 0) {
         char foe[24];
-        if (g_story_map_cursor == 1) draw_text_small(204, 196, "< >", IDX_GOLD_HI, IDX_BLACK);
+        if (g_story_map_cursor == 1) draw_text_small(WAIFU_FM_WIDTH - 52, WAIFU_UI_BOTTOM_Y(196), "< >", IDX_GOLD_HI, IDX_BLACK);
         waifu_str_copy(foe, (int)sizeof(foe), "FOE ");
         waifu_str_cat_i32(foe, (int)sizeof(foe), g_story_duel_index + 1);
         waifu_str_cat(foe, (int)sizeof(foe), "/");
         waifu_str_cat_i32(foe, (int)sizeof(foe), g_story_progress + 1);
-        draw_text_small(135, 210, foe, IDX_WHITE, IDX_BLACK);
+        draw_text_small(WAIFU_FM_WIDTH - 121, WAIFU_UI_BOTTOM_Y(210), foe, IDX_WHITE, IDX_BLACK);
     }
 
-    draw_panel_rect(8, 181, 108, 41, IDX_UI_DARK);
+    draw_panel_rect(8, WAIFU_UI_BOTTOM_Y(181), 108, 41, IDX_UI_DARK);
     if (g_story_duel_index < g_story_progress) {
         /* Selecting an already-cleared opponent: a rematch. */
         waifu_str_copy(line, (int)sizeof(line), "Rematch: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), ".");
-        draw_wrapped_text_small_box(16, 190, 91, 3, 9, line, IDX_GOLD_HI, IDX_BLACK);
+        draw_wrapped_text_small_box(16, WAIFU_UI_BOTTOM_Y(190), 91, 3, 9, line, IDX_GOLD_HI, IDX_BLACK);
     } else if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
-        draw_wrapped_text_small_box(16, 190, 91, 3, 9, "The demon waits in the void. This is the final duel.", IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(16, WAIFU_UI_BOTTOM_Y(190), 91, 3, 9, "The demon waits in the void. This is the final duel.", IDX_WHITE, IDX_BLACK);
     } else if (story_opponent_is_boss()) {
         waifu_str_copy(line, (int)sizeof(line), "A boss: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), ". Prepare well.");
-        draw_wrapped_text_small_box(16, 190, 91, 3, 9, line, IDX_RED, IDX_BLACK);
+        draw_wrapped_text_small_box(16, WAIFU_UI_BOTTOM_Y(190), 91, 3, 9, line, IDX_RED, IDX_BLACK);
     } else {
         waifu_str_copy(line, (int)sizeof(line), "Next: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), " awaits.");
-        draw_wrapped_text_small_box(16, 190, 91, 3, 9, line, IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(16, WAIFU_UI_BOTTOM_Y(190), 91, 3, 9, line, IDX_WHITE, IDX_BLACK);
     }
     if (g_story_map_cursor == 1 && g_story_progress > 0)
-        draw_text_small(11, 226, "A/RUN GO  L/R FOE", IDX_WHITE, IDX_BLACK);
+        draw_text_small(11, WAIFU_FM_HEIGHT - 14, "A/RUN GO  L/R FOE", IDX_WHITE, IDX_BLACK);
     else
-        draw_text_small(11, 226, "A/RUN SELECT", IDX_WHITE, IDX_BLACK);
+        draw_text_small(11, WAIFU_FM_HEIGHT - 14, "A/RUN SELECT", IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_story_map_screen(int f)
@@ -10594,7 +10620,7 @@ static void draw_story_ending_screen(void)
     {
         char visible_line[160];
         waifu_str_copy_n(visible_line, (int)sizeof(visible_line), story_ending_lines[line], visible_chars);
-        draw_wrapped_text_small_box(10, 198, WAIFU_FM_WIDTH - 20, 4, 10, visible_line, IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(10, WAIFU_FM_HEIGHT - 42, WAIFU_FM_WIDTH - 20, 4, 10, visible_line, IDX_WHITE, IDX_BLACK);
     }
 }
 

@@ -1,4 +1,5 @@
 #include "assets.h"
+#include "cfx_screen_config.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -87,7 +88,7 @@ void waifu_assets_big_art_draw_queue_reset(void)
 void waifu_assets_note_big_art_draw(WaifuBigArtKind kind, int card_id, int x, int y)
 {
     if (g_big_art_draw_count >= WAIFU_ASSET_BIG_ART_DRAW_MAX) return;
-    if (x < 0 || y < 0 || x + WAIFU_BIG_W > 256 || y + WAIFU_BIG_H > 240) return;
+    if (x < 0 || y < 0 || x + WAIFU_BIG_W > WAIFU_FM_WIDTH || y + WAIFU_BIG_H > WAIFU_FM_HEIGHT) return;
     g_big_art_draws[g_big_art_draw_count].kind = kind;
     g_big_art_draws[g_big_art_draw_count].card_id = card_id;
     g_big_art_draws[g_big_art_draw_count].x = x;
@@ -129,6 +130,7 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
    currently visible hand/field set so drawing does not thrash the CD every
    frame. */
 #define CD32X_CARD_FACE_CACHE_SLOTS 24
+#define CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT 5
 #define CARD_FACE_STAGE_BYTES ((size_t)CD32X_CARD_FACE_CACHE_SLOTS * CARD_ONE_BYTES)
 #else
 #define CARD_FACE_STAGE_BYTES CARD_FACE_BYTES
@@ -215,12 +217,15 @@ static uint8_t *stage_title16m_ptr(void) { return g_asset_stage_ram + TITLE_BYTE
 static uint8_t *stage_card_faces_ptr(void) { return g_asset_stage_ram; }
 static uint8_t *stage_card_back_ptr(void) { return g_asset_stage_ram + CARD_FACE_STAGE_BYTES; }
 static uint8_t *stage_support_face_ptr(void) { return g_asset_stage_ram + CARD_FACE_STAGE_BYTES + CARD_ONE_BYTES; }
+static int g_prewarm_face_card_count = 0;
 #if defined(WAIFU_FM_CD32X)
 static uint8_t *stage_card_face_cache_slot_ptr(int slot) { return g_asset_stage_ram + ((size_t)slot * CARD_ONE_BYTES); }
 static int g_cd32x_face_cache_card_id[CD32X_CARD_FACE_CACHE_SLOTS];
 static unsigned g_cd32x_face_cache_stamp[CD32X_CARD_FACE_CACHE_SLOTS];
 static unsigned g_cd32x_face_cache_clock = 1;
+static int g_prewarm_face_card_ids[CD32X_CARD_FACE_CACHE_SLOTS];
 static void cd32x_card_face_cache_reset(void);
+static int cd32x_find_card_face_slot(int card_id);
 #endif
 static uint8_t *stage_big_cache_ptr(int slot) { return g_asset_stage_ram + CARD_BIG_STAGE_OFFSET + ((size_t)slot * CARD_BIG_CACHE_SLOT_BYTES); }
 static uint8_t *stage_support_big_ptr(void) { return g_asset_stage_ram + CARD_BIG_STAGE_OFFSET + ((size_t)WAIFU_ASSET_BIG_CACHE_SLOTS * CARD_BIG_CACHE_SLOT_BYTES); }
@@ -503,7 +508,30 @@ static void prewarm_list_clear(void)
     g_prewarm_big_card_count = 0;
     g_prewarm_support_big = 0;
     g_prewarm_all_big_cards = 0;
+#if defined(WAIFU_FM_CD32X)
+    for (int i = 0; i < CD32X_CARD_FACE_CACHE_SLOTS; ++i) g_prewarm_face_card_ids[i] = -1;
+    g_prewarm_face_card_count = 0;
+#endif
 }
+
+#if defined(WAIFU_FM_CD32X)
+static int prewarm_face_list_contains(int card_id)
+{
+    for (int i = 0; i < g_prewarm_face_card_count; ++i) {
+        if (g_prewarm_face_card_ids[i] == card_id) return 1;
+    }
+    return 0;
+}
+
+static void prewarm_face_list_add_card(int card_id)
+{
+    if (card_id < 0 || card_id >= WAIFU_CARD_COUNT) return;
+    if (cd32x_find_card_face_slot(card_id) >= 0) return;
+    if (g_prewarm_face_card_count >= CD32X_CARD_FACE_CACHE_SLOTS) return;
+    if (prewarm_face_list_contains(card_id)) return;
+    g_prewarm_face_card_ids[g_prewarm_face_card_count++] = card_id;
+}
+#endif
 
 static int prewarm_list_contains(int card_id)
 {
@@ -566,11 +594,15 @@ void waifu_assets_request_cards_for_list(const int *card_ids, int count)
     prewarm_list_clear();
 #if defined(WAIFU_FM_CD32X)
     /* CD32X battle entry must not front-load big-art reads: each 112x112 card
-       costs a CD seek plus a word-by-word supervisor transfer.  Battle cut-ins
-       still prewarm their exact pair when selected; the LOADING screen only
-       stages the small card/back/support faces needed to enter the duel. */
-    (void)card_ids;
-    (void)count;
+       costs a CD seek plus a word-by-word supervisor transfer.  Do prewarm the
+       small face LRU for the opening player hand only, because otherwise the
+       first visible hand frame synchronously streams faces.  Later hand/field
+       faces are loaded on demand from 32 KiB chunks; prewarming the whole deck
+       before the first draw just moves the hang onto the loading screen. */
+    if (card_ids && count > 0) {
+        int limit = count < CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT ? count : CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT;
+        for (int i = 0; i < limit; ++i) prewarm_face_list_add_card(card_ids[i]);
+    }
 #else
     if (card_ids && count > 0) {
         for (int i = 0; i < count; ++i) prewarm_list_add_card(card_ids[i]);
@@ -585,7 +617,13 @@ void waifu_assets_request_cards_for_list(const int *card_ids, int count)
     evict_title();
     evict_portraits();
     if (g_cards_loaded) {
+#if defined(WAIFU_FM_CD32X)
+        g_pending_request = (g_prewarm_face_card_count > 0 ||
+                             g_prewarm_big_card_count > 0 ||
+                             (g_prewarm_support_big && !g_support_big_loaded)) ? WAIFU_ASSET_REQUEST_CARDS : WAIFU_ASSET_REQUEST_NONE;
+#else
         g_pending_request = (g_prewarm_big_card_count > 0 || (g_prewarm_support_big && !g_support_big_loaded)) ? WAIFU_ASSET_REQUEST_CARDS : WAIFU_ASSET_REQUEST_NONE;
+#endif
         g_load_step = 3;
         g_ready = (g_pending_request == WAIFU_ASSET_REQUEST_NONE);
         return;
@@ -713,8 +751,9 @@ int waifu_assets_load_step(void)
     case WAIFU_ASSET_REQUEST_CARDS:
         if (g_load_step == 0) {
 #if defined(WAIFU_FM_CD32X)
-            /* CD32X streams card faces per-card into the LRU on demand (see
-               waifu_assets_card_face); nothing to preload -- just reset cache. */
+            /* CD32X streams card faces per-card into the LRU.  Reset it here,
+               then prewarm the requested opening/near-draw faces below while
+               the loading screen is visible. */
             cd32x_card_face_cache_reset();
 #else
             if (!cd_read_blob_padded_from_start(WAIFU_ASSET_BLOB_CARD_FACES, stage_card_faces_ptr(), CARD_FACE_BYTES)) return 0;
@@ -755,13 +794,25 @@ int waifu_assets_load_step(void)
             ++g_load_step;
             return 0;
         }
-        if (g_load_step == 4 && g_prewarm_all_big_cards) {
-            if (!load_all_big_card_art_cached()) return 0;
-            g_load_step = 4 + g_prewarm_big_card_count;
+#if defined(WAIFU_FM_CD32X)
+        if (g_load_step >= 4 && g_load_step < 4 + g_prewarm_face_card_count) {
+            int prewarm_index = g_load_step - 4;
+            int card_id = g_prewarm_face_card_ids[prewarm_index];
+            if (card_id >= 0 && card_id < WAIFU_CARD_COUNT) {
+                if (!waifu_assets_card_face(card_id)) return 0;
+            }
+            ++g_load_step;
             return 0;
         }
-        if (g_load_step >= 4 && g_load_step < 4 + g_prewarm_big_card_count) {
-            int prewarm_index = g_load_step - 4;
+#endif
+        if (g_load_step == 4 + g_prewarm_face_card_count && g_prewarm_all_big_cards) {
+            if (!load_all_big_card_art_cached()) return 0;
+            g_load_step = 4 + g_prewarm_face_card_count + g_prewarm_big_card_count;
+            return 0;
+        }
+        if (g_load_step >= 4 + g_prewarm_face_card_count &&
+            g_load_step < 4 + g_prewarm_face_card_count + g_prewarm_big_card_count) {
+            int prewarm_index = g_load_step - 4 - g_prewarm_face_card_count;
             int card_id = g_prewarm_big_card_ids[prewarm_index];
             if (card_id >= 0 && card_id < WAIFU_CARD_COUNT) {
                 if (!load_big_card_art_cached(card_id)) return 0;
@@ -792,7 +843,7 @@ int waifu_assets_loading_percent(void)
     case WAIFU_ASSET_REQUEST_STORY_INTRO:
     case WAIFU_ASSET_REQUEST_STORY_DUEL: return (g_load_step * 100) / PORTRAIT_SLOT_COUNT;
     case WAIFU_ASSET_REQUEST_CARDS: {
-        int total = 4 + g_prewarm_big_card_count;
+        int total = 4 + g_prewarm_face_card_count + g_prewarm_big_card_count;
         if (total < 4) total = 4;
         return (g_load_step * 100) / total;
     }
@@ -812,6 +863,9 @@ const char *waifu_assets_loading_label(void)
         if (g_load_step == 1) return "CARD BACK";
         if (g_load_step == 2) return "SUPPORT FACE";
         if (g_load_step == 3) return "SUPPORT BIG ART";
+#if defined(WAIFU_FM_CD32X)
+        if (g_load_step < 4 + g_prewarm_face_card_count) return "CARD FACE";
+#endif
         return "MONSTER BIG ART";
     }
     if (g_pending_request == WAIFU_ASSET_REQUEST_STORY_INTRO || g_pending_request == WAIFU_ASSET_REQUEST_STORY_DUEL) {

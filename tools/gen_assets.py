@@ -442,6 +442,15 @@ def nearest_idx_in_palette(palette, rgb):
             best=i; bd=d
     return best
 
+def nearest_nonzero_idx_in_palette(palette, rgb):
+    best=1; bd=10**9
+    for i in range(1, 256):
+        pr,pg,pb=palette[i*3:i*3+3]
+        d=(pr-rgb[0])**2+(pg-rgb[1])**2+(pb-rgb[2])**2
+        if d<bd:
+            best=i; bd=d
+    return best
+
 def apply_base_colors(pal_img, palette, idx_map):
     for name,rgb in BASE_COLORS.items():
         i = idx_map[name] * 3
@@ -465,15 +474,29 @@ def qbytes_with_palette(im, quant_palette):
 def qbytes(im):
     return qbytes_with_palette(im, pal_img)
 
+def qbytes_card_art(im):
+    rgb_im = im.convert('RGB')
+    data = bytearray(qbytes_with_palette(rgb_im, pal_img))
+    if 0 in data:
+        rgb = list(rgb_im.getdata())
+        for i, px in enumerate(data):
+            if px == 0:
+                data[i] = nearest_nonzero_idx_in_palette(palette, rgb[i])
+    return bytes(data)
+
 def qbytes_dialogue(im):
     return qbytes_with_palette(im, dialogue_pal_img)
 
-q_cards=[qbytes(im) for im in card_faces_rgb]
-q_big_cards=[qbytes(im) for im in big_card_rgb]
-q_support=qbytes(support_rgb)
-q_support_big=qbytes(support_big_rgb)
-q_back=qbytes(back_rgb)
+q_cards=[qbytes_card_art(im) for im in card_faces_rgb]
+q_big_cards=[qbytes_card_art(im) for im in big_card_rgb]
+q_support=qbytes_card_art(support_rgb)
+q_support_big=qbytes_card_art(support_big_rgb)
+q_back=qbytes_card_art(back_rgb)
 q_tex=[qbytes(im) for im in tex_rgb]
+
+card_art_blobs = q_cards + q_big_cards + [q_support, q_support_big, q_back]
+if any(0 in blob for blob in card_art_blobs):
+    raise RuntimeError('card art blobs must not use palette index 0')
 
 # Keep the 3D texture atlas identical between the common and dialogue palettes.
 # The story-dialogue (plaza) scene renders the same pyramid/sky geometry as the

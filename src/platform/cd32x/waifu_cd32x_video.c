@@ -2,7 +2,7 @@
  *
  * This target intentionally exposes only the generic game framebuffer seam to
  * common code.  Platform-specific work stays here: 32X VDP setup, CRAM upload,
- * and 320x240 8bpp framebuffer presentation. */
+ * and 320x224 NTSC 8bpp framebuffer presentation. */
 #include "waifu_cd32x_video.h"
 #include "cd32x_32x.h"
 #include "assets.h"
@@ -26,8 +26,8 @@
 #define CD32X_MD_CMD_SET_FADE   0xCD02u
 
 
-#if WAIFU_CD32X_W != 320 || WAIFU_CD32X_H != 240
-#error "CD32X video backend expects WAIFU_FM_WIDTH=320 and WAIFU_FM_HEIGHT=240"
+#if WAIFU_CD32X_W != 320 || WAIFU_CD32X_H != 224
+#error "CD32X video backend expects WAIFU_FM_WIDTH=320 and WAIFU_FM_HEIGHT=224"
 #endif
 #if CD32X_TITLE_SCREEN_W != 320 || CD32X_TITLE_SCREEN_H != 240
 #error "CD32X title asset must be 320x240"
@@ -128,13 +128,13 @@ static void cd32x_restore_title_rect_back(int x, int y, int w, int h)
     if (x0 >= x1 || y0 >= y1) return;
 
     waifu_assets_title_screen_dims(&tw, &th);
-    if (!title || tw != WAIFU_CD32X_W || th != WAIFU_CD32X_H) {
+    if (!title || tw != WAIFU_CD32X_W || th < WAIFU_CD32X_H) {
         cd32x_fill_rect_back(x0, y0, x1 - x0, y1 - y0, IDX_BLACK);
         return;
     }
 
     for (int yy = y0; yy < y1; ++yy) {
-        const uint8_t *src = title + (uint32_t)yy * WAIFU_CD32X_W + x0;
+        const uint8_t *src = title + (uint32_t)yy * (uint32_t)tw + x0;
         int xx = x0;
         if (xx & 1) {
             cd32x_put_px_back(xx, yy, *src++);
@@ -354,7 +354,7 @@ WaifuCd32xVideo *waifu_cd32x_video_create(void)
     while ((MARS_SYS_INTMSK & MARS_SH2_ACCESS_VDP) == 0) {
     }
 
-    MARS_VDP_DISPMODE = (uint16_t)(MARS_240_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
+    MARS_VDP_DISPMODE = (uint16_t)(MARS_224_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
 
     cd32x_init_framebuffers(&g_video);
 
@@ -379,7 +379,7 @@ void waifu_cd32x_video_begin_8bpp(WaifuCd32xVideo *video)
     g_cd32x_menu_selected = -1;
     g_cd32x_menu_has_save = -1;
     g_cd32x_menu_pages_remaining = 0;
-    MARS_VDP_DISPMODE = (uint16_t)(MARS_240_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
+    MARS_VDP_DISPMODE = (uint16_t)(MARS_224_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
 }
 
 void waifu_cd32x_video_set_palette_rgb(WaifuCd32xVideo *video, const uint8_t *rgb, WaifuFmPaletteId palette_id, int fade_q8)
