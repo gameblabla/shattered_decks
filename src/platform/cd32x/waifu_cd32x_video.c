@@ -17,14 +17,9 @@
 #define WAIFU_CD32X_H WAIFU_FM_HEIGHT
 #define WAIFU_CD32X_LINE_TABLE_WORDS 0x100
 #define WAIFU_CD32X_FB_BYTE_OFFSET ((int)WAIFU_CD32X_FRAMEBUFFER_LINE_TABLE_BYTES)
-#define WAIFU_CD32X_PAGE0 0x24000000u
-#define WAIFU_CD32X_PAGE1 0x24020000u
 #define WAIFU_CD32X_TITLE_BYTES (CD32X_TITLE_SCREEN_W * CD32X_TITLE_SCREEN_H)
 #define WAIFU_CD32X_TITLE_WORDS (WAIFU_CD32X_TITLE_BYTES / 2)
 #define WAIFU_CD32X_TITLE_XOFF ((WAIFU_CD32X_W - CD32X_TITLE_SCREEN_W) / 2)
-#ifndef WAIFU_CD32X_CLEAR_BACK_AFTER_FLIP
-#define WAIFU_CD32X_CLEAR_BACK_AFTER_FLIP 1
-#endif
 
 #define CD32X_COMM_READY        0x0001u
 #define CD32X_MD_CMD_SET_FADE   0xCD02u
@@ -45,17 +40,6 @@ struct WaifuCd32xVideo {
 };
 
 static WaifuCd32xVideo g_video;
-
-static volatile uint16_t *cd32x_page_words(int page)
-{
-    return (volatile uint16_t *)(uintptr_t)(page ? WAIFU_CD32X_PAGE1 : WAIFU_CD32X_PAGE0);
-}
-
-static volatile uint8_t *cd32x_page_pixels(int page)
-{
-    return (volatile uint8_t *)(uintptr_t)((page ? WAIFU_CD32X_PAGE1 : WAIFU_CD32X_PAGE0) + WAIFU_CD32X_FRAMEBUFFER_LINE_TABLE_BYTES);
-}
-
 
 static int cd32x_request_md_palette_fade(int fade_q8)
 {
@@ -92,47 +76,47 @@ static void cd32x_wait_fb_flip(WaifuCd32xVideo *video)
     video->current_fb ^= 1u;
 }
 
-#if WAIFU_CD32X_CLEAR_BACK_AFTER_FLIP
-static void cd32x_clear_cpu_back_page_pixels(void)
+static void cd32x_write_back_line_table(void)
 {
-    volatile uint16_t *dst = &MARS_FRAMEBUFFER;
-    int words = (WAIFU_CD32X_W * WAIFU_CD32X_H) / 2;
-
-    dst += WAIFU_CD32X_LINE_TABLE_WORDS;
-    for (int i = 0; i < words; ++i) {
-        dst[i] = 0;
-    }
-}
-#endif
-
-static void cd32x_init_framebuffer_page_at(int page)
-{
-    volatile uint16_t *fb16 = cd32x_page_words(page);
-    int y;
-    int i;
-
-    for (y = 0; y < WAIFU_CD32X_H; ++y) {
+    /* Blastem's 32x_video.c is the ground truth here: framebuffer aperture
+       writes always target video->back, and changing FS swaps front/back.  The
+       0x24020000 aperture is overwrite mode for that same back page, not a
+       CPU-addressable second page.  Therefore each page must receive its line
+       table while it is the current back page, before requesting an FS flip. */
+    volatile uint16_t *fb16 = &MARS_FRAMEBUFFER;
+    for (int y = 0; y < WAIFU_CD32X_H; ++y) {
         fb16[y] = (uint16_t)(WAIFU_CD32X_LINE_TABLE_WORDS + y * (WAIFU_CD32X_W / 2));
     }
-    for (i = WAIFU_CD32X_LINE_TABLE_WORDS; i < WAIFU_CD32X_LINE_TABLE_WORDS + (WAIFU_CD32X_W * WAIFU_CD32X_H) / 2; ++i) {
-        fb16[i] = 0;
+}
+
+static void cd32x_clear_back_pixels(uint8_t c)
+{
+    volatile uint16_t *fb16 = &MARS_FRAMEBUFFER;
+    uint16_t pair = (uint16_t)(((uint16_t)c << 8) | c);
+
+    fb16 += WAIFU_CD32X_LINE_TABLE_WORDS;
+    for (int i = 0; i < (WAIFU_CD32X_W * WAIFU_CD32X_H) / 2; ++i) {
+        fb16[i] = pair;
     }
 }
 
 static void cd32x_init_framebuffers(WaifuCd32xVideo *video)
 {
-    cd32x_init_framebuffer_page_at(0);
-    cd32x_init_framebuffer_page_at(1);
     video->current_fb = (uint16_t)(MARS_VDP_FBCTL & MARS_VDP_FS);
+    cd32x_write_back_line_table();
+    cd32x_clear_back_pixels(0);
+    cd32x_wait_fb_flip(video);
+    cd32x_write_back_line_table();
+    cd32x_clear_back_pixels(0);
 }
 
-static void cd32x_put_px_page(int page, int x, int y, uint8_t c)
+static void cd32x_put_px_back(int x, int y, uint8_t c)
 {
     volatile uint16_t *words;
     uint32_t pix;
     uint16_t w;
     if ((unsigned)x >= WAIFU_CD32X_W || (unsigned)y >= WAIFU_CD32X_H) return;
-    words = cd32x_page_words(page);
+    words = &MARS_FRAMEBUFFER;
     pix = (uint32_t)WAIFU_CD32X_FB_BYTE_OFFSET + (uint32_t)y * WAIFU_CD32X_W + (uint32_t)x;
     words += pix >> 1;
     w = *words;
@@ -141,13 +125,7 @@ static void cd32x_put_px_page(int page, int x, int y, uint8_t c)
     *words = w;
 }
 
-static void cd32x_put_px_both(int x, int y, uint8_t c)
-{
-    cd32x_put_px_page(0, x, y, c);
-    cd32x_put_px_page(1, x, y, c);
-}
-
-static void cd32x_fill_rect_page(int page, int x, int y, int w, int h, uint8_t c)
+static void cd32x_fill_rect_back(int x, int y, int w, int h, uint8_t c)
 {
     int x0 = x;
     int y0 = y;
@@ -162,22 +140,16 @@ static void cd32x_fill_rect_page(int page, int x, int y, int w, int h, uint8_t c
     for (int yy = y0; yy < y1; ++yy) {
         int xx = x0;
         if (xx & 1) {
-            cd32x_put_px_page(page, xx, yy, c);
+            cd32x_put_px_back(xx, yy, c);
             ++xx;
         }
-        volatile uint16_t *dst = cd32x_page_words(page) + ((WAIFU_CD32X_FB_BYTE_OFFSET + yy * WAIFU_CD32X_W + xx) >> 1);
+        volatile uint16_t *dst = &MARS_FRAMEBUFFER + ((WAIFU_CD32X_FB_BYTE_OFFSET + yy * WAIFU_CD32X_W + xx) >> 1);
         while (xx + 1 < x1) {
             *dst++ = pair;
             xx += 2;
         }
-        if (xx < x1) cd32x_put_px_page(page, xx, yy, c);
+        if (xx < x1) cd32x_put_px_back(xx, yy, c);
     }
-}
-
-static void cd32x_fill_rect_both(int x, int y, int w, int h, uint8_t c)
-{
-    cd32x_fill_rect_page(0, x, y, w, h, c);
-    cd32x_fill_rect_page(1, x, y, w, h, c);
 }
 
 static uint8_t cd32x_font_row(unsigned char ch, int row)
@@ -210,7 +182,7 @@ static void cd32x_draw_char_scaled_both(int x, int y, char ch, int scale, uint8_
         uint8_t row = cd32x_outline_row(uch, yy);
         for (int xx = 0; xx < 8; ++xx) {
             if (row & (uint8_t)(0x80u >> xx)) {
-                cd32x_fill_rect_both(x + xx * scale, y + yy * scale, scale, scale, outline);
+                cd32x_fill_rect_back(x + xx * scale, y + yy * scale, scale, scale, outline);
             }
         }
     }
@@ -218,7 +190,7 @@ static void cd32x_draw_char_scaled_both(int x, int y, char ch, int scale, uint8_
         uint8_t row = cd32x_font_row(uch, yy);
         for (int xx = 0; xx < 8; ++xx) {
             if (row & (uint8_t)(0x80u >> xx)) {
-                cd32x_fill_rect_both(x + xx * scale, y + yy * scale, scale, scale, fg);
+                cd32x_fill_rect_back(x + xx * scale, y + yy * scale, scale, scale, fg);
             }
         }
     }
@@ -242,11 +214,11 @@ static void cd32x_draw_text_centered_both(int y, const char *text, int scale, ui
 
 static void cd32x_draw_panel_rect_both(int x, int y, int w, int h, uint8_t fill)
 {
-    cd32x_fill_rect_both(x, y, w, h, fill);
-    cd32x_fill_rect_both(x, y, w, 1, IDX_WHITE);
-    cd32x_fill_rect_both(x, y + h - 1, w, 1, IDX_BLACK);
-    cd32x_fill_rect_both(x, y, 1, h, IDX_WHITE);
-    cd32x_fill_rect_both(x + w - 1, y, 1, h, IDX_BLACK);
+    cd32x_fill_rect_back(x, y, w, h, fill);
+    cd32x_fill_rect_back(x, y, w, 1, IDX_WHITE);
+    cd32x_fill_rect_back(x, y + h - 1, w, 1, IDX_BLACK);
+    cd32x_fill_rect_back(x, y, 1, h, IDX_WHITE);
+    cd32x_fill_rect_back(x + w - 1, y, 1, h, IDX_BLACK);
 }
 
 static void cd32x_draw_title_logo_both(void)
@@ -272,13 +244,13 @@ static void cd32x_draw_menu_both(int selected, int has_save)
     int ox = (WAIFU_CD32X_W - 256) / 2;
     const char *help = "RANDOM DECK / FREE DUEL";
     cd32x_draw_title_logo_both();
-    cd32x_fill_rect_both(ox + 39, 124, 178, 75, IDX_BLACK);
+    cd32x_fill_rect_back(ox + 39, 124, 178, 75, IDX_BLACK);
     cd32x_draw_panel_rect_both(ox + 41, 126, 174, 71, IDX_UI_DARK);
     cd32x_draw_text_scaled_both(ox + 72, 139, "STORY MODE", 1, selected == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     cd32x_draw_text_scaled_both(ox + 72, 159, "BATTLE MODE", 1, selected == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     cd32x_draw_text_scaled_both(ox + 72, 179, "LOAD STORY", 1, selected == 2 ? (has_save ? IDX_GOLD_HI : IDX_DIM) : (has_save ? IDX_WHITE : IDX_DIM), IDX_BLACK);
     int ay = selected == 0 ? 143 : (selected == 1 ? 163 : 183);
-    for (int r = 0; r < 7; ++r) cd32x_fill_rect_both(ox + 54, ay - 3 + r, 1 + r, 1, IDX_RED);
+    for (int r = 0; r < 7; ++r) cd32x_fill_rect_back(ox + 54, ay - 3 + r, 1 + r, 1, IDX_RED);
     if (selected == 0) help = "ENTER NAME / FIRST DREAM";
     else if (selected == 2) help = has_save ? "RESUME SAVED STORY" : "NO SAVE FILE FOUND";
     /* The help line sits directly over the title-screen copyright strip.
@@ -286,7 +258,7 @@ static void cd32x_draw_menu_both(int selected, int has_save)
        layer, so clear this narrow line before the transparent glyph/outline
        renderer runs.  This removes the old copyright pixels without restoring
        solid black cells around every menu character. */
-    cd32x_fill_rect_both(ox + 43, 204, 170, 14, IDX_BLACK);
+    cd32x_fill_rect_back(ox + 43, 204, 170, 14, IDX_BLACK);
     cd32x_draw_text_scaled_both(ox + 55, 207, help, 1, has_save || selected != 2 ? IDX_WHITE : IDX_RED, IDX_BLACK);
 }
 
@@ -338,35 +310,33 @@ void waifu_cd32x_video_set_palette_rgb(WaifuCd32xVideo *video, const uint8_t *rg
 void waifu_cd32x_video_clear_black(WaifuCd32xVideo *video)
 {
     (void)video;
-    cd32x_fill_rect_page(0, 0, 0, WAIFU_CD32X_W, WAIFU_CD32X_H, 0);
-    cd32x_fill_rect_page(1, 0, 0, WAIFU_CD32X_W, WAIFU_CD32X_H, 0);
+    cd32x_write_back_line_table();
+    cd32x_clear_back_pixels(0);
 }
 
 volatile uint8_t *waifu_cd32x_video_title_upload_buffer(void)
 {
-    return cd32x_page_pixels(0);
+    return (volatile uint8_t *)(uintptr_t)WAIFU_CD32X_FRAMEBUFFER_PIXELS;
 }
 
 void waifu_cd32x_video_commit_title_upload(void)
 {
-    volatile uint16_t *src = cd32x_page_words(0) + WAIFU_CD32X_LINE_TABLE_WORDS;
-    volatile uint16_t *dst = cd32x_page_words(1) + WAIFU_CD32X_LINE_TABLE_WORDS;
-    for (int i = 0; i < WAIFU_CD32X_TITLE_WORDS; ++i) {
-        dst[i] = src[i];
-    }
+    cd32x_write_back_line_table();
 }
 
 void waifu_cd32x_video_present_8bpp(WaifuCd32xVideo *video, const uint8_t *framebuffer, const uint8_t *rgb, WaifuFmPaletteId palette_id, int fade_q8)
 {
     /* The 32X CPU-visible framebuffer window always targets the current back
-       page.  Keep flipping, but repack a complete software-rendered frame into
-       that back page every vblank; title/menu are intentionally not treated as
-       one-shot hardware overlays on this target. */
+       page.  Keep flipping, but make the current back page self-contained every
+       frame: line table first, then the complete software-rendered pixels.
+       Title/menu are intentionally not treated as one-shot hardware overlays on
+       this target. */
     volatile uint16_t *dst16 = &MARS_FRAMEBUFFER;
     int y;
     if (!video || !framebuffer) return;
     waifu_cd32x_video_set_palette_rgb(video, rgb, palette_id, fade_q8);
 
+    cd32x_write_back_line_table();
     dst16 += WAIFU_CD32X_LINE_TABLE_WORDS;
     for (y = 0; y < WAIFU_CD32X_H; ++y) {
         const uint8_t *src = framebuffer + y * WAIFU_CD32X_W;
@@ -381,14 +351,6 @@ void waifu_cd32x_video_wait_vblank(WaifuCd32xVideo *video)
 {
     if (!video) return;
     cd32x_wait_fb_flip(video);
-#if WAIFU_CD32X_CLEAR_BACK_AFTER_FLIP
-    /* The 32X framebuffer aperture always writes the hidden back page.  Clear
-       that newly hidden page after FS changes so any state that draws only a
-       partial/transition frame starts from black instead of exposing stale
-       title/loading/game pixels on the next flip.  The line table is left
-       resident and present_8bpp repacks a full frame before the page is shown. */
-    cd32x_clear_cpu_back_page_pixels();
-#endif
 }
 
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)

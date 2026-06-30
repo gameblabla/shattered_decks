@@ -190,10 +190,13 @@ separate future track; CD32X should use RF5C164.
    preview state; CD32X rendering uses cached-only 112x112 art so a missed prewarm
    drops art for the frame instead of issuing a render-time CD read.
    **Related presentation fix:** the 32X video backend no longer treats title/menu
-   as a one-shot hardware overlay, and after each FS page flip it clears the newly
-   hidden CPU-visible back page (line table preserved). This is separate from card
-   cache memory, but it addresses stale-page flashes in title/loading/game
-   transitions when a state draws only a partial/black frame.
+   as a one-shot hardware overlay. It follows Blastem's `32x_video.c` model:
+   framebuffer writes target the current `back` page, FS swaps `front`/`back`,
+   and `0x24020000` is overwrite mode for the same back page rather than a second
+   CPU-addressable framebuffer. `present_8bpp` therefore writes a fresh line table
+   plus the complete 320x240 pixel payload to the current back page before every
+   flip. This is separate from card cache memory, but it fixes black/stale-page
+   flashes caused by one physical page being shown without a valid line table.
 2. **RF5C164 music streaming, CD idle.** Stream one deck-editor theme from a
    preloaded Word-RAM buffer (CD quiet) to validate the double-buffer/refill and
    quality before adding CD contention.
