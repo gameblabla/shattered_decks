@@ -229,11 +229,9 @@ static void cd32x_cdda_resume_after_read(void)
     }
 }
 
-static int cd32x_read_file_slice(const char *filename, int byte_offset, int bytes, char *dst);
-static void cd32x_transfer_word_ram_to_32x(int words);
-
 static void cd32x_service_card_face_request(int card_id, int words, char *word_ram)
 {
+    int byte_offset;
     int rc;
 
     if (card_id < 0 || card_id >= CD32X_CARD_SINGLE_COUNT || words != CD32X_CARD_ONE_WORDS) {
@@ -241,23 +239,23 @@ static void cd32x_service_card_face_request(int card_id, int words, char *word_r
         return;
     }
 
-    /* Serve one card face with the same sector-accurate slice reader the big-art
-       and portrait paths use.  The earlier load_file()+memcpy approach loaded the
-       whole atlas through the CD BIOS and then slid the requested card to the
-       start of the transfer window; that delivered each face rotated four bytes
-       (the card frame "wrapped around" on the field) because the BIOS file load
-       does not align to the same raw user-data window read_cd() returns.  Reading
-       exactly the card's 2052 bytes by LBA matches the proven big-art path and
-       keeps faces byte-identical to the on-disc atlas. */
-    rc = cd32x_read_file_slice("CARD_FACES.BIN",
-                               card_id * CD32X_CARD_ONE_BYTES,
-                               CD32X_CARD_ONE_BYTES,
-                               word_ram);
+    /* Serve one card face by loading the whole face atlas through the proven CD
+       BIOS load_file path (the raw read_cd/LBA path could hang on some BIOS
+       implementations), then sliding the requested card to the start of the
+       Word-RAM transfer window.  CARD_FACES.BIN (~144 KiB) fits in the 256 KiB
+       2M Word RAM staging buffer. */
+    rc = load_file((char *)"CARD_FACES.BIN", word_ram);
     if (rc < 0) {
         cd32x_fail_cd_request(rc);
         return;
     }
-    cd32x_transfer_word_ram_to_32x(words);
+
+    byte_offset = card_id * CD32X_CARD_ONE_BYTES;
+    memcpy(word_ram, word_ram + byte_offset, CD32X_CARD_ONE_BYTES);
+    switch_banks();
+    rc = do_md_cmd2(MD_CMD_CPY_TO_32X, 0x200000, words);
+    if (rc < 0) cd32x_fail_cd_request(rc);
+    cd32x_cdda_resume_after_read();
 }
 
 static int cd32x_read_file_slice(const char *filename, int byte_offset, int bytes, char *dst)
