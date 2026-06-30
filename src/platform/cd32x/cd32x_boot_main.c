@@ -267,7 +267,10 @@ static void cd32x_cdda_resume_after_read(void)
 
 static void cd32x_before_cd_read(void)
 {
-    cd32x_music_pump();
+    /* The RF5C164 ring is now refilled from the Sub-CPU INT2/vblank handler, so
+       it keeps streaming through the blocking load_file below without the main
+       loop pumping it (pumping here too would race the INT2 pump on the shared
+       stream state).  Kept as a hook in case a pre-read action is needed later. */
 }
 
 /* The whole CARD_FACES.BIN atlas (~144 KiB) is loaded into the Word-RAM staging
@@ -638,7 +641,8 @@ int main(void)
 
     for (;;) {
         cd32x_service_cd_request();
-        cd32x_music_pump();
+        /* The RF5C164 ring is refilled from the INT2/vblank handler; here we only
+           keep the CD chunk source topped up for it. */
         cd32x_music_stream_pump();
     }
 
