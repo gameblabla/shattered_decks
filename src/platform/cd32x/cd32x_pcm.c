@@ -246,30 +246,55 @@ int cd32x_pcm_sfx_play(int effect)
 /* ---- RF5C164 streamed music ------------------------------------------------
    SFX occupies the low generated block range of wave RAM; music uses the
    remaining high RAM on channel 4 with a 0xFF loop-end marker at 0xFF00 so the
-   chip wraps the ring continuously.  Each vblank tick the supervisor copies the
-   next PRG-RAM chunk bytes into the ring ahead of the play head (open-loop: play
-   and write both advance ~RATE/60 bytes/tick).  When a chunk has been fully
-   queued into the ring, the supervisor can overwrite the PRG-RAM source buffer
-   with the next CD chunk while the RF5C164 drains the queued ring audio. */
+   chip wraps the ring continuously.
+
+   Streaming is CLOSED-LOOP: the RF5C164 exposes the live per-channel playback
+   address through its read registers (0x10-0x1F; see BlastEm rf5c164_read), so
+   each pump reads channel 4's play head out of wave RAM and refills the ring up
+   to a near-full target ahead of it.  This is immune to the open-loop failure
+   that silenced music during card loads: a blocking BIOS CD read starves the
+   Sub-CPU INT2 so GET_TICKS freezes while the chip keeps draining the ring, and
+   the old tick-paced refill then wrote almost nothing and underran.  Reading the
+   actual play head removes any dependence on GET_TICKS and on the assumed
+   sample rate, and keeps the ring maximally buffered (~2.4s) right up to each
+   CD read so a single read never drains it.  When a source chunk has been fully
+   queued into the ring, cd32x_music_needs_chunk() asks the supervisor to load
+   the next CD chunk into the PRG-RAM source buffer. */
 #define CD32X_MUSIC_CHANNEL    4u
 #define CD32X_MUSIC_RING_BLOCK WAIFU_CD32X_SFX_PCM_USED_BLOCKS
 #define CD32X_MUSIC_RING_BASE  (CD32X_MUSIC_RING_BLOCK << 8)
 #define CD32X_MUSIC_MARKER_OFF 0xFF00u
 #define CD32X_MUSIC_RING_BYTES (CD32X_MUSIC_MARKER_OFF - CD32X_MUSIC_RING_BASE)
-#define CD32X_MUSIC_TICK_BYTES 184u                                     /* 11025/60 */
 #define CD32X_MUSIC_VOLUME     0xC0u
 #define CD32X_MUSIC_LEAD_GUARD 1024u
+
+/* RF5C164 channel-4 playback-address read registers.  Register N sits at
+   0xFF0001 + 2*N; the address registers for channel C are 0x10|(C<<1) (low byte
+   of the wave-RAM byte address, cur_ptr>>11) and 0x11|(C<<1) (high byte,
+   cur_ptr>>19).  Channel 4 -> 0x18 / 0x19 -> 0xFF0031 / 0xFF0033. */
+#define PCM_PLAY_LO *((volatile uint8_t *)0xFF0031)
+#define PCM_PLAY_HI *((volatile uint8_t *)0xFF0033)
 
 static int8_t  g_music_clip[WAIFU_CD32X_MUSIC_PCM_MAX_CHUNK_BYTES];
 static uint32_t g_music_clip_len;
 static uint32_t g_music_clip_pos;
 static uint16_t g_music_write_off;
-static uint32_t g_music_last_tick;
 static uint8_t  g_music_playing;
 static uint8_t  g_music_need_chunk;
 
 int8_t *cd32x_music_clip_buffer(void) { return g_music_clip; }
 uint32_t cd32x_music_clip_capacity(void) { return (uint32_t)sizeof(g_music_clip); }
+
+/* Live channel-4 play head as a ring-relative byte offset in [0, RING_BYTES).
+   Returns 0 before the channel has started (cur_ptr still below the ring). */
+static uint16_t music_play_off(void)
+{
+    uint16_t addr = (uint16_t)(((uint16_t)PCM_PLAY_HI << 8) | (uint16_t)PCM_PLAY_LO);
+    if (addr < (uint16_t)CD32X_MUSIC_RING_BASE) return 0u;
+    addr = (uint16_t)(addr - (uint16_t)CD32X_MUSIC_RING_BASE);
+    if (addr >= (uint16_t)CD32X_MUSIC_RING_BYTES) addr = (uint16_t)(CD32X_MUSIC_RING_BYTES - 1u);
+    return addr;
+}
 
 static void music_write_ring(uint32_t n)
 {
@@ -323,15 +348,16 @@ void cd32x_music_start(uint32_t chunk_bytes)
     pcm_set_env(CD32X_MUSIC_VOLUME);
     pcm_set_pan(128u);
 
-    /* The ring is already fully primed.  Start rewriting near the far end of
-       the ring so CD reads have almost the whole RF5C164 ring as stall margin. */
+    /* The ring is already fully primed with clip[0..RING_BYTES).  Position the
+       write head a near-full target ahead of the play head (which starts at the
+       ring base) so the closed-loop pump sees the ring as full and only refills
+       as the chip drains it. */
     lead = CD32X_MUSIC_RING_BYTES > CD32X_MUSIC_LEAD_GUARD
         ? CD32X_MUSIC_RING_BYTES - CD32X_MUSIC_LEAD_GUARD
         : CD32X_MUSIC_RING_BYTES / 2u;
     if (lead >= g_music_clip_len) lead = g_music_clip_len - 1u;
     g_music_write_off = (uint16_t)lead;
     g_music_clip_pos = lead;
-    g_music_last_tick = GET_TICKS;
     g_music_playing = 1u;
     pcm_set_on(CD32X_MUSIC_CHANNEL);
 }
@@ -344,7 +370,6 @@ void cd32x_music_supply_chunk(uint32_t chunk_bytes)
     g_music_clip_len = chunk_bytes;
     g_music_clip_pos = 0u;
     g_music_need_chunk = 0u;
-    g_music_last_tick = GET_TICKS;
 }
 
 int cd32x_music_needs_chunk(void)
@@ -363,11 +388,22 @@ void cd32x_music_stop(void)
 
 void cd32x_music_pump(void)
 {
-    uint32_t now, delta;
+    uint16_t play, write, fill, target;
     if (!g_music_playing) return;
-    now = GET_TICKS;
-    delta = now - g_music_last_tick;
-    if (delta == 0u) return;
-    g_music_last_tick = now;
-    music_write_ring(delta * CD32X_MUSIC_TICK_BYTES);
+    if (g_music_clip_len == 0u || g_music_clip_pos >= g_music_clip_len) {
+        g_music_need_chunk = 1u;
+        return;
+    }
+
+    /* Refill the ring up to TARGET valid bytes ahead of the live play head.
+       fill = (write - play) mod RING_BYTES is the amount of queued, not-yet
+       played audio; top it back up to the near-full target each pump. */
+    play = music_play_off();
+    write = g_music_write_off;
+    fill = (write >= play)
+        ? (uint16_t)(write - play)
+        : (uint16_t)(CD32X_MUSIC_RING_BYTES - (uint16_t)(play - write));
+    target = (uint16_t)(CD32X_MUSIC_RING_BYTES - CD32X_MUSIC_LEAD_GUARD);
+    if (fill >= target) return;
+    music_write_ring((uint32_t)(target - fill));
 }
