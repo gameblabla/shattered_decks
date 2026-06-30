@@ -13,6 +13,7 @@
 #include "cd32x_md_iface.h"
 #include "cd32x_files.h"
 #include "cd32x_pcm.h"
+#include "cd32x_music_pcm.h"
 #include "waifu_assets.h"
 
 extern void cd32x_bios_cdda_init(void);
@@ -25,6 +26,8 @@ extern void cd32x_bios_cdda_stop(void);
 #define CD32X_MD_CMD_CDDA_PLAY  0xCD03
 #define CD32X_MD_CMD_CDDA_STOP  0xCD04
 #define CD32X_MD_CMD_PCM_PLAY   0xCD05
+#define CD32X_MD_CMD_PCM_MUSIC  0xCD06
+#define CD32X_MD_CMD_PCM_MUSIC_STOP 0xCD07
 #define CD32X_CD_STATUS_ERROR   0xCDEE
 
 #define WAIFU_ASSET_BLOB_TITLE_SCREEN            0
@@ -49,6 +52,7 @@ extern void cd32x_bios_cdda_stop(void);
 #define CD32X_CARD_BIG_ONE_WORDS                   (CD32X_CARD_BIG_ONE_BYTES / 2)
 #define CD32X_CD_SECTOR_BYTES                      2048
 #define CD32X_CARD_BIG_CD_SLOT_BYTES               (((CD32X_CARD_BIG_ONE_BYTES + CD32X_CD_SECTOR_BYTES - 1) / CD32X_CD_SECTOR_BYTES) * CD32X_CD_SECTOR_BYTES)
+#define CD32X_CARD_BIG_CHUNK_CARDS                 16
 #define CD32X_STORY_PORTRAIT_COUNT                 WAIFU_STORY_PORTRAIT_COUNT
 #define CD32X_STORY_PORTRAIT_CD_STRIDE             WAIFU_STORY_PORTRAIT_CD_STRIDE
 #define CD32X_STORY_PORTRAIT_WORDS                 (CD32X_STORY_PORTRAIT_CD_STRIDE / 2)
@@ -279,39 +283,6 @@ static void cd32x_service_card_face_request(int card_id, int words, char *word_r
     cd32x_cdda_resume_after_read();
 }
 
-static int cd32x_read_file_slice(const char *filename, int byte_offset, int bytes, char *dst)
-{
-    char *sector_buf = (char *)0x6800;
-    int file_lba;
-    int file_len;
-    int pos;
-    int remaining;
-
-    if (byte_offset < 0 || bytes <= 0) return -1;
-    if (find_dir_entry((char *)filename) < 0) return -1;
-    file_lba = global_vars->DENTRY_OFFSET;
-    file_len = global_vars->DENTRY_LENGTH;
-    if (byte_offset > file_len || bytes > file_len - byte_offset) return -1;
-
-    pos = byte_offset;
-    remaining = bytes;
-    while (remaining > 0) {
-        int sector_offset = pos & (CD32X_CD_SECTOR_BYTES - 1);
-        int copy = CD32X_CD_SECTOR_BYTES - sector_offset;
-        int rc;
-        if (copy > remaining) copy = remaining;
-        rc = read_cd(file_lba + (pos / CD32X_CD_SECTOR_BYTES), 1, sector_buf);
-        if (rc < 0) {
-            return rc;
-        }
-        memcpy(dst, sector_buf + sector_offset, copy);
-        dst += copy;
-        pos += copy;
-        remaining -= copy;
-    }
-    return 0;
-}
-
 static void cd32x_transfer_word_ram_to_32x(int words)
 {
     int rc;
@@ -323,6 +294,10 @@ static void cd32x_transfer_word_ram_to_32x(int words)
 
 static void cd32x_service_card_big_request(int card_id, int words, char *word_ram)
 {
+    char filename[] = "CARD_BG0.BIN";
+    int chunk_id;
+    int chunk_card;
+    int byte_offset;
     int rc;
 
     if (card_id < 0 || card_id >= CD32X_CARD_SINGLE_COUNT || words != CD32X_CARD_BIG_ONE_WORDS) {
@@ -331,13 +306,24 @@ static void cd32x_service_card_big_request(int card_id, int words, char *word_ra
     }
     cd32x_invalidate_face_atlas();
 
-    rc = cd32x_read_file_slice("CARD_BIG_ART_CD.BIN",
-                               card_id * CD32X_CARD_BIG_CD_SLOT_BYTES,
-                               CD32X_CARD_BIG_ONE_BYTES,
-                               word_ram);
+    chunk_id = card_id / CD32X_CARD_BIG_CHUNK_CARDS;
+    chunk_card = card_id % CD32X_CARD_BIG_CHUNK_CARDS;
+    byte_offset = chunk_card * CD32X_CARD_BIG_CD_SLOT_BYTES;
+    filename[7] = (char)('0' + chunk_id);
+    rc = load_file(filename, word_ram);
     if (rc < 0) {
         cd32x_fail_cd_request(rc);
         return;
+    }
+    if (byte_offset < 0 || byte_offset + CD32X_CARD_BIG_ONE_BYTES > rc) {
+        cd32x_fail_cd_request(-1);
+        return;
+    }
+    if (byte_offset > 0) {
+        int i;
+        for (i = 0; i < CD32X_CARD_BIG_ONE_BYTES; ++i) {
+            word_ram[i] = word_ram[byte_offset + i];
+        }
     }
     cd32x_transfer_word_ram_to_32x(words);
 }
@@ -345,6 +331,7 @@ static void cd32x_service_card_big_request(int card_id, int words, char *word_ra
 static void cd32x_service_portrait_request(int portrait_id, int words, int mask, char *word_ram)
 {
     const char *filename = mask ? "STORY_PORTRAIT_MASK.BIN" : "STORY_PORTRAITS.BIN";
+    int byte_offset;
     int rc;
 
     if (portrait_id < 0 || portrait_id >= CD32X_STORY_PORTRAIT_COUNT || words != CD32X_STORY_PORTRAIT_WORDS) {
@@ -353,15 +340,58 @@ static void cd32x_service_portrait_request(int portrait_id, int words, int mask,
     }
     cd32x_invalidate_face_atlas();
 
-    rc = cd32x_read_file_slice(filename,
-                               portrait_id * CD32X_STORY_PORTRAIT_CD_STRIDE,
-                               CD32X_STORY_PORTRAIT_CD_STRIDE,
-                               word_ram);
+    /* Portrait planes are only ~156 KiB each, so load the whole plane through
+       the proven BIOS path and slide the requested record to the transfer
+       window.  Raw read_cd slices can hang if story-map CD-DA is still active. */
+    rc = load_file((char *)filename, word_ram);
     if (rc < 0) {
         cd32x_fail_cd_request(rc);
         return;
     }
+    byte_offset = portrait_id * CD32X_STORY_PORTRAIT_CD_STRIDE;
+    if (byte_offset < 0 || byte_offset + CD32X_STORY_PORTRAIT_CD_STRIDE > rc) {
+        cd32x_fail_cd_request(-1);
+        return;
+    }
+    memcpy(word_ram, word_ram + byte_offset, CD32X_STORY_PORTRAIT_CD_STRIDE);
     cd32x_transfer_word_ram_to_32x(words);
+}
+
+/* Load one in-duel / deck-editor theme clip from CD into the Sub-CPU PRG-RAM
+   music buffer and start the RF5C164 stream.  The clip goes to PRG RAM, not Word
+   RAM, so it does not disturb the resident card-face atlas.  Card data is read
+   from a quiet drive afterwards (these screens run no CD-DA). */
+static int cd32x_start_music(int theme_id)
+{
+    char *word_ram = (char *)0x0C0000;
+    const char *file;
+    int bytes;
+    int rc;
+
+    switch (theme_id) {
+    case WAIFU_CD32X_MUSIC_DECK_EDITOR_ID:
+        file = WAIFU_CD32X_MUSIC_DECK_EDITOR_FILE; bytes = WAIFU_CD32X_MUSIC_DECK_EDITOR_BYTES; break;
+    case WAIFU_CD32X_MUSIC_BATTLE_ID:
+        file = WAIFU_CD32X_MUSIC_BATTLE_FILE; bytes = WAIFU_CD32X_MUSIC_BATTLE_BYTES; break;
+    case WAIFU_CD32X_MUSIC_BOSS_ID:
+        file = WAIFU_CD32X_MUSIC_BOSS_FILE; bytes = WAIFU_CD32X_MUSIC_BOSS_BYTES; break;
+    case WAIFU_CD32X_MUSIC_FINAL_BOSS_ID:
+        file = WAIFU_CD32X_MUSIC_FINAL_BOSS_FILE; bytes = WAIFU_CD32X_MUSIC_FINAL_BOSS_BYTES; break;
+    default:
+        cd32x_music_stop();
+        return 0;
+    }
+    if ((uint32_t)bytes > cd32x_music_clip_capacity()) bytes = (int)cd32x_music_clip_capacity();
+
+    cd32x_music_stop();
+    cd32x_invalidate_face_atlas();
+    rc = load_file((char *)file, word_ram);
+    if (rc < 0) return rc;
+    if (rc < bytes) bytes = rc;
+    if (bytes <= 1) return -1;
+    memcpy(cd32x_music_clip_buffer(), word_ram, bytes);
+    cd32x_music_start((uint32_t)bytes);
+    return 0;
 }
 
 static void cd32x_service_cd_request(void)
@@ -384,6 +414,16 @@ static void cd32x_service_cd_request(void)
     }
     if (cmd == CD32X_MD_CMD_CDDA_PLAY || cmd == CD32X_MD_CMD_CDDA_STOP) {
         cd32x_service_cdda_request(cmd);
+        return;
+    }
+    if (cmd == CD32X_MD_CMD_PCM_MUSIC) {
+        int theme = do_md_cmd2(MD_CMD_GET_COMM32X, 2, 2);
+        cd32x_finish_md_request(cd32x_start_music(theme));
+        return;
+    }
+    if (cmd == CD32X_MD_CMD_PCM_MUSIC_STOP) {
+        cd32x_music_stop();
+        cd32x_finish_md_request(0);
         return;
     }
     if (cmd == CD32X_MD_CMD_PCM_PLAY) {
@@ -477,6 +517,7 @@ int main(void)
 
     for (;;) {
         cd32x_service_cd_request();
+        cd32x_music_pump();
     }
 
     return 0;

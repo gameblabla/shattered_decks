@@ -98,7 +98,11 @@ CD_ASSETS := \
   assets/generated/support_face.bin \
   assets/generated/support_big_art.bin \
   assets/generated/support_big_art_cd.bin \
-  assets/generated/cd32x_sfx_pcm.bin
+  assets/generated/cd32x_sfx_pcm.bin \
+  assets/generated/DECK_PCM.BIN \
+  assets/generated/BATTLE_PCM.BIN \
+  assets/generated/BOSS_PCM.BIN \
+  assets/generated/FINALBOSS_PCM.BIN
 
 CDDA_WAVS := \
   Music/Titlescreen_MoonlitCipher.wav \
@@ -194,9 +198,13 @@ assets/generated/cd32x_title_screen_img.bin src/generated/cd32x_title_asset.h: t
 assets/generated/cd32x_sfx_pcm.bin src/generated/cd32x_sfx_pcm.h: tools/gen_cd32x_sfx_pcm.py
 	python3 tools/gen_cd32x_sfx_pcm.py
 
-$(M68K_OBJDIR)/src/platform/cd32x/cd32x_pcm.o: src/generated/cd32x_sfx_pcm.h
+assets/generated/DECK_PCM.BIN assets/generated/BATTLE_PCM.BIN assets/generated/BOSS_PCM.BIN assets/generated/FINALBOSS_PCM.BIN src/generated/cd32x_music_pcm.h: tools/gen_cd32x_music_pcm.py Music/Overworld.wav Music/Battle.wav Music/Boss.wav Music/FinalBoss.wav
+	python3 tools/gen_cd32x_music_pcm.py
 
-$(CDROOT): $(M68K_BIN) $(CD_ASSETS)
+$(M68K_OBJDIR)/src/platform/cd32x/cd32x_boot_main.o: src/generated/cd32x_music_pcm.h
+$(M68K_OBJDIR)/src/platform/cd32x/cd32x_pcm.o: src/generated/cd32x_sfx_pcm.h src/generated/cd32x_music_pcm.h
+
+$(CDROOT): $(M68K_BIN) $(CD_ASSETS) src/generated/cd32x_music_pcm.h
 	$(RM) $(CDROOT)
 	mkdir -p $(CDROOT)/ASSETS
 	cp $(M68K_BIN) $(CDROOT)/APP.BIN
@@ -207,11 +215,16 @@ $(CDROOT): $(M68K_BIN) $(CD_ASSETS)
 	python3 tools/cd32x_assets/split_card_faces.py assets/generated/card_faces.bin $(CDROOT)/ASSETS
 	cp assets/generated/card_big_art.bin $(CDROOT)/ASSETS/CARD_BIG_ART.BIN
 	cp assets/generated/card_big_art_cd.bin $(CDROOT)/ASSETS/CARD_BIG_ART_CD.BIN
+	python3 tools/cd32x_assets/split_card_big_art.py assets/generated/card_big_art_cd.bin $(CDROOT)/ASSETS
 	cp assets/generated/card_back.bin $(CDROOT)/ASSETS/CARD_BACK.BIN
 	cp assets/generated/support_face.bin $(CDROOT)/ASSETS/SUPPORT_FACE.BIN
 	cp assets/generated/support_big_art.bin $(CDROOT)/ASSETS/SUPPORT_BIG_ART.BIN
 	cp assets/generated/support_big_art_cd.bin $(CDROOT)/ASSETS/SUPPORT_BIG_ART_CD.BIN
 	cp assets/generated/cd32x_sfx_pcm.bin $(CDROOT)/ASSETS/SFX_PCM.BIN
+	cp assets/generated/DECK_PCM.BIN $(CDROOT)/ASSETS/DECK_PCM.BIN
+	cp assets/generated/BATTLE_PCM.BIN $(CDROOT)/ASSETS/BATTLE_PCM.BIN
+	cp assets/generated/BOSS_PCM.BIN $(CDROOT)/ASSETS/BOSS_PCM.BIN
+	cp assets/generated/FINALBOSS_PCM.BIN $(CDROOT)/ASSETS/FINALBOSS_PCM.BIN
 
 cd: $(ISO)
 
