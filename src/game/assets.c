@@ -527,6 +527,14 @@ void waifu_assets_request_cards_for_list(const int *card_ids, int count)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
     prewarm_list_clear();
+#if defined(WAIFU_FM_CD32X)
+    /* CD32X battle entry must not front-load big-art reads: each 112x112 card
+       costs a CD seek plus a word-by-word supervisor transfer.  Battle cut-ins
+       still prewarm their exact pair when selected; the LOADING screen only
+       stages the small card/back/support faces needed to enter the duel. */
+    (void)card_ids;
+    (void)count;
+#else
     if (card_ids && count > 0) {
         for (int i = 0; i < count; ++i) prewarm_list_add_card(card_ids[i]);
     }
@@ -534,6 +542,7 @@ void waifu_assets_request_cards_for_list(const int *card_ids, int count)
     /* Support/equip big art is a common mid-animation miss; stage it with the
        normal card working set so the reveal path never blocks on CD. */
     g_prewarm_support_big = 1;
+#endif
     g_requested_portrait_id[0] = -1;
     g_requested_portrait_id[1] = -1;
     evict_title();
