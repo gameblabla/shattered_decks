@@ -891,6 +891,36 @@ void cfx_board_fill(uint8_t *dst, int n,
             : [du] "r" (du), [dv] "r" (dv), [tile] "r" (tile)
             : "memory");
     }
+#elif CFX_RENDERER_USE_SH1_ASM
+    {
+        uint32_t c0, ru, rv;
+        uint32_t mask_u = 0x1fu;
+        uint32_t mask_v = 0x3e0u;
+        __asm__ volatile (
+            "1:\n"
+            "mov %[v],%[rv]\n"
+            "shlr2 %[rv]\n"
+            "shlr %[rv]\n"
+            "and %[mask_v],%[rv]\n"
+            "mov %[u],%[ru]\n"
+            "shlr8 %[ru]\n"
+            "and %[mask_u],%[ru]\n"
+            "add %[rv],%[ru]\n"
+            "add %[tile],%[ru]\n"
+            "mov.b @%[ru],%[c0]\n"
+            "mov.b %[c0],@%[dst]\n"
+            "add %[du],%[u]\n"
+            "add %[dv],%[v]\n"
+            "add #1,%[dst]\n"
+            "add #-1,%[n]\n"
+            "tst %[n],%[n]\n"
+            "bf 1b\n"
+            : [dst] "+r" (dst), [n] "+r" (n), [u] "+r" (u), [v] "+r" (v),
+              [c0] "=&r" (c0), [ru] "=&r" (ru), [rv] "=&r" (rv)
+            : [du] "r" (du), [dv] "r" (dv), [tile] "r" (tile),
+              [mask_u] "r" (mask_u), [mask_v] "r" (mask_v)
+            : "memory");
+    }
 #else
     while (n-- > 0) {
         *dst++ = tile[(((uint32_t)v >> 3) & 0x3e0) | (((uint32_t)u >> 8) & 0x1f)];
@@ -1230,7 +1260,7 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
     }
 }
 
-#if CFX_RENDERER_USE_V810_ASM && CFX_RENDERER_DIRECT_RECT
+#if (CFX_RENDERER_USE_V810_ASM || CFX_RENDERER_USE_SH1_ASM) && CFX_RENDERER_DIRECT_RECT
 /* Compact affine direct-tile inner loop for the perspective board floor
    (32x32 source, pitch 32).  This is the hot per-pixel path: the previous C
    loop recomputed a full 2-D texel address per pixel and, together with the
@@ -1253,6 +1283,7 @@ static inline __attribute__((always_inline)) void cfx_draw_board_pair_nowrap(
     uint32_t sv = (uint32_t)(int32_t)step_v;
     uint32_t c0, c1, ru, rv;
     if (pairs) {
+#if CFX_RENDERER_USE_V810_ASM
         __asm__ volatile (
             "1:\n"
             "mov %[v],%[rv]\n" "shl 2,%[rv]\n" "andi 0x3e0,%[rv],%[rv]\n"
@@ -1269,6 +1300,48 @@ static inline __attribute__((always_inline)) void cfx_draw_board_pair_nowrap(
               [c0] "=&r" (c0), [c1] "=&r" (c1), [ru] "=&r" (ru), [rv] "=&r" (rv)
             : [su] "r" (su), [sv] "r" (sv), [tile] "r" (tile)
             : "memory");
+#elif CFX_RENDERER_USE_SH1_ASM
+        uint32_t mask_u = 0x1fu;
+        uint32_t mask_v = 0x3e0u;
+        __asm__ volatile (
+            "1:\n"
+            "mov %[v],%[rv]\n"
+            "shll2 %[rv]\n"
+            "and %[mask_v],%[rv]\n"
+            "mov %[u],%[ru]\n"
+            "shlr2 %[ru]\n"
+            "shlr %[ru]\n"
+            "and %[mask_u],%[ru]\n"
+            "add %[rv],%[ru]\n"
+            "add %[tile],%[ru]\n"
+            "mov.b @%[ru],%[c0]\n"
+            "add %[su],%[u]\n"
+            "add %[sv],%[v]\n"
+            "mov %[v],%[rv]\n"
+            "shll2 %[rv]\n"
+            "and %[mask_v],%[rv]\n"
+            "mov %[u],%[ru]\n"
+            "shlr2 %[ru]\n"
+            "shlr %[ru]\n"
+            "and %[mask_u],%[ru]\n"
+            "add %[rv],%[ru]\n"
+            "add %[tile],%[ru]\n"
+            "mov.b @%[ru],%[c1]\n"
+            "add %[su],%[u]\n"
+            "add %[sv],%[v]\n"
+            "shll8 %[c0]\n"
+            "or %[c1],%[c0]\n"
+            "mov.w %[c0],@%[dst]\n"
+            "add #2,%[dst]\n"
+            "add #-1,%[pairs]\n"
+            "tst %[pairs],%[pairs]\n"
+            "bf 1b\n"
+            : [dst] "+r" (dst), [pairs] "+r" (pairs), [u] "+r" (u), [v] "+r" (v),
+              [c0] "=&r" (c0), [c1] "=&r" (c1), [ru] "=&r" (ru), [rv] "=&r" (rv)
+            : [su] "r" (su), [sv] "r" (sv), [tile] "r" (tile),
+              [mask_u] "r" (mask_u), [mask_v] "r" (mask_v)
+            : "memory");
+#endif
     }
     *up = (uint8_t)u;
     *vp = (uint8_t)v;
@@ -1366,7 +1439,7 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
         --span;
     }
 
-#if CFX_RENDERER_USE_V810_ASM && CFX_RENDERER_DIRECT_RECT
+#if (CFX_RENDERER_USE_V810_ASM || CFX_RENDERER_USE_SH1_ASM) && CFX_RENDERER_DIRECT_RECT
     /* Fast affine inner loop for the perspective board floor.  Only the 32x32,
        pitch-32 tiles used by the board match the hardcoded shift layout; any
        other geometry falls through to the portable C loop below. */

@@ -887,13 +887,13 @@ static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
     if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
     /* Stone-temple pillar quads used to go through draw_textured_tri(), which
        evaluates barycentric texture coordinates with per-pixel MUL/DIV.  The
-       PC-FX map objects use the same 32x32 atlas tiles as the in-game board, so
-       route them through the compact affine board rasterizer instead: projection
-       is unchanged, but the fill path is edge-stepped and division-free in the
-       hot loops. */
+       PC-FX/CD32X map objects use the same 32x32 atlas tiles as the in-game
+       board, so route them through the compact affine board rasterizer instead:
+       projection is unchanged, but the fill path is edge-stepped and
+       division-free in the hot loops. */
     {
         const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
         Point2D p0 = {(DEFAULT_INT)pa.x, (DEFAULT_INT)pa.y, 0, 0};
@@ -932,7 +932,7 @@ static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
     Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
     Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
     Point2D p3 = {(DEFAULT_INT)dx, (DEFAULT_INT)dy, 0, uvmax};
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
     cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 #else
     cfx_renderer3d_draw_quad(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
@@ -1193,6 +1193,8 @@ static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
         : [v] "r" (v)
         : "memory");
     PROFILE_UI_FAST_FILL();
+#elif defined(WAIFU_FM_CD32X)
+    waifu_cd32x_fill_u8_parallel(dst, count, c);
 #else
     memset(dst, c, (size_t)count);
 #endif
