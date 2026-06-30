@@ -2993,6 +2993,39 @@ static void draw_projected_card_quad(const uint8_t *src, int sw, int sh,
     draw_projected_card_quad_ex(src, sw, sh, p0, p1, p2, p3, 0);
 }
 
+#if defined(WAIFU_FM_CD32X)
+static uint8_t g_cd32x_board_card_back[WAIFU_CARD_W * WAIFU_CARD_H];
+static int g_cd32x_board_card_back_ready = 0;
+
+static const uint8_t *cd32x_board_card_back_tex(void)
+{
+    if (!g_cd32x_board_card_back_ready) {
+        const int cx = WAIFU_CARD_W / 2;
+        const int cy = WAIFU_CARD_H / 2;
+        for (int y = 0; y < WAIFU_CARD_H; ++y) {
+            for (int x = 0; x < WAIFU_CARD_W; ++x) {
+                uint8_t px = 243;
+                if (x <= 1 || x >= WAIFU_CARD_W - 2 || y <= 1 || y >= WAIFU_CARD_H - 2) px = 192;
+                else if (x == 2 || x == WAIFU_CARD_W - 3 || y == 2 || y == WAIFU_CARD_H - 3) px = 14;
+                else if (x == 3 || x == WAIFU_CARD_W - 4 || y == 3 || y == WAIFU_CARD_H - 4) px = 77;
+                else {
+                    int dx = x - cx;
+                    int dy = y - cy;
+                    int ax = dx < 0 ? -dx : dx;
+                    int ay = dy < 0 ? -dy : dy;
+                    int ring = ax > ay ? ax : ay;
+                    int phase = (dx * 3 + dy * 5 + ring * 7) & 15;
+                    if ((ring == 4 || ring == 7 || ring == 10 || ring == 13 || ring == 16) && phase < 10) px = (phase < 4) ? 38 : 17;
+                }
+                g_cd32x_board_card_back[y * WAIFU_CARD_W + x] = px;
+            }
+        }
+        g_cd32x_board_card_back_ready = 1;
+    }
+    return g_cd32x_board_card_back;
+}
+#endif
+
 static void draw_board_card_state(Camera cam, int col, int row, int card_id, int back, int gray, int defense)
 {
     /* Real flat textured field card: project the four card corners on the 3D
@@ -3005,7 +3038,11 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
     int32_t hw = defense ? Q8_FRAC(50,100) : Q8_FRAC(36,100);
     int32_t hz = defense ? Q8_FRAC(36,100) : Q8_FRAC(50,100);
     int32_t y = Q8_FRAC(115,1000);
+#if defined(WAIFU_FM_CD32X)
+    const uint8_t *tex = back ? cd32x_board_card_back_tex() : (is_support_card(card_id) ? waifu_assets_support_face() : card_face_ptr(card_id));
+#else
     const uint8_t *tex = back ? waifu_assets_card_back() : (is_support_card(card_id) ? waifu_assets_support_face() : card_face_ptr(card_id));
+#endif
     if (back) gray = 0;
     ScreenPt p0 = project_point(cam, v3(cx - hw, y, cz - hz));
     ScreenPt p1 = project_point(cam, v3(cx + hw, y, cz - hz));
