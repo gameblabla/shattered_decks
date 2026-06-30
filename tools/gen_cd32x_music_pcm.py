@@ -5,10 +5,14 @@ The full CD-DA themes are minutes long, but on CD32X the deck-editor and battle
 screens stream card data off the disc, so their music is served by the Sega-CD
 RF5C164 PCM chip instead of CD-DA (which would force a stop/resume around every
 read).  Each full source theme is resampled to a low-rate RF5C164 sign/magnitude
-stream and split into large CD chunks.  The supervisor loads one chunk at a time
+stream and split into short CD chunks.  The supervisor loads one chunk at a time
 through Word RAM into Sub-CPU PRG RAM, then refills a RF5C164 wave-RAM ring from
 that buffer.  The deliberately modest sample rate buys more autonomous playback
-time in wave RAM while the CD drive is busy loading card/portrait assets.
+time in wave RAM while the CD drive is busy loading card/portrait assets.  Keep
+each source chunk large enough to survive battle-entry asset traffic after the
+initial ring prime, but still small enough for a short CD read: tiny chunks can
+starve before the next music load gets CD time, while huge chunks can take longer
+to load than the ring can play unattended.
 
 Output: assets/generated/<STEM><NN>.BIN per theme chunk +
 src/generated/cd32x_music_pcm.h with per-theme chunk counts and the shared
@@ -25,7 +29,7 @@ OUT_H = os.path.join(ROOT, 'src', 'generated', 'cd32x_music_pcm.h')
 OUT_STAMP = os.path.join(OUT_DIR, '.cd32x_music_pcm.stamp')
 
 RATE = 8000
-CHUNK_BYTES = 224 * 1024
+CHUNK_BYTES = 64 * 1024
 # RF5C164 frequency delta for RATE.  BlastEm models Sega CD PCM at
 # 50 MHz / (4 * 384), with cur_ptr advancing by delta / 2048 per output sample.
 SCD_MASTER_CLOCK = 50000000
