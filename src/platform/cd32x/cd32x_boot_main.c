@@ -52,7 +52,10 @@ extern void cd32x_bios_cdda_stop(void);
 #define CD32X_CARD_BIG_ONE_WORDS                   (CD32X_CARD_BIG_ONE_BYTES / 2)
 #define CD32X_CD_SECTOR_BYTES                      2048
 #define CD32X_CARD_BIG_CD_SLOT_BYTES               (((CD32X_CARD_BIG_ONE_BYTES + CD32X_CD_SECTOR_BYTES - 1) / CD32X_CD_SECTOR_BYTES) * CD32X_CD_SECTOR_BYTES)
-#define CD32X_CARD_BIG_CHUNK_CARDS                 16
+/* Cards per big-art chunk file (CBGnn.BIN).  Small chunks keep a B-button card
+   check down to one ~56 KiB BIOS read instead of a whole 224 KiB 16-card chunk.
+   Must match CARDS_PER_CHUNK in tools/cd32x_assets/split_card_big_art.py. */
+#define CD32X_CARD_BIG_CHUNK_CARDS                 4
 #define CD32X_STORY_PORTRAIT_COUNT                 WAIFU_STORY_PORTRAIT_COUNT
 #define CD32X_STORY_PORTRAIT_CD_STRIDE             WAIFU_STORY_PORTRAIT_CD_STRIDE
 #define CD32X_STORY_PORTRAIT_WORDS                 (CD32X_STORY_PORTRAIT_CD_STRIDE / 2)
@@ -325,7 +328,7 @@ static void cd32x_transfer_word_ram_to_32x(int words)
 
 static void cd32x_service_card_big_request(int card_id, int words, char *word_ram)
 {
-    char filename[] = "CARD_BG0.BIN";
+    char filename[] = "CBG00.BIN";
     int chunk_id;
     int chunk_card;
     int byte_offset;
@@ -340,7 +343,8 @@ static void cd32x_service_card_big_request(int card_id, int words, char *word_ra
     chunk_id = card_id / CD32X_CARD_BIG_CHUNK_CARDS;
     chunk_card = card_id % CD32X_CARD_BIG_CHUNK_CARDS;
     byte_offset = chunk_card * CD32X_CARD_BIG_CD_SLOT_BYTES;
-    filename[7] = (char)('0' + chunk_id);
+    filename[3] = (char)('0' + (chunk_id / 10) % 10);
+    filename[4] = (char)('0' + chunk_id % 10);
     if (cd32x_set_asset_cwd() < 0) {
         cd32x_fail_cd_request(-1);
         return;

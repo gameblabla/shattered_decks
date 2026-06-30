@@ -4,8 +4,16 @@
 The supervisor can load a named file through the Sega CD BIOS reliably while
 raw sector slices are more fragile around active audio/data transitions.  The
 input is assets/generated/card_big_art_cd.bin: records padded to seven
-2048-byte sectors with the first 112*112 bytes containing the card art.  Chunks
-are kept below 256 KiB so one chunk fits in the Word-RAM staging window.
+2048-byte sectors with the first 112*112 bytes containing the card art.
+
+Chunks are small (a few cards each) so a single B-button card check streams only
+~56 KiB instead of a whole 224 KiB 16-card chunk: card checks no longer stall for
+a second-plus of CD access, and re-checks served from the SH-2 big-art LRU stay
+free.  CARDS_PER_CHUNK must match CD32X_CARD_BIG_CHUNK_CARDS in
+src/platform/cd32x/cd32x_boot_main.c.  The file count is kept low enough that the
+/ASSETS ISO directory stays inside one sector (this disc's Sega CD boot loader is
+only exercised single-sector), and the "CBG%02d.BIN" names stay within ISO9660
+8.3.
 """
 import sys
 from pathlib import Path
@@ -13,7 +21,7 @@ from pathlib import Path
 CARD_BYTES = 112 * 112
 SECTOR = 2048
 SLOT_BYTES = ((CARD_BYTES + SECTOR - 1) // SECTOR) * SECTOR
-CARDS_PER_CHUNK = 16
+CARDS_PER_CHUNK = 4
 
 
 def main(argv):
@@ -30,7 +38,7 @@ def main(argv):
     for chunk_id, start_card in enumerate(range(0, card_count, CARDS_PER_CHUNK)):
         start = start_card * SLOT_BYTES
         end = min(card_count, start_card + CARDS_PER_CHUNK) * SLOT_BYTES
-        (outdir / f"CARD_BG{chunk_id}.BIN").write_bytes(data[start:end])
+        (outdir / f"CBG{chunk_id:02d}.BIN").write_bytes(data[start:end])
     return 0
 
 
