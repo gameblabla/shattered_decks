@@ -125,8 +125,10 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
 #if defined(WAIFU_FM_CD32X)
 /* CD32X cannot keep the full 72-card face atlas (~144 KiB) resident in 32X
    SDRAM without overrunning into the stack.  Card faces are streamed per-card
-   into a small LRU staged in the asset arena. */
-#define CD32X_CARD_FACE_CACHE_SLOTS 8
+   into an LRU staged in the asset arena.  Keep this large enough for the
+   currently visible hand/field set so drawing does not thrash the CD every
+   frame. */
+#define CD32X_CARD_FACE_CACHE_SLOTS 24
 #define CARD_FACE_STAGE_BYTES ((size_t)CD32X_CARD_FACE_CACHE_SLOTS * CARD_ONE_BYTES)
 #else
 #define CARD_FACE_STAGE_BYTES CARD_FACE_BYTES
@@ -165,12 +167,20 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
 #define ASSET_BASE_STAGE_BYTES ASSET_STAGE_A_BYTES
 #elif defined(WAIFU_FM_CD32X)
 /* CD32X displays only the 8bpp title plane.  Keep the PC-FX 16M title staging
-   out of the 32X SDRAM arena without changing PC-FX/headless behavior. */
+   out of the 32X SDRAM arena without changing PC-FX/headless behavior.
+   Title, portraits, and cards are mutually exclusive working sets on CD32X;
+   card big-art is packed after CARDS_TOTAL_BYTES rather than after this title
+   maximum so card mode does not run past the actual 32X SDRAM arena. */
 #define ASSET_BASE_STAGE_BYTES ((ASSET_STAGE_A_BYTES > TITLE_BYTES) ? ASSET_STAGE_A_BYTES : TITLE_BYTES)
+#define CARD_BIG_STAGE_OFFSET CARDS_TOTAL_BYTES
 #else
 #define ASSET_BASE_STAGE_BYTES ((ASSET_STAGE_A_BYTES > TITLE_TOTAL_BYTES) ? ASSET_STAGE_A_BYTES : TITLE_TOTAL_BYTES)
 #endif
-#define ASSET_STAGE_BYTES (ASSET_BASE_STAGE_BYTES + CARD_BIG_CACHE_BYTES)
+#ifndef CARD_BIG_STAGE_OFFSET
+#define CARD_BIG_STAGE_OFFSET ASSET_BASE_STAGE_BYTES
+#endif
+#define ASSET_CARD_STAGE_BYTES (CARD_BIG_STAGE_OFFSET + CARD_BIG_CACHE_BYTES)
+#define ASSET_STAGE_BYTES ((ASSET_BASE_STAGE_BYTES > ASSET_CARD_STAGE_BYTES) ? ASSET_BASE_STAGE_BYTES : ASSET_CARD_STAGE_BYTES)
 #if defined(WAIFU_FM_CD32X)
 typedef char WaifuCd32xAssetStageFits[(ASSET_STAGE_BYTES <= WAIFU_CD32X_ASSET_ARENA_BYTES) ? 1 : -1];
 #define g_asset_stage_ram (waifu_cd32x_asset_arena())
@@ -212,8 +222,8 @@ static unsigned g_cd32x_face_cache_stamp[CD32X_CARD_FACE_CACHE_SLOTS];
 static unsigned g_cd32x_face_cache_clock = 1;
 static void cd32x_card_face_cache_reset(void);
 #endif
-static uint8_t *stage_big_cache_ptr(int slot) { return g_asset_stage_ram + ASSET_BASE_STAGE_BYTES + ((size_t)slot * CARD_BIG_CACHE_SLOT_BYTES); }
-static uint8_t *stage_support_big_ptr(void) { return g_asset_stage_ram + ASSET_BASE_STAGE_BYTES + ((size_t)WAIFU_ASSET_BIG_CACHE_SLOTS * CARD_BIG_CACHE_SLOT_BYTES); }
+static uint8_t *stage_big_cache_ptr(int slot) { return g_asset_stage_ram + CARD_BIG_STAGE_OFFSET + ((size_t)slot * CARD_BIG_CACHE_SLOT_BYTES); }
+static uint8_t *stage_support_big_ptr(void) { return g_asset_stage_ram + CARD_BIG_STAGE_OFFSET + ((size_t)WAIFU_ASSET_BIG_CACHE_SLOTS * CARD_BIG_CACHE_SLOT_BYTES); }
 static int g_big_cache_card_id[WAIFU_ASSET_BIG_CACHE_SLOTS];
 static unsigned g_big_cache_stamp[WAIFU_ASSET_BIG_CACHE_SLOTS];
 static unsigned g_big_cache_clock = 1;
@@ -368,6 +378,26 @@ static void evict_title(void)
     }
 }
 
+static void clear_big_art_cache_metadata(void)
+{
+    int loaded = big_cache_loaded_count();
+    if (loaded > 0) {
+        size_t bytes = (size_t)loaded * CARD_BIG_CACHE_SLOT_BYTES;
+        if (g_ram_used >= bytes) g_ram_used -= bytes;
+        else g_ram_used = 0;
+    }
+    if (g_support_big_loaded) {
+        if (g_ram_used >= CARD_BIG_CACHE_SLOT_BYTES) g_ram_used -= CARD_BIG_CACHE_SLOT_BYTES;
+        else g_ram_used = 0;
+    }
+    for (int i = 0; i < WAIFU_ASSET_BIG_CACHE_SLOTS; ++i) {
+        g_big_cache_card_id[i] = -1;
+        g_big_cache_stamp[i] = 0;
+    }
+    g_big_cache_clock = 1;
+    g_support_big_loaded = 0;
+}
+
 static void evict_cards(void)
 {
     if (g_cards_loaded) {
@@ -375,11 +405,18 @@ static void evict_cards(void)
         if (g_ram_used >= CARDS_TOTAL_BYTES) g_ram_used -= CARDS_TOTAL_BYTES;
         else g_ram_used = 0;
     }
+#if defined(WAIFU_FM_CD32X)
+    /* CD32X title, portrait, card-face, and big-art storage all overlap inside
+       the transient SDRAM arena.  Any working-set switch can overwrite big art,
+       so cached-only draw probes must not keep stale card IDs. */
+    clear_big_art_cache_metadata();
+#else
     /* Deliberately do not evict g_big_cache_card_id[] or support big art here.
-       Those live after ASSET_BASE_STAGE_BYTES, outside the title/portrait/card
+       Those live after CARD_BIG_STAGE_OFFSET, outside the title/portrait/card
        working-set overlay.  Keeping them resident makes the big-art cache global
        for the whole game session and lets story/random battles reuse card art
        already loaded by earlier duels or deck previews. */
+#endif
 }
 
 static void evict_portraits(void)
