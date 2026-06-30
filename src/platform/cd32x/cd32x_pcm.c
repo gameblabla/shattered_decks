@@ -286,10 +286,21 @@ int8_t *cd32x_music_clip_buffer(void) { return g_music_clip; }
 uint32_t cd32x_music_clip_capacity(void) { return (uint32_t)sizeof(g_music_clip); }
 
 /* Live channel-4 play head as a ring-relative byte offset in [0, RING_BYTES).
-   Returns 0 before the channel has started (cur_ptr still below the ring). */
+   Returns 0 before the channel has started (cur_ptr still below the ring).
+
+   The RF5C164 only exposes the channel address read registers while the control
+   register is in register/channel-select mode (D6=1) with the wanted channel
+   selected; in wave-RAM access mode (D6=0, left by the previous pcm_cpy) the
+   reads return RAM/garbage on real hardware.  BlastEm decodes the channel from
+   the address alone and ignores this, which is why the old read worked in the
+   emulator but the stream silently stalled after one ring (~2.6s) on hardware.
+   Select channel 4 first, then read 0x18/0x19. */
 static uint16_t music_play_off(void)
 {
-    uint16_t addr = (uint16_t)(((uint16_t)PCM_PLAY_HI << 8) | (uint16_t)PCM_PLAY_LO);
+    uint16_t addr;
+    PCM_CTRL = (uint8_t)(0xC0u | CD32X_MUSIC_CHANNEL);
+    pcm_delay();
+    addr = (uint16_t)(((uint16_t)PCM_PLAY_HI << 8) | (uint16_t)PCM_PLAY_LO);
     if (addr < (uint16_t)CD32X_MUSIC_RING_BASE) return 0u;
     addr = (uint16_t)(addr - (uint16_t)CD32X_MUSIC_RING_BASE);
     if (addr >= (uint16_t)CD32X_MUSIC_RING_BYTES) addr = (uint16_t)(CD32X_MUSIC_RING_BYTES - 1u);
