@@ -478,15 +478,6 @@ static int prewarm_list_contains(int card_id)
 
 static void prewarm_list_add_card(int card_id)
 {
-#if defined(WAIFU_FM_CD32X)
-    /* CD32X does not yet have offset-aware big-art streaming (the resident
-       supervisor only services start-aligned blobs plus the per-card face
-       slices).  Keep battle loading bounded to the small-card working set and
-       support art rather than blocking forever on CARD_BIG_ART offset slices.
-       PC-FX/headless retain the normal prewarm/cache behavior. */
-    (void)card_id;
-    return;
-#else
     if (card_id < 0) return;
     if (card_id >= WAIFU_CARD_COUNT) {
         if (!g_support_big_loaded) g_prewarm_support_big = 1;
@@ -496,7 +487,6 @@ static void prewarm_list_add_card(int card_id)
     if (g_prewarm_big_card_count >= WAIFU_ASSET_BIG_CACHE_SLOTS) return;
     if (prewarm_list_contains(card_id)) return;
     g_prewarm_big_card_ids[g_prewarm_big_card_count++] = card_id;
-#endif
 }
 
 static void prewarm_list_add_all_monster_big_art(void)
@@ -1061,6 +1051,25 @@ const uint8_t *waifu_assets_card_big_art(int card_id)
     return load_big_card_art_cached(card_id);
 #else
     return waifu_big_card_art + ((size_t)card_id * CARD_BIG_ONE_BYTES);
+#endif
+}
+
+int waifu_assets_prewarm_big_art_pair(int card_a, int card_b)
+{
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+    int ok = 1;
+    if (!g_cards_loaded) return 0;
+    if (card_a >= 0 && card_a < WAIFU_CARD_COUNT) {
+        if (!load_big_card_art_cached(card_a)) ok = 0;
+    }
+    if (card_b >= 0 && card_b < WAIFU_CARD_COUNT && card_b != card_a) {
+        if (!load_big_card_art_cached(card_b)) ok = 0;
+    }
+    return ok;
+#else
+    (void)card_a;
+    (void)card_b;
+    return 1;
 #endif
 }
 

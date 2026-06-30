@@ -41,7 +41,7 @@ SH2_INCLUDES := -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated -Isrc/platform
 M68K_INCLUDES := -I. -Isrc/generated -Isrc/platform/cd32x \
   -I$(ROOTDIR)/m68k-elf/include -I$(ROOTDIR)/m68k-elf/m68k-elf/include
 
-SH2_CFLAGS_BASE ?= -m2 -mb -Os -Wall -Wextra -Wno-unused-parameter -Werror=vla -std=gnu99 -fomit-frame-pointer -fno-builtin -ffunction-sections -fdata-sections -D__32X__ -DPLATFORM=7 -DBY16=1 -DHARDWARE_DIV=1 -DWAIFU_FM_CD32X -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_NO_STDIO -DWAIFU_ASSET_BIG_CACHE_SLOTS=1 -DWAIFU_ASSET_RAM_BUDGET=196608 -DWAIFU_BG_CACHE_DISABLE -DWAIFU_BATTLE_BASE_CACHE_DISABLE -DWAIFU_FLOOR_SAMPLE_CACHE_DISABLE
+SH2_CFLAGS_BASE ?= -m2 -mb -Os -Wall -Wextra -Wno-unused-parameter -Werror=vla -std=gnu99 -fomit-frame-pointer -fno-builtin -ffunction-sections -fdata-sections -D__32X__ -DPLATFORM=7 -DBY16=1 -DHARDWARE_DIV=1 -DWAIFU_FM_CD32X -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_NO_STDIO -DWAIFU_ASSET_BIG_CACHE_SLOTS=2 -DWAIFU_ASSET_RAM_BUDGET=196608 -DWAIFU_BG_CACHE_DISABLE -DWAIFU_BATTLE_BASE_CACHE_DISABLE -DWAIFU_FLOOR_SAMPLE_CACHE_DISABLE
 ifeq ($(CD32X_ASSET_MODE),cdrom)
 SH2_CFLAGS := $(SH2_CFLAGS_BASE) -DWAIFU_ASSET_USE_CDROM $(SH2_INCLUDES) $(EXTRA_CFLAGS)
 else

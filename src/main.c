@@ -2368,10 +2368,10 @@ static const uint8_t *card_big_art_ptr(int id)
 {
     if (id < 0) id = 0;
     if (id >= WAIFU_CARD_COUNT) id = WAIFU_CARD_COUNT - 1;
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
     /* Rendering must never issue a synchronous CD/SCSI read.  Full-size card
-       art is loaded by the asset-loading state and then reused from the global
-       big-art cache; on an unexpected miss, draw the frame/text only. */
+       art is prewarmed into the target's resident cache; on an unexpected miss,
+       draw the frame/text only instead of stalling inside presentation. */
     return waifu_assets_card_big_art_cached(id);
 #else
     return waifu_assets_card_big_art(id);
@@ -2380,7 +2380,7 @@ static const uint8_t *card_big_art_ptr(int id)
 
 static const uint8_t *support_big_art_ptr(void)
 {
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
     return waifu_assets_support_big_art_cached();
 #else
     return waifu_assets_support_big_art();
@@ -7528,11 +7528,15 @@ static void prepare_battle(int attacker_owner, int attacker_slot, int defender_s
     g_b_battle_damage_owner = bc.damage_owner;
     g_b_battle_outcome = bc.outcome;
     fmt_i32_dec(g_b_damage_text, (int)sizeof(g_b_damage_text), bc.damage);
+#if defined(WAIFU_FM_CD32X)
+    (void)waifu_assets_prewarm_big_art_pair(atk_id, def_id);
+#else
     /* Pull big art into the small CD/SCSI cache before the battle cut-in starts.
        This keeps the reveal animation event-driven and prevents the first
        face-up frame from stalling on an art cache miss. */
     (void)card_big_art_ptr(atk_id);
     (void)card_big_art_ptr(def_id);
+#endif
     set_battle_phase(attacker_owner == 0 ? IB_PLAYER_BATTLE : IB_COM_BATTLE);
 }
 
@@ -7575,7 +7579,11 @@ static void prepare_direct_attack(int attacker_owner, int attacker_slot)
     g_b_direct_damage = dmg;
     waifu_str_copy(g_b_damage_text, (int)sizeof(g_b_damage_text), "-"); waifu_str_cat_i32(g_b_damage_text, (int)sizeof(g_b_damage_text), dmg);
     g_b_battle_outcome = BATTLE_DIRECT_ATTACK;
+#if defined(WAIFU_FM_CD32X)
+    (void)waifu_assets_prewarm_big_art_pair(atk_id, CARD_NONE);
+#else
     (void)card_big_art_ptr(atk_id);
+#endif
     set_battle_phase(attacker_owner == 0 ? IB_PLAYER_BATTLE : IB_COM_BATTLE);
 }
 
@@ -8820,7 +8828,13 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             try_queue_player_fusion_slot(g_b_selected_hand);
             g_b_player_hand_intro_pending = 0;
         }
-        if (press_b) { set_battle_phase(IB_CARD_PREVIEW); break; }
+        if (press_b) {
+#if defined(WAIFU_FM_CD32X)
+            (void)waifu_assets_prewarm_big_art_pair(g_i_player_hand[g_b_selected_hand], CARD_NONE);
+#endif
+            set_battle_phase(IB_CARD_PREVIEW);
+            break;
+        }
         if (press_up) { clear_player_fusion_queue(); set_top_selector(g_b_selected_player_slot, PLAYER_CARD_ROW); g_b_attack_attacker_slot = -1; g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND_TO_TOP); break; }
         if (press_a && g_b_fusion_count > 0 && player_can_start_fusion()) {
             int target = player_can_place_monster() ? first_free_player_slot() : -1;
@@ -9038,6 +9052,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 int preview_id = top_selector_preview_card();
                 if (preview_id >= 0) {
                     g_b_preview_card_id = preview_id;
+#if defined(WAIFU_FM_CD32X)
+                    (void)waifu_assets_prewarm_big_art_pair(g_b_preview_card_id, CARD_NONE);
+#endif
                     set_battle_phase(IB_FIELD_CARD_PREVIEW);
                     break;
                 }
@@ -10963,6 +10980,9 @@ void waifu_fm_step(const WaifuFmInput *input)
         if (press_b && deck_editor_active_count() > 0) {
             int *arr = deck_editor_active_array();
             g_deck_preview_card = arr[g_deck_cursor];
+#if defined(WAIFU_FM_CD32X)
+            (void)waifu_assets_prewarm_big_art_pair(g_deck_preview_card, CARD_NONE);
+#endif
             g_i_state = WAIFU_I_DECK_PREVIEW;
             g_i_frame = -1;
         }

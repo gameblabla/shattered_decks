@@ -63,7 +63,7 @@ already drive.
 
 ## Card streaming — the concrete plan (1x, hidden behind the flip)
 
-**Sizes (confirmed in tree):** one big card art is `112*112*1bpp = 12544 B`.
+**Sizes (confirmed in tree):** one big card art is `112*112 = 12544 B` (256 colors).
 `CARD_BIG_ART_CD.BIN` is already padded **per card to 7 sectors = 14336 B**,
 sector-aligned, so a card is a **direct LBA read — no offset slicing, no
 decompression**. The whole file is 72 cards * 14336 = ~1.03 MB.
@@ -179,13 +179,21 @@ separate future track; CD32X should use RF5C164.
    from `CARD_BIG_ART_CD.BIN` and `CPY_TO_32X` into a 2-slot SDRAM cache; drive it
    behind the card-back/flip window. Verify a streamed big-art matches the raw one
    headless. This alone fixes Issues 3/4 and is independently shippable.
-   **Implemented:** the SH-2 CD32X blob-slice backend now maps exact card big-art
-   and story portrait/mask slice requests to private supervisor IDs; the Sega-CD
+   **Implemented:** the SH-2 CD32X blob-slice backend maps exact card big-art and
+   story portrait/mask slice requests to private supervisor IDs; the Sega-CD
    supervisor seeks inside `CARD_BIG_ART_CD.BIN`, `STORY_PORTRAITS.BIN`, and
    `STORY_PORTRAIT_MASK.BIN`, reads only the requested sector-padded record into
-   Word RAM, then transfers it with `CPY_TO_32X`. The current SH-2 cache size is
-   still controlled by `WAIFU_ASSET_BIG_CACHE_SLOTS` (one slot in `Makefile.cd32x`);
-   expanding that to the planned two-slot battle cache is a follow-up.
+   Word RAM, then transfers it with `CPY_TO_32X`. `Makefile.cd32x` now builds with
+   `WAIFU_ASSET_BIG_CACHE_SLOTS=2`, matching the planned attacker+defender cache.
+   Battle cut-ins prewarm that exact pair before the phase starts; hand, field,
+   and deck card-check previews prewarm the selected monster before entering the
+   preview state; CD32X rendering uses cached-only 112x112 art so a missed prewarm
+   drops art for the frame instead of issuing a render-time CD read.
+   **Related presentation fix:** the 32X video backend no longer treats title/menu
+   as a one-shot hardware overlay, and after each FS page flip it clears the newly
+   hidden CPU-visible back page (line table preserved). This is separate from card
+   cache memory, but it addresses stale-page flashes in title/loading/game
+   transitions when a state draws only a partial/black frame.
 2. **RF5C164 music streaming, CD idle.** Stream one deck-editor theme from a
    preloaded Word-RAM buffer (CD quiet) to validate the double-buffer/refill and
    quality before adding CD contention.

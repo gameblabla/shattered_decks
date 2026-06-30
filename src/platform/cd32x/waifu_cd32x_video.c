@@ -22,6 +22,9 @@
 #define WAIFU_CD32X_TITLE_BYTES (CD32X_TITLE_SCREEN_W * CD32X_TITLE_SCREEN_H)
 #define WAIFU_CD32X_TITLE_WORDS (WAIFU_CD32X_TITLE_BYTES / 2)
 #define WAIFU_CD32X_TITLE_XOFF ((WAIFU_CD32X_W - CD32X_TITLE_SCREEN_W) / 2)
+#ifndef WAIFU_CD32X_CLEAR_BACK_AFTER_FLIP
+#define WAIFU_CD32X_CLEAR_BACK_AFTER_FLIP 1
+#endif
 
 #define CD32X_COMM_READY        0x0001u
 #define CD32X_MD_CMD_SET_FADE   0xCD02u
@@ -88,6 +91,19 @@ static void cd32x_wait_fb_flip(WaifuCd32xVideo *video)
     }
     video->current_fb ^= 1u;
 }
+
+#if WAIFU_CD32X_CLEAR_BACK_AFTER_FLIP
+static void cd32x_clear_cpu_back_page_pixels(void)
+{
+    volatile uint16_t *dst = &MARS_FRAMEBUFFER;
+    int words = (WAIFU_CD32X_W * WAIFU_CD32X_H) / 2;
+
+    dst += WAIFU_CD32X_LINE_TABLE_WORDS;
+    for (int i = 0; i < words; ++i) {
+        dst[i] = 0;
+    }
+}
+#endif
 
 static void cd32x_init_framebuffer_page_at(int page)
 {
@@ -365,6 +381,14 @@ void waifu_cd32x_video_wait_vblank(WaifuCd32xVideo *video)
 {
     if (!video) return;
     cd32x_wait_fb_flip(video);
+#if WAIFU_CD32X_CLEAR_BACK_AFTER_FLIP
+    /* The 32X framebuffer aperture always writes the hidden back page.  Clear
+       that newly hidden page after FS changes so any state that draws only a
+       partial/transition frame starts from black instead of exposing stale
+       title/loading/game pixels on the next flip.  The line table is left
+       resident and present_8bpp repacks a full frame before the page is shown. */
+    cd32x_clear_cpu_back_page_pixels();
+#endif
 }
 
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
