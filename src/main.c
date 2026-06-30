@@ -2390,6 +2390,20 @@ static const uint8_t *support_big_art_ptr(void)
 static void draw_card_sprite(int id, int x, int y, int w, int h, int back)
 {
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
+#if defined(WAIFU_FM_CD32X)
+    if (back) {
+        rect_fill(x, y, w, h, IDX_CARD_RIM);
+        rect_outline(x, y, w, h, IDX_GOLD_HI);
+        rect_outline(x+1, y+1, w-2, h-2, IDX_GOLD_DARK);
+        rect_fill(x+3, y+3, w-6, h-6, IDX_DARK_BROWN);
+        rect_outline(x+4, y+4, w-8, h-8, IDX_GOLD_DARK);
+        line_i(x + w / 2, y + 6, x + w - 7, y + h / 2, IDX_GOLD_HI);
+        line_i(x + w - 7, y + h / 2, x + w / 2, y + h - 7, IDX_GOLD_DARK);
+        line_i(x + w / 2, y + h - 7, x + 6, y + h / 2, IDX_GOLD_HI);
+        line_i(x + 6, y + h / 2, x + w / 2, y + 6, IDX_GOLD_DARK);
+        return;
+    }
+#endif
     draw_card_raw(back ? waifu_assets_card_back() : card_face_ptr(id), WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
 }
 
@@ -2397,6 +2411,12 @@ static void draw_card_sprite_ex(int id, int x, int y, int w, int h, int back, in
 {
     const uint8_t *src = back ? waifu_assets_card_back() : card_face_ptr(id);
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
+#if defined(WAIFU_FM_CD32X)
+    if (back) {
+        draw_card_sprite(id, x, y, w, h, 1);
+        return;
+    }
+#endif
     if (gray) draw_card_raw_gray(src, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
     else draw_card_raw(src, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
 }
@@ -2423,6 +2443,26 @@ static void draw_trap_frame_overlay(int x, int y, int w, int h)
 static void draw_support_sprite(int id, int x, int y, int w, int h)
 {
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
+#if defined(WAIFU_FM_CD32X)
+    {
+        int trap = is_trap_support_card(id);
+        uint8_t frame_hi = trap ? IDX_TRAP_FRAME_HI : IDX_SUPPORT_FRAME;
+        uint8_t frame = trap ? IDX_TRAP_FRAME : IDX_SUPPORT_FRAME_HI;
+        uint8_t frame_dk = trap ? IDX_TRAP_FRAME_DK : IDX_UI_DARK;
+        rect_fill(x, y, w, h, frame_hi);
+        rect_outline(x, y, w, h, IDX_WHITE);
+        rect_outline(x+1, y+1, w-2, h-2, frame);
+        rect_fill(x+3, y+3, w-6, h-6, frame_dk);
+        rect_fill(x+5, y+5, w-10, (h > 18) ? 5 : 3, frame);
+        rect_fill(x+5, y+h-13, w-10, 8, frame);
+        rect_outline(x+5, y+11, w-10, h-27, frame);
+        line_i(x + w / 2, y + 14, x + w - 9, y + h / 2, frame_hi);
+        line_i(x + w - 9, y + h / 2, x + w / 2, y + h - 17, frame);
+        line_i(x + w / 2, y + h - 17, x + 8, y + h / 2, frame_hi);
+        line_i(x + 8, y + h / 2, x + w / 2, y + 14, frame);
+        return;
+    }
+#endif
     draw_card_raw(waifu_assets_support_face(), WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
     if (is_trap_support_card(id)) draw_trap_frame_overlay(x, y, w, h);
 }
@@ -2994,35 +3034,81 @@ static void draw_projected_card_quad(const uint8_t *src, int sw, int sh,
 }
 
 #if defined(WAIFU_FM_CD32X)
-static uint8_t g_cd32x_board_card_back[WAIFU_CARD_W * WAIFU_CARD_H];
-static int g_cd32x_board_card_back_ready = 0;
-
-static const uint8_t *cd32x_board_card_back_tex(void)
+static void draw_solid_tri(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color)
 {
-    if (!g_cd32x_board_card_back_ready) {
-        const int cx = WAIFU_CARD_W / 2;
-        const int cy = WAIFU_CARD_H / 2;
-        for (int y = 0; y < WAIFU_CARD_H; ++y) {
-            for (int x = 0; x < WAIFU_CARD_W; ++x) {
-                uint8_t px = 243;
-                if (x <= 1 || x >= WAIFU_CARD_W - 2 || y <= 1 || y >= WAIFU_CARD_H - 2) px = 192;
-                else if (x == 2 || x == WAIFU_CARD_W - 3 || y == 2 || y == WAIFU_CARD_H - 3) px = 14;
-                else if (x == 3 || x == WAIFU_CARD_W - 4 || y == 3 || y == WAIFU_CARD_H - 4) px = 77;
-                else {
-                    int dx = x - cx;
-                    int dy = y - cy;
-                    int ax = dx < 0 ? -dx : dx;
-                    int ay = dy < 0 ? -dy : dy;
-                    int ring = ax > ay ? ax : ay;
-                    int phase = (dx * 3 + dy * 5 + ring * 7) & 15;
-                    if ((ring == 4 || ring == 7 || ring == 10 || ring == 13 || ring == 16) && phase < 10) px = (phase < 4) ? 38 : 17;
-                }
-                g_cd32x_board_card_back[y * WAIFU_CARD_W + x] = px;
+    if (!a.ok || !b.ok || !c.ok) return;
+    int minx = a.x < b.x ? (a.x < c.x ? a.x : c.x) : (b.x < c.x ? b.x : c.x);
+    int maxx = a.x > b.x ? (a.x > c.x ? a.x : c.x) : (b.x > c.x ? b.x : c.x);
+    int miny = a.y < b.y ? (a.y < c.y ? a.y : c.y) : (b.y < c.y ? b.y : c.y);
+    int maxy = a.y > b.y ? (a.y > c.y ? a.y : c.y) : (b.y > c.y ? b.y : c.y);
+    if (minx < -8192 || maxx > 8192 || miny < -8192 || maxy > 8192) return;
+    int den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if (den == 0) return;
+    if (minx < 0) minx = 0;
+    if (maxx >= WAIFU_FM_WIDTH) maxx = WAIFU_FM_WIDTH - 1;
+    if (miny < 0) miny = 0;
+    if (maxy >= WAIFU_FM_HEIGHT) maxy = WAIFU_FM_HEIGHT - 1;
+    for (int y = miny; y <= maxy; ++y) {
+        for (int x = minx; x <= maxx; ++x) {
+            int px2 = x * 2 + 1, py2 = y * 2 + 1;
+            int wa2 = (b.y - c.y) * (px2 - c.x * 2) + (c.x - b.x) * (py2 - c.y * 2);
+            int wb2 = (c.y - a.y) * (px2 - c.x * 2) + (a.x - c.x) * (py2 - c.y * 2);
+            int wc2 = den * 2 - wa2 - wb2;
+            if ((den > 0 && wa2 >= 0 && wb2 >= 0 && wc2 >= 0) ||
+                (den < 0 && wa2 <= 0 && wb2 <= 0 && wc2 <= 0)) {
+                put_px(x, y, color);
             }
         }
-        g_cd32x_board_card_back_ready = 1;
     }
-    return g_cd32x_board_card_back;
+}
+
+static ScreenPt midpoint_pt(ScreenPt a, ScreenPt b)
+{
+    ScreenPt m;
+    m.x = (a.x + b.x) / 2;
+    m.y = (a.y + b.y) / 2;
+    m.ok = a.ok && b.ok;
+    return m;
+}
+
+static void draw_cd32x_projected_card_back(ScreenPt p0, ScreenPt p1, ScreenPt p2, ScreenPt p3)
+{
+    if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
+    draw_solid_tri(p0, p1, p2, IDX_DARK_BROWN);
+    draw_solid_tri(p0, p2, p3, IDX_DARK_BROWN);
+    line_i(p0.x, p0.y, p1.x, p1.y, IDX_CARD_RIM);
+    line_i(p1.x, p1.y, p2.x, p2.y, IDX_CARD_RIM);
+    line_i(p2.x, p2.y, p3.x, p3.y, IDX_CARD_RIM);
+    line_i(p3.x, p3.y, p0.x, p0.y, IDX_CARD_RIM);
+    ScreenPt top = midpoint_pt(p0, p1);
+    ScreenPt right = midpoint_pt(p1, p2);
+    ScreenPt bottom = midpoint_pt(p2, p3);
+    ScreenPt left = midpoint_pt(p3, p0);
+    line_i(top.x, top.y, right.x, right.y, IDX_GOLD_HI);
+    line_i(right.x, right.y, bottom.x, bottom.y, IDX_GOLD_DARK);
+    line_i(bottom.x, bottom.y, left.x, left.y, IDX_GOLD_HI);
+    line_i(left.x, left.y, top.x, top.y, IDX_GOLD_DARK);
+}
+
+static void draw_cd32x_projected_support_card(ScreenPt p0, ScreenPt p1, ScreenPt p2, ScreenPt p3)
+{
+    if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
+    draw_solid_tri(p0, p1, p2, IDX_UI_DARK);
+    draw_solid_tri(p0, p2, p3, IDX_UI_DARK);
+    line_i(p0.x, p0.y, p1.x, p1.y, IDX_SUPPORT_FRAME);
+    line_i(p1.x, p1.y, p2.x, p2.y, IDX_SUPPORT_FRAME);
+    line_i(p2.x, p2.y, p3.x, p3.y, IDX_SUPPORT_FRAME);
+    line_i(p3.x, p3.y, p0.x, p0.y, IDX_SUPPORT_FRAME);
+    ScreenPt top = midpoint_pt(p0, p1);
+    ScreenPt right = midpoint_pt(p1, p2);
+    ScreenPt bottom = midpoint_pt(p2, p3);
+    ScreenPt left = midpoint_pt(p3, p0);
+    line_i(left.x, left.y, right.x, right.y, IDX_SUPPORT_FRAME_HI);
+    line_i(top.x, top.y, bottom.x, bottom.y, IDX_SUPPORT_FRAME_HI);
+    line_i((top.x + left.x) / 2, (top.y + left.y) / 2,
+           (bottom.x + right.x) / 2, (bottom.y + right.y) / 2, IDX_SUPPORT_FRAME);
+    line_i((top.x + right.x) / 2, (top.y + right.y) / 2,
+           (bottom.x + left.x) / 2, (bottom.y + left.y) / 2, IDX_SUPPORT_FRAME);
 }
 #endif
 
@@ -3038,10 +3124,11 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
     int32_t hw = defense ? Q8_FRAC(50,100) : Q8_FRAC(36,100);
     int32_t hz = defense ? Q8_FRAC(36,100) : Q8_FRAC(50,100);
     int32_t y = Q8_FRAC(115,1000);
+    int support = is_support_card(card_id);
 #if defined(WAIFU_FM_CD32X)
-    const uint8_t *tex = back ? cd32x_board_card_back_tex() : (is_support_card(card_id) ? waifu_assets_support_face() : card_face_ptr(card_id));
+    const uint8_t *tex = (back || support) ? NULL : card_face_ptr(card_id);
 #else
-    const uint8_t *tex = back ? waifu_assets_card_back() : (is_support_card(card_id) ? waifu_assets_support_face() : card_face_ptr(card_id));
+    const uint8_t *tex = back ? waifu_assets_card_back() : (support ? waifu_assets_support_face() : card_face_ptr(card_id));
 #endif
     if (back) gray = 0;
     ScreenPt p0 = project_point(cam, v3(cx - hw, y, cz - hz));
@@ -3051,11 +3138,37 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
     /* Player-side cards face YOU. COM-side cards are rotated 180 degrees on
        the board plane so they face the opponent instead of always facing YOU. */
     if (defense) {
-        if (row <= 1) draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p3, p0, p1, p2, gray);
-        else          draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p1, p2, p3, p0, gray);
+        if (row <= 1) {
+#if defined(WAIFU_FM_CD32X)
+            if (back) draw_cd32x_projected_card_back(p3, p0, p1, p2);
+            else if (support) draw_cd32x_projected_support_card(p3, p0, p1, p2);
+            else
+#endif
+            draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p3, p0, p1, p2, gray);
+        } else {
+#if defined(WAIFU_FM_CD32X)
+            if (back) draw_cd32x_projected_card_back(p1, p2, p3, p0);
+            else if (support) draw_cd32x_projected_support_card(p1, p2, p3, p0);
+            else
+#endif
+            draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p1, p2, p3, p0, gray);
+        }
     } else {
-        if (row <= 1) draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p2, p3, p0, p1, gray);
-        else          draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p0, p1, p2, p3, gray);
+        if (row <= 1) {
+#if defined(WAIFU_FM_CD32X)
+            if (back) draw_cd32x_projected_card_back(p2, p3, p0, p1);
+            else if (support) draw_cd32x_projected_support_card(p2, p3, p0, p1);
+            else
+#endif
+            draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p2, p3, p0, p1, gray);
+        } else {
+#if defined(WAIFU_FM_CD32X)
+            if (back) draw_cd32x_projected_card_back(p0, p1, p2, p3);
+            else if (support) draw_cd32x_projected_support_card(p0, p1, p2, p3);
+            else
+#endif
+            draw_projected_card_quad_ex(tex, WAIFU_CARD_W, WAIFU_CARD_H, p0, p1, p2, p3, gray);
+        }
     }
 }
 
