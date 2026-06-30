@@ -31,6 +31,12 @@ Use this file as the first stop when you need to change behavior. It is written 
   - `make` builds headless.
   - `make sdl12` builds the SDL frontend.
 
+- [Makefile.cd32x](/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/Makefile.cd32x:1)
+  - `make -f Makefile.cd32x` builds the Mega CD32X `.cue`.
+  - CD32X CD/file handling is split between SH-2-side request mapping in [src/platform/cd32x/waifu_cd32x_cdrom.c](/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/src/platform/cd32x/waifu_cd32x_cdrom.c:1) and Sega-CD supervisor reads in [src/platform/cd32x/cd32x_boot_main.c](/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/src/platform/cd32x/cd32x_boot_main.c:1). Keep offset/slice semantics here, not in common gameplay code.
+  - Big card art on CD32X is streamed per card from sector-padded `CARD_BIG_ART_CD.BIN` slots; story portraits and masks are streamed by generated `WAIFU_STORY_PORTRAIT_CD_STRIDE`. Do not read the whole big-art atlas into Word RAM.
+  - CD32X title/menu rendering must use software full redraw (`waifu_platform_text_overlay_is_hardware() == 0`) because the 32X CPU-visible framebuffer is the current back page and flips every frame. Do not restore one-shot title/menu hardware overlay composition.
+
 - Resolution config (all of PC-FX / SDL / headless):
   - `src/engine/cfx_screen_config.h` `WAIFU_FM_WIDTH` / `WAIFU_FM_HEIGHT` are the single source of truth (default 256x240). `game_api.h` and `main.c` derive `W`/`H` from these; no other file hardcodes the screen size.
   - Full-screen 2D art (title + ending) is resolution-driven: edit the two numbers, then `make assets` (host) — `tools/gen_title_asset.py` reads the resolution, sets `TITLE_SCREEN_W/H`, and picks the matching source PNG. Selection order: canonical `assets/source/title/title_<W>x<H>.png` & `assets/source/ending/ending_<W>x<H>.png`, then the explicit `RESOLUTION_TITLE`/`RESOLUTION_ENDING` maps in that script, then the default. Sources exist for 256x240, 320x240, 384x240, 640x400, 640x480, 704x480, 704x512. Add a resolution by dropping in `title_<W>x<H>.png`/`ending<W>x<H>.png` (or a map entry).

@@ -13,6 +13,7 @@
 #include "cd32x_md_iface.h"
 #include "cd32x_files.h"
 #include "cd32x_pcm.h"
+#include "waifu_assets.h"
 
 extern void cd32x_bios_cdda_init(void);
 extern int cd32x_bios_cdda_play(int track, int loop);
@@ -38,9 +39,19 @@ extern void cd32x_bios_cdda_stop(void);
 #define WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD      12
 #define CD32X_PRIV_BLOB_CARD_FACE_0               0x0100
 #define CD32X_PRIV_BLOB_CARD_SINGLE_0             0x0200
-#define CD32X_CARD_SINGLE_COUNT                    72
-#define CD32X_CARD_ONE_BYTES                       (38 * 54)
+#define CD32X_PRIV_BLOB_CARD_BIG_SINGLE_0         0x0300
+#define CD32X_PRIV_BLOB_PORTRAIT_PIXELS_0         0x0400
+#define CD32X_PRIV_BLOB_PORTRAIT_MASK_0           0x0500
+#define CD32X_CARD_SINGLE_COUNT                    WAIFU_CARD_COUNT
+#define CD32X_CARD_ONE_BYTES                       (WAIFU_CARD_W * WAIFU_CARD_H)
 #define CD32X_CARD_ONE_WORDS                       (CD32X_CARD_ONE_BYTES / 2)
+#define CD32X_CARD_BIG_ONE_BYTES                   (WAIFU_BIG_W * WAIFU_BIG_H)
+#define CD32X_CARD_BIG_ONE_WORDS                   (CD32X_CARD_BIG_ONE_BYTES / 2)
+#define CD32X_CD_SECTOR_BYTES                      2048
+#define CD32X_CARD_BIG_CD_SLOT_BYTES               (((CD32X_CARD_BIG_ONE_BYTES + CD32X_CD_SECTOR_BYTES - 1) / CD32X_CD_SECTOR_BYTES) * CD32X_CD_SECTOR_BYTES)
+#define CD32X_STORY_PORTRAIT_COUNT                 WAIFU_STORY_PORTRAIT_COUNT
+#define CD32X_STORY_PORTRAIT_CD_STRIDE             WAIFU_STORY_PORTRAIT_CD_STRIDE
+#define CD32X_STORY_PORTRAIT_WORDS                 (CD32X_STORY_PORTRAIT_CD_STRIDE / 2)
 
 typedef struct Cd32xBlobInfo {
     int blob;
@@ -247,6 +258,89 @@ static void cd32x_service_card_face_request(int card_id, int words, char *word_r
     cd32x_cdda_resume_after_read();
 }
 
+static int cd32x_read_file_slice(const char *filename, int byte_offset, int bytes, char *dst)
+{
+    char *sector_buf = (char *)0x6800;
+    int file_lba;
+    int file_len;
+    int pos;
+    int remaining;
+
+    if (byte_offset < 0 || bytes <= 0) return -1;
+    if (find_dir_entry((char *)filename) < 0) return -1;
+    file_lba = global_vars->DENTRY_OFFSET;
+    file_len = global_vars->DENTRY_LENGTH;
+    if (byte_offset > file_len || bytes > file_len - byte_offset) return -1;
+
+    pos = byte_offset;
+    remaining = bytes;
+    while (remaining > 0) {
+        int sector_offset = pos & (CD32X_CD_SECTOR_BYTES - 1);
+        int copy = CD32X_CD_SECTOR_BYTES - sector_offset;
+        int rc;
+        if (copy > remaining) copy = remaining;
+        rc = read_cd(file_lba + (pos / CD32X_CD_SECTOR_BYTES), 1, sector_buf);
+        if (rc < 0) {
+            return rc;
+        }
+        memcpy(dst, sector_buf + sector_offset, copy);
+        dst += copy;
+        pos += copy;
+        remaining -= copy;
+    }
+    return 0;
+}
+
+static void cd32x_transfer_word_ram_to_32x(int words)
+{
+    int rc;
+    switch_banks();
+    rc = do_md_cmd2(MD_CMD_CPY_TO_32X, 0x200000, words);
+    if (rc < 0) cd32x_fail_cd_request(rc);
+    else cd32x_cdda_resume_after_read();
+}
+
+static void cd32x_service_card_big_request(int card_id, int words, char *word_ram)
+{
+    int rc;
+
+    if (card_id < 0 || card_id >= CD32X_CARD_SINGLE_COUNT || words != CD32X_CARD_BIG_ONE_WORDS) {
+        cd32x_fail_cd_request(-1);
+        return;
+    }
+
+    rc = cd32x_read_file_slice("CARD_BIG_ART_CD.BIN",
+                               card_id * CD32X_CARD_BIG_CD_SLOT_BYTES,
+                               CD32X_CARD_BIG_ONE_BYTES,
+                               word_ram);
+    if (rc < 0) {
+        cd32x_fail_cd_request(rc);
+        return;
+    }
+    cd32x_transfer_word_ram_to_32x(words);
+}
+
+static void cd32x_service_portrait_request(int portrait_id, int words, int mask, char *word_ram)
+{
+    const char *filename = mask ? "STORY_PORTRAIT_MASK.BIN" : "STORY_PORTRAITS.BIN";
+    int rc;
+
+    if (portrait_id < 0 || portrait_id >= CD32X_STORY_PORTRAIT_COUNT || words != CD32X_STORY_PORTRAIT_WORDS) {
+        cd32x_fail_cd_request(-1);
+        return;
+    }
+
+    rc = cd32x_read_file_slice(filename,
+                               portrait_id * CD32X_STORY_PORTRAIT_CD_STRIDE,
+                               CD32X_STORY_PORTRAIT_CD_STRIDE,
+                               word_ram);
+    if (rc < 0) {
+        cd32x_fail_cd_request(rc);
+        return;
+    }
+    cd32x_transfer_word_ram_to_32x(words);
+}
+
 static void cd32x_service_cd_request(void)
 {
     const Cd32xBlobInfo *info;
@@ -281,6 +375,21 @@ static void cd32x_service_cd_request(void)
     if (blob >= CD32X_PRIV_BLOB_CARD_SINGLE_0 &&
         blob < CD32X_PRIV_BLOB_CARD_SINGLE_0 + CD32X_CARD_SINGLE_COUNT) {
         cd32x_service_card_face_request(blob - CD32X_PRIV_BLOB_CARD_SINGLE_0, words, word_ram);
+        return;
+    }
+    if (blob >= CD32X_PRIV_BLOB_CARD_BIG_SINGLE_0 &&
+        blob < CD32X_PRIV_BLOB_CARD_BIG_SINGLE_0 + CD32X_CARD_SINGLE_COUNT) {
+        cd32x_service_card_big_request(blob - CD32X_PRIV_BLOB_CARD_BIG_SINGLE_0, words, word_ram);
+        return;
+    }
+    if (blob >= CD32X_PRIV_BLOB_PORTRAIT_PIXELS_0 &&
+        blob < CD32X_PRIV_BLOB_PORTRAIT_PIXELS_0 + CD32X_STORY_PORTRAIT_COUNT) {
+        cd32x_service_portrait_request(blob - CD32X_PRIV_BLOB_PORTRAIT_PIXELS_0, words, 0, word_ram);
+        return;
+    }
+    if (blob >= CD32X_PRIV_BLOB_PORTRAIT_MASK_0 &&
+        blob < CD32X_PRIV_BLOB_PORTRAIT_MASK_0 + CD32X_STORY_PORTRAIT_COUNT) {
+        cd32x_service_portrait_request(blob - CD32X_PRIV_BLOB_PORTRAIT_MASK_0, words, 1, word_ram);
         return;
     }
     info = cd32x_blob_info(blob);

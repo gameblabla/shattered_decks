@@ -179,6 +179,13 @@ separate future track; CD32X should use RF5C164.
    from `CARD_BIG_ART_CD.BIN` and `CPY_TO_32X` into a 2-slot SDRAM cache; drive it
    behind the card-back/flip window. Verify a streamed big-art matches the raw one
    headless. This alone fixes Issues 3/4 and is independently shippable.
+   **Implemented:** the SH-2 CD32X blob-slice backend now maps exact card big-art
+   and story portrait/mask slice requests to private supervisor IDs; the Sega-CD
+   supervisor seeks inside `CARD_BIG_ART_CD.BIN`, `STORY_PORTRAITS.BIN`, and
+   `STORY_PORTRAIT_MASK.BIN`, reads only the requested sector-padded record into
+   Word RAM, then transfers it with `CPY_TO_32X`. The current SH-2 cache size is
+   still controlled by `WAIFU_ASSET_BIG_CACHE_SLOTS` (one slot in `Makefile.cd32x`);
+   expanding that to the planned two-slot battle cache is a follow-up.
 2. **RF5C164 music streaming, CD idle.** Stream one deck-editor theme from a
    preloaded Word-RAM buffer (CD quiet) to validate the double-buffer/refill and
    quality before adding CD contention.

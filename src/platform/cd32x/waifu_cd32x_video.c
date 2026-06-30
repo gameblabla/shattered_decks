@@ -42,7 +42,6 @@ struct WaifuCd32xVideo {
 };
 
 static WaifuCd32xVideo g_video;
-static int g_title_direct_valid;
 
 static volatile uint16_t *cd32x_page_words(int page)
 {
@@ -278,8 +277,6 @@ static void cd32x_draw_menu_both(int selected, int has_save)
 WaifuCd32xVideo *waifu_cd32x_video_create(void)
 {
     memset(&g_video, 0, sizeof(g_video));
-    g_title_direct_valid = 0;
-
     while ((MARS_SYS_INTMSK & MARS_SH2_ACCESS_VDP) == 0) {
     }
 
@@ -341,25 +338,18 @@ void waifu_cd32x_video_commit_title_upload(void)
     for (int i = 0; i < WAIFU_CD32X_TITLE_WORDS; ++i) {
         dst[i] = src[i];
     }
-    g_title_direct_valid = 1;
 }
 
 void waifu_cd32x_video_present_8bpp(WaifuCd32xVideo *video, const uint8_t *framebuffer, const uint8_t *rgb, WaifuFmPaletteId palette_id, int fade_q8)
 {
-    /* The display page-flips every frame between PAGE0 and PAGE1, but the common
-       renderer only draws into the live framebuffer (PAGE0).  Mirror the packed
-       frame into PAGE1 as well so whichever page the VDP shows after the flip
-       carries the current frame -- this removes the per-frame white/black flash.
-       Writing both pages also covers the case where 0x24020000 is the second
-       physical buffer rather than an overwrite window. */
+    /* The 32X CPU-visible framebuffer window always targets the current back
+       page.  Keep flipping, but repack a complete software-rendered frame into
+       that back page every vblank; title/menu are intentionally not treated as
+       one-shot hardware overlays on this target. */
     volatile uint16_t *dst16 = &MARS_FRAMEBUFFER;
     int y;
     if (!video || !framebuffer) return;
     waifu_cd32x_video_set_palette_rgb(video, rgb, palette_id, fade_q8);
-
-    if (palette_id == WAIFU_FM_PALETTE_TITLE && g_title_direct_valid) {
-        return;
-    }
 
     dst16 += WAIFU_CD32X_LINE_TABLE_WORDS;
     for (y = 0; y < WAIFU_CD32X_H; ++y) {
@@ -388,7 +378,6 @@ int waifu_platform_text_overlay(WaifuTextOverlayKind kind, const WaifuTextOverla
 {
     WaifuTextOverlayParams empty = {0};
     const WaifuTextOverlayParams *p = params ? params : &empty;
-    if (!g_title_direct_valid) return 1;
     switch (kind) {
     case WAIFU_TEXT_OVERLAY_TITLE_PROMPT:
         cd32x_draw_title_prompt_both(p->prompt_visible, p->has_save);
