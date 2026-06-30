@@ -2786,6 +2786,7 @@ static void render_board_cached(Camera cam)
 
 static void draw_textured_tri_ex(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c, int gray)
 {
+    if (!src || sw <= 0 || sh <= 0) return;
     int minx = a.x < b.x ? (a.x < c.x ? a.x : c.x) : (b.x < c.x ? b.x : c.x);
     int maxx = a.x > b.x ? (a.x > c.x ? a.x : c.x) : (b.x > c.x ? b.x : c.x);
     int miny = a.y < b.y ? (a.y < c.y ? a.y : c.y) : (b.y < c.y ? b.y : c.y);
@@ -2968,6 +2969,7 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
                                         ScreenPt p0, ScreenPt p1, ScreenPt p2, ScreenPt p3,
                                         int gray)
 {
+    if (!src || sw <= 0 || sh <= 0) return;
     if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
     TexV a = {p0.x, p0.y, 0, 0};
     TexV b = {p1.x, p1.y, Q8_ONE, 0};
@@ -3004,6 +3006,7 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
     int32_t hz = defense ? Q8_FRAC(36,100) : Q8_FRAC(50,100);
     int32_t y = Q8_FRAC(115,1000);
     const uint8_t *tex = back ? waifu_assets_card_back() : (is_support_card(card_id) ? waifu_assets_support_face() : card_face_ptr(card_id));
+    if (back) gray = 0;
     ScreenPt p0 = project_point(cam, v3(cx - hw, y, cz - hz));
     ScreenPt p1 = project_point(cam, v3(cx + hw, y, cz - hz));
     ScreenPt p2 = project_point(cam, v3(cx + hw, y, cz + hz));
