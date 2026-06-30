@@ -193,13 +193,14 @@ separate future track; CD32X should use RF5C164.
    `32x_video.c` model: framebuffer writes target the current `back` page, FS
    swaps `front`/`back`, and `0x24020000` is overwrite mode for the same back page
    rather than a second CPU-addressable framebuffer. Common CD32X drawing renders
-   directly into that current back page, so `present_8bpp` refreshes the line
-   table/palette and avoids repack-copying the framebuffer onto itself. Title/menu
-   use the CD32X hardware-overlay hook, but the backend warms both flipped pages
-   after each title/menu mode change and restores only the prompt/menu rectangles
-   from the resident title asset. This is separate from card cache memory, but it
-   fixes black/stale-page flashes without making title fade/blink spend a full
-   320x240 copy every frame.
+   directly into that current back page, so `present_8bpp` avoids repack-copying
+   the framebuffer onto itself; both pages get their line tables during init/clear,
+   and present normally only updates palette state before the flip. Title/menu use
+   the CD32X hardware-overlay hook, but the backend warms both flipped pages after
+   each title/menu mode change and restores only the prompt/menu rectangles from
+   the resident title asset. This is separate from card cache memory, but it fixes
+   black/stale-page flashes without making title fade/blink spend a full 320x240
+   copy every frame.
 2. **RF5C164 music streaming, CD idle.** Stream one deck-editor theme from a
    preloaded Word-RAM buffer (CD quiet) to validate the double-buffer/refill and
    quality before adding CD contention.

@@ -43,6 +43,11 @@ struct WaifuCd32xVideo {
 static WaifuCd32xVideo g_video;
 static int g_cd32x_overlay_kind = -1;
 static int g_cd32x_overlay_base_pages_remaining = 0;
+static int g_cd32x_prompt_visible = -1;
+static int g_cd32x_prompt_pages_remaining = 0;
+static int g_cd32x_menu_selected = -1;
+static int g_cd32x_menu_has_save = -1;
+static int g_cd32x_menu_pages_remaining = 0;
 
 static void cd32x_put_px_back(int x, int y, uint8_t c);
 static void cd32x_fill_rect_back(int x, int y, int w, int h, uint8_t c);
@@ -277,35 +282,57 @@ static void cd32x_overlay_begin(WaifuTextOverlayKind kind)
     if (g_cd32x_overlay_kind != (int)kind) {
         g_cd32x_overlay_kind = (int)kind;
         g_cd32x_overlay_base_pages_remaining = 2;
+        g_cd32x_prompt_visible = -1;
+        g_cd32x_prompt_pages_remaining = 0;
+        g_cd32x_menu_selected = -1;
+        g_cd32x_menu_has_save = -1;
+        g_cd32x_menu_pages_remaining = 0;
     }
 }
 
-static void cd32x_restore_title_base_if_needed(void)
+static int cd32x_restore_title_base_if_needed(void)
 {
-    if (g_cd32x_overlay_base_pages_remaining <= 0) return;
+    if (g_cd32x_overlay_base_pages_remaining <= 0) return 0;
     cd32x_restore_title_rect_back(0, 0, WAIFU_CD32X_W, WAIFU_CD32X_H);
     cd32x_draw_title_logo_both();
     --g_cd32x_overlay_base_pages_remaining;
+    return 1;
 }
 
 static void cd32x_draw_title_prompt_both(int prompt_visible, int has_save)
 {
+    int restored_base;
     (void)has_save;
     cd32x_overlay_begin(WAIFU_TEXT_OVERLAY_TITLE_PROMPT);
-    cd32x_restore_title_base_if_needed();
+    if (prompt_visible != g_cd32x_prompt_visible) {
+        g_cd32x_prompt_visible = prompt_visible;
+        g_cd32x_prompt_pages_remaining = 2;
+    }
+    restored_base = cd32x_restore_title_base_if_needed();
+    if (!restored_base && g_cd32x_prompt_pages_remaining <= 0) return;
+
     cd32x_restore_title_rect_back(0, 184, WAIFU_CD32X_W, 36);
     if (prompt_visible) {
         cd32x_draw_text_centered_both(190, "PRESS RUN TO START", 1, IDX_WHITE, IDX_BLACK);
     }
     cd32x_draw_text_centered_both(208, "(C) 2026 GAMEBLABLA", 1, IDX_WHITE, IDX_BLACK);
+    if (g_cd32x_prompt_pages_remaining > 0) --g_cd32x_prompt_pages_remaining;
 }
 
 static void cd32x_draw_menu_both(int selected, int has_save)
 {
     int ox = (WAIFU_CD32X_W - 256) / 2;
     const char *help = "RANDOM DECK / FREE DUEL";
+    int restored_base;
     cd32x_overlay_begin(WAIFU_TEXT_OVERLAY_MENU);
-    cd32x_restore_title_base_if_needed();
+    if (selected != g_cd32x_menu_selected || has_save != g_cd32x_menu_has_save) {
+        g_cd32x_menu_selected = selected;
+        g_cd32x_menu_has_save = has_save;
+        g_cd32x_menu_pages_remaining = 2;
+    }
+    restored_base = cd32x_restore_title_base_if_needed();
+    if (!restored_base && g_cd32x_menu_pages_remaining <= 0) return;
+
     cd32x_draw_title_logo_both();
     cd32x_fill_rect_back(ox + 39, 124, 178, 75, IDX_BLACK);
     cd32x_draw_panel_rect_both(ox + 41, 126, 174, 71, IDX_UI_DARK);
@@ -316,13 +343,9 @@ static void cd32x_draw_menu_both(int selected, int has_save)
     for (int r = 0; r < 7; ++r) cd32x_fill_rect_back(ox + 54, ay - 3 + r, 1 + r, 1, IDX_RED);
     if (selected == 0) help = "ENTER NAME / FIRST DREAM";
     else if (selected == 2) help = has_save ? "RESUME SAVED STORY" : "NO SAVE FILE FOUND";
-    /* The help line sits directly over the title-screen copyright strip.
-       CD32X draws text into the 32X bitmap instead of a separate MD/PC-FX text
-       layer, so clear this narrow line before the transparent glyph/outline
-       renderer runs.  This removes the old copyright pixels without restoring
-       solid black cells around every menu character. */
-    cd32x_fill_rect_back(ox + 43, 204, 170, 14, IDX_BLACK);
+    cd32x_restore_title_rect_back(ox + 43, 204, 170, 14);
     cd32x_draw_text_scaled_both(ox + 55, 207, help, 1, has_save || selected != 2 ? IDX_WHITE : IDX_RED, IDX_BLACK);
+    if (g_cd32x_menu_pages_remaining > 0) --g_cd32x_menu_pages_remaining;
 }
 
 WaifuCd32xVideo *waifu_cd32x_video_create(void)
@@ -351,6 +374,11 @@ void waifu_cd32x_video_begin_8bpp(WaifuCd32xVideo *video)
     (void)video;
     g_cd32x_overlay_kind = -1;
     g_cd32x_overlay_base_pages_remaining = 0;
+    g_cd32x_prompt_visible = -1;
+    g_cd32x_prompt_pages_remaining = 0;
+    g_cd32x_menu_selected = -1;
+    g_cd32x_menu_has_save = -1;
+    g_cd32x_menu_pages_remaining = 0;
     MARS_VDP_DISPMODE = (uint16_t)(MARS_240_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
 }
 
@@ -393,15 +421,14 @@ void waifu_cd32x_video_present_8bpp(WaifuCd32xVideo *video, const uint8_t *frame
 {
     /* The 32X CPU-visible framebuffer window always targets the current back
        page.  Common CD32X rendering uses that window as its framebuffer, so the
-       normal present path only needs to refresh the line table and palette
-       before the vblank flip.  Keep the copy fallback for callers that provide
-       a separate host-side buffer. */
+       normal present path only needs to refresh the palette before the vblank
+       flip.  Both pages get their line tables during init/clear; keep the copy
+       fallback for callers that provide a separate host-side buffer. */
     volatile uint16_t *dst16 = &MARS_FRAMEBUFFER;
     int y;
     if (!video || !framebuffer) return;
     waifu_cd32x_video_set_palette_rgb(video, rgb, palette_id, fade_q8);
 
-    cd32x_write_back_line_table();
     if (framebuffer == (const uint8_t *)(uintptr_t)WAIFU_CD32X_FRAMEBUFFER_PIXELS) return;
 
     dst16 += WAIFU_CD32X_LINE_TABLE_WORDS;
@@ -447,6 +474,11 @@ void waifu_platform_text_overlay_clear(void)
 {
     g_cd32x_overlay_kind = -1;
     g_cd32x_overlay_base_pages_remaining = 0;
+    g_cd32x_prompt_visible = -1;
+    g_cd32x_prompt_pages_remaining = 0;
+    g_cd32x_menu_selected = -1;
+    g_cd32x_menu_has_save = -1;
+    g_cd32x_menu_pages_remaining = 0;
 }
 
 int waifu_platform_text_overlay_is_hardware(void)
