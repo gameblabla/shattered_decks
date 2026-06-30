@@ -25,9 +25,12 @@ RATE = 11025
 # Keep each clip small enough to load fast (~1x CD) and fit Sub-CPU PRG RAM
 # alongside the supervisor; a multi-second loop is plenty for these themes.
 CLIP_SECONDS = 12.0
-# RF5C164 frequency delta for RATE.  Matches the SFX bank's proven 11025 Hz
-# delta (WAIFU_CD32X_SFX_PCM_FREQ_DELTA == 0x056B); scale linearly if RATE moves.
-FREQ_DELTA = round(0x056B * (RATE / 11025.0))
+# RF5C164 frequency delta for RATE.  BlastEm models Sega CD PCM at
+# 50 MHz / (4 * 384), with cur_ptr advancing by delta / 2048 per output sample.
+SCD_MASTER_CLOCK = 50000000
+RF5C164_DIVIDER = 4
+RF5C164_FRAC_SCALE = 1 << 11
+FREQ_DELTA = (RATE * RF5C164_FRAC_SCALE * RF5C164_DIVIDER * 384 + SCD_MASTER_CLOCK // 2) // SCD_MASTER_CLOCK
 
 # (macro name, CD filename stem, source wav, loop-start seconds)
 THEMES = [
