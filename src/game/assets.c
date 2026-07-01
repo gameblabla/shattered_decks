@@ -129,7 +129,7 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
    into an LRU staged in the asset arena.  Keep this large enough for the
    currently visible hand/field set so drawing does not thrash the CD every
    frame. */
-#define CD32X_CARD_FACE_CACHE_SLOTS 8
+#define CD32X_CARD_FACE_CACHE_SLOTS 5
 #define CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT 5
 #define CARD_FACE_STAGE_BYTES ((size_t)CD32X_CARD_FACE_CACHE_SLOTS * CARD_ONE_BYTES)
 #else

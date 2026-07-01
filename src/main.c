@@ -486,9 +486,11 @@ static Camera g_board_bg_cache_cam;
 static int g_board_bg_cache_valid = 0;
 #endif
 #if defined(WAIFU_FM_CD32X)
-#define CD32X_BOARD_CACHE_Y 92
-#define CD32X_BOARD_CACHE_H 84
-static uint8_t g_cd32x_board_rect_cache[WAIFU_FM_WIDTH * CD32X_BOARD_CACHE_H];
+#define CD32X_BOARD_CACHE_X 40
+#define CD32X_BOARD_CACHE_W 240
+#define CD32X_BOARD_CACHE_Y 73
+#define CD32X_BOARD_CACHE_H 127
+static uint8_t g_cd32x_board_rect_cache[CD32X_BOARD_CACHE_W * CD32X_BOARD_CACHE_H];
 static Camera g_cd32x_board_rect_cache_cam;
 static int g_cd32x_board_rect_cache_valid = 0;
 #endif
@@ -3221,17 +3223,17 @@ static void render_board_cached(Camera cam)
         if (g_cd32x_board_rect_cache_valid && camera_equal(g_cd32x_board_rect_cache_cam, cam)) {
             clear_screen(IDX_BLACK);
             for (int y = 0; y < CD32X_BOARD_CACHE_H; ++y) {
-                copy_u8_fast(framebuffer + (CD32X_BOARD_CACHE_Y + y) * WAIFU_FM_WIDTH,
-                             g_cd32x_board_rect_cache + y * WAIFU_FM_WIDTH,
-                             WAIFU_FM_WIDTH);
+                copy_u8_fast(framebuffer + (CD32X_BOARD_CACHE_Y + y) * WAIFU_FM_WIDTH + CD32X_BOARD_CACHE_X,
+                             g_cd32x_board_rect_cache + y * CD32X_BOARD_CACHE_W,
+                             CD32X_BOARD_CACHE_W);
             }
             return;
         }
         render_board(cam);
         for (int y = 0; y < CD32X_BOARD_CACHE_H; ++y) {
-            copy_u8_fast(g_cd32x_board_rect_cache + y * WAIFU_FM_WIDTH,
-                         framebuffer + (CD32X_BOARD_CACHE_Y + y) * WAIFU_FM_WIDTH,
-                         WAIFU_FM_WIDTH);
+            copy_u8_fast(g_cd32x_board_rect_cache + y * CD32X_BOARD_CACHE_W,
+                         framebuffer + (CD32X_BOARD_CACHE_Y + y) * WAIFU_FM_WIDTH + CD32X_BOARD_CACHE_X,
+                         CD32X_BOARD_CACHE_W);
         }
         g_cd32x_board_rect_cache_cam = cam;
         g_cd32x_board_rect_cache_valid = 1;
