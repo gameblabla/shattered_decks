@@ -3221,7 +3221,9 @@ static void render_board_cached(Camera cam)
 #if defined(WAIFU_FM_CD32X)
     if (camera_equal(cam, battle_top_camera()) || camera_equal(cam, enemy_battle_top_camera())) {
         if (g_cd32x_board_rect_cache_valid && camera_equal(g_cd32x_board_rect_cache_cam, cam)) {
-            clear_screen(IDX_BLACK);
+            /* Cache misses render the full board from black.  On hits, preserve
+               the previous full-board pixels outside this SDRAM-sized rectangle;
+               clearing here crops the static top view. */
             for (int y = 0; y < CD32X_BOARD_CACHE_H; ++y) {
                 copy_u8_fast(framebuffer + (CD32X_BOARD_CACHE_Y + y) * WAIFU_FM_WIDTH + CD32X_BOARD_CACHE_X,
                              g_cd32x_board_rect_cache + y * CD32X_BOARD_CACHE_W,
