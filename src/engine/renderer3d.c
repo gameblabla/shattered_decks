@@ -44,7 +44,11 @@ typedef struct {
    final palette-index texel for the currently selected 16x16 tile.
    The texture palette is remapped below index 128 so V810/SH1 signed byte
    loads can be packed directly without zero-extension in the hot loop. */
+#if CFX_RENDERER_BUILD_SINGLE_LUT
 static uint8_t tex_lut[1u << 16] __attribute__((aligned(16)));
+#else
+static uint8_t tex_lut[1] __attribute__((aligned(16)));
+#endif
 #if CFX_RENDERER_MULTI_LUT
 static uint8_t tex_lut_tiles[CFX_MAX_TEXTURE_TILES][1u << 16] __attribute__((aligned(16)));
 const uint8_t *active_tex_lut = tex_lut_tiles[0];
@@ -110,6 +114,7 @@ static inline uint32_t cfx_div_refine_u32(uint32_t un, uint32_t ud, uint32_t q)
     return q;
 }
 
+#if CFX_RENDERER_DIV_LUT
 static const uint16_t cfx_recip_q15_u8[257] = {
     0, 32768, 16384, 10922, 8192, 6553, 5461, 4681, 4096, 3640, 3276, 2978, 2730, 2520, 2340, 2184,
     2048, 1927, 1820, 1724, 1638, 1560, 1489, 1424, 1365, 1310, 1260, 1213, 1170, 1129, 1092, 1057,
@@ -165,6 +170,7 @@ static const uint32_t cfx_recip_q24_u8[257] = {
     67650, 67378, 67109, 66841, 66576, 66313, 66052, 65793,
     65536
 };
+#endif
 
 static inline int32_t cfx_fast_div_tz_i32_u16_q15(int32_t n, uint16_t d)
 {
@@ -175,6 +181,9 @@ static inline int32_t cfx_fast_div_tz_i32_u16_q15(int32_t n, uint16_t d)
            than falling back to DIV so the V810 hot renderer remains division-free. */
         d = 256;
     }
+#if !CFX_RENDERER_DIV_LUT
+    return n / (int32_t)d;
+#else
     uint32_t a;
     uint8_t neg = 0;
     if (n < 0) {
@@ -185,8 +194,10 @@ static inline int32_t cfx_fast_div_tz_i32_u16_q15(int32_t n, uint16_t d)
     }
     uint32_t q = (a * (uint32_t)cfx_recip_q15_u8[d]) >> 15;
     return neg ? -(int32_t)q : (int32_t)q;
+#endif
 }
 
+#if CFX_RENDERER_DIV_LUT
 static const uint16_t cfx_recip_q8_u16[257] = {
     0, 256, 128, 85, 64, 51, 43, 37, 32, 28, 26, 23, 21, 20, 18, 17,
     16, 15, 14, 13, 13, 12, 12, 11, 11, 10, 10, 9, 9, 9, 9, 8,
@@ -206,6 +217,7 @@ static const uint16_t cfx_recip_q8_u16[257] = {
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1
 };
+#endif
 
 static inline int32_t cfx_div_toward_zero(int32_t n, int16_t d)
 {
@@ -216,6 +228,9 @@ static inline int32_t cfx_div_toward_zero(int32_t n, int16_t d)
     uint32_t ud = (d < 0) ? (uint32_t)(-(int32_t)d) : (uint32_t)d;
     if (d < 0) neg ^= 1;
     uint32_t q;
+#if !CFX_RENDERER_DIV_LUT
+    q = un / ud;
+#else
     if (ud == 1) {
         q = un;
     } else if (ud <= 256u) {
@@ -234,6 +249,7 @@ static inline int32_t cfx_div_toward_zero(int32_t n, int16_t d)
         while (scaled > 256u) { scaled = (uint16_t)((scaled + 1u) >> 1); ++shift; }
         q = ((un * (uint32_t)cfx_recip_q8_u16[scaled]) >> (8 + shift));
     }
+#endif
 
     /* Reciprocal estimate, then exact toward-zero correction.  Bad projection
        inputs can make the estimate much farther off than the normal board
@@ -252,6 +268,9 @@ static inline int32_t cfx_div_toward_zero_i32d(int32_t n, int32_t d)
     if (n < 0) neg ^= 1;
     if (d < 0) neg ^= 1;
     uint32_t q;
+#if !CFX_RENDERER_DIV_LUT
+    q = un / ud;
+#else
     if (ud == 1u) {
         q = un;
     } else if (ud <= 256u) {
@@ -262,6 +281,7 @@ static inline int32_t cfx_div_toward_zero_i32d(int32_t n, int32_t d)
         while (scaled > 256u) { scaled = (scaled + 1u) >> 1; ++shift; }
         q = ((un * (uint32_t)cfx_recip_q8_u16[scaled]) >> (8 + shift));
     }
+#endif
     q = cfx_div_refine_u32(un, ud, q);
     return cfx_div_apply_sign(q, neg);
 }
@@ -382,6 +402,7 @@ static void cfx_renderer3d_prebuild_pcfx_tile_luts(const CfxRenderer3DState *ren
 
 static void cfx_renderer3d_build_lut_for_tile(const CfxRenderer3DState *renderer, const uint8_t *tile)
 {
+#if CFX_RENDERER_BUILD_SINGLE_LUT
     if (tex_lut_ready && tex_lut_source_tile == tile && tex_lut_source_pitch == renderer->tile_pitch_bytes) {
         active_tex_lut = tex_lut;
         return;
@@ -393,6 +414,14 @@ static void cfx_renderer3d_build_lut_for_tile(const CfxRenderer3DState *renderer
     tex_lut_source_pitch = renderer->tile_pitch_bytes;
     tex_lut_ready = 1;
     active_tex_lut = tex_lut;
+#else
+    (void)renderer;
+    (void)tile;
+    active_tex_lut = tex_lut;
+    tex_lut_ready = 1;
+    tex_lut_source_tile = NULL;
+    tex_lut_source_pitch = 0;
+#endif
 }
 
 uint32_t cfx_renderer3d_lut_size_bytes(void)
@@ -402,7 +431,7 @@ uint32_t cfx_renderer3d_lut_size_bytes(void)
 #elif CFX_RENDERER_DIRECT_ROW_LUT
     return (uint32_t)(sizeof(tex_lut) + sizeof(tex_row_lut_tiles));
 #else
-    return (uint32_t)sizeof(tex_lut);
+    return CFX_RENDERER_BUILD_SINGLE_LUT ? (uint32_t)sizeof(tex_lut) : 0u;
 #endif
 }
 
@@ -1227,7 +1256,15 @@ void cfx_renderer3d_draw_quad(CfxRenderer3D *renderer, const Point2D *p0, const 
 #endif
 
 #if !CFX_RENDERER_MULTI_LUT
+#if CFX_RENDERER_BUILD_SINGLE_LUT
     cfx_renderer3d_build_lut_for_tile(state, tile);
+#else
+    /* CD32X keeps the large 64 KiB expanded texture LUT out of SDRAM.
+       Its direct-tile paths should have handled board quads above; if a
+       later path reaches the LUT-only fallback, skip the draw rather than
+       sampling an absent cache. */
+    return;
+#endif
 #else
     (void)tile;
 #endif

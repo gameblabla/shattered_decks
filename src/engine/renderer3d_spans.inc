@@ -893,33 +893,70 @@ void cfx_board_fill(uint8_t *dst, int n,
     }
 #elif CFX_RENDERER_USE_SH1_ASM
     {
-        uint32_t c0, ru, rv;
         uint32_t mask_u = 0x1fu;
         uint32_t mask_v = 0x3e0u;
-        __asm__ volatile (
-            "1:\n"
-            "mov %[v],%[rv]\n"
-            "shlr2 %[rv]\n"
-            "shlr %[rv]\n"
-            "and %[mask_v],%[rv]\n"
-            "mov %[u],%[ru]\n"
-            "shlr8 %[ru]\n"
-            "and %[mask_u],%[ru]\n"
-            "add %[rv],%[ru]\n"
-            "add %[tile],%[ru]\n"
-            "mov.b @%[ru],%[c0]\n"
-            "mov.b %[c0],@%[dst]\n"
-            "add %[du],%[u]\n"
-            "add %[dv],%[v]\n"
-            "add #1,%[dst]\n"
-            "add #-1,%[n]\n"
-            "tst %[n],%[n]\n"
-            "bf 1b\n"
-            : [dst] "+r" (dst), [n] "+r" (n), [u] "+r" (u), [v] "+r" (v),
-              [c0] "=&r" (c0), [ru] "=&r" (ru), [rv] "=&r" (rv)
-            : [du] "r" (du), [dv] "r" (dv), [tile] "r" (tile),
-              [mask_u] "r" (mask_u), [mask_v] "r" (mask_v)
-            : "memory");
+        if (((uintptr_t)dst & 1u) != 0u) {
+            *dst++ = tile[(((uint32_t)v >> 3) & 0x3e0) | (((uint32_t)u >> 8) & 0x1f)];
+            u += du;
+            v += dv;
+            --n;
+        }
+
+        if (n >= 2) {
+            uint32_t c0, c1, ru, rv;
+            uint16_t *dst16 = (uint16_t *)dst;
+            int pairs = n >> 1;
+            int pair_count = pairs;
+
+            __asm__ volatile (
+                "1:\n"
+                "mov %[v],%[rv]\n"
+                "shlr2 %[rv]\n"
+                "shlr %[rv]\n"
+                "and %[mask_v],%[rv]\n"
+                "mov %[u],%[ru]\n"
+                "shlr8 %[ru]\n"
+                "and %[mask_u],%[ru]\n"
+                "add %[rv],%[ru]\n"
+                "add %[tile],%[ru]\n"
+                "mov.b @%[ru],%[c0]\n"
+                "add %[du],%[u]\n"
+                "add %[dv],%[v]\n"
+
+                "mov %[v],%[rv]\n"
+                "shlr2 %[rv]\n"
+                "shlr %[rv]\n"
+                "and %[mask_v],%[rv]\n"
+                "mov %[u],%[ru]\n"
+                "shlr8 %[ru]\n"
+                "and %[mask_u],%[ru]\n"
+                "add %[rv],%[ru]\n"
+                "add %[tile],%[ru]\n"
+                "mov.b @%[ru],%[c1]\n"
+                "extu.b %[c0],%[c0]\n"
+                "extu.b %[c1],%[c1]\n"
+                "shll8 %[c0]\n"
+                "or %[c1],%[c0]\n"
+                "mov.w %[c0],@%[dst]\n"
+                "add #2,%[dst]\n"
+                "add %[du],%[u]\n"
+                "add %[dv],%[v]\n"
+                "add #-1,%[pairs]\n"
+                "tst %[pairs],%[pairs]\n"
+                "bf 1b\n"
+                : [dst] "+r" (dst16), [pairs] "+r" (pairs), [u] "+r" (u), [v] "+r" (v),
+                  [c0] "=&r" (c0), [c1] "=&r" (c1), [ru] "=&r" (ru), [rv] "=&r" (rv)
+                : [du] "r" (du), [dv] "r" (dv), [tile] "r" (tile),
+                  [mask_u] "r" (mask_u), [mask_v] "r" (mask_v)
+                : "memory");
+
+            dst = (uint8_t *)dst16;
+            n -= pair_count << 1;
+        }
+
+        if (n > 0) {
+            *dst = tile[(((uint32_t)v >> 3) & 0x3e0) | (((uint32_t)u >> 8) & 0x1f)];
+        }
     }
 #else
     while (n-- > 0) {
