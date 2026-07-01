@@ -1235,7 +1235,31 @@ static void draw_field_slab_sides(Camera cam)
 static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
 {
     if (count <= 0) return;
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_CD32X)
+    uint16_t pair = (uint16_t)(((uint16_t)c << 8) | c);
+    if ((uintptr_t)dst & 1u) {
+        *dst++ = c;
+        --count;
+    }
+    {
+        uint16_t *dst16 = (uint16_t *)(uintptr_t)dst;
+        int pairs = count >> 1;
+        while (pairs >= 8) {
+            dst16[0] = pair;
+            dst16[1] = pair;
+            dst16[2] = pair;
+            dst16[3] = pair;
+            dst16[4] = pair;
+            dst16[5] = pair;
+            dst16[6] = pair;
+            dst16[7] = pair;
+            dst16 += 8;
+            pairs -= 8;
+        }
+        while (pairs-- > 0) *dst16++ = pair;
+        if (count & 1) *(uint8_t *)(uintptr_t)dst16 = c;
+    }
+#elif defined(WAIFU_FM_PCFX)
     uint32_t n = (uint32_t)count;
     uint32_t v = (uint32_t)c;
     uint32_t groups;
@@ -1280,7 +1304,34 @@ static void clear_screen(uint8_t c) { fill_u8_fast(framebuffer, WAIFU_FM_WIDTH *
 static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
 {
     if (count <= 0) return;
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_CD32X)
+    if ((uintptr_t)dst & 1u) {
+        *dst++ = *src++;
+        --count;
+    }
+    {
+        uint16_t *dst16 = (uint16_t *)(uintptr_t)dst;
+        int pairs = count >> 1;
+        while (pairs >= 8) {
+            dst16[0] = (uint16_t)(((uint16_t)src[0] << 8) | src[1]);
+            dst16[1] = (uint16_t)(((uint16_t)src[2] << 8) | src[3]);
+            dst16[2] = (uint16_t)(((uint16_t)src[4] << 8) | src[5]);
+            dst16[3] = (uint16_t)(((uint16_t)src[6] << 8) | src[7]);
+            dst16[4] = (uint16_t)(((uint16_t)src[8] << 8) | src[9]);
+            dst16[5] = (uint16_t)(((uint16_t)src[10] << 8) | src[11]);
+            dst16[6] = (uint16_t)(((uint16_t)src[12] << 8) | src[13]);
+            dst16[7] = (uint16_t)(((uint16_t)src[14] << 8) | src[15]);
+            src += 16;
+            dst16 += 8;
+            pairs -= 8;
+        }
+        while (pairs-- > 0) {
+            *dst16++ = (uint16_t)(((uint16_t)src[0] << 8) | src[1]);
+            src += 2;
+        }
+        if (count & 1) *(uint8_t *)(uintptr_t)dst16 = *src;
+    }
+#elif defined(WAIFU_FM_PCFX)
     uint32_t n = (uint32_t)count;
     uint32_t groups;
     /* Framebuffer/cache copies are aligned and large.  Keep the body compact:
@@ -2203,6 +2254,28 @@ static inline __attribute__((always_inline)) void pcfx_blit_row_gray_v810(const 
 
 #endif
 
+#if defined(WAIFU_FM_CD32X)
+static inline void cd32x_blit_row_mapped_pairs(const uint8_t *src, uint8_t *dst, const uint8_t *xmap, int count)
+{
+    if (count <= 0) return;
+    if ((uintptr_t)dst & 1u) {
+        *dst++ = src[*xmap++];
+        --count;
+    }
+    {
+        uint16_t *dst16 = (uint16_t *)(uintptr_t)dst;
+        while (count >= 2) {
+            uint8_t a = src[xmap[0]];
+            uint8_t b = src[xmap[1]];
+            *dst16++ = (uint16_t)(((uint16_t)a << 8) | b);
+            xmap += 2;
+            count -= 2;
+        }
+        if (count) *(uint8_t *)(uintptr_t)dst16 = src[*xmap];
+    }
+}
+#endif
+
 static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
 {
     uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
@@ -2211,6 +2284,8 @@ static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
         const uint8_t *srow = src + (int)g_card_ymap_38x50[yy] * WAIFU_CARD_W;
 #if defined(WAIFU_FM_PCFX)
         pcfx_blit_row38_v810(srow, dst);
+#elif defined(WAIFU_FM_CD32X)
+        copy_u8_fast(dst, srow, 38);
 #else
         memcpy(dst, srow, 38);
 #endif
@@ -2224,8 +2299,12 @@ static void blit_card_36x49_fast(const uint8_t *src, int x, int y)
     int yy;
     for (yy = 0; yy < 49; ++yy) {
         const uint8_t *srow = src + (int)g_card_ymap_36x49[yy] * WAIFU_CARD_W;
+#if defined(WAIFU_FM_CD32X)
+        cd32x_blit_row_mapped_pairs(srow, dst, g_card_xmap_36, 36);
+#else
         int xx;
         for (xx = 0; xx < 36; ++xx) dst[xx] = srow[g_card_xmap_36[xx]];
+#endif
         dst += WAIFU_FM_WIDTH;
     }
 }
@@ -2253,8 +2332,12 @@ static void blit_card_mapped_fast(const uint8_t *src, int x, int y, int dw, int 
     int yy;
     for (yy = 0; yy < dh; ++yy) {
         const uint8_t *srow = src + (int)ymap[yy] * WAIFU_CARD_W;
+#if defined(WAIFU_FM_CD32X)
+        cd32x_blit_row_mapped_pairs(srow, dst, xmap, dw);
+#else
         int xx;
         for (xx = 0; xx < dw; ++xx) dst[xx] = srow[xmap[xx]];
+#endif
         dst += WAIFU_FM_WIDTH;
     }
 }

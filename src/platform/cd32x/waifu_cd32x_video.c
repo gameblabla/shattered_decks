@@ -52,6 +52,27 @@ static int g_cd32x_menu_pages_remaining = 0;
 static void cd32x_put_px_back(int x, int y, uint8_t c);
 static void cd32x_fill_rect_back(int x, int y, int w, int h, uint8_t c);
 
+static inline void cd32x_copy_pairs_to_back(volatile uint16_t *dst, const uint8_t *src, int pairs)
+{
+    while (pairs >= 8) {
+        dst[0] = (uint16_t)(((uint16_t)src[0] << 8) | src[1]);
+        dst[1] = (uint16_t)(((uint16_t)src[2] << 8) | src[3]);
+        dst[2] = (uint16_t)(((uint16_t)src[4] << 8) | src[5]);
+        dst[3] = (uint16_t)(((uint16_t)src[6] << 8) | src[7]);
+        dst[4] = (uint16_t)(((uint16_t)src[8] << 8) | src[9]);
+        dst[5] = (uint16_t)(((uint16_t)src[10] << 8) | src[11]);
+        dst[6] = (uint16_t)(((uint16_t)src[12] << 8) | src[13]);
+        dst[7] = (uint16_t)(((uint16_t)src[14] << 8) | src[15]);
+        src += 16;
+        dst += 8;
+        pairs -= 8;
+    }
+    while (pairs-- > 0) {
+        *dst++ = (uint16_t)(((uint16_t)src[0] << 8) | src[1]);
+        src += 2;
+    }
+}
+
 static int cd32x_request_md_palette_fade(int fade_q8)
 {
     if (fade_q8 < 0) fade_q8 = 0;
@@ -141,10 +162,11 @@ static void cd32x_restore_title_rect_back(int x, int y, int w, int h)
             ++xx;
         }
         volatile uint16_t *dst = &MARS_FRAMEBUFFER + ((WAIFU_CD32X_FB_BYTE_OFFSET + yy * WAIFU_CD32X_W + xx) >> 1);
-        while (xx + 1 < x1) {
-            *dst++ = (uint16_t)(((uint16_t)src[0] << 8) | src[1]);
-            src += 2;
-            xx += 2;
+        {
+            int pairs = (x1 - xx) >> 1;
+            cd32x_copy_pairs_to_back(dst, src, pairs);
+            src += pairs << 1;
+            xx += pairs << 1;
         }
         if (xx < x1) cd32x_put_px_back(xx, yy, *src);
     }
@@ -453,10 +475,7 @@ void waifu_cd32x_video_present_8bpp(WaifuCd32xVideo *video, const uint8_t *frame
     dst16 += WAIFU_CD32X_LINE_TABLE_WORDS;
     for (y = 0; y < WAIFU_CD32X_H; ++y) {
         const uint8_t *src = framebuffer + y * WAIFU_CD32X_W;
-        int x;
-        for (x = 0; x < WAIFU_CD32X_W; x += 2) {
-            dst16[y * (WAIFU_CD32X_W / 2) + (x / 2)] = (uint16_t)(((uint16_t)src[x] << 8) | src[x + 1]);
-        }
+        cd32x_copy_pairs_to_back(dst16 + y * (WAIFU_CD32X_W / 2), src, WAIFU_CD32X_W / 2);
     }
 }
 
