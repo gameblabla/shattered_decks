@@ -485,16 +485,6 @@ static uint8_t g_board_bg_cache[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 static Camera g_board_bg_cache_cam;
 static int g_board_bg_cache_valid = 0;
 #endif
-#if defined(WAIFU_FM_CD32X)
-#define CD32X_BOARD_CACHE_X 48
-#define CD32X_BOARD_CACHE_W 224
-#define CD32X_BOARD_CACHE_Y 64
-#define CD32X_BOARD_CACHE_H 136
-static uint8_t g_cd32x_board_rect_cache[CD32X_BOARD_CACHE_W * CD32X_BOARD_CACHE_H];
-static Camera g_cd32x_board_rect_cache_cam;
-static int g_cd32x_board_rect_cache_valid = 0;
-#endif
-
 static int camera_equal(Camera a, Camera b)
 {
     return a.eye.x == b.eye.x && a.eye.y == b.eye.y && a.eye.z == b.eye.z &&
@@ -507,9 +497,6 @@ static void invalidate_board_bg_cache(void)
 {
 #if !defined(WAIFU_BG_CACHE_DISABLE)
     g_board_bg_cache_valid = 0;
-#endif
-#if defined(WAIFU_FM_CD32X)
-    g_cd32x_board_rect_cache_valid = 0;
 #endif
 }
 typedef struct { int x, y; int32_t depth; int ok; } ScreenPt;
@@ -3218,28 +3205,6 @@ static void render_board(Camera cam)
 
 static void render_board_cached(Camera cam)
 {
-#if defined(WAIFU_FM_CD32X)
-    if (camera_equal(cam, battle_top_camera()) || camera_equal(cam, enemy_battle_top_camera())) {
-        if (g_cd32x_board_rect_cache_valid && camera_equal(g_cd32x_board_rect_cache_cam, cam)) {
-            clear_screen(IDX_BLACK);
-            for (int y = 0; y < CD32X_BOARD_CACHE_H; ++y) {
-                copy_u8_fast(framebuffer + (CD32X_BOARD_CACHE_Y + y) * WAIFU_FM_WIDTH + CD32X_BOARD_CACHE_X,
-                             g_cd32x_board_rect_cache + y * CD32X_BOARD_CACHE_W,
-                             CD32X_BOARD_CACHE_W);
-            }
-            return;
-        }
-        render_board(cam);
-        for (int y = 0; y < CD32X_BOARD_CACHE_H; ++y) {
-            copy_u8_fast(g_cd32x_board_rect_cache + y * CD32X_BOARD_CACHE_W,
-                         framebuffer + (CD32X_BOARD_CACHE_Y + y) * WAIFU_FM_WIDTH + CD32X_BOARD_CACHE_X,
-                         CD32X_BOARD_CACHE_W);
-        }
-        g_cd32x_board_rect_cache_cam = cam;
-        g_cd32x_board_rect_cache_valid = 1;
-        return;
-    }
-#endif
 #if defined(WAIFU_BG_CACHE_DISABLE)
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
     unsigned long long _profile_render_t0 = g_profile_render_enabled ? profile_now_us() : 0;
