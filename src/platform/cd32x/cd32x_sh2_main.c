@@ -35,14 +35,14 @@ int main(void)
         music = waifu_fm_audio_music_track();
         if (music == WAIFU_FM_MUSIC_TITLE &&
             (!waifu_assets_title_ready() ||
-             waifu_fm_palette_id() != WAIFU_FM_PALETTE_TITLE ||
-             waifu_fm_video_fade_q8() < 256)) {
+             waifu_fm_palette_id() != WAIFU_FM_PALETTE_TITLE)) {
             /* Match the PC-FX CD-DA gate: do not start title music while the
-               title image is still loading, while the direct 32X title page is
-               not active, or while palette fade-in is still underway.  This
-               avoids repeatedly interrupting the drive under the black/loading
-               frames.  If title CD-DA is already active, keep it alive during
-               title/menu fade-out instead of issuing a stop command. */
+               title image is still loading or while the direct 32X title page
+               is not active.  Once the title asset/palette are ready, allow the
+               track to start during fade-in so a quick RUN press cannot leave
+               title/menu CD-DA permanently silent.  If title CD-DA is already
+               active, keep it alive during title/menu fade-out instead of
+               issuing a stop command. */
             if (last_music != WAIFU_FM_MUSIC_TITLE) music = WAIFU_FM_MUSIC_NONE;
         }
         if (music != last_music) {

@@ -75,11 +75,10 @@
 #define WAIFU_CD32X_FIELD_SIDE_WALLS 1
 #endif
 #if defined(WAIFU_FM_CD32X) && !defined(WAIFU_CD32X_BOARD_FLAT_TOP)
-/* Aggressive CD32X LOD: keep the projected board geometry, grid, cards, and
-   textured side lips, but flat-fill the large top cells.  The textured top is
-   the dominant per-frame pixel sampler on SH-2; flat spans buy frame time
-   without adding a framebuffer-sized cache to SDRAM. */
-#define WAIFU_CD32X_BOARD_FLAT_TOP 1
+/* Keep the CD32X field fully textured by default.  WAIFU_CD32X_BOARD_FLAT_TOP
+   remains available as a speed/debug LOD path, but the textured path is the
+   release target and is covered by the BlastEm battle capture. */
+#define WAIFU_CD32X_BOARD_FLAT_TOP 0
 #endif
 #define CFX_PI_Q8 804
 #define TITLE_SEQUENCE_FRAMES 310
@@ -487,8 +486,8 @@ static Camera g_board_bg_cache_cam;
 static int g_board_bg_cache_valid = 0;
 #endif
 #if defined(WAIFU_FM_CD32X)
-#define CD32X_BOARD_CACHE_Y 64
-#define CD32X_BOARD_CACHE_H 112
+#define CD32X_BOARD_CACHE_Y 92
+#define CD32X_BOARD_CACHE_H 84
 static uint8_t g_cd32x_board_rect_cache[WAIFU_FM_WIDTH * CD32X_BOARD_CACHE_H];
 static Camera g_cd32x_board_rect_cache_cam;
 static int g_cd32x_board_rect_cache_valid = 0;
