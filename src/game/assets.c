@@ -129,8 +129,13 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
    into an LRU staged in the asset arena.  Keep this large enough for the
    currently visible hand/field set so drawing does not thrash the CD every
    frame. */
-#define CD32X_CARD_FACE_CACHE_SLOTS 5
-#define CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT 5
+/* One deck-editor page draws 6x3 small card faces.  Keep enough slots for the
+   visible page so resident icons do not evict each other during redraws, but
+   only preload the first row on entry; issuing 18 single-card CD requests
+   before the editor appears makes the debug editor path feel hung on real
+   CD32X timings. */
+#define CD32X_CARD_FACE_CACHE_SLOTS 18
+#define CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT 6
 #define CARD_FACE_STAGE_BYTES ((size_t)CD32X_CARD_FACE_CACHE_SLOTS * CARD_ONE_BYTES)
 #else
 #define CARD_FACE_STAGE_BYTES CARD_FACE_BYTES
