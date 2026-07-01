@@ -5485,6 +5485,12 @@ static int g_deck_scroll[2] = {0, 0};
 static int g_deck_flash = 0;
 static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
+/* On CD32X a card-check streams the 112x112 art from CD on demand.  The B-press
+   no longer blocks the deck editor's input frame on that seek; instead the deck
+   preview state paints a "CARD LOADING..." frame first, then performs the read
+   on a later preview frame so the page flip shows the loading placeholder while
+   the supervisor seeks instead of freezing the editor. */
+static int g_deck_preview_art_pending = 0;
 
 #define STORY_MAX_DUELS 5
 /* g_story_duel_index is the *currently selected* duel -- the opponent that will
@@ -7522,17 +7528,17 @@ static WaifuMusicTrack music_track_for_current_state(void)
     switch (g_i_state) {
     case WAIFU_I_LOADING_ASSETS:
         return WAIFU_MUSIC_NONE;
+    /* The title attract screen and the mode-select menu share the title
+       theme.  On every target that reaches this point through CD-DA, the
+       title track starts from the first title/menu frame and is interrupted
+       only by an explicit transition.  (PC-FX additionally gates the start
+       on title-asset readiness from its platform layer; CD32X layers the
+       same gate in cd32x_sh2_main.c.) */
     case WAIFU_I_TITLE:
     case WAIFU_I_TITLE_TO_MENU:
     case WAIFU_I_MENU:
     case WAIFU_I_MENU_TO_STORY:
-#ifdef WAIFU_FM_CD32X
-    case WAIFU_I_MENU_TO_BATTLE:
-        /* CD32X must have title CD-DA fully stopped before battle card assets
-           start loading.  Stopping during the short black fade gives the
-           supervisor multiple frames to accept/retry the stop command. */
-        return WAIFU_MUSIC_NONE;
-#else
+#ifndef WAIFU_FM_CD32X
     case WAIFU_I_MENU_TO_BATTLE:
 #endif
     case WAIFU_I_MENU_TO_LOAD:
@@ -7541,6 +7547,15 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_STORY_LOAD_DEVICE_TO_MAP:
 #endif
         return WAIFU_MUSIC_TITLE;
+#ifdef WAIFU_FM_CD32X
+    case WAIFU_I_MENU_TO_BATTLE:
+        /* CD32X must have title CD-DA fully stopped before battle card assets
+           start loading.  Stopping during the short black fade gives the
+           supervisor multiple frames to accept/retry the stop command.  This
+           is a CD32X-only NONE return; the title/menu cases above still map
+           to WAIFU_MUSIC_TITLE so the title track actually starts. */
+        return WAIFU_MUSIC_NONE;
+#endif
 #ifdef WAIFU_FM_PCFX
     case WAIFU_I_STORY_LOAD_TO_MAP:
         return WAIFU_MUSIC_NONE;
@@ -10145,7 +10160,6 @@ void waifu_fm_init(void)
     /* Temporary CD32X iteration shortcut: boot straight to the deck editor
        through the normal card loading screen. */
     enter_debug_deck_editor_after_assets();
-    if (g_i_state == WAIFU_I_LOADING_ASSETS) g_i_frame = 0;
 #else
     waifu_assets_request_title();
     if (waifu_assets_needs_loading_screen()) {
@@ -10174,7 +10188,6 @@ void waifu_fm_reset_interactive(void)
        boot straight into the deck editor through the normal card-loading path.
        Build with EXTRA_CFLAGS=-DCD32X_DEBUG_AUTOBATTLE. */
     enter_debug_deck_editor_after_assets();
-    if (g_i_state == WAIFU_I_LOADING_ASSETS) g_i_frame = 0;
 #else
     waifu_assets_request_title();
     g_i_loading_target = WAIFU_I_TITLE;
@@ -10493,19 +10506,26 @@ static void draw_deck_editor(void)
     draw_panel_rect(4, 4, WAIFU_FM_WIDTH - 8, WAIFU_FM_HEIGHT - 8, IDX_UI_DARK);
     draw_centered_text(12, "DECK EDITOR", IDX_GOLD_HI, IDX_BLACK);
 
-    rect_fill(14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_DARK : IDX_BLACK);
-    rect_outline(14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_HI : IDX_DIM);
-    waifu_str_copy(line, (int)sizeof(line), "DECK "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_deck_count); waifu_str_cat(line, (int)sizeof(line), "/40");
-    draw_text_small(22, 31, line, g_deck_tab == 0 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
+    /* The deck editor is authored for the 256-wide layout.  WAIFU_UI_CENTER_DX
+       cancels out at widths <= 256 (it is (W-256)/2) so PC-FX/headless/SDL are
+       byte-identical; on the 320-wide CD32X display it shifts the whole editor
+       block right by (320-256)/2 = 32 so tabs/grid/status/hint stop clinging to
+       the left edge of the full-width blue box and sit centered inside it. */
+    int ed_dx = WAIFU_UI_CENTER_DX;
 
-    rect_fill(140, 27, 102, 14, g_deck_tab == 1 ? IDX_GOLD_DARK : IDX_BLACK);
-    rect_outline(140, 27, 102, 14, g_deck_tab == 1 ? IDX_GOLD_HI : IDX_DIM);
+    rect_fill(ed_dx + 14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_DARK : IDX_BLACK);
+    rect_outline(ed_dx + 14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_HI : IDX_DIM);
+    waifu_str_copy(line, (int)sizeof(line), "DECK "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_deck_count); waifu_str_cat(line, (int)sizeof(line), "/40");
+    draw_text_small(ed_dx + 22, 31, line, g_deck_tab == 0 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
+
+    rect_fill(ed_dx + 140, 27, 102, 14, g_deck_tab == 1 ? IDX_GOLD_DARK : IDX_BLACK);
+    rect_outline(ed_dx + 140, 27, 102, 14, g_deck_tab == 1 ? IDX_GOLD_HI : IDX_DIM);
     waifu_str_copy(line, (int)sizeof(line), "STORAGE "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_storage_count);
-    draw_text_small(148, 31, line, g_deck_tab == 1 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
+    draw_text_small(ed_dx + 148, 31, line, g_deck_tab == 1 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
 
     recalc_story_deck_counts();
     waifu_str_copy(line, (int)sizeof(line), "SUPPORT "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)(g_story_support_count + g_story_equip_count)); waifu_str_cat(line, (int)sizeof(line), "  EQ "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_equip_count);
-    draw_text_small(76, 43, line, IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small(ed_dx + 76, 43, line, IDX_GOLD_HI, IDX_BLACK);
 
     if (count <= 0) {
         draw_centered_text(105, "EMPTY", IDX_DIM, IDX_BLACK);
@@ -10515,21 +10535,21 @@ static void draw_deck_editor(void)
             if (idx >= count) break;
             int col = i % DECK_GRID_COLS;
             int row = i / DECK_GRID_COLS;
-            int x = 14 + col * 40;
+            int x = ed_dx + 14 + col * 40;
             int y = 50 + row * 45;
             draw_deck_editor_icon(arr[idx], x, y, idx == g_deck_cursor);
         }
     }
 
-    rect_fill(9, WAIFU_UI_BOTTOM_Y(190), WAIFU_FM_WIDTH - 18, 36, IDX_BLACK);
-    rect_outline(9, WAIFU_UI_BOTTOM_Y(190), WAIFU_FM_WIDTH - 18, 36, IDX_UI_LIGHT);
+    rect_fill(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), WAIFU_FM_WIDTH - (ed_dx + 9) * 2, 36, IDX_BLACK);
+    rect_outline(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), WAIFU_FM_WIDTH - (ed_dx + 9) * 2, 36, IDX_UI_LIGHT);
     if (selected_card >= 0) {
-        draw_text_small_ellipsis(15, WAIFU_UI_BOTTOM_Y(196), deck_editor_card_name(selected_card), 25, IDX_WHITE, IDX_BLACK);
+        draw_text_small_ellipsis(ed_dx + 15, WAIFU_UI_BOTTOM_Y(196), deck_editor_card_name(selected_card), 25, IDX_WHITE, IDX_BLACK);
         if (is_support_card(selected_card)) {
-            draw_text_small_ellipsis(15, WAIFU_UI_BOTTOM_Y(208), support_card_type(selected_card), 23, IDX_GOLD_HI, IDX_BLACK);
+            draw_text_small_ellipsis(ed_dx + 15, WAIFU_UI_BOTTOM_Y(208), support_card_type(selected_card), 23, IDX_GOLD_HI, IDX_BLACK);
         } else {
             fmt_label_u32(line, (int)sizeof(line), "ATK", (unsigned)waifu_card_atk[selected_card]); waifu_str_cat(line, (int)sizeof(line), " DEF "); waifu_str_cat_u32(line, (int)sizeof(line), (unsigned)waifu_card_def[selected_card]);
-            draw_text_small(15, WAIFU_UI_BOTTOM_Y(208), line, IDX_GOLD_HI, IDX_BLACK);
+            draw_text_small(ed_dx + 15, WAIFU_UI_BOTTOM_Y(208), line, IDX_GOLD_HI, IDX_BLACK);
         }
     }
     if (g_deck_flash > 0 && ((g_deck_flash / 8) & 1) == 0) {
@@ -10537,7 +10557,7 @@ static void draw_deck_editor(void)
             (g_story_deck_count == STORY_DECK_SIZE ? "DECK IS FULL" : "DECK MUST BE 40");
         draw_centered_text(WAIFU_UI_BOTTOM_Y(181), msg, IDX_RED, IDX_BLACK);
     }
-    draw_text_small(15, WAIFU_FM_HEIGHT - 14, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
+    draw_text_small(ed_dx + 15, WAIFU_FM_HEIGHT - 14, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
 }
 
 static void transition_draw_deck_editor_source(int frame, void *ctx)
@@ -11774,7 +11794,13 @@ void waifu_fm_step(const WaifuFmInput *input)
             int *arr = deck_editor_active_array();
             g_deck_preview_card = arr[g_deck_cursor];
 #if defined(WAIFU_FM_CD32X)
-            (void)waifu_assets_prewarm_big_art_pair(g_deck_preview_card, CARD_NONE);
+            /* Only stream art the preview actually needs and that is not already
+               resident in the small big-art LRU.  The load is deferred to the
+               DECK_PREVIEW case so this input frame finishes redrawing the deck
+               editor and flips before the seek stalls the SH-2. */
+            g_deck_preview_art_pending = is_support_card(g_deck_preview_card)
+                ? (waifu_assets_support_big_art_cached() == NULL)
+                : (waifu_assets_card_big_art_cached(g_deck_preview_card) == NULL);
 #endif
             g_i_state = WAIFU_I_DECK_PREVIEW;
             g_i_frame = -1;
@@ -11822,6 +11848,24 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     case WAIFU_I_DECK_PREVIEW:
         draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
+#if defined(WAIFU_FM_CD32X)
+        if (g_deck_preview_art_pending) {
+            /* Entry frame (g_i_frame == -1) only paints the "CARD LOADING..."
+               placeholder; the supervisor read runs on the next preview frame so
+               the page flip between them shows the loading state on screen
+               instead of freezing the previous (deck editor) frame for the seek.
+               Once the art is resident the cached preview path resumes. */
+            if (g_i_frame >= 0) {
+                if (is_support_card(g_deck_preview_card)) {
+                    (void)waifu_assets_support_big_art();
+                } else {
+                    (void)waifu_assets_prewarm_big_art_pair(g_deck_preview_card, CARD_NONE);
+                }
+                g_deck_preview_art_pending = 0;
+            }
+            draw_centered_text(WAIFU_FM_HEIGHT / 2, "CARD LOADING...", IDX_GOLD_HI, IDX_BLACK);
+        }
+#endif
         if (press_b || press_a || press_start) {
             g_i_state = WAIFU_I_DECK_EDITOR;
             g_i_frame = -1;
