@@ -10483,7 +10483,18 @@ static const char *deck_editor_card_name(int id)
 
 static void draw_deck_editor_icon(int card, int x, int y, int selected)
 {
+#if defined(WAIFU_FM_CD32X)
+    uint8_t rim = is_support_card(card) ? IDX_SUPPORT_FRAME : IDX_CARD_RIM;
+    uint8_t mid = is_support_card(card) ? IDX_SUPPORT_FRAME_HI : IDX_GOLD_DARK;
+    rect_fill(x + 2, y + 3, 26, 34, IDX_BLACK);
+    rect_fill(x, y, 26, 34, rim);
+    rect_outline(x, y, 26, 34, IDX_GOLD_HI);
+    rect_fill(x + 3, y + 3, 20, 28, IDX_UI_DARK);
+    rect_fill(x + 5, y + 5, 16, 5, mid);
+    rect_fill(x + 5, y + 23, 16, 5, mid);
+#else
     draw_hand_card_sprite(card, x, y, 26, 34, 0);
+#endif
     if (selected) {
         rect_outline(x - 2, y - 2, 30, 38, IDX_RED);
         rect_outline(x - 3, y - 3, 32, 40, IDX_UI_RED);
@@ -11794,13 +11805,10 @@ void waifu_fm_step(const WaifuFmInput *input)
             int *arr = deck_editor_active_array();
             g_deck_preview_card = arr[g_deck_cursor];
 #if defined(WAIFU_FM_CD32X)
-            /* Only stream art the preview actually needs and that is not already
-               resident in the small big-art LRU.  The load is deferred to the
-               DECK_PREVIEW case so this input frame finishes redrawing the deck
-               editor and flips before the seek stalls the SH-2. */
-            g_deck_preview_art_pending = is_support_card(g_deck_preview_card)
-                ? (waifu_assets_support_big_art_cached() == NULL)
-                : (waifu_assets_card_big_art_cached(g_deck_preview_card) == NULL);
+            /* CD32X card-check is an interactive screen.  Do not issue a
+               single-card CD seek from here; the preview renderer uses cached
+               art only and still shows the card data on a cache miss. */
+            g_deck_preview_art_pending = 0;
 #endif
             g_i_state = WAIFU_I_DECK_PREVIEW;
             g_i_frame = -1;
@@ -11850,19 +11858,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
 #if defined(WAIFU_FM_CD32X)
         if (g_deck_preview_art_pending) {
-            /* Entry frame (g_i_frame == -1) only paints the "CARD LOADING..."
-               placeholder; the supervisor read runs on the next preview frame so
-               the page flip between them shows the loading state on screen
-               instead of freezing the previous (deck editor) frame for the seek.
-               Once the art is resident the cached preview path resumes. */
-            if (g_i_frame >= 0) {
-                if (is_support_card(g_deck_preview_card)) {
-                    (void)waifu_assets_support_big_art();
-                } else {
-                    (void)waifu_assets_prewarm_big_art_pair(g_deck_preview_card, CARD_NONE);
-                }
-                g_deck_preview_art_pending = 0;
-            }
+            g_deck_preview_art_pending = 0;
             draw_centered_text(WAIFU_FM_HEIGHT / 2, "CARD LOADING...", IDX_GOLD_HI, IDX_BLACK);
         }
 #endif
