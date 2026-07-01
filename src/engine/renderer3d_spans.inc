@@ -903,55 +903,104 @@ void cfx_board_fill(uint8_t *dst, int n,
         }
 
         if (n >= 2) {
-            uint32_t c0, c1, ru, rv;
+            uint32_t c0, c1, c2, c3, ru, rv;
             uint16_t *dst16 = (uint16_t *)dst;
             int pairs = n >> 1;
-            int pair_count = pairs;
+            int pair_groups = pairs >> 1;
+            int pair_group_count = pair_groups;
 
-            __asm__ volatile (
-                "1:\n"
-                "mov %[v],%[rv]\n"
-                "shlr2 %[rv]\n"
-                "shlr %[rv]\n"
-                "and %[mask_v],%[rv]\n"
-                "mov %[u],%[ru]\n"
-                "shlr8 %[ru]\n"
-                "and %[mask_u],%[ru]\n"
-                "add %[rv],%[ru]\n"
-                "add %[tile],%[ru]\n"
-                "mov.b @%[ru],%[c0]\n"
-                "add %[du],%[u]\n"
-                "add %[dv],%[v]\n"
+            if (pair_groups > 0) {
+                __asm__ volatile (
+                    "1:\n"
+                    "mov %[v],%[rv]\n"
+                    "shlr2 %[rv]\n"
+                    "shlr %[rv]\n"
+                    "and %[mask_v],%[rv]\n"
+                    "mov %[u],%[ru]\n"
+                    "shlr8 %[ru]\n"
+                    "and %[mask_u],%[ru]\n"
+                    "add %[rv],%[ru]\n"
+                    "add %[tile],%[ru]\n"
+                    "mov.b @%[ru],%[c0]\n"
+                    "add %[du],%[u]\n"
+                    "add %[dv],%[v]\n"
 
-                "mov %[v],%[rv]\n"
-                "shlr2 %[rv]\n"
-                "shlr %[rv]\n"
-                "and %[mask_v],%[rv]\n"
-                "mov %[u],%[ru]\n"
-                "shlr8 %[ru]\n"
-                "and %[mask_u],%[ru]\n"
-                "add %[rv],%[ru]\n"
-                "add %[tile],%[ru]\n"
-                "mov.b @%[ru],%[c1]\n"
-                "extu.b %[c0],%[c0]\n"
-                "extu.b %[c1],%[c1]\n"
-                "shll8 %[c0]\n"
-                "or %[c1],%[c0]\n"
-                "mov.w %[c0],@%[dst]\n"
-                "add #2,%[dst]\n"
-                "add %[du],%[u]\n"
-                "add %[dv],%[v]\n"
-                "add #-1,%[pairs]\n"
-                "tst %[pairs],%[pairs]\n"
-                "bf 1b\n"
-                : [dst] "+r" (dst16), [pairs] "+r" (pairs), [u] "+r" (u), [v] "+r" (v),
-                  [c0] "=&r" (c0), [c1] "=&r" (c1), [ru] "=&r" (ru), [rv] "=&r" (rv)
-                : [du] "r" (du), [dv] "r" (dv), [tile] "r" (tile),
-                  [mask_u] "r" (mask_u), [mask_v] "r" (mask_v)
-                : "memory");
+                    "mov %[v],%[rv]\n"
+                    "shlr2 %[rv]\n"
+                    "shlr %[rv]\n"
+                    "and %[mask_v],%[rv]\n"
+                    "mov %[u],%[ru]\n"
+                    "shlr8 %[ru]\n"
+                    "and %[mask_u],%[ru]\n"
+                    "add %[rv],%[ru]\n"
+                    "add %[tile],%[ru]\n"
+                    "mov.b @%[ru],%[c1]\n"
+                    "add %[du],%[u]\n"
+                    "add %[dv],%[v]\n"
+
+                    "mov %[v],%[rv]\n"
+                    "shlr2 %[rv]\n"
+                    "shlr %[rv]\n"
+                    "and %[mask_v],%[rv]\n"
+                    "mov %[u],%[ru]\n"
+                    "shlr8 %[ru]\n"
+                    "and %[mask_u],%[ru]\n"
+                    "add %[rv],%[ru]\n"
+                    "add %[tile],%[ru]\n"
+                    "mov.b @%[ru],%[c2]\n"
+                    "add %[du],%[u]\n"
+                    "add %[dv],%[v]\n"
+
+                    "mov %[v],%[rv]\n"
+                    "shlr2 %[rv]\n"
+                    "shlr %[rv]\n"
+                    "and %[mask_v],%[rv]\n"
+                    "mov %[u],%[ru]\n"
+                    "shlr8 %[ru]\n"
+                    "and %[mask_u],%[ru]\n"
+                    "add %[rv],%[ru]\n"
+                    "add %[tile],%[ru]\n"
+                    "mov.b @%[ru],%[c3]\n"
+                    "add %[du],%[u]\n"
+                    "add %[dv],%[v]\n"
+
+                    "extu.b %[c0],%[c0]\n"
+                    "extu.b %[c1],%[c1]\n"
+                    "extu.b %[c2],%[c2]\n"
+                    "extu.b %[c3],%[c3]\n"
+                    "shll8 %[c0]\n"
+                    "or %[c1],%[c0]\n"
+                    "mov.w %[c0],@%[dst]\n"
+                    "add #2,%[dst]\n"
+                    "shll8 %[c2]\n"
+                    "or %[c3],%[c2]\n"
+                    "mov.w %[c2],@%[dst]\n"
+                    "add #2,%[dst]\n"
+                    "add #-1,%[pairs]\n"
+                    "tst %[pairs],%[pairs]\n"
+                    "bf 1b\n"
+                    : [dst] "+r" (dst16), [pairs] "+r" (pair_groups), [u] "+r" (u), [v] "+r" (v),
+                      [c0] "=&r" (c0), [c1] "=&r" (c1), [c2] "=&r" (c2), [c3] "=&r" (c3),
+                      [ru] "=&r" (ru), [rv] "=&r" (rv)
+                    : [du] "r" (du), [dv] "r" (dv), [tile] "r" (tile),
+                      [mask_u] "r" (mask_u), [mask_v] "r" (mask_v)
+                    : "memory");
+
+                n -= pair_group_count << 2;
+            }
+
+            if (pairs & 1) {
+                uint8_t p0 = tile[(((uint32_t)v >> 3) & 0x3e0) | (((uint32_t)u >> 8) & 0x1f)];
+                u += du;
+                v += dv;
+                uint8_t p1 = tile[(((uint32_t)v >> 3) & 0x3e0) | (((uint32_t)u >> 8) & 0x1f)];
+                u += du;
+                v += dv;
+                *dst16++ = cfx_pack_pixel_pair(p0, p1);
+                n -= 2;
+            }
 
             dst = (uint8_t *)dst16;
-            n -= pair_count << 1;
         }
 
         if (n > 0) {

@@ -70,10 +70,9 @@
 #define WAIFU_BOARD_FAST_AFFINE_ENABLE 1
 #endif
 #if defined(WAIFU_FM_CD32X) && !defined(WAIFU_CD32X_FIELD_SIDE_WALLS)
-/* SDRAM is too tight for a full field framebuffer cache on CD32X, so battle
-   field frames are normally re-rendered. Keep the textured board top and grid,
-   but skip the decorative side-wall lip quads on this target's fast path. */
-#define WAIFU_CD32X_FIELD_SIDE_WALLS 0
+/* CD32X re-renders the battle field every frame, so keep side walls on the
+   compact affine path and split part of that work across the Slave SH-2. */
+#define WAIFU_CD32X_FIELD_SIDE_WALLS 1
 #endif
 #define CFX_PI_Q8 804
 #define TITLE_SEQUENCE_FRAMES 310
@@ -1030,6 +1029,28 @@ static void build_board_projected(Camera cam, BoardProjected *bp)
     }
 }
 
+static void draw_field_slab_x_wall_fast(const BoardProjected *bp, int side)
+{
+    if (side == 0) {
+        for (int r = 0; r < BOARD_ROWS; ++r)
+            draw_wall_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
+    } else {
+        for (int r = 0; r < BOARD_ROWS; ++r)
+            draw_wall_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
+    }
+}
+
+static void draw_field_slab_facing_z_wall_fast(Camera cam, const BoardProjected *bp)
+{
+    if (cam.eye.z >= 0) {
+        for (int c = 0; c < BOARD_COLS; ++c)
+            draw_wall_quad3d_fast_projected(bp->top[BOARD_ROWS][c], bp->top[BOARD_ROWS][c+1], bp->bottom_z1[c+1], bp->bottom_z1[c], field_side_tile_for_cell(c, BOARD_ROWS - 1));
+    } else {
+        for (int c = 0; c < BOARD_COLS; ++c)
+            draw_wall_quad3d_fast_projected(bp->top[0][c], bp->top[0][c+1], bp->bottom_z0[c+1], bp->bottom_z0[c], field_side_tile_for_cell(c, 0));
+    }
+}
+
 static void draw_field_slab_sides_fast(Camera cam, const BoardProjected *bp)
 {
     /* Only the camera-facing Z wall is externally visible once the board top is
@@ -1037,42 +1058,22 @@ static void draw_field_slab_sides_fast(Camera cam, const BoardProjected *bp)
        textured quads.  Keep both X walls because the centered battle cameras can
        see both side lips.  This keeps the table textured, trims dead work, and
        avoids the old lower-left corner fold caused by screen-clamped wall verts. */
-    if (cam.eye.z >= 0) {
-        if (cam.eye.x >= 0) {
-            for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_wall_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
-            for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_wall_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
-        } else {
-            for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_wall_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
-            for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_wall_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
-        }
-        for (int c = 0; c < BOARD_COLS; ++c)
-            draw_wall_quad3d_fast_projected(bp->top[BOARD_ROWS][c], bp->top[BOARD_ROWS][c+1], bp->bottom_z1[c+1], bp->bottom_z1[c], field_side_tile_for_cell(c, BOARD_ROWS - 1));
+    if (cam.eye.x >= 0) {
+        draw_field_slab_x_wall_fast(bp, 0);
+        draw_field_slab_x_wall_fast(bp, 1);
     } else {
-        if (cam.eye.x >= 0) {
-            for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_wall_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
-            for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_wall_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
-        } else {
-            for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_wall_quad3d_fast_projected(bp->top[r][BOARD_COLS], bp->top[r+1][BOARD_COLS], bp->bottom_x1[r+1], bp->bottom_x1[r], field_side_tile_for_cell(BOARD_COLS - 1, r));
-            for (int r = 0; r < BOARD_ROWS; ++r)
-                draw_wall_quad3d_fast_projected(bp->top[r][0], bp->top[r+1][0], bp->bottom_x0[r+1], bp->bottom_x0[r], field_side_tile_for_cell(0, r));
-        }
-        for (int c = 0; c < BOARD_COLS; ++c)
-            draw_wall_quad3d_fast_projected(bp->top[0][c], bp->top[0][c+1], bp->bottom_z0[c+1], bp->bottom_z0[c], field_side_tile_for_cell(c, 0));
+        draw_field_slab_x_wall_fast(bp, 1);
+        draw_field_slab_x_wall_fast(bp, 0);
     }
+    draw_field_slab_facing_z_wall_fast(cam, bp);
 }
 
 #if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
 enum {
     CD32X_BOARD_JOB_IDLE = 0,
     CD32X_BOARD_JOB_RENDER_ROWS = 1,
-    CD32X_BOARD_JOB_DONE = 2,
+    CD32X_BOARD_JOB_RENDER_X_WALL = 2,
+    CD32X_BOARD_JOB_DONE = 3,
     CD32X_BOARD_SLAVE_READY = 0x57335832u
 };
 
@@ -1081,6 +1082,7 @@ typedef struct Cd32xBoardJob {
     volatile uint32_t command;
     volatile int32_t row_start;
     volatile int32_t row_end;
+    volatile int32_t side;
     BoardProjected bp;
 } Cd32xBoardJob;
 
@@ -1093,6 +1095,29 @@ static Cd32xBoardJob *cd32x_board_job_uncached(void)
         addr = (addr - WAIFU_CD32X_SDRAM_CACHED_BASE) + WAIFU_CD32X_SDRAM_UNCACHED_BASE;
     }
     return (Cd32xBoardJob *)addr;
+}
+
+static int cd32x_render_board_sides_parallel(Camera cam, const BoardProjected *bp)
+{
+    Cd32xBoardJob *job = cd32x_board_job_uncached();
+    int slave_side = (cam.eye.x >= 0) ? 0 : 1;
+    int master_side = slave_side ^ 1;
+    if (job->ready != CD32X_BOARD_SLAVE_READY || job->command != CD32X_BOARD_JOB_IDLE) {
+        return 0;
+    }
+
+    job->bp = *bp;
+    job->side = slave_side;
+    __asm__ volatile ("" ::: "memory");
+    job->command = CD32X_BOARD_JOB_RENDER_X_WALL;
+
+    draw_field_slab_x_wall_fast(bp, master_side);
+
+    while (job->command != CD32X_BOARD_JOB_DONE) {
+    }
+    job->command = CD32X_BOARD_JOB_IDLE;
+    draw_field_slab_facing_z_wall_fast(cam, bp);
+    return 1;
 }
 
 static void render_board_top_rows_projected(const BoardProjected *bp, int row_start, int row_end)
@@ -1138,6 +1163,10 @@ void waifu_cd32x_slave_service(void)
         int row_start = (int)job->row_start;
         int row_end = (int)job->row_end;
         render_board_top_rows_projected(&job->bp, row_start, row_end);
+        __asm__ volatile ("" ::: "memory");
+        job->command = CD32X_BOARD_JOB_DONE;
+    } else if (job->command == CD32X_BOARD_JOB_RENDER_X_WALL) {
+        draw_field_slab_x_wall_fast(&job->bp, (int)job->side);
         __asm__ volatile ("" ::: "memory");
         job->command = CD32X_BOARD_JOB_DONE;
     }
@@ -3038,7 +3067,12 @@ static void render_board(Camera cam)
     BoardProjected bp;
     build_board_projected(cam, &bp);
 #if !defined(WAIFU_FM_CD32X) || WAIFU_CD32X_FIELD_SIDE_WALLS
+#if defined(WAIFU_FM_CD32X)
+    if (!cd32x_render_board_sides_parallel(cam, &bp))
+#endif
+    {
     draw_field_slab_sides_fast(cam, &bp);
+    }
 #endif
 
 #if defined(WAIFU_FM_CD32X)
