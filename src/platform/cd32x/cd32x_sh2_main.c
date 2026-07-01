@@ -5,6 +5,8 @@
 #include "waifu_cd32x_input.h"
 #include "waifu_cd32x_video.h"
 
+void waifu_cd32x_slave_service(void);
+
 int main(void)
 {
     WaifuCd32xCdrom *cdrom = waifu_cd32x_cdrom_create();
@@ -65,6 +67,7 @@ uint8_t *cfx_game_framebuffer(void)
 void slave(void)
 {
     for (;;) {
+        waifu_cd32x_slave_service();
         __asm__ volatile ("nop");
     }
 }

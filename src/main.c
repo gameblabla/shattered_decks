@@ -44,6 +44,7 @@
 #endif
 #ifdef WAIFU_FM_CD32X
 #include "waifu_cd32x_video.h"
+#include "waifu_cd32x_memory.h"
 #endif
 
 #define BOARD_COLS 5
@@ -1051,6 +1052,82 @@ static void draw_field_slab_sides_fast(Camera cam, const BoardProjected *bp)
             draw_wall_quad3d_fast_projected(bp->top[0][c], bp->top[0][c+1], bp->bottom_z0[c+1], bp->bottom_z0[c], field_side_tile_for_cell(c, 0));
     }
 }
+
+#if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+enum {
+    CD32X_BOARD_JOB_IDLE = 0,
+    CD32X_BOARD_JOB_RENDER_ROWS = 1,
+    CD32X_BOARD_JOB_DONE = 2,
+    CD32X_BOARD_SLAVE_READY = 0x57335832u
+};
+
+typedef struct Cd32xBoardJob {
+    volatile uint32_t ready;
+    volatile uint32_t command;
+    volatile int32_t row_start;
+    volatile int32_t row_end;
+    BoardProjected bp;
+} Cd32xBoardJob;
+
+static Cd32xBoardJob g_cd32x_board_job __attribute__((aligned(16)));
+
+static Cd32xBoardJob *cd32x_board_job_uncached(void)
+{
+    uintptr_t addr = (uintptr_t)&g_cd32x_board_job;
+    if (addr >= WAIFU_CD32X_SDRAM_CACHED_BASE && addr < WAIFU_CD32X_SDRAM_CACHED_LIMIT) {
+        addr = (addr - WAIFU_CD32X_SDRAM_CACHED_BASE) + WAIFU_CD32X_SDRAM_UNCACHED_BASE;
+    }
+    return (Cd32xBoardJob *)addr;
+}
+
+static void render_board_top_rows_projected(const BoardProjected *bp, int row_start, int row_end)
+{
+    if (row_start < 0) row_start = 0;
+    if (row_end > BOARD_ROWS) row_end = BOARD_ROWS;
+    for (int r = row_start; r < row_end; ++r) {
+        for (int c = 0; c < BOARD_COLS; ++c) {
+            int tile = ((r + c) & 1) ? 5 : 1;
+            draw_quad3d_fast_projected(bp->top[r][c], bp->top[r][c+1],
+                                       bp->top[r+1][c+1], bp->top[r+1][c], tile);
+        }
+    }
+}
+
+static int cd32x_render_board_top_parallel(const BoardProjected *bp)
+{
+    Cd32xBoardJob *job = cd32x_board_job_uncached();
+    const int split = BOARD_ROWS / 2;
+    if (job->ready != CD32X_BOARD_SLAVE_READY || job->command != CD32X_BOARD_JOB_IDLE) {
+        return 0;
+    }
+
+    job->bp = *bp;
+    job->row_start = split;
+    job->row_end = BOARD_ROWS;
+    __asm__ volatile ("" ::: "memory");
+    job->command = CD32X_BOARD_JOB_RENDER_ROWS;
+
+    render_board_top_rows_projected(bp, 0, split);
+
+    while (job->command != CD32X_BOARD_JOB_DONE) {
+    }
+    job->command = CD32X_BOARD_JOB_IDLE;
+    return 1;
+}
+
+void waifu_cd32x_slave_service(void)
+{
+    Cd32xBoardJob *job = cd32x_board_job_uncached();
+    job->ready = CD32X_BOARD_SLAVE_READY;
+    if (job->command == CD32X_BOARD_JOB_RENDER_ROWS) {
+        int row_start = (int)job->row_start;
+        int row_end = (int)job->row_end;
+        render_board_top_rows_projected(&job->bp, row_start, row_end);
+        __asm__ volatile ("" ::: "memory");
+        job->command = CD32X_BOARD_JOB_DONE;
+    }
+}
+#endif
 
 
 static int field_side_tile_for_cell(int c, int r)
@@ -2780,11 +2857,16 @@ static void render_board(Camera cam)
     build_board_projected(cam, &bp);
     draw_field_slab_sides_fast(cam, &bp);
 
+#if defined(WAIFU_FM_CD32X)
+    if (!cd32x_render_board_top_parallel(&bp))
+#endif
+    {
     for (int r = 0; r < BOARD_ROWS; ++r) {
         for (int c = 0; c < BOARD_COLS; ++c) {
             int tile = ((r + c) & 1) ? 5 : 1;
             draw_quad3d_fast_projected(bp.top[r][c], bp.top[r][c+1], bp.top[r+1][c+1], bp.top[r+1][c], tile);
         }
+    }
     }
 #endif
 
