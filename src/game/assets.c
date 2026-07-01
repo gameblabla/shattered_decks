@@ -634,6 +634,10 @@ void waifu_assets_request_cards_for_list(const int *card_ids, int count)
         int limit = count < CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT ? count : CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT;
         for (int i = 0; i < limit; ++i) prewarm_face_list_add_card(card_ids[i]);
     }
+    /* The support/equip big art is one shared 112x112 image.  Load it with the
+       battle working set so black-background support/equip reveals never draw
+       blank or perform their first CD read during/after the animation. */
+    g_prewarm_support_big = 1;
 #else
     if (card_ids && count > 0) {
         for (int i = 0; i < count; ++i) prewarm_list_add_card(card_ids[i]);

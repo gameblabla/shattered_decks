@@ -8109,11 +8109,19 @@ static void start_thunder(int owner, int hand_slot)
             g_b_thunder_slots[out] = i;
             g_b_thunder_cards[out] = card;
             g_b_thunder_backs[out] = target_owner ? !g_i_com_faceup[i] : !g_i_player_faceup[i];
+#if defined(WAIFU_FM_CD32X)
+            (void)waifu_assets_prewarm_big_art_pair(card, CARD_NONE);
+#else
             (void)card_big_art_ptr(card);
+#endif
         }
     }
     if (g_b_thunder_count <= 0) return;
+#if defined(WAIFU_FM_CD32X)
+    (void)waifu_assets_support_big_art();
+#else
     (void)support_big_art_ptr();
+#endif
     used[hand_slot] = 1;
     clear_battle_snapshot();
     set_battle_phase(IB_COM_THUNDER_ANIM);
@@ -8173,8 +8181,13 @@ static int try_trigger_player_trap(int com_attacker_slot)
        attacker is destroyed without ever being flipped face up. */
     g_b_thunder_backs[0] = !g_i_com_faceup[com_attacker_slot];
     g_b_thunder_count = 1;
+#if defined(WAIFU_FM_CD32X)
+    (void)waifu_assets_prewarm_big_art_pair(g_b_thunder_cards[0], CARD_NONE);
+    (void)waifu_assets_support_big_art();
+#else
     (void)card_big_art_ptr(g_b_thunder_cards[0]);
     (void)support_big_art_ptr();
+#endif
     if (hand_slot >= 0) g_i_player_used[hand_slot] = 1;
     clear_battle_snapshot();
     set_battle_phase(IB_COM_THUNDER_ANIM);
@@ -8290,7 +8303,11 @@ static void start_player_one_shot_support(int hand_slot)
     g_b_support_lp_to = is_heal_support_card(card) ? g_you_lp + WAIFU_SUPPORT_HEAL_AMOUNT : g_you_lp;
     g_i_player_used[hand_slot] = 1;
     clear_player_fusion_queue();
+#if defined(WAIFU_FM_CD32X)
+    (void)waifu_assets_support_big_art();
+#else
     (void)support_big_art_ptr();
+#endif
     set_battle_phase(IB_PLAYER_SUPPORT_ANIM);
 }
 
@@ -8817,11 +8834,18 @@ static void start_equip(int owner, int hand_slot, int target_slot)
     g_b_equip_base_def = field_card_def(owner, target_slot);
     g_b_equip_pending_atk = equip_atk_bonus(g_b_equip_card);
     g_b_equip_pending_def = equip_def_bonus(g_b_equip_card);
-    /* Pre-cache both visible pieces before the equip animation starts.  The
-       support/equip art is normally already loaded during battle startup; the
-       target card may be newly revealed or evicted, so force its big-art slot
-       here rather than stalling on the first full-art animation frame. */
+    /* Pre-cache both visible pieces before the equip animation starts.  On
+       CD32X the normal draw-time big-art helpers are cache-only, so use the
+       explicit prewarm/load APIs here while we are still between animation
+       states.  Otherwise the equip reveal can draw a blank card and the next
+       attack cut-in pays the first target-art CD read. */
+#if defined(WAIFU_FM_CD32X)
+    (void)waifu_assets_prewarm_big_art_pair(target_card, CARD_NONE);
+    (void)waifu_assets_support_big_art();
+#else
     (void)card_big_art_ptr(target_card);
+    (void)support_big_art_ptr();
+#endif
     if (owner == 0) {
         g_i_player_field[target_slot] = CARD_NONE;
         g_i_player_faceup[target_slot] = 1;
