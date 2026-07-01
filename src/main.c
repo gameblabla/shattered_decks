@@ -69,6 +69,12 @@
    quads with the compact affine renderer. */
 #define WAIFU_BOARD_FAST_AFFINE_ENABLE 1
 #endif
+#if defined(WAIFU_FM_CD32X) && !defined(WAIFU_CD32X_FIELD_SIDE_WALLS)
+/* SDRAM is too tight for a full field framebuffer cache on CD32X, so battle
+   field frames are normally re-rendered. Keep the textured board top and grid,
+   but skip the decorative side-wall lip quads on this target's fast path. */
+#define WAIFU_CD32X_FIELD_SIDE_WALLS 0
+#endif
 #define CFX_PI_Q8 804
 #define TITLE_SEQUENCE_FRAMES 310
 #define DUEL_TOTAL_FRAMES 2696
@@ -236,6 +242,7 @@ static unsigned long long g_profile_hand_card_draws = 0;
 static unsigned long long g_profile_hand_card_us = 0;
 static unsigned long long g_profile_card2d_fast_calls = 0;
 static unsigned long long g_profile_card2d_generic_calls = 0;
+static unsigned long long g_profile_card2d_generic_us = 0;
 static unsigned long long g_profile_ui_fast_fill_calls = 0;
 
 static unsigned long long profile_now_us(void)
@@ -265,14 +272,22 @@ static unsigned long long profile_now_us(void)
         } \
     } while (0)
 #define PROFILE_CARD2D_FAST() do { if (g_profile_render_enabled) g_profile_card2d_fast_calls++; } while (0)
-#define PROFILE_CARD2D_GENERIC() do { if (g_profile_render_enabled) g_profile_card2d_generic_calls++; } while (0)
+#define PROFILE_CARD2D_GENERIC_BEGIN() unsigned long long _profile_card2d_t0 = g_profile_render_enabled ? profile_now_us() : 0
+#define PROFILE_CARD2D_GENERIC_END() \
+    do { \
+        if (g_profile_render_enabled) { \
+            g_profile_card2d_generic_calls++; \
+            g_profile_card2d_generic_us += profile_now_us() - _profile_card2d_t0; \
+        } \
+    } while (0)
 #define PROFILE_UI_FAST_FILL() do { if (g_profile_render_enabled) g_profile_ui_fast_fill_calls++; } while (0)
 #else
 #define PROFILE_HAND_CARD_DRAW(call_expr) do { call_expr; } while (0)
 #define PROFILE_HAND_BEGIN() do { } while (0)
 #define PROFILE_HAND_END() do { } while (0)
 #define PROFILE_CARD2D_FAST() do { } while (0)
-#define PROFILE_CARD2D_GENERIC() do { } while (0)
+#define PROFILE_CARD2D_GENERIC_BEGIN() do { } while (0)
+#define PROFILE_CARD2D_GENERIC_END() do { } while (0)
 #define PROFILE_UI_FAST_FILL() do { } while (0)
 #endif
 
@@ -2274,6 +2289,67 @@ static inline void cd32x_blit_row_mapped_pairs(const uint8_t *src, uint8_t *dst,
         if (count) *(uint8_t *)(uintptr_t)dst16 = src[*xmap];
     }
 }
+
+static void cd32x_blit_scaled_fast(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
+{
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = x + dw;
+    int y1 = y + dh;
+    int32_t step_x;
+    int32_t step_y;
+
+    if (!src || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
+    if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+    if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    step_x = (int32_t)(((uint32_t)sw << 16) / (uint32_t)dw);
+    step_y = (int32_t)(((uint32_t)sh << 16) / (uint32_t)dh);
+
+    for (int dy = y0; dy < y1; ++dy) {
+        int sy = (int)(((int32_t)(dy - y) * step_y) >> 16);
+        int count = x1 - x0;
+        int32_t sxq = (int32_t)(x0 - x) * step_x;
+        uint8_t *dst = framebuffer + (int32_t)dy * WAIFU_FM_WIDTH + x0;
+        const uint8_t *srow;
+
+        if (sy < 0) sy = 0;
+        if (sy >= sh) sy = sh - 1;
+        srow = src + (int32_t)sy * sw;
+
+        if ((uintptr_t)dst & 1u) {
+            int sx = (int)(sxq >> 16);
+            if (sx < 0) sx = 0;
+            if (sx >= sw) sx = sw - 1;
+            *dst++ = srow[sx];
+            sxq += step_x;
+            --count;
+        }
+        {
+            uint16_t *dst16 = (uint16_t *)(uintptr_t)dst;
+            while (count >= 2) {
+                int sx0 = (int)(sxq >> 16);
+                int sx1;
+                sxq += step_x;
+                sx1 = (int)(sxq >> 16);
+                sxq += step_x;
+                if (sx0 < 0) sx0 = 0;
+                if (sx0 >= sw) sx0 = sw - 1;
+                if (sx1 < 0) sx1 = 0;
+                if (sx1 >= sw) sx1 = sw - 1;
+                *dst16++ = (uint16_t)(((uint16_t)srow[sx0] << 8) | srow[sx1]);
+                count -= 2;
+            }
+            if (count) {
+                int sx = (int)(sxq >> 16);
+                if (sx < 0) sx = 0;
+                if (sx >= sw) sx = sw - 1;
+                *(uint8_t *)(uintptr_t)dst16 = srow[sx];
+            }
+        }
+    }
+}
 #endif
 
 static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
@@ -2396,7 +2472,12 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
         return;
     }
     if (try_draw_card_raw_fast(src, sw, sh, x, y, dw, dh, 0)) return;
-    PROFILE_CARD2D_GENERIC();
+#if defined(WAIFU_FM_CD32X)
+    cd32x_blit_scaled_fast(src, sw, sh, x, y, dw, dh);
+    PROFILE_CARD2D_FAST();
+    return;
+#endif
+    PROFILE_CARD2D_GENERIC_BEGIN();
     for (int yy = 0; yy < dh; ++yy) {
         int sy = (yy * sh) / dh;
         int dy = y + yy;
@@ -2408,13 +2489,14 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
             framebuffer[dy * WAIFU_FM_WIDTH + dx] = src[sy * sw + sx];
         }
     }
+    PROFILE_CARD2D_GENERIC_END();
 }
 
 static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
     if (!src || dw <= 0 || dh <= 0) return;
     if (try_draw_card_raw_fast(src, sw, sh, x, y, dw, dh, 1)) return;
-    PROFILE_CARD2D_GENERIC();
+    PROFILE_CARD2D_GENERIC_BEGIN();
     for (int yy = 0; yy < dh; ++yy) {
         int sy = (yy * sh) / dh;
         int dy = y + yy;
@@ -2426,6 +2508,7 @@ static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y,
             framebuffer[dy * WAIFU_FM_WIDTH + dx] = gray_card_dither_px(src[sy * sw + sx], dx, dy);
         }
     }
+    PROFILE_CARD2D_GENERIC_END();
 }
 
 
@@ -2740,13 +2823,14 @@ static void draw_big_battle_card_rect(int id, int x, int y, int w, int h, int ba
             int art_h = h > 134 ? 112 : h - 20;
             if (art_w < 1) art_w = 1;
             if (art_h < 1) art_h = 1;
-#ifdef WAIFU_FM_PCFX
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
             /* The face-down reveal was spending most of the visible flip in
                repeated scaled big-art reads/rasterization.  Show a cheap gold
                card-face silhouette while the card is still edge-on, then snap
                to the normal 112x112 direct-art path near full width.  This
                matches the already-fast equip-card reveal path and keeps SCSI/CD
-               misses out of the moving part of the animation. */
+               misses and CD32X scaled-art work out of the moving part of the
+               animation. */
             if (w < 120) {
                 int cx = x + w / 2;
                 rect_fill(x + 4, y + 6, w - 8, art_h, IDX_DARK_BROWN);
@@ -2953,7 +3037,9 @@ static void render_board(Camera cam)
 #else
     BoardProjected bp;
     build_board_projected(cam, &bp);
+#if !defined(WAIFU_FM_CD32X) || WAIFU_CD32X_FIELD_SIDE_WALLS
     draw_field_slab_sides_fast(cam, &bp);
+#endif
 
 #if defined(WAIFU_FM_CD32X)
     if (!cd32x_render_board_top_parallel(&bp))
@@ -2980,7 +3066,16 @@ static void render_board(Camera cam)
 static void render_board_cached(Camera cam)
 {
 #if defined(WAIFU_BG_CACHE_DISABLE)
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+    unsigned long long _profile_render_t0 = g_profile_render_enabled ? profile_now_us() : 0;
+#endif
     render_board(cam);
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
+    if (g_profile_render_enabled) {
+        g_profile_board_cache_render_us += profile_now_us() - _profile_render_t0;
+        g_profile_board_cache_misses++;
+    }
+#endif
 #else
     if (g_board_bg_cache_valid && camera_equal(g_board_bg_cache_cam, cam)) {
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
@@ -13113,6 +13208,7 @@ int main(int argc, char **argv)
         double cards_per_hand = g_profile_hand_calls ? (double)g_profile_hand_card_draws / (double)g_profile_hand_calls : 0.0;
         double board_hit_copy_avg_us = g_profile_board_cache_hits ? (double)g_profile_board_cache_copy_us / (double)(g_profile_board_cache_hits + g_profile_board_cache_misses) : 0.0;
         double board_miss_render_avg_us = g_profile_board_cache_misses ? (double)g_profile_board_cache_render_us / (double)g_profile_board_cache_misses : 0.0;
+        double card2d_generic_avg_us = g_profile_card2d_generic_calls ? (double)g_profile_card2d_generic_us / (double)g_profile_card2d_generic_calls : 0.0;
         printf("PROFILE_RENDER board_cache_hits=%llu board_cache_misses=%llu board_render_us=%llu board_copy_us=%llu board_miss_render_avg_us=%.2f board_copy_avg_us=%.2f ",
                g_profile_board_cache_hits, g_profile_board_cache_misses,
                g_profile_board_cache_render_us, g_profile_board_cache_copy_us,
@@ -13120,8 +13216,9 @@ int main(int argc, char **argv)
         printf("hand_calls=%llu hand_total_us=%llu hand_avg_us=%.2f hand_card_draws=%llu hand_card_us=%llu hand_card_avg_us=%.2f cards_per_hand=%.2f ",
                g_profile_hand_calls, g_profile_hand_total_us, hand_avg_us,
                g_profile_hand_card_draws, g_profile_hand_card_us, hand_card_avg_us, cards_per_hand);
-        printf("card2d_fast=%llu card2d_generic=%llu ui_fast_fills=%llu\n",
-               g_profile_card2d_fast_calls, g_profile_card2d_generic_calls, g_profile_ui_fast_fill_calls);
+        printf("card2d_fast=%llu card2d_generic=%llu card2d_generic_us=%llu card2d_generic_avg_us=%.2f ui_fast_fills=%llu\n",
+               g_profile_card2d_fast_calls, g_profile_card2d_generic_calls,
+               g_profile_card2d_generic_us, card2d_generic_avg_us, g_profile_ui_fast_fill_calls);
     }
 #endif
     return 0;
