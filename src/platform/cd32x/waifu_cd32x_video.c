@@ -38,6 +38,13 @@ struct WaifuCd32xVideo {
     WaifuFmPaletteId current_palette_id;
     int current_fade_q8;
     int current_md_fade_q8;
+    uint32_t last_flip_vblank;
+    uint16_t recent_vblank_sum;
+    uint8_t recent_vblank_samples;
+    uint8_t recent_vblank_pos;
+    uint8_t recent_vblanks[32];
+    uint8_t last_frame_vblanks;
+    uint8_t recent_fps;
 };
 
 static WaifuCd32xVideo g_video;
@@ -89,6 +96,65 @@ static int cd32x_request_md_palette_fade(int fade_q8)
     return 1;
 }
 
+static void cd32x_wait_fill_done(void)
+{
+    while (MARS_VDP_FBCTL & MARS_VDP_FEN) {
+    }
+}
+
+static void cd32x_auto_fill_back_words(uint16_t start_word, int words, uint16_t value)
+{
+    while (words > 0) {
+        int page_left = 256 - ((int)start_word & 255);
+        int run = words < page_left ? words : page_left;
+        if (run > 256) run = 256;
+        cd32x_wait_fill_done();
+        MARS_VDP_FILLEN = (uint16_t)(run - 1);
+        MARS_VDP_FILADR = start_word;
+        MARS_VDP_FILDAT = value;
+        start_word = (uint16_t)(start_word + run);
+        words -= run;
+    }
+    cd32x_wait_fill_done();
+}
+
+static uint32_t cd32x_vblank_count(void)
+{
+    return (uint32_t)MARS_SYS_COMM12;
+}
+
+static void cd32x_record_frame_pacing(WaifuCd32xVideo *video)
+{
+    uint32_t now;
+    uint32_t delta;
+    uint8_t vblanks;
+    if (!video) return;
+    now = cd32x_vblank_count();
+    delta = video->last_flip_vblank ? (now - video->last_flip_vblank) : 1u;
+    if (delta == 0u) delta = 1u;
+    if (delta > 255u) delta = 255u;
+    video->last_flip_vblank = now;
+    vblanks = (uint8_t)delta;
+    video->last_frame_vblanks = vblanks;
+    if (video->recent_vblank_samples < (uint8_t)sizeof(video->recent_vblanks)) {
+        video->recent_vblanks[video->recent_vblank_pos] = vblanks;
+        video->recent_vblank_sum = (uint16_t)(video->recent_vblank_sum + vblanks);
+        ++video->recent_vblank_samples;
+    } else {
+        uint8_t old = video->recent_vblanks[video->recent_vblank_pos];
+        video->recent_vblanks[video->recent_vblank_pos] = vblanks;
+        video->recent_vblank_sum = (uint16_t)(video->recent_vblank_sum + vblanks - old);
+    }
+    video->recent_vblank_pos = (uint8_t)((video->recent_vblank_pos + 1u) & 31u);
+    if (video->recent_vblank_sum) {
+        video->recent_fps = (uint8_t)(((60u * (uint32_t)video->recent_vblank_samples) +
+                                       (video->recent_vblank_sum >> 1)) /
+                                      video->recent_vblank_sum);
+    } else {
+        video->recent_fps = 60u;
+    }
+}
+
 static uint16_t cd32x_rgb_to_cram(uint8_t r, uint8_t g, uint8_t b, int fade_q8)
 {
     unsigned rr = (unsigned)((r * fade_q8) >> 8);
@@ -106,6 +172,7 @@ static void cd32x_wait_fb_flip(WaifuCd32xVideo *video)
     while ((MARS_VDP_FBCTL & MARS_VDP_FS) == video->current_fb) {
     }
     video->current_fb ^= 1u;
+    cd32x_record_frame_pacing(video);
 }
 
 static void cd32x_write_back_line_table(void)
@@ -123,13 +190,10 @@ static void cd32x_write_back_line_table(void)
 
 static void cd32x_clear_back_pixels(uint8_t c)
 {
-    volatile uint16_t *fb16 = &MARS_FRAMEBUFFER;
     uint16_t pair = (uint16_t)(((uint16_t)c << 8) | c);
-
-    fb16 += WAIFU_CD32X_LINE_TABLE_WORDS;
-    for (int i = 0; i < (WAIFU_CD32X_W * WAIFU_CD32X_H) / 2; ++i) {
-        fb16[i] = pair;
-    }
+    cd32x_auto_fill_back_words((uint16_t)WAIFU_CD32X_LINE_TABLE_WORDS,
+                               (WAIFU_CD32X_W * WAIFU_CD32X_H) / 2,
+                               pair);
 }
 
 static void cd32x_restore_title_rect_back(int x, int y, int w, int h)
@@ -303,6 +367,22 @@ static void cd32x_draw_text_centered_both(int y, const char *text, int scale, ui
     cd32x_draw_text_scaled_both((WAIFU_CD32X_W - len * 8 * scale) / 2, y, text, scale, fg, bg);
 }
 
+static char *cd32x_append_u8(char *p, unsigned v)
+{
+    if (v >= 100u) {
+        *p++ = (char)('0' + (v / 100u));
+        v %= 100u;
+        *p++ = (char)('0' + (v / 10u));
+        *p++ = (char)('0' + (v % 10u));
+    } else if (v >= 10u) {
+        *p++ = (char)('0' + (v / 10u));
+        *p++ = (char)('0' + (v % 10u));
+    } else {
+        *p++ = (char)('0' + v);
+    }
+    return p;
+}
+
 static void cd32x_draw_panel_rect_both(int x, int y, int w, int h, uint8_t fill)
 {
     cd32x_fill_rect_back(x, y, w, h, fill);
@@ -446,6 +526,30 @@ void waifu_cd32x_video_clear_black(WaifuCd32xVideo *video)
     (void)video;
     cd32x_write_back_line_table();
     cd32x_clear_back_pixels(0);
+}
+
+void waifu_cd32x_video_clear_back_index(uint8_t c)
+{
+    cd32x_clear_back_pixels(c);
+}
+
+void waifu_cd32x_video_draw_debug_overlay(WaifuCd32xVideo *video)
+{
+    char buf[16];
+    char *p;
+    if (!video) return;
+    p = buf;
+    *p++ = 'F';
+    *p++ = 'P';
+    *p++ = 'S';
+    *p++ = ' ';
+    p = cd32x_append_u8(p, video->recent_fps ? video->recent_fps : 60u);
+    *p++ = ' ';
+    *p++ = 'V';
+    *p++ = 'B';
+    p = cd32x_append_u8(p, video->last_frame_vblanks ? video->last_frame_vblanks : 1u);
+    *p = '\0';
+    cd32x_draw_text_scaled_both(122, 5, buf, 1, IDX_GOLD_HI, IDX_BLACK);
 }
 
 volatile uint8_t *waifu_cd32x_video_title_upload_buffer(void)

@@ -74,10 +74,17 @@
    compact affine path and split part of that work across the Slave SH-2. */
 #define WAIFU_CD32X_FIELD_SIDE_WALLS 1
 #endif
+#if defined(WAIFU_FM_CD32X) && !defined(WAIFU_CD32X_BOARD_FLAT_TOP)
+/* Aggressive CD32X LOD: keep the projected board geometry, grid, cards, and
+   textured side lips, but flat-fill the large top cells.  The textured top is
+   the dominant per-frame pixel sampler on SH-2; flat spans buy frame time
+   without adding a framebuffer-sized cache to SDRAM. */
+#define WAIFU_CD32X_BOARD_FLAT_TOP 1
+#endif
 #define CFX_PI_Q8 804
 #define TITLE_SEQUENCE_FRAMES 310
 #define DUEL_TOTAL_FRAMES 2696
-#ifdef WAIFU_FM_PCFX
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
 #define DUEL_OPENING_END 72
 #define WAIFU_PCFX_PLACE_FRAMES 12
 #define WAIFU_PCFX_PLACE_SETTLE_FRAMES 10
@@ -479,6 +486,13 @@ static uint8_t g_board_bg_cache[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 static Camera g_board_bg_cache_cam;
 static int g_board_bg_cache_valid = 0;
 #endif
+#if defined(WAIFU_FM_CD32X)
+#define CD32X_BOARD_CACHE_Y 64
+#define CD32X_BOARD_CACHE_H 112
+static uint8_t g_cd32x_board_rect_cache[WAIFU_FM_WIDTH * CD32X_BOARD_CACHE_H];
+static Camera g_cd32x_board_rect_cache_cam;
+static int g_cd32x_board_rect_cache_valid = 0;
+#endif
 
 static int camera_equal(Camera a, Camera b)
 {
@@ -492,6 +506,9 @@ static void invalidate_board_bg_cache(void)
 {
 #if !defined(WAIFU_BG_CACHE_DISABLE)
     g_board_bg_cache_valid = 0;
+#endif
+#if defined(WAIFU_FM_CD32X)
+    g_cd32x_board_rect_cache_valid = 0;
 #endif
 }
 typedef struct { int x, y; int32_t depth; int ok; } ScreenPt;
@@ -977,6 +994,94 @@ static void draw_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, Sc
     cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 }
 
+#if defined(WAIFU_FM_CD32X) && WAIFU_CD32X_BOARD_FLAT_TOP
+static void cd32x_hspan_fast(int y, int x0, int x1, uint8_t color)
+{
+    if ((unsigned)y >= WAIFU_FM_HEIGHT) return;
+    if (x0 > x1) {
+        int t = x0;
+        x0 = x1;
+        x1 = t;
+    }
+    if (x1 < 0 || x0 >= WAIFU_FM_WIDTH) return;
+    if (x0 < 0) x0 = 0;
+    if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;
+    {
+        uint8_t *dst = framebuffer + (int32_t)y * WAIFU_FM_WIDTH + x0;
+        int count = x1 - x0 + 1;
+        uint16_t pair = (uint16_t)(((uint16_t)color << 8) | color);
+        if ((uintptr_t)dst & 1u) {
+            *dst++ = color;
+            --count;
+        }
+        {
+            uint16_t *dst16 = (uint16_t *)(uintptr_t)dst;
+            int pairs = count >> 1;
+            while (pairs >= 8) {
+                dst16[0] = pair;
+                dst16[1] = pair;
+                dst16[2] = pair;
+                dst16[3] = pair;
+                dst16[4] = pair;
+                dst16[5] = pair;
+                dst16[6] = pair;
+                dst16[7] = pair;
+                dst16 += 8;
+                pairs -= 8;
+            }
+            while (pairs-- > 0) *dst16++ = pair;
+            if (count & 1) *(uint8_t *)(uintptr_t)dst16 = color;
+        }
+    }
+}
+
+static void cd32x_tri_edge_intersect(ScreenPt a, ScreenPt b, int y, int *xs, int *count)
+{
+    int miny;
+    int maxy;
+    if (a.y == b.y) return;
+    miny = a.y < b.y ? a.y : b.y;
+    maxy = a.y > b.y ? a.y : b.y;
+    if (y < miny || y >= maxy) return;
+    if (*count >= 3) return;
+    xs[(*count)++] = a.x + (int)(((int32_t)(y - a.y) * (int32_t)(b.x - a.x)) / (int32_t)(b.y - a.y));
+}
+
+static void cd32x_fill_solid_tri_fast(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color)
+{
+    int miny;
+    int maxy;
+    if (!a.ok || !b.ok || !c.ok) return;
+    if (a.x < -1024 || a.x > WAIFU_FM_WIDTH + 1024 ||
+        b.x < -1024 || b.x > WAIFU_FM_WIDTH + 1024 ||
+        c.x < -1024 || c.x > WAIFU_FM_WIDTH + 1024) return;
+    miny = a.y < b.y ? (a.y < c.y ? a.y : c.y) : (b.y < c.y ? b.y : c.y);
+    maxy = a.y > b.y ? (a.y > c.y ? a.y : c.y) : (b.y > c.y ? b.y : c.y);
+    if (miny < 0) miny = 0;
+    if (maxy >= WAIFU_FM_HEIGHT) maxy = WAIFU_FM_HEIGHT - 1;
+    for (int y = miny; y <= maxy; ++y) {
+        int xs[3];
+        int count = 0;
+        cd32x_tri_edge_intersect(a, b, y, xs, &count);
+        cd32x_tri_edge_intersect(b, c, y, xs, &count);
+        cd32x_tri_edge_intersect(c, a, y, xs, &count);
+        if (count >= 2) cd32x_hspan_fast(y, xs[0], xs[1], color);
+    }
+}
+
+static uint8_t cd32x_board_top_color(int tile)
+{
+    return (tile == 5) ? IDX_GOLD_DARK : IDX_CARD_GOLD;
+}
+
+static void draw_board_top_quad_flat_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, ScreenPt pd, int tile)
+{
+    uint8_t color = cd32x_board_top_color(tile);
+    cd32x_fill_solid_tri_fast(pa, pb, pc, color);
+    cd32x_fill_solid_tri_fast(pa, pc, pd, color);
+}
+#endif
+
 static void draw_wall_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, ScreenPt pd, int tile)
 {
     if (!pa.ok || !pb.ok || !pc.ok || !pd.ok) return;
@@ -1127,8 +1232,13 @@ static void render_board_top_rows_projected(const BoardProjected *bp, int row_st
     for (int r = row_start; r < row_end; ++r) {
         for (int c = 0; c < BOARD_COLS; ++c) {
             int tile = ((r + c) & 1) ? 5 : 1;
+#if defined(WAIFU_FM_CD32X) && WAIFU_CD32X_BOARD_FLAT_TOP
+            draw_board_top_quad_flat_projected(bp->top[r][c], bp->top[r][c+1],
+                                               bp->top[r+1][c+1], bp->top[r+1][c], tile);
+#else
             draw_quad3d_fast_projected(bp->top[r][c], bp->top[r][c+1],
                                        bp->top[r+1][c+1], bp->top[r+1][c], tile);
+#endif
         }
     }
 }
@@ -1343,7 +1453,11 @@ static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
 #endif
 }
 
+#if defined(WAIFU_FM_CD32X)
+static void clear_screen(uint8_t c) { waifu_cd32x_video_clear_back_index(c); }
+#else
 static void clear_screen(uint8_t c) { fill_u8_fast(framebuffer, WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT, c); }
+#endif
 
 static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
 {
@@ -3082,7 +3196,11 @@ static void render_board(Camera cam)
     for (int r = 0; r < BOARD_ROWS; ++r) {
         for (int c = 0; c < BOARD_COLS; ++c) {
             int tile = ((r + c) & 1) ? 5 : 1;
+#if defined(WAIFU_FM_CD32X) && WAIFU_CD32X_BOARD_FLAT_TOP
+            draw_board_top_quad_flat_projected(bp.top[r][c], bp.top[r][c+1], bp.top[r+1][c+1], bp.top[r+1][c], tile);
+#else
             draw_quad3d_fast_projected(bp.top[r][c], bp.top[r][c+1], bp.top[r+1][c+1], bp.top[r+1][c], tile);
+#endif
         }
     }
     }
@@ -3099,6 +3217,28 @@ static void render_board(Camera cam)
 
 static void render_board_cached(Camera cam)
 {
+#if defined(WAIFU_FM_CD32X)
+    if (camera_equal(cam, battle_top_camera()) || camera_equal(cam, enemy_battle_top_camera())) {
+        if (g_cd32x_board_rect_cache_valid && camera_equal(g_cd32x_board_rect_cache_cam, cam)) {
+            clear_screen(IDX_BLACK);
+            for (int y = 0; y < CD32X_BOARD_CACHE_H; ++y) {
+                copy_u8_fast(framebuffer + (CD32X_BOARD_CACHE_Y + y) * WAIFU_FM_WIDTH,
+                             g_cd32x_board_rect_cache + y * WAIFU_FM_WIDTH,
+                             WAIFU_FM_WIDTH);
+            }
+            return;
+        }
+        render_board(cam);
+        for (int y = 0; y < CD32X_BOARD_CACHE_H; ++y) {
+            copy_u8_fast(g_cd32x_board_rect_cache + y * WAIFU_FM_WIDTH,
+                         framebuffer + (CD32X_BOARD_CACHE_Y + y) * WAIFU_FM_WIDTH,
+                         WAIFU_FM_WIDTH);
+        }
+        g_cd32x_board_rect_cache_cam = cam;
+        g_cd32x_board_rect_cache_valid = 1;
+        return;
+    }
+#endif
 #if defined(WAIFU_BG_CACHE_DISABLE)
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
     unsigned long long _profile_render_t0 = g_profile_render_enabled ? profile_now_us() : 0;
@@ -3192,6 +3332,107 @@ static void draw_textured_tri(const uint8_t *src, int sw, int sh, TexV a, TexV b
 {
     draw_textured_tri_ex(src, sw, sh, a, b, c, 0);
 }
+
+#if defined(WAIFU_FM_CD32X)
+static void draw_textured_tri_affine_cd32x(const uint8_t *src, int sw, int sh, TexV a, TexV b, TexV c, int gray)
+{
+    int minx;
+    int maxx;
+    int miny;
+    int maxy;
+    int den;
+    int Aa;
+    int Ba;
+    int Ab;
+    int Bb;
+    int Ac;
+    int Bc;
+    int32_t U0;
+    int32_t U1;
+    int32_t U2;
+    int32_t V0;
+    int32_t V1;
+    int32_t V2;
+    int32_t du_dx;
+    int32_t dv_dx;
+    int32_t du_dy;
+    int32_t dv_dy;
+    int wa_row;
+    int wb_row;
+    int wc_row;
+    int32_t u_row;
+    int32_t v_row;
+
+    if (!src || sw <= 0 || sh <= 0) return;
+    minx = a.x < b.x ? (a.x < c.x ? a.x : c.x) : (b.x < c.x ? b.x : c.x);
+    maxx = a.x > b.x ? (a.x > c.x ? a.x : c.x) : (b.x > c.x ? b.x : c.x);
+    miny = a.y < b.y ? (a.y < c.y ? a.y : c.y) : (b.y < c.y ? b.y : c.y);
+    maxy = a.y > b.y ? (a.y > c.y ? a.y : c.y) : (b.y > c.y ? b.y : c.y);
+    if (minx < -8192 || maxx > 8192 || miny < -8192 || maxy > 8192) return;
+    den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if (den == 0) return;
+    if (minx < 0) minx = 0;
+    if (maxx >= WAIFU_FM_WIDTH) maxx = WAIFU_FM_WIDTH - 1;
+    if (miny < 0) miny = 0;
+    if (maxy >= WAIFU_FM_HEIGHT) maxy = WAIFU_FM_HEIGHT - 1;
+
+    Aa = b.y - c.y;
+    Ba = c.x - b.x;
+    Ab = c.y - a.y;
+    Bb = a.x - c.x;
+    Ac = -(Aa + Ab);
+    Bc = -(Ba + Bb);
+    U0 = (int32_t)(((int64_t)a.u * (int64_t)(sw - 1) << 16) >> Q8_SHIFT);
+    U1 = (int32_t)(((int64_t)b.u * (int64_t)(sw - 1) << 16) >> Q8_SHIFT);
+    U2 = (int32_t)(((int64_t)c.u * (int64_t)(sw - 1) << 16) >> Q8_SHIFT);
+    V0 = (int32_t)(((int64_t)a.v * (int64_t)(sh - 1) << 16) >> Q8_SHIFT);
+    V1 = (int32_t)(((int64_t)b.v * (int64_t)(sh - 1) << 16) >> Q8_SHIFT);
+    V2 = (int32_t)(((int64_t)c.v * (int64_t)(sh - 1) << 16) >> Q8_SHIFT);
+    du_dx = (int32_t)(((int64_t)Aa * U0 + (int64_t)Ab * U1 + (int64_t)Ac * U2) / den);
+    dv_dx = (int32_t)(((int64_t)Aa * V0 + (int64_t)Ab * V1 + (int64_t)Ac * V2) / den);
+    du_dy = (int32_t)(((int64_t)Ba * U0 + (int64_t)Bb * U1 + (int64_t)Bc * U2) / den);
+    dv_dy = (int32_t)(((int64_t)Ba * V0 + (int64_t)Bb * V1 + (int64_t)Bc * V2) / den);
+
+    wa_row = Aa * (minx - c.x) + Ba * (miny - c.y);
+    wb_row = Ab * (minx - c.x) + Bb * (miny - c.y);
+    wc_row = den - wa_row - wb_row;
+    u_row = (int32_t)(((int64_t)wa_row * U0 + (int64_t)wb_row * U1 + (int64_t)wc_row * U2) / den);
+    v_row = (int32_t)(((int64_t)wa_row * V0 + (int64_t)wb_row * V1 + (int64_t)wc_row * V2) / den);
+
+    for (int y = miny; y <= maxy; ++y) {
+        int wa = wa_row;
+        int wb = wb_row;
+        int wc = wc_row;
+        int32_t u = u_row;
+        int32_t v = v_row;
+        uint8_t *dst = framebuffer + (int32_t)y * WAIFU_FM_WIDTH;
+        for (int x = minx; x <= maxx; ++x) {
+            if ((den > 0 && wa >= 0 && wb >= 0 && wc >= 0) ||
+                (den < 0 && wa <= 0 && wb <= 0 && wc <= 0)) {
+                int sx = u >> 16;
+                int sy = v >> 16;
+                uint8_t pix;
+                if (sx < 0) sx = 0;
+                else if (sx >= sw) sx = sw - 1;
+                if (sy < 0) sy = 0;
+                else if (sy >= sh) sy = sh - 1;
+                pix = src[sy * sw + sx];
+                dst[x] = gray ? gray_card_dither_px(pix, x, y) : pix;
+            }
+            wa += Aa;
+            wb += Ab;
+            wc += Ac;
+            u += du_dx;
+            v += dv_dx;
+        }
+        wa_row += Ba;
+        wb_row += Bb;
+        wc_row += Bc;
+        u_row += du_dy;
+        v_row += dv_dy;
+    }
+}
+#endif
 
 static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int flip_u)
 {
@@ -3335,8 +3576,13 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
     TexV b = {p1.x, p1.y, Q8_ONE, 0};
     TexV c = {p2.x, p2.y, Q8_ONE, Q8_ONE};
     TexV d = {p3.x, p3.y, 0, Q8_ONE};
+#if defined(WAIFU_FM_CD32X)
+    draw_textured_tri_affine_cd32x(src, sw, sh, a, b, c, gray);
+    draw_textured_tri_affine_cd32x(src, sw, sh, a, c, d, gray);
+#else
     draw_textured_tri_ex(src, sw, sh, a, b, c, gray);
     draw_textured_tri_ex(src, sw, sh, a, c, d, gray);
+#endif
     line_i(p0.x,p0.y,p1.x,p1.y, gray ? IDX_DIM : IDX_CARD_RIM);
     line_i(p1.x,p1.y,p2.x,p2.y, gray ? IDX_DIM : IDX_CARD_RIM);
     line_i(p2.x,p2.y,p3.x,p3.y, gray ? IDX_DIM : IDX_CARD_RIM);
@@ -3356,6 +3602,9 @@ static void draw_projected_card_quad(const uint8_t *src, int sw, int sh,
 #if defined(WAIFU_FM_CD32X)
 static void draw_solid_tri(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color)
 {
+#if defined(WAIFU_CD32X_BOARD_FLAT_TOP) && WAIFU_CD32X_BOARD_FLAT_TOP
+    cd32x_fill_solid_tri_fast(a, b, c, color);
+#else
     if (!a.ok || !b.ok || !c.ok) return;
     int minx = a.x < b.x ? (a.x < c.x ? a.x : c.x) : (b.x < c.x ? b.x : c.x);
     int maxx = a.x > b.x ? (a.x > c.x ? a.x : c.x) : (b.x > c.x ? b.x : c.x);
@@ -3380,6 +3629,7 @@ static void draw_solid_tri(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color)
             }
         }
     }
+#endif
 }
 
 static ScreenPt midpoint_pt(ScreenPt a, ScreenPt b)

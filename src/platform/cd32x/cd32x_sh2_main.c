@@ -26,6 +26,9 @@ int main(void)
         waifu_cd32x_input_poll(input, &in);
         waifu_fm_step(&in);
 
+#if defined(CD32X_DEBUG_AUTOBATTLE) || defined(WAIFU_CD32X_DEBUG_FPS)
+        waifu_cd32x_video_draw_debug_overlay(video);
+#endif
         waifu_cd32x_video_present_8bpp(video, waifu_fm_framebuffer(), waifu_fm_palette_rgb(), waifu_fm_palette_id(), waifu_fm_video_fade_q8());
         waifu_cd32x_video_wait_vblank(video);
 
