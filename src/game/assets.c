@@ -192,6 +192,7 @@ static uint8_t g_asset_stage_ram[ASSET_STAGE_BYTES] __attribute__((aligned(4)));
 static int g_story_portrait_slot_id[PORTRAIT_SLOT_COUNT] = {-1, -1};
 static int g_requested_portrait_id[PORTRAIT_SLOT_COUNT] = {-1, -1};
 static int g_title_loaded = 0;
+static int g_ending_loaded = 0;
 static int g_cards_loaded = 0;
 static WaifuAssetRequest g_pending_request = WAIFU_ASSET_REQUEST_NONE;
 static int g_load_step = 0;
@@ -257,6 +258,7 @@ void waifu_assets_init(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
     g_title_loaded = 0;
+    g_ending_loaded = 0;
     g_cards_loaded = 0;
     g_story_portrait_slot_id[0] = -1;
     g_story_portrait_slot_id[1] = -1;
@@ -357,6 +359,7 @@ const char *waifu_assets_request_name(WaifuAssetRequest req)
     case WAIFU_ASSET_REQUEST_TITLE: return "TITLE";
     case WAIFU_ASSET_REQUEST_STORY_INTRO: return "STORY INTRO";
     case WAIFU_ASSET_REQUEST_STORY_DUEL: return "STORY PORTRAITS";
+    case WAIFU_ASSET_REQUEST_ENDING: return "ENDING";
     case WAIFU_ASSET_REQUEST_CARDS: return "CARD ART";
     default: return "READY";
     }
@@ -381,6 +384,11 @@ static void evict_title(void)
         else g_ram_used = 0;
 #endif
     }
+}
+
+static void evict_ending(void)
+{
+    g_ending_loaded = 0;
 }
 
 static void clear_big_art_cache_metadata(void)
@@ -464,6 +472,7 @@ void waifu_assets_request_title(void)
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
     g_requested_portrait_id[0] = -1;
     g_requested_portrait_id[1] = -1;
+    evict_ending();
     evict_cards();
     evict_portraits();
     if (g_title_loaded) { g_pending_request = WAIFU_ASSET_REQUEST_NONE; g_ready = 1; return; }
@@ -477,6 +486,7 @@ void waifu_assets_request_story_intro(void)
     g_requested_portrait_id[0] = 0;
     g_requested_portrait_id[1] = -1;
     evict_title();
+    evict_ending();
     evict_cards();
     if (requested_portraits_ready()) { g_pending_request = WAIFU_ASSET_REQUEST_NONE; g_ready = 1; return; }
     evict_portraits();
@@ -492,12 +502,32 @@ void waifu_assets_request_story_duel(int opponent_portrait_id)
     g_requested_portrait_id[0] = 0;
     g_requested_portrait_id[1] = opponent_portrait_id == 0 ? -1 : opponent_portrait_id;
     evict_title();
+    evict_ending();
     evict_cards();
     if (requested_portraits_ready()) { g_pending_request = WAIFU_ASSET_REQUEST_NONE; g_ready = 1; return; }
     evict_portraits();
     start_request(WAIFU_ASSET_REQUEST_STORY_DUEL);
 #else
     (void)opponent_portrait_id;
+#endif
+}
+
+void waifu_assets_request_ending(void)
+{
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+    g_requested_portrait_id[0] = -1;
+    g_requested_portrait_id[1] = -1;
+    evict_title();
+    evict_cards();
+    evict_portraits();
+#if defined(WAIFU_FM_CD32X)
+    if (g_ending_loaded) { g_pending_request = WAIFU_ASSET_REQUEST_NONE; g_ready = 1; return; }
+    start_request(WAIFU_ASSET_REQUEST_ENDING);
+#else
+    g_ending_loaded = 1;
+    g_pending_request = WAIFU_ASSET_REQUEST_NONE;
+    g_ready = 1;
+#endif
 #endif
 }
 
@@ -577,6 +607,7 @@ void waifu_assets_request_cards(void)
     g_requested_portrait_id[0] = -1;
     g_requested_portrait_id[1] = -1;
     evict_title();
+    evict_ending();
     evict_portraits();
     if (g_cards_loaded) {
         g_pending_request = (g_prewarm_big_card_count > 0 || (g_prewarm_support_big && !g_support_big_loaded)) ? WAIFU_ASSET_REQUEST_CARDS : WAIFU_ASSET_REQUEST_NONE;
@@ -615,6 +646,7 @@ void waifu_assets_request_cards_for_list(const int *card_ids, int count)
     g_requested_portrait_id[0] = -1;
     g_requested_portrait_id[1] = -1;
     evict_title();
+    evict_ending();
     evict_portraits();
     if (g_cards_loaded) {
 #if defined(WAIFU_FM_CD32X)
@@ -748,6 +780,18 @@ int waifu_assets_load_step(void)
             return 0;
         }
         break;
+    case WAIFU_ASSET_REQUEST_ENDING:
+        if (g_load_step == 0) {
+#if defined(WAIFU_FM_CD32X)
+            if (!cd_read_blob(WAIFU_ASSET_BLOB_ENDING_SCREEN_PCFX_YUV422, stage_title_ptr(), TITLE_BYTES)) return 0;
+#endif
+            g_ending_loaded = 1;
+            ++g_load_step;
+            g_ready = 1;
+            g_pending_request = WAIFU_ASSET_REQUEST_NONE;
+            return 1;
+        }
+        break;
     case WAIFU_ASSET_REQUEST_CARDS:
         if (g_load_step == 0) {
 #if defined(WAIFU_FM_CD32X)
@@ -840,6 +884,7 @@ int waifu_assets_loading_percent(void)
     if (g_ready) return 100;
     switch (g_pending_request) {
     case WAIFU_ASSET_REQUEST_TITLE: return g_load_step ? 100 : 0;
+    case WAIFU_ASSET_REQUEST_ENDING: return g_load_step ? 100 : 0;
     case WAIFU_ASSET_REQUEST_STORY_INTRO:
     case WAIFU_ASSET_REQUEST_STORY_DUEL: return (g_load_step * 100) / PORTRAIT_SLOT_COUNT;
     case WAIFU_ASSET_REQUEST_CARDS: {
@@ -963,7 +1008,11 @@ const uint16_t *waifu_assets_title_screen_pcfx_yuv422(void)
 const uint8_t *waifu_assets_ending_screen_img(void)
 {
 #ifdef WAIFU_ASSET_EXTERNAL_ENDING_IMAGE
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM && defined(WAIFU_FM_CD32X)
+    return g_ending_loaded ? stage_title_ptr() : NULL;
+#else
     return NULL;
+#endif
 #else
     return ending_screen_img;
 #endif

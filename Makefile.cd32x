@@ -90,6 +90,7 @@ CD32X_M68K_SRCS_S := \
 
 CD_ASSETS := \
   assets/generated/cd32x_title_screen_img.bin \
+  assets/generated/cd32x_ending_screen_img.bin \
   assets/generated/story_portraits.bin \
   assets/generated/story_portrait_mask.bin \
   assets/generated/card_faces.bin \
@@ -190,8 +191,11 @@ $(M68K_BIN): $(M68K_ELF)
 	$(DD) if=$(M68K_OBJDIR)/temp.m68k.bin of=$@ bs=2048 conv=sync
 
 
-assets/generated/cd32x_title_screen_img.bin src/generated/cd32x_title_asset.h: tools/gen_cd32x_title_asset.py assets/source/title/title_320.png src/generated/waifu_assets.h
+assets/generated/cd32x_title_screen_img.bin assets/generated/cd32x_ending_screen_img.bin src/generated/cd32x_title_asset.h: tools/gen_cd32x_title_asset.py assets/source/title/title_320x224.png assets/source/ending/ending320x240.png src/generated/waifu_assets.h src/generated/title_asset.h
 	python3 tools/gen_cd32x_title_asset.py
+
+src/generated/title_asset.h: tools/gen_title_asset.py assets/source/title/title_320x224.png assets/source/ending/ending320x240.png src/engine/cfx_screen_config.h src/generated/waifu_assets.h
+	python3 tools/gen_title_asset.py
 
 assets/generated/cd32x_sfx_pcm.bin src/generated/cd32x_sfx_pcm.h: tools/gen_cd32x_sfx_pcm.py
 	python3 tools/gen_cd32x_sfx_pcm.py
@@ -201,12 +205,15 @@ $(CD32X_MUSIC_PCM_STAMP) src/generated/cd32x_music_pcm.h: tools/gen_cd32x_music_
 
 $(M68K_OBJDIR)/src/platform/cd32x/cd32x_boot_main.o: src/generated/cd32x_music_pcm.h
 $(M68K_OBJDIR)/src/platform/cd32x/cd32x_pcm.o: src/generated/cd32x_sfx_pcm.h src/generated/cd32x_music_pcm.h
+$(SH2_OBJDIR)/src/main.o $(SH2_OBJDIR)/src/game/assets.o $(SH2_OBJDIR)/src/game/palette.o $(SH2_OBJDIR)/src/platform/cd32x/waifu_cd32x_video.o: src/generated/title_asset.h src/generated/cd32x_title_asset.h
+$(M68K_OBJDIR)/src/platform/cd32x/cd32x_boot_main.o: src/generated/cd32x_title_asset.h
 
 $(CDROOT): $(M68K_BIN) $(CD_ASSETS) src/generated/cd32x_music_pcm.h
 	$(RM) $(CDROOT)
 	mkdir -p $(CDROOT)/ASSETS $(CDROOT)/MUSIC
 	cp $(M68K_BIN) $(CDROOT)/APP.BIN
 	cp assets/generated/cd32x_title_screen_img.bin $(CDROOT)/ASSETS/TITLE_SCREEN_IMG.BIN
+	cp assets/generated/cd32x_ending_screen_img.bin $(CDROOT)/ASSETS/ENDING_SCREEN_IMG.BIN
 	cp assets/generated/story_portraits.bin $(CDROOT)/ASSETS/STORY_PORTRAITS.BIN
 	cp assets/generated/story_portrait_mask.bin $(CDROOT)/ASSETS/STORY_PORTRAIT_MASK.BIN
 	cp assets/generated/card_faces.bin $(CDROOT)/ASSETS/CARD_FACES.BIN

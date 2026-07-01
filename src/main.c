@@ -2297,6 +2297,21 @@ static int try_draw_card_raw_fast(const uint8_t *src, int sw, int sh, int x, int
 static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
     if (!src || dw <= 0 || dh <= 0) return;
+    if (dw == sw && dh == sh) {
+        int x0 = x < 0 ? 0 : x;
+        int y0 = y < 0 ? 0 : y;
+        int x1 = x + dw;
+        int y1 = y + dh;
+        if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+        if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+        if (x0 >= x1 || y0 >= y1) return;
+        for (int yy = y0; yy < y1; ++yy) {
+            copy_u8_fast(framebuffer + (int32_t)yy * WAIFU_FM_WIDTH + x0,
+                         src + (int32_t)(yy - y) * sw + (x0 - x),
+                         x1 - x0);
+        }
+        return;
+    }
     if (try_draw_card_raw_fast(src, sw, sh, x, y, dw, dh, 0)) return;
     PROFILE_CARD2D_GENERIC();
     for (int yy = 0; yy < dh; ++yy) {
@@ -6973,6 +6988,12 @@ static void enter_story_plaza_after_assets(void)
     enter_state_after_assets(WAIFU_I_STORY_PLAZA);
 }
 
+static void enter_story_ending_after_assets(void)
+{
+    waifu_assets_request_ending();
+    enter_state_after_assets(WAIFU_I_STORY_ENDING);
+}
+
 static void enter_deck_editor_after_assets(void)
 {
     waifu_assets_request_cards();
@@ -10696,7 +10717,7 @@ static void draw_story_ending_screen(void)
     /* Software path: ending artwork with the narration composited as text. */
     {
         const uint8_t *ending_img = waifu_assets_ending_screen_img();
-        if (ending_img) draw_card_raw(ending_img, TITLE_SCREEN_W, TITLE_SCREEN_H, 0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
+        if (ending_img) draw_card_raw(ending_img, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, 0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
         else clear_screen(IDX_BLACK);
     }
     {
@@ -10739,9 +10760,8 @@ static void story_return_to_map_after_duel(void)
                 g_story_battle_active = 0;
                 g_story_ending_line = 0;
                 g_story_ending_erasing = 0;
-                g_i_state = WAIFU_I_STORY_ENDING;
-                g_i_frame = -1;
                 init_battle_state();
+                enter_story_ending_after_assets();
                 return;
             }
             ++g_story_progress;
@@ -11484,7 +11504,7 @@ static void debug_setup_music_demo_state(const char *name)
     } else if (!strcmp(name, "ending")) {
         g_story_ending_line = 0;
         g_story_ending_erasing = 0;
-        g_i_state = WAIFU_I_STORY_ENDING;
+        enter_story_ending_after_assets();
     } else if (!strcmp(name, "ending-credits") || !strcmp(name, "credits")) {
         g_i_state = WAIFU_I_STORY_ENDING_CREDITS;
     } else if (!strcmp(name, "result-sequence") || !strcmp(name, "victory-sequence")) {

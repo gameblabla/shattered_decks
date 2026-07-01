@@ -29,8 +29,8 @@
 #if WAIFU_CD32X_W != 320 || WAIFU_CD32X_H != 224
 #error "CD32X video backend expects WAIFU_FM_WIDTH=320 and WAIFU_FM_HEIGHT=224"
 #endif
-#if CD32X_TITLE_SCREEN_W != 320 || CD32X_TITLE_SCREEN_H != 240
-#error "CD32X title asset must be 320x240"
+#if CD32X_TITLE_SCREEN_W != 320 || CD32X_TITLE_SCREEN_H != 224
+#error "CD32X title asset must be 320x224"
 #endif
 
 struct WaifuCd32xVideo {
@@ -162,17 +162,10 @@ static void cd32x_init_framebuffers(WaifuCd32xVideo *video)
 
 static void cd32x_put_px_back(int x, int y, uint8_t c)
 {
-    volatile uint16_t *words;
-    uint32_t pix;
-    uint16_t w;
+    volatile uint8_t *pixels;
     if ((unsigned)x >= WAIFU_CD32X_W || (unsigned)y >= WAIFU_CD32X_H) return;
-    words = &MARS_FRAMEBUFFER;
-    pix = (uint32_t)WAIFU_CD32X_FB_BYTE_OFFSET + (uint32_t)y * WAIFU_CD32X_W + (uint32_t)x;
-    words += pix >> 1;
-    w = *words;
-    if ((x & 1) == 0) w = (uint16_t)((w & 0x00ffu) | ((uint16_t)c << 8));
-    else w = (uint16_t)((w & 0xff00u) | c);
-    *words = w;
+    pixels = (volatile uint8_t *)(uintptr_t)WAIFU_CD32X_FRAMEBUFFER_PIXELS;
+    pixels[(uint32_t)y * WAIFU_CD32X_W + (uint32_t)x] = c;
 }
 
 static void cd32x_fill_rect_back(int x, int y, int w, int h, uint8_t c)
@@ -223,6 +216,32 @@ static uint8_t cd32x_outline_row(unsigned char ch, int row)
 static void cd32x_draw_char_scaled_both(int x, int y, char ch, int scale, uint8_t fg, uint8_t outline)
 {
     unsigned char uch = (unsigned char)ch;
+    if (scale == 1) {
+        volatile uint8_t *pixels = (volatile uint8_t *)(uintptr_t)WAIFU_CD32X_FRAMEBUFFER_PIXELS;
+        for (int yy = 0; yy < 8; ++yy) {
+            int py = y + yy;
+            uint8_t row = cd32x_outline_row(uch, yy);
+            if ((unsigned)py >= WAIFU_CD32X_H) continue;
+            for (int xx = 0; xx < 8; ++xx) {
+                int px = x + xx;
+                if ((row & (uint8_t)(0x80u >> xx)) && (unsigned)px < WAIFU_CD32X_W) {
+                    pixels[(uint32_t)py * WAIFU_CD32X_W + (uint32_t)px] = outline;
+                }
+            }
+        }
+        for (int yy = 0; yy < 8; ++yy) {
+            int py = y + yy;
+            uint8_t row = cd32x_font_row(uch, yy);
+            if ((unsigned)py >= WAIFU_CD32X_H) continue;
+            for (int xx = 0; xx < 8; ++xx) {
+                int px = x + xx;
+                if ((row & (uint8_t)(0x80u >> xx)) && (unsigned)px < WAIFU_CD32X_W) {
+                    pixels[(uint32_t)py * WAIFU_CD32X_W + (uint32_t)px] = fg;
+                }
+            }
+        }
+        return;
+    }
 
     /* Match the PC-FX title overlay semantics: background pixels are
        transparent, with only a one-glyph-pixel black outline and the glyph

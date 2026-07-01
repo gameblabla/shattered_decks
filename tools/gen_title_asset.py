@@ -42,6 +42,7 @@ W, H = read_screen_resolution()
 # 256x240 keeps the original shipped title art for byte-stable default builds.
 RESOLUTION_TITLE = {
     (256, 240): 'titlescreen_shardsofcards.png',
+    (320, 224): 'title_320x224.png',
     (320, 240): 'title_320.png',
     (384, 240): 'title_384x240.png',
     (640, 400): 'title_640x400.png',
@@ -51,6 +52,7 @@ RESOLUTION_TITLE = {
 }
 RESOLUTION_ENDING = {
     (256, 240): 'ending256x240.png',
+    (320, 224): 'ending320x240.png',
     (320, 240): 'ending320x240.png',
     (384, 240): 'ending384x240.png',
     (640, 400): 'ending640x400.png',

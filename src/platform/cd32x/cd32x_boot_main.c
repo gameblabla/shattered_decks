@@ -15,6 +15,7 @@
 #include "cd32x_pcm.h"
 #include "cd32x_music_pcm.h"
 #include "waifu_assets.h"
+#include "cd32x_title_asset.h"
 
 extern void cd32x_bios_cdda_init(void);
 extern int cd32x_bios_cdda_play(int track, int loop);
@@ -31,6 +32,7 @@ extern void cd32x_bios_cdda_stop(void);
 #define CD32X_CD_STATUS_ERROR   0xCDEE
 
 #define WAIFU_ASSET_BLOB_TITLE_SCREEN            0
+#define WAIFU_ASSET_BLOB_ENDING_SCREEN           3
 #define WAIFU_ASSET_BLOB_STORY_PORTRAITS         4
 #define WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK     5
 #define WAIFU_ASSET_BLOB_CARD_FACES              6
@@ -69,7 +71,8 @@ typedef struct Cd32xBlobInfo {
 } Cd32xBlobInfo;
 
 static const Cd32xBlobInfo g_cd32x_blobs[] = {
-    { WAIFU_ASSET_BLOB_TITLE_SCREEN,        "TITLE_SCREEN_IMG.BIN",      38400 },
+    { WAIFU_ASSET_BLOB_TITLE_SCREEN,        "TITLE_SCREEN_IMG.BIN",      CD32X_TITLE_SCREEN_BYTES / 2 },
+    { WAIFU_ASSET_BLOB_ENDING_SCREEN,       "ENDING_SCREEN_IMG.BIN",     CD32X_TITLE_SCREEN_BYTES / 2 },
     { WAIFU_ASSET_BLOB_STORY_PORTRAITS,     "STORY_PORTRAITS.BIN",       0xFFFF },
     { WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK, "STORY_PORTRAIT_MASK.BIN",   0xFFFF },
     { WAIFU_ASSET_BLOB_CARD_FACES,          "CARD_FACES.BIN",            0xFFFF },

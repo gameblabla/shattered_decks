@@ -37,6 +37,7 @@ typedef enum WaifuAssetRequest {
     WAIFU_ASSET_REQUEST_TITLE,
     WAIFU_ASSET_REQUEST_STORY_INTRO,
     WAIFU_ASSET_REQUEST_STORY_DUEL,
+    WAIFU_ASSET_REQUEST_ENDING,
     WAIFU_ASSET_REQUEST_CARDS
 } WaifuAssetRequest;
 
@@ -114,6 +115,7 @@ int waifu_assets_ram_budget_ok(void);
 void waifu_assets_request_title(void);
 void waifu_assets_request_story_intro(void);
 void waifu_assets_request_story_duel(int opponent_portrait_id);
+void waifu_assets_request_ending(void);
 void waifu_assets_request_cards(void);
 /* Request card working set and pre-warm likely large monster art. The list is copied; support cards imply support big-art prewarm. */
 void waifu_assets_request_cards_for_list(const int *card_ids, int count);
