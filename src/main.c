@@ -2761,7 +2761,11 @@ static const uint8_t *card_face_ptr(int id)
 {
     if (id < 0) id = 0;
     if (id >= WAIFU_CARD_COUNT) id = WAIFU_CARD_COUNT - 1;
+#if defined(WAIFU_FM_CD32X)
+    return waifu_assets_card_face_cached(id);
+#else
     return waifu_assets_card_face(id);
+#endif
 }
 
 static const uint8_t *card_big_art_ptr(int id)
@@ -2803,6 +2807,25 @@ static void draw_card_sprite(int id, int x, int y, int w, int h, int back)
         line_i(x + 6, y + h / 2, x + w / 2, y + 6, IDX_GOLD_DARK);
         return;
     }
+    {
+        const uint8_t *src = card_face_ptr(id);
+        if (!src) {
+            rect_fill(x, y, w, h, IDX_CARD_RIM);
+            rect_outline(x, y, w, h, IDX_GOLD_HI);
+            rect_outline(x+1, y+1, w-2, h-2, IDX_GOLD_DARK);
+            rect_fill(x+3, y+3, w-6, h-6, IDX_UI_DARK);
+            rect_fill(x+5, y+5, w-10, (h > 18) ? 5 : 3, IDX_GOLD_DARK);
+            rect_fill(x+5, y+h-13, w-10, 8, IDX_GOLD_DARK);
+            rect_outline(x+5, y+11, w-10, h-27, IDX_GOLD_DARK);
+            line_i(x + w / 2, y + 14, x + w - 9, y + h / 2, IDX_GOLD_HI);
+            line_i(x + w - 9, y + h / 2, x + w / 2, y + h - 17, IDX_GOLD_DARK);
+            line_i(x + w / 2, y + h - 17, x + 8, y + h / 2, IDX_GOLD_HI);
+            line_i(x + 8, y + h / 2, x + w / 2, y + 14, IDX_GOLD_DARK);
+            return;
+        }
+        draw_card_raw(src, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
+        return;
+    }
 #endif
     draw_card_raw(back ? waifu_assets_card_back() : card_face_ptr(id), WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
 }
@@ -2814,6 +2837,10 @@ static void draw_card_sprite_ex(int id, int x, int y, int w, int h, int back, in
 #if defined(WAIFU_FM_CD32X)
     if (back) {
         draw_card_sprite(id, x, y, w, h, 1);
+        return;
+    }
+    if (!src) {
+        draw_card_sprite(id, x, y, w, h, 0);
         return;
     }
 #endif
@@ -7424,9 +7451,20 @@ static void enter_story_ending_after_assets(void)
 
 static void enter_deck_editor_after_assets(void)
 {
-    waifu_assets_request_cards();
+    waifu_assets_request_deck_editor_cards(g_story_player_deck, g_story_deck_count);
     enter_state_after_assets(WAIFU_I_DECK_EDITOR);
 }
+
+#ifdef CD32X_DEBUG_AUTOBATTLE
+static void enter_debug_deck_editor_after_assets(void)
+{
+    generate_story_starter_deck();
+    generate_story_storage_pool();
+    reset_story_deck_editor();
+    g_story_editor_from_pyramid = 0;
+    enter_deck_editor_after_assets();
+}
+#endif
 
 static void add_battle_prewarm_id(int *ids, int *count, int cap, int card_id)
 {
@@ -10103,12 +10141,19 @@ void waifu_fm_init(void)
     invalidate_board_bg_cache();
     invalidate_battle_composite_cache();
     waifu_assets_init();
+#ifdef CD32X_DEBUG_AUTOBATTLE
+    /* Temporary CD32X iteration shortcut: boot straight to the deck editor
+       through the normal card loading screen. */
+    enter_debug_deck_editor_after_assets();
+    if (g_i_state == WAIFU_I_LOADING_ASSETS) g_i_frame = 0;
+#else
     waifu_assets_request_title();
     if (waifu_assets_needs_loading_screen()) {
         g_i_loading_target = WAIFU_I_TITLE;
         g_i_state = WAIFU_I_LOADING_ASSETS;
         g_i_frame = 0;
     }
+#endif
     waifu_fm_use_common_palette();
     waifu_sound_init();
     update_music_for_current_state();
@@ -10126,9 +10171,10 @@ void waifu_fm_reset_interactive(void)
     invalidate_battle_composite_cache();
 #ifdef CD32X_DEBUG_AUTOBATTLE
     /* Throwaway CD32X iteration shortcut: skip title/menu asset requests and
-       boot straight into a Battle-Mode duel through the normal card-loading
-       path.  Build with EXTRA_CFLAGS=-DCD32X_DEBUG_AUTOBATTLE. */
-    enter_battle_after_assets();
+       boot straight into the deck editor through the normal card-loading path.
+       Build with EXTRA_CFLAGS=-DCD32X_DEBUG_AUTOBATTLE. */
+    enter_debug_deck_editor_after_assets();
+    if (g_i_state == WAIFU_I_LOADING_ASSETS) g_i_frame = 0;
 #else
     waifu_assets_request_title();
     g_i_loading_target = WAIFU_I_TITLE;
@@ -11299,8 +11345,22 @@ void waifu_fm_step(const WaifuFmInput *input)
             waifu_assets_ready() && !story_duel_portraits_ready()) {
             request_story_duel_assets();
         }
+        if (waifu_assets_ready()) {
+            if (g_i_loading_target == WAIFU_I_STORY_PLAZA &&
+                !story_duel_portraits_ready()) {
+                request_story_duel_assets();
+                break;
+            }
+            g_i_state = g_i_loading_target;
+            g_i_frame = -1;
+            break;
+        }
         draw_asset_loading_screen();
+#ifdef CD32X_DEBUG_AUTOBATTLE
+        if (waifu_assets_load_step()) {
+#else
         if (g_i_frame >= 24 && waifu_assets_load_step()) {
+#endif
             if (g_i_loading_target == WAIFU_I_STORY_PLAZA &&
                 !story_duel_portraits_ready()) {
                 request_story_duel_assets();

@@ -117,6 +117,7 @@ void waifu_assets_request_story_intro(void);
 void waifu_assets_request_story_duel(int opponent_portrait_id);
 void waifu_assets_request_ending(void);
 void waifu_assets_request_cards(void);
+void waifu_assets_request_deck_editor_cards(const int *card_ids, int count);
 /* Request card working set and pre-warm likely large monster art. The list is copied; support cards imply support big-art prewarm. */
 void waifu_assets_request_cards_for_list(const int *card_ids, int count);
 WaifuAssetRequest waifu_assets_pending_request(void);
@@ -141,6 +142,7 @@ const uint16_t *waifu_assets_ending_screen_pcfx_yuv422(void);
 const uint8_t *waifu_assets_story_portrait_pixels(int portrait_id);
 const uint8_t *waifu_assets_story_portrait_mask(int portrait_id);
 const uint8_t *waifu_assets_card_face(int card_id);
+const uint8_t *waifu_assets_card_face_cached(int card_id);
 const uint8_t *waifu_assets_card_big_art(int card_id);
 /* Synchronously load the exact monster big-art pair needed by an imminent
  * reveal/cut-in into the resident cache.  Compiled/cart builds are already

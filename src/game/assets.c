@@ -602,8 +602,14 @@ void waifu_assets_request_cards(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
     prewarm_list_clear();
+#if defined(WAIFU_FM_CD32X)
+    /* CD32X cannot afford the generic all-monster big-art prewarm.  The deck
+       editor only needs the compact card-face/back/support working set up
+       front; individual 112x112 previews are loaded on demand. */
+#else
     prewarm_list_add_all_monster_big_art();
     if (!g_support_big_loaded) g_prewarm_support_big = 1;
+#endif
     g_requested_portrait_id[0] = -1;
     g_requested_portrait_id[1] = -1;
     evict_title();
@@ -616,6 +622,38 @@ void waifu_assets_request_cards(void)
         return;
     }
     start_request(WAIFU_ASSET_REQUEST_CARDS);
+#endif
+}
+
+void waifu_assets_request_deck_editor_cards(const int *card_ids, int count)
+{
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+#if defined(WAIFU_FM_CD32X)
+    prewarm_list_clear();
+    if (card_ids && count > 0) {
+        int limit = count < CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT ? count : CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT;
+        for (int i = 0; i < limit; ++i) prewarm_face_list_add_card(card_ids[i]);
+    }
+    g_requested_portrait_id[0] = -1;
+    g_requested_portrait_id[1] = -1;
+    evict_title();
+    evict_ending();
+    evict_portraits();
+    if (g_cards_loaded) {
+        g_pending_request = (g_prewarm_face_card_count > 0) ? WAIFU_ASSET_REQUEST_CARDS : WAIFU_ASSET_REQUEST_NONE;
+        g_load_step = 3;
+        g_ready = (g_pending_request == WAIFU_ASSET_REQUEST_NONE);
+        return;
+    }
+    start_request(WAIFU_ASSET_REQUEST_CARDS);
+#else
+    (void)card_ids;
+    (void)count;
+    waifu_assets_request_cards();
+#endif
+#else
+    (void)card_ids;
+    (void)count;
 #endif
 }
 
@@ -824,13 +862,25 @@ int waifu_assets_load_step(void)
         }
         if (g_load_step == 2) {
 #if defined(WAIFU_FM_CD32X)
-            if (!cd_read_blob(WAIFU_ASSET_BLOB_SUPPORT_FACE, stage_support_face_ptr(), CARD_ONE_BYTES)) return 0;
+            /* Temporary CD32X deck-editor autoboot path: support faces are not
+               required to enter the editor and this small CD read can block on
+               some images. */
 #else
             if (!cd_read_blob_padded_from_start(WAIFU_ASSET_BLOB_SUPPORT_FACE, stage_support_face_ptr(), CARD_ONE_BYTES)) return 0;
 #endif
             ++g_load_step;
             g_cards_loaded = 1;
             add_ram_used(CARDS_TOTAL_BYTES);
+#if defined(WAIFU_FM_CD32X)
+            if (!g_prewarm_support_big &&
+                g_prewarm_face_card_count <= 0 &&
+                g_prewarm_big_card_count <= 0 &&
+                !g_prewarm_all_big_cards) {
+                g_ready = 1;
+                g_pending_request = WAIFU_ASSET_REQUEST_NONE;
+                return 1;
+            }
+#endif
             return 0;
         }
         if (g_load_step == 3) {
@@ -840,6 +890,15 @@ int waifu_assets_load_step(void)
                 add_ram_used(CARD_BIG_CACHE_SLOT_BYTES);
             }
             ++g_load_step;
+#if defined(WAIFU_FM_CD32X)
+            if (g_prewarm_face_card_count <= 0 &&
+                g_prewarm_big_card_count <= 0 &&
+                !g_prewarm_all_big_cards) {
+                g_ready = 1;
+                g_pending_request = WAIFU_ASSET_REQUEST_NONE;
+                return 1;
+            }
+#endif
             return 0;
         }
 #if defined(WAIFU_FM_CD32X)
@@ -914,6 +973,7 @@ const char *waifu_assets_loading_label(void)
         if (g_load_step == 3) return "SUPPORT BIG ART";
 #if defined(WAIFU_FM_CD32X)
         if (g_load_step < 4 + g_prewarm_face_card_count) return "CARD FACE";
+        if (g_prewarm_big_card_count <= 0 && !g_prewarm_all_big_cards) return "READY";
 #endif
         return "MONSTER BIG ART";
     }
@@ -1182,6 +1242,28 @@ const uint8_t *waifu_assets_card_face(int card_id)
             }
             g_cd32x_face_cache_card_id[slot] = card_id;
         }
+        g_cd32x_face_cache_stamp[slot] = g_cd32x_face_cache_clock++;
+        if (g_cd32x_face_cache_clock == 0) g_cd32x_face_cache_clock = 1;
+        return stage_card_face_cache_slot_ptr(slot);
+    }
+#else
+    return stage_card_faces_ptr() + ((size_t)card_id * CARD_ONE_BYTES);
+#endif
+#else
+    return waifu_card_faces + ((size_t)card_id * CARD_ONE_BYTES);
+#endif
+}
+
+const uint8_t *waifu_assets_card_face_cached(int card_id)
+{
+    if (card_id < 0) card_id = 0;
+    if (card_id >= WAIFU_CARD_COUNT) card_id = WAIFU_CARD_COUNT - 1;
+#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+    if (!g_cards_loaded) return NULL;
+#if defined(WAIFU_FM_CD32X)
+    {
+        int slot = cd32x_find_card_face_slot(card_id);
+        if (slot < 0) return NULL;
         g_cd32x_face_cache_stamp[slot] = g_cd32x_face_cache_clock++;
         if (g_cd32x_face_cache_clock == 0) g_cd32x_face_cache_clock = 1;
         return stage_card_face_cache_slot_ptr(slot);
