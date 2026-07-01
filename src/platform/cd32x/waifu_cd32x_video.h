@@ -23,7 +23,6 @@ void waifu_cd32x_video_present_8bpp(WaifuCd32xVideo *video, const uint8_t *frame
 void waifu_cd32x_video_wait_vblank(WaifuCd32xVideo *video);
 volatile uint8_t *waifu_cd32x_video_title_upload_buffer(void);
 void waifu_cd32x_video_commit_title_upload(void);
-void waifu_cd32x_fill_u8_parallel(uint8_t *dst, int count, uint8_t color);
 
 #ifdef __cplusplus
 }

@@ -1193,8 +1193,6 @@ static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
         : [v] "r" (v)
         : "memory");
     PROFILE_UI_FAST_FILL();
-#elif defined(WAIFU_FM_CD32X)
-    waifu_cd32x_fill_u8_parallel(dst, count, c);
 #else
     memset(dst, c, (size_t)count);
 #endif

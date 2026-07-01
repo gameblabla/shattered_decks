@@ -3,92 +3,7 @@
 #include "waifu_cd32x_audio.h"
 #include "waifu_cd32x_cdrom.h"
 #include "waifu_cd32x_input.h"
-#include "waifu_cd32x_memory.h"
 #include "waifu_cd32x_video.h"
-
-enum {
-    CD32X_SLAVE_JOB_IDLE = 0,
-    CD32X_SLAVE_JOB_FILL_U8 = 1
-};
-
-typedef struct Cd32xSlaveJob {
-    volatile uint32_t command;
-    volatile uint32_t dst;
-    volatile uint32_t count;
-    volatile uint32_t color;
-} Cd32xSlaveJob;
-
-static Cd32xSlaveJob g_cd32x_slave_job __attribute__((aligned(16)));
-
-static volatile Cd32xSlaveJob *cd32x_slave_job_uncached(void)
-{
-    uintptr_t addr = (uintptr_t)&g_cd32x_slave_job;
-    if (addr >= WAIFU_CD32X_SDRAM_CACHED_BASE && addr < WAIFU_CD32X_SDRAM_CACHED_LIMIT) {
-        addr = (addr - WAIFU_CD32X_SDRAM_CACHED_BASE) + WAIFU_CD32X_SDRAM_UNCACHED_BASE;
-    }
-    return (volatile Cd32xSlaveJob *)addr;
-}
-
-static void cd32x_fill_u8_local(uint8_t *dst, uint32_t count, uint8_t color)
-{
-    uint16_t pair = (uint16_t)(((uint16_t)color << 8) | color);
-    volatile uint8_t *d8 = (volatile uint8_t *)dst;
-
-    if (((uintptr_t)d8 & 1u) && count > 0u) {
-        *d8++ = color;
-        --count;
-    }
-
-    volatile uint16_t *d16 = (volatile uint16_t *)(volatile void *)d8;
-    while (count >= 8u) {
-        d16[0] = pair;
-        d16[1] = pair;
-        d16[2] = pair;
-        d16[3] = pair;
-        d16 += 4;
-        count -= 8u;
-    }
-    while (count >= 2u) {
-        *d16++ = pair;
-        count -= 2u;
-    }
-
-    d8 = (volatile uint8_t *)(volatile void *)d16;
-    if (count) *d8 = color;
-}
-
-void waifu_cd32x_fill_u8_parallel(uint8_t *dst, int count, uint8_t color)
-{
-    volatile Cd32xSlaveJob *job = cd32x_slave_job_uncached();
-    uint32_t total;
-    uint32_t first;
-
-    if (count <= 0) return;
-    total = (uint32_t)count;
-    if (total < 4096u) {
-        cd32x_fill_u8_local(dst, total, color);
-        return;
-    }
-
-    while (job->command != CD32X_SLAVE_JOB_IDLE) {
-    }
-
-    first = (total >> 1) & ~1u;
-    if (first == 0u || first >= total) {
-        cd32x_fill_u8_local(dst, total, color);
-        return;
-    }
-
-    job->dst = (uint32_t)(uintptr_t)(dst + first);
-    job->count = total - first;
-    job->color = color;
-    job->command = CD32X_SLAVE_JOB_FILL_U8;
-
-    cd32x_fill_u8_local(dst, first, color);
-
-    while (job->command != CD32X_SLAVE_JOB_IDLE) {
-    }
-}
 
 int main(void)
 {
@@ -149,13 +64,7 @@ uint8_t *cfx_game_framebuffer(void)
 
 void slave(void)
 {
-    volatile Cd32xSlaveJob *job = cd32x_slave_job_uncached();
     for (;;) {
-        if (job->command == CD32X_SLAVE_JOB_FILL_U8) {
-            cd32x_fill_u8_local((uint8_t *)(uintptr_t)job->dst, job->count, (uint8_t)job->color);
-            job->command = CD32X_SLAVE_JOB_IDLE;
-        } else {
-            __asm__ volatile ("nop");
-        }
+        __asm__ volatile ("nop");
     }
 }

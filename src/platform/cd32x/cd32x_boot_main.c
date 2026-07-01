@@ -100,8 +100,13 @@ static const Cd32xBlobInfo *cd32x_blob_info(int blob)
    write clobbers it, so those paths reset this so the next face reloads only
    the needed 32 KiB chunk instead of the whole 145 KiB face atlas. */
 static int g_face_chunk_resident = -1;
+static int g_face_chunk_resident_size = 0;
 static int8_t g_face_card_scratch[CD32X_CARD_ONE_BYTES];
-static void cd32x_invalidate_face_atlas(void) { g_face_chunk_resident = -1; }
+static void cd32x_invalidate_face_atlas(void)
+{
+    g_face_chunk_resident = -1;
+    g_face_chunk_resident_size = 0;
+}
 
 static int g_cd32x_cwd = -1;
 
@@ -295,7 +300,7 @@ static int cd32x_load_card_face_chunk(int chunk_id, char *word_ram)
         /* The previous CPY handed this Word-RAM bank to the MD/32X side; switch
            it back so the Sub-CPU can read the resident chunk. */
         switch_banks();
-        return 0;
+        return g_face_chunk_resident_size;
     }
     if (g_face_chunk_resident >= 0) {
         /* Same reason as above, but a new chunk must be loaded over it. */
@@ -306,10 +311,11 @@ static int cd32x_load_card_face_chunk(int chunk_id, char *word_ram)
     cd32x_before_cd_read();
     rc = load_file(filename, word_ram);
     if (rc < 0) {
-        g_face_chunk_resident = -1;
+        cd32x_invalidate_face_atlas();
         return rc;
     }
     g_face_chunk_resident = chunk_id;     /* load_file leaves the bank Sub-CPU owned */
+    g_face_chunk_resident_size = rc;
     return rc;
 }
 
@@ -355,7 +361,7 @@ static void cd32x_service_card_face_request(int card_id, int words, char *word_r
         remaining -= n;
         ++chunk_id;
         chunk_off = 0;
-        if (remaining > 0) g_face_chunk_resident = -1;
+        if (remaining > 0) cd32x_invalidate_face_atlas();
     }
 
     memcpy(word_ram, g_face_card_scratch, CD32X_CARD_ONE_BYTES);
