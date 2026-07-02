@@ -129,12 +129,11 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
    into an LRU staged in the asset arena.  Keep this large enough for the
    currently visible hand/field set so drawing does not thrash the CD every
    frame. */
-/* One deck-editor page draws 6x3 small card faces.  Keep enough slots for the
-   visible page so resident icons do not evict each other during redraws, but do
-   not preload faces on entry: each single-card CD request is slow enough that
-   even a first-row preload keeps the editor on LOADING for far too long. */
+/* CD32X deck editor intentionally skips the face working set, but battle entry
+   prewarms enough small faces for the visible hands and near-future field cards
+   so board thumbnails do not fall back to vector placeholders. */
 #define CD32X_CARD_FACE_CACHE_SLOTS 18
-#define CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT 0
+#define CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT CD32X_CARD_FACE_CACHE_SLOTS
 #define CARD_FACE_STAGE_BYTES ((size_t)CD32X_CARD_FACE_CACHE_SLOTS * CARD_ONE_BYTES)
 #else
 #define CARD_FACE_STAGE_BYTES CARD_FACE_BYTES
@@ -667,10 +666,9 @@ void waifu_assets_request_cards_for_list(const int *card_ids, int count)
 #if defined(WAIFU_FM_CD32X)
     /* CD32X battle entry must not front-load big-art reads: each 112x112 card
        costs a CD seek plus a word-by-word supervisor transfer.  Do prewarm the
-       small face LRU for the opening player hand only, because otherwise the
-       first visible hand frame synchronously streams faces.  Later hand/field
-       faces are loaded on demand from 32 KiB chunks; prewarming the whole deck
-       before the first draw just moves the hang onto the loading screen. */
+       small face LRU for visible hands and likely early field cards so battle
+       thumbnails are real card faces; the deck editor uses a separate request
+       path that skips this working set. */
     if (card_ids && count > 0) {
         int limit = count < CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT ? count : CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT;
         for (int i = 0; i < limit; ++i) prewarm_face_list_add_card(card_ids[i]);
@@ -865,9 +863,10 @@ int waifu_assets_load_step(void)
         }
         if (g_load_step == 2) {
 #if defined(WAIFU_FM_CD32X)
-            /* Temporary CD32X deck-editor autoboot path: support faces are not
-               required to enter the editor and this small CD read can block on
-               some images. */
+            /* Deck editor uses waifu_assets_request_deck_editor_cards() and never
+               reaches this card working-set path.  Battle does, so load the real
+               support-face thumbnail for hand/field support cards. */
+            if (!cd_read_blob(WAIFU_ASSET_BLOB_SUPPORT_FACE, stage_support_face_ptr(), CARD_ONE_BYTES)) return 0;
 #else
             if (!cd_read_blob_padded_from_start(WAIFU_ASSET_BLOB_SUPPORT_FACE, stage_support_face_ptr(), CARD_ONE_BYTES)) return 0;
 #endif

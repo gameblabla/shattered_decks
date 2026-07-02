@@ -2872,7 +2872,12 @@ static void draw_support_sprite(int id, int x, int y, int w, int h)
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
 #if defined(WAIFU_FM_CD32X)
     {
+        const uint8_t *src = waifu_assets_support_face();
         int trap = is_trap_support_card(id);
+        if (src) {
+            draw_card_raw(src, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
+            return;
+        }
         uint8_t frame_hi = trap ? IDX_TRAP_FRAME_HI : IDX_SUPPORT_FRAME;
         uint8_t frame = trap ? IDX_TRAP_FRAME : IDX_SUPPORT_FRAME_HI;
         uint8_t frame_dk = trap ? IDX_TRAP_FRAME_DK : IDX_UI_DARK;
@@ -5485,19 +5490,14 @@ static int g_deck_scroll[2] = {0, 0};
 static int g_deck_flash = 0;
 static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
-/* On CD32X a card-check streams the 112x112 art from CD on demand.  The B-press
-   never issues that seek from the deck editor's input frame; it only records
-   whether the art is missing and enters the preview state.  The preview then
-   hides the seek behind a smooth black VDP palette fade (driven through
-   g_video_fade_visible_q8, which the CD32X video backend applies to both the
-   32X CRAM and the MD VDP palette).  The screen fades to black, holds black
-   while the art streams, and fades back up to reveal the loaded preview.  The
-   fade-down also gives the non-blocking RF5C164 music stop a few frames to
-   clear the resident supervisor before the art read is issued, so a second
-   consecutive card-check no longer collides with the PCM music pump.  No
-   "LOADING..." text is drawn; the black transition replaces it. */
+/* On CD32X a deck card-check streams the 112x112 art from CD on demand.  The
+   B-press never issues that seek from the editor input frame; it enters the
+   preview state, keeps drawing the deck editor while fading to black, blocks on
+   the art read at black, then fades the loaded preview back in. */
 static int g_deck_preview_art_pending = 0;
 #if defined(WAIFU_FM_CD32X)
+#define CD32X_DECK_PREVIEW_LOAD_PENDING 1
+#define CD32X_DECK_PREVIEW_REVEAL       2
 /* Fade length (frames) for each leg of the card-check black transition, and the
    maximum number of black-hold frames to wait for a stuck art stream before
    giving up and revealing the frame-only preview (safety net so a lost
@@ -11875,43 +11875,41 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_PREVIEW:
-        draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
 #if defined(WAIFU_FM_CD32X)
-        if (g_deck_preview_art_pending) {
-            /* Smooth black VDP palette transition hides the card-check CD load.
-               The preview panel is drawn (with a blank art box while loading)
-               and faded to black over CD32X_DECK_CHECK_FADE_FRAMES frames.  The
-               fade-down also gives the non-blocking RF5C164 music stop a few
-               frames to clear the resident supervisor before the 112x112 art
-               read is issued, so a second consecutive card-check no longer
-               collides with the PCM music pump.  Once the fade reaches black,
-               the synchronous art stream blocks inside waifu_fm_step; the screen
-               is already black, so the stall is invisible.  When the stream
-               resolves, the next frame snaps back to full intensity (the CD32X
-               palette fade is decrease-only, matching the snap-reveal used by
-               the other CD32X state transitions).  No "LOADING..." text is
-               drawn; the black fade replaces it. */
+        if (g_deck_preview_art_pending == CD32X_DECK_PREVIEW_LOAD_PENDING) {
             int ff = g_i_frame < 0 ? 0 : g_i_frame;
             if (ff < CD32X_DECK_CHECK_FADE_FRAMES) {
+                draw_deck_editor();
                 apply_black_dither_fade(Q8_ONE - q8_ratio(ff + 1, CD32X_DECK_CHECK_FADE_FRAMES));
             } else {
                 int art_loaded;
                 int load_frame = ff - CD32X_DECK_CHECK_FADE_FRAMES;
+                draw_transition_black_hold_frame();
                 if (is_support_card(g_deck_preview_card)) {
                     art_loaded = waifu_assets_support_big_art() != NULL;
                 } else {
                     art_loaded = waifu_assets_prewarm_big_art_pair(g_deck_preview_card, CARD_NONE);
                 }
                 if (art_loaded || load_frame >= CD32X_DECK_CHECK_LOAD_TIMEOUT) {
-                    /* Art resolved, or the stream stalled past the safety
-                       timeout: reveal the preview (with art if it arrived,
-                       frame-only as a fallback) instead of staying black. */
-                    g_deck_preview_art_pending = 0;
+                    g_deck_preview_art_pending = CD32X_DECK_PREVIEW_REVEAL;
+                    g_i_frame = -1;
                 }
                 apply_black_dither_fade(0);
             }
+            break;
+        }
+        if (g_deck_preview_art_pending == CD32X_DECK_PREVIEW_REVEAL) {
+            int ff = g_i_frame < 0 ? 0 : g_i_frame;
+            draw_interactive_card_preview(g_deck_preview_card, ff);
+            if (ff < CD32X_DECK_CHECK_FADE_FRAMES) {
+                apply_black_dither_fade(q8_ratio(ff + 1, CD32X_DECK_CHECK_FADE_FRAMES));
+                break;
+            }
+            g_deck_preview_art_pending = 0;
+            break;
         }
 #endif
+        draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
         if (press_b || press_a || press_start) {
 #if defined(WAIFU_FM_CD32X)
             /* Never leave the preview faded; a B-press during the black hold

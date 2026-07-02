@@ -118,7 +118,7 @@ void waifu_assets_request_story_duel(int opponent_portrait_id);
 void waifu_assets_request_ending(void);
 void waifu_assets_request_cards(void);
 void waifu_assets_request_deck_editor_cards(const int *card_ids, int count);
-/* Request card working set and pre-warm likely large monster art. The list is copied; support cards imply support big-art prewarm. */
+/* Request the battle card working set. CD32X uses the list to prewarm small card faces; support cards imply support big-art prewarm. */
 void waifu_assets_request_cards_for_list(const int *card_ids, int count);
 WaifuAssetRequest waifu_assets_pending_request(void);
 const char *waifu_assets_request_name(WaifuAssetRequest req);

@@ -323,6 +323,8 @@ static uint8_t  g_music_need_chunk;
 static uint8_t  g_music_have_play_off;
 static uint8_t  g_music_stale_play_reads;
 
+static void music_pump_locked(void);
+
 int8_t *cd32x_music_clip_buffer(void) { return g_music_clip; }
 uint32_t cd32x_music_clip_capacity(void) { return (uint32_t)sizeof(g_music_clip); }
 
@@ -426,6 +428,7 @@ void cd32x_music_supply_chunk(uint32_t chunk_bytes)
     g_music_clip_pos = 0u;
     g_music_need_chunk = 0u;
     g_music_stale_play_reads = 0u;
+    music_pump_locked();
     cd32x_irq_unlock(sr);
 }
 
