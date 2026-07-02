@@ -929,13 +929,29 @@ static int project_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
     return pa->ok && pb->ok && pc->ok && pd->ok;
 }
 
+#if defined(WAIFU_FM_CD32X)
+static void line_i(int x0, int y0, int x1, int y1, uint8_t c);
+static void cd32x_fill_solid_tri_fast(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color);
+static uint8_t cd32x_story_tile_color(int tile);
+#endif
+
 static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
 {
     ScreenPt pa, pb, pc, pd;
     if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+#if defined(WAIFU_FM_CD32X)
+    {
+        uint8_t color = cd32x_story_tile_color(tile);
+        cd32x_fill_solid_tri_fast(pa, pb, pc, color);
+        cd32x_fill_solid_tri_fast(pa, pc, pd, color);
+        line_i(pa.x, pa.y, pb.x, pb.y, IDX_STONE_HI);
+        line_i(pb.x, pb.y, pc.x, pc.y, IDX_STONE);
+        line_i(pc.x, pc.y, pd.x, pd.y, IDX_STONE_HI);
+        line_i(pd.x, pd.y, pa.x, pa.y, IDX_STONE);
+    }
+#elif defined(WAIFU_FM_PCFX)
     /* Stone-temple pillar quads used to go through draw_textured_tri(), which
        evaluates barycentric texture coordinates with per-pixel MUL/DIV.  The
        PC-FX/CD32X map objects use the same 32x32 atlas tiles as the in-game
@@ -1010,7 +1026,7 @@ static void draw_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, Sc
     cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 }
 
-#if defined(WAIFU_FM_CD32X) && WAIFU_CD32X_BOARD_FLAT_TOP
+#if defined(WAIFU_FM_CD32X)
 static void cd32x_hspan_fast(int y, int x0, int x1, uint8_t color)
 {
     if ((unsigned)y >= WAIFU_FM_HEIGHT) return;
@@ -1088,6 +1104,18 @@ static void cd32x_fill_solid_tri_fast(ScreenPt a, ScreenPt b, ScreenPt c, uint8_
 static uint8_t cd32x_board_top_color(int tile)
 {
     return (tile == 5) ? IDX_GOLD_DARK : IDX_CARD_GOLD;
+}
+
+static uint8_t cd32x_story_tile_color(int tile)
+{
+    switch (tile) {
+    case 0: return IDX_UI_DARK;
+    case 2: return IDX_DARK_BROWN;
+    case 3: return IDX_STONE;
+    case 6: return IDX_FLAME3;
+    case 7: return IDX_DARK_BROWN;
+    default: return IDX_CARD_GOLD;
+    }
 }
 
 static void draw_board_top_quad_flat_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, ScreenPt pd, int tile)
@@ -3483,6 +3511,19 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     if (!pa.ok || !pb.ok || !pc.ok) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
+#if defined(WAIFU_FM_CD32X)
+    {
+        uint8_t color = cd32x_story_tile_color(tile);
+        (void)flip_u;
+        (void)rows;
+        (void)cols;
+        cd32x_fill_solid_tri_fast(pa, pb, pc, color);
+        line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
+        line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_HI);
+        line_i(pc.x, pc.y, pa.x, pa.y, IDX_GOLD_DARK);
+        return;
+    }
+#else
     const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
     int sw = WAIFU_TEX_TILE_SIZE, sh = WAIFU_TEX_TILE_SIZE;
     int minx, maxx, miny, maxy;
@@ -3585,6 +3626,7 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
     line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_DARK);
     line_i(pc.x, pc.y, pa.x, pa.y, IDX_GOLD_DARK);
+#endif
 }
 
 static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
@@ -3802,11 +3844,16 @@ static void draw_zone_cursor(Camera cam, int col, int row)
 
 static void draw_top_selector_cursor(Camera cam)
 {
-    int32_t t = q8_smooth_ratio(g_b_top_cursor_anim, 8);
+#if defined(WAIFU_FM_CD32X)
+    const int cursor_anim_frames = 4;
+#else
+    const int cursor_anim_frames = 8;
+#endif
+    int32_t t = q8_smooth_ratio(g_b_top_cursor_anim, cursor_anim_frames);
     int32_t col = Q8_FROM_INT(g_b_top_prev_col) + q8_mul(Q8_FROM_INT(g_b_top_col - g_b_top_prev_col), t);
     int32_t row = Q8_FROM_INT(g_b_top_prev_row) + q8_mul(Q8_FROM_INT(g_b_top_row - g_b_top_prev_row), t);
     draw_zone_cursor_q(cam, col, row);
-    if (g_b_top_cursor_anim < 8) ++g_b_top_cursor_anim;
+    if (g_b_top_cursor_anim < cursor_anim_frames) ++g_b_top_cursor_anim;
 }
 
 static void draw_flying_card(Camera cam, int card_id, int hand_index, int target_col, int target_row, int frame, int start, int end, int back)
@@ -10413,21 +10460,22 @@ static void draw_egyptian_corner(int x, int y, int flip)
 static void draw_story_name_entry(void)
 {
     char buf[32];
+    int dx = WAIFU_UI_CENTER_DX;
     clear_screen(IDX_BLACK);
     for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         uint8_t c = (y & 8) ? IDX_DARK_BROWN : IDX_BLACK;
         if (y < 36 || y > WAIFU_UI_BOTTOM_Y(204)) hline(0, WAIFU_FM_WIDTH - 1, y, c);
     }
-    draw_panel_rect(20, 29, 216, 180, IDX_UI_DARK);
-    draw_egyptian_corner(31, 42, 0);
-    draw_egyptian_corner(224, 42, 1);
+    draw_panel_rect(dx + 20, 29, 216, 180, IDX_UI_DARK);
+    draw_egyptian_corner(dx + 31, 42, 0);
+    draw_egyptian_corner(dx + 224, 42, 1);
     draw_centered_text_scaled(47, "NAME ENTRY", 1, IDX_GOLD_HI, IDX_BLACK);
     draw_centered_text(66, "SCRIBE OF THE NILE", IDX_WHITE, IDX_BLACK);
 
-    rect_fill(46, 92, 164, 38, IDX_BLACK);
-    rect_outline(46, 92, 164, 38, IDX_GOLD_HI);
+    rect_fill(dx + 46, 92, 164, 38, IDX_BLACK);
+    rect_outline(dx + 46, 92, 164, 38, IDX_GOLD_HI);
     for (int i = 0; i < STORY_NAME_LEN; ++i) {
-        int x = 61 + i * 23;
+        int x = dx + 61 + i * 23;
         char ch[2] = { g_story_name[i], 0 };
         if (i == g_story_name_pos) {
             rect_fill(x - 4, 99, 19, 21, IDX_DARK_BROWN);
@@ -10439,9 +10487,9 @@ static void draw_story_name_entry(void)
 
     waifu_str_copy(buf, (int)sizeof(buf), "LETTER "); waifu_str_cat_char(buf, (int)sizeof(buf), g_story_name[g_story_name_pos]);
     draw_centered_text(143, buf, IDX_WHITE, IDX_BLACK);
-    draw_text_small(34, 166, "LEFT/RIGHT SLOT", IDX_WHITE, IDX_BLACK);
-    draw_text_small(34, 180, "UP/DOWN GLYPH", IDX_WHITE, IDX_BLACK);
-    draw_text_small(34, 194, "A NEXT   RUN DREAM", IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small(dx + 34, 166, "LEFT/RIGHT SLOT", IDX_WHITE, IDX_BLACK);
+    draw_text_small(dx + 34, 180, "UP/DOWN GLYPH", IDX_WHITE, IDX_BLACK);
+    draw_text_small(dx + 34, 194, "A NEXT   RUN DREAM", IDX_GOLD_HI, IDX_BLACK);
     if (!g_story_name_to_intro && g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
     if (g_story_name_to_intro) apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame, 20));
 }
@@ -10702,6 +10750,31 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
        ground layer (KING affine BG / VDC) instead; background is black for now. */
     (void)cam; (void)floor_y; (void)tile_a; (void)tile_b; (void)tile_size;
     return;
+#elif defined(WAIFU_FM_CD32X)
+    /* CD32X story scenes cannot afford the old per-pixel inverse-projected
+       textured floor while the sanctum UI is also drawing.  Keep the scene
+       readable with horizon bands and sparse perspective guide lines; the
+       battle board still uses the textured dual-SH2 renderer. */
+    {
+        uint8_t ca = cd32x_story_tile_color(tile_a);
+        uint8_t cb = cd32x_story_tile_color(tile_b);
+        int phase = q8_to_int(cam.eye.x + cam.eye.z) & 31;
+        int horizon = WAIFU_FM_HEIGHT / 2;
+        (void)floor_y;
+        (void)tile_size;
+        for (int y = horizon; y < WAIFU_FM_HEIGHT; ++y) {
+            int band = ((y - horizon + phase) >> 4) & 1;
+            hline(0, WAIFU_FM_WIDTH - 1, y, band ? cb : ca);
+        }
+        for (int y = horizon + 14; y < WAIFU_FM_HEIGHT; y += 18) {
+            hline(0, WAIFU_FM_WIDTH - 1, y, IDX_GOLD_DARK);
+        }
+        for (int x = WAIFU_FM_WIDTH / 2; x < WAIFU_FM_WIDTH; x += 32) {
+            line_i(WAIFU_FM_WIDTH / 2, horizon, x, WAIFU_FM_HEIGHT - 1, IDX_GOLD_DARK);
+            line_i(WAIFU_FM_WIDTH / 2, horizon, WAIFU_FM_WIDTH - 1 - x, WAIFU_FM_HEIGHT - 1, IDX_GOLD_DARK);
+        }
+        return;
+    }
 #else
     Vec3 ffwd = vnorm(vsub(cam.target, cam.eye));
     Vec3 fright = vnorm(vcross(ffwd, cam.up));

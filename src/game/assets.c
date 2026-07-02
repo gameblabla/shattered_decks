@@ -282,6 +282,11 @@ void waifu_assets_init(void)
     g_prewarm_big_card_count = 0;
     g_prewarm_support_big = 0;
     g_prewarm_all_big_cards = 0;
+#if defined(WAIFU_FM_CD32X)
+    cd32x_card_face_cache_reset();
+    for (int i = 0; i < CD32X_CARD_FACE_CACHE_SLOTS; ++i) g_prewarm_face_card_ids[i] = -1;
+    g_prewarm_face_card_count = 0;
+#endif
 #endif
 }
 
