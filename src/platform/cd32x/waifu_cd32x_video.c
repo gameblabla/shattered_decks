@@ -38,13 +38,17 @@ struct WaifuCd32xVideo {
     WaifuFmPaletteId current_palette_id;
     int current_fade_q8;
     int current_md_fade_q8;
+#if defined(CD32X_DEBUG_AUTOBATTLE) || defined(WAIFU_CD32X_DEBUG_FPS)
+    /* Frame-pacing probe consumed only by the debug overlay.  Keep it cheap
+       (a single last-frame vblank delta) so the overlay's bookkeeping adds
+       almost nothing to the SH2 image; a value of 1 == 60 fps, 2 == 30 fps,
+       which is all that is needed when comparing renderer changes.  The
+       previous 32-entry ring-buffer average was ~100 bytes of debug-only code
+       that pushed the autobattle debug build past the 128 KiB BlastEm SH2
+       staging limit and broke boot. */
     uint32_t last_flip_vblank;
-    uint16_t recent_vblank_sum;
-    uint8_t recent_vblank_samples;
-    uint8_t recent_vblank_pos;
-    uint8_t recent_vblanks[32];
     uint8_t last_frame_vblanks;
-    uint8_t recent_fps;
+#endif
 };
 
 static WaifuCd32xVideo g_video;
@@ -123,37 +127,22 @@ static uint32_t cd32x_vblank_count(void)
     return (uint32_t)MARS_SYS_COMM12;
 }
 
+#if defined(CD32X_DEBUG_AUTOBATTLE) || defined(WAIFU_CD32X_DEBUG_FPS)
 static void cd32x_record_frame_pacing(WaifuCd32xVideo *video)
 {
     uint32_t now;
     uint32_t delta;
-    uint8_t vblanks;
     if (!video) return;
     now = cd32x_vblank_count();
     delta = video->last_flip_vblank ? (now - video->last_flip_vblank) : 1u;
     if (delta == 0u) delta = 1u;
     if (delta > 255u) delta = 255u;
     video->last_flip_vblank = now;
-    vblanks = (uint8_t)delta;
-    video->last_frame_vblanks = vblanks;
-    if (video->recent_vblank_samples < (uint8_t)sizeof(video->recent_vblanks)) {
-        video->recent_vblanks[video->recent_vblank_pos] = vblanks;
-        video->recent_vblank_sum = (uint16_t)(video->recent_vblank_sum + vblanks);
-        ++video->recent_vblank_samples;
-    } else {
-        uint8_t old = video->recent_vblanks[video->recent_vblank_pos];
-        video->recent_vblanks[video->recent_vblank_pos] = vblanks;
-        video->recent_vblank_sum = (uint16_t)(video->recent_vblank_sum + vblanks - old);
-    }
-    video->recent_vblank_pos = (uint8_t)((video->recent_vblank_pos + 1u) & 31u);
-    if (video->recent_vblank_sum) {
-        video->recent_fps = (uint8_t)(((60u * (uint32_t)video->recent_vblank_samples) +
-                                       (video->recent_vblank_sum >> 1)) /
-                                      video->recent_vblank_sum);
-    } else {
-        video->recent_fps = 60u;
-    }
+    video->last_frame_vblanks = (uint8_t)delta;
 }
+#else
+static void cd32x_record_frame_pacing(WaifuCd32xVideo *video) { (void)video; }
+#endif
 
 static uint16_t cd32x_rgb_to_cram(uint8_t r, uint8_t g, uint8_t b, int fade_q8)
 {
@@ -535,21 +524,21 @@ void waifu_cd32x_video_clear_back_index(uint8_t c)
 
 void waifu_cd32x_video_draw_debug_overlay(WaifuCd32xVideo *video)
 {
-    char buf[16];
+    char buf[12];
     char *p;
     if (!video) return;
+#if defined(CD32X_DEBUG_AUTOBATTLE) || defined(WAIFU_CD32X_DEBUG_FPS)
     p = buf;
-    *p++ = 'F';
-    *p++ = 'P';
-    *p++ = 'S';
-    *p++ = ' ';
-    p = cd32x_append_u8(p, video->recent_fps ? video->recent_fps : 60u);
-    *p++ = ' ';
     *p++ = 'V';
     *p++ = 'B';
+    *p++ = ' ';
     p = cd32x_append_u8(p, video->last_frame_vblanks ? video->last_frame_vblanks : 1u);
     *p = '\0';
     cd32x_draw_text_scaled_both(122, 5, buf, 1, IDX_GOLD_HI, IDX_BLACK);
+#else
+    (void)buf;
+    (void)p;
+#endif
 }
 
 volatile uint8_t *waifu_cd32x_video_title_upload_buffer(void)

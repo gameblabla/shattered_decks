@@ -3,7 +3,11 @@
 #include <string.h>
 #include <stdlib.h>
 
-#if !defined(WAIFU_FM_PCFX)
+#if !defined(WAIFU_FM_PCFX) && !defined(WAIFU_FM_CD32X)
+#define WAIFU_SOUND_USE_STREAMED_MUSIC 1
+#endif
+
+#if !defined(WAIFU_FM_PCFX) && !defined(WAIFU_FM_CD32X)
 #include "sound_assets.h"
 #endif
 
@@ -17,6 +21,9 @@
 
 #if defined(WAIFU_FM_PCFX)
 extern void waifu_pcfx_sfx_play(int effect);
+#endif
+#if defined(WAIFU_FM_CD32X)
+extern void waifu_cd32x_audio_play_sfx(int effect);
 #endif
 
 typedef struct WaifuSoundVoice {
@@ -36,7 +43,7 @@ static int16_t clamp_s16(int v)
     return (int16_t)v;
 }
 
-#if !defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_SOUND_USE_STREAMED_MUSIC)
 /* ---------------------------------------------------------------------------
  * Streamed music playback.
  *
@@ -233,9 +240,9 @@ static void music_next_frame(WaifuMusicStream *st, int *l, int *r)
         music_read_src_frame(st, &st->cur_l, &st->cur_r);
     }
 }
-#endif /* !WAIFU_FM_PCFX */
+#endif /* WAIFU_SOUND_USE_STREAMED_MUSIC */
 
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
 static int asset_count(void)
 {
     return WAIFU_SOUND_EFFECT_COUNT;
@@ -364,7 +371,7 @@ void waifu_sound_init(void)
     memset(g_voices, 0, sizeof(g_voices));
     g_music_track = WAIFU_MUSIC_NONE;
     g_music_pos = 0;
-#if !defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_SOUND_USE_STREAMED_MUSIC)
     music_stream_close(&g_music_stream);
 #endif
 }
@@ -374,7 +381,7 @@ void waifu_sound_reset(void)
     memset(g_voices, 0, sizeof(g_voices));
     g_music_track = WAIFU_MUSIC_NONE;
     g_music_pos = 0;
-#if !defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_SOUND_USE_STREAMED_MUSIC)
     music_stream_close(&g_music_stream);
 #endif
 }
@@ -385,7 +392,7 @@ void waifu_sound_set_music(WaifuMusicTrack track)
     if (g_music_track != track) {
         g_music_track = track;
         g_music_pos = 0;
-#if !defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_SOUND_USE_STREAMED_MUSIC)
         music_stream_close(&g_music_stream);
         if (track != WAIFU_MUSIC_NONE)
             music_stream_open(&g_music_stream, music_track_path(track));
@@ -418,6 +425,9 @@ void waifu_sound_play(WaifuSoundEffect effect)
 #if defined(WAIFU_FM_PCFX)
     if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return;
     waifu_pcfx_sfx_play((int)effect);
+#elif defined(WAIFU_FM_CD32X)
+    if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return;
+    waifu_cd32x_audio_play_sfx((int)effect);
 #else
     int i;
     int best = -1;
@@ -463,7 +473,7 @@ void waifu_sound_mix_s16(int16_t *dst, int frames)
             left  += (music * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
             right += (music * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
         }
-#else
+#elif defined(WAIFU_SOUND_USE_STREAMED_MUSIC)
         if (g_music_stream.fp) {
             int ml = 0, mr = 0;
             music_next_frame(&g_music_stream, &ml, &mr);

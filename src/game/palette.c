@@ -7,6 +7,9 @@
 
 #include "waifu_assets.h"
 #include "title_asset.h"
+#if defined(WAIFU_FM_CD32X)
+#include "cd32x_title_asset.h"
+#endif
 
 static WaifuFmPaletteId g_active_palette_id = WAIFU_FM_PALETTE_COMMON;
 
@@ -53,7 +56,11 @@ WaifuFmPaletteId waifu_fm_palette_id(void)
 
 const uint8_t *waifu_fm_palette_rgb_for_id(WaifuFmPaletteId id)
 {
+#if defined(WAIFU_FM_CD32X)
+    if (id == WAIFU_FM_PALETTE_TITLE) return cd32x_title_screen_palette_rgb;
+#else
     if (id == WAIFU_FM_PALETTE_TITLE) return title_screen_palette_rgb;
+#endif
     if (id == WAIFU_FM_PALETTE_ENDING) return ending_screen_palette_rgb;
     if (id == WAIFU_FM_PALETTE_DIALOGUE) return waifu_dialogue_palette_rgb;
     return waifu_palette_rgb;
