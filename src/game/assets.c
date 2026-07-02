@@ -633,23 +633,22 @@ void waifu_assets_request_deck_editor_cards(const int *card_ids, int count)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
 #if defined(WAIFU_FM_CD32X)
+    /* The CD32X deck editor draws metadata-only grid icons.  Enter it
+       immediately; do not load card faces/back/support faces.  Do evict
+       title/portrait/ending working sets so a later deck card-check can stream
+       the selected 112x112 art into the big-art cache without overlapping a
+       live low-arena asset. */
+    (void)card_ids;
+    (void)count;
     prewarm_list_clear();
-    if (card_ids && count > 0) {
-        int limit = count < CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT ? count : CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT;
-        for (int i = 0; i < limit; ++i) prewarm_face_list_add_card(card_ids[i]);
-    }
     g_requested_portrait_id[0] = -1;
     g_requested_portrait_id[1] = -1;
     evict_title();
     evict_ending();
     evict_portraits();
-    if (g_cards_loaded) {
-        g_pending_request = (g_prewarm_face_card_count > 0) ? WAIFU_ASSET_REQUEST_CARDS : WAIFU_ASSET_REQUEST_NONE;
-        g_load_step = 3;
-        g_ready = (g_pending_request == WAIFU_ASSET_REQUEST_NONE);
-        return;
-    }
-    start_request(WAIFU_ASSET_REQUEST_CARDS);
+    g_pending_request = WAIFU_ASSET_REQUEST_NONE;
+    g_load_step = 0;
+    g_ready = 1;
 #else
     (void)card_ids;
     (void)count;
@@ -1297,7 +1296,9 @@ int waifu_assets_prewarm_big_art_pair(int card_a, int card_b)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
     int ok = 1;
+#if !defined(WAIFU_FM_CD32X)
     if (!g_cards_loaded) return 0;
+#endif
     if (card_a >= 0 && card_a < WAIFU_CARD_COUNT) {
         if (!load_big_card_art_cached(card_a)) ok = 0;
     }
@@ -1395,7 +1396,9 @@ const uint8_t *waifu_assets_support_face(void)
 const uint8_t *waifu_assets_support_big_art(void)
 {
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+#if !defined(WAIFU_FM_CD32X)
     if (!g_cards_loaded) return NULL;
+#endif
     if (!g_support_big_loaded) {
         if (!cd_read_blob(WAIFU_ASSET_BLOB_SUPPORT_BIG_ART, stage_support_big_ptr(), CARD_BIG_ONE_BYTES)) return NULL;
         g_support_big_loaded = 1;

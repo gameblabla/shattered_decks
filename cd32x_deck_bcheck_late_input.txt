@@ -12,6 +12,5 @@
 2400: START
 2700: START
 3000: START
-3600: START
-7000: START
-12000: gamepads.1.b
+12000: +gamepads.1.b
+12240: -gamepads.1.b

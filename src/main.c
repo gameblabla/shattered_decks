@@ -5491,6 +5491,7 @@ static int g_deck_preview_card = CARD_NONE;
    on a later preview frame so the page flip shows the loading placeholder while
    the supervisor seeks instead of freezing the editor. */
 static int g_deck_preview_art_pending = 0;
+static int g_deck_editor_pcm_unlocked = 0;
 
 #define STORY_MAX_DUELS 5
 /* g_story_duel_index is the *currently selected* duel -- the opponent that will
@@ -6704,6 +6705,8 @@ static void reset_story_deck_editor(void)
     g_deck_flash = 0;
     g_deck_flash_reason = 0;
     g_deck_preview_card = CARD_NONE;
+    g_deck_preview_art_pending = 0;
+    g_deck_editor_pcm_unlocked = 0;
 }
 
 static int story_deck_card_count(int card)
@@ -7584,6 +7587,10 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_DECK_PREVIEW:
     case WAIFU_I_DECK_EDITOR_TO_PYRAMID:
     case WAIFU_I_DECK_EDITOR_TO_BATTLE:
+#ifdef WAIFU_FM_CD32X
+        if (g_deck_preview_art_pending) return WAIFU_MUSIC_NONE;
+        if (!g_deck_editor_pcm_unlocked) return WAIFU_MUSIC_NONE;
+#endif
         return WAIFU_MUSIC_DECK_EDITOR;
     case WAIFU_I_BATTLE:
         if (g_b_phase == IB_TALLY) return (g_b_result < 0) ? WAIFU_MUSIC_LOST : WAIFU_MUSIC_RESULTS;
@@ -11805,10 +11812,12 @@ void waifu_fm_step(const WaifuFmInput *input)
             int *arr = deck_editor_active_array();
             g_deck_preview_card = arr[g_deck_cursor];
 #if defined(WAIFU_FM_CD32X)
-            /* CD32X card-check is an interactive screen.  Do not issue a
-               single-card CD seek from here; the preview renderer uses cached
-               art only and still shows the card data on a cache miss. */
-            g_deck_preview_art_pending = 0;
+            /* Do not issue a CD seek in the editor input frame.  The preview
+               state paints first, then streams the selected full art. */
+            g_deck_preview_art_pending = is_support_card(g_deck_preview_card)
+                ? (waifu_assets_support_big_art_cached() == NULL)
+                : (waifu_assets_card_big_art_cached(g_deck_preview_card) == NULL);
+            if (!g_deck_preview_art_pending) g_deck_editor_pcm_unlocked = 1;
 #endif
             g_i_state = WAIFU_I_DECK_PREVIEW;
             g_i_frame = -1;
@@ -11858,7 +11867,18 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
 #if defined(WAIFU_FM_CD32X)
         if (g_deck_preview_art_pending) {
-            g_deck_preview_art_pending = 0;
+            if (g_i_frame >= 1) {
+                int art_loaded;
+                if (is_support_card(g_deck_preview_card)) {
+                    art_loaded = waifu_assets_support_big_art() != NULL;
+                } else {
+                    art_loaded = waifu_assets_prewarm_big_art_pair(g_deck_preview_card, CARD_NONE);
+                }
+                if (art_loaded) {
+                    g_deck_preview_art_pending = 0;
+                    g_deck_editor_pcm_unlocked = 1;
+                }
+            }
             draw_centered_text(WAIFU_FM_HEIGHT / 2, "CARD LOADING...", IDX_GOLD_HI, IDX_BLACK);
         }
 #endif

@@ -24,12 +24,15 @@
 #define CD32X_MD_CMD_PCM_MUSIC      0xCD06u
 #define CD32X_MD_CMD_PCM_MUSIC_STOP 0xCD07u
 #define CD32X_PCM_THEME_NONE        (-1)
+#define CD32X_MD_STATUS_ERROR       0xCDEEu
 
 struct WaifuCd32xAudio {
     WaifuFmMusicTrack current_music;
     uint8_t active_cdda_track;
     uint8_t active_loop;
     int active_pcm_theme;
+    int pcm_command_theme;
+    uint8_t pcm_command_pending;
 };
 
 static WaifuCd32xAudio g_audio;
@@ -68,15 +71,26 @@ static int pcm_theme_for_music(WaifuFmMusicTrack track)
 
 static int cd32x_audio_supervisor_idle(void)
 {
-    uint32_t timeout;
-    for (timeout = 0; MARS_SYS_COMM0 != 0u && timeout < 0x00400000u; ++timeout) {
-    }
     return MARS_SYS_COMM0 == 0u;
 }
 
-static int cd32x_audio_send_pcm_music(int theme)
+static void cd32x_audio_poll_pcm_command(WaifuCd32xAudio *audio)
 {
-    uint32_t timeout;
+    if (!audio || !audio->pcm_command_pending) return;
+    if (!cd32x_audio_supervisor_idle()) return;
+    if (MARS_SYS_COMM4 != CD32X_MD_STATUS_ERROR) {
+        audio->active_pcm_theme = audio->pcm_command_theme;
+    }
+    audio->pcm_command_pending = 0;
+    audio->pcm_command_theme = CD32X_PCM_THEME_NONE;
+}
+
+static int cd32x_audio_try_send_pcm_music(WaifuCd32xAudio *audio, int theme)
+{
+    if (!audio) return 0;
+    cd32x_audio_poll_pcm_command(audio);
+    if (audio->pcm_command_pending) return 0;
+    if (theme == audio->active_pcm_theme) return 1;
     if (!cd32x_audio_supervisor_idle()) return 0;
     if (theme >= 0) {
         MARS_SYS_COMM2 = (uint16_t)theme;
@@ -86,11 +100,9 @@ static int cd32x_audio_send_pcm_music(int theme)
     }
     MARS_SYS_COMM6 = 0;
     MARS_SYS_COMM0 = 1;
-
-    for (timeout = 0; MARS_SYS_COMM0 != 0u && timeout < 0x08000000u; ++timeout) {
-    }
-    if (MARS_SYS_COMM0 != 0u) return 0;
-    return MARS_SYS_COMM4 != 0xCDEEu;
+    audio->pcm_command_theme = theme;
+    audio->pcm_command_pending = 1;
+    return 1;
 }
 
 static uint8_t cdda_loop_for_music(WaifuFmMusicTrack track)
@@ -108,6 +120,7 @@ WaifuCd32xAudio *waifu_cd32x_audio_create(void)
 {
     memset(&g_audio, 0, sizeof(g_audio));
     g_audio.active_pcm_theme = CD32X_PCM_THEME_NONE;
+    g_audio.pcm_command_theme = CD32X_PCM_THEME_NONE;
     (void)waifu_cd32x_cdda_stop();
     return &g_audio;
 }
@@ -125,12 +138,14 @@ static void cd32x_audio_try_apply_music(WaifuCd32xAudio *audio)
     int pcm_theme;
     if (!audio) return;
 
+    cd32x_audio_poll_pcm_command(audio);
     pcm_theme = pcm_theme_for_music(audio->current_music);
     /* A PCM theme and CD-DA are mutually exclusive.  Start/stop the RF5C164
        stream on change; a theme implies CD-DA off. */
     if (pcm_theme != audio->active_pcm_theme) {
-        if (cd32x_audio_send_pcm_music(pcm_theme)) audio->active_pcm_theme = pcm_theme;
+        (void)cd32x_audio_try_send_pcm_music(audio, pcm_theme);
     }
+    if (audio->pcm_command_pending) return;
     if (pcm_theme != CD32X_PCM_THEME_NONE) {
         if (audio->active_cdda_track != CD32X_TRACK_NONE) {
             if (waifu_cd32x_cdda_stop()) {
@@ -174,22 +189,19 @@ void waifu_cd32x_audio_pump(WaifuCd32xAudio *audio)
 
 #define CD32X_MD_CMD_PCM_PLAY   0xCD05u
 
-static int cd32x_audio_wait_supervisor_idle(void)
+static int cd32x_audio_sfx_supervisor_idle(void)
 {
-    uint32_t timeout;
-    for (timeout = 0; MARS_SYS_COMM0 != 0u && timeout < 0x00400000u; ++timeout) {
-    }
     return MARS_SYS_COMM0 == 0u;
 }
 
 void waifu_cd32x_audio_play_sfx(int sfx_id)
 {
     if (sfx_id < 0) return;
-    if (!cd32x_audio_wait_supervisor_idle()) return;
+    if (!cd32x_audio_sfx_supervisor_idle()) return;
     MARS_SYS_COMM2 = (uint16_t)sfx_id;
     MARS_SYS_COMM6 = 0;
     MARS_SYS_COMM4 = CD32X_MD_CMD_PCM_PLAY;
     MARS_SYS_COMM0 = 1;
-    /* Do not block the game on SFX completion; the supervisor acks quickly after
-       touching PCM registers.  Later music/CD-ROM requests wait for COMM0 idle. */
+    /* Do not block the game on SFX.  If the supervisor is busy with a music/CD
+       request the effect is dropped; cursor movement must remain immediate. */
 }
