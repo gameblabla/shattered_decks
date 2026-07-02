@@ -5491,6 +5491,7 @@ static int g_deck_preview_card = CARD_NONE;
    on a later preview frame so the page flip shows the loading placeholder while
    the supervisor seeks instead of freezing the editor. */
 static int g_deck_preview_art_pending = 0;
+static int g_deck_preview_exit_pending = 0;
 static int g_deck_editor_pcm_unlocked = 0;
 
 #define STORY_MAX_DUELS 5
@@ -6706,6 +6707,7 @@ static void reset_story_deck_editor(void)
     g_deck_flash_reason = 0;
     g_deck_preview_card = CARD_NONE;
     g_deck_preview_art_pending = 0;
+    g_deck_preview_exit_pending = 0;
     g_deck_editor_pcm_unlocked = 0;
 }
 
@@ -11817,6 +11819,7 @@ void waifu_fm_step(const WaifuFmInput *input)
             g_deck_preview_art_pending = is_support_card(g_deck_preview_card)
                 ? (waifu_assets_support_big_art_cached() == NULL)
                 : (waifu_assets_card_big_art_cached(g_deck_preview_card) == NULL);
+            g_deck_preview_exit_pending = 0;
             if (!g_deck_preview_art_pending) g_deck_editor_pcm_unlocked = 1;
 #endif
             g_i_state = WAIFU_I_DECK_PREVIEW;
@@ -11881,8 +11884,19 @@ void waifu_fm_step(const WaifuFmInput *input)
             }
             draw_centered_text(WAIFU_FM_HEIGHT / 2, "CARD LOADING...", IDX_GOLD_HI, IDX_BLACK);
         }
+        if (g_deck_preview_art_pending && (press_b || press_a || press_start)) {
+            g_deck_preview_exit_pending = 1;
+            break;
+        }
+        if (!g_deck_preview_art_pending && g_deck_preview_exit_pending) {
+            g_deck_preview_exit_pending = 0;
+            g_i_state = WAIFU_I_DECK_EDITOR;
+            g_i_frame = -1;
+            break;
+        }
 #endif
         if (press_b || press_a || press_start) {
+            g_deck_preview_exit_pending = 0;
             g_i_state = WAIFU_I_DECK_EDITOR;
             g_i_frame = -1;
         }
