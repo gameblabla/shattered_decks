@@ -5493,6 +5493,10 @@ static int g_deck_preview_card = CARD_NONE;
 static int g_deck_preview_art_pending = 0;
 static int g_deck_preview_exit_pending = 0;
 static int g_deck_editor_pcm_unlocked = 0;
+#if defined(WAIFU_FM_CD32X)
+#define CD32X_DECK_EDITOR_PCM_RESUME_DELAY_FRAMES 720
+static int g_deck_editor_pcm_resume_delay = 0;
+#endif
 
 #define STORY_MAX_DUELS 5
 /* g_story_duel_index is the *currently selected* duel -- the opponent that will
@@ -6709,6 +6713,9 @@ static void reset_story_deck_editor(void)
     g_deck_preview_art_pending = 0;
     g_deck_preview_exit_pending = 0;
     g_deck_editor_pcm_unlocked = 0;
+#if defined(WAIFU_FM_CD32X)
+    g_deck_editor_pcm_resume_delay = 0;
+#endif
 }
 
 static int story_deck_card_count(int card)
@@ -7585,13 +7592,19 @@ static WaifuMusicTrack music_track_for_current_state(void)
         return WAIFU_MUSIC_OPENING_DREAM;
     case WAIFU_I_STORY_ENDING_CREDITS:
         return WAIFU_MUSIC_NONE;
-    case WAIFU_I_DECK_EDITOR:
     case WAIFU_I_DECK_PREVIEW:
+#ifdef WAIFU_FM_CD32X
+        return WAIFU_MUSIC_NONE;
+#else
+        return WAIFU_MUSIC_DECK_EDITOR;
+#endif
+    case WAIFU_I_DECK_EDITOR:
     case WAIFU_I_DECK_EDITOR_TO_PYRAMID:
     case WAIFU_I_DECK_EDITOR_TO_BATTLE:
 #ifdef WAIFU_FM_CD32X
         if (g_deck_preview_art_pending) return WAIFU_MUSIC_NONE;
         if (!g_deck_editor_pcm_unlocked) return WAIFU_MUSIC_NONE;
+        if (g_deck_editor_pcm_resume_delay > 0) return WAIFU_MUSIC_NONE;
 #endif
         return WAIFU_MUSIC_DECK_EDITOR;
     case WAIFU_I_BATTLE:
@@ -11804,6 +11817,9 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_EDITOR:
+#if defined(WAIFU_FM_CD32X)
+        if (g_deck_editor_pcm_resume_delay > 0) --g_deck_editor_pcm_resume_delay;
+#endif
         if (press_tab) deck_editor_switch_tab();
         if (press_left) deck_editor_move_cursor(-1, 0);
         if (press_right) deck_editor_move_cursor(1, 0);
@@ -11820,6 +11836,8 @@ void waifu_fm_step(const WaifuFmInput *input)
                 ? (waifu_assets_support_big_art_cached() == NULL)
                 : (waifu_assets_card_big_art_cached(g_deck_preview_card) == NULL);
             g_deck_preview_exit_pending = 0;
+            g_deck_editor_pcm_resume_delay = 0;
+            if (g_deck_preview_art_pending) g_deck_editor_pcm_unlocked = 0;
             if (!g_deck_preview_art_pending) g_deck_editor_pcm_unlocked = 1;
 #endif
             g_i_state = WAIFU_I_DECK_PREVIEW;
@@ -11890,6 +11908,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         }
         if (!g_deck_preview_art_pending && g_deck_preview_exit_pending) {
             g_deck_preview_exit_pending = 0;
+            g_deck_editor_pcm_resume_delay = CD32X_DECK_EDITOR_PCM_RESUME_DELAY_FRAMES;
             g_i_state = WAIFU_I_DECK_EDITOR;
             g_i_frame = -1;
             break;
@@ -11897,6 +11916,9 @@ void waifu_fm_step(const WaifuFmInput *input)
 #endif
         if (press_b || press_a || press_start) {
             g_deck_preview_exit_pending = 0;
+#if defined(WAIFU_FM_CD32X)
+            g_deck_editor_pcm_resume_delay = CD32X_DECK_EDITOR_PCM_RESUME_DELAY_FRAMES;
+#endif
             g_i_state = WAIFU_I_DECK_EDITOR;
             g_i_frame = -1;
         }
