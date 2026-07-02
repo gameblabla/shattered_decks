@@ -45,6 +45,7 @@
 #ifdef WAIFU_FM_CD32X
 #include "waifu_cd32x_video.h"
 #include "waifu_cd32x_memory.h"
+#define WAIFU_CD32X_VBLANK_TICK (*(volatile unsigned long *)0x2000402C)
 #endif
 
 #define BOARD_COLS 5
@@ -5491,7 +5492,6 @@ static int g_deck_preview_card = CARD_NONE;
    on a later preview frame so the page flip shows the loading placeholder while
    the supervisor seeks instead of freezing the editor. */
 static int g_deck_preview_art_pending = 0;
-static int g_deck_preview_exit_pending = 0;
 static int g_deck_editor_pcm_unlocked = 0;
 #if defined(WAIFU_FM_CD32X)
 #define CD32X_DECK_EDITOR_PCM_RESUME_DELAY_FRAMES 720
@@ -6711,7 +6711,6 @@ static void reset_story_deck_editor(void)
     g_deck_flash_reason = 0;
     g_deck_preview_card = CARD_NONE;
     g_deck_preview_art_pending = 0;
-    g_deck_preview_exit_pending = 0;
     g_deck_editor_pcm_unlocked = 0;
 #if defined(WAIFU_FM_CD32X)
     g_deck_editor_pcm_resume_delay = 0;
@@ -6925,7 +6924,12 @@ static void award_story_win_drop(void)
     append_card_to(g_story_storage, &g_story_storage_count, STORY_STORAGE_SIZE, card);
 }
 
-#ifdef WAIFU_FM_PCFX
+#if defined(CD32X_DEBUG_AUTOBATTLE)
+static int story_save_exists(void) { return 0; }
+static int write_story_save(void) { return 0; }
+static int read_story_save(void) { return 0; }
+
+#elif defined(WAIFU_FM_PCFX)
 
 /* -----------------------------------------------------------------------
  * PC-FX BackupRAM / ExBackupRAM save via the BIOS filesystem layer.
@@ -11835,8 +11839,7 @@ void waifu_fm_step(const WaifuFmInput *input)
             g_deck_preview_art_pending = is_support_card(g_deck_preview_card)
                 ? (waifu_assets_support_big_art_cached() == NULL)
                 : (waifu_assets_card_big_art_cached(g_deck_preview_card) == NULL);
-            g_deck_preview_exit_pending = 0;
-            g_deck_editor_pcm_resume_delay = 0;
+            g_deck_editor_pcm_resume_delay = (int)(unsigned)WAIFU_CD32X_VBLANK_TICK;
             if (g_deck_preview_art_pending) g_deck_editor_pcm_unlocked = 0;
             if (!g_deck_preview_art_pending) g_deck_editor_pcm_unlocked = 1;
 #endif
@@ -11885,37 +11888,52 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_PREVIEW:
-        draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
 #if defined(WAIFU_FM_CD32X)
         if (g_deck_preview_art_pending) {
-            if (g_i_frame >= 1) {
-                int art_loaded;
-                if (is_support_card(g_deck_preview_card)) {
+            int art_loaded = 0;
+            unsigned elapsed = (unsigned)WAIFU_CD32X_VBLANK_TICK - (unsigned)g_deck_editor_pcm_resume_delay;
+            int art_x = WAIFU_UI_CENTER_DX + 8;
+            {
+                render_interactive_card_preview_static(g_deck_preview_card);
+                rect_fill(art_x - 4, WAIFU_BATTLE_CARD_Y - 12, 136, 174, IDX_BLACK);
+            }
+            if (g_deck_preview_art_pending == 1 && is_support_card(g_deck_preview_card)) {
+                if (elapsed >= 32u) {
                     art_loaded = waifu_assets_support_big_art() != NULL;
-                } else {
-                    art_loaded = waifu_assets_prewarm_big_art_pair(g_deck_preview_card, CARD_NONE);
                 }
-                if (art_loaded) {
+            } else if (g_deck_preview_art_pending == 1) {
+                art_loaded = waifu_assets_cd32x_start_card_big_art_async(g_deck_preview_card);
+                if (!art_loaded) art_loaded = waifu_assets_cd32x_poll_big_art_async();
+            }
+            if (art_loaded > 0) {
+                g_deck_preview_art_pending = 2;
+                if (elapsed >= 32u) {
+                    g_deck_editor_pcm_resume_delay = (int)((unsigned)WAIFU_CD32X_VBLANK_TICK - 32u);
+                    elapsed = 32u;
+                }
+            }
+            if (elapsed < 32u) {
+                int w = 120 - (int)((elapsed * 115u) >> 5);
+                draw_big_battle_card_rect(g_deck_preview_card, art_x + ((120 - w) >> 1), WAIFU_BATTLE_CARD_Y, w, 160, 1);
+            } else if (g_deck_preview_art_pending == 2) {
+                unsigned front = elapsed - 32u;
+                int w;
+                if (front > 32u) front = 32u;
+                w = 5 + (int)((front * 115u) >> 5);
+                draw_big_battle_card_rect(g_deck_preview_card, art_x + ((120 - w) >> 1), WAIFU_BATTLE_CARD_Y, w, 160, 0);
+                if (elapsed >= 64u) {
                     g_deck_preview_art_pending = 0;
                     g_deck_editor_pcm_unlocked = 1;
                 }
             }
-            draw_centered_text(WAIFU_FM_HEIGHT / 2, "CARD LOADING...", IDX_GOLD_HI, IDX_BLACK);
-        }
-        if (g_deck_preview_art_pending && (press_b || press_a || press_start)) {
-            g_deck_preview_exit_pending = 1;
-            break;
-        }
-        if (!g_deck_preview_art_pending && g_deck_preview_exit_pending) {
-            g_deck_preview_exit_pending = 0;
-            g_deck_editor_pcm_resume_delay = CD32X_DECK_EDITOR_PCM_RESUME_DELAY_FRAMES;
-            g_i_state = WAIFU_I_DECK_EDITOR;
-            g_i_frame = -1;
-            break;
-        }
+        } else
 #endif
-        if (press_b || press_a || press_start) {
-            g_deck_preview_exit_pending = 0;
+        draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
+        if (
+#if defined(WAIFU_FM_CD32X)
+            !g_deck_preview_art_pending &&
+#endif
+            (press_b || press_a || press_start)) {
 #if defined(WAIFU_FM_CD32X)
             g_deck_editor_pcm_resume_delay = CD32X_DECK_EDITOR_PCM_RESUME_DELAY_FRAMES;
 #endif
