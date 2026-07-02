@@ -863,10 +863,9 @@ int waifu_assets_load_step(void)
         }
         if (g_load_step == 2) {
 #if defined(WAIFU_FM_CD32X)
-            /* Deck editor uses waifu_assets_request_deck_editor_cards() and never
-               reaches this card working-set path.  Battle does, so load the real
-               support-face thumbnail for hand/field support cards. */
-            if (!cd_read_blob(WAIFU_ASSET_BLOB_SUPPORT_FACE, stage_support_face_ptr(), CARD_ONE_BYTES)) return 0;
+            /* CD32X battle uses real monster thumbnails from the face LRU.
+               Support-card miniatures stay on the compact vector path to keep
+               the SH-2 image under the 128 KiB boot-staging limit. */
 #else
             if (!cd_read_blob_padded_from_start(WAIFU_ASSET_BLOB_SUPPORT_FACE, stage_support_face_ptr(), CARD_ONE_BYTES)) return 0;
 #endif

@@ -2872,12 +2872,7 @@ static void draw_support_sprite(int id, int x, int y, int w, int h)
     rect_fill(x+2, y+3, w, h, IDX_BLACK);
 #if defined(WAIFU_FM_CD32X)
     {
-        const uint8_t *src = waifu_assets_support_face();
         int trap = is_trap_support_card(id);
-        if (src) {
-            draw_card_raw(src, WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
-            return;
-        }
         uint8_t frame_hi = trap ? IDX_TRAP_FRAME_HI : IDX_SUPPORT_FRAME;
         uint8_t frame = trap ? IDX_TRAP_FRAME : IDX_SUPPORT_FRAME_HI;
         uint8_t frame_dk = trap ? IDX_TRAP_FRAME_DK : IDX_UI_DARK;
@@ -5246,6 +5241,9 @@ static int g_b_selected_hand = 0;
 static int g_b_selected_player_slot = 0;
 static int g_b_selected_com_slot = 0;
 static int g_b_preview_card_id = CARD_NONE;
+#if defined(WAIFU_FM_CD32X)
+static int g_b_preview_art_pending = 0;
+#endif
 static int g_b_fusion_hand_slots[I_HAND] = {-1, -1, -1, -1, -1};
 static int g_b_fusion_count = 0;
 static int g_b_fusion_target_slot = -1;
@@ -5490,20 +5488,17 @@ static int g_deck_scroll[2] = {0, 0};
 static int g_deck_flash = 0;
 static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
+static void draw_deck_editor(void);
 /* On CD32X a deck card-check streams the 112x112 art from CD on demand.  The
    B-press never issues that seek from the editor input frame; it enters the
    preview state, keeps drawing the deck editor while fading to black, blocks on
    the art read at black, then fades the loaded preview back in. */
 static int g_deck_preview_art_pending = 0;
 #if defined(WAIFU_FM_CD32X)
-#define CD32X_DECK_PREVIEW_LOAD_PENDING 1
-#define CD32X_DECK_PREVIEW_REVEAL       2
-/* Fade length (frames) for each leg of the card-check black transition, and the
-   maximum number of black-hold frames to wait for a stuck art stream before
-   giving up and revealing the frame-only preview (safety net so a lost
-   supervisor request cannot leave the screen black forever). */
+#define CD32X_CARD_CHECK_LOAD_PENDING 1
+#define CD32X_CARD_CHECK_REVEAL       2
+/* Fade length (frames) for each leg of the card-check black transition. */
 #define CD32X_DECK_CHECK_FADE_FRAMES   14
-#define CD32X_DECK_CHECK_LOAD_TIMEOUT  240
 #endif
 
 #define STORY_MAX_DUELS 5
@@ -6417,8 +6412,14 @@ static int battle_phase_accepts_player_input(void)
 {
     switch (g_b_phase) {
     case IB_PLAYER_HAND:
+        return 1;
     case IB_CARD_PREVIEW:
     case IB_FIELD_CARD_PREVIEW:
+#if defined(WAIFU_FM_CD32X)
+        return g_b_preview_art_pending == 0;
+#else
+        return 1;
+#endif
     case IB_PLAYER_EQUIP_TARGET:
     case IB_PLAYER_FUSION_TARGET:
     case IB_PLAYER_TOP:
@@ -8183,8 +8184,49 @@ static void draw_interactive_card_preview(int card_id, int f)
 #else
     render_interactive_card_preview_static(card_id);
 #endif
-    if (((f / 16) & 1) == 0) draw_text_small((WAIFU_FM_WIDTH - 56) / 2, WAIFU_FM_HEIGHT - 17, "B: BACK", IDX_WHITE, IDX_BLACK);
+    (void)f;
 }
+
+#if defined(WAIFU_FM_CD32X)
+static int cd32x_load_card_check_art(int card_id)
+{
+    if (is_support_card(card_id)) return waifu_assets_support_big_art() != NULL;
+    return waifu_assets_prewarm_big_art_pair(card_id, CARD_NONE);
+}
+
+static int cd32x_step_card_check_transition(int card_id, int *pending, int *frame, int draw_deck_source)
+{
+    int ff;
+    if (*pending == CD32X_CARD_CHECK_LOAD_PENDING) {
+        ff = *frame < 0 ? 0 : *frame;
+        if (ff < CD32X_DECK_CHECK_FADE_FRAMES) {
+            if (draw_deck_source) draw_deck_editor();
+            apply_black_dither_fade(Q8_ONE - q8_ratio(ff + 1, CD32X_DECK_CHECK_FADE_FRAMES));
+        } else {
+            int art_loaded;
+            draw_transition_black_hold_frame();
+            art_loaded = cd32x_load_card_check_art(card_id);
+            if (art_loaded) {
+                *pending = CD32X_CARD_CHECK_REVEAL;
+                *frame = -1;
+            }
+            apply_black_dither_fade(0);
+        }
+        return 1;
+    }
+    if (*pending == CD32X_CARD_CHECK_REVEAL) {
+        ff = *frame < 0 ? 0 : *frame;
+        draw_interactive_card_preview(card_id, ff);
+        if (ff < CD32X_DECK_CHECK_FADE_FRAMES) {
+            apply_black_dither_fade(q8_ratio(ff + 1, CD32X_DECK_CHECK_FADE_FRAMES));
+        } else {
+            *pending = 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+#endif
 
 
 
@@ -9635,7 +9677,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         }
         if (press_b) {
 #if defined(WAIFU_FM_CD32X)
-            (void)waifu_assets_prewarm_big_art_pair(g_i_player_hand[g_b_selected_hand], CARD_NONE);
+            g_b_preview_art_pending = CD32X_CARD_CHECK_LOAD_PENDING;
 #endif
             set_battle_phase(IB_CARD_PREVIEW);
             break;
@@ -9743,13 +9785,30 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     }
 
     case IB_CARD_PREVIEW:
+#if defined(WAIFU_FM_CD32X)
+        if (cd32x_step_card_check_transition(g_i_player_hand[g_b_selected_hand], &g_b_preview_art_pending, &g_b_phase_frame, 0)) break;
+#endif
         draw_interactive_card_preview(g_i_player_hand[g_b_selected_hand], g_b_phase_frame);
-        if (press_b || press_a || press_start) { g_b_player_hand_intro_pending = 0; set_battle_phase(IB_PLAYER_HAND); }
+        if (press_b || press_a || press_start) {
+#if defined(WAIFU_FM_CD32X)
+            g_b_preview_art_pending = 0;
+#endif
+            g_b_player_hand_intro_pending = 0;
+            set_battle_phase(IB_PLAYER_HAND);
+        }
         break;
 
     case IB_FIELD_CARD_PREVIEW:
+#if defined(WAIFU_FM_CD32X)
+        if (cd32x_step_card_check_transition(g_b_preview_card_id, &g_b_preview_art_pending, &g_b_phase_frame, 0)) break;
+#endif
         draw_interactive_card_preview(g_b_preview_card_id, g_b_phase_frame);
-        if (press_b || press_a || press_start) { set_battle_phase(IB_PLAYER_TOP); }
+        if (press_b || press_a || press_start) {
+#if defined(WAIFU_FM_CD32X)
+            g_b_preview_art_pending = 0;
+#endif
+            set_battle_phase(IB_PLAYER_TOP);
+        }
         break;
 
     case IB_PLAYER_PLACE: {
@@ -9858,7 +9917,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 if (preview_id >= 0) {
                     g_b_preview_card_id = preview_id;
 #if defined(WAIFU_FM_CD32X)
-                    (void)waifu_assets_prewarm_big_art_pair(g_b_preview_card_id, CARD_NONE);
+                    g_b_preview_art_pending = CD32X_CARD_CHECK_LOAD_PENDING;
 #endif
                     set_battle_phase(IB_FIELD_CARD_PREVIEW);
                     break;
@@ -11876,46 +11935,10 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     case WAIFU_I_DECK_PREVIEW:
 #if defined(WAIFU_FM_CD32X)
-        if (g_deck_preview_art_pending == CD32X_DECK_PREVIEW_LOAD_PENDING) {
-            int ff = g_i_frame < 0 ? 0 : g_i_frame;
-            if (ff < CD32X_DECK_CHECK_FADE_FRAMES) {
-                draw_deck_editor();
-                apply_black_dither_fade(Q8_ONE - q8_ratio(ff + 1, CD32X_DECK_CHECK_FADE_FRAMES));
-            } else {
-                int art_loaded;
-                int load_frame = ff - CD32X_DECK_CHECK_FADE_FRAMES;
-                draw_transition_black_hold_frame();
-                if (is_support_card(g_deck_preview_card)) {
-                    art_loaded = waifu_assets_support_big_art() != NULL;
-                } else {
-                    art_loaded = waifu_assets_prewarm_big_art_pair(g_deck_preview_card, CARD_NONE);
-                }
-                if (art_loaded || load_frame >= CD32X_DECK_CHECK_LOAD_TIMEOUT) {
-                    g_deck_preview_art_pending = CD32X_DECK_PREVIEW_REVEAL;
-                    g_i_frame = -1;
-                }
-                apply_black_dither_fade(0);
-            }
-            break;
-        }
-        if (g_deck_preview_art_pending == CD32X_DECK_PREVIEW_REVEAL) {
-            int ff = g_i_frame < 0 ? 0 : g_i_frame;
-            draw_interactive_card_preview(g_deck_preview_card, ff);
-            if (ff < CD32X_DECK_CHECK_FADE_FRAMES) {
-                apply_black_dither_fade(q8_ratio(ff + 1, CD32X_DECK_CHECK_FADE_FRAMES));
-                break;
-            }
-            g_deck_preview_art_pending = 0;
-            break;
-        }
+        if (cd32x_step_card_check_transition(g_deck_preview_card, &g_deck_preview_art_pending, &g_i_frame, 1)) break;
 #endif
         draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
         if (press_b || press_a || press_start) {
-#if defined(WAIFU_FM_CD32X)
-            /* Never leave the preview faded; a B-press during the black hold
-               must restore full intensity before returning to the editor. */
-            g_video_fade_visible_q8 = Q8_ONE;
-#endif
             g_i_state = WAIFU_I_DECK_EDITOR;
             g_i_frame = -1;
         }
