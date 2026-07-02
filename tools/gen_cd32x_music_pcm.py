@@ -28,7 +28,7 @@ OUT_DIR = os.path.join(ROOT, 'assets', 'generated')
 OUT_H = os.path.join(ROOT, 'src', 'generated', 'cd32x_music_pcm.h')
 OUT_STAMP = os.path.join(OUT_DIR, '.cd32x_music_pcm.stamp')
 
-RATE = 5000
+RATE = 4900
 CHUNK_BYTES = 64 * 1024
 # RF5C164 frequency delta for RATE.  BlastEm models Sega CD PCM at
 # 50 MHz / (4 * 384), with cur_ptr advancing by delta / 2048 per output sample.

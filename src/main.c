@@ -83,7 +83,35 @@
 #define CFX_PI_Q8 804
 #define TITLE_SEQUENCE_FRAMES 310
 #define DUEL_TOTAL_FRAMES 2696
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+#if defined(WAIFU_FM_CD32X)
+#define DUEL_OPENING_END 72
+#define WAIFU_PCFX_PLACE_FRAMES 8
+#define WAIFU_PCFX_PLACE_SETTLE_FRAMES 7
+#define WAIFU_PCFX_TURN_FRAMES 12
+#define WAIFU_PCFX_SELECT_FRAMES 16
+#define WAIFU_PCFX_RETURN_FRAMES 12
+#define WAIFU_PCFX_HANDTOP_FRAMES 8
+#define WAIFU_PCFX_HANDTOP_ANCHORS 5
+#define WAIFU_RESULT_UI_CLEAR_FRAMES 32
+#define WAIFU_RESULT_MUSIC_LEAD_FRAMES 8
+#define WAIFU_RESULT_ANIM_START_FRAMES (WAIFU_RESULT_UI_CLEAR_FRAMES + WAIFU_RESULT_MUSIC_LEAD_FRAMES)
+#define WAIFU_RESULT_TOTAL_FRAMES (WAIFU_RESULT_ANIM_START_FRAMES + WAIFU_PCFX_HANDTOP_FRAMES + 96)
+#define WAIFU_PCFX_DRAW_FRAMES 18
+#define WAIFU_HAND_INTRO_FRAMES 18
+#define WAIFU_EQUIP_ANIM_FRAMES 36
+#define WAIFU_FUSION_ANIM_FRAMES 74
+#define WAIFU_BATTLE_PRELUDE_FRAMES 8
+#define WAIFU_BATTLE_SLIDE_FRAMES 8
+#define WAIFU_BATTLE_FLIP_FRAMES 8
+#define WAIFU_BATTLE_REVEAL_PAUSE_FRAMES 1
+#define WAIFU_BATTLE_RAM_FRAMES 10
+#define WAIFU_BATTLE_COUNTER_GAP_FRAMES 5
+#define WAIFU_BATTLE_BURN_DELAY_FRAMES 8
+#define WAIFU_BATTLE_FINAL_SETTLE_FRAMES 5
+#define WAIFU_DIRECT_SLIDE_FRAMES 14
+#define WAIFU_DIRECT_LUNGE_FRAMES 28
+#define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES 18
+#elif defined(WAIFU_FM_PCFX)
 #define DUEL_OPENING_END 72
 #define WAIFU_PCFX_PLACE_FRAMES 12
 #define WAIFU_PCFX_PLACE_SETTLE_FRAMES 10
@@ -317,7 +345,7 @@ static int g_b_top_prev_row = 2;
 static int g_b_top_cursor_anim = 8;
 static int g_b_attack_attacker_slot = -1;
 
-#ifdef WAIFU_FM_PCFX
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
 #define BATTLE_BURN_DUR 12
 #define BATTLE_BURN_VANISH_FRAMES 10
 #else
@@ -9407,7 +9435,7 @@ static void fusion_field_card_rect(Camera cam, int target_slot, int *x, int *y, 
 {
     ScreenPt dst = project_point(cam, v3(zone_cx(target_slot), Q8_FRAC(10,100), zone_cz(PLAYER_CARD_ROW)));
     if (!dst.ok) {
-        *x = 114;
+        *x = (WAIFU_FM_WIDTH / 2) - 14;
         *y = 126;
     } else {
         *x = dst.x - 14;
@@ -9479,7 +9507,7 @@ static void draw_player_fusion_anim(void)
     if (count < 1) count = 1;
     if (count > FUSION_MAX_MATERIALS) count = FUSION_MAX_MATERIALS;
     spread = count > 1 ? (count - 1) * 34 : 0;
-    first_target_x = 128 - spread / 2 - w / 2;
+    first_target_x = (WAIFU_FM_WIDTH / 2) - spread / 2 - w / 2;
 
     if (f >= fusion_landing_start) {
         Camera cam = placement_camera();
@@ -9511,12 +9539,12 @@ static void draw_player_fusion_anim(void)
         }
         if (target_slot >= 0 && target_slot < I_FIELD) draw_zone_cursor(cam, target_slot, PLAYER_CARD_ROW);
         if (g_b_fusion_anim_success) {
-            draw_fusion_landing_card(cam, g_b_fusion_anim_result, 101, 74, 54, 72, target_slot, local, 0);
+            draw_fusion_landing_card(cam, g_b_fusion_anim_result, (WAIFU_FM_WIDTH - 54) / 2, 74, 54, 72, target_slot, local, 0);
             draw_centered_text(WAIFU_UI_BOTTOM_Y(191), "FUSION SUCCESS", IDX_GREEN, IDX_BLACK);
             draw_centered_text(WAIFU_UI_BOTTOM_Y(205), "PLACING RESULT", IDX_WHITE, IDX_BLACK);
         } else if (failed_fusion_can_place_last_card()) {
             int final_index = g_b_fusion_anim_final_source_index;
-            int final_x = (final_index >= 0) ? first_target_x + final_index * 34 : 101;
+            int final_x = (final_index >= 0) ? first_target_x + final_index * 34 : (WAIFU_FM_WIDTH - 54) / 2;
             draw_failed_fusion_dropped_materials(count, first_target_x, local);
             draw_fusion_landing_card(cam, g_b_fusion_anim_final_card, final_x, 82, 38, 50, target_slot, local, 0);
             if (g_b_fusion_anim_equip_only) {
@@ -9542,7 +9570,7 @@ static void draw_player_fusion_anim(void)
 
     clear_screen(IDX_BLACK);
     for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) hline(0, WAIFU_FM_WIDTH - 1, y, (y & 8) ? IDX_UI_DARK : IDX_BLACK);
-    draw_panel_rect(20, 26, 216, 178, IDX_UI_DARK);
+    draw_panel_rect(WAIFU_UI_CENTER_DX + 20, 26, 216, 178, IDX_UI_DARK);
     draw_centered_text(39, "FUSION", IDX_GOLD_HI, IDX_BLACK);
 
     if (f < fusion_flash_start) {
@@ -9555,7 +9583,7 @@ static void draw_player_fusion_anim(void)
             if (slot == FUSION_FIELD_SLOT) draw_text_small(x + 5, cy + h + 3, "FLD", IDX_GOLD_HI, IDX_BLACK);
         }
         for (i = 0; i < 18; ++i) {
-            int px = 128 + q8_to_int(q8_mul(q8_sin_rad((f * 5 + i * 29) * Q8_FRAC(8,100)), Q8_FROM_INT(44)));
+            int px = (WAIFU_FM_WIDTH / 2) + q8_to_int(q8_mul(q8_sin_rad((f * 5 + i * 29) * Q8_FRAC(8,100)), Q8_FROM_INT(44)));
             int py = 103 + q8_to_int(q8_mul(q8_cos_rad((f * 7 + i * 31) * Q8_FRAC(8,100)), Q8_FROM_INT(22)));
             draw_disc(px, py, 1 + (i % 2), (i & 1) ? IDX_GREEN : IDX_GOLD_HI);
         }
@@ -9564,7 +9592,7 @@ static void draw_player_fusion_anim(void)
     } else if (g_b_fusion_anim_success) {
         int rw = 38;
         int rh = 50;
-        int rx = 128 - rw / 2;
+        int rx = (WAIFU_FM_WIDTH / 2) - rw / 2;
         int ry = lerp_i(72, 82, reveal_t);
         draw_hand_card_sprite(g_b_fusion_anim_result, rx, ry, rw, rh, 0);
         if ((f & 4) == 0) rect_outline(rx - 4, ry - 4, rw + 8, rh + 8, pulse);
@@ -9584,10 +9612,10 @@ static void draw_player_fusion_anim(void)
             draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, ly, 38, 50, 0);
             if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT) draw_text_small(x + 5, ly + 53, "FLD", IDX_GOLD_HI, IDX_BLACK);
         }
-        line_i(92, 85, 164, 132, IDX_RED);
-        line_i(164, 85, 92, 132, IDX_RED);
-        line_i(93, 85, 165, 132, IDX_BLACK);
-        line_i(165, 85, 93, 132, IDX_BLACK);
+        line_i((WAIFU_FM_WIDTH / 2) - 36, 85, (WAIFU_FM_WIDTH / 2) + 36, 132, IDX_RED);
+        line_i((WAIFU_FM_WIDTH / 2) + 36, 85, (WAIFU_FM_WIDTH / 2) - 36, 132, IDX_RED);
+        line_i((WAIFU_FM_WIDTH / 2) - 35, 85, (WAIFU_FM_WIDTH / 2) + 37, 132, IDX_BLACK);
+        line_i((WAIFU_FM_WIDTH / 2) + 37, 85, (WAIFU_FM_WIDTH / 2) - 35, 132, IDX_BLACK);
         draw_centered_text(166, "FUSION FAILED", IDX_RED, IDX_BLACK);
         draw_centered_text(181, failed_fusion_can_place_last_card() ? "LAST CARD PLACED" : "CARDS DISCARDED", IDX_WHITE, IDX_BLACK);
     }
