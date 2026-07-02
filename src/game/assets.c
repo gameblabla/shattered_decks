@@ -17,7 +17,6 @@
 #if defined(WAIFU_FM_CD32X)
 #include "waifu_cd32x_memory.h"
 #include "waifu_cd32x_video.h"
-#include "waifu_cd32x_cdrom.h"
 #include "cd32x_title_asset.h"
 #endif
 
@@ -243,10 +242,6 @@ static int g_prewarm_big_card_ids[WAIFU_ASSET_BIG_CACHE_SLOTS];
 static int g_prewarm_big_card_count = 0;
 static int g_prewarm_support_big = 0;
 static int g_prewarm_all_big_cards = 0;
-#if defined(WAIFU_FM_CD32X)
-static int g_async_big_card_id = -1;
-static int g_async_big_slot = -1;
-#endif
 static int find_big_cache_slot(int card_id);
 static int big_cache_loaded_count(void);
 static void prewarm_list_add_all_monster_big_art(void);
@@ -1226,45 +1221,6 @@ static const uint8_t *load_big_card_art_cached(int card_id)
     if (g_big_cache_clock == 0) g_big_cache_clock = 1;
     return stage_big_cache_ptr(slot);
 }
-
-#if defined(WAIFU_FM_CD32X)
-int waifu_assets_cd32x_start_card_big_art_async(int card_id)
-{
-    int slot;
-    if (card_id < 0 || card_id >= WAIFU_CARD_COUNT) return -1;
-    if (find_big_cache_slot(card_id) >= 0) return 1;
-    if (g_async_big_card_id >= 0) return 0;
-    slot = choose_big_cache_slot();
-    if (!waifu_cd32x_cdrom_async_read_card_big(card_id, stage_big_cache_ptr(slot))) {
-        return 0;
-    }
-    g_async_big_card_id = card_id;
-    g_async_big_slot = slot;
-    g_big_cache_card_id[slot] = -1;
-    return 0;
-}
-
-int waifu_assets_cd32x_poll_big_art_async(void)
-{
-    int rc;
-    if (g_async_big_card_id < 0) return 1;
-    rc = waifu_cd32x_cdrom_async_poll();
-    if (rc == 0) return 0;
-    if (rc < 0) {
-        g_async_big_card_id = -1;
-        g_async_big_slot = -1;
-        return -1;
-    }
-    if (g_async_big_slot >= 0) {
-        g_big_cache_card_id[g_async_big_slot] = g_async_big_card_id;
-        g_big_cache_stamp[g_async_big_slot] = g_big_cache_clock++;
-        if (g_big_cache_clock == 0) g_big_cache_clock = 1;
-    }
-    g_async_big_card_id = -1;
-    g_async_big_slot = -1;
-    return 1;
-}
-#endif
 #endif
 
 const uint8_t *waifu_assets_card_face(int card_id)

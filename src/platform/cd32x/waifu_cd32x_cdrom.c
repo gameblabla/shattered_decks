@@ -6,6 +6,7 @@
  * protocol behind one target-specific module. */
 #include "waifu_cd32x_cdrom.h"
 #include "assets.h"
+#include "waifu_assets.h"
 #include "cd32x_32x.h"
 
 #include <stddef.h>
@@ -26,20 +27,12 @@
 #define CD32X_PRIV_BLOB_CARD_BIG_SINGLE_0 0x0300
 #define CD32X_PRIV_BLOB_PORTRAIT_PIXELS_0 0x0400
 #define CD32X_PRIV_BLOB_PORTRAIT_MASK_0 0x0500
-#define WAIFU_CD32X_CARD_COUNT 72u
-#define WAIFU_CD32X_CARD_W 38u
-#define WAIFU_CD32X_CARD_H 54u
-#define WAIFU_CD32X_BIG_W 112u
-#define WAIFU_CD32X_BIG_H 112u
-#define WAIFU_CD32X_STORY_PORTRAIT_COUNT 6u
-#define WAIFU_CD32X_STORY_PORTRAIT_W 124u
-#define WAIFU_CD32X_STORY_PORTRAIT_H 200u
-#define CD32X_CARD_ONE_BYTES ((size_t)WAIFU_CD32X_CARD_W * (size_t)WAIFU_CD32X_CARD_H)
-#define CD32X_CARD_BIG_ONE_BYTES ((size_t)WAIFU_CD32X_BIG_W * (size_t)WAIFU_CD32X_BIG_H)
+#define CD32X_CARD_ONE_BYTES ((size_t)WAIFU_CARD_W * (size_t)WAIFU_CARD_H)
+#define CD32X_CARD_BIG_ONE_BYTES ((size_t)WAIFU_BIG_W * (size_t)WAIFU_BIG_H)
 #define CD32X_CD_SECTOR_BYTES 2048u
 #define CD32X_CARD_BIG_CD_SLOT_BYTES (((CD32X_CARD_BIG_ONE_BYTES + CD32X_CD_SECTOR_BYTES - 1u) / CD32X_CD_SECTOR_BYTES) * CD32X_CD_SECTOR_BYTES)
 #ifndef WAIFU_STORY_PORTRAIT_CD_STRIDE
-#define WAIFU_STORY_PORTRAIT_CD_STRIDE (((size_t)WAIFU_CD32X_STORY_PORTRAIT_W * (size_t)WAIFU_CD32X_STORY_PORTRAIT_H + CD32X_CD_SECTOR_BYTES - 1u) & ~(CD32X_CD_SECTOR_BYTES - 1u))
+#define WAIFU_STORY_PORTRAIT_CD_STRIDE (((size_t)WAIFU_STORY_PORTRAIT_W * (size_t)WAIFU_STORY_PORTRAIT_H + CD32X_CD_SECTOR_BYTES - 1u) & ~(CD32X_CD_SECTOR_BYTES - 1u))
 #endif
 
 struct WaifuCd32xCdrom {
@@ -47,23 +40,14 @@ struct WaifuCd32xCdrom {
     uint8_t last_cdda_track;
 };
 
-typedef struct Cd32xAsyncRead {
-    volatile uint16_t *dst;
-    uint16_t words_total;
-    uint16_t words_done;
-    uint8_t active;
-} Cd32xAsyncRead;
-
 typedef struct BlobPathEntry {
     WaifuAssetBlobId blob;
     const char *path;
 } BlobPathEntry;
 
 static WaifuCd32xCdrom g_cdrom;
-static Cd32xAsyncRead g_async_read;
 
 static int cd32x_request_blob_raw(int blob, void *dst, size_t bytes);
-static int cd32x_async_request_blob_raw(int blob, void *dst);
 
 static const BlobPathEntry g_blob_paths[] = {
     { WAIFU_ASSET_BLOB_TITLE_SCREEN, "/ASSETS/TITLE_SCREEN_IMG.BIN;1" },
@@ -222,7 +206,7 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
     if (blob == WAIFU_ASSET_BLOB_CARD_FACES) {
         if (offset % CD32X_CARD_ONE_BYTES == 0u && bytes == CD32X_CARD_ONE_BYTES) {
             size_t card_id = offset / CD32X_CARD_ONE_BYTES;
-            if (card_id >= WAIFU_CD32X_CARD_COUNT) return 0;
+            if (card_id >= WAIFU_CARD_COUNT) return 0;
             return cd32x_request_blob_raw((int)CD32X_PRIV_BLOB_CARD_SINGLE_0 + (int)card_id, out, bytes);
         }
         if (offset == 0u) {
@@ -241,7 +225,7 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
     if (blob == WAIFU_ASSET_BLOB_CARD_BIG_ART) {
         if (offset % CD32X_CARD_BIG_ONE_BYTES == 0u && bytes == CD32X_CARD_BIG_ONE_BYTES) {
             size_t card_id = offset / CD32X_CARD_BIG_ONE_BYTES;
-            if (card_id >= WAIFU_CD32X_CARD_COUNT) return 0;
+            if (card_id >= WAIFU_CARD_COUNT) return 0;
             return cd32x_request_blob_raw((int)CD32X_PRIV_BLOB_CARD_BIG_SINGLE_0 + (int)card_id, out, bytes);
         }
     }
@@ -253,7 +237,7 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
             int base = (blob == WAIFU_ASSET_BLOB_STORY_PORTRAITS)
                 ? CD32X_PRIV_BLOB_PORTRAIT_PIXELS_0
                 : CD32X_PRIV_BLOB_PORTRAIT_MASK_0;
-            if (portrait_id >= WAIFU_CD32X_STORY_PORTRAIT_COUNT) return 0;
+            if (portrait_id >= WAIFU_STORY_PORTRAIT_COUNT) return 0;
             return cd32x_request_blob_raw(base + (int)portrait_id, out, bytes);
         }
     }
@@ -266,53 +250,6 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
     if (offset != 0) return 0;
     return waifu_cd32x_cdrom_read_file(path, dst, bytes, &got) && got >= bytes;
 }
-
-static int cd32x_async_request_blob_raw(int blob, void *dst)
-{
-    if (!dst || (((uintptr_t)dst) & 1u) != 0u) return 0;
-    if (g_async_read.active) return 0;
-    if (MARS_SYS_COMM0 != 0u) return 0;
-
-    g_async_read.dst = (volatile uint16_t *)dst;
-    g_async_read.words_total = (uint16_t)(CD32X_CARD_BIG_ONE_BYTES >> 1);
-    g_async_read.words_done = 0;
-    g_async_read.active = 1;
-
-    MARS_SYS_COMM2 = g_async_read.words_total;
-    MARS_SYS_COMM4 = CD32X_CD_CMD_READ_BLOB;
-    MARS_SYS_COMM6 = (uint16_t)blob;
-    MARS_SYS_COMM0 = CD32X_COMM_READY;
-    return 1;
-}
-
-int waifu_cd32x_cdrom_async_read_card_big(int card_id, void *dst)
-{
-    if (card_id < 0 || card_id >= (int)WAIFU_CD32X_CARD_COUNT) return 0;
-    return cd32x_async_request_blob_raw((int)CD32X_PRIV_BLOB_CARD_BIG_SINGLE_0 + card_id, dst);
-}
-
-int waifu_cd32x_cdrom_async_poll(void)
-{
-    unsigned max_words = 1u;
-    if (!g_async_read.active) return 1;
-    if (MARS_SYS_COMM0 == 0u && MARS_SYS_COMM4 == CD32X_CD_STATUS_ERROR) {
-        g_async_read.active = 0;
-        return -1;
-    }
-    while (max_words > 0u && g_async_read.words_done < g_async_read.words_total) {
-        if (MARS_SYS_COMM0 != CD32X_COMM_XFER_WORD) return 0;
-        g_async_read.dst[g_async_read.words_done++] = MARS_SYS_COMM2;
-        MARS_SYS_COMM0 = CD32X_COMM_READY;
-        --max_words;
-    }
-    if (g_async_read.words_done >= g_async_read.words_total && MARS_SYS_COMM0 == CD32X_COMM_XFER_DONE) {
-        MARS_SYS_COMM0 = 0;
-        g_async_read.active = 0;
-        return 1;
-    }
-    return 0;
-}
-
 
 static int cd32x_supervisor_request(uint16_t cmd, uint16_t arg0, uint16_t arg1, int wait_for_completion)
 {

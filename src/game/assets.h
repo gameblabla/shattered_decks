@@ -158,10 +158,6 @@ int waifu_assets_big_art_cache_loaded_count(void);
 int waifu_assets_big_art_cache_slot_count(void);
 int waifu_assets_big_art_cache_contains(int card_id);
 int waifu_assets_support_big_art_loaded(void);
-#if defined(WAIFU_FM_CD32X)
-int waifu_assets_cd32x_start_card_big_art_async(int card_id);
-int waifu_assets_cd32x_poll_big_art_async(void);
-#endif
 #if defined(WAIFU_FM_HEADLESS_TESTS)
 unsigned long waifu_assets_debug_platform_read_count(void);
 void waifu_assets_debug_reset_platform_read_count(void);

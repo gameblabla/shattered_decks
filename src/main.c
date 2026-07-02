@@ -45,7 +45,6 @@
 #ifdef WAIFU_FM_CD32X
 #include "waifu_cd32x_video.h"
 #include "waifu_cd32x_memory.h"
-#define WAIFU_CD32X_VBLANK_TICK (*(volatile unsigned long *)0x2000402C)
 #endif
 
 #define BOARD_COLS 5
@@ -5487,15 +5486,24 @@ static int g_deck_flash = 0;
 static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
 /* On CD32X a card-check streams the 112x112 art from CD on demand.  The B-press
-   no longer blocks the deck editor's input frame on that seek; instead the deck
-   preview state paints a "CARD LOADING..." frame first, then performs the read
-   on a later preview frame so the page flip shows the loading placeholder while
-   the supervisor seeks instead of freezing the editor. */
+   never issues that seek from the deck editor's input frame; it only records
+   whether the art is missing and enters the preview state.  The preview then
+   hides the seek behind a smooth black VDP palette fade (driven through
+   g_video_fade_visible_q8, which the CD32X video backend applies to both the
+   32X CRAM and the MD VDP palette).  The screen fades to black, holds black
+   while the art streams, and fades back up to reveal the loaded preview.  The
+   fade-down also gives the non-blocking RF5C164 music stop a few frames to
+   clear the resident supervisor before the art read is issued, so a second
+   consecutive card-check no longer collides with the PCM music pump.  No
+   "LOADING..." text is drawn; the black transition replaces it. */
 static int g_deck_preview_art_pending = 0;
-static int g_deck_editor_pcm_unlocked = 0;
 #if defined(WAIFU_FM_CD32X)
-#define CD32X_DECK_EDITOR_PCM_RESUME_DELAY_FRAMES 720
-static int g_deck_editor_pcm_resume_delay = 0;
+/* Fade length (frames) for each leg of the card-check black transition, and the
+   maximum number of black-hold frames to wait for a stuck art stream before
+   giving up and revealing the frame-only preview (safety net so a lost
+   supervisor request cannot leave the screen black forever). */
+#define CD32X_DECK_CHECK_FADE_FRAMES   14
+#define CD32X_DECK_CHECK_LOAD_TIMEOUT  240
 #endif
 
 #define STORY_MAX_DUELS 5
@@ -6711,10 +6719,6 @@ static void reset_story_deck_editor(void)
     g_deck_flash_reason = 0;
     g_deck_preview_card = CARD_NONE;
     g_deck_preview_art_pending = 0;
-    g_deck_editor_pcm_unlocked = 0;
-#if defined(WAIFU_FM_CD32X)
-    g_deck_editor_pcm_resume_delay = 0;
-#endif
 }
 
 static int story_deck_card_count(int card)
@@ -6924,12 +6928,7 @@ static void award_story_win_drop(void)
     append_card_to(g_story_storage, &g_story_storage_count, STORY_STORAGE_SIZE, card);
 }
 
-#if defined(CD32X_DEBUG_AUTOBATTLE)
-static int story_save_exists(void) { return 0; }
-static int write_story_save(void) { return 0; }
-static int read_story_save(void) { return 0; }
-
-#elif defined(WAIFU_FM_PCFX)
+#ifdef WAIFU_FM_PCFX
 
 /* -----------------------------------------------------------------------
  * PC-FX BackupRAM / ExBackupRAM save via the BIOS filesystem layer.
@@ -7596,21 +7595,15 @@ static WaifuMusicTrack music_track_for_current_state(void)
         return WAIFU_MUSIC_OPENING_DREAM;
     case WAIFU_I_STORY_ENDING_CREDITS:
         return WAIFU_MUSIC_NONE;
+    case WAIFU_I_DECK_EDITOR:
     case WAIFU_I_DECK_PREVIEW:
+    case WAIFU_I_DECK_EDITOR_TO_PYRAMID:
+    case WAIFU_I_DECK_EDITOR_TO_BATTLE:
 #ifdef WAIFU_FM_CD32X
         return WAIFU_MUSIC_NONE;
 #else
         return WAIFU_MUSIC_DECK_EDITOR;
 #endif
-    case WAIFU_I_DECK_EDITOR:
-    case WAIFU_I_DECK_EDITOR_TO_PYRAMID:
-    case WAIFU_I_DECK_EDITOR_TO_BATTLE:
-#ifdef WAIFU_FM_CD32X
-        if (g_deck_preview_art_pending) return WAIFU_MUSIC_NONE;
-        if (!g_deck_editor_pcm_unlocked) return WAIFU_MUSIC_NONE;
-        if (g_deck_editor_pcm_resume_delay > 0) return WAIFU_MUSIC_NONE;
-#endif
-        return WAIFU_MUSIC_DECK_EDITOR;
     case WAIFU_I_BATTLE:
         if (g_b_phase == IB_TALLY) return (g_b_result < 0) ? WAIFU_MUSIC_LOST : WAIFU_MUSIC_RESULTS;
         if (g_b_phase == IB_REWARD) return WAIFU_MUSIC_RESULTS;
@@ -11821,9 +11814,6 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_EDITOR:
-#if defined(WAIFU_FM_CD32X)
-        if (g_deck_editor_pcm_resume_delay > 0) --g_deck_editor_pcm_resume_delay;
-#endif
         if (press_tab) deck_editor_switch_tab();
         if (press_left) deck_editor_move_cursor(-1, 0);
         if (press_right) deck_editor_move_cursor(1, 0);
@@ -11839,9 +11829,6 @@ void waifu_fm_step(const WaifuFmInput *input)
             g_deck_preview_art_pending = is_support_card(g_deck_preview_card)
                 ? (waifu_assets_support_big_art_cached() == NULL)
                 : (waifu_assets_card_big_art_cached(g_deck_preview_card) == NULL);
-            g_deck_editor_pcm_resume_delay = (int)(unsigned)WAIFU_CD32X_VBLANK_TICK;
-            if (g_deck_preview_art_pending) g_deck_editor_pcm_unlocked = 0;
-            if (!g_deck_preview_art_pending) g_deck_editor_pcm_unlocked = 1;
 #endif
             g_i_state = WAIFU_I_DECK_PREVIEW;
             g_i_frame = -1;
@@ -11888,54 +11875,48 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_PREVIEW:
+        draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
 #if defined(WAIFU_FM_CD32X)
         if (g_deck_preview_art_pending) {
-            int art_loaded = 0;
-            unsigned elapsed = (unsigned)WAIFU_CD32X_VBLANK_TICK - (unsigned)g_deck_editor_pcm_resume_delay;
-            int art_x = WAIFU_UI_CENTER_DX + 8;
-            {
-                render_interactive_card_preview_static(g_deck_preview_card);
-                rect_fill(art_x - 4, WAIFU_BATTLE_CARD_Y - 12, 136, 174, IDX_BLACK);
-            }
-            if (g_deck_preview_art_pending == 1 && is_support_card(g_deck_preview_card)) {
-                if (elapsed >= 32u) {
+            /* Smooth black VDP palette transition hides the card-check CD load.
+               The preview panel is drawn (with a blank art box while loading)
+               and faded to black over CD32X_DECK_CHECK_FADE_FRAMES frames.  The
+               fade-down also gives the non-blocking RF5C164 music stop a few
+               frames to clear the resident supervisor before the 112x112 art
+               read is issued, so a second consecutive card-check no longer
+               collides with the PCM music pump.  Once the fade reaches black,
+               the synchronous art stream blocks inside waifu_fm_step; the screen
+               is already black, so the stall is invisible.  When the stream
+               resolves, the next frame snaps back to full intensity (the CD32X
+               palette fade is decrease-only, matching the snap-reveal used by
+               the other CD32X state transitions).  No "LOADING..." text is
+               drawn; the black fade replaces it. */
+            int ff = g_i_frame < 0 ? 0 : g_i_frame;
+            if (ff < CD32X_DECK_CHECK_FADE_FRAMES) {
+                apply_black_dither_fade(Q8_ONE - q8_ratio(ff + 1, CD32X_DECK_CHECK_FADE_FRAMES));
+            } else {
+                int art_loaded;
+                int load_frame = ff - CD32X_DECK_CHECK_FADE_FRAMES;
+                if (is_support_card(g_deck_preview_card)) {
                     art_loaded = waifu_assets_support_big_art() != NULL;
+                } else {
+                    art_loaded = waifu_assets_prewarm_big_art_pair(g_deck_preview_card, CARD_NONE);
                 }
-            } else if (g_deck_preview_art_pending == 1) {
-                art_loaded = waifu_assets_cd32x_start_card_big_art_async(g_deck_preview_card);
-                if (!art_loaded) art_loaded = waifu_assets_cd32x_poll_big_art_async();
-            }
-            if (art_loaded > 0) {
-                g_deck_preview_art_pending = 2;
-                if (elapsed >= 32u) {
-                    g_deck_editor_pcm_resume_delay = (int)((unsigned)WAIFU_CD32X_VBLANK_TICK - 32u);
-                    elapsed = 32u;
-                }
-            }
-            if (elapsed < 32u) {
-                int w = 120 - (int)((elapsed * 115u) >> 5);
-                draw_big_battle_card_rect(g_deck_preview_card, art_x + ((120 - w) >> 1), WAIFU_BATTLE_CARD_Y, w, 160, 1);
-            } else if (g_deck_preview_art_pending == 2) {
-                unsigned front = elapsed - 32u;
-                int w;
-                if (front > 32u) front = 32u;
-                w = 5 + (int)((front * 115u) >> 5);
-                draw_big_battle_card_rect(g_deck_preview_card, art_x + ((120 - w) >> 1), WAIFU_BATTLE_CARD_Y, w, 160, 0);
-                if (elapsed >= 64u) {
+                if (art_loaded || load_frame >= CD32X_DECK_CHECK_LOAD_TIMEOUT) {
+                    /* Art resolved, or the stream stalled past the safety
+                       timeout: reveal the preview (with art if it arrived,
+                       frame-only as a fallback) instead of staying black. */
                     g_deck_preview_art_pending = 0;
-                    g_deck_editor_pcm_unlocked = 1;
                 }
+                apply_black_dither_fade(0);
             }
-        } else
+        }
 #endif
-        draw_interactive_card_preview(g_deck_preview_card, g_i_frame);
-        if (
+        if (press_b || press_a || press_start) {
 #if defined(WAIFU_FM_CD32X)
-            !g_deck_preview_art_pending &&
-#endif
-            (press_b || press_a || press_start)) {
-#if defined(WAIFU_FM_CD32X)
-            g_deck_editor_pcm_resume_delay = CD32X_DECK_EDITOR_PCM_RESUME_DELAY_FRAMES;
+            /* Never leave the preview faded; a B-press during the black hold
+               must restore full intensity before returning to the editor. */
+            g_video_fade_visible_q8 = Q8_ONE;
 #endif
             g_i_state = WAIFU_I_DECK_EDITOR;
             g_i_frame = -1;
