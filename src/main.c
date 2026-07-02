@@ -932,6 +932,7 @@ static int project_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
 #if defined(WAIFU_FM_CD32X)
 static void line_i(int x0, int y0, int x1, int y1, uint8_t c);
 static void cd32x_fill_solid_tri_fast(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color);
+static uint8_t cd32x_story_tile_color(int tile);
 #endif
 
 static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
@@ -940,7 +941,17 @@ static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
     if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+#if defined(WAIFU_FM_CD32X)
+    {
+        uint8_t color = cd32x_story_tile_color(tile);
+        cd32x_fill_solid_tri_fast(pa, pb, pc, color);
+        cd32x_fill_solid_tri_fast(pa, pc, pd, color);
+        line_i(pa.x, pa.y, pb.x, pb.y, IDX_STONE_HI);
+        line_i(pb.x, pb.y, pc.x, pc.y, IDX_STONE);
+        line_i(pc.x, pc.y, pd.x, pd.y, IDX_STONE_HI);
+        line_i(pd.x, pd.y, pa.x, pa.y, IDX_STONE);
+    }
+#elif defined(WAIFU_FM_PCFX)
     /* Stone-temple pillar quads used to go through draw_textured_tri(), which
        evaluates barycentric texture coordinates with per-pixel MUL/DIV.  The
        PC-FX/CD32X map objects use the same 32x32 atlas tiles as the in-game
@@ -1093,6 +1104,18 @@ static void cd32x_fill_solid_tri_fast(ScreenPt a, ScreenPt b, ScreenPt c, uint8_
 static uint8_t cd32x_board_top_color(int tile)
 {
     return (tile == 5) ? IDX_GOLD_DARK : IDX_CARD_GOLD;
+}
+
+static uint8_t cd32x_story_tile_color(int tile)
+{
+    switch (tile) {
+    case 0: return IDX_UI_DARK;
+    case 2: return IDX_DARK_BROWN;
+    case 3: return IDX_STONE;
+    case 6: return IDX_FLAME3;
+    case 7: return IDX_DARK_BROWN;
+    default: return IDX_CARD_GOLD;
+    }
 }
 
 static void draw_board_top_quad_flat_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, ScreenPt pd, int tile)
@@ -3490,15 +3513,13 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
 #if defined(WAIFU_FM_CD32X)
     {
-        const uint8_t *src = waifu_texture_atlas + ((size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
-        TexV ta = {pa.x, pa.y, flip_u ? Q8_ONE : 0, Q8_ONE};
-        TexV tb = {pb.x, pb.y, flip_u ? 0 : Q8_ONE, Q8_ONE};
-        TexV tc = {pc.x, pc.y, Q8_HALF, 0};
+        uint8_t color = cd32x_story_tile_color(tile);
+        (void)flip_u;
         (void)rows;
         (void)cols;
-        draw_textured_tri_affine_cd32x(src, WAIFU_TEX_TILE_SIZE, WAIFU_TEX_TILE_SIZE, ta, tb, tc, 0);
+        cd32x_fill_solid_tri_fast(pa, pb, pc, color);
         line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
-        line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_DARK);
+        line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_HI);
         line_i(pc.x, pc.y, pa.x, pa.y, IDX_GOLD_DARK);
         return;
     }
@@ -10730,27 +10751,27 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
     (void)cam; (void)floor_y; (void)tile_a; (void)tile_b; (void)tile_size;
     return;
 #elif defined(WAIFU_FM_CD32X)
+    /* CD32X story scenes cannot afford the old per-pixel inverse-projected
+       textured floor while the sanctum UI is also drawing.  Keep the scene
+       readable with horizon bands and sparse perspective guide lines; the
+       battle board still uses the textured dual-SH2 renderer. */
     {
-        int near_row = 5;
-        int far_row = -5;
-        int left_col = -5;
-        int right_col = 5;
-        int z_step = cam.eye.z >= 0 ? -1 : 1;
-        int z_start = z_step < 0 ? near_row - 1 : far_row;
-        int z_end = z_step < 0 ? far_row - 1 : near_row;
-        for (int gz = z_start; gz != z_end; gz += z_step) {
-            for (int gx = left_col; gx < right_col; ++gx) {
-                int32_t x0 = gx * tile_size;
-                int32_t x1 = (gx + 1) * tile_size;
-                int32_t z0 = gz * tile_size;
-                int32_t z1 = (gz + 1) * tile_size;
-                int tile = ((gx ^ gz) & 1) ? tile_b : tile_a;
-                Vec3 a = v3(x0, floor_y, z0);
-                Vec3 b = v3(x1, floor_y, z0);
-                Vec3 c = v3(x1, floor_y, z1);
-                Vec3 d = v3(x0, floor_y, z1);
-                draw_quad3d(cam, a, b, c, d, tile);
-            }
+        uint8_t ca = cd32x_story_tile_color(tile_a);
+        uint8_t cb = cd32x_story_tile_color(tile_b);
+        int phase = q8_to_int(cam.eye.x + cam.eye.z) & 31;
+        int horizon = WAIFU_FM_HEIGHT / 2;
+        (void)floor_y;
+        (void)tile_size;
+        for (int y = horizon; y < WAIFU_FM_HEIGHT; ++y) {
+            int band = ((y - horizon + phase) >> 4) & 1;
+            hline(0, WAIFU_FM_WIDTH - 1, y, band ? cb : ca);
+        }
+        for (int y = horizon + 14; y < WAIFU_FM_HEIGHT; y += 18) {
+            hline(0, WAIFU_FM_WIDTH - 1, y, IDX_GOLD_DARK);
+        }
+        for (int x = WAIFU_FM_WIDTH / 2; x < WAIFU_FM_WIDTH; x += 32) {
+            line_i(WAIFU_FM_WIDTH / 2, horizon, x, WAIFU_FM_HEIGHT - 1, IDX_GOLD_DARK);
+            line_i(WAIFU_FM_WIDTH / 2, horizon, WAIFU_FM_WIDTH - 1 - x, WAIFU_FM_HEIGHT - 1, IDX_GOLD_DARK);
         }
         return;
     }

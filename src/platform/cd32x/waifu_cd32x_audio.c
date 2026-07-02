@@ -39,8 +39,6 @@ struct WaifuCd32xAudio {
 
 static WaifuCd32xAudio g_audio;
 
-static void __attribute__((noinline)) cd32x_audio_send_sfx(int sfx_id);
-
 static uint8_t cdda_track_for_music(WaifuFmMusicTrack track)
 {
     switch (track) {
@@ -148,12 +146,6 @@ static void cd32x_audio_try_apply_music(WaifuCd32xAudio *audio)
     /* A PCM theme and CD-DA are mutually exclusive.  Start/stop the RF5C164
        stream on change; a theme implies CD-DA off. */
     if (pcm_theme != audio->active_pcm_theme) {
-        if (audio->pending_sfx >= 0 && !audio->pcm_command_pending &&
-            cd32x_audio_supervisor_idle()) {
-            cd32x_audio_send_sfx(audio->pending_sfx);
-            audio->pending_sfx = -1;
-            return;
-        }
         (void)cd32x_audio_try_send_pcm_music(audio, pcm_theme);
     }
     if (audio->pcm_command_pending) return;
@@ -203,13 +195,12 @@ void waifu_cd32x_audio_pump(WaifuCd32xAudio *audio)
     /* CD-ROM reads and direct-title transfers can temporarily occupy the
        resident M68K supervisor.  Do not declare CD-DA active after a failed
        command; retry here until the supervisor accepts the request. */
+    cd32x_audio_try_apply_music(audio);
     if (audio && audio->pending_sfx >= 0 && !audio->pcm_command_pending &&
         cd32x_audio_supervisor_idle()) {
         cd32x_audio_send_sfx(audio->pending_sfx);
         audio->pending_sfx = -1;
-        return;
     }
-    cd32x_audio_try_apply_music(audio);
 }
 
 void waifu_cd32x_audio_play_sfx(int sfx_id)

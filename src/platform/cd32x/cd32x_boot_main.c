@@ -427,7 +427,8 @@ static void cd32x_service_card_big_request(int card_id, int words, char *word_ra
 
 static void cd32x_service_portrait_request(int portrait_id, int words, int mask, char *word_ram)
 {
-    char filename[10];
+    const char *filename = mask ? "STORY_PORTRAIT_MASK.BIN" : "STORY_PORTRAITS.BIN";
+    int byte_offset;
     int rc;
 
     if (portrait_id < 0 || portrait_id >= CD32X_STORY_PORTRAIT_COUNT || words != CD32X_STORY_PORTRAIT_WORDS) {
@@ -436,34 +437,25 @@ static void cd32x_service_portrait_request(int portrait_id, int words, int mask,
     }
     cd32x_invalidate_face_atlas();
 
-    filename[0] = 'P';
-    filename[1] = mask ? 'M' : 'O';
-    filename[2] = mask ? 'K' : 'R';
-    filename[3] = (char)('0' + ((portrait_id / 10) % 10));
-    filename[4] = (char)('0' + (portrait_id % 10));
-    filename[5] = '.';
-    filename[6] = 'B';
-    filename[7] = 'I';
-    filename[8] = 'N';
-    filename[9] = 0;
-
-    /* A full 6-record portrait atlas is larger than the 128 KiB Word-RAM
-       staging window.  Load only the requested record so ANPU+ dialogue cannot
-       overrun staging memory before the 32X transfer. */
+    /* Portrait planes are only ~156 KiB each, so load the whole plane through
+       the proven BIOS path and slide the requested record to the transfer
+       window.  Raw read_cd slices can hang if story-map CD-DA is still active. */
     if (cd32x_set_asset_cwd() < 0) {
         cd32x_fail_cd_request(-1);
         return;
     }
     cd32x_before_cd_read();
-    rc = load_file(filename, word_ram);
+    rc = load_file((char *)filename, word_ram);
     if (rc < 0) {
         cd32x_fail_cd_request(rc);
         return;
     }
-    if (rc != CD32X_STORY_PORTRAIT_CD_STRIDE) {
+    byte_offset = portrait_id * CD32X_STORY_PORTRAIT_CD_STRIDE;
+    if (byte_offset < 0 || byte_offset + CD32X_STORY_PORTRAIT_CD_STRIDE > rc) {
         cd32x_fail_cd_request(-1);
         return;
     }
+    memcpy(word_ram, word_ram + byte_offset, CD32X_STORY_PORTRAIT_CD_STRIDE);
     cd32x_transfer_word_ram_to_32x(words);
 }
 

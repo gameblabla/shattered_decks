@@ -28,7 +28,7 @@ OUT_DIR = os.path.join(ROOT, 'assets', 'generated')
 OUT_H = os.path.join(ROOT, 'src', 'generated', 'cd32x_music_pcm.h')
 OUT_STAMP = os.path.join(OUT_DIR, '.cd32x_music_pcm.stamp')
 
-RATE = 7350
+RATE = 4900
 CHUNK_BYTES = 64 * 1024
 # RF5C164 frequency delta for RATE.  BlastEm models Sega CD PCM at
 # 50 MHz / (4 * 384), with cur_ptr advancing by delta / 2048 per output sample.
@@ -81,22 +81,16 @@ def to_mono_s16(ch, width, raw):
 
 
 def resample(samples, src_rate, dst_rate, count):
-    """Linear resample to dst_rate, exactly `count` output samples."""
+    """Nearest-neighbour resample to dst_rate, exactly `count` output samples."""
     out = [0] * count
     n = len(samples)
     if n == 0:
         return out
-    if n == 1:
-        out[0] = samples[0]
-        return out
     for i in range(count):
-        pos = (i * src_rate << 16) // dst_rate
-        src = pos >> 16
-        frac = pos & 0xFFFF
-        if src >= n - 1:
-            out[i] = samples[-1]
-        else:
-            out[i] = (samples[src] * (0x10000 - frac) + samples[src + 1] * frac) >> 16
+        src = (i * src_rate) // dst_rate
+        if src >= n:
+            src = n - 1
+        out[i] = samples[src]
     return out
 
 
