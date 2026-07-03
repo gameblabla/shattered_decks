@@ -942,14 +942,17 @@ static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
 #if defined(WAIFU_FM_CD32X)
+    /* Textured stone/pillar quad through the compact affine board rasterizer
+       (already linked for the battle board), replacing the solid-fill LOD.  The
+       texture atlas indices are reserved into the dialogue palette by
+       tools/gen_assets.py, so story textures keep their colors. */
     {
-        uint8_t color = cd32x_story_tile_color(tile);
-        cd32x_fill_solid_tri_fast(pa, pb, pc, color);
-        cd32x_fill_solid_tri_fast(pa, pc, pd, color);
-        line_i(pa.x, pa.y, pb.x, pb.y, IDX_STONE_HI);
-        line_i(pb.x, pb.y, pc.x, pc.y, IDX_STONE);
-        line_i(pc.x, pc.y, pd.x, pd.y, IDX_STONE_HI);
-        line_i(pd.x, pd.y, pa.x, pa.y, IDX_STONE);
+        const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
+        Point2D p0 = {(DEFAULT_INT)pa.x, (DEFAULT_INT)pa.y, 0, 0};
+        Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, uvmax, 0};
+        Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uvmax, uvmax};
+        Point2D p3 = {(DEFAULT_INT)pd.x, (DEFAULT_INT)pd.y, 0, uvmax};
+        cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
     }
 #elif defined(WAIFU_FM_PCFX)
     /* Stone-temple pillar quads used to go through draw_textured_tri(), which
@@ -1223,6 +1226,7 @@ enum {
     CD32X_BOARD_JOB_RENDER_ROWS = 1,
     CD32X_BOARD_JOB_RENDER_X_WALL = 2,
     CD32X_BOARD_JOB_DONE = 3,
+    CD32X_BOARD_JOB_RENDER_FLOOR = 4,
     CD32X_BOARD_SLAVE_READY = 0x57335832u
 };
 
@@ -1233,7 +1237,15 @@ typedef struct Cd32xBoardJob {
     volatile int32_t row_end;
     volatile int32_t side;
     BoardProjected bp;
+    /* Story floor job parameters (CD32X_BOARD_JOB_RENDER_FLOOR). */
+    Camera floor_cam;
+    volatile int32_t floor_y;
+    volatile int32_t floor_tile_a;
+    volatile int32_t floor_tile_b;
+    volatile int32_t floor_tile_size;
 } Cd32xBoardJob;
+
+static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size, int y_start, int y_end);
 
 static Cd32xBoardJob g_cd32x_board_job __attribute__((aligned(16)));
 
@@ -1309,6 +1321,38 @@ static int cd32x_render_board_top_parallel(const BoardProjected *bp)
     return 1;
 }
 
+/* Render the textured story floor with the Slave taking the bottom band and the
+   Master the top band.  Returns 0 (caller falls back to single-CPU) if the Slave
+   is not idle/ready.  Blocks until both bands are done so the floor is complete
+   before the pyramid/stones draw over it. */
+static int cd32x_render_floor_parallel(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size)
+{
+    Cd32xBoardJob *job = cd32x_board_job_uncached();
+    /* The floor only fills rows below the horizon (~H/2); split that active band
+       so both CPUs do a similar row count. */
+    const int split = WAIFU_FM_HEIGHT / 2 + WAIFU_FM_HEIGHT / 4;
+    if (job->ready != CD32X_BOARD_SLAVE_READY || job->command != CD32X_BOARD_JOB_IDLE) {
+        return 0;
+    }
+
+    job->floor_cam = cam;
+    job->floor_y = floor_y;
+    job->floor_tile_a = tile_a;
+    job->floor_tile_b = tile_b;
+    job->floor_tile_size = tile_size;
+    job->row_start = split;
+    job->row_end = WAIFU_FM_HEIGHT;
+    __asm__ volatile ("" ::: "memory");
+    job->command = CD32X_BOARD_JOB_RENDER_FLOOR;
+
+    render_floor_row_range(cam, floor_y, tile_a, tile_b, tile_size, 0, split);
+
+    while (job->command != CD32X_BOARD_JOB_DONE) {
+    }
+    job->command = CD32X_BOARD_JOB_IDLE;
+    return 1;
+}
+
 void waifu_cd32x_slave_service(void)
 {
     Cd32xBoardJob *job = cd32x_board_job_uncached();
@@ -1321,6 +1365,13 @@ void waifu_cd32x_slave_service(void)
         job->command = CD32X_BOARD_JOB_DONE;
     } else if (job->command == CD32X_BOARD_JOB_RENDER_X_WALL) {
         draw_field_slab_x_wall_fast(&job->bp, (int)job->side);
+        __asm__ volatile ("" ::: "memory");
+        job->command = CD32X_BOARD_JOB_DONE;
+    } else if (job->command == CD32X_BOARD_JOB_RENDER_FLOOR) {
+        render_floor_row_range(job->floor_cam, (int32_t)job->floor_y,
+                               (int)job->floor_tile_a, (int)job->floor_tile_b,
+                               (int32_t)job->floor_tile_size,
+                               (int)job->row_start, (int)job->row_end);
         __asm__ volatile ("" ::: "memory");
         job->command = CD32X_BOARD_JOB_DONE;
     }
@@ -3516,15 +3567,20 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
 #if defined(WAIFU_FM_CD32X)
+    /* Textured pyramid face: draw the base0-base1-apex triangle as a degenerate
+       quad (apex doubled) through the compact affine board rasterizer.  The
+       second sub-triangle collapses to zero area, so only the face is filled. */
     {
-        uint8_t color = cd32x_story_tile_color(tile);
-        (void)flip_u;
-        (void)rows;
-        (void)cols;
-        cd32x_fill_solid_tri_fast(pa, pb, pc, color);
-        line_i(pa.x, pa.y, pb.x, pb.y, IDX_GOLD_DARK);
-        line_i(pb.x, pb.y, pc.x, pc.y, IDX_GOLD_HI);
-        line_i(pc.x, pc.y, pa.x, pa.y, IDX_GOLD_DARK);
+        const DEFAULT_INT umax = (DEFAULT_INT)((cols * WAIFU_TEX_TILE_SIZE - 1) << 8);
+        const DEFAULT_INT vmax = (DEFAULT_INT)((rows * WAIFU_TEX_TILE_SIZE - 1) << 8);
+        DEFAULT_INT u0 = flip_u ? umax : 0;
+        DEFAULT_INT u1 = flip_u ? 0 : umax;
+        DEFAULT_INT uapex = umax / 2;
+        Point2D p0 = {(DEFAULT_INT)pa.x, (DEFAULT_INT)pa.y, u0, 0};
+        Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, u1, 0};
+        Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uapex, vmax};
+        Point2D p3 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uapex, vmax};
+        cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
         return;
     }
 #else
@@ -10760,40 +10816,13 @@ static Camera story_map_camera(int f)
 
 /* PS1-style scanline floor renderer: inverse-projects each scanline to the
    floor plane, derives UVs from world XZ, and tiles the texture with modulo
-   wrapping.  All math is Q8.8 fixed point and 32-bit integer only. */
-static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size)
+   wrapping.  All math is Q8.8 fixed point and 32-bit integer only.  Rendered as
+   a row range [y_start, y_end) so the work can be split across both SH-2s. */
+static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size, int y_start, int y_end)
 {
 #ifdef WAIFU_FM_PCFX
-    /* Floor disabled on PC-FX: the KING software floor (per-pixel 230KB-LUT reads
-       through KING I/O with wait states) is too slow.  Evaluating a hardware
-       ground layer (KING affine BG / VDC) instead; background is black for now. */
-    (void)cam; (void)floor_y; (void)tile_a; (void)tile_b; (void)tile_size;
+    (void)cam; (void)floor_y; (void)tile_a; (void)tile_b; (void)tile_size; (void)y_start; (void)y_end;
     return;
-#elif defined(WAIFU_FM_CD32X)
-    /* CD32X story scenes cannot afford the old per-pixel inverse-projected
-       textured floor while the sanctum UI is also drawing.  Keep the scene
-       readable with horizon bands and sparse perspective guide lines; the
-       battle board still uses the textured dual-SH2 renderer. */
-    {
-        uint8_t ca = cd32x_story_tile_color(tile_a);
-        uint8_t cb = cd32x_story_tile_color(tile_b);
-        int phase = q8_to_int(cam.eye.x + cam.eye.z) & 31;
-        int horizon = WAIFU_FM_HEIGHT / 2;
-        (void)floor_y;
-        (void)tile_size;
-        for (int y = horizon; y < WAIFU_FM_HEIGHT; ++y) {
-            int band = ((y - horizon + phase) >> 4) & 1;
-            hline(0, WAIFU_FM_WIDTH - 1, y, band ? cb : ca);
-        }
-        for (int y = horizon + 14; y < WAIFU_FM_HEIGHT; y += 18) {
-            hline(0, WAIFU_FM_WIDTH - 1, y, IDX_GOLD_DARK);
-        }
-        for (int x = WAIFU_FM_WIDTH / 2; x < WAIFU_FM_WIDTH; x += 32) {
-            line_i(WAIFU_FM_WIDTH / 2, horizon, x, WAIFU_FM_HEIGHT - 1, IDX_GOLD_DARK);
-            line_i(WAIFU_FM_WIDTH / 2, horizon, WAIFU_FM_WIDTH - 1 - x, WAIFU_FM_HEIGHT - 1, IDX_GOLD_DARK);
-        }
-        return;
-    }
 #else
     Vec3 ffwd = vnorm(vsub(cam.target, cam.eye));
     Vec3 fright = vnorm(vcross(ffwd, cam.up));
@@ -10808,8 +10837,10 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
     int32_t direct_period = tile_size << (Q8_SHIFT + 1);
     if (direct_period <= 0) return;
 #endif
+    if (y_start < 0) y_start = 0;
+    if (y_end > WAIFU_FM_HEIGHT) y_end = WAIFU_FM_HEIGHT;
 
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+    for (int y = y_start; y < y_end; ++y) {
         int32_t dy = q8_div(Q8_FROM_INT(WAIFU_FM_HEIGHT / 2 - y) - Q8_HALF, cam.focal);
         int32_t ray_y = q8_mul(fup.y, dy) + ffwd.y;
         if (ray_y >= 0) continue;
@@ -10859,6 +10890,18 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
         }
     }
 #endif /* WAIFU_FM_PCFX */
+}
+
+static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size)
+{
+#if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+    /* Split the textured floor across both SH-2s: the Slave renders the bottom
+       band while the Master renders the top band, so the dominant per-pixel
+       floor cost is roughly halved and the story pyramid/stones (drawn on the
+       Master after this returns) still land on top of a complete floor. */
+    if (cd32x_render_floor_parallel(cam, floor_y, tile_a, tile_b, tile_size)) return;
+#endif
+    render_floor_row_range(cam, floor_y, tile_a, tile_b, tile_size, 0, WAIFU_FM_HEIGHT);
 }
 
 static void draw_map_pyramid_3d(int f)
