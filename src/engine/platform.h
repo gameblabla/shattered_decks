@@ -44,6 +44,14 @@ int waifu_platform_storage_write(const char *name, const void *data, int len);
  * (>= 0), or -1 if the blob could not be opened. */
 int waifu_platform_storage_read(const char *name, void *data, int max_len);
 
+/* Multi-device variants. Some platforms expose more than one save device
+ * (CD32X: 0 = internal Backup RAM, 1 = Backup RAM cartridge); the common code
+ * offers a device picker over them. Single-device platforms ignore `device`.
+ * The non-`_dev` calls above are equivalent to `device == 0`. */
+int waifu_platform_storage_exists_dev(int device, const char *name);
+int waifu_platform_storage_write_dev(int device, const char *name, const void *data, int len);
+int waifu_platform_storage_read_dev(int device, const char *name, void *data, int max_len);
+
 /* ---- Background layer -----------------------------------------------------
  * Some platforms can present a scrolling background *behind* the game's
  * framebuffer using dedicated hardware (PC-FX RAINBOW). Platforms without one

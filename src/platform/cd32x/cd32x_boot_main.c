@@ -32,7 +32,8 @@ extern void cd32x_bios_cdda_stop(void);
 #define CD32X_MD_CMD_SAVE_WRITE  0xCD08
 #define CD32X_MD_CMD_SAVE_EXISTS 0xCD09
 #define CD32X_CD_STATUS_ERROR   0xCDEE
-#define CD32X_PRIV_BLOB_SAVE     0x0600
+#define CD32X_PRIV_BLOB_SAVE     0x0600   /* internal Backup RAM */
+#define CD32X_PRIV_BLOB_SAVE_CART 0x0601  /* Backup RAM cartridge */
 
 #define WAIFU_ASSET_BLOB_TITLE_SCREEN            0
 #define WAIFU_ASSET_BLOB_ENDING_SCREEN           3
@@ -722,19 +723,25 @@ static void buram_prepare_wparams(void)
     g_bram_wparams[13] = (unsigned char)(CD32X_SAVE_RECORD_BLOCKS & 0xFF);
 }
 
-/* SAVE_EXISTS: BRMINIT then BRMSERCH.  Reports found via COMM4/rc. */
-static void cd32x_service_save_exists(void)
+/* SAVE_EXISTS: device 0 = internal Backup RAM (BRMINIT+BRMSERCH), device 1 =
+   Backup RAM cartridge (Main-CPU CART_EXISTS).  Reports found via COMM4/rc. */
+static void cd32x_service_save_exists(int device)
 {
     int found;
     cd32x_invalidate_face_atlas();
-    buram_init();
-    found = buram_exists();
+    if (device == 1) {
+        found = do_md_cmd0(MD_CMD_CART_EXISTS) ? 1 : 0;
+    } else {
+        buram_init();
+        found = buram_exists();
+    }
     cd32x_finish_md_request(found ? 0 : -1);
 }
 
-/* SAVE_WRITE: receive the fixed record from the SH-2 into Word RAM, then
-   BRMWRITE it.  Formats the Backup RAM first if it is unformatted. */
-static void cd32x_service_save_write(char *word_ram)
+/* SAVE_WRITE: receive the fixed record from the SH-2 into Word RAM, then persist
+   it to the internal Backup RAM (BRMWRITE, auto-formatting if needed) or the
+   Backup RAM cartridge (Main-CPU CART_SAVE). */
+static void cd32x_service_save_write(int device, char *word_ram)
 {
     int words;
     int rc;
@@ -747,22 +754,40 @@ static void cd32x_service_save_write(char *word_ram)
     }
     switch_banks();  /* hand Word RAM to the Main CPU for the SH-2 transfer */
     do_md_cmd2(MD_CMD_CPY_FROM_32X, 0x200000, words);
-    switch_banks();  /* take Word RAM back to read it */
-    memcpy(g_bram_buf, word_ram, CD32X_SAVE_RECORD_BYTES);
-
-    if (!buram_init()) buram_format();
-    buram_prepare_wparams();
-    rc = buram_write() ? 0 : -1;
+    if (device == 1) {
+        /* The cart is Main-CPU memory-mapped; write straight from Word RAM. */
+        rc = do_md_cmd2(MD_CMD_CART_SAVE, 0x200000, CD32X_SAVE_RECORD_BYTES) < 0 ? -1 : 0;
+        switch_banks();  /* restore Sub-CPU Word RAM ownership */
+    } else {
+        switch_banks();  /* take Word RAM back to read it on the Sub CPU */
+        memcpy(g_bram_buf, word_ram, CD32X_SAVE_RECORD_BYTES);
+        if (!buram_init()) buram_format();
+        buram_prepare_wparams();
+        rc = buram_write() ? 0 : -1;
+    }
     cd32x_finish_md_request(rc);
 }
 
-/* SAVE_READ (served through the READ_BLOB path): BRMREAD into Word RAM then
-   stream to the SH-2 like any other blob. */
-static void cd32x_service_save_read(int words, char *word_ram)
+/* SAVE_READ (served through the READ_BLOB path): load the record into Word RAM
+   from the internal Backup RAM (BRMREAD) or the cartridge (CART_LOAD), then
+   stream it to the SH-2 like any other blob. */
+static void cd32x_service_save_read(int device, int words, char *word_ram)
 {
     cd32x_invalidate_face_atlas();
     if (words != CD32X_SAVE_RECORD_WORDS) {
         cd32x_fail_cd_request(-1);
+        return;
+    }
+    if (device == 1) {
+        switch_banks();  /* Main CPU owns Word RAM to fill it from the cart */
+        if (do_md_cmd2(MD_CMD_CART_LOAD, 0x200000, CD32X_SAVE_RECORD_BYTES) < 0) {
+            switch_banks();
+            cd32x_fail_cd_request(-1);
+            return;
+        }
+        /* Word RAM already Main-owned; stream it to the SH-2 directly. */
+        do_md_cmd2(MD_CMD_CPY_TO_32X, 0x200000, words);
+        cd32x_cdda_resume_after_read();
         return;
     }
     buram_init();
@@ -812,11 +837,11 @@ static void cd32x_service_cd_request(void)
         return;
     }
     if (cmd == CD32X_MD_CMD_SAVE_EXISTS) {
-        cd32x_service_save_exists();
+        cd32x_service_save_exists(do_md_cmd2(MD_CMD_GET_COMM32X, 2, 2));
         return;
     }
     if (cmd == CD32X_MD_CMD_SAVE_WRITE) {
-        cd32x_service_save_write(word_ram);
+        cd32x_service_save_write(do_md_cmd2(MD_CMD_GET_COMM32X, 2, 2), word_ram);
         return;
     }
     if (cmd != CD32X_CD_CMD_READ_BLOB) return;
@@ -824,7 +849,11 @@ static void cd32x_service_cd_request(void)
     words = do_md_cmd2(MD_CMD_GET_COMM32X, 2, 2);
     blob = do_md_cmd2(MD_CMD_GET_COMM32X, 6, 2);
     if (blob == CD32X_PRIV_BLOB_SAVE) {
-        cd32x_service_save_read(words, word_ram);
+        cd32x_service_save_read(0, words, word_ram);
+        return;
+    }
+    if (blob == CD32X_PRIV_BLOB_SAVE_CART) {
+        cd32x_service_save_read(1, words, word_ram);
         return;
     }
     if (blob >= CD32X_PRIV_BLOB_CARD_SINGLE_0 &&

@@ -42,3 +42,22 @@ int waifu_platform_storage_read(const char *name, void *data, int max_len)
     fclose(fp);
     return (int)got;
 }
+
+/* The host has a single save device; the device index is ignored. */
+int waifu_platform_storage_exists_dev(int device, const char *name)
+{
+    (void)device;
+    return waifu_platform_storage_exists(name);
+}
+
+int waifu_platform_storage_write_dev(int device, const char *name, const void *data, int len)
+{
+    (void)device;
+    return waifu_platform_storage_write(name, data, len);
+}
+
+int waifu_platform_storage_read_dev(int device, const char *name, void *data, int max_len)
+{
+    (void)device;
+    return waifu_platform_storage_read(name, data, max_len);
+}

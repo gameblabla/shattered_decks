@@ -82,7 +82,10 @@
         .equ    MD_CMD_DMA_TO_32X, 21
         .equ    MD_CMD_CPY_TO_32X, 22
         .equ    MD_CMD_CPY_FROM_32X, 23
-        .equ    MD_CMD_END, 24
+        .equ    MD_CMD_CART_SAVE, 24
+        .equ    MD_CMD_CART_LOAD, 25
+        .equ    MD_CMD_CART_EXISTS, 26
+        .equ    MD_CMD_END, 27
 
 
         .text
@@ -457,6 +460,9 @@ cmd_table:
         .word   dma_to_32x - cmd_table
         .word   cpy_to_32x - cmd_table
         .word   cpy_from_32x - cmd_table
+        .word   cart_save - cmd_table
+        .word   cart_load - cmd_table
+        .word   cart_exists - cmd_table
 
 | void md_init_hw(void);
 | initialize MD hardware
@@ -1370,6 +1376,91 @@ cpy_from_32x:
 
         moveq   #0,d0
         rts
+
+|-----------------------------------------------------------------------|
+|  Sega CD Backup RAM Cartridge (Main-CPU memory-mapped) save storage    |
+|  Record layout on the cart (byte i at odd address 0x600001 + 2*i):     |
+|    0..3   magic 'WFMS'                                                  |
+|    4..    the fixed save record (length + payload)                     |
+|  Write-enable register: 0x7FFFFF (write 1 to enable, 0 to protect).    |
+|  Presence is inferred by writing the magic and verifying it reads back |
+|  (a missing cart reads open bus, which will not match 'WFMS').         |
+|-----------------------------------------------------------------------|
+
+| int cart_check_magic(void)  -- d0 = 1 if 'WFMS' present, else 0
+cart_check_magic:
+        lea     0x600001,a0
+        cmpi.b  #0x57,(a0)              /* 'W' */
+        bne.b   0f
+        cmpi.b  #0x46,2(a0)             /* 'F' */
+        bne.b   0f
+        cmpi.b  #0x4D,4(a0)             /* 'M' */
+        bne.b   0f
+        cmpi.b  #0x53,6(a0)             /* 'S' */
+        bne.b   0f
+        moveq   #1,d0
+        rts
+0:
+        moveq   #0,d0
+        rts
+
+| int cart_save(void *src, int bytes);
+| copy the record from Word RAM to the cart with a 'WFMS' magic prefix, then
+| verify the magic reads back (which also detects a missing/write-protected
+| cart).
+| exit: d0 = 0 ok, -1 failed / no cart
+cart_save:
+        movea.l 4(sp),a1                /* src (Word RAM) */
+        move.l  8(sp),d1                /* bytes */
+        move.b  #1,0x7FFFFF             /* enable cart writes */
+        lea     0x600001,a0
+        move.b  #0x57,(a0)              /* 'W' */
+        move.b  #0x46,2(a0)             /* 'F' */
+        move.b  #0x4D,4(a0)             /* 'M' */
+        move.b  #0x53,6(a0)             /* 'S' */
+        lea     0x600009,a0             /* record data (magic offset 4) */
+        move.l  d1,d0
+        subq.l  #1,d0
+1:
+        move.b  (a1)+,(a0)              /* record byte -> odd cart byte */
+        addq.l  #2,a0
+        dbra    d0,1b
+        move.b  #0,0x7FFFFF             /* protect writes again */
+        bsr     cart_check_magic
+        tst.l   d0
+        beq.b   0f
+        moveq   #0,d0                   /* verified */
+        rts
+0:
+        moveq   #-1,d0
+        rts
+
+| int cart_load(void *dst, int bytes);
+| copy the record from the cart to Word RAM if the magic matches.
+| exit: d0 = 0 ok, -1 no cart / no valid record
+cart_load:
+        bsr     cart_check_magic
+        tst.l   d0
+        beq.b   cart_load_fail
+        movea.l 4(sp),a1                /* dst (Word RAM) */
+        move.l  8(sp),d1                /* bytes */
+        lea     0x600009,a0             /* record data */
+        move.l  d1,d0
+        subq.l  #1,d0
+1:
+        move.b  (a0),(a1)+              /* odd cart byte -> record byte */
+        addq.l  #2,a0
+        dbra    d0,1b
+        moveq   #0,d0
+        rts
+cart_load_fail:
+        moveq   #-1,d0
+        rts
+
+| int cart_exists(void);
+| exit: d0 = 1 if a cart holds a valid record, else 0
+cart_exists:
+        bra     cart_check_magic
 
         .align  4
 

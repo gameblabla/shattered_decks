@@ -5270,8 +5270,10 @@ typedef enum WaifuInteractiveState {
     WAIFU_I_STORY_MAP,
     WAIFU_I_STORY_PYRAMID,
     WAIFU_I_STORY_SAVE,
-#ifdef WAIFU_FM_PCFX
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
     WAIFU_I_STORY_SAVE_DEVICE,
+#endif
+#ifdef WAIFU_FM_PCFX
     WAIFU_I_STORY_LOAD_DEVICE_TO_MAP,
 #endif
     WAIFU_I_STORY_TO_PLAZA,
@@ -5285,9 +5287,11 @@ typedef enum WaifuInteractiveState {
     WAIFU_I_DECK_EDITOR_TO_BATTLE,
     WAIFU_I_BATTLE,
     WAIFU_I_LOADING_ASSETS,
-#ifdef WAIFU_FM_PCFX
-    /* PC-FX only: pick which backup device (internal / FX-BMP) to load from. */
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+    /* Pick which backup device (internal / external) to load from. */
     WAIFU_I_STORY_LOAD_DEVICE,
+#endif
+#ifdef WAIFU_FM_PCFX
     /* PC-FX only: visible backup-RAM load handoff before drawing the 3D map. */
     WAIFU_I_STORY_LOAD_TO_MAP,
 #endif
@@ -5362,9 +5366,11 @@ static WaifuInteractiveState g_i_state = WAIFU_I_TITLE;
 static WaifuInteractiveState g_i_loading_target = WAIFU_I_TITLE;
 static int g_i_frame = 0;
 static int g_i_menu_selected = 0;
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+static int g_i_load_device_sel = 0; /* 0 internal, 1 external, 2 back */
+static int g_i_save_device_sel = 0; /* 0 internal, 1 external, 2 back */
+#endif
 #ifdef WAIFU_FM_PCFX
-static int g_i_load_device_sel = 0; /* 0 internal, 1 FX-BMP, 2 back */
-static int g_i_save_device_sel = 0; /* 0 internal, 1 FX-BMP, 2 back */
 static int g_i_load_pending_device = 0;
 #endif
 static WaifuFmInput g_prev_input;
@@ -7287,9 +7293,20 @@ static int read_story_save(void)
 
 #else
 
+/* Per-device existence (device 0 = primary/internal, 1 = secondary/cartridge).
+   Single-device ports (host) only ever use device 0. */
+static int story_save_exists_device(int device)
+{
+    return waifu_platform_storage_exists_dev(device, STORY_SAVE_PATH);
+}
+
 static int story_save_exists(void)
 {
-    return waifu_platform_storage_exists(STORY_SAVE_PATH);
+#if defined(WAIFU_FM_CD32X)
+    return (story_save_exists_device(0) || story_save_exists_device(1)) ? 1 : 0;
+#else
+    return story_save_exists_device(0);
+#endif
 }
 
 /* Whitespace tokenizer over an in-memory save blob. Keeps the host save format
@@ -7335,7 +7352,7 @@ static int story_save_next_int(StorySaveScan *s, int *out)
     return 1;
 }
 
-static int write_story_save(void)
+static int write_story_save_device(int device)
 {
     char buf[4096];
     int len, i;
@@ -7369,10 +7386,10 @@ static int write_story_save(void)
     waifu_str_cat(buf, (int)sizeof(buf), "\n");
 
     len = (int)strlen(buf);
-    return waifu_platform_storage_write(STORY_SAVE_PATH, buf, len) == len;
+    return waifu_platform_storage_write_dev(device, STORY_SAVE_PATH, buf, len) == len;
 }
 
-static int read_story_save(void)
+static int read_story_save_device(int device)
 {
     char buf[4096];
     StorySaveScan sc;
@@ -7381,7 +7398,7 @@ static int read_story_save(void)
     int deck_count = 0, storage_count = 0;
     int n, i;
 
-    n = waifu_platform_storage_read(STORY_SAVE_PATH, buf, (int)sizeof(buf) - 1);
+    n = waifu_platform_storage_read_dev(device, STORY_SAVE_PATH, buf, (int)sizeof(buf) - 1);
     if (n < 0) return 0;
     if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
     buf[n] = '\0';
@@ -7434,6 +7451,24 @@ static int read_story_save(void)
     init_battle_state();
     return 1;
 }
+
+/* Non-picker save/load helpers.  On CD32X the sanctum SAVE and menu LOAD use the
+   per-device picker instead; these remain for single-device ports and for the
+   "load whichever device has a save" convenience. */
+static int write_story_save(void)
+{
+    return write_story_save_device(0);
+}
+
+static int read_story_save(void)
+{
+#if defined(WAIFU_FM_CD32X)
+    if (read_story_save_device(0)) return 1;
+    return read_story_save_device(1);
+#else
+    return read_story_save_device(0);
+#endif
+}
 #endif
 
 static int load_story_to_map(void)
@@ -7448,8 +7483,8 @@ static int load_story_to_map(void)
     return 1;
 }
 
-#ifdef WAIFU_FM_PCFX
-/* PC-FX: load from one specific backup device (ext: 0=internal, 1=FX-BMP). */
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+/* Load from one specific backup device (ext: 0=internal, 1=external cartridge). */
 static int load_story_device_to_map(int ext)
 {
     if (!read_story_save_device(ext)) {
@@ -7486,6 +7521,12 @@ static void begin_story_load(void)
         g_i_state = WAIFU_I_STORY_LOAD_DEVICE;
         g_i_frame = -1;
     }
+#elif defined(WAIFU_FM_CD32X)
+    /* Two devices (internal Backup RAM + RAM cartridge): let the player pick.
+       The picker itself only loads a device that actually holds a save. */
+    g_i_load_device_sel = 0;
+    g_i_state = WAIFU_I_STORY_LOAD_DEVICE;
+    g_i_frame = -1;
 #else
     if (!load_story_to_map()) g_deck_flash = 60;
 #endif
@@ -11339,15 +11380,28 @@ static void draw_story_save_screen(void)
     if (((g_i_frame / 16) & 1) == 0) draw_centered_text(143, "A/RUN/B BACK", IDX_WHITE, IDX_BLACK);
 }
 
-#ifdef WAIFU_FM_PCFX
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+/* External backup device label: FX-BMP on PC-FX, RAM cartridge on CD32X. */
+#if defined(WAIFU_FM_CD32X)
+#define WAIFU_EXTERNAL_DEVICE_LABEL "CARTRIDGE"
+#else
+#define WAIFU_EXTERNAL_DEVICE_LABEL "FX-BMP"
+#endif
+
+static void draw_story_device_picker(const char *title, int sel, int sanctum_bg)
+{
+    if (sanctum_bg) draw_story_sanctum_background();
+    else clear_screen(IDX_BLACK);
+    draw_blue_gradient_box(126, 54, 122, 132);
+    draw_text(161, 70, title, IDX_GOLD_HI, IDX_BLACK);
+    draw_text(151, 106, sel == 0 ? "> INTERNAL" : "  INTERNAL", sel == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 126, sel == 1 ? "> " WAIFU_EXTERNAL_DEVICE_LABEL : "  " WAIFU_EXTERNAL_DEVICE_LABEL, sel == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(151, 146, sel == 2 ? "> BACK" : "  BACK", sel == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+}
+
 static void draw_story_save_device_screen(void)
 {
-    draw_story_sanctum_background();
-    draw_blue_gradient_box(126, 54, 122, 132);
-    draw_text(161, 70, "SAVE TO", IDX_GOLD_HI, IDX_BLACK);
-    draw_text(151, 106, g_i_save_device_sel == 0 ? "> INTERNAL" : "  INTERNAL", g_i_save_device_sel == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(151, 126, g_i_save_device_sel == 1 ? "> FX-BMP" : "  FX-BMP", g_i_save_device_sel == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(151, 146, g_i_save_device_sel == 2 ? "> BACK" : "  BACK", g_i_save_device_sel == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_story_device_picker("SAVE TO", g_i_save_device_sel, 1);
 }
 #endif
 
@@ -11805,6 +11859,40 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 #endif
 
+#if defined(WAIFU_FM_CD32X)
+    case WAIFU_I_STORY_LOAD_DEVICE:
+    {
+        /* Software-drawn INTERNAL / CARTRIDGE / BACK picker over the sanctum
+           background (the CD32X menu is a full-redraw software screen). */
+        int internal_has = story_save_exists_device(0);
+        int external_has = story_save_exists_device(1);
+        if (press_up) g_i_load_device_sel = (g_i_load_device_sel + 2) % 3;
+        if (press_down) g_i_load_device_sel = (g_i_load_device_sel + 1) % 3;
+        draw_story_device_picker("LOAD FROM", g_i_load_device_sel, 0);
+        if (press_a || press_start) {
+            if (g_i_load_device_sel == 2) {
+                g_i_state = WAIFU_I_MENU;
+                g_i_frame = -1;
+            } else {
+                int ext = g_i_load_device_sel; /* 0 internal, 1 cartridge */
+                int has = ext ? external_has : internal_has;
+                if (has && !load_story_device_to_map(ext)) {
+                    g_story_save_status = -1;
+                    g_i_state = WAIFU_I_MENU;
+                    g_i_frame = -1;
+                }
+                /* No save on the chosen device: stay so the player can pick the
+                   other one or BACK. */
+            }
+        }
+        if (press_b) {
+            g_i_state = WAIFU_I_MENU;
+            g_i_frame = -1;
+        }
+        break;
+    }
+#endif
+
     case WAIFU_I_STORY_NAME:
         g_story_name_to_intro = 0;
         if (press_left) g_story_name_pos = (g_story_name_pos + STORY_NAME_LEN - 1) % STORY_NAME_LEN;
@@ -11912,7 +12000,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_story_pyramid_menu();
         if (press_a || press_start) {
             if (g_story_pyramid_cursor == 0) {
-#ifdef WAIFU_FM_PCFX
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
                 g_i_save_device_sel = 0;
                 g_i_state = WAIFU_I_STORY_SAVE_DEVICE;
                 g_i_frame = -1;
@@ -11947,7 +12035,7 @@ void waifu_fm_step(const WaifuFmInput *input)
         }
         break;
 
-#ifdef WAIFU_FM_PCFX
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
     case WAIFU_I_STORY_SAVE_DEVICE:
         if (press_up) g_i_save_device_sel = (g_i_save_device_sel + 2) % 3;
         if (press_down) g_i_save_device_sel = (g_i_save_device_sel + 1) % 3;

@@ -24,6 +24,7 @@
 #define CD32X_MD_CMD_SAVE_EXISTS 0xCD09u
 #define CD32X_CD_STATUS_ERROR   0xCDEEu
 #define CD32X_PRIV_BLOB_SAVE    0x0600
+#define CD32X_PRIV_BLOB_SAVE_CART 0x0601
 #define CD32X_SAVE_RECORD_WORDS (WAIFU_CD32X_SAVE_RECORD_BYTES / 2)
 #define CD32X_CARD_FACE_CHUNK_BYTES 32768u
 #define CD32X_CARD_FACE_CHUNK_COUNT 5u
@@ -280,7 +281,7 @@ static int cd32x_supervisor_request(uint16_t cmd, uint16_t arg0, uint16_t arg1, 
    cd32x_request_blob_raw, with the roles reversed: the supervisor raises
    COMM0=WANT_WORD, this side places a word in COMM2 and raises COMM0=XFER_WORD.
    Both CPUs are big-endian, so the record's byte order round-trips unchanged. */
-int waifu_cd32x_save_write_record(const void *rec)
+int waifu_cd32x_save_write_record(const void *rec, int device)
 {
     const uint16_t *src = (const uint16_t *)rec;
     uint32_t timeout;
@@ -289,6 +290,7 @@ int waifu_cd32x_save_write_record(const void *rec)
     if (!rec || (((uintptr_t)rec) & 1u)) return 0;
     if (!cd32x_wait_supervisor_idle()) return 0;
 
+    MARS_SYS_COMM2 = (uint16_t)(device ? 1 : 0);
     MARS_SYS_COMM6 = (uint16_t)CD32X_SAVE_RECORD_WORDS;
     MARS_SYS_COMM4 = CD32X_MD_CMD_SAVE_WRITE;
     MARS_SYS_COMM0 = CD32X_COMM_READY;
@@ -310,15 +312,16 @@ int waifu_cd32x_save_write_record(const void *rec)
     return MARS_SYS_COMM4 != CD32X_CD_STATUS_ERROR;
 }
 
-int waifu_cd32x_save_read_record(void *rec)
+int waifu_cd32x_save_read_record(void *rec, int device)
 {
+    int blob = device ? CD32X_PRIV_BLOB_SAVE_CART : CD32X_PRIV_BLOB_SAVE;
     if (!rec) return 0;
-    return cd32x_request_blob_raw(CD32X_PRIV_BLOB_SAVE, rec, WAIFU_CD32X_SAVE_RECORD_BYTES);
+    return cd32x_request_blob_raw(blob, rec, WAIFU_CD32X_SAVE_RECORD_BYTES);
 }
 
-int waifu_cd32x_save_exists(void)
+int waifu_cd32x_save_exists(int device)
 {
-    return cd32x_supervisor_request(CD32X_MD_CMD_SAVE_EXISTS, 0, 0, 1) ? 1 : 0;
+    return cd32x_supervisor_request(CD32X_MD_CMD_SAVE_EXISTS, (uint16_t)(device ? 1 : 0), 0, 1) ? 1 : 0;
 }
 
 int waifu_cd32x_cdda_play(uint8_t track, uint8_t loop)

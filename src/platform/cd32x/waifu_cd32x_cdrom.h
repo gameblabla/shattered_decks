@@ -22,9 +22,10 @@ int waifu_cd32x_cdda_stop(void);
    (length header + payload) is owned by the storage seam; these move an opaque
    WAIFU_CD32X_SAVE_RECORD_BYTES record to/from the Sub-CPU BRAM service. */
 #define WAIFU_CD32X_SAVE_RECORD_BYTES 1024
-int waifu_cd32x_save_write_record(const void *rec);
-int waifu_cd32x_save_read_record(void *rec);
-int waifu_cd32x_save_exists(void);
+/* device: 0 = internal Backup RAM, 1 = Backup RAM cartridge. */
+int waifu_cd32x_save_write_record(const void *rec, int device);
+int waifu_cd32x_save_read_record(void *rec, int device);
+int waifu_cd32x_save_exists(int device);
 
 #ifdef __cplusplus
 }
