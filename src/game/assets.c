@@ -1316,6 +1316,22 @@ int waifu_assets_prewarm_big_art_pair(int card_a, int card_b)
 #endif
 }
 
+int waifu_assets_prewarm_card_face(int card_id)
+{
+    if (card_id < 0 || card_id >= WAIFU_CARD_COUNT) return 0;
+#if defined(WAIFU_FM_CD32X)
+    /* Stream the face into the resident LRU cache.  Render-time face access on
+       CD32X is cache-only, so a card produced mid-battle (e.g. a fusion result)
+       must be warmed here before the board tries to draw it. */
+    if (!g_cards_loaded) return 0;
+    return waifu_assets_card_face(card_id) != NULL;
+#else
+    /* Every face is already resident on compiled/cart and non-CD32X CD builds. */
+    (void)card_id;
+    return 1;
+#endif
+}
+
 const uint8_t *waifu_assets_card_big_art_cached(int card_id)
 {
     if (card_id < 0 || card_id >= WAIFU_CARD_COUNT) return NULL;

@@ -148,6 +148,12 @@ const uint8_t *waifu_assets_card_big_art(int card_id);
  * reveal/cut-in into the resident cache.  Compiled/cart builds are already
  * resident and return success. */
 int waifu_assets_prewarm_big_art_pair(int card_a, int card_b);
+/* Synchronously stream a monster's small card face into the resident face cache.
+ * CD-ROM/CD32X builds keep only a small streamed face working set, so newly
+ * produced cards (e.g. fusion results) that were not part of the battle prewarm
+ * list must be warmed here before they are drawn on the board.  Compiled/cart
+ * builds keep every face resident and return success without a read. */
+int waifu_assets_prewarm_card_face(int card_id);
 /* Non-blocking large-art cache probes.  CD-ROM builds return NULL on a miss;
  * they never issue a CD/SCSI read.  Presenters use these to upload known-resident
  * card art directly to hardware without risking a frame-time stall. */

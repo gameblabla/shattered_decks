@@ -6068,6 +6068,13 @@ static int prepare_player_fusion_anim(int target_slot)
     g_b_fusion_anim_equip_only = (!performed_fusion && !failed_pair &&
                                   is_monster_card(current) && current_equip_count > 0);
     g_b_fusion_anim_result = g_b_fusion_anim_success ? current : CARD_NONE;
+    /* The fused result is a card that need not have been part of the battle
+       prewarm working set.  Warm its small face now (a discrete pre-animation
+       step, not a render frame) so the landing animation and the placed board
+       card draw the real thumbnail instead of the missing-art placeholder. */
+    if (is_monster_card(g_b_fusion_anim_final_card)) {
+        waifu_assets_prewarm_card_face(g_b_fusion_anim_final_card);
+    }
     return 1;
 }
 
