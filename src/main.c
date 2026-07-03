@@ -7779,6 +7779,16 @@ static int next_headless_lcg_draw_id(void)
 }
 #endif
 
+/* Every card drawn into a hand may be rendered in the hand or placed on the
+   field this turn.  Render-time face access is cache-only on CD32X, and cards
+   drawn deep from the 40-card deck are past the battle-entry prewarm window, so
+   warm the face here at the discrete draw event.  No-op on resident builds. */
+static int warm_drawn_card_face(int card)
+{
+    if (card >= 0) waifu_assets_prewarm_card_face(card);
+    return card;
+}
+
 static int next_draw_id(void)
 {
 #ifdef WAIFU_FM_HEADLESS_TESTS
@@ -7789,11 +7799,11 @@ static int next_draw_id(void)
 #endif
     int card = waifu_deck_draw(&g_i_player_deck);
     sync_battle_deck_counts();
-    if (card >= 0) return card;
+    if (card >= 0) return warm_drawn_card_face(card);
 #ifdef WAIFU_FM_HEADLESS_TESTS
     return hand_ids[0];
 #else
-    return (int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT);
+    return warm_drawn_card_face((int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT));
 #endif
 }
 
@@ -7807,11 +7817,11 @@ static int next_com_draw_id(void)
 #endif
     int card = waifu_deck_draw(&g_i_com_deck);
     sync_battle_deck_counts();
-    if (card >= 0) return card;
+    if (card >= 0) return warm_drawn_card_face(card);
 #ifdef WAIFU_FM_HEADLESS_TESTS
     return com_hand_ids[0];
 #else
-    return (int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT);
+    return warm_drawn_card_face((int)(waifu_deck_rng_next(&g_i_deck_rng) % (uint32_t)WAIFU_CARD_COUNT));
 #endif
 }
 
@@ -10160,6 +10170,12 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 g_b_place_slot = ai_action.field_slot;
                 g_b_place_card = g_i_com_hand[ai_action.hand_slot];
                 g_b_place_defense = ai_action.defense_position;
+                /* Render-time face access is cache-only on CD32X, and a COM
+                   monster drawn deep from its deck (e.g. Pumpkira) is not in the
+                   battle-entry prewarm working set.  Warm the face here on the
+                   discrete select->place transition, before IB_COM_PLACE draws
+                   the fly-in card; no-op on resident (non-CD32X) builds. */
+                waifu_assets_prewarm_card_face(g_b_place_card);
                 set_battle_phase(IB_COM_PLACE);
             } else {
                 clear_battle_snapshot();
