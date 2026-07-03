@@ -18,6 +18,14 @@ int waifu_cd32x_cdrom_async_poll(void);
 int waifu_cd32x_cdda_play(uint8_t track, uint8_t loop);
 int waifu_cd32x_cdda_stop(void);
 
+/* Internal Backup RAM save transport (fixed-size record).  The record framing
+   (length header + payload) is owned by the storage seam; these move an opaque
+   WAIFU_CD32X_SAVE_RECORD_BYTES record to/from the Sub-CPU BRAM service. */
+#define WAIFU_CD32X_SAVE_RECORD_BYTES 1024
+int waifu_cd32x_save_write_record(const void *rec);
+int waifu_cd32x_save_read_record(void *rec);
+int waifu_cd32x_save_exists(void);
+
 #ifdef __cplusplus
 }
 #endif

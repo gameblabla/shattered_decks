@@ -29,7 +29,10 @@ extern void cd32x_bios_cdda_stop(void);
 #define CD32X_MD_CMD_PCM_PLAY   0xCD05
 #define CD32X_MD_CMD_PCM_MUSIC  0xCD06
 #define CD32X_MD_CMD_PCM_MUSIC_STOP 0xCD07
+#define CD32X_MD_CMD_SAVE_WRITE  0xCD08
+#define CD32X_MD_CMD_SAVE_EXISTS 0xCD09
 #define CD32X_CD_STATUS_ERROR   0xCDEE
+#define CD32X_PRIV_BLOB_SAVE     0x0600
 
 #define WAIFU_ASSET_BLOB_TITLE_SCREEN            0
 #define WAIFU_ASSET_BLOB_ENDING_SCREEN           3
@@ -589,6 +592,188 @@ static void cd32x_music_stream_pump(void)
     }
 }
 
+/* -----------------------------------------------------------------------
+ * Save persistence: Sega CD internal Backup RAM via the _BURAM BIOS.
+ *
+ * On a Sega CD 32X the cartridge slot holds the 32X, so the internal 8 KiB
+ * Backup RAM is the only save device.  The _BURAM vector (0x5F16) is part of
+ * the Sub-CPU BIOS jump table (already used via SPNull at 0x5F3A during init).
+ * A single fixed-size record "WAIFUFM" holds the story save blob; the common
+ * game code owns its format (a 2-byte length header + payload), so here it is
+ * an opaque CD32X_SAVE_RECORD_BYTES byte record.  Save data crosses from the
+ * SH-2 to Word RAM through the mirror-of-cpy_to_32x MD routine (CPY_FROM_32X).
+ * ----------------------------------------------------------------------- */
+#define CD32X_BRM_INIT           0
+#define CD32X_BRM_SERCH          2
+#define CD32X_BRM_READ           3
+#define CD32X_BRM_WRITE          4
+#define CD32X_BRM_FORMAT         6
+#define CD32X_SAVE_RECORD_BYTES  1024
+#define CD32X_SAVE_RECORD_WORDS  (CD32X_SAVE_RECORD_BYTES / 2)
+/* Normal-mode Backup RAM blocks are 0x40 bytes each. */
+#define CD32X_SAVE_RECORD_BLOCKS (CD32X_SAVE_RECORD_BYTES / 0x40)
+
+static unsigned char g_bram_work[0x640];
+static unsigned char g_bram_str[12];
+static unsigned char g_bram_buf[CD32X_SAVE_RECORD_BYTES];
+static unsigned char g_bram_wparams[14];
+/* 11-char Backup RAM filename + terminator. */
+static const char g_bram_save_name[12] = { 'W','A','I','F','U','F','M','_','_','_','_', 0 };
+
+/* BRMINIT: 1 = Sega-formatted RAM present, 0 = absent/unformatted (carry set). */
+static int buram_init(void)
+{
+    register unsigned int d0 asm("d0") = CD32X_BRM_INIT;
+    register void *a0 asm("a0") = g_bram_work;
+    register void *a1 asm("a1") = g_bram_str;
+    int ok;
+    asm volatile(
+        "jsr    0x5F16\n\t"
+        "moveq  #1,%0\n\t"
+        "bcc    1f\n\t"
+        "moveq  #0,%0\n\t"
+        "1:\n\t"
+        : "=d"(ok), "+d"(d0), "+a"(a0), "+a"(a1)
+        :
+        : "d1", "cc", "memory");
+    return ok;
+}
+
+/* BRMFORMAT: 1 = ok.  BRMINIT must have been called first. */
+static int buram_format(void)
+{
+    register unsigned int d0 asm("d0") = CD32X_BRM_FORMAT;
+    int ok;
+    asm volatile(
+        "jsr    0x5F16\n\t"
+        "moveq  #1,%0\n\t"
+        "bcc    1f\n\t"
+        "moveq  #0,%0\n\t"
+        "1:\n\t"
+        : "=d"(ok), "+d"(d0)
+        :
+        : "d1", "a0", "a1", "cc", "memory");
+    return ok;
+}
+
+/* BRMSERCH: 1 = the save file exists. */
+static int buram_exists(void)
+{
+    register unsigned int d0 asm("d0") = CD32X_BRM_SERCH;
+    register const void *a0 asm("a0") = g_bram_save_name;
+    int found;
+    asm volatile(
+        "jsr    0x5F16\n\t"
+        "moveq  #1,%0\n\t"
+        "bcc    1f\n\t"
+        "moveq  #0,%0\n\t"
+        "1:\n\t"
+        : "=d"(found), "+d"(d0), "+a"(a0)
+        :
+        : "d1", "a1", "cc", "memory");
+    return found;
+}
+
+/* BRMREAD the save record into g_bram_buf: 1 = ok. */
+static int buram_read(void)
+{
+    register unsigned int d0 asm("d0") = CD32X_BRM_READ;
+    register const void *a0 asm("a0") = g_bram_save_name;
+    register void *a1 asm("a1") = g_bram_buf;
+    int ok;
+    asm volatile(
+        "jsr    0x5F16\n\t"
+        "moveq  #1,%0\n\t"
+        "bcc    1f\n\t"
+        "moveq  #0,%0\n\t"
+        "1:\n\t"
+        : "=d"(ok), "+d"(d0), "+a"(a0), "+a"(a1)
+        :
+        : "d1", "cc", "memory");
+    return ok;
+}
+
+/* BRMWRITE g_bram_buf to the save record: 1 = ok. */
+static int buram_write(void)
+{
+    register unsigned int d0 asm("d0") = CD32X_BRM_WRITE;
+    register const void *a0 asm("a0") = g_bram_wparams;
+    register const void *a1 asm("a1") = g_bram_buf;
+    register unsigned int d1 asm("d1") = 0;
+    int ok;
+    asm volatile(
+        "jsr    0x5F16\n\t"
+        "moveq  #1,%0\n\t"
+        "bcc    1f\n\t"
+        "moveq  #0,%0\n\t"
+        "1:\n\t"
+        : "=d"(ok), "+d"(d0), "+d"(d1), "+a"(a0), "+a"(a1)
+        :
+        : "cc", "memory");
+    return ok;
+}
+
+static void buram_prepare_wparams(void)
+{
+    int i;
+    for (i = 0; i < 11; ++i) g_bram_wparams[i] = (unsigned char)g_bram_save_name[i];
+    g_bram_wparams[11] = 0;  /* normal mode */
+    g_bram_wparams[12] = (unsigned char)((CD32X_SAVE_RECORD_BLOCKS >> 8) & 0xFF);
+    g_bram_wparams[13] = (unsigned char)(CD32X_SAVE_RECORD_BLOCKS & 0xFF);
+}
+
+/* SAVE_EXISTS: BRMINIT then BRMSERCH.  Reports found via COMM4/rc. */
+static void cd32x_service_save_exists(void)
+{
+    int found;
+    cd32x_invalidate_face_atlas();
+    buram_init();
+    found = buram_exists();
+    cd32x_finish_md_request(found ? 0 : -1);
+}
+
+/* SAVE_WRITE: receive the fixed record from the SH-2 into Word RAM, then
+   BRMWRITE it.  Formats the Backup RAM first if it is unformatted. */
+static void cd32x_service_save_write(char *word_ram)
+{
+    int words;
+    int rc;
+
+    cd32x_invalidate_face_atlas();
+    words = do_md_cmd2(MD_CMD_GET_COMM32X, 6, 2);
+    if (words != CD32X_SAVE_RECORD_WORDS) {
+        cd32x_finish_md_request(-1);
+        return;
+    }
+    switch_banks();  /* hand Word RAM to the Main CPU for the SH-2 transfer */
+    do_md_cmd2(MD_CMD_CPY_FROM_32X, 0x200000, words);
+    switch_banks();  /* take Word RAM back to read it */
+    memcpy(g_bram_buf, word_ram, CD32X_SAVE_RECORD_BYTES);
+
+    if (!buram_init()) buram_format();
+    buram_prepare_wparams();
+    rc = buram_write() ? 0 : -1;
+    cd32x_finish_md_request(rc);
+}
+
+/* SAVE_READ (served through the READ_BLOB path): BRMREAD into Word RAM then
+   stream to the SH-2 like any other blob. */
+static void cd32x_service_save_read(int words, char *word_ram)
+{
+    cd32x_invalidate_face_atlas();
+    if (words != CD32X_SAVE_RECORD_WORDS) {
+        cd32x_fail_cd_request(-1);
+        return;
+    }
+    buram_init();
+    if (!buram_exists() || !buram_read()) {
+        cd32x_fail_cd_request(-1);
+        return;
+    }
+    memcpy(word_ram, g_bram_buf, CD32X_SAVE_RECORD_BYTES);
+    cd32x_transfer_word_ram_to_32x(words);
+}
+
 static void cd32x_service_cd_request(void)
 {
     const Cd32xBlobInfo *info;
@@ -626,10 +811,22 @@ static void cd32x_service_cd_request(void)
         cd32x_finish_md_request(cd32x_pcm_sfx_play(effect));
         return;
     }
+    if (cmd == CD32X_MD_CMD_SAVE_EXISTS) {
+        cd32x_service_save_exists();
+        return;
+    }
+    if (cmd == CD32X_MD_CMD_SAVE_WRITE) {
+        cd32x_service_save_write(word_ram);
+        return;
+    }
     if (cmd != CD32X_CD_CMD_READ_BLOB) return;
 
     words = do_md_cmd2(MD_CMD_GET_COMM32X, 2, 2);
     blob = do_md_cmd2(MD_CMD_GET_COMM32X, 6, 2);
+    if (blob == CD32X_PRIV_BLOB_SAVE) {
+        cd32x_service_save_read(words, word_ram);
+        return;
+    }
     if (blob >= CD32X_PRIV_BLOB_CARD_SINGLE_0 &&
         blob < CD32X_PRIV_BLOB_CARD_SINGLE_0 + CD32X_CARD_SINGLE_COUNT) {
         cd32x_service_card_face_request(blob - CD32X_PRIV_BLOB_CARD_SINGLE_0, words, word_ram);

@@ -98,6 +98,7 @@ enum {
     MD_CMD_SET_COMM32X,
     MD_CMD_DMA_TO_32X,
     MD_CMD_CPY_TO_32X,
+    MD_CMD_CPY_FROM_32X,
     MD_CMD_END
 };
 

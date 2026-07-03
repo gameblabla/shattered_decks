@@ -81,7 +81,8 @@
         .equ    MD_CMD_SET_COMM32X, 20
         .equ    MD_CMD_DMA_TO_32X, 21
         .equ    MD_CMD_CPY_TO_32X, 22
-        .equ    MD_CMD_END, 23
+        .equ    MD_CMD_CPY_FROM_32X, 23
+        .equ    MD_CMD_END, 24
 
 
         .text
@@ -455,6 +456,7 @@ cmd_table:
         .word   set_comm32x - cmd_table
         .word   dma_to_32x - cmd_table
         .word   cpy_to_32x - cmd_table
+        .word   cpy_from_32x - cmd_table
 
 | void md_init_hw(void);
 | initialize MD hardware
@@ -1336,6 +1338,35 @@ cpy_to_32x:
 3:
         cmpi.w  #0,0xA15120
         bne.b   3b
+
+        moveq   #0,d0
+        rts
+
+| int cpy_from_32x(short *dst, int len);
+| receive data from the 32X (SH-2) through COMM registers into Word RAM
+| entry: arg1 = destination pointer (Word RAM, Main-CPU view), arg2 = length (words)
+| exit:  d0 = 0 (okay) or -1 (error)
+| Mirror of cpy_to_32x.  Handshake per word: this side raises COMM0=2 to request
+| a word, waits for the SH-2 to place the word in COMM2 and raise COMM0=3, then
+| reads it.  On the last word COMM0 is left at 3; the Sub-CPU supervisor clears
+| COMM0 after it finishes the Backup-RAM write, so the SH-2 never sees completion
+| early.
+cpy_from_32x:
+        tst.b   d7
+        bne.b   0f
+        moveq   #-1,d0                  /* 32X not initialized */
+        rts
+0:
+        movea.l 4(sp),a0                /* destination pointer */
+        move.l  8(sp),d0                /* length */
+        subq.l  #1,d0                   /* for dbra */
+1:
+        move.w  #2,0xA15120             /* request next word */
+2:
+        cmpi.w  #3,0xA15120             /* wait for SH2 to provide word */
+        bne.b   2b
+        move.w  0xA15122,(a0)+          /* store word from COMM2 */
+        dbra    d0,1b
 
         moveq   #0,d0
         rts
