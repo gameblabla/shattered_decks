@@ -214,8 +214,8 @@ $(CDROOT): $(M68K_BIN) $(CD_ASSETS) src/generated/cd32x_music_pcm.h
 	cp $(M68K_BIN) $(CDROOT)/APP.BIN
 	cp assets/generated/cd32x_title_screen_img.bin $(CDROOT)/ASSETS/TITLE_SCREEN_IMG.BIN
 	cp assets/generated/cd32x_ending_screen_img.bin $(CDROOT)/ASSETS/ENDING_SCREEN_IMG.BIN
-	cp assets/generated/story_portraits.bin $(CDROOT)/ASSETS/STORY_PORTRAITS.BIN
-	cp assets/generated/story_portrait_mask.bin $(CDROOT)/ASSETS/STORY_PORTRAIT_MASK.BIN
+	python3 tools/cd32x_assets/split_story_portraits.py assets/generated/story_portraits.bin $(CDROOT)/ASSETS SPX
+	python3 tools/cd32x_assets/split_story_portraits.py assets/generated/story_portrait_mask.bin $(CDROOT)/ASSETS SPM
 	cp assets/generated/card_faces.bin $(CDROOT)/ASSETS/CARD_FACES.BIN
 	python3 tools/cd32x_assets/split_card_faces.py assets/generated/card_faces.bin $(CDROOT)/ASSETS
 	cp assets/generated/card_big_art.bin $(CDROOT)/ASSETS/CARD_BIG_ART.BIN

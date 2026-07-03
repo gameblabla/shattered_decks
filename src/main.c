@@ -1810,6 +1810,9 @@ static void draw_panel_rect(int x, int y, int w, int h, uint8_t fill)
 
 static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, int sh, int x, int y)
 {
+    /* A NULL mask selects index-0 color-key transparency: the platform baked the
+       alpha mask into the pixels (transparent -> 0) at load time to keep only one
+       resident plane per portrait.  Otherwise use the explicit alpha mask. */
     for (int yy = 0; yy < sh; ++yy) {
         int dy = y + yy;
         if ((unsigned)dy >= WAIFU_FM_HEIGHT) continue;
@@ -1817,7 +1820,8 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
             int dx = x + xx;
             if ((unsigned)dx >= WAIFU_FM_WIDTH) continue;
             int idx = yy * sw + xx;
-            if (mask[idx]) put_px(dx, dy, pix[idx]);
+            uint8_t p = pix[idx];
+            if (mask ? mask[idx] : (p != 0)) put_px(dx, dy, p);
         }
     }
 }
@@ -1827,7 +1831,7 @@ static void draw_story_portrait(int portrait_id, int x, int y)
     if (portrait_id < 0 || portrait_id >= WAIFU_STORY_PORTRAIT_COUNT) return;
     const uint8_t *pix = waifu_assets_story_portrait_pixels(portrait_id);
     const uint8_t *mask = waifu_assets_story_portrait_mask(portrait_id);
-    if (!pix || !mask) return;
+    if (!pix) return;
     draw_masked_bitmap(pix, mask, WAIFU_STORY_PORTRAIT_W, WAIFU_STORY_PORTRAIT_H, x, y);
 }
 
@@ -10284,6 +10288,14 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_interactive_tally();
         if (press_start || press_a) {
             if (g_story_battle_active && g_b_result >= 0) {
+                /* The rolled reward card was not part of the battle big-art
+                   working set, so its 112x112 art must be streamed into the
+                   resident cache before the reveal draws it (cache-only on
+                   CD32X; resident no-op elsewhere).  Support rewards reuse the
+                   already-resident shared support big art. */
+                if (is_monster_card(g_b_reward_card)) {
+                    (void)waifu_assets_prewarm_big_art_pair(g_b_reward_card, CARD_NONE);
+                }
                 set_battle_phase(IB_REWARD);   /* show the earned card first */
             } else if (g_story_battle_active) {
                 story_return_to_map_after_duel(); /* loss: no reward */
@@ -10316,7 +10328,7 @@ void waifu_fm_init(void)
     invalidate_board_bg_cache();
     invalidate_battle_composite_cache();
     waifu_assets_init();
-#ifdef CD32X_DEBUG_AUTOBATTLE
+#if defined(CD32X_DEBUG_AUTOBATTLE)
     /* Temporary CD32X iteration shortcut: boot straight to the deck editor
        through the normal card loading screen. */
     enter_debug_deck_editor_after_assets();

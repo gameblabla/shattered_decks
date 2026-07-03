@@ -158,11 +158,26 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
 #else
 #define PORTRAIT_PLANE_BYTES PORTRAIT_ONE_BYTES
 #endif
-#define PORTRAIT_SLOT_BYTES (PORTRAIT_PLANE_BYTES * 2u)
+#if defined(WAIFU_FM_CD32X)
+/* CD32X keeps only the pixel plane resident and color-keys index 0.  The alpha
+   mask is baked into the pixels (transparent -> 0) at load time using a single
+   shared scratch plane, so two 124x200 portraits fit the SDRAM asset arena
+   without spilling past __bss_end into the SH-2 master/slave stacks (two
+   pixel+mask slots were ~106 KiB and overran the stacks, crashing the plaza). */
+#define PORTRAIT_RESIDENT_PLANES 1u
+#else
+#define PORTRAIT_RESIDENT_PLANES 2u
+#endif
+#define PORTRAIT_SLOT_BYTES (PORTRAIT_PLANE_BYTES * PORTRAIT_RESIDENT_PLANES)
 #define PORTRAIT_SLOT_COUNT 2
 
 #if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+#if defined(WAIFU_FM_CD32X)
+/* One extra plane past the resident slots is the transient mask-bake scratch. */
+#define STORY_TWO_PORTRAIT_BYTES ((size_t)PORTRAIT_SLOT_COUNT * PORTRAIT_SLOT_BYTES + PORTRAIT_PLANE_BYTES)
+#else
 #define STORY_TWO_PORTRAIT_BYTES ((size_t)PORTRAIT_SLOT_COUNT * PORTRAIT_SLOT_BYTES)
+#endif
 #define CARD_BIG_CACHE_BYTES ((size_t)WAIFU_ASSET_BIG_CACHE_SLOTS * CARD_BIG_CACHE_SLOT_BYTES + CARD_BIG_CACHE_SLOT_BYTES)
 #define ASSET_STAGE_A_BYTES ((CARDS_TOTAL_BYTES > STORY_TWO_PORTRAIT_BYTES) ? CARDS_TOTAL_BYTES : STORY_TWO_PORTRAIT_BYTES)
 #if defined(WAIFU_FM_PCFX)
@@ -245,7 +260,14 @@ static int find_big_cache_slot(int card_id);
 static int big_cache_loaded_count(void);
 static void prewarm_list_add_all_monster_big_art(void);
 static uint8_t *stage_portrait_pixels_ptr(int slot) { return g_asset_stage_ram + ((size_t)slot * PORTRAIT_SLOT_BYTES); }
+#if defined(WAIFU_FM_CD32X)
+/* Shared transient scratch just past the two resident pixel slots; the mask is
+   read here, baked into the slot pixels as index-0 transparency, then discarded.
+   No per-slot resident mask exists on CD32X. */
+static uint8_t *stage_portrait_mask_scratch_ptr(void) { return g_asset_stage_ram + ((size_t)PORTRAIT_SLOT_COUNT * PORTRAIT_SLOT_BYTES); }
+#else
 static uint8_t *stage_portrait_mask_ptr(int slot) { return stage_portrait_pixels_ptr(slot) + PORTRAIT_PLANE_BYTES; }
+#endif
 #endif
 
 static void note_high_water(size_t used)
@@ -776,7 +798,23 @@ static int load_requested_portrait_slot(int slot)
     if (portrait_id >= WAIFU_STORY_PORTRAIT_COUNT) return 0;
     off = (size_t)portrait_id * PORTRAIT_PLANE_BYTES;
     if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAITS, stage_portrait_pixels_ptr(slot), off, PORTRAIT_PLANE_BYTES)) return 0;
+#if defined(WAIFU_FM_CD32X)
+    {
+        /* Bake the alpha mask into the pixels as index-0 transparency, then drop
+           it: transparent texels become 0, and any opaque texel that happens to
+           be 0 is bumped to 1 so it is not color-keyed away.  Keeps a single
+           resident plane per portrait (see PORTRAIT_RESIDENT_PLANES). */
+        uint8_t *pix = stage_portrait_pixels_ptr(slot);
+        uint8_t *mask = stage_portrait_mask_scratch_ptr();
+        size_t i;
+        if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK, mask, off, PORTRAIT_PLANE_BYTES)) return 0;
+        for (i = 0; i < PORTRAIT_ONE_BYTES; ++i) {
+            pix[i] = mask[i] ? (pix[i] ? pix[i] : 1u) : 0u;
+        }
+    }
+#else
     if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK, stage_portrait_mask_ptr(slot), off, PORTRAIT_PLANE_BYTES)) return 0;
+#endif
     g_story_portrait_slot_id[slot] = portrait_id;
     add_ram_used(PORTRAIT_SLOT_BYTES);
     return 1;
@@ -1113,7 +1151,12 @@ const uint8_t *waifu_assets_story_portrait_pixels(int portrait_id)
 const uint8_t *waifu_assets_story_portrait_mask(int portrait_id)
 {
     if (portrait_id < 0 || portrait_id >= WAIFU_STORY_PORTRAIT_COUNT) return NULL;
-#if WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
+#if defined(WAIFU_FM_CD32X)
+    /* No resident mask: the alpha was baked into the pixels as index-0
+       transparency at load, so the draw path color-keys index 0. */
+    (void)portrait_id;
+    return NULL;
+#elif WAIFU_ASSET_ACTIVE_BACKEND == WAIFU_ASSET_KIND_CDROM
     for (int i = 0; i < PORTRAIT_SLOT_COUNT; ++i) {
         if (g_story_portrait_slot_id[i] == portrait_id) return stage_portrait_mask_ptr(i);
     }

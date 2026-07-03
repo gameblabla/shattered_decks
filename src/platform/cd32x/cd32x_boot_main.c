@@ -63,6 +63,12 @@ extern void cd32x_bios_cdda_stop(void);
 #define CD32X_STORY_PORTRAIT_COUNT                 WAIFU_STORY_PORTRAIT_COUNT
 #define CD32X_STORY_PORTRAIT_CD_STRIDE             WAIFU_STORY_PORTRAIT_CD_STRIDE
 #define CD32X_STORY_PORTRAIT_WORDS                 (CD32X_STORY_PORTRAIT_CD_STRIDE / 2)
+/* A whole portrait plane (COUNT * ~26 KiB = ~156 KiB) does not fit in the
+   128 KiB 1M-mode Word RAM bank load_file targets, so the plane is split into
+   small chunk files (SPX%02d.BIN pixels / SPM%02d.BIN mask) that each hold a
+   few records.  Must match PORTRAITS_PER_CHUNK in
+   tools/cd32x_assets/split_story_portraits.py. */
+#define CD32X_STORY_PORTRAIT_CHUNK                 2
 
 typedef struct Cd32xBlobInfo {
     int blob;
@@ -427,7 +433,9 @@ static void cd32x_service_card_big_request(int card_id, int words, char *word_ra
 
 static void cd32x_service_portrait_request(int portrait_id, int words, int mask, char *word_ram)
 {
-    const char *filename = mask ? "STORY_PORTRAIT_MASK.BIN" : "STORY_PORTRAITS.BIN";
+    char filename[] = "SPX00.BIN";
+    int chunk_id;
+    int chunk_portrait;
     int byte_offset;
     int rc;
 
@@ -437,25 +445,40 @@ static void cd32x_service_portrait_request(int portrait_id, int words, int mask,
     }
     cd32x_invalidate_face_atlas();
 
-    /* Portrait planes are only ~156 KiB each, so load the whole plane through
-       the proven BIOS path and slide the requested record to the transfer
-       window.  Raw read_cd slices can hang if story-map CD-DA is still active. */
+    /* Load only the small chunk file holding this portrait (a few 26 KiB
+       records) so the BIOS read fits the 128 KiB Word RAM bank, then slide the
+       requested record to the transfer window.  Loading the whole ~156 KiB
+       plane overran the bank and hung/crashed the first-opponent plaza load. */
+    chunk_id = portrait_id / CD32X_STORY_PORTRAIT_CHUNK;
+    chunk_portrait = portrait_id % CD32X_STORY_PORTRAIT_CHUNK;
+    byte_offset = chunk_portrait * CD32X_STORY_PORTRAIT_CD_STRIDE;
+    filename[2] = mask ? 'M' : 'X';
+    filename[3] = (char)('0' + (chunk_id / 10) % 10);
+    filename[4] = (char)('0' + chunk_id % 10);
     if (cd32x_set_asset_cwd() < 0) {
         cd32x_fail_cd_request(-1);
         return;
     }
     cd32x_before_cd_read();
-    rc = load_file((char *)filename, word_ram);
+    rc = load_file(filename, word_ram);
     if (rc < 0) {
         cd32x_fail_cd_request(rc);
         return;
     }
-    byte_offset = portrait_id * CD32X_STORY_PORTRAIT_CD_STRIDE;
     if (byte_offset < 0 || byte_offset + CD32X_STORY_PORTRAIT_CD_STRIDE > rc) {
         cd32x_fail_cd_request(-1);
         return;
     }
-    memcpy(word_ram, word_ram + byte_offset, CD32X_STORY_PORTRAIT_CD_STRIDE);
+    /* Slide the requested record to the transfer window with a byte loop, not
+       memcpy: this is a Word RAM -> Word RAM copy and, as in the big-art path,
+       the BIOS memcpy's wide/backward moves are unreliable on the shared Word
+       RAM bank -- using memcpy here crashed the second-portrait plaza load. */
+    if (byte_offset > 0) {
+        int i;
+        for (i = 0; i < CD32X_STORY_PORTRAIT_CD_STRIDE; ++i) {
+            word_ram[i] = word_ram[byte_offset + i];
+        }
+    }
     cd32x_transfer_word_ram_to_32x(words);
 }
 
