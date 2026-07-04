@@ -453,6 +453,15 @@ static void evict_cards(void)
        the transient SDRAM arena.  Any working-set switch can overwrite big art,
        so cached-only draw probes must not keep stale card IDs. */
     clear_big_art_cache_metadata();
+    /* The small-face LRU pixels sit at the arena base, exactly where the
+       title/portrait/ending working sets are staged, so its metadata must be
+       invalidated here as well.  Battle entry builds its face prewarm list by
+       skipping cards cd32x_find_card_face_slot() reports as resident; a stale
+       hit here drops the card from the list right before the CARDS load path
+       resets the cache, and render-time face access is cache-only, so that
+       card's board thumbnail would stay a vector placeholder for the whole
+       duel. */
+    cd32x_card_face_cache_reset();
 #else
     /* Deliberately do not evict g_big_cache_card_id[] or support big art here.
        Those live after CARD_BIG_STAGE_OFFSET, outside the title/portrait/card
