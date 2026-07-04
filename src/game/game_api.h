@@ -57,6 +57,11 @@ typedef struct WaifuFmDirtyRect {
 void waifu_fm_init(void);
 void waifu_fm_reset_interactive(void);
 void waifu_fm_step(const WaifuFmInput *input);
+/* Report how many hardware vblanks the previous frame actually took (>=1).
+   Battle phase animations advance by this step so they stay tied to the
+   hardware timer when rendering runs slower than 60 Hz.  Platforms that
+   never call this keep the default 1 step per waifu_fm_step(). */
+void waifu_fm_set_frame_vblanks(int vblanks);
 void waifu_fm_render_scripted_frame(int frame);
 uint8_t *waifu_fm_framebuffer(void);
 uint32_t waifu_fm_frame_dirty_serial(void);

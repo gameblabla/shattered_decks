@@ -24,6 +24,11 @@ int main(void)
         WaifuFmMusicTrack music;
 
         waifu_cd32x_input_poll(input, &in);
+        /* Tie battle animation pacing to the hardware vblank counter: report
+           how many vblanks the previous frame really took so equip/fusion
+           animations advance in wall-clock time even when a frame renders
+           slower than 60 Hz. */
+        waifu_fm_set_frame_vblanks(waifu_cd32x_video_last_frame_vblanks(video));
         waifu_fm_step(&in);
 
 #if defined(CD32X_DEBUG_AUTOBATTLE) || defined(WAIFU_CD32X_DEBUG_FPS)

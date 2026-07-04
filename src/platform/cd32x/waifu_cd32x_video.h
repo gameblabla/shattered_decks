@@ -24,6 +24,9 @@ void waifu_cd32x_video_fill_rows_index(int y0, int y1, uint8_t c);
 void waifu_cd32x_video_draw_debug_overlay(WaifuCd32xVideo *video);
 void waifu_cd32x_video_present_8bpp(WaifuCd32xVideo *video, const uint8_t *framebuffer, const uint8_t *rgb, WaifuFmPaletteId palette_id, int fade_q8);
 void waifu_cd32x_video_wait_vblank(WaifuCd32xVideo *video);
+/* Hardware vblanks the previous presented frame took (>=1); feeds the game
+   core's hardware-timer animation pacing. */
+int waifu_cd32x_video_last_frame_vblanks(const WaifuCd32xVideo *video);
 volatile uint8_t *waifu_cd32x_video_title_upload_buffer(void);
 void waifu_cd32x_video_commit_title_upload(void);
 

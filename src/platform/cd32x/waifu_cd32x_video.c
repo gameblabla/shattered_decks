@@ -39,17 +39,16 @@ struct WaifuCd32xVideo {
     WaifuFmPaletteId current_palette_id;
     int current_fade_q8;
     int current_md_fade_q8;
-#if defined(CD32X_DEBUG_AUTOBATTLE) || defined(WAIFU_CD32X_DEBUG_FPS)
-    /* Frame-pacing probe consumed only by the debug overlay.  Keep it cheap
-       (a single last-frame vblank delta) so the overlay's bookkeeping adds
-       almost nothing to the SH2 image; a value of 1 == 60 fps, 2 == 30 fps,
-       which is all that is needed when comparing renderer changes.  The
-       previous 32-entry ring-buffer average was ~100 bytes of debug-only code
-       that pushed the autobattle debug build past the 128 KiB BlastEm SH2
-       staging limit and broke boot. */
+    /* Frame-pacing probe: a single last-frame vblank delta (1 == 60 fps,
+       2 == 30 fps).  Originally debug-overlay-only; now always compiled
+       because the game core consumes it via waifu_fm_set_frame_vblanks() to
+       advance battle animations by real hardware time.  Still just ~8 bytes
+       of state and a COMM12 read per flip.  The previous 32-entry ring-buffer
+       average was ~100 bytes of debug-only code that pushed the autobattle
+       debug build past the 128 KiB BlastEm SH2 staging limit and broke
+       boot. */
     uint32_t last_flip_vblank;
     uint8_t last_frame_vblanks;
-#endif
 };
 
 static WaifuCd32xVideo g_video;
@@ -129,7 +128,6 @@ static uint32_t cd32x_vblank_count(void)
     return (uint32_t)MARS_SYS_COMM12;
 }
 
-#if defined(CD32X_DEBUG_AUTOBATTLE) || defined(WAIFU_CD32X_DEBUG_FPS)
 static void cd32x_record_frame_pacing(WaifuCd32xVideo *video)
 {
     uint32_t now;
@@ -142,9 +140,12 @@ static void cd32x_record_frame_pacing(WaifuCd32xVideo *video)
     video->last_flip_vblank = now;
     video->last_frame_vblanks = (uint8_t)delta;
 }
-#else
-static void cd32x_record_frame_pacing(WaifuCd32xVideo *video) { (void)video; }
-#endif
+
+int waifu_cd32x_video_last_frame_vblanks(const WaifuCd32xVideo *video)
+{
+    if (!video || video->last_frame_vblanks == 0u) return 1;
+    return (int)video->last_frame_vblanks;
+}
 
 static uint16_t cd32x_rgb_to_cram(uint8_t r, uint8_t g, uint8_t b, int fade_q8)
 {

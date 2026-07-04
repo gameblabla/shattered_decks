@@ -99,7 +99,7 @@
 #define WAIFU_RESULT_TOTAL_FRAMES (WAIFU_RESULT_ANIM_START_FRAMES + WAIFU_PCFX_HANDTOP_FRAMES + 96)
 #define WAIFU_PCFX_DRAW_FRAMES 18
 #define WAIFU_HAND_INTRO_FRAMES 18
-#define WAIFU_EQUIP_ANIM_FRAMES 36
+#define WAIFU_EQUIP_ANIM_FRAMES 22
 #define WAIFU_FUSION_ANIM_FRAMES 74
 #define WAIFU_BATTLE_PRELUDE_FRAMES 8
 #define WAIFU_BATTLE_SLIDE_FRAMES 8
@@ -5578,6 +5578,12 @@ static WaifuFmInput g_prev_input;
 static WaifuBattlePhase g_b_phase = IB_OPENING;
 static int g_b_frame = 0;
 static int g_b_phase_frame = 0;
+/* Battle animation pacing step in hardware vblanks.  Platforms that render
+   slower than 60 Hz (CD32X) report the real vblank delta of the previous
+   frame through waifu_fm_set_frame_vblanks(), so phase animations (equip,
+   fusion, battle clash) advance in wall-clock time instead of stretching
+   with the render rate.  Everywhere else this stays 1. */
+static int g_b_anim_step = 1;
 static int g_b_selected_hand = 0;
 static int g_b_selected_player_slot = 0;
 static int g_b_selected_com_slot = 0;
@@ -8285,7 +8291,13 @@ static void play_player_hand_intro_draw_sfx(void)
     int i;
     if (!g_b_player_hand_intro_pending) return;
     for (i = 0; i < I_HAND; ++i) {
-        if (!g_i_player_used[i] && g_b_phase_frame == 1 + i * 5) {
+        /* Crossing test instead of exact equality: with hardware-vblank
+           stepping (g_b_anim_step > 1) the phase frame can jump past the
+           cue frame, so fire when the step window crosses it. */
+        int cue = 1 + i * 5;
+        if (!g_i_player_used[i] &&
+            g_b_phase_frame >= cue &&
+            g_b_phase_frame - g_b_anim_step < cue) {
             waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
         }
     }
@@ -10625,8 +10637,23 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
     }
 
-    g_b_frame++;
-    g_b_phase_frame++;
+    /* Advance battle animation time by real elapsed hardware vblanks (1 on
+       platforms that never call waifu_fm_set_frame_vblanks).  This keeps the
+       equip/fusion/clash animations tied to the hardware timer instead of the
+       render rate: a 2-vblank render frame consumes 2 animation frames. */
+    g_b_frame += g_b_anim_step;
+    g_b_phase_frame += g_b_anim_step;
+}
+
+void waifu_fm_set_frame_vblanks(int vblanks)
+{
+    /* Clamp: a CD load or cache prewarm can stall for dozens of vblanks;
+       jumping animation time that far would skip entire sub-stages (reveal,
+       merge flash) of the equip animation.  Cap the catch-up so a stall
+       degrades to at most 4x speed instead of a visual teleport. */
+    if (vblanks < 1) vblanks = 1;
+    if (vblanks > 4) vblanks = 4;
+    g_b_anim_step = vblanks;
 }
 
 void waifu_fm_init(void)
