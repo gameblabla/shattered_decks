@@ -114,11 +114,17 @@ static const Cd32xBlobInfo *cd32x_blob_info(int blob)
    the needed 32 KiB chunk instead of the whole 145 KiB face atlas. */
 static int g_face_chunk_resident = -1;
 static int g_face_chunk_resident_size = 0;
+/* Set once a card face has been assembled into word_ram[0..CD32X_CARD_ONE_BYTES)
+   for the CPY_TO_32X transfer: that write clobbers the head of the resident
+   chunk, so a later fast-path read of that region must reload instead of
+   returning the stale, card-shaped bytes left behind. */
+static int g_face_chunk_head_dirty = 0;
 static int8_t g_face_card_scratch[CD32X_CARD_ONE_BYTES];
 static void cd32x_invalidate_face_atlas(void)
 {
     g_face_chunk_resident = -1;
     g_face_chunk_resident_size = 0;
+    g_face_chunk_head_dirty = 0;
 }
 
 static int g_cd32x_cwd = -1;
@@ -329,6 +335,7 @@ static int cd32x_load_card_face_chunk(int chunk_id, char *word_ram)
     }
     g_face_chunk_resident = chunk_id;     /* load_file leaves the bank Sub-CPU owned */
     g_face_chunk_resident_size = rc;
+    g_face_chunk_head_dirty = 0;          /* freshly loaded: head matches the file */
     return rc;
 }
 
@@ -360,6 +367,16 @@ static void cd32x_service_card_face_request(int card_id, int words, char *word_r
     while (remaining > 0) {
         int available = CD32X_CARD_FACE_CHUNK_BYTES - chunk_off;
         int n = remaining < available ? remaining : available;
+        /* A prior serve assembled its card into the head of word_ram, clobbering
+           the first CD32X_CARD_ONE_BYTES of whatever chunk stayed resident.  If
+           this read touches that clobbered head, drop the cache so the chunk
+           reloads pristine; otherwise the fast path would return the previous
+           card's pixels (seen as a wrapped, wrong face for the first card of a
+           chunk, e.g. Celeste at chunk 1 / offset 64). */
+        if (g_face_chunk_resident == chunk_id && g_face_chunk_head_dirty &&
+            chunk_off < CD32X_CARD_ONE_BYTES) {
+            cd32x_invalidate_face_atlas();
+        }
         rc = cd32x_load_card_face_chunk(chunk_id, word_ram);
         if (rc < 0) {
             cd32x_fail_cd_request(rc);
@@ -378,6 +395,9 @@ static void cd32x_service_card_face_request(int card_id, int words, char *word_r
     }
 
     memcpy(word_ram, g_face_card_scratch, CD32X_CARD_ONE_BYTES);
+    /* The assembled card now occupies word_ram[0..CD32X_CARD_ONE_BYTES): the
+       resident chunk's head is no longer the on-disk data. */
+    if (g_face_chunk_resident >= 0) g_face_chunk_head_dirty = 1;
     switch_banks();
     rc = do_md_cmd2(MD_CMD_CPY_TO_32X, 0x200000, words);
     if (rc < 0) cd32x_fail_cd_request(rc);
@@ -657,7 +677,13 @@ static int buram_format(void)
     return ok;
 }
 
-/* BRMSERCH: 1 = the save file exists. */
+/* BRMSERCH: 1 = the save file exists.
+   The BIOS signals "file not found" by returning d0 = -1, NOT by setting the
+   carry flag -- carry is only raised on a hardware/RAM error.  Checking carry
+   alone therefore reports every healthy (but empty) Backup RAM as holding the
+   save, which lights up LOAD STORY and lets a phantom load run.  Require both a
+   clean return (carry clear) and a non-negative d0 (start block) before
+   treating the file as present. */
 static int buram_exists(void)
 {
     register unsigned int d0 asm("d0") = CD32X_BRM_SERCH;
@@ -665,11 +691,13 @@ static int buram_exists(void)
     int found;
     asm volatile(
         "jsr    0x5F16\n\t"
-        "moveq  #1,%0\n\t"
-        "bcc    1f\n\t"
-        "moveq  #0,%0\n\t"
+        "moveq  #0,%0\n\t"      /* assume absent */
+        "bcs    1f\n\t"         /* carry set: hardware error -> absent */
+        "tst.w  %1\n\t"         /* d0.w == -1 when the file is not found */
+        "bmi    1f\n\t"
+        "moveq  #1,%0\n\t"      /* clean return and d0 >= 0 -> found */
         "1:\n\t"
-        : "=d"(found), "+d"(d0), "+a"(a0)
+        : "=&d"(found), "+d"(d0), "+a"(a0)
         :
         : "d1", "a1", "cc", "memory");
     return found;
@@ -732,8 +760,12 @@ static void cd32x_service_save_exists(int device)
     if (device == 1) {
         found = do_md_cmd0(MD_CMD_CART_EXISTS) ? 1 : 0;
     } else {
-        buram_init();
-        found = buram_exists();
+        /* BRMINIT reports whether Sega-formatted Backup RAM is present.  When it
+           is not (unformatted / empty RAM) there is no directory to search, and
+           calling BRMSERCH on that undefined state can spuriously report the
+           save as found -- which lets LOAD STORY light up and then load garbage.
+           Only search when the RAM is actually formatted. */
+        found = buram_init() ? buram_exists() : 0;
     }
     cd32x_finish_md_request(found ? 0 : -1);
 }

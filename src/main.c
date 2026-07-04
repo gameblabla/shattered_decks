@@ -11365,14 +11365,20 @@ static void draw_story_pyramid_menu(void)
 
 static void draw_story_save_screen(void)
 {
+    /* Center the panel and its wrapped body text on the active display so the
+       box reads the same on the 256px PC-FX/SDL target and the 320px CD32X
+       target instead of being fixed to a 256-wide layout. */
+    const int box_w = 194;
+    int box_x = (WAIFU_FM_WIDTH - box_w) / 2;
+    int body_x = box_x + 26;
     draw_story_sanctum_background();
-    draw_blue_gradient_box(31, 78, 194, 82);
+    draw_blue_gradient_box(box_x, 78, box_w, 82);
     if (g_story_save_status < 0) {
         draw_centered_text(95, "SAVE FAILED", IDX_RED, IDX_BLACK);
         draw_centered_text(118, "The memory seal is broken.", IDX_WHITE, IDX_BLACK);
     } else if (g_story_save_status > 0) {
         draw_centered_text(95, "PROGRESS SAVED", IDX_GOLD_HI, IDX_BLACK);
-        draw_wrapped_text_small_box(57, 115, 143, 2, 10, story_subst_name("The sanctum remembers Serena."), IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(body_x, 115, 143, 2, 10, story_subst_name("The sanctum remembers Serena."), IDX_WHITE, IDX_BLACK);
     } else {
         draw_centered_text(95, "NO SAVE DATA", IDX_RED, IDX_BLACK);
         draw_centered_text(118, "Nothing is written yet.", IDX_WHITE, IDX_BLACK);
@@ -11662,9 +11668,11 @@ void waifu_fm_step(const WaifuFmInput *input)
     } else if (g_i_state == WAIFU_I_TITLE && (press_a || press_start)) {
         waifu_sound_play(WAIFU_SOUND_CONFIRM);
     } else if (g_i_state == WAIFU_I_MENU && g_i_menu_selected == 2 && (press_a || press_start)) {
-        /* Load Story enters BackupRAM I/O; keep this path silent so a menu
-           confirm PSG cannot latch while the title overlay and backup state
-           are being torn down. */
+        /* Load Story: when a save exists this enters BackupRAM I/O, so keep it
+           silent (a confirm PSG could latch while the title overlay and backup
+           state are torn down).  When no save exists on any device the row is
+           disabled -- play the back/deny cue instead of confirming. */
+        if (!story_save_exists()) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
     } else if (g_i_state == WAIFU_I_STORY_LOAD_DEVICE && (press_a || press_start) && g_i_load_device_sel == 2) {
         waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
     } else if (g_i_state == WAIFU_I_STORY_LOAD_DEVICE && (press_a || press_start) && g_i_load_device_sel != 2) {
@@ -11771,9 +11779,13 @@ void waifu_fm_step(const WaifuFmInput *input)
                 enter_menu_to_story_fade();
             } else if (g_i_menu_selected == 1) {
                 enter_menu_to_battle_fade();
-            } else {
+            } else if (story_save_exists()) {
                 enter_menu_to_load_fade();
             }
+            /* No save on any device: LOAD STORY is disabled (drawn dimmed).
+               Stay on the menu rather than entering the load flow with nothing
+               to read -- doing so previously left the title in a glitched,
+               unresponsive state. */
         }
         break;
 
