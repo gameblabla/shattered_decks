@@ -25,6 +25,7 @@
 #include "common.h"
 #include "renderer3d.h"
 #include "bmp_writer.h"
+#define WAIFU_FONT_MENUDATA_DEFINE
 #include "font_menudata.h"
 #include "waifu_assets.h"
 #include "title_asset.h"
@@ -688,25 +689,6 @@ static FloorSampleCache *floor_sample_cache_for(int32_t tile_size)
     return &g_floor_sample_cache[free_slot];
 }
 
-#else
-static uint8_t floor_sample_direct(int32_t phase_q16, int32_t tile_size)
-{
-    int32_t tile_q16 = tile_size << Q8_SHIFT;
-    int32_t period_q16 = tile_q16 + tile_q16;
-    int32_t p;
-    int tile;
-    int32_t local;
-    int tex;
-
-    if (tile_q16 <= 0) return 0;
-    p = wrap_floor_sample_phase(phase_q16, period_q16);
-    tile = (p >= tile_q16) ? 1 : 0;
-    local = tile ? (p - tile_q16) : p;
-    tex = (int)(((int64_t)local * (WAIFU_TEX_TILE_SIZE - 1)) / tile_q16);
-    if (tex < 0) tex = 0;
-    if (tex >= WAIFU_TEX_TILE_SIZE) tex = WAIFU_TEX_TILE_SIZE - 1;
-    return (uint8_t)((tile << 5) | tex);
-}
 #endif
 
 static const int16_t q8_sin_quarter[65] = {
@@ -933,6 +915,11 @@ static int project_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
 static void line_i(int x0, int y0, int x1, int y1, uint8_t c);
 static void cd32x_fill_solid_tri_fast(ScreenPt a, ScreenPt b, ScreenPt c, uint8_t color);
 static uint8_t cd32x_story_tile_color(int tile);
+#if defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+static int cd32x_story_quads_push(const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, int tile);
+static void cd32x_story_quads_begin(void);
+static void cd32x_story_quads_flush(void);
+#endif
 #endif
 
 static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
@@ -952,6 +939,9 @@ static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
         Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, uvmax, 0};
         Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uvmax, uvmax};
         Point2D p3 = {(DEFAULT_INT)pd.x, (DEFAULT_INT)pd.y, 0, uvmax};
+#if defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+        if (cd32x_story_quads_push(&p0, &p1, &p2, &p3, tile)) return;
+#endif
         cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
     }
 #elif defined(WAIFU_FM_PCFX)
@@ -1220,6 +1210,24 @@ static void draw_field_slab_sides_fast(Camera cam, const BoardProjected *bp)
     draw_field_slab_facing_z_wall_fast(cam, bp);
 }
 
+/* One opaque UI rectangle the story floor renderer may skip ([x0,x1) x
+   [y0,y1), empty when x0 >= x1).  Story screens draw panels/dialog boxes over
+   the 3D scene every frame; the floor texels underneath are pure wasted
+   stores into contended framebuffer DRAM, which is the dominant story-frame
+   cost on CD32X.  The rect must be fully covered by an opaque panel drawn
+   later in the same frame; boundary overdraw is harmless because the panel
+   paints on top.  Consumed (and cleared) by draw_floor_tiled each frame;
+   non-CD32X targets ignore it so host output stays byte-identical. */
+static int g_floor_occl_x0, g_floor_occl_y0, g_floor_occl_x1, g_floor_occl_y1;
+
+static void story_scene_set_floor_occluder(int x, int y, int w, int h)
+{
+    g_floor_occl_x0 = x;
+    g_floor_occl_y0 = y;
+    g_floor_occl_x1 = x + w;
+    g_floor_occl_y1 = y + h;
+}
+
 #if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
 enum {
     CD32X_BOARD_JOB_IDLE = 0,
@@ -1227,8 +1235,21 @@ enum {
     CD32X_BOARD_JOB_RENDER_X_WALL = 2,
     CD32X_BOARD_JOB_DONE = 3,
     CD32X_BOARD_JOB_RENDER_FLOOR = 4,
+    CD32X_BOARD_JOB_RENDER_QUAD_BAND = 5,
     CD32X_BOARD_SLAVE_READY = 0x57335832u
 };
+
+/* Story-scene quad batch (CD32X_BOARD_JOB_RENDER_QUAD_BAND): the Master
+   projects and collects the scene's textured quads (pillars, pyramid/volcano
+   faces), then both CPUs rasterize the SAME ordered list clipped to disjoint
+   scanline bands.  Painter order is preserved inside each band and the bands
+   never overlap, so there is no cross-CPU write race. */
+#define CD32X_STORY_QUAD_MAX 22
+
+typedef struct Cd32xStoryQuad {
+    Point2D p0, p1, p2, p3;
+    DEFAULT_INT tile;
+} Cd32xStoryQuad;
 
 typedef struct Cd32xBoardJob {
     volatile uint32_t ready;
@@ -1243,9 +1264,20 @@ typedef struct Cd32xBoardJob {
     volatile int32_t floor_tile_a;
     volatile int32_t floor_tile_b;
     volatile int32_t floor_tile_size;
+    /* Story quad batch (CD32X_BOARD_JOB_RENDER_QUAD_BAND); appended after the
+       floor fields so the earlier job layouts are unchanged. */
+    volatile int32_t quad_count;
+    Cd32xStoryQuad quads[CD32X_STORY_QUAD_MAX];
+    /* Floor occluder rect for CD32X_BOARD_JOB_RENDER_FLOOR (see
+       story_scene_set_floor_occluder). */
+    volatile int32_t floor_occl_x0;
+    volatile int32_t floor_occl_y0;
+    volatile int32_t floor_occl_x1;
+    volatile int32_t floor_occl_y1;
 } Cd32xBoardJob;
 
-static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size, int y_start, int y_end);
+static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size, int y_start, int y_end,
+                                   int ox0, int oy0, int ox1, int oy1);
 
 static Cd32xBoardJob g_cd32x_board_job __attribute__((aligned(16)));
 
@@ -1325,7 +1357,8 @@ static int cd32x_render_board_top_parallel(const BoardProjected *bp)
    Master the top band.  Returns 0 (caller falls back to single-CPU) if the Slave
    is not idle/ready.  Blocks until both bands are done so the floor is complete
    before the pyramid/stones draw over it. */
-static int cd32x_render_floor_parallel(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size)
+static int cd32x_render_floor_parallel(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size,
+                                       int ox0, int oy0, int ox1, int oy1)
 {
     Cd32xBoardJob *job = cd32x_board_job_uncached();
     /* The floor only fills rows below the horizon (~H/2); split that active band
@@ -1340,17 +1373,98 @@ static int cd32x_render_floor_parallel(Camera cam, int32_t floor_y, int tile_a, 
     job->floor_tile_a = tile_a;
     job->floor_tile_b = tile_b;
     job->floor_tile_size = tile_size;
+    job->floor_occl_x0 = ox0;
+    job->floor_occl_y0 = oy0;
+    job->floor_occl_x1 = ox1;
+    job->floor_occl_y1 = oy1;
     job->row_start = split;
     job->row_end = WAIFU_FM_HEIGHT;
     __asm__ volatile ("" ::: "memory");
     job->command = CD32X_BOARD_JOB_RENDER_FLOOR;
 
-    render_floor_row_range(cam, floor_y, tile_a, tile_b, tile_size, 0, split);
+    render_floor_row_range(cam, floor_y, tile_a, tile_b, tile_size, 0, split, ox0, oy0, ox1, oy1);
 
     while (job->command != CD32X_BOARD_JOB_DONE) {
     }
     job->command = CD32X_BOARD_JOB_IDLE;
     return 1;
+}
+
+/* --- Story quad batch (see Cd32xStoryQuad) ------------------------------- */
+
+static int g_story_quads_active = 0;
+static int g_story_quads_count = 0;
+static int g_story_quads_ymin = 0;
+static int g_story_quads_ymax = 0;
+
+static void cd32x_story_quads_begin(void)
+{
+    g_story_quads_active = 1;
+    g_story_quads_count = 0;
+    g_story_quads_ymin = WAIFU_FM_HEIGHT;
+    g_story_quads_ymax = 0;
+}
+
+static void cd32x_story_quads_track_y(int y)
+{
+    if (y < g_story_quads_ymin) g_story_quads_ymin = y;
+    if (y + 1 > g_story_quads_ymax) g_story_quads_ymax = y + 1;
+}
+
+/* Returns 1 when the quad was captured into the batch; 0 tells the caller to
+   draw it immediately (batch inactive or full). */
+static int cd32x_story_quads_push(const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, int tile)
+{
+    Cd32xStoryQuad *q;
+    if (!g_story_quads_active || g_story_quads_count >= CD32X_STORY_QUAD_MAX) return 0;
+    q = &cd32x_board_job_uncached()->quads[g_story_quads_count++];
+    q->p0 = *p0;
+    q->p1 = *p1;
+    q->p2 = *p2;
+    q->p3 = *p3;
+    q->tile = (DEFAULT_INT)tile;
+    cd32x_story_quads_track_y(p0->y);
+    cd32x_story_quads_track_y(p1->y);
+    cd32x_story_quads_track_y(p2->y);
+    cd32x_story_quads_track_y(p3->y);
+    return 1;
+}
+
+static void cd32x_story_quads_draw_band(const Cd32xStoryQuad *quads, int count, int y0, int y1)
+{
+    for (int i = 0; i < count; ++i) {
+        Point2D p0 = quads[i].p0, p1 = quads[i].p1, p2 = quads[i].p2, p3 = quads[i].p3;
+        cfx_renderer3d_draw_quad_board_band(&renderer, &p0, &p1, &p2, &p3,
+                                            quads[i].tile, (DEFAULT_INT)y0, (DEFAULT_INT)y1);
+    }
+}
+
+static void cd32x_story_quads_flush(void)
+{
+    Cd32xBoardJob *job = cd32x_board_job_uncached();
+    int count = g_story_quads_count;
+    int ymin = g_story_quads_ymin;
+    int ymax = g_story_quads_ymax;
+    g_story_quads_active = 0;
+    g_story_quads_count = 0;
+    if (count <= 0) return;
+    if (ymin < 0) ymin = 0;
+    if (ymax > WAIFU_FM_HEIGHT) ymax = WAIFU_FM_HEIGHT;
+    if (ymin >= ymax) return;
+    if (job->ready == CD32X_BOARD_SLAVE_READY && job->command == CD32X_BOARD_JOB_IDLE) {
+        int split = (ymin + ymax) / 2;
+        job->quad_count = count;
+        job->row_start = split;
+        job->row_end = ymax;
+        __asm__ volatile ("" ::: "memory");
+        job->command = CD32X_BOARD_JOB_RENDER_QUAD_BAND;
+        cd32x_story_quads_draw_band(job->quads, count, ymin, split);
+        while (job->command != CD32X_BOARD_JOB_DONE) {
+        }
+        job->command = CD32X_BOARD_JOB_IDLE;
+    } else {
+        cd32x_story_quads_draw_band(job->quads, count, ymin, ymax);
+    }
 }
 
 void waifu_cd32x_slave_service(void)
@@ -1371,7 +1485,14 @@ void waifu_cd32x_slave_service(void)
         render_floor_row_range(job->floor_cam, (int32_t)job->floor_y,
                                (int)job->floor_tile_a, (int)job->floor_tile_b,
                                (int32_t)job->floor_tile_size,
-                               (int)job->row_start, (int)job->row_end);
+                               (int)job->row_start, (int)job->row_end,
+                               (int)job->floor_occl_x0, (int)job->floor_occl_y0,
+                               (int)job->floor_occl_x1, (int)job->floor_occl_y1);
+        __asm__ volatile ("" ::: "memory");
+        job->command = CD32X_BOARD_JOB_DONE;
+    } else if (job->command == CD32X_BOARD_JOB_RENDER_QUAD_BAND) {
+        cd32x_story_quads_draw_band(job->quads, (int)job->quad_count,
+                                    (int)job->row_start, (int)job->row_end);
         __asm__ volatile ("" ::: "memory");
         job->command = CD32X_BOARD_JOB_DONE;
     }
@@ -1554,6 +1675,22 @@ static void clear_screen(uint8_t c) { waifu_cd32x_video_clear_back_index(c); }
 static void clear_screen(uint8_t c) { fill_u8_fast(framebuffer, WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT, c); }
 #endif
 
+/* Fill the full-width scanline band [y0, y1) with one palette index.  Same
+   pixels on every platform; CD32X hands the band to the 32X VDP auto-fill so
+   the SH-2 issues no framebuffer stores at all (the whole-frame sky fills were
+   a large share of the story frame's contended-VRAM write budget). */
+static void fill_rows(int y0, int y1, uint8_t c)
+{
+    if (y0 < 0) y0 = 0;
+    if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+    if (y0 >= y1) return;
+#if defined(WAIFU_FM_CD32X)
+    waifu_cd32x_video_fill_rows_index(y0, y1, c);
+#else
+    fill_u8_fast(framebuffer + (int32_t)y0 * WAIFU_FM_WIDTH, (y1 - y0) * WAIFU_FM_WIDTH, c);
+#endif
+}
+
 static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
 {
     if (count <= 0) return;
@@ -1678,6 +1815,34 @@ static void rect_outline(int x, int y, int w, int h, uint8_t c)
     for (int yy = y; yy < y+h; ++yy) { put_px(x, yy, c); put_px(x+w-1, yy, c); }
 }
 
+/* Truncating 64-bit division without libgcc's ___divdi3 (~620 bytes of image
+   the CD32X build cannot spare).  Only the line clipper needs 64-bit division,
+   a handful of times per drawn line, so a plain shift-subtract loop is fine. */
+static long long lldiv_trunc(long long n, long long d)
+{
+    /* Fast path: both operands fit in 32 bits (true for nearly every line
+       clip and triangle-gradient setup), so use the plain 32-bit division.
+       Only genuinely 64-bit numerators take the bit loop. */
+    int32_t n32 = (int32_t)n, d32 = (int32_t)d;
+    if ((long long)n32 == n && (long long)d32 == d && d32 != 0 &&
+        !(n32 == (int32_t)0x80000000 && d32 == -1)) {
+        return n32 / d32;
+    }
+    {
+        int neg = (n < 0) != (d < 0);
+        unsigned long long un = n < 0 ? 0ULL - (unsigned long long)n : (unsigned long long)n;
+        unsigned long long ud = d < 0 ? 0ULL - (unsigned long long)d : (unsigned long long)d;
+        unsigned long long q = 0, r = 0;
+        int i;
+        if (ud == 0) return 0;
+        for (i = 63; i >= 0; --i) {
+            r = (r << 1) | ((un >> i) & 1u);
+            if (r >= ud) { r -= ud; q |= 1ULL << i; }
+        }
+        return neg ? -(long long)q : (long long)q;
+    }
+}
+
 static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
 {
     /* Clip the segment to the screen rect FIRST (Liang-Barsky, 64-bit so it
@@ -1697,16 +1862,16 @@ static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
         for (i = 0; i < 4; ++i) {
             if (p[i] == 0) { if (q[i] < 0) return; continue; }
             {
-                long long r = (q[i] * (1LL << 16)) / p[i];
+                long long r = lldiv_trunc(q[i] << 16, p[i]);
                 if (p[i] < 0) { if (r > t1) return; if (r > t0) t0 = r; }
                 else          { if (r < t0) return; if (r < t1) t1 = r; }
             }
         }
         if (t0 > t1) return;
-        x0 = (int)(ax + (dx * t0) / (1LL << 16));
-        y0 = (int)(ay + (dy * t0) / (1LL << 16));
-        x1 = (int)(ax + (dx * t1) / (1LL << 16));
-        y1 = (int)(ay + (dy * t1) / (1LL << 16));
+        x0 = (int)(ax + lldiv_trunc(dx * t0, 1LL << 16));
+        y0 = (int)(ay + lldiv_trunc(dy * t0, 1LL << 16));
+        x1 = (int)(ax + lldiv_trunc(dx * t1, 1LL << 16));
+        y1 = (int)(ay + lldiv_trunc(dy * t1, 1LL << 16));
     }
     {
         int adx = i_abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
@@ -1864,6 +2029,37 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
     /* A NULL mask selects index-0 color-key transparency: the platform baked the
        alpha mask into the pixels (transparent -> 0) at load time to keep only one
        resident plane per portrait.  Otherwise use the explicit alpha mask. */
+#if defined(WAIFU_FM_CD32X)
+    /* CD32X never has a resident mask (waifu_assets_story_portrait_mask returns
+       NULL there), so only the color-key path is compiled: clip once, then pack
+       adjacent opaque texels into halfword stores.  The per-pixel put_px
+       version issued a bounds test plus a byte write into contended
+       framebuffer DRAM for every one of the ~2x 124x200 portrait pixels each
+       plaza frame. */
+    int sx0 = x < 0 ? -x : 0;
+    int sy0 = y < 0 ? -y : 0;
+    int sx1 = (x + sw > WAIFU_FM_WIDTH) ? WAIFU_FM_WIDTH - x : sw;
+    int sy1 = (y + sh > WAIFU_FM_HEIGHT) ? WAIFU_FM_HEIGHT - y : sh;
+    (void)mask;
+    for (int yy = sy0; yy < sy1; ++yy) {
+        const uint8_t *srow = pix + (int32_t)yy * sw + sx0;
+        uint8_t *drow = framebuffer + (int32_t)(y + yy) * WAIFU_FM_WIDTH + (x + sx0);
+        int n = sx1 - sx0;
+        if (n > 0 && ((uintptr_t)drow & 1u)) {
+            if (*srow) *drow = *srow;
+            ++srow; ++drow; --n;
+        }
+        while (n >= 2) {
+            uint8_t p0 = srow[0];
+            uint8_t p1 = srow[1];
+            if (p0 && p1) *(uint16_t *)(uintptr_t)drow = (uint16_t)(((uint16_t)p0 << 8) | p1);
+            else if (p0) drow[0] = p0;
+            else if (p1) drow[1] = p1;
+            srow += 2; drow += 2; n -= 2;
+        }
+        if (n > 0 && *srow) *drow = *srow;
+    }
+#else
     for (int yy = 0; yy < sh; ++yy) {
         int dy = y + yy;
         if ((unsigned)dy >= WAIFU_FM_HEIGHT) continue;
@@ -1875,6 +2071,7 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
             if (mask ? mask[idx] : (p != 0)) put_px(dx, dy, p);
         }
     }
+#endif
 }
 
 static void draw_story_portrait(int portrait_id, int x, int y)
@@ -3492,16 +3689,16 @@ static void draw_textured_tri_affine_cd32x(const uint8_t *src, int sw, int sh, T
     V0 = (int32_t)(((int64_t)a.v * (int64_t)(sh - 1) << 16) >> Q8_SHIFT);
     V1 = (int32_t)(((int64_t)b.v * (int64_t)(sh - 1) << 16) >> Q8_SHIFT);
     V2 = (int32_t)(((int64_t)c.v * (int64_t)(sh - 1) << 16) >> Q8_SHIFT);
-    du_dx = (int32_t)(((int64_t)Aa * U0 + (int64_t)Ab * U1 + (int64_t)Ac * U2) / den);
-    dv_dx = (int32_t)(((int64_t)Aa * V0 + (int64_t)Ab * V1 + (int64_t)Ac * V2) / den);
-    du_dy = (int32_t)(((int64_t)Ba * U0 + (int64_t)Bb * U1 + (int64_t)Bc * U2) / den);
-    dv_dy = (int32_t)(((int64_t)Ba * V0 + (int64_t)Bb * V1 + (int64_t)Bc * V2) / den);
+    du_dx = (int32_t)lldiv_trunc((int64_t)Aa * U0 + (int64_t)Ab * U1 + (int64_t)Ac * U2, den);
+    dv_dx = (int32_t)lldiv_trunc((int64_t)Aa * V0 + (int64_t)Ab * V1 + (int64_t)Ac * V2, den);
+    du_dy = (int32_t)lldiv_trunc((int64_t)Ba * U0 + (int64_t)Bb * U1 + (int64_t)Bc * U2, den);
+    dv_dy = (int32_t)lldiv_trunc((int64_t)Ba * V0 + (int64_t)Bb * V1 + (int64_t)Bc * V2, den);
 
     wa_row = Aa * (minx - c.x) + Ba * (miny - c.y);
     wb_row = Ab * (minx - c.x) + Bb * (miny - c.y);
     wc_row = den - wa_row - wb_row;
-    u_row = (int32_t)(((int64_t)wa_row * U0 + (int64_t)wb_row * U1 + (int64_t)wc_row * U2) / den);
-    v_row = (int32_t)(((int64_t)wa_row * V0 + (int64_t)wb_row * V1 + (int64_t)wc_row * V2) / den);
+    u_row = (int32_t)lldiv_trunc((int64_t)wa_row * U0 + (int64_t)wb_row * U1 + (int64_t)wc_row * U2, den);
+    v_row = (int32_t)lldiv_trunc((int64_t)wa_row * V0 + (int64_t)wb_row * V1 + (int64_t)wc_row * V2, den);
 
     for (int y = miny; y <= maxy; ++y) {
         int wa = wa_row;
@@ -3580,6 +3777,9 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
         Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, u1, 0};
         Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uapex, vmax};
         Point2D p3 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uapex, vmax};
+#if defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+        if (cd32x_story_quads_push(&p0, &p1, &p2, &p3, tile)) return;
+#endif
         cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
         return;
     }
@@ -9734,7 +9934,7 @@ static void draw_player_fusion_anim(void)
     }
 
     clear_screen(IDX_BLACK);
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) hline(0, WAIFU_FM_WIDTH - 1, y, (y & 8) ? IDX_UI_DARK : IDX_BLACK);
+    for (int y = 8; y < WAIFU_FM_HEIGHT; y += 16) fill_rows(y, y + 8, IDX_UI_DARK);
     draw_panel_rect(WAIFU_UI_CENTER_DX + 20, 26, 216, 178, IDX_UI_DARK);
     draw_centered_text(39, "FUSION", IDX_GOLD_HI, IDX_BLACK);
 
@@ -10594,9 +10794,14 @@ static void draw_story_name_entry(void)
     char buf[32];
     int dx = WAIFU_UI_CENTER_DX;
     clear_screen(IDX_BLACK);
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
-        uint8_t c = (y & 8) ? IDX_DARK_BROWN : IDX_BLACK;
-        if (y < 36 || y > WAIFU_UI_BOTTOM_Y(204)) hline(0, WAIFU_FM_WIDTH - 1, y, c);
+    for (int y = 8; y < WAIFU_FM_HEIGHT; y += 16) {
+        /* Striped rows only above the panel and below the help line. */
+        int y1 = y + 8;
+        if (y < 36) fill_rows(y, y1 < 36 ? y1 : 36, IDX_DARK_BROWN);
+        if (y1 > WAIFU_UI_BOTTOM_Y(204) + 1) {
+            int y0 = y > WAIFU_UI_BOTTOM_Y(204) + 1 ? y : WAIFU_UI_BOTTOM_Y(204) + 1;
+            fill_rows(y0, y1, IDX_DARK_BROWN);
+        }
     }
     draw_panel_rect(dx + 20, 29, 216, 180, IDX_UI_DARK);
     draw_egyptian_corner(dx + 31, 42, 0);
@@ -10796,9 +11001,9 @@ static void draw_deck_editor(void)
     int selected_card = (count > 0 && g_deck_cursor < count) ? arr[g_deck_cursor] : CARD_NONE;
 
     clear_screen(IDX_BLACK);
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
-        uint8_t c = (y < 28) ? IDX_DARK_BROWN : ((y & 8) ? IDX_UI_DARK : IDX_BLACK);
-        hline(0, WAIFU_FM_WIDTH - 1, y, c);
+    fill_rows(0, 28, IDX_DARK_BROWN);
+    for (int y = 24; y < WAIFU_FM_HEIGHT; y += 16) {
+        fill_rows(y > 28 ? y : 28, y + 8, IDX_UI_DARK);
     }
     draw_panel_rect(4, 4, WAIFU_FM_WIDTH - 8, WAIFU_FM_HEIGHT - 8, IDX_UI_DARK);
     draw_centered_text(12, "DECK EDITOR", IDX_GOLD_HI, IDX_BLACK);
@@ -10875,12 +11080,19 @@ static Camera story_map_camera(int f)
    floor plane, derives UVs from world XZ, and tiles the texture with modulo
    wrapping.  All math is Q8.8 fixed point and 32-bit integer only.  Rendered as
    a row range [y_start, y_end) so the work can be split across both SH-2s. */
-static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size, int y_start, int y_end)
+static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size, int y_start, int y_end,
+                                   int ox0, int oy0, int ox1, int oy1)
 {
 #ifdef WAIFU_FM_PCFX
     (void)cam; (void)floor_y; (void)tile_a; (void)tile_b; (void)tile_size; (void)y_start; (void)y_end;
+    (void)ox0; (void)oy0; (void)ox1; (void)oy1;
     return;
 #else
+#if !defined(WAIFU_FM_CD32X)
+    /* Host/generic targets ignore the occluder so their output stays
+       byte-identical to the pre-occluder renderer. */
+    (void)ox0; (void)oy0; (void)ox1; (void)oy1;
+#endif
     Vec3 ffwd = vnorm(vsub(cam.target, cam.eye));
     Vec3 fright = vnorm(vcross(ffwd, cam.up));
     Vec3 fup = vcross(fright, ffwd);
@@ -10891,8 +11103,16 @@ static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int 
     FloorSampleCache *sample_cache = floor_sample_cache_for(tile_size);
     if (!sample_cache) return;
 #else
-    int32_t direct_period = tile_size << (Q8_SHIFT + 1);
-    if (direct_period <= 0) return;
+    /* Direct sampling (no LUT): resolve phase -> texel with one reciprocal
+       computed per call instead of floor_sample_direct()'s 64-bit multiply +
+       64-bit divide PER SAMPLE (two samples per pixel).  local < tile_q16 and
+       tex_scale <= (TS-1)<<16 / tile_q16, so local * tex_scale < (TS-1)<<16
+       always fits in 32 bits. */
+    int32_t tile_q16 = tile_size << Q8_SHIFT;
+    int32_t direct_period = tile_q16 + tile_q16;
+    int32_t tex_scale;
+    if (tile_q16 <= 0) return;
+    tex_scale = (int32_t)(((WAIFU_TEX_TILE_SIZE - 1) << 16) / tile_q16);
 #endif
     if (y_start < 0) y_start = 0;
     if (y_end > WAIFU_FM_HEIGHT) y_end = WAIFU_FM_HEIGHT;
@@ -10931,34 +11151,115 @@ static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int 
         dx %= period; if (dx < 0) dx += period;
         dz %= period; if (dz < 0) dz += period;
 
-        for (int x = 0; x < WAIFU_FM_WIDTH; ++x) {
 #if !defined(WAIFU_FLOOR_SAMPLE_CACHE_DISABLE)
+        for (int x = 0; x < WAIFU_FM_WIDTH; ++x) {
             uint8_t ux = samp[px];
             uint8_t vz = samp[pz];
-#else
-            uint8_t ux = floor_sample_direct(px, tile_size);
-            uint8_t vz = floor_sample_direct(pz, tile_size);
-#endif
             int tile = ((ux ^ vz) & 32) ? tile_b : tile_a;
             const uint8_t *src = atlas + (size_t)tile * tw * tw;
             row[x] = src[(vz & 31) * tw + (ux & 31)];
             px += dx; if (px >= period) px -= period;
             pz += dz; if (pz >= period) pz -= period;
         }
+#else
+        /* px/pz stay in [0, period) so the tile parity is a single compare and
+           the texel index one 32-bit multiply.  FLOOR_TEXEL leaves the sampled
+           atlas byte in `out` and advances one pixel. */
+#define FLOOR_TEXEL(out) do { \
+            int32_t lx_ = px, lz_ = pz; \
+            const uint8_t *src_; \
+            int checker_ = 0; \
+            if (lx_ >= tile_q16) { lx_ -= tile_q16; checker_ ^= 1; } \
+            if (lz_ >= tile_q16) { lz_ -= tile_q16; checker_ ^= 1; } \
+            src_ = atlas + (size_t)(checker_ ? tile_b : tile_a) * tw * tw; \
+            (out) = src_[(int)(((uint32_t)lz_ * (uint32_t)tex_scale) >> 16) * tw + \
+                         (int)(((uint32_t)lx_ * (uint32_t)tex_scale) >> 16)]; \
+            px += dx; if (px >= period) px -= period; \
+            pz += dz; if (pz >= period) pz -= period; \
+        } while (0)
+#if defined(WAIFU_FM_CD32X)
+        /* WAIFU_FM_WIDTH is even and every framebuffer row starts halfword
+           aligned, so emit two texels per 16-bit store: byte writes into the
+           contended 32X framebuffer DRAM are the worst-case access.  Rows
+           crossed by the occluder rect are filled as two spans with the skip
+           region's stores elided entirely (span edges rounded outward to keep
+           pair alignment; the extra texel lands under the opaque panel). */
+        {
+            uint16_t *dst16 = (uint16_t *)(uintptr_t)row;
+            int x = 0;
+            int x_end = WAIFU_FM_WIDTH;
+            int resume_at = WAIFU_FM_WIDTH;
+            int32_t px_row = px, pz_row = pz;
+            /* ox0/ox1 arrive pre-clamped and pair-aligned (draw_floor_tiled). */
+            if (y >= oy0 && y < oy1) {
+                x_end = ox0;
+                resume_at = ox1;
+            }
+            for (;;) {
+                for (; x < x_end; x += 2) {
+                    uint8_t t0, t1;
+                    FLOOR_TEXEL(t0);
+                    FLOOR_TEXEL(t1);
+                    *dst16++ = (uint16_t)(((uint16_t)t0 << 8) | t1);
+                }
+                if (x_end == WAIFU_FM_WIDTH || resume_at >= WAIFU_FM_WIDTH) break;
+                /* Re-seed the texture phases on the far side of the skipped
+                   panel span and continue with the same inner loop. */
+                x = resume_at;
+                px = (px_row + (int32_t)x * dx) % period;
+                pz = (pz_row + (int32_t)x * dz) % period;
+                dst16 = (uint16_t *)(uintptr_t)(row + x);
+                x_end = WAIFU_FM_WIDTH;
+            }
+        }
+#else
+        for (int x = 0; x < WAIFU_FM_WIDTH; ++x) {
+            FLOOR_TEXEL(row[x]);
+        }
+#endif
+#undef FLOOR_TEXEL
+#endif
     }
 #endif /* WAIFU_FM_PCFX */
 }
 
 static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size)
 {
+    /* Consume the per-frame occluder rect (screens re-arm it every frame) and
+       normalize it once: clamped to the screen and pair-aligned OUTWARD (the
+       extra covered texel hides under the opaque panel), so the row loop needs
+       no per-row clamping.  An empty rect becomes oy0 == oy1 (no row hits). */
+    int ox0 = (g_floor_occl_x0 + 1) & ~1, oy0 = g_floor_occl_y0;
+    int ox1 = g_floor_occl_x1 & ~1, oy1 = g_floor_occl_y1;
+    g_floor_occl_x0 = g_floor_occl_x1 = 0;
+    g_floor_occl_y0 = g_floor_occl_y1 = 0;
+    if (ox0 < 0) ox0 = 0;
+    if (ox0 > WAIFU_FM_WIDTH) ox0 = WAIFU_FM_WIDTH;
+    if (ox1 > WAIFU_FM_WIDTH) ox1 = WAIFU_FM_WIDTH;
+    if (ox1 < ox0) ox1 = ox0;
+    if (ox0 >= ox1) { oy0 = 0; oy1 = 0; }
 #if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
     /* Split the textured floor across both SH-2s: the Slave renders the bottom
        band while the Master renders the top band, so the dominant per-pixel
        floor cost is roughly halved and the story pyramid/stones (drawn on the
        Master after this returns) still land on top of a complete floor. */
-    if (cd32x_render_floor_parallel(cam, floor_y, tile_a, tile_b, tile_size)) return;
+    if (cd32x_render_floor_parallel(cam, floor_y, tile_a, tile_b, tile_size, ox0, oy0, ox1, oy1)) return;
 #endif
-    render_floor_row_range(cam, floor_y, tile_a, tile_b, tile_size, 0, WAIFU_FM_HEIGHT);
+    render_floor_row_range(cam, floor_y, tile_a, tile_b, tile_size, 0, WAIFU_FM_HEIGHT, ox0, oy0, ox1, oy1);
+}
+
+/* World-space back-face test for the convex story solids (pyramid, volcano
+   cone, temple pillar caps).  For faces wound (p0, p1, pk) the cross product
+   points INTO the solid with the vertex orders used by the face tables, so a
+   face is visible only when the eye is on the other side of its plane.  Q8
+   magnitudes: |cross| < 2^14, |eye - p0| < 2^12, so the dot terms fit int32.
+   Culling halves the textured fill: back faces were fully rasterized and then
+   completely overdrawn by the front faces. */
+static int story_face_visible(Camera cam, Vec3 p0, Vec3 p1, Vec3 pk)
+{
+    Vec3 n = vcross(vsub(p1, p0), vsub(pk, p0));
+    Vec3 e = vsub(cam.eye, p0);
+    return (q8_mul(n.x, e.x) + q8_mul(n.y, e.y) + q8_mul(n.z, e.z)) < 0;
 }
 
 static void draw_map_pyramid_3d(int f)
@@ -10999,7 +11300,16 @@ static void draw_map_pyramid_3d(int f)
             }
         }
     }
-    for (int i = 0; i < 4; ++i) draw_tri3d_pyramid_face(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip, 5, 3);
+#if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+    cd32x_story_quads_begin();
+#endif
+    for (int i = 0; i < 4; ++i) {
+        if (!story_face_visible(cam, faces[i].p0, faces[i].p1, apex)) continue;
+        draw_tri3d_pyramid_face(cam, faces[i].p0, faces[i].p1, apex, faces[i].tile, faces[i].flip, 5, 3);
+    }
+#if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+    cd32x_story_quads_flush();
+#endif
 
     ScreenPt peak = project_point(cam, apex);
     if (peak.ok) put_px(peak.x, peak.y, IDX_GOLD_HI);
@@ -11036,27 +11346,38 @@ static void draw_map_temple_3d(int f)
     draw_floor_tiled(cam, -Q8_FRAC(7,100), 3, 3, Q8_FRAC(16,10));
     /* Temple pillars: two rows of columns forming a corridor. */
     int32_t pillar_y0 = 0, pillar_y1 = Q8_FRAC(26,10);
+    const int32_t r = Q8_FRAC(35,100);
+#if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+    cd32x_story_quads_begin();
+#endif
     for (int row = 0; row < 2; ++row) {
         int32_t pz = -Q8_FRAC(25,10) + Q8_FROM_INT(row * 2);
         for (int side = 0; side < 2; ++side) {
             int32_t px = side ? Q8_FRAC(22,10) : -Q8_FRAC(22,10);
-            Vec3 b0 = v3(px - Q8_FRAC(35,100), pillar_y0, pz - Q8_FRAC(35,100));
-            Vec3 b1 = v3(px + Q8_FRAC(35,100), pillar_y0, pz - Q8_FRAC(35,100));
-            Vec3 b2 = v3(px + Q8_FRAC(35,100), pillar_y0, pz + Q8_FRAC(35,100));
-            Vec3 b3 = v3(px - Q8_FRAC(35,100), pillar_y0, pz + Q8_FRAC(35,100));
-            Vec3 t0 = v3(px - Q8_FRAC(35,100), pillar_y1, pz - Q8_FRAC(35,100));
-            Vec3 t1 = v3(px + Q8_FRAC(35,100), pillar_y1, pz - Q8_FRAC(35,100));
-            Vec3 t2 = v3(px + Q8_FRAC(35,100), pillar_y1, pz + Q8_FRAC(35,100));
-            Vec3 t3 = v3(px - Q8_FRAC(35,100), pillar_y1, pz + Q8_FRAC(35,100));
-            /* Front and back faces */
-            draw_quad3d_safe(cam, b0, b1, t1, t0, 3);
-            draw_quad3d_safe(cam, b3, b2, t2, t3, 3);
-            draw_quad3d_safe(cam, b1, b2, t2, t1, 3);
-            draw_quad3d_safe(cam, b0, b3, t3, t0, 3);
-            /* Capital top */
-            draw_quad3d_safe(cam, t0, t1, t2, t3, 3);
+            Vec3 b0 = v3(px - r, pillar_y0, pz - r);
+            Vec3 b1 = v3(px + r, pillar_y0, pz - r);
+            Vec3 b2 = v3(px + r, pillar_y0, pz + r);
+            Vec3 b3 = v3(px - r, pillar_y0, pz + r);
+            Vec3 t0 = v3(px - r, pillar_y1, pz - r);
+            Vec3 t1 = v3(px + r, pillar_y1, pz - r);
+            Vec3 t2 = v3(px + r, pillar_y1, pz + r);
+            Vec3 t3 = v3(px - r, pillar_y1, pz + r);
+            /* The pillar walls are exactly vertical axis-aligned planes, so
+               visibility is a plain camera-side test per face; back faces were
+               fully textured and then overdrawn.  Visible faces of a convex
+               prism never overlap on screen, so the draw order among them does
+               not matter. */
+            if (cam.eye.z < pz - r) draw_quad3d_safe(cam, b0, b1, t1, t0, 3);
+            if (cam.eye.z > pz + r) draw_quad3d_safe(cam, b3, b2, t2, t3, 3);
+            if (cam.eye.x > px + r) draw_quad3d_safe(cam, b1, b2, t2, t1, 3);
+            if (cam.eye.x < px - r) draw_quad3d_safe(cam, b0, b3, t3, t0, 3);
+            /* Capital top: only visible from above. */
+            if (cam.eye.y > pillar_y1) draw_quad3d_safe(cam, t0, t1, t2, t3, 3);
         }
     }
+#if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+    cd32x_story_quads_flush();
+#endif
 }
 
 static Camera story_volcano_camera(int f)
@@ -11077,24 +11398,35 @@ static void draw_map_volcano_3d(int f)
     Vec3 b = v3( Q8_FRAC(26,10), 0, -Q8_FRAC(26,10));
     Vec3 c = v3( Q8_FRAC(26,10), 0,  Q8_FRAC(26,10));
     Vec3 d = v3(-Q8_FRAC(26,10), 0,  Q8_FRAC(26,10));
-    typedef struct { Vec3 p0, p1; int flip; int32_t depth; } VFace;
+    typedef struct { Vec3 p0, p1; int flip; int32_t depth; int visible; } VFace;
     VFace vf[4] = {
-        {a, b, 0, 0}, {b, c, 1, 0}, {c, d, 0, 0}, {d, a, 1, 0}
+        {a, b, 0, 0, 0}, {b, c, 1, 0, 0}, {c, d, 0, 0, 0}, {d, a, 1, 0, 0}
     };
     for (int i = 0; i < 4; ++i) {
         ScreenPt p0 = project_point(cam, vf[i].p0);
         ScreenPt p1 = project_point(cam, vf[i].p1);
         ScreenPt p2 = project_point(cam, apex_v);
         vf[i].depth = (p0.depth + p1.depth + p2.depth) / 3;
+        vf[i].visible = story_face_visible(cam, vf[i].p0, vf[i].p1, apex_v);
     }
     for (int i = 0; i < 3; ++i)
         for (int j = i + 1; j < 4; ++j)
             if (vf[i].depth < vf[j].depth) { VFace t = vf[i]; vf[i] = vf[j]; vf[j] = t; }
+#if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+    cd32x_story_quads_begin();
+#endif
     for (int i = 0; i < 4; ++i) {
+        if (!vf[i].visible) continue;
         draw_tri3d_pyramid_face(cam, vf[i].p0, vf[i].p1, apex_v, 7, vf[i].flip, 6, 4);
-        /* Match the desert-road pyramid's painter ordering: outline each
-           sorted face immediately after its real surface, so nearer faces
-           naturally overwrite the far-side wire edges. */
+    }
+#if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+    cd32x_story_quads_flush();
+#endif
+    /* Wire edges of the visible faces only.  Hidden faces' outlines were
+       always fully overdrawn by the nearer surfaces anyway, and drawing the
+       outlines after all faces keeps the batched quad fill self-contained. */
+    for (int i = 0; i < 4; ++i) {
+        if (!vf[i].visible) continue;
         ScreenPt p0 = project_point(cam, vf[i].p0);
         ScreenPt p1 = project_point(cam, vf[i].p1);
         ScreenPt p2 = project_point(cam, apex_v);
@@ -11155,10 +11487,10 @@ static void draw_map_void_3d(int f)
 
 static void draw_desert_sky(void)
 {
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
-        uint8_t c = y < 52 ? IDX_UI_BLUE : (y < 93 ? IDX_UI_TEAL : (y < 143 ? IDX_GOLD_DARK : IDX_DARK_BROWN));
-        hline(0, WAIFU_FM_WIDTH - 1, y, c);
-    }
+    fill_rows(0, 52, IDX_UI_BLUE);
+    fill_rows(52, 93, IDX_UI_TEAL);
+    fill_rows(93, 143, IDX_GOLD_DARK);
+    fill_rows(143, WAIFU_FM_HEIGHT, IDX_DARK_BROWN);
     for (int x = 0; x < WAIFU_FM_WIDTH; x += 6) {
         int yy = 142 + ((x * 13) & 7);
         hline(x, x + 5 < WAIFU_FM_WIDTH ? x + 5 : WAIFU_FM_WIDTH - 1, yy, IDX_GOLD_HI);
@@ -11167,18 +11499,18 @@ static void draw_desert_sky(void)
 
 static void draw_temple_sky(void)
 {
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
-        uint8_t c = y < 40 ? IDX_UI_BLUE : (y < 80 ? IDX_UI_TEAL : (y < 120 ? IDX_DIM : IDX_DARK_BROWN));
-        hline(0, WAIFU_FM_WIDTH - 1, y, c);
-    }
+    fill_rows(0, 40, IDX_UI_BLUE);
+    fill_rows(40, 80, IDX_UI_TEAL);
+    fill_rows(80, 120, IDX_DIM);
+    fill_rows(120, WAIFU_FM_HEIGHT, IDX_DARK_BROWN);
 }
 
 static void draw_volcano_sky(void)
 {
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
-        uint8_t c = y < 45 ? IDX_BLACK : (y < 85 ? IDX_RED : (y < 120 ? IDX_FLAME3 : IDX_DARK_BROWN));
-        hline(0, WAIFU_FM_WIDTH - 1, y, c);
-    }
+    fill_rows(0, 45, IDX_BLACK);
+    fill_rows(45, 85, IDX_RED);
+    fill_rows(85, 120, IDX_FLAME3);
+    fill_rows(120, WAIFU_FM_HEIGHT, IDX_DARK_BROWN);
     /* Embers drifting upward. */
     for (int i = 0; i < 40; ++i) {
         int x = (i * 53 + 17) % WAIFU_FM_WIDTH;
@@ -11189,7 +11521,7 @@ static void draw_volcano_sky(void)
 
 static void draw_void_sky(void)
 {
-    for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) hline(0, WAIFU_FM_WIDTH - 1, y, IDX_BLACK);
+    fill_rows(0, WAIFU_FM_HEIGHT, IDX_BLACK);
     /* Stars. */
     for (int i = 0; i < 60; ++i) {
         int x = (i * 67 + 13) % WAIFU_FM_WIDTH;
@@ -11271,6 +11603,8 @@ static void draw_story_map_screen_content(int f)
 {
     char line[96];
     draw_story_sky(f);
+    /* The DESTINATION panel is the largest opaque cover over the floor. */
+    story_scene_set_floor_occluder(WAIFU_FM_WIDTH - 130, WAIFU_UI_BOTTOM_Y(146), 121, 76);
     draw_story_scene_3d(f);
     draw_panel_rect(WAIFU_FM_WIDTH - 130, WAIFU_UI_BOTTOM_Y(146), 121, 76, IDX_UI_DARK);
     draw_text_small(WAIFU_FM_WIDTH - 121, WAIFU_UI_BOTTOM_Y(155), "DESTINATION", IDX_GOLD_HI, IDX_BLACK);
@@ -11352,6 +11686,7 @@ static void draw_story_fire_to_deck_transition(int f)
 
 static void draw_story_pyramid_menu(void)
 {
+    story_scene_set_floor_occluder(126, 42, 122, 160);
     draw_story_sanctum_background();
     draw_blue_gradient_box(126, 42, 122, 160);
     draw_text(158, 55, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
@@ -11371,6 +11706,7 @@ static void draw_story_save_screen(void)
     const int box_w = 194;
     int box_x = (WAIFU_FM_WIDTH - box_w) / 2;
     int body_x = box_x + 26;
+    story_scene_set_floor_occluder(box_x, 78, box_w, 82);
     draw_story_sanctum_background();
     draw_blue_gradient_box(box_x, 78, box_w, 82);
     if (g_story_save_status < 0) {
@@ -11396,8 +11732,12 @@ static void draw_story_save_screen(void)
 
 static void draw_story_device_picker(const char *title, int sel, int sanctum_bg)
 {
-    if (sanctum_bg) draw_story_sanctum_background();
-    else clear_screen(IDX_BLACK);
+    if (sanctum_bg) {
+        story_scene_set_floor_occluder(126, 54, 122, 132);
+        draw_story_sanctum_background();
+    } else {
+        clear_screen(IDX_BLACK);
+    }
     draw_blue_gradient_box(126, 54, 122, 132);
     draw_text(161, 70, title, IDX_GOLD_HI, IDX_BLACK);
     draw_text(151, 106, sel == 0 ? "> INTERNAL" : "  INTERNAL", sel == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
@@ -11449,6 +11789,8 @@ static void draw_story_plaza_scene_content(int anim_frame)
     waifu_fm_use_dialogue_palette();
     clear_screen(IDX_BLACK);
     draw_story_sky(anim_frame);
+    /* The full-width dialog box always covers the bottom 66 rows. */
+    story_scene_set_floor_occluder(0, WAIFU_FM_HEIGHT - 66, WAIFU_FM_WIDTH, 66);
     draw_story_scene_3d(anim_frame);
     draw_panel_rect(8, 8, 102, 18, IDX_UI_DARK);
     draw_text_small(14, 14, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);

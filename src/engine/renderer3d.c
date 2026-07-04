@@ -115,61 +115,24 @@ static inline uint32_t cfx_div_refine_u32(uint32_t un, uint32_t ud, uint32_t q)
 }
 
 #if CFX_RENDERER_DIV_LUT
-static const uint16_t cfx_recip_q15_u8[257] = {
-    0, 32768, 16384, 10922, 8192, 6553, 5461, 4681, 4096, 3640, 3276, 2978, 2730, 2520, 2340, 2184,
-    2048, 1927, 1820, 1724, 1638, 1560, 1489, 1424, 1365, 1310, 1260, 1213, 1170, 1129, 1092, 1057,
-    1024, 992, 963, 936, 910, 885, 862, 840, 819, 799, 780, 762, 744, 728, 712, 697,
-    682, 668, 655, 642, 630, 618, 606, 595, 585, 574, 564, 555, 546, 537, 528, 520,
-    512, 504, 496, 489, 481, 474, 468, 461, 455, 448, 442, 436, 431, 425, 420, 414,
-    409, 404, 399, 394, 390, 385, 381, 376, 372, 368, 364, 360, 356, 352, 348, 344,
-    341, 337, 334, 330, 327, 324, 321, 318, 315, 312, 309, 306, 303, 300, 297, 295,
-    292, 289, 287, 284, 282, 280, 277, 275, 273, 270, 268, 266, 264, 262, 260, 258,
-    256, 254, 252, 250, 248, 246, 244, 242, 240, 239, 237, 235, 234, 232, 230, 229,
-    227, 225, 224, 222, 221, 219, 218, 217, 215, 214, 212, 211, 210, 208, 207, 206,
-    204, 203, 202, 201, 199, 198, 197, 196, 195, 193, 192, 191, 190, 189, 188, 187,
-    186, 185, 184, 183, 182, 181, 180, 179, 178, 177, 176, 175, 174, 173, 172, 171,
-    170, 169, 168, 168, 167, 166, 165, 164, 163, 163, 162, 161, 160, 159, 159, 158,
-    157, 156, 156, 155, 154, 153, 153, 152, 151, 151, 150, 149, 148, 148, 147, 146,
-    146, 145, 144, 144, 143, 143, 142, 141, 141, 140, 140, 139, 138, 138, 137, 137,
-    136, 135, 135, 134, 134, 133, 133, 132, 132, 131, 131, 130, 130, 129, 129, 128,
-    128
-};
+/* Reciprocal LUTs, built once at renderer init instead of being stored in the
+   image: 2 KiB of pure floor/round(K/d) data was a real cost against the CD32X
+   128 KiB SH-2 staging budget.  Values are exactly the old constant tables:
+   q15 = 32768/d, q24 = (1<<24 + d/2)/d, q8 = (256 + d/2)/d.  Any renderer use
+   before cfx_renderer3d_init() would read zeros, so keep init first. */
+static uint16_t cfx_recip_q15_u8[257];
+static uint32_t cfx_recip_q24_u8[257];
+static uint16_t cfx_recip_q8_u16[257];
 
-static const uint32_t cfx_recip_q24_u8[257] = {
-    0, 16777216, 8388608, 5592405, 4194304, 3355443, 2796203, 2396745,
-    2097152, 1864135, 1677722, 1525201, 1398101, 1290555, 1198373, 1118481,
-    1048576, 986895, 932068, 883011, 838861, 798915, 762601, 729444,
-    699051, 671089, 645278, 621378, 599186, 578525, 559241, 541201,
-    524288, 508400, 493448, 479349, 466034, 453438, 441506, 430185,
-    419430, 409200, 399458, 390168, 381300, 372827, 364722, 356962,
-    349525, 342392, 335544, 328965, 322639, 316551, 310689, 305040,
-    299593, 294337, 289262, 284360, 279620, 275036, 270600, 266305,
-    262144, 258111, 254200, 250406, 246724, 243148, 239675, 236299,
-    233017, 229825, 226719, 223696, 220753, 217886, 215093, 212370,
-    209715, 207126, 204600, 202135, 199729, 197379, 195084, 192842,
-    190650, 188508, 186414, 184365, 182361, 180400, 178481, 176602,
-    174763, 172961, 171196, 169467, 167772, 166111, 164483, 162886,
-    161319, 159783, 158276, 156796, 155345, 153919, 152520, 151146,
-    149797, 148471, 147169, 145889, 144631, 143395, 142180, 140985,
-    139810, 138655, 137518, 136400, 135300, 134218, 133153, 132104,
-    131072, 130056, 129056, 128070, 127100, 126144, 125203, 124276,
-    123362, 122461, 121574, 120699, 119837, 118987, 118149, 117323,
-    116508, 115705, 114912, 114131, 113360, 112599, 111848, 111107,
-    110376, 109655, 108943, 108240, 107546, 106861, 106185, 105517,
-    104858, 104206, 103563, 102928, 102300, 101680, 101068, 100462,
-    99864, 99273, 98690, 98112, 97542, 96978, 96421, 95870,
-    95325, 94787, 94254, 93727, 93207, 92692, 92183, 91679,
-    91181, 90688, 90200, 89718, 89241, 88768, 88301, 87839,
-    87381, 86929, 86480, 86037, 85598, 85164, 84733, 84308,
-    83886, 83469, 83056, 82646, 82241, 81840, 81443, 81049,
-    80660, 80274, 79892, 79513, 79138, 78766, 78398, 78034,
-    77672, 77314, 76960, 76608, 76260, 75915, 75573, 75234,
-    74898, 74565, 74235, 73908, 73584, 73263, 72944, 72629,
-    72316, 72005, 71698, 71392, 71090, 70790, 70493, 70198,
-    69905, 69615, 69327, 69042, 68759, 68478, 68200, 67924,
-    67650, 67378, 67109, 66841, 66576, 66313, 66052, 65793,
-    65536
-};
+static void cfx_recip_tables_build(void)
+{
+    if (cfx_recip_q15_u8[1]) return;
+    for (int d = 1; d <= 256; ++d) {
+        cfx_recip_q15_u8[d] = (uint16_t)(32768u / (uint32_t)d);
+        cfx_recip_q24_u8[d] = (uint32_t)((16777216u + (uint32_t)(d >> 1)) / (uint32_t)d);
+        cfx_recip_q8_u16[d] = (uint16_t)((256u + (uint32_t)(d >> 1)) / (uint32_t)d);
+    }
+}
 #endif
 
 static inline int32_t cfx_fast_div_tz_i32_u16_q15(int32_t n, uint16_t d)
@@ -196,28 +159,6 @@ static inline int32_t cfx_fast_div_tz_i32_u16_q15(int32_t n, uint16_t d)
     return neg ? -(int32_t)q : (int32_t)q;
 #endif
 }
-
-#if CFX_RENDERER_DIV_LUT
-static const uint16_t cfx_recip_q8_u16[257] = {
-    0, 256, 128, 85, 64, 51, 43, 37, 32, 28, 26, 23, 21, 20, 18, 17,
-    16, 15, 14, 13, 13, 12, 12, 11, 11, 10, 10, 9, 9, 9, 9, 8,
-    8, 8, 8, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 5,
-    5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1
-};
-#endif
 
 static inline int32_t cfx_div_toward_zero(int32_t n, int16_t d)
 {
@@ -438,6 +379,9 @@ uint32_t cfx_renderer3d_lut_size_bytes(void)
 void cfx_renderer3d_init(CfxRenderer3D *renderer, const CfxRenderer3DConfig *config)
 {
     CfxRenderer3DState *state = cfx_state(renderer);
+#if CFX_RENDERER_DIV_LUT
+    cfx_recip_tables_build();
+#endif
     tex_lut_ready = 0;
     tex_lut_source_tile = NULL;
     active_tex_lut = tex_lut;
@@ -1076,7 +1020,7 @@ static inline int32_t cfx_board_clampg(int32_t g)
 }
 
 
-static void cfx_board_tri(uint8_t *fb, int W, int H, const uint8_t *tile,
+static void cfx_board_tri(uint8_t *fb, int W, int H, int ylo, const uint8_t *tile,
     int x0, int y0, int32_t U0, int32_t V0,
     int x1, int y1, int32_t U1, int32_t V1,
     int x2, int y2, int32_t U2, int32_t V2)
@@ -1148,8 +1092,8 @@ static void cfx_board_tri(uint8_t *fb, int W, int H, const uint8_t *tile,
                 dvs = cfx_div_toward_zero_i32d((V2 - V1) << 16, dy12);
             }
             for (; y < yend; ++y) {
-                if (y >= H) return;            /* below screen: nothing left to draw */
-                if (y >= 0) {
+                if (y >= H) return;            /* below screen/band: nothing left to draw */
+                if (y >= ylo) {
                     int xa = (int)(xl >> 16);
                     int xb = (int)(xs >> 16);
                     int use_long_left = (xa < xb);
@@ -1181,6 +1125,20 @@ static void cfx_board_tri(uint8_t *fb, int W, int H, const uint8_t *tile,
 void cfx_renderer3d_draw_quad_board(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type)
 {
 #if CFX_RENDERER_DIRECT_GENERIC_TILE && CFX_RENDERER_DIRECT_RECT
+    cfx_renderer3d_draw_quad_board_band(renderer, p0, p1, p2, p3, tetromino_type,
+                                        0, (DEFAULT_INT)cfx_state(renderer)->height);
+#else
+    cfx_renderer3d_draw_quad(renderer, p0, p1, p2, p3, tetromino_type);
+#endif
+}
+
+/* Band-clipped board quad: fills only scanlines in [y0, y1).  Two CPUs can
+   rasterize the same quad list into disjoint bands with no write overlap and
+   painter order preserved inside each band (CD32X story scenes); the plain
+   quad entry point above is this with the full framebuffer height. */
+void cfx_renderer3d_draw_quad_board_band(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type, DEFAULT_INT y0, DEFAULT_INT y1)
+{
+#if CFX_RENDERER_DIRECT_GENERIC_TILE && CFX_RENDERER_DIRECT_RECT
     CfxRenderer3DState *state = cfx_state(renderer);
     if (!state->framebuffer || !state->texture_atlas) {
         return;
@@ -1191,21 +1149,25 @@ void cfx_renderer3d_draw_quad_board(CfxRenderer3D *renderer, const Point2D *p0, 
     } else if (tetromino_type >= CFX_TEXTURE_TILE_COUNT) {
         tetromino_type = CFX_TEXTURE_TILE_COUNT - 1;
     }
+    if (y0 < 0) y0 = 0;
+    if (y1 > (DEFAULT_INT)state->height) y1 = (DEFAULT_INT)state->height;
+    if (y0 >= y1) return;
 
     {
         const uint8_t *tile = state->texture_atlas + ((int32_t)tetromino_type * state->tile_stride_bytes);
         uint8_t *fb = state->framebuffer;
-        int W = (int)state->width, H = (int)state->height;
-        cfx_board_tri(fb, W, H, tile,
+        int W = (int)state->width;
+        cfx_board_tri(fb, W, (int)y1, (int)y0, tile,
                       (int)p0->x, (int)p0->y, (int32_t)p0->u, (int32_t)p0->v,
                       (int)p1->x, (int)p1->y, (int32_t)p1->u, (int32_t)p1->v,
                       (int)p2->x, (int)p2->y, (int32_t)p2->u, (int32_t)p2->v);
-        cfx_board_tri(fb, W, H, tile,
+        cfx_board_tri(fb, W, (int)y1, (int)y0, tile,
                       (int)p0->x, (int)p0->y, (int32_t)p0->u, (int32_t)p0->v,
                       (int)p2->x, (int)p2->y, (int32_t)p2->u, (int32_t)p2->v,
                       (int)p3->x, (int)p3->y, (int32_t)p3->u, (int32_t)p3->v);
     }
 #else
+    (void)y0; (void)y1;
     cfx_renderer3d_draw_quad(renderer, p0, p1, p2, p3, tetromino_type);
 #endif
 }

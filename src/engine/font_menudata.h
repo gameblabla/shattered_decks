@@ -1,7 +1,14 @@
 #ifndef n2DLIB_FONT
 #define n2DLIB_FONT
 
-static uint8_t n2DLib_font[] =
+/* One shared copy: src/main.c defines WAIFU_FONT_MENUDATA_DEFINE before
+   including this header; every other user links against that copy.  As a
+   per-TU `static` array each including file carried its own 1 KiB duplicate,
+   which the CD32X 128 KiB image budget cannot afford. */
+#ifndef WAIFU_FONT_MENUDATA_DEFINE
+extern const uint8_t n2DLib_font[128 * 8];
+#else
+const uint8_t n2DLib_font[128 * 8] =
 {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* Char 000 (.) */
 	0x7E, 0x81, 0xA5, 0x81, 0xBD, 0x99, 0x81, 0x7E,	/* Char 001 (.) */
@@ -132,4 +139,5 @@ static uint8_t n2DLib_font[] =
 	0x76, 0xDC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* Char 126 (~) */
 	0x00, 0x10, 0x38, 0x6C, 0xC6, 0xC6, 0xFE, 0x00	/* Char 127 (.) */
 };
+#endif /* WAIFU_FONT_MENUDATA_DEFINE */
 #endif

@@ -31,6 +31,7 @@ void cfx_renderer3d_set_texture_atlas(CfxRenderer3D *renderer, const void *atlas
 void cfx_renderer3d_draw_face_list(CfxRenderer3D *renderer, FaceToDraw *faces, DEFAULT_INT face_count);
 void cfx_renderer3d_draw_quad(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type);
 void cfx_renderer3d_draw_quad_board(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type);
+void cfx_renderer3d_draw_quad_board_band(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type, DEFAULT_INT y0, DEFAULT_INT y1);
 void cfx_renderer3d_draw_quad_offscreen_direct(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type);
 /* Division-free affine quad path for cached 3D board/background quads.
    It is intentionally approximate but stable; the generic renderer remains

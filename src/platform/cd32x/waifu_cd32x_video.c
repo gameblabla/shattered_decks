@@ -522,6 +522,20 @@ void waifu_cd32x_video_clear_back_index(uint8_t c)
     cd32x_clear_back_pixels(c);
 }
 
+void waifu_cd32x_video_fill_rows_index(int y0, int y1, uint8_t c)
+{
+    /* Full-width scanline bands are contiguous in the back page, so the 32X
+       VDP auto-fill can paint them without any SH-2 framebuffer stores.  Only
+       the Master may call this: the fill registers are shared VDP state and
+       the Slave render jobs must not race them. */
+    if (y0 < 0) y0 = 0;
+    if (y1 > WAIFU_CD32X_H) y1 = WAIFU_CD32X_H;
+    if (y0 >= y1) return;
+    cd32x_auto_fill_back_words((uint16_t)(WAIFU_CD32X_LINE_TABLE_WORDS + y0 * (WAIFU_CD32X_W / 2)),
+                               (y1 - y0) * (WAIFU_CD32X_W / 2),
+                               (uint16_t)(((uint16_t)c << 8) | c));
+}
+
 void waifu_cd32x_video_draw_debug_overlay(WaifuCd32xVideo *video)
 {
     char buf[12];
