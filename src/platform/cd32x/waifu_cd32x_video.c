@@ -24,6 +24,7 @@
 
 #define CD32X_COMM_READY        0x0001u
 #define CD32X_MD_CMD_SET_FADE   0xCD02u
+#define CD32X_MD_CMD_SET_BG     0xCD0Au
 
 
 #if WAIFU_CD32X_W != 320 || WAIFU_CD32X_H != 224
@@ -62,6 +63,7 @@ static int g_cd32x_menu_pages_remaining = 0;
 
 static void cd32x_put_px_back(int x, int y, uint8_t c);
 static void cd32x_fill_rect_back(int x, int y, int w, int h, uint8_t c);
+static void cd32x_background_frame_end(void);
 
 static inline void cd32x_copy_pairs_to_back(volatile uint16_t *dst, const uint8_t *src, int pairs)
 {
@@ -503,6 +505,12 @@ void waifu_cd32x_video_set_palette_rgb(WaifuCd32xVideo *video, const uint8_t *rg
     for (i = 0; i < 256; ++i) {
         cram[i] = cd32x_rgb_to_cram(rgb[i * 3 + 0], rgb[i * 3 + 1], rgb[i * 3 + 2], fade_q8);
     }
+    /* Palette index 0 is the see-through key for the MD plane-B story sky:
+       with MARS_VDP_PRIO_32X the 32X pixel wins unless its CRAM entry has the
+       priority bit set, so flag entry 0 (and only entry 0) as MD-priority.
+       Where the MD planes are also transparent this shows the MD backdrop
+       (black), which matches the old index-0 behavior. */
+    cram[0] |= 0x8000u;
     if (fade_q8 != video->current_md_fade_q8 && cd32x_request_md_palette_fade(fade_q8)) {
         video->current_md_fade_q8 = fade_q8;
     }
@@ -575,6 +583,7 @@ void waifu_cd32x_video_present_8bpp(WaifuCd32xVideo *video, const uint8_t *frame
     volatile uint16_t *dst16 = &MARS_FRAMEBUFFER;
     int y;
     if (!video || !framebuffer) return;
+    cd32x_background_frame_end();
     waifu_cd32x_video_set_palette_rgb(video, rgb, palette_id, fade_q8);
 
     if (framebuffer == (const uint8_t *)(uintptr_t)WAIFU_CD32X_FRAMEBUFFER_PIXELS) return;
@@ -592,11 +601,51 @@ void waifu_cd32x_video_wait_vblank(WaifuCd32xVideo *video)
     cd32x_wait_fb_flip(video);
 }
 
+/* Mega Drive plane-B story sky behind the 32X bitmap.  The Sub-CPU
+   supervisor owns the MD VDP work (CD32X_MD_CMD_SET_BG); this side only
+   latches kind+scroll opportunistically (never stealing the COMM registers
+   from a CD transfer) and reports whether a hardware sky is active so the
+   caller clears the sky region to palette index 0 instead of compositing a
+   software sky. */
+static int g_cd32x_bg_sent_word = -1;   /* last latched (kind<<12)|scroll */
+static int g_cd32x_bg_frame_requested = 0;
+
+static int cd32x_send_bg_word(unsigned word)
+{
+    if (MARS_SYS_COMM0 != 0u) return 0;
+    MARS_SYS_COMM2 = (uint16_t)word;
+    MARS_SYS_COMM4 = CD32X_MD_CMD_SET_BG;
+    MARS_SYS_COMM0 = CD32X_COMM_READY;
+    return 1;
+}
+
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
 {
-    (void)kind;
-    (void)hscroll;
+    unsigned word = (((unsigned)kind & 0xFu) << 12) | ((unsigned)hscroll & 0x1FFu);
+    g_cd32x_bg_frame_requested = 1;
+    if ((int)word != g_cd32x_bg_sent_word && cd32x_send_bg_word(word)) {
+        g_cd32x_bg_sent_word = (int)word;
+    }
+    /* Active once the requested KIND has been latched by the supervisor; a
+       stale scroll value only lags the parallax sway by a frame. */
+    if (g_cd32x_bg_sent_word >= 0 &&
+        ((unsigned)g_cd32x_bg_sent_word >> 12) == ((unsigned)kind & 0xFu)) {
+        return kind != WAIFU_BACKGROUND_NONE;
+    }
     return 0;
+}
+
+/* Called from present: turn the MD sky off as soon as a frame renders without
+   requesting one, so battle/menu/deck screens never show it through index-0
+   pixels. */
+static void cd32x_background_frame_end(void)
+{
+    if (!g_cd32x_bg_frame_requested &&
+        g_cd32x_bg_sent_word > 0 && ((unsigned)g_cd32x_bg_sent_word >> 12) != 0u &&
+        cd32x_send_bg_word(0)) {
+        g_cd32x_bg_sent_word = 0;
+    }
+    g_cd32x_bg_frame_requested = 0;
 }
 
 int waifu_platform_text_overlay(WaifuTextOverlayKind kind, const WaifuTextOverlayParams *params)

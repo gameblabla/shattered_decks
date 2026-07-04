@@ -11552,13 +11552,54 @@ static int story_background_hscroll(int f)
     return q8_to_int(q8_mul(Q8_FROM_INT(4), q8_sin_rad(phase))) & 0x01ff;
 }
 
+#if defined(WAIFU_FM_CD32X)
+static Camera story_scene_camera(int f)
+{
+    switch (story_scene_kind()) {
+    case STORY_SCENE_TEMPLE:  return story_temple_camera(f);
+    case STORY_SCENE_VOLCANO: return story_volcano_camera(f);
+    case STORY_SCENE_VOID:    return story_void_camera(f);
+    default:                  return story_map_camera(f);
+    }
+}
+
+/* Rows that must be cleared to index 0 for the MD-plane sky: everything the
+   textured floor will not overwrite this frame.  Replicates the floor
+   renderer's per-row activity test exactly (all four story scenes use
+   floor_y = -0.07), plus a two-row overlap that the floor repaints. */
+static int story_sky_clear_rows(int f)
+{
+    Camera cam = story_scene_camera(f);
+    Vec3 ffwd = vnorm(vsub(cam.target, cam.eye));
+    Vec3 fright = vnorm(vcross(ffwd, cam.up));
+    Vec3 fup = vcross(fright, ffwd);
+    int y;
+    for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+        int32_t dy = q8_div(Q8_FROM_INT(WAIFU_FM_HEIGHT / 2 - y) - Q8_HALF, cam.focal);
+        int32_t ray_y = q8_mul(fup.y, dy) + ffwd.y;
+        if (ray_y < 0 &&
+            q8_div(-Q8_FRAC(7,100) - cam.eye.y, ray_y) > Q8_FRAC(1,100)) break;
+    }
+    y += 2;
+    return y > WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT : y;
+}
+#endif
+
 static void draw_story_sky(int f)
 {
-    /* Ask the platform for a hardware background layer (PC-FX RAINBOW). If it
-       presents one, leave the framebuffer transparent for it to show through;
-       otherwise composite the sky into the framebuffer in software. */
+    /* Ask the platform for a hardware background layer (PC-FX RAINBOW,
+       CD32X MD plane-B sky). If it presents one, leave the framebuffer
+       transparent for it to show through; otherwise composite the sky into
+       the framebuffer in software. */
     if (waifu_platform_background_request(story_background_kind(), story_background_hscroll(f))) {
+#if defined(WAIFU_FM_CD32X)
+        /* Only the sky band needs index 0; the floor repaints every row below
+           the horizon (panel-occluded floor spans are covered by the panels
+           drawn later this frame). */
+        fill_rows(0, story_sky_clear_rows(f), 0);
+#else
         clear_screen(0);
+#endif
         return;
     }
     switch (story_scene_kind()) {

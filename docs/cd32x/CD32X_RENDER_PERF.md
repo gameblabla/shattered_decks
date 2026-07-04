@@ -36,6 +36,14 @@
 > store-bound on contended framebuffer DRAM (both CPUs share its bandwidth),
 > so the next big lever is still **§7.1 (SDRAM shadow + DMA present)**, which
 > also unlocks §7.4 dirty rects. §7.5/§7.7 remain open.
+>
+> **§7.6 is now fully implemented**: the story skies are Mega Drive VDP
+> plane-B gradients/starfield behind the 32X bitmap
+> (`CD32X_MD_CMD_SET_BG`, Sub-CPU compositor in `cd32x_boot_main.c`; tiles
+> are synthesized at runtime, scene switches are palette-line-3 swaps).  The
+> 32X marks CRAM entry 0 as MD-priority and the SH-2 only auto-fills the
+> rows above the floor horizon to index 0 (`story_sky_clear_rows`), so the
+> sky costs the SH-2s nothing beyond that partial clear.
 
 This is an analysis-only document. It describes how the Sega CD 32X build draws a
 frame with the two SH-2s, the exact code paths involved, the hardware limits that

@@ -31,6 +31,7 @@ extern void cd32x_bios_cdda_stop(void);
 #define CD32X_MD_CMD_PCM_MUSIC_STOP 0xCD07
 #define CD32X_MD_CMD_SAVE_WRITE  0xCD08
 #define CD32X_MD_CMD_SAVE_EXISTS 0xCD09
+#define CD32X_MD_CMD_SET_BG     0xCD0A
 #define CD32X_CD_STATUS_ERROR   0xCDEE
 #define CD32X_PRIV_BLOB_SAVE     0x0600   /* internal Backup RAM */
 #define CD32X_PRIV_BLOB_SAVE_CART 0x0601  /* Backup RAM cartridge */
@@ -210,6 +211,163 @@ static void cd32x_finish_md_request(int rc)
     cd32x_set_comm_word(0, 0);
 }
 
+/* ---- Mega Drive VDP story sky (CD32X_MD_CMD_SET_BG) ----------------------
+ *
+ * The story scenes show a Mega Drive plane-B background behind the 32X
+ * bitmap: the SH-2 clears the sky region of the framebuffer to palette index
+ * 0 (transparent with MARS_VDP_PRIO_32X) and the MD plane shows through.
+ * Tiles are synthesized here at runtime (solid + checker-dither ramp tiles
+ * and starfield tiles), so switching between the gradient scenes is only a
+ * 16-entry CRAM update in palette line 3.  Kinds follow WaifuBackgroundKind:
+ * 0 NONE, 1 DESERT (blue sky), 2 STONE (dark sky), 3 EMBER (dawn sky),
+ * 4 SKY (starfield). */
+#define CD32X_BG_TILE_VRAM   0x4000
+#define CD32X_BG_TILE_BASE   (CD32X_BG_TILE_VRAM / 32)  /* 512 */
+#define CD32X_BG_SOLID(i)    (CD32X_BG_TILE_BASE + (i))         /* colors 1..14 */
+#define CD32X_BG_DITHER(i)   (CD32X_BG_TILE_BASE + 14 + (i))    /* colors i+1/i+2 */
+#define CD32X_BG_STAR(v)     (CD32X_BG_TILE_BASE + 27 + (v))    /* 3 variants */
+#define CD32X_BG_TILE_COUNT  30
+#define CD32X_BG_NAME_TABLE  0xE000
+#define CD32X_BG_PAL_LINE    3
+#define CD32X_BG_NT_PAL_BITS 0x6000
+
+static signed char g_md_bg_kind = -1;       /* -1: nothing configured yet */
+static signed char g_md_bg_layout = 0;      /* 0 none, 1 gradient, 2 starfield */
+static signed char g_md_bg_tiles_ready = 0;
+static unsigned g_md_bg_scroll = 0xFFFFu;
+static unsigned g_md_bg_fade = 256u;
+static unsigned char g_md_bg_rgb[16][3];
+
+static void cd32x_md_bg_push_palette(void)
+{
+    char *word_ram = (char *)0x0C0000;
+    unsigned short *pal = (unsigned short *)word_ram;
+    int i;
+    cd32x_invalidate_face_atlas();
+    for (i = 0; i < 16; ++i) {
+        pal[i] = cd32x_md_rgb444(g_md_bg_rgb[i][0], g_md_bg_rgb[i][1],
+                                 g_md_bg_rgb[i][2], g_md_bg_fade);
+    }
+    switch_banks();
+    do_md_cmd3(MD_CMD_SET_PALETTE, 0x200000, CD32X_BG_PAL_LINE * 16, 16);
+}
+
+static void cd32x_md_bg_build_palette(int kind)
+{
+    /* Endpoint colors per kind (MD CRAM channels; bit 0 is ignored by the
+       VDP so the useful range is the even values 0..14).  Ramp entry 1 is the
+       top of the screen, entry 14 the horizon; 15 is the star white. */
+    static const unsigned char ends[4][6] = {
+        { 0, 2, 10,  8, 12, 14 },  /* DESERT: deep blue -> pale horizon */
+        { 0, 0,  2,  2,  4,  8 },  /* STONE: near-black -> dim slate */
+        { 4, 0,  8, 14,  8,  0 },  /* EMBER: dusk purple -> dawn orange */
+        { 0, 0,  0,  0,  0,  2 }   /* SKY: black space, faint blue floor */
+    };
+    const unsigned char *e = ends[(kind >= 1 && kind <= 4) ? kind - 1 : 0];
+    int i, c;
+    for (c = 0; c < 3; ++c) g_md_bg_rgb[0][c] = 0;
+    for (i = 1; i <= 14; ++i) {
+        for (c = 0; c < 3; ++c) {
+            int top = e[c], bot = e[3 + c];
+            g_md_bg_rgb[i][c] = (unsigned char)(top + ((bot - top) * (i - 1)) / 13);
+        }
+    }
+    g_md_bg_rgb[15][0] = g_md_bg_rgb[15][1] = g_md_bg_rgb[15][2] = 14;  /* stars */
+    if (kind == 0) {
+        for (i = 0; i < 16; ++i)
+            g_md_bg_rgb[i][0] = g_md_bg_rgb[i][1] = g_md_bg_rgb[i][2] = 0;
+    }
+}
+
+static void cd32x_md_bg_upload_tiles(void)
+{
+    char *word_ram = (char *)0x0C0000;
+    unsigned int *t = (unsigned int *)word_ram;
+    int i, row;
+    cd32x_invalidate_face_atlas();
+    /* 14 solid tiles for ramp colors 1..14. */
+    for (i = 0; i < 14; ++i) {
+        unsigned int v = (unsigned int)(i + 1) * 0x11111111u;
+        for (row = 0; row < 8; ++row) *t++ = v;
+    }
+    /* 13 checkerboard dither tiles blending ramp color i+1 with i+2. */
+    for (i = 0; i < 13; ++i) {
+        unsigned int a = (unsigned int)(((i + 1) << 4) | (i + 2)) * 0x01010101u;
+        unsigned int b = (unsigned int)(((i + 2) << 4) | (i + 1)) * 0x01010101u;
+        for (row = 0; row < 8; ++row) *t++ = (row & 1) ? b : a;
+    }
+    /* 3 star tiles: ramp color 1 base with a single white texel. */
+    for (i = 0; i < 3; ++i) {
+        for (row = 0; row < 8; ++row) {
+            unsigned int v = 0x11111111u;
+            if (row == i * 2 + 1) v = (v & ~(0xFu << ((i * 3 + 2) * 4))) | (0xFu << ((i * 3 + 2) * 4));
+            *t++ = v;
+        }
+    }
+    switch_banks();
+    do_md_cmd3(MD_CMD_COPY_VRAM, CD32X_BG_TILE_VRAM, 0x200000, CD32X_BG_TILE_COUNT * 16);
+}
+
+static void cd32x_md_bg_upload_name_table(int layout)
+{
+    char *word_ram = (char *)0x0C0000;
+    unsigned short *nt = (unsigned short *)word_ram;
+    int r, col;
+    cd32x_invalidate_face_atlas();
+    for (r = 0; r < 32; ++r) {
+        int s = r < 27 ? r : 26;
+        unsigned short grad = (unsigned short)(CD32X_BG_NT_PAL_BITS |
+            ((s & 1) ? CD32X_BG_DITHER(s >> 1) : CD32X_BG_SOLID(s >> 1)));
+        unsigned short base = (unsigned short)(CD32X_BG_NT_PAL_BITS | CD32X_BG_SOLID(0));
+        for (col = 0; col < 64; ++col) {
+            if (layout == 2) {
+                /* Sparse deterministic starfield. */
+                unsigned h = (unsigned)(r * 29 + col * 13 + ((r * col) & 7));
+                nt[r * 64 + col] = (h % 23u) == 5u
+                    ? (unsigned short)(CD32X_BG_NT_PAL_BITS | CD32X_BG_STAR(h % 3u))
+                    : base;
+            } else {
+                nt[r * 64 + col] = grad;
+            }
+        }
+    }
+    switch_banks();
+    do_md_cmd3(MD_CMD_COPY_VRAM, CD32X_BG_NAME_TABLE, 0x200000, 32 * 64);
+}
+
+static void cd32x_service_md_bg_request(void)
+{
+    unsigned word = (unsigned)do_md_cmd2(MD_CMD_GET_COMM32X, 2, 2);
+    int kind = (int)((word >> 12) & 0xFu);
+    unsigned scroll = word & 0x1FFu;
+    if (kind > 4) kind = 0;
+    if (kind != (int)g_md_bg_kind) {
+        cd32x_md_bg_build_palette(kind);
+        if (kind != 0) {
+            int layout = (kind == 4) ? 2 : 1;
+            if (!g_md_bg_tiles_ready) {
+                cd32x_md_bg_upload_tiles();
+                g_md_bg_tiles_ready = 1;
+            }
+            if (layout != (int)g_md_bg_layout) {
+                cd32x_md_bg_upload_name_table(layout);
+                g_md_bg_layout = (signed char)layout;
+            }
+            /* The resident boot text lives in plane A and would show through
+               the transparent sky pixels; clear it before the first reveal. */
+            do_md_cmd0(MD_CMD_CLEAR_A);
+        }
+        cd32x_md_bg_push_palette();
+        g_md_bg_kind = (signed char)kind;
+    }
+    if (kind != 0 && scroll != g_md_bg_scroll) {
+        /* Full-screen plane B hscroll word lives at 0xAC02 (reg 13 table). */
+        do_md_cmd2(MD_CMD_SET_VRAM, 0xAC02, (int)scroll);
+        g_md_bg_scroll = scroll;
+    }
+    cd32x_finish_md_request(0);
+}
+
 static void cd32x_service_md_fade_request(void)
 {
     char *word_ram = (char *)0x0C0000;
@@ -236,6 +394,10 @@ static void cd32x_service_md_fade_request(void)
     pal[1] = cd32x_md_rgb444(10u, 0u, 0u, fade_q8);
     switch_banks();
     do_md_cmd3(MD_CMD_SET_PALETTE, 0x200000, 32, 2);
+
+    /* Keep the story-sky plane in step with the 32X palette fade. */
+    g_md_bg_fade = fade_q8;
+    if (g_md_bg_kind > 0) cd32x_md_bg_push_palette();
 
     cd32x_finish_md_request(0);
 }
@@ -849,6 +1011,10 @@ static void cd32x_service_cd_request(void)
         cd32x_service_md_fade_request();
         return;
     }
+    if (cmd == CD32X_MD_CMD_SET_BG) {
+        cd32x_service_md_bg_request();
+        return;
+    }
     if (cmd == CD32X_MD_CMD_CDDA_PLAY || cmd == CD32X_MD_CMD_CDDA_STOP) {
         cd32x_service_cdda_request(cmd);
         return;
@@ -972,7 +1138,11 @@ int main(void)
 
     cd32x_put_status("SH2 running", TEXT_GREEN, 14, 8);
     cd32x_delay(60);
-    cd32x_put_status("           ", TEXT_GREEN, 14, 8);
+    /* The 32X marks palette index 0 as MD-priority (story skies show the MD
+       plane through it), so the resident boot text must not linger in the MD
+       planes once the game is running. */
+    do_md_cmd0(MD_CMD_CLEAR_A);
+    do_md_cmd0(MD_CMD_CLEAR_B);
 
     for (;;) {
         cd32x_service_cd_request();
