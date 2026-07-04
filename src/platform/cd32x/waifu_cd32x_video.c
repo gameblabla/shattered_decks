@@ -511,8 +511,16 @@ void waifu_cd32x_video_set_palette_rgb(WaifuCd32xVideo *video, const uint8_t *rg
        Where the MD planes are also transparent this shows the MD backdrop
        (black), which matches the old index-0 behavior. */
     cram[0] |= 0x8000u;
-    if (fade_q8 != video->current_md_fade_q8 && cd32x_request_md_palette_fade(fade_q8)) {
-        video->current_md_fade_q8 = fade_q8;
+    {
+        /* MD CRAM channels are 3-bit, so only ~8 fade levels are visible on
+           the MD layer anyway: quantize the forwarded fade so a transition
+           issues a handful of MD palette rewrites instead of one per frame.
+           Each rewrite is held to vblank on the Main CPU (set_palette), so
+           fewer bursts also means fewer chances to slip past vblank. */
+        int md_fade = fade_q8 >= 256 ? 256 : (fade_q8 & ~31);
+        if (md_fade != video->current_md_fade_q8 && cd32x_request_md_palette_fade(md_fade)) {
+            video->current_md_fade_q8 = md_fade;
+        }
     }
     video->current_palette_id = palette_id;
     video->current_fade_q8 = fade_q8;

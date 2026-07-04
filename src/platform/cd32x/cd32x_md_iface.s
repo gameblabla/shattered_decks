@@ -892,6 +892,15 @@ delay:
 |        start = index of the first color in the palette to set
 |        count = number of colors to copy
 set_palette:
+        lea     0xC00000,a1
+        /* CRAM data-port writes during active display are rendered as bright
+           "CRAM dot" artifacts on the raster; with the 32X story sky the MD
+           layer is visible through the 32X bitmap, so fade-time palette
+           updates flashed in the sky.  Hold the write until vertical blank. */
+0:
+        move.w  4(a1),d0                /* VDP status */
+        btst    #3,d0                   /* VBLANK flag */
+        beq.b   0b
         movea.l 4(sp),a0                /* pal */
         move.l  8(sp),d0                /* start */
         move.l  12(sp),d1               /* count */
@@ -900,12 +909,11 @@ set_palette:
         ori.l   #0xC0000000,d0          /* write CRAM address (0 + index*2) */
         subq.w  #1,d1                   /* for dbra */
 
-        lea     0xC00000,a1
         move.w  #0x8F02,4(a1)           /* set INC to 2 */
         move.l  d0,4(a1)                /* write CRAM */
-0:
+1:
         move.w  (a0)+,(a1)              /* copy color to palette */
-        dbra    d1,0b
+        dbra    d1,1b
         rts
 
 | void z80_busrequest(int flag)
