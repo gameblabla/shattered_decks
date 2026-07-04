@@ -344,30 +344,46 @@ static uint16_t music_read_play_off(void)
     return addr;
 }
 
+/* RF5C164 sign/magnitude silence (0xFF would be a loop-end marker). */
+static const uint8_t music_silence[32] = {
+    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+    0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80
+};
+
 static void music_write_ring(uint32_t n)
 {
     uint16_t off = g_music_write_off;
-    if (g_music_clip_len == 0 || g_music_clip_pos >= g_music_clip_len) {
-        g_music_need_chunk = g_music_playing != 0u;
-        return;
-    }
     if (n > CD32X_MUSIC_RING_BYTES) n = CD32X_MUSIC_RING_BYTES;
     while (n > 0u) {
         uint32_t ring_room = (uint32_t)(CD32X_MUSIC_RING_BYTES - off);
-        uint32_t clip_room = g_music_clip_len - g_music_clip_pos;
+        uint32_t clip_room = (g_music_clip_len > g_music_clip_pos)
+            ? g_music_clip_len - g_music_clip_pos : 0u;
         uint32_t chunk = n;
         if (chunk > ring_room) chunk = ring_room;
-        if (chunk > clip_room) chunk = clip_room;
-        pcm_cpy((uint16_t)(CD32X_MUSIC_RING_BASE + off),
-                g_music_clip + g_music_clip_pos, (uint16_t)chunk, 0u);
+        if (clip_room == 0u) {
+            /* Source chunk exhausted and the next one has not arrived yet:
+               keep the write head advancing at the consumption rate laying
+               down SILENCE.  Leaving the ring untouched here made the chip
+               replay the stale ringful (the "song tail repeats" bug near the
+               end of a track); with silence the audible gap is exactly the
+               chunk-supply delay, after which the stream resumes -- for the
+               track loop that is the song end, a short pause, then chunk 0. */
+            g_music_need_chunk = g_music_playing != 0u;
+            if (chunk > (uint32_t)sizeof(music_silence)) chunk = (uint32_t)sizeof(music_silence);
+            pcm_cpy((uint16_t)(CD32X_MUSIC_RING_BASE + off),
+                    music_silence, (uint16_t)chunk, 0u);
+        } else {
+            if (chunk > clip_room) chunk = clip_room;
+            pcm_cpy((uint16_t)(CD32X_MUSIC_RING_BASE + off),
+                    g_music_clip + g_music_clip_pos, (uint16_t)chunk, 0u);
+            g_music_clip_pos += chunk;
+            if (g_music_clip_pos >= g_music_clip_len) g_music_need_chunk = 1u;
+        }
         off = (uint16_t)(off + chunk);
         if (off >= CD32X_MUSIC_RING_BYTES) off = 0u;
-        g_music_clip_pos += chunk;
         n -= chunk;
-        if (g_music_clip_pos >= g_music_clip_len) {
-            g_music_need_chunk = 1u;
-            break;
-        }
     }
     g_music_write_off = off;
 }
@@ -487,9 +503,25 @@ static void music_pump_locked(void)
     g_music_last_tick = GET_TICKS;
 }
 
+/* SH-2 one-shot SFX trigger word, written to MARS COMM14 by the 32X side and
+   mirrored into this Main-CPU-writable gate-array word by the MD vblank
+   handler.  Format (seq<<8)|sfx_id with seq never 0, so the boot value cannot
+   fire.  Dispatching from INT2 keeps one-shots on time even while the main
+   supervisor loop is blocked inside a BIOS CD read (card faces, music
+   chunks), which used to delay battle SFX by the whole read. */
+#define CD32X_SFX_TRIGGER_WORD (*(volatile uint16_t *)0xFF8014)
+static uint16_t g_sfx_last_trigger;
+
 /* Called from the Sub-CPU INT2/vblank handler. */
 void cd32x_music_pump(void)
 {
+    uint16_t trig = CD32X_SFX_TRIGGER_WORD;
+    if (trig != g_sfx_last_trigger) {
+        g_sfx_last_trigger = trig;
+        if ((trig & 0xFF00u) != 0u) {
+            (void)cd32x_pcm_sfx_play((int)(trig & 0xFFu));
+        }
+    }
     music_pump_locked();
 }
 

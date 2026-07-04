@@ -28,7 +28,12 @@ OUT_DIR = os.path.join(ROOT, 'assets', 'generated')
 OUT_H = os.path.join(ROOT, 'src', 'generated', 'cd32x_music_pcm.h')
 OUT_STAMP = os.path.join(OUT_DIR, '.cd32x_music_pcm.stamp')
 
-RATE = 4900
+# 9.8 kHz doubles the old 4.9 kHz fidelity.  The wave-RAM ring (~29 KiB)
+# still buys ~3 s of autonomous playback, far more than one 64 KiB chunk read,
+# and the ring pump now writes SILENCE while a source chunk is late instead of
+# replaying stale ring data, so an underrun degrades to a brief quiet moment
+# rather than a repeated song tail.
+RATE = 9800
 CHUNK_BYTES = 64 * 1024
 # RF5C164 frequency delta for RATE.  BlastEm models Sega CD PCM at
 # 50 MHz / (4 * 384), with cur_ptr advancing by delta / 2048 per output sample.
@@ -81,16 +86,26 @@ def to_mono_s16(ch, width, raw):
 
 
 def resample(samples, src_rate, dst_rate, count):
-    """Nearest-neighbour resample to dst_rate, exactly `count` output samples."""
+    """Box-filter decimation: average the source span behind each output
+    sample.  Nearest-neighbour picking aliased audibly at these low target
+    rates; the box average acts as a crude but effective low-pass."""
     out = [0] * count
     n = len(samples)
     if n == 0:
         return out
     for i in range(count):
-        src = (i * src_rate) // dst_rate
-        if src >= n:
-            src = n - 1
-        out[i] = samples[src]
+        a = (i * src_rate) // dst_rate
+        b = ((i + 1) * src_rate) // dst_rate
+        if a >= n:
+            a = n - 1
+        if b <= a:
+            b = a + 1
+        if b > n:
+            b = n
+        acc = 0
+        for j in range(a, b):
+            acc += samples[j]
+        out[i] = acc // (b - a)
     return out
 
 

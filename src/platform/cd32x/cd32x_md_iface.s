@@ -1497,7 +1497,9 @@ vblank_int:
         move.l  d0,0xA1201C             /* increment ticks */
         tst.b   d7
         beq.b   2f
-        move.l  d0,0xA1512C
+        move.w  d0,0xA1512C             /* tick low word only: COMM14 belongs to the SFX trigger */
+        move.w  0xA1512E,d0
+        move.w  d0,0xA12014             /* mirror SH-2 SFX trigger word for the Sub INT2 handler */
 2:
         move.w  0xA12000,d0
         ori.w   #0x0100,d0

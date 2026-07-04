@@ -34,7 +34,7 @@ struct WaifuCd32xAudio {
     int active_pcm_theme;
     int pcm_command_theme;
     uint8_t pcm_command_pending;
-    int pending_sfx;
+    uint8_t sfx_seq;
 };
 
 static WaifuCd32xAudio g_audio;
@@ -123,7 +123,6 @@ WaifuCd32xAudio *waifu_cd32x_audio_create(void)
     memset(&g_audio, 0, sizeof(g_audio));
     g_audio.active_pcm_theme = CD32X_PCM_THEME_NONE;
     g_audio.pcm_command_theme = CD32X_PCM_THEME_NONE;
-    g_audio.pending_sfx = -1;
     (void)waifu_cd32x_cdda_stop();
     return &g_audio;
 }
@@ -182,36 +181,27 @@ void waifu_cd32x_audio_set_music(WaifuCd32xAudio *audio, WaifuFmMusicTrack track
     cd32x_audio_try_apply_music(audio);
 }
 
-static void __attribute__((noinline)) cd32x_audio_send_sfx(int sfx_id)
-{
-    MARS_SYS_COMM2 = (uint16_t)sfx_id;
-    MARS_SYS_COMM6 = 0;
-    MARS_SYS_COMM4 = CD32X_MD_CMD_PCM_PLAY;
-    MARS_SYS_COMM0 = 1;
-}
-
 void waifu_cd32x_audio_pump(WaifuCd32xAudio *audio)
 {
     /* CD-ROM reads and direct-title transfers can temporarily occupy the
        resident M68K supervisor.  Do not declare CD-DA active after a failed
        command; retry here until the supervisor accepts the request. */
     cd32x_audio_try_apply_music(audio);
-    if (audio && audio->pending_sfx >= 0 && !audio->pcm_command_pending &&
-        cd32x_audio_supervisor_idle()) {
-        cd32x_audio_send_sfx(audio->pending_sfx);
-        audio->pending_sfx = -1;
-    }
 }
 
 void waifu_cd32x_audio_play_sfx(int sfx_id)
 {
-    if (sfx_id < 0) return;
-    if (!cd32x_audio_supervisor_idle()) {
-        g_audio.pending_sfx = sfx_id;
-        return;
-    }
-    cd32x_audio_send_sfx(sfx_id);
-    g_audio.pending_sfx = -1;
-    /* Do not block the game on SFX.  If the supervisor is busy with a music/CD
-       request the latest one-shot is retried from the audio pump. */
+    /* One-shots bypass the COMM0 command channel entirely: the old path had
+       to wait for the supervisor, so an SFX raised while a card face or a
+       music chunk was streaming (most battle draws/placements) played only
+       after the whole CD read finished.  Instead the trigger word goes into
+       MARS COMM14; the MD vblank handler mirrors it into a gate-array word
+       and the Sub-CPU INT2 handler (which runs even inside a blocking BIOS
+       read) fires the preloaded sample -- worst case one frame late.  The
+       sequence tag makes each press distinct; it skips 0 so the boot value
+       of the mirror word can never fire a stray effect. */
+    if (sfx_id < 0 || sfx_id > 255) return;
+    g_audio.sfx_seq = (uint8_t)(g_audio.sfx_seq + 1u);
+    if (g_audio.sfx_seq == 0u) g_audio.sfx_seq = 1u;
+    MARS_SYS_COMM14 = (uint16_t)(((uint16_t)g_audio.sfx_seq << 8) | (uint16_t)sfx_id);
 }
