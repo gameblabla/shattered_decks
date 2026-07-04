@@ -468,6 +468,17 @@ WaifuCd32xVideo *waifu_cd32x_video_create(void)
 
     MARS_VDP_DISPMODE = (uint16_t)(MARS_224_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
 
+    /* CRAM holds BIOS leftovers at this point and the framebuffers are about
+       to be cleared to index 0: black the palette out now (entry 0 keeps its
+       MD-priority bit) so the frames before the first game palette upload
+       cannot flash garbage colors. */
+    {
+        volatile uint16_t *cram = &MARS_CRAM;
+        int i;
+        cram[0] = 0x8000u;
+        for (i = 1; i < 256; ++i) cram[i] = 0;
+    }
+
     cd32x_init_framebuffers(&g_video);
 
     g_video.current_palette_id = (WaifuFmPaletteId)-1;
@@ -502,15 +513,19 @@ void waifu_cd32x_video_set_palette_rgb(WaifuCd32xVideo *video, const uint8_t *rg
     if (fade_q8 < 0) fade_q8 = 0;
     if (fade_q8 > 256) fade_q8 = 256;
     if (palette_id == video->current_palette_id && fade_q8 == video->current_fade_q8) return;
-    for (i = 0; i < 256; ++i) {
-        cram[i] = cd32x_rgb_to_cram(rgb[i * 3 + 0], rgb[i * 3 + 1], rgb[i * 3 + 2], fade_q8);
-    }
     /* Palette index 0 is the see-through key for the MD plane-B story sky:
        with MARS_VDP_PRIO_32X the 32X pixel wins unless its CRAM entry has the
        priority bit set, so flag entry 0 (and only entry 0) as MD-priority.
        Where the MD planes are also transparent this shows the MD backdrop
-       (black), which matches the old index-0 behavior. */
-    cram[0] |= 0x8000u;
+       (black), which matches the old index-0 behavior.  The bit MUST be part
+       of the single entry-0 write: rewriting it bare and OR-ing the bit in
+       after the 256-entry loop left a mid-display window where index-0
+       pixels showed entry 0's raw color -- the common palette's entry 0 is
+       near-white, which flashed the whole sky/boot screen every rewrite. */
+    cram[0] = cd32x_rgb_to_cram(rgb[0], rgb[1], rgb[2], fade_q8) | 0x8000u;
+    for (i = 1; i < 256; ++i) {
+        cram[i] = cd32x_rgb_to_cram(rgb[i * 3 + 0], rgb[i * 3 + 1], rgb[i * 3 + 2], fade_q8);
+    }
     {
         /* MD CRAM channels are 3-bit, so only ~8 fade levels are visible on
            the MD layer anyway: quantize the forwarded fade so a transition

@@ -1136,11 +1136,11 @@ int main(void)
 
     cd32x_force_md_h40();
 
-    cd32x_put_status("SH2 running", TEXT_GREEN, 14, 8);
-    cd32x_delay(60);
     /* The 32X marks palette index 0 as MD-priority (story skies show the MD
-       plane through it), so the resident boot text must not linger in the MD
-       planes once the game is running. */
+       plane through it), and the freshly booted SH-2 presents an index-0
+       cleared framebuffer while the title assets stream: wipe the boot text
+       from the MD planes IMMEDIATELY at handoff or it shows through.  (The
+       old "SH2 running" status + delay lingered for a second of gameplay.) */
     do_md_cmd0(MD_CMD_CLEAR_A);
     do_md_cmd0(MD_CMD_CLEAR_B);
 
