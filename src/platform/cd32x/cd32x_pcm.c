@@ -312,7 +312,17 @@ int cd32x_pcm_sfx_play(int effect)
 #define PCM_PLAY_LO *((volatile uint8_t *)0xFF0031)
 #define PCM_PLAY_HI *((volatile uint8_t *)0xFF0033)
 
-static int8_t  g_music_clip[WAIFU_CD32X_MUSIC_PCM_MAX_CHUNK_BYTES];
+/* Double-buffered chunk source: the INT2 pump drains the ACTIVE buffer into
+   the wave-RAM ring while the supervisor prefetches the NEXT chunk into the
+   BACK buffer.  The buffer swap happens inside the pump itself, so a chunk
+   boundary costs no CD wait at all -- music only goes (silence-)dry if the CD
+   was too busy to prefetch for an entire chunk duration, which keeps 16 kHz
+   streaming safe alongside mid-duel card-art reads. */
+static int8_t  g_music_clip_a[WAIFU_CD32X_MUSIC_PCM_MAX_CHUNK_BYTES] __attribute__((aligned(4)));
+static int8_t  g_music_clip_b[WAIFU_CD32X_MUSIC_PCM_MAX_CHUNK_BYTES] __attribute__((aligned(4)));
+static int8_t *g_music_clip = g_music_clip_a;
+static int8_t *g_music_back = g_music_clip_b;
+static uint32_t g_music_back_len;
 static uint32_t g_music_clip_len;
 static uint32_t g_music_clip_pos;
 static uint16_t g_music_write_off;
@@ -326,7 +336,8 @@ static uint8_t  g_music_stale_play_reads;
 static void music_pump_locked(void);
 
 int8_t *cd32x_music_clip_buffer(void) { return g_music_clip; }
-uint32_t cd32x_music_clip_capacity(void) { return (uint32_t)sizeof(g_music_clip); }
+int8_t *cd32x_music_back_buffer(void) { return g_music_back; }
+uint32_t cd32x_music_clip_capacity(void) { return (uint32_t)sizeof(g_music_clip_a); }
 
 static uint16_t music_read_play_off(void)
 {
@@ -362,6 +373,18 @@ static void music_write_ring(uint32_t n)
             ? g_music_clip_len - g_music_clip_pos : 0u;
         uint32_t chunk = n;
         if (chunk > ring_room) chunk = ring_room;
+        if (clip_room == 0u && g_music_back_len != 0u) {
+            /* Seamless chunk boundary: swap in the prefetched back buffer and
+               immediately ask the supervisor for the one after it. */
+            int8_t *t = g_music_clip;
+            g_music_clip = g_music_back;
+            g_music_back = t;
+            g_music_clip_len = g_music_back_len;
+            g_music_clip_pos = 0u;
+            g_music_back_len = 0u;
+            g_music_need_chunk = g_music_playing != 0u;
+            continue;
+        }
         if (clip_room == 0u) {
             /* Source chunk exhausted and the next one has not arrived yet:
                keep the write head advancing at the consumption rate laying
@@ -394,13 +417,14 @@ void cd32x_music_start(uint32_t chunk_bytes)
     uint32_t lead;
     uint16_t sr;
     if (chunk_bytes < 2u) return;
-    if (chunk_bytes > (uint32_t)sizeof(g_music_clip)) chunk_bytes = (uint32_t)sizeof(g_music_clip);
+    if (chunk_bytes > (uint32_t)sizeof(g_music_clip_a)) chunk_bytes = (uint32_t)sizeof(g_music_clip_a);
 
     sr = cd32x_irq_lock();
     cd32x_music_stop();
 
     g_music_clip_len = chunk_bytes;
     g_music_clip_pos = 0u;
+    g_music_back_len = 0u;
     g_music_need_chunk = 0u;
     g_music_write_off = 0u;
     g_music_have_play_off = 0u;
@@ -429,6 +453,10 @@ void cd32x_music_start(uint32_t chunk_bytes)
     g_music_clip_pos = lead;
     g_music_last_tick = GET_TICKS;
     g_music_playing = 1u;
+    /* Ask for the chunk-1 prefetch right away: the back buffer starts empty
+       and the whole point of the double buffer is to have the next chunk
+       resident before the active one drains. */
+    g_music_need_chunk = 1u;
     pcm_set_on(CD32X_MUSIC_CHANNEL);
     cd32x_irq_unlock(sr);
 }
@@ -438,10 +466,13 @@ void cd32x_music_supply_chunk(uint32_t chunk_bytes)
     uint16_t sr;
     if (!g_music_playing) return;
     if (chunk_bytes < 1u) return;
-    if (chunk_bytes > (uint32_t)sizeof(g_music_clip)) chunk_bytes = (uint32_t)sizeof(g_music_clip);
+    if (chunk_bytes > (uint32_t)sizeof(g_music_clip_a)) chunk_bytes = (uint32_t)sizeof(g_music_clip_a);
     sr = cd32x_irq_lock();
-    g_music_clip_len = chunk_bytes;
-    g_music_clip_pos = 0u;
+    /* The supervisor filled the BACK buffer (cd32x_music_back_buffer); mark it
+       ready.  The INT2 pump swaps it in the moment the active clip drains, so
+       normal chunk boundaries are seamless.  Pump immediately so a stream that
+       already ran dry (silence) resumes without waiting for the next tick. */
+    g_music_back_len = chunk_bytes;
     g_music_need_chunk = 0u;
     g_music_stale_play_reads = 0u;
     music_pump_locked();
@@ -450,7 +481,7 @@ void cd32x_music_supply_chunk(uint32_t chunk_bytes)
 
 int cd32x_music_needs_chunk(void)
 {
-    return g_music_playing && g_music_need_chunk;
+    return g_music_playing && g_music_need_chunk && g_music_back_len == 0u;
 }
 
 void cd32x_music_stop(void)
@@ -461,6 +492,7 @@ void cd32x_music_stop(void)
     pcm_set_off(CD32X_MUSIC_CHANNEL);
     g_music_playing = 0u;
     g_music_clip_len = 0u;
+    g_music_back_len = 0u;
     g_music_need_chunk = 0u;
     g_music_have_play_off = 0u;
     g_music_stale_play_reads = 0u;

@@ -28,12 +28,14 @@ OUT_DIR = os.path.join(ROOT, 'assets', 'generated')
 OUT_H = os.path.join(ROOT, 'src', 'generated', 'cd32x_music_pcm.h')
 OUT_STAMP = os.path.join(OUT_DIR, '.cd32x_music_pcm.stamp')
 
-# 9.8 kHz doubles the old 4.9 kHz fidelity.  The wave-RAM ring (~29 KiB)
-# still buys ~3 s of autonomous playback, far more than one 64 KiB chunk read,
-# and the ring pump now writes SILENCE while a source chunk is late instead of
-# replaying stale ring data, so an underrun degrades to a brief quiet moment
-# rather than a repeated song tail.
-RATE = 9800
+# 16 kHz streaming.  Safe because the chunk source is DOUBLE BUFFERED on the
+# Sub CPU: the next 64 KiB chunk is prefetched into a second PRG-RAM buffer
+# while the current one feeds the wave-RAM ring, so a chunk boundary costs no
+# CD wait and card-art reads only ever delay the *prefetch* (which has a whole
+# chunk duration, ~4 s, of slack).  The ~29 KiB ring itself still buys ~1.8 s
+# of fully autonomous playback, and a genuine starvation degrades to silence
+# (never a stale-ring replay).
+RATE = 16000
 CHUNK_BYTES = 64 * 1024
 # RF5C164 frequency delta for RATE.  BlastEm models Sega CD PCM at
 # 50 MHz / (4 * 384), with cur_ptr advancing by delta / 2048 per output sample.
@@ -134,9 +136,10 @@ def main():
     for _, stem, _ in THEMES:
         for old in glob.glob(os.path.join(OUT_DIR, '%s[0-9][0-9].BIN' % stem)):
             os.remove(old)
-        old_clip = os.path.join(OUT_DIR, '%s_PCM.BIN' % stem)
-        if os.path.exists(old_clip):
-            os.remove(old_clip)
+        for old in (os.path.join(OUT_DIR, '%s_PCM.BIN' % stem),
+                    os.path.join(OUT_DIR, '%s.PCM' % stem)):
+            if os.path.exists(old):
+                os.remove(old)
 
     for macro, stem, wav in THEMES:
         path = os.path.join(ROOT, wav)
@@ -145,13 +148,14 @@ def main():
         count = max(1, (len(mono) * RATE + rate // 2) // rate)
         clip = resample(mono, rate, RATE, count)
         pcm = to_rf5c164(clip)
-        chunks = 0
-        for off in range(0, len(pcm), CHUNK_BYTES):
-            chunk = pcm[off:off + CHUNK_BYTES]
-            out_bin = os.path.join(OUT_DIR, '%s%02d.BIN' % (stem, chunks))
-            with open(out_bin, 'wb') as f:
-                f.write(chunk)
-            chunks += 1
+        # ONE contiguous <STEM>.PCM per theme: the prebuilt Sega CD boot
+        # block's find_dir_entry only walks a single directory sector, so
+        # per-chunk files broke once /MUSIC outgrew ~40 entries.  The
+        # supervisor reads 64 KiB chunks with raw sector reads at LBA
+        # offsets instead.
+        chunks = (len(pcm) + CHUNK_BYTES - 1) // CHUNK_BYTES
+        with open(os.path.join(OUT_DIR, '%s.PCM' % stem), 'wb') as f:
+            f.write(pcm)
         entries.append((macro, stem, len(pcm), chunks))
         print('%-20s %-10s %8d bytes %2d chunks (%.1fs)' %
               (macro, stem, len(pcm), chunks, len(pcm) / float(RATE)))

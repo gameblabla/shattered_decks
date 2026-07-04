@@ -35,6 +35,7 @@ int cd32x_pcm_sfx_play(int effect);
    vblank tick.  When the PRG chunk has been fully queued into wave RAM,
    cd32x_music_needs_chunk() asks the supervisor to load the next CD chunk. */
 int8_t *cd32x_music_clip_buffer(void);
+int8_t *cd32x_music_back_buffer(void);
 uint32_t cd32x_music_clip_capacity(void);
 void cd32x_music_start(uint32_t chunk_bytes);
 void cd32x_music_supply_chunk(uint32_t chunk_bytes);

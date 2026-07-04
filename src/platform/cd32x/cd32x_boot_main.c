@@ -668,16 +668,14 @@ static void cd32x_service_portrait_request(int portrait_id, int words, int mask,
     cd32x_transfer_word_ram_to_32x(words);
 }
 
-static void cd32x_music_chunk_filename(char *out, const char *stem, int chunk)
+static void cd32x_music_pcm_filename(char *out, const char *stem)
 {
     int i = 0;
-    while (stem && *stem && i < 6) out[i++] = *stem++;
-    out[i++] = (char)('0' + ((chunk / 10) % 10));
-    out[i++] = (char)('0' + (chunk % 10));
+    while (stem && *stem && i < 8) out[i++] = *stem++;
     out[i++] = '.';
-    out[i++] = 'B';
-    out[i++] = 'I';
-    out[i++] = 'N';
+    out[i++] = 'P';
+    out[i++] = 'C';
+    out[i++] = 'M';
     out[i] = 0;
 }
 
@@ -707,19 +705,33 @@ static int cd32x_music_theme_info(int theme_id, const char **stem, int *chunks)
     }
 }
 
-static int cd32x_load_music_chunk(const char *stem, int chunk, char *word_ram)
+/* Each theme is ONE contiguous <STEM>.PCM file; chunks are read with raw
+   sector reads at file-LBA offsets straight into the Sub-CPU PRG-RAM source
+   buffers.  Two reasons: (a) per-chunk files put later chunks past the first
+   /MUSIC directory sector, and the prebuilt Sega CD boot block's
+   find_dir_entry only walks ONE directory sector (at 16 kHz that silently
+   broke every theme whose chunk 0 sorted past ~40 entries); (b) skipping the
+   Word-RAM staging keeps the resident card-face chunk intact across music
+   loads.  ISO9660 files are single contiguous extents, so LBA + 32*k is
+   exact; 64 KiB chunks are 32 whole sectors. */
+static int g_cd32x_pcm_music_lba;
+static uint32_t g_cd32x_pcm_music_bytes;
+
+static int cd32x_music_read_chunk(int chunk, int8_t *dest)
 {
-    char filename[16];
+    uint32_t off = (uint32_t)chunk * (uint32_t)WAIFU_CD32X_MUSIC_PCM_CHUNK_BYTES;
+    uint32_t len;
+    int nsec;
     int rc;
-    cd32x_music_chunk_filename(filename, stem, chunk);
-    if (cd32x_set_music_cwd() < 0) return -1;
+    if (g_cd32x_pcm_music_lba <= 0 || off >= g_cd32x_pcm_music_bytes) return -1;
+    len = g_cd32x_pcm_music_bytes - off;
+    if (len > (uint32_t)WAIFU_CD32X_MUSIC_PCM_CHUNK_BYTES) len = WAIFU_CD32X_MUSIC_PCM_CHUNK_BYTES;
+    nsec = (int)((len + 2047u) >> 11);
     cd32x_before_cd_read();
-    rc = load_file(filename, word_ram);
+    rc = read_cd(g_cd32x_pcm_music_lba + chunk * (WAIFU_CD32X_MUSIC_PCM_CHUNK_BYTES >> 11),
+                 nsec, dest);
     if (rc < 0) return rc;
-    if ((uint32_t)rc > cd32x_music_clip_capacity()) rc = (int)cd32x_music_clip_capacity();
-    if (rc <= 0) return -1;
-    memcpy(cd32x_music_clip_buffer(), word_ram, rc);
-    return rc;
+    return (int)len;
 }
 
 static void cd32x_clear_music_stream(void)
@@ -728,16 +740,16 @@ static void cd32x_clear_music_stream(void)
     g_cd32x_pcm_music_stem = 0;
     g_cd32x_pcm_music_chunks = 0;
     g_cd32x_pcm_music_next_chunk = 0;
+    g_cd32x_pcm_music_lba = 0;
+    g_cd32x_pcm_music_bytes = 0;
 }
 
-/* Load the first in-duel / deck-editor theme chunk from CD into the Sub-CPU
-   PRG-RAM music source buffer and start the RF5C164 ring.  Later chunks are
-   loaded by cd32x_music_stream_pump() when the current source chunk has been
-   queued into wave RAM.  The chunk load uses Word RAM only as a temporary CD
-   staging buffer, so card art keeps its existing chunked transfer semantics. */
+/* Resolve the theme's .PCM extent, load chunk 0 into the ACTIVE source buffer
+   and start the RF5C164 ring.  Later chunks are prefetched into the BACK
+   buffer by cd32x_music_stream_pump(). */
 static int cd32x_start_music(int theme_id)
 {
-    char *word_ram = (char *)0x0C0000;
+    char filename[16];
     const char *stem;
     int chunks;
     int rc;
@@ -749,9 +761,21 @@ static int cd32x_start_music(int theme_id)
     if (chunks <= 0) return -1;
 
     cd32x_clear_music_stream();
-    cd32x_invalidate_face_atlas();
-    rc = cd32x_load_music_chunk(stem, 0, word_ram);
-    if (rc < 0) return rc;
+    cd32x_music_pcm_filename(filename, stem);
+    if (cd32x_set_music_cwd() < 0) return -1;
+    if (find_dir_entry(filename) < 0) return -1;
+    g_cd32x_pcm_music_lba = global_vars->DENTRY_OFFSET;
+    g_cd32x_pcm_music_bytes = (uint32_t)global_vars->DENTRY_LENGTH;
+    if (g_cd32x_pcm_music_bytes < 2u) {
+        cd32x_clear_music_stream();
+        return -1;
+    }
+
+    rc = cd32x_music_read_chunk(0, cd32x_music_clip_buffer());
+    if (rc < 0) {
+        cd32x_clear_music_stream();
+        return rc;
+    }
     cd32x_music_start((uint32_t)rc);
     g_cd32x_pcm_music_stem = stem;
     g_cd32x_pcm_music_chunks = chunks;
@@ -761,12 +785,12 @@ static int cd32x_start_music(int theme_id)
 
 static void cd32x_music_stream_pump(void)
 {
-    char *word_ram = (char *)0x0C0000;
     int rc;
     if (!g_cd32x_pcm_music_stem || g_cd32x_pcm_music_chunks <= 0) return;
     if (!cd32x_music_needs_chunk()) return;
-    cd32x_invalidate_face_atlas();
-    rc = cd32x_load_music_chunk(g_cd32x_pcm_music_stem, g_cd32x_pcm_music_next_chunk, word_ram);
+    /* Prefetch into the BACK buffer: the INT2 pump swaps it in when the
+       active clip drains, so normal chunk boundaries never wait for the CD. */
+    rc = cd32x_music_read_chunk(g_cd32x_pcm_music_next_chunk, cd32x_music_back_buffer());
     if (rc <= 0) return;
     cd32x_music_supply_chunk((uint32_t)rc);
     ++g_cd32x_pcm_music_next_chunk;

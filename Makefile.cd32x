@@ -226,10 +226,10 @@ $(CDROOT): $(M68K_BIN) $(CD_ASSETS) src/generated/cd32x_music_pcm.h
 	cp assets/generated/support_big_art.bin $(CDROOT)/ASSETS/SUPPORT_BIG_ART.BIN
 	cp assets/generated/support_big_art_cd.bin $(CDROOT)/ASSETS/SUPPORT_BIG_ART_CD.BIN
 	cp assets/generated/cd32x_sfx_pcm.bin $(CDROOT)/ASSETS/SFX_PCM.BIN
-	cp assets/generated/DECK??.BIN $(CDROOT)/MUSIC/
-	cp assets/generated/BTL??.BIN $(CDROOT)/MUSIC/
-	cp assets/generated/BOSS??.BIN $(CDROOT)/MUSIC/
-	cp assets/generated/FINL??.BIN $(CDROOT)/MUSIC/
+	cp assets/generated/DECK.PCM $(CDROOT)/MUSIC/
+	cp assets/generated/BTL.PCM $(CDROOT)/MUSIC/
+	cp assets/generated/BOSS.PCM $(CDROOT)/MUSIC/
+	cp assets/generated/FINL.PCM $(CDROOT)/MUSIC/
 
 cd: $(ISO)
 
