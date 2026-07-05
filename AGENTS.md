@@ -238,7 +238,7 @@ Verify PC-FX present changes by booting the new CD fresh (a `.mcr`/state snapsho
 
 - Equip animation: `WAIFU_EQUIP_ANIM_FRAMES` in `src/main.c:117` is 72 on CD32X (was 22 after the `1b3d4bc` vblank-step commit). Compensates for `g_b_anim_step` (1..4) so the visual sub-stages (flip, merge, flash) have enough game-frames to render smoothly. PC-FX uses 36, host uses 120. At step=2 this yields ~14 reveal frames and ~16 merge frames, matching PC-FX smoothness.
 - Burn/vanish frames: `BATTLE_BURN_DUR`/`BATTLE_BURN_VANISH_FRAMES` at `src/main.c:368-370` are doubled for CD32X (24/20 vs PC-FX 12/10) because the thunder burn animation indexes into `g_b_anim_vblanks` which advances by `g_b_anim_step`. The higher value preserves smooth burn-wipe progression even when step >= 2.
-- Title prompt on CD32X says "PUSH START" instead of "PRESS RUN TO START": `src/platform/cd32x/waifu_cd32x_video.c:429`. The blink rate is halved (48-frame toggle vs 24-frame) at `src/main.c:12406` so the prompt updates more slowly on CD32X than PC-FX/PC.
+- Title prompt on CD32X says "PUSH START" instead of "PRESS RUN TO START": `src/platform/cd32x/waifu_cd32x_video.c:429`. The blink rate is 60-frame toggle (vs 24-frame on PC-FX/PC) at `src/main.c:12406` so the prompt updates more slowly on CD32X.
 
 ## CD32X card-face LRU invalidation
 

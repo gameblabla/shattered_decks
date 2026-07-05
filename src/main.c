@@ -12403,7 +12403,7 @@ void waifu_fm_step(const WaifuFmInput *input)
     {
         WaifuTextOverlayParams ov = {0};
 #if defined(WAIFU_FM_CD32X)
-        ov.prompt_visible = ((g_i_frame / 48) & 1) == 0;
+        ov.prompt_visible = ((g_i_frame / 60) & 1) == 0;
 #else
         ov.prompt_visible = ((g_i_frame / 24) & 1) == 0;
 #endif
