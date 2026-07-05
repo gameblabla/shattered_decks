@@ -426,7 +426,7 @@ static void cd32x_draw_title_prompt_both(int prompt_visible, int has_save)
 
     cd32x_restore_title_rect_back(0, 184, WAIFU_CD32X_W, 36);
     if (prompt_visible) {
-        cd32x_draw_text_centered_both(190, "PRESS RUN TO START", 1, IDX_WHITE, IDX_BLACK);
+        cd32x_draw_text_centered_both(190, "PUSH START", 1, IDX_WHITE, IDX_BLACK);
     }
     cd32x_draw_text_centered_both(208, "(C) 2026 GAMEBLABLA", 1, IDX_WHITE, IDX_BLACK);
     if (g_cd32x_prompt_pages_remaining > 0) --g_cd32x_prompt_pages_remaining;

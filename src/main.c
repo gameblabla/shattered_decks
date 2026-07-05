@@ -114,7 +114,7 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_RESULT_TOTAL_FRAMES (WAIFU_RESULT_ANIM_START_FRAMES + WAIFU_PCFX_HANDTOP_FRAMES + 96)
 #define WAIFU_PCFX_DRAW_FRAMES 18
 #define WAIFU_HAND_INTRO_FRAMES 18
-#define WAIFU_EQUIP_ANIM_FRAMES 22
+#define WAIFU_EQUIP_ANIM_FRAMES 48
 #define WAIFU_FUSION_ANIM_FRAMES 74
 #define WAIFU_BATTLE_PRELUDE_FRAMES 8
 #define WAIFU_BATTLE_SLIDE_FRAMES 8
@@ -361,9 +361,16 @@ static int g_b_top_prev_row = 2;
 static int g_b_top_cursor_anim = 8;
 static int g_b_attack_attacker_slot = -1;
 
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+#if defined(WAIFU_FM_PCFX)
 #define BATTLE_BURN_DUR 12
 #define BATTLE_BURN_VANISH_FRAMES 10
+#elif defined(WAIFU_FM_CD32X)
+/* Doubled relative to PC-FX because g_b_anim_step can be >= 2, which skips
+   intermediate burn frames and makes the wipe/vanishing effect look too fast.
+   The higher count ensures enough game-frames of visual burn even when the
+   vblank-accumulator jumps by multiple steps per waifu_fm_step(). */
+#define BATTLE_BURN_DUR 24
+#define BATTLE_BURN_VANISH_FRAMES 20
 #else
 #define BATTLE_BURN_DUR 52
 #define BATTLE_BURN_VANISH_FRAMES 44
@@ -12395,7 +12402,11 @@ void waifu_fm_step(const WaifuFmInput *input)
     case WAIFU_I_TITLE:
     {
         WaifuTextOverlayParams ov = {0};
+#if defined(WAIFU_FM_CD32X)
+        ov.prompt_visible = ((g_i_frame / 48) & 1) == 0;
+#else
         ov.prompt_visible = ((g_i_frame / 24) & 1) == 0;
+#endif
         ov.has_save = story_save_exists();
         if (waifu_platform_text_overlay_is_hardware()) {
             /* Title runs as a static (KING 16M) surface with the mutable prompt

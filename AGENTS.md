@@ -234,6 +234,12 @@ Verify PC-FX present changes by booting the new CD fresh (a `.mcr`/state snapsho
 - `waifu_sound_set_music()` opens/closes the stream on track change (called from `waifu_fm_step` under SDL's audio lock, so no race with the callback). The PSG `placeholder_music_sample()` generator is now compiled only for the PC-FX build (which plays real music via CD-DA and never reaches this mixer).
 - Verify: `./waifu_fm_headless --music-demo-state <title|battle|results|...> --frames N --record-wav out.wav --no-png`, then inspect `out.wav` for real stereo content. Note `Music/Battle.wav` fades in (near-silent for ~1s), so capture ≥600 frames to see it ramp up.
 
+## CD32X Animation Timing / Title Text
+
+- Equip animation: `WAIFU_EQUIP_ANIM_FRAMES` in `src/main.c:117` is 48 on CD32X (was 22 after the `1b3d4bc` vblank-step commit). Compensates for `g_b_anim_step` (1..4) so the visual sub-stages (flip, merge, flash) have enough game-frames to render smoothly. PC-FX uses 36, host uses 120.
+- Burn/vanish frames: `BATTLE_BURN_DUR`/`BATTLE_BURN_VANISH_FRAMES` at `src/main.c:368-370` are doubled for CD32X (24/20 vs PC-FX 12/10) because the thunder burn animation indexes into `g_b_anim_vblanks` which advances by `g_b_anim_step`. The higher value preserves smooth burn-wipe progression even when step >= 2.
+- Title prompt on CD32X says "PUSH START" instead of "PRESS RUN TO START": `src/platform/cd32x/waifu_cd32x_video.c:429`. The blink rate is halved (48-frame toggle vs 24-frame) at `src/main.c:12406` so the prompt updates more slowly on CD32X than PC-FX/PC.
+
 ## CD32X card-face LRU invalidation
 
 - The CD32X small-face LRU pixels live at the SDRAM asset-arena base — the same bytes where the title/portrait/ending working sets are staged. `evict_cards()` MUST invalidate the face-LRU metadata (`cd32x_card_face_cache_reset()`) exactly like it already clears big-art metadata: battle entry builds its face prewarm list by skipping cards `cd32x_find_card_face_slot()` reports resident, and a stale hit there drops the card from the prewarm list right before the CARDS load path resets the cache. Render-time face access is cache-only on CD32X, so such a card's board thumbnail stays a vector placeholder for the whole duel (the historical "random missing thumbnails on the second duel" bug). Any new working set that overlays the low arena must keep this invalidation in the eviction path, not in request-time heuristics.
