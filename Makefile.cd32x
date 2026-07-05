@@ -100,6 +100,7 @@ CD_ASSETS := \
   assets/generated/support_face.bin \
   assets/generated/support_big_art.bin \
   assets/generated/support_big_art_cd.bin \
+  assets/generated/tex_atlas.bin \
   assets/generated/cd32x_sfx_pcm.bin \
   $(CD32X_MUSIC_PCM_STAMP)
 
@@ -182,6 +183,16 @@ $(SH2_ELF): $(SH2_OBJS)
 $(SH2_BIN): $(SH2_ELF)
 	$(SH2_OBJCOPY) -O binary $< $(SH2_OBJDIR)/temp.sh2.bin
 	$(DD) if=$(SH2_OBJDIR)/temp.sh2.bin of=$@ bs=16 conv=sync
+	@sz=$$(stat -c%s $@); \
+	if [ $$sz -gt 131072 ]; then \
+	  echo "ERROR: SH2 boot image is $$sz bytes; the 32X CD boot ROM uploads at most"; \
+	  echo "       131072 bytes (one 128 KiB framebuffer pass), so this image would be"; \
+	  echo "       silently truncated and hang at 'Uploading SH2 app...'."; \
+	  echo "       Move cold code/data to a CD blob (see TEX_ATLAS.BIN) or shrink."; \
+	  rm -f $@; exit 1; \
+	else \
+	  echo "SH2 boot image: $$sz / 131072 bytes ($$((131072 - sz)) free)"; \
+	fi
 
 $(M68K_ELF): $(SH2_BIN) $(M68K_OBJS)
 	$(M68K_CC) $(M68K_LDFLAGS) $(M68K_OBJS) $(M68K_LIBS) -o $@
@@ -196,6 +207,9 @@ assets/generated/cd32x_title_screen_img.bin assets/generated/cd32x_ending_screen
 
 src/generated/title_asset.h: tools/gen_title_asset.py assets/source/title/title_320x224.png assets/source/ending/ending320x240.png src/engine/cfx_screen_config.h src/generated/waifu_assets.h
 	python3 tools/gen_title_asset.py
+
+assets/generated/tex_atlas.bin: tools/cd32x_assets/extract_tex_atlas.py src/generated/waifu_assets.h
+	python3 tools/cd32x_assets/extract_tex_atlas.py src/generated/waifu_assets.h $@
 
 assets/generated/cd32x_sfx_pcm.bin src/generated/cd32x_sfx_pcm.h: tools/gen_cd32x_sfx_pcm.py
 	python3 tools/gen_cd32x_sfx_pcm.py
@@ -223,6 +237,7 @@ $(CDROOT): $(M68K_BIN) $(CD_ASSETS) src/generated/cd32x_music_pcm.h
 	python3 tools/cd32x_assets/split_card_big_art.py assets/generated/card_big_art_cd.bin $(CDROOT)/ASSETS
 	cp assets/generated/card_back.bin $(CDROOT)/ASSETS/CARD_BACK.BIN
 	cp assets/generated/support_face.bin $(CDROOT)/ASSETS/SUPPORT_FACE.BIN
+	cp assets/generated/tex_atlas.bin $(CDROOT)/ASSETS/TEX_ATLAS.BIN
 	cp assets/generated/support_big_art.bin $(CDROOT)/ASSETS/SUPPORT_BIG_ART.BIN
 	cp assets/generated/support_big_art_cd.bin $(CDROOT)/ASSETS/SUPPORT_BIG_ART_CD.BIN
 	cp assets/generated/cd32x_sfx_pcm.bin $(CDROOT)/ASSETS/SFX_PCM.BIN

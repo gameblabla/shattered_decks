@@ -61,8 +61,14 @@ typedef enum WaifuAssetBlobId {
     WAIFU_ASSET_BLOB_CARD_BACK,
     WAIFU_ASSET_BLOB_SUPPORT_FACE,
     WAIFU_ASSET_BLOB_SUPPORT_BIG_ART,
-    WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD
+    WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD,
+    WAIFU_ASSET_BLOB_TEX_ATLAS
 } WaifuAssetBlobId;
+
+/* CD-backend builds only: one-shot raw blob read (used by the CD32X build to
+   stream the 3D texture atlas out of the SH2 boot image, which is capped at
+   128 KiB by the 32X CD boot upload). */
+int waifu_assets_read_blob(WaifuAssetBlobId blob, uint8_t *dst, size_t bytes);
 
 typedef enum WaifuBigArtKind {
     WAIFU_BIG_ART_CARD = 0,

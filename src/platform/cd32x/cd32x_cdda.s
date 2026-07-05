@@ -12,6 +12,7 @@
         .equ    BIOS_DRV_INIT,   0x0010
         .equ    BIOS_MSC_PLAY1,  0x0012
         .equ    BIOS_MSC_PLAYR,  0x0013
+        .equ    BIOS_CDB_CHK,    0x0080
         .equ    BIOS_CDB_STAT,   0x0081
         .equ    BIOS_FDR_SET,    0x0085
         .equ    BIOS_CDC_STOP,   0x0089
@@ -40,6 +41,24 @@ cd32x_bios_cdda_init:
         movem.l (sp)+,d2-d7/a2-a6
         rts
 
+| cd32x_cdda_wait_ready: bounded wait for the BIOS to finish any in-flight
+| command.  BIOS music calls (MSCPLAY/MSCSTOP/FDRSET/...) are silently DROPPED
+| while the BIOS is busy (CDB_CHK returns carry set), and the supervisor asks
+| for CD-DA right after blocking data reads — exactly when the BIOS is still
+| busy.  That race is why music sometimes failed to start (or stop).
+| Clobbers d0/d2 (callers save d2 via movem).  Bounded so a wedged drive can
+| never strand the supervisor loop.
+cd32x_cdda_wait_ready:
+        move.l  #0x00080000,d2
+1:
+        move.w  #BIOS_CDB_CHK,d0
+        jsr     CDBIOS.w
+        bcc.b   2f                      | carry clear: BIOS ready
+        subq.l  #1,d2
+        bne.b   1b
+2:
+        rts
+
 | int cd32x_bios_cdda_play(int track, int loop);
 | track is the absolute CD track number from the mixed-mode CUE. loop selects
 | BIOS_MSC_PLAYR, otherwise BIOS_MSC_PLAY1.
@@ -48,14 +67,18 @@ cd32x_bios_cdda_play:
         move.l  4(sp),d0
         move.w  d0,cd32x_cdda_track
         movem.l d2-d7/a2-a6,-(sp)
+        bsr.b   cd32x_cdda_wait_ready
         move.w  #BIOS_CDC_STOP,d0
         jsr     CDBIOS.w
+        bsr.b   cd32x_cdda_wait_ready
         move.w  #BIOS_ROM_PAUSEON,d0
         jsr     CDBIOS.w
+        bsr.b   cd32x_cdda_wait_ready
         move.w  #0x0400,d1
         move.w  #BIOS_FDR_SET,d0
         jsr     CDBIOS.w
         move.w  #0x4000,GA_REG_CDFADER.l
+        bsr.b   cd32x_cdda_wait_ready
         lea     cd32x_cdda_track(pc),a0
         tst.l   52(sp)                  | original second arg after movem push
         beq.b   1f
@@ -69,10 +92,26 @@ cd32x_bios_cdda_play:
         moveq   #0,d0
         rts
 
+| int cd32x_bios_cdda_status(void);
+| CDBSTAT refresh + return the CDSTAT status word.  High byte: 0x00 = STOP,
+| 0x01 = playing, 0x03 = seeking, 0x05 = paused.  Used by the supervisor to
+| notice that a non-looping jingle finished BEFORE a data read clobbers the
+| status word with the data-access state.
+        .global cd32x_bios_cdda_status
+cd32x_bios_cdda_status:
+        movem.l d2-d7/a2-a6,-(sp)
+        move.w  #BIOS_CDB_STAT,d0
+        jsr     CDBIOS.w
+        movem.l (sp)+,d2-d7/a2-a6
+        moveq   #0,d0
+        move.w  CDSTAT.w,d0
+        rts
+
 | void cd32x_bios_cdda_stop(void);
         .global cd32x_bios_cdda_stop
 cd32x_bios_cdda_stop:
         movem.l d2-d7/a2-a6,-(sp)
+        bsr.w   cd32x_cdda_wait_ready
         move.w  #BIOS_MSC_STOP,d0
         jsr     CDBIOS.w
         movem.l (sp)+,d2-d7/a2-a6

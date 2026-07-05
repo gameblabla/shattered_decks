@@ -20,6 +20,7 @@
 extern void cd32x_bios_cdda_init(void);
 extern int cd32x_bios_cdda_play(int track, int loop);
 extern void cd32x_bios_cdda_stop(void);
+extern int cd32x_bios_cdda_status(void);
 
 #define CD32X_COMM_READY        0x0001
 #define CD32X_CD_CMD_READ_BLOB  0xCD01
@@ -47,6 +48,7 @@ extern void cd32x_bios_cdda_stop(void);
 #define WAIFU_ASSET_BLOB_SUPPORT_FACE            10
 #define WAIFU_ASSET_BLOB_SUPPORT_BIG_ART         11
 #define WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD      12
+#define WAIFU_ASSET_BLOB_TEX_ATLAS               13
 #define CD32X_PRIV_BLOB_CARD_FACE_0               0x0100
 #define CD32X_PRIV_BLOB_CARD_SINGLE_0             0x0200
 #define CD32X_PRIV_BLOB_CARD_BIG_SINGLE_0         0x0300
@@ -97,7 +99,8 @@ static const Cd32xBlobInfo g_cd32x_blobs[] = {
     { WAIFU_ASSET_BLOB_CARD_BACK,           "CARD_BACK.BIN",             1026 },
     { WAIFU_ASSET_BLOB_SUPPORT_FACE,        "SUPPORT_FACE.BIN",          1026 },
     { WAIFU_ASSET_BLOB_SUPPORT_BIG_ART,     "SUPPORT_BIG_ART.BIN",       6272 },
-    { WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD,  "SUPPORT_BIG_ART_CD.BIN",    7168 }
+    { WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD,  "SUPPORT_BIG_ART_CD.BIN",    7168 },
+    { WAIFU_ASSET_BLOB_TEX_ATLAS,           "TEX_ATLAS.BIN",             4608 }
 };
 
 static const Cd32xBlobInfo *cd32x_blob_info(int blob)
@@ -410,6 +413,15 @@ static int g_cd32x_cdda_initialized;
 static int g_cd32x_cdda_track = -1;
 static int g_cd32x_cdda_loop = 0;
 static int g_cd32x_cdda_playing = 0;
+/* Deferred CD-DA resume: re-issuing MSCPLAY right after every data read made
+   the track restart from its beginning once per read, so read bursts (title
+   assets, story portraits, multi-chunk card assembles) audibly yanked the
+   music back over and over.  Instead the read paths only arm this pending
+   flag; the supervisor idle loop fires the single restart once the CD has
+   been quiet for CD32X_CDDA_RESUME_DELAY_FRAMES. */
+#define CD32X_CDDA_RESUME_DELAY_FRAMES 20u
+static int g_cd32x_cdda_resume_pending = 0;
+static unsigned int g_cd32x_cdda_resume_tick = 0;
 static const char *g_cd32x_pcm_music_stem = 0;
 static int g_cd32x_pcm_music_chunks = 0;
 static int g_cd32x_pcm_music_next_chunk = 0;
@@ -435,10 +447,12 @@ static void cd32x_service_cdda_request(int cmd)
             g_cd32x_cdda_track = track;
             g_cd32x_cdda_loop = loop != 0;
             g_cd32x_cdda_playing = 1;
+            g_cd32x_cdda_resume_pending = 0;   /* explicit play supersedes it */
         }
     } else if (cmd == CD32X_MD_CMD_CDDA_STOP) {
         cd32x_bios_cdda_stop();
         g_cd32x_cdda_playing = 0;
+        g_cd32x_cdda_resume_pending = 0;       /* never resurrect a stopped track */
     } else {
         rc = -1;
     }
@@ -446,9 +460,25 @@ static void cd32x_service_cdda_request(int cmd)
 }
 
 /* Re-assert the current CD-DA track after a BIOS data read stopped it.  Called
-   after each card/portrait/blob read so battle/menu music survives card loads. */
+   after each card/portrait/blob read so battle/menu music survives card loads.
+   Only ARMS the deferred resume; the actual MSCPLAY happens in
+   cd32x_cdda_service_pending_resume() once the CD goes quiet, so a burst of
+   reads costs one restart at its end instead of one restart per read. */
 static void cd32x_cdda_resume_after_read(void)
 {
+    if (g_cd32x_cdda_playing && g_cd32x_cdda_track >= 2) {
+        g_cd32x_cdda_resume_pending = 1;
+        g_cd32x_cdda_resume_tick = GET_TICKS + CD32X_CDDA_RESUME_DELAY_FRAMES;
+    }
+}
+
+/* Called from the supervisor idle loop (never between the chunks of one
+   multi-part read). */
+static void cd32x_cdda_service_pending_resume(void)
+{
+    if (!g_cd32x_cdda_resume_pending) return;
+    if ((int)(GET_TICKS - g_cd32x_cdda_resume_tick) < 0) return;
+    g_cd32x_cdda_resume_pending = 0;
     if (g_cd32x_cdda_playing && g_cd32x_cdda_track >= 2) {
         cd32x_ensure_cdda_initialized();
         cd32x_bios_cdda_play(g_cd32x_cdda_track, g_cd32x_cdda_loop);
@@ -457,6 +487,16 @@ static void cd32x_cdda_resume_after_read(void)
 
 static void cd32x_before_cd_read(void)
 {
+    /* A non-looping jingle (victory/fail) that already finished on its own
+       must NOT be resurrected by the post-read resume.  Sample the BIOS
+       status now, while it still reflects CD-DA -- after the read it reports
+       the data access instead.  High status byte 0x00 == STOP. */
+    if (g_cd32x_cdda_playing && !g_cd32x_cdda_loop) {
+        if (((cd32x_bios_cdda_status() >> 8) & 0xFF) == 0) {
+            g_cd32x_cdda_playing = 0;
+            g_cd32x_cdda_resume_pending = 0;
+        }
+    }
     /* Top the RF5C164 wave-RAM ring up before the BIOS owns the CD for a card or
        portrait read.  The INT2 pump continues normal vblank refills, but this
        gives blocking reads the largest possible buffered-audio cushion. */
@@ -1173,6 +1213,8 @@ int main(void)
         /* The RF5C164 ring is refilled from the INT2/vblank handler; here we only
            keep the CD chunk source topped up for it. */
         cd32x_music_stream_pump();
+        /* Restart CD-DA that a data read stopped, once the CD has gone quiet. */
+        cd32x_cdda_service_pending_resume();
     }
 
     return 0;

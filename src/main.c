@@ -27,7 +27,22 @@
 #include "bmp_writer.h"
 #define WAIFU_FONT_MENUDATA_DEFINE
 #include "font_menudata.h"
+#ifdef WAIFU_FM_CD32X
+/* The baked 9 KiB texture atlas pushes the SH2 boot image past the hard
+   128 KiB 32X CD boot upload cap (the boot ROM does exactly one framebuffer
+   pass; anything larger is truncated and the console hangs at "Uploading
+   SH2 app...").  Rename the baked copy away — an unreferenced static const
+   is discarded by the compiler — and stream ASSETS/TEX_ATLAS.BIN from CD
+   into BSS at init instead (same SDRAM cost, 9 KiB less boot image). */
+#define waifu_texture_atlas waifu_texture_atlas_baked_unused
+#endif
 #include "waifu_assets.h"
+#ifdef WAIFU_FM_CD32X
+#undef waifu_texture_atlas
+static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
+                                   WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE]
+    __attribute__((aligned(4)));
+#endif
 #include "title_asset.h"
 #ifndef WAIFU_FM_NO_HEADLESS_MAIN
 #include "zmbv_mkv.h"
@@ -4102,7 +4117,54 @@ static void draw_zone_cursor(Camera cam, int col, int row)
     draw_zone_cursor_q(cam, Q8_FROM_INT(col), Q8_FROM_INT(row));
 }
 
-static void draw_top_selector_cursor(Camera cam)
+static void draw_zone_reticle_q(Camera cam, int32_t col, int32_t row)
+{
+    /* Attack-target reticle: open corner brackets, inward edge ticks and a
+       centre dot.  Same red as the zone box, but the distinct shape separates
+       the TARGET from the already-locked attacker's solid rectangle. */
+    ScreenPt p[4];
+    int cx = 0, cy = 0, i;
+    int32_t x0 = col_xq(col), x1 = col_xq(col + Q8_ONE);
+    int32_t z0 = row_zq(row), z1 = row_zq(row + Q8_ONE);
+    p[0] = project_point(cam, v3(x0,Q8_FRAC(10,100),z0));
+    p[1] = project_point(cam, v3(x1,Q8_FRAC(10,100),z0));
+    p[2] = project_point(cam, v3(x1,Q8_FRAC(10,100),z1));
+    p[3] = project_point(cam, v3(x0,Q8_FRAC(10,100),z1));
+    if (!p[0].ok || !p[1].ok || !p[2].ok || !p[3].ok) return;
+    for (i = 0; i < 4; ++i) {
+        /* Same edge clamp as draw_zone_cursor_q so off-screen zones still
+           show a reticle pinned to the screen border. */
+        p[i].x = p[i].x < 0 ? 0 : (p[i].x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p[i].x);
+        p[i].y = p[i].y < 0 ? 0 : (p[i].y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p[i].y);
+        cx += p[i].x; cy += p[i].y;
+    }
+    cx /= 4; cy /= 4;
+    for (i = 0; i < 4; ++i) {
+        ScreenPt a = p[i], b = p[(i + 1) & 3];
+        int qx = (b.x - a.x) / 4, qy = (b.y - a.y) / 4;
+        int mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+        int tx = mx + (cx - mx) / 3, ty = my + (cy - my) / 3;
+        /* Corner brackets: only the outer quarter of each edge is drawn,
+           leaving the middle open (doubled for FM readability). */
+        line_i(a.x, a.y, a.x + qx, a.y + qy, IDX_RED);
+        line_i(a.x + 1, a.y, a.x + qx + 1, a.y + qy, IDX_RED);
+        line_i(b.x, b.y, b.x - qx, b.y - qy, IDX_RED);
+        line_i(b.x + 1, b.y, b.x - qx + 1, b.y - qy, IDX_RED);
+        /* Crosshair tick from the open edge midpoint toward the centre. */
+        line_i(mx, my, tx, ty, IDX_RED);
+        line_i(mx + 1, my, tx + 1, ty, IDX_RED);
+    }
+    /* Centre dot. */
+    hline(cx - 1, cx + 2, cy, IDX_RED);
+    hline(cx - 1, cx + 2, cy - 1, IDX_RED);
+}
+
+static void draw_zone_reticle(Camera cam, int col, int row)
+{
+    draw_zone_reticle_q(cam, Q8_FROM_INT(col), Q8_FROM_INT(row));
+}
+
+static void draw_top_selector_cursor_ex(Camera cam, int reticle)
 {
 #if defined(WAIFU_FM_CD32X)
     const int cursor_anim_frames = 4;
@@ -4112,8 +4174,14 @@ static void draw_top_selector_cursor(Camera cam)
     int32_t t = q8_smooth_ratio(g_b_top_cursor_anim, cursor_anim_frames);
     int32_t col = Q8_FROM_INT(g_b_top_prev_col) + q8_mul(Q8_FROM_INT(g_b_top_col - g_b_top_prev_col), t);
     int32_t row = Q8_FROM_INT(g_b_top_prev_row) + q8_mul(Q8_FROM_INT(g_b_top_row - g_b_top_prev_row), t);
-    draw_zone_cursor_q(cam, col, row);
+    if (reticle) draw_zone_reticle_q(cam, col, row);
+    else draw_zone_cursor_q(cam, col, row);
     if (g_b_top_cursor_anim < cursor_anim_frames) ++g_b_top_cursor_anim;
+}
+
+static void draw_top_selector_cursor(Camera cam)
+{
+    draw_top_selector_cursor_ex(cam, 0);
 }
 
 static void draw_flying_card(Camera cam, int card_id, int hand_index, int target_col, int target_row, int frame, int start, int end, int back)
@@ -5534,7 +5602,12 @@ typedef enum WaifuBattlePhase {
     IB_PLAYER_SUPPORT_ANIM,
     /* Story-win reward reveal shown after the victory tally: displays the card
        the player just earned before returning to the sanctum map. */
-    IB_REWARD
+    IB_REWARD,
+    /* COM targeting beat: before an attack animation starts, walk the red zone
+       cursor across the COM row to the attacker, then (for monster attacks)
+       across the player row to the target — the same motion a player produces
+       in IB_PLAYER_TOP — so COM attacks no longer pop out of nowhere. */
+    IB_COM_TARGET
 } WaifuBattlePhase;
 
 #define I_HAND 5
@@ -5584,6 +5657,11 @@ static int g_b_phase_frame = 0;
    fusion, battle clash) advance in wall-clock time instead of stretching
    with the render rate.  Everywhere else this stays 1. */
 static int g_b_anim_step = 1;
+/* Accumulated hardware vblanks for visual animation pacing (equip, fusion,
+   thunder, support).  Advances by g_b_anim_step each waifu_fm_step() so that
+   visual effects stay tied to wall-clock time even when rendering runs slower
+   than 60 Hz.  Phase-state timing uses g_b_phase_frame (always +1/step). */
+static int g_b_anim_vblanks = 0;
 static int g_b_selected_hand = 0;
 static int g_b_selected_player_slot = 0;
 static int g_b_selected_com_slot = 0;
@@ -5665,6 +5743,10 @@ static int g_b_battle_damage = 0;
 static int g_b_battle_damage_owner = -1; /* 0 player, 1 COM, -1 none */
 static char g_b_damage_text[16] = "0";
 static int g_b_com_return_fade = 0;
+/* Attack chosen by the AI, held while IB_COM_TARGET plays the cursor walk.
+   def slot is -1 for a direct attack (no target row pass). */
+static int g_b_com_pending_atk_slot = -1;
+static int g_b_com_pending_def_slot = -1;
 static int g_b_result = 0;
 /* Card earned for a story win, computed once at the victory tally so the reward
    reveal and the storage award show the same card.  CARD_NONE when unset. */
@@ -6755,6 +6837,7 @@ static void set_battle_phase(WaifuBattlePhase phase)
     WaifuBattlePhase prev = g_b_phase;
     g_b_phase = phase;
     g_b_phase_frame = 0;
+    g_b_anim_vblanks = 0;
     if (phase != prev) {
         if (phase == IB_TURN_TO_COM || phase == IB_TURN_TO_PLAYER) waifu_sound_play(WAIFU_SOUND_TURN_PASSED);
         /* Loss jingle is CD-DA on PC-FX and a music track on host; no PCM SFX. */
@@ -7877,6 +7960,37 @@ static void enter_debug_deck_editor_after_assets(void)
 }
 #endif
 
+#ifdef CD32X_DEBUG_ENDING
+/* Throwaway CD32X iteration shortcut: boot straight into the story ending
+   sequence through the normal ending asset-loading path, as if the final
+   duel had just been won.  Build with
+   EXTRA_CFLAGS=-DCD32X_DEBUG_ENDING.  Mirrors the headless
+   --music-demo-state "ending" jump in debug_setup_music_demo_state(). */
+static void enter_debug_story_ending_after_assets(void)
+{
+    g_story_progress = STORY_MAX_DUELS;
+    g_story_duel_index = STORY_MAX_DUELS - 1;
+    g_story_ending_line = 0;
+    g_story_ending_erasing = 0;
+    enter_story_ending_after_assets();
+}
+#endif
+
+#ifdef CD32X_DEBUG_VOID
+/* Throwaway CD32X iteration shortcut: boot straight into the final (void)
+   sanctum plaza through the normal duel asset-loading path, as if the story
+   frontier had reached THE VOID.  Build with EXTRA_CFLAGS=-DCD32X_DEBUG_VOID.
+   Mirrors debug_setup_asset_load_demo()'s "story-duel-4" jump. */
+static void enter_debug_story_void_after_assets(void)
+{
+    g_story_duel_index = STORY_MAX_DUELS - 1;
+    g_story_progress = STORY_MAX_DUELS - 1;
+    g_story_plaza_line = 0;
+    request_story_duel_assets();
+    enter_state_after_assets(WAIFU_I_STORY_PLAZA);
+}
+#endif
+
 static void add_battle_prewarm_id(int *ids, int *count, int cap, int card_id)
 {
     if (!ids || !count || *count >= cap) return;
@@ -8291,13 +8405,8 @@ static void play_player_hand_intro_draw_sfx(void)
     int i;
     if (!g_b_player_hand_intro_pending) return;
     for (i = 0; i < I_HAND; ++i) {
-        /* Crossing test instead of exact equality: with hardware-vblank
-           stepping (g_b_anim_step > 1) the phase frame can jump past the
-           cue frame, so fire when the step window crosses it. */
         int cue = 1 + i * 5;
-        if (!g_i_player_used[i] &&
-            g_b_phase_frame >= cue &&
-            g_b_phase_frame - g_b_anim_step < cue) {
+        if (!g_i_player_used[i] && g_b_phase_frame == cue) {
             waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
         }
     }
@@ -9007,7 +9116,7 @@ static void finish_thunder(void)
 
 static void draw_com_thunder_anim(void)
 {
-    int f = g_b_phase_frame;
+    int f = g_b_anim_vblanks;
     int intro = thunder_intro_frames();
     int card_x = WAIFU_BIG_ART_128_X;
     int card_y = 35;
@@ -9118,7 +9227,7 @@ static void finish_player_one_shot_support(void)
 
 static void draw_player_one_shot_support_anim(void)
 {
-    int f = g_b_phase_frame;
+    int f = g_b_anim_vblanks;
     int reveal = WAIFU_SUPPORT_REVEAL_FRAMES;
     clear_screen(IDX_BLACK);
     draw_support_big_art_112((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2, WAIFU_UI_BOTTOM_Y(32));
@@ -9383,9 +9492,7 @@ static void draw_interactive_tally(void)
     fmt_i32_dec(line, (int)sizeof(line), g_i_player_deck_left); draw_text(ox + 55, 130, "DECK LEFT", IDX_WHITE, IDX_BLACK); draw_text(ox + 176, 130, line, IDX_GOLD_HI, IDX_BLACK);
     fmt_i32_dec(line, (int)sizeof(line), score); draw_text(ox + 55, 148, "SCORE", IDX_WHITE, IDX_BLACK); draw_text(ox + 152, 148, line, IDX_GOLD_HI, IDX_BLACK);
     waifu_str_copy(line, (int)sizeof(line), "RANK "); waifu_str_cat_char(line, (int)sizeof(line), rank); draw_centered_text_scaled(170, line, 2, IDX_GOLD_HI, IDX_BLACK);
-    draw_text_small(WAIFU_UI_CENTER_DX + 50, WAIFU_UI_BOTTOM_Y(210), (g_story_battle_active && won) ? "RUN: CLAIM REWARD" :
-                              (g_story_battle_active ? "RUN: RETURN TO MAP" : "RUN: RETURN TO TITLE"),
-                    IDX_WHITE, IDX_BLACK);
+
 }
 
 /* Story-win reward reveal: shows the card the player just earned (already rolled
@@ -9580,6 +9687,11 @@ static int battle_animation_event_complete(int end_frame)
     return g_b_phase_frame >= end_frame;
 }
 
+static int battle_animation_vblank_complete(int end_vblanks)
+{
+    return g_b_anim_vblanks >= end_vblanks;
+}
+
 
 static void start_equip(int owner, int hand_slot, int target_slot)
 {
@@ -9701,7 +9813,7 @@ static void draw_player_equip_target(void)
 
 static void draw_player_equip_anim(void)
 {
-    int f = g_b_phase_frame;
+    int f = g_b_anim_vblanks;
     int32_t t = q8_smooth_ratio(f, WAIFU_EQUIP_ANIM_FRAMES);
 #ifdef WAIFU_FM_PCFX
     int reveal_frames = WAIFU_BATTLE_FLIP_FRAMES;
@@ -9863,7 +9975,7 @@ static void draw_failed_fusion_dropped_materials(int count, int first_target_x, 
 
 static void draw_player_fusion_anim(void)
 {
-    int f = g_b_phase_frame;
+    int f = g_b_anim_vblanks;
     int fusion_merge_end = (WAIFU_FUSION_ANIM_FRAMES * 34) / 100;
     int fusion_flash_start = (WAIFU_FUSION_ANIM_FRAMES * 42) / 100;
     int fusion_flash_end = (WAIFU_FUSION_ANIM_FRAMES * 52) / 100;
@@ -10269,7 +10381,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_PLAYER_EQUIP_ANIM:
         draw_player_equip_anim();
-        if (battle_animation_event_complete(WAIFU_EQUIP_ANIM_FRAMES)) finish_equip();
+        if (battle_animation_vblank_complete(WAIFU_EQUIP_ANIM_FRAMES)) finish_equip();
         break;
 
     case IB_PLAYER_FUSION_TARGET:
@@ -10295,12 +10407,12 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_PLAYER_FUSION_ANIM:
         draw_player_fusion_anim();
-        if (battle_animation_event_complete(fusion_total_frames())) finish_player_fusion_anim();
+        if (battle_animation_vblank_complete(fusion_total_frames())) finish_player_fusion_anim();
         break;
 
     case IB_PLAYER_SUPPORT_ANIM:
         draw_player_one_shot_support_anim();
-        if (battle_animation_event_complete(player_support_total_frames())) finish_player_one_shot_support();
+        if (battle_animation_vblank_complete(player_support_total_frames())) finish_player_one_shot_support();
         break;
 
     case IB_PLAYER_TOP:
@@ -10364,7 +10476,10 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         view_slot = top_selector_player_monster_slot();
         draw_interactive_base(battle_top_camera());
         if (g_b_attack_attacker_slot >= 0) draw_zone_cursor(battle_top_camera(), g_b_attack_attacker_slot, PLAYER_CARD_ROW);
-        draw_top_selector_cursor(battle_top_camera());
+        /* While an attacker is locked, the moving selector is picking the
+           attack TARGET: draw it as a reticle so the two red markers read
+           differently at a glance. */
+        draw_top_selector_cursor_ex(battle_top_camera(), g_b_attack_attacker_slot >= 0);
         if (g_b_attack_attacker_slot >= 0) {
             draw_bottom_info_top_selector("TARGET");
         } else if (view_slot >= 0) {
@@ -10490,12 +10605,12 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_COM_EQUIP_ANIM:
         draw_player_equip_anim();
-        if (battle_animation_event_complete(WAIFU_EQUIP_ANIM_FRAMES)) finish_equip();
+        if (battle_animation_vblank_complete(WAIFU_EQUIP_ANIM_FRAMES)) finish_equip();
         break;
 
     case IB_COM_THUNDER_ANIM:
         draw_com_thunder_anim();
-        if (battle_animation_event_complete(thunder_total_frames())) finish_thunder();
+        if (battle_animation_vblank_complete(thunder_total_frames())) finish_thunder();
         break;
 
     case IB_COM_BATTLE:
@@ -10528,11 +10643,15 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 if (++set_guard >= I_FIELD * 2) break;
             }
             if (ai_action.kind == WAIFU_AI_ACTION_ATTACK_MONSTER) {
-                g_b_com_return_fade = 1;
-                prepare_battle(1, ai_action.attacker_slot, ai_action.defender_slot);
+                g_b_com_pending_atk_slot = ai_action.attacker_slot;
+                g_b_com_pending_def_slot = ai_action.defender_slot;
+                set_battle_phase(IB_COM_TARGET);
+                break;
             } else if (ai_action.kind == WAIFU_AI_ACTION_ATTACK_DIRECT) {
-                g_b_com_return_fade = 1;
-                prepare_direct_attack(1, ai_action.attacker_slot);
+                g_b_com_pending_atk_slot = ai_action.attacker_slot;
+                g_b_com_pending_def_slot = -1;
+                set_battle_phase(IB_COM_TARGET);
+                break;
             } else {
                 set_battle_phase(IB_COM_RETURN);
                 break;
@@ -10547,6 +10666,53 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             }
         }
         break;
+
+    case IB_COM_TARGET: {
+        /* Visible COM targeting: step the zone cursor slot-by-slot across the
+           COM row to the attacker, dwell, then hop to the player row and step
+           to the target (skipped for direct attacks).  Discrete hops on the
+           top view read like a player driving the selector in IB_PLAYER_TOP. */
+        const int step = WAIFU_PCFX_SELECT_FRAMES / 4;  /* frames per slot hop */
+        const int dwell = WAIFU_PCFX_SELECT_FRAMES / 2; /* pause on each pick */
+        int atk = g_b_com_pending_atk_slot;
+        int def = g_b_com_pending_def_slot;
+        int walk1 = atk * step;          /* COM row: slot 0 -> attacker */
+        int lock1 = walk1 + dwell;       /* attacker locked in */
+        int walk2 = (def >= 0) ? def * step : 0;
+        int total = lock1 + walk2 + (def >= 0 ? dwell : 0);
+        int f = g_b_phase_frame;
+        Camera cam = enemy_battle_top_camera();
+        int cur_slot, cur_row;
+        if (f < lock1 || def < 0) {
+            cur_slot = (f < walk1) ? f / step : atk;
+            cur_row = ENEMY_CARD_ROW;
+        } else {
+            int f2 = f - lock1;
+            cur_slot = (f2 < walk2) ? f2 / step : def;
+            cur_row = PLAYER_CARD_ROW;
+        }
+        draw_interactive_base(cam);
+        /* Once the attacker is locked, keep its cursor on screen while the
+           target pass runs, mirroring the player's two-cursor display.  The
+           walking target cursor switches to the reticle shape so it cannot be
+           confused with the attacker's solid box. */
+        if (def >= 0 && f >= lock1) {
+            draw_zone_cursor(cam, atk, ENEMY_CARD_ROW);
+            draw_zone_reticle(cam, cur_slot, cur_row);
+        } else {
+            draw_zone_cursor(cam, cur_slot, cur_row);
+        }
+        if (def >= 0 && f >= lock1) draw_bottom_info_field(0, cur_slot, "TARGET");
+        else draw_bottom_info_field(1, atk, "COM ATK");
+        if (battle_animation_event_complete(total)) {
+            g_b_com_return_fade = 1;
+            g_b_com_pending_atk_slot = -1;
+            g_b_com_pending_def_slot = -1;
+            if (def >= 0) prepare_battle(1, atk, def);
+            else prepare_direct_attack(1, atk);
+        }
+        break;
+    }
 
     case IB_COM_RETURN:
         atk_slot = first_live_com_slot();
@@ -10637,12 +10803,13 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
     }
 
-    /* Advance battle animation time by real elapsed hardware vblanks (1 on
-       platforms that never call waifu_fm_set_frame_vblanks).  This keeps the
-       equip/fusion/clash animations tied to the hardware timer instead of the
-       render rate: a 2-vblank render frame consumes 2 animation frames. */
-    g_b_frame += g_b_anim_step;
-    g_b_phase_frame += g_b_anim_step;
+    /* Advance the logical phase frame by 1 per step (state machine timing).
+       Separately accumulate elapsed hardware vblanks so that visual
+       animations (equip, fusion, thunder, support) advance in wall-clock
+       time when the render rate varies. */
+    g_b_frame++;
+    g_b_phase_frame++;
+    g_b_anim_vblanks += g_b_anim_step;
 }
 
 void waifu_fm_set_frame_vblanks(int vblanks)
@@ -10668,10 +10835,24 @@ void waifu_fm_init(void)
     invalidate_board_bg_cache();
     invalidate_battle_composite_cache();
     waifu_assets_init();
+#ifdef WAIFU_FM_CD32X
+    /* Atlas lives on CD (see comment at the top include); pull it into BSS
+       before the first 3D draw. */
+    waifu_assets_read_blob(WAIFU_ASSET_BLOB_TEX_ATLAS, waifu_texture_atlas,
+                           sizeof(waifu_texture_atlas));
+#endif
 #if defined(CD32X_DEBUG_AUTOBATTLE)
     /* Temporary CD32X iteration shortcut: boot straight to the deck editor
        through the normal card loading screen. */
     enter_debug_deck_editor_after_assets();
+#elif defined(CD32X_DEBUG_ENDING)
+    /* Temporary CD32X iteration shortcut: boot straight into the story
+       ending through the normal ending asset-loading path. */
+    enter_debug_story_ending_after_assets();
+#elif defined(CD32X_DEBUG_VOID)
+    /* Temporary CD32X iteration shortcut: boot straight into the final
+       (void) sanctum plaza through the normal duel asset-loading path. */
+    enter_debug_story_void_after_assets();
 #else
     waifu_assets_request_title();
     if (waifu_assets_needs_loading_screen()) {
@@ -10700,6 +10881,14 @@ void waifu_fm_reset_interactive(void)
        boot straight into the deck editor through the normal card-loading path.
        Build with EXTRA_CFLAGS=-DCD32X_DEBUG_AUTOBATTLE. */
     enter_debug_deck_editor_after_assets();
+#elif defined(CD32X_DEBUG_ENDING)
+    /* Throwaway CD32X iteration shortcut: boot straight into the story
+       ending.  Build with EXTRA_CFLAGS=-DCD32X_DEBUG_ENDING. */
+    enter_debug_story_ending_after_assets();
+#elif defined(CD32X_DEBUG_VOID)
+    /* Throwaway CD32X iteration shortcut: boot straight into the final
+       (void) sanctum plaza.  Build with EXTRA_CFLAGS=-DCD32X_DEBUG_VOID. */
+    enter_debug_story_void_after_assets();
 #else
     waifu_assets_request_title();
     g_i_loading_target = WAIFU_I_TITLE;
@@ -10914,8 +11103,18 @@ static const char *story_fire_lines[] = {
    real flames.  (The present path already page-flips; a full-screen animation
    still needs a full KRAM upload each frame, which is unavoidable.) */
 #define FIRE_Y0 40
-#define FIRE_FW (WAIFU_FM_WIDTH / 2)
-#define FIRE_FH ((WAIFU_FM_HEIGHT - FIRE_Y0) / 2)
+#if defined(WAIFU_FM_CD32X)
+/* CD32X: quarter-res intensity buffer, blitted 4x.  The half-res buffer was
+   14.7 KiB of permanent SH-2 .bss for one story cutscene; every .bss byte here
+   pushes __bss_end up and shrinks the transient asset arena the card caches
+   live in.  Quarter res costs 3.6 KiB and reads chunkier in a way that suits
+   the 32X output. */
+#define FIRE_SCALE 4
+#else
+#define FIRE_SCALE 2
+#endif
+#define FIRE_FW (WAIFU_FM_WIDTH / FIRE_SCALE)
+#define FIRE_FH ((WAIFU_FM_HEIGHT - FIRE_Y0) / FIRE_SCALE)
 #define FIRE_MAXI 32
 static uint8_t g_fire_buf[FIRE_FW * FIRE_FH];
 static uint32_t g_fire_rng = 0x2545f491u;
@@ -10966,16 +11165,21 @@ static void draw_oldschool_fire(int f)
         }
     }
 
-    /* Blit half-res intensity to the framebuffer (2x) via the colour LUT. */
+    /* Blit low-res intensity to the framebuffer (FIRE_SCALE x) via the colour
+       LUT.  At scale 2 this is the original 2x doubler; CD32X blits 4x. */
     for (y = 0; y < FIRE_FH; ++y) {
         const uint8_t *src = g_fire_buf + y * FIRE_FW;
-        uint8_t *d0 = framebuffer + (FIRE_Y0 + y * 2) * WAIFU_FM_WIDTH;
-        uint8_t *d1 = d0 + WAIFU_FM_WIDTH;
+        uint8_t *d0 = framebuffer + (FIRE_Y0 + y * FIRE_SCALE) * WAIFU_FM_WIDTH;
+        int sy;
         for (x = 0; x < FIRE_FW; ++x) {
             uint8_t c = g_fire_lut[src[x]];
-            int fx = x * 2;
-            d0[fx] = c; d0[fx + 1] = c;
-            d1[fx] = c; d1[fx + 1] = c;
+            int fx = x * FIRE_SCALE;
+            int i;
+            for (i = 0; i < FIRE_SCALE; ++i) d0[fx + i] = c;
+        }
+        for (sy = 1; sy < FIRE_SCALE; ++sy) {
+            uint8_t *dn = d0 + sy * WAIFU_FM_WIDTH;
+            for (x = 0; x < FIRE_FW * FIRE_SCALE; ++x) dn[x] = d0[x];
         }
     }
 }
@@ -11250,6 +11454,37 @@ static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int 
 #endif /* WAIFU_FM_PCFX */
 }
 
+#if defined(WAIFU_FM_CD32X)
+/* Flat single-tile floor probe.  The void sanctum's floor is
+   draw_floor_tiled(..., 0, 0, ...) and atlas tile 0 is a solid black tile, so
+   its "textured" floor is a constant color: running the per-pixel raycaster on
+   both SH-2s (phase stepping + atlas sampling + halfword stores into contended
+   framebuffer DRAM) buys nothing over a solid band fill.  Detect flat tiles
+   once (the atlas is const) so the caller can hand the whole floor to the 32X
+   VDP auto-fill instead — zero SH-2 framebuffer stores, byte-identical output
+   (every sampled texel of a flat tile is the same palette index). */
+static int cd32x_floor_tile_flat(int tile, uint8_t *color)
+{
+    /* 0 = unprobed, 1 = flat, 2 = varied. */
+    static uint8_t flat_state[WAIFU_TEX_TILE_COUNT];
+    static uint8_t flat_color[WAIFU_TEX_TILE_COUNT];
+    if (tile < 0 || tile >= WAIFU_TEX_TILE_COUNT) return 0;
+    if (flat_state[tile] == 0) {
+        const uint8_t *src = waifu_texture_atlas +
+            (size_t)tile * WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE;
+        int i;
+        flat_state[tile] = 1;
+        flat_color[tile] = src[0];
+        for (i = 1; i < WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE; ++i) {
+            if (src[i] != src[0]) { flat_state[tile] = 2; break; }
+        }
+    }
+    if (flat_state[tile] != 1) return 0;
+    *color = flat_color[tile];
+    return 1;
+}
+#endif
+
 static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size)
 {
     /* Consume the per-frame occluder rect (screens re-arm it every frame) and
@@ -11265,6 +11500,32 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
     if (ox1 > WAIFU_FM_WIDTH) ox1 = WAIFU_FM_WIDTH;
     if (ox1 < ox0) ox1 = ox0;
     if (ox0 >= ox1) { oy0 = 0; oy1 = 0; }
+#if defined(WAIFU_FM_CD32X) && !defined(CD32X_DEBUG_NO_FLAT_FLOOR)
+    {
+        uint8_t flat_c;
+        if (tile_a == tile_b && cd32x_floor_tile_flat(tile_a, &flat_c)) {
+            /* First active floor row: the same per-row visibility test
+               render_floor_row_range (and story_sky_clear_rows) uses.  Active
+               rows are contiguous down to the screen bottom — draw_story_sky
+               already relies on that to clear only the band above the horizon.
+               The occluder rect is only a store-skipping hint, and the VDP
+               auto-fill costs the SH-2s nothing, so it is ignored here (the
+               opaque panel repaints those rows later this frame anyway). */
+            Vec3 ffwd = vnorm(vsub(cam.target, cam.eye));
+            Vec3 fright = vnorm(vcross(ffwd, cam.up));
+            Vec3 fup = vcross(fright, ffwd);
+            int y;
+            for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+                int32_t dy = q8_div(Q8_FROM_INT(WAIFU_FM_HEIGHT / 2 - y) - Q8_HALF, cam.focal);
+                int32_t ray_y = q8_mul(fup.y, dy) + ffwd.y;
+                if (ray_y < 0 &&
+                    q8_div(floor_y - cam.eye.y, ray_y) > Q8_FRAC(1,100)) break;
+            }
+            fill_rows(y, WAIFU_FM_HEIGHT, flat_c);
+            return;
+        }
+    }
+#endif
 #if defined(WAIFU_FM_CD32X) && defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
     /* Split the textured floor across both SH-2s: the Slave renders the bottom
        band while the Master renders the top band, so the dominant per-pixel

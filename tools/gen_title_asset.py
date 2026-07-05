@@ -52,7 +52,7 @@ RESOLUTION_TITLE = {
 }
 RESOLUTION_ENDING = {
     (256, 240): 'ending256x240.png',
-    (320, 224): 'ending320x240.png',
+    (320, 224): 'ending320x224.png',
     (320, 240): 'ending320x240.png',
     (384, 240): 'ending384x240.png',
     (640, 400): 'ending640x400.png',

@@ -306,6 +306,11 @@ int cd32x_pcm_sfx_play(int effect)
 #define CD32X_MUSIC_VOLUME     0xC0u
 #define CD32X_MUSIC_LEAD_GUARD 1024u
 #define CD32X_MUSIC_STALE_READ_LIMIT 3u
+/* When the play head is found to have overrun the write head (stalled refill
+   during a long blocked CD read, or a junk play-address readback), restart the
+   write head this many bytes ahead of the play head so the fresh data is not
+   racing the chip's fetch of the very next byte. */
+#define CD32X_MUSIC_RESYNC_SKID 64u
 
 /* RF5C164 channel-4 playback-address read registers.  The channel constants in
    this file are zero-based, so channel 4 maps to the chip's CH5 readback pair. */
@@ -522,14 +527,34 @@ static void music_pump_locked(void)
             ? (uint16_t)(write - play)
             : (uint16_t)(CD32X_MUSIC_RING_BYTES - (uint16_t)(play - write));
         target = (uint16_t)(CD32X_MUSIC_RING_BYTES - CD32X_MUSIC_LEAD_GUARD);
-        if (fill < target) {
+        if (fill > target) {
+            /* Impossible for a healthy stream: this pump is the ring's only
+               writer and never tops it past `target`, so a fill inside the
+               guard band means the play head OVERRAN the write head during a
+               stall (long blocked card/portrait read) or the play-address
+               readback returned junk.  Left alone the pump stops writing and
+               the chip replays a stale ringful -- audibly the music jumps back
+               to earlier material.  Resync: restart the write head just ahead
+               of the play head and lay down a fresh leadful. */
+            g_music_write_off = (uint16_t)
+                ((uint16_t)(play + CD32X_MUSIC_RESYNC_SKID)
+                 % (uint16_t)CD32X_MUSIC_RING_BYTES);
+            music_write_ring((uint32_t)target);
+        } else if (fill < target) {
             music_write_ring((uint32_t)(target - fill));
         }
     } else {
         now = GET_TICKS;
         delta = now - g_music_last_tick;
         if (delta != 0u) {
-            music_write_ring(delta * CD32X_MUSIC_TICK_BYTES);
+            uint32_t n = delta * CD32X_MUSIC_TICK_BYTES;
+            /* A large tick jump (pump starved while the supervisor sat inside
+               a blocking BIOS read) must not lap the ring and plough through
+               the play head: cap one refill at a single leadful. */
+            if (n > (uint32_t)(CD32X_MUSIC_RING_BYTES - CD32X_MUSIC_LEAD_GUARD)) {
+                n = (uint32_t)(CD32X_MUSIC_RING_BYTES - CD32X_MUSIC_LEAD_GUARD);
+            }
+            music_write_ring(n);
         }
     }
     g_music_last_tick = GET_TICKS;

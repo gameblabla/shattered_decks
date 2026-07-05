@@ -132,7 +132,12 @@ int waifu_assets_big_art_blob_slice(WaifuBigArtKind kind, int card_id, WaifuAsse
 /* CD32X deck editor intentionally skips the face working set, but battle entry
    prewarms enough small faces for the visible hands and near-future field cards
    so board thumbnails do not fall back to vector placeholders. */
-#define CD32X_CARD_FACE_CACHE_SLOTS 18
+/* 22 slots: both hands (10) + both fields (10) + back/near-draws headroom, so a
+   full late-game board no longer thrashes the LRU as the unlocked card pool
+   grows.  Paid for by the CD32X quarter-res story fire buffer (-11 KiB .bss);
+   the stage grows by 4 x 2052 = 8208 bytes, still a net gain in the gap between
+   the asset arena and the SH-2 stacks. */
+#define CD32X_CARD_FACE_CACHE_SLOTS 22
 #define CD32X_CARD_FACE_ENTRY_PREWARM_LIMIT CD32X_CARD_FACE_CACHE_SLOTS
 #define CARD_FACE_STAGE_BYTES ((size_t)CD32X_CARD_FACE_CACHE_SLOTS * CARD_ONE_BYTES)
 #else
@@ -770,6 +775,11 @@ static int cd_read_blob(WaifuAssetBlobId blob, uint8_t *dst, size_t bytes)
     return read_blob_platform(blob, dst, bytes);
 }
 
+int waifu_assets_read_blob(WaifuAssetBlobId blob, uint8_t *dst, size_t bytes)
+{
+    return cd_read_blob(blob, dst, bytes);
+}
+
 static size_t cd_round_sector_bytes(size_t bytes)
 {
     return (bytes + (size_t)PCFX_CD_SECTOR_BYTES - 1u) & ~((size_t)PCFX_CD_SECTOR_BYTES - 1u);
@@ -1267,9 +1277,23 @@ static const uint8_t *load_big_card_art_cached(int card_id)
     int slot = find_big_cache_slot(card_id);
     if (slot < 0) {
         size_t off = (size_t)card_id * CARD_BIG_ONE_BYTES;
+        int was_empty;
+        int ok = 0;
+        int attempt;
         slot = choose_big_cache_slot();
-        if (g_big_cache_card_id[slot] < 0) add_ram_used(CARD_BIG_CACHE_SLOT_BYTES);
-        if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_CARD_BIG_ART, stage_big_cache_ptr(slot), off, CARD_BIG_ONE_BYTES)) return NULL;
+        was_empty = g_big_cache_card_id[slot] < 0;
+        /* The CD read clobbers the slot in place, and a failed transfer still
+           leaves partially written pixels behind (the CD32X word stream bails
+           mid-copy on a supervisor timeout).  Unmap the evicted card FIRST so
+           a failed/partial read can never leave the old id pointing at
+           half-overwritten art, and retry once: a transient supervisor-busy
+           window (music chunk prefetch mid-duel) is the common failure. */
+        g_big_cache_card_id[slot] = -1;
+        for (attempt = 0; attempt < 2 && !ok; ++attempt) {
+            ok = cd_read_blob_slice(WAIFU_ASSET_BLOB_CARD_BIG_ART, stage_big_cache_ptr(slot), off, CARD_BIG_ONE_BYTES);
+        }
+        if (!ok) return NULL;
+        if (was_empty) add_ram_used(CARD_BIG_CACHE_SLOT_BYTES);
         g_big_cache_card_id[slot] = card_id;
     }
     g_big_cache_stamp[slot] = g_big_cache_clock++;
@@ -1289,15 +1313,21 @@ const uint8_t *waifu_assets_card_face(int card_id)
         int slot = cd32x_find_card_face_slot(card_id);
         uint8_t *ptr;
         if (slot < 0) {
+            int ok = 0;
+            int attempt;
             slot = cd32x_choose_card_face_slot();
             ptr = stage_card_face_cache_slot_ptr(slot);
-            if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_CARD_FACES,
-                                    ptr,
-                                    (size_t)card_id * CARD_ONE_BYTES,
-                                    CARD_ONE_BYTES)) {
-                g_cd32x_face_cache_card_id[slot] = -1;
-                return NULL;
+            /* Unmap the evicted card BEFORE the read (a failed transfer leaves
+               the slot partially clobbered) and retry once on a transient
+               supervisor-busy failure. */
+            g_cd32x_face_cache_card_id[slot] = -1;
+            for (attempt = 0; attempt < 2 && !ok; ++attempt) {
+                ok = cd_read_blob_slice(WAIFU_ASSET_BLOB_CARD_FACES,
+                                        ptr,
+                                        (size_t)card_id * CARD_ONE_BYTES,
+                                        CARD_ONE_BYTES);
             }
+            if (!ok) return NULL;
             g_cd32x_face_cache_card_id[slot] = card_id;
         }
         g_cd32x_face_cache_stamp[slot] = g_cd32x_face_cache_clock++;
