@@ -232,12 +232,21 @@ static void cd32x_restore_title_rect_back(int x, int y, int w, int h)
 
 static void cd32x_init_framebuffers(WaifuCd32xVideo *video)
 {
+    /* Clear both boot pages to IDX_BLACK (opaque black), NOT index 0.  Index 0
+       is the MD-priority "see-through" key: with MARS_VDP_PRIO_32X an index-0
+       pixel defers to the MD layer, so a page left at index 0 shows the MD
+       backdrop (and, once the game's first palette upload forwards the near-
+       white common-palette entry 0 to the MD fade before the first real frame
+       has page-flipped in, that backdrop is briefly near-white).  That was the
+       ~2-frame white flash between the Sega/32X BIOS and the LOADING screen.
+       IDX_BLACK maps to an opaque black CRAM entry with no priority bit, so the
+       boot pages stay black regardless of the MD layer until the game draws. */
     video->current_fb = (uint16_t)(MARS_VDP_FBCTL & MARS_VDP_FS);
     cd32x_write_back_line_table();
-    cd32x_clear_back_pixels(0);
+    cd32x_clear_back_pixels(IDX_BLACK);
     cd32x_wait_fb_flip(video);
     cd32x_write_back_line_table();
-    cd32x_clear_back_pixels(0);
+    cd32x_clear_back_pixels(IDX_BLACK);
 }
 
 static void cd32x_put_px_back(int x, int y, uint8_t c)
@@ -645,6 +654,7 @@ void waifu_cd32x_video_wait_vblank(WaifuCd32xVideo *video)
    caller clears the sky region to palette index 0 instead of compositing a
    software sky. */
 static int g_cd32x_bg_sent_word = -1;   /* last latched (kind<<12)|scroll */
+static int g_cd32x_bg_applied_kind = 0; /* KIND the supervisor has actually set up */
 static int g_cd32x_bg_frame_requested = 0;
 
 static int cd32x_send_bg_word(unsigned word)
@@ -659,15 +669,32 @@ static int cd32x_send_bg_word(unsigned word)
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
 {
     unsigned word = (((unsigned)kind & 0xFu) << 12) | ((unsigned)hscroll & 0x1FFu);
+    int req_kind = (int)((unsigned)kind & 0xFu);
     g_cd32x_bg_frame_requested = 1;
+
+    /* Promote the last-SENT kind to "applied" only once the supervisor is idle
+       again (COMM0 cleared): the SET_BG service builds the sky palette, uploads
+       the plane-B tiles/name table and pushes the palette before it releases
+       COMM0, so an idle supervisor means that whole set-up has actually landed.
+       Reporting "active" merely because the request was SENT let the SH-2 start
+       punching index-0 holes for the sky a dozen-plus frames before plane-B was
+       really showing it, so those holes exposed the near-white MD layer -- the
+       white flash seen when a sanctum scene appears without a covering fade
+       (e.g. loading a save straight to the map, or B-ing back from the plaza).
+       Until the kind is applied, draw_story_sky() composites the opaque
+       software sky instead, which is the same dark void art, so the hand-off is
+       seamless rather than a flash. */
+    if (MARS_SYS_COMM0 == 0u && g_cd32x_bg_sent_word >= 0) {
+        g_cd32x_bg_applied_kind = g_cd32x_bg_sent_word >> 12;
+    }
+
     if ((int)word != g_cd32x_bg_sent_word && cd32x_send_bg_word(word)) {
         g_cd32x_bg_sent_word = (int)word;
     }
-    /* Active once the requested KIND has been latched by the supervisor; a
-       stale scroll value only lags the parallax sway by a frame. */
-    if (g_cd32x_bg_sent_word >= 0 &&
-        ((unsigned)g_cd32x_bg_sent_word >> 12) == ((unsigned)kind & 0xFu)) {
-        return kind != WAIFU_BACKGROUND_NONE;
+
+    /* Active only once the supervisor has applied THIS kind. */
+    if (kind != WAIFU_BACKGROUND_NONE && g_cd32x_bg_applied_kind == req_kind) {
+        return 1;
     }
     return 0;
 }
