@@ -6,13 +6,23 @@ This repo is a small C game with two entry points:
 
 Use this file as the first stop when you need to change behavior. It is written to save context tokens: jump to the listed files and line anchors instead of re-traversing the repo.
 
-## Skills (CD32X focus)
+## Skills
 
-The current focus is the Sega Mega CD32X build (`make -f Makefile.cd32x`). Read these before touching CD32X code:
+Read the relevant skill BEFORE touching a platform's code. `.claude/skills/`:
 
-- `.claude/skills/cd32x-build-verify/SKILL.md` — build commands, the < 131072-byte SH-2 image limit, headless BlastEm capture workflow (`scripts/cd32x/blastem_headless_capture.sh`), input-script gotchas, debug defines.
-- `.claude/skills/cd32x-architecture/SKILL.md` — layer map, M68K-supervisor vs SH-2 hardware split under `src/platform/cd32x/`, platform seams (`src/engine/platform.h`), feature switches, framebuffer page-flip and palette-entry-0 rules.
-- `.claude/skills/cd32x-improvements/SKILL.md` — memory budgets (SDRAM/Word RAM), implemented perf levers, measured dead-ends, and the remaining roadmap (SDRAM shadow + DMA present, PCM music streaming, offset-aware big-art reads).
+Core (all builds):
+- `headless-core/SKILL.md` — the platform-agnostic frame machine: host build/run, the `--regression-*` gate map, the asset-pipeline "regenerate-or-desync" traps, and the portability rules (`platform.h` seams, the four build contexts of `main.c`).
+
+CD32X (`make -f Makefile.cd32x`):
+- `cd32x-build-verify/SKILL.md` — build commands, the < 131072-byte SH-2 image limit, headless BlastEm capture workflow (`scripts/cd32x/blastem_headless_capture.sh`), input-script gotchas, debug defines.
+- `cd32x-architecture/SKILL.md` — layer map, M68K-supervisor vs SH-2 hardware split under `src/platform/cd32x/`, platform seams (`src/engine/platform.h`), SH-2/M68K assembly invariants (extu.b, the `MARS_SYS_COMM*` mailbox map, `_BURAM` BIOS), feature switches, framebuffer page-flip and palette-entry-0 rules.
+- `cd32x-improvements/SKILL.md` — memory budgets (SDRAM/Word RAM), implemented perf levers, measured dead-ends, and the remaining roadmap (SDRAM shadow + DMA present, PCM music streaming, offset-aware big-art reads).
+
+PC-FX (`make -f Makefile.pcfx cd`):
+- `pcfx-build-verify/SKILL.md` — the 3-pass CD build, the pcfx-headless accurate-backend capture flow (never `--fast-video` for fades), boot timing, BackupRAM `--save-dir` testing, menu-driving gotchas, and a failure→recovery table.
+- `pcfx-architecture/SKILL.md` — KING/VDC/KRAM/RAINBOW video model, dirty-present + page-flip, 16M title/ending, the 8bpp fade-to-black glitch class, palettes, CD-DA + ADPCM audio, and the `WAIF` BackupRAM save format.
+
+Low-confidence areas an LLM cannot reason about from source alone are tracked in `LOW_END_LLM_LOW_CONFIDENCE.md`, each mapped to the skill that mitigates it.
 
 Longer-form docs live in `docs/cd32x/`.
 
@@ -109,6 +119,7 @@ Longer-form docs live in `docs/cd32x/`.
   - PC-FX Battle Mode selection must finish the title/menu fade before `init_battle_state()` runs. That initializer switches to the common 8bpp palette; running it on the A-press menu frame makes the title cut to black, reveal the title again, then fade a second time.
   - Menu-to-story, menu-to-random-battle, menu-to-load, PC-FX load-device-to-map, story-dialogue-to-deck, and deck-editor exits all use the shared fade-to-black helper in `src/main.c` before loading or destination setup. Keep asset prewarming and battle initialization after the black fade so PC-FX cannot hitch during the visible fade.
   - Fade-to-black length is split by purpose, do NOT collapse them back together. `WAIFU_TITLE_FADE_FRAMES` (PC-FX 36 / others 4) is the long grace the title and ending need to hide the KING 8bpp↔16M mode switch. The in-game deck-editor / sanctum transitions (`WAIFU_I_DECK_EDITOR_TO_PYRAMID` / `TO_BATTLE`, `STORY_FIRE_TO_DECK`, `STORY_PLAZA_TO_DECK`) stay in 8bpp and use the short `WAIFU_INGAME_FADE_FRAMES` (PC-FX 10 / others 4) with `WAIFU_INGAME_FADE_HOLD` (4). They previously reused `WAIFU_TITLE_FADE_FRAMES` for BOTH the fade and the hold, so exiting the deck editor with RUN took fade+hold = 72 frames (~1.2 s of black) on PC-FX before loading even started; the split drops that to ~14 frames while the black hold of 4 still covers the palette-write / KRAM page-flip skew (see the 8bpp fade-to-black glitch notes below). `REWARD_TO_ENDING` keeps `WAIFU_TITLE_FADE_FRAMES` because it crosses into the 16M ending surface.
+  - PC-FX boot/loading WHITE flash: `waifu_pcfx_video_begin_8bpp()` fills the KING 8bpp KRAM with the `IDX_BLACK` *index*, but the 256 VCE colour entries are not written until the first `present_8bpp` (which happens during asset load / the loading screen). `set_king_8bpp_video()` only configures the palette BANK, not the entries. At cold boot the VCE palette RAM powers up undefined — bright on real hardware — so that black-index framebuffer displays as a full-screen white flash for the frames between the BIOS handoff and the first present (i.e. right as the loading screen comes up). Fix: `begin_8bpp` now force-writes all 256 entries to `WAIFU_PCFX_NEUTRAL_BLACK` (0x0088) after `set_king_8bpp_video()`; `active_palette` stays invalid so the first present still uploads the real palette. pcfxemu clears VCE to black and so never showed this — it is a reason-about-it, not look-at-it, flash (verify by the video-init ordering, not a capture). Do not remove the palette pre-blacken.
   - PC-FX 8bpp fade-to-black "one frame fully lit before black" glitch (two parts, both needed):
     1. `apply_black_dither_fade()` on PC-FX records a palette fade level only, but when the fade reaches fully black (`visible <= 0`) it must ALSO `clear_screen(IDX_BLACK)`, exactly like the host dither path (`threshold >= 64`). A palette-only black leaves the faded-out 8bpp scene sitting in the framebuffer; the next state restores the palette before its first frame is uploaded, flashing that stale scene. This covers the ad-hoc palette-only fades that hit `visible == 0` (e.g. `draw_story_name_entry` to_intro).
     2. The shared `draw_transition_black_hold_frame()` (the hold tail of `draw_fade_to_black_transition`, used by deck-editor exits, story fire-to-deck, plaza-to-deck, and menu transitions) must KEEP the palette black (`apply_black_dither_fade(0)`) instead of letting the per-frame `waifu_fm_use_common_palette()` reset leave the fade at full. The PC-FX palette write lands on the VCE immediately, but the cleared (black) framebuffer only reaches the screen on the next KRAM page flip; resetting the fade to full while the displayed page still holds the just-dimmed scene flashes it fully lit for one frame on real hardware (pcfxemu presents atomically so it cannot be seen there). The title/menu fade uses the VDC mask, not the palette fade, which is why it never had this flash.

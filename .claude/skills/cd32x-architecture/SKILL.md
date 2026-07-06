@@ -39,6 +39,35 @@ Two CPU programs cooperate. Put logic on the correct side; the SH-2 must NEVER c
 - `waifu_cd32x_memory.h` — SDRAM budget map (see numbers below). Deliberately NO CPU shadow framebuffer (would cost ~75 KiB).
 - `waifu_cd32x_input.c/.h`, `waifu_cd32x_runtime.c`, `cd32x_files.s/.h`, `cd32x_32x.h`.
 
+## Assembly invariants (SH-2 / M68K — you cannot mentally execute asm; check these against source)
+
+You will not reason asm out in your head — so treat these as hard invariants and,
+when touching `.s` files, verify against the source rather than assuming.
+
+- **`mov.b` sign-extends on SH-2.** Any inline asm that loads a palette/index
+  BYTE and packs it into a halfword MUST `extu.b` it first; a raw index ≥ 128
+  becomes `0xff..` and produces a bogus halfword that crashes BlastEm/hardware
+  (this shipped as a board-span crash). Check the palette-pack loops in
+  `renderer3d_cd32x.c` / `renderer3d_spans.inc`.
+- **32X↔MD mailbox = `MARS_SYS_COMM0..14`** (`cd32x_32x.h`, MD side `0xA15120+`).
+  Fixed meanings — do not repurpose: COMM0 = Master handshake + word-transfer
+  protocol (raise 2 = request, SH-2 replies word in COMM2 + raises 3; supervisor
+  clears COMM0 when fully done); COMM4/6 = Slave; COMM8/COMM10 = controller 1/2;
+  COMM12 = vcount low word (debug frame pacing); COMM14 = SFX trigger
+  `(seq<<8)|sfx_id`, mirrored to the Sub by the MD vblank (the tick writer at
+  `cd32x_md_iface.s` deliberately writes only COMM14's low sibling so it never
+  clobbers the SFX byte). When you change one user of a COMM register, grep ALL
+  users (`cd32x_md_iface.s`, `waifu_cd32x_cdrom.c`, `cd32x_boot_main.c`,
+  `cd32x_pcm.c`) and keep them consistent — nothing type-checks this.
+- **Sega-CD Backup-RAM BIOS is M68K-side only** (`cd32x_boot_main.c`): `_BURAM`
+  vector `0x5F16`, functions BRMINIT / BRMSERCH (exists) / BRMREAD / BRMWRITE.
+  The SH-2 NEVER calls these — it requests via the mailbox; the supervisor runs
+  the BIOS and copies the record back. Argument/preserved-register conventions
+  live in that file's helpers; reuse them, don't hand-roll a new trap.
+- Branch range (`bsr` vs `bsr.b`, `bra` vs `bra.b`) is assembler-checked — a
+  too-far short branch is a build error, not a silent bug, so let the assembler
+  tell you rather than guessing.
+
 ## Memory budgets (memorize before adding ANY buffer)
 
 | Region | Size | Used for |
