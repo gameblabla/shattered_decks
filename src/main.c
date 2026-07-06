@@ -12054,7 +12054,7 @@ static void draw_story_map_screen_content(int f)
         waifu_str_copy(line, (int)sizeof(line), "Rematch: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), ".");
         draw_wrapped_text_small_box(16, WAIFU_UI_BOTTOM_Y(190), 91, 3, 9, line, IDX_GOLD_HI, IDX_BLACK);
     } else if (g_story_duel_index >= STORY_MAX_DUELS - 1) {
-        draw_wrapped_text_small_box(16, WAIFU_UI_BOTTOM_Y(190), 91, 3, 9, "The demon waits in the void. This is the final duel.", IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small_box(16, WAIFU_UI_BOTTOM_Y(190), 91, 3, 9, "The void awaits. Final duel.", IDX_WHITE, IDX_BLACK);
     } else if (story_opponent_is_boss()) {
         waifu_str_copy(line, (int)sizeof(line), "A boss: "); waifu_str_cat(line, (int)sizeof(line), story_opponent_name()); waifu_str_cat(line, (int)sizeof(line), ". Prepare well.");
         draw_wrapped_text_small_box(16, WAIFU_UI_BOTTOM_Y(190), 91, 3, 9, line, IDX_RED, IDX_BLACK);
@@ -12102,7 +12102,7 @@ static void draw_story_pyramid_menu(void)
     draw_story_sanctum_background();
     draw_blue_gradient_box(126, 42, 122, 160);
     draw_text(158, 55, "SANCTUM", IDX_GOLD_HI, IDX_BLACK);
-    draw_wrapped_text_small_box(138, 76, 99, 4, 10, story_subst_name("A place of rest. Serena can prepare before the next duel."), IDX_WHITE, IDX_BLACK);
+    draw_wrapped_text_small_box(138, 76, 99, 4, 10, "A place of rest. Prepare for the next duel.", IDX_WHITE, IDX_BLACK);
     draw_text(151, 122, "SAVE", g_story_pyramid_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(151, 140, "DECK EDITOR", g_story_pyramid_cursor == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
     draw_text(151, 158, "QUIT", g_story_pyramid_cursor == 2 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
