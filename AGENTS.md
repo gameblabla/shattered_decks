@@ -6,6 +6,16 @@ This repo is a small C game with two entry points:
 
 Use this file as the first stop when you need to change behavior. It is written to save context tokens: jump to the listed files and line anchors instead of re-traversing the repo.
 
+## Skills (CD32X focus)
+
+The current focus is the Sega Mega CD32X build (`make -f Makefile.cd32x`). Read these before touching CD32X code:
+
+- `.claude/skills/cd32x-build-verify/SKILL.md` — build commands, the < 131072-byte SH-2 image limit, headless BlastEm capture workflow (`scripts/cd32x/blastem_headless_capture.sh`), input-script gotchas, debug defines.
+- `.claude/skills/cd32x-architecture/SKILL.md` — layer map, M68K-supervisor vs SH-2 hardware split under `src/platform/cd32x/`, platform seams (`src/engine/platform.h`), feature switches, framebuffer page-flip and palette-entry-0 rules.
+- `.claude/skills/cd32x-improvements/SKILL.md` — memory budgets (SDRAM/Word RAM), implemented perf levers, measured dead-ends, and the remaining roadmap (SDRAM shadow + DMA present, PCM music streaming, offset-aware big-art reads).
+
+Longer-form docs live in `docs/cd32x/`.
+
 ## High-Value Files
 
 - [src/main.c](/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/src/main.c:1)
