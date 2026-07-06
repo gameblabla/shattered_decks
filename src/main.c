@@ -11217,8 +11217,16 @@ static const char *story_fire_lines[] = {
    it 2x to the framebuffer through a colour LUT.  Cheaper and looks more like
    real flames.  (The present path already page-flips; a full-screen animation
    still needs a full KRAM upload each frame, which is unavoidable.) */
-#define FIRE_Y0 40
 #if defined(WAIFU_FM_CD32X)
+/* CD32X starts the fire at the very top of the screen.  With the hard 40px
+   FIRE_Y0 band the tall dark-red flame tips were sharply cropped at that
+   horizontal line (the more so at quarter res, where the top edge is chunky)
+   instead of tapering into black; filling from row 0 lets them fade to the
+   screen edge.  The extra rows are cheap: at quarter res each row of screen
+   height is only FIRE_FW (= WAIFU_FM_WIDTH/4) bytes of .bss, so dropping the
+   40px band grows the buffer by 40/4 * 80 = 800 bytes -- a small fraction of
+   the ~11 KiB the quarter-res switch already reclaimed for the asset arena. */
+#define FIRE_Y0 0
 /* CD32X: quarter-res intensity buffer, blitted 4x.  The half-res buffer was
    14.7 KiB of permanent SH-2 .bss for one story cutscene; every .bss byte here
    pushes __bss_end up and shrinks the transient asset arena the card caches
@@ -11226,6 +11234,7 @@ static const char *story_fire_lines[] = {
    the 32X output. */
 #define FIRE_SCALE 4
 #else
+#define FIRE_Y0 40
 #define FIRE_SCALE 2
 #endif
 #define FIRE_FW (WAIFU_FM_WIDTH / FIRE_SCALE)
