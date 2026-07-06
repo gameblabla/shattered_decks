@@ -5938,18 +5938,6 @@ static int g_story_fire_line = 0;
 static int g_deck_tab = 0; /* 0 deck, 1 storage */
 static int g_deck_cursor = 0;
 static int g_deck_scroll[2] = {0, 0};
-/* Deck editor cursor auto-repeat: held direction moves once immediately, then
-   pauses (WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) before repeating at a steady
-   cadence (WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES), like a typical UI menu.
-   Without this, navigating a 40-card grid means mashing the d-pad once per
-   cell. Only ONE direction is ever "active" at a time (index: 0 up, 1 down,
-   2 left, 3 right, -1 none) -- a fresh press on any direction always takes
-   over immediately, even while another direction is mid-repeat, so reversing
-   direction never has to wait out the previous hold's timer. */
-static int g_deck_editor_active_dir = -1;
-static int g_deck_editor_repeat_timer = 0;
-#define WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES 8
-#define WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES 4
 static int g_deck_flash = 0;
 static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
@@ -6145,43 +6133,6 @@ static void step_lp_display(void)
 {
     g_you_lp_disp = lp_disp_step_toward(g_you_lp_disp, g_you_lp);
     g_com_lp_disp = lp_disp_step_toward(g_com_lp_disp, g_com_lp);
-}
-
-/* Held-direction auto-repeat for the deck editor cursor: standard "Delayed
-   Auto Shift" (DAS), the same convention most games use for menu/grid cursors
-   (Tetris-style piece shifting, etc). `edge`/`held` are each
-   {up,down,left,right}. A single "active direction" plus one countdown timer
-   (instead of four independent per-direction counters) means any fresh edge
-   press on ANY direction immediately takes over and fires that same frame --
-   0 delay for press-release taps, no matter what was previously held or
-   mid-repeat, which is also what fixes pressing the opposite direction while
-   still holding the first one. Only a direction that stays continuously held
-   with no new press waits out WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES once,
-   then fires every WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES. The timer counts
-   plain logical frames (ticks of this function), not real elapsed vblanks --
-   an earlier version scaled it by g_b_anim_step to compensate for CD32X frame
-   time, but that let a single ordinary tap (held across as few as 2-3 calls)
-   sometimes cross the delay threshold early and fire a bonus repeat, which
-   read as broken/inconsistent repeat rather than smoother pacing. Plain tick
-   counting is simpler and matches how this kind of UI repeat conventionally
-   works. Returns the direction index to move this frame, or -1 for none. */
-static int deck_editor_repeat_dir(const int edge[4], const int held[4])
-{
-    int i;
-    for (i = 0; i < 4; ++i) {
-        if (edge[i]) {
-            g_deck_editor_active_dir = i;
-            g_deck_editor_repeat_timer = WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES;
-            return i;
-        }
-    }
-    if (g_deck_editor_active_dir < 0 || !held[g_deck_editor_active_dir]) {
-        g_deck_editor_active_dir = -1;
-        return -1;
-    }
-    if (--g_deck_editor_repeat_timer > 0) return -1;
-    g_deck_editor_repeat_timer = WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES;
-    return g_deck_editor_active_dir;
 }
 
 static int player_can_place_monster(void)
@@ -7251,8 +7202,6 @@ static void reset_story_deck_editor(void)
     g_deck_flash_reason = 0;
     g_deck_preview_card = CARD_NONE;
     g_deck_preview_art_pending = 0;
-    g_deck_editor_active_dir = -1;
-    g_deck_editor_repeat_timer = 0;
 }
 
 static int story_deck_card_count(int card)
@@ -12961,17 +12910,10 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     case WAIFU_I_DECK_EDITOR:
         if (press_tab) deck_editor_switch_tab();
-        {
-            const int edge[4] = { press_up, press_down, press_left, press_right };
-            const int held[4] = { input->up, input->down, input->left, input->right };
-            switch (deck_editor_repeat_dir(edge, held)) {
-            case 0: deck_editor_move_cursor(0, -1); break;
-            case 1: deck_editor_move_cursor(0, 1); break;
-            case 2: deck_editor_move_cursor(-1, 0); break;
-            case 3: deck_editor_move_cursor(1, 0); break;
-            default: break;
-            }
-        }
+        if (press_left) deck_editor_move_cursor(-1, 0);
+        if (press_right) deck_editor_move_cursor(1, 0);
+        if (press_up) deck_editor_move_cursor(0, -1);
+        if (press_down) deck_editor_move_cursor(0, 1);
         if (press_a) deck_editor_move_selected_card();
         if (press_b && deck_editor_active_count() > 0) {
             int *arr = deck_editor_active_array();
