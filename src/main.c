@@ -7501,7 +7501,7 @@ static void save_build_blob(u8 *buf)
 {
     int i;
     u16 cksum = 0;
-    buf[0] = 'WAIFU_FM_WIDTH'; buf[1] = 'A'; buf[2] = 'I'; buf[3] = 'F';
+    buf[0] = 'W'; buf[1] = 'A'; buf[2] = 'I'; buf[3] = 'F';
     buf[4] = WAIFU_SAVE_VERSION;
     for (i = 0; i < STORY_NAME_LEN; ++i) buf[5 + i] = (u8)g_story_name[i];
     buf[11] = (u8)g_story_progress;
@@ -7522,7 +7522,7 @@ static int save_parse_blob(const u8 *buf, u32 len)
     int i;
     u16 cksum = 0, stored;
     if (len < WAIFU_SAVE_SIZE) return 0;
-    if (buf[0] != 'WAIFU_FM_WIDTH' || buf[1] != 'A' || buf[2] != 'I' || buf[3] != 'F') return 0;
+    if (buf[0] != 'W' || buf[1] != 'A' || buf[2] != 'I' || buf[3] != 'F') return 0;
     if (buf[4] != WAIFU_SAVE_VERSION) return 0;
     for (i = 0; i < 121; ++i) cksum = (u16)(cksum + buf[i]);
     stored = (u16)buf[121] | ((u16)buf[122] << 8);
