@@ -6147,14 +6147,27 @@ static void step_lp_display(void)
    physical button state, `edge` is the single-frame press edge, and
    `hold_frames` is a per-direction counter owned by the caller. Returns 1 on
    the initial press and then again every REPEAT_INTERVAL frames once held
-   past REPEAT_DELAY, 0 otherwise. */
+   past REPEAT_DELAY, 0 otherwise.
+
+   Advances `hold_frames` by g_b_anim_step (real elapsed vblanks since the
+   previous waifu_fm_step(), reported every frame on CD32X regardless of
+   state -- see waifu_fm_set_frame_vblanks()) rather than a flat 1 per logical
+   call. The deck editor's per-frame draw cost can take more than one real
+   vblank on CD32X; counting logical calls instead of elapsed time made the
+   delay/interval run in slow motion whenever a frame took longer than 1/60s,
+   which is what made holding a direction feel sluggish instead of snappy.
+   Host/PC-FX always report step 1, so this is a no-op there. */
 static int repeat_trigger(int held, int edge, int *hold_frames)
 {
+    int prev;
     if (!held) { *hold_frames = 0; return 0; }
-    if (edge) { *hold_frames = 1; return 1; }
-    ++*hold_frames;
+    if (edge) { *hold_frames = 0; return 1; }
+    prev = *hold_frames;
+    *hold_frames += g_b_anim_step > 0 ? g_b_anim_step : 1;
     if (*hold_frames < WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) return 0;
-    return ((*hold_frames - WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) % WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES) == 0;
+    if (prev < WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) return 1;
+    return ((*hold_frames - WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) / WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES) !=
+           ((prev - WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) / WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES);
 }
 
 static int player_can_place_monster(void)
