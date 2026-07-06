@@ -11,6 +11,7 @@ one title-screen asset API; the PC-FX CD backend maps the title blob to the
 PC-FX-specific external file.
 """
 from pathlib import Path
+import os
 import re
 from PIL import Image, ImageOps
 
@@ -22,16 +23,83 @@ TITLE_DIR = ROOT / 'assets/source/title'
 ENDING_DIR = ROOT / 'assets/source/ending'
 
 
+def _target_defines():
+    """Preprocessor macros the current build defines, so this tool can pick the
+    same cfx_screen_config.h branch the C compiler will.  The build's Makefile
+    passes its target via the environment: Makefile.cd32x sets WAIFU_FM_CD32X=1,
+    the PC-FX and host builds leave it unset (they compile the #else branch)."""
+    defs = set()
+    raw = os.environ.get('WAIFU_FM_DEFINES', '')
+    for tok in re.split(r'[,\s]+', raw):
+        if tok:
+            defs.add(tok)
+    for key in ('WAIFU_FM_CD32X', 'WAIFU_FM_PCFX'):
+        if os.environ.get(key):
+            defs.add(key)
+    return defs
+
+
 def read_screen_resolution():
     """The single source of truth for the build resolution is
     src/engine/cfx_screen_config.h (WAIFU_FM_WIDTH / WAIFU_FM_HEIGHT). Changing
     those two numbers retargets the whole build, including which full-screen 2D
-    source art is baked here."""
+    source art is baked here.
+
+    That header now selects the resolution with `#if defined(WAIFU_FM_CD32X)`
+    (320x224) vs. `#else` (256x240).  A naive "first #define WAIFU_FM_WIDTH"
+    regex would always read the CD32X value and bake 320-wide title art into
+    every build -- which the 256-wide PC-FX KING upload then reinterprets as a
+    diagonally sheared image.  Evaluate the #if/#else the way the target build
+    does, using the macros the Makefile put in the environment.  An explicit
+    WAIFU_FM_WIDTH/HEIGHT pair in the environment overrides everything."""
+    env_w = os.environ.get('WAIFU_FM_WIDTH')
+    env_h = os.environ.get('WAIFU_FM_HEIGHT')
+    if env_w and env_h:
+        return int(env_w), int(env_h)
+
     text = SCREEN_CONFIG.read_text()
-    def macro(name, default):
-        m = re.search(r'^#define\s+' + name + r'\s+(\d+)', text, re.M)
-        return int(m.group(1)) if m else default
-    return macro('WAIFU_FM_WIDTH', 256), macro('WAIFU_FM_HEIGHT', 240)
+    defs = _target_defines()
+
+    def cond_defined(expr):
+        m = re.search(r'defined\s*\(?\s*([A-Za-z_]\w*)\s*\)?', expr)
+        return bool(m) and m.group(1) in defs
+
+    values = {}
+    active = [True]   # is the current (possibly nested) region compiled?
+    taken = [True]    # has a branch of the current #if chain already matched?
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith('#ifdef') or s.startswith('#ifndef') or s.startswith('#if'):
+            parent = active[-1]
+            if s.startswith('#ifdef'):
+                m = re.match(r'#ifdef\s+([A-Za-z_]\w*)', s)
+                val = bool(m) and m.group(1) in defs
+            elif s.startswith('#ifndef'):
+                m = re.match(r'#ifndef\s+([A-Za-z_]\w*)', s)
+                val = bool(m) and m.group(1) not in defs
+            else:
+                val = cond_defined(s)
+            active.append(parent and val)
+            taken.append(parent and val)
+        elif s.startswith('#elif'):
+            parent = active[-2] if len(active) >= 2 else True
+            val = parent and (not taken[-1]) and cond_defined(s)
+            active[-1] = val
+            taken[-1] = taken[-1] or val
+        elif s.startswith('#else'):
+            parent = active[-2] if len(active) >= 2 else True
+            val = parent and (not taken[-1])
+            active[-1] = val
+            taken[-1] = True
+        elif s.startswith('#endif'):
+            if len(active) > 1:
+                active.pop()
+                taken.pop()
+        elif active[-1]:
+            m = re.match(r'#define\s+(WAIFU_FM_WIDTH|WAIFU_FM_HEIGHT)\s+(\d+)', s)
+            if m:
+                values[m.group(1)] = int(m.group(2))
+    return values.get('WAIFU_FM_WIDTH', 256), values.get('WAIFU_FM_HEIGHT', 240)
 
 
 W, H = read_screen_resolution()
@@ -41,7 +109,7 @@ W, H = read_screen_resolution()
 # below) or add an explicit entry here. Filenames are relative to their dir.
 # 256x240 keeps the original shipped title art for byte-stable default builds.
 RESOLUTION_TITLE = {
-    (256, 240): 'titlescreen_shardsofcards.png',
+    (256, 240): 'title256.png',
     (320, 224): 'title_320x224.png',
     (320, 240): 'title_320.png',
     (384, 240): 'title_384x240.png',

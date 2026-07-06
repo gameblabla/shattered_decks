@@ -206,7 +206,7 @@ assets/generated/cd32x_title_screen_img.bin assets/generated/cd32x_ending_screen
 	python3 tools/gen_cd32x_title_asset.py
 
 src/generated/title_asset.h: tools/gen_title_asset.py assets/source/title/title_320x224.png assets/source/ending/ending320x240.png src/engine/cfx_screen_config.h src/generated/waifu_assets.h
-	python3 tools/gen_title_asset.py
+	WAIFU_FM_CD32X=1 python3 tools/gen_title_asset.py
 
 assets/generated/tex_atlas.bin: tools/cd32x_assets/extract_tex_atlas.py src/generated/waifu_assets.h
 	python3 tools/cd32x_assets/extract_tex_atlas.py src/generated/waifu_assets.h $@

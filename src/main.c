@@ -4500,6 +4500,23 @@ static void apply_black_dither_fade(int32_t visible)
 #define WAIFU_TITLE_FADE_FRAMES 4
 #endif
 
+/* Short fade for in-game black transitions that enter/leave the deck editor and
+   sanctum scenes.  These stay in the normal 8bpp video mode -- unlike the title
+   and ending, which cross the KING 16M mode switch and need the long
+   WAIFU_TITLE_FADE_FRAMES grace to hide it.  Reusing the title constant here
+   made the deck-editor RUN-exit take fade+hold = 72 frames on PC-FX (over a
+   second of black), which felt broken.  Keep the fade brief and the black hold
+   minimal so exiting the deck editor is snappy on every port. */
+#ifdef WAIFU_FM_PCFX
+#define WAIFU_INGAME_FADE_FRAMES 10
+#else
+#define WAIFU_INGAME_FADE_FRAMES 4
+#endif
+/* Matches the proven menu-transition black hold (see the WAIFU_TITLE_FADE_FRAMES
+   menu fades that pass a hold of 4): enough to cover the PC-FX palette-write /
+   KRAM page-flip skew so the last lit frame never flashes back before black. */
+#define WAIFU_INGAME_FADE_HOLD 4
+
 static void draw_field_pair_for_battle(Camera cam, int atk_col, int atk_row, int atk_id, int atk_back,
                                        int def_col, int def_row, int def_id, int def_back)
 {
@@ -12767,8 +12784,8 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_STORY_FIRE_TO_DECK:
-        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
-                                          WAIFU_TITLE_FADE_FRAMES,
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_INGAME_FADE_FRAMES,
+                                          WAIFU_INGAME_FADE_HOLD,
                                           transition_draw_story_fire_source, NULL)) {
             enter_deck_editor_after_assets();
         }
@@ -12912,8 +12929,8 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_STORY_PLAZA_TO_DECK:
-        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
-                                          WAIFU_TITLE_FADE_FRAMES,
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_INGAME_FADE_FRAMES,
+                                          WAIFU_INGAME_FADE_HOLD,
                                           transition_draw_story_plaza_source, NULL)) {
             enter_deck_editor_after_assets();
         }
@@ -13010,8 +13027,8 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_EDITOR_TO_PYRAMID:
-        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
-                                          WAIFU_TITLE_FADE_FRAMES,
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_INGAME_FADE_FRAMES,
+                                          WAIFU_INGAME_FADE_HOLD,
                                           transition_draw_deck_editor_source, NULL)) {
             g_story_editor_from_pyramid = 0;
             g_i_state = WAIFU_I_STORY_PYRAMID;
@@ -13020,8 +13037,8 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_EDITOR_TO_BATTLE:
-        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
-                                          WAIFU_TITLE_FADE_FRAMES,
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_INGAME_FADE_FRAMES,
+                                          WAIFU_INGAME_FADE_HOLD,
                                           transition_draw_deck_editor_source, NULL)) {
             init_story_battle_state();
             enter_battle_after_assets();
