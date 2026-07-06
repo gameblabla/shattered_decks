@@ -16,6 +16,7 @@
 
 #define WAIFU_CD32X_W WAIFU_FM_WIDTH
 #define WAIFU_CD32X_H WAIFU_FM_HEIGHT
+
 #define WAIFU_CD32X_LINE_TABLE_WORDS 0x100
 #define WAIFU_CD32X_FB_BYTE_OFFSET ((int)WAIFU_CD32X_FRAMEBUFFER_LINE_TABLE_BYTES)
 #define WAIFU_CD32X_TITLE_BYTES (CD32X_TITLE_SCREEN_W * CD32X_TITLE_SCREEN_H)
@@ -173,6 +174,7 @@ static void cd32x_write_back_line_table(void)
        writes always target video->back, and changing FS swaps front/back.  The
        0x24020000 aperture is overwrite mode for that same back page, not a
        CPU-addressable second page.  Therefore each page must receive its line
+       table while it is the current back page, before requesting an FS flip.
        table while it is the current back page, before requesting an FS flip. */
     volatile uint16_t *fb16 = &MARS_FRAMEBUFFER;
     for (int y = 0; y < WAIFU_CD32X_H; ++y) {
@@ -457,7 +459,8 @@ static void cd32x_draw_menu_both(int selected, int has_save)
     if (selected == 0) help = "ENTER NAME / FIRST DREAM";
     else if (selected == 2) help = has_save ? "RESUME SAVED STORY" : "NO SAVE FILE FOUND";
     cd32x_restore_title_rect_back(ox + 43, 204, 170, 14);
-    cd32x_draw_text_scaled_both(ox + 55, 207, help, 1, has_save || selected != 2 ? IDX_WHITE : IDX_RED, IDX_BLACK);
+    // Glitchy mess
+    //cd32x_draw_text_scaled_both(ox + 55, 207, help, 1, has_save || selected != 2 ? IDX_WHITE : IDX_RED, IDX_BLACK);
     if (g_cd32x_menu_pages_remaining > 0) --g_cd32x_menu_pages_remaining;
 }
 
@@ -467,12 +470,22 @@ WaifuCd32xVideo *waifu_cd32x_video_create(void)
     while ((MARS_SYS_INTMSK & MARS_SH2_ACCESS_VDP) == 0) {
     }
 
+    /* Blacken 32X CRAM BEFORE enabling the display: DISPMODE may reset the
+       VDP palette RAM on some hardware states, so we write CRAM both before
+       and after the mode switch to guarantee no white-flash window between
+       the overlay becoming active and the first game palette upload.  Entry 0
+       keeps its MD-priority bit so index-0 pixels show the MD backdrop
+       (black). */
+    {
+        volatile uint16_t *cram = &MARS_CRAM;
+        int i;
+        cram[0] = 0x8000u;
+        for (i = 1; i < 256; ++i) cram[i] = 0;
+    }
+
     MARS_VDP_DISPMODE = (uint16_t)(MARS_224_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
 
-    /* CRAM holds BIOS leftovers at this point and the framebuffers are about
-       to be cleared to index 0: black the palette out now (entry 0 keeps its
-       MD-priority bit) so the frames before the first game palette upload
-       cannot flash garbage colors. */
+    /* Re-blacken CRAM after DISPMODE in case the mode switch reset the palette. */
     {
         volatile uint16_t *cram = &MARS_CRAM;
         int i;
@@ -503,7 +516,7 @@ void waifu_cd32x_video_begin_8bpp(WaifuCd32xVideo *video)
     g_cd32x_menu_selected = -1;
     g_cd32x_menu_has_save = -1;
     g_cd32x_menu_pages_remaining = 0;
-    MARS_VDP_DISPMODE = (uint16_t)(MARS_224_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
+    MARS_VDP_DISPMODE = (uint16_t)(MARS_240_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
 }
 
 void waifu_cd32x_video_set_palette_rgb(WaifuCd32xVideo *video, const uint8_t *rgb, WaifuFmPaletteId palette_id, int fade_q8)

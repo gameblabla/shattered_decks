@@ -5563,6 +5563,7 @@ typedef enum WaifuInteractiveState {
     WAIFU_I_STORY_TO_PLAZA,
     WAIFU_I_STORY_PLAZA,
     WAIFU_I_STORY_PLAZA_TO_DECK,
+    WAIFU_I_REWARD_TO_ENDING,
     WAIFU_I_STORY_ENDING,
     WAIFU_I_STORY_ENDING_CREDITS,
     WAIFU_I_DECK_EDITOR,
@@ -8142,6 +8143,11 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_STORY_PLAZA_TO_DECK:
     case WAIFU_I_STORY_ENDING:
         return WAIFU_MUSIC_OPENING_DREAM;
+    case WAIFU_I_REWARD_TO_ENDING:
+        /* Keep the results track playing through this black-hold transition
+           instead of cutting to silence for a handful of frames right before
+           WAIFU_I_STORY_ENDING's own OPENING_DREAM track starts. */
+        return WAIFU_MUSIC_RESULTS;
     case WAIFU_I_STORY_ENDING_CREDITS:
         return WAIFU_MUSIC_NONE;
     case WAIFU_I_DECK_EDITOR:
@@ -12356,12 +12362,25 @@ static void story_return_to_map_after_duel(void)
            earlier opponent (duel_index < progress) leaves progress untouched. */
         if (g_story_duel_index >= g_story_progress) {
             if (g_story_progress >= STORY_MAX_DUELS - 1) {
-                /* The final duel was the frontier: clearing it ends the story. */
+                /* The final duel was the frontier: clearing it ends the story.
+                   Route through a black-hold transition instead of cutting
+                   straight from the reward screen into WAIFU_I_STORY_ENDING:
+                   every other major scene change in this game (menu->story,
+                   menu->battle, deck-editor exits, map->plaza, etc.) fades to
+                   black before loading/displaying the destination, and this
+                   was the one hard cut that skipped it. The ending image is a
+                   full-screen external asset streamed fresh (like the title
+                   screen), so cutting to it directly risked a frame or two of
+                   stale/mismatched palette-vs-framebuffer content flashing
+                   before the new palette and image are both actually in
+                   place -- the same class of transient this game already
+                   avoids everywhere else with a fade. */
                 g_story_battle_active = 0;
                 g_story_ending_line = 0;
                 g_story_ending_erasing = 0;
                 init_battle_state();
-                enter_story_ending_after_assets();
+                g_i_state = WAIFU_I_REWARD_TO_ENDING;
+                g_i_frame = -1;
                 return;
             }
             ++g_story_progress;
@@ -12874,6 +12893,16 @@ void waifu_fm_step(const WaifuFmInput *input)
                                           WAIFU_TITLE_FADE_FRAMES,
                                           transition_draw_story_plaza_source, NULL)) {
             enter_deck_editor_after_assets();
+        }
+        break;
+
+    case WAIFU_I_REWARD_TO_ENDING:
+        /* Plain black-hold transition (no source scene: init_battle_state()
+           has already reset the reward/battle state by the time we get
+           here). See story_return_to_map_after_duel() for why this exists. */
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
+                                          WAIFU_TITLE_FADE_FRAMES, NULL, NULL)) {
+            enter_story_ending_after_assets();
         }
         break;
 
@@ -13526,16 +13555,31 @@ static int debug_regression_story_rematch(void)
         return 1;
     }
 
-    /* Clearing the final frontier triggers the ending rather than the map. */
+    /* Clearing the final frontier triggers the ending rather than the map, via
+       a brief WAIFU_I_REWARD_TO_ENDING black-hold transition (see
+       story_return_to_map_after_duel()) instead of jumping to
+       WAIFU_I_STORY_ENDING directly. */
     g_story_progress = STORY_MAX_DUELS - 1;
     g_story_duel_index = STORY_MAX_DUELS - 1;
     g_story_battle_active = 1;
     g_b_result = 1;
     story_return_to_map_after_duel();
-    if (g_i_state != WAIFU_I_STORY_ENDING || g_story_battle_active) {
-        fprintf(stderr, "REGRESSION story_rematch FAIL: final win state=%d active=%d\n",
+    if (g_i_state != WAIFU_I_REWARD_TO_ENDING || g_story_battle_active) {
+        fprintf(stderr, "REGRESSION story_rematch FAIL: final win transition state=%d active=%d\n",
                 (int)g_i_state, g_story_battle_active);
         return 1;
+    }
+    {
+        int guard;
+        memset(&in, 0, sizeof(in));
+        for (guard = 0; guard < 120 && g_i_state != WAIFU_I_STORY_ENDING; ++guard) {
+            waifu_fm_step(&in);
+        }
+        if (g_i_state != WAIFU_I_STORY_ENDING) {
+            fprintf(stderr, "REGRESSION story_rematch FAIL: final win state=%d guard=%d\n",
+                    (int)g_i_state, guard);
+            return 1;
+        }
     }
 
     printf("REGRESSION story_rematch OK frontier+rematch+loss+ending\n");

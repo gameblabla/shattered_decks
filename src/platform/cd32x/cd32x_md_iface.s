@@ -605,7 +605,7 @@ md_init_hw:
 | VDP register initialization values
 InitVDPRegs:
         .byte   0x04    /* 8004 => write reg 0 = /IE1 (no HBL INT), /M3 (enable read H/V cnt) */
-        .byte   0x14    /* 8114 => write reg 1 = /DISP (display off), /IE0 (no VBL INT), M1 (DMA enabled), /M2 (V28 mode) */
+        .byte   0x04    /* 8104 => write reg 1 = /DISP (display off), /IE0 (no VBL INT), /M1 (DMA disabled), /M2 (V28 / 224-line mode).  The 32X VDP captures 224 lines; putting the MD VDP in V30 (240-line) mode leaked 16 scanlines past the 32X overlay. */
         .byte   0x30    /* 8230 => write reg 2 = Name Tbl A = 0xC000 */
         .byte   0x2C    /* 832C => write reg 3 = Name Tbl W = 0xB000 */
         .byte   0x07    /* 8407 => write reg 4 = Name Tbl B = 0xE000 */

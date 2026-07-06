@@ -1186,6 +1186,37 @@ int main(void)
     }
 
     cd32x_put_status("Uploading SH2 app...", TEXT_GREEN, 9, 6);
+
+    /* Leave the MD side completely clean BEFORE releasing the SH-2s
+       (MD_CMD_INIT_32X below), not after: do_md_cmd*() is a synchronous
+       round-trip to the Main CPU, but that Main-CPU command handler is also
+       what releases the SH-2s from reset, so they start running -- and can
+       reach their own first present (which marks 32X palette index 0 as
+       MD-priority/transparent) -- immediately once INIT_32X's handler runs,
+       independently of and racing ahead of whatever this Sub-CPU program
+       does *after* do_md_cmd2() returns. Sequencing these MD-side commands
+       first (CRAM entry 0 black, then wipe the boot-text planes) instead of
+       after closes that race outright, rather than narrowing the window.
+       This previously ran after INIT_32X and still left a brief white flash
+       on boot: whatever was on the MD planes (leftover BIOS graphics, or the
+       "Uploading SH2 app..." boot text just printed above) showed through
+       the freshly-booted 32X's transparent index-0 pixels for the frames
+       between SH-2 release and these commands landing. Doing this here also
+       means it must run before the SH-2 binary is staged into word_ram
+       below (SET_PALETTE reuses word_ram as scratch) -- do not move it
+       after the memcpy/switch_banks() pair. */
+    cd32x_force_md_h40();
+    {
+        char *pal_ram = (char *)0x0C0000;
+        unsigned short *pal = (unsigned short *)pal_ram;
+        pal[0] = 0x0000;
+        pal[1] = 0x0000;
+        switch_banks();
+        do_md_cmd3(MD_CMD_SET_PALETTE, 0x200000, 0, 2);
+    }
+    do_md_cmd0(MD_CMD_CLEAR_A);
+    do_md_cmd0(MD_CMD_CLEAR_B);
+
     memcpy(word_ram, &sh2_app_start[8], sh2_app_length - 8);
     switch_banks();
     rc = do_md_cmd2(MD_CMD_INIT_32X, 0x200000, sh2_app_length);
@@ -1197,16 +1228,6 @@ int main(void)
         for (;;) {
         }
     }
-
-    cd32x_force_md_h40();
-
-    /* The 32X marks palette index 0 as MD-priority (story skies show the MD
-       plane through it), and the freshly booted SH-2 presents an index-0
-       cleared framebuffer while the title assets stream: wipe the boot text
-       from the MD planes IMMEDIATELY at handoff or it shows through.  (The
-       old "SH2 running" status + delay lingered for a second of gameplay.) */
-    do_md_cmd0(MD_CMD_CLEAR_A);
-    do_md_cmd0(MD_CMD_CLEAR_B);
 
     for (;;) {
         cd32x_service_cd_request();
