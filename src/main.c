@@ -12971,11 +12971,18 @@ void waifu_fm_step(const WaifuFmInput *input)
             int *arr = deck_editor_active_array();
             g_deck_preview_card = arr[g_deck_cursor];
 #if defined(WAIFU_FM_CD32X)
-            /* Do not issue a CD seek in the editor input frame.  The preview
-               state paints first, then streams the selected full art. */
-            g_deck_preview_art_pending = is_support_card(g_deck_preview_card)
-                ? (waifu_assets_support_big_art_cached() == NULL)
-                : (waifu_assets_card_big_art_cached(g_deck_preview_card) == NULL);
+            /* Always run the fade-to-black -> load -> fade-in card-check
+               transition, matching the in-battle card check (IB_CARD_PREVIEW
+               sets LOAD_PENDING unconditionally).  Gating it on the art being
+               uncached made the deck editor SNAP straight to the preview
+               whenever the art happened to be resident (support cards, or a
+               monster still in the 2-slot big-art LRU from a recent check),
+               so the same button felt smooth on one card and abrupt on the
+               next.  cd32x_load_card_check_art is idempotent and returns
+               instantly for a cache hit, so this adds no CD seek in that case
+               -- only the consistent fade.  The load still happens in the
+               preview state's black hold, never in this input frame. */
+            g_deck_preview_art_pending = CD32X_CARD_CHECK_LOAD_PENDING;
 #endif
             g_i_state = WAIFU_I_DECK_PREVIEW;
             g_i_frame = -1;
