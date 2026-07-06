@@ -5920,8 +5920,15 @@ static uint32_t battle_base_visual_key(void)
 {
     uint32_t h = 2166136261u;
     int i;
-    h = waifu_hash_step_u32(h, (uint32_t)g_you_lp);
-    h = waifu_hash_step_u32(h, (uint32_t)g_com_lp);
+    /* Key on the *displayed* LP counters, not the instant g_you_lp/g_com_lp.
+       The HUD renders g_*_lp_disp, which step_lp_display() animates toward the
+       real LP over several frames after a hit/heal.  Hashing the instant value
+       leaves the key unchanged during that countdown (the real LP already sits
+       at its target), so the composite cache would restore a stale frame with
+       the old number baked in and the HUD counter would appear frozen.  CD32X
+       never saw this because it builds with WAIFU_BATTLE_BASE_CACHE_DISABLE. */
+    h = waifu_hash_step_u32(h, (uint32_t)g_you_lp_disp);
+    h = waifu_hash_step_u32(h, (uint32_t)g_com_lp_disp);
     h = waifu_hash_step_u32(h, (uint32_t)g_i_player_deck_left);
     h = waifu_hash_step_u32(h, (uint32_t)g_i_com_deck_left);
     for (i = 0; i < I_FIELD; ++i) {
