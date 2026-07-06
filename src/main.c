@@ -8125,8 +8125,22 @@ static WaifuMusicTrack music_track_for_current_state(void)
     case WAIFU_I_STORY_LOAD_TO_MAP:
         return WAIFU_MUSIC_NONE;
 #endif
-    case WAIFU_I_STORY_NAME:
+#ifdef WAIFU_FM_CD32X
     case WAIFU_I_STORY_NAME_TO_INTRO:
+        /* Mirror the WAIFU_I_MENU_TO_BATTLE gate above: stop the overworld
+           CD-DA during this short name->intro hold so the resident supervisor
+           has finished the stop and is idle before the first Serena portrait
+           read begins.  Otherwise that very first read races the in-flight
+           CD-DA stop (COMM0 busy) and can bail on a transient supervisor-busy
+           window -- the load_requested_portrait_slot retry rides most of those
+           out, but not issuing the read into a busy supervisor at all is the
+           cleaner half of the same fix.  CD-DA resumes at WAIFU_I_STORY_INTRO. */
+        return WAIFU_MUSIC_NONE;
+#endif
+    case WAIFU_I_STORY_NAME:
+#ifndef WAIFU_FM_CD32X
+    case WAIFU_I_STORY_NAME_TO_INTRO:
+#endif
     case WAIFU_I_STORY_INTRO:
     case WAIFU_I_STORY_FIRE:
     case WAIFU_I_STORY_FIRE_TO_DECK:

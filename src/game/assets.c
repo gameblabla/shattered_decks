@@ -813,29 +813,51 @@ static int load_requested_portrait_slot(int slot)
 {
     int portrait_id = g_requested_portrait_id[slot];
     size_t off;
+    int was_empty;
+    int attempt;
+    int ok = 0;
     if (portrait_id < 0) return 1;
     if (portrait_id >= WAIFU_STORY_PORTRAIT_COUNT) return 0;
     off = (size_t)portrait_id * PORTRAIT_PLANE_BYTES;
-    if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAITS, stage_portrait_pixels_ptr(slot), off, PORTRAIT_PLANE_BYTES)) return 0;
+
+    /* Unmap the slot BEFORE the read and retry once on failure, mirroring the
+       card-face / big-art readers (see waifu_assets_card_face and
+       load_big_card_art_cached).  A failed transfer leaves partially written
+       pixels behind -- the CD32X word stream bails mid-copy when the resident
+       supervisor is briefly busy (music PCM chunk prefetch, or the CD-DA
+       stop/settle that immediately precedes the very first portrait read after
+       name entry).  Clearing the slot id first means such a partial read can
+       never leave a stale id pointing at half-overwritten art, and the single
+       retry rides out that transient supervisor-busy window instead of
+       surfacing as a portrait that fails to load. */
+    was_empty = g_story_portrait_slot_id[slot] < 0;
+    g_story_portrait_slot_id[slot] = -1;
+
+    for (attempt = 0; attempt < 2 && !ok; ++attempt) {
+        if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAITS, stage_portrait_pixels_ptr(slot), off, PORTRAIT_PLANE_BYTES)) continue;
 #if defined(WAIFU_FM_CD32X)
-    {
-        /* Bake the alpha mask into the pixels as index-0 transparency, then drop
-           it: transparent texels become 0, and any opaque texel that happens to
-           be 0 is bumped to 1 so it is not color-keyed away.  Keeps a single
-           resident plane per portrait (see PORTRAIT_RESIDENT_PLANES). */
-        uint8_t *pix = stage_portrait_pixels_ptr(slot);
-        uint8_t *mask = stage_portrait_mask_scratch_ptr();
-        size_t i;
-        if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK, mask, off, PORTRAIT_PLANE_BYTES)) return 0;
-        for (i = 0; i < PORTRAIT_ONE_BYTES; ++i) {
-            pix[i] = mask[i] ? (pix[i] ? pix[i] : 1u) : 0u;
+        {
+            /* Bake the alpha mask into the pixels as index-0 transparency, then drop
+               it: transparent texels become 0, and any opaque texel that happens to
+               be 0 is bumped to 1 so it is not color-keyed away.  Keeps a single
+               resident plane per portrait (see PORTRAIT_RESIDENT_PLANES). */
+            uint8_t *pix = stage_portrait_pixels_ptr(slot);
+            uint8_t *mask = stage_portrait_mask_scratch_ptr();
+            size_t i;
+            if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK, mask, off, PORTRAIT_PLANE_BYTES)) continue;
+            for (i = 0; i < PORTRAIT_ONE_BYTES; ++i) {
+                pix[i] = mask[i] ? (pix[i] ? pix[i] : 1u) : 0u;
+            }
         }
-    }
 #else
-    if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK, stage_portrait_mask_ptr(slot), off, PORTRAIT_PLANE_BYTES)) return 0;
+        if (!cd_read_blob_slice(WAIFU_ASSET_BLOB_STORY_PORTRAIT_MASK, stage_portrait_mask_ptr(slot), off, PORTRAIT_PLANE_BYTES)) continue;
 #endif
+        ok = 1;
+    }
+    if (!ok) return 0;
+
     g_story_portrait_slot_id[slot] = portrait_id;
-    add_ram_used(PORTRAIT_SLOT_BYTES);
+    if (was_empty) add_ram_used(PORTRAIT_SLOT_BYTES);
     return 1;
 }
 #endif
