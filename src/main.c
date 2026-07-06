@@ -225,6 +225,15 @@ static int g_video_fade_visible_q8 = Q8_ONE;
 static CfxRenderer3D renderer;
 static int g_you_lp = 8000;
 static int g_com_lp = 8000;
+/* HUD-displayed LP counters. Battle logic (win/loss, damage math) reads/writes
+   g_you_lp/g_com_lp instantly; the HUD reads these _disp counters instead, so
+   a big hit counts down visibly over a beat rather than snapping straight to
+   the new value. step_lp_display() nudges them toward the real LP once per
+   frame, unconditionally, so the animation keeps progressing even across
+   state/phase changes (e.g. into the post-battle return). */
+static int g_you_lp_disp = 8000;
+static int g_com_lp_disp = 8000;
+#define WAIFU_LP_DISPLAY_STEP 40
 static int g_player_hand_offset_y = 0;
 static int g_enemy_hand_offset_y = 0;
 static int g_suppress_hand_cursor = 0;
@@ -2137,13 +2146,13 @@ static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
     draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
     draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
-    fmt_lp5(lpbuf, g_com_lp);
+    fmt_lp5(lpbuf, g_com_lp_disp);
     draw_text_small(209 + lp_ox, 9 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 
     draw_panel_rect(177 + lp_ox, 23 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 25 + lp_oy, 23, 8, IDX_UI_RED);
     draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
-    fmt_lp5(lpbuf, g_you_lp);
+    fmt_lp5(lpbuf, g_you_lp_disp);
     draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 }
 
@@ -5929,6 +5938,14 @@ static int g_story_fire_line = 0;
 static int g_deck_tab = 0; /* 0 deck, 1 storage */
 static int g_deck_cursor = 0;
 static int g_deck_scroll[2] = {0, 0};
+/* Deck editor cursor auto-repeat: held direction moves once immediately, then
+   pauses (WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) before repeating at a steady
+   cadence (WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES), like a typical UI menu.
+   Without this, navigating a 40-card grid means mashing the d-pad once per
+   cell. Indices: 0 up, 1 down, 2 left, 3 right. */
+static int g_deck_editor_hold_frames[4] = {0, 0, 0, 0};
+#define WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES 16
+#define WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES 6
 static int g_deck_flash = 0;
 static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
@@ -6111,6 +6128,34 @@ static void draw_cutin_battle_card(int id, int x, int y, int back, int attacker_
 }
 
 static int input_pressed(int now, int prev) { return now && !prev; }
+
+static int lp_disp_step_toward(int disp, int target)
+{
+    int diff = target - disp;
+    if (diff == 0) return disp;
+    if (diff > 0) return diff <= WAIFU_LP_DISPLAY_STEP ? target : disp + WAIFU_LP_DISPLAY_STEP;
+    return diff >= -WAIFU_LP_DISPLAY_STEP ? target : disp - WAIFU_LP_DISPLAY_STEP;
+}
+
+static void step_lp_display(void)
+{
+    g_you_lp_disp = lp_disp_step_toward(g_you_lp_disp, g_you_lp);
+    g_com_lp_disp = lp_disp_step_toward(g_com_lp_disp, g_com_lp);
+}
+
+/* Held-direction auto-repeat for menu-style cursors: `held` is the current raw
+   physical button state, `edge` is the single-frame press edge, and
+   `hold_frames` is a per-direction counter owned by the caller. Returns 1 on
+   the initial press and then again every REPEAT_INTERVAL frames once held
+   past REPEAT_DELAY, 0 otherwise. */
+static int repeat_trigger(int held, int edge, int *hold_frames)
+{
+    if (!held) { *hold_frames = 0; return 0; }
+    if (edge) { *hold_frames = 1; return 1; }
+    ++*hold_frames;
+    if (*hold_frames < WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) return 0;
+    return ((*hold_frames - WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) % WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES) == 0;
+}
 
 static int player_can_place_monster(void)
 {
@@ -7179,6 +7224,7 @@ static void reset_story_deck_editor(void)
     g_deck_flash_reason = 0;
     g_deck_preview_card = CARD_NONE;
     g_deck_preview_art_pending = 0;
+    for (int i = 0; i < 4; ++i) g_deck_editor_hold_frames[i] = 0;
 }
 
 static int story_deck_card_count(int card)
@@ -8258,6 +8304,8 @@ static void init_battle_state(void)
     }
     g_you_lp = 8000;
     g_com_lp = 8000;
+    g_you_lp_disp = 8000;
+    g_com_lp_disp = 8000;
     sync_battle_deck_counts();
     g_b_phase = IB_OPENING;
     g_b_frame = 0;
@@ -8369,7 +8417,7 @@ static void init_story_battle_state(void)
     }
     sync_battle_deck_counts();
     /* Bosses have higher LP. */
-    if (story_opponent_is_boss()) g_com_lp = 9999;
+    if (story_opponent_is_boss()) { g_com_lp = 9999; g_com_lp_disp = 9999; }
 }
 
 static void draw_interactive_field_cards(Camera cam)
@@ -9009,9 +9057,17 @@ static void start_thunder(int owner, int hand_slot)
             g_b_thunder_slots[out] = i;
             g_b_thunder_cards[out] = card;
             g_b_thunder_backs[out] = target_owner ? !g_i_com_faceup[i] : !g_i_player_faceup[i];
-#if defined(WAIFU_FM_CD32X)
-            (void)waifu_assets_prewarm_big_art_pair(card, CARD_NONE);
-#else
+#if !defined(WAIFU_FM_CD32X)
+            /* CD32X's big-art cache is only 2 slots (WAIFU_ASSET_BIG_CACHE_SLOTS=2),
+               deliberately sized for a single attacker/defender pair. THUNDER can
+               destroy up to I_FIELD (5) monsters, revealed one at a time; loading
+               all of them here would just thrash those 2 slots and leave only the
+               last couple resident by the time the sequential reveal reaches the
+               earlier targets. CD32X instead prewarms lazily, one (plus a
+               look-ahead) target at a time, right as each is about to be shown --
+               see the `seg == 0` prewarm in draw_com_thunder_anim(). Host/PC-FX
+               have a cache large enough to hold every monster's art, so loading
+               everything up front here avoids any later stall. */
             (void)card_big_art_ptr(card);
 #endif
         }
@@ -9157,13 +9213,25 @@ static void draw_com_thunder_anim(void)
         draw_support_big_art_scaled(slide_x, card_y, 128, 128);
         if (is_trap) rect_outline(slide_x - 2, card_y - 2, 132, 132, IDX_TRAP_FRAME);
         /* The card slides in from offscreen right first; the name/effect text
-           only appears once it has landed at center, not while it is moving. */
+           only appears once it has landed at center, not while it is moving.
+           Anchor the text off the card's actual bottom edge (card_y + 128)
+           instead of the old fixed WAIFU_UI_BOTTOM_Y(174): that constant is
+           tuned against a 240-tall canvas and goes negative on CD32X's 224
+           lines, which put the title text over the card's lower edge instead
+           of below it. Center the description on its own rendered pixel
+           width (7px/glyph in the small font) rather than a fixed 200px box,
+           so shorter lines like "ALL COM MONSTERS" land on true screen
+           center instead of the left-shifted box center. */
         if (f >= slide) {
-            draw_centered_text(WAIFU_UI_BOTTOM_Y(174), title, title_col, IDX_BLACK);
-            draw_wrapped_text_small((WAIFU_FM_WIDTH - 200) / 2, WAIFU_UI_BOTTOM_Y(194),
-                                    is_trap ? "TRAP: DESTROY ATTACKER" :
-                                    (g_b_thunder_owner == 0 ? "ALL COM MONSTERS" : "ALL PLAYER MONSTERS"),
-                                    25, IDX_WHITE, IDX_BLACK);
+            const char *desc = is_trap ? "TRAP: DESTROY ATTACKER" :
+                                (g_b_thunder_owner == 0 ? "ALL COM MONSTERS" : "ALL PLAYER MONSTERS");
+            int card_bottom = card_y + 128;
+            int title_y = card_bottom + 6;
+            int desc_y = title_y + 20;
+            int desc_x = (WAIFU_FM_WIDTH - (int)strlen(desc) * 7) / 2;
+            if (desc_x < 4) desc_x = 4;
+            draw_centered_text(title_y, title, title_col, IDX_BLACK);
+            draw_wrapped_text_small(desc_x, desc_y, desc, 25, IDX_WHITE, IDX_BLACK);
         }
         if (f >= fade_start) {
             apply_black_dither_fade(Q8_ONE - q8_ratio(f - fade_start, WAIFU_THUNDER_FADE_FRAMES));
@@ -9179,7 +9247,19 @@ static void draw_com_thunder_anim(void)
         if (idx >= 0 && idx < g_b_thunder_count) {
             int id = g_b_thunder_cards[idx];
             int back = g_b_thunder_backs[idx];
-            if (seg == 0) waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
+            if (seg == 0) {
+                waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
+#if defined(WAIFU_FM_CD32X)
+                /* Flush the 2-slot big-art cache for the newly-current target
+                   (plus a look-ahead on the next one) right as its burn segment
+                   starts, instead of relying on a stale prewarm from when
+                   THUNDER was declared. See the comment in start_thunder(). */
+                {
+                    int next_id = (idx + 1 < g_b_thunder_count) ? g_b_thunder_cards[idx + 1] : CARD_NONE;
+                    (void)waifu_assets_prewarm_big_art_pair(id, next_id);
+                }
+#endif
+            }
             draw_centered_text(8, title, title_col, IDX_BLACK);
             if (seg < BATTLE_BURN_DUR) {
                 draw_big_battle_card_burning(id, WAIFU_SINGLE_BATTLE_CARD_X, WAIFU_BATTLE_CARD_Y, back, seg);
@@ -12336,6 +12416,7 @@ void waifu_fm_step(const WaifuFmInput *input)
        back to its start pose -- the scene holds its motion instead of visibly
        resetting. */
     ++g_story_scene_anim_frame;
+    step_lp_display();
     waifu_fm_use_common_palette();
     update_music_for_current_state();
     memset(&zero, 0, sizeof(zero));
@@ -12852,10 +12933,10 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     case WAIFU_I_DECK_EDITOR:
         if (press_tab) deck_editor_switch_tab();
-        if (press_left) deck_editor_move_cursor(-1, 0);
-        if (press_right) deck_editor_move_cursor(1, 0);
-        if (press_up) deck_editor_move_cursor(0, -1);
-        if (press_down) deck_editor_move_cursor(0, 1);
+        if (repeat_trigger(input->up, press_up, &g_deck_editor_hold_frames[0])) deck_editor_move_cursor(0, -1);
+        if (repeat_trigger(input->down, press_down, &g_deck_editor_hold_frames[1])) deck_editor_move_cursor(0, 1);
+        if (repeat_trigger(input->left, press_left, &g_deck_editor_hold_frames[2])) deck_editor_move_cursor(-1, 0);
+        if (repeat_trigger(input->right, press_right, &g_deck_editor_hold_frames[3])) deck_editor_move_cursor(1, 0);
         if (press_a) deck_editor_move_selected_card();
         if (press_b && deck_editor_active_count() > 0) {
             int *arr = deck_editor_active_array();

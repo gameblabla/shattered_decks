@@ -53,10 +53,10 @@ SH2_LDFLAGS ?= -T src/platform/cd32x/mars-cd.ld -Wl,-Map=$(SH2_OBJDIR)/$(CD32X_T
 SH2_LIBPATH := -L$(SH2_GCC_LIBDIR)
 SH2_LIBS ?= $(SH2_LIBPATH) -lgcc -lgcc-Os-4-200
 
-M68K_CFLAGS ?= -m68000 -Os -fno-builtin -Wall -Wextra -Wno-unused-parameter -fomit-frame-pointer $(M68K_INCLUDES)
-M68K_HWFLAGS ?= -m68000 -Os -fno-builtin -Wall -Wextra -Wno-unused-parameter -fomit-frame-pointer $(M68K_INCLUDES)
+M68K_CFLAGS ?= -m68000 -Os -fno-builtin -Wall -Wextra -Wno-unused-parameter -fomit-frame-pointer -ffunction-sections -fdata-sections $(M68K_INCLUDES)
+M68K_HWFLAGS ?= -m68000 -Os -fno-builtin -Wall -Wextra -Wno-unused-parameter -fomit-frame-pointer -ffunction-sections -fdata-sections $(M68K_INCLUDES)
 M68K_ASFLAGS ?= -m68000 --register-prefix-optional
-M68K_LDFLAGS ?= -T $(LDSCRIPTSDIR)/cd.ld -Wl,-Map=$(M68K_OBJDIR)/$(CD32X_TARGET).m68k.map -nostdlib
+M68K_LDFLAGS ?= -T $(LDSCRIPTSDIR)/cd.ld -Wl,-Map=$(M68K_OBJDIR)/$(CD32X_TARGET).m68k.map -nostdlib -Wl,--gc-sections
 M68K_LIBPATH := -L$(M68K_GCC_LIBDIR)
 M68K_LIBS ?= $(M68K_LIBPATH) -lgcc
 
