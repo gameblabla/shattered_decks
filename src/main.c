@@ -5625,13 +5625,21 @@ typedef enum WaifuBattlePhase {
 #ifdef WAIFU_FM_PCFX
 #define BATTLE_ANIM_FRAMES 48
 #define DIRECT_ATTACK_ANIM_FRAMES 36
+#define WAIFU_SPELL_TRAP_SLIDE_FRAMES 10
 #define WAIFU_THUNDER_CARD_FRAMES 34
 #define WAIFU_THUNDER_FADE_FRAMES 12
 #define WAIFU_THUNDER_TARGET_GAP_FRAMES 5
 #else
 #define BATTLE_ANIM_FRAMES 196
 #define DIRECT_ATTACK_ANIM_FRAMES 108
-#define WAIFU_THUNDER_CARD_FRAMES 62
+/* Spell/trap reveal (THUNDER, MIRROR VEIL, and one-shot supports): the card
+   slides in from offscreen right to center over one second (60 frames at the
+   60 Hz NTSC vblank rate shared by CD32X/host), then the name/effect text
+   appears once it has landed. WAIFU_THUNDER_CARD_FRAMES must stay comfortably
+   above the slide so there is real hold time to read the text before the
+   fade-out (thunder_intro_frames() derives from it). */
+#define WAIFU_SPELL_TRAP_SLIDE_FRAMES 60
+#define WAIFU_THUNDER_CARD_FRAMES 100
 #define WAIFU_THUNDER_FADE_FRAMES 20
 #define WAIFU_THUNDER_TARGET_GAP_FRAMES 10
 #endif
@@ -5933,8 +5941,15 @@ static int g_deck_preview_art_pending = 0;
 #if defined(WAIFU_FM_CD32X)
 #define CD32X_CARD_CHECK_LOAD_PENDING 1
 #define CD32X_CARD_CHECK_REVEAL       2
-/* Fade length (frames) for each leg of the card-check black transition. */
-#define CD32X_DECK_CHECK_FADE_FRAMES   14
+/* Fade length (frames) for each leg of the card-check black transition.
+   This only paces the *visual* fade; the CD read is polled every frame once
+   fully black (see cd32x_step_card_check_transition) regardless of this
+   value, so shortening it cannot desync from the CD-ROM load -- a slow read
+   simply holds black longer after the fade-out completes. Cutting this too
+   low makes each leg of the dissolve visibly jerky (too few palette steps
+   between full and black); 10 keeps it noticeably snappier than the old
+   14-frame sluggish version while still reading as a smooth fade. */
+#define CD32X_DECK_CHECK_FADE_FRAMES   10
 #endif
 
 #define STORY_MAX_DUELS 5
@@ -9136,13 +9151,20 @@ static void draw_com_thunder_anim(void)
 
     if (f < intro) {
         int fade_start = WAIFU_THUNDER_CARD_FRAMES;
-        draw_support_big_art_scaled(card_x, card_y, 128, 128);
-        if (is_trap) rect_outline(card_x - 2, card_y - 2, 132, 132, IDX_TRAP_FRAME);
-        draw_centered_text(WAIFU_UI_BOTTOM_Y(174), title, title_col, IDX_BLACK);
-        draw_wrapped_text_small((WAIFU_FM_WIDTH - 200) / 2, WAIFU_UI_BOTTOM_Y(194),
-                                is_trap ? "TRAP: DESTROY ATTACKER" :
-                                (g_b_thunder_owner == 0 ? "ALL COM MONSTERS" : "ALL PLAYER MONSTERS"),
-                                25, IDX_WHITE, IDX_BLACK);
+        int slide = WAIFU_SPELL_TRAP_SLIDE_FRAMES;
+        int32_t slide_t = q8_smooth_ratio(f < slide ? f : slide, slide);
+        int slide_x = card_x + (int)((((int64_t)(WAIFU_FM_WIDTH - card_x)) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
+        draw_support_big_art_scaled(slide_x, card_y, 128, 128);
+        if (is_trap) rect_outline(slide_x - 2, card_y - 2, 132, 132, IDX_TRAP_FRAME);
+        /* The card slides in from offscreen right first; the name/effect text
+           only appears once it has landed at center, not while it is moving. */
+        if (f >= slide) {
+            draw_centered_text(WAIFU_UI_BOTTOM_Y(174), title, title_col, IDX_BLACK);
+            draw_wrapped_text_small((WAIFU_FM_WIDTH - 200) / 2, WAIFU_UI_BOTTOM_Y(194),
+                                    is_trap ? "TRAP: DESTROY ATTACKER" :
+                                    (g_b_thunder_owner == 0 ? "ALL COM MONSTERS" : "ALL PLAYER MONSTERS"),
+                                    25, IDX_WHITE, IDX_BLACK);
+        }
         if (f >= fade_start) {
             apply_black_dither_fade(Q8_ONE - q8_ratio(f - fade_start, WAIFU_THUNDER_FADE_FRAMES));
         }
@@ -9236,13 +9258,22 @@ static void draw_player_one_shot_support_anim(void)
 {
     int f = g_b_anim_vblanks;
     int reveal = WAIFU_SUPPORT_REVEAL_FRAMES;
+    int slide = WAIFU_SPELL_TRAP_SLIDE_FRAMES;
+    int32_t slide_t = q8_smooth_ratio(f < slide ? f : slide, slide);
+    int base_x = (WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2;
+    int slide_x = base_x + (int)((((int64_t)(WAIFU_FM_WIDTH - base_x)) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
     clear_screen(IDX_BLACK);
-    draw_support_big_art_112((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2, WAIFU_UI_BOTTOM_Y(32));
+    draw_support_big_art_112(slide_x, WAIFU_UI_BOTTOM_Y(32));
+    /* The card slides in from offscreen right first; the name/effect text only
+       appears once it has landed at center, not while it is moving.  Once
+       shown, keep the card fully visible and let the text appear over it --
+       do not dip to black in between; a fade belongs only on the transition
+       to the next scene (e.g. the IB_PLAYER_DRAW slide that follows an
+       Ancient Draw). */
+    if (f < slide) {
+        return;
+    }
     draw_centered_text(WAIFU_UI_BOTTOM_Y(154), support_card_name(g_b_support_card), IDX_GOLD_HI, IDX_BLACK);
-    /* The card and its effect text share one scene: keep the card fully visible
-       the whole time and let the text appear over it.  Do not dip to black in
-       between -- a fade belongs only on the transition to the next scene (e.g.
-       the IB_PLAYER_DRAW slide that follows an Ancient Draw). */
     if (f < reveal) {
         return;
     }
@@ -11685,7 +11716,7 @@ static Camera story_volcano_camera(int f)
 static void draw_map_volcano_3d(int f)
 {
     Camera cam = story_volcano_camera(f);
-    draw_floor_tiled(cam, -Q8_FRAC(7,100), 6, 6, Q8_FRAC(176,100));
+    draw_floor_tiled(cam, -Q8_FRAC(7,100), 2, 2, Q8_FRAC(176,100));
     /* Volcano cone: steep triangular faces like the pyramid but wider and
        darker, with a glowing crater rim. */
     Vec3 apex_v = v3(0, Q8_FRAC(32,10), 0);
@@ -12006,18 +12037,6 @@ static void transition_draw_story_fire_source(int frame, void *ctx)
     (void)frame;
     (void)ctx;
     draw_story_fire_screen(g_story_fire_line);
-}
-
-static void draw_story_fire_to_deck_transition(int f)
-{
-    /* Fade the fire scene out to black, then HOLD black for the second half.
-       Do NOT reveal the deck editor here: the deck screen must only appear
-       after the LOADING screen (entered via enter_deck_editor_after_assets()
-       once this transition finishes).  Fading the deck editor in here made it
-       flash for a few frames before LOADING ran. */
-    draw_fade_to_black_transition(f, WAIFU_FAST_TRANSITION_HALF_FRAMES,
-                                  WAIFU_FAST_TRANSITION_HALF_FRAMES,
-                                  transition_draw_story_fire_source, NULL);
 }
 
 static void draw_story_pyramid_menu(void)
@@ -12598,9 +12617,10 @@ void waifu_fm_step(const WaifuFmInput *input)
             g_story_name[g_story_name_pos] = story_name_chars[idx];
         }
         draw_story_name_entry();
-        if (press_b) {
-            enter_menu_after_assets();
-        } else if (press_start) {
+        /* No B-button shortcut back to the mode-select menu: once story mode
+           is entered, the only way out is the Sanctum QUIT option so a story
+           session is never abandoned by an accidental Back press. */
+        if (press_start) {
             g_story_name_to_intro = 1;
             g_i_state = WAIFU_I_STORY_NAME_TO_INTRO;
             g_i_frame = -1;
@@ -12628,9 +12648,7 @@ void waifu_fm_step(const WaifuFmInput *input)
                 g_i_frame = -1;
             }
         }
-        if (press_b) {
-            enter_menu_after_assets();
-        }
+        /* No B-button shortcut back to the menu; see WAIFU_I_STORY_NAME. */
         break;
 
     case WAIFU_I_STORY_FIRE:
@@ -12645,14 +12663,13 @@ void waifu_fm_step(const WaifuFmInput *input)
                 g_i_frame = -1;
             }
         }
-        if (press_b) {
-            enter_menu_after_assets();
-        }
+        /* No B-button shortcut back to the menu; see WAIFU_I_STORY_NAME. */
         break;
 
     case WAIFU_I_STORY_FIRE_TO_DECK:
-        draw_story_fire_to_deck_transition(g_i_frame);
-        if (g_i_frame >= WAIFU_FAST_TRANSITION_HALF_FRAMES * 2) {
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
+                                          WAIFU_TITLE_FADE_FRAMES,
+                                          transition_draw_story_fire_source, NULL)) {
             enter_deck_editor_after_assets();
         }
         break;
@@ -12683,9 +12700,9 @@ void waifu_fm_step(const WaifuFmInput *input)
                 g_i_frame = -1;
             }
         }
-        if (press_b) {
-            enter_menu_after_assets();
-        }
+        /* No B-button shortcut back to the menu: leaving the story map to the
+           title/menu is only reachable through Sanctum QUIT (see
+           WAIFU_I_STORY_PYRAMID's g_story_pyramid_cursor == 2 handling). */
         break;
 
     case WAIFU_I_STORY_PYRAMID:
@@ -12795,8 +12812,8 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_STORY_PLAZA_TO_DECK:
-        if (draw_fade_to_black_transition(g_i_frame, WAIFU_FAST_TRANSITION_HALF_FRAMES,
-                                          WAIFU_FAST_TRANSITION_HALF_FRAMES,
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
+                                          WAIFU_TITLE_FADE_FRAMES,
                                           transition_draw_story_plaza_source, NULL)) {
             enter_deck_editor_after_assets();
         }
@@ -12876,8 +12893,8 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_EDITOR_TO_PYRAMID:
-        if (draw_fade_to_black_transition(g_i_frame, WAIFU_FAST_TRANSITION_HALF_FRAMES,
-                                          WAIFU_FAST_TRANSITION_HALF_FRAMES,
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
+                                          WAIFU_TITLE_FADE_FRAMES,
                                           transition_draw_deck_editor_source, NULL)) {
             g_story_editor_from_pyramid = 0;
             g_i_state = WAIFU_I_STORY_PYRAMID;
@@ -12886,8 +12903,8 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_DECK_EDITOR_TO_BATTLE:
-        if (draw_fade_to_black_transition(g_i_frame, WAIFU_FAST_TRANSITION_HALF_FRAMES,
-                                          WAIFU_FAST_TRANSITION_HALF_FRAMES,
+        if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
+                                          WAIFU_TITLE_FADE_FRAMES,
                                           transition_draw_deck_editor_source, NULL)) {
             init_story_battle_state();
             enter_battle_after_assets();
@@ -13700,7 +13717,7 @@ static int debug_regression_thunder_support(void)
                 (int)g_b_phase, g_b_thunder_count, g_i_com_used[0]);
         return 1;
     }
-    for (guard = 0; guard < 240 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) {
+    for (guard = 0; guard < 400 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) {
         waifu_fm_step(&in);
     }
     if (g_b_phase == IB_COM_THUNDER_ANIM || is_monster_card(g_i_player_field[0]) ||
@@ -13727,7 +13744,7 @@ static int debug_regression_thunder_support(void)
                 (int)g_b_phase, g_b_thunder_owner, g_b_thunder_count, g_i_player_used[0]);
         return 1;
     }
-    for (guard = 0; guard < 240 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) {
+    for (guard = 0; guard < 400 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) {
         waifu_fm_step(&in);
     }
     if (g_b_phase == IB_COM_THUNDER_ANIM || is_monster_card(g_i_com_field[0]) ||
@@ -13946,7 +13963,7 @@ static int debug_regression_trap_counter(void)
                 g_b_thunder_slots[0], g_i_player_used[0]);
         return 1;
     }
-    for (guard = 0; guard < 240 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) waifu_fm_step(&in);
+    for (guard = 0; guard < 400 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) waifu_fm_step(&in);
     if (g_b_phase != IB_COM_BATTLE || is_monster_card(g_i_com_field[0]) ||
         !is_monster_card(g_i_player_field[0]) || g_i_player_faceup[0] != 0 ||
         g_you_lp != lp_before || g_b_trap_counter_active) {
@@ -13979,7 +13996,7 @@ static int debug_regression_trap_counter(void)
                 (int)g_b_phase, g_b_trap_counter_active, g_i_player_used[3]);
         return 1;
     }
-    for (guard = 0; guard < 240 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) waifu_fm_step(&in);
+    for (guard = 0; guard < 400 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) waifu_fm_step(&in);
     if (g_b_phase != IB_COM_BATTLE || is_monster_card(g_i_com_field[1]) || g_you_lp != lp_before) {
         fprintf(stderr, "REGRESSION trap_counter FAIL: after direct phase=%d com1=%d lp=%d/%d guard=%d\n",
                 (int)g_b_phase, g_i_com_field[1], g_you_lp, lp_before, guard);
