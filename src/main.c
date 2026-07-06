@@ -5942,10 +5942,14 @@ static int g_deck_scroll[2] = {0, 0};
    pauses (WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) before repeating at a steady
    cadence (WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES), like a typical UI menu.
    Without this, navigating a 40-card grid means mashing the d-pad once per
-   cell. Indices: 0 up, 1 down, 2 left, 3 right. */
-static int g_deck_editor_hold_frames[4] = {0, 0, 0, 0};
-#define WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES 16
-#define WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES 6
+   cell. Only ONE direction is ever "active" at a time (index: 0 up, 1 down,
+   2 left, 3 right, -1 none) -- a fresh press on any direction always takes
+   over immediately, even while another direction is mid-repeat, so reversing
+   direction never has to wait out the previous hold's timer. */
+static int g_deck_editor_active_dir = -1;
+static int g_deck_editor_repeat_timer = 0;
+#define WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES 8
+#define WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES 4
 static int g_deck_flash = 0;
 static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
@@ -6143,31 +6147,37 @@ static void step_lp_display(void)
     g_com_lp_disp = lp_disp_step_toward(g_com_lp_disp, g_com_lp);
 }
 
-/* Held-direction auto-repeat for menu-style cursors: `held` is the current raw
-   physical button state, `edge` is the single-frame press edge, and
-   `hold_frames` is a per-direction counter owned by the caller. Returns 1 on
-   the initial press and then again every REPEAT_INTERVAL frames once held
-   past REPEAT_DELAY, 0 otherwise.
-
-   Advances `hold_frames` by g_b_anim_step (real elapsed vblanks since the
-   previous waifu_fm_step(), reported every frame on CD32X regardless of
-   state -- see waifu_fm_set_frame_vblanks()) rather than a flat 1 per logical
-   call. The deck editor's per-frame draw cost can take more than one real
-   vblank on CD32X; counting logical calls instead of elapsed time made the
-   delay/interval run in slow motion whenever a frame took longer than 1/60s,
-   which is what made holding a direction feel sluggish instead of snappy.
-   Host/PC-FX always report step 1, so this is a no-op there. */
-static int repeat_trigger(int held, int edge, int *hold_frames)
+/* Held-direction auto-repeat for the deck editor cursor: a single "active
+   direction" plus a countdown timer, instead of four independent per-direction
+   counters. `edge`/`held` are each {up,down,left,right}. Any fresh edge press
+   immediately takes over as the active direction and fires right away, even
+   if a different direction is mid-repeat -- so pressing the opposite
+   direction while still holding the first one responds instantly instead of
+   waiting for the old direction's repeat timer. Once a direction is active
+   with no new press, the timer counts down by g_b_anim_step (real elapsed
+   vblanks since the previous waifu_fm_step() -- reported every frame on
+   CD32X regardless of state, see waifu_fm_set_frame_vblanks()) rather than a
+   flat 1 per logical call, so the delay/interval stay correct in wall-clock
+   time even if a frame's draw cost takes more than one real vblank. Returns
+   the direction index to move this frame, or -1 for none. */
+static int deck_editor_repeat_dir(const int edge[4], const int held[4])
 {
-    int prev;
-    if (!held) { *hold_frames = 0; return 0; }
-    if (edge) { *hold_frames = 0; return 1; }
-    prev = *hold_frames;
-    *hold_frames += g_b_anim_step > 0 ? g_b_anim_step : 1;
-    if (*hold_frames < WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) return 0;
-    if (prev < WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) return 1;
-    return ((*hold_frames - WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) / WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES) !=
-           ((prev - WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES) / WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES);
+    int i;
+    for (i = 0; i < 4; ++i) {
+        if (edge[i]) {
+            g_deck_editor_active_dir = i;
+            g_deck_editor_repeat_timer = WAIFU_DECK_EDITOR_REPEAT_DELAY_FRAMES;
+            return i;
+        }
+    }
+    if (g_deck_editor_active_dir < 0 || !held[g_deck_editor_active_dir]) {
+        g_deck_editor_active_dir = -1;
+        return -1;
+    }
+    g_deck_editor_repeat_timer -= (g_b_anim_step > 0 ? g_b_anim_step : 1);
+    if (g_deck_editor_repeat_timer > 0) return -1;
+    g_deck_editor_repeat_timer = WAIFU_DECK_EDITOR_REPEAT_INTERVAL_FRAMES;
+    return g_deck_editor_active_dir;
 }
 
 static int player_can_place_monster(void)
@@ -7237,7 +7247,8 @@ static void reset_story_deck_editor(void)
     g_deck_flash_reason = 0;
     g_deck_preview_card = CARD_NONE;
     g_deck_preview_art_pending = 0;
-    for (int i = 0; i < 4; ++i) g_deck_editor_hold_frames[i] = 0;
+    g_deck_editor_active_dir = -1;
+    g_deck_editor_repeat_timer = 0;
 }
 
 static int story_deck_card_count(int card)
@@ -12946,10 +12957,17 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     case WAIFU_I_DECK_EDITOR:
         if (press_tab) deck_editor_switch_tab();
-        if (repeat_trigger(input->up, press_up, &g_deck_editor_hold_frames[0])) deck_editor_move_cursor(0, -1);
-        if (repeat_trigger(input->down, press_down, &g_deck_editor_hold_frames[1])) deck_editor_move_cursor(0, 1);
-        if (repeat_trigger(input->left, press_left, &g_deck_editor_hold_frames[2])) deck_editor_move_cursor(-1, 0);
-        if (repeat_trigger(input->right, press_right, &g_deck_editor_hold_frames[3])) deck_editor_move_cursor(1, 0);
+        {
+            const int edge[4] = { press_up, press_down, press_left, press_right };
+            const int held[4] = { input->up, input->down, input->left, input->right };
+            switch (deck_editor_repeat_dir(edge, held)) {
+            case 0: deck_editor_move_cursor(0, -1); break;
+            case 1: deck_editor_move_cursor(0, 1); break;
+            case 2: deck_editor_move_cursor(-1, 0); break;
+            case 3: deck_editor_move_cursor(1, 0); break;
+            default: break;
+            }
+        }
         if (press_a) deck_editor_move_selected_card();
         if (press_b && deck_editor_active_count() > 0) {
             int *arr = deck_editor_active_array();
