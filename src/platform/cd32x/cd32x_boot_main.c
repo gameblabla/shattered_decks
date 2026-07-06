@@ -1170,7 +1170,7 @@ int main(void)
     char *word_ram = (char *)0x0C0000;
     int rc;
 
-    cd32x_put_status("Waifu FM CD32X", TEXT_WHITE, 12, 2);
+    cd32x_put_status("SHATTERING DECKS", TEXT_WHITE, 12, 2);
     cd32x_put_status("Initializing CD...", TEXT_GREEN, 10, 4);
     init_cd();
     cd32x_set_asset_cwd();
@@ -1185,7 +1185,7 @@ int main(void)
 #endif
     }
 
-    cd32x_put_status("Uploading SH2 app...", TEXT_GREEN, 9, 6);
+    cd32x_put_status("NOW LOADING...", TEXT_GREEN, 9, 6);
 
     /* Leave the MD side completely clean BEFORE releasing the SH-2s
        (MD_CMD_INIT_32X below), not after: do_md_cmd*() is a synchronous
