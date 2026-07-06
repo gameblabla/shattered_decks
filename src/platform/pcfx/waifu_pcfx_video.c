@@ -2305,6 +2305,19 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
     king_seek_write_words(WAIFU_PCFX_PAGE_STRIDE_WORDS);
     king_kram_fill_words(WAIFU_PCFX_BLACK_WORD, WAIFU_PCFX_PAGE_STRIDE_WORDS);
     set_king_8bpp_video(1);
+    /* Blacken the KING 8bpp VCE palette (entries 0..255) now.  set_king_8bpp_video
+       only configures the palette BANK; the 256 colour entries are not written
+       until the first present_8bpp uploads a real frame (during asset load / the
+       loading screen).  The KRAM just filled above holds the IDX_BLACK *index*,
+       so until that first present the screen shows index-0-ish pixels through
+       whatever the VCE palette RAM happens to hold.  At cold boot that is the
+       undefined/BIOS power-up state -- bright on real hardware -- producing a
+       full-screen WHITE flash right after the BIOS hands off and as the loading
+       screen comes up (pcfxemu clears VCE to black, so it hides this; the console
+       shows it).  Force every entry to neutral black here so the boot/loading
+       window is black regardless of power-up state.  active_palette stays invalid
+       (set below), so the first present still uploads the real palette. */
+    for (int i = 0; i < 256; ++i) eris_tetsu_set_palette((uint16_t)i, WAIFU_PCFX_NEUTRAL_BLACK);
     /* Re-assert the black VDC mask after the VDC mode registers are touched. */
     pcfx_vdc_overlay_force_black(video);
     video->mode = WAIFU_PCFX_VIDEO_MODE_KING_8BPP;
