@@ -2168,6 +2168,14 @@ static void fmt_prefixed_i32(char *dst, int dst_size, char prefix, int value);
 
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
 {
+    /* NOTE: the top HUD (FIELD/MARE + COM/YOU LP) is drawn INSIDE the battle
+       base cache (draw_interactive_base -> battle_base_cache_restore), so on a
+       cache hit it is restored by a framebuffer memcpy and costs nothing.  It is
+       therefore deliberately kept as software framebuffer text: moving it to the
+       VDC overlay would make cache-hit frames stop re-emitting the glyphs (the
+       cache only snapshots the framebuffer), blanking the counters.  Only the
+       UNCACHED per-frame HUD (bottom info panel, see draw_bottom_info_offset_ex)
+       is worth moving to the hardware overlay. */
     char lpbuf[16];
     draw_panel_rect(6 + field_ox, 7 + field_oy, 49, 29, IDX_UI_DARK);
     draw_text_small(11 + field_ox, 11 + field_oy, "FIELD", IDX_WHITE, IDX_BLACK);
@@ -2382,6 +2390,33 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
     for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
     char line[64];
+#if defined(WAIFU_FM_PCFX)
+    /* PC-FX: bottom-info panel text rides the VDC hardware overlay (drop-shadow
+       HUD font) instead of the CPU framebuffer, so it costs no KRAM upload and
+       does not dirty the framebuffer.  The teal panel background above stays in
+       the framebuffer; only the glyphs move to the overlay layer. */
+    if (is_support_card(card_id)) {
+        char support_line[64];
+        waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_name(card_id), 24);
+        waifu_pcfx_video_hud_print(6, base+6, support_line, WAIFU_PCFX_HUD_COLOR_WHITE);
+        waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_type(card_id), 31);
+        waifu_pcfx_video_hud_print(6, base+21, support_line, WAIFU_PCFX_HUD_COLOR_WHITE);
+        waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 68, base+21, "USE", WAIFU_PCFX_HUD_COLOR_GOLD);
+        return;
+    }
+    if (!is_monster_card(card_id)) return;
+    waifu_str_copy_n(line, (int)sizeof(line), waifu_card_names[card_id], 24);
+    waifu_pcfx_video_hud_print(6, base+6, line, WAIFU_PCFX_HUD_COLOR_WHITE);
+    fmt_join2(line, (int)sizeof(line), waifu_card_attr[card_id], " / ", waifu_card_tribe[card_id]);
+    waifu_pcfx_video_hud_print(6, base+21, line, WAIFU_PCFX_HUD_COLOR_WHITE);
+    if (atk < 0) atk = (int)waifu_card_atk[card_id];
+    if (defv < 0) defv = (int)waifu_card_def[card_id];
+    fmt_prefixed_i32(line, (int)sizeof(line), 'x', atk);
+    waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 41, base+15, line, WAIFU_PCFX_HUD_COLOR_WHITE);
+    fmt_i32_dec(line, (int)sizeof(line), defv);
+    waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 35, base+26, line, WAIFU_PCFX_HUD_COLOR_WHITE);
+    rect_outline(WAIFU_FM_WIDTH - 41,base+25,6,6,IDX_WHITE);
+#else
     if (is_support_card(card_id)) {
         char support_line[64];
         waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_name(card_id), 24);
@@ -2403,6 +2438,7 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     fmt_i32_dec(line, (int)sizeof(line), defv);
     draw_text_small(WAIFU_FM_WIDTH - 35, base+26, line, stat_delta_color(defv - (int)waifu_card_def[card_id]), IDX_BLACK);
     rect_outline(WAIFU_FM_WIDTH - 41,base+25,6,6,IDX_WHITE);
+#endif
 }
 
 static void draw_bottom_info_offset(int card_id, const char *mode, int yoff)
