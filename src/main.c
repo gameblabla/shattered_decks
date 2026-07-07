@@ -2209,6 +2209,19 @@ static uint8_t stat_delta_color(int delta)
     return IDX_WHITE;
 }
 
+#ifdef WAIFU_FM_PCFX
+/* VDC-overlay analogue of stat_delta_color: maps an atk/def delta to the
+   matching HUD font colour (green buff / red nerf / white unchanged) so the
+   bottom info panel's stat values keep their buff/nerf tint on the hardware
+   overlay layer instead of always rendering white. */
+static int waifu_pcfx_hud_stat_color(int delta)
+{
+    if (delta > 0) return WAIFU_PCFX_HUD_COLOR_GREEN;
+    if (delta < 0) return WAIFU_PCFX_HUD_COLOR_RED;
+    return WAIFU_PCFX_HUD_COLOR_WHITE;
+}
+#endif
+
 static void fmt_u32_dec(char *dst, int dst_size, unsigned value)
 {
     char tmp[10];
@@ -2412,9 +2425,9 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     if (atk < 0) atk = (int)waifu_card_atk[card_id];
     if (defv < 0) defv = (int)waifu_card_def[card_id];
     fmt_prefixed_i32(line, (int)sizeof(line), 'x', atk);
-    waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 41, base+15, line, WAIFU_PCFX_HUD_COLOR_WHITE);
+    waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 41, base+15, line, waifu_pcfx_hud_stat_color(atk - (int)waifu_card_atk[card_id]));
     fmt_i32_dec(line, (int)sizeof(line), defv);
-    waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 35, base+26, line, WAIFU_PCFX_HUD_COLOR_WHITE);
+    waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 35, base+26, line, waifu_pcfx_hud_stat_color(defv - (int)waifu_card_def[card_id]));
     rect_outline(WAIFU_FM_WIDTH - 41,base+25,6,6,IDX_WHITE);
 #else
     if (is_support_card(card_id)) {
@@ -9443,6 +9456,37 @@ static void draw_player_one_shot_support_anim(void)
     if (f < slide) {
         return;
     }
+#if defined(WAIFU_FM_PCFX)
+    /* PC-FX: the support reveal rides the VDC hardware overlay (drop-shadow
+       HUD font) instead of the CPU framebuffer, so the per-frame text costs no
+       KRAM upload and does not dirty the black-bg framebuffer the card art
+       lives on.  Positions are static once the card has landed (the slide is
+       already complete here), so tile-grid snapping is invisible.  The overlay
+       re-arms exactly when the text first appears (it idled during the slide);
+       the cleared-BAT layer is visually identical to torn down, so the single
+       re-arm reads as the text fading in, not a compositor glitch. */
+    waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(154),
+                                        support_card_name(g_b_support_card),
+                                        WAIFU_PCFX_HUD_COLOR_GOLD);
+    if (f < reveal) {
+        return;
+    }
+    if (g_b_support_kind == 2) {
+        waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(184), "DRAW 1 CARD", WAIFU_PCFX_HUD_COLOR_WHITE);
+        waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(205), "FROM YOUR DECK", WAIFU_PCFX_HUD_COLOR_WHITE);
+    } else if (g_b_support_kind == 3) {
+        char line[48];
+        int32_t t = q8_smooth_ratio(f - reveal, WAIFU_SUPPORT_TEXT_FRAMES);
+        int lp = g_b_support_lp_from +
+                 (int)(((g_b_support_lp_to - g_b_support_lp_from) * q8_smoothstep(t) + Q8_HALF) >> Q8_SHIFT);
+        waifu_str_copy(line, (int)sizeof(line), "LP ");
+        waifu_str_cat_i32(line, (int)sizeof(line), g_b_support_lp_from);
+        waifu_str_cat(line, (int)sizeof(line), " > ");
+        waifu_str_cat_i32(line, (int)sizeof(line), lp);
+        waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(188), line, WAIFU_PCFX_HUD_COLOR_GREEN);
+        waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(207), "LIFE RESTORED", WAIFU_PCFX_HUD_COLOR_WHITE);
+    }
+#else
     draw_centered_text(WAIFU_UI_BOTTOM_Y(154), support_card_name(g_b_support_card), IDX_GOLD_HI, IDX_BLACK);
     if (f < reveal) {
         return;
@@ -9462,6 +9506,7 @@ static void draw_player_one_shot_support_anim(void)
         draw_centered_text(WAIFU_UI_BOTTOM_Y(188), line, IDX_GREEN, IDX_BLACK);
         draw_centered_text(WAIFU_UI_BOTTOM_Y(207), "LIFE RESTORED", IDX_WHITE, IDX_BLACK);
     }
+#endif
 }
 
 static void reveal_monster_slot(int owner, int slot)

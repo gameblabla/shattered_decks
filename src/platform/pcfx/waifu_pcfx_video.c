@@ -1090,9 +1090,19 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
    keep their colour on the overlay.  Foreground pixels select overlay palette
    entry 3 (gold); the shadow stays entry 1 (black). */
 #define WAIFU_PCFX_VDC_HUD_GOLD_FONT_TILE_BASE 0x1e0
+/* Green-foreground HUD font (0x240..0x29f) for buffed stat deltas and LP-gain
+   text.  Uses a 4-plane tile pattern (the white/gold fonts only write 2 planes;
+   planes 2/3 stay 0 there) so foreground pixels can map to overlay palette
+   entry 7 (green = plane0+plane1+plane2) while the shadow keeps entry 1. */
+#define WAIFU_PCFX_VDC_HUD_GREEN_FONT_TILE_BASE 0x240
+/* Red-foreground HUD font (0x2a0..0x2ff) for nerfed stat deltas.  4-plane tile:
+   foreground in plane2 -> entry 4 (red), shadow in plane0 -> entry 1 (black). */
+#define WAIFU_PCFX_VDC_HUD_RED_FONT_TILE_BASE 0x2a0
 /* Colour selector passed to waifu_pcfx_video_hud_print(). */
 #define WAIFU_PCFX_HUD_COLOR_WHITE 0
 #define WAIFU_PCFX_HUD_COLOR_GOLD  1
+#define WAIFU_PCFX_HUD_COLOR_GREEN 2
+#define WAIFU_PCFX_HUD_COLOR_RED   3
 #define WAIFU_PCFX_VDC_MAP_W 64
 #define WAIFU_PCFX_VDC_MAP_H 32
 #define WAIFU_PCFX_VDC_VISIBLE_W 32
@@ -1103,6 +1113,7 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_PAL_RED   0x04
 #define WAIFU_PCFX_VDC_PAL_PANEL 0x05
 #define WAIFU_PCFX_VDC_PAL_EDGE  0x06
+#define WAIFU_PCFX_VDC_PAL_GREEN 0x07
 #define WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL 0x111
 #define WAIFU_PCFX_VDC_SANCTUM_TILE_EDGE  0x112
 /* Fade tile lives immediately after the 64x32 BAT so tile 0 remains unusable
@@ -1382,6 +1393,48 @@ static void pcfx_vdc_overlay_upload_font(void)
         }
         for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
     }
+
+    /* Green HUD font: 4-plane tile, foreground in plane0+plane1+plane2 so the
+       pixel value is 7 (green).  Plane0/1 are the first 8 words (low byte =
+       plane0 = fg|shadow, high byte = plane1 = fg); plane2 is the high byte of
+       the second 8 words.  Shadow-only pixels keep plane0 only -> value 1
+       (black).  CHIP_0 stays transparent (all zero), as for white/gold. */
+    eris_low_sup_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_HUD_GREEN_FONT_TILE_BASE * 16);
+    for (int i = WAIFU_PCFX_VDC_FONT_FIRST; i <= WAIFU_PCFX_VDC_FONT_LAST; ++i) {
+        for (int j = 0; j < 16; ++j) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
+    }
+    eris_low_sup_set_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_HUD_GREEN_FONT_TILE_BASE * 16);
+    for (int ch = WAIFU_PCFX_VDC_FONT_FIRST; ch <= WAIFU_PCFX_VDC_FONT_LAST; ++ch) {
+        for (int row = 0; row < 8; ++row) {
+            uint8_t fg = pcfx_font_row((unsigned char)ch, row);
+            uint8_t shadow = pcfx_shadow_row((unsigned char)ch, row);
+            eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(((uint16_t)fg << 8) | (fg | shadow)));
+        }
+        for (int row = 0; row < 8; ++row) {
+            uint8_t fg = pcfx_font_row((unsigned char)ch, row);
+            eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(((uint16_t)fg << 8) | 0));
+        }
+    }
+
+    /* Red HUD font: 4-plane tile, foreground in plane2 -> value 4 (red).  First
+       8 words carry only the shadow in plane0 (low byte); second 8 words carry
+       fg in plane2 (high byte).  fg pixel = plane2 = value 4 (red); shadow-only
+       = plane0 = value 1 (black). */
+    eris_low_sup_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_HUD_RED_FONT_TILE_BASE * 16);
+    for (int i = WAIFU_PCFX_VDC_FONT_FIRST; i <= WAIFU_PCFX_VDC_FONT_LAST; ++i) {
+        for (int j = 0; j < 16; ++j) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
+    }
+    eris_low_sup_set_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_HUD_RED_FONT_TILE_BASE * 16);
+    for (int ch = WAIFU_PCFX_VDC_FONT_FIRST; ch <= WAIFU_PCFX_VDC_FONT_LAST; ++ch) {
+        for (int row = 0; row < 8; ++row) {
+            uint8_t shadow = pcfx_shadow_row((unsigned char)ch, row);
+            eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(((uint16_t)0 << 8) | shadow));
+        }
+        for (int row = 0; row < 8; ++row) {
+            uint8_t fg = pcfx_font_row((unsigned char)ch, row);
+            eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(((uint16_t)fg << 8) | 0));
+        }
+    }
 }
 
 static void pcfx_vdc_overlay_clear_rect(int tx, int ty, int w, int h)
@@ -1427,6 +1480,7 @@ static void pcfx_vdc_restore_overlay_palette(void)
     eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_RED),   0x5F0F);
     eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_PANEL), rgb888_to_pcfx_yuv(12, 18, 28));
     eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_EDGE),  rgb888_to_pcfx_yuv(210, 172, 90));
+    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_GREEN), rgb888_to_pcfx_yuv(21, 82, 46));
 }
 
 static void pcfx_vdc_sanctum_upload_solid_tile(uint16_t tile, uint16_t vdc0_row, uint16_t vdc1_row)
@@ -1813,11 +1867,19 @@ static void pcfx_vdc_overlay_print_centered(int ty, const char *str)
    KING game.  HUD text therefore costs no KING framebuffer redraw or KRAM upload.
    Pixel coords snap to the 8x8 tile grid -- close to, not pixel-identical with,
    the software draw_text* layout, which the drop-shadow HUD font mirrors. */
+static int pcfx_vdc_hud_font_base(int color)
+{
+    switch (color) {
+    case WAIFU_PCFX_HUD_COLOR_GOLD:  return WAIFU_PCFX_VDC_HUD_GOLD_FONT_TILE_BASE;
+    case WAIFU_PCFX_HUD_COLOR_GREEN: return WAIFU_PCFX_VDC_HUD_GREEN_FONT_TILE_BASE;
+    case WAIFU_PCFX_HUD_COLOR_RED:   return WAIFU_PCFX_VDC_HUD_RED_FONT_TILE_BASE;
+    default:                          return WAIFU_PCFX_VDC_HUD_FONT_TILE_BASE;
+    }
+}
+
 static void pcfx_vdc_overlay_print_hud(int tx, int ty, const char *str, int len, int color)
 {
-    int font_base = (color == WAIFU_PCFX_HUD_COLOR_GOLD)
-                        ? WAIFU_PCFX_VDC_HUD_GOLD_FONT_TILE_BASE
-                        : WAIFU_PCFX_VDC_HUD_FONT_TILE_BASE;
+    int font_base = pcfx_vdc_hud_font_base(color);
     if (!str || len <= 0) return;
     if (tx < 0 || ty < 0 || ty >= WAIFU_PCFX_VDC_MAP_H) return;
     if (len > WAIFU_PCFX_VDC_MAP_W - tx) len = WAIFU_PCFX_VDC_MAP_W - tx;
@@ -1848,6 +1910,19 @@ void waifu_pcfx_video_hud_print(int x, int y, const char *str, int color)
     e->len = (uint8_t)n;
     e->color = (uint8_t)color;
     ++g_hud_text_count;
+}
+
+void waifu_pcfx_video_hud_print_centered(int y, const char *str, int color)
+{
+    if (!str) return;
+    int n = 0;
+    while (str[n] && n < WAIFU_PCFX_HUD_MAX_CHARS - 1) ++n;
+    if (n == 0) return;
+    /* The HUD font tiles are 8px wide, matching software draw_text.  Center on
+       the visible 32-tile (256px) width; snap the computed pixel x to the tile
+       grid the overlay prints on. */
+    int x = (WAIFU_FM_WIDTH - n * 8) / 2;
+    waifu_pcfx_video_hud_print(x, y, str, color);
 }
 
 static void pcfx_vdc_overlay_print_story_line(int tx, int ty, const char *str, int max_len, int *visible_chars)
