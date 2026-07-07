@@ -5,7 +5,7 @@
 ![Ingame screenshot for Shaterred Decks](https://github.com/gameblabla/shattered_decks/blob/main/screenshots/waifu_ingame.png?raw=true)
 
 
-Shattered Decks is a card homebrew game for the NEC PC-FX, inspired by Forbidden Memories except with monsters based on anime women.
+Shattered Decks is a card homebrew game for the NEC PC-FX, Sega CD32X, inspired by Forbidden Memories except with monsters based on anime women.
 
 The story follows Serena through a desert dreamscape of forgotten courts, sanctums, mirages, gates, and burning ruins. 
 Her deck is tied to the Twilight Seal, a chain once used to close the Gate Beneath the Sands. If the seal is claimed by the abyss first, the old ruins will open again.
