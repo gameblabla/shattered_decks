@@ -1918,21 +1918,60 @@ static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
     }
 }
 
+static inline void draw_glyph_shadowed_8x8(int x, int y, const uint8_t *charfont, uint8_t fg, uint8_t shadow)
+{
+    if (x >= 0 && y >= 0 && x + 8 < WAIFU_FM_WIDTH && y + 8 < WAIFU_FM_HEIGHT) {
+        uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
+        uint8_t *sdst = dst + WAIFU_FM_WIDTH + 1;
+        for (int yy = 0; yy < 8; ++yy) {
+            uint8_t row = charfont[yy];
+            if (row) {
+                for (int xx = 0; xx < 8; ++xx) {
+                    if (row & (uint8_t)(0x80u >> xx)) sdst[xx] = shadow;
+                }
+                for (int xx = 0; xx < 8; ++xx) {
+                    if (row & (uint8_t)(0x80u >> xx)) dst[xx] = fg;
+                }
+            }
+            sdst += WAIFU_FM_WIDTH;
+            dst += WAIFU_FM_WIDTH;
+        }
+        return;
+    }
+
+    for (int yy = 0; yy < 8; ++yy) {
+        int py = y + yy;
+        int sy = py + 1;
+        uint8_t row = charfont[yy];
+        if (!row) continue;
+        if ((unsigned)sy < WAIFU_FM_HEIGHT) {
+            for (int xx = 0; xx < 8; ++xx) {
+                if (row & (uint8_t)(0x80u >> xx)) {
+                    int sx = x + xx + 1;
+                    if ((unsigned)sx < WAIFU_FM_WIDTH) framebuffer[sy * WAIFU_FM_WIDTH + sx] = shadow;
+                }
+            }
+        }
+        if ((unsigned)py < WAIFU_FM_HEIGHT) {
+            for (int xx = 0; xx < 8; ++xx) {
+                if (row & (uint8_t)(0x80u >> xx)) {
+                    int px = x + xx;
+                    if ((unsigned)px < WAIFU_FM_WIDTH) framebuffer[py * WAIFU_FM_WIDTH + px] = fg;
+                }
+            }
+        }
+    }
+}
+
 static void draw_text(int x, int y, const char *s, uint8_t fg, uint8_t shadow)
 {
     int ox = x;
     for (; *s; ++s) {
         if (*s == '\n') { y += 8; x = ox; continue; }
         unsigned char ch = (unsigned char)*s;
-        const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
-        for (int yy = 0; yy < 8; ++yy) {
-            uint8_t row = charfont[yy];
-            for (int xx = 0; xx < 8; ++xx) {
-                if (row & (uint8_t)(1u << (7 - xx))) {
-                    put_px(x + xx + 1, y + yy + 1, shadow);
-                    put_px(x + xx, y + yy, fg);
-                }
-            }
+        if (ch != ' ') {
+            const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
+            draw_glyph_shadowed_8x8(x, y, charfont, fg, shadow);
         }
         x += 8;
     }
@@ -1943,18 +1982,12 @@ static void draw_text_small(int x, int y, const char *s, uint8_t fg, uint8_t sha
     /* Compact HUD text, but draw all 8 glyph columns. Earlier builds rendered
        only 6 columns, which clipped wide glyphs such as M and WAIFU_FM_WIDTH whenever they
        appeared at the end of a word. Use a 7-pixel advance for PS1-style tight
-       spacing while preserving the complete glyph bitmap. */
+    spacing while preserving the complete glyph bitmap. */
     for (; *s; ++s) {
         unsigned char ch = (unsigned char)*s;
-        const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
-        for (int yy = 0; yy < 8; ++yy) {
-            uint8_t row = charfont[yy];
-            for (int xx = 0; xx < 8; ++xx) {
-                if (row & (uint8_t)(1u << (7 - xx))) {
-                    put_px(x + xx + 1, y + yy + 1, shadow);
-                    put_px(x + xx, y + yy, fg);
-                }
-            }
+        if (ch != ' ') {
+            const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
+            draw_glyph_shadowed_8x8(x, y, charfont, fg, shadow);
         }
         x += 7;
     }

@@ -1140,6 +1140,9 @@ static int g_vdc_overlay_fade_level = 16;
 static int g_vdc_overlay_applied_fade_level = -1;
 static int g_vdc_overlay_fade_map_active = 0;
 static int g_vdc_overlay_dirty = 1;
+static uint16_t g_vdc_overlay_cache0[WAIFU_PCFX_VDC_MAP_W * WAIFU_PCFX_VDC_MAP_H];
+static uint16_t g_vdc_overlay_cache1[WAIFU_PCFX_VDC_MAP_W * WAIFU_PCFX_VDC_MAP_H];
+static int g_vdc_overlay_cache_valid = 0;
 static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video);
 static void pcfx_vdc_overlay_flush(WaifuPcfxVideo *video);
 
@@ -1209,16 +1212,46 @@ static void pcfx_vdc_overlay_upload_fade_tile(int level)
     for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
 }
 
+static void pcfx_vdc_overlay_invalidate_cache(void)
+{
+    g_vdc_overlay_cache_valid = 0;
+}
+
+static void pcfx_vdc_overlay_cache_store(int addr, uint16_t tile0, uint16_t tile1)
+{
+    if ((unsigned)addr >= (unsigned)(WAIFU_PCFX_VDC_MAP_W * WAIFU_PCFX_VDC_MAP_H)) return;
+    g_vdc_overlay_cache0[addr] = tile0;
+    g_vdc_overlay_cache1[addr] = tile1;
+}
+
+static void pcfx_vdc_overlay_write_cell(int addr, uint16_t tile0, uint16_t tile1)
+{
+    if ((unsigned)addr >= (unsigned)(WAIFU_PCFX_VDC_MAP_W * WAIFU_PCFX_VDC_MAP_H)) return;
+    if (g_vdc_overlay_cache_valid &&
+        g_vdc_overlay_cache0[addr] == tile0 &&
+        g_vdc_overlay_cache1[addr] == tile1) {
+        return;
+    }
+    eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
+    eris_low_sup_vram_write(VDC_CHIP_0, tile0);
+    eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
+    eris_low_sup_vram_write(VDC_CHIP_1, tile1);
+    pcfx_vdc_overlay_cache_store(addr, tile0, tile1);
+}
+
 static void pcfx_vdc_overlay_fill_fade_map(void)
 {
     uint16_t tile = (uint16_t)WAIFU_PCFX_VDC_FADE_TILE_BASE;
+    uint16_t tile1 = (uint16_t)(tile | 0x8000);
     for (int row = 0; row < WAIFU_PCFX_VDC_MAP_H; ++row) {
         int addr = row * WAIFU_PCFX_VDC_MAP_W;
         eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
         for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, tile);
         eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_1, tile1);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) pcfx_vdc_overlay_cache_store(addr + col, tile, tile1);
     }
+    g_vdc_overlay_cache_valid = 1;
     g_vdc_overlay_fade_map_active = 1;
 }
 
@@ -1282,11 +1315,13 @@ static void pcfx_vdc_overlay_clear_rect(int tx, int ty, int w, int h)
 
     for (int row = 0; row < h; ++row) {
         int addr = (ty + row) * WAIFU_PCFX_VDC_MAP_W + tx;
-        eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
-        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_BLANK_TILE);
-        eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
-        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
+        for (int col = 0; col < w; ++col) {
+            pcfx_vdc_overlay_write_cell(addr + col,
+                                        WAIFU_PCFX_VDC_BLANK_TILE,
+                                        (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
+        }
     }
+    g_vdc_overlay_cache_valid = 1;
 }
 
 static void pcfx_vdc_overlay_clear_all(void)
@@ -1644,6 +1679,7 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
     video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
     video->vdc_overlay_ready = 0;
     video->vdc_overlay_shutdown_countdown = 0;
+    pcfx_vdc_overlay_invalidate_cache();
     g_vdc_overlay_dirty = 0;
     g_vdc_overlay_applied_mode = WAIFU_PCFX_OVERLAY_OFF;
     g_vdc_overlay_applied_fade_level = -1;
@@ -1669,25 +1705,17 @@ static void pcfx_vdc_overlay_print(int tx, int ty, const char *str, int max_len)
     if (max_len > WAIFU_PCFX_VDC_MAP_W - tx) max_len = WAIFU_PCFX_VDC_MAP_W - tx;
     len = pcfx_strlen_limited(str, max_len);
 
-    eris_low_sup_set_vram_write(VDC_CHIP_0, ty * WAIFU_PCFX_VDC_MAP_W + tx);
     for (int i = 0; i < max_len; ++i) {
         unsigned char ch = (i < len) ? (unsigned char)str[i] : (unsigned char)' ';
         uint16_t tile = WAIFU_PCFX_VDC_BLANK_TILE;
         if (ch >= WAIFU_PCFX_VDC_FONT_FIRST && ch <= WAIFU_PCFX_VDC_FONT_LAST) {
             tile = (uint16_t)(WAIFU_PCFX_VDC_FONT_TILE_BASE + (ch - WAIFU_PCFX_VDC_FONT_FIRST));
         }
-        eris_low_sup_vram_write(VDC_CHIP_0, tile);
+        pcfx_vdc_overlay_write_cell(ty * WAIFU_PCFX_VDC_MAP_W + tx + i,
+                                    tile,
+                                    (uint16_t)(tile | 0x8000));
     }
-
-    eris_low_sup_set_vram_write(VDC_CHIP_1, ty * WAIFU_PCFX_VDC_MAP_W + tx);
-    for (int i = 0; i < max_len; ++i) {
-        unsigned char ch = (i < len) ? (unsigned char)str[i] : (unsigned char)' ';
-        uint16_t tile = WAIFU_PCFX_VDC_BLANK_TILE;
-        if (ch >= WAIFU_PCFX_VDC_FONT_FIRST && ch <= WAIFU_PCFX_VDC_FONT_LAST) {
-            tile = (uint16_t)(WAIFU_PCFX_VDC_FONT_TILE_BASE + (ch - WAIFU_PCFX_VDC_FONT_FIRST));
-        }
-        eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
-    }
+    g_vdc_overlay_cache_valid = 1;
 }
 
 static void pcfx_vdc_overlay_print_centered(int ty, const char *str)
@@ -1714,6 +1742,7 @@ static void pcfx_vdc_overlay_print_story_line(int tx, int ty, const char *str, i
 static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video)
 {
     if (!video) return;
+    pcfx_vdc_overlay_invalidate_cache();
 
     eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
     eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
