@@ -34,7 +34,7 @@ void waifu_cd32x_input_poll(WaifuCd32xInput *input, WaifuFmInput *out)
     out->left = (buttons & SEGA_CTRL_LEFT) != 0;
     out->right = (buttons & SEGA_CTRL_RIGHT) != 0;
     out->a = (buttons & SEGA_CTRL_A) != 0;
-    out->b = (buttons & (SEGA_CTRL_B | SEGA_CTRL_C)) != 0;
-    out->tab = (buttons & SEGA_CTRL_X) != 0;
+    out->b = (buttons & SEGA_CTRL_B) != 0;
+    out->tab = (buttons & (SEGA_CTRL_C | SEGA_CTRL_X)) != 0;
     out->start = (buttons & SEGA_CTRL_START) != 0;
 }
