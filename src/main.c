@@ -2428,7 +2428,7 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 41, base+15, line, waifu_pcfx_hud_stat_color(atk - (int)waifu_card_atk[card_id]));
     fmt_i32_dec(line, (int)sizeof(line), defv);
     waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 35, base+26, line, waifu_pcfx_hud_stat_color(defv - (int)waifu_card_def[card_id]));
-    rect_outline(WAIFU_FM_WIDTH - 41,base+25,6,6,IDX_WHITE);
+    waifu_pcfx_video_hud_def_icon(WAIFU_FM_WIDTH - 43, base+26, WAIFU_PCFX_HUD_COLOR_WHITE);
 #else
     if (is_support_card(card_id)) {
         char support_line[64];
@@ -12035,27 +12035,46 @@ static void draw_map_void_3d(int f)
     }
 }
 
-static void draw_desert_sky(void)
+static void draw_sky_motion_specks(int f, int count, int y_base, int y_mask, uint8_t c0, uint8_t c1)
+{
+    int shift = (f >> 1) % WAIFU_FM_WIDTH;
+    for (int y = 24; y < 96; ++y) {
+        int start = (shift + y * 3) & 7;
+        for (int x = start; x < WAIFU_FM_WIDTH; x += 8) {
+            put_px(x, y, (((x - shift) + y) & 8) ? c0 : c1);
+        }
+    }
+    for (int i = 0; i < count; ++i) {
+        int x = (i * 47 + 11 + shift) % WAIFU_FM_WIDTH;
+        int y = y_base + ((i * 29 + 5) & y_mask);
+        put_px(x, y, (i & 3) ? c0 : c1);
+    }
+}
+
+static void draw_desert_sky(int f)
 {
     fill_rows(0, 52, IDX_UI_BLUE);
     fill_rows(52, 93, IDX_UI_TEAL);
     fill_rows(93, 143, IDX_GOLD_DARK);
     fill_rows(143, WAIFU_FM_HEIGHT, IDX_DARK_BROWN);
+    draw_sky_motion_specks(f, 96, 24, 63, IDX_UI_LIGHT, IDX_WHITE);
     for (int x = 0; x < WAIFU_FM_WIDTH; x += 6) {
-        int yy = 142 + ((x * 13) & 7);
+        int sx = (x + ((f >> 1) & 31)) % WAIFU_FM_WIDTH;
+        int yy = 142 + ((sx * 13) & 7);
         hline(x, x + 5 < WAIFU_FM_WIDTH ? x + 5 : WAIFU_FM_WIDTH - 1, yy, IDX_GOLD_HI);
     }
 }
 
-static void draw_temple_sky(void)
+static void draw_temple_sky(int f)
 {
     fill_rows(0, 40, IDX_UI_BLUE);
     fill_rows(40, 80, IDX_UI_TEAL);
     fill_rows(80, 120, IDX_DIM);
     fill_rows(120, WAIFU_FM_HEIGHT, IDX_DARK_BROWN);
+    draw_sky_motion_specks(f, 112, 24, 63, IDX_DIM, IDX_UI_LIGHT);
 }
 
-static void draw_volcano_sky(void)
+static void draw_volcano_sky(int f)
 {
     fill_rows(0, 45, IDX_BLACK);
     fill_rows(45, 85, IDX_RED);
@@ -12063,18 +12082,19 @@ static void draw_volcano_sky(void)
     fill_rows(120, WAIFU_FM_HEIGHT, IDX_DARK_BROWN);
     /* Embers drifting upward. */
     for (int i = 0; i < 40; ++i) {
-        int x = (i * 53 + 17) % WAIFU_FM_WIDTH;
+        int x = (i * 53 + 17 + (f >> 1)) % WAIFU_FM_WIDTH;
         int y = 120 - ((i * 31 + 7) & 63);
         put_px(x, y, (i & 1) ? IDX_FLAME1 : IDX_GOLD_HI);
     }
+    draw_sky_motion_specks(f, 96, 24, 63, IDX_FLAME1, IDX_GOLD_HI);
 }
 
-static void draw_void_sky(void)
+static void draw_void_sky(int f)
 {
     fill_rows(0, WAIFU_FM_HEIGHT, IDX_BLACK);
     /* Stars. */
     for (int i = 0; i < 60; ++i) {
-        int x = (i * 67 + 13) % WAIFU_FM_WIDTH;
+        int x = (i * 67 + 13 + (f >> 1)) % WAIFU_FM_WIDTH;
         int y = (i * 41 + 5) & 127;
         put_px(x, y, (i & 3) ? IDX_DIM : IDX_WHITE);
     }
@@ -12153,10 +12173,10 @@ static void draw_story_sky(int f)
         return;
     }
     switch (story_scene_kind()) {
-    case STORY_SCENE_TEMPLE:  draw_temple_sky();  break;
-    case STORY_SCENE_VOLCANO: draw_volcano_sky(); break;
-    case STORY_SCENE_VOID:    draw_void_sky();    break;
-    default:                  draw_desert_sky();  break;
+    case STORY_SCENE_TEMPLE:  draw_temple_sky(f);  break;
+    case STORY_SCENE_VOLCANO: draw_volcano_sky(f); break;
+    case STORY_SCENE_VOID:    draw_void_sky(f);    break;
+    default:                  draw_desert_sky(f);  break;
     }
 }
 
@@ -12178,6 +12198,9 @@ static void draw_story_sanctum_background(void)
        frame keeps the scene steady across those sub-screens. */
     draw_story_sky(g_story_scene_anim_frame);
     draw_story_scene_3d(g_story_scene_anim_frame);
+#if defined(WAIFU_FM_PCFX)
+    draw_sky_motion_specks(g_story_scene_anim_frame, 160, 24, 63, IDX_UI_LIGHT, IDX_WHITE);
+#endif
 }
 
 static const char *story_scene_name(void)
@@ -12197,6 +12220,9 @@ static void draw_story_map_screen_content(int f)
     /* The DESTINATION panel is the largest opaque cover over the floor. */
     story_scene_set_floor_occluder(WAIFU_FM_WIDTH - 130, WAIFU_UI_BOTTOM_Y(146), 121, 76);
     draw_story_scene_3d(f);
+#if defined(WAIFU_FM_PCFX)
+    draw_sky_motion_specks(f, 160, 24, 63, IDX_UI_LIGHT, IDX_WHITE);
+#endif
     draw_panel_rect(WAIFU_FM_WIDTH - 130, WAIFU_UI_BOTTOM_Y(146), 121, 76, IDX_UI_DARK);
     draw_text_small(WAIFU_FM_WIDTH - 121, WAIFU_UI_BOTTOM_Y(155), "DESTINATION", IDX_GOLD_HI, IDX_BLACK);
     draw_text(WAIFU_FM_WIDTH - 113, WAIFU_UI_BOTTOM_Y(174), "SANCTUM", g_story_map_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
@@ -12796,14 +12822,13 @@ void waifu_fm_step(const WaifuFmInput *input)
     case WAIFU_I_STORY_LOAD_TO_MAP:
         waifu_pcfx_video_overlay_clear();
         draw_backup_loading_screen();
-        if (g_i_frame >= 8) {
+        if (g_i_frame >= 24) {
             if (!load_story_device_to_map(g_i_load_pending_device)) {
                 int fallback = g_i_load_pending_device ? 0 : 1;
                 if (!story_save_exists_device(fallback) ||
                     !load_story_device_to_map(fallback)) {
                     g_story_save_status = -1;
-                    g_i_state = WAIFU_I_MENU;
-                    g_i_frame = -1;
+                    enter_menu_after_assets();
                 }
             }
         }

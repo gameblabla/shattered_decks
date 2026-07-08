@@ -68,6 +68,7 @@ void waifu_pcfx_video_overlay_clear(void);
 #define WAIFU_PCFX_HUD_COLOR_RED   3
 void waifu_pcfx_video_hud_print(int x, int y, const char *str, int color);
 void waifu_pcfx_video_hud_print_centered(int y, const char *str, int color);
+void waifu_pcfx_video_hud_def_icon(int x, int y, int color);
 
 #ifdef __cplusplus
 }

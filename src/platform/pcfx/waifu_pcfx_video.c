@@ -1078,25 +1078,17 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_FONT_FIRST 0x20
 #define WAIFU_PCFX_VDC_FONT_LAST  0x7f
 /* Second, HUD-flavoured font that reuses the same n2DLib bitmaps as the outline
-   font but styles glyphs with a (+1,+1) black drop-shadow so they read like the
-   software draw_text* glyphs.  It occupies the 96 tiles immediately after the
-   outline font (0x180..0x1df).  The shadow of the bottom row / rightmost column
-   falls outside the 8x8 cell and is clipped -- close, not pixel-identical, which
-   is the accepted trade-off for keeping each glyph self-contained in one tile. */
+   font but styles glyphs with a (+1,+1) black drop-shadow.  It occupies the 96
+   tiles immediately after the outline font (0x180..0x1df). */
 #define WAIFU_PCFX_VDC_HUD_FONT_TILE_BASE 0x180
 #define WAIFU_PCFX_VDC_HUD_BLANK_TILE WAIFU_PCFX_VDC_HUD_FONT_TILE_BASE
-/* Gold-foreground twin of the HUD font (0x1e0..0x23f), same drop-shadow, so HUD
-   strings that were gold in the software path (card USE prompt, LP counters)
-   keep their colour on the overlay.  Foreground pixels select overlay palette
-   entry 3 (gold); the shadow stays entry 1 (black). */
+/* Gold-foreground twin of the HUD font (0x1e0..0x23f), used for prompts and LP
+   counters that were gold in the software text path. */
 #define WAIFU_PCFX_VDC_HUD_GOLD_FONT_TILE_BASE 0x1e0
 /* Green-foreground HUD font (0x240..0x29f) for buffed stat deltas and LP-gain
-   text.  Uses a 4-plane tile pattern (the white/gold fonts only write 2 planes;
-   planes 2/3 stay 0 there) so foreground pixels can map to overlay palette
-   entry 7 (green = plane0+plane1+plane2) while the shadow keeps entry 1. */
+   text. */
 #define WAIFU_PCFX_VDC_HUD_GREEN_FONT_TILE_BASE 0x240
-/* Red-foreground HUD font (0x2a0..0x2ff) for nerfed stat deltas.  4-plane tile:
-   foreground in plane2 -> entry 4 (red), shadow in plane0 -> entry 1 (black). */
+/* Red-foreground HUD font (0x2a0..0x2ff) for nerfed stat deltas. */
 #define WAIFU_PCFX_VDC_HUD_RED_FONT_TILE_BASE 0x2a0
 /* Colour selector passed to waifu_pcfx_video_hud_print(). */
 #define WAIFU_PCFX_HUD_COLOR_WHITE 0
@@ -1216,17 +1208,14 @@ static uint8_t pcfx_outline_row(unsigned char ch, int row)
     return (uint8_t)(neigh & (uint8_t)~center);
 }
 
-/* Drop-shadow at (+1,+1): the shadow pixel at (x,y) is lit where the glyph has a
-   foreground pixel at (x-1,y-1).  Bit 0x80 is the leftmost pixel, so shifting the
-   row-above bitmap right by one moves it one pixel to the right; the foreground
-   itself masks out any shadow bit that lands under a lit glyph pixel. */
+/* Drop-shadow at (+1,+1): the shadow pixel at (x,y) is lit where the glyph has
+   a foreground pixel at (x-1,y-1). */
 static uint8_t pcfx_shadow_row(unsigned char ch, int row)
 {
     uint8_t fg = pcfx_font_row(ch, row);
     uint8_t shadow = (uint8_t)(pcfx_font_row(ch, row - 1) >> 1);
     return (uint8_t)(shadow & (uint8_t)~fg);
 }
-
 
 static uint8_t pcfx_vdc_fade_pattern_row(int level, int row)
 {
@@ -1360,9 +1349,10 @@ static void pcfx_vdc_overlay_upload_font(void)
         for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
     }
 
-    /* HUD drop-shadow font: same VDC0 high-nibble zeros, VDC1 low nibble is
-       0 transparent / 1 black shadow / 2 white foreground -- matching the
-       software draw_text* look on the hardware overlay layer. */
+    /* HUD drop-shadow fonts.  The duel BAT writes the same tile attributes to
+       both VDC sides; with the old VDC1 high-priority attribute the foreground
+       plane was lost in pcfx-headless captures and only the low shadow bits
+       survived. */
     eris_low_sup_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_HUD_FONT_TILE_BASE * 16);
     for (int i = WAIFU_PCFX_VDC_FONT_FIRST; i <= WAIFU_PCFX_VDC_FONT_LAST; ++i) {
         for (int j = 0; j < 16; ++j) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
@@ -1395,10 +1385,7 @@ static void pcfx_vdc_overlay_upload_font(void)
     }
 
     /* Green HUD font: 4-plane tile, foreground in plane0+plane1+plane2 so the
-       pixel value is 7 (green).  Plane0/1 are the first 8 words (low byte =
-       plane0 = fg|shadow, high byte = plane1 = fg); plane2 is the high byte of
-       the second 8 words.  Shadow-only pixels keep plane0 only -> value 1
-       (black).  CHIP_0 stays transparent (all zero), as for white/gold. */
+       pixel value is 7 (green).  Shadow-only pixels keep plane0 only. */
     eris_low_sup_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_HUD_GREEN_FONT_TILE_BASE * 16);
     for (int i = WAIFU_PCFX_VDC_FONT_FIRST; i <= WAIFU_PCFX_VDC_FONT_LAST; ++i) {
         for (int j = 0; j < 16; ++j) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
@@ -1417,9 +1404,8 @@ static void pcfx_vdc_overlay_upload_font(void)
     }
 
     /* Red HUD font: 4-plane tile, foreground in plane2 -> value 4 (red).  First
-       8 words carry only the shadow in plane0 (low byte); second 8 words carry
-       fg in plane2 (high byte).  fg pixel = plane2 = value 4 (red); shadow-only
-       = plane0 = value 1 (black). */
+       8 words carry only the shadow in plane0; second 8 words carry the higher
+       foreground plane for the intended red palette index. */
     eris_low_sup_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_HUD_RED_FONT_TILE_BASE * 16);
     for (int i = WAIFU_PCFX_VDC_FONT_FIRST; i <= WAIFU_PCFX_VDC_FONT_LAST; ++i) {
         for (int j = 0; j < 16; ++j) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
@@ -1428,7 +1414,7 @@ static void pcfx_vdc_overlay_upload_font(void)
     for (int ch = WAIFU_PCFX_VDC_FONT_FIRST; ch <= WAIFU_PCFX_VDC_FONT_LAST; ++ch) {
         for (int row = 0; row < 8; ++row) {
             uint8_t shadow = pcfx_shadow_row((unsigned char)ch, row);
-            eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(((uint16_t)0 << 8) | shadow));
+            eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)shadow);
         }
         for (int row = 0; row < 8; ++row) {
             uint8_t fg = pcfx_font_row((unsigned char)ch, row);
@@ -1450,7 +1436,7 @@ static void pcfx_vdc_overlay_clear_rect(int tx, int ty, int w, int h)
         for (int col = 0; col < w; ++col) {
             pcfx_vdc_overlay_write_cell(addr + col,
                                         WAIFU_PCFX_VDC_BLANK_TILE,
-                                        (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
+                                        WAIFU_PCFX_VDC_BLANK_TILE);
         }
     }
     g_vdc_overlay_cache_valid = 1;
@@ -1690,9 +1676,11 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
     if (!video) return;
     backdrop_changed = (g_sanctum_loaded_backdrop != (int)backdrop);
     if (backdrop_changed) {
-        waifu_pcfx_cdrom_read_rainbow_bg_to_kram(pcfx_rainbow_asset_for_backdrop(backdrop),
-                                                 WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR,
-                                                 pcfx_rainbow_bytes_for_backdrop(backdrop));
+        if (!waifu_pcfx_cdrom_read_rainbow_bg_to_kram(pcfx_rainbow_asset_for_backdrop(backdrop),
+                                                     WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR,
+                                                     pcfx_rainbow_bytes_for_backdrop(backdrop))) {
+            return;
+        }
         g_sanctum_loaded_backdrop = (int)backdrop;
     }
 
@@ -1737,17 +1725,21 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
 static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdrop backdrop)
 {
     int backdrop_changed;
+    int needs_compositor_restore;
     if (!video) return;
+    needs_compositor_restore = g_duel_hud_active || video->vdc_overlay_ready;
     g_duel_hud_active = 0;
     backdrop_changed = (g_sanctum_loaded_backdrop != (int)backdrop);
     if (backdrop_changed) {
-        waifu_pcfx_cdrom_read_rainbow_bg_to_kram(pcfx_rainbow_asset_for_backdrop(backdrop),
-                                                 WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR,
-                                                 pcfx_rainbow_bytes_for_backdrop(backdrop));
+        if (!waifu_pcfx_cdrom_read_rainbow_bg_to_kram(pcfx_rainbow_asset_for_backdrop(backdrop),
+                                                     WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR,
+                                                     pcfx_rainbow_bytes_for_backdrop(backdrop))) {
+            return;
+        }
         g_sanctum_loaded_backdrop = (int)backdrop;
     }
 
-    if (!g_rainbow_backdrop_active || backdrop_changed) {
+    if (!g_rainbow_backdrop_active || backdrop_changed || needs_compositor_restore) {
         video->front_page = 0;
         video->back_page = 0;
         video->have_last_frame = 0;
@@ -1759,7 +1751,7 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
 
     g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
     pcfx_king_set_bg_kram_page_inline(0);
-    if (!g_rainbow_backdrop_active || backdrop_changed) {
+    if (!g_rainbow_backdrop_active || backdrop_changed || needs_compositor_restore) {
         eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
         eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
         eris_low_sup_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
@@ -1794,7 +1786,8 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
 
 static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
 {
-    if (!video || (!g_sanctum_active && !g_rainbow_backdrop_active && video->vdc_bg == WAIFU_PCFX_VDC_BG_NONE)) return;
+    if (!video || (!g_sanctum_active && !g_rainbow_backdrop_active &&
+                   !video->vdc_overlay_ready && video->vdc_bg == WAIFU_PCFX_VDC_BG_NONE)) return;
     pcfx_vdc_sanctum_clear_all();
     pcfx_vdc_restore_overlay_palette();
     pcfx_rainbow_stop_transfer();
@@ -1865,8 +1858,8 @@ static void pcfx_vdc_overlay_print_centered(int ty, const char *str)
    waifu_pcfx_video_hud_begin_frame() + waifu_pcfx_video_hud_print(x,y,str), then
    the next present composites them onto the VDC tile layer IN FRONT of the 8bpp
    KING game.  HUD text therefore costs no KING framebuffer redraw or KRAM upload.
-   Pixel coords snap to the 8x8 tile grid -- close to, not pixel-identical with,
-   the software draw_text* layout, which the drop-shadow HUD font mirrors. */
+   Pixel coords snap to the 8x8 tile grid, so this is close to but not
+   pixel-identical with the software draw_text* layout. */
 static int pcfx_vdc_hud_font_base(int color)
 {
     switch (color) {
@@ -1890,7 +1883,7 @@ static void pcfx_vdc_overlay_print_hud(int tx, int ty, const char *str, int len,
             tile = (uint16_t)(font_base + (ch - WAIFU_PCFX_VDC_FONT_FIRST));
         }
         pcfx_vdc_overlay_write_cell(ty * WAIFU_PCFX_VDC_MAP_W + tx + i,
-                                    tile, (uint16_t)(tile | 0x8000));
+                                    tile, tile);
     }
     g_vdc_overlay_cache_valid = 1;
 }
@@ -1923,6 +1916,11 @@ void waifu_pcfx_video_hud_print_centered(int y, const char *str, int color)
        grid the overlay prints on. */
     int x = (WAIFU_FM_WIDTH - n * 8) / 2;
     waifu_pcfx_video_hud_print(x, y, str, color);
+}
+
+void waifu_pcfx_video_hud_def_icon(int x, int y, int color)
+{
+    waifu_pcfx_video_hud_print(x, y, "O", color);
 }
 
 static void pcfx_vdc_overlay_print_story_line(int tx, int ty, const char *str, int max_len, int *visible_chars)
@@ -2618,16 +2616,12 @@ void waifu_pcfx_video_request_rainbow_hscroll(int hscroll)
    framebuffer background transparent for the RAINBOW layer to show through. */
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
 {
-    WaifuPcfxSanctumBackdrop backdrop;
-    switch (kind) {
-    case WAIFU_BACKGROUND_STONE: backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_STONE; break;
-    case WAIFU_BACKGROUND_EMBER: backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_EMBER; break;
-    case WAIFU_BACKGROUND_SKY:   backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_SKY;   break;
-    default:                     backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_DESERT; break;
-    }
-    waifu_pcfx_video_request_rainbow_backdrop(backdrop);
-    waifu_pcfx_video_request_rainbow_hscroll(hscroll);
-    return 1;
+    /* The current RAINBOW/TETSU compositor path can leave BG0 hidden after
+       title/menu VDC transitions.  Use the shared software sky until that
+       hardware path is safe again; the software sky still scrolls. */
+    (void)kind;
+    (void)hscroll;
+    return 0;
 }
 
 /* Platform text seam: present whole-screen UI panels on the VDC hardware text
@@ -2803,10 +2797,10 @@ static void pcfx_duel_hud_begin(WaifuPcfxVideo *video)
     pcfx_vdc_overlay_clear_all();
     eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
     eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
-    eris_tetsu_set_priorities(7, 0, 6, 0, 0, 0, 0);
+    eris_tetsu_set_priorities(7, 7, 6, 0, 0, 0, 0);
     eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_16, TETSU_COLORS_16,
-                              1, 0, 1, 0, 0, 0, 0);
+                              1, 1, 1, 0, 0, 0, 0);
     video->vdc_overlay_ready = 1;
     g_vdc_overlay_fade_level = 0;
     g_vdc_overlay_applied_fade_level = 0;
@@ -2844,8 +2838,6 @@ static void pcfx_duel_hud_manage(WaifuPcfxVideo *video)
     } else if (g_duel_hud_active) {
         if (++g_duel_hud_idle_frames > WAIFU_PCFX_HUD_IDLE_TEARDOWN) {
             pcfx_duel_hud_end(video);
-        } else {
-            pcfx_vdc_overlay_clear_all();
         }
     }
     g_hud_text_count = 0;
@@ -2889,6 +2881,7 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
         g_rainbow_backdrop_requested = 0;
         g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
         applied_rainbow_backdrop = 1;
+        if (!g_rainbow_backdrop_active) pcfx_vdc_clear_background(video);
     } else if (g_rainbow_backdrop_active) {
         pcfx_vdc_clear_background(video);
     }
