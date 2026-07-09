@@ -2161,6 +2161,28 @@ static void draw_hud(void)
     draw_hud_offset(0, 0, 0, 0);
 }
 
+/* Draw the LP counter digits only, not the full HUD.  Used by
+   draw_interactive_base to overlay the animated _disp counters on top of a
+   cached composite frame whose LP digits are stale.  The position math must
+   match draw_hud_offset — we re-draw both the panel background and the digits
+   so the cached old digits are fully covered. */
+static void draw_lp_counters(int lp_ox, int lp_oy)
+{
+    char lpbuf[16];
+    lp_ox += WAIFU_UI_EXTRA_W;
+    draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
+    rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
+    draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
+    fmt_lp5(lpbuf, g_com_lp_disp);
+    draw_text_small(209 + lp_ox, 9 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
+
+    draw_panel_rect(177 + lp_ox, 23 + lp_oy, 71, 12, IDX_UI_DARK);
+    rect_fill(179 + lp_ox, 25 + lp_oy, 23, 8, IDX_UI_RED);
+    draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
+    fmt_lp5(lpbuf, g_you_lp_disp);
+    draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
+}
+
 static uint8_t stat_delta_color(int delta)
 {
     if (delta > 0) return IDX_GREEN;
@@ -5920,15 +5942,15 @@ static uint32_t battle_base_visual_key(void)
 {
     uint32_t h = 2166136261u;
     int i;
-    /* Key on the *displayed* LP counters, not the instant g_you_lp/g_com_lp.
-       The HUD renders g_*_lp_disp, which step_lp_display() animates toward the
-       real LP over several frames after a hit/heal.  Hashing the instant value
-       leaves the key unchanged during that countdown (the real LP already sits
-       at its target), so the composite cache would restore a stale frame with
-       the old number baked in and the HUD counter would appear frozen.  CD32X
-       never saw this because it builds with WAIFU_BATTLE_BASE_CACHE_DISABLE. */
-    h = waifu_hash_step_u32(h, (uint32_t)g_you_lp_disp);
-    h = waifu_hash_step_u32(h, (uint32_t)g_com_lp_disp);
+    /* Key on the instant LP counters, not the displayed g_*_lp_disp counters.
+       Hashing the displayed values makes every frame of the countdown animation
+       invalidate the composite cache, forcing a full board+field re-render each
+       frame.  The instant LP only changes in resolve_battle (a discrete event),
+       so the cache stays valid across the animation; draw_interactive_base
+       overlays the current _disp digits on top after any cache restore, so the
+       HUD counter animates without re-rendering the board. */
+    h = waifu_hash_step_u32(h, (uint32_t)g_you_lp);
+    h = waifu_hash_step_u32(h, (uint32_t)g_com_lp);
     h = waifu_hash_step_u32(h, (uint32_t)g_i_player_deck_left);
     h = waifu_hash_step_u32(h, (uint32_t)g_i_com_deck_left);
     for (i = 0; i < I_FIELD; ++i) {
@@ -8626,7 +8648,15 @@ static void draw_interactive_base(Camera cam)
 {
     uint32_t key = battle_base_visual_key();
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
-    if (battle_base_cache_restore(cam, key)) return;
+    if (battle_base_cache_restore(cam, key)) {
+        /* Overlay the animated LP counters on top of the cached composite.
+           The cache is keyed on g_you_lp/g_com_lp (instant, stable during the
+           LP countdown), so it stays valid across the multi-frame animation;
+           without this overlay the HUD would show the frozen counter value
+           from the frame the cache was last built. */
+        draw_lp_counters(0, 0);
+        return;
+    }
 #else
     (void)key;
 #endif
@@ -9639,21 +9669,22 @@ static void draw_interactive_tally(void)
 static void draw_interactive_reward(void)
 {
     int card = g_b_reward_card;
-    const char *name;
     /* The earned card is revealed with the same face-down -> flip-up turn the
        battle cut-in uses, then settles into the static reward art. Support-card
        rewards (which the static path frames specially) skip the scaled flip. */
     int flip_dur = WAIFU_BATTLE_FLIP_FRAMES;
     int flipping = is_monster_card(card) && g_b_phase_frame < flip_dur;
+    int pw = WAIFU_FM_WIDTH - WAIFU_UI_CENTER_DX * 2 - 32;
+    if (pw < 194) pw = 194;
+    int px = (WAIFU_FM_WIDTH - pw) / 2;
+    int ph = WAIFU_FM_HEIGHT - 40;
+    int py = 18;
     waifu_fm_use_common_palette();
     clear_screen(IDX_BLACK);
-    draw_panel_rect(WAIFU_UI_CENTER_DX + 31, 18, 194, WAIFU_FM_HEIGHT - 40, IDX_UI_DARK);
+    draw_panel_rect(px, py, pw, ph, IDX_UI_DARK);
     draw_centered_text_scaled(26, "CARD WON!", 1, IDX_GOLD_HI, IDX_BLACK);
-    hline(WAIFU_UI_CENTER_DX + 45, WAIFU_UI_CENTER_DX + 210, 44, IDX_UI_LIGHT);
 
 #if defined(WAIFU_FM_PCFX)
-    /* Static held screen: render big art through the framebuffer, not the
-       presenter's direct-KRAM bypass (see draw_interactive_card_preview). */
     ++g_big_art_direct_note_suppressed;
 #endif
     if (flipping) {
@@ -9670,13 +9701,19 @@ static void draw_interactive_reward(void)
     --g_big_art_direct_note_suppressed;
 #endif
 
-    if (flipping) return; /* hold the name/prompt until the card has flipped up */
+    if (flipping) return;
 
-    name = is_support_card(card) ? support_card_name(card)
-         : (is_monster_card(card) ? waifu_card_names[card] : "???");
-    draw_centered_text(WAIFU_UI_BOTTOM_Y(174), name, IDX_WHITE, IDX_BLACK);
-    draw_centered_text(WAIFU_UI_BOTTOM_Y(191), "ADDED TO STORAGE", IDX_GOLD_HI, IDX_BLACK);
-    draw_text_small((WAIFU_FM_WIDTH - 13 * 8) / 2, WAIFU_UI_BOTTOM_Y(202), "RUN: CONTINUE", IDX_WHITE, IDX_BLACK);
+    /* Name text: use small font to fit inside the panel, wrapped to the panel
+       width minus padding.  The panel interior is pw - 4 (2px inset on each side),
+       and the small font uses a 7px advance per glyph. */
+    {
+        const char *name = is_support_card(card) ? support_card_name(card)
+                         : (is_monster_card(card) ? waifu_card_names[card] : "???");
+        int textw = pw - 8;
+        if (textw < 96) textw = 96;
+        draw_wrapped_text_small_box(px + 6, WAIFU_UI_BOTTOM_Y(172), textw, 2, 10, name, IDX_WHITE, IDX_BLACK);
+    }
+    draw_centered_text(WAIFU_UI_BOTTOM_Y(192), "ADDED TO STORAGE", IDX_GOLD_HI, IDX_BLACK);
 }
 
 static int draw_replacement_cards_to_hand(void)
