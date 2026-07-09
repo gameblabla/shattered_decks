@@ -55,21 +55,6 @@ void waifu_pcfx_video_overlay_ending_story(const char *name, int page, int promp
 void waifu_pcfx_video_overlay_ending_credits(void);
 void waifu_pcfx_video_overlay_clear(void);
 
-/* In-duel HUD text on the VDC hardware overlay layer.  Duel draw code just calls
-   hud_print() for each HUD string (framebuffer pixel coords, snapped to the 8x8
-   tile grid); the next present composites them in front of KING BG0 without
-   touching the KING framebuffer and clears the list for the next frame.  Frames
-   that print no HUD text tear the overlay back down after a short grace period.
-   color is one of WAIFU_PCFX_HUD_COLOR_*.  hud_print_centered() horizontally
-   centers on the visible width using the 8px HUD glyph advance. */
-#define WAIFU_PCFX_HUD_COLOR_WHITE 0
-#define WAIFU_PCFX_HUD_COLOR_GOLD  1
-#define WAIFU_PCFX_HUD_COLOR_GREEN 2
-#define WAIFU_PCFX_HUD_COLOR_RED   3
-void waifu_pcfx_video_hud_print(int x, int y, const char *str, int color);
-void waifu_pcfx_video_hud_print_centered(int y, const char *str, int color);
-void waifu_pcfx_video_hud_def_icon(int x, int y, int color);
-
 #ifdef __cplusplus
 }
 #endif

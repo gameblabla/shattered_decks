@@ -1918,60 +1918,21 @@ static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
     }
 }
 
-static inline void draw_glyph_shadowed_8x8(int x, int y, const uint8_t *charfont, uint8_t fg, uint8_t shadow)
-{
-    if (x >= 0 && y >= 0 && x + 8 < WAIFU_FM_WIDTH && y + 8 < WAIFU_FM_HEIGHT) {
-        uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
-        uint8_t *sdst = dst + WAIFU_FM_WIDTH + 1;
-        for (int yy = 0; yy < 8; ++yy) {
-            uint8_t row = charfont[yy];
-            if (row) {
-                for (int xx = 0; xx < 8; ++xx) {
-                    if (row & (uint8_t)(0x80u >> xx)) sdst[xx] = shadow;
-                }
-                for (int xx = 0; xx < 8; ++xx) {
-                    if (row & (uint8_t)(0x80u >> xx)) dst[xx] = fg;
-                }
-            }
-            sdst += WAIFU_FM_WIDTH;
-            dst += WAIFU_FM_WIDTH;
-        }
-        return;
-    }
-
-    for (int yy = 0; yy < 8; ++yy) {
-        int py = y + yy;
-        int sy = py + 1;
-        uint8_t row = charfont[yy];
-        if (!row) continue;
-        if ((unsigned)sy < WAIFU_FM_HEIGHT) {
-            for (int xx = 0; xx < 8; ++xx) {
-                if (row & (uint8_t)(0x80u >> xx)) {
-                    int sx = x + xx + 1;
-                    if ((unsigned)sx < WAIFU_FM_WIDTH) framebuffer[sy * WAIFU_FM_WIDTH + sx] = shadow;
-                }
-            }
-        }
-        if ((unsigned)py < WAIFU_FM_HEIGHT) {
-            for (int xx = 0; xx < 8; ++xx) {
-                if (row & (uint8_t)(0x80u >> xx)) {
-                    int px = x + xx;
-                    if ((unsigned)px < WAIFU_FM_WIDTH) framebuffer[py * WAIFU_FM_WIDTH + px] = fg;
-                }
-            }
-        }
-    }
-}
-
 static void draw_text(int x, int y, const char *s, uint8_t fg, uint8_t shadow)
 {
     int ox = x;
     for (; *s; ++s) {
         if (*s == '\n') { y += 8; x = ox; continue; }
         unsigned char ch = (unsigned char)*s;
-        if (ch != ' ') {
-            const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
-            draw_glyph_shadowed_8x8(x, y, charfont, fg, shadow);
+        const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
+        for (int yy = 0; yy < 8; ++yy) {
+            uint8_t row = charfont[yy];
+            for (int xx = 0; xx < 8; ++xx) {
+                if (row & (uint8_t)(1u << (7 - xx))) {
+                    put_px(x + xx + 1, y + yy + 1, shadow);
+                    put_px(x + xx, y + yy, fg);
+                }
+            }
         }
         x += 8;
     }
@@ -1982,12 +1943,18 @@ static void draw_text_small(int x, int y, const char *s, uint8_t fg, uint8_t sha
     /* Compact HUD text, but draw all 8 glyph columns. Earlier builds rendered
        only 6 columns, which clipped wide glyphs such as M and WAIFU_FM_WIDTH whenever they
        appeared at the end of a word. Use a 7-pixel advance for PS1-style tight
-    spacing while preserving the complete glyph bitmap. */
+       spacing while preserving the complete glyph bitmap. */
     for (; *s; ++s) {
         unsigned char ch = (unsigned char)*s;
-        if (ch != ' ') {
-            const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
-            draw_glyph_shadowed_8x8(x, y, charfont, fg, shadow);
+        const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
+        for (int yy = 0; yy < 8; ++yy) {
+            uint8_t row = charfont[yy];
+            for (int xx = 0; xx < 8; ++xx) {
+                if (row & (uint8_t)(1u << (7 - xx))) {
+                    put_px(x + xx + 1, y + yy + 1, shadow);
+                    put_px(x + xx, y + yy, fg);
+                }
+            }
         }
         x += 7;
     }
@@ -2168,14 +2135,6 @@ static void fmt_prefixed_i32(char *dst, int dst_size, char prefix, int value);
 
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
 {
-    /* NOTE: the top HUD (FIELD/MARE + COM/YOU LP) is drawn INSIDE the battle
-       base cache (draw_interactive_base -> battle_base_cache_restore), so on a
-       cache hit it is restored by a framebuffer memcpy and costs nothing.  It is
-       therefore deliberately kept as software framebuffer text: moving it to the
-       VDC overlay would make cache-hit frames stop re-emitting the glyphs (the
-       cache only snapshots the framebuffer), blanking the counters.  Only the
-       UNCACHED per-frame HUD (bottom info panel, see draw_bottom_info_offset_ex)
-       is worth moving to the hardware overlay. */
     char lpbuf[16];
     draw_panel_rect(6 + field_ox, 7 + field_oy, 49, 29, IDX_UI_DARK);
     draw_text_small(11 + field_ox, 11 + field_oy, "FIELD", IDX_WHITE, IDX_BLACK);
@@ -2208,19 +2167,6 @@ static uint8_t stat_delta_color(int delta)
     if (delta < 0) return IDX_RED;
     return IDX_WHITE;
 }
-
-#ifdef WAIFU_FM_PCFX
-/* VDC-overlay analogue of stat_delta_color: maps an atk/def delta to the
-   matching HUD font colour (green buff / red nerf / white unchanged) so the
-   bottom info panel's stat values keep their buff/nerf tint on the hardware
-   overlay layer instead of always rendering white. */
-static int waifu_pcfx_hud_stat_color(int delta)
-{
-    if (delta > 0) return WAIFU_PCFX_HUD_COLOR_GREEN;
-    if (delta < 0) return WAIFU_PCFX_HUD_COLOR_RED;
-    return WAIFU_PCFX_HUD_COLOR_WHITE;
-}
-#endif
 
 static void fmt_u32_dec(char *dst, int dst_size, unsigned value)
 {
@@ -2403,33 +2349,6 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
     for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
     char line[64];
-#if defined(WAIFU_FM_PCFX)
-    /* PC-FX: bottom-info panel text rides the VDC hardware overlay (drop-shadow
-       HUD font) instead of the CPU framebuffer, so it costs no KRAM upload and
-       does not dirty the framebuffer.  The teal panel background above stays in
-       the framebuffer; only the glyphs move to the overlay layer. */
-    if (is_support_card(card_id)) {
-        char support_line[64];
-        waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_name(card_id), 24);
-        waifu_pcfx_video_hud_print(6, base+6, support_line, WAIFU_PCFX_HUD_COLOR_WHITE);
-        waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_type(card_id), 31);
-        waifu_pcfx_video_hud_print(6, base+21, support_line, WAIFU_PCFX_HUD_COLOR_WHITE);
-        waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 68, base+21, "USE", WAIFU_PCFX_HUD_COLOR_GOLD);
-        return;
-    }
-    if (!is_monster_card(card_id)) return;
-    waifu_str_copy_n(line, (int)sizeof(line), waifu_card_names[card_id], 24);
-    waifu_pcfx_video_hud_print(6, base+6, line, WAIFU_PCFX_HUD_COLOR_WHITE);
-    fmt_join2(line, (int)sizeof(line), waifu_card_attr[card_id], " / ", waifu_card_tribe[card_id]);
-    waifu_pcfx_video_hud_print(6, base+21, line, WAIFU_PCFX_HUD_COLOR_WHITE);
-    if (atk < 0) atk = (int)waifu_card_atk[card_id];
-    if (defv < 0) defv = (int)waifu_card_def[card_id];
-    fmt_prefixed_i32(line, (int)sizeof(line), 'x', atk);
-    waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 41, base+15, line, waifu_pcfx_hud_stat_color(atk - (int)waifu_card_atk[card_id]));
-    fmt_i32_dec(line, (int)sizeof(line), defv);
-    waifu_pcfx_video_hud_print(WAIFU_FM_WIDTH - 35, base+26, line, waifu_pcfx_hud_stat_color(defv - (int)waifu_card_def[card_id]));
-    waifu_pcfx_video_hud_def_icon(WAIFU_FM_WIDTH - 43, base+26, WAIFU_PCFX_HUD_COLOR_WHITE);
-#else
     if (is_support_card(card_id)) {
         char support_line[64];
         waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_name(card_id), 24);
@@ -2451,7 +2370,6 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     fmt_i32_dec(line, (int)sizeof(line), defv);
     draw_text_small(WAIFU_FM_WIDTH - 35, base+26, line, stat_delta_color(defv - (int)waifu_card_def[card_id]), IDX_BLACK);
     rect_outline(WAIFU_FM_WIDTH - 41,base+25,6,6,IDX_WHITE);
-#endif
 }
 
 static void draw_bottom_info_offset(int card_id, const char *mode, int yoff)
@@ -9456,37 +9374,6 @@ static void draw_player_one_shot_support_anim(void)
     if (f < slide) {
         return;
     }
-#if defined(WAIFU_FM_PCFX)
-    /* PC-FX: the support reveal rides the VDC hardware overlay (drop-shadow
-       HUD font) instead of the CPU framebuffer, so the per-frame text costs no
-       KRAM upload and does not dirty the black-bg framebuffer the card art
-       lives on.  Positions are static once the card has landed (the slide is
-       already complete here), so tile-grid snapping is invisible.  The overlay
-       re-arms exactly when the text first appears (it idled during the slide);
-       the cleared-BAT layer is visually identical to torn down, so the single
-       re-arm reads as the text fading in, not a compositor glitch. */
-    waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(154),
-                                        support_card_name(g_b_support_card),
-                                        WAIFU_PCFX_HUD_COLOR_GOLD);
-    if (f < reveal) {
-        return;
-    }
-    if (g_b_support_kind == 2) {
-        waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(184), "DRAW 1 CARD", WAIFU_PCFX_HUD_COLOR_WHITE);
-        waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(205), "FROM YOUR DECK", WAIFU_PCFX_HUD_COLOR_WHITE);
-    } else if (g_b_support_kind == 3) {
-        char line[48];
-        int32_t t = q8_smooth_ratio(f - reveal, WAIFU_SUPPORT_TEXT_FRAMES);
-        int lp = g_b_support_lp_from +
-                 (int)(((g_b_support_lp_to - g_b_support_lp_from) * q8_smoothstep(t) + Q8_HALF) >> Q8_SHIFT);
-        waifu_str_copy(line, (int)sizeof(line), "LP ");
-        waifu_str_cat_i32(line, (int)sizeof(line), g_b_support_lp_from);
-        waifu_str_cat(line, (int)sizeof(line), " > ");
-        waifu_str_cat_i32(line, (int)sizeof(line), lp);
-        waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(188), line, WAIFU_PCFX_HUD_COLOR_GREEN);
-        waifu_pcfx_video_hud_print_centered(WAIFU_UI_BOTTOM_Y(207), "LIFE RESTORED", WAIFU_PCFX_HUD_COLOR_WHITE);
-    }
-#else
     draw_centered_text(WAIFU_UI_BOTTOM_Y(154), support_card_name(g_b_support_card), IDX_GOLD_HI, IDX_BLACK);
     if (f < reveal) {
         return;
@@ -9506,7 +9393,6 @@ static void draw_player_one_shot_support_anim(void)
         draw_centered_text(WAIFU_UI_BOTTOM_Y(188), line, IDX_GREEN, IDX_BLACK);
         draw_centered_text(WAIFU_UI_BOTTOM_Y(207), "LIFE RESTORED", IDX_WHITE, IDX_BLACK);
     }
-#endif
 }
 
 static void reveal_monster_slot(int owner, int slot)
@@ -12035,46 +11921,27 @@ static void draw_map_void_3d(int f)
     }
 }
 
-static void draw_sky_motion_specks(int f, int count, int y_base, int y_mask, uint8_t c0, uint8_t c1)
-{
-    int shift = (f >> 1) % WAIFU_FM_WIDTH;
-    for (int y = 24; y < 96; ++y) {
-        int start = (shift + y * 3) & 7;
-        for (int x = start; x < WAIFU_FM_WIDTH; x += 8) {
-            put_px(x, y, (((x - shift) + y) & 8) ? c0 : c1);
-        }
-    }
-    for (int i = 0; i < count; ++i) {
-        int x = (i * 47 + 11 + shift) % WAIFU_FM_WIDTH;
-        int y = y_base + ((i * 29 + 5) & y_mask);
-        put_px(x, y, (i & 3) ? c0 : c1);
-    }
-}
-
-static void draw_desert_sky(int f)
+static void draw_desert_sky(void)
 {
     fill_rows(0, 52, IDX_UI_BLUE);
     fill_rows(52, 93, IDX_UI_TEAL);
     fill_rows(93, 143, IDX_GOLD_DARK);
     fill_rows(143, WAIFU_FM_HEIGHT, IDX_DARK_BROWN);
-    draw_sky_motion_specks(f, 96, 24, 63, IDX_UI_LIGHT, IDX_WHITE);
     for (int x = 0; x < WAIFU_FM_WIDTH; x += 6) {
-        int sx = (x + ((f >> 1) & 31)) % WAIFU_FM_WIDTH;
-        int yy = 142 + ((sx * 13) & 7);
+        int yy = 142 + ((x * 13) & 7);
         hline(x, x + 5 < WAIFU_FM_WIDTH ? x + 5 : WAIFU_FM_WIDTH - 1, yy, IDX_GOLD_HI);
     }
 }
 
-static void draw_temple_sky(int f)
+static void draw_temple_sky(void)
 {
     fill_rows(0, 40, IDX_UI_BLUE);
     fill_rows(40, 80, IDX_UI_TEAL);
     fill_rows(80, 120, IDX_DIM);
     fill_rows(120, WAIFU_FM_HEIGHT, IDX_DARK_BROWN);
-    draw_sky_motion_specks(f, 112, 24, 63, IDX_DIM, IDX_UI_LIGHT);
 }
 
-static void draw_volcano_sky(int f)
+static void draw_volcano_sky(void)
 {
     fill_rows(0, 45, IDX_BLACK);
     fill_rows(45, 85, IDX_RED);
@@ -12082,19 +11949,18 @@ static void draw_volcano_sky(int f)
     fill_rows(120, WAIFU_FM_HEIGHT, IDX_DARK_BROWN);
     /* Embers drifting upward. */
     for (int i = 0; i < 40; ++i) {
-        int x = (i * 53 + 17 + (f >> 1)) % WAIFU_FM_WIDTH;
+        int x = (i * 53 + 17) % WAIFU_FM_WIDTH;
         int y = 120 - ((i * 31 + 7) & 63);
         put_px(x, y, (i & 1) ? IDX_FLAME1 : IDX_GOLD_HI);
     }
-    draw_sky_motion_specks(f, 96, 24, 63, IDX_FLAME1, IDX_GOLD_HI);
 }
 
-static void draw_void_sky(int f)
+static void draw_void_sky(void)
 {
     fill_rows(0, WAIFU_FM_HEIGHT, IDX_BLACK);
     /* Stars. */
     for (int i = 0; i < 60; ++i) {
-        int x = (i * 67 + 13 + (f >> 1)) % WAIFU_FM_WIDTH;
+        int x = (i * 67 + 13) % WAIFU_FM_WIDTH;
         int y = (i * 41 + 5) & 127;
         put_px(x, y, (i & 3) ? IDX_DIM : IDX_WHITE);
     }
@@ -12173,10 +12039,10 @@ static void draw_story_sky(int f)
         return;
     }
     switch (story_scene_kind()) {
-    case STORY_SCENE_TEMPLE:  draw_temple_sky(f);  break;
-    case STORY_SCENE_VOLCANO: draw_volcano_sky(f); break;
-    case STORY_SCENE_VOID:    draw_void_sky(f);    break;
-    default:                  draw_desert_sky(f);  break;
+    case STORY_SCENE_TEMPLE:  draw_temple_sky();  break;
+    case STORY_SCENE_VOLCANO: draw_volcano_sky(); break;
+    case STORY_SCENE_VOID:    draw_void_sky();    break;
+    default:                  draw_desert_sky();  break;
     }
 }
 
@@ -12198,9 +12064,6 @@ static void draw_story_sanctum_background(void)
        frame keeps the scene steady across those sub-screens. */
     draw_story_sky(g_story_scene_anim_frame);
     draw_story_scene_3d(g_story_scene_anim_frame);
-#if defined(WAIFU_FM_PCFX)
-    draw_sky_motion_specks(g_story_scene_anim_frame, 160, 24, 63, IDX_UI_LIGHT, IDX_WHITE);
-#endif
 }
 
 static const char *story_scene_name(void)
@@ -12220,9 +12083,6 @@ static void draw_story_map_screen_content(int f)
     /* The DESTINATION panel is the largest opaque cover over the floor. */
     story_scene_set_floor_occluder(WAIFU_FM_WIDTH - 130, WAIFU_UI_BOTTOM_Y(146), 121, 76);
     draw_story_scene_3d(f);
-#if defined(WAIFU_FM_PCFX)
-    draw_sky_motion_specks(f, 160, 24, 63, IDX_UI_LIGHT, IDX_WHITE);
-#endif
     draw_panel_rect(WAIFU_FM_WIDTH - 130, WAIFU_UI_BOTTOM_Y(146), 121, 76, IDX_UI_DARK);
     draw_text_small(WAIFU_FM_WIDTH - 121, WAIFU_UI_BOTTOM_Y(155), "DESTINATION", IDX_GOLD_HI, IDX_BLACK);
     draw_text(WAIFU_FM_WIDTH - 113, WAIFU_UI_BOTTOM_Y(174), "SANCTUM", g_story_map_cursor == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
@@ -12333,11 +12193,6 @@ static void draw_story_save_screen(void)
 #define WAIFU_EXTERNAL_DEVICE_LABEL "CARTRIDGE"
 #else
 #define WAIFU_EXTERNAL_DEVICE_LABEL "FX-BMP"
-#endif
-#if defined(WAIFU_FM_PCFX)
-#define WAIFU_STORY_LOAD_TO_MAP_WAIT_FRAMES 60
-#else
-#define WAIFU_STORY_LOAD_TO_MAP_WAIT_FRAMES 24
 #endif
 
 static void draw_story_device_picker(const char *title, int sel, int sanctum_bg)
@@ -12827,13 +12682,14 @@ void waifu_fm_step(const WaifuFmInput *input)
     case WAIFU_I_STORY_LOAD_TO_MAP:
         waifu_pcfx_video_overlay_clear();
         draw_backup_loading_screen();
-        if (g_i_frame >= WAIFU_STORY_LOAD_TO_MAP_WAIT_FRAMES) {
+        if (g_i_frame >= 8) {
             if (!load_story_device_to_map(g_i_load_pending_device)) {
                 int fallback = g_i_load_pending_device ? 0 : 1;
                 if (!story_save_exists_device(fallback) ||
                     !load_story_device_to_map(fallback)) {
                     g_story_save_status = -1;
-                    enter_menu_after_assets();
+                    g_i_state = WAIFU_I_MENU;
+                    g_i_frame = -1;
                 }
             }
         }
