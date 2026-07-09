@@ -43,7 +43,7 @@ card|Water_Element|Ondina, Water Element|Aqua|Water|1800|2200|A water spirit wit
 card|White_dragon|Albathia, White Dragon|Dragon|Light|2600|2100|A light dragon that leads elite decks.
 card|Witch|Morganna, Night Witch|Spellcaster|Dark|1900|1700|A dark spellcaster who turns frost into flame.
 card|Yokai|Yuzuki, Yokai Shade|Fiend|Dark|2000|1800|A dark fiend born from storm and shadow.
-card|insect_bomb|Bombella, Hive Grenadier|Insect|Fire|1000|1000|A fire insect that can trigger queen fusions.
+card|insect_bomb|Bombella, Hive Grenadier|Insect|Fire|1650|1000|A fire insect that can trigger queen fusions.
 card|Demonic|Lethara, Abyss Harbinger|Fiend|Dark|2450|1850|A dark fiend with boss-tier pressure.
 card|Eel|Neridia, Coil Siren|Aqua|Water|1700|1600|A water aqua monster that keeps tempo steady.
 card|Elec_Wolf|Raikora, Storm Wolf|Thunder|Light|2100|1500|A light thunder beast that sparks shadow fusion.
