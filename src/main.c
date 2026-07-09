@@ -12334,6 +12334,11 @@ static void draw_story_save_screen(void)
 #else
 #define WAIFU_EXTERNAL_DEVICE_LABEL "FX-BMP"
 #endif
+#if defined(WAIFU_FM_PCFX)
+#define WAIFU_STORY_LOAD_TO_MAP_WAIT_FRAMES 60
+#else
+#define WAIFU_STORY_LOAD_TO_MAP_WAIT_FRAMES 24
+#endif
 
 static void draw_story_device_picker(const char *title, int sel, int sanctum_bg)
 {
@@ -12822,7 +12827,7 @@ void waifu_fm_step(const WaifuFmInput *input)
     case WAIFU_I_STORY_LOAD_TO_MAP:
         waifu_pcfx_video_overlay_clear();
         draw_backup_loading_screen();
-        if (g_i_frame >= 24) {
+        if (g_i_frame >= WAIFU_STORY_LOAD_TO_MAP_WAIT_FRAMES) {
             if (!load_story_device_to_map(g_i_load_pending_device)) {
                 int fallback = g_i_load_pending_device ? 0 : 1;
                 if (!story_save_exists_device(fallback) ||

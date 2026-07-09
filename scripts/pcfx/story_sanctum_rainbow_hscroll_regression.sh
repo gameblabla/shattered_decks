@@ -33,15 +33,15 @@ b[off + 122] = ck >> 8
 Path(dst).write_bytes(b)
 PY
 
-  "$PCFX_HEADLESS" --bios-dir "$PCFX_BIOS_DIR" --save-dir "$scene_out" --pcfx --fast-video \
-    --frames 5200 --commands "$COMMANDS" \
-    --screenshot "$scene_out/sanctum_a.ppm" \
-    --state-out "$scene_out/sanctum.state" \
-    "$PCFX_CUE" >/dev/null
-
+  base_frames=5200
   hold_frames=60
   "$PCFX_HEADLESS" --bios-dir "$PCFX_BIOS_DIR" --save-dir "$scene_out" --pcfx --fast-video \
-    --state-in "$scene_out/sanctum.state" --frames "$hold_frames" \
+    --frames "$base_frames" --commands "$COMMANDS" \
+    --screenshot "$scene_out/sanctum_a.ppm" \
+    "$PCFX_CUE" >/dev/null
+
+  "$PCFX_HEADLESS" --bios-dir "$PCFX_BIOS_DIR" --save-dir "$scene_out" --pcfx --fast-video \
+    --frames $((base_frames + hold_frames)) --commands "$COMMANDS" \
     --screenshot "$scene_out/sanctum_b.ppm" \
     "$PCFX_CUE" >/dev/null
 
@@ -106,9 +106,10 @@ scene_name = sys.argv[3]
 if (wa, ha) != (wb, hb):
     raise SystemExit("screenshot dimensions differ")
 
-# Upper-left RAINBOW area. This stays above most 3D geometry and left of the
-# VDC menu panel, while including enough texture/stars for every backdrop.
-x0, y0, x1, y1 = 0, 24, 128, 96
+# Left-side RAINBOW texture band. The direct PC-FX RAINBOW backdrop presents
+# the upper desert/stone rows as mostly flat color, so sample lower rows where
+# every converted still has enough detail to expose horizontal scroll.
+x0, y0, x1, y1 = 0, 180, 128, 220
 min_changed = 100
 identity = sad(pa, pb, wa, x0, y0, x1, y1, 0)
 best_shift = 0

@@ -1577,7 +1577,7 @@ static void pcfx_rainbow_setup(void)
 {
 #if defined(__v810__)
     uint16_t zero = 0;
-    uint16_t control = 3;
+    uint16_t control = 1;
     __asm__ volatile (
         "out.b %[zero],0x200[r0]\n"
         "out.b %[zero],0x202[r0]\n"
@@ -1743,10 +1743,6 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
         video->front_page = 0;
         video->back_page = 0;
         video->have_last_frame = 0;
-#if WAIFU_PCFX_DIRTY_PRESENT
-        video->page_shadow_valid[0] = 0;
-        video->page_shadow_valid[1] = 0;
-#endif
     }
 
     g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
@@ -1762,18 +1758,25 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
         eris_low_sup_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
         eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
         eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
-        pcfx_vdc_overlay_init(video);
-        eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
-        eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
+        video->vdc_overlay_ready = 0;
+        video->vdc_overlay_shutdown_countdown = 0;
+        pcfx_vdc_sanctum_clear_all();
+        pcfx_vdc_overlay_invalidate_cache();
+        g_vdc_overlay_dirty = 0;
+        g_vdc_overlay_fade_map_active = 0;
+        g_vdc_overlay_applied_mode = WAIFU_PCFX_OVERLAY_OFF;
+        g_vdc_overlay_applied_fade_level = -1;
+        eris_king_set_bg_prio(KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+        eris_king_set_bg_mode(KING_BGMODE_NONE, 0, 0, 0);
         pcfx_king_set_bg0_page_inline(page_bat_offset(0));
-        /* The RAINBOW still itself cannot be palette-faded, so the fade mask
-           is drawn by VDC tiles.  Keep VDC in front of both KING BG0 and
-           RAINBOW; transparent VDC tile pixels still let the scene show
-           normally once the fade level reaches zero. */
-        eris_tetsu_set_priorities(7, 7, 6, 0, 0, 0, 5);
+        /* Present the decoded RAINBOW backdrop directly. Re-enabling BG0 KRAM
+           uploads while RAINBOW is armed can stop the PC-FX video path on the
+           loaded-save map; the story-map software frame remains disabled here
+           so the RAINBOW still is visible and hscrolls. */
+        eris_tetsu_set_priorities(0, 0, 0, 0, 0, 0, 7);
         eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                                   TETSU_COLORS_16, TETSU_COLORS_16,
-                                  1, 1, 1, 0, 0, 0, 1);
+                                  0, 0, 0, 0, 0, 0, 1);
     }
     if (!g_rainbow_backdrop_active || backdrop_changed || !g_rainbow_transfer_armed) {
         pcfx_rainbow_setup();
@@ -2616,12 +2619,16 @@ void waifu_pcfx_video_request_rainbow_hscroll(int hscroll)
    framebuffer background transparent for the RAINBOW layer to show through. */
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
 {
-    /* The current RAINBOW/TETSU compositor path can leave BG0 hidden after
-       title/menu VDC transitions.  Use the shared software sky until that
-       hardware path is safe again; the software sky still scrolls. */
-    (void)kind;
-    (void)hscroll;
-    return 0;
+    WaifuPcfxSanctumBackdrop backdrop;
+    switch (kind) {
+    case WAIFU_BACKGROUND_STONE: backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_STONE; break;
+    case WAIFU_BACKGROUND_EMBER: backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_EMBER; break;
+    case WAIFU_BACKGROUND_SKY:   backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_SKY;   break;
+    default:                     backdrop = WAIFU_PCFX_SANCTUM_BACKDROP_DESERT; break;
+    }
+    waifu_pcfx_video_request_rainbow_backdrop(backdrop);
+    waifu_pcfx_video_request_rainbow_hscroll(hscroll);
+    return 1;
 }
 
 /* Platform text seam: present whole-screen UI panels on the VDC hardware text
@@ -2891,10 +2898,9 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
     g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
 
     if (g_rainbow_backdrop_active) {
-        pcfx_vdc_overlay_set_fade_q8(fade_q8);
-        video->front_page = 0;
-        video->back_page = 0;
-        pcfx_king_set_bg_kram_page_inline(0);
+        pcfx_rainbow_set_hscroll(g_rainbow_hscroll_requested ? g_rainbow_hscroll : 0);
+        video->have_last_frame = 0;
+        return;
     }
 
     /* Composite in-duel HUD text onto the VDC tile layer in front of KING BG0.
@@ -2989,6 +2995,9 @@ void waifu_pcfx_video_present_title_hicolor_stub(WaifuPcfxVideo *video, const ui
 void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
 {
     volatile uint16_t * const sr = (volatile uint16_t *)0x80000400u;
+    if (g_rainbow_backdrop_active && !g_sanctum_active) {
+        return;
+    }
     while ((*sr & 0x0020u) == 0) { }
     if (video && video->pending_title_page_flip) {
         pcfx_king_set_bg_kram_page_inline(0);
