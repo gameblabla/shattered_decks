@@ -22,6 +22,7 @@
 
 #include "defines.h"
 #include "platform.h"
+#include "hw3d.h"
 #include "common.h"
 #include "renderer3d.h"
 #include "bmp_writer.h"
@@ -540,6 +541,25 @@ static int equip_def_bonus(int card_id);
 typedef struct { int32_t x, y, z; } Vec3;
 typedef struct { Vec3 eye, target, up; int32_t focal; } Camera;
 
+/* Adapters for the hardware 3D scene-capture seam (hw3d.h). On builds without
+   a hardware backend the seam calls are inert stubs, so these compile away. */
+static inline WaifuHw3DVec3 hw3d_v(Vec3 v)
+{
+    WaifuHw3DVec3 o;
+    o.x = v.x; o.y = v.y; o.z = v.z;
+    return o;
+}
+
+static inline WaifuHw3DCamera hw3d_camera(Camera c)
+{
+    WaifuHw3DCamera o;
+    o.eye = hw3d_v(c.eye);
+    o.target = hw3d_v(c.target);
+    o.up = hw3d_v(c.up);
+    o.focal = c.focal;
+    return o;
+}
+
 #if !defined(WAIFU_BG_CACHE_DISABLE)
 static uint8_t g_board_bg_cache[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 static Camera g_board_bg_cache_cam;
@@ -956,6 +976,11 @@ static void cd32x_story_quads_flush(void);
 static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
 {
     ScreenPt pa, pb, pc, pd;
+    {
+        WaifuHw3DCamera hc = hw3d_camera(cam);
+        WaifuHw3DVec3 q[4] = { hw3d_v(a), hw3d_v(b), hw3d_v(c), hw3d_v(d) };
+        if (waifu_hw3d_quad(&hc, q, tile)) return;
+    }
     if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
@@ -1004,6 +1029,11 @@ static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
 static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
 {
     ScreenPt pa, pb, pc, pd;
+    {
+        WaifuHw3DCamera hc = hw3d_camera(cam);
+        WaifuHw3DVec3 q[4] = { hw3d_v(a), hw3d_v(b), hw3d_v(c), hw3d_v(d) };
+        if (waifu_hw3d_quad(&hc, q, tile)) return;
+    }
     if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
@@ -1546,6 +1576,11 @@ static int field_side_tile_for_cell(int c, int r)
 static void draw_wall_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
 {
     ScreenPt pa, pb, pc, pd;
+    {
+        WaifuHw3DCamera hc = hw3d_camera(cam);
+        WaifuHw3DVec3 q[4] = { hw3d_v(a), hw3d_v(b), hw3d_v(c), hw3d_v(d) };
+        if (waifu_hw3d_quad(&hc, q, tile)) return;
+    }
     if (!project_quad3d(cam, a, b, c, d, &pa, &pb, &pc, &pd)) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
@@ -1703,7 +1738,11 @@ static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
 #if defined(WAIFU_FM_CD32X)
 static void clear_screen(uint8_t c) { waifu_cd32x_video_clear_back_index(c); }
 #else
-static void clear_screen(uint8_t c) { fill_u8_fast(framebuffer, WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT, c); }
+static void clear_screen(uint8_t c)
+{
+    if (waifu_hw2d_clear(c)) return;
+    fill_u8_fast(framebuffer, WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT, c);
+}
 #endif
 
 /* Fill the full-width scanline band [y0, y1) with one palette index.  Same
@@ -1715,6 +1754,7 @@ static void fill_rows(int y0, int y1, uint8_t c)
     if (y0 < 0) y0 = 0;
     if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
     if (y0 >= y1) return;
+    if (waifu_hw2d_rect(0, y0, WAIFU_FM_WIDTH, y1 - y0, c)) return;
 #if defined(WAIFU_FM_CD32X)
     waifu_cd32x_video_fill_rows_index(y0, y1, c);
 #else
@@ -1807,7 +1847,10 @@ static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
 
 static void put_px(int x, int y, uint8_t c)
 {
-    if ((unsigned)x < WAIFU_FM_WIDTH && (unsigned)y < WAIFU_FM_HEIGHT) framebuffer[y * WAIFU_FM_WIDTH + x] = c;
+    if ((unsigned)x < WAIFU_FM_WIDTH && (unsigned)y < WAIFU_FM_HEIGHT) {
+        if (waifu_hw2d_px(x, y, c)) return;
+        framebuffer[y * WAIFU_FM_WIDTH + x] = c;
+    }
 }
 
 static void hline(int x0, int x1, int y, uint8_t c)
@@ -1817,6 +1860,7 @@ static void hline(int x0, int x1, int y, uint8_t c)
     if (x1 < 0 || x0 >= WAIFU_FM_WIDTH) return;
     if (x0 < 0) x0 = 0;
     if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;
+    if (waifu_hw2d_rect(x0, y, x1 - x0 + 1, 1, c)) return;
     fill_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0, x1 - x0 + 1, c);
 }
 
@@ -1832,6 +1876,7 @@ static void rect_fill(int x, int y, int w, int h, uint8_t c)
     if (y0 < 0) y0 = 0;
     if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;
     if (y1 >= WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT - 1;
+    if (waifu_hw2d_rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, c)) return;
     int count = x1 - x0 + 1;
     uint8_t *dst = framebuffer + y0 * WAIFU_FM_WIDTH + x0;
     for (int yy = y0; yy <= y1; ++yy) {
@@ -1876,6 +1921,7 @@ static long long lldiv_trunc(long long n, long long d)
 
 static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
 {
+    if (waifu_hw2d_line(x0, y0, x1, y1, c)) return;
     /* Clip the segment to the screen rect FIRST (Liang-Barsky, 64-bit so it
        survives huge inputs).  A projected vertex just in front of the camera
        (small cz, large cx/cz) can land at a coordinate in the millions; the old
@@ -2060,6 +2106,7 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
     /* A NULL mask selects index-0 color-key transparency: the platform baked the
        alpha mask into the pixels (transparent -> 0) at load time to keep only one
        resident plane per portrait.  Otherwise use the explicit alpha mask. */
+    if (waifu_hw2d_image(pix, mask, sw, sh, x, y, sw, sh, 0, mask == 0)) return;
 #if defined(WAIFU_FM_CD32X)
     /* CD32X never has a resident mask (waifu_assets_story_portrait_mask returns
        NULL there), so only the color-key path is compiled: clip once, then pack
@@ -2948,6 +2995,7 @@ static int try_draw_card_raw_fast(const uint8_t *src, int sw, int sh, int x, int
 static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
     if (!src || dw <= 0 || dh <= 0) return;
+    if (waifu_hw2d_image(src, 0, sw, sh, x, y, dw, dh, 0, 0)) return;
     if (dw == sw && dh == sh) {
         int x0 = x < 0 ? 0 : x;
         int y0 = y < 0 ? 0 : y;
@@ -2987,6 +3035,7 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
 static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
     if (!src || dw <= 0 || dh <= 0) return;
+    if (waifu_hw2d_image(src, 0, sw, sh, x, y, dw, dh, 1, 0)) return;
     if (try_draw_card_raw_fast(src, sw, sh, x, y, dw, dh, 1)) return;
     PROFILE_CARD2D_GENERIC_BEGIN();
     for (int yy = 0; yy < dh; ++yy) {
@@ -3011,6 +3060,7 @@ static int g_big_art_direct_note_suppressed = 0;
 static void blit_art112_fast(const uint8_t *src, int x, int y)
 {
     if (!src || !rect_fully_visible(x, y, WAIFU_BIG_W, WAIFU_BIG_H)) return;
+    if (waifu_hw2d_image(src, 0, WAIFU_BIG_W, WAIFU_BIG_H, x, y, WAIFU_BIG_W, WAIFU_BIG_H, 0, 0)) return;
     uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
 #if defined(WAIFU_FM_PCFX)
     /* The V810 word-copy path is only safe when both the source and destination
@@ -3511,6 +3561,12 @@ static int32_t zone_cz(int r) { return (row_z0(r) + row_z0(r+1)) / 2; }
 
 static void draw_grid_line(Camera cam, Vec3 a, Vec3 b, uint8_t c)
 {
+    {
+        WaifuHw3DCamera hc = hw3d_camera(cam);
+        WaifuHw3DVec3 ha = hw3d_v(a), hb = hw3d_v(b);
+        /* shadow_px 1 replicates the second, one-pixel-lower software line. */
+        if (waifu_hw3d_line(&hc, &ha, &hb, c, 1)) return;
+    }
     ScreenPt pa = project_point(cam, a), pb = project_point(cam, b);
     if (pa.ok && pb.ok) {
         line_i(pa.x, pa.y, pb.x, pb.y, c);
@@ -3812,6 +3868,11 @@ static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int fl
    instead of a single distorted square. */
 static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 apex_v, int tile, int flip_u, int rows, int cols)
 {
+    {
+        WaifuHw3DCamera hc = hw3d_camera(cam);
+        WaifuHw3DVec3 t[3] = { hw3d_v(base0), hw3d_v(base1), hw3d_v(apex_v) };
+        if (waifu_hw3d_tri(&hc, t, tile, flip_u, rows, cols, IDX_GOLD_DARK)) return;
+    }
     ScreenPt pa = project_point(cam, base0), pb = project_point(cam, base1), pc = project_point(cam, apex_v);
     if (!pa.ok || !pb.ok || !pc.ok) return;
     if (tile < 0) tile = 0;
@@ -3948,6 +4009,16 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
 {
     if (!src || sw <= 0 || sh <= 0) return;
     if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
+    {
+        /* Screen-space capture net for projected card quads whose callers have
+           no world-space data (the board-card path captures upstream in 3D and
+           never reaches here on hardware platforms). Only the textured fill is
+           handed over; the rim/diagonal line_i calls below capture as 2D lines
+           themselves, preserving the software draw order. */
+        int xy[8] = { p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y };
+        if (waifu_hw2d_image_quad(src, sw, sh, xy, gray)) goto outline;
+    }
+    {
     TexV a = {p0.x, p0.y, 0, 0};
     TexV b = {p1.x, p1.y, Q8_ONE, 0};
     TexV c = {p2.x, p2.y, Q8_ONE, Q8_ONE};
@@ -3959,6 +4030,8 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
     draw_textured_tri_ex(src, sw, sh, a, b, c, gray);
     draw_textured_tri_ex(src, sw, sh, a, c, d, gray);
 #endif
+    }
+outline:
     line_i(p0.x,p0.y,p1.x,p1.y, gray ? IDX_DIM : IDX_CARD_RIM);
     line_i(p1.x,p1.y,p2.x,p2.y, gray ? IDX_DIM : IDX_CARD_RIM);
     line_i(p2.x,p2.y,p3.x,p3.y, gray ? IDX_DIM : IDX_CARD_RIM);
@@ -4077,6 +4150,23 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
     const uint8_t *tex = back ? waifu_assets_card_back() : (support ? waifu_assets_support_face() : card_face_ptr(card_id));
 #endif
     if (back) gray = 0;
+    if (tex) {
+        /* Hardware capture path: rotate the WORLD corners exactly the way the
+           software calls below rotate the projected corners, so UV corner 0
+           ((0,0)) lands on the same physical corner in both renderers. */
+        Vec3 w[4];
+        int rot = defense ? (row <= 1 ? 3 : 1) : (row <= 1 ? 2 : 0);
+        WaifuHw3DVec3 q[4];
+        WaifuHw3DCamera hc = hw3d_camera(cam);
+        int k;
+        w[0] = v3(cx - hw, y, cz - hz);
+        w[1] = v3(cx + hw, y, cz - hz);
+        w[2] = v3(cx + hw, y, cz + hz);
+        w[3] = v3(cx - hw, y, cz + hz);
+        for (k = 0; k < 4; ++k) q[k] = hw3d_v(w[(rot + k) & 3]);
+        if (waifu_hw3d_image_quad(&hc, q, tex, WAIFU_CARD_W, WAIFU_CARD_H,
+                                  gray, gray ? IDX_DIM : IDX_CARD_RIM)) return;
+    }
     ScreenPt p0 = project_point(cam, v3(cx - hw, y, cz - hz));
     ScreenPt p1 = project_point(cam, v3(cx + hw, y, cz - hz));
     ScreenPt p2 = project_point(cam, v3(cx + hw, y, cz + hz));
@@ -4469,6 +4559,15 @@ static int calc_battle_delta(int atk_id, int def_id, int defender_in_defense)
 static void apply_black_dither_fade(int32_t visible)
 {
     visible = q8_clamp(visible, 0, Q8_ONE);
+    if (waifu_hw3d_present()) {
+        /* Hardware-3D platforms fade as palette intensity (like PC-FX/CD32X):
+           the GPU scene lives below the framebuffer, so the host Bayer dither
+           would only darken the 2D overlay layer. The frontend scales the
+           shared palette by waifu_fm_video_fade_q8(), fading every layer
+           (sky, 3D scene, overlay) uniformly. */
+        if ((int)visible < g_video_fade_visible_q8) g_video_fade_visible_q8 = (int)visible;
+        return;
+    }
 #if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
     /* PC-FX/CD32X: do not dither-walk the framebuffer for partial fades.
        These targets apply fade as palette intensity.  CD32X in particular can
@@ -9703,15 +9802,20 @@ static void draw_interactive_reward(void)
 
     if (flipping) return;
 
-    /* Name text: use small font to fit inside the panel, wrapped to the panel
-       width minus padding.  The panel interior is pw - 4 (2px inset on each side),
-       and the small font uses a 7px advance per glyph. */
+    /* Name text: center within the panel.  Short names (fits in one line at
+       small-font 7px advance) are drawn centered directly; long names wrap
+       inside a centered box. */
     {
         const char *name = is_support_card(card) ? support_card_name(card)
                          : (is_monster_card(card) ? waifu_card_names[card] : "???");
         int textw = pw - 8;
         if (textw < 96) textw = 96;
-        draw_wrapped_text_small_box(px + 6, WAIFU_UI_BOTTOM_Y(172), textw, 2, 10, name, IDX_WHITE, IDX_BLACK);
+        int name_px = (int)strlen(name) * 7;
+        if (name_px <= textw) {
+            draw_text_small(px + (pw - name_px) / 2, WAIFU_UI_BOTTOM_Y(174), name, IDX_WHITE, IDX_BLACK);
+        } else {
+            draw_wrapped_text_small_box(px + (pw - textw) / 2, WAIFU_UI_BOTTOM_Y(172), textw, 2, 10, name, IDX_WHITE, IDX_BLACK);
+        }
     }
     draw_centered_text(WAIFU_UI_BOTTOM_Y(192), "ADDED TO STORAGE", IDX_GOLD_HI, IDX_BLACK);
 }
@@ -11008,6 +11112,7 @@ void waifu_fm_init(void)
     cfx_renderer3d_set_texture_atlas(&renderer, waifu_texture_atlas,
                                       WAIFU_TEX_TILE_SIZE,
                                       WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
+    waifu_hw3d_set_texture_atlas(waifu_texture_atlas, WAIFU_TEX_TILE_COUNT);
     invalidate_board_bg_cache();
     invalidate_battle_composite_cache();
     waifu_assets_init();
@@ -11352,6 +11457,19 @@ static void draw_oldschool_fire(int f)
 
     /* Blit low-res intensity to the framebuffer (FIRE_SCALE x) via the colour
        LUT.  At scale 2 this is the original 2x doubler; CD32X blits 4x. */
+    if (waifu_hw2d_active()) {
+        /* Map the intensity buffer through the colour LUT once and hand the
+           whole flame band to the hardware layer as one scaled image. */
+        static uint8_t mapped[FIRE_FW * FIRE_FH];
+        for (y = 0; y < FIRE_FH; ++y) {
+            const uint8_t *src = g_fire_buf + y * FIRE_FW;
+            uint8_t *dst = mapped + y * FIRE_FW;
+            for (x = 0; x < FIRE_FW; ++x) dst[x] = g_fire_lut[src[x]];
+        }
+        waifu_hw2d_image(mapped, 0, FIRE_FW, FIRE_FH, 0, FIRE_Y0,
+                         FIRE_FW * FIRE_SCALE, FIRE_FH * FIRE_SCALE, 0, 0);
+        return;
+    }
     for (y = 0; y < FIRE_FH; ++y) {
         const uint8_t *src = g_fire_buf + y * FIRE_FW;
         uint8_t *d0 = framebuffer + (FIRE_Y0 + y * FIRE_SCALE) * WAIFU_FM_WIDTH;
@@ -11672,6 +11790,16 @@ static int cd32x_floor_tile_flat(int tile, uint8_t *color)
 
 static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b, int32_t tile_size)
 {
+    {
+        WaifuHw3DCamera hc = hw3d_camera(cam);
+        if (waifu_hw3d_floor(&hc, floor_y, tile_a, tile_b, tile_size)) {
+            /* Hardware plane; consume the occluder rect like the software
+               paths so the per-frame arm/consume contract stays intact. */
+            g_floor_occl_x0 = g_floor_occl_x1 = 0;
+            g_floor_occl_y0 = g_floor_occl_y1 = 0;
+            return;
+        }
+    }
     /* Consume the per-frame occluder rect (screens re-arm it every frame) and
        normalize it once: clamped to the screen and pair-aligned OUTWARD (the
        extra covered texel hides under the opaque panel), so the row loop needs
@@ -11944,6 +12072,22 @@ static void draw_map_void_3d(int f)
         Vec3 fwd = v3(cx, cy, cz - s);
         Vec3 bck = v3(cx, cy, cz + s);
         uint8_t cc = (ci & 1) ? IDX_UI_BLUE : IDX_FLAME1;
+        {
+            WaifuHw3DCamera hc = hw3d_camera(cam);
+            WaifuHw3DVec3 htop = hw3d_v(top), hbot = hw3d_v(bot);
+            WaifuHw3DVec3 hlft = hw3d_v(lft), hrgt = hw3d_v(rgt);
+            WaifuHw3DVec3 hfwd = hw3d_v(fwd), hbck = hw3d_v(bck);
+            if (waifu_hw3d_line(&hc, &hlft, &htop, cc, 0)) {
+                waifu_hw3d_line(&hc, &hrgt, &htop, cc, 0);
+                waifu_hw3d_line(&hc, &hlft, &hbot, cc, 0);
+                waifu_hw3d_line(&hc, &hrgt, &hbot, cc, 0);
+                waifu_hw3d_line(&hc, &hfwd, &htop, cc, 0);
+                waifu_hw3d_line(&hc, &hbck, &htop, cc, 0);
+                waifu_hw3d_line(&hc, &hfwd, &hbot, cc, 0);
+                waifu_hw3d_line(&hc, &hbck, &hbot, cc, 0);
+                continue;
+            }
+        }
         ScreenPt st = project_point(cam, top), sb = project_point(cam, bot);
         ScreenPt sl = project_point(cam, lft), sr = project_point(cam, rgt);
         ScreenPt sf = project_point(cam, fwd), sk = project_point(cam, bck);

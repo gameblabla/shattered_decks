@@ -42,3 +42,20 @@ crash.txt
 
 # Bundled emulator source / reference (not part of the game)
 pcfxemu/
+
+# Vendored SDKs / toolchains / reference material (not part of the game)
+/SDL3/
+/SDL_gpu_examples/
+/MegaPCM/
+/PC-FX_Info/
+/PCFX_ADPCM_example/
+/liberis/
+/megadev/
+/pcfx_scsi_sigrok_protocol_decoder/
+/sega-vr-disasm/
+/x68000_playground/
+/.vexp/
+
+# SDL3 host build binary
+/waifu_fm_sdl3
+/waifu_fm_headless_cdrom_2mb
