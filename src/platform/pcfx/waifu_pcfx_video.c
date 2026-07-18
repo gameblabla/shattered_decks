@@ -254,7 +254,15 @@ static inline __attribute__((always_inline)) int title16m_bg_cg_page(int page)
 
 /* Presenter-local copy macro.  This intentionally expands to asm volatile at
    each hot use site instead of relying on an out-of-line helper.  The V810
-   path is compact: 32 bytes per loop, plus a tiny byte tail. */
+   path is compact: 32 bytes per loop, plus a tiny byte tail.
+
+   Both call sites copy the CPU framebuffer into the page shadow (a full frame in
+   pcfx_present_full_upload, a dirty band in pcfx_shadow_copy_rect) -- two
+   separate ~60 KB arrays in different 2 KiB DRAM pages.  The V810 has no data
+   cache and charges +3 cyc per 2 KiB page *change*, so batch all eight loads
+   (r10..r17) THEN all eight stores: one contiguous src run + one contiguous dst
+   run costs ~2 page changes per 32-byte group instead of the ~15 the old
+   interleaved ld/st paid.  (Same fix as main.c copy_u8_fast.) */
 #if defined(__v810__)
 #define pcfx_copy_bytes_inline(dst_arg, src_arg, count_arg) do { \
     int __pcfx_count = (int)(count_arg); \
@@ -270,21 +278,21 @@ static inline __attribute__((always_inline)) int title16m_bg_cg_page(int page)
             "be 2f\n" \
             "1:\n" \
             "ld.w 0[%[src]],r10\n" \
+            "ld.w 4[%[src]],r11\n" \
+            "ld.w 8[%[src]],r12\n" \
+            "ld.w 12[%[src]],r13\n" \
+            "ld.w 16[%[src]],r14\n" \
+            "ld.w 20[%[src]],r15\n" \
+            "ld.w 24[%[src]],r16\n" \
+            "ld.w 28[%[src]],r17\n" \
             "st.w r10,0[%[dst]]\n" \
-            "ld.w 4[%[src]],r10\n" \
-            "st.w r10,4[%[dst]]\n" \
-            "ld.w 8[%[src]],r10\n" \
-            "st.w r10,8[%[dst]]\n" \
-            "ld.w 12[%[src]],r10\n" \
-            "st.w r10,12[%[dst]]\n" \
-            "ld.w 16[%[src]],r10\n" \
-            "st.w r10,16[%[dst]]\n" \
-            "ld.w 20[%[src]],r10\n" \
-            "st.w r10,20[%[dst]]\n" \
-            "ld.w 24[%[src]],r10\n" \
-            "st.w r10,24[%[dst]]\n" \
-            "ld.w 28[%[src]],r10\n" \
-            "st.w r10,28[%[dst]]\n" \
+            "st.w r11,4[%[dst]]\n" \
+            "st.w r12,8[%[dst]]\n" \
+            "st.w r13,12[%[dst]]\n" \
+            "st.w r14,16[%[dst]]\n" \
+            "st.w r15,20[%[dst]]\n" \
+            "st.w r16,24[%[dst]]\n" \
+            "st.w r17,28[%[dst]]\n" \
             "addi 32,%[src],%[src]\n" \
             "addi 32,%[dst],%[dst]\n" \
             "add -1,%[groups]\n" \
@@ -304,7 +312,7 @@ static inline __attribute__((always_inline)) int title16m_bg_cg_page(int page)
             : [dst] "+r" (__pcfx_dst), [src] "+r" (__pcfx_src), \
               [n] "+r" (__pcfx_n), [groups] "=&r" (__pcfx_groups) \
             : \
-            : "r10", "memory"); \
+            : "r10", "r11", "r12", "r13", "r14", "r15", "r16", "r17", "memory"); \
     } \
 } while (0)
 #else
