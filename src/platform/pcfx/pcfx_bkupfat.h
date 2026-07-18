@@ -1,7 +1,7 @@
 #ifndef PCFX_BKUPFAT_H
 #define PCFX_BKUPFAT_H
 
-#include <eris/types.h>
+#include <pcfx/types.h>
 
 #define BKUPFAT_VOL_SIZE      0x8000U
 #define BKUPFAT_SRM_SIZE      0x10000U

@@ -13,6 +13,8 @@ HOSTCC ?= gcc
 PCFX_TARGET ?= waifupcfx
 CDOUT ?= waifupcfx
 
+# The game links libpcfx (installed under $(V810GCC)); its headers live under
+# pcfx/ in $(V810GCC)/include, plus libpcfx's own eris/cd.h + eris/scsi.h.
 INCLUDES := \
   -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated -Isrc/platform/pcfx \
   -I$(V810GCC)/include -I$(V810GCC)/$(PREFIX)/include
@@ -31,7 +33,7 @@ else
 CFLAGS += -DPLATFORM=1 -DWAIFU_FM_PCFX -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_USE_CART_ROM -DWAIFU_ASSET_NO_STDIO $(INCLUDES)
 endif
 LDFLAGS ?= -L$(V810GCC)/lib -L$(V810GCC)/$(PREFIX)/lib -L$(V810GCC)/lib/gcc/$(PREFIX)/4.9.4 $(V810GCC)/$(PREFIX)/lib/crt0.o --gc-sections
-LIBS ?= -leris -lc -lsim -lnosys -lgcc
+LIBS ?= -lpcfx -lc -lsim -lnosys -lgcc
 
 PCFX_SRCS_C := \
   src/platform/pcfx/pcfx_main.c \

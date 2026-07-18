@@ -3,8 +3,8 @@
 #include "pcfx_sfx_adpcm.h"
 #include "sounds.h"
 
-#include <eris/types.h>
-#include <eris/low/soundbox.h>
+#include <pcfx/types.h>
+#include <pcfx/sound.h>
 #include <stdint.h>
 
 #if defined(__GNUC__)
@@ -230,11 +230,11 @@ static uint8_t lerp_u8(uint8_t a, uint8_t b, uint8_t frame, uint8_t duration)
 static void psg_channel_silence(uint8_t ch, uint8_t guard_frames)
 {
     if (ch >= WAIFU_PCFX_PSG_CHANNELS) return;
-    eris_low_psg_set_channel(ch);
-    eris_low_psg_set_noise(0, 0);
-    eris_low_psg_set_freq(0);
-    eris_low_psg_set_balance(0, 0);
-    eris_low_psg_set_volume(0, 0, 0);
+    psg_set_channel(ch);
+    psg_set_noise(0, 0);
+    psg_set_freq(0);
+    psg_set_balance(0, 0);
+    psg_set_volume(0, 0, 0);
     g_psg_off_guard[ch] = guard_frames;
 }
 
@@ -253,10 +253,10 @@ static void psg_channel_prepare_start(uint8_t ch)
 static void psg_load_wave(uint8_t ch, const uint8_t *wave)
 {
     int i;
-    eris_low_psg_set_channel(ch);
-    eris_low_psg_set_volume(0, 0, 0);
-    eris_low_psg_set_noise(0, 0);
-    for (i = 0; i < 32; ++i) eris_low_psg_waveform_data((uint8_t)(wave[i] & 31u));
+    psg_set_channel(ch);
+    psg_set_volume(0, 0, 0);
+    psg_set_noise(0, 0);
+    for (i = 0; i < 32; ++i) psg_waveform_data((uint8_t)(wave[i] & 31u));
 }
 
 #define PSG_TONE(w,d,h0,h1,v0,v1,l,r) \
@@ -532,25 +532,25 @@ static void WAIFU_PCFX_UNUSED waifu_pcfx_sfx_pump_psg(void)
         }
         if (!v->active) continue;
         vol = lerp_u8(v->volume0, v->volume1, v->frame, v->duration);
-        eris_low_psg_set_channel(v->channel);
-        eris_low_psg_set_balance(v->pan_l, v->pan_r);
+        psg_set_channel(v->channel);
+        psg_set_balance(v->pan_l, v->pan_r);
         if (v->noise) {
-            eris_low_psg_set_freq(0);
-            eris_low_psg_set_noise(lerp_u8(v->noise0, v->noise1, v->frame, v->duration), 1);
+            psg_set_freq(0);
+            psg_set_noise(lerp_u8(v->noise0, v->noise1, v->frame, v->duration), 1);
         } else {
-            eris_low_psg_set_noise(0, 0);
-            eris_low_psg_set_freq(lerp_u16(v->period0, v->period1, v->frame, v->duration));
+            psg_set_noise(0, 0);
+            psg_set_freq(lerp_u16(v->period0, v->period1, v->frame, v->duration));
         }
-        eris_low_psg_set_volume(vol, vol ? 1 : 0, 0);
+        psg_set_volume(vol, vol ? 1 : 0, 0);
         ++v->frame;
     }
     for (i = 0; i < WAIFU_PCFX_PSG_CHANNELS; ++i) {
         if (g_psg_off_guard[i]) {
-            eris_low_psg_set_channel((uint8_t)i);
-            eris_low_psg_set_noise(0, 0);
-            eris_low_psg_set_freq(0);
-            eris_low_psg_set_balance(0, 0);
-            eris_low_psg_set_volume(0, 0, 0);
+            psg_set_channel((uint8_t)i);
+            psg_set_noise(0, 0);
+            psg_set_freq(0);
+            psg_set_balance(0, 0);
+            psg_set_volume(0, 0, 0);
             --g_psg_off_guard[i];
         }
     }
@@ -582,15 +582,15 @@ static inline void king_reg_w(uint16_t reg, uint32_t value)
 
 static void waifu_pcfx_adpcm_mute(void)
 {
-    eris_low_adpcm_set_volume(0, 0, 0);
-    eris_low_adpcm_set_volume(1, 0, 0);
+    adpcm_set_volume(0, 0, 0);
+    adpcm_set_volume(1, 0, 0);
 }
 
 static void waifu_pcfx_adpcm_stop_hw(void)
 {
     waifu_pcfx_adpcm_mute();
-    eris_low_adpcm_set_control(ADPCM_RATE_16000, 1, 1, 1, 1);
-    eris_low_adpcm_set_control(ADPCM_RATE_16000, 1, 1, 0, 0);
+    adpcm_set_control(ADPCM_RATE_16000, 1, 1, 1, 1);
+    adpcm_set_control(ADPCM_RATE_16000, 1, 1, 0, 0);
     king_reg_h(0x50u, 0u);
     king_reg_h(0x51u, 0u); /* ch0: sequential, no interrupts */
     king_reg_h(0x52u, 0u); /* ch1: sequential, no interrupts */
@@ -631,15 +631,15 @@ void waifu_pcfx_adpcm_sample_play(int effect)
     volume = m->volume ? m->volume : 63u;
 
     waifu_pcfx_adpcm_mute();
-    eris_low_adpcm_set_control(ADPCM_RATE_16000, 1, 1, 1, 0);
-    eris_low_adpcm_set_control(ADPCM_RATE_16000, 1, 1, 0, 0);
+    adpcm_set_control(ADPCM_RATE_16000, 1, 1, 1, 0);
+    adpcm_set_control(ADPCM_RATE_16000, 1, 1, 0, 0);
 
     king_reg_h(0x50u, 0u);
     king_reg_h(0x51u, 0u);
     king_reg_h(0x58u, (uint16_t)(start >> 8));
     king_reg_w(0x59u, end);
-    eris_low_adpcm_set_volume(0, volume, volume);
-    eris_low_adpcm_set_volume(1, volume, volume);
+    adpcm_set_volume(0, volume, volume);
+    adpcm_set_volume(1, volume, volume);
     
     play = (uint16_t)(1u | 4u); /* ch0 + 16 kHz rate bits */
     king_reg_h(0x50u, play);
@@ -649,9 +649,9 @@ static void waifu_pcfx_sfx_init(void)
 {
     int i;
     g_adpcm_loaded = 0;
-    eris_low_psg_set_main_volume(15, 15);
-    eris_low_psg_set_lfo_control(0, 0);
-    eris_low_psg_set_lfo_freq(0);
+    psg_set_main_volume(15, 15);
+    psg_set_lfo_control(0, 0);
+    psg_set_lfo_freq(0);
     for (i = 0; i < WAIFU_PCFX_PSG_CHANNELS; ++i) {
         psg_load_wave((uint8_t)i, g_psg_wave_soft);
         psg_channel_off((uint8_t)i);

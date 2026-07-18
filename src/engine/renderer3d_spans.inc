@@ -8,7 +8,7 @@
 extern uint8_t *cfx_game_framebuffer(void);
 extern int cfx_pcfx_current_page_word_offset(void);
 extern int cfx_pcfx_current_kram_page_word_offset;
-extern void eris_king_set_kram_write(uint32_t addr, int incr);
+extern void king_set_kram_write(uint32_t addr, int incr);
 #endif
 
 /* Whether this render targets the live direct-VRAM (KRAM) page. The shared core
@@ -38,7 +38,7 @@ static inline __attribute__((always_inline)) void cfx_pcfx_kram_select_data_regi
 
 static inline __attribute__((always_inline)) void cfx_pcfx_kram_seek_frame_word(int32_t frame_word_index)
 {
-    /* Inline eris_king_set_kram_write(addr, 1) plus select KRAM data register.
+    /* Inline king_set_kram_write(addr, 1) plus select KRAM data register.
        The scanline rasterizer calls this once per emitted row, so avoiding the
        liberis function call matters on V810.  KING register 0x0D receives the
        write address ORed with increment<<18; register 0x0E is the data port. */

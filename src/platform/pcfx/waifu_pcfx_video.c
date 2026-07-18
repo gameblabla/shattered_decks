@@ -1,11 +1,10 @@
 #include "waifu_pcfx_video.h"
 #include "fastking.h"
 
-#include <eris/king.h>
-#include <eris/tetsu.h>
-#include <eris/7up.h>
-#include <eris/low/7up.h>
-#include <eris/v810.h>
+#include <pcfx/king.h>
+#include <pcfx/tetsu.h>
+#include <pcfx/vdc.h>
+#include <pcfx/v810.h>
 #include <stdint.h>
 #include <string.h>
 #include "waifu_assets.h"
@@ -16,6 +15,61 @@
 #include "title_asset.h"
 #include "rainbow_bg_assets.h"
 #include "font_menudata.h"
+
+/* --- liberis 7up -> libpcfx VDC compatibility helpers ------------------------
+   libpcfx's VDC layer (vdc_setreg + friends) is register-oriented and, unlike
+   the old liberis eris_low_sup_* API, has no set_control / set_video_mode /
+   set_access_width helpers and cannot read registers back.  These small wrappers
+   reproduce exactly what liberis wrote (verified against liberis src/low/7up.S)
+   so the migration keeps identical VDC programming.  set_control needs a
+   read-modify-write of CR (reg 5) to preserve the interrupt-enable bits, so a
+   software shadow of CR is kept here (init 0 == post-vdc_init hardware state). */
+#ifndef SUP_LOW_MAP_64X32
+#define SUP_LOW_MAP_64X32 1  /* liberis sup_low_mapsize: 64x32 tile virtual map */
+#endif
+
+static uint16_t g_waifu_vdc_cr[2] = { 0, 0 };
+
+static void waifu_vdc_setreg(int chip, int reg, int value)
+{
+    if (reg == 0x05)
+        g_waifu_vdc_cr[chip & 1] = (uint16_t)value;
+    vdc_setreg(chip, reg, value);
+}
+
+static void waifu_vdc_set_control(int chip, int increment, int bg_show, int spr_show)
+{
+    /* Keep everything except the increment field (bits 11-12) and the BG/sprite
+       show bits (7/6); mirrors liberis' 0xE73F keep-mask read-modify-write. */
+    uint16_t cr = (uint16_t)((g_waifu_vdc_cr[chip & 1] & 0xE73F)
+                             | ((increment & 3) << 11)
+                             | ((bg_show   & 1) << 7)
+                             | ((spr_show  & 1) << 6));
+    g_waifu_vdc_cr[chip & 1] = cr;
+    vdc_setreg(chip, 0x05, cr);
+}
+
+static void waifu_vdc_set_video_mode(int chip, int hdispstrt, int hsyncwid,
+        int hdispend, int hdispwid, int vdispstrt, int vsyncwid,
+        int vdispwid, int vdispend)
+{
+    vdc_setreg(chip, 0x0A, ((hdispstrt & 0xFF) << 8) | (hsyncwid & 0xFF)); /* HSR */
+    vdc_setreg(chip, 0x0B, ((hdispend  & 0xFF) << 8) | (hdispwid & 0xFF)); /* HDR */
+    vdc_setreg(chip, 0x0C, ((vdispstrt & 0xFF) << 8) | (vsyncwid & 0xFF)); /* VPR */
+    vdc_setreg(chip, 0x0D, vdispwid & 0xFFFF);                             /* VDR */
+    vdc_setreg(chip, 0x0E, vdispend & 0xFFFF);                             /* VCR */
+}
+
+static void waifu_vdc_set_access_width(int chip, int cg_mode, int mapsize,
+                                       int spr_px_w, int vram_px_w)
+{
+    vdc_setreg(chip, 0x09,                                                 /* MWR */
+               ((cg_mode & 1) << 7)
+               | (mapsize << 4)
+               | ((spr_px_w & 3) << 2)
+               | (vram_px_w & 3));
+}
+/* --------------------------------------------------------------------------- */
 
 #define WAIFU_PCFX_W WAIFU_FM_WIDTH
 #define WAIFU_PCFX_H WAIFU_FM_HEIGHT
@@ -279,7 +333,7 @@ static inline __attribute__((always_inline)) void pcfx_king_set_bg_kram_page_inl
         : [ps] "r" (ps)
         : "memory");
 #else
-    eris_king_set_kram_pages(0, page ? 1 : 0, g_king_page_setting_extra ? 1 : 0, 1);
+    king_set_kram_pages(0, page ? 1 : 0, g_king_page_setting_extra ? 1 : 0, 1);
 #endif
 }
 
@@ -288,7 +342,7 @@ static inline __attribute__((always_inline)) void pcfx_king_set_bg0_page_inline(
 #if defined(__v810__)
     uint32_t page = (uint32_t)cg_page;
     uint32_t reg;
-    /* Inline eris_king_set_bat_cg_addr(KING_BG0,0,page) and the matching
+    /* Inline king_set_bat_cg_addr(KING_BG0,0,page) and the matching
        BG0SUB call.  This runs every presented frame, so avoiding two jal/rts
        pairs is worthwhile and the sequence is still tiny. */
     __asm__ volatile (
@@ -308,8 +362,8 @@ static inline __attribute__((always_inline)) void pcfx_king_set_bg0_page_inline(
         : [page] "r" (page)
         : "memory");
 #else
-    eris_king_set_bat_cg_addr(KING_BG0, 0, (uint32_t)cg_page);
-    eris_king_set_bat_cg_addr(KING_BG0SUB, 0, (uint32_t)cg_page);
+    king_set_bat_cg_addr(KING_BG0, 0, (uint32_t)cg_page);
+    king_set_bat_cg_addr(KING_BG0SUB, 0, (uint32_t)cg_page);
 #endif
 }
 
@@ -363,6 +417,13 @@ static inline __attribute__((always_inline)) unsigned pcfx_row_block_masks(const
     for (int b = 0; b < WAIFU_PCFX_DIRTY_BLOCKS_X; b += 2) {
         uint32_t c0 = c[0], c1 = c[1], c2 = c[2], c3 = c[3];
         uint32_t c4 = c[4], c5 = c[5], c6 = c[6], c7 = c[7];
+        /* Compiler barrier: force all eight `cur` loads to be emitted before the
+           eight `old` loads.  Without it the V810 scheduler re-interleaves them
+           (cur,old,cur,old,...), which reintroduces the 2 KiB DRAM page
+           ping-pong this batching exists to avoid.  With the barrier each chunk
+           is one contiguous cur run then one contiguous old run: ~2 page
+           changes instead of ~16. */
+        __asm__ volatile("" ::: "memory");
         uint32_t o0 = o[0], o1 = o[1], o2 = o[2], o3 = o[3];
         uint32_t o4 = o[4], o5 = o[5], o6 = o[6], o7 = o[7];
         if ((c0 ^ o0) | (c1 ^ o1) | (c2 ^ o2) | (c3 ^ o3)) {
@@ -1059,7 +1120,7 @@ static void king_seek_write_words(uint32_t word_addr)
     uint32_t addr = word_addr | (1u << 18);
     uint32_t lo = addr & 0xffffu;
     uint32_t hi = addr >> 16;
-    /* eris_king_set_kram_write() uses out.w.  For physical KRAM page 1 we
+    /* king_set_kram_write() uses out.w.  For physical KRAM page 1 we
        need bit 31 of KRAMWA to survive exactly, so write the 32-bit KRAMWA
        register as explicit low/high halfwords before streaming register 0x0E. */
     __asm__ volatile (
@@ -1071,7 +1132,7 @@ static void king_seek_write_words(uint32_t word_addr)
         : [lo] "r" (lo), [hi] "r" (hi)
         : "memory");
 #else
-    eris_king_set_kram_write(word_addr, 1);
+    king_set_kram_write(word_addr, 1);
 #endif
 }
 
@@ -1243,14 +1304,14 @@ static void pcfx_vdc_overlay_upload_fade_tile(int level)
 {
     if (level < 0) level = 0;
     if (level > 16) level = 16;
-    eris_low_sup_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_FADE_TILE_BASE * 16);
-    for (int row = 0; row < 16; ++row) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
+    vdc_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_FADE_TILE_BASE * 16);
+    for (int row = 0; row < 16; ++row) vdc_vram_write(VDC_CHIP_0, 0x0000);
 
-    eris_low_sup_set_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_FADE_TILE_BASE * 16);
+    vdc_set_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_FADE_TILE_BASE * 16);
     for (int row = 0; row < 8; ++row) {
-        eris_low_sup_vram_write(VDC_CHIP_1, pcfx_vdc_fade_pattern_row(level, row));
+        vdc_vram_write(VDC_CHIP_1, pcfx_vdc_fade_pattern_row(level, row));
     }
-    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
+    for (int row = 0; row < 8; ++row) vdc_vram_write(VDC_CHIP_1, 0x0000);
 }
 
 static void pcfx_vdc_overlay_fill_fade_map(void)
@@ -1258,10 +1319,10 @@ static void pcfx_vdc_overlay_fill_fade_map(void)
     uint16_t tile = (uint16_t)WAIFU_PCFX_VDC_FADE_TILE_BASE;
     for (int row = 0; row < WAIFU_PCFX_VDC_MAP_H; ++row) {
         int addr = row * WAIFU_PCFX_VDC_MAP_W;
-        eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, tile);
-        eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
+        vdc_set_vram_write(VDC_CHIP_0, addr);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) vdc_vram_write(VDC_CHIP_0, tile);
+        vdc_set_vram_write(VDC_CHIP_1, addr);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) vdc_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
     }
     g_vdc_overlay_fade_map_active = 1;
 }
@@ -1295,24 +1356,24 @@ static void pcfx_vdc_overlay_upload_font(void)
        foreground.  In pcfxemu's dual-VDC BG-combo path, a low nibble of zero
        leaves the KING/Rainbow layer visible, so the 16M title image never has
        to be rewritten just to blink text. */
-    eris_low_sup_set_vram_write(VDC_CHIP_0, 0);
-    for (int j = 0; j < 16; ++j) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
-    eris_low_sup_set_vram_write(VDC_CHIP_1, 0);
-    for (int j = 0; j < 16; ++j) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
+    vdc_set_vram_write(VDC_CHIP_0, 0);
+    for (int j = 0; j < 16; ++j) vdc_vram_write(VDC_CHIP_0, 0x0000);
+    vdc_set_vram_write(VDC_CHIP_1, 0);
+    for (int j = 0; j < 16; ++j) vdc_vram_write(VDC_CHIP_1, 0x0000);
 
-    eris_low_sup_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_FONT_TILE_BASE * 16);
+    vdc_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_FONT_TILE_BASE * 16);
     for (int i = WAIFU_PCFX_VDC_FONT_FIRST; i <= WAIFU_PCFX_VDC_FONT_LAST; ++i) {
-        for (int j = 0; j < 16; ++j) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
+        for (int j = 0; j < 16; ++j) vdc_vram_write(VDC_CHIP_0, 0x0000);
     }
 
-    eris_low_sup_set_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_FONT_TILE_BASE * 16);
+    vdc_set_vram_write(VDC_CHIP_1, WAIFU_PCFX_VDC_FONT_TILE_BASE * 16);
     for (int ch = WAIFU_PCFX_VDC_FONT_FIRST; ch <= WAIFU_PCFX_VDC_FONT_LAST; ++ch) {
         for (int row = 0; row < 8; ++row) {
             uint8_t fg = pcfx_font_row((unsigned char)ch, row);
             uint8_t outline = pcfx_outline_row((unsigned char)ch, row);
-            eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(((uint16_t)fg << 8) | outline));
+            vdc_vram_write(VDC_CHIP_1, (uint16_t)(((uint16_t)fg << 8) | outline));
         }
-        for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
+        for (int row = 0; row < 8; ++row) vdc_vram_write(VDC_CHIP_1, 0x0000);
     }
 }
 
@@ -1326,10 +1387,10 @@ static void pcfx_vdc_overlay_clear_rect(int tx, int ty, int w, int h)
 
     for (int row = 0; row < h; ++row) {
         int addr = (ty + row) * WAIFU_PCFX_VDC_MAP_W + tx;
-        eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
-        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_BLANK_TILE);
-        eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
-        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
+        vdc_set_vram_write(VDC_CHIP_0, addr);
+        for (int col = 0; col < w; ++col) vdc_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_BLANK_TILE);
+        vdc_set_vram_write(VDC_CHIP_1, addr);
+        for (int col = 0; col < w; ++col) vdc_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
     }
 }
 
@@ -1340,7 +1401,7 @@ static void pcfx_vdc_overlay_clear_all(void)
 
 static void pcfx_vdc_select_overlay_palette(void)
 {
-    eris_tetsu_set_7up_palette(WAIFU_PCFX_VDC_PALETTE_BASE, WAIFU_PCFX_VDC_PALETTE_BASE);
+    tetsu_set_vdc_palette(WAIFU_PCFX_VDC_PALETTE_BASE, WAIFU_PCFX_VDC_PALETTE_BASE);
 }
 
 static uint16_t pcfx_vdc_palette_entry(uint16_t index)
@@ -1351,23 +1412,23 @@ static uint16_t pcfx_vdc_palette_entry(uint16_t index)
 static void pcfx_vdc_restore_overlay_palette(void)
 {
     pcfx_vdc_select_overlay_palette();
-    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_BLACK), 0x0088);
-    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_WHITE), 0xE088);
-    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_GOLD),  0xB468);
-    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_RED),   0x5F0F);
-    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_PANEL), rgb888_to_pcfx_yuv(12, 18, 28));
-    eris_tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_EDGE),  rgb888_to_pcfx_yuv(210, 172, 90));
+    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_BLACK), 0x0088);
+    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_WHITE), 0xE088);
+    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_GOLD),  0xB468);
+    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_RED),   0x5F0F);
+    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_PANEL), rgb888_to_pcfx_yuv(12, 18, 28));
+    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_EDGE),  rgb888_to_pcfx_yuv(210, 172, 90));
 }
 
 static void pcfx_vdc_sanctum_upload_solid_tile(uint16_t tile, uint16_t vdc0_row, uint16_t vdc1_row)
 {
-    eris_low_sup_set_vram_write(VDC_CHIP_0, tile * 16);
-    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_0, vdc0_row);
-    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_0, 0x0000);
+    vdc_set_vram_write(VDC_CHIP_0, tile * 16);
+    for (int row = 0; row < 8; ++row) vdc_vram_write(VDC_CHIP_0, vdc0_row);
+    for (int row = 0; row < 8; ++row) vdc_vram_write(VDC_CHIP_0, 0x0000);
 
-    eris_low_sup_set_vram_write(VDC_CHIP_1, tile * 16);
-    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, vdc1_row);
-    for (int row = 0; row < 8; ++row) eris_low_sup_vram_write(VDC_CHIP_1, 0x0000);
+    vdc_set_vram_write(VDC_CHIP_1, tile * 16);
+    for (int row = 0; row < 8; ++row) vdc_vram_write(VDC_CHIP_1, vdc1_row);
+    for (int row = 0; row < 8; ++row) vdc_vram_write(VDC_CHIP_1, 0x0000);
 }
 
 static void pcfx_vdc_sanctum_upload_tiles(void)
@@ -1399,10 +1460,10 @@ static WaifuPcfxRainbowBgAsset pcfx_rainbow_asset_for_backdrop(WaifuPcfxSanctumB
 static void pcfx_vdc_sanctum_clear_all(void)
 {
     for (int row = 0; row < WAIFU_PCFX_VDC_MAP_H; ++row) {
-        eris_low_sup_set_vram_write(VDC_CHIP_0, row * WAIFU_PCFX_VDC_MAP_W);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_BLANK_TILE);
-        eris_low_sup_set_vram_write(VDC_CHIP_1, row * WAIFU_PCFX_VDC_MAP_W);
-        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
+        vdc_set_vram_write(VDC_CHIP_0, row * WAIFU_PCFX_VDC_MAP_W);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) vdc_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_BLANK_TILE);
+        vdc_set_vram_write(VDC_CHIP_1, row * WAIFU_PCFX_VDC_MAP_W);
+        for (int col = 0; col < WAIFU_PCFX_VDC_MAP_W; ++col) vdc_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
     }
 }
 
@@ -1417,13 +1478,13 @@ static void pcfx_vdc_sanctum_panel(int tx, int ty, int w, int h)
     for (int row = 0; row < h; ++row) {
         int addr = (ty + row) * WAIFU_PCFX_VDC_MAP_W + tx;
         int edge_row = (row == 0 || row == h - 1);
-        eris_low_sup_set_vram_write(VDC_CHIP_0, addr);
+        vdc_set_vram_write(VDC_CHIP_0, addr);
         for (int col = 0; col < w; ++col) {
             int edge_col = (col == 0 || col == w - 1);
-            eris_low_sup_vram_write(VDC_CHIP_0, (edge_row || edge_col) ? WAIFU_PCFX_VDC_SANCTUM_TILE_EDGE : WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL);
+            vdc_vram_write(VDC_CHIP_0, (edge_row || edge_col) ? WAIFU_PCFX_VDC_SANCTUM_TILE_EDGE : WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL);
         }
-        eris_low_sup_set_vram_write(VDC_CHIP_1, addr);
-        for (int col = 0; col < w; ++col) eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
+        vdc_set_vram_write(VDC_CHIP_1, addr);
+        for (int col = 0; col < w; ++col) vdc_vram_write(VDC_CHIP_1, (uint16_t)(WAIFU_PCFX_VDC_BLANK_TILE | 0x8000));
     }
 }
 
@@ -1435,16 +1496,16 @@ static void pcfx_vdc_sanctum_print(int tx, int ty, const char *str, int max_len)
     if (max_len > WAIFU_PCFX_VDC_MAP_W - tx) max_len = WAIFU_PCFX_VDC_MAP_W - tx;
     len = pcfx_strlen_limited(str, max_len);
 
-    eris_low_sup_set_vram_write(VDC_CHIP_0, ty * WAIFU_PCFX_VDC_MAP_W + tx);
-    for (int i = 0; i < max_len; ++i) eris_low_sup_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL);
-    eris_low_sup_set_vram_write(VDC_CHIP_1, ty * WAIFU_PCFX_VDC_MAP_W + tx);
+    vdc_set_vram_write(VDC_CHIP_0, ty * WAIFU_PCFX_VDC_MAP_W + tx);
+    for (int i = 0; i < max_len; ++i) vdc_vram_write(VDC_CHIP_0, WAIFU_PCFX_VDC_SANCTUM_TILE_PANEL);
+    vdc_set_vram_write(VDC_CHIP_1, ty * WAIFU_PCFX_VDC_MAP_W + tx);
     for (int i = 0; i < max_len; ++i) {
         unsigned char ch = (i < len) ? (unsigned char)str[i] : (unsigned char)' ';
         uint16_t tile = WAIFU_PCFX_VDC_BLANK_TILE;
         if (ch >= WAIFU_PCFX_VDC_FONT_FIRST && ch <= WAIFU_PCFX_VDC_FONT_LAST) {
             tile = (uint16_t)(WAIFU_PCFX_VDC_FONT_TILE_BASE + (ch - WAIFU_PCFX_VDC_FONT_FIRST));
         }
-        eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
+        vdc_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
     }
 }
 
@@ -1578,16 +1639,16 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
     g_vdc_overlay_applied_mode = WAIFU_PCFX_OVERLAY_OFF;
     g_vdc_overlay_applied_fade_level = -1;
 
-    eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
-    eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
-    eris_low_sup_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
-    eris_low_sup_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
-    eris_low_sup_set_scroll(VDC_CHIP_0, 0, 0);
-    eris_low_sup_set_scroll(VDC_CHIP_1, 0, 0);
-    eris_low_sup_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
-    eris_low_sup_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
-    eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
-    eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
+    waifu_vdc_set_control(VDC_CHIP_0, 0, 1, 0);
+    waifu_vdc_set_control(VDC_CHIP_1, 0, 1, 0);
+    waifu_vdc_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
+    waifu_vdc_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
+    vdc_set_scroll(VDC_CHIP_0, 0, 0);
+    vdc_set_scroll(VDC_CHIP_1, 0, 0);
+    waifu_vdc_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+    waifu_vdc_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+    waifu_vdc_setreg(VDC_CHIP_0, 5, 0x88);
+    waifu_vdc_setreg(VDC_CHIP_1, 5, 0x80);
 
     pcfx_vdc_select_overlay_palette();
     pcfx_vdc_restore_overlay_palette();
@@ -1600,10 +1661,10 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
     }
     pcfx_rainbow_set_hscroll(g_rainbow_hscroll_requested ? g_rainbow_hscroll : 0);
     g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
-    eris_king_set_bg_prio(KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
-    eris_king_set_bg_mode(KING_BGMODE_NONE, 0, 0, 0);
-    eris_tetsu_set_priorities(7, 7, 0, 0, 0, 0, 6);
-    eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
+    king_set_bg_prio(KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+    king_set_bg_mode(KING_BGMODE_NONE, 0, 0, 0);
+    tetsu_set_priorities(7, 7, 0, 0, 0, 0, 6);
+    tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_16, TETSU_COLORS_16,
                               1, 1, 0, 0, 0, 0, 1);
     g_sanctum_active = 1;
@@ -1638,26 +1699,26 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
     g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
     pcfx_king_set_bg_kram_page_inline(0);
     if (!g_rainbow_backdrop_active || backdrop_changed) {
-        eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
-        eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
-        eris_low_sup_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
-        eris_low_sup_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
-        eris_low_sup_set_scroll(VDC_CHIP_0, 0, 0);
-        eris_low_sup_set_scroll(VDC_CHIP_1, 0, 0);
-        eris_low_sup_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
-        eris_low_sup_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
-        eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
-        eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
+        waifu_vdc_set_control(VDC_CHIP_0, 0, 1, 0);
+        waifu_vdc_set_control(VDC_CHIP_1, 0, 1, 0);
+        waifu_vdc_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
+        waifu_vdc_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
+        vdc_set_scroll(VDC_CHIP_0, 0, 0);
+        vdc_set_scroll(VDC_CHIP_1, 0, 0);
+        waifu_vdc_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+        waifu_vdc_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+        waifu_vdc_setreg(VDC_CHIP_0, 5, 0x88);
+        waifu_vdc_setreg(VDC_CHIP_1, 5, 0x80);
         pcfx_vdc_overlay_init(video);
-        eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
-        eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
+        king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+        king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
         pcfx_king_set_bg0_page_inline(page_bat_offset(0));
         /* The RAINBOW still itself cannot be palette-faded, so the fade mask
            is drawn by VDC tiles.  Keep VDC in front of both KING BG0 and
            RAINBOW; transparent VDC tile pixels still let the scene show
            normally once the fade level reaches zero. */
-        eris_tetsu_set_priorities(7, 7, 6, 0, 0, 0, 5);
-        eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
+        tetsu_set_priorities(7, 7, 6, 0, 0, 0, 5);
+        tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                                   TETSU_COLORS_16, TETSU_COLORS_16,
                                   1, 1, 1, 0, 0, 0, 1);
     }
@@ -1678,13 +1739,13 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
     pcfx_rainbow_stop_transfer();
     g_king_page_setting_extra = 0;
     pcfx_king_set_bg_kram_page_inline(0);
-    eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
-    eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
-    eris_tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
-    eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
+    king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+    king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
+    tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
+    tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_256, TETSU_COLORS_16,
                               1, 0, 1, 0, 0, 0, 0);
-    eris_tetsu_set_7up_palette(0, 0);
+    tetsu_set_vdc_palette(0, 0);
 #if WAIFU_PCFX_DIRTY_PRESENT
     video->page_shadow_valid[0] = 0;
     video->page_shadow_valid[1] = 0;
@@ -1719,24 +1780,24 @@ static void pcfx_vdc_overlay_print(int tx, int ty, const char *str, int max_len)
     if (max_len > WAIFU_PCFX_VDC_MAP_W - tx) max_len = WAIFU_PCFX_VDC_MAP_W - tx;
     len = pcfx_strlen_limited(str, max_len);
 
-    eris_low_sup_set_vram_write(VDC_CHIP_0, ty * WAIFU_PCFX_VDC_MAP_W + tx);
+    vdc_set_vram_write(VDC_CHIP_0, ty * WAIFU_PCFX_VDC_MAP_W + tx);
     for (int i = 0; i < max_len; ++i) {
         unsigned char ch = (i < len) ? (unsigned char)str[i] : (unsigned char)' ';
         uint16_t tile = WAIFU_PCFX_VDC_BLANK_TILE;
         if (ch >= WAIFU_PCFX_VDC_FONT_FIRST && ch <= WAIFU_PCFX_VDC_FONT_LAST) {
             tile = (uint16_t)(WAIFU_PCFX_VDC_FONT_TILE_BASE + (ch - WAIFU_PCFX_VDC_FONT_FIRST));
         }
-        eris_low_sup_vram_write(VDC_CHIP_0, tile);
+        vdc_vram_write(VDC_CHIP_0, tile);
     }
 
-    eris_low_sup_set_vram_write(VDC_CHIP_1, ty * WAIFU_PCFX_VDC_MAP_W + tx);
+    vdc_set_vram_write(VDC_CHIP_1, ty * WAIFU_PCFX_VDC_MAP_W + tx);
     for (int i = 0; i < max_len; ++i) {
         unsigned char ch = (i < len) ? (unsigned char)str[i] : (unsigned char)' ';
         uint16_t tile = WAIFU_PCFX_VDC_BLANK_TILE;
         if (ch >= WAIFU_PCFX_VDC_FONT_FIRST && ch <= WAIFU_PCFX_VDC_FONT_LAST) {
             tile = (uint16_t)(WAIFU_PCFX_VDC_FONT_TILE_BASE + (ch - WAIFU_PCFX_VDC_FONT_FIRST));
         }
-        eris_low_sup_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
+        vdc_vram_write(VDC_CHIP_1, (uint16_t)(tile | 0x8000));
     }
 }
 
@@ -1765,14 +1826,14 @@ static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video)
 {
     if (!video) return;
 
-    eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
-    eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
-    eris_low_sup_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
-    eris_low_sup_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
-    eris_low_sup_set_scroll(VDC_CHIP_0, 0, 0);
-    eris_low_sup_set_scroll(VDC_CHIP_1, 0, 0);
-    eris_low_sup_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
-    eris_low_sup_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+    waifu_vdc_set_control(VDC_CHIP_0, 0, 1, 0);
+    waifu_vdc_set_control(VDC_CHIP_1, 0, 1, 0);
+    waifu_vdc_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
+    waifu_vdc_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
+    vdc_set_scroll(VDC_CHIP_0, 0, 0);
+    vdc_set_scroll(VDC_CHIP_1, 0, 0);
+    waifu_vdc_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+    waifu_vdc_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
 
     pcfx_vdc_restore_overlay_palette();
 
@@ -1784,8 +1845,8 @@ static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video)
     g_vdc_overlay_fade_level = 16;
     g_vdc_overlay_applied_fade_level = -1;
     pcfx_vdc_overlay_fill_fade_map();
-    eris_low_sup_setreg(VDC_CHIP_0, 5, 0x88);
-    eris_low_sup_setreg(VDC_CHIP_1, 5, 0x80);
+    waifu_vdc_setreg(VDC_CHIP_0, 5, 0x88);
+    waifu_vdc_setreg(VDC_CHIP_1, 5, 0x80);
 
     video->vdc_overlay_ready = 1;
     g_vdc_overlay_applied_mode = WAIFU_PCFX_OVERLAY_OFF;
@@ -2031,12 +2092,12 @@ void waifu_pcfx_video_overlay_clear(void)
 static void set_king_16m_title_video(void)
 {
     /* VDC BG must be in front of KING BG0 for prompt/menu text. */
-    eris_tetsu_set_priorities(7, 0, 6, 0, 0, 0, 0);
+    tetsu_set_priorities(7, 0, 6, 0, 0, 0, 0);
     pcfx_vdc_select_overlay_palette();
-    eris_tetsu_set_king_palette(0, 0, 0, 0);
-    eris_tetsu_set_rainbow_palette(0);
+    tetsu_set_king_palette(0, 0, 0, 0);
+    tetsu_set_rainbow_palette(0);
 
-    eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
+    tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_256, TETSU_COLORS_16,
                               1, 0, 1, 0, 0, 0, 0);
 
@@ -2046,12 +2107,12 @@ static void set_king_16m_title_video(void)
        (the title is not uploaded until later in this same present) shows one
        frame of that data reinterpreted as YUV garbage: a pink wash with a
        diagonal mode-switch seam.  Masking first hides the switch entirely. */
-    eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
-    eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
+    waifu_vdc_set_control(VDC_CHIP_0, 0, 1, 0);
+    waifu_vdc_set_control(VDC_CHIP_1, 0, 1, 0);
     pcfx_vdc_overlay_init(&g_video);
 
-    eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
-    eris_king_set_bg_mode(KING_BGMODE_16M, 0, 0, 0);
+    king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+    king_set_bg_mode(KING_BGMODE_16M, 0, 0, 0);
     pcfx_king_set_bg_kram_page_inline(0);
 
     memset(g_king_microprog, 0, sizeof(g_king_microprog));
@@ -2063,18 +2124,18 @@ static void set_king_16m_title_video(void)
     g_king_microprog[5] = KING_CODE_BG0_CG_5;
     g_king_microprog[6] = KING_CODE_BG0_CG_6;
     g_king_microprog[7] = KING_CODE_BG0_CG_7;
-    eris_king_disable_microprogram();
-    eris_king_write_microprogram(g_king_microprog, 0, 16);
-    eris_king_enable_microprogram();
+    king_disable_microprogram();
+    king_write_microprogram(g_king_microprog, 0, 16);
+    king_enable_microprogram();
     pcfx_king_set_bg0_page_inline(0);
     /* In 16M KING mode with the dual-VDC overlay enabled, the top four
        visible scanlines sample the wrapped hidden rows unless BG0 is scrolled
        down by four pixels.  Keep the title/Menu surface aligned to the
        256x240 framebuffer instead of exposing stale hidden KRAM at the top. */
-    eris_king_set_scroll(KING_BG0, 0, WAIFU_PCFX_TITLE_16M_SCROLL_Y);
-    eris_king_set_scroll(KING_BG0SUB, 0, WAIFU_PCFX_TITLE_16M_SCROLL_Y);
-    eris_king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
-    eris_king_set_bg_size(KING_BG0SUB, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
+    king_set_scroll(KING_BG0, 0, WAIFU_PCFX_TITLE_16M_SCROLL_Y);
+    king_set_scroll(KING_BG0SUB, 0, WAIFU_PCFX_TITLE_16M_SCROLL_Y);
+    king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
+    king_set_bg_size(KING_BG0SUB, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
 }
 
 static WAIFU_PCFX_COLD void pcfx_title_upload_full_16m_from_ram(int page, const uint16_t *title_yuv422)
@@ -2258,17 +2319,17 @@ static void set_king_8bpp_video(int display_page)
     /* Keep the front VDC overlay intact until the new 8bpp KING page has been
        cleared.  Clearing it here exposes the previous 16M title surface for a
        frame during title/menu -> loading/battle mode switches. */
-    eris_tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
+    tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
     pcfx_vdc_select_overlay_palette();
     /* KING palette offsets are stored as 8-bit values in two-color units in
        the VCE.  Use palette bank 0 for the 8bpp page path and upload the same
        RGB-derived entries there.  Passing 256 wrapped through the low byte on
        some paths, leaving BIOS/default colors visible. */
-    eris_tetsu_set_king_palette(0, 0, 0, 0);
-    eris_tetsu_set_rainbow_palette(0);
+    tetsu_set_king_palette(0, 0, 0, 0);
+    tetsu_set_rainbow_palette(0);
 
-    eris_king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
-    eris_king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0); /* 8bpp KING BG0. */
+    king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+    king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0); /* 8bpp KING BG0. */
     pcfx_king_set_bg_kram_page_inline(0);
 
     memset(g_king_microprog, 0, sizeof(g_king_microprog));
@@ -2276,40 +2337,40 @@ static void set_king_8bpp_video(int display_page)
     g_king_microprog[1] = KING_CODE_BG0_CG_1;
     g_king_microprog[2] = KING_CODE_BG0_CG_2;
     g_king_microprog[3] = KING_CODE_BG0_CG_3;
-    eris_king_disable_microprogram();
-    eris_king_write_microprogram(g_king_microprog, 0, 16);
-    eris_king_enable_microprogram();
+    king_disable_microprogram();
+    king_write_microprogram(g_king_microprog, 0, 16);
+    king_enable_microprogram();
     /* Point the display at the caller-selected page directly as the BG mode
        becomes 8bpp.  The transition uses the second 8bpp page (which aliases no
        16M title CG page) so the visible page is clean black across the mid-scan
        16M -> 8bpp switch. */
     pcfx_king_set_bg0_page_inline(page_bat_offset(display_page));
-    eris_king_set_scroll(KING_BG0, 0, 0);
-    eris_king_set_scroll(KING_BG0SUB, 0, 0);
-    eris_king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
-    eris_king_set_bg_size(KING_BG0SUB, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
+    king_set_scroll(KING_BG0, 0, 0);
+    king_set_scroll(KING_BG0SUB, 0, 0);
+    king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
+    king_set_bg_size(KING_BG0SUB, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
 
-    eris_tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
+    tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_256, TETSU_COLORS_16,
                               1, 0, 1, 0, 0, 0, 0);
 
     /* Keep VDC layers initialized and ready for converted backgrounds, but the
        first port leaves them transparent/empty unless a PC-FX VDC background
        is explicitly selected. */
-    eris_low_sup_set_control(VDC_CHIP_0, 0, 1, 0);
-    eris_low_sup_set_control(VDC_CHIP_1, 0, 1, 0);
-    eris_low_sup_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
-    eris_low_sup_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
-    eris_low_sup_set_scroll(VDC_CHIP_0, 0, 0);
-    eris_low_sup_set_scroll(VDC_CHIP_1, 0, 0);
-    eris_low_sup_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
-    eris_low_sup_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+    waifu_vdc_set_control(VDC_CHIP_0, 0, 1, 0);
+    waifu_vdc_set_control(VDC_CHIP_1, 0, 1, 0);
+    waifu_vdc_set_access_width(VDC_CHIP_0, 0, SUP_LOW_MAP_64X32, 0, 0);
+    waifu_vdc_set_access_width(VDC_CHIP_1, 0, SUP_LOW_MAP_64X32, 0, 0);
+    vdc_set_scroll(VDC_CHIP_0, 0, 0);
+    vdc_set_scroll(VDC_CHIP_1, 0, 0);
+    waifu_vdc_set_video_mode(VDC_CHIP_0, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
+    waifu_vdc_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
 }
 
 WaifuPcfxVideo *waifu_pcfx_video_create(void)
 {
-    eris_king_init();
-    eris_tetsu_init();
+    king_init();
+    tetsu_init();
     memset(&g_video, 0, sizeof(g_video));
     g_video.front_page = 0;
     g_video.back_page = 1;
@@ -2368,7 +2429,7 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
        shows it).  Force every entry to neutral black here so the boot/loading
        window is black regardless of power-up state.  active_palette stays invalid
        (set below), so the first present still uploads the real palette. */
-    for (int i = 0; i < 256; ++i) eris_tetsu_set_palette((uint16_t)i, WAIFU_PCFX_NEUTRAL_BLACK);
+    for (int i = 0; i < 256; ++i) tetsu_set_palette((uint16_t)i, WAIFU_PCFX_NEUTRAL_BLACK);
     /* Re-assert the black VDC mask after the VDC mode registers are touched. */
     pcfx_vdc_overlay_force_black(video);
     video->mode = WAIFU_PCFX_VIDEO_MODE_KING_8BPP;
@@ -2440,6 +2501,21 @@ void waifu_pcfx_video_request_rainbow_hscroll(int hscroll)
 /* Platform background seam: present the requested scene background on the
    hardware RAINBOW layer. Returns 1 so the common scene code leaves the
    framebuffer background transparent for the RAINBOW layer to show through. */
+/* No widescreen HUD room on this target: keep the fixed 2D UI layout. */
+int waifu_platform_ui_extra_w(void) { return 0; }
+void waifu_platform_ui_hud(int on) { (void)on; }
+int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, unsigned char fg, unsigned char shadow)
+{ (void)x; (void)y; (void)cell_w; (void)ch; (void)fg; (void)shadow; return 0; }
+
+/* Do the ending image's blocking CD->KRAM DMA now, before the ending scene's
+   typewriter starts. Called at the end of the reward->ending black fade, so the
+   read is hidden behind the black frame instead of freezing a few characters
+   into the narration. Mirrors the upload the first ending present would do. */
+void waifu_platform_prewarm_ending(void)
+{
+    pcfx_present_ending_16m(&g_video, 0);
+}
+
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
 {
     WaifuPcfxSanctumBackdrop backdrop;
@@ -2541,7 +2617,7 @@ void waifu_pcfx_video_set_palette_rgb_fade(WaifuPcfxVideo *video, const uint8_t 
         const uint16_t *row = waifu_pcfx_palette_fade_lut[pcfx_palette_table_index(palette_id)][level];
         for (int i = 0; i < 256; ++i) {
             uint16_t yuv = row[i];
-            eris_tetsu_set_palette((uint16_t)i, yuv);
+            tetsu_set_palette((uint16_t)i, yuv);
         }
     } else {
         if (!video->have_base_yuv || video->active_palette != palette_id) {
@@ -2557,12 +2633,12 @@ void waifu_pcfx_video_set_palette_rgb_fade(WaifuPcfxVideo *video, const uint8_t 
                 int b = (rgb[i * 3 + 2] * fade_q8 + 128) >> 8;
                 yuv = rgb888_to_pcfx_yuv((uint8_t)r, (uint8_t)g, (uint8_t)b);
             }
-            eris_tetsu_set_palette((uint16_t)i, yuv);
+            tetsu_set_palette((uint16_t)i, yuv);
         }
         video->have_base_yuv = 1;
     }
 
-    eris_tetsu_set_palette((uint16_t)IDX_BLACK, WAIFU_PCFX_NEUTRAL_BLACK);
+    tetsu_set_palette((uint16_t)IDX_BLACK, WAIFU_PCFX_NEUTRAL_BLACK);
     video->active_palette = palette_id;
     video->active_fade_q8 = level;
 }
@@ -2761,6 +2837,13 @@ void waifu_pcfx_video_present_title_hicolor_stub(WaifuPcfxVideo *video, const ui
 void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
 {
     volatile uint16_t * const sr = (volatile uint16_t *)0x80000400u;
+    /* Re-arm VDC-0's vblank-IRQ enable (CR bit 0x08) every frame.  The BIOS
+       vsync handler keeps rewriting this VDC's control register for its own use
+       and drops the enable bit; the VDC only latches its VD status bit (which we
+       poll just below) at vblank when the enable is set, so without this the
+       poll spins forever.  Writing it here re-arms it just before the wait, and
+       VD latches at the next vblank before the BIOS handler runs. */
+    waifu_vdc_setreg(VDC_CHIP_0, 5, 0x88);
     while ((*sr & 0x0020u) == 0) { }
     if (video && video->pending_title_page_flip) {
         pcfx_king_set_bg_kram_page_inline(0);

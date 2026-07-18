@@ -12,7 +12,7 @@ static WaifuPcfxInput g_input;
 WaifuPcfxInput *waifu_pcfx_input_create(void)
 {
     memset(&g_input, 0, sizeof(g_input));
-    eris_pad_init(0);
+    contrlr_pad_init(0);
     return &g_input;
 }
 
@@ -26,8 +26,8 @@ void waifu_pcfx_input_poll(WaifuPcfxInput *input, WaifuFmInput *out)
     if (!input || !out) return;
     memset(out, 0, sizeof(*out));
     input->previous_raw = input->current_raw;
-    (void)eris_pad_type(0);
-    input->current_raw = (uint32_t)eris_pad_read(0);
+    (void)contrlr_pad_type(0);
+    input->current_raw = (uint32_t)contrlr_pad_read(0);
 
     /* Button mapping follows Cascade FX's known-good PC-FX pad decode. */
     out->left  = (input->current_raw & (1u << 11)) != 0;

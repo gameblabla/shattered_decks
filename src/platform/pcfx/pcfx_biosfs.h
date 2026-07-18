@@ -1,7 +1,7 @@
 #ifndef PCFX_BIOSFS_H
 #define PCFX_BIOSFS_H
 
-#include <eris/types.h>
+#include <pcfx/types.h>
 
 #define PCFX_BIOSFS_PATH_INTERNAL "/SRAM"
 #define PCFX_BIOSFS_PATH_EXTERNAL "/CARD"
