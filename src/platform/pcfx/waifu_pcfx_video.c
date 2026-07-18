@@ -464,30 +464,56 @@ static inline __attribute__((always_inline)) int pcfx_dirty_collect_row_runs(con
     return count;
 }
 
+/* Per-row dirty runs produced by the plan pass and consumed by the band-present
+   pass, so the framebuffer/shadow diff is scanned ONCE per frame instead of
+   twice (the plan pass computed identical runs and threw them away, then
+   pcfx_present_dirty_bands re-read the whole 256x240 frame + shadow to rebuild
+   them -- the single biggest data-side 2 KiB DRAM page source).  A dirty-band
+   present only happens when the plan pass scanned every row without crossing a
+   full-upload threshold, so at most WAIFU_PCFX_DIRTY_MAX_TOTAL_RUNS runs (plus
+   one row's worth for the row that trips the threshold) are ever stored. */
+#define WAIFU_PCFX_DIRTY_PLAN_RUN_CAP (WAIFU_PCFX_DIRTY_MAX_TOTAL_RUNS + WAIFU_PCFX_DIRTY_MAX_ROW_RUNS)
+static PcfxDirtyRun g_plan_runs[WAIFU_PCFX_DIRTY_PLAN_RUN_CAP];
+static uint8_t g_plan_row_run_count[WAIFU_PCFX_H];
+/* Number of leading rows whose runs in g_plan_runs are valid for reuse.  Set to
+   WAIFU_PCFX_H only when the plan pass scanned all rows (i.e. a dirty-band
+   present will follow); a lower value makes the present pass fall back to
+   re-scanning those rows (it never does in practice, but keeps it correct). */
+static int g_plan_rows_valid = 0;
+
 static WAIFU_PCFX_NOINLINE PcfxDirtyPlanStats pcfx_dirty_plan_stats(const uint8_t *cur, const uint8_t *old)
 {
     PcfxDirtyPlanStats stats;
     stats.dirty_blocks = 0;
     stats.row_runs = 0;
-    PcfxDirtyRun runs[WAIFU_PCFX_DIRTY_MAX_ROW_RUNS];
-    for (int y = 0; y < WAIFU_PCFX_H; ++y) {
+    int total = 0;
+    int y = 0;
+    g_plan_rows_valid = 0;
+    for (; y < WAIFU_PCFX_H; ++y) {
         const uint8_t *a = cur + y * WAIFU_PCFX_W;
         const uint8_t *b = old + y * WAIFU_PCFX_W;
-        int rc = pcfx_dirty_collect_row_runs(a, b, runs);
-        stats.row_runs += rc;
+        int rc = pcfx_dirty_collect_row_runs(a, b, &g_plan_runs[total]);
+        g_plan_row_run_count[y] = (uint8_t)rc;
         for (int i = 0; i < rc; ++i) {
-            stats.dirty_blocks += (int)runs[i].x1b - (int)runs[i].x0b + 1;
+            stats.dirty_blocks += (int)g_plan_runs[total + i].x1b - (int)g_plan_runs[total + i].x0b + 1;
         }
+        total += rc;
+        stats.row_runs += rc;
         /* The only use of these totals is the caller's full-upload test below.
            Once either threshold is provably crossed the exact counts no longer
            matter, so stop scanning -- a heavily-changed (animation) frame need
            not diff all 240 rows just to conclude "upload the whole frame".
-           Same decision, far less work on the frames that were most expensive. */
+           Same decision, far less work on the frames that were most expensive.
+           On that early exit the stored runs are incomplete, but the caller
+           does a full upload (never a band present), so they go unused. */
         if (stats.dirty_blocks * WAIFU_PCFX_DIRTY_BLOCK_W >= WAIFU_PCFX_DIRTY_FULL_THRESHOLD_BYTES ||
             stats.row_runs > WAIFU_PCFX_DIRTY_MAX_TOTAL_RUNS) {
-            break;
+            return stats;
         }
     }
+    /* Full frame scanned without tripping a threshold -> the band present will
+       run and can reuse every row's runs. */
+    g_plan_rows_valid = WAIFU_PCFX_H;
     return stats;
 }
 
@@ -1025,20 +1051,34 @@ static WAIFU_PCFX_NOINLINE void pcfx_present_dirty_bands(uint8_t *shadow, const 
     PcfxDirtyBand active[WAIFU_PCFX_DIRTY_MAX_BANDS];
     PcfxDirtyRun runs[WAIFU_PCFX_DIRTY_MAX_ROW_RUNS];
     int active_count = 0;
+    int plan_base = 0;
     for (int i = 0; i < WAIFU_PCFX_DIRTY_MAX_BANDS; ++i) active[i].used = 0;
 
     for (int y = 0; y < WAIFU_PCFX_H; ++y) {
         for (int i = 0; i < active_count; ++i) active[i].matched = 0;
-        int run_count = pcfx_dirty_collect_row_runs(framebuffer + y * WAIFU_PCFX_W,
+        int run_count;
+        const PcfxDirtyRun *rowruns;
+        if (y < g_plan_rows_valid) {
+            /* Reuse the runs the plan pass already computed for this row (same
+               framebuffer-vs-shadow diff -- the shadow for row y is not touched
+               until its band flushes, which is after this row is processed), so
+               we do not re-read the whole frame here. */
+            run_count = g_plan_row_run_count[y];
+            rowruns = &g_plan_runs[plan_base];
+            plan_base += run_count;
+        } else {
+            run_count = pcfx_dirty_collect_row_runs(framebuffer + y * WAIFU_PCFX_W,
                                                     shadow + y * WAIFU_PCFX_W,
                                                     runs);
+            rowruns = runs;
+        }
         for (int r = 0; r < run_count; ++r) {
             int found = -1;
             for (int i = 0; i < active_count; ++i) {
                 if (active[i].used && !active[i].matched &&
-                    active[i].x0b == runs[r].x0b &&
-                    active[i].x1b == runs[r].x1b &&
-                    active[i].black == runs[r].black) {
+                    active[i].x0b == rowruns[r].x0b &&
+                    active[i].x1b == rowruns[r].x1b &&
+                    active[i].black == rowruns[r].black) {
                     found = i;
                     break;
                 }
@@ -1048,9 +1088,9 @@ static WAIFU_PCFX_NOINLINE void pcfx_present_dirty_bands(uint8_t *shadow, const 
                 active[found].matched = 1;
             } else if (active_count < WAIFU_PCFX_DIRTY_MAX_BANDS) {
                 PcfxDirtyBand *b = &active[active_count++];
-                b->x0b = runs[r].x0b;
-                b->x1b = runs[r].x1b;
-                b->black = runs[r].black;
+                b->x0b = rowruns[r].x0b;
+                b->x1b = rowruns[r].x1b;
+                b->black = rowruns[r].black;
                 b->y0 = (uint8_t)y;
                 b->y1 = (uint8_t)y;
                 b->used = 1;
@@ -1061,9 +1101,9 @@ static WAIFU_PCFX_NOINLINE void pcfx_present_dirty_bands(uint8_t *shadow, const 
                    page stale and the flip shows black/garbage).  Flush it now as
                    a single-row band. */
                 PcfxDirtyBand one;
-                one.x0b = runs[r].x0b;
-                one.x1b = runs[r].x1b;
-                one.black = runs[r].black;
+                one.x0b = rowruns[r].x0b;
+                one.x1b = rowruns[r].x1b;
+                one.black = rowruns[r].black;
                 one.y0 = (uint8_t)y;
                 one.y1 = (uint8_t)y;
                 one.used = 1;

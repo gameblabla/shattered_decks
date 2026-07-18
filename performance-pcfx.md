@@ -109,3 +109,32 @@ committed unsigned. Results are appended below as milestones land.
 ## Results
 
 _(appended per milestone)_
+
+## Results (appended per milestone)
+
+### Migration baseline (libpcfx build, in-duel summon-animation state, 600 fields)
+
+After the liberis->libpcfx migration the in-duel cost profile is essentially
+unchanged (the render routines are the same code): CPI 2.489, field 99.91%
+saturated. 2 KiB DRAM page penalties **74,644 cyc/field (20.85%)**, data=69,868;
+flag-use stalls 36,023 (10.06%); icache miss-rate 1.93% (4,040 misses/field).
+Hottest DRAM sinks: `draw_interactive_base`, `pcfx_dirty_plan_stats` (the
+full-frame diff), `rect_fill`/`put_px`/`draw_text_small` (icache thrash),
+`battle_base_cache_store`.
+
+### Milestone: single-scan dirty present (batched reads already in place)
+
+`pcfx_dirty_plan_stats` (plan) and `pcfx_present_dirty_bands` (upload) both diffed
+the full 256x240 framebuffer against the page-shadow -- the plan pass computed
+per-row dirty runs and threw them away, then the present pass re-read the whole
+frame + shadow to rebuild them. The plan pass now stores its runs
+(`g_plan_runs` / `g_plan_row_run_count`, capped at the dirty-band run budget) and
+the present pass reuses them, so a dirty-band frame diffs the frame **once**
+instead of twice. Verified **pixel-identical** (md5 of in-duel frames unchanged).
+
+Scope note: the profiled summon-animation and settled-board states are
+full-upload or unchanged frames, which do not take the dirty-band path, so this
+does not move their numbers -- it removes one full frame+shadow read (~120 KB of
+2 KiB-page-crossing traffic) on the partial-update frames that do (cursor / LP
+counter over a static board). The dominant in-duel DRAM sinks for future work
+are `draw_interactive_base` and the plan-pass scan itself.
