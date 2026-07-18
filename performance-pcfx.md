@@ -317,3 +317,47 @@ cross-region icache bounce every scanline (6.14 % -> 7.41 %).
 Real lever for a future pass: enable `-flto` for the PC-FX link (lets the walker
 and span co-optimize / the divide stay local), or shrink the per-scanline path
 below 1 KB.  Both are larger changes on pixel-exact, regression-tested code.
+
+### The icache lever that actually worked: set-alignment (commit f3223da)
+
+The "shrink the per-scanline path" idea above is a trap on a **direct-mapped**
+cache: every function-size nibble reshuffles absolute addresses and the
+walker/span conflicts move unpredictably.  Measured, all three size tweaks made
+it *worse* (unrolling the board-pair loop 6.53 % -> 7.97 %; out-lining the
+vertex-unpack prologue 6.53 % -> 7.09 %; a tighter row loop alone 6.53 % ->
+7.03 %) even when they cut instruction count -- the layout shift dominated.
+
+What worked is **placement, not size**.  The V810 icache is 1 KB direct-mapped,
+8-byte lines, 128 sets; a byte at address A lives in set `(A>>3)&127`.  Mapping
+the hot code to sets showed the affine walker's hot scanline loop sits in the
+middle sets (~52-96) while its once-per-quad *prologue* covers the low sets.
+`cfx_draw_span_direct_tile_row` (the #1 miss bucket) was landing on sets ~69-105
+and so collided with the walker's hot loop every scanline.  Pinning the row
+filler to a 1 KB boundary (`__attribute__((aligned(1024)))` -> icache set 0)
+drops it onto sets 0-41, where it aliases only the walker's *cold* prologue.
+The two stop evicting each other:
+
+- misses/field 13951 -> 12486, fixed miss cost 27903 -> 24973 cyc/field
+- render overhead (icache-miss + 2 KiB-DRAM-page + MUL) 92313 -> 88839 (-3.8 %)
+
+Measuring this needs care: the game busy-spins on the VDC vblank bit, so the
+field is always ~99.91 % "used" and dropped=0 regardless of render cost.  The
+spin loop is tiny/resident and touches no DRAM and no MUL, so the clean,
+spin-free render-cost proxy is **icache-miss cyc + 2 KiB-DRAM-page cyc + MUL
+cyc** (all reported per-field by pcfx-headless-prof).  CPI and raw instr/field
+are confounded by how many spin iterations fit.
+
+Two smaller shrinks rode along on the row filler (both pixel-identical): its
+four-pixel body is now tight V810 asm that drops the redundant `&31` (u is an
+8-bit accumulator so `u>>3` is already 0..31) and fills the loop branch's
+flag-read slot with the trailing `st.h` so `bne` stops stalling on the
+just-decremented count.
+
+Residual (open): the span dispatcher `cfx_draw_span_direct_tile` (~606 B) still
+overlaps both the row (set 16-41) and the walker hot loop (set 52-93) because it
+spans sets 18-93 and runs every scanline.  Its *clip* prologue is the only hot
+part; parking that in the free set range (97-127) would need explicit placement
+(a linker fragment) since power-of-2 alignment can only force set 0/32/64/96,
+not 97.  Out-lining the dispatcher's step_v!=0 body shrank it to 194 B but
+regressed DRAM (+5.7k cyc/field) because the skewed-cell path then pays a call
+per span -- reverted.
