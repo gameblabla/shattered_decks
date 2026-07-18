@@ -345,31 +345,54 @@ typedef struct PcfxDirtyPlanStats {
     int row_runs;
 } PcfxDirtyPlanStats;
 
-static inline __attribute__((always_inline)) int pcfx_block16_dirty(const uint8_t *cur, const uint8_t *old, int block)
+/* Per-scanline 16px-block dirty/black bitmasks (bit b = block b).
+ *
+ * The V810 has no data cache and charges +3 cyc on every 2 KiB DRAM *page
+ * change* (single last-page register, see pcfxemu core.c RAMLPCHECK).  `cur`
+ * (the CPU framebuffer) and `old` (the page shadow) are two separate ~60 KB
+ * arrays in different pages, so the old block test -- `a[0]!=b[0] | a[1]!=b[1]
+ * | ...` -- ping-ponged cur<->old on nearly every word and made this diff
+ * ~22% of the whole field.  Here we read a contiguous run of 8 `cur` words,
+ * THEN the matching 8 `old` words: consecutive accesses stay on one page, so a
+ * chunk costs ~2 page changes instead of ~16.  Bit-for-bit identical result. */
+static inline __attribute__((always_inline)) unsigned pcfx_row_block_masks(const uint8_t *cur, const uint8_t *old, unsigned *black_mask_out)
 {
-    const uint32_t *a = (const uint32_t *)(cur + block * WAIFU_PCFX_DIRTY_BLOCK_W);
-    const uint32_t *b = (const uint32_t *)(old + block * WAIFU_PCFX_DIRTY_BLOCK_W);
-    return (a[0] != b[0]) | (a[1] != b[1]) | (a[2] != b[2]) | (a[3] != b[3]);
-}
-
-static inline __attribute__((always_inline)) int pcfx_block16_is_black(const uint8_t *cur, int block)
-{
-    const uint32_t *a = (const uint32_t *)(cur + block * WAIFU_PCFX_DIRTY_BLOCK_W);
-    const uint32_t black32 = 0xffffffffu;
-    return (a[0] == black32) & (a[1] == black32) & (a[2] == black32) & (a[3] == black32);
+    const uint32_t *c = (const uint32_t *)cur;
+    const uint32_t *o = (const uint32_t *)old;
+    unsigned dirty = 0, black = 0;
+    for (int b = 0; b < WAIFU_PCFX_DIRTY_BLOCKS_X; b += 2) {
+        uint32_t c0 = c[0], c1 = c[1], c2 = c[2], c3 = c[3];
+        uint32_t c4 = c[4], c5 = c[5], c6 = c[6], c7 = c[7];
+        uint32_t o0 = o[0], o1 = o[1], o2 = o[2], o3 = o[3];
+        uint32_t o4 = o[4], o5 = o[5], o6 = o[6], o7 = o[7];
+        if ((c0 ^ o0) | (c1 ^ o1) | (c2 ^ o2) | (c3 ^ o3)) {
+            dirty |= 1u << b;
+            if ((c0 & c1 & c2 & c3) == 0xffffffffu) black |= 1u << b;
+        }
+        if ((c4 ^ o4) | (c5 ^ o5) | (c6 ^ o6) | (c7 ^ o7)) {
+            dirty |= 1u << (b + 1);
+            if ((c4 & c5 & c6 & c7) == 0xffffffffu) black |= 1u << (b + 1);
+        }
+        c += 8;
+        o += 8;
+    }
+    *black_mask_out = black;
+    return dirty;
 }
 
 static inline __attribute__((always_inline)) int pcfx_dirty_collect_row_runs(const uint8_t *cur, const uint8_t *old, PcfxDirtyRun runs[WAIFU_PCFX_DIRTY_MAX_ROW_RUNS])
 {
+    unsigned black_mask;
+    unsigned dirty = pcfx_row_block_masks(cur, old, &black_mask);
     int count = 0;
     int b = 0;
     while (b < WAIFU_PCFX_DIRTY_BLOCKS_X) {
-        if (!pcfx_block16_dirty(cur, old, b)) { ++b; continue; }
-        int black = pcfx_block16_is_black(cur, b);
+        if (!((dirty >> b) & 1u)) { ++b; continue; }
+        int black = (int)((black_mask >> b) & 1u);
         int start = b++;
         while (b < WAIFU_PCFX_DIRTY_BLOCKS_X &&
-               pcfx_block16_dirty(cur, old, b) &&
-               pcfx_block16_is_black(cur, b) == black) {
+               ((dirty >> b) & 1u) &&
+               (int)((black_mask >> b) & 1u) == black) {
             ++b;
         }
         runs[count].x0b = (uint8_t)start;
@@ -393,6 +416,15 @@ static WAIFU_PCFX_NOINLINE PcfxDirtyPlanStats pcfx_dirty_plan_stats(const uint8_
         stats.row_runs += rc;
         for (int i = 0; i < rc; ++i) {
             stats.dirty_blocks += (int)runs[i].x1b - (int)runs[i].x0b + 1;
+        }
+        /* The only use of these totals is the caller's full-upload test below.
+           Once either threshold is provably crossed the exact counts no longer
+           matter, so stop scanning -- a heavily-changed (animation) frame need
+           not diff all 240 rows just to conclude "upload the whole frame".
+           Same decision, far less work on the frames that were most expensive. */
+        if (stats.dirty_blocks * WAIFU_PCFX_DIRTY_BLOCK_W >= WAIFU_PCFX_DIRTY_FULL_THRESHOLD_BYTES ||
+            stats.row_runs > WAIFU_PCFX_DIRTY_MAX_TOTAL_RUNS) {
+            break;
         }
     }
     return stats;
