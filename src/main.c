@@ -1894,6 +1894,11 @@ static void rect_outline(int x, int y, int w, int h, uint8_t c)
 /* Truncating 64-bit division without libgcc's ___divdi3 (~620 bytes of image
    the CD32X build cannot spare).  Only the line clipper needs 64-bit division,
    a handful of times per drawn line, so a plain shift-subtract loop is fine. */
+#if defined(WAIFU_FM_CD32X)
+/* 64-bit truncating divide, used only by the CD32X compact affine card
+   rasterizer (draw_textured_tri_affine_cd32x).  The PC-FX line clipper and
+   pyramid path no longer need it -- they are 32-bit -- so it is compiled only
+   where a caller remains, keeping ___divdi3/___muldi3 out of the PC-FX image. */
 static long long lldiv_trunc(long long n, long long d)
 {
     /* Fast path: both operands fit in 32 bits (true for nearly every line
@@ -1918,37 +1923,50 @@ static long long lldiv_trunc(long long n, long long d)
         return neg ? -(long long)q : (long long)q;
     }
 }
+#endif /* WAIFU_FM_CD32X */
 
 static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
 {
     if (waifu_hw2d_line(x0, y0, x1, y1, c)) return;
-    /* Clip the segment to the screen rect FIRST (Liang-Barsky, 64-bit so it
-       survives huge inputs).  A projected vertex just in front of the camera
-       (small cz, large cx/cz) can land at a coordinate in the millions; the old
-       unclipped Bresenham then looped ~millions of times -- put_px() silently
-       drops out-of-bounds writes, so it just spun forever and hung the game
-       (repro: COM equips a monster then attacks).  After clipping the loop only
-       walks the on-screen span. */
-    long long ax = x0, ay = y0, dx = (long long)x1 - x0, dy = (long long)y1 - y0;
+    /* Clip the segment to the screen rect FIRST (Liang-Barsky).  A projected
+       vertex just in front of the camera (small cz, large cx/cz) used to land at
+       a coordinate in the millions and the old unclipped Bresenham then looped
+       ~millions of times -- put_px() silently drops out-of-bounds writes, so it
+       spun forever and hung the game (repro: COM equips a monster then attacks).
+       project_point / project_point_basis now clamp every projected vertex to
+       +-8192, and the 2D UI callers pass on-screen coords, so the clip runs
+       entirely in 32-bit: q<<16 <= 8447<<16 (~5.5e8) and dx*t <= 16384*65536
+       (~1.07e9) both fit int32.  The old 64-bit intermediates -- and the
+       ___divdi3 / ___muldi3 libgcc helpers they pulled in -- are no longer
+       needed.  A defensive clamp guarantees no caller can overflow the 16.16
+       math regardless of where the coordinate came from. */
+    if (x0 < -8192) x0 = -8192; else if (x0 > 8192) x0 = 8192;
+    if (x1 < -8192) x1 = -8192; else if (x1 > 8192) x1 = 8192;
+    if (y0 < -8192) y0 = -8192; else if (y0 > 8192) y0 = 8192;
+    if (y1 < -8192) y1 = -8192; else if (y1 > 8192) y1 = 8192;
+    {
+    int ax = x0, ay = y0, dx = x1 - x0, dy = y1 - y0;
     if (dx == 0 && dy == 0) { put_px(x0, y0, c); return; }
     {
-        long long t0 = 0, t1 = 1LL << 16;
-        long long p[4] = { -dx, dx, -dy, dy };
-        long long q[4] = { ax, (long long)(WAIFU_FM_WIDTH - 1) - ax, ay, (long long)(WAIFU_FM_HEIGHT - 1) - ay };
+        int t0 = 0, t1 = 1 << 16;
+        int p[4] = { -dx, dx, -dy, dy };
+        int q[4] = { ax, (WAIFU_FM_WIDTH - 1) - ax, ay, (WAIFU_FM_HEIGHT - 1) - ay };
         int i;
         for (i = 0; i < 4; ++i) {
             if (p[i] == 0) { if (q[i] < 0) return; continue; }
             {
-                long long r = lldiv_trunc(q[i] << 16, p[i]);
+                /* truncate toward zero, exactly like the old lldiv_trunc */
+                int r = (q[i] << 16) / p[i];
                 if (p[i] < 0) { if (r > t1) return; if (r > t0) t0 = r; }
                 else          { if (r < t0) return; if (r < t1) t1 = r; }
             }
         }
         if (t0 > t1) return;
-        x0 = (int)(ax + lldiv_trunc(dx * t0, 1LL << 16));
-        y0 = (int)(ay + lldiv_trunc(dy * t0, 1LL << 16));
-        x1 = (int)(ax + lldiv_trunc(dx * t1, 1LL << 16));
-        y1 = (int)(ay + lldiv_trunc(dy * t1, 1LL << 16));
+        x0 = ax + (dx * t0) / (1 << 16);
+        y0 = ay + (dy * t0) / (1 << 16);
+        x1 = ax + (dx * t1) / (1 << 16);
+        y1 = ay + (dy * t1) / (1 << 16);
+    }
     }
     {
         int adx = i_abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
@@ -3877,10 +3895,18 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
     if (!pa.ok || !pb.ok || !pc.ok) return;
     if (tile < 0) tile = 0;
     if (tile >= WAIFU_TEX_TILE_COUNT) tile = WAIFU_TEX_TILE_COUNT - 1;
-#if defined(WAIFU_FM_CD32X)
-    /* Textured pyramid face: draw the base0-base1-apex triangle as a degenerate
-       quad (apex doubled) through the compact affine board rasterizer.  The
-       second sub-triangle collapses to zero area, so only the face is filled. */
+#if defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+    /* Textured pyramid face through the compact affine board rasterizer -- the
+       same clean, edge-stepped, division-free renderer the in-game board already
+       uses on PC-FX and CD32X.  Draw base0-base1-apex as a degenerate quad (apex
+       doubled) so the second sub-triangle collapses to zero area and only the
+       face is filled.
+
+       This replaces the legacy per-face barycentric rasterizer (kept below for
+       host/SDL builds), whose gradient/seed setup evaluated 64-bit int mul/div
+       -- the sole source of the ___muldi3 / ___divdi3 libgcc helpers in the
+       PC-FX image.  The board renderer is 32-bit throughout, so both PC-FX and
+       CD32X now render the story-map pyramid with the identical clean path. */
     {
         const DEFAULT_INT umax = (DEFAULT_INT)((cols * WAIFU_TEX_TILE_SIZE - 1) << 8);
         const DEFAULT_INT vmax = (DEFAULT_INT)((rows * WAIFU_TEX_TILE_SIZE - 1) << 8);
@@ -3891,7 +3917,7 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
         Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, u1, 0};
         Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uapex, vmax};
         Point2D p3 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uapex, vmax};
-#if defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+#if defined(WAIFU_FM_CD32X)
         if (cd32x_story_quads_push(&p0, &p1, &p2, &p3, tile)) return;
 #endif
         cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
@@ -9359,7 +9385,7 @@ static void draw_com_thunder_anim(void)
         int fade_start = WAIFU_THUNDER_CARD_FRAMES;
         int slide = WAIFU_SPELL_TRAP_SLIDE_FRAMES;
         int32_t slide_t = q8_smooth_ratio(f < slide ? f : slide, slide);
-        int slide_x = card_x + (int)((((int64_t)(WAIFU_FM_WIDTH - card_x)) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
+        int slide_x = card_x + (((WAIFU_FM_WIDTH - card_x) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
         draw_support_big_art_scaled(slide_x, card_y, 128, 128);
         if (is_trap) rect_outline(slide_x - 2, card_y - 2, 132, 132, IDX_TRAP_FRAME);
         /* The card slides in from offscreen right first; the name/effect text
@@ -9491,7 +9517,7 @@ static void draw_player_one_shot_support_anim(void)
     int slide = WAIFU_SPELL_TRAP_SLIDE_FRAMES;
     int32_t slide_t = q8_smooth_ratio(f < slide ? f : slide, slide);
     int base_x = (WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2;
-    int slide_x = base_x + (int)((((int64_t)(WAIFU_FM_WIDTH - base_x)) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
+    int slide_x = base_x + (((WAIFU_FM_WIDTH - base_x) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
     clear_screen(IDX_BLACK);
     draw_support_big_art_112(slide_x, WAIFU_UI_BOTTOM_Y(32));
     /* The card slides in from offscreen right first; the name/effect text only
