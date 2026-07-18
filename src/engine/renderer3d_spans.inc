@@ -1234,7 +1234,13 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row_
    it out of cfx_draw_span_direct_tile stops its ~200 bytes from fragmenting the
    floor's hot per-scanline path in the tiny 1 KB V810 icache. */
 #if defined(WAIFU_FM_PCFX)
-static __attribute__((noinline)) void cfx_draw_span_direct_tile_row(
+/* Aligned to a 1 KB boundary (V810 icache set 0).  The affine quad walker's hot
+   scanline loop lands in the middle cache sets; pinning this #1-thrashing row
+   filler to set 0 makes it alias only the walker's once-per-quad cold prologue
+   instead of its per-scanline loop, so the two stop evicting each other.
+   Measured: in-duel icache misses/field 13951 -> ~12500, render-overhead
+   (icache + DRAM + MUL) cyc/field ~92300 -> ~88800. */
+static __attribute__((noinline, aligned(1024))) void cfx_draw_span_direct_tile_row(
 #else
 static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
 #endif
@@ -1316,6 +1322,43 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
         --span;
     }
 
+#if CFX_RENDERER_USE_V810_ASM && !CFX_RENDERER_DIRECT_KRAM
+    /* Tight V810 form of the four-pixel row body (this is the #1 in-duel icache
+       thrasher).  Two shrinks vs the compiler's C loop: u is an 8-bit
+       accumulator so (u>>3) is already 0..31 -- the per-pixel CFX_TEX_MASK &31
+       is dropped -- and the two trailing st.h fill the loop branch's flag-read
+       slot so bne no longer stalls on the just-decremented count.  All four
+       texels come from the single source row (same DRAM page); pixel-identical
+       to the C body: left texel in the high byte, u advances per pixel. */
+    if (span >= 4) {
+        uint16_t iters = (uint16_t)((uint16_t)span >> 2);
+        uint32_t uu = u;
+        uint32_t su = (uint32_t)(uint8_t)step_u;
+        uint32_t a0, a1, a2, a3, ta;
+        __asm__ volatile (
+            "1:\n"
+            "mov %[u],%[ta]\n" "shr 3,%[ta]\n" "add %[row],%[ta]\n" "ld.b 0[%[ta]],%[a0]\n"
+            "add %[su],%[u]\n" "andi 255,%[u],%[u]\n"
+            "mov %[u],%[ta]\n" "shr 3,%[ta]\n" "add %[row],%[ta]\n" "ld.b 0[%[ta]],%[a1]\n"
+            "add %[su],%[u]\n" "andi 255,%[u],%[u]\n"
+            "mov %[u],%[ta]\n" "shr 3,%[ta]\n" "add %[row],%[ta]\n" "ld.b 0[%[ta]],%[a2]\n"
+            "add %[su],%[u]\n" "andi 255,%[u],%[u]\n"
+            "mov %[u],%[ta]\n" "shr 3,%[ta]\n" "add %[row],%[ta]\n" "ld.b 0[%[ta]],%[a3]\n"
+            "add %[su],%[u]\n" "andi 255,%[u],%[u]\n"
+            "shl 8,%[a0]\n" "or %[a1],%[a0]\n"
+            "shl 8,%[a2]\n" "or %[a3],%[a2]\n"
+            "add 4,%[dst]\n" "add -1,%[iters]\n"
+            "st.h %[a0],-4[%[dst]]\n" "st.h %[a2],-2[%[dst]]\n"
+            "bne 1b\n"
+            : [dst] "+r" (dst), [iters] "+r" (iters), [u] "+r" (uu),
+              [a0] "=&r" (a0), [a1] "=&r" (a1), [a2] "=&r" (a2), [a3] "=&r" (a3),
+              [ta] "=&r" (ta)
+            : [su] "r" (su), [row] "r" (row)
+            : "memory");
+        u = (uint8_t)uu;
+        span &= 3;
+    }
+#else
     while (span >= 4) {
         const uint8_t c0 = cfx_fetch_direct_row_texel(row, u);
         u = (uint8_t)(u + (uint8_t)step_u);
@@ -1336,6 +1379,7 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
         dst += 2;
         span = (int16_t)(span - 4);
     }
+#endif
 
     if (span >= 2) {
         const uint8_t c0 = cfx_fetch_direct_row_texel(row, u);
