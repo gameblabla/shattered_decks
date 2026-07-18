@@ -6042,13 +6042,15 @@ typedef struct WaifuBattleBaseCache {
 } WaifuBattleBaseCache;
 
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+/* Only the two RESTING battle cameras are cached: the hand-idle view and the
+   top view.  Those are the frames where the 3D field is not moving, so a cheap
+   composite copy beats re-running the board renderer while the player scrolls
+   the hand or reads the field.  Every other camera -- the hand<->top lift and
+   any animating field -- renders live full-time (battle_base_cache_for_camera
+   returns NULL for them), so there is no mid-transition keyframe cache. */
 static WaifuBattleBaseCache g_b_base_cache;
 #if defined(WAIFU_FM_PCFX)
 static WaifuBattleBaseCache g_b_base_cache_top;
-/* Cached camera keyframes for the hand<->top lift.  Endpoints reuse the normal
-   hand and top base caches; only the true in-between camera bases live here. */
-static WaifuBattleBaseCache g_b_handtop_mid_cache[WAIFU_PCFX_HANDTOP_ANCHORS - 2];
-static int g_b_handtop_prewarm_index = 0;
 #endif
 #endif
 
@@ -6058,8 +6060,6 @@ static void invalidate_battle_composite_cache(void)
     g_b_base_cache.valid = 0;
 #if defined(WAIFU_FM_PCFX)
     g_b_base_cache_top.valid = 0;
-    for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS - 2; ++i) g_b_handtop_mid_cache[i].valid = 0;
-    g_b_handtop_prewarm_index = 0;
 #endif
 #endif
 }
@@ -8719,57 +8719,37 @@ static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
 #endif
 
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
-#if defined(WAIFU_FM_PCFX)
-static int pcfx_handtop_anchor_index_for_camera(Camera cam)
-{
-    for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS; ++i) {
-        if (camera_equal(cam, pcfx_handtop_anchor_camera(i))) return i;
-    }
-    return -1;
-}
-
-static WaifuBattleBaseCache *pcfx_handtop_cache_for_anchor(int anchor)
-{
-    if (anchor <= 0) return &g_b_base_cache;
-    if (anchor >= WAIFU_PCFX_HANDTOP_ANCHORS - 1) return &g_b_base_cache_top;
-    return &g_b_handtop_mid_cache[anchor - 1];
-}
-#endif
-
+/* Return the cache slot for a RESTING camera, or NULL for a moving one.  Only
+   the hand-idle and top views rest; everything else (the hand<->top lift, side
+   and attack cameras, any animating field) returns NULL so draw_interactive_base
+   renders it live and does not spend a copy caching a frame that will not be
+   reused. */
 static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
 {
 #if defined(WAIFU_FM_PCFX)
-    int anchor = pcfx_handtop_anchor_index_for_camera(cam);
-    if (anchor >= 0) return pcfx_handtop_cache_for_anchor(anchor);
     if (camera_equal(cam, battle_top_camera())) return &g_b_base_cache_top;
-#endif
+    if (camera_equal(cam, player_camera())) return &g_b_base_cache;
+    return NULL;
+#else
     (void)cam;
     return &g_b_base_cache;
+#endif
 }
 
 static int battle_base_cache_restore(Camera cam, uint32_t key)
 {
     WaifuBattleBaseCache *primary = battle_base_cache_for_camera(cam);
-    if (primary->valid && primary->key == key && camera_equal(primary->cam, cam)) {
+    if (primary && primary->valid && primary->key == key && camera_equal(primary->cam, cam)) {
         copy_u8_fast(framebuffer, primary->pixels, (int)sizeof(primary->pixels));
         return 1;
     }
-#if defined(WAIFU_FM_PCFX)
-    /* The secondary top-view cache is used to remove the UP transition's first
-       board miss.  Also check the normal slot so older paths remain compatible
-       if it happens to contain the requested camera. */
-    if (primary != &g_b_base_cache && g_b_base_cache.valid &&
-        g_b_base_cache.key == key && camera_equal(g_b_base_cache.cam, cam)) {
-        copy_u8_fast(framebuffer, g_b_base_cache.pixels, (int)sizeof(g_b_base_cache.pixels));
-        return 1;
-    }
-#endif
     return 0;
 }
 
 static void battle_base_cache_store(Camera cam, uint32_t key)
 {
     WaifuBattleBaseCache *cache = battle_base_cache_for_camera(cam);
+    if (!cache) return; /* moving camera: rendered live, nothing to cache */
     copy_u8_fast(cache->pixels, framebuffer, (int)sizeof(cache->pixels));
     cache->cam = cam;
     cache->key = key;
@@ -8802,39 +8782,6 @@ static void draw_interactive_base(Camera cam)
     battle_base_cache_store(cam, key);
 #endif
 }
-
-#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
-static void prewarm_interactive_base(Camera cam)
-{
-    uint32_t key = battle_base_visual_key();
-    WaifuBattleBaseCache *cache = battle_base_cache_for_camera(cam);
-    if (cache->valid && cache->key == key && camera_equal(cache->cam, cam)) return;
-    render_board_cached(cam);
-    draw_interactive_field_cards(cam);
-    draw_hud();
-    battle_base_cache_store(cam, key);
-}
-
-static void prewarm_handtop_transition_bases(void)
-{
-    uint32_t key = battle_base_visual_key();
-    /* Prewarm one missing hand->top keyframe per hand-idle frame.  This keeps
-       steady hand view responsive after the short warmup and lets pressing UP
-       play a smooth cached camera lift instead of a hard cut or repeated board
-       re-renders.  Prefer the top endpoint first so the transition can always
-       finish on a cache hit, then fill the intermediate perspectives. */
-    for (int tries = 0; tries < WAIFU_PCFX_HANDTOP_ANCHORS; ++tries) {
-        int seq = g_b_handtop_prewarm_index++ % WAIFU_PCFX_HANDTOP_ANCHORS;
-        int anchor = (seq == 0) ? (WAIFU_PCFX_HANDTOP_ANCHORS - 1) : (seq - 1);
-        Camera cam = pcfx_handtop_anchor_camera(anchor);
-        WaifuBattleBaseCache *cache = pcfx_handtop_cache_for_anchor(anchor);
-        if (!(cache->valid && cache->key == key && camera_equal(cache->cam, cam))) {
-            prewarm_interactive_base(cam);
-            return;
-        }
-    }
-}
-#endif
 
 static void draw_interactive_field_base_no_hud(Camera cam)
 {
@@ -10585,9 +10532,6 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             }
         }
         if (press_start) { clear_player_fusion_queue(); g_b_attack_attacker_slot = -1; clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
-#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
-        prewarm_handtop_transition_bases();
-#endif
         play_player_hand_intro_draw_sfx();
         draw_interactive_base(player_camera());
         draw_interactive_player_hand(g_b_player_hand_intro_pending ? g_b_phase_frame : 999, g_b_selected_hand, 0, 0);
