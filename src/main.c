@@ -9794,7 +9794,11 @@ static void draw_interactive_reward(void)
         rect_outline((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2 - 1, WAIFU_UI_BOTTOM_Y(53), 114, 114, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
         rect_outline((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2, WAIFU_UI_BOTTOM_Y(54), 112, 112, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
     } else if (is_monster_card(card)) {
+        /* Settle into the framed card, matching the gold rim the flip showed on
+           its final frame; the bare art alone dropped the border after the turn. */
         draw_card_big_art_112(card, (WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2, WAIFU_UI_BOTTOM_Y(54));
+        rect_outline((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2 - 1, WAIFU_UI_BOTTOM_Y(53), 114, 114, IDX_GOLD_HI);
+        rect_outline((WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2, WAIFU_UI_BOTTOM_Y(54), 112, 112, IDX_CARD_RIM);
     }
 #if defined(WAIFU_FM_PCFX)
     --g_big_art_direct_note_suppressed;
