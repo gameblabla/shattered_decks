@@ -20,6 +20,17 @@ INCLUDES := \
   -I$(V810GCC)/include -I$(V810GCC)/$(PREFIX)/include
 
 CFLAGS ?= -O2 -fomit-frame-pointer -fno-builtin -ffunction-sections -fdata-sections -Werror=vla -Wall -Wextra -std=gnu99 -mv810 -mprolog-function -msda=0
+# Strip the in-game render caches on PC-FX.  The board-background and
+# battle-composite caches each hold a full 256x240 framebuffer and were added
+# back when live board rendering blew the field budget.  After the V810 perf
+# work (int64 removal, DRAM copy batching) the board renders live within a
+# field, so the caches now cost more than they save: every cache hit is a
+# 61440-byte copy_u8_fast out of a COLD DRAM buffer, which is pure D-cache
+# pollution and 2 KiB-page-crossing DRAM traffic (the top data-side sink in the
+# in-duel profile).  Rendering the board straight from the small, hot floor
+# sample LUT instead touches far less cold memory.  Keep the tiny floor sample
+# cache -- it is what makes the live render cheap.
+CFLAGS += -DWAIFU_BG_CACHE_DISABLE -DWAIFU_BATTLE_BASE_CACHE_DISABLE
 PCFX_ASSET_MODE ?= cart
 ifeq ($(PCFX_ASSET_MODE),cdrom)
 CFLAGS += -DPLATFORM=1 -DWAIFU_FM_PCFX -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_USE_CDROM -DWAIFU_ASSET_NO_STDIO $(INCLUDES)

@@ -10585,7 +10585,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             }
         }
         if (press_start) { clear_player_fusion_queue(); g_b_attack_attacker_slot = -1; clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
         prewarm_handtop_transition_bases();
 #endif
         play_player_hand_intro_draw_sfx();
