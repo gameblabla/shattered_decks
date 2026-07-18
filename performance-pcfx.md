@@ -273,3 +273,47 @@ Follow-up if a heavy scene ever drops a frame: the icache regression is the
 lever -- shrink `render_board`'s hot loop below 1 KB (split the per-pixel floor
 sampler from the grid/setup code) rather than reinstating the cold full-frame
 cache.
+
+## Refinement: cache only the resting cameras + a look at the 3D icache (ba0cac9, ecb5b58)
+
+Stripping the caches entirely traded the cold-copy DRAM penalty for a ~5x icache
+miss-rate on every frame (render_board is much larger code than a memcpy).  The
+better split: cache the frames where the 3D field does not move -- the hand-idle
+and top views -- and render everything else (the hand<->top camera lift, any
+animating field) live.
+
+`battle_base_cache_for_camera()` now returns a slot only for `player_camera()`
+and `battle_top_camera()`; every other camera returns NULL -> live render, no
+store.  The hand<->top mid-keyframe cache + prewarming are gone (transitions are
+always unique-camera misses anyway).  Measured per field:
+
+| state | icache miss-rate | CPI | DRAM penalty |
+|---|---:|---:|---:|
+| hand-idle (cache hit) | 0.79 % | 2.30 | 15.8 % |
+| top-idle (cache hit)  | 0.87 % | 2.10 | 8.2 % |
+| moving field (live)   | ~6 %   | ~2.3 | ~14 % |
+
+So the resting views are back to a cheap copy + ~1 % icache, and only the brief
+moving frames pay the live-render icache cost.
+
+### Why the 3D routines can't easily hit the icache less
+
+The live-render hot path is `cfx_renderer3d_draw_quad_fast_affine` (the affine
+quad walker, **~1.2 KB on its own -- larger than the entire 1 KB V810 icache**)
+calling `cfx_draw_span_direct_tile` (~0.6 KB) once per scanline.  The two
+functions total ~1.8 KB and ping-pong the icache every scanline; worse, they sit
+in different translation units (walker in renderer3d.c, span in
+renderer3d_pcfx.c via renderer3d_spans.inc), so no inline can merge them without
+LTO or moving code across the intended per-platform TU split.
+
+What helped: out-lining `cfx_draw_span_direct_tile_row` (the constant-V
+block-face path the floor never takes) trimmed the span dispatcher ~950 -> 606 B
+and nudged the live miss-rate 6.35 % -> 6.14 %.
+
+What hurt (reverted): out-lining the per-scanline `cfx_fast_div_tz_i32_u16_q15`
+shrank the walker only ~70 B but moved the divide to a distant address, adding a
+cross-region icache bounce every scanline (6.14 % -> 7.41 %).
+
+Real lever for a future pass: enable `-flto` for the PC-FX link (lets the walker
+and span co-optimize / the divide stay local), or shrink the per-scanline path
+below 1 KB.  Both are larger changes on pixel-exact, regression-tested code.
