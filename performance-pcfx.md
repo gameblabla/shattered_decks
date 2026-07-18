@@ -231,3 +231,45 @@ already batched + single-scan) and the small icache-thrashing 2D helpers
 (`rect_fill`, `draw_text_small`, `draw_text`, `side_battle_camera`). The
 remaining data-page traffic is the genuinely unavoidable full-frame diff + KRAM
 upload on frames that actually change the board.
+
+## Stripping the in-game render caches (commit 09f4e9f)
+
+Once the board rendered live within a field (after the int64 removal + DRAM copy
+batching above), the render caches themselves became the top *data*-side sink.
+The board-background cache (`g_board_bg_cache`) and the battle-composite cache
+(`g_b_base_cache`/`_top`/`_handtop_mid`) each hold a full 256x240 framebuffer;
+every steady-state cache hit is a 61440-byte `copy_u8_fast` out of a **cold**
+DRAM buffer -- the V810 has no data cache, so those 61440 reads walk cold 2 KiB
+DRAM pages and evict the 1 KB icache working set.
+
+Fix: enable the existing `WAIFU_BG_CACHE_DISABLE` +
+`WAIFU_BATTLE_BASE_CACHE_DISABLE` guards for the PC-FX build (`Makefile.pcfx`),
+so `draw_interactive_base` renders board + field cards + HUD straight into the
+framebuffer each frame from the small, hot floor sample LUT. The tiny floor
+sample cache stays (it is what makes the live render cheap).
+
+Re-measured (this build vs the cache-ON build, `pcfx-headless-prof`, 120 fields):
+
+| metric | cache-ON | cache-OFF (live) |
+|---|---:|---:|
+| DRAM page penalty (field view) | 46174 cyc/field (12.90 %) | **43026 (12.02 %)** |
+| ...data component | 42810 | **28889** (-32 %) |
+| ...code-refill component | 3364 | 14137 |
+| DRAM page penalty (hand view) | 56744 (15.85 %) | **53358 (14.91 %)** |
+| ...data component | 53018 | **38235** (-28 %) |
+| CPI (mean) | ~2.31 | ~2.30 |
+| 1 KB icache miss-rate | ~1.1 % | 6.0-6.3 % |
+
+Trade-off, stated plainly: the data-side DRAM traffic drops hard (the cold
+full-frame copies are gone) but the 1 KB icache miss-rate rises ~5x, because
+`render_board`'s floor loop is much larger code than a `memcpy`. Net total DRAM
+page penalty is -6..-7 %. Both effects are absorbed by the vblank-spin margin --
+field / hand / hand->top camera transition / top views all still present within
+a field (`dropped=0`) and render pixel-correct live (verified in the accurate
+backend). The camera transitions never benefited from the cache anyway (a unique
+camera each frame is always a cache miss), so they are unchanged.
+
+Follow-up if a heavy scene ever drops a frame: the icache regression is the
+lever -- shrink `render_board`'s hot loop below 1 KB (split the per-pixel floor
+sampler from the grid/setup code) rather than reinstating the cold full-frame
+cache.
