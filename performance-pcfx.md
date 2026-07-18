@@ -138,3 +138,96 @@ does not move their numbers -- it removes one full frame+shadow read (~120 KB of
 2 KiB-page-crossing traffic) on the partial-update frames that do (cursor / LP
 counter over a static board). The dominant in-duel DRAM sinks for future work
 are `draw_interactive_base` and the plan-pass scan itself.
+
+### Milestone: drop int64 (___divdi3/___muldi3) + clean pyramid (commit 8a3a11a)
+
+Goal: eliminate the libgcc 64-bit int helpers and make the PC-FX story-map
+pyramid use the same clean renderer as the CD32X build. Three changes, all
+verified in `pcfx-headless` (accurate backend): title, LOAD STORY sanctum
+pyramid, in-duel board + hand-card rims.
+
+1. **PC-FX pyramid faces -> `cfx_renderer3d_draw_quad_board`.** The story-map
+   pyramid (`draw_tri3d_pyramid_face`) was the only PC-FX 3D primitive still on
+   the legacy per-face barycentric rasterizer in main.c, whose gradient/seed
+   setup used 64-bit int mul/div (the `2LL*Aa*U0 / den2` and
+   `(int64_t)wa2_row*U0 / den2` numerators reach ~1e11 because texcoords are
+   `<<16` and screen deltas up to ~4000). The board already routes through the
+   compact, edge-stepped, division-free `cfx_board_tri` (renderer3d.c) on both
+   PC-FX and CD32X; the pyramid now does too (degenerate quad, apex doubled), so
+   the two targets share the identical clean path. The legacy int64 `#else`
+   branch stays only for host/SDL builds. This is aligned with the renderer's
+   own I-cache strategy (one small span rasterizer that fits the 1 KB icache).
+2. **`line_i` clip -> 32-bit.** `project_point`/`project_point_basis` already
+   clamp every projected vertex to +-8192, so the "coords in the millions" case
+   the 64-bit Liang-Barsky clip guarded against can no longer happen; `q<<16`
+   (<=~5.5e8) and `dx*t` (<=~1.07e9) both fit int32. A defensive +-8192 clamp
+   keeps it overflow-proof for any caller. Truncation-toward-zero preserved, so
+   bit-identical for all in-range inputs.
+3. **`slide_x` support-card interpolations -> 32-bit** (products are tiny).
+
+`lldiv_trunc` is now compiled only for the CD32X affine card path that still
+needs it. With no 64-bit int mul/div left in compiled PC-FX code, the linker
+drops ___divdi3 / ___muldi3 entirely.
+
+Result: PC-FX ELF **404276 -> 365488 bytes (-38 KB)** -- removing the legacy
+pyramid rasterizer + the two libgcc helpers -- which also eases 1 KB-icache
+pressure. Re-measured in-duel (fresh state from this build, cursor animation,
+600 fields): CPI 2.566, icache miss-rate **1.08%** (2246 misses/field), no
+___divdi3/___muldi3 (remaining DIV/DIVU/MUL are hardware 32-bit ops). The 64-bit
+helpers were only ~216 cyc/field, so this is a code-size/dependency/correctness
+win, not a cycle win -- as intended.
+
+### Current dominant sinks (post-milestone, in-duel + cursor anim, 600 fields)
+
+| Sink | share | routine (nm) | notes |
+|---|---:|---|---|
+| **2 KiB DRAM page penalties** | **24.3 %** | (data=83761 cyc/field) | V810 has no data cache; +3 cyc/2 KiB-page change |
+| `draw_interactive_base` | top cycles | main.c | in-duel board base; biggest single cycle bucket |
+| `pcfx_dirty_plan_stats` | 2nd | waifu_pcfx_video.c | present diff (already batched + single-scan) |
+| flag-use stalls | 9.9 % | codegen | 99.9 % of Bcc/SETF/STSR pay +2 |
+| icache misses (fixed) | 1.25 % | rect_fill / side_battle_camera / draw_text_small | small hot fns thrash 1 KB icache |
+
+The floor (`draw_floor_tiled`) is disabled on PC-FX, so in-duel the DRAM penalty
+is dominated by `draw_interactive_base` and the plan-pass scan. Per the renderer
+perf history, camera-keyed board caches were measured as ~1 % dead-ends (unique
+camera every animation frame) and reverted; the fundamental cost is the
+full-board re-render + near-full KRAM upload on animation/transition frames.
+
+### Milestone: batch copy_u8_fast -> kill the DRAM page ping-pong (commit b8a3d40)
+
+`draw_interactive_base` was the top hot-PC bucket, and its cost was **not** board
+rendering -- on a cursor-move frame the camera is unchanged, so the camera-keyed
+`battle_base_cache` HITS and `draw_interactive_base` just `copy_u8_fast`s the
+~60 KB cached composite into the framebuffer (then overlays the LP counters).
+`copy_u8_fast`'s V810 inner loop interleaved `ld.w src; st.w dst; ld.w src; ...`.
+`src` (cache) and `dst` (framebuffer) are separate ~60 KB arrays in different
+2 KiB DRAM pages, and the V810 has no data cache (a single last-page register,
++3 cyc per 2 KiB page *change*), so **every one of the 16 accesses per 32-byte
+group changed page** -- ~15 page changes/group. That single copy was most of the
+24 % data-page penalty.
+
+Fix: batch all eight loads (into r10..r17) then all eight stores, so the loads
+are one contiguous `src` run and the stores one contiguous `dst` run -> ~2 page
+changes/group. Non-overlapping memcpy semantics unchanged (all callers copy
+between distinct arrays); tail byte loop untouched. Same trick the dirty-diff
+already uses.
+
+Re-measured (fresh in-duel state from this build, cursor animation, 600 fields):
+
+| metric | before (8a3a11a) | after (b8a3d40) |
+|---|---:|---:|
+| 2 KiB DRAM page penalty | 86908 cyc/field (24.28 %) | **56362 cyc/field (15.75 %)** |
+| ...data component | 83761 | **52862** |
+| CPI (mean) | 2.566 | **2.306** |
+| top hot bucket | `draw_interactive_base` | `pcfx_dirty_plan_stats` |
+
+Verified pixel-identical in `pcfx-headless` (the cached base is copied
+byte-for-byte; in-duel board/HUD/cards render the same). This copy is shared by
+every framebuffer<->cache copy (`g_board_bg_cache`, the hand<->top keyframe
+caches, row blits), so all of them get the same DRAM reduction.
+
+After this, the top in-duel sink is `pcfx_dirty_plan_stats` (the present diff,
+already batched + single-scan) and the small icache-thrashing 2D helpers
+(`rect_fill`, `draw_text_small`, `draw_text`, `side_battle_camera`). The
+remaining data-page traffic is the genuinely unavoidable full-frame diff + KRAM
+upload on frames that actually change the board.
