@@ -1229,7 +1229,15 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row_
 }
 #endif
 
+/* Out-of-line: this is the constant-V (axis-aligned block face) row path, which
+   the perspective board floor never takes (floor rows have step_v != 0).  Keeping
+   it out of cfx_draw_span_direct_tile stops its ~200 bytes from fragmenting the
+   floor's hot per-scanline path in the tiny 1 KB V810 icache. */
+#if defined(WAIFU_FM_PCFX)
+static __attribute__((noinline)) void cfx_draw_span_direct_tile_row(
+#else
 static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
+#endif
     const CfxRenderer3DState *renderer, const uint8_t *tile, int16_t y, int16_t xs, int16_t span,
     uint16_t tex_state, int8_t step_u)
 {
