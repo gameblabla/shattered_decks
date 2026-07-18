@@ -1795,9 +1795,17 @@ static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
 #elif defined(WAIFU_FM_PCFX)
     uint32_t n = (uint32_t)count;
     uint32_t groups;
-    /* Framebuffer/cache copies are aligned and large.  Keep the body compact:
-       32 bytes per loop, eight ld.w/st.w pairs, well under the 1 KiB V810
-       I-cache while avoiding a slow byte copy or unknown libc memcpy. */
+    /* Framebuffer/cache copies are aligned and large, and src/dst live in
+       SEPARATE ~60 KB arrays in different 2 KiB DRAM pages.  The V810 has no
+       data cache and charges +3 cyc on every 2 KiB page *change* (single
+       last-page register).  The old body interleaved ld.w/st.w (src,dst,src,
+       dst,...), so every one of the 16 accesses per 32-byte group ping-ponged
+       src<->dst pages -- ~15 page changes per group.  Batch all eight loads
+       (into r10..r17) THEN all eight stores: the loads are one contiguous src
+       run and the stores one contiguous dst run, so a group costs ~2 page
+       changes instead of ~15 (~7x less DRAM penalty on the battle-base composite
+       copy, which runs every cached in-duel frame).  Still ~20 instructions,
+       well under the 1 KiB I-cache. */
     __asm__ volatile (
         "mov %[n],%[groups]\n"
         "shr 5,%[groups]\n"
@@ -1805,21 +1813,21 @@ static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
         "be 2f\n"
         "1:\n"
         "ld.w 0[%[src]],r10\n"
+        "ld.w 4[%[src]],r11\n"
+        "ld.w 8[%[src]],r12\n"
+        "ld.w 12[%[src]],r13\n"
+        "ld.w 16[%[src]],r14\n"
+        "ld.w 20[%[src]],r15\n"
+        "ld.w 24[%[src]],r16\n"
+        "ld.w 28[%[src]],r17\n"
         "st.w r10,0[%[dst]]\n"
-        "ld.w 4[%[src]],r10\n"
-        "st.w r10,4[%[dst]]\n"
-        "ld.w 8[%[src]],r10\n"
-        "st.w r10,8[%[dst]]\n"
-        "ld.w 12[%[src]],r10\n"
-        "st.w r10,12[%[dst]]\n"
-        "ld.w 16[%[src]],r10\n"
-        "st.w r10,16[%[dst]]\n"
-        "ld.w 20[%[src]],r10\n"
-        "st.w r10,20[%[dst]]\n"
-        "ld.w 24[%[src]],r10\n"
-        "st.w r10,24[%[dst]]\n"
-        "ld.w 28[%[src]],r10\n"
-        "st.w r10,28[%[dst]]\n"
+        "st.w r11,4[%[dst]]\n"
+        "st.w r12,8[%[dst]]\n"
+        "st.w r13,12[%[dst]]\n"
+        "st.w r14,16[%[dst]]\n"
+        "st.w r15,20[%[dst]]\n"
+        "st.w r16,24[%[dst]]\n"
+        "st.w r17,28[%[dst]]\n"
         "addi 32,%[src],%[src]\n"
         "addi 32,%[dst],%[dst]\n"
         "add -1,%[groups]\n"
@@ -1838,7 +1846,7 @@ static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
         "4:\n"
         : [dst] "+r" (dst), [src] "+r" (src), [n] "+r" (n), [groups] "=&r" (groups)
         :
-        : "r10", "memory");
+        : "r10", "r11", "r12", "r13", "r14", "r15", "r16", "r17", "memory");
 #else
     memcpy(dst, src, (size_t)count);
 #endif
