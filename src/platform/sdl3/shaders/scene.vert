@@ -13,6 +13,10 @@ layout(location = 2) in float a_tile;
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) out float v_tile;
 
+/* x = horizontal scale: 1.0 on a game-aspect target, < 1 in widescreen so the
+   3D view fills the wider canvas undistorted (paired with the floor's sx*hs). */
+layout(set = 1, binding = 0) uniform Xform { vec4 p; } u_xf;
+
 const float ZN = 0.05;
 const float ZF = 200.0;
 
@@ -22,5 +26,5 @@ void main()
     float zclip = ZF * (w - ZN) / (ZF - ZN);
     v_uv = a_uv;
     v_tile = a_tile;
-    gl_Position = vec4(a_pos.x, a_pos.y, zclip, w);
+    gl_Position = vec4(a_pos.x * u_xf.p.x, a_pos.y, zclip, w);
 }

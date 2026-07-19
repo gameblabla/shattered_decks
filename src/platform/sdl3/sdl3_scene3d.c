@@ -15,6 +15,7 @@
  * clear wiping the framebuffer. */
 
 #include "sdl3_internal.h"
+#include "sdl3_text.h"
 
 #include <math.h>
 #include <string.h>
@@ -22,6 +23,8 @@
 #include "platform.h"
 #include "hw3d.h"
 #include "game_api.h"
+#include "assets.h"
+#include "sdl3_hires.h"
 
 static Sdl3SceneFrame g_frame = {
     .bg_rgba = { 0.0f, 0.0f, 0.0f, 1.0f },
@@ -110,6 +113,8 @@ static void xform_point(const SceneXform *xf, const WaifuHw3DVec3 *p, float out[
 /* ---- 2D run management ----------------------------------------------------- */
 
 static int g_run_open_kind = -1;
+static int g_ui_hud = 0;        /* widescreen HUD capture bracket (full-width) */
+static int g_ui_extra_w = 0;    /* set by the video layer from the canvas aspect */
 
 static void ui_close_run(void)
 {
@@ -119,9 +124,11 @@ static void ui_close_run(void)
 static void ui_append(int kind, int count_added)
 {
     Sdl3UiRun *run;
-    int first = (kind == SDL3_UI_RUN_TRIS) ? g_frame.ui_vert_count
-                                           : g_frame.ui_line_vert_count;
-    if (g_run_open_kind == kind && g_frame.ui_run_count > 0) {
+    int first = (kind == SDL3_UI_RUN_TRIS)  ? g_frame.ui_vert_count
+              : (kind == SDL3_UI_RUN_GLYPH) ? g_frame.ui_glyph_vert_count
+                                            : g_frame.ui_line_vert_count;
+    if (g_run_open_kind == kind && g_frame.ui_run_count > 0 &&
+        g_frame.ui_runs[g_frame.ui_run_count - 1].hud == g_ui_hud) {
         g_frame.ui_runs[g_frame.ui_run_count - 1].count += count_added;
         return;
     }
@@ -130,7 +137,23 @@ static void ui_append(int kind, int count_added)
     run->kind = kind;
     run->first = first - count_added;
     run->count = count_added;
+    run->hud = g_ui_hud;
     g_run_open_kind = kind;
+}
+
+/* Insert a hi-res card as its own run in the UI list so its draw order relative
+   to surrounding 2D (card frame, cursor, stat text) is preserved. */
+static void ui_append_hires(int draw_index)
+{
+    Sdl3UiRun *run;
+    if (draw_index < 0) return;
+    if (g_frame.ui_run_count >= SDL3_UI_MAX_RUNS) return;
+    run = &g_frame.ui_runs[g_frame.ui_run_count++];
+    run->kind = SDL3_UI_RUN_HIRES;
+    run->first = draw_index;
+    run->count = 0;
+    run->hud = g_ui_hud;
+    g_run_open_kind = -1;   /* hi-res runs never coalesce with adjacent tris */
 }
 
 static void ui_push_quad(float x0, float y0, float x1, float y1,
@@ -189,6 +212,54 @@ static void ui_push_line(float x0, float y0, float x1, float y1, const float rgb
     g_frame.ui_line_vert_count += 2;
     ui_append(SDL3_UI_RUN_LINES, 2);
     g_frame.has_content = 1;
+}
+
+/* One text glyph quad into the glyph vertex stream (uv normalized into the
+   persistent atlas). Coalesced into the current glyph run so a whole string is
+   one draw. */
+static void ui_push_glyph_quad(float x0, float y0, float x1, float y1,
+                               float u0, float v0, float u1, float v1,
+                               const float rgba[4])
+{
+    Sdl3UiVertex *vt;
+    static const int cx[6] = { 0, 1, 1, 0, 1, 0 };
+    static const int cy[6] = { 0, 0, 1, 0, 1, 1 };
+    int i;
+    if (g_frame.ui_glyph_vert_count + 6 > SDL3_UI_MAX_GLYPH_VERTS) return;
+    vt = &g_frame.ui_glyph_verts[g_frame.ui_glyph_vert_count];
+    for (i = 0; i < 6; ++i) {
+        vt[i].x = cx[i] ? x1 : x0;
+        vt[i].y = cy[i] ? y1 : y0;
+        vt[i].u = cx[i] ? u1 : u0;
+        vt[i].v = cy[i] ? v1 : v0;
+        vt[i].r = rgba[0]; vt[i].g = rgba[1]; vt[i].b = rgba[2]; vt[i].a = rgba[3];
+    }
+    g_frame.ui_glyph_vert_count += 6;
+    ui_append(SDL3_UI_RUN_GLYPH, 6);
+    g_frame.has_content = 1;
+}
+
+/* Per-character text seam (src/engine/platform.h). SDL3 renders each glyph from
+   the FreeType atlas as a crisp quad (drop shadow + fill, matching the bitmap
+   font's (x+1,y+1)/(x,y) two-pass look). Returns 1 when handled so the common
+   text primitives skip the 8x8 bitmap blit; returns 0 only when the font could
+   not be loaded, so the caller falls back to the bitmap font. */
+int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, uint8_t fg, uint8_t shadow)
+{
+    WaifuGlyphInfo gi;
+    float fg_rgba[4], sh_rgba[4];
+    (void)cell_w;
+    if (!waifu_sdl3_text_ready()) return 0;
+    if (!waifu_sdl3_glyph_info(ch, &gi)) return 1;   /* space/blank: advance only */
+    pal_rgba_f(shadow, sh_rgba);
+    pal_rgba_f(fg, fg_rgba);
+    ui_push_glyph_quad((float)x + gi.dx + 1.0f, (float)y + gi.dy + 1.0f,
+                       (float)x + gi.dx + gi.dw + 1.0f, (float)y + gi.dy + gi.dh + 1.0f,
+                       gi.u0, gi.v0, gi.u1, gi.v1, sh_rgba);
+    ui_push_glyph_quad((float)x + gi.dx, (float)y + gi.dy,
+                       (float)x + gi.dx + gi.dw, (float)y + gi.dy + gi.dh,
+                       gi.u0, gi.v0, gi.u1, gi.v1, fg_rgba);
+    return 1;
 }
 
 /* First 3D primitive of the frame: everything 2D so far is scene backdrop. */
@@ -308,6 +379,110 @@ void waifu_hw3d_set_texture_atlas(const void *atlas, int tile_count)
     g_tiles_converted = 0;
 }
 
+/* ---- hi-res card art (PC) --------------------------------------------------
+ * Board/hand/detail card draws arrive here as 8bpp pixel pointers. On the SDL3
+ * build we map the game's stable per-card face/big-art pointers to a card id and
+ * substitute the full-resolution source art (sdl3_hires + per-card GPU texture
+ * in the video layer), keeping the console 8bpp path for everything else. No
+ * common-code change: the map is keyed on the pointers the game already hands
+ * us. */
+
+typedef struct CardPtr { const uint8_t *ptr; int card_id; int kind; } CardPtr;
+static CardPtr g_card_ptrs[256 * 2];
+static int g_card_ptr_count = 0;
+static int g_card_ptrs_built = 0;
+
+static void build_card_ptr_map(void)
+{
+    int n, id;
+    g_card_ptr_count = 0;
+    g_card_ptrs_built = 1;
+    n = waifu_sdl3_hires_card_count();
+    for (id = 0; id < n && g_card_ptr_count + 2 <= (int)(sizeof(g_card_ptrs)/sizeof(g_card_ptrs[0])); ++id) {
+        const uint8_t *f, *b;
+        if (!waifu_sdl3_hires_has_card(id)) continue;
+        f = waifu_assets_card_face(id);
+        b = waifu_assets_card_big_art(id);
+        if (f) { g_card_ptrs[g_card_ptr_count].ptr = f; g_card_ptrs[g_card_ptr_count].card_id = id; g_card_ptrs[g_card_ptr_count].kind = WAIFU_HIRES_FACE; ++g_card_ptr_count; }
+        if (b) { g_card_ptrs[g_card_ptr_count].ptr = b; g_card_ptrs[g_card_ptr_count].card_id = id; g_card_ptrs[g_card_ptr_count].kind = WAIFU_HIRES_BIG; ++g_card_ptr_count; }
+    }
+}
+
+/* If `pix` is the full-screen title/ending image, return 1 (title) / 2 (ending)
+   so it can be drawn from the 16:9 source across the full canvas. */
+static int fullimage_lookup(const uint8_t *pix)
+{
+    if (!pix) return 0;
+    if (pix == waifu_assets_title_screen_img()) return 1;
+    if (pix == waifu_assets_ending_screen_img()) return 2;
+    return 0;
+}
+
+/* If `pix` is a known card face/big-art buffer, return 1 and set the card id + kind. */
+static int card_lookup(const uint8_t *pix, int *card_id, int *kind)
+{
+    int i;
+    if (!pix) return 0;
+    if (!g_card_ptrs_built) build_card_ptr_map();
+    for (i = 0; i < g_card_ptr_count; ++i) {
+        if (g_card_ptrs[i].ptr == pix) {
+            *card_id = g_card_ptrs[i].card_id;
+            *kind = g_card_ptrs[i].kind;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Emit one hi-res card quad (6 verts, two triangles) from clip-space corners
+   wound (0,0),(1,0),(1,1),(0,1). Returns the hires_draws index, or -1 if full. */
+static int push_hires_quad(const float p[4][3], int card_id, int kind, int group, float gray)
+{
+    static const int order[6] = { 0, 1, 2, 0, 2, 3 };
+    static const float uv[4][2] = { {0,0}, {1,0}, {1,1}, {0,1} };
+    Sdl3HiresDraw *d;
+    int i;
+    if (g_frame.hires_draw_count >= SDL3_HIRES_MAX_DRAWS) return -1;
+    d = &g_frame.hires_draws[g_frame.hires_draw_count];
+    d->first_vertex = g_frame.hires_draw_count * 6;
+    d->card_id = card_id;
+    d->kind = kind;
+    d->group = group;
+    for (i = 0; i < 6; ++i) {
+        int c = order[i];
+        Sdl3ImageVertex *vt = &g_frame.hires_verts[d->first_vertex + i];
+        vt->x = p[c][0]; vt->y = p[c][1]; vt->w = p[c][2];
+        vt->u = uv[c][0]; vt->v = uv[c][1];
+        vt->gray = gray;
+    }
+    return g_frame.hires_draw_count++;
+}
+
+/* The card-face art window inside the 38x54 framed thumbnail (gen_assets pastes
+   the 30x30 art at (4,9)). The gold frame / stat plate stay on the 8bpp face;
+   only this inner window is overlaid with hi-res art. */
+#define CARD_ART_U0 (4.0f / 38.0f)
+#define CARD_ART_U1 (34.0f / 38.0f)
+#define CARD_ART_V0 (9.0f / 54.0f)
+#define CARD_ART_V1 (39.0f / 54.0f)
+
+/* Bilinear point on the card quad (corners wound (0,0),(1,0),(1,1),(0,1)) at
+   fractional (u, w); used to carve the art-window sub-quad from a board card. */
+static WaifuHw3DVec3 card_bilerp(const WaifuHw3DVec3 v[4], float u, float w)
+{
+    WaifuHw3DVec3 r;
+    float tx = (float)v[0].x + ((float)v[1].x - (float)v[0].x) * u;
+    float ty = (float)v[0].y + ((float)v[1].y - (float)v[0].y) * u;
+    float tz = (float)v[0].z + ((float)v[1].z - (float)v[0].z) * u;
+    float bx = (float)v[3].x + ((float)v[2].x - (float)v[3].x) * u;
+    float by = (float)v[3].y + ((float)v[2].y - (float)v[3].y) * u;
+    float bz = (float)v[3].z + ((float)v[2].z - (float)v[3].z) * u;
+    r.x = (int32_t)(tx + (bx - tx) * w);
+    r.y = (int32_t)(ty + (by - ty) * w);
+    r.z = (int32_t)(tz + (bz - tz) * w);
+    return r;
+}
+
 static void push_scene_vertex(const float pos[3], float u, float v, float tile)
 {
     Sdl3SceneVertex *vt;
@@ -390,90 +565,31 @@ int waifu_hw3d_tri(const WaifuHw3DCamera *cam, const WaifuHw3DVec3 v[3], int til
 int waifu_hw3d_floor(const WaifuHw3DCamera *cam, int32_t floor_y,
                      int tile_a, int tile_b, int32_t tile_size)
 {
-    /* One large rectangle on the plane y = floor_y centered under the camera;
-       the checkerboard tile pattern is evaluated per fragment from world XZ.
-       The rectangle is clipped against the camera near plane HERE, in world
-       space: a whole-plane quad has corners behind the eye, and triangles
-       crossing w = 0 do not rasterize reliably, so only forward geometry is
-       ever submitted. The far plane (200 world units) trims the horizon; the
-       sky's ground band sits behind it, matching the software look where the
-       raycast floor recedes into the distant-ground sky color. */
-    const float R = 180.0f;
-    const float NEAR_CZ = 0.06f;
+    /* Record the floor plane as an environment parameter set for the fullscreen
+       ray-plane pass (sdl3_video.c). Instead of triangulating a giant
+       camera-centred quad — which produces degenerate grazing vertices at the
+       near plane and never rasterizes cleanly — the GPU casts a ray per pixel
+       from the eye through that pixel, intersects the plane y = floor_y, and
+       samples the checkerboard at the hit point. That yields a truly infinite,
+       glitch-free floor that recedes exactly to the horizon. */
     const SceneXform *xf;
-    Sdl3FloorDraw *fd;
-    float fy;
-    float poly[8][2];   /* clipped polygon, world XZ */
-    float cz[8];
-    int poly_n = 4;
-    float clipped[8][2];
-    int n, i;
+    Sdl3Env *env = &g_frame.env;
 
     mark_3d();
     ensure_tiles_converted();
-    if (g_frame.floor_count >= SDL3_SCENE_MAX_FLOORS) return 1;
     xf = xform_for(cam);
-    fy = floor_y / 256.0f;
 
-    poly[0][0] = xf->ex - R; poly[0][1] = xf->ez - R;
-    poly[1][0] = xf->ex + R; poly[1][1] = xf->ez - R;
-    poly[2][0] = xf->ex + R; poly[2][1] = xf->ez + R;
-    poly[3][0] = xf->ex - R; poly[3][1] = xf->ez + R;
-
-    /* Camera-space forward distance of a floor point (y fixed at fy). */
-    for (i = 0; i < poly_n; ++i) {
-        float px = poly[i][0] - xf->ex;
-        float py = fy - xf->ey;
-        float pz = poly[i][1] - xf->ez;
-        cz[i] = px * xf->fx + py * xf->fy + pz * xf->fz;
-    }
-
-    /* Sutherland-Hodgman against cz >= NEAR_CZ (cz is affine in world XZ, so
-       edge interpolation is exact). */
-    n = 0;
-    for (i = 0; i < poly_n; ++i) {
-        int j = (i + 1) % poly_n;
-        int in_i = cz[i] >= NEAR_CZ;
-        int in_j = cz[j] >= NEAR_CZ;
-        if (in_i) {
-            clipped[n][0] = poly[i][0];
-            clipped[n][1] = poly[i][1];
-            ++n;
-        }
-        if (in_i != in_j) {
-            float t = (NEAR_CZ - cz[i]) / (cz[j] - cz[i]);
-            clipped[n][0] = poly[i][0] + t * (poly[j][0] - poly[i][0]);
-            clipped[n][1] = poly[i][1] + t * (poly[j][1] - poly[i][1]);
-            ++n;
-        }
-    }
-    if (n < 3) return 1; /* plane entirely behind the camera */
-
-    fd = &g_frame.floors[g_frame.floor_count];
-    fd->first_vertex = g_frame.floor_count * SDL3_FLOOR_VERTS_PER_DRAW;
-    fd->tile_a = (float)(tile_a < 0 ? 0 : tile_a);
-    fd->tile_b = (float)(tile_b < 0 ? 0 : tile_b);
-    fd->texels_per_unit = 32.0f / (tile_size > 0 ? tile_size / 256.0f : 1.0f);
-
-    /* Fan-triangulate the (convex) clipped polygon. */
-    fd->vertex_count = 0;
-    for (i = 1; i + 1 < n && fd->vertex_count + 3 <= SDL3_FLOOR_VERTS_PER_DRAW; ++i) {
-        int tri[3] = { 0, i, i + 1 };
-        int k;
-        for (k = 0; k < 3; ++k) {
-            WaifuHw3DVec3 wp;
-            float pos[3];
-            Sdl3FloorVertex *vt = &g_frame.floor_verts[fd->first_vertex + fd->vertex_count++];
-            wp.x = (int32_t)(clipped[tri[k]][0] * 256.0f);
-            wp.y = floor_y;
-            wp.z = (int32_t)(clipped[tri[k]][1] * 256.0f);
-            xform_point(xf, &wp, pos);
-            vt->x = pos[0]; vt->y = pos[1]; vt->w = pos[2];
-            vt->wx = clipped[tri[k]][0];
-            vt->wz = clipped[tri[k]][1];
-        }
-    }
-    g_frame.floor_count++;
+    env->has_floor = 1;
+    env->floor_y = floor_y / 256.0f;
+    env->tile_a = (float)(tile_a < 0 ? 0 : tile_a);
+    env->tile_b = (float)(tile_b < 0 ? 0 : tile_b);
+    env->texels_per_unit = 32.0f / (tile_size > 0 ? tile_size / 256.0f : 1.0f);
+    env->eye[0] = xf->ex; env->eye[1] = xf->ey; env->eye[2] = xf->ez;
+    env->right[0] = xf->rx; env->right[1] = xf->ry; env->right[2] = xf->rz;
+    env->up[0] = xf->ux; env->up[1] = xf->uy; env->up[2] = xf->uz;
+    env->fwd[0] = xf->fx; env->fwd[1] = xf->fy; env->fwd[2] = xf->fz;
+    env->sx = xf->sx;
+    env->sy = xf->sy;
     return 1;
 }
 
@@ -490,6 +606,28 @@ int waifu_hw3d_image_quad(const WaifuHw3DCamera *cam, const WaifuHw3DVec3 v[4],
 
     if (!pixels || w <= 0 || h <= 0) return 0;
     mark_3d();
+
+    /* Full-resolution card art (PC): a board card keeps its 8bpp framed face
+       (gold frame + stat plate) and overlays hi-res art in the inner art
+       window only, so the card still reads as a framed card. */
+    {
+        int card_id, kind;
+        if (card_lookup(pixels, &card_id, &kind)) {
+            WaifuHw3DVec3 aw[4];
+            float ap[4][3];
+            xf = xform_for(cam);
+            aw[0] = card_bilerp(v, CARD_ART_U0, CARD_ART_V0);
+            aw[1] = card_bilerp(v, CARD_ART_U1, CARD_ART_V0);
+            aw[2] = card_bilerp(v, CARD_ART_U1, CARD_ART_V1);
+            aw[3] = card_bilerp(v, CARD_ART_U0, CARD_ART_V1);
+            for (i = 0; i < 4; ++i) xform_point(xf, &aw[i], ap[i]);
+            /* Overlay drawn with the group-0 hi-res pass, after the 8bpp faces
+               (image_verts) below, so it lands on this card's art window. */
+            push_hires_quad(ap, card_id, WAIFU_HIRES_FACE, 0 /* 3D */, g);
+            (void)kind;
+        }
+    }
+
     if (g_frame.image_vert_count + 6 > SDL3_SCENE_MAX_IMAGE_VERTS) return 1;
     e = image_atlas_add(pixels, 0, w, h, 0);
     if (!e) return 1; /* atlas full: drop rather than corrupt */
@@ -599,6 +737,61 @@ int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
     static const float dim[4] = { 0.55f, 0.55f, 0.55f, 1.0f };
     const ImageEntry *e;
     if (!pix || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return 1;
+
+    /* 16:9 title / ending (PC): the full-screen source fills the whole canvas
+       (the menu text / logo still overlays in the centered column). */
+    {
+        int fi = fullimage_lookup(pix);
+        if (fi) { g_frame.full_image = fi; g_frame.has_content = 1; return 1; }
+    }
+
+    /* Full-resolution card art (PC): a hand thumbnail or detail big-art blit
+       becomes a hi-res quad, inserted into the UI run list at this exact point
+       so any frame/cursor/stat text drawn afterwards still lands on top. The
+       screen rect maps to clip space the same way the UI transform does. */
+    {
+        int card_id, kind;
+        if (!mask && card_lookup(pix, &card_id, &kind)) {
+            /* In the widescreen HUD bracket the enclosing quad maps game-x over
+               [0, WAIFU_FM_WIDTH+extra] (matching the 8bpp frame's ui.vert
+               transform), so a card sliding in from the true screen edge stays
+               aligned with its frame. */
+            float hx = (float)(g_ui_hud ? WAIFU_FM_WIDTH + g_ui_extra_w : WAIFU_FM_WIDTH) * 0.5f;
+            float hy = (float)WAIFU_FM_HEIGHT * 0.5f;
+            if (kind == WAIFU_HIRES_BIG) {
+                /* Detail big art is frameless (the panel frame is drawn
+                   separately): replace the whole rect with hi-res. */
+                float p[4][3];
+                int idx;
+                p[0][0] = (float)dx / hx - 1.0f;        p[0][1] = 1.0f - (float)dy / hy;        p[0][2] = 1.0f;
+                p[1][0] = (float)(dx + dw) / hx - 1.0f; p[1][1] = 1.0f - (float)dy / hy;        p[1][2] = 1.0f;
+                p[2][0] = (float)(dx + dw) / hx - 1.0f; p[2][1] = 1.0f - (float)(dy + dh) / hy; p[2][2] = 1.0f;
+                p[3][0] = (float)dx / hx - 1.0f;        p[3][1] = 1.0f - (float)(dy + dh) / hy; p[3][2] = 1.0f;
+                idx = push_hires_quad(p, card_id, kind, 1 /* 2D */, gray ? 1.0f : 0.0f);
+                if (idx >= 0) { ui_append_hires(idx); g_frame.has_content = 1; return 1; }
+            } else {
+                /* Card face: keep the 8bpp framed thumbnail (drawn below) and
+                   overlay hi-res art in the inner art window only. */
+                float ax0 = (float)dx + (float)dw * CARD_ART_U0, ax1 = (float)dx + (float)dw * CARD_ART_U1;
+                float ay0 = (float)dy + (float)dh * CARD_ART_V0, ay1 = (float)dy + (float)dh * CARD_ART_V1;
+                float p[4][3];
+                int idx;
+                e = image_atlas_add(pix, mask, sw, sh, colorkey0);
+                if (e) ui_push_quad((float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh),
+                                    (float)e->x, (float)e->y, (float)(e->x + sw), (float)(e->y + sh),
+                                    gray ? dim : white);
+                p[0][0] = ax0 / hx - 1.0f; p[0][1] = 1.0f - ay0 / hy; p[0][2] = 1.0f;
+                p[1][0] = ax1 / hx - 1.0f; p[1][1] = 1.0f - ay0 / hy; p[1][2] = 1.0f;
+                p[2][0] = ax1 / hx - 1.0f; p[2][1] = 1.0f - ay1 / hy; p[2][2] = 1.0f;
+                p[3][0] = ax0 / hx - 1.0f; p[3][1] = 1.0f - ay1 / hy; p[3][2] = 1.0f;
+                idx = push_hires_quad(p, card_id, kind, 1 /* 2D */, gray ? 1.0f : 0.0f);
+                if (idx >= 0) ui_append_hires(idx);
+                g_frame.has_content = 1;
+                return 1;
+            }
+        }
+    }
+
     e = image_atlas_add(pix, mask, sw, sh, colorkey0);
     if (!e) return 1; /* atlas full: drop rather than corrupt */
     ui_push_quad((float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh),
@@ -633,13 +826,94 @@ int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
 
 /* ---- platform video seams (replacing host_video.c) --------------------------- */
 
-/* No dedicated background layer: the software sky paints before the frame's
-   first 3D primitive and is captured into the backdrop runs, pixel-exact. */
+/* Sky band palette slots (stable semantic indices from
+   src/generated/waifu_assets.h; IDX_* names given so this mirrors the software
+   draw_*_sky() colours while following palette swaps/fades). */
+#define ENV_IDX_BLACK      255  /* IDX_BLACK */
+#define ENV_IDX_DIM        133  /* IDX_DIM */
+#define ENV_IDX_UI_BLUE    198  /* IDX_UI_BLUE */
+#define ENV_IDX_UI_TEAL    205  /* IDX_UI_TEAL */
+#define ENV_IDX_GOLD_DARK  100  /* IDX_GOLD_DARK */
+#define ENV_IDX_DARK_BROWN 243  /* IDX_DARK_BROWN */
+#define ENV_IDX_RED        135  /* IDX_RED */
+#define ENV_IDX_FLAME3     138  /* IDX_FLAME3 */
+
+static void env_stop(float dst[4], float y, uint8_t idx)
+{
+    float rgba[4];
+    pal_rgba_f(idx, rgba);
+    dst[0] = rgba[0]; dst[1] = rgba[1]; dst[2] = rgba[2];
+    dst[3] = y;
+}
+
+/* Resolve the story-scene sky into a smooth 4-stop vertical gradient. The stops
+   correspond to draw_*_sky()'s bands (top -> horizon), rendered interpolated on
+   the GPU instead of as hard rows. Requested through the same seam the PC-FX
+   RAINBOW and CD32X MD sky plane use, so the software band fill is skipped. */
+/* ---- widescreen HUD seam ---------------------------------------------------- */
+
+void waifu_sdl3_set_ui_extra_w(int extra)
+{
+    g_ui_extra_w = extra < 0 ? 0 : extra;
+}
+
+int waifu_platform_ui_extra_w(void)
+{
+    return g_ui_extra_w;
+}
+
+void waifu_platform_ui_hud(int on)
+{
+    int want = on ? 1 : 0;
+    if (want != g_ui_hud) ui_close_run();   /* don't coalesce across the boundary */
+    g_ui_hud = want;
+}
+
+/* SDL3 decodes the 16:9 ending image in the present pre-pass (fullimage_ensure),
+   not lazily mid-frame, so there is nothing to prewarm. */
+void waifu_platform_prewarm_ending(void) {}
+
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
 {
-    (void)kind;
-    (void)hscroll;
-    return 0;
+    Sdl3Env *env = &g_frame.env;
+    env->has_sky = 1;
+    env->sky_kind = (int)kind;
+    env->sky_hscroll = hscroll;
+
+    switch (kind) {
+    case WAIFU_BACKGROUND_STONE:  /* temple: blue -> teal -> dim -> brown */
+        env_stop(env->sky_stops[0], 0.00f, ENV_IDX_UI_BLUE);
+        env_stop(env->sky_stops[1], 0.28f, ENV_IDX_UI_TEAL);
+        env_stop(env->sky_stops[2], 0.52f, ENV_IDX_DIM);
+        env_stop(env->sky_stops[3], 0.80f, ENV_IDX_DARK_BROWN);
+        env_stop(env->horizon,      0.00f, ENV_IDX_DARK_BROWN);
+        break;
+    case WAIFU_BACKGROUND_EMBER:  /* volcano: black -> red -> flame -> brown */
+        env_stop(env->sky_stops[0], 0.00f, ENV_IDX_BLACK);
+        env_stop(env->sky_stops[1], 0.28f, ENV_IDX_RED);
+        env_stop(env->sky_stops[2], 0.52f, ENV_IDX_FLAME3);
+        env_stop(env->sky_stops[3], 0.80f, ENV_IDX_DARK_BROWN);
+        env_stop(env->horizon,      0.00f, ENV_IDX_DARK_BROWN);
+        break;
+    case WAIFU_BACKGROUND_SKY:    /* void: deep black with drifting stars */
+        env_stop(env->sky_stops[0], 0.00f, ENV_IDX_BLACK);
+        env_stop(env->sky_stops[1], 0.50f, ENV_IDX_BLACK);
+        env_stop(env->sky_stops[2], 0.85f, ENV_IDX_BLACK);
+        env_stop(env->sky_stops[3], 1.00f, ENV_IDX_BLACK);
+        env_stop(env->horizon,      0.00f, ENV_IDX_BLACK);
+        break;
+    default:                      /* desert: blue -> teal -> gold -> brown */
+        env_stop(env->sky_stops[0], 0.00f, ENV_IDX_UI_BLUE);
+        env_stop(env->sky_stops[1], 0.33f, ENV_IDX_UI_TEAL);
+        env_stop(env->sky_stops[2], 0.60f, ENV_IDX_GOLD_DARK);
+        env_stop(env->sky_stops[3], 0.85f, ENV_IDX_DARK_BROWN);
+        env_stop(env->horizon,      0.00f, ENV_IDX_DARK_BROWN);
+        break;
+    }
+    /* Far distance (world units) over which the floor fades into the horizon
+       colour, hiding checker aliasing at the horizon line. */
+    env->horizon[3] = 26.0f;
+    return 1;
 }
 
 /* No hardware text layer: UI panels stay on the (captured) software path. */
@@ -666,16 +940,29 @@ Sdl3SceneFrame *waifu_sdl3_scene_frame(void)
     return &g_frame;
 }
 
+/* Consumed once by the present after the environment pass has been rendered:
+   the sky request is set BEFORE the frame's clear_screen (which runs
+   frame_reset), so it must persist across the reset and only be dropped here so
+   a following non-story frame does not inherit a stale sky. */
+void waifu_sdl3_env_consume_sky(void)
+{
+    g_frame.env.has_sky = 0;
+}
+
 void waifu_sdl3_scene_frame_reset(void)
 {
     g_frame.has_content = 0;
     g_frame.cleared = 0;
     g_frame.scene_vert_count = 0;
-    g_frame.floor_count = 0;
+    g_frame.env.has_floor = 0;      /* sky fields persist: cleared at present */
     g_frame.image_vert_count = 0;
     g_frame.line_vert_count = 0;
+    g_frame.hires_draw_count = 0;
+    g_frame.full_image = 0;
+    g_ui_hud = 0;
     g_frame.ui_vert_count = 0;
     g_frame.ui_line_vert_count = 0;
+    g_frame.ui_glyph_vert_count = 0;
     g_frame.ui_run_count = 0;
     g_frame.bg_runs = -1;
     g_frame.image_atlas_used_h = 0;

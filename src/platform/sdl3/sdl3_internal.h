@@ -26,10 +26,10 @@
 #define SDL3_SCENE_MAX_SCENE_VERTS 16384   /* 3D atlas-tile quads/tris */
 #define SDL3_SCENE_MAX_IMAGE_VERTS 4096    /* 3D card-face quads */
 #define SDL3_SCENE_MAX_LINE_VERTS  16384   /* 3D line list */
-#define SDL3_SCENE_MAX_FLOORS      8
 
 #define SDL3_UI_MAX_VERTS          262144  /* 2D quads (6 verts each) */
 #define SDL3_UI_MAX_LINE_VERTS     16384   /* 2D line list */
+#define SDL3_UI_MAX_GLYPH_VERTS    32768   /* hi-res text glyph quads (6 each) */
 #define SDL3_UI_MAX_RUNS           4096
 
 /* Per-frame streaming RGBA atlas for every captured image (title/ending
@@ -46,11 +46,6 @@ typedef struct Sdl3SceneVertex {
     float u, v;         /* tile-relative UV; integer part = repeats */
     float tile;         /* atlas layer */
 } Sdl3SceneVertex;
-
-typedef struct Sdl3FloorVertex {
-    float x, y, w;
-    float wx, wz;       /* world-space XZ, for the checker pattern */
-} Sdl3FloorVertex;
 
 typedef struct Sdl3ImageVertex {
     float x, y, w;
@@ -69,29 +64,59 @@ typedef struct Sdl3UiVertex {
     float r, g, b, a;
 } Sdl3UiVertex;
 
-/* Up to 12 vertices per floor: the plane rectangle is clipped against the
-   camera near plane on the CPU (so no vertex is ever behind the eye — a
-   whole-plane quad crossing w=0 does not rasterize reliably) and the
-   resulting polygon fan-triangulated. */
-#define SDL3_FLOOR_VERTS_PER_DRAW 12
-
-typedef struct Sdl3FloorDraw {
-    int first_vertex;               /* into floor_verts */
-    int vertex_count;
+/* Environment: the story-map sky + infinite floor, rendered as one fullscreen
+   ray-cast pass (sdl3_video.c: pl_env) instead of captured geometry.
+     - The sky is a smooth vertical gradient between up to four palette-resolved
+       stops (replacing the software's hard fill_rows bands), requested through
+       waifu_platform_background_request() exactly like the PC-FX RAINBOW / CD32X
+       MD sky plane.  sky_* fields are populated BEFORE the frame's clear_screen
+       (which resets the rest of the frame), so they persist across the reset and
+       are consumed once at present.
+     - The floor is a checkerboard plane at y = floor_y sampled per fragment by
+       intersecting the eye ray with the plane — infinite, with no near/far clip
+       artifacts.  floor_* / camera fields are captured by waifu_hw3d_floor(). */
+typedef struct Sdl3Env {
+    int has_sky;                    /* sky gradient requested this frame */
+    int sky_kind;                   /* WaifuBackgroundKind (procedural stars/embers) */
+    int sky_hscroll;                /* parallax phase for the star/ember drift */
+    int has_floor;                  /* floor plane captured this frame */
+    float floor_y;                  /* plane height, world units */
     float tile_a, tile_b;           /* atlas layers for the checker */
     float texels_per_unit;          /* 32 / tile_size_world */
-} Sdl3FloorDraw;
+    float eye[3], right[3], up[3], fwd[3];  /* camera basis (orthonormal) */
+    float sx, sy;                   /* focal / (W/2), focal / (H/2) */
+    float sky_stops[4][4];          /* rgb + normalized screen-y per gradient stop */
+    float horizon[4];               /* rgb horizon/fog color + far distance */
+} Sdl3Env;
 
 typedef enum Sdl3UiRunKind {
     SDL3_UI_RUN_TRIS = 0,
-    SDL3_UI_RUN_LINES = 1
+    SDL3_UI_RUN_LINES = 1,
+    SDL3_UI_RUN_HIRES = 2,          /* one hi-res card (index into hires_draws) */
+    SDL3_UI_RUN_GLYPH = 3           /* run of FreeType text glyph quads */
 } Sdl3UiRunKind;
 
 typedef struct Sdl3UiRun {
     int kind;                       /* Sdl3UiRunKind */
-    int first;                      /* vertex offset in the kind's array */
-    int count;                      /* vertex count */
+    int first;                      /* vertex offset in the kind's array (TRIS/LINES);
+                                       hires_draws index (HIRES) */
+    int count;                      /* vertex count (TRIS/LINES); unused (HIRES) */
+    int hud;                        /* 1 = widescreen HUD run: render full-width */
 } Sdl3UiRun;
+
+/* Full-resolution card art (PC only): a card face/big-art draw substituted for
+   the 8bpp blit. Vertices are Sdl3ImageVertex (clip space + 0..1 UV) in
+   hires_verts; each draw names the card + framing so the video layer can bind
+   the per-card mipmapped texture. group 0 = 3D board card (drawn with the 3D
+   solids, full-width viewport); group 1 = 2D card (hand/detail), interleaved in
+   the UI run list so draw order (frames, cursors, text over the art) is kept. */
+#define SDL3_HIRES_MAX_DRAWS 64
+typedef struct Sdl3HiresDraw {
+    int first_vertex;               /* into hires_verts (6 per quad) */
+    int card_id;
+    int kind;                       /* WAIFU_HIRES_FACE / WAIFU_HIRES_BIG */
+    int group;                      /* 0 = 3D solid, 1 = 2D UI */
+} Sdl3HiresDraw;
 
 typedef struct Sdl3SceneFrame {
     int has_content;                /* anything captured since last reset */
@@ -105,9 +130,7 @@ typedef struct Sdl3SceneFrame {
     Sdl3SceneVertex scene_verts[SDL3_SCENE_MAX_SCENE_VERTS];
     int scene_vert_count;
 
-    Sdl3FloorVertex floor_verts[SDL3_SCENE_MAX_FLOORS * SDL3_FLOOR_VERTS_PER_DRAW];
-    Sdl3FloorDraw floors[SDL3_SCENE_MAX_FLOORS];
-    int floor_count;
+    Sdl3Env env;                    /* story-map sky gradient + infinite floor */
 
     Sdl3ImageVertex image_verts[SDL3_SCENE_MAX_IMAGE_VERTS];
     int image_vert_count;
@@ -115,11 +138,23 @@ typedef struct Sdl3SceneFrame {
     Sdl3LineVertex line_verts[SDL3_SCENE_MAX_LINE_VERTS];
     int line_vert_count;
 
+    /* --- hi-res card art (PC only) --- */
+    Sdl3ImageVertex hires_verts[SDL3_HIRES_MAX_DRAWS * 6];
+    Sdl3HiresDraw hires_draws[SDL3_HIRES_MAX_DRAWS];
+    int hires_draw_count;
+    int full_image;                 /* 0 none, 1 title, 2 ending: draw the 16:9
+                                       source across the full canvas (PC) */
+
     /* --- 2D UI layer --- */
     Sdl3UiVertex ui_verts[SDL3_UI_MAX_VERTS];
     int ui_vert_count;
     Sdl3UiVertex ui_line_verts[SDL3_UI_MAX_LINE_VERTS];
     int ui_line_vert_count;
+    /* Hi-res text glyph quads: same Sdl3UiVertex layout as the 2D UI but the uv
+       is normalized (0..1) into the persistent glyph atlas, sampled linearly by
+       the glyph pipeline. Interleaved in the run list to keep draw order. */
+    Sdl3UiVertex ui_glyph_verts[SDL3_UI_MAX_GLYPH_VERTS];
+    int ui_glyph_vert_count;
     Sdl3UiRun ui_runs[SDL3_UI_MAX_RUNS];
     int ui_run_count;
     int bg_runs;                    /* runs captured before the first 3D
@@ -141,5 +176,12 @@ Sdl3SceneFrame *waifu_sdl3_scene_frame(void);
    frame's geometry has been uploaded). The background color and converted
    tile atlas persist across frames. */
 void waifu_sdl3_scene_frame_reset(void);
+
+/* Drops the persistent sky request after the environment pass consumed it. */
+void waifu_sdl3_env_consume_sky(void);
+
+/* Set by the video layer each present: the extra game-x HUD width the current
+   widescreen canvas affords (0 = none). Read back by waifu_platform_ui_extra_w. */
+void waifu_sdl3_set_ui_extra_w(int extra);
 
 #endif /* WAIFU_SDL3_INTERNAL_H */
