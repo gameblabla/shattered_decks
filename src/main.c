@@ -6214,13 +6214,6 @@ static WaifuBattleBaseCache g_b_base_cache_top;
 static WaifuBattleBaseCache g_b_handtop_mid_cache[WAIFU_PCFX_HANDTOP_ANCHORS - 2];
 /* Round-robin cursor for prewarming one missing lift keyframe per idle frame. */
 static int g_b_handtop_prewarm_index = 0;
-/* Card-placement views are static backgrounds too: during the fly-in the board +
-   field + HUD do not change (the card is committed to the field only when the
-   animation ends), yet the placement phase re-runs the whole 3D field render
-   every frame just to draw the moving flying-card/cursor/hand on top.  Cache the
-   two placement composites (player + COM side) and overlay the animation. */
-static WaifuBattleBaseCache g_b_base_cache_place;
-static WaifuBattleBaseCache g_b_base_cache_enemy_place;
 #endif
 #endif
 
@@ -6232,8 +6225,6 @@ static void invalidate_battle_composite_cache(void)
     g_b_base_cache_top.valid = 0;
     for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS - 2; ++i) g_b_handtop_mid_cache[i].valid = 0;
     g_b_handtop_prewarm_index = 0;
-    g_b_base_cache_place.valid = 0;
-    g_b_base_cache_enemy_place.valid = 0;
 #endif
 #endif
 }
@@ -8920,8 +8911,6 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
 #if defined(WAIFU_FM_PCFX)
     int anchor = pcfx_handtop_anchor_index_for_camera(cam);
     if (anchor >= 0) return pcfx_handtop_cache_for_anchor(anchor);
-    if (camera_equal(cam, placement_camera())) return &g_b_base_cache_place;
-    if (camera_equal(cam, enemy_placement_camera())) return &g_b_base_cache_enemy_place;
     return NULL;
 #else
     (void)cam;
