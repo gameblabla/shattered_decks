@@ -76,6 +76,38 @@ typedef enum WaifuBackgroundKind {
  * can later present `kind`/`hscroll` and return 1 without touching game code. */
 int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll);
 
+/* ---- Widescreen HUD -------------------------------------------------------
+ * On a widescreen presentation (the SDL3/PC build) the 3D view fills the frame,
+ * but the fixed 2D UI is otherwise centered in a game-aspect column with side
+ * bars. These let the duel HUD reach the true screen edges:
+ *   - ui_extra_w() is the extra game-x width available beyond WAIFU_FM_WIDTH
+ *     (0 when there is no widescreen room); the HUD adds it to right-anchored
+ *     positions and to the full-width bar so they span the wider frame.
+ *   - ui_hud(1) .. ui_hud(0) brackets the HUD draw calls; the platform renders
+ *     everything between them across the FULL width (mapping game-x [0,
+ *     WAIFU_FM_WIDTH+extra] to the whole frame at native scale) instead of the
+ *     centered column, so edge-anchored HUD lands at the screen edges.
+ * Non-widescreen platforms return 0 / no-op, leaving the layout unchanged. */
+int waifu_platform_ui_extra_w(void);
+void waifu_platform_ui_hud(int on);
+
+/* Per-character text rendering seam. A platform that can render high-resolution
+   glyphs (SDL3/PC via FreeType) draws the character at cell origin (x,y) with
+   the given fixed cell advance and returns 1; the common text primitives then
+   skip their 8x8 bitmap blit. Returns 0 to fall back to the bitmap font (every
+   console target, and SDL3 if the font could not be loaded). fg/shadow are
+   palette indices. */
+int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch,
+                         unsigned char fg, unsigned char shadow);
+
+/* Preload the story-ending full-screen image so the ending scene does not stall
+   mid-typewriter on its first frame. On PC-FX the ending image is a direct
+   CD->KRAM DMA performed lazily by the first ending present; calling this while
+   the screen is already faded to black (end of the reward->ending transition)
+   moves that blocking read behind the black frame. No-op where the ending image
+   is preloaded through the normal asset/loading path (CD32X) or is cheap (PC). */
+void waifu_platform_prewarm_ending(void);
+
 /* ---- Text: software + hardware --------------------------------------------
  * UI text is rendered two complementary ways, and a single platform may use
  * BOTH at once (PC-FX does):

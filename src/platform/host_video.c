@@ -19,6 +19,13 @@ int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
     return 0;
 }
 
+/* No widescreen room on the host framebuffer: the HUD keeps its normal layout. */
+int waifu_platform_ui_extra_w(void) { return 0; }
+void waifu_platform_ui_hud(int on) { (void)on; }
+int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, unsigned char fg, unsigned char shadow)
+{ (void)x; (void)y; (void)cell_w; (void)ch; (void)fg; (void)shadow; return 0; }
+void waifu_platform_prewarm_ending(void) {}
+
 /* The host has no hardware text layer, so every UI panel is rendered with the
    software text API by the caller. Returning 0 selects that software path. */
 int waifu_platform_text_overlay(WaifuTextOverlayKind kind, const WaifuTextOverlayParams *params)

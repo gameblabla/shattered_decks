@@ -202,6 +202,31 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_HAND_Y_BASE (WAIFU_BOTTOM_INFO_Y - 51)
 #define WAIFU_BATTLE_CARD_W 120
 #define WAIFU_BATTLE_CARD_H 160
+
+/* Runtime right-edge clip for the UI drawing primitives. Normally
+   WAIFU_FM_WIDTH; ui_hud_begin() widens it to the full widescreen HUD extent so
+   edge-anchored HUD (bottom bar, LP panels) is not clipped back to the
+   game-aspect column. Non-widescreen platforms report 0 extra, so it stays
+   WAIFU_FM_WIDTH and every target's software clip is unchanged. */
+static int g_ui_clip_w = WAIFU_FM_WIDTH;
+/* Reference-counted so full-screen scenes can wrap themselves in the HUD bracket
+   and still call helpers (dialog box, etc.) that also open their own bracket
+   without the inner ui_hud_end() prematurely closing the outer one. */
+static int g_ui_hud_depth = 0;
+static void ui_hud_begin(void)
+{
+    if (g_ui_hud_depth++ == 0) {
+        waifu_platform_ui_hud(1);
+        g_ui_clip_w = WAIFU_FM_WIDTH + waifu_platform_ui_extra_w();
+    }
+}
+static void ui_hud_end(void)
+{
+    if (g_ui_hud_depth > 0 && --g_ui_hud_depth == 0) {
+        g_ui_clip_w = WAIFU_FM_WIDTH;
+        waifu_platform_ui_hud(0);
+    }
+}
 #define WAIFU_BATTLE_CARD_X0 (WAIFU_UI_CENTER_DX + 4)
 #define WAIFU_BATTLE_CARD_X1 (WAIFU_UI_CENTER_DX + 132)
 #define WAIFU_BATTLE_CARD_Y (((WAIFU_FM_HEIGHT - 202) < 33) ? (WAIFU_FM_HEIGHT - 202) : 33)
@@ -1855,9 +1880,9 @@ static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
 
 static void put_px(int x, int y, uint8_t c)
 {
-    if ((unsigned)x < WAIFU_FM_WIDTH && (unsigned)y < WAIFU_FM_HEIGHT) {
+    if ((unsigned)x < (unsigned)g_ui_clip_w && (unsigned)y < WAIFU_FM_HEIGHT) {
         if (waifu_hw2d_px(x, y, c)) return;
-        framebuffer[y * WAIFU_FM_WIDTH + x] = c;
+        if (x < WAIFU_FM_WIDTH) framebuffer[y * WAIFU_FM_WIDTH + x] = c;
     }
 }
 
@@ -1865,11 +1890,12 @@ static void hline(int x0, int x1, int y, uint8_t c)
 {
     if ((unsigned)y >= WAIFU_FM_HEIGHT) return;
     if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
-    if (x1 < 0 || x0 >= WAIFU_FM_WIDTH) return;
+    if (x1 < 0 || x0 >= g_ui_clip_w) return;
     if (x0 < 0) x0 = 0;
-    if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;
+    if (x1 >= g_ui_clip_w) x1 = g_ui_clip_w - 1;
     if (waifu_hw2d_rect(x0, y, x1 - x0 + 1, 1, c)) return;
-    fill_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0, x1 - x0 + 1, c);
+    if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;   /* software framebuffer stride */
+    if (x0 <= x1) fill_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0, x1 - x0 + 1, c);
 }
 
 static void rect_fill(int x, int y, int w, int h, uint8_t c)
@@ -1879,12 +1905,14 @@ static void rect_fill(int x, int y, int w, int h, uint8_t c)
     int y0 = y;
     int x1 = x + w - 1;
     int y1 = y + h - 1;
-    if (x1 < 0 || y1 < 0 || x0 >= WAIFU_FM_WIDTH || y0 >= WAIFU_FM_HEIGHT) return;
+    if (x1 < 0 || y1 < 0 || x0 >= g_ui_clip_w || y0 >= WAIFU_FM_HEIGHT) return;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;
+    if (x1 >= g_ui_clip_w) x1 = g_ui_clip_w - 1;
     if (y1 >= WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT - 1;
     if (waifu_hw2d_rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, c)) return;
+    if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;   /* software framebuffer stride */
+    if (x0 > x1) return;
     int count = x1 - x0 + 1;
     uint8_t *dst = framebuffer + y0 * WAIFU_FM_WIDTH + x0;
     for (int yy = y0; yy <= y1; ++yy) {
@@ -1897,6 +1925,26 @@ static void rect_outline(int x, int y, int w, int h, uint8_t c)
 {
     hline(x, x+w-1, y, c); hline(x, x+w-1, y+h-1, c);
     for (int yy = y; yy < y+h; ++yy) { put_px(x, yy, c); put_px(x+w-1, yy, c); }
+}
+
+/* Solid t-pixel-thick line, plotted as t x t filled blocks along a Bresenham
+   walk so it scales with the render resolution (the GPU line primitive is only
+   1 device pixel — too thin for the hi-res selector/target). */
+static void thick_line(int x0, int y0, int x1, int y1, int t, uint8_t c)
+{
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1, sx = x0 < x1 ? 1 : -1;
+    int dy = y1 > y0 ? -(y1 - y0) : -(y0 - y1), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy, r = t / 2, guard = 0;
+    if (t < 1) t = 1;
+    for (;;) {
+        rect_fill(x0 - r, y0 - r, t, t, c);
+        if ((x0 == x1 && y0 == y1) || ++guard > 4096) break;
+        {
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+    }
 }
 
 /* Truncating 64-bit division without libgcc's ___divdi3 (~620 bytes of image
@@ -1996,6 +2044,9 @@ static void draw_text(int x, int y, const char *s, uint8_t fg, uint8_t shadow)
     for (; *s; ++s) {
         if (*s == '\n') { y += 8; x = ox; continue; }
         unsigned char ch = (unsigned char)*s;
+#if defined(WAIFU_PLATFORM_HW3D) /* hi-res glyph seam only exists on the SDL3/PC build; keep consoles' per-char path a plain bitmap blit (no cross-TU call) */
+        if (waifu_platform_glyph(x, y, 8, ch, fg, shadow)) { x += 8; continue; }
+#endif
         const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
         for (int yy = 0; yy < 8; ++yy) {
             uint8_t row = charfont[yy];
@@ -2018,6 +2069,9 @@ static void draw_text_small(int x, int y, const char *s, uint8_t fg, uint8_t sha
        spacing while preserving the complete glyph bitmap. */
     for (; *s; ++s) {
         unsigned char ch = (unsigned char)*s;
+#if defined(WAIFU_PLATFORM_HW3D)
+        if (waifu_platform_glyph(x, y, 7, ch, fg, shadow)) { x += 7; continue; }
+#endif
         const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
         for (int yy = 0; yy < 8; ++yy) {
             uint8_t row = charfont[yy];
@@ -2192,14 +2246,91 @@ static int story_slide_x(int from_x, int to_x, int frame)
     return lerp_i(from_x, to_x, q8_smooth_ratio(frame, 26));
 }
 
-static void draw_story_dialog_box(const char *speaker, const char *subhead, const char *text, uint8_t speaker_color, int f)
+/* --- Shared typewriter reveal (story dialogue + ending narration) ---------
+   Narrative text types on one character at a time instead of appearing all at
+   once. The reveal is a pure function of how long the current (scene, line) has
+   been on screen: `now` is the scene's per-state frame counter (g_i_frame), and
+   the origin is captured whenever the scene or line changes (or the frame
+   counter resets on state re-entry). Both the story dialogue box and the ending
+   narration share this so the effect and its timing live in ONE place. */
+static void waifu_str_copy_n(char *dst, int dst_size, const char *src, int max_chars);
+#define WAIFU_TEXT_TYPE_FRAMES_PER_CHAR 2   /* ~30 chars/sec at 60fps: fairly fast */
+enum {
+    STORY_TW_INTRO = 1,
+    STORY_TW_FIRE,
+    STORY_TW_PLAZA,
+    STORY_TW_ENDING
+};
+static int g_tw_scene = 0;
+static int g_tw_line = -0x40000000;
+static int g_tw_origin = 0;
+
+static int story_text_reveal_count(int scene, int line, int now, int len)
+{
+    int elapsed, vis;
+    if (scene != g_tw_scene || line != g_tw_line || now < g_tw_origin) {
+        g_tw_scene = scene;
+        g_tw_line = line;
+        g_tw_origin = now;
+    }
+    elapsed = now - g_tw_origin;
+    if (elapsed < 0) elapsed = 0;
+    vis = elapsed / WAIFU_TEXT_TYPE_FRAMES_PER_CHAR + 1;   /* first glyph shows at once */
+    if (vis > len) vis = len;
+    return vis;
+}
+
+/* True once the current (scene,line) has fully typed out. */
+static int story_text_fully_typed(int scene, int line, int now, int len)
+{
+    return story_text_reveal_count(scene, line, now, len) >= len;
+}
+
+/* Frame at which the current line's typing started (valid after a matching
+   story_text_reveal_count/… call this frame). Used to snap a line to fully
+   typed on a button press: set the scene frame to origin + len*FPC. */
+static int story_text_reveal_origin(void) { return g_tw_origin; }
+
+/* On a button press: if (scene,line) is still typing, returns the scene-frame
+   value to snap it fully typed; returns -1 if it's already done (advance the
+   line). `now` is the scene's frame counter (g_i_frame). Must be called the same
+   frame the line was drawn so the reveal origin is current. */
+static int story_text_snap_frame(int scene, int line, int now, const char *s)
+{
+    int len = (int)strlen(s);
+    if (story_text_fully_typed(scene, line, now, len)) return -1;
+    return story_text_reveal_origin() + len * WAIFU_TEXT_TYPE_FRAMES_PER_CHAR;
+}
+
+static void draw_story_dialog_box(int scene, int line, const char *speaker, const char *subhead, const char *text, uint8_t speaker_color, int f)
 {
     int box_y = WAIFU_FM_HEIGHT - 66;
-    (void)f;
-    draw_panel_rect(0, box_y, WAIFU_FM_WIDTH, 66, IDX_UI_DARK);
+    /* Widescreen: the dark bar spans the true screen width so there are no side
+       bars under the scene. RPG convention: the speaker name and body text stay
+       LEFT-aligned (the text just wraps across the wider box), and the flavour
+       subhead is anchored to the box's top-right instead of floating mid-box.
+       extra==0 on console -> the subhead keeps its original x=108 and the body
+       wrap width is unchanged, so the layout is byte-identical. */
+    int ex = waifu_platform_ui_extra_w();
+    int box_w = WAIFU_FM_WIDTH + ex;
+    int sub_x = 108;
+    int full_len = (int)strlen(text);
+    int vis = story_text_reveal_count(scene, line, f, full_len);
+    char shown[192];
+    waifu_str_copy_n(shown, (int)sizeof(shown), text, vis);
+    ui_hud_begin();
+    draw_panel_rect(0, box_y, box_w, 66, IDX_UI_DARK);
     draw_text_small(10, box_y + 10, speaker, speaker_color, IDX_BLACK);
-    if (subhead && *subhead) draw_text_small_ellipsis(108, box_y + 10, subhead, 20, IDX_UI_LIGHT, IDX_BLACK);
-    draw_wrapped_text_small_box(10, box_y + 25, WAIFU_FM_WIDTH - 20, 4, 10, text, IDX_WHITE, IDX_BLACK);
+    if (subhead && *subhead) {
+        if (ex > 0) {
+            int len = (int)strlen(subhead);
+            if (len > 20) len = 20;
+            sub_x = box_w - 10 - len * 7;   /* right-align to the box edge */
+        }
+        draw_text_small_ellipsis(sub_x, box_y + 10, subhead, 20, IDX_UI_LIGHT, IDX_BLACK);
+    }
+    draw_wrapped_text_small_box(10, box_y + 25, box_w - 20, 4, 10, shown, IDX_WHITE, IDX_BLACK);
+    ui_hud_end();
 }
 
 static void fmt_i32_dec(char *dst, int dst_size, int value);
@@ -2209,13 +2340,16 @@ static void fmt_prefixed_i32(char *dst, int dst_size, char prefix, int value);
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
 {
     char lpbuf[16];
+    /* Widescreen HUD: render the top HUD across the full frame so FIELD anchors
+       to the true left edge and the LP panels to the true right edge. */
+    ui_hud_begin();
     draw_panel_rect(6 + field_ox, 7 + field_oy, 49, 29, IDX_UI_DARK);
     draw_text_small(11 + field_ox, 11 + field_oy, "FIELD", IDX_WHITE, IDX_BLACK);
     draw_text(11 + field_ox, 23 + field_oy, story_water_field_active() ? "WATER" : "MARE", IDX_WHITE, IDX_BLACK);
 
     /* Anchor the LP panel to the right edge: shifts right by the extra width on
-       wider framebuffers, stays put on the 256-wide layout. */
-    lp_ox += WAIFU_UI_EXTRA_W;
+       wider framebuffers (compile-time) plus the runtime widescreen room. */
+    lp_ox += WAIFU_UI_EXTRA_W + waifu_platform_ui_extra_w();
     draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
     draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
@@ -2227,6 +2361,7 @@ static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
     draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
     fmt_lp5(lpbuf, g_you_lp_disp);
     draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
+    ui_hud_end();
 }
 
 static void draw_hud(void)
@@ -2242,7 +2377,8 @@ static void draw_hud(void)
 static void draw_lp_counters(int lp_ox, int lp_oy)
 {
     char lpbuf[16];
-    lp_ox += WAIFU_UI_EXTRA_W;
+    ui_hud_begin();
+    lp_ox += WAIFU_UI_EXTRA_W + waifu_platform_ui_extra_w();
     draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
     rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
     draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
@@ -2254,6 +2390,7 @@ static void draw_lp_counters(int lp_ox, int lp_oy)
     draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
     fmt_lp5(lpbuf, g_you_lp_disp);
     draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
+    ui_hud_end();
 }
 
 static uint8_t stat_delta_color(int delta)
@@ -2440,9 +2577,13 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
 {
     (void)mode;
     int base = WAIFU_BOTTOM_INFO_Y + yoff;
-    rect_fill(0, base, WAIFU_FM_WIDTH, 35, IDX_UI_TEAL);
-    hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
-    for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
+    /* Widescreen: the info bar spans the full frame; the name stays at the left
+       edge, stats anchor to the right edge. */
+    int hw = WAIFU_FM_WIDTH + waifu_platform_ui_extra_w();
+    ui_hud_begin();
+    rect_fill(0, base, hw, 35, IDX_UI_TEAL);
+    hline(0,hw-1,base,IDX_WHITE); hline(0,hw-1,base+1,IDX_UI_LIGHT); hline(0,hw-1,base+2,IDX_DIM);
+    for (int y = base+4; y < base+35; y += 3) hline(0,hw-1,y,IDX_UI_TEAL2);
     char line[64];
     if (is_support_card(card_id)) {
         char support_line[64];
@@ -2450,10 +2591,11 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
         draw_text(6, base+6, support_line, IDX_WHITE, IDX_BLACK);
         waifu_str_copy_n(support_line, (int)sizeof(support_line), support_card_type(card_id), 31);
         draw_text_small(6, base+21, support_line, IDX_WHITE, IDX_BLACK);
-        draw_text_small(WAIFU_FM_WIDTH - 68, base+21, "USE", IDX_GOLD_HI, IDX_BLACK);
+        draw_text_small(hw - 68, base+21, "USE", IDX_GOLD_HI, IDX_BLACK);
+        ui_hud_end();
         return;
     }
-    if (!is_monster_card(card_id)) return;
+    if (!is_monster_card(card_id)) { waifu_platform_ui_hud(0); return; }
     waifu_str_copy_n(line, (int)sizeof(line), waifu_card_names[card_id], 24);
     draw_text(6, base+6, line, IDX_WHITE, IDX_BLACK);
     fmt_join2(line, (int)sizeof(line), waifu_card_attr[card_id], " / ", waifu_card_tribe[card_id]);
@@ -2461,10 +2603,11 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     if (atk < 0) atk = (int)waifu_card_atk[card_id];
     if (defv < 0) defv = (int)waifu_card_def[card_id];
     fmt_prefixed_i32(line, (int)sizeof(line), 'x', atk);
-    draw_text_small(WAIFU_FM_WIDTH - 41, base+15, line, stat_delta_color(atk - (int)waifu_card_atk[card_id]), IDX_BLACK);
+    draw_text_small(hw - 41, base+15, line, stat_delta_color(atk - (int)waifu_card_atk[card_id]), IDX_BLACK);
     fmt_i32_dec(line, (int)sizeof(line), defv);
-    draw_text_small(WAIFU_FM_WIDTH - 35, base+26, line, stat_delta_color(defv - (int)waifu_card_def[card_id]), IDX_BLACK);
-    rect_outline(WAIFU_FM_WIDTH - 41,base+25,6,6,IDX_WHITE);
+    draw_text_small(hw - 35, base+26, line, stat_delta_color(defv - (int)waifu_card_def[card_id]), IDX_BLACK);
+    rect_outline(hw - 41,base+25,6,6,IDX_WHITE);
+    ui_hud_end();
 }
 
 static void draw_bottom_info_offset(int card_id, const char *mode, int yoff)
@@ -3492,14 +3635,22 @@ static int hand_y(void) { return WAIFU_HAND_Y_BASE + g_player_hand_offset_y; }
 
 static void draw_player_hand(int f, int selected)
 {
+    /* Widescreen: render the whole hand across the full frame (ui_hud), shifting
+       every card right by half the extra room so the hand stays centered but no
+       card is clipped at the column edge — and a card drawn in from the true
+       screen edge slides all the way in instead of popping in cropped. */
+    int extra = waifu_platform_ui_extra_w();
+    int ho = extra / 2;
     PROFILE_HAND_BEGIN();
+    if (extra > 0) ui_hud_begin();
     for (int i = 0; i < 5; ++i) {
-        int x0 = hand_final_x(i);
+        int x0 = hand_final_x(i) + ho;
         int y = hand_y();
         int x = x0;
         if (f < 116) {
             int32_t t = q8_smooth_ratio(f - (84 + i * 4), 12);
-            x = lerp_i(272 + WAIFU_UI_EXTRA_W, x0, t);
+            int start = (extra > 0) ? (WAIFU_FM_WIDTH + extra + 24) : (272 + WAIFU_UI_EXTRA_W);
+            x = lerp_i(start, x0, t);
         }
         if (i == g_player_hide_index) continue;
         if (((f >= 150 && f < 176) || (f >= 475 && f < 505) || (f >= 910 && f < 930)) && i == selected) continue;
@@ -3507,6 +3658,7 @@ static void draw_player_hand(int f, int selected)
         else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, 38, 50, 0));
         if (!g_suppress_hand_cursor && i == selected && f >= 102) draw_red_cursor(x, y, 38, 50);
     }
+    if (extra > 0) ui_hud_end();
     PROFILE_HAND_END();
 }
 
@@ -4269,9 +4421,8 @@ static void draw_zone_cursor_q(Camera cam, int32_t col, int32_t row)
     p1.x = p1.x < 0 ? 0 : (p1.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p1.x); p1.y = p1.y < 0 ? 0 : (p1.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p1.y);
     p2.x = p2.x < 0 ? 0 : (p2.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p2.x); p2.y = p2.y < 0 ? 0 : (p2.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p2.y);
     p3.x = p3.x < 0 ? 0 : (p3.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p3.x); p3.y = p3.y < 0 ? 0 : (p3.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p3.y);
-    line_i(p0.x,p0.y,p1.x,p1.y,IDX_RED); line_i(p1.x,p1.y,p2.x,p2.y,IDX_RED);
-    line_i(p2.x,p2.y,p3.x,p3.y,IDX_RED); line_i(p3.x,p3.y,p0.x,p0.y,IDX_RED);
-    line_i(p0.x+1,p0.y,p1.x+1,p1.y,IDX_RED); line_i(p3.x+1,p3.y,p2.x+1,p2.y,IDX_RED);
+    thick_line(p0.x,p0.y,p1.x,p1.y,3,IDX_RED); thick_line(p1.x,p1.y,p2.x,p2.y,3,IDX_RED);
+    thick_line(p2.x,p2.y,p3.x,p3.y,3,IDX_RED); thick_line(p3.x,p3.y,p0.x,p0.y,3,IDX_RED);
 }
 
 static void draw_zone_cursor(Camera cam, int col, int row)
@@ -4306,19 +4457,15 @@ static void draw_zone_reticle_q(Camera cam, int32_t col, int32_t row)
         int qx = (b.x - a.x) / 4, qy = (b.y - a.y) / 4;
         int mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
         int tx = mx + (cx - mx) / 3, ty = my + (cy - my) / 3;
-        /* Corner brackets: only the outer quarter of each edge is drawn,
-           leaving the middle open (doubled for FM readability). */
-        line_i(a.x, a.y, a.x + qx, a.y + qy, IDX_RED);
-        line_i(a.x + 1, a.y, a.x + qx + 1, a.y + qy, IDX_RED);
-        line_i(b.x, b.y, b.x - qx, b.y - qy, IDX_RED);
-        line_i(b.x + 1, b.y, b.x - qx + 1, b.y - qy, IDX_RED);
+        /* Corner brackets (thick so they read at hi-res): only the outer
+           quarter of each edge is drawn, leaving the middle open. */
+        thick_line(a.x, a.y, a.x + qx, a.y + qy, 3, IDX_RED);
+        thick_line(b.x, b.y, b.x - qx, b.y - qy, 3, IDX_RED);
         /* Crosshair tick from the open edge midpoint toward the centre. */
-        line_i(mx, my, tx, ty, IDX_RED);
-        line_i(mx + 1, my, tx + 1, ty, IDX_RED);
+        thick_line(mx, my, tx, ty, 3, IDX_RED);
     }
     /* Centre dot. */
-    hline(cx - 1, cx + 2, cy, IDX_RED);
-    hline(cx - 1, cx + 2, cy - 1, IDX_RED);
+    rect_fill(cx - 2, cy - 2, 4, 4, IDX_RED);
 }
 
 static void draw_zone_reticle(Camera cam, int col, int row)
@@ -4721,8 +4868,15 @@ static void draw_battle_cutin_event_ex(int f, int start,
     }
 
     int local = local0 - WAIFU_BATTLE_PRELUDE_FRAMES;
-    const int ax = WAIFU_BATTLE_CARD_X0, ay = WAIFU_BATTLE_CARD_Y;
-    const int dx = WAIFU_BATTLE_CARD_X1, dy = WAIFU_BATTLE_CARD_Y;
+    /* Widescreen: center the whole clash on the true screen (the pair stays
+       centred, sliding in from the real screen edges) instead of confining it to
+       the game-aspect column. ho==0 on console -> byte-identical positions. The
+       HUD bracket is opened here, after the 3D prelude returned above, so the
+       ui_hud depth stays balanced. */
+    const int ho = waifu_platform_ui_extra_w() / 2;
+    ui_hud_begin();
+    const int ax = WAIFU_BATTLE_CARD_X0 + ho, ay = WAIFU_BATTLE_CARD_Y;
+    const int dx = WAIFU_BATTLE_CARD_X1 + ho, dy = WAIFU_BATTLE_CARD_Y;
     const int slide_dur = WAIFU_BATTLE_SLIDE_FRAMES;
     const int atk_flip_start = slide_dur;
     const int flip_dur = WAIFU_BATTLE_FLIP_FRAMES;
@@ -4749,7 +4903,7 @@ static void draw_battle_cutin_event_ex(int f, int start,
     if (local < slide_dur) {
         int32_t e = q8_smooth_ratio(local, slide_dur);
         int ax0 = lerp_i(-WAIFU_BATTLE_CARD_W, ax, e);
-        int dx0 = lerp_i(WAIFU_FM_WIDTH + 8, dx, e);
+        int dx0 = lerp_i(WAIFU_FM_WIDTH + waifu_platform_ui_extra_w() + 8, dx, e);
         draw_cutin_battle_card(atk_id, ax0, ay, atk_back, 1);
         draw_cutin_battle_card(def_id, dx0, dy, def_back, 0);
     } else if (atk_back && local < def_flip_start) {
@@ -4857,11 +5011,13 @@ static void draw_battle_cutin_event_ex(int f, int start,
         const char *name = is_monster_card(atk_id) ? waifu_card_names[atk_id] : (is_support_card(atk_id) ? support_card_name(atk_id) : "???");
         draw_wrapped_text_small(4, 4, name, 19, IDX_WHITE, IDX_BLACK);
     }
-    rect_fill(WAIFU_FM_WIDTH - 138, WAIFU_FM_HEIGHT - 42, 138, 42, IDX_BLACK);
     {
+        int rx = WAIFU_FM_WIDTH + waifu_platform_ui_extra_w();
+        rect_fill(rx - 138, WAIFU_FM_HEIGHT - 42, 138, 42, IDX_BLACK);
         const char *name = is_monster_card(def_id) ? waifu_card_names[def_id] : (is_support_card(def_id) ? support_card_name(def_id) : "???");
-        draw_wrapped_text_small(WAIFU_FM_WIDTH - 134, WAIFU_FM_HEIGHT - 41, name, 20, IDX_WHITE, IDX_BLACK);
+        draw_wrapped_text_small(rx - 134, WAIFU_FM_HEIGHT - 41, name, 20, IDX_WHITE, IDX_BLACK);
     }
+    ui_hud_end();
 }
 
 static void draw_battle_cutin_event(int f, int start,
@@ -6051,6 +6207,20 @@ typedef struct WaifuBattleBaseCache {
 static WaifuBattleBaseCache g_b_base_cache;
 #if defined(WAIFU_FM_PCFX)
 static WaifuBattleBaseCache g_b_base_cache_top;
+/* Cache the intermediate hand<->top lift keyframes too.  The lift is quantized
+   onto WAIFU_PCFX_HANDTOP_ANCHORS camera positions precisely so they can be
+   cached: without this the return trip (top->hand) and every repeat lift re-run
+   the board renderer live at each anchor, which is the visible slowdown. */
+static WaifuBattleBaseCache g_b_handtop_mid_cache[WAIFU_PCFX_HANDTOP_ANCHORS - 2];
+/* Round-robin cursor for prewarming one missing lift keyframe per idle frame. */
+static int g_b_handtop_prewarm_index = 0;
+/* Card-placement views are static backgrounds too: during the fly-in the board +
+   field + HUD do not change (the card is committed to the field only when the
+   animation ends), yet the placement phase re-runs the whole 3D field render
+   every frame just to draw the moving flying-card/cursor/hand on top.  Cache the
+   two placement composites (player + COM side) and overlay the animation. */
+static WaifuBattleBaseCache g_b_base_cache_place;
+static WaifuBattleBaseCache g_b_base_cache_enemy_place;
 #endif
 #endif
 
@@ -6060,6 +6230,10 @@ static void invalidate_battle_composite_cache(void)
     g_b_base_cache.valid = 0;
 #if defined(WAIFU_FM_PCFX)
     g_b_base_cache_top.valid = 0;
+    for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS - 2; ++i) g_b_handtop_mid_cache[i].valid = 0;
+    g_b_handtop_prewarm_index = 0;
+    g_b_base_cache_place.valid = 0;
+    g_b_base_cache_enemy_place.valid = 0;
 #endif
 #endif
 }
@@ -8719,16 +8893,35 @@ static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
 #endif
 
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
-/* Return the cache slot for a RESTING camera, or NULL for a moving one.  Only
-   the hand-idle and top views rest; everything else (the hand<->top lift, side
-   and attack cameras, any animating field) returns NULL so draw_interactive_base
-   renders it live and does not spend a copy caching a frame that will not be
-   reused. */
+#if defined(WAIFU_FM_PCFX)
+/* Map a camera to its hand<->top anchor index (0=hand .. ANCHORS-1=top), or -1 if
+   it is not one of the quantized lift keyframes. */
+static int pcfx_handtop_anchor_index_for_camera(Camera cam)
+{
+    for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS; ++i)
+        if (camera_equal(cam, pcfx_handtop_anchor_camera(i))) return i;
+    return -1;
+}
+
+static WaifuBattleBaseCache *pcfx_handtop_cache_for_anchor(int anchor)
+{
+    if (anchor <= 0) return &g_b_base_cache;                          /* hand */
+    if (anchor >= WAIFU_PCFX_HANDTOP_ANCHORS - 1) return &g_b_base_cache_top; /* top */
+    return &g_b_handtop_mid_cache[anchor - 1];                        /* lift keyframe */
+}
+#endif
+
+/* Return the cache slot for a cacheable camera, or NULL for a moving one.  The
+   hand-idle view, the top view, AND the quantized hand<->top lift keyframes all
+   cache (the lift is stepped onto a small anchor set so it can); side / attack /
+   animating-field cameras are not anchors -> NULL -> rendered live. */
 static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
 {
 #if defined(WAIFU_FM_PCFX)
-    if (camera_equal(cam, battle_top_camera())) return &g_b_base_cache_top;
-    if (camera_equal(cam, player_camera())) return &g_b_base_cache;
+    int anchor = pcfx_handtop_anchor_index_for_camera(cam);
+    if (anchor >= 0) return pcfx_handtop_cache_for_anchor(anchor);
+    if (camera_equal(cam, placement_camera())) return &g_b_base_cache_place;
+    if (camera_equal(cam, enemy_placement_camera())) return &g_b_base_cache_enemy_place;
     return NULL;
 #else
     (void)cam;
@@ -8760,6 +8953,7 @@ static void battle_base_cache_store(Camera cam, uint32_t key)
 static void draw_interactive_base(Camera cam)
 {
     uint32_t key = battle_base_visual_key();
+
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
     if (battle_base_cache_restore(cam, key)) {
         /* Overlay the animated LP counters on top of the cached composite.
@@ -8788,6 +8982,43 @@ static void draw_interactive_field_base_no_hud(Camera cam)
     render_board_cached(cam);
     draw_interactive_field_cards(cam);
 }
+
+#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+/* Render one battle-base composite for `cam` straight into its cache slot without
+   presenting it -- used to pre-fill the hand<->top lift keyframes during idle so
+   the first lift plays from cache.  Uses the shared framebuffer as scratch; the
+   caller redraws the real view over it before present. */
+static void prewarm_interactive_base(Camera cam)
+{
+    uint32_t key = battle_base_visual_key();
+    WaifuBattleBaseCache *cache = battle_base_cache_for_camera(cam);
+    if (!cache) return;
+    if (cache->valid && cache->key == key && camera_equal(cache->cam, cam)) return;
+    render_board_cached(cam);
+    draw_interactive_field_cards(cam);
+    draw_hud();
+    battle_base_cache_store(cam, key);
+}
+
+/* Fill one still-missing hand<->top anchor keyframe per idle frame so the FIRST
+   lift plays entirely from cache (no live board re-render).  Prefer the top
+   endpoint first so the lift can always finish on a hit, then the intermediate
+   perspectives.  Only ~one board render per idle frame, spread over the anchors. */
+static void prewarm_handtop_transition_bases(void)
+{
+    uint32_t key = battle_base_visual_key();
+    for (int tries = 0; tries < WAIFU_PCFX_HANDTOP_ANCHORS; ++tries) {
+        int seq = g_b_handtop_prewarm_index++ % WAIFU_PCFX_HANDTOP_ANCHORS;
+        int anchor = (seq == 0) ? (WAIFU_PCFX_HANDTOP_ANCHORS - 1) : (seq - 1);
+        Camera cam = pcfx_handtop_anchor_camera(anchor);
+        WaifuBattleBaseCache *cache = pcfx_handtop_cache_for_anchor(anchor);
+        if (!(cache->valid && cache->key == key && camera_equal(cache->cam, cam))) {
+            prewarm_interactive_base(cam);
+            return;
+        }
+    }
+}
+#endif
 
 static int result_focus_card_id(void)
 {
@@ -9893,18 +10124,24 @@ static void draw_player_hand_turn_draw(int f, int selected)
        the whole hand sliding up as one block (which read like a re-deal). */
     int rise = q8_to_int(q8_mul(Q8_FROM_INT(92),
                   Q8_ONE - q8_smooth_ratio(f, (WAIFU_PCFX_DRAW_FRAMES + 1) / 2)));
+    /* Widescreen: render the whole hand full-width, centered (see draw_player_hand),
+       so drawn cards slide in from the true screen edge and none clip. */
+    int extra = waifu_platform_ui_extra_w();
+    int ho = extra / 2;
+    if (extra > 0) ui_hud_begin();
     for (i = 0; i < I_HAND; ++i) {
-        int x0 = hand_final_x(i);
+        int x0 = hand_final_x(i) + ho;
         int x = x0;
         int y = WAIFU_HAND_Y_BASE;
         int d = is_recent_draw_slot(i);
         if (g_i_player_used[i]) continue;
         if (d >= 0) {
-            int start = turn_draw_slide_start(d);
+            int start_frame = turn_draw_slide_start(d);
             int dur = (WAIFU_PCFX_DRAW_FRAMES * 4) / 9;
+            int start_x = (extra > 0) ? (WAIFU_FM_WIDTH + extra + 24) : (282 + WAIFU_UI_EXTRA_W);
             if (dur < 4) dur = 4;
-            int32_t t = q8_smooth_ratio(f - start, dur);
-            x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
+            int32_t t = q8_smooth_ratio(f - start_frame, dur);
+            x = lerp_i(start_x, x0, t);
         } else {
             y = WAIFU_HAND_Y_BASE + rise;
         }
@@ -9912,6 +10149,7 @@ static void draw_player_hand_turn_draw(int f, int selected)
                                  is_monster_card(g_i_player_hand[i]) && player_hand_monster_blocked()));
         if (f >= WAIFU_PCFX_DRAW_FRAMES && i == selected) draw_red_cursor(x, y, 38, 50);
     }
+    if (extra > 0) ui_hud_end();
     PROFILE_HAND_END();
 }
 
@@ -10532,6 +10770,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             }
         }
         if (press_start) { clear_player_fusion_queue(); g_b_attack_attacker_slot = -1; clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
+#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+        prewarm_handtop_transition_bases(); /* pre-fill lift keyframes during hand idle */
+#endif
         play_player_hand_intro_draw_sfx();
         draw_interactive_base(player_camera());
         draw_interactive_player_hand(g_b_player_hand_intro_pending ? g_b_phase_frame : 999, g_b_selected_hand, 0, 0);
@@ -11338,14 +11579,19 @@ static void draw_story_intro_screen(int f)
     if (line < 0) line = 0;
     if (line >= line_count) line = line_count - 1;
 
+    int ex = waifu_platform_ui_extra_w();
+    int tx = ex / 2;
     waifu_fm_use_dialogue_palette();
     clear_screen(IDX_BLACK);
+    ui_hud_begin();
     if ((f & 32) == 0) {
-        for (int i = 0; i < 24; ++i) put_px(116 + ((i * 17 + f) & 23), 38 + ((i * 11) & 31), IDX_DIM);
+        for (int i = 0; i < 24; ++i) put_px(116 + tx + ((i * 17 + f) & 23), 38 + ((i * 11) & 31), IDX_DIM);
     }
+    /* px==10 lands at the true screen-left edge inside the HUD bracket. */
     px = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 10, 10, f);
     draw_story_portrait(STORY_PORTRAIT_SERENA, px, WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20);
-    draw_story_dialog_box(g_story_name, "THE SHARDS WHISPER", story_intro_lines[line], IDX_GOLD_HI, f);
+    draw_story_dialog_box(STORY_TW_INTRO, line, g_story_name, "THE SHARDS WHISPER", story_intro_lines[line], IDX_GOLD_HI, f);
+    ui_hud_end();
     if (f >= 0 && f < 24) apply_black_dither_fade(q8_ratio(f, 24));
 }
 
@@ -11448,8 +11694,14 @@ static void draw_oldschool_fire(int f)
             uint8_t *dst = mapped + y * FIRE_FW;
             for (x = 0; x < FIRE_FW; ++x) dst[x] = g_fire_lut[src[x]];
         }
+        /* Widescreen: stretch the flame band across the true screen width so it
+           fills the frame instead of leaving black side bars (the fire is
+           organic noise, so horizontal stretch reads fine). Must be inside a
+           ui_hud bracket (draw_story_fire_screen opens one). extra==0 on
+           console -> unchanged 256-wide blit. */
+        int ex = waifu_platform_ui_extra_w();
         waifu_hw2d_image(mapped, 0, FIRE_FW, FIRE_FH, 0, FIRE_Y0,
-                         FIRE_FW * FIRE_SCALE, FIRE_FH * FIRE_SCALE, 0, 0);
+                         FIRE_FW * FIRE_SCALE + ex, FIRE_FH * FIRE_SCALE, 0, 0);
         return;
     }
     for (y = 0; y < FIRE_FH; ++y) {
@@ -11475,12 +11727,21 @@ static void draw_story_fire_screen(int f)
     int line = g_story_fire_line;
     if (line < 0) line = 0;
     if (line >= line_count) line = line_count - 1;
+    int ex = waifu_platform_ui_extra_w();
+    const char *fire_text = story_subst_name(story_fire_lines[line]);
+    int fire_len = (int)strlen(fire_text);
+    int fire_vis = story_text_reveal_count(STORY_TW_FIRE, line, f, fire_len);
+    char fire_shown[128];
+    waifu_str_copy_n(fire_shown, (int)sizeof(fire_shown), fire_text, fire_vis);
     clear_screen(IDX_BLACK);
+    ui_hud_begin();
     draw_oldschool_fire(f);
-    draw_panel_rect(8, WAIFU_UI_BOTTOM_Y(172), WAIFU_FM_WIDTH - 16, 57, IDX_UI_DARK);
+    draw_panel_rect(8, WAIFU_UI_BOTTOM_Y(172), WAIFU_FM_WIDTH + ex - 16, 57, IDX_UI_DARK);
     draw_text_small(18, WAIFU_UI_BOTTOM_Y(183), "DEMON", IDX_RED, IDX_BLACK);
-    draw_wrapped_text_small_box(18, WAIFU_UI_BOTTOM_Y(198), WAIFU_FM_WIDTH - 38, 3, 10, story_subst_name(story_fire_lines[line]), IDX_WHITE, IDX_BLACK);
-    if (((f / 16) & 1) == 0) draw_text_small(WAIFU_FM_WIDTH - 59, WAIFU_FM_HEIGHT - 24, "A/RUN", IDX_WHITE, IDX_BLACK);
+    draw_wrapped_text_small_box(18, WAIFU_UI_BOTTOM_Y(198), WAIFU_FM_WIDTH + ex - 38, 3, 10, fire_shown, IDX_WHITE, IDX_BLACK);
+    /* Only offer the A/RUN prompt once the line has finished typing. */
+    if (fire_vis >= fire_len && ((f / 16) & 1) == 0) draw_text_small(WAIFU_FM_WIDTH + ex - 59, WAIFU_FM_HEIGHT - 24, "A/RUN", IDX_WHITE, IDX_BLACK);
+    ui_hud_end();
 }
 
 static const char *deck_editor_card_name(int id)
@@ -12414,23 +12675,29 @@ static void draw_story_plaza_scene_content(int anim_frame)
     if (line_count <= 0) line_count = 1;
     if (line >= line_count) line = line_count - 1;
 
+    int ex = waifu_platform_ui_extra_w();
     waifu_fm_use_dialogue_palette();
     clear_screen(IDX_BLACK);
     draw_story_sky(anim_frame);
-    /* The full-width dialog box always covers the bottom 66 rows. */
-    story_scene_set_floor_occluder(0, WAIFU_FM_HEIGHT - 66, WAIFU_FM_WIDTH, 66);
+    /* The full-width dialog box always covers the bottom 66 rows (full screen
+       width in widescreen). */
+    story_scene_set_floor_occluder(0, WAIFU_FM_HEIGHT - 66, WAIFU_FM_WIDTH + ex, 66);
     draw_story_scene_3d(anim_frame);
+    ui_hud_begin();
     draw_panel_rect(8, 8, 102, 18, IDX_UI_DARK);
     draw_text_small(14, 14, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);
 
+    /* Widescreen: Serena hugs the true left edge, the opponent the true right
+       edge (both slide in from just off their respective screen edges). */
     serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2, anim_frame);
-    opp_x = story_slide_x(WAIFU_FM_WIDTH + 14, WAIFU_FM_WIDTH - WAIFU_STORY_PORTRAIT_W - 2, anim_frame);
+    opp_x = story_slide_x(WAIFU_FM_WIDTH + ex + 14, WAIFU_FM_WIDTH + ex - WAIFU_STORY_PORTRAIT_W - 2, anim_frame);
     /* Raise portraits so their hands and upper torsos read more naturally,
        while leaving the textbox directly over their lower bodies. */
     serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20;
     opp_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 14;
     draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
     draw_story_portrait(opp->portrait_id, opp_x, opp_y);
+    ui_hud_end();
     if (dialog[line].speaker == STORY_SPK_OPPONENT) {
         speaker = opp->name;
         speaker_color = story_opponent_is_boss() ? IDX_RED : IDX_GOLD_HI;
@@ -12445,7 +12712,7 @@ static void draw_story_plaza_scene_content(int anim_frame)
         subhead = opp->title;
     }
 
-    draw_story_dialog_box(speaker, subhead, story_subst_name(dialog[line].text), speaker_color, anim_frame);
+    draw_story_dialog_box(STORY_TW_PLAZA, line, speaker, subhead, story_subst_name(dialog[line].text), speaker_color, anim_frame);
 }
 
 static void draw_story_plaza_scene(void)
@@ -12465,7 +12732,6 @@ static void transition_draw_story_plaza_source(int frame, void *ctx)
 
 #define STORY_ENDING_CREDITS_FRAMES 300
 #define STORY_ENDING_TEXT_ERASE_FRAMES 36
-#define STORY_ENDING_TEXT_TYPE_FRAME_SPAN 72
 
 static const char *story_ending_lines[] = {
     "The last shard is silent. No enemy answers its call.",
@@ -12488,12 +12754,13 @@ static int story_ending_line_visible_chars(int line)
     len = (int)strlen(story_ending_lines[line]);
     if (g_story_ending_erasing && g_i_frame >= 0) {
         visible = len - q8_to_int(q8_mul(Q8_FROM_INT(len), q8_ratio(g_i_frame, STORY_ENDING_TEXT_ERASE_FRAMES)));
-    } else {
-        visible = q8_to_int(q8_mul(Q8_FROM_INT(len), q8_ratio(g_i_frame + 1, STORY_ENDING_TEXT_TYPE_FRAME_SPAN)));
+        if (visible < 0) visible = 0;
+        if (visible > len) visible = len;
+        return visible;
     }
-    if (visible < 0) visible = 0;
-    if (visible > len) visible = len;
-    return visible;
+    /* Typing: the SAME shared typewriter the story dialogue box uses, so the
+       reveal effect and its speed live in one place. */
+    return story_text_reveal_count(STORY_TW_ENDING, line, g_i_frame, len);
 }
 
 static int story_ending_line_fully_typed(void)
@@ -12928,11 +13195,16 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_story_intro_screen(g_i_frame);
         if (press_a || press_start) {
             int line_count = (int)(sizeof(story_intro_lines) / sizeof(story_intro_lines[0]));
-            ++g_story_intro_line;
-            if (g_story_intro_line >= line_count) {
-                g_story_fire_line = 0;
-                g_i_state = WAIFU_I_STORY_FIRE;
-                g_i_frame = -1;
+            int snap = story_text_snap_frame(STORY_TW_INTRO, g_story_intro_line, g_i_frame, story_intro_lines[g_story_intro_line]);
+            if (snap >= 0) {
+                g_i_frame = snap;   /* first press finishes the line */
+            } else {
+                ++g_story_intro_line;
+                if (g_story_intro_line >= line_count) {
+                    g_story_fire_line = 0;
+                    g_i_state = WAIFU_I_STORY_FIRE;
+                    g_i_frame = -1;
+                }
             }
         }
         /* No B-button shortcut back to the menu; see WAIFU_I_STORY_NAME. */
@@ -12942,12 +13214,17 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_story_fire_screen(g_i_frame);
         if (press_a || press_start) {
             int line_count = (int)(sizeof(story_fire_lines) / sizeof(story_fire_lines[0]));
-            ++g_story_fire_line;
-            if (g_story_fire_line >= line_count) {
-                reset_story_deck_editor();
-                g_story_editor_from_pyramid = 0;
-                g_i_state = WAIFU_I_STORY_FIRE_TO_DECK;
-                g_i_frame = -1;
+            int snap = story_text_snap_frame(STORY_TW_FIRE, g_story_fire_line, g_i_frame, story_subst_name(story_fire_lines[g_story_fire_line]));
+            if (snap >= 0) {
+                g_i_frame = snap;   /* first press finishes the line */
+            } else {
+                ++g_story_fire_line;
+                if (g_story_fire_line >= line_count) {
+                    reset_story_deck_editor();
+                    g_story_editor_from_pyramid = 0;
+                    g_i_state = WAIFU_I_STORY_FIRE_TO_DECK;
+                    g_i_frame = -1;
+                }
             }
         }
         /* No B-button shortcut back to the menu; see WAIFU_I_STORY_NAME. */
@@ -13080,7 +13357,16 @@ void waifu_fm_step(const WaifuFmInput *input)
         draw_story_plaza_scene();
         if (press_a || press_start) {
             int line_count = 0;
-            story_dialogue_for_duel(g_story_duel_index, &line_count);
+            const StoryDialogueLine *dialog = story_dialogue_for_duel(g_story_duel_index, &line_count);
+            int lc = g_story_plaza_line;
+            if (line_count <= 0) line_count = 1;
+            if (lc < 0) lc = 0;
+            if (lc >= line_count) lc = line_count - 1;
+            int snap = story_text_snap_frame(STORY_TW_PLAZA, lc, g_i_frame, story_subst_name(dialog[lc].text));
+            if (snap >= 0) {
+                g_i_frame = snap;   /* first press finishes the line */
+                break;
+            }
             ++g_story_plaza_line;
             if (g_story_plaza_line >= line_count) {
                 reset_story_deck_editor();
@@ -13112,6 +13398,10 @@ void waifu_fm_step(const WaifuFmInput *input)
            here). See story_return_to_map_after_duel() for why this exists. */
         if (draw_fade_to_black_transition(g_i_frame, WAIFU_TITLE_FADE_FRAMES,
                                           WAIFU_TITLE_FADE_FRAMES, NULL, NULL)) {
+            /* Screen is fully black here: pull the ending image's blocking
+               CD->KRAM read forward so the ending narration does not freeze a
+               few characters in. No-op on platforms that preload it normally. */
+            waifu_platform_prewarm_ending();
             enter_story_ending_after_assets();
         }
         break;
@@ -13128,8 +13418,12 @@ void waifu_fm_step(const WaifuFmInput *input)
                 g_i_frame = -1;
             }
         } else if (press_a || press_start) {
-            if (!story_ending_line_fully_typed()) {
-                g_i_frame = STORY_ENDING_TEXT_TYPE_FRAME_SPAN;
+            int eline = g_story_ending_line;
+            if (eline < 0) eline = 0;
+            if (eline >= story_ending_line_count()) eline = story_ending_line_count() - 1;
+            int snap = story_text_snap_frame(STORY_TW_ENDING, eline, g_i_frame, story_ending_lines[eline]);
+            if (snap >= 0) {
+                g_i_frame = snap;   /* first press finishes the line */
             } else {
                 g_story_ending_erasing = 1;
                 g_i_frame = -1;
