@@ -79,18 +79,20 @@ static void waifu_vdc_set_access_width(int chip, int cg_mode, int mapsize,
 #define WAIFU_PCFX_TITLE_16M_KRAM_ROWS 256
 #define WAIFU_PCFX_TITLE_16M_KRAM_WORDS (WAIFU_PCFX_W * WAIFU_PCFX_TITLE_16M_KRAM_ROWS)
 #define WAIFU_PCFX_TITLE_16M_SCROLL_Y 4
-/* KING BG0 is configured as a 256x256 8bpp plane.  The visible game frame is
-   256x240, but the hardware page stride must remain 256x256 so page 1 does
-   not alias page 0's hidden bottom 16 scanlines. */
-#define WAIFU_PCFX_PAGE_STRIDE_WORDS ((WAIFU_PCFX_W * 256) / 2)
+/* KING BG0 is an affine 512x256 8bpp source.  A=2.0 makes the 256-dot display
+   sample every other source texel, so every logical framebuffer pixel occupies
+   an entire KRAM word (both bytes contain the same palette index).  This avoids
+   the paired-pixel/halfword artefacts of the old 256x256 packed BG0 path. */
+#define WAIFU_PCFX_BG_SOURCE_W 512
+#define WAIFU_PCFX_BG_SOURCE_H 256
+#define WAIFU_PCFX_BG_ROW_WORDS (WAIFU_PCFX_BG_SOURCE_W / 2)
+#define WAIFU_PCFX_PAGE_STRIDE_WORDS ((WAIFU_PCFX_BG_SOURCE_W * WAIFU_PCFX_BG_SOURCE_H) / 2)
 #define WAIFU_PCFX_KING_BG_PAGE_0 0
 #define WAIFU_PCFX_KING_BG_PAGE_1 (WAIFU_PCFX_PAGE_STRIDE_WORDS / 1024)
-/* KING 8bpp gameplay is TRIPLE buffered (doom-pcfx scheme).  The three 64 KB
-   pages live at KRAM words 0 / 0x8000 / 0x10000 (CG bases 0 / 32 / 64), all
-   below word 0x20000 so the single programmed BG microprogram bank serves all
-   three.  Triple buffering lets the display flip be deferred to the tear-safe
-   vblank window while the next frame renders into the third page, so the CPU
-   never has to wait on a live buffer (vs. the old two-page mid-scan flip). */
+/* KING 8bpp gameplay is TRIPLE buffered.  The three 128 KB affine sources live
+   at KRAM words 0 / 0x10000 / 0x20000 (CG bases 0 / 64 / 128), all in physical
+   KRAM page 0.  A display flip is deferred to vblank, leaving a third page for
+   the CPU upload. */
 #define WAIFU_PCFX_PAGE_COUNT 3
 #define WAIFU_PCFX_NEUTRAL_BLACK 0x0088u
 #define WAIFU_PCFX_16M_BLACK_Y 0x0101u
@@ -106,7 +108,7 @@ static void waifu_vdc_set_access_width(int chip, int cg_mode, int mapsize,
    16px bands.  A full 256x240 KRAM upload is ~30k out.h (close to a whole frame's
    budget), so this diff is the main thing keeping partially-changed frames cheap;
    it stays on.  Set to 0 to force a full inline upload every changed frame. */
-#define WAIFU_PCFX_DIRTY_PRESENT 1
+#define WAIFU_PCFX_DIRTY_PRESENT 0
 #endif
 #ifndef WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
 /* Keep big-card art in the same CPU-framebuffer dirty-band path as every other
@@ -375,6 +377,20 @@ static inline __attribute__((always_inline)) void pcfx_king_set_bg0_page_inline(
 #endif
 }
 
+/* The KING keeps affine state in live registers.  Reassert it at every vblank:
+   BIOS/video activity can otherwise leave stale coefficients or a stale centre
+   behind, producing the intermittent horizontal scaling/offset corruption seen
+   after mode changes on hardware. */
+static inline __attribute__((always_inline)) void pcfx_king_refresh_8bpp_affine_state(void)
+{
+    eris_king_set_bg0_affine_coefficient_a(0x0200); /* 256 display dots -> 512 source texels */
+    eris_king_set_bg0_affine_coefficient_b(0);
+    eris_king_set_bg0_affine_coefficient_c(0);
+    eris_king_set_bg0_affine_coefficient_d(0x0100);
+    eris_king_set_bg_affine_center_x(0);
+    eris_king_set_bg_affine_center_y(0);
+}
+
 static inline __attribute__((always_inline)) void pcfx_schedule_title_page_flip(WaifuPcfxVideo *video, int kram_page, int new_front, int new_back)
 {
     video->pending_title_kram_page = kram_page;
@@ -457,11 +473,11 @@ static inline __attribute__((always_inline)) int pcfx_dirty_collect_row_runs(con
     int b = 0;
     while (b < WAIFU_PCFX_DIRTY_BLOCKS_X) {
         if (!((dirty >> b) & 1u)) { ++b; continue; }
-        int black = (int)((black_mask >> b) & 1u);
+        /* Affine-source uploads must include changed black texels too. */
+        int black = 0;
         int start = b++;
         while (b < WAIFU_PCFX_DIRTY_BLOCKS_X &&
-               ((dirty >> b) & 1u) &&
-               (int)((black_mask >> b) & 1u) == black) {
+               ((dirty >> b) & 1u)) {
             ++b;
         }
         runs[count].x0b = (uint8_t)start;
@@ -571,6 +587,16 @@ static inline __attribute__((always_inline)) void pcfx_fill_black_shadow_rect(ui
         p += WAIFU_PCFX_W;
     }
 }
+
+/* 512-wide affine-source upload helpers.  They deliberately write every dirty
+   texel, including IDX_BLACK: a black-special-case clear is a masked write in
+   this mode and can leave a stale neighbouring source texel visible through the
+   affine fetch. */
+static void pcfx_kram_upload_rect_affine(const uint8_t *src, int page_word_offset,
+                                         int x0, int y0, int width, int rows,
+                                         int src_pitch);
+static void pcfx_kram_write_frame_affine(const uint8_t *framebuffer,
+                                         int page_word_offset);
 
 static inline __attribute__((always_inline)) void pcfx_kram_upload_rect_bytes_inline(const uint8_t *src_arg, int page_word_offset_arg, int x0_arg, int y0_arg, int row_bytes_arg, int rows_arg)
 {
@@ -1029,9 +1055,9 @@ static void pcfx_prime_shadow_for_direct_big_art(uint8_t *shadow, const uint8_t 
 static void pcfx_upload_direct_big_art(const PcfxDirectBigArt *arts, int count, int page_word_offset_value)
 {
     for (int i = 0; i < count; ++i) {
-        pcfx_kram_upload_linear_rect_bytes_inline(arts[i].src, page_word_offset_value,
-                                                  arts[i].x, arts[i].y,
-                                                  arts[i].width, WAIFU_BIG_H, arts[i].pitch);
+        pcfx_kram_upload_rect_affine(arts[i].src, page_word_offset_value,
+                                     arts[i].x, arts[i].y,
+                                     arts[i].width, WAIFU_BIG_H, arts[i].pitch);
     }
 }
 #endif
@@ -1045,13 +1071,10 @@ static inline __attribute__((always_inline)) void pcfx_flush_dirty_band(uint8_t 
     int width = ((int)band->x1b - (int)band->x0b + 1) * WAIFU_PCFX_DIRTY_BLOCK_W;
     int y0 = (int)band->y0;
     int rows = (int)band->y1 - (int)band->y0 + 1;
-    if (band->black) {
-        pcfx_kram_clear_rect_black_inline(page_word_offset_value, x0, y0, width, rows);
-        pcfx_fill_black_shadow_rect(shadow, x0, y0, width, rows);
-    } else {
-        pcfx_kram_upload_rect_bytes_inline(framebuffer, page_word_offset_value, x0, y0, width, rows);
-        pcfx_shadow_copy_rect(shadow, framebuffer, x0, y0, width, rows);
-    }
+    pcfx_kram_upload_rect_affine(framebuffer + y0 * WAIFU_PCFX_W + x0,
+                                 page_word_offset_value, x0, y0, width, rows,
+                                 WAIFU_PCFX_W);
+    pcfx_shadow_copy_rect(shadow, framebuffer, x0, y0, width, rows);
 }
 
 static WAIFU_PCFX_NOINLINE void pcfx_present_dirty_bands(uint8_t *shadow, const uint8_t *framebuffer, int page_word_offset_value)
@@ -1182,6 +1205,55 @@ static void king_seek_write_words(uint32_t word_addr)
 #else
     king_set_kram_write(word_addr, 1);
 #endif
+}
+
+static inline __attribute__((always_inline)) void pcfx_kram_write_affine_texel(uint8_t texel)
+{
+    uint16_t word = (uint16_t)texel | ((uint16_t)texel << 8);
+#if defined(__v810__)
+    __asm__ volatile ("out.h %0,0x604[r0]" : : "r" (word) : "memory");
+#else
+    king_kram_write(word);
+#endif
+}
+
+static inline __attribute__((always_inline)) void pcfx_kram_select_data_register(void)
+{
+#if defined(__v810__)
+    uint32_t reg;
+    __asm__ volatile (
+        "movea 14,r0,%[reg]\n"
+        "out.h %[reg],0x600[r0]\n"
+        : [reg] "=&r" (reg)
+        :
+        : "memory");
+#endif
+}
+
+/* A 512-wide affine source maps each logical pixel to one KRAM word.  Do not
+   coalesce or mask writes here: the current source word must match the CPU
+   framebuffer exactly before its page is made visible. */
+static void pcfx_kram_upload_rect_affine(const uint8_t *src, int page_word_offset,
+                                         int x0, int y0, int width, int rows,
+                                         int src_pitch)
+{
+    for (int row = 0; row < rows; ++row) {
+        const uint8_t *p = src + row * src_pitch;
+        king_seek_write_words((uint32_t)(page_word_offset +
+                              (y0 + row) * WAIFU_PCFX_BG_ROW_WORDS + x0));
+        /* king_seek_write_words leaves KING's register selector on KRAMWA.
+           Select KRAMWD before emitting the unmasked texel halfwords. */
+        pcfx_kram_select_data_register();
+        for (int x = 0; x < width; ++x) pcfx_kram_write_affine_texel(p[x]);
+    }
+}
+
+static void pcfx_kram_write_frame_affine(const uint8_t *framebuffer,
+                                         int page_word_offset)
+{
+    pcfx_kram_upload_rect_affine(framebuffer, page_word_offset, 0, 0,
+                                 WAIFU_PCFX_W, WAIFU_PCFX_H,
+                                 WAIFU_PCFX_W);
 }
 
 
@@ -1758,7 +1830,7 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
         waifu_vdc_setreg(VDC_CHIP_0, 5, 0x88);
         waifu_vdc_setreg(VDC_CHIP_1, 5, 0x80);
         pcfx_vdc_overlay_init(video);
-        king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+        king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 1);
         king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
         pcfx_king_set_bg0_page_inline(page_bat_offset(0));
         /* The RAINBOW still itself cannot be palette-faded, so the fade mask
@@ -1787,7 +1859,9 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
     pcfx_rainbow_stop_transfer();
     g_king_page_setting_extra = 0;
     pcfx_king_set_bg_kram_page_inline(0);
-    king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+    /* Enable BG0's affine fetch.  The source is 512x256 8bpp; A=2 samples the
+       even texel of each duplicated KRAM word for every 256-wide output dot. */
+    king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 1);
     king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
     tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
     tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
@@ -2376,27 +2450,26 @@ static void set_king_8bpp_video(int display_page)
     tetsu_set_king_palette(0, 0, 0, 0);
     tetsu_set_rainbow_palette(0);
 
-    king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
+    king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 1);
     king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0); /* 8bpp KING BG0. */
     pcfx_king_set_bg_kram_page_inline(0);
 
-    memset(g_king_microprog, 0, sizeof(g_king_microprog));
-    g_king_microprog[0] = KING_CODE_BG0_CG_0;
-    g_king_microprog[1] = KING_CODE_BG0_CG_1;
-    g_king_microprog[2] = KING_CODE_BG0_CG_2;
-    g_king_microprog[3] = KING_CODE_BG0_CG_3;
+    /* A 512-wide affine source needs the rotation microprogram in both banks;
+       page 2 starts in bank B at CG base 128. */
+    for (int i = 0; i < 16; ++i) g_king_microprog[i] = KING_CODE_ROTATE;
     king_disable_microprogram();
     king_write_microprogram(g_king_microprog, 0, 16);
     king_enable_microprogram();
     /* Point the display at the caller-selected page directly as the BG mode
-       becomes 8bpp.  The transition uses the second 8bpp page (which aliases no
-       16M title CG page) so the visible page is clean black across the mid-scan
-       16M -> 8bpp switch. */
+       becomes 8bpp.  begin_8bpp selects the third page for the mode handoff;
+       it is outside both 16M title surfaces and stays clean black across the
+       mid-scan 16M -> 8bpp switch. */
     pcfx_king_set_bg0_page_inline(page_bat_offset(display_page));
     king_set_scroll(KING_BG0, 0, 0);
     king_set_scroll(KING_BG0SUB, 0, 0);
-    king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
-    king_set_bg_size(KING_BG0SUB, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
+    king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_512, KING_BGSIZE_256, KING_BGSIZE_512);
+    king_set_bg_size(KING_BG0SUB, KING_BGSIZE_256, KING_BGSIZE_512, KING_BGSIZE_256, KING_BGSIZE_512);
+    pcfx_king_refresh_8bpp_affine_state();
 
     tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_256, TETSU_COLORS_16,
@@ -2459,12 +2532,12 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
        stripe pattern; 8bpp-black 0xFFFF reads as bright 16M), so a page at
        offset 0 always shows a stripe band or a white line on the switch frame.
        Instead, keep offset 0 as 16M-black (from pcfx_title_blackout_pages) and
-       display the SECOND 8bpp page (offset PAGE_STRIDE_WORDS), which aliases no
+       display the THIRD 8bpp page (offset 2*PAGE_STRIDE_WORDS), which aliases no
        16M CG page.  Whichever layer a scanline samples across the switch -- the
        old 16M surface at offset 0, or the new 8bpp page -- it reads black. */
-    king_seek_write_words(WAIFU_PCFX_PAGE_STRIDE_WORDS);
+    king_seek_write_words(WAIFU_PCFX_PAGE_STRIDE_WORDS * 2);
     king_kram_fill_words(WAIFU_PCFX_BLACK_WORD, WAIFU_PCFX_PAGE_STRIDE_WORDS);
-    set_king_8bpp_video(1);
+    set_king_8bpp_video(2);
     /* Blacken the KING 8bpp VCE palette (entries 0..255) now.  set_king_8bpp_video
        only configures the palette BANK; the 256 colour entries are not written
        until the first present_8bpp uploads a real frame (during asset load / the
@@ -2490,20 +2563,21 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
     video->have_base_yuv = 0;
     video->active_palette = (WaifuFmPaletteId)-1;
     video->active_fade_q8 = -1;
-    /* Front is the freshly cleared second page; the next present uploads a real
+    /* Front is the freshly cleared third page; the next present uploads a real
        frame into page 0 (whose KRAM still holds 16M-black/stripe bytes) before
        it is ever displayed, so force its shadow invalid. */
-    video->front_page = 1;
+    video->front_page = 2;
     video->back_page = 0;
     video->pending_page = -1;
 #if WAIFU_PCFX_DIRTY_PRESENT
-    memset(video->page_shadow[1], IDX_BLACK, WAIFU_PCFX_FRAME_BYTES);
-    video->page_shadow_valid[1] = 1;
+    memset(video->page_shadow[2], IDX_BLACK, WAIFU_PCFX_FRAME_BYTES);
+    video->page_shadow_valid[2] = 1;
     video->page_shadow_valid[0] = 0;
-    /* The third buffer (KRAM word 0x10000) holds power-up/16M garbage, but it is
+    /* The second buffer (KRAM word 0x10000) holds the hidden 16M title surface,
+       but it is
        never displayed until a present has full-uploaded a whole 256x240 frame
        into it, so only its shadow needs invalidating here. */
-    video->page_shadow_valid[2] = 0;
+    video->page_shadow_valid[1] = 0;
 #endif
     /* Entering 8bpp gameplay means the title/menu/load/ending VDC overlay is
        gone for good.  Force the overlay *intent* back to OFF here, not just the
@@ -2722,7 +2796,7 @@ void waifu_pcfx_video_clear_black(WaifuPcfxVideo *video)
 #if WAIFU_PCFX_DIRTY_PRESENT
 static WAIFU_PCFX_COLD void pcfx_present_full_upload(WaifuPcfxVideo *video, const uint8_t *framebuffer, uint8_t *shadow)
 {
-    pcfx_kram_write_frame_inline(framebuffer, page_word_offset(video->back_page));
+    pcfx_kram_write_frame_affine(framebuffer, page_word_offset(video->back_page));
     pcfx_copy_bytes_inline(shadow, framebuffer, WAIFU_PCFX_FRAME_BYTES);
     video->page_shadow_valid[video->back_page] = 1;
 }
@@ -2860,12 +2934,7 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
         return;
     }
 
-    /* Framebuffer is 256x240 packed 8bpp.  KING 8bpp CG data is byte-ordered
-       like a big-endian pair inside each 16-bit KRAM word, while the V810 and
-       CPU framebuffer are little-endian byte arrays.  Stream it straight to the
-       hidden KRAM page with the inline byte-swapping writer (no fastking jal/rts
-       in the present hot path); the BG0 page flip below then makes it visible. */
-    pcfx_kram_write_frame_inline(framebuffer, page_word_offset(video->back_page));
+    pcfx_kram_write_frame_affine(framebuffer, page_word_offset(video->back_page));
 #endif
 
 #if !WAIFU_PCFX_DIRTY_PRESENT
@@ -2907,6 +2976,11 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
         pcfx_king_set_bg0_page_inline(page_bat_offset(video->pending_page));
         video->front_page = video->pending_page;
         video->pending_page = -1;
+    }
+    if (video && video->mode == WAIFU_PCFX_VIDEO_MODE_KING_8BPP) {
+        /* Must be inside the vblank window: coefficients/centre are live KING
+           state and are refreshed every field for reliable affine BG0 output. */
+        pcfx_king_refresh_8bpp_affine_state();
     }
     if (video) pcfx_vdc_overlay_flush(video);
     while ((*sr & 0x0020u) != 0) { }
