@@ -2099,11 +2099,11 @@ static void pcfx_story_layers_flush(WaifuPcfxVideo *video)
     if (g_rainbow_backdrop_active) {
         tetsu_set_priorities(7, 6, 5, 0, 0, 0, 4);
         tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
-                             TETSU_COLORS_16, TETSU_COLORS_16, 1, 1, 1, 0, 0, 0, 1);
+                             TETSU_COLORS_256, TETSU_COLORS_256, 1, 1, 1, 0, 0, 0, 1);
     } else {
         tetsu_set_priorities(7, 6, 5, 0, 0, 0, 0);
         tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
-                             TETSU_COLORS_16, TETSU_COLORS_16, 1, 1, 1, 0, 0, 0, 0);
+                             TETSU_COLORS_256, TETSU_COLORS_256, 1, 1, 1, 0, 0, 0, 0);
     }
     for (int slot = 0; slot < g_story_portrait_count; ++slot)
         if (g_story_portrait_uploaded[slot] != g_story_portrait_request[slot].id ||
@@ -2887,7 +2887,11 @@ int waifu_platform_story_portrait(int portrait_id, int x, int y)
     g_story_portrait_request[g_story_portrait_count].x = x;
     g_story_portrait_request[g_story_portrait_count].y = y;
     ++g_story_portrait_count;
-    return 1;
+    /* Keep a KING backing portrait.  Some PC-FX BIOS/video combinations can
+     * suppress the VDC sprite plane for a field after a mode transition; the
+     * hardware sprite covers this backing layer normally, while the backing
+     * prevents a visible disappearance on that field. */
+    return 0;
 }
 
 void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
