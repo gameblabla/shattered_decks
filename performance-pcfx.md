@@ -361,3 +361,39 @@ part; parking that in the free set range (97-127) would need explicit placement
 not 97.  Out-lining the dispatcher's step_v!=0 body shrank it to 194 B but
 regressed DRAM (+5.7k cyc/field) because the skewed-cell path then pays a call
 per span -- reverted.
+
+## Hardware-reference affine renderer port (Maka PC-FX)
+
+The gameplay presenter now follows the real-hardware-proven layout from
+`maka_apple_pcfx_project_accuratefps_cd`: KING BG0 is a 512x256 affine source,
+coefficient A=2 samples one logical pixel from each duplicated KRAM word, three
+128 KiB sources fit in physical KRAM page 0, and page selection remains
+vblank-held.  The affine registers and centre are reasserted in vblank so a
+mode transition cannot leave stale live KING state.  Full and dirty uploads
+both write complete duplicated texel words, eliminating the old byte-lane and
+stale-neighbour failure classes.  Accurate-backend captures show a clean board,
+side walls, projected cards, and stable repeated frames with no paired-pixel
+tearing or horizontal offset.
+
+### Rejected copied pair-loop micro-optimization
+
+The Maka-style two-texel `cfx_board_fill` loop was measured against its scalar
+predecessor with build-matched emulator states.  Both ran the same 180-field
+card-placement/camera workload under `pcfx-headless-prof`; neither dropped a
+field.  The pair loop reduced instructions from 147,439 to 145,089 per field
+(-1.59%), but its larger code body shifted the adjacent, per-scanline
+`cfx_draw_span_direct_tile` dispatcher into worse sets of the V810's direct-
+mapped 1 KiB I-cache:
+
+| metric (per field) | scalar | copied pair loop | change |
+|---|---:|---:|---:|
+| instructions | 147,439 | 145,089 | -1.59% |
+| I-cache misses | 9,652 | 10,443 | +8.20% |
+| fixed I-cache miss cycles | 19,304 | 20,886 | +1,582 |
+| 2 KiB DRAM penalty | 50,429 | 53,206 | +2,777 |
+| spin-free render proxy (miss + DRAM) | 69,733 | 74,092 | **+4,359 (+6.25%)** |
+
+The scalar loop is therefore retained.  This is the same placement-over-size
+lesson as the earlier row-filler work: instruction count falls inside the
+vblank spin margin, while cache and DRAM penalties expose the actual rendering
+cost.

@@ -883,50 +883,24 @@ void cfx_board_fill(uint8_t *dst, int n,
     if (n <= 0) return;
 #if CFX_RENDERER_USE_V810_ASM
     {
-        /* Maka's compact raster surface uses this same tile-local sampler:
-           align one byte, then fetch/pack two texels per loop and commit one
-           ST.H.  The board tiles are only 1 KiB, so keeping `tile` as the
-           single hot base avoids the old 64 KiB LUT's DRAM traffic while the
-           paired stores halve framebuffer write transactions and branches.
-           LD.B is signed on V810, hence the explicit low-byte masks before
-           packing; board palettes are allowed to use indices above 127. */
-        if (((uintptr_t)dst & 1u) != 0u) {
-            *dst++ = tile[(((uint32_t)v >> 3) & 0x3e0u) |
-                          (((uint32_t)u >> 8) & 0x1fu)];
-            u += du;
-            v += dv;
-            --n;
-        }
-
-        if (n >= 2) {
-            uint16_t *dst16 = (uint16_t *)(void *)dst;
-            int pairs = n >> 1;
-            uint32_t c0, c1, ru, rv;
-            __asm__ volatile (
-                "1:\n"
-                "mov %[v],%[rv]\n" "shr 3,%[rv]\n" "andi 0x3e0,%[rv],%[rv]\n"
-                "mov %[u],%[ru]\n" "shr 8,%[ru]\n" "andi 0x1f,%[ru],%[ru]\n"
-                "add %[rv],%[ru]\n" "add %[tile],%[ru]\n" "ld.b 0[%[ru]],%[c0]\n"
-                "add %[du],%[u]\n" "add %[dv],%[v]\n"
-                "mov %[v],%[rv]\n" "shr 3,%[rv]\n" "andi 0x3e0,%[rv],%[rv]\n"
-                "mov %[u],%[ru]\n" "shr 8,%[ru]\n" "andi 0x1f,%[ru],%[ru]\n"
-                "add %[rv],%[ru]\n" "add %[tile],%[ru]\n" "ld.b 0[%[ru]],%[c1]\n"
-                "add %[du],%[u]\n" "add %[dv],%[v]\n"
-                "andi 255,%[c0],%[c0]\n" "andi 255,%[c1],%[c1]\n"
-                "shl 8,%[c0]\n" "or %[c1],%[c0]\n" "st.h %[c0],0[%[dst]]\n"
-                "add 2,%[dst]\n" "add -1,%[pairs]\n" "bne 1b\n"
-                : [dst] "+r" (dst16), [pairs] "+r" (pairs), [u] "+r" (u), [v] "+r" (v),
-                  [c0] "=&r" (c0), [c1] "=&r" (c1), [ru] "=&r" (ru), [rv] "=&r" (rv)
-                : [du] "r" (du), [dv] "r" (dv), [tile] "r" (tile)
-                : "memory");
-            dst = (uint8_t *)(void *)dst16;
-            n &= 1;
-        }
-
-        if (n != 0) {
-            *dst = tile[(((uint32_t)v >> 3) & 0x3e0u) |
-                        (((uint32_t)u >> 8) & 0x1fu)];
-        }
+        /* Keep this scalar loop compact.  A copied two-texel Maka variant
+           removed 1.6% of the moving-board instruction count, but grew this
+           function enough to shift the adjacent hot span dispatcher across
+           direct-mapped V810 I-cache sets.  The measured render-cost proxy
+           regressed by 4.4k cycles/field, so code placement wins here. */
+        uint32_t c0, ru, rv;
+        __asm__ volatile (
+            "1:\n"
+            "mov %[v],%[rv]\n" "shr 3,%[rv]\n" "andi 0x3e0,%[rv],%[rv]\n"
+            "mov %[u],%[ru]\n" "shr 8,%[ru]\n" "andi 0x1f,%[ru],%[ru]\n"
+            "add %[rv],%[ru]\n" "add %[tile],%[ru]\n" "ld.b 0[%[ru]],%[c0]\n"
+            "st.b %[c0],0[%[dst]]\n"
+            "add %[du],%[u]\n" "add %[dv],%[v]\n"
+            "add 1,%[dst]\n" "add -1,%[n]\n" "bne 1b\n"
+            : [dst] "+r" (dst), [n] "+r" (n), [u] "+r" (u), [v] "+r" (v),
+              [c0] "=&r" (c0), [ru] "=&r" (ru), [rv] "=&r" (rv)
+            : [du] "r" (du), [dv] "r" (dv), [tile] "r" (tile)
+            : "memory");
     }
 #elif CFX_RENDERER_USE_SH1_ASM
     {
