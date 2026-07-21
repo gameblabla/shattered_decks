@@ -17,7 +17,7 @@ CDOUT ?= waifupcfx
 # pcfx/ in $(V810GCC)/include, plus libpcfx's own eris/cd.h + eris/scsi.h.
 INCLUDES := \
   -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated -Isrc/platform/pcfx \
-  -I$(V810GCC)/include -I$(V810GCC)/$(PREFIX)/include
+  -Ilibpcfx/include -I$(V810GCC)/include -I$(V810GCC)/$(PREFIX)/include
 
 CFLAGS ?= -O2 -fomit-frame-pointer -fno-builtin -ffunction-sections -fdata-sections -Werror=vla -Wall -Wextra -std=gnu99 -mv810 -mprolog-function -msda=0
 # Render the moving 3D field live on PC-FX, cache only the resting views.
@@ -129,7 +129,7 @@ RAINBOW_BG_STREAMS := \
 ELF_TARGET := $(OBJDIR)/$(PCFX_TARGET).elf
 BIN_TARGET := $(OBJDIR)/$(PCFX_TARGET).program.bin
 MAP_TARGET := $(OBJDIR)/$(PCFX_TARGET).map
-PCFX_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(PCFX_SRCS_C)) $(patsubst %.s,$(OBJDIR)/%.o,$(PCFX_SRCS_S))
+PCFX_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(PCFX_SRCS_C)) $(patsubst %.s,$(OBJDIR)/%.o,$(PCFX_SRCS_S)) $(OBJDIR)/libpcfx/src/cdda.o
 
 .PHONY: all program clean clean-build clean-output cd zip toolchain-check pcfxtools regression-pcfx-hand-card regression-pcfx-battle-card regression-pcfx-battle-card-stripe
 

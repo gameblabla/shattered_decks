@@ -3,6 +3,7 @@
 #include "pcfx_sfx_adpcm.h"
 #include "sounds.h"
 
+#include <eris/cdda.h>
 #include <pcfx/types.h>
 #include <pcfx/sound.h>
 #include <stdint.h>
@@ -45,13 +46,7 @@
 
 struct WaifuPcfxAudio {
     WaifuFmMusicTrack current_music; /* last music enum handed to us */
-    uint8_t desired_track;           /* CD track we want (0 = silent) */
-    uint8_t desired_loop;            /* WAIFU_CDDA_LOOP for looping music, 0 for one-shot */
-    uint8_t active_track;            /* CD track we last issued a play for */
-    uint8_t active_loop;             /* loop mode of the active play command */
-    uint32_t active_seq;             /* cd-read seq at the moment we started it */
-    uint32_t last_read_seq;          /* cd-read seq seen on the previous pump */
-    uint8_t silence_stop_frames;     /* short CD-DA STOP retry after entering true silence */
+    uint32_t last_cd_read_seq;
 };
 
 static WaifuPcfxAudio g_audio;
@@ -67,7 +62,7 @@ static uint8_t g_turn_jingle_guard_frames = 0u;
 static void waifu_pcfx_cdda_apply_mix_volume(uint8_t volume)
 {
     if (g_cdda_mix_volume == volume) return;
-    waifu_pcfx_cdda_set_volume(volume, volume);
+    eris_cdda_music_set_volume(volume);
     g_cdda_mix_volume = volume;
 }
 
@@ -727,32 +722,21 @@ static uint8_t music_to_cdda_loop(WaifuFmMusicTrack track)
     switch (track) {
     case WAIFU_FM_MUSIC_RESULTS:
     case WAIFU_FM_MUSIC_LOST:
-        return WAIFU_CDDA_NORMAL; /* victory/loss jingle: play once */
+        return 0; /* victory/loss jingle: play once */
     default:
-        return WAIFU_CDDA_LOOP;
+        return 1;
     }
 }
 
 WaifuPcfxAudio *waifu_pcfx_audio_create(void)
 {
     g_audio.current_music = WAIFU_FM_MUSIC_NONE;
-    g_audio.desired_track = 0;
-    g_audio.desired_loop = WAIFU_CDDA_LOOP;
-    g_audio.active_track = 0;
-    g_audio.active_loop = WAIFU_CDDA_LOOP;
-    g_audio.active_seq = 0;
-    g_audio.last_read_seq = waifu_pcfx_cd_read_seq();
-    g_audio.silence_stop_frames = 10u;
     g_cdda_duck_frames = 0;
     g_turn_jingle_guard_frames = 0;
     g_cdda_mix_volume = 0u;
-    waifu_pcfx_cdda_set_volume(0, 0);
-    waifu_pcfx_cdda_stop();
+    eris_cdda_music_init();
+    g_audio.last_cd_read_seq = waifu_pcfx_cd_read_seq();
     waifu_pcfx_sfx_init();
-    waifu_pcfx_cdda_stop();
-    waifu_pcfx_cdda_set_volume(0, 0);
-    g_cdda_mix_volume = 0u;
-    g_audio.last_read_seq = waifu_pcfx_cd_read_seq();
     return &g_audio;
 }
 
@@ -766,81 +750,32 @@ void waifu_pcfx_audio_set_music(WaifuPcfxAudio *audio, WaifuFmMusicTrack track)
     if (!audio) return;
     if (audio->current_music == track) return;
     audio->current_music = track;
-    /* Record intent only.  The actual SCSI play is issued from the pump once
-       any in-flight CD data load has settled, because a data read would stop
-       CD-DA again immediately.  This also handles re-arming after a load. */
-    audio->desired_track = music_to_cdda_track(track);
-    audio->desired_loop = music_to_cdda_loop(track);
-    if (audio->desired_track == 0) audio->silence_stop_frames = 10u;
+    /* The library owns the NEC D8/D9 transport, BCD track encoding, and the
+       restart after a reported CD data read.  This call records intent only. */
+    eris_cdda_music_play(music_to_cdda_track(track), music_to_cdda_loop(track));
 }
 
-/* Issue/refresh CD-DA playback to match desired_track, but only when CD reads
-   have settled for a frame.  A data read stops the drive's audio engine, so we
-   restart the loop whenever a read has happened since we last started it. */
 void waifu_pcfx_audio_pump(WaifuPcfxAudio *audio)
 {
-    uint32_t seq;
+    uint32_t read_seq;
     if (!audio) return;
-
-    seq = waifu_pcfx_cd_read_seq();
-
-    /* True silence requested: retry CD-DA pause briefly.  SFX are ADPCM and
-       independent of this branch; loading states that should keep or resume
-       music no longer map to WAIFU_MUSIC_NONE in src/main.c. */
-    if (audio->desired_track == 0) {
-        waifu_pcfx_cdda_apply_mix_volume(0u);
-        if (audio->active_track != 0 || audio->silence_stop_frames) {
-            waifu_pcfx_cdda_stop();
-            audio->active_track = 0;
-            audio->active_seq = seq;
-            if (audio->silence_stop_frames) --audio->silence_stop_frames;
-        }
-        if (g_cdda_duck_frames) --g_cdda_duck_frames;
-        if (g_turn_jingle_guard_frames) --g_turn_jingle_guard_frames;
-        audio->last_read_seq = seq;
-        return;
+    read_seq = waifu_pcfx_cd_read_seq();
+    if (read_seq != audio->last_cd_read_seq) {
+        eris_cdda_notify_cd_read();
+        audio->last_cd_read_seq = read_seq;
     }
-
     waifu_pcfx_cdda_pump_mix_volume();
-
-    if (seq != audio->last_read_seq) {
-        /* A CD data load happened during this frame; it has stopped any CD-DA.
-           Wait until a frame passes with no further reads before (re)starting,
-           so we don't fight an in-progress multi-sector load. */
-        audio->last_read_seq = seq;
-        return;
-    }
-
-    /* Start when the track changed, or when a read has interrupted playback
-       since we last issued it (active_seq lags the current read seq).
-
-       PC-FX D9 uses an exclusive end position.  For one music item, play from
-       the desired track to the following track/leadout.  Passing start=end is
-       an empty range; passing mode 0 is silent. */
-    if (audio->desired_track != audio->active_track ||
-        audio->desired_loop != audio->active_loop ||
-        seq != audio->active_seq) {
-        waifu_pcfx_cdda_play(audio->desired_track, (uint8_t)(audio->desired_track + 1u), audio->desired_loop);
-        audio->active_track = audio->desired_track;
-        audio->active_loop = audio->desired_loop;
-        audio->active_seq = seq;
-        audio->silence_stop_frames = 0;
-    }
+    eris_cdda_music_pump();
 }
 
 void waifu_pcfx_audio_stop_all(WaifuPcfxAudio *audio)
 {
     if (!audio) return;
     audio->current_music = WAIFU_FM_MUSIC_NONE;
-    audio->desired_track = 0;
-    audio->desired_loop = WAIFU_CDDA_LOOP;
-    audio->active_track = 0;
-    audio->active_loop = WAIFU_CDDA_LOOP;
-    audio->silence_stop_frames = 10u;
     g_cdda_duck_frames = 0;
     g_turn_jingle_guard_frames = 0;
     waifu_pcfx_cdda_apply_mix_volume(0u);
-    waifu_pcfx_cdda_stop();
+    eris_cdda_music_stop();
     waifu_pcfx_psg_stop_all();
     waifu_pcfx_adpcm_stop_hw();
 }

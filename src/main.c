@@ -12768,6 +12768,41 @@ static const char *story_battle_intro_lines(void)
    the camera snap back -- the scene must hold its last live pose instead. */
 static int g_story_plaza_freeze_frame = 0;
 
+#if defined(WAIFU_FM_PCFX)
+/* A dialogue line changes one glyph at a time, but the old PC-FX path rebuilt
+   the entire textured plaza (sky, floor, temple and two large portraits) for
+   every glyph.  That both burned V810 time and made the dirty presenter upload
+   almost a full frame, so text visibly crawled on hardware.  Once the short
+   portrait entrance is done, retain the non-dialogue pixels and redraw only
+   the box.  This is deliberately PC-FX-only: other targets either have a
+   different present cost or their own parallel renderer/cache strategy. */
+#define WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME 30
+typedef struct WaifuPcfxPlazaDialogueCache {
+    int valid;
+    int duel;
+    StorySceneKind scene;
+    uint8_t pixels[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
+} WaifuPcfxPlazaDialogueCache;
+
+static WaifuPcfxPlazaDialogueCache g_pcfx_plaza_dialogue_cache;
+
+static int pcfx_plaza_dialogue_cache_matches(void)
+{
+    return g_pcfx_plaza_dialogue_cache.valid &&
+           g_pcfx_plaza_dialogue_cache.duel == g_story_duel_index &&
+           g_pcfx_plaza_dialogue_cache.scene == story_scene_kind();
+}
+
+static void pcfx_plaza_dialogue_cache_store(void)
+{
+    memcpy(g_pcfx_plaza_dialogue_cache.pixels, framebuffer,
+           WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
+    g_pcfx_plaza_dialogue_cache.duel = g_story_duel_index;
+    g_pcfx_plaza_dialogue_cache.scene = story_scene_kind();
+    g_pcfx_plaza_dialogue_cache.valid = 1;
+}
+#endif
+
 static void draw_story_plaza_scene_content(int anim_frame)
 {
     int line = g_story_plaza_line;
@@ -12778,6 +12813,10 @@ static void draw_story_plaza_scene_content(int anim_frame)
     const char *speaker = g_story_name;
     const char *subhead = opp->title;
     uint8_t speaker_color = IDX_GOLD_HI;
+#if defined(WAIFU_FM_PCFX)
+    int cached = anim_frame >= WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME &&
+                 pcfx_plaza_dialogue_cache_matches();
+#endif
 
     if (line < 0) line = 0;
     if (line_count <= 0) line_count = 1;
@@ -12785,27 +12824,39 @@ static void draw_story_plaza_scene_content(int anim_frame)
 
     int ex = waifu_platform_ui_extra_w();
     waifu_fm_use_dialogue_palette();
-    clear_screen(IDX_BLACK);
-    draw_story_sky(anim_frame);
-    /* The full-width dialog box always covers the bottom 66 rows (full screen
-       width in widescreen). */
-    story_scene_set_floor_occluder(0, WAIFU_FM_HEIGHT - 66, WAIFU_FM_WIDTH + ex, 66);
-    draw_story_scene_3d(anim_frame);
-    ui_hud_begin();
-    draw_panel_rect(8, 8, 102, 18, IDX_UI_DARK);
-    draw_text_small(14, 14, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);
+#if defined(WAIFU_FM_PCFX)
+    if (cached) {
+        memcpy(framebuffer, g_pcfx_plaza_dialogue_cache.pixels,
+               WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
+    } else
+#endif
+    {
+        clear_screen(IDX_BLACK);
+        draw_story_sky(anim_frame);
+        /* The full-width dialog box always covers the bottom 66 rows (full screen
+           width in widescreen). */
+        story_scene_set_floor_occluder(0, WAIFU_FM_HEIGHT - 66, WAIFU_FM_WIDTH + ex, 66);
+        draw_story_scene_3d(anim_frame);
+        ui_hud_begin();
+        draw_panel_rect(8, 8, 102, 18, IDX_UI_DARK);
+        draw_text_small(14, 14, story_scene_name(), IDX_GOLD_HI, IDX_BLACK);
 
-    /* Widescreen: Serena hugs the true left edge, the opponent the true right
-       edge (both slide in from just off their respective screen edges). */
-    serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2, anim_frame);
-    opp_x = story_slide_x(WAIFU_FM_WIDTH + ex + 14, WAIFU_FM_WIDTH + ex - WAIFU_STORY_PORTRAIT_W - 2, anim_frame);
-    /* Raise portraits so their hands and upper torsos read more naturally,
-       while leaving the textbox directly over their lower bodies. */
-    serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20;
-    opp_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 14;
-    draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
-    draw_story_portrait(opp->portrait_id, opp_x, opp_y);
-    ui_hud_end();
+        /* Widescreen: Serena hugs the true left edge, the opponent the true right
+           edge (both slide in from just off their respective screen edges). */
+        serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2, anim_frame);
+        opp_x = story_slide_x(WAIFU_FM_WIDTH + ex + 14, WAIFU_FM_WIDTH + ex - WAIFU_STORY_PORTRAIT_W - 2, anim_frame);
+        /* Raise portraits so their hands and upper torsos read more naturally,
+           while leaving the textbox directly over their lower bodies. */
+        serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20;
+        opp_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 14;
+        draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
+        draw_story_portrait(opp->portrait_id, opp_x, opp_y);
+        ui_hud_end();
+#if defined(WAIFU_FM_PCFX)
+        if (anim_frame >= WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME)
+            pcfx_plaza_dialogue_cache_store();
+#endif
+    }
     if (dialog[line].speaker == STORY_SPK_OPPONENT) {
         speaker = opp->name;
         speaker_color = story_opponent_is_boss() ? IDX_RED : IDX_GOLD_HI;

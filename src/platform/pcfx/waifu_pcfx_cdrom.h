@@ -28,17 +28,8 @@ WaifuPcfxCdrom *waifu_pcfx_cdrom_create(void);
 void waifu_pcfx_cdrom_destroy(WaifuPcfxCdrom *cdrom);
 int waifu_pcfx_cdrom_read_asset(WaifuPcfxCdrom *cdrom, WaifuPcfxCdAssetId asset, void *dst, size_t dst_size);
 
-/* CDDA playback — standalone (no cdrom context required). */
-#define WAIFU_CDDA_SILENT 0x00
-#define WAIFU_CDDA_NORMAL 0x01
-#define WAIFU_CDDA_LOOP   0x04
-void waifu_pcfx_cdda_play(uint8_t start_track, uint8_t end_track, uint8_t loop);
-void waifu_pcfx_cdda_stop(void);
-void waifu_pcfx_cdda_set_volume(uint8_t left, uint8_t right);
-
-/* Monotonic counter bumped on every CD data read.  A SCSI/CD data read stops
-   CD-DA playback on real hardware (and in the emulator), so the audio layer
-   watches this to know when a load has interrupted music and must restart it. */
+/* Monotonic counter bumped on every CD data read, retained for diagnostics.
+   CD-DA recovery itself is owned by eris/cdda.h's music manager. */
 uint32_t waifu_pcfx_cd_read_seq(void);
 
 /* Blocking CD/SCSI DMA directly into KING KRAM.  kram_addr is the KING
