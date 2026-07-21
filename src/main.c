@@ -2254,7 +2254,10 @@ static int story_slide_x(int from_x, int to_x, int frame)
    counter resets on state re-entry). Both the story dialogue box and the ending
    narration share this so the effect and its timing live in ONE place. */
 static void waifu_str_copy_n(char *dst, int dst_size, const char *src, int max_chars);
-#define WAIFU_TEXT_TYPE_FRAMES_PER_CHAR 2   /* ~30 chars/sec at 60fps: fairly fast */
+/* 3/2 characters per 60 Hz frame = 90 characters/sec, exactly three times
+   the former 30 chars/sec typewriter rate. */
+#define WAIFU_TEXT_TYPE_CHARS_NUM 3
+#define WAIFU_TEXT_TYPE_CHARS_DEN 2
 enum {
     STORY_TW_INTRO = 1,
     STORY_TW_FIRE,
@@ -2275,7 +2278,8 @@ static int story_text_reveal_count(int scene, int line, int now, int len)
     }
     elapsed = now - g_tw_origin;
     if (elapsed < 0) elapsed = 0;
-    vis = elapsed / WAIFU_TEXT_TYPE_FRAMES_PER_CHAR + 1;   /* first glyph shows at once */
+    vis = (elapsed * WAIFU_TEXT_TYPE_CHARS_NUM) / WAIFU_TEXT_TYPE_CHARS_DEN + 1;
+    /* First glyph shows at once. */
     if (vis > len) vis = len;
     return vis;
 }
@@ -2288,7 +2292,7 @@ static int story_text_fully_typed(int scene, int line, int now, int len)
 
 /* Frame at which the current line's typing started (valid after a matching
    story_text_reveal_count/… call this frame). Used to snap a line to fully
-   typed on a button press: set the scene frame to origin + len*FPC. */
+   typed on a button press. */
 static int story_text_reveal_origin(void) { return g_tw_origin; }
 
 /* On a button press: if (scene,line) is still typing, returns the scene-frame
@@ -2299,7 +2303,10 @@ static int story_text_snap_frame(int scene, int line, int now, const char *s)
 {
     int len = (int)strlen(s);
     if (story_text_fully_typed(scene, line, now, len)) return -1;
-    return story_text_reveal_origin() + len * WAIFU_TEXT_TYPE_FRAMES_PER_CHAR;
+    if (len <= 1) return story_text_reveal_origin();
+    return story_text_reveal_origin()
+           + ((len - 1) * WAIFU_TEXT_TYPE_CHARS_DEN
+              + WAIFU_TEXT_TYPE_CHARS_NUM - 1) / WAIFU_TEXT_TYPE_CHARS_NUM;
 }
 
 static void draw_story_dialog_box(int scene, int line, const char *speaker, const char *subhead, const char *text, uint8_t speaker_color, int f)
