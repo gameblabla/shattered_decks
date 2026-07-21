@@ -100,15 +100,12 @@ static void waifu_vdc_set_access_width(int chip, int cg_mode, int mapsize,
 #define WAIFU_PCFX_BLACK_WORD ((uint16_t)((IDX_BLACK << 8) | IDX_BLACK))
 #define WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1 0x00001000u
 #ifndef WAIFU_PCFX_DIRTY_PRESENT
-/* Present path: render once to the CPU framebuffer, then stream it to the hidden
-   KRAM page with the inline out.h writer (no fastking jal/rts) and flip BG0 to
-   it for tear-free double buffering.  The page_shadow[2] mirrors are NOT a second
-   software back buffer for buffering's sake -- they let the presenter diff the
-   new frame against what each KRAM page already holds and upload only the changed
-   16px bands.  A full 256x240 KRAM upload is ~30k out.h (close to a whole frame's
-   budget), so this diff is the main thing keeping partially-changed frames cheap;
-   it stays on.  Set to 0 to force a full inline upload every changed frame. */
-#define WAIFU_PCFX_DIRTY_PRESENT 0
+/* Keep a logical shadow for each affine source page and emit only source texels
+   that differ.  Each changed byte becomes one complete duplicated KRAM word;
+   do not substitute masked writes here, as affine fetches can expose stale
+   neighbours after a page flip.  Set to 0 only when diagnosing the full-upload
+   fallback. */
+#define WAIFU_PCFX_DIRTY_PRESENT 1
 #endif
 #ifndef WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
 /* Keep big-card art in the same CPU-framebuffer dirty-band path as every other
@@ -401,7 +398,7 @@ static inline __attribute__((always_inline)) void pcfx_schedule_title_page_flip(
     video->pending_page = -1;
 }
 
-#if WAIFU_PCFX_DIRTY_PRESENT
+#if 0 /* Retired 256-wide helpers and block-band presenter. */
 typedef struct PcfxDirtyRun {
     uint8_t x0b;
     uint8_t x1b;
@@ -882,7 +879,7 @@ static inline __attribute__((always_inline)) void pcfx_kram_write_frame_inline(c
 #endif
 }
 
-#if WAIFU_PCFX_DIRTY_PRESENT
+#if 0 /* Retired 256-wide helpers and block-band presenter. */
 static inline __attribute__((always_inline)) void pcfx_kram_clear_rect_black_inline(int page_word_offset_arg, int x0_arg, int y0_arg, int width_bytes_arg, int rows_arg)
 {
 #if defined(__v810__)
@@ -1255,6 +1252,49 @@ static void pcfx_kram_write_frame_affine(const uint8_t *framebuffer,
                                  WAIFU_PCFX_W, WAIFU_PCFX_H,
                                  WAIFU_PCFX_W);
 }
+
+#if WAIFU_PCFX_DIRTY_PRESENT
+/* Maka's 512x256 path uses a compact logical shadow and writes each changed
+   source byte as a complete KRAM word.  Keep the same invariant here: the
+   shadow is updated only after the corresponding unmasked texel has been sent,
+   so every triple-buffer page exactly describes what its affine source holds.
+   Consecutive changed four-byte groups share one KRAM seek; unchanged groups
+   close a run rather than being bridged with stale/masked data. */
+static WAIFU_PCFX_NOINLINE int pcfx_present_dirty_rows(uint8_t *shadow,
+                                                        const uint8_t *framebuffer,
+                                                        int page_word_offset)
+{
+    int changed_words = 0;
+    for (int y = 0; y < WAIFU_PCFX_H; ++y) {
+        const uint32_t *src = (const uint32_t *)(framebuffer + y * WAIFU_PCFX_W);
+        uint32_t *dst = (uint32_t *)(shadow + y * WAIFU_PCFX_W);
+        int word = 0;
+        while (word < WAIFU_PCFX_W / 4) {
+            while (word < WAIFU_PCFX_W / 4 && src[word] == dst[word]) ++word;
+            if (word == WAIFU_PCFX_W / 4) break;
+
+            int first = word;
+            do {
+                ++word;
+            } while (word < WAIFU_PCFX_W / 4 && src[word] != dst[word]);
+
+            king_seek_write_words((uint32_t)(page_word_offset +
+                                  y * WAIFU_PCFX_BG_ROW_WORDS + first * 4));
+            pcfx_kram_select_data_register();
+            for (int i = first; i < word; ++i) {
+                uint32_t texels = src[i];
+                pcfx_kram_write_affine_texel((uint8_t)texels);
+                pcfx_kram_write_affine_texel((uint8_t)(texels >> 8));
+                pcfx_kram_write_affine_texel((uint8_t)(texels >> 16));
+                pcfx_kram_write_affine_texel((uint8_t)(texels >> 24));
+                dst[i] = texels;
+                ++changed_words;
+            }
+        }
+    }
+    return changed_words;
+}
+#endif
 
 
 
@@ -2882,49 +2922,16 @@ void waifu_pcfx_video_present_8bpp(WaifuPcfxVideo *video, const uint8_t *framebu
     }
 
 #if WAIFU_PCFX_DIRTY_PRESENT
-    int upload_full = 0;
     uint8_t *shadow = video->page_shadow[video->back_page];
-#if WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
-    PcfxDirectBigArt direct_art[WAIFU_ASSET_BIG_ART_DRAW_MAX];
-    int direct_art_count = 0;
-#endif
-
     if (!video->page_shadow_valid[video->back_page]) {
-        upload_full = 1;
+        pcfx_present_full_upload(video, framebuffer, shadow);
     } else {
-        /* Large 112x112 card-art draws are usually already resident in the
-           global CD cache after the duel prewarm.  Prime block-aligned direct
-           art regions before the generic dirty-band planner, then stream them
-           to KING KRAM.  Aligned card-art windows use the cached art source;
-           half-block battle positions use a 16-pixel-aligned framebuffer
-           envelope so moving cards always update whole edge blocks. */
-#if WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
-        direct_art_count = pcfx_collect_direct_big_art(direct_art, WAIFU_ASSET_BIG_ART_DRAW_MAX, framebuffer);
-        if (direct_art_count > 0) pcfx_prime_shadow_for_direct_big_art(shadow, framebuffer, direct_art, direct_art_count);
-#endif
-
-        PcfxDirtyPlanStats dirty_stats = pcfx_dirty_plan_stats(framebuffer, shadow);
-        if (dirty_stats.dirty_blocks == 0) {
-#if WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
-            if (direct_art_count > 0) pcfx_upload_direct_big_art(direct_art, direct_art_count, page_word_offset(video->back_page));
-#endif
+        if (pcfx_present_dirty_rows(shadow, framebuffer,
+                                    page_word_offset(video->back_page)) == 0) {
             /* The hidden page already holds this exact frame; commit it. */
             pcfx_commit_8bpp_page(video);
             return;
         }
-        if (dirty_stats.dirty_blocks * WAIFU_PCFX_DIRTY_BLOCK_W >= WAIFU_PCFX_DIRTY_FULL_THRESHOLD_BYTES ||
-            dirty_stats.row_runs > WAIFU_PCFX_DIRTY_MAX_TOTAL_RUNS) {
-            upload_full = 1;
-        }
-    }
-
-    if (upload_full) {
-        pcfx_present_full_upload(video, framebuffer, shadow);
-    } else {
-        pcfx_present_dirty_bands(shadow, framebuffer, page_word_offset(video->back_page));
-#if WAIFU_PCFX_DIRECT_BIG_ART_ENABLE
-        if (direct_art_count > 0) pcfx_upload_direct_big_art(direct_art, direct_art_count, page_word_offset(video->back_page));
-#endif
     }
 #else
     uint32_t frame_sum;
