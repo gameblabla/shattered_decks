@@ -13210,6 +13210,18 @@ void waifu_fm_step(const WaifuFmInput *input)
             } else if (g_i_menu_selected == 1) {
                 enter_menu_to_battle_fade();
             } else if (story_save_exists()) {
+#ifdef WAIFU_FM_PCFX
+                /* With two real choices, keep the title/menu surface live and
+                   replace its VDC text immediately.  Fading to black only to
+                   fade the same surface back in as a device picker feels like
+                   a load stall; a single save still takes MENU_TO_LOAD and
+                   follows the normal fade into its direct load. */
+                if (story_save_exists_device(0) && story_save_exists_device(1)) {
+                    g_i_load_device_sel = 0;
+                    g_i_state = WAIFU_I_STORY_LOAD_DEVICE;
+                    g_i_frame = -1;
+                } else
+#endif
                 enter_menu_to_load_fade();
             }
             /* No save on any device: LOAD STORY is disabled (drawn dimmed).
