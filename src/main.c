@@ -12801,6 +12801,19 @@ static void pcfx_plaza_dialogue_cache_store(void)
     g_pcfx_plaza_dialogue_cache.scene = story_scene_kind();
     g_pcfx_plaza_dialogue_cache.valid = 1;
 }
+
+static void pcfx_plaza_dialogue_cache_restore(void)
+{
+    const uint8_t *src = g_pcfx_plaza_dialogue_cache.pixels;
+    uint8_t *dst = framebuffer;
+    int i;
+    /* Index 0 is the RAINBOW key.  Do not copy cached sky texels over the
+       freshly cleared keyed frame: restore only the opaque 3D/portrait/UI
+       foreground that belongs on top of the live VDC background. */
+    for (i = 0; i < WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT; ++i) {
+        if (src[i] != 0) dst[i] = src[i];
+    }
+}
 #endif
 
 static void draw_story_plaza_scene_content(int anim_frame)
@@ -12826,15 +12839,11 @@ static void draw_story_plaza_scene_content(int anim_frame)
     waifu_fm_use_dialogue_palette();
 #if defined(WAIFU_FM_PCFX)
     if (cached) {
-        /* draw_story_sky() normally re-arms RAINBOW every frame.  The cached
-           backdrop intentionally skips that draw, but must still renew the
-           platform request or present_8bpp clears the layer as unused.  Keep
-           the settle-frame scroll value too: the cached foreground and its
-           transparent sky holes remain perfectly registered. */
-        waifu_platform_background_request(story_background_kind(),
-                                          story_background_hscroll(WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME));
-        memcpy(framebuffer, g_pcfx_plaza_dialogue_cache.pixels,
-               WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
+        /* Keep the exact live sky path: it re-arms PC-FX RAINBOW and clears
+           the framebuffer to its transparency key before cached foreground
+           pixels are composited back on top. */
+        draw_story_sky(WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME);
+        pcfx_plaza_dialogue_cache_restore();
     } else
 #endif
     {
