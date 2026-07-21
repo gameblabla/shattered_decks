@@ -8977,15 +8977,20 @@ static int battle_base_cache_restore(Camera cam, uint32_t key)
             int yoff = (g_b_phase == IB_PLAYER_PLACE)
                      ? q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(prev, WAIFU_PCFX_PLACE_SETTLE_FRAMES)))
                      : q8_to_int(q8_mul(Q8_FROM_INT(82), q8_smooth_ratio(prev, WAIFU_PCFX_PLACE_SETTLE_FRAMES)));
-            FlyingCardLayout old_card;
+            FlyingCardLayout path_card;
             int x0, y0, x1, y1;
 
             /* The cached placement base is already present in framebuffer.
-               Restore only what last frame's moving overlays damaged. */
-            x0 = hand_final_x(0);
-            x1 = hand_final_x(I_HAND - 1) + 38;
-            y0 = WAIFU_HAND_Y_BASE + yoff;
-            y1 = y0 + 50;
+               Restore only the regions the moving overlays can damage. */
+            /* Restore the complete footprint, not just each card's nominal
+               38x50 face.  draw_card_sprite() adds a +2,+3 shadow, while the
+               COM hand's selected-card cursor reaches 3px sideways and 12px
+               above/below.  Omitting those margins leaves thin card-shaped
+               scraps behind as the hand settles. */
+            x0 = hand_final_x(0) - 3;
+            x1 = hand_final_x(I_HAND - 1) + 38 + 3;
+            y0 = WAIFU_HAND_Y_BASE + yoff - 12;
+            y1 = WAIFU_HAND_Y_BASE + yoff + 50 + 12;
             if (x0 < 0) x0 = 0;
             if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
             if (y0 < 0) y0 = 0;
@@ -8994,12 +8999,29 @@ static int battle_base_cache_restore(Camera cam, uint32_t key)
                 copy_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0,
                              primary->pixels + y * WAIFU_FM_WIDTH + x0, x1 - x0);
 
-            if (flying_card_layout(cam, g_b_place_hand, g_b_place_slot, row,
-                                   prev, 0, WAIFU_PCFX_PLACE_FRAMES,
-                                   g_b_phase == IB_PLAYER_PLACE ? 2 : 1, &old_card)) {
-                x0 = old_card.x - 4; y0 = old_card.y - 4;
-                x1 = old_card.x + old_card.w + 4;
-                y1 = old_card.y + old_card.h + 4;
+            /* PC-FX can present a rendered game frame for more than one video
+               field.  Clearing only phase_frame-1 therefore does not guarantee
+               that the framebuffer contains only that one old card position;
+               late flip/glide frames can retain older silhouettes.  Restore
+               the union of the complete short flight path from the clean base.
+               This is still a fraction of a full 256x240 framebuffer copy. */
+            x0 = WAIFU_FM_WIDTH; y0 = WAIFU_FM_HEIGHT;
+            x1 = 0; y1 = 0;
+            for (int path_frame = 0; path_frame <= WAIFU_PCFX_PLACE_FRAMES; ++path_frame) {
+                if (flying_card_layout(cam, g_b_place_hand, g_b_place_slot, row,
+                                       path_frame, 0, WAIFU_PCFX_PLACE_FRAMES,
+                                       g_b_phase == IB_PLAYER_PLACE ? 2 : 1, &path_card)) {
+                    int px0 = path_card.x - 4;
+                    int py0 = path_card.y - 4;
+                    int px1 = path_card.x + path_card.w + 4;
+                    int py1 = path_card.y + path_card.h + 4;
+                    if (px0 < x0) x0 = px0;
+                    if (py0 < y0) y0 = py0;
+                    if (px1 > x1) x1 = px1;
+                    if (py1 > y1) y1 = py1;
+                }
+            }
+            if (x0 < x1 && y0 < y1) {
                 if (x0 < 0) x0 = 0;
                 if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
                 if (y0 < 0) y0 = 0;
