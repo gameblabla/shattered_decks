@@ -2254,9 +2254,9 @@ static int story_slide_x(int from_x, int to_x, int frame)
    counter resets on state re-entry). Both the story dialogue box and the ending
    narration share this so the effect and its timing live in ONE place. */
 static void waifu_str_copy_n(char *dst, int dst_size, const char *src, int max_chars);
-/* 3/2 characters per 60 Hz frame = 90 characters/sec, exactly three times
-   the former 30 chars/sec typewriter rate. */
-#define WAIFU_TEXT_TYPE_CHARS_NUM 3
+/* 15/2 characters per 60 Hz frame = 450 characters/sec, five times the
+   preceding 90 chars/sec typewriter rate. */
+#define WAIFU_TEXT_TYPE_CHARS_NUM 15
 #define WAIFU_TEXT_TYPE_CHARS_DEN 2
 enum {
     STORY_TW_INTRO = 1,
