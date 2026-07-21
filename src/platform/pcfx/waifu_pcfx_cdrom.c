@@ -174,12 +174,10 @@ static uint32_t cd_round_sector_bytes_u32(uint32_t bytes)
     return (bytes + (PCFX_CD_SECTOR_SIZE - 1u)) & ~(PCFX_CD_SECTOR_SIZE - 1u);
 }
 
-/* Free KRAM scratch for CD->RAM bounces: KING physical page 0, above the three
-   256x256 display pages (words 0 / 0x8000 / 0x10000, each 0x8000 words) and
-   below the page-1 ADPCM bank (0x20000).  The 0x18000..0x1FFFF window (0x8000
-   words / 64 KiB) is not fetched by BG0 nor used by ADPCM/RAINBOW, so DMAing
-   into it never disturbs the visible frame or audio. */
-#define WAIFU_PCFX_CD_BOUNCE_KRAM_WORD 0x18000u
+/* The 512x256 affine triple buffer owns page-0 words 0x00000..0x2FFFF.
+   Keep CD->RAM DMA in the unused fourth quarter, below physical page 1's
+   ADPCM/RAINBOW bank; the old 0x18000 scratch overlapped affine page 1. */
+#define WAIFU_PCFX_CD_BOUNCE_KRAM_WORD 0x30000u
 #define WAIFU_PCFX_CD_BOUNCE_WORDS     0x4000u   /* 32 KiB (16 sectors) per pass */
 
 /* Read CD -> main RAM through libpcfx's retail-style DMA bounce path. */
