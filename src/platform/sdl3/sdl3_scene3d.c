@@ -933,6 +933,10 @@ int waifu_platform_text_overlay_is_hardware(void)
     return 0;
 }
 
+void waifu_platform_story_layers_begin(void) {}
+int waifu_platform_story_portrait(int portrait_id, int x, int y)
+{ (void)portrait_id; (void)x; (void)y; return 0; }
+
 /* ---- frame lifecycle ---------------------------------------------------------- */
 
 Sdl3SceneFrame *waifu_sdl3_scene_frame(void)

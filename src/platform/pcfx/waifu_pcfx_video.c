@@ -1361,6 +1361,36 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 #define WAIFU_PCFX_VDC_FADE_TILE_BASE 0x080
 #define WAIFU_PCFX_VDC_FADE_LEVELS 17
 
+/* Story portraits use the same paired-HuC6270 256-colour sprite contract as
+ * doom-pcfx: VDC0 carries the high nibble, VDC1 carries the low nibble and its
+ * palette-bank bit 3 arms the combine.  A 124x200 portrait occupies an 8x4
+ * grid of 16x64 cells; two active portraits exactly consume the 64-entry SAT.
+ * Pattern storage is deliberately above the 64x32 BAT/font area and below the
+ * SAT source at 0xff00. */
+#define WAIFU_PCFX_STORY_SPR_MAX       2
+#define WAIFU_PCFX_STORY_CELL_W        16
+#define WAIFU_PCFX_STORY_CELL_H        64
+#define WAIFU_PCFX_STORY_COLS          8
+#define WAIFU_PCFX_STORY_ROWS          4
+#define WAIFU_PCFX_STORY_CELLS         (WAIFU_PCFX_STORY_COLS * WAIFU_PCFX_STORY_ROWS)
+#define WAIFU_PCFX_STORY_NO_STRIDE     8
+#define WAIFU_PCFX_STORY_SLOT0_NO      0x080
+#define WAIFU_PCFX_STORY_SLOT1_NO      (WAIFU_PCFX_STORY_SLOT0_NO + WAIFU_PCFX_STORY_CELLS * WAIFU_PCFX_STORY_NO_STRIDE)
+#define WAIFU_PCFX_STORY_SAT_ADDR      0xff00
+#define WAIFU_PCFX_STORY_SAT_H64       0x2000
+
+typedef struct WaifuPcfxStoryPortraitRequest {
+    int id;
+    int x;
+    int y;
+} WaifuPcfxStoryPortraitRequest;
+
+static WaifuPcfxStoryPortraitRequest g_story_portrait_request[WAIFU_PCFX_STORY_SPR_MAX];
+static int g_story_portrait_count;
+static int g_story_portrait_uploaded[WAIFU_PCFX_STORY_SPR_MAX] = { -1, -1 };
+static int g_story_portrait_uploaded_y[WAIFU_PCFX_STORY_SPR_MAX] = { -0x4000, -0x4000 };
+static int g_story_sat_visible;
+
 static WaifuPcfxVdcBackground g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
 static int g_rainbow_backdrop_requested;
 static int g_rainbow_backdrop_active;
@@ -1967,6 +1997,121 @@ static void pcfx_vdc_overlay_print_centered(int ty, const char *str)
 {
     int len = pcfx_strlen_limited(str, WAIFU_PCFX_VDC_VISIBLE_W);
     pcfx_vdc_overlay_print((WAIFU_PCFX_VDC_VISIBLE_W - len) / 2, ty, str, len);
+}
+
+static void pcfx_story_upload_portrait(int slot, int portrait_id, int screen_y)
+{
+    const uint8_t *pix = waifu_assets_story_portrait_pixels(portrait_id);
+    const uint8_t *mask = waifu_assets_story_portrait_mask(portrait_id);
+    uint16_t base_no = slot == 0 ? WAIFU_PCFX_STORY_SLOT0_NO : WAIFU_PCFX_STORY_SLOT1_NO;
+    if (!pix) return;
+
+    for (int cell = 0; cell < WAIFU_PCFX_STORY_CELLS; ++cell) {
+        int cx = (cell % WAIFU_PCFX_STORY_COLS) * WAIFU_PCFX_STORY_CELL_W;
+        int cy = (cell / WAIFU_PCFX_STORY_COLS) * WAIFU_PCFX_STORY_CELL_H;
+        for (int block = 0; block < 4; ++block) {
+            uint16_t hi[4][16] = {{0}};
+            uint16_t lo[4][16] = {{0}};
+            for (int row = 0; row < 16; ++row) {
+                int sy = cy + block * 16 + row;
+                if (sy >= WAIFU_STORY_PORTRAIT_H || screen_y + sy >= WAIFU_FM_HEIGHT - 66) continue;
+                for (int x = 0; x < 16; ++x) {
+                    int sx = cx + x;
+                    int src_i;
+                    uint8_t v;
+                    uint16_t bit;
+                    if (sx >= WAIFU_STORY_PORTRAIT_W) continue;
+                    src_i = sy * WAIFU_STORY_PORTRAIT_W + sx;
+                    v = pix[src_i];
+                    if (mask ? !mask[src_i] : v == 0) continue;
+                    /* Combined VDC sprites key transparency from the LOW
+                     * nibble.  Preserve every other palette index and nudge
+                     * only the sixteen unsafe x0 colours to a neighbour. */
+                    if ((v & 0x0f) == 0) v = (uint8_t)(v | 1);
+                    bit = (uint16_t)(1u << (15 - x));
+                    for (int plane = 0; plane < 4; ++plane) {
+                        if ((v >> (plane + 4)) & 1) hi[plane][row] |= bit;
+                        if ((v >> plane) & 1) lo[plane][row] |= bit;
+                    }
+                }
+            }
+            for (int chip = 0; chip < 2; ++chip) {
+                uint16_t addr = (uint16_t)((base_no + cell * WAIFU_PCFX_STORY_NO_STRIDE) * 64 + block * 128);
+                vdc_set_vram_write(chip, addr);
+                for (int plane = 0; plane < 4; ++plane)
+                    for (int row = 0; row < 16; ++row)
+                        vdc_vram_write(chip, chip == 0 ? hi[plane][row] : lo[plane][row]);
+            }
+        }
+    }
+    g_story_portrait_uploaded[slot] = portrait_id;
+    g_story_portrait_uploaded_y[slot] = screen_y;
+}
+
+static void pcfx_story_write_sat(void)
+{
+    uint16_t sat[64 * 4];
+    int n = 0;
+    memset(sat, 0, sizeof(sat));
+    for (int slot = 0; slot < g_story_portrait_count; ++slot) {
+        uint16_t base_no = slot == 0 ? WAIFU_PCFX_STORY_SLOT0_NO : WAIFU_PCFX_STORY_SLOT1_NO;
+        for (int cell = 0; cell < WAIFU_PCFX_STORY_CELLS && n < 64; ++cell) {
+            int col = cell % WAIFU_PCFX_STORY_COLS;
+            int row = cell / WAIFU_PCFX_STORY_COLS;
+            if (g_story_portrait_request[slot].y + row * WAIFU_PCFX_STORY_CELL_H >= WAIFU_FM_HEIGHT - 66) continue;
+            sat[n * 4 + 0] = (uint16_t)((g_story_portrait_request[slot].y + row * WAIFU_PCFX_STORY_CELL_H + 0x40) & 0x3ff);
+            sat[n * 4 + 1] = (uint16_t)((g_story_portrait_request[slot].x + col * WAIFU_PCFX_STORY_CELL_W + 0x20) & 0x3ff);
+            sat[n * 4 + 2] = (uint16_t)(((base_no + cell * WAIFU_PCFX_STORY_NO_STRIDE) << 1) & 0x7ff);
+            sat[n * 4 + 3] = WAIFU_PCFX_STORY_SAT_H64;
+            ++n;
+        }
+    }
+    vdc_set_vram_write(VDC_CHIP_0, WAIFU_PCFX_STORY_SAT_ADDR);
+    for (int i = 0; i < 64 * 4; ++i) vdc_vram_write(VDC_CHIP_0, sat[i]);
+    vdc_set_vram_write(VDC_CHIP_1, WAIFU_PCFX_STORY_SAT_ADDR);
+    for (int i = 0; i < 64; ++i) {
+        vdc_vram_write(VDC_CHIP_1, sat[i * 4 + 0]);
+        vdc_vram_write(VDC_CHIP_1, sat[i * 4 + 1]);
+        vdc_vram_write(VDC_CHIP_1, sat[i * 4 + 2]);
+        vdc_vram_write(VDC_CHIP_1, sat[i * 4 + 3] ? (WAIFU_PCFX_STORY_SAT_H64 | 0x0008) : 0);
+    }
+    vdc_setreg(VDC_CHIP_0, VDC_REG_DCR, VDC_DCR_SATB_AUTO);
+    vdc_setreg(VDC_CHIP_1, VDC_REG_DCR, VDC_DCR_SATB_AUTO);
+    vdc_set_satb_address(VDC_CHIP_0, WAIFU_PCFX_STORY_SAT_ADDR);
+    vdc_set_satb_address(VDC_CHIP_1, WAIFU_PCFX_STORY_SAT_ADDR);
+    g_story_sat_visible = n != 0;
+}
+
+static void pcfx_story_layers_flush(WaifuPcfxVideo *video)
+{
+    int active = g_story_portrait_count != 0;
+    if (!active && !g_story_sat_visible) return;
+    if (!active) {
+        g_story_portrait_count = 0;
+        pcfx_story_write_sat();
+        return;
+    }
+    /* VDC sprites sit in front of KING and RAINBOW.  The dialog bar keeps its
+     * established KING palette/text path; portrait cells are clipped before
+     * that bar, so it remains an opaque foreground HUD. */
+    waifu_vdc_set_control(VDC_CHIP_0, 0, 1, 1);
+    waifu_vdc_set_control(VDC_CHIP_1, 0, 1, 1);
+    if (g_rainbow_backdrop_active) {
+        tetsu_set_priorities(7, 6, 5, 0, 0, 0, 4);
+        tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
+                             TETSU_COLORS_16, TETSU_COLORS_16, 1, 1, 1, 0, 0, 0, 1);
+    } else {
+        tetsu_set_priorities(7, 6, 5, 0, 0, 0, 0);
+        tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
+                             TETSU_COLORS_16, TETSU_COLORS_16, 1, 1, 1, 0, 0, 0, 0);
+    }
+    for (int slot = 0; slot < g_story_portrait_count; ++slot)
+        if (g_story_portrait_uploaded[slot] != g_story_portrait_request[slot].id ||
+            g_story_portrait_uploaded_y[slot] != g_story_portrait_request[slot].y)
+            pcfx_story_upload_portrait(slot, g_story_portrait_request[slot].id,
+                                       g_story_portrait_request[slot].y);
+    pcfx_story_write_sat();
+    if (video) video->vdc_overlay_shutdown_countdown = 0;
 }
 
 static void pcfx_vdc_overlay_print_story_line(int tx, int ty, const char *str, int max_len, int *visible_chars)
@@ -2729,6 +2874,22 @@ int waifu_platform_text_overlay_is_hardware(void)
     return 1;
 }
 
+void waifu_platform_story_layers_begin(void)
+{
+    g_story_portrait_count = 0;
+}
+
+int waifu_platform_story_portrait(int portrait_id, int x, int y)
+{
+    if (portrait_id < 0 || portrait_id >= WAIFU_STORY_PORTRAIT_COUNT ||
+        g_story_portrait_count >= WAIFU_PCFX_STORY_SPR_MAX) return 0;
+    g_story_portrait_request[g_story_portrait_count].id = portrait_id;
+    g_story_portrait_request[g_story_portrait_count].x = x;
+    g_story_portrait_request[g_story_portrait_count].y = y;
+    ++g_story_portrait_count;
+    return 1;
+}
+
 void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
 {
     g_sanctum_backdrop = backdrop;
@@ -2989,7 +3150,13 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
            state and are refreshed every field for reliable affine BG0 output. */
         pcfx_king_refresh_8bpp_affine_state();
     }
-    if (video) pcfx_vdc_overlay_flush(video);
+    if (video) {
+        pcfx_vdc_overlay_flush(video);
+        /* Overlay flush may rebuild the VDC BAT for a fade.  Story HUD and
+         * sprites are staged afterwards, inside vblank, so both VDCs latch a
+         * complete paired SAT on the next field. */
+        pcfx_story_layers_flush(video);
+    }
     while ((*sr & 0x0020u) != 0) { }
     if (video && video->mode == WAIFU_PCFX_VIDEO_MODE_KING_8BPP && video->vdc_overlay_shutdown_countdown > 0) {
         --video->vdc_overlay_shutdown_countdown;

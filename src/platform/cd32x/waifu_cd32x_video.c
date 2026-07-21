@@ -755,3 +755,7 @@ int waifu_platform_text_overlay_is_hardware(void)
        only the small mutable prompt/menu areas from the resident title asset. */
     return 1;
 }
+
+void waifu_platform_story_layers_begin(void) {}
+int waifu_platform_story_portrait(int portrait_id, int x, int y)
+{ (void)portrait_id; (void)x; (void)y; return 0; }

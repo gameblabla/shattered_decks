@@ -2234,6 +2234,7 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
 static void draw_story_portrait(int portrait_id, int x, int y)
 {
     if (portrait_id < 0 || portrait_id >= WAIFU_STORY_PORTRAIT_COUNT) return;
+    if (waifu_platform_story_portrait(portrait_id, x, y)) return;
     const uint8_t *pix = waifu_assets_story_portrait_pixels(portrait_id);
     const uint8_t *mask = waifu_assets_story_portrait_mask(portrait_id);
     if (!pix) return;
@@ -13056,6 +13057,7 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     waifu_fm_init();
     waifu_assets_big_art_draw_queue_reset();
+    waifu_platform_story_layers_begin();
     frame_dirty_reset();
     g_video_fade_visible_q8 = Q8_ONE;
     /* Free-running ambient frame for the story 3D sanctum/scene sway.  Unlike

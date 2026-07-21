@@ -165,6 +165,14 @@ void waifu_platform_text_overlay_clear(void);
  * platform so the branch is trivially predicted. */
 int waifu_platform_text_overlay_is_hardware(void);
 
+/* ---- Story portraits ------------------------------------------------------
+ * A platform with a hardware sprite plane may take story portraits out of the
+ * software framebuffer.  The core brackets every rendered frame, then submits
+ * each portrait in draw order.  Returning 1 means the caller must not blit the
+ * portrait into the framebuffer. */
+void waifu_platform_story_layers_begin(void);
+int waifu_platform_story_portrait(int portrait_id, int x, int y);
+
 #ifdef __cplusplus
 }
 #endif
