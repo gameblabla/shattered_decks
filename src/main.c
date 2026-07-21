@@ -3187,16 +3187,34 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
     return;
 #endif
     PROFILE_CARD2D_GENERIC_BEGIN();
+    /* Preserve floor(pixel * source / destination) exactly, but advance the
+       quotient/remainder incrementally.  Placement cards change size almost
+       every frame, so they cannot use a prebuilt scale map; doing two integer
+       divides per output pixel was the dominant cost of the fly-in overlay on
+       PC-FX. */
+    int sy = 0;
+    int sy_rem = 0;
+    int sy_step = sh / dh;
+    int sy_rem_step = sh % dh;
+    int sx_step = sw / dw;
+    int sx_rem_step = sw % dw;
     for (int yy = 0; yy < dh; ++yy) {
-        int sy = (yy * sh) / dh;
         int dy = y + yy;
-        if ((unsigned)dy >= WAIFU_FM_HEIGHT) continue;
-        for (int xx = 0; xx < dw; ++xx) {
-            int sx = (xx * sw) / dw;
-            int dx = x + xx;
-            if ((unsigned)dx >= WAIFU_FM_WIDTH) continue;
-            framebuffer[dy * WAIFU_FM_WIDTH + dx] = src[sy * sw + sx];
+        if ((unsigned)dy < WAIFU_FM_HEIGHT) {
+            int sx = 0;
+            int sx_rem = 0;
+            for (int xx = 0; xx < dw; ++xx) {
+                int dx = x + xx;
+                if ((unsigned)dx < WAIFU_FM_WIDTH)
+                    framebuffer[dy * WAIFU_FM_WIDTH + dx] = src[sy * sw + sx];
+                sx += sx_step;
+                sx_rem += sx_rem_step;
+                if (sx_rem >= dw) { sx_rem -= dw; ++sx; }
+            }
         }
+        sy += sy_step;
+        sy_rem += sy_rem_step;
+        if (sy_rem >= dh) { sy_rem -= dh; ++sy; }
     }
     PROFILE_CARD2D_GENERIC_END();
 }
@@ -3755,8 +3773,11 @@ static void draw_grid_line(Camera cam, Vec3 a, Vec3 b, uint8_t c)
 static void draw_grid_line_projected(ScreenPt pa, ScreenPt pb, uint8_t c)
 {
     if (pa.ok && pb.ok) {
+        /* These endpoints already lie on the shared projected cell boundary.
+           Unlike a free-standing 3D line, the board grid needs no one-pixel
+           drop shadow: duplicating it at y+1 makes the top-view rules two
+           pixels thick and extends the bottom/side endpoints past the board. */
         line_i(pa.x, pa.y, pb.x, pb.y, c);
-        line_i(pa.x, pa.y+1, pb.x, pb.y+1, IDX_DARK_BROWN);
     }
 }
 
@@ -4493,7 +4514,15 @@ static void draw_top_selector_cursor(Camera cam)
     draw_top_selector_cursor_ex(cam, 0);
 }
 
-static void draw_flying_card(Camera cam, int card_id, int hand_index, int target_col, int target_row, int frame, int start, int end, int back)
+typedef struct FlyingCardLayout {
+    int x, y, w, h;
+    int render_back;
+    int32_t t;
+} FlyingCardLayout;
+
+static int flying_card_layout(Camera cam, int hand_index, int target_col, int target_row,
+                              int frame, int start, int end, int back,
+                              FlyingCardLayout *out)
 {
     int32_t t = q8_ratio(frame - start, end - start);
     int flip_to_back = (back == 2);
@@ -4507,7 +4536,7 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
     int midw = 48, midh = 66;
 
     ScreenPt dst = project_point(cam, v3(zone_cx(target_col), Q8_FRAC(10,100), zone_cz(target_row)));
-    if (!dst.ok) return;
+    if (!dst.ok) return 0;
     int dx = dst.x - 14, dy = dst.y - 20;
 
     int x, y, w, h;
@@ -4559,13 +4588,28 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
         }
     }
 
+    out->x = x; out->y = y; out->w = w; out->h = h;
+    out->render_back = render_back;
+    out->t = t;
+    return 1;
+}
+
+static void draw_flying_card(Camera cam, int card_id, int hand_index, int target_col, int target_row, int frame, int start, int end, int back)
+{
+    FlyingCardLayout layout;
+    int flip_to_back = (back == 2);
+    if (!flying_card_layout(cam, hand_index, target_col, target_row,
+                            frame, start, end, back, &layout)) return;
+
     /* soft black shadow under the flying card */
-    rect_fill(x+3, y+h-2, w, 4, IDX_BLACK);
-    draw_card_sprite(card_id, x, y, w, h, render_back);
-    if (flip_to_back && t >= Q8_FRAC(38,100) && t < Q8_FRAC(42,100)) rect_fill(x + w / 2 - 1, y + 2, 2, h - 4, IDX_WHITE);
-    if (t > Q8_FRAC(78,100)) {
-        rect_outline(x-2,y-2,w+4,h+4,IDX_GOLD_HI);
-        if (((frame - start) & 3) < 2) rect_outline(x-4,y-4,w+8,h+8,IDX_WHITE);
+    rect_fill(layout.x+3, layout.y+layout.h-2, layout.w, 4, IDX_BLACK);
+    draw_card_sprite(card_id, layout.x, layout.y, layout.w, layout.h, layout.render_back);
+    if (flip_to_back && layout.t >= Q8_FRAC(38,100) && layout.t < Q8_FRAC(42,100))
+        rect_fill(layout.x + layout.w / 2 - 1, layout.y + 2, 2, layout.h - 4, IDX_WHITE);
+    if (layout.t > Q8_FRAC(78,100)) {
+        rect_outline(layout.x-2,layout.y-2,layout.w+4,layout.h+4,IDX_GOLD_HI);
+        if (((frame - start) & 3) < 2)
+            rect_outline(layout.x-4,layout.y-4,layout.w+8,layout.h+8,IDX_WHITE);
     }
 }
 
@@ -6198,12 +6242,9 @@ typedef struct WaifuBattleBaseCache {
 } WaifuBattleBaseCache;
 
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
-/* Only the two RESTING battle cameras are cached: the hand-idle view and the
-   top view.  Those are the frames where the 3D field is not moving, so a cheap
-   composite copy beats re-running the board renderer while the player scrolls
-   the hand or reads the field.  Every other camera -- the hand<->top lift and
-   any animating field -- renders live full-time (battle_base_cache_for_camera
-   returns NULL for them), so there is no mid-transition keyframe cache. */
+/* Cache static battle cameras: hand-idle, top view, and placement fly-ins.  A
+   cheap composite copy beats re-running the board and every placed card while
+   only the cursor/hand/flying-card overlays move. */
 static WaifuBattleBaseCache g_b_base_cache;
 #if defined(WAIFU_FM_PCFX)
 static WaifuBattleBaseCache g_b_base_cache_top;
@@ -8903,14 +8944,19 @@ static WaifuBattleBaseCache *pcfx_handtop_cache_for_anchor(int anchor)
 #endif
 
 /* Return the cache slot for a cacheable camera, or NULL for a moving one.  The
-   hand-idle view, the top view, AND the quantized hand<->top lift keyframes all
-   cache (the lift is stepped onto a small anchor set so it can); side / attack /
-   animating-field cameras are not anchors -> NULL -> rendered live. */
+   hand-idle view, top view, quantized hand<->top lift keyframes, and the two
+   static placement cameras cache.  Side / attack / continuously moving cameras
+   still return NULL and render live. */
 static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
 {
 #if defined(WAIFU_FM_PCFX)
     int anchor = pcfx_handtop_anchor_index_for_camera(cam);
     if (anchor >= 0) return pcfx_handtop_cache_for_anchor(anchor);
+    /* Placement temporarily borrows one intermediate lift slot.  This adds no
+       BSS on the 2 MiB PC-FX, keeps the resting hand/top views intact, and the
+       idle prewarmer rebuilds the displaced lift anchor before its next use. */
+    if (camera_equal(cam, placement_camera()) || camera_equal(cam, enemy_placement_camera()))
+        return &g_b_handtop_mid_cache[0];
     return NULL;
 #else
     (void)cam;
@@ -8922,6 +8968,48 @@ static int battle_base_cache_restore(Camera cam, uint32_t key)
 {
     WaifuBattleBaseCache *primary = battle_base_cache_for_camera(cam);
     if (primary && primary->valid && primary->key == key && camera_equal(primary->cam, cam)) {
+#if defined(WAIFU_FM_PCFX)
+        if (g_b_phase == IB_PLAYER_PLACE || g_b_phase == IB_COM_PLACE) {
+            int prev = g_b_phase_frame > 0 ? g_b_phase_frame - 1 : 0;
+            int row = (g_b_phase == IB_PLAYER_PLACE)
+                    ? (g_b_place_trap ? PLAYER_CARD_ROW + 1 : PLAYER_CARD_ROW)
+                    : ENEMY_CARD_ROW;
+            int yoff = (g_b_phase == IB_PLAYER_PLACE)
+                     ? q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(prev, WAIFU_PCFX_PLACE_SETTLE_FRAMES)))
+                     : q8_to_int(q8_mul(Q8_FROM_INT(82), q8_smooth_ratio(prev, WAIFU_PCFX_PLACE_SETTLE_FRAMES)));
+            FlyingCardLayout old_card;
+            int x0, y0, x1, y1;
+
+            /* The cached placement base is already present in framebuffer.
+               Restore only what last frame's moving overlays damaged. */
+            x0 = hand_final_x(0);
+            x1 = hand_final_x(I_HAND - 1) + 38;
+            y0 = WAIFU_HAND_Y_BASE + yoff;
+            y1 = y0 + 50;
+            if (x0 < 0) x0 = 0;
+            if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+            if (y0 < 0) y0 = 0;
+            if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+            for (int y = y0; y < y1; ++y)
+                copy_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0,
+                             primary->pixels + y * WAIFU_FM_WIDTH + x0, x1 - x0);
+
+            if (flying_card_layout(cam, g_b_place_hand, g_b_place_slot, row,
+                                   prev, 0, WAIFU_PCFX_PLACE_FRAMES,
+                                   g_b_phase == IB_PLAYER_PLACE ? 2 : 1, &old_card)) {
+                x0 = old_card.x - 4; y0 = old_card.y - 4;
+                x1 = old_card.x + old_card.w + 4;
+                y1 = old_card.y + old_card.h + 4;
+                if (x0 < 0) x0 = 0;
+                if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+                if (y0 < 0) y0 = 0;
+                if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+                for (int y = y0; y < y1; ++y)
+                    copy_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0,
+                                 primary->pixels + y * WAIFU_FM_WIDTH + x0, x1 - x0);
+            }
+        } else
+#endif
         copy_u8_fast(framebuffer, primary->pixels, (int)sizeof(primary->pixels));
         return 1;
     }
