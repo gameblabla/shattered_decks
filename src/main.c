@@ -12845,6 +12845,19 @@ static void draw_story_plaza_scene_content(int anim_frame)
            pixels are composited back on top. */
         draw_story_sky(WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME);
         pcfx_plaza_dialogue_cache_restore();
+        /* The cached KING foreground deliberately excludes hardware portraits.
+           They must still be submitted every frame: story_layers_begin() resets
+           the VDC request list before drawing, and omitting these requests made
+           the next vblank publish an empty SAT as soon as the cache settled. */
+        serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2,
+                                 WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME);
+        opp_x = story_slide_x(WAIFU_FM_WIDTH + ex + 14,
+                              WAIFU_FM_WIDTH + ex - WAIFU_STORY_PORTRAIT_W - 2,
+                              WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME);
+        serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20;
+        opp_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 14;
+        draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
+        draw_story_portrait(opp->portrait_id, opp_x, opp_y);
     } else
 #endif
     {
