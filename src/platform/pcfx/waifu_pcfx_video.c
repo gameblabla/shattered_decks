@@ -2887,11 +2887,7 @@ int waifu_platform_story_portrait(int portrait_id, int x, int y)
     g_story_portrait_request[g_story_portrait_count].x = x;
     g_story_portrait_request[g_story_portrait_count].y = y;
     ++g_story_portrait_count;
-    /* Keep a KING backing portrait.  Some PC-FX BIOS/video combinations can
-     * suppress the VDC sprite plane for a field after a mode transition; the
-     * hardware sprite covers this backing layer normally, while the backing
-     * prevents a visible disappearance on that field. */
-    return 0;
+    return 1;
 }
 
 void waifu_pcfx_video_request_sanctum(WaifuPcfxSanctumBackdrop backdrop, WaifuPcfxSanctumOverlay overlay, int value, int blink_visible)
@@ -3132,7 +3128,14 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
        poll just below) at vblank when the enable is set, so without this the
        poll spins forever.  Writing it here re-arms it just before the wait, and
        VD latches at the next vblank before the BIOS handler runs. */
-    waifu_vdc_setreg(VDC_CHIP_0, 5, 0x88);
+    /* Keep VDC0's sprite plane enabled while waiting for the next vblank.
+     * Story portraits are combined 256-colour sprites: VDC0 carries their
+     * high nibble and VDC1 the low nibble.  Re-arming the vblank IRQ with
+     * 0x88 used to clear VDC0's sprite-enable bit immediately after the
+     * story flush, leaving a portrait visible only for the brief interval
+     * between the flush and this wait. */
+    waifu_vdc_setreg(VDC_CHIP_0, VDC_REG_CR,
+                     VDC_CR_IRQ_VC | VDC_CR_BB | VDC_CR_SB);
     while ((*sr & 0x0020u) == 0) { }
     if (video && video->pending_title_page_flip) {
         pcfx_king_set_bg_kram_page_inline(0);
