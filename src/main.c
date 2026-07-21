@@ -253,10 +253,9 @@ static int g_you_lp = 8000;
 static int g_com_lp = 8000;
 /* HUD-displayed LP counters. Battle logic (win/loss, damage math) reads/writes
    g_you_lp/g_com_lp instantly; the HUD reads these _disp counters instead, so
-   a big hit counts down visibly over a beat rather than snapping straight to
-   the new value. step_lp_display() nudges them toward the real LP once per
-   frame, unconditionally, so the animation keeps progressing even across
-   state/phase changes (e.g. into the post-battle return). */
+   a big hit normally counts down visibly over a beat rather than snapping
+   straight to the new value. PC-FX bypasses that drain because its lower duel
+   update rate makes the counter lag far behind the resolved damage. */
 static int g_you_lp_disp = 8000;
 static int g_com_lp_disp = 8000;
 #define WAIFU_LP_DISPLAY_STEP 40
@@ -6507,6 +6506,7 @@ static void draw_cutin_battle_card(int id, int x, int y, int back, int attacker_
 
 static int input_pressed(int now, int prev) { return now && !prev; }
 
+#if !defined(WAIFU_FM_PCFX)
 static int lp_disp_step_toward(int disp, int target)
 {
     int diff = target - disp;
@@ -6514,11 +6514,20 @@ static int lp_disp_step_toward(int disp, int target)
     if (diff > 0) return diff <= WAIFU_LP_DISPLAY_STEP ? target : disp + WAIFU_LP_DISPLAY_STEP;
     return diff >= -WAIFU_LP_DISPLAY_STEP ? target : disp - WAIFU_LP_DISPLAY_STEP;
 }
+#endif
 
 static void step_lp_display(void)
 {
+#if defined(WAIFU_FM_PCFX)
+    /* Battle logic has already committed the authoritative values.  Present
+       them on the next rendered frame instead of spending many slow PC-FX
+       updates walking the HUD counter down in 40-LP increments. */
+    g_you_lp_disp = g_you_lp;
+    g_com_lp_disp = g_com_lp;
+#else
     g_you_lp_disp = lp_disp_step_toward(g_you_lp_disp, g_you_lp);
     g_com_lp_disp = lp_disp_step_toward(g_com_lp_disp, g_com_lp);
+#endif
 }
 
 static int player_can_place_monster(void)
