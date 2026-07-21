@@ -12776,7 +12776,7 @@ static int g_story_plaza_freeze_frame = 0;
    portrait entrance is done, retain the non-dialogue pixels and redraw only
    the box.  This is deliberately PC-FX-only: other targets either have a
    different present cost or their own parallel renderer/cache strategy. */
-#define WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME 30
+#define WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME 24
 typedef struct WaifuPcfxPlazaDialogueCache {
     int valid;
     int duel;
@@ -12826,6 +12826,13 @@ static void draw_story_plaza_scene_content(int anim_frame)
     waifu_fm_use_dialogue_palette();
 #if defined(WAIFU_FM_PCFX)
     if (cached) {
+        /* draw_story_sky() normally re-arms RAINBOW every frame.  The cached
+           backdrop intentionally skips that draw, but must still renew the
+           platform request or present_8bpp clears the layer as unused.  Keep
+           the settle-frame scroll value too: the cached foreground and its
+           transparent sky holes remain perfectly registered. */
+        waifu_platform_background_request(story_background_kind(),
+                                          story_background_hscroll(WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME));
         memcpy(framebuffer, g_pcfx_plaza_dialogue_cache.pixels,
                WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
     } else
