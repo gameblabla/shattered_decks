@@ -2146,6 +2146,12 @@ static void pcfx_vdc_overlay_init(WaifuPcfxVideo *video)
 
     pcfx_vdc_overlay_upload_fade_tile(16);
     pcfx_vdc_overlay_upload_font();
+    /* The BIOS leaves a live VDC SAT behind.  Title mode hides VDC sprites,
+     * but RAINBOW story scenes enable that output again; without an explicit
+     * empty SAT transfer the BIOS logo/sprites reappear above a loaded story.
+     * Ask the vblank story flush to publish a paired zero SAT after this VDC
+     * setup is complete. */
+    g_story_sat_visible = 1;
     /* Start covered.  The first title frame may require a full 16M KRAM upload;
        keeping an opaque VDC black mask in front prevents any one-frame reveal
        of uninitialized or partially uploaded KING data. */
