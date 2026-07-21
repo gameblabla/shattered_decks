@@ -355,9 +355,30 @@ def tile_side_wall():
 def tile_dark(): return Image.new('RGB',(TILE,TILE),(0,0,0))
 
 def tile_brown():
+    # Canonical dark checker art -- kept as the palette-defining reference so the
+    # 256-colour master palette (and therefore every card/portrait it quantizes)
+    # stays byte-stable.  The BOARD renders tile_brown_board() instead (see
+    # tex_atlas_rgb below); this original is only fed to the palette builder.
     img=Image.new('RGB',(TILE,TILE),(52,19,7)); d=ImageDraw.Draw(img)
     for y in range(0,TILE,4): d.line([0,y,31,y], fill=(25,8,3))
     for x in range(0,TILE,8): d.line([x,0,x,31], fill=(100,42,10))
+    return img
+
+def tile_brown_board():
+    # Low-frequency carved-wood grain for the dark board squares.  Reuse only
+    # colours from tile_brown(), which keeps the master palette byte-stable.
+    # Broad two-pixel bands survive the projected whole-texel sampling without
+    # turning into the old comb of one-pixel vertical/horizontal streaks.
+    img=Image.new('RGB',(TILE,TILE),(52,19,7)); d=ImageDraw.Draw(img)
+    dark=(25,8,3); warm=(100,42,10)
+    d.line([(0,8),(7,7),(15,9),(23,7),(31,8)], fill=dark, width=2)
+    d.line([(0,10),(7,9),(15,11),(23,9),(31,10)], fill=warm, width=2)
+    d.line([(0,23),(8,21),(16,23),(24,22),(31,24)], fill=dark, width=2)
+    d.line([(0,25),(8,23),(16,25),(24,24),(31,26)], fill=warm, width=2)
+    d.ellipse([5,14,10,18], fill=warm)
+    d.ellipse([7,15,9,17], fill=dark)
+    d.ellipse([23,2,27,5], fill=warm)
+    d.rectangle([24,3,26,4], fill=dark)
     return img
 
 def tile_volcanic_ground():
@@ -416,6 +437,12 @@ support_rgb=draw_support_face()
 support_big_rgb=draw_support_emblem(BIG_W)
 back_rgb=draw_card_back()
 tex_rgb=[tile_dark(),tile_gold(0),tile_sand(),tile_stone(),tile_side_wall(),tile_brown(),tile_volcanic_ground(),tile_volcanic_slope(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
+# Art actually baked into the runtime atlas: identical to tex_rgb except the
+# dark board checker (index 5) uses the projection-safe tile_brown_board(). tex_rgb
+# (the canonical art) still drives the palette so the master palette and every
+# card/portrait quantized against it stay byte-stable; only the board tile art
+# changes.  See tile_brown_board() for why.
+tex_atlas_rgb=list(tex_rgb); tex_atlas_rgb[5]=tile_brown_board()
 story_portraits_rgba=load_story_portraits_rgba()
 
 def build_palette_image(images):
@@ -492,7 +519,7 @@ q_big_cards=[qbytes_card_art(im) for im in big_card_rgb]
 q_support=qbytes_card_art(support_rgb)
 q_support_big=qbytes_card_art(support_big_rgb)
 q_back=qbytes_card_art(back_rgb)
-q_tex=[qbytes(im) for im in tex_rgb]
+q_tex=[qbytes(im) for im in tex_atlas_rgb]
 
 card_art_blobs = q_cards + q_big_cards + [q_support, q_support_big, q_back]
 if any(0 in blob for blob in card_art_blobs):
