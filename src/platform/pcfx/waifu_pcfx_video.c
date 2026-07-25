@@ -1823,6 +1823,26 @@ static void pcfx_rainbow_write_reg16(uint16_t reg, uint16_t value)
 #endif
 }
 
+/* REG.41 is the RAINBOW's 32-bit KRAM SOURCE ADDRESS; it must be written with a
+   full out.w, not an out.h.  A halfword write leaves the upper half holding
+   whatever the last 32-bit KING access put there, so the decoder can be pointed
+   at an arbitrary KRAM address -- it then decodes garbage or nothing at all.
+   doom-pcfx uses king_reg32() here for exactly this reason. */
+static void pcfx_rainbow_write_reg32(uint16_t reg, uint32_t value)
+{
+#if defined(__v810__)
+    __asm__ volatile (
+        "out.h %[reg],0x600[r0]\n"
+        "out.w %[value],0x604[r0]\n"
+        :
+        : [reg] "r" ((uint32_t)reg), [value] "r" (value)
+        : "memory");
+#else
+    (void)reg;
+    (void)value;
+#endif
+}
+
 static void pcfx_rainbow_setup(void)
 {
 #if defined(__v810__)
@@ -1859,10 +1879,15 @@ static void pcfx_rainbow_set_hscroll(int hscroll)
 #endif
 }
 
+/* Arm the RAINBOW decode for ONE field (KING regs 0x40..0x44).
+   The HuC6271 decodes exactly one frame per arm, so this has to run EVERY field
+   or the layer goes blank -- see pcfx_rainbow_rearm_field() in the vblank
+   handler.  The once-at-setup arm this used to rely on is why the backdrop
+   showed up for a single field and then vanished. */
 static void pcfx_rainbow_start_transfer(void)
 {
     pcfx_rainbow_write_reg16(0x40, 0x0000);
-    pcfx_rainbow_write_reg16(0x41, (uint16_t)WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR);
+    pcfx_rainbow_write_reg32(0x41, (uint32_t)WAIFU_PCFX_RAINBOW_BG_KRAM_WORD_ADDR);
     pcfx_rainbow_write_reg16(0x42, (uint16_t)WAIFU_PCFX_RAINBOW_BG_TRANSFER_START);
     pcfx_rainbow_write_reg16(0x43, (uint16_t)WAIFU_PCFX_RAINBOW_BG_BLOCK_COUNT);
     pcfx_rainbow_write_reg16(0x44, 0x0000);
@@ -3290,6 +3315,23 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
         /* Must be inside the vblank window: coefficients/centre are live KING
            state and are refreshed every field for reliable affine BG0 output. */
         pcfx_king_refresh_8bpp_affine_state();
+    }
+    /* One RAINBOW arm per FIELD.  The HuC6271 decodes exactly one frame per arm
+       and then idles, so a backdrop armed only when it is first selected shows
+       for a single field and is stale from then on.  doom-pcfx makes the same
+       split and for the same reason: the arm is FIELD-rate work, not
+       frame-rate work, so it must not sit behind a present/flip gate.
+
+       Placed after the flip and gated on raster >= 248 (doom's
+       RAINBOW_RESTART_RASTER): that is where this field's RAINBOW transfer has
+       finished, so regs 0x40..0x44 can be reprogrammed for the next field
+       without disturbing the one being displayed.  The spin is bounded and
+       short (<= ~8 lines from 240), and degrades to "skip this field's arm"
+       rather than hanging. */
+    if (g_rainbow_backdrop_active || g_sanctum_active) {
+        spin = 0;
+        while (pcfx_tetsu_raster_stable() < 248 && spin++ < 200000u) { }
+        pcfx_rainbow_start_transfer();
     }
     if (video) {
         pcfx_vdc_overlay_flush(video);

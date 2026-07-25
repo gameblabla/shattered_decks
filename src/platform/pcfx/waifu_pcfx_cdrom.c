@@ -180,35 +180,111 @@ static uint32_t cd_round_sector_bytes_u32(uint32_t bytes)
 #define WAIFU_PCFX_CD_BOUNCE_KRAM_WORD 0x30000u
 #define WAIFU_PCFX_CD_BOUNCE_WORDS     0x4000u   /* 32 KiB (16 sectors) per pass */
 
-/* Read CD -> main RAM through libpcfx's retail-style DMA bounce path. */
+/* CD read path preference, mirroring doom-pcfx's cd_kram_read().
+ *
+ * Commit 1d5a775 ("Use retail DMA CD readers on PC-FX") replaced this file's
+ * own phase-driven reader with libpcfx's eris_cd_read_* and left DMA as the
+ * ONLY path.  That is what black-screened the boot: every asset load failed at
+ * the first read, so the title never arrived and no music ever started.
+ * doom-pcfx hit the same wall from the other direction and records the verdict
+ * in i_system_pcfx.c: "on the one real console this port is tested on, the DMA
+ * paths currently fail outright (boot dies at the first read), so the CPU-PIO
+ * path is back as an automatic sticky fallback".
+ *
+ * The mode is a PREFERENCE, never a verdict.  A one-shot probe that disables
+ * the loser forever turns a single marginal sector (a CD-R that needed a
+ * re-read, a drive still spinning up) into a permanently crippled session.  So
+ * both paths stay available on every call at the full attempt budget; winning
+ * only reorders which is tried first next time. */
+#define WAIFU_CD_PATH_DMA 1
+#define WAIFU_CD_PATH_PIO 2
+static int g_cd_path_pref = WAIFU_CD_PATH_DMA;
+
+/* Read CD -> main RAM.  DMA bounces through KRAM scratch; the fallback is
+   libpcfx's CPU-PIO whole-transfer reader straight into RAM. */
 static uint32_t cd_read(uint32_t lba, uint8_t *buf, uint32_t bytes)
 {
+    int ok;
     if (!lba || !bytes) return 0;
     king_set_page_setting(WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1);
-    if (!eris_cd_read_dma(lba, buf, bytes, WAIFU_PCFX_CD_BOUNCE_KRAM_WORD,
-                          WAIFU_PCFX_CD_BOUNCE_WORDS)) {
-        scsi_clear_phase_irq();
-        g_cd_read_seq++;
-        return 0;
+
+    if (g_cd_path_pref == WAIFU_CD_PATH_DMA) {
+        ok = eris_cd_read_dma(lba, buf, bytes, WAIFU_PCFX_CD_BOUNCE_KRAM_WORD,
+                              WAIFU_PCFX_CD_BOUNCE_WORDS);
+        if (!ok) {
+            eris_cd_bus_settle();   /* a failed read leaves the target mid-phase */
+            ok = (eris_cd_read(lba, buf, bytes) == bytes);
+            if (ok) g_cd_path_pref = WAIFU_CD_PATH_PIO;
+        }
+    } else {
+        ok = (eris_cd_read(lba, buf, bytes) == bytes);
+        if (!ok) {
+            eris_cd_bus_settle();
+            ok = eris_cd_read_dma(lba, buf, bytes, WAIFU_PCFX_CD_BOUNCE_KRAM_WORD,
+                                  WAIFU_PCFX_CD_BOUNCE_WORDS);
+            if (ok) g_cd_path_pref = WAIFU_CD_PATH_DMA;
+        }
     }
+
     scsi_clear_phase_irq();
     /* A data read leaves the drive's CD-DA engine stopped; record that so the
        audio layer can restart music once the load settles. */
     g_cd_read_seq++;
-    return bytes;
+    return ok ? bytes : 0;
 }
 
-/* Direct CD->KRAM reads use libpcfx's phase-driven retail DMA path. */
+/* Direct CD->KRAM read, DMA preferred with a CPU-PIO fallback.
+ *
+ * page_bit is D31 of the KRAM address, and it must reach BOTH places: it
+ * routes the SCSI engine's page via REG.0F SCP, AND it selects the page the
+ * CPU KRAM cursor addresses.  The DMA reader needs it for the second reason
+ * too -- eris_cd_read_kram() verifies a transfer by stamping a sentinel into
+ * the destination and reading it back through that cursor, so passing a bare
+ * address while REG.0F points at page 1 checks page 0 and FAILS A GOOD
+ * TRANSFER (eris/cd.h documents exactly this).  The old code passed page_bit
+ * only to king_set_page_setting() and handed eris_cd_read_kram() an address
+ * with D31 clear.  doom-pcfx gets this right: `kram_word | (page1 ? 0x80000000
+ * : 0)`.
+ *
+ * dma_only forbids the CPU-PIO fallback.  It exists for the RAINBOW streams:
+ * the HuC6271 decoder only accepts KRAM data delivered by the KING SCSI/CD DMA
+ * engine, and the CPU KRAM write port does NOT feed it -- a PIO "success" there
+ * lands the bytes in KRAM and still decodes to nothing.  doom-pcfx keeps the
+ * same carve-out for its sky. */
 static int cd_dma_read_to_kram(uint32_t lba, uint32_t kram_addr, uint32_t bytes,
-                               uint32_t page_bit)
+                               uint32_t page_bit, int dma_only)
 {
     uint32_t size = cd_round_sector_bytes_u32(bytes);
+    uint32_t addr = kram_addr | page_bit;
     int ok;
     if (!lba || !bytes) return 0;
 
     king_set_page_setting((page_bit ? WAIFU_PCFX_KRAM_PAGESETTING_SCSI1 : 0u)
                           | WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1);
-    ok = eris_cd_read_kram(lba, kram_addr, size);
+
+    if (dma_only) {
+        ok = eris_cd_read_kram(lba, addr, size);
+        scsi_clear_phase_irq();
+        g_cd_read_seq++;
+        return ok;
+    }
+
+    if (g_cd_path_pref == WAIFU_CD_PATH_DMA) {
+        ok = eris_cd_read_kram(lba, addr, size);
+        if (!ok) {
+            eris_cd_bus_settle();
+            ok = eris_cd_read_kram_pio(lba, addr, 1, size);
+            if (ok) g_cd_path_pref = WAIFU_CD_PATH_PIO;
+        }
+    } else {
+        ok = eris_cd_read_kram_pio(lba, addr, 1, size);
+        if (!ok) {
+            eris_cd_bus_settle();
+            ok = eris_cd_read_kram(lba, addr, size);
+            if (ok) g_cd_path_pref = WAIFU_CD_PATH_DMA;
+        }
+    }
+
     scsi_clear_phase_irq();
     /* A data read leaves the drive's CD-DA engine stopped; record that so the
        audio layer can restart music once the load settles. */
@@ -221,7 +297,7 @@ static int cd_read_kram_on_page(uint32_t lba, uint32_t kram_addr, uint32_t bytes
     int r;
     if (!lba || !bytes) return 0;
 
-    r = cd_dma_read_to_kram(lba, kram_addr, bytes, scsi_page1 ? 0x80000000u : 0u);
+    r = cd_dma_read_to_kram(lba, kram_addr, bytes, scsi_page1 ? 0x80000000u : 0u, 0);
     /* Leave ADPCM fetching from physical page 1; video will OR this bit into
        its BG page flips as well. */
     king_set_page_setting(WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1);
@@ -229,7 +305,8 @@ static int cd_read_kram_on_page(uint32_t lba, uint32_t kram_addr, uint32_t bytes
 }
 
 static int cd_read_kram_with_page_setting(uint32_t lba, uint32_t kram_addr, uint32_t bytes,
-                                          uint32_t dma_page_setting, uint32_t restore_page_setting)
+                                          uint32_t dma_page_setting, uint32_t restore_page_setting,
+                                          int dma_only)
 {
     int r;
     uint32_t page_bit;
@@ -237,7 +314,7 @@ static int cd_read_kram_with_page_setting(uint32_t lba, uint32_t kram_addr, uint
 
     /* Route the DMA to the requested physical KRAM page. */
     page_bit = (dma_page_setting & WAIFU_PCFX_KRAM_PAGESETTING_SCSI1) ? 0x80000000u : 0u;
-    r = cd_dma_read_to_kram(lba, kram_addr, bytes, page_bit);
+    r = cd_dma_read_to_kram(lba, kram_addr, bytes, page_bit, dma_only);
     king_set_page_setting(restore_page_setting);
     return r;
 }
@@ -324,7 +401,8 @@ int waifu_pcfx_cdrom_read_rainbow_bg_to_kram(WaifuPcfxRainbowBgAsset asset, uint
         kram_addr,
         (uint32_t)bytes,
         WAIFU_PCFX_KRAM_PAGESETTING_SCSI1 | WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1 | WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1,
-        WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1 | WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1);
+        WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1 | WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1,
+        1 /* DMA only: the HuC6271 never sees CPU-PIO KRAM writes */);
 }
 
 WaifuPcfxCdrom *waifu_pcfx_cdrom_create(void)

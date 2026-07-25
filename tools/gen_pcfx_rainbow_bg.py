@@ -20,27 +20,76 @@ ZIGZAG = [
     53, 60, 61, 54, 47, 55, 62, 63,
 ]
 
-LUMA_Q = [
-    16, 11, 10, 16, 24, 40, 51, 61,
-    12, 12, 14, 19, 26, 58, 60, 55,
-    14, 13, 16, 24, 40, 57, 69, 56,
-    14, 17, 22, 29, 51, 87, 80, 62,
-    18, 22, 37, 56, 68, 109, 103, 77,
-    24, 35, 55, 64, 81, 104, 113, 92,
-    49, 64, 78, 87, 103, 121, 120, 101,
-    72, 92, 95, 98, 112, 100, 103, 99,
+# HuC6271 quantization tables, lifted verbatim from Team Innocent.
+#
+# These are the 128 bytes that disc's FF FF block header carries, read straight
+# out of its live RAINBOW source in KRAM (save state, KING.RAINBOWKRAMA =
+# 0x227FF, KRAM_Mode = 1). All four frames resident at the time carry the same
+# 128 bytes, and reshaping them 8x8 raster gives a table that is monotonic along
+# both axes and symmetric about the diagonal -- which is what settles the
+# storage order as NATURAL, not zigzag.
+#
+# The tables the encoder used before these were the baseline JPEG ones run
+# through a quality scaler, which is a different curve entirely: JPEG spends its
+# precision evenly and rolls off gently, while this one holds the low
+# frequencies very fine (3..7) and then slams the high corner to the 254
+# ceiling. That is a video table -- keep the DC and the first few AC terms,
+# throw the rest away.
+#
+# What these tables do NOT settle is the transform normalization; see IDCT_GAIN
+# below for why the argument that they did was wrong.
+LUMA_Q_RETAIL = [
+      4,   3,   4,   5,   6,   6,   7,   7,
+      3,   3,   4,   5,   6,   7,   7,  35,
+      4,   4,   5,   5,   6,   7,  11,  59,
+      4,   4,   5,   6,   7,  11,  23, 254,
+      5,   5,   6,   7,  11,  35,  67, 254,
+      5,   5,   6,   7,  27,  55, 254, 254,
+      6,   6,   7,  11,  59,  75, 254, 254,
+      7,   7,  11,  63, 119, 254, 254, 254,
 ]
 
-CHROMA_Q = [
-    17, 18, 24, 47, 99, 99, 99, 99,
-    18, 21, 26, 66, 99, 99, 99, 99,
-    24, 26, 56, 99, 99, 99, 99, 99,
-    47, 66, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
-    99, 99, 99, 99, 99, 99, 99, 99,
+CHROMA_Q_RETAIL = [
+      8,   4,   5,   7,  19, 131, 254, 254,
+      4,   4,   5,   7,  27, 254, 254, 254,
+      4,   5,   7,  11,  99, 254, 254, 254,
+      5,   6,   7,  19, 131, 254, 254, 254,
+      7,   7,  11,  99, 254, 254, 254, 254,
+      7,  11,  67, 254, 254, 254, 254, 254,
+     11,  99, 254, 254, 254, 254, 254, 254,
+    254, 254, 254, 254, 254, 254, 254, 254,
 ]
+
+# Team Innocent's tables are tuned for a bandwidth its FMV had to live inside:
+# every frame streams off the disc in real time. The sky does not -- it is DMA'd
+# into KRAM once at level load and re-armed from there, so its only size limits
+# are the KRAM page-1 reserve (SKY_RESERVE_WORD * 2 = 20480 bytes, enforced in
+# gen_pcfx_sky.py) and however many bits the decoder can chew through inside one
+# 16-line raster window. Retail's ~16 KB/frame is the demonstrated ceiling for
+# the latter, since Team Innocent hits the same 15-strip geometry we do.
+#
+# Halving every step -- so the whole curve gets one more bit of precision,
+# including the 254 high-frequency ceiling that becomes 127 -- costs 11953 bytes
+# against those two ceilings and buys +1.5 dB (RGB 32.29 -> 33.79, luma 32.98 ->
+# 34.81), measured through tools/rainbow_refdec.py. That shows up as the DOOM
+# sky's dither grain surviving instead of being smeared into visible 8x8 block
+# structure across the mountain faces.
+#
+# Finer is available and still fits the KRAM reserve (1/4 = 17377 B, RGB 34.94)
+# but pushes past retail's proven per-strip decode load for the last 1.2 dB, and
+# there is no way to test a raster-deadline overrun short of a burn. 1/2 keeps a
+# 4.5 KB margin under retail. Chroma is nearly free either way (2x2 subsampling
+# caps RGB near 39.9 dB no matter how fine the chroma table is), so it is scaled
+# with luma rather than tuned separately.
+Q_REFINE = 2
+
+
+def _refine(table):
+    return [min(254, max(1, (v + Q_REFINE - 1) // Q_REFINE)) for v in table]
+
+
+LUMA_Q = _refine(LUMA_Q_RETAIL)
+CHROMA_Q = _refine(CHROMA_Q_RETAIL)
 
 # Baseline JPEG tables kept here for reference while comparing against the
 # RAINBOW decoder. The generated stream below uses the HuC6271 tables.
@@ -209,14 +258,18 @@ class BitWriter:
         return bytes(self.data), self.unstuffed
 
 
-def scaled_quant(base, quality):
-    quality = max(1, min(100, quality))
-    scale = 5000 // quality if quality < 50 else 200 - quality * 2
-    out = []
-    for q in base:
-        val = (q * scale + 50) // 100
-        out.append(max(1, min(255, val)))
-    return np.array(out, dtype=np.float64).reshape((8, 8))
+def quant_table(base):
+    """The retail table, verbatim. No quality scaler.
+
+    There used to be a JPEG-style quality knob multiplying these. It has no
+    meaning here: the numbers above are not a quality-50 reference curve to be
+    scaled off, they are the HuC6271 table one shipping title actually feeds the
+    chip, and the block header hands them to the decoder as-is. Scaling them
+    changes the encoder's idea of the picture and the decoder's idea in lockstep
+    only as long as both stay in the range the Huffman symbol set can express --
+    and the DC/AC category argument above shows how little headroom there is.
+    """
+    return np.array(base, dtype=np.float64).reshape((8, 8))
 
 
 def fdct_matrix():
@@ -255,11 +308,36 @@ def signed_bits(value, size):
     return value - 1 + (1 << size)
 
 
+# The HuC6271's inverse transform is not orthonormal: it returns FOUR TIMES the
+# orthonormal IDCT, so the forward transform that matches it must be scaled by
+# 1/4. Both of pcfxemu's independent decoder models agree on the factor:
+#
+#   * the fast backend's jrevdct ends its second pass at
+#     DESCALE(..., CONST_BITS + PASS1_BITS + 1). Stock IJG ends at +3. Two bits
+#     fewer of descale is exactly 4x.
+#   * the 2019 hardware-accurate backend (idct.c, integer Loeffler with the
+#     chip's own coefficients) lands ((D << 5) + 32) >> 6 = D/2 in every sample
+#     of a DC-only block, where an orthonormal IDCT lands D/8. Also 4x.
+#
+# With the factor the chain is an identity: a flat block of value V has
+# orthonormal DC 8*(V-128); quantizing by the luma DC step 4 with this scale
+# gives (V-128)/2; the decoder dequantizes back to 2*(V-128) and its IDCT lands
+# (V-128) per sample, +128 = V.
+#
+# Dropping the factor (commit c3522f1) overdrove the chip 4x. Measured through
+# tools/rainbow_refdec.py, the resulting sky put 80.5% of its samples on a clip
+# rail at 13.5 dB PSNR -- the soft grey mountain backdrop decoded as a
+# black-and-white silhouette. That is what "the sky doesn't look very good" is.
+#
+# The category argument that justified removing it does not survive contact with
+# the Huffman tables. Symbol sizes 2..7 carry 3-bit DC codes while 8 and 9 cost
+# 6 and 7 bits, so the table is built for DC magnitudes under ~128 -- which is
+# where 1/4 scaling puts them (+/-64), not where full scale puts them (+/-256).
+IDCT_GAIN = 4.0
+
+
 def quantized_block(block, qtable):
-    # pcfxemu's HuC6271 IDCT returns roughly half of the dequantized DCT
-    # coefficient magnitude used by a normal JPEG path. Scale the forward DCT
-    # down here so the decoded picture lands back in the intended 0..255 range.
-    coeff = (DCT @ (block - 128.0) @ DCT.T) * 0.25
+    coeff = (DCT @ (block - 128.0) @ DCT.T) / IDCT_GAIN
     return np.rint(coeff / qtable).astype(np.int32).reshape(64)
 
 
@@ -307,13 +385,74 @@ def encode_block(writer, coeffs, qtable, last_dc, dc_table, ac_table, chroma):
     return dc
 
 
-def encode_frame(path, quality):
+# Dummy data between blocks. C6272_2 section 3.4.2 only says "insert the
+# specified dummy words/blocks at stream boundaries" without giving the count;
+# the retail stream settles it. Team Innocent's live RAINBOW source in KRAM
+# (save state, KING.RAINBOWKRAMA = 0x227FF, KRAM_Mode = 1, BlockCount = 15)
+# puts exactly four zero words after every block, in all 45 blocks of the three
+# frames resident at the time. The HuC6271 needs them to flush its input buffer
+# between blocks, and section 3.4.2 warns they count toward the KRAM address.
+BLOCK_PAD = b"\x00" * 8
+
+# Every block begins on a 16-bit KRAM word boundary, and the way that is held is
+# by making the size field even -- the advance from one block start to the next
+# is `size_field + 10`, so an even size keeps a word-aligned stream word-aligned
+# forever.
+#
+# This is measured, not inferred. Scanning KRAM1 of all three resident Team
+# Innocent save states and following every FF FF frame header through its 15
+# blocks gives 92 frames / 1380 blocks, and of those:
+#
+#     odd block sizes: 0        odd block start offsets: 0
+#
+# Zero out of 1380 on both counts. A stream whose sizes were merely whatever the
+# entropy coder happened to emit would be odd about half the time, so this is the
+# chip's rule (the same "dummy WORDS" quantization C6272_2 3.4.2 talks about for
+# BLOCK_PAD), not an accident of their encoder.
+#
+# We were violating it: the entropy length was left as-is, so 9 of our 15 blocks
+# started on an odd byte. The HuC6271 fetches KRAM a word at a time and serves
+# the decoder bytes out of that word, so an odd block start puts every fetch for
+# that block on the wrong half -- and whether the decoder recovers depends on
+# where its input FIFO happens to be, which is why the damage showed up as PART
+# of the sky FLICKERING rather than as a stream that simply never decodes.
+#
+# Padding is a single zero byte inside the size field. The decoder stops on the
+# 16-column count, not on running out of bytes, so a trailing byte it never reads
+# costs nothing; 0x00 is chosen because 0xFF would read as a block marker.
+def align_entropy(entropy):
+    return entropy + b"\x00" if len(entropy) & 1 else entropy
+
+
+def encode_frame(path):
+    """Encode one 256x240 frame as a HuC6271 block stream.
+
+    Layout, taken byte for byte from Team Innocent's in-KRAM stream (see
+    BLOCK_PAD above) rather than inferred:
+
+        block 0     FF FF <size16> <128 bytes qtables> <entropy> <8 zero bytes>
+        block 1..14 FF F8 <size16>                     <entropy> <8 zero bytes>
+
+    Four things here used to be wrong, and each one alone desynchronises the
+    decoder after the first 16 raster lines -- which is exactly the "sky only
+    partially visible" symptom:
+
+      * every block carried the FF FF marker. FF FF starts a FRAME; the
+        continuation marker is FF F8.
+      * every block carried a copy of the quantization tables. Only the FF FF
+        block does.
+      * the size field counted UNSTUFFED entropy bytes while the stream stores
+        stuffed ones, so it under-ran every block by the number of FF 00 pairs
+        in it.
+      * block sizes were left odd, so blocks started mid-KRAM-word. Retail never
+        does this in 1380 measured blocks -- see align_entropy() above.
+    """
     img = Image.open(path).convert("RGB")
     if img.size != (256, 240):
         img = img.resize((256, 240), Image.Resampling.LANCZOS)
     yuv = pcfx_yuv(np.asarray(img, dtype=np.uint8))
-    qy = scaled_quant(LUMA_Q, quality)
-    qc = scaled_quant(CHROMA_Q, quality)
+    qy = quant_table(LUMA_Q)
+    qc = quant_table(CHROMA_Q)
     qtables = bytes(int(qy.flat[i]) for i in range(64)) + bytes(int(qc.flat[i]) for i in range(64))
     out = bytearray()
 
@@ -334,17 +473,23 @@ def encode_frame(path, quality):
             dc_u = encode_block(writer, quantized_block(uplane, qc), qc, dc_u, HUFF_DC_UV, HUFF_AC_UV, True)
             dc_v = encode_block(writer, quantized_block(vplane, qc), qc, dc_v, HUFF_DC_UV, HUFF_AC_UV, True)
 
-        entropy, unstuffed_len = writer.finish()
-        size_field = 2 + 128 + unstuffed_len
-        out.extend([0xFF, 0xFF, (size_field >> 8) & 0xFF, size_field & 0xFF])
-        out.extend(qtables)
+        entropy, _unstuffed_len = writer.finish()
+        entropy = align_entropy(entropy)   # keep every block word-aligned
+        first = block_y == 0
+        tables = qtables if first else b""
+        # size counts the size field itself, the quantization tables when
+        # present, and the entropy bytes AS STORED (stuffing included).
+        size_field = 2 + len(tables) + len(entropy)
+        out.extend([0xFF, 0xFF if first else 0xF8,
+                    (size_field >> 8) & 0xFF, size_field & 0xFF])
+        out.extend(tables)
         out.extend(entropy)
+        out.extend(BLOCK_PAD)
     return bytes(out)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--quality", type=int, default=95)
     parser.add_argument("--header", required=True)
     parser.add_argument("triples", nargs="+", help="input.png output.bin SYMBOL triplets")
     args = parser.parse_args()
@@ -357,7 +502,7 @@ def main():
         dst = Path(args.triples[i + 1])
         sym = args.triples[i + 2]
         dst.parent.mkdir(parents=True, exist_ok=True)
-        stream = encode_frame(src, args.quality)
+        stream = encode_frame(src)
         dst.write_bytes(stream)
         records.append((sym, len(stream)))
 

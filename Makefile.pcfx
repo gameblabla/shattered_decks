@@ -196,7 +196,7 @@ $(TITLE_ASSET_FILES): tools/gen_title_asset.py src/generated/waifu_assets.h $(TI
 
 $(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): tools/gen_pcfx_rainbow_bg.py $(RAINBOW_SOURCE_FILES)
 	@mkdir -p assets/generated src/generated
-	python3 tools/gen_pcfx_rainbow_bg.py --quality 95 --header $(RAINBOW_BG_HEADER) \
+	python3 tools/gen_pcfx_rainbow_bg.py --header $(RAINBOW_BG_HEADER) \
 		assets/source/bg/desert.png assets/generated/rainbow_desert.bin WAIFU_PCFX_RAINBOW_DESERT \
 		assets/source/bg/stone.png assets/generated/rainbow_stone.bin WAIFU_PCFX_RAINBOW_STONE \
 		assets/source/bg/ember.png assets/generated/rainbow_ember.bin WAIFU_PCFX_RAINBOW_EMBER \
