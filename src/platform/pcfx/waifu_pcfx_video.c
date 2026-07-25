@@ -374,10 +374,98 @@ static inline __attribute__((always_inline)) void pcfx_king_set_bg0_page_inline(
 #endif
 }
 
-/* The KING keeps affine state in live registers.  Reassert it at every vblank:
-   BIOS/video activity can otherwise leave stale coefficients or a stale centre
-   behind, producing the intermittent horizontal scaling/offset corruption seen
-   after mode changes on hardware. */
+/* Raw KING indexed 16-bit register write (index port 0x600, data port 0x604).
+   libpcfx exposes no setter for REG.16, and the affine block is written through
+   fastking's own out.h pairs, so keep one local primitive rather than pulling in
+   a call for a two-instruction sequence. */
+static inline __attribute__((always_inline)) void pcfx_king_reg16(uint32_t reg, uint32_t val)
+{
+#if defined(__v810__)
+    __asm__ volatile (
+        "out.h %[reg],0x600[r0]\n"
+        "out.h %[val],0x604[r0]\n"
+        :
+        : [reg] "r" (reg), [val] "r" (val)
+        : "memory");
+#else
+    (void)reg; (void)val;
+#endif
+}
+
+/* ---- BG0 rotation microprogram, per displayed KRAM bank -------------------
+   Vendored from wolf-pcfx (platform/wolf_video.c king_bg0_rotate_mprog), whose
+   recipe is the one confirmed on real PC-FX silicon.
+
+   The 16 microprogram words are NOT two alternative programs.  C6272_2 3.6.7.3:
+   "Load the Bank A access microprogram into storage locations 0-7, and the Bank
+   B access microprogram into storage locations 8-F... the BG plane processing
+   section of HuC6272 independently accesses BOTH KRAM banks SIMULTANEOUSLY
+   within one dot cycle", and "a Bank A microprogram directs access to Bank A
+   KRAM, and a Bank B microprogram directs access to Bank B KRAM."  Slot i is
+   cycle i on bank A; slot 8+i is cycle i on bank B, and both run in the same
+   cycle.
+
+   For a rotated plane the schedule is fixed.  3.6.7.4)(D): "Because the
+   source-image coordinates are recalculated for every dot, EIGHT CG-data
+   accesses must be described (all with offset 0)" -- eight, one per dot of the
+   8-dot basic cycle -- and Example 35 (3.6.8.4), which the manual calls "the
+   only possible microprogram description for internal dot-sequential format",
+   is eight BG0/ROT/direct/CG0 in ONE bank with NOP in the other.
+
+   Filling all 16 slots with KING_CODE_ROTATE (what this port used to do)
+   therefore describes SIXTEEN CG accesses for one rotated plane, two per dot,
+   against both banks at once.  That is not an expensive-but-valid schedule, it
+   is a malformed one, and 3.6.7.4)(D) says the display will be incorrect when a
+   rotated plane's microprogram conflicts.  pcfxemu never sees it: king.c decodes
+   only the 8 slots of the bank its CG base selects and otherwise uses the
+   opcodes for a bus-contention model, so a 16-slot fill renders identically
+   there and the bug only shows on hardware.
+
+   This port cannot commit to one bank statically either: the three 0x10000-word
+   affine sources span words 0..0x2FFFF, so pages 0 and 1 are in bank A and page
+   2 is in bank B (D17).  The legal 8-access program is instead reloaded to
+   target whichever bank the page being displayed lives in.  That is 18 extra
+   register writes on the flips that change bank, inside the vblank window the
+   presenter already flips in -- 3.6.6 warns only that "the image is disturbed
+   while MPSW is 0", which is exactly what vblank is for. */
+#define WAIFU_PCFX_KRAM_BANK_WORDS 0x20000u   /* D17: word 0x20000 = bank B */
+
+static int g_king_mprog_bank = -1;   /* bank the loaded rotation program targets */
+
+static void pcfx_king_bg0_rotate_mprog(int bank)
+{
+    for (int i = 0; i < 16; ++i) g_king_microprog[i] = KING_CODE_NOP;
+    for (int i = 0; i < 8; ++i)  g_king_microprog[(bank ? 8 : 0) + i] = KING_CODE_ROTATE;
+
+    /* REG.13/REG.14 may only be written with MPSW clear (3.6.7.3 steps 1-5). */
+    king_disable_microprogram();
+    king_write_microprogram(g_king_microprog, 0, 16);
+    king_enable_microprogram();
+    g_king_mprog_bank = bank;
+}
+
+/* The KING keeps affine state in live registers.  Reassert it at every vblank
+   AND at every page flip: BIOS/video activity can otherwise leave stale
+   coefficients or a stale centre behind, producing the intermittent horizontal
+   scaling/offset corruption seen after mode changes on hardware.
+
+   wolf-pcfx establishes (real PC-FXGA silicon, 2026-07-21) that BG0's affine
+   coefficients must be valid EVERY time the plane is presented, and that the
+   commercial title Miraculum rewrites priority REG.12 (affine-enable) every
+   vblank rather than once at boot -- so the rotate-enable priority write belongs
+   here too, not just in the one-shot mode setup.  An init-only write is what
+   looked correct under pcfxemu while leaving BG0 zoomed/scrambled on hardware.
+
+   The priority/rotate-enable and REG.16 writes do NOT belong here, even though
+   wolf-pcfx keeps them in the same function: this refresh is called every field
+   from waifu_pcfx_video_wait_vblank() whenever video->mode is KING_8BPP, and
+   that mode flag stays set across the 16M title/menu surface (the title path
+   flips BG0 to KING_BGMODE_16M without changing it).  Asserting BG0's
+   rotate-enable bit from there re-enables the affine fetch underneath a 16M
+   plane and blacks the title out.  wolf-pcfx has no 16M mode to collide with.
+   They live in pcfx_king_set_8bpp_display_page() below instead, which only ever
+   runs on an actual 8bpp page set.  The coefficients themselves are inert
+   outside rotate mode, so refreshing them every field stays safe. */
 static inline __attribute__((always_inline)) void pcfx_king_refresh_8bpp_affine_state(void)
 {
     eris_king_set_bg0_affine_coefficient_a(0x0200); /* 256 display dots -> 512 source texels */
@@ -386,6 +474,27 @@ static inline __attribute__((always_inline)) void pcfx_king_refresh_8bpp_affine_
     eris_king_set_bg0_affine_coefficient_d(0x0100);
     eris_king_set_bg_affine_center_x(0);
     eris_king_set_bg_affine_center_y(0);
+}
+
+/* Point BG0 (and its sub layer) at 8bpp affine page 0..2 and make the plane
+   presentable in the same breath: re-aim the rotation microprogram at that
+   page's KRAM bank BEFORE the fetch is pointed at it (so no raster is ever
+   scheduled against the wrong bank), then reassert priority/affine.  Every 8bpp
+   display-page change must go through here -- see wolf_video.c's
+   king_set_display_page(), which this mirrors. */
+static void pcfx_king_set_8bpp_display_page(int page)
+{
+    int bank = (page_word_offset(page) & WAIFU_PCFX_KRAM_BANK_WORDS) ? 1 : 0;
+    if (bank != g_king_mprog_bank)
+        pcfx_king_bg0_rotate_mprog(bank);
+    pcfx_king_set_bg0_page_inline(page_bat_offset(page));
+    /* Rotate-enable and out-of-area mode belong to the presented 8bpp plane, so
+       they are reasserted here rather than in the per-field coefficient refresh
+       -- see that function's comment for the 16M-title collision. */
+    king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE,
+                     KING_BGPRIO_HIDE, 1);
+    pcfx_king_reg16(0x16, 0x0000);  /* transparent-paste outside the main screen */
+    pcfx_king_refresh_8bpp_affine_state();
 }
 
 static inline __attribute__((always_inline)) void pcfx_schedule_title_page_flip(WaifuPcfxVideo *video, int kram_page, int new_front, int new_back)
@@ -1902,7 +2011,7 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
         pcfx_vdc_overlay_init(video);
         king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 1);
         king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
-        pcfx_king_set_bg0_page_inline(page_bat_offset(0));
+        pcfx_king_set_8bpp_display_page(0);
         /* The RAINBOW still itself cannot be palette-faded, so the fade mask
            is drawn by VDC tiles.  Keep VDC in front of both KING BG0 and
            RAINBOW; transparent VDC tile pixels still let the scene show
@@ -2428,7 +2537,15 @@ static void set_king_16m_title_video(void)
     king_set_bg_mode(KING_BGMODE_16M, 0, 0, 0);
     pcfx_king_set_bg_kram_page_inline(0);
 
-    memset(g_king_microprog, 0, sizeof(g_king_microprog));
+    /* Bank A holds both 16M surfaces (words 0 and 0x10000, below the D17 bank
+       boundary at 0x20000), so the eight CG accesses go in slots 0-7 and bank
+       B's slots 8-F must hold KING_CODE_NOP -- not the all-zero word memset
+       used to leave there.  Opcode 0 is not NOP (C6272_2 3.6.7.2: NOP is its
+       own encoding); an all-zero slot describes a real bank-B access with every
+       field zero, so KING schedules eight spurious bank-B fetches per dot cycle
+       alongside the intended ones.  pcfxemu decodes only the CG base's bank and
+       so never shows it. */
+    for (int i = 0; i < 16; ++i) g_king_microprog[i] = KING_CODE_NOP;
     g_king_microprog[0] = KING_CODE_BG0_CG_0;
     g_king_microprog[1] = KING_CODE_BG0_CG_1;
     g_king_microprog[2] = KING_CODE_BG0_CG_2;
@@ -2440,6 +2557,8 @@ static void set_king_16m_title_video(void)
     king_disable_microprogram();
     king_write_microprogram(g_king_microprog, 0, 16);
     king_enable_microprogram();
+    /* The rotation program is gone; force a reload on the next 8bpp page set. */
+    g_king_mprog_bank = -1;
     pcfx_king_set_bg0_page_inline(0);
     /* In 16M KING mode with the dual-VDC overlay enabled, the top four
        visible scanlines sample the wrapped hidden rows unless BG0 is scrolled
@@ -2645,22 +2764,17 @@ static void set_king_8bpp_video(int display_page)
     king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0); /* 8bpp KING BG0. */
     pcfx_king_set_bg_kram_page_inline(0);
 
-    /* A 512-wide affine source needs the rotation microprogram in both banks;
-       page 2 starts in bank B at CG base 128. */
-    for (int i = 0; i < 16; ++i) g_king_microprog[i] = KING_CODE_ROTATE;
-    king_disable_microprogram();
-    king_write_microprogram(g_king_microprog, 0, 16);
-    king_enable_microprogram();
-    /* Point the display at the caller-selected page directly as the BG mode
-       becomes 8bpp.  begin_8bpp selects the third page for the mode handoff;
-       it is outside both 16M title surfaces and stays clean black across the
-       mid-scan 16M -> 8bpp switch. */
-    pcfx_king_set_bg0_page_inline(page_bat_offset(display_page));
     king_set_scroll(KING_BG0, 0, 0);
     king_set_scroll(KING_BG0SUB, 0, 0);
     king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_512, KING_BGSIZE_256, KING_BGSIZE_512);
     king_set_bg_size(KING_BG0SUB, KING_BGSIZE_256, KING_BGSIZE_512, KING_BGSIZE_256, KING_BGSIZE_512);
-    pcfx_king_refresh_8bpp_affine_state();
+    /* Point the display at the caller-selected page directly as the BG mode
+       becomes 8bpp.  begin_8bpp selects the third page for the mode handoff;
+       it is outside both 16M title surfaces and stays clean black across the
+       mid-scan 16M -> 8bpp switch.  This also loads the 8-access rotation
+       microprogram into that page's KRAM bank and asserts priority/affine. */
+    g_king_mprog_bank = -1;   /* mode switch invalidates any loaded program */
+    pcfx_king_set_8bpp_display_page(display_page);
 
     tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_256, TETSU_COLORS_16,
@@ -2997,7 +3111,7 @@ void waifu_pcfx_video_clear_black(WaifuPcfxVideo *video)
         video->page_shadow_valid[p] = 1;
     }
 #endif
-    pcfx_king_set_bg0_page_inline(page_bat_offset(video->front_page));
+    pcfx_king_set_8bpp_display_page(video->front_page);
 }
 
 #if WAIFU_PCFX_DIRTY_PRESENT
@@ -3025,7 +3139,7 @@ static WAIFU_PCFX_COLD void pcfx_present_update_palette_if_needed(WaifuPcfxVideo
 static inline __attribute__((always_inline)) void pcfx_commit_8bpp_page(WaifuPcfxVideo *video)
 {
     if (g_rainbow_backdrop_active) {
-        pcfx_king_set_bg0_page_inline(page_bat_offset(video->back_page));
+        pcfx_king_set_8bpp_display_page(video->back_page);
         video->front_page = video->back_page;
         video->pending_page = -1;
     } else {
@@ -3125,24 +3239,38 @@ void waifu_pcfx_video_present_title_hicolor_stub(WaifuPcfxVideo *video, const ui
     pcfx_present_title_16m(video, framebuffer);
 }
 
+/* Read the HuC6261 (TETSU/VCE) raster line counter with a stable double-read.
+   A lone read can latch a bogus transitional value on real hardware, which would
+   flip the vblank predicate at the wrong scanline; require two agreeing reads
+   (bounded retries).  pcfxemu returns a clean value, so this is a no-op there. */
+static int pcfx_tetsu_raster_stable(void)
+{
+    int a = tetsu_get_raster();
+    for (int tries = 0; tries < 8; ++tries) {
+        int b = tetsu_get_raster();
+        if (a == b) return a;
+        a = b;
+    }
+    return a;
+}
+
 void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
 {
-    volatile uint16_t * const sr = (volatile uint16_t *)0x80000400u;
-    /* Re-arm VDC-0's vblank-IRQ enable (CR bit 0x08) every frame.  The BIOS
-       vsync handler keeps rewriting this VDC's control register for its own use
-       and drops the enable bit; the VDC only latches its VD status bit (which we
-       poll just below) at vblank when the enable is set, so without this the
-       poll spins forever.  Writing it here re-arms it just before the wait, and
-       VD latches at the next vblank before the BIOS handler runs. */
-    /* Keep VDC0's sprite plane enabled while waiting for the next vblank.
-     * Story portraits are combined 256-colour sprites: VDC0 carries their
-     * high nibble and VDC1 the low nibble.  Re-arming the vblank IRQ with
-     * 0x88 used to clear VDC0's sprite-enable bit immediately after the
-     * story flush, leaving a portrait visible only for the brief interval
-     * between the flush and this wait. */
-    waifu_vdc_setreg(VDC_CHIP_0, VDC_REG_CR,
-                     VDC_CR_IRQ_VC | VDC_CR_BB | VDC_CR_SB);
-    while ((*sr & 0x0020u) == 0) { }
+    /* Time fields by polling the TETSU raster, NOT the VDC VD-status latch at
+       0x80000400.  That bit only latches cleanly under pcfxemu; on real hardware
+       it behaves differently, and with all interrupts disabled (see main) the
+       BIOS no longer re-arms it -- the old poll then spun FOREVER, leaving the
+       KING BG black.  Active display is 240 lines; raster >= 240 is the vblank
+       window.  Every spin is bounded so a misbehaving VCE degrades to slow,
+       never hangs.  No VDC vblank IRQ is armed. */
+    uint32_t spin;
+    /* Keep VDC0's BG + sprite planes enabled (story portraits are combined
+       256-colour sprites split across VDC0/VDC1) WITHOUT the vblank IRQ-enable
+       bit -- interrupts are off, nothing services it. */
+    waifu_vdc_setreg(VDC_CHIP_0, VDC_REG_CR, VDC_CR_BB | VDC_CR_SB);
+    /* Wait for the start of the vblank window. */
+    spin = 0;
+    while (pcfx_tetsu_raster_stable() < 240 && spin++ < 2000000u) { }
     if (video && video->pending_title_page_flip) {
         pcfx_king_set_bg_kram_page_inline(0);
         pcfx_king_set_bg0_page_inline(title16m_bg_cg_page(video->pending_title_kram_page));
@@ -3154,7 +3282,7 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
            now, inside the vblank window, so the CG-base change is never seen
            mid-scan (tear-free).  The next frame is already rendering into the
            third buffer.  RAINBOW never sets pending_page (it flips in-line). */
-        pcfx_king_set_bg0_page_inline(page_bat_offset(video->pending_page));
+        pcfx_king_set_8bpp_display_page(video->pending_page);
         video->front_page = video->pending_page;
         video->pending_page = -1;
     }
@@ -3170,7 +3298,9 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
          * complete paired SAT on the next field. */
         pcfx_story_layers_flush(video);
     }
-    while ((*sr & 0x0020u) != 0) { }
+    /* Wait out the vblank window so the next call catches the following field. */
+    spin = 0;
+    while (pcfx_tetsu_raster_stable() >= 240 && spin++ < 2000000u) { }
     if (video && video->mode == WAIFU_PCFX_VIDEO_MODE_KING_8BPP && video->vdc_overlay_shutdown_countdown > 0) {
         --video->vdc_overlay_shutdown_countdown;
         if (video->vdc_overlay_shutdown_countdown == 0) pcfx_vdc_overlay_shutdown(video);

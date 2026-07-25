@@ -2,7 +2,7 @@
 # Requires a local V810/liberis toolchain; no binary toolchain is bundled here.
 
 PREFIX ?= v810
-V810GCC ?= /opt/v810
+V810GCC ?= /opt/v810-gcc
 CC := $(PREFIX)-gcc
 AS := $(PREFIX)-as
 LD := $(PREFIX)-ld
@@ -13,11 +13,17 @@ HOSTCC ?= gcc
 PCFX_TARGET ?= waifupcfx
 CDOUT ?= waifupcfx
 
-# The game links libpcfx (installed under $(V810GCC)); its headers live under
-# pcfx/ in $(V810GCC)/include, plus libpcfx's own eris/cd.h + eris/scsi.h.
+# The game links libpcfx.  The canonical tree is the shared DoomPCFX checkout
+# (the same one wolf-pcfx builds against): its eris/* headers carry the
+# hardware-verified CD-DMA and CD-DA contracts that the stale in-tree copy
+# predates.  The installed archive is $(V810GCC)/lib/libpcfx.a, built from that
+# tree, and $(V810GCC)/include/pcfx matches it byte for byte -- so headers and
+# archive stay in step.  $(LIBPCFX)/include comes FIRST so eris/* resolves there.
+LIBPCFX ?= /home/anonymous/Documents/DEV/DoomPCFX/libpcfx
+LIBPCFX_A := $(V810GCC)/lib/libpcfx.a
 INCLUDES := \
   -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated -Isrc/platform/pcfx \
-  -Ilibpcfx/include -I$(V810GCC)/include -I$(V810GCC)/$(PREFIX)/include
+  -I$(LIBPCFX)/include -I$(V810GCC)/include -I$(V810GCC)/$(PREFIX)/include
 
 CFLAGS ?= -O2 -fomit-frame-pointer -fno-builtin -ffunction-sections -fdata-sections -Werror=vla -Wall -Wextra -std=gnu99 -mv810 -mprolog-function -msda=0
 # Render the moving 3D field live on PC-FX, cache only the resting views.
@@ -43,7 +49,9 @@ else
 CFLAGS += -DPLATFORM=1 -DWAIFU_FM_PCFX -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_USE_CART_ROM -DWAIFU_ASSET_NO_STDIO $(INCLUDES)
 endif
 LDFLAGS ?= -L$(V810GCC)/lib -L$(V810GCC)/$(PREFIX)/lib -L$(V810GCC)/lib/gcc/$(PREFIX)/4.9.4 $(V810GCC)/$(PREFIX)/lib/crt0.o --gc-sections
-LIBS ?= -lpcfx -lc -lsim -lnosys -lgcc
+# libpcfx.a is named by full path rather than -lpcfx so the archive that gets
+# linked is unambiguously the installed one, whatever else is on the -L path.
+LIBS ?= $(LIBPCFX_A) -lc -lsim -lnosys -lgcc
 
 PCFX_SRCS_C := \
   src/platform/pcfx/pcfx_main.c \
@@ -119,6 +127,9 @@ CD_ASSETS := \
   assets/generated/sfx_adpcm.bin \
   assets/generated/ending_screen_pcfx_yuv422.bin
 
+PCFX_RECOVERY_ASSETS := $(patsubst assets/generated/%,assets/generated/recovery/%,$(CD_ASSETS))
+PCFX_CD_CHECKSUM_HEADER := src/generated/pcfx_cd_checksums.h
+
 OBJDIR := build/pcfx
 RAINBOW_BG_HEADER := src/generated/rainbow_bg_assets.h
 RAINBOW_BG_STREAMS := \
@@ -129,7 +140,9 @@ RAINBOW_BG_STREAMS := \
 ELF_TARGET := $(OBJDIR)/$(PCFX_TARGET).elf
 BIN_TARGET := $(OBJDIR)/$(PCFX_TARGET).program.bin
 MAP_TARGET := $(OBJDIR)/$(PCFX_TARGET).map
-PCFX_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(PCFX_SRCS_C)) $(patsubst %.s,$(OBJDIR)/%.o,$(PCFX_SRCS_S)) $(OBJDIR)/libpcfx/src/cdda.o
+# cdda.o used to be compiled here from the in-tree libpcfx/src/cdda.c; it now
+# comes from $(LIBPCFX_A), which is where the CD-DA fixes live.
+PCFX_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(PCFX_SRCS_C)) $(patsubst %.s,$(OBJDIR)/%.o,$(PCFX_SRCS_S))
 
 .PHONY: all program clean clean-build clean-output cd zip toolchain-check pcfxtools regression-pcfx-hand-card regression-pcfx-battle-card regression-pcfx-battle-card-stripe
 
@@ -189,9 +202,14 @@ $(RAINBOW_BG_STREAMS) $(RAINBOW_BG_HEADER): tools/gen_pcfx_rainbow_bg.py $(RAINB
 		assets/source/bg/ember.png assets/generated/rainbow_ember.bin WAIFU_PCFX_RAINBOW_EMBER \
 		assets/source/bg/sky.png assets/generated/rainbow_sky.bin WAIFU_PCFX_RAINBOW_SKY
 
+$(PCFX_CD_CHECKSUM_HEADER) $(PCFX_RECOVERY_ASSETS): tools/gen_pcfx_cd_checksums.py $(CD_ASSETS)
+	@mkdir -p assets/generated/recovery src/generated
+	python3 tools/gen_pcfx_cd_checksums.py
+
 $(OBJDIR)/src/platform/pcfx/waifu_pcfx_video.o: $(RAINBOW_BG_HEADER)
 $(OBJDIR)/src/platform/pcfx/waifu_pcfx_video.o: $(PCFX_PALETTE_FILES)
 $(OBJDIR)/src/platform/pcfx/waifu_pcfx_cdrom.o: $(RAINBOW_BG_HEADER)
+$(OBJDIR)/src/platform/pcfx/waifu_pcfx_cdrom.o: $(PCFX_CD_CHECKSUM_HEADER)
 
 $(ELF_TARGET): $(PCFX_OBJS)
 	$(LD) $(LDFLAGS) $(PCFX_OBJS) $(LIBS) -o $@ -Map $(MAP_TARGET)
@@ -205,18 +223,19 @@ $(OBJDIR)/cdlink.generated.txt: $(BIN_TARGET)
 		echo "binary $(BIN_TARGET)"; \
 		echo "lbaheader lbas.h"; \
 		echo "cddaheader cdda_tracks.h"; \
+		echo "track1audio TRACK1.wav"; \
 		echo "name Waifu FM"; \
 		echo "maker ChatGPT"; \
 		echo "country JP"; \
 		echo "version 01"; \
 		echo "date 20260619"; \
-		for f in $(CD_ASSETS); do echo "append $$f"; done; \
+		for f in $(CD_ASSETS) $(PCFX_RECOVERY_ASSETS); do echo "append $$f"; done; \
 	} > $@
 
 clean-output:
 	rm -f $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin waifupcfx_pyramid.cue lbas.h cdda_tracks.h
 
-cd: clean-output toolchain-check $(PCFX_CDLINK) $(ASSET_GEN_FILES) $(PCFX_SFX_FILES) $(TITLE_ASSET_FILES) $(PCFX_PALETTE_FILES) $(CD_ASSETS)
+cd: clean-output toolchain-check $(PCFX_CDLINK) $(ASSET_GEN_FILES) $(PCFX_SFX_FILES) $(TITLE_ASSET_FILES) $(PCFX_PALETTE_FILES) $(CD_ASSETS) $(PCFX_CD_CHECKSUM_HEADER) $(PCFX_RECOVERY_ASSETS)
 	# Pass 1: build without lbas.h/cdda_tracks.h, run cdlink to generate both headers
 	#         and convert WAV tracks to raw CD-audio bins.
 	$(MAKE) -f Makefile.pcfx clean-build PCFX_TARGET=$(PCFX_TARGET) PCFX_ASSET_MODE=cdrom V810GCC=$(V810GCC) PREFIX=$(PREFIX) PCFX_CDLINK=$(PCFX_CDLINK) HOSTCC=$(HOSTCC)
@@ -251,8 +270,13 @@ ZIP_NAME ?= ShatteredDecks_PCFX_gbb_2026.zip
 zip: cd
 	@command -v zip >/dev/null || { echo "missing 'zip' tool"; exit 1; }
 	rm -f $(ZIP_NAME)
-	zip -j $(ZIP_NAME) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin
+	# _*.bin globs both the audio lead track ($(CDOUT)_t01.bin) and every
+	# stem-keyed CD-DA music track ($(CDOUT)_<Song>.bin); $(CDOUT).bin (the
+	# data track, no underscore suffix) is listed explicitly above.
+	zip -j $(ZIP_NAME) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_*.bin
 	@echo "Packaged $(ZIP_NAME)"
 
 clean:
-	rm -rf $(OBJDIR) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_t*.bin waifupcfx_pyramid.cue out.bin lbas.h cdda_tracks.h $(ZIP_NAME)
+	# _*.bin also removes the stem-keyed CD-DA music cache (kept across builds
+	# for fast reripping); a full clean resets it too.
+	rm -rf $(OBJDIR) $(CDOUT).cue $(CDOUT).bin $(CDOUT)_*.bin waifupcfx_pyramid.cue out.bin lbas.h cdda_tracks.h $(ZIP_NAME)
