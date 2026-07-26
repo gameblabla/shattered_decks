@@ -159,6 +159,10 @@ struct WaifuPcfxVideo {
     uint32_t last_frame_mix;
     uint32_t last_title_dirty_serial;
     uint8_t title16m_page_valid[2];
+    /* Frames to wait before re-attempting a 16M title/ending upload that the
+       drive refused.  Without it a single failed upload retries every frame
+       forever -- see pcfx_present_title_16m(). */
+    uint8_t title16m_upload_backoff;
     int vdc_overlay_ready;
     int vdc_overlay_shutdown_countdown;
     int have_last_frame;
@@ -2623,6 +2627,9 @@ static WAIFU_PCFX_COLD void pcfx_title_upload_full_16m_from_ram(int page, const 
     }
 }
 
+/* Retry spacing for a refused 16M upload, in frames (~1s at 60Hz). */
+#define WAIFU_PCFX_TITLE_UPLOAD_RETRY_FRAMES 60u
+
 static WAIFU_PCFX_COLD int pcfx_title_upload_full_16m_direct_cd(int page)
 {
 #if defined(WAIFU_ASSET_USE_CDROM)
@@ -2702,6 +2709,11 @@ static WAIFU_PCFX_COLD void pcfx_present_title_16m(WaifuPcfxVideo *video, const 
     pcfx_vdc_overlay_set_fade_q8(waifu_fm_video_fade_q8());
 
     need_upload = reconfigure || video->active_palette != WAIFU_FM_PALETTE_TITLE || !video->title16m_page_valid[0];
+    if (reconfigure) video->title16m_upload_backoff = 0;
+    if (need_upload && video->title16m_upload_backoff) {
+        --video->title16m_upload_backoff;
+        need_upload = 0;
+    }
     if (need_upload) {
         int ok = pcfx_title_upload_full_16m_direct_cd(0);
         if (!ok) {
@@ -2717,6 +2729,29 @@ static WAIFU_PCFX_COLD void pcfx_present_title_16m(WaifuPcfxVideo *video, const 
             video->front_page = 0;
             video->back_page = 0;
             video->have_last_frame = 1;
+            video->title16m_upload_backoff = 0;
+        } else {
+            /* The upload failed and there is no RAM copy to fall back on:
+               waifu_assets_title_screen_pcfx_yuv422() returns NULL
+               unconditionally in PC-FX CD-ROM builds, because the 128 KiB
+               CPU-side title buffer was removed in favour of this direct
+               CD->KRAM DMA.  So `ok` stays 0, title16m_page_valid[0] is never
+               set, and without this backoff need_upload is true again on the
+               very next frame -- a fresh 128 KiB CD->KRAM read EVERY FRAME,
+               for as long as the title or menu is on screen.
+
+               That is not a theoretical loop.  Each of those reads bumps the
+               CD-DA read sequence, and the music manager can only restart a
+               track from its beginning, so the drive audibly seeks and the
+               title theme restarts over and over.  It is also self-sustaining:
+               a data read issued while CD-DA is streaming is exactly the read
+               most likely to be refused, so the failure keeps reproducing
+               itself.  pcfxemu's reads always succeed, so it never shows any
+               of this.
+
+               Back off instead: retry about once a second, which still
+               recovers if the drive was merely busy, but cannot thrash. */
+            video->title16m_upload_backoff = WAIFU_PCFX_TITLE_UPLOAD_RETRY_FRAMES;
         }
     }
 }
@@ -2748,6 +2783,11 @@ static WAIFU_PCFX_COLD void pcfx_present_ending_16m(WaifuPcfxVideo *video, int b
     pcfx_vdc_overlay_set_fade_q8(waifu_fm_video_fade_q8());
 
     need_upload = reconfigure || video->active_palette != target || !video->title16m_page_valid[0];
+    if (reconfigure) video->title16m_upload_backoff = 0;
+    if (need_upload && video->title16m_upload_backoff) {
+        --video->title16m_upload_backoff;
+        need_upload = 0;
+    }
     if (need_upload) {
         int ok = 1;
         if (black) {
@@ -2768,6 +2808,10 @@ static WAIFU_PCFX_COLD void pcfx_present_ending_16m(WaifuPcfxVideo *video, int b
             video->front_page = 0;
             video->back_page = 0;
             video->have_last_frame = 1;
+            video->title16m_upload_backoff = 0;
+        } else {
+            /* Same per-frame CD re-read loop as the title path above. */
+            video->title16m_upload_backoff = WAIFU_PCFX_TITLE_UPLOAD_RETRY_FRAMES;
         }
     }
 }
