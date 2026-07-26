@@ -1817,8 +1817,27 @@ static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
         if (count & 1) *(uint8_t *)(uintptr_t)dst16 = *src;
     }
 #elif defined(WAIFU_FM_PCFX)
-    uint32_t n = (uint32_t)count;
+    uint32_t n;
     uint32_t groups;
+    /* The batched body below moves 32 bytes per group with ld.w/st.w, and the
+       V810 IGNORES the low two bits of a word address.  A misaligned call
+       therefore reads/writes the ENCLOSING aligned words while its byte tail
+       resumes at (start + 32*groups), silently skipping the 1-3 bytes in
+       between -- the in-duel placement restore copies rows starting at x0=9
+       (hand_final_x(0)-3) for 232 bytes, so x=232 was never restored and left a
+       one-pixel stale column of the hand card standing on the board.  Byte-copy
+       until dst is word aligned, and if src does not share that phase (the 1:1
+       card blit in draw_card_raw does not) copy the whole run byte-wise. */
+    while (count > 0 && (((uintptr_t)dst & 3u) != 0u)) {
+        *dst++ = *src++;
+        --count;
+    }
+    if (count > 0 && (((uintptr_t)src & 3u) != 0u)) {
+        while (count-- > 0) *dst++ = *src++;
+        return;
+    }
+    if (count <= 0) return;
+    n = (uint32_t)count;
     /* Framebuffer/cache copies are aligned and large, and src/dst live in
        SEPARATE ~60 KB arrays in different 2 KiB DRAM pages.  The V810 has no
        data cache and charges +3 cyc on every 2 KiB page *change* (single
