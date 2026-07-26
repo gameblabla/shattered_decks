@@ -598,6 +598,10 @@ static void waifu_pcfx_adpcm_stop_hw(void)
     king_reg_w(0x5Du, 0u);
 }
 
+/* Pull the SFX bank off CD into KRAM.  This is a CD READ, which stops the
+   drive's CD-DA engine, so it must only ever run somewhere a music restart is
+   free -- boot, or a stretch with no music playing.  Never from a sound effect;
+   see waifu_pcfx_adpcm_sample_play(). */
 int waifu_pcfx_adpcm_samples_load(void)
 {
     if (g_adpcm_loaded) return 1;
@@ -618,7 +622,13 @@ void waifu_pcfx_adpcm_sample_play(int effect)
     uint16_t play;
     uint8_t volume;
 
-    if (!waifu_pcfx_adpcm_samples_load()) return;
+    /* Play what is in KRAM, or play nothing.  This deliberately does NOT fall
+       back to loading the bank: this runs on a button press, a CD read stops
+       the drive's audio engine, and the CD-DA manager can only restart a track
+       from its beginning -- so a bank that failed to load at boot would make
+       every single keypress rewind the music.  The retry lives in the pump,
+       where it waits for a silent stretch. */
+    if (!g_adpcm_loaded) return;
     if (effect < 0) return;
     if ((unsigned)effect >= WAIFU_PCFX_SFX_ADPCM_META_COUNT) return;
     m = &waifu_pcfx_sfx_adpcm_meta[effect];
@@ -777,6 +787,11 @@ void waifu_pcfx_audio_pump(WaifuPcfxAudio *audio)
         eris_cdda_music_set_volume(0);
         if (g_cdda_duck_frames) --g_cdda_duck_frames;
         if (g_turn_jingle_guard_frames) --g_turn_jingle_guard_frames;
+
+        /* No music playing, so the CD read this costs is free: this is the one
+           place a SFX bank that failed to load at boot may be retried.  Doing it
+           from the sound path instead would rewind the music on a keypress. */
+        if (!g_adpcm_loaded) waifu_pcfx_adpcm_samples_load();
     } else {
         waifu_pcfx_cdda_pump_mix_volume();
     }
