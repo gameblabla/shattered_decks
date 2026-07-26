@@ -194,34 +194,50 @@ static inline __attribute__((always_inline)) void pcfx_vce_set_palette(uint16_t 
     if ((int)i > g_vce_pal_hi) g_vce_pal_hi = (int)i;
 }
 
-/* Push the staged span to the VCE.  ONLY call from inside blanking.
+/* Push the staged entries to the VCE.  ONLY call from inside blanking.
    CPA (R01) auto-increments on every CPW (R02) access (C6261 2.1.3 (4)), so the
-   palette address goes out once and the data streams from there. */
+   palette address goes out once per RUN and the data streams from there.
+
+   Runs, not one span: entries this port has never staged must be SKIPPED.  The
+   dirty span can straddle the gap between the 0..255 KING palette and the VDC
+   overlay entries at 256+, and blanket-writing the gap would push the shadow's
+   initial 0x0000 into VCE entries nobody here owns -- Y=0,U=0,V=0 is a
+   saturated green (this exact mistake washed wolf-pcfx's menu green when the
+   same fix was ported there).  Break the run at every unknown entry. */
 static void pcfx_vce_palette_flush(void)
 {
     int lo = g_vce_pal_lo;
     int hi = g_vce_pal_hi;
+    int i;
     if (hi < lo) return;
     g_vce_pal_lo = WAIFU_PCFX_VCE_PAL_ENTRIES;
     g_vce_pal_hi = -1;
+    i = lo;
+    while (i <= hi) {
+        if ((g_vce_pal_known[i >> 5] & (1u << (i & 31))) == 0) { ++i; continue; }
 #if defined(__v810__)
-    {
-        uint32_t reg = 1;
-        uint32_t val = (uint32_t)lo;
-        __asm__ volatile (
-            "out.h %[reg],0x300[r0]\n"
-            "out.h %[val],0x304[r0]\n"
-            : : [reg] "r" (reg), [val] "r" (val) : "memory");
-        reg = 2;
-        __asm__ volatile ("out.h %[reg],0x300[r0]\n" : : [reg] "r" (reg) : "memory");
-        for (int i = lo; i <= hi; ++i) {
-            uint32_t c = g_vce_pal[i];
-            __asm__ volatile ("out.h %[c],0x304[r0]\n" : : [c] "r" (c) : "memory");
+        {
+            uint32_t reg = 1;
+            uint32_t val = (uint32_t)i;
+            __asm__ volatile (
+                "out.h %[reg],0x300[r0]\n"
+                "out.h %[val],0x304[r0]\n"
+                : : [reg] "r" (reg), [val] "r" (val) : "memory");
+            reg = 2;
+            __asm__ volatile ("out.h %[reg],0x300[r0]\n" : : [reg] "r" (reg) : "memory");
+            do {
+                uint32_t c = g_vce_pal[i];
+                __asm__ volatile ("out.h %[c],0x304[r0]\n" : : [c] "r" (c) : "memory");
+                ++i;
+            } while (i <= hi && (g_vce_pal_known[i >> 5] & (1u << (i & 31))) != 0);
         }
-    }
 #else
-    for (int i = lo; i <= hi; ++i) tetsu_set_palette((uint16_t)i, g_vce_pal[i]);
+        do {
+            tetsu_set_palette((uint16_t)i, g_vce_pal[i]);
+            ++i;
+        } while (i <= hi && (g_vce_pal_known[i >> 5] & (1u << (i & 31))) != 0);
 #endif
+    }
 }
 
 /* Cold paths that stage a palette without a following present (the mode-switch
