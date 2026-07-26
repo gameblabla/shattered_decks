@@ -8353,14 +8353,7 @@ static void enter_menu_after_assets(void)
     /* Start on STORY MODE so the standard verification path RUN, DOWN, A
        deterministically enters BATTLE MODE. */
     g_i_menu_selected = 0;
-    /* Deliberately NO waifu_assets_request_title() here.  Both callers reach
-       this from WAIFU_I_TITLE, which already requested exactly these assets and
-       is displaying them, so the request can only ever hit its
-       already-loaded early-out -- except that it is also the one thing on the
-       reveal that can reach start_request() and go to the disc.  On PC-FX a CD
-       read stops the drive's CD-DA engine and the track can only be restarted
-       from its beginning, so a reveal that touches the disc rewinds the music.
-       Revealing a menu over a screen already on-screen must not load anything. */
+    waifu_assets_request_title();
     enter_state_after_assets(WAIFU_I_MENU);
 }
 
