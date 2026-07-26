@@ -180,110 +180,165 @@ static uint32_t cd_round_sector_bytes_u32(uint32_t bytes)
 #define WAIFU_PCFX_CD_BOUNCE_KRAM_WORD 0x30000u
 #define WAIFU_PCFX_CD_BOUNCE_WORDS     0x4000u   /* 32 KiB (16 sectors) per pass */
 
-/* CD read path preference, mirroring doom-pcfx's cd_kram_read().
- *
- * Commit 1d5a775 ("Use retail DMA CD readers on PC-FX") replaced this file's
- * own phase-driven reader with libpcfx's eris_cd_read_* and left DMA as the
- * ONLY path.  That is what black-screened the boot: every asset load failed at
- * the first read, so the title never arrived and no music ever started.
- * doom-pcfx hit the same wall from the other direction and records the verdict
- * in i_system_pcfx.c: "on the one real console this port is tested on, the DMA
- * paths currently fail outright (boot dies at the first read), so the CPU-PIO
- * path is back as an automatic sticky fallback".
- *
- * The mode is a PREFERENCE, never a verdict.  A one-shot probe that disables
- * the loser forever turns a single marginal sector (a CD-R that needed a
- * re-read, a drive still spinning up) into a permanently crippled session.  So
- * both paths stay available on every call at the full attempt budget; winning
- * only reorders which is tried first next time. */
-#define WAIFU_CD_PATH_DMA 1
-#define WAIFU_CD_PATH_PIO 2
-static int g_cd_path_pref = WAIFU_CD_PATH_DMA;
+#define WAIFU_CD_SPIN_LONG 0x200000u
 
-/* Read CD -> main RAM.  DMA bounces through KRAM scratch; the fallback is
-   libpcfx's CPU-PIO whole-transfer reader straight into RAM. */
+/* Phase-driven (count-0) CD -> KRAM real-DMA read -- the way commercial PC-FX
+   titles read from disc.  Restored verbatim in behaviour from the reader that
+   commit 1d5a775 ("Use retail DMA CD readers on PC-FX") deleted; that deletion
+   is the head of the chain that black-screens and HANGS this port on a real
+   console.  Two independent real-hardware errata rule out every alternative,
+   and this shape is the only one immune to both:
+
+     * CPU-driven PIO reads (per-byte manual ACK: eris_cd_read,
+       eris_cd_read_kram_pio) are unreliable on real hardware.  pcfxemu models
+       this (docs/king-pio-read-erratum.md, ENABLED by default) from a real
+       capture, and probe 027 on hardware pins the mechanism: a failed PIO read
+       dies so fast that all 8 driver attempts fit in one vblank field, and once
+       ONE attempt fails EVERY later one does too -- REQUEST SENSE and seek
+       recovery never help, only a full SCSI bus reset restores the bus.  It is
+       a poisoned bus, not a per-command error.  So a PIO "fallback" does not
+       degrade gracefully: the first time it runs it wedges the drive for the
+       rest of the session.  Commit 1e6abcc added exactly that fallback to fix
+       the black boot, which is why the console now hangs instead.
+
+     * A COUNT-BOUNDED KING DMA (exact programmed length) trips the KING
+       "retire one past the count" erratum and never signals completion.
+       eris_cd_read_dma() arms count-bounded chunks for every non-final chunk,
+       so any transfer larger than one bounce pass takes that shape -- which is
+       most asset blobs here.
+
+   A count-0 transfer is PHASE-DRIVEN: the KING SCSI engine auto-ACKs the whole
+   DATA-IN phase in hardware (immune to the CPU-ACK failure) and retires when
+   the drive leaves DATA IN rather than on an exact count (immune to the
+   retire-past erratum).  It works on real hardware and in both accurate
+   emulators.  pcfxemu's own erratum doc records this port, in its pre-1d5a775
+   shape, as the homebrew that "loads fine" on real hardware for this reason.
+
+   The caller selects the target KRAM page with king_set_page_setting() first.
+   The DMA address register carries NO page bit -- per libpcfx docs/KING_REGS.md
+   the engine's target page comes from REG.0F SCP -- so unlike eris_cd_read_kram
+   (which self-verifies through the CPU cursor, and therefore needed D31) this
+   takes a bare word address.  Returns 1 on GOOD status, 0 otherwise.
+   Every loop here is spin-bounded, so a dead drive fails rather than hangs. */
+static int cd_dma_read_kram(uint32_t lba, uint32_t kram_addr, uint32_t bytes)
+{
+    uint8_t cdb[10];
+    uint32_t blocks = cd_round_sector_bytes_u32(bytes) >> 11;   /* / 2048 */
+    uint32_t spins;
+    int reached;
+
+    if (!lba || !blocks) return 0;
+
+    cdb[0] = 0x28;                        /* READ(10) */
+    cdb[1] = 0;
+    cdb[2] = (uint8_t)(lba >> 24);
+    cdb[3] = (uint8_t)(lba >> 16);
+    cdb[4] = (uint8_t)(lba >> 8);
+    cdb[5] = (uint8_t)lba;
+    cdb[6] = 0;
+    cdb[7] = (uint8_t)(blocks >> 8);
+    cdb[8] = (uint8_t)blocks;
+    cdb[9] = 0;
+
+    if (eris_scsi_command(cdb, 10) == (int)SCSI_ERR_TIMEOUT) return 0;
+
+    /* Wait (bounded) for the drive to present DATA IN. */
+    reached = 0;
+    spins = WAIFU_CD_SPIN_LONG;
+    while (spins--) {
+        scsi_phase ph = eris_scsi_get_phase();
+        if (ph == SCSI_PHASE_DATA_IN) { reached = 1; break; }
+        if (ph == SCSI_PHASE_STATUS || ph == SCSI_PHASE_BUS_FREE) break;
+    }
+    if (!reached) return 0;
+
+    /* Count 0 => phase-driven DMA: it retires when the drive leaves DATA IN.
+       Polling the phase register advances the KING DMA (each read runs the
+       engine), so the bytes stream into KRAM while we wait here. */
+    eris_scsi_begin_dma(kram_addr, 0);
+    spins = WAIFU_CD_SPIN_LONG;
+    while (spins-- && eris_scsi_get_phase() == SCSI_PHASE_DATA_IN) { }
+    eris_scsi_finish_dma();
+
+    /* Consume STATUS. */
+    spins = WAIFU_CD_SPIN_LONG;
+    while (spins--) {
+        scsi_phase ph = eris_scsi_get_phase();
+        if (ph == SCSI_PHASE_STATUS)
+            return (eris_scsi_status() == SCSI_STATUS_GOOD) ? 1 : 0;
+        if (ph == SCSI_PHASE_BUS_FREE)
+            return 1;   /* transfer completed and the drive dropped the bus */
+    }
+    return 0;
+}
+
+/* Read CD -> main RAM via the KING real-DMA engine, NOT CPU-PIO.  The DMA can
+   only target KRAM, so bounce through the scratch window and CPU-copy KRAM ->
+   RAM (word reads through the KING data port, which never touch the failing
+   CPU-ACK path). */
 static uint32_t cd_read(uint32_t lba, uint8_t *buf, uint32_t bytes)
 {
-    int ok;
+    uint32_t total = cd_round_sector_bytes_u32(bytes);
+    uint32_t done = 0;
+
     if (!lba || !bytes) return 0;
+
+    /* Route the SCSI DMA to KRAM physical page 0 (no SCSI page-1 bit); keep
+       ADPCM fetching from page 1 as elsewhere. */
     king_set_page_setting(WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1);
 
-    if (g_cd_path_pref == WAIFU_CD_PATH_DMA) {
-        ok = eris_cd_read_dma(lba, buf, bytes, WAIFU_PCFX_CD_BOUNCE_KRAM_WORD,
-                              WAIFU_PCFX_CD_BOUNCE_WORDS);
-        if (!ok) {
-            eris_cd_bus_settle();   /* a failed read leaves the target mid-phase */
-            ok = (eris_cd_read(lba, buf, bytes) == bytes);
-            if (ok) g_cd_path_pref = WAIFU_CD_PATH_PIO;
+    while (done < total) {
+        uint32_t pass_bytes = total - done;
+        uint32_t pass_words;
+        uint32_t i;
+        if (pass_bytes > WAIFU_PCFX_CD_BOUNCE_WORDS * 2u)
+            pass_bytes = WAIFU_PCFX_CD_BOUNCE_WORDS * 2u;
+        pass_words = pass_bytes >> 1;
+
+        if (!cd_dma_read_kram(lba + (done / PCFX_CD_SECTOR_SIZE),
+                              WAIFU_PCFX_CD_BOUNCE_KRAM_WORD, pass_bytes)) {
+            scsi_clear_phase_irq();
+            g_cd_read_seq++;
+            return 0;
         }
-    } else {
-        ok = (eris_cd_read(lba, buf, bytes) == bytes);
-        if (!ok) {
-            eris_cd_bus_settle();
-            ok = eris_cd_read_dma(lba, buf, bytes, WAIFU_PCFX_CD_BOUNCE_KRAM_WORD,
-                                  WAIFU_PCFX_CD_BOUNCE_WORDS);
-            if (ok) g_cd_path_pref = WAIFU_CD_PATH_DMA;
+
+        /* Copy the DMAed words out of the scratch into RAM (little endian:
+           low byte first, matching eris_cd_read_kram's packing). */
+        king_set_kram_read(WAIFU_PCFX_CD_BOUNCE_KRAM_WORD, 1);
+        for (i = 0; i < pass_words; i++) {
+            uint16_t w = king_kram_read();
+            buf[done + i * 2u]      = (uint8_t)(w & 0xffu);
+            buf[done + i * 2u + 1u] = (uint8_t)(w >> 8);
         }
+        done += pass_bytes;
     }
 
     scsi_clear_phase_irq();
     /* A data read leaves the drive's CD-DA engine stopped; record that so the
        audio layer can restart music once the load settles. */
     g_cd_read_seq++;
-    return ok ? bytes : 0;
+    return bytes;
 }
 
-/* Direct CD->KRAM read, DMA preferred with a CPU-PIO fallback.
- *
- * page_bit is D31 of the KRAM address, and it must reach BOTH places: it
- * routes the SCSI engine's page via REG.0F SCP, AND it selects the page the
- * CPU KRAM cursor addresses.  The DMA reader needs it for the second reason
- * too -- eris_cd_read_kram() verifies a transfer by stamping a sentinel into
- * the destination and reading it back through that cursor, so passing a bare
- * address while REG.0F points at page 1 checks page 0 and FAILS A GOOD
- * TRANSFER (eris/cd.h documents exactly this).  The old code passed page_bit
- * only to king_set_page_setting() and handed eris_cd_read_kram() an address
- * with D31 clear.  doom-pcfx gets this right: `kram_word | (page1 ? 0x80000000
- * : 0)`.
- *
- * dma_only forbids the CPU-PIO fallback.  It exists for the RAINBOW streams:
- * the HuC6271 decoder only accepts KRAM data delivered by the KING SCSI/CD DMA
- * engine, and the CPU KRAM write port does NOT feed it -- a PIO "success" there
- * lands the bytes in KRAM and still decodes to nothing.  doom-pcfx keeps the
- * same carve-out for its sky. */
+/* Direct CD->KRAM read.  One phase-driven KING SCSI DMA for the whole transfer
+   (see cd_dma_read_kram).  page_bit selects KRAM physical page 1 through REG.0F
+   SCP; it is deliberately NOT OR'd into the DMA address, which has no page
+   field.  dma_only is retained for call-site clarity -- there is no longer any
+   non-DMA path to forbid, but the RAINBOW streams genuinely require the SCSI
+   DMA engine (the HuC6271 decoder does not accept data delivered through the
+   CPU KRAM write port), so the flag documents that requirement at the seam. */
 static int cd_dma_read_to_kram(uint32_t lba, uint32_t kram_addr, uint32_t bytes,
                                uint32_t page_bit, int dma_only)
 {
     uint32_t size = cd_round_sector_bytes_u32(bytes);
-    uint32_t addr = kram_addr | page_bit;
     int ok;
+    (void)dma_only;
     if (!lba || !bytes) return 0;
 
     king_set_page_setting((page_bit ? WAIFU_PCFX_KRAM_PAGESETTING_SCSI1 : 0u)
                           | WAIFU_PCFX_KRAM_PAGESETTING_ADPCM1);
 
-    if (dma_only) {
-        ok = eris_cd_read_kram(lba, addr, size);
-        scsi_clear_phase_irq();
-        g_cd_read_seq++;
-        return ok;
-    }
-
-    if (g_cd_path_pref == WAIFU_CD_PATH_DMA) {
-        ok = eris_cd_read_kram(lba, addr, size);
-        if (!ok) {
-            eris_cd_bus_settle();
-            ok = eris_cd_read_kram_pio(lba, addr, 1, size);
-            if (ok) g_cd_path_pref = WAIFU_CD_PATH_PIO;
-        }
-    } else {
-        ok = eris_cd_read_kram_pio(lba, addr, 1, size);
-        if (!ok) {
-            eris_cd_bus_settle();
-            ok = eris_cd_read_kram(lba, addr, size);
-            if (ok) g_cd_path_pref = WAIFU_CD_PATH_DMA;
-        }
-    }
+    ok = cd_dma_read_kram(lba, kram_addr, size);
 
     scsi_clear_phase_irq();
     /* A data read leaves the drive's CD-DA engine stopped; record that so the
