@@ -142,6 +142,128 @@ static void waifu_vdc_set_access_width(int chip, int cg_mode, int mapsize,
 static uint16_t g_king_microprog[16];
 static uint32_t g_king_page_setting_extra;
 
+static int pcfx_tetsu_raster_stable(void);
+
+/* Spin until the VCE reports a raster inside the vertical blanking window.
+   Active display is 240 lines; raster >= 240 is blanking (same predicate
+   waifu_pcfx_video_wait_vblank uses).  Bounded, so a misbehaving VCE degrades
+   to "did not wait" rather than hanging. */
+static void pcfx_wait_blank_window(void)
+{
+    uint32_t spin = 0;
+    while (pcfx_tetsu_raster_stable() < 240 && spin++ < 2000000u) { }
+}
+
+/* ---- VCE (HuC6261) colour palette staging ---------------------------------
+   C6261 2.1.3 (5), colour palette DATA WRITE register (CPW, R02):
+   "Writing data to the colour palette RAM DURING DISPLAY shows NOISE ON THE
+   SCREEN."  (6), the palette READ register, carries the identical warning.
+   This is the hardware's own statement, not an inference.
+
+   Every palette upload in this port went straight to the VCE from inside
+   waifu_pcfx_video_present_8bpp(), and pcfx_main's loop is
+   present -> wait_vblank, so a present always begins at the TOP OF ACTIVE
+   DISPLAY.  A fade rewrites all 256 KING entries every field, and begin_8bpp
+   blackens all 256 at the mode switch, so the boot/loading window and every
+   fade sprayed hundreds of palette writes across live rasters -- exactly the
+   brief lines and colour glitches that show on console and never under
+   pcfxemu, whose VCE just stores palette writes into an array with no noise
+   model.
+
+   So stage entries here and flush the dirty span inside the blanking window.
+   The whole 512-entry palette costs a couple of thousand cycles against the
+   ~30k the 22-line window affords, and the flush is span-bounded anyway. */
+#define WAIFU_PCFX_VCE_PAL_ENTRIES 512
+static uint16_t g_vce_pal[WAIFU_PCFX_VCE_PAL_ENTRIES];
+static uint32_t g_vce_pal_known[WAIFU_PCFX_VCE_PAL_ENTRIES / 32];
+static int g_vce_pal_lo = WAIFU_PCFX_VCE_PAL_ENTRIES;
+static int g_vce_pal_hi = -1;
+
+/* Replaces every direct tetsu_set_palette() call in this file.  Entries whose
+   staged value is already known to be live are dropped, which is what keeps a
+   steady-state fade level or a re-selected identical palette from re-flushing
+   256 entries per field. */
+static inline __attribute__((always_inline)) void pcfx_vce_set_palette(uint16_t entry, uint16_t yuv)
+{
+    unsigned i = (unsigned)entry;
+    if (i >= WAIFU_PCFX_VCE_PAL_ENTRIES) return;
+    if ((g_vce_pal_known[i >> 5] & (1u << (i & 31))) != 0 && g_vce_pal[i] == yuv) return;
+    g_vce_pal[i] = yuv;
+    g_vce_pal_known[i >> 5] |= 1u << (i & 31);
+    if ((int)i < g_vce_pal_lo) g_vce_pal_lo = (int)i;
+    if ((int)i > g_vce_pal_hi) g_vce_pal_hi = (int)i;
+}
+
+/* Push the staged span to the VCE.  ONLY call from inside blanking.
+   CPA (R01) auto-increments on every CPW (R02) access (C6261 2.1.3 (4)), so the
+   palette address goes out once and the data streams from there. */
+static void pcfx_vce_palette_flush(void)
+{
+    int lo = g_vce_pal_lo;
+    int hi = g_vce_pal_hi;
+    if (hi < lo) return;
+    g_vce_pal_lo = WAIFU_PCFX_VCE_PAL_ENTRIES;
+    g_vce_pal_hi = -1;
+#if defined(__v810__)
+    {
+        uint32_t reg = 1;
+        uint32_t val = (uint32_t)lo;
+        __asm__ volatile (
+            "out.h %[reg],0x300[r0]\n"
+            "out.h %[val],0x304[r0]\n"
+            : : [reg] "r" (reg), [val] "r" (val) : "memory");
+        reg = 2;
+        __asm__ volatile ("out.h %[reg],0x300[r0]\n" : : [reg] "r" (reg) : "memory");
+        for (int i = lo; i <= hi; ++i) {
+            uint32_t c = g_vce_pal[i];
+            __asm__ volatile ("out.h %[c],0x304[r0]\n" : : [c] "r" (c) : "memory");
+        }
+    }
+#else
+    for (int i = lo; i <= hi; ++i) tetsu_set_palette((uint16_t)i, g_vce_pal[i]);
+#endif
+}
+
+/* Cold paths that stage a palette without a following present (the mode-switch
+   blackout in begin_8bpp) need it live now; wait one blanking window and go. */
+static void pcfx_vce_palette_flush_in_blank(void)
+{
+    pcfx_wait_blank_window();
+    pcfx_vce_palette_flush();
+}
+
+/* ---- KING reconfiguration window ------------------------------------------
+   C6272_1 (24) BG format register REG.10: "change this register while the
+   microprogram is stopped", and its content is IMMEDIATELY effective.
+   C6272_1 (23) KRAM page register REG.0F: rewriting the BG page bit is
+   FORBIDDEN while BG display is running -- the permitted windows are the
+   vertical blanking period or a microprogram (MPSW) stop.
+   C6272_2 3.6.6: writing an immediate-effect register during the display
+   period disturbs THAT RASTER, and "while MPSW is 0 the image is disturbed".
+
+   Both king_set_bg_mode() and the microprogram download were being issued
+   mid-active-display from present-time paths (set_king_8bpp_video,
+   set_king_16m_title_video, the RAINBOW apply and the VDC background clear),
+   with MPSW left running for the REG.10 write.  Wrap those sequences so they
+   run inside blanking with the microprogram stopped, as the manual requires.
+   Nesting is counted because the microprogram download helpers below are
+   called both standalone and from inside a larger reconfiguration. */
+static int g_king_reconfig_depth;
+
+static void pcfx_king_reconfig_begin(void)
+{
+    if (g_king_reconfig_depth++ == 0) {
+        pcfx_wait_blank_window();
+        king_disable_microprogram();
+    }
+}
+
+static void pcfx_king_reconfig_end(void)
+{
+    if (g_king_reconfig_depth > 0 && --g_king_reconfig_depth == 0)
+        king_enable_microprogram();
+}
+
 struct WaifuPcfxVideo {
     int front_page;   /* KRAM 8bpp page currently latched on the display */
     int back_page;    /* KRAM 8bpp page the next present renders into */
@@ -331,11 +453,24 @@ static inline __attribute__((always_inline)) int title16m_bg_cg_page(int page)
 #endif
 
 
+/* Last value written to KING REG.0F, or -1 when unknown (boot / after any path
+   that may have let the BIOS touch it). */
+static int32_t g_king_page_setting_live = -1;
+
 static inline __attribute__((always_inline)) void pcfx_king_set_bg_kram_page_inline(int page)
 {
 #if defined(__v810__)
     uint32_t reg;
     uint32_t ps = 0x00000100u | g_king_page_setting_extra | (page ? 0x00000010u : 0u);
+    /* C6272_1 (23): rewriting a REG.0F page bit while the corresponding
+       transfer/display is running is forbidden -- the BG bit may only change in
+       vertical blanking or with MPSW stopped.  The RAINBOW branch of
+       present_8bpp re-issued this register with an UNCHANGED value on every
+       single field, from the top of active display.  Drop redundant writes so
+       the register is only ever touched when the value genuinely changes (which
+       happens inside pcfx_king_reconfig_begin/end windows). */
+    if ((int32_t)ps == g_king_page_setting_live) return;
+    g_king_page_setting_live = (int32_t)ps;
     /* Preserve ADPCM page 1 and any active RAINBOW page selection while flipping
        the KING BG page.  pcfxemu's ADPCM page bit is 0x100 and RAINBOW page bit
        is 0x1000; clearing either makes those decoders read page 0. */
@@ -347,6 +482,11 @@ static inline __attribute__((always_inline)) void pcfx_king_set_bg_kram_page_inl
         : [ps] "r" (ps)
         : "memory");
 #else
+    {
+        int32_t ps = (int32_t)(0x00000100u | g_king_page_setting_extra | (page ? 0x00000010u : 0u));
+        if (ps == g_king_page_setting_live) return;
+        g_king_page_setting_live = ps;
+    }
     king_set_kram_pages(0, page ? 1 : 0, g_king_page_setting_extra ? 1 : 0, 1);
 #endif
 }
@@ -438,16 +578,19 @@ static inline __attribute__((always_inline)) void pcfx_king_reg16(uint32_t reg, 
 #define WAIFU_PCFX_KRAM_BANK_WORDS 0x20000u   /* D17: word 0x20000 = bank B */
 
 static int g_king_mprog_bank = -1;   /* bank the loaded rotation program targets */
+static int32_t g_king_reg16_live = -1; /* last value written to REG.16, -1 = unknown */
 
 static void pcfx_king_bg0_rotate_mprog(int bank)
 {
     for (int i = 0; i < 16; ++i) g_king_microprog[i] = KING_CODE_NOP;
     for (int i = 0; i < 8; ++i)  g_king_microprog[(bank ? 8 : 0) + i] = KING_CODE_ROTATE;
 
-    /* REG.13/REG.14 may only be written with MPSW clear (3.6.7.3 steps 1-5). */
-    king_disable_microprogram();
+    /* REG.13/REG.14 may only be written with MPSW clear (3.6.7.3 steps 1-5), and
+       3.6.6 warns the image is disturbed while MPSW is 0 -- so take the shared
+       reconfiguration window, which parks the download inside blanking. */
+    pcfx_king_reconfig_begin();
     king_write_microprogram(g_king_microprog, 0, 16);
-    king_enable_microprogram();
+    pcfx_king_reconfig_end();
     g_king_mprog_bank = bank;
 }
 
@@ -500,7 +643,15 @@ static void pcfx_king_set_8bpp_display_page(int page)
        -- see that function's comment for the 16M-title collision. */
     king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE,
                      KING_BGPRIO_HIDE, 1);
-    pcfx_king_reg16(0x16, 0x0000);  /* transparent-paste outside the main screen */
+    /* REG.16 is an IMMEDIATE-effect register (C6272_1 (29)), so re-issuing it
+       from a mid-display page set disturbs that raster (3.6.6).  Every 8bpp
+       present under RAINBOW does exactly that, always with the same value.
+       Write it only when it actually changes; REG.12 and the affine block below
+       are next-HSYNC registers ((25), (33)) and are safe to reassert. */
+    if (g_king_reg16_live != 0x0000) {
+        pcfx_king_reg16(0x16, 0x0000); /* transparent-paste outside the main screen */
+        g_king_reg16_live = 0x0000;
+    }
     pcfx_king_refresh_8bpp_affine_state();
 }
 
@@ -1718,12 +1869,12 @@ static uint16_t pcfx_vdc_palette_entry(uint16_t index)
 static void pcfx_vdc_restore_overlay_palette(void)
 {
     pcfx_vdc_select_overlay_palette();
-    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_BLACK), 0x0088);
-    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_WHITE), 0xE088);
-    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_GOLD),  0xB468);
-    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_RED),   0x5F0F);
-    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_PANEL), rgb888_to_pcfx_yuv(12, 18, 28));
-    tetsu_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_EDGE),  rgb888_to_pcfx_yuv(210, 172, 90));
+    pcfx_vce_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_BLACK), 0x0088);
+    pcfx_vce_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_WHITE), 0xE088);
+    pcfx_vce_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_GOLD),  0xB468);
+    pcfx_vce_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_RED),   0x5F0F);
+    pcfx_vce_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_PANEL), rgb888_to_pcfx_yuv(12, 18, 28));
+    pcfx_vce_set_palette(pcfx_vdc_palette_entry(WAIFU_PCFX_VDC_PAL_EDGE),  rgb888_to_pcfx_yuv(210, 172, 90));
 }
 
 static void pcfx_vdc_sanctum_upload_solid_tile(uint16_t tile, uint16_t vdc0_row, uint16_t vdc1_row)
@@ -1992,8 +2143,10 @@ static void pcfx_vdc_apply_sanctum(WaifuPcfxVideo *video, WaifuPcfxSanctumBackdr
     }
     pcfx_rainbow_set_hscroll(g_rainbow_hscroll_requested ? g_rainbow_hscroll : 0);
     g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
+    pcfx_king_reconfig_begin();
     king_set_bg_prio(KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
     king_set_bg_mode(KING_BGMODE_NONE, 0, 0, 0);
+    pcfx_king_reconfig_end();
     tetsu_set_priorities(7, 7, 0, 0, 0, 0, 6);
     tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_16, TETSU_COLORS_16,
@@ -2027,7 +2180,12 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
     }
 
     g_king_page_setting_extra = WAIFU_PCFX_KRAM_PAGESETTING_RAINBOW1;
-    pcfx_king_set_bg_kram_page_inline(0);
+    if (g_king_page_setting_live != (int32_t)(0x00000100u | g_king_page_setting_extra)) {
+        /* REG.0F: BG page bit only moves in blanking or with MPSW stopped. */
+        pcfx_king_reconfig_begin();
+        pcfx_king_set_bg_kram_page_inline(0);
+        pcfx_king_reconfig_end();
+    }
     if (!g_rainbow_backdrop_active || backdrop_changed) {
         waifu_vdc_set_control(VDC_CHIP_0, 0, 1, 0);
         waifu_vdc_set_control(VDC_CHIP_1, 0, 1, 0);
@@ -2040,9 +2198,11 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
         waifu_vdc_setreg(VDC_CHIP_0, 5, 0x88);
         waifu_vdc_setreg(VDC_CHIP_1, 5, 0x80);
         pcfx_vdc_overlay_init(video);
+        pcfx_king_reconfig_begin();
         king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 1);
         king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
         pcfx_king_set_8bpp_display_page(0);
+        pcfx_king_reconfig_end();
         /* The RAINBOW still itself cannot be palette-faded, so the fade mask
            is drawn by VDC tiles.  Keep VDC in front of both KING BG0 and
            RAINBOW; transparent VDC tile pixels still let the scene show
@@ -2068,11 +2228,13 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
     pcfx_vdc_restore_overlay_palette();
     pcfx_rainbow_stop_transfer();
     g_king_page_setting_extra = 0;
+    pcfx_king_reconfig_begin();
     pcfx_king_set_bg_kram_page_inline(0);
     /* Enable BG0's affine fetch.  The source is 512x256 8bpp; A=2 samples the
        even texel of each duplicated KRAM word for every 256-wide output dot. */
     king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 1);
     king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0);
+    pcfx_king_reconfig_end();
     tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
     tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_256, TETSU_COLORS_16,
@@ -2563,6 +2725,11 @@ static void set_king_16m_title_video(void)
     waifu_vdc_set_control(VDC_CHIP_1, 0, 1, 0);
     pcfx_vdc_overlay_init(&g_video);
 
+    /* REG.10 (BG format) is immediate-effect and must be changed with the
+       microprogram stopped, and REG.0F's BG page bit may only move in blanking
+       or with MPSW stopped.  Take the window for the whole KING block below,
+       including the microprogram download it ends with. */
+    pcfx_king_reconfig_begin();
     king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 0);
     king_set_bg_mode(KING_BGMODE_16M, 0, 0, 0);
     pcfx_king_set_bg_kram_page_inline(0);
@@ -2584,9 +2751,7 @@ static void set_king_16m_title_video(void)
     g_king_microprog[5] = KING_CODE_BG0_CG_5;
     g_king_microprog[6] = KING_CODE_BG0_CG_6;
     g_king_microprog[7] = KING_CODE_BG0_CG_7;
-    king_disable_microprogram();
     king_write_microprogram(g_king_microprog, 0, 16);
-    king_enable_microprogram();
     /* The rotation program is gone; force a reload on the next 8bpp page set. */
     g_king_mprog_bank = -1;
     pcfx_king_set_bg0_page_inline(0);
@@ -2598,6 +2763,7 @@ static void set_king_16m_title_video(void)
     king_set_scroll(KING_BG0SUB, 0, WAIFU_PCFX_TITLE_16M_SCROLL_Y);
     king_set_bg_size(KING_BG0, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
     king_set_bg_size(KING_BG0SUB, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256, KING_BGSIZE_256);
+    pcfx_king_reconfig_end();
 }
 
 static WAIFU_PCFX_COLD void pcfx_title_upload_full_16m_from_ram(int page, const uint16_t *title_yuv422)
@@ -2830,6 +2996,9 @@ static void set_king_8bpp_video(int display_page)
     tetsu_set_king_palette(0, 0, 0, 0);
     tetsu_set_rainbow_palette(0);
 
+    /* Same reconfiguration window as the 16M path: REG.10 with MPSW stopped,
+       REG.0F and the immediate-effect size registers inside blanking. */
+    pcfx_king_reconfig_begin();
     king_set_bg_prio(KING_BGPRIO_0, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, 1);
     king_set_bg_mode(KING_BGMODE_256_PAL, 0, 0, 0); /* 8bpp KING BG0. */
     pcfx_king_set_bg_kram_page_inline(0);
@@ -2845,6 +3014,7 @@ static void set_king_8bpp_video(int display_page)
        microprogram into that page's KRAM bank and asserts priority/affine. */
     g_king_mprog_bank = -1;   /* mode switch invalidates any loaded program */
     pcfx_king_set_8bpp_display_page(display_page);
+    pcfx_king_reconfig_end();
 
     tetsu_set_video_mode(TETSU_LINES_262, 0, TETSU_DOTCLOCK_5MHz,
                               TETSU_COLORS_256, TETSU_COLORS_16,
@@ -2981,7 +3151,10 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
        shows it).  Force every entry to neutral black here so the boot/loading
        window is black regardless of power-up state.  active_palette stays invalid
        (set below), so the first present still uploads the real palette. */
-    for (int i = 0; i < 256; ++i) tetsu_set_palette((uint16_t)i, WAIFU_PCFX_NEUTRAL_BLACK);
+    for (int i = 0; i < 256; ++i) pcfx_vce_set_palette((uint16_t)i, WAIFU_PCFX_NEUTRAL_BLACK);
+    /* Nothing presents between here and the first loading frame, so push the
+       blackout out now -- inside blanking, per C6261 2.1.3 (5). */
+    pcfx_vce_palette_flush_in_blank();
     /* Re-assert the black VDC mask after the VDC mode registers are touched. */
     pcfx_vdc_overlay_force_black(video);
     video->mode = WAIFU_PCFX_VIDEO_MODE_KING_8BPP;
@@ -3181,7 +3354,7 @@ void waifu_pcfx_video_set_palette_rgb_fade(WaifuPcfxVideo *video, const uint8_t 
         const uint16_t *row = waifu_pcfx_palette_fade_lut[pcfx_palette_table_index(palette_id)][level];
         for (int i = 0; i < 256; ++i) {
             uint16_t yuv = row[i];
-            tetsu_set_palette((uint16_t)i, yuv);
+            pcfx_vce_set_palette((uint16_t)i, yuv);
         }
     } else {
         if (!video->have_base_yuv || video->active_palette != palette_id) {
@@ -3197,12 +3370,12 @@ void waifu_pcfx_video_set_palette_rgb_fade(WaifuPcfxVideo *video, const uint8_t 
                 int b = (rgb[i * 3 + 2] * fade_q8 + 128) >> 8;
                 yuv = rgb888_to_pcfx_yuv((uint8_t)r, (uint8_t)g, (uint8_t)b);
             }
-            tetsu_set_palette((uint16_t)i, yuv);
+            pcfx_vce_set_palette((uint16_t)i, yuv);
         }
         video->have_base_yuv = 1;
     }
 
-    tetsu_set_palette((uint16_t)IDX_BLACK, WAIFU_PCFX_NEUTRAL_BLACK);
+    pcfx_vce_set_palette((uint16_t)IDX_BLACK, WAIFU_PCFX_NEUTRAL_BLACK);
     video->active_palette = palette_id;
     video->active_fade_q8 = level;
 }
@@ -3392,6 +3565,12 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
     /* Wait for the start of the vblank window. */
     spin = 0;
     while (pcfx_tetsu_raster_stable() < 240 && spin++ < 2000000u) { }
+    /* Flush the staged VCE palette FIRST, while the window is freshest: C6261
+       2.1.3 (5) says palette RAM writes during display show noise, and the
+       present that staged these entries ran across active display.  Doing it
+       here also lands the palette in the same field as the page flip below,
+       which keeps a fade level and the framebuffer it belongs to in step. */
+    pcfx_vce_palette_flush();
     if (video && video->pending_title_page_flip) {
         pcfx_king_set_bg_kram_page_inline(0);
         pcfx_king_set_bg0_page_inline(title16m_bg_cg_page(video->pending_title_kram_page));
