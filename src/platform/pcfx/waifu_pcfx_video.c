@@ -89,11 +89,14 @@ static void waifu_vdc_set_access_width(int chip, int cg_mode, int mapsize,
 #define WAIFU_PCFX_PAGE_STRIDE_WORDS ((WAIFU_PCFX_BG_SOURCE_W * WAIFU_PCFX_BG_SOURCE_H) / 2)
 #define WAIFU_PCFX_KING_BG_PAGE_0 0
 #define WAIFU_PCFX_KING_BG_PAGE_1 (WAIFU_PCFX_PAGE_STRIDE_WORDS / 1024)
-/* KING 8bpp gameplay is TRIPLE buffered.  The three 128 KB affine sources live
-   at KRAM words 0 / 0x10000 / 0x20000 (CG bases 0 / 64 / 128), all in physical
-   KRAM page 0.  A display flip is deferred to vblank, leaving a third page for
-   the CPU upload. */
-#define WAIFU_PCFX_PAGE_COUNT 3
+/* KING 8bpp gameplay is DOUBLE buffered.  The two 128 KB affine sources live at
+   KRAM words 0 / 0x10000 (CG bases 0 / 64), both inside KRAM bank 0 so a single
+   programmed BG rotation microprogram bank serves both.  The display flip is
+   deferred to the tear-safe vblank window, and the game presents exactly once
+   per field (present -> wait_vblank in pcfx_main), so the just-shown page is
+   always free again before the next present draws into it -- a third buffer
+   would only ever sit idle. */
+#define WAIFU_PCFX_PAGE_COUNT 2
 #define WAIFU_PCFX_NEUTRAL_BLACK 0x0088u
 #define WAIFU_PCFX_16M_BLACK_Y 0x0101u
 #define WAIFU_PCFX_16M_BLACK_UV 0x8080u
@@ -228,13 +231,13 @@ static uint16_t rgb888_to_pcfx_yuv(uint8_t r, uint8_t g, uint8_t b)
 
 static inline __attribute__((always_inline)) int page_word_offset(int page)
 {
-    /* page 0/1/2 -> KRAM word 0 / 0x10000 / 0x20000 (page 2 is bank B) */
+    /* page 0/1 -> KRAM word 0 / 0x10000 (both in bank 0) */
     return page * WAIFU_PCFX_PAGE_STRIDE_WORDS;
 }
 
 static inline __attribute__((always_inline)) int page_bat_offset(int page)
 {
-    /* page 0/1/2 -> BG0/BG0SUB CG base 0 / 64 / 128 (1024-word units) */
+    /* page 0/1 -> BG0/BG0SUB CG base 0 / 64 (1024-word units) */
     return page * WAIFU_PCFX_KING_BG_PAGE_1;
 }
 
@@ -2016,7 +2019,6 @@ static void pcfx_apply_rainbow_backdrop(WaifuPcfxVideo *video, WaifuPcfxSanctumB
 #if WAIFU_PCFX_DIRTY_PRESENT
         video->page_shadow_valid[0] = 0;
         video->page_shadow_valid[1] = 0;
-        video->page_shadow_valid[2] = 0;
 #endif
     }
 
@@ -2075,7 +2077,6 @@ static void pcfx_vdc_clear_background(WaifuPcfxVideo *video)
 #if WAIFU_PCFX_DIRTY_PRESENT
     video->page_shadow_valid[0] = 0;
     video->page_shadow_valid[1] = 0;
-    video->page_shadow_valid[2] = 0;
 #endif
     video->vdc_bg = WAIFU_PCFX_VDC_BG_NONE;
     video->vdc_overlay_ready = 0;
@@ -2917,13 +2918,13 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
        in both interpretations (16M-black 0x0101/0x8080 reads as an 8bpp index
        stripe pattern; 8bpp-black 0xFFFF reads as bright 16M), so a page at
        offset 0 always shows a stripe band or a white line on the switch frame.
-       Instead, keep offset 0 as 16M-black (from pcfx_title_blackout_pages) and
-       display the THIRD 8bpp page (offset 2*PAGE_STRIDE_WORDS), which aliases no
-       16M CG page.  Whichever layer a scanline samples across the switch -- the
-       old 16M surface at offset 0, or the new 8bpp page -- it reads black. */
-    king_seek_write_words(WAIFU_PCFX_PAGE_STRIDE_WORDS * 2);
+       Instead, leave offset 0 untouched and bring up 8bpp on the SECOND page
+       (offset PAGE_STRIDE_WORDS): the switch frame then never shows the old 16M
+       surface reinterpreted as palette indices, and the opaque VDC black mask
+       forced above covers the transient either way. */
+    king_seek_write_words(WAIFU_PCFX_PAGE_STRIDE_WORDS);
     king_kram_fill_words(WAIFU_PCFX_BLACK_WORD, WAIFU_PCFX_PAGE_STRIDE_WORDS);
-    set_king_8bpp_video(2);
+    set_king_8bpp_video(1);
     /* Blacken the KING 8bpp VCE palette (entries 0..255) now.  set_king_8bpp_video
        only configures the palette BANK; the 256 colour entries are not written
        until the first present_8bpp uploads a real frame (during asset load / the
@@ -2949,21 +2950,16 @@ void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video)
     video->have_base_yuv = 0;
     video->active_palette = (WaifuFmPaletteId)-1;
     video->active_fade_q8 = -1;
-    /* Front is the freshly cleared third page; the next present uploads a real
-       frame into page 0 (whose KRAM still holds 16M-black/stripe bytes) before
-       it is ever displayed, so force its shadow invalid. */
-    video->front_page = 2;
+    /* Front is the freshly cleared second page; the next present uploads a real
+       frame into page 0 (whose KRAM still holds the 16M title bytes) before it
+       is ever displayed, so force its shadow invalid. */
+    video->front_page = 1;
     video->back_page = 0;
     video->pending_page = -1;
 #if WAIFU_PCFX_DIRTY_PRESENT
-    memset(video->page_shadow[2], IDX_BLACK, WAIFU_PCFX_FRAME_BYTES);
-    video->page_shadow_valid[2] = 1;
+    memset(video->page_shadow[1], IDX_BLACK, WAIFU_PCFX_FRAME_BYTES);
+    video->page_shadow_valid[1] = 1;
     video->page_shadow_valid[0] = 0;
-    /* The second buffer (KRAM word 0x10000) holds the hidden 16M title surface,
-       but it is
-       never displayed until a present has full-uploaded a whole 256x240 frame
-       into it, so only its shadow needs invalidating here. */
-    video->page_shadow_valid[1] = 0;
 #endif
     /* Entering 8bpp gameplay means the title/menu/load/ending VDC overlay is
        gone for good.  Force the overlay *intent* back to OFF here, not just the
@@ -3176,8 +3172,8 @@ void waifu_pcfx_video_clear_black(WaifuPcfxVideo *video)
 {
     if (!video) return;
     king_seek_write_words(0);
-    /* Blacken all three 8bpp pages (words 0 .. 0x17FFF, one contiguous run that
-       stays within the 0x20000-word KRAM half). */
+    /* Blacken both 8bpp pages (words 0 .. 0x1FFFF, one contiguous run that stays
+       within KRAM bank 0). */
     king_kram_fill_words(WAIFU_PCFX_BLACK_WORD, WAIFU_PCFX_PAGE_STRIDE_WORDS * WAIFU_PCFX_PAGE_COUNT);
     video->front_page = 0;
     video->back_page = 1;
@@ -3211,12 +3207,12 @@ static WAIFU_PCFX_COLD void pcfx_present_update_palette_if_needed(WaifuPcfxVideo
 
 /* Commit the 8bpp page a present just finished rendering into (video->back_page).
    Under RAINBOW the overlay is single-page and latches immediately.  Otherwise
-   this is the doom-pcfx triple-buffer commit: the drawn page becomes PENDING and
-   its display flip is deferred to the tear-safe vblank window (see
-   waifu_pcfx_video_wait_vblank), while the draw target advances to the third
-   buffer -- front + pending + back == 0+1+2 == 3, so it is always the one page
-   that is neither on screen nor waiting to be, and the next frame never touches
-   a live buffer. */
+   this is the double-buffer commit: the drawn page becomes PENDING and its
+   display flip is deferred to the tear-safe vblank window (see
+   waifu_pcfx_video_wait_vblank), so the CG base never changes mid-scan.  The
+   draw target becomes the page on screen right now; wait_vblank runs before the
+   next present (pcfx_main's loop is present -> wait_vblank), retires the pending
+   flip and thereby frees it, so no frame ever renders into a live buffer. */
 static inline __attribute__((always_inline)) void pcfx_commit_8bpp_page(WaifuPcfxVideo *video)
 {
     if (g_rainbow_backdrop_active) {
@@ -3225,7 +3221,7 @@ static inline __attribute__((always_inline)) void pcfx_commit_8bpp_page(WaifuPcf
         video->pending_page = -1;
     } else {
         video->pending_page = video->back_page;
-        video->back_page = WAIFU_PCFX_PAGE_COUNT - video->front_page - video->pending_page;
+        video->back_page = video->front_page;
     }
     video->have_last_frame = 1;
 }
@@ -3359,10 +3355,11 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
         video->back_page = video->pending_title_back_page;
         video->pending_title_page_flip = 0;
     } else if (video && video->mode == WAIFU_PCFX_VIDEO_MODE_KING_8BPP && video->pending_page >= 0) {
-        /* Triple-buffer deferred flip: latch the page the last present rendered
+        /* Deferred double-buffer flip: latch the page the last present rendered
            now, inside the vblank window, so the CG-base change is never seen
-           mid-scan (tear-free).  The next frame is already rendering into the
-           third buffer.  RAINBOW never sets pending_page (it flips in-line). */
+           mid-scan (tear-free).  This also frees the page that was on screen,
+           which the next present draws into.  RAINBOW never sets pending_page
+           (it flips in-line). */
         pcfx_king_set_8bpp_display_page(video->pending_page);
         video->front_page = video->pending_page;
         video->pending_page = -1;
