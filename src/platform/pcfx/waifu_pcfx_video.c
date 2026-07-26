@@ -228,13 +228,13 @@ static uint16_t rgb888_to_pcfx_yuv(uint8_t r, uint8_t g, uint8_t b)
 
 static inline __attribute__((always_inline)) int page_word_offset(int page)
 {
-    /* page 0/1/2 -> KRAM word 0 / 0x8000 / 0x10000 */
+    /* page 0/1/2 -> KRAM word 0 / 0x10000 / 0x20000 (page 2 is bank B) */
     return page * WAIFU_PCFX_PAGE_STRIDE_WORDS;
 }
 
 static inline __attribute__((always_inline)) int page_bat_offset(int page)
 {
-    /* page 0/1/2 -> BG0/BG0SUB CG base 0 / 32 / 64 (1024-word units) */
+    /* page 0/1/2 -> BG0/BG0SUB CG base 0 / 64 / 128 (1024-word units) */
     return page * WAIFU_PCFX_KING_BG_PAGE_1;
 }
 
@@ -2818,8 +2818,64 @@ static void set_king_8bpp_video(int display_page)
     waifu_vdc_set_video_mode(VDC_CHIP_1, 2, 2, 4, 0x1F, 0x11, 2, 239, 2);
 }
 
+/* KRAM MODE (KING REG.61) -- must be programmed after reset and BEFORE any KRAM
+   access.  C6272_1 2.1 step 3; REG.61 is a single 16-bit cell, D15..D1 unused,
+   D0 = MOD (0 = 1-Mbit, 1 = 4-Mbit).
+
+   Nothing in this port ever wrote it, so the console kept whatever the retail
+   BIOS left -- and the wolf-pcfx / doom-pcfx hardware burns established that is
+   1-MBIT mode.  In 1-Mbit mode (Hudson map figure c260c7b9) only words
+   0x00000..0x0FFFF of each bank are SOLID; 0x10000..0x1FFFF is the DOTTED
+   optional-expansion half and reads back as open bus, and 1.3 requires every
+   REG.0F page selector to be zero, so page routing silently does nothing.
+
+   This port's KRAM map does not survive that, and every part of it that does not
+   survive arrived with the affine/ROTATE work (21fef51), which grew the BG0 page
+   stride from 30720 words to 0x10000:
+
+     - affine page 1 sits at word 0x10000, entirely inside the dead half;
+     - affine page 2 sits at word 0x20000 (bank B), which is the page
+       waifu_pcfx_video_begin_8bpp() parks the display on for the 16M->8bpp
+       handoff -- so the loading screen is composited from a plane that, in
+       1-Mbit mode, is not there.  That is the black boot: the console never
+       reaches a visible "LOADING...";
+     - the CD->RAM DMA bounce window is at word 0x30000 (waifu_pcfx_cdrom.c),
+       bank B's dead half, so asset reads bounce through open bus;
+     - the RAINBOW backdrop stream and the SFX ADPCM bank both live on KRAM
+       PAGE 1, which in 1-Mbit mode is not a place: their writes fold back onto
+       page 0, i.e. on top of the framebuffers.
+
+   None of it reports an error, and pcfxemu models KRAM as the full map
+   unconditionally (king.c records REG.61 into king->KRAM_Mode and never narrows
+   addressing by it), so the whole class is invisible in the emulator -- the
+   title screen captures clean either way.  4-Mbit mode (figure 61476210) makes
+   all of it real: 2 pages x 262144 words, per page bank A = 0x00000..0x1FFFF and
+   bank B = 0x20000..0x3FFFF, every 64K block solid, page selectors live.
+
+   It is not a speed trade.  libpcfx example 024 swept REG.61 on real hardware
+   against a fixed BG schedule and timed 30720 CPU->KRAM halfwords at
+   26038/26035/26033/26032 ticks for $61 = 0/1/2/3 -- a 0.023% spread with no
+   bit-0 structure, on a bench that separates microprogram variants by 10%.  It
+   is a capacity knob.
+
+   No interrupt guard around the select/data pair: main() masks every source at
+   the controller and disables at the CPU (PSW) before this runs, so nothing can
+   land between the index and data writes. */
+void waifu_pcfx_video_init_kram_mode(void)
+{
+    static int done;
+    if (done) return;
+    done = 1;
+    king_set_kram_mode(1);   /* 1 = 4-Mbit: 2 pages x 262144 words */
+}
+
 WaifuPcfxVideo *waifu_pcfx_video_create(void)
 {
+    /* Normally already done from main(); harmless and idempotent if not, and it
+       keeps this module correct standalone.  king_init() below is itself a KRAM
+       access (it clears all four half-pages), and only reaches them in 4-Mbit. */
+    waifu_pcfx_video_init_kram_mode();
+
     king_init();
     tetsu_init();
     memset(&g_video, 0, sizeof(g_video));

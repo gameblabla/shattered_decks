@@ -34,6 +34,10 @@ typedef enum WaifuPcfxSanctumOverlay {
     WAIFU_PCFX_SANCTUM_OVERLAY_SAVE_DEVICE = 2
 } WaifuPcfxSanctumOverlay;
 
+/* KING REG.61 (KRAM MODE).  Must run before ANY other KING access -- call it as
+   the first statement of main().  waifu_pcfx_video_create() calls it too, so the
+   video module stays correct on its own; the call is idempotent. */
+void waifu_pcfx_video_init_kram_mode(void);
 WaifuPcfxVideo *waifu_pcfx_video_create(void);
 void waifu_pcfx_video_destroy(WaifuPcfxVideo *video);
 void waifu_pcfx_video_begin_8bpp(WaifuPcfxVideo *video);

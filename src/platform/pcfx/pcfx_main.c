@@ -5,9 +5,31 @@
 #include "waifu_pcfx_input.h"
 #include "waifu_pcfx_video.h"
 #include "pcfx.h"
+#include <pcfx/v810.h>
 
 int main(void)
 {
+    /* Real-hardware bring-up: run with NO interrupts at all.  On real PC-FX
+       hardware any armed IRQ (the BIOS vsync handler, an interval timer, the
+       KING VD-status vblank IRQ) can starve the single highest-priority source
+       the controller delivers, stall the render loop and leave the KING BG
+       layer BLACK -- while pcfxemu tolerates it and looks fine.  Masking every
+       source at the controller AND disabling at the CPU (PSW) means no ISR ever
+       runs, so nothing corrupts a KING register write or the VDC control
+       register.  Field timing is done by polling the TETSU raster in
+       waifu_pcfx_video_wait_vblank instead (matches the maka/doom-pcfx hardware
+       path). */
+    irq_set_mask(0x7F);   /* mask every maskable source at the controller */
+    irq_disable();        /* and disable at the CPU (PSW) -- no ISR ever runs */
+
+    /* KING REG.61 = 4-Mbit KRAM, before any other KING access (C6272_1 2.1 step
+       3, and doom-pcfx/wolf-pcfx keep it first for the same reason).  The retail
+       BIOS hands off in 1-Mbit mode, in which most of this port's KRAM map --
+       affine pages 1 and 2, the CD DMA bounce window, and the RAINBOW/ADPCM page
+       1 -- does not exist.  That is the real-hardware black boot; the full
+       derivation is on waifu_pcfx_video_init_kram_mode(). */
+    waifu_pcfx_video_init_kram_mode();
+
     WaifuPcfxCdrom *cdrom = waifu_pcfx_cdrom_create();
     WaifuPcfxVideo *video = waifu_pcfx_video_create();
     WaifuPcfxInput *input = waifu_pcfx_input_create();
