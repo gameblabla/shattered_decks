@@ -28,9 +28,11 @@ WaifuPcfxCdrom *waifu_pcfx_cdrom_create(void);
 void waifu_pcfx_cdrom_destroy(WaifuPcfxCdrom *cdrom);
 int waifu_pcfx_cdrom_read_asset(WaifuPcfxCdrom *cdrom, WaifuPcfxCdAssetId asset, void *dst, size_t dst_size);
 
-/* Monotonic counter bumped on every CD data read, retained for diagnostics.
-   CD-DA recovery itself is owned by eris/cdda.h's music manager. */
-uint32_t waifu_pcfx_cd_read_seq(void);
+/* CD-DA lives in libpcfx (<eris/cdda.h>): the command layer there is the one
+   that works on a real console, and its music manager owns the "a data read
+   stops the drive's audio engine" recovery.  Every reader in this module calls
+   eris_cdda_notify_cd_read(), so the manager sees the loads; the audio layer
+   calls eris_cdda_music_* and pumps it once per frame. */
 
 /* Blocking CD/SCSI DMA directly into KING KRAM.  kram_addr is the KING
  * KRAM word address, matching liberis eris_cd_read_kram(). */

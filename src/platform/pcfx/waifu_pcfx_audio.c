@@ -3,9 +3,9 @@
 #include "pcfx_sfx_adpcm.h"
 #include "sounds.h"
 
-#include <eris/cdda.h>
 #include <pcfx/types.h>
 #include <pcfx/sound.h>
+#include <eris/cdda.h>
 #include <stdint.h>
 
 #if defined(__GNUC__)
@@ -44,9 +44,17 @@
 #define CDDA_TRACK_FAIL 0
 #endif
 
+/* Music is CD-DA, played through libpcfx's music manager (eris/cdda.h).  This
+   layer only translates the game's music enum into a track number and owns the
+   SFX duck; the manager owns the drive: BCD track addressing, the single-D8
+   play (a paused D8 + starting D9 pair is what fell silent on real hardware
+   when the D9 landed mid-seek), the interval-timer guard around the KING
+   register sequences, and the restart-after-a-load policy.  See the comment
+   block in waifu_pcfx_cdrom.c for the full list of what the hand-rolled command
+   layer this replaced got wrong on silicon. */
+
 struct WaifuPcfxAudio {
     WaifuFmMusicTrack current_music; /* last music enum handed to us */
-    uint32_t last_cd_read_seq;
 };
 
 static WaifuPcfxAudio g_audio;
@@ -55,26 +63,21 @@ static WaifuPcfxAudio g_audio;
 #define WAIFU_PCFX_CDDA_DUCK_VOLUME 38u   /* Temporary SFX duck, not a global music cut. */
 #define WAIFU_PCFX_CDDA_DUCK_SHORT 24u
 #define WAIFU_PCFX_CDDA_DUCK_LONG  58u
-static uint8_t g_cdda_mix_volume = 255u;
 static uint8_t g_cdda_duck_frames = 0u;
 static uint8_t g_turn_jingle_guard_frames = 0u;
-
-static void waifu_pcfx_cdda_apply_mix_volume(uint8_t volume)
-{
-    if (g_cdda_mix_volume == volume) return;
-    eris_cdda_music_set_volume(volume);
-    g_cdda_mix_volume = volume;
-}
 
 static void waifu_pcfx_cdda_request_duck(uint8_t frames)
 {
     if (frames > g_cdda_duck_frames) g_cdda_duck_frames = frames;
 }
 
+/* Hand the manager the level we want; it programs KING only when the level
+   actually changes, and holds the output muted on its own while it is retrying
+   a play the drive refused. */
 static void waifu_pcfx_cdda_pump_mix_volume(void)
 {
     uint8_t target = g_cdda_duck_frames ? WAIFU_PCFX_CDDA_DUCK_VOLUME : WAIFU_PCFX_CDDA_BASE_VOLUME;
-    waifu_pcfx_cdda_apply_mix_volume(target);
+    eris_cdda_music_set_volume(target);
     if (g_cdda_duck_frames) --g_cdda_duck_frames;
     if (g_turn_jingle_guard_frames) --g_turn_jingle_guard_frames;
 }
@@ -717,7 +720,7 @@ static uint8_t music_to_cdda_track(WaifuFmMusicTrack track)
     }
 }
 
-static uint8_t music_to_cdda_loop(WaifuFmMusicTrack track)
+static int music_cdda_loops(WaifuFmMusicTrack track)
 {
     switch (track) {
     case WAIFU_FM_MUSIC_RESULTS:
@@ -733,10 +736,15 @@ WaifuPcfxAudio *waifu_pcfx_audio_create(void)
     g_audio.current_music = WAIFU_FM_MUSIC_NONE;
     g_cdda_duck_frames = 0;
     g_turn_jingle_guard_frames = 0;
-    g_cdda_mix_volume = 0u;
+
+    /* Silences the drive (including any CD-DA the BIOS left running) and zeroes
+       the KING level.  SFX init loads the ADPCM bank off CD, which stops the
+       audio engine again, so re-init afterwards to reset the manager's
+       read-sequence baseline rather than leaving it a load behind. */
     eris_cdda_music_init();
-    g_audio.last_cd_read_seq = waifu_pcfx_cd_read_seq();
     waifu_pcfx_sfx_init();
+    eris_cdda_music_init();
+    eris_cdda_music_set_volume(0);
     return &g_audio;
 }
 
@@ -750,21 +758,29 @@ void waifu_pcfx_audio_set_music(WaifuPcfxAudio *audio, WaifuFmMusicTrack track)
     if (!audio) return;
     if (audio->current_music == track) return;
     audio->current_music = track;
-    /* The library owns the NEC D8/D9 transport, BCD track encoding, and the
-       restart after a reported CD data read.  This call records intent only. */
-    eris_cdda_music_play(music_to_cdda_track(track), music_to_cdda_loop(track));
+    /* Records intent only.  The manager issues the SCSI play from the pump once
+       any in-flight CD data load has settled, because a data read would stop
+       CD-DA again immediately; it also re-arms playback after a load. */
+    eris_cdda_music_play(music_to_cdda_track(track), music_cdda_loops(track));
 }
 
+/* Service CD-DA once per frame.  The manager decides when it is safe to talk to
+   the drive (loads settled), retries plays the drive refused, and lands the
+   bounding D9 on a later frame so it never collides with the play's own seek. */
 void waifu_pcfx_audio_pump(WaifuPcfxAudio *audio)
 {
-    uint32_t read_seq;
     if (!audio) return;
-    read_seq = waifu_pcfx_cd_read_seq();
-    if (read_seq != audio->last_cd_read_seq) {
-        eris_cdda_notify_cd_read();
-        audio->last_cd_read_seq = read_seq;
+
+    if (eris_cdda_music_current() == CDDA_TRACK_NONE) {
+        /* Silence: SFX are ADPCM and unaffected, but the duck/jingle timers
+           still have to run down or the next track would start ducked. */
+        eris_cdda_music_set_volume(0);
+        if (g_cdda_duck_frames) --g_cdda_duck_frames;
+        if (g_turn_jingle_guard_frames) --g_turn_jingle_guard_frames;
+    } else {
+        waifu_pcfx_cdda_pump_mix_volume();
     }
-    waifu_pcfx_cdda_pump_mix_volume();
+
     eris_cdda_music_pump();
 }
 
@@ -774,7 +790,7 @@ void waifu_pcfx_audio_stop_all(WaifuPcfxAudio *audio)
     audio->current_music = WAIFU_FM_MUSIC_NONE;
     g_cdda_duck_frames = 0;
     g_turn_jingle_guard_frames = 0;
-    waifu_pcfx_cdda_apply_mix_volume(0u);
+    eris_cdda_music_set_volume(0);
     eris_cdda_music_stop();
     waifu_pcfx_psg_stop_all();
     waifu_pcfx_adpcm_stop_hw();

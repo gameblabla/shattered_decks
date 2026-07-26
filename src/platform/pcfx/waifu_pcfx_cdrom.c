@@ -5,6 +5,7 @@
 
 #include <string.h>
 #include <eris/cd.h>
+#include <eris/cdda.h>
 #include <eris/scsi.h>
 /* Used by the optional ADPCM RAM-load debug path. */
 #include "fastking.h"
@@ -162,11 +163,14 @@ static inline void king_set_page_setting(uint32_t page_setting)
         : "memory");
 }
 
-static volatile uint32_t g_cd_read_seq = 0;
-
-uint32_t waifu_pcfx_cd_read_seq(void)
+/* A CD data read leaves the drive's CD-DA engine stopped (real hardware and
+   emulation both), so every read site reports itself to libpcfx's CD-DA music
+   manager, which re-issues playback once the bus has settled.  The counter
+   lives in libpcfx now instead of here, so the manager and the reader can
+   never disagree about how many reads have happened. */
+static void cd_note_read(void)
 {
-    return g_cd_read_seq;
+    eris_cdda_notify_cd_read();
 }
 
 static uint32_t cd_round_sector_bytes_u32(uint32_t bytes)
@@ -298,7 +302,7 @@ static uint32_t cd_read(uint32_t lba, uint8_t *buf, uint32_t bytes)
         if (!cd_dma_read_kram(lba + (done / PCFX_CD_SECTOR_SIZE),
                               WAIFU_PCFX_CD_BOUNCE_KRAM_WORD, pass_bytes)) {
             scsi_clear_phase_irq();
-            g_cd_read_seq++;
+            cd_note_read();
             return 0;
         }
 
@@ -314,9 +318,7 @@ static uint32_t cd_read(uint32_t lba, uint8_t *buf, uint32_t bytes)
     }
 
     scsi_clear_phase_irq();
-    /* A data read leaves the drive's CD-DA engine stopped; record that so the
-       audio layer can restart music once the load settles. */
-    g_cd_read_seq++;
+    cd_note_read();
     return bytes;
 }
 
@@ -341,9 +343,7 @@ static int cd_dma_read_to_kram(uint32_t lba, uint32_t kram_addr, uint32_t bytes,
     ok = cd_dma_read_kram(lba, kram_addr, size);
 
     scsi_clear_phase_irq();
-    /* A data read leaves the drive's CD-DA engine stopped; record that so the
-       audio layer can restart music once the load settles. */
-    g_cd_read_seq++;
+    cd_note_read();
     return ok;
 }
 
@@ -532,70 +532,33 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
     return 1;
 }
 
-/* Spin-wait required between the two halves of a CDDA play command pair.
-   Without it the second SCSI command races the first and the drive ignores it. */
-#define WAIFU_CDDA_WAIT_CYCLES 0x800
-
-static void cdda_wait(void)
-{
-    int n = WAIFU_CDDA_WAIT_CYCLES;
-    while (n-- > 0) {
-        __asm__ volatile ("nop\nnop\nnop\nnop" ::: "memory");
-    }
-}
-
-void waifu_pcfx_cdda_play(uint8_t start_track, uint8_t end_track, uint8_t mode)
-{
-    uint8_t cmd[10];
-
-    if (start_track == 0 || end_track == 0) {
-        waifu_pcfx_cdda_stop();
-        return;
-    }
-
-    /* 0xD8/SAPSP: set the start position by track and leave playback paused.
-       Track numbers here are BCD-compatible for the game disc's <= 9 CD-DA
-       tracks.  cmd[1] bit 0 deliberately stays clear; D9/SAPEP below starts
-       the actual playback after the end position is installed. */
-    __builtin_memset(cmd, 0, sizeof(cmd));
-    cmd[0] = 0xD8;
-    cmd[2] = start_track;
-    cmd[9] = 0x80;
-    eris_scsi_command(cmd, 10);
-    cdda_wait();
-    eris_scsi_status();
-
-    /* 0xD9/SAPEP: set the exclusive end position and playback mode.
-       In the PC-FX CD model, cdb[1] & 7 == 0 is silent, 4 is loop, and any
-       other nonzero value is normal play.  The end track is an end POSITION,
-       so a single-track play must pass the following track (or leadout), not
-       the same track. */
-    __builtin_memset(cmd, 0, sizeof(cmd));
-    cmd[0] = 0xD9;
-    cmd[1] = mode;
-    cmd[2] = end_track;
-    cmd[9] = 0x80;
-    eris_scsi_command(cmd, 10);
-    cdda_wait();
-    eris_scsi_status();
-
-    scsi_clear_phase_irq();
-}
-
-void waifu_pcfx_cdda_stop(void)
-{
-    uint8_t cmd[10];
-    /* NEC pause/still command.  The old track-0 D8/D9 sequence is invalid in
-       track-address mode and may leave the previous CD-DA track audible. */
-    __builtin_memset(cmd, 0, sizeof(cmd));
-    cmd[0] = 0xDA;
-    eris_scsi_command(cmd, 10);
-    cdda_wait();
-    eris_scsi_status();
-    scsi_clear_phase_irq();
-}
-
-void waifu_pcfx_cdda_set_volume(uint8_t left, uint8_t right)
-{
-    cdda_set_volume(left, right);
-}
+/* CD-DA is issued by libpcfx (eris/cdda.h), not from here.
+ *
+ * This file used to carry its own D8/D9/DA command layer, and every one of its
+ * differences from libpcfx's is a reason the music did not play on a real
+ * console (it all worked in emulation, which is why it survived this long):
+ *
+ *   * It started playback with D8 mode 0 (seek, stay paused) and relied on the
+ *     following D9 to actually start the audio.  D8 returns GOOD as soon as the
+ *     command is accepted and then the head seeks -- and a music change here
+ *     always follows an asset load, so the head is somewhere in the data track
+ *     and that seek is long.  The D9 lands mid-seek, the drive answers BUSY,
+ *     and BUSY in SCSI means the command was NOT executed: no end position, no
+ *     mode, drive parked at the start position forever.  libpcfx plays with a
+ *     single D8 carrying mode 1 (CDDA_SAPSP_PLAY) -- what the PC-FX BIOS's own
+ *     CD player sends -- which cannot be refused halfway through its own seek,
+ *     and defers the bounding D9 to later frames where a refusal is free.
+ *   * It put track numbers on the bus as plain binary.  The drive parses cdb[2]
+ *     in track-address mode as BCD, so anything above track 9 is either an
+ *     invalid nibble (CHECK CONDITION) or addresses the wrong track.  This disc
+ *     has more than nine CD-DA tracks, so several songs could never play.
+ *   * Its eris_scsi_command()/eris_scsi_status() sequences ran unguarded.  Those
+ *     are KING 0x600/0x604 register-select/data pairs; an interval-timer IRQ
+ *     landing between the halves corrupts them on silicon (it cannot in the
+ *     emulator, which has no such window).
+ *   * It ended the PLAY path with a MODE-register write (scsi_clear_phase_irq),
+ *     touching the bus again just as the drive started streaming audio.  That
+ *     write belongs on the stop path only.
+ *
+ * The audio layer now drives eris_cdda_music_* directly, which also owns the
+ * settle/retry policy around loads. */
