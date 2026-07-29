@@ -144,14 +144,27 @@ static uint32_t g_king_page_setting_extra;
 
 static int pcfx_tetsu_raster_stable(void);
 
-/* Spin until the VCE reports a raster inside the vertical blanking window.
-   Active display is 240 lines; raster >= 240 is blanking (same predicate
-   waifu_pcfx_video_wait_vblank uses).  Bounded, so a misbehaving VCE degrades
-   to "did not wait" rather than hanging. */
+/* HuC6261 vertical timing (C6261 SVB/EVB): the 240-line picture occupies
+   rasters 22..261.  Rasters 240..258 are therefore still active display, not
+   blanking; writing VCE palettes, KING live registers or the paired VDC SAT
+   there produces hardware-only noise/tearing that pcfxemu does not model. */
+#define WAIFU_PCFX_VBLANK_SVB 262u
+#define WAIFU_PCFX_VBLANK_EVB  22u
+
+static int pcfx_raster_in_vblank(unsigned raster)
+{
+    return raster >= WAIFU_PCFX_VBLANK_SVB ||
+           raster < WAIFU_PCFX_VBLANK_EVB;
+}
+
+/* Spin until the VCE reports a raster inside the real vertical blanking
+   window.  Bounded, so a misbehaving VCE degrades to "did not wait" rather
+   than hanging. */
 static void pcfx_wait_blank_window(void)
 {
     uint32_t spin = 0;
-    while (pcfx_tetsu_raster_stable() < 240 && spin++ < 2000000u) { }
+    while (!pcfx_raster_in_vblank((unsigned)pcfx_tetsu_raster_stable()) &&
+           spin++ < 2000000u) { }
 }
 
 /* ---- VCE (HuC6261) colour palette staging ---------------------------------
@@ -1673,6 +1686,7 @@ static int g_story_portrait_count;
 static int g_story_portrait_uploaded[WAIFU_PCFX_STORY_SPR_MAX] = { -1, -1 };
 static int g_story_portrait_uploaded_y[WAIFU_PCFX_STORY_SPR_MAX] = { -0x4000, -0x4000 };
 static int g_story_sat_visible;
+static int g_story_sat_dma_armed;
 
 static WaifuPcfxVdcBackground g_vdc_bg_requested = WAIFU_PCFX_VDC_BG_NONE;
 static int g_rainbow_backdrop_requested;
@@ -2392,10 +2406,18 @@ static void pcfx_story_write_sat(void)
         vdc_vram_write(VDC_CHIP_1, sat[i * 4 + 2]);
         vdc_vram_write(VDC_CHIP_1, sat[i * 4 + 3] ? (WAIFU_PCFX_STORY_SAT_H64 | 0x0008) : 0);
     }
-    vdc_setreg(VDC_CHIP_0, VDC_REG_DCR, VDC_DCR_SATB_AUTO);
-    vdc_setreg(VDC_CHIP_1, VDC_REG_DCR, VDC_DCR_SATB_AUTO);
-    vdc_set_satb_address(VDC_CHIP_0, WAIFU_PCFX_STORY_SAT_ADDR);
-    vdc_set_satb_address(VDC_CHIP_1, WAIFU_PCFX_STORY_SAT_ADDR);
+    /* Repeated SATB DMA is armed only after both complete source tables exist,
+     * then left running.  Re-arming the two VDCs sequentially every frame can
+     * straddle their VDW latch: one chip takes the new high-nibble table while
+     * the other keeps the old low-nibble table, producing a one-field
+     * purple/white portrait glitch on real hardware. */
+    if (!g_story_sat_dma_armed) {
+        vdc_setreg(VDC_CHIP_0, VDC_REG_DCR, VDC_DCR_SATB_AUTO);
+        vdc_setreg(VDC_CHIP_1, VDC_REG_DCR, VDC_DCR_SATB_AUTO);
+        vdc_set_satb_address(VDC_CHIP_0, WAIFU_PCFX_STORY_SAT_ADDR);
+        vdc_set_satb_address(VDC_CHIP_1, WAIFU_PCFX_STORY_SAT_ADDR);
+        g_story_sat_dma_armed = 1;
+    }
     g_story_sat_visible = n != 0;
 }
 
@@ -3570,23 +3592,34 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
        0x80000400.  That bit only latches cleanly under pcfxemu; on real hardware
        it behaves differently, and with all interrupts disabled (see main) the
        BIOS no longer re-arms it -- the old poll then spun FOREVER, leaving the
-       KING BG black.  Active display is 240 lines; raster >= 240 is the vblank
-       window.  Every spin is bounded so a misbehaving VCE degrades to slow,
-       never hangs.  No VDC vblank IRQ is armed. */
+       KING BG black.  C6261 SVB=262 and EVB=22, so blanking is raster 262 then
+       0..21; 240..258 is the bottom of active display.  Every spin is bounded
+       so a misbehaving VCE degrades to slow, never hangs.  No VDC vblank IRQ
+       is armed. */
     uint32_t spin;
+    unsigned raster;
     /* Keep VDC0's BG + sprite planes enabled (story portraits are combined
        256-colour sprites split across VDC0/VDC1) WITHOUT the vblank IRQ-enable
        bit -- interrupts are off, nothing services it. */
     waifu_vdc_setreg(VDC_CHIP_0, VDC_REG_CR, VDC_CR_BB | VDC_CR_SB);
-    /* Wait for the start of the vblank window. */
+    /* RAINBOW finishes decoding near the bottom of active display.  Re-arm it
+       there, before entering real vblank; moving this into blanking aborts the
+       progressive transfer before the field is complete. */
+    if (g_rainbow_backdrop_active || g_sanctum_active) {
+        spin = 0;
+        raster = (unsigned)pcfx_tetsu_raster_stable();
+        while (raster < 248u && spin++ < 2000000u)
+            raster = (unsigned)pcfx_tetsu_raster_stable();
+        if (raster >= 248u && raster < WAIFU_PCFX_VBLANK_SVB)
+            pcfx_rainbow_start_transfer();
+    }
+    /* Wait for the real vertical blanking window. */
     spin = 0;
-    while (pcfx_tetsu_raster_stable() < 240 && spin++ < 2000000u) { }
-    /* Flush the staged VCE palette FIRST, while the window is freshest: C6261
-       2.1.3 (5) says palette RAM writes during display show noise, and the
-       present that staged these entries ran across active display.  Doing it
-       here also lands the palette in the same field as the page flip below,
-       which keeps a fade level and the framebuffer it belongs to in step. */
-    pcfx_vce_palette_flush();
+    while (!pcfx_raster_in_vblank((unsigned)pcfx_tetsu_raster_stable()) &&
+           spin++ < 2000000u) { }
+    /* Flip first: KING REG.0F is vblank-only and the CG/affine registers affect
+       scanout immediately, so they have the shortest deadline in the window.
+       Palette and VDC work follow only after the displayed page is coherent. */
     if (video && video->pending_title_page_flip) {
         pcfx_king_set_bg_kram_page_inline(0);
         pcfx_king_set_bg0_page_inline(title16m_bg_cg_page(video->pending_title_kram_page));
@@ -3608,23 +3641,10 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
            state and are refreshed every field for reliable affine BG0 output. */
         pcfx_king_refresh_8bpp_affine_state();
     }
-    /* One RAINBOW arm per FIELD.  The HuC6271 decodes exactly one frame per arm
-       and then idles, so a backdrop armed only when it is first selected shows
-       for a single field and is stale from then on.  doom-pcfx makes the same
-       split and for the same reason: the arm is FIELD-rate work, not
-       frame-rate work, so it must not sit behind a present/flip gate.
-
-       Placed after the flip and gated on raster >= 248 (doom's
-       RAINBOW_RESTART_RASTER): that is where this field's RAINBOW transfer has
-       finished, so regs 0x40..0x44 can be reprogrammed for the next field
-       without disturbing the one being displayed.  The spin is bounded and
-       short (<= ~8 lines from 240), and degrades to "skip this field's arm"
-       rather than hanging. */
-    if (g_rainbow_backdrop_active || g_sanctum_active) {
-        spin = 0;
-        while (pcfx_tetsu_raster_stable() < 248 && spin++ < 200000u) { }
-        pcfx_rainbow_start_transfer();
-    }
+    /* C6261 2.1.3 (5) says palette RAM writes during display show noise.
+       Flushing after the short page flip keeps the burst in real blanking while
+       still landing the palette in the same field as its framebuffer. */
+    pcfx_vce_palette_flush();
     if (video) {
         pcfx_vdc_overlay_flush(video);
         /* Overlay flush may rebuild the VDC BAT for a fade.  Story HUD and
@@ -3634,7 +3654,8 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
     }
     /* Wait out the vblank window so the next call catches the following field. */
     spin = 0;
-    while (pcfx_tetsu_raster_stable() >= 240 && spin++ < 2000000u) { }
+    while (pcfx_raster_in_vblank((unsigned)pcfx_tetsu_raster_stable()) &&
+           spin++ < 2000000u) { }
     if (video && video->mode == WAIFU_PCFX_VIDEO_MODE_KING_8BPP && video->vdc_overlay_shutdown_countdown > 0) {
         --video->vdc_overlay_shutdown_countdown;
         if (video->vdc_overlay_shutdown_countdown == 0) pcfx_vdc_overlay_shutdown(video);
