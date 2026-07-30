@@ -1523,6 +1523,96 @@ static inline __attribute__((always_inline)) void pcfx_kram_select_data_register
 #endif
 }
 
+#if WAIFU_PCFX_DIRTY_PRESENT && defined(__v810__)
+/* Upload complete four-word runs after king_seek_write_words() selected their
+   destination.  The CPU framebuffer and page shadow live in different 2 KiB
+   DRAM pages.  The scalar loop below used to alternate one framebuffer load
+   with one shadow store for every four pixels, paying two page changes per
+   word.  This loop loads four words first, streams their sixteen duplicated
+   texels to KING, then stores all four shadow words: two page changes per
+   sixteen pixels, with exactly the same KRAM and shadow contents.
+
+   Keep this inline.  Besides avoiding an ABI call in every changed row, the
+   compact four-byte subloops keep the uploader's hot body within the V810's
+   1 KiB direct-mapped instruction cache. */
+static inline __attribute__((always_inline)) int pcfx_kram_upload_shadow_word_groups(
+    const uint32_t *src, uint32_t *dst, int words)
+{
+    int groups = words >> 2;
+    int done = groups << 2;
+    if (groups > 0) {
+        __asm__ volatile (
+            "1:\n"
+            "ld.w 0[%[src]],r10\n"
+            "ld.w 4[%[src]],r11\n"
+            "ld.w 8[%[src]],r12\n"
+            "ld.w 12[%[src]],r13\n"
+
+            "mov r10,r14\n"
+            "movea 4,r0,r16\n"
+            "2:\n"
+            "andi 255,r14,r15\n"
+            "mov r15,r17\n"
+            "shl 8,r17\n"
+            "or r17,r15\n"
+            "out.h r15,0x604[r0]\n"
+            "shr 8,r14\n"
+            "add -1,r16\n"
+            "bne 2b\n"
+
+            "mov r11,r14\n"
+            "movea 4,r0,r16\n"
+            "3:\n"
+            "andi 255,r14,r15\n"
+            "mov r15,r17\n"
+            "shl 8,r17\n"
+            "or r17,r15\n"
+            "out.h r15,0x604[r0]\n"
+            "shr 8,r14\n"
+            "add -1,r16\n"
+            "bne 3b\n"
+
+            "mov r12,r14\n"
+            "movea 4,r0,r16\n"
+            "4:\n"
+            "andi 255,r14,r15\n"
+            "mov r15,r17\n"
+            "shl 8,r17\n"
+            "or r17,r15\n"
+            "out.h r15,0x604[r0]\n"
+            "shr 8,r14\n"
+            "add -1,r16\n"
+            "bne 4b\n"
+
+            "mov r13,r14\n"
+            "movea 4,r0,r16\n"
+            "5:\n"
+            "andi 255,r14,r15\n"
+            "mov r15,r17\n"
+            "shl 8,r17\n"
+            "or r17,r15\n"
+            "out.h r15,0x604[r0]\n"
+            "shr 8,r14\n"
+            "add -1,r16\n"
+            "bne 5b\n"
+
+            "st.w r10,0[%[dst]]\n"
+            "st.w r11,4[%[dst]]\n"
+            "st.w r12,8[%[dst]]\n"
+            "st.w r13,12[%[dst]]\n"
+            "addi 16,%[src],%[src]\n"
+            "addi 16,%[dst],%[dst]\n"
+            "add -1,%[groups]\n"
+            "bne 1b\n"
+            : [src] "+r" (src), [dst] "+r" (dst), [groups] "+r" (groups)
+            :
+            : "r10", "r11", "r12", "r13", "r14", "r15", "r16", "r17",
+              "memory");
+    }
+    return done;
+}
+#endif
+
 /* A 512-wide affine source maps each logical pixel to one KRAM word.  Do not
    coalesce or mask writes here: the current source word must match the CPU
    framebuffer exactly before its page is made visible. */
@@ -1577,7 +1667,16 @@ static WAIFU_PCFX_NOINLINE int pcfx_present_dirty_rows(uint8_t *shadow,
             king_seek_write_words((uint32_t)(page_word_offset +
                                   y * WAIFU_PCFX_BG_ROW_WORDS + first * 4));
             pcfx_kram_select_data_register();
-            for (int i = first; i < word; ++i) {
+            int i = first;
+#if defined(__v810__)
+            {
+                int grouped = pcfx_kram_upload_shadow_word_groups(src + i, dst + i,
+                                                                  word - i);
+                i += grouped;
+                changed_words += grouped;
+            }
+#endif
+            for (; i < word; ++i) {
                 uint32_t texels = src[i];
                 pcfx_kram_write_affine_texel((uint8_t)texels);
                 pcfx_kram_write_affine_texel((uint8_t)(texels >> 8));
