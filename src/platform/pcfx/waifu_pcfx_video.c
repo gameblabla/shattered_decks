@@ -2383,6 +2383,7 @@ static void pcfx_story_write_sat(void)
 {
     uint16_t sat[64 * 4];
     int n = 0;
+    int was_visible = g_story_sat_visible;
     memset(sat, 0, sizeof(sat));
     for (int slot = 0; slot < g_story_portrait_count; ++slot) {
         uint16_t base_no = slot == 0 ? WAIFU_PCFX_STORY_SLOT0_NO : WAIFU_PCFX_STORY_SLOT1_NO;
@@ -2406,12 +2407,16 @@ static void pcfx_story_write_sat(void)
         vdc_vram_write(VDC_CHIP_1, sat[i * 4 + 2]);
         vdc_vram_write(VDC_CHIP_1, sat[i * 4 + 3] ? (WAIFU_PCFX_STORY_SAT_H64 | 0x0008) : 0);
     }
-    /* Repeated SATB DMA is armed only after both complete source tables exist,
-     * then left running.  Re-arming the two VDCs sequentially every frame can
-     * straddle their VDW latch: one chip takes the new high-nibble table while
-     * the other keeps the old low-nibble table, producing a one-field
-     * purple/white portrait glitch on real hardware. */
-    if (!g_story_sat_dma_armed) {
+    /* Arm only after both complete source tables exist, and re-arm once when
+     * portraits become visible.  The boot-time empty-SAT cleanup happens while
+     * title video is active; the later title->8bpp timing/control handoff can
+     * leave real VDCs no longer repeating that old arm even though our software
+     * flag still says it happened.  That made the first Serena portrait remain
+     * absent on hardware.  A hidden->visible edge is safely away from the VDW
+     * latch (this flush runs in the VCE blank window), so both chips receive a
+     * fresh source/auto-DMA arm without restoring the old per-frame sequential
+     * re-arm that mixed high and low nibbles for one field during duels. */
+    if (!g_story_sat_dma_armed || (n != 0 && !was_visible)) {
         vdc_setreg(VDC_CHIP_0, VDC_REG_DCR, VDC_DCR_SATB_AUTO);
         vdc_setreg(VDC_CHIP_1, VDC_REG_DCR, VDC_DCR_SATB_AUTO);
         vdc_set_satb_address(VDC_CHIP_0, WAIFU_PCFX_STORY_SAT_ADDR);
