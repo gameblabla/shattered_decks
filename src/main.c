@@ -11860,12 +11860,13 @@ static void draw_story_fire_screen(int f)
 {
     int line_count = (int)(sizeof(story_fire_lines) / sizeof(story_fire_lines[0]));
     int line = g_story_fire_line;
+    int past_last_line = line >= line_count;
     if (line < 0) line = 0;
     if (line >= line_count) line = line_count - 1;
     int ex = waifu_platform_ui_extra_w();
     const char *fire_text = story_subst_name(story_fire_lines[line]);
     int fire_len = (int)strlen(fire_text);
-    int fire_vis = story_text_reveal_count(STORY_TW_FIRE, line, f, fire_len);
+    int fire_vis = past_last_line ? 0 : story_text_reveal_count(STORY_TW_FIRE, line, f, fire_len);
     char fire_shown[128];
     waifu_str_copy_n(fire_shown, (int)sizeof(fire_shown), fire_text, fire_vis);
     clear_screen(IDX_BLACK);
@@ -11875,7 +11876,7 @@ static void draw_story_fire_screen(int f)
     draw_text_small(18, WAIFU_UI_BOTTOM_Y(183), "DEMON", IDX_RED, IDX_BLACK);
     draw_wrapped_text_small_box(18, WAIFU_UI_BOTTOM_Y(198), WAIFU_FM_WIDTH + ex - 38, 3, 10, fire_shown, IDX_WHITE, IDX_BLACK);
     /* Only offer the A/RUN prompt once the line has finished typing. */
-    if (fire_vis >= fire_len && ((f / 16) & 1) == 0) draw_text_small(WAIFU_FM_WIDTH + ex - 59, WAIFU_FM_HEIGHT - 24, "A/RUN", IDX_WHITE, IDX_BLACK);
+    if (!past_last_line && fire_vis >= fire_len && ((f / 16) & 1) == 0) draw_text_small(WAIFU_FM_WIDTH + ex - 59, WAIFU_FM_HEIGHT - 24, "A/RUN", IDX_WHITE, IDX_BLACK);
     ui_hud_end();
 }
 
