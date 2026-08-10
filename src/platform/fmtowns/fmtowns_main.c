@@ -11,13 +11,19 @@
  * pattern, proved the boot -> protected mode -> CRTC/palette -> VRAM
  * present path end to end.
  *
- * Milestone 2 (current default, FMTOWNS_MILESTONE 2): presents the game's
- * real title-screen art (src/generated/title_asset.h, the same asset every
- * other platform's title screen uses) through fmtowns_video.c instead of a
- * synthetic pattern, linked directly into the payload
- * (fmtowns_title_asset.S). Proves the present path against real production
- * pixel data + palette ahead of CD-ROM loading (milestone 3) or the game
- * core itself compiling for this target.
+ * Milestone 2: presents the game's real title-screen art
+ * (src/generated/title_asset.h, the same asset every other platform's
+ * title screen uses) through fmtowns_video.c instead of a synthetic
+ * pattern, linked directly into the payload with .incbin
+ * (fmtowns_title_asset.S). Proved the present path against real production
+ * pixel data + palette ahead of CD-ROM loading.
+ *
+ * Milestone 3 (current default, FMTOWNS_MILESTONE 3): the exact same title
+ * asset, but read at runtime off the CD image's ISO9660 filesystem
+ * (src/platform/fmtowns/common/cdrom.c + iso9660.c, through media.h's
+ * fmt_media_load()) instead of being linked into the payload. Proves the
+ * CD-ROM read path this platform's real asset streaming (cards, portraits,
+ * ending art, etc) will eventually go through.
  */
 #include <stdint.h>
 
@@ -28,7 +34,7 @@
                         into cpu_id at this struct's exact field offsets. */
 
 #ifndef FMTOWNS_MILESTONE
-#define FMTOWNS_MILESTONE 2
+#define FMTOWNS_MILESTONE 3
 #endif
 
 struct cpu_ident cpu_id;
@@ -82,15 +88,61 @@ static void fmtowns_draw_test_pattern(void)
     }
 }
 
-#if FMTOWNS_MILESTONE >= 2
+#if FMTOWNS_MILESTONE == 2
 /* Linked in by fmtowns_title_asset.S -- see that file for provenance. */
 extern const unsigned char g_fmtowns_title_pixels[];
 extern const unsigned char g_fmtowns_title_palette[];
 
-static void fmtowns_present_title_asset(void)
+static void fmtowns_present_title_asset_incbin(void)
 {
     fmtowns_video_init();
     fmtowns_video_present_8bpp(g_fmtowns_title_pixels, g_fmtowns_title_palette, 256);
+}
+#endif
+
+#if FMTOWNS_MILESTONE >= 3
+/* Milestone 3: the same two files, staged onto the CD image as CD/TITLE.BIN
+ * and CD/TITLE.PAL (see Makefile.fmtowns), read back at runtime through
+ * fmt_media_load() -> fmt_iso9660_load() -> fmt_cdrom_read(). Static, not
+ * stack, both to keep them out of the payload's small default stack and
+ * because .bss this size is exactly what the PAYLOAD_LIMIT check in
+ * Makefile.fmtowns exists to catch if it ever grows past what fits below
+ * the FMR VRAM window. */
+static uint8_t g_fmtowns_title_pixels_cd[256 * 240];
+static uint8_t g_fmtowns_title_palette_cd[256 * 3];
+
+/* Loops forever showing a solid colour if either CD read fails, rather than
+ * presenting a half-loaded or garbage frame -- there is no console/serial
+ * output on this target to report the failure through instead. */
+static void fmtowns_fail_pattern(uint8_t color)
+{
+    static uint8_t frame[256 * 240];
+    static uint8_t palette[3];
+    uint32_t i;
+
+    palette[0] = color; palette[1] = 0; palette[2] = 0;
+    for (i = 0; i < sizeof(frame); ++i) frame[i] = 0;
+    fmtowns_video_init();
+    fmtowns_video_present_8bpp(frame, palette, 1);
+    for (;;) fmt_wait_vsync();
+}
+
+static void fmtowns_present_title_asset_cdrom(void)
+{
+    int32_t got;
+
+    got = fmt_media_load("TITLE.BIN", g_fmtowns_title_pixels_cd, sizeof(g_fmtowns_title_pixels_cd));
+    if (got != (int32_t)sizeof(g_fmtowns_title_pixels_cd)) {
+        fmtowns_fail_pattern(255);   /* CD read of the pixel data failed */
+    }
+
+    got = fmt_media_load("TITLE.PAL", g_fmtowns_title_palette_cd, sizeof(g_fmtowns_title_palette_cd));
+    if (got != (int32_t)sizeof(g_fmtowns_title_palette_cd)) {
+        fmtowns_fail_pattern(128);   /* CD read of the palette failed */
+    }
+
+    fmtowns_video_init();
+    fmtowns_video_present_8bpp(g_fmtowns_title_pixels_cd, g_fmtowns_title_palette_cd, 256);
 }
 #endif
 
@@ -98,8 +150,10 @@ void start_main(void)
 {
     (void)fmt_media_init();
 
-#if FMTOWNS_MILESTONE >= 2
-    fmtowns_present_title_asset();
+#if FMTOWNS_MILESTONE >= 3
+    fmtowns_present_title_asset_cdrom();
+#elif FMTOWNS_MILESTONE == 2
+    fmtowns_present_title_asset_incbin();
 #else
     fmtowns_draw_test_pattern();
 #endif

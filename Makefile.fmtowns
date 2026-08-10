@@ -98,6 +98,16 @@ $(PAYLOAD_BIN): $(PAYLOAD_ELF)
 $(CDROOT)/SYSTEM.BIN: $(PAYLOAD_BIN) | $(CDROOT)
 	cp -f $(PAYLOAD_BIN) $(CDROOT)/SYSTEM.BIN
 
+# Milestone 3: the same title asset bytes fmtowns_title_asset.S links in,
+# staged as ordinary CD files instead and read back at runtime by
+# fmtowns_main.c's fmtowns_present_title_asset_cdrom() through
+# fmt_media_load() (src/platform/fmtowns/common/iso9660.c + cdrom.c).
+$(CDROOT)/TITLE.BIN: $(OBJDIR)/title_pixels.bin | $(CDROOT)
+	cp -f $(OBJDIR)/title_pixels.bin $(CDROOT)/TITLE.BIN
+
+$(CDROOT)/TITLE.PAL: $(OBJDIR)/title_palette.bin | $(CDROOT)
+	cp -f $(OBJDIR)/title_palette.bin $(CDROOT)/TITLE.PAL
+
 $(BOOTDIR)/bootsect.s: $(BOOTDIR)/bootsect.S $(BOOTDIR)/defs.h
 	$(CC) -E -traditional -I$(BOOTDIR) $< -o $@
 
@@ -148,7 +158,7 @@ $(IPLBIN): $(BOOTDIR)/bootsect.o $(BOOTDIR)/setup.o $(BOOTDIR)/ipl.bin.lds | $(O
 # staged relative to it.
 MKCD            = $(abspath tools/fmtowns/mkcd.sh)
 
-$(OUTPUT_ISO): $(IPLBIN) $(CDROOT)/SYSTEM.BIN tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
+$(OUTPUT_ISO): $(IPLBIN) $(CDROOT)/SYSTEM.BIN $(CDROOT)/TITLE.BIN $(CDROOT)/TITLE.PAL tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
 	cd $(OBJDIR) && $(MKCD)
 
 .PHONY: run

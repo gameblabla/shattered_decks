@@ -79,7 +79,22 @@ Not yet touched, and out of scope for this session's changes:
    the correct title art, matching the source PNG exactly (checked
    visually).
 
-3-7. **Not started.** See "Next steps" below for what each needs.
+3. **CD-ROM asset loading -- DONE, verified booting.** The same title
+   asset milestone 2 linked in with `.incbin` is now staged onto the CD
+   image as `CD/TITLE.BIN` / `CD/TITLE.PAL` (`Makefile.fmtowns`) and read
+   back at runtime by `fmtowns_present_title_asset_cdrom()` in
+   `fmtowns_main.c`, through `media.h`'s `fmt_media_load()` ->
+   `fmt_iso9660_load()` -> `fmt_cdrom_read()`
+   (`src/platform/fmtowns/common/iso9660.c` + `cdrom.c`, both already
+   copied in since milestone 1 but unused until now). On a short read of
+   either file it presents a solid diagnostic colour and halts rather than
+   showing a half-loaded frame (there is no console output on this target
+   to report a failure through otherwise). Verified booting in
+   Tsugaru_CUI: the captured `SS` screenshot is **byte-identical** (same
+   PNG checksum) to milestone 2's linked-in version, proving the CD read
+   reproduced the exact same bytes.
+
+4-6. **Not started.** See "Next steps" below for what each needs.
 
 ## Headless emulator verification (how, and a caveat)
 
@@ -120,41 +135,32 @@ was needed once. Always background/timeout-guard interactive Tsugaru runs.
 
 ## Next steps, in priority order
 
-1. **CD asset loading** (milestone 3). The plumbing is already copied in
-   and unused: `src/platform/fmtowns/common/cdrom.c` + `iso9660.c`,
-   reachable through `media.h`'s `fmt_media_find()`/`fmt_media_load()`.
-   Swap `fmtowns_title_asset.S`'s `.incbin` for staging the same bytes as
-   a CD file (`CD/TITLE.BIN`/`CD/TITLE.PAL` in the mkcd.sh tree) and
-   loading them at runtime with `fmt_media_load()` before the first
-   present. This is intentionally the very next step, not a big lift --
-   the media API already works in FMTOWNSCD_EXAMPLE_Cube's own MP2 player.
-2. Implement `src/engine/platform.h`'s full seam (storage, background
+1. Implement `src/engine/platform.h`'s full seam (storage, background
    layer, widescreen HUD, text overlay, story portraits) in a new
    `waifu_fmtowns_platform.c`, following `waifu_cd32x_*` as the template
    the task brief calls out. Storage needs a decision on where FM TOWNS
    Marty save data lives (the Marty has no standard battery-backed SRAM
    like the CD32X's Backup RAM; likely candidates: an IC memory card, if
    one is assumed present, or accept saves are session-only on this
-   target -- needs a call from whoever picks this up next).
-3. CD asset loading wired through `src/common/cdrom.c` + `iso9660.c`
-   (already copied in, unused so far) into the game's asset seam --
-   mirror `waifu_cd32x_cdrom.c`'s blob-table approach, adapted to
-   ISO9660 filenames instead of Sega CD's BIOS load-file calls.
-4. Input: `src/platform/fmtowns/common/pad.c` is already copied in and
+   target -- needs a call from whoever picks this up next). CD asset
+   loading itself (the mechanics) is proven by milestone 3 above; what's
+   left here is wiring it to the game's actual blob/asset table the way
+   `waifu_cd32x_cdrom.c` does, once the core exists to ask for blobs.
+2. Input: `src/platform/fmtowns/common/pad.c` is already copied in and
    unused; wire it to `WaifuFmInput` the way
    `waifu_cd32x_input.c` does.
-5. Audio: `src/platform/fmtowns/common/cdda.c` is copied in and unused;
+3. Audio: `src/platform/fmtowns/common/cdda.c` is copied in and unused;
    wire music through it (CD-DA is the primary path per the brief; DAC-PCM
    via `pcmstream.c`/`dacout.c`/`mp2*.c` is also already present as the
    documented fallback but should stay unused unless CD-DA turns out not to
    fit).
-6. Flat-shaded 3D renderer: write `src/engine/renderer3d_fmtowns.c`
+4. Flat-shaded 3D renderer: write `src/engine/renderer3d_fmtowns.c`
    analogous to `src/engine/renderer3d_cd32x.c` (read that file first --
    it is the actual current source of truth for the flat-shaded approach,
    the CPU budget assumptions there likely need re-deriving for the
    TOWNS' 386SX/DX class CPU rather than the 32X's SH-2), and register it
    in `src/engine/renderer3d.c`'s per-platform dispatch.
-7. Once 2-6 land, get the actual game core (`src/main.c` equivalent to
+5. Once 1-4 land, get the actual game core (`src/main.c` equivalent to
    `cd32x_sh2_main.c`'s `waifu_fm_init()`/`waifu_fm_step()` loop) compiling
    freestanding for `-m32 -march=i386 -ffreestanding`: this is likely the
    single largest remaining unknown -- the portable core was written
