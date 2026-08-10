@@ -55,6 +55,11 @@ pcfxemu/
 /sega-vr-disasm/
 /x68000_playground/
 /.vexp/
+/FMTOWNSCD_EXAMPLE_Cube/
+
+# FM TOWNS boot payload: gcc -E preprocessed assembly (regenerated from the
+# committed .S sources by Makefile.fmtowns)
+src/platform/fmtowns/boot/*.s
 
 # SDL3 host build binary
 /waifu_fm_sdl3

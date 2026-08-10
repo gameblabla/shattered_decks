@@ -1,0 +1,146 @@
+# FM TOWNS (Marty) bare-metal CD-boot port.
+#
+# Boots the same way FMTOWNSCD_EXAMPLE_Cube does: a hand-written IPL4 boot
+# sector (src/platform/fmtowns/boot/bootsect.S + setup.S) takes the machine
+# from the boot ROM straight into 32-bit flat protected mode
+# (src/platform/fmtowns/boot/head.S), with no DOS, no RUN386 extender and no
+# runtime ISO9660 driver beyond what the payload brings itself. See
+# src/platform/fmtowns/STATUS.md for the current state of the port and
+# FMTOWNSCD_EXAMPLE_Cube/README.md + docs/HOWFMTOWNS_BOOTS_FROM_CD.txt for how
+# this boot path works in general (that directory is a reference copy only;
+# nothing here builds out of it).
+#
+# Milestone 1 (this file's default target): src/platform/fmtowns/fmtowns_main.c
+# draws a synthetic 256x240 8bpp test pattern -- it does not yet call the
+# portable game core. `make -f Makefile.fmtowns run` builds output.iso and
+# boots it in Tsugaru_CUI.elf (copied from FMTOWNSCD_EXAMPLE_Cube, the same
+# emulator its own run.sh uses).
+
+AS              = as -32
+CC              = gcc
+LD              = ld -s
+
+FMTOWNS_DIR     = src/platform/fmtowns
+BOOTDIR         = $(FMTOWNS_DIR)/boot
+COMMONDIR       = $(FMTOWNS_DIR)/common
+OBJDIR          = build/fmtowns
+CDROOT          = $(OBJDIR)/CD
+
+CFLAGS          = -I$(OBJDIR) -I$(BOOTDIR) -I$(COMMONDIR) -I$(FMTOWNS_DIR) \
+                  -Wall -march=i386 -std=gnu99 -m32 -Os \
+                  -fomit-frame-pointer -fno-builtin -ffreestanding \
+                  -fPIC -Wno-stack-protector -fno-stack-protector -s
+
+TSUGARU         = FMTOWNSCD_EXAMPLE_Cube/Tsugaru_CUI.elf
+MARTY_ROM       = FMTOWNSCD_EXAMPLE_Cube/MARTY_ROM
+
+# ---------------------------------------------------------------------
+# Milestone-1 object set: boot trampoline + libfmt video/CRTC/palette +
+# CD-ROM/ISO9660 media stubs (linked in because media.h's CD path pulls
+# them in even though start_main() does not read any assets yet) + the
+# new fmtowns_main.c entry point. No game-core sources are compiled yet
+# (see STATUS.md) -- that is intentionally deferred to a later milestone.
+# ---------------------------------------------------------------------
+OBJS            = $(BOOTDIR)/head.o $(BOOTDIR)/reloc.o \
+                  $(FMTOWNS_DIR)/fmtowns_main.o \
+                  $(COMMONDIR)/common.o $(COMMONDIR)/palette.o $(COMMONDIR)/libfmt.o \
+                  $(COMMONDIR)/pad.o $(COMMONDIR)/cdrom.o $(COMMONDIR)/iso9660.o
+
+IPLBIN          = $(OBJDIR)/IPL.BIN
+PAYLOAD_ELF     = $(OBJDIR)/mygame_shared
+PAYLOAD_BIN     = $(OBJDIR)/mygame_shared.bin
+OUTPUT_ISO      = $(OBJDIR)/output.iso
+
+.DEFAULT_GOAL   := all
+
+FLAGS_STAMP     = $(OBJDIR)/flags.stamp
+FLAGS_STAMP_TEXT = $(CFLAGS)
+.PHONY: force
+$(FLAGS_STAMP): force
+	@mkdir -p $(OBJDIR)
+	@echo '$(FLAGS_STAMP_TEXT)' | cmp -s - $@ || echo '$(FLAGS_STAMP_TEXT)' > $@
+
+all: $(OUTPUT_ISO)
+
+$(OBJDIR):
+	mkdir -p $(OBJDIR)
+
+$(CDROOT): | $(OBJDIR)
+	mkdir -p $(CDROOT)
+
+# See FMTOWNSCD_EXAMPLE_Cube's Makefile for why this is a static link
+# followed by a -shared -Bsymbolic relink of the *same* objects: it
+# captures the GOT/relocation layout, then produces the PIC shared object
+# that actually gets objcopy'd to a flat binary (src/platform/fmtowns/boot/
+# reloc.c self-relocates it at boot). PAYLOAD_LOAD/PAYLOAD_LIMIT match
+# src/platform/fmtowns/boot/defs.h's TSTLOAD and the FMR VRAM window start.
+PAYLOAD_LOAD    = 0x10000
+PAYLOAD_LIMIT   = 0xC0000
+
+$(PAYLOAD_ELF): $(OBJS) $(BOOTDIR)/mygame_shared.lds | $(OBJDIR)
+	$(LD) --warn-constructors --warn-common -static -T $(BOOTDIR)/mygame_shared.lds \
+		-o $@ $(OBJS) && \
+	$(LD) -shared -Bsymbolic -T $(BOOTDIR)/mygame_shared.lds -o $@ $(OBJS)
+	@objdump -h $@ | awk -v base="$(PAYLOAD_LOAD)" -v top="$(PAYLOAD_LIMIT)" \
+		'$$2==".bss" { \
+		   base = strtonum(base); top = strtonum(top); \
+		   last = base + strtonum("0x" $$4) + strtonum("0x" $$3); \
+		   printf "payload ends at 0x%x, main RAM ends at 0x%x (%d bytes spare)\n", \
+		          last, top, top - last; \
+		   if (last > top) { \
+		     print "payload overruns main RAM: .bss past 0xC0000 is the FMR VRAM window, not memory" > "/dev/stderr"; \
+		     exit 1 } }'
+
+$(PAYLOAD_BIN): $(PAYLOAD_ELF)
+	objcopy -O binary $< $@
+
+$(CDROOT)/SYSTEM.BIN: $(PAYLOAD_BIN) | $(CDROOT)
+	cp -f $(PAYLOAD_BIN) $(CDROOT)/SYSTEM.BIN
+
+$(BOOTDIR)/bootsect.s: $(BOOTDIR)/bootsect.S $(BOOTDIR)/defs.h
+	$(CC) -E -traditional -I$(BOOTDIR) $< -o $@
+
+$(BOOTDIR)/setup.s: $(BOOTDIR)/setup.S $(BOOTDIR)/defs.h
+	$(CC) -E -traditional -I$(BOOTDIR) $< -o $@
+
+$(BOOTDIR)/head.s: $(BOOTDIR)/head.S $(BOOTDIR)/defs.h $(BOOTDIR)/config.h $(BOOTDIR)/test.h $(FLAGS_STAMP)
+	$(CC) -E -traditional -I$(BOOTDIR) $< -o $@
+
+$(BOOTDIR)/bootsect.o: $(BOOTDIR)/bootsect.s $(FLAGS_STAMP)
+	$(AS) -o $@ $<
+
+$(BOOTDIR)/setup.o: $(BOOTDIR)/setup.s $(FLAGS_STAMP)
+	$(AS) -o $@ $<
+
+$(BOOTDIR)/head.o: $(BOOTDIR)/head.s $(FLAGS_STAMP)
+	$(AS) -o $@ $<
+
+$(BOOTDIR)/reloc.o: $(BOOTDIR)/reloc.c $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -fno-strict-aliasing -o $@ $<
+
+$(FMTOWNS_DIR)/fmtowns_main.o: $(FMTOWNS_DIR)/fmtowns_main.c $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+$(COMMONDIR)/%.o: $(COMMONDIR)/%.c $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+$(IPLBIN): $(BOOTDIR)/bootsect.o $(BOOTDIR)/setup.o $(BOOTDIR)/ipl.bin.lds | $(OBJDIR)
+	$(LD) -T $(BOOTDIR)/ipl.bin.lds $(BOOTDIR)/bootsect.o $(BOOTDIR)/setup.o -o $@
+
+# tools/fmtowns/mkcd.sh + inject_ipl.py want a "CD" directory and
+# "IPL.BIN"/output.iso at their own cwd (see that script's header), so this
+# runs from $(OBJDIR) with the freshly built IPL.BIN and CD/SYSTEM.BIN
+# staged relative to it.
+MKCD            = $(abspath tools/fmtowns/mkcd.sh)
+
+$(OUTPUT_ISO): $(IPLBIN) $(CDROOT)/SYSTEM.BIN tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
+	cd $(OBJDIR) && $(MKCD)
+
+.PHONY: run
+run: $(OUTPUT_ISO)
+	$(TSUGARU) $(MARTY_ROM)/ -TOWNSTYPE MARTY -CD $(OUTPUT_ISO) -NORMALFD -DONTUSEFPU -AUTOSCALE
+
+.PHONY: clean
+clean:
+	rm -rf $(OBJDIR)
+	rm -f $(BOOTDIR)/*.o $(BOOTDIR)/*.s $(COMMONDIR)/*.o
