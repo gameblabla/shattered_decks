@@ -94,7 +94,26 @@ Not yet touched, and out of scope for this session's changes:
    PNG checksum) to milestone 2's linked-in version, proving the CD read
    reproduced the exact same bytes.
 
-4-6. **Not started.** See "Next steps" below for what each needs.
+4. **Input -- DONE, verified booting.** `fmtowns_input.c`/`.h` wrap
+   `src/platform/fmtowns/common/pad.c`'s `fmt_pad_read(0)` (unused since
+   milestone 1) behind `fmtowns_input_read_pad1()`. `fmtowns_main.c`'s
+   `fmtowns_pad_status_loop()` reloads the title asset off CD exactly like
+   milestone 3, then stays live: every vblank it re-reads the pad and
+   repaints a 12-cell status strip across the bottom of the screen (one
+   cell per pad bit, palette indices 254/255 repurposed for lit/unlit --
+   a debug overlay, not final HUD art). Verified booting in Tsugaru_CUI:
+   the strip renders as 12 distinct dark cells, the expected idle
+   (all-released) state with no controller attached, and the boot stays
+   alive through the frame capture rather than hanging on the pad
+   driver's I/O strobe wait loop. **Caveat**: this environment has no way
+   to inject a real button press into the emulator (no `SENDKEY`-style
+   console command was found -- see the verification section below), so a
+   strip reacting to actual input was not observed, only that the read
+   call runs safely every frame and returns a plausible idle value. A
+   session with real hardware or a GUI Tsugaru build with a bound gamepad
+   should confirm the strip actually lights up on a press.
+
+5-6. **Not started.** See "Next steps" below for what each needs.
 
 ## Headless emulator verification (how, and a caveat)
 
@@ -146,9 +165,13 @@ was needed once. Always background/timeout-guard interactive Tsugaru runs.
    loading itself (the mechanics) is proven by milestone 3 above; what's
    left here is wiring it to the game's actual blob/asset table the way
    `waifu_cd32x_cdrom.c` does, once the core exists to ask for blobs.
-2. Input: `src/platform/fmtowns/common/pad.c` is already copied in and
-   unused; wire it to `WaifuFmInput` the way
-   `waifu_cd32x_input.c` does.
+2. Input mechanics are proven by milestone 4 above (`fmtowns_input.c`);
+   what's left is wiring `fmtowns_input_read_pad1()`'s bits to
+   `WaifuFmInput` the way `waifu_cd32x_input.c` does, once the core exists
+   to hand a `WaifuFmInput` to. Also worth doing on real hardware or a
+   GUI Tsugaru build with a bound gamepad: confirm the milestone-4 status
+   strip actually reacts to a real button press (only the idle state was
+   observed headlessly -- see milestone 4's caveat above).
 3. Audio: `src/platform/fmtowns/common/cdda.c` is copied in and unused;
    wire music through it (CD-DA is the primary path per the brief; DAC-PCM
    via `pcmstream.c`/`dacout.c`/`mp2*.c` is also already present as the

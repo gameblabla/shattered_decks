@@ -43,7 +43,7 @@ MARTY_ROM       = FMTOWNSCD_EXAMPLE_Cube/MARTY_ROM
 # ---------------------------------------------------------------------
 OBJS            = $(BOOTDIR)/head.o $(BOOTDIR)/reloc.o \
                   $(FMTOWNS_DIR)/fmtowns_main.o $(FMTOWNS_DIR)/fmtowns_video.o \
-                  $(FMTOWNS_DIR)/fmtowns_title_asset.o \
+                  $(FMTOWNS_DIR)/fmtowns_input.o $(FMTOWNS_DIR)/fmtowns_title_asset.o \
                   $(COMMONDIR)/common.o $(COMMONDIR)/palette.o $(COMMONDIR)/libfmt.o \
                   $(COMMONDIR)/pad.o $(COMMONDIR)/cdrom.o $(COMMONDIR)/iso9660.o
 
@@ -133,6 +133,9 @@ $(FMTOWNS_DIR)/fmtowns_main.o: $(FMTOWNS_DIR)/fmtowns_main.c $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/fmtowns_video.o: $(FMTOWNS_DIR)/fmtowns_video.c $(FMTOWNS_DIR)/fmtowns_video.h $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+$(FMTOWNS_DIR)/fmtowns_input.o: $(FMTOWNS_DIR)/fmtowns_input.c $(FMTOWNS_DIR)/fmtowns_input.h $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 # The game's real 256x240 8bpp title screen + palette (src/generated/
