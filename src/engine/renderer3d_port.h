@@ -17,6 +17,24 @@
 #define CFX_RENDERER_QUAD_SCANLINE 1
 #define CFX_RENDERER_BUILD_SINGLE_LUT 0
 #define CFX_RENDERER_DIV_LUT 1
+#elif defined(WAIFU_FM_FMTOWNS)
+/* FM TOWNS Marty: flat-shaded only, like CD32X (see
+   src/engine/renderer3d_cd32x.c / src/platform/fmtowns/STATUS.md's
+   milestone 6 for why -- weaker than the PC-FX's textured/perspective
+   renderer). Same portable-C span-filler settings as CD32X's branch
+   below, minus the SH-2 assembly leaves (this is a plain i386 target). */
+#define CFX_RENDERER_MULTI_LUT 0
+#define CFX_RENDERER_WORD_ORDER_PCFX 0
+#define CFX_RENDERER_HEADLESS_BYTES 0
+#define CFX_RENDERER_USE_V810_ASM 0
+#define CFX_RENDERER_USE_SH1_ASM 0
+#define CFX_RENDERER_DIRECT_RECT 1
+#define CFX_RENDERER_DIRECT_ROW_LUT 0
+#define CFX_RENDERER_DIRECT_GENERIC_TILE 1
+#define CFX_RENDERER_DIRECT_KRAM 0
+#define CFX_RENDERER_QUAD_SCANLINE 1
+#define CFX_RENDERER_BUILD_SINGLE_LUT 0
+#define CFX_RENDERER_DIV_LUT 1
 #elif defined(WAIFU_FM_PCFX)
 #define CFX_RENDERER_MULTI_LUT 0
 #define CFX_RENDERER_WORD_ORDER_PCFX 1

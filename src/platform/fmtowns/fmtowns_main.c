@@ -47,10 +47,21 @@
  * a real music track staged as CD-DA track 2 by Makefile.fmtowns (a clip
  * of Music/Titlescreen_MoonlitCipher.wav, the same music PC-FX/CD32X play
  * over their own title screens).
+ *
+ * Milestone 6 (current default, FMTOWNS_MILESTONE 6): a flat-shaded,
+ * backface-culled rotating cube (fmtowns_cube_demo.c) replaces the title
+ * art as the main scene, still under the same pad-status strip and CD-DA
+ * swatch overlays. This is the "flat-shaded 3D renderer" milestone: see
+ * fmtowns_cube_demo.c's own header comment for why it is a standalone demo
+ * (integer-only rasterizer, no FPU assumed) rather than the portable game
+ * core's actual renderer3d.c pipeline -- src/engine/renderer3d_fmtowns.c
+ * registers that seam for later, but the game core does not compile for
+ * this target yet.
  */
 #include <stdint.h>
 
 #include "fmtowns_audio.h"
+#include "fmtowns_cube_demo.h"
 #include "fmtowns_input.h"
 #include "fmtowns_video.h"
 #include "libfmt.h"
@@ -59,7 +70,7 @@
                         into cpu_id at this struct's exact field offsets. */
 
 #ifndef FMTOWNS_MILESTONE
-#define FMTOWNS_MILESTONE 5
+#define FMTOWNS_MILESTONE 6
 #endif
 
 struct cpu_ident cpu_id;
@@ -282,11 +293,56 @@ static void fmtowns_pad_status_loop(void)
 }
 #endif
 
+#if FMTOWNS_MILESTONE >= 6
+static uint8_t g_fmtowns_cube_frame[256 * 240];
+static uint8_t g_fmtowns_cube_palette[256 * 3];
+
+/* Milestone 6: no CD reads at all (the cube demo needs no assets), so
+ * CD-DA can start immediately -- unlike fmtowns_pad_status_loop() above,
+ * there is no title-asset load to wait out first. Draws the rotating cube
+ * into rows 0-231 every frame, then the same pad-status strip (rows
+ * 232-239) and CD-DA swatch (top-left 8x8, drawn after the cube so it
+ * overlays it) as milestones 4-5. */
+static void fmtowns_cube_demo_loop(void)
+{
+    fmtowns_cube_demo_palette(g_fmtowns_cube_palette);
+    g_fmtowns_cube_palette[FMTOWNS_PAD_IDX_OFF * 3 + 0] = 24;
+    g_fmtowns_cube_palette[FMTOWNS_PAD_IDX_OFF * 3 + 1] = 24;
+    g_fmtowns_cube_palette[FMTOWNS_PAD_IDX_OFF * 3 + 2] = 24;
+    g_fmtowns_cube_palette[FMTOWNS_PAD_IDX_ON * 3 + 0] = 40;
+    g_fmtowns_cube_palette[FMTOWNS_PAD_IDX_ON * 3 + 1] = 220;
+    g_fmtowns_cube_palette[FMTOWNS_PAD_IDX_ON * 3 + 2] = 60;
+
+    (void)fmtowns_audio_start_music();
+
+    fmtowns_video_init();
+    fmt_load_palette(g_fmtowns_cube_palette, 256);
+
+    for (;;) {
+        unsigned int pad_status = fmtowns_input_read_pad1();
+
+        fmtowns_cube_demo_frame(g_fmtowns_cube_frame);
+        fmtowns_draw_pad_status(g_fmtowns_cube_frame, pad_status);
+        fmtowns_draw_cdda_status(g_fmtowns_cube_frame, g_fmtowns_cube_palette);
+        fmt_load_palette(g_fmtowns_cube_palette, 256);
+
+        fmt_put_image(g_fmtowns_cube_frame, 256, 240, 256);
+        if (fmt_page_flipping_available()) {
+            fmt_flip_page();
+        } else {
+            fmt_wait_vsync();
+        }
+    }
+}
+#endif
+
 void start_main(void)
 {
     (void)fmt_media_init();
 
-#if FMTOWNS_MILESTONE >= 4
+#if FMTOWNS_MILESTONE >= 6
+    fmtowns_cube_demo_loop();
+#elif FMTOWNS_MILESTONE >= 4
     fmtowns_pad_status_loop();
 #elif FMTOWNS_MILESTONE == 3
     fmtowns_present_title_asset_cdrom();

@@ -150,7 +150,40 @@ Not yet touched, and out of scope for this session's changes:
    `Makefile.fmtowns run-iso`/`iso` still build and boot the plain
    data-only disc from milestones 1-4 if a CD-DA-free build is needed.
 
-6. **Not started.** See "Next steps" below for what it needs.
+6. **Flat-shaded 3D renderer -- DONE (standalone demo), verified booting.**
+   Two separate things landed together, deliberately kept apart:
+   - `src/engine/renderer3d_fmtowns.c` + a new `WAIFU_FM_FMTOWNS` branch in
+     `src/engine/renderer3d_port.h` (copying CD32X's portable-C,
+     flat-shaded-only span-filler settings, minus the SH-2 asm leaves)
+     register the seam the task brief asks for -- the same
+     shared-geometry-in-`renderer3d.c` / target-specific-span-filler split
+     CD32X and PC-FX use. **This is not yet compiled by anything**:
+     `Makefile.fmtowns` does not build `src/engine/*.c` at all (the
+     portable game core doesn't compile for this target yet -- see item 5
+     of "Next steps"), so this file is unverified beyond "it is valid C
+     that mirrors a working pattern."
+   - `src/platform/fmtowns/fmtowns_cube_demo.c`/`.h`: a genuinely
+     standalone, boot-verified flat-shaded rasterizer -- a rotating cube,
+     6 faces each one flat colour, backface-culled via a 2D signed-area
+     test, integer-only fixed-point math throughout (no FPU is assumed;
+     rotation uses Bhaskara I's integer sine approximation rather than a
+     lookup table or floats). `fmtowns_main.c`'s new
+     `fmtowns_cube_demo_loop()` replaces the title art as the main scene
+     while keeping the same pad-status strip and CD-DA swatch overlays
+     from milestones 4-5 running underneath/alongside it, and starts
+     CD-DA immediately (no CD reads needed for this demo, so no
+     read-before-play ordering constraint to satisfy first).
+
+   Verified booting in Tsugaru_CUI: the captured frame shows three
+   correctly backface-culled faces (purple/red/yellow, each a solid flat
+   colour) forming a partially-rotated cube, with the CD-DA swatch
+   (green, still playing) and pad strip both composing correctly on top.
+   **Known rendering artifact**: a thin 1-pixel gap/seam is visible
+   between two adjacent faces in the captured frame -- almost certainly
+   an off-by-one in the scanline edge-intersection fill
+   (`fmtowns_cube_edge()`'s `y < y1` / interpolation rounding), not a
+   structural problem; worth a closer look before this code is ever
+   promoted beyond "proof of concept."
 
 ## Headless emulator verification (how, and a caveat)
 
@@ -219,12 +252,18 @@ was needed once. Always background/timeout-guard interactive Tsugaru runs.
    fast local iteration. Also worth doing with real speakers or a WAV
    capture: confirm audio actually comes out, not just that the drive
    reports `PLAYING` (see milestone 5's caveat above).
-4. Flat-shaded 3D renderer: write `src/engine/renderer3d_fmtowns.c`
-   analogous to `src/engine/renderer3d_cd32x.c` (read that file first --
-   it is the actual current source of truth for the flat-shaded approach,
-   the CPU budget assumptions there likely need re-deriving for the
-   TOWNS' 386SX/DX class CPU rather than the 32X's SH-2), and register it
-   in `src/engine/renderer3d.c`'s per-platform dispatch.
+4. The flat-shaded renderer seam is registered
+   (`src/engine/renderer3d_fmtowns.c` + `renderer3d_port.h`'s
+   `WAIFU_FM_FMTOWNS` branch, milestone 6) but has never actually been
+   compiled -- it needs `src/engine/renderer3d.c` and its dependencies
+   pulled into `Makefile.fmtowns`, which in practice means item 5 below
+   (the game core) has to land first, since the renderer isn't usable in
+   isolation from the geometry/state it renders. When that happens, also
+   look hard at the CPU budget: `renderer3d_cd32x.c`'s assumptions were
+   derived for the 32X's SH-2, not the TOWNS' 386SX/DX-class CPU, and
+   `fmtowns_cube_demo.c`'s scanline fill has a known 1px seam artifact
+   (see milestone 6 above) worth fixing or reimplementing rather than
+   copying forward.
 5. Once 1-4 land, get the actual game core (`src/main.c` equivalent to
    `cd32x_sh2_main.c`'s `waifu_fm_init()`/`waifu_fm_step()` loop) compiling
    freestanding for `-m32 -march=i386 -ffreestanding`: this is likely the
@@ -235,18 +274,25 @@ was needed once. Always background/timeout-guard interactive Tsugaru runs.
    `Makefile.cd32x`'s `SH2_CFLAGS_BASE` for the flags it needed:
    `-DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_NO_STDIO
    -DWAIFU_ASSET_RAM_BUDGET=...` etc). Budget real time for this; it was
-   not attempted in this session at all.
+   not attempted in this session at all. No FPU should be assumed here
+   either (see milestone 6's cube demo for why) -- check whether the
+   portable core's math relies on floats anywhere hot.
 
 ## The single most important thing to do next
 
-Attempt to get the portable game core compiling freestanding (item 7 above)
-as soon as milestone 3 (CD loading) lands -- that is the step most likely to
-surface fundamental blockers (missing libc pieces, `.bss`-over-0xC0000
-overflow given the game's much larger asset/state footprint than this
-milestone's ~90 KB payload) that should be discovered early rather than
-after building out the whole asset/audio/input/renderer pipeline around a
-core that turns out not to fit. Everything built so far (video present,
-soon CD loading, input, CD-DA, flat-shaded renderer) can be validated
-standalone, but it only becomes the actual game once the core compiles for
-`-m32 -march=i386 -ffreestanding`, and that has not been attempted at all
-yet.
+All six milestones from the original plan are now done and boot-verified in
+some form (1-3 fully; 4-5 verified to the extent this headless environment
+allows -- see each one's caveat above; 6 as a standalone demo, not the real
+renderer). Every one of them was a platform seam or a proof of concept in
+isolation. None of it is the actual game yet. The single most important
+next step is attempting to get the portable game core (`src/game/`,
+`src/engine/*`, the `waifu_fm_init()`/`waifu_fm_step()` loop
+`cd32x_sh2_main.c` shows the shape of) compiling freestanding for
+`-m32 -march=i386 -ffreestanding` -- see "Next steps" item 5. That is the
+step most likely to surface fundamental blockers (missing libc pieces,
+float/FPU dependencies this session deliberately avoided in its own demo
+code, `.bss`-over-0xC0000 overflow given the game's much larger
+asset/state footprint than this session's payloads, which topped out
+around 300 KB) that should be discovered early rather than after wiring
+the whole asset/audio/input/renderer pipeline to a core that turns out not
+to fit as-is. It has not been attempted at all yet, in any form.
