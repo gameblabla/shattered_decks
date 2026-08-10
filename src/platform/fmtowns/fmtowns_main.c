@@ -25,20 +25,32 @@
  * streaming (cards, portraits, ending art, etc) will eventually go
  * through.
  *
- * Milestone 4 (current default, FMTOWNS_MILESTONE 4): reads the real 6-button
- * pad (src/platform/fmtowns/common/pad.c, unused since milestone 1) every
+ * Milestone 4: reads the real 6-button pad
+ * (src/platform/fmtowns/common/pad.c, unused since milestone 1) every
  * frame through fmtowns_input.c and renders its 12-bit status as a strip of
  * lit/unlit blocks across the bottom of the title screen -- pixel indices
  * 254/255 are repurposed for this (see fmtowns_pad_status_loop() below).
- * This is a debug overlay, not the final HUD treatment: it proves the pad
+ * This is a debug overlay, not the final HUD treatment: it proved the pad
  * read call executes safely every vblank without hanging boot (it has its
- * own I/O strobe wait loop -- see pad.c), which is the meaningful "does
- * input work" bar in this headless environment where no real button press
- * can be injected into the emulator to check the strip visually reacts
- * (see STATUS.md's verification notes).
+ * own I/O strobe wait loop -- see pad.c).
+ *
+ * Milestone 5 (current default, FMTOWNS_MILESTONE 5): starts CD-DA music
+ * (src/platform/fmtowns/common/cdda.c, unused since milestone 1) through
+ * fmtowns_audio.c once, right after the title asset's CD reads finish and
+ * before entering the live pad loop -- see cdda.h's block comment on why
+ * the drive cannot read data sectors and play a CD-DA track at once, which
+ * is exactly why this waits until after fmtowns_load_title_asset_cdrom().
+ * A one-pixel corner swatch (top-left 8x8, palette index 253) reflects
+ * fmt_cdda_state() every frame: green while playing, red otherwise, since
+ * nothing in this headless setup can otherwise confirm audio came out of
+ * the (virtual) speakers -- see STATUS.md's verification notes. Built with
+ * a real music track staged as CD-DA track 2 by Makefile.fmtowns (a clip
+ * of Music/Titlescreen_MoonlitCipher.wav, the same music PC-FX/CD32X play
+ * over their own title screens).
  */
 #include <stdint.h>
 
+#include "fmtowns_audio.h"
 #include "fmtowns_input.h"
 #include "fmtowns_video.h"
 #include "libfmt.h"
@@ -47,7 +59,7 @@
                         into cpu_id at this struct's exact field offsets. */
 
 #ifndef FMTOWNS_MILESTONE
-#define FMTOWNS_MILESTONE 4
+#define FMTOWNS_MILESTONE 5
 #endif
 
 struct cpu_ident cpu_id;
@@ -192,11 +204,41 @@ static void fmtowns_draw_pad_status(uint8_t *frame, unsigned int pad_status)
     }
 }
 
+#if FMTOWNS_MILESTONE >= 5
+#define FMTOWNS_CDDA_IDX      253
+#define FMTOWNS_CDDA_SWATCH_W 8
+#define FMTOWNS_CDDA_SWATCH_H 8
+
+/* Repaints palette index FMTOWNS_CDDA_IDX to reflect fmt_cdda_state()
+ * (green while playing == FMT_CDDA_PLAYING (1), red otherwise) and fills
+ * the top-left 8x8 corner with it. The palette entry, not just the pixel
+ * index, has to change every call -- unlike the pad strip (fixed
+ * on/off colours picked once) this swatch's *colour* is the live signal,
+ * so the caller must re-upload the palette after this returns. */
+static void fmtowns_draw_cdda_status(uint8_t *frame, uint8_t *palette)
+{
+    int x, y;
+    int playing = (fmtowns_audio_state() == 1 /* FMT_CDDA_PLAYING */);
+
+    palette[FMTOWNS_CDDA_IDX * 3 + 0] = playing ? 40  : 220;
+    palette[FMTOWNS_CDDA_IDX * 3 + 1] = playing ? 220 : 40;
+    palette[FMTOWNS_CDDA_IDX * 3 + 2] = 40;
+
+    for (y = 0; y < FMTOWNS_CDDA_SWATCH_H; ++y) {
+        for (x = 0; x < FMTOWNS_CDDA_SWATCH_W; ++x) {
+            frame[(uint32_t)y * 256u + x] = FMTOWNS_CDDA_IDX;
+        }
+    }
+}
+#endif
+
 /* Milestone 4: load the title asset off CD exactly like milestone 3, then
  * stay live -- every vblank, re-read the real pad and repaint the status
  * strip, proving fmt_pad_read() (src/platform/fmtowns/common/pad.c) runs
  * safely on real hardware timing every frame rather than just once at
- * boot. */
+ * boot. Milestone 5 additionally starts CD-DA music once before the loop
+ * and repaints a corner swatch each frame from its live state (see the
+ * FMTOWNS_MILESTONE >= 5 block comment above fmtowns_draw_cdda_status()). */
 static void fmtowns_pad_status_loop(void)
 {
     fmtowns_load_title_asset_cdrom();
@@ -207,12 +249,29 @@ static void fmtowns_pad_status_loop(void)
     g_fmtowns_title_palette_cd[FMTOWNS_PAD_IDX_ON * 3 + 1] = 220;
     g_fmtowns_title_palette_cd[FMTOWNS_PAD_IDX_ON * 3 + 2] = 60;
 
+#if FMTOWNS_MILESTONE >= 5
+    {
+        int playing = fmtowns_audio_start_music();
+        /* Bootstrap swatch colour before the first real state poll: dim
+         * grey if the drive never even accepted the play command (e.g. a
+         * data-only .iso build with no CD-DA track), otherwise let the
+         * per-frame state poll below decide green/red. */
+        g_fmtowns_title_palette_cd[FMTOWNS_CDDA_IDX * 3 + 0] = playing ? 220 : 60;
+        g_fmtowns_title_palette_cd[FMTOWNS_CDDA_IDX * 3 + 1] = playing ? 40  : 60;
+        g_fmtowns_title_palette_cd[FMTOWNS_CDDA_IDX * 3 + 2] = playing ? 40  : 60;
+    }
+#endif
+
     fmtowns_video_init();
     fmt_load_palette(g_fmtowns_title_palette_cd, 256);
 
     for (;;) {
         unsigned int pad_status = fmtowns_input_read_pad1();
         fmtowns_draw_pad_status(g_fmtowns_title_pixels_cd, pad_status);
+#if FMTOWNS_MILESTONE >= 5
+        fmtowns_draw_cdda_status(g_fmtowns_title_pixels_cd, g_fmtowns_title_palette_cd);
+        fmt_load_palette(g_fmtowns_title_palette_cd, 256);
+#endif
         fmt_put_image(g_fmtowns_title_pixels_cd, 256, 240, 256);
         if (fmt_page_flipping_available()) {
             fmt_flip_page();

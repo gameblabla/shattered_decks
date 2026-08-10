@@ -113,7 +113,44 @@ Not yet touched, and out of scope for this session's changes:
    session with real hardware or a GUI Tsugaru build with a bound gamepad
    should confirm the strip actually lights up on a press.
 
-5-6. **Not started.** See "Next steps" below for what each needs.
+5. **CD-DA audio -- DONE, verified booting with a real playback-state
+   round trip.** `fmtowns_audio.c`/`.h` wrap
+   `src/platform/fmtowns/common/cdda.c` (unused since milestone 1):
+   `fmtowns_audio_start_music()` initializes the mixer, reads the disc
+   TOC, finds the first audio track and starts it looping;
+   `fmtowns_audio_state()` polls `fmt_cdda_state()`. `Makefile.fmtowns`
+   now builds a real mixed-mode disc by default (`$(OUTPUT_CUE)`,
+   `output.bin`/`output.cue` instead of a plain `.iso`): a 20-second clip
+   of `Music/Titlescreen_MoonlitCipher.wav` (the same title music
+   PC-FX/CD32X play, trimmed only so local build/boot iteration stays
+   fast) staged as Red Book audio track 2 behind the ISO9660 data track 1,
+   via `tools/fmtowns/mkcd.sh`'s existing multi-track path. Per
+   `cdda.h`'s own documentation, the drive cannot read data sectors while
+   a track plays, so playback starts only after
+   `fmtowns_load_title_asset_cdrom()`'s CD reads are done, right before
+   the live pad loop begins. A top-left 8x8 corner swatch repaints every
+   frame from the live `fmt_cdda_state()` poll -- green while playing, red
+   otherwise -- since nothing in this headless setup can otherwise confirm
+   audio came out of the (virtual) speakers.
+
+   Verified booting in Tsugaru_CUI with the CD-DA disc: **the swatch is
+   green**, meaning the emulator's own CDC model accepted the play command
+   and is reporting `FMT_CDDA_PLAYING` back through the same polling path
+   real hardware uses -- a genuine round trip through the playback-state
+   machinery, not just "didn't crash." (Actual audio *output* -- samples
+   reaching a speaker/WAV capture -- was not separately verified; Tsugaru
+   was run with default audio settings and no capture was attempted. The
+   state round trip is the strongest signal available without one.)
+   **Known cosmetic side effect**: the swatch reuses palette index 253,
+   which the title art also happens to use elsewhere (visible as green
+   speckling on the character's clothing in the milestone 5 screenshot) --
+   harmless for a debug overlay, but a real HUD would need a reserved
+   index the way `tools/gen_cd32x_title_asset.py` reserves index 0 for
+   CD32X's title asset.
+   `Makefile.fmtowns run-iso`/`iso` still build and boot the plain
+   data-only disc from milestones 1-4 if a CD-DA-free build is needed.
+
+6. **Not started.** See "Next steps" below for what it needs.
 
 ## Headless emulator verification (how, and a caveat)
 
@@ -172,11 +209,16 @@ was needed once. Always background/timeout-guard interactive Tsugaru runs.
    GUI Tsugaru build with a bound gamepad: confirm the milestone-4 status
    strip actually reacts to a real button press (only the idle state was
    observed headlessly -- see milestone 4's caveat above).
-3. Audio: `src/platform/fmtowns/common/cdda.c` is copied in and unused;
-   wire music through it (CD-DA is the primary path per the brief; DAC-PCM
-   via `pcmstream.c`/`dacout.c`/`mp2*.c` is also already present as the
-   documented fallback but should stay unused unless CD-DA turns out not to
-   fit).
+3. Audio mechanics (mixer init, TOC read, play, live state poll) are
+   proven by milestone 5 above (`fmtowns_audio.c`); what's left is
+   wiring `fmtowns_audio_start_music()`/`_state()` to the game's real
+   music-track selection (`WaifuFmMusicTrack`) the way
+   `waifu_cd32x_audio.c` does, and building the real, full-length CD-DA
+   tracks (`cdda_tracks.h`'s `CDDA_TRACK_*`, `Music/*.wav`) onto the disc
+   instead of the one 20-second title-music clip milestone 5 used for
+   fast local iteration. Also worth doing with real speakers or a WAV
+   capture: confirm audio actually comes out, not just that the drive
+   reports `PLAYING` (see milestone 5's caveat above).
 4. Flat-shaded 3D renderer: write `src/engine/renderer3d_fmtowns.c`
    analogous to `src/engine/renderer3d_cd32x.c` (read that file first --
    it is the actual current source of truth for the flat-shaded approach,

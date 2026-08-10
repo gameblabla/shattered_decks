@@ -43,14 +43,27 @@ MARTY_ROM       = FMTOWNSCD_EXAMPLE_Cube/MARTY_ROM
 # ---------------------------------------------------------------------
 OBJS            = $(BOOTDIR)/head.o $(BOOTDIR)/reloc.o \
                   $(FMTOWNS_DIR)/fmtowns_main.o $(FMTOWNS_DIR)/fmtowns_video.o \
-                  $(FMTOWNS_DIR)/fmtowns_input.o $(FMTOWNS_DIR)/fmtowns_title_asset.o \
+                  $(FMTOWNS_DIR)/fmtowns_input.o $(FMTOWNS_DIR)/fmtowns_audio.o \
+                  $(FMTOWNS_DIR)/fmtowns_title_asset.o \
                   $(COMMONDIR)/common.o $(COMMONDIR)/palette.o $(COMMONDIR)/libfmt.o \
-                  $(COMMONDIR)/pad.o $(COMMONDIR)/cdrom.o $(COMMONDIR)/iso9660.o
+                  $(COMMONDIR)/pad.o $(COMMONDIR)/cdrom.o $(COMMONDIR)/iso9660.o \
+                  $(COMMONDIR)/cdda.o
 
 IPLBIN          = $(OBJDIR)/IPL.BIN
 PAYLOAD_ELF     = $(OBJDIR)/mygame_shared
 PAYLOAD_BIN     = $(OBJDIR)/mygame_shared.bin
 OUTPUT_ISO      = $(OBJDIR)/output.iso
+
+# Milestone 5: CD-DA. A clip of the game's real title music, staged as
+# audio track 2 behind the ISO9660 data track 1 (see tools/fmtowns/mkcd.sh)
+# and read back by src/platform/fmtowns/common/cdda.c ->
+# fmtowns_audio_start_music(). Trimmed to keep local build/boot-test
+# iteration fast; nothing about the CD-DA path itself depends on the clip
+# length.
+MUSIC_SRC       = Music/Titlescreen_MoonlitCipher.wav
+MUSIC_CLIP_SECS ?= 20
+MUSIC_CLIP      = $(OBJDIR)/title_music_clip.wav
+OUTPUT_CUE      = $(OBJDIR)/output.cue
 
 .DEFAULT_GOAL   := all
 
@@ -61,7 +74,11 @@ $(FLAGS_STAMP): force
 	@mkdir -p $(OBJDIR)
 	@echo '$(FLAGS_STAMP_TEXT)' | cmp -s - $@ || echo '$(FLAGS_STAMP_TEXT)' > $@
 
-all: $(OUTPUT_ISO)
+all: $(OUTPUT_CUE)
+
+# Plain data-only .iso with no CD-DA track (what milestones 1-4 booted).
+# Still reachable directly: `make -f Makefile.fmtowns build/fmtowns/output.iso`.
+iso: $(OUTPUT_ISO)
 
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
@@ -138,6 +155,9 @@ $(FMTOWNS_DIR)/fmtowns_video.o: $(FMTOWNS_DIR)/fmtowns_video.c $(FMTOWNS_DIR)/fm
 $(FMTOWNS_DIR)/fmtowns_input.o: $(FMTOWNS_DIR)/fmtowns_input.c $(FMTOWNS_DIR)/fmtowns_input.h $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
+$(FMTOWNS_DIR)/fmtowns_audio.o: $(FMTOWNS_DIR)/fmtowns_audio.c $(FMTOWNS_DIR)/fmtowns_audio.h $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -o $@ $<
+
 # The game's real 256x240 8bpp title screen + palette (src/generated/
 # title_asset.h, the same asset every other platform's title screen is
 # generated from), repacked to raw binaries and linked directly into the
@@ -164,10 +184,24 @@ MKCD            = $(abspath tools/fmtowns/mkcd.sh)
 $(OUTPUT_ISO): $(IPLBIN) $(CDROOT)/SYSTEM.BIN $(CDROOT)/TITLE.BIN $(CDROOT)/TITLE.PAL tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
 	cd $(OBJDIR) && $(MKCD)
 
-.PHONY: run
-run: $(OUTPUT_ISO)
+$(MUSIC_CLIP): $(MUSIC_SRC) | $(OBJDIR)
+	sox $(MUSIC_SRC) $@ trim 0 $(MUSIC_CLIP_SECS)
+
+# Mixed-mode disc: same ISO9660 data track as $(OUTPUT_ISO), plus
+# $(MUSIC_CLIP) as Red Book audio track 2 (mkcd.sh's multi-arg form ->
+# output.bin + output.cue instead of a plain .iso). Tsugaru's -CD flag
+# accepts either.
+$(OUTPUT_CUE): $(IPLBIN) $(CDROOT)/SYSTEM.BIN $(CDROOT)/TITLE.BIN $(CDROOT)/TITLE.PAL $(MUSIC_CLIP) tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
+	cd $(OBJDIR) && $(MKCD) $(abspath $(MUSIC_CLIP))
+
+.PHONY: run run-iso
+run: $(OUTPUT_CUE)
+	$(TSUGARU) $(MARTY_ROM)/ -TOWNSTYPE MARTY -CD $(OUTPUT_CUE) -NORMALFD -DONTUSEFPU -AUTOSCALE
+
+run-iso: $(OUTPUT_ISO)
 	$(TSUGARU) $(MARTY_ROM)/ -TOWNSTYPE MARTY -CD $(OUTPUT_ISO) -NORMALFD -DONTUSEFPU -AUTOSCALE
 
+.PHONY: iso
 .PHONY: clean
 clean:
 	rm -rf $(OBJDIR)
