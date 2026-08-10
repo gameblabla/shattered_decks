@@ -61,7 +61,25 @@ Not yet touched, and out of scope for this session's changes:
    VRAM present -> page flip -> vsync wait, all on real (emulated) FM TOWNS
    Marty hardware timing, not just "it compiles."
 
-2-7. **Not started.** See "Next steps" below for what each needs.
+2. **Real framebuffer/palette present with the game's actual art -- DONE,
+   verified booting.** `src/platform/fmtowns/fmtowns_video.c` wraps
+   libfmt's CRTC/palette/VRAM calls into a `fmtowns_video_init()` /
+   `fmtowns_video_present_8bpp()` / `fmtowns_video_wait_vblank()` shape
+   matching the CD32X/PC-FX ports' present call. `fmtowns_main.c` now
+   presents the game's real 256x240 8bpp title-screen art (the same
+   `src/generated/title_asset.h` every other platform's title screen comes
+   from) instead of the milestone-1 synthetic pattern.
+   `tools/fmtowns/extract_title_asset.py` repacks that header's two arrays
+   to raw `.bin` files at build time; `fmtowns_title_asset.S` links them
+   directly into the payload with `.incbin` (CD-ROM loading is
+   deliberately deferred to milestone 3 so this milestone isolates "does
+   the present pipeline render real production pixels/palette correctly,"
+   separately from "does the CD reader work"). Verified booting in
+   Tsugaru_CUI with the same headless `SS` recipe -- the captured frame is
+   the correct title art, matching the source PNG exactly (checked
+   visually).
+
+3-7. **Not started.** See "Next steps" below for what each needs.
 
 ## Headless emulator verification (how, and a caveat)
 
@@ -102,13 +120,14 @@ was needed once. Always background/timeout-guard interactive Tsugaru runs.
 
 ## Next steps, in priority order
 
-1. **Palette + framebuffer present wired to the game's real 8bpp asset
-   pipeline** (milestone 2). Needs: deciding how `WAIFU_FM_WIDTH`/`HEIGHT`
-   (check `src/engine/`) map onto the 256x240 8bpp mode `libfmt.c` already
-   supports, and a `waifu_fmtowns_video.c` seam file analogous to
-   `src/platform/cd32x/waifu_cd32x_video.c` that calls `fmt_set_mode()` /
-   `fmt_load_palette()` / `fmt_put_image()` / `fmt_flip_page()` against the
-   game's actual framebuffer + palette rather than a synthetic pattern.
+1. **CD asset loading** (milestone 3). The plumbing is already copied in
+   and unused: `src/platform/fmtowns/common/cdrom.c` + `iso9660.c`,
+   reachable through `media.h`'s `fmt_media_find()`/`fmt_media_load()`.
+   Swap `fmtowns_title_asset.S`'s `.incbin` for staging the same bytes as
+   a CD file (`CD/TITLE.BIN`/`CD/TITLE.PAL` in the mkcd.sh tree) and
+   loading them at runtime with `fmt_media_load()` before the first
+   present. This is intentionally the very next step, not a big lift --
+   the media API already works in FMTOWNSCD_EXAMPLE_Cube's own MP2 player.
 2. Implement `src/engine/platform.h`'s full seam (storage, background
    layer, widescreen HUD, text overlay, story portraits) in a new
    `waifu_fmtowns_platform.c`, following `waifu_cd32x_*` as the template
@@ -149,13 +168,14 @@ was needed once. Always background/timeout-guard interactive Tsugaru runs.
 
 ## The single most important thing to do next
 
-Wire a `waifu_fmtowns_video.c` (milestone 2) that presents the *actual*
-game framebuffer/palette instead of the synthetic test pattern, so the next
-session's own "does it boot" bar is meaningful for real game pixels, and
-then immediately attempt to get the portable game core compiling
-freestanding (next-next step, item 7 above) -- that is the step most likely
-to surface fundamental blockers (missing libc pieces, `.bss`-over-0xC0000
+Attempt to get the portable game core compiling freestanding (item 7 above)
+as soon as milestone 3 (CD loading) lands -- that is the step most likely to
+surface fundamental blockers (missing libc pieces, `.bss`-over-0xC0000
 overflow given the game's much larger asset/state footprint than this
-milestone's ~30 KB payload) that should be discovered early rather than
-after building out the whole asset/audio/input pipeline around a core that
-turns out not to fit.
+milestone's ~90 KB payload) that should be discovered early rather than
+after building out the whole asset/audio/input/renderer pipeline around a
+core that turns out not to fit. Everything built so far (video present,
+soon CD loading, input, CD-DA, flat-shaded renderer) can be validated
+standalone, but it only becomes the actual game once the core compiles for
+`-m32 -march=i386 -ffreestanding`, and that has not been attempted at all
+yet.

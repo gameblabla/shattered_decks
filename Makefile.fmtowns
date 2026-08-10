@@ -42,7 +42,8 @@ MARTY_ROM       = FMTOWNSCD_EXAMPLE_Cube/MARTY_ROM
 # (see STATUS.md) -- that is intentionally deferred to a later milestone.
 # ---------------------------------------------------------------------
 OBJS            = $(BOOTDIR)/head.o $(BOOTDIR)/reloc.o \
-                  $(FMTOWNS_DIR)/fmtowns_main.o \
+                  $(FMTOWNS_DIR)/fmtowns_main.o $(FMTOWNS_DIR)/fmtowns_video.o \
+                  $(FMTOWNS_DIR)/fmtowns_title_asset.o \
                   $(COMMONDIR)/common.o $(COMMONDIR)/palette.o $(COMMONDIR)/libfmt.o \
                   $(COMMONDIR)/pad.o $(COMMONDIR)/cdrom.o $(COMMONDIR)/iso9660.o
 
@@ -121,6 +122,20 @@ $(BOOTDIR)/reloc.o: $(BOOTDIR)/reloc.c $(FLAGS_STAMP)
 $(FMTOWNS_DIR)/fmtowns_main.o: $(FMTOWNS_DIR)/fmtowns_main.c $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
+$(FMTOWNS_DIR)/fmtowns_video.o: $(FMTOWNS_DIR)/fmtowns_video.c $(FMTOWNS_DIR)/fmtowns_video.h $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+# The game's real 256x240 8bpp title screen + palette (src/generated/
+# title_asset.h, the same asset every other platform's title screen is
+# generated from), repacked to raw binaries and linked directly into the
+# payload for milestone 2. Milestone 3 replaces this incbin path with an
+# actual CD-ROM/ISO9660 read of the same bytes staged as a CD file instead.
+$(OBJDIR)/title_pixels.bin $(OBJDIR)/title_palette.bin &: tools/fmtowns/extract_title_asset.py src/generated/title_asset.h | $(OBJDIR)
+	python3 tools/fmtowns/extract_title_asset.py $(OBJDIR)/title_pixels.bin $(OBJDIR)/title_palette.bin
+
+$(FMTOWNS_DIR)/fmtowns_title_asset.o: $(FMTOWNS_DIR)/fmtowns_title_asset.S $(OBJDIR)/title_pixels.bin $(OBJDIR)/title_palette.bin $(FLAGS_STAMP)
+	$(AS) -I. -o $@ $<
+
 $(COMMONDIR)/%.o: $(COMMONDIR)/%.c $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
@@ -143,4 +158,4 @@ run: $(OUTPUT_ISO)
 .PHONY: clean
 clean:
 	rm -rf $(OBJDIR)
-	rm -f $(BOOTDIR)/*.o $(BOOTDIR)/*.s $(COMMONDIR)/*.o
+	rm -f $(BOOTDIR)/*.o $(BOOTDIR)/*.s $(COMMONDIR)/*.o $(FMTOWNS_DIR)/*.o

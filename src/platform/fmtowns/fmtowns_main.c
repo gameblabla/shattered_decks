@@ -3,22 +3,33 @@
  * This is the payload's C entry (called by src/platform/fmtowns/boot/head.S
  * as `start_main`, no DOS / no TOWNS OS -- see FMTOWNSCD_EXAMPLE_Cube's
  * README.md and docs/HOWFMTOWNS_BOOTS_FROM_CD.txt for how the IPL4 boot
- * sector gets here).
+ * sector gets here). See src/platform/fmtowns/STATUS.md for the milestone
+ * plan and current status; it does not yet call into the portable game
+ * core (src/game, src/engine) -- that is a later milestone.
  *
- * Milestone 1 status (see src/platform/fmtowns/STATUS.md): this only proves
- * out the boot -> 32-bit flat mode -> 256x240 8bpp CRTC/palette -> VRAM
- * present path with a synthetic test pattern. It does not yet call into the
- * portable game core (src/game, src/engine) -- that is the next milestone
- * and needs the platform.h seam (src/platform/fmtowns/waifu_fmtowns_platform.c,
- * added in this same commit but not yet wired to a game loop) plus a CD asset
- * pipeline analogous to the CD32X port's waifu_cd32x_cdrom.c.
+ * Milestone 1: fmtowns_draw_test_pattern() below, a synthetic 256x240 8bpp
+ * pattern, proved the boot -> protected mode -> CRTC/palette -> VRAM
+ * present path end to end.
+ *
+ * Milestone 2 (current default, FMTOWNS_MILESTONE 2): presents the game's
+ * real title-screen art (src/generated/title_asset.h, the same asset every
+ * other platform's title screen uses) through fmtowns_video.c instead of a
+ * synthetic pattern, linked directly into the payload
+ * (fmtowns_title_asset.S). Proves the present path against real production
+ * pixel data + palette ahead of CD-ROM loading (milestone 3) or the game
+ * core itself compiling for this target.
  */
 #include <stdint.h>
 
+#include "fmtowns_video.h"
 #include "libfmt.h"
 #include "media.h"
 #include "test.h"   /* struct cpu_ident -- head.S writes CPUID probe results
                         into cpu_id at this struct's exact field offsets. */
+
+#ifndef FMTOWNS_MILESTONE
+#define FMTOWNS_MILESTONE 2
+#endif
 
 struct cpu_ident cpu_id;
 
@@ -71,11 +82,27 @@ static void fmtowns_draw_test_pattern(void)
     }
 }
 
+#if FMTOWNS_MILESTONE >= 2
+/* Linked in by fmtowns_title_asset.S -- see that file for provenance. */
+extern const unsigned char g_fmtowns_title_pixels[];
+extern const unsigned char g_fmtowns_title_palette[];
+
+static void fmtowns_present_title_asset(void)
+{
+    fmtowns_video_init();
+    fmtowns_video_present_8bpp(g_fmtowns_title_pixels, g_fmtowns_title_palette, 256);
+}
+#endif
+
 void start_main(void)
 {
     (void)fmt_media_init();
 
+#if FMTOWNS_MILESTONE >= 2
+    fmtowns_present_title_asset();
+#else
     fmtowns_draw_test_pattern();
+#endif
 
     for (;;) {
         fmt_wait_vsync();
