@@ -287,9 +287,16 @@ static int g_b_anim_step = 1;
  * instead of ==, or it will be skipped whenever the step exceeds 1. */
 static inline int frame_logic_step(void)
 {
-#if defined(WAIFU_FM_FMTOWNS)
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_FM_FIXED_LOGIC_STEP)
     return g_b_anim_step;
 #else
+    /* WAIFU_FM_FIXED_LOGIC_STEP is a measurement build only.  Wall-clock
+       pacing means a faster build reaches any given game frame at a different
+       point in the deck shuffle, so two builds parked on "the same" duel
+       scene can end up holding different cards -- which makes their frame
+       times incomparable.  Pinning the step makes the frame-indexed input
+       script replay identically in both, at the cost of the slow-motion bug
+       this define exists to work around. */
     return 1;
 #endif
 }

@@ -70,6 +70,25 @@ def read_stamp(path):
     }
 
 
+# The machine's free-running counter is 16 bits at 1us, so it wraps every
+# 65.536 ms and a section longer than that is reported modulo the wrap -- a
+# 66 ms game step reads back as 0.5 ms.  Nothing in the payload can tell the
+# two apart: there is only the one clock, and it is sampled once at each end
+# of a section.  What CAN be said is that no frame drawing a 3-D board on a
+# 16 MHz 386SX costs a fraction of a millisecond, so a step that small is the
+# wrap rather than a fast frame.  This cost a whole afternoon once: a build
+# whose real step was ~66 ms reported 0.5 ms and looked 125x FASTER than the
+# 62 ms build that had actually improved it.
+ALIAS_SUSPECT_US = 5000
+
+
+def alias_warning(st):
+    if st["total_us"] and 0 < st["step_us"] < ALIAS_SUSPECT_US:
+        return ("  <- step under 5 ms: suspect the 65.536 ms counter wrap "
+                "(add 65.5 ms) unless this scene really draws almost nothing")
+    return ""
+
+
 def summarize(stats):
     """Print the distribution of frame times across a whole capture.
 
@@ -124,7 +143,7 @@ def main():
                   f"step {st['step_us'] / 1000:.1f} + "
                   f"present {st['present_us'] / 1000:.1f}]"
                   if st["total_us"] else "timing not yet sampled")
-        print(f"{path}: frame {st['frame']}, {timing}, {music}")
+        print(f"{path}: frame {st['frame']}, {timing}, {music}{alias_warning(st)}")
     if want_summary:
         summarize(timed)
 

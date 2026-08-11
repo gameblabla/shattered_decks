@@ -460,6 +460,102 @@ one; a second boot of the same CMOS image read it back byte-identical; and
 every byte of the CMOS below the game's block was unchanged from the stock
 BIOS contents.
 
+## Frame pacing and the 3D rasterizer (this session)
+
+### The game ran in slow motion, and that was a bug, not a frame rate
+
+`waifu_fm_step()` advances the game by however many 60 Hz frames the platform
+reports, and this loop hard-coded `waifu_fm_set_frame_vblanks(1)`.  So a 20 ms
+frame still counted as one frame of game time: at the measured 50 fps every
+phase, camera move and card flight took 1.2x too long, and a heavy scene
+stretched proportionally further.  Only the animation clock
+(`g_b_anim_vblanks`) had ever been wall-clock paced; the phase state machine
+and the UI frame counter were not.
+
+`fmtowns_frame_pace()` already measured the frame in order to hold the loop
+down to 60 Hz.  It now also returns how many 60 Hz periods the frame really
+consumed, and `frame_logic_step()` in main.c multiplies the phase/UI counters
+by it.  Leftover microseconds carry between frames -- a steady 25 ms frame
+alternates 1,2,1,2 rather than truncating a third of the clock away every
+frame -- and the carry is capped so a CD stall cannot bank debt and then
+fast-forward the game.  Six cues that fired on an exact frame number became
+`frame_cue_crossed()` tests, since a step above 1 steps straight over `==`.
+
+It is opt-in per platform (`WAIFU_FM_FMTOWNS` only).  CD32X reports a real
+count too and could be switched over once someone re-verifies its duel
+timings.
+
+### The rasterizer: 26.8 -> 15.2 ms on the top-down board
+
+Measured on `./fmtowns.sh profile board` with the composite cache off, which
+is the only way to see the renderer at all (with the cache on, the parked
+frame is served by a memcpy).  The two builds' frames differ by 0 pixels
+outside the debug stamp.
+
+Three separate things were wrong or slow:
+
+1. **Every pixel pair was horizontally swapped.**  The shared span fillers
+   pack two pixels into a halfword with the left pixel in the high byte,
+   which is correct for PC-FX (KING's KRAM word order) and for CD32X (a
+   big-endian SH-2 writing byte-linear memory).  A little-endian i386 writing
+   byte-linear memory wants the opposite.  `CFX_RENDERER_PAIR_LOW_BYTE_LEFT`
+   now picks the layout from how the target addresses memory.
+2. **The compiler's inner loops spilled to the stack.**  The i386 has eight
+   registers and `-fPIC` reserves one; the board-floor loop was reading `du`
+   and `dv` from the stack for every pixel and spending two branches per
+   pixel.  The i386 fillers pre-shift the texture coordinate so its integer
+   part is the top bits of a register (extraction is one shift, no mask, and
+   the coordinate's wrap is the carry off bit 31) and pack u and v into one
+   accumulator separated by a carry guard, so one add advances both.  Four
+   pixels are collected with `ROR` and written as one 32-bit store, which the
+   SX's 16-bit bus splits into two cycles instead of four.
+3. **Headers rebuilt nothing.**  `Makefile.fmtowns` had no dependency
+   tracking, so the first capture of a rewritten hot loop measured the old
+   object and reported "no change".  `-MMD` now.
+
+The top-down board goes entirely through the constant-V row filler and never
+touches `cfx_board_fill` at all -- established by bisecting with the
+`CFX_MEASURE_C_*` knobs in `renderer3d_spans.inc`, which switch each loop
+back to its C original.  Keep them; attributing anything on this target is
+hard, and they are the only way to do it.
+
+### **The profiler lies above 65.536 ms.  Read this before trusting a number.**
+
+The machine's only free-running clock is 16 bits at 1 us.  A section longer
+than 65.536 ms is reported modulo the wrap, and nothing in the payload can
+tell the difference -- there is one clock and it is sampled once at each end
+of a section.  A real ~66 ms game step reads back as **0.5 ms**.
+
+This produced a confident, completely wrong conclusion mid-session: a build
+whose hand-view step really was ~66 ms reported 0.5 ms and appeared 125x
+faster than the 62.5 ms build that had actually improved it.  The
+contradiction only surfaced because stubbing the board render out entirely
+still cost 56.8 ms, which no 0.5 ms frame can contain.
+
+`tools/fmtowns/read_frame_stamp.py` now flags any step under 5 ms as
+alias-suspect.  Treat every number near or above 65 ms as unknown modulo
+65.5 ms, and prefer scenes that measure well under it -- which is why the
+board view, not the hand view, is this port's rasterizer benchmark.
+
+### Comparing two builds is harder than it looks (second trap)
+
+Wall-clock pacing means a faster build reaches any given game frame at a
+different point in the deck shuffle, so two builds parked on "the same" duel
+scene can hold different cards and have different amounts of card art
+streamed in -- and then their frame times are not comparable at all.  Build
+measurement discs with `EXTRA_CORE_DEFINES=-DWAIFU_FM_FIXED_LOGIC_STEP`,
+which pins the logic to one step per rendered frame so the frame-indexed
+input script replays identically in both.  Verified: with it, the two builds'
+parked hand frames are pixel-identical apart from the stamp.
+
+### Where the time actually goes now
+
+Parked duel, hand view, cache off, pinned logic step: ~62.5 ms of game step,
+of which ~57 ms remains with the board render stubbed out entirely.  So after
+this work the rasterizer is no longer the duel's dominant cost -- the card
+art and hand drawing are.  That is the next thing to profile, and STATUS's
+older "card-vs-card battle screen, 28-62 ms" note is probably the same cost.
+
 ## What is left
 
 - **Frame rate.**  The game step is down to ~1.8 ms in the parked duel scene
