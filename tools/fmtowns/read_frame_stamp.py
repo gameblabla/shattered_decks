@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read the debug state stamp out of a Tsugaru screenshot.
 
-FMTOWNS_DEBUG_INPUT builds stamp state into the top-left 74 pixels of the
+FMTOWNS_DEBUG_INPUT builds stamp state into the top-left 82 pixels of the
 256x240 framebuffer as little-endian bit patterns (see fmtowns_main.c's
 fmtowns_stamp_debug_state):
 
@@ -13,6 +13,7 @@ fmtowns_stamp_debug_state):
     pixels 46-57  average present time, in 128us units
     pixels 58-61  60 Hz periods the loop charged the game for this frame
     pixels 62-73  worst whole-frame time in the window, in 128us units
+    pixels 74-81  video fade level, 255 = fully lit, 0 = black
 
 The three timing fields come from PIT channel 1 (307.2 kHz), so the frame
 rate they give is the emulated Marty's real speed and does not depend on how
@@ -44,7 +45,7 @@ ORIGIN_X = 64
 SCALE = 2
 
 
-STAMP_BITS = 74
+STAMP_BITS = 82
 
 # Timing fields are stored in 128us units (fmtowns_main.c).
 US_PER_UNIT = 128
@@ -72,6 +73,7 @@ def read_stamp(path):
         "present_us": ((bits >> 46) & 0xFFF) * US_PER_UNIT,
         "steps": (bits >> 58) & 0xF,
         "worst_us": ((bits >> 62) & 0xFFF) * US_PER_UNIT,
+        "fade": (bits >> 74) & 0xFF,
         "fps": (1e6 / total) if total else 0.0,
     }
 
@@ -151,6 +153,7 @@ def main():
                   f"present {st['present_us'] / 1000:.1f}, "
                   f"paced {st['steps']}], "
                   f"worst {st['worst_us'] / 1000:.1f}ms"
+                  + (f", fade {st['fade']}" if st["fade"] < 255 else "")
                   if st["total_us"] else "timing not yet sampled")
         print(f"{path}: frame {st['frame']}, {timing}, {music}{alias_warning(st)}")
     if want_summary:

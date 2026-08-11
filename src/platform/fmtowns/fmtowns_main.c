@@ -150,7 +150,7 @@ extern const unsigned char g_fmtowns_title_palette[];
 static void fmtowns_present_title_asset_incbin(void)
 {
     fmtowns_video_init();
-    fmtowns_video_present_8bpp(g_fmtowns_title_pixels, g_fmtowns_title_palette, 256);
+    fmtowns_video_present_8bpp(g_fmtowns_title_pixels, g_fmtowns_title_palette, 256, 256);
 }
 #endif
 
@@ -177,7 +177,7 @@ static void fmtowns_fail_pattern(uint8_t color)
     palette[0] = color; palette[1] = 0; palette[2] = 0;
     for (i = 0; i < sizeof(frame); ++i) frame[i] = 0;
     fmtowns_video_init();
-    fmtowns_video_present_8bpp(frame, palette, 1);
+    fmtowns_video_present_8bpp(frame, palette, 1, 256);
     for (;;) fmt_wait_vsync();
 }
 
@@ -201,7 +201,7 @@ static void fmtowns_present_title_asset_cdrom(void)
 {
     fmtowns_load_title_asset_cdrom();
     fmtowns_video_init();
-    fmtowns_video_present_8bpp(g_fmtowns_title_pixels_cd, g_fmtowns_title_palette_cd, 256);
+    fmtowns_video_present_8bpp(g_fmtowns_title_pixels_cd, g_fmtowns_title_palette_cd, 256, 256);
 }
 #endif
 #endif /* FMTOWNS_MILESTONE >= 3 */
@@ -664,6 +664,7 @@ static void fmtowns_prof_frame_end(uint32_t step_us, uint32_t present_us,
  *   pixels 46-57  average present time, in 128us units
  *   pixels 58-61  60 Hz periods this frame was charged to the game (pacing)
  *   pixels 62-73  worst whole-frame time in the window, in 128us units
+ *   pixels 74-81  waifu_fm_video_fade_q8() for this frame (255 = fully lit)
  *
  * The frame counter is what lets input scripts be calibrated against real
  * captures instead of guessed at -- wall-clock timing is useless for that
@@ -681,7 +682,7 @@ static void fmtowns_prof_frame_end(uint32_t step_us, uint32_t present_us,
  * 60 ms frame stamped with 1 period means the clock lied, while the same
  * frame stamped with 4 means the pacing is right and the frame rate is the
  * only problem left. */
-#define FMTOWNS_STAMP_BITS 74
+#define FMTOWNS_STAMP_BITS 82
 
 /* Microseconds -> the 12-bit, 128us-per-unit field the stamp carries.
  * Saturating rather than truncating: a frame slower than 524 ms is a
@@ -698,7 +699,7 @@ static void fmtowns_stamp_debug_state(uint8_t *frame_buffer, unsigned int frame,
 {
     unsigned int lo = frame & 0xffffu;
     unsigned int hi;   /* pixels 32..63 */
-    unsigned int top;  /* pixels 64..73 */
+    unsigned int top;  /* pixels 64..81 */
     int i;
 
     lo |= ((unsigned int)fmtowns_audio_started_track() & 0x1fu) << 16;
@@ -713,6 +714,14 @@ static void fmtowns_stamp_debug_state(uint8_t *frame_buffer, unsigned int frame,
     hi |= (steps > 15u ? 15u : steps)            << 26;
     hi |= fmtowns_prof_field(g_prof_worst)       << 30;
     top = fmtowns_prof_field(g_prof_worst)       >> 2;
+    {   /* Fade is 0..256; 256 and 255 both stamp as 255, which is what the
+         * reader wants -- "fully lit" is the only thing that distinction
+         * would mean and neither value is a fade. */
+        int fade = waifu_fm_video_fade_q8();
+        if (fade > 255) fade = 255;
+        if (fade < 0) fade = 0;
+        top |= (unsigned int)fade << 10;
+    }
 
     for (i = 0; i < 32; ++i) {
         frame_buffer[i] = (lo & (1u << i)) ? 3 : 255;
@@ -787,7 +796,8 @@ static void waifu_fm_game_loop(void)
          * game running at half the display rate no matter how fast it
          * renders.  Holding the loop to 60 Hz is fmtowns_frame_pace()'s job
          * at the bottom, not this call's -- see that function. */
-        fmtowns_video_present_8bpp(waifu_fm_framebuffer(), waifu_fm_palette_rgb(), 256);
+        fmtowns_video_present_8bpp(waifu_fm_framebuffer(), waifu_fm_palette_rgb(), 256,
+                                   waifu_fm_video_fade_q8());
 #ifdef FMTOWNS_DEBUG_INPUT
         t_present = fmtowns_prof_split();
 #endif

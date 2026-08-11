@@ -4895,8 +4895,14 @@ static void apply_black_dither_fade(int32_t visible)
         if ((int)visible < g_video_fade_visible_q8) g_video_fade_visible_q8 = (int)visible;
         return;
     }
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
-    /* PC-FX/CD32X: do not dither-walk the framebuffer for partial fades.
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X) || defined(WAIFU_FM_FMTOWNS)
+    /* PC-FX/CD32X/FM TOWNS: do not dither-walk the framebuffer for partial
+       fades.  The Bayer walk is 61440 iterations of a compare and a
+       conditional store, which on a 386SX costs more than the scene under it:
+       every fade frame paid it, so a 24-frame transition took seconds of
+       black and read as the game having hung.  The Marty reloads its palette
+       through I/O every frame anyway (fmtowns_video.c), so scaling 768 bytes
+       of RGB is the cheap way to darken everything at once.
        These targets apply fade as palette intensity.  CD32X in particular can
        present the title as a direct 32X framebuffer surface, so the host-style
        black dither would touch the wrong path and leave the visible title

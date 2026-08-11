@@ -31,10 +31,23 @@ static int g_last_palette_count = -1;
 
 void fmtowns_video_present_8bpp(const unsigned char *framebuffer,
                                  const unsigned char *palette_rgb888,
-                                 int palette_count)
+                                 int palette_count, int fade_q8)
 {
+    /* The faded copy, built only on frames that are actually fading.  Static
+     * rather than automatic because the payload's stack is small and 768
+     * bytes of it is not free. */
+    static unsigned char faded[256 * 3];
     int i;
     int changed = (palette_count != g_last_palette_count);
+
+    if (fade_q8 < 256) {
+        if (fade_q8 < 0) fade_q8 = 0;
+        for (i = 0; i < palette_count * 3; ++i) {
+            faded[i] = (unsigned char)(((unsigned int)palette_rgb888[i]
+                                        * (unsigned int)fade_q8) >> 8);
+        }
+        palette_rgb888 = faded;
+    }
 
     if (!changed) {
         for (i = 0; i < palette_count * 3; ++i) {
