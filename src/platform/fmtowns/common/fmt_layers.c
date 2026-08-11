@@ -2,8 +2,11 @@
 #include "common.h"
 #include "io.h"
 #include "defs.h"
+#include "machine.h"
 
-#define VRAM0 0xA00000u
+/* Not yet wired into any build (see STATUS.md) -- kept in step with
+ * machine.h's runtime VRAM0 base anyway so it is correct the day it is. */
+#define VRAM0 g_fmt_vram0_base
 #define VRAM1 (VRAM0+PAGE_BYTES)
 #define PAGE_BYTES 0x40000u
 

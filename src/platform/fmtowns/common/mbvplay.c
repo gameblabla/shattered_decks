@@ -298,7 +298,7 @@ static void upload_palette(void)
 static void present(void)
 {
     prepare_palette();
-    fmt_mbv_blit((volatile uint8_t *)FMT_VRAM0_BASE, g_fmt_draw_buffer_offset,
+    fmt_mbv_blit((volatile uint8_t *)g_fmt_vram0_base, g_fmt_draw_buffer_offset,
                  g_frame, (uint32_t)g_info.width * g_info.height);
     fmt_flip_page_poll(poll_dac);
     if (g_pal_pending_n) {

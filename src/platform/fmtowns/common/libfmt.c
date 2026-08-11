@@ -4,12 +4,12 @@
 #include "defs.h"
 
 /*
- * FM TOWNS VRAM0 physical base address for the 386SX-based UX/Marty
- * memory map (TOWNSEMU's TOWNSADDR_386SX_VRAM0_BASE). The "full"
- * 386DX/486 FM TOWNS map uses 0x80000000 instead - this library
- * currently only targets Marty.
+ * FM TOWNS VRAM0 physical base address. g_fmt_vram0_base (machine.h) holds
+ * TOWNSEMU's TOWNSADDR_386SX_VRAM0_BASE (0xA00000) on the narrow 386SX-based
+ * UX/Marty memory map, or TOWNSADDR_VRAM0_BASE (0x80000000) on the "full"
+ * 386DX/486/Pentium map -- whichever fmt_machine_detect() found this
+ * machine to be.
  */
-#define TOWNS_VRAM0_BASE_MARTY   FMT_VRAM0_BASE
 #define TOWNS_VRAM_SIZE           0x80000u
 
 static const fmt_mode_t g_modes[FMT_NUM_MODES] = {
@@ -204,7 +204,7 @@ void fmt_set_mode(fmt_mode_id_t id)
 
     /* A mode change must never expose stale VRAM.  Clear all buffers that
      * belong to the mode while display output is stopped. */
-    volatile uint8_t *vram = (volatile uint8_t *)TOWNS_VRAM0_BASE_MARTY;
+    volatile uint8_t *vram = (volatile uint8_t *)g_fmt_vram0_base;
     uint32_t clear_size = g_can_flip ? g_frame_buffer_size * 2u
                                      : g_frame_buffer_size;
     if (clear_size > TOWNS_VRAM_SIZE) {
@@ -249,7 +249,7 @@ void fmt_load_palette(const uint8_t *rgb888, int count)
  */
 void fmt_put_image(const void *src, int width, int height, int stride)
 {
-    volatile uint8_t *vram = (volatile uint8_t *)TOWNS_VRAM0_BASE_MARTY;
+    volatile uint8_t *vram = (volatile uint8_t *)g_fmt_vram0_base;
     const uint8_t *src8 = (const uint8_t *)src;
     int bytes_per_pixel = (g_cur->bpp == 16) ? 2 : 1;
     uint32_t span = (uint32_t)width * (uint32_t)bytes_per_pixel;

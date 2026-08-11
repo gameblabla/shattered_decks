@@ -79,6 +79,8 @@
 #include "io.h"     /* inw() -- the free-running 1us counter used to profile
                        frame time; see fmtowns_prof_split() below. */
 #include "libfmt.h"
+#include "machine.h" /* fmt_machine_detect() -- Marty/UX (narrow) vs standard
+                        (wide) memory map, see machine.h's block comment */
 #include "media.h"
 #include "test.h"   /* struct cpu_ident -- head.S writes CPUID probe results
                         into cpu_id at this struct's exact field offsets. */
@@ -823,6 +825,11 @@ static void waifu_fm_game_loop(void)
 
 void start_main(void)
 {
+    /* Must run before anything below touches VRAM (fmt_set_mode() included,
+     * inside fmt_media_init()'s callers and every present path) -- it picks
+     * the physical VRAM base every later VRAM store uses. See machine.h. */
+    fmt_machine_detect();
+
     (void)fmt_media_init();
 
 #if FMTOWNS_MILESTONE >= 7

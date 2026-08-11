@@ -22,7 +22,6 @@
  * divisible by 4; the 2-pixel routines require x divisible by 2.  All pixels
  * in a call must fit on the scanline.
  */
-#define FMT_VRAM0_BASE                 0xA00000u
 #define FMT_VRAM_MASK_ADDRESS_PORT     0x0458u
 #define FMT_VRAM_MASK_DATA_LOW_PORT    0x045Au
 #define FMT_VRAM_MASK_DATA_HIGH_PORT   0x045Bu
@@ -46,21 +45,21 @@ static inline void fmt_vram_set_packed_mask(uint32_t mask)
 
 static inline void fmt_vram_store32(uint32_t logical_offset, uint32_t pixels)
 {
-    volatile uint32_t *dst = (volatile uint32_t *)(FMT_VRAM0_BASE
+    volatile uint32_t *dst = (volatile uint32_t *)(g_fmt_vram0_base
         + fmt_vram_singlepage_offset(g_fmt_draw_buffer_offset + logical_offset));
     __asm__ volatile ("movl %1,(%0)" : : "r" (dst), "r" (pixels) : "memory");
 }
 
 static inline void fmt_vram_store16(uint32_t logical_offset, uint16_t pixels)
 {
-    volatile uint16_t *dst = (volatile uint16_t *)(FMT_VRAM0_BASE
+    volatile uint16_t *dst = (volatile uint16_t *)(g_fmt_vram0_base
         + fmt_vram_singlepage_offset(g_fmt_draw_buffer_offset + logical_offset));
     __asm__ volatile ("movw %1,(%0)" : : "r" (dst), "r" (pixels) : "memory");
 }
 
 static inline void fmt_vram_store8(uint32_t logical_offset, uint8_t pixel)
 {
-    volatile uint8_t *dst = (volatile uint8_t *)(FMT_VRAM0_BASE
+    volatile uint8_t *dst = (volatile uint8_t *)(g_fmt_vram0_base
         + fmt_vram_singlepage_offset(g_fmt_draw_buffer_offset + logical_offset));
     __asm__ volatile ("movb %1,(%0)" : : "r" (dst), "q" (pixel) : "memory");
 }

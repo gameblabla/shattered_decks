@@ -159,6 +159,7 @@ OBJS            = $(BOOTDIR)/head.o $(BOOTDIR)/reloc.o \
                   $(FMTOWNS_DIR)/waifu_fmtowns_platform.o \
                   $(FMTOWNS_DIR)/waifu_fmtowns_cdrom.o \
                   $(COMMONDIR)/common.o $(COMMONDIR)/palette.o $(COMMONDIR)/libfmt.o \
+                  $(COMMONDIR)/machine.o \
                   $(COMMONDIR)/pad.o $(COMMONDIR)/cdrom.o $(COMMONDIR)/iso9660.o \
                   $(COMMONDIR)/cdda.o \
                   $(CORE_OBJS)

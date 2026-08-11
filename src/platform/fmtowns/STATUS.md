@@ -627,3 +627,180 @@ object and reported "no change".
   has run on a physical Marty, and no one has heard the audio -- the CD-DA
   evidence is playback state read back through the drive, and the SFX
   evidence is the emulator's own PCM recording.
+
+## Runtime Marty / standard-model detection
+
+This port was Marty-only until now: everything above was built and verified
+solely against `-TOWNSTYPE MARTY`. This section adds runtime detection so
+the *same built image* also boots and renders correctly on a standard
+(non-Marty) FM TOWNS, without a build-time flag or a second ISO.
+
+### Why the white screen happened
+
+Booting the existing Marty-only image against a plain FM TOWNS ROM set
+(`FMT/ROMS/FMT_{DIC,DOS,FNT,SYS}.ROM`, non-Marty) produced a permanent
+white screen. Two things were confirmed by reading TOWNSEMU's own source
+(`FMTOWNSCD_EXAMPLE_Cube/TOWNSEMU/src/`):
+
+1. `-TOWNSTYPE FMTOWNS` (tried first) is not a valid Tsugaru model string --
+   see `StrToTownsType()` in `towns/townsdef/townsdef.cpp`. It parses to
+   `TOWNSTYPE_UNKNOWN`, which skips memory-map setup entirely. Minor, not
+   the root cause: a *valid* string (`-TOWNSTYPE MX`) reproduced the same
+   white screen.
+2. **The real cause**: `FMT_VRAM0_BASE` (`common/fmt_pixel.h`,
+   `common/libfmt.h`) was the compile-time constant `0xA00000`, which is
+   the VRAM window *only* on 80386SX-class machines (Marty, UX -- 24-bit
+   physical address space, Fujitsu gave them a completely different
+   physical memory map from every 386DX/486/Pentium-class model). See
+   `FMTOWNSCD_EXAMPLE_Cube/docs/HOWFMTOWNS_BOOTS_FROM_CD.txt` and
+   `TOWNSEMU/src/towns/memory/physmem.cpp`'s `SetUpMemoryAccess()`, which
+   branches VRAM/ROM/CMOS addresses on `cpuType==TOWNSCPU_80386SX`: one
+   `TOWNSADDR_386SX_*` constant set for Marty/UX, a completely different
+   `TOWNSADDR_*` set (VRAM0 at `0x80000000`, not `0xA00000`) for everyone
+   else. On a standard model, `0xA00000` is just ordinary RAM -- every pixel
+   the game wrote vanished into unused memory, the CRTC never got fed real
+   data, and the display sat at its power-on-default (white).
+
+### The detection mechanism: I/O port 0x30, the machine ID register
+
+Real FM TOWNS software distinguishes the two memory maps off a genuine
+hardware register: I/O port `0x30` (low byte) / `0x31` (high byte),
+`TOWNSIO_MACHINE_ID_LOW`/`_HIGH` in TOWNSEMU's `townsdef.h`. Reading
+`FMTownsCommon::MachineID()` in `towns/towns.cpp` (the function that
+supplies these two bytes) shows the low byte is a small CPU-class field for
+genuine (non-legacy-FMR) models: `0`=80286-class (never a real FM TOWNS),
+`1`=80386(DX)-class, `2`=80486/Pentium-class, `3`=80386SX-class -- and
+`TOWNSTYPE_2_UX` and `TOWNSTYPE_MARTY` are the *only* two cases in that
+switch that produce `3`. That is exactly the narrow/wide memory-map split
+this port needs, straight off one I/O read, no per-model table to keep in
+sync.
+
+(Real `TBIOS.SYS` is documented -- per TOWNSEMU's author, from disassembly,
+confirmed by a third party in 2024 -- to test the *high* byte's `0x40` bit
+to detect Marty specifically (`highByte=0x4A` for Marty vs. `0x1`-`0x11`
+for everything else including UX's `0x3`). That identifies Marty alone, not
+the shared 386SX narrow-map class UX also belongs to, so it is the wrong
+test for this port's purposes even though it is the "real" BIOS-internal
+Marty check. The low byte's CPU-class field is the one this port reads.)
+
+Confirmed experimentally, not just read off the emulator source: booted the
+same build under `-TOWNSTYPE MARTY`, `MX`, `CX` and `UX` and checked the
+captured title screen renders correctly under all four (see "Verification"
+below) -- MX/CX are wide-map (486DX/386-class) models, UX is narrow-map
+like Marty, so this exercises the branch both ways.
+
+### What changed
+
+- **New `src/platform/fmtowns/common/machine.h`/`machine.c`.**
+  `fmt_machine_detect()` reads I/O port `0x30` once and sets
+  `g_fmt_vram0_base` to `0xA00000` (narrow, TOWNSADDR_386SX_VRAM0_BASE) or
+  `0x80000000` (wide, TOWNSADDR_VRAM0_BASE) accordingly.
+  `fmt_machine_is_narrow_map()` exposes the same result as a bool for any
+  future call site that needs it (nothing but VRAM base needed it this
+  pass -- see "What was checked and found not to need a branch" below).
+  Defaults to the narrow map before detection runs, preserving this port's
+  original Marty-only behaviour as the fallback.
+- **`FMT_VRAM0_BASE` stopped being a compile-time constant.** It was defined
+  in three places (`common/fmt_pixel.h`, `common/libfmt.h`, and
+  `common/libfmt.c`'s now-removed `TOWNS_VRAM0_BASE_MARTY` alias) and read
+  directly by `common/mbvplay.c` and (unused/uncompiled)
+  `common/fmt_layers.c`. All five now read `g_fmt_vram0_base` instead.
+- **`fmtowns_main.c`'s `start_main()` calls `fmt_machine_detect()` as its
+  first line**, before `fmt_media_init()` or anything that could touch
+  VRAM (`fmt_set_mode()`, any present call).
+- **`Makefile.fmtowns`** builds `$(COMMONDIR)/machine.o` into the payload.
+
+### What was checked and found not to need a branch
+
+The physical VRAM *base* differs, but the byte-swizzle math on top of it
+does not: `fmt_vram_singlepage_offset()` (`fmt_pixel.h`) mirrors TOWNSEMU's
+`VRAM1Trans::SinglePageOffsetToLinearOffset()`
+(`towns/render/render.h`), which is defined purely in terms of the offset
+*within* the window, with no dependency on which base the window is
+mapped at -- and both windows are the same size (`0x80000`, 512 KiB), so
+no size-driven behaviour differs either. CRTC/palette I/O ports are
+ordinary port-mapped I/O, identical across every model -- only the
+*memory-mapped* windows (VRAM, ROM, CMOS) move. This game's CMOS save path
+(`waifu_fmtowns_platform.c`) already goes through the low-1MB
+FMR-compatible bank-switched window at `0xD8000` (gated by I/O `0x0480` bit
+0), which is the legacy access path common to all models -- not the
+"native CMOS RAM" window that *does* move between narrow/wide maps
+(`0xF40000` vs `0xC2140000`) but that this port never used. So the save
+path needed no change.
+
+Also checked and not a concern: the 32-bit flat data segment `head.S`'s GDT
+sets up (`0x00cf92000000ffff` -- base 0, 4 GiB limit, granularity bit set)
+already covers all the way to `0x80000000`; no segment/paging change was
+needed to reach the wide map's VRAM window.
+
+CD-ROM access (`common/cdrom.c`) was flagged as a possible concern (`towns/
+scsi/scsi.cpp` notes "Marty did not have a SCSI I/F") but did not need
+changes: the boot ROM's `call far 0xFFFB:0x14` low-level sector-read
+routine that this bare-metal payload's `cdrom.c` uses is model-independent
+per `HOWFMTOWNS_BOOTS_FROM_CD.txt` -- the SCSI-vs-Marty-CDC difference only
+matters to OS-level access, not raw IPL-time sector reads. Confirmed
+indirectly: the non-Marty captures below show the title art and text that
+only exist after a successful CD read (title/palette assets, the "PRESS RUN
+TO START" prompt), so the read path worked without modification.
+
+### Verification
+
+Built once with `make -f Makefile.fmtowns` (no `-TOWNSTYPE`-specific build
+flags exist or were added -- this is genuinely one binary). Confirmed no
+regression to the boot-sector ceiling check (still 45480 bytes spare,
+unchanged from before this change) and no regression on Marty:
+`tools/fmtowns/headless_shot.sh` (which hardcodes `-TOWNSTYPE MARTY`)
+captured the correct title screen, matching the pre-change baseline exactly
+(same checksum-equivalent capture).
+
+Then booted the *identical* `build/fmtowns/output.cue` against the
+non-Marty `FMT/ROMS/` ROM set and `FMT/Tsugaru_CUI.elf`, under three valid
+non-Marty `-TOWNSTYPE` values:
+
+```sh
+{ sleep 10; printf 'SS /tmp/shot.png\nQUIT\n'; } | xvfb-run -a timeout -s KILL 40 \
+  ./FMT/Tsugaru_CUI.elf "FMT/ROMS" -TOWNSTYPE MX -MEMSIZE 2 -CD build/fmtowns/output.cue \
+  -NORMALFD -DONTUSEFPU -NOWAITBOOT -GAMEPORT0 KEY -KEYBOARD DIRECT
+```
+
+- `MX` (wide map, 486DX-class): title screen renders correctly, **pixel-
+  identical** (same PNG bytes) to the Marty capture at the same boot
+  timing.
+- `CX` (wide map, 386-class): title screen renders correctly (captured a
+  frame with the blinking "PRESS RUN TO START" prompt on-screen -- a
+  benign UI-animation timing difference from the other captures, not a
+  rendering defect).
+- `UX` (narrow map, like Marty): title screen renders correctly, pixel-
+  identical to the `CX` capture at the same boot timing.
+
+All four captures (`MARTY`, `MX`, `CX`, `UX`) show the correct art,
+correct palette, and correct text -- proving both branches of
+`fmt_machine_detect()` (narrow map on Marty/UX, wide map on MX/CX) present
+real production pixels through the same code path. This clears the
+session's minimum bar (title-screen parity on both machines from one
+binary).
+
+### What is left
+
+- Only the title screen has been verified on non-Marty. Milestones 3-7
+  (CD-DA, input, the real game core, a full duel) were all verified on
+  Marty only; nothing about `fmt_machine_detect()` should affect them
+  differently, since they all route VRAM writes through the same
+  `g_fmt_vram0_base`-based helpers already exercised here, but none of them
+  has actually been captured running past the title on a non-Marty model.
+- **Performance on non-Marty is unmeasured.** Everything in "Frame pacing
+  and the 3D rasterizer" above was profiled against Marty's 80386SX timing
+  only. A 486DX/Pentium-class standard model has a materially different
+  CPU, and this payload's PIT-channel-1-based pacing
+  (`fmtowns_frame_pace()`) should still hold it to 60 Hz correctly (it
+  paces off wall-clock hardware time, not instruction count), but the
+  *cost* of a moving-camera frame (currently 30 ms / ~30 fps on Marty) has
+  not been measured on a faster CPU class and may differ substantially.
+- **`fmt_machine_is_narrow_map()` has no caller yet** beyond
+  `g_fmt_vram0_base` internally choosing between the two constants -- it is
+  exposed for any future model-specific behaviour (e.g. if a
+  performance or ROM/CMOS-window difference surfaces once milestones
+  past the title are verified on non-Marty) but nothing needed it this
+  pass.
+- Real hardware, as above: nothing here has run on a physical machine of
+  either class.

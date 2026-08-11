@@ -72,10 +72,11 @@ typedef struct {
     video_set_t video;
 } fmt_mode_t;
 
-/* FM TOWNS VRAM0 as seen through the 386SX (Marty/UX) memory map.  Exposed
- * because a caller with its own blitter - src/common/mbv_blit.h - needs the
- * same base libfmt writes through. */
-#define FMT_VRAM0_BASE  0xA00000u
+/* FM TOWNS VRAM0 physical base, resolved at runtime for whichever memory
+ * map (narrow 386SX/Marty/UX, or wide everyone-else) fmt_machine_detect()
+ * found -- see machine.h. Exposed because a caller with its own blitter -
+ * src/common/mbv_blit.h - needs the same base libfmt writes through. */
+#include "machine.h"
 
 /* Byte offset of the buffer currently selected for drawing.  Pixel
  * primitives use this before applying the single-page VRAM transform. */
