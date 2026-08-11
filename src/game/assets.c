@@ -414,7 +414,10 @@ static void evict_title(void)
 {
     if (g_title_loaded) {
         g_title_loaded = 0;
-#if !defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_FMTOWNS)
+        if (g_ram_used >= TITLE_BYTES) g_ram_used -= TITLE_BYTES;
+        else g_ram_used = 0;
+#elif !defined(WAIFU_FM_PCFX)
         if (g_ram_used >= TITLE_TOTAL_BYTES) g_ram_used -= TITLE_TOTAL_BYTES;
         else g_ram_used = 0;
 #endif
@@ -878,9 +881,15 @@ int waifu_assets_load_step(void)
             note_high_water(g_ram_used);
 #else
             if (!cd_read_blob(WAIFU_ASSET_BLOB_TITLE_SCREEN, stage_title_ptr(), TITLE_BYTES)) return 0;
-#if !defined(WAIFU_FM_CD32X)
+#if !defined(WAIFU_FM_CD32X) && !defined(WAIFU_FM_FMTOWNS)
             if (!cd_read_blob(WAIFU_ASSET_BLOB_TITLE_SCREEN_PCFX_YUV422, stage_title16m_ptr(), TITLE_16M_BYTES)) return 0;
             add_ram_used(TITLE_TOTAL_BYTES);
+#elif defined(WAIFU_FM_FMTOWNS)
+            /* No PC-FX KING 16M title layer here: the plain 8bpp title
+               screen loaded just above is the whole title asset, staged in
+               main RAM like the generic path (unlike CD32X, which streams
+               straight to 32X framebuffer pages). */
+            add_ram_used(TITLE_BYTES);
 #else
             /* CD32X streams the title directly to 32X framebuffer pages, not
                to SH-2 SDRAM, so it should not count against asset RAM. */

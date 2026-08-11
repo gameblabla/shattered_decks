@@ -252,6 +252,62 @@ void fmt_put_image(const void *src, int width, int height, int stride)
     volatile uint8_t *vram = (volatile uint8_t *)TOWNS_VRAM0_BASE_MARTY;
     const uint8_t *src8 = (const uint8_t *)src;
     int bytes_per_pixel = (g_cur->bpp == 16) ? 2 : 1;
+    uint32_t span = (uint32_t)width * (uint32_t)bytes_per_pixel;
+
+    /*
+     * Fast path for a full-width single-page blit -- what a game's
+     * per-frame present always is, and far too slow the byte-at-a-time way
+     * on a 386SX (61440 stores per frame, each with the swizzle recomputed).
+     *
+     * The swizzle is not as scattered as it looks.  Writing off = 8k + j:
+     *
+     *     trans(8k+j) = ((j&4) << 16) | (4k) | (j&3)
+     *
+     * so each aligned group of 8 source bytes lands as two *contiguous*
+     * 4-byte runs: bytes 0-3 at 4k, bytes 4-7 at 0x40000 + 4k.  Every 8
+     * source bytes is therefore one dword store into each of two banks,
+     * with the destination pointers just marching forward -- no per-byte
+     * address arithmetic at all, and 4 bytes moved per store instead of 1.
+     *
+     * Only taken when the copy is contiguous in `off` space (src stride ==
+     * VRAM stride, full width) and both the draw-page offset and the stride
+     * are multiples of 8, which is exactly the 256x240 8bpp case
+     * (stride 256, page size 61440).  Anything else falls through to the
+     * general loop below.
+     */
+    if (!g_cur->linear && span == (uint32_t)stride && span == g_cur->stride
+        && (g_fmt_draw_buffer_offset & 7u) == 0 && (g_cur->stride & 7u) == 0) {
+        uint32_t total = (uint32_t)height * (uint32_t)g_cur->stride;
+        uint32_t base = g_fmt_draw_buffer_offset >> 1;
+        volatile uint32_t *lo = (volatile uint32_t *)(vram + base);
+        volatile uint32_t *hi = (volatile uint32_t *)(vram + 0x40000u + base);
+        /* Dword loads off a byte-aligned source are legal on x86 (they only
+         * cost an extra bus cycle when they straddle a dword boundary), and
+         * a game framebuffer is aligned in practice anyway. */
+        const uint32_t *s = (const uint32_t *)src;
+        uint32_t quads = total >> 5;   /* 32 source bytes per iteration */
+        uint32_t groups = (total >> 3) & 3u;
+
+        /* Unrolled 4x.  Once the game step got cheap enough this blit became
+         * ~15 ms of a 16.6 ms frame -- the single thing standing between the
+         * duel and a locked 60 Hz -- so the loop's own increment/compare/branch
+         * per 8 bytes is worth removing.  It cannot be a `rep movsl`: the two
+         * banks want alternating dwords from one source, which no single string
+         * move expresses.  The tail runs whatever is left over; 61440 bytes is
+         * an exact multiple of 32, so in practice it runs zero times. */
+        while (quads--) {
+            lo[0] = s[0]; hi[0] = s[1];
+            lo[1] = s[2]; hi[1] = s[3];
+            lo[2] = s[4]; hi[2] = s[5];
+            lo[3] = s[6]; hi[3] = s[7];
+            lo += 4; hi += 4; s += 8;
+        }
+        while (groups--) {
+            *lo++ = *s++;
+            *hi++ = *s++;
+        }
+        return;
+    }
 
     for (int y = 0; y < height; y++) {
         const uint8_t *srow = src8 + y * stride;

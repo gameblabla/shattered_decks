@@ -8994,6 +8994,24 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
     if (camera_equal(cam, placement_camera()) || camera_equal(cam, enemy_placement_camera()))
         return &g_b_handtop_mid_cache[0];
     return NULL;
+#elif defined(WAIFU_FM_FMTOWNS)
+    /* Marty caches the top-down board views only.  Restoring a composite is a
+       61440-byte RAM-to-RAM copy, which on a 16 MHz 386SX behind a 16-bit bus
+       is milliseconds, not the near-free operation it is on the other
+       targets.  So the trade only pays where the render it replaces costs
+       more than the copy, and on this machine that is the top-down board
+       view (measured at ~19 ms of game step) and not the hand view (~4 ms,
+       most of the board off-screen or behind the cards).  Handing every
+       camera the cache, which is what the generic branch below does, made
+       the hand view measurably slower than no cache at all.
+
+       Both top cameras share the one slot.  They belong to different phases
+       and never alternate frame to frame, so they do not thrash; a phase
+       change costs one re-render, which is what a cache miss always costs. */
+    if (camera_equal(cam, battle_top_camera()) ||
+        camera_equal(cam, enemy_battle_top_camera()))
+        return &g_b_base_cache;
+    return NULL;
 #else
     (void)cam;
     return &g_b_base_cache;
@@ -11677,8 +11695,7 @@ static void draw_story_name_entry(void)
         hline(x - 2, x + 10, 121, IDX_UI_LIGHT);
     }
 
-    waifu_str_copy(buf, (int)sizeof(buf), "LETTER "); waifu_str_cat_char(buf, (int)sizeof(buf), g_story_name[g_story_name_pos]);
-    draw_centered_text(143, buf, IDX_WHITE, IDX_BLACK);
+
     draw_text_small(dx + 34, 166, "LEFT/RIGHT SLOT", IDX_WHITE, IDX_BLACK);
     draw_text_small(dx + 34, 180, "UP/DOWN GLYPH", IDX_WHITE, IDX_BLACK);
     draw_text_small(dx + 34, 194, "A NEXT   RUN DREAM", IDX_GOLD_HI, IDX_BLACK);
@@ -11768,8 +11785,26 @@ static const char *story_fire_lines[] = {
 #endif
 #define FIRE_FW (WAIFU_FM_WIDTH / FIRE_SCALE)
 #define FIRE_FH ((WAIFU_FM_HEIGHT - FIRE_Y0) / FIRE_SCALE)
+/* One guard cell on each side of every row mirrors the edge cell, so the
+   "pull from a random lower neighbour" step can read below[x-1..x+1] with no
+   per-cell clamp (two stores per row replace 2*FIRE_FW compares). */
+#define FIRE_STRIDE (FIRE_FW + 2)
 #define FIRE_MAXI 32
-static uint8_t g_fire_buf[FIRE_FW * FIRE_FH];
+
+/* Geometry of the DEMON dialogue panel draw_story_fire_screen puts over the
+   flames.  Every pixel the panel and its text touch is inside this rectangle,
+   so on PC-FX the flame blit skips the cells it hides (the intensity buffer is
+   still simulated there -- the flames must keep rising behind the panel) and
+   the panel itself is only redrawn when its contents change.  Cells 0..3 and
+   124..127 straddle the 8px margins the panel leaves at each edge and stay
+   live; the eight-cell groups between them are exactly the hidden span. */
+#define FIRE_PANEL_X 8
+#define FIRE_PANEL_Y 172
+#define FIRE_PANEL_H 57
+/* First/last+1 intensity row whose BOTH output scanlines are inside the panel. */
+#define FIRE_HIDE_Y0 ((FIRE_PANEL_Y - FIRE_Y0 + FIRE_SCALE - 1) / FIRE_SCALE)
+#define FIRE_HIDE_Y1 ((FIRE_PANEL_Y + FIRE_PANEL_H - 1 - FIRE_Y0) / FIRE_SCALE)
+static uint8_t g_fire_buf[FIRE_STRIDE * FIRE_FH];
 static uint32_t g_fire_rng = 0x2545f491u;
 
 static const uint8_t g_fire_lut[FIRE_MAXI + 1] = {
@@ -11781,6 +11816,28 @@ static const uint8_t g_fire_lut[FIRE_MAXI + 1] = {
     IDX_GOLD_HI, IDX_GOLD_HI, IDX_GOLD_HI, IDX_GOLD_HI, IDX_GOLD_HI
 };
 
+#if defined(WAIFU_FM_PCFX)
+/* Same LUT with the colour pre-doubled, so a horizontal 2x pixel pair is one
+   halfword and two cells pack into a single aligned framebuffer word store
+   (little-endian V810: low byte = leftmost pixel). */
+#define FIRE_LUT2_ENTRY(c) (uint16_t)(((uint16_t)(c) << 8) | (uint16_t)(c))
+static const uint16_t g_fire_lut2[FIRE_MAXI + 1] = {
+    FIRE_LUT2_ENTRY(IDX_BLACK),
+    FIRE_LUT2_ENTRY(IDX_RED), FIRE_LUT2_ENTRY(IDX_RED), FIRE_LUT2_ENTRY(IDX_RED),
+    FIRE_LUT2_ENTRY(IDX_RED), FIRE_LUT2_ENTRY(IDX_RED), FIRE_LUT2_ENTRY(IDX_RED),
+    FIRE_LUT2_ENTRY(IDX_FLAME3), FIRE_LUT2_ENTRY(IDX_FLAME3), FIRE_LUT2_ENTRY(IDX_FLAME3),
+    FIRE_LUT2_ENTRY(IDX_FLAME3), FIRE_LUT2_ENTRY(IDX_FLAME3), FIRE_LUT2_ENTRY(IDX_FLAME3),
+    FIRE_LUT2_ENTRY(IDX_FLAME3),
+    FIRE_LUT2_ENTRY(IDX_FLAME2), FIRE_LUT2_ENTRY(IDX_FLAME2), FIRE_LUT2_ENTRY(IDX_FLAME2),
+    FIRE_LUT2_ENTRY(IDX_FLAME2), FIRE_LUT2_ENTRY(IDX_FLAME2), FIRE_LUT2_ENTRY(IDX_FLAME2),
+    FIRE_LUT2_ENTRY(IDX_FLAME2), FIRE_LUT2_ENTRY(IDX_FLAME2),
+    FIRE_LUT2_ENTRY(IDX_FLAME1), FIRE_LUT2_ENTRY(IDX_FLAME1), FIRE_LUT2_ENTRY(IDX_FLAME1),
+    FIRE_LUT2_ENTRY(IDX_FLAME1), FIRE_LUT2_ENTRY(IDX_FLAME1), FIRE_LUT2_ENTRY(IDX_FLAME1),
+    FIRE_LUT2_ENTRY(IDX_GOLD_HI), FIRE_LUT2_ENTRY(IDX_GOLD_HI), FIRE_LUT2_ENTRY(IDX_GOLD_HI),
+    FIRE_LUT2_ENTRY(IDX_GOLD_HI), FIRE_LUT2_ENTRY(IDX_GOLD_HI)
+};
+#endif
+
 static inline uint32_t fire_rng_next(void)
 {
     uint32_t r = g_fire_rng;
@@ -11789,35 +11846,109 @@ static inline uint32_t fire_rng_next(void)
     return r;
 }
 
+/* Advance one cell from four RNG bits: bits 0/1 pick the lower neighbour
+   (-1/0/+1 with the same zero-mean distribution the old `(r & 3) - 1` clamp
+   produced), bit 2 is the decay.  The `& ~(v >> 31)` floor is branchless --
+   below[] is >= 0 and the decay is at most 1, so v can only reach -1. */
+#define FIRE_CELL_STEP(dstvar, below, i, bits) do {                          \
+    int fire_v_ = (int)(below)[(i) + (int)((bits) & 1u) -                     \
+                               (int)(((bits) >> 1) & 1u)] -                   \
+                  (int)(((bits) >> 2) & 1u);                                  \
+    (dstvar) = fire_v_ & ~(fire_v_ >> 31);                                    \
+    (bits) >>= 4;                                                             \
+} while (0)
+
 static void draw_oldschool_fire(int f)
 {
     (void)f;
-    uint8_t *bottom = g_fire_buf + (FIRE_FH - 1) * FIRE_FW;
+    uint8_t *bottom = g_fire_buf + (FIRE_FH - 1) * FIRE_STRIDE + 1;
     int x, y;
 
-    /* Hot, flickering base row. */
-    for (x = 0; x < FIRE_FW; ++x) {
-        uint32_t r = fire_rng_next();
-        bottom[x] = (uint8_t)((r & 7) ? FIRE_MAXI : (FIRE_MAXI - 8));
+    /* Hot, flickering base row.  One xorshift feeds eight cells: a full RNG
+       step per cell cost more than the propagation arithmetic it fed. */
+    {
+        uint32_t r = 0;
+        int have = 0;
+        for (x = 0; x < FIRE_FW; ++x) {
+            if (have == 0) { r = fire_rng_next(); have = 8; }
+            bottom[x] = (uint8_t)((r & 7u) ? FIRE_MAXI : (FIRE_MAXI - 8));
+            r >>= 4; --have;
+        }
+        bottom[-1] = bottom[0];
+        bottom[FIRE_FW] = bottom[FIRE_FW - 1];
     }
 
-    /* Propagate upward: each cell is a random lower neighbour minus a little decay. */
+    /* Propagate upward: each cell is a random lower neighbour minus a little
+       decay.  Cells are advanced in groups of eight sharing one RNG word; on
+       PC-FX the same group is immediately mapped through the doubled colour LUT
+       and stored as four framebuffer words on each of the two output rows.
+       Grouping matters on the V810: it has no data cache and one DRAM page
+       register, so the old cell-at-a-time read-below / write-row / read-LUT /
+       write-framebuffer interleave paid a 2 KiB page change on nearly every
+       access.  Each group now touches the source rows, then the LUT, then the
+       framebuffer, in three contiguous runs. */
     for (y = FIRE_FH - 2; y >= 0; --y) {
-        uint8_t *row = g_fire_buf + y * FIRE_FW;
-        const uint8_t *below = row + FIRE_FW;
-        for (x = 0; x < FIRE_FW; ++x) {
-            uint32_t r = fire_rng_next();
-            int dx = (int)(r & 3) - 1;        /* -1, 0, 1, then 2 -> clamp to 0 */
-            int sx;
-            int v;
-            if (dx > 1) dx = 0;
-            sx = x + dx;
-            if (sx < 0) sx = 0; else if (sx >= FIRE_FW) sx = FIRE_FW - 1;
-            v = (int)below[sx] - (int)((r >> 2) & 1);
-            row[x] = (uint8_t)(v < 0 ? 0 : v);
+        uint8_t *row = g_fire_buf + y * FIRE_STRIDE + 1;
+        const uint8_t *below = row + FIRE_STRIDE;
+#if defined(WAIFU_FM_PCFX)
+        uint32_t *d0 = (uint32_t *)(framebuffer + (FIRE_Y0 + y * FIRE_SCALE) * WAIFU_FM_WIDTH);
+        uint32_t *d1 = (uint32_t *)(framebuffer + (FIRE_Y0 + y * FIRE_SCALE + 1) * WAIFU_FM_WIDTH);
+        int row_visible = (y < FIRE_HIDE_Y0 || y >= FIRE_HIDE_Y1);
+#endif
+        for (x = 0; x < FIRE_FW; x += 8) {
+            uint32_t bits = fire_rng_next();
+            int v0, v1, v2, v3, v4, v5, v6, v7;
+            FIRE_CELL_STEP(v0, below, x + 0, bits);
+            FIRE_CELL_STEP(v1, below, x + 1, bits);
+            FIRE_CELL_STEP(v2, below, x + 2, bits);
+            FIRE_CELL_STEP(v3, below, x + 3, bits);
+            FIRE_CELL_STEP(v4, below, x + 4, bits);
+            FIRE_CELL_STEP(v5, below, x + 5, bits);
+            FIRE_CELL_STEP(v6, below, x + 6, bits);
+            FIRE_CELL_STEP(v7, below, x + 7, bits);
+            row[x + 0] = (uint8_t)v0;
+            row[x + 1] = (uint8_t)v1;
+            row[x + 2] = (uint8_t)v2;
+            row[x + 3] = (uint8_t)v3;
+            row[x + 4] = (uint8_t)v4;
+            row[x + 5] = (uint8_t)v5;
+            row[x + 6] = (uint8_t)v6;
+            row[x + 7] = (uint8_t)v7;
+#if defined(WAIFU_FM_PCFX)
+            {
+                int w = x >> 1;
+                if (row_visible || x == 0) {
+                    uint32_t w0 = (uint32_t)g_fire_lut2[v0] | ((uint32_t)g_fire_lut2[v1] << 16);
+                    uint32_t w1 = (uint32_t)g_fire_lut2[v2] | ((uint32_t)g_fire_lut2[v3] << 16);
+                    d0[w + 0] = w0; d0[w + 1] = w1;
+                    d1[w + 0] = w0; d1[w + 1] = w1;
+                }
+                if (row_visible || x == FIRE_FW - 8) {
+                    uint32_t w2 = (uint32_t)g_fire_lut2[v4] | ((uint32_t)g_fire_lut2[v5] << 16);
+                    uint32_t w3 = (uint32_t)g_fire_lut2[v6] | ((uint32_t)g_fire_lut2[v7] << 16);
+                    d0[w + 2] = w2; d0[w + 3] = w3;
+                    d1[w + 2] = w2; d1[w + 3] = w3;
+                }
+            }
+#endif
+        }
+        row[-1] = row[0];
+        row[FIRE_FW] = row[FIRE_FW - 1];
+    }
+
+#if defined(WAIFU_FM_PCFX)
+    /* The base row is the only one the fused loop above did not emit. */
+    {
+        uint32_t *d0 = (uint32_t *)(framebuffer + (FIRE_Y0 + (FIRE_FH - 1) * FIRE_SCALE) * WAIFU_FM_WIDTH);
+        uint32_t *d1 = (uint32_t *)(framebuffer + (FIRE_Y0 + (FIRE_FH - 1) * FIRE_SCALE + 1) * WAIFU_FM_WIDTH);
+        for (x = 0; x < FIRE_FW; x += 2) {
+            uint32_t w0 = (uint32_t)g_fire_lut2[bottom[x]] |
+                          ((uint32_t)g_fire_lut2[bottom[x + 1]] << 16);
+            d0[x >> 1] = w0;
+            d1[x >> 1] = w0;
         }
     }
-
+#else
     /* Blit low-res intensity to the framebuffer (FIRE_SCALE x) via the colour
        LUT.  At scale 2 this is the original 2x doubler; CD32X blits 4x. */
     if (waifu_hw2d_active()) {
@@ -11825,7 +11956,7 @@ static void draw_oldschool_fire(int f)
            whole flame band to the hardware layer as one scaled image. */
         static uint8_t mapped[FIRE_FW * FIRE_FH];
         for (y = 0; y < FIRE_FH; ++y) {
-            const uint8_t *src = g_fire_buf + y * FIRE_FW;
+            const uint8_t *src = g_fire_buf + y * FIRE_STRIDE + 1;
             uint8_t *dst = mapped + y * FIRE_FW;
             for (x = 0; x < FIRE_FW; ++x) dst[x] = g_fire_lut[src[x]];
         }
@@ -11840,7 +11971,7 @@ static void draw_oldschool_fire(int f)
         return;
     }
     for (y = 0; y < FIRE_FH; ++y) {
-        const uint8_t *src = g_fire_buf + y * FIRE_FW;
+        const uint8_t *src = g_fire_buf + y * FIRE_STRIDE + 1;
         uint8_t *d0 = framebuffer + (FIRE_Y0 + y * FIRE_SCALE) * WAIFU_FM_WIDTH;
         int sy;
         for (x = 0; x < FIRE_FW; ++x) {
@@ -11854,6 +11985,7 @@ static void draw_oldschool_fire(int f)
             for (x = 0; x < FIRE_FW * FIRE_SCALE; ++x) dn[x] = d0[x];
         }
     }
+#endif
 }
 
 static void draw_story_fire_screen(int f)
@@ -11869,7 +12001,14 @@ static void draw_story_fire_screen(int f)
     int fire_vis = past_last_line ? 0 : story_text_reveal_count(STORY_TW_FIRE, line, f, fire_len);
     char fire_shown[128];
     waifu_str_copy_n(fire_shown, (int)sizeof(fire_shown), fire_text, fire_vis);
+#if defined(WAIFU_FM_PCFX)
+    /* The flame band covers every pixel from FIRE_Y0 to the bottom of the
+       screen, so the full-frame clear only has to blacken the strip above it --
+       the rest was ~51 KB of framebuffer stores immediately overwritten. */
+    fill_rows(0, FIRE_Y0, IDX_BLACK);
+#else
     clear_screen(IDX_BLACK);
+#endif
     ui_hud_begin();
     draw_oldschool_fire(f);
     draw_panel_rect(8, WAIFU_UI_BOTTOM_Y(172), WAIFU_FM_WIDTH + ex - 16, 57, IDX_UI_DARK);
@@ -13979,7 +14118,8 @@ static void debug_prepare_story_save_fixture(void)
     generate_story_starter_deck();
     generate_story_storage_pool();
     memset(g_story_name, 0, sizeof(g_story_name));
-    strncpy(g_story_name, "SAVEOK", STORY_NAME_LEN);
+    /* Keep scripted/regression captures representative of the default heroine. */
+    strncpy(g_story_name, "SERENA", STORY_NAME_LEN);
     g_story_name[STORY_NAME_LEN] = '\0';
     g_story_duel_index = 3;
     g_story_progress = 3;

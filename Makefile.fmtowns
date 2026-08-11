@@ -26,50 +26,154 @@ COMMONDIR       = $(FMTOWNS_DIR)/common
 OBJDIR          = build/fmtowns
 CDROOT          = $(OBJDIR)/CD
 
-CFLAGS          = -I$(OBJDIR) -I$(BOOTDIR) -I$(COMMONDIR) -I$(FMTOWNS_DIR) \
-                  -Wall -march=i386 -std=gnu99 -m32 -Os \
+CORE_INCLUDES   = -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated
+# Which of the game core's render caches this target can afford.  All three
+# trade RAM for skipped work, and on this machine two of them lose:
+#
+# * WAIFU_FLOOR_SAMPLE_CACHE_DISABLE stays on -- the LUT is 256 KiB per tile
+#   size (FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16 in src/main.c), far more .bss
+#   than there is, and main.c's #else path already avoids the 64-bit divide
+#   the LUT existed to replace.
+# * WAIFU_BG_CACHE_DISABLE stays on -- restoring it is a 61440-byte copy,
+#   milliseconds on a 16 MHz 386SX behind a 16-bit bus, and the battle
+#   composite cache below already covers the one view whose board render
+#   costs more than that.
+# * WAIFU_BATTLE_BASE_CACHE_DISABLE comes OFF: 60 KiB of .bss to skip a
+#   whole software-3D board render on the top-down board view, which is the
+#   expensive one (~19 ms of game step).  main.c's WAIFU_FM_FMTOWNS branch
+#   in battle_base_cache_for_camera() is what keeps it to that view --
+#   caching every camera made the cheap hand view slower than no cache.
+#
+# Keep an eye on BSS_LIMIT below when adding to this list, and see
+# src/platform/fmtowns/STATUS.md for how to measure a change like this
+# without fooling yourself.
+CORE_DEFINES    = -DWAIFU_FM_FMTOWNS -DWAIFU_FM_NO_HEADLESS_MAIN \
+                  -DWAIFU_ASSET_NO_STDIO -DWAIFU_ASSET_USE_CDROM \
+                  -DWAIFU_ASSET_BIG_CACHE_SLOTS=40 -DWAIFU_ASSET_RAM_BUDGET=1048576 \
+                  -DWAIFU_BG_CACHE_DISABLE \
+                  -DWAIFU_FLOOR_SAMPLE_CACHE_DISABLE
+
+CBASEFLAGS      = -Wall -march=i386 -std=gnu99 -m32 -Os \
                   -fomit-frame-pointer -fno-builtin -ffreestanding \
+                  -ffunction-sections -fdata-sections \
                   -fPIC -Wno-stack-protector -fno-stack-protector -s
+
+CFLAGS          = -I$(OBJDIR) -I$(BOOTDIR) -I$(COMMONDIR) -I$(FMTOWNS_DIR) \
+                  $(CORE_INCLUDES) $(CORE_DEFINES) $(CBASEFLAGS)
+
+# Game-core objects (src/main.c, src/game/*, src/engine/*) deliberately do
+# NOT see -I$(COMMONDIR)/-I$(BOOTDIR)/-I$(FMTOWNS_DIR): this target's own
+# common/common.h (CRTC/palette I/O) shadows src/engine/common.h (the
+# DEFAULT_INT/Point2D game-core types) under quote-include lookup, since
+# COMMONDIR would otherwise come first in the search path -- silently
+# compiling the wrong "common.h" into every game-core TU. Only
+# waifu_fmtowns_platform.c/_runtime.c/_cdrom.c (this port's own glue, which
+# legitimately needs both assets.h and iso9660.h/cdrom.h) use the full
+# $(CFLAGS) above.
+#
+# GAME_OPT is split out because the game core is where every frame is
+# actually spent (software 3D board, card blits), so it is the one place
+# trading size for speed would pay.  It stays at -Os anyway: -O2 grows the
+# payload by ~64 KiB, which puts it over the 512 KiB boot-sector ceiling
+# (see PAYLOAD_LIMIT below) and the machine boots to a silent black screen.
+# Anyone re-measuring this needs to free image space first -- the ceiling is
+# a boot-time layout constraint, not a compiler flag.
+GAME_OPT        ?= -Os
+GAME_CFLAGS     = $(CORE_INCLUDES) $(CORE_DEFINES) \
+                  $(filter-out -Os,$(CBASEFLAGS)) $(GAME_OPT)
+
+# Headless verification hook.  FMTOWNS_DEBUG_INPUT=1 compiles a frame-indexed
+# button script (INPUT_SCRIPT below) into the payload, which fmtowns_main.c ORs
+# into the real pad read every frame.  It exists because nothing in a headless
+# setup can inject a pad press into Tsugaru_CUI -- its monitor's TYPE command
+# reaches the keyboard controller but not the game ports, and AUTOSHOT only
+# drives a physical host gamepad, so without this the port can only ever be
+# verified as far as the title screen.  Off by default: the shipping payload
+# carries none of it.
+FMTOWNS_DEBUG_INPUT ?= 0
+INPUT_SCRIPT    = $(FMTOWNS_DIR)/debug_input.txt
+INPUT_SCRIPT_H  = $(OBJDIR)/fmtowns_input_script.h
+
+ifeq ($(FMTOWNS_DEBUG_INPUT),1)
+CORE_DEFINES   += -DFMTOWNS_DEBUG_INPUT
+MAIN_DEPS      += $(INPUT_SCRIPT_H)
+endif
 
 TSUGARU         = FMTOWNSCD_EXAMPLE_Cube/Tsugaru_CUI.elf
 MARTY_ROM       = FMTOWNSCD_EXAMPLE_Cube/MARTY_ROM
 
 # ---------------------------------------------------------------------
+# Game-core object set (milestone 7): the portable game core
+# (src/main.c, src/game/*, src/engine/*), the same sources
+# CD32X_SH2_SRCS_C in Makefile.cd32x lists, compiled freestanding for this
+# target with the flags cd32x_sh2_main.c's SH2_CFLAGS_BASE established as
+# the pattern (WAIFU_FM_NO_HEADLESS_MAIN, WAIFU_ASSET_NO_STDIO, the cache
+# WAIFU_*_DISABLE knobs). Objects land out-of-tree under
+# $(OBJDIR)/core/ (mirroring Makefile.cd32x's SH2_OBJDIR) so this doesn't
+# collide with any other target's build of the same shared sources.
+# ---------------------------------------------------------------------
+COREOBJDIR      = $(OBJDIR)/core
+CORE_SRCS_C     = src/main.c \
+                  src/game/ai.c src/game/deck.c src/game/palette.c \
+                  src/game/sounds.c src/game/assets.c \
+                  src/engine/renderer3d.c src/engine/renderer3d_fmtowns.c \
+                  src/engine/common.c
+CORE_OBJS       = $(patsubst %.c,$(COREOBJDIR)/%.o,$(CORE_SRCS_C))
+
+# ---------------------------------------------------------------------
 # Milestone-1 object set: boot trampoline + libfmt video/CRTC/palette +
-# CD-ROM/ISO9660 media stubs (linked in because media.h's CD path pulls
-# them in even though start_main() does not read any assets yet) + the
-# new fmtowns_main.c entry point. No game-core sources are compiled yet
-# (see STATUS.md) -- that is intentionally deferred to a later milestone.
+# CD-ROM/ISO9660 media stubs + the fmtowns_main.c entry point.
+# Milestone 7 additionally links the game-core object set above plus this
+# target's own platform.h seam / freestanding libc / CD asset backend
+# (waifu_fmtowns_platform.c, waifu_fmtowns_runtime.c, waifu_fmtowns_cdrom.c
+# -- see those files' headers and STATUS.md).
 # ---------------------------------------------------------------------
 OBJS            = $(BOOTDIR)/head.o $(BOOTDIR)/reloc.o \
                   $(FMTOWNS_DIR)/fmtowns_main.o $(FMTOWNS_DIR)/fmtowns_video.o \
                   $(FMTOWNS_DIR)/fmtowns_input.o $(FMTOWNS_DIR)/fmtowns_audio.o \
+                  $(FMTOWNS_DIR)/fmtowns_sfx.o $(COMMONDIR)/sound.o \
                   $(FMTOWNS_DIR)/fmtowns_cube_demo.o \
                   $(FMTOWNS_DIR)/fmtowns_title_asset.o \
+                  $(FMTOWNS_DIR)/waifu_fmtowns_runtime.o \
+                  $(FMTOWNS_DIR)/waifu_fmtowns_platform.o \
+                  $(FMTOWNS_DIR)/waifu_fmtowns_cdrom.o \
                   $(COMMONDIR)/common.o $(COMMONDIR)/palette.o $(COMMONDIR)/libfmt.o \
                   $(COMMONDIR)/pad.o $(COMMONDIR)/cdrom.o $(COMMONDIR)/iso9660.o \
-                  $(COMMONDIR)/cdda.o
+                  $(COMMONDIR)/cdda.o \
+                  $(CORE_OBJS)
 
 IPLBIN          = $(OBJDIR)/IPL.BIN
 PAYLOAD_ELF     = $(OBJDIR)/mygame_shared
 PAYLOAD_BIN     = $(OBJDIR)/mygame_shared.bin
 OUTPUT_ISO      = $(OBJDIR)/output.iso
 
-# Milestone 5: CD-DA. A clip of the game's real title music, staged as
-# audio track 2 behind the ISO9660 data track 1 (see tools/fmtowns/mkcd.sh)
-# and read back by src/platform/fmtowns/common/cdda.c ->
-# fmtowns_audio_start_music(). Trimmed to keep local build/boot-test
-# iteration fast; nothing about the CD-DA path itself depends on the clip
-# length.
-MUSIC_SRC       = Music/Titlescreen_MoonlitCipher.wav
-MUSIC_CLIP_SECS ?= 20
-MUSIC_CLIP      = $(OBJDIR)/title_music_clip.wav
+# CD-DA music: the game's whole soundtrack, one Red Book audio track per
+# WAV behind the ISO9660 data track 1 (tools/fmtowns/mkcd.sh), played by
+# src/platform/fmtowns/common/cdda.c through fmtowns_audio.c.
+#
+# MUSIC_STEMS's ORDER IS THE DISC'S TRACK ORDER: the first stem is CD track
+# 2 (track 1 being data), the second track 3, and so on.  Rather than
+# writing those numbers down twice, the rule below generates
+# fmtowns_cdda_tracks.h from this list, and fmtowns_audio.c maps
+# WaifuFmMusicTrack onto the generated FMTOWNS_CDDA_TRACK_* constants -- so
+# reordering or inserting a stem here cannot desync the code from the disc.
+#
+# MUSIC_SECS trims every track to that many seconds, purely to keep local
+# build + boot-test iteration fast (the full soundtrack is ~18 minutes and
+# ~190 MB of audio sectors).  0, the default, means full length: that is
+# what a real build wants.
+MUSIC_STEMS     = Titlescreen_MoonlitCipher Overworld Battle Boss FinalBoss \
+                  Victory Fail Youlost
+MUSIC_SECS      ?= 0
+MUSIC_SRCS      = $(patsubst %,Music/%.wav,$(MUSIC_STEMS))
+MUSIC_TRACKS    = $(patsubst %,$(OBJDIR)/cdda/%.wav,$(MUSIC_STEMS))
+CDDA_TRACKS_H   = $(OBJDIR)/fmtowns_cdda_tracks.h
 OUTPUT_CUE      = $(OBJDIR)/output.cue
 
 .DEFAULT_GOAL   := all
 
 FLAGS_STAMP     = $(OBJDIR)/flags.stamp
-FLAGS_STAMP_TEXT = $(CFLAGS)
+FLAGS_STAMP_TEXT = $(CFLAGS) $(GAME_CFLAGS)
 .PHONY: force
 $(FLAGS_STAMP): force
 	@mkdir -p $(OBJDIR)
@@ -94,20 +198,52 @@ $(CDROOT): | $(OBJDIR)
 # reloc.c self-relocates it at boot). PAYLOAD_LOAD/PAYLOAD_LIMIT match
 # src/platform/fmtowns/boot/defs.h's TSTLOAD and the FMR VRAM window start.
 PAYLOAD_LOAD    = 0x10000
-PAYLOAD_LIMIT   = 0xC0000
+# The loaded image's real ceiling is the boot sector, not the VRAM window.
+# bootsect.S relocates itself (and its stack, SP = 0x3FF4) to INITSEG =
+# 0x9000 in boot/defs.h, and then loads the payload upward from 0x10000 --
+# so the moment the payload reaches 0x90000 it overwrites the loader that is
+# still running and the machine boots to a black screen with no diagnostic
+# at all.  That is 512 KiB of payload, not the 0xC0000 (704 KiB) this check
+# used to allow; the difference is exactly why a -O2 game core (545 KiB)
+# linked cleanly and then would not boot.  Raising it means moving INITSEG
+# up (0xB000 would buy another 128 KiB, if 0xB0000 is RAM on the target
+# machine) -- not relaxing this number.
+PAYLOAD_LIMIT   = 0x90000
+# .bss is linked into extended RAM instead (see boot/mygame_shared.lds): it
+# is NOBITS, so it never has to fit under the 0xC0000 FMR VRAM window with
+# the loaded image.  A Marty has 2 MB, so 0x200000 is the hard ceiling.
+BSS_LIMIT       = 0x200000
+
+# Milestone 7's game core does 64-bit division (renderer3d.c's pyramid
+# faces, sounds.c's stream math) that gcc lowers to __divdi3/__udivdi3
+# rather than inlining -- there is no HARDWARE_DIV-style i386 shortcut like
+# CD32X's SH2_CFLAGS_BASE uses, so pull those two helpers (and only those:
+# LIBGCC is an archive, so the linker takes just the referenced members)
+# from the host toolchain's 32-bit libgcc.
+LIBGCC          := $(shell $(CC) -m32 -print-libgcc-file-name)
 
 $(PAYLOAD_ELF): $(OBJS) $(BOOTDIR)/mygame_shared.lds | $(OBJDIR)
-	$(LD) --warn-constructors --warn-common -static -T $(BOOTDIR)/mygame_shared.lds \
-		-o $@ $(OBJS) && \
-	$(LD) -shared -Bsymbolic -T $(BOOTDIR)/mygame_shared.lds -o $@ $(OBJS)
+	$(LD) --gc-sections --warn-constructors --warn-common -static -T $(BOOTDIR)/mygame_shared.lds \
+		-o $@ $(OBJS) $(LIBGCC) && \
+	$(LD) --gc-sections -shared -Bsymbolic -T $(BOOTDIR)/mygame_shared.lds -o $@ $(OBJS) $(LIBGCC)
 	@objdump -h $@ | awk -v base="$(PAYLOAD_LOAD)" -v top="$(PAYLOAD_LIMIT)" \
-		'$$2==".bss" { \
-		   base = strtonum(base); top = strtonum(top); \
-		   last = base + strtonum("0x" $$4) + strtonum("0x" $$3); \
-		   printf "payload ends at 0x%x, main RAM ends at 0x%x (%d bytes spare)\n", \
-		          last, top, top - last; \
-		   if (last > top) { \
-		     print "payload overruns main RAM: .bss past 0xC0000 is the FMR VRAM window, not memory" > "/dev/stderr"; \
+		-v bsstop="$(BSS_LIMIT)" \
+		'BEGIN { base = strtonum(base); top = strtonum(top); \
+		         bsstop = strtonum(bsstop); imgend = 0 } \
+		 $$2==".bss" { bssend = base + strtonum("0x" $$4) + strtonum("0x" $$3); next } \
+		 $$1 ~ /^[0-9]+$$/ && $$2 !~ /^\.(bss|comment|debug)/ { \
+		   e = base + strtonum("0x" $$4) + strtonum("0x" $$3); \
+		   if (e > imgend) imgend = e } \
+		 END { \
+		   printf "loaded image ends at 0x%x / 0x%x (%d bytes spare, boot-sector ceiling)\n", \
+		          imgend, top, top - imgend; \
+		   printf ".bss ends at 0x%x / 0x%x (%d bytes spare)\n", \
+		          bssend, bsstop, bsstop - bssend; \
+		   if (imgend > top) { \
+		     print "loaded image overruns low RAM: past 0xC0000 is the FMR VRAM window, not memory" > "/dev/stderr"; \
+		     exit 1 } \
+		   if (bssend > bsstop) { \
+		     print ".bss overruns a 2 MB Marty (extended RAM ends at 0x200000)" > "/dev/stderr"; \
 		     exit 1 } }'
 
 $(PAYLOAD_BIN): $(PAYLOAD_ELF)
@@ -147,7 +283,10 @@ $(BOOTDIR)/head.o: $(BOOTDIR)/head.s $(FLAGS_STAMP)
 $(BOOTDIR)/reloc.o: $(BOOTDIR)/reloc.c $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -fno-strict-aliasing -o $@ $<
 
-$(FMTOWNS_DIR)/fmtowns_main.o: $(FMTOWNS_DIR)/fmtowns_main.c $(FLAGS_STAMP)
+$(INPUT_SCRIPT_H): $(INPUT_SCRIPT) tools/fmtowns/gen_input_script.py | $(OBJDIR)
+	python3 tools/fmtowns/gen_input_script.py $(INPUT_SCRIPT) $@
+
+$(FMTOWNS_DIR)/fmtowns_main.o: $(FMTOWNS_DIR)/fmtowns_main.c $(MAIN_DEPS) $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/fmtowns_video.o: $(FMTOWNS_DIR)/fmtowns_video.c $(FMTOWNS_DIR)/fmtowns_video.h $(FLAGS_STAMP)
@@ -156,11 +295,39 @@ $(FMTOWNS_DIR)/fmtowns_video.o: $(FMTOWNS_DIR)/fmtowns_video.c $(FMTOWNS_DIR)/fm
 $(FMTOWNS_DIR)/fmtowns_input.o: $(FMTOWNS_DIR)/fmtowns_input.c $(FMTOWNS_DIR)/fmtowns_input.h $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
-$(FMTOWNS_DIR)/fmtowns_audio.o: $(FMTOWNS_DIR)/fmtowns_audio.c $(FMTOWNS_DIR)/fmtowns_audio.h $(FLAGS_STAMP)
+$(FMTOWNS_DIR)/fmtowns_audio.o: $(FMTOWNS_DIR)/fmtowns_audio.c $(FMTOWNS_DIR)/fmtowns_audio.h $(CDDA_TRACKS_H) $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/fmtowns_cube_demo.o: $(FMTOWNS_DIR)/fmtowns_cube_demo.c $(FMTOWNS_DIR)/fmtowns_cube_demo.h $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
+
+# Sound-effect wave data, packed for the RF5C68 out of the same sounds/*.wav
+# the other ports use (tools/fmtowns/gen_sfx_pcm.py).  Linked into the
+# payload rather than staged on the CD: reading it off disc would stop the
+# CD-DA music every time the game beeped (see fmtowns_sfx.c).
+SFX_PCM_H       = $(OBJDIR)/fmtowns_sfx_pcm.h
+SFX_WAV_DIR     = sounds
+
+$(SFX_PCM_H): tools/fmtowns/gen_sfx_pcm.py $(wildcard $(SFX_WAV_DIR)/*.wav) | $(OBJDIR)
+	python3 tools/fmtowns/gen_sfx_pcm.py $(SFX_WAV_DIR) $@
+
+$(FMTOWNS_DIR)/fmtowns_sfx.o: $(FMTOWNS_DIR)/fmtowns_sfx.c $(FMTOWNS_DIR)/fmtowns_sfx.h $(SFX_PCM_H) $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+$(FMTOWNS_DIR)/waifu_fmtowns_runtime.o: $(FMTOWNS_DIR)/waifu_fmtowns_runtime.c $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+$(FMTOWNS_DIR)/waifu_fmtowns_platform.o: $(FMTOWNS_DIR)/waifu_fmtowns_platform.c $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+$(FMTOWNS_DIR)/waifu_fmtowns_cdrom.o: $(FMTOWNS_DIR)/waifu_fmtowns_cdrom.c $(FLAGS_STAMP)
+	$(CC) -c $(CFLAGS) -o $@ $<
+
+# Game-core object set (milestone 7) -- out-of-tree, see CORE_OBJS above.
+# Uses GAME_CFLAGS, not CFLAGS -- see that variable's comment above.
+$(COREOBJDIR)/%.o: %.c $(FLAGS_STAMP)
+	@mkdir -p $(dir $@)
+	$(CC) -c $(GAME_CFLAGS) -o $@ $<
 
 # The game's real 256x240 8bpp title screen + palette (src/generated/
 # title_asset.h, the same asset every other platform's title screen is
@@ -176,6 +343,35 @@ $(FMTOWNS_DIR)/fmtowns_title_asset.o: $(FMTOWNS_DIR)/fmtowns_title_asset.S $(OBJ
 $(COMMONDIR)/%.o: $(COMMONDIR)/%.c $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -o $@ $<
 
+# Milestone 7: the game's real card/portrait/atlas art, staged onto the CD
+# as 8.3-named files and read back at runtime by waifu_fmtowns_cdrom.c's
+# waifu_assets_platform_read_blob_slice() through fmt_iso9660_find() +
+# fmt_cdrom_read() -- same mechanics milestone 3 proved for TITLE.BIN,
+# just for the rest of assets.h's WaifuAssetBlobId set. Source .bin files
+# are already-generated, platform-neutral raw pixel blobs (tools/gen_assets.py)
+# shared with the CD32X/PC-FX CD builds; only the CD *filenames* are this
+# port's own choice (see waifu_fmtowns_cdrom.c's blob_filename()).
+CD_ASSET_FILES  = PORTRAIT.BIN PORTMASK.BIN CARDFACE.BIN CARDBIG.BIN \
+                  CARDBACK.BIN SUPFACE.BIN SUPBIG.BIN TEXATLAS.BIN
+CD_ASSET_TARGETS = $(addprefix $(CDROOT)/,$(CD_ASSET_FILES))
+
+$(CDROOT)/PORTRAIT.BIN: assets/generated/story_portraits.bin | $(CDROOT)
+	cp -f $< $@
+$(CDROOT)/PORTMASK.BIN: assets/generated/story_portrait_mask.bin | $(CDROOT)
+	cp -f $< $@
+$(CDROOT)/CARDFACE.BIN: assets/generated/card_faces.bin | $(CDROOT)
+	cp -f $< $@
+$(CDROOT)/CARDBIG.BIN: assets/generated/card_big_art.bin | $(CDROOT)
+	cp -f $< $@
+$(CDROOT)/CARDBACK.BIN: assets/generated/card_back.bin | $(CDROOT)
+	cp -f $< $@
+$(CDROOT)/SUPFACE.BIN: assets/generated/support_face.bin | $(CDROOT)
+	cp -f $< $@
+$(CDROOT)/SUPBIG.BIN: assets/generated/support_big_art.bin | $(CDROOT)
+	cp -f $< $@
+$(CDROOT)/TEXATLAS.BIN: assets/generated/tex_atlas.bin | $(CDROOT)
+	cp -f $< $@
+
 $(IPLBIN): $(BOOTDIR)/bootsect.o $(BOOTDIR)/setup.o $(BOOTDIR)/ipl.bin.lds | $(OBJDIR)
 	$(LD) -T $(BOOTDIR)/ipl.bin.lds $(BOOTDIR)/bootsect.o $(BOOTDIR)/setup.o -o $@
 
@@ -185,25 +381,56 @@ $(IPLBIN): $(BOOTDIR)/bootsect.o $(BOOTDIR)/setup.o $(BOOTDIR)/ipl.bin.lds | $(O
 # staged relative to it.
 MKCD            = $(abspath tools/fmtowns/mkcd.sh)
 
-$(OUTPUT_ISO): $(IPLBIN) $(CDROOT)/SYSTEM.BIN $(CDROOT)/TITLE.BIN $(CDROOT)/TITLE.PAL tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
+$(OUTPUT_ISO): $(IPLBIN) $(CDROOT)/SYSTEM.BIN $(CDROOT)/TITLE.BIN $(CDROOT)/TITLE.PAL $(CD_ASSET_TARGETS) tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
 	cd $(OBJDIR) && $(MKCD)
 
-$(MUSIC_CLIP): $(MUSIC_SRC) | $(OBJDIR)
-	sox $(MUSIC_SRC) $@ trim 0 $(MUSIC_CLIP_SECS)
+# Each soundtrack WAV, converted once into $(OBJDIR)/cdda/ (and trimmed if
+# MUSIC_SECS says so) so mkcd.sh gets a stable set of inputs and a rebuild
+# does not re-decode ~190 MB of audio every time.
+#
+# MUSIC_SECS is part of the recipe, not just a knob, so it has to be part of
+# the dependency: without this stamp, switching from a trimmed iteration
+# build back to MUSIC_SECS=0 leaves the already-converted 20-second clips in
+# place and silently ships a disc full of truncated music.
+MUSIC_STAMP     = $(OBJDIR)/cdda/secs.stamp
+$(MUSIC_STAMP): force
+	@mkdir -p $(dir $@)
+	@echo '$(MUSIC_SECS)' | cmp -s - $@ || echo '$(MUSIC_SECS)' > $@
 
-# Mixed-mode disc: same ISO9660 data track as $(OUTPUT_ISO), plus
-# $(MUSIC_CLIP) as Red Book audio track 2 (mkcd.sh's multi-arg form ->
-# output.bin + output.cue instead of a plain .iso). Tsugaru's -CD flag
-# accepts either.
-$(OUTPUT_CUE): $(IPLBIN) $(CDROOT)/SYSTEM.BIN $(CDROOT)/TITLE.BIN $(CDROOT)/TITLE.PAL $(MUSIC_CLIP) tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
-	cd $(OBJDIR) && $(MKCD) $(abspath $(MUSIC_CLIP))
+$(OBJDIR)/cdda/%.wav: Music/%.wav $(MUSIC_STAMP) | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	$(if $(filter 0,$(MUSIC_SECS)), \
+	    cp -f $< $@, \
+	    sox $< $@ trim 0 $(MUSIC_SECS))
+
+# Track numbers, derived from MUSIC_STEMS's order so the disc layout and
+# the code that plays it cannot disagree -- see MUSIC_STEMS above.
+$(CDDA_TRACKS_H): Makefile.fmtowns | $(OBJDIR)
+	@{ echo '/* Generated by Makefile.fmtowns from MUSIC_STEMS. Do not edit. */'; \
+	   echo '#ifndef FMTOWNS_CDDA_TRACKS_H'; \
+	   echo '#define FMTOWNS_CDDA_TRACKS_H'; \
+	   echo ''; \
+	   n=1; for stem in $(MUSIC_STEMS); do \
+	     n=$$((n + 1)); \
+	     echo "#define FMTOWNS_CDDA_TRACK_$$(echo $$stem | tr 'a-z' 'A-Z') $$n"; \
+	   done; \
+	   echo ''; \
+	   echo '#endif'; } > $@
+	@echo "cdda tracks: $(words $(MUSIC_STEMS)) audio tracks (2-$(shell expr 1 + $(words $(MUSIC_STEMS))))"
+
+# Mixed-mode disc: the same ISO9660 data track as $(OUTPUT_ISO), plus one
+# Red Book audio track per MUSIC_STEMS entry, in that order (mkcd.sh's
+# multi-arg form -> output.bin + output.cue instead of a plain .iso).
+# Tsugaru's -CD flag accepts either.
+$(OUTPUT_CUE): $(IPLBIN) $(CDROOT)/SYSTEM.BIN $(CDROOT)/TITLE.BIN $(CDROOT)/TITLE.PAL $(CD_ASSET_TARGETS) $(MUSIC_TRACKS) tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
+	cd $(OBJDIR) && $(MKCD) $(abspath $(MUSIC_TRACKS))
 
 .PHONY: run run-iso
 run: $(OUTPUT_CUE)
-	$(TSUGARU) $(MARTY_ROM)/ -TOWNSTYPE MARTY -CD $(OUTPUT_CUE) -NORMALFD -DONTUSEFPU -AUTOSCALE
+	$(TSUGARU) $(MARTY_ROM)/ -TOWNSTYPE MARTY -MEMSIZE 2 -CD $(OUTPUT_CUE) -NORMALFD -DONTUSEFPU -AUTOSCALE
 
 run-iso: $(OUTPUT_ISO)
-	$(TSUGARU) $(MARTY_ROM)/ -TOWNSTYPE MARTY -CD $(OUTPUT_ISO) -NORMALFD -DONTUSEFPU -AUTOSCALE
+	$(TSUGARU) $(MARTY_ROM)/ -TOWNSTYPE MARTY -MEMSIZE 2 -CD $(OUTPUT_ISO) -NORMALFD -DONTUSEFPU -AUTOSCALE
 
 .PHONY: iso
 .PHONY: clean

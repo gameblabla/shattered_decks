@@ -96,10 +96,38 @@ static int play(uint8_t channel, const uint8_t *data, uint32_t len, int loop)
     outb(g_channel_mask, FMT_SND_PCM_CH_ON_OFF);
     outb(0x00, FMT_SND_PCM_CTRL);
 
-    for (i = 0; i < len; i++) {
-        write_wave_byte(base + i, data[i]);
+    /* Upload a bank at a time rather than calling write_wave_byte() per byte.
+     * Wave RAM is reached through a 4 KiB window whose bank is chosen by a
+     * port write, and the bank only changes every 4096 bytes -- selecting it
+     * per byte doubles the I/O for a sample that can be nearly 8 KiB long,
+     * which is real time on a 386SX every time an effect is triggered. */
+    {
+        uint32_t done = 0;
+        while (done <= len) {          /* <= : the 0xff end marker after data */
+            uint32_t addr = base + done;
+            uint32_t in_bank = addr & (FMT_WAVERAM_BANK_SIZE - 1u);
+            uint32_t chunk = FMT_WAVERAM_BANK_SIZE - in_bank;
+            uint32_t remaining = len - done;
+
+            outb((uint8_t)((addr >> 12) & 0x0fu), FMT_SND_PCM_CTRL);
+            if (chunk > remaining) {
+                chunk = remaining;
+            }
+            for (i = 0; i < chunk; i++) {
+                FMT_WAVERAM_WINDOW[in_bank + i] = data[done + i];
+            }
+            done += chunk;
+            if (done == len) {
+                /* End marker, in this bank if it fits or the next one round. */
+                if (in_bank + chunk < FMT_WAVERAM_BANK_SIZE) {
+                    FMT_WAVERAM_WINDOW[in_bank + chunk] = 0xff;
+                } else {
+                    write_wave_byte(base + len, 0xff);
+                }
+                break;
+            }
+        }
     }
-    write_wave_byte(base + len, 0xff);
 
     loop_address = loop ? (uint16_t)base :
                           (uint16_t)(base + FMT_SOUND_SILENCE_OFFSET);

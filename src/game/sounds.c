@@ -25,6 +25,9 @@ extern void waifu_pcfx_sfx_play(int effect);
 #if defined(WAIFU_FM_CD32X)
 extern void waifu_cd32x_audio_play_sfx(int effect);
 #endif
+#if defined(WAIFU_FM_FMTOWNS)
+extern void waifu_fmtowns_sfx_play(int effect);
+#endif
 
 typedef struct WaifuSoundVoice {
     int active;
@@ -428,6 +431,12 @@ void waifu_sound_play(WaifuSoundEffect effect)
 #elif defined(WAIFU_FM_CD32X)
     if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return;
     waifu_cd32x_audio_play_sfx((int)effect);
+#elif defined(WAIFU_FM_FMTOWNS)
+    /* RF5C68 wave-table playback -- see src/platform/fmtowns/fmtowns_sfx.c.
+       Like PC-FX and CD32X, the sample data and mixing live in hardware, so
+       none of the software voice mixing below is compiled for this target. */
+    if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return;
+    waifu_fmtowns_sfx_play((int)effect);
 #else
     int i;
     int best = -1;

@@ -1,0 +1,50 @@
+# Default headless verification script for the FM TOWNS debug build.
+#
+#   make -f Makefile.fmtowns FMTOWNS_DEBUG_INPUT=1
+#   tools/fmtowns/headless_shot.sh <prefix> <monitor-script>
+#   tools/fmtowns/read_frame_stamp.py <shots>   # which frame each shot caught
+#
+# Syntax: <frame> <BUTTON[+BUTTON...]> [hold_frames]   (see
+# tools/fmtowns/gen_input_script.py).  Frames are game frames, not wall
+# clock, so the same script replays identically however slowly the emulator
+# happens to be running -- calibrate new steps by reading the frame stamp out
+# of a capture rather than by guessing at seconds.
+#
+# This one takes the BATTLE MODE path, the shortest route to a real duel and
+# so to the flat-shaded 3D renderer: title -> menu -> menu item 1 -> deck
+# editor -> duel, then keeps tapping A so the duel walks itself forward
+# through its phases.
+
+  90 START        # title: RUN to enter the menu
+ 300 DOWN         # menu: STORY MODE (0) -> BATTLE MODE (1)
+ 400 A            # enter the deck editor
+
+# The default deck is 34/40 with 6 cards sitting in storage, and START only
+# starts the duel on an exactly-40 deck (main.c's WAIFU_I_DECK_EDITOR case --
+# a short deck just flashes the counter).  So switch to the STORAGE tab and
+# move all six across before pressing START, or the script sits in the deck
+# editor forever, which is exactly what it used to do.
+ 900 TAB          # deck tab -> storage tab
+ 930 A            # move a storage card into the deck (x6)
+ 960 A
+ 990 A
+1020 A
+1050 A
+1080 A
+1110 START        # 40/40: commit the deck and start the duel
+
+# Duel: a tap every half second from frame 1300 to the end of the frame
+# range the table can hold.  Every duel phase advances on A, so a capture
+# taken at any later point lands somewhere real in the duel rather than on
+# whichever single phase one press happened to reach.  It runs this far
+# because the duel is now a 60 fps scene: a two-minute capture covers ~7000
+# game frames, and a script that stopped at 3000 left the last shots idling
+# in whatever phase the taps ran out on.
+#
+# The RIGHT/DOWN taps between the A presses matter: the board phases want a
+# square chosen before A does anything, so an A-only script eventually parks
+# on one square re-selecting it forever and the duel stops progressing (LP
+# frozen for 14000 frames, which is exactly what a capture showed).
+1300 A     4 x1060@60
+1320 RIGHT 4 x1060@60
+1340 DOWN  4 x1060@60
