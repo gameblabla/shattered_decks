@@ -388,7 +388,10 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_fast_pair_pc
  * Each can be switched back to its portable C original with
  * -DCFX_MEASURE_C_ROW, -DCFX_MEASURE_C_AFFINE or -DCFX_MEASURE_C_BOARD_FILL
  * (and cfx_board_fill can be stubbed out entirely with
- * -DCFX_MEASURE_SKIP_BOARD_FILL).  They are here because attributing a
+ * -DCFX_MEASURE_SKIP_BOARD_FILL, every textured span with
+ * -DCFX_MEASURE_SKIP_SPANS -- which answers "how much of this frame is the
+ * rasterizer at all", the question that decides whether to keep tuning the
+ * inner loops or to draw fewer pixels).  They are here because attributing a
  * measurement on this target is genuinely hard -- the emulator reports one
  * number for the whole game step -- and bisecting with these is what
  * established that the top-down board view goes through the constant-V row
@@ -992,6 +995,10 @@ static inline void cfx_draw_span_pcfx_exact_words(const CfxRenderer3DState *rend
 
 void cfx_draw_span(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, int16_t span, uint16_t tex_state, int16_t tex_step_linear, int8_t step_u, int8_t step_v)
 {
+#ifdef CFX_MEASURE_SKIP_SPANS
+    (void)renderer;(void)y;(void)xs;(void)span;(void)tex_state;
+    (void)tex_step_linear;(void)step_u;(void)step_v; return;
+#endif
 #if CFX_RENDERER_DIRECT_KRAM
     if (cfx_renderer3d_direct_kram_active(renderer)) {
         cfx_draw_span_kram(renderer, y, xs, span, tex_state, tex_step_linear, step_u, step_v);
@@ -1165,7 +1172,7 @@ static void cfx_board_fill_i386(uint8_t *dst, int n, uint32_t A, uint32_t dA,
 void cfx_board_fill(uint8_t *dst, int n,
         int32_t u, int32_t v, int32_t du, int32_t dv, const uint8_t *tile)
 {
-#ifdef CFX_MEASURE_SKIP_BOARD_FILL
+#if defined(CFX_MEASURE_SKIP_BOARD_FILL) || defined(CFX_MEASURE_SKIP_SPANS)
     (void)dst;(void)n;(void)u;(void)v;(void)du;(void)dv;(void)tile; return;
 #endif
     if (n <= 0) return;
@@ -1823,6 +1830,10 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
                                              int16_t y, int16_t xs, int16_t span,
                                              uint16_t tex_state, int8_t step_u, int8_t step_v)
 {
+#ifdef CFX_MEASURE_SKIP_SPANS
+    (void)renderer;(void)tile;(void)y;(void)xs;(void)span;(void)tex_state;
+    (void)step_u;(void)step_v; return;
+#endif
     if (span <= 0 || y < 0 || y >= renderer->height) {
         return;
     }

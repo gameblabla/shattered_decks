@@ -79,11 +79,18 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define FIELD_THICK (-108) /* -0.42 in Q8.8 */
 #define FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16 (Q8_FROM_INT(4) << Q8_SHIFT)
 #define FLOOR_SAMPLE_CACHE_SLOTS 2
-#if (defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)) && !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
-/* PC-FX/CD32X: render the battle board through the pre-projected quad path.  The
+#if (defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X) || defined(WAIFU_FM_FMTOWNS)) \
+    && !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
+/* Consoles: render the battle board through the pre-projected quad path.  The
    generic path reprojects every cell corner and wall corner independently;
    the fast path projects the shared grid once and draws the same 32x32 tile
-   quads with the compact affine renderer. */
+   quads with the compact affine renderer.
+
+   FM TOWNS was left off this list when the port was written, and stayed off
+   through a whole optimisation pass aimed at the span fillers -- which is why
+   that pass moved so little.  Stubbing every textured span out of the Marty's
+   uncached hand view took it from 129 ms to 122 ms: the fill was never the
+   cost, the generic path's per-cell projection and per-scanline setup was. */
 #define WAIFU_BOARD_FAST_AFFINE_ENABLE 1
 #endif
 #if defined(WAIFU_FM_CD32X) && !defined(WAIFU_CD32X_FIELD_SIDE_WALLS)
@@ -3878,6 +3885,16 @@ static void render_board(Camera cam)
        full framebuffer. */
     clear_screen(IDX_BLACK);
 
+#ifdef WAIFU_MEASURE_SKIP_BOARD
+    /* Measurement build only (EXTRA_CORE_DEFINES): draws no board at all, so
+       the difference against a normal build is everything the board costs --
+       projection, walker setup and fill together.  Whatever is left is the
+       cards, the HUD and the game step itself.  Pair it with
+       CFX_MEASURE_SKIP_SPANS, which removes only the fill. */
+    (void)cam;
+    return;
+#endif
+
 #if !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
     /* slab sides first */
     draw_field_slab_sides(cam);
@@ -6327,8 +6344,10 @@ typedef struct WaifuBattleBaseCache {
    cheap composite copy beats re-running the board and every placed card while
    only the cursor/hand/flying-card overlays move. */
 static WaifuBattleBaseCache g_b_base_cache;
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
 static WaifuBattleBaseCache g_b_base_cache_top;
+#endif
+#if defined(WAIFU_FM_PCFX)
 /* Cache the intermediate hand<->top lift keyframes too.  The lift is quantized
    onto WAIFU_PCFX_HANDTOP_ANCHORS camera positions precisely so they can be
    cached: without this the return trip (top->hand) and every repeat lift re-run
@@ -6343,8 +6362,10 @@ static void invalidate_battle_composite_cache(void)
 {
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
     g_b_base_cache.valid = 0;
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
     g_b_base_cache_top.valid = 0;
+#endif
+#if defined(WAIFU_FM_PCFX)
     for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS - 2; ++i) g_b_handtop_mid_cache[i].valid = 0;
     g_b_handtop_prewarm_index = 0;
 #endif
@@ -9053,21 +9074,32 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
         return &g_b_handtop_mid_cache[0];
     return NULL;
 #elif defined(WAIFU_FM_FMTOWNS)
-    /* Marty caches the top-down board views only.  Restoring a composite is a
-       61440-byte RAM-to-RAM copy, which on a 16 MHz 386SX behind a 16-bit bus
-       is milliseconds, not the near-free operation it is on the other
-       targets.  So the trade only pays where the render it replaces costs
-       more than the copy, and on this machine that is the top-down board
-       view (measured at ~19 ms of game step) and not the hand view (~4 ms,
-       most of the board off-screen or behind the cards).  Handing every
-       camera the cache, which is what the generic branch below does, made
-       the hand view measurably slower than no cache at all.
+    /* Marty caches both resting views: the top-down board and the hand view.
+       Restoring a composite is a 61440-byte RAM-to-RAM copy, which on a 16 MHz
+       386SX behind a 16-bit bus costs real milliseconds rather than being the
+       near-free operation it is on the other targets, so the trade only pays
+       where the render it replaces costs more than the copy.
 
-       Both top cameras share the one slot.  They belong to different phases
-       and never alternate frame to frame, so they do not thrash; a phase
-       change costs one re-render, which is what a cache miss always costs. */
+       It pays in BOTH resting views, which the earlier version of this comment
+       denied on the strength of a measurement that was not real: it had the
+       hand view's board render at ~4 ms, when the honest figure is over
+       100 ms.  The 1 us clock those numbers came from wraps every 65.536 ms
+       and this port's duel frames are longer than that, so the hand view was
+       being timed modulo the wrap (see fmtowns_main.c's frame-clock note).
+       The hand camera looks along the board rather than down at it, so the
+       floor's near rows are magnified across most of the screen -- it is the
+       more expensive view to rasterize, not the cheaper one.
+
+       Two slots, because the hand view and the top view are what the player
+       toggles between with UP/DOWN: sharing one slot would make every toggle
+       a full re-render of the view being entered.  Each pair of cameras
+       (player/enemy side) shares its slot -- those belong to different phases
+       and never alternate frame to frame. */
     if (camera_equal(cam, battle_top_camera()) ||
         camera_equal(cam, enemy_battle_top_camera()))
+        return &g_b_base_cache_top;
+    if (camera_equal(cam, player_camera()) ||
+        camera_equal(cam, enemy_camera()))
         return &g_b_base_cache;
     return NULL;
 #else
