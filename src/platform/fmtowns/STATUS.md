@@ -708,6 +708,12 @@ like Marty, so this exercises the branch both ways.
 - **`fmtowns_main.c`'s `start_main()` calls `fmt_machine_detect()` as its
   first line**, before `fmt_media_init()` or anything that could touch
   VRAM (`fmt_set_mode()`, any present call).
+- **The same startup call now explicitly enables FAST mode** through I/O
+  `0x5EC` (bit 0).  Firmware can leave a standard-model boot with six
+  main-RAM and VRAM wait states even when Marty happened to boot fast.  The
+  bare-metal payload must not inherit that BIOS choice: it selects the
+  documented fast bus setting before the title/game loop, on both memory-map
+  classes.  This is independent of (and does not alter) the VRAM-base branch.
 - **`Makefile.fmtowns`** builds `$(COMMONDIR)/machine.o` into the payload.
 
 ### What was checked and found not to need a branch
@@ -788,14 +794,13 @@ binary).
   differently, since they all route VRAM writes through the same
   `g_fmt_vram0_base`-based helpers already exercised here, but none of them
   has actually been captured running past the title on a non-Marty model.
-- **Performance on non-Marty is unmeasured.** Everything in "Frame pacing
-  and the 3D rasterizer" above was profiled against Marty's 80386SX timing
-  only. A 486DX/Pentium-class standard model has a materially different
-  CPU, and this payload's PIT-channel-1-based pacing
-  (`fmtowns_frame_pace()`) should still hold it to 60 Hz correctly (it
-  paces off wall-clock hardware time, not instruction count), but the
-  *cost* of a moving-camera frame (currently 30 ms / ~30 fps on Marty) has
-  not been measured on a faster CPU class and may differ substantially.
+- **Non-Marty performance remains a verification scope, not a separate
+  renderer/code-path project.** The startup FAST-mode write removes the
+  known BIOS-inherited wait-state discrepancy that appears exactly when the
+  live title loop begins.  The normal FM TOWNS target still needs a full
+  title-to-duel capture and frame-stamp comparison against Marty before it
+  can make a parity claim; no model-specific render duplication or second
+  binary is warranted unless that controlled check finds a remaining gap.
 - **`fmt_machine_is_narrow_map()` has no caller yet** beyond
   `g_fmt_vram0_base` internally choosing between the two constants -- it is
   exposed for any future model-specific behaviour (e.g. if a

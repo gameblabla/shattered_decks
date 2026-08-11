@@ -23,7 +23,16 @@ set -eu
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 TSUGARU=$ROOT/FMTOWNSCD_EXAMPLE_Cube/Tsugaru_CUI.elf
-ROM=$ROOT/FMTOWNSCD_EXAMPLE_Cube/MARTY_ROM/
+# Overridable so a build can be profiled/tested against a non-Marty model
+# too (see STATUS.md's "Runtime Marty / standard-model detection" and the
+# UX/MX-vs-Marty perf-parity investigation): FMTOWNS_TOWNSTYPE must be a
+# real Tsugaru model string ("FMTOWNS" is NOT one -- it silently falls back
+# to TOWNSTYPE_UNKNOWN, see STATUS.md), and FMTOWNS_ROM must point at a ROM
+# directory matching that model class (MARTY_ROM only works for -TOWNSTYPE
+# MARTY; a plain FM TOWNS ROM dump is needed for MX/UX/etc).
+ROM=${FMTOWNS_ROM:-$ROOT/FMTOWNSCD_EXAMPLE_Cube/MARTY_ROM/}
+TOWNSTYPE=${FMTOWNS_TOWNSTYPE:-MARTY}
+MEMSIZE=${FMTOWNS_MEMSIZE:-2}
 CD=${FMTOWNS_CD:-$ROOT/build/fmtowns/output.cue}
 
 OUT=${1:?usage: headless_shot.sh OUT_PREFIX [SCRIPT_FILE]}
@@ -52,6 +61,6 @@ feed() {
 
 feed | xvfb-run -a timeout -s KILL "$RUN_TIMEOUT" \
 	"$TSUGARU" "$ROM" \
-	-TOWNSTYPE MARTY -MEMSIZE 2 -CD "$CD" $EXTRA_CMOS \
+	-TOWNSTYPE "$TOWNSTYPE" -MEMSIZE "$MEMSIZE" -CD "$CD" $EXTRA_CMOS \
 	-NORMALFD -DONTUSEFPU -NOWAITBOOT $EXTRA_TSUGARU \
 	-GAMEPORT0 KEY -KEYBOARD DIRECT

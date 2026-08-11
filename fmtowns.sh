@@ -53,6 +53,15 @@ MAKE="make -f Makefile.fmtowns"
 TSUGARU=FMTOWNSCD_EXAMPLE_Cube/Tsugaru_CUI.elf
 MARTY_ROM=FMTOWNSCD_EXAMPLE_Cube/MARTY_ROM
 
+# Overridable so `run`/`test`/`profile` can target a non-Marty model -- e.g.
+#   FMTOWNS_TOWNSTYPE=MX FMTOWNS_ROM=/path/to/plain/ROMS ./fmtowns.sh profile
+# "FMTOWNS" is NOT a real Tsugaru model string (see STATUS.md); use a real
+# one (MX, UX, CX, ...). Defaults reproduce the exact Marty invocation this
+# script always used.
+FMTOWNS_TOWNSTYPE=${FMTOWNS_TOWNSTYPE:-MARTY}
+FMTOWNS_ROM=${FMTOWNS_ROM:-$MARTY_ROM}
+FMTOWNS_MEMSIZE=${FMTOWNS_MEMSIZE:-2}
+
 # Where test/profile drop their screenshots.  Overridable so two runs can be
 # kept side by side (before/after a change).
 SHOTS=${FMTOWNS_SHOTS:-$ROOT/build/fmtowns/shots}
@@ -138,6 +147,8 @@ capture() {
 	} > "$script"
 
 	EXTRA_TSUGARU="-NOWAIT" RUN_TIMEOUT=${RUN_TIMEOUT:-300} \
+		FMTOWNS_TOWNSTYPE="$FMTOWNS_TOWNSTYPE" FMTOWNS_ROM="$FMTOWNS_ROM/" \
+		FMTOWNS_MEMSIZE="$FMTOWNS_MEMSIZE" \
 		tools/fmtowns/headless_shot.sh "$SHOTS/shot" "$script" \
 		> "$SHOTS/emulator.log" 2>&1
 	shift
@@ -155,7 +166,7 @@ run)
 	# Tsugaru's default for game port 0 is a physical gamepad
 	# (TOWNS_GAMEPORTEMU_PHYSICAL0), so without -GAMEPORT0 KEY it silently
 	# ignores the keyboard and nothing responds at the title screen.
-	exec "$TSUGARU" "$MARTY_ROM/" -TOWNSTYPE MARTY -CD "$image" \
+	exec "$TSUGARU" "$FMTOWNS_ROM/" -TOWNSTYPE "$FMTOWNS_TOWNSTYPE" -MEMSIZE "$FMTOWNS_MEMSIZE" -CD "$image" \
 		-NORMALFD -DONTUSEFPU -AUTOSCALE -GAMEPORT0 KEY
 	;;
 test)
