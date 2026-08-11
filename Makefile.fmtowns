@@ -194,7 +194,13 @@ OUTPUT_CUE      = $(OBJDIR)/output.cue
 .DEFAULT_GOAL   := all
 
 FLAGS_STAMP     = $(OBJDIR)/flags.stamp
-FLAGS_STAMP_TEXT = $(CFLAGS) $(GAME_CFLAGS)
+# INPUT_SCRIPT is in here because it selects a *file*, and the generated
+# header's only other prerequisite is that file's timestamp: switching from
+# the parked profiling script back to debug_input.txt leaves a newer header
+# built from the wrong script, and make sees nothing to do.  That silently
+# made `fmtowns.sh test` after `fmtowns.sh profile` re-measure the parked
+# scene while reporting it as the full walkthrough.
+FLAGS_STAMP_TEXT = $(CFLAGS) $(GAME_CFLAGS) INPUT_SCRIPT=$(INPUT_SCRIPT)
 .PHONY: force
 $(FLAGS_STAMP): force
 	@mkdir -p $(OBJDIR)
@@ -304,7 +310,7 @@ $(BOOTDIR)/head.o: $(BOOTDIR)/head.s $(FLAGS_STAMP)
 $(BOOTDIR)/reloc.o: $(BOOTDIR)/reloc.c $(FLAGS_STAMP)
 	$(CC) -c $(CFLAGS) -fno-strict-aliasing $(DEPFLAGS) -o $@ $<
 
-$(INPUT_SCRIPT_H): $(INPUT_SCRIPT) tools/fmtowns/gen_input_script.py | $(OBJDIR)
+$(INPUT_SCRIPT_H): $(INPUT_SCRIPT) tools/fmtowns/gen_input_script.py $(FLAGS_STAMP) | $(OBJDIR)
 	python3 tools/fmtowns/gen_input_script.py $(INPUT_SCRIPT) $@
 
 $(FMTOWNS_DIR)/fmtowns_main.o: $(FMTOWNS_DIR)/fmtowns_main.c $(MAIN_DEPS) $(FLAGS_STAMP)

@@ -67,19 +67,25 @@ target=all
 image=build/fmtowns/output.cue
 cmd=${1:-build}
 [ $# -gt 0 ] && shift
-makeargs=""
 scene=hand
+# Everything that is not ours is re-collected into the positional list and
+# forwarded to make as separate words.  It used to be accumulated into one
+# string, which split a multi-define measurement build --
+#   ./fmtowns.sh profile hand 'EXTRA_CORE_DEFINES=-DA -DB'
+# -- into a make variable plus a make *target* named -DB, and make died in a
+# usage dump.  Combining two measurement knobs is exactly what attributing a
+# frame on this target takes, so that has to work.
+makeargs=""
 for arg in "$@"; do
 	case $arg in
 	--iso)        target=iso; image=build/fmtowns/output.iso ;;
 	hand|board)   scene=$arg ;;
-	*)            makeargs="$makeargs $arg" ;;
+	*)            makeargs="$makeargs '$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")'" ;;
 	esac
 done
 
 build() {
-	# shellcheck disable=SC2086  # word splitting of makeargs is the point
-	$MAKE "$target" $makeargs "$@"
+	eval "$MAKE \"\$target\" $makeargs \"\$@\""
 }
 
 # The parked-scene input scripts `profile` compiles in: title -> menu ->
@@ -154,7 +160,7 @@ run)
 	;;
 test)
 	build FMTOWNS_DEBUG_INPUT=1
-	capture "40 25 25 25 25 30" --summary
+	capture "40 12 12 12 12 12 12 12 12 12 12 12 12" --summary
 	echo
 	echo "screenshots in $SHOTS"
 	;;

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read the debug state stamp out of a Tsugaru screenshot.
 
-FMTOWNS_DEBUG_INPUT builds stamp state into the top-left 58 pixels of the
+FMTOWNS_DEBUG_INPUT builds stamp state into the top-left 74 pixels of the
 256x240 framebuffer as little-endian bit patterns (see fmtowns_main.c's
 fmtowns_stamp_debug_state):
 
@@ -11,11 +11,15 @@ fmtowns_stamp_debug_state):
     pixels 22-33  average whole-frame time, in 128us units
     pixels 34-45  average waifu_fm_step() time, in 128us units
     pixels 46-57  average present time, in 128us units
+    pixels 58-61  60 Hz periods the loop charged the game for this frame
+    pixels 62-73  worst whole-frame time in the window, in 128us units
 
-The three timing fields come from the machine's own free-running 1us counter,
-so the frame rate they give is the emulated Marty's real speed and does not
-depend on how fast the host is emulating -- a run under -NOWAIT reports the
-same fps as a throttled one.  Tsugaru's SS command saves a
+The three timing fields come from PIT channel 1 (307.2 kHz), so the frame
+rate they give is the emulated Marty's real speed and does not depend on how
+fast the host is emulating -- a run under -NOWAIT reports the same fps as a
+throttled one.  The pacing field is the count the loop handed to
+waifu_fm_step(): at 60 fps it is 1, and a 50 ms frame should show 3.  A slow
+frame stamped with 1 means the game is running in slow motion.  Tsugaru's SS command saves a
 640x480 frame, in which that framebuffer is drawn 2x-scaled and centred, so
 framebuffer pixel (i, 0) is screenshot pixel (64 + 2i, 0).
 
@@ -40,7 +44,7 @@ ORIGIN_X = 64
 SCALE = 2
 
 
-STAMP_BITS = 58
+STAMP_BITS = 74
 
 # Timing fields are stored in 128us units (fmtowns_main.c).
 US_PER_UNIT = 128
@@ -66,26 +70,28 @@ def read_stamp(path):
         "total_us": total,
         "step_us": ((bits >> 34) & 0xFFF) * US_PER_UNIT,
         "present_us": ((bits >> 46) & 0xFFF) * US_PER_UNIT,
+        "steps": (bits >> 58) & 0xF,
+        "worst_us": ((bits >> 62) & 0xFFF) * US_PER_UNIT,
         "fps": (1e6 / total) if total else 0.0,
     }
 
 
-# The machine's free-running counter is 16 bits at 1us, so it wraps every
-# 65.536 ms and a section longer than that is reported modulo the wrap -- a
-# 66 ms game step reads back as 0.5 ms.  Nothing in the payload can tell the
-# two apart: there is only the one clock, and it is sampled once at each end
-# of a section.  What CAN be said is that no frame drawing a 3-D board on a
-# 16 MHz 386SX costs a fraction of a millisecond, so a step that small is the
-# wrap rather than a fast frame.  This cost a whole afternoon once: a build
-# whose real step was ~66 ms reported 0.5 ms and looked 125x FASTER than the
-# 62 ms build that had actually improved it.
+# The clock is PIT channel 1: 16 bits at 307.2 kHz, so it wraps every 213.3 ms
+# and only a section longer than THAT aliases.  This field used to come from
+# the 1 us counter at I/O 0x26, which wraps every 65.536 ms -- inside the range
+# this port's duel frames actually occupy, so a 66 ms step reported as 0.5 ms
+# and a build that had genuinely improved looked 125x slower.  That cost a
+# whole afternoon once.  The check below is kept for reading OLD captures and
+# as a general "no frame drawing a 3-D board on a 16 MHz 386SX costs a fraction
+# of a millisecond" sanity rule.
 ALIAS_SUSPECT_US = 5000
 
 
 def alias_warning(st):
     if st["total_us"] and 0 < st["step_us"] < ALIAS_SUSPECT_US:
-        return ("  <- step under 5 ms: suspect the 65.536 ms counter wrap "
-                "(add 65.5 ms) unless this scene really draws almost nothing")
+        return ("  <- step under 5 ms: implausible unless this scene really "
+                "draws almost nothing (an old capture would be a 65.5 ms "
+                "counter wrap)")
     return ""
 
 
@@ -113,6 +119,7 @@ def summarize(stats):
     show("frame", field("total_us"))
     show("step", field("step_us"))
     show("present", field("present_us"))
+    show("worst", field("worst_us"))
     fps = sorted(s["fps"] for s in stats)
     print(f"  fps      min {fps[0]:6.1f}  median {fps[len(fps) // 2]:6.1f}"
           f"  max {fps[-1]:6.1f}")
@@ -141,7 +148,9 @@ def main():
         timing = (f"{st['fps']:.1f} fps "
                   f"[frame {st['total_us'] / 1000:.1f}ms = "
                   f"step {st['step_us'] / 1000:.1f} + "
-                  f"present {st['present_us'] / 1000:.1f}]"
+                  f"present {st['present_us'] / 1000:.1f}, "
+                  f"paced {st['steps']}], "
+                  f"worst {st['worst_us'] / 1000:.1f}ms"
                   if st["total_us"] else "timing not yet sampled")
         print(f"{path}: frame {st['frame']}, {timing}, {music}{alias_warning(st)}")
     if want_summary:

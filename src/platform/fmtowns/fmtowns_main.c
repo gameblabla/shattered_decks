@@ -383,6 +383,75 @@ static void fmtowns_read_input(WaifuFmInput *in)
 }
 
 /* ------------------------------------------------------------------
+ * The frame clock.
+ *
+ * Everything below -- pacing, the profiler, the elapsed-frame count handed
+ * to the core -- measures time with PIT channel 1, NOT with the 1 us
+ * free-running counter at I/O 0x26 that the rest of this port uses.  That
+ * choice is the whole reason the pacing works, so it is worth the paragraph:
+ *
+ * The 0x26 counter is 16 bits at 1 us and therefore wraps every 65.536 ms.
+ * A frame slower than that is indistinguishable from a fast one -- an 80 ms
+ * frame reads back as 14.5 ms -- and there is nothing to sample in between,
+ * because the CPU is inside waifu_fm_step() for the whole interval.  This
+ * port's duel frames are exactly in that range, so the first version of the
+ * pacing measured an 80 ms frame as 14.5 ms, concluded it owed the game one
+ * 60 Hz period, and left the slow-motion bug it was written to fix fully in
+ * place (while also spinning out the "missing" 2 ms, making it worse).
+ *
+ * PIT channel 1 (I/O 0x42, control 0x46) runs at 307,200 Hz.  Loaded with a
+ * count of 0 in mode 0 it becomes a free-running 16-bit down-counter that
+ * wraps every 65536 ticks -- 213.3 ms, over three whole 0x26 wraps -- with
+ * 3.26 us of resolution, which is far finer than anything here needs.  Two
+ * further pieces of luck make it the right clock rather than merely a longer
+ * one:
+ *
+ *   - 307200 / 60 is exactly 5120, so a 60 Hz frame is a whole number of
+ *     ticks and the pacing needs no division on a 16 MHz 386SX.
+ *   - Nothing else in the game build touches channel 1.  common/vgmplay.c
+ *     does (mode 0 one-shots), but that player only runs from the standalone
+ *     VGM path, never from the game loop.  Channel 0 -- the system timer --
+ *     is left alone.
+ *
+ * Interrupts are masked (boot/head.S ends with cli), so channel 1's timeout
+ * flag setting at I/O 0x60 goes nowhere; we never read it.
+ *
+ * The remaining blind spot is a frame longer than 213 ms, which aliases the
+ * same way.  In practice that only happens across a CD read, which the
+ * pacing already refuses to charge the game for (see the cap below).
+ */
+#define FMTOWNS_PIT1_COUNT      0x0042
+#define FMTOWNS_PIT_CONTROL     0x0046
+#define FMTOWNS_TICKS_PER_FRAME 5120u    /* 307200 Hz / 60 -- exact */
+
+static void fmtowns_clock_init(void)
+{
+    outb(0x70, FMTOWNS_PIT_CONTROL);  /* ch1, lo+hi byte, mode 0, binary */
+    outb(0x00, FMTOWNS_PIT1_COUNT);
+    outb(0x00, FMTOWNS_PIT1_COUNT);   /* count 0 == 65536 ticks == 213.3 ms */
+}
+
+/* The raw down-counter.  Elapsed ticks between two reads are
+ * (uint16_t)(earlier - later) -- it counts down, and the 16-bit subtraction
+ * absorbs the wrap for free. */
+static uint16_t fmtowns_clock_ticks(void)
+{
+    unsigned int lo, hi;
+    outb(0x40, FMTOWNS_PIT_CONTROL);  /* latch channel 1 */
+    lo = inb(FMTOWNS_PIT1_COUNT);
+    hi = inb(FMTOWNS_PIT1_COUNT);
+    return (uint16_t)(lo | (hi << 8));
+}
+
+/* Ticks -> microseconds: one tick is 3.255208 us, and 13333/4096 is that to
+ * within 0.003%.  Kept as a shift so there is no 32-bit divide; the product
+ * stays inside 32 bits for any interval under a second. */
+static uint32_t fmtowns_ticks_us(uint32_t ticks)
+{
+    return (ticks * 13333u) >> 12;
+}
+
+/* ------------------------------------------------------------------
  * Frame pacing.
  *
  * The present path ends in fmt_flip_page(), which waits for a vsync edge
@@ -393,16 +462,11 @@ static void fmtowns_read_input(WaifuFmInput *in)
  * Tsugaru -- every animation five times too fast.  The port had simply
  * never been quick enough to find out.
  *
- * So the loop paces itself against the same 1 us counter the profiler uses
- * (I/O 0x26; see fmtowns_prof_split() below for why that clock is the right
- * one) instead of trusting the video hardware to do it.
+ * So the loop paces itself against the frame clock above instead of trusting
+ * the video hardware to do it.
  *
  * A frame that overruns its budget is not slowed down further: the spin only
- * ever waits out the remainder, so a heavy frame just runs late.  The counter
- * is 16 bits (65.5 ms), so elapsed time is accumulated from short deltas
- * rather than one subtraction; a frame slower than a whole wrap would still
- * be mispaced, but at that point the frame rate is the problem, not the
- * pacing.
+ * ever waits out the remainder, so a heavy frame just runs late.
  *
  * THE RETURN VALUE IS THE OTHER HALF OF THE JOB.  Pacing alone only stops
  * the game running too *fast*; on its own it leaves the opposite bug in
@@ -416,41 +480,40 @@ static void fmtowns_read_input(WaifuFmInput *in)
  * This returns how many 60 Hz periods the frame really consumed, which the
  * loop hands straight to the core.  Two details make that count honest:
  *
- *  - The leftover microseconds are carried, not dropped.  A steady 25 ms
- *    frame is 1.5 periods; truncating every frame to 1 would lose a third of
- *    the game's clock.  With the carry it alternates 1,2,1,2 and averages
+ *  - The leftover ticks are carried, not dropped.  A steady 25 ms frame is
+ *    1.5 periods; truncating every frame to 1 would lose a third of the
+ *    game's clock.  With the carry it alternates 1,2,1,2 and averages
  *    exactly right.
  *  - The carry is capped at one period so a long stall (a CD read, a cache
  *    prewarm) cannot bank seconds of debt and then fast-forward the game
  *    once it clears.  The core clamps the count itself as well.
  */
-#define FMTOWNS_FRAME_US 16667u   /* 60 Hz */
-
 static unsigned int fmtowns_frame_pace(void)
 {
     static uint16_t mark;
     static int armed;
-    static uint32_t carry;      /* unspent microseconds from earlier frames */
+    static uint32_t carry;      /* unspent ticks from earlier frames */
     uint32_t elapsed;
     unsigned int periods;
 
     if (!armed) {
-        mark = (uint16_t)inw(0x26);
+        fmtowns_clock_init();
+        mark = fmtowns_clock_ticks();
         armed = 1;
         return 1;
     }
 
     elapsed = carry;
     for (;;) {
-        uint16_t now = (uint16_t)inw(0x26);
-        elapsed += (uint16_t)(now - mark);
+        uint16_t now = fmtowns_clock_ticks();
+        elapsed += (uint16_t)(mark - now);   /* counts down */
         mark = now;
-        if (elapsed >= FMTOWNS_FRAME_US) break;
+        if (elapsed >= FMTOWNS_TICKS_PER_FRAME) break;
     }
 
     periods = 0;
-    while (elapsed >= FMTOWNS_FRAME_US) {   /* no 32-bit divide on a 386SX */
-        elapsed -= FMTOWNS_FRAME_US;
+    while (elapsed >= FMTOWNS_TICKS_PER_FRAME) { /* no 32-bit divide on a 386SX */
+        elapsed -= FMTOWNS_TICKS_PER_FRAME;
         ++periods;
         if (periods >= 8u) {                /* a stall, not a slow frame */
             elapsed = 0;
@@ -518,18 +581,11 @@ static void fmtowns_apply_input_script(WaifuFmInput *in, unsigned int frame)
  * the time actually goes, which is exactly what an optimisation pass needs
  * to know.
  *
- * I/O 0x26 is the FM TOWNS's free-running 16-bit counter: it ticks once per
- * microsecond regardless of CPU speed (see common/dacout.h, which paces the
- * DAC off it for the same "identical on hardware and emulator" reason).  The
- * difference between two reads is therefore real elapsed microseconds on the
- * emulated machine, immune to however fast or slow the host happens to be
- * emulating -- so a measurement taken under -NOWAIT is still a true Marty
- * figure.
- *
- * It wraps every 65.536 ms, which is why time is accumulated per *section*
- * rather than by subtracting one start-of-frame stamp from an
- * end-of-frame one: a whole 6 fps frame is 150 ms and would alias, while no
- * single section here comes close to a wrap.  Sections are summed over
+ * The clock is the PIT channel 1 counter set up above: a hardware tick rate
+ * that does not depend on CPU speed, so a measurement taken under -NOWAIT is
+ * still a true Marty figure, and a 213 ms range so that a duel frame -- which
+ * really can exceed the 65.536 ms the old 1 us clock could express -- is
+ * measured rather than aliased.  Sections are summed over
  * FMTOWNS_PROF_WINDOW frames and published as averages, because individual
  * frames vary a lot (a CD read, a scene change) and a single sampled frame
  * is not a number worth optimising against.
@@ -547,16 +603,32 @@ static unsigned int g_prof_frames;
 static uint32_t g_prof_avg_total;
 static uint32_t g_prof_avg_step;
 static uint32_t g_prof_avg_present;
+/* The worst single frame in the window, published alongside the averages.
+ * An average over 16 frames hides exactly the frames worth finding: a camera
+ * sweep or a fade is a handful of frames inside an otherwise idle scene, and
+ * a 130 ms frame every sixteenth frame moves a 16.6 ms average to 23 ms --
+ * which reads as "a bit slow" rather than as the eight-frame lurch it is.
+ *
+ * It runs on a much longer window than the averages, because a screenshot
+ * only samples the frames immediately before it: at 16 frames the field
+ * describes a quarter of a second out of the twenty between shots, so a
+ * capture can walk a whole duel and never once look at the frame that
+ * stutters.  256 frames is several seconds of coverage and still recent
+ * enough to attribute to the scene the shot shows. */
+#define FMTOWNS_PROF_WORST_WINDOW 256
+static uint32_t g_prof_acc_worst;
+static unsigned int g_prof_worst_frames;
+static uint32_t g_prof_worst;
 
 /* Microseconds since the previous call, and re-arm.  The 16-bit wrap is
  * handled for free: the subtraction is done in 16-bit width, so a counter
  * that has wrapped once still yields the correct difference. */
-static uint16_t fmtowns_prof_split(void)
+static uint32_t fmtowns_prof_split(void)
 {
-    uint16_t now = (uint16_t)inw(0x26);
-    uint16_t delta = (uint16_t)(now - g_prof_mark);
+    uint16_t now = fmtowns_clock_ticks();
+    uint16_t delta = (uint16_t)(g_prof_mark - now);   /* counts down */
     g_prof_mark = now;
-    return delta;
+    return fmtowns_ticks_us(delta);
 }
 
 static void fmtowns_prof_frame_end(uint32_t step_us, uint32_t present_us,
@@ -565,6 +637,13 @@ static void fmtowns_prof_frame_end(uint32_t step_us, uint32_t present_us,
     g_prof_acc_step    += step_us;
     g_prof_acc_present += present_us;
     g_prof_acc_total   += step_us + present_us + other_us;
+    if (step_us + present_us + other_us > g_prof_acc_worst)
+        g_prof_acc_worst = step_us + present_us + other_us;
+    if (++g_prof_worst_frames >= FMTOWNS_PROF_WORST_WINDOW) {
+        g_prof_worst = g_prof_acc_worst;
+        g_prof_acc_worst = 0;
+        g_prof_worst_frames = 0;
+    }
     if (++g_prof_frames < FMTOWNS_PROF_WINDOW) return;
 
     g_prof_avg_total   = g_prof_acc_total   / FMTOWNS_PROF_WINDOW;
@@ -583,6 +662,8 @@ static void fmtowns_prof_frame_end(uint32_t step_us, uint32_t present_us,
  *   pixels 22-33  average whole-frame time, in 128us units
  *   pixels 34-45  average waifu_fm_step() time, in 128us units
  *   pixels 46-57  average present time, in 128us units
+ *   pixels 58-61  60 Hz periods this frame was charged to the game (pacing)
+ *   pixels 62-73  worst whole-frame time in the window, in 128us units
  *
  * The frame counter is what lets input scripts be calibrated against real
  * captures instead of guessed at -- wall-clock timing is useless for that
@@ -593,8 +674,14 @@ static void fmtowns_prof_frame_end(uint32_t step_us, uint32_t present_us,
  * capture into a profile: 128us units keep a whole 12-bit field under half a
  * second, far past the slowest frame this port has ever produced, while
  * still resolving well inside one 16.7 ms vblank.  Indices 3/255 are the game
- * palette's white/black (src/generated/waifu_assets.h). */
-#define FMTOWNS_STAMP_BITS 58
+ * palette's white/black (src/generated/waifu_assets.h).
+ *
+ * The pacing field is what makes a slow-motion complaint diagnosable from a
+ * capture: it is the number the loop actually charged the core for, so a
+ * 60 ms frame stamped with 1 period means the clock lied, while the same
+ * frame stamped with 4 means the pacing is right and the frame rate is the
+ * only problem left. */
+#define FMTOWNS_STAMP_BITS 74
 
 /* Microseconds -> the 12-bit, 128us-per-unit field the stamp carries.
  * Saturating rather than truncating: a frame slower than 524 ms is a
@@ -606,10 +693,12 @@ static unsigned int fmtowns_prof_field(uint32_t us)
     return (units > 0xfffu) ? 0xfffu : (unsigned int)units;
 }
 
-static void fmtowns_stamp_debug_state(uint8_t *frame_buffer, unsigned int frame)
+static void fmtowns_stamp_debug_state(uint8_t *frame_buffer, unsigned int frame,
+                                      unsigned int steps)
 {
     unsigned int lo = frame & 0xffffu;
-    unsigned int hi;   /* pixels 32..57, kept in a second word: 58 > 32 bits */
+    unsigned int hi;   /* pixels 32..63 */
+    unsigned int top;  /* pixels 64..73 */
     int i;
 
     lo |= ((unsigned int)fmtowns_audio_started_track() & 0x1fu) << 16;
@@ -621,12 +710,18 @@ static void fmtowns_stamp_debug_state(uint8_t *frame_buffer, unsigned int frame)
     hi  = fmtowns_prof_field(g_prof_avg_total)   >> 10;
     hi |= fmtowns_prof_field(g_prof_avg_step)    << 2;
     hi |= fmtowns_prof_field(g_prof_avg_present) << 14;
+    hi |= (steps > 15u ? 15u : steps)            << 26;
+    hi |= fmtowns_prof_field(g_prof_worst)       << 30;
+    top = fmtowns_prof_field(g_prof_worst)       >> 2;
 
     for (i = 0; i < 32; ++i) {
         frame_buffer[i] = (lo & (1u << i)) ? 3 : 255;
     }
-    for (i = 32; i < FMTOWNS_STAMP_BITS; ++i) {
+    for (i = 32; i < 64; ++i) {
         frame_buffer[i] = (hi & (1u << (i - 32))) ? 3 : 255;
+    }
+    for (i = 64; i < FMTOWNS_STAMP_BITS; ++i) {
+        frame_buffer[i] = (top & (1u << (i - 64))) ? 3 : 255;
     }
 }
 #endif /* FMTOWNS_DEBUG_INPUT */
@@ -643,11 +738,21 @@ static void fmtowns_stamp_debug_state(uint8_t *frame_buffer, unsigned int frame)
 
 static void waifu_fm_game_loop(void)
 {
+    /* GAME frames, not rendered ones: it advances by the paced step count, so
+     * it counts the 60 Hz ticks the core has been given.  Both the debug input
+     * script and the stamp are indexed by it, which is what makes a script
+     * replay identically at any frame rate -- and identically to the same
+     * script under ./waifu_fm_headless, which is where scripts get written and
+     * verified.  Indexing by rendered frames instead (what this used to do)
+     * silently retimes every script the moment the frame rate moves: the
+     * capture that walked a duel at 60 fps parks in one phase at 30, because
+     * every tap lands twice as late in game time. */
     unsigned int frame = 0;
     /* 60 Hz frames of game time the *previous* iteration consumed; the first
      * one has nothing to measure yet, so it is worth exactly one. */
     unsigned int steps = 1;
 
+    fmtowns_clock_init();       /* before anything times anything */
     waifu_fm_init();
     waifu_fm_reset_interactive();
     fmtowns_video_init();
@@ -664,7 +769,6 @@ static void waifu_fm_game_loop(void)
 #ifdef FMTOWNS_DEBUG_INPUT
         fmtowns_apply_input_script(&in, frame);
 #endif
-        ++frame;
         /* Charge the core for the wall-clock time the last frame really took,
          * so phases and animations advance at the same speed whatever the
          * render rate is.  See fmtowns_frame_pace(). */
@@ -676,7 +780,7 @@ static void waifu_fm_game_loop(void)
 #ifdef FMTOWNS_DEBUG_INPUT
         t_step = fmtowns_prof_split();
 
-        fmtowns_stamp_debug_state(waifu_fm_framebuffer(), frame);
+        fmtowns_stamp_debug_state(waifu_fm_framebuffer(), frame, steps);
 #endif
         /* No extra vblank wait here: the present path's page flip already
          * blocks on a vsync edge, and waiting a second time would leave the
@@ -698,6 +802,7 @@ static void waifu_fm_game_loop(void)
         /* Last thing in the frame, so everything above counts towards the
          * 60 Hz budget rather than being spent on top of it. */
         steps = fmtowns_frame_pace();
+        frame += steps;
 #ifdef FMTOWNS_DEBUG_INPUT
         t_other = fmtowns_prof_split();
         fmtowns_prof_frame_end(t_step, t_present, t_other);
