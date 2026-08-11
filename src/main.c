@@ -9858,7 +9858,16 @@ static void draw_com_thunder_anim(void)
         if (idx >= 0 && idx < g_b_thunder_count) {
             int id = g_b_thunder_cards[idx];
             int back = g_b_thunder_backs[idx];
-            if (seg == 0) {
+            /* Crossed, not landed on exactly. THUNDER burns its targets one
+               per seg_frames-long segment, and this fires the destruction
+               sound (and the CD32X art prewarm) at the start of each. An
+               `seg == 0` test only holds when the phase frame lands exactly on
+               a segment boundary, which it does on every platform that steps
+               one frame at a time -- and almost never on FM TOWNS, whose
+               wall-clock pacing steps by whatever the last frame cost. That is
+               why the port had no card-destroyed sound under THUNDER while
+               every other cue in the duel played. */
+            if (frame_cue_crossed(local, idx * seg_frames)) {
                 waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
 #if defined(WAIFU_FM_CD32X)
                 /* Flush the 2-slot big-art cache for the newly-current target
