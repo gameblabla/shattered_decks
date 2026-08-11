@@ -431,19 +431,36 @@ genuinely coexist.  `tools/fmtowns/gen_sfx_pcm.py` packs the same
 `sounds/*.wav` the other ports use into RF5C68 sign-magnitude samples
 (0x80 is silence, 0x00 and 0xFF are reserved, so magnitudes are clamped to
 1..126), each resampled to the highest rate at which it still fits a 7935-byte
-channel slot.  They are linked into the payload rather than staged on the
-CD, because reading them off disc would stop the music every time the game
-beeped.  `fmtowns_sfx.c` voices them round-robin over 6 channels and skips
-re-uploading a sample that is already in the target slot;
-`sounds.c`'s `waifu_sound_play()` reaches it the same way it reaches the
+channel slot and then loudness-normalised.  They are linked into the payload
+rather than staged on the CD, because reading them off disc would stop the
+music every time the game beeped.  `fmtowns_sfx.c` voices them round-robin
+over 6 channels and skips re-uploading a sample that is already in the target
+slot; `sounds.c`'s `waifu_sound_play()` reaches it the same way it reaches the
 PC-FX and CD32X players.  `common/sound.c`'s wave-RAM upload was also fixed
 to select the 4 KiB bank once per bank instead of once per byte.
 
-**Verified two ways**: with CD-DA muted, Tsugaru's FM/PCM recording contains
-discrete effect bursts exactly where the script pressed buttons; and a
-wave-RAM dump matches the generated sample bytes exactly, in distinct
-channel slots (SELECT, CONFIRM, CONFIRM_ALT and CARD_DRAWN -- the four the
-run actually triggered).
+**Normalisation is not optional here.**  Without it the two longest effects,
+CardDestroyed and TurnPassed, were inaudible in play, and the reason is worth
+recording because it looked like a hardware bug and was not one.  The source
+WAVs are mixed at very different levels (SlashAttack's RMS is 73 of a possible
+127; TurnPassed's is 9.7, CardPlaced's 0.9), and any effect too long to fit a
+slot at 8 kHz is resampled down until it does -- so the longest effects take
+the widest box filter and lose the most amplitude to it.  TurnPassed reached
+the chip at an encoded peak of 20 against SlashAttack's 125.  A wave-RAM
+read-back audit confirmed every uploaded byte, both bank crossings and the end
+markers, for all ten effects: the upload and the chip programming were always
+correct, the data was just too quiet to hear over CD-DA.  Because these are
+percussive sounds with high crest factors, peak normalisation buys almost
+nothing (under 4 dB for CardDestroyed); the generator normalises against the
+99.5th-percentile magnitude instead, clipping above it, capped at 12x so a
+near-silent source is not amplified into its own noise floor.
+
+**Verified three ways**: with CD-DA muted, Tsugaru's FM/PCM recording contains
+discrete effect bursts exactly where the script pressed buttons; a wave-RAM
+dump matches the generated sample bytes exactly, in distinct channel slots;
+and a probe that plays all ten effects three seconds apart records nine bursts
+(YOU_LOST has no sample) at the right durations and all at full scale --
+TurnPassed measured +18.4 dB against its pre-normalisation capture.
 
 ### Saves: battery-backed CMOS, not session-only RAM
 
