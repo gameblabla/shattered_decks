@@ -39,7 +39,11 @@
 /* First byte of a 4-byte status FIFO reply. */
 #define CDSTAT_NO_ERROR           0x00  /* Command accepted */
 #define CDSTAT_READ_DONE          0x06  /* All requested sectors transferred */
-#define CDSTAT_DATA_READY         0x22  /* One sector is ready to be transferred */
+/* 0x22 is the generic/DMA data-ready status.  A PIO transfer can report
+ * 0x21 instead; MAME does so for every sector after the first, while
+ * TOWNSEMU reports 0x22.  Both mean the same thing to this polled reader. */
+#define CDSTAT_DATA_READY_DMA     0x22
+#define CDSTAT_DATA_READY_PIO     0x21
 
 #define CD_SECTOR_SIZE            2048u
 #define CD_MSF_PREGAP_FRAMES       150u /* 00:02:00 */
@@ -174,7 +178,7 @@ int fmt_cdrom_read(uint32_t lba, uint16_t count, void *buf)
         if (status == CDSTAT_NO_ERROR) {
             continue;
         }
-        if (status != CDSTAT_DATA_READY) {
+        if (status != CDSTAT_DATA_READY_DMA && status != CDSTAT_DATA_READY_PIO) {
             return -1;
         }
 
@@ -296,7 +300,7 @@ unsigned fmt_cdrom_stream_step(fmt_cd_stream *st, uint32_t play_pos,
         (void)inb(CD_COMMAND_STATUS);
         (void)inb(CD_COMMAND_STATUS);
         (void)inb(CD_COMMAND_STATUS);
-        if (code == CDSTAT_DATA_READY) {
+        if (code == CDSTAT_DATA_READY_DMA || code == CDSTAT_DATA_READY_PIO) {
             outb(0x08, CD_TRANSFER_CTRL); /* STS=1, DTS=0: software transfer. */
             st->byte_idx = 0;
             st->state = FMT_CD_STREAM_XFER;
