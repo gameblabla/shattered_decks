@@ -41,27 +41,33 @@ int fprintf(FILE *fp, const char *fmt, ...) { (void)fp; (void)fmt; return 0; }
  *
  * memcpy uses `rep movsl`: four bytes moved per iteration with the loop
  * counter in hardware, instead of a load/store/increment/branch sequence
- * per byte.  Measured in a duel, on the same scene from the same input
- * script, that took the game step from 4.5 ms to 1.7 ms per frame.  The
+ * per byte.  It was measured as taking a duel's game step from 4.5 ms to
+ * 1.7 ms; treat the direction as sound and the two numbers as unknown, since
+ * they came off the wrapping clock described below.  The
  * destination is aligned first because an unaligned dword access costs an
  * extra bus cycle on every single transfer on the 386SX's 16-bit bus, and
  * card blits land on odd addresses constantly.  Blocks under BLOCK_MIN take
  * the byte loop: three `rep` instructions plus the alignment arithmetic is
  * a fixed cost that a handful of bytes cannot repay.
  *
- * memset is deliberately NOT given the same treatment, however obvious it
- * looks.  It was tried, and on the same fixed scene it took the game step
- * from 4.5 ms to 50.7 ms -- an 11x regression -- with memcpy left alone, so
- * the attribution is not in doubt.  What is in doubt is the mechanism: a
- * standalone in-payload benchmark of the very same routine says `rep stosl`
- * beats the byte loop at every size tried (2.5x at 64 bytes, 4.4x at 256,
- * 6x at 61440), so this is something about how the fills interleave with
- * the rest of a real frame under Tsugaru, not about the instruction being
- * slow in isolation.  Nobody has run this on a physical Marty, where the
- * 386's published timings say `rep stosd` should win.  Until someone does,
- * the emulator is the only oracle there is, and it says byte loop -- so if
- * you are about to "fix" this, measure it on a fixed scene first (see
- * STATUS.md's "Performance" section for the method).
+ * memset gets the same treatment, and the story of how it nearly did not is
+ * worth keeping.  An earlier pass measured `rep stosl` here as taking the
+ * game step from 4.5 ms to 50.7 ms -- an 11x regression -- and left a byte
+ * loop plus a long comment warning the next person off.  It also recorded
+ * that a standalone in-payload benchmark of the very same routine found
+ * `rep stosl` 6x FASTER at 61440 bytes, and could not reconcile the two.
+ *
+ * The benchmark was right and the frame measurement was fiction.  Both
+ * numbers came off the 1 us counter at I/O 0x26, which wraps every 65.536 ms:
+ * the frames being compared were ~70 ms and ~116 ms, and they reported as
+ * 4.5 and 50.7.  Re-measured on the wrap-proof clock (fmtowns_main.c), on the
+ * same parked scene, `rep stosl` takes the uncached hand view's step from
+ * 50.4 ms to 30.2 ms -- a 40% cut, in the direction the 386's published
+ * timings said all along.
+ *
+ * The lesson is not about string instructions.  It is that a measurement
+ * which contradicts a microbenchmark of the same code is a reason to
+ * distrust the measurement, not to write a comment explaining the paradox.
  *
  * -fno-builtin (Makefile.fmtowns) keeps gcc from recognising these bodies
  * and rewriting them into calls to themselves.  head.S clears the
@@ -112,11 +118,25 @@ void *memmove(void *dst, const void *src, size_t n)
     return dst;
 }
 
-/* Byte loop on purpose -- see the block comment above before changing it. */
 void *memset(void *dst, int c, size_t n)
 {
     unsigned char *d = (unsigned char *)dst;
-    while (n--) *d++ = (unsigned char)c;
+    unsigned int v = (unsigned char)c;
+    size_t head, words;
+
+    if (n < BLOCK_MIN) {
+        while (n--) *d++ = (unsigned char)c;
+        return dst;
+    }
+    v |= v << 8;
+    v |= v << 16;
+    head = (size_t)(0u - (size_t)(uintptr_t)d) & 3u;
+    n -= head;
+    words = n >> 2;
+    n &= 3u;
+    __asm__ volatile ("rep stosb" : "+D"(d), "+c"(head) : "a"(v) : "memory");
+    __asm__ volatile ("rep stosl" : "+D"(d), "+c"(words) : "a"(v) : "memory");
+    __asm__ volatile ("rep stosb" : "+D"(d), "+c"(n) : "a"(v) : "memory");
     return dst;
 }
 
