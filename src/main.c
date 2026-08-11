@@ -248,6 +248,58 @@ static int g_frame_dirty_full = 0;
 static int g_frame_dirty_count = 0;
 static WaifuFmDirtyRect g_frame_dirty_rects[WAIFU_FM_MAX_DIRTY_RECTS];
 static int g_video_fade_visible_q8 = Q8_ONE;
+
+/* ---- wall-clock frame pacing -------------------------------------------
+ *
+ * Battle animation pacing step, in hardware vblanks (60 Hz frames).  A
+ * platform that renders slower than 60 Hz reports the real elapsed frame
+ * count of the previous frame through waifu_fm_set_frame_vblanks();
+ * everywhere else this stays 1. */
+static int g_b_anim_step = 1;
+
+/* How many 60 Hz frames of game time one waifu_fm_step() is worth.
+ *
+ * The animation clock (g_b_anim_vblanks) has always been wall-clock paced,
+ * but the phase state machine and the UI frame counter were not: they
+ * advanced by exactly one per rendered frame.  On a platform that cannot
+ * hold 60 fps that runs the whole game in slow motion -- a duel phase
+ * written as "48 frames" takes 48 *rendered* frames, so at 30 fps it lasts
+ * twice as long, the card flies to the board at half speed, and menus feel
+ * sluggish.  It is the same bug as a PC game tying its physics to the frame
+ * rate.
+ *
+ * Feeding the real elapsed frame count back in fixes it: at 30 fps a step is
+ * worth 2 frames of game time, so the phase still ends after 48 frames'
+ * worth of wall clock -- it just gets drawn half as often.  Timings written
+ * against 60 Hz stay correct at any render rate.
+ *
+ * Opt-in per platform, because it changes how every phase advances and only
+ * platforms that report a real elapsed count benefit.  FM TOWNS does
+ * (fmtowns_frame_pace() measures it off the machine's 1 us counter).  CD32X
+ * reports one too and could be switched over the same way once someone
+ * re-verifies its duel timings; until then it keeps one step per frame, and
+ * everywhere else the count is always 1, so this is a no-op.
+ *
+ * The clamp lives in waifu_fm_set_frame_vblanks(): a CD load worth dozens of
+ * frames is capped rather than teleporting the game forward.
+ *
+ * Anything that fires on an exact frame number must use frame_cue_crossed()
+ * instead of ==, or it will be skipped whenever the step exceeds 1. */
+static inline int frame_logic_step(void)
+{
+#if defined(WAIFU_FM_FMTOWNS)
+    return g_b_anim_step;
+#else
+    return 1;
+#endif
+}
+
+/* True on the one step where the frame counter `f` reaches or passes `cue`. */
+static inline int frame_cue_crossed(int f, int cue)
+{
+    return f >= cue && (f - frame_logic_step()) < cue;
+}
+
 static CfxRenderer3D renderer;
 static int g_you_lp = 8000;
 static int g_com_lp = 8000;
@@ -4964,11 +5016,12 @@ static void draw_battle_cutin_event_ex(int f, int start,
     if (outcome == BATTLE_DESTROY_BOTH) burn_start = ram_start + ram_dur + (WAIFU_BATTLE_BURN_DELAY_FRAMES / 2);
     int burn_dur = BATTLE_BURN_DUR;
 
-    /* SFX are tied to the visible cut-in beats, not to battle resolution. */
-    if (local == ram_start) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
-    if (outcome == BATTLE_DESTROY_ATTACKER && local == counter_start) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
+    /* SFX are tied to the visible cut-in beats, not to battle resolution.
+       Crossed rather than landed on exactly -- see frame_cue_crossed(). */
+    if (frame_cue_crossed(local, ram_start)) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
+    if (outcome == BATTLE_DESTROY_ATTACKER && frame_cue_crossed(local, counter_start)) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
     if ((outcome == BATTLE_DESTROY_DEFENDER || outcome == BATTLE_DESTROY_ATTACKER || outcome == BATTLE_DESTROY_BOTH) &&
-        local == burn_start) waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
+        frame_cue_crossed(local, burn_start)) waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
 
     if (local < slide_dur) {
         int32_t e = q8_smooth_ratio(local, slide_dur);
@@ -6074,16 +6127,11 @@ static WaifuFmInput g_prev_input;
 static WaifuBattlePhase g_b_phase = IB_OPENING;
 static int g_b_frame = 0;
 static int g_b_phase_frame = 0;
-/* Battle animation pacing step in hardware vblanks.  Platforms that render
-   slower than 60 Hz (CD32X) report the real vblank delta of the previous
-   frame through waifu_fm_set_frame_vblanks(), so phase animations (equip,
-   fusion, battle clash) advance in wall-clock time instead of stretching
-   with the render rate.  Everywhere else this stays 1. */
-static int g_b_anim_step = 1;
 /* Accumulated hardware vblanks for visual animation pacing (equip, fusion,
    thunder, support).  Advances by g_b_anim_step each waifu_fm_step() so that
    visual effects stay tied to wall-clock time even when rendering runs slower
-   than 60 Hz.  Phase-state timing uses g_b_phase_frame (always +1/step). */
+   than 60 Hz.  g_b_anim_step and the phase-frame pacing that goes with it are
+   declared near the top of this file (frame_logic_step()). */
 static int g_b_anim_vblanks = 0;
 static int g_b_selected_hand = 0;
 static int g_b_selected_player_slot = 0;
@@ -8894,7 +8942,10 @@ static void play_player_hand_intro_draw_sfx(void)
     if (!g_b_player_hand_intro_pending) return;
     for (i = 0; i < I_HAND; ++i) {
         int cue = 1 + i * 5;
-        if (!g_i_player_used[i] && g_b_phase_frame == cue) {
+        /* Crossed, not landed on exactly: with wall-clock pacing the phase
+           frame can step by more than one, and an == test would silently drop
+           the draw sound for some of the five cards. */
+        if (!g_i_player_used[i] && frame_cue_crossed(g_b_phase_frame, cue)) {
             waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
         }
     }
@@ -9960,10 +10011,10 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
         return;
     }
     if (atk_back) local -= flip_dur;
-    if (local == WAIFU_DIRECT_SLIDE_FRAMES) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
+    if (frame_cue_crossed(local, WAIFU_DIRECT_SLIDE_FRAMES)) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
     {
         int hit_frame = WAIFU_DIRECT_SLIDE_FRAMES + (WAIFU_DIRECT_LUNGE_FRAMES / 2);
-        if (local == hit_frame) waifu_sound_play(WAIFU_SOUND_DIRECT_HIT);
+        if (frame_cue_crossed(local, hit_frame)) waifu_sound_play(WAIFU_SOUND_DIRECT_HIT);
     }
     if (local < WAIFU_DIRECT_SLIDE_FRAMES) {
         int32_t e = q8_smooth_ratio(local, WAIFU_DIRECT_SLIDE_FRAMES);
@@ -10060,7 +10111,7 @@ static void draw_interactive_result(void)
     const char *msg = g_b_result < 0 ? "YOU LOSE" : "YOU WIN";
     const int card_id = result_focus_card_id();
 
-    if (local == WAIFU_RESULT_UI_CLEAR_FRAMES) update_music_for_current_state();
+    if (frame_cue_crossed(local, WAIFU_RESULT_UI_CLEAR_FRAMES)) update_music_for_current_state();
 
     if (local < WAIFU_RESULT_UI_CLEAR_FRAMES) {
         int32_t e = q8_smooth_ratio(local, WAIFU_RESULT_UI_CLEAR_FRAMES);
@@ -10263,7 +10314,7 @@ static void play_turn_draw_sfx(int f)
 {
     int i;
     for (i = 0; i < g_b_draw_count; ++i) {
-        if (f == turn_draw_slide_start(i)) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
+        if (frame_cue_crossed(f, turn_draw_slide_start(i))) waifu_sound_play(WAIFU_SOUND_CARD_DRAWN);
     }
 }
 
@@ -11459,12 +11510,12 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
     }
 
-    /* Advance the logical phase frame by 1 per step (state machine timing).
-       Separately accumulate elapsed hardware vblanks so that visual
-       animations (equip, fusion, thunder, support) advance in wall-clock
-       time when the render rate varies. */
-    g_b_frame++;
-    g_b_phase_frame++;
+    /* Advance the logical phase frame (state machine timing) and the visual
+       animation clock (equip, fusion, thunder, support).  Both move by
+       frame_logic_step() so a platform that renders slower than 60 Hz still
+       progresses in wall-clock time -- see that function. */
+    g_b_frame += frame_logic_step();
+    g_b_phase_frame += frame_logic_step();
     g_b_anim_vblanks += g_b_anim_step;
 }
 
@@ -13244,7 +13295,7 @@ void waifu_fm_step(const WaifuFmInput *input)
        sub-screen (SAVE, save-device, deck editor) no longer snaps the camera
        back to its start pose -- the scene holds its motion instead of visibly
        resetting. */
-    ++g_story_scene_anim_frame;
+    g_story_scene_anim_frame += frame_logic_step();
     step_lp_display();
     waifu_fm_use_common_palette();
     update_music_for_current_state();
@@ -13899,7 +13950,7 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     update_music_for_current_state();
     g_prev_input = *input;
-    ++g_i_frame;
+    g_i_frame += frame_logic_step();
 }
 
 

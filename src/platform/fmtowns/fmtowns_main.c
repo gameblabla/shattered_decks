@@ -395,38 +395,70 @@ static void fmtowns_read_input(WaifuFmInput *in)
  *
  * So the loop paces itself against the same 1 us counter the profiler uses
  * (I/O 0x26; see fmtowns_prof_split() below for why that clock is the right
- * one) instead of trusting the video hardware to do it.  waifu_fm_step()
- * advances the game by exactly one frame per call -- waifu_fm_set_frame_vblanks(1)
- * -- so the loop owes it one 60 Hz period of wall time per iteration, no
- * more and no less, and that is a property of the game rather than of
- * whatever the CRTC registers happen to make Tsugaru do.
+ * one) instead of trusting the video hardware to do it.
  *
- * A frame that overruns its budget is not slowed down further: the spin
- * only ever waits out the remainder, so a heavy frame just runs late, the
- * way it did before.  The counter is 16 bits (65.5 ms), so the elapsed time
- * is accumulated from short deltas rather than one subtraction; a single
- * frame slower than a whole wrap would still be mispaced, but at that point
- * the frame rate is the problem, not the pacing.
+ * A frame that overruns its budget is not slowed down further: the spin only
+ * ever waits out the remainder, so a heavy frame just runs late.  The counter
+ * is 16 bits (65.5 ms), so elapsed time is accumulated from short deltas
+ * rather than one subtraction; a frame slower than a whole wrap would still
+ * be mispaced, but at that point the frame rate is the problem, not the
+ * pacing.
+ *
+ * THE RETURN VALUE IS THE OTHER HALF OF THE JOB.  Pacing alone only stops
+ * the game running too *fast*; on its own it leaves the opposite bug in
+ * place, which is the one this port actually shipped with.  waifu_fm_step()
+ * advances the game by however many 60 Hz frames the platform tells it, and
+ * this loop used to hard-code waifu_fm_set_frame_vblanks(1) -- so a frame
+ * that took 33 ms still counted as one frame of game time and the entire
+ * game, phases and animations alike, ran at half speed.  The heavier the
+ * scene, the slower the game progressed.
+ *
+ * This returns how many 60 Hz periods the frame really consumed, which the
+ * loop hands straight to the core.  Two details make that count honest:
+ *
+ *  - The leftover microseconds are carried, not dropped.  A steady 25 ms
+ *    frame is 1.5 periods; truncating every frame to 1 would lose a third of
+ *    the game's clock.  With the carry it alternates 1,2,1,2 and averages
+ *    exactly right.
+ *  - The carry is capped at one period so a long stall (a CD read, a cache
+ *    prewarm) cannot bank seconds of debt and then fast-forward the game
+ *    once it clears.  The core clamps the count itself as well.
  */
 #define FMTOWNS_FRAME_US 16667u   /* 60 Hz */
 
-static void fmtowns_frame_pace(void)
+static unsigned int fmtowns_frame_pace(void)
 {
     static uint16_t mark;
     static int armed;
-    uint32_t elapsed = 0;
+    static uint32_t carry;      /* unspent microseconds from earlier frames */
+    uint32_t elapsed;
+    unsigned int periods;
 
     if (!armed) {
         mark = (uint16_t)inw(0x26);
         armed = 1;
-        return;
+        return 1;
     }
+
+    elapsed = carry;
     for (;;) {
         uint16_t now = (uint16_t)inw(0x26);
         elapsed += (uint16_t)(now - mark);
         mark = now;
-        if (elapsed >= FMTOWNS_FRAME_US) return;
+        if (elapsed >= FMTOWNS_FRAME_US) break;
     }
+
+    periods = 0;
+    while (elapsed >= FMTOWNS_FRAME_US) {   /* no 32-bit divide on a 386SX */
+        elapsed -= FMTOWNS_FRAME_US;
+        ++periods;
+        if (periods >= 8u) {                /* a stall, not a slow frame */
+            elapsed = 0;
+            break;
+        }
+    }
+    carry = elapsed;
+    return periods;
 }
 
 #ifdef FMTOWNS_DEBUG_INPUT
@@ -612,6 +644,9 @@ static void fmtowns_stamp_debug_state(uint8_t *frame_buffer, unsigned int frame)
 static void waifu_fm_game_loop(void)
 {
     unsigned int frame = 0;
+    /* 60 Hz frames of game time the *previous* iteration consumed; the first
+     * one has nothing to measure yet, so it is worth exactly one. */
+    unsigned int steps = 1;
 
     waifu_fm_init();
     waifu_fm_reset_interactive();
@@ -630,7 +665,10 @@ static void waifu_fm_game_loop(void)
         fmtowns_apply_input_script(&in, frame);
 #endif
         ++frame;
-        waifu_fm_set_frame_vblanks(1);
+        /* Charge the core for the wall-clock time the last frame really took,
+         * so phases and animations advance at the same speed whatever the
+         * render rate is.  See fmtowns_frame_pace(). */
+        waifu_fm_set_frame_vblanks((int)steps);
 #ifdef FMTOWNS_DEBUG_INPUT
         (void)fmtowns_prof_split();     /* close out the previous frame's tail */
 #endif
@@ -659,7 +697,7 @@ static void waifu_fm_game_loop(void)
 
         /* Last thing in the frame, so everything above counts towards the
          * 60 Hz budget rather than being spent on top of it. */
-        fmtowns_frame_pace();
+        steps = fmtowns_frame_pace();
 #ifdef FMTOWNS_DEBUG_INPUT
         t_other = fmtowns_prof_split();
         fmtowns_prof_frame_end(t_step, t_present, t_other);
