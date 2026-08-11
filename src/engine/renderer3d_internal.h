@@ -36,6 +36,12 @@
 #ifndef CFX_RENDERER_DIV_LUT
 #define CFX_RENDERER_DIV_LUT 1
 #endif
+#ifndef CFX_RENDERER_PAIR_LOW_BYTE_LEFT
+#define CFX_RENDERER_PAIR_LOW_BYTE_LEFT 0
+#endif
+#ifndef CFX_RENDERER_USE_I386_ASM
+#define CFX_RENDERER_USE_I386_ASM 0
+#endif
 
 #define CFX_TEX_SIZE CFX_TEXTURE_TILE_SIZE
 #define CFX_TEX_MASK (CFX_TEX_SIZE - 1)
@@ -95,6 +101,38 @@ static inline uint16_t cfx_advance_tex_state_n(uint16_t state, int8_t du, int8_t
     return cfx_pack_tex_state(u, v);
 }
 
+/* Two 8bpp pixels packed into the halfword the span fillers store.
+ *
+ * Which byte of that halfword is the LEFT pixel is a property of the target,
+ * not a free choice.  On PC-FX the halfword is handed to KING, whose KRAM
+ * word order puts the left pixel in the high byte; on CD32X the halfword is
+ * stored to a byte-linear framebuffer by a big-endian SH-2, where the high
+ * byte is the lower address and so is also the left pixel.  Both want the
+ * same packing, which is why it was hardcoded.
+ *
+ * FM TOWNS is neither: a little-endian i386 storing to a byte-linear
+ * framebuffer, where the LOW byte is the lower address.  With the high-byte
+ * packing every horizontal pixel pair the 3D renderer emitted came out
+ * swapped -- textures on the duel board were mirrored in 2-pixel columns.
+ * CFX_RENDERER_PAIR_LOW_BYTE_LEFT selects the layout, so the packing follows
+ * from how the target's memory is actually addressed instead of from which
+ * platform was ported first. */
+#if CFX_RENDERER_PAIR_LOW_BYTE_LEFT
+static inline void cfx_put_even_pixel_word(uint16_t *word, uint8_t color)
+{
+    *word = (uint16_t)((*word & 0xff00u) | (uint16_t)color);
+}
+
+static inline void cfx_put_odd_pixel_word(uint16_t *word, uint8_t color)
+{
+    *word = (uint16_t)((*word & 0x00ffu) | ((uint16_t)color << 8));
+}
+
+static inline uint16_t cfx_pack_pixel_pair(uint8_t left, uint8_t right)
+{
+    return (uint16_t)(((uint16_t)right << 8) | (uint16_t)left);
+}
+#else
 static inline void cfx_put_even_pixel_word(uint16_t *word, uint8_t color)
 {
     *word = (uint16_t)((*word & 0x00ffu) | ((uint16_t)color << 8));
@@ -109,6 +147,7 @@ static inline uint16_t cfx_pack_pixel_pair(uint8_t left, uint8_t right)
 {
     return (uint16_t)(((uint16_t)left << 8) | (uint16_t)right);
 }
+#endif
 
 static inline uint8_t cfx_fetch_texel(uint16_t state)
 {

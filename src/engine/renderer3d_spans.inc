@@ -374,6 +374,170 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_fast_pair_pc
 }
 #endif
 
+#if CFX_RENDERER_USE_I386_ASM
+#if CFX_TEX_SIZE != 32
+/* The shift counts below (27 for a texel column, 3/0x3e0 for a texel row)
+   are the 32x32 pitch-32 tile layout written out as constants; they have no
+   way to notice a different tile size, so make it a build error instead. */
+#error "i386 span fillers assume a 32x32 texture tile"
+#endif
+/* ---- i386 span fillers ---------------------------------------------------
+ *
+ * Three loops share one shape, so it is described once here.
+ *
+ * Each can be switched back to its portable C original with
+ * -DCFX_MEASURE_C_ROW, -DCFX_MEASURE_C_AFFINE or -DCFX_MEASURE_C_BOARD_FILL
+ * (and cfx_board_fill can be stubbed out entirely with
+ * -DCFX_MEASURE_SKIP_BOARD_FILL).  They are here because attributing a
+ * measurement on this target is genuinely hard -- the emulator reports one
+ * number for the whole game step -- and bisecting with these is what
+ * established that the top-down board view goes through the constant-V row
+ * filler and never touches cfx_board_fill at all.  Pass them through
+ * EXTRA_CORE_DEFINES; nothing defines them in a normal build.
+ *
+ * THE ACCUMULATOR IS PRE-SHIFTED so the texture coordinate's integer part
+ * ends up in the TOP bits of a 32-bit register.  Extracting it is then a
+ * single unsigned shift with no mask, and the coordinate's wraparound -- the
+ * `& 31` or `(uint8_t)` cast the C code performs on every pixel -- happens
+ * for free as the carry falls off bit 31.  A constant-V row, where only u
+ * moves, therefore costs five instructions per pixel:
+ *
+ *      movl %[U],%[t] ; shrl $27,%[t]     ; texel column, no mask
+ *      movb (%[row],%[t]),%b[acc]         ; fetch
+ *      rorl $8,%[acc]                     ; pack
+ *      addl %[dU],%[U]                    ; step
+ *
+ * against roughly 7.5 for what the compiler emitted, half of which touched
+ * the stack because it ran out of registers.
+ *
+ * FOUR PIXELS PER 32-BIT STORE.  Bytes are collected in one register with
+ * ROR: each fetch writes the low byte and rotates it up, so after four the
+ * first pixel is back in the low byte -- which on a little-endian byte
+ * framebuffer is exactly where the leftmost pixel belongs.  On a 386SX the
+ * 32-bit store is split into two 16-bit bus cycles by the hardware, so it
+ * costs half of what four byte stores do, and it removes three quarters of
+ * the pointer arithmetic and loop branching as well.  The destination is
+ * aligned to 4 first: an unaligned dword store pays an extra bus cycle every
+ * single time, which would give most of the saving straight back.
+ *
+ * Register pressure decides the rest.  The i386 has eight registers, one is
+ * the stack pointer and -fPIC reserves another for the GOT, so a loop that
+ * needs an accumulator, a source base, a destination, an address temp and a
+ * coordinate has nothing left for its own bounds -- hence the end pointer
+ * (and, where a second coordinate is in play, its step) living in memory. */
+
+/* Constant-V row: u advances, v does not.  U is u << 24, dU is step_u << 24,
+   so u's 8-bit wrap is the carry out of bit 31.  Exact -- no approximation
+   anywhere in this one. */
+static void cfx_direct_row_i386(uint8_t *dst, int span, const uint8_t *row,
+                                uint32_t U, uint32_t dU)
+{
+    while (span > 0 && ((uintptr_t)dst & 3u) != 0u) {
+        *dst++ = row[U >> 27];
+        U += dU;
+        --span;
+    }
+
+    if (span >= 4) {
+        uint32_t t, acc;
+        uint8_t *const end = dst + (span & ~3);
+        __asm__ volatile (
+            "1:\n\t"
+#define CFX_I386_ROW_PIXEL                \
+            "movl %[U],%[t]\n\t"          \
+            "shrl $27,%[t]\n\t"           \
+            "movb (%[row],%[t]),%b[acc]\n\t" \
+            "rorl $8,%[acc]\n\t"          \
+            "addl %[dU],%[U]\n\t"
+            CFX_I386_ROW_PIXEL
+            CFX_I386_ROW_PIXEL
+            CFX_I386_ROW_PIXEL
+            CFX_I386_ROW_PIXEL
+#undef CFX_I386_ROW_PIXEL
+            "movl %[acc],(%[dst])\n\t"
+            "addl $4,%[dst]\n\t"
+            "cmpl %[end],%[dst]\n\t"
+            "jb 1b\n\t"
+            : [dst] "+r" (dst), [U] "+r" (U),
+              [t] "=&r" (t), [acc] "=&q" (acc)
+            : [dU] "r" (dU), [row] "r" (row), [end] "m" (end)
+            : "cc", "memory");
+        span &= 3;
+    }
+
+    while (span-- > 0) {
+        *dst++ = row[U >> 27];
+        U += dU;
+    }
+}
+
+/* Affine row: both u and v advance (perspective board floor, tilted card
+   faces).  One packed accumulator advances both, so the loop does one add
+   rather than two:
+ *
+ *      bits  0-7   v      A  = v | (u << 24)
+ *      bits  8-23  carry guard
+ *      bits 24-31  u      dA = (uint8)step_v + ((uint8)step_u << 24)
+ *
+ * u sits at the top, so its 8-bit wrap is the carry off bit 31.  v keeps its
+ * own low byte and its carries pile up harmlessly in the 16-bit guard, which
+ * a span would have to be 65536 pixels long to overflow -- so unlike the
+ * usual packed-UV trick this one is exact, not merely close.
+ *
+ * The texel row is (v >> 3) * 32, i.e. (A & 0xff) << 2 masked to 0x3e0, and
+ * the column is A >> 27.  Only a 32x32 pitch-32 tile can be addressed this
+ * way; the caller checks the pitch. */
+static void cfx_direct_affine_i386(uint8_t *dst, int span, const uint8_t *tile,
+                                   uint32_t A, uint32_t dA)
+{
+#define CFX_I386_AFFINE_TEXEL(A, tile) \
+    ((tile)[((((A) & 0xffu) << 2) & 0x3e0u) | ((A) >> 27)])
+
+    while (span > 0 && ((uintptr_t)dst & 3u) != 0u) {
+        *dst++ = CFX_I386_AFFINE_TEXEL(A, tile);
+        A += dA;
+        --span;
+    }
+
+    if (span >= 4) {
+        uint32_t t1, t2, acc;
+        uint8_t *const end = dst + (span & ~3);
+        __asm__ volatile (
+            "1:\n\t"
+#define CFX_I386_AFFINE_PIXEL             \
+            "movl %[A],%[t1]\n\t"         \
+            "shll $2,%[t1]\n\t"           \
+            "andl $0x3e0,%[t1]\n\t"       \
+            "movl %[A],%[t2]\n\t"         \
+            "shrl $27,%[t2]\n\t"          \
+            "addl %[t2],%[t1]\n\t"        \
+            "movb (%[tile],%[t1]),%b[acc]\n\t" \
+            "rorl $8,%[acc]\n\t"          \
+            "addl %[dA],%[A]\n\t"
+            CFX_I386_AFFINE_PIXEL
+            CFX_I386_AFFINE_PIXEL
+            CFX_I386_AFFINE_PIXEL
+            CFX_I386_AFFINE_PIXEL
+#undef CFX_I386_AFFINE_PIXEL
+            "movl %[acc],(%[dst])\n\t"
+            "addl $4,%[dst]\n\t"
+            "cmpl %[end],%[dst]\n\t"
+            "jb 1b\n\t"
+            : [dst] "+r" (dst), [A] "+r" (A),
+              [t1] "=&r" (t1), [t2] "=&r" (t2), [acc] "=&q" (acc)
+            : [dA] "m" (dA), [tile] "r" (tile), [end] "m" (end)
+            : "cc", "memory");
+        span &= 3;
+    }
+
+    while (span-- > 0) {
+        *dst++ = CFX_I386_AFFINE_TEXEL(A, tile);
+        A += dA;
+    }
+#undef CFX_I386_AFFINE_TEXEL
+}
+#endif /* CFX_RENDERER_USE_I386_ASM */
+
 static inline __attribute__((always_inline)) uint8_t cfx_span_can_linear(uint16_t pairs, uint16_t tex_state, int8_t step_u, int8_t step_v)
 {
     uint32_t pixels = (uint32_t)pairs << 1;
@@ -890,11 +1054,127 @@ void cfx_draw_span(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, in
 }
 
 
+#if CFX_RENDERER_USE_I386_ASM
+/* ---- i386: one packed UV accumulator, four pixels per 32-bit store -------
+ *
+ * This is the FM TOWNS duel board's hot loop: the top-down board view is
+ * ~50000 pixels of it per frame and measured 26.8 ms of game step, i.e. the
+ * whole 3-D cost of a duel is essentially this function.
+ *
+ * What the compiler produced from the portable C loop below, at -Os for
+ * -march=i386, was 14 instructions per pixel:
+ *
+ *      cmpl %ecx,%eax ; je ... ; incl %eax          <- 2 branches per pixel
+ *      movl %esi,%edx ; shrl $3,%edx  ; andl $992,%edx
+ *      movl %ebx,%ebp ; shrl $8,%ebp  ; andl $31,%ebp
+ *      orl  %ebp,%edx ; movb (%edi,%edx),%dl ; movb %dl,-1(%eax)
+ *      addl 36(%esp),%ebx ; addl 40(%esp),%esi      <- du/dv re-read from
+ *      jmp  ...                                        the stack per pixel
+ *
+ * Three things are wrong with it on a 16 MHz 386SX behind a 16-bit bus,
+ * where instruction fetch is itself a bus cost: du and dv are read from
+ * memory for every pixel, the loop spends two branches per pixel, and each
+ * pixel is its own byte store.
+ *
+ * PACKED ACCUMULATOR.  u and v are both Q8 and only their low 13 bits can
+ * matter -- the texel index is ((v>>8)&31)*32 + ((u>>8)&31), so everything
+ * above bit 12 of either is masked away.  Two 13-bit quantities fit in one
+ * 32-bit register, which turns two adds (and two stack reads) into one:
+ *
+ *      bits  0-7   v fraction        A     = (v & 0x1fff) | (u << 19)
+ *      bits  8-12  v integer         dA    = (dv & 0x1fff) + (du << 19)
+ *      bits 13-18  carry guard       v row = (A >> 3) & 0x3e0
+ *      bits 19-26  u fraction        u col = (A >> 27)
+ *      bits 27-31  u integer
+ *
+ * u sits at the top so its wraparound falls off bit 31 and is discarded --
+ * exactly the mod-32 texture repeat the C code gets from its mask -- and
+ * because its integer part is the top 5 bits, extracting it is a single
+ * shift with no mask at all.  dv is reduced mod 8192 so it stays positive
+ * and can carry at most once per pixel, which is what makes the guard work:
+ * v's carries pile up in bits 13-18 and only leak into u's fraction after 64
+ * of them, so across a 256-pixel span u drifts by at most 4/256 of a texel.
+ * That is the one place this is not bit-identical to the C loop, and it is
+ * far below a visible pixel.
+ *
+ * Per pixel that leaves 9 instructions, one of them the dA add from memory
+ * (the i386 has 8 registers, -fPIC reserves one for the GOT, and the loop
+ * needs the accumulator, the tile base, the destination, two address temps
+ * and the pixel accumulator, so dA is the one that loses).  The four pixel
+ * bytes are collected in one register with ROR and written as a single
+ * 32-bit store: a dword store is two bus cycles on the SX's 16-bit bus
+ * against four for four byte stores, and it removes three quarters of the
+ * loop's pointer arithmetic and branching as well.  The destination is
+ * aligned to 4 first, since an unaligned dword store costs an extra bus
+ * cycle on every one of them. */
+/* One pixel.  The ROR walks the newest byte up to the top of the register;
+   after four of them the first pixel is back in the low byte, which is where
+   the leftmost pixel belongs in a little-endian byte framebuffer. */
+#define CFX_I386_BOARD_PIXEL              \
+    "movl %[A],%[t1]\n\t"                 \
+    "shrl $3,%[t1]\n\t"                   \
+    "andl $0x3e0,%[t1]\n\t"               \
+    "movl %[A],%[t2]\n\t"                 \
+    "shrl $27,%[t2]\n\t"                  \
+    "addl %[t2],%[t1]\n\t"                \
+    "movb (%[tile],%[t1]),%b[acc]\n\t"    \
+    "rorl $8,%[acc]\n\t"                  \
+    "addl %[dA],%[A]\n\t"
+
+static void cfx_board_fill_i386(uint8_t *dst, int n, uint32_t A, uint32_t dA,
+                                const uint8_t *tile)
+{
+    /* Head: byte pixels until the destination is 4-aligned. */
+    while (n > 0 && ((uintptr_t)dst & 3u) != 0u) {
+        *dst++ = tile[((A >> 3) & 0x3e0u) | (A >> 27)];
+        A += dA;
+        --n;
+    }
+
+    if (n >= 4) {
+        /* Six registers is all there is: the i386 has eight, -fPIC reserves
+           one for the GOT and one is the stack pointer.  dA and the end
+           pointer are therefore memory operands -- dA costs one read per
+           pixel, end one per four. */
+        uint32_t t1, t2, acc;
+        uint8_t *const end = dst + (n & ~3);
+        __asm__ volatile (
+            "1:\n\t"
+            CFX_I386_BOARD_PIXEL
+            CFX_I386_BOARD_PIXEL
+            CFX_I386_BOARD_PIXEL
+            CFX_I386_BOARD_PIXEL
+            "movl %[acc],(%[dst])\n\t"
+            "addl $4,%[dst]\n\t"
+            "cmpl %[end],%[dst]\n\t"
+            "jb 1b\n\t"
+            : [dst] "+r" (dst), [A] "+r" (A),
+              [t1] "=&r" (t1), [t2] "=&r" (t2), [acc] "=&q" (acc)
+            : [dA] "m" (dA), [tile] "r" (tile), [end] "m" (end)
+            : "cc", "memory");
+        n &= 3;
+    }
+
+    while (n-- > 0) {
+        *dst++ = tile[((A >> 3) & 0x3e0u) | (A >> 27)];
+        A += dA;
+    }
+}
+#endif /* CFX_RENDERER_USE_I386_ASM */
+
 void cfx_board_fill(uint8_t *dst, int n,
         int32_t u, int32_t v, int32_t du, int32_t dv, const uint8_t *tile)
 {
+#ifdef CFX_MEASURE_SKIP_BOARD_FILL
+    (void)dst;(void)n;(void)u;(void)v;(void)du;(void)dv;(void)tile; return;
+#endif
     if (n <= 0) return;
-#if CFX_RENDERER_USE_V810_ASM
+#if CFX_RENDERER_USE_I386_ASM && !defined(CFX_MEASURE_C_BOARD_FILL)
+    cfx_board_fill_i386(dst, n,
+                        ((uint32_t)v & 0x1fffu) | ((uint32_t)u << 19),
+                        ((uint32_t)dv & 0x1fffu) + ((uint32_t)du << 19),
+                        tile);
+#elif CFX_RENDERER_USE_V810_ASM
     {
         /* Keep this scalar loop compact.  A copied two-texel Maka variant
            removed 1.6% of the moving-board instruction count, but grew this
@@ -1296,6 +1576,24 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
     }
 #endif
 
+#if CFX_RENDERER_USE_I386_ASM && !defined(CFX_MEASURE_C_ROW)
+    /* This is the FM TOWNS duel's most expensive loop by a wide margin.  The
+       top-down board view is a grid of screen-aligned quads, so every one of
+       its scanlines is a constant-V row and lands here; that view measured
+       26.8 ms of game step against 1.0 ms for the hand view, and the
+       difference is this function.
+       Nothing here needs the pair machinery the other targets use.  Those
+       exist because PC-FX writes KRAM through a 16-bit port and CD32X is
+       big-endian; an i386 writing a byte-linear framebuffer can simply
+       address pixels, which drops the odd-edge read-modify-write entirely. */
+    {
+        uint8_t *b = renderer->framebuffer + ((int32_t)y * renderer->width) + xs;
+        cfx_direct_row_i386(b, span, row,
+                            (uint32_t)u << 24, (uint32_t)(uint8_t)step_u << 24);
+        return;
+    }
+#endif
+
 #if CFX_RENDERER_DIRECT_KRAM
     if (direct_kram) {
         if (xs & 1) {
@@ -1562,6 +1860,19 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
 
     uint8_t u = (uint8_t)tex_state;
     uint8_t v = (uint8_t)(tex_state >> 8);
+#if CFX_RENDERER_USE_I386_ASM && !defined(CFX_MEASURE_C_AFFINE)
+    /* Byte-addressed, one packed accumulator -- see cfx_direct_affine_i386().
+       Only the 32x32 pitch-32 tiles the board and card faces use match its
+       hardcoded row shift; anything else falls through to the portable C
+       below, exactly as the V810/SH-2 fast paths do. */
+    if (renderer->tile_pitch_bytes == 32) {
+        uint8_t *b = renderer->framebuffer + ((int32_t)y * renderer->width) + xs;
+        cfx_direct_affine_i386(b, span, tile,
+                               (uint32_t)v | ((uint32_t)u << 24),
+                               (uint32_t)(uint8_t)step_v + ((uint32_t)(uint8_t)step_u << 24));
+        return;
+    }
+#endif
     uint16_t *dst = (uint16_t *)renderer->framebuffer + ((int32_t)y * (renderer->width >> 1)) + (xs >> 1);
 #if CFX_RENDERER_DIRECT_KRAM
     uint8_t direct_kram = cfx_renderer3d_direct_kram_active(renderer);

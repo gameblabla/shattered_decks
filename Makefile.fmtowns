@@ -47,7 +47,19 @@ CORE_INCLUDES   = -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated
 # Keep an eye on BSS_LIMIT below when adding to this list, and see
 # src/platform/fmtowns/STATUS.md for how to measure a change like this
 # without fooling yourself.
-CORE_DEFINES    = -DWAIFU_FM_FMTOWNS -DWAIFU_FM_NO_HEADLESS_MAIN \
+#
+# EXTRA_CORE_DEFINES is a command-line hook for measurement builds, so a
+# profiling experiment does not have to be an edit to this file that someone
+# later forgets to revert.  The one that matters here is
+#
+#   make -f Makefile.fmtowns EXTRA_CORE_DEFINES=-DWAIFU_BATTLE_BASE_CACHE_DISABLE
+#
+# which turns the composite cache off so the parked duel scene re-renders the
+# whole software-3D board every frame.  That is the only way to see what the
+# renderer itself costs: with the cache on, the parked view is a memcpy and
+# the rasterizer barely runs, so a rasterizer change measures as noise.
+CORE_DEFINES    = $(EXTRA_CORE_DEFINES) \
+                  -DWAIFU_FM_FMTOWNS -DWAIFU_FM_NO_HEADLESS_MAIN \
                   -DWAIFU_ASSET_NO_STDIO -DWAIFU_ASSET_USE_CDROM \
                   -DWAIFU_ASSET_BIG_CACHE_SLOTS=40 -DWAIFU_ASSET_RAM_BUDGET=1048576 \
                   -DWAIFU_BG_CACHE_DISABLE \
@@ -81,6 +93,15 @@ CFLAGS          = -I$(OBJDIR) -I$(BOOTDIR) -I$(COMMONDIR) -I$(FMTOWNS_DIR) \
 GAME_OPT        ?= -Os
 GAME_CFLAGS     = $(CORE_INCLUDES) $(CORE_DEFINES) \
                   $(filter-out -Os,$(CBASEFLAGS)) $(GAME_OPT)
+
+# Header dependency tracking.  Without this, editing a header rebuilds
+# nothing: the explicit prerequisites below only list a file's own .h, and
+# the game core's rule lists none at all.  That is not a slow-build
+# annoyance, it is a correctness trap -- a change to
+# src/engine/renderer3d_spans.inc (where the rasterizer's inner loops live)
+# used to leave the old object in place, so the next emulator capture
+# measured the OLD code and reported "no change" for a rewritten hot loop.
+DEPFLAGS        = -MMD -MP
 
 # Headless verification hook.  FMTOWNS_DEBUG_INPUT=1 compiles a frame-indexed
 # button script (INPUT_SCRIPT below) into the payload, which fmtowns_main.c ORs
@@ -281,25 +302,25 @@ $(BOOTDIR)/head.o: $(BOOTDIR)/head.s $(FLAGS_STAMP)
 	$(AS) -o $@ $<
 
 $(BOOTDIR)/reloc.o: $(BOOTDIR)/reloc.c $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -fno-strict-aliasing -o $@ $<
+	$(CC) -c $(CFLAGS) -fno-strict-aliasing $(DEPFLAGS) -o $@ $<
 
 $(INPUT_SCRIPT_H): $(INPUT_SCRIPT) tools/fmtowns/gen_input_script.py | $(OBJDIR)
 	python3 tools/fmtowns/gen_input_script.py $(INPUT_SCRIPT) $@
 
 $(FMTOWNS_DIR)/fmtowns_main.o: $(FMTOWNS_DIR)/fmtowns_main.c $(MAIN_DEPS) $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/fmtowns_video.o: $(FMTOWNS_DIR)/fmtowns_video.c $(FMTOWNS_DIR)/fmtowns_video.h $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/fmtowns_input.o: $(FMTOWNS_DIR)/fmtowns_input.c $(FMTOWNS_DIR)/fmtowns_input.h $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/fmtowns_audio.o: $(FMTOWNS_DIR)/fmtowns_audio.c $(FMTOWNS_DIR)/fmtowns_audio.h $(CDDA_TRACKS_H) $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/fmtowns_cube_demo.o: $(FMTOWNS_DIR)/fmtowns_cube_demo.c $(FMTOWNS_DIR)/fmtowns_cube_demo.h $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 # Sound-effect wave data, packed for the RF5C68 out of the same sounds/*.wav
 # the other ports use (tools/fmtowns/gen_sfx_pcm.py).  Linked into the
@@ -312,22 +333,22 @@ $(SFX_PCM_H): tools/fmtowns/gen_sfx_pcm.py $(wildcard $(SFX_WAV_DIR)/*.wav) | $(
 	python3 tools/fmtowns/gen_sfx_pcm.py $(SFX_WAV_DIR) $@
 
 $(FMTOWNS_DIR)/fmtowns_sfx.o: $(FMTOWNS_DIR)/fmtowns_sfx.c $(FMTOWNS_DIR)/fmtowns_sfx.h $(SFX_PCM_H) $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/waifu_fmtowns_runtime.o: $(FMTOWNS_DIR)/waifu_fmtowns_runtime.c $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/waifu_fmtowns_platform.o: $(FMTOWNS_DIR)/waifu_fmtowns_platform.c $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 $(FMTOWNS_DIR)/waifu_fmtowns_cdrom.o: $(FMTOWNS_DIR)/waifu_fmtowns_cdrom.c $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 # Game-core object set (milestone 7) -- out-of-tree, see CORE_OBJS above.
 # Uses GAME_CFLAGS, not CFLAGS -- see that variable's comment above.
 $(COREOBJDIR)/%.o: %.c $(FLAGS_STAMP)
 	@mkdir -p $(dir $@)
-	$(CC) -c $(GAME_CFLAGS) -o $@ $<
+	$(CC) -c $(GAME_CFLAGS) $(DEPFLAGS) -o $@ $<
 
 # The game's real 256x240 8bpp title screen + palette (src/generated/
 # title_asset.h, the same asset every other platform's title screen is
@@ -341,7 +362,7 @@ $(FMTOWNS_DIR)/fmtowns_title_asset.o: $(FMTOWNS_DIR)/fmtowns_title_asset.S $(OBJ
 	$(AS) -I. -o $@ $<
 
 $(COMMONDIR)/%.o: $(COMMONDIR)/%.c $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -c $(CFLAGS) $(DEPFLAGS) -o $@ $<
 
 # Milestone 7: the game's real card/portrait/atlas art, staged onto the CD
 # as 8.3-named files and read back at runtime by waifu_fmtowns_cdrom.c's
@@ -437,3 +458,8 @@ run-iso: $(OUTPUT_ISO)
 clean:
 	rm -rf $(OBJDIR)
 	rm -f $(BOOTDIR)/*.o $(BOOTDIR)/*.s $(COMMONDIR)/*.o $(FMTOWNS_DIR)/*.o
+	rm -f $(BOOTDIR)/*.d $(COMMONDIR)/*.d $(FMTOWNS_DIR)/*.d
+
+# The -MMD depfiles written beside every object (see DEPFLAGS).  The dash
+# matters on a clean tree, where none of them exist yet.
+-include $(CORE_OBJS:.o=.d) $(OBJS:.o=.d)
