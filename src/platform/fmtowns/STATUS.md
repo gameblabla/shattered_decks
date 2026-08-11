@@ -345,12 +345,22 @@ script that walks to a scene and then **stops** (`90 START / 300 DOWN /
 400 A`, no further input, parks in the duel's hand view), so both builds
 render the same thing forever.  Everything below is measured that way.
 
+> **Every number in this subsection is wrong.**  They were taken with the
+> 1 us counter at I/O 0x26, which wraps every 65.536 ms -- inside the range
+> this port's frames actually occupied, so a 70 ms frame reported as 4.5 ms
+> and a 116 ms one as 50.7.  The conclusions built on them (that `rep stosl`
+> memset was an 11x loss, that the hand view's board render was cheap, that
+> the duel "was already running at the display cap") are all artefacts.  The
+> section is kept because the *method* it describes -- park the scene, compare
+> like with like -- is right, and because the failure is worth recognising.
+> See "Frame pacing and the 3D rasterizer" below for the real figures.
+
 | build                                        | game step per frame |
 | -------------------------------------------- | ------------------- |
-| baseline (byte-loop `memcpy`, no caches)      | 4.5 ms              |
-| `rep movsl` memcpy                            | 1.7 ms              |
-| ... plus `rep stosl` memset                   | 47 ms  (!)          |
-| shipped (memcpy only + top-view composite)    | 1.8 ms              |
+| baseline (byte-loop `memcpy`, no caches)      | 4.5 ms  (aliased)   |
+| `rep movsl` memcpy                            | 1.7 ms  (aliased)   |
+| ... plus `rep stosl` memset                   | 47 ms   (aliased)   |
+| shipped (memcpy only + top-view composite)    | 1.8 ms  (aliased)   |
 
 1. **`memcpy` was a C byte loop** (`waifu_fmtowns_runtime.c`).  The game
    core's `copy_u8_fast()` has hand-written backends for PC-FX and CD32X and
@@ -358,42 +368,37 @@ render the same thing forever.  Everything below is measured that way.
    panel and glyph blit was a per-byte load/store/increment/branch.  It is
    now `rep movsl` with the destination aligned first, and blocks under 32
    bytes still take the byte loop because three `rep` instructions cannot be
-   repaid by a handful of bytes.  2.6x off the game step.
-2. **The same change to `memset` is an 11x LOSS** and is not shipped.  That
-   is not a typo, and the attribution is not in doubt -- it was measured with
-   memcpy left alone.  A standalone benchmark of the identical routine inside
-   the payload says `rep stosl` beats the byte loop at every size tried, so
-   whatever this is, it is about how thousands of small fills interleave with
-   a real frame under Tsugaru, not about the instruction.  Read the comment
-   above `memset()` before touching it.
-3. **The battle-composite cache is on, for the top-down board cameras only**
-   (`WAIFU_BATTLE_BASE_CACHE_DISABLE` dropped from `Makefile.fmtowns`; the
-   `WAIFU_FM_FMTOWNS` branch in `battle_base_cache_for_camera()` picks the
-   cameras).  60 KiB of `.bss` to skip a whole software-3D board render on
-   the one view where that render costs more than the 61440-byte restore
-   copy.  Caching *every* camera, which is what the generic branch does, made
-   the cheap hand view slower than no cache at all.
+   repaid by a handful of bytes.  This one is real, though the two numbers
+   attached to it are not.
+2. **`memset` now gets the same treatment.**  It did not, for a long time, on
+   the strength of the aliased "11x loss" above -- and the comment above
+   `memset()` explaining why the in-payload microbenchmark disagreed should
+   have been read as evidence against the measurement.  Re-measured on the
+   wrap-proof clock, `rep stosl` takes the uncached hand view's step from
+   50.4 ms to 30.2 ms.
+3. **The battle-composite cache is on** (`WAIFU_BATTLE_BASE_CACHE_DISABLE`
+   dropped from `Makefile.fmtowns`; the `WAIFU_FM_FMTOWNS` branch in
+   `battle_base_cache_for_camera()` picks the cameras).  It covered only the
+   top-down view at the time, on the aliased reasoning that the hand view's
+   board render was cheaper than the restore copy; it now covers both resting
+   views in two slots.
    `WAIFU_BG_CACHE_DISABLE` and `WAIFU_FLOOR_SAMPLE_CACHE_DISABLE` stay on
    for the same kind of reason (the second is 256 KiB per tile size and
    simply does not fit).
 
-**The frame rate is now paced in software, and it has to be.**  The present
-path ends in `fmt_flip_page()`, which waits on a vsync edge, and that was the
-only thing holding the game to a sane speed.  Once the step and the VRAM
-blit got cheap, that wait started returning in ~3 ms instead of a display
-field and the whole game ran at **325 fps** -- every animation five times too
-fast.  `fmtowns_frame_pace()` in `fmtowns_main.c` now holds the loop to one
-60 Hz period per `waifu_fm_step()` off the same 1 us counter, which is a
-property of the game rather than of whatever the CRTC registers make Tsugaru
-do.  The parked-scene frame time with it is 19.8 ms.
+**The frame rate is paced in software, and it has to be.**  The present path
+ends in `fmt_flip_page()`, which waits on a vsync edge, and that was the only
+thing holding the game to a sane speed.  Once the step and the VRAM blit got
+cheap, that wait started returning in ~3 ms instead of a display field and
+the whole game ran at **325 fps** -- every animation five times too fast.
+`fmtowns_frame_pace()` in `fmtowns_main.c` holds the loop to 60 Hz off a
+free-running hardware counter, which is a property of the game rather than of
+whatever the CRTC registers make Tsugaru do.  (It measured that counter with
+the wrapping 1 us clock at first, which is the subject of the section below.)
 
 **What is not established.**  None of this has run on a physical Marty.  The
-`memset` result in particular contradicts the 386's published instruction
-timings, so it may be an emulator artefact -- but the emulator is the only
-oracle there is, and shipping the version that measures faster on it is the
-only defensible call until someone has real hardware.  The `present` figure
-in the stamp is dominated by that vsync wait and is not stable run to run;
-`step` is, and is what the table above reports.
+`present` figure in the stamp is dominated by the vsync wait and is not
+stable run to run; `step` is, and is what the tables report.
 
 ### Music: the whole soundtrack, switching per scene
 
@@ -460,124 +465,140 @@ one; a second boot of the same CMOS image read it back byte-identical; and
 every byte of the CMOS below the game's block was unchanged from the stock
 BIOS contents.
 
-## Frame pacing and the 3D rasterizer (this session)
+## Frame pacing and the 3D rasterizer
 
-### The game ran in slow motion, and that was a bug, not a frame rate
+### The clock was lying, and everything downstream of it was wrong
+
+The machine's free-running 1 us counter at I/O 0x26 is 16 bits, so it wraps
+every 65.536 ms.  This port's frames were longer than that.  A 134 ms frame
+read back as 3 ms, an 80 ms one as 14.5, and nothing in the payload could
+tell the difference: there is one clock and it is sampled once at each end of
+a section, with the CPU inside `waifu_fm_step()` for the whole interval
+between.
+
+That single fact produced, at various times: a "the duel already runs at the
+display cap" conclusion about a 7.5 fps scene; an 11x regression attributed to
+`rep stosl`; a cache policy built on the hand view's board render costing
+4 ms when it cost over 100; and a frame-pacing fix that could not work,
+because it asked the same clock how long the frame took and was told "about
+one 60 Hz period" every time.
+
+**Everything now times off PIT channel 1** (`fmtowns_clock_ticks()` in
+fmtowns_main.c): 307,200 Hz, free-running, wrapping every 213.3 ms.
+307200/60 is exactly 5120, so a 60 Hz frame is a whole number of ticks and
+the pacing divides nothing on a 386SX.  Only a frame over 213 ms aliases now,
+and in practice that means a CD read, which the pacing refuses to charge the
+game for anyway.
+
+If you take one thing from this file: **a measurement that contradicts a
+microbenchmark of its own code is a reason to distrust the measurement.**
+
+### Where the duel actually went
+
+Parked duel scene, measured with `./fmtowns.sh profile`, before and after:
+
+| scene                                   | before   | after   |
+| --------------------------------------- | -------- | ------- |
+| hand view, composite cache on           | 128 ms   | 7.6 ms  |
+| top-down board, composite cache on      | 10.2 ms  | 7.2 ms  |
+| hand view, cache off (= a moving camera)| 129.3 ms | 30.2 ms |
+
+Both resting views hold 60 fps; a moving camera runs at 30.  Three changes,
+in order of size:
+
+1. **The board was never on the compact affine rasterizer.**
+   `WAIFU_BOARD_FAST_AFFINE_ENABLE` listed PC-FX and CD32X and not FM TOWNS,
+   so the Marty took the generic desktop path: all four corners of all 64
+   cells reprojected independently, filled with per-pixel barycentric
+   texture math.  A whole optimisation pass aimed at the span fillers' inner
+   loops moved almost nothing, which was the clue -- stubbing every textured
+   span out of the frame took it from 129.3 ms to 122.1 ms.  On the shared
+   pre-projected path the same frame's step is 50.4 ms, pixel-identical.
+2. **`rep stosl` memset**: 50.4 -> 30.2 ms.  See above.
+3. **The composite cache now covers both resting views**, in two slots, not
+   just the top-down one.  The hand camera looks *along* the board, so its
+   near rows are magnified across most of the screen: it is the more
+   expensive view to rasterize, not the cheaper one.  Two slots rather than
+   one because UP/DOWN toggles between exactly these two views, and sharing a
+   slot would make every toggle a re-render.
+
+What is left in a 30.2 ms uncached frame: board 20.6 ms (12.8 setup,
+7.8 fill), everything else 9.6 ms.  The setup is the per-scanline edge walk
+and its two reciprocal-LUT divides; that is the next thing to attack if 30
+is not good enough, and `CFX_MEASURE_SKIP_SPANS` /
+`WAIFU_MEASURE_SKIP_BOARD` are the knobs that split it.
+
+### Fades were dithering every pixel
+
+`apply_black_dither_fade()` walks all 61440 pixels with a Bayer compare and a
+conditional store.  PC-FX and CD32X opt out and fade the palette instead;
+FM TOWNS did not, so every frame of every transition paid a full-screen walk
+on top of re-rendering the scene under it, and a transition crawled.  It now
+fades the palette in `fmtowns_video_present_8bpp()`, which had to compare and
+upload that palette anyway.
+
+### Game speed is untied from the render rate
 
 `waifu_fm_step()` advances the game by however many 60 Hz frames the platform
-reports, and this loop hard-coded `waifu_fm_set_frame_vblanks(1)`.  So a 20 ms
-frame still counted as one frame of game time: at the measured 50 fps every
-phase, camera move and card flight took 1.2x too long, and a heavy scene
-stretched proportionally further.  Only the animation clock
-(`g_b_anim_vblanks`) had ever been wall-clock paced; the phase state machine
-and the UI frame counter were not.
+reports.  `fmtowns_frame_pace()` returns the real count off the PIT, carrying
+leftover ticks so a steady 25 ms frame alternates 1,2,1,2 instead of losing a
+third of the game's clock, and capping the count so a stall cannot bank debt
+and then fast-forward.  `frame_logic_step()` in main.c multiplies the phase
+and UI counters by it; six cues that fired on an exact frame number became
+`frame_cue_crossed()` tests, since a step above 1 steps over `==`.
 
-`fmtowns_frame_pace()` already measured the frame in order to hold the loop
-down to 60 Hz.  It now also returns how many 60 Hz periods the frame really
-consumed, and `frame_logic_step()` in main.c multiplies the phase/UI counters
-by it.  Leftover microseconds carry between frames -- a steady 25 ms frame
-alternates 1,2,1,2 rather than truncating a third of the clock away every
-frame -- and the carry is capped so a CD stall cannot bank debt and then
-fast-forward the game.  Six cues that fired on an exact frame number became
-`frame_cue_crossed()` tests, since a step above 1 steps straight over `==`.
+Note the core clamps the count at 4 (`waifu_fm_set_frame_vblanks()`), so a
+frame slower than ~66 ms still runs in slow motion by construction.  That is
+a deliberate anti-teleport limit, and the answer to it is to not have frames
+that slow.
 
-It is opt-in per platform (`WAIFU_FM_FMTOWNS` only).  CD32X reports a real
-count too and could be switched over once someone re-verifies its duel
-timings.
+### Reading a capture
 
-### The rasterizer: 26.8 -> 15.2 ms on the top-down board
+`tools/fmtowns/read_frame_stamp.py` reports, per screenshot: the game frame,
+the CD-DA track, the frame time split into step and present, **the 60 Hz
+period count the loop charged the core**, the **worst whole frame in the last
+256**, and the **fade level**.  The last three exist because of specific
+failures: a slow-motion complaint is now diagnosable from one screenshot (a
+60 ms frame stamped "paced 1" means the clock is lying again); an average
+over 16 frames hides the one camera sweep that stutters; and a fade is
+otherwise completely invisible to a headless run.
 
-Measured on `./fmtowns.sh profile board` with the composite cache off, which
-is the only way to see the renderer at all (with the cache on, the parked
-frame is served by a memcpy).  The two builds' frames differ by 0 pixels
-outside the debug stamp.
+Two harness traps, both of which produced wrong answers before they were
+fixed:
 
-Three separate things were wrong or slow:
+- **Scripts are indexed by game frames, not rendered ones.**  A script
+  written against a 60 fps build parks in one phase at 30 fps, because every
+  tap lands twice as late in game time.  One capture sat re-selecting the
+  same square for 10,000 frames while reporting itself as a duel
+  walkthrough.
+- **`INPUT_SCRIPT` is part of the flags stamp.**  The generated header's only
+  other prerequisite is the script file's timestamp, so switching back from
+  the parked profiling script left make with nothing to do and
+  `fmtowns.sh test` silently re-measured the parked scene.
 
-1. **Every pixel pair was horizontally swapped.**  The shared span fillers
-   pack two pixels into a halfword with the left pixel in the high byte,
-   which is correct for PC-FX (KING's KRAM word order) and for CD32X (a
-   big-endian SH-2 writing byte-linear memory).  A little-endian i386 writing
-   byte-linear memory wants the opposite.  `CFX_RENDERER_PAIR_LOW_BYTE_LEFT`
-   now picks the layout from how the target addresses memory.
-2. **The compiler's inner loops spilled to the stack.**  The i386 has eight
-   registers and `-fPIC` reserves one; the board-floor loop was reading `du`
-   and `dv` from the stack for every pixel and spending two branches per
-   pixel.  The i386 fillers pre-shift the texture coordinate so its integer
-   part is the top bits of a register (extraction is one shift, no mask, and
-   the coordinate's wrap is the carry off bit 31) and pack u and v into one
-   accumulator separated by a carry guard, so one add advances both.  Four
-   pixels are collected with `ROR` and written as one 32-bit store, which the
-   SX's 16-bit bus splits into two cycles instead of four.
-3. **Headers rebuilt nothing.**  `Makefile.fmtowns` had no dependency
-   tracking, so the first capture of a rewritten hot loop measured the old
-   object and reported "no change".  `-MMD` now.
-
-The top-down board goes entirely through the constant-V row filler and never
-touches `cfx_board_fill` at all -- established by bisecting with the
-`CFX_MEASURE_C_*` knobs in `renderer3d_spans.inc`, which switch each loop
-back to its C original.  Keep them; attributing anything on this target is
-hard, and they are the only way to do it.
-
-### **The profiler lies above 65.536 ms.  Read this before trusting a number.**
-
-The machine's only free-running clock is 16 bits at 1 us.  A section longer
-than 65.536 ms is reported modulo the wrap, and nothing in the payload can
-tell the difference -- there is one clock and it is sampled once at each end
-of a section.  A real ~66 ms game step reads back as **0.5 ms**.
-
-This produced a confident, completely wrong conclusion mid-session: a build
-whose hand-view step really was ~66 ms reported 0.5 ms and appeared 125x
-faster than the 62.5 ms build that had actually improved it.  The
-contradiction only surfaced because stubbing the board render out entirely
-still cost 56.8 ms, which no 0.5 ms frame can contain.
-
-`tools/fmtowns/read_frame_stamp.py` now flags any step under 5 ms as
-alias-suspect.  Treat every number near or above 65 ms as unknown modulo
-65.5 ms, and prefer scenes that measure well under it -- which is why the
-board view, not the hand view, is this port's rasterizer benchmark.
-
-### Comparing two builds is harder than it looks (second trap)
-
-Wall-clock pacing means a faster build reaches any given game frame at a
-different point in the deck shuffle, so two builds parked on "the same" duel
-scene can hold different cards and have different amounts of card art
-streamed in -- and then their frame times are not comparable at all.  Build
-measurement discs with `EXTRA_CORE_DEFINES=-DWAIFU_FM_FIXED_LOGIC_STEP`,
-which pins the logic to one step per rendered frame so the frame-indexed
-input script replays identically in both.  Verified: with it, the two builds'
-parked hand frames are pixel-identical apart from the stamp.
-
-### Where the time actually goes now
-
-Parked duel, hand view, cache off, pinned logic step: ~62.5 ms of game step,
-of which ~57 ms remains with the board render stubbed out entirely.  So after
-this work the rasterizer is no longer the duel's dominant cost -- the card
-art and hand drawing are.  That is the next thing to profile, and STATUS's
-older "card-vs-card battle screen, 28-62 ms" note is probably the same cost.
+Also: `Makefile.fmtowns` had no header dependency tracking until recently
+(`-MMD` now).  The first capture of a rewritten hot loop measured the old
+object and reported "no change".
 
 ## What is left
 
-- **Frame rate.**  The game step is down to ~1.8 ms in the parked duel scene
-  (see "Performance: the duel, actually measured"), and the frame is now
-  bounded by the present path -- mostly by the vsync wait inside
-  `fmt_flip_page()`, whose duration under Tsugaru is neither stable nor
-  obviously related to a 60 Hz field.  Whether the remaining ~18 ms is a real
-  hardware cost or an emulator artefact of this custom CRTC mode is the next
-  thing worth finding out; if it is the latter, dropping the flip's wait and
-  leaving pacing entirely to `fmtowns_frame_pace()` is the obvious move, but
-  it risks tearing on a real Marty and nobody has one.
-- **Heavy scenes have not been profiled.**  The captures park in the duel's
-  hand view.  The card-vs-card battle screen with its two large art panels
-  measured 28-62 ms of game step on the baseline build and is the worst scene
-  anyone has caught; story dialogue, the sanctum map, and attack animations
-  with moving cameras (which miss the composite cache by construction) are
-  unmeasured.  Park the debug script on one and read the stamp.
-- **Animation pacing.**  `waifu_fm_set_frame_vblanks(1)` is hard-coded, so a
-  frame that overruns its budget makes battle animations run slow rather than
-  dropping steps.  `fmtowns_frame_pace()` now supplies the free-running time
-  source this needs (I/O 0x26, no YM2612 timer required), so the remaining
-  work is feeding a real elapsed-frame count into the core.
+- **Moving cameras cost 30 ms.**  The resting duel views are cached and hold
+  60 fps; anything that moves the camera (the hand<->top lift, card flights,
+  attack sweeps) renders live at 30.  Of that frame, 12.8 ms is the affine
+  walker's per-scanline setup -- four edge tests and two reciprocal-LUT
+  divides per row, per quad.  Specialising that loop for the i386, or
+  quantising the lift onto cached anchors the way PC-FX does (60 KiB a slot,
+  ~117 KiB of `.bss` spare), are the two obvious moves.
+- **The present path is 5-11 ms** and its variance is a vsync wait, so a
+  frame that finishes a millisecond late costs a whole extra field.  Whether
+  the blit itself can be cut (or the flip's wait dropped, leaving pacing
+  entirely to `fmtowns_frame_pace()`) is unmeasured; the latter risks tearing
+  on a real Marty and nobody has one.
+- **Heavy scenes still are not profiled.**  The captures park in the duel.
+  The card-vs-card battle screen with its two large art panels, story
+  dialogue, and the sanctum map are all unmeasured -- park the debug script
+  on one and read the stamp.  The worst frames a full scripted run catches
+  (80-230 ms) are CD reads, not renders.
 - **A duel played to completion** (and the story path through to the sanctum
   save screen) has not been driven end to end.  Getting *into* a duel is no
   longer the obstacle -- `debug_input.txt` now assembles the 40-card deck
