@@ -199,8 +199,10 @@ void fmt_set_mode(fmt_mode_id_t id)
     g_fmt_draw_buffer_offset = (uint32_t)g_draw_page * g_frame_buffer_size;
 
     /* FA0 is expressed in groups of eight bytes in all supported
-     * single-page 8/16bpp modes.  Begin on the first, cleared page. */
+     * single-page 8/16bpp modes.  Begin on the first, cleared page.
+     * FA1 must track it - see fmt_flip_page_poll(). */
     crtc_out16(FA0, 0);
+    crtc_out16(FA1, 0);
 
     /* A mode change must never expose stale VRAM.  Clear all buffers that
      * belong to the mode while display output is stopped. */
@@ -356,9 +358,22 @@ int fmt_flip_page_poll(void (*poll)(void))
     g_draw_page ^= 1u;
 
     /* FA0 increments by eight bytes in single-page 8bpp and 16bpp modes
-     * (TOWNSEMU TownsCRTC::GetPageVRAMAddressOffset()). */
-    crtc_out16(FA0,
-        (uint16_t)(((uint32_t)g_display_page * g_frame_buffer_size) / 8u));
+     * (TOWNSEMU TownsCRTC::GetPageVRAMAddressOffset()).
+     *
+     * FA1 has to be given the same address.  Single-page mode is not "one
+     * layer using one register set": the CRTC still fetches the picture
+     * from both VRAM banks, alternating between them every 16 bits, and
+     * each bank is addressed by its own register set (bank 0 by
+     * FA0/HAJ0/FO0/LO0, bank 1 by FA1/HAJ1/FO1/LO1).  Flipping FA0 alone
+     * leaves every other pair of 8bpp pixels being fetched from the page
+     * that is not being displayed: on hardware that showed up as a
+     * 4-pixel-period stripe pattern over the whole screen, half of it the
+     * palette-index-0 cream of the never-drawn page.  Emulators that model
+     * only one register set in this mode show nothing wrong. */
+    uint16_t page_addr =
+        (uint16_t)(((uint32_t)g_display_page * g_frame_buffer_size) / 8u);
+    crtc_out16(FA0, page_addr);
+    crtc_out16(FA1, page_addr);
     g_fmt_draw_buffer_offset = (uint32_t)g_draw_page * g_frame_buffer_size;
     return 0;
 }

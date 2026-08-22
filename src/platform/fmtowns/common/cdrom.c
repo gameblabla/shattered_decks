@@ -16,8 +16,17 @@
  * lost-data timeout (~100ms per sector), which is exactly what was
  * happening: every sector cost a full timeout/abort cycle. The real
  * per-sector handshake is SRQ + the status FIFO below. */
+#define CD_STATUS_DRY            0x01  /* Sub-MPU ready to accept a command byte / parameter */
 #define CD_STATUS_SRQ            0x02  /* Status read request: 4 status bytes waiting in the FIFO */
 #define CD_STATUS_STSF           0x20  /* Software (PIO) transfer in progress */
+
+/* Write-only "wait about one microsecond" register (I/O 0x6C, present
+ * since the TOWNS 20F, so on every model this port targets).  The CD-ROM
+ * BIOS - and CaptainYS's hardware-verified FM/TOWNS/EXPERIMENTS/CDREAD/
+ * CDREAD.ASM, which this driver's sequence is modelled on - spaces the
+ * parameter-FIFO writes with it.  Back-to-back OUTs on a fast machine put
+ * them ~450ns apart, well under what the reference code ever produces. */
+#define CD_TIMER_1US_WAIT        0x6C
 
 /* Written to CD_MASTER_CTRL_STATUS to acknowledge/clear SIRQ (bit7,
  * SMIC) and DEI (bit6, DEIC) after handling a sector's transfer
@@ -35,6 +44,18 @@
  * status replies but no interrupts, so STATUS is set and IRQ is not. */
 #define CDCMD_MODE1READ           0x02
 #define CDCMD_FLAG_STATUS         0x20
+
+/* The undocumented setup command the CD-ROM BIOS issues immediately before
+ * every sector read, with the fixed parameters 08 01 00 00 00 00 00 00.
+ * Its effect is not documented anywhere - the Technical Databook declines
+ * to publish the CDC command set at all ("please use the CD-ROM BIOS") -
+ * but tracing a Marty boot ROM's own CDC traffic shows 36 of them, one
+ * paired with each read, and no driver known to work on real hardware
+ * skips it.  A bare MODE1READ is accepted (status 00H) and then never
+ * delivers a sector, which is exactly the hang this port had on hardware
+ * while running fine under emulators that do not model the requirement.
+ * 0xA0 already carries the STATUS flag (bit 5); the IRQ flag stays clear. */
+#define CDCMD_SETUP               0xA0
 
 /* First byte of a 4-byte status FIFO reply. */
 #define CDSTAT_NO_ERROR           0x00  /* Command accepted */
@@ -133,10 +154,56 @@ void fmt_cdc_drain_status(void)
 
 void fmt_cdc_issue(uint8_t cmd, const uint8_t param[8])
 {
-    outb(cmd, CD_COMMAND_STATUS);
+    /* The CDC parameter FIFO is loaded before the command is fired.  This is
+     * the order used by the TBIOS-compatible hardware reference: the command
+     * register starts execution using the eight parameters already queued.
+     * TOWNSEMU also models this pairing, and MAME executes immediately on the
+     * command-register write, so writing the command first makes it consume
+     * stale parameters there.
+     *
+     * DRY (4C0H bit 0) means "the sub-MPU can accept a command"; a byte
+     * written while it is clear is simply dropped.  CDREAD.ASM waits for it
+     * once before loading the FIFO and again before the command register,
+     * and so do we.  Note this is the only place waiting on DRY is correct:
+     * it stays clear for the whole duration of a read, so polling it after
+     * MODE1READ - which this file used to do - can only be satisfied by the
+     * drive giving up on its lost-data timeout. */
+    (void)wait_status_bit(CD_STATUS_DRY);
     for (int i = 0; i < 8; i++) {
         outb(param[i], CD_PARAMETER_DATA);
+        outb(0, CD_TIMER_1US_WAIT);
     }
+    (void)wait_status_bit(CD_STATUS_DRY);
+    outb(cmd, CD_COMMAND_STATUS);
+}
+
+/* CDCMD_SETUP and the fixed parameters the CD-ROM BIOS pairs with it - see
+ * its definition.  Laid out command-byte-first like fmt_cd_stream::cmd, so
+ * the streaming issuer can dribble either one out with the same code. */
+static const uint8_t g_setup_cmd[9] = { CDCMD_SETUP, 0x08, 0x01, 0, 0, 0, 0, 0, 0 };
+
+int fmt_cdc_setup_read(void)
+{
+    uint8_t status[4];
+
+    fmt_cdc_issue(g_setup_cmd[0], &g_setup_cmd[1]);
+    /* The command carries STATUS but not IRQ, so it posts a status entry
+     * without raising SIRQ: read the entry and the drive is ready for the
+     * read command, with nothing left over for the read's own handshake to
+     * trip over.  No acknowledge is needed (and CDREAD.ASM issues none).
+     *
+     * The reply itself is waited for but not judged: the setup command
+     * reports drive state, so the first one after a disc change answers
+     * "media changed" (21 08 00 00) followed by a clear 00 - an answer, not
+     * a failure.  Drain whatever it queued so the read that follows sees
+     * only its own status codes. */
+    if (fmt_cdc_read_status(status) != 0) {
+        return -1;
+    }
+    for (int i = 0; i < 8 && fmt_cdc_status_pending(); i++) {
+        (void)fmt_cdc_read_status(status);
+    }
+    return 0;
 }
 
 /* Fills in the 9 bytes a MODE1READ takes: the command byte followed by
@@ -164,6 +231,11 @@ int fmt_cdrom_read(uint32_t lba, uint16_t count, void *buf)
     }
 
     fmt_cdc_drain_status();
+    /* Every read is preceded by the CD-ROM BIOS's setup command; without it
+     * real hardware accepts MODE1READ and then hands over nothing. */
+    if (fmt_cdc_setup_read() != 0) {
+        return -1;
+    }
     build_read_command(lba, count, cmd);
     fmt_cdc_issue(cmd[0], &cmd[1]);
 
@@ -263,31 +335,59 @@ unsigned fmt_cdrom_stream_step(fmt_cd_stream *st, uint32_t play_pos,
 
         build_read_command(st->lba + st->sector, (uint16_t)run, st->cmd);
         st->cmd_idx = 0;
-        st->state = FMT_CD_STREAM_ISSUE;
+        st->state = FMT_CD_STREAM_SETUP;
         return 0;
     }
 
+    case FMT_CD_STREAM_SETUP:
     case FMT_CD_STREAM_ISSUE: {
         /* Dribbled out a few bytes per call rather than all nine at
          * once: this runs inside the caller's sample-pacing loop, and
          * nine back-to-back I/O writes is enough work to push a sample
-         * late. */
-        unsigned n = (unsigned)(sizeof st->cmd) - st->cmd_idx;
+         * late.
+         *
+         * Both the CD-ROM BIOS setup command (SETUP) and the read itself
+         * (ISSUE) go out this way: eight parameter bytes, then the command
+         * byte that fires them.  A byte written while DRY is clear would be
+         * dropped, so stop and come back rather than losing it - the state
+         * machine is allowed to make no progress on any given call. */
+        const uint8_t *cmd = (st->state == FMT_CD_STREAM_SETUP)
+                             ? g_setup_cmd : st->cmd;
+        unsigned n = 9u - st->cmd_idx;
+
         if (n > budget) {
             n = budget;
         }
         for (unsigned i = 0; i < n; i++) {
-            uint8_t b = st->cmd[st->cmd_idx + i];
-            if (st->cmd_idx + i == 0) {
-                outb(b, CD_COMMAND_STATUS);
-            } else {
-                outb(b, CD_PARAMETER_DATA);
+            if (!(inb(CD_MASTER_CTRL_STATUS) & CD_STATUS_DRY)) {
+                return 0;
             }
+            if (st->cmd_idx < 8u) {
+                outb(cmd[st->cmd_idx + 1u], CD_PARAMETER_DATA);
+                outb(0, CD_TIMER_1US_WAIT);
+            } else {
+                outb(cmd[0], CD_COMMAND_STATUS);
+            }
+            st->cmd_idx++;
         }
-        st->cmd_idx = (uint8_t)(st->cmd_idx + n);
-        if (st->cmd_idx >= sizeof st->cmd) {
-            st->state = FMT_CD_STREAM_WAIT;
+        if (st->cmd_idx >= 9u) {
+            st->state = (st->state == FMT_CD_STREAM_SETUP)
+                        ? FMT_CD_STREAM_SETUP_WAIT : FMT_CD_STREAM_WAIT;
         }
+        return 0;
+    }
+
+    case FMT_CD_STREAM_SETUP_WAIT: {
+        /* The setup command's reply is consumed, not judged - see
+         * fmt_cdc_setup_read(). */
+        if (!(inb(CD_MASTER_CTRL_STATUS) & CD_STATUS_SRQ)) {
+            return 0;
+        }
+        for (int i = 0; i < 4; i++) {
+            (void)inb(CD_COMMAND_STATUS);
+        }
+        st->cmd_idx = 0;
+        st->state = FMT_CD_STREAM_ISSUE;
         return 0;
     }
 

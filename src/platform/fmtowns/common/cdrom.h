@@ -40,14 +40,20 @@
  * starting at LBA `lba`, confirmed working end-to-end (booted, loaded
  * IMAGE.RAW+PALETTE.BIN via iso9660.c, rendered pixel-correct in
  * TOWNSEMU - see the fmt_iso9660_load() call site in main.c):
- *   1. Write the command byte (CDCMD_MODE1READ) to 0x4C2. This just
- *      latches state.cmd - execution doesn't start yet.
+ *   1. Send the CD-ROM BIOS's undocumented setup command (0xA0 with the
+ *      fixed parameters 08 01 00 00 00 00 00 00) and read its 4-byte
+ *      status reply. Real hardware requires this before every read; see
+ *      fmt_cdc_setup_read() below.
  *   2. Write 8 parameter bytes to 0x4C4: BCD-encoded start MSF (3 bytes),
- *      BCD-encoded end MSF (3 bytes, exclusive - start+count sectors),
- *      then 2 unused/zero filler bytes to reach the CDC's fixed 8-byte
- *      parameter queue (PARAM_QUEUE_LEN in cdrom.cpp) - the 8th byte is
- *      what actually triggers command execution.
- *   3. Per sector: write 0x08 to 0x4C6 to arm CPU-transfer mode for that
+ *      BCD-encoded end MSF (3 bytes, *inclusive* - the last sector to
+ *      read), then 2 unused/zero filler bytes to reach the CDC's fixed
+ *      8-byte parameter queue (PARAM_QUEUE_LEN in cdrom.cpp).
+ *   3. Write the command byte (CDCMD_MODE1READ) to 0x4C2. That fires the
+ *      already-parameterized request; the parameters must be in place
+ *      first, which is how the CD-ROM BIOS and the hardware reference
+ *      FM/TOWNS/EXPERIMENTS/CDREAD/CDREAD.ASM order it. Both this and the
+ *      parameter writes are preceded by a wait for DRY (0x4C0 bit 0).
+ *   4. Per sector: write 0x08 to 0x4C6 to arm CPU-transfer mode for that
  *      sector, poll 0x4C0 until the STSF bit (0x20) is set, then read
  *      2048 bytes one at a time from 0x4C4. The CDC clears STSF and
  *      CPUTransfer after each sector, so this arm-poll-read cycle repeats
@@ -87,10 +93,23 @@ int fmt_cdrom_read(uint32_t lba, uint16_t count, void *buf);
  * to match on. */
 void fmt_cdc_drain_status(void);
 
-/* Writes a command byte followed by its 8 parameter bytes. The 8th
- * parameter byte is what starts the command, so all nine always go out.
- * Issues no waits - poll for the reply with fmt_cdc_read_status(). */
+/* Loads the 8-byte parameter FIFO and then writes the command byte, which
+ * is what starts the command. Waits for DRY (the sub-MPU's "I can accept a
+ * command" flag) before the FIFO and again before the command register,
+ * because bytes written while it is clear are dropped. Does not wait for
+ * the command to finish - poll for that with fmt_cdc_read_status(). */
 void fmt_cdc_issue(uint8_t cmd, const uint8_t param[8]);
+
+/* Issues the undocumented setup command the CD-ROM BIOS sends immediately
+ * before every sector read (0xA0 with parameters 08 01 00 00 00 00 00 00)
+ * and consumes its status reply. Returns 0, or -1 if no reply arrived.
+ *
+ * fmt_cdrom_read() and the streaming reader below do this for themselves;
+ * it is exposed for anything else that drives a read command directly.
+ * A read that skips it is accepted by the sub-MPU and then never delivers
+ * a sector - a hang that emulators which do not model the requirement will
+ * not show (Tsugaru only under -CDCSTRICT). */
+int fmt_cdc_setup_read(void);
 
 /* 1 if a status entry is waiting (SRQ set), 0 if not. Never blocks. */
 int fmt_cdc_status_pending(void);
@@ -135,6 +154,8 @@ void fmt_cdc_ack(void);
 
 enum {
     FMT_CD_STREAM_IDLE,   /* between commands - will start a run when the ring has room */
+    FMT_CD_STREAM_SETUP,  /* writing out the 9 bytes of the BIOS setup command */
+    FMT_CD_STREAM_SETUP_WAIT, /* waiting on the setup command's status reply */
     FMT_CD_STREAM_ISSUE,  /* writing out the 9 command/parameter bytes */
     FMT_CD_STREAM_WAIT,   /* command in flight, waiting on the status FIFO */
     FMT_CD_STREAM_XFER,   /* a sector is ready, draining it into the ring */
@@ -151,7 +172,8 @@ typedef struct {
     uint32_t total_sectors;  /* sectors the file occupies */
     uint32_t sector;         /* next sector of the file to fetch */
     uint16_t byte_idx;       /* bytes taken so far from the sector in flight */
-    uint8_t  cmd[9];         /* command byte + 8 parameter bytes being issued */
+    uint8_t  cmd[9];         /* command byte + 8 params; params issue first */
+                             /* (cmd_idx walks it as params 1..8 then byte 0) */
     uint8_t  cmd_idx;
     uint8_t  state;
     uint8_t  loop;
