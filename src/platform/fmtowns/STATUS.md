@@ -628,6 +628,94 @@ object and reported "no change".
   evidence is playback state read back through the drive, and the SFX
   evidence is the emulator's own PCM recording.
 
+## CDC command ordering and MAME compatibility
+
+The polled MODE1 reader queues all eight bytes in the CDC parameter FIFO and
+then writes the command register.  This is the hardware sequence used by the
+TBIOS-compatible `FM/TOWNS/EXPERIMENTS/CDREAD/CDREAD.ASM` reference
+(`CDC_PUSH_PARAMS`, wait-ready, then `CDC_SHOOT_MODE1READ`).  The command write
+fires the already-parameterized request; it is not the first byte of a
+nine-byte packet.
+
+The previous command-first sequence happened to work in TOWNSEMU, whose state
+machine waits until it has seen both a command and eight parameters.  MAME
+executes MODE1READ immediately on the command-register write, so it consumed
+the stale parameter FIFO and the game remained at `LOADING... TITLE 0%`.
+Parameter-first ordering is both hardware-correct and accepted by both
+emulators.  It is used by the blocking asset reader and by the nonblocking PCM
+stream command issuer; leaving the stream path command-first would reintroduce
+the same stale-LBA bug when streamed music starts.
+
+Verified from the same `build/fmtowns/output.cue` on 2026-08-11: MAME's
+`fmtowns -cdrom` driver and TOWNSEMU/Tsugaru `-TOWNSTYPE MARTY` both load past
+the progress screen and render the title image.
+
+## The hardware-only CD hang: the A0 setup command
+
+A build that loaded fine in both emulators still hung on a real FM TOWNS Marty
+at `LOADING... TITLE 0%`, on the very first asset read.  The cause is a
+command the driver never sent.
+
+`FM/TOWNS/EXPERIMENTS/CDREAD/CDREAD.ASM` -- CaptainYS's own hardware
+experiment, and the closest thing to a specification that exists, since the
+Technical Databook declines to publish the CDC command set at all ("please use
+the CD-ROM BIOS") -- issues an undocumented command `A0H` with the fixed
+parameters `08 01 00 00 00 00 00 00` immediately before its `MODE1READ`, with
+the comment "TBIOS uses this command before reading sectors.  Effect is
+undocumented and unknown".  Tracing the Marty boot ROM's own CDC traffic shows
+36 of them, each one paired with a read.  No driver known to work on hardware
+skips it.  A bare `MODE1READ` is *accepted* -- the sub-MPU takes the command
+and posts status `00H` -- and then simply never hands over a sector, which is
+what a driver polling for `22H` sees as a permanent freeze on the frame it drew
+before the read.  That is exactly the hardware symptom.
+
+`fmt_cdc_setup_read()` sends it, and both readers in `cdrom.c` call it before
+every read command (the drive requires it per read, not once per session).
+The two other handshake rules the same reference implies are also honoured
+now: `fmt_cdc_issue()` waits for DRY (`4C0H` bit 0, "sub-MPU can accept a
+command") before loading the parameter FIFO and again before the command
+register, since a byte written while DRY is clear is dropped, and it spaces
+the parameter writes with the 1us wait register (I/O `6CH`) the way the BIOS
+does.  DRY *before* a command is the only correct use of that flag; it stays
+clear for the whole duration of a read, so waiting on it afterwards can only
+be satisfied by the drive's lost-data timeout (see the comment block at the
+top of `cdrom.c`).
+
+This cannot be confirmed without a Marty, and it is a deduction, not a
+measurement.  Two other candidates that looked at least as strong were killed
+by evidence: a >=1us gap between parameter bytes (the boot ROM writes them
+500ns apart) and keeping SMIM set when acknowledging (the boot ROM acks with
+it clear).  Tsugaru's `-CDCSTRICT` option models the A0 and DRY rules so the
+failure can be reproduced without hardware; on the pre-fix build it froze at
+the same `LOADING...` screen the Marty photo shows.
+
+Verified 2026-08-22 from `build/fmtowns/output.cue`:
+
+- Tsugaru `-TOWNSTYPE MARTY -CDCSTRICT`: boots to the title, and a scripted
+  run through the deck editor into a duel reports zero `[CDCSTRICT]`
+  violations.
+- Tsugaru without the flag, and MAME `fmtownsux -cdrom`: unchanged, both still
+  reach the title.  The A0 command is a no-op in both.
+
+## Single-page 256-colour mode uses *both* CRTC register sets
+
+Page flipping wrote `FA0` only.  On hardware that produced a stripe pattern
+over the whole screen with a 4-pixel period, half of it the cream of palette
+index 0 -- the never-drawn page showing through.
+
+Single-page mode is not "one layer driven by one register set".  The CRTC
+still fetches the picture from both VRAM banks, alternating every 16 bits, and
+each bank is addressed by its own set: bank 0 by `FA0`/`HAJ0`/`FO0`/`LO0`,
+bank 1 by `FA1`/`HAJ1`/`FO1`/`LO1`.  With `FA0` flipped to the second page and
+`FA1` left at 0, every other pair of 8bpp pixels came from page 0, which at
+that moment still held the `fmt_set_mode()` clear.
+
+`fmt_flip_page_poll()` now writes the page address to both, and
+`fmt_set_mode()` zeroes both.  Emulators that model only one register set in
+this mode show nothing wrong either way -- Tsugaru did not until it was taught
+the 16-bit cadence.  Every other CRTC register in the mode tables already
+carries identical values in both sets, so `FA` was the only one out of step.
+
 ## Runtime Marty / standard-model detection
 
 This port was Marty-only until now: everything above was built and verified
