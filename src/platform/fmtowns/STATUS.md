@@ -697,6 +697,67 @@ Verified 2026-08-22 from `build/fmtowns/output.cue`:
 - Tsugaru without the flag, and MAME `fmtownsux -cdrom`: unchanged, both still
   reach the title.  The A0 command is a no-op in both.
 
+## CD diagnostics: what the next hardware hang will report
+
+The A0 fix above is a deduction, not a measurement, so this port has to
+assume it can still hang on a real drive.  What made the first hang
+undebuggable was not the hang: it was that the frozen screen said
+`LOADING...` / `TITLE 0%` and nothing else.  No file, no sector, no attempt
+count, no CDC register.  `src/platform/fmtowns/fmtowns_cd_diag.[ch]` exists
+so that never costs another round trip through a photograph.
+
+It is game code, not libfmt.  libfmt's `cdrom.c` stays a driver that returns
+0 or -1; all the policy -- retry, report, prompt -- lives here.
+
+**Boot self-test.**  `fmtowns_cd_diag_selftest()` runs before the game core
+and walks the CD path one labelled step at a time: the CDC status port, the
+A0 setup command alone, a read of sector 16, the `CD001` signature in what
+came back, the directory lookup for `TITLE.BIN`, and a read at its real LBA.
+Each step's label is painted **before** the step runs, so a step that never
+returns leaves its own name on screen as the diagnosis.  It prints the raw
+`4C0` value and the file's LBA/size either way, holds for ~1.5s on success,
+and on failure holds a report with a visible countdown and re-runs itself
+when it expires (A starts the game anyway).  An unattended machine keeps
+trying rather than sitting dead.
+
+**Breadcrumbs.**  Before every read attempt during the asset load, a line
+like `RD 0003B2 N1E T1 TITLE.BIN` (LBA, sector count, attempt, file) is
+stamped into the bottom row of VRAM.  Two details matter: it goes into
+*both* pages, because a hang stops the page flip and the draw page may not
+be the one on screen; and it is written straight to VRAM rather than to the
+game's framebuffer, because a framebuffer only reaches the glass when
+something presents it, and the case this exists for is the case where
+nothing does.  Breadcrumbs switch off once `waifu_assets_ready()` and wipe
+their line on the way out, so they cost nothing in a running duel.
+
+**Retry and report.**  `fmtowns_cd_diag_read()` retries a failed read
+`DIAG_READ_TRIES` (3) times, draining the CDC status FIFO between attempts
+so the next command does not match on the previous one's wreckage.  If all
+three fail, `fmtowns_cd_diag_report_failure()` paints the file, the sector,
+the count, the attempts, the sampled `4C0`, a plain-language reading of it
+("NO DRIVE RESPONDING" / "DRIVE READY, READ REFUSED" / "DRIVE BUSY OR
+STALLED"), and the running counters, then offers RUN to retry or A to
+continue without the data.  The counters (`READS`/`SECTORS`/`RETRY`/`FAILED`)
+are cumulative, so an intermittent drive shows up as a non-zero retry count
+on a self-test that otherwise passed.
+
+Note what bounds a hang today: the driver's poll limits are spin counts, not
+wall-clock timeouts (`CD_POLL_LIMIT`), so a drive that stops answering costs
+on the order of ten seconds per attempt and about a minute before the report
+appears.  That is the intended trade -- slow and legible beats fast and
+wrong -- but it is why the retry count is 3 and not 10.
+
+**Verifying the failure path.**  No emulator will produce the fault this is
+for, so building with `FMTOWNS_CD_FORCE_FAIL=n` makes the first *n* reads
+fail without asking the drive.  `n=1` exercises the report screen, the
+countdown, and the recovery.  Verified 2026-08-22 under Tsugaru `-CDCSTRICT`:
+the self-test reports `READ SECTOR 16 FAIL` / `VOLUME DESCRIPTOR FAIL`,
+`RETRY 3 FAILED 1`, holds the prompt with a live countdown, then re-runs
+itself and boots to the title.  With the hook off, the self-test reports six
+PASSes and `REG 4C0 = 41 READY`, the breadcrumb was captured mid-load, and a
+scripted run into a duel is unchanged (zero `[CDCSTRICT]` violations, no
+breadcrumb residue on the board).  MAME `fmtownsux -cdrom` unaffected.
+
 ## Single-page 256-colour mode uses *both* CRTC register sets
 
 Page flipping wrote `FA0` only.  On hardware that produced a stripe pattern

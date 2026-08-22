@@ -120,6 +120,16 @@ CORE_DEFINES   += -DFMTOWNS_DEBUG_INPUT
 MAIN_DEPS      += $(INPUT_SCRIPT_H)
 endif
 
+# Failure-path verification hook for the CD diagnostic (fmtowns_cd_diag.c).
+# FMTOWNS_CD_FORCE_FAIL=n makes the first n sector reads fail without asking
+# the drive, so the report screen and the retry path can actually be run --
+# no emulator will produce the hardware fault they exist for.  Off by
+# default; the shipping payload carries none of it.
+FMTOWNS_CD_FORCE_FAIL ?= 0
+ifneq ($(FMTOWNS_CD_FORCE_FAIL),0)
+CORE_DEFINES   += -DFMTOWNS_CD_DIAG_FORCE_FAIL=$(FMTOWNS_CD_FORCE_FAIL)
+endif
+
 TSUGARU         = FMTOWNSCD_EXAMPLE_Cube/Tsugaru_CUI.elf
 MARTY_ROM       = FMTOWNSCD_EXAMPLE_Cube/MARTY_ROM
 
@@ -153,6 +163,7 @@ OBJS            = $(BOOTDIR)/head.o $(BOOTDIR)/reloc.o \
                   $(FMTOWNS_DIR)/fmtowns_main.o $(FMTOWNS_DIR)/fmtowns_video.o \
                   $(FMTOWNS_DIR)/fmtowns_input.o $(FMTOWNS_DIR)/fmtowns_audio.o \
                   $(FMTOWNS_DIR)/fmtowns_sfx.o $(COMMONDIR)/sound.o \
+                  $(FMTOWNS_DIR)/fmtowns_cd_diag.o \
                   $(FMTOWNS_DIR)/fmtowns_cube_demo.o \
                   $(FMTOWNS_DIR)/fmtowns_title_asset.o \
                   $(FMTOWNS_DIR)/waifu_fmtowns_runtime.o \

@@ -14,6 +14,7 @@
 #include "iso9660.h"
 #include "cdrom.h"
 #include "fmtowns_audio.h"
+#include "fmtowns_cd_diag.h"
 #include <string.h>
 
 #define FMT_CD_SECTOR_BYTES 2048u
@@ -48,10 +49,34 @@ static int blob_lba(WaifuAssetBlobId blob, uint32_t *out_lba)
     if (blob == g_cached_blob) { *out_lba = g_cached_lba; return 1; }
     name = blob_filename(blob);
     if (!name) return 0;
+    /* Name the file before the directory scan, not after: everything the
+     * diagnostic layer can report about a read that never comes back is
+     * only as good as the last stage set (fmtowns_cd_diag.h). */
+    fmtowns_cd_diag_stage(name);
     if (fmt_iso9660_find(name, &g_cached_lba, &g_cached_size) != 0) return 0;
     g_cached_blob = blob;
     *out_lba = g_cached_lba;
     return 1;
+}
+
+/* Every read the asset loader does, with retries and a breadcrumb, and with
+ * the failure report shown rather than a silent "0" handed back to a core
+ * that has no way to say what went wrong.  Returns 1 if the data is there.
+ *
+ * The core treats a failed slice as "this asset is missing" and carries on
+ * drawing without it, which on a disc that has stopped answering means a
+ * game made of blank cards.  Giving up is still offered -- the report has a
+ * key for it -- but it is not what happens by default. */
+static int diag_read(uint32_t lba, uint16_t count, void *buf)
+{
+    for (;;) {
+        if (fmtowns_cd_diag_read(lba, count, buf) == 0) {
+            return 1;
+        }
+        if (!fmtowns_cd_diag_report_failure()) {
+            return 0;
+        }
+    }
 }
 
 int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size_t offset, size_t bytes)
@@ -68,20 +93,25 @@ int waifu_assets_platform_read_blob_slice(WaifuAssetBlobId blob, void *dst, size
      * silent for the rest of the scene. */
     fmtowns_audio_note_data_read();
 
+    /* Breadcrumbs are worth their VRAM stores while the loading screen is
+     * up -- that is the screen a hang would freeze on -- and pure overhead
+     * once the game is drawing its own frames over them. */
+    fmtowns_cd_diag_breadcrumbs(!waifu_assets_ready());
+
     while (bytes > 0) {
         uint32_t lba = base_lba + (uint32_t)(offset / FMT_CD_SECTOR_BYTES);
         size_t sector_off = offset & (FMT_CD_SECTOR_BYTES - 1u);
         if (sector_off == 0 && bytes >= FMT_CD_SECTOR_BYTES) {
             size_t whole = bytes & ~((size_t)FMT_CD_SECTOR_BYTES - 1u);
             uint16_t count = (uint16_t)(whole / FMT_CD_SECTOR_BYTES);
-            if (fmt_cdrom_read(lba, count, out) != 0) return 0;
+            if (!diag_read(lba, count, out)) return 0;
             out += whole;
             offset += whole;
             bytes -= whole;
         } else {
             size_t chunk = FMT_CD_SECTOR_BYTES - sector_off;
             if (chunk > bytes) chunk = bytes;
-            if (fmt_cdrom_read(lba, 1, scratch) != 0) return 0;
+            if (!diag_read(lba, 1, scratch)) return 0;
             memcpy(out, scratch + sector_off, chunk);
             out += chunk;
             offset += chunk;

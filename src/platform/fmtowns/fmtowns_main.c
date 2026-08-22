@@ -72,6 +72,7 @@
 #include <stdint.h>
 
 #include "fmtowns_audio.h"
+#include "fmtowns_cd_diag.h"
 #include "fmtowns_cube_demo.h"
 #include "fmtowns_input.h"
 #include "fmtowns_sfx.h"
@@ -833,6 +834,13 @@ void start_main(void)
     (void)fmt_media_init();
 
 #if FMTOWNS_MILESTONE >= 7
+    /* Before the core, because the core's answer to a dead disc is the
+     * bare "LOADING... 0%" screen that made the Marty freeze impossible to
+     * diagnose from a photograph.  This walks the same CD path one labelled
+     * step at a time and leaves the result on screen -- including the case
+     * where a step never returns.  See fmtowns_cd_diag.h. */
+    (void)fmtowns_cd_diag_selftest();
+
     waifu_fm_game_loop();
 #elif FMTOWNS_MILESTONE >= 6
     fmtowns_cube_demo_loop();
