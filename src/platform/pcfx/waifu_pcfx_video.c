@@ -1658,6 +1658,83 @@ static void pcfx_kram_write_frame_affine(const uint8_t *framebuffer,
 }
 
 #if WAIFU_PCFX_DIRTY_PRESENT
+/* Return how many leading 32-byte (8-word) groups of `src` and `dst` are
+   identical, so the dirty scan can hunt for the next changed word in strides
+   instead of one word at a time.
+
+   Why this is asm: `src` (the CPU framebuffer) and `dst` (the page shadow) are
+   two ~60 KB arrays in different 2 KiB DRAM pages, and the V810 has no data
+   cache and one page register (+3 cyc per page *change*).  The natural
+   `src[i] == dst[i]` walk therefore pays a page change on BOTH loads of every
+   word -- it was ~21 cyc per word and the single biggest cost of a present.
+   Loading all eight source words THEN all eight shadow words costs two page
+   changes per group instead of sixteen.  Written in C, gcc happily
+   re-interleaves the two load runs and the win disappears (verified in the
+   disassembly), which is the same reason pcfx_copy_bytes_inline is asm. */
+#if defined(__v810__)
+static inline int pcfx_dirty_skip_equal_groups(const uint32_t *src, const uint32_t *dst, int groups)
+{
+    int skipped;
+    __asm__ volatile (
+        "mov 0,%[skipped]\n"
+        "1:\n"
+        "ld.w 0[%[src]],r10\n"
+        "ld.w 4[%[src]],r11\n"
+        "ld.w 8[%[src]],r12\n"
+        "ld.w 12[%[src]],r13\n"
+        "ld.w 16[%[src]],r14\n"
+        "ld.w 20[%[src]],r15\n"
+        "ld.w 24[%[src]],r16\n"
+        "ld.w 28[%[src]],r17\n"
+        "ld.w 0[%[dst]],r18\n"
+        "xor r18,r10\n"
+        "ld.w 4[%[dst]],r18\n"
+        "xor r18,r11\n"
+        "ld.w 8[%[dst]],r18\n"
+        "xor r18,r12\n"
+        "ld.w 12[%[dst]],r18\n"
+        "xor r18,r13\n"
+        "ld.w 16[%[dst]],r18\n"
+        "xor r18,r14\n"
+        "ld.w 20[%[dst]],r18\n"
+        "xor r18,r15\n"
+        "ld.w 24[%[dst]],r18\n"
+        "xor r18,r16\n"
+        "ld.w 28[%[dst]],r18\n"
+        "xor r18,r17\n"
+        "or r11,r10\n"
+        "or r13,r12\n"
+        "or r15,r14\n"
+        "or r17,r16\n"
+        "or r12,r10\n"
+        "or r16,r14\n"
+        "or r14,r10\n"
+        "bne 2f\n"
+        "addi 32,%[src],%[src]\n"
+        "addi 32,%[dst],%[dst]\n"
+        "add 1,%[skipped]\n"
+        "cmp %[groups],%[skipped]\n"
+        "blt 1b\n"
+        "2:\n"
+        : [skipped] "=&r" (skipped), [src] "+r" (src), [dst] "+r" (dst)
+        : [groups] "r" (groups)
+        : "r10", "r11", "r12", "r13", "r14", "r15", "r16", "r17", "r18");
+    return skipped;
+}
+#else
+static inline int pcfx_dirty_skip_equal_groups(const uint32_t *src, const uint32_t *dst, int groups)
+{
+    int g;
+    for (g = 0; g < groups; ++g) {
+        int i;
+        for (i = 0; i < 8; ++i) {
+            if (src[g * 8 + i] != dst[g * 8 + i]) return g;
+        }
+    }
+    return groups;
+}
+#endif
+
 /* Maka's 512x256 path uses a compact logical shadow and writes each changed
    source byte as a complete KRAM word.  Keep the same invariant here: the
    shadow is updated only after the corresponding unmasked texel has been sent,
@@ -1674,6 +1751,17 @@ static WAIFU_PCFX_NOINLINE int pcfx_present_dirty_rows(uint8_t *shadow,
         uint32_t *dst = (uint32_t *)(shadow + y * WAIFU_PCFX_W);
         int word = 0;
         while (word < WAIFU_PCFX_W / 4) {
+            /* Skip unchanged 32-byte groups first (see
+               pcfx_dirty_skip_equal_groups), then fall back to the exact
+               word-at-a-time walk inside the group that changed.  Emission
+               below is untouched, so the KRAM writes and shadow updates stay
+               byte-for-byte identical to the plain scan. */
+            {
+                int groups = (WAIFU_PCFX_W / 4 - word) >> 3;
+                if (groups > 0) {
+                    word += 8 * pcfx_dirty_skip_equal_groups(src + word, dst + word, groups);
+                }
+            }
             while (word < WAIFU_PCFX_W / 4 && src[word] == dst[word]) ++word;
             if (word == WAIFU_PCFX_W / 4) break;
 
