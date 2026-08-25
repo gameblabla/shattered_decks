@@ -122,6 +122,7 @@ static void fmtowns_draw_test_pattern(void)
     uint16_t x, y;
 
     fmt_set_mode(FMT_MODE_256x240_8BPP);
+    fmt_wait_vsync();
     fmt_load_palette(palette, 5);
 
     for (y = 0; y < 240; ++y) {
@@ -295,6 +296,7 @@ static void fmtowns_pad_status_loop(void)
 #endif
 
     fmtowns_video_init();
+    fmt_wait_vsync();
     fmt_load_palette(g_fmtowns_title_palette_cd, 256);
 
     for (;;) {
@@ -302,14 +304,15 @@ static void fmtowns_pad_status_loop(void)
         fmtowns_draw_pad_status(g_fmtowns_title_pixels_cd, pad_status);
 #if FMTOWNS_MILESTONE >= 5
         fmtowns_draw_cdda_status(g_fmtowns_title_pixels_cd, g_fmtowns_title_palette_cd);
-        fmt_load_palette(g_fmtowns_title_palette_cd, 256);
 #endif
         fmt_put_image(g_fmtowns_title_pixels_cd, 256, 240, 256);
-        if (fmt_page_flipping_available()) {
-            fmt_flip_page();
-        } else {
-            fmt_wait_vsync();
-        }
+        /* Palette RAM is CRTC-visible immediately: only ever write it inside
+         * vertical blanking, then flip in the same window. */
+        fmt_wait_vsync();
+#if FMTOWNS_MILESTONE >= 5
+        fmt_load_palette(g_fmtowns_title_palette_cd, 256);
+#endif
+        fmt_flip_page_now();
     }
 }
 #endif
@@ -337,6 +340,7 @@ static void fmtowns_cube_demo_loop(void)
     (void)fmtowns_audio_start_music();
 
     fmtowns_video_init();
+    fmt_wait_vsync();
     fmt_load_palette(g_fmtowns_cube_palette, 256);
 
     for (;;) {
@@ -345,14 +349,13 @@ static void fmtowns_cube_demo_loop(void)
         fmtowns_cube_demo_frame(g_fmtowns_cube_frame);
         fmtowns_draw_pad_status(g_fmtowns_cube_frame, pad_status);
         fmtowns_draw_cdda_status(g_fmtowns_cube_frame, g_fmtowns_cube_palette);
-        fmt_load_palette(g_fmtowns_cube_palette, 256);
 
         fmt_put_image(g_fmtowns_cube_frame, 256, 240, 256);
-        if (fmt_page_flipping_available()) {
-            fmt_flip_page();
-        } else {
-            fmt_wait_vsync();
-        }
+        /* Palette RAM is CRTC-visible immediately: only ever write it inside
+         * vertical blanking, then flip in the same window. */
+        fmt_wait_vsync();
+        fmt_load_palette(g_fmtowns_cube_palette, 256);
+        fmt_flip_page_now();
     }
 }
 #endif

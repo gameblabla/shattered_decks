@@ -157,13 +157,31 @@ static int pcfx_raster_in_vblank(unsigned raster)
            raster < WAIFU_PCFX_VBLANK_EVB;
 }
 
-/* Spin until the VCE reports a raster inside the real vertical blanking
-   window.  Bounded, so a misbehaving VCE degrades to "did not wait" rather
-   than hanging. */
+/* Blanking is not "safe" the moment the raster reports it: what a caller
+   actually needs is enough of the window LEFT for its burst.  A palette flush
+   is a couple of thousand cycles and a line is ~1365, so reserve a handful of
+   lines; anything entering blanking later than that must wait for the next
+   window rather than spill its writes into active display. */
+#define WAIFU_PCFX_VBLANK_RESERVE 6u
+
+static int pcfx_blank_window_has_room(unsigned raster)
+{
+    if (raster >= WAIFU_PCFX_VBLANK_SVB) return 1;   /* window just opened */
+    return raster + WAIFU_PCFX_VBLANK_RESERVE <= WAIFU_PCFX_VBLANK_EVB;
+}
+
+/* Spin until the VCE reports a raster inside the vertical blanking window with
+   room to spare.  Arriving already inside blanking is the case this exists
+   for: the plain "is it blanking?" test returned instantly at, say, raster 21,
+   and the caller's burst -- 256 palette entries on a fade, or a KING
+   reconfiguration -- then ran on into active display, which is exactly the
+   write it was trying to avoid.  Too late in the window now falls through to
+   the next one.  Bounded, so a misbehaving VCE degrades to "did not wait"
+   rather than hanging. */
 static void pcfx_wait_blank_window(void)
 {
     uint32_t spin = 0;
-    while (!pcfx_raster_in_vblank((unsigned)pcfx_tetsu_raster_stable()) &&
+    while (!pcfx_blank_window_has_room((unsigned)pcfx_tetsu_raster_stable()) &&
            spin++ < 2000000u) { }
 }
 
@@ -3717,9 +3735,13 @@ void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
         if (raster >= 248u && raster < WAIFU_PCFX_VBLANK_SVB)
             pcfx_rainbow_start_transfer();
     }
-    /* Wait for the real vertical blanking window. */
+    /* Wait for the real vertical blanking window -- with enough of it left to
+       hold the flip, the palette flush and the VDC staging below.  Entering
+       this call while blanking has nearly run out (a present that finished
+       early) used to pass the plain blanking test and then spray palette RAM
+       across the first live rasters. */
     spin = 0;
-    while (!pcfx_raster_in_vblank((unsigned)pcfx_tetsu_raster_stable()) &&
+    while (!pcfx_blank_window_has_room((unsigned)pcfx_tetsu_raster_stable()) &&
            spin++ < 2000000u) { }
     /* Flip first: KING REG.0F is vblank-only and the CG/affine registers affect
        scanout immediately, so they have the shortest deadline in the window.

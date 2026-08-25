@@ -225,14 +225,24 @@ const fmt_mode_t *fmt_current_mode(void)
     return g_cur;
 }
 
-void fmt_load_palette(const uint8_t *rgb888, int count)
+/* `rgb888` is always the base of the WHOLE palette; `first` selects where in
+ * it to start.  Uploading a sub-range matters because palette RAM may only be
+ * written during vertical blanking (see fmtowns_video_present_8bpp()), and the
+ * blanking window only fits so many port writes: sending just the entries that
+ * actually changed is what keeps a fade inside it. */
+void fmt_load_palette_range(const uint8_t *rgb888, int first, int count)
 {
-    for (int i = 0; i < count; i++) {
+    for (int i = first; i < first + count; i++) {
         uint8_t r = rgb888[i * 3];
         uint8_t g = rgb888[i * 3 + 1];
         uint8_t b = rgb888[i * 3 + 2];
         set_palette((uint8_t)i, r, g, b);
     }
+}
+
+void fmt_load_palette(const uint8_t *rgb888, int count)
+{
+    fmt_load_palette_range(rgb888, 0, count);
 }
 
 /*
@@ -353,6 +363,17 @@ int fmt_flip_page_poll(void (*poll)(void))
     }
 
     fmt_wait_vsync_poll(poll);
+    return fmt_flip_page_now();
+}
+
+/* The page swap on its own, with no vsync wait of its own.  For callers that
+ * have already parked themselves inside blanking to do other blanking-only
+ * work (palette RAM, above all) and must not spend a second field waiting. */
+int fmt_flip_page_now(void)
+{
+    if (!g_can_flip) {
+        return -1;
+    }
 
     g_display_page = g_draw_page;
     g_draw_page ^= 1u;
