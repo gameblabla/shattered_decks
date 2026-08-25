@@ -227,9 +227,11 @@ const fmt_mode_t *fmt_current_mode(void)
 
 /* `rgb888` is always the base of the WHOLE palette; `first` selects where in
  * it to start.  Uploading a sub-range matters because palette RAM may only be
- * written during vertical blanking (see fmtowns_video_present_8bpp()), and the
- * blanking window only fits so many port writes: sending just the entries that
- * actually changed is what keeps a fade inside it. */
+ * written during vertical blanking - the CRTC reads it on every displayed
+ * pixel and the ports latch immediately, so a write during active display
+ * changes colours mid-frame - and the blanking window only fits so many port
+ * writes.  Sending just the entries that actually changed is what keeps a
+ * 256-entry fade inside it. */
 void fmt_load_palette_range(const uint8_t *rgb888, int first, int count)
 {
     for (int i = first; i < first + count; i++) {
@@ -369,6 +371,7 @@ int fmt_flip_page_poll(void (*poll)(void))
 /* The page swap on its own, with no vsync wait of its own.  For callers that
  * have already parked themselves inside blanking to do other blanking-only
  * work (palette RAM, above all) and must not spend a second field waiting. */
+
 int fmt_flip_page_now(void)
 {
     if (!g_can_flip) {

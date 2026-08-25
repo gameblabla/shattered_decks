@@ -127,8 +127,10 @@ void fmt_wait_vsync(void);
 void fmt_wait_vsync_poll(void (*poll)(void));
 int fmt_flip_page_poll(void (*poll)(void));
 
-/* Swap the pages immediately, without waiting for vertical blank.  Only for
- * callers already inside blanking (see fmtowns_video_present_8bpp()). */
+/* Swap the pages immediately, without waiting for vertical blank.  For a
+ * caller that already waited for one itself in order to do other
+ * blanking-only work (palette RAM above all) and must not spend a second
+ * field on the flip. */
 int fmt_flip_page_now(void);
 
 #endif
