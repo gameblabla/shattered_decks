@@ -81,7 +81,7 @@ static int deck_append_limited(WaifuDeck *deck, int card, int max_copies)
 
 uint32_t waifu_deck_runtime_seed(uint32_t salt)
 {
-#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOSTORY)
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOSTORY)
     /* Profiling builds only (see the enter_debug_*_after_assets() helpers in
        src/main.c).  The real seed mixes time() and clock(), so two runs of a
        parked-scene capture deal different hands, put different card art on

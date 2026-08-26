@@ -12,7 +12,7 @@
 #                                 report what each screenshot caught: game
 #                                 frame, CD-DA track, and the frame time split
 #                                 into game step vs present
-#   ./fmtowns.sh profile [hand|board|story|name]
+#   ./fmtowns.sh profile [hand|board|story|name|fire]
 #                                 the same capture, but parked on ONE scene --
 #                                 this is the mode to use when comparing two
 #                                 builds; see the notes below.  `hand' (the
@@ -114,7 +114,7 @@ core_defines=""
 for arg in "$@"; do
 	case $arg in
 	--iso)                target=iso; image=build/fmtowns/output.iso ;;
-	hand|board|story|name) scene=$arg ;;
+	hand|board|story|name|fire) scene=$arg ;;
 	EXTRA_CORE_DEFINES=*) core_defines="${arg#EXTRA_CORE_DEFINES=}" ;;
 	*)            makeargs="$makeargs '$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")'" ;;
 	esac
@@ -159,6 +159,11 @@ build() {
 #          the scene that shows what caching and the dirty present are
 #          worth -- and the one the "story text is sluggish" report is
 #          about.
+#   fire   the DEMON fire cutscene: a full-screen propagation animation over
+#          which a dialogue panel is drawn.  Every pixel below row 40 changes
+#          every frame, so neither the composite caches nor the dirty present
+#          can help it -- it is the pure cost of the flame loop and its 2x
+#          blit, and the one scene where those are the whole frame.
 #   name   the story name-entry screen: a clear, two striped bands, one
 #          panel and about sixty glyphs.  No 3-D, no asset blits, nothing
 #          animating -- so whatever it costs is what the shared 2-D path
@@ -168,13 +173,9 @@ write_parked_script() {
 	# so there is nothing to press to get there -- only the one button
 	# that picks which parked view to sit on.
 	: > "$1"
-	if [ "$2" = board ]; then
-		cat >> "$1" <<-'EOF'
-		# UP leaves the hand for the top-down board view (main.c's
-		# IB_PLAYER_HAND case), which waits for input, so the scene holds.
-		600 UP
-		EOF
-	fi
+	# Board profiling uses WAIFU_DEBUG_AUTOBOARD below rather than a timed
+	# button: the frame-time catch-up can skip a one-shot scripted edge on a
+	# sufficiently slow experimental build.
 }
 
 # Boot the debug disc under xvfb and take timed screenshots.  The sleeps are
@@ -226,8 +227,10 @@ profile)
 	mkdir -p "$SHOTS"
 	write_parked_script "$SHOTS/parked_input.txt" "$scene"
 	case $scene in
+	board) parked_define=-DWAIFU_DEBUG_AUTOBOARD ;;
 	story) parked_define=-DWAIFU_DEBUG_AUTOSTORY ;;
 	name)  parked_define=-DWAIFU_DEBUG_AUTONAME ;;
+	fire)  parked_define=-DWAIFU_DEBUG_AUTOFIRE ;;
 	*)     parked_define=-DWAIFU_DEBUG_AUTODUEL ;;
 	esac
 	build "$parked_define" \

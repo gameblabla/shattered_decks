@@ -116,6 +116,15 @@ void fmt_put_image(const void *src, int width, int height, int stride);
  * handle. */
 int fmt_put_image_dirty(const void *src);
 
+/* Same, but only look at the 64-pixel groups the caller says it wrote.
+ * `row_mask` is one byte per scanline, bit g set for group g of that row
+ * (a 256-wide 8bpp row is four groups); NULL scans everything.  The union
+ * with the previous call's mask is taken internally -- see the comment on
+ * g_dirty_prev_rows.  A mask that under-reports leaves VRAM stale, so it
+ * has to come from something that tracks every write. */
+int fmt_put_image_dirty_rows(const void *src, const unsigned char *row_mask,
+                             const unsigned char *force_mask);
+
 /* Forget what VRAM is believed to contain, so the next fmt_put_image_dirty()
  * writes the whole screen.  fmt_set_mode() does this for you; call it after
  * anything else that writes VRAM behind libfmt's back. */

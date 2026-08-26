@@ -64,6 +64,18 @@ void waifu_fm_step(const WaifuFmInput *input);
 void waifu_fm_set_frame_vblanks(int vblanks);
 void waifu_fm_render_scripted_frame(int frame);
 uint8_t *waifu_fm_framebuffer(void);
+/* Which parts of the framebuffer waifu_fm_step() actually wrote.  Non-zero
+   return = all of it (the default, and what every frame that clears and
+   redraws reports).  Otherwise *rows is WAIFU_FM_HEIGHT mask bytes, one bit
+   per 64-pixel group of that scanline.  A presenter that reads this can skip
+   comparing and uploading the rest; one that ignores it is still correct.
+   waifu_fm_frame_damage_clear() says the frame reached the screen. */
+int waifu_fm_frame_damage(const uint8_t **rows);
+void waifu_fm_frame_damage_clear(void);
+/* The subset of that mask the frame knows changed, so a presenter that
+   compares before uploading can skip the comparison there.  NULL, or all
+   zero, when the frame makes no such claim. */
+const uint8_t *waifu_fm_frame_damage_forced(void);
 uint32_t waifu_fm_frame_dirty_serial(void);
 int waifu_fm_frame_dirty_full(void);
 int waifu_fm_frame_dirty_rects(WaifuFmDirtyRect *out_rects, int max_rects);

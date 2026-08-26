@@ -802,8 +802,32 @@ static void waifu_fm_game_loop(void)
          * game running at half the display rate no matter how fast it
          * renders.  Holding the loop to 60 Hz is fmtowns_frame_pace()'s job
          * at the bottom, not this call's -- see that function. */
-        fmtowns_video_present_8bpp(waifu_fm_framebuffer(), waifu_fm_palette_rgb(), 256,
-                                   waifu_fm_video_fade_q8());
+        {
+            /* What the game says it drew.  A full frame reports "everything"
+             * and this is the blit that always ran; a settled screen reports
+             * a handful of scanlines and the present neither reads nor
+             * uploads the rest.  See waifu_fm_frame_damage(). */
+            const unsigned char *rows = 0;
+            int full = waifu_fm_frame_damage(&rows);
+#ifdef FMTOWNS_DEBUG_INPUT
+            /* The debug stamp is written above, after the game's own damage
+             * accounting closed, so declare it here: pixels 0..81 of row 0,
+             * i.e. the first two 64-pixel groups. */
+            static unsigned char stamped_rows[240];
+            if (!full && rows) {
+                unsigned int y;
+                for (y = 0; y < 240u; ++y) stamped_rows[y] = rows[y];
+                stamped_rows[0] |= 0x03u;
+                rows = stamped_rows;
+            }
+#endif
+            fmtowns_video_present_8bpp_rows(waifu_fm_framebuffer(),
+                                            waifu_fm_palette_rgb(), 256,
+                                            waifu_fm_video_fade_q8(),
+                                            full ? 0 : rows,
+                                            full ? 0 : waifu_fm_frame_damage_forced());
+            waifu_fm_frame_damage_clear();
+        }
 #ifdef FMTOWNS_DEBUG_INPUT
         t_present = fmtowns_prof_split();
         /* The vertical-blank wait inside the present is not present *work*:

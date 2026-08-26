@@ -305,6 +305,26 @@ void fmt_load_palette(const uint8_t *rgb888, int count)
 
 static uint32_t g_dirty_hash[FMT_DIRTY_MAX_GROUPS];
 static uint8_t  g_dirty_prev[FMT_DIRTY_MAX_GROUPS];
+
+/* WHAT THE CALLER DECLARED LAST FRAME.
+ *
+ * The hash above answers "did this group change?" but it has to read the
+ * group to do it, and reading all 61440 bytes is ~13 ms on the 386SX model
+ * -- the entire `present` cost of a screen where the game moved nothing.
+ * So the game also reports which 64-pixel groups it wrote
+ * (waifu_fm_frame_damage(), src/main.c) and the scan skips the rest.
+ *
+ * The scan set has to be the union of THIS frame's and LAST frame's
+ * declarations, for the same page-flip reason g_dirty_prev exists: a group
+ * written last frame still owes this frame's page a copy.  Everything
+ * outside that union is unchanged in both pages, so not looking at it is
+ * exactly as correct as looking and finding nothing. */
+/* g_dirty_prev value meaning "written, but the stored hash was not updated
+ * and no longer describes the group" -- see the force_mask path below.  It is
+ * also non-zero, so it keeps the page-flip rule (write again next frame). */
+#define FMT_DIRTY_NO_HASH 2u
+#define FMT_DIRTY_MAX_ROWS 240u
+static uint8_t g_dirty_prev_rows[FMT_DIRTY_MAX_ROWS];
 /* Cleared by fmt_set_mode(): the hashes describe VRAM contents, and after a
  * mode set (which also clears both pages) they describe nothing. */
 static int g_dirty_valid = 0;
@@ -345,6 +365,12 @@ void fmt_invalidate_dirty_present(void)
 
 int fmt_put_image_dirty(const void *src)
 {
+    return fmt_put_image_dirty_rows(src, 0, 0);
+}
+
+int fmt_put_image_dirty_rows(const void *src, const unsigned char *row_mask,
+                             const unsigned char *force_mask)
+{
     volatile uint8_t *vram = (volatile uint8_t *)g_fmt_vram0_base;
     uint32_t total = (uint32_t)g_cur->stride * (uint32_t)g_cur->height;
     uint32_t groups = total / (FMT_DIRTY_GROUP_DWORDS * 4u);
@@ -359,6 +385,17 @@ int fmt_put_image_dirty(const void *src)
 
     /* Same preconditions as fmt_put_image()'s fast path, plus a size the
      * hash table covers.  Anything else is not the game's present. */
+    uint32_t row_groups = (uint32_t)g_cur->stride / (FMT_DIRTY_GROUP_DWORDS * 4u);
+
+    /* Row masks are one byte per scanline with one bit per group, so they only
+     * describe a mode whose row divides into at most 8 groups and whose height
+     * fits the table.  Anything else falls back to scanning everything. */
+    if (row_mask && ((uint32_t)g_cur->stride % (FMT_DIRTY_GROUP_DWORDS * 4u) != 0
+                     || row_groups == 0 || row_groups > 8u
+                     || (uint32_t)g_cur->height > FMT_DIRTY_MAX_ROWS)) {
+        row_mask = 0;
+    }
+
     if (g_cur->linear || g_cur->bpp != 8 || groups > FMT_DIRTY_MAX_GROUPS
         || total % (FMT_DIRTY_GROUP_DWORDS * 4u) != 0
         || (g_fmt_draw_buffer_offset & 7u) != 0 || (g_cur->stride & 7u) != 0) {
@@ -380,10 +417,71 @@ int fmt_put_image_dirty(const void *src)
             hash[g] = fmt_dirty_fold(s + g * FMT_DIRTY_GROUP_DWORDS);
             prev[g] = 1;
         }
+        for (g = 0; g < FMT_DIRTY_MAX_ROWS; ++g) g_dirty_prev_rows[g] = 0xffu;
         g_dirty_valid = 1;
         return 1;
     }
 
+    if (row_mask) {
+        uint32_t all = (uint32_t)((1u << row_groups) - 1u);
+        uint32_t y;
+        g = 0;
+        for (y = 0; y < (uint32_t)g_cur->height; ++y) {
+            uint32_t m = (uint32_t)(row_mask[y] | g_dirty_prev_rows[y]) & all;
+            uint32_t f = force_mask ? ((uint32_t)force_mask[y] & all) : 0u;
+            uint32_t bit;
+            g_dirty_prev_rows[y] = (uint8_t)(row_mask[y] & all);
+            if (!m) {
+                /* Whole scanline untouched in both frames: step over it
+                 * without reading one byte of it, which is the point. */
+                lo += 8u * row_groups;
+                hi += 8u * row_groups;
+                s  += FMT_DIRTY_GROUP_DWORDS * row_groups;
+                g  += row_groups;
+                continue;
+            }
+            for (bit = 0; bit < row_groups; ++bit, ++g) {
+                if (f & (1u << bit)) {
+                    /* The caller has already said this group changed, so
+                     * reading it back and folding it would only confirm what
+                     * is known.  Leave the stored hash alone and record
+                     * FMT_DIRTY_NO_HASH, which makes the next comparison of
+                     * this group unconditional rather than a comparison
+                     * against a value that no longer describes it. */
+                    lo[0] = s[0];  hi[0] = s[1];
+                    lo[1] = s[2];  hi[1] = s[3];
+                    lo[2] = s[4];  hi[2] = s[5];
+                    lo[3] = s[6];  hi[3] = s[7];
+                    lo[4] = s[8];  hi[4] = s[9];
+                    lo[5] = s[10]; hi[5] = s[11];
+                    lo[6] = s[12]; hi[6] = s[13];
+                    lo[7] = s[14]; hi[7] = s[15];
+                    prev[g] = FMT_DIRTY_NO_HASH;
+                    ++written;
+                } else if (m & (1u << bit)) {
+                    uint32_t h = fmt_dirty_fold(s);
+                    unsigned int changed = (prev[g] == FMT_DIRTY_NO_HASH) | (h != hash[g]);
+                    hash[g] = h;
+                    if (changed | prev[g]) {
+                        lo[0] = s[0];  hi[0] = s[1];
+                        lo[1] = s[2];  hi[1] = s[3];
+                        lo[2] = s[4];  hi[2] = s[5];
+                        lo[3] = s[6];  hi[3] = s[7];
+                        lo[4] = s[8];  hi[4] = s[9];
+                        lo[5] = s[10]; hi[5] = s[11];
+                        lo[6] = s[12]; hi[6] = s[13];
+                        lo[7] = s[14]; hi[7] = s[15];
+                        ++written;
+                    }
+                    prev[g] = (uint8_t)changed;
+                }
+                lo += 8; hi += 8; s += 16;
+            }
+        }
+        return written != 0;
+    }
+
+    for (g = 0; g < FMT_DIRTY_MAX_ROWS; ++g) g_dirty_prev_rows[g] = 0xffu;
     for (g = 0; g < groups; ++g) {
         uint32_t h = fmt_dirty_fold(s);
         unsigned int changed = (h != hash[g]);

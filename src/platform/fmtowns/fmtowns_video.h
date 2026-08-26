@@ -35,6 +35,17 @@ void fmtowns_video_present_8bpp(const unsigned char *framebuffer,
                                  const unsigned char *palette_rgb888,
                                  int palette_count, int fade_q8);
 
+/* Same, but only compare and upload the 64-pixel groups `row_mask` marks --
+ * one byte per scanline, bit g for group g (a 256-wide row is four).  NULL
+ * behaves exactly like fmtowns_video_present_8bpp().  The mask comes from
+ * waifu_fm_frame_damage(); an under-reporting mask leaves VRAM stale, so it
+ * must not be hand-written. */
+void fmtowns_video_present_8bpp_rows(const unsigned char *framebuffer,
+                                      const unsigned char *palette_rgb888,
+                                      int palette_count, int fade_q8,
+                                      const unsigned char *row_mask,
+                                      const unsigned char *force_mask);
+
 /* Non-zero if fmtowns_video_present_8bpp() already synchronises to vblank,
  * so a caller's own frame pacing must not add a second wait (that would cap
  * the game at half the display rate). */

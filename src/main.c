@@ -245,10 +245,12 @@ static void ui_hud_end(void)
    framebuffer page. This avoids spending 75 KiB of SH-2 SDRAM on a shadow
    framebuffer before the asset/card-art caches are considered. */
 static uint8_t *const framebuffer = (uint8_t *)WAIFU_CD32X_FRAMEBUFFER_PIXELS;
-#elif defined(WAIFU_FM_PCFX)
-static uint8_t framebuffer[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT] __attribute__((aligned(16)));
 #else
-static uint8_t framebuffer[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
+/* Aligned because several presenters and blitters read or write it a 32-bit
+   word at a time -- libfmt's dirty present and the fire's doubled-colour LUT
+   store, among others -- and one of those targets faults on a misaligned
+   word rather than merely running slower for it. */
+static uint8_t framebuffer[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT] __attribute__((aligned(16)));
 #endif
 static uint32_t g_frame_dirty_serial = 0;
 static int g_frame_dirty_full = 0;
@@ -378,6 +380,320 @@ static void frame_mark_dirty_rect(int x, int y, int w, int h)
     ++g_frame_dirty_serial;
 }
 
+
+/* ------------------------------------------------------------------------- */
+/* Framebuffer damage tracking.
+ *
+ * FM TOWNS presents by comparing the framebuffer against a per-64-byte-group
+ * hash and writing only the groups that changed (fmt_put_image_dirty(), see
+ * src/platform/fmtowns/common/libfmt.c).  That comparison reads all 61440
+ * bytes whether or not anything moved, and on a 16 MHz 386SX behind a 16-bit
+ * bus that read alone is ~13 ms -- it was the entire `present` figure on a
+ * screen where the game never touched a pixel.
+ *
+ * So the drawing side records which parts of the framebuffer it wrote, and
+ * the present only looks at those.  One byte per scanline, one bit per
+ * 64-pixel group (a 256-wide row is exactly four), which is the granularity
+ * the present's groups already have -- finer tracking would buy nothing.
+ *
+ * The default every frame is `full`: a screen that clears and redraws is
+ * described correctly with no bookkeeping, and anything this file forgets to
+ * instrument stays correct as long as it runs in a full frame.  Narrowing is
+ * opt-in -- fb_damage_reset() means "the framebuffer currently matches what
+ * was presented last frame, and from here on I will declare what I touch".
+ * Only the cached-composite paths (the duel base, the story dialogue and the
+ * name-entry screen) claim that, and everything they can reach afterwards is
+ * instrumented below.
+ *
+ * WAIFU_FB_DAMAGE_VERIFY (host builds) keeps a shadow copy and asserts after
+ * every frame that the declared damage covers every byte that actually
+ * changed; see fb_damage_verify().  That is the check that makes the opt-in
+ * safe to extend. */
+#if defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
+#define WAIFU_FB_DAMAGE 1
+#endif
+
+#if defined(WAIFU_FB_DAMAGE)
+#define FB_DMG_SHIFT 6                                   /* 64 pixels/group */
+#define FB_DMG_GROUPS (WAIFU_FM_WIDTH >> FB_DMG_SHIFT)
+#define FB_DMG_ALL_MASK ((uint8_t)((1u << FB_DMG_GROUPS) - 1u))
+static uint8_t g_fb_dmg[WAIFU_FM_HEIGHT];
+static int g_fb_dmg_full = 1;
+
+/* Groups the caller knows have changed, so the presenter can skip finding
+   out.  The dirty present's comparison is a read of the framebuffer plus a
+   fold per 64-byte group, and on a full-screen animation -- the fire
+   cutscene, where every cell is re-simulated every frame -- that read is
+   pure overhead on top of the write it always ends up doing anyway. */
+static uint8_t g_fb_force[WAIFU_FM_HEIGHT];
+
+/* WHAT THE PRESENTER SCANS: this frame's mask and the previous one's.  The
+   VRAM page being written is two frames old (libfmt.c's page-flip note), so a
+   group written last frame still owes this frame's page a copy. */
+static uint8_t g_fb_dmg_prev[WAIFU_FM_HEIGHT];
+static int g_fb_dmg_prev_full = 1;
+
+/* WHAT A CACHED-COMPOSITE SCREEN HAS TO PUT BACK.
+
+   A duel or story frame is a fixed composite with a small overlay on top: a
+   few cards, a counter, a line of text.  Restoring the composite by copying
+   all 61440 bytes back is the most expensive thing left in such a frame, and
+   nearly all of it puts back pixels nothing ever touched.
+
+   So the damage since the framebuffer last matched the composite is tracked
+   separately from the damage since the last present, and it is the former the
+   restore uses.  fb_damage_base_mark() is the "the framebuffer is the
+   composite right now" point -- called where a composite is stored and again
+   right after one is restored.  Damage declared after that point is recorded
+   independently in g_fb_ovl_curr, so it remains visible even when the base
+   itself made the frame's ordinary damage mask full. */
+/* Damage drawn after the current composite was established.  This must be a
+   separate mask, not `g_fb_dmg & ~base_mark`: a freshly rendered composite
+   has already touched every group, so a cursor drawn on top cannot set a bit
+   that was not present in the base mark.  The difference scheme consequently
+   lost the first overlay after every cache miss (most visibly the red field
+   selector after placing a card). */
+static uint8_t g_fb_ovl_curr[WAIFU_FM_HEIGHT];
+static uint8_t g_fb_ovl_prev[WAIFU_FM_HEIGHT];
+static int g_fb_ovl_prev_full = 1;
+/* Which composite the framebuffer is currently built on.  Restoring a
+   different one (the hand view's cache after the top view's, say) has to put
+   back the whole screen, not just where the overlay was. */
+static const uint8_t *g_fb_base_src;
+
+/* A screen whose picture the framebuffer still holds from last frame, so it
+   only has to redraw the part that moves.  Any full-screen write invalidates
+   it, which is what clear_screen() and a full composite restore do, so a
+   screen that draws over this one cannot leave a stale tag behind. */
+static int g_ui_retained_tag;
+
+/* The one rectangle a screen may hold back from the composite restore.  See
+   fb_keep_opaque(); `valid` is last frame's claim, `claimed` this frame's. */
+static int g_fb_kept_valid, g_fb_keep_claimed;
+static int g_fb_keep_x, g_fb_keep_y, g_fb_keep_w, g_fb_keep_h;
+
+static void fb_mark_kept_rect(void)
+{
+    int x = g_fb_keep_x, y = g_fb_keep_y;
+    int x1 = x + g_fb_keep_w, y1 = y + g_fb_keep_h;
+    uint8_t mask;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+    if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+    if (x >= x1 || y >= y1) return;
+    /* Whole groups only: a group straddling the edge still holds composite
+       pixels the restore has to be allowed to put back. */
+    x = (x + ((1 << FB_DMG_SHIFT) - 1)) >> FB_DMG_SHIFT;
+    x1 >>= FB_DMG_SHIFT;
+    if (x >= x1) return;
+    mask = (uint8_t)((FB_DMG_ALL_MASK << x) & (FB_DMG_ALL_MASK >> (FB_DMG_GROUPS - x1)));
+    for (; y < y1; ++y) g_fb_ovl_curr[y] &= (uint8_t)~mask;
+}
+
+static void fb_damage_all(void)
+{
+    g_fb_dmg_full = 1;
+    memset(g_fb_dmg, FB_DMG_ALL_MASK, sizeof(g_fb_dmg));
+    memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
+    g_ui_retained_tag = 0;
+    g_fb_base_src = 0;
+    /* Everything on screen has just been replaced, so no claim survives. */
+    g_fb_kept_valid = 0;
+    g_fb_keep_claimed = 0;
+}
+
+/* "The framebuffer is the cached composite `src` as of now." */
+static void fb_damage_base_mark(const uint8_t *src)
+{
+    memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
+    g_fb_base_src = src;
+}
+
+/* "I filled this rectangle opaquely, and I redraw it myself the moment its
+   contents change, so the composite restore never has to put anything back
+   under it."
+
+   This is what lets a duel frame stop copying the hand band and the info bar
+   back from the cached board every frame just to draw the identical cards and
+   the identical card name on top again.  The claim has two halves and both
+   matter: opaque (nothing of the composite shows through) and self-redrawing
+   (a change repaints the whole rectangle, or calls fb_unkeep_opaque() first).
+   Removing it from the current overlay mask is exactly "this does not need
+   restoring from the composite next frame". */
+static void fb_keep_opaque(int x, int y, int w, int h)
+{
+    g_fb_keep_x = x; g_fb_keep_y = y; g_fb_keep_w = w; g_fb_keep_h = h;
+    g_fb_keep_claimed = 1;
+    fb_mark_kept_rect();
+}
+
+/* Did the claim made earlier this frame survive?  It does not if the frame
+   turned out to need a full redraw -- fb_damage_all() drops every claim,
+   because the pixels the claim was about have just been overwritten. */
+static int fb_keep_claimed(void) { return g_fb_keep_claimed; }
+/* Was a claim in force for the frame now on screen?  If so the composite
+   restore has just skipped that rectangle. */
+static int fb_keep_was_active(void) { return g_fb_kept_valid; }
+
+/* "The framebuffer as it stands is what was presented last frame." */
+static void fb_damage_reset(void)
+{
+    memcpy(g_fb_dmg_prev, g_fb_dmg, sizeof(g_fb_dmg_prev));
+    g_fb_dmg_prev_full = g_fb_dmg_full;
+    if (g_fb_keep_claimed) fb_mark_kept_rect();
+    memcpy(g_fb_ovl_prev, g_fb_ovl_curr, sizeof(g_fb_ovl_prev));
+    g_fb_ovl_prev_full = (g_fb_base_src == 0);
+    g_fb_kept_valid = g_fb_keep_claimed;
+    g_fb_keep_claimed = 0;
+    memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
+    g_fb_dmg_full = 0;
+    memset(g_fb_dmg, 0, sizeof(g_fb_dmg));
+    memset(g_fb_force, 0, sizeof(g_fb_force));
+}
+
+/* x1/y1 exclusive.  Clipped, so callers may pass unclipped geometry. */
+static void fb_mark_rect(uint8_t *rows, int x, int y, int w, int h)
+{
+    int x1, y1;
+    uint8_t mask;
+    if (w <= 0 || h <= 0) return;
+    x1 = x + w; y1 = y + h;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+    if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+    if (x >= x1 || y >= y1) return;
+    mask = (uint8_t)((FB_DMG_ALL_MASK << (x >> FB_DMG_SHIFT)) &
+                     (FB_DMG_ALL_MASK >> (FB_DMG_GROUPS - 1 - ((x1 - 1) >> FB_DMG_SHIFT))));
+    for (; y < y1; ++y) rows[y] |= mask;
+}
+
+static void fb_clear_rect(uint8_t *rows, int x, int y, int w, int h)
+{
+    int x1, y1;
+    uint8_t mask;
+    if (w <= 0 || h <= 0) return;
+    x1 = x + w; y1 = y + h;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+    if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+    if (x >= x1 || y >= y1) return;
+    mask = (uint8_t)((FB_DMG_ALL_MASK << (x >> FB_DMG_SHIFT)) &
+                     (FB_DMG_ALL_MASK >> (FB_DMG_GROUPS - 1 - ((x1 - 1) >> FB_DMG_SHIFT))));
+    for (; y < y1; ++y) rows[y] &= (uint8_t)~mask;
+}
+
+/* Still recorded when the frame is already `full`, because the overlay mask
+   above is a difference of two masks and needs both to stay meaningful. */
+static void fb_damage_rect(int x, int y, int w, int h)
+{
+    fb_mark_rect(g_fb_dmg, x, y, w, h);
+    if (g_fb_base_src) fb_mark_rect(g_fb_ovl_curr, x, y, w, h);
+}
+
+static void fb_damage_span(int y, int x0, int x1)
+{
+    fb_damage_rect(x0, y, x1 - x0, 1);
+}
+
+/* Same, plus "and it definitely changed" -- see g_fb_force.  Only claim this
+   for pixels that really are rewritten with new content every frame; claiming
+   it for still ones makes the presenter upload them for nothing. */
+static void fb_damage_rect_forced(int x, int y, int w, int h)
+{
+    fb_damage_rect(x, y, w, h);
+    fb_mark_rect(g_fb_force, x, y, w, h);
+}
+
+/* Tags for ui_retained()/ui_retain().  0 means "nothing retained". */
+#define UI_TAG_NAME_ENTRY     1
+#define UI_TAG_STORY_DIALOGUE 2
+#define UI_TAG_FIRE_PANEL     4
+
+static int ui_retained(int tag)
+{
+    return tag != 0 && g_ui_retained_tag == tag;
+}
+
+static void ui_retain(int tag)
+{
+    g_ui_retained_tag = tag;
+}
+
+#if defined(WAIFU_FB_DAMAGE_VERIFY)
+/* Host-only audit of the declarations above.  Keeps a byte-exact shadow of the
+   last presented frame and, once per step, checks that every byte that
+   actually changed falls inside what the frame declared.  A drawing path that
+   forgets to declare shows up here as a loud line on a PC instead of as one
+   stale 64-pixel block on a Marty. */
+static uint8_t g_fb_shadow[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
+static unsigned long g_fb_damage_violations;
+static unsigned long g_fb_verify_step;
+/* WAIFU_DMG_TRACE=1 prints the per-frame mask size, which is how you tell
+   "this screen declares a sliver" from "this screen declares everything and
+   the restore is still copying 61440 bytes". */
+static int g_fb_trace = -1;
+
+unsigned long waifu_fm_damage_violations(void) { return g_fb_damage_violations; }
+
+static void fb_damage_verify(void)
+{
+    int y;
+    ++g_fb_verify_step;
+    if (g_fb_trace < 0) { const char *e = getenv("WAIFU_DMG_TRACE"); g_fb_trace = e ? (e[0] - '0') : 0; }
+    if (g_fb_trace) {
+        int rows = 0, groups = 0;
+        for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+            int b;
+            if (g_fb_dmg[y]) ++rows;
+            for (b = 0; b < FB_DMG_GROUPS; ++b)
+                if (g_fb_dmg[y] & (1u << b)) ++groups;
+        }
+        fprintf(stderr, "DMG step %lu full=%d rows=%d groups=%d tag=%d\n",
+                g_fb_verify_step, g_fb_dmg_full, rows, groups, g_ui_retained_tag);
+        if (g_fb_trace > 1) {
+            for (y = 0; y < WAIFU_FM_HEIGHT; ++y)
+                if (g_fb_dmg[y]) fprintf(stderr, "  row %3d %x\n", y, g_fb_dmg[y]);
+        }
+    }
+    if (g_fb_dmg_full || g_fb_dmg_prev_full) return;
+    for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+        const uint8_t *fb = framebuffer + y * WAIFU_FM_WIDTH;
+        const uint8_t *sh = g_fb_shadow + y * WAIFU_FM_WIDTH;
+        int x;
+        for (x = 0; x < WAIFU_FM_WIDTH; ++x) {
+            if (fb[x] == sh[x]) continue;
+            if ((g_fb_dmg[y] | (g_fb_dmg_prev_full ? 0xffu : g_fb_dmg_prev[y]))
+                & (1u << (x >> FB_DMG_SHIFT))) continue;
+            ++g_fb_damage_violations;
+            if (g_fb_damage_violations <= 20) {
+                fprintf(stderr,
+                        "DAMAGE UNDECLARED step %lu at x=%d y=%d (was %u now %u), row mask %02x\n",
+                        g_fb_verify_step, x, y, sh[x], fb[x], g_fb_dmg[y]);
+            }
+            break;   /* one report per row is enough to find the culprit */
+        }
+    }
+}
+#endif
+#else
+#define fb_damage_all()                do { } while (0)
+#define fb_damage_reset()              do { } while (0)
+#define fb_damage_base_mark(src)       do { (void)(src); } while (0)
+#define fb_keep_opaque(x, y, w, h)     do { (void)(x); (void)(y); (void)(w); (void)(h); } while (0)
+#define fb_keep_claimed()              (0)
+#define fb_keep_was_active()           (0)
+#define UI_TAG_NAME_ENTRY     1
+#define UI_TAG_STORY_DIALOGUE 2
+#define UI_TAG_FIRE_PANEL     4
+#define ui_retained(tag)               (0)
+#define ui_retain(tag)                 do { (void)(tag); } while (0)
+#define fb_damage_rect(x, y, w, h)     do { (void)(x); (void)(y); (void)(w); (void)(h); } while (0)
+#define fb_damage_span(y, x0, x1)      do { (void)(y); (void)(x0); (void)(x1); } while (0)
+#define fb_damage_rect_forced(x, y, w, h) fb_damage_rect(x, y, w, h)
+#endif
 
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
 static int g_profile_render_enabled = 0;
@@ -1088,6 +1404,7 @@ static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
 #if defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
         if (cd32x_story_quads_push(&p0, &p1, &p2, &p3, tile)) return;
 #endif
+        fb_damage_all();
         cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
     }
 #elif defined(WAIFU_FM_PCFX)
@@ -1103,6 +1420,7 @@ static void draw_quad3d_safe(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
         Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, uvmax, 0};
         Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uvmax, uvmax};
         Point2D p3 = {(DEFAULT_INT)pd.x, (DEFAULT_INT)pd.y, 0, uvmax};
+        fb_damage_all();
         cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
     }
 #else
@@ -1141,8 +1459,10 @@ static void draw_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int tile)
     Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
     Point2D p3 = {(DEFAULT_INT)dx, (DEFAULT_INT)dy, 0, uvmax};
 #if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+    fb_damage_all();
     cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 #else
+    fb_damage_all();
     cfx_renderer3d_draw_quad(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 #endif
 }
@@ -1167,6 +1487,7 @@ static void draw_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, Sc
     Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
     Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
     Point2D p3 = {(DEFAULT_INT)dx, (DEFAULT_INT)dy, 0, uvmax};
+    fb_damage_all();
     cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 }
 
@@ -1293,6 +1614,7 @@ static void draw_wall_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt p
 #undef WALL_CLAMP_X
 #undef WALL_APRON_Y
 #undef WALL_APRON_X
+    fb_damage_all();
     cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 }
 
@@ -1585,6 +1907,7 @@ static void cd32x_story_quads_draw_band(const Cd32xStoryQuad *quads, int count, 
 {
     for (int i = 0; i < count; ++i) {
         Point2D p0 = quads[i].p0, p1 = quads[i].p1, p2 = quads[i].p2, p3 = quads[i].p3;
+        fb_damage_all();
         cfx_renderer3d_draw_quad_board_band(&renderer, &p0, &p1, &p2, &p3,
                                             quads[i].tile, (DEFAULT_INT)y0, (DEFAULT_INT)y1);
     }
@@ -1687,6 +2010,7 @@ static void draw_wall_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d, int til
         Point2D p1 = {(DEFAULT_INT)pb.x, (DEFAULT_INT)pb.y, uvmax, 0};
         Point2D p2 = {(DEFAULT_INT)pc.x, (DEFAULT_INT)pc.y, uvmax, uvmax};
         Point2D p3 = {(DEFAULT_INT)pd.x, (DEFAULT_INT)pd.y, 0, uvmax};
+        fb_damage_all();
         cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
     }
 #else
@@ -1757,6 +2081,7 @@ static void draw_field_slab_sides(Camera cam)
 
 /* ------------------------------------------------------------------------- */
 /* 2D drawing */
+
 
 static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
 {
@@ -1857,6 +2182,7 @@ static void clear_screen(uint8_t c) { waifu_cd32x_video_clear_back_index(c); }
 static void clear_screen(uint8_t c)
 {
     if (waifu_hw2d_clear(c)) return;
+    fb_damage_all();
     fill_u8_fast(framebuffer, WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT, c);
 }
 #endif
@@ -1874,6 +2200,7 @@ static void fill_rows(int y0, int y1, uint8_t c)
 #if defined(WAIFU_FM_CD32X)
     waifu_cd32x_video_fill_rows_index(y0, y1, c);
 #else
+    fb_damage_rect(0, y0, WAIFU_FM_WIDTH, y1 - y0);
     fill_u8_fast(framebuffer + (int32_t)y0 * WAIFU_FM_WIDTH, (y1 - y0) * WAIFU_FM_WIDTH, c);
 #endif
 }
@@ -1987,12 +2314,108 @@ static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
 #endif
 }
 
+/* Restore, from a cached whole-screen composite, exactly the pixels the last
+   frame drew over it -- and nothing else.
+
+   The cached-composite screens (the duel base, the story dialogue) settle into
+   a fixed picture with a small moving overlay on top: a few cards, a counter,
+   a line of text.  Copying all 61440 bytes back to undo that is the single
+   most expensive thing left in a settled frame on this machine, and 90% of it
+   restores pixels that were never touched.  Last frame's damage mask says
+   which 64-pixel groups the overlay actually covered, so those are the only
+   ones that need undoing.
+
+   Deliberately does NOT declare damage for the partial case: everything it
+   writes is by definition inside the previous frame's mask, and the presenter
+   already scans the union of both frames (libfmt.c).  Declaring it would grow
+   this frame's mask, and next frame's restore with it, until the mask covered
+   every overlay position ever used. */
+static int fb_unkeep_opaque(int x, int y, int w, int h);
+
+static void fb_restore_composite(const uint8_t *src)
+{
+#if defined(WAIFU_FB_DAMAGE) && !defined(WAIFU_FB_DAMAGE_FULLRESTORE)
+    /* EXTRA_CORE_DEFINES=-DWAIFU_FB_DAMAGE_FULLRESTORE turns this back into the
+       whole-screen copy, which is what the partial restore is measured and
+       pixel-diffed against. */
+    if (!g_fb_ovl_prev_full && g_fb_base_src == src) {
+        int y;
+        for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+            unsigned m = g_fb_ovl_prev[y];
+            int g = 0;
+            if (!m) continue;
+            while (g < FB_DMG_GROUPS) {
+                int run;
+                if (!(m & (1u << g))) { ++g; continue; }
+                run = g;
+                while (run < FB_DMG_GROUPS && (m & (1u << run))) ++run;
+                {
+                    int x0 = g << FB_DMG_SHIFT;
+                    int n = (run - g) << FB_DMG_SHIFT;
+                    int off = y * WAIFU_FM_WIDTH + x0;
+                    copy_u8_fast(framebuffer + off, src + off, n);
+                }
+                g = run;
+            }
+        }
+        fb_damage_base_mark(src);
+        /* Last frame a screen held a rectangle back from the restore on the
+           promise of redrawing it.  If nothing has renewed that promise by
+           now, this frame is being drawn by something else entirely and those
+           pixels are stale -- put the composite back under them. */
+        if (g_fb_kept_valid && !g_fb_keep_claimed)
+            fb_unkeep_opaque(g_fb_keep_x, g_fb_keep_y, g_fb_keep_w, g_fb_keep_h);
+        return;
+    }
+#endif
+    fb_damage_all();
+    copy_u8_fast(framebuffer, src, WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
+    fb_damage_base_mark(src);
+}
+
+/* Give a kept rectangle back: the composite goes under it again and it becomes
+   ordinary overlay.  Needed when what was drawn there MOVES rather than simply
+   being repainted in place -- a hand card sliding sideways leaves pixels
+   outside its new footprint that only the composite can undo.  Returns 0 when
+   there is no composite to restore from, in which case the caller has to draw
+   the frame the long way. */
+static int fb_unkeep_opaque(int x, int y, int w, int h)
+{
+#if defined(WAIFU_FB_DAMAGE)
+    int x1 = x + w, y1 = y + h;
+    int y0;
+    if (!g_fb_base_src) return 0;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+    if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+    if (x >= x1 || y >= y1) return 1;
+    y0 = y;
+    fb_damage_rect(x, y, x1 - x, y1 - y);
+    for (; y < y1; ++y) {
+        int off = y * WAIFU_FM_WIDTH + x;
+        copy_u8_fast(framebuffer + off, g_fb_base_src + off, x1 - x);
+    }
+    /* This write restored the composite; it is present damage, but not an
+       overlay that needs to be undone again on the following frame. */
+    fb_clear_rect(g_fb_ovl_curr, x, y0, x1 - x, y1 - y0);
+    return 1;
+#else
+    (void)x; (void)y; (void)w; (void)h;
+    return 0;
+#endif
+}
+
+
 
 static void put_px(int x, int y, uint8_t c)
 {
     if ((unsigned)x < (unsigned)g_ui_clip_w && (unsigned)y < WAIFU_FM_HEIGHT) {
         if (waifu_hw2d_px(x, y, c)) return;
-        if (x < WAIFU_FM_WIDTH) framebuffer[y * WAIFU_FM_WIDTH + x] = c;
+        if (x < WAIFU_FM_WIDTH) {
+            fb_damage_span(y, x, x + 1);
+            framebuffer[y * WAIFU_FM_WIDTH + x] = c;
+        }
     }
 }
 
@@ -2005,7 +2428,10 @@ static void hline(int x0, int x1, int y, uint8_t c)
     if (x1 >= g_ui_clip_w) x1 = g_ui_clip_w - 1;
     if (waifu_hw2d_rect(x0, y, x1 - x0 + 1, 1, c)) return;
     if (x1 >= WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH - 1;   /* software framebuffer stride */
-    if (x0 <= x1) fill_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0, x1 - x0 + 1, c);
+    if (x0 <= x1) {
+        fb_damage_span(y, x0, x1 + 1);
+        fill_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0, x1 - x0 + 1, c);
+    }
 }
 
 static void rect_fill(int x, int y, int w, int h, uint8_t c)
@@ -2025,6 +2451,7 @@ static void rect_fill(int x, int y, int w, int h, uint8_t c)
     if (x0 > x1) return;
     int count = x1 - x0 + 1;
     uint8_t *dst = framebuffer + y0 * WAIFU_FM_WIDTH + x0;
+    fb_damage_rect(x0, y0, count, y1 - y0 + 1);
     for (int yy = y0; yy <= y1; ++yy) {
         fill_u8_fast(dst, count, c);
         dst += WAIFU_FM_WIDTH;
@@ -2050,6 +2477,11 @@ static void rect_outline(int x, int y, int w, int h, uint8_t c)
         int okl = (unsigned)xl < (unsigned)WAIFU_FM_WIDTH;
         int okr = (unsigned)xr < (unsigned)WAIFU_FM_WIDTH;
         uint8_t *p = framebuffer + (int32_t)y0 * WAIFU_FM_WIDTH;
+        /* Only the two 1px columns, not the rectangle's interior: a panel
+           outline that claimed its whole area would make the present upload
+           the panel every frame. */
+        if (okl) fb_damage_rect(xl, y0, 1, y1 - y0);
+        if (okr) fb_damage_rect(xr, y0, 1, y1 - y0);
         for (int yy = y0; yy < y1; ++yy, p += WAIFU_FM_WIDTH) {
             if (okl) p[xl] = c;
             if (okr) p[xr] = c;
@@ -2214,6 +2646,7 @@ static void blit_glyph_unclipped(int x, int y, unsigned char ch,
                                  uint8_t fg, uint8_t shadow, int sofs)
 {
     const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
+    fb_damage_rect(x, y, 8 + sofs, 8 + sofs);
 #if defined(WAIFU_FM_FMTOWNS)
     uint32_t colors[2];
     colors[0] = 0x01010101u * (uint32_t)shadow;
@@ -2359,27 +2792,51 @@ static void draw_text_small_ellipsis(int x, int y, const char *s, int max_chars,
     draw_text_small(x, y, buf, fg, shadow);
 }
 
-static int draw_wrapped_text_small_box(int x, int y, int max_w, int max_lines, int line_gap, const char *s, uint8_t fg, uint8_t shadow)
+/* WHERE draw_wrapped_text_small_box() PUTS ITS LINES.
+
+   Split out from the drawing because a typewriter block is redrawn on every
+   frame of a story line, and at ~0.15 ms per glyph on a 386SX that was the
+   single largest thing left in a settled story frame.  Knowing the layout
+   makes the common case -- one more character on the end of the last line --
+   a one-glyph draw instead of a hundred-glyph one.
+
+   Every entry is an index into `s`, so the caller can compare two layouts of
+   the same growing string and see whether anything already on screen moved.
+   The rule reproduced here IS the drawing rule; keep them together. */
+#define WAIFU_WRAP_MAX_LINES 8
+typedef struct WaifuWrapLayout {
+    int count;
+    int ellipsis;                        /* last line went through the "..." path */
+    int16_t start[WAIFU_WRAP_MAX_LINES];
+    int16_t len[WAIFU_WRAP_MAX_LINES];
+} WaifuWrapLayout;
+
+static int wrap_max_chars(int max_w)
 {
-    const char *p = s ? s : "";
-    int max_chars;
-    int lines = 0;
-    if (max_w < 7 || max_lines <= 0) return 0;
-    max_chars = max_w / 7;
+    int max_chars = max_w / 7;
     if (max_chars < 1) max_chars = 1;
     if (max_chars > 60) max_chars = 60;
+    return max_chars;
+}
 
-    while (*p && lines < max_lines) {
+static void wrap_layout(const char *s, int max_chars, int max_lines, WaifuWrapLayout *out)
+{
+    const char *p = s ? s : "";
+    const char *base = p;
+    out->count = 0;
+    out->ellipsis = 0;
+    if (max_lines > WAIFU_WRAP_MAX_LINES) max_lines = WAIFU_WRAP_MAX_LINES;
+    while (*p && out->count < max_lines) {
         int len, n, split = -1;
         while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
         if (!*p) break;
         len = (int)strlen(p);
         if (len <= max_chars) {
-            draw_text_small(x, y + lines * line_gap, p, fg, shadow);
-            ++lines;
+            out->start[out->count] = (int16_t)(p - base);
+            out->len[out->count] = (int16_t)len;
+            ++out->count;
             break;
         }
-
         for (int i = max_chars - 1; i > 0; --i) {
             char c = p[i];
             if (c == ' ' || c == '/' || c == ',' || c == '-') {
@@ -2388,17 +2845,65 @@ static int draw_wrapped_text_small_box(int x, int y, int max_w, int max_lines, i
             }
         }
         n = (split > 0) ? split : max_chars;
-        if (lines == max_lines - 1) {
-            draw_text_small_ellipsis(x, y + lines * line_gap, p, max_chars, fg, shadow);
-            ++lines;
+        out->start[out->count] = (int16_t)(p - base);
+        if (out->count == max_lines - 1) {
+            out->len[out->count] = (int16_t)max_chars;
+            out->ellipsis = 1;
+            ++out->count;
             break;
         }
-        draw_text_small_n(x, y + lines * line_gap, p, n, fg, shadow);
+        out->len[out->count] = (int16_t)n;
+        ++out->count;
         p += n;
         while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-        ++lines;
     }
-    return lines;
+}
+
+/* Draw lines [from_line, count), and on `from_line` skip the first
+   `from_char` characters -- they are already on screen at exactly these
+   coordinates, because the advance is a fixed 7 pixels per character. */
+static void wrap_draw(int x, int y, int line_gap, const char *s,
+                      const WaifuWrapLayout *l, int max_chars,
+                      int from_line, int from_char, uint8_t fg, uint8_t shadow)
+{
+    for (int i = from_line; i < l->count; ++i) {
+        int skip = (i == from_line) ? from_char : 0;
+        int ly = y + i * line_gap;
+        if (l->ellipsis && i == l->count - 1) {
+            draw_text_small_ellipsis(x, ly, s + l->start[i], max_chars, fg, shadow);
+            continue;
+        }
+        if (skip >= l->len[i]) continue;
+        draw_text_small_n(x + skip * 7, ly, s + l->start[i] + skip,
+                          l->len[i] - skip, fg, shadow);
+    }
+}
+
+/* Non-zero when `cur` is `prev` with more characters typed onto its last line
+   and nothing else moved -- the only case in which the block on screen can be
+   extended instead of redrawn.  A line closing reflows the text after the
+   break, so that returns 0 and the caller repaints the block. */
+static int wrap_extends(const WaifuWrapLayout *prev, const WaifuWrapLayout *cur)
+{
+    int i;
+    if (prev->count <= 0 || prev->count != cur->count) return 0;
+    if (prev->ellipsis || cur->ellipsis) return 0;
+    for (i = 0; i < cur->count - 1; ++i) {
+        if (prev->start[i] != cur->start[i] || prev->len[i] != cur->len[i]) return 0;
+    }
+    i = cur->count - 1;
+    return prev->start[i] == cur->start[i] && cur->len[i] >= prev->len[i];
+}
+
+static int draw_wrapped_text_small_box(int x, int y, int max_w, int max_lines, int line_gap, const char *s, uint8_t fg, uint8_t shadow)
+{
+    WaifuWrapLayout l;
+    int max_chars;
+    if (max_w < 7 || max_lines <= 0) return 0;
+    max_chars = wrap_max_chars(max_w);
+    wrap_layout(s, max_chars, max_lines, &l);
+    wrap_draw(x, y, line_gap, s ? s : "", &l, max_chars, 0, 0, fg, shadow);
+    return l.count;
 }
 
 static void draw_wrapped_text_small(int x, int y, const char *s, int max_chars, uint8_t fg, uint8_t shadow)
@@ -2428,6 +2933,7 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
        alpha mask into the pixels (transparent -> 0) at load time to keep only one
        resident plane per portrait.  Otherwise use the explicit alpha mask. */
     if (waifu_hw2d_image(pix, mask, sw, sh, x, y, sw, sh, 0, mask == 0)) return;
+    fb_damage_rect(x, y, sw, sh);
 #if defined(WAIFU_FM_CD32X)
     /* CD32X never has a resident mask (waifu_assets_story_portrait_mask returns
        NULL there), so only the color-key path is compiled: clip once, then pack
@@ -2525,6 +3031,14 @@ static int story_slide_x(int from_x, int to_x, int frame)
    counter resets on state re-entry). Both the story dialogue box and the ending
    narration share this so the effect and its timing live in ONE place. */
 static void waifu_str_copy_n(char *dst, int dst_size, const char *src, int max_chars);
+
+/* strcmp()==0 without pulling in a libc the console targets do not have. */
+static int waifu_str_equal(const char *a, const char *b)
+{
+    if (!a || !b) return a == b;
+    while (*a && *a == *b) { ++a; ++b; }
+    return *a == *b;
+}
 /* 15/2 characters per 60 Hz frame = 450 characters/sec, five times the
    preceding 90 chars/sec typewriter rate. */
 #define WAIFU_TEXT_TYPE_CHARS_NUM 15
@@ -2596,18 +3110,71 @@ static void draw_story_dialog_box(int scene, int line, const char *speaker, cons
     int vis = story_text_reveal_count(scene, line, f, full_len);
     char shown[192];
     waifu_str_copy_n(shown, (int)sizeof(shown), text, vis);
+    /* The box is opaque, and its frame and speaker line only change when the
+       LINE does -- while a line is typing, the only thing moving is the body
+       text.  So when the caller says the composed screen is still on the
+       framebuffer (ui_retained(UI_TAG_STORY_DIALOGUE), which only the settled
+       story-plaza path claims), redraw the four body rows and leave the panel,
+       its three outlines, the speaker and the subhead alone.  That is 9.4 KB
+       of fill and ~120 glyphs instead of 17 KB and ~150 -- and, more to the
+       point, it lets the caller skip restoring the cached composite too, since
+       nothing outside those rows was ever damaged. */
+    static char s_box_speaker[32];
+    static char s_box_subhead[32];
+    static int s_box_scene = -1, s_box_line = -1, s_box_w = -1;
+    static uint8_t s_box_color;
+    int chrome_valid =
+        ui_retained(UI_TAG_STORY_DIALOGUE) &&
+        s_box_scene == scene && s_box_line == line && s_box_w == box_w &&
+        s_box_color == speaker_color &&
+        waifu_str_equal(s_box_speaker, speaker) &&
+        waifu_str_equal(s_box_subhead, subhead ? subhead : "");
+
     ui_hud_begin();
-    draw_panel_rect(0, box_y, box_w, 66, IDX_UI_DARK);
-    draw_text_small(10, box_y + 10, speaker, speaker_color, IDX_BLACK);
-    if (subhead && *subhead) {
-        if (ex > 0) {
-            int len = (int)strlen(subhead);
-            if (len > 20) len = 20;
-            sub_x = box_w - 10 - len * 7;   /* right-align to the box edge */
+    if (!chrome_valid) {
+        draw_panel_rect(0, box_y, box_w, 66, IDX_UI_DARK);
+        draw_text_small(10, box_y + 10, speaker, speaker_color, IDX_BLACK);
+        if (subhead && *subhead) {
+            if (ex > 0) {
+                int len = (int)strlen(subhead);
+                if (len > 20) len = 20;
+                sub_x = box_w - 10 - len * 7;   /* right-align to the box edge */
+            }
+            draw_text_small_ellipsis(sub_x, box_y + 10, subhead, 20, IDX_UI_LIGHT, IDX_BLACK);
         }
-        draw_text_small_ellipsis(sub_x, box_y + 10, subhead, 20, IDX_UI_LIGHT, IDX_BLACK);
+        waifu_str_copy_n(s_box_speaker, (int)sizeof(s_box_speaker), speaker, 31);
+        waifu_str_copy_n(s_box_subhead, (int)sizeof(s_box_subhead), subhead ? subhead : "", 31);
+        s_box_scene = scene; s_box_line = line; s_box_w = box_w;
+        s_box_color = speaker_color;
     }
-    draw_wrapped_text_small_box(10, box_y + 25, box_w - 20, 4, 10, shown, IDX_WHITE, IDX_BLACK);
+    {
+        /* The body, typed one character at a time.  Redrawing all four lines
+           for each new character was ~120 glyph blits a frame; while the
+           layout only grows on its last line, the new characters land exactly
+           where they would have anyway (a fixed 7px advance), so drawing just
+           those is the same picture.  A line closing reflows the text after
+           the break -- wrap_extends() says so -- and then the block is
+           cleared back to the panel fill and drawn whole. */
+        static WaifuWrapLayout s_body;
+        static int s_body_valid;
+        WaifuWrapLayout cur;
+        int max_chars = wrap_max_chars(box_w - 20);
+        int from_line = 0, from_char = 0;
+        wrap_layout(shown, max_chars, 4, &cur);
+        if (chrome_valid && s_body_valid && wrap_extends(&s_body, &cur)) {
+            from_line = cur.count - 1;
+            from_char = s_body.len[from_line];
+        } else {
+            /* Clear just the body rows back to the panel fill.  They sit well
+               inside the three outlines (x >= 10, rows box_y+25 .. box_y+64),
+               so this cannot eat the frame. */
+            if (chrome_valid) rect_fill(10, box_y + 25, box_w - 20, 40, IDX_UI_DARK);
+        }
+        wrap_draw(10, box_y + 25, 10, shown, &cur, max_chars,
+                  from_line, from_char, IDX_WHITE, IDX_BLACK);
+        s_body = cur;
+        s_body_valid = 1;
+    }
     ui_hud_end();
 }
 
@@ -3340,6 +3907,7 @@ static void cd32x_blit_scaled_fast(const uint8_t *src, int sw, int sh, int x, in
 
 static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
 {
+    fb_damage_rect(x, y, 38, 50);
     uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
     int yy;
     for (yy = 0; yy < 50; ++yy) {
@@ -3348,6 +3916,18 @@ static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
         pcfx_blit_row38_v810(srow, dst);
 #elif defined(WAIFU_FM_CD32X)
         copy_u8_fast(dst, srow, 38);
+#elif defined(WAIFU_FM_FMTOWNS)
+        /* memcpy() would charge this row a call, an under-32-bytes branch,
+           alignment arithmetic and three `rep` set-ups; 38 bytes is nine
+           dwords and a halfword, known at compile time. */
+        {
+            const unsigned char *sp = srow;
+            unsigned char *dp = dst;
+            unsigned int n = 9;
+            __asm__ volatile ("rep movsl" : "+D"(dp), "+S"(sp), "+c"(n) :: "memory");
+            dp[0] = sp[0];
+            dp[1] = sp[1];
+        }
 #else
         memcpy(dst, srow, 38);
 #endif
@@ -3357,6 +3937,7 @@ static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
 
 static void blit_card_36x49_fast(const uint8_t *src, int x, int y)
 {
+    fb_damage_rect(x, y, 36, 49);
     uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
     int yy;
     for (yy = 0; yy < 49; ++yy) {
@@ -3373,6 +3954,7 @@ static void blit_card_36x49_fast(const uint8_t *src, int x, int y)
 
 static void blit_card_38x50_gray_fast(const uint8_t *src, int x, int y)
 {
+    fb_damage_rect(x, y, 38, 50);
     uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
     int yy;
     if (!g_gray_lut_ready) init_gray_lut();
@@ -3390,6 +3972,7 @@ static void blit_card_38x50_gray_fast(const uint8_t *src, int x, int y)
 
 static void blit_card_mapped_fast(const uint8_t *src, int x, int y, int dw, int dh, const uint8_t *xmap, const uint8_t *ymap)
 {
+    fb_damage_rect(x, y, dw, dh);
     uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
     int yy;
     for (yy = 0; yy < dh; ++yy) {
@@ -3443,6 +4026,7 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
 {
     if (!src || dw <= 0 || dh <= 0) return;
     if (waifu_hw2d_image(src, 0, sw, sh, x, y, dw, dh, 0, 0)) return;
+    fb_damage_rect(x, y, dw, dh);
     if (dw == sw && dh == sh) {
         int x0 = x < 0 ? 0 : x;
         int y0 = y < 0 ? 0 : y;
@@ -3503,6 +4087,7 @@ static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y,
     if (waifu_hw2d_image(src, 0, sw, sh, x, y, dw, dh, 1, 0)) return;
     if (try_draw_card_raw_fast(src, sw, sh, x, y, dw, dh, 1)) return;
     PROFILE_CARD2D_GENERIC_BEGIN();
+    fb_damage_rect(x, y, dw, dh);
     for (int yy = 0; yy < dh; ++yy) {
         int sy = (yy * sh) / dh;
         int dy = y + yy;
@@ -3526,6 +4111,7 @@ static void blit_art112_fast(const uint8_t *src, int x, int y)
 {
     if (!src || !rect_fully_visible(x, y, WAIFU_BIG_W, WAIFU_BIG_H)) return;
     if (waifu_hw2d_image(src, 0, WAIFU_BIG_W, WAIFU_BIG_H, x, y, WAIFU_BIG_W, WAIFU_BIG_H, 0, 0)) return;
+    fb_damage_rect(x, y, WAIFU_BIG_W, WAIFU_BIG_H);
     uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
 #if defined(WAIFU_FM_PCFX)
     /* The V810 word-copy path is only safe when both the source and destination
@@ -3667,9 +4253,21 @@ static const uint8_t *support_big_art_ptr(void)
 #endif
 }
 
+/* A card's drop shadow is the full card rectangle offset by (2,3) -- and the
+   card is then drawn opaquely on top of all but a 2px strip down the right
+   and a 3px strip along the bottom.  Filling the whole rectangle first wrote
+   1900 bytes of a 38x50 hand card's 2114-byte shadow and immediately buried
+   them; five cards do that every frame the hand changes.  Same pixels, drawn
+   once. */
+static void draw_card_drop_shadow(int x, int y, int w, int h)
+{
+    rect_fill(x + w, y + 3, 2, h, IDX_BLACK);
+    rect_fill(x + 2, y + h, w, 3, IDX_BLACK);
+}
+
 static void draw_card_sprite(int id, int x, int y, int w, int h, int back)
 {
-    rect_fill(x+2, y+3, w, h, IDX_BLACK);
+    draw_card_drop_shadow(x, y, w, h);
 #if defined(WAIFU_FM_CD32X)
     if (back) {
         rect_fill(x, y, w, h, IDX_CARD_RIM);
@@ -3709,7 +4307,10 @@ static void draw_card_sprite(int id, int x, int y, int w, int h, int back)
 static void draw_card_sprite_ex(int id, int x, int y, int w, int h, int back, int gray)
 {
     const uint8_t *src = back ? waifu_assets_card_back() : card_face_ptr(id);
-    rect_fill(x+2, y+3, w, h, IDX_BLACK);
+    /* Only the sliver the card will not cover -- unless there is no art to
+       cover it with, in which case the whole shadow rectangle is what shows. */
+    if (src) draw_card_drop_shadow(x, y, w, h);
+    else rect_fill(x+2, y+3, w, h, IDX_BLACK);
 #if defined(WAIFU_FM_CD32X)
     if (back) {
         draw_card_sprite(id, x, y, w, h, 1);
@@ -3745,7 +4346,8 @@ static void draw_trap_frame_overlay(int x, int y, int w, int h)
 
 static void draw_support_sprite(int id, int x, int y, int w, int h)
 {
-    rect_fill(x+2, y+3, w, h, IDX_BLACK);
+    if (waifu_assets_support_face()) draw_card_drop_shadow(x, y, w, h);
+    else rect_fill(x+2, y+3, w, h, IDX_BLACK);
 #if defined(WAIFU_FM_CD32X)
     {
         int trap = is_trap_support_card(id);
@@ -4152,6 +4754,7 @@ static void render_board_cached(Camera cam)
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
         unsigned long long _profile_t0 = g_profile_render_enabled ? profile_now_us() : 0;
 #endif
+        fb_damage_all();
         copy_u8_fast(framebuffer, g_board_bg_cache, (int)sizeof(g_board_bg_cache));
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
         if (g_profile_render_enabled) {
@@ -4303,6 +4906,7 @@ static void draw_textured_tri_affine_cd32x(const uint8_t *src, int sw, int sh, T
         int32_t u = u_row;
         int32_t v = v_row;
         uint8_t *dst = framebuffer + (int32_t)y * WAIFU_FM_WIDTH;
+        fb_damage_span(y, minx, maxx + 1);
         for (int x = minx; x <= maxx; ++x) {
             if ((den > 0 && wa >= 0 && wb >= 0 && wc >= 0) ||
                 (den < 0 && wa <= 0 && wb <= 0 && wc <= 0)) {
@@ -4389,6 +4993,7 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
 #if defined(WAIFU_FM_CD32X)
         if (cd32x_story_quads_push(&p0, &p1, &p2, &p3, tile)) return;
 #endif
+        fb_damage_all();
         cfx_renderer3d_draw_quad_board(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
         return;
     }
@@ -4482,6 +5087,7 @@ static void draw_tri3d_pyramid_face(Camera cam, Vec3 base0, Vec3 base1, Vec3 ape
             int u = u_row + du_dx * (xL - minx);
             int v = v_row + dv_dx * (xL - minx);
             uint8_t *prow = framebuffer + y * WAIFU_FM_WIDTH;
+            fb_damage_span(y, xL, xR + 1);
             for (int x = xL; x <= xR; ++x) {
                 prow[x] = src[rep[(v >> 8) & (Q8_ONE - 1)] * sw + rep[(u >> 8) & (Q8_ONE - 1)]];
                 u += du_dx; v += dv_dx;
@@ -5112,6 +5718,7 @@ static void apply_black_dither_fade(int32_t visible)
     int threshold = (int)(((Q8_ONE - visible) * 64 + Q8_HALF) >> Q8_SHIFT);
     if (threshold <= 0) return;
     if (threshold >= 64) { clear_screen(IDX_BLACK); return; }
+    fb_damage_all();
     for (int y = 0; y < WAIFU_FM_HEIGHT; ++y) {
         for (int x = 0; x < WAIFU_FM_WIDTH; ++x) {
             if (bayer[y & 7][x & 7] < threshold) framebuffer[y * WAIFU_FM_WIDTH + x] = IDX_BLACK;
@@ -5642,6 +6249,7 @@ static void restore_title_rect(int x, int y, int w, int h)
         return;
     }
 
+    fb_damage_rect(x0, y0, x1 - x0, y1 - y0);
     for (int yy = y0; yy < y1; ++yy) {
         copy_u8_fast(framebuffer + yy * WAIFU_FM_WIDTH + x0,
                      title_img + yy * TITLE_SCREEN_W + x0,
@@ -8756,6 +9364,22 @@ static void enter_debug_story_plaza_after_assets(void)
 }
 #endif
 
+#ifdef WAIFU_DEBUG_AUTOFIRE
+static void reset_story_entry(void);
+/* Profiling shortcut: boot straight onto the DEMON fire cutscene, the one
+   full-screen animation in the game -- every pixel below row 40 changes every
+   frame, so no cache and no dirty present can help it and what it costs is
+   what the propagation loop plus the 2x blit cost.
+   ./fmtowns.sh profile fire builds this.  Never ship it. */
+static void enter_debug_story_fire_after_assets(void)
+{
+    reset_story_entry();
+    g_story_fire_line = 0;
+    g_i_state = WAIFU_I_STORY_FIRE;
+    g_i_frame = 0;
+}
+#endif
+
 #ifdef WAIFU_DEBUG_AUTONAME
 static void reset_story_entry(void);
 /* Profiling shortcut: boot straight onto the story name-entry screen.  It is
@@ -8806,7 +9430,7 @@ static void enter_battle_after_assets(void)
     enter_state_after_assets(WAIFU_I_BATTLE);
 }
 
-#ifdef WAIFU_DEBUG_AUTODUEL
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD)
 /* Profiling shortcut: boot straight into a free duel instead of walking
    title -> menu -> BATTLE MODE.
 
@@ -8831,6 +9455,10 @@ static void enter_debug_autoduel_after_assets(void)
        scatters by several milliseconds between otherwise identical builds. */
     init_battle_state();
     enter_battle_after_assets();
+#if defined(WAIFU_DEBUG_AUTOBOARD)
+    set_top_selector(0, PLAYER_CARD_ROW);
+    set_battle_phase(IB_PLAYER_TOP);
+#endif
 }
 #endif
 
@@ -9229,6 +9857,90 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
     PROFILE_HAND_END();
 }
 
+/* THE DUEL'S BOTTOM BAND: the five hand cards, their selector and the card
+   info bar, drawn as one retained unit.
+
+   These three cost 30 of a parked hand frame's 37 ms of drawing -- roughly
+   two thirds of it glyphs at ~0.15 ms each and the rest 38x50 card blits --
+   and while the player is looking at their hand, deciding, none of it changes
+   from one frame to the next.  So the band is held back from the composite
+   restore (fb_keep_opaque) and redrawn only when something in it actually
+   moves.  A frame that changes nothing then costs the LP counters and a page
+   flip.
+
+   The band has to be one unit because the info bar is drawn ON TOP of the
+   bottom ~11 rows of the cards: retaining one without the other would leave
+   card shadow over a bar that no longer repaints itself.
+
+   Everything the two draw calls read goes into the key.  Anything left out
+   would show up as a stale band, which is why the host build renders every
+   scripted scenario through this path and diffs it against a build that has
+   it compiled out (see WAIFU_FB_DAMAGE_VERIFY). */
+#define DUEL_BAND_Y0 (WAIFU_HAND_Y_BASE - 12)
+#define DUEL_BAND_H  (WAIFU_FM_HEIGHT - DUEL_BAND_Y0)
+
+static uint32_t duel_band_key(int f, int selected)
+{
+    uint32_t k = 0x811c9dc5u;
+    int i;
+    int card = g_i_player_hand[selected];
+    /* Only an intro still in flight moves the cards; past it the animation
+       argument is a constant and must not keep the key changing. */
+    k = k * 33u + (uint32_t)(f < 48 ? f : 999);
+    k = k * 33u + (uint32_t)selected;
+    k = k * 33u + (uint32_t)g_player_hand_offset_y;
+    k = k * 33u + (uint32_t)(g_suppress_hand_cursor ? 1 : 0);
+    k = k * 33u + (uint32_t)(player_hand_monster_blocked() ? 1 : 0);
+    for (i = 0; i < I_HAND; ++i) {
+        k = k * 33u + (uint32_t)g_i_player_hand[i];
+        k = k * 33u + (uint32_t)(g_i_player_used[i] ? 1 : 0);
+        k = k * 33u + (uint32_t)player_fusion_order_for_slot(i);
+    }
+    /* The info bar's content: the selected card plus the live stat values it
+       prints, which an equip or a battle modifier can change under a hand
+       that is otherwise identical. */
+    k = k * 33u + (uint32_t)card;
+    if (is_monster_card(card)) {
+        k = k * 33u + (uint32_t)waifu_card_atk[card];
+        k = k * 33u + (uint32_t)waifu_card_def[card];
+    }
+    k = k * 33u + (uint32_t)waifu_platform_ui_extra_w();
+    return k;
+}
+
+/* Called BEFORE draw_interactive_base(), because the claim has to be in place
+   before the composite restore consults it.  A restore that turns out to need
+   the whole screen drops the claim by itself (fb_damage_all). */
+static void duel_band_hint(void)
+{
+    fb_keep_opaque(0, DUEL_BAND_Y0, WAIFU_FM_WIDTH + waifu_platform_ui_extra_w(),
+                   DUEL_BAND_H);
+}
+
+static void draw_interactive_player_hand(int f, int selected, int yoff, int suppress_cursor);
+static void draw_bottom_info(int card_id, const char *mode);
+
+static void duel_band_draw(int f, int selected)
+{
+    static uint32_t s_key;
+    static int s_key_valid;
+    uint32_t key = duel_band_key(f, selected);
+
+    if (fb_keep_claimed() && s_key_valid && key == s_key) return;   /* already on screen */
+
+    /* The restore skipped the band on the strength of the claim, so anything
+       the old cards left outside the new ones has to come back from the
+       composite before they are drawn again. */
+    if (fb_keep_claimed() && fb_keep_was_active())
+        fb_unkeep_opaque(0, DUEL_BAND_Y0, WAIFU_FM_WIDTH + waifu_platform_ui_extra_w(),
+                         DUEL_BAND_H);
+
+    draw_interactive_player_hand(f, selected, 0, 0);
+    draw_bottom_info(g_i_player_hand[selected], "HAND");
+    s_key = key;
+    s_key_valid = 1;
+}
+
 static void play_player_hand_intro_draw_sfx(void)
 {
     int i;
@@ -9441,7 +10153,10 @@ static int battle_base_cache_restore(Camera cam, uint32_t key)
             }
         } else
 #endif
-        copy_u8_fast(framebuffer, primary->pixels, (int)sizeof(primary->pixels));
+        /* Only the pixels last frame's hand, cursor and counters covered --
+           the rest of the composite is still on screen.  See
+           fb_restore_composite(). */
+        fb_restore_composite(primary->pixels);
         return 1;
     }
     return 0;
@@ -9452,6 +10167,9 @@ static void battle_base_cache_store(Camera cam, uint32_t key)
     WaifuBattleBaseCache *cache = battle_base_cache_for_camera(cam);
     if (!cache) return; /* moving camera: rendered live, nothing to cache */
     copy_u8_fast(cache->pixels, framebuffer, (int)sizeof(cache->pixels));
+    /* From here the framebuffer IS this composite; whatever the caller draws
+       next is the overlay the next restore has to undo. */
+    fb_damage_base_mark(cache->pixels);
     cache->cam = cam;
     cache->key = key;
     cache->valid = 1;
@@ -11291,9 +12009,20 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         prewarm_handtop_transition_bases(); /* pre-fill lift keyframes during hand idle */
 #endif
         play_player_hand_intro_draw_sfx();
+        /* Attribution knobs for the parked hand view (./fmtowns.sh profile
+           hand): each one removes exactly one of the three things a cached
+           hand frame does, so the frame stamp attributes it. */
+        duel_band_hint();
+#if !defined(WAIFU_MEASURE_HAND_NOBASE)
         draw_interactive_base(player_camera());
+#endif
+#if !defined(WAIFU_MEASURE_HAND_NOCARDS) && !defined(WAIFU_MEASURE_HAND_NOINFO)
+        duel_band_draw(g_b_player_hand_intro_pending ? g_b_phase_frame : 999, g_b_selected_hand);
+#elif !defined(WAIFU_MEASURE_HAND_NOCARDS)
         draw_interactive_player_hand(g_b_player_hand_intro_pending ? g_b_phase_frame : 999, g_b_selected_hand, 0, 0);
+#elif !defined(WAIFU_MEASURE_HAND_NOINFO)
         draw_bottom_info(g_i_player_hand[g_b_selected_hand], "HAND");
+#endif
         if (g_b_phase_frame >= 48) g_b_player_hand_intro_pending = 0;
         break;
 
@@ -11862,12 +12591,14 @@ void waifu_fm_init(void)
     waifu_assets_read_blob(WAIFU_ASSET_BLOB_TEX_ATLAS, waifu_texture_atlas,
                            sizeof(waifu_texture_atlas));
 #endif
-#if defined(WAIFU_DEBUG_AUTODUEL)
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();
 #elif defined(WAIFU_DEBUG_AUTONAME)
     enter_debug_story_name_after_assets();
+#elif defined(WAIFU_DEBUG_AUTOFIRE)
+    enter_debug_story_fire_after_assets();
 #elif defined(CD32X_DEBUG_AUTOBATTLE)
     /* Temporary CD32X iteration shortcut: boot straight to the deck editor
        through the normal card loading screen. */
@@ -11903,12 +12634,14 @@ void waifu_fm_reset_interactive(void)
     init_battle_state();
     invalidate_board_bg_cache();
     invalidate_battle_composite_cache();
-#if defined(WAIFU_DEBUG_AUTODUEL)
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();
 #elif defined(WAIFU_DEBUG_AUTONAME)
     enter_debug_story_name_after_assets();
+#elif defined(WAIFU_DEBUG_AUTOFIRE)
+    enter_debug_story_fire_after_assets();
 #elif defined(CD32X_DEBUG_AUTOBATTLE)
     /* Throwaway CD32X iteration shortcut: skip title/menu asset requests and
        boot straight into the deck editor through the normal card-loading path.
@@ -11935,6 +12668,43 @@ void waifu_fm_reset_interactive(void)
 uint8_t *waifu_fm_framebuffer(void)
 {
     return framebuffer;
+}
+
+/* See the damage-tracking comment above fb_damage_rect().  Returns non-zero
+   when the whole framebuffer must be treated as changed; otherwise *rows
+   points at WAIFU_FM_HEIGHT mask bytes, bit g set for each 64-pixel group of
+   that scanline that was written since the last waifu_fm_frame_damage_clear().
+   Platforms that ignore this keep presenting whole frames and stay correct. */
+int waifu_fm_frame_damage(const uint8_t **rows)
+{
+#if defined(WAIFU_FB_DAMAGE)
+    if (rows) *rows = g_fb_dmg;
+    return g_fb_dmg_full;
+#else
+    if (rows) *rows = 0;
+    return 1;
+#endif
+}
+
+/* The subset of waifu_fm_frame_damage() the frame KNOWS changed, so a
+   presenter that compares before uploading can skip comparing these.  Never
+   larger than the damage mask; empty on a frame that declared nothing. */
+const uint8_t *waifu_fm_frame_damage_forced(void)
+{
+#if defined(WAIFU_FB_DAMAGE)
+    return g_fb_force;
+#else
+    return 0;
+#endif
+}
+
+/* Called by the presenter once the frame has reached the screen: from here on
+   the framebuffer and what the display holds agree, so the next frame's
+   declarations start from nothing.  Any full redraw re-arms `full` itself
+   through clear_screen(). */
+void waifu_fm_frame_damage_clear(void)
+{
+    fb_damage_reset();
 }
 
 uint32_t waifu_fm_frame_dirty_serial(void)
@@ -12038,10 +12808,47 @@ static void draw_egyptian_corner(int x, int y, int flip)
     }
 }
 
+/* The one thing on the name-entry screen that changes between frames: the
+   glyph slots and the cursor, all of them inside the 164x38 field box.  Split
+   out so the settled screen can redraw just this over last frame's picture --
+   the field fill covers every pixel the loop below can touch, so the result is
+   the same image the full redraw produces. */
+#define NAME_FIELD_X 46
+#define NAME_FIELD_Y 92
+#define NAME_FIELD_W 164
+#define NAME_FIELD_H 38
+
+static void draw_story_name_field(int dx)
+{
+    rect_fill(dx + NAME_FIELD_X, NAME_FIELD_Y, NAME_FIELD_W, NAME_FIELD_H, IDX_BLACK);
+    rect_outline(dx + NAME_FIELD_X, NAME_FIELD_Y, NAME_FIELD_W, NAME_FIELD_H, IDX_GOLD_HI);
+    for (int i = 0; i < STORY_NAME_LEN; ++i) {
+        int x = dx + 61 + i * 23;
+        char ch[2] = { g_story_name[i], 0 };
+        if (i == g_story_name_pos) {
+            rect_fill(x - 4, 99, 19, 21, IDX_DARK_BROWN);
+            rect_outline(x - 5, 98, 21, 23, IDX_GOLD_HI);
+        }
+        draw_text(x, 104, ch, i == g_story_name_pos ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+        hline(x - 2, x + 10, 121, IDX_UI_LIGHT);
+    }
+}
+
 static void draw_story_name_entry(void)
 {
-    char buf[32];
     int dx = WAIFU_UI_CENTER_DX;
+    /* A dither fade rewrites every pixel, so the retained picture is only good
+       for the frames between them. */
+    int fading = g_story_name_to_intro || (g_i_frame >= 0 && g_i_frame < 24);
+
+    if (!fading && ui_retained(UI_TAG_NAME_ENTRY)) {
+        /* Panel, headings, bands and help text are already on screen and none
+           of them can change while this screen is up.  ~2 KB of fills instead
+           of a 61440-byte clear plus a 38880-byte panel plus eighty glyphs. */
+        draw_story_name_field(dx);
+        return;
+    }
+
     clear_screen(IDX_BLACK);
     for (int y = 8; y < WAIFU_FM_HEIGHT; y += 16) {
         /* Striped rows only above the panel and below the help line. */
@@ -12058,25 +12865,15 @@ static void draw_story_name_entry(void)
     draw_centered_text_scaled(47, "NAME ENTRY", 1, IDX_GOLD_HI, IDX_BLACK);
     draw_centered_text(66, "SCRIBE OF THE NILE", IDX_WHITE, IDX_BLACK);
 
-    rect_fill(dx + 46, 92, 164, 38, IDX_BLACK);
-    rect_outline(dx + 46, 92, 164, 38, IDX_GOLD_HI);
-    for (int i = 0; i < STORY_NAME_LEN; ++i) {
-        int x = dx + 61 + i * 23;
-        char ch[2] = { g_story_name[i], 0 };
-        if (i == g_story_name_pos) {
-            rect_fill(x - 4, 99, 19, 21, IDX_DARK_BROWN);
-            rect_outline(x - 5, 98, 21, 23, IDX_GOLD_HI);
-        }
-        draw_text(x, 104, ch, i == g_story_name_pos ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-        hline(x - 2, x + 10, 121, IDX_UI_LIGHT);
-    }
-
+    draw_story_name_field(dx);
 
     draw_text_small(dx + 34, 166, "LEFT/RIGHT SLOT", IDX_WHITE, IDX_BLACK);
     draw_text_small(dx + 34, 180, "UP/DOWN GLYPH", IDX_WHITE, IDX_BLACK);
     draw_text_small(dx + 34, 194, "A NEXT   RUN DREAM", IDX_GOLD_HI, IDX_BLACK);
     if (!g_story_name_to_intro && g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
     if (g_story_name_to_intro) apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame, 20));
+    /* Last, so the fades above (which invalidate it) win. */
+    if (!fading) ui_retain(UI_TAG_NAME_ENTRY);
 }
 
 static void draw_blue_gradient_box(int x, int y, int w, int h)
@@ -12183,6 +12980,12 @@ static const char *story_fire_lines[] = {
 static uint8_t g_fire_buf[FIRE_STRIDE * FIRE_FH];
 static uint32_t g_fire_rng = 0x2545f491u;
 
+#if (defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)) && \
+    !defined(WAIFU_MEASURE_FIRE_GENERIC)
+#define WAIFU_FIRE_BANDED 1
+#endif
+
+#if !defined(WAIFU_FM_PCFX) && !defined(WAIFU_FIRE_BANDED)
 static const uint8_t g_fire_lut[FIRE_MAXI + 1] = {
     IDX_BLACK,
     IDX_RED, IDX_RED, IDX_RED, IDX_RED, IDX_RED, IDX_RED,
@@ -12191,11 +12994,14 @@ static const uint8_t g_fire_lut[FIRE_MAXI + 1] = {
     IDX_FLAME1, IDX_FLAME1, IDX_FLAME1, IDX_FLAME1, IDX_FLAME1, IDX_FLAME1,
     IDX_GOLD_HI, IDX_GOLD_HI, IDX_GOLD_HI, IDX_GOLD_HI, IDX_GOLD_HI
 };
+#endif
 
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
 /* Same LUT with the colour pre-doubled, so a horizontal 2x pixel pair is one
    halfword and two cells pack into a single aligned framebuffer word store
-   (little-endian V810: low byte = leftmost pixel). */
+   (little-endian V810 and i386 alike: low byte = leftmost pixel).  x advances
+   in groups of eight cells, so `x >> 1` is a multiple of four and every store
+   below is naturally aligned -- which the V810 requires and the 386 wants. */
 #define FIRE_LUT2_ENTRY(c) (uint16_t)(((uint16_t)(c) << 8) | (uint16_t)(c))
 static const uint16_t g_fire_lut2[FIRE_MAXI + 1] = {
     FIRE_LUT2_ENTRY(IDX_BLACK),
@@ -12234,9 +13040,102 @@ static inline uint32_t fire_rng_next(void)
     (bits) >>= 4;                                                             \
 } while (0)
 
+#if defined(WAIFU_FIRE_BANDED)
+/* THE THREE BANDS OF A FIRE FRAME.
+
+   At 128x100 cells the propagation alone was 98 ms of a 111 ms frame on the
+   386SX model, and the 2x blit and the dirty present were paying for all
+   61440 pixels on top.  None of that is reducible per cell without changing
+   what the flames look like -- but a lot of those cells cost nothing to know
+   about:
+
+   * ABOVE THE FLAME FRONT the buffer is provably all zero.  A cell can only
+     become non-zero if one of the three cells below it is, so the front can
+     climb by at most one row per frame; everything above it stays zero, maps
+     to IDX_BLACK, and is already black on screen from the last frame that did
+     touch it.  Neither simulating nor blitting it changes a pixel.  On a
+     settled flame that is a quarter to a third of the band.
+   * BEHIND THE DIALOGUE PANEL nothing is visible.  The flames still have to
+     rise there (the front above the panel is fed from below it), so those
+     rows are simulated -- but not blitted, except for the 8-pixel margins the
+     panel leaves at each screen edge.  That is another 28 of 100 rows.
+   * THE PANEL ITSELF is opaque and only its typed line changes, so it is
+     drawn once and afterwards only the body text is refreshed.
+
+   What is left changing each frame is the flames you can actually see, which
+   is also all the dirty present then has to upload. */
+#define FIRE_PANEL_Y0 (WAIFU_UI_BOTTOM_Y(FIRE_PANEL_Y))
+#define FIRE_PANEL_Y1 (FIRE_PANEL_Y0 + FIRE_PANEL_H)
+/* Dwords (two cells each) outside the panel at each end of a hidden row. */
+#define FIRE_EDGE_DWORDS (FIRE_PANEL_X / (2 * FIRE_SCALE))
+#define FIRE_ROW_DWORDS  (FIRE_FW / 2)
+
+static int g_fire_front = FIRE_FH;   /* topmost non-zero cell row */
+static int g_fire_full_blit = 1;     /* the screen under the band is not ours yet */
+
+/* One cell, addressed off the ROW pointer rather than a separate `below`
+   pointer: FIRE_STRIDE is a compile-time constant, so the row below folds into
+   the instruction's displacement and one of the i386's six usable registers
+   stays free.  That matters more than it sounds -- the first version of this
+   loop spilled `below`, the framebuffer pointers and the row's OR accumulator
+   to the stack and reloaded them for every cell, and a stack access on this
+   machine is a main-RAM bus cycle. */
+#define FIRE_CELL_STEP_ROW(dstvar, row, i, bits) do {                        \
+    int fire_v_ = (int)(row)[(i) + FIRE_STRIDE + (int)((bits) & 1u) -        \
+                             (int)(((bits) >> 1) & 1u)] -                    \
+                  (int)(((bits) >> 2) & 1u);                                 \
+    (dstvar) = fire_v_ & ~(fire_v_ >> 31);                                   \
+    (bits) >>= 4;                                                            \
+} while (0)
+
+/* Two cells: one intensity pair, one framebuffer dword, written to both
+   output scanlines.  Nothing stays live across the pair, so eight of these
+   share an RNG word without eight values fighting over the register file. */
+#define FIRE_PAIR(row, dp, i, bits) do {                                     \
+    int fv0_, fv1_;                                                          \
+    uint32_t fpx_;                                                           \
+    FIRE_CELL_STEP_ROW(fv0_, (row), (i), (bits));                            \
+    FIRE_CELL_STEP_ROW(fv1_, (row), (i) + 1, (bits));                        \
+    (row)[(i)] = (uint8_t)fv0_;                                              \
+    (row)[(i) + 1] = (uint8_t)fv1_;                                          \
+    fpx_ = (uint32_t)g_fire_lut2[fv0_] | ((uint32_t)g_fire_lut2[fv1_] << 16);\
+    *(uint32_t *)(void *)((dp) + (i) * FIRE_SCALE) = fpx_;                   \
+    *(uint32_t *)(void *)((dp) + (i) * FIRE_SCALE + WAIFU_FM_WIDTH) = fpx_;  \
+} while (0)
+
+/* Same, intensity only: the rows the dialogue panel covers still have to burn
+   so the visible flames above them are fed, but nothing of them is seen. */
+#define FIRE_PAIR_SIM(row, i, bits) do {                                     \
+    int fv0_, fv1_;                                                          \
+    FIRE_CELL_STEP_ROW(fv0_, (row), (i), (bits));                            \
+    FIRE_CELL_STEP_ROW(fv1_, (row), (i) + 1, (bits));                        \
+    (row)[(i)] = (uint8_t)fv0_;                                              \
+    (row)[(i) + 1] = (uint8_t)fv1_;                                          \
+} while (0)
+
+static void fire_blit_row_partial(const uint8_t *row, int oy, int hide0, int hide1)
+{
+    uint32_t *d0 = (uint32_t *)(framebuffer + (int32_t)oy * WAIFU_FM_WIDTH);
+    uint32_t *d1 = (uint32_t *)(framebuffer + (int32_t)(oy + 1) * WAIFU_FM_WIDTH);
+    int w;
+    for (w = 0; w < FIRE_ROW_DWORDS; ++w) {
+        int edge = (w < FIRE_EDGE_DWORDS) || (w >= FIRE_ROW_DWORDS - FIRE_EDGE_DWORDS);
+        uint32_t px;
+        if (!edge && hide0 && hide1) continue;
+        px = (uint32_t)g_fire_lut2[row[w * 2]] |
+             ((uint32_t)g_fire_lut2[row[w * 2 + 1]] << 16);
+        if (!hide0 || edge) d0[w] = px;
+        if (!hide1 || edge) d1[w] = px;
+    }
+}
+#endif
+
 static void draw_oldschool_fire(int f)
 {
     (void)f;
+#if !defined(WAIFU_FIRE_BANDED)
+    fb_damage_rect(0, FIRE_Y0, FIRE_FW * FIRE_SCALE, FIRE_FH * FIRE_SCALE);
+#endif
     uint8_t *bottom = g_fire_buf + (FIRE_FH - 1) * FIRE_STRIDE + 1;
     int x, y;
 
@@ -12263,10 +13162,96 @@ static void draw_oldschool_fire(int f)
        write-framebuffer interleave paid a 2 KiB page change on nearly every
        access.  Each group now touches the source rows, then the LUT, then the
        framebuffer, in three contiguous runs. */
+#if defined(WAIFU_FIRE_BANDED)
+    {
+        /* Two cells per iteration, not eight: on a machine with six usable
+           general registers the eight-way unroll the V810 wants spills every
+           intermediate to the stack, and the propagation measured 98 ms a
+           frame because of it.  A pair is exactly one framebuffer dword. */
+#if defined(WAIFU_MEASURE_FIRE_NOFRONT)
+        int sim_top = 0;   /* attribution knob: simulate and blit every row */
+#else
+        int sim_top = g_fire_full_blit ? 0 : g_fire_front - 1;
+#endif
+        int new_front = FIRE_FH - 1;   /* the base row is always alight */
+        int blit_top = sim_top;
+        if (sim_top < 0) sim_top = 0;
+        for (y = FIRE_FH - 2; y >= sim_top; --y) {
+            uint8_t *row = g_fire_buf + y * FIRE_STRIDE + 1;
+            int oy = FIRE_Y0 + y * FIRE_SCALE;
+            int hide0 = (oy     >= FIRE_PANEL_Y0 && oy     < FIRE_PANEL_Y1);
+            int hide1 = (oy + 1 >= FIRE_PANEL_Y0 && oy + 1 < FIRE_PANEL_Y1);
+            if (!hide0 && !hide1) {
+                uint8_t *dp = framebuffer + (int32_t)oy * WAIFU_FM_WIDTH;
+                for (x = 0; x < FIRE_FW; x += 8) {
+                    uint32_t bits = fire_rng_next();
+                    FIRE_PAIR(row, dp, x + 0, bits);
+                    FIRE_PAIR(row, dp, x + 2, bits);
+                    FIRE_PAIR(row, dp, x + 4, bits);
+                    FIRE_PAIR(row, dp, x + 6, bits);
+                }
+            } else {
+                for (x = 0; x < FIRE_FW; x += 8) {
+                    uint32_t bits = fire_rng_next();
+                    FIRE_PAIR_SIM(row, x + 0, bits);
+                    FIRE_PAIR_SIM(row, x + 2, bits);
+                    FIRE_PAIR_SIM(row, x + 4, bits);
+                    FIRE_PAIR_SIM(row, x + 6, bits);
+                }
+                fire_blit_row_partial(row, oy, hide0, hide1);
+            }
+            row[-1] = row[0];
+            row[FIRE_FW] = row[FIRE_FW - 1];
+        }
+        /* Where the flames reach now.  Only the topmost simulated row can have
+           changed from all-zero to alight -- a cell lights from the row below
+           it, so the front climbs at most one row a frame -- so one scan of
+           that row answers it, instead of an OR accumulator that the inner
+           loop would have to keep live (and, measured, spill).  A frame that
+           redraws the whole band has no such history and scans for it. */
+        if (g_fire_full_blit) {
+            for (y = 0; y < FIRE_FH; ++y) {
+                const uint8_t *r = g_fire_buf + y * FIRE_STRIDE + 1;
+                int any = 0;
+                for (x = 0; x < FIRE_FW; ++x) any |= r[x];
+                if (any) { new_front = y; break; }
+            }
+        } else {
+            const uint8_t *r = g_fire_buf + sim_top * FIRE_STRIDE + 1;
+            int any = 0;
+            for (x = 0; x < FIRE_FW; ++x) any |= r[x];
+            new_front = any ? sim_top : g_fire_front;
+        }
+        /* Step the RNG over the rows that were not simulated -- last, which is
+           where the full loop (which runs bottom to top) would have reached
+           them.  Their cells are all zero either way, so this changes no
+           pixel; what it buys is that the random stream stays identical to the
+           version that simulates every row, which makes "the flames are
+           unchanged" something a frame-by-frame diff can confirm rather than
+           something to take on trust.  Sixteen words a row is a rounding error
+           against the 128 cells it stands in for. */
+        for (y = sim_top - 1; y >= 0; --y) {
+            for (x = 0; x < FIRE_FW; x += 8) (void)fire_rng_next();
+        }
+        g_fire_front = new_front;
+        /* Declare only what was actually written: the visible flames, and the
+           two 8-pixel margins beside the panel. */
+        {
+            int oy0 = FIRE_Y0 + blit_top * FIRE_SCALE;
+            if (oy0 < FIRE_Y0) oy0 = FIRE_Y0;
+            if (oy0 < FIRE_PANEL_Y0)
+                fb_damage_rect_forced(0, oy0, WAIFU_FM_WIDTH, FIRE_PANEL_Y0 - oy0);
+            fb_damage_rect_forced(0, FIRE_PANEL_Y1, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT - FIRE_PANEL_Y1);
+            fb_damage_rect_forced(0, FIRE_PANEL_Y0, FIRE_PANEL_X, FIRE_PANEL_H);
+            fb_damage_rect_forced(WAIFU_FM_WIDTH - FIRE_PANEL_X, FIRE_PANEL_Y0, FIRE_PANEL_X, FIRE_PANEL_H);
+        }
+        g_fire_full_blit = 0;
+    }
+#else
     for (y = FIRE_FH - 2; y >= 0; --y) {
         uint8_t *row = g_fire_buf + y * FIRE_STRIDE + 1;
         const uint8_t *below = row + FIRE_STRIDE;
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
         uint32_t *d0 = (uint32_t *)(framebuffer + (FIRE_Y0 + y * FIRE_SCALE) * WAIFU_FM_WIDTH);
         uint32_t *d1 = (uint32_t *)(framebuffer + (FIRE_Y0 + y * FIRE_SCALE + 1) * WAIFU_FM_WIDTH);
         int row_visible = (y < FIRE_HIDE_Y0 || y >= FIRE_HIDE_Y1);
@@ -12290,7 +13275,7 @@ static void draw_oldschool_fire(int f)
             row[x + 5] = (uint8_t)v5;
             row[x + 6] = (uint8_t)v6;
             row[x + 7] = (uint8_t)v7;
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
             {
                 int w = x >> 1;
                 if (row_visible || x == 0) {
@@ -12311,8 +13296,9 @@ static void draw_oldschool_fire(int f)
         row[-1] = row[0];
         row[FIRE_FW] = row[FIRE_FW - 1];
     }
+#endif /* !WAIFU_FIRE_BANDED */
 
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FIRE_BANDED)
     /* The base row is the only one the fused loop above did not emit. */
     {
         uint32_t *d0 = (uint32_t *)(framebuffer + (FIRE_Y0 + (FIRE_FH - 1) * FIRE_SCALE) * WAIFU_FM_WIDTH);
@@ -12377,7 +13363,59 @@ static void draw_story_fire_screen(int f)
     int fire_vis = past_last_line ? 0 : story_text_reveal_count(STORY_TW_FIRE, line, f, fire_len);
     char fire_shown[128];
     waifu_str_copy_n(fire_shown, (int)sizeof(fire_shown), fire_text, fire_vis);
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FIRE_BANDED)
+    {
+        /* The panel is opaque and only its typed line moves, so it is composed
+           once and then only its body rows are refreshed -- incrementally
+           while the layout merely grows.  Skipping the panel also keeps the
+           flame's hidden band genuinely hidden: see draw_oldschool_fire(). */
+        static int s_fire_line = -1, s_fire_prompt = -1, s_fire_w = -1;
+        static WaifuWrapLayout s_fire_body;
+        static int s_fire_body_valid;
+        int box_w = WAIFU_FM_WIDTH + ex;
+        int prompt = (!past_last_line && fire_vis >= fire_len && ((f / 16) & 1) == 0);
+        int panel_valid = ui_retained(UI_TAG_FIRE_PANEL) &&
+                          s_fire_line == line && s_fire_w == box_w;
+        WaifuWrapLayout cur;
+        int max_chars = wrap_max_chars(box_w - 38);
+        int from_line = 0, from_char = 0;
+
+        g_fire_full_blit = !panel_valid;
+        if (!panel_valid) fill_rows(0, FIRE_Y0, IDX_BLACK);
+        ui_hud_begin();
+        draw_oldschool_fire(f);
+        if (!panel_valid) {
+            draw_panel_rect(8, FIRE_PANEL_Y0, box_w - 16, FIRE_PANEL_H, IDX_UI_DARK);
+            draw_text_small(18, WAIFU_UI_BOTTOM_Y(183), "DEMON", IDX_RED, IDX_BLACK);
+            s_fire_body_valid = 0;
+        }
+        wrap_layout(fire_shown, max_chars, 3, &cur);
+        if (panel_valid && s_fire_body_valid && s_fire_prompt == prompt &&
+            wrap_extends(&s_fire_body, &cur)) {
+            from_line = cur.count - 1;
+            from_char = s_fire_body.len[from_line];
+        } else if (panel_valid) {
+            /* Body rows back to the panel fill.  They reach one row into the
+               panel's inner (DIM) bottom edge, because the third text line's
+               drop shadow does; put that edge back before the text, which is
+               the order draw_panel_rect and the text ran in originally. */
+            rect_fill(18, WAIFU_UI_BOTTOM_Y(198), box_w - 38,
+                      FIRE_PANEL_Y1 - 3 - WAIFU_UI_BOTTOM_Y(198) + 1, IDX_UI_DARK);
+            hline(10, box_w - 11, FIRE_PANEL_Y1 - 3, IDX_DIM);
+        }
+        wrap_draw(18, WAIFU_UI_BOTTOM_Y(198), 10, fire_shown, &cur, max_chars,
+                  from_line, from_char, IDX_WHITE, IDX_BLACK);
+        if (prompt) draw_text_small(box_w - 59, WAIFU_FM_HEIGHT - 24, "A/RUN", IDX_WHITE, IDX_BLACK);
+        ui_hud_end();
+        s_fire_body = cur;
+        s_fire_body_valid = 1;
+        s_fire_prompt = prompt;
+        s_fire_line = line;
+        s_fire_w = box_w;
+        ui_retain(UI_TAG_FIRE_PANEL);
+        return;
+    }
+#elif defined(WAIFU_FM_PCFX)
     /* The flame band covers every pixel from FIRE_Y0 to the bottom of the
        screen, so the full-frame clear only has to blacken the strip above it --
        the rest was ~51 KB of framebuffer stores immediately overwritten. */
@@ -12386,10 +13424,17 @@ static void draw_story_fire_screen(int f)
     clear_screen(IDX_BLACK);
 #endif
     ui_hud_begin();
+    /* Attribution knobs (EXTRA_CORE_DEFINES): the fire screen is a flame
+       simulation plus an opaque dialogue panel, and they have completely
+       different fixes, so the frame stamp has to be able to separate them. */
+#if !defined(WAIFU_MEASURE_FIRE_NOFLAME)
     draw_oldschool_fire(f);
+#endif
+#if !defined(WAIFU_MEASURE_FIRE_NOPANEL)
     draw_panel_rect(8, WAIFU_UI_BOTTOM_Y(172), WAIFU_FM_WIDTH + ex - 16, 57, IDX_UI_DARK);
     draw_text_small(18, WAIFU_UI_BOTTOM_Y(183), "DEMON", IDX_RED, IDX_BLACK);
     draw_wrapped_text_small_box(18, WAIFU_UI_BOTTOM_Y(198), WAIFU_FM_WIDTH + ex - 38, 3, 10, fire_shown, IDX_WHITE, IDX_BLACK);
+#endif
     /* Only offer the A/RUN prompt once the line has finished typing. */
     if (!past_last_line && fire_vis >= fire_len && ((f / 16) & 1) == 0) draw_text_small(WAIFU_FM_WIDTH + ex - 59, WAIFU_FM_HEIGHT - 24, "A/RUN", IDX_WHITE, IDX_BLACK);
     ui_hud_end();
@@ -12567,6 +13612,7 @@ static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int 
         int32_t period = direct_period;
 #endif
         uint8_t *row = framebuffer + y * WAIFU_FM_WIDTH;
+        fb_damage_span(y, 0, WAIFU_FM_WIDTH);
         int32_t px = wrap_floor_sample_phase(wl_x << Q8_SHIFT, period);
         int32_t pz = wrap_floor_sample_phase(wl_z << Q8_SHIFT, period);
         int32_t dx = ((wr_x - wl_x) << Q8_SHIFT) / (WAIFU_FM_WIDTH - 1);
@@ -13314,7 +14360,7 @@ static const char *story_battle_intro_lines(void)
    the camera snap back -- the scene must hold its last live pose instead. */
 static int g_story_plaza_freeze_frame = 0;
 
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
 /* A dialogue line changes one glyph at a time, but the naive path rebuilds
    the entire textured plaza -- sky, raycast floor, temple/pyramid solids and
    two large portraits -- for every one of them.  On PC-FX that burned V810
@@ -13352,6 +14398,7 @@ static void plaza_dialogue_cache_store(void)
 {
     memcpy(g_plaza_dialogue_cache.pixels, framebuffer,
            WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
+    fb_damage_base_mark(g_plaza_dialogue_cache.pixels);
     g_plaza_dialogue_cache.duel = g_story_duel_index;
     g_plaza_dialogue_cache.scene = story_scene_kind();
     g_plaza_dialogue_cache.valid = 1;
@@ -13370,8 +14417,7 @@ static void plaza_dialogue_cache_restore(void)
         if (src[i] != 0) dst[i] = src[i];
     }
 #else
-    copy_u8_fast(framebuffer, g_plaza_dialogue_cache.pixels,
-                 WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
+    fb_restore_composite(g_plaza_dialogue_cache.pixels);
 #endif
 }
 #endif
@@ -13386,7 +14432,7 @@ static void draw_story_plaza_scene_content(int anim_frame)
     const char *speaker = g_story_name;
     const char *subhead = opp->title;
     uint8_t speaker_color = IDX_GOLD_HI;
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
     /* EXTRA_CORE_DEFINES=-DWAIFU_PLAZA_CACHE_DISABLE re-renders the settled
        scene every frame, which is what the cache is measured against. */
 #if defined(WAIFU_PLAZA_CACHE_DISABLE)
@@ -13403,7 +14449,7 @@ static void draw_story_plaza_scene_content(int anim_frame)
 
     int ex = waifu_platform_ui_extra_w();
     waifu_fm_use_dialogue_palette();
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
     if (cached) {
 #if defined(WAIFU_FM_PCFX)
         /* Keep the exact live sky path: it re-arms PC-FX RAINBOW and clears
@@ -13427,8 +14473,11 @@ static void draw_story_plaza_scene_content(int anim_frame)
 #else
         /* Every pixel of the settled scene is in the cache -- portraits are
            software-blitted here, not a hardware layer -- so one copy is the
-           whole restore. */
-        plaza_dialogue_cache_restore();
+           whole restore.  And once the dialogue box below has been composed
+           over it, nothing outside the box's own body rows is ever damaged,
+           so there is nothing left to restore at all: the box is opaque and
+           redraws its own background.  See draw_story_dialog_box(). */
+        if (!ui_retained(UI_TAG_STORY_DIALOGUE)) plaza_dialogue_cache_restore();
         (void)serena_x; (void)opp_x; (void)serena_y; (void)opp_y;
 #endif
     } else
@@ -13455,7 +14504,7 @@ static void draw_story_plaza_scene_content(int anim_frame)
         draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
         draw_story_portrait(opp->portrait_id, opp_x, opp_y);
         ui_hud_end();
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
         if (anim_frame >= WAIFU_PLAZA_CACHE_SETTLE_FRAME)
             plaza_dialogue_cache_store();
 #endif
@@ -13475,6 +14524,10 @@ static void draw_story_plaza_scene_content(int anim_frame)
     }
 
     draw_story_dialog_box(STORY_TW_PLAZA, line, speaker, subhead, story_subst_name(dialog[line].text), speaker_color, anim_frame);
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
+    /* Last, so a fade (which invalidates every retained screen) wins. */
+    if (cached) ui_retain(UI_TAG_STORY_DIALOGUE);
+#endif
 }
 
 static void draw_story_plaza_scene(void)
@@ -14307,6 +15360,13 @@ void waifu_fm_step(const WaifuFmInput *input)
     update_music_for_current_state();
     g_prev_input = *input;
     g_i_frame += frame_logic_step();
+#if defined(WAIFU_FB_DAMAGE_VERIFY)
+    /* Stand in for the presenter: audit, snapshot, and start the next frame's
+       declarations from nothing, exactly as fmtowns_main.c does. */
+    fb_damage_verify();
+    memcpy(g_fb_shadow, framebuffer, sizeof(g_fb_shadow));
+    fb_damage_reset();
+#endif
 }
 
 

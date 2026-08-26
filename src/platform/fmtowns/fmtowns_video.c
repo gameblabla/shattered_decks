@@ -52,6 +52,16 @@ void fmtowns_video_present_8bpp(const unsigned char *framebuffer,
                                  const unsigned char *palette_rgb888,
                                  int palette_count, int fade_q8)
 {
+    fmtowns_video_present_8bpp_rows(framebuffer, palette_rgb888, palette_count,
+                                    fade_q8, 0, 0);
+}
+
+void fmtowns_video_present_8bpp_rows(const unsigned char *framebuffer,
+                                      const unsigned char *palette_rgb888,
+                                      int palette_count, int fade_q8,
+                                      const unsigned char *row_mask,
+                                      const unsigned char *force_mask)
+{
     /* The faded copy, built only on frames that are actually fading.  Static
      * rather than automatic because the payload's stack is small and 768
      * bytes of it is not free. */
@@ -81,10 +91,10 @@ void fmtowns_video_present_8bpp(const unsigned char *framebuffer,
     {
         static unsigned int tick;
         if ((tick++ % (FMTOWNS_MEASURE_BLIT_EVERY)) == 0)
-            fmt_put_image_dirty(framebuffer);
+            fmt_put_image_dirty_rows(framebuffer, row_mask, force_mask);
     }
 #else
-    fmt_put_image_dirty(framebuffer);
+    fmt_put_image_dirty_rows(framebuffer, row_mask, force_mask);
 #endif
 
     /* Palette RAM, by contrast, is read by the CRTC on every displayed pixel,
