@@ -427,9 +427,29 @@ int fmt_put_image_dirty_rows(const void *src, const unsigned char *row_mask,
         uint32_t y;
         g = 0;
         for (y = 0; y < (uint32_t)g_cur->height; ++y) {
-            uint32_t m = (uint32_t)(row_mask[y] | g_dirty_prev_rows[y]) & all;
+            uint32_t owed = 0;
+            uint32_t m;
             uint32_t f = force_mask ? ((uint32_t)force_mask[y] & all) : 0u;
             uint32_t bit;
+
+            /* A comparison made because of LAST frame's declaration can
+             * discover a change that THIS frame did not declare.  Partial
+             * composite restoration deliberately works that way: restoring
+             * the old cursor is covered by the old cursor's mask, while this
+             * frame declares only its new position.
+             *
+             * That discovered change was written to one VRAM page and
+             * prev[] records that the other page is still owed the write.
+             * Include those per-group debts in the scan gate.  Using only
+             * the two declaration masks dropped the group one frame too
+             * early, leaving alternating pages with different cursor/card/UI
+             * pixels (and the same stale-page artifact after the fire scene). */
+            for (bit = 0; bit < row_groups; ++bit) {
+                if (prev[g + bit]) owed |= 1u << bit;
+            }
+            m = ((uint32_t)row_mask[y]
+                 | (uint32_t)g_dirty_prev_rows[y]
+                 | owed) & all;
             g_dirty_prev_rows[y] = (uint8_t)(row_mask[y] & all);
             if (!m) {
                 /* Whole scanline untouched in both frames: step over it
