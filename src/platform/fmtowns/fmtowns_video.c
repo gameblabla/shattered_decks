@@ -66,14 +66,23 @@ void fmtowns_video_present_8bpp_rows(const unsigned char *framebuffer,
      * rather than automatic because the payload's stack is small and 768
      * bytes of it is not free. */
     static unsigned char faded[256 * 3];
+    static unsigned char fade_lut[256];
     int i;
     int force = (palette_count != g_last_palette_count);
 
     if (fade_q8 < 256) {
+        unsigned int scaled = 0;
         if (fade_q8 < 0) fade_q8 = 0;
+        /* A 386 multiply is microcoded, and doing 768 of them in every fade
+         * field made retained opening frames needlessly expensive.  Build the
+         * exact floor(i*fade/256) mapping with one running add per entry, then
+         * scale RGB through byte lookups. */
+        for (i = 0; i < 256; ++i) {
+            fade_lut[i] = (unsigned char)(scaled >> 8);
+            scaled += (unsigned int)fade_q8;
+        }
         for (i = 0; i < palette_count * 3; ++i) {
-            faded[i] = (unsigned char)(((unsigned int)palette_rgb888[i]
-                                        * (unsigned int)fade_q8) >> 8);
+            faded[i] = fade_lut[palette_rgb888[i]];
         }
         palette_rgb888 = faded;
     }

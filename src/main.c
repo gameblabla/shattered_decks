@@ -166,6 +166,40 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_DIRECT_SLIDE_FRAMES 8
 #define WAIFU_DIRECT_LUNGE_FRAMES 12
 #define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES 8
+#elif defined(WAIFU_FM_FMTOWNS)
+/* Match the shorter console battle reveal on the 16 MHz Marty.  The original
+   150-frame opening was designed for a host that can redraw a new software-3D
+   camera every vblank; on a 386SX it stretched the pre-duel flyover into a
+   long sequence of missed fields.  The renderer below retains a handful of
+   real camera keyframes, so this is still an animated reveal rather than a
+   cut to the board. */
+#define DUEL_OPENING_END 72
+#define WAIFU_PCFX_PLACE_FRAMES 48
+#define WAIFU_PCFX_PLACE_SETTLE_FRAMES 38
+#define WAIFU_PCFX_TURN_FRAMES 58
+#define WAIFU_PCFX_SELECT_FRAMES 70
+#define WAIFU_PCFX_RETURN_FRAMES 30
+#define WAIFU_PCFX_HANDTOP_FRAMES 18
+#define WAIFU_FMTOWNS_HANDTOP_ANCHORS 3
+#define WAIFU_RESULT_UI_CLEAR_FRAMES 50
+#define WAIFU_RESULT_MUSIC_LEAD_FRAMES 12
+#define WAIFU_RESULT_ANIM_START_FRAMES (WAIFU_RESULT_UI_CLEAR_FRAMES + WAIFU_RESULT_MUSIC_LEAD_FRAMES)
+#define WAIFU_RESULT_TOTAL_FRAMES (WAIFU_RESULT_ANIM_START_FRAMES + WAIFU_PCFX_HANDTOP_FRAMES + 130)
+#define WAIFU_PCFX_DRAW_FRAMES 84
+#define WAIFU_HAND_INTRO_FRAMES 60
+#define WAIFU_EQUIP_ANIM_FRAMES 120
+#define WAIFU_FUSION_ANIM_FRAMES 166
+#define WAIFU_BATTLE_PRELUDE_FRAMES 16
+#define WAIFU_BATTLE_SLIDE_FRAMES 18
+#define WAIFU_BATTLE_FLIP_FRAMES 32
+#define WAIFU_BATTLE_REVEAL_PAUSE_FRAMES 6
+#define WAIFU_BATTLE_RAM_FRAMES 34
+#define WAIFU_BATTLE_COUNTER_GAP_FRAMES 16
+#define WAIFU_BATTLE_BURN_DELAY_FRAMES 30
+#define WAIFU_BATTLE_FINAL_SETTLE_FRAMES 8
+#define WAIFU_DIRECT_SLIDE_FRAMES 24
+#define WAIFU_DIRECT_LUNGE_FRAMES 40
+#define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES 38
 #else
 #define DUEL_OPENING_END 150
 #define WAIFU_PCFX_PLACE_FRAMES 48
@@ -6524,8 +6558,69 @@ static void draw_card_preview_screen(int f)
     else if (local > 96) apply_black_dither_fade(Q8_ONE - out_t);
 }
 
+static void draw_interactive_base(Camera cam);
+
 static void render_duel_opening_frame(int f)
 {
+#if defined(WAIFU_FM_FMTOWNS)
+    /* The palette fade is cheap on FM TOWNS, but a fresh 3-D perspective is
+       not.  Advance through five genuine flyover cameras and retain the
+       framebuffer between them.  This preserves the visible approach while
+       replacing 56 near-identical board renders with at most five. */
+    enum { OPENING_CAMERA_ANCHORS = 5 };
+    static int last_f = -1;
+    static int last_anchor = -1;
+    static int hud_visible = 0;
+    int lf, span, anchor;
+    int32_t ft;
+
+    if (f <= 0 || f < last_f) {
+        last_anchor = -1;
+        hud_visible = 0;
+        clear_screen(IDX_BLACK);
+    }
+    last_f = f;
+    if (f < 16) {
+        /* Build the first textured perspective while the palette is black.
+           It is already resident when the reveal becomes visible at frame 16. */
+        if (f >= 12 && last_anchor < 0) {
+            render_board_cached(opening_camera(18));
+            last_anchor = 0;
+        }
+        if (f >= 12) apply_black_dither_fade(0);
+        return;
+    }
+
+    lf = f - 16;
+    span = DUEL_OPENING_END - 16;
+    anchor = (lf * (OPENING_CAMERA_ANCHORS - 1) + span / 2) / span;
+    if (anchor < 0) anchor = 0;
+    if (anchor >= OPENING_CAMERA_ANCHORS) anchor = OPENING_CAMERA_ANCHORS - 1;
+    ft = q8_ratio(anchor, OPENING_CAMERA_ANCHORS - 1);
+
+    if (anchor != last_anchor) {
+        if (anchor == OPENING_CAMERA_ANCHORS - 1) {
+            /* Land exactly on the normal hand camera.  Its battle composite
+               was prepared during loading, so the flyover ends without one
+               last live 3-D render or a perspective snap on hand entry. */
+            draw_interactive_base(player_camera());
+            hud_visible = 1;
+        } else {
+            Camera cam = opening_camera(18 + q8_to_int(q8_mul(Q8_FROM_INT(66), q8_smoothstep(ft))));
+            clear_screen(IDX_BLACK);
+            render_board_cached(cam);
+        }
+        if (f > 40 && !hud_visible) {
+            draw_hud();
+            hud_visible = 1;
+        }
+        last_anchor = anchor;
+    } else if (f > 40 && !hud_visible) {
+        draw_hud();
+        hud_visible = 1;
+    }
+    apply_black_dither_fade(q8_smoothstep(q8_ratio(lf, span)));
+#else
     clear_screen(IDX_BLACK);
     if (f < 16) return;
     int lf = f - 16;
@@ -6535,6 +6630,7 @@ static void render_duel_opening_frame(int f)
     /* Longer fade-in: the field slowly resolves out of black before the hand UI. */
     apply_black_dither_fade(q8_smoothstep(ft));
     if (f > 40) draw_hud();
+#endif
 }
 
 static void render_duel_frame(int f)
@@ -10069,17 +10165,26 @@ static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
     return pcfx_handtop_anchor_camera(anchor);
 }
 #elif defined(WAIFU_FM_FMTOWNS)
+static Camera fmtowns_handtop_anchor_camera(int anchor)
+{
+    if (anchor <= 0) return player_camera();
+    if (anchor >= WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1) return battle_top_camera();
+    return lerp_camera(player_camera(), battle_top_camera(),
+                       q8_ratio(anchor, WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1));
+}
+
+static int fmtowns_handtop_anchor_for_frame(int frame, int dur)
+{
+    if (frame <= 0) return 0;
+    if (frame >= dur) return WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1;
+    return (frame * (WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1) + dur / 2) / dur;
+}
+
 static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
 {
-    /* A unique software-3D perspective per lift frame is prohibitively slow
-       on a 386SX and cannot use either resting-view cache.  Keep the motion in
-       the hand overlay, but reveal the destination endpoint immediately: the
-       first hand->top frame builds the top cache once, every remaining frame
-       restores it, and top->hand can reuse the hand cache already on screen.
-       The animation remains a clear slide rather than an abrupt state cut. */
-    (void)frame;
-    (void)dur;
-    return to_top ? battle_top_camera() : player_camera();
+    int anchor = fmtowns_handtop_anchor_for_frame(frame, dur);
+    if (!to_top) anchor = WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1 - anchor;
+    return fmtowns_handtop_anchor_camera(anchor);
 }
 #else
 static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
@@ -10146,8 +10251,14 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
        a full re-render of the view being entered.  Each pair of cameras
        (player/enemy side) shares its slot -- those belong to different phases
        and never alternate frame to frame. */
-    if (camera_equal(cam, battle_top_camera()) ||
-        camera_equal(cam, enemy_battle_top_camera()))
+    /* The top slot doubles as a one-entry transition-keyframe cache.  Three
+       full-screen slots would exceed the Marty's RAM budget; one slot still
+       retains each quantized camera for its several animation frames, then is
+       overwritten by the next.  The hand endpoint keeps its own slot. */
+    for (int anchor = 1; anchor < WAIFU_FMTOWNS_HANDTOP_ANCHORS; ++anchor)
+        if (camera_equal(cam, fmtowns_handtop_anchor_camera(anchor)))
+            return &g_b_base_cache_top;
+    if (camera_equal(cam, enemy_battle_top_camera()))
         return &g_b_base_cache_top;
     if (camera_equal(cam, player_camera()) ||
         camera_equal(cam, enemy_camera()))
@@ -10323,15 +10434,16 @@ static void prewarm_handtop_transition_bases(void)
 #endif
 #endif
 
-static void fmtowns_prewarm_battle_top_while_loading(void)
+static void fmtowns_prewarm_battle_views_while_loading(void)
 {
 #if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
     if (g_i_loading_target == WAIFU_I_BATTLE) {
-        /* Build the expensive top perspective while the loading screen still
+        /* Build the expensive hand and top perspectives while loading still
            owns the display.  Repaint that screen after using the framebuffer
-           as cache scratch, so the one uncached 3-D frame is never exposed as
-           a hitch when the player first lifts the hand away. */
+           as cache scratch, so neither resting endpoint is first exposed as
+           a live 3-D hitch. */
         prewarm_interactive_base(battle_top_camera());
+        prewarm_interactive_base(player_camera());
         draw_asset_loading_screen();
     }
 #endif
@@ -14880,7 +14992,7 @@ void waifu_fm_step(const WaifuFmInput *input)
                 request_story_duel_assets();
                 break;
             }
-            fmtowns_prewarm_battle_top_while_loading();
+            fmtowns_prewarm_battle_views_while_loading();
             g_i_state = g_i_loading_target;
             g_i_frame = -1;
             break;
@@ -14896,7 +15008,7 @@ void waifu_fm_step(const WaifuFmInput *input)
                 request_story_duel_assets();
                 break;
             }
-            fmtowns_prewarm_battle_top_while_loading();
+            fmtowns_prewarm_battle_views_while_loading();
             g_i_state = g_i_loading_target;
             g_i_frame = -1;
         }
