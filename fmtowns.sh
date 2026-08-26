@@ -12,7 +12,7 @@
 #                                 report what each screenshot caught: game
 #                                 frame, CD-DA track, and the frame time split
 #                                 into game step vs present
-#   ./fmtowns.sh profile [hand|board|story]
+#   ./fmtowns.sh profile [hand|board|story|name]
 #                                 the same capture, but parked on ONE scene --
 #                                 this is the mode to use when comparing two
 #                                 builds; see the notes below.  `hand' (the
@@ -114,7 +114,7 @@ core_defines=""
 for arg in "$@"; do
 	case $arg in
 	--iso)                target=iso; image=build/fmtowns/output.iso ;;
-	hand|board|story)     scene=$arg ;;
+	hand|board|story|name) scene=$arg ;;
 	EXTRA_CORE_DEFINES=*) core_defines="${arg#EXTRA_CORE_DEFINES=}" ;;
 	*)            makeargs="$makeargs '$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")'" ;;
 	esac
@@ -159,6 +159,10 @@ build() {
 #          the scene that shows what caching and the dirty present are
 #          worth -- and the one the "story text is sluggish" report is
 #          about.
+#   name   the story name-entry screen: a clear, two striped bands, one
+#          panel and about sixty glyphs.  No 3-D, no asset blits, nothing
+#          animating -- so whatever it costs is what the shared 2-D path
+#          costs, and that cost is charged to every screen in the game.
 write_parked_script() {
 	# The build boots straight into the duel (WAIFU_DEBUG_AUTODUEL below),
 	# so there is nothing to press to get there -- only the one button
@@ -223,6 +227,7 @@ profile)
 	write_parked_script "$SHOTS/parked_input.txt" "$scene"
 	case $scene in
 	story) parked_define=-DWAIFU_DEBUG_AUTOSTORY ;;
+	name)  parked_define=-DWAIFU_DEBUG_AUTONAME ;;
 	*)     parked_define=-DWAIFU_DEBUG_AUTODUEL ;;
 	esac
 	build "$parked_define" \

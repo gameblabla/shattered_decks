@@ -1820,6 +1820,32 @@ static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
         : [v] "r" (v)
         : "memory");
     PROFILE_UI_FAST_FILL();
+#elif defined(WAIFU_FM_FMTOWNS)
+    /* Inline, not a memset() call.  rect_fill and hline reach this once per
+       scanline, so memset's call, its under-32-bytes branch, its alignment
+       arithmetic and all three of its `rep` set-ups are charged per row.
+       Measured: a 216x180 panel fill cost 10.6 ms against 7.8 ms for the same
+       38880 bytes written as one contiguous memset -- 15 us per row of pure
+       overhead, and panels, bands and card frames fill rows on every screen.
+       Skipping the head/tail reps when they are empty (always, after the
+       first row of a rect fill, since the stride is a multiple of 4) leaves
+       the common case as a single `rep stosl`. */
+    {
+        unsigned char *d = dst;
+        unsigned int v = (unsigned char)c;
+        unsigned int n = (unsigned int)count;
+        unsigned int head = (unsigned int)(0u - (uintptr_t)d) & 3u;
+        unsigned int words;
+        v |= v << 8;
+        v |= v << 16;
+        if (head > n) head = n;
+        n -= head;
+        words = n >> 2;
+        n &= 3u;
+        if (head)  __asm__ volatile ("rep stosb" : "+D"(d), "+c"(head) : "a"(v) : "memory");
+        if (words) __asm__ volatile ("rep stosl" : "+D"(d), "+c"(words) : "a"(v) : "memory");
+        if (n)     __asm__ volatile ("rep stosb" : "+D"(d), "+c"(n) : "a"(v) : "memory");
+    }
 #else
     memset(dst, c, (size_t)count);
 #endif
@@ -2008,7 +2034,28 @@ static void rect_fill(int x, int y, int w, int h, uint8_t c)
 static void rect_outline(int x, int y, int w, int h, uint8_t c)
 {
     hline(x, x+w-1, y, c); hline(x, x+w-1, y+h-1, c);
+#if defined(WAIFU_PLATFORM_HW3D)
     for (int yy = y; yy < y+h; ++yy) { put_px(x, yy, c); put_px(x+w-1, yy, c); }
+#else
+    /* Hoist the clip and the address arithmetic out of the two vertical
+       edges.  put_px re-tested both bounds and recomputed y*WIDTH+x for every
+       one of the 2h pixels; draw_panel_rect alone runs three of these down a
+       180-pixel-tall panel, and card frames and the HUD outline something on
+       every frame.  Same pixels: x is in range for the write exactly when it
+       passes put_px's clip, since g_ui_clip_w is never below WAIFU_FM_WIDTH. */
+    {
+        int y0 = y < 0 ? 0 : y;
+        int y1 = y + h > WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT : y + h;
+        int xl = x, xr = x + w - 1;
+        int okl = (unsigned)xl < (unsigned)WAIFU_FM_WIDTH;
+        int okr = (unsigned)xr < (unsigned)WAIFU_FM_WIDTH;
+        uint8_t *p = framebuffer + (int32_t)y0 * WAIFU_FM_WIDTH;
+        for (int yy = y0; yy < y1; ++yy, p += WAIFU_FM_WIDTH) {
+            if (okl) p[xl] = c;
+            if (okr) p[xr] = c;
+        }
+    }
+#endif
 }
 
 /* Solid t-pixel-thick line, plotted as t x t filled blocks along a Bresenham
@@ -2122,6 +2169,104 @@ static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
     }
 }
 
+/* ---- glyph blit --------------------------------------------------------
+ *
+ * Every screen in the game is charged for this, so it is worth more than it
+ * looks.  draw_text/draw_text_small used to plot each glyph through put_px:
+ * 64 bit tests per character and, for every lit texel, two calls that each
+ * re-clipped the point and recomputed y*WIDTH+x.  Measured on the FM TOWNS
+ * 386SX timing model against the flattest screen in the game -- the story
+ * name entry, no 3-D and no asset blits at all -- that was about 0.24 ms per
+ * character, half of a 60 ms frame for roughly eighty glyphs.
+ *
+ * A glyph that lands wholly inside the framebuffer (true for all but text
+ * deliberately run off an edge) does not need any of that: clip once for the
+ * whole character, then walk a row pointer.  The shadow is a separate pass
+ * over the same bitmap one pixel down-right, which draws the same pixels as
+ * the interleaved version did -- the foreground was written second there
+ * too, so it still wins every overlap.
+ *
+ * On FM TOWNS the row is then written four pixels at a time through a
+ * nibble -> byte-mask table, so an 8-pixel row costs two read-modify-write
+ * dwords per pass instead of eight tested byte stores.  That part is x86
+ * only on purpose: it writes unaligned 32-bit words, which V810 (ld.w/st.w
+ * ignore the low two address bits) and SH-2 cannot do.
+ *
+ * Not compiled on the HW3D (SDL3) build at all: there put_px feeds the 2-D
+ * capture hook, and bypassing it would drop text out of the frame.
+ */
+#if !defined(WAIFU_PLATFORM_HW3D)
+#if defined(WAIFU_FM_FMTOWNS)
+/* index = 4 bitmap bits, MSB leftmost; result = one 0xFF byte per set bit in
+   little-endian order, so mask byte 0 is the leftmost pixel. */
+static const uint32_t g_glyph_nibble_mask[16] = {
+    0x00000000u, 0xFF000000u, 0x00FF0000u, 0xFFFF0000u,
+    0x0000FF00u, 0xFF00FF00u, 0x00FFFF00u, 0xFFFFFF00u,
+    0x000000FFu, 0xFF0000FFu, 0x00FF00FFu, 0xFFFF00FFu,
+    0x0000FFFFu, 0xFF00FFFFu, 0x00FFFFFFu, 0xFFFFFFFFu
+};
+typedef uint32_t glyph_u32_una __attribute__((may_alias, aligned(1)));
+#endif
+
+/* Draw ch at (x,y) with its shadow at (x+sofs, y+sofs).  Caller guarantees
+   the whole glyph plus its shadow is inside the framebuffer. */
+static void blit_glyph_unclipped(int x, int y, unsigned char ch,
+                                 uint8_t fg, uint8_t shadow, int sofs)
+{
+    const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
+#if defined(WAIFU_FM_FMTOWNS)
+    uint32_t colors[2];
+    colors[0] = 0x01010101u * (uint32_t)shadow;
+    colors[1] = 0x01010101u * (uint32_t)fg;
+    for (int pass = 0; pass < 2; ++pass) {
+        int off = pass ? 0 : sofs;
+        uint8_t *row = framebuffer + (int32_t)(y + off) * WAIFU_FM_WIDTH + (x + off);
+        uint32_t col = colors[pass];
+        for (int yy = 0; yy < 8; ++yy, row += WAIFU_FM_WIDTH) {
+            uint8_t bits = charfont[yy];
+            uint32_t m;
+            if (!bits) continue;
+            m = g_glyph_nibble_mask[bits >> 4];
+            if (m) {
+                glyph_u32_una *d = (glyph_u32_una *)(void *)row;
+                *d = (*d & ~m) | (col & m);
+            }
+            m = g_glyph_nibble_mask[bits & 15u];
+            if (m) {
+                glyph_u32_una *d = (glyph_u32_una *)(void *)(row + 4);
+                *d = (*d & ~m) | (col & m);
+            }
+        }
+    }
+#else
+    for (int pass = 0; pass < 2; ++pass) {
+        int off = pass ? 0 : sofs;
+        uint8_t *row = framebuffer + (int32_t)(y + off) * WAIFU_FM_WIDTH + (x + off);
+        uint8_t col = pass ? fg : shadow;
+        for (int yy = 0; yy < 8; ++yy, row += WAIFU_FM_WIDTH) {
+            uint8_t bits = charfont[yy];
+            if (!bits) continue;
+            if (bits & 0x80u) row[0] = col;
+            if (bits & 0x40u) row[1] = col;
+            if (bits & 0x20u) row[2] = col;
+            if (bits & 0x10u) row[3] = col;
+            if (bits & 0x08u) row[4] = col;
+            if (bits & 0x04u) row[5] = col;
+            if (bits & 0x02u) row[6] = col;
+            if (bits & 0x01u) row[7] = col;
+        }
+    }
+#endif
+}
+
+/* The glyph and its shadow together span [x, x+7+sofs] x [y, y+7+sofs]. */
+static inline int glyph_fits_unclipped(int x, int y, int sofs)
+{
+    return x >= 0 && y >= 0 &&
+           x + 8 + sofs <= WAIFU_FM_WIDTH && y + 8 + sofs <= WAIFU_FM_HEIGHT;
+}
+#endif /* !WAIFU_PLATFORM_HW3D */
+
 static void draw_text(int x, int y, const char *s, uint8_t fg, uint8_t shadow)
 {
     int ox = x;
@@ -2130,6 +2275,12 @@ static void draw_text(int x, int y, const char *s, uint8_t fg, uint8_t shadow)
         unsigned char ch = (unsigned char)*s;
 #if defined(WAIFU_PLATFORM_HW3D) /* hi-res glyph seam only exists on the SDL3/PC build; keep consoles' per-char path a plain bitmap blit (no cross-TU call) */
         if (waifu_platform_glyph(x, y, 8, ch, fg, shadow)) { x += 8; continue; }
+#else
+        if (glyph_fits_unclipped(x, y, 1)) {
+            blit_glyph_unclipped(x, y, ch, fg, shadow, 1);
+            x += 8;
+            continue;
+        }
 #endif
         const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
         for (int yy = 0; yy < 8; ++yy) {
@@ -2155,6 +2306,12 @@ static void draw_text_small(int x, int y, const char *s, uint8_t fg, uint8_t sha
         unsigned char ch = (unsigned char)*s;
 #if defined(WAIFU_PLATFORM_HW3D)
         if (waifu_platform_glyph(x, y, 7, ch, fg, shadow)) { x += 7; continue; }
+#else
+        if (glyph_fits_unclipped(x, y, 1)) {
+            blit_glyph_unclipped(x, y, ch, fg, shadow, 1);
+            x += 7;
+            continue;
+        }
 #endif
         const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
         for (int yy = 0; yy < 8; ++yy) {
@@ -2301,7 +2458,8 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
         }
         if (n > 0 && *srow) *drow = *srow;
     }
-#else
+#elif defined(WAIFU_PLATFORM_HW3D)
+    /* Keep the per-pixel path where put_px feeds the 2-D capture hook. */
     for (int yy = 0; yy < sh; ++yy) {
         int dy = y + yy;
         if ((unsigned)dy >= WAIFU_FM_HEIGHT) continue;
@@ -2311,6 +2469,34 @@ static void draw_masked_bitmap(const uint8_t *pix, const uint8_t *mask, int sw, 
             int idx = yy * sw + xx;
             uint8_t p = pix[idx];
             if (mask ? mask[idx] : (p != 0)) put_px(dx, dy, p);
+        }
+    }
+#else
+    /* Same shape as the CD32X path above, and for the same reason: clip once
+       for the whole bitmap instead of bounds-testing and recomputing
+       y*WIDTH+x inside put_px for every one of the ~25000 texels a story
+       portrait covers.  Byte stores only, so this is safe on the V810 and
+       anywhere else with alignment rules; the halfword packing above is
+       CD32X's own. */
+    {
+        int sx0 = x < 0 ? -x : 0;
+        int sy0 = y < 0 ? -y : 0;
+        int sx1 = (x + sw > WAIFU_FM_WIDTH) ? WAIFU_FM_WIDTH - x : sw;
+        int sy1 = (y + sh > WAIFU_FM_HEIGHT) ? WAIFU_FM_HEIGHT - y : sh;
+        for (int yy = sy0; yy < sy1; ++yy) {
+            const uint8_t *srow = pix + (int32_t)yy * sw;
+            uint8_t *drow = framebuffer + (int32_t)(y + yy) * WAIFU_FM_WIDTH + x;
+            if (mask) {
+                const uint8_t *mrow = mask + (int32_t)yy * sw;
+                for (int xx = sx0; xx < sx1; ++xx) {
+                    if (mrow[xx]) drow[xx] = srow[xx];
+                }
+            } else {
+                for (int xx = sx0; xx < sx1; ++xx) {
+                    uint8_t p = srow[xx];
+                    if (p) drow[xx] = p;
+                }
+            }
         }
     }
 #endif
@@ -5239,6 +5425,18 @@ static void draw_text_scaled(int x, int y, const char *s, int scale, uint8_t fg,
     int cx = x;
     for (; s && *s; ++s, cx += 8 * scale) {
         unsigned char ch = (unsigned char)*s;
+#if !defined(WAIFU_PLATFORM_HW3D)
+        /* At scale 1 every "block" below is a 1x1 rect_fill -- a clip, a
+           hardware-2D probe and a one-byte memset call per lit texel, twice.
+           That is the most expensive way in this file to set a pixel, and the
+           title/heading text that uses this drawer pays it on every frame.
+           The unclipped glyph blit draws exactly the same pixels (the shadow
+           sits two pixels down-right here, not one). */
+        if (scale == 1 && glyph_fits_unclipped(cx, y, 2)) {
+            blit_glyph_unclipped(cx, y, ch, fg, shadow, 2);
+            continue;
+        }
+#endif
         const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
         for (int yy = 0; yy < 8; ++yy) {
             uint8_t row = charfont[yy];
@@ -8558,6 +8756,21 @@ static void enter_debug_story_plaza_after_assets(void)
 }
 #endif
 
+#ifdef WAIFU_DEBUG_AUTONAME
+static void reset_story_entry(void);
+/* Profiling shortcut: boot straight onto the story name-entry screen.  It is
+   the flattest screen in the game -- a clear, two striped bands, one panel and
+   about sixty glyphs, no 3D and no asset blits at all -- so whatever it costs
+   is what the shared 2-D path costs, charged to every other screen too.
+   ./fmtowns.sh profile name builds this.  Never ship it. */
+static void enter_debug_story_name_after_assets(void)
+{
+    reset_story_entry();
+    g_i_state = WAIFU_I_STORY_NAME;
+    g_i_frame = 0;
+}
+#endif
+
 static void add_battle_prewarm_id(int *ids, int *count, int cap, int card_id)
 {
     if (!ids || !count || *count >= cap) return;
@@ -11653,6 +11866,8 @@ void waifu_fm_init(void)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();
+#elif defined(WAIFU_DEBUG_AUTONAME)
+    enter_debug_story_name_after_assets();
 #elif defined(CD32X_DEBUG_AUTOBATTLE)
     /* Temporary CD32X iteration shortcut: boot straight to the deck editor
        through the normal card loading screen. */
@@ -11692,6 +11907,8 @@ void waifu_fm_reset_interactive(void)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();
+#elif defined(WAIFU_DEBUG_AUTONAME)
+    enter_debug_story_name_after_assets();
 #elif defined(CD32X_DEBUG_AUTOBATTLE)
     /* Throwaway CD32X iteration shortcut: skip title/menu asset requests and
        boot straight into the deck editor through the normal card-loading path.

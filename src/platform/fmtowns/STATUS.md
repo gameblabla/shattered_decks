@@ -1035,8 +1035,8 @@ alone:
    `waifu_deck_runtime_seed()` drops its entropy in any `WAIFU_DEBUG_AUTO*`
    build.
 
-`./fmtowns.sh profile [hand|board|story]` is now reproducible to the tenth
-of a millisecond across runs.
+`./fmtowns.sh profile [hand|board|story|name]` is now reproducible to the
+tenth of a millisecond across runs.
 
 ### What changed in the game, and what each was worth
 
@@ -1046,6 +1046,7 @@ Parked scenes, 386SX model, `step` and `present` in ms:
 | --- | --- | --- | --- |
 | before | 70.1 | (not separable) | 10.0 |
 | after | 47.0 | 15.9 | 14.9 |
+| after the 2-D pass below | 38.1 | 15.9 | 14.9 |
 
 1. **~190 KB of unreachable PCM stopped being linked in.**
    `src/game/sounds.c` gated its software mixer for PC-FX and CD32X but not
@@ -1083,6 +1084,76 @@ Parked scenes, 386SX model, `step` and `present` in ms:
    been running with whatever wait profile the boot ROM left.  This is
    invisible in the emulator unless the model above is on, and it is the
    single largest *hardware-only* unknown left.
+
+### The flat 2-D screens: it was `put_px`, and it is fixed
+
+The open question above -- why a screen with no 3-D in it cost 60 ms of step
+-- has an answer, and it was not the palette rebuild or the hardware-2D
+hook (that hook compiles to `return 0` everywhere but SDL3).  It was the
+per-texel cost of the shared drawing primitives.
+
+`./fmtowns.sh profile name` was added to measure it: `WAIFU_DEBUG_AUTONAME`
+boots straight onto the story name-entry screen, which is the flattest
+screen in the game -- one `clear_screen`, two striped bands, one panel and
+about eighty glyphs, no 3-D, no asset blits, nothing animating.  Whatever it
+costs is what the shared 2-D path costs, and that is charged to every other
+screen too.  Cutting the draw down piece by piece gave this, in ms of step:
+
+| drawn | before | after |
+| --- | --- | --- |
+| nothing (`step` floor) | 0.0 | 0.0 |
+| `clear_screen` only (61440-byte memset) | 12.3 | 12.3 |
+| + the striped bands | 14.2 | 14.2 |
+| + `draw_panel_rect` (216x180) | 28.5 | 25.9 |
+| + corners, both headings, the name field | 49.7 | 33.2 |
+| + the three help lines (46 glyphs) | **60.5** | **38.9** |
+
+So text alone was 32.0 ms of a 60.5 ms frame -- about 0.24 ms per
+character.  Three things were doing it, and all three are the same mistake:
+
+1. **`draw_text`/`draw_text_small` plotted every glyph pixel through
+   `put_px`.**  Two calls per lit texel, each re-clipping the point against
+   two bounds and recomputing `y*WIDTH+x`, 64 bit tests per character.  They
+   now clip once for the whole glyph when it lands wholly inside the
+   framebuffer (`blit_glyph_unclipped()`) and walk a row pointer; on FM
+   TOWNS the row goes out four pixels at a time through a nibble ->
+   byte-mask table, two read-modify-write dwords per row per pass.  That
+   part is x86-only on purpose: it writes unaligned 32-bit words, which the
+   V810 (whose `ld.w`/`st.w` ignore the low two address bits) and the SH-2
+   cannot do, so those targets take the portable byte-store version.
+2. **`draw_text_scaled` at scale 1 drew each lit texel as a 1x1
+   `rect_fill`** -- a clip, a hardware-2D probe and a one-byte `memset`
+   call, twice per pixel.  It is the most expensive way in the file to set a
+   pixel, and it drew every heading in the game.  Scale 1 now takes the
+   glyph blit above (its shadow sits two pixels down-right, not one, which
+   is why it could not simply call `draw_text`).
+3. **`rect_outline` walked its two vertical edges through `put_px`.**
+   `draw_panel_rect` runs three of those down a 180-pixel panel every frame.
+   Clipped once, written through a row pointer.
+
+`draw_masked_bitmap`'s portable path had the same shape (a bounds test and
+an address computation per texel, over the ~25000 texels of a story
+portrait) and got the same treatment -- CD32X already had a clip-once
+version of its own; the new one is byte stores only, so PC-FX shares it.
+
+None of this changes a pixel.  The host build renders the story walk-in, a
+duel, the deck editor and the card-detail screens byte-identical to the
+build before the change, and the FM TOWNS capture of the name screen differs
+only in the debug stamp that holds the timings.
+
+What the whole change is worth on the parked scenes (`step`, ms):
+
+| | before | after |
+| --- | --- | --- |
+| name entry | 60.5 | 38.9 |
+| duel, hand view | 47.0 | 38.1 |
+| story plaza | 44.8 | 31.7 |
+
+The rest of the name screen's 38.9 ms is not a mystery any more: 12.3 of it
+is `clear_screen` writing 61440 bytes, which at the model's 16-bit bus and
+two wait states is about 5 MB/s -- the fill is already at the machine's
+memory bandwidth.  Another 7.8 ms is the panel's 38880 bytes.  Making those
+cheaper means drawing fewer bytes, not drawing them faster.
 
 ### Attribution knobs
 
@@ -1141,17 +1212,11 @@ the sprites help anything.
    screen can be redrawn.  Restoring only the damaged band (the PC-FX
    placement path already does this for its own case) is the largest single
    step win left in a duel.
-3. **Flat 2-D UI screens cost as much as 3-D ones, and nobody knows why.**
-   The story name-entry screen (`draw_story_name_entry()`) has no 3-D in it
-   at all -- a `clear_screen`, some `fill_rows` bands, one panel, and about
-   sixty glyphs -- and it still costs **60.4 ms of step**.  The settled story
-   dialogue frame, fully cached, costs ~45 ms, which is more than the
-   61440-byte cache restore can account for.  Something in the shared 2-D
-   path (`put_px`'s per-pixel `waifu_hw2d_px()` hook, `draw_text*`,
-   `draw_panel_rect`'s four `rect_outline` passes, the per-frame palette
-   rebuild) is far more expensive per pixel than the fills around it.
-   Attributing that is probably worth more than any further work on the
-   renderer, because it is charged to *every* screen in the game.
+3. **Flat 2-D UI screens cost as much as 3-D ones** -- answered, see "The
+   flat 2-D screens" below.  It was `put_px`, and it is fixed; what is left
+   on those screens is the 61440-byte `clear_screen` and the dirty-present
+   scan, both of which are at the memory bandwidth the model gives a 16-bit
+   bus and neither of which gets cheaper without drawing less.
 4. **Two linear passes instead of alternating banks in the blit.**  The blit
    alternates between VRAM `0x00000` and `0x40000` every 4 bytes, which is
    a DRAM row miss per store on real page-mode VRAM and free in an emulator
