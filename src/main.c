@@ -9925,7 +9925,15 @@ static void duel_band_draw(int f, int selected)
     static int s_key_valid;
     uint32_t key = duel_band_key(f, selected);
 
-    if (fb_keep_claimed() && s_key_valid && key == s_key) return;   /* already on screen */
+    /* A claim made for THIS frame only says the composite restore may leave
+       the band alone.  It is safe to skip drawing only when LAST frame also
+       retained it.  On the first settled frame after top->hand, the full
+       hand-camera cache restore cancels the old claim and the cards are drawn
+       normally; on the following frame the partial restore puts the bare
+       composite under the band.  Treating the newly-made claim alone as
+       "already on screen" then skipped the cards and info UI permanently. */
+    if (fb_keep_claimed() && fb_keep_was_active() && s_key_valid && key == s_key)
+        return;
 
     /* The restore skipped the band on the strength of the claim, so anything
        the old cards left outside the new ones has to come back from the
