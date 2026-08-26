@@ -7026,8 +7026,7 @@ static int g_b_thunder_count = 0;
    COM battle phase (the attack is cancelled) instead of ending a turn. */
 static int g_b_trap_counter_active = 0;
 /* Field slot holding the player's face-down set Trap that the current auto-trap
-   burst is firing from (-1 if the trap was triggered straight out of hand). The
-   slot is cleared when the trap resolves. */
+   burst is firing from. The slot is cleared when the trap resolves. */
 static int g_b_trap_field_slot = -1;
 static int g_b_support_hand = -1;
 static int g_b_support_card = CARD_NONE;
@@ -10481,7 +10480,7 @@ static void prepare_battle(int attacker_owner, int attacker_slot, int defender_s
     BattleCalc bc;
     if (attacker_owner == 0 && player_first_turn_attack_locked()) return;
     if (attacker_slot < 0 || attacker_slot >= I_FIELD || defender_slot < 0 || defender_slot >= I_FIELD) return;
-    /* COM declared an attack on the player: the player's auto-trap (if held)
+    /* COM declared an attack on the player: the player's auto-trap (if set)
        fires first, destroying the attacker and cancelling the attack. */
     if (attacker_owner == 1 && try_trigger_player_trap(attacker_slot)) return;
     atk_id = attacker_owner == 0 ? g_i_player_field[attacker_slot] : g_i_com_field[attacker_slot];
@@ -10681,37 +10680,27 @@ static void start_player_thunder(int hand_slot)
     start_thunder(0, hand_slot);
 }
 
-/* Auto-fire the player's purple Trap card against a declared COM attack.
-   Returns 1 if a trap was held and triggered (the caller must then abort the
+/* Auto-fire the player's set purple Trap card against a declared COM attack.
+   Returns 1 if a field trap triggered (the caller must then abort the
    normal attack: the trap destroys the attacker before the battle step, so no
    reveal or damage happens). The trap targets only the attacking COM monster
    and reuses the thunder destruction animation. */
 static int try_trigger_player_trap(int com_attacker_slot)
 {
-    int hand_slot = -1;
     int field_slot = -1;
-    int trap_card = CARD_NONE;
     int i;
     if (com_attacker_slot < 0 || com_attacker_slot >= I_FIELD) return 0;
     if (!is_monster_card(g_i_com_field[com_attacker_slot])) return 0;
-    /* A face-down Trap set on the support row fires first; otherwise fall back
-       to a Trap still held in the hand (it auto-activates either way). */
+    /* Traps must first be set face-down on the support row. A copy still in the
+       hand is inert until the player spends a turn placing it. */
     for (i = 0; i < I_FIELD; ++i) {
         if (is_trap_support_card(g_i_player_equip_field[i])) { field_slot = i; break; }
     }
-    if (field_slot >= 0) {
-        trap_card = g_i_player_equip_field[field_slot];
-    } else {
-        for (i = 0; i < I_HAND; ++i) {
-            if (!g_i_player_used[i] && is_trap_support_card(g_i_player_hand[i])) { hand_slot = i; break; }
-        }
-        if (hand_slot < 0) return 0;
-        trap_card = g_i_player_hand[hand_slot];
-    }
+    if (field_slot < 0) return 0;
 
-    g_b_thunder_hand = hand_slot;
+    g_b_thunder_hand = -1;
     g_b_trap_field_slot = field_slot;
-    g_b_thunder_card = trap_card;
+    g_b_thunder_card = g_i_player_equip_field[field_slot];
     g_b_thunder_owner = 0; /* player reacts */
     g_b_trap_counter_active = 1;
     for (i = 0; i < I_FIELD; ++i) {
@@ -10732,7 +10721,6 @@ static int try_trigger_player_trap(int com_attacker_slot)
     (void)card_big_art_ptr(g_b_thunder_cards[0]);
     (void)support_big_art_ptr();
 #endif
-    if (hand_slot >= 0) g_i_player_used[hand_slot] = 1;
     clear_battle_snapshot();
     set_battle_phase(IB_COM_THUNDER_ANIM);
     return 1;
@@ -16399,6 +16387,10 @@ static int debug_regression_trap_counter(void)
     g_i_player_field[0] = WAIFU_CARD_ID_INSECT_SOLDIER;
     g_i_player_faceup[0] = 0;   /* face-down: must stay hidden */
     g_i_player_defense[0] = 1;
+    g_i_player_equip_field[2] = SUPPORT_TRAP_CARD_ID;
+    g_i_player_equip_target[2] = -1;
+    /* Also keep a second copy in hand: firing the set copy must neither use nor
+       consume the hand copy. */
     g_i_player_hand[0] = SUPPORT_TRAP_CARD_ID;
     g_i_player_used[0] = 0;
     lp_before = g_you_lp;
@@ -16406,24 +16398,25 @@ static int debug_regression_trap_counter(void)
     prepare_battle(1, 0, 0);
     if (g_b_phase != IB_COM_THUNDER_ANIM || !g_b_trap_counter_active ||
         g_b_thunder_count != 1 || g_b_thunder_owner != 0 ||
-        g_b_thunder_slots[0] != 0 || !g_i_player_used[0]) {
-        fprintf(stderr, "REGRESSION trap_counter FAIL: trap not armed phase=%d trap=%d count=%d owner=%d slot=%d used=%d\n",
+        g_b_thunder_slots[0] != 0 || g_b_trap_field_slot != 2 || g_i_player_used[0]) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: set trap not armed phase=%d trap=%d count=%d owner=%d target=%d field=%d hand_used=%d\n",
                 (int)g_b_phase, g_b_trap_counter_active, g_b_thunder_count, g_b_thunder_owner,
-                g_b_thunder_slots[0], g_i_player_used[0]);
+                g_b_thunder_slots[0], g_b_trap_field_slot, g_i_player_used[0]);
         return 1;
     }
     for (guard = 0; guard < 400 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) waifu_fm_step(&in);
     if (g_b_phase != IB_COM_BATTLE || is_monster_card(g_i_com_field[0]) ||
         !is_monster_card(g_i_player_field[0]) || g_i_player_faceup[0] != 0 ||
-        g_you_lp != lp_before || g_b_trap_counter_active) {
-        fprintf(stderr, "REGRESSION trap_counter FAIL: after melee phase=%d com0=%d p0=%d p0_faceup=%d lp=%d/%d guard=%d\n",
+        g_you_lp != lp_before || g_b_trap_counter_active ||
+        g_i_player_equip_field[2] != CARD_NONE || g_i_player_used[0]) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: after melee phase=%d com0=%d p0=%d p0_faceup=%d lp=%d/%d field=%d hand_used=%d guard=%d\n",
                 (int)g_b_phase, g_i_com_field[0], g_i_player_field[0], g_i_player_faceup[0],
-                g_you_lp, lp_before, guard);
+                g_you_lp, lp_before, g_i_player_equip_field[2], g_i_player_used[0], guard);
         return 1;
     }
 
-    /* --- Scenario 2: COM direct attack on the player's life points. The trap
-       still fires and destroys the attacker; the player takes no damage. */
+    /* --- Scenario 2: a Trap in hand cannot answer a COM direct attack. The
+       attack must proceed normally and the hand card must remain unused. */
     if (!debug_regression_prepare_battle_cards("trap_counter")) return 1;
     g_i_state = WAIFU_I_BATTLE;
     for (int i = 0; i < I_FIELD; ++i) { clear_monster_slot(0, i); clear_monster_slot(1, i); }
@@ -16440,19 +16433,20 @@ static int debug_regression_trap_counter(void)
     lp_before = g_you_lp;
 
     prepare_direct_attack(1, 1);
-    if (g_b_phase != IB_COM_THUNDER_ANIM || !g_b_trap_counter_active || !g_i_player_used[3]) {
-        fprintf(stderr, "REGRESSION trap_counter FAIL: direct trap not armed phase=%d trap=%d used=%d\n",
-                (int)g_b_phase, g_b_trap_counter_active, g_i_player_used[3]);
+    if (g_b_phase == IB_COM_THUNDER_ANIM || g_b_trap_counter_active || g_i_player_used[3] ||
+        g_b_battle_outcome != BATTLE_DIRECT_ATTACK || g_b_battle_atk_card != WAIFU_CARD_ID_DRAGON) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: hand trap fired phase=%d trap=%d used=%d outcome=%d attacker=%d\n",
+                (int)g_b_phase, g_b_trap_counter_active, g_i_player_used[3],
+                (int)g_b_battle_outcome, g_b_battle_atk_card);
         return 1;
     }
-    for (guard = 0; guard < 400 && g_b_phase == IB_COM_THUNDER_ANIM; ++guard) waifu_fm_step(&in);
-    if (g_b_phase != IB_COM_BATTLE || is_monster_card(g_i_com_field[1]) || g_you_lp != lp_before) {
-        fprintf(stderr, "REGRESSION trap_counter FAIL: after direct phase=%d com1=%d lp=%d/%d guard=%d\n",
-                (int)g_b_phase, g_i_com_field[1], g_you_lp, lp_before, guard);
+    if (!is_monster_card(g_i_com_field[1]) || g_you_lp != lp_before) {
+        fprintf(stderr, "REGRESSION trap_counter FAIL: hand-trap declaration mutated battle com1=%d lp=%d/%d\n",
+                g_i_com_field[1], g_you_lp, lp_before);
         return 1;
     }
 
-    /* --- Scenario 3: no trap in hand. A COM attack must resolve as a normal
+    /* --- Scenario 3: no set trap. A COM attack must resolve as a normal
        battle (the trap must not fire and the attacker survives the cut-in). */
     if (!debug_regression_prepare_battle_cards("trap_counter")) return 1;
     g_i_state = WAIFU_I_BATTLE;
