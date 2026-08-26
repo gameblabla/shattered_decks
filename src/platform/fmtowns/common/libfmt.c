@@ -1,6 +1,9 @@
 #include "libfmt.h"
 #include "palette.h"
 #include "io.h"
+#if defined(FMTOWNS_MEASURE_DIRTY_BAR)
+#include "fmt_pixel.h"
+#endif
 #include "defs.h"
 
 /*
@@ -192,6 +195,7 @@ void fmt_set_mode(fmt_mode_id_t id)
     set_crtc(m->crtc);
     set_video(m->video);
 
+    fmt_invalidate_dirty_present();
     g_frame_buffer_size = (uint32_t)m->stride * m->height;
     g_can_flip = (!m->linear && g_frame_buffer_size * 2u <= TOWNS_VRAM_SIZE);
     g_display_page = 0;
@@ -261,6 +265,166 @@ void fmt_load_palette(const uint8_t *rgb888, int count)
  * instead, which is a no-op - so those modes get a plain row-major
  * write, with no per-byte transform.
  */
+/* ------------------------------------------------------------------
+ * Dirty-region present.
+ *
+ * fmt_put_image() pushes all 61440 bytes into VRAM every frame, whether or
+ * not a single pixel moved.  Under the 386SX bus model that is the single
+ * most expensive thing this port does outside the rasterizer -- a VRAM bus
+ * cycle costs several times a main-RAM one, and a 16-bit bus splits every
+ * 32-bit store into two of them -- and most frames of this game change a
+ * fraction of the screen: a story dialogue frame types one character, a
+ * parked duel frame moves nothing at all.
+ *
+ * So: hash each aligned 32-byte group of the source, keep the hashes, and
+ * store only the groups whose hash changed.
+ *
+ * A hash rather than a shadow copy of the framebuffer, for two reasons.  It
+ * is 7.7 KB of .bss instead of 61 KB, on a machine whose whole .bss budget
+ * is the 1 MB between 0x100000 and a 2 MB Marty's ceiling; and it is
+ * *faster*, because the comparison then reads the framebuffer once instead
+ * of reading both it and a shadow.  Reads are what this costs, so halving
+ * them halves the price of finding out that nothing changed.
+ *
+ * The hash is a rotate-and-XOR fold, which is position-sensitive (a plain
+ * XOR would not notice two dwords swapping places) and cheap enough on a
+ * 386 to stay well under what the stores cost.  A collision would leave one
+ * 32-byte block stale until the next time that block changed; at 2^-32 per
+ * changed group that is a self-healing once-in-many-hours flicker, which is
+ * the right trade against 53 KB of RAM this machine does not have.
+ *
+ * PAGE FLIPPING is why g_dirty_prev exists.  The two VRAM pages alternate,
+ * so the page being written now was last written two frames ago and holds
+ * frame N-2, not N-1.  Writing only what changed since N-1 would leave it
+ * missing everything that changed between N-2 and N-1.  The union of the
+ * last two frames' changed sets is a superset of "changed since N-2", so
+ * each group is written if it changed this frame OR changed last frame.
+ */
+#define FMT_DIRTY_GROUP_DWORDS 16u                    /* 64 source bytes */
+#define FMT_DIRTY_MAX_GROUPS   (256u * 240u / 64u)     /* the 8bpp game mode */
+
+static uint32_t g_dirty_hash[FMT_DIRTY_MAX_GROUPS];
+static uint8_t  g_dirty_prev[FMT_DIRTY_MAX_GROUPS];
+/* Cleared by fmt_set_mode(): the hashes describe VRAM contents, and after a
+ * mode set (which also clears both pages) they describe nothing. */
+static int g_dirty_valid = 0;
+
+/* One group's hash.  Every operation takes its operand straight out of the
+ * framebuffer, so this is sixteen instructions for sixty-four bytes -- which
+ * is the whole point.  An earlier version loaded into a register, rotated,
+ * and XORed (three instructions per dword) and cost as much as the stores it
+ * was there to avoid: 25.8 ms to hash a screen it then decided not to write
+ * a single byte of, against 23 ms to blit the screen unconditionally.  On a
+ * machine with no cache and a 2-3x clock penalty per instruction, the
+ * instruction count of a comparison matters as much as the bus traffic.
+ *
+ * XOR and add alternate so the fold is order-sensitive: with one operation
+ * throughout, two dwords swapping places inside a group would hash the same.
+ * A missed change leaves one 64-byte block stale until that block next
+ * changes, so it self-heals; at 2^-32 per changed group that is the right
+ * trade against the 61 KB of .bss a byte-exact shadow copy would need on a
+ * machine whose entire .bss budget is one megabyte. */
+static inline uint32_t fmt_dirty_fold(const uint32_t *s)
+{
+    uint32_t h = 0x811c9dc5u;
+    h ^= s[0];  h += s[1];
+    h ^= s[2];  h += s[3];
+    h ^= s[4];  h += s[5];
+    h ^= s[6];  h += s[7];
+    h ^= s[8];  h += s[9];
+    h ^= s[10]; h += s[11];
+    h ^= s[12]; h += s[13];
+    h ^= s[14]; h += s[15];
+    return h;
+}
+
+void fmt_invalidate_dirty_present(void)
+{
+    g_dirty_valid = 0;
+}
+
+int fmt_put_image_dirty(const void *src)
+{
+    volatile uint8_t *vram = (volatile uint8_t *)g_fmt_vram0_base;
+    uint32_t total = (uint32_t)g_cur->stride * (uint32_t)g_cur->height;
+    uint32_t groups = total / (FMT_DIRTY_GROUP_DWORDS * 4u);
+    uint32_t base;
+    volatile uint32_t *lo;
+    volatile uint32_t *hi;
+    const uint32_t *s = (const uint32_t *)src;
+    uint32_t *hash = g_dirty_hash;
+    uint8_t *prev = g_dirty_prev;
+    uint32_t written = 0;
+    uint32_t g;
+
+    /* Same preconditions as fmt_put_image()'s fast path, plus a size the
+     * hash table covers.  Anything else is not the game's present. */
+    if (g_cur->linear || g_cur->bpp != 8 || groups > FMT_DIRTY_MAX_GROUPS
+        || total % (FMT_DIRTY_GROUP_DWORDS * 4u) != 0
+        || (g_fmt_draw_buffer_offset & 7u) != 0 || (g_cur->stride & 7u) != 0) {
+        fmt_put_image(src, g_cur->width, g_cur->height, g_cur->stride);
+        g_dirty_valid = 0;
+        return 1;
+    }
+
+    base = g_fmt_draw_buffer_offset >> 1;
+    lo = (volatile uint32_t *)(vram + base);
+    hi = (volatile uint32_t *)(vram + 0x40000u + base);
+
+    if (!g_dirty_valid) {
+        /* Nothing is known about either page: write everything, seed the
+         * hashes, and mark every group dirty so the *other* page gets a
+         * full write on the next present too. */
+        fmt_put_image(src, g_cur->width, g_cur->height, g_cur->stride);
+        for (g = 0; g < groups; ++g) {
+            hash[g] = fmt_dirty_fold(s + g * FMT_DIRTY_GROUP_DWORDS);
+            prev[g] = 1;
+        }
+        g_dirty_valid = 1;
+        return 1;
+    }
+
+    for (g = 0; g < groups; ++g) {
+        uint32_t h = fmt_dirty_fold(s);
+        unsigned int changed = (h != hash[g]);
+
+        if (changed) hash[g] = h;
+
+        if (changed | prev[g]) {
+            lo[0] = s[0];  hi[0] = s[1];
+            lo[1] = s[2];  hi[1] = s[3];
+            lo[2] = s[4];  hi[2] = s[5];
+            lo[3] = s[6];  hi[3] = s[7];
+            lo[4] = s[8];  hi[4] = s[9];
+            lo[5] = s[10]; hi[5] = s[11];
+            lo[6] = s[12]; hi[6] = s[13];
+            lo[7] = s[14]; hi[7] = s[15];
+            ++written;
+        }
+        prev[g] = (uint8_t)changed;
+
+        lo += 8; hi += 8; s += 16;
+    }
+
+#if defined(FMTOWNS_MEASURE_DIRTY_BAR)
+    /* Attribution knob (EXTRA_CORE_DEFINES=-DFMTOWNS_MEASURE_DIRTY_BAR):
+     * paint the number of groups this present actually wrote as a bar
+     * across row 1 of VRAM, full scale = all of them.  It is the only way
+     * to tell "the dirty present is skipping nothing" apart from "the
+     * comparison itself is what costs" -- and those two have opposite
+     * fixes. */
+    {
+        uint32_t n = (written * 256u) / (groups ? groups : 1u), x;
+        for (x = 0; x < 256u; ++x) {
+            uint32_t off = g_fmt_draw_buffer_offset + 256u + x;
+            ((volatile uint8_t *)g_fmt_vram0_base)[fmt_vram_singlepage_offset(off)] =
+                (x < n) ? 3u : 255u;
+        }
+    }
+#endif
+    return written != 0;
+}
+
 void fmt_put_image(const void *src, int width, int height, int stride)
 {
     volatile uint8_t *vram = (volatile uint8_t *)g_fmt_vram0_base;

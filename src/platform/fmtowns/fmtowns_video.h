@@ -1,6 +1,20 @@
 #ifndef FMTOWNS_VIDEO_H
 #define FMTOWNS_VIDEO_H
 
+#include <stdint.h>
+
+/* The machine's free-running PIT channel 1, defined in fmtowns_main.c.  See
+ * the comment there: this is the only clock on this port with a usable
+ * range -- the 1 us counter at I/O 0x26 wraps at 65.5 ms, which is shorter
+ * than a frame here, and once invalidated a whole session of measurements. */
+uint16_t fmtowns_clock_ticks(void);
+uint32_t fmtowns_ticks_us(uint32_t ticks);
+
+/* Microseconds the last present spent parked in fmt_wait_vsync(), and
+ * reset.  The caller's profiler subtracts it so `present` means work done
+ * rather than time waited -- see the call site in fmtowns_main.c. */
+uint32_t fmtowns_video_take_vblank_wait_us(void);
+
 /* Sets the CRTC to the game's native 256x240 8bpp mode. Call once at boot. */
 void fmtowns_video_init(void);
 

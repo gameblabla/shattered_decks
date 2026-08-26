@@ -65,10 +65,20 @@ CORE_DEFINES    = $(EXTRA_CORE_DEFINES) \
                   -DWAIFU_BG_CACHE_DISABLE \
                   -DWAIFU_FLOOR_SAMPLE_CACHE_DISABLE
 
-CBASEFLAGS      = -Wall -march=i386 -std=gnu99 -m32 -Os \
+# -fno-pic, not -fPIC: the payload is linked at a fixed 0x10000 and loaded
+# there and nowhere else (boot/mygame_shared.lds explains what the PIC build
+# was costing).  On a 386 that is worth real time -- PIC reserves %ebx for
+# the GOT, leaving the rasterizer's inner loops six general registers, and
+# turns every global access into an indirection.
+# -O2, not -Os, for the platform layer too.  libfmt.c's present path is a
+# per-frame walk over 61440 bytes; at -Os its inner loop was several
+# milliseconds slower per frame than the same source at -O2, which on this
+# machine is a measurable fraction of the frame.  There is ~280 KB of image
+# headroom (see PAYLOAD_LIMIT) so size is no longer the binding constraint.
+CBASEFLAGS      = -Wall -march=i386 -std=gnu99 -m32 -O2 \
                   -fomit-frame-pointer -fno-builtin -ffreestanding \
                   -ffunction-sections -fdata-sections \
-                  -fPIC -Wno-stack-protector -fno-stack-protector -s
+                  -fno-pic -fno-plt -Wno-stack-protector -fno-stack-protector -s
 
 CFLAGS          = -I$(OBJDIR) -I$(BOOTDIR) -I$(COMMONDIR) -I$(FMTOWNS_DIR) \
                   $(CORE_INCLUDES) $(CORE_DEFINES) $(CBASEFLAGS)
@@ -85,14 +95,19 @@ CFLAGS          = -I$(OBJDIR) -I$(BOOTDIR) -I$(COMMONDIR) -I$(FMTOWNS_DIR) \
 #
 # GAME_OPT is split out because the game core is where every frame is
 # actually spent (software 3D board, card blits), so it is the one place
-# trading size for speed would pay.  It stays at -Os anyway: -O2 grows the
-# payload by ~64 KiB, which puts it over the 512 KiB boot-sector ceiling
-# (see PAYLOAD_LIMIT below) and the machine boots to a silent black screen.
-# Anyone re-measuring this needs to free image space first -- the ceiling is
-# a boot-time layout constraint, not a compiler flag.
-GAME_OPT        ?= -Os
+# trading size for speed pays.  Measured on the parked hand view under the
+# 386SX timing model (see fmtowns.sh's FMTOWNS_TIMING): 57.6 ms of game step
+# at -Os, 46.2 ms at -O2.
+#
+# This used to have to stay at -Os, because -O2 grew the payload past the
+# 512 KiB boot-sector ceiling (PAYLOAD_LIMIT below) and the machine booted to
+# a silent black screen.  Two things paid for it since: the software mixer's
+# ~190 KB of unreachable PCM is no longer linked in (src/game/sounds.c), and
+# dropping -fPIC let --gc-sections actually work (boot/mygame_shared.lds).
+# There is around 280 KB of headroom now.
+GAME_OPT        ?= -O2
 GAME_CFLAGS     = $(CORE_INCLUDES) $(CORE_DEFINES) \
-                  $(filter-out -Os,$(CBASEFLAGS)) $(GAME_OPT)
+                  $(filter-out -O2,$(CBASEFLAGS)) $(GAME_OPT)
 
 # Header dependency tracking.  Without this, editing a header rebuilds
 # nothing: the explicit prerequisites below only list a file's own .h, and
@@ -159,7 +174,7 @@ CORE_OBJS       = $(patsubst %.c,$(COREOBJDIR)/%.o,$(CORE_SRCS_C))
 # (waifu_fmtowns_platform.c, waifu_fmtowns_runtime.c, waifu_fmtowns_cdrom.c
 # -- see those files' headers and STATUS.md).
 # ---------------------------------------------------------------------
-OBJS            = $(BOOTDIR)/head.o $(BOOTDIR)/reloc.o \
+OBJS            = $(BOOTDIR)/head.o \
                   $(FMTOWNS_DIR)/fmtowns_main.o $(FMTOWNS_DIR)/fmtowns_video.o \
                   $(FMTOWNS_DIR)/fmtowns_input.o $(FMTOWNS_DIR)/fmtowns_audio.o \
                   $(FMTOWNS_DIR)/fmtowns_sfx.o $(COMMONDIR)/sound.o \
@@ -230,12 +245,12 @@ $(OBJDIR):
 $(CDROOT): | $(OBJDIR)
 	mkdir -p $(CDROOT)
 
-# See FMTOWNSCD_EXAMPLE_Cube's Makefile for why this is a static link
-# followed by a -shared -Bsymbolic relink of the *same* objects: it
-# captures the GOT/relocation layout, then produces the PIC shared object
-# that actually gets objcopy'd to a flat binary (src/platform/fmtowns/boot/
-# reloc.c self-relocates it at boot). PAYLOAD_LOAD/PAYLOAD_LIMIT match
-# src/platform/fmtowns/boot/defs.h's TSTLOAD and the FMR VRAM window start.
+# One plain static link at a fixed address.  It used to be a static link
+# followed by a -shared -Bsymbolic relink of the same objects, so that
+# boot/reloc.c could self-relocate the result at boot; see
+# boot/mygame_shared.lds for why that is gone.  PAYLOAD_LOAD matches
+# TSTLOAD in src/platform/fmtowns/boot/defs.h and the ". = 0x10000" in the
+# linker script -- all three have to agree.
 PAYLOAD_LOAD    = 0x10000
 # The loaded image's real ceiling is the boot sector, not the VRAM window.
 # bootsect.S relocates itself (and its stack, SP = 0x3FF4) to INITSEG =
@@ -263,9 +278,8 @@ LIBGCC          := $(shell $(CC) -m32 -print-libgcc-file-name)
 
 $(PAYLOAD_ELF): $(OBJS) $(BOOTDIR)/mygame_shared.lds | $(OBJDIR)
 	$(LD) --gc-sections --warn-constructors --warn-common -static -T $(BOOTDIR)/mygame_shared.lds \
-		-o $@ $(OBJS) $(LIBGCC) && \
-	$(LD) --gc-sections -shared -Bsymbolic -T $(BOOTDIR)/mygame_shared.lds -o $@ $(OBJS) $(LIBGCC)
-	@objdump -h $@ | awk -v base="$(PAYLOAD_LOAD)" -v top="$(PAYLOAD_LIMIT)" \
+		-o $@ $(OBJS) $(LIBGCC)
+	@objdump -h $@ | awk -v base="0" -v top="$(PAYLOAD_LIMIT)" \
 		-v bsstop="$(BSS_LIMIT)" \
 		'BEGIN { base = strtonum(base); top = strtonum(top); \
 		         bsstop = strtonum(bsstop); imgend = 0 } \
@@ -307,8 +321,11 @@ $(BOOTDIR)/bootsect.s: $(BOOTDIR)/bootsect.S $(BOOTDIR)/defs.h
 $(BOOTDIR)/setup.s: $(BOOTDIR)/setup.S $(BOOTDIR)/defs.h
 	$(CC) -E -traditional -I$(BOOTDIR) $< -o $@
 
+# -DFMT_NO_RELOC: static link at a fixed address, so head.S must not call
+# boot/reloc.c's _dl_start (there are no dynamic relocations to apply, and
+# reloc.o is no longer in OBJS).
 $(BOOTDIR)/head.s: $(BOOTDIR)/head.S $(BOOTDIR)/defs.h $(BOOTDIR)/config.h $(BOOTDIR)/test.h $(FLAGS_STAMP)
-	$(CC) -E -traditional -I$(BOOTDIR) $< -o $@
+	$(CC) -E -traditional -DFMT_NO_RELOC -I$(BOOTDIR) $< -o $@
 
 $(BOOTDIR)/bootsect.o: $(BOOTDIR)/bootsect.s $(FLAGS_STAMP)
 	$(AS) -o $@ $<
@@ -318,9 +335,6 @@ $(BOOTDIR)/setup.o: $(BOOTDIR)/setup.s $(FLAGS_STAMP)
 
 $(BOOTDIR)/head.o: $(BOOTDIR)/head.s $(FLAGS_STAMP)
 	$(AS) -o $@ $<
-
-$(BOOTDIR)/reloc.o: $(BOOTDIR)/reloc.c $(FLAGS_STAMP)
-	$(CC) -c $(CFLAGS) -fno-strict-aliasing $(DEPFLAGS) -o $@ $<
 
 $(INPUT_SCRIPT_H): $(INPUT_SCRIPT) tools/fmtowns/gen_input_script.py $(FLAGS_STAMP) | $(OBJDIR)
 	python3 tools/fmtowns/gen_input_script.py $(INPUT_SCRIPT) $@

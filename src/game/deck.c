@@ -81,6 +81,16 @@ static int deck_append_limited(WaifuDeck *deck, int card, int max_copies)
 
 uint32_t waifu_deck_runtime_seed(uint32_t salt)
 {
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOSTORY)
+    /* Profiling builds only (see the enter_debug_*_after_assets() helpers in
+       src/main.c).  The real seed mixes time() and clock(), so two runs of a
+       parked-scene capture deal different hands, put different card art on
+       screen, and give the frame a different cost -- which reads as several
+       milliseconds of unexplained scatter in a before/after comparison.
+       Derive from the salt alone instead, so a parked scene is the same
+       scene every run. */
+    return deck_mix32(salt ^ 0x5f3a91c7u);
+#else
     static uint32_t runtime_seed_counter = 0u;
     uintptr_t stack_mix = (uintptr_t)&salt;
     uintptr_t code_mix = (uintptr_t)&waifu_deck_runtime_seed;
@@ -101,6 +111,7 @@ uint32_t waifu_deck_runtime_seed(uint32_t salt)
     s = deck_mix32(s);
     if (s == 0u) s = 0x6d2b79f5u;
     return s;
+#endif
 }
 
 void waifu_deck_rng_seed(WaifuDeckRng *rng, uint32_t seed)

@@ -3,11 +3,17 @@
 #include <string.h>
 #include <stdlib.h>
 
-#if !defined(WAIFU_FM_PCFX) && !defined(WAIFU_FM_CD32X)
+/* Consoles that have their own sound hardware do not use the portable
+ * software mixer below, and must not link src/generated/sound_assets.h with
+ * it: that header is ~190 KB of PCM, and on FM TOWNS the payload has a hard
+ * 512 KiB boot ceiling (see Makefile.fmtowns's PAYLOAD_LIMIT).  --gc-sections
+ * cannot drop it there either, because the payload's final link is
+ * -shared -Bsymbolic, which makes every global an export and therefore a GC
+ * root -- the bytes were physically in the shipped image.  FM TOWNS plays
+ * effects through the RF5C68 (fmtowns_sfx.c) and music from CD-DA
+ * (fmtowns_audio.c), so none of it was ever read. */
+#if !defined(WAIFU_FM_PCFX) && !defined(WAIFU_FM_CD32X) && !defined(WAIFU_FM_FMTOWNS)
 #define WAIFU_SOUND_USE_STREAMED_MUSIC 1
-#endif
-
-#if !defined(WAIFU_FM_PCFX) && !defined(WAIFU_FM_CD32X)
 #include "sound_assets.h"
 #endif
 
@@ -245,7 +251,7 @@ static void music_next_frame(WaifuMusicStream *st, int *l, int *r)
 }
 #endif /* WAIFU_SOUND_USE_STREAMED_MUSIC */
 
-#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X) || defined(WAIFU_FM_FMTOWNS)
 static int asset_count(void)
 {
     return WAIFU_SOUND_EFFECT_COUNT;

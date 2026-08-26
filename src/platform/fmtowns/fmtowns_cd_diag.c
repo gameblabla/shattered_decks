@@ -110,6 +110,12 @@ static void diag_text_at(int x, int y, const char *s, uint8_t fg, uint8_t bg)
     if (y < 0 || y + 8 > DIAG_H) {
         return;
     }
+    /* This writes VRAM directly, behind the per-frame present.  Tell it so,
+     * or fmt_put_image_dirty() keeps believing the pixels this just
+     * overwrote are still what it last wrote there, and a breadcrumb from a
+     * mid-game asset load stays burned into the bottom row of the screen
+     * until something in the game happens to change those exact bytes. */
+    fmt_invalidate_dirty_present();
     for (p = 0; p < pages; ++p) {
         uint32_t off = (uint32_t)p * fb;
         const char *c = s;

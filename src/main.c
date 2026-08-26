@@ -8540,6 +8540,24 @@ static void enter_debug_story_void_after_assets(void)
 }
 #endif
 
+#ifdef WAIFU_DEBUG_AUTOSTORY
+/* Profiling shortcut: boot straight into the first story plaza dialogue --
+   the "even the text in story mode is sluggish" scene -- instead of walking
+   title -> STORY MODE -> name entry.  Same reasoning as
+   enter_debug_autoduel_after_assets(): a scripted walk-in cannot be replayed
+   identically by two builds of different speed, because the CD reads on the
+   way in take wall time and the script counts game frames.
+   ./fmtowns.sh profile story builds this.  Never ship it. */
+static void enter_debug_story_plaza_after_assets(void)
+{
+    g_story_duel_index = 0;
+    g_story_progress = 0;
+    g_story_plaza_line = 0;
+    request_story_duel_assets();
+    enter_state_after_assets(WAIFU_I_STORY_PLAZA);
+}
+#endif
+
 static void add_battle_prewarm_id(int *ids, int *count, int cap, int card_id)
 {
     if (!ids || !count || *count >= cap) return;
@@ -8574,6 +8592,34 @@ static void enter_battle_after_assets(void)
     request_battle_cards_for_known_decks();
     enter_state_after_assets(WAIFU_I_BATTLE);
 }
+
+#ifdef WAIFU_DEBUG_AUTODUEL
+/* Profiling shortcut: boot straight into a free duel instead of walking
+   title -> menu -> BATTLE MODE.
+
+   A scripted walk-in cannot be trusted to compare two builds on this
+   platform.  The script fires on GAME frames, but the CD reads between the
+   title screen and the duel take a fixed amount of wall time, so a build
+   with a faster frame has loaded LESS by any given frame number -- and a
+   press tuned to the slow build lands before the menu exists in the fast
+   one.  That is not hypothetical: an -Os and an -O2 build of this port were
+   once compared with one sitting in the duel and the other on the menu for
+   the entire capture, and the -O2 build was written down as a regression.
+   Booting into the duel removes the navigation, and with it the trap.
+
+   Build with EXTRA_CORE_DEFINES=-DWAIFU_DEBUG_AUTODUEL; ./fmtowns.sh
+   profile does it for you.  Never ship it. */
+static void enter_debug_autoduel_after_assets(void)
+{
+    /* The deck is dealt reproducibly here: waifu_deck_runtime_seed() drops
+       its time()/clock() entropy in any WAIFU_DEBUG_AUTO* build (see
+       src/game/deck.c).  Without that, two runs deal different hands, the
+       parked scene shows different card art at a different cost, and `step`
+       scatters by several milliseconds between otherwise identical builds. */
+    init_battle_state();
+    enter_battle_after_assets();
+}
+#endif
 
 static void init_story_battle_state(void);
 
@@ -11603,7 +11649,11 @@ void waifu_fm_init(void)
     waifu_assets_read_blob(WAIFU_ASSET_BLOB_TEX_ATLAS, waifu_texture_atlas,
                            sizeof(waifu_texture_atlas));
 #endif
-#if defined(CD32X_DEBUG_AUTOBATTLE)
+#if defined(WAIFU_DEBUG_AUTODUEL)
+    enter_debug_autoduel_after_assets();
+#elif defined(WAIFU_DEBUG_AUTOSTORY)
+    enter_debug_story_plaza_after_assets();
+#elif defined(CD32X_DEBUG_AUTOBATTLE)
     /* Temporary CD32X iteration shortcut: boot straight to the deck editor
        through the normal card loading screen. */
     enter_debug_deck_editor_after_assets();
@@ -11638,7 +11688,11 @@ void waifu_fm_reset_interactive(void)
     init_battle_state();
     invalidate_board_bg_cache();
     invalidate_battle_composite_cache();
-#ifdef CD32X_DEBUG_AUTOBATTLE
+#if defined(WAIFU_DEBUG_AUTODUEL)
+    enter_debug_autoduel_after_assets();
+#elif defined(WAIFU_DEBUG_AUTOSTORY)
+    enter_debug_story_plaza_after_assets();
+#elif defined(CD32X_DEBUG_AUTOBATTLE)
     /* Throwaway CD32X iteration shortcut: skip title/menu asset requests and
        boot straight into the deck editor through the normal card-loading path.
        Build with EXTRA_CFLAGS=-DCD32X_DEBUG_AUTOBATTLE. */
@@ -12380,16 +12434,19 @@ static void render_floor_row_range(Camera cam, int32_t floor_y, int tile_a, int 
 #endif /* WAIFU_FM_PCFX */
 }
 
-#if defined(WAIFU_FM_CD32X)
+#if defined(WAIFU_FM_CD32X) || defined(WAIFU_FM_FMTOWNS)
 /* Flat single-tile floor probe.  The void sanctum's floor is
    draw_floor_tiled(..., 0, 0, ...) and atlas tile 0 is a solid black tile, so
-   its "textured" floor is a constant color: running the per-pixel raycaster on
-   both SH-2s (phase stepping + atlas sampling + halfword stores into contended
-   framebuffer DRAM) buys nothing over a solid band fill.  Detect flat tiles
-   once (the atlas is const) so the caller can hand the whole floor to the 32X
-   VDP auto-fill instead — zero SH-2 framebuffer stores, byte-identical output
-   (every sampled texel of a flat tile is the same palette index). */
-static int cd32x_floor_tile_flat(int tile, uint8_t *color)
+   its "textured" floor is a constant color: running the per-pixel raycaster
+   (phase stepping + atlas sampling + a store per pixel) buys nothing over a
+   solid band fill.  Detect flat tiles once (the atlas is const) so the caller
+   can fill the whole floor instead -- byte-identical output, since every
+   sampled texel of a flat tile is the same palette index.
+
+   Worth it anywhere the per-pixel path is expensive, which is both remaining
+   console targets: the 32X hands the fill to the VDP auto-filler, and the FM
+   TOWNS Marty gets a `rep stosl` band instead of ~30k rounds of raycast. */
+static int floor_tile_flat(int tile, uint8_t *color)
 {
     /* 0 = unprobed, 1 = flat, 2 = varied. */
     static uint8_t flat_state[WAIFU_TEX_TILE_COUNT];
@@ -12436,10 +12493,10 @@ static void draw_floor_tiled(Camera cam, int32_t floor_y, int tile_a, int tile_b
     if (ox1 > WAIFU_FM_WIDTH) ox1 = WAIFU_FM_WIDTH;
     if (ox1 < ox0) ox1 = ox0;
     if (ox0 >= ox1) { oy0 = 0; oy1 = 0; }
-#if defined(WAIFU_FM_CD32X) && !defined(CD32X_DEBUG_NO_FLAT_FLOOR)
+#if (defined(WAIFU_FM_CD32X) || defined(WAIFU_FM_FMTOWNS)) && !defined(CD32X_DEBUG_NO_FLAT_FLOOR)
     {
         uint8_t flat_c;
-        if (tile_a == tile_b && cd32x_floor_tile_flat(tile_a, &flat_c)) {
+        if (tile_a == tile_b && floor_tile_flat(tile_a, &flat_c)) {
             /* First active floor row: the same per-row visibility test
                render_floor_row_range (and story_sky_clear_rows) uses.  Active
                rows are contiguous down to the screen bottom — draw_story_sky
@@ -13040,43 +13097,53 @@ static const char *story_battle_intro_lines(void)
    the camera snap back -- the scene must hold its last live pose instead. */
 static int g_story_plaza_freeze_frame = 0;
 
-#if defined(WAIFU_FM_PCFX)
-/* A dialogue line changes one glyph at a time, but the old PC-FX path rebuilt
-   the entire textured plaza (sky, floor, temple and two large portraits) for
-   every glyph.  That both burned V810 time and made the dirty presenter upload
-   almost a full frame, so text visibly crawled on hardware.  Once the short
-   portrait entrance is done, retain the non-dialogue pixels and redraw only
-   the box.  This is deliberately PC-FX-only: other targets either have a
-   different present cost or their own parallel renderer/cache strategy. */
-#define WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME 24
-typedef struct WaifuPcfxPlazaDialogueCache {
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
+/* A dialogue line changes one glyph at a time, but the naive path rebuilds
+   the entire textured plaza -- sky, raycast floor, temple/pyramid solids and
+   two large portraits -- for every one of them.  On PC-FX that burned V810
+   time and made the dirty presenter upload almost a full frame, so text
+   visibly crawled on hardware.  On the FM TOWNS Marty it is worse still:
+   there is no second processor and no hardware portrait layer, so a
+   dialogue frame costs the same as a camera sweep.  That is what "even the
+   text in story mode is sluggish" is.
+
+   Once the short portrait entrance has settled, keep the non-dialogue pixels
+   and redraw only the box on top of them.
+
+   The two targets restore differently, which is the whole reason this is not
+   one function: PC-FX composites over a live RAINBOW background and must not
+   copy cached sky texels over the transparency key, while FM TOWNS owns
+   every pixel and can take the composite whole. */
+#define WAIFU_PLAZA_CACHE_SETTLE_FRAME 24
+typedef struct WaifuPlazaDialogueCache {
     int valid;
     int duel;
     StorySceneKind scene;
     uint8_t pixels[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
-} WaifuPcfxPlazaDialogueCache;
+} WaifuPlazaDialogueCache;
 
-static WaifuPcfxPlazaDialogueCache g_pcfx_plaza_dialogue_cache;
+static WaifuPlazaDialogueCache g_plaza_dialogue_cache;
 
-static int pcfx_plaza_dialogue_cache_matches(void)
+static int plaza_dialogue_cache_matches(void)
 {
-    return g_pcfx_plaza_dialogue_cache.valid &&
-           g_pcfx_plaza_dialogue_cache.duel == g_story_duel_index &&
-           g_pcfx_plaza_dialogue_cache.scene == story_scene_kind();
+    return g_plaza_dialogue_cache.valid &&
+           g_plaza_dialogue_cache.duel == g_story_duel_index &&
+           g_plaza_dialogue_cache.scene == story_scene_kind();
 }
 
-static void pcfx_plaza_dialogue_cache_store(void)
+static void plaza_dialogue_cache_store(void)
 {
-    memcpy(g_pcfx_plaza_dialogue_cache.pixels, framebuffer,
+    memcpy(g_plaza_dialogue_cache.pixels, framebuffer,
            WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
-    g_pcfx_plaza_dialogue_cache.duel = g_story_duel_index;
-    g_pcfx_plaza_dialogue_cache.scene = story_scene_kind();
-    g_pcfx_plaza_dialogue_cache.valid = 1;
+    g_plaza_dialogue_cache.duel = g_story_duel_index;
+    g_plaza_dialogue_cache.scene = story_scene_kind();
+    g_plaza_dialogue_cache.valid = 1;
 }
 
-static void pcfx_plaza_dialogue_cache_restore(void)
+static void plaza_dialogue_cache_restore(void)
 {
-    const uint8_t *src = g_pcfx_plaza_dialogue_cache.pixels;
+#if defined(WAIFU_FM_PCFX)
+    const uint8_t *src = g_plaza_dialogue_cache.pixels;
     uint8_t *dst = framebuffer;
     int i;
     /* Index 0 is the RAINBOW key.  Do not copy cached sky texels over the
@@ -13085,6 +13152,10 @@ static void pcfx_plaza_dialogue_cache_restore(void)
     for (i = 0; i < WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT; ++i) {
         if (src[i] != 0) dst[i] = src[i];
     }
+#else
+    copy_u8_fast(framebuffer, g_plaza_dialogue_cache.pixels,
+                 WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
+#endif
 }
 #endif
 
@@ -13098,9 +13169,15 @@ static void draw_story_plaza_scene_content(int anim_frame)
     const char *speaker = g_story_name;
     const char *subhead = opp->title;
     uint8_t speaker_color = IDX_GOLD_HI;
-#if defined(WAIFU_FM_PCFX)
-    int cached = anim_frame >= WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME &&
-                 pcfx_plaza_dialogue_cache_matches();
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
+    /* EXTRA_CORE_DEFINES=-DWAIFU_PLAZA_CACHE_DISABLE re-renders the settled
+       scene every frame, which is what the cache is measured against. */
+#if defined(WAIFU_PLAZA_CACHE_DISABLE)
+    int cached = 0;
+#else
+    int cached = anim_frame >= WAIFU_PLAZA_CACHE_SETTLE_FRAME &&
+                 plaza_dialogue_cache_matches();
+#endif
 #endif
 
     if (line < 0) line = 0;
@@ -13109,26 +13186,34 @@ static void draw_story_plaza_scene_content(int anim_frame)
 
     int ex = waifu_platform_ui_extra_w();
     waifu_fm_use_dialogue_palette();
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
     if (cached) {
+#if defined(WAIFU_FM_PCFX)
         /* Keep the exact live sky path: it re-arms PC-FX RAINBOW and clears
            the framebuffer to its transparency key before cached foreground
            pixels are composited back on top. */
-        draw_story_sky(WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME);
-        pcfx_plaza_dialogue_cache_restore();
+        draw_story_sky(WAIFU_PLAZA_CACHE_SETTLE_FRAME);
+        plaza_dialogue_cache_restore();
         /* The cached KING foreground deliberately excludes hardware portraits.
            They must still be submitted every frame: story_layers_begin() resets
            the VDC request list before drawing, and omitting these requests made
            the next vblank publish an empty SAT as soon as the cache settled. */
         serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2,
-                                 WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME);
+                                 WAIFU_PLAZA_CACHE_SETTLE_FRAME);
         opp_x = story_slide_x(WAIFU_FM_WIDTH + ex + 14,
                               WAIFU_FM_WIDTH + ex - WAIFU_STORY_PORTRAIT_W - 2,
-                              WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME);
+                              WAIFU_PLAZA_CACHE_SETTLE_FRAME);
         serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20;
         opp_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 14;
         draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
         draw_story_portrait(opp->portrait_id, opp_x, opp_y);
+#else
+        /* Every pixel of the settled scene is in the cache -- portraits are
+           software-blitted here, not a hardware layer -- so one copy is the
+           whole restore. */
+        plaza_dialogue_cache_restore();
+        (void)serena_x; (void)opp_x; (void)serena_y; (void)opp_y;
+#endif
     } else
 #endif
     {
@@ -13153,9 +13238,9 @@ static void draw_story_plaza_scene_content(int anim_frame)
         draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
         draw_story_portrait(opp->portrait_id, opp_x, opp_y);
         ui_hud_end();
-#if defined(WAIFU_FM_PCFX)
-        if (anim_frame >= WAIFU_PCFX_PLAZA_CACHE_SETTLE_FRAME)
-            pcfx_plaza_dialogue_cache_store();
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
+        if (anim_frame >= WAIFU_PLAZA_CACHE_SETTLE_FRAME)
+            plaza_dialogue_cache_store();
 #endif
     }
     if (dialog[line].speaker == STORY_SPK_OPPONENT) {

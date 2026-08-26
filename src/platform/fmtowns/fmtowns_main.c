@@ -440,7 +440,7 @@ static void fmtowns_clock_init(void)
 /* The raw down-counter.  Elapsed ticks between two reads are
  * (uint16_t)(earlier - later) -- it counts down, and the 16-bit subtraction
  * absorbs the wrap for free. */
-static uint16_t fmtowns_clock_ticks(void)
+uint16_t fmtowns_clock_ticks(void)
 {
     unsigned int lo, hi;
     outb(0x40, FMTOWNS_PIT_CONTROL);  /* latch channel 1 */
@@ -452,7 +452,7 @@ static uint16_t fmtowns_clock_ticks(void)
 /* Ticks -> microseconds: one tick is 3.255208 us, and 13333/4096 is that to
  * within 0.003%.  Kept as a shift so there is no 32-bit divide; the product
  * stays inside 32 bits for any interval under a second. */
-static uint32_t fmtowns_ticks_us(uint32_t ticks)
+uint32_t fmtowns_ticks_us(uint32_t ticks)
 {
     return (ticks * 13333u) >> 12;
 }
@@ -777,7 +777,7 @@ static void waifu_fm_game_loop(void)
     for (;;) {
         WaifuFmInput in;
 #ifdef FMTOWNS_DEBUG_INPUT
-        uint32_t t_step, t_present, t_other;
+        uint32_t t_step, t_present, t_other, t_vblank_wait = 0;
 #endif
 
         fmtowns_read_input(&in);
@@ -806,6 +806,18 @@ static void waifu_fm_game_loop(void)
                                    waifu_fm_video_fade_q8());
 #ifdef FMTOWNS_DEBUG_INPUT
         t_present = fmtowns_prof_split();
+        /* The vertical-blank wait inside the present is not present *work*:
+         * it is whatever is left of the field after the frame finished, so
+         * leaving it in makes a faster blit look like a slower one and two
+         * builds impossible to compare.  Charge it to `other` (which the
+         * stamp folds into the whole-frame total) and let `present` mean the
+         * VRAM blit plus the palette upload plus the flip. */
+        {
+            uint32_t wait_us = fmtowns_video_take_vblank_wait_us();
+            if (wait_us > t_present) wait_us = t_present;
+            t_present -= wait_us;
+            t_vblank_wait = wait_us;
+        }
 #endif
 
         /* Music and SFX after the present, so neither sits between the
@@ -821,7 +833,7 @@ static void waifu_fm_game_loop(void)
         frame += steps;
 #ifdef FMTOWNS_DEBUG_INPUT
         t_other = fmtowns_prof_split();
-        fmtowns_prof_frame_end(t_step, t_present, t_other);
+        fmtowns_prof_frame_end(t_step, t_present, t_other + t_vblank_wait);
 #endif
     }
 }

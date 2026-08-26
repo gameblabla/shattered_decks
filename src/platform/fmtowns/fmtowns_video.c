@@ -38,6 +38,16 @@ static int palette_entry_differs(const unsigned char *pal, int i)
         || g_last_palette[i * 3 + 2] != pal[i * 3 + 2];
 }
 
+/* See fmtowns_video_take_vblank_wait_us(). */
+static uint32_t g_vblank_wait_us;
+
+uint32_t fmtowns_video_take_vblank_wait_us(void)
+{
+    uint32_t us = g_vblank_wait_us;
+    g_vblank_wait_us = 0;
+    return us;
+}
+
 void fmtowns_video_present_8bpp(const unsigned char *framebuffer,
                                  const unsigned char *palette_rgb888,
                                  int palette_count, int fade_q8)
@@ -59,8 +69,23 @@ void fmtowns_video_present_8bpp(const unsigned char *framebuffer,
     }
 
     /* VRAM first: the draw page is not being scanned out, so the blit has no
-     * timing constraint and can have the whole active-display period. */
-    fmt_put_image(framebuffer, 256, 240, 256);
+     * timing constraint and can have the whole active-display period.
+     * Only the 32-byte groups that changed are written -- see
+     * fmt_put_image_dirty() in libfmt.c. */
+#if defined(FMTOWNS_MEASURE_BLIT_EVERY)
+    /* Attribution knob: run the VRAM blit only every Nth frame, so the
+     * `present` figure in the frame stamp becomes
+     * (palette + flip) + (blit / N) and the blit's own share can be solved
+     * for.  Skipping it outright is no use -- the screen then never updates
+     * and the stamp cannot be read back. */
+    {
+        static unsigned int tick;
+        if ((tick++ % (FMTOWNS_MEASURE_BLIT_EVERY)) == 0)
+            fmt_put_image_dirty(framebuffer);
+    }
+#else
+    fmt_put_image_dirty(framebuffer);
+#endif
 
     /* Palette RAM, by contrast, is read by the CRTC on every displayed pixel,
      * and the TOWNS palette ports latch immediately.  Writing them while the
@@ -70,7 +95,12 @@ void fmtowns_video_present_8bpp(const unsigned char *framebuffer,
      * entering the game).  So park on a fresh vertical blank BEFORE touching
      * a single palette entry, and do the page flip in that same window rather
      * than waiting for a second one. */
-    fmt_wait_vsync();
+    {
+        uint16_t before = fmtowns_clock_ticks();
+        fmt_wait_vsync();
+        g_vblank_wait_us +=
+            fmtowns_ticks_us((uint16_t)(before - fmtowns_clock_ticks()));
+    }
 
     i = 0;
     while (i < palette_count) {

@@ -958,3 +958,210 @@ binary).
   pass.
 - Real hardware, as above: nothing here has run on a physical machine of
   either class.
+
+## Marty speed pass (2026-08-26)
+
+A phone capture of a real machine (`IMG_6472.mov`) showed the game running
+in single digits in a duel and the *story text* crawling, while Tsugaru
+reported a locked 60 fps.  This section is why the two disagreed, what was
+done about it, and what is left.
+
+### The emulator was never a speed reference, and now can be
+
+Tsugaru's CPU core is an i486 with a single global MHz number applied to
+486 instruction clock counts.  There is no cache model, no DRAM wait state
+and no VRAM penalty: `mainRAMWait`/`VRAMWait` (I/O `5E0H`/`5E2H`/`5E6H`)
+existed only to flip `state.currentFreq` between two values, and both
+default to zero.  So **every profile this port has ever taken -- including
+all the millisecond figures further up this file -- describes a 25 MHz 486
+with perfect memory**, not a 16 MHz 386SX with no cache behind a 16-bit
+bus.  That is the whole 3-6x gap.
+
+`FMTOWNSCD_EXAMPLE_Cube/TOWNSEMU` now models it, off four new switches:
+
+| switch | what it does |
+| --- | --- |
+| `-CPUCLOCKSCALE percent` | scales the core's per-instruction clock count (386 microcode + no instruction cache) |
+| `-BUSWAIT clocks` | clocks charged per data bus cycle to main RAM |
+| `-VRAMBUSWAIT clocks` | ditto for VRAM, sprite RAM and the FMR window |
+| `-DATABUSWIDTH 16\|32` | a dword access costs two bus cycles on 16 |
+
+`Memory` (`src/ramrom/ramrom.h`) keeps a per-4KB-slot wait table and an
+accumulator that `FMTownsCommon::RunOneInstruction()` charges alongside the
+core's own clocks.  Two details matter if you touch it:
+
+* Instruction fetch deliberately does **not** go through the counter -- it
+  uses the const memory window, and prefetch overlaps execution on real
+  hardware.  The cost of running 386 code is `-CPUCLOCKSCALE`'s job.
+* `TownsMainRAMAccess::GetMemoryWindow()` refuses to hand out a direct
+  pointer while the model is on (`refuseMemoryWindow`).  Without that, the
+  CPU's operand-pointer fast path bypasses `Memory` entirely and a main-RAM
+  wait state would only ever be charged to string instructions.
+
+The game's own `5E0H`/`5E2H`/`5E6H` writes add to the CLI floor, so a
+program's wait-state setup is finally visible in a profile.
+
+`fmtowns.sh` passes `FMTOWNS_TIMING`, defaulting to
+`-FREQ 16 -CPUCLOCKSCALE 220 -BUSWAIT 2 -VRAMBUSWAIT 6 -DATABUSWIDTH 16`.
+**Those four numbers are a calibration, not a measurement.**  Nobody has
+profiled the real machine.  They were chosen because they put a parked duel
+frame in the range the phone capture shows, and they should be re-fitted the
+moment someone photographs a real Marty's frame stamp
+(`tools/fmtowns/read_frame_stamp.py` reads a photo as happily as a
+screenshot).  Compare builds, not absolute numbers.  `FMTOWNS_TIMING=`
+(empty) restores the old zero-wait behaviour exactly.
+
+### Measurement fixes that had to come first
+
+Three separate things were making before/after comparisons lie, and each
+one produced at least one confidently wrong conclusion in this session
+alone:
+
+1. **`present` included the vsync wait.**  A faster blit just waited longer
+   and measured the same.  `fmtowns_video_take_vblank_wait_us()` now hands
+   the wait back to `fmtowns_main.c`, which charges it to `other`, so
+   `present` means work.
+2. **The walk-in script desynchronised the two builds.**  A script step
+   fires on a *game* frame, but the CD reads between the title screen and
+   the duel take wall time -- so a faster build has loaded *less* at any
+   given frame number.  At the old `400 A` the `-Os` build sat in the duel
+   and the `-O2` build sat on the menu for the entire capture, and `-O2`
+   was written down as an 8% regression when it is a 20% win.
+   `./fmtowns.sh profile` now builds `-DWAIFU_DEBUG_AUTODUEL` (or
+   `-DWAIFU_DEBUG_AUTOSTORY`) and boots straight into the scene, pressing
+   nothing.
+3. **The deck was dealt from `time()`/`clock()`.**  Different cards on
+   screen cost different amounts to blit, worth ~5 ms of scatter.
+   `waifu_deck_runtime_seed()` drops its entropy in any `WAIFU_DEBUG_AUTO*`
+   build.
+
+`./fmtowns.sh profile [hand|board|story]` is now reproducible to the tenth
+of a millisecond across runs.
+
+### What changed in the game, and what each was worth
+
+Parked scenes, 386SX model, `step` and `present` in ms:
+
+| | hand: step | hand: present | fps |
+| --- | --- | --- | --- |
+| before | 70.1 | (not separable) | 10.0 |
+| after | 47.0 | 15.9 | 14.9 |
+
+1. **~190 KB of unreachable PCM stopped being linked in.**
+   `src/game/sounds.c` gated its software mixer for PC-FX and CD32X but not
+   FM TOWNS, and `--gc-sections` could not drop it because the payload's
+   final link was `-shared -Bsymbolic`, which makes every global an export
+   and therefore a GC root.  The bytes were physically in the shipped image.
+2. **`-fPIC` and the self-relocation are gone.**  The payload is loaded at
+   `0x10000` and nowhere else, so it is now a plain static link at that
+   address (`boot/mygame_shared.lds`, `-DFMT_NO_RELOC`, `reloc.o` dropped).
+   PIC was costing `%ebx` -- on a machine with eight registers, in a
+   rasterizer written against all of them -- plus a GOT indirection per
+   global.  Worth 70.1 -> 59.0 ms of step on its own, and ~58 KB of image.
+3. **`-O2` everywhere** (game core *and* platform layer).  59.0 -> 47.4 ms
+   of step; libfmt's present loop alone was ~4 ms/frame slower at `-Os`.
+   This is what 1 and 2 bought: the image went from 41 KB of headroom under
+   the 512 KiB boot ceiling to ~280 KB.
+4. **Dirty-region present** (`fmt_put_image_dirty()`, libfmt.c).  Hash each
+   64-byte group of the framebuffer, store only the groups whose hash
+   changed, and dirty the union of the last *two* frames' changes because
+   the page being written is two frames old.  23.0 -> 13.2 ms for the blit.
+   The first version of this cost *more* than the blit it replaced; see the
+   comment on `fmt_dirty_fold()` for why, it is the most transferable thing
+   learned here.
+5. **The story plaza dialogue cache**, previously PC-FX-only, now covers FM
+   TOWNS (`plaza_dialogue_cache_*` in `src/main.c`).  Worth ~4 ms of step,
+   less than expected, and it is the dirty present that it really unlocks:
+   with the scene settled the story screen writes almost no VRAM at all.
+   Story plaza went 12.1 -> 14.9 fps.
+6. **Flat floor tiles fill instead of raycast** on FM TOWNS as well as
+   CD32X (`floor_tile_flat()`), for the void sanctum's solid-colour floor.
+7. **Wait-state registers are written at boot** (`common/machine.c`):
+   `5E0H`, `5E2H` and `5E6H` as well as the `5ECH` FAST/SLOW switch that
+   was already there.  `5ECH` is documented as 3rd-generation-and-later, so
+   on a 2nd-generation 386SX it is very likely a no-op and the machine has
+   been running with whatever wait profile the boot ROM left.  This is
+   invisible in the emulator unless the model above is on, and it is the
+   single largest *hardware-only* unknown left.
+
+### Attribution knobs
+
+All via `EXTRA_CORE_DEFINES`:
+
+| define | what it isolates |
+| --- | --- |
+| `WAIFU_BATTLE_BASE_CACHE_DISABLE` | the live board render (hand view: 47 ms cached, 167 ms live) |
+| `WAIFU_PLAZA_CACHE_DISABLE` | the live story plaza render |
+| `FMTOWNS_MEASURE_BLIT_EVERY=n` | run the VRAM blit 1 frame in n, so `present = (palette+flip) + blit/n` and the blit's share can be solved for.  Skipping it outright is useless -- the stamp then never updates |
+| `FMTOWNS_MEASURE_DIRTY_BAR` | paint the number of groups the dirty present actually wrote as a bar across row 1.  This is what tells "it is skipping nothing" apart from "the comparison itself is the cost", and those have opposite fixes |
+| `CFX_MEASURE_SKIP_SPANS`, `WAIFU_MEASURE_SKIP_BOARD`, ... | as before |
+
+### The second layer: what the hardware actually allows
+
+The obvious next move -- put the cards, the HUD text and the battle
+animation on VRAM layer 1, as sprites, and leave the 3D board on layer 0 so
+it only redraws when the camera moves -- **cannot be done in this game's
+colour depth**, and the reason is in the CRTC, not the software.
+
+From `TOWNSEMU/src/towns/crtc/crtc.cpp`:
+
+* `TownsCRTC::GetPageBitsPerPixel()` returns 8 **only** when
+  `LowResCrtcIsInSinglePageMode()` is true.  In two-page mode the only
+  encodings are 4bpp (16 colours) and 16bpp (RGB555).  There is no 256-colour
+  two-layer mode on this machine.
+* `TownsCRTC::UpdateSpriteHardware()` refuses sprites unless the machine is
+  **not** in single-page mode and page 1 is 16bpp with a 512-byte line.
+
+So the choice is:
+
+* keep 256 colours -> single page -> exactly one layer, no sprites (today);
+* two layers -> layer 0 becomes 16 colours (a drastic art regression, and
+  every asset in the game is 8bpp indexed) or 16bpp (which doubles the
+  background's VRAM traffic on the bus that is already the bottleneck, and
+  breaks the palette-scaling fade in `fmtowns_video_present_8bpp()` --
+  fades would go back to costing 61440 dithered pixels a frame).
+
+`common/fmt_layers.c` and `common/fmt_sprite.c` are already in the tree for
+whoever wants to try the 16bpp variant; `fmt_set_background_and_sprites()`
+sets up exactly that configuration.  It is a port-scale rewrite, not a
+change, and it should not be started without first measuring a 16bpp
+background blit under the timing model above -- if that alone costs more
+than the ~13 ms the dirty present now spends, the whole idea is dead before
+the sprites help anything.
+
+### Left to do, in the order they look worth doing
+
+1. **Get one real number off the machine.**  `FMTOWNS_DEBUG_INPUT=1` stamps
+   frame/step/present into the top-left pixels; photograph the screen and
+   run `tools/fmtowns/read_frame_stamp.py` on the photo.  Then re-fit
+   `FMTOWNS_TIMING` and everything below becomes measurable instead of
+   modelled.
+2. **The composite restore is a whole-screen copy.**  `draw_interactive_base()`
+   restores 61440 bytes so that overlays covering maybe a third of the
+   screen can be redrawn.  Restoring only the damaged band (the PC-FX
+   placement path already does this for its own case) is the largest single
+   step win left in a duel.
+3. **Flat 2-D UI screens cost as much as 3-D ones, and nobody knows why.**
+   The story name-entry screen (`draw_story_name_entry()`) has no 3-D in it
+   at all -- a `clear_screen`, some `fill_rows` bands, one panel, and about
+   sixty glyphs -- and it still costs **60.4 ms of step**.  The settled story
+   dialogue frame, fully cached, costs ~45 ms, which is more than the
+   61440-byte cache restore can account for.  Something in the shared 2-D
+   path (`put_px`'s per-pixel `waifu_hw2d_px()` hook, `draw_text*`,
+   `draw_panel_rect`'s four `rect_outline` passes, the per-frame palette
+   rebuild) is far more expensive per pixel than the fills around it.
+   Attributing that is probably worth more than any further work on the
+   renderer, because it is charged to *every* screen in the game.
+4. **Two linear passes instead of alternating banks in the blit.**  The blit
+   alternates between VRAM `0x00000` and `0x40000` every 4 bytes, which is
+   a DRAM row miss per store on real page-mode VRAM and free in an emulator
+   that models no such thing.  Two passes would cost one extra read of the
+   source per group to make every store sequential.  Deliberately *not*
+   done: it cannot be measured here, and the timing model does not model
+   DRAM pages.  Adding a row-miss penalty to `Memory`'s wait table would
+   make it measurable, and is probably the right next emulator change.
+5. **Moving cameras** (the hand<->top lift, card flights, attack sweeps)
+   still render live, at the 167 ms/frame the cache-disabled measurement
+   shows.  PC-FX quantises the lift onto cached anchors
+   (`WAIFU_PCFX_HANDTOP_ANCHORS`); the same trick fits here -- ~59 KB of
+   `.bss` spare, one 61440-byte slot.

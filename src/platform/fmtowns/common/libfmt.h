@@ -104,6 +104,23 @@ void fmt_load_palette_range(const uint8_t *rgb888, int first, int count);
  * after fmt_set_mode(). */
 void fmt_put_image(const void *src, int width, int height, int stride);
 
+/* Full-screen present for the current mode that writes only the 32-byte
+ * groups whose contents changed -- the per-frame present path, and far
+ * cheaper than fmt_put_image() on the many frames where most of the screen
+ * stands still.  `src` must be a full-size, full-stride image for the mode.
+ * Returns non-zero if anything was actually written to VRAM.
+ *
+ * See the long comment above the definition in libfmt.c for how the
+ * change detection works and why page flipping makes it track two frames
+ * rather than one.  Falls back to fmt_put_image() for any mode it cannot
+ * handle. */
+int fmt_put_image_dirty(const void *src);
+
+/* Forget what VRAM is believed to contain, so the next fmt_put_image_dirty()
+ * writes the whole screen.  fmt_set_mode() does this for you; call it after
+ * anything else that writes VRAM behind libfmt's back. */
+void fmt_invalidate_dirty_present(void);
+
 /* Low-resolution hardware page flipping.  fmt_set_mode() starts with page 0
  * displayed and page 1 selected for drawing when two complete buffers fit in
  * 512KB VRAM.  The 31kHz 15bpp modes are too large and return false here.

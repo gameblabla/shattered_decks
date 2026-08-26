@@ -12,7 +12,7 @@
 #                                 report what each screenshot caught: game
 #                                 frame, CD-DA track, and the frame time split
 #                                 into game step vs present
-#   ./fmtowns.sh profile [hand|board]
+#   ./fmtowns.sh profile [hand|board|story]
 #                                 the same capture, but parked on ONE scene --
 #                                 this is the mode to use when comparing two
 #                                 builds; see the notes below.  `hand' (the
@@ -62,6 +62,25 @@ FMTOWNS_TOWNSTYPE=${FMTOWNS_TOWNSTYPE:-MARTY}
 FMTOWNS_ROM=${FMTOWNS_ROM:-$MARTY_ROM}
 FMTOWNS_MEMSIZE=${FMTOWNS_MEMSIZE:-2}
 
+# Marty timing model.  Tsugaru's CPU core is a 486 with zero-wait memory
+# whatever -TOWNSTYPE says, so out of the box it reports this game at 60 fps
+# on a machine that really runs it in single digits -- every profile taken
+# before 2026-08-26 describes a 25 MHz 386 with perfect memory.  These
+# switches (added to TOWNSEMU in the same change as this line) scale the
+# core's clock count to 386 microcode and charge wait states per data bus
+# cycle, VRAM more than main RAM, so that moving bytes out of VRAM shows up
+# as the win it is on hardware.
+#
+# THE NUMBERS ARE A CALIBRATION, NOT A MEASUREMENT.  Nobody has profiled the
+# real machine yet.  They are set so a parked duel frame lands in the range
+# the phone capture of a real Marty shows, and they should be re-fitted the
+# moment someone reads a frame stamp off real hardware
+# (tools/fmtowns/read_frame_stamp.py on a photo of the screen).  Until then
+# treat absolute figures as indicative and compare builds, not runs.
+#
+# FMTOWNS_TIMING= (empty) restores the old zero-wait behaviour.
+FMTOWNS_TIMING=${FMTOWNS_TIMING--FREQ 16 -CPUCLOCKSCALE 220 -BUSWAIT 2 -VRAMBUSWAIT 6 -DATABUSWIDTH 16}
+
 # Where test/profile drop their screenshots.  Overridable so two runs can be
 # kept side by side (before/after a change).
 SHOTS=${FMTOWNS_SHOTS:-$ROOT/build/fmtowns/shots}
@@ -84,22 +103,44 @@ scene=hand
 # -- into a make variable plus a make *target* named -DB, and make died in a
 # usage dump.  Combining two measurement knobs is exactly what attributing a
 # frame on this target takes, so that has to work.
+#
+# EXTRA_CORE_DEFINES is pulled out of that list instead of being forwarded
+# verbatim, because `profile` has to add -DWAIFU_DEBUG_AUTODUEL to it, and
+# two command-line assignments of the same make variable would make the last
+# one win -- silently dropping whichever measurement knob the caller asked
+# for.  build() puts it back, with its own defines prepended.
 makeargs=""
+core_defines=""
 for arg in "$@"; do
 	case $arg in
-	--iso)        target=iso; image=build/fmtowns/output.iso ;;
-	hand|board)   scene=$arg ;;
+	--iso)                target=iso; image=build/fmtowns/output.iso ;;
+	hand|board|story)     scene=$arg ;;
+	EXTRA_CORE_DEFINES=*) core_defines="${arg#EXTRA_CORE_DEFINES=}" ;;
 	*)            makeargs="$makeargs '$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")'" ;;
 	esac
 done
 
+# $1 is prepended to whatever EXTRA_CORE_DEFINES the caller passed;
+# everything after it goes to make unchanged.
 build() {
-	eval "$MAKE \"\$target\" $makeargs \"\$@\""
+	own=$1; shift
+	eval "$MAKE \"\$target\" $makeargs \
+		\"EXTRA_CORE_DEFINES=\$own \$core_defines\" \"\$@\""
 }
 
 # The parked-scene input scripts `profile` compiles in: title -> menu ->
 # BATTLE MODE -> ... -> a duel, then nothing.  Frames, not seconds, so they
 # replay identically however fast the emulator runs.
+#
+# `profile` does NOT walk in through the menu any more.  A script step fires
+# on a GAME frame, but the CD reads between the title screen and the duel
+# take a fixed amount of wall time -- so a build with a faster frame has
+# loaded LESS by any given frame number, and a press tuned to a slow build
+# lands before the menu exists in a fast one.  That is not hypothetical: at
+# "400 A" the -Os build entered the duel and the -O2 build sat on the menu
+# for the entire capture, and -O2 was written down as a 8% regression when
+# it is really a 20% win.  WAIFU_DEBUG_AUTODUEL (src/main.c) boots straight
+# into a free duel instead, so there is no navigation left to desynchronise.
 #
 # Two scenes, because they stress completely different code:
 #
@@ -112,20 +153,22 @@ build() {
 #          EXTRA_CORE_DEFINES=-DWAIFU_BATTLE_BASE_CACHE_DISABLE, or the
 #          composite cache serves the parked frame from a memcpy and the
 #          rasterizer never runs at all.
+#   story  the first story plaza dialogue: sky gradient, raycast floor,
+#          temple solids, two large portraits and a typewriter text box.
+#          Nothing in it moves once the portraits have slid in, so it is
+#          the scene that shows what caching and the dirty present are
+#          worth -- and the one the "story text is sluggish" report is
+#          about.
 write_parked_script() {
-	cat > "$1" <<-'EOF'
-	# Generated by fmtowns.sh -- walk into the duel, then stop pressing
-	# buttons so the scene stays put and two builds can be compared on
-	# identical pixels.
-	 90 START
-	300 DOWN
-	400 A
-	EOF
+	# The build boots straight into the duel (WAIFU_DEBUG_AUTODUEL below),
+	# so there is nothing to press to get there -- only the one button
+	# that picks which parked view to sit on.
+	: > "$1"
 	if [ "$2" = board ]; then
 		cat >> "$1" <<-'EOF'
 		# UP leaves the hand for the top-down board view (main.c's
 		# IB_PLAYER_HAND case), which waits for input, so the scene holds.
-		1000 UP
+		600 UP
 		EOF
 	fi
 }
@@ -146,7 +189,7 @@ capture() {
 		printf 'SLEEP 2\nQUIT\n'
 	} > "$script"
 
-	EXTRA_TSUGARU="-NOWAIT" RUN_TIMEOUT=${RUN_TIMEOUT:-300} \
+	EXTRA_TSUGARU="-NOWAIT $FMTOWNS_TIMING" RUN_TIMEOUT=${RUN_TIMEOUT:-300} \
 		FMTOWNS_TOWNSTYPE="$FMTOWNS_TOWNSTYPE" FMTOWNS_ROM="$FMTOWNS_ROM/" \
 		FMTOWNS_MEMSIZE="$FMTOWNS_MEMSIZE" \
 		tools/fmtowns/headless_shot.sh "$SHOTS/shot" "$script" \
@@ -157,20 +200,20 @@ capture() {
 
 case $cmd in
 build)
-	build
+	build ""
 	echo "built $image"
 	;;
 run)
-	build
+	build ""
 	[ -x "$TSUGARU" ] || { echo "missing $TSUGARU" >&2; exit 1; }
 	# Tsugaru's default for game port 0 is a physical gamepad
 	# (TOWNS_GAMEPORTEMU_PHYSICAL0), so without -GAMEPORT0 KEY it silently
 	# ignores the keyboard and nothing responds at the title screen.
 	exec "$TSUGARU" "$FMTOWNS_ROM/" -TOWNSTYPE "$FMTOWNS_TOWNSTYPE" -MEMSIZE "$FMTOWNS_MEMSIZE" -CD "$image" \
-		-NORMALFD -DONTUSEFPU -AUTOSCALE -GAMEPORT0 KEY
+		-NORMALFD -DONTUSEFPU -AUTOSCALE -GAMEPORT0 KEY $FMTOWNS_TIMING
 	;;
 test)
-	build FMTOWNS_DEBUG_INPUT=1
+	build "" FMTOWNS_DEBUG_INPUT=1
 	capture "40 12 12 12 12 12 12 12 12 12 12 12 12" --summary
 	echo
 	echo "screenshots in $SHOTS"
@@ -178,7 +221,12 @@ test)
 profile)
 	mkdir -p "$SHOTS"
 	write_parked_script "$SHOTS/parked_input.txt" "$scene"
-	build FMTOWNS_DEBUG_INPUT=1 INPUT_SCRIPT="$SHOTS/parked_input.txt"
+	case $scene in
+	story) parked_define=-DWAIFU_DEBUG_AUTOSTORY ;;
+	*)     parked_define=-DWAIFU_DEBUG_AUTODUEL ;;
+	esac
+	build "$parked_define" \
+		FMTOWNS_DEBUG_INPUT=1 INPUT_SCRIPT="$SHOTS/parked_input.txt"
 	# Three shots well after the scene has settled; they should agree.
 	capture "35 15 15"
 	echo
