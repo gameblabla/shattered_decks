@@ -456,6 +456,11 @@ static int g_fb_dmg_prev_full = 1;
 static uint8_t g_fb_ovl_curr[WAIFU_FM_HEIGHT];
 static uint8_t g_fb_ovl_prev[WAIFU_FM_HEIGHT];
 static int g_fb_ovl_prev_full = 1;
+/* A zero-draw retained frame keeps the overlay visible for longer than the
+   presenter's usual current+previous-frame damage window.  The first later
+   composite restore must therefore declare the old overlay footprint anew so
+   both alternating VRAM pages receive it. */
+static int g_fb_ovl_retained;
 /* Which composite the framebuffer is currently built on.  Restoring a
    different one (the hand view's cache after the top view's, say) has to put
    back the whole screen, not just where the overlay was. */
@@ -498,6 +503,7 @@ static void fb_damage_all(void)
     memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
     g_ui_retained_tag = 0;
     g_fb_base_src = 0;
+    g_fb_ovl_retained = 0;
     /* Everything on screen has just been replaced, so no claim survives. */
     g_fb_kept_valid = 0;
     g_fb_keep_claimed = 0;
@@ -508,6 +514,7 @@ static void fb_damage_base_mark(const uint8_t *src)
 {
     memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
     g_fb_base_src = src;
+    g_fb_ovl_retained = 0;
 }
 
 /* "I filled this rectangle opaquely, and I redraw it myself the moment its
@@ -611,6 +618,7 @@ static void fb_damage_rect_forced(int x, int y, int w, int h)
 #define UI_TAG_NAME_ENTRY     1
 #define UI_TAG_STORY_DIALOGUE 2
 #define UI_TAG_FIRE_PANEL     4
+#define UI_TAG_BATTLE_TOP     8
 
 static int ui_retained(int tag)
 {
@@ -620,6 +628,18 @@ static int ui_retained(int tag)
 static void ui_retain(int tag)
 {
     g_ui_retained_tag = tag;
+}
+
+/* Keep the post-composite overlay description alive across a frame that did
+   not draw anything.  The retained top-board path leaves the RAM framebuffer
+   completely alone while the selector and info panel are unchanged.  Without
+   carrying this mask forward, the first later selector move would forget the
+   old cursor footprint and the composite restore would leave red pixels
+   behind.  This records no present damage: no pixel was written. */
+static void fb_retain_overlay(void)
+{
+    memcpy(g_fb_ovl_curr, g_fb_ovl_prev, sizeof(g_fb_ovl_curr));
+    g_fb_ovl_retained = 1;
 }
 
 #if defined(WAIFU_FB_DAMAGE_VERIFY)
@@ -688,8 +708,10 @@ static void fb_damage_verify(void)
 #define UI_TAG_NAME_ENTRY     1
 #define UI_TAG_STORY_DIALOGUE 2
 #define UI_TAG_FIRE_PANEL     4
+#define UI_TAG_BATTLE_TOP     8
 #define ui_retained(tag)               (0)
 #define ui_retain(tag)                 do { (void)(tag); } while (0)
+#define fb_retain_overlay()             do { } while (0)
 #define fb_damage_rect(x, y, w, h)     do { (void)(x); (void)(y); (void)(w); (void)(h); } while (0)
 #define fb_damage_span(y, x0, x1)      do { (void)(y); (void)(x0); (void)(x1); } while (0)
 #define fb_damage_rect_forced(x, y, w, h) fb_damage_rect(x, y, w, h)
@@ -2340,6 +2362,13 @@ static void fb_restore_composite(const uint8_t *src)
        pixel-diffed against. */
     if (!g_fb_ovl_prev_full && g_fb_base_src == src) {
         int y;
+        if (g_fb_ovl_retained) {
+            /* The usual previous-frame declaration has aged out while this
+               unchanged overlay was retained.  Re-declare only its old
+               footprint on the one frame that restores it. */
+            for (y = 0; y < WAIFU_FM_HEIGHT; ++y)
+                g_fb_dmg[y] |= g_fb_ovl_prev[y];
+        }
         for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
             unsigned m = g_fb_ovl_prev[y];
             int g = 0;
@@ -7226,6 +7255,31 @@ static uint32_t battle_base_visual_key(void)
     return h;
 }
 
+#if defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
+static int player_first_turn_attack_locked(void);
+
+/* Everything visible in an idle tactical top view.  On a Marty, redrawing an
+   unchanged frame is much slower than a display field even after the 3-D base
+   is cached: glyphs, selector geometry, composite restoration, and RAM traffic
+   still cost tens of milliseconds on a 16 MHz 386SX.  This key lets that view
+   retain the already-composited RAM framebuffer until an input or battle-state
+   change actually alters a pixel. */
+static uint32_t battle_top_visual_key(void)
+{
+    uint32_t h = battle_base_visual_key();
+    h = waifu_hash_step_u32(h, (uint32_t)g_you_lp_disp);
+    h = waifu_hash_step_u32(h, (uint32_t)g_com_lp_disp);
+    h = waifu_hash_step_u32(h, (uint32_t)(g_b_top_col + 1));
+    h = waifu_hash_step_u32(h, (uint32_t)(g_b_top_row + 1));
+    h = waifu_hash_step_u32(h, (uint32_t)(g_b_top_prev_col + 1));
+    h = waifu_hash_step_u32(h, (uint32_t)(g_b_top_prev_row + 1));
+    h = waifu_hash_step_u32(h, (uint32_t)g_b_top_cursor_anim);
+    h = waifu_hash_step_u32(h, (uint32_t)(g_b_attack_attacker_slot + 1));
+    h = waifu_hash_step_u32(h, (uint32_t)(player_first_turn_attack_locked() ? 1 : 0));
+    return h;
+}
+#endif
+
 #define STORY_STORAGE_SIZE 64
 #define DECK_GRID_COLS 6
 #define DECK_GRID_ROWS 3
@@ -10014,6 +10068,19 @@ static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
     if (!to_top) anchor = WAIFU_PCFX_HANDTOP_ANCHORS - 1 - anchor;
     return pcfx_handtop_anchor_camera(anchor);
 }
+#elif defined(WAIFU_FM_FMTOWNS)
+static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
+{
+    /* A unique software-3D perspective per lift frame is prohibitively slow
+       on a 386SX and cannot use either resting-view cache.  Keep the motion in
+       the hand overlay, but reveal the destination endpoint immediately: the
+       first hand->top frame builds the top cache once, every remaining frame
+       restores it, and top->hand can reuse the hand cache already on screen.
+       The animation remains a clear slide rather than an abrupt state cut. */
+    (void)frame;
+    (void)dur;
+    return to_top ? battle_top_camera() : player_camera();
+}
 #else
 static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
 {
@@ -10216,7 +10283,8 @@ static void draw_interactive_field_base_no_hud(Camera cam)
     draw_interactive_field_cards(cam);
 }
 
-#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+#if (defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)) && \
+    !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
 /* Render one battle-base composite for `cam` straight into its cache slot without
    presenting it -- used to pre-fill the hand<->top lift keyframes during idle so
    the first lift plays from cache.  Uses the shared framebuffer as scratch; the
@@ -10233,6 +10301,7 @@ static void prewarm_interactive_base(Camera cam)
     battle_base_cache_store(cam, key);
 }
 
+#if defined(WAIFU_FM_PCFX)
 /* Fill one still-missing hand<->top anchor keyframe per idle frame so the FIRST
    lift plays entirely from cache (no live board re-render).  Prefer the top
    endpoint first so the lift can always finish on a hit, then the intermediate
@@ -10252,6 +10321,21 @@ static void prewarm_handtop_transition_bases(void)
     }
 }
 #endif
+#endif
+
+static void fmtowns_prewarm_battle_top_while_loading(void)
+{
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+    if (g_i_loading_target == WAIFU_I_BATTLE) {
+        /* Build the expensive top perspective while the loading screen still
+           owns the display.  Repaint that screen after using the framebuffer
+           as cache scratch, so the one uncached 3-D frame is never exposed as
+           a hitch when the player first lifts the hand away. */
+        prewarm_interactive_base(battle_top_camera());
+        draw_asset_loading_screen();
+    }
+#endif
+}
 
 static int result_focus_card_id(void)
 {
@@ -12161,6 +12245,12 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_PLAYER_TOP:
+    {
+#if defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
+        static uint32_t s_top_visual_key;
+        static int s_top_visual_key_valid;
+        uint32_t top_visual_key;
+#endif
         if (press_left) move_top_selector(-1, 0);
         if (press_right) move_top_selector(1, 0);
         if (press_up) move_top_selector(0, -1);
@@ -12219,6 +12309,18 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         }
         if (press_start) { g_b_attack_attacker_slot = -1; clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
         view_slot = top_selector_player_monster_slot();
+#if defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
+        top_visual_key = battle_top_visual_key();
+        if (ui_retained(UI_TAG_BATTLE_TOP) && s_top_visual_key_valid &&
+            top_visual_key == s_top_visual_key) {
+            /* The full top composite, including selector and text, is already
+               in the CPU framebuffer.  Preserve its overlay bookkeeping for
+               the first frame that eventually moves the selector. */
+            fb_retain_overlay();
+            ui_retain(UI_TAG_BATTLE_TOP);
+            break;
+        }
+#endif
         draw_interactive_base(battle_top_camera());
         if (g_b_attack_attacker_slot >= 0) draw_zone_cursor(battle_top_camera(), g_b_attack_attacker_slot, PLAYER_CARD_ROW);
         /* While an attacker is locked, the moving selector is picking the
@@ -12232,7 +12334,21 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         } else {
             draw_bottom_info_top_selector(player_first_turn_attack_locked() ? "NO ATK" : "FIELD");
         }
+#if defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
+        /* draw_top_selector_cursor_ex() advances its easing counter.  Do not
+           retain until it reaches the non-CD32X eight-frame endpoint, or the
+           key written after the first pose would match on the next step and
+           freeze the cursor halfway through its glide. */
+        if (g_b_top_cursor_anim >= 8) {
+            s_top_visual_key = battle_top_visual_key();
+            s_top_visual_key_valid = 1;
+            ui_retain(UI_TAG_BATTLE_TOP);
+        } else {
+            s_top_visual_key_valid = 0;
+        }
+#endif
         break;
+    }
 
     case IB_PLAYER_BATTLE:
         draw_interactive_battle();
@@ -14764,6 +14880,7 @@ void waifu_fm_step(const WaifuFmInput *input)
                 request_story_duel_assets();
                 break;
             }
+            fmtowns_prewarm_battle_top_while_loading();
             g_i_state = g_i_loading_target;
             g_i_frame = -1;
             break;
@@ -14779,6 +14896,7 @@ void waifu_fm_step(const WaifuFmInput *input)
                 request_story_duel_assets();
                 break;
             }
+            fmtowns_prewarm_battle_top_while_loading();
             g_i_state = g_i_loading_target;
             g_i_frame = -1;
         }
