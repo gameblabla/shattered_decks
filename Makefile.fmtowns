@@ -58,10 +58,12 @@ CORE_INCLUDES   = -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated
 # whole software-3D board every frame.  That is the only way to see what the
 # renderer itself costs: with the cache on, the parked view is a memcpy and
 # the rasterizer barely runs, so a rasterizer change measures as noise.
+# Slot 40's 112x112 payload funds one full-frame battle composite for the
+# otherwise-static placement camera.
 CORE_DEFINES    = $(EXTRA_CORE_DEFINES) \
                   -DWAIFU_FM_FMTOWNS -DWAIFU_FM_NO_HEADLESS_MAIN \
                   -DWAIFU_ASSET_NO_STDIO -DWAIFU_ASSET_USE_CDROM \
-                  -DWAIFU_ASSET_BIG_CACHE_SLOTS=40 -DWAIFU_ASSET_RAM_BUDGET=1048576 \
+                  -DWAIFU_ASSET_BIG_CACHE_SLOTS=39 -DWAIFU_ASSET_RAM_BUDGET=1048576 \
                   -DWAIFU_BG_CACHE_DISABLE \
                   -DWAIFU_FLOOR_SAMPLE_CACHE_DISABLE
 

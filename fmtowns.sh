@@ -12,7 +12,7 @@
 #                                 report what each screenshot caught: game
 #                                 frame, CD-DA track, and the frame time split
 #                                 into game step vs present
-#   ./fmtowns.sh profile [hand|board|story|name|fire]
+#   ./fmtowns.sh profile [hand|board|place|story|name|fire]
 #                                 the same capture, but parked on ONE scene --
 #                                 this is the mode to use when comparing two
 #                                 builds; see the notes below.  `hand' (the
@@ -114,7 +114,7 @@ core_defines=""
 for arg in "$@"; do
 	case $arg in
 	--iso)                target=iso; image=build/fmtowns/output.iso ;;
-	hand|board|story|name|fire) scene=$arg ;;
+	hand|board|place|story|name|fire) scene=$arg ;;
 	EXTRA_CORE_DEFINES=*) core_defines="${arg#EXTRA_CORE_DEFINES=}" ;;
 	*)            makeargs="$makeargs '$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")'" ;;
 	esac
@@ -153,6 +153,9 @@ build() {
 #          EXTRA_CORE_DEFINES=-DWAIFU_BATTLE_BASE_CACHE_DISABLE, or the
 #          composite cache serves the parked frame from a memcpy and the
 #          rasterizer never runs at all.
+#   place  continuously repeats the normal 48-field player card flight.  Its
+#          3-D camera is static, so this isolates the placement composite cache
+#          while retaining every frame of the animation.
 #   story  the first story plaza dialogue: sky gradient, raycast floor,
 #          temple solids, two large portraits and a typewriter text box.
 #          Nothing in it moves once the portraits have slid in, so it is
@@ -228,6 +231,7 @@ profile)
 	write_parked_script "$SHOTS/parked_input.txt" "$scene"
 	case $scene in
 	board) parked_define=-DWAIFU_DEBUG_AUTOBOARD ;;
+	place) parked_define=-DWAIFU_DEBUG_AUTOPLACE ;;
 	story) parked_define=-DWAIFU_DEBUG_AUTOSTORY ;;
 	name)  parked_define=-DWAIFU_DEBUG_AUTONAME ;;
 	fire)  parked_define=-DWAIFU_DEBUG_AUTOFIRE ;;

@@ -93,6 +93,9 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
    cost, the generic path's per-cell projection and per-scanline setup was. */
 #define WAIFU_BOARD_FAST_AFFINE_ENABLE 1
 #endif
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_FMTOWNS_FIELD_CARD_GENERIC)
+#define WAIFU_FIELD_CARD_FAST_AFFINE 1
+#endif
 #if defined(WAIFU_FM_CD32X) && !defined(WAIFU_CD32X_FIELD_SIDE_WALLS)
 /* CD32X re-renders the battle field every frame, so keep side walls on the
    compact affine path and split part of that work across the Slave SH-2. */
@@ -4088,6 +4091,10 @@ static int try_draw_card_raw_fast(const uint8_t *src, int sw, int sh, int x, int
 static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
     if (!src || dw <= 0 || dh <= 0) return;
+    /* Placement/deal animations deliberately slide whole cards beyond the
+       framebuffer.  The old scaler still walked every source pixel there,
+       only to reject every destination coordinate inside its inner loop. */
+    if (x >= WAIFU_FM_WIDTH || y >= WAIFU_FM_HEIGHT || x + dw <= 0 || y + dh <= 0) return;
     if (waifu_hw2d_image(src, 0, sw, sh, x, y, dw, dh, 0, 0)) return;
     fb_damage_rect(x, y, dw, dh);
     if (dw == sw && dh == sh) {
@@ -4147,6 +4154,7 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
 static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
     if (!src || dw <= 0 || dh <= 0) return;
+    if (x >= WAIFU_FM_WIDTH || y >= WAIFU_FM_HEIGHT || x + dw <= 0 || y + dh <= 0) return;
     if (waifu_hw2d_image(src, 0, sw, sh, x, y, dw, dh, 1, 0)) return;
     if (try_draw_card_raw_fast(src, sw, sh, x, y, dw, dh, 1)) return;
     PROFILE_CARD2D_GENERIC_BEGIN();
@@ -4998,6 +5006,83 @@ static void draw_textured_tri_affine_cd32x(const uint8_t *src, int sw, int sh, T
 }
 #endif
 
+#if defined(WAIFU_FIELD_CARD_FAST_AFFINE)
+/* Incremental affine field-card mapper for a 16 MHz 386SX.
+
+   The generic mapper is affine too, but reaches that result in the most
+   expensive possible way on this CPU: two multiplies and two divides for every
+   covered pixel, followed by a clipped put_px() call.  A cache miss after a
+   placement redraws every field card, so that hidden generic fallback was the
+   long hitch users reasonably mistook for perspective-correct texturing.
+
+   Texture coordinates and barycentric half-planes are linear in screen space.
+   Compute their gradients once in Q8, then advance all six values with ADDs.
+   The only divides are the six triangle-setup divisions; the inner loop is
+   bounds tests, one indexed load, and additions. */
+static void draw_textured_tri_affine_fmtowns(const uint8_t *src, int sw, int sh,
+                                             TexV a, TexV b, TexV c, int gray)
+{
+    int minx, maxx, miny, maxy, den;
+    int aa, ba, ab, bb, ac, bc;
+    int u0, u1, u2, v0, v1, v2;
+    int du_dx, dv_dx, du_dy, dv_dy;
+    int wa_row, wb_row, wc_row, u_row, v_row;
+
+    if (!src || sw <= 0 || sh <= 0) return;
+    minx = a.x < b.x ? (a.x < c.x ? a.x : c.x) : (b.x < c.x ? b.x : c.x);
+    maxx = a.x > b.x ? (a.x > c.x ? a.x : c.x) : (b.x > c.x ? b.x : c.x);
+    miny = a.y < b.y ? (a.y < c.y ? a.y : c.y) : (b.y < c.y ? b.y : c.y);
+    maxy = a.y > b.y ? (a.y > c.y ? a.y : c.y) : (b.y > c.y ? b.y : c.y);
+    if (minx < -8192 || maxx > 8192 || miny < -8192 || maxy > 8192) return;
+    den = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+    if (den == 0) return;
+    if (minx < 0) minx = 0;
+    if (maxx >= WAIFU_FM_WIDTH) maxx = WAIFU_FM_WIDTH - 1;
+    if (miny < 0) miny = 0;
+    if (maxy >= WAIFU_FM_HEIGHT) maxy = WAIFU_FM_HEIGHT - 1;
+    if (minx > maxx || miny > maxy) return;
+
+    aa = b.y - c.y; ba = c.x - b.x;
+    ab = c.y - a.y; bb = a.x - c.x;
+    ac = -(aa + ab); bc = -(ba + bb);
+    u0 = a.u * (sw - 1); u1 = b.u * (sw - 1); u2 = c.u * (sw - 1);
+    v0 = a.v * (sh - 1); v1 = b.v * (sh - 1); v2 = c.v * (sh - 1);
+    du_dx = (aa * u0 + ab * u1 + ac * u2) / den;
+    dv_dx = (aa * v0 + ab * v1 + ac * v2) / den;
+    du_dy = (ba * u0 + bb * u1 + bc * u2) / den;
+    dv_dy = (ba * v0 + bb * v1 + bc * v2) / den;
+
+    wa_row = aa * (minx - c.x) + ba * (miny - c.y);
+    wb_row = ab * (minx - c.x) + bb * (miny - c.y);
+    wc_row = den - wa_row - wb_row;
+    u_row = (wa_row * u0 + wb_row * u1 + wc_row * u2) / den;
+    v_row = (wa_row * v0 + wb_row * v1 + wc_row * v2) / den;
+
+    for (int y = miny; y <= maxy; ++y) {
+        int wa = wa_row, wb = wb_row, wc = wc_row;
+        int u = u_row, v = v_row;
+        uint8_t *dst = framebuffer + (int32_t)y * WAIFU_FM_WIDTH;
+        fb_damage_span(y, minx, maxx + 1);
+        for (int x = minx; x <= maxx; ++x) {
+            if ((den > 0 && wa >= 0 && wb >= 0 && wc >= 0) ||
+                (den < 0 && wa <= 0 && wb <= 0 && wc <= 0)) {
+                int sx = (u + Q8_HALF) >> Q8_SHIFT;
+                int sy = (v + Q8_HALF) >> Q8_SHIFT;
+                uint8_t pix;
+                if (sx < 0) sx = 0; else if (sx >= sw) sx = sw - 1;
+                if (sy < 0) sy = 0; else if (sy >= sh) sy = sh - 1;
+                pix = src[sy * sw + sx];
+                dst[x] = gray ? gray_card_dither_px(pix, x, y) : pix;
+            }
+            wa += aa; wb += ab; wc += ac;
+            u += du_dx; v += dv_dx;
+        }
+        wa_row += ba; wb_row += bb; wc_row += bc;
+        u_row += du_dy; v_row += dv_dy;
+    }
+}
+#endif
+
 static void draw_tri3d_tile(Camera cam, Vec3 a, Vec3 b, Vec3 c, int tile, int flip_u)
 {
     ScreenPt pa = project_point(cam, a), pb = project_point(cam, b), pc = project_point(cam, c);
@@ -5190,6 +5275,9 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
 #if defined(WAIFU_FM_CD32X)
     draw_textured_tri_affine_cd32x(src, sw, sh, a, b, c, gray);
     draw_textured_tri_affine_cd32x(src, sw, sh, a, c, d, gray);
+#elif defined(WAIFU_FIELD_CARD_FAST_AFFINE)
+    draw_textured_tri_affine_fmtowns(src, sw, sh, a, b, c, gray);
+    draw_textured_tri_affine_fmtowns(src, sw, sh, a, c, d, gray);
 #else
     draw_textured_tri_ex(src, sw, sh, a, b, c, gray);
     draw_textured_tri_ex(src, sw, sh, a, c, d, gray);
@@ -5463,7 +5551,17 @@ static void draw_top_selector_cursor_ex(Camera cam, int reticle)
     int32_t row = Q8_FROM_INT(g_b_top_prev_row) + q8_mul(Q8_FROM_INT(g_b_top_row - g_b_top_prev_row), t);
     if (reticle) draw_zone_reticle_q(cam, col, row);
     else draw_zone_cursor_q(cam, col, row);
-    if (g_b_top_cursor_anim < cursor_anim_frames) ++g_b_top_cursor_anim;
+    if (g_b_top_cursor_anim < cursor_anim_frames) {
+#if defined(WAIFU_FM_FMTOWNS)
+        /* Keep the eight-field glide at eight display fields even when a
+           cache miss made this render consume two or more of them. */
+        g_b_top_cursor_anim += frame_logic_step();
+        if (g_b_top_cursor_anim > cursor_anim_frames)
+            g_b_top_cursor_anim = cursor_anim_frames;
+#else
+        ++g_b_top_cursor_anim;
+#endif
+    }
 }
 
 static void draw_top_selector_cursor(Camera cam)
@@ -7283,6 +7381,17 @@ static WaifuBattleBaseCache g_b_base_cache;
 #if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
 static WaifuBattleBaseCache g_b_base_cache_top;
 #endif
+#if defined(WAIFU_FM_FMTOWNS)
+/* One reusable cache for static cameras that are never visible together:
+   the hand<->top midpoint and the player/COM placement views.  The old Marty
+   path rendered the placement board from scratch on every one of the 48 card
+   flight frames even though the camera and field did not move. */
+static WaifuBattleBaseCache g_b_fmtowns_work_cache;
+static int g_b_fmtowns_place_static_baked;
+static int g_b_fmtowns_place_static_slot;
+static int g_b_fmtowns_place_static_row;
+static int g_b_fmtowns_place_static_card;
+#endif
 #if defined(WAIFU_FM_PCFX)
 /* Cache the intermediate hand<->top lift keyframes too.  The lift is quantized
    onto WAIFU_PCFX_HANDTOP_ANCHORS camera positions precisely so they can be
@@ -7300,6 +7409,10 @@ static void invalidate_battle_composite_cache(void)
     g_b_base_cache.valid = 0;
 #if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
     g_b_base_cache_top.valid = 0;
+#endif
+#if defined(WAIFU_FM_FMTOWNS)
+    g_b_fmtowns_work_cache.valid = 0;
+    g_b_fmtowns_place_static_baked = 0;
 #endif
 #if defined(WAIFU_FM_PCFX)
     for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS - 2; ++i) g_b_handtop_mid_cache[i].valid = 0;
@@ -9579,7 +9692,7 @@ static void enter_battle_after_assets(void)
     enter_state_after_assets(WAIFU_I_BATTLE);
 }
 
-#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD)
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOPLACE)
 /* Profiling shortcut: boot straight into a free duel instead of walking
    title -> menu -> BATTLE MODE.
 
@@ -9603,10 +9716,27 @@ static void enter_debug_autoduel_after_assets(void)
        parked scene shows different card art at a different cost, and `step`
        scatters by several milliseconds between otherwise identical builds. */
     init_battle_state();
+#if defined(WAIFU_DEBUG_AUTOBOARD)
+    /* Profile a real occupied field.  The old shortcut parked on an empty
+       board and therefore reported 60 fps without ever executing the field
+       card mapper that dominates cache misses in actual play. */
+    for (int i = 0; i < 3; ++i) {
+        g_i_player_field[i] = g_i_player_hand[i];
+        g_i_player_faceup[i] = 1;
+        g_i_com_field[i] = g_i_com_hand[i];
+        g_i_com_faceup[i] = 1;
+    }
+#endif
     enter_battle_after_assets();
 #if defined(WAIFU_DEBUG_AUTOBOARD)
     set_top_selector(0, PLAYER_CARD_ROW);
     set_battle_phase(IB_PLAYER_TOP);
+#elif defined(WAIFU_DEBUG_AUTOPLACE)
+    g_b_place_hand = 0;
+    g_b_place_card = g_i_player_hand[0];
+    g_b_place_slot = 0;
+    g_b_place_trap = 0;
+    set_battle_phase(IB_PLAYER_PLACE);
 #endif
 }
 #endif
@@ -9980,6 +10110,13 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
     PROFILE_HAND_BEGIN();
     int i;
     int y = WAIFU_HAND_Y_BASE + yoff;
+    /* The placement hand settles completely below the 240-line display.
+       Avoid five card dispatches (and their clipped scaler loops) once it has
+       left; this changes no animation frame or visible pixel. */
+    if (y >= WAIFU_FM_HEIGHT || y + 53 <= 0) {
+        PROFILE_HAND_END();
+        return;
+    }
     for (i = 0; i < I_HAND; ++i) {
         int x0 = hand_final_x(i);
         int x = x0;
@@ -10255,9 +10392,15 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
        full-screen slots would exceed the Marty's RAM budget; one slot still
        retains each quantized camera for its several animation frames, then is
        overwritten by the next.  The hand endpoint keeps its own slot. */
-    for (int anchor = 1; anchor < WAIFU_FMTOWNS_HANDTOP_ANCHORS; ++anchor)
-        if (camera_equal(cam, fmtowns_handtop_anchor_camera(anchor)))
+    for (int anchor = 1; anchor < WAIFU_FMTOWNS_HANDTOP_ANCHORS; ++anchor) {
+        if (!camera_equal(cam, fmtowns_handtop_anchor_camera(anchor))) continue;
+        if (anchor >= WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1)
             return &g_b_base_cache_top;
+        return &g_b_fmtowns_work_cache;
+    }
+    if (camera_equal(cam, placement_camera()) ||
+        camera_equal(cam, enemy_placement_camera()))
+        return &g_b_fmtowns_work_cache;
     if (camera_equal(cam, enemy_battle_top_camera()))
         return &g_b_base_cache_top;
     if (camera_equal(cam, player_camera()) ||
@@ -10358,7 +10501,40 @@ static void battle_base_cache_store(Camera cam, uint32_t key)
     cache->cam = cam;
     cache->key = key;
     cache->valid = 1;
+#if defined(WAIFU_FM_FMTOWNS)
+    if (cache == &g_b_fmtowns_work_cache)
+        g_b_fmtowns_place_static_baked = 0;
+#endif
 }
+
+#if defined(WAIFU_FM_FMTOWNS)
+/* Add the placement view's non-moving cursor and optional info panel to the
+   reusable composite itself.  Otherwise the damage compositor restores and
+   redraws those same pixels on all 48 flight frames. */
+static void fmtowns_draw_placement_static(Camera cam, int slot, int row,
+                                          int card, const char *label)
+{
+    WaifuBattleBaseCache *cache = battle_base_cache_for_camera(cam);
+    if (cache == &g_b_fmtowns_work_cache && cache->valid &&
+        g_b_fmtowns_place_static_baked &&
+        g_b_fmtowns_place_static_slot == slot &&
+        g_b_fmtowns_place_static_row == row &&
+        g_b_fmtowns_place_static_card == card) {
+        return;
+    }
+
+    draw_zone_cursor(cam, slot, row);
+    if (label) draw_bottom_info(card, label);
+    if (cache == &g_b_fmtowns_work_cache && cache->valid) {
+        copy_u8_fast(cache->pixels, framebuffer, (int)sizeof(cache->pixels));
+        fb_damage_base_mark(cache->pixels);
+        g_b_fmtowns_place_static_slot = slot;
+        g_b_fmtowns_place_static_row = row;
+        g_b_fmtowns_place_static_card = card;
+        g_b_fmtowns_place_static_baked = 1;
+    }
+}
+#endif
 #endif /* !WAIFU_BATTLE_BASE_CACHE_DISABLE */
 
 static void draw_interactive_base(Camera cam)
@@ -10444,6 +10620,9 @@ static void fmtowns_prewarm_battle_views_while_loading(void)
            a live 3-D hitch. */
         prewarm_interactive_base(battle_top_camera());
         prewarm_interactive_base(player_camera());
+        /* Leave the reusable slot on the first long static-camera animation a
+           duel can enter, so its initial card flight is a cache hit too. */
+        prewarm_interactive_base(placement_camera());
         draw_asset_loading_screen();
     }
 #endif
@@ -12272,11 +12451,26 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     case IB_PLAYER_PLACE: {
         int place_row = g_b_place_trap ? (PLAYER_CARD_ROW + 1) : PLAYER_CARD_ROW;
         draw_interactive_base(placement_camera());
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+        fmtowns_draw_placement_static(placement_camera(), g_b_place_slot,
+                                      place_row, g_b_place_card,
+                                      g_b_place_trap ? "SET" : "PLACE");
+#else
         draw_zone_cursor(placement_camera(), g_b_place_slot, place_row);
+#endif
         draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, place_row, g_b_phase_frame, 0, WAIFU_PCFX_PLACE_FRAMES, 2);
         draw_interactive_player_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(g_b_phase_frame, WAIFU_PCFX_PLACE_SETTLE_FRAMES))), 1);
+#if !(defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE))
         draw_bottom_info(g_b_place_card, g_b_place_trap ? "SET" : "PLACE");
+#endif
         if (battle_animation_event_complete(WAIFU_PCFX_PLACE_FRAMES)) {
+#if defined(WAIFU_DEBUG_AUTOPLACE)
+            /* Profiling-only loop: preserve all 48 animation fields while
+               repeatedly exercising the same static placement camera. */
+            g_b_phase_frame = 0;
+            g_b_anim_vblanks = 0;
+            break;
+#endif
             if (g_b_place_trap) {
                 g_i_player_equip_field[g_b_place_slot] = g_b_place_card;
                 g_i_player_equip_target[g_b_place_slot] = -1;
@@ -12527,7 +12721,12 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 
     case IB_COM_PLACE:
         draw_interactive_base(enemy_placement_camera());
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+        fmtowns_draw_placement_static(enemy_placement_camera(), g_b_place_slot,
+                                      ENEMY_CARD_ROW, g_b_place_card, NULL);
+#else
         draw_zone_cursor(enemy_placement_camera(), g_b_place_slot, ENEMY_CARD_ROW);
+#endif
         draw_flying_card(enemy_placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, ENEMY_CARD_ROW, g_b_phase_frame, 0, WAIFU_PCFX_PLACE_FRAMES, 1);
         draw_interactive_com_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(82), q8_smooth_ratio(g_b_phase_frame, WAIFU_PCFX_PLACE_SETTLE_FRAMES))));
         if (battle_animation_event_complete(WAIFU_PCFX_PLACE_FRAMES)) {
@@ -12815,7 +13014,7 @@ void waifu_fm_init(void)
     waifu_assets_read_blob(WAIFU_ASSET_BLOB_TEX_ATLAS, waifu_texture_atlas,
                            sizeof(waifu_texture_atlas));
 #endif
-#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD)
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOPLACE)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();
@@ -12858,7 +13057,7 @@ void waifu_fm_reset_interactive(void)
     init_battle_state();
     invalidate_board_bg_cache();
     invalidate_battle_composite_cache();
-#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD)
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOPLACE)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();
