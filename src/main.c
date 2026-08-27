@@ -502,6 +502,12 @@ static int g_fb_ovl_retained;
    different one (the hand view's cache after the top view's, say) has to put
    back the whole screen, not just where the overlay was. */
 static const uint8_t *g_fb_base_src;
+/* A uniform-colour framebuffer is another valid retained base.  Battle
+   cut-ins use black behind a few moving cards; treating that black as a base
+   lets the next frame erase only the previous overlay groups instead of
+   clearing all 61,440 pixels again. */
+static int g_fb_base_solid_valid;
+static uint8_t g_fb_base_solid_color;
 
 /* A screen whose picture the framebuffer still holds from last frame, so it
    only has to redraw the part that moves.  Any full-screen write invalidates
@@ -540,6 +546,7 @@ static void fb_damage_all(void)
     memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
     g_ui_retained_tag = 0;
     g_fb_base_src = 0;
+    g_fb_base_solid_valid = 0;
     g_fb_ovl_retained = 0;
     /* Everything on screen has just been replaced, so no claim survives. */
     g_fb_kept_valid = 0;
@@ -551,6 +558,17 @@ static void fb_damage_base_mark(const uint8_t *src)
 {
     memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
     g_fb_base_src = src;
+    g_fb_base_solid_valid = 0;
+    g_fb_ovl_retained = 0;
+}
+
+/* "The framebuffer is uniformly `color` as of now." */
+static void fb_damage_solid_mark(uint8_t color)
+{
+    memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
+    g_fb_base_src = 0;
+    g_fb_base_solid_valid = 1;
+    g_fb_base_solid_color = color;
     g_fb_ovl_retained = 0;
 }
 
@@ -587,7 +605,7 @@ static void fb_damage_reset(void)
     g_fb_dmg_prev_full = g_fb_dmg_full;
     if (g_fb_keep_claimed) fb_mark_kept_rect();
     memcpy(g_fb_ovl_prev, g_fb_ovl_curr, sizeof(g_fb_ovl_prev));
-    g_fb_ovl_prev_full = (g_fb_base_src == 0);
+    g_fb_ovl_prev_full = (g_fb_base_src == 0 && !g_fb_base_solid_valid);
     g_fb_kept_valid = g_fb_keep_claimed;
     g_fb_keep_claimed = 0;
     memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
@@ -634,7 +652,7 @@ static void fb_clear_rect(uint8_t *rows, int x, int y, int w, int h)
 static void fb_damage_rect(int x, int y, int w, int h)
 {
     fb_mark_rect(g_fb_dmg, x, y, w, h);
-    if (g_fb_base_src) fb_mark_rect(g_fb_ovl_curr, x, y, w, h);
+    if (g_fb_base_src || g_fb_base_solid_valid) fb_mark_rect(g_fb_ovl_curr, x, y, w, h);
 }
 
 static void fb_damage_span(int y, int x0, int x1)
@@ -739,6 +757,7 @@ static void fb_damage_verify(void)
 #define fb_damage_all()                do { } while (0)
 #define fb_damage_reset()              do { } while (0)
 #define fb_damage_base_mark(src)       do { (void)(src); } while (0)
+#define fb_damage_solid_mark(color)    do { (void)(color); } while (0)
 #define fb_keep_opaque(x, y, w, h)     do { (void)(x); (void)(y); (void)(w); (void)(h); } while (0)
 #define fb_keep_claimed()              (0)
 #define fb_keep_was_active()           (0)
@@ -2245,6 +2264,46 @@ static void clear_screen(uint8_t c)
     fill_u8_fast(framebuffer, WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT, c);
 }
 #endif
+
+/* Restore a uniform retained background beneath last frame's overlays.
+
+   The first call still performs the ordinary full clear.  Later calls write
+   only the 64-pixel groups touched by the previous cards/text, matching the
+   presenter's native granularity.  Pixels are identical to clear_screen();
+   this only avoids rewriting known-black groups that were never covered. */
+static void restore_solid_screen(uint8_t c)
+{
+#if defined(WAIFU_FB_DAMAGE) && !defined(WAIFU_FB_DAMAGE_FULLRESTORE)
+    if (!g_fb_ovl_prev_full && g_fb_base_solid_valid &&
+        g_fb_base_solid_color == c) {
+        int y;
+        if (g_fb_ovl_retained) {
+            for (y = 0; y < WAIFU_FM_HEIGHT; ++y)
+                g_fb_dmg[y] |= g_fb_ovl_prev[y];
+        }
+        for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+            unsigned m = g_fb_ovl_prev[y];
+            int g = 0;
+            while (g < FB_DMG_GROUPS) {
+                int run;
+                int x0;
+                int n;
+                if (!(m & (1u << g))) { ++g; continue; }
+                run = g;
+                while (run < FB_DMG_GROUPS && (m & (1u << run))) ++run;
+                x0 = g << FB_DMG_SHIFT;
+                n = (run - g) << FB_DMG_SHIFT;
+                fill_u8_fast(framebuffer + y * WAIFU_FM_WIDTH + x0, n, c);
+                g = run;
+            }
+        }
+        fb_damage_solid_mark(c);
+        return;
+    }
+#endif
+    clear_screen(c);
+    fb_damage_solid_mark(c);
+}
 
 /* Fill the full-width scanline band [y0, y1) with one palette index.  Same
    pixels on every platform; CD32X hands the band to the 32X VDP auto-fill so
@@ -4241,6 +4300,31 @@ static void blit_art112_fast(const uint8_t *src, int x, int y)
         return;
     }
 #endif
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_FMTOWNS_SCALAR_BIGART)
+    /* The two 112x112 cut-in pictures are copied every visible battle frame.
+       GCC's byte loop costs one load/store/increment/branch sequence per
+       texel on the 386SX.  A row is exactly 28 dwords, so let the 386 string
+       engine move it with one counted instruction.  Dword transfers still
+       become two cycles on the Marty's 16-bit external bus, but that is the
+       hardware's useful packed path: four pixels per instruction and two bus
+       cycles, rather than four byte instructions and four bus cycles.  x can
+       be unaligned during the lunge/shake; unaligned movsl remains byte-exact
+       on x86 and is still cheaper than the scalar loop.
+
+       WAIFU_FMTOWNS_SCALAR_BIGART is a measurement/visual-reference switch;
+       it keeps the portable byte loop below without changing any pixels. */
+    for (int yy = 0; yy < WAIFU_BIG_H; ++yy) {
+        const uint8_t *sp = src + yy * WAIFU_BIG_W;
+        uint8_t *dp = dst;
+        unsigned int words = WAIFU_BIG_W / 4;
+        __asm__ volatile ("rep movsl"
+                          : "+D" (dp), "+S" (sp), "+c" (words)
+                          :
+                          : "memory");
+        dst += WAIFU_FM_WIDTH;
+    }
+    return;
+#endif
     for (int yy = 0; yy < WAIFU_BIG_H; ++yy) {
         const uint8_t *srow = src + yy * WAIFU_BIG_W;
         uint8_t *drow = dst;
@@ -5967,19 +6051,20 @@ static void draw_battle_cutin_event_ex(int f, int start,
                                        const char *damage_text,
                                        BattleOutcome outcome)
 {
-    clear_screen(IDX_BLACK);
     int local0 = f - start;
 
     /* Battle begins in tactical top view. Only the active card is outlined; no
        hand-selection arrow is shown during placement/top mode. Face-down cards
        are not revealed on the 3D field here. */
     if (local0 < WAIFU_BATTLE_PRELUDE_FRAMES) {
+        clear_screen(IDX_BLACK);
         Camera cam = side_battle_camera(atk_row);
         draw_field_pair_for_battle(cam, atk_col, atk_row, atk_id, atk_back,
                                         def_col, def_row, def_id, def_back);
         return;
     }
 
+    restore_solid_screen(IDX_BLACK);
     int local = local0 - WAIFU_BATTLE_PRELUDE_FRAMES;
     /* Widescreen: center the whole clash on the true screen (the pair stays
        centred, sliding in from the real screen edges) instead of confining it to
@@ -9699,7 +9784,12 @@ static void enter_battle_after_assets(void)
     enter_state_after_assets(WAIFU_I_BATTLE);
 }
 
-#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOPLACE)
+static void prepare_battle(int attacker_owner, int attacker_slot, int defender_slot);
+static void prepare_direct_attack(int attacker_owner, int attacker_slot);
+
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || \
+    defined(WAIFU_DEBUG_AUTOPLACE) || defined(WAIFU_DEBUG_AUTOLIFT) || \
+    defined(WAIFU_DEBUG_AUTOBATTLE) || defined(WAIFU_DEBUG_AUTODIRECT)
 /* Profiling shortcut: boot straight into a free duel instead of walking
    title -> menu -> BATTLE MODE.
 
@@ -9723,7 +9813,8 @@ static void enter_debug_autoduel_after_assets(void)
        parked scene shows different card art at a different cost, and `step`
        scatters by several milliseconds between otherwise identical builds. */
     init_battle_state();
-#if defined(WAIFU_DEBUG_AUTOBOARD)
+#if defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOBATTLE) || \
+    defined(WAIFU_DEBUG_AUTODIRECT)
     /* Profile a real occupied field.  The old shortcut parked on an empty
        board and therefore reported 60 fps without ever executing the field
        card mapper that dominates cache misses in actual play. */
@@ -9744,6 +9835,21 @@ static void enter_debug_autoduel_after_assets(void)
     g_b_place_slot = 0;
     g_b_place_trap = 0;
     set_battle_phase(IB_PLAYER_PLACE);
+#elif defined(WAIFU_DEBUG_AUTOLIFT)
+    set_top_selector(0, PLAYER_CARD_ROW);
+    set_battle_phase(IB_PLAYER_HAND_TO_TOP);
+#elif defined(WAIFU_DEBUG_AUTOBATTLE)
+    /* Deterministic, continuously-looping attacker-wins cut-in.  Both cards
+       are already in the dealt hands/decks, so the ordinary battle-entry
+       request stages their full art before the first visible frame. */
+    g_b_turns = 2; /* the real first-turn attack lock must not reject the probe */
+    prepare_battle(0, 0, 0);
+#elif defined(WAIFU_DEBUG_AUTODIRECT)
+    /* Same fixed attacker, but with an empty opposing field so the one-card
+       lunge/slash path can be measured independently. */
+    for (int i = 0; i < I_FIELD; ++i) g_i_com_field[i] = CARD_NONE;
+    g_b_turns = 2;
+    prepare_direct_attack(0, 0);
 #endif
 }
 #endif
@@ -11420,13 +11526,14 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     int target_x = (g_b_battle_atk_owner == 0) ? (WAIFU_BATTLE_CARD_X1 + 22) : (WAIFU_BATTLE_CARD_X0 + 24);
     int target_y = WAIFU_BATTLE_CARD_Y;
     int card_x = ax;
-    clear_screen(IDX_BLACK);
     if (local < WAIFU_BATTLE_PRELUDE_FRAMES) {
+        clear_screen(IDX_BLACK);
         Camera cam = side_battle_camera(atk_row);
         draw_interactive_base(cam);
         draw_zone_cursor(cam, atk_col, atk_row);
         return;
     }
+    restore_solid_screen(IDX_BLACK);
     local -= WAIFU_BATTLE_PRELUDE_FRAMES;
     if (atk_back && local < flip_dur) {
         draw_big_battle_card_flip(atk_id, ax, ay, local, flip_dur);
@@ -12427,6 +12534,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), q8_smooth_ratio(g_b_phase_frame, dur)));
         draw_player_handtop_transition_shared(g_b_phase_frame, dur, 1, hand_off, 1, 1);
         if (battle_animation_event_complete(dur)) {
+#if defined(WAIFU_DEBUG_AUTOLIFT)
+            set_battle_phase(IB_PLAYER_TOP_TO_HAND);
+#else
 #if defined(WAIFU_FM_FMTOWNS)
             /* Synchronize the completed top-camera picture to both alternating
                VRAM pages.  Without this explicit final declaration, the last
@@ -12435,6 +12545,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             fb_damage_all();
 #endif
             set_battle_phase(IB_PLAYER_TOP);
+#endif
         }
         break;
     }
@@ -12447,10 +12558,14 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), Q8_ONE - q8_smooth_ratio(g_b_phase_frame, dur)));
         draw_player_handtop_transition_shared(g_b_phase_frame, dur, 0, hand_off, 1, 1);
         if (battle_animation_event_complete(dur)) {
+#if defined(WAIFU_DEBUG_AUTOLIFT)
+            set_battle_phase(IB_PLAYER_HAND_TO_TOP);
+#else
 #if defined(WAIFU_FM_FMTOWNS)
             fb_damage_all();
 #endif
             set_battle_phase(IB_PLAYER_HAND);
+#endif
         }
         break;
     }
@@ -12693,8 +12808,15 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     case IB_PLAYER_BATTLE:
         draw_interactive_battle();
         if (battle_animation_event_complete(current_battle_anim_frames())) {
+#if defined(WAIFU_DEBUG_AUTOBATTLE) || defined(WAIFU_DEBUG_AUTODIRECT)
+            /* Profiling-only loop: replay every visual pose without resolving
+               the field, LP, or cache state underneath it. */
+            g_b_phase_frame = 0;
+            g_b_anim_vblanks = 0;
+#else
             resolve_battle();
             if (g_b_phase == IB_PLAYER_BATTLE) set_battle_phase(IB_PLAYER_RETURN_TOP);
+#endif
         }
         break;
 
@@ -13048,7 +13170,9 @@ void waifu_fm_init(void)
     waifu_assets_read_blob(WAIFU_ASSET_BLOB_TEX_ATLAS, waifu_texture_atlas,
                            sizeof(waifu_texture_atlas));
 #endif
-#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOPLACE)
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || \
+    defined(WAIFU_DEBUG_AUTOPLACE) || defined(WAIFU_DEBUG_AUTOLIFT) || \
+    defined(WAIFU_DEBUG_AUTOBATTLE) || defined(WAIFU_DEBUG_AUTODIRECT)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();
@@ -13091,7 +13215,9 @@ void waifu_fm_reset_interactive(void)
     init_battle_state();
     invalidate_board_bg_cache();
     invalidate_battle_composite_cache();
-#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOPLACE)
+#if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || \
+    defined(WAIFU_DEBUG_AUTOPLACE) || defined(WAIFU_DEBUG_AUTOLIFT) || \
+    defined(WAIFU_DEBUG_AUTOBATTLE) || defined(WAIFU_DEBUG_AUTODIRECT)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();

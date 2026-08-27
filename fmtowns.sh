@@ -12,7 +12,7 @@
 #                                 report what each screenshot caught: game
 #                                 frame, CD-DA track, and the frame time split
 #                                 into game step vs present
-#   ./fmtowns.sh profile [hand|board|place|story|name|fire]
+#   ./fmtowns.sh profile [hand|board|place|lift|battle|direct|story|name|fire]
 #                                 the same capture, but parked on ONE scene --
 #                                 this is the mode to use when comparing two
 #                                 builds; see the notes below.  `hand' (the
@@ -114,7 +114,7 @@ core_defines=""
 for arg in "$@"; do
 	case $arg in
 	--iso)                target=iso; image=build/fmtowns/output.iso ;;
-	hand|board|place|story|name|fire) scene=$arg ;;
+	hand|board|place|lift|battle|direct|story|name|fire) scene=$arg ;;
 	EXTRA_CORE_DEFINES=*) core_defines="${arg#EXTRA_CORE_DEFINES=}" ;;
 	*)            makeargs="$makeargs '$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")'" ;;
 	esac
@@ -232,6 +232,9 @@ profile)
 	case $scene in
 	board) parked_define=-DWAIFU_DEBUG_AUTOBOARD ;;
 	place) parked_define=-DWAIFU_DEBUG_AUTOPLACE ;;
+	lift) parked_define=-DWAIFU_DEBUG_AUTOLIFT ;;
+	battle) parked_define=-DWAIFU_DEBUG_AUTOBATTLE ;;
+	direct) parked_define=-DWAIFU_DEBUG_AUTODIRECT ;;
 	story) parked_define=-DWAIFU_DEBUG_AUTOSTORY ;;
 	name)  parked_define=-DWAIFU_DEBUG_AUTONAME ;;
 	fire)  parked_define=-DWAIFU_DEBUG_AUTOFIRE ;;
