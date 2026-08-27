@@ -358,6 +358,74 @@ static inline uint32_t fmt_dirty_fold(const uint32_t *s)
     return h;
 }
 
+/* Write complete 64-byte source groups to the two physical banks.  A group
+ * contains sixteen source dwords: even dwords belong to the low bank and odd
+ * dwords to the high bank.  The default path finishes one bank pass before
+ * touching the other, so each destination pointer advances monotonically.
+ * FMTOWNS_VRAM_INTERLEAVED_REFERENCE is retained for pixel/reference and
+ * hardware A/B measurements. */
+static inline void fmt_write_low_group(volatile uint32_t *d, const uint32_t *s)
+{
+    d[0] = s[0];  d[1] = s[2];  d[2] = s[4];  d[3] = s[6];
+    d[4] = s[8];  d[5] = s[10]; d[6] = s[12]; d[7] = s[14];
+}
+
+static inline void fmt_write_high_group(volatile uint32_t *d, const uint32_t *s)
+{
+    d[0] = s[1];  d[1] = s[3];  d[2] = s[5];  d[3] = s[7];
+    d[4] = s[9];  d[5] = s[11]; d[6] = s[13]; d[7] = s[15];
+}
+
+static void fmt_write_groups(volatile uint32_t *lo, volatile uint32_t *hi,
+                             const uint32_t *s, uint32_t groups)
+{
+#if defined(FMTOWNS_VRAM_INTERLEAVED_REFERENCE)
+    while (groups--) {
+        lo[0] = s[0];  hi[0] = s[1];
+        lo[1] = s[2];  hi[1] = s[3];
+        lo[2] = s[4];  hi[2] = s[5];
+        lo[3] = s[6];  hi[3] = s[7];
+        lo[4] = s[8];  hi[4] = s[9];
+        lo[5] = s[10]; hi[5] = s[11];
+        lo[6] = s[12]; hi[6] = s[13];
+        lo[7] = s[14]; hi[7] = s[15];
+        lo += 8; hi += 8; s += 16;
+    }
+#else
+    /* Four groups per setup amortises the loop branch without needing more
+       than the i386's general registers. */
+    {
+        const uint32_t *source = s;
+        uint32_t n = groups;
+        while (n >= 4u) {
+            fmt_write_low_group(lo,      s);
+            fmt_write_low_group(lo + 8,  s + 16);
+            fmt_write_low_group(lo + 16, s + 32);
+            fmt_write_low_group(lo + 24, s + 48);
+            lo += 32; s += 64; n -= 4u;
+        }
+        while (n--) {
+            fmt_write_low_group(lo, s);
+            lo += 8; s += 16;
+        }
+
+        s = source;
+        n = groups;
+        while (n >= 4u) {
+            fmt_write_high_group(hi,      s);
+            fmt_write_high_group(hi + 8,  s + 16);
+            fmt_write_high_group(hi + 16, s + 32);
+            fmt_write_high_group(hi + 24, s + 48);
+            hi += 32; s += 64; n -= 4u;
+        }
+        while (n--) {
+            fmt_write_high_group(hi, s);
+            hi += 8; s += 16;
+        }
+    }
+#endif
+}
+
 void fmt_invalidate_dirty_present(void)
 {
     g_dirty_valid = 0;
@@ -397,6 +465,7 @@ int fmt_put_image_dirty_rows(const void *src, const unsigned char *row_mask,
     }
 
     if (g_cur->linear || g_cur->bpp != 8 || groups > FMT_DIRTY_MAX_GROUPS
+        || row_groups > 32u
         || total % (FMT_DIRTY_GROUP_DWORDS * 4u) != 0
         || (g_fmt_draw_buffer_offset & 7u) != 0 || (g_cur->stride & 7u) != 0) {
         fmt_put_image(src, g_cur->width, g_cur->height, g_cur->stride);
@@ -430,6 +499,10 @@ int fmt_put_image_dirty_rows(const void *src, const unsigned char *row_mask,
             uint32_t owed = 0;
             uint32_t m;
             uint32_t f = force_mask ? ((uint32_t)force_mask[y] & all) : 0u;
+            uint32_t write_mask = 0;
+            const uint32_t *row_s = s;
+            volatile uint32_t *row_lo = lo;
+            volatile uint32_t *row_hi = hi;
             uint32_t bit;
 
             /* A comparison made because of LAST frame's declaration can
@@ -460,7 +533,7 @@ int fmt_put_image_dirty_rows(const void *src, const unsigned char *row_mask,
                 g  += row_groups;
                 continue;
             }
-            for (bit = 0; bit < row_groups; ++bit, ++g) {
+            for (bit = 0; bit < row_groups; ++bit) {
                 if (f & (1u << bit)) {
                     /* The caller has already said this group changed, so
                      * reading it back and folding it would only confirm what
@@ -468,60 +541,68 @@ int fmt_put_image_dirty_rows(const void *src, const unsigned char *row_mask,
                      * FMT_DIRTY_NO_HASH, which makes the next comparison of
                      * this group unconditional rather than a comparison
                      * against a value that no longer describes it. */
-                    lo[0] = s[0];  hi[0] = s[1];
-                    lo[1] = s[2];  hi[1] = s[3];
-                    lo[2] = s[4];  hi[2] = s[5];
-                    lo[3] = s[6];  hi[3] = s[7];
-                    lo[4] = s[8];  hi[4] = s[9];
-                    lo[5] = s[10]; hi[5] = s[11];
-                    lo[6] = s[12]; hi[6] = s[13];
-                    lo[7] = s[14]; hi[7] = s[15];
-                    prev[g] = FMT_DIRTY_NO_HASH;
-                    ++written;
+                    write_mask |= 1u << bit;
+                    prev[g + bit] = FMT_DIRTY_NO_HASH;
                 } else if (m & (1u << bit)) {
-                    uint32_t h = fmt_dirty_fold(s);
-                    unsigned int changed = (prev[g] == FMT_DIRTY_NO_HASH) | (h != hash[g]);
-                    hash[g] = h;
-                    if (changed | prev[g]) {
-                        lo[0] = s[0];  hi[0] = s[1];
-                        lo[1] = s[2];  hi[1] = s[3];
-                        lo[2] = s[4];  hi[2] = s[5];
-                        lo[3] = s[6];  hi[3] = s[7];
-                        lo[4] = s[8];  hi[4] = s[9];
-                        lo[5] = s[10]; hi[5] = s[11];
-                        lo[6] = s[12]; hi[6] = s[13];
-                        lo[7] = s[14]; hi[7] = s[15];
-                        ++written;
-                    }
-                    prev[g] = (uint8_t)changed;
+                    const uint32_t *group_s = row_s + bit * FMT_DIRTY_GROUP_DWORDS;
+                    uint32_t group = g + bit;
+                    uint32_t h = fmt_dirty_fold(group_s);
+                    unsigned int changed = (prev[group] == FMT_DIRTY_NO_HASH) | (h != hash[group]);
+                    hash[group] = h;
+                    if (changed | prev[group]) write_mask |= 1u << bit;
+                    prev[group] = (uint8_t)changed;
                 }
-                lo += 8; hi += 8; s += 16;
             }
+            bit = 0;
+            while (bit < row_groups) {
+                uint32_t run;
+                if (!(write_mask & (1u << bit))) { ++bit; continue; }
+                run = bit;
+                while (run < row_groups && (write_mask & (1u << run))) ++run;
+                fmt_write_groups(row_lo + bit * 8u, row_hi + bit * 8u,
+                                 row_s + bit * FMT_DIRTY_GROUP_DWORDS, run - bit);
+                written += run - bit;
+                bit = run;
+            }
+            lo += 8u * row_groups;
+            hi += 8u * row_groups;
+            s += FMT_DIRTY_GROUP_DWORDS * row_groups;
+            g += row_groups;
         }
         return written != 0;
     }
 
     for (g = 0; g < FMT_DIRTY_MAX_ROWS; ++g) g_dirty_prev_rows[g] = 0xffu;
-    for (g = 0; g < groups; ++g) {
-        uint32_t h = fmt_dirty_fold(s);
-        unsigned int changed = (h != hash[g]);
+    {
+        uint32_t y;
+        for (y = 0; y < (uint32_t)g_cur->height; ++y) {
+            const uint32_t *row_s = (const uint32_t *)((const uint8_t *)src + y * g_cur->stride);
+            volatile uint32_t *row_lo = (volatile uint32_t *)(vram + base + y * row_groups * 32u);
+            volatile uint32_t *row_hi = (volatile uint32_t *)(vram + 0x40000u + base + y * row_groups * 32u);
+            uint32_t write_mask = 0;
+            uint32_t bit;
 
-        if (changed) hash[g] = h;
+            for (bit = 0; bit < row_groups; ++bit) {
+                uint32_t group = y * row_groups + bit;
+                uint32_t h = fmt_dirty_fold(row_s + bit * FMT_DIRTY_GROUP_DWORDS);
+                unsigned int changed = (h != hash[group]);
+                if (changed) hash[group] = h;
+                if (changed | prev[group]) write_mask |= 1u << bit;
+                prev[group] = (uint8_t)changed;
+            }
 
-        if (changed | prev[g]) {
-            lo[0] = s[0];  hi[0] = s[1];
-            lo[1] = s[2];  hi[1] = s[3];
-            lo[2] = s[4];  hi[2] = s[5];
-            lo[3] = s[6];  hi[3] = s[7];
-            lo[4] = s[8];  hi[4] = s[9];
-            lo[5] = s[10]; hi[5] = s[11];
-            lo[6] = s[12]; hi[6] = s[13];
-            lo[7] = s[14]; hi[7] = s[15];
-            ++written;
+            bit = 0;
+            while (bit < row_groups) {
+                uint32_t run;
+                if (!(write_mask & (1u << bit))) { ++bit; continue; }
+                run = bit;
+                while (run < row_groups && (write_mask & (1u << run))) ++run;
+                fmt_write_groups(row_lo + bit * 8u, row_hi + bit * 8u,
+                                 row_s + bit * FMT_DIRTY_GROUP_DWORDS, run - bit);
+                written += run - bit;
+                bit = run;
+            }
         }
-        prev[g] = (uint8_t)changed;
-
-        lo += 8; hi += 8; s += 16;
     }
 
 #if defined(FMTOWNS_MEASURE_DIRTY_BAR)
@@ -571,7 +652,7 @@ void fmt_put_image(const void *src, int width, int height, int stride)
      * (stride 256, page size 61440).  Anything else falls through to the
      * general loop below.
      */
-    if (!g_cur->linear && span == (uint32_t)stride && span == g_cur->stride
+    if (!g_cur->linear && g_cur->bpp == 8 && span == (uint32_t)stride && span == g_cur->stride
         && (g_fmt_draw_buffer_offset & 7u) == 0 && (g_cur->stride & 7u) == 0) {
         uint32_t total = (uint32_t)height * (uint32_t)g_cur->stride;
         uint32_t base = g_fmt_draw_buffer_offset >> 1;
@@ -580,28 +661,9 @@ void fmt_put_image(const void *src, int width, int height, int stride)
         /* Dword loads off a byte-aligned source are legal on x86 (they only
          * cost an extra bus cycle when they straddle a dword boundary), and
          * a game framebuffer is aligned in practice anyway. */
-        const uint32_t *s = (const uint32_t *)src;
-        uint32_t quads = total >> 5;   /* 32 source bytes per iteration */
-        uint32_t groups = (total >> 3) & 3u;
-
-        /* Unrolled 4x.  Once the game step got cheap enough this blit became
-         * ~15 ms of a 16.6 ms frame -- the single thing standing between the
-         * duel and a locked 60 Hz -- so the loop's own increment/compare/branch
-         * per 8 bytes is worth removing.  It cannot be a `rep movsl`: the two
-         * banks want alternating dwords from one source, which no single string
-         * move expresses.  The tail runs whatever is left over; 61440 bytes is
-         * an exact multiple of 32, so in practice it runs zero times. */
-        while (quads--) {
-            lo[0] = s[0]; hi[0] = s[1];
-            lo[1] = s[2]; hi[1] = s[3];
-            lo[2] = s[4]; hi[2] = s[5];
-            lo[3] = s[6]; hi[3] = s[7];
-            lo += 4; hi += 4; s += 8;
-        }
-        while (groups--) {
-            *lo++ = *s++;
-            *hi++ = *s++;
-        }
+        /* The helper keeps four-pixel dword transfers while making the bank
+           ordering an explicit, shared measurement switch. */
+        fmt_write_groups(lo, hi, (const uint32_t *)src, total >> 6);
         return;
     }
 

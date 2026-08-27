@@ -499,7 +499,6 @@ static int g_fb_ovl_prev_full = 1;
    presenter's usual current+previous-frame damage window.  The first later
    composite restore must therefore declare the old overlay footprint anew so
    both alternating VRAM pages receive it. */
-static int g_fb_ovl_retained;
 /* Which composite the framebuffer is currently built on.  Restoring a
    different one (the hand view's cache after the top view's, say) has to put
    back the whole screen, not just where the overlay was. */
@@ -549,7 +548,6 @@ static void fb_damage_all(void)
     g_ui_retained_tag = 0;
     g_fb_base_src = 0;
     g_fb_base_solid_valid = 0;
-    g_fb_ovl_retained = 0;
     /* Everything on screen has just been replaced, so no claim survives. */
     g_fb_kept_valid = 0;
     g_fb_keep_claimed = 0;
@@ -561,7 +559,6 @@ static void fb_damage_base_mark(const uint8_t *src)
     memset(g_fb_ovl_curr, 0, sizeof(g_fb_ovl_curr));
     g_fb_base_src = src;
     g_fb_base_solid_valid = 0;
-    g_fb_ovl_retained = 0;
 }
 
 /* "The framebuffer is uniformly `color` as of now." */
@@ -571,7 +568,6 @@ static void fb_damage_solid_mark(uint8_t color)
     g_fb_base_src = 0;
     g_fb_base_solid_valid = 1;
     g_fb_base_solid_color = color;
-    g_fb_ovl_retained = 0;
 }
 
 /* "I filled this rectangle opaquely, and I redraw it myself the moment its
@@ -696,7 +692,6 @@ static void ui_retain(int tag)
 static void fb_retain_overlay(void)
 {
     memcpy(g_fb_ovl_curr, g_fb_ovl_prev, sizeof(g_fb_ovl_curr));
-    g_fb_ovl_retained = 1;
 }
 
 #if defined(WAIFU_FB_DAMAGE_VERIFY)
@@ -2337,10 +2332,12 @@ static void restore_solid_screen(uint8_t c)
     if (!g_fb_ovl_prev_full && g_fb_base_solid_valid &&
         g_fb_base_solid_color == c) {
         int y;
-        if (g_fb_ovl_retained) {
-            for (y = 0; y < WAIFU_FM_HEIGHT; ++y)
-                g_fb_dmg[y] |= g_fb_ovl_prev[y];
-        }
+        /* The restored pixels are observable output on this frame.  Declare
+           the old footprint explicitly so the alternating draw page receives
+           the cleared card/text pixels even when this restore follows a move,
+           not only when a retained overlay aged out. */
+        for (y = 0; y < WAIFU_FM_HEIGHT; ++y)
+            g_fb_dmg[y] |= g_fb_ovl_prev[y];
         for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
             unsigned m = g_fb_ovl_prev[y];
             int g = 0;
@@ -2503,11 +2500,12 @@ static inline void copy_u8_fast(uint8_t *dst, const uint8_t *src, int count)
    which 64-pixel groups the overlay actually covered, so those are the only
    ones that need undoing.
 
-   Deliberately does NOT declare damage for the partial case: everything it
-   writes is by definition inside the previous frame's mask, and the presenter
-   already scans the union of both frames (libfmt.c).  Declaring it would grow
-   this frame's mask, and next frame's restore with it, until the mask covered
-   every overlay position ever used. */
+   The partial restore also re-declares the old footprint as present damage.
+   The presenter normally carries the previous declaration for page flipping,
+   but making the restore explicit is what guarantees that both physical VRAM
+   pages receive the cleared pixels when an overlay moves.  This does not grow
+   the next restore mask: fb_damage_base_mark() clears the current overlay
+   description immediately after the copy. */
 static int fb_unkeep_opaque(int x, int y, int w, int h);
 
 static void fb_restore_composite(const uint8_t *src)
@@ -2518,13 +2516,12 @@ static void fb_restore_composite(const uint8_t *src)
        pixel-diffed against. */
     if (!g_fb_ovl_prev_full && g_fb_base_src == src) {
         int y;
-        if (g_fb_ovl_retained) {
-            /* The usual previous-frame declaration has aged out while this
-               unchanged overlay was retained.  Re-declare only its old
-               footprint on the one frame that restores it. */
-            for (y = 0; y < WAIFU_FM_HEIGHT; ++y)
-                g_fb_dmg[y] |= g_fb_ovl_prev[y];
-        }
+        /* The restored pixels are part of this frame's observable output.
+           Keep them in the current declaration even when the presenter has
+           a previous-frame union of its own: the draw page alternates, and
+           the page that missed the moving overlay must be repaired now. */
+        for (y = 0; y < WAIFU_FM_HEIGHT; ++y)
+            g_fb_dmg[y] |= g_fb_ovl_prev[y];
         for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
             unsigned m = g_fb_ovl_prev[y];
             int g = 0;
@@ -4216,25 +4213,48 @@ static inline void blit_scaled_row_mapped(const uint8_t *src, uint8_t *dst,
                                           const uint16_t *xmap, int count)
 {
 #if defined(WAIFU_FM_FMTOWNS) && defined(__i386__)
-    /* One non-contiguous source read and one contiguous destination write per
-       pixel.  lodsw/stosb advance both streams in hardware; EAX turns the map
-       word into the indexed source offset.  Scaling arithmetic was moved out
-       of this height-times-width loop when the map was built. */
+    /* Scaling arithmetic was moved out of this height-times-width loop when
+       the map was built.  Four source pixels are packed into one destination
+       dword whenever possible.  The source reads remain byte-addressed because
+       a scaled row is not contiguous, but the destination pays one store for
+       four exact indexed pixels; the unaligned store is legal on the 386 and
+       is needed for the two-pixel card shakes. */
+    {
+        unsigned int groups = (unsigned int)count >> 2;
+        int tail = count & 3;
     __asm__ volatile (
         "cld\n"
-        "test %[count],%[count]\n"
+        "test %[groups],%[groups]\n"
         "jz 2f\n"
         "1:\n"
         "lodsw\n"
         "movzwl %%ax,%%eax\n"
         "movb (%[src],%%eax,1),%%al\n"
-        "stosb\n"
-        "decl %[count]\n"
+        "movb %%al,%%bl\n"
+        "lodsw\n"
+        "movzwl %%ax,%%eax\n"
+        "movb (%[src],%%eax,1),%%al\n"
+        "movb %%al,%%bh\n"
+        "lodsw\n"
+        "movzwl %%ax,%%eax\n"
+        "movb (%[src],%%eax,1),%%al\n"
+        "movb %%al,%%dl\n"
+        "lodsw\n"
+        "movzwl %%ax,%%eax\n"
+        "movb (%[src],%%eax,1),%%al\n"
+        "movb %%al,%%dh\n"
+        "shll $16,%%edx\n"
+        "movw %%bx,%%dx\n"
+        "movl %%edx,(%%edi)\n"
+        "addl $4,%%edi\n"
+        "decl %[groups]\n"
         "jnz 1b\n"
         "2:\n"
-        : "+S" (xmap), "+D" (dst), [count] "+c" (count)
+        : "+S" (xmap), "+D" (dst), [groups] "+c" (groups)
         : [src] "r" (src)
-        : "eax", "cc", "memory");
+        : "eax", "ebx", "edx", "cc", "memory");
+        while (tail-- > 0) *dst++ = src[*xmap++];
+    }
 #else
     while (count-- > 0) *dst++ = src[*xmap++];
 #endif
@@ -5881,6 +5901,8 @@ static void draw_flash_rect(int x, int y, int w, int h, uint8_t c)
     rect_outline(x, y, w, h, IDX_WHITE);
 }
 
+static void draw_disc(int cx, int cy, int r, uint8_t c);
+
 static void draw_flames(int x, int y, int w, int h, int frame)
 {
     for (int i = 0; i < 90; ++i) {
@@ -5889,15 +5911,13 @@ static void draw_flames(int x, int y, int w, int h, int frame)
         int py = y + h - ((r / 13) % h) - (frame % 9);
         int rad = 1 + ((r >> 6) % 5);
         uint8_t col = (i % 3 == 0) ? IDX_FLAME1 : ((i % 3 == 1) ? IDX_FLAME2 : IDX_FLAME3);
-        for (int yy = -rad; yy <= rad; ++yy)
-            for (int xx = -rad; xx <= rad; ++xx)
-                if (xx*xx + yy*yy <= rad*rad) put_px(px+xx, py+yy, col);
+        draw_disc(px, py, rad, col);
     }
 }
 
 
-static void draw_disc(int cx, int cy, int r, uint8_t c);
-static void draw_big_battle_card_burning(int id, int x, int y, int back, int burn_frame)
+static void draw_big_battle_card_burning_impl(int id, int x, int y, int back,
+                                              int burn_frame, int draw_base)
 {
     const int w = WAIFU_BATTLE_CARD_W, h = WAIFU_BATTLE_CARD_H;
     if (burn_frame < 0) burn_frame = 0;
@@ -5909,7 +5929,7 @@ static void draw_big_battle_card_burning(int id, int x, int y, int back, int bur
     const int vanish_frames = BATTLE_BURN_VANISH_FRAMES;
     if (burn_frame >= vanish_frames) return;
 
-    draw_big_battle_card(id, x, y, back);
+    if (draw_base) draw_big_battle_card(id, x, y, back);
     int erase_h = (burn_frame * h) / vanish_frames;
     if (erase_h > h) erase_h = h;
     int edge = y + h - erase_h;
@@ -5938,12 +5958,31 @@ static void draw_big_battle_card_burning(int id, int x, int y, int back, int bur
     }
 }
 
+static void draw_big_battle_card_burning(int id, int x, int y, int back, int burn_frame)
+{
+    draw_big_battle_card_burning_impl(id, x, y, back, burn_frame, 1);
+}
+
+/* Retained cut-ins already have the complete face-up card in their canonical
+   framebuffer.  Only the erase edge, ordered flame discs, and hot fringe are
+   new pixels on a burn frame. */
+static void draw_big_battle_card_burning_overlay(int id, int x, int y, int back, int burn_frame)
+{
+    draw_big_battle_card_burning_impl(id, x, y, back, burn_frame, 0);
+}
+
 static void draw_disc(int cx, int cy, int r, uint8_t c)
 {
+    int rr = r * r;
     for (int yy = -r; yy <= r; ++yy) {
-        for (int xx = -r; xx <= r; ++xx) {
-            if (xx*xx + yy*yy <= r*r) put_px(cx+xx, cy+yy, c);
-        }
+        int span = 0;
+        while ((span + 1) <= r && (span + 1) * (span + 1) + yy * yy <= rr)
+            ++span;
+        /* The old implementation tested every pixel in the square and called
+           put_px() for each hit.  A circle row is one inclusive interval, so
+           hline() emits exactly the same pixels while doing one clipped fill
+           and one damage declaration for the row. */
+        hline(cx - span, cx + span, cy + yy, c);
     }
 }
 
@@ -6008,6 +6047,34 @@ static void draw_big_battle_card_hit_flash(int id, int x, int y, int back, int p
        overlay for a few frames. */
     draw_big_battle_card(id, x, y, back);
     if (((phase / 2) & 1) == 0) {
+        /* Both the packed and scalar implementations are overlays on a
+           retained cut-in base.  Keep their damage declarations identical so
+           the scalar reference remains a valid pixel/damage oracle. */
+        fb_damage_rect(x + 4, y + 5, 112, 114);
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_FMTOWNS_SCALAR_FLASH)
+        /* The checker keeps exactly one byte in each four-pixel group.  On
+           Marty, emit the three white pixels with one packed dword read/write
+           instead of three clipped put_px() calls.  The impact cards are
+           fully visible; retain the scalar path for any future clipped use so
+           this kernel cannot change edge semantics. */
+        if (x + 4 >= 0 && x + 116 <= WAIFU_FM_WIDTH &&
+            y + 5 >= 0 && y + 119 <= WAIFU_FM_HEIGHT) {
+            int yy;
+            for (yy = y + 5; yy < y + 119; ++yy) {
+                uint8_t *dst = framebuffer + yy * WAIFU_FM_WIDTH + x + 4;
+                int keep_lane = (4 - ((x + 4 + yy + phase * 3) & 3)) & 3;
+                uint32_t keep = 0xffu << (8 * keep_lane);
+                uint32_t white = (uint32_t)IDX_WHITE * 0x01010101u;
+                int n;
+                for (n = 0; n < 28; ++n) {
+                    uint32_t old = *(uint32_t *)(void *)dst;
+                    *(uint32_t *)(void *)dst = (old & keep) | (white & ~keep);
+                    dst += 4;
+                }
+            }
+            return;
+        }
+#endif
         for (int yy = y + 5; yy < y + 119; ++yy) {
             for (int xx = x + 4; xx < x + 116; ++xx) {
                 if (((xx + yy + phase * 3) & 3) != 0) put_px(xx, yy, IDX_WHITE);
@@ -6142,6 +6209,33 @@ typedef enum {
     BATTLE_NO_DESTROY = 4
 } BattleOutcome;
 
+static void draw_battle_cutin_names(int atk_id, int def_id)
+{
+    rect_fill(0, 2, 128, 22, IDX_BLACK);
+    {
+        const char *name = is_monster_card(atk_id) ? waifu_card_names[atk_id] : (is_support_card(atk_id) ? support_card_name(atk_id) : "???");
+        draw_wrapped_text_small(4, 4, name, 19, IDX_WHITE, IDX_BLACK);
+    }
+    {
+        int rx = WAIFU_FM_WIDTH + waifu_platform_ui_extra_w();
+        rect_fill(rx - 138, WAIFU_FM_HEIGHT - 42, 138, 42, IDX_BLACK);
+        {
+            const char *name = is_monster_card(def_id) ? waifu_card_names[def_id] : (is_support_card(def_id) ? support_card_name(def_id) : "???");
+            draw_wrapped_text_small(rx - 134, WAIFU_FM_HEIGHT - 41, name, 20, IDX_WHITE, IDX_BLACK);
+        }
+    }
+}
+
+#if defined(WAIFU_FM_FMTOWNS)
+static int fmtowns_cutin_begin(int atk_id, int def_id,
+                               int extra_w, int start, int local0);
+static int fmtowns_cutin_base_valid(void);
+static void fmtowns_cutin_build_base(int atk_id, int def_id);
+static void fmtowns_cutin_capture(void);
+static void fmtowns_cutin_restore(void);
+static void fmtowns_cutin_blank_card(int x, int y);
+#endif
+
 static void draw_battle_cutin_event_ex(int f, int start,
                                        int atk_id, int def_id,
                                        int atk_col, int atk_row, int atk_back,
@@ -6162,14 +6256,23 @@ static void draw_battle_cutin_event_ex(int f, int start,
         return;
     }
 
-    restore_solid_screen(IDX_BLACK);
     int local = local0 - WAIFU_BATTLE_PRELUDE_FRAMES;
     /* Widescreen: center the whole clash on the true screen (the pair stays
        centred, sliding in from the real screen edges) instead of confining it to
        the game-aspect column. ho==0 on console -> byte-identical positions. The
        HUD bracket is opened here, after the 3D prelude returned above, so the
        ui_hud depth stays balanced. */
-    const int ho = waifu_platform_ui_extra_w() / 2;
+    const int extra_w = waifu_platform_ui_extra_w();
+    const int ho = extra_w / 2;
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+    int cutin_retain = fmtowns_cutin_begin(atk_id, def_id, extra_w, start, local0);
+#endif
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE) && !defined(WAIFU_BATTLE_CUTIN_RETAIN_DISABLE)
+    if (cutin_retain && fmtowns_cutin_base_valid()) fmtowns_cutin_restore();
+    else restore_solid_screen(IDX_BLACK);
+#else
+    restore_solid_screen(IDX_BLACK);
+#endif
     ui_hud_begin();
     const int ax = WAIFU_BATTLE_CARD_X0 + ho, ay = WAIFU_BATTLE_CARD_Y;
     const int dx = WAIFU_BATTLE_CARD_X1 + ho, dy = WAIFU_BATTLE_CARD_Y;
@@ -6189,6 +6292,16 @@ static void draw_battle_cutin_event_ex(int f, int start,
                                                           : (ram_start + ram_dur + WAIFU_BATTLE_BURN_DELAY_FRAMES);
     if (outcome == BATTLE_DESTROY_BOTH) burn_start = ram_start + ram_dur + (WAIFU_BATTLE_BURN_DELAY_FRAMES / 2);
     int burn_dur = BATTLE_BURN_DUR;
+    int cutin_base = 0;
+
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE) && !defined(WAIFU_BATTLE_CUTIN_RETAIN_DISABLE)
+    /* A slow frame can jump over the short face-up pause.  Build the exact
+       canonical face once before painting that frame's transient overlay. */
+    if (cutin_retain && local >= reveal_end && !fmtowns_cutin_base_valid()) {
+        fmtowns_cutin_build_base(atk_id, def_id);
+    }
+    cutin_base = cutin_retain && fmtowns_cutin_base_valid();
+#endif
 
     /* SFX are tied to the visible cut-in beats, not to battle resolution.
        Crossed rather than landed on exactly -- see frame_cue_crossed(). */
@@ -6210,8 +6323,10 @@ static void draw_battle_cutin_event_ex(int f, int start,
         draw_cutin_battle_card(atk_id, ax, ay, 0, 1);
         draw_big_battle_card_flip(def_id, dx, dy, local - def_flip_start, flip_dur);
     } else if (local < ram_start) {
-        draw_cutin_battle_card(atk_id, ax, ay, 0, 1);
-        draw_cutin_battle_card(def_id, dx, dy, 0, 0);
+        if (!cutin_base) {
+            draw_cutin_battle_card(atk_id, ax, ay, 0, 1);
+            draw_cutin_battle_card(def_id, dx, dy, 0, 0);
+        }
     } else if (local < burn_start) {
         int atk_x = ax;
         int def_x = dx;
@@ -6268,11 +6383,35 @@ static void draw_battle_cutin_event_ex(int f, int start,
             shake_attacker = ((local & 1) ? -2 : 2);
         }
 
-        if (flash_attacker) draw_big_battle_card_hit_flash(atk_id, atk_x + shake_attacker, ay, 0, local);
-        else draw_cutin_battle_card(atk_id, atk_x, ay, 0, 1);
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE) && !defined(WAIFU_BATTLE_CUTIN_RETAIN_DISABLE)
+        if (cutin_base) {
+            int draw_atk = flash_attacker || atk_x != ax || shake_attacker != 0;
+            int draw_def = flash_defender || def_x != dx || shake_defender != 0;
+            int current_atk_x = atk_x + shake_attacker;
+            int current_def_x = def_x + shake_defender;
+            int overlap = current_atk_x < current_def_x + WAIFU_BATTLE_CARD_W &&
+                          current_def_x < current_atk_x + WAIFU_BATTLE_CARD_W;
 
-        if (flash_defender) draw_big_battle_card_hit_flash(def_id, def_x + shake_defender, dy, 0, local);
-        else draw_cutin_battle_card(def_id, def_x, dy, 0, 0);
+            /* The canonical cards remain underneath.  A moving/flashing card
+               is redrawn only when needed; if its current footprint overlaps
+               the other card, redraw the later-painted defender as well. */
+            if (draw_atk) {
+                if (flash_attacker) draw_big_battle_card_hit_flash(atk_id, current_atk_x, ay, 0, local);
+                else draw_cutin_battle_card(atk_id, current_atk_x, ay, 0, 1);
+            }
+            if (draw_def || (draw_atk && overlap)) {
+                if (flash_defender) draw_big_battle_card_hit_flash(def_id, current_def_x, dy, 0, local);
+                else draw_cutin_battle_card(def_id, current_def_x, dy, 0, 0);
+            }
+        } else
+#endif
+        {
+            if (flash_attacker) draw_big_battle_card_hit_flash(atk_id, atk_x + shake_attacker, ay, 0, local);
+            else draw_cutin_battle_card(atk_id, atk_x, ay, 0, 1);
+
+            if (flash_defender) draw_big_battle_card_hit_flash(def_id, def_x + shake_defender, dy, 0, local);
+            else draw_cutin_battle_card(def_id, def_x, dy, 0, 0);
+        }
 
         if (outcome == BATTLE_DESTROY_DEFENDER && local >= hit_hold_start && local < burn_start) {
             draw_centered_damage_text_in_card(def_x + shake_defender, dy, damage_text);
@@ -6285,6 +6424,19 @@ static void draw_battle_cutin_event_ex(int f, int start,
         }
     } else if (local < burn_start + burn_dur) {
         int burn = local - burn_start;
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE) && !defined(WAIFU_BATTLE_CUTIN_RETAIN_DISABLE)
+        if (cutin_base) {
+            if (outcome == BATTLE_DESTROY_DEFENDER) {
+                draw_big_battle_card_burning_overlay(def_id, dx, dy, 0, burn);
+            } else if (outcome == BATTLE_DESTROY_ATTACKER) {
+                draw_big_battle_card_burning_overlay(atk_id, ax, ay, 0, burn);
+            } else if (outcome == BATTLE_DESTROY_BOTH) {
+                draw_big_battle_card_burning_overlay(atk_id, ax, ay, 0, burn);
+                draw_big_battle_card_burning_overlay(def_id, dx, dy, 0, burn);
+            }
+        } else
+#endif
+        {
         if (outcome == BATTLE_DESTROY_DEFENDER) {
             draw_cutin_battle_card(atk_id, ax, ay, 0, 1);
             draw_big_battle_card_burning(def_id, dx, dy, 0, burn);
@@ -6298,22 +6450,24 @@ static void draw_battle_cutin_event_ex(int f, int start,
             draw_cutin_battle_card(atk_id, ax, ay, 0, 1);
             draw_cutin_battle_card(def_id, dx, dy, 0, 0);
         }
+        }
     } else {
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE) && \
+    !defined(WAIFU_BATTLE_CUTIN_RETAIN_DISABLE)
+        if (cutin_base) {
+            if (outcome == BATTLE_DESTROY_ATTACKER || outcome == BATTLE_DESTROY_BOTH)
+                fmtowns_cutin_blank_card(ax, ay);
+            if (outcome == BATTLE_DESTROY_DEFENDER || outcome == BATTLE_DESTROY_BOTH)
+                fmtowns_cutin_blank_card(dx, dy);
+        } else
+#endif
+        {
         if (outcome != BATTLE_DESTROY_ATTACKER && outcome != BATTLE_DESTROY_BOTH) draw_cutin_battle_card(atk_id, ax, ay, 0, 1);
         if (outcome != BATTLE_DESTROY_DEFENDER && outcome != BATTLE_DESTROY_BOTH) draw_cutin_battle_card(def_id, dx, dy, 0, 0);
+        }
     }
 
-    rect_fill(0, 2, 128, 22, IDX_BLACK);
-    {
-        const char *name = is_monster_card(atk_id) ? waifu_card_names[atk_id] : (is_support_card(atk_id) ? support_card_name(atk_id) : "???");
-        draw_wrapped_text_small(4, 4, name, 19, IDX_WHITE, IDX_BLACK);
-    }
-    {
-        int rx = WAIFU_FM_WIDTH + waifu_platform_ui_extra_w();
-        rect_fill(rx - 138, WAIFU_FM_HEIGHT - 42, 138, 42, IDX_BLACK);
-        const char *name = is_monster_card(def_id) ? waifu_card_names[def_id] : (is_support_card(def_id) ? support_card_name(def_id) : "???");
-        draw_wrapped_text_small(rx - 134, WAIFU_FM_HEIGHT - 41, name, 20, IDX_WHITE, IDX_BLACK);
-    }
+    if (!cutin_base) draw_battle_cutin_names(atk_id, def_id);
     ui_hud_end();
 }
 
@@ -7577,6 +7731,32 @@ static WaifuBattleBaseCache g_b_base_cache_top;
    path rendered the placement board from scratch on every one of the 48 card
    flight frames even though the camera and field did not move. */
 static WaifuBattleBaseCache g_b_fmtowns_work_cache;
+typedef enum FmtownsWorkCacheOwner {
+    FMTOWNS_WORK_CACHE_NONE = 0,
+    FMTOWNS_WORK_CACHE_CAMERA = 1,
+    FMTOWNS_WORK_CACHE_CUTIN = 2
+} FmtownsWorkCacheOwner;
+
+/* The 61,440-byte work slot is shared by camera composites and the battle
+   cut-in.  Keep the ownership explicit: a camera key must never accidentally
+   interpret a retained 2-D cut-in as a 3-D board. */
+static FmtownsWorkCacheOwner g_b_fmtowns_work_cache_owner = FMTOWNS_WORK_CACHE_NONE;
+
+typedef struct FmtownsCutinBaseKey {
+    int atk_id;
+    int def_id;
+    int atk_atk;
+    int atk_def;
+    int def_atk;
+    int def_def;
+    int extra_w;
+} FmtownsCutinBaseKey;
+
+/* Small metadata only; the image itself lives in g_b_fmtowns_work_cache. */
+static FmtownsCutinBaseKey g_b_fmtowns_cutin_key;
+static int g_b_fmtowns_cutin_active;
+static int g_b_fmtowns_cutin_start;
+static int g_b_fmtowns_cutin_last_local;
 static int g_b_fmtowns_place_static_baked;
 static int g_b_fmtowns_place_static_slot;
 static int g_b_fmtowns_place_static_row;
@@ -7602,6 +7782,10 @@ static void invalidate_battle_composite_cache(void)
 #endif
 #if defined(WAIFU_FM_FMTOWNS)
     g_b_fmtowns_work_cache.valid = 0;
+    g_b_fmtowns_work_cache_owner = FMTOWNS_WORK_CACHE_NONE;
+    g_b_fmtowns_cutin_active = 0;
+    g_b_fmtowns_cutin_start = 0;
+    g_b_fmtowns_cutin_last_local = -1;
     g_b_fmtowns_place_static_baked = 0;
 #endif
 #if defined(WAIFU_FM_PCFX)
@@ -8637,6 +8821,10 @@ static void clear_battle_snapshot(void)
     g_b_direct_damage = 0;
 }
 
+#if defined(WAIFU_FM_FMTOWNS)
+static void fmtowns_cutin_leave(void);
+#endif
+
 static void update_music_for_current_state(void);
 
 static void set_battle_phase(WaifuBattlePhase phase)
@@ -8646,6 +8834,10 @@ static void set_battle_phase(WaifuBattlePhase phase)
     g_b_phase_frame = 0;
     g_b_anim_vblanks = 0;
     if (phase != prev) {
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+        if (prev == IB_PLAYER_BATTLE || prev == IB_COM_BATTLE)
+            fmtowns_cutin_leave();
+#endif
         if (phase == IB_TURN_TO_COM || phase == IB_TURN_TO_PLAYER) waifu_sound_play(WAIFU_SOUND_TURN_PASSED);
         /* Loss jingle is CD-DA on PC-FX and a music track on host; no PCM SFX. */
     }
@@ -10584,6 +10776,8 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
         return &g_b_handtop_mid_cache[0];
     return NULL;
 #elif defined(WAIFU_FM_FMTOWNS)
+    if (g_b_fmtowns_work_cache_owner == FMTOWNS_WORK_CACHE_CUTIN)
+        return NULL;
     int handtop_count = fmtowns_handtop_anchor_count();
     int turn_count = fmtowns_turn_anchor_count();
     /* Marty caches both resting views: the top-down board and the hand view.
@@ -10728,8 +10922,10 @@ static void battle_base_cache_store(Camera cam, uint32_t key)
     cache->key = key;
     cache->valid = 1;
 #if defined(WAIFU_FM_FMTOWNS)
-    if (cache == &g_b_fmtowns_work_cache)
+    if (cache == &g_b_fmtowns_work_cache) {
+        g_b_fmtowns_work_cache_owner = FMTOWNS_WORK_CACHE_CAMERA;
         g_b_fmtowns_place_static_baked = 0;
+    }
 #endif
 }
 
@@ -10759,6 +10955,109 @@ static void fmtowns_draw_placement_static(Camera cam, int slot, int row,
         g_b_fmtowns_place_static_card = card;
         g_b_fmtowns_place_static_baked = 1;
     }
+}
+#endif
+
+#if defined(WAIFU_FM_FMTOWNS)
+static int fmtowns_cutin_key_equal(const FmtownsCutinBaseKey *a,
+                                   const FmtownsCutinBaseKey *b)
+{
+    return a->atk_id == b->atk_id && a->def_id == b->def_id &&
+           a->atk_atk == b->atk_atk && a->atk_def == b->atk_def &&
+           a->def_atk == b->def_atk && a->def_def == b->def_def &&
+           a->extra_w == b->extra_w;
+}
+
+static int fmtowns_cutin_stat_value(int id, int attacker, int atk_stat)
+{
+    if (!is_monster_card(id)) return 0;
+    if (attacker && id == g_b_battle_atk_card)
+        return atk_stat ? g_b_battle_atk_display_atk : g_b_battle_atk_display_def;
+    if (!attacker && id == g_b_battle_def_card)
+        return atk_stat ? g_b_battle_def_display_atk : g_b_battle_def_display_def;
+    return atk_stat ? (int)waifu_card_atk[id] : (int)waifu_card_def[id];
+}
+
+static void fmtowns_cutin_leave(void)
+{
+    g_b_fmtowns_cutin_active = 0;
+    g_b_fmtowns_cutin_start = 0;
+    g_b_fmtowns_cutin_last_local = -1;
+    g_b_fmtowns_work_cache_owner = FMTOWNS_WORK_CACHE_NONE;
+    g_b_fmtowns_work_cache.valid = 0;
+}
+
+static int fmtowns_cutin_begin(int atk_id, int def_id,
+                               int extra_w, int start, int local0)
+{
+    FmtownsCutinBaseKey key;
+    key.atk_id = atk_id;
+    key.def_id = def_id;
+    key.atk_atk = fmtowns_cutin_stat_value(atk_id, 1, 1);
+    key.atk_def = fmtowns_cutin_stat_value(atk_id, 1, 0);
+    key.def_atk = fmtowns_cutin_stat_value(def_id, 0, 1);
+    key.def_def = fmtowns_cutin_stat_value(def_id, 0, 0);
+    key.extra_w = extra_w;
+
+    if (!g_b_fmtowns_cutin_active ||
+        g_b_fmtowns_work_cache_owner != FMTOWNS_WORK_CACHE_CUTIN ||
+        g_b_fmtowns_cutin_start != start ||
+        local0 < g_b_fmtowns_cutin_last_local ||
+        !fmtowns_cutin_key_equal(&g_b_fmtowns_cutin_key, &key)) {
+        g_b_fmtowns_cutin_key = key;
+        g_b_fmtowns_cutin_active = 1;
+        g_b_fmtowns_cutin_start = start;
+        g_b_fmtowns_cutin_last_local = local0;
+        g_b_fmtowns_work_cache_owner = FMTOWNS_WORK_CACHE_CUTIN;
+        g_b_fmtowns_work_cache.valid = 0;
+        g_b_fmtowns_place_static_baked = 0;
+    } else {
+        g_b_fmtowns_cutin_last_local = local0;
+    }
+
+#if defined(WAIFU_BATTLE_CUTIN_RETAIN_DISABLE)
+    return 0;
+#else
+    return 1;
+#endif
+}
+
+static int fmtowns_cutin_base_valid(void)
+{
+    return g_b_fmtowns_cutin_active &&
+           g_b_fmtowns_work_cache_owner == FMTOWNS_WORK_CACHE_CUTIN &&
+           g_b_fmtowns_work_cache.valid;
+}
+
+static void fmtowns_cutin_build_base(int atk_id, int def_id)
+{
+    draw_cutin_battle_card(atk_id, WAIFU_BATTLE_CARD_X0 + g_b_fmtowns_cutin_key.extra_w / 2,
+                           WAIFU_BATTLE_CARD_Y, 0, 1);
+    draw_cutin_battle_card(def_id, WAIFU_BATTLE_CARD_X1 + g_b_fmtowns_cutin_key.extra_w / 2,
+                           WAIFU_BATTLE_CARD_Y, 0, 0);
+    draw_battle_cutin_names(atk_id, def_id);
+    fmtowns_cutin_capture();
+}
+
+static void fmtowns_cutin_capture(void)
+{
+    copy_u8_fast(g_b_fmtowns_work_cache.pixels, framebuffer,
+                 (int)sizeof(g_b_fmtowns_work_cache.pixels));
+    fb_damage_base_mark(g_b_fmtowns_work_cache.pixels);
+    g_b_fmtowns_work_cache_owner = FMTOWNS_WORK_CACHE_CUTIN;
+    g_b_fmtowns_work_cache.valid = 1;
+}
+
+static void fmtowns_cutin_restore(void)
+{
+    fb_restore_composite(g_b_fmtowns_work_cache.pixels);
+}
+
+static void fmtowns_cutin_blank_card(int x, int y)
+{
+    /* Match the complete footprint of draw_big_battle_card_stats(), including
+       its right and bottom shadow strips. */
+    rect_fill(x, y, WAIFU_BATTLE_CARD_W + 3, WAIFU_BATTLE_CARD_H + 4, IDX_BLACK);
 }
 #endif
 #endif /* !WAIFU_BATTLE_BASE_CACHE_DISABLE */
