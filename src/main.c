@@ -361,8 +361,9 @@ static int g_com_lp = 8000;
 /* HUD-displayed LP counters. Battle logic (win/loss, damage math) reads/writes
    g_you_lp/g_com_lp instantly; the HUD reads these _disp counters instead, so
    a big hit normally counts down visibly over a beat rather than snapping
-   straight to the new value. PC-FX bypasses that drain because its lower duel
-   update rate makes the counter lag far behind the resolved damage. */
+   straight to the new value. PC-FX and FM TOWNS bypass that drain because
+   their lower duel update rates make the counter lag far behind the resolved
+   damage. */
 static int g_you_lp_disp = 8000;
 static int g_com_lp_disp = 8000;
 #define WAIFU_LP_DISPLAY_STEP 40
@@ -6239,6 +6240,7 @@ static void fmtowns_cutin_build_base(int atk_id, int def_id);
 static void fmtowns_cutin_capture(void);
 static void fmtowns_cutin_restore(void);
 static void fmtowns_cutin_blank_card(int x, int y);
+static void fmtowns_cutin_blank_displaced_card(int old_x, int new_x, int y);
 static void fmtowns_cutin_draw_card(int base_x, int x, int y,
                                     int flash, int phase);
 #endif
@@ -6399,9 +6401,20 @@ static void draw_battle_cutin_event_ex(int f, int start,
             int overlap = current_atk_x < current_def_x + WAIFU_BATTLE_CARD_W + 3 &&
                           current_def_x < current_atk_x + WAIFU_BATTLE_CARD_W + 3;
 
-            /* The canonical cards remain underneath.  A moving/flashing card
-               is redrawn only when needed; if its current footprint overlaps
-               the other card, redraw the later-painted defender as well. */
+            /* The retained base contains both cards at their resting positions.
+               Remove a displaced card's resting copy before drawing the moving
+               pair; otherwise the dirty presenter correctly preserves that copy
+               as a stale card-shaped remnant.  Blank both resting footprints
+               before either moving card is painted so overlap keeps the normal
+               attacker-then-defender painter order. */
+            if (current_atk_x != ax)
+                fmtowns_cutin_blank_displaced_card(ax, current_atk_x, ay);
+            if (current_def_x != dx)
+                fmtowns_cutin_blank_displaced_card(dx, current_def_x, dy);
+
+            /* A moving/flashing card is redrawn only when needed; if its
+               current footprint overlaps the other card, redraw the
+               later-painted defender as well. */
             if (draw_atk) {
                 fmtowns_cutin_draw_card(ax, current_atk_x, ay,
                                         flash_attacker, local);
@@ -6434,12 +6447,23 @@ static void draw_battle_cutin_event_ex(int f, int start,
 #if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE) && !defined(WAIFU_BATTLE_CUTIN_RETAIN_DISABLE)
         if (cutin_base) {
             if (outcome == BATTLE_DESTROY_DEFENDER) {
-                draw_big_battle_card_burning_overlay(def_id, dx, dy, 0, burn);
+                if (burn >= BATTLE_BURN_VANISH_FRAMES)
+                    fmtowns_cutin_blank_card(dx, dy);
+                else
+                    draw_big_battle_card_burning_overlay(def_id, dx, dy, 0, burn);
             } else if (outcome == BATTLE_DESTROY_ATTACKER) {
-                draw_big_battle_card_burning_overlay(atk_id, ax, ay, 0, burn);
+                if (burn >= BATTLE_BURN_VANISH_FRAMES)
+                    fmtowns_cutin_blank_card(ax, ay);
+                else
+                    draw_big_battle_card_burning_overlay(atk_id, ax, ay, 0, burn);
             } else if (outcome == BATTLE_DESTROY_BOTH) {
-                draw_big_battle_card_burning_overlay(atk_id, ax, ay, 0, burn);
-                draw_big_battle_card_burning_overlay(def_id, dx, dy, 0, burn);
+                if (burn >= BATTLE_BURN_VANISH_FRAMES) {
+                    fmtowns_cutin_blank_card(ax, ay);
+                    fmtowns_cutin_blank_card(dx, dy);
+                } else {
+                    draw_big_battle_card_burning_overlay(atk_id, ax, ay, 0, burn);
+                    draw_big_battle_card_burning_overlay(def_id, dx, dy, 0, burn);
+                }
             }
         } else
 #endif
@@ -8064,7 +8088,7 @@ static void draw_cutin_battle_card(int id, int x, int y, int back, int attacker_
 
 static int input_pressed(int now, int prev) { return now && !prev; }
 
-#if !defined(WAIFU_FM_PCFX)
+#if !defined(WAIFU_FM_PCFX) && !defined(WAIFU_FM_FMTOWNS)
 static int lp_disp_step_toward(int disp, int target)
 {
     int diff = target - disp;
@@ -8076,9 +8100,9 @@ static int lp_disp_step_toward(int disp, int target)
 
 static void step_lp_display(void)
 {
-#if defined(WAIFU_FM_PCFX)
+#if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
     /* Battle logic has already committed the authoritative values.  Present
-       them on the next rendered frame instead of spending many slow PC-FX
+       them on the next rendered frame instead of spending many slow target
        updates walking the HUD counter down in 40-LP increments. */
     g_you_lp_disp = g_you_lp;
     g_com_lp_disp = g_com_lp;
@@ -11119,6 +11143,30 @@ static void fmtowns_cutin_blank_card(int x, int y)
     /* Match the complete footprint of draw_big_battle_card_stats(), including
        its right and bottom shadow strips. */
     rect_fill(x, y, WAIFU_BATTLE_CARD_W + 3, WAIFU_BATTLE_CARD_H + 4, IDX_BLACK);
+}
+
+static void fmtowns_cutin_blank_displaced_card(int old_x, int new_x, int y)
+{
+    int dx = new_x - old_x;
+    int x;
+    int w;
+
+    if (dx == 0) return;
+    w = i_abs(dx);
+
+    /* Erase only the part of the retained resting card that the shifted card
+       will not cover.  The three bands mirror fmtowns_cutin_copy_card(): the
+       right shadow starts below the first four rows, and the bottom shadow is
+       inset by three pixels.  A full 123x164 clear here would move another
+       20 KB per animation frame on the Marty. */
+    x = dx > 0 ? old_x : old_x + WAIFU_BATTLE_CARD_W - w;
+    rect_fill(x, y, w, 4, IDX_BLACK);
+
+    x = dx > 0 ? old_x : old_x + WAIFU_BATTLE_CARD_W + 3 - w;
+    rect_fill(x, y + 4, w, 156, IDX_BLACK);
+
+    x = dx > 0 ? old_x + 3 : old_x + WAIFU_BATTLE_CARD_W + 3 - w;
+    rect_fill(x, y + 160, w, 4, IDX_BLACK);
 }
 #endif
 #endif /* !WAIFU_BATTLE_BASE_CACHE_DISABLE */
