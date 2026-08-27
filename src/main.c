@@ -4152,6 +4152,34 @@ static int try_draw_card_raw_fast(const uint8_t *src, int sw, int sh, int x, int
     return 0;
 }
 
+static inline void blit_scaled_row_mapped(const uint8_t *src, uint8_t *dst,
+                                          const uint16_t *xmap, int count)
+{
+#if defined(WAIFU_FM_FMTOWNS) && defined(__i386__)
+    /* One non-contiguous source read and one contiguous destination write per
+       pixel.  lodsw/stosb advance both streams in hardware; EAX turns the map
+       word into the indexed source offset.  Scaling arithmetic was moved out
+       of this height-times-width loop when the map was built. */
+    __asm__ volatile (
+        "cld\n"
+        "test %[count],%[count]\n"
+        "jz 2f\n"
+        "1:\n"
+        "lodsw\n"
+        "movzwl %%ax,%%eax\n"
+        "movb (%[src],%%eax,1),%%al\n"
+        "stosb\n"
+        "decl %[count]\n"
+        "jnz 1b\n"
+        "2:\n"
+        : "+S" (xmap), "+D" (dst), [count] "+c" (count)
+        : [src] "r" (src)
+        : "eax", "cc", "memory");
+#else
+    while (count-- > 0) *dst++ = src[*xmap++];
+#endif
+}
+
 static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
     if (!src || dw <= 0 || dh <= 0) return;
@@ -4188,26 +4216,31 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
        every frame, so they cannot use a prebuilt scale map; doing two integer
        divides per output pixel was the dominant cost of the fly-in overlay on
        PC-FX. */
-    int sy = 0;
-    int sy_rem = 0;
+    int xx0 = x < 0 ? -x : 0;
+    int yy0 = y < 0 ? -y : 0;
+    int xx1 = x + dw > WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - x : dw;
+    int yy1 = y + dh > WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - y : dh;
+    int sy_num = yy0 * sh;
+    int sy = sy_num / dh;
+    int sy_rem = sy_num % dh;
     int sy_step = sh / dh;
     int sy_rem_step = sh % dh;
     int sx_step = sw / dw;
     int sx_rem_step = sw % dw;
-    for (int yy = 0; yy < dh; ++yy) {
-        int dy = y + yy;
-        if ((unsigned)dy < WAIFU_FM_HEIGHT) {
-            int sx = 0;
-            int sx_rem = 0;
-            for (int xx = 0; xx < dw; ++xx) {
-                int dx = x + xx;
-                if ((unsigned)dx < WAIFU_FM_WIDTH)
-                    framebuffer[dy * WAIFU_FM_WIDTH + dx] = src[sy * sw + sx];
-                sx += sx_step;
-                sx_rem += sx_rem_step;
-                if (sx_rem >= dw) { sx_rem -= dw; ++sx; }
-            }
-        }
+    uint16_t xmap[WAIFU_FM_WIDTH];
+    int sx_num = xx0 * sw;
+    int sx = sx_num / dw;
+    int sx_rem = sx_num % dw;
+    int visible_w = xx1 - xx0;
+    for (int i = 0; i < visible_w; ++i) {
+        xmap[i] = (uint16_t)sx;
+        sx += sx_step;
+        sx_rem += sx_rem_step;
+        if (sx_rem >= dw) { sx_rem -= dw; ++sx; }
+    }
+    for (int yy = yy0; yy < yy1; ++yy) {
+        uint8_t *dst = framebuffer + (y + yy) * WAIFU_FM_WIDTH + x + xx0;
+        blit_scaled_row_mapped(src + sy * sw, dst, xmap, visible_w);
         sy += sy_step;
         sy_rem += sy_rem_step;
         if (sy_rem >= dh) { sy_rem -= dh; ++sy; }
