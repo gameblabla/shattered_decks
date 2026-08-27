@@ -11065,6 +11065,8 @@ static void fmtowns_cutin_copy_base_rect(int sx, int sy, int x, int y,
 {
     int sx0 = 0, sy0 = 0;
     int x1 = x + w, y1 = y + h;
+    uint8_t *dst;
+    const uint8_t *source;
     int yy;
 
     if (x < 0) { sx0 = -x; x = 0; }
@@ -11074,11 +11076,13 @@ static void fmtowns_cutin_copy_base_rect(int sx, int sy, int x, int y,
     if (x >= x1 || y >= y1) return;
 
     fb_damage_rect(x, y, x1 - x, y1 - y);
+    dst = framebuffer + y * WAIFU_FM_WIDTH + x;
+    source = g_b_fmtowns_work_cache.pixels
+           + (sy + sy0) * WAIFU_FM_WIDTH + sx + sx0;
     for (yy = y; yy < y1; ++yy) {
-        int source_y = sy + sy0 + (yy - y);
-        int off = source_y * WAIFU_FM_WIDTH + sx + sx0;
-        copy_u8_fast(framebuffer + yy * WAIFU_FM_WIDTH + x,
-                     g_b_fmtowns_work_cache.pixels + off, x1 - x);
+        copy_u8_fast(dst, source, x1 - x);
+        dst += WAIFU_FM_WIDTH;
+        source += WAIFU_FM_WIDTH;
     }
 }
 
@@ -11091,11 +11095,13 @@ static void fmtowns_cutin_copy_base_rect(int sx, int sy, int x, int y,
 static void fmtowns_cutin_copy_card(int base_x, int x, int y)
 {
     const int base_y = WAIFU_BATTLE_CARD_Y;
+    /* Rows 4..159 are contiguous from the card body into its right shadow.
+       The short top and bottom bands are the only rows where the renderer's
+       shadow rectangle does not make the whole 123-pixel span opaque. */
     fmtowns_cutin_copy_base_rect(base_x, base_y, x, y,
-                                 WAIFU_BATTLE_CARD_W, 160);
-    fmtowns_cutin_copy_base_rect(base_x + WAIFU_BATTLE_CARD_W,
-                                 base_y + 4, x + WAIFU_BATTLE_CARD_W,
-                                 y + 4, 3, 156);
+                                 WAIFU_BATTLE_CARD_W, 4);
+    fmtowns_cutin_copy_base_rect(base_x, base_y + 4, x, y + 4,
+                                 WAIFU_BATTLE_CARD_W + 3, 156);
     fmtowns_cutin_copy_base_rect(base_x + 3, base_y + 160,
                                  x + 3, y + 160,
                                  WAIFU_BATTLE_CARD_W, 4);
