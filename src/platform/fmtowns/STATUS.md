@@ -1230,3 +1230,44 @@ the sprites help anything.
    shows.  PC-FX quantises the lift onto cached anchors
    (`WAIFU_PCFX_HANDTOP_ANCHORS`); the same trick fits here -- ~59 KB of
    `.bss` spare, one 61440-byte slot.
+
+### 2026-08-27 battle/transition follow-up
+
+Items 2 and 5 immediately above are historical now.  The duel compositor
+restores only prior overlay groups, black battle cut-ins use the same retained
+base mechanism, hand<->top uses three cached real-3D anchors, and turn changes
+use seven retained half-orbit anchors in the existing reusable slot.  No extra
+full-screen cache was added: the current 2 MiB link leaves only 7936 bytes
+between `.bss` and the stack ceiling, not the older ~59 KiB figure.
+
+Deterministic profiler scenes were added for `lift`, `turn`, `battle`, and
+`direct`.  The last calibrated-Marty captures made before the container's X
+socket service failed were:
+
+| scene | calibrated rate | frame split |
+| --- | --- | --- |
+| placement | 14.9-15.9 fps | step 34.4-37.0 ms, present 21.2-22.0 ms |
+| two-card battle cut-in | 9.0-11.0 fps | step 56.8-75.3 ms, present 24.7-27.1 ms |
+
+Those are honest **before-follow-up** baselines, not post-change claims.  The
+host damage/profiling build verifies the structural reductions while emulator
+capture is unavailable:
+
+- battle cut-ins declare an average 705/960 presenter groups instead of a
+  forced 960; direct attacks average 473/960;
+- the 240-frame hand<->top loop moves all 750 visible/clipped hand-card draws
+  through fixed-map fast paths (`generic: 325 -> 0`);
+- the dynamic placement scaler's mapped-row implementation halves its host
+  attribution time (544 us -> 273 us over 240 frames), and the actual i386
+  object contains the intended `lodsw`/indexed-load/`stosb` loop;
+- the 300-frame turn loop reduces board rasterizations from 234 to 32 (86%).
+
+Visual verification was deliberately stronger than spot checks.  Production
+and forced-full-restore builds produced byte-identical PNGs for every frame of
+420 normal battle frames, 300 direct-attack frames, 240 hand<->top frames, 240
+placement frames, and 300 anchored-turn frames.  Contact sheets were inspected
+across entry, intermediate poses, hit/flash/burn/removal, clipping, flip,
+landing, both orbit directions, and loop boundaries.  The damage verifier
+reported no undeclared pixels.  Re-run `./fmtowns.sh profile` on calibrated
+Tsugaru (and ultimately physical hardware) before attaching a post-change fps
+number to these wins.

@@ -184,6 +184,7 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_PCFX_RETURN_FRAMES 30
 #define WAIFU_PCFX_HANDTOP_FRAMES 18
 #define WAIFU_FMTOWNS_HANDTOP_ANCHORS 3
+#define WAIFU_FMTOWNS_TURN_ANCHORS 7
 #define WAIFU_RESULT_UI_CLEAR_FRAMES 50
 #define WAIFU_RESULT_MUSIC_LEAD_FRAMES 12
 #define WAIFU_RESULT_ANIM_START_FRAMES (WAIFU_RESULT_UI_CLEAR_FRAMES + WAIFU_RESULT_MUSIC_LEAD_FRAMES)
@@ -1372,6 +1373,35 @@ static Camera turn_camera(int f, int start, int end, int to_enemy)
     int32_t y = Q8_FRAC(245,100) + q8_mul(Q8_FRAC(85,100), st);
     return make_camera(v3(q8_mul(q8_sin_rad(a), radius), y, q8_mul(q8_cos_rad(a), radius)), v3(0,0,0), v3(0,Q8_ONE,0), Q8_FROM_INT(148));
 }
+
+#if defined(WAIFU_FM_FMTOWNS)
+static Camera fmtowns_turn_anchor_camera(int anchor, int to_enemy)
+{
+    if (anchor < 0) anchor = 0;
+    if (anchor >= WAIFU_FMTOWNS_TURN_ANCHORS) anchor = WAIFU_FMTOWNS_TURN_ANCHORS - 1;
+    return turn_camera(anchor, 0, WAIFU_FMTOWNS_TURN_ANCHORS - 1, to_enemy);
+}
+
+static Camera interactive_turn_camera(int frame, int dur, int to_enemy)
+{
+#if defined(WAIFU_FMTOWNS_SMOOTH_TURN)
+    /* Visual/performance reference: restore the original unique camera on
+       every logic frame.  Production uses retained anchors below. */
+    return turn_camera(frame, 0, dur, to_enemy);
+#else
+    int anchor;
+    if (frame <= 0) anchor = 0;
+    else if (frame >= dur) anchor = WAIFU_FMTOWNS_TURN_ANCHORS - 1;
+    else anchor = (frame * (WAIFU_FMTOWNS_TURN_ANCHORS - 1) + dur / 2) / dur;
+    return fmtowns_turn_anchor_camera(anchor, to_enemy);
+#endif
+}
+#else
+static Camera interactive_turn_camera(int frame, int dur, int to_enemy)
+{
+    return turn_camera(frame, 0, dur, to_enemy);
+}
+#endif
 
 static int32_t col_x0(int c);
 static int32_t row_z0(int r);
@@ -9827,7 +9857,8 @@ static void prepare_direct_attack(int attacker_owner, int attacker_slot);
 
 #if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || \
     defined(WAIFU_DEBUG_AUTOPLACE) || defined(WAIFU_DEBUG_AUTOLIFT) || \
-    defined(WAIFU_DEBUG_AUTOBATTLE) || defined(WAIFU_DEBUG_AUTODIRECT)
+    defined(WAIFU_DEBUG_AUTOTURN) || defined(WAIFU_DEBUG_AUTOBATTLE) || \
+    defined(WAIFU_DEBUG_AUTODIRECT)
 /* Profiling shortcut: boot straight into a free duel instead of walking
    title -> menu -> BATTLE MODE.
 
@@ -9852,7 +9883,7 @@ static void enter_debug_autoduel_after_assets(void)
        scatters by several milliseconds between otherwise identical builds. */
     init_battle_state();
 #if defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOBATTLE) || \
-    defined(WAIFU_DEBUG_AUTODIRECT)
+    defined(WAIFU_DEBUG_AUTODIRECT) || defined(WAIFU_DEBUG_AUTOTURN)
     /* Profile a real occupied field.  The old shortcut parked on an empty
        board and therefore reported 60 fps without ever executing the field
        card mapper that dominates cache misses in actual play. */
@@ -9876,6 +9907,8 @@ static void enter_debug_autoduel_after_assets(void)
 #elif defined(WAIFU_DEBUG_AUTOLIFT)
     set_top_selector(0, PLAYER_CARD_ROW);
     set_battle_phase(IB_PLAYER_HAND_TO_TOP);
+#elif defined(WAIFU_DEBUG_AUTOTURN)
+    set_battle_phase(IB_TURN_TO_COM);
 #elif defined(WAIFU_DEBUG_AUTOBATTLE)
     /* Deterministic, continuously-looping attacker-wins cut-in.  Both cards
        are already in the dealt hands/decks, so the ordinary battle-entry
@@ -10549,6 +10582,13 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
             return &g_b_base_cache_top;
         return &g_b_fmtowns_work_cache;
     }
+    /* Turn changes share the same scratch slot.  Each half-orbit anchor stays
+       visible for several logic frames, so only its first frame rasterizes;
+       the reverse turn visits this same camera set in reverse order. */
+    for (int anchor = 0; anchor < WAIFU_FMTOWNS_TURN_ANCHORS; ++anchor)
+        if (camera_equal(cam, fmtowns_turn_anchor_camera(anchor, 1)) ||
+            camera_equal(cam, fmtowns_turn_anchor_camera(anchor, 0)))
+            return &g_b_fmtowns_work_cache;
     if (camera_equal(cam, placement_camera()) ||
         camera_equal(cam, enemy_placement_camera()))
         return &g_b_fmtowns_work_cache;
@@ -12872,12 +12912,16 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_TURN_TO_COM:
-        draw_interactive_base(turn_camera(g_b_phase_frame, 0, WAIFU_PCFX_TURN_FRAMES, 1));
+        draw_interactive_base(interactive_turn_camera(g_b_phase_frame, WAIFU_PCFX_TURN_FRAMES, 1));
         if (battle_animation_event_complete(WAIFU_PCFX_TURN_FRAMES)) {
+#if defined(WAIFU_DEBUG_AUTOTURN)
+            set_battle_phase(IB_TURN_TO_PLAYER);
+#else
             draw_replacement_cards_to_com_hand();
             g_b_selected_com_slot = 0;
             g_b_com_return_fade = 0;
             set_battle_phase(IB_COM_SELECT);
+#endif
         }
         break;
 
@@ -13097,7 +13141,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_TURN_TO_PLAYER:
-        draw_interactive_base(turn_camera(g_b_phase_frame, 0, WAIFU_PCFX_TURN_FRAMES, 0));
+        draw_interactive_base(interactive_turn_camera(g_b_phase_frame, WAIFU_PCFX_TURN_FRAMES, 0));
         {
             int yoff = 0;
             if (g_b_phase_frame < WAIFU_PCFX_TURN_FRAMES / 2) {
@@ -13112,6 +13156,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             }
         }
         if (battle_animation_event_complete(WAIFU_PCFX_TURN_FRAMES)) {
+#if defined(WAIFU_DEBUG_AUTOTURN)
+            set_battle_phase(IB_TURN_TO_COM);
+#else
             if (g_i_player_deck_left <= 0) {
                 g_b_result = -1;
                 set_battle_phase(IB_RESULT);
@@ -13119,6 +13166,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                 draw_replacement_cards_to_hand();
                 set_battle_phase(IB_PLAYER_DRAW);
             }
+#endif
         }
         break;
 
@@ -13210,7 +13258,8 @@ void waifu_fm_init(void)
 #endif
 #if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || \
     defined(WAIFU_DEBUG_AUTOPLACE) || defined(WAIFU_DEBUG_AUTOLIFT) || \
-    defined(WAIFU_DEBUG_AUTOBATTLE) || defined(WAIFU_DEBUG_AUTODIRECT)
+    defined(WAIFU_DEBUG_AUTOTURN) || defined(WAIFU_DEBUG_AUTOBATTLE) || \
+    defined(WAIFU_DEBUG_AUTODIRECT)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();
@@ -13255,7 +13304,8 @@ void waifu_fm_reset_interactive(void)
     invalidate_battle_composite_cache();
 #if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || \
     defined(WAIFU_DEBUG_AUTOPLACE) || defined(WAIFU_DEBUG_AUTOLIFT) || \
-    defined(WAIFU_DEBUG_AUTOBATTLE) || defined(WAIFU_DEBUG_AUTODIRECT)
+    defined(WAIFU_DEBUG_AUTOTURN) || defined(WAIFU_DEBUG_AUTOBATTLE) || \
+    defined(WAIFU_DEBUG_AUTODIRECT)
     enter_debug_autoduel_after_assets();
 #elif defined(WAIFU_DEBUG_AUTOSTORY)
     enter_debug_story_plaza_after_assets();
