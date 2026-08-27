@@ -6041,11 +6041,8 @@ static void draw_direct_attack_slash(int target_x, int target_y, int frame, int 
     }
 }
 
-static void draw_big_battle_card_hit_flash(int id, int x, int y, int back, int phase)
+static void draw_big_battle_card_hit_flash_overlay(int x, int y, int phase)
 {
-    /* Victim impact flash: draw the card first, then a checker/stripe white
-       overlay for a few frames. */
-    draw_big_battle_card(id, x, y, back);
     if (((phase / 2) & 1) == 0) {
         /* Both the packed and scalar implementations are overlays on a
            retained cut-in base.  Keep their damage declarations identical so
@@ -6081,6 +6078,14 @@ static void draw_big_battle_card_hit_flash(int id, int x, int y, int back, int p
             }
         }
     }
+}
+
+static void draw_big_battle_card_hit_flash(int id, int x, int y, int back, int phase)
+{
+    /* Victim impact flash: draw the card first, then a checker/stripe white
+       overlay for a few frames. */
+    draw_big_battle_card(id, x, y, back);
+    draw_big_battle_card_hit_flash_overlay(x, y, phase);
 }
 
 static void draw_cutin_battle_card(int id, int x, int y, int back, int attacker_card);
@@ -6234,6 +6239,8 @@ static void fmtowns_cutin_build_base(int atk_id, int def_id);
 static void fmtowns_cutin_capture(void);
 static void fmtowns_cutin_restore(void);
 static void fmtowns_cutin_blank_card(int x, int y);
+static void fmtowns_cutin_draw_card(int base_x, int x, int y,
+                                    int flash, int phase);
 #endif
 
 static void draw_battle_cutin_event_ex(int f, int start,
@@ -6389,19 +6396,19 @@ static void draw_battle_cutin_event_ex(int f, int start,
             int draw_def = flash_defender || def_x != dx || shake_defender != 0;
             int current_atk_x = atk_x + shake_attacker;
             int current_def_x = def_x + shake_defender;
-            int overlap = current_atk_x < current_def_x + WAIFU_BATTLE_CARD_W &&
-                          current_def_x < current_atk_x + WAIFU_BATTLE_CARD_W;
+            int overlap = current_atk_x < current_def_x + WAIFU_BATTLE_CARD_W + 3 &&
+                          current_def_x < current_atk_x + WAIFU_BATTLE_CARD_W + 3;
 
             /* The canonical cards remain underneath.  A moving/flashing card
                is redrawn only when needed; if its current footprint overlaps
                the other card, redraw the later-painted defender as well. */
             if (draw_atk) {
-                if (flash_attacker) draw_big_battle_card_hit_flash(atk_id, current_atk_x, ay, 0, local);
-                else draw_cutin_battle_card(atk_id, current_atk_x, ay, 0, 1);
+                fmtowns_cutin_draw_card(ax, current_atk_x, ay,
+                                        flash_attacker, local);
             }
             if (draw_def || (draw_atk && overlap)) {
-                if (flash_defender) draw_big_battle_card_hit_flash(def_id, current_def_x, dy, 0, local);
-                else draw_cutin_battle_card(def_id, current_def_x, dy, 0, 0);
+                fmtowns_cutin_draw_card(dx, current_def_x, dy,
+                                        flash_defender, local);
             }
         } else
 #endif
@@ -11051,6 +11058,54 @@ static void fmtowns_cutin_capture(void)
 static void fmtowns_cutin_restore(void)
 {
     fb_restore_composite(g_b_fmtowns_work_cache.pixels);
+}
+
+static void fmtowns_cutin_copy_base_rect(int sx, int sy, int x, int y,
+                                         int w, int h)
+{
+    int sx0 = 0, sy0 = 0;
+    int x1 = x + w, y1 = y + h;
+    int yy;
+
+    if (x < 0) { sx0 = -x; x = 0; }
+    if (y < 0) { sy0 = -y; y = 0; }
+    if (x1 > WAIFU_FM_WIDTH) x1 = WAIFU_FM_WIDTH;
+    if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
+    if (x >= x1 || y >= y1) return;
+
+    fb_damage_rect(x, y, x1 - x, y1 - y);
+    for (yy = y; yy < y1; ++yy) {
+        int source_y = sy + sy0 + (yy - y);
+        int off = source_y * WAIFU_FM_WIDTH + sx + sx0;
+        copy_u8_fast(framebuffer + yy * WAIFU_FM_WIDTH + x,
+                     g_b_fmtowns_work_cache.pixels + off, x1 - x);
+    }
+}
+
+/* draw_big_battle_card_stats() writes a fully opaque card rectangle, a right
+   shadow strip, and a bottom shadow strip.  Copy exactly those three regions
+   from the canonical card instead of rebuilding frame, art, stats, and text.
+   Keeping the shadow strips separate is important: copying a bounding box would
+   erase an underlying card through the small unwritten corner gaps when the
+   two cards overlap during a lunge. */
+static void fmtowns_cutin_copy_card(int base_x, int x, int y)
+{
+    const int base_y = WAIFU_BATTLE_CARD_Y;
+    fmtowns_cutin_copy_base_rect(base_x, base_y, x, y,
+                                 WAIFU_BATTLE_CARD_W, 160);
+    fmtowns_cutin_copy_base_rect(base_x + WAIFU_BATTLE_CARD_W,
+                                 base_y + 4, x + WAIFU_BATTLE_CARD_W,
+                                 y + 4, 3, 156);
+    fmtowns_cutin_copy_base_rect(base_x + 3, base_y + 160,
+                                 x + 3, y + 160,
+                                 WAIFU_BATTLE_CARD_W, 4);
+}
+
+static void fmtowns_cutin_draw_card(int base_x, int x, int y,
+                                    int flash, int phase)
+{
+    fmtowns_cutin_copy_card(base_x, x, y);
+    if (flash) draw_big_battle_card_hit_flash_overlay(x, y, phase);
 }
 
 static void fmtowns_cutin_blank_card(int x, int y)
