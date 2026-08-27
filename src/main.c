@@ -5546,22 +5546,29 @@ static void draw_top_selector_cursor_ex(Camera cam, int reticle)
 #else
     const int cursor_anim_frames = 8;
 #endif
+#if defined(WAIFU_FM_FMTOWNS)
+    /* Advance before choosing the pose.  Advancing afterwards made the frame
+       drawn at 7/8 set the logical counter to 8; the retained-top key then
+       treated that 7/8 framebuffer as the completed endpoint forever.  Using
+       the elapsed-field step here also scales naturally: a 486 holding 60 Hz
+       draws all eight poses, while a slow Marty catches up without stretching
+       the animation in wall-clock time. */
+    if (g_b_top_cursor_anim < cursor_anim_frames) {
+        g_b_top_cursor_anim += frame_logic_step();
+        if (g_b_top_cursor_anim > cursor_anim_frames)
+            g_b_top_cursor_anim = cursor_anim_frames;
+    }
+#endif
     int32_t t = q8_smooth_ratio(g_b_top_cursor_anim, cursor_anim_frames);
     int32_t col = Q8_FROM_INT(g_b_top_prev_col) + q8_mul(Q8_FROM_INT(g_b_top_col - g_b_top_prev_col), t);
     int32_t row = Q8_FROM_INT(g_b_top_prev_row) + q8_mul(Q8_FROM_INT(g_b_top_row - g_b_top_prev_row), t);
     if (reticle) draw_zone_reticle_q(cam, col, row);
     else draw_zone_cursor_q(cam, col, row);
+#if !defined(WAIFU_FM_FMTOWNS)
     if (g_b_top_cursor_anim < cursor_anim_frames) {
-#if defined(WAIFU_FM_FMTOWNS)
-        /* Keep the eight-field glide at eight display fields even when a
-           cache miss made this render consume two or more of them. */
-        g_b_top_cursor_anim += frame_logic_step();
-        if (g_b_top_cursor_anim > cursor_anim_frames)
-            g_b_top_cursor_anim = cursor_anim_frames;
-#else
         ++g_b_top_cursor_anim;
-#endif
     }
+#endif
 }
 
 static void draw_top_selector_cursor(Camera cam)
@@ -12406,7 +12413,16 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         int dur = WAIFU_PCFX_HANDTOP_FRAMES;
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), q8_smooth_ratio(g_b_phase_frame, dur)));
         draw_player_handtop_transition_shared(g_b_phase_frame, dur, 1, hand_off, 1, 1);
-        if (battle_animation_event_complete(dur)) set_battle_phase(IB_PLAYER_TOP);
+        if (battle_animation_event_complete(dur)) {
+#if defined(WAIFU_FM_FMTOWNS)
+            /* Synchronize the completed top-camera picture to both alternating
+               VRAM pages.  Without this explicit final declaration, the last
+               clipped hand-card strips could survive on one page for several
+               flips after the CPU framebuffer was already clean. */
+            fb_damage_all();
+#endif
+            set_battle_phase(IB_PLAYER_TOP);
+        }
         break;
     }
 
@@ -12417,7 +12433,12 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         int dur = WAIFU_PCFX_HANDTOP_FRAMES;
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), Q8_ONE - q8_smooth_ratio(g_b_phase_frame, dur)));
         draw_player_handtop_transition_shared(g_b_phase_frame, dur, 0, hand_off, 1, 1);
-        if (battle_animation_event_complete(dur)) set_battle_phase(IB_PLAYER_HAND);
+        if (battle_animation_event_complete(dur)) {
+#if defined(WAIFU_FM_FMTOWNS)
+            fb_damage_all();
+#endif
+            set_battle_phase(IB_PLAYER_HAND);
+        }
         break;
     }
 
