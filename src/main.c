@@ -10651,6 +10651,19 @@ static void draw_player_handtop_transition_shared(int frame, int dur, int to_top
     if (draw_hud) draw_interactive_base(cam);
     else draw_interactive_field_base_no_hud(cam);
     if (draw_hand) draw_interactive_player_hand(999, g_b_selected_hand, hand_yoff, 1);
+#if defined(WAIFU_FM_FMTOWNS)
+    if (to_top && draw_hand) {
+        /* The hand is clipped while it slides through the bottom edge.  Make
+           that whole escape band an authoritative upload: relying on hashes
+           plus the moving overlay's old footprint allowed thin card tops to
+           survive briefly on one of the two alternating VRAM pages.  Forced
+           damage writes this frame's clean band now and carries the write as
+           a debt to the other page, without making the moving 3-D board or
+           any animation pose cheaper. */
+        fb_damage_rect_forced(0, DUEL_BAND_Y0, WAIFU_FM_WIDTH,
+                              WAIFU_FM_HEIGHT - DUEL_BAND_Y0);
+    }
+#endif
 }
 
 static void draw_interactive_common(Camera cam, int bottom_card, const char *bottom_mode)
