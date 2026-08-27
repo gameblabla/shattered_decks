@@ -862,6 +862,8 @@ int waifu_platform_ui_extra_w(void)
     return g_ui_extra_w;
 }
 
+int waifu_platform_performance_tier(void) { return 2; }
+
 void waifu_platform_ui_hud(int on)
 {
     int want = on ? 1 : 0;

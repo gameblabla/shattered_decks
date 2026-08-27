@@ -183,8 +183,9 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_PCFX_SELECT_FRAMES 70
 #define WAIFU_PCFX_RETURN_FRAMES 30
 #define WAIFU_PCFX_HANDTOP_FRAMES 18
-#define WAIFU_FMTOWNS_HANDTOP_ANCHORS 3
-#define WAIFU_FMTOWNS_TURN_ANCHORS 7
+#define WAIFU_FMTOWNS_HANDTOP_MAX_ANCHORS 5
+#define WAIFU_FMTOWNS_TURN_MAX_ANCHORS 15
+#define WAIFU_FMTOWNS_OPENING_MAX_ANCHORS 9
 #define WAIFU_RESULT_UI_CLEAR_FRAMES 50
 #define WAIFU_RESULT_MUSIC_LEAD_FRAMES 12
 #define WAIFU_RESULT_ANIM_START_FRAMES (WAIFU_RESULT_UI_CLEAR_FRAMES + WAIFU_RESULT_MUSIC_LEAD_FRAMES)
@@ -1375,11 +1376,39 @@ static Camera turn_camera(int f, int start, int end, int to_enemy)
 }
 
 #if defined(WAIFU_FM_FMTOWNS)
+static int fmtowns_performance_tier(void)
+{
+#if defined(WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER)
+    return WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER;
+#else
+    return waifu_platform_performance_tier();
+#endif
+}
+
+static int fmtowns_handtop_anchor_count(void)
+{
+    int tier = fmtowns_performance_tier();
+    return tier >= 2 ? WAIFU_FMTOWNS_HANDTOP_MAX_ANCHORS : (tier >= 1 ? 4 : 3);
+}
+
+static int fmtowns_turn_anchor_count(void)
+{
+    int tier = fmtowns_performance_tier();
+    return tier >= 2 ? WAIFU_FMTOWNS_TURN_MAX_ANCHORS : (tier >= 1 ? 9 : 7);
+}
+
+static int fmtowns_opening_anchor_count(void)
+{
+    int tier = fmtowns_performance_tier();
+    return tier >= 2 ? WAIFU_FMTOWNS_OPENING_MAX_ANCHORS : (tier >= 1 ? 7 : 5);
+}
+
 static Camera fmtowns_turn_anchor_camera(int anchor, int to_enemy)
 {
+    int count = fmtowns_turn_anchor_count();
     if (anchor < 0) anchor = 0;
-    if (anchor >= WAIFU_FMTOWNS_TURN_ANCHORS) anchor = WAIFU_FMTOWNS_TURN_ANCHORS - 1;
-    return turn_camera(anchor, 0, WAIFU_FMTOWNS_TURN_ANCHORS - 1, to_enemy);
+    if (anchor >= count) anchor = count - 1;
+    return turn_camera(anchor, 0, count - 1, to_enemy);
 }
 
 static Camera interactive_turn_camera(int frame, int dur, int to_enemy)
@@ -1389,10 +1418,11 @@ static Camera interactive_turn_camera(int frame, int dur, int to_enemy)
        every logic frame.  Production uses retained anchors below. */
     return turn_camera(frame, 0, dur, to_enemy);
 #else
+    int count = fmtowns_turn_anchor_count();
     int anchor;
     if (frame <= 0) anchor = 0;
-    else if (frame >= dur) anchor = WAIFU_FMTOWNS_TURN_ANCHORS - 1;
-    else anchor = (frame * (WAIFU_FMTOWNS_TURN_ANCHORS - 1) + dur / 2) / dur;
+    else if (frame >= dur) anchor = count - 1;
+    else anchor = (frame * (count - 1) + dur / 2) / dur;
     return fmtowns_turn_anchor_camera(anchor, to_enemy);
 #endif
 }
@@ -6822,14 +6852,14 @@ static void render_duel_opening_frame(int f)
 {
 #if defined(WAIFU_FM_FMTOWNS)
     /* The palette fade is cheap on FM TOWNS, but a fresh 3-D perspective is
-       not.  Advance through five genuine flyover cameras and retain the
-       framebuffer between them.  This preserves the visible approach while
-       replacing 56 near-identical board renders with at most five. */
-    enum { OPENING_CAMERA_ANCHORS = 5 };
+       not.  Advance through a CPU-tiered set of genuine flyover cameras and
+       retain the framebuffer between them.  This preserves the visible
+       approach while avoiding 56 near-identical board renders. */
     static int last_f = -1;
     static int last_anchor = -1;
     static int hud_visible = 0;
     int lf, span, anchor;
+    int anchor_count = fmtowns_opening_anchor_count();
     int32_t ft;
 
     if (f <= 0 || f < last_f) {
@@ -6851,13 +6881,13 @@ static void render_duel_opening_frame(int f)
 
     lf = f - 16;
     span = DUEL_OPENING_END - 16;
-    anchor = (lf * (OPENING_CAMERA_ANCHORS - 1) + span / 2) / span;
+    anchor = (lf * (anchor_count - 1) + span / 2) / span;
     if (anchor < 0) anchor = 0;
-    if (anchor >= OPENING_CAMERA_ANCHORS) anchor = OPENING_CAMERA_ANCHORS - 1;
-    ft = q8_ratio(anchor, OPENING_CAMERA_ANCHORS - 1);
+    if (anchor >= anchor_count) anchor = anchor_count - 1;
+    ft = q8_ratio(anchor, anchor_count - 1);
 
     if (anchor != last_anchor) {
-        if (anchor == OPENING_CAMERA_ANCHORS - 1) {
+        if (anchor == anchor_count - 1) {
             /* Land exactly on the normal hand camera.  Its battle composite
                was prepared during loading, so the flyover ends without one
                last live 3-D render or a perspective snap on hand entry. */
@@ -10488,23 +10518,26 @@ static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
 #elif defined(WAIFU_FM_FMTOWNS)
 static Camera fmtowns_handtop_anchor_camera(int anchor)
 {
+    int count = fmtowns_handtop_anchor_count();
     if (anchor <= 0) return player_camera();
-    if (anchor >= WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1) return battle_top_camera();
+    if (anchor >= count - 1) return battle_top_camera();
     return lerp_camera(player_camera(), battle_top_camera(),
-                       q8_ratio(anchor, WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1));
+                       q8_ratio(anchor, count - 1));
 }
 
 static int fmtowns_handtop_anchor_for_frame(int frame, int dur)
 {
+    int count = fmtowns_handtop_anchor_count();
     if (frame <= 0) return 0;
-    if (frame >= dur) return WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1;
-    return (frame * (WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1) + dur / 2) / dur;
+    if (frame >= dur) return count - 1;
+    return (frame * (count - 1) + dur / 2) / dur;
 }
 
 static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
 {
+    int count = fmtowns_handtop_anchor_count();
     int anchor = fmtowns_handtop_anchor_for_frame(frame, dur);
-    if (!to_top) anchor = WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1 - anchor;
+    if (!to_top) anchor = count - 1 - anchor;
     return fmtowns_handtop_anchor_camera(anchor);
 }
 #else
@@ -10551,6 +10584,8 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
         return &g_b_handtop_mid_cache[0];
     return NULL;
 #elif defined(WAIFU_FM_FMTOWNS)
+    int handtop_count = fmtowns_handtop_anchor_count();
+    int turn_count = fmtowns_turn_anchor_count();
     /* Marty caches both resting views: the top-down board and the hand view.
        Restoring a composite is a 61440-byte RAM-to-RAM copy, which on a 16 MHz
        386SX behind a 16-bit bus costs real milliseconds rather than being the
@@ -10576,16 +10611,16 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
        full-screen slots would exceed the Marty's RAM budget; one slot still
        retains each quantized camera for its several animation frames, then is
        overwritten by the next.  The hand endpoint keeps its own slot. */
-    for (int anchor = 1; anchor < WAIFU_FMTOWNS_HANDTOP_ANCHORS; ++anchor) {
+    for (int anchor = 1; anchor < handtop_count; ++anchor) {
         if (!camera_equal(cam, fmtowns_handtop_anchor_camera(anchor))) continue;
-        if (anchor >= WAIFU_FMTOWNS_HANDTOP_ANCHORS - 1)
+        if (anchor >= handtop_count - 1)
             return &g_b_base_cache_top;
         return &g_b_fmtowns_work_cache;
     }
     /* Turn changes share the same scratch slot.  Each half-orbit anchor stays
        visible for several logic frames, so only its first frame rasterizes;
        the reverse turn visits this same camera set in reverse order. */
-    for (int anchor = 0; anchor < WAIFU_FMTOWNS_TURN_ANCHORS; ++anchor)
+    for (int anchor = 0; anchor < turn_count; ++anchor)
         if (camera_equal(cam, fmtowns_turn_anchor_camera(anchor, 1)) ||
             camera_equal(cam, fmtowns_turn_anchor_camera(anchor, 0)))
             return &g_b_fmtowns_work_cache;

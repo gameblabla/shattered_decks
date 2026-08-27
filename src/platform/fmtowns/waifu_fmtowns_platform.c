@@ -15,6 +15,7 @@
 #include "platform.h"
 #include <string.h>
 #include "io.h"
+#include "machine.h"
 
 /* ---- Storage: the machine's battery-backed CMOS RAM -------------------
  *
@@ -178,6 +179,13 @@ int waifu_platform_storage_read(const char *name, void *data, int max_len) { ret
 
 int waifu_platform_ui_extra_w(void) { return 0; }
 void waifu_platform_ui_hud(int on) { (void)on; }
+int waifu_platform_performance_tier(void)
+{
+    int cpu_class = fmt_machine_cpu_class();
+    if (cpu_class == FMT_MACHINE_ID_CPU_80486) return 2;
+    if (cpu_class == FMT_MACHINE_ID_CPU_80386DX) return 1;
+    return 0; /* 386SX-class Marty/UX, plus any unknown value as a safe default. */
+}
 
 int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch,
                          unsigned char fg, unsigned char shadow)

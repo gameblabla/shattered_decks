@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#define FMT_MACHINE_ID_CPU_80386DX 1u
+#define FMT_MACHINE_ID_CPU_80486   2u
+#define FMT_MACHINE_ID_CPU_80386SX 3u
+
 /*
  * Runtime FM TOWNS model detection.
  *
@@ -53,6 +57,9 @@ void fmt_machine_detect(void);
  * originally, which keeps every existing Marty-only code path correct by
  * construction if some future call site forgets to detect first. */
 int fmt_machine_is_narrow_map(void);
+
+/* Raw genuine-TOWNS CPU-class field read from machine-ID port 0x30. */
+int fmt_machine_cpu_class(void);
 
 /* VRAM0's physical base address for the machine fmt_machine_detect() found:
  * 0xA00000 on the narrow (386SX) map, 0x80000000 on the wide map. This is

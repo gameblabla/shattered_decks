@@ -91,6 +91,12 @@ int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll);
 int waifu_platform_ui_extra_w(void);
 void waifu_platform_ui_hud(int on);
 
+/* Coarse CPU/rendering-performance tier for optional visual fidelity scaling.
+ * 0 = baseline/constrained, 1 = intermediate, 2 = fast.  Game timing must not
+ * depend on this value; it may only select how many intermediate visual poses
+ * are rendered or retained during a fixed-duration animation. */
+int waifu_platform_performance_tier(void);
+
 /* Per-character text rendering seam. A platform that can render high-resolution
    glyphs (SDL3/PC via FreeType) draws the character at cell origin (x,y) with
    the given fixed cell advance and returns 1; the common text primitives then

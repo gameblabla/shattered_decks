@@ -28,10 +28,6 @@
 #define FMT_IO_MAINRAM_WAIT      0x05e2u
 #define FMT_IO_VRAM_WAIT         0x05e6u
 
-/* FMTownsCommon::MachineID()'s CPU-class field, low byte, genuine FM TOWNS
- * (non-FMR) models: the only value the UX and the Marty produce. */
-#define FMT_MACHINE_ID_CPU_80386SX  3u
-
 #define FMT_VRAM0_BASE_NARROW  0xA00000u   /* 386SX map: Marty, UX */
 #define FMT_VRAM0_BASE_WIDE    0x80000000u /* everyone else */
 
@@ -40,10 +36,12 @@
 uint32_t g_fmt_vram0_base = FMT_VRAM0_BASE_NARROW;
 
 static int g_fmt_narrow_map = 1;
+static uint8_t g_fmt_cpu_class = FMT_MACHINE_ID_CPU_80386SX;
 
 void fmt_machine_detect(void)
 {
     uint8_t cpu_class = inb(FMT_IO_MACHINE_ID_LOW);
+    g_fmt_cpu_class = cpu_class;
 
     if (cpu_class == FMT_MACHINE_ID_CPU_80386SX) {
         g_fmt_narrow_map = 1;
@@ -64,4 +62,9 @@ void fmt_machine_detect(void)
 int fmt_machine_is_narrow_map(void)
 {
     return g_fmt_narrow_map;
+}
+
+int fmt_machine_cpu_class(void)
+{
+    return (int)g_fmt_cpu_class;
 }

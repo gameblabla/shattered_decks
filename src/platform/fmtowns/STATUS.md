@@ -1271,3 +1271,33 @@ landing, both orbit directions, and loop boundaries.  The damage verifier
 reported no undeclared pixels.  Re-run `./fmtowns.sh profile` on calibrated
 Tsugaru (and ultimately physical hardware) before attaching a post-change fps
 number to these wins.
+
+### Runtime camera fidelity by CPU class
+
+The retained-camera density now follows the CPU-class byte already read from
+machine-ID port `0x30`.  The same binary selects tier 0 for 386SX-class
+Marty/UX machines, tier 1 for 386DX-class machines, and tier 2 for
+486/Pentium-class machines.  Only visual keyframe density changes: gameplay and
+animation durations remain on the same 60 Hz logic timeline.
+
+| tier | hand/top anchors | turn anchors | opening anchors |
+| --- | ---: | ---: | ---: |
+| 386SX | 3 | 7 | 5 |
+| 386DX | 4 | 9 | 7 |
+| 486/Pentium | 5 | 15 | 9 |
+
+`WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER` exists only as a measurement override.
+Forced tier 0 remains byte-identical to the saved Marty references for all 300
+turn frames and all 240 hand/top frames.  The damage-verifier turn scene reports
+32/42/67 board renders over the same 300-frame run at tiers 0/1/2; all three
+tiers complete without undeclared framebuffer damage.  Tier-2 turn and lift
+contact sheets were inspected for ordered cameras, correct endpoints, field
+cards, hands, and HUD composition.
+
+The normal FM Towns image still links with 7936 bytes below the BSS/stack
+ceiling.  The common story regression suite passes, PC-FX passes a fresh
+three-pass build and accurate-backend title capture, and CD32X passes at 125696
+bytes (5376 bytes below its staging limit) with a fresh `32xcd` title capture.
+These checks establish correctness and structural scaling, not real-machine
+frame rates; faster-hardware timing still needs a calibrated emulator or
+physical capture.
