@@ -4032,10 +4032,14 @@ static void cd32x_blit_scaled_fast(const uint8_t *src, int sw, int sh, int x, in
 
 static void blit_card_38x50_fast(const uint8_t *src, int x, int y)
 {
+    int yy0 = y < 0 ? -y : 0;
+    int yy1 = y + 50 > WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - y : 50;
     fb_damage_rect(x, y, 38, 50);
-    uint8_t *dst = framebuffer + y * WAIFU_FM_WIDTH + x;
+    uint8_t *dst;
     int yy;
-    for (yy = 0; yy < 50; ++yy) {
+    if (yy0 >= yy1) return;
+    dst = framebuffer + (y + yy0) * WAIFU_FM_WIDTH + x;
+    for (yy = yy0; yy < yy1; ++yy) {
         const uint8_t *srow = src + (int)g_card_ymap_38x50[yy] * WAIFU_CARD_W;
 #if defined(WAIFU_FM_PCFX)
         pcfx_blit_row38_v810(srow, dst);
@@ -4115,7 +4119,8 @@ static void blit_card_mapped_fast(const uint8_t *src, int x, int y, int dw, int 
 static int try_draw_card_raw_fast(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh, int gray)
 {
     if (!src || sw != WAIFU_CARD_W || sh != WAIFU_CARD_H) return 0;
-    if (dw == 38 && dh == 50 && rect_fully_visible(x, y, 38, 50)) {
+    if (dw == 38 && dh == 50 && x >= 0 && x + 38 <= WAIFU_FM_WIDTH &&
+        y < WAIFU_FM_HEIGHT && y + 50 > 0) {
         if (gray) return 0; /* use generic dithered gray path */
         blit_card_38x50_fast(src, x, y);
         PROFILE_CARD2D_FAST();
