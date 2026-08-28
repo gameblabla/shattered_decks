@@ -67,11 +67,16 @@ CORE_DEFINES    = $(EXTRA_CORE_DEFINES) \
                   -DWAIFU_BG_CACHE_DISABLE \
                   -DWAIFU_FLOOR_SAMPLE_CACHE_DISABLE
 
-# -fno-pic, not -fPIC: the payload is linked at a fixed 0x10000 and loaded
-# there and nowhere else (boot/mygame_shared.lds explains what the PIC build
-# was costing).  On a 386 that is worth real time -- PIC reserves %ebx for
-# the GOT, leaving the rasterizer's inner loops six general registers, and
-# turns every global access into an indirection.
+# -fno-pic/-fno-pie, not -fPIC/-fPIE: the payload is linked at a fixed 0x10000
+# and loaded there and nowhere else (boot/mygame_shared.lds explains what the
+# PIC build was costing).  On a 386 that is worth real time -- PIC reserves
+# %ebx for the GOT, leaving the rasterizer's inner loops six general registers,
+# and turns every global access into an indirection.  Keep both switches
+# explicit because many modern distro GCC specs default executable builds to
+# PIE; the final link checks below make the fixed-address contract fail closed.
+# Do not use -fno-plt here.  On 32-bit GCC it intentionally emits GOT32X
+# indirect calls, even for this static image.  A normal non-PIC call relocates
+# directly to the final address and leaves no GOT call stub in the payload.
 # -O2, not -Os, for the platform layer too.  libfmt.c's present path is a
 # per-frame walk over 61440 bytes; at -Os its inner loop was several
 # milliseconds slower per frame than the same source at -O2, which on this
@@ -80,7 +85,7 @@ CORE_DEFINES    = $(EXTRA_CORE_DEFINES) \
 CBASEFLAGS      = -Wall -march=i386 -std=gnu99 -m32 -O2 \
                   -fomit-frame-pointer -fno-builtin -ffreestanding \
                   -ffunction-sections -fdata-sections \
-                  -fno-pic -fno-plt -Wno-stack-protector -fno-stack-protector -s
+                  -fno-pic -fno-pie -Wno-stack-protector -fno-stack-protector -s
 
 CFLAGS          = -I$(OBJDIR) -I$(BOOTDIR) -I$(COMMONDIR) -I$(FMTOWNS_DIR) \
                   $(CORE_INCLUDES) $(CORE_DEFINES) $(CBASEFLAGS)
@@ -281,6 +286,12 @@ LIBGCC          := $(shell $(CC) -m32 -print-libgcc-file-name)
 $(PAYLOAD_ELF): $(OBJS) $(BOOTDIR)/mygame_shared.lds | $(OBJDIR)
 	$(LD) --gc-sections --warn-constructors --warn-common -static -T $(BOOTDIR)/mygame_shared.lds \
 		-o $@ $(OBJS) $(LIBGCC)
+	@type=$$(readelf -h $@ | awk '/Type:/ { print $$2; exit }'); \
+		test "$$type" = EXEC || { echo "payload is not a fixed-address EXEC (type=$$type)" >&2; exit 1; }
+	@if readelf -SW $@ | awk 'NR > 5 && $$3 ~ /^\\.(plt|dynamic|interp)$$/ { found = 1; print $$3 } END { exit found }'; then :; else \
+		echo "payload contains a PLT/dynamic/interpreter section" >&2; exit 1; fi
+	@if objdump -d $@ | grep -Eq 'call[[:space:]]+\*0x'; then \
+		echo "payload contains an absolute indirect call (unexpected GOT call)" >&2; exit 1; fi
 	@objdump -h $@ | awk -v base="0" -v top="$(PAYLOAD_LIMIT)" \
 		-v bsstop="$(BSS_LIMIT)" \
 		'BEGIN { base = strtonum(base); top = strtonum(top); \
