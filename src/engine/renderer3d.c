@@ -880,15 +880,13 @@ static void cfx_draw_board_span_tilted(const CfxRenderer3DState *state,
    next; only rows at a vertex need the four-edge lookup. */
 static uint8_t cfx_draw_textured_quad_fast_affine_active_edges(
     const CfxRenderer3DState *renderer, const uint8_t *tile,
-    const CfxFastQuadEdge *source_edges, int16_t min_y, int16_t max_y,
-    uint8_t board_fast)
+    CfxFastQuadEdge *edges, int16_t min_y, int16_t max_y,
+    uint8_t board_fast, uint8_t validate_boundaries)
 {
-    CfxFastQuadEdge edges[4];
     int active0 = -1;
     int active1 = -1;
     int active_count = 0;
 
-    for (int i = 0; i < 4; ++i) edges[i] = source_edges[i];
     if (min_y == max_y) return 1;
 
     if (min_y < 0) {
@@ -906,7 +904,7 @@ static uint8_t cfx_draw_textured_quad_fast_affine_active_edges(
     if (max_y > renderer->height) max_y = (int16_t)renderer->height;
     if (min_y >= max_y) return 1;
 
-    {
+    if (validate_boundaries) {
         int boundary_y[9];
         int boundary_count = 0;
         boundary_y[boundary_count++] = min_y;
@@ -1001,14 +999,18 @@ static uint8_t cfx_draw_textured_quad_fast_affine_edges(const CfxRenderer3DState
                                                         int16_t min_y, int16_t max_y,
                                                         uint8_t board_fast)
 {
+    CfxFastQuadEdge edges[4];
+    for (int i = 0; i < 4; ++i) edges[i] = source_edges[i];
     if (cfx_draw_textured_quad_fast_affine_active_edges(renderer, tile,
-                                                        source_edges, min_y, max_y,
-                                                        board_fast)) {
+                                                        edges, min_y, max_y,
+                                                        board_fast, 1)) {
         return 1;
     }
 
     {
-        CfxFastQuadEdge edges[4];
+        /* The validated walker may have advanced its private copy before
+           rejecting a malformed polygon, so restart from the caller's
+           original edges for the general fallback. */
         for (int i = 0; i < 4; ++i) edges[i] = source_edges[i];
         if (min_y == max_y) return 1;
 
@@ -1074,6 +1076,21 @@ static uint8_t cfx_draw_textured_quad_fast_affine_edges(const CfxRenderer3DState
         }
     }
     return 1;
+}
+
+/* The board-mesh caller can prove that all of its cells are strict convex
+   before entering the cached walker.  That proof makes the endpoint scan
+   above redundant for every cell, while the public quad path retains the
+   validated behavior for arbitrary polygons. */
+static uint8_t cfx_draw_textured_quad_fast_affine_trusted_edges(
+    const CfxRenderer3DState *renderer, const uint8_t *tile,
+    CfxFastQuadEdge *edges, int16_t min_y, int16_t max_y,
+    uint8_t board_fast)
+{
+    return cfx_draw_textured_quad_fast_affine_active_edges(renderer, tile,
+                                                            edges,
+                                                            min_y, max_y,
+                                                            board_fast, 0);
 }
 
 static uint8_t cfx_draw_textured_quad_fast_affine_direct(const CfxRenderer3DState *renderer,
@@ -1190,6 +1207,40 @@ static void cfx_board_set_edge_uv(CfxFastQuadEdge *edge,
     }
 }
 
+static void cfx_board_vertical_v_params(const CfxBoardPoint *a,
+                                        const CfxBoardPoint *b,
+                                        uint8_t *v_start,
+                                        int32_t *v_step)
+{
+    int16_t dy = (int16_t)(b->y - a->y);
+    if (dy == 0) {
+        *v_start = 0;
+        *v_step = 0;
+    } else if (dy > 0) {
+        *v_start = 0;
+        *v_step = cfx_fast_div_tz_i32_u16_q15(255 << 8, (uint16_t)dy);
+    } else {
+        dy = (int16_t)-dy;
+        *v_start = 255;
+        *v_step = cfx_fast_div_tz_i32_u16_q15(-(255 << 8), (uint16_t)dy);
+    }
+}
+
+static inline void cfx_board_set_precomputed_uv(
+    CfxFastQuadEdge *edge, const CfxBoardGeomEdge *geom,
+    uint8_t u_start, uint8_t v_start,
+    int32_t u_step, int32_t v_step)
+{
+    edge->y_start = geom->y_start;
+    edge->y_end = geom->y_end;
+    edge->x = geom->x;
+    edge->x_step = geom->x_step;
+    edge->u = (int32_t)u_start << 8;
+    edge->v = (int32_t)v_start << 8;
+    edge->u_step = u_step;
+    edge->v_step = v_step;
+}
+
 static int cfx_board_axis_cell(const CfxBoardPoint *p0,
                                const CfxBoardPoint *p1,
                                const CfxBoardPoint *p2,
@@ -1197,6 +1248,54 @@ static int cfx_board_axis_cell(const CfxBoardPoint *p0,
 {
     return p0->y == p1->y && p1->x == p2->x &&
            p2->y == p3->y && p3->x == p0->x;
+}
+
+static int cfx_board_turn_sign(const CfxBoardPoint *a,
+                               const CfxBoardPoint *b,
+                               const CfxBoardPoint *c)
+{
+    int32_t ab_x = (int32_t)b->x - a->x;
+    int32_t ab_y = (int32_t)b->y - a->y;
+    int32_t bc_x = (int32_t)c->x - b->x;
+    int32_t bc_y = (int32_t)c->y - b->y;
+    int32_t cross = ab_x * bc_y - ab_y * bc_x;
+    return (cross < 0) ? -1 : (cross > 0) ? 1 : 0;
+}
+
+static int cfx_board_mesh_strictly_convex(const CfxBoardPoint *points,
+                                          DEFAULT_INT point_stride,
+                                          DEFAULT_INT rows, DEFAULT_INT cols,
+                                          DEFAULT_INT width, DEFAULT_INT height)
+{
+    /* Main's board_mesh_point_from_screen() clamps to this range.  Keeping
+       the check here makes the fast proof safe for other mesh callers too;
+       once coordinates are screen-bounded, every cross product fits int32. */
+    for (DEFAULT_INT r = 0; r <= rows; ++r) {
+        int32_t row = (int32_t)r * point_stride;
+        for (DEFAULT_INT c = 0; c <= cols; ++c) {
+            const CfxBoardPoint *p = &points[row + c];
+            if (p->x < 0 || p->x >= width || p->y < 0 || p->y >= height)
+                return 0;
+        }
+    }
+
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int32_t row0 = (int32_t)r * point_stride;
+        int32_t row1 = (int32_t)(r + 1) * point_stride;
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            const CfxBoardPoint *p0 = &points[row0 + c];
+            const CfxBoardPoint *p1 = &points[row0 + c + 1];
+            const CfxBoardPoint *p2 = &points[row1 + c + 1];
+            const CfxBoardPoint *p3 = &points[row1 + c];
+            int sign = cfx_board_turn_sign(p0, p1, p2);
+            if (sign == 0 || cfx_board_turn_sign(p1, p2, p3) != sign ||
+                cfx_board_turn_sign(p2, p3, p0) != sign ||
+                cfx_board_turn_sign(p3, p0, p1) != sign) {
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 static DEFAULT_INT cfx_board_clamp_tile(DEFAULT_INT tile)
@@ -1697,11 +1796,14 @@ static uint8_t CFX_BOARD_MESH_COLD cfx_draw_board_mesh_cached(const CfxRenderer3
                                           DEFAULT_INT point_stride,
                                           DEFAULT_INT rows, DEFAULT_INT cols,
                                           DEFAULT_INT even_tile,
-                                          DEFAULT_INT odd_tile)
+                                          DEFAULT_INT odd_tile,
+                                          uint8_t trusted_convex)
 {
     CfxBoardGeomEdge vertical[CFX_BOARD_MESH_MAX_COLS + 1];
     CfxBoardGeomEdge top_edges[CFX_BOARD_MESH_MAX_COLS];
     CfxBoardGeomEdge bottom_edges[CFX_BOARD_MESH_MAX_COLS];
+    uint8_t vertical_v_start[CFX_BOARD_MESH_MAX_COLS + 1];
+    int32_t vertical_v_step[CFX_BOARD_MESH_MAX_COLS + 1];
     const DEFAULT_INT even = cfx_board_clamp_tile(even_tile);
     const DEFAULT_INT odd = cfx_board_clamp_tile(odd_tile);
     const uint8_t *even_src = state->texture_atlas + ((int32_t)even * state->tile_stride_bytes);
@@ -1712,6 +1814,8 @@ static uint8_t CFX_BOARD_MESH_COLD cfx_draw_board_mesh_cached(const CfxRenderer3
         int32_t row1 = (int32_t)(r + 1) * point_stride;
         for (DEFAULT_INT c = 0; c <= cols; ++c) {
             cfx_board_build_geom_edge(&vertical[c], &points[row0 + c], &points[row1 + c]);
+            cfx_board_vertical_v_params(&points[row0 + c], &points[row1 + c],
+                                        &vertical_v_start[c], &vertical_v_step[c]);
         }
         for (DEFAULT_INT c = 0; c < cols; ++c) {
             cfx_board_build_geom_edge(&top_edges[c],
@@ -1738,11 +1842,20 @@ static uint8_t CFX_BOARD_MESH_COLD cfx_draw_board_mesh_cached(const CfxRenderer3
             if (p3->y > max_y) max_y = p3->y;
 
             cfx_board_set_edge_uv(&edges[0], &top_edges[c], p0, p1, 0, 0, 255, 0);
-            cfx_board_set_edge_uv(&edges[1], &vertical[c + 1], p1, p2, 255, 0, 255, 255);
+            cfx_board_set_precomputed_uv(&edges[1], &vertical[c + 1],
+                                         255, vertical_v_start[c + 1],
+                                         0, vertical_v_step[c + 1]);
             cfx_board_set_edge_uv(&edges[2], &bottom_edges[c], p2, p3, 255, 255, 0, 255);
-            cfx_board_set_edge_uv(&edges[3], &vertical[c], p3, p0, 0, 255, 0, 0);
-            cfx_draw_textured_quad_fast_affine_edges(state, tile, edges,
-                                                     min_y, max_y, 1);
+            cfx_board_set_precomputed_uv(&edges[3], &vertical[c],
+                                         0, vertical_v_start[c],
+                                         0, vertical_v_step[c]);
+            if (trusted_convex) {
+                cfx_draw_textured_quad_fast_affine_trusted_edges(state, tile, edges,
+                                                                 min_y, max_y, 1);
+            } else {
+                cfx_draw_textured_quad_fast_affine_edges(state, tile, edges,
+                                                         min_y, max_y, 1);
+            }
         }
     }
     return 1;
@@ -1836,7 +1949,10 @@ uint8_t cfx_renderer3d_draw_board_mesh_fast_affine(
         }
     }
     return cfx_draw_board_mesh_cached(state, points, point_stride, rows, cols,
-                                     even_tile, odd_tile);
+                                     even_tile, odd_tile,
+                                     (uint8_t)cfx_board_mesh_strictly_convex(
+                                         points, point_stride, rows, cols,
+                                         state->width, state->height));
 #else
     return cfx_draw_board_mesh_fallback(renderer, points, point_stride,
                                         rows, cols, even_tile, odd_tile);
