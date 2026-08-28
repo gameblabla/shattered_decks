@@ -19,6 +19,11 @@ typedef struct CfxRenderer3D {
     uintptr_t opaque[CFX_RENDERER3D_STORAGE_WORDS];
 } CfxRenderer3D;
 
+typedef struct CfxBoardPoint {
+    int16_t x;
+    int16_t y;
+} CfxBoardPoint;
+
 typedef struct {
     void *framebuffer;
     DEFAULT_INT width;
@@ -37,6 +42,10 @@ void cfx_renderer3d_draw_quad_offscreen_direct(CfxRenderer3D *renderer, const Po
    It is intentionally approximate but stable; the generic renderer remains
    available for objects that need the old triangle path. */
 uint8_t cfx_renderer3d_draw_quad_fast_affine(CfxRenderer3D *renderer, const Point2D *p0, const Point2D *p1, const Point2D *p2, const Point2D *p3, DEFAULT_INT tetromino_type);
+uint8_t cfx_renderer3d_draw_board_mesh_fast_affine(
+    CfxRenderer3D *renderer, const CfxBoardPoint *points,
+    DEFAULT_INT point_stride, DEFAULT_INT rows, DEFAULT_INT cols,
+    DEFAULT_INT even_tile, DEFAULT_INT odd_tile);
 uint32_t cfx_renderer3d_lut_size_bytes(void);
 
 #endif

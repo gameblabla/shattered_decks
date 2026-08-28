@@ -1,6 +1,5 @@
 #include "renderer3d_internal.h"
 
-
 typedef struct {
     int16_t x, y;
     uint16_t u, v;
@@ -788,6 +787,295 @@ static void cfx_fast_quad_build_edge(CfxFastQuadEdge *edge, const CfxVertexIn *a
     }
 }
 
+static uint8_t cfx_draw_axis_rect_fast_affine_exact(
+    const CfxRenderer3DState *state, const uint8_t *tile,
+    const CfxVertexIn *v0, const CfxVertexIn *v1,
+    const CfxVertexIn *v2, const CfxVertexIn *v3)
+{
+    const CfxVertexIn *tl;
+    const CfxVertexIn *tr;
+    const CfxVertexIn *bl;
+    const CfxVertexIn *br;
+    int16_t left, right, top, bottom;
+    int16_t height;
+    int16_t span;
+    int16_t draw_top;
+    int16_t draw_bottom;
+    int32_t left_u_fp;
+    int32_t left_v_fp;
+    int32_t right_u_fp;
+    int32_t right_v_fp;
+    int32_t left_u_step;
+    int32_t left_v_step;
+    int32_t right_u_step;
+    int32_t right_v_step;
+
+    if (!cfx_get_axis_rect_corners(v0, v1, v2, v3,
+                                   &tl, &tr, &bl, &left, &right, &top, &bottom)) {
+        return 0;
+    }
+    br = cfx_find_rect_corner_common(v0, v1, v2, v3, right, bottom);
+    if (!br) return 0;
+
+    height = (int16_t)(bottom - top);
+    span = (int16_t)(right - left + 1);
+    if (height <= 0 || span <= 0) return 1;
+
+    left_u_fp = (int32_t)tl->u << 8;
+    left_v_fp = (int32_t)tl->v << 8;
+    right_u_fp = (int32_t)tr->u << 8;
+    right_v_fp = (int32_t)tr->v << 8;
+    left_u_step = cfx_fast_div_tz_i32_u16_q15(
+        ((int32_t)bl->u - (int32_t)tl->u) << 8, (uint16_t)height);
+    left_v_step = cfx_fast_div_tz_i32_u16_q15(
+        ((int32_t)bl->v - (int32_t)tl->v) << 8, (uint16_t)height);
+    right_u_step = cfx_fast_div_tz_i32_u16_q15(
+        ((int32_t)br->u - (int32_t)tr->u) << 8, (uint16_t)height);
+    right_v_step = cfx_fast_div_tz_i32_u16_q15(
+        ((int32_t)br->v - (int32_t)tr->v) << 8, (uint16_t)height);
+
+    draw_top = top;
+    draw_bottom = bottom;
+    if (draw_top < 0) {
+        int16_t skip = (int16_t)-draw_top;
+        left_u_fp += left_u_step * skip;
+        left_v_fp += left_v_step * skip;
+        right_u_fp += right_u_step * skip;
+        right_v_fp += right_v_step * skip;
+        draw_top = 0;
+    }
+    if (draw_bottom > state->height) draw_bottom = state->height;
+
+    for (int16_t y = draw_top; y < draw_bottom; ++y) {
+        uint16_t denom = (uint16_t)((span > 256) ? 256 : span);
+        int32_t du_fp = cfx_fast_div_tz_i32_u16_q15(right_u_fp - left_u_fp, denom);
+        int32_t dv_fp = cfx_fast_div_tz_i32_u16_q15(right_v_fp - left_v_fp, denom);
+        int8_t step_u = (int8_t)(du_fp >> 8);
+        int8_t step_v = (int8_t)(dv_fp >> 8);
+        uint16_t tex_state = cfx_pack_tex_state(
+            (uint8_t)(left_u_fp >> 8), (uint8_t)(left_v_fp >> 8));
+        cfx_draw_span_direct_tile(state, tile, y, left, span, tex_state, step_u, step_v);
+        left_u_fp += left_u_step;
+        left_v_fp += left_v_step;
+        right_u_fp += right_u_step;
+        right_v_fp += right_v_step;
+    }
+    return 1;
+}
+
+static void cfx_draw_board_span_flat(const CfxRenderer3DState *state,
+                                     const uint8_t *tile, int16_t y,
+                                     int16_t xs, int16_t span,
+                                     uint16_t tex_state, int8_t step_u);
+static void cfx_draw_board_span_tilted(const CfxRenderer3DState *state,
+                                     const uint8_t *tile, int16_t y,
+                                     int16_t xs, int16_t span,
+                                     uint16_t tex_state, int8_t step_u,
+                                     int8_t step_v);
+
+/* A convex board cell has exactly two active boundary edges on every covered
+   scanline.  The generic fallback below checks all four edges every row, which
+   is needlessly expensive for the moving opening mesh.  Keep the original
+   edge order and arithmetic, but carry the active pair from one row to the
+   next; only rows at a vertex need the four-edge lookup. */
+static uint8_t cfx_draw_textured_quad_fast_affine_active_edges(
+    const CfxRenderer3DState *renderer, const uint8_t *tile,
+    const CfxFastQuadEdge *source_edges, int16_t min_y, int16_t max_y,
+    uint8_t board_fast)
+{
+    CfxFastQuadEdge edges[4];
+    int active0 = -1;
+    int active1 = -1;
+    int active_count = 0;
+
+    for (int i = 0; i < 4; ++i) edges[i] = source_edges[i];
+    if (min_y == max_y) return 1;
+
+    if (min_y < 0) {
+        int16_t skip = (int16_t)-min_y;
+        for (int i = 0; i < 4; ++i) {
+            if (edges[i].y_start < 0 && edges[i].y_end > 0) {
+                edges[i].x += edges[i].x_step * skip;
+                edges[i].u += edges[i].u_step * skip;
+                edges[i].v += edges[i].v_step * skip;
+                edges[i].y_start = 0;
+            }
+        }
+        min_y = 0;
+    }
+    if (max_y > renderer->height) max_y = (int16_t)renderer->height;
+    if (min_y >= max_y) return 1;
+
+    {
+        int boundary_y[9];
+        int boundary_count = 0;
+        boundary_y[boundary_count++] = min_y;
+        for (int i = 0; i < 4; ++i) {
+            boundary_y[boundary_count++] = edges[i].y_start;
+            boundary_y[boundary_count++] = edges[i].y_end;
+        }
+        /* An edge-active set can change only at one of these eight endpoints.
+           Validate those few scanlines up front, so the optimized loop can
+           never draw half a malformed polygon before falling back. */
+        for (int b = 0; b < boundary_count; ++b) {
+            int y_check = boundary_y[b];
+            int count = 0;
+            if (y_check < min_y || y_check >= max_y) continue;
+            for (int i = 0; i < 4; ++i) {
+                if (y_check >= edges[i].y_start && y_check < edges[i].y_end) ++count;
+            }
+            if (count != 2) return 0;
+        }
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        if (min_y >= edges[i].y_start && min_y < edges[i].y_end) {
+            if (active_count == 0) active0 = i;
+            else if (active_count == 1) active1 = i;
+            ++active_count;
+        }
+    }
+    if (active_count != 2) return 0;
+
+    for (int16_t y = min_y; y < max_y; ++y) {
+        CfxFastQuadEdge *e0 = &edges[active0];
+        CfxFastQuadEdge *e1 = &edges[active1];
+        int32_t xs_fp[2] = {e0->x, e1->x};
+        int32_t us_fp[2] = {e0->u, e1->u};
+        int32_t vs_fp[2] = {e0->v, e1->v};
+
+        e0->x += e0->x_step;
+        e0->u += e0->u_step;
+        e0->v += e0->v_step;
+        e1->x += e1->x_step;
+        e1->u += e1->u_step;
+        e1->v += e1->v_step;
+
+        if (xs_fp[0] > xs_fp[1]) {
+            int32_t tx = xs_fp[0]; xs_fp[0] = xs_fp[1]; xs_fp[1] = tx;
+            int32_t tu = us_fp[0]; us_fp[0] = us_fp[1]; us_fp[1] = tu;
+            int32_t tv = vs_fp[0]; vs_fp[0] = vs_fp[1]; vs_fp[1] = tv;
+        }
+
+        int16_t x_start = (int16_t)((xs_fp[0] + ((1 << CFX_GEOM_FIXED_SHIFT) - 1)) >> CFX_GEOM_FIXED_SHIFT);
+        int16_t x_end = (int16_t)(xs_fp[1] >> CFX_GEOM_FIXED_SHIFT);
+        int16_t span = (int16_t)(x_end - x_start + 1);
+        if (span <= 0) continue;
+
+        uint16_t denom = (uint16_t)((span > 256) ? 256 : span);
+        int32_t du_fp = cfx_fast_div_tz_i32_u16_q15(us_fp[1] - us_fp[0], denom);
+        int32_t dv_fp = cfx_fast_div_tz_i32_u16_q15(vs_fp[1] - vs_fp[0], denom);
+        int8_t step_u = (int8_t)(du_fp >> 8);
+        int8_t step_v = (int8_t)(dv_fp >> 8);
+        uint16_t tex_state = cfx_pack_tex_state((uint8_t)(us_fp[0] >> 8), (uint8_t)(vs_fp[0] >> 8));
+        if (board_fast) {
+            cfx_draw_board_span_tilted(renderer, tile, y, x_start, span,
+                                     tex_state, step_u, step_v);
+        } else {
+            cfx_draw_span_direct_tile(renderer, tile, y, x_start, span,
+                                      tex_state, step_u, step_v);
+        }
+
+        if (y + 1 < max_y &&
+            (y + 1 >= e0->y_end || y + 1 >= e1->y_end)) {
+            active_count = 0;
+            for (int i = 0; i < 4; ++i) {
+                if (y + 1 >= edges[i].y_start && y + 1 < edges[i].y_end) {
+                    if (active_count == 0) active0 = i;
+                    else if (active_count == 1) active1 = i;
+                    ++active_count;
+                }
+            }
+            /* Board cells are convex, so this cannot happen for the intended
+               mesh.  Refuse the specialized path before any future caller can
+               silently get a partial polygon. */
+            if (active_count != 2) return 0;
+        }
+    }
+    return 1;
+}
+
+static uint8_t cfx_draw_textured_quad_fast_affine_edges(const CfxRenderer3DState *renderer,
+                                                        const uint8_t *tile,
+                                                        const CfxFastQuadEdge *source_edges,
+                                                        int16_t min_y, int16_t max_y,
+                                                        uint8_t board_fast)
+{
+    if (cfx_draw_textured_quad_fast_affine_active_edges(renderer, tile,
+                                                        source_edges, min_y, max_y,
+                                                        board_fast)) {
+        return 1;
+    }
+
+    {
+        CfxFastQuadEdge edges[4];
+        for (int i = 0; i < 4; ++i) edges[i] = source_edges[i];
+        if (min_y == max_y) return 1;
+
+        if (min_y < 0) {
+            int16_t skip = (int16_t)-min_y;
+            for (int i = 0; i < 4; ++i) {
+                if (edges[i].y_start < 0 && edges[i].y_end > 0) {
+                    edges[i].x += edges[i].x_step * skip;
+                    edges[i].u += edges[i].u_step * skip;
+                    edges[i].v += edges[i].v_step * skip;
+                    edges[i].y_start = 0;
+                }
+            }
+            min_y = 0;
+        }
+        if (max_y > renderer->height) max_y = (int16_t)renderer->height;
+
+        for (int16_t y = min_y; y < max_y; ++y) {
+            int16_t count = 0;
+            int32_t xs_fp[2];
+            int32_t us_fp[2];
+            int32_t vs_fp[2];
+
+            for (int i = 0; i < 4; ++i) {
+                CfxFastQuadEdge *e = &edges[i];
+                if (y >= e->y_start && y < e->y_end) {
+                    if (count < 2) {
+                        xs_fp[count] = e->x;
+                        us_fp[count] = e->u;
+                        vs_fp[count] = e->v;
+                        ++count;
+                    }
+                    e->x += e->x_step;
+                    e->u += e->u_step;
+                    e->v += e->v_step;
+                }
+            }
+            if (count < 2) continue;
+            if (xs_fp[0] > xs_fp[1]) {
+                int32_t tx = xs_fp[0]; xs_fp[0] = xs_fp[1]; xs_fp[1] = tx;
+                int32_t tu = us_fp[0]; us_fp[0] = us_fp[1]; us_fp[1] = tu;
+                int32_t tv = vs_fp[0]; vs_fp[0] = vs_fp[1]; vs_fp[1] = tv;
+            }
+
+            int16_t x_start = (int16_t)((xs_fp[0] + ((1 << CFX_GEOM_FIXED_SHIFT) - 1)) >> CFX_GEOM_FIXED_SHIFT);
+            int16_t x_end = (int16_t)(xs_fp[1] >> CFX_GEOM_FIXED_SHIFT);
+            int16_t span = (int16_t)(x_end - x_start + 1);
+            if (span <= 0) continue;
+
+            uint16_t denom = (uint16_t)((span > 256) ? 256 : span);
+            int32_t du_fp = cfx_fast_div_tz_i32_u16_q15(us_fp[1] - us_fp[0], denom);
+            int32_t dv_fp = cfx_fast_div_tz_i32_u16_q15(vs_fp[1] - vs_fp[0], denom);
+            int8_t step_u = (int8_t)(du_fp >> 8);
+            int8_t step_v = (int8_t)(dv_fp >> 8);
+            uint16_t tex_state = cfx_pack_tex_state((uint8_t)(us_fp[0] >> 8), (uint8_t)(vs_fp[0] >> 8));
+            if (board_fast) {
+                cfx_draw_board_span_tilted(renderer, tile, y, x_start, span,
+                                         tex_state, step_u, step_v);
+            } else {
+                cfx_draw_span_direct_tile(renderer, tile, y, x_start, span,
+                                          tex_state, step_u, step_v);
+            }
+        }
+    }
+    return 1;
+}
+
 static uint8_t cfx_draw_textured_quad_fast_affine_direct(const CfxRenderer3DState *renderer,
                                                          const uint8_t *tile,
                                                          CfxVertexIn p0, CfxVertexIn p1,
@@ -808,62 +1096,8 @@ static uint8_t cfx_draw_textured_quad_fast_affine_direct(const CfxRenderer3DStat
     cfx_fast_quad_build_edge(&edges[1], &points[1], &points[2]);
     cfx_fast_quad_build_edge(&edges[2], &points[2], &points[3]);
     cfx_fast_quad_build_edge(&edges[3], &points[3], &points[0]);
-
-    if (min_y < 0) {
-        int16_t skip = (int16_t)-min_y;
-        for (int i = 0; i < 4; ++i) {
-            if (edges[i].y_start < 0 && edges[i].y_end > 0) {
-                edges[i].x += edges[i].x_step * skip;
-                edges[i].u += edges[i].u_step * skip;
-                edges[i].v += edges[i].v_step * skip;
-                edges[i].y_start = 0;
-            }
-        }
-        min_y = 0;
-    }
-    if (max_y > renderer->height) max_y = (int16_t)renderer->height;
-
-    for (int16_t y = min_y; y < max_y; ++y) {
-        int16_t count = 0;
-        int32_t xs_fp[2];
-        int32_t us_fp[2];
-        int32_t vs_fp[2];
-
-        for (int i = 0; i < 4; ++i) {
-            CfxFastQuadEdge *e = &edges[i];
-            if (y >= e->y_start && y < e->y_end) {
-                if (count < 2) {
-                    xs_fp[count] = e->x;
-                    us_fp[count] = e->u;
-                    vs_fp[count] = e->v;
-                    ++count;
-                }
-                e->x += e->x_step;
-                e->u += e->u_step;
-                e->v += e->v_step;
-            }
-        }
-        if (count < 2) continue;
-        if (xs_fp[0] > xs_fp[1]) {
-            int32_t tx = xs_fp[0]; xs_fp[0] = xs_fp[1]; xs_fp[1] = tx;
-            int32_t tu = us_fp[0]; us_fp[0] = us_fp[1]; us_fp[1] = tu;
-            int32_t tv = vs_fp[0]; vs_fp[0] = vs_fp[1]; vs_fp[1] = tv;
-        }
-
-        int16_t x_start = (int16_t)((xs_fp[0] + ((1 << CFX_GEOM_FIXED_SHIFT) - 1)) >> CFX_GEOM_FIXED_SHIFT);
-        int16_t x_end = (int16_t)(xs_fp[1] >> CFX_GEOM_FIXED_SHIFT);
-        int16_t span = (int16_t)(x_end - x_start + 1);
-        if (span <= 0) continue;
-
-        uint16_t denom = (uint16_t)((span > 256) ? 256 : span);
-        int32_t du_fp = cfx_fast_div_tz_i32_u16_q15(us_fp[1] - us_fp[0], denom);
-        int32_t dv_fp = cfx_fast_div_tz_i32_u16_q15(vs_fp[1] - vs_fp[0], denom);
-        int8_t step_u = (int8_t)(du_fp >> 8);
-        int8_t step_v = (int8_t)(dv_fp >> 8);
-        uint16_t tex_state = cfx_pack_tex_state((uint8_t)(us_fp[0] >> 8), (uint8_t)(vs_fp[0] >> 8));
-        cfx_draw_span_direct_tile(renderer, tile, y, x_start, span, tex_state, step_u, step_v);
-    }
-    return 1;
+    return cfx_draw_textured_quad_fast_affine_edges(renderer, tile, edges,
+                                                    min_y, max_y, 0);
 }
 
 uint8_t cfx_renderer3d_draw_quad_fast_affine(CfxRenderer3D *renderer,
@@ -880,8 +1114,640 @@ uint8_t cfx_renderer3d_draw_quad_fast_affine(CfxRenderer3D *renderer,
     CfxVertexIn v1 = cfx_make_vertex_endpoint(p1);
     CfxVertexIn v2 = cfx_make_vertex_endpoint(p2);
     CfxVertexIn v3 = cfx_make_vertex_endpoint(p3);
+    if (cfx_draw_axis_rect_fast_affine_exact(state, tile, &v0, &v1, &v2, &v3)) {
+        return 1;
+    }
     return cfx_draw_textured_quad_fast_affine_direct(state, tile, v0, v1, v2, v3);
 }
+
+typedef struct {
+    int16_t y_start;
+    int16_t y_end;
+    int32_t x;
+    int32_t x_step;
+} CfxBoardGeomEdge;
+
+static void cfx_board_build_geom_edge(CfxBoardGeomEdge *edge,
+                                      const CfxBoardPoint *a,
+                                      const CfxBoardPoint *b)
+{
+    int16_t dy = (int16_t)(b->y - a->y);
+    if (dy == 0) {
+        edge->y_start = a->y;
+        edge->y_end = a->y;
+        edge->x = ((int32_t)a->x) << CFX_GEOM_FIXED_SHIFT;
+        edge->x_step = 0;
+    } else if (dy > 0) {
+        edge->y_start = a->y;
+        edge->y_end = b->y;
+        edge->x = ((int32_t)a->x) << CFX_GEOM_FIXED_SHIFT;
+        edge->x_step = cfx_fast_div_tz_i32_u16_q15(
+            ((int32_t)b->x - (int32_t)a->x) << CFX_GEOM_FIXED_SHIFT,
+            (uint16_t)dy);
+    } else {
+        dy = (int16_t)-dy;
+        edge->y_start = b->y;
+        edge->y_end = a->y;
+        edge->x = ((int32_t)b->x) << CFX_GEOM_FIXED_SHIFT;
+        edge->x_step = cfx_fast_div_tz_i32_u16_q15(
+            ((int32_t)a->x - (int32_t)b->x) << CFX_GEOM_FIXED_SHIFT,
+            (uint16_t)dy);
+    }
+}
+
+static void cfx_board_set_edge_uv(CfxFastQuadEdge *edge,
+                                  const CfxBoardGeomEdge *geom,
+                                  const CfxBoardPoint *a,
+                                  const CfxBoardPoint *b,
+                                  uint8_t au, uint8_t av,
+                                  uint8_t bu, uint8_t bv)
+{
+    int16_t dy = (int16_t)(b->y - a->y);
+    edge->y_start = geom->y_start;
+    edge->y_end = geom->y_end;
+    edge->x = geom->x;
+    edge->x_step = geom->x_step;
+    if (dy == 0) {
+        edge->u = (int32_t)au << 8;
+        edge->v = (int32_t)av << 8;
+        edge->u_step = 0;
+        edge->v_step = 0;
+    } else if (dy > 0) {
+        edge->u = (int32_t)au << 8;
+        edge->v = (int32_t)av << 8;
+        edge->u_step = (au == bu) ? 0 : cfx_fast_div_tz_i32_u16_q15(
+            ((int32_t)bu - (int32_t)au) << 8, (uint16_t)dy);
+        edge->v_step = (av == bv) ? 0 : cfx_fast_div_tz_i32_u16_q15(
+            ((int32_t)bv - (int32_t)av) << 8, (uint16_t)dy);
+    } else {
+        dy = (int16_t)-dy;
+        edge->u = (int32_t)bu << 8;
+        edge->v = (int32_t)bv << 8;
+        edge->u_step = (au == bu) ? 0 : cfx_fast_div_tz_i32_u16_q15(
+            ((int32_t)au - (int32_t)bu) << 8, (uint16_t)dy);
+        edge->v_step = (av == bv) ? 0 : cfx_fast_div_tz_i32_u16_q15(
+            ((int32_t)av - (int32_t)bv) << 8, (uint16_t)dy);
+    }
+}
+
+static int cfx_board_axis_cell(const CfxBoardPoint *p0,
+                               const CfxBoardPoint *p1,
+                               const CfxBoardPoint *p2,
+                               const CfxBoardPoint *p3)
+{
+    return p0->y == p1->y && p1->x == p2->x &&
+           p2->y == p3->y && p3->x == p0->x;
+}
+
+static DEFAULT_INT cfx_board_clamp_tile(DEFAULT_INT tile)
+{
+    if (tile < 0) return 0;
+    if (tile >= CFX_TEXTURE_TILE_COUNT) return CFX_TEXTURE_TILE_COUNT - 1;
+    return tile;
+}
+
+static uint8_t cfx_draw_board_mesh_axis(const CfxRenderer3DState *state,
+                                        const CfxBoardPoint *points,
+                                        DEFAULT_INT point_stride,
+                                        DEFAULT_INT rows, DEFAULT_INT cols,
+                                        DEFAULT_INT even_tile,
+                                        DEFAULT_INT odd_tile)
+{
+    const DEFAULT_INT even = cfx_board_clamp_tile(even_tile);
+    const DEFAULT_INT odd = cfx_board_clamp_tile(odd_tile);
+    const uint8_t *even_src = state->texture_atlas + ((int32_t)even * state->tile_stride_bytes);
+    const uint8_t *odd_src = state->texture_atlas + ((int32_t)odd * state->tile_stride_bytes);
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int32_t row0 = (int32_t)r * point_stride;
+        int32_t row1 = (int32_t)(r + 1) * point_stride;
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            const CfxBoardPoint *p0 = &points[row0 + c];
+            const CfxBoardPoint *p1 = &points[row0 + c + 1];
+            const CfxBoardPoint *p3 = &points[row1 + c];
+            int16_t left = p0->x < p1->x ? p0->x : p1->x;
+            int16_t right = p0->x > p1->x ? p0->x : p1->x;
+            int16_t top = p0->y < p3->y ? p0->y : p3->y;
+            int16_t bottom = p0->y > p3->y ? p0->y : p3->y;
+            int16_t height;
+            int16_t span;
+            int16_t draw_top;
+            int16_t draw_bottom;
+            int32_t left_u_fp;
+            int32_t left_v_fp;
+            int32_t right_u_fp;
+            int32_t right_v_fp;
+            int32_t left_u_step;
+            int32_t left_v_step;
+            int32_t right_u_step;
+            int32_t right_v_step;
+            uint16_t denom;
+            int8_t step_u;
+            int8_t step_v;
+            const uint8_t *tile;
+            uint8_t left_u = (p0->x <= p1->x) ? 0u : 255u;
+            uint8_t top_v = (p0->y <= p3->y) ? 0u : 255u;
+            uint8_t right_u = (uint8_t)(255u - left_u);
+            uint8_t bottom_v = (uint8_t)(255u - top_v);
+
+            height = (int16_t)(bottom - top);
+            span = (int16_t)(right - left + 1);
+            if (height <= 0 || span <= 0) continue;
+            left_u_fp = (int32_t)left_u << 8;
+            left_v_fp = (int32_t)top_v << 8;
+            right_u_fp = (int32_t)right_u << 8;
+            right_v_fp = (int32_t)top_v << 8;
+            left_u_step = 0;
+            left_v_step = cfx_fast_div_tz_i32_u16_q15(
+                ((int32_t)bottom_v - (int32_t)top_v) << 8,
+                (uint16_t)height);
+            right_u_step = left_u_step;
+            right_v_step = left_v_step;
+
+            draw_top = top;
+            draw_bottom = bottom;
+            if (draw_top < 0) {
+                int16_t skip = (int16_t)-draw_top;
+                left_u_fp += left_u_step * skip;
+                left_v_fp += left_v_step * skip;
+                right_u_fp += right_u_step * skip;
+                right_v_fp += right_v_step * skip;
+                draw_top = 0;
+            }
+            if (draw_bottom > state->height) draw_bottom = (int16_t)state->height;
+            denom = (uint16_t)((span > 256) ? 256 : span);
+            step_u = (int8_t)(cfx_fast_div_tz_i32_u16_q15(
+                right_u_fp - left_u_fp, denom) >> 8);
+            step_v = (int8_t)(cfx_fast_div_tz_i32_u16_q15(
+                right_v_fp - left_v_fp, denom) >> 8);
+            tile = ((r + c) & 1) ? odd_src : even_src;
+            for (int16_t y = draw_top; y < draw_bottom; ++y) {
+        cfx_draw_span_direct_tile(state, tile, y, left, span,
+            cfx_pack_tex_state((uint8_t)(left_u_fp >> 8),
+                               (uint8_t)(left_v_fp >> 8)),
+            step_u, step_v);
+                left_u_fp += left_u_step;
+                left_v_fp += left_v_step;
+                right_u_fp += right_u_step;
+                right_v_fp += right_v_step;
+            }
+        }
+    }
+    return 1;
+}
+
+#define CFX_BOARD_MESH_MAX_COLS 64
+
+#if defined(__GNUC__)
+#define CFX_BOARD_MESH_COLD __attribute__((noinline, cold))
+#else
+#define CFX_BOARD_MESH_COLD
+#endif
+
+static int cfx_board_rows_uniform_trapezoid(const CfxBoardPoint *points,
+                                            DEFAULT_INT point_stride,
+                                            DEFAULT_INT rows, DEFAULT_INT cols)
+{
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int32_t row0 = (int32_t)r * point_stride;
+        int32_t row1 = (int32_t)(r + 1) * point_stride;
+        int16_t top_y = points[row0].y;
+        int16_t bottom_y = points[row1].y;
+        for (DEFAULT_INT c = 1; c <= cols; ++c) {
+            if (points[row0 + c].y != top_y || points[row1 + c].y != bottom_y)
+                return 0;
+        }
+    }
+    return 1;
+}
+
+/* The Marty board's ground cells use a 32x32 tile and constant V on each
+   scanline.  For the usual small U steps, several adjacent screen pixels
+   therefore sample the same source texel.  The normal row filler still does
+   one texture lookup per output pixel; coalesce those runs here and write
+   repeated bytes in aligned dwords.  This is board-only: object faces and
+   slab walls retain the ordinary renderer path, and the fallback keeps
+   measurement builds and non-Marty targets on their existing implementation. */
+static void cfx_draw_board_span_flat(const CfxRenderer3DState *state,
+                                     const uint8_t *tile, int16_t y,
+                                     int16_t xs, int16_t span,
+                                     uint16_t tex_state, int8_t step_u)
+{
+#if defined(WAIFU_FM_FMTOWNS) && defined(__i386__) && (CFX_TEX_SIZE == 32) && \
+    !defined(CFX_MEASURE_SKIP_SPANS) && !defined(CFX_MEASURE_C_ROW)
+    uint8_t u = (uint8_t)tex_state;
+    uint8_t v = (uint8_t)(tex_state >> 8);
+    const uint8_t *row;
+    uint8_t *dst;
+
+    if (span <= 0 || y < 0 || y >= state->height) return;
+    if (xs < 0) {
+        int16_t skip = (int16_t)-xs;
+        if (skip >= span) return;
+        u = (uint8_t)(u + (int)step_u * skip);
+        span = (int16_t)(span - skip);
+        xs = 0;
+    }
+    if (xs >= state->width) return;
+    if ((int32_t)xs + span > state->width)
+        span = (int16_t)(state->width - xs);
+    if (span <= 0) return;
+
+    row = tile + (((uint16_t)(v >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK) *
+                 (uint16_t)state->tile_pitch_bytes);
+    dst = state->framebuffer + ((int32_t)y * state->width) + xs;
+    while (span > 0) {
+        int phase = u & 7;
+        int run;
+        uint8_t color;
+        uint32_t packed;
+        int left;
+
+        if (step_u > 0) {
+            run = (8 - phase + (int)step_u - 1) / (int)step_u;
+        } else if (step_u < 0) {
+            int magnitude = -(int)step_u;
+            run = (phase + magnitude) / magnitude;
+        } else {
+            run = span;
+        }
+        if (run > span) run = span;
+        color = row[(uint16_t)(u >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK];
+        packed = (uint32_t)color * 0x01010101u;
+        left = run;
+        while (left > 0 && ((uintptr_t)dst & 3u) != 0u) {
+            *dst++ = color;
+            --left;
+        }
+        while (left >= 4) {
+            *(uint32_t *)dst = packed;
+            dst += 4;
+            left -= 4;
+        }
+        while (left-- > 0) *dst++ = color;
+        u = (uint8_t)(u + (int)step_u * run);
+        span = (int16_t)(span - run);
+    }
+#else
+    cfx_draw_span_direct_tile(state, tile, y, xs, span, tex_state, step_u, 0);
+#endif
+}
+
+static void cfx_draw_board_span_tilted(const CfxRenderer3DState *state,
+                                     const uint8_t *tile, int16_t y,
+                                     int16_t xs, int16_t span,
+                                     uint16_t tex_state, int8_t step_u,
+                                     int8_t step_v)
+{
+#if defined(WAIFU_FM_FMTOWNS) && defined(__i386__) && (CFX_TEX_SIZE == 32) && \
+    !defined(CFX_MEASURE_SKIP_SPANS) && !defined(CFX_MEASURE_C_ROW)
+    uint8_t u;
+    uint8_t v;
+    uint8_t *dst;
+
+    if (span <= 0 || y < 0 || y >= state->height) return;
+    if (xs < 0) {
+        int16_t skip = (int16_t)-xs;
+        if (skip >= span) return;
+        tex_state = cfx_advance_tex_state_n(tex_state, step_u, step_v,
+                                            (uint16_t)skip);
+        span = (int16_t)(span - skip);
+        xs = 0;
+    }
+    if (xs >= state->width) return;
+    if ((int32_t)xs + span > state->width)
+        span = (int16_t)(state->width - xs);
+    if (span <= 0) return;
+
+    u = (uint8_t)tex_state;
+    v = (uint8_t)(tex_state >> 8);
+    dst = state->framebuffer + ((int32_t)y * state->width) + xs;
+
+    while (span > 0) {
+        int run_u;
+        int run_v;
+        int run;
+        int phase_u = u & 7;
+        int phase_v = v & 7;
+        int magnitude;
+        uint8_t color;
+        uint32_t packed;
+        int left;
+
+        if (step_u > 0) {
+            run_u = (8 - phase_u + (int)step_u - 1) / (int)step_u;
+        } else if (step_u < 0) {
+            magnitude = -(int)step_u;
+            run_u = (phase_u + magnitude) / magnitude;
+        } else {
+            run_u = span;
+        }
+        if (step_v > 0) {
+            run_v = (8 - phase_v + (int)step_v - 1) / (int)step_v;
+        } else if (step_v < 0) {
+            magnitude = -(int)step_v;
+            run_v = (phase_v + magnitude) / magnitude;
+        } else {
+            run_v = span;
+        }
+        run = run_u < run_v ? run_u : run_v;
+        if (run > span) run = span;
+
+        color = tile[(((uint16_t)(v >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK) *
+                     (uint16_t)state->tile_pitch_bytes) +
+                    ((uint16_t)(u >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK)];
+        packed = (uint32_t)color * 0x01010101u;
+        left = run;
+        while (left > 0 && ((uintptr_t)dst & 3u) != 0u) {
+            *dst++ = color;
+            --left;
+        }
+        while (left >= 4) {
+            *(uint32_t *)dst = packed;
+            dst += 4;
+            left -= 4;
+        }
+        while (left-- > 0) *dst++ = color;
+
+        u = (uint8_t)(u + (int)step_u * run);
+        v = (uint8_t)(v + (int)step_v * run);
+        span = (int16_t)(span - run);
+    }
+#else
+    cfx_draw_span_direct_tile(state, tile, y, xs, span, tex_state, step_u, step_v);
+#endif
+}
+
+/* The projected ground plane keeps every screen row of a board mesh on one
+   horizontal scanline boundary.  In that common case the old per-cell loop
+   copied and advanced each shared column edge once for its left cell and once
+   for its right cell.  Walk one row at a time instead: each column edge is
+   stepped once, while every cell retains its own U endpoint and tile. */
+static uint8_t CFX_BOARD_MESH_COLD cfx_draw_board_mesh_trapezoid_rows(
+    const CfxRenderer3DState *state, const CfxBoardPoint *points,
+    DEFAULT_INT point_stride, DEFAULT_INT rows, DEFAULT_INT cols,
+    DEFAULT_INT even_tile, DEFAULT_INT odd_tile)
+{
+    CfxBoardGeomEdge vertical[CFX_BOARD_MESH_MAX_COLS + 1];
+    const DEFAULT_INT even = cfx_board_clamp_tile(even_tile);
+    const DEFAULT_INT odd = cfx_board_clamp_tile(odd_tile);
+    const uint8_t *even_src = state->texture_atlas + ((int32_t)even * state->tile_stride_bytes);
+    const uint8_t *odd_src = state->texture_atlas + ((int32_t)odd * state->tile_stride_bytes);
+
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int32_t row0 = (int32_t)r * point_stride;
+        int32_t row1 = (int32_t)(r + 1) * point_stride;
+        int16_t top = points[row0].y;
+        int16_t bottom = points[row1].y;
+        int16_t min_y = top < bottom ? top : bottom;
+        int16_t max_y = top > bottom ? top : bottom;
+        int16_t draw_top = min_y;
+        int16_t draw_bottom = max_y;
+        int16_t height = (int16_t)(max_y - min_y);
+        int32_t v_fp;
+        int32_t v_step;
+        uint8_t top_v;
+        uint8_t bottom_v;
+
+        if (height <= 0) continue;
+        for (DEFAULT_INT c = 0; c <= cols; ++c)
+            cfx_board_build_geom_edge(&vertical[c], &points[row0 + c], &points[row1 + c]);
+
+        top_v = (top <= bottom) ? 0u : 255u;
+        bottom_v = (uint8_t)(255u - top_v);
+        v_fp = (int32_t)top_v << 8;
+        v_step = cfx_fast_div_tz_i32_u16_q15(
+            ((int32_t)bottom_v - (int32_t)top_v) << 8, (uint16_t)height);
+
+        if (draw_top < 0) {
+            int16_t skip = (int16_t)-draw_top;
+            for (DEFAULT_INT c = 0; c <= cols; ++c)
+                vertical[c].x += vertical[c].x_step * skip;
+            v_fp += v_step * skip;
+            draw_top = 0;
+        }
+        if (draw_bottom > state->height) draw_bottom = (int16_t)state->height;
+
+        for (int16_t y = draw_top; y < draw_bottom; ++y) {
+            for (DEFAULT_INT c = 0; c < cols; ++c) {
+                const CfxBoardPoint *p0 = &points[row0 + c];
+                const CfxBoardPoint *p1 = &points[row0 + c + 1];
+                int32_t xs0 = vertical[c + 1].x;
+                int32_t xs1 = vertical[c].x;
+                int32_t us0 = (int32_t)((p0->x <= p1->x) ? 255u : 0u) << 8;
+                int32_t us1 = (int32_t)((p0->x <= p1->x) ? 0u : 255u) << 8;
+                int16_t x_start;
+                int16_t x_end;
+                int16_t span;
+                uint16_t denom;
+                int8_t step_u;
+
+                if (xs0 > xs1) {
+                    int32_t t = xs0;
+                    xs0 = xs1;
+                    xs1 = t;
+                    t = us0;
+                    us0 = us1;
+                    us1 = t;
+                }
+                x_start = (int16_t)((xs0 + ((1 << CFX_GEOM_FIXED_SHIFT) - 1)) >> CFX_GEOM_FIXED_SHIFT);
+                x_end = (int16_t)(xs1 >> CFX_GEOM_FIXED_SHIFT);
+                span = (int16_t)(x_end - x_start + 1);
+                if (span <= 0) continue;
+
+                denom = (uint16_t)((span > 256) ? 256 : span);
+                step_u = (int8_t)(cfx_fast_div_tz_i32_u16_q15(us1 - us0, denom) >> 8);
+                cfx_draw_board_span_flat(state,
+                    ((r + c) & 1) ? odd_src : even_src, y, x_start, span,
+                    cfx_pack_tex_state((uint8_t)(us0 >> 8), (uint8_t)(v_fp >> 8)),
+                    step_u);
+            }
+            for (DEFAULT_INT c = 0; c <= cols; ++c)
+                vertical[c].x += vertical[c].x_step;
+            v_fp += v_step;
+        }
+    }
+    return 1;
+}
+
+static uint8_t cfx_draw_board_mesh_trapezoid(const CfxRenderer3DState *state,
+                                             const CfxBoardPoint *points,
+                                             DEFAULT_INT point_stride,
+                                             DEFAULT_INT rows, DEFAULT_INT cols,
+                                             DEFAULT_INT even_tile,
+                                             DEFAULT_INT odd_tile)
+{
+    CfxBoardGeomEdge vertical[CFX_BOARD_MESH_MAX_COLS + 1];
+    const DEFAULT_INT even = cfx_board_clamp_tile(even_tile);
+    const DEFAULT_INT odd = cfx_board_clamp_tile(odd_tile);
+    const uint8_t *even_src = state->texture_atlas + ((int32_t)even * state->tile_stride_bytes);
+    const uint8_t *odd_src = state->texture_atlas + ((int32_t)odd * state->tile_stride_bytes);
+
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int32_t row0 = (int32_t)r * point_stride;
+        int32_t row1 = (int32_t)(r + 1) * point_stride;
+        for (DEFAULT_INT c = 0; c <= cols; ++c) {
+            cfx_board_build_geom_edge(&vertical[c], &points[row0 + c], &points[row1 + c]);
+        }
+
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            const CfxBoardPoint *p0 = &points[row0 + c];
+            const CfxBoardPoint *p1 = &points[row0 + c + 1];
+            const CfxBoardPoint *p2 = &points[row1 + c + 1];
+            const CfxBoardPoint *p3 = &points[row1 + c];
+            CfxFastQuadEdge left;
+            CfxFastQuadEdge right;
+            int16_t min_y = p0->y;
+            int16_t max_y = p0->y;
+            int16_t draw_top;
+            int16_t draw_bottom;
+            const uint8_t *tile = ((r + c) & 1) ? odd_src : even_src;
+
+            if (p1->y < min_y) min_y = p1->y;
+            if (p2->y < min_y) min_y = p2->y;
+            if (p3->y < min_y) min_y = p3->y;
+            if (p1->y > max_y) max_y = p1->y;
+            if (p2->y > max_y) max_y = p2->y;
+            if (p3->y > max_y) max_y = p3->y;
+            if (min_y == max_y) continue;
+
+            /* The old quad walker sees the right edge before the left edge.
+               Keep that order, including the endpoint UVs, so its x-order
+               swap and all subsequent truncation remain unchanged. */
+            cfx_board_set_edge_uv(&right, &vertical[c + 1], p1, p2,
+                                  255, 0, 255, 255);
+            cfx_board_set_edge_uv(&left, &vertical[c], p3, p0,
+                                  0, 255, 0, 0);
+
+            draw_top = min_y;
+            draw_bottom = max_y;
+            if (draw_top < 0) {
+                int16_t skip = (int16_t)-draw_top;
+                if (right.y_start < 0 && right.y_end > 0) {
+                    right.x += right.x_step * skip;
+                    right.u += right.u_step * skip;
+                    right.v += right.v_step * skip;
+                    right.y_start = 0;
+                }
+                if (left.y_start < 0 && left.y_end > 0) {
+                    left.x += left.x_step * skip;
+                    left.u += left.u_step * skip;
+                    left.v += left.v_step * skip;
+                    left.y_start = 0;
+                }
+                draw_top = 0;
+            }
+            if (draw_bottom > state->height) draw_bottom = (int16_t)state->height;
+
+            for (int16_t y = draw_top; y < draw_bottom; ++y) {
+                int32_t xs0 = right.x;
+                int32_t xs1 = left.x;
+                int32_t us0 = right.u;
+                int32_t us1 = left.u;
+                int32_t vs0 = right.v;
+                int32_t vs1 = left.v;
+                int16_t x_start;
+                int16_t x_end;
+                int16_t span;
+                uint16_t denom;
+                int8_t step_u;
+
+                right.x += right.x_step;
+                right.u += right.u_step;
+                right.v += right.v_step;
+                left.x += left.x_step;
+                left.u += left.u_step;
+                left.v += left.v_step;
+
+                if (xs0 > xs1) {
+                    int32_t t;
+                    t = xs0; xs0 = xs1; xs1 = t;
+                    t = us0; us0 = us1; us1 = t;
+                    t = vs0; vs0 = vs1; vs1 = t;
+                }
+                x_start = (int16_t)((xs0 + ((1 << CFX_GEOM_FIXED_SHIFT) - 1)) >> CFX_GEOM_FIXED_SHIFT);
+                x_end = (int16_t)(xs1 >> CFX_GEOM_FIXED_SHIFT);
+                span = (int16_t)(x_end - x_start + 1);
+                if (span <= 0) continue;
+
+                denom = (uint16_t)((span > 256) ? 256 : span);
+                /* The two horizontal boundaries have equal y endpoints, so
+                   both vertical edges carry the same V at every scanline.
+                   U is always an endpoint pair (0,255); spell out the exact
+                   truncation of (delta << 8) / denom, including its negative
+                   arithmetic-shift case, instead of dividing on every row. */
+                if (us1 == us0) {
+                    step_u = 0;
+                } else if (us1 > us0) {
+                    step_u = (int8_t)(255 / denom);
+                } else {
+                    step_u = (int8_t)(-((255 + denom - 1) / denom));
+                }
+                cfx_draw_board_span_flat(state, tile, y, x_start, span,
+                    cfx_pack_tex_state((uint8_t)(us0 >> 8),
+                                       (uint8_t)(vs0 >> 8)),
+                    step_u);
+            }
+        }
+    }
+    return 1;
+}
+
+static uint8_t CFX_BOARD_MESH_COLD cfx_draw_board_mesh_cached(const CfxRenderer3DState *state,
+                                          const CfxBoardPoint *points,
+                                          DEFAULT_INT point_stride,
+                                          DEFAULT_INT rows, DEFAULT_INT cols,
+                                          DEFAULT_INT even_tile,
+                                          DEFAULT_INT odd_tile)
+{
+    CfxBoardGeomEdge vertical[CFX_BOARD_MESH_MAX_COLS + 1];
+    CfxBoardGeomEdge top_edges[CFX_BOARD_MESH_MAX_COLS];
+    CfxBoardGeomEdge bottom_edges[CFX_BOARD_MESH_MAX_COLS];
+    const DEFAULT_INT even = cfx_board_clamp_tile(even_tile);
+    const DEFAULT_INT odd = cfx_board_clamp_tile(odd_tile);
+    const uint8_t *even_src = state->texture_atlas + ((int32_t)even * state->tile_stride_bytes);
+    const uint8_t *odd_src = state->texture_atlas + ((int32_t)odd * state->tile_stride_bytes);
+
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int32_t row0 = (int32_t)r * point_stride;
+        int32_t row1 = (int32_t)(r + 1) * point_stride;
+        for (DEFAULT_INT c = 0; c <= cols; ++c) {
+            cfx_board_build_geom_edge(&vertical[c], &points[row0 + c], &points[row1 + c]);
+        }
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            cfx_board_build_geom_edge(&top_edges[c],
+                &points[row0 + c], &points[row0 + c + 1]);
+            cfx_board_build_geom_edge(&bottom_edges[c],
+                &points[row1 + c + 1], &points[row1 + c]);
+        }
+
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            const CfxBoardPoint *p0 = &points[row0 + c];
+            const CfxBoardPoint *p1 = &points[row0 + c + 1];
+            const CfxBoardPoint *p2 = &points[row1 + c + 1];
+            const CfxBoardPoint *p3 = &points[row1 + c];
+            CfxFastQuadEdge edges[4];
+            int16_t min_y = p0->y;
+            int16_t max_y = p0->y;
+            const uint8_t *tile = ((r + c) & 1) ? odd_src : even_src;
+
+            if (p1->y < min_y) min_y = p1->y;
+            if (p2->y < min_y) min_y = p2->y;
+            if (p3->y < min_y) min_y = p3->y;
+            if (p1->y > max_y) max_y = p1->y;
+            if (p2->y > max_y) max_y = p2->y;
+            if (p3->y > max_y) max_y = p3->y;
+
+            cfx_board_set_edge_uv(&edges[0], &top_edges[c], p0, p1, 0, 0, 255, 0);
+            cfx_board_set_edge_uv(&edges[1], &vertical[c + 1], p1, p2, 255, 0, 255, 255);
+            cfx_board_set_edge_uv(&edges[2], &bottom_edges[c], p2, p3, 255, 255, 0, 255);
+            cfx_board_set_edge_uv(&edges[3], &vertical[c], p3, p0, 0, 255, 0, 0);
+            cfx_draw_textured_quad_fast_affine_edges(state, tile, edges,
+                                                     min_y, max_y, 1);
+        }
+    }
+    return 1;
+}
+
 #else
 uint8_t cfx_renderer3d_draw_quad_fast_affine(CfxRenderer3D *renderer,
                                              const Point2D *p0, const Point2D *p1,
@@ -891,7 +1757,91 @@ uint8_t cfx_renderer3d_draw_quad_fast_affine(CfxRenderer3D *renderer,
     cfx_renderer3d_draw_quad(renderer, p0, p1, p2, p3, tetromino_type);
     return 1;
 }
+
 #endif
+
+static uint8_t CFX_BOARD_MESH_COLD cfx_draw_board_mesh_fallback(CfxRenderer3D *renderer,
+                                            const CfxBoardPoint *points,
+                                            DEFAULT_INT point_stride,
+                                            DEFAULT_INT rows, DEFAULT_INT cols,
+                                            DEFAULT_INT even_tile,
+                                            DEFAULT_INT odd_tile)
+{
+    const DEFAULT_INT uvmax = (DEFAULT_INT)((CFX_TEXTURE_TILE_SIZE - 1) << 8);
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int32_t row0 = (int32_t)r * point_stride;
+        int32_t row1 = (int32_t)(r + 1) * point_stride;
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            Point2D p0 = {(DEFAULT_INT)points[row0 + c].x,
+                          (DEFAULT_INT)points[row0 + c].y, 0, 0};
+            Point2D p1 = {(DEFAULT_INT)points[row0 + c + 1].x,
+                          (DEFAULT_INT)points[row0 + c + 1].y, uvmax, 0};
+            Point2D p2 = {(DEFAULT_INT)points[row1 + c + 1].x,
+                          (DEFAULT_INT)points[row1 + c + 1].y, uvmax, uvmax};
+            Point2D p3 = {(DEFAULT_INT)points[row1 + c].x,
+                          (DEFAULT_INT)points[row1 + c].y, 0, uvmax};
+            cfx_renderer3d_draw_quad_fast_affine(renderer, &p0, &p1, &p2, &p3,
+                ((r + c) & 1) ? odd_tile : even_tile);
+        }
+    }
+    return 1;
+}
+
+uint8_t cfx_renderer3d_draw_board_mesh_fast_affine(
+    CfxRenderer3D *renderer, const CfxBoardPoint *points,
+    DEFAULT_INT point_stride, DEFAULT_INT rows, DEFAULT_INT cols,
+    DEFAULT_INT even_tile, DEFAULT_INT odd_tile)
+{
+    CfxRenderer3DState *state = cfx_state(renderer);
+    if (!state->framebuffer || !state->texture_atlas || !points) return 0;
+    if (rows < 0 || cols < 0 || point_stride <= cols) return 0;
+    if (rows == 0 || cols == 0) return 1;
+#if CFX_RENDERER_DIRECT_RECT
+    if (cols > CFX_BOARD_MESH_MAX_COLS) {
+        return cfx_draw_board_mesh_fallback(renderer, points, point_stride,
+                                            rows, cols, even_tile, odd_tile);
+    }
+    {
+        int all_axis = 1;
+        int all_trapezoid = 1;
+        for (DEFAULT_INT r = 0; r < rows && (all_axis || all_trapezoid); ++r) {
+            int32_t row0 = (int32_t)r * point_stride;
+            int32_t row1 = (int32_t)(r + 1) * point_stride;
+            for (DEFAULT_INT c = 0; c < cols; ++c) {
+                const CfxBoardPoint *p0 = &points[row0 + c];
+                const CfxBoardPoint *p1 = &points[row0 + c + 1];
+                const CfxBoardPoint *p2 = &points[row1 + c + 1];
+                const CfxBoardPoint *p3 = &points[row1 + c];
+                if (!cfx_board_axis_cell(p0, p1, p2, p3)) {
+                    all_axis = 0;
+                }
+                if (p0->y != p1->y || p2->y != p3->y ||
+                    (p0->y == p3->y) || (p1->y == p2->y) ||
+                    ((p0->y < p3->y) != (p1->y < p2->y))) {
+                    all_trapezoid = 0;
+                }
+            }
+        }
+        if (all_axis) {
+            return cfx_draw_board_mesh_axis(state, points, point_stride,
+                                            rows, cols, even_tile, odd_tile);
+        }
+        if (all_trapezoid) {
+            if (cfx_board_rows_uniform_trapezoid(points, point_stride, rows, cols)) {
+                return cfx_draw_board_mesh_trapezoid_rows(state, points, point_stride,
+                                                          rows, cols, even_tile, odd_tile);
+            }
+            return cfx_draw_board_mesh_trapezoid(state, points, point_stride,
+                                                 rows, cols, even_tile, odd_tile);
+        }
+    }
+    return cfx_draw_board_mesh_cached(state, points, point_stride, rows, cols,
+                                     even_tile, odd_tile);
+#else
+    return cfx_draw_board_mesh_fallback(renderer, points, point_stride,
+                                        rows, cols, even_tile, odd_tile);
+#endif
+}
 
 static void cfx_draw_textured_triangle(const CfxRenderer3DState *renderer,
 #if CFX_RENDERER_DIRECT_GENERIC_TILE && CFX_RENDERER_DIRECT_RECT

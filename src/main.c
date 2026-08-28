@@ -668,6 +668,18 @@ static void fb_damage_rect_forced(int x, int y, int w, int h)
     fb_mark_rect(g_fb_force, x, y, w, h);
 }
 
+/* The direct-attack cut-in contains thin, repeated card/slash patterns that
+   can alias the presenter's intentionally cheap 32-bit fold even though the
+   64-byte group changed.  Its overlay is small enough to bypass comparison:
+   force both the freshly drawn groups and the groups restored from last
+   frame's overlay so neither alternating VRAM page can retain the collision. */
+static void fb_damage_force_overlay_history(void)
+{
+    int y;
+    for (y = 0; y < WAIFU_FM_HEIGHT; ++y)
+        g_fb_force[y] |= (uint8_t)(g_fb_ovl_prev[y] | g_fb_ovl_curr[y]);
+}
+
 /* Tags for ui_retained()/ui_retain().  0 means "nothing retained". */
 #define UI_TAG_NAME_ENTRY     1
 #define UI_TAG_STORY_DIALOGUE 2
@@ -769,6 +781,7 @@ static void fb_damage_verify(void)
 #define fb_damage_rect(x, y, w, h)     do { (void)(x); (void)(y); (void)(w); (void)(h); } while (0)
 #define fb_damage_span(y, x0, x1)      do { (void)(y); (void)(x0); (void)(x1); } while (0)
 #define fb_damage_rect_forced(x, y, w, h) fb_damage_rect(x, y, w, h)
+#define fb_damage_force_overlay_history() do { } while (0)
 #endif
 
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
@@ -1625,6 +1638,16 @@ static void draw_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, Sc
     cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 }
 
+static int board_mesh_point_from_screen(ScreenPt p, CfxBoardPoint *out)
+{
+    if (!p.ok) return 0;
+    out->x = (int16_t)(p.x < 0 ? 0 :
+        (p.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p.x));
+    out->y = (int16_t)(p.y < 0 ? 0 :
+        (p.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p.y));
+    return 1;
+}
+
 #if defined(WAIFU_FM_CD32X)
 static void cd32x_hspan_fast(int y, int x0, int x1, uint8_t color)
 {
@@ -1802,18 +1825,13 @@ static void draw_field_slab_facing_z_wall_fast(Camera cam, const BoardProjected 
 
 static void draw_field_slab_sides_fast(Camera cam, const BoardProjected *bp)
 {
-    /* Only the camera-facing Z wall is externally visible once the board top is
-       drawn; the far Z wall is fully hidden by the top surface but still cost 5
-       textured quads.  Keep both X walls because the centered battle cameras can
-       see both side lips.  This keeps the table textured, trims dead work, and
-       avoids the old lower-left corner fold caused by screen-clamped wall verts. */
-    if (cam.eye.x >= 0) {
-        draw_field_slab_x_wall_fast(bp, 0);
-        draw_field_slab_x_wall_fast(bp, 1);
-    } else {
-        draw_field_slab_x_wall_fast(bp, 1);
-        draw_field_slab_x_wall_fast(bp, 0);
-    }
+    /* The top surface is opaque and is drawn after the walls.  Once the
+       camera-facing X wall is painted, the opposite X wall is entirely behind
+       that surface (the old painter-only path redrew both and charged the
+       Marty for the hidden wall).  Keep every visible wall textured, but do not
+       rasterize the camera-away X lip.  The Z-facing wall remains segmented so
+       its brick material repeats per board cell. */
+    draw_field_slab_x_wall_fast(bp, cam.eye.x >= 0 ? 1 : 0);
     draw_field_slab_facing_z_wall_fast(cam, bp);
 }
 
@@ -4947,16 +4965,6 @@ static void render_board(Camera cam)
        full framebuffer. */
     clear_screen(IDX_BLACK);
 
-#ifdef WAIFU_MEASURE_SKIP_BOARD
-    /* Measurement build only (EXTRA_CORE_DEFINES): draws no board at all, so
-       the difference against a normal build is everything the board costs --
-       projection, walker setup and fill together.  Whatever is left is the
-       cards, the HUD and the game step itself.  Pair it with
-       CFX_MEASURE_SKIP_SPANS, which removes only the fill. */
-    (void)cam;
-    return;
-#endif
-
 #if !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
     /* slab sides first */
     draw_field_slab_sides(cam);
@@ -4988,6 +4996,7 @@ static void render_board(Camera cam)
     if (!cd32x_render_board_top_parallel(&bp))
 #endif
     {
+#if defined(WAIFU_FM_CD32X)
     for (int r = 0; r < BOARD_ROWS; ++r) {
         for (int c = 0; c < BOARD_COLS; ++c) {
             int tile = ((r + c) & 1) ? 5 : 1;
@@ -4998,7 +5007,45 @@ static void render_board(Camera cam)
 #endif
         }
     }
+#else
+#if defined(WAIFU_MEASURE_BOARD_MESH_REFERENCE)
+    for (int r = 0; r < BOARD_ROWS; ++r) {
+        for (int c = 0; c < BOARD_COLS; ++c) {
+            int tile = ((r + c) & 1) ? 5 : 1;
+            draw_quad3d_fast_projected(bp.top[r][c], bp.top[r][c+1],
+                bp.top[r+1][c+1], bp.top[r+1][c], tile);
+        }
     }
+#else
+    {
+        CfxBoardPoint mesh_points[BOARD_ROWS + 1][BOARD_COLS + 1];
+        int mesh_valid = 1;
+        for (int r = 0; r <= BOARD_ROWS; ++r) {
+            for (int c = 0; c <= BOARD_COLS; ++c) {
+                if (!board_mesh_point_from_screen(bp.top[r][c], &mesh_points[r][c])) {
+                    mesh_valid = 0;
+                }
+            }
+        }
+        if (mesh_valid) {
+            fb_damage_all();
+            mesh_valid = cfx_renderer3d_draw_board_mesh_fast_affine(
+                &renderer, &mesh_points[0][0], BOARD_COLS + 1,
+                BOARD_ROWS, BOARD_COLS, 1, 5);
+        }
+        if (!mesh_valid) {
+            for (int r = 0; r < BOARD_ROWS; ++r) {
+                for (int c = 0; c < BOARD_COLS; ++c) {
+                    int tile = ((r + c) & 1) ? 5 : 1;
+                    draw_quad3d_fast_projected(bp.top[r][c], bp.top[r][c+1],
+                        bp.top[r+1][c+1], bp.top[r+1][c], tile);
+                }
+            }
+        }
+    }
+#endif
+    }
+#endif
 #endif
 
 #if !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
@@ -5586,7 +5633,8 @@ static void draw_cd32x_projected_support_card(ScreenPt p0, ScreenPt p1, ScreenPt
 }
 #endif
 
-static void draw_board_card_state(Camera cam, int col, int row, int card_id, int back, int gray, int defense)
+static void draw_board_card_state(Camera cam, int col, int row, int card_id, int back, int gray, int defense,
+                                  const CameraBasis *basis)
 {
     /* Real flat textured field card: project the four card corners on the 3D
        board plane and affine-map the 38x54 indexed card texture into the quad.
@@ -5622,10 +5670,14 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
         if (waifu_hw3d_image_quad(&hc, q, tex, WAIFU_CARD_W, WAIFU_CARD_H,
                                   gray, gray ? IDX_DIM : IDX_CARD_RIM)) return;
     }
-    ScreenPt p0 = project_point(cam, v3(cx - hw, y, cz - hz));
-    ScreenPt p1 = project_point(cam, v3(cx + hw, y, cz - hz));
-    ScreenPt p2 = project_point(cam, v3(cx + hw, y, cz + hz));
-    ScreenPt p3 = project_point(cam, v3(cx - hw, y, cz + hz));
+    ScreenPt p0 = basis ? project_point_basis(basis, v3(cx - hw, y, cz - hz)) :
+                         project_point(cam, v3(cx - hw, y, cz - hz));
+    ScreenPt p1 = basis ? project_point_basis(basis, v3(cx + hw, y, cz - hz)) :
+                         project_point(cam, v3(cx + hw, y, cz - hz));
+    ScreenPt p2 = basis ? project_point_basis(basis, v3(cx + hw, y, cz + hz)) :
+                         project_point(cam, v3(cx + hw, y, cz + hz));
+    ScreenPt p3 = basis ? project_point_basis(basis, v3(cx - hw, y, cz + hz)) :
+                         project_point(cam, v3(cx - hw, y, cz + hz));
     /* Player-side cards face YOU. COM-side cards are rotated 180 degrees on
        the board plane so they face the opponent instead of always facing YOU. */
     if (defense) {
@@ -5665,12 +5717,18 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
 
 static void draw_board_card_ex(Camera cam, int col, int row, int card_id, int back, int gray)
 {
-    draw_board_card_state(cam, col, row, card_id, back, gray, 0);
+    draw_board_card_state(cam, col, row, card_id, back, gray, 0, NULL);
 }
 
 static void draw_board_card(Camera cam, int col, int row, int card_id, int back)
 {
     draw_board_card_ex(cam, col, row, card_id, back, 0);
+}
+
+static void draw_board_card_ex_basis(Camera cam, const CameraBasis *basis,
+                                     int col, int row, int card_id, int back, int gray)
+{
+    draw_board_card_state(cam, col, row, card_id, back, gray, 0, basis);
 }
 
 static void draw_zone_cursor_q(Camera cam, int32_t col, int32_t row)
@@ -10525,20 +10583,21 @@ static void init_story_battle_state(void)
 
 static void draw_interactive_field_cards(Camera cam)
 {
+    CameraBasis basis = make_camera_basis(cam);
     int i;
     for (i = 0; i < I_FIELD; ++i) {
-        if (g_i_com_equip_field[i] >= 0) draw_board_card_ex(cam, i, ENEMY_CARD_ROW - 1, g_i_com_equip_field[i], 0, 0);
+        if (g_i_com_equip_field[i] >= 0) draw_board_card_ex_basis(cam, &basis, i, ENEMY_CARD_ROW - 1, g_i_com_equip_field[i], 0, 0);
     }
     for (i = 0; i < I_FIELD; ++i) {
-        if (g_i_com_field[i] >= 0) draw_board_card_state(cam, i, ENEMY_CARD_ROW, g_i_com_field[i], !g_i_com_faceup[i], g_i_com_attacked[i], g_i_com_defense[i]);
+        if (g_i_com_field[i] >= 0) draw_board_card_state(cam, i, ENEMY_CARD_ROW, g_i_com_field[i], !g_i_com_faceup[i], g_i_com_attacked[i], g_i_com_defense[i], &basis);
     }
     for (i = 0; i < I_FIELD; ++i) {
-        if (g_i_player_field[i] >= 0) draw_board_card_state(cam, i, PLAYER_CARD_ROW, g_i_player_field[i], !g_i_player_faceup[i], g_i_player_attacked[i], g_i_player_defense[i]);
+        if (g_i_player_field[i] >= 0) draw_board_card_state(cam, i, PLAYER_CARD_ROW, g_i_player_field[i], !g_i_player_faceup[i], g_i_player_attacked[i], g_i_player_defense[i], &basis);
     }
     for (i = 0; i < I_FIELD; ++i) {
         if (g_i_player_equip_field[i] >= 0)
-            draw_board_card_ex(cam, i, PLAYER_CARD_ROW + 1, g_i_player_equip_field[i],
-                               is_trap_support_card(g_i_player_equip_field[i]) ? 1 : 0, 0);
+            draw_board_card_ex_basis(cam, &basis, i, PLAYER_CARD_ROW + 1, g_i_player_equip_field[i],
+                                     is_trap_support_card(g_i_player_equip_field[i]) ? 1 : 0, 0);
     }
 }
 
@@ -12058,6 +12117,7 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     local -= WAIFU_BATTLE_PRELUDE_FRAMES;
     if (atk_back && local < flip_dur) {
         draw_big_battle_card_flip(atk_id, ax, ay, local, flip_dur);
+        fb_damage_force_overlay_history();
         return;
     }
     if (atk_back) local -= flip_dur;
@@ -12086,6 +12146,7 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
             draw_centered_damage_text_in_card(target_x - 20, 36, g_b_damage_text);
         }
     }
+    fb_damage_force_overlay_history();
 }
 
 static void draw_interactive_battle(void)
@@ -13285,7 +13346,8 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         }
         if (press_start) { g_b_attack_attacker_slot = -1; clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
         view_slot = top_selector_player_monster_slot();
-#if defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
+#if (defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)) && \
+    !defined(WAIFU_MEASURE_FORCE_LIVE_BOARD)
         top_visual_key = battle_top_visual_key();
         if (ui_retained(UI_TAG_BATTLE_TOP) && s_top_visual_key_valid &&
             top_visual_key == s_top_visual_key) {
@@ -13310,7 +13372,8 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         } else {
             draw_bottom_info_top_selector(player_first_turn_attack_locked() ? "NO ATK" : "FIELD");
         }
-#if defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)
+#if (defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)) && \
+    !defined(WAIFU_MEASURE_FORCE_LIVE_BOARD)
         /* draw_top_selector_cursor_ex() advances its easing counter.  Do not
            retain until it reaches the non-CD32X eight-frame endpoint, or the
            key written after the first pose would match on the next step and
