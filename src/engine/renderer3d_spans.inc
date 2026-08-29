@@ -541,6 +541,56 @@ static void cfx_direct_affine_i386(uint8_t *dst, int span, const uint8_t *tile,
     }
 #undef CFX_I386_AFFINE_TEXEL
 }
+
+/* A vertical projected edge can leave U constant across an affine span.  The
+   middle turn pose uses this case heavily; retain the packed V accumulator but
+   compute the fixed U column once per span instead of once per pixel. */
+static void cfx_direct_affine_i386_const_u(uint8_t *dst, int span,
+                                           const uint8_t *tile,
+                                           uint32_t A, uint32_t dA)
+{
+#define CFX_I386_CONST_U_TEXEL(A, tile) \
+    ((tile)[(A) & 0x3e0u])
+
+    while (span > 0 && ((uintptr_t)dst & 3u) != 0u) {
+        *dst++ = CFX_I386_CONST_U_TEXEL(A, tile);
+        A += dA;
+        --span;
+    }
+
+    if (span >= 4) {
+        uint32_t t1, acc;
+        uint8_t *const end = dst + (span & ~3);
+        __asm__ volatile (
+            "1:\n\t"
+#define CFX_I386_CONST_U_PIXEL          \
+            "movl %[A],%[t1]\n\t"      \
+            "andl $0x3e0,%[t1]\n\t"    \
+            "movb (%[tile],%[t1]),%b[acc]\n\t" \
+            "rorl $8,%[acc]\n\t"       \
+            "addl %[dA],%[A]\n\t"
+            CFX_I386_CONST_U_PIXEL
+            CFX_I386_CONST_U_PIXEL
+            CFX_I386_CONST_U_PIXEL
+            CFX_I386_CONST_U_PIXEL
+#undef CFX_I386_CONST_U_PIXEL
+            "movl %[acc],(%[dst])\n\t"
+            "addl $4,%[dst]\n\t"
+            "cmpl %[end],%[dst]\n\t"
+            "jb 1b\n\t"
+            : [dst] "+r" (dst), [A] "+r" (A),
+              [t1] "=&r" (t1), [acc] "=&q" (acc)
+            : [dA] "r" (dA), [tile] "r" (tile), [end] "m" (end)
+            : "cc", "memory");
+        span &= 3;
+    }
+
+    while (span-- > 0) {
+        *dst++ = CFX_I386_CONST_U_TEXEL(A, tile);
+        A += dA;
+    }
+#undef CFX_I386_CONST_U_TEXEL
+}
 #endif /* CFX_RENDERER_USE_I386_ASM */
 
 static inline __attribute__((always_inline)) uint8_t cfx_span_can_linear(uint16_t pairs, uint16_t tex_state, int8_t step_u, int8_t step_v)
@@ -1957,10 +2007,14 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
        below, exactly as the V810/SH-2 fast paths do. */
     if (renderer->tile_pitch_bytes == 32) {
         uint8_t *b = renderer->framebuffer + ((int32_t)y * renderer->width) + xs;
-        cfx_direct_affine_i386(b, span, tile,
-                               ((uint32_t)v << 2) | ((uint32_t)u << 24),
-                               ((uint32_t)(uint8_t)step_v << 2) +
-                               ((uint32_t)(uint8_t)step_u << 24));
+        uint32_t A = ((uint32_t)v << 2) | ((uint32_t)u << 24);
+        uint32_t dA = ((uint32_t)(uint8_t)step_v << 2) +
+                      ((uint32_t)(uint8_t)step_u << 24);
+        if (step_u == 0)
+            cfx_direct_affine_i386_const_u(b, span,
+                                           tile + ((uint32_t)u >> 3), A, dA);
+        else
+            cfx_direct_affine_i386(b, span, tile, A, dA);
         return;
     }
 #endif

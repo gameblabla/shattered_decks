@@ -68,6 +68,10 @@ physical-Marty measurement. The proxy used by `fmtowns.sh` is:
   `step_u == 5`. It encodes the phase increment as an immediate, freeing one
   386 register from the four-pixel packed loop. All other row steps continue
   through the existing exact kernel.
+- Added an FM-only constant-U affine kernel for projected spans with
+  `step_u == 0`, which are common in the middle turn pose. It hoists the
+  fixed texture column into the tile pointer and advances only the packed V
+  accumulator; all other affine spans retain the general exact kernel.
 
 The profiling-only `--fixed-pose-bench` harness reports camera basis, point
 transformation, projection, clear, walls, mesh setup, span fill, grid,
@@ -131,6 +135,16 @@ attribution remained `124 us` total with `35 us` in span fill and hash
 Turn and lift captures remained valid continuous live perspectives; their
 phase-sensitive samples are visual/regression evidence, not a like-for-like
 timing claim.
+
+The constant-U affine candidate retained those exact hashes and reduced the
+32-bit host fixed-pose middle-turn attribution to `89 us` total (`14 us` span
+fill); top and tilted samples were `123 us` and `106 us` in that run. The
+forced-live FM board probe stayed at three repeated `76.3 ms` totals
+(`38.4/38.5 ms` step plus `22.1 ms` present), so the candidate does not regress
+the top-view hot path. A separate FM turn capture remained visually intact but
+landed at phase-sensitive totals of `145.5/58.8/126.2 ms`; those samples are
+not a like-for-like speed claim. The overall `33.3 ms` moving-frame target is
+still unmet.
 
 The follow-up clipped-row build also produced intact, continuously changing
 turn and lift screenshots. Its unaligned `profile turn` samples were
