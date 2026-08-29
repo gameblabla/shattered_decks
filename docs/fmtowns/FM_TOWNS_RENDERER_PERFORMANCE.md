@@ -64,6 +64,10 @@ physical-Marty measurement. The proxy used by `fmtowns.sh` is:
   board walker now reaches the constant-V filler without repeating the generic
   direct-tile bounds and step dispatch; the generic path remains unchanged for
   other targets and callers.
+- Added a second FM-only constant-V kernel for the authored top-view case
+  `step_u == 5`. It encodes the phase increment as an immediate, freeing one
+  386 register from the four-pixel packed loop. All other row steps continue
+  through the existing exact kernel.
 
 The profiling-only `--fixed-pose-bench` harness reports camera basis, point
 transformation, projection, clear, walls, mesh setup, span fill, grid,
@@ -109,7 +113,7 @@ but the Up hand-to-top transition advances through live poses instead of
 appearing hung. The inspected PNGs show continuous board perspectives with
 intact board, wall, HUD, and card rendering.
 
-For a non-retained board measurement, the final-code `profile board` was run with
+For a non-retained board measurement, the pre-step-five accepted tree was run with
 `-DWAIFU_BATTLE_BASE_CACHE_DISABLE -DWAIFU_MEASURE_FORCE_LIVE_BOARD`. Constant-V
 row filler plus exact top-wall cull and register-resident loop bound produced
 repeated `76.3 ms` total (`42.8 ms` step + `22.1 ms` present), versus the
@@ -118,6 +122,15 @@ follow-up clipped-row dispatch is the source of the lower step time; the
 inspected PNG retained the full board and six projected field cards. This is an
 incremental win, but it is still above budget; the moving turn and lift captures
 remain the more representative performance evidence.
+
+The accepted step-five kernel was then measured with the same forced-live board
+command. It produced three repeated `60.5 ms` totals (`38.4/38.5 ms` step plus
+`22.1 ms` present), with the full textured board intact. The fixed-pose top
+attribution remained `124 us` total with `35 us` in span fill and hash
+`3e7c64ce`; the middle and tilted hashes remained `8ebdc7b5` and `8b7920ef`.
+Turn and lift captures remained valid continuous live perspectives; their
+phase-sensitive samples are visual/regression evidence, not a like-for-like
+timing claim.
 
 The follow-up clipped-row build also produced intact, continuously changing
 turn and lift screenshots. Its unaligned `profile turn` samples were
@@ -134,14 +147,14 @@ outputs, not release assets.
 
 The fixed-pose harness was built with `cc -m32 -O2`,
 `-DWAIFU_FM_FMTOWNS -DWAIFU_PROFILE_RENDER -DWAIFU_FIXED_POSE_BENCH`, and a
-weak host stub for the FM sound callback. The accepted span-filler changes and
-the clipped-row dispatch candidate were compared with the pre-change executable
-and with
+weak host stub for the FM sound callback. The accepted span-filler changes,
+clipped-row dispatch, and step-five kernel were compared with the pre-change
+executable and with
 `-DWAIFU_MEASURE_BOARD_MESH_REFERENCE`.
 
 | Pose | Board path | Total | Span fill | Pixels | Runs | Hash |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| top | trapezoid rows | 124 us | 36 us | 95,546 | 985 | `3e7c64ce` |
+| top | trapezoid rows | 124 us | 35 us | 95,546 | 985 | `3e7c64ce` |
 | turn middle | specialized grid | 92 us | 15 us | 10,704 | 418 | `8ebdc7b5` |
 | turn tilted | specialized grid | 108 us | 23 us | 11,720 | 609 | `8b7920ef` |
 

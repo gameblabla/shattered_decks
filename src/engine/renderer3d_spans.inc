@@ -1173,6 +1173,51 @@ static void cfx_board_fill_i386(uint8_t *dst, int n, uint32_t A, uint32_t dA,
         A += dA;
     }
 }
+
+/* The authored top-view board has a fixed Q8 U step of five for every
+   emitted span.  Keep that common case separate so the 386 loop can encode
+   the phase advance as an immediate and does not reserve a register for dU. */
+static void cfx_direct_row_i386_step5(uint8_t *dst, int span,
+                                      const uint8_t *row, uint32_t U)
+{
+    while (span > 0 && ((uintptr_t)dst & 3u) != 0u) {
+        *dst++ = row[U >> 27];
+        U += 0x05000000u;
+        --span;
+    }
+
+    if (span >= 4) {
+        uint32_t t, acc;
+        uint8_t *const end = dst + (span & ~3);
+        __asm__ volatile (
+            "1:\n\t"
+#define CFX_I386_ROW_STEP5_PIXEL         \
+            "movl %[U],%[t]\n\t"        \
+            "shrl $27,%[t]\n\t"        \
+            "movb (%[row],%[t]),%b[acc]\n\t" \
+            "rorl $8,%[acc]\n\t"        \
+            "addl $0x05000000,%[U]\n\t"
+            CFX_I386_ROW_STEP5_PIXEL
+            CFX_I386_ROW_STEP5_PIXEL
+            CFX_I386_ROW_STEP5_PIXEL
+            CFX_I386_ROW_STEP5_PIXEL
+#undef CFX_I386_ROW_STEP5_PIXEL
+            "movl %[acc],(%[dst])\n\t"
+            "addl $4,%[dst]\n\t"
+            "cmpl %[end],%[dst]\n\t"
+            "jb 1b\n\t"
+            : [dst] "+r" (dst), [U] "+r" (U),
+              [t] "=&r" (t), [acc] "=&q" (acc)
+            : [row] "r" (row), [end] "r" (end)
+            : "cc", "memory");
+        span &= 3;
+    }
+
+    while (span-- > 0) {
+        *dst++ = row[U >> 27];
+        U += 0x05000000u;
+    }
+}
 #endif /* CFX_RENDERER_USE_I386_ASM */
 
 void cfx_board_fill(uint8_t *dst, int n,
@@ -1604,8 +1649,11 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
        address pixels, which drops the odd-edge read-modify-write entirely. */
     {
         uint8_t *b = renderer->framebuffer + ((int32_t)y * renderer->width) + xs;
-        cfx_direct_row_i386(b, span, row,
-                            (uint32_t)u << 24, (uint32_t)(uint8_t)step_u << 24);
+        if (step_u == 5)
+            cfx_direct_row_i386_step5(b, span, row, (uint32_t)u << 24);
+        else
+            cfx_direct_row_i386(b, span, row,
+                                (uint32_t)u << 24, (uint32_t)(uint8_t)step_u << 24);
         return;
     }
 #endif
