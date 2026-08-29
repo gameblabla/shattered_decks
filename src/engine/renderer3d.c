@@ -73,6 +73,30 @@ static uint8_t tex_row_lut_ready;
 
 #define CFX_DIV_CORRECTION_LIMIT 8u
 
+/* Number of pixels until an 8-pixel texel boundary. The tilted Marty board
+   span uses this in its run splitter; keeping the nine possible distances and
+   seven useful magnitudes in ROM removes two integer divisions from every
+   run while preserving the old ceil(distance / magnitude) result exactly.
+   Magnitudes >= 8 always reach the next boundary in one pixel. */
+static const uint8_t cfx_boundary_run[9][7] = {
+    {0, 0, 0, 0, 0, 0, 0},
+    {1, 1, 1, 1, 1, 1, 1},
+    {2, 1, 1, 1, 1, 1, 1},
+    {3, 2, 1, 1, 1, 1, 1},
+    {4, 2, 2, 1, 1, 1, 1},
+    {5, 3, 2, 2, 1, 1, 1},
+    {6, 3, 2, 2, 2, 1, 1},
+    {7, 4, 3, 2, 2, 2, 1},
+    {8, 4, 3, 2, 2, 2, 1}
+};
+
+static inline int cfx_boundary_run_for(int distance, int magnitude)
+{
+    if (magnitude >= 8) return 1;
+    if (magnitude <= 0) return 0;
+    return cfx_boundary_run[distance][magnitude - 1];
+}
+
 static inline int32_t cfx_div_apply_sign(uint32_t q, uint8_t neg)
 {
     if (!neg) {
@@ -122,6 +146,8 @@ static inline uint32_t cfx_div_refine_u32(uint32_t un, uint32_t ud, uint32_t q)
 static uint16_t cfx_recip_q15_u8[257];
 static uint32_t cfx_recip_q24_u8[257];
 static uint16_t cfx_recip_q8_u16[257];
+static uint8_t cfx_floor_255_u8[257];
+static uint8_t cfx_ceil_255_u8[257];
 
 static void cfx_recip_tables_build(void)
 {
@@ -130,7 +156,19 @@ static void cfx_recip_tables_build(void)
         cfx_recip_q15_u8[d] = (uint16_t)(32768u / (uint32_t)d);
         cfx_recip_q24_u8[d] = (uint32_t)((16777216u + (uint32_t)(d >> 1)) / (uint32_t)d);
         cfx_recip_q8_u16[d] = (uint16_t)((256u + (uint32_t)(d >> 1)) / (uint32_t)d);
+        cfx_floor_255_u8[d] = (uint8_t)(255u / (uint32_t)d);
+        cfx_ceil_255_u8[d] = (uint8_t)((255u + (uint32_t)d - 1u) / (uint32_t)d);
     }
+}
+
+static inline int8_t cfx_board_step_255(int positive, uint16_t denom)
+{
+    if (denom == 0) return 0;
+    if (denom > 256) denom = 256;
+    /* The old Q8 divide followed by an arithmetic >>8 is floor(255/d) for a
+       positive delta and -ceil(255/d) for a negative one. */
+    return positive ? (int8_t)cfx_floor_255_u8[denom]
+                    : (int8_t)-(int)cfx_ceil_255_u8[denom];
 }
 #endif
 
@@ -1498,18 +1536,18 @@ static void cfx_draw_board_span_tilted(const CfxRenderer3DState *state,
         int left;
 
         if (step_u > 0) {
-            run_u = (8 - phase_u + (int)step_u - 1) / (int)step_u;
+            run_u = cfx_boundary_run_for(8 - phase_u, (int)step_u);
         } else if (step_u < 0) {
             magnitude = -(int)step_u;
-            run_u = (phase_u + magnitude) / magnitude;
+            run_u = cfx_boundary_run_for(phase_u + 1, magnitude);
         } else {
             run_u = span;
         }
         if (step_v > 0) {
-            run_v = (8 - phase_v + (int)step_v - 1) / (int)step_v;
+            run_v = cfx_boundary_run_for(8 - phase_v, (int)step_v);
         } else if (step_v < 0) {
             magnitude = -(int)step_v;
-            run_v = (phase_v + magnitude) / magnitude;
+            run_v = cfx_boundary_run_for(phase_v + 1, magnitude);
         } else {
             run_v = span;
         }
@@ -1619,7 +1657,7 @@ static uint8_t CFX_BOARD_MESH_COLD cfx_draw_board_mesh_trapezoid_rows(
                 if (span <= 0) continue;
 
                 denom = (uint16_t)((span > 256) ? 256 : span);
-                step_u = (int8_t)(cfx_fast_div_tz_i32_u16_q15(us1 - us0, denom) >> 8);
+                step_u = cfx_board_step_255(us1 > us0, denom);
                 cfx_draw_board_span_flat(state,
                     ((r + c) & 1) ? odd_src : even_src, y, x_start, span,
                     cfx_pack_tex_state((uint8_t)(us0 >> 8), (uint8_t)(v_fp >> 8)),
@@ -1739,13 +1777,7 @@ static uint8_t cfx_draw_board_mesh_trapezoid(const CfxRenderer3DState *state,
                    U is always an endpoint pair (0,255); spell out the exact
                    truncation of (delta << 8) / denom, including its negative
                    arithmetic-shift case, instead of dividing on every row. */
-                if (us1 == us0) {
-                    step_u = 0;
-                } else if (us1 > us0) {
-                    step_u = (int8_t)(255 / denom);
-                } else {
-                    step_u = (int8_t)(-((255 + denom - 1) / denom));
-                }
+                step_u = (us1 == us0) ? 0 : cfx_board_step_255(us1 > us0, denom);
                 cfx_draw_board_span_flat(state, tile, y, x_start, span,
                     cfx_pack_tex_state((uint8_t)(us0 >> 8),
                                        (uint8_t)(vs0 >> 8)),

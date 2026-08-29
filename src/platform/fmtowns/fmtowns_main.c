@@ -474,11 +474,9 @@ uint32_t fmtowns_ticks_us(uint32_t ticks)
  * A frame that overruns its budget is not slowed down further: the spin only
  * ever waits out the remainder, so a heavy frame just runs late.
  *
- * The return value is retained for diagnostics and for the next pacing
- * measurement.  It is deliberately NOT handed to the game state: the active
- * renderer must display every logical pose, even when a frame takes multiple
- * vblanks.  An over-budget scene therefore plays in slow motion until its
- * live 3-D render reaches the target rate.
+ * The return value is handed to the core for static/2-D wall-clock timing.
+ * Moving battle cameras use a separate one-displayed-pose clock, so they do
+ * not skip authored poses when a frame takes multiple vblanks.
  *
  * Two details make the elapsed-period measurement honest:
  *
@@ -774,10 +772,9 @@ static void waifu_fm_game_loop(void)
 #ifdef FMTOWNS_DEBUG_INPUT
         fmtowns_apply_input_script(&in, frame);
 #endif
-        /* Keep game time tied to displayed poses.  `steps` is the elapsed
-         * wall-clock measurement used by the pacer, not a request to skip
-         * logical frames. */
-        waifu_fm_set_frame_vblanks(1);
+        /* Static/2-D animation follows the elapsed wall-clock periods. Moving
+         * battle cameras deliberately advance one displayed pose per step. */
+        waifu_fm_set_frame_vblanks((int)steps);
 #ifdef FMTOWNS_DEBUG_INPUT
         (void)fmtowns_prof_split();     /* close out the previous frame's tail */
 #endif
@@ -798,13 +795,14 @@ static void waifu_fm_game_loop(void)
              * a handful of scanlines and the present neither reads nor
              * uploads the rest.  See waifu_fm_frame_damage(). */
             const unsigned char *rows = 0;
-            int full = waifu_fm_frame_damage(&rows);
+            int dense = waifu_fm_frame_present_dense();
+            (void)waifu_fm_frame_damage(&rows);
 #ifdef FMTOWNS_DEBUG_INPUT
             /* The debug stamp is written above, after the game's own damage
              * accounting closed, so declare it here: pixels 0..81 of row 0,
              * i.e. the first two 64-pixel groups. */
             static unsigned char stamped_rows[240];
-            if (!full && rows) {
+            if (!dense && rows) {
                 unsigned int y;
                 for (y = 0; y < 240u; ++y) stamped_rows[y] = rows[y];
                 stamped_rows[0] |= 0x03u;
@@ -814,8 +812,8 @@ static void waifu_fm_game_loop(void)
             fmtowns_video_present_8bpp_rows(waifu_fm_framebuffer(),
                                             waifu_fm_palette_rgb(), 256,
                                             waifu_fm_video_fade_q8(),
-                                            full ? 0 : rows,
-                                            full ? 0 : waifu_fm_frame_damage_forced());
+                                            dense ? 0 : rows,
+                                            dense ? 0 : waifu_fm_frame_damage_forced());
             waifu_fm_frame_damage_clear();
         }
 #ifdef FMTOWNS_DEBUG_INPUT
@@ -847,7 +845,7 @@ static void waifu_fm_game_loop(void)
 #ifndef FMTOWNS_DEBUG_INPUT
         (void)steps;
 #endif
-        frame += 1;
+        frame += steps;
 #ifdef FMTOWNS_DEBUG_INPUT
         t_other = fmtowns_prof_split();
         fmtowns_prof_frame_end(t_step, t_present, t_other + t_vblank_wait);

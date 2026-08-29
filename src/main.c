@@ -287,17 +287,21 @@ static int g_frame_dirty_full = 0;
 static int g_frame_dirty_count = 0;
 static WaifuFmDirtyRect g_frame_dirty_rects[WAIFU_FM_MAX_DIRTY_RECTS];
 static int g_video_fade_visible_q8 = Q8_ONE;
+static int g_frame_present_dense = 0;
+
+/* The FM loop supplies the number of complete 60 Hz periods measured before
+   this step. Static/2-D work may consume that wall-clock amount; a moving
+   camera still advances one displayed pose at a time. */
+static int g_frame_vblank_step = 1;
 
 /* ---- frame pacing ------------------------------------------------------
  *
- * A rendered frame is one logical animation frame.  The platform may still
- * measure elapsed vblanks for diagnostics and pacing, but feeding that count
- * into the game would jump over poses whenever a 3-D frame overruns its
- * budget.  Slow hardware therefore shows every pose in slow motion until the
- * renderer is fast enough to present it at the target refresh rate. */
+ * The platform's elapsed-vblank count is wall-clock time for static/UI work.
+   Moving 3-D phase counters select one displayed pose per call instead, so a
+   slow renderer cannot skip the authored camera path. */
 static inline int frame_logic_step(void)
 {
-    return 1;
+    return g_frame_vblank_step;
 }
 
 /* True on the one step where the frame counter `f` reaches or passes `cue`. */
@@ -338,6 +342,7 @@ static void frame_dirty_reset(void)
 {
     g_frame_dirty_full = 0;
     g_frame_dirty_count = 0;
+    g_frame_present_dense = 0;
 }
 
 static void frame_mark_full_dirty(void)
@@ -1401,6 +1406,24 @@ static ScreenPt project_point_basis(const CameraBasis *b, Vec3 p)
     return s;
 }
 
+/* Same projection arithmetic as project_point_basis(), split so the board
+   builder can reuse the X/Z contributions shared by every grid vertex. Keep
+   the quotient and final multiply in the same order for pixel-identical
+   output. */
+static ScreenPt project_camera_coords(const CameraBasis *b,
+                                      int32_t cx, int32_t cy, int32_t cz)
+{
+    ScreenPt s;
+    s.depth = cz;
+    if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
+    s.x = WAIFU_FM_WIDTH / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal));
+    s.y = WAIFU_FM_HEIGHT / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal));
+    if (s.x < -8192) s.x = -8192; else if (s.x > 8192) s.x = 8192;
+    if (s.y < -8192) s.y = -8192; else if (s.y > 8192) s.y = 8192;
+    s.ok = 1;
+    return s;
+}
+
 static int project_quad3d(Camera cam, Vec3 a, Vec3 b, Vec3 c, Vec3 d,
                           ScreenPt *pa, ScreenPt *pb, ScreenPt *pc, ScreenPt *pd)
 {
@@ -1682,18 +1705,76 @@ typedef struct BoardProjected {
 static void build_board_projected(Camera cam, BoardProjected *bp)
 {
     CameraBasis basis = make_camera_basis(cam);
+    int32_t x_right[BOARD_COLS + 1], x_up[BOARD_COLS + 1], x_fwd[BOARD_COLS + 1];
+    int32_t z_right[BOARD_ROWS + 1], z_up[BOARD_ROWS + 1], z_fwd[BOARD_ROWS + 1];
+    int32_t y_top_right, y_top_up, y_top_fwd;
+    int32_t y_thick_right, y_thick_up, y_thick_fwd;
+    int32_t z0_right, z0_up, z0_fwd;
+    int32_t z1_right, z1_up, z1_fwd;
+    int32_t x0_right, x0_up, x0_fwd;
+    int32_t x1_right, x1_up, x1_fwd;
+
+    /* Compute each contribution with the original (coordinate-eye) operand
+       intact. Subtracting precomputed products would change truncation by one
+       fixed-point unit for some camera bases. */
+    for (int c = 0; c <= BOARD_COLS; ++c) {
+        int32_t x = col_x0(c) - basis.eye.x;
+        x_right[c] = q8_mul(x, basis.right.x);
+        x_up[c] = q8_mul(x, basis.up.x);
+        x_fwd[c] = q8_mul(x, basis.fwd.x);
+    }
+    for (int r = 0; r <= BOARD_ROWS; ++r) {
+        int32_t z = row_z0(r) - basis.eye.z;
+        z_right[r] = q8_mul(z, basis.right.z);
+        z_up[r] = q8_mul(z, basis.up.z);
+        z_fwd[r] = q8_mul(z, basis.fwd.z);
+    }
+    y_top_right = q8_mul(FIELD_Y - basis.eye.y, basis.right.y);
+    y_top_up = q8_mul(FIELD_Y - basis.eye.y, basis.up.y);
+    y_top_fwd = q8_mul(FIELD_Y - basis.eye.y, basis.fwd.y);
+    y_thick_right = q8_mul(FIELD_THICK - basis.eye.y, basis.right.y);
+    y_thick_up = q8_mul(FIELD_THICK - basis.eye.y, basis.up.y);
+    y_thick_fwd = q8_mul(FIELD_THICK - basis.eye.y, basis.fwd.y);
+    z0_right = q8_mul(FIELD_Z0 - basis.eye.z, basis.right.z);
+    z0_up = q8_mul(FIELD_Z0 - basis.eye.z, basis.up.z);
+    z0_fwd = q8_mul(FIELD_Z0 - basis.eye.z, basis.fwd.z);
+    z1_right = q8_mul(FIELD_Z1 - basis.eye.z, basis.right.z);
+    z1_up = q8_mul(FIELD_Z1 - basis.eye.z, basis.up.z);
+    z1_fwd = q8_mul(FIELD_Z1 - basis.eye.z, basis.fwd.z);
+    x0_right = q8_mul(FIELD_X0 - basis.eye.x, basis.right.x);
+    x0_up = q8_mul(FIELD_X0 - basis.eye.x, basis.up.x);
+    x0_fwd = q8_mul(FIELD_X0 - basis.eye.x, basis.fwd.x);
+    x1_right = q8_mul(FIELD_X1 - basis.eye.x, basis.right.x);
+    x1_up = q8_mul(FIELD_X1 - basis.eye.x, basis.up.x);
+    x1_fwd = q8_mul(FIELD_X1 - basis.eye.x, basis.fwd.x);
+
     for (int r = 0; r <= BOARD_ROWS; ++r) {
         for (int c = 0; c <= BOARD_COLS; ++c) {
-            bp->top[r][c] = project_point_basis(&basis, v3(col_x0(c), FIELD_Y, row_z0(r)));
+            bp->top[r][c] = project_camera_coords(&basis,
+                x_right[c] + y_top_right + z_right[r],
+                x_up[c] + y_top_up + z_up[r],
+                x_fwd[c] + y_top_fwd + z_fwd[r]);
         }
     }
     for (int c = 0; c <= BOARD_COLS; ++c) {
-        bp->bottom_z0[c] = project_point_basis(&basis, v3(col_x0(c), FIELD_THICK, FIELD_Z0));
-        bp->bottom_z1[c] = project_point_basis(&basis, v3(col_x0(c), FIELD_THICK, FIELD_Z1));
+        bp->bottom_z0[c] = project_camera_coords(&basis,
+            x_right[c] + y_thick_right + z0_right,
+            x_up[c] + y_thick_up + z0_up,
+            x_fwd[c] + y_thick_fwd + z0_fwd);
+        bp->bottom_z1[c] = project_camera_coords(&basis,
+            x_right[c] + y_thick_right + z1_right,
+            x_up[c] + y_thick_up + z1_up,
+            x_fwd[c] + y_thick_fwd + z1_fwd);
     }
     for (int r = 0; r <= BOARD_ROWS; ++r) {
-        bp->bottom_x0[r] = project_point_basis(&basis, v3(FIELD_X0, FIELD_THICK, row_z0(r)));
-        bp->bottom_x1[r] = project_point_basis(&basis, v3(FIELD_X1, FIELD_THICK, row_z0(r)));
+        bp->bottom_x0[r] = project_camera_coords(&basis,
+            x0_right + y_thick_right + z_right[r],
+            x0_up + y_thick_up + z_up[r],
+            x0_fwd + y_thick_fwd + z_fwd[r]);
+        bp->bottom_x1[r] = project_camera_coords(&basis,
+            x1_right + y_thick_right + z_right[r],
+            x1_up + y_thick_up + z_up[r],
+            x1_fwd + y_thick_fwd + z_fwd[r]);
     }
 }
 
@@ -2225,10 +2306,15 @@ static inline void fill_u8_fast(uint8_t *dst, int count, uint8_t c)
 }
 
 #if defined(WAIFU_FM_CD32X)
-static void clear_screen(uint8_t c) { waifu_cd32x_video_clear_back_index(c); }
+static void clear_screen(uint8_t c)
+{
+    g_frame_present_dense = 0;
+    waifu_cd32x_video_clear_back_index(c);
+}
 #else
 static void clear_screen(uint8_t c)
 {
+    g_frame_present_dense = 0;
     if (waifu_hw2d_clear(c)) return;
     fb_damage_all();
     fill_u8_fast(framebuffer, WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT, c);
@@ -4860,6 +4946,10 @@ static void render_board(Camera cam)
        platform-agnostic and guarantees both SDL and headless produce the same
        full framebuffer. */
     clear_screen(IDX_BLACK);
+    /* A live board/floor render writes the dense 3-D surface. The presenter
+       may use a direct full blit for this frame; retained/sparse UI paths do
+       not set this hint and continue through damage comparison. */
+    g_frame_present_dense = 1;
 
 #if !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
     /* slab sides first */
@@ -6177,6 +6267,12 @@ static void draw_field_pair_for_battle(Camera cam, int atk_col, int atk_row, int
     draw_hud();
 }
 
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+/* Defined beside the cache implementation below. The FM work slot is shared
+   with placement and 2-D cut-ins, never with this tactical prelude. */
+static int fmtowns_draw_battle_prelude(int atk_col, int atk_row);
+#endif
+
 
 typedef enum {
     BATTLE_DESTROY_DEFENDER = 0,
@@ -6229,6 +6325,9 @@ static void draw_battle_cutin_event_ex(int f, int start,
        hand-selection arrow is shown during placement/top mode. Face-down cards
        are not revealed on the 3D field here. */
     if (local0 < WAIFU_BATTLE_PRELUDE_FRAMES) {
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+        if (fmtowns_draw_battle_prelude(atk_col, atk_row)) return;
+#endif
         clear_screen(IDX_BLACK);
         Camera cam = side_battle_camera(atk_row);
         draw_field_pair_for_battle(cam, atk_col, atk_row, atk_id, atk_back,
@@ -7476,10 +7575,17 @@ static WaifuFmInput g_prev_input;
 static WaifuBattlePhase g_b_phase = IB_OPENING;
 static int g_b_frame = 0;
 static int g_b_phase_frame = 0;
-/* Accumulated logical animation frames for visual effects (equip, fusion,
-   thunder, support).  It advances once per rendered frame so no visible pose
-   is skipped when the active renderer overruns its refresh budget. */
+/* Wall-clock animation frames for static/2-D effects (equip, fusion, thunder,
+   support, cut-ins, and selection/UI beats). */
 static int g_b_anim_vblanks = 0;
+/* A phase transition is rendered at frame zero before the elapsed time from
+   the preceding phase is allowed to advance it. This prevents a long CD or
+   render stall from hiding the first pose of the new phase. */
+static int g_b_phase_first_frame = 1;
+/* Result uses wall-clock phase timing for its clear/music lead-in, then this
+   separate counter advances one displayed pose at a time for the moving
+   top-to-hand camera. */
+static int g_b_result_pose_frame = 0;
 static int g_b_selected_hand = 0;
 static int g_b_selected_player_slot = 0;
 static int g_b_selected_com_slot = 0;
@@ -7678,7 +7784,8 @@ static WaifuBattleBaseCache g_b_fmtowns_work_cache;
 typedef enum FmtownsWorkCacheOwner {
     FMTOWNS_WORK_CACHE_NONE = 0,
     FMTOWNS_WORK_CACHE_CAMERA = 1,
-    FMTOWNS_WORK_CACHE_CUTIN = 2
+    FMTOWNS_WORK_CACHE_CUTIN = 2,
+    FMTOWNS_WORK_CACHE_PRELUDE = 3
 } FmtownsWorkCacheOwner;
 
 /* The 61,440-byte work slot is shared by camera composites and the battle
@@ -7705,6 +7812,10 @@ static int g_b_fmtowns_place_static_baked;
 static int g_b_fmtowns_place_static_slot;
 static int g_b_fmtowns_place_static_row;
 static int g_b_fmtowns_place_static_card;
+static uint32_t g_b_fmtowns_prelude_key;
+static int g_b_fmtowns_prelude_atk_col;
+static int g_b_fmtowns_prelude_atk_row;
+static int g_b_fmtowns_prelude_late_frame;
 #endif
 #if defined(WAIFU_FM_PCFX)
 /* Placement is static while the flying card and hand overlays move over it.
@@ -7727,6 +7838,7 @@ static void invalidate_battle_composite_cache(void)
     g_b_fmtowns_cutin_start = 0;
     g_b_fmtowns_cutin_last_local = -1;
     g_b_fmtowns_place_static_baked = 0;
+    g_b_fmtowns_prelude_key = 0;
 #endif
 #if defined(WAIFU_FM_PCFX)
     g_b_placement_cache.valid = 0;
@@ -8772,6 +8884,8 @@ static void set_battle_phase(WaifuBattlePhase phase)
     g_b_phase = phase;
     g_b_phase_frame = 0;
     g_b_anim_vblanks = 0;
+    g_b_phase_first_frame = 1;
+    g_b_result_pose_frame = 0;
     if (phase != prev) {
 #if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
         if (prev == IB_PLAYER_BATTLE || prev == IB_COM_BATTLE)
@@ -8781,6 +8895,22 @@ static void set_battle_phase(WaifuBattlePhase phase)
         /* Loss jingle is CD-DA on PC-FX and a music track on host; no PCM SFX. */
     }
     update_music_for_current_state();
+}
+
+static int battle_phase_uses_displayed_pose(WaifuBattlePhase phase)
+{
+    switch (phase) {
+    case IB_OPENING:
+    case IB_PLAYER_HAND_TO_TOP:
+    case IB_PLAYER_TOP_TO_HAND:
+    case IB_PLAYER_RETURN_TOP:
+    case IB_COM_RETURN:
+    case IB_TURN_TO_COM:
+    case IB_TURN_TO_PLAYER:
+        return 1;
+    default:
+        return 0;
+    }
 }
 
 static int battle_phase_accepts_player_input(void)
@@ -10321,6 +10451,8 @@ static void init_battle_state(void)
     g_b_phase = IB_OPENING;
     g_b_frame = 0;
     g_b_phase_frame = 0;
+    g_b_phase_first_frame = 1;
+    g_b_result_pose_frame = 0;
     g_b_selected_hand = 0;
     g_b_selected_player_slot = 0;
     g_b_selected_com_slot = 0;
@@ -10650,7 +10782,8 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
     if (camera_equal(cam, placement_camera()) ||
         camera_equal(cam, enemy_placement_camera()))
         return &g_b_fmtowns_work_cache;
-    if (camera_equal(cam, enemy_battle_top_camera()))
+    if (camera_equal(cam, battle_top_camera()) ||
+        camera_equal(cam, enemy_battle_top_camera()))
         return &g_b_base_cache_top;
     if (camera_equal(cam, player_camera()) ||
         camera_equal(cam, enemy_camera()))
@@ -10969,6 +11102,55 @@ static void fmtowns_cutin_blank_displaced_card(int old_x, int new_x, int y)
 #endif
 #endif /* !WAIFU_BATTLE_BASE_CACHE_DISABLE */
 
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+static uint32_t fmtowns_battle_prelude_key(int atk_col, int atk_row)
+{
+    uint32_t h = battle_base_visual_key();
+    h = waifu_hash_step_u32(h, (uint32_t)(atk_col + 1));
+    h = waifu_hash_step_u32(h, (uint32_t)(atk_row + 1));
+    h = waifu_hash_step_u32(h, (uint32_t)(g_battle_late_frame + 2));
+    return h;
+}
+
+static int fmtowns_draw_battle_prelude(int atk_col, int atk_row)
+{
+    Camera cam = side_battle_camera(atk_row);
+    uint32_t key = fmtowns_battle_prelude_key(atk_col, atk_row);
+    int same = g_b_fmtowns_work_cache_owner == FMTOWNS_WORK_CACHE_PRELUDE &&
+               g_b_fmtowns_work_cache.valid &&
+               g_b_fmtowns_prelude_key == key &&
+               g_b_fmtowns_prelude_atk_col == atk_col &&
+               g_b_fmtowns_prelude_atk_row == atk_row &&
+               g_b_fmtowns_prelude_late_frame == g_battle_late_frame &&
+               camera_equal(g_b_fmtowns_work_cache.cam, cam);
+
+    if (same) {
+        fb_restore_composite(g_b_fmtowns_work_cache.pixels);
+        return 1;
+    }
+
+    /* render_board() clears the scratch framebuffer before drawing the fixed
+       board. Capture the complete tactical view into the existing reusable
+       FM work slot; later prelude frames restore it without another 3-D pass. */
+    render_board_cached(cam);
+    draw_interactive_field_cards(cam);
+    draw_zone_cursor(cam, atk_col, atk_row);
+    draw_hud();
+    copy_u8_fast(g_b_fmtowns_work_cache.pixels, framebuffer,
+                 (int)sizeof(g_b_fmtowns_work_cache.pixels));
+    fb_damage_base_mark(g_b_fmtowns_work_cache.pixels);
+    g_b_fmtowns_work_cache.cam = cam;
+    g_b_fmtowns_work_cache.key = key;
+    g_b_fmtowns_work_cache.valid = 1;
+    g_b_fmtowns_work_cache_owner = FMTOWNS_WORK_CACHE_PRELUDE;
+    g_b_fmtowns_prelude_key = key;
+    g_b_fmtowns_prelude_atk_col = atk_col;
+    g_b_fmtowns_prelude_atk_row = atk_row;
+    g_b_fmtowns_prelude_late_frame = g_battle_late_frame;
+    return 1;
+}
+#endif
+
 static void draw_interactive_base(Camera cam)
 {
     uint32_t key = battle_base_visual_key();
@@ -11035,6 +11217,9 @@ static void fmtowns_prewarm_battle_views_while_loading(void)
            duel can enter, so its initial card flight is a cache hit too. */
         prewarm_interactive_base(placement_camera());
         draw_asset_loading_screen();
+        /* The prewarm used the live framebuffer as scratch, but the loading
+           screen is the actual frame being presented. */
+        g_frame_present_dense = 0;
     }
 #endif
 }
@@ -11825,6 +12010,9 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     int target_y = WAIFU_BATTLE_CARD_Y;
     int card_x = ax;
     if (local < WAIFU_BATTLE_PRELUDE_FRAMES) {
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+        if (fmtowns_draw_battle_prelude(atk_col, atk_row)) return;
+#endif
         clear_screen(IDX_BLACK);
         Camera cam = side_battle_camera(atk_row);
         draw_interactive_base(cam);
@@ -11893,6 +12081,9 @@ static void draw_interactive_battle(void)
 
     if (g_b_phase_frame < WAIFU_BATTLE_PRELUDE_FRAMES) {
         prelude_cam = side_battle_camera(atk_row);
+#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+        if (fmtowns_draw_battle_prelude(atk_col, atk_row)) return;
+#endif
         draw_interactive_base(prelude_cam);
         draw_zone_cursor(prelude_cam, atk_col, atk_row);
         return;
@@ -11967,7 +12158,7 @@ static void draw_interactive_result(void)
     }
 
     {
-        int anim = local - WAIFU_RESULT_ANIM_START_FRAMES;
+        int anim = g_b_result_pose_frame;
         int clamped_anim = anim;
         if (clamped_anim > WAIFU_PCFX_HANDTOP_FRAMES) clamped_anim = WAIFU_PCFX_HANDTOP_FRAMES;
         /* Use the same continuous top->hand camera path as the normal DOWN
@@ -12713,6 +12904,7 @@ static void finish_player_fusion_anim(void)
 static void step_battle_interactive(const WaifuFmInput *input, int press_up, int press_down, int press_left, int press_right, int press_a, int press_b, int press_start, int press_tab)
 {
     int slot, atk_slot, def_slot, view_slot;
+    WaifuBattlePhase phase_before = g_b_phase;
     (void)input;
 
     switch (g_b_phase) {
@@ -13435,18 +13627,31 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
     }
 
-    /* Advance one logical frame only after the current pose was rendered. */
+    /* Advance only after the current pose was rendered. A newly entered phase
+       keeps its frame-zero pose for one call; moving cameras then take one
+       displayed step, while static/2-D phases consume measured wall time. */
     g_b_frame += frame_logic_step();
-    g_b_phase_frame += frame_logic_step();
-    g_b_anim_vblanks += frame_logic_step();
+    if (g_b_phase == phase_before) {
+        int phase_frame_before = g_b_phase_frame;
+        int first = g_b_phase_first_frame;
+        int phase_step = first ? 1 :
+            (battle_phase_uses_displayed_pose(g_b_phase) ? 1 : frame_logic_step());
+        int wall_step = first ? 1 : frame_logic_step();
+        g_b_phase_frame += phase_step;
+        g_b_anim_vblanks += wall_step;
+        if (g_b_phase == IB_RESULT && phase_frame_before >= WAIFU_RESULT_ANIM_START_FRAMES)
+            ++g_b_result_pose_frame;
+        g_b_phase_first_frame = 0;
+    }
 }
 
 void waifu_fm_set_frame_vblanks(int vblanks)
 {
-    /* Kept as a platform seam for timing diagnostics.  Elapsed vblanks must
-       not advance game state: doing so skips every pose on an over-budget
-       frame. */
-    (void)vblanks;
+    /* Static/2-D animation and global scene clocks follow elapsed time. The
+       moving battle camera has its own one-pose-per-render counter below. */
+    if (vblanks < 1) vblanks = 1;
+    if (vblanks > 4) vblanks = 4;
+    g_frame_vblank_step = vblanks;
 }
 
 void waifu_fm_init(void)
@@ -13507,6 +13712,7 @@ void waifu_fm_init(void)
 
 void waifu_fm_reset_interactive(void)
 {
+    g_frame_vblank_step = 1;
     waifu_assets_reset();
     g_i_menu_selected = 0;
     memset(&g_prev_input, 0, sizeof(g_prev_input));
@@ -13567,6 +13773,11 @@ int waifu_fm_frame_damage(const uint8_t **rows)
     if (rows) *rows = 0;
     return 1;
 #endif
+}
+
+int waifu_fm_frame_present_dense(void)
+{
+    return g_frame_present_dense;
 }
 
 /* The subset of waifu_fm_frame_damage() the frame KNOWS changed, so a

@@ -58,9 +58,9 @@ void waifu_fm_init(void);
 void waifu_fm_reset_interactive(void);
 void waifu_fm_step(const WaifuFmInput *input);
 /* Report how many hardware vblanks the previous frame actually took (>=1).
-   Battle phase animations advance by this step so they stay tied to the
-   hardware timer when rendering runs slower than 60 Hz.  Platforms that
-   never call this keep the default 1 step per waifu_fm_step(). */
+   Static/2-D clocks consume this wall-clock step. Moving battle cameras keep
+   one displayed pose per waifu_fm_step(), so an over-budget render cannot skip
+   authored poses. Platforms that never call this keep the default 1. */
 void waifu_fm_set_frame_vblanks(int vblanks);
 void waifu_fm_render_scripted_frame(int frame);
 uint8_t *waifu_fm_framebuffer(void);
@@ -72,6 +72,11 @@ uint8_t *waifu_fm_framebuffer(void);
    waifu_fm_frame_damage_clear() says the frame reached the screen. */
 int waifu_fm_frame_damage(const uint8_t **rows);
 void waifu_fm_frame_damage_clear(void);
+/* Non-zero only when the final frame rendered a dense live board/floor. A
+   presenter may use an unconditional full upload for that case; sparse and
+   retained frames must continue through the row-mask comparison path even if
+   their damage declaration says "full" because they cleared before drawing. */
+int waifu_fm_frame_present_dense(void);
 /* The subset of that mask the frame knows changed, so a presenter that
    compares before uploading can skip the comparison there.  NULL, or all
    zero, when the frame makes no such claim. */
