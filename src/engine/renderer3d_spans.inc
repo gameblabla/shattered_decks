@@ -426,8 +426,9 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_fast_pair_pc
  * Register pressure decides the rest.  The i386 has eight registers, one is
  * the stack pointer and -fPIC reserves another for the GOT, so a loop that
  * needs an accumulator, a source base, a destination, an address temp and a
- * coordinate has nothing left for its own bounds -- hence the end pointer
- * (and, where a second coordinate is in play, its step) living in memory. */
+ * coordinate has nothing left for its own bounds.  The row loop uses all seven
+ * non-stack registers, keeping the end pointer in a register as well so the
+ * per-iteration compare does not reload it from memory. */
 
 /* Constant-V row: u advances, v does not.  U is u << 24, dU is step_u << 24,
    so u's 8-bit wrap is the carry out of bit 31.  Exact -- no approximation
@@ -463,7 +464,7 @@ static void cfx_direct_row_i386(uint8_t *dst, int span, const uint8_t *row,
             "jb 1b\n\t"
             : [dst] "+r" (dst), [U] "+r" (U),
               [t] "=&r" (t), [acc] "=&q" (acc)
-            : [dU] "r" (dU), [row] "r" (row), [end] "m" (end)
+            : [dU] "r" (dU), [row] "r" (row), [end] "r" (end)
             : "cc", "memory");
         span &= 3;
     }

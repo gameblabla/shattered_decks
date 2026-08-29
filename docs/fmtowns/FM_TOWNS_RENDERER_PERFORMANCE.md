@@ -56,6 +56,10 @@ physical-Marty measurement. The proxy used by `fmtowns.sh` is:
   more expensive than its repeated-color stores. The new path keeps the same
   uint8 UV wrapping and packed stores without splitting every scanline into
   tiny runs.
+- Kept the FM/i386 constant-V row filler’s loop end pointer in a register. This
+  removes one memory reload from each four-pixel loop iteration without
+  changing the packed stores or texture sequence. Fixed-pose hashes remain
+  `3e7c64ce`, `8ebdc7b5`, and `8b7920ef`.
 
 The profiling-only `--fixed-pose-bench` harness reports camera basis, point
 transformation, projection, clear, walls, mesh setup, span fill, grid,
@@ -101,12 +105,13 @@ appearing hung. The inspected PNGs show continuous board perspectives with
 intact board, wall, HUD, and card rendering.
 
 For a non-retained board measurement, the final-code `profile board` was run with
-`-DWAIFU_BATTLE_BASE_CACHE_DISABLE -DWAIFU_MEASURE_FORCE_LIVE_BOARD`. The
-constant-V row filler plus exact top-wall cull produced three identical samples
-of `93.1 ms` total (`54.7 ms` step + `22.1 ms` present). The inspected PNG
-retained the full board and six projected field cards. The result is a valid
-visual regression capture, but it is still above budget; the moving turn and
-lift captures remain the more representative performance evidence.
+`-DWAIFU_BATTLE_BASE_CACHE_DISABLE -DWAIFU_MEASURE_FORCE_LIVE_BOARD`. Constant-V
+row filler plus exact top-wall cull and register-resident loop bound produced
+repeated `76.3 ms` total (`52.5 ms` step + `22.1 ms` present), versus the
+accepted pre-change `93.1 ms` total (`54.7 ms` step + `22.1 ms` present). The
+inspected PNG retained the full board and six projected field cards. This is an
+incremental win, but it is still above budget; the moving turn and lift captures
+remain the more representative performance evidence.
 
 Capture artifacts were written under `build/fmtowns/shots/` and are generated
 outputs, not release assets.
@@ -154,8 +159,10 @@ bytes, below the strict 131,072-byte staging limit.
 - The accurate PC-FX headless backend booted the rebuilt image and produced an
   inspected title PNG. The documented PC-FX regression scripts are absent in
   this checkout.
-- No CD32X headless capture tool is present in this checkout, so its required
-  visual gate could not be run after the successful build/size gate.
+- The bundled CD32X headless binary was attempted, but its default run only
+  produced a `32X not detected` diagnostic image and an explicit `-m 32x` run
+  stopped at an unmapped M68K address without producing a PNG. Its visual gate
+  is therefore unverified; the clean build and strict SH-2 size gate passed.
 - Tsugaru cannot establish physical hardware timing. A future physical-Marty
   run should capture the same frame stamp for board, placement, battle, and
   direct scenes before publishing FPS claims.
@@ -166,11 +173,17 @@ bytes, below the strict 131,072-byte staging limit.
   captures regressed to 168--191 ms of calibrated step work versus the accepted
   83--109 ms range, despite unchanged pixels; the committed dense/damage
   boundary therefore remains as before.
+- A conservative previous-frame damage-union clear was also prototyped and
+  removed. It cleared every previously declared 64-pixel group, including UI
+  overlays, and passed the inspected board capture, but did not beat optimized
+  full clear repeatably (`55.4 ms` versus `54.7 ms` step in a forced-live board
+  pair) and added transition-state complexity. Full clear remains safe.
 - The full plan’s remaining renderer work is wall occlusion/batching if its
   nine segmented walls can be reduced without changing their visible edge
-  pixels, plus live 3-D damage-union clearing. Any further specialization must
-  remain behind the byte-identical reference gate. The fixed-pose attribution
-  shows projection is currently a small stage on the 32-bit harness; the FM row
-  filler and endpoint wall cull are accepted, but the live Marty-proxy
-  measurements remain above the frame budget and require another optimization
-  cycle plus physical Marty timing before claiming completion.
+  pixels, plus a new high-confidence reduction in moving span/store traffic.
+  Any further specialization must remain behind the byte-identical reference
+  gate. The fixed-pose attribution shows projection is currently a small stage
+  on the 32-bit harness; the FM row filler and endpoint wall cull are accepted,
+  but the live Marty-proxy measurements remain above the frame budget and
+  require another optimization cycle plus physical Marty timing before claiming
+  completion.
