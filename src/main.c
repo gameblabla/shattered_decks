@@ -69,6 +69,7 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_FMTOWNS_TURN_BOARD_CACHE 1
 #include "fmtowns_turn_board_cache.h"
 #include "fmtowns_turn_card_cache.h"
+#include "fmtowns_turn_card_geometry.h"
 #endif
 #ifdef WAIFU_FM_PCFX
 #include "waifu_pcfx_video.h"
@@ -6821,6 +6822,26 @@ static void draw_cd32x_projected_support_card(ScreenPt p0, ScreenPt p1, ScreenPt
 }
 #endif
 
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+static int fmtowns_turn_card_geometry(int pose, int slot,
+                                      ScreenPt *p0, ScreenPt *p1,
+                                      ScreenPt *p2, ScreenPt *p3)
+{
+    const uint8_t *g;
+    if (pose < 0 || pose >= WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_POSES ||
+        slot < 0 || slot >= WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS)
+        return 0;
+    g = waifu_fmtowns_turn_card_geometry[pose][slot];
+    p0->x = g[0]; p0->y = g[1];
+    p1->x = g[2]; p1->y = g[3];
+    p2->x = g[4]; p2->y = g[5];
+    p3->x = g[6]; p3->y = g[7];
+    p0->depth = p1->depth = p2->depth = p3->depth = 0;
+    p0->ok = p1->ok = p2->ok = p3->ok = 1;
+    return 1;
+}
+#endif
+
 static void draw_board_card_state(Camera cam, int col, int row, int card_id, int back, int gray, int defense,
                                   const CameraBasis *basis)
 {
@@ -6858,14 +6879,22 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
         if (waifu_hw3d_image_quad(&hc, q, tex, WAIFU_CARD_W, WAIFU_CARD_H,
                                   gray, gray ? IDX_DIM : IDX_CARD_RIM)) return;
     }
-    ScreenPt p0 = basis ? project_point_basis(basis, v3(cx - hw, y, cz - hz)) :
-                         project_point(cam, v3(cx - hw, y, cz - hz));
-    ScreenPt p1 = basis ? project_point_basis(basis, v3(cx + hw, y, cz - hz)) :
-                         project_point(cam, v3(cx + hw, y, cz - hz));
-    ScreenPt p2 = basis ? project_point_basis(basis, v3(cx + hw, y, cz + hz)) :
-                         project_point(cam, v3(cx + hw, y, cz + hz));
-    ScreenPt p3 = basis ? project_point_basis(basis, v3(cx - hw, y, cz + hz)) :
-                         project_point(cam, v3(cx - hw, y, cz + hz));
+    ScreenPt p0, p1, p2, p3;
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    if (!defense && !fmtowns_turn_card_geometry(g_fmtowns_turn_board_pose,
+                                    g_fmtowns_turn_card_slot - 5,
+                                    &p0, &p1, &p2, &p3))
+#endif
+    {
+        p0 = basis ? project_point_basis(basis, v3(cx - hw, y, cz - hz)) :
+                     project_point(cam, v3(cx - hw, y, cz - hz));
+        p1 = basis ? project_point_basis(basis, v3(cx + hw, y, cz - hz)) :
+                     project_point(cam, v3(cx + hw, y, cz - hz));
+        p2 = basis ? project_point_basis(basis, v3(cx + hw, y, cz + hz)) :
+                     project_point(cam, v3(cx + hw, y, cz + hz));
+        p3 = basis ? project_point_basis(basis, v3(cx - hw, y, cz + hz)) :
+                     project_point(cam, v3(cx - hw, y, cz + hz));
+    }
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
     {
         int x0 = p0.x, x1 = p0.x, y0 = p0.y, y1 = p0.y;
