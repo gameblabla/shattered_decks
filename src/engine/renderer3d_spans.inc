@@ -478,23 +478,25 @@ static void cfx_direct_row_i386(uint8_t *dst, int span, const uint8_t *row,
    faces).  One packed accumulator advances both, so the loop does one add
    rather than two:
  *
- *      bits  0-7   v      A  = v | (u << 24)
- *      bits  8-23  carry guard
- *      bits 24-31  u      dA = (uint8)step_v + ((uint8)step_u << 24)
+ *      bits  0-1   unused            A  = (v << 2) | (u << 24)
+ *      bits  2-9   v Q8
+ *      bits 10-23  carry guard       dA = (step_v << 2) + (step_u << 24)
+ *      bits 24-31  u Q8
  *
- * u sits at the top, so its 8-bit wrap is the carry off bit 31.  v keeps its
- * own low byte and its carries pile up harmlessly in the 16-bit guard, which
- * a span would have to be 65536 pixels long to overflow -- so unlike the
- * usual packed-UV trick this one is exact, not merely close.
+ * u sits at the top, so its 8-bit wrap is the carry off bit 31.  V is shifted
+ * left by two so its texture-row mask is already in place; bits 11..26 are
+ * deliberately empty, so signed Q8 V steps can wrap or carry without
+ * touching U.  This is the same uint8_t-wrapped coordinate arithmetic as the
+ * scalar path, but removes one shift from every affine pixel.
  *
- * The texel row is (v >> 3) * 32, i.e. (A & 0xff) << 2 masked to 0x3e0, and
+ * The texel row is (v >> 3) * 32, i.e. A masked to 0x3e0, and
  * the column is A >> 27.  Only a 32x32 pitch-32 tile can be addressed this
  * way; the caller checks the pitch. */
 static void cfx_direct_affine_i386(uint8_t *dst, int span, const uint8_t *tile,
                                    uint32_t A, uint32_t dA)
 {
 #define CFX_I386_AFFINE_TEXEL(A, tile) \
-    ((tile)[((((A) & 0xffu) << 2) & 0x3e0u) | ((A) >> 27)])
+    ((tile)[((A) & 0x3e0u) | ((A) >> 27)])
 
     while (span > 0 && ((uintptr_t)dst & 3u) != 0u) {
         *dst++ = CFX_I386_AFFINE_TEXEL(A, tile);
@@ -509,7 +511,6 @@ static void cfx_direct_affine_i386(uint8_t *dst, int span, const uint8_t *tile,
             "1:\n\t"
 #define CFX_I386_AFFINE_PIXEL             \
             "movl %[A],%[t1]\n\t"         \
-            "shll $2,%[t1]\n\t"           \
             "andl $0x3e0,%[t1]\n\t"       \
             "movl %[A],%[t2]\n\t"         \
             "shrl $27,%[t2]\n\t"          \
@@ -1891,8 +1892,9 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
     if (renderer->tile_pitch_bytes == 32) {
         uint8_t *b = renderer->framebuffer + ((int32_t)y * renderer->width) + xs;
         cfx_direct_affine_i386(b, span, tile,
-                               (uint32_t)v | ((uint32_t)u << 24),
-                               (uint32_t)(uint8_t)step_v + ((uint32_t)(uint8_t)step_u << 24));
+                               ((uint32_t)v << 2) | ((uint32_t)u << 24),
+                               ((uint32_t)(uint8_t)step_v << 2) +
+                               ((uint32_t)(uint8_t)step_u << 24));
         return;
     }
 #endif

@@ -1598,7 +1598,6 @@ static void draw_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt pc, Sc
     Point2D p1 = {(DEFAULT_INT)bx, (DEFAULT_INT)by, uvmax, 0};
     Point2D p2 = {(DEFAULT_INT)cx, (DEFAULT_INT)cy, uvmax, uvmax};
     Point2D p3 = {(DEFAULT_INT)dx, (DEFAULT_INT)dy, 0, uvmax};
-    fb_damage_all();
     cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 }
 
@@ -1735,7 +1734,6 @@ static void draw_wall_quad3d_fast_projected(ScreenPt pa, ScreenPt pb, ScreenPt p
 #undef WALL_CLAMP_X
 #undef WALL_APRON_Y
 #undef WALL_APRON_X
-    fb_damage_all();
     cfx_renderer3d_draw_quad_fast_affine(&renderer, &p0, &p1, &p2, &p3, (DEFAULT_INT)tile);
 }
 
@@ -1867,12 +1865,22 @@ static void draw_field_slab_facing_z_wall_fast(Camera cam, const BoardProjected 
 
 static void draw_field_slab_sides_fast(Camera cam, const BoardProjected *bp)
 {
-    /* The top surface is opaque and is drawn after the walls.  Once the
+    /* The top surface is opaque and is drawn after the walls.  At the exact
+       tactical top endpoints the projected top mesh covers every side-wall
+       pixel; retaining the wall pass there only paints pixels that are
+       immediately overwritten.  Keep the cull restricted to those authored
+       endpoint cameras: the turn/placement views expose the front wall and
+       still use every per-cell wall texture.  The endpoint condition is also
+       why this does not become a frame-skip or a moving-camera cache.
+
+       For other cameras, once the
        camera-facing X wall is painted, the opposite X wall is entirely behind
        that surface (the old painter-only path redrew both and charged the
        Marty for the hidden wall).  Keep every visible wall textured, but do not
        rasterize the camera-away X lip.  The Z-facing wall remains segmented so
        its brick material repeats per board cell. */
+    if (camera_equal(cam, battle_top_camera()) ||
+        camera_equal(cam, enemy_battle_top_camera())) return;
     draw_field_slab_x_wall_fast(bp, cam.eye.x >= 0 ? 1 : 0);
     draw_field_slab_facing_z_wall_fast(cam, bp);
 }
@@ -5104,7 +5112,6 @@ static void render_board(Camera cam)
             }
         }
         if (mesh_valid) {
-            fb_damage_all();
 #if defined(WAIFU_FIXED_POSE_BENCH)
             if (g_fixed_pose_bench_active) {
                 g_fixed_pose_bench_sample.board_setup_us += profile_now_us() - fixed_pose_t0;
@@ -5405,6 +5412,12 @@ static void draw_textured_tri_affine_fmtowns(const uint8_t *src, int sw, int sh,
     aa = b.y - c.y; ba = c.x - b.x;
     ab = c.y - a.y; bb = a.x - c.x;
     ac = -(aa + ab); bc = -(ba + bb);
+    if (den < 0) {
+        den = -den;
+        aa = -aa; ba = -ba;
+        ab = -ab; bb = -bb;
+        ac = -ac; bc = -bc;
+    }
     u0 = a.u * (sw - 1); u1 = b.u * (sw - 1); u2 = c.u * (sw - 1);
     v0 = a.v * (sh - 1); v1 = b.v * (sh - 1); v2 = c.v * (sh - 1);
     du_dx = (aa * u0 + ab * u1 + ac * u2) / den;
@@ -5424,8 +5437,7 @@ static void draw_textured_tri_affine_fmtowns(const uint8_t *src, int sw, int sh,
         uint8_t *dst = framebuffer + (int32_t)y * WAIFU_FM_WIDTH;
         fb_damage_span(y, minx, maxx + 1);
         for (int x = minx; x <= maxx; ++x) {
-            if ((den > 0 && wa >= 0 && wb >= 0 && wc >= 0) ||
-                (den < 0 && wa <= 0 && wb <= 0 && wc <= 0)) {
+            if ((wa | wb | wc) >= 0) {
                 int sx = (u + Q8_HALF) >> Q8_SHIFT;
                 int sy = (v + Q8_HALF) >> Q8_SHIFT;
                 uint8_t pix;
