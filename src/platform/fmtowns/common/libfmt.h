@@ -104,6 +104,11 @@ void fmt_load_palette_range(const uint8_t *rgb888, int first, int count);
  * after fmt_set_mode(). */
 void fmt_put_image(const void *src, int width, int height, int stride);
 
+/* Full-screen 8/16bpp blit for a frame known to have redrawn every pixel.
+ * This uses the optimized contiguous path directly and invalidates the dirty
+ * presenter state, avoiding a redundant whole-frame change-detection scan. */
+void fmt_put_image_full(const void *src);
+
 /* Full-screen present for the current mode that writes only the 32-byte
  * groups whose contents changed -- the per-frame present path, and far
  * cheaper than fmt_put_image() on the many frames where most of the screen

@@ -118,7 +118,6 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_PCFX_SELECT_FRAMES 16
 #define WAIFU_PCFX_RETURN_FRAMES 12
 #define WAIFU_PCFX_HANDTOP_FRAMES 8
-#define WAIFU_PCFX_HANDTOP_ANCHORS 5
 #define WAIFU_RESULT_UI_CLEAR_FRAMES 32
 #define WAIFU_RESULT_MUSIC_LEAD_FRAMES 8
 #define WAIFU_RESULT_ANIM_START_FRAMES (WAIFU_RESULT_UI_CLEAR_FRAMES + WAIFU_RESULT_MUSIC_LEAD_FRAMES)
@@ -145,11 +144,9 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_PCFX_TURN_FRAMES 12
 #define WAIFU_PCFX_SELECT_FRAMES 16
 #define WAIFU_PCFX_RETURN_FRAMES 12
-/* Hand<->top camera lift.  PC-FX uses cached 3D camera keyframes so the
-   board still moves through real perspective steps without re-rendering a
-   unique camera every transition frame. */
+/* Hand<->top camera lift.  The active camera is rendered live on every
+   transition frame; only the exact resting viewpoints may use composites. */
 #define WAIFU_PCFX_HANDTOP_FRAMES 8
-#define WAIFU_PCFX_HANDTOP_ANCHORS 5
 #define WAIFU_RESULT_UI_CLEAR_FRAMES 32
 #define WAIFU_RESULT_MUSIC_LEAD_FRAMES 8
 #define WAIFU_RESULT_ANIM_START_FRAMES (WAIFU_RESULT_UI_CLEAR_FRAMES + WAIFU_RESULT_MUSIC_LEAD_FRAMES)
@@ -170,12 +167,9 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_DIRECT_LUNGE_FRAMES 12
 #define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES 8
 #elif defined(WAIFU_FM_FMTOWNS)
-/* Match the shorter console battle reveal on the 16 MHz Marty.  The original
-   150-frame opening was designed for a host that can redraw a new software-3D
-   camera every vblank; on a 386SX it stretched the pre-duel flyover into a
-   long sequence of missed fields.  The renderer below retains a handful of
-   real camera keyframes, so this is still an animated reveal rather than a
-   cut to the board. */
+/* Match the shorter console battle reveal on the 16 MHz Marty.  Every visible
+   flyover frame still gets its own live 3-D camera; the shorter timing keeps
+   the reveal practical while the renderer is being optimized. */
 #define DUEL_OPENING_END 72
 #define WAIFU_PCFX_PLACE_FRAMES 48
 #define WAIFU_PCFX_PLACE_SETTLE_FRAMES 38
@@ -183,9 +177,6 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define WAIFU_PCFX_SELECT_FRAMES 70
 #define WAIFU_PCFX_RETURN_FRAMES 30
 #define WAIFU_PCFX_HANDTOP_FRAMES 18
-#define WAIFU_FMTOWNS_HANDTOP_MAX_ANCHORS 5
-#define WAIFU_FMTOWNS_TURN_MAX_ANCHORS 15
-#define WAIFU_FMTOWNS_OPENING_MAX_ANCHORS 9
 #define WAIFU_RESULT_UI_CLEAR_FRAMES 50
 #define WAIFU_RESULT_MUSIC_LEAD_FRAMES 12
 #define WAIFU_RESULT_ANIM_START_FRAMES (WAIFU_RESULT_UI_CLEAR_FRAMES + WAIFU_RESULT_MUSIC_LEAD_FRAMES)
@@ -297,56 +288,16 @@ static int g_frame_dirty_count = 0;
 static WaifuFmDirtyRect g_frame_dirty_rects[WAIFU_FM_MAX_DIRTY_RECTS];
 static int g_video_fade_visible_q8 = Q8_ONE;
 
-/* ---- wall-clock frame pacing -------------------------------------------
+/* ---- frame pacing ------------------------------------------------------
  *
- * Battle animation pacing step, in hardware vblanks (60 Hz frames).  A
- * platform that renders slower than 60 Hz reports the real elapsed frame
- * count of the previous frame through waifu_fm_set_frame_vblanks();
- * everywhere else this stays 1. */
-static int g_b_anim_step = 1;
-
-/* How many 60 Hz frames of game time one waifu_fm_step() is worth.
- *
- * The animation clock (g_b_anim_vblanks) has always been wall-clock paced,
- * but the phase state machine and the UI frame counter were not: they
- * advanced by exactly one per rendered frame.  On a platform that cannot
- * hold 60 fps that runs the whole game in slow motion -- a duel phase
- * written as "48 frames" takes 48 *rendered* frames, so at 30 fps it lasts
- * twice as long, the card flies to the board at half speed, and menus feel
- * sluggish.  It is the same bug as a PC game tying its physics to the frame
- * rate.
- *
- * Feeding the real elapsed frame count back in fixes it: at 30 fps a step is
- * worth 2 frames of game time, so the phase still ends after 48 frames'
- * worth of wall clock -- it just gets drawn half as often.  Timings written
- * against 60 Hz stay correct at any render rate.
- *
- * Opt-in per platform, because it changes how every phase advances and only
- * platforms that report a real elapsed count benefit.  FM TOWNS does
- * (fmtowns_frame_pace() measures it off the machine's 1 us counter).  CD32X
- * reports one too and could be switched over the same way once someone
- * re-verifies its duel timings; until then it keeps one step per frame, and
- * everywhere else the count is always 1, so this is a no-op.
- *
- * The clamp lives in waifu_fm_set_frame_vblanks(): a CD load worth dozens of
- * frames is capped rather than teleporting the game forward.
- *
- * Anything that fires on an exact frame number must use frame_cue_crossed()
- * instead of ==, or it will be skipped whenever the step exceeds 1. */
+ * A rendered frame is one logical animation frame.  The platform may still
+ * measure elapsed vblanks for diagnostics and pacing, but feeding that count
+ * into the game would jump over poses whenever a 3-D frame overruns its
+ * budget.  Slow hardware therefore shows every pose in slow motion until the
+ * renderer is fast enough to present it at the target refresh rate. */
 static inline int frame_logic_step(void)
 {
-#if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_FM_FIXED_LOGIC_STEP)
-    return g_b_anim_step;
-#else
-    /* WAIFU_FM_FIXED_LOGIC_STEP is a measurement build only.  Wall-clock
-       pacing means a faster build reaches any given game frame at a different
-       point in the deck shuffle, so two builds parked on "the same" duel
-       scene can end up holding different cards -- which makes their frame
-       times incomparable.  Pinning the step makes the frame-indexed input
-       script replay identically in both, at the cost of the slow-motion bug
-       this define exists to work around. */
     return 1;
-#endif
 }
 
 /* True on the one step where the frame counter `f` reaches or passes `cue`. */
@@ -870,10 +821,8 @@ static int g_b_attack_attacker_slot = -1;
 #define BATTLE_BURN_DUR 12
 #define BATTLE_BURN_VANISH_FRAMES 10
 #elif defined(WAIFU_FM_CD32X)
-/* Doubled relative to PC-FX because g_b_anim_step can be >= 2, which skips
-   intermediate burn frames and makes the wipe/vanishing effect look too fast.
-   The higher count ensures enough game-frames of visual burn even when the
-   vblank-accumulator jumps by multiple steps per waifu_fm_step(). */
+/* Keep enough logical frames for the wipe/vanishing effect to read clearly on
+   every target.  Logical animation advances once per rendered frame. */
 #define BATTLE_BURN_DUR 24
 #define BATTLE_BURN_VANISH_FRAMES 20
 #else
@@ -1384,63 +1333,10 @@ static Camera turn_camera(int f, int start, int end, int to_enemy)
     return make_camera(v3(q8_mul(q8_sin_rad(a), radius), y, q8_mul(q8_cos_rad(a), radius)), v3(0,0,0), v3(0,Q8_ONE,0), Q8_FROM_INT(148));
 }
 
-#if defined(WAIFU_FM_FMTOWNS)
-static int fmtowns_performance_tier(void)
-{
-#if defined(WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER)
-    return WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER;
-#else
-    return waifu_platform_performance_tier();
-#endif
-}
-
-static int fmtowns_handtop_anchor_count(void)
-{
-    int tier = fmtowns_performance_tier();
-    return tier >= 2 ? WAIFU_FMTOWNS_HANDTOP_MAX_ANCHORS : (tier >= 1 ? 4 : 3);
-}
-
-static int fmtowns_turn_anchor_count(void)
-{
-    int tier = fmtowns_performance_tier();
-    return tier >= 2 ? WAIFU_FMTOWNS_TURN_MAX_ANCHORS : (tier >= 1 ? 9 : 7);
-}
-
-static int fmtowns_opening_anchor_count(void)
-{
-    int tier = fmtowns_performance_tier();
-    return tier >= 2 ? WAIFU_FMTOWNS_OPENING_MAX_ANCHORS : (tier >= 1 ? 7 : 5);
-}
-
-static Camera fmtowns_turn_anchor_camera(int anchor, int to_enemy)
-{
-    int count = fmtowns_turn_anchor_count();
-    if (anchor < 0) anchor = 0;
-    if (anchor >= count) anchor = count - 1;
-    return turn_camera(anchor, 0, count - 1, to_enemy);
-}
-
-static Camera interactive_turn_camera(int frame, int dur, int to_enemy)
-{
-#if defined(WAIFU_FMTOWNS_SMOOTH_TURN)
-    /* Visual/performance reference: restore the original unique camera on
-       every logic frame.  Production uses retained anchors below. */
-    return turn_camera(frame, 0, dur, to_enemy);
-#else
-    int count = fmtowns_turn_anchor_count();
-    int anchor;
-    if (frame <= 0) anchor = 0;
-    else if (frame >= dur) anchor = count - 1;
-    else anchor = (frame * (count - 1) + dur / 2) / dur;
-    return fmtowns_turn_anchor_camera(anchor, to_enemy);
-#endif
-}
-#else
 static Camera interactive_turn_camera(int frame, int dur, int to_enemy)
 {
     return turn_camera(frame, 0, dur, to_enemy);
 }
-#endif
 
 static int32_t col_x0(int c);
 static int32_t row_z0(int r);
@@ -5044,8 +4940,8 @@ static void render_board(Camera cam)
         }
     }
 #endif
-    }
 #endif
+    }
 #endif
 
 #if !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
@@ -5055,6 +4951,19 @@ static void render_board(Camera cam)
     for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line_projected(bp.top[0][c], bp.top[BOARD_ROWS][c], IDX_DARK_BROWN);
     for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line_projected(bp.top[r][0], bp.top[r][BOARD_COLS], IDX_DARK_BROWN);
 #endif
+}
+
+/* A board composite is valid only for a camera that will remain unchanged
+   while overlays animate.  Moving-camera frames must never enter this cache:
+   caching them would turn a smooth camera path into retained keyframes. */
+static int camera_is_static_board(Camera cam)
+{
+    return camera_equal(cam, player_camera()) ||
+           camera_equal(cam, enemy_camera()) ||
+           camera_equal(cam, battle_top_camera()) ||
+           camera_equal(cam, enemy_battle_top_camera()) ||
+           camera_equal(cam, placement_camera()) ||
+           camera_equal(cam, enemy_placement_camera());
 }
 
 static void render_board_cached(Camera cam)
@@ -5071,6 +4980,10 @@ static void render_board_cached(Camera cam)
     }
 #endif
 #else
+    if (!camera_is_static_board(cam)) {
+        render_board(cam);
+        return;
+    }
     if (g_board_bg_cache_valid && camera_equal(g_board_bg_cache_cam, cam)) {
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
         unsigned long long _profile_t0 = g_profile_render_enabled ? profile_now_us() : 0;
@@ -7093,75 +7006,19 @@ static void draw_interactive_base(Camera cam);
 
 static void render_duel_opening_frame(int f)
 {
-#if defined(WAIFU_FM_FMTOWNS)
-    /* The palette fade is cheap on FM TOWNS, but a fresh 3-D perspective is
-       not.  Advance through a CPU-tiered set of genuine flyover cameras and
-       retain the framebuffer between them.  This preserves the visible
-       approach while avoiding 56 near-identical board renders. */
-    static int last_f = -1;
-    static int last_anchor = -1;
-    static int hud_visible = 0;
-    int lf, span, anchor;
-    int anchor_count = fmtowns_opening_anchor_count();
-    int32_t ft;
-
-    if (f <= 0 || f < last_f) {
-        last_anchor = -1;
-        hud_visible = 0;
-        clear_screen(IDX_BLACK);
-    }
-    last_f = f;
     if (f < 16) {
-        /* Build the first textured perspective while the palette is black.
-           It is already resident when the reveal becomes visible at frame 16. */
-        if (f >= 12 && last_anchor < 0) {
-            render_board_cached(opening_camera(18));
-            last_anchor = 0;
-        }
-        if (f >= 12) apply_black_dither_fade(0);
+        clear_screen(IDX_BLACK);
         return;
     }
-
-    lf = f - 16;
-    span = DUEL_OPENING_END - 16;
-    anchor = (lf * (anchor_count - 1) + span / 2) / span;
-    if (anchor < 0) anchor = 0;
-    if (anchor >= anchor_count) anchor = anchor_count - 1;
-    ft = q8_ratio(anchor, anchor_count - 1);
-
-    if (anchor != last_anchor) {
-        if (anchor == anchor_count - 1) {
-            /* Land exactly on the normal hand camera.  Its battle composite
-               was prepared during loading, so the flyover ends without one
-               last live 3-D render or a perspective snap on hand entry. */
-            draw_interactive_base(player_camera());
-            hud_visible = 1;
-        } else {
-            Camera cam = opening_camera(18 + q8_to_int(q8_mul(Q8_FROM_INT(66), q8_smoothstep(ft))));
-            clear_screen(IDX_BLACK);
-            render_board_cached(cam);
-        }
-        if (f > 40 && !hud_visible) {
-            draw_hud();
-            hud_visible = 1;
-        }
-        last_anchor = anchor;
-    } else if (f > 40 && !hud_visible) {
-        draw_hud();
-        hud_visible = 1;
-    }
-    apply_black_dither_fade(q8_smoothstep(q8_ratio(lf, span)));
-#else
-    clear_screen(IDX_BLACK);
-    if (f < 16) return;
     int lf = f - 16;
     int32_t ft = q8_ratio(lf, DUEL_OPENING_END - 16);
     Camera cam = opening_camera(18 + q8_to_int(q8_mul(Q8_FROM_INT(66), q8_smoothstep(ft))));
-    render_board_cached(cam);
+    /* This is an active camera path, so every displayed pose is rendered from
+       its continuous perspective instead of being retained as a keyframe. */
+    render_board(cam);
     /* Longer fade-in: the field slowly resolves out of black before the hand UI. */
     apply_black_dither_fade(q8_smoothstep(ft));
     if (f > 40) draw_hud();
-#endif
 }
 
 static void render_duel_frame(int f)
@@ -7317,7 +7174,6 @@ static void render_duel_script_frame(int f)
 {
     g_battle_late_frame = -1;
     set_lps_for_frame(f);
-    clear_screen(IDX_BLACK);
 
     /* First duel beat is deliberately slower in v5. It now demonstrates:
        hand -> UP to top/spell-trap field -> DOWN back to hand -> UP/placement,
@@ -7345,6 +7201,7 @@ static void render_duel_script_frame(int f)
     int enemy_draw_sequence = 0;
 
     if (f < 18) {
+        clear_screen(IDX_BLACK);
         if (f > 8) draw_hud();
         return;
     } else if (f < 84) {
@@ -7619,11 +7476,9 @@ static WaifuFmInput g_prev_input;
 static WaifuBattlePhase g_b_phase = IB_OPENING;
 static int g_b_frame = 0;
 static int g_b_phase_frame = 0;
-/* Accumulated hardware vblanks for visual animation pacing (equip, fusion,
-   thunder, support).  Advances by g_b_anim_step each waifu_fm_step() so that
-   visual effects stay tied to wall-clock time even when rendering runs slower
-   than 60 Hz.  g_b_anim_step and the phase-frame pacing that goes with it are
-   declared near the top of this file (frame_logic_step()). */
+/* Accumulated logical animation frames for visual effects (equip, fusion,
+   thunder, support).  It advances once per rendered frame so no visible pose
+   is skipped when the active renderer overruns its refresh budget. */
 static int g_b_anim_vblanks = 0;
 static int g_b_selected_hand = 0;
 static int g_b_selected_player_slot = 0;
@@ -7852,13 +7707,9 @@ static int g_b_fmtowns_place_static_row;
 static int g_b_fmtowns_place_static_card;
 #endif
 #if defined(WAIFU_FM_PCFX)
-/* Cache the intermediate hand<->top lift keyframes too.  The lift is quantized
-   onto WAIFU_PCFX_HANDTOP_ANCHORS camera positions precisely so they can be
-   cached: without this the return trip (top->hand) and every repeat lift re-run
-   the board renderer live at each anchor, which is the visible slowdown. */
-static WaifuBattleBaseCache g_b_handtop_mid_cache[WAIFU_PCFX_HANDTOP_ANCHORS - 2];
-/* Round-robin cursor for prewarming one missing lift keyframe per idle frame. */
-static int g_b_handtop_prewarm_index = 0;
+/* Placement is static while the flying card and hand overlays move over it.
+   Keep a dedicated slot so the active hand<->top camera remains live. */
+static WaifuBattleBaseCache g_b_placement_cache;
 #endif
 #endif
 
@@ -7878,8 +7729,7 @@ static void invalidate_battle_composite_cache(void)
     g_b_fmtowns_place_static_baked = 0;
 #endif
 #if defined(WAIFU_FM_PCFX)
-    for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS - 2; ++i) g_b_handtop_mid_cache[i].valid = 0;
-    g_b_handtop_prewarm_index = 0;
+    g_b_placement_cache.valid = 0;
 #endif
 #endif
 }
@@ -10773,141 +10623,30 @@ static void draw_interactive_com_hand(int f, int selected, int yoff)
     PROFILE_HAND_END();
 }
 
-#if defined(WAIFU_FM_PCFX)
-static Camera pcfx_handtop_anchor_camera(int anchor)
-{
-    if (anchor <= 0) return player_camera();
-    if (anchor >= WAIFU_PCFX_HANDTOP_ANCHORS - 1) return battle_top_camera();
-    return lerp_camera(player_camera(), battle_top_camera(), q8_ratio(anchor, WAIFU_PCFX_HANDTOP_ANCHORS - 1));
-}
-
-static int pcfx_handtop_anchor_for_frame(int frame, int dur)
-{
-    if (frame <= 0) return 0;
-    if (frame >= dur) return WAIFU_PCFX_HANDTOP_ANCHORS - 1;
-    /* Quantize a smooth camera lift onto cached real-3D keyframes.  The hand and
-       cursor overlays still move every logic frame; only the expensive base
-       perspective is stepped through a small cacheable set. */
-    return (frame * (WAIFU_PCFX_HANDTOP_ANCHORS - 1) + dur / 2) / dur;
-}
-
-static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
-{
-    int anchor = pcfx_handtop_anchor_for_frame(frame, dur);
-    if (!to_top) anchor = WAIFU_PCFX_HANDTOP_ANCHORS - 1 - anchor;
-    return pcfx_handtop_anchor_camera(anchor);
-}
-#elif defined(WAIFU_FM_FMTOWNS)
-static Camera fmtowns_handtop_anchor_camera(int anchor)
-{
-    int count = fmtowns_handtop_anchor_count();
-    if (anchor <= 0) return player_camera();
-    if (anchor >= count - 1) return battle_top_camera();
-    return lerp_camera(player_camera(), battle_top_camera(),
-                       q8_ratio(anchor, count - 1));
-}
-
-static int fmtowns_handtop_anchor_for_frame(int frame, int dur)
-{
-    int count = fmtowns_handtop_anchor_count();
-    if (frame <= 0) return 0;
-    if (frame >= dur) return count - 1;
-    return (frame * (count - 1) + dur / 2) / dur;
-}
-
-static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
-{
-    int count = fmtowns_handtop_anchor_count();
-    int anchor = fmtowns_handtop_anchor_for_frame(frame, dur);
-    if (!to_top) anchor = count - 1 - anchor;
-    return fmtowns_handtop_anchor_camera(anchor);
-}
-#else
 static Camera player_handtop_transition_camera(int frame, int dur, int to_top)
 {
     int32_t t = q8_ratio(frame, dur);
     return to_top ? lerp_camera(player_camera(), battle_top_camera(), t)
                   : lerp_camera(battle_top_camera(), player_camera(), t);
 }
-#endif
 
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
-#if defined(WAIFU_FM_PCFX)
-/* Map a camera to its hand<->top anchor index (0=hand .. ANCHORS-1=top), or -1 if
-   it is not one of the quantized lift keyframes. */
-static int pcfx_handtop_anchor_index_for_camera(Camera cam)
-{
-    for (int i = 0; i < WAIFU_PCFX_HANDTOP_ANCHORS; ++i)
-        if (camera_equal(cam, pcfx_handtop_anchor_camera(i))) return i;
-    return -1;
-}
-
-static WaifuBattleBaseCache *pcfx_handtop_cache_for_anchor(int anchor)
-{
-    if (anchor <= 0) return &g_b_base_cache;                          /* hand */
-    if (anchor >= WAIFU_PCFX_HANDTOP_ANCHORS - 1) return &g_b_base_cache_top; /* top */
-    return &g_b_handtop_mid_cache[anchor - 1];                        /* lift keyframe */
-}
-#endif
-
-/* Return the cache slot for a cacheable camera, or NULL for a moving one.  The
-   hand-idle view, top view, quantized hand<->top lift keyframes, and the two
-   static placement cameras cache.  Side / attack / continuously moving cameras
-   still return NULL and render live. */
+/* Return the cache slot for an exact static camera, or NULL for a moving one. */
 static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
 {
 #if defined(WAIFU_FM_PCFX)
-    int anchor = pcfx_handtop_anchor_index_for_camera(cam);
-    if (anchor >= 0) return pcfx_handtop_cache_for_anchor(anchor);
-    /* Placement temporarily borrows one intermediate lift slot.  This adds no
-       BSS on the 2 MiB PC-FX, keeps the resting hand/top views intact, and the
-       idle prewarmer rebuilds the displaced lift anchor before its next use. */
     if (camera_equal(cam, placement_camera()) || camera_equal(cam, enemy_placement_camera()))
-        return &g_b_handtop_mid_cache[0];
+        return &g_b_placement_cache;
+    if (camera_equal(cam, battle_top_camera()) ||
+        camera_equal(cam, enemy_battle_top_camera()))
+        return &g_b_base_cache_top;
+    if (camera_equal(cam, player_camera()) ||
+        camera_equal(cam, enemy_camera()))
+        return &g_b_base_cache;
     return NULL;
 #elif defined(WAIFU_FM_FMTOWNS)
     if (g_b_fmtowns_work_cache_owner == FMTOWNS_WORK_CACHE_CUTIN)
         return NULL;
-    int handtop_count = fmtowns_handtop_anchor_count();
-    int turn_count = fmtowns_turn_anchor_count();
-    /* Marty caches both resting views: the top-down board and the hand view.
-       Restoring a composite is a 61440-byte RAM-to-RAM copy, which on a 16 MHz
-       386SX behind a 16-bit bus costs real milliseconds rather than being the
-       near-free operation it is on the other targets, so the trade only pays
-       where the render it replaces costs more than the copy.
-
-       It pays in BOTH resting views, which the earlier version of this comment
-       denied on the strength of a measurement that was not real: it had the
-       hand view's board render at ~4 ms, when the honest figure is over
-       100 ms.  The 1 us clock those numbers came from wraps every 65.536 ms
-       and this port's duel frames are longer than that, so the hand view was
-       being timed modulo the wrap (see fmtowns_main.c's frame-clock note).
-       The hand camera looks along the board rather than down at it, so the
-       floor's near rows are magnified across most of the screen -- it is the
-       more expensive view to rasterize, not the cheaper one.
-
-       Two slots, because the hand view and the top view are what the player
-       toggles between with UP/DOWN: sharing one slot would make every toggle
-       a full re-render of the view being entered.  Each pair of cameras
-       (player/enemy side) shares its slot -- those belong to different phases
-       and never alternate frame to frame. */
-    /* The top slot doubles as a one-entry transition-keyframe cache.  Three
-       full-screen slots would exceed the Marty's RAM budget; one slot still
-       retains each quantized camera for its several animation frames, then is
-       overwritten by the next.  The hand endpoint keeps its own slot. */
-    for (int anchor = 1; anchor < handtop_count; ++anchor) {
-        if (!camera_equal(cam, fmtowns_handtop_anchor_camera(anchor))) continue;
-        if (anchor >= handtop_count - 1)
-            return &g_b_base_cache_top;
-        return &g_b_fmtowns_work_cache;
-    }
-    /* Turn changes share the same scratch slot.  Each half-orbit anchor stays
-       visible for several logic frames, so only its first frame rasterizes;
-       the reverse turn visits this same camera set in reverse order. */
-    for (int anchor = 0; anchor < turn_count; ++anchor)
-        if (camera_equal(cam, fmtowns_turn_anchor_camera(anchor, 1)) ||
-            camera_equal(cam, fmtowns_turn_anchor_camera(anchor, 0)))
-            return &g_b_fmtowns_work_cache;
     if (camera_equal(cam, placement_camera()) ||
         camera_equal(cam, enemy_placement_camera()))
         return &g_b_fmtowns_work_cache;
@@ -10918,7 +10657,7 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
         return &g_b_base_cache;
     return NULL;
 #else
-    (void)cam;
+    if (!camera_is_static_board(cam)) return NULL;
     return &g_b_base_cache;
 #endif
 }
@@ -11265,9 +11004,8 @@ static void draw_interactive_field_base_no_hud(Camera cam)
 
 #if (defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)) && \
     !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
-/* Render one battle-base composite for `cam` straight into its cache slot without
-   presenting it -- used to pre-fill the hand<->top lift keyframes during idle so
-   the first lift plays from cache.  Uses the shared framebuffer as scratch; the
+/* Render one static battle-base composite for `cam` straight into its cache
+   slot without presenting it.  Uses the shared framebuffer as scratch; the
    caller redraws the real view over it before present. */
 static void prewarm_interactive_base(Camera cam)
 {
@@ -11281,26 +11019,6 @@ static void prewarm_interactive_base(Camera cam)
     battle_base_cache_store(cam, key);
 }
 
-#if defined(WAIFU_FM_PCFX)
-/* Fill one still-missing hand<->top anchor keyframe per idle frame so the FIRST
-   lift plays entirely from cache (no live board re-render).  Prefer the top
-   endpoint first so the lift can always finish on a hit, then the intermediate
-   perspectives.  Only ~one board render per idle frame, spread over the anchors. */
-static void prewarm_handtop_transition_bases(void)
-{
-    uint32_t key = battle_base_visual_key();
-    for (int tries = 0; tries < WAIFU_PCFX_HANDTOP_ANCHORS; ++tries) {
-        int seq = g_b_handtop_prewarm_index++ % WAIFU_PCFX_HANDTOP_ANCHORS;
-        int anchor = (seq == 0) ? (WAIFU_PCFX_HANDTOP_ANCHORS - 1) : (seq - 1);
-        Camera cam = pcfx_handtop_anchor_camera(anchor);
-        WaifuBattleBaseCache *cache = pcfx_handtop_cache_for_anchor(anchor);
-        if (!(cache->valid && cache->key == key && camera_equal(cache->cam, cam))) {
-            prewarm_interactive_base(cam);
-            return;
-        }
-    }
-}
-#endif
 #endif
 
 static void fmtowns_prewarm_battle_views_while_loading(void)
@@ -12252,9 +11970,9 @@ static void draw_interactive_result(void)
         int anim = local - WAIFU_RESULT_ANIM_START_FRAMES;
         int clamped_anim = anim;
         if (clamped_anim > WAIFU_PCFX_HANDTOP_FRAMES) clamped_anim = WAIFU_PCFX_HANDTOP_FRAMES;
-        /* Use the same top->hand camera/keyframe helper as the normal DOWN path,
-           but keep the result overlays cleared instead of reintroducing battle
-           HUD panels. */
+        /* Use the same continuous top->hand camera path as the normal DOWN
+           transition, but keep the result overlays cleared instead of
+           reintroducing battle HUD panels. */
         draw_player_handtop_transition_shared(clamped_anim, WAIFU_PCFX_HANDTOP_FRAMES,
                                               0, 0, 0, 0);
         if (anim >= WAIFU_PCFX_HANDTOP_FRAMES + 8) {
@@ -13085,9 +12803,6 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
             }
         }
         if (press_start) { clear_player_fusion_queue(); g_b_attack_attacker_slot = -1; clear_com_attacks(); g_b_com_monster_played_this_turn = 0; set_battle_phase(IB_TURN_TO_COM); break; }
-#if defined(WAIFU_FM_PCFX) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
-        prewarm_handtop_transition_bases(); /* pre-fill lift keyframes during hand idle */
-#endif
         play_player_hand_intro_draw_sfx();
         /* Attribution knobs for the parked hand view (./fmtowns.sh profile
            hand): each one removes exactly one of the three things a cached
@@ -13107,11 +12822,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_PLAYER_HAND_TO_TOP: {
-        /* PC-FX transition fast path without the hard cut: use cached 3D camera
-           keyframes along the hand->top lift.  The board changes through real
-           intermediate perspectives, while the hand overlay slides every logic
-           frame.  This avoids the original cache-miss storm without snapping
-           immediately to the top camera. */
+        /* Keep the transition continuous: the board is rendered from the live
+           interpolated camera on every logic frame while the hand overlay
+           slides with it.  Exact resting viewpoints may still use composites. */
         int dur = WAIFU_PCFX_HANDTOP_FRAMES;
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), q8_smooth_ratio(g_b_phase_frame, dur)));
         draw_player_handtop_transition_shared(g_b_phase_frame, dur, 1, hand_off, 1, 1);
@@ -13133,9 +12846,8 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
     }
 
     case IB_PLAYER_TOP_TO_HAND: {
-        /* Reverse path uses the same cached camera keyframes in reverse order,
-           so returning to hand is also smooth without re-rendering a unique
-           3D board for every logic frame. */
+        /* Reverse the same continuous camera path.  Moving viewpoints remain
+           live renders; only the exact resting endpoint can be composited. */
         int dur = WAIFU_PCFX_HANDTOP_FRAMES;
         int hand_off = q8_to_int(q8_mul(Q8_FROM_INT(118), Q8_ONE - q8_smooth_ratio(g_b_phase_frame, dur)));
         draw_player_handtop_transition_shared(g_b_phase_frame, dur, 0, hand_off, 1, 1);
@@ -13723,24 +13435,18 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
     }
 
-    /* Advance the logical phase frame (state machine timing) and the visual
-       animation clock (equip, fusion, thunder, support).  Both move by
-       frame_logic_step() so a platform that renders slower than 60 Hz still
-       progresses in wall-clock time -- see that function. */
+    /* Advance one logical frame only after the current pose was rendered. */
     g_b_frame += frame_logic_step();
     g_b_phase_frame += frame_logic_step();
-    g_b_anim_vblanks += g_b_anim_step;
+    g_b_anim_vblanks += frame_logic_step();
 }
 
 void waifu_fm_set_frame_vblanks(int vblanks)
 {
-    /* Clamp: a CD load or cache prewarm can stall for dozens of vblanks;
-       jumping animation time that far would skip entire sub-stages (reveal,
-       merge flash) of the equip animation.  Cap the catch-up so a stall
-       degrades to at most 4x speed instead of a visual teleport. */
-    if (vblanks < 1) vblanks = 1;
-    if (vblanks > 4) vblanks = 4;
-    g_b_anim_step = vblanks;
+    /* Kept as a platform seam for timing diagnostics.  Elapsed vblanks must
+       not advance game state: doing so skips every pose on an over-budget
+       frame. */
+    (void)vblanks;
 }
 
 void waifu_fm_init(void)

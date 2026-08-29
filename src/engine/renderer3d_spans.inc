@@ -395,7 +395,7 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_fast_pair_pc
  * measurement on this target is genuinely hard -- the emulator reports one
  * number for the whole game step -- and bisecting with these is what
  * established that the top-down board view goes through the constant-V row
- * filler and never touches cfx_board_fill at all.  Pass them through
+ * filler and its packed cfx_board_fill path.  Pass them through
  * EXTRA_CORE_DEFINES; nothing defines them in a normal build.
  *
  * THE ACCUMULATOR IS PRE-SHIFTED so the texture coordinate's integer part
@@ -528,7 +528,7 @@ static void cfx_direct_affine_i386(uint8_t *dst, int span, const uint8_t *tile,
             "jb 1b\n\t"
             : [dst] "+r" (dst), [A] "+r" (A),
               [t1] "=&r" (t1), [t2] "=&r" (t2), [acc] "=&q" (acc)
-            : [dA] "m" (dA), [tile] "r" (tile), [end] "m" (end)
+            : [dA] "r" (dA), [tile] "r" (tile), [end] "m" (end)
             : "cc", "memory");
         span &= 3;
     }
@@ -1104,10 +1104,10 @@ void cfx_draw_span(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, in
  * That is the one place this is not bit-identical to the C loop, and it is
  * far below a visible pixel.
  *
- * Per pixel that leaves 9 instructions, one of them the dA add from memory
- * (the i386 has 8 registers, -fPIC reserves one for the GOT, and the loop
- * needs the accumulator, the tile base, the destination, two address temps
- * and the pixel accumulator, so dA is the one that loses).  The four pixel
+ * Per pixel that leaves 9 instructions, including the dA add from a retained
+ * register (the i386 has 8 registers, -fPIC reserves one for the GOT, and the
+ * loop needs the accumulator, the tile base, the destination, two address
+ * temps and the pixel accumulator).  The four pixel
  * bytes are collected in one register with ROR and written as a single
  * 32-bit store: a dword store is two bus cycles on the SX's 16-bit bus
  * against four for four byte stores, and it removes three quarters of the
@@ -1139,10 +1139,9 @@ static void cfx_board_fill_i386(uint8_t *dst, int n, uint32_t A, uint32_t dA,
     }
 
     if (n >= 4) {
-        /* Six registers is all there is: the i386 has eight, -fPIC reserves
-           one for the GOT and one is the stack pointer.  dA and the end
-           pointer are therefore memory operands -- dA costs one read per
-           pixel, end one per four. */
+        /* Six registers are occupied by the loop state: the i386 has eight,
+           -fPIC reserves one for the GOT and one is the stack pointer.  Keep
+           dA in a register; only the end pointer remains a memory operand. */
         uint32_t t1, t2, acc;
         uint8_t *const end = dst + (n & ~3);
         __asm__ volatile (
@@ -1157,7 +1156,7 @@ static void cfx_board_fill_i386(uint8_t *dst, int n, uint32_t A, uint32_t dA,
             "jb 1b\n\t"
             : [dst] "+r" (dst), [A] "+r" (A),
               [t1] "=&r" (t1), [t2] "=&r" (t2), [acc] "=&q" (acc)
-            : [dA] "m" (dA), [tile] "r" (tile), [end] "m" (end)
+            : [dA] "r" (dA), [tile] "r" (tile), [end] "m" (end)
             : "cc", "memory");
         n &= 3;
     }

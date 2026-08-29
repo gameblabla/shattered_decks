@@ -1420,12 +1420,11 @@ static int cfx_board_rows_uniform_trapezoid(const CfxBoardPoint *points,
 }
 
 /* The Marty board's ground cells use a 32x32 tile and constant V on each
-   scanline.  For the usual small U steps, several adjacent screen pixels
-   therefore sample the same source texel.  The normal row filler still does
-   one texture lookup per output pixel; coalesce those runs here and write
-   repeated bytes in aligned dwords.  This is board-only: object faces and
-   slab walls retain the ordinary renderer path, and the fallback keeps
-   measurement builds and non-Marty targets on their existing implementation. */
+   scanline.  Feed that row directly to the backend's packed i386 board-fill
+   loop: it emits four pixels per store and avoids the divide/run bookkeeping
+   that used to dominate this otherwise simple constant-V case.  The incoming
+   coordinates are 8-bit texture positions (0..255); cfx_board_fill's Q8
+   interface therefore receives them multiplied by 32. */
 static void cfx_draw_board_span_flat(const CfxRenderer3DState *state,
                                      const uint8_t *tile, int16_t y,
                                      int16_t xs, int16_t span,
@@ -1433,16 +1432,13 @@ static void cfx_draw_board_span_flat(const CfxRenderer3DState *state,
 {
 #if defined(WAIFU_FM_FMTOWNS) && defined(__i386__) && (CFX_TEX_SIZE == 32) && \
     !defined(CFX_MEASURE_SKIP_SPANS) && !defined(CFX_MEASURE_C_ROW)
-    uint8_t u = (uint8_t)tex_state;
-    uint8_t v = (uint8_t)(tex_state >> 8);
-    const uint8_t *row;
-    uint8_t *dst;
-
     if (span <= 0 || y < 0 || y >= state->height) return;
     if (xs < 0) {
         int16_t skip = (int16_t)-xs;
         if (skip >= span) return;
-        u = (uint8_t)(u + (int)step_u * skip);
+        tex_state = cfx_pack_tex_state(
+            (uint8_t)((uint8_t)tex_state + (int)step_u * skip),
+            (uint8_t)(tex_state >> 8));
         span = (int16_t)(span - skip);
         xs = 0;
     }
@@ -1450,42 +1446,11 @@ static void cfx_draw_board_span_flat(const CfxRenderer3DState *state,
     if ((int32_t)xs + span > state->width)
         span = (int16_t)(state->width - xs);
     if (span <= 0) return;
-
-    row = tile + (((uint16_t)(v >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK) *
-                 (uint16_t)state->tile_pitch_bytes);
-    dst = state->framebuffer + ((int32_t)y * state->width) + xs;
-    while (span > 0) {
-        int phase = u & 7;
-        int run;
-        uint8_t color;
-        uint32_t packed;
-        int left;
-
-        if (step_u > 0) {
-            run = (8 - phase + (int)step_u - 1) / (int)step_u;
-        } else if (step_u < 0) {
-            int magnitude = -(int)step_u;
-            run = (phase + magnitude) / magnitude;
-        } else {
-            run = span;
-        }
-        if (run > span) run = span;
-        color = row[(uint16_t)(u >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK];
-        packed = (uint32_t)color * 0x01010101u;
-        left = run;
-        while (left > 0 && ((uintptr_t)dst & 3u) != 0u) {
-            *dst++ = color;
-            --left;
-        }
-        while (left >= 4) {
-            *(uint32_t *)dst = packed;
-            dst += 4;
-            left -= 4;
-        }
-        while (left-- > 0) *dst++ = color;
-        u = (uint8_t)(u + (int)step_u * run);
-        span = (int16_t)(span - run);
-    }
+    cfx_board_fill(state->framebuffer + ((int32_t)y * state->width) + xs,
+                   span,
+                   (int32_t)(uint8_t)tex_state << 5,
+                   (int32_t)(uint8_t)(tex_state >> 8) << 5,
+                   (int32_t)step_u << 5, 0, tile);
 #else
     cfx_draw_span_direct_tile(state, tile, y, xs, span, tex_state, step_u, 0);
 #endif

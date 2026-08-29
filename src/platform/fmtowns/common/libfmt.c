@@ -677,6 +677,15 @@ void fmt_put_image(const void *src, int width, int height, int stride)
     }
 }
 
+void fmt_put_image_full(const void *src)
+{
+    fmt_put_image(src, g_cur->width, g_cur->height, g_cur->stride);
+    /* The caller has redrawn the complete frame, so the dirty hash is not a
+       useful description of the page just written.  The next partial present
+       will seed it from the new framebuffer contents. */
+    g_dirty_valid = 0;
+}
+
 int fmt_page_flipping_available(void)
 {
     return g_can_flip;

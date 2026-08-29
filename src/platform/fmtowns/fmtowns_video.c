@@ -100,10 +100,16 @@ void fmtowns_video_present_8bpp_rows(const unsigned char *framebuffer,
     {
         static unsigned int tick;
         if ((tick++ % (FMTOWNS_MEASURE_BLIT_EVERY)) == 0)
-            fmt_put_image_dirty_rows(framebuffer, row_mask, force_mask);
+            if (!row_mask && !force_mask)
+                fmt_put_image_full(framebuffer);
+            else
+                fmt_put_image_dirty_rows(framebuffer, row_mask, force_mask);
     }
 #else
-    fmt_put_image_dirty_rows(framebuffer, row_mask, force_mask);
+    if (!row_mask && !force_mask)
+        fmt_put_image_full(framebuffer);
+    else
+        fmt_put_image_dirty_rows(framebuffer, row_mask, force_mask);
 #endif
 
     /* Palette RAM, by contrast, is read by the CRTC on every displayed pixel,
