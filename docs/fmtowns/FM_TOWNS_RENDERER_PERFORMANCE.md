@@ -193,6 +193,19 @@ bytes, below the strict 131,072-byte staging limit.
   overlays, and passed the inspected board capture, but did not beat optimized
   full clear repeatably (`55.4 ms` versus `54.7 ms` step in a forced-live board
   pair) and added transition-state complexity. Full clear remains safe.
+- Two further i386 row-kernel experiments were rejected. Expanding a source
+  row to all 256 Q8 phases once per board scanline preserved all three fixed
+  hashes, but moved the top fixed-pose span fill from `36 us` to `68 us` and
+  the FM forced-live board from `42.8 ms` step to `163.6 ms` step (`193.7 ms`
+  total); rebuilding the expanded row cache was more expensive than the
+  saved address shift. Keeping the phase in the 386 register high byte also
+  preserved the hashes but raised the top span fill to `44 us` and total to
+  `134 us`, so it was removed. Both probes used the same calibrated proxy and
+  left no runtime cache or alternate kernel in the final tree.
+- A temporary `CFX_MEASURE_SKIP_SPANS` attribution probe was also removed. It
+  changed the i386 link layout enough to raise the forced-live board to
+  `121.2 ms` step despite bypassing the direct-row stores, confirming that
+  skip-build timings are not a valid source attribution on this 386 target.
 - The full plan’s remaining renderer work is wall occlusion/batching if its
   nine segmented walls can be reduced without changing their visible edge
   pixels, plus another high-confidence reduction in moving span/store traffic.
