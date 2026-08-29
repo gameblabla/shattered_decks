@@ -229,6 +229,15 @@ bytes, below the strict 131,072-byte staging limit.
   preserved the hashes but raised the top span fill to `44 us` and total to
   `134 us`, so it was removed. Both probes used the same calibrated proxy and
   left no runtime cache or alternate kernel in the final tree.
+- A persistent packed phase table was also rejected. It used 64 KiB of loaded
+  data for two tiles × 32 rows × 256 phases and initially looked promising on
+  the host benchmark (`126 us` to `113 us` for the top pose), while preserving
+  all three fixed-pose hashes. On the calibrated forced-live FM board it
+  instead produced repeated `239.2 ms` totals (`209.7 ms` step plus `22.1 ms`
+  present), versus the accepted `60.5 ms` total. The later board PNGs were
+  visually intact (`/tmp/fmt-packed-board/shot1.png` and `shot2.png`), but the
+  3.5× FM regression came from the large table’s bus/cache traffic, so the
+  table and its extra payload were removed.
 - A temporary `CFX_MEASURE_SKIP_SPANS` attribution probe was also removed. It
   changed the i386 link layout enough to raise the forced-live board to
   `121.2 ms` step despite bypassing the direct-row stores, confirming that
