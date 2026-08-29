@@ -60,6 +60,16 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #include "palette.h"
 #include "sounds.h"
 #include "assets.h"
+#if defined(WAIFU_FM_FMTOWNS) && \
+    !defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE_DISABLE) && \
+    !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+/* The FM TOWNS turn board is static geometry with a finite authored camera
+   path.  Keep one independently seekable compressed board image per camera
+   pose; cards and HUD are still drawn live after the board is restored. */
+#define WAIFU_FMTOWNS_TURN_BOARD_CACHE 1
+#include "fmtowns_turn_board_cache.h"
+#include "fmtowns_turn_card_cache.h"
+#endif
 #ifdef WAIFU_FM_PCFX
 #include "waifu_pcfx_video.h"
 #include "pcfx_biosfs.h"
@@ -483,6 +493,10 @@ static int g_ui_retained_tag;
 static int g_fb_kept_valid, g_fb_keep_claimed;
 static int g_fb_keep_x, g_fb_keep_y, g_fb_keep_w, g_fb_keep_h;
 
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+static int fmtowns_turn_damage_suppressed(void);
+#endif
+
 static void fb_mark_kept_rect(void)
 {
     int x = g_fb_keep_x, y = g_fb_keep_y;
@@ -611,6 +625,13 @@ static void fb_clear_rect(uint8_t *rows, int x, int y, int w, int h)
    above is a difference of two masks and needs both to stay meaningful. */
 static void fb_damage_rect(int x, int y, int w, int h)
 {
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    /* render_board() already declared the complete moving pose dense.  The
+       live card/HUD calls below cannot narrow that contract, and maintaining
+       the 64-pixel damage bitmap for each card scanline only burns CPU on the
+       386. */
+    if (fmtowns_turn_damage_suppressed()) return;
+#endif
     fb_mark_rect(g_fb_dmg, x, y, w, h);
     if (g_fb_base_src || g_fb_base_solid_valid) fb_mark_rect(g_fb_ovl_curr, x, y, w, h);
 }
@@ -1053,6 +1074,73 @@ static uint8_t g_board_bg_cache[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 static Camera g_board_bg_cache_cam;
 static int g_board_bg_cache_valid = 0;
 #endif
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+static int g_fmtowns_turn_board_pose = -1;
+static int g_fmtowns_turn_board_loaded_pose = -1;
+static int g_fmtowns_turn_overlay_tracking = 0;
+
+typedef struct FmtownsTurnOverlayRect {
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+} FmtownsTurnOverlayRect;
+
+#define FMTOWNS_TURN_OVERLAY_RECTS 24
+static FmtownsTurnOverlayRect g_fmtowns_turn_overlay_rects[2][FMTOWNS_TURN_OVERLAY_RECTS];
+static int g_fmtowns_turn_overlay_counts[2];
+static int g_fmtowns_turn_overlay_active;
+static int g_fmtowns_turn_card_slot = -1;
+static int g_fmtowns_turn_card_replay_eligible = 0;
+static uint8_t *fmtowns_turn_board_cache_scratch(void);
+static void fmtowns_turn_record_overlay_rect(int x0, int y0, int x1, int y1);
+
+static int fmtowns_turn_damage_suppressed(void)
+{
+    return g_fmtowns_turn_board_pose >= 0;
+}
+#endif
+
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+static int fmtowns_turn_replay_card(const uint8_t *tex)
+{
+    int slot = g_fmtowns_turn_card_slot - 5;
+    const uint8_t *p;
+    const uint8_t *end;
+
+    if (!tex || g_fmtowns_turn_board_pose < 0 ||
+        !g_fmtowns_turn_card_replay_eligible ||
+        slot < 0 || slot >= WAIFU_FMTOWNS_TURN_CARD_CACHE_SLOTS ||
+        g_fmtowns_turn_board_pose >= WAIFU_FMTOWNS_TURN_CARD_CACHE_POSES)
+        return 0;
+    p = waifu_fmtowns_turn_card_cache_data +
+        waifu_fmtowns_turn_card_cache_offsets[g_fmtowns_turn_board_pose][slot];
+    end = waifu_fmtowns_turn_card_cache_data +
+          waifu_fmtowns_turn_card_cache_offsets[g_fmtowns_turn_board_pose][slot + 1];
+    while (p < end) {
+        unsigned dst = (unsigned)p[0] | ((unsigned)p[1] << 8);
+        unsigned packed = (unsigned)p[2] | ((unsigned)p[3] << 8);
+        unsigned width = (packed >> 12) + 1;
+        uint8_t color = tex[packed & 0x0fffu];
+        uint8_t *d = framebuffer + dst;
+        if (width == 4) {
+            uint16_t pair = (uint16_t)color | ((uint16_t)color << 8);
+            *(uint16_t *)d = pair;
+            *(uint16_t *)(d + 2) = pair;
+            d += WAIFU_FM_WIDTH;
+            *(uint16_t *)d = pair;
+            *(uint16_t *)(d + 2) = pair;
+        } else {
+            for (unsigned x = 0; x < width; ++x) d[x] = color;
+            d += WAIFU_FM_WIDTH;
+            for (unsigned x = 0; x < width; ++x) d[x] = color;
+        }
+        p += 4;
+    }
+    return p == end;
+}
+#endif
+
 static int camera_equal(Camera a, Camera b)
 {
     return a.eye.x == b.eye.x && a.eye.y == b.eye.y && a.eye.z == b.eye.z &&
@@ -2800,8 +2888,46 @@ static long long lldiv_trunc(long long n, long long d)
 }
 #endif /* WAIFU_FM_CD32X */
 
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+static int line_i_turn_fast(int x0, int y0, int x1, int y1, uint8_t c)
+{
+    int dx, sx, dy, sy, err;
+    uint8_t *p;
+
+    /* Moving turn frames are declared dense by the board cache.  The projected
+       card rims are already screen-clipped, so this is the same Bresenham walk
+       as line_i(), with the per-pixel clip, address multiply, and damage-span
+       update removed. */
+    if (g_fmtowns_turn_board_pose < 0 || g_ui_clip_w != WAIFU_FM_WIDTH ||
+        (unsigned)x0 >= (unsigned)WAIFU_FM_WIDTH ||
+        (unsigned)x1 >= (unsigned)WAIFU_FM_WIDTH ||
+        (unsigned)y0 >= (unsigned)WAIFU_FM_HEIGHT ||
+        (unsigned)y1 >= (unsigned)WAIFU_FM_HEIGHT)
+        return 0;
+    dx = i_abs(x1 - x0);
+    sx = x0 < x1 ? 1 : -1;
+    dy = -i_abs(y1 - y0);
+    sy = y0 < y1 ? 1 : -1;
+    err = dx + dy;
+    p = framebuffer + y0 * WAIFU_FM_WIDTH + x0;
+    for (;;) {
+        *p = c;
+        if (x0 == x1 && y0 == y1) break;
+        {
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; p += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; p += sy * WAIFU_FM_WIDTH; }
+        }
+    }
+    return 1;
+}
+#endif
+
 static void line_i(int x0, int y0, int x1, int y1, uint8_t c)
 {
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    if (line_i_turn_fast(x0, y0, x1, y1, c)) return;
+#endif
     if (waifu_hw2d_line(x0, y0, x1, y1, c)) return;
     /* Clip the segment to the screen rect FIRST (Liang-Barsky).  A projected
        vertex just in front of the camera (small cz, large cx/cz) used to land at
@@ -3681,6 +3807,9 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     /* Widescreen: the info bar spans the full frame; the name stays at the left
        edge, stats anchor to the right edge. */
     int hw = WAIFU_FM_WIDTH + waifu_platform_ui_extra_w();
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    fmtowns_turn_record_overlay_rect(0, base, hw, base + 35);
+#endif
     ui_hud_begin();
     rect_fill(0, base, hw, 35, IDX_UI_TEAL);
     hline(0,hw-1,base,IDX_WHITE); hline(0,hw-1,base+1,IDX_UI_LIGHT); hline(0,hw-1,base+2,IDX_DIM);
@@ -5014,10 +5143,268 @@ static void draw_grid_line_projected(ScreenPt pa, ScreenPt pb, uint8_t c)
     }
 }
 
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+static void fmtowns_turn_copy_ram(uint8_t *dst, const uint8_t *src, unsigned count)
+{
+#if defined(__i386__)
+    unsigned words = count >> 2;
+    __asm__ volatile ("cld\nrep movsl"
+                      : "+D" (dst), "+S" (src), "+c" (words)
+                      :
+                      : "memory");
+    count &= 3u;
+#else
+    while (count >= 4) {
+        *(uint32_t *)(void *)dst = *(const uint32_t *)(const void *)src;
+        dst += 4;
+        src += 4;
+        count -= 4;
+    }
+#endif
+    while (count--) *dst++ = *src++;
+}
+
+static void fmtowns_turn_record_overlay_rect(int x0, int y0, int x1, int y1)
+{
+    int next;
+    FmtownsTurnOverlayRect *r;
+    if (!g_fmtowns_turn_overlay_tracking) return;
+    next = g_fmtowns_turn_overlay_active ^ 1;
+    if (g_fmtowns_turn_overlay_counts[next] >= FMTOWNS_TURN_OVERLAY_RECTS) return;
+    /* The card affine fill may touch the next row for its 2x2 sampler and its
+       outline can sit just outside the projected corners. */
+    r = &g_fmtowns_turn_overlay_rects[next][g_fmtowns_turn_overlay_counts[next]++];
+    r->x0 = x0 - 2;
+    r->y0 = y0 - 2;
+    r->x1 = x1 + 3;
+    r->y1 = y1 + 3;
+}
+
+static void fmtowns_turn_overlay_begin(void)
+{
+    g_fmtowns_turn_overlay_counts[g_fmtowns_turn_overlay_active ^ 1] = 0;
+}
+
+static void fmtowns_turn_overlay_commit(void)
+{
+    g_fmtowns_turn_overlay_active ^= 1;
+}
+
+static void fmtowns_turn_expand_sample(const uint8_t *logical, unsigned sample)
+{
+    unsigned x = sample % WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH;
+    unsigned y = sample / WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH;
+    uint16_t pair = (uint16_t)logical[sample] |
+                    ((uint16_t)logical[sample] << 8);
+    uint8_t *d0 = framebuffer + (y * 2u) * WAIFU_FM_WIDTH + x * 2u;
+    *(uint16_t *)(void *)d0 = pair;
+    *(uint16_t *)(void *)(d0 + WAIFU_FM_WIDTH) = pair;
+}
+
+static void fmtowns_turn_expand_rect(const uint8_t *logical,
+                                      int x0, int y0, int x1, int y1)
+{
+    int bx0 = x0 >> 1;
+    int by0 = y0 >> 1;
+    int bx1 = (x1 + 1) >> 1;
+    int by1 = (y1 + 1) >> 1;
+    if (bx0 < 0) bx0 = 0;
+    if (by0 < 0) by0 = 0;
+    if (bx1 > WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH)
+        bx1 = WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH;
+    if (by1 > WAIFU_FMTOWNS_TURN_BOARD_CACHE_HEIGHT)
+        by1 = WAIFU_FMTOWNS_TURN_BOARD_CACHE_HEIGHT;
+    for (int y = by0; y < by1; ++y) {
+        unsigned sample = (unsigned)y * WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH + (unsigned)bx0;
+        for (int x = bx0; x < bx1; ++x, ++sample)
+            fmtowns_turn_expand_sample(logical, sample);
+    }
+}
+
+static void fmtowns_turn_expand_all(const uint8_t *logical)
+{
+    unsigned sample;
+    for (sample = 0; sample < WAIFU_FMTOWNS_TURN_BOARD_CACHE_FRAME_BYTES; ++sample)
+        fmtowns_turn_expand_sample(logical, sample);
+}
+
+static void fmtowns_turn_restore_previous_overlays(const uint8_t *logical)
+{
+    int i;
+    const FmtownsTurnOverlayRect *rects =
+        g_fmtowns_turn_overlay_rects[g_fmtowns_turn_overlay_active];
+    for (i = 0; i < g_fmtowns_turn_overlay_counts[g_fmtowns_turn_overlay_active]; ++i)
+        fmtowns_turn_expand_rect(logical, rects[i].x0, rects[i].y0,
+                                 rects[i].x1, rects[i].y1);
+}
+
+static int fmtowns_turn_apply_delta(int from_pose, int update_frame)
+{
+    const uint8_t *src;
+    const uint8_t *send;
+    uint8_t *logical = fmtowns_turn_board_cache_scratch();
+
+    if (from_pose < 0 || from_pose + 1 >= WAIFU_FMTOWNS_TURN_BOARD_CACHE_POSES)
+        return 0;
+    src = waifu_fmtowns_turn_board_cache_data +
+          waifu_fmtowns_turn_board_cache_offsets[from_pose + 1];
+    send = src + waifu_fmtowns_turn_board_cache_lengths[from_pose + 1];
+    while (src < send) {
+        unsigned sample;
+        unsigned length;
+        if ((unsigned)(send - src) < 3) return 0;
+        sample = (unsigned)src[0] | ((unsigned)src[1] << 8);
+        length = src[2];
+        src += 3;
+        if (!length || sample >= WAIFU_FMTOWNS_TURN_BOARD_CACHE_FRAME_BYTES ||
+            length > WAIFU_FMTOWNS_TURN_BOARD_CACHE_FRAME_BYTES - sample ||
+            (unsigned)(send - src) < length) return 0;
+        while (length--) {
+            logical[sample] ^= *src++;
+            if (update_frame) fmtowns_turn_expand_sample(logical, sample);
+            ++sample;
+        }
+    }
+    return 1;
+}
+
+static int fmtowns_turn_decode_keyframe(void)
+{
+    const uint8_t *src = waifu_fmtowns_turn_board_cache_data;
+    const uint8_t *send = src + waifu_fmtowns_turn_board_cache_lengths[0];
+    uint8_t *scratch = fmtowns_turn_board_cache_scratch();
+    uint8_t *dst = scratch;
+    uint8_t *dend = scratch + WAIFU_FMTOWNS_TURN_BOARD_CACHE_FRAME_BYTES;
+
+    while (src < send) {
+        unsigned token = *src++;
+        unsigned literal_len = token >> 4;
+        unsigned match_len;
+        unsigned offset;
+        uint8_t *match;
+
+        if (literal_len == 15) {
+            unsigned n;
+            do {
+                if (src >= send) return 0;
+                n = *src++;
+                literal_len += n;
+            } while (n == 255);
+        }
+        if ((unsigned)(send - src) < literal_len ||
+            (unsigned)(dend - dst) < literal_len) return 0;
+        fmtowns_turn_copy_ram(dst, src, literal_len);
+        dst += literal_len;
+        src += literal_len;
+        if (src == send) break;
+        if ((unsigned)(send - src) < 2) return 0;
+        offset = (unsigned)src[0] | ((unsigned)src[1] << 8);
+        src += 2;
+        if (!offset || offset > (unsigned)(dst - scratch)) return 0;
+        match_len = (token & 15) + 4;
+        if ((token & 15) == 15) {
+            unsigned n;
+            do {
+                if (src >= send) return 0;
+                n = *src++;
+                match_len += n;
+            } while (n == 255);
+        }
+        if ((unsigned)(dend - dst) < match_len) return 0;
+        match = dst - offset;
+        if (offset == 1) {
+            fill_u8_fast(dst, (int)match_len, match[0]);
+            dst += match_len;
+        } else if (offset == 2) {
+            uint16_t pair = *(const uint16_t *)(const void *)match;
+            uint32_t pair4 = (uint32_t)pair | ((uint32_t)pair << 16);
+#if defined(__i386__)
+            unsigned words = match_len >> 2;
+            __asm__ volatile ("cld\nrep stosl"
+                              : "+D" (dst), "+c" (words)
+                              : "a" (pair4)
+                              : "memory");
+            match_len &= 3u;
+#else
+            while (match_len >= 4) {
+                *(uint32_t *)(void *)dst = pair4;
+                dst += 4;
+                match_len -= 4;
+            }
+#endif
+            if (match_len >= 2) {
+                *(uint16_t *)(void *)dst = pair;
+                dst += 2;
+                match_len -= 2;
+            }
+            if (match_len) *dst++ = *(const uint8_t *)(const void *)match;
+        } else if (offset >= 4) {
+#if defined(__i386__)
+            unsigned words = match_len >> 2;
+            __asm__ volatile ("cld\nrep movsl"
+                              : "+D" (dst), "+S" (match), "+c" (words)
+                              :
+                              : "memory");
+            match_len &= 3u;
+#else
+            while (match_len >= 4) {
+                *(uint32_t *)(void *)dst =
+                    *(const uint32_t *)(const void *)match;
+                dst += 4;
+                match += 4;
+                match_len -= 4;
+            }
+#endif
+            while (match_len--) *dst++ = *match++;
+        } else {
+            while (match_len--) *dst++ = *match++;
+        }
+    }
+    return dst == dend;
+}
+
+static int fmtowns_turn_board_cache_decode(int pose)
+{
+    if (pose < 0 || pose >= WAIFU_FMTOWNS_TURN_BOARD_CACHE_POSES) return 0;
+    if (g_fmtowns_turn_board_loaded_pose == pose) return 1;
+    if (g_fmtowns_turn_board_loaded_pose < 0) {
+        if (!fmtowns_turn_decode_keyframe()) return 0;
+        fmtowns_turn_expand_all(fmtowns_turn_board_cache_scratch());
+        g_fmtowns_turn_board_loaded_pose = 0;
+    }
+    if (pose == g_fmtowns_turn_board_loaded_pose + 1) {
+        fmtowns_turn_restore_previous_overlays(fmtowns_turn_board_cache_scratch());
+        if (!fmtowns_turn_apply_delta(g_fmtowns_turn_board_loaded_pose, 1)) return 0;
+        g_fmtowns_turn_board_loaded_pose = pose;
+        return 1;
+    }
+    if (pose == g_fmtowns_turn_board_loaded_pose - 1) {
+        fmtowns_turn_restore_previous_overlays(fmtowns_turn_board_cache_scratch());
+        if (!fmtowns_turn_apply_delta(pose, 1)) return 0;
+        g_fmtowns_turn_board_loaded_pose = pose;
+        return 1;
+    }
+    if (!fmtowns_turn_decode_keyframe()) return 0;
+    for (int p = 0; p < pose; ++p)
+        if (!fmtowns_turn_apply_delta(p, 0)) return 0;
+    fmtowns_turn_expand_all(fmtowns_turn_board_cache_scratch());
+    g_fmtowns_turn_board_loaded_pose = pose;
+    return 1;
+}
+#endif
+
 static void render_board(Camera cam)
 {
 #if defined(WAIFU_FIXED_POSE_BENCH)
     unsigned long long fixed_pose_t0 = g_fixed_pose_bench_active ? profile_now_us() : 0;
+#endif
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    if (g_fmtowns_turn_board_pose >= 0 &&
+        fmtowns_turn_board_cache_decode(g_fmtowns_turn_board_pose)) {
+        fb_damage_all();
+        g_frame_present_dense = 1;
+        return;
+    }
 #endif
     /* Every 3D field frame must start from a clean black framebuffer.
        The SDL 1.2 frontend exposed stale title/menu/hand pixels because the
@@ -5697,6 +6084,281 @@ static WAIFU_CARD_ROW_NOINLINE void card_fill_row_plain_block2x2(
         *dst_next = *pixel;
     }
 }
+
+/* During the moving turn only, cards can use a wider horizontal sample block:
+   the 256-wide FM display has enough pixel-art structure that 4x2 nearest
+   samples remain legible, while halving the number of texture walks and
+   framebuffer stores in the dominant card path.  This is spatial LOD only;
+   the camera still advances and presents every authored turn pose. */
+static WAIFU_CARD_ROW_NOINLINE void card_fill_row_plain_block4x2(
+    const uint8_t *src, uint8_t *dst, int count, int u, int v, int du, int dv)
+{
+    int sx = (u + Q8_HALF) >> Q8_SHIFT;
+    int sy = (v + Q8_HALF) >> Q8_SHIFT;
+    int uf = (u + Q8_HALF) & (Q8_ONE - 1);
+    int vf = (v + Q8_HALF) & (Q8_ONE - 1);
+    int step_u = du * 4;
+    int step_v = dv * 4;
+    int du_base = step_u >> Q8_SHIFT;
+    int dv_base = step_v >> Q8_SHIFT;
+    int du_frac = step_u & (Q8_ONE - 1);
+    int dv_frac = step_v & (Q8_ONE - 1);
+    int base_step = du_base + dv_base * WAIFU_CARD_W;
+    const uint8_t *pixel = src + sy * WAIFU_CARD_W + sx;
+    uint8_t *dst_next = dst + WAIFU_FM_WIDTH;
+
+    if ((uintptr_t)dst & 1u) {
+        *dst++ = *pixel;
+        *dst_next++ = dst[-1];
+        --count;
+        pixel += base_step;
+        uf += du_frac;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++pixel; }
+        vf += dv_frac;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; pixel += WAIFU_CARD_W; }
+    }
+    while (count >= 4) {
+        uint16_t packed = (uint16_t)*pixel | ((uint16_t)*pixel << 8);
+        *(uint16_t *)dst = packed;
+        *(uint16_t *)(dst + 2) = packed;
+        *(uint16_t *)dst_next = packed;
+        *(uint16_t *)(dst_next + 2) = packed;
+        dst += 4;
+        dst_next += 4;
+        count -= 4;
+        pixel += base_step;
+        uf += du_frac;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++pixel; }
+        vf += dv_frac;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; pixel += WAIFU_CARD_W; }
+    }
+    while (count-- > 0) {
+        *dst++ = *pixel;
+        *dst_next++ = dst[-1];
+    }
+}
+
+/* Fill one y-monotone half of a card triangle.  The older affine mapper
+   derives each row's interval from three half-planes.  A projected card is a
+   convex, screen-space triangle, so its interval is also the pair of active
+   edge intersections; carrying those two intersections removes the three
+   edge tests and their correction walks from every sampled row. */
+static void card_fill_scanline_half(const uint8_t *src,
+                                    int minx, int miny,
+                                    int y0, int y1,
+                                    TexV edge0a, TexV edge0b,
+                                    TexV edge1a, TexV edge1b,
+                                    int u_row, int v_row,
+                                    int du_dx, int dv_dx,
+                                    int du_dy, int dv_dy)
+{
+    int dy0 = edge0b.y - edge0a.y;
+    int dy1 = edge1b.y - edge1a.y;
+    int32_t x0 = (int32_t)edge0a.x << 16;
+    int32_t x1 = (int32_t)edge1a.x << 16;
+    int32_t dx0 = dy0 ? ((int32_t)(edge0b.x - edge0a.x) << 16) / dy0 : 0;
+    int32_t dx1 = dy1 ? ((int32_t)(edge1b.x - edge1a.x) << 16) / dy1 : 0;
+    int y;
+
+    if (y0 < edge0a.y) y0 = edge0a.y;
+    if (y0 < edge1a.y) y0 = edge1a.y;
+    if (y1 > edge0b.y) y1 = edge0b.y;
+    if (y1 > edge1b.y) y1 = edge1b.y;
+    if (y0 > y1) return;
+
+    x0 += dx0 * (y0 - edge0a.y);
+    x1 += dx1 * (y0 - edge1a.y);
+    for (y = y0; y <= y1; y += 2) {
+        int left = x0 < x1 ? (int)card_span_fixed_ceil_q16(x0) : (int)card_span_fixed_ceil_q16(x1);
+        int right = x0 > x1 ? (int)(x0 >> 16) : (int)(x1 >> 16);
+        int row_u;
+        int row_v;
+
+        if (left < minx) left = minx;
+        if (right >= WAIFU_FM_WIDTH) right = WAIFU_FM_WIDTH - 1;
+        if (left <= right) {
+            row_u = u_row + du_dy * (y - miny) + du_dx * (left - minx);
+            row_v = v_row + dv_dy * (y - miny) + dv_dx * (left - minx);
+            fb_damage_span(y, left, right + 1);
+            card_fill_row_plain_block4x2(src, framebuffer + y * WAIFU_FM_WIDTH + left,
+                                         right - left + 1, row_u, row_v, du_dx, dv_dx);
+            if (y < y1) fb_damage_span(y + 1, left, right + 1);
+        }
+        x0 += dx0 * 2;
+        x1 += dx1 * 2;
+    }
+}
+
+static void draw_textured_tri_scanline_fmtowns(const uint8_t *src, int sw, int sh,
+                                               TexV a, TexV b, TexV c)
+{
+    TexV top = a, mid = b, bot = c;
+    int minx, maxx, miny, maxy, den;
+    int aa, ba, ab, bb, ac, bc;
+    int u0, u1, u2, v0, v1, v2;
+    int du_dx, dv_dx, du_dy, dv_dy;
+    int wa_row, wb_row, wc_row, u_row, v_row;
+
+    if (!src || sw <= 0 || sh <= 0) return;
+    if (top.y > mid.y) { TexV t = top; top = mid; mid = t; }
+    if (mid.y > bot.y) { TexV t = mid; mid = bot; bot = t; }
+    if (top.y > mid.y) { TexV t = top; top = mid; mid = t; }
+
+    minx = top.x;
+    if (mid.x < minx) minx = mid.x;
+    if (bot.x < minx) minx = bot.x;
+    maxx = top.x;
+    if (mid.x > maxx) maxx = mid.x;
+    if (bot.x > maxx) maxx = bot.x;
+    miny = top.y;
+    maxy = bot.y;
+    if (minx < -8192 || maxx > 8192 || miny < -8192 || maxy > 8192) return;
+    den = (mid.y - bot.y) * (top.x - bot.x) + (bot.x - mid.x) * (top.y - bot.y);
+    if (den == 0) return;
+    if (minx < 0) minx = 0;
+    if (maxx >= WAIFU_FM_WIDTH) maxx = WAIFU_FM_WIDTH - 1;
+    if (miny < 0) miny = 0;
+    if (maxy >= WAIFU_FM_HEIGHT) maxy = WAIFU_FM_HEIGHT - 1;
+    if (minx > maxx || miny > maxy) return;
+
+    aa = mid.y - bot.y; ba = bot.x - mid.x;
+    ab = bot.y - top.y; bb = top.x - bot.x;
+    ac = -(aa + ab); bc = -(ba + bb);
+    if (den < 0) {
+        den = -den;
+        aa = -aa; ba = -ba;
+        ab = -ab; bb = -bb;
+        ac = -ac; bc = -bc;
+    }
+    u0 = top.u * (sw - 1); u1 = mid.u * (sw - 1); u2 = bot.u * (sw - 1);
+    v0 = top.v * (sh - 1); v1 = mid.v * (sh - 1); v2 = bot.v * (sh - 1);
+    du_dx = (aa * u0 + ab * u1 + ac * u2) / den;
+    dv_dx = (aa * v0 + ab * v1 + ac * v2) / den;
+    du_dy = (ba * u0 + bb * u1 + bc * u2) / den;
+    dv_dy = (ba * v0 + bb * v1 + bc * v2) / den;
+    wa_row = aa * (minx - bot.x) + ba * (miny - bot.y);
+    wb_row = ab * (minx - bot.x) + bb * (miny - bot.y);
+    wc_row = den - wa_row - wb_row;
+    u_row = (wa_row * u0 + wb_row * u1 + wc_row * u2) / den;
+    v_row = (wa_row * v0 + wb_row * v1 + wc_row * v2) / den;
+
+    if (top.y < mid.y) {
+        card_fill_scanline_half(src, minx, top.y, miny, mid.y - 1,
+                                top, mid, top, bot,
+                                u_row, v_row, du_dx, dv_dx, du_dy, dv_dy);
+    }
+    if (mid.y < bot.y) {
+        card_fill_scanline_half(src, minx, top.y, mid.y, maxy,
+                                mid, bot, top, bot,
+                                u_row, v_row, du_dx, dv_dx, du_dy, dv_dy);
+    }
+}
+
+/* The four card corners are a convex projected quadrilateral.  For turn
+   frames, rasterize that polygon in one scan pass instead of splitting it
+   into two separately clipped triangles.  Its affine UV gradient is taken
+   from the first three corners; at this display size the resulting difference
+   is below the 4x2 spatial sample footprint, while the edge walker eliminates
+   one complete triangle setup and row traversal per card. */
+static void draw_textured_quad_scanline_fmtowns(const uint8_t *src, int sw, int sh,
+                                                TexV a, TexV b, TexV c, TexV d)
+{
+    TexV va[4] = { a, b, c, d };
+    TexV vb[4] = { b, c, d, a };
+    int edge_y0[4], edge_y1[4], edge_x0[4], edge_x1[4];
+    int32_t edge_x[4], edge_dx[4];
+    int minx = a.x, maxx = a.x, miny = a.y, maxy = a.y;
+    int den, aa, ba, ab, bb, ac, bc;
+    int u0, u1, u2, v0, v1, v2;
+    int du_dx, dv_dx, du_dy, dv_dy;
+    int u_row, v_row;
+    int i, y;
+
+    if (!src || sw <= 0 || sh <= 0) return;
+    for (i = 1; i < 4; ++i) {
+        if (va[i].x < minx) minx = va[i].x;
+        if (va[i].x > maxx) maxx = va[i].x;
+        if (va[i].y < miny) miny = va[i].y;
+        if (va[i].y > maxy) maxy = va[i].y;
+    }
+    if (minx < -8192 || maxx > 8192 || miny < -8192 || maxy > 8192) return;
+    den = (b.y - d.y) * (a.x - d.x) + (d.x - b.x) * (a.y - d.y);
+    if (den == 0) return;
+    if (minx < 0) minx = 0;
+    if (maxx >= WAIFU_FM_WIDTH) maxx = WAIFU_FM_WIDTH - 1;
+    if (miny < 0) miny = 0;
+    if (maxy >= WAIFU_FM_HEIGHT) maxy = WAIFU_FM_HEIGHT - 1;
+    if (minx > maxx || miny > maxy) return;
+
+    aa = b.y - d.y; ba = d.x - b.x;
+    ab = d.y - a.y; bb = a.x - d.x;
+    ac = -(aa + ab); bc = -(ba + bb);
+    if (den < 0) {
+        den = -den;
+        aa = -aa; ba = -ba;
+        ab = -ab; bb = -bb;
+        ac = -ac; bc = -bc;
+    }
+    u0 = a.u * (sw - 1); u1 = b.u * (sw - 1); u2 = d.u * (sw - 1);
+    v0 = a.v * (sh - 1); v1 = b.v * (sh - 1); v2 = d.v * (sh - 1);
+    du_dx = (aa * u0 + ab * u1 + ac * u2) / den;
+    dv_dx = (aa * v0 + ab * v1 + ac * v2) / den;
+    du_dy = (ba * u0 + bb * u1 + bc * u2) / den;
+    dv_dy = (ba * v0 + bb * v1 + bc * v2) / den;
+    {
+        int wa = aa * (minx - d.x) + ba * (miny - d.y);
+        int wb = ab * (minx - d.x) + bb * (miny - d.y);
+        int wc = den - wa - wb;
+        u_row = (wa * u0 + wb * u1 + wc * u2) / den;
+        v_row = (wa * v0 + wb * v1 + wc * v2) / den;
+    }
+
+    for (i = 0; i < 4; ++i) {
+        if (va[i].y <= vb[i].y) {
+            edge_y0[i] = va[i].y; edge_y1[i] = vb[i].y;
+            edge_x0[i] = va[i].x; edge_x1[i] = vb[i].x;
+        } else {
+            edge_y0[i] = vb[i].y; edge_y1[i] = va[i].y;
+            edge_x0[i] = vb[i].x; edge_x1[i] = va[i].x;
+        }
+        edge_dx[i] = edge_y0[i] == edge_y1[i] ? 0 :
+            ((int32_t)(edge_x1[i] - edge_x0[i]) << 16) /
+            (edge_y1[i] - edge_y0[i]);
+        edge_x[i] = ((int32_t)edge_x0[i] << 16) +
+                    edge_dx[i] * (miny - edge_y0[i]);
+    }
+
+    for (y = miny; y <= maxy; y += 2) {
+        int left = WAIFU_FM_WIDTH << 16;
+        int right = -(1 << 30);
+        int active = 0;
+        for (i = 0; i < 4; ++i) {
+            if (y >= edge_y0[i] && y <= edge_y1[i]) {
+                if (edge_x[i] < left) left = edge_x[i];
+                if (edge_x[i] > right) right = edge_x[i];
+                ++active;
+            }
+        }
+        if (active >= 2) {
+            int x_start = card_span_fixed_ceil_q16(left);
+            int x_end = right >> 16;
+            int row_u, row_v;
+            if (x_start < minx) x_start = minx;
+            if (x_end >= WAIFU_FM_WIDTH) x_end = WAIFU_FM_WIDTH - 1;
+            if (x_start <= x_end) {
+                row_u = u_row + du_dy * (y - miny) + du_dx * (x_start - minx);
+                row_v = v_row + dv_dy * (y - miny) + dv_dx * (x_start - minx);
+                fb_damage_span(y, x_start, x_end + 1);
+                card_fill_row_plain_block4x2(src,
+                                             framebuffer + y * WAIFU_FM_WIDTH + x_start,
+                                             x_end - x_start + 1,
+                                             row_u, row_v, du_dx, dv_dx);
+                if (y < maxy) fb_damage_span(y + 1, x_start, x_end + 1);
+            }
+        }
+        for (i = 0; i < 4; ++i) edge_x[i] += edge_dx[i] * 2;
+    }
+}
 #endif
 #undef WAIFU_CARD_ROW_NOINLINE
 
@@ -5812,8 +6474,14 @@ static void draw_textured_tri_affine_fmtowns(const uint8_t *src, int sw, int sh,
 #if defined(__i386__)
             if (!gray) {
                 raster_rows = (y < maxy) ? 2 : 1;
-                card_fill_row_plain_block2x2(src, dst + x_start, x_end - x_start + 1,
-                                             u, v, du_dx, dv_dx);
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+                if (g_fmtowns_turn_board_pose >= 0)
+                    card_fill_row_plain_block4x2(src, dst + x_start, x_end - x_start + 1,
+                                                 u, v, du_dx, dv_dx);
+                else
+#endif
+                    card_fill_row_plain_block2x2(src, dst + x_start, x_end - x_start + 1,
+                                                 u, v, du_dx, dv_dx);
                 if (raster_rows == 2) fb_damage_span(y + 1, x_start, x_end + 1);
             } else {
 #else
@@ -6026,6 +6694,9 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
         int xy[8] = { p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y };
         if (waifu_hw2d_image_quad(src, sw, sh, xy, gray)) goto outline;
     }
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    if (fmtowns_turn_replay_card(src)) goto outline;
+#endif
     {
     TexV a = {p0.x, p0.y, 0, 0};
     TexV b = {p1.x, p1.y, Q8_ONE, 0};
@@ -6035,8 +6706,16 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
     draw_textured_tri_affine_cd32x(src, sw, sh, a, b, c, gray);
     draw_textured_tri_affine_cd32x(src, sw, sh, a, c, d, gray);
 #elif defined(WAIFU_FIELD_CARD_FAST_AFFINE)
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    if (!gray && g_fmtowns_turn_board_pose >= 0) {
+        draw_textured_quad_scanline_fmtowns(src, sw, sh, a, b, c, d);
+    } else {
+#endif
     draw_textured_tri_affine_fmtowns(src, sw, sh, a, b, c, gray);
     draw_textured_tri_affine_fmtowns(src, sw, sh, a, c, d, gray);
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    }
+#endif
 #else
     draw_textured_tri_ex(src, sw, sh, a, b, c, gray);
     draw_textured_tri_ex(src, sw, sh, a, c, d, gray);
@@ -6187,6 +6866,17 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
                          project_point(cam, v3(cx + hw, y, cz + hz));
     ScreenPt p3 = basis ? project_point_basis(basis, v3(cx - hw, y, cz + hz)) :
                          project_point(cam, v3(cx - hw, y, cz + hz));
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    {
+        int x0 = p0.x, x1 = p0.x, y0 = p0.y, y1 = p0.y;
+        if (p1.x < x0) x0 = p1.x; if (p2.x < x0) x0 = p2.x; if (p3.x < x0) x0 = p3.x;
+        if (p1.x > x1) x1 = p1.x; if (p2.x > x1) x1 = p2.x; if (p3.x > x1) x1 = p3.x;
+        if (p1.y < y0) y0 = p1.y; if (p2.y < y0) y0 = p2.y; if (p3.y < y0) y0 = p3.y;
+        if (p1.y > y1) y1 = p1.y; if (p2.y > y1) y1 = p2.y; if (p3.y > y1) y1 = p3.y;
+        fmtowns_turn_record_overlay_rect(x0, y0, x1, y1);
+    }
+    g_fmtowns_turn_card_replay_eligible = !gray && !defense;
+#endif
     /* Player-side cards face YOU. COM-side cards are rotated 180 degrees on
        the board plane so they face the opponent instead of always facing YOU. */
     if (defense) {
@@ -8287,6 +8977,15 @@ static WaifuBattleBaseCache g_b_base_cache_top;
    path rendered the placement board from scratch on every one of the 48 card
    flight frames even though the camera and field did not move. */
 static WaifuBattleBaseCache g_b_fmtowns_work_cache;
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+static uint8_t *fmtowns_turn_board_cache_scratch(void)
+{
+    /* The moving turn camera never stores a battle-base composite in this
+       slot, so its existing 60 KiB image buffer is a free decode workspace.
+       Reusing it keeps the cache at zero additional BSS bytes. */
+    return g_b_fmtowns_work_cache.pixels;
+}
+#endif
 typedef enum FmtownsWorkCacheOwner {
     FMTOWNS_WORK_CACHE_NONE = 0,
     FMTOWNS_WORK_CACHE_CAMERA = 1,
@@ -8332,6 +9031,13 @@ static WaifuBattleBaseCache g_b_placement_cache;
 
 static void invalidate_battle_composite_cache(void)
 {
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    g_fmtowns_turn_board_loaded_pose = -1;
+    g_fmtowns_turn_overlay_tracking = 0;
+    g_fmtowns_turn_overlay_counts[0] = 0;
+    g_fmtowns_turn_overlay_counts[1] = 0;
+    g_fmtowns_turn_overlay_active = 0;
+#endif
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
     g_b_base_cache.valid = 0;
 #if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_FMTOWNS)
@@ -11073,20 +11779,41 @@ static void draw_interactive_field_cards(Camera cam)
 {
     CameraBasis basis = make_camera_basis(cam);
     int i;
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    fmtowns_turn_overlay_begin();
+#endif
     for (i = 0; i < I_FIELD; ++i) {
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+        g_fmtowns_turn_card_slot = i;
+#endif
         if (g_i_com_equip_field[i] >= 0) draw_board_card_ex_basis(cam, &basis, i, ENEMY_CARD_ROW - 1, g_i_com_equip_field[i], 0, 0);
     }
     for (i = 0; i < I_FIELD; ++i) {
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+        g_fmtowns_turn_card_slot = 5 + i;
+#endif
         if (g_i_com_field[i] >= 0) draw_board_card_state(cam, i, ENEMY_CARD_ROW, g_i_com_field[i], !g_i_com_faceup[i], g_i_com_attacked[i], g_i_com_defense[i], &basis);
     }
     for (i = 0; i < I_FIELD; ++i) {
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+        g_fmtowns_turn_card_slot = 10 + i;
+#endif
         if (g_i_player_field[i] >= 0) draw_board_card_state(cam, i, PLAYER_CARD_ROW, g_i_player_field[i], !g_i_player_faceup[i], g_i_player_attacked[i], g_i_player_defense[i], &basis);
     }
     for (i = 0; i < I_FIELD; ++i) {
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+        g_fmtowns_turn_card_slot = 15 + i;
+#endif
         if (g_i_player_equip_field[i] >= 0)
             draw_board_card_ex_basis(cam, &basis, i, PLAYER_CARD_ROW + 1, g_i_player_equip_field[i],
                                      is_trap_support_card(g_i_player_equip_field[i]) ? 1 : 0, 0);
     }
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    g_fmtowns_turn_card_slot = -1;
+#endif
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    fmtowns_turn_overlay_commit();
+#endif
 }
 
 static void draw_interactive_player_hand(int f, int selected, int yoff, int suppress_cursor)
@@ -11662,7 +12389,11 @@ static void draw_interactive_base(Camera cam)
     uint32_t key = battle_base_visual_key();
 
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    if (g_fmtowns_turn_board_pose < 0 && battle_base_cache_restore(cam, key)) {
+#else
     if (battle_base_cache_restore(cam, key)) {
+#endif
         /* Overlay the animated LP counters on top of the cached composite.
            The cache is keyed on g_you_lp/g_com_lp (instant, stable during the
            LP countdown), so it stays valid across the multi-frame animation;
@@ -11681,6 +12412,25 @@ static void draw_interactive_base(Camera cam)
 
 #if !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
     battle_base_cache_store(cam, key);
+#endif
+}
+
+static void draw_interactive_turn_base(int frame, int dur, int to_enemy)
+{
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    int pose = to_enemy ? frame : dur - frame;
+    Camera cam = interactive_turn_camera(pose, dur, 1);
+    g_fmtowns_turn_overlay_tracking = 1;
+    g_fmtowns_turn_board_pose = pose;
+    draw_interactive_base(cam);
+    g_fmtowns_turn_board_pose = -1;
+    /* A turn pose is a complete moving board frame.  Reassert the dense
+       presentation contract after the live card/HUD overlays too: an
+       endpoint may otherwise restore a retained static composite and leave
+       only its small overlay footprint marked for presentation. */
+    g_frame_present_dense = 1;
+#else
+    draw_interactive_base(interactive_turn_camera(frame, dur, to_enemy));
 #endif
 }
 
@@ -13828,7 +14578,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_TURN_TO_COM:
-        draw_interactive_base(interactive_turn_camera(g_b_phase_frame, WAIFU_PCFX_TURN_FRAMES, 1));
+        draw_interactive_turn_base(g_b_phase_frame, WAIFU_PCFX_TURN_FRAMES, 1);
         if (battle_animation_event_complete(WAIFU_PCFX_TURN_FRAMES)) {
 #if defined(WAIFU_DEBUG_AUTOTURN)
             set_battle_phase(IB_TURN_TO_PLAYER);
@@ -14057,7 +14807,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         break;
 
     case IB_TURN_TO_PLAYER:
-        draw_interactive_base(interactive_turn_camera(g_b_phase_frame, WAIFU_PCFX_TURN_FRAMES, 0));
+        draw_interactive_turn_base(g_b_phase_frame, WAIFU_PCFX_TURN_FRAMES, 0);
         {
             int yoff = 0;
             if (g_b_phase_frame < WAIFU_PCFX_TURN_FRAMES / 2) {
@@ -14132,6 +14882,15 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         if (press_start || press_a) story_return_to_map_after_duel();
         break;
     }
+
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    /* Keep the moving-turn frame dense even on the terminal pose, where the
+       phase transition above can change g_b_phase before the presenter reads
+       the frame contract. */
+    if (phase_before == IB_TURN_TO_COM || phase_before == IB_TURN_TO_PLAYER)
+        g_frame_present_dense = 1;
+    g_fmtowns_turn_overlay_tracking = 0;
+#endif
 
     /* Advance only after the current pose was rendered. A newly entered phase
        keeps its frame-zero pose for one call; moving cameras then take one
@@ -18601,11 +19360,19 @@ static void fixed_pose_bench_one(const char *id, Camera cam)
     unsigned long long worst_total = 0;
     int i;
 
+#if defined(WAIFU_FIXED_POSE_TURN_CACHE) && defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    if (!strcmp(id, "turn_mid")) g_fmtowns_turn_board_pose = 29;
+    else if (!strcmp(id, "turn_tilt")) g_fmtowns_turn_board_pose = 15;
+#endif
+
     for (i = 0; i < FIXED_POSE_REPEATS; ++i) {
         fixed_pose_bench_render_once(cam);
         samples[i] = g_fixed_pose_bench_sample;
         if (samples[i].total_us > worst_total) worst_total = samples[i].total_us;
     }
+#if defined(WAIFU_FIXED_POSE_TURN_CACHE) && defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    g_fmtowns_turn_board_pose = -1;
+#endif
 
 #define FIXED_POSE_MEDIAN(field, out) \
     do { \

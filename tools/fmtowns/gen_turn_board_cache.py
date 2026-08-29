@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Pack captured FM TOWNS turn-board frames as a keyframe plus XOR deltas.
+
+The input is a concatenation of 256x240 8bpp framebuffers.  Only the first
+``poses`` frames are emitted; the runtime walks reversible deltas in either
+direction for the opposite turn direction.  Pose zero is an independently
+compressed keyframe.  Each following block contains runs of XOR changes from
+the preceding pose, so the same block can be applied forward or backward.
+
+Usage:
+    gen_turn_board_cache.py frames.raw src/generated/fmtowns_turn_board_cache.h
+
+The source capture is a build artifact, not runtime state.  The generated
+header contains board pixels only; cards and HUD remain live draws.
+"""
+
+from __future__ import annotations
+
+import argparse
+import struct
+import subprocess
+import shutil
+from pathlib import Path
+
+WIDTH = 256
+HEIGHT = 240
+DEFAULT_POSES = 59
+LZ4_MAGIC = 0x184D2204
+
+
+def literal_only_block(data: bytes) -> bytes:
+    out = bytearray()
+    n = len(data)
+    token = 0xF0 if n >= 15 else n << 4
+    out.append(token)
+    if n >= 15:
+        rem = n - 15
+        while rem >= 255:
+            out.append(255)
+            rem -= 255
+        out.append(rem)
+    out.extend(data)
+    return bytes(out)
+
+
+def encode_xor_delta(previous: bytes, current: bytes) -> bytes:
+    """Encode changed runs as [sample offset:u16, length:u8, xor bytes]."""
+    if len(previous) != len(current):
+        raise ValueError('delta frames have different sizes')
+    out = bytearray()
+    i = 0
+    while i < len(previous):
+        while i < len(previous) and previous[i] == current[i]:
+            i += 1
+        if i >= len(previous):
+            break
+        start = i
+        while i < len(previous) and previous[i] != current[i] and i - start < 255:
+            i += 1
+        length = i - start
+        out.extend((start & 0xff, (start >> 8) & 0xff, length))
+        out.extend(previous[j] ^ current[j] for j in range(start, i))
+    return bytes(out)
+
+
+def extract_lz4_block(frame: bytes) -> bytes | None:
+    if len(frame) < 15 or struct.unpack_from('<I', frame, 0)[0] != LZ4_MAGIC:
+        raise ValueError('lz4 did not produce a valid frame')
+    flg = frame[4]
+    off = 6
+    if (flg >> 3) & 1:
+        off += 8
+    off += 1  # header checksum
+    if off + 4 > len(frame):
+        raise ValueError('truncated lz4 frame')
+    block_size = struct.unpack_from('<I', frame, off)[0]
+    off += 4
+    if block_size & 0x80000000:
+        return None
+    end = off + block_size
+    if end > len(frame):
+        raise ValueError('truncated lz4 block')
+    return frame[off:end]
+
+
+def compress_block(data: bytes) -> bytes:
+    literal = literal_only_block(data)
+    lz4 = shutil.which('lz4')
+    if not lz4:
+        return literal
+    result = subprocess.run(
+        [lz4, '-12', '-B4', '--no-frame-crc', '-f', '/dev/stdin', '/dev/stdout'],
+        input=data,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=True,
+    )
+    block = extract_lz4_block(result.stdout)
+    if block is None or len(block) >= len(literal):
+        return literal
+    return block
+
+
+def format_bytes(data: bytes) -> str:
+    lines = []
+    for i in range(0, len(data), 16):
+        lines.append('    ' + ', '.join(f'0x{v:02x}' for v in data[i:i + 16]) + ',')
+    return '\n'.join(lines)
+
+
+def format_words(values: list[int], width: int, suffix: str) -> str:
+    lines = []
+    for i in range(0, len(values), width):
+        lines.append('    ' + ', '.join(str(v) + suffix for v in values[i:i + width]) + ',')
+    return '\n'.join(lines)
+
+
+def generate(raw_path: Path, output_path: Path, poses: int, scale: int) -> None:
+    if scale != 2:
+        raise ValueError('the FM TOWNS turn decoder currently requires --scale 2')
+    raw = raw_path.read_bytes()
+    source_frame_bytes = WIDTH * HEIGHT
+    frame_width = WIDTH // scale
+    frame_height = HEIGHT // scale
+    frame_bytes = frame_width * frame_height
+    need = poses * source_frame_bytes
+    if len(raw) < need:
+        raise ValueError(f'{raw_path}: need {need} bytes, found {len(raw)}')
+
+    frames = []
+    for i in range(poses):
+        source = raw[i * source_frame_bytes:(i + 1) * source_frame_bytes]
+        frames.append(bytes(source[y * scale * WIDTH + x * scale]
+                            for y in range(frame_height)
+                            for x in range(frame_width)))
+    blocks = [compress_block(frames[0])]
+    blocks.extend(encode_xor_delta(previous, current)
+                  for previous, current in zip(frames, frames[1:]))
+    offsets = []
+    cursor = 0
+    for block in blocks:
+        offsets.append(cursor)
+        cursor += len(block)
+    offsets.append(cursor)
+    lengths = [len(block) for block in blocks]
+    packed = b''.join(blocks)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    text = f'''/* Generated by tools/fmtowns/gen_turn_board_cache.py. Do not edit. */
+#ifndef WAIFU_FMTOWNS_TURN_BOARD_CACHE_H
+#define WAIFU_FMTOWNS_TURN_BOARD_CACHE_H
+
+#include <stdint.h>
+
+#define WAIFU_FMTOWNS_TURN_BOARD_CACHE_POSES {poses}
+#define WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH {frame_width}
+#define WAIFU_FMTOWNS_TURN_BOARD_CACHE_HEIGHT {frame_height}
+#define WAIFU_FMTOWNS_TURN_BOARD_CACHE_SCALE {scale}
+#define WAIFU_FMTOWNS_TURN_BOARD_CACHE_FRAME_BYTES {frame_bytes}
+#define WAIFU_FMTOWNS_TURN_BOARD_CACHE_BYTES {len(packed)}
+
+static const uint32_t waifu_fmtowns_turn_board_cache_offsets[{len(offsets)}] = {{
+{format_words(offsets, 6, 'u')}
+}};
+
+static const uint16_t waifu_fmtowns_turn_board_cache_lengths[{len(lengths)}] = {{
+{format_words(lengths, 8, 'u')}
+}};
+
+static const uint8_t waifu_fmtowns_turn_board_cache_data[{len(packed)}] = {{
+{format_bytes(packed)}
+}};
+
+#endif
+'''
+    output_path.write_text(text)
+    raw_bytes = poses * frame_bytes
+    delta_bytes = sum(len(block) for block in blocks[1:])
+    print(f'generated {output_path}: poses={poses} keyframe={len(blocks[0])} '
+          f'deltas={delta_bytes} packed={len(packed)} raw={raw_bytes} '
+          f'ratio={len(packed) / raw_bytes:.4f}')
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('raw', type=Path)
+    parser.add_argument('output', type=Path)
+    parser.add_argument('--poses', type=int, default=DEFAULT_POSES)
+    parser.add_argument('--scale', type=int, default=2)
+    args = parser.parse_args()
+    if args.poses <= 0 or args.poses > 255:
+        parser.error('--poses must be in 1..255')
+    generate(args.raw, args.output, args.poses, args.scale)
+
+
+if __name__ == '__main__':
+    main()
