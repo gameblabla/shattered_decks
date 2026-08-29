@@ -1,5 +1,9 @@
 #include "renderer3d_internal.h"
 
+#if defined(WAIFU_PROFILE_RENDER)
+CfxRenderer3DProfile *cfx_renderer3d_active_profile;
+#endif
+
 typedef struct {
     int16_t x, y;
     uint16_t u, v;
@@ -72,30 +76,6 @@ static uint8_t tex_row_lut_ready;
 #endif
 
 #define CFX_DIV_CORRECTION_LIMIT 8u
-
-/* Number of pixels until an 8-pixel texel boundary. The tilted Marty board
-   span uses this in its run splitter; keeping the nine possible distances and
-   seven useful magnitudes in ROM removes two integer divisions from every
-   run while preserving the old ceil(distance / magnitude) result exactly.
-   Magnitudes >= 8 always reach the next boundary in one pixel. */
-static const uint8_t cfx_boundary_run[9][7] = {
-    {0, 0, 0, 0, 0, 0, 0},
-    {1, 1, 1, 1, 1, 1, 1},
-    {2, 1, 1, 1, 1, 1, 1},
-    {3, 2, 1, 1, 1, 1, 1},
-    {4, 2, 2, 1, 1, 1, 1},
-    {5, 3, 2, 2, 1, 1, 1},
-    {6, 3, 2, 2, 2, 1, 1},
-    {7, 4, 3, 2, 2, 2, 1},
-    {8, 4, 3, 2, 2, 2, 1}
-};
-
-static inline int cfx_boundary_run_for(int distance, int magnitude)
-{
-    if (magnitude >= 8) return 1;
-    if (magnitude <= 0) return 0;
-    return cfx_boundary_run[distance][magnitude - 1];
-}
 
 static inline int32_t cfx_div_apply_sign(uint32_t q, uint8_t neg)
 {
@@ -175,6 +155,9 @@ static inline int8_t cfx_board_step_255(int positive, uint16_t denom)
 static inline int32_t cfx_fast_div_tz_i32_u16_q15(int32_t n, uint16_t d)
 {
     if (d == 0) return 0;
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_division_op();
+#endif
     if (d == 1) return n;
     if (d > 256) {
         /* Fast board path only uses screen-sized spans/edges.  Clamp rather
@@ -200,6 +183,9 @@ static inline int32_t cfx_fast_div_tz_i32_u16_q15(int32_t n, uint16_t d)
 static inline int32_t cfx_div_toward_zero(int32_t n, int16_t d)
 {
     if (d == 0) return 0;
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_division_op();
+#endif
     uint8_t neg = 0;
     uint32_t un = cfx_abs_i32_u32(n);
     if (n < 0) neg ^= 1;
@@ -436,6 +422,9 @@ void cfx_renderer3d_init(CfxRenderer3D *renderer, const CfxRenderer3DConfig *con
     state->height = config->height;
     state->tile_pitch_bytes = CFX_TEXTURE_TILE_PITCH_BYTES;
     state->tile_stride_bytes = CFX_TEXTURE_TILE_STRIDE_BYTES;
+#if defined(WAIFU_PROFILE_RENDER)
+    state->profile = NULL;
+#endif
 }
 
 void cfx_renderer3d_set_framebuffer(CfxRenderer3D *renderer, void *framebuffer)
@@ -463,6 +452,14 @@ void cfx_renderer3d_set_texture_atlas(CfxRenderer3D *renderer, const void *atlas
     cfx_renderer3d_prebuild_pcfx_tile_luts(state);
 #endif
 }
+
+#if defined(WAIFU_PROFILE_RENDER)
+void cfx_renderer3d_set_profile(CfxRenderer3D *renderer, CfxRenderer3DProfile *profile)
+{
+    cfx_state(renderer)->profile = profile;
+    cfx_renderer3d_active_profile = profile;
+}
+#endif
 
 
 static inline const CfxVertexIn *cfx_find_rect_corner_common(const CfxVertexIn *v0, const CfxVertexIn *v1,
@@ -628,6 +625,9 @@ static int cfx_right_section(CfxRightEdge *edge)
 #if CFX_RENDERER_QUAD_SCANLINE
 static void cfx_quad_build_edge(CfxQuadEdge *edge, const CfxVertexIn *a, const CfxVertexIn *b)
 {
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_edge_setup();
+#endif
     int16_t dy = (int16_t)(b->y - a->y);
     if (dy == 0) {
         edge->y_start = a->y;
@@ -792,6 +792,9 @@ typedef struct {
 
 static void cfx_fast_quad_build_edge(CfxFastQuadEdge *edge, const CfxVertexIn *a, const CfxVertexIn *b)
 {
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_edge_setup();
+#endif
     int16_t dy = (int16_t)(b->y - a->y);
     if (dy == 0) {
         edge->y_start = a->y;
@@ -1186,6 +1189,9 @@ static void cfx_board_build_geom_edge(CfxBoardGeomEdge *edge,
                                       const CfxBoardPoint *a,
                                       const CfxBoardPoint *b)
 {
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_edge_setup();
+#endif
     int16_t dy = (int16_t)(b->y - a->y);
     if (dy == 0) {
         edge->y_start = a->y;
@@ -1468,6 +1474,9 @@ static void cfx_draw_board_span_flat(const CfxRenderer3DState *state,
                                      int16_t xs, int16_t span,
                                      uint16_t tex_state, int8_t step_u)
 {
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_board_span(state, 0);
+#endif
 #if defined(WAIFU_FM_FMTOWNS) && defined(__i386__) && (CFX_TEX_SIZE == 32) && \
     !defined(CFX_MEASURE_SKIP_SPANS) && !defined(CFX_MEASURE_C_ROW)
     if (span <= 0 || y < 0 || y >= state->height) return;
@@ -1484,6 +1493,9 @@ static void cfx_draw_board_span_flat(const CfxRenderer3DState *state,
     if ((int32_t)xs + span > state->width)
         span = (int16_t)(state->width - xs);
     if (span <= 0) return;
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_emit_span(state, span);
+#endif
     cfx_board_fill(state->framebuffer + ((int32_t)y * state->width) + xs,
                    span,
                    (int32_t)(uint8_t)tex_state << 5,
@@ -1500,80 +1512,18 @@ static void cfx_draw_board_span_tilted(const CfxRenderer3DState *state,
                                      uint16_t tex_state, int8_t step_u,
                                      int8_t step_v)
 {
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_board_span(state, 1);
+#endif
 #if defined(WAIFU_FM_FMTOWNS) && defined(__i386__) && (CFX_TEX_SIZE == 32) && \
     !defined(CFX_MEASURE_SKIP_SPANS) && !defined(CFX_MEASURE_C_ROW)
-    uint8_t u;
-    uint8_t v;
-    uint8_t *dst;
-
-    if (span <= 0 || y < 0 || y >= state->height) return;
-    if (xs < 0) {
-        int16_t skip = (int16_t)-xs;
-        if (skip >= span) return;
-        tex_state = cfx_advance_tex_state_n(tex_state, step_u, step_v,
-                                            (uint16_t)skip);
-        span = (int16_t)(span - skip);
-        xs = 0;
-    }
-    if (xs >= state->width) return;
-    if ((int32_t)xs + span > state->width)
-        span = (int16_t)(state->width - xs);
-    if (span <= 0) return;
-
-    u = (uint8_t)tex_state;
-    v = (uint8_t)(tex_state >> 8);
-    dst = state->framebuffer + ((int32_t)y * state->width) + xs;
-
-    while (span > 0) {
-        int run_u;
-        int run_v;
-        int run;
-        int phase_u = u & 7;
-        int phase_v = v & 7;
-        int magnitude;
-        uint8_t color;
-        uint32_t packed;
-        int left;
-
-        if (step_u > 0) {
-            run_u = cfx_boundary_run_for(8 - phase_u, (int)step_u);
-        } else if (step_u < 0) {
-            magnitude = -(int)step_u;
-            run_u = cfx_boundary_run_for(phase_u + 1, magnitude);
-        } else {
-            run_u = span;
-        }
-        if (step_v > 0) {
-            run_v = cfx_boundary_run_for(8 - phase_v, (int)step_v);
-        } else if (step_v < 0) {
-            magnitude = -(int)step_v;
-            run_v = cfx_boundary_run_for(phase_v + 1, magnitude);
-        } else {
-            run_v = span;
-        }
-        run = run_u < run_v ? run_u : run_v;
-        if (run > span) run = span;
-
-        color = tile[(((uint16_t)(v >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK) *
-                     (uint16_t)state->tile_pitch_bytes) +
-                    ((uint16_t)(u >> CFX_FIXED_POINT_SHIFT) & CFX_TEX_MASK)];
-        packed = (uint32_t)color * 0x01010101u;
-        left = run;
-        while (left > 0 && ((uintptr_t)dst & 3u) != 0u) {
-            *dst++ = color;
-            --left;
-        }
-        while (left >= 4) {
-            *(uint32_t *)dst = packed;
-            dst += 4;
-            left -= 4;
-        }
-        while (left-- > 0) *dst++ = color;
-
-        u = (uint8_t)(u + (int)step_u * run);
-        v = (uint8_t)(v + (int)step_v * run);
-        span = (int16_t)(span - run);
-    }
+    /* Tilted board spans average only 1.25--1.34 pixels per texture-boundary
+       run in the measured turn poses.  The run splitter therefore spends more
+       time finding boundaries than it saves in repeated-color stores.  Reuse
+       the exact packed-accumulator affine filler: it preserves the same
+       uint8_t UV wrapping and 4-pixel stores, but advances one pixel without
+       the per-run lookup/branch machinery. */
+    cfx_draw_span_direct_tile(state, tile, y, xs, span, tex_state, step_u, step_v);
 #else
     cfx_draw_span_direct_tile(state, tile, y, xs, span, tex_state, step_u, step_v);
 #endif
@@ -1906,6 +1856,12 @@ uint8_t cfx_renderer3d_draw_board_mesh_fast_affine(
     if (!state->framebuffer || !state->texture_atlas || !points) return 0;
     if (rows < 0 || cols < 0 || point_stride <= cols) return 0;
     if (rows == 0 || cols == 0) return 1;
+#if defined(WAIFU_PROFILE_RENDER)
+    if (state->profile) {
+        state->profile->cells += (uint32_t)rows * (uint32_t)cols;
+        state->profile->board_path = CFX_PROFILE_BOARD_FALLBACK;
+    }
+#endif
 #if CFX_RENDERER_DIRECT_RECT
     if (cols > CFX_BOARD_MESH_MAX_COLS) {
         return cfx_draw_board_mesh_fallback(renderer, points, point_stride,
@@ -1933,19 +1889,31 @@ uint8_t cfx_renderer3d_draw_board_mesh_fast_affine(
             }
         }
         if (all_axis) {
+#if defined(WAIFU_PROFILE_RENDER)
+            if (state->profile) state->profile->board_path = CFX_PROFILE_BOARD_AXIS;
+#endif
             return cfx_draw_board_mesh_axis(state, points, point_stride,
                                             rows, cols, even_tile, odd_tile);
         }
         if (all_trapezoid) {
             if (cfx_board_rows_uniform_trapezoid(points, point_stride, rows, cols)) {
+#if defined(WAIFU_PROFILE_RENDER)
+                if (state->profile) state->profile->board_path = CFX_PROFILE_BOARD_TRAPEZOID_ROWS;
+#endif
                 return cfx_draw_board_mesh_trapezoid_rows(state, points, point_stride,
                                                           rows, cols, even_tile, odd_tile);
             }
+#if defined(WAIFU_PROFILE_RENDER)
+            if (state->profile) state->profile->board_path = CFX_PROFILE_BOARD_TRAPEZOID;
+#endif
             return cfx_draw_board_mesh_trapezoid(state, points, point_stride,
                                                  rows, cols, even_tile, odd_tile);
         }
-    }
-    return cfx_draw_board_mesh_cached(state, points, point_stride, rows, cols,
+        }
+#if defined(WAIFU_PROFILE_RENDER)
+        if (state->profile) state->profile->board_path = CFX_PROFILE_BOARD_CACHED_EDGES;
+#endif
+        return cfx_draw_board_mesh_cached(state, points, point_stride, rows, cols,
                                      even_tile, odd_tile,
                                      (uint8_t)cfx_board_mesh_strictly_convex(
                                          points, point_stride, rows, cols,

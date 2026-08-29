@@ -1038,6 +1038,11 @@ void cfx_draw_span(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, in
         return;
     }
 
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_emit_span(renderer, span);
+    cfx_profile_emit_run(renderer, span);
+#endif
+
     uint16_t *dst = (uint16_t *)renderer->framebuffer + ((int32_t)y * (renderer->width >> 1)) + (xs >> 1);
 
     if (xs & 1) {
@@ -1175,6 +1180,9 @@ void cfx_board_fill(uint8_t *dst, int n,
     (void)dst;(void)n;(void)u;(void)v;(void)du;(void)dv;(void)tile; return;
 #endif
     if (n <= 0) return;
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_emit_global_run(n);
+#endif
 #if CFX_RENDERER_USE_I386_ASM && !defined(CFX_MEASURE_C_BOARD_FILL)
     cfx_board_fill_i386(dst, n,
                         ((uint32_t)v & 0x1fffu) | ((uint32_t)u << 19),
@@ -1858,6 +1866,11 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
     if (span <= 0) {
         return;
     }
+
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_emit_span(renderer, span);
+    cfx_profile_emit_run(renderer, span);
+#endif
 
     /* Axis-aligned block faces have a constant V across each row.  Keep this
        path separate so the PC-FX/V810 hot loop only shifts U, loads from a

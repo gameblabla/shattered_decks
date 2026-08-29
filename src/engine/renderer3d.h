@@ -24,6 +24,33 @@ typedef struct CfxBoardPoint {
     int16_t y;
 } CfxBoardPoint;
 
+#if defined(WAIFU_PROFILE_RENDER)
+/* Profiling-only counters.  The pointer is absent from shipping renderer
+   state unless a measurement build opts in, so these counters cannot change
+   the FM TOWNS payload or hot-loop ABI. */
+typedef struct CfxRenderer3DProfile {
+    uint32_t board_path;
+    uint32_t cells;
+    uint32_t scanlines;
+    uint32_t spans;
+    uint32_t pixels;
+    uint32_t flat_spans;
+    uint32_t tilted_spans;
+    uint32_t runs;
+    uint32_t run_pixels;
+    uint32_t edge_setups;
+    uint32_t division_ops;
+} CfxRenderer3DProfile;
+
+enum {
+    CFX_PROFILE_BOARD_AXIS = 1,
+    CFX_PROFILE_BOARD_TRAPEZOID_ROWS = 2,
+    CFX_PROFILE_BOARD_TRAPEZOID = 3,
+    CFX_PROFILE_BOARD_CACHED_EDGES = 4,
+    CFX_PROFILE_BOARD_FALLBACK = 5
+};
+#endif
+
 typedef struct {
     void *framebuffer;
     DEFAULT_INT width;
@@ -47,5 +74,8 @@ uint8_t cfx_renderer3d_draw_board_mesh_fast_affine(
     DEFAULT_INT point_stride, DEFAULT_INT rows, DEFAULT_INT cols,
     DEFAULT_INT even_tile, DEFAULT_INT odd_tile);
 uint32_t cfx_renderer3d_lut_size_bytes(void);
+#if defined(WAIFU_PROFILE_RENDER)
+void cfx_renderer3d_set_profile(CfxRenderer3D *renderer, CfxRenderer3DProfile *profile);
+#endif
 
 #endif

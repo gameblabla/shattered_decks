@@ -58,12 +58,67 @@ typedef struct {
     DEFAULT_INT height;
     DEFAULT_INT tile_pitch_bytes;
     DEFAULT_INT tile_stride_bytes;
+#if defined(WAIFU_PROFILE_RENDER)
+    CfxRenderer3DProfile *profile;
+#endif
 } CfxRenderer3DState;
 
 static inline CfxRenderer3DState *cfx_state(CfxRenderer3D *renderer)
 {
     return (CfxRenderer3DState *)(void *)renderer->opaque;
 }
+
+#if defined(WAIFU_PROFILE_RENDER)
+extern CfxRenderer3DProfile *cfx_renderer3d_active_profile;
+
+static inline void cfx_profile_division_op(void)
+{
+    if (cfx_renderer3d_active_profile)
+        ++cfx_renderer3d_active_profile->division_ops;
+}
+
+static inline void cfx_profile_edge_setup(void)
+{
+    if (cfx_renderer3d_active_profile)
+        ++cfx_renderer3d_active_profile->edge_setups;
+}
+
+static inline void cfx_profile_board_span(const CfxRenderer3DState *state,
+                                          int tilted)
+{
+    if (state->profile) {
+        if (tilted) ++state->profile->tilted_spans;
+        else ++state->profile->flat_spans;
+    }
+}
+
+static inline void cfx_profile_emit_span(const CfxRenderer3DState *state,
+                                         int span)
+{
+    if (state->profile && span > 0) {
+        ++state->profile->scanlines;
+        ++state->profile->spans;
+        state->profile->pixels += (uint32_t)span;
+    }
+}
+
+static inline void cfx_profile_emit_run(const CfxRenderer3DState *state,
+                                        int run)
+{
+    if (state->profile && run > 0) {
+        ++state->profile->runs;
+        state->profile->run_pixels += (uint32_t)run;
+    }
+}
+
+static inline void cfx_profile_emit_global_run(int run)
+{
+    if (cfx_renderer3d_active_profile && run > 0) {
+        ++cfx_renderer3d_active_profile->runs;
+        cfx_renderer3d_active_profile->run_pixels += (uint32_t)run;
+    }
+}
+#endif
 
 /* The currently-selected 16x16 -> palette-index texel LUT, shared between the
    LUT builders (renderer3d.c) and the span fillers (backend). It is plain

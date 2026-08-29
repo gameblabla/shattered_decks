@@ -12,6 +12,11 @@
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
 #include <sys/time.h>
 #endif
+#if defined(WAIFU_FIXED_POSE_BENCH) && \
+    (!defined(WAIFU_FM_HEADLESS_TESTS) || !defined(WAIFU_PROFILE_RENDER) || \
+     !defined(WAIFU_FM_FMTOWNS))
+#error "WAIFU_FIXED_POSE_BENCH requires the host profiling harness"
+#endif
 
 #if defined(WAIFU_ASSET_USE_CDROM)
 #define WAIFU_ASSET_EXTERNAL_TITLE_IMAGE 1
@@ -755,6 +760,40 @@ static unsigned long long g_profile_card2d_generic_calls = 0;
 static unsigned long long g_profile_card2d_generic_us = 0;
 static unsigned long long g_profile_ui_fast_fill_calls = 0;
 
+#if defined(WAIFU_FIXED_POSE_BENCH)
+typedef struct FixedPoseBenchSample {
+    unsigned long long total_us;
+    unsigned long long clear_us;
+    unsigned long long basis_us;
+    unsigned long long transform_us;
+    unsigned long long projection_us;
+    unsigned long long walls_us;
+    unsigned long long board_setup_us;
+    unsigned long long span_fill_us;
+    unsigned long long grid_us;
+    unsigned long long overlays_us;
+    unsigned long long present_compare_us;
+    uint32_t clear_bytes;
+    uint32_t grid_lines;
+    uint32_t damaged_groups;
+    uint32_t presented_groups;
+    uint32_t projection_points;
+    uint32_t projection_divisions;
+    CfxRenderer3DProfile renderer;
+    uint32_t framebuffer_hash;
+} FixedPoseBenchSample;
+
+static int g_fixed_pose_bench_active;
+static FixedPoseBenchSample g_fixed_pose_bench_sample;
+static uint8_t g_fixed_pose_bench_previous[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
+static int g_fixed_pose_bench_have_previous;
+
+static void fixed_pose_bench_grid_line(void)
+{
+    if (g_fixed_pose_bench_active) ++g_fixed_pose_bench_sample.grid_lines;
+}
+#endif
+
 static unsigned long long profile_now_us(void)
 {
     struct timeval tv;
@@ -1416,6 +1455,12 @@ static ScreenPt project_camera_coords(const CameraBasis *b,
     ScreenPt s;
     s.depth = cz;
     if (cz <= Q8_FRAC(5,100)) { s.x = s.y = 0; s.ok = 0; return s; }
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    if (g_fixed_pose_bench_active) {
+        ++g_fixed_pose_bench_sample.projection_points;
+        g_fixed_pose_bench_sample.projection_divisions += 2;
+    }
+#endif
     s.x = WAIFU_FM_WIDTH / 2 + q8_to_int(q8_mul(q8_div(cx, cz), b->focal));
     s.y = WAIFU_FM_HEIGHT / 2 - q8_to_int(q8_mul(q8_div(cy, cz), b->focal));
     if (s.x < -8192) s.x = -8192; else if (s.x > 8192) s.x = 8192;
@@ -1704,7 +1749,16 @@ typedef struct BoardProjected {
 
 static void build_board_projected(Camera cam, BoardProjected *bp)
 {
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    unsigned long long fixed_pose_t0 = g_fixed_pose_bench_active ? profile_now_us() : 0;
+#endif
     CameraBasis basis = make_camera_basis(cam);
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    if (g_fixed_pose_bench_active) {
+        g_fixed_pose_bench_sample.basis_us += profile_now_us() - fixed_pose_t0;
+        fixed_pose_t0 = profile_now_us();
+    }
+#endif
     int32_t x_right[BOARD_COLS + 1], x_up[BOARD_COLS + 1], x_fwd[BOARD_COLS + 1];
     int32_t z_right[BOARD_ROWS + 1], z_up[BOARD_ROWS + 1], z_fwd[BOARD_ROWS + 1];
     int32_t y_top_right, y_top_up, y_top_fwd;
@@ -1748,6 +1802,13 @@ static void build_board_projected(Camera cam, BoardProjected *bp)
     x1_up = q8_mul(FIELD_X1 - basis.eye.x, basis.up.x);
     x1_fwd = q8_mul(FIELD_X1 - basis.eye.x, basis.fwd.x);
 
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    if (g_fixed_pose_bench_active) {
+        g_fixed_pose_bench_sample.transform_us += profile_now_us() - fixed_pose_t0;
+        fixed_pose_t0 = profile_now_us();
+    }
+#endif
+
     for (int r = 0; r <= BOARD_ROWS; ++r) {
         for (int c = 0; c <= BOARD_COLS; ++c) {
             bp->top[r][c] = project_camera_coords(&basis,
@@ -1776,6 +1837,10 @@ static void build_board_projected(Camera cam, BoardProjected *bp)
             x1_up + y_thick_up + z_up[r],
             x1_fwd + y_thick_fwd + z_fwd[r]);
     }
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    if (g_fixed_pose_bench_active)
+        g_fixed_pose_bench_sample.projection_us += profile_now_us() - fixed_pose_t0;
+#endif
 }
 
 static void draw_field_slab_x_wall_fast(const BoardProjected *bp, int side)
@@ -4911,6 +4976,9 @@ static int32_t zone_cz(int r) { return (row_z0(r) + row_z0(r+1)) / 2; }
 
 static void draw_grid_line(Camera cam, Vec3 a, Vec3 b, uint8_t c)
 {
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    fixed_pose_bench_grid_line();
+#endif
     {
         WaifuHw3DCamera hc = hw3d_camera(cam);
         WaifuHw3DVec3 ha = hw3d_v(a), hb = hw3d_v(b);
@@ -4926,6 +4994,9 @@ static void draw_grid_line(Camera cam, Vec3 a, Vec3 b, uint8_t c)
 
 static void draw_grid_line_projected(ScreenPt pa, ScreenPt pb, uint8_t c)
 {
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    fixed_pose_bench_grid_line();
+#endif
     if (pa.ok && pb.ok) {
         /* These endpoints already lie on the shared projected cell boundary.
            Unlike a free-standing 3D line, the board grid needs no one-pixel
@@ -4937,6 +5008,9 @@ static void draw_grid_line_projected(ScreenPt pa, ScreenPt pb, uint8_t c)
 
 static void render_board(Camera cam)
 {
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    unsigned long long fixed_pose_t0 = g_fixed_pose_bench_active ? profile_now_us() : 0;
+#endif
     /* Every 3D field frame must start from a clean black framebuffer.
        The SDL 1.2 frontend exposed stale title/menu/hand pixels because the
        interactive field renderer only drew board geometry and UI, leaving
@@ -4946,6 +5020,12 @@ static void render_board(Camera cam)
        platform-agnostic and guarantees both SDL and headless produce the same
        full framebuffer. */
     clear_screen(IDX_BLACK);
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    if (g_fixed_pose_bench_active) {
+        g_fixed_pose_bench_sample.clear_us += profile_now_us() - fixed_pose_t0;
+        g_fixed_pose_bench_sample.clear_bytes += (uint32_t)(WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT);
+    }
+#endif
     /* A live board/floor render writes the dense 3-D surface. The presenter
        may use a direct full blit for this frame; retained/sparse UI paths do
        not set this hint and continue through damage comparison. */
@@ -4974,7 +5054,14 @@ static void render_board(Camera cam)
     if (!cd32x_render_board_sides_parallel(cam, &bp))
 #endif
     {
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    if (g_fixed_pose_bench_active) fixed_pose_t0 = profile_now_us();
+#endif
     draw_field_slab_sides_fast(cam, &bp);
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    if (g_fixed_pose_bench_active)
+        g_fixed_pose_bench_sample.walls_us += profile_now_us() - fixed_pose_t0;
+#endif
     }
 #endif
 
@@ -5006,6 +5093,9 @@ static void render_board(Camera cam)
     {
         CfxBoardPoint mesh_points[BOARD_ROWS + 1][BOARD_COLS + 1];
         int mesh_valid = 1;
+#if defined(WAIFU_FIXED_POSE_BENCH)
+        if (g_fixed_pose_bench_active) fixed_pose_t0 = profile_now_us();
+#endif
         for (int r = 0; r <= BOARD_ROWS; ++r) {
             for (int c = 0; c <= BOARD_COLS; ++c) {
                 if (!board_mesh_point_from_screen(bp.top[r][c], &mesh_points[r][c])) {
@@ -5015,9 +5105,19 @@ static void render_board(Camera cam)
         }
         if (mesh_valid) {
             fb_damage_all();
+#if defined(WAIFU_FIXED_POSE_BENCH)
+            if (g_fixed_pose_bench_active) {
+                g_fixed_pose_bench_sample.board_setup_us += profile_now_us() - fixed_pose_t0;
+                fixed_pose_t0 = profile_now_us();
+            }
+#endif
             mesh_valid = cfx_renderer3d_draw_board_mesh_fast_affine(
                 &renderer, &mesh_points[0][0], BOARD_COLS + 1,
                 BOARD_ROWS, BOARD_COLS, 1, 5);
+#if defined(WAIFU_FIXED_POSE_BENCH)
+            if (g_fixed_pose_bench_active)
+                g_fixed_pose_bench_sample.span_fill_us += profile_now_us() - fixed_pose_t0;
+#endif
         }
         if (!mesh_valid) {
             for (int r = 0; r < BOARD_ROWS; ++r) {
@@ -5038,8 +5138,15 @@ static void render_board(Camera cam)
     for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line(cam, v3(col_x0(c),Q8_FRAC(3,100),FIELD_Z0), v3(col_x0(c),Q8_FRAC(3,100),FIELD_Z1), IDX_DARK_BROWN);
     for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line(cam, v3(FIELD_X0,Q8_FRAC(3,100),row_z0(r)), v3(FIELD_X1,Q8_FRAC(3,100),row_z0(r)), IDX_DARK_BROWN);
 #else
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    if (g_fixed_pose_bench_active) fixed_pose_t0 = profile_now_us();
+#endif
     for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line_projected(bp.top[0][c], bp.top[BOARD_ROWS][c], IDX_DARK_BROWN);
     for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line_projected(bp.top[r][0], bp.top[r][BOARD_COLS], IDX_DARK_BROWN);
+#if defined(WAIFU_FIXED_POSE_BENCH)
+    if (g_fixed_pose_bench_active)
+        g_fixed_pose_bench_sample.grid_us += profile_now_us() - fixed_pose_t0;
+#endif
 #endif
 }
 
@@ -17978,6 +18085,182 @@ static void debug_setup_ai_demo_scenario(const char *name)
     }
 }
 
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER) && \
+    defined(WAIFU_FIXED_POSE_BENCH)
+static const char *fixed_pose_bench_path_name(uint32_t path)
+{
+    switch (path) {
+    case CFX_PROFILE_BOARD_AXIS: return "axis";
+    case CFX_PROFILE_BOARD_TRAPEZOID_ROWS: return "trapezoid_rows";
+    case CFX_PROFILE_BOARD_TRAPEZOID: return "trapezoid";
+    case CFX_PROFILE_BOARD_CACHED_EDGES: return "cached_edges";
+    case CFX_PROFILE_BOARD_FALLBACK: return "fallback";
+    default: return "none";
+    }
+}
+
+static unsigned long long fixed_pose_bench_median(unsigned long long *values,
+                                                  int count)
+{
+    int i;
+    int j;
+    for (i = 0; i < count; ++i) {
+        for (j = i + 1; j < count; ++j) {
+            if (values[j] < values[i]) {
+                unsigned long long t = values[i];
+                values[i] = values[j];
+                values[j] = t;
+            }
+        }
+    }
+    return values[count / 2];
+}
+
+static void fixed_pose_bench_present_compare(void)
+{
+    unsigned long long t0 = profile_now_us();
+    uint32_t damaged = 0;
+    uint32_t presented = 0;
+    int y;
+
+#if defined(WAIFU_FB_DAMAGE)
+    for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+        int group;
+        for (group = 0; group < FB_DMG_GROUPS; ++group)
+            if (g_fb_dmg[y] & (uint8_t)(1u << group)) ++damaged;
+    }
+#endif
+    for (y = 0; y < WAIFU_FM_HEIGHT; ++y) {
+        int group;
+        const uint8_t *now = framebuffer + y * WAIFU_FM_WIDTH;
+        const uint8_t *old = g_fixed_pose_bench_previous + y * WAIFU_FM_WIDTH;
+        for (group = 0; group < WAIFU_FM_WIDTH; group += (1 << FB_DMG_SHIFT)) {
+            if (!g_fixed_pose_bench_have_previous ||
+                memcmp(now + group, old + group, (size_t)(1 << FB_DMG_SHIFT)) != 0)
+                ++presented;
+        }
+    }
+    memcpy(g_fixed_pose_bench_previous, framebuffer,
+           sizeof(g_fixed_pose_bench_previous));
+    g_fixed_pose_bench_have_previous = 1;
+    g_fixed_pose_bench_sample.damaged_groups += damaged;
+    g_fixed_pose_bench_sample.presented_groups += presented;
+    g_fixed_pose_bench_sample.present_compare_us += profile_now_us() - t0;
+}
+
+static uint32_t fixed_pose_bench_framebuffer_hash(void)
+{
+    uint32_t h = 2166136261u;
+    size_t i;
+    for (i = 0; i < sizeof(framebuffer); ++i) {
+        h ^= framebuffer[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static void fixed_pose_bench_render_once(Camera cam)
+{
+    unsigned long long total_t0;
+    unsigned long long overlay_t0;
+    memset(&g_fixed_pose_bench_sample, 0, sizeof(g_fixed_pose_bench_sample));
+    memset(g_fixed_pose_bench_previous, 0, sizeof(g_fixed_pose_bench_previous));
+    g_fixed_pose_bench_have_previous = 0;
+    g_fixed_pose_bench_active = 1;
+    cfx_renderer3d_set_profile(&renderer, &g_fixed_pose_bench_sample.renderer);
+
+    total_t0 = profile_now_us();
+    render_board(cam);
+    cfx_renderer3d_set_profile(&renderer, NULL);
+    overlay_t0 = profile_now_us();
+    draw_interactive_field_cards(cam);
+    draw_hud();
+    g_fixed_pose_bench_sample.overlays_us = profile_now_us() - overlay_t0;
+    fixed_pose_bench_present_compare();
+    g_fixed_pose_bench_sample.framebuffer_hash = fixed_pose_bench_framebuffer_hash();
+    g_fixed_pose_bench_sample.total_us = profile_now_us() - total_t0;
+    g_fixed_pose_bench_active = 0;
+}
+
+static void fixed_pose_bench_one(const char *id, Camera cam)
+{
+    enum { FIXED_POSE_REPEATS = 7 };
+    FixedPoseBenchSample samples[FIXED_POSE_REPEATS];
+    unsigned long long values[FIXED_POSE_REPEATS];
+    unsigned long long med_total;
+    unsigned long long med_clear;
+    unsigned long long med_basis;
+    unsigned long long med_transform;
+    unsigned long long med_projection;
+    unsigned long long med_walls;
+    unsigned long long med_setup;
+    unsigned long long med_spans;
+    unsigned long long med_grid;
+    unsigned long long med_overlays;
+    unsigned long long med_present;
+    unsigned long long worst_total = 0;
+    int i;
+
+    for (i = 0; i < FIXED_POSE_REPEATS; ++i) {
+        fixed_pose_bench_render_once(cam);
+        samples[i] = g_fixed_pose_bench_sample;
+        if (samples[i].total_us > worst_total) worst_total = samples[i].total_us;
+    }
+
+#define FIXED_POSE_MEDIAN(field, out) \
+    do { \
+        for (i = 0; i < FIXED_POSE_REPEATS; ++i) values[i] = samples[i].field; \
+        (out) = fixed_pose_bench_median(values, FIXED_POSE_REPEATS); \
+    } while (0)
+    FIXED_POSE_MEDIAN(total_us, med_total);
+    FIXED_POSE_MEDIAN(clear_us, med_clear);
+    FIXED_POSE_MEDIAN(basis_us, med_basis);
+    FIXED_POSE_MEDIAN(transform_us, med_transform);
+    FIXED_POSE_MEDIAN(projection_us, med_projection);
+    FIXED_POSE_MEDIAN(walls_us, med_walls);
+    FIXED_POSE_MEDIAN(board_setup_us, med_setup);
+    FIXED_POSE_MEDIAN(span_fill_us, med_spans);
+    FIXED_POSE_MEDIAN(grid_us, med_grid);
+    FIXED_POSE_MEDIAN(overlays_us, med_overlays);
+    FIXED_POSE_MEDIAN(present_compare_us, med_present);
+#undef FIXED_POSE_MEDIAN
+
+    printf("FIXED_POSE id=%s repeats=%d path=%s "
+           "median_us=total:%llu clear:%llu basis:%llu transform:%llu projection:%llu "
+           "walls:%llu board_setup:%llu span_fill:%llu grid:%llu overlays:%llu present_compare:%llu "
+           "worst_total:%llu hash=%08x counters=cells:%u scanlines:%u spans:%u pixels:%u flat:%u tilted:%u runs:%u run_pixels:%u edges:%u division_ops:%u projection_points:%u projection_divisions:%u clear_bytes:%u grid_lines:%u damaged_groups:%u presented_groups:%u\n",
+           id, FIXED_POSE_REPEATS, fixed_pose_bench_path_name(samples[0].renderer.board_path),
+           med_total, med_clear, med_basis, med_transform, med_projection,
+           med_walls, med_setup, med_spans, med_grid, med_overlays, med_present,
+           worst_total,
+           samples[0].framebuffer_hash,
+           samples[0].renderer.cells, samples[0].renderer.scanlines,
+           samples[0].renderer.spans, samples[0].renderer.pixels,
+           samples[0].renderer.flat_spans, samples[0].renderer.tilted_spans,
+           samples[0].renderer.runs, samples[0].renderer.run_pixels,
+           samples[0].renderer.edge_setups, samples[0].renderer.division_ops,
+           samples[0].projection_points, samples[0].projection_divisions,
+           samples[0].clear_bytes, samples[0].grid_lines,
+           samples[0].damaged_groups, samples[0].presented_groups);
+}
+
+static int fixed_pose_bench_run(void)
+{
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+    debug_put_player_monster(0, player_summon_id, 1, 0);
+    debug_put_com_monster(0, enemy_summon_id, 1, 0);
+    g_profile_render_enabled = 1;
+
+    /* These are fixed logical pose IDs, never runtime cache keys: */
+    fixed_pose_bench_one("top", battle_top_camera());
+    fixed_pose_bench_one("turn_mid", interactive_turn_camera(29, 58, 1));
+    fixed_pose_bench_one("turn_tilt", interactive_turn_camera(15, 58, 1));
+    cfx_renderer3d_set_profile(&renderer, NULL);
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     int frames = 3600;
@@ -18004,6 +18287,10 @@ int main(int argc, char **argv)
     int regression_thunder_support = 0;
     int regression_trap_counter = 0;
     int regression_fusion_equip = 0;
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER) && \
+    defined(WAIFU_FIXED_POSE_BENCH)
+    int fixed_pose_bench = 0;
+#endif
     CommandEvent events[MAX_COMMAND_EVENTS];
     int event_count = 0;
     int f;
@@ -18039,6 +18326,10 @@ int main(int argc, char **argv)
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
         else if (!strcmp(argv[i], "--profile-render")) g_profile_render_enabled = 1;
 #endif
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER) && \
+    defined(WAIFU_FIXED_POSE_BENCH)
+        else if (!strcmp(argv[i], "--fixed-pose-bench")) fixed_pose_bench = 1;
+#endif
         else if (!strcmp(argv[i], "--deckout-demo")) g_force_deckout_demo = 1;
         else if (!strcmp(argv[i], "--lp-loss-demo")) g_force_lp_loss_demo = 1;
     }
@@ -18046,6 +18337,11 @@ int main(int argc, char **argv)
     if (dump_every < 1) dump_every = 1;
 
     waifu_fm_init();
+
+#if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER) && \
+    defined(WAIFU_FIXED_POSE_BENCH)
+    if (fixed_pose_bench) return fixed_pose_bench_run();
+#endif
 
 #ifdef WAIFU_FM_HEADLESS_TESTS
     if (regression_story_save || regression_story_duels || regression_card_check || regression_result_music || regression_sanctum_entry || regression_story_rematch || regression_thunder_support || regression_trap_counter || regression_fusion_equip) {
