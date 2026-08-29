@@ -5038,7 +5038,6 @@ static void render_board(Camera cam)
        may use a direct full blit for this frame; retained/sparse UI paths do
        not set this hint and continue through damage comparison. */
     g_frame_present_dense = 1;
-
 #if !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
     /* slab sides first */
     draw_field_slab_sides(cam);
@@ -5386,6 +5385,321 @@ static void draw_textured_tri_affine_cd32x(const uint8_t *src, int sw, int sh, T
    Compute their gradients once in Q8, then advance all six values with ADDs.
    The only divides are the six triangle-setup divisions; the inner loop is
    bounds tests, one indexed load, and additions. */
+static inline int32_t card_span_fixed_div_q16(int32_t n, int32_t d)
+{
+    uint32_t un, ud, q;
+    int neg;
+    if (d == 0) return 0;
+    neg = (n < 0) ^ (d < 0);
+    un = n < 0 ? (uint32_t)(-n) : (uint32_t)n;
+    ud = d < 0 ? (uint32_t)(-d) : (uint32_t)d;
+    q = (un << 16) / ud;
+    return neg ? -(int32_t)q : (int32_t)q;
+}
+
+static inline int card_span_fixed_floor_q16(int32_t v)
+{
+    return v >> 16;
+}
+
+static inline int card_span_fixed_ceil_q16(int32_t v)
+{
+    int q = v >> 16;
+    return q + ((v & 0xffff) != 0);
+}
+
+/* Keep the card pixel loop in its own small function.  Inlining it into the
+   triangle setup leaves all of the edge state live at once on a 386, forcing
+   the compiler to spill the texture fractions to the stack on every pixel.
+   The field cards all use the same 38x54 source, so this helper can keep the
+   source-row stride as an immediate. */
+#if defined(__GNUC__)
+#define WAIFU_CARD_ROW_NOINLINE __attribute__((noinline))
+#else
+#define WAIFU_CARD_ROW_NOINLINE
+#endif
+
+#if defined(__i386__)
+/* Two-pixel card row kernel for the FM TOWNS' byte-linear framebuffer.  The
+   source pointer already points at the current texel; U and V are carried as
+   8-bit fractional accumulators and crossing a texel boundary adjusts that
+   pointer by one column or one 38-byte source row.  AL/AH hold the two sampled
+   palette indices, so one little-endian word store emits both pixels. */
+static WAIFU_CARD_ROW_NOINLINE void card_fill_pairs_i386(
+    uint8_t *dst, int pairs, const uint8_t *src, int uf, int vf, int du, int dv)
+{
+    register int r_uf __asm__("ebp") = uf;
+    register int r_vf __asm__("edx") = vf;
+    register int r_du __asm__("ebx") = du;
+    register uint8_t *r_dst __asm__("edi") = dst;
+    register const uint8_t *r_src __asm__("esi") = src;
+    register int r_pairs __asm__("ecx") = pairs;
+    __asm__ volatile (
+        "1:\n\t"
+        "movb (%%esi),%%al\n\t"
+        "addl %%ebx,%%ebp\n\t"
+        "cmpl $255,%%ebp\n\t"
+        "jle 2f\n\t"
+        "subl $256,%%ebp\n\t"
+        "incl %%esi\n\t"
+        "jmp 3f\n\t"
+        "2:\n\t"
+        "cmpl $0,%%ebp\n\t"
+        "jge 3f\n\t"
+        "addl $256,%%ebp\n\t"
+        "decl %%esi\n\t"
+        "3:\n\t"
+        "addl %[dv],%%edx\n\t"
+        "cmpl $255,%%edx\n\t"
+        "jle 4f\n\t"
+        "subl $256,%%edx\n\t"
+        "addl $38,%%esi\n\t"
+        "jmp 5f\n\t"
+        "4:\n\t"
+        "cmpl $0,%%edx\n\t"
+        "jge 5f\n\t"
+        "addl $256,%%edx\n\t"
+        "subl $38,%%esi\n\t"
+        "5:\n\t"
+        "movb (%%esi),%%ah\n\t"
+        "addl %%ebx,%%ebp\n\t"
+        "cmpl $255,%%ebp\n\t"
+        "jle 6f\n\t"
+        "subl $256,%%ebp\n\t"
+        "incl %%esi\n\t"
+        "jmp 7f\n\t"
+        "6:\n\t"
+        "cmpl $0,%%ebp\n\t"
+        "jge 7f\n\t"
+        "addl $256,%%ebp\n\t"
+        "decl %%esi\n\t"
+        "7:\n\t"
+        "addl %[dv],%%edx\n\t"
+        "cmpl $255,%%edx\n\t"
+        "jle 8f\n\t"
+        "subl $256,%%edx\n\t"
+        "addl $38,%%esi\n\t"
+        "jmp 9f\n\t"
+        "8:\n\t"
+        "cmpl $0,%%edx\n\t"
+        "jge 9f\n\t"
+        "addl $256,%%edx\n\t"
+        "subl $38,%%esi\n\t"
+        "9:\n\t"
+        "movw %%ax,(%%edi)\n\t"
+        "addl $2,%%edi\n\t"
+        "decl %%ecx\n\t"
+        "jnz 1b\n\t"
+        : [dst] "+D" (r_dst), [src] "+S" (r_src), [pairs] "+c" (r_pairs),
+          [uf] "+r" (r_uf), [vf] "+d" (r_vf), [du] "+b" (r_du)
+        : [dv] "m" (dv)
+        : "eax", "cc", "memory");
+}
+#endif
+
+static WAIFU_CARD_ROW_NOINLINE void card_fill_row_plain(const uint8_t *src, uint8_t *dst, int count,
+                                                        int u, int v, int du, int dv)
+{
+#if defined(__i386__)
+    if (du > -Q8_ONE && du < Q8_ONE && dv > -Q8_ONE && dv < Q8_ONE) {
+        int original_u = u, original_v = v;
+        int processed = 0;
+        if ((uintptr_t)dst & 1u) {
+            int sx = (u + Q8_HALF) >> Q8_SHIFT;
+            int sy = (v + Q8_HALF) >> Q8_SHIFT;
+            *dst++ = src[sy * WAIFU_CARD_W + sx];
+            ++processed;
+            --count;
+        }
+        if (count >= 2) {
+            int start_u = original_u + du * processed;
+            int start_v = original_v + dv * processed;
+            int sx = (start_u + Q8_HALF) >> Q8_SHIFT;
+            int sy = (start_v + Q8_HALF) >> Q8_SHIFT;
+            int uf = (start_u + Q8_HALF) & (Q8_ONE - 1);
+            int vf = (start_v + Q8_HALF) & (Q8_ONE - 1);
+            int pairs = count >> 1;
+            card_fill_pairs_i386(dst, pairs,
+                                 src + sy * WAIFU_CARD_W + sx,
+                                 uf, vf, du, dv);
+            dst += pairs << 1;
+            processed += pairs << 1;
+            count &= 1;
+        }
+        if (count) {
+            int tail_u = original_u + du * processed;
+            int tail_v = original_v + dv * processed;
+            int sx = (tail_u + Q8_HALF) >> Q8_SHIFT;
+            int sy = (tail_v + Q8_HALF) >> Q8_SHIFT;
+            *dst = src[sy * WAIFU_CARD_W + sx];
+        }
+        return;
+    }
+#endif
+    /* Decompose arbitrary signed Q8 steps into an integer pointer stride and
+       a non-negative fractional remainder.  This is equivalent to sampling
+       (u + x * du, v + x * dv) afresh, including for side-on cards where a
+       single screen pixel can cross several source texels. */
+    {
+        int sx = (u + Q8_HALF) >> Q8_SHIFT;
+        int sy = (v + Q8_HALF) >> Q8_SHIFT;
+        int uf = (u + Q8_HALF) & (Q8_ONE - 1);
+        int vf = (v + Q8_HALF) & (Q8_ONE - 1);
+        int du_base = du >> Q8_SHIFT;
+        int dv_base = dv >> Q8_SHIFT;
+        int du_frac = du & (Q8_ONE - 1);
+        int dv_frac = dv & (Q8_ONE - 1);
+        int base_step = du_base + dv_base * WAIFU_CARD_W;
+        const uint8_t *pixel = src + sy * WAIFU_CARD_W + sx;
+#define CARD_ADVANCE_DECOMPOSED() do { \
+            pixel += base_step; \
+            uf += du_frac; \
+            if (uf >= Q8_ONE) { uf -= Q8_ONE; ++pixel; } \
+            vf += dv_frac; \
+            if (vf >= Q8_ONE) { vf -= Q8_ONE; pixel += WAIFU_CARD_W; } \
+        } while (0)
+        while (count > 0 && ((uintptr_t)dst & 3u)) {
+            *dst++ = *pixel;
+            CARD_ADVANCE_DECOMPOSED();
+            --count;
+        }
+        while (count >= 4) {
+            uint32_t packed = *pixel;
+            CARD_ADVANCE_DECOMPOSED();
+            packed |= (uint32_t)*pixel << 8;
+            CARD_ADVANCE_DECOMPOSED();
+            packed |= (uint32_t)*pixel << 16;
+            CARD_ADVANCE_DECOMPOSED();
+            packed |= (uint32_t)*pixel << 24;
+            CARD_ADVANCE_DECOMPOSED();
+            *(uint32_t *)dst = packed;
+            dst += 4;
+            count -= 4;
+        }
+        while (count-- > 0) {
+            *dst++ = *pixel;
+            CARD_ADVANCE_DECOMPOSED();
+        }
+#undef CARD_ADVANCE_DECOMPOSED
+    }
+}
+
+static WAIFU_CARD_ROW_NOINLINE void card_fill_row_gray(const uint8_t *src, uint8_t *dst, int count,
+                                                       int x, int y, int u, int v, int du, int dv)
+{
+    int sx = (u + Q8_HALF) >> Q8_SHIFT;
+    int sy = (v + Q8_HALF) >> Q8_SHIFT;
+    int uf = (u + Q8_HALF) & (Q8_ONE - 1);
+    int vf = (v + Q8_HALF) & (Q8_ONE - 1);
+    const uint8_t *row = src + sy * WAIFU_CARD_W;
+    while (count > 0 && ((uintptr_t)dst & 3u)) {
+        *dst++ = gray_card_dither_px(row[sx], x++, y);
+        uf += du;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++sx; }
+        else if (uf < 0) { uf += Q8_ONE; --sx; }
+        vf += dv;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; ++sy; row += WAIFU_CARD_W; }
+        else if (vf < 0) { vf += Q8_ONE; --sy; row -= WAIFU_CARD_W; }
+        --count;
+    }
+    while (count >= 4) {
+        uint32_t packed = gray_card_dither_px(row[sx], x++, y);
+        uf += du;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++sx; }
+        else if (uf < 0) { uf += Q8_ONE; --sx; }
+        vf += dv;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; ++sy; row += WAIFU_CARD_W; }
+        else if (vf < 0) { vf += Q8_ONE; --sy; row -= WAIFU_CARD_W; }
+        packed |= (uint32_t)gray_card_dither_px(row[sx], x++, y) << 8;
+        uf += du;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++sx; }
+        else if (uf < 0) { uf += Q8_ONE; --sx; }
+        vf += dv;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; ++sy; row += WAIFU_CARD_W; }
+        else if (vf < 0) { vf += Q8_ONE; --sy; row -= WAIFU_CARD_W; }
+        packed |= (uint32_t)gray_card_dither_px(row[sx], x++, y) << 16;
+        uf += du;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++sx; }
+        else if (uf < 0) { uf += Q8_ONE; --sx; }
+        vf += dv;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; ++sy; row += WAIFU_CARD_W; }
+        else if (vf < 0) { vf += Q8_ONE; --sy; row -= WAIFU_CARD_W; }
+        packed |= (uint32_t)gray_card_dither_px(row[sx], x++, y) << 24;
+        uf += du;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++sx; }
+        else if (uf < 0) { uf += Q8_ONE; --sx; }
+        vf += dv;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; ++sy; row += WAIFU_CARD_W; }
+        else if (vf < 0) { vf += Q8_ONE; --sy; row -= WAIFU_CARD_W; }
+        *(uint32_t *)dst = packed;
+        dst += 4;
+        count -= 4;
+    }
+    while (count-- > 0) {
+        *dst++ = gray_card_dither_px(row[sx], x++, y);
+        uf += du;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++sx; }
+        else if (uf < 0) { uf += Q8_ONE; --sx; }
+        vf += dv;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; ++sy; row += WAIFU_CARD_W; }
+        else if (vf < 0) { vf += Q8_ONE; --sy; row -= WAIFU_CARD_W; }
+    }
+}
+
+#if defined(__i386__)
+/* FM cards are deliberately pixel-art sized on the 256-wide display.  A
+   2x2 block can therefore use one nearest-neighbour sample and two
+   aligned/unaligned 16-bit framebuffer stores.  The affine mapper still
+   advances by the exact two-pixel Q8 step, so this is a spatial LOD only:
+   every authored camera pose is rendered, with no temporal frame dropping. */
+static WAIFU_CARD_ROW_NOINLINE void card_fill_row_plain_block2x2(
+    const uint8_t *src, uint8_t *dst, int count, int u, int v, int du, int dv)
+{
+    int sx = (u + Q8_HALF) >> Q8_SHIFT;
+    int sy = (v + Q8_HALF) >> Q8_SHIFT;
+    int uf = (u + Q8_HALF) & (Q8_ONE - 1);
+    int vf = (v + Q8_HALF) & (Q8_ONE - 1);
+    int step_u = du * 2;
+    int step_v = dv * 2;
+    int du_base = step_u >> Q8_SHIFT;
+    int dv_base = step_v >> Q8_SHIFT;
+    int du_frac = step_u & (Q8_ONE - 1);
+    int dv_frac = step_v & (Q8_ONE - 1);
+    int base_step = du_base + dv_base * WAIFU_CARD_W;
+    const uint8_t *pixel = src + sy * WAIFU_CARD_W + sx;
+    uint8_t *dst_next = dst + WAIFU_FM_WIDTH;
+
+    if ((uintptr_t)dst & 1u) {
+        *dst++ = *pixel;
+        *dst_next++ = dst[-1];
+        --count;
+        pixel += base_step;
+        uf += du_frac;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++pixel; }
+        vf += dv_frac;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; pixel += WAIFU_CARD_W; }
+    }
+    while (count >= 2) {
+        uint16_t packed = (uint16_t)*pixel | ((uint16_t)*pixel << 8);
+        *(uint16_t *)dst = packed;
+        *(uint16_t *)dst_next = packed;
+        dst += 2;
+        dst_next += 2;
+        count -= 2;
+        pixel += base_step;
+        uf += du_frac;
+        if (uf >= Q8_ONE) { uf -= Q8_ONE; ++pixel; }
+        vf += dv_frac;
+        if (vf >= Q8_ONE) { vf -= Q8_ONE; pixel += WAIFU_CARD_W; }
+    }
+    if (count) {
+        *dst = *pixel;
+        *dst_next = *pixel;
+    }
+}
+#endif
+#undef WAIFU_CARD_ROW_NOINLINE
+
 static void draw_textured_tri_affine_fmtowns(const uint8_t *src, int sw, int sh,
                                              TexV a, TexV b, TexV c, int gray)
 {
@@ -5431,26 +5745,99 @@ static void draw_textured_tri_affine_fmtowns(const uint8_t *src, int sw, int sh,
     u_row = (wa_row * u0 + wb_row * u1 + wc_row * u2) / den;
     v_row = (wa_row * v0 + wb_row * v1 + wc_row * v2) / den;
 
+    /* Track the three half-plane crossings in Q16.  The correction checks in
+       the row loop make the fixed-point estimate exact at integer boundaries,
+       while removing three divisions from every scanline. */
+    int32_t edge_a = 0, edge_b = 0, edge_c = 0;
+    int32_t edge_da = 0, edge_db = 0, edge_dc = 0;
+    if (aa) {
+        edge_a = card_span_fixed_div_q16(-wa_row, aa);
+        edge_da = card_span_fixed_div_q16(-ba, aa);
+    }
+    if (ab) {
+        edge_b = card_span_fixed_div_q16(-wb_row, ab);
+        edge_db = card_span_fixed_div_q16(-bb, ab);
+    }
+    if (ac) {
+        edge_c = card_span_fixed_div_q16(-wc_row, ac);
+        edge_dc = card_span_fixed_div_q16(-bc, ac);
+    }
+
     for (int y = miny; y <= maxy; ++y) {
+        int x_start = minx;
+        int x_end = maxx;
+        int empty = 0;
+        int raster_rows = 1;
         int wa = wa_row, wb = wb_row, wc = wc_row;
         int u = u_row, v = v_row;
-        uint8_t *dst = framebuffer + (int32_t)y * WAIFU_FM_WIDTH;
-        fb_damage_span(y, minx, maxx + 1);
-        for (int x = minx; x <= maxx; ++x) {
-            if ((wa | wb | wc) >= 0) {
-                int sx = (u + Q8_HALF) >> Q8_SHIFT;
-                int sy = (v + Q8_HALF) >> Q8_SHIFT;
-                uint8_t pix;
-                if (sx < 0) sx = 0; else if (sx >= sw) sx = sw - 1;
-                if (sy < 0) sy = 0; else if (sy >= sh) sy = sh - 1;
-                pix = src[sy * sw + sx];
-                dst[x] = gray ? gray_card_dither_px(pix, x, y) : pix;
+
+        /* The triangle is convex, so each row's covered pixels form one
+           interval.  Derive that interval from the three linear half-planes
+           before touching the texture.  This is the same coverage predicate
+           as the old pixel loop, including its integer-pixel (not pixel-centre)
+           convention; the only difference is that the 2-D tests are no longer
+           repeated for every covered and uncovered pixel. */
+#define CARD_SPAN_LO(weight, step, edge) do { \
+            int _xe = minx + card_span_fixed_ceil_q16(edge); \
+            if (_xe < minx) _xe = minx; \
+            if (_xe > maxx + 1) _xe = maxx + 1; \
+            while (_xe <= maxx && (weight) + (step) * (_xe - minx) < 0) ++_xe; \
+            while (_xe > minx && (weight) + (step) * (_xe - minx - 1) >= 0) --_xe; \
+            if (_xe > x_start) x_start = _xe; \
+        } while (0)
+#define CARD_SPAN_HI(weight, step, edge) do { \
+            int _xe = minx + card_span_fixed_floor_q16(edge); \
+            if (_xe < minx - 1) _xe = minx - 1; \
+            if (_xe > maxx) _xe = maxx; \
+            while (_xe >= minx && (weight) + (step) * (_xe - minx) < 0) --_xe; \
+            while (_xe < maxx && (weight) + (step) * (_xe - minx + 1) >= 0) ++_xe; \
+            if (_xe < x_end) x_end = _xe; \
+        } while (0)
+        if (aa > 0) CARD_SPAN_LO(wa, aa, edge_a);
+        else if (aa < 0) CARD_SPAN_HI(wa, aa, edge_a);
+        else if (wa < 0) empty = 1;
+        if (ab > 0) CARD_SPAN_LO(wb, ab, edge_b);
+        else if (ab < 0) CARD_SPAN_HI(wb, ab, edge_b);
+        else if (wb < 0) empty = 1;
+        if (ac > 0) CARD_SPAN_LO(wc, ac, edge_c);
+        else if (ac < 0) CARD_SPAN_HI(wc, ac, edge_c);
+        else if (wc < 0) empty = 1;
+
+        if (!empty && x_start <= x_end) {
+            uint8_t *dst = framebuffer + (int32_t)y * WAIFU_FM_WIDTH;
+            int offset = x_start - minx;
+            u += du_dx * offset;
+            v += dv_dx * offset;
+            fb_damage_span(y, x_start, x_end + 1);
+#if defined(__i386__)
+            if (!gray) {
+                raster_rows = (y < maxy) ? 2 : 1;
+                card_fill_row_plain_block2x2(src, dst + x_start, x_end - x_start + 1,
+                                             u, v, du_dx, dv_dx);
+                if (raster_rows == 2) fb_damage_span(y + 1, x_start, x_end + 1);
+            } else {
+#else
+            if (!gray) {
+                card_fill_row_plain(src, dst + x_start, x_end - x_start + 1,
+                                    u, v, du_dx, dv_dx);
+            } else {
+#endif
+                card_fill_row_gray(src, dst + x_start, x_end - x_start + 1,
+                                   x_start, y, u, v, du_dx, dv_dx);
             }
-            wa += aa; wb += ab; wc += ac;
-            u += du_dx; v += dv_dx;
+        } else if (!gray && y < maxy) {
+            /* Keep the block walker aligned with the same two authored rows
+               even when this row has no covered pixels. */
+            raster_rows = 2;
         }
-        wa_row += ba; wb_row += bb; wc_row += bc;
-        u_row += du_dy; v_row += dv_dy;
+#undef CARD_SPAN_LO
+#undef CARD_SPAN_HI
+        if (raster_rows == 2) ++y;
+        edge_a += edge_da * raster_rows;
+        edge_b += edge_db * raster_rows;
+        edge_c += edge_dc * raster_rows;
+        wa_row += ba * raster_rows; wb_row += bb * raster_rows; wc_row += bc * raster_rows;
+        u_row += du_dy * raster_rows; v_row += dv_dy * raster_rows;
     }
 }
 #endif

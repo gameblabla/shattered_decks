@@ -262,10 +262,26 @@ void cfx_draw_span_quad_fp(const CfxRenderer3DState *renderer, int16_t y, int16_
 uint8_t cfx_renderer3d_direct_kram_active(const CfxRenderer3DState *renderer);
 void cfx_board_fill(uint8_t *dst, int n,
                     int32_t u, int32_t v, int32_t du, int32_t dv, const uint8_t *tile);
+/* FM moving-board triangle path: duplicate one sampled texel into a 2x2
+ * framebuffer block.  The shared triangle walker advances its edge state by
+ * two rows when it selects this spatial LOD. */
+void cfx_board_fill_block2x2(uint8_t *dst, int n,
+                             int32_t u, int32_t v,
+                             int32_t du, int32_t dv,
+                             const uint8_t *tile);
 #if CFX_RENDERER_DIRECT_RECT
 void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t *tile,
                                int16_t y, int16_t xs, int16_t span,
                                uint16_t tex_state, int8_t step_u, int8_t step_v);
+/* FM TOWNS moving-board LOD: emit a span into two adjacent framebuffer rows,
+ * sampling one texel per 2x2 output block.  Other backends fall back to the
+ * normal exact span path; the shared mesh walker decides when this is safe to
+ * use for the specialized board grid. */
+void cfx_draw_board_span_direct_block2x2(const CfxRenderer3DState *renderer,
+                                         const uint8_t *tile, int16_t y,
+                                         int16_t xs, int16_t span,
+                                         uint16_t tex_state, int8_t step_u,
+                                         int8_t step_v);
 #if CFX_RENDERER_DIRECT_FLAT_ROW
 /* The FM board walker supplies a row that has already been clipped to the
  * framebuffer.  This entry point skips the generic direct-tile wrapper's

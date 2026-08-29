@@ -1778,6 +1778,8 @@ typedef struct {
     int32_t tex;
     int32_t tex_step;
     int16_t last_y;
+    int32_t base_x;
+    int32_t base_tex;
 } CfxBoardGridEdge;
 
 typedef struct {
@@ -1799,6 +1801,15 @@ static void cfx_board_grid_edge_from_geom(CfxBoardGridEdge *dst,
     dst->tex = tex;
     dst->tex_step = tex_step;
     dst->last_y = geom->y_start;
+    dst->base_x = geom->x;
+    dst->base_tex = tex;
+}
+
+static void cfx_board_grid_reset(CfxBoardGridEdge *edge)
+{
+    edge->x = edge->base_x;
+    edge->tex = edge->base_tex;
+    edge->last_y = edge->y_start;
 }
 
 static void cfx_board_grid_advance(CfxBoardGridEdge *edge, int16_t y)
@@ -1860,8 +1871,6 @@ static uint8_t cfx_draw_board_mesh_specialized_grid(
     const DEFAULT_INT odd = cfx_board_clamp_tile(odd_tile);
     const uint8_t *even_src = state->texture_atlas + ((int32_t)even * state->tile_stride_bytes);
     const uint8_t *odd_src = state->texture_atlas + ((int32_t)odd * state->tile_stride_bytes);
-    int16_t global_min_y = (int16_t)state->height;
-    int16_t global_max_y = 0;
 
     if (rows != CFX_SPECIAL_BOARD_ROWS || cols != CFX_SPECIAL_BOARD_COLS)
         return 0;
@@ -1923,17 +1932,40 @@ static uint8_t cfx_draw_board_mesh_specialized_grid(
             if (p3->y > cell->max_y) cell->max_y = p3->y;
             cell->active0 = -1;
             cell->active1 = -1;
-            if (cell->min_y < global_min_y) global_min_y = cell->min_y;
-            if (cell->max_y > global_max_y) global_max_y = cell->max_y;
         }
     }
 
-    if (global_min_y < 0) global_min_y = 0;
-    if (global_max_y > state->height) global_max_y = (int16_t)state->height;
-    if (global_min_y >= global_max_y) return 1;
-
-    for (int16_t y = global_min_y; y < global_max_y; ++y) {
-        for (DEFAULT_INT r = 0; r < rows; ++r) {
+    /* Visit one projected board row at a time.  The previous global-Y walk
+       checked all 20 cells for every screen row, even though only one logical
+       board row is active there.  Keeping the authored cell order but making
+       the row range the outer loop removes those 15 inactive-cell checks from
+       every scanline without changing edge stepping or emitted spans. */
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int16_t row_min_y = (int16_t)state->height;
+        int16_t row_max_y = 0;
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            CfxBoardGridCell *cell = &cells[r * cols + c];
+            if (cell->min_y < row_min_y) row_min_y = cell->min_y;
+            if (cell->max_y > row_max_y) row_max_y = cell->max_y;
+            cell->active0 = -1;
+            cell->active1 = -1;
+        }
+        if (row_min_y < 0) row_min_y = 0;
+        if (row_max_y > state->height) row_max_y = (int16_t)state->height;
+        for (DEFAULT_INT c = 0; c <= cols; ++c)
+            cfx_board_grid_reset(&edges[r * (cols + 1) + c]);
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            cfx_board_grid_reset(&edges[CFX_SPECIAL_BOARD_VERTICAL_COUNT + r * cols + c]);
+            cfx_board_grid_reset(&edges[CFX_SPECIAL_BOARD_VERTICAL_COUNT + (r + 1) * cols + c]);
+        }
+        /* A moving FM board is texture-detail limited at this resolution.  The
+           paired path below still visits every authored camera pose, but emits
+           one nearest-neighbour sample for a 2x2 framebuffer block.  Advance
+           the edge state by the same two scanlines so the next pose starts
+           from the exact projected geometry; this is spatial LOD, never frame
+           dropping.  Keep the final unpaired row exact. */
+        for (int16_t y = row_min_y; y < row_max_y; ) {
+            int block_rows = (y + 1 < row_max_y && y + 1 < state->height) ? 2 : 1;
             for (DEFAULT_INT c = 0; c < cols; ++c) {
                 CfxBoardGridCell *cell = &cells[r * cols + c];
                 int32_t xs0, xs1, us0, us1, vs0, vs1;
@@ -1963,12 +1995,24 @@ static uint8_t cfx_draw_board_mesh_specialized_grid(
                 if (span > 0) {
                     denom = (uint16_t)((span > 256) ? 256 : span);
                     step_u = (int8_t)(cfx_fast_div_tz_i32_u16_q15(us1 - us0, denom) >> 8);
-                    step_v = (int8_t)(cfx_fast_div_tz_i32_u16_q15(vs1 - vs0, denom) >> 8);
-                    cfx_draw_board_span_tilted(
-                        state, ((r + c) & 1) ? odd_src : even_src, y,
-                        x_start, span,
-                        cfx_pack_tex_state((uint8_t)(us0 >> 8), (uint8_t)(vs0 >> 8)),
-                        step_u, step_v);
+                    step_v = (vs1 == vs0) ? 0 :
+                        (int8_t)(cfx_fast_div_tz_i32_u16_q15(vs1 - vs0, denom) >> 8);
+                    if (block_rows) {
+#if defined(WAIFU_PROFILE_RENDER)
+                        cfx_profile_board_span(state, 1);
+#endif
+                        cfx_draw_board_span_direct_block2x2(
+                            state, ((r + c) & 1) ? odd_src : even_src, y,
+                            x_start, span,
+                            cfx_pack_tex_state((uint8_t)(us0 >> 8), (uint8_t)(vs0 >> 8)),
+                            step_u, step_v);
+                    } else {
+                        cfx_draw_board_span_tilted(
+                            state, ((r + c) & 1) ? odd_src : even_src, y,
+                            x_start, span,
+                            cfx_pack_tex_state((uint8_t)(us0 >> 8), (uint8_t)(vs0 >> 8)),
+                            step_u, step_v);
+                    }
                 }
 
                 if (y + 1 < cell->max_y &&
@@ -1981,6 +2025,7 @@ static uint8_t cfx_draw_board_mesh_specialized_grid(
                         return 0;
                 }
             }
+            y = (int16_t)(y + block_rows);
         }
     }
     return 1;
@@ -2382,7 +2427,12 @@ static void cfx_board_tri(uint8_t *fb, int W, int H, int ylo, const uint8_t *til
                 dus = cfx_div_toward_zero_i32d((U2 - U1) << 16, dy12);
                 dvs = cfx_div_toward_zero_i32d((V2 - V1) << 16, dy12);
             }
-            for (; y < yend; ++y) {
+            for (; y < yend; ) {
+                int block_rows = 0;
+#if defined(WAIFU_FM_FMTOWNS) && CFX_RENDERER_USE_I386_ASM && \
+    !defined(CFX_MEASURE_SKIP_SPANS) && !defined(CFX_MEASURE_C_BOARD_FILL)
+                block_rows = (y + 1 < yend && y + 1 < H);
+#endif
                 if (y >= H) return;            /* below screen/band: nothing left to draw */
                 if (y >= ylo) {
                     int xa = (int)(xl >> 16);
@@ -2401,12 +2451,27 @@ static void cfx_board_tri(uint8_t *fb, int W, int H, int ylo, const uint8_t *til
                             U += (int32_t)(left - edge_left) * gUx;
                             V += (int32_t)(left - edge_left) * gVx;
                         }
+#if defined(WAIFU_FM_FMTOWNS) && CFX_RENDERER_USE_I386_ASM && \
+    !defined(CFX_MEASURE_SKIP_SPANS) && !defined(CFX_MEASURE_C_BOARD_FILL)
+                        if (block_rows) {
+                            cfx_board_fill_block2x2(
+                                fb + ((W == 256) ? ((int32_t)y << 8) : (int32_t)y * W) + left,
+                                right - left + 1, U, V, gUx, gVx, tile);
+                        } else
+#endif
                         cfx_board_fill(fb + ((W == 256) ? ((int32_t)y << 8) : (int32_t)y * W) + left,
                                        right - left + 1, U, V, gUx, gVx, tile);
                     }
                 }
-                xl += dxl; ul += dul; vl += dvl;
-                xs += dxs; us += dus; vs += dvs;
+                if (block_rows) {
+                    xl += dxl * block_rows; ul += dul * block_rows; vl += dvl * block_rows;
+                    xs += dxs * block_rows; us += dus * block_rows; vs += dvs * block_rows;
+                    y += block_rows;
+                } else {
+                    xl += dxl; ul += dul; vl += dvl;
+                    xs += dxs; us += dus; vs += dvs;
+                    ++y;
+                }
             }
         }
     }

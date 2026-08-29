@@ -1490,6 +1490,49 @@ void cfx_board_fill(uint8_t *dst, int n,
 #endif
 }
 
+void cfx_board_fill_block2x2(uint8_t *dst, int n,
+                             int32_t u, int32_t v,
+                             int32_t du, int32_t dv,
+                             const uint8_t *tile)
+{
+#if defined(WAIFU_FM_FMTOWNS) && CFX_RENDERER_USE_I386_ASM && \
+    !defined(CFX_MEASURE_SKIP_SPANS) && !defined(CFX_MEASURE_C_BOARD_FILL)
+    uint32_t A;
+    uint32_t dA;
+    uint32_t dA2;
+    uint8_t *dst_next = dst + 256;
+
+    if (n <= 0) return;
+    A = ((uint32_t)v & 0x1fffu) | ((uint32_t)u << 19);
+    dA = ((uint32_t)dv & 0x1fffu) + ((uint32_t)du << 19);
+    dA2 = dA + dA;
+    if ((uintptr_t)dst & 1u) {
+        uint8_t color = tile[((A >> 3) & 0x3e0u) | (A >> 27)];
+        *dst++ = color;
+        *dst_next++ = color;
+        A += dA;
+        --n;
+    }
+    while (n >= 2) {
+        uint8_t color = tile[((A >> 3) & 0x3e0u) | (A >> 27)];
+        uint16_t packed = (uint16_t)color | ((uint16_t)color << 8);
+        *(uint16_t *)dst = packed;
+        *(uint16_t *)dst_next = packed;
+        dst += 2;
+        dst_next += 2;
+        A += dA2;
+        n -= 2;
+    }
+    if (n > 0) {
+        uint8_t color = tile[((A >> 3) & 0x3e0u) | (A >> 27)];
+        *dst = color;
+        *dst_next = color;
+    }
+#else
+    cfx_board_fill(dst, n, u, v, du, dv, tile);
+#endif
+}
+
 /* Direct-tile (axis-aligned) span fillers + row-LUT helpers. */
 #if CFX_RENDERER_DIRECT_ROW_LUT
 static inline __attribute__((always_inline)) uint8_t cfx_u_span_can_linear(uint16_t pixels, uint8_t u, int8_t step_u)
@@ -2183,6 +2226,82 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
         if (direct_kram) cfx_pcfx_kram_write_word(*dst);
 #endif
     }
+}
+
+void cfx_draw_board_span_direct_block2x2(const CfxRenderer3DState *renderer,
+                                         const uint8_t *tile, int16_t y,
+                                         int16_t xs, int16_t span,
+                                         uint16_t tex_state, int8_t step_u,
+                                         int8_t step_v)
+{
+#if defined(WAIFU_FM_FMTOWNS) && CFX_RENDERER_USE_I386_ASM && \
+    !defined(CFX_MEASURE_SKIP_SPANS) && !defined(CFX_MEASURE_C_ROW)
+    int16_t skip;
+    uint8_t *dst;
+    uint8_t *dst_next;
+    uint8_t u;
+    uint8_t v;
+    uint32_t A;
+    uint32_t dA;
+
+    /* The specialized mesh proves that the source endpoints are on-screen,
+       but keep the public backend seam clipped so a future board caller cannot
+       make the second row walk outside the framebuffer. */
+    if (span <= 0 || y < 0 || y + 1 >= renderer->height) {
+        cfx_draw_span_direct_tile(renderer, tile, y, xs, span,
+                                   tex_state, step_u, step_v);
+        return;
+    }
+    if (xs < 0) {
+        skip = (int16_t)-xs;
+        if (skip >= span) return;
+        tex_state = cfx_advance_tex_state_n(tex_state, step_u, step_v,
+                                            (uint16_t)skip);
+        span = (int16_t)(span - skip);
+        xs = 0;
+    }
+    if (xs >= renderer->width) return;
+    if ((int32_t)xs + span > renderer->width)
+        span = (int16_t)(renderer->width - xs);
+    if (span <= 0) return;
+
+    u = (uint8_t)tex_state;
+    v = (uint8_t)(tex_state >> 8);
+    A = ((uint32_t)v << 2) | ((uint32_t)u << 24);
+    dA = ((uint32_t)(uint8_t)step_v << 2) +
+         ((uint32_t)(uint8_t)step_u << 24);
+    dst = renderer->framebuffer + ((int32_t)y * renderer->width) + xs;
+    dst_next = dst + renderer->width;
+
+    /* Keep an odd leading pixel single so the main loop can use aligned
+       16-bit stores for pairs.  Unaligned stores are legal on the 386 too,
+       but this avoids needlessly splitting the common case. */
+    if ((xs & 1) != 0) {
+        uint8_t color = tile[(A & 0x3e0u) | (A >> 27)];
+        *dst++ = color;
+        *dst_next++ = color;
+        A += dA;
+        --span;
+    }
+    while (span >= 2) {
+        uint8_t color = tile[(A & 0x3e0u) | (A >> 27)];
+        uint16_t packed = (uint16_t)color | ((uint16_t)color << 8);
+        *(uint16_t *)dst = packed;
+        *(uint16_t *)dst_next = packed;
+        dst += 2;
+        dst_next += 2;
+        A += dA + dA;
+        span = (int16_t)(span - 2);
+    }
+    if (span > 0) {
+        uint8_t color = tile[(A & 0x3e0u) | (A >> 27)];
+        *dst = color;
+        *dst_next = color;
+    }
+#else
+    cfx_draw_span_direct_tile(renderer, tile, y, xs, span,
+                               tex_state, step_u, step_v);
+#endif
 }
 
 /* Per-row emit for the textured-quad scanline walker: chooses the direct-VRAM
