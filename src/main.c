@@ -5367,7 +5367,14 @@ static int fmtowns_turn_decode_keyframe(void)
 static int fmtowns_turn_board_cache_decode(int pose)
 {
     if (pose < 0 || pose >= WAIFU_FMTOWNS_TURN_BOARD_CACHE_POSES) return 0;
-    if (g_fmtowns_turn_board_loaded_pose == pose) return 1;
+    if (g_fmtowns_turn_board_loaded_pose == pose) {
+        /* A phase can hand the endpoint pose directly to the next turn.  The
+           board itself is unchanged, but the previous frame's cards/info bar
+           are not: restore their footprints before the new phase redraws its
+           live 2-D overlays, or the old HUD remains baked into the framebuffer. */
+        fmtowns_turn_restore_previous_overlays(fmtowns_turn_board_cache_scratch());
+        return 1;
+    }
     if (g_fmtowns_turn_board_loaded_pose < 0) {
         if (!fmtowns_turn_decode_keyframe()) return 0;
         fmtowns_turn_expand_all(fmtowns_turn_board_cache_scratch());
@@ -11840,9 +11847,6 @@ static void draw_interactive_field_cards(Camera cam)
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
     g_fmtowns_turn_card_slot = -1;
 #endif
-#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
-    fmtowns_turn_overlay_commit();
-#endif
 }
 
 static void draw_interactive_player_hand(int f, int selected, int yoff, int suppress_cursor)
@@ -14918,6 +14922,14 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
        the frame contract. */
     if (phase_before == IB_TURN_TO_COM || phase_before == IB_TURN_TO_PLAYER)
         g_frame_present_dense = 1;
+    /* draw_interactive_field_cards() starts the next overlay list, but the
+       turn-to-player bottom info bar is drawn after draw_interactive_base().
+       Commit only after the whole moving frame has added its 2-D overlays;
+       committing inside draw_interactive_field_cards() put the bar into the
+       inactive list, so the next reduced-board decode could paint board
+       pixels through the old HUD rectangle. */
+    if (g_fmtowns_turn_overlay_tracking)
+        fmtowns_turn_overlay_commit();
     g_fmtowns_turn_overlay_tracking = 0;
 #endif
 
