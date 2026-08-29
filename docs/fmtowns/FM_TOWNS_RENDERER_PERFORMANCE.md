@@ -60,6 +60,10 @@ physical-Marty measurement. The proxy used by `fmtowns.sh` is:
   removes one memory reload from each four-pixel loop iteration without
   changing the packed stores or texture sequence. Fixed-pose hashes remain
   `3e7c64ce`, `8ebdc7b5`, and `8b7920ef`.
+- Added an FM capability-path entry for already-clipped flat board rows. The
+  board walker now reaches the constant-V filler without repeating the generic
+  direct-tile bounds and step dispatch; the generic path remains unchanged for
+  other targets and callers.
 
 The profiling-only `--fixed-pose-bench` harness reports camera basis, point
 transformation, projection, clear, walls, mesh setup, span fill, grid,
@@ -83,9 +87,10 @@ before its later cache and clipped-card follow-ups:
 | Placement | 14.9–15.9 | 34.4–37.0 ms | 21.2–22.0 ms |
 | Two-card battle cut-in | 9.0–11.0 | 56.8–75.3 ms | 24.7–27.1 ms |
 
-Fresh captures of this tree were made with `./fmtowns.sh profile ...`. The
-script takes samples at wall-clock intervals, so battle and attack samples can
-land on different authored effects. The current moving-turn samples were:
+Fresh captures of the accepted pre-dispatch tree were made with
+`./fmtowns.sh profile ...`. The script takes samples at wall-clock intervals,
+so battle and attack samples can land on different authored effects. Those
+moving-turn samples were:
 
 | Capture | Sample 0 | Sample 1 | Sample 2 | Result |
 | --- | --- | --- | --- | --- |
@@ -107,11 +112,20 @@ intact board, wall, HUD, and card rendering.
 For a non-retained board measurement, the final-code `profile board` was run with
 `-DWAIFU_BATTLE_BASE_CACHE_DISABLE -DWAIFU_MEASURE_FORCE_LIVE_BOARD`. Constant-V
 row filler plus exact top-wall cull and register-resident loop bound produced
-repeated `76.3 ms` total (`52.5 ms` step + `22.1 ms` present), versus the
+repeated `76.3 ms` total (`42.8 ms` step + `22.1 ms` present), versus the
 accepted pre-change `93.1 ms` total (`54.7 ms` step + `22.1 ms` present). The
+follow-up clipped-row dispatch is the source of the lower step time; the
 inspected PNG retained the full board and six projected field cards. This is an
 incremental win, but it is still above budget; the moving turn and lift captures
 remain the more representative performance evidence.
+
+The follow-up clipped-row build also produced intact, continuously changing
+turn and lift screenshots. Its unaligned `profile turn` samples were
+`99.5/144.4/226.3 ms` total (`70.4/108.3/193.3 ms` step), and its lift samples
+were `146.4/169.3/79.9 ms` total (`113.2/135.2/45.3 ms` step). These are not
+like-for-like pose comparisons because the wall-clock samples landed in
+different authored phases; the forced-live board and fixed-pose hashes are the
+repeatable decision gates for this flat-row-only change.
 
 Capture artifacts were written under `build/fmtowns/shots/` and are generated
 outputs, not release assets.
@@ -120,15 +134,16 @@ outputs, not release assets.
 
 The fixed-pose harness was built with `cc -m32 -O2`,
 `-DWAIFU_FM_FMTOWNS -DWAIFU_PROFILE_RENDER -DWAIFU_FIXED_POSE_BENCH`, and a
-weak host stub for the FM sound callback. The accepted span-filler change was
-compared with the pre-change executable and with
+weak host stub for the FM sound callback. The accepted span-filler changes and
+the clipped-row dispatch candidate were compared with the pre-change executable
+and with
 `-DWAIFU_MEASURE_BOARD_MESH_REFERENCE`.
 
 | Pose | Board path | Total | Span fill | Pixels | Runs | Hash |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| top | trapezoid rows | 129 us | 38 us | 95,546 | 985 | `3e7c64ce` |
-| turn middle | specialized grid | 93 us | 16 us | 10,704 | 418 | `8ebdc7b5` |
-| turn tilted | specialized grid | 103 us | 23 us | 11,720 | 609 | `8b7920ef` |
+| top | trapezoid rows | 124 us | 36 us | 95,546 | 985 | `3e7c64ce` |
+| turn middle | specialized grid | 92 us | 15 us | 10,704 | 418 | `8ebdc7b5` |
+| turn tilted | specialized grid | 108 us | 23 us | 11,720 | 609 | `8b7920ef` |
 
 The three hashes matched the exact reference mesh hashes. `Runs` is the number
 of emitted filler invocations in the moving path; it is one per board scanline
@@ -180,10 +195,11 @@ bytes, below the strict 131,072-byte staging limit.
   pair) and added transition-state complexity. Full clear remains safe.
 - The full plan’s remaining renderer work is wall occlusion/batching if its
   nine segmented walls can be reduced without changing their visible edge
-  pixels, plus a new high-confidence reduction in moving span/store traffic.
+  pixels, plus another high-confidence reduction in moving span/store traffic.
   Any further specialization must remain behind the byte-identical reference
   gate. The fixed-pose attribution shows projection is currently a small stage
-  on the 32-bit harness; the FM row filler and endpoint wall cull are accepted,
+  on the 32-bit harness; the FM row filler, clipped-row dispatch, and endpoint
+  wall cull are accepted,
   but the live Marty-proxy measurements remain above the frame budget and
   require another optimization cycle plus physical Marty timing before claiming
   completion.

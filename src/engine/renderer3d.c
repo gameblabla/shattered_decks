@@ -1497,7 +1497,8 @@ static void cfx_draw_board_span_flat(const CfxRenderer3DState *state,
     cfx_profile_emit_span(state, span);
 #endif
 #if CFX_RENDERER_DIRECT_FLAT_ROW
-    cfx_draw_span_direct_tile(state, tile, y, xs, span, tex_state, step_u, 0);
+    cfx_draw_span_direct_tile_flat_clipped(state, tile, y, xs, span,
+                                           tex_state, step_u);
 #else
     cfx_board_fill(state->framebuffer + ((int32_t)y * state->width) + xs,
                    span,

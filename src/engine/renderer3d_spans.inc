@@ -1835,6 +1835,23 @@ static inline __attribute__((always_inline)) void cfx_draw_board_pair_nowrap(
 }
 #endif
 
+#if CFX_RENDERER_DIRECT_FLAT_ROW
+void cfx_draw_span_direct_tile_flat_clipped(const CfxRenderer3DState *renderer,
+                                            const uint8_t *tile, int16_t y,
+                                            int16_t xs, int16_t span,
+                                            uint16_t tex_state, int8_t step_u)
+{
+#if defined(WAIFU_PROFILE_RENDER)
+    /* cfx_draw_board_span_flat() has already emitted the board-span profile
+       record; retain the old direct-tile run accounting for comparable bench
+       output without repeating its bounds/dispatch work in normal builds. */
+    cfx_profile_emit_span(renderer, span);
+    cfx_profile_emit_run(renderer, span);
+#endif
+    cfx_draw_span_direct_tile_row(renderer, tile, y, xs, span, tex_state, step_u);
+}
+#endif
+
 void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t *tile,
                                              int16_t y, int16_t xs, int16_t span,
                                              uint16_t tex_state, int8_t step_u, int8_t step_v)

@@ -266,6 +266,15 @@ void cfx_board_fill(uint8_t *dst, int n,
 void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t *tile,
                                int16_t y, int16_t xs, int16_t span,
                                uint16_t tex_state, int8_t step_u, int8_t step_v);
+#if CFX_RENDERER_DIRECT_FLAT_ROW
+/* The FM board walker supplies a row that has already been clipped to the
+ * framebuffer.  This entry point skips the generic direct-tile wrapper's
+ * repeated bounds/step dispatch and goes straight to the constant-V filler. */
+void cfx_draw_span_direct_tile_flat_clipped(const CfxRenderer3DState *renderer,
+                                            const uint8_t *tile, int16_t y,
+                                            int16_t xs, int16_t span,
+                                            uint16_t tex_state, int8_t step_u);
+#endif
 #endif
 #if CFX_RENDERER_DIRECT_KRAM
 void cfx_draw_span_kram_fp_exact(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, int16_t span,
