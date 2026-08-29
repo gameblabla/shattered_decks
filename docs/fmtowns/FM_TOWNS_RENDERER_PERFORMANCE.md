@@ -72,6 +72,10 @@ physical-Marty measurement. The proxy used by `fmtowns.sh` is:
   `step_u == 0`, which are common in the middle turn pose. It hoists the
   fixed texture column into the tile pointer and advances only the packed V
   accumulator; all other affine spans retain the general exact kernel.
+- Added a two-slot FM/i386 cache of the exact 48-byte expanded row produced by
+  the authored U=0, step_u=5 board pattern. After each tile row is prepared,
+  the hot path copies its pixels with rep movsl plus a byte tail; the cache
+  uses only 3,072 bytes of BSS and regenerates on a tile/pitch miss.
 
 The profiling-only `--fixed-pose-bench` harness reports camera basis, point
 transformation, projection, clear, walls, mesh setup, span fill, grid,
@@ -146,6 +150,15 @@ landed at phase-sensitive totals of `145.5/58.8/126.2 ms`; those samples are
 not a like-for-like speed claim. The overall `33.3 ms` moving-frame target is
 still unmet.
 
+The expanded-row cache was then measured with the same forced-live board
+profile. All three settled screenshots reported 42.8 ms total
+(19.2 ms step plus 22.1 ms present), below the new 50 ms objective. The
+cached capture was pixel-identical to the accepted fixed-pattern capture
+outside the two-row debug timing stamp, with zero differing game pixels. The
+inspected PNG shows the complete checkerboard, walls, six field cards, HUD,
+and lower equip panel. This is a calibrated Tsugaru proxy result, not a
+physical-Marty measurement.
+
 The follow-up clipped-row build also produced intact, continuously changing
 turn and lift screenshots. Its unaligned `profile turn` samples were
 `99.5/144.4/226.3 ms` total (`70.4/108.3/193.3 ms` step), and its lift samples
@@ -183,12 +196,16 @@ The normal final FM build linked successfully with:
 
 ```text
 SYSTEM.BIN end: 0x53710 / 0x90000; spare: 248048 bytes
-.bss end:    0x1fd400 / 0x200000; spare: 11264 bytes
+.bss end:    0x1fe000 / 0x200000; spare: 8192 bytes
 ```
 
 No additional full-screen BSS allocation was introduced. PC-FX also rebuilt
 successfully. CD32X rebuilt from `clean-build`; its SH-2 image was 128,896
 bytes, below the strict 131,072-byte staging limit.
+
+The new row cache uses 3,072 bytes and leaves the final 2 MiB FM link with
+8,192 bytes of BSS headroom. The PC-FX and CD32X program builds were rerun
+after this shared renderer change.
 
 ## Verification limits and next work
 

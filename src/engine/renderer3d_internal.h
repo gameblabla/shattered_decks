@@ -274,6 +274,12 @@ void cfx_draw_span_direct_tile_flat_clipped(const CfxRenderer3DState *renderer,
                                             const uint8_t *tile, int16_t y,
                                             int16_t xs, int16_t span,
                                             uint16_t tex_state, int8_t step_u);
+/* FM top-view probe: the authored U=0, step-five cells use a fixed eight-pixel
+ * source pattern, so the i386 filler can avoid per-pixel phase arithmetic. */
+void cfx_draw_span_direct_tile_flat_step5_pattern(const CfxRenderer3DState *renderer,
+                                                  const uint8_t *tile, int16_t y,
+                                                  int16_t xs, int16_t span,
+                                                  uint16_t tex_state);
 #endif
 #endif
 #if CFX_RENDERER_DIRECT_KRAM

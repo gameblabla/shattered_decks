@@ -1268,6 +1268,66 @@ static void cfx_direct_row_i386_step5(uint8_t *dst, int span,
         U += 0x05000000u;
     }
 }
+
+/* For U=0 and step=5, one eight-pixel group samples source offsets
+   0,0,1,1,2,3,3,4; the next group starts five texels later.  The board cells
+   are at most 48 pixels wide, so this bounded path never reaches the 32-texel
+   wrap.  Cache the expanded rows: after the first use, the hot path is a
+   bounded tile lookup plus a short dword copy instead of phase arithmetic. */
+#define CFX_STEP5_PATTERN_CACHE_SLOTS 2
+#define CFX_STEP5_PATTERN_BYTES 48
+typedef struct CfxStep5PatternCache {
+    const uint8_t *tile;
+    uint16_t pitch;
+    uint8_t rows[CFX_TEX_SIZE][CFX_STEP5_PATTERN_BYTES];
+} CfxStep5PatternCache;
+
+static CfxStep5PatternCache cfx_step5_pattern_cache[CFX_STEP5_PATTERN_CACHE_SLOTS];
+static uint8_t cfx_step5_pattern_cache_next;
+
+static void cfx_direct_row_i386_step5_pattern(uint8_t *dst, int span,
+                                              const uint8_t *tile,
+                                              uint8_t row_index,
+                                              uint16_t tile_pitch)
+{
+    const uint8_t *row;
+    unsigned int slot;
+    for (slot = 0; slot < CFX_STEP5_PATTERN_CACHE_SLOTS; ++slot) {
+        if (cfx_step5_pattern_cache[slot].tile == tile &&
+            cfx_step5_pattern_cache[slot].pitch == tile_pitch)
+            break;
+    }
+    if (slot == CFX_STEP5_PATTERN_CACHE_SLOTS) {
+        slot = cfx_step5_pattern_cache_next;
+        cfx_step5_pattern_cache_next =
+            (uint8_t)((cfx_step5_pattern_cache_next + 1u) %
+                      CFX_STEP5_PATTERN_CACHE_SLOTS);
+        cfx_step5_pattern_cache[slot].tile = tile;
+        cfx_step5_pattern_cache[slot].pitch = tile_pitch;
+        for (unsigned int v = 0; v < CFX_TEX_SIZE; ++v) {
+            const uint8_t *src = tile + v * (unsigned int)tile_pitch;
+            for (unsigned int x = 0; x < CFX_STEP5_PATTERN_BYTES; ++x)
+                cfx_step5_pattern_cache[slot].rows[v][x] =
+                    src[(x * 5u) >> 3];
+        }
+    }
+    row = cfx_step5_pattern_cache[slot].rows[row_index & CFX_TEX_MASK];
+
+    {
+        uint32_t words = (uint32_t)span >> 2;
+        if (words) {
+            __asm__ volatile (
+                "rep movsl"
+                : [dst] "+D" (dst), [row] "+S" (row), [words] "+c" (words)
+                :
+                : "memory");
+            span &= 3;
+        }
+    }
+    while (span-- > 0)
+        *dst++ = *row++;
+}
+
 #endif /* CFX_RENDERER_USE_I386_ASM */
 
 void cfx_board_fill(uint8_t *dst, int n,
@@ -1948,6 +2008,27 @@ void cfx_draw_span_direct_tile_flat_clipped(const CfxRenderer3DState *renderer,
 #endif
     cfx_draw_span_direct_tile_row(renderer, tile, y, xs, span, tex_state, step_u);
 }
+
+void cfx_draw_span_direct_tile_flat_step5_pattern(const CfxRenderer3DState *renderer,
+                                                  const uint8_t *tile, int16_t y,
+                                                  int16_t xs, int16_t span,
+                                                  uint16_t tex_state)
+{
+#if CFX_RENDERER_USE_I386_ASM
+#if defined(WAIFU_PROFILE_RENDER)
+    cfx_profile_emit_span(renderer, span);
+    cfx_profile_emit_run(renderer, span);
+#endif
+    cfx_direct_row_i386_step5_pattern(
+        renderer->framebuffer + ((int32_t)y * renderer->width) + xs,
+        span, tile,
+        (uint8_t)((tex_state >> 8) >> CFX_FIXED_POINT_SHIFT),
+        (uint16_t)renderer->tile_pitch_bytes);
+#else
+    (void)renderer; (void)tile; (void)y; (void)xs; (void)span; (void)tex_state;
+#endif
+}
+
 #endif
 
 void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t *tile,
