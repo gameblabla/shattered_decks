@@ -1496,11 +1496,15 @@ static void cfx_draw_board_span_flat(const CfxRenderer3DState *state,
 #if defined(WAIFU_PROFILE_RENDER)
     cfx_profile_emit_span(state, span);
 #endif
+#if CFX_RENDERER_DIRECT_FLAT_ROW
+    cfx_draw_span_direct_tile(state, tile, y, xs, span, tex_state, step_u, 0);
+#else
     cfx_board_fill(state->framebuffer + ((int32_t)y * state->width) + xs,
                    span,
                    (int32_t)(uint8_t)tex_state << 5,
                    (int32_t)(uint8_t)(tex_state >> 8) << 5,
                    (int32_t)step_u << 5, 0, tile);
+#endif
 #else
     cfx_draw_span_direct_tile(state, tile, y, xs, span, tex_state, step_u, 0);
 #endif
@@ -1738,6 +1742,246 @@ static uint8_t cfx_draw_board_mesh_trapezoid(const CfxRenderer3DState *state,
     return 1;
 }
 
+#if CFX_RENDERER_SPECIALIZED_BOARD_GRID
+/* FM TOWNS only: the in-game board is a fixed 5x4 grid.  The generic moving
+   mesh path rebuilds horizontal edge metadata for every cell and then walks
+   each cell independently.  That repeats the same projected grid edge for
+   its neighbour and makes the scanline loop pay a call/branch transition at
+   every cell.  Keep one mutable state per unique edge and visit cells in the
+   same row-major order as the reference renderer, but make the scanline the
+   outer loop.  The edge state is advanced lazily, so shared edges advance once
+   even when two adjacent cells use them.
+
+   This is deliberately bounded to the shipped board dimensions.  It does not
+   become a general mesh cache or a moving-camera cache: all edge state is
+   rebuilt from the caller's current projected points for every invocation. */
+#define CFX_SPECIAL_BOARD_ROWS 4
+#define CFX_SPECIAL_BOARD_COLS 5
+#define CFX_SPECIAL_BOARD_VERTICAL_COUNT \
+    (CFX_SPECIAL_BOARD_ROWS * (CFX_SPECIAL_BOARD_COLS + 1))
+#define CFX_SPECIAL_BOARD_HORIZONTAL_COUNT \
+    ((CFX_SPECIAL_BOARD_ROWS + 1) * CFX_SPECIAL_BOARD_COLS)
+#define CFX_SPECIAL_BOARD_EDGE_COUNT \
+    (CFX_SPECIAL_BOARD_VERTICAL_COUNT + CFX_SPECIAL_BOARD_HORIZONTAL_COUNT)
+
+typedef struct {
+    int16_t y_start;
+    int16_t y_end;
+    int32_t x;
+    int32_t x_step;
+    /* Horizontal edges use tex/tex_step for U; vertical edges use it for V. */
+    int32_t tex;
+    int32_t tex_step;
+    int16_t last_y;
+} CfxBoardGridEdge;
+
+typedef struct {
+    uint8_t edge[4]; /* top, right, bottom, left */
+    int16_t min_y;
+    int16_t max_y;
+    int8_t active0;
+    int8_t active1;
+} CfxBoardGridCell;
+
+static void cfx_board_grid_edge_from_geom(CfxBoardGridEdge *dst,
+                                           const CfxBoardGeomEdge *geom,
+                                           int32_t tex, int32_t tex_step)
+{
+    dst->y_start = geom->y_start;
+    dst->y_end = geom->y_end;
+    dst->x = geom->x;
+    dst->x_step = geom->x_step;
+    dst->tex = tex;
+    dst->tex_step = tex_step;
+    dst->last_y = geom->y_start;
+}
+
+static void cfx_board_grid_advance(CfxBoardGridEdge *edge, int16_t y)
+{
+    if (edge->last_y < y) {
+        int32_t count = (int32_t)y - edge->last_y;
+        edge->x += edge->x_step * count;
+        edge->tex += edge->tex_step * count;
+        edge->last_y = y;
+    }
+}
+
+static int cfx_board_grid_select_active(const CfxBoardGridCell *cell,
+                                        const CfxBoardGridEdge *edges,
+                                        int16_t y,
+                                        int8_t *active0, int8_t *active1)
+{
+    int count = 0;
+    for (int i = 0; i < 4; ++i) {
+        const CfxBoardGridEdge *edge = &edges[cell->edge[i]];
+        if (y >= edge->y_start && y < edge->y_end) {
+            if (count == 0) *active0 = (int8_t)i;
+            else if (count == 1) *active1 = (int8_t)i;
+            ++count;
+        }
+    }
+    return count == 2;
+}
+
+static void cfx_board_grid_values(CfxBoardGridEdge *edge, int local_edge,
+                                  int16_t y, int32_t *x, int32_t *u,
+                                  int32_t *v)
+{
+    cfx_board_grid_advance(edge, y);
+    *x = edge->x;
+    if (local_edge == 0) {
+        *u = edge->tex;
+        *v = 0;
+    } else if (local_edge == 1) {
+        *u = 255 << 8;
+        *v = edge->tex;
+    } else if (local_edge == 2) {
+        *u = edge->tex;
+        *v = 255 << 8;
+    } else {
+        *u = 0;
+        *v = edge->tex;
+    }
+}
+
+static uint8_t cfx_draw_board_mesh_specialized_grid(
+    const CfxRenderer3DState *state, const CfxBoardPoint *points,
+    DEFAULT_INT point_stride, DEFAULT_INT rows, DEFAULT_INT cols,
+    DEFAULT_INT even_tile, DEFAULT_INT odd_tile)
+{
+    CfxBoardGridEdge edges[CFX_SPECIAL_BOARD_EDGE_COUNT];
+    CfxBoardGridCell cells[CFX_SPECIAL_BOARD_ROWS * CFX_SPECIAL_BOARD_COLS];
+    const DEFAULT_INT even = cfx_board_clamp_tile(even_tile);
+    const DEFAULT_INT odd = cfx_board_clamp_tile(odd_tile);
+    const uint8_t *even_src = state->texture_atlas + ((int32_t)even * state->tile_stride_bytes);
+    const uint8_t *odd_src = state->texture_atlas + ((int32_t)odd * state->tile_stride_bytes);
+    int16_t global_min_y = (int16_t)state->height;
+    int16_t global_max_y = 0;
+
+    if (rows != CFX_SPECIAL_BOARD_ROWS || cols != CFX_SPECIAL_BOARD_COLS)
+        return 0;
+
+    /* Build each vertical edge once.  Its texture component is V; U is a
+       cell-side constant supplied by cfx_board_grid_values(). */
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int32_t row0 = (int32_t)r * point_stride;
+        int32_t row1 = (int32_t)(r + 1) * point_stride;
+        for (DEFAULT_INT c = 0; c <= cols; ++c) {
+            CfxBoardGeomEdge geom;
+            uint8_t v_start;
+            int32_t v_step;
+            cfx_board_build_geom_edge(&geom, &points[row0 + c], &points[row1 + c]);
+            cfx_board_vertical_v_params(&points[row0 + c], &points[row1 + c],
+                                        &v_start, &v_step);
+            cfx_board_grid_edge_from_geom(
+                &edges[r * (cols + 1) + c], &geom,
+                (int32_t)v_start << 8, v_step);
+        }
+    }
+
+    /* Horizontal edges are shared by the cells above and below.  The physical
+       mapping is U=0..255 from left to right; the two callers differ only in
+       their constant V (0 for top, 255 for bottom). */
+    for (DEFAULT_INT r = 0; r <= rows; ++r) {
+        int32_t row = (int32_t)r * point_stride;
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            CfxBoardGeomEdge geom;
+            CfxFastQuadEdge uv;
+            cfx_board_build_geom_edge(&geom, &points[row + c], &points[row + c + 1]);
+            cfx_board_set_edge_uv(&uv, &geom, &points[row + c], &points[row + c + 1],
+                                  0, 0, 255, 0);
+            cfx_board_grid_edge_from_geom(&edges[CFX_SPECIAL_BOARD_VERTICAL_COUNT + r * cols + c],
+                                          &geom, uv.u, uv.u_step);
+        }
+    }
+
+    for (DEFAULT_INT r = 0; r < rows; ++r) {
+        int32_t row0 = (int32_t)r * point_stride;
+        int32_t row1 = (int32_t)(r + 1) * point_stride;
+        for (DEFAULT_INT c = 0; c < cols; ++c) {
+            CfxBoardGridCell *cell = &cells[r * cols + c];
+            const CfxBoardPoint *p0 = &points[row0 + c];
+            const CfxBoardPoint *p1 = &points[row0 + c + 1];
+            const CfxBoardPoint *p2 = &points[row1 + c + 1];
+            const CfxBoardPoint *p3 = &points[row1 + c];
+            cell->edge[0] = (uint8_t)(CFX_SPECIAL_BOARD_VERTICAL_COUNT + r * cols + c);
+            cell->edge[1] = (uint8_t)((r * (cols + 1)) + c + 1);
+            cell->edge[2] = (uint8_t)(CFX_SPECIAL_BOARD_VERTICAL_COUNT + (r + 1) * cols + c);
+            cell->edge[3] = (uint8_t)((r * (cols + 1)) + c);
+            cell->min_y = p0->y;
+            cell->max_y = p0->y;
+            if (p1->y < cell->min_y) cell->min_y = p1->y;
+            if (p2->y < cell->min_y) cell->min_y = p2->y;
+            if (p3->y < cell->min_y) cell->min_y = p3->y;
+            if (p1->y > cell->max_y) cell->max_y = p1->y;
+            if (p2->y > cell->max_y) cell->max_y = p2->y;
+            if (p3->y > cell->max_y) cell->max_y = p3->y;
+            cell->active0 = -1;
+            cell->active1 = -1;
+            if (cell->min_y < global_min_y) global_min_y = cell->min_y;
+            if (cell->max_y > global_max_y) global_max_y = cell->max_y;
+        }
+    }
+
+    if (global_min_y < 0) global_min_y = 0;
+    if (global_max_y > state->height) global_max_y = (int16_t)state->height;
+    if (global_min_y >= global_max_y) return 1;
+
+    for (int16_t y = global_min_y; y < global_max_y; ++y) {
+        for (DEFAULT_INT r = 0; r < rows; ++r) {
+            for (DEFAULT_INT c = 0; c < cols; ++c) {
+                CfxBoardGridCell *cell = &cells[r * cols + c];
+                int32_t xs0, xs1, us0, us1, vs0, vs1;
+                int16_t x_start, x_end, span;
+                uint16_t denom;
+                int8_t step_u, step_v;
+
+                if (y < cell->min_y || y >= cell->max_y) continue;
+                if (cell->active0 < 0 &&
+                    !cfx_board_grid_select_active(cell, edges, y,
+                                                  &cell->active0, &cell->active1))
+                    return 0;
+
+                cfx_board_grid_values(&edges[cell->edge[(int)cell->active0]],
+                                      cell->active0, y, &xs0, &us0, &vs0);
+                cfx_board_grid_values(&edges[cell->edge[(int)cell->active1]],
+                                      cell->active1, y, &xs1, &us1, &vs1);
+                if (xs0 > xs1) {
+                    int32_t t;
+                    t = xs0; xs0 = xs1; xs1 = t;
+                    t = us0; us0 = us1; us1 = t;
+                    t = vs0; vs0 = vs1; vs1 = t;
+                }
+                x_start = (int16_t)((xs0 + ((1 << CFX_GEOM_FIXED_SHIFT) - 1)) >> CFX_GEOM_FIXED_SHIFT);
+                x_end = (int16_t)(xs1 >> CFX_GEOM_FIXED_SHIFT);
+                span = (int16_t)(x_end - x_start + 1);
+                if (span > 0) {
+                    denom = (uint16_t)((span > 256) ? 256 : span);
+                    step_u = (int8_t)(cfx_fast_div_tz_i32_u16_q15(us1 - us0, denom) >> 8);
+                    step_v = (int8_t)(cfx_fast_div_tz_i32_u16_q15(vs1 - vs0, denom) >> 8);
+                    cfx_draw_board_span_tilted(
+                        state, ((r + c) & 1) ? odd_src : even_src, y,
+                        x_start, span,
+                        cfx_pack_tex_state((uint8_t)(us0 >> 8), (uint8_t)(vs0 >> 8)),
+                        step_u, step_v);
+                }
+
+                if (y + 1 < cell->max_y &&
+                    (y + 1 >= edges[cell->edge[(int)cell->active0]].y_end ||
+                     y + 1 >= edges[cell->edge[(int)cell->active1]].y_end)) {
+                    cell->active0 = -1;
+                    cell->active1 = -1;
+                    if (!cfx_board_grid_select_active(cell, edges, (int16_t)(y + 1),
+                                                      &cell->active0, &cell->active1))
+                        return 0;
+                }
+            }
+        }
+    }
+    return 1;
+}
+#endif
+
 static uint8_t CFX_BOARD_MESH_COLD cfx_draw_board_mesh_cached(const CfxRenderer3DState *state,
                                           const CfxBoardPoint *points,
                                           DEFAULT_INT point_stride,
@@ -1910,14 +2154,25 @@ uint8_t cfx_renderer3d_draw_board_mesh_fast_affine(
                                                  rows, cols, even_tile, odd_tile);
         }
         }
+        {
+            uint8_t trusted_convex = (uint8_t)cfx_board_mesh_strictly_convex(
+                points, point_stride, rows, cols, state->width, state->height);
+#if CFX_RENDERER_SPECIALIZED_BOARD_GRID
+            if (trusted_convex &&
+                cfx_draw_board_mesh_specialized_grid(state, points, point_stride,
+                                                     rows, cols, even_tile, odd_tile)) {
 #if defined(WAIFU_PROFILE_RENDER)
-        if (state->profile) state->profile->board_path = CFX_PROFILE_BOARD_CACHED_EDGES;
+                if (state->profile) state->profile->board_path = CFX_PROFILE_BOARD_SPECIALIZED_GRID;
 #endif
-        return cfx_draw_board_mesh_cached(state, points, point_stride, rows, cols,
-                                     even_tile, odd_tile,
-                                     (uint8_t)cfx_board_mesh_strictly_convex(
-                                         points, point_stride, rows, cols,
-                                         state->width, state->height));
+                return 1;
+            }
+#endif
+#if defined(WAIFU_PROFILE_RENDER)
+            if (state->profile) state->profile->board_path = CFX_PROFILE_BOARD_CACHED_EDGES;
+#endif
+            return cfx_draw_board_mesh_cached(state, points, point_stride, rows, cols,
+                                              even_tile, odd_tile, trusted_convex);
+        }
 #else
     return cfx_draw_board_mesh_fallback(renderer, points, point_stride,
                                         rows, cols, even_tile, odd_tile);

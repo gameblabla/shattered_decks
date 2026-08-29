@@ -18095,6 +18095,7 @@ static const char *fixed_pose_bench_path_name(uint32_t path)
     case CFX_PROFILE_BOARD_TRAPEZOID: return "trapezoid";
     case CFX_PROFILE_BOARD_CACHED_EDGES: return "cached_edges";
     case CFX_PROFILE_BOARD_FALLBACK: return "fallback";
+    case CFX_PROFILE_BOARD_SPECIALIZED_GRID: return "specialized_grid";
     default: return "none";
     }
 }

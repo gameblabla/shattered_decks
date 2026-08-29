@@ -31,6 +31,14 @@ physical-Marty measurement. The proxy used by `fmtowns.sh` is:
   trapezoid paths with runtime-built exact lookup tables.
 - Reused board X/Z projection contributions across the 5x4 mesh while keeping
   the original fixed-point multiply, add, divide, and truncation order.
+- Added an FM-only specialized moving 5x4 grid walker. It rebuilds the 49
+  unique projected grid edges for each current pose and advances shared edges
+  once per scanline; it is selected only after the existing strict-convex,
+  screen-bounded proof and falls back to the cached generic walker otherwise.
+- Added an FM-only constant-V row filler for the board's top-view rows. It
+  feeds the packed direct row loop instead of the general board-address loop,
+  which is safe for the fixed 32x32 / constant-V surface and leaves other
+  targets on their existing capability path.
 - Measured the FM/i386 tilted board spans and routed them through the existing
   exact packed affine filler. The old texture-boundary splitter averaged only
   1.25--1.34 pixels per run in the moving poses, so its lookup/branch work was
@@ -77,16 +85,26 @@ retained/static frame and the stamp warns that the sub-5 ms step can be a
 rasterizer speed claim. The inspected PNGs showed the intended board, card,
 battle, and attack scenes.
 
-After the accepted packed-affine change, final-code visual captures were
-repeated with `./fmtowns.sh profile turn`, `./fmtowns.sh profile lift`, and
-`./fmtowns.sh profile board`. The turn samples reported `222.1`, `234.6`, and
-`217.1 ms` total (`189.4`, `202.8`, and `184.6 ms` step); the lift samples
-reported `142.5`, `123.0`, and `151.9 ms` total (`109.6`, `89.7`, and
-`116.1 ms` step). The PNGs showed distinct, continuous board perspectives and
-intact board, wall, HUD, and card rendering. The board profile again measured a
-retained/static frame (`16.6 ms = 0.4 ms step + 8.6 ms present`), so it was not
-used as live-render timing evidence; the fixed-pose top benchmark below is the
-forced-live static-board measurement.
+After the moving-grid and constant-V row changes, fresh final-code captures
+were repeated with `./fmtowns.sh profile turn` and `./fmtowns.sh profile lift`.
+Turn samples reported `122.6`, `122.0`, and `136.7 ms` total (`85.1`, `86.1`,
+and `104.2 ms` step); lift samples reported `117.0`, `161.8`, and `117.0 ms`
+total (`84.0`, `127.5`, and `84.0 ms` step). These are still far above the
+33.3 ms target and are phase-sensitive, but the Up hand-to-top transition now
+advances through live poses instead of appearing hung. The inspected PNGs
+showed continuous board perspectives with intact board, wall, HUD, and card
+rendering.
+
+For a non-retained board measurement, `profile board` was run with
+`-DWAIFU_BATTLE_BASE_CACHE_DISABLE -DWAIFU_MEASURE_FORCE_LIVE_BOARD`. The
+constant-V row filler produced three identical samples of `126.6 ms` total
+(`97.8 ms` step + `22.1 ms` present). The comparable pre-row sample was
+`176.9 ms` total (`139.4 ms` step + `22.1 ms` present), a reduction of about
+41.6 ms in this parked top-view scene. The PNG was inspected and retained the
+full board and six projected field cards. A diagnostic build that skipped the
+slab walls reached `93.1 ms` total (`65.9 ms` step), showing that wall
+occlusion/batching is the next material renderer target; that switch is not in
+the shipping build because the walls still contribute visible edge pixels.
 
 Capture artifacts were written under `build/fmtowns/shots/` and are generated
 outputs, not release assets.
@@ -99,20 +117,20 @@ weak host stub for the FM sound callback. The accepted span-filler change was
 compared with the pre-change executable and with
 `-DWAIFU_MEASURE_BOARD_MESH_REFERENCE`.
 
-| Pose | Board path | Span fill before | Span fill after | Pixels | Runs after | Hash |
+| Pose | Board path | Total | Span fill | Pixels | Runs | Hash |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| top | trapezoid rows | 45 us | 44 us | 51,419 | 1,230 | `3e7c64ce` |
-| turn middle | cached edges | 64 us | 13 us | 10,704 | 418 | `8ebdc7b5` |
-| turn tilted | cached edges | 89 us | 18 us | 11,720 | 609 | `8b7920ef` |
+| top | trapezoid rows | 122 us | 38 us | 99,192 | 1,230 | `a23d555c` |
+| turn middle | specialized grid | 93 us | 16 us | 10,704 | 418 | `14a46aff` |
+| turn tilted | specialized grid | 103 us | 24 us | 11,720 | 609 | `24dabd81` |
 
-The three hashes matched the reference mesh hashes exactly. A 600-frame
-scripted-render PNG comparison between the pre-change and accepted binaries
-also reported zero differing frames. The counters explain why the change is
-specific to moving poses: the top view remains on its constant-V board-fill
-path, while the two tilted cases no longer pay for thousands of one-pixel
-texture-boundary runs. `Runs after` is the number of emitted filler invocations
-in this path; after the change it is one per board scanline rather than a count
-of texture-boundary sub-runs.
+The three hashes matched the reference mesh hashes exactly. The reference
+builds reported totals of 117, 89, and 96 us respectively, with hashes
+`a23d555c`, `14a46aff`, and `24dabd81`. The specialized path therefore keeps
+the exact fixed-pose output while reducing moving-pose edge/division work; its
+host total is close to the reference because the bounded shared-edge loop has
+some setup overhead. `Runs` is the number of emitted filler invocations in the
+moving path; it is one per board scanline rather than a count of
+texture-boundary sub-runs.
 
 ## Memory and build gates
 
@@ -142,9 +160,11 @@ bytes, below the strict 131,072-byte staging limit.
 - Tsugaru cannot establish physical hardware timing. A future physical-Marty
   run should capture the same frame stamp for board, placement, battle, and
   direct scenes before publishing FPS claims.
-- The full plan’s remaining renderer work is still open: a global specialized
-  5x4 moving-mesh walker, wall batching if its nine visible segments prove
-  material, and live 3-D damage-union clearing. Any such specialization must
+- The full plan’s remaining renderer work is now wall occlusion/batching if
+  its nine segmented walls can be reduced without changing their visible edge
+  pixels, plus live 3-D damage-union clearing. Any further specialization must
   remain behind the byte-identical reference gate. The fixed-pose attribution
-  shows projection is currently a small stage on the 32-bit harness, while
-  the moving span filler was the next measurable target.
+  shows projection is currently a small stage on the 32-bit harness; the FM row
+  filler is accepted, but the live Marty-proxy measurements remain above the
+  frame budget and require another optimization cycle plus physical Marty
+  timing before claiming completion.
