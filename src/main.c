@@ -8919,8 +8919,7 @@ static void draw_spin_glyph(int cx, int cy, unsigned char ch, int scale,
 }
 
 /* Draws `msg` centred on `cx`, letter i having spun for (anim - i*spread)
-   frames. Returns the number of letters that have finished settling, so the
-   caller can tick a cue as each one lands. */
+   frames. Returns the number of letters that have finished settling. */
 static int draw_result_banner(int cx, int y, const char *msg, int scale,
                               int anim, uint8_t fg, uint8_t edge)
 {
@@ -15016,18 +15015,11 @@ static void draw_interactive_result(void)
         if (anim >= WAIFU_PCFX_HANDTOP_FRAMES + 8) {
             int text_f = anim - WAIFU_PCFX_HANDTOP_FRAMES - 8;
 #if defined(WAIFU_PLATFORM_HW3D)
-            /* Each letter lands with its own tick, so the banner arrives as a
-               flourish over the result music instead of simply appearing. */
-            static int s_result_landed = 0;
-            int landed;
-            if (text_f <= 1) s_result_landed = 0;
-            landed = draw_result_banner(ui_center_x(0), 100, msg, 3, text_f,
-                                        g_b_result < 0 ? IDX_RED : IDX_GOLD_HI,
-                                        g_b_result < 0 ? IDX_UI_RED : IDX_GOLD_DARK);
-            while (s_result_landed < landed) {
-                waifu_sound_play(g_b_result < 0 ? WAIFU_SOUND_SELECT : WAIFU_SOUND_CONFIRM_ALT);
-                ++s_result_landed;
-            }
+            /* The letters land silently: the result music carries the moment,
+               and a per-letter cue fired the menu blips eight times over. */
+            (void)draw_result_banner(ui_center_x(0), 100, msg, 3, text_f,
+                                     g_b_result < 0 ? IDX_RED : IDX_GOLD_HI,
+                                     g_b_result < 0 ? IDX_UI_RED : IDX_GOLD_DARK);
 #else
             int32_t e = q8_smooth_ratio(text_f, 42);
             int scale = (text_f < 42) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
