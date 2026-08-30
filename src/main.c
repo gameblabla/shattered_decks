@@ -14814,6 +14814,22 @@ static void attach_player_fusion_final_equips(int target_slot)
     }
 }
 
+/* Did the chain that just resolved actually SUMMON a monster?
+
+   An equip-only chain (no fusion happened, equips were attached) whose monster
+   came from the field summoned nothing: it bolted equips onto a card that was
+   already standing there. Charging the turn's one summon for that took away a
+   play the player never made -- and the direct equip path (an equip card
+   confirmed on a field monster, finish_equip) has never charged for it, so the
+   two routes to the same action disagreed. */
+static int player_fusion_summoned_a_monster(void)
+{
+    int src = g_b_fusion_anim_final_source_index;
+    if (!g_b_fusion_anim_equip_only) return 1;      /* a real fusion, or a failed pair */
+    if (src < 0 || src >= FUSION_MAX_MATERIALS) return 1;
+    return g_b_fusion_anim_slots[src] != FUSION_FIELD_SLOT;
+}
+
 static void finish_player_fusion_anim(void)
 {
     int i;
@@ -14832,7 +14848,7 @@ static void finish_player_fusion_anim(void)
             g_i_player_defense[placed_slot] = 0;
             g_i_player_attacked[placed_slot] = 0;
             attach_player_fusion_final_equips(placed_slot);
-            g_b_player_monster_played_this_turn = 1;
+            if (player_fusion_summoned_a_monster()) g_b_player_monster_played_this_turn = 1;
             g_b_selected_player_slot = placed_slot;
             set_top_selector(placed_slot, PLAYER_CARD_ROW);
         } else if (g_b_fusion_anim_has_field_card && target_slot >= 0 && target_slot < I_FIELD) {
@@ -14852,7 +14868,7 @@ static void finish_player_fusion_anim(void)
         g_b_selected_hand = next_live_hand_index(g_b_selected_hand, 1);
         g_b_cards_used += used_hand_count;
         g_b_player_fused_this_turn = 1;
-        g_b_player_monster_played_this_turn = 1;
+        if (player_fusion_summoned_a_monster()) g_b_player_monster_played_this_turn = 1;
         if (discarded_material) waifu_sound_play(WAIFU_SOUND_CARD_DESTROYED);
         if (placed_slot >= 0) waifu_sound_play(WAIFU_SOUND_CARD_PLACED);
     }
@@ -18142,6 +18158,22 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
         }
         break;
 
+    case WAIFU_I_STORY_PYRAMID:
+        /* The sanctum's four rows (SAVE / DECK EDITOR / QUIT / BACK), laid out
+           at 18 px starting at y=122 inside the panel at x=126..248. */
+        for (i = 0; i < 4; ++i) {
+            if (!ptr_in(cx, cy, 139, 122 + i * 18 - 4, 109, 18)) continue;
+            g_story_pyramid_cursor = i;
+            if (p.left_pressed) *press_a = 1;
+        }
+        if (p.right_pressed) *press_b = 1;   /* back to the map */
+        break;
+
+    case WAIFU_I_STORY_SAVE:
+        /* A result panel whose own prompt reads "A/RUN/B BACK": any click. */
+        if (p.left_pressed || p.right_pressed) *press_a = 1;
+        break;
+
     case WAIFU_I_DECK_EDITOR: {
         int ed_dx = ptr_column_dx() + WAIFU_UI_CENTER_DX;
         int count = deck_editor_active_count();
@@ -20167,6 +20199,52 @@ static int debug_regression_fusion_equip_only(void)
         }
         printf("REGRESSION fusion_occupied_equip OK field=%d equip=%d atk_bonus=%d\n",
                g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0]);
+    }
+
+    /* EQUIPS ONLY, onto a monster that is already on the field. Nothing was
+       summoned -- the card was standing there before and is standing there
+       after -- so the turn's one monster action must survive, exactly as it
+       does when the same equip is confirmed through the direct equip flow. */
+    {
+        int k;
+        debug_setup_fusion_equip_scenario("fusion-then-equip");
+        for (k = 0; k < I_HAND; ++k) g_i_player_used[k] = 1;
+        g_i_player_field[0] = WAIFU_CARD_ID_GOLEM_IDOL;
+        g_i_player_faceup[0] = 1;
+        g_i_player_defense[0] = 0;
+        g_i_player_atk_bonus[0] = 0;
+        g_i_player_def_bonus[0] = 0;
+        g_i_player_hand[0] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_used[0] = 0;
+        g_b_player_monster_played_this_turn = 0;
+        g_b_player_fused_this_turn = 0;
+        clear_player_fusion_queue();
+        if (try_queue_player_fusion_slot(0) != 1) {
+            fprintf(stderr, "REGRESSION fusion_field_equip_keeps_summon FAIL: queue_count=%d\n", g_b_fusion_count);
+            return 1;
+        }
+        if (!prepare_player_fusion_anim(0)) {
+            fprintf(stderr, "REGRESSION fusion_field_equip_keeps_summon FAIL: prepare failed\n");
+            return 1;
+        }
+        if (!g_b_fusion_anim_equip_only || g_b_fusion_anim_final_card != WAIFU_CARD_ID_GOLEM_IDOL) {
+            fprintf(stderr, "REGRESSION fusion_field_equip_keeps_summon FAIL: equip_only=%d final=%d\n",
+                    g_b_fusion_anim_equip_only, g_b_fusion_anim_final_card);
+            return 1;
+        }
+        finish_player_fusion_anim();
+        if (g_i_player_field[0] != WAIFU_CARD_ID_GOLEM_IDOL ||
+            g_i_player_equip_field[0] != SUPPORT_EQUIP_CARD_ID ||
+            g_i_player_atk_bonus[0] != equip_atk_bonus(SUPPORT_EQUIP_CARD_ID) ||
+            !player_can_place_monster()) {
+            fprintf(stderr, "REGRESSION fusion_field_equip_keeps_summon FAIL: field=%d equip=%d atk_bonus=%d can_place=%d\n",
+                    g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0],
+                    player_can_place_monster());
+            return 1;
+        }
+        printf("REGRESSION fusion_field_equip_keeps_summon OK field=%d equip=%d atk_bonus=%d can_place=%d\n",
+               g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0],
+               player_can_place_monster());
     }
 
     /* Occupied-zone chain fusion: two weak WATER hand monsters first assemble

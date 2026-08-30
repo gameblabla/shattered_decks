@@ -87,10 +87,6 @@ uint8_t *waifu_sdl3_hires_card_decode(int card_id, int kind, int *w, int *h)
 
 #define PORTRAIT_BOX_W (124 * WAIFU_SDL3_PORTRAIT_SCALE)
 #define PORTRAIT_BOX_H (200 * WAIFU_SDL3_PORTRAIT_SCALE)
-/* How much of the figure's height the bust crop keeps, and how far below the
-   top of the alpha bounding box it starts (hair needs headroom). */
-#define PORTRAIT_UPPER_FRACTION 0.55f
-#define PORTRAIT_HEAD_MARGIN    0.01f
 
 /* Alpha bounding box of an RGBA image; returns 0 if fully transparent. */
 static int alpha_bbox(const uint8_t *px, int w, int h, int *x0, int *y0, int *x1, int *y1)
@@ -157,10 +153,10 @@ static void resample_box(const uint8_t *src, int sw, int srx, int sry, int srw, 
 uint8_t *waifu_sdl3_hires_portrait_decode(int portrait_id, int *w, int *h)
 {
     const char *path;
-    uint8_t *src, *box;
+    uint8_t *src, *box, *art;
     int sw = 0, sh = 0;
     int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
-    int tw, th, cw, ch, cx, cy;
+    int tw, th, ch, dst_h, oy, y;
 
     if (portrait_id < 0 || portrait_id >= WAIFU_SDL3_PORTRAIT_SRC_COUNT) return NULL;
     path = waifu_sdl3_portrait_src[portrait_id];
@@ -173,34 +169,32 @@ uint8_t *waifu_sdl3_hires_portrait_decode(int portrait_id, int *w, int *h)
     tw = bx1 - bx0;
     th = by1 - by0;
 
-    /* Bust framing: take the top PORTRAIT_UPPER_FRACTION of the figure and a
-       width that gives the portrait cell's aspect, so the crop FILLS the cell
-       with head and torso instead of standing a whole tiny figure in it. The
-       console 8bpp portrait keeps its full-figure framing -- there the cell is
-       124x200 real pixels and a bust would be all nose. */
-    ch = (int)(th * PORTRAIT_UPPER_FRACTION);
-    cw = (int)((float)ch * (float)PORTRAIT_BOX_W / (float)PORTRAIT_BOX_H + 0.5f);
-    if (cw > tw) {
-        /* Narrow source (a tall cut-out): widen as far as it goes and take the
-           height that matches, which shows a little more of the body. */
-        cw = tw;
-        ch = (int)((float)cw * (float)PORTRAIT_BOX_H / (float)PORTRAIT_BOX_W + 0.5f);
-        if (ch > th) ch = th;
-    }
-    if (cw < 1) cw = 1;
+    /* NEVER crop the sides. The figure's full width is kept and the cell's
+       aspect decides how much of its HEIGHT fits; taking that from the top of
+       the alpha box keeps the head in frame. A figure taller than the cell
+       therefore shows its upper body (the framing this screen wants), and one
+       shorter than the cell shows all of it, standing on the bottom edge with
+       transparency above -- which is the console portrait's own framing. */
+    ch = (int)(((long long)tw * PORTRAIT_BOX_H + PORTRAIT_BOX_W / 2) / PORTRAIT_BOX_W);
+    if (ch > th) ch = th;
     if (ch < 1) ch = 1;
-    cx = bx0 + (tw - cw) / 2;                 /* centred on the figure */
-    cy = by0 + (int)(th * PORTRAIT_HEAD_MARGIN); /* a little air above the head */
-    if (cy + ch > by1) cy = by1 - ch;
-    if (cy < 0) cy = 0;
-    if (cx < 0) cx = 0;
-    if (cx + cw > sw) cx = sw - cw;
-    if (cy + ch > sh) cy = sh - ch;
 
-    box = (uint8_t *)malloc((size_t)PORTRAIT_BOX_W * PORTRAIT_BOX_H * 4);
-    if (!box) { free(src); return NULL; }
-    resample_box(src, sw, cx, cy, cw, ch, box, PORTRAIT_BOX_W, PORTRAIT_BOX_H);
+    dst_h = (int)(((long long)ch * PORTRAIT_BOX_W + tw / 2) / tw);
+    if (dst_h > PORTRAIT_BOX_H) dst_h = PORTRAIT_BOX_H;
+    if (dst_h < 1) dst_h = 1;
+
+    box = (uint8_t *)calloc((size_t)PORTRAIT_BOX_W * PORTRAIT_BOX_H, 4);
+    art = (uint8_t *)malloc((size_t)PORTRAIT_BOX_W * dst_h * 4);
+    if (!box || !art) { free(box); free(art); free(src); return NULL; }
+    resample_box(src, sw, bx0, by0, tw, ch, art, PORTRAIT_BOX_W, dst_h);
     free(src);
+
+    oy = PORTRAIT_BOX_H - dst_h;          /* stands on the bottom of the cell */
+    for (y = 0; y < dst_h; ++y) {
+        memcpy(box + ((size_t)(oy + y) * PORTRAIT_BOX_W) * 4,
+               art + ((size_t)y * PORTRAIT_BOX_W) * 4, (size_t)PORTRAIT_BOX_W * 4);
+    }
+    free(art);
     *w = PORTRAIT_BOX_W;
     *h = PORTRAIT_BOX_H;
     return box;
