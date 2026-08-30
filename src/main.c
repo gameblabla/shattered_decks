@@ -8030,21 +8030,47 @@ typedef enum {
     BATTLE_NO_DESTROY = 4
 } BattleOutcome;
 
+/* A combatant's name during the cut-in. The console draws it on a filled black
+   plate, which is the cheap way to keep 8x8 white text readable over whatever
+   the animation leaves behind. The PC build stages the clash over the arena
+   backdrop instead of over a black screen, and there those two plates read as
+   black rectangles pasted onto the scene -- one of them big enough to look like
+   leftover garbage under the destroyed card. So on PC the plate is dropped and
+   the name carries its own black outline. */
+#if defined(WAIFU_PLATFORM_HW3D)
+static void draw_wrapped_text_small_outlined(int x, int y, const char *s, int max_chars,
+                                             uint8_t fg, uint8_t outline)
+{
+    static const int dir[8][2] = {
+        { -1, -1 }, { 0, -1 }, { 1, -1 }, { -1, 0 },
+        { 1, 0 }, { -1, 1 }, { 0, 1 }, { 1, 1 }
+    };
+    int i;
+    for (i = 0; i < 8; ++i)
+        draw_wrapped_text_small(x + dir[i][0], y + dir[i][1], s, max_chars, outline, outline);
+    draw_wrapped_text_small(x, y, s, max_chars, fg, outline);
+}
+#endif
+
 static void draw_battle_cutin_names(int atk_id, int def_id)
 {
+    const char *atk_name = is_monster_card(atk_id) ? waifu_card_names[atk_id]
+                         : (is_support_card(atk_id) ? support_card_name(atk_id) : "???");
+    const char *def_name = is_monster_card(def_id) ? waifu_card_names[def_id]
+                         : (is_support_card(def_id) ? support_card_name(def_id) : "???");
+    int rx = WAIFU_FM_WIDTH + waifu_platform_ui_extra_w();
+#if defined(WAIFU_PLATFORM_HW3D)
+    draw_wrapped_text_small_outlined(4, 4, atk_name, 19, IDX_WHITE, IDX_BLACK);
+    /* 20 cells of 7 px is 140, so the console's -134 hung the last letter over
+       the screen edge once the plate stopped covering for it. */
+    draw_wrapped_text_small_outlined(rx - 145, WAIFU_FM_HEIGHT - 41, def_name, 20,
+                                     IDX_WHITE, IDX_BLACK);
+#else
     rect_fill(0, 2, 128, 22, IDX_BLACK);
-    {
-        const char *name = is_monster_card(atk_id) ? waifu_card_names[atk_id] : (is_support_card(atk_id) ? support_card_name(atk_id) : "???");
-        draw_wrapped_text_small(4, 4, name, 19, IDX_WHITE, IDX_BLACK);
-    }
-    {
-        int rx = WAIFU_FM_WIDTH + waifu_platform_ui_extra_w();
-        rect_fill(rx - 138, WAIFU_FM_HEIGHT - 42, 138, 42, IDX_BLACK);
-        {
-            const char *name = is_monster_card(def_id) ? waifu_card_names[def_id] : (is_support_card(def_id) ? support_card_name(def_id) : "???");
-            draw_wrapped_text_small(rx - 134, WAIFU_FM_HEIGHT - 41, name, 20, IDX_WHITE, IDX_BLACK);
-        }
-    }
+    draw_wrapped_text_small(4, 4, atk_name, 19, IDX_WHITE, IDX_BLACK);
+    rect_fill(rx - 138, WAIFU_FM_HEIGHT - 42, 138, 42, IDX_BLACK);
+    draw_wrapped_text_small(rx - 134, WAIFU_FM_HEIGHT - 41, def_name, 20, IDX_WHITE, IDX_BLACK);
+#endif
 }
 
 #if defined(WAIFU_FM_FMTOWNS)
@@ -14141,9 +14167,17 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     /* Match the normal monster-battle card lanes. The previous direct-attack
        lanes were shifted inward, so the attacker appeared too far right/left
        before and after the lunge. */
-    int ax = (g_b_battle_atk_owner == 0) ? WAIFU_BATTLE_CARD_X0 : WAIFU_BATTLE_CARD_X1;
+    /* Widescreen: this clash is authored for the 256-wide column, so without the
+       HUD bracket it was confined to it -- the attacker slid in from the COLUMN
+       edge and its hi-res art was clipped there, which read as the card being
+       cut off by an invisible 4:3 window. ho == 0 on console, so the authored
+       positions are unchanged there. */
+    const int extra_w = waifu_platform_ui_extra_w();
+    const int ho = extra_w / 2;
+    int ax = ((g_b_battle_atk_owner == 0) ? WAIFU_BATTLE_CARD_X0 : WAIFU_BATTLE_CARD_X1) + ho;
     int ay = WAIFU_BATTLE_CARD_Y;
-    int target_x = (g_b_battle_atk_owner == 0) ? (WAIFU_BATTLE_CARD_X1 + 22) : (WAIFU_BATTLE_CARD_X0 + 24);
+    int target_x = ((g_b_battle_atk_owner == 0) ? (WAIFU_BATTLE_CARD_X1 + 22)
+                                                : (WAIFU_BATTLE_CARD_X0 + 24)) + ho;
     int target_y = WAIFU_BATTLE_CARD_Y;
     int card_x = ax;
     if (local < WAIFU_BATTLE_PRELUDE_FRAMES) {
@@ -14158,9 +14192,11 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     }
     restore_solid_screen(IDX_BLACK);
     waifu_platform_arena_backdrop();
+    ui_hud_begin();
     local -= WAIFU_BATTLE_PRELUDE_FRAMES;
     if (atk_back && local < flip_dur) {
         draw_big_battle_card_flip(atk_id, ax, ay, local, flip_dur);
+        ui_hud_end();
         fb_damage_force_overlay_history();
         return;
     }
@@ -14172,7 +14208,8 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     }
     if (local < WAIFU_DIRECT_SLIDE_FRAMES) {
         int32_t e = q8_smooth_ratio(local, WAIFU_DIRECT_SLIDE_FRAMES);
-        card_x = lerp_i((g_b_battle_atk_owner == 0) ? -WAIFU_BATTLE_CARD_W : WAIFU_FM_WIDTH + 8, ax, e);
+        card_x = lerp_i((g_b_battle_atk_owner == 0) ? -WAIFU_BATTLE_CARD_W
+                                                    : WAIFU_FM_WIDTH + extra_w + 8, ax, e);
     } else if (local < WAIFU_DIRECT_SLIDE_FRAMES + WAIFU_DIRECT_LUNGE_FRAMES) {
         int32_t t = q8_ratio(local - WAIFU_DIRECT_SLIDE_FRAMES, WAIFU_DIRECT_LUNGE_FRAMES);
         int32_t lunge = (t < Q8_FRAC(62,100)) ? q8_smoothstep(q8_div(t, Q8_FRAC(62,100))) : Q8_ONE - q8_smoothstep(q8_div(t - Q8_FRAC(62,100), Q8_FRAC(38,100)));
@@ -14190,6 +14227,7 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
             draw_centered_damage_text_in_card(target_x - 20, 36, g_b_damage_text);
         }
     }
+    ui_hud_end();
     fb_damage_force_overlay_history();
 }
 
