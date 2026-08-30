@@ -3912,20 +3912,35 @@ static void draw_stat_icon_shield(int x, int y)
 }
 #endif /* WAIFU_PLATFORM_HW3D */
 
-static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, int atk, int defv)
+/* THE DUEL'S BOTTOM INFO BAR.
+   Every variant -- a named card, an empty zone, a face-down monster -- is the
+   same teal bar with the same rules and differs only in its two lines of text,
+   so they all raise it here. They used to be three copies, and the two the top
+   view uses were still drawing themselves WAIFU_FM_WIDTH wide with no HUD
+   bracket: on a widescreen display the bar under the tactical view stopped at
+   the 256-wide column while the identical bar under the hand view reached the
+   screen edges. Opens the HUD bracket (the caller closes it) and returns the
+   width the bar actually spans, which is what the right-anchored text uses. */
+static int bottom_info_bar(int base)
 {
-    (void)mode;
-    int base = WAIFU_BOTTOM_INFO_Y + yoff;
-    /* Widescreen: the info bar spans the full frame; the name stays at the left
-       edge, stats anchor to the right edge. */
     int hw = WAIFU_FM_WIDTH + waifu_platform_ui_extra_w();
-#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
-    fmtowns_turn_record_overlay_rect(0, base, hw, base + 35);
-#endif
     ui_hud_begin();
     rect_fill(0, base, hw, 35, IDX_UI_TEAL);
     hline(0,hw-1,base,IDX_WHITE); hline(0,hw-1,base+1,IDX_UI_LIGHT); hline(0,hw-1,base+2,IDX_DIM);
     for (int y = base+4; y < base+35; y += 3) hline(0,hw-1,y,IDX_UI_TEAL2);
+    return hw;
+}
+
+static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, int atk, int defv)
+{
+    (void)mode;
+    int base = WAIFU_BOTTOM_INFO_Y + yoff;
+    int hw;
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    fmtowns_turn_record_overlay_rect(0, base, WAIFU_FM_WIDTH + waifu_platform_ui_extra_w(),
+                                     base + 35);
+#endif
+    hw = bottom_info_bar(base);
     char line[64];
     if (is_support_card(card_id)) {
         char support_line[64];
@@ -3937,7 +3952,7 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
         ui_hud_end();
         return;
     }
-    if (!is_monster_card(card_id)) { waifu_platform_ui_hud(0); return; }
+    if (!is_monster_card(card_id)) { ui_hud_end(); return; }
     waifu_str_copy_n(line, (int)sizeof(line), waifu_card_names[card_id], 24);
     draw_text(6, base+6, line, IDX_WHITE, IDX_BLACK);
     fmt_join2(line, (int)sizeof(line), waifu_card_attr[card_id], " / ", waifu_card_tribe[card_id]);
@@ -10482,24 +10497,22 @@ static void draw_bottom_empty_field(const char *mode)
 {
     char line[48];
     int base = WAIFU_BOTTOM_INFO_Y;
-    rect_fill(0, base, WAIFU_FM_WIDTH, 35, IDX_UI_TEAL);
-    hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
-    for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
+    (void)bottom_info_bar(base);
     waifu_str_copy(line, (int)sizeof(line), mode ? mode : "FIELD"); waifu_str_cat(line, (int)sizeof(line), " C"); waifu_str_cat_i32(line, (int)sizeof(line), g_b_top_col + 1); waifu_str_cat(line, (int)sizeof(line), " R"); waifu_str_cat_i32(line, (int)sizeof(line), g_b_top_row + 1);
     draw_text(6, base+6, line, IDX_DIM, IDX_BLACK);
     draw_text_small(6, base+21, "EMPTY ZONE", IDX_WHITE, IDX_BLACK);
+    ui_hud_end();
 }
 
 /* Hidden info for a face-down monster: never reveal name / attribute / stats. */
 static void draw_bottom_info_facedown(const char *mode)
 {
     int base = WAIFU_BOTTOM_INFO_Y;
-    rect_fill(0, base, WAIFU_FM_WIDTH, 35, IDX_UI_TEAL);
-    hline(0,WAIFU_FM_WIDTH-1,base,IDX_WHITE); hline(0,WAIFU_FM_WIDTH-1,base+1,IDX_UI_LIGHT); hline(0,WAIFU_FM_WIDTH-1,base+2,IDX_DIM);
-    for (int y = base+4; y < base+35; y += 3) hline(0,WAIFU_FM_WIDTH-1,y,IDX_UI_TEAL2);
+    int hw = bottom_info_bar(base);
     draw_text(6, base+6, "SET MONSTER", IDX_WHITE, IDX_BLACK);
     draw_text_small(6, base+21, "FACE-DOWN / HIDDEN", IDX_WHITE, IDX_BLACK);
-    if (mode) draw_text_small(WAIFU_FM_WIDTH - 68, base+21, mode, IDX_GOLD_HI, IDX_BLACK);
+    if (mode) draw_text_small(hw - 68, base+21, mode, IDX_GOLD_HI, IDX_BLACK);
+    ui_hud_end();
 }
 
 static void draw_bottom_info_top_selector(const char *mode)
