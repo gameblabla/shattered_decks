@@ -5149,6 +5149,13 @@ static void draw_big_battle_card_stats(int id, int x, int y, int back, int atk, 
         return;
     }
     if (is_support_card(id)) {
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* PC: send it through the same path the hand thumbnail uses, so a
+           Spell / Equip / Trap wears its real full-resolution front frame at
+           this size too instead of the art inside a drawn blue rectangle. */
+        draw_support_sprite(id, x, y, w, h);
+        return;
+#endif
         /* Support/equip cards can appear in battle reveals only if bad/stale
            state puts them in a monster zone. Draw the support art with the
            support card's distinct blue frame and no ATK/DEF/stat strings;
@@ -13612,6 +13619,13 @@ static void render_interactive_card_preview_static(int card_id)
         tx = art_x + 132;
         maxw = WAIFU_FM_WIDTH - tx - 10;
         if (maxw < 96) maxw = 96;
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* PC: the same footprint a monster's big card occupies, drawn through
+           the hand-thumbnail path so the card wears its real Spell / Equip /
+           Trap front frame here too -- until now only the small thumbnail did,
+           and the check screen showed the bare art in a blue rectangle. */
+        draw_support_sprite(card_id, art_x, WAIFU_BATTLE_CARD_Y, 120, 160);
+#else
         {
             int trap = is_trap_support_card(card_id);
             rect_fill(art_x - 1, 36, 128, 160, IDX_BLACK);
@@ -13619,6 +13633,7 @@ static void render_interactive_card_preview_static(int card_id)
             rect_outline(art_x - 3, 34, 132, 164, trap ? IDX_TRAP_FRAME_HI : IDX_BLUE_WHITE);
             rect_outline(art_x - 2, 35, 130, 162, trap ? IDX_TRAP_FRAME : IDX_UI_BLUE);
         }
+#endif
         draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
         lines = draw_wrapped_text_small_box(tx, y, maxw, 3, 10, support_card_name(card_id), IDX_WHITE, IDX_BLACK);
         y += lines * 10 + 7;
