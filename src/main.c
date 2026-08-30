@@ -3988,6 +3988,66 @@ static void draw_stat_icon_shield(int x, int y)
     put_px(x + 2, y + 2, IDX_WHITE);
 }
 
+/* ---- deck-editor label icons ----------------------------------------------
+   The editor's counters were words: DECK, STORAGE, SUPPORT, EQ. On PC each is
+   a small drawn mark instead, so the counts read at a glance and the panel
+   stops being four lines of shouting capitals. All are authored on a 9x9 cell
+   that sits on the small-text line, like the stat icons above. */
+
+#define LABEL_ICON_W 9
+#define LABEL_ICON_H 9
+
+/* Three cards fanned out of a stack. */
+static void draw_label_icon_deck(int x, int y)
+{
+    int i;
+    for (i = 2; i >= 0; --i) {
+        int ox = x + i, oy = y + (2 - i) * 2;
+        rect_fill(ox, oy, 6, 6, i == 0 ? IDX_GOLD_HI : IDX_GOLD_DARK);
+        rect_outline(ox, oy, 6, 6, IDX_BLACK);
+    }
+}
+
+/* A lidded chest with a clasp. */
+static void draw_label_icon_storage(int x, int y)
+{
+    rect_fill(x, y + 1, 9, 3, IDX_GOLD_HI);
+    rect_outline(x, y + 1, 9, 3, IDX_GOLD_DARK);
+    rect_fill(x, y + 4, 9, 5, IDX_DARK_BROWN);
+    rect_outline(x, y + 4, 9, 5, IDX_GOLD_DARK);
+    rect_fill(x + 4, y + 3, 2, 3, IDX_GOLD_HI);
+}
+
+/* A four-point sparkle. */
+static void draw_label_icon_support(int x, int y)
+{
+    int cx = x + 4, cy = y + 4, r;
+    for (r = 0; r <= 4; ++r) {
+        hline(cx - (4 - r), cx + (4 - r), cy - r, IDX_UI_LIGHT);
+        hline(cx - (4 - r), cx + (4 - r), cy + r, IDX_UI_LIGHT);
+    }
+    put_px(cx, cy, IDX_WHITE);
+}
+
+/* A ring with its stone. */
+static void draw_label_icon_equip(int x, int y)
+{
+    rect_outline(x + 1, y + 3, 7, 6, IDX_GOLD_HI);
+    rect_outline(x + 2, y + 4, 5, 4, IDX_GOLD_DARK);
+    rect_fill(x + 3, y, 3, 3, IDX_UI_TEAL);
+    rect_outline(x + 3, y, 3, 3, IDX_GOLD_HI);
+}
+
+/* One "<icon> <text>" counter. Returns the x just past the text. */
+static int draw_label_count(int x, int y, void (*icon)(int, int),
+                            const char *text, uint8_t fg)
+{
+    icon(x, y - 1);
+    x += LABEL_ICON_W + 3;
+    draw_text_small(x, y, text, fg, IDX_BLACK);
+    return x + (int)strlen(text) * 7;
+}
+
 /* "<sword> nnnn  <shield> nnnn" at the small-text cell, in place of spelling
    ATK and DEF out. Returns the x just past the last digit. The icons are 9
    tall against the cell's 8, so they hang one pixel above the baseline row. */
@@ -10266,6 +10326,17 @@ static int g_story_fire_line = 0;
 static int g_deck_tab = 0; /* 0 deck, 1 storage */
 static int g_deck_cursor = 0;
 static int g_deck_scroll[2] = {0, 0};
+#if defined(WAIFU_PLATFORM_HW3D)
+/* PC scrolls the gallery by the pixel rather than by the row, so the grid can
+   come to rest between rows and a drag can move it continuously. The row-based
+   g_deck_scroll above is still what the console layout uses. */
+static int g_deck_scroll_px[2] = {0, 0};
+static int g_deck_drag_card = -1;    /* index in the active array being dragged */
+static int g_deck_drag_tab = 0;
+static int g_deck_drag_x = 0, g_deck_drag_y = 0;
+static int g_deck_pan = 0;           /* a left-drag over empty grid pans it */
+static int g_deck_pan_y0 = 0, g_deck_pan_px0 = 0;
+#endif
 static int g_deck_flash = 0;
 static int g_deck_flash_reason = 0; /* 0 generic/count, 1 copy limit */
 static int g_deck_preview_card = CARD_NONE;
@@ -11611,6 +11682,12 @@ static void reset_story_deck_editor(void)
     g_deck_cursor = 0;
     g_deck_scroll[0] = 0;
     g_deck_scroll[1] = 0;
+#if defined(WAIFU_PLATFORM_HW3D)
+    g_deck_scroll_px[0] = 0;
+    g_deck_scroll_px[1] = 0;
+    g_deck_drag_card = -1;
+    g_deck_pan = 0;
+#endif
     g_deck_flash = 0;
     g_deck_flash_reason = 0;
     g_deck_preview_card = CARD_NONE;
@@ -11650,6 +11727,10 @@ static int deck_editor_active_count(void)
     return g_deck_tab ? g_story_storage_count : g_story_deck_count;
 }
 
+#if defined(WAIFU_PLATFORM_HW3D)
+static void deck_scroll_follow_cursor(void);
+#endif
+
 static void deck_editor_clamp_cursor(void)
 {
     int count = deck_editor_active_count();
@@ -11674,6 +11755,9 @@ static void deck_editor_clamp_cursor(void)
     if (max_scroll_row < 0) max_scroll_row = 0;
     if (scroll_row > max_scroll_row) scroll_row = max_scroll_row;
     *scroll = scroll_row * DECK_GRID_COLS;
+#if defined(WAIFU_PLATFORM_HW3D)
+    deck_scroll_follow_cursor();
+#endif
 }
 
 static void deck_editor_switch_tab(void)
@@ -17642,8 +17726,236 @@ static void draw_deck_editor_icon(int card, int x, int y, int selected)
    is. */
 static int deck_side_margin_room(void) { return waifu_platform_ui_extra_w() >= 160; }
 
+#if defined(WAIFU_PLATFORM_HW3D)
+/* ---- the PC deck editor ----------------------------------------------------
+   The console editor is one column: two tabs, a three-row grid that steps a
+   whole row at a time, a one-line info bar and a row of control hints. It has
+   to be, at 256 px wide.
+
+   On PC the panel is wide enough to hold the card check itself, so the layout
+   splits: the selected card stands full size at the LEFT with its name, its
+   stats and its lore under it -- no separate check screen to open -- and the
+   gallery moves to the RIGHT, where it scrolls by the pixel rather than by the
+   row. A card is moved between deck and storage by dragging it onto the other
+   tab; dragging the empty space between cards pans the gallery. The counters
+   are drawn marks instead of words, and the control-hint line is gone: there
+   is nothing left on this screen that needs explaining in text. */
+
+#define ED_ROW_H 45
+#define ED_COL_W 40
+#define ED_PANE_W 168          /* left check pane, when there is room for it */
+
+/* The two-pane layout needs a real left column; a game-aspect window has none,
+   and there the authored single-column layout is kept (with the pixel scroll). */
+static int deck_pane_layout(void) { return g_ui_clip_w >= 380; }
+static int deck_grid_x(void)
+{
+    return deck_pane_layout() ? ED_PANE_W
+                              : (WAIFU_UI_CENTER_DX + ui_center_dx() + 14);
+}
+static int deck_tab_y(void) { return 27; }
+/* Below the tab row AND the SUPPORT/EQ counters that sit under it. */
+static int deck_grid_y0(void) { return 58; }
+static int deck_grid_y1(void) { return WAIFU_UI_BOTTOM_Y(deck_pane_layout() ? 212 : 188); }
+static int deck_view_h(void) { return deck_grid_y1() - deck_grid_y0(); }
+static int deck_scroll_max(int count)
+{
+    int rows = (count + DECK_GRID_COLS - 1) / DECK_GRID_COLS;
+    int m = rows * ED_ROW_H - deck_view_h();
+    return m < 0 ? 0 : m;
+}
+
+/* Bring the scroll back inside its range without moving it otherwise. */
+static void deck_scroll_clamp(void)
+{
+    int *px = &g_deck_scroll_px[g_deck_tab];
+    int m = deck_scroll_max(deck_editor_active_count());
+    if (*px > m) *px = m;
+    if (*px < 0) *px = 0;
+}
+
+/* Scroll just far enough that the cursor's row is fully in view. Called when
+   the PAD moves the cursor; a pointer click leaves the view where it is. */
+static void deck_scroll_follow_cursor(void)
+{
+    int *px = &g_deck_scroll_px[g_deck_tab];
+    int count = deck_editor_active_count();
+    int top, bottom;
+    if (count <= 0) { *px = 0; return; }
+    top = (g_deck_cursor / DECK_GRID_COLS) * ED_ROW_H;
+    bottom = top + 40;
+    if (top < *px) *px = top;
+    else if (bottom > *px + deck_view_h()) *px = bottom - deck_view_h();
+    deck_scroll_clamp();
+}
+
+/* Screen rect of the grid cell holding `idx`, in the current scroll. */
+static void deck_cell_rect(int idx, int *x, int *y)
+{
+    *x = deck_grid_x() + (idx % DECK_GRID_COLS) * ED_COL_W;
+    *y = deck_grid_y0() + (idx / DECK_GRID_COLS) * ED_ROW_H - g_deck_scroll_px[g_deck_tab];
+}
+
+/* The card index under a point, or -1. Only cells fully inside the view are
+   pickable, so a half-scrolled row cannot be clicked through the header. */
+static int deck_cell_at(int px, int py)
+{
+    int count = deck_editor_active_count();
+    int i;
+    if (py < deck_grid_y0() || py >= deck_grid_y1()) return -1;
+    for (i = 0; i < count; ++i) {
+        int x, y;
+        deck_cell_rect(i, &x, &y);
+        if (y < deck_grid_y0() - 6 || y + 34 > deck_grid_y1() + 6) continue;
+        if (px >= x - 3 && px < x + 29 && py >= y - 3 && py < y + 37) return i;
+    }
+    return -1;
+}
+
+static int deck_tab_hit(int px, int py, int tab)
+{
+    int x = deck_grid_x() + tab * 122;
+    return px >= x && px < x + 114 && py >= deck_tab_y() && py < deck_tab_y() + 14;
+}
+
+/* The left pane: the selected card at full size, then everything the separate
+   check screen used to show. */
+static void draw_deck_check_pane(int card)
+{
+    int cx = 32, cy = 26, cw = 92, ch = 130;
+    int y;
+    if (card < 0) return;
+    draw_hand_card_sprite(card, cx, cy, cw, ch, 0);
+    y = cy + ch + 8;
+    y += draw_wrapped_text_small_box(10, y, ED_PANE_W - 22, 2, 10,
+                                     deck_editor_card_name(card),
+                                     IDX_WHITE, IDX_BLACK) * 10 + 4;
+    if (is_support_card(card)) {
+        draw_text_small(10, y, support_card_type(card), IDX_GOLD_HI, IDX_BLACK);
+        y += 12;
+        draw_wrapped_text_small_box(10, y, ED_PANE_W - 22, 3, 10,
+                                    support_card_effect(card), IDX_UI_LIGHT, IDX_BLACK);
+    } else {
+        draw_stat_icon_pair(10, y, (unsigned)waifu_card_atk[card],
+                            (unsigned)waifu_card_def[card], IDX_GOLD_HI);
+        y += 12;
+        draw_wrapped_text_small_box(10, y, ED_PANE_W - 22, 3, 10,
+                                    waifu_card_desc[card], IDX_UI_LIGHT, IDX_BLACK);
+    }
+}
+
+static void draw_deck_editor_pc(void)
+{
+    char line[64];
+    int count = deck_editor_active_count();
+    int *arr = deck_editor_active_array();
+    int selected_card = (count > 0 && g_deck_cursor < count) ? arr[g_deck_cursor] : CARD_NONE;
+    int gx, y0, y1, i;
+
+    clear_screen(IDX_BLACK);
+    ui_hud_begin();
+    fill_rows(0, 28, IDX_DARK_BROWN);
+    for (i = 24; i < WAIFU_FM_HEIGHT; i += 16) fill_rows(i > 28 ? i : 28, i + 8, IDX_UI_DARK);
+    draw_panel_rect(4, 4, g_ui_clip_w - 8, WAIFU_FM_HEIGHT - 8, IDX_UI_DARK);
+
+    deck_scroll_clamp();
+    gx = deck_grid_x();
+    y0 = deck_grid_y0();
+    y1 = deck_grid_y1();
+
+    /* The gallery first, then the bands above and below it painted back over
+       whatever a part-scrolled row spilled into them -- the cheap way to clip a
+       scrolling list on a renderer with no scissor of its own. */
+    if (count <= 0) {
+        draw_text_small(gx + 80, y0 + 40, "EMPTY", IDX_DIM, IDX_BLACK);
+    } else {
+        for (i = 0; i < count; ++i) {
+            int x, y;
+            if (i == g_deck_drag_card && g_deck_drag_tab == g_deck_tab) continue;
+            deck_cell_rect(i, &x, &y);
+            if (y + 40 < y0 || y > y1) continue;
+            draw_deck_editor_icon(arr[i], x, y, i == g_deck_cursor);
+        }
+    }
+    rect_fill(gx - 8, 24, g_ui_clip_w - gx + 4, y0 - 24, IDX_UI_DARK);
+    rect_fill(gx - 8, y1, g_ui_clip_w - gx + 4, WAIFU_FM_HEIGHT - 8 - y1, IDX_UI_DARK);
+
+    draw_centered_text(12, "DECK EDITOR", IDX_GOLD_HI, IDX_BLACK);
+
+    /* Tabs, named by their marks. */
+    for (i = 0; i < 2; ++i) {
+        int x = gx + i * 122;
+        int on = (g_deck_tab == i);
+        int hover = (g_deck_drag_card >= 0 && g_deck_drag_tab != i);
+        rect_fill(x, deck_tab_y(), 114, 14, on ? IDX_GOLD_DARK : IDX_BLACK);
+        rect_outline(x, deck_tab_y(), 114, 14, (on || hover) ? IDX_GOLD_HI : IDX_DIM);
+        if (i == 0) {
+            waifu_str_copy(line, (int)sizeof(line), "");
+            waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_deck_count);
+            waifu_str_cat(line, (int)sizeof(line), "/40");
+            draw_label_count(x + 8, deck_tab_y() + 3, draw_label_icon_deck, line,
+                             on ? IDX_WHITE : IDX_DIM);
+        } else {
+            waifu_str_copy(line, (int)sizeof(line), "");
+            waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_storage_count);
+            draw_label_count(x + 8, deck_tab_y() + 3, draw_label_icon_storage, line,
+                             on ? IDX_WHITE : IDX_DIM);
+        }
+    }
+
+    recalc_story_deck_counts();
+    {
+        int x = gx + 2;
+        waifu_str_copy(line, (int)sizeof(line), "");
+        waifu_str_cat_u32_z2(line, (int)sizeof(line),
+                             (unsigned)(g_story_support_count + g_story_equip_count));
+        x = draw_label_count(x, deck_tab_y() + 18, draw_label_icon_support, line, IDX_GOLD_HI) + 12;
+        waifu_str_copy(line, (int)sizeof(line), "");
+        waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_equip_count);
+        draw_label_count(x, deck_tab_y() + 18, draw_label_icon_equip, line, IDX_GOLD_HI);
+    }
+
+    if (deck_pane_layout()) {
+        draw_deck_check_pane(selected_card);
+    } else if (selected_card >= 0) {
+        /* A game-aspect window has no left column, so the card's name and stats
+           keep the authored one-line bar under the gallery. */
+        int by = WAIFU_UI_BOTTOM_Y(192);
+        rect_fill(gx - 5, by, g_ui_clip_w - (gx - 5) - 9, 30, IDX_BLACK);
+        rect_outline(gx - 5, by, g_ui_clip_w - (gx - 5) - 9, 30, IDX_UI_LIGHT);
+        draw_text_small_ellipsis(gx + 1, by + 6, deck_editor_card_name(selected_card),
+                                 25, IDX_WHITE, IDX_BLACK);
+        if (is_support_card(selected_card))
+            draw_text_small_ellipsis(gx + 1, by + 18, support_card_type(selected_card),
+                                     23, IDX_GOLD_HI, IDX_BLACK);
+        else
+            draw_stat_icon_pair(gx + 1, by + 18, (unsigned)waifu_card_atk[selected_card],
+                                (unsigned)waifu_card_def[selected_card], IDX_GOLD_HI);
+    }
+
+    /* The card in hand follows the pointer, above everything else. */
+    if (g_deck_drag_card >= 0) {
+        int *from = g_deck_drag_tab ? g_story_storage : g_story_player_deck;
+        int n = g_deck_drag_tab ? g_story_storage_count : g_story_deck_count;
+        if (g_deck_drag_card < n)
+            draw_deck_editor_icon(from[g_deck_drag_card], g_deck_drag_x - 13,
+                                  g_deck_drag_y - 17, 0);
+    }
+
+    if (g_deck_flash > 0 && ((g_deck_flash / 8) & 1) == 0) {
+        const char *msg = g_deck_flash_reason == 1 ? "MAX 4 COPIES" :
+            (g_story_deck_count == STORY_DECK_SIZE ? "DECK IS FULL" : "DECK MUST BE 40");
+        draw_centered_text(WAIFU_UI_BOTTOM_Y(222), msg, IDX_RED, IDX_BLACK);
+    }
+    ui_hud_end();
+}
+#endif /* WAIFU_PLATFORM_HW3D */
+
 static void draw_deck_editor(void)
 {
+#if defined(WAIFU_PLATFORM_HW3D)
+    draw_deck_editor_pc();
+#else
     char line[96];
     int count = deck_editor_active_count();
     int *arr = deck_editor_active_array();
@@ -17762,6 +18074,7 @@ static void draw_deck_editor(void)
     }
     draw_deck_editor_pointer_buttons();
     ui_hud_end();
+#endif /* WAIFU_PLATFORM_HW3D */
 }
 
 static void transition_draw_deck_editor_source(int frame, void *ctx)
@@ -19014,10 +19327,17 @@ static int deck_rows_can_go_up(void) { return g_deck_cursor >= DECK_GRID_COLS; }
 
 static void draw_deck_editor_pointer_buttons(void)
 {
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* The PC editor has no on-screen buttons: the wheel and a drag do the
+       scrolling, a drag onto the other tab moves a card, and the check is
+       always open in the left pane. */
+    return;
+#else
     int i;
     if (!g_ptr_active || !deck_btn_room()) return;
     for (i = 0; i < DECK_BTN_COUNT; ++i)
         ptr_button(deck_btn_x(), deck_btn_y(i), DECK_BTN_W, DECK_BTN_H, k_deck_btn_label[i]);
+#endif
 }
 
 /* Nearest board zone to a column-space point, or 0 if nothing is close enough.
@@ -19247,6 +19567,56 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
         int ed_dx = ptr_column_dx() + WAIFU_UI_CENTER_DX;
         int count = deck_editor_active_count();
         int scroll = g_deck_scroll[g_deck_tab];
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* PC: the wheel scrolls by the pixel; pressing on a card picks it up
+           and dropping it on the other tab moves it there; pressing anywhere
+           else in the gallery and moving pans it. Nothing here steps a whole
+           row, and there are no on-screen buttons to hit-test. */
+        {
+            int cell;
+            if (p.wheel) {
+                g_deck_scroll_px[g_deck_tab] -= p.wheel * (ED_ROW_H / 2);
+                deck_scroll_clamp();
+            }
+            g_deck_drag_x = p.x;
+            g_deck_drag_y = p.y;
+            if (p.left_pressed) {
+                if (deck_tab_hit(p.x, p.y, 0) && g_deck_tab != 0) { *press_tab = 1; break; }
+                if (deck_tab_hit(p.x, p.y, 1) && g_deck_tab != 1) { *press_tab = 1; break; }
+                cell = deck_cell_at(p.x, p.y);
+                if (cell >= 0) {
+                    g_deck_cursor = cell;
+                    g_deck_drag_card = cell;
+                    g_deck_drag_tab = g_deck_tab;
+                } else if (p.x >= deck_grid_x() - 8 && p.y >= deck_grid_y0() &&
+                           p.y < deck_grid_y1()) {
+                    g_deck_pan = 1;
+                    g_deck_pan_y0 = p.y;
+                    g_deck_pan_px0 = g_deck_scroll_px[g_deck_tab];
+                }
+            }
+            if (g_deck_pan) {
+                if (!p.left_down) g_deck_pan = 0;
+                else {
+                    g_deck_scroll_px[g_deck_tab] = g_deck_pan_px0 - (p.y - g_deck_pan_y0);
+                    deck_scroll_clamp();
+                }
+            }
+            if (g_deck_drag_card >= 0 && !p.left_down) {
+                int drop_other = deck_tab_hit(p.x, p.y, g_deck_drag_tab ? 0 : 1);
+                if (drop_other && g_deck_drag_card == g_deck_cursor &&
+                    g_deck_drag_tab == g_deck_tab) {
+                    *press_a = 1;   /* the same move the pad's A performs */
+                }
+                g_deck_drag_card = -1;
+            }
+            if (p.right_pressed) {
+                cell = deck_cell_at(p.x, p.y);
+                if (cell >= 0) g_deck_cursor = cell;
+            }
+            break;
+        }
+#endif
         /* The wheel walks the grid a row at a time, wherever the pointer is --
            the same thing the ROW UP / ROW DN buttons do, and what a wheel over
            a list is expected to do. Checked before the buttons so it still
