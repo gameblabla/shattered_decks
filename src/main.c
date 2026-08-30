@@ -8071,7 +8071,17 @@ static void draw_big_battle_card_burning_impl(int id, int x, int y, int back,
     int erase_h = (burn_frame * h) / vanish_frames;
     if (erase_h > h) erase_h = h;
     int edge = y + h - erase_h;
-    if (erase_h > 0) rect_fill(x-2, edge, w+4, erase_h+4, IDX_BLACK);
+    if (erase_h > 0) {
+        /* The console erases the consumed part of the card to black, because
+           its cut-in screen IS black. Over the PC's arena backdrop that black
+           reads as a hole left behind the destroyed card, so there the scene is
+           painted back instead. */
+        /* Wider than the console's erase: the card's own (3, 4) drop shadow
+           reaches past its right edge, and a sliver of that left behind reads
+           as a black hairline down the side of the flames. */
+        if (!waifu_platform_arena_backdrop_band(x - 3, edge, w + 9, erase_h + 6))
+            rect_fill(x - 2, edge, w + 4, erase_h + 4, IDX_BLACK);
+    }
 
     /* Flame edge: bottom-to-top, with multiple lobes centered over the card.
        This is not a generic radial explosion; it is a burn wipe. */

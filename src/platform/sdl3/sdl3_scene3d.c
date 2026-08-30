@@ -1313,14 +1313,57 @@ void waifu_platform_ui_hud(int on)
    to near-black, with a warm floor haze under the board's horizon — pushed as
    the first full-width UI runs of the frame, so they are captured before any
    3D primitive and composite underneath the board. */
+static const float k_arena_top[4]   = { 0.050f, 0.054f, 0.140f, 1.0f };
+static const float k_arena_mid[4]   = { 0.105f, 0.085f, 0.195f, 1.0f };
+static const float k_arena_low[4]   = { 0.028f, 0.024f, 0.058f, 1.0f };
+static const float k_arena_haze0[4] = { 0.85f, 0.66f, 0.32f, 0.00f };
+static const float k_arena_haze1[4] = { 0.85f, 0.66f, 0.32f, 0.15f };
+static const float k_arena_haze2[4] = { 0.85f, 0.66f, 0.32f, 0.00f };
+
+static void arena_grad_at(const float a[4], const float b[4], float t, float out[4])
+{
+    int i;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    for (i = 0; i < 4; ++i) out[i] = a[i] + (b[i] - a[i]) * t;
+}
+
+/* One backdrop layer spanning [ly0, ly1), clipped to the caller's rectangle and
+   with its stop colours re-evaluated at the clipped edges -- so a band of the
+   backdrop is exactly the pixels the full-screen paint would have put there. */
+static void arena_layer(float ly0, float ly1, const float a[4], const float b[4],
+                        float rx0, float ry0, float rx1, float ry1)
+{
+    float y0 = ry0 > ly0 ? ry0 : ly0;
+    float y1 = ry1 < ly1 ? ry1 : ly1;
+    float c0[4], c1[4];
+    if (y1 <= y0 || ly1 <= ly0) return;
+    arena_grad_at(a, b, (y0 - ly0) / (ly1 - ly0), c0);
+    arena_grad_at(a, b, (y1 - ly0) / (ly1 - ly0), c1);
+    ui_push_quad_grad(rx0, y0, rx1, y1, c0, c1);
+}
+
+int waifu_platform_arena_backdrop_band(int x, int y, int w, int h)
+{
+    const float fh = (float)WAIFU_FM_HEIGHT;
+    const float x0 = (float)x, y0 = (float)y;
+    const float x1 = (float)(x + w), y1 = (float)(y + h);
+    const int was_hud = g_ui_hud;
+    if (w <= 0 || h <= 0) return 1;
+    waifu_platform_ui_hud(1);
+    arena_layer(0.0f, fh * 0.55f, k_arena_top, k_arena_mid, x0, y0, x1, y1);
+    arena_layer(fh * 0.55f, fh, k_arena_mid, k_arena_low, x0, y0, x1, y1);
+    arena_layer(fh * 0.38f, fh * 0.62f, k_arena_haze0, k_arena_haze1, x0, y0, x1, y1);
+    arena_layer(fh * 0.62f, fh * 0.92f, k_arena_haze1, k_arena_haze2, x0, y0, x1, y1);
+    /* The side vignette is deliberately NOT repainted: it is transparent
+       everywhere except the outer flanks, and nothing that uses this seam sits
+       out there. */
+    waifu_platform_ui_hud(was_hud);
+    return 1;
+}
+
 int waifu_platform_arena_backdrop(void)
 {
-    static const float top[4]   = { 0.050f, 0.054f, 0.140f, 1.0f };
-    static const float mid[4]   = { 0.105f, 0.085f, 0.195f, 1.0f };
-    static const float low[4]   = { 0.028f, 0.024f, 0.058f, 1.0f };
-    static const float haze0[4] = { 0.85f, 0.66f, 0.32f, 0.00f };
-    static const float haze1[4] = { 0.85f, 0.66f, 0.32f, 0.15f };
-    static const float haze2[4] = { 0.85f, 0.66f, 0.32f, 0.00f };
     static const float dark[4]  = { 0.0f, 0.0f, 0.0f, 0.62f };
     static const float clear[4] = { 0.0f, 0.0f, 0.0f, 0.00f };
     const float w = (float)(WAIFU_FM_WIDTH + g_ui_extra_w);
@@ -1328,12 +1371,12 @@ int waifu_platform_arena_backdrop(void)
     const int was_hud = g_ui_hud;
 
     waifu_platform_ui_hud(1);
-    ui_push_quad_grad(0.0f, 0.0f, w, h * 0.55f, top, mid);
-    ui_push_quad_grad(0.0f, h * 0.55f, w, h, mid, low);
+    ui_push_quad_grad(0.0f, 0.0f, w, h * 0.55f, k_arena_top, k_arena_mid);
+    ui_push_quad_grad(0.0f, h * 0.55f, w, h, k_arena_mid, k_arena_low);
     /* Horizon haze: a soft warm band around the board's horizon line, so the
        flanks read as an arena rather than empty space. */
-    ui_push_quad_grad(0.0f, h * 0.38f, w, h * 0.62f, haze0, haze1);
-    ui_push_quad_grad(0.0f, h * 0.62f, w, h * 0.92f, haze1, haze2);
+    ui_push_quad_grad(0.0f, h * 0.38f, w, h * 0.62f, k_arena_haze0, k_arena_haze1);
+    ui_push_quad_grad(0.0f, h * 0.62f, w, h * 0.92f, k_arena_haze1, k_arena_haze2);
     /* Side vignette: only exists when the display is wider than the game
        column, and it falls off exactly at the column edge, so the board keeps
        the eye and the flanks frame it instead of glowing. */

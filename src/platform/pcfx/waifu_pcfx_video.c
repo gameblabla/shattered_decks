@@ -3473,6 +3473,8 @@ void waifu_pcfx_video_request_rainbow_hscroll(int hscroll)
 /* No widescreen HUD room on this target: keep the fixed 2D UI layout. */
 int waifu_platform_ui_extra_w(void) { return 0; }
 int waifu_platform_arena_backdrop(void) { return 0; }
+int waifu_platform_arena_backdrop_band(int x, int y, int w, int h)
+{ (void)x; (void)y; (void)w; (void)h; return 0; }
 void waifu_platform_ui_hud(int on) { (void)on; }
 int waifu_platform_performance_tier(void) { return 0; }
 int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, unsigned char fg, unsigned char shadow)

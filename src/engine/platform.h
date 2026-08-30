@@ -103,6 +103,14 @@ void waifu_platform_ui_hud(int on);
  * changes. */
 int waifu_platform_arena_backdrop(void);
 
+/* Repaint ONE RECTANGLE of that backdrop, exactly as the full-screen call
+ * paints it there. An effect that consumes part of a card -- the battle burn
+ * wipe -- can then put the scene back where the card was instead of erasing to
+ * black, which over a real backdrop reads as a black hole left behind the
+ * destroyed card. Returns 0 where there is no arena backdrop, so the caller
+ * falls back to its solid erase. */
+int waifu_platform_arena_backdrop_band(int x, int y, int w, int h);
+
 /* Coarse CPU/rendering-performance tier for optional visual fidelity scaling.
  * 0 = baseline/constrained, 1 = intermediate, 2 = fast.  Game timing must not
  * depend on this value; it may only select how many intermediate visual poses
