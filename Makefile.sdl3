@@ -73,7 +73,9 @@ SDL3_PLATFORM_SRCS := \
   src/platform/sdl3/sdl3_settings.c \
   src/platform/sdl3/sdl3_input.c \
   src/platform/sdl3/sdl3_overlay.c \
-  src/platform/sdl3/sdl3_menu.c
+  src/platform/sdl3/sdl3_menu.c \
+  src/platform/sdl3/sdl3_mouse.c \
+  src/platform/sdl3/sdl3_fire.c
 
 # The shared game core and engine, identical to every console target.
 SDL3_CORE_SRCS := \

@@ -15,8 +15,14 @@ extern "C" {
 
 enum {
     WAIFU_HIRES_FACE = 0,   /* upper-torso thumbnail framing (card face) */
-    WAIFU_HIRES_BIG  = 1    /* square framing (detail big art) */
+    WAIFU_HIRES_BIG  = 1,   /* square framing (detail big art) */
+    WAIFU_HIRES_PORTRAIT = 2 /* story dialogue portrait (id = portrait id) */
 };
+
+/* Scale of the decoded portrait against the game's 124x200 portrait box. The
+   decoded buffer is exactly WAIFU_STORY_PORTRAIT_W/H * this, so it drops onto
+   the same screen rect the 8bpp portrait uses. */
+#define WAIFU_SDL3_PORTRAIT_SCALE 4
 
 /* Number of cards the path table knows about (== the game's card count). */
 int waifu_sdl3_hires_card_count(void);
@@ -28,6 +34,12 @@ int waifu_sdl3_hires_has_card(int card_id);
  * (row-major, tight). Caller frees. Returns NULL if the card has no source or
  * decoding failed. w and h set to the cropped dimensions. */
 uint8_t *waifu_sdl3_hires_card_decode(int card_id, int kind, int *w, int *h);
+
+/* Decode a story portrait's high-resolution source, framed exactly like the
+ * 8bpp portrait the console builds bake (alpha-trimmed, upper-body crop,
+ * bottom-anchored and centred in the portrait box) but at
+ * WAIFU_SDL3_PORTRAIT_SCALE times the size. Caller frees. NULL if unavailable. */
+uint8_t *waifu_sdl3_hires_portrait_decode(int portrait_id, int *w, int *h);
 
 /* Decode the 16:9 title / ending source into a NEW malloc'd RGBA8 buffer
  * (caller frees). NULL if unavailable. */

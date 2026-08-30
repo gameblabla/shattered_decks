@@ -27,6 +27,7 @@ void waifu_menu_destroy(WaifuMenu *menu);
 
 int waifu_menu_active(const WaifuMenu *menu);
 void waifu_menu_open(WaifuMenu *menu);
+void waifu_menu_open_options(WaifuMenu *menu);
 void waifu_menu_close(WaifuMenu *menu);
 
 /* Turns off writing the settings file when the menu closes (scripted runs). */

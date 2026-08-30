@@ -25,6 +25,8 @@
 #include "sdl3_overlay.h"
 #include "sdl3_shaders.h"
 #include "sdl3_hires.h"
+#include "sdl3_mouse.h"
+#include "sdl3_card_paths.h"
 #include "sdl3_text.h"
 
 /* The offscreen canvas tracks the drawable so the renderer is both resolution-
@@ -96,6 +98,10 @@ struct WaifuSdl3Video {
     int hires_count;
 
     /* 16:9 title / ending source textures (PC), decoded on first use. */
+    /* Story dialogue portraits, same lazy-decode policy keyed on portrait id. */
+    SDL_GPUTexture *portrait_tex[WAIFU_SDL3_PORTRAIT_SRC_COUNT];
+    unsigned char portrait_tried[WAIFU_SDL3_PORTRAIT_SRC_COUNT];
+
     SDL_GPUTexture *title_tex;
     SDL_GPUTexture *ending_tex;
     unsigned char title_tried, ending_tried;
@@ -410,8 +416,16 @@ static void canvas_dims_for(const WaifuSdl3Video *v, int sw, int sh, int *out_w,
    (canvas_initialized = 0) so the next frame starts from a clean clear. */
 static int canvas_ensure(WaifuSdl3Video *v, int w, int h)
 {
+    /* The outgoing canvas, kept alive just long enough to be rescaled into the
+       new one.  Without this a resolution change hands the game an empty canvas
+       and the screen goes BLACK until something redraws it in full -- which,
+       with the retained-screen caches (and with the game frozen behind the
+       options menu, where resolution is actually changed), can be never. */
+    SDL_GPUTexture *old_canvas = v->canvas;
+    int old_w = v->canvas_w, old_h = v->canvas_h;
+    int had_content = v->canvas_initialized;
+
     if (v->canvas && v->canvas_w == w && v->canvas_h == h) return 1;
-    if (v->canvas) SDL_ReleaseGPUTexture(v->dev, v->canvas);
     if (v->present_tex) SDL_ReleaseGPUTexture(v->dev, v->present_tex);
     if (v->depth) SDL_ReleaseGPUTexture(v->dev, v->depth);
     v->canvas = NULL;
@@ -430,6 +444,30 @@ static int canvas_ensure(WaifuSdl3Video *v, int w, int h)
                               (Uint32)v->canvas_w, (Uint32)v->canvas_h, 1,
                               SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
     v->canvas_initialized = 0;
+    if (old_canvas) {
+        if (v->canvas && had_content && old_w > 0 && old_h > 0) {
+            SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(v->dev);
+            if (cmd) {
+                SDL_GPUBlitInfo bi;
+                SDL_zero(bi);
+                bi.source.texture = old_canvas;
+                bi.source.w = (Uint32)old_w;
+                bi.source.h = (Uint32)old_h;
+                bi.destination.texture = v->canvas;
+                bi.destination.w = (Uint32)v->canvas_w;
+                bi.destination.h = (Uint32)v->canvas_h;
+                bi.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                bi.filter = SDL_GPU_FILTER_LINEAR;
+                SDL_BlitGPUTexture(cmd, &bi);
+                SDL_SubmitGPUCommandBuffer(cmd);
+                v->canvas_initialized = 1;
+            }
+        }
+        SDL_ReleaseGPUTexture(v->dev, old_canvas);
+        /* Tell the core to drop its retained-screen caches and redraw fully:
+           the rescaled picture is a stand-in, not the real thing. */
+        waifu_sdl3_display_reset_notify();
+    }
     return v->canvas && v->present_tex && v->depth;
 }
 
@@ -684,13 +722,23 @@ static SDL_GPUTexture *hires_ensure(WaifuSdl3Video *v, int card_id, int kind)
     uint8_t *rgba;
     int w = 0, hh = 0;
 
-    if (card_id < 0 || card_id >= v->hires_count) return NULL;
-    if (kind == WAIFU_HIRES_BIG) { slot = &v->hires_big[card_id]; tried = &v->hires_big_tried[card_id]; }
-    else                        { slot = &v->hires_face[card_id]; tried = &v->hires_face_tried[card_id]; }
+    if (kind == WAIFU_HIRES_PORTRAIT) {
+        if (card_id < 0 || card_id >= WAIFU_SDL3_PORTRAIT_SRC_COUNT) return NULL;
+        slot = &v->portrait_tex[card_id];
+        tried = &v->portrait_tried[card_id];
+    } else if (card_id < 0 || card_id >= v->hires_count) {
+        return NULL;
+    } else if (kind == WAIFU_HIRES_BIG) {
+        slot = &v->hires_big[card_id]; tried = &v->hires_big_tried[card_id];
+    } else {
+        slot = &v->hires_face[card_id]; tried = &v->hires_face_tried[card_id];
+    }
     if (*slot) return *slot;
     if (*tried) return NULL;
     *tried = 1;
-    rgba = waifu_sdl3_hires_card_decode(card_id, kind, &w, &hh);
+    rgba = (kind == WAIFU_HIRES_PORTRAIT)
+         ? waifu_sdl3_hires_portrait_decode(card_id, &w, &hh)
+         : waifu_sdl3_hires_card_decode(card_id, kind, &w, &hh);
     if (!rgba) return NULL;
     *slot = make_mipped_texture(v, rgba, w, hh);
     free(rgba);
@@ -1457,6 +1505,21 @@ int waifu_sdl3_video_window_to_overlay(const WaifuSdl3Video *v, float mx, float 
     return 1;
 }
 
+int waifu_sdl3_video_window_to_game(const WaifuSdl3Video *v, float mx, float my,
+                                    float *gx, float *gy)
+{
+    float ox = 0.0f, oy = 0.0f;
+    float scale;
+    if (!waifu_sdl3_video_window_to_overlay(v, mx, my, &ox, &oy)) return 0;
+    /* The overlay space is WAIFU_OVERLAY_H units over the canvas height; the
+       game's own space is WAIFU_FM_HEIGHT * canvas_scale pixels over that same
+       canvas, so one conversion factor serves both axes. */
+    scale = (float)v->canvas_h / 360.0f / (float)(v->canvas_scale > 0 ? v->canvas_scale : 1);
+    if (gx) *gx = ox * scale;
+    if (gy) *gy = oy * scale;
+    return 1;
+}
+
 int waifu_sdl3_video_display_count(void)
 {
     int count = 0;
@@ -1554,6 +1617,11 @@ void waifu_sdl3_video_destroy(WaifuSdl3Video *v)
                 if (v->hires_face && v->hires_face[c]) SDL_ReleaseGPUTexture(v->dev, v->hires_face[c]);
                 if (v->hires_big && v->hires_big[c]) SDL_ReleaseGPUTexture(v->dev, v->hires_big[c]);
             }
+        }
+        {
+            int pi;
+            for (pi = 0; pi < WAIFU_SDL3_PORTRAIT_SRC_COUNT; ++pi)
+                if (v->portrait_tex[pi]) SDL_ReleaseGPUTexture(v->dev, v->portrait_tex[pi]);
         }
         if (v->title_tex) SDL_ReleaseGPUTexture(v->dev, v->title_tex);
         if (v->ending_tex) SDL_ReleaseGPUTexture(v->dev, v->ending_tex);

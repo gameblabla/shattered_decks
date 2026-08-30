@@ -173,6 +173,13 @@ typedef struct Sdl3SceneFrame {
    primitive was silently dropped this frame — the visible symptom is a piece
    of the picture missing, e.g. a card's drop shadow drawn with no card in it.
    Reported per frame under WAIFU_SDL3_DEBUG. */
+/* Pushes a caller-owned RGBA8 image into this frame's image atlas and draws it
+   as a UI quad over the game-space rect (dx,dy,dw,dh). Used by the true-colour
+   effects (sdl3_fire.c) that have no 8bpp palette form. Returns 1 when it was
+   taken, 0 when the atlas had no room. */
+int waifu_sdl3_push_rgba_image(const uint32_t *rgba, int sw, int sh,
+                               int dx, int dy, int dw, int dh);
+
 extern int g_sdl3_drop_atlas, g_sdl3_drop_run, g_sdl3_drop_vert, g_sdl3_drop_hires;
 
 /* Owned by sdl3_scene3d.c. */

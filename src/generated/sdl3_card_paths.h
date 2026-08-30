@@ -79,6 +79,17 @@ static const char *const waifu_sdl3_card_src[WAIFU_SDL3_CARD_SRC_COUNT] = {
     "assets/source/cards/MechaUltimateDragon.png",
 };
 
+#define WAIFU_SDL3_PORTRAIT_SRC_COUNT 6
+
+static const char *const waifu_sdl3_portrait_src[WAIFU_SDL3_PORTRAIT_SRC_COUNT] = {
+    "assets/source/story_portraits/serena_highres.png",
+    "assets/source/story_portraits/opponent_0_hires.png",
+    "assets/source/story_portraits/opponent_1_highres.png",
+    "assets/source/story_portraits/opponent_2_highres.png",
+    "assets/source/story_portraits/opponent_3_highres.png.png",
+    "assets/source/story_portraits/opponent_4_hires.png",
+};
+
 static const char *const waifu_sdl3_title_src = "assets/source/title/title_16by9.png";
 static const char *const waifu_sdl3_ending_src = "assets/source/ending/ending_16by9.png";
 

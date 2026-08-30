@@ -189,6 +189,63 @@ int waifu_platform_text_overlay_is_hardware(void);
 void waifu_platform_story_layers_begin(void);
 int waifu_platform_story_portrait(int portrait_id, int x, int y);
 
+/* ---- PC frontend seams (SDL3 only) ----------------------------------------
+ * Everything below exists only on a build with a hardware 3D/2D frontend
+ * (WAIFU_PLATFORM_HW3D). Console targets compile the inert static-inline stubs,
+ * which fold away completely, so their behaviour stays byte-identical. */
+#if defined(WAIFU_PLATFORM_HW3D)
+
+/* Mouse pointer, reported in the game's widescreen HUD space: x runs
+ * 0 .. WAIFU_FM_WIDTH + waifu_platform_ui_extra_w(), y runs 0 .. WAIFU_FM_HEIGHT.
+ * A screen drawn in the CENTERED game column subtracts extra/2 from x.
+ * `active` is 1 only while the player is actually using the mouse (it moved or
+ * was clicked recently), which is what gates the on-screen buttons. */
+typedef struct WaifuPointer {
+    int active;
+    int x, y;
+    int left_down;
+    int left_pressed;      /* button went down this frame */
+    int left_released;     /* button came up this frame */
+    int right_pressed;
+    int drag_x, drag_y;    /* where the current/just-ended drag started */
+} WaifuPointer;
+
+/* 1 when a pointer exists and `out` was filled. */
+int waifu_platform_pointer(WaifuPointer *out);
+
+/* 1 exactly once after the output surface was rebuilt (resolution / window mode
+ * change). The persistent canvas is empty afterwards, so the core must drop its
+ * retained-screen caches and redraw the whole frame. */
+int waifu_platform_display_reset(void);
+
+/* Opens the frontend's own options screen (title-menu OPTIONS row). */
+void waifu_platform_open_options(void);
+
+/* Draws the PSX-DOOM style fire across the given screen rect (game HUD space)
+ * at the frontend's native resolution. Returns 1 when it was drawn (the caller
+ * then skips the low-resolution software flames). */
+int waifu_platform_fire(int x, int y, int w, int h);
+
+#else
+
+typedef struct WaifuPointer {
+    int active;
+    int x, y;
+    int left_down;
+    int left_pressed;
+    int left_released;
+    int right_pressed;
+    int drag_x, drag_y;
+} WaifuPointer;
+
+static inline int waifu_platform_pointer(WaifuPointer *out) { (void)out; return 0; }
+static inline int waifu_platform_display_reset(void) { return 0; }
+static inline void waifu_platform_open_options(void) {}
+static inline int waifu_platform_fire(int x, int y, int w, int h)
+{ (void)x; (void)y; (void)w; (void)h; return 0; }
+
+#endif /* WAIFU_PLATFORM_HW3D */
+
 #ifdef __cplusplus
 }
 #endif

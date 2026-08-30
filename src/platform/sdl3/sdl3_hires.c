@@ -79,6 +79,133 @@ uint8_t *waifu_sdl3_hires_card_decode(int card_id, int kind, int *w, int *h)
     return crop;
 }
 
+/* ---- story portraits ------------------------------------------------------
+ * The decoded portrait always comes out exactly PORTRAIT_BOX_W x PORTRAIT_BOX_H,
+ * an integer multiple of the game's 124x200 portrait cell, so the frontend can
+ * drop it straight onto the rect the 8bpp blit would have covered with no
+ * placement maths at the call site. */
+
+#define PORTRAIT_BOX_W (124 * WAIFU_SDL3_PORTRAIT_SCALE)
+#define PORTRAIT_BOX_H (200 * WAIFU_SDL3_PORTRAIT_SCALE)
+/* How much of the figure's height the bust crop keeps, and how far below the
+   top of the alpha bounding box it starts (hair needs headroom). */
+#define PORTRAIT_UPPER_FRACTION 0.55f
+#define PORTRAIT_HEAD_MARGIN    0.01f
+
+/* Alpha bounding box of an RGBA image; returns 0 if fully transparent. */
+static int alpha_bbox(const uint8_t *px, int w, int h, int *x0, int *y0, int *x1, int *y1)
+{
+    int x, y, minx = w, miny = h, maxx = -1, maxy = -1;
+    for (y = 0; y < h; ++y) {
+        const uint8_t *row = px + (size_t)y * w * 4;
+        for (x = 0; x < w; ++x) {
+            if (row[x * 4 + 3] == 0) continue;
+            if (x < minx) minx = x;
+            if (x > maxx) maxx = x;
+            if (y < miny) miny = y;
+            if (y > maxy) maxy = y;
+        }
+    }
+    if (maxx < 0) return 0;
+    *x0 = minx; *y0 = miny; *x1 = maxx + 1; *y1 = maxy + 1;
+    return 1;
+}
+
+/* Area-average resample of a sub-rectangle into dst_w x dst_h. Alpha-weighted,
+ * so the transparent border of a cut-out figure does not bleed its (black)
+ * colour into the silhouette edge. */
+static void resample_box(const uint8_t *src, int sw, int srx, int sry, int srw, int srh,
+                         uint8_t *dst, int dst_w, int dst_h)
+{
+    int dx, dy;
+    /* The destination can be LARGER than the source rect (a portrait whose art
+       is smaller than the portrait cell), in which case a destination pixel
+       covers less than one source pixel and the span collapses. Widening it by
+       one must not walk off the end of the rectangle -- that read past the last
+       row is what corrupted the heap the first time round. */
+    for (dy = 0; dy < dst_h; ++dy) {
+        int sy0 = sry + (int)((int64_t)dy * srh / dst_h);
+        int sy1 = sry + (int)((int64_t)(dy + 1) * srh / dst_h);
+        if (sy1 <= sy0) sy1 = sy0 + 1;
+        if (sy1 > sry + srh) { sy1 = sry + srh; sy0 = sy1 - 1; }
+        for (dx = 0; dx < dst_w; ++dx) {
+            int sx0 = srx + (int)((int64_t)dx * srw / dst_w);
+            int sx1 = srx + (int)((int64_t)(dx + 1) * srw / dst_w);
+            uint32_t ar = 0, ag = 0, ab = 0, aa = 0;
+            int n = 0, x, y;
+            uint8_t *o;
+            if (sx1 <= sx0) sx1 = sx0 + 1;
+            if (sx1 > srx + srw) { sx1 = srx + srw; sx0 = sx1 - 1; }
+            for (y = sy0; y < sy1; ++y) {
+                const uint8_t *row = src + ((size_t)y * sw + sx0) * 4;
+                for (x = sx0; x < sx1; ++x, row += 4) {
+                    uint32_t a = row[3];
+                    ar += row[0] * a; ag += row[1] * a; ab += row[2] * a; aa += a;
+                    ++n;
+                }
+            }
+            o = dst + ((size_t)dy * dst_w + dx) * 4;
+            if (aa == 0 || n == 0) { o[0] = o[1] = o[2] = o[3] = 0; continue; }
+            o[0] = (uint8_t)(ar / aa);
+            o[1] = (uint8_t)(ag / aa);
+            o[2] = (uint8_t)(ab / aa);
+            o[3] = (uint8_t)(aa / (uint32_t)n);
+        }
+    }
+}
+
+uint8_t *waifu_sdl3_hires_portrait_decode(int portrait_id, int *w, int *h)
+{
+    const char *path;
+    uint8_t *src, *box;
+    int sw = 0, sh = 0;
+    int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;
+    int tw, th, cw, ch, cx, cy;
+
+    if (portrait_id < 0 || portrait_id >= WAIFU_SDL3_PORTRAIT_SRC_COUNT) return NULL;
+    path = waifu_sdl3_portrait_src[portrait_id];
+    if (!path || !path[0]) return NULL;
+    src = waifu_sdl3_image_load_rgba(path, &sw, &sh);
+    if (!src) return NULL;
+    if (!alpha_bbox(src, sw, sh, &bx0, &by0, &bx1, &by1)) {
+        bx0 = by0 = 0; bx1 = sw; by1 = sh;
+    }
+    tw = bx1 - bx0;
+    th = by1 - by0;
+
+    /* Bust framing: take the top PORTRAIT_UPPER_FRACTION of the figure and a
+       width that gives the portrait cell's aspect, so the crop FILLS the cell
+       with head and torso instead of standing a whole tiny figure in it. The
+       console 8bpp portrait keeps its full-figure framing -- there the cell is
+       124x200 real pixels and a bust would be all nose. */
+    ch = (int)(th * PORTRAIT_UPPER_FRACTION);
+    cw = (int)((float)ch * (float)PORTRAIT_BOX_W / (float)PORTRAIT_BOX_H + 0.5f);
+    if (cw > tw) {
+        /* Narrow source (a tall cut-out): widen as far as it goes and take the
+           height that matches, which shows a little more of the body. */
+        cw = tw;
+        ch = (int)((float)cw * (float)PORTRAIT_BOX_H / (float)PORTRAIT_BOX_W + 0.5f);
+        if (ch > th) ch = th;
+    }
+    if (cw < 1) cw = 1;
+    if (ch < 1) ch = 1;
+    cx = bx0 + (tw - cw) / 2;                 /* centred on the figure */
+    cy = by0 + (int)(th * PORTRAIT_HEAD_MARGIN); /* a little air above the head */
+    if (cy + ch > by1) cy = by1 - ch;
+    if (cy < 0) cy = 0;
+    if (cx < 0) cx = 0;
+    if (cx + cw > sw) cx = sw - cw;
+    if (cy + ch > sh) cy = sh - ch;
+
+    box = (uint8_t *)malloc((size_t)PORTRAIT_BOX_W * PORTRAIT_BOX_H * 4);
+    if (!box) { free(src); return NULL; }
+    resample_box(src, sw, cx, cy, cw, ch, box, PORTRAIT_BOX_W, PORTRAIT_BOX_H);
+    free(src);
+    *w = PORTRAIT_BOX_W;
+    *h = PORTRAIT_BOX_H;
+    return box;
+}
+
 uint8_t *waifu_sdl3_hires_title_decode(int *w, int *h)
 {
     if (!waifu_sdl3_title_src || !waifu_sdl3_title_src[0]) return NULL;

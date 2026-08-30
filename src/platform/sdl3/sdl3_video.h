@@ -73,6 +73,12 @@ void waifu_sdl3_video_window_size(const WaifuSdl3Video *video, int *w, int *h);
 int waifu_sdl3_video_window_to_overlay(const WaifuSdl3Video *video,
                                        float mx, float my, float *ox, float *oy);
 
+/* Maps a mouse position in window coordinates to the game's widescreen HUD
+   space (x over 0 .. WAIFU_FM_WIDTH + ui_extra_w, y over 0 .. WAIFU_FM_HEIGHT).
+   Returns 0 when the point is outside the presented image. */
+int waifu_sdl3_video_window_to_game(const WaifuSdl3Video *video,
+                                    float mx, float my, float *gx, float *gy);
+
 void waifu_sdl3_video_destroy(WaifuSdl3Video *video);
 
 #ifdef __cplusplus

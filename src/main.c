@@ -280,6 +280,13 @@ static void ui_hud_end(void)
         waifu_platform_ui_hud(0);
     }
 }
+/* Left edge that centres a `w`-wide element on whatever the UI currently spans:
+   the game column normally, the true screen inside a HUD bracket. Identical to
+   the authored (WAIFU_FM_WIDTH - w) / 2 on every console. */
+static int ui_center_x(int w) { return (g_ui_clip_w - w) / 2; }
+/* Half the widescreen surplus: what a centred element inside a HUD bracket has
+   to be shifted by when its x was written against the 256-wide column. */
+static int ui_center_dx(void) { return (g_ui_clip_w - WAIFU_FM_WIDTH) / 2; }
 #define WAIFU_BATTLE_CARD_X0 (WAIFU_UI_CENTER_DX + 4)
 #define WAIFU_BATTLE_CARD_X1 (WAIFU_UI_CENTER_DX + 132)
 #define WAIFU_BATTLE_CARD_Y (((WAIFU_FM_HEIGHT - 202) < 33) ? (WAIFU_FM_HEIGHT - 202) : 33)
@@ -2575,7 +2582,9 @@ static void fill_rows(int y0, int y1, uint8_t c)
     if (y0 < 0) y0 = 0;
     if (y1 > WAIFU_FM_HEIGHT) y1 = WAIFU_FM_HEIGHT;
     if (y0 >= y1) return;
-    if (waifu_hw2d_rect(0, y0, WAIFU_FM_WIDTH, y1 - y0, c)) return;
+    /* g_ui_clip_w is WAIFU_FM_WIDTH except inside a widescreen HUD bracket,
+       where a full-screen band has to reach the real screen edges. */
+    if (waifu_hw2d_rect(0, y0, g_ui_clip_w, y1 - y0, c)) return;
 #if defined(WAIFU_FM_CD32X)
     waifu_cd32x_video_fill_rows_index(y0, y1, c);
 #else
@@ -3608,6 +3617,9 @@ static void fmt_prefixed_i32(char *dst, int dst_size, char prefix, int value);
 
 /* Widescreen duel wings (defined once the battle state exists, below). */
 static void draw_duel_wings(int field_ox, int lp_ox);
+/* On-screen END TURN button (mouse only); defined with the pointer code near
+   waifu_fm_step, and a no-op on every console. */
+static void draw_pointer_end_turn_button(void);
 
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
 {
@@ -8518,15 +8530,18 @@ static int text_px_width(const char *s, int scale)
     return s ? (int)strlen(s) * 8 * scale : 0;
 }
 
+/* Centred on whatever the UI spans -- the game column, or the true screen when
+   a full-screen scene has opened a HUD bracket. g_ui_clip_w is WAIFU_FM_WIDTH
+   everywhere else and on every console, so this is the authored layout there. */
 static void draw_centered_text(int y, const char *s, uint8_t fg, uint8_t shadow)
 {
-    int x = (WAIFU_FM_WIDTH - ((int)strlen(s) * 8)) / 2;
+    int x = ui_center_x((int)strlen(s) * 8);
     draw_text(x, y, s, fg, shadow);
 }
 
 static void draw_centered_text_scaled(int y, const char *s, int scale, uint8_t fg, uint8_t shadow)
 {
-    int x = (WAIFU_FM_WIDTH - text_px_width(s, scale)) / 2;
+    int x = ui_center_x(text_px_width(s, scale));
     draw_text_scaled(x, y, s, scale, fg, shadow);
 }
 
@@ -8668,19 +8683,40 @@ static void draw_title_prompt(int f)
     draw_centered_text(208, "(C) 2026 GAMEBLABLA", IDX_WHITE, IDX_BLACK);
 }
 
+/* Title menu rows. The PC build appends OPTIONS -- the frontend's video / audio
+   / controls screen belongs on the title screen next to the game modes, not
+   only behind the in-game pause key. Consoles have no such screen and keep the
+   three rows (and their exact layout) they always had. */
+#if defined(WAIFU_PLATFORM_HW3D)
+#define MENU_ROW_COUNT 4
+#define MENU_ROW_OPTIONS 3
+#else
+#define MENU_ROW_COUNT 3
+#define MENU_ROW_OPTIONS (-1)
+#endif
+/* Row baselines: the three-row panel keeps its authored geometry; a fourth row
+   tightens the pitch so the panel still fits between logo and prompt. */
+#define MENU_ROW_PITCH (MENU_ROW_COUNT > 3 ? 17 : 20)
+#define MENU_ROW_Y(n) (139 + (n) * MENU_ROW_PITCH)
+#define MENU_PANEL_H (MENU_ROW_COUNT > 3 ? 78 : 71)
+
 static void draw_menu_overlay(int selected)
 {
     int has_save = story_save_exists();
     const char *help = "RANDOM DECK / FREE DUEL";
-    rect_fill(39, 124, 178, 75, IDX_BLACK);
-    draw_panel_rect(41, 126, 174, 71, IDX_UI_DARK);
-    draw_text(72, 139, "STORY MODE", selected == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(72, 159, "BATTLE MODE", selected == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
-    draw_text(72, 179, "LOAD STORY", selected == 2 ? (has_save ? IDX_GOLD_HI : IDX_DIM) : (has_save ? IDX_WHITE : IDX_DIM), IDX_BLACK);
-    int ay = selected == 0 ? 143 : (selected == 1 ? 163 : 183);
+    rect_fill(39, 124, 178, MENU_PANEL_H + 4, IDX_BLACK);
+    draw_panel_rect(41, 126, 174, MENU_PANEL_H, IDX_UI_DARK);
+    draw_text(72, MENU_ROW_Y(0), "STORY MODE", selected == 0 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(72, MENU_ROW_Y(1), "BATTLE MODE", selected == 1 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    draw_text(72, MENU_ROW_Y(2), "LOAD STORY", selected == 2 ? (has_save ? IDX_GOLD_HI : IDX_DIM) : (has_save ? IDX_WHITE : IDX_DIM), IDX_BLACK);
+#if MENU_ROW_COUNT > 3
+    draw_text(72, MENU_ROW_Y(3), "OPTIONS", selected == 3 ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+#endif
+    int ay = MENU_ROW_Y(selected < MENU_ROW_COUNT ? selected : 0) + 4;
     for (int r = 0; r < 7; ++r) hline(54, 54+r, ay-3+r, IDX_RED);
     if (selected == 0) help = "ENTER NAME / FIRST DREAM";
     else if (selected == 2) help = has_save ? "RESUME SAVED STORY" : "NO SAVE FILE FOUND";
+    else if (selected == MENU_ROW_OPTIONS) help = "VIDEO / AUDIO / CONTROLS";
     draw_text_small(55, 207, help, has_save || selected != 2 ? IDX_WHITE : IDX_RED, IDX_BLACK);
 }
 
@@ -13623,13 +13659,14 @@ static void finish_thunder(void)
     else set_battle_phase(owner == 0 ? IB_PLAYER_TOP : IB_COM_BATTLE);
 }
 
-static void draw_com_thunder_anim(void)
+/* Body only: the caller owns the clear and the widescreen HUD bracket (this
+   returns early after the intro slide). */
+static void draw_com_thunder_body(void)
 {
     int f = g_b_anim_vblanks;
     int intro = thunder_intro_frames();
-    int card_x = WAIFU_BIG_ART_128_X;
+    int card_x = ui_center_x(128);
     int card_y = 35;
-    clear_screen(IDX_BLACK);
 
     {
     int is_trap = g_b_trap_counter_active;
@@ -13640,7 +13677,7 @@ static void draw_com_thunder_anim(void)
         int fade_start = WAIFU_THUNDER_CARD_FRAMES;
         int slide = WAIFU_SPELL_TRAP_SLIDE_FRAMES;
         int32_t slide_t = q8_smooth_ratio(f < slide ? f : slide, slide);
-        int slide_x = card_x + (((WAIFU_FM_WIDTH - card_x) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
+        int slide_x = card_x + (((g_ui_clip_w - card_x) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
         draw_support_big_art_scaled(slide_x, card_y, 128, 128);
         if (is_trap) rect_outline(slide_x - 2, card_y - 2, 132, 132, IDX_TRAP_FRAME);
         /* The card slides in from offscreen right first; the name/effect text
@@ -13659,7 +13696,7 @@ static void draw_com_thunder_anim(void)
             int card_bottom = card_y + 128;
             int title_y = card_bottom + 6;
             int desc_y = title_y + 20;
-            int desc_x = (WAIFU_FM_WIDTH - (int)strlen(desc) * 7) / 2;
+            int desc_x = ui_center_x((int)strlen(desc) * 7);
             if (desc_x < 4) desc_x = 4;
             draw_centered_text(title_y, title, title_col, IDX_BLACK);
             draw_wrapped_text_small(desc_x, desc_y, desc, 25, IDX_WHITE, IDX_BLACK);
@@ -13702,11 +13739,19 @@ static void draw_com_thunder_anim(void)
             }
             draw_centered_text(8, title, title_col, IDX_BLACK);
             if (seg < BATTLE_BURN_DUR) {
-                draw_big_battle_card_burning(id, WAIFU_SINGLE_BATTLE_CARD_X, WAIFU_BATTLE_CARD_Y, back, seg);
+                draw_big_battle_card_burning(id, ui_center_x(WAIFU_BATTLE_CARD_W), WAIFU_BATTLE_CARD_Y, back, seg);
             }
         }
     }
     }
+}
+
+static void draw_com_thunder_anim(void)
+{
+    clear_screen(IDX_BLACK);
+    ui_hud_begin();
+    draw_com_thunder_body();
+    ui_hud_end();
 }
 
 static int player_support_total_frames(void)
@@ -13774,15 +13819,16 @@ static void finish_player_one_shot_support(void)
     set_battle_phase(next_phase);
 }
 
-static void draw_player_one_shot_support_anim(void)
+/* Body only: the caller owns the clear and the widescreen HUD bracket, which
+   this cannot do itself because it returns early in two places. */
+static void draw_player_one_shot_support_body(void)
 {
     int f = g_b_anim_vblanks;
     int reveal = WAIFU_SUPPORT_REVEAL_FRAMES;
     int slide = WAIFU_SPELL_TRAP_SLIDE_FRAMES;
     int32_t slide_t = q8_smooth_ratio(f < slide ? f : slide, slide);
-    int base_x = (WAIFU_FM_WIDTH - WAIFU_BIG_W) / 2;
-    int slide_x = base_x + (((WAIFU_FM_WIDTH - base_x) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
-    clear_screen(IDX_BLACK);
+    int base_x = ui_center_x(WAIFU_BIG_W);
+    int slide_x = base_x + (((g_ui_clip_w - base_x) * (Q8_ONE - slide_t) + Q8_HALF) >> Q8_SHIFT);
     draw_support_big_art_112(slide_x, WAIFU_UI_BOTTOM_Y(32));
     /* The card slides in from offscreen right first; the name/effect text only
        appears once it has landed at center, not while it is moving.  Once
@@ -13812,6 +13858,14 @@ static void draw_player_one_shot_support_anim(void)
         draw_centered_text(WAIFU_UI_BOTTOM_Y(188), line, IDX_GREEN, IDX_BLACK);
         draw_centered_text(WAIFU_UI_BOTTOM_Y(207), "LIFE RESTORED", IDX_WHITE, IDX_BLACK);
     }
+}
+
+static void draw_player_one_shot_support_anim(void)
+{
+    clear_screen(IDX_BLACK);
+    ui_hud_begin();
+    draw_player_one_shot_support_body();
+    ui_hud_end();
 }
 
 static void reveal_monster_slot(int owner, int slot)
@@ -14379,7 +14433,7 @@ static void draw_equip_stat_line_centered(int y, const char *label, int from, in
     char line[32];
     int value = from + (int)(((to - from) * q8_smoothstep(t) + Q8_HALF) >> Q8_SHIFT);
     waifu_str_copy(line, (int)sizeof(line), label); waifu_str_cat_char(line, (int)sizeof(line), ' '); waifu_str_cat_u32_z4(line, (int)sizeof(line), (unsigned)value);
-    draw_text((WAIFU_FM_WIDTH - text_px_width(line, 1)) / 2, y, line, stat_delta_color(to - from), IDX_BLACK);
+    draw_text(ui_center_x(text_px_width(line, 1)), y, line, stat_delta_color(to - from), IDX_BLACK);
 }
 
 static void draw_player_equip_target(void)
@@ -14414,16 +14468,21 @@ static void draw_player_equip_anim(void)
     int32_t merge_t = q8_smooth_ratio(f - merge_start, merge_frames);
     int card_w = WAIFU_CARD_W;
     int card_h = WAIFU_CARD_H;
-    int target_x = WAIFU_SINGLE_BATTLE_CARD_X;
-    int target_y = WAIFU_BATTLE_CARD_Y;
-    int target_cx = target_x + 60;
-    int target_cy = target_y + 80;
-    int card_x = lerp_i(26, target_cx - card_w / 2, merge_t);
-    int card_y = lerp_i(36, target_cy - card_h / 2, merge_t);
+    int target_x, target_y, target_cx, target_cy, card_x, card_y;
     int atk_to = g_b_equip_base_atk + g_b_equip_pending_atk;
     int def_to = g_b_equip_base_def + g_b_equip_pending_def;
 
     clear_screen(IDX_BLACK);
+    /* Full-screen animation: it owns the whole display, so the flash reaches the
+       real edges and the card centres on the true screen instead of sitting in a
+       256-wide column with black bars beside it. */
+    ui_hud_begin();
+    target_x = ui_center_x(WAIFU_BATTLE_CARD_W);
+    target_y = WAIFU_BATTLE_CARD_Y;
+    target_cx = target_x + 60;
+    target_cy = target_y + 80;
+    card_x = lerp_i(26, target_cx - card_w / 2, merge_t);
+    card_y = lerp_i(36, target_cy - card_h / 2, merge_t);
     if (reveal) {
         draw_big_battle_card_flip(g_b_equip_target_card, target_x, target_y, f, reveal_frames);
     } else {
@@ -14441,11 +14500,12 @@ static void draw_player_equip_anim(void)
         int cy = target_cy + q8_to_int(q8_mul(q8_cos_rad(ay), Q8_FROM_INT(18 + (i % 4) * 3)));
         draw_disc(cx, cy, 1 + (i % 3), (i & 1) ? IDX_GREEN : IDX_WHITE);
     }
-    if (f >= (WAIFU_EQUIP_ANIM_FRAMES * 23) / 30 && f < (WAIFU_EQUIP_ANIM_FRAMES * 9) / 10) rect_fill(0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
+    if (f >= (WAIFU_EQUIP_ANIM_FRAMES * 23) / 30 && f < (WAIFU_EQUIP_ANIM_FRAMES * 9) / 10) rect_fill(0, 0, g_ui_clip_w, WAIFU_FM_HEIGHT, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
     if ((f & 4) == 0) rect_outline(target_x - 4, target_y - 4, 128, 168, IDX_WHITE);
     draw_centered_text(9, "EQUIP POWER", IDX_GOLD_HI, IDX_BLACK);
     draw_equip_stat_line_centered(WAIFU_UI_BOTTOM_Y(190), "ATK", g_b_equip_base_atk, atk_to, t);
     draw_equip_stat_line_centered(WAIFU_UI_BOTTOM_Y(208), "DEF", g_b_equip_base_def, def_to, t);
+    ui_hud_end();
 }
 
 static void reset_player_fusion_anim(void)
@@ -14644,8 +14704,12 @@ static void draw_player_fusion_anim(void)
     }
 
     clear_screen(IDX_BLACK);
+    /* Full-screen scene: the striped ground, the panel and the flash all reach
+       the true screen edges, and the card cluster re-centres on it. */
+    ui_hud_begin();
+    first_target_x = (g_ui_clip_w / 2) - spread / 2 - w / 2;
     for (int y = 8; y < WAIFU_FM_HEIGHT; y += 16) fill_rows(y, y + 8, IDX_UI_DARK);
-    draw_panel_rect(WAIFU_UI_CENTER_DX + 20, 26, 216, 178, IDX_UI_DARK);
+    draw_panel_rect(WAIFU_UI_CENTER_DX + 20, 26, g_ui_clip_w - 40 - 2 * WAIFU_UI_CENTER_DX, 178, IDX_UI_DARK);
     draw_centered_text(39, "FUSION", IDX_GOLD_HI, IDX_BLACK);
 
     if (f < fusion_flash_start) {
@@ -14658,16 +14722,16 @@ static void draw_player_fusion_anim(void)
             if (slot == FUSION_FIELD_SLOT) draw_text_small(x + 5, cy + h + 3, "FLD", IDX_GOLD_HI, IDX_BLACK);
         }
         for (i = 0; i < 18; ++i) {
-            int px = (WAIFU_FM_WIDTH / 2) + q8_to_int(q8_mul(q8_sin_rad((f * 5 + i * 29) * Q8_FRAC(8,100)), Q8_FROM_INT(44)));
+            int px = (g_ui_clip_w / 2) + q8_to_int(q8_mul(q8_sin_rad((f * 5 + i * 29) * Q8_FRAC(8,100)), Q8_FROM_INT(44)));
             int py = 103 + q8_to_int(q8_mul(q8_cos_rad((f * 7 + i * 31) * Q8_FRAC(8,100)), Q8_FROM_INT(22)));
             draw_disc(px, py, 1 + (i % 2), (i & 1) ? IDX_GREEN : IDX_GOLD_HI);
         }
     } else if (f < fusion_flash_end) {
-        rect_fill(0, 0, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
+        rect_fill(0, 0, g_ui_clip_w, WAIFU_FM_HEIGHT, (f & 2) ? IDX_WHITE : IDX_GOLD_HI);
     } else if (g_b_fusion_anim_success) {
         int rw = 38;
         int rh = 50;
-        int rx = (WAIFU_FM_WIDTH / 2) - rw / 2;
+        int rx = (g_ui_clip_w / 2) - rw / 2;
         int ry = lerp_i(72, 82, reveal_t);
         draw_hand_card_sprite(g_b_fusion_anim_result, rx, ry, rw, rh, 0);
         if ((f & 4) == 0) rect_outline(rx - 4, ry - 4, rw + 8, rh + 8, pulse);
@@ -14687,13 +14751,14 @@ static void draw_player_fusion_anim(void)
             draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, ly, 38, 50, 0);
             if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT) draw_text_small(x + 5, ly + 53, "FLD", IDX_GOLD_HI, IDX_BLACK);
         }
-        line_i((WAIFU_FM_WIDTH / 2) - 36, 85, (WAIFU_FM_WIDTH / 2) + 36, 132, IDX_RED);
-        line_i((WAIFU_FM_WIDTH / 2) + 36, 85, (WAIFU_FM_WIDTH / 2) - 36, 132, IDX_RED);
-        line_i((WAIFU_FM_WIDTH / 2) - 35, 85, (WAIFU_FM_WIDTH / 2) + 37, 132, IDX_BLACK);
-        line_i((WAIFU_FM_WIDTH / 2) + 37, 85, (WAIFU_FM_WIDTH / 2) - 35, 132, IDX_BLACK);
+        line_i((g_ui_clip_w / 2) - 36, 85, (g_ui_clip_w / 2) + 36, 132, IDX_RED);
+        line_i((g_ui_clip_w / 2) + 36, 85, (g_ui_clip_w / 2) - 36, 132, IDX_RED);
+        line_i((g_ui_clip_w / 2) - 35, 85, (g_ui_clip_w / 2) + 37, 132, IDX_BLACK);
+        line_i((g_ui_clip_w / 2) + 37, 85, (g_ui_clip_w / 2) - 35, 132, IDX_BLACK);
         draw_centered_text(166, "FUSION FAILED", IDX_RED, IDX_BLACK);
         draw_centered_text(181, failed_fusion_can_place_last_card() ? "LAST CARD PLACED" : "CARDS DISCARDED", IDX_WHITE, IDX_BLACK);
     }
+    ui_hud_end();
 }
 
 
@@ -14870,6 +14935,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         draw_bottom_info(g_i_player_hand[g_b_selected_hand], "HAND");
 #endif
         if (g_b_phase_frame >= 48) g_b_player_hand_intro_pending = 0;
+        ui_hud_begin();
+        draw_pointer_end_turn_button();
+        ui_hud_end();
         break;
 
     case IB_PLAYER_HAND_TO_TOP: {
@@ -15135,6 +15203,9 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
         } else {
             draw_bottom_info_top_selector(player_first_turn_attack_locked() ? "NO ATK" : "FIELD");
         }
+        ui_hud_begin();
+        draw_pointer_end_turn_button();
+        ui_hud_end();
 #if (defined(WAIFU_FM_FMTOWNS) || defined(WAIFU_FB_DAMAGE_VERIFY)) && \
     !defined(WAIFU_MEASURE_FORCE_LIVE_BOARD)
         /* draw_top_selector_cursor_ex() advances its easing counter.  Do not
@@ -15818,20 +15889,30 @@ static void draw_story_name_field(int dx)
 
 static void draw_story_name_entry(void)
 {
-    int dx = WAIFU_UI_CENTER_DX;
+    int dx;
     /* A dither fade rewrites every pixel, so the retained picture is only good
        for the frames between them. */
     int fading = g_story_name_to_intro || (g_i_frame >= 0 && g_i_frame < 24);
 
+    /* Widescreen: the striped ground behind the screen runs to the real edges
+       (it is scenery, not a menu) and the panel re-centres on the true screen.
+       The bracket has to be open on the retained path too, or the name field
+       would land at a different x than the panel already under it -- and it has
+       to be opened AFTER the clear, because a clear resets the frame's capture
+       state (the HUD flag with it). */
     if (!fading && ui_retained(UI_TAG_NAME_ENTRY)) {
         /* Panel, headings, bands and help text are already on screen and none
            of them can change while this screen is up.  ~2 KB of fills instead
            of a 61440-byte clear plus a 38880-byte panel plus eighty glyphs. */
-        draw_story_name_field(dx);
+        ui_hud_begin();
+        draw_story_name_field(WAIFU_UI_CENTER_DX + ui_center_dx());
+        ui_hud_end();
         return;
     }
 
     clear_screen(IDX_BLACK);
+    ui_hud_begin();
+    dx = WAIFU_UI_CENTER_DX + ui_center_dx();
     for (int y = 8; y < WAIFU_FM_HEIGHT; y += 16) {
         /* Striped rows only above the panel and below the help line. */
         int y1 = y + 8;
@@ -15856,6 +15937,7 @@ static void draw_story_name_entry(void)
     if (g_story_name_to_intro) apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame, 20));
     /* Last, so the fades above (which invalidate it) win. */
     if (!fading) ui_retain(UI_TAG_NAME_ENTRY);
+    ui_hud_end();
 }
 
 static void draw_blue_gradient_box(int x, int y, int w, int h)
@@ -16115,6 +16197,16 @@ static void fire_blit_row_partial(const uint8_t *row, int oy, int hide0, int hid
 static void draw_oldschool_fire(int f)
 {
     (void)f;
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* PC: the frontend owns the flames (PSX-DOOM algorithm, 37-colour ramp, at
+       the display's own resolution -- and at a sane climb rate, which the 2x
+       cell height here never was at 60 Hz). Full width, so a widescreen frame
+       is fire edge to edge. */
+    if (waifu_platform_fire(0, FIRE_Y0,
+                            WAIFU_FM_WIDTH + waifu_platform_ui_extra_w(),
+                            WAIFU_FM_HEIGHT - FIRE_Y0))
+        return;
+#endif
 #if !defined(WAIFU_FIRE_BANDED)
     fb_damage_rect(0, FIRE_Y0, FIRE_FW * FIRE_SCALE, FIRE_FH * FIRE_SCALE);
 #endif
@@ -16456,11 +16548,15 @@ static void draw_deck_editor(void)
     int selected_card = (count > 0 && g_deck_cursor < count) ? arr[g_deck_cursor] : CARD_NONE;
 
     clear_screen(IDX_BLACK);
+    /* The editor's box IS the screen background here, so it spans the true
+       display; only the authored 256-wide block of tabs/grid/status inside it
+       is re-centred (ed_dx below). */
+    ui_hud_begin();
     fill_rows(0, 28, IDX_DARK_BROWN);
     for (int y = 24; y < WAIFU_FM_HEIGHT; y += 16) {
         fill_rows(y > 28 ? y : 28, y + 8, IDX_UI_DARK);
     }
-    draw_panel_rect(4, 4, WAIFU_FM_WIDTH - 8, WAIFU_FM_HEIGHT - 8, IDX_UI_DARK);
+    draw_panel_rect(4, 4, g_ui_clip_w - 8, WAIFU_FM_HEIGHT - 8, IDX_UI_DARK);
     draw_centered_text(12, "DECK EDITOR", IDX_GOLD_HI, IDX_BLACK);
 
     /* The deck editor is authored for the 256-wide layout.  WAIFU_UI_CENTER_DX
@@ -16468,7 +16564,7 @@ static void draw_deck_editor(void)
        byte-identical; on the 320-wide CD32X display it shifts the whole editor
        block right by (320-256)/2 = 32 so tabs/grid/status/hint stop clinging to
        the left edge of the full-width blue box and sit centered inside it. */
-    int ed_dx = WAIFU_UI_CENTER_DX;
+    int ed_dx = WAIFU_UI_CENTER_DX + ui_center_dx();
 
     rect_fill(ed_dx + 14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_DARK : IDX_BLACK);
     rect_outline(ed_dx + 14, 27, 102, 14, g_deck_tab == 0 ? IDX_GOLD_HI : IDX_DIM);
@@ -16498,8 +16594,8 @@ static void draw_deck_editor(void)
         }
     }
 
-    rect_fill(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), WAIFU_FM_WIDTH - (ed_dx + 9) * 2, 36, IDX_BLACK);
-    rect_outline(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), WAIFU_FM_WIDTH - (ed_dx + 9) * 2, 36, IDX_UI_LIGHT);
+    rect_fill(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), g_ui_clip_w - (ed_dx + 9) * 2, 36, IDX_BLACK);
+    rect_outline(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), g_ui_clip_w - (ed_dx + 9) * 2, 36, IDX_UI_LIGHT);
     if (selected_card >= 0) {
         draw_text_small_ellipsis(ed_dx + 15, WAIFU_UI_BOTTOM_Y(196), deck_editor_card_name(selected_card), 25, IDX_WHITE, IDX_BLACK);
         if (is_support_card(selected_card)) {
@@ -16515,6 +16611,7 @@ static void draw_deck_editor(void)
         draw_centered_text(WAIFU_UI_BOTTOM_Y(181), msg, IDX_RED, IDX_BLACK);
     }
     draw_text_small(ed_dx + 15, WAIFU_FM_HEIGHT - 14, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
+    ui_hud_end();
 }
 
 static void transition_draw_deck_editor_source(int frame, void *ctx)
@@ -17671,6 +17768,268 @@ static void story_return_to_map_after_duel(void)
 
 
 
+
+/* ---------------------------------------------------------------------------
+ * MOUSE (PC only).
+ *
+ * The game is cursor-driven everywhere, so the pointer is not a second input
+ * scheme: it hit-tests the layout that is already on screen, moves the SAME
+ * cursor the d-pad moves, and synthesizes the button press that cursor would
+ * have needed.  One state machine, and mouse and pad stay interchangeable in
+ * the middle of an action.
+ *
+ * Coordinates arrive in widescreen HUD space (0 .. WAIFU_FM_WIDTH + extra).
+ * Screens authored for the 256-wide column subtract ptr_column_dx(); the 3-D
+ * board projects into that same column space.
+ *
+ * Compiled only for the PC frontend; the consoles get the no-op stubs at the
+ * end of the block, so not a byte of this reaches their ROMs.
+ * ------------------------------------------------------------------------- */
+#if defined(WAIFU_PLATFORM_HW3D)
+
+/* Live pointer, published for the draw side (the on-screen buttons appear only
+   while the mouse is actually being used, and highlight under it). */
+static int g_ptr_active, g_ptr_x, g_ptr_y;
+
+static int ui_full_w(void) { return WAIFU_FM_WIDTH + waifu_platform_ui_extra_w(); }
+/* HUD-space x of the game column's left edge. */
+static int ptr_column_dx(void) { return waifu_platform_ui_extra_w() / 2; }
+
+static int ptr_in(int px, int py, int x, int y, int w, int h)
+{
+    return px >= x && px < x + w && py >= y && py < y + h;
+}
+
+/* The one on-screen button: end the turn.  Anchored to the true bottom-right of
+   the duel HUD, above the card info bar. */
+#define PTR_END_TURN_W 62
+#define PTR_END_TURN_H 16
+static int ptr_end_turn_x(void) { return ui_full_w() - PTR_END_TURN_W - 6; }
+/* Above the hand row (which is taller in widescreen) and below the duel wing
+   panels, at the far right where the board never projects: a click there is
+   never also a click on a card or a zone. */
+static int ptr_end_turn_y(void) { return 112; }
+
+/* Drawn by the two player-turn views. Only while the mouse is in use, so a pad
+   player never sees it. Must be called inside a HUD bracket (it is anchored to
+   the true screen edge). */
+static void draw_pointer_end_turn_button(void)
+{
+    int x, y, hot;
+    if (!g_ptr_active) return;
+    x = ptr_end_turn_x();
+    y = ptr_end_turn_y();
+    hot = ptr_in(g_ptr_x, g_ptr_y, x, y, PTR_END_TURN_W, PTR_END_TURN_H);
+    rect_fill(x, y, PTR_END_TURN_W, PTR_END_TURN_H, hot ? IDX_GOLD_DARK : IDX_UI_DARK);
+    rect_outline(x, y, PTR_END_TURN_W, PTR_END_TURN_H, hot ? IDX_GOLD_HI : IDX_UI_LIGHT);
+    draw_text_small(x + 6, y + 5, "END TURN", hot ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+}
+
+/* Nearest board zone to a column-space point, or 0 if nothing is close enough.
+   Zones are found by projecting their centres with the same camera the frame
+   drew, which keeps the hit test honest through the camera's idle sway. */
+static int ptr_board_zone(Camera cam, int cx, int cy, int *out_col, int *out_row)
+{
+    int col, row, best_col = -1, best_row = -1;
+    long best = 26L * 26L;   /* a zone is ~28px wide on screen at this camera */
+    for (row = 0; row < BOARD_ROWS; ++row) {
+        for (col = 0; col < BOARD_COLS; ++col) {
+            ScreenPt p = project_point(cam, v3(zone_cx(col), 0, zone_cz(row)));
+            long dx, dy, d;
+            if (!p.ok) continue;
+            dx = (long)(p.x - cx);
+            dy = (long)(p.y - cy);
+            d = dx * dx + dy * dy;
+            if (d < best) { best = d; best_col = col; best_row = row; }
+        }
+    }
+    if (best_col < 0) return 0;
+    *out_col = best_col;
+    *out_row = best_row;
+    return 1;
+}
+
+/* The duel. Returns having possibly moved a cursor and raised a button edge. */
+static void ptr_drive_battle(const WaifuPointer *p, int cx, int cy,
+                             int *press_up, int *press_down,
+                             int *press_a, int *press_b, int *press_start, int *press_tab)
+{
+    int i;
+    switch (g_b_phase) {
+    case IB_PLAYER_HAND: {
+        int hy = hand_row_y(g_player_hand_offset_y);
+        int hw = hand_card_w(), hh = hand_card_h();
+        int over = -1;
+        if (ptr_in(p->x, p->y, ptr_end_turn_x(), ptr_end_turn_y(),
+                   PTR_END_TURN_W, PTR_END_TURN_H)) {
+            if (p->left_pressed) *press_start = 1;
+            break;
+        }
+        for (i = 0; i < I_HAND; ++i) {
+            if (ptr_in(p->x, p->y, hand_slot_x(i), hy, hw, hh)) over = i;
+        }
+        if (over >= 0 && g_i_player_hand[over] != CARD_NONE) g_b_selected_hand = over;
+        if (p->right_pressed && over >= 0) { *press_b = 1; break; }
+        if (p->left_released) {
+            int from = -1;
+            for (i = 0; i < I_HAND; ++i) {
+                if (ptr_in(p->drag_x, p->drag_y, hand_slot_x(i), hy, hw, hh)) from = i;
+            }
+            if (from >= 0 && p->drag_y - p->y > 12) {
+                /* Dragged a hand card up onto the field: that is exactly what
+                   confirming on it does -- play it. */
+                g_b_selected_hand = from;
+                *press_a = 1;
+            } else if (from < 0 && p->y < hy - 8 && p->drag_y < hy - 8) {
+                /* Clicked the board above the hand: lift to the tactical view. */
+                *press_up = 1;
+            }
+        }
+        break;
+    }
+    case IB_PLAYER_TOP: {
+        Camera cam = battle_top_camera();
+        int col, row;
+        if (ptr_in(p->x, p->y, ptr_end_turn_x(), ptr_end_turn_y(),
+                   PTR_END_TURN_W, PTR_END_TURN_H)) {
+            if (p->left_pressed) *press_start = 1;
+            break;
+        }
+        if (p->y >= WAIFU_BOTTOM_INFO_Y - 6) {
+            /* Below the board: drop back to the hand view. The handler only
+               descends from the bottom row, so put the cursor there first. */
+            if (p->left_pressed) { g_b_top_row = BOARD_ROWS - 1; *press_down = 1; }
+            break;
+        }
+        if (!ptr_board_zone(cam, cx, cy, &col, &row)) break;
+        if (col != g_b_top_col || row != g_b_top_row) set_top_selector(col, row);
+        if (p->right_pressed) *press_tab = 1;      /* attack / defence position */
+        else if (p->left_pressed) *press_a = 1;    /* declare attack, pick target */
+        break;
+    }
+    case IB_CARD_PREVIEW:
+    case IB_FIELD_CARD_PREVIEW:
+        if (p->left_pressed || p->right_pressed) *press_b = 1;
+        break;
+    case IB_RESULT:
+    case IB_TALLY:
+    case IB_REWARD:
+        if (p->left_pressed) *press_a = 1;
+        break;
+    default:
+        break;
+    }
+    (void)cy;
+}
+
+static void ptr_drive(int *press_up, int *press_down, int *press_left, int *press_right,
+                      int *press_a, int *press_b, int *press_start, int *press_tab)
+{
+    WaifuPointer p;
+    int cx, cy, i;
+
+    (void)press_left; (void)press_right;
+    if (!waifu_platform_pointer(&p)) { g_ptr_active = 0; return; }
+    g_ptr_active = p.active;
+    g_ptr_x = p.x;
+    g_ptr_y = p.y;
+    if (!p.active) return;
+    cx = p.x - ptr_column_dx();
+    cy = p.y;
+
+    switch (g_i_state) {
+    case WAIFU_I_TITLE:
+        if (p.left_pressed) *press_start = 1;
+        break;
+
+    case WAIFU_I_MENU:
+        for (i = 0; i < MENU_ROW_COUNT; ++i) {
+            if (!ptr_in(cx, cy, 41, MENU_ROW_Y(i) - 5, 174, MENU_ROW_PITCH)) continue;
+            g_i_menu_selected = i;
+            if (p.left_pressed) *press_a = 1;
+        }
+        break;
+
+    case WAIFU_I_STORY_NAME:
+        /* Each glyph cell picks that slot; the wheel/keys still change letters,
+           and confirming is the A the click raises once a slot is picked. */
+        for (i = 0; i < STORY_NAME_LEN; ++i) {
+            int x = ptr_column_dx() + WAIFU_UI_CENTER_DX + 57 + i * 23;
+            if (!ptr_in(p.x, p.y, x, 96, 23, 28)) continue;
+            if (p.left_pressed) g_story_name_pos = i;
+            if (p.right_pressed) *press_down = 1;
+        }
+        break;
+
+    case WAIFU_I_STORY_MAP:
+        /* DESTINATION panel: SANCTUM / BATTLE. */
+        for (i = 0; i < 2; ++i) {
+            int y = WAIFU_UI_BOTTOM_Y(i == 0 ? 170 : 190);
+            if (!ptr_in(cx, cy, WAIFU_FM_WIDTH - 126, y, 118, 20)) continue;
+            g_story_map_cursor = i;
+            if (p.left_pressed) *press_a = 1;
+        }
+        break;
+
+    case WAIFU_I_DECK_EDITOR: {
+        int ed_dx = ptr_column_dx() + WAIFU_UI_CENTER_DX;
+        int count = deck_editor_active_count();
+        int scroll = g_deck_scroll[g_deck_tab];
+        /* Tabs. */
+        if (ptr_in(p.x, p.y, ed_dx + 14, 27, 102, 14) && p.left_pressed && g_deck_tab != 0) *press_tab = 1;
+        if (ptr_in(p.x, p.y, ed_dx + 140, 27, 102, 14) && p.left_pressed && g_deck_tab != 1) *press_tab = 1;
+        for (i = 0; i < DECK_VISIBLE_CARDS; ++i) {
+            int idx = scroll + i;
+            int x = ed_dx + 14 + (i % DECK_GRID_COLS) * 40;
+            int y = 50 + (i / DECK_GRID_COLS) * 45;
+            if (idx >= count) break;
+            if (!ptr_in(p.x, p.y, x - 3, y - 3, 32, 40)) continue;
+            /* First click picks the card, a click on the already-picked card
+               moves it between deck and storage -- the same two steps the pad
+               takes (walk the cursor there, then A). */
+            if (p.left_pressed) {
+                if (g_deck_cursor == idx) *press_a = 1;
+                else g_deck_cursor = idx;
+            }
+            if (p.right_pressed) { g_deck_cursor = idx; *press_b = 1; }
+        }
+        break;
+    }
+
+    case WAIFU_I_DECK_PREVIEW:
+        if (p.left_pressed || p.right_pressed) *press_b = 1;
+        break;
+
+    /* Narrative screens: a click is "go on", the same as A. */
+    case WAIFU_I_STORY_INTRO:
+    case WAIFU_I_STORY_FIRE:
+    case WAIFU_I_STORY_PLAZA:
+    case WAIFU_I_STORY_ENDING:
+    case WAIFU_I_STORY_ENDING_CREDITS:
+        if (p.left_pressed) *press_a = 1;
+        break;
+
+    case WAIFU_I_BATTLE:
+        ptr_drive_battle(&p, cx, cy, press_up, press_down, press_a, press_b, press_start, press_tab);
+        break;
+
+    default:
+        break;
+    }
+}
+
+#else /* no pointer on the consoles */
+
+static void draw_pointer_end_turn_button(void) {}
+static void ptr_drive(int *press_up, int *press_down, int *press_left, int *press_right,
+                      int *press_a, int *press_b, int *press_start, int *press_tab)
+{
+    (void)press_up; (void)press_down; (void)press_left; (void)press_right;
+    (void)press_a; (void)press_b; (void)press_start; (void)press_tab;
+}
+
+#endif /* WAIFU_PLATFORM_HW3D */
+
 void waifu_fm_step(const WaifuFmInput *input)
 {
     WaifuFmInput zero;
@@ -17680,6 +18039,19 @@ void waifu_fm_step(const WaifuFmInput *input)
     waifu_assets_big_art_draw_queue_reset();
     waifu_platform_story_layers_begin();
     frame_dirty_reset();
+    /* The PC frontend rebuilt its output surface (a resolution or window-mode
+       change).  Its persistent canvas is a rescaled stand-in for the old one,
+       so every screen that normally redraws only what moved -- the retained
+       panels, the kept rectangle, the solid-background shortcut -- has to be
+       composed again from scratch this frame.  Without this a mode change left
+       the picture frozen or black until something happened to repaint it. */
+    if (waifu_platform_display_reset()) {
+        ui_retain(0);
+#if !defined(WAIFU_BG_CACHE_DISABLE)
+        g_board_bg_cache_valid = 0;
+#endif
+        frame_mark_full_dirty();
+    }
     g_video_fade_visible_q8 = Q8_ONE;
     /* Free-running ambient frame for the story 3D sanctum/scene sway.  Unlike
        g_i_frame it never resets on a state change, so opening a sanctum
@@ -17701,6 +18073,11 @@ void waifu_fm_step(const WaifuFmInput *input)
     press_b = input_pressed(input->b, g_prev_input.b);
     press_start = input_pressed(input->start, g_prev_input.start);
     press_tab = input_pressed(input->tab, g_prev_input.tab);
+
+    /* Mouse: hit-tests this frame's layout and folds its result into the same
+       cursor moves and button edges the pad produces (no-op on consoles). */
+    ptr_drive(&press_up, &press_down, &press_left, &press_right,
+              &press_a, &press_b, &press_start, &press_tab);
 
     suppress_battle_input_if_locked(&press_up, &press_down, &press_left, &press_right,
                                     &press_a, &press_b, &press_start, &press_tab);
@@ -17810,8 +18187,13 @@ void waifu_fm_step(const WaifuFmInput *input)
     case WAIFU_I_MENU:
     {
         int old_menu_selected = g_i_menu_selected;
-        if (press_up) g_i_menu_selected = (g_i_menu_selected + 2) % 3;
-        if (press_down) g_i_menu_selected = (g_i_menu_selected + 1) % 3;
+        /* DOWN runs the whole list; UP from the top row wraps to the last GAME
+           mode, not to OPTIONS.  The three modes therefore keep exactly the ring
+           they have on every console -- which is what the shared command scripts
+           navigate -- and OPTIONS is reached by continuing past the bottom. */
+        if (press_up)
+            g_i_menu_selected = (g_i_menu_selected > 0) ? g_i_menu_selected - 1 : 2;
+        if (press_down) g_i_menu_selected = (g_i_menu_selected + 1) % MENU_ROW_COUNT;
         if (waifu_platform_text_overlay_is_hardware()) {
             /* Menu text lives on the hardware overlay; recompose the resident
                background only on entry or when the selection changed. */
@@ -17829,7 +18211,11 @@ void waifu_fm_step(const WaifuFmInput *input)
         }
     }
         if (press_start || press_a) {
-            if (g_i_menu_selected == 0) {
+            if (g_i_menu_selected == MENU_ROW_OPTIONS) {
+                /* Hands the screen to the frontend; the game stays on the menu
+                   and resumes here when the player backs out. */
+                waifu_platform_open_options();
+            } else if (g_i_menu_selected == 0) {
                 reset_story_entry();
                 enter_menu_to_story_fade();
             } else if (g_i_menu_selected == 1) {

@@ -29,6 +29,7 @@
 #include "sdl3_settings.h"
 #include "sdl3_input.h"
 #include "sdl3_menu.h"
+#include "sdl3_mouse.h"
 #include "sdl3_overlay.h"
 
 #define MAX_COMMAND_EVENTS 4096
@@ -42,6 +43,10 @@
 typedef struct ScriptButtons {
     WaifuFmInput in;
     int menu;
+    int mouse;                  /* this frame touches the pointer at all */
+    int mouse_x, mouse_y;       /* game HUD space */
+    int click, rclick;          /* button edges, first frame of the event only */
+    int mdown, mup;             /* held-button edges, for a scripted drag */
 } ScriptButtons;
 
 typedef struct CommandEvent {
@@ -151,6 +156,24 @@ static void input_or_button(ScriptButtons *sb, const char *tok)
     else if (!strcmp(buf, "START") || !strcmp(buf, "RUN") || !strcmp(buf, "SPACE")) sb->in.start = 1;
     else if (!strcmp(buf, "TAB") || !strcmp(buf, "BUTTON4") || !strcmp(buf, "BTN4") || !strcmp(buf, "4")) sb->in.tab = 1;
     else if (!strcmp(buf, "MENU") || !strcmp(buf, "ESC") || !strcmp(buf, "ESCAPE")) sb->menu = 1;
+    /* Mouse, so a command script can exercise the pointer UI the same way it
+       exercises the pad: MOUSE=<x>:<y> (game HUD space) parks the cursor,
+       CLICK / RCLICK press a button there. Without any of these a script never
+       moves the mouse, so every existing script behaves exactly as before. */
+    else if (!strncmp(buf, "MOUSE=", 6)) {
+        const char *v = buf + 6;
+        char *end = NULL;
+        long mx = strtol(v, &end, 10);
+        long my = (end && *end) ? strtol(end + 1, NULL, 10) : 0;
+        sb->mouse = 1;
+        sb->mouse_x = (int)mx;
+        sb->mouse_y = (int)my;
+    }
+    else if (!strcmp(buf, "CLICK") || !strcmp(buf, "LCLICK")) { sb->mouse = 1; sb->click = 1; }
+    else if (!strcmp(buf, "RCLICK")) { sb->mouse = 1; sb->rclick = 1; }
+    /* Press and release separately, so a script can drag a card. */
+    else if (!strcmp(buf, "MDOWN")) { sb->mouse = 1; sb->mdown = 1; }
+    else if (!strcmp(buf, "MUP")) { sb->mouse = 1; sb->mup = 1; }
 }
 
 static void input_or_button_list(ScriptButtons *sb, const char *tok)
@@ -220,6 +243,20 @@ static ScriptButtons input_for_frame_from_events(int frame, const CommandEvent *
             sb.in.start |= events[i].input.in.start;
             sb.in.tab |= events[i].input.in.tab;
             sb.menu |= events[i].input.menu;
+            if (events[i].input.mouse) {
+                sb.mouse = 1;
+                if (events[i].input.mouse_x || events[i].input.mouse_y) {
+                    sb.mouse_x = events[i].input.mouse_x;
+                    sb.mouse_y = events[i].input.mouse_y;
+                }
+                /* A click is an EDGE: only the event's first frame presses. */
+                if (frame == events[i].start) {
+                    sb.click |= events[i].input.click;
+                    sb.rclick |= events[i].input.rclick;
+                    sb.mdown |= events[i].input.mdown;
+                    sb.mup |= events[i].input.mup;
+                }
+            }
         }
     }
     return sb;
@@ -332,7 +369,9 @@ int main(int argc, char **argv)
     int volatile_settings = 0;
     const char *commands_path = NULL;
     const char *out_dir = NULL;
+    int script_mouse = 0;
     uint8_t *dump_scratch = NULL;
+    size_t dump_scratch_size = 0;
     Uint64 next_frame_ns;
     Uint64 fps_window_ns;
     Uint64 last_tick_ns;
@@ -426,6 +465,7 @@ int main(int argc, char **argv)
         while (SDL_PollEvent(&ev)) {
             waifu_input_handle_event(input, &ev);
             waifu_menu_handle_event(menu, &ev);
+            waifu_sdl3_mouse_handle_event(&ev);
             switch (ev.type) {
             case SDL_EVENT_QUIT:
                 running = 0;
@@ -440,6 +480,12 @@ int main(int argc, char **argv)
         if (commands_path) {
             ScriptButtons sb = input_for_frame_from_events(frame, events, event_count);
             waifu_input_inject(input, &sb.in, sb.menu);
+            if (sb.mouse) {
+                waifu_sdl3_mouse_inject(sb.mouse_x, sb.mouse_y,
+                                        sb.click || sb.mdown,
+                                        sb.click || sb.mup, sb.rclick);
+                script_mouse = 1;
+            }
         }
         {
             Uint64 now = SDL_GetTicksNS();
@@ -450,6 +496,12 @@ int main(int argc, char **argv)
             if (frame_delta_ns > SDL_NS_PER_SECOND / 4) frame_delta_ns = STEP_NS;
         }
         waifu_input_update(input);
+        /* The game core sees the pointer only when it actually owns the screen:
+           not behind the frontend menu, and not during a scripted capture. */
+        /* A scripted run ignores the real mouse (its position would leak into a
+           capture), unless the script itself has driven the pointer. */
+        waifu_sdl3_mouse_update(video, waifu_menu_active(menu) ||
+                                       (commands_path != NULL && !script_mouse));
         /* The overlay draws into the present target (canvas sized), so its
            virtual space must carry the CANVAS aspect, not the window's — they
            differ in the pillarbox/stretch fit modes. */
@@ -476,6 +528,11 @@ int main(int argc, char **argv)
         } else {
             if (waifu_input_pressed(input, WAIFU_ACT_MENU)) {
                 waifu_menu_open(menu);
+                step_accum_ns = 0;
+            } else if (waifu_sdl3_options_requested()) {
+                /* The title menu's OPTIONS row: the same frontend options the
+                   pause menu shows, opened straight at its list. */
+                waifu_menu_open_options(menu);
                 step_accum_ns = 0;
             } else {
                 int steps = 1;
@@ -509,11 +566,17 @@ int main(int argc, char **argv)
         }
 
         if (out_dir && dump_every > 0 && (frame % dump_every) == 0) {
-            if (!dump_scratch) {
-                dump_scratch = (uint8_t *)malloc((size_t)waifu_sdl3_video_render_width(video) *
-                                                 (size_t)waifu_sdl3_video_render_height(video) * 4);
+            /* The canvas is resized by a window/resolution change, so the
+               download buffer is sized per dump, not once: a grown canvas
+               would otherwise overrun a buffer allocated for the old one. */
+            size_t need = (size_t)waifu_sdl3_video_render_width(video) *
+                          (size_t)waifu_sdl3_video_render_height(video) * 4;
+            if (need > dump_scratch_size) {
+                uint8_t *grown = (uint8_t *)realloc(dump_scratch, need);
+                if (grown) { dump_scratch = grown; dump_scratch_size = need; }
             }
-            if (dump_scratch) dump_gpu_frame_png(video, dump_scratch, out_dir, frame);
+            if (dump_scratch && dump_scratch_size >= need)
+                dump_gpu_frame_png(video, dump_scratch, out_dir, frame);
         }
 
         ++frame;

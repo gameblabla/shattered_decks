@@ -25,6 +25,7 @@
 #include "game_api.h"
 #include "assets.h"
 #include "sdl3_hires.h"
+#include "sdl3_card_paths.h"
 
 static Sdl3SceneFrame g_frame = {
     .bg_rgba = { 0.0f, 0.0f, 0.0f, 1.0f },
@@ -429,6 +430,56 @@ static const ImageEntry *image_atlas_add(const uint8_t *pixels, const uint8_t *m
     if (g_shelf_y + g_shelf_h > g_frame.image_atlas_used_h)
         g_frame.image_atlas_used_h = g_shelf_y + g_shelf_h;
     return e;
+}
+
+/* Same shelf allocator, but for an image that is already true colour (the
+   effects that have no palette form). The content changes every frame, so
+   unlike image_atlas_add there is nothing to look up: each call takes fresh
+   shelf space in that frame's atlas. */
+static const ImageEntry *image_atlas_add_rgba(const uint32_t *rgba, int w, int h)
+{
+    ImageEntry *e;
+    int row;
+    if (g_image_entry_count >= SDL3_IMAGE_MAX_ENTRIES) { g_sdl3_drop_atlas++; return 0; }
+    if (w > SDL3_IMAGE_ATLAS_W || h > SDL3_IMAGE_ATLAS_H) { g_sdl3_drop_atlas++; return 0; }
+    if (g_shelf_x + w > SDL3_IMAGE_ATLAS_W) {
+        g_shelf_y += g_shelf_h;
+        g_shelf_x = 0;
+        g_shelf_h = 0;
+    }
+    if (g_shelf_y + h > SDL3_IMAGE_ATLAS_H) { g_sdl3_drop_atlas++; return 0; }
+    e = &g_image_entries[g_image_entry_count++];
+    e->pixels = NULL;
+    e->mask = NULL;
+    e->w = w;
+    e->h = h;
+    e->colorkey0 = 0;
+    e->x = g_shelf_x;
+    e->y = g_shelf_y;
+    for (row = 0; row < h; ++row) {
+        memcpy(g_frame.image_atlas + (size_t)(e->y + row) * SDL3_IMAGE_ATLAS_W + e->x,
+               rgba + (size_t)row * w, (size_t)w * sizeof(uint32_t));
+    }
+    g_shelf_x += w;
+    if (h > g_shelf_h) g_shelf_h = h;
+    if (g_shelf_y + g_shelf_h > g_frame.image_atlas_used_h)
+        g_frame.image_atlas_used_h = g_shelf_y + g_shelf_h;
+    return e;
+}
+
+int waifu_sdl3_push_rgba_image(const uint32_t *rgba, int sw, int sh,
+                               int dx, int dy, int dw, int dh)
+{
+    static const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    const ImageEntry *e;
+    if (!rgba || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return 1;
+    e = image_atlas_add_rgba(rgba, sw, sh);
+    if (!e) return 0;
+    ui_push_quad((float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh),
+                 (float)e->x, (float)e->y,
+                 (float)(e->x + sw), (float)(e->y + sh), white);
+    g_frame.has_content = 1;
+    return 1;
 }
 
 /* ---- hw3d seam (3D scene) --------------------------------------------------- */
@@ -1042,8 +1093,37 @@ int waifu_platform_text_overlay_is_hardware(void)
 }
 
 void waifu_platform_story_layers_begin(void) {}
+/* Story dialogue portraits at full resolution (PC).  The decoded portrait is
+   framed to the same 124x200 cell the 8bpp one occupies (sdl3_hires.c does the
+   fitting), so this is a straight substitution: the quad is exactly the rect the
+   software blit would have covered, and the upper-body framing / bottom anchor
+   come out of the shared recipe rather than being re-guessed here.
+   Returns 0 when there is no source, and the caller blits the 8bpp portrait. */
 int waifu_platform_story_portrait(int portrait_id, int x, int y)
-{ (void)portrait_id; (void)x; (void)y; return 0; }
+{
+    float hx, hy, p[4][3];
+    int idx;
+    if (portrait_id < 0 || portrait_id >= WAIFU_SDL3_PORTRAIT_SRC_COUNT) return 0;
+    if (!waifu_sdl3_portrait_src[portrait_id] || !waifu_sdl3_portrait_src[portrait_id][0]) return 0;
+    hx = (float)(g_ui_hud ? WAIFU_FM_WIDTH + g_ui_extra_w : WAIFU_FM_WIDTH) * 0.5f;
+    hy = (float)WAIFU_FM_HEIGHT * 0.5f;
+    {
+        float x0 = (float)x, y0 = (float)y;
+        /* WAIFU_STORY_PORTRAIT_W/H from src/generated/waifu_assets.h, spelled
+           out rather than pulling that 86k-line header into the capture TU. */
+        float x1 = x0 + 124.0f;
+        float y1 = y0 + 200.0f;
+        p[0][0] = x0 / hx - 1.0f; p[0][1] = 1.0f - y0 / hy; p[0][2] = 1.0f;
+        p[1][0] = x1 / hx - 1.0f; p[1][1] = 1.0f - y0 / hy; p[1][2] = 1.0f;
+        p[2][0] = x1 / hx - 1.0f; p[2][1] = 1.0f - y1 / hy; p[2][2] = 1.0f;
+        p[3][0] = x0 / hx - 1.0f; p[3][1] = 1.0f - y1 / hy; p[3][2] = 1.0f;
+    }
+    idx = push_hires_quad(p, portrait_id, WAIFU_HIRES_PORTRAIT, 1 /* 2D */, 0.0f);
+    if (idx < 0) return 0;
+    ui_append_hires(idx);
+    g_frame.has_content = 1;
+    return 1;
+}
 
 /* ---- frame lifecycle ---------------------------------------------------------- */
 

@@ -156,6 +156,17 @@ void waifu_menu_open(WaifuMenu *m)
     beep(1);
 }
 
+/* Same, but landing straight on the options list: the title screen's OPTIONS
+   row should not make the player walk through the pause root first. */
+void waifu_menu_open_options(WaifuMenu *m)
+{
+    waifu_menu_open(m);
+    if (!m) return;
+    m->page = PAGE_OPTIONS;
+    m->cursor[PAGE_OPTIONS] = 0;
+    m->scroll = 0;
+}
+
 void waifu_menu_close(WaifuMenu *m)
 {
     if (!m || !m->active) return;
