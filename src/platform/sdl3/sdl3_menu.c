@@ -39,6 +39,7 @@ typedef enum MenuPage {
     PAGE_VIDEO,
     PAGE_AUDIO,
     PAGE_CONTROLS,
+    PAGE_QUIT,
     PAGE_COUNT
 } MenuPage;
 
@@ -58,6 +59,17 @@ struct WaifuMenu {
 
     char toast[64];
     int toast_frames;
+
+    /* Mouse: the panel/row rectangles the last draw produced, in overlay
+       units, so hovering picks a row and a click acts on it. */
+    float hit_x0, hit_x1;
+    float hit_y0, hit_row_h;
+    int hit_first, hit_rows;
+    int mouse_row;               /* -1 = pointer not over a row */
+    int mouse_click;             /* pending left click on mouse_row */
+    int mouse_click_left_half;   /* click landed on the left half (decrease) */
+    int mouse_wheel;             /* pending wheel steps (+down) */
+    int mouse_active;            /* pointer moved recently: draw the hover */
 
     /* Windowed-resolution presets, filtered to what the display can show. */
     int preset_w[16], preset_h[16];
@@ -383,6 +395,12 @@ static void build_rows(WaifuMenu *m, RowList *rl, const char **title)
         *title = "CONTROLS";
         build_controls(m, rl);
         break;
+    case PAGE_QUIT:
+        *title = "QUIT GAME?";
+        row_add(rl, ROW_INFO, -1, "PROGRESS SINCE THE LAST SAVE IS LOST.", "");
+        row_add(rl, ROW_ACTION, ID_QUIT_TITLE, "KEEP PLAYING", "");
+        row_add(rl, ROW_ACTION, ID_QUIT_APP, "QUIT TO DESKTOP", "");
+        break;
     default:
         *title = "PAUSED";
         row_add(rl, ROW_ACTION, ID_RESUME, "RESUME", "");
@@ -514,7 +532,13 @@ static void activate(WaifuMenu *m, const Row *row)
     case PAGE_ROOT:
         if (row->id == ID_RESUME) { beep(1); waifu_menu_close(m); }
         else if (row->id == ID_OPTIONS) { beep(1); m->page = PAGE_OPTIONS; m->scroll = 0; }
-        else if (row->id == ID_QUIT_APP) { beep(1); m->quit = 1; }
+        else if (row->id == ID_QUIT_APP) { beep(1); m->page = PAGE_QUIT; m->cursor[PAGE_QUIT] = 1; m->scroll = 0; }
+        break;
+    case PAGE_QUIT:
+        beep(1);
+        if (row->id == ID_QUIT_APP) m->quit = 1;
+        else m->page = PAGE_ROOT;
+        m->scroll = 0;
         break;
     case PAGE_OPTIONS:
         beep(1);
@@ -606,6 +630,12 @@ static void draw_page(WaifuMenu *m, const RowList *rl, const char *title, float 
                             gold[0], gold[1], gold[2], gold[3] * 0.7f);
 
     rowy = y + PANEL_PAD + 30.0f;
+    m->hit_x0 = x + PANEL_PAD - 6.0f;
+    m->hit_x1 = x + panel_w - PANEL_PAD + 6.0f;
+    m->hit_y0 = rowy;
+    m->hit_row_h = ROW_H;
+    m->hit_first = m->scroll;
+    m->hit_rows = visible;
     for (i = 0; i < visible; ++i) {
         int idx = m->scroll + i;
         const Row *r;
@@ -653,11 +683,15 @@ static void draw_page(WaifuMenu *m, const RowList *rl, const char *title, float 
 
     /* Footer hint. */
     {
-        const char *hint = (m->rebind_action >= 0)
-            ? "PRESS A KEY OR BUTTON   -   ESC CANCELS"
-            : (m->page == PAGE_ROOT
-               ? "UP/DOWN SELECT   -   CONFIRM ACCEPT   -   CANCEL RESUME"
-               : "UP/DOWN SELECT   -   LEFT/RIGHT CHANGE   -   CANCEL BACK");
+        const char *hint;
+        if (m->rebind_action >= 0)
+            hint = "PRESS A KEY OR BUTTON   -   ESC CANCELS";
+        else if (m->page == PAGE_ROOT)
+            hint = "UP/DOWN SELECT   -   CONFIRM ACCEPT   -   CANCEL RESUME";
+        else if (m->page == PAGE_OPTIONS || m->page == PAGE_QUIT)
+            hint = "UP/DOWN SELECT   -   CONFIRM ACCEPT   -   CANCEL BACK";
+        else
+            hint = "UP/DOWN SELECT   -   LEFT/RIGHT CHANGE   -   CANCEL BACK";
         float fw = waifu_sdl3_overlay_text_width(FOOT_SIZE, hint);
         draw_text_shadow(x + (panel_w - fw) * 0.5f, y + panel_h - PANEL_PAD + 2.0f,
                          FOOT_SIZE, hint, dim);
@@ -677,6 +711,45 @@ static void draw_toast(WaifuMenu *m)
     waifu_sdl3_overlay_text(22.0f, WAIFU_OVERLAY_H - 28.0f, 10.0f, m->toast,
                             COL_TEXT[0], COL_TEXT[1], COL_TEXT[2], a);
     m->toast_frames--;
+}
+
+/* --- mouse ------------------------------------------------------------------
+   A desktop release is expected to be playable with the pointer in its menus:
+   hovering moves the selection, the left button activates (and, on a slider or
+   a choice, the half of the row you click decides the direction), and the wheel
+   scrolls a long page. */
+
+void waifu_menu_handle_event(WaifuMenu *m, const SDL_Event *ev)
+{
+    float ox = 0.0f, oy = 0.0f;
+    if (!m || !m->active || !ev) return;
+
+    switch (ev->type) {
+    case SDL_EVENT_MOUSE_MOTION:
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (!waifu_sdl3_video_window_to_overlay(m->video, ev->motion.x, ev->motion.y, &ox, &oy)) {
+            m->mouse_row = -1;
+            return;
+        }
+        m->mouse_active = 1;
+        m->mouse_row = -1;
+        if (m->hit_rows > 0 && ox >= m->hit_x0 && ox < m->hit_x1 && oy >= m->hit_y0) {
+            int idx = (int)((oy - m->hit_y0) / m->hit_row_h);
+            if (idx >= 0 && idx < m->hit_rows) {
+                m->mouse_row = m->hit_first + idx;
+                m->mouse_click_left_half = (ox < (m->hit_x0 + m->hit_x1) * 0.5f);
+            }
+        }
+        if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN && m->mouse_row >= 0 &&
+            ev->button.button == SDL_BUTTON_LEFT)
+            m->mouse_click = 1;
+        break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        m->mouse_wheel -= (int)ev->wheel.y;
+        break;
+    default:
+        break;
+    }
 }
 
 /* --- frame ----------------------------------------------------------------- */
@@ -710,6 +783,38 @@ int waifu_menu_update(WaifuMenu *m, int px_w, int px_h)
     if (rl.count <= 0) return 1;
 
     cursor = clampi(m->cursor[m->page], 0, rl.count - 1);
+
+    /* Pointer first: hovering a selectable row takes the selection, so the
+       keyboard/pad and the mouse never disagree about what is highlighted. */
+    if (m->rebind_action < 0) {
+        if (m->mouse_wheel) {
+            m->scroll += m->mouse_wheel;
+            m->mouse_wheel = 0;
+        }
+        if (m->mouse_row >= 0 && m->mouse_row < rl.count &&
+            rl.rows[m->mouse_row].kind != ROW_INFO && m->mouse_active) {
+            if (m->mouse_row != cursor) beep(0);
+            cursor = m->mouse_row;
+            m->cursor[m->page] = cursor;
+        }
+        if (m->mouse_click) {
+            const Row *r = &rl.rows[cursor];
+            m->mouse_click = 0;
+            if (m->mouse_row == cursor) {
+                if (r->kind == ROW_CHOICE || r->kind == ROW_SLIDER) {
+                    int dir = m->mouse_click_left_half ? -1 : 1;
+                    if (m->page == PAGE_VIDEO) adjust_video(m, r->id, dir);
+                    else if (m->page == PAGE_AUDIO) adjust_audio(m, r->id, dir);
+                    else if (m->page == PAGE_CONTROLS) adjust_controls(m, r->id, dir);
+                    beep(0);
+                } else {
+                    activate(m, r);
+                }
+            }
+        }
+    }
+
+    if (!m->active) return m->quit ? 0 : 1;
 
     if (m->rebind_action < 0) {
         if (waifu_input_repeat(m->input, WAIFU_ACT_DOWN)) { cursor++; moved = 1; }
@@ -749,7 +854,7 @@ int waifu_menu_update(WaifuMenu *m, int px_w, int px_h)
             waifu_input_pressed(m->input, WAIFU_ACT_MENU)) {
             beep(0);
             if (m->page == PAGE_ROOT) waifu_menu_close(m);
-            else if (m->page == PAGE_OPTIONS) m->page = PAGE_ROOT;
+            else if (m->page == PAGE_OPTIONS || m->page == PAGE_QUIT) m->page = PAGE_ROOT;
             else { m->page = PAGE_OPTIONS; }
             m->scroll = 0;
         }

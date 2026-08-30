@@ -13,6 +13,8 @@
 #include "sdl3_input.h"
 #include "sdl3_video.h"
 
+#include <SDL3/SDL.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -29,6 +31,10 @@ void waifu_menu_close(WaifuMenu *menu);
 
 /* Turns off writing the settings file when the menu closes (scripted runs). */
 void waifu_menu_set_persist(WaifuMenu *menu, int on);
+
+/* Feeds one SDL event to the menu (mouse motion / clicks / wheel). Ignored
+   while the menu is closed. */
+void waifu_menu_handle_event(WaifuMenu *menu, const SDL_Event *ev);
 
 /* One frame of menu: consumes input, applies changes, emits the overlay.
    Returns 0 when the player chose to quit the game. */

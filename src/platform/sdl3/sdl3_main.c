@@ -361,6 +361,7 @@ int main(int argc, char **argv)
 
         while (SDL_PollEvent(&ev)) {
             waifu_input_handle_event(input, &ev);
+            waifu_menu_handle_event(menu, &ev);
             switch (ev.type) {
             case SDL_EVENT_QUIT:
                 running = 0;
@@ -377,7 +378,11 @@ int main(int argc, char **argv)
             waifu_input_inject(input, &sb.in, sb.menu);
         }
         waifu_input_update(input);
-        waifu_sdl3_video_window_size(video, &win_w, &win_h);
+        /* The overlay draws into the present target (canvas sized), so its
+           virtual space must carry the CANVAS aspect, not the window's — they
+           differ in the pillarbox/stretch fit modes. */
+        win_w = waifu_sdl3_video_render_width(video);
+        win_h = waifu_sdl3_video_render_height(video);
 
         /* Frontend hotkeys work in and out of the menu, except while a
            rebinding capture is armed (the input layer swallows those). */

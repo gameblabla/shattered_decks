@@ -251,11 +251,24 @@ int waifu_settings_save(const WaifuSettings *s)
 
 const char *waifu_settings_key_name(int scancode)
 {
+    /* Upper-cased into a small rotating buffer: SDL names keys in mixed case
+       ("Left Ctrl") and the rest of the UI is upper-case. Rotating lets a
+       caller format two names in one expression. */
+    static char buf[4][40];
+    static int slot = 0;
     const char *name;
+    char *out;
+    int i;
+
     if (scancode <= 0 || scancode >= SDL_SCANCODE_COUNT) return "---";
     name = SDL_GetScancodeName((SDL_Scancode)scancode);
     if (!name || !name[0]) return "???";
-    return name;
+    out = buf[slot];
+    slot = (slot + 1) & 3;
+    for (i = 0; name[i] && i < (int)sizeof(buf[0]) - 1; ++i)
+        out[i] = (char)SDL_toupper((unsigned char)name[i]);
+    out[i] = '\0';
+    return out;
 }
 
 const char *waifu_settings_pad_name(int button)

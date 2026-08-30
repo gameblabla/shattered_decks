@@ -62,6 +62,12 @@ int waifu_sdl3_video_mode(int display, int index, int *w, int *h, float *hz);
 /* The window's current drawable size (what the options menu reports). */
 void waifu_sdl3_video_window_size(const WaifuSdl3Video *video, int *w, int *h);
 
+/* Maps a mouse position in window coordinates to the overlay's virtual units
+   (sdl3_overlay.h), accounting for HiDPI, the letterbox and the stretch mode.
+   Returns 0 when the point is outside the presented image. */
+int waifu_sdl3_video_window_to_overlay(const WaifuSdl3Video *video,
+                                       float mx, float my, float *ox, float *oy);
+
 void waifu_sdl3_video_destroy(WaifuSdl3Video *video);
 
 #ifdef __cplusplus

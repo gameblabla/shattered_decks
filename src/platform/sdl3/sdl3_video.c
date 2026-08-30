@@ -1412,6 +1412,39 @@ void waifu_sdl3_video_window_size(const WaifuSdl3Video *v, int *w, int *h)
     if (h) *h = wh;
 }
 
+int waifu_sdl3_video_window_to_overlay(const WaifuSdl3Video *v, float mx, float my,
+                                       float *ox, float *oy)
+{
+    int pw = 0, ph = 0, ww = 0, wh = 0;
+    float vx, vy, vw, vh, s;
+
+    if (!v) return 0;
+    SDL_GetWindowSizeInPixels(v->window, &pw, &ph);
+    SDL_GetWindowSize(v->window, &ww, &wh);
+    if (pw < 1 || ph < 1 || ww < 1 || wh < 1) return 0;
+    /* Mouse events arrive in window coordinates; the present rect is in pixels. */
+    mx *= (float)pw / (float)ww;
+    my *= (float)ph / (float)wh;
+
+    if (v->cfg && v->cfg->aspect_mode == WAIFU_ASPECT_STRETCH) {
+        vw = (float)pw; vh = (float)ph;
+    } else {
+        float sx = (float)pw / (float)v->canvas_w;
+        float sy = (float)ph / (float)v->canvas_h;
+        s = sx < sy ? sx : sy;
+        vw = v->canvas_w * s;
+        vh = v->canvas_h * s;
+    }
+    vx = ((float)pw - vw) * 0.5f;
+    vy = ((float)ph - vh) * 0.5f;
+    if (mx < vx || my < vy || mx >= vx + vw || my >= vy + vh) return 0;
+
+    /* The overlay spans the present target, whose aspect is the canvas aspect. */
+    if (ox) *ox = (mx - vx) / vw * (WAIFU_OVERLAY_H * (float)v->canvas_w / (float)v->canvas_h);
+    if (oy) *oy = (my - vy) / vh * WAIFU_OVERLAY_H;
+    return 1;
+}
+
 int waifu_sdl3_video_display_count(void)
 {
     int count = 0;
