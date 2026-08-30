@@ -18053,6 +18053,13 @@ static const char *const k_deck_btn_label[DECK_BTN_COUNT] = {
     "ROW UP", "ROW DN", "CHECK", "DONE"
 };
 
+/* Row movement driven by the MOUSE stops at the top of the list. The pad's UP
+   wraps to the other tab when it runs out of rows, which is a reasonable
+   shortcut for a d-pad; on a wheel it is a trap -- you scroll up to see the
+   first cards and land in STORAGE instead. The tabs are one click away, so the
+   mouse has no need of the shortcut. */
+static int deck_rows_can_go_up(void) { return g_deck_cursor >= DECK_GRID_COLS; }
+
 static void draw_deck_editor_pointer_buttons(void)
 {
     int i;
@@ -18287,7 +18294,7 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
            the same thing the ROW UP / ROW DN buttons do, and what a wheel over
            a list is expected to do. Checked before the buttons so it still
            works while the pointer rests on one. */
-        if (p.wheel > 0) { *press_up = 1; break; }
+        if (p.wheel > 0) { if (deck_rows_can_go_up()) *press_up = 1; break; }
         if (p.wheel < 0) { *press_down = 1; break; }
         if (deck_btn_room()) {
             int b;
@@ -18295,7 +18302,9 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
                 if (!ptr_in(p.x, p.y, deck_btn_x(), deck_btn_y(b), DECK_BTN_W, DECK_BTN_H))
                     continue;
                 if (!p.left_pressed) break;
-                if (b == 0) *press_up = 1;
+                /* ROW UP is the same movement as the wheel, and stops the same
+                   way rather than swapping the tab under the player. */
+                if (b == 0) { if (deck_rows_can_go_up()) *press_up = 1; }
                 else if (b == 1) *press_down = 1;
                 else if (b == 2) *press_b = 1;
                 else *press_start = 1;
