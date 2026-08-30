@@ -178,6 +178,7 @@ int waifu_platform_storage_read(const char *name, void *data, int max_len) { ret
 /* ---- No hardware background/text/sprite layers yet ------------------- */
 
 int waifu_platform_ui_extra_w(void) { return 0; }
+int waifu_platform_arena_backdrop(void) { return 0; }
 void waifu_platform_ui_hud(int on) { (void)on; }
 int waifu_platform_performance_tier(void)
 {

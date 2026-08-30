@@ -91,6 +91,16 @@ int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll);
 int waifu_platform_ui_extra_w(void);
 void waifu_platform_ui_hud(int on);
 
+/* Arena backdrop for the 3D duel board.  The board is drawn over a flat black
+ * clear on every console; a platform with a real colour pipeline may instead
+ * fill the frame with a graded backdrop, which is what keeps a widescreen duel
+ * from being a small board floating in a black void.  Called immediately after
+ * the field clear, before any board geometry, so whatever it draws lands
+ * underneath.  Returns 1 when the platform drew one (purely informational —
+ * the caller draws the board either way); consoles return 0 and nothing
+ * changes. */
+int waifu_platform_arena_backdrop(void);
+
 /* Coarse CPU/rendering-performance tier for optional visual fidelity scaling.
  * 0 = baseline/constrained, 1 = intermediate, 2 = fast.  Game timing must not
  * depend on this value; it may only select how many intermediate visual poses

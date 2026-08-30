@@ -21,6 +21,7 @@ int waifu_platform_background_request(WaifuBackgroundKind kind, int hscroll)
 
 /* No widescreen room on the host framebuffer: the HUD keeps its normal layout. */
 int waifu_platform_ui_extra_w(void) { return 0; }
+int waifu_platform_arena_backdrop(void) { return 0; }
 void waifu_platform_ui_hud(int on) { (void)on; }
 int waifu_platform_performance_tier(void) { return 2; }
 int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, unsigned char fg, unsigned char shadow)

@@ -1,5 +1,14 @@
 # FM TOWNS Marty port -- status
 
+> **Physical-hardware update (2026-08-27):** The owner has confirmed that the
+> current game runs on real FM TOWNS hardware and that CD-ROM access works after
+> the latest CD-ROM-access update. `IMG_6472.mov` is also a phone recording of
+> the game running on real hardware. Older statements below that “nothing has
+> run on physical hardware” are historical and must not be treated as current
+> blanket truth. This confirmation is scoped: it does not by itself verify
+> every scene, audio output, save persistence, controller path, or frame-time
+> measurement.
+
 Branch/worktree: `.claude/worktrees/agent-abf2922f9621eb1c6` (branch
 `worktree-agent-abf2922f9621eb1c6`, based on `fix/revert-vdc-text-rainbow`).
 

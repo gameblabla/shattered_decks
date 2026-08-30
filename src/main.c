@@ -3606,6 +3606,9 @@ static void fmt_i32_dec(char *dst, int dst_size, int value);
 static void fmt_lp5(char out[6], int value);
 static void fmt_prefixed_i32(char *dst, int dst_size, char prefix, int value);
 
+/* Widescreen duel wings (defined once the battle state exists, below). */
+static void draw_duel_wings(int field_ox, int lp_ox);
+
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
 {
     char lpbuf[16];
@@ -3630,6 +3633,7 @@ static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
     draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
     fmt_lp5(lpbuf, g_you_lp_disp);
     draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
+    draw_duel_wings(field_ox, lp_ox);
     ui_hud_end();
 }
 
@@ -5464,6 +5468,9 @@ static void render_board(Camera cam)
        platform-agnostic and guarantees both SDL and headless produce the same
        full framebuffer. */
     clear_screen(IDX_BLACK);
+    /* A platform with a real colour pipeline replaces that flat black with a
+       graded arena backdrop (no-op on every console). */
+    waifu_platform_arena_backdrop();
 #if defined(WAIFU_FIXED_POSE_BENCH)
     if (g_fixed_pose_bench_active) {
         g_fixed_pose_bench_sample.clear_us += profile_now_us() - fixed_pose_t0;
@@ -10576,6 +10583,67 @@ static void reseed_battle_deck_rng_for_game(uint32_t salt)
     waifu_deck_rng_seed(&g_i_deck_rng, waifu_deck_runtime_seed(salt));
     g_i_deck_rng_seeded = 1;
 #endif
+}
+
+/* --- widescreen duel wings ---------------------------------------------------
+   A display wider than the authored 256-pixel column leaves real estate on both
+   sides of the centred board. Rather than pad it with black, the flanks carry
+   the duel state a console layout has nowhere to put: turn/cards played and
+   both decks and hands, at a glance, without opening a menu.
+
+   Everything is gated on waifu_platform_ui_extra_w(): it is 0 on every console
+   target and on a game-aspect display, where these draw nothing at all and the
+   shipped layout is byte-identical. */
+
+#define WING_MIN_EXTRA 120     /* < 60 px a side is not worth a panel */
+#define WING_MAX_W      86
+#define WING_MIN_W      58
+
+static int hand_cards_left(const int *used)
+{
+    int i, n = 0;
+    for (i = 0; i < I_HAND; ++i) if (!used[i]) ++n;
+    return n;
+}
+
+static void wing_row(int x, int y, int w, const char *label, int value)
+{
+    char buf[12];
+    fmt_i32_dec(buf, (int)sizeof(buf), value);
+    draw_text_small(x + 5, y, label, IDX_UI_LIGHT, IDX_BLACK);
+    /* Values right-aligned inside the panel (small font advances 7 px). */
+    draw_text_small(x + w - 5 - (int)strlen(buf) * 7, y, buf, IDX_GOLD_HI, IDX_BLACK);
+}
+
+static void wing_panel(int x, int y, int w, int h, const char *title)
+{
+    draw_panel_rect(x, y, w, h, IDX_UI_DARK);
+    draw_text_small(x + 5, y + 5, title, IDX_WHITE, IDX_BLACK);
+    hline(x + 4, x + w - 5, y + 14, IDX_GOLD_DARK);
+}
+
+static void draw_duel_wings(int field_ox, int lp_ox)
+{
+    const int extra = waifu_platform_ui_extra_w();
+    int w, lx, rx, y;
+    if (extra < WING_MIN_EXTRA) return;
+    w = extra / 2 - 10;
+    if (w > WING_MAX_W) w = WING_MAX_W;
+    if (w < WING_MIN_W) return;
+
+    y = 42;
+    lx = 6 + field_ox;
+    rx = 248 + lp_ox - w;   /* lp_ox already carries the widescreen offset */
+
+    wing_panel(lx, y, w, 62, "DUEL");
+    wing_row(lx, y + 19, w, "TURN", g_b_turns);
+    wing_row(lx, y + 30, w, "PLAYED", g_b_cards_used);
+    wing_row(lx, y + 41, w, "DECK", g_i_player_deck_left);
+    wing_row(lx, y + 52, w, "HAND", hand_cards_left(g_i_player_used));
+
+    wing_panel(rx, y, w, 40, "RIVAL");
+    wing_row(rx, y + 19, w, "DECK", g_i_com_deck_left);
+    wing_row(rx, y + 30, w, "HAND", hand_cards_left(g_i_com_used));
 }
 
 static void sync_battle_deck_counts(void)

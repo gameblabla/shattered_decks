@@ -178,6 +178,54 @@ static void ui_push_quad(float x0, float y0, float x1, float y1,
     g_frame.has_content = 1;
 }
 
+/* Vertically graded solid quad: same run/vertex path as ui_push_quad, but the
+   top and bottom edges carry different colours so a backdrop can be a smooth
+   gradient instead of banded fill_rows. */
+static void ui_push_quad_grad(float x0, float y0, float x1, float y1,
+                              const float top_rgba[4], const float bot_rgba[4])
+{
+    Sdl3UiVertex *vt;
+    static const int cx[6] = { 0, 1, 1, 0, 1, 0 };
+    static const int cy[6] = { 0, 0, 1, 0, 1, 1 };
+    int i;
+    if (g_frame.ui_vert_count + 6 > SDL3_UI_MAX_VERTS) return;
+    vt = &g_frame.ui_verts[g_frame.ui_vert_count];
+    for (i = 0; i < 6; ++i) {
+        const float *c = cy[i] ? bot_rgba : top_rgba;
+        vt[i].x = cx[i] ? x1 : x0;
+        vt[i].y = cy[i] ? y1 : y0;
+        vt[i].u = -1.0f;
+        vt[i].v = 0.0f;
+        vt[i].r = c[0]; vt[i].g = c[1]; vt[i].b = c[2]; vt[i].a = c[3];
+    }
+    g_frame.ui_vert_count += 6;
+    ui_append(SDL3_UI_RUN_TRIS, 6);
+    g_frame.has_content = 1;
+}
+
+/* Horizontally graded solid quad (arena side vignette). */
+static void ui_push_quad_hgrad(float x0, float y0, float x1, float y1,
+                               const float left_rgba[4], const float right_rgba[4])
+{
+    Sdl3UiVertex *vt;
+    static const int cx[6] = { 0, 1, 1, 0, 1, 0 };
+    static const int cy[6] = { 0, 0, 1, 0, 1, 1 };
+    int i;
+    if (g_frame.ui_vert_count + 6 > SDL3_UI_MAX_VERTS) return;
+    vt = &g_frame.ui_verts[g_frame.ui_vert_count];
+    for (i = 0; i < 6; ++i) {
+        const float *c = cx[i] ? right_rgba : left_rgba;
+        vt[i].x = cx[i] ? x1 : x0;
+        vt[i].y = cy[i] ? y1 : y0;
+        vt[i].u = -1.0f;
+        vt[i].v = 0.0f;
+        vt[i].r = c[0]; vt[i].g = c[1]; vt[i].b = c[2]; vt[i].a = c[3];
+    }
+    g_frame.ui_vert_count += 6;
+    ui_append(SDL3_UI_RUN_TRIS, 6);
+    g_frame.has_content = 1;
+}
+
 static void ui_push_corner_quad(const float xy[8], const float uv[8], const float rgba[4])
 {
     Sdl3UiVertex *vt;
@@ -869,6 +917,45 @@ void waifu_platform_ui_hud(int on)
     int want = on ? 1 : 0;
     if (want != g_ui_hud) ui_close_run();   /* don't coalesce across the boundary */
     g_ui_hud = want;
+}
+
+/* Arena backdrop (platform.h): the duel board is cleared to black on every
+   console, which on a widescreen display leaves the board floating in a void.
+   Here the frame opens with a graded vault instead — a deep indigo sky falling
+   to near-black, with a warm floor haze under the board's horizon — pushed as
+   the first full-width UI runs of the frame, so they are captured before any
+   3D primitive and composite underneath the board. */
+int waifu_platform_arena_backdrop(void)
+{
+    static const float top[4]   = { 0.050f, 0.054f, 0.140f, 1.0f };
+    static const float mid[4]   = { 0.105f, 0.085f, 0.195f, 1.0f };
+    static const float low[4]   = { 0.028f, 0.024f, 0.058f, 1.0f };
+    static const float haze0[4] = { 0.85f, 0.66f, 0.32f, 0.00f };
+    static const float haze1[4] = { 0.85f, 0.66f, 0.32f, 0.15f };
+    static const float haze2[4] = { 0.85f, 0.66f, 0.32f, 0.00f };
+    static const float dark[4]  = { 0.0f, 0.0f, 0.0f, 0.62f };
+    static const float clear[4] = { 0.0f, 0.0f, 0.0f, 0.00f };
+    const float w = (float)(WAIFU_FM_WIDTH + g_ui_extra_w);
+    const float h = (float)WAIFU_FM_HEIGHT;
+    const int was_hud = g_ui_hud;
+
+    waifu_platform_ui_hud(1);
+    ui_push_quad_grad(0.0f, 0.0f, w, h * 0.55f, top, mid);
+    ui_push_quad_grad(0.0f, h * 0.55f, w, h, mid, low);
+    /* Horizon haze: a soft warm band around the board's horizon line, so the
+       flanks read as an arena rather than empty space. */
+    ui_push_quad_grad(0.0f, h * 0.38f, w, h * 0.62f, haze0, haze1);
+    ui_push_quad_grad(0.0f, h * 0.62f, w, h * 0.92f, haze1, haze2);
+    /* Side vignette: only exists when the display is wider than the game
+       column, and it falls off exactly at the column edge, so the board keeps
+       the eye and the flanks frame it instead of glowing. */
+    if (g_ui_extra_w > 0) {
+        const float flank = (float)g_ui_extra_w * 0.5f;
+        ui_push_quad_hgrad(0.0f, 0.0f, flank, h, dark, clear);
+        ui_push_quad_hgrad(w - flank, 0.0f, w, h, clear, dark);
+    }
+    waifu_platform_ui_hud(was_hud);
+    return 1;
 }
 
 /* SDL3 decodes the 16:9 ending image in the present pre-pass (fullimage_ensure),
