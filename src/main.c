@@ -3626,6 +3626,7 @@ static void draw_duel_wings(int field_ox, int lp_ox);
 /* On-screen END TURN button (mouse only); defined with the pointer code near
    waifu_fm_step, and a no-op on every console. */
 static void draw_pointer_end_turn_button(void);
+static void draw_deck_editor_pointer_buttons(void);
 
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
 {
@@ -16689,6 +16690,7 @@ static void draw_deck_editor(void)
         draw_centered_text(WAIFU_UI_BOTTOM_Y(181), msg, IDX_RED, IDX_BLACK);
     }
     draw_text_small(ed_dx + 15, WAIFU_FM_HEIGHT - 14, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
+    draw_deck_editor_pointer_buttons();
     ui_hud_end();
 }
 
@@ -17886,23 +17888,56 @@ static int ptr_end_turn_x(void) { return ui_full_w() - PTR_END_TURN_W - 6; }
    never also a click on a card or a zone. */
 static int ptr_end_turn_y(void) { return 112; }
 
+/* One on-screen button, lit while the pointer is over it. The label is centred
+   on the box: the small font advances 7 px per glyph and its cell is 8 px tall.
+   Must be called inside a HUD bracket -- every button is anchored to the true
+   screen edge, not to the game column. */
+static void ptr_button(int x, int y, int w, int h, const char *label)
+{
+    int hot = ptr_in(g_ptr_x, g_ptr_y, x, y, w, h);
+    rect_fill(x, y, w, h, hot ? IDX_GOLD_DARK : IDX_UI_DARK);
+    rect_outline(x, y, w, h, hot ? IDX_GOLD_HI : IDX_UI_LIGHT);
+    draw_text_small(x + (w - waifu_cstrlen(label) * 7) / 2, y + (h - 8) / 2,
+                    label, hot ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+}
+
 /* Drawn by the two player-turn views. Only while the mouse is in use, so a pad
-   player never sees it. Must be called inside a HUD bracket (it is anchored to
-   the true screen edge). */
+   player never sees it. */
 static void draw_pointer_end_turn_button(void)
 {
-    int x, y, hot;
     if (!g_ptr_active) return;
-    x = ptr_end_turn_x();
-    y = ptr_end_turn_y();
-    hot = ptr_in(g_ptr_x, g_ptr_y, x, y, PTR_END_TURN_W, PTR_END_TURN_H);
-    rect_fill(x, y, PTR_END_TURN_W, PTR_END_TURN_H, hot ? IDX_GOLD_DARK : IDX_UI_DARK);
-    rect_outline(x, y, PTR_END_TURN_W, PTR_END_TURN_H, hot ? IDX_GOLD_HI : IDX_UI_LIGHT);
-    /* Centred on the box, not inset by eye: the small font advances 7 px per
-       glyph and its cell is 8 px tall. */
-    draw_text_small(x + (PTR_END_TURN_W - PTR_END_TURN_LABEL_W) / 2,
-                    y + (PTR_END_TURN_H - 8) / 2,
-                    PTR_END_TURN_LABEL, hot ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    ptr_button(ptr_end_turn_x(), ptr_end_turn_y(), PTR_END_TURN_W, PTR_END_TURN_H,
+               PTR_END_TURN_LABEL);
+}
+
+/* THE DECK EDITOR'S MOUSE BUTTONS.
+   Clicking cards and tabs covers most of the editor, but leaving it (RUN),
+   checking a card (B) and scrolling a list longer than the eighteen visible
+   slots have no pointer equivalent -- a mouse-only player could edit a deck and
+   then not get out of the screen. These four buttons are those keys.
+
+   They live in the margin the widescreen panel leaves beside the authored
+   256-wide block, so they cost the console layout nothing and cover nothing.
+   With no margin (a game-aspect window) there is genuinely nowhere to put them
+   that is not already the editor, so they are omitted -- the same gating the
+   duel's wing panels use. */
+#define DECK_BTN_W 64
+#define DECK_BTN_H 16
+#define DECK_BTN_GAP 22
+#define DECK_BTN_COUNT 4
+static int deck_btn_room(void) { return waifu_platform_ui_extra_w() >= 2 * (DECK_BTN_W + 16); }
+static int deck_btn_x(void) { return ui_full_w() - DECK_BTN_W - 12; }
+static int deck_btn_y(int i) { return 58 + i * DECK_BTN_GAP; }
+static const char *const k_deck_btn_label[DECK_BTN_COUNT] = {
+    "ROW UP", "ROW DN", "CHECK", "DONE"
+};
+
+static void draw_deck_editor_pointer_buttons(void)
+{
+    int i;
+    if (!g_ptr_active || !deck_btn_room()) return;
+    for (i = 0; i < DECK_BTN_COUNT; ++i)
+        ptr_button(deck_btn_x(), deck_btn_y(i), DECK_BTN_W, DECK_BTN_H, k_deck_btn_label[i]);
 }
 
 /* Nearest board zone to a column-space point, or 0 if nothing is close enough.
@@ -18111,6 +18146,20 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
         int ed_dx = ptr_column_dx() + WAIFU_UI_CENTER_DX;
         int count = deck_editor_active_count();
         int scroll = g_deck_scroll[g_deck_tab];
+        if (deck_btn_room()) {
+            int b;
+            for (b = 0; b < DECK_BTN_COUNT; ++b) {
+                if (!ptr_in(p.x, p.y, deck_btn_x(), deck_btn_y(b), DECK_BTN_W, DECK_BTN_H))
+                    continue;
+                if (!p.left_pressed) break;
+                if (b == 0) *press_up = 1;
+                else if (b == 1) *press_down = 1;
+                else if (b == 2) *press_b = 1;
+                else *press_start = 1;
+                break;
+            }
+            if (b < DECK_BTN_COUNT) break;   /* the pointer is on a button */
+        }
         /* Tabs. */
         if (ptr_in(p.x, p.y, ed_dx + 14, 27, 102, 14) && p.left_pressed && g_deck_tab != 0) *press_tab = 1;
         if (ptr_in(p.x, p.y, ed_dx + 140, 27, 102, 14) && p.left_pressed && g_deck_tab != 1) *press_tab = 1;
@@ -18157,6 +18206,7 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
 #else /* no pointer on the consoles */
 
 static void draw_pointer_end_turn_button(void) {}
+static void draw_deck_editor_pointer_buttons(void) {}
 static void ptr_drive(int *press_up, int *press_down, int *press_left, int *press_right,
                       int *press_a, int *press_b, int *press_start, int *press_tab)
 {
