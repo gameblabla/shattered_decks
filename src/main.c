@@ -92,6 +92,21 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define FIELD_Z0 (-653)   /* -2.55 in Q8.8 */
 #define FIELD_Z1 ( 653)   /*  2.55 in Q8.8 */
 #define FIELD_Y  (0)
+/* How far above the board plane a field card and the zone cursor are placed.
+   The software renderers have no depth buffer, so a card needs a real lift to
+   keep its quad painted over the tile it stands on -- but that lift also
+   magnifies the card and pushes it away from the projection centre, so a card
+   in an outer column drifted off its tile (worst at the board's left and right
+   edges, exact in the middle) and read as hovering above the board. The
+   hardware 3D path depth-tests, so a single Q8 step is enough to break the tie
+   with the tile, and the cursor can sit exactly on the plane it highlights. */
+#if defined(WAIFU_PLATFORM_HW3D)
+#define BOARD_CARD_Y   (1)
+#define ZONE_CURSOR_Y  (0)
+#else
+#define BOARD_CARD_Y   Q8_FRAC(115,1000)
+#define ZONE_CURSOR_Y  Q8_FRAC(10,100)
+#endif
 #define FIELD_THICK (-108) /* -0.42 in Q8.8 */
 #define FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16 (Q8_FROM_INT(4) << Q8_SHIFT)
 #define FLOOR_SAMPLE_CACHE_SLOTS 2
@@ -7319,7 +7334,7 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
     int32_t cx = zone_cx(col), cz = zone_cz(row);
     int32_t hw = defense ? Q8_FRAC(50,100) : Q8_FRAC(36,100);
     int32_t hz = defense ? Q8_FRAC(36,100) : Q8_FRAC(50,100);
-    int32_t y = Q8_FRAC(115,1000);
+    int32_t y = BOARD_CARD_Y;
     int support = is_support_card(card_id);
 #if defined(WAIFU_FM_CD32X)
     const uint8_t *tex = (back || support) ? NULL : card_face_ptr(card_id);
@@ -7469,10 +7484,10 @@ static void draw_zone_cursor_q(Camera cam, int32_t col, int32_t row)
 {
     int32_t x0 = col_xq(col), x1 = col_xq(col + Q8_ONE);
     int32_t z0 = row_zq(row), z1 = row_zq(row + Q8_ONE);
-    ScreenPt p0 = project_point(cam, v3(x0,Q8_FRAC(10,100),z0));
-    ScreenPt p1 = project_point(cam, v3(x1,Q8_FRAC(10,100),z0));
-    ScreenPt p2 = project_point(cam, v3(x1,Q8_FRAC(10,100),z1));
-    ScreenPt p3 = project_point(cam, v3(x0,Q8_FRAC(10,100),z1));
+    ScreenPt p0 = project_point(cam, v3(x0,ZONE_CURSOR_Y,z0));
+    ScreenPt p1 = project_point(cam, v3(x1,ZONE_CURSOR_Y,z0));
+    ScreenPt p2 = project_point(cam, v3(x1,ZONE_CURSOR_Y,z1));
+    ScreenPt p3 = project_point(cam, v3(x0,ZONE_CURSOR_Y,z1));
     if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
     /* Keep the cursor visible: far/upper zones (especially enemy rows) can project
        off the top of the top-down view, leaving the player targeting "blind".
@@ -7507,10 +7522,10 @@ static void draw_zone_reticle_q(Camera cam, int32_t col, int32_t row)
     int cx = 0, cy = 0, i;
     int32_t x0 = col_xq(col), x1 = col_xq(col + Q8_ONE);
     int32_t z0 = row_zq(row), z1 = row_zq(row + Q8_ONE);
-    p[0] = project_point(cam, v3(x0,Q8_FRAC(10,100),z0));
-    p[1] = project_point(cam, v3(x1,Q8_FRAC(10,100),z0));
-    p[2] = project_point(cam, v3(x1,Q8_FRAC(10,100),z1));
-    p[3] = project_point(cam, v3(x0,Q8_FRAC(10,100),z1));
+    p[0] = project_point(cam, v3(x0,ZONE_CURSOR_Y,z0));
+    p[1] = project_point(cam, v3(x1,ZONE_CURSOR_Y,z0));
+    p[2] = project_point(cam, v3(x1,ZONE_CURSOR_Y,z1));
+    p[3] = project_point(cam, v3(x0,ZONE_CURSOR_Y,z1));
     if (!p[0].ok || !p[1].ok || !p[2].ok || !p[3].ok) return;
     for (i = 0; i < 4; ++i) {
         /* Same edge clamp as draw_zone_cursor_q so off-screen zones still
@@ -7606,7 +7621,7 @@ static int flying_card_layout(Camera cam, int hand_index, int target_col, int ta
     int midx = 104 + ho, midy = 82;
     int midw = 48, midh = 66;
 
-    ScreenPt dst = project_point(cam, v3(zone_cx(target_col), Q8_FRAC(10,100), zone_cz(target_row)));
+    ScreenPt dst = project_point(cam, v3(zone_cx(target_col), BOARD_CARD_Y, zone_cz(target_row)));
     if (!dst.ok) return 0;
     int dx = dst.x - 14 + ho, dy = dst.y - 20;
 
@@ -14832,7 +14847,7 @@ static void draw_player_fusion_target(void)
 
 static void fusion_field_card_rect(Camera cam, int target_slot, int *x, int *y, int *w, int *h)
 {
-    ScreenPt dst = project_point(cam, v3(zone_cx(target_slot), Q8_FRAC(10,100), zone_cz(PLAYER_CARD_ROW)));
+    ScreenPt dst = project_point(cam, v3(zone_cx(target_slot), BOARD_CARD_Y, zone_cz(PLAYER_CARD_ROW)));
     if (!dst.ok) {
         *x = (WAIFU_FM_WIDTH / 2) - 14;
         *y = 126;
