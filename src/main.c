@@ -17912,6 +17912,13 @@ static void ptr_drive_battle(const WaifuPointer *p, int cx, int cy,
                    confirming on it does -- play it. */
                 g_b_selected_hand = from;
                 *press_a = 1;
+            } else if (from >= 0 && p->y >= WAIFU_BOTTOM_INFO_Y) {
+                /* Dropped DOWN onto the info bar: queue the card as fusion
+                   material, which is what DOWN does on this screen. Up plays a
+                   card, down feeds the fusion -- the same two directions the pad
+                   uses, so the gestures and the buttons stay one mechanism. */
+                g_b_selected_hand = from;
+                *press_down = 1;
             } else if (from < 0 && p->y < hy - 8 && p->drag_y < hy - 8) {
                 /* Clicked the board above the hand: lift to the tactical view. */
                 *press_up = 1;
