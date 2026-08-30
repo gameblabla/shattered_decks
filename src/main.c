@@ -287,6 +287,49 @@ static int ui_center_x(int w) { return (g_ui_clip_w - w) / 2; }
 /* Half the widescreen surplus: what a centred element inside a HUD bracket has
    to be shifted by when its x was written against the 256-wide column. */
 static int ui_center_dx(void) { return (g_ui_clip_w - WAIFU_FM_WIDTH) / 2; }
+
+/* ---- on-screen control prompts --------------------------------------------
+   A console prompt can say "A" because the letter is printed on the pad. On PC
+   it cannot: the controls are rebindable and the player may be on a keyboard or
+   a pad, so every prompt that names a button has to ask what that button is
+   currently called. prompt_text() returns the authored console string unchanged
+   where there is nothing to ask (waifu_platform_prompt_label returns NULL), and
+   otherwise expands a tiny format: %a confirm, %b cancel, %s start, %t assist.
+
+   Directions keep their authored wording ("L/R", "UP/DOWN"): those name a
+   DIRECTION, which every input device has, rather than a specific physical
+   button, so they stay true under any binding. */
+#if defined(WAIFU_PLATFORM_HW3D)
+static const char *prompt_text(const char *authored, const char *fmt)
+{
+    static char buf[80];
+    int o = 0;
+    const char *f;
+    if (!waifu_platform_prompt_label(WAIFU_PROMPT_CONFIRM)) return authored;
+    for (f = fmt; *f && o < (int)sizeof(buf) - 1; ++f) {
+        const char *lab = 0;
+        if (*f == '%') {
+            switch (f[1]) {
+            case 'a': lab = waifu_platform_prompt_label(WAIFU_PROMPT_CONFIRM); break;
+            case 'b': lab = waifu_platform_prompt_label(WAIFU_PROMPT_CANCEL); break;
+            case 's': lab = waifu_platform_prompt_label(WAIFU_PROMPT_START); break;
+            case 't': lab = waifu_platform_prompt_label(WAIFU_PROMPT_ASSIST); break;
+            default: break;
+            }
+        }
+        if (!lab) { buf[o++] = *f; continue; }
+        /* Copied out immediately: the platform hands back a rotating buffer. */
+        ++f;
+        while (*lab && o < (int)sizeof(buf) - 1) buf[o++] = *lab++;
+    }
+    buf[o] = '\0';
+    return buf;
+}
+#else
+/* Nothing is rebindable: the authored text is the answer, and the formatter
+   above never reaches a console ROM. */
+#define prompt_text(authored, fmt) (authored)
+#endif
 #define WAIFU_BATTLE_CARD_X0 (WAIFU_UI_CENTER_DX + 4)
 #define WAIFU_BATTLE_CARD_X1 (WAIFU_UI_CENTER_DX + 132)
 #define WAIFU_BATTLE_CARD_Y (((WAIFU_FM_HEIGHT - 202) < 33) ? (WAIFU_FM_HEIGHT - 202) : 33)
@@ -8511,7 +8554,9 @@ static void draw_tally_screen(int f, int won)
 
     waifu_str_copy(line, (int)sizeof(line), "RANK "); waifu_str_cat_char(line, (int)sizeof(line), rank);
     draw_centered_text_scaled(170, line, 2, IDX_GOLD_HI, IDX_BLACK);
-    draw_text_small(ox + 50, WAIFU_UI_BOTTOM_Y(210), "PRESS RUN: RETURN TO TITLE", IDX_WHITE, IDX_BLACK);
+    draw_text_small(ox + 50, WAIFU_UI_BOTTOM_Y(210),
+                    prompt_text("PRESS RUN: RETURN TO TITLE", "%s: RETURN TO TITLE"),
+                    IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_victory_screen(int f)
@@ -8700,7 +8745,8 @@ static void draw_title_logo(void)
 static void draw_title_prompt(int f)
 {
     if (((f / 24) & 1) == 0) {
-        draw_centered_text(190, "PRESS RUN TO START", IDX_WHITE, IDX_BLACK);
+        draw_centered_text(190, prompt_text("PRESS RUN TO START", "PRESS %s TO START"),
+                           IDX_WHITE, IDX_BLACK);
     }
     draw_centered_text(208, "(C) 2026 GAMEBLABLA", IDX_WHITE, IDX_BLACK);
 }
@@ -16027,7 +16073,8 @@ static void draw_story_name_entry(void)
 #else
     draw_text_small(dx + 34, 180, "UP/DOWN GLYPH", IDX_WHITE, IDX_BLACK);
 #endif
-    draw_text_small(dx + 34, 194, "A NEXT   RUN DREAM", IDX_GOLD_HI, IDX_BLACK);
+    draw_text_small(dx + 34, 194, prompt_text("A NEXT   RUN DREAM", "%a NEXT   %s DREAM"),
+                    IDX_GOLD_HI, IDX_BLACK);
     if (!g_story_name_to_intro && g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
     if (g_story_name_to_intro) apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame, 20));
     /* Last, so the fades above (which invalidate it) win. */
@@ -16574,7 +16621,13 @@ static void draw_story_fire_screen(int f)
         }
         wrap_draw(18, WAIFU_UI_BOTTOM_Y(198), 10, fire_shown, &cur, max_chars,
                   from_line, from_char, IDX_WHITE, IDX_BLACK);
-        if (prompt) draw_text_small(box_w - 59, WAIFU_FM_HEIGHT - 24, "A/RUN", IDX_WHITE, IDX_BLACK);
+        if (prompt) {
+            const char *pr = prompt_text("A/RUN", "%a");
+            /* Right edge at box_w-24, which is where the authored 59 px
+               reserve put the end of the five-character "A/RUN". */
+            draw_text_small(box_w - 24 - waifu_cstrlen(pr) * 7, WAIFU_FM_HEIGHT - 24,
+                            pr, IDX_WHITE, IDX_BLACK);
+        }
         ui_hud_end();
         s_fire_body = cur;
         s_fire_body_valid = 1;
@@ -16605,7 +16658,14 @@ static void draw_story_fire_screen(int f)
     draw_wrapped_text_small_box(18, WAIFU_UI_BOTTOM_Y(198), WAIFU_FM_WIDTH + ex - 38, 3, 10, fire_shown, IDX_WHITE, IDX_BLACK);
 #endif
     /* Only offer the A/RUN prompt once the line has finished typing. */
-    if (!past_last_line && fire_vis >= fire_len && ((f / 16) & 1) == 0) draw_text_small(WAIFU_FM_WIDTH + ex - 59, WAIFU_FM_HEIGHT - 24, "A/RUN", IDX_WHITE, IDX_BLACK);
+    if (!past_last_line && fire_vis >= fire_len && ((f / 16) & 1) == 0) {
+        /* Right-anchored on the prompt's real width: the authored 59 px reserve
+           only ever fitted the five characters of "A/RUN", and this reproduces
+           its right edge exactly for that string. */
+        const char *pr = prompt_text("A/RUN", "%a");
+        draw_text_small(WAIFU_FM_WIDTH + ex - 24 - waifu_cstrlen(pr) * 7,
+                        WAIFU_FM_HEIGHT - 24, pr, IDX_WHITE, IDX_BLACK);
+    }
     ui_hud_end();
 }
 
@@ -16705,27 +16765,19 @@ static void draw_deck_editor(void)
             (g_story_deck_count == STORY_DECK_SIZE ? "DECK IS FULL" : "DECK MUST BE 40");
         draw_centered_text(WAIFU_UI_BOTTOM_Y(181), msg, IDX_RED, IDX_BLACK);
     }
-    /* The control names come from the platform where they are rebindable (and
-       where the player may be on a pad), so this line cannot be a fixed string
-       there. Consoles answer NULL and keep the authored text exactly. */
+    /* "SWAP" rather than the console's "TAB": with the stock binding the key is
+       itself called TAB, and "TAB TAB" reads as a stutter. */
     {
-        const char *k_move = waifu_platform_prompt_label(WAIFU_PROMPT_CONFIRM);
-        const char *k_check = waifu_platform_prompt_label(WAIFU_PROMPT_CANCEL);
-        const char *k_tab = waifu_platform_prompt_label(WAIFU_PROMPT_ASSIST);
-        if (k_move && k_check && k_tab) {
-            char hint[64];
-            waifu_str_copy(hint, (int)sizeof(hint), k_move);
-            waifu_str_cat(hint, (int)sizeof(hint), " MOVE  ");
-            waifu_str_cat(hint, (int)sizeof(hint), k_check);
-            waifu_str_cat(hint, (int)sizeof(hint), " CHECK  ");
-            waifu_str_cat(hint, (int)sizeof(hint), k_tab);
-            /* "SWAP", not the console's "TAB": with the default binding the key
-               is itself called TAB, and "TAB TAB" reads as a stutter. */
-            waifu_str_cat(hint, (int)sizeof(hint), " SWAP");
-            draw_text_small(ed_dx + 9, WAIFU_FM_HEIGHT - 14, hint, IDX_WHITE, IDX_BLACK);
-        } else {
-            draw_text_small(ed_dx + 15, WAIFU_FM_HEIGHT - 14, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
-        }
+        const char *hint = prompt_text("A MOVE  B CHECK  BTN4 TAB",
+                                       "%a MOVE  %b CHECK  %t SWAP");
+        /* Left-aligned as authored, but pulled left if long control names would
+           otherwise push it past the block's right edge. The console string is
+           short enough that x never moves. */
+        int x = ed_dx + 15;
+        int right = ed_dx + 247 - waifu_cstrlen(hint) * 7;
+        if (x > right) x = right;
+        if (x < ed_dx + 9) x = ed_dx + 9;
+        draw_text_small(x, WAIFU_FM_HEIGHT - 14, hint, IDX_WHITE, IDX_BLACK);
     }
     draw_deck_editor_pointer_buttons();
     ui_hud_end();
@@ -17436,9 +17488,11 @@ static void draw_story_map_screen_content(int f)
         draw_wrapped_text_small_box(16, WAIFU_UI_BOTTOM_Y(190), 91, 3, 9, line, IDX_WHITE, IDX_BLACK);
     }
     if (g_story_map_cursor == 1 && g_story_progress > 0)
-        draw_text_small(11, WAIFU_FM_HEIGHT - 14, "A/RUN GO  L/R FOE", IDX_WHITE, IDX_BLACK);
+        draw_text_small(11, WAIFU_FM_HEIGHT - 14,
+                        prompt_text("A/RUN GO  L/R FOE", "%a GO  L/R FOE"), IDX_WHITE, IDX_BLACK);
     else
-        draw_text_small(11, WAIFU_FM_HEIGHT - 14, "A/RUN SELECT", IDX_WHITE, IDX_BLACK);
+        draw_text_small(11, WAIFU_FM_HEIGHT - 14,
+                        prompt_text("A/RUN SELECT", "%a SELECT"), IDX_WHITE, IDX_BLACK);
 }
 
 static void draw_story_map_screen(int f)
@@ -17504,7 +17558,8 @@ static void draw_story_save_screen(void)
         draw_centered_text(95, "NO SAVE DATA", IDX_RED, IDX_BLACK);
         draw_centered_text(118, "Nothing is written yet.", IDX_WHITE, IDX_BLACK);
     }
-    if (((g_i_frame / 16) & 1) == 0) draw_centered_text(143, "A/RUN/B BACK", IDX_WHITE, IDX_BLACK);
+    if (((g_i_frame / 16) & 1) == 0)
+        draw_centered_text(143, prompt_text("A/RUN/B BACK", "%a/%s/%b BACK"), IDX_WHITE, IDX_BLACK);
 }
 
 #if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X)
