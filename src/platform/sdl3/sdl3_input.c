@@ -1,12 +1,101 @@
 /* Action-based keyboard + gamepad input — see sdl3_input.h. */
 
 #include "sdl3_input.h"
+#include "platform.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 #define REPEAT_DELAY_FRAMES 16
 #define REPEAT_RATE_FRAMES  4
+
+/* ---- keyboard text entry (platform.h seam) --------------------------------
+   The core opens a text field (the story name) and the frontend answers with
+   what the player types. Two halves matter:
+
+   * SDL's own text input is started, so the OS keyboard layout, dead keys and
+     an IME all work rather than the game guessing letters from scancodes.
+   * While it is on, keys that PRODUCE TEXT stop driving actions. Otherwise
+     typing a name would also press buttons -- with the stock bindings, W/A/S/D
+     are the d-pad, SPACE is RUN and BACKSPACE is Cancel, so "SAM" would walk
+     the cursor and start the game. Keys that produce no text (Return, Escape,
+     the arrows, Tab, the F-keys) keep working, which is what leaves Return
+     free to accept the name and the arrows free to pick a slot. */
+#define TEXT_QUEUE_MAX 32
+static char g_text_queue[TEXT_QUEUE_MAX];
+static int g_text_head, g_text_tail;
+static int g_text_want;      /* the core has a field open */
+static int g_text_suspend;   /* the frontend menu is on top of it */
+static int g_text_active;    /* want && !suspend: SDL text input is running */
+static SDL_Window *g_text_window;
+
+static void text_push(char c)
+{
+    int next = (g_text_tail + 1) % TEXT_QUEUE_MAX;
+    if (next == g_text_head) return;      /* full: drop, never overwrite */
+    g_text_queue[g_text_tail] = c;
+    g_text_tail = next;
+}
+
+void waifu_sdl3_text_attach(SDL_Window *window) { g_text_window = window; }
+
+static void text_apply(void)
+{
+    int want = g_text_want && !g_text_suspend;
+    if (want == g_text_active) return;
+    g_text_active = want;
+    g_text_head = g_text_tail = 0;        /* stale keystrokes never carry over */
+    if (!g_text_window) return;
+    if (g_text_active) SDL_StartTextInput(g_text_window);
+    else               SDL_StopTextInput(g_text_window);
+}
+
+void waifu_platform_text_input(int on)
+{
+    g_text_want = !!on;
+    text_apply();
+}
+
+/* The frontend menu opens over the game: it needs the letter keys back for its
+   own navigation, and nothing typed into it belongs in the game's field. The
+   core's request is remembered, so closing the menu puts the field back. */
+void waifu_sdl3_text_suspend(int on)
+{
+    g_text_suspend = !!on;
+    text_apply();
+}
+
+void waifu_sdl3_text_inject(const char *text)
+{
+    /* Scripted typing, so the keyboard path is reachable from a headless
+       capture the same way MOUSE= reaches the pointer. Queued regardless of
+       whether SDL's text input is running -- only the core's open field ever
+       drains it. */
+    for (; text && *text; ++text) {
+        if (*text == '_') text_push(' ');
+        else text_push(*text);
+    }
+}
+
+int waifu_platform_text_poll(void)
+{
+    int c;
+    if (g_text_head == g_text_tail) return 0;
+    c = (unsigned char)g_text_queue[g_text_head];
+    g_text_head = (g_text_head + 1) % TEXT_QUEUE_MAX;
+    return c;
+}
+
+/* Does this scancode type something on the current layout? Asking SDL rather
+   than listing scancodes keeps it right on a layout where, say, the key at
+   QWERTY's W types something else. */
+static int scancode_types_text(int sc)
+{
+    SDL_Keycode k;
+    if (sc == SDL_SCANCODE_BACKSPACE) return 1;   /* edits the field */
+    k = SDL_GetKeyFromScancode((SDL_Scancode)sc, SDL_KMOD_NONE, false);
+    return k >= 0x20 && k < 0x7F;
+}
 
 typedef struct PadSlot {
     SDL_Gamepad *pad;
@@ -99,7 +188,18 @@ void waifu_input_handle_event(WaifuInput *in, const SDL_Event *ev)
     case SDL_EVENT_GAMEPAD_REMOVED:
         pad_remove(in, ev->gdevice.which);
         break;
+    case SDL_EVENT_TEXT_INPUT:
+        if (g_text_active) {
+            const char *t = ev->text.text;
+            /* The field is plain ASCII; anything else (an accented letter, an
+               IME commit) has no glyph in the game's font, so drop it rather
+               than write a byte the name cannot hold. */
+            for (; t && *t; ++t)
+                if ((unsigned char)*t >= 0x20 && (unsigned char)*t < 0x7F) text_push(*t);
+        }
+        break;
     case SDL_EVENT_KEY_DOWN:
+        if (g_text_active && ev->key.scancode == SDL_SCANCODE_BACKSPACE) text_push('\b');
         if (in->capturing && !ev->key.repeat) {
             in->capturing = 0;
             in->captured = 1;
@@ -171,7 +271,11 @@ void waifu_input_update(WaifuInput *in)
     for (a = 0; a < WAIFU_ACT_COUNT; ++a) {
         for (b = 0; b < WAIFU_BINDS_PER_ACTION; ++b) {
             int sc = in->cfg->key[a][b];
-            if (sc > 0 && sc < SDL_SCANCODE_COUNT && keys[sc]) in->held[a] = 1;
+            if (sc <= 0 || sc >= SDL_SCANCODE_COUNT || !keys[sc]) continue;
+            /* A text field is open: the letter keys belong to it, not to the
+               buttons they are bound to. */
+            if (g_text_active && scancode_types_text(sc)) continue;
+            in->held[a] = 1;
         }
     }
 

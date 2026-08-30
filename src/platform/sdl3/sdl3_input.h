@@ -34,6 +34,19 @@ void waifu_input_destroy(WaifuInput *in);
    reopen pads after a rumble/deadzone change; bindings are read live. */
 void waifu_input_settings_changed(WaifuInput *in);
 
+/* The window SDL's text input is started on (see waifu_platform_text_input in
+   platform.h). Call once after the window exists. */
+void waifu_sdl3_text_attach(SDL_Window *window);
+
+/* Queues typed characters as if they had come from the keyboard (command
+   scripts). '_' stands for a space so the token stays one word; '\b' is a
+   backspace. */
+void waifu_sdl3_text_inject(const char *text);
+
+/* Suspends the core's text field while the frontend menu is up (and restores it
+   when the menu closes), so the menu keeps the whole keyboard. */
+void waifu_sdl3_text_suspend(int on);
+
 /* Feeds one SDL event (device add/remove, key/button edges for rebinding). */
 void waifu_input_handle_event(WaifuInput *in, const SDL_Event *ev);
 

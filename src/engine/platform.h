@@ -226,6 +226,14 @@ void waifu_platform_open_options(void);
  * then skips the low-resolution software flames). */
 int waifu_platform_fire(int x, int y, int w, int h);
 
+/* Keyboard text entry. The core turns this on for as long as a text field is
+ * open; while it is on the frontend stops routing text-producing keys to the
+ * action layer (so typing a name cannot also press buttons) and queues what was
+ * typed. waifu_platform_text_poll() takes one edit off that queue: a character
+ * code, '\b' for backspace, or 0 when there is nothing left. */
+void waifu_platform_text_input(int on);
+int waifu_platform_text_poll(void);
+
 #else
 
 typedef struct WaifuPointer {
@@ -243,6 +251,8 @@ static inline int waifu_platform_display_reset(void) { return 0; }
 static inline void waifu_platform_open_options(void) {}
 static inline int waifu_platform_fire(int x, int y, int w, int h)
 { (void)x; (void)y; (void)w; (void)h; return 0; }
+static inline void waifu_platform_text_input(int on) { (void)on; }
+static inline int waifu_platform_text_poll(void) { return 0; }
 
 #endif /* WAIFU_PLATFORM_HW3D */
 

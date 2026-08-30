@@ -47,6 +47,7 @@ typedef struct ScriptButtons {
     int mouse_x, mouse_y;       /* game HUD space */
     int click, rclick;          /* button edges, first frame of the event only */
     int mdown, mup;             /* held-button edges, for a scripted drag */
+    char text[32];              /* TYPE=... characters, first frame only */
 } ScriptButtons;
 
 typedef struct CommandEvent {
@@ -174,6 +175,15 @@ static void input_or_button(ScriptButtons *sb, const char *tok)
     /* Press and release separately, so a script can drag a card. */
     else if (!strcmp(buf, "MDOWN")) { sb->mouse = 1; sb->mdown = 1; }
     else if (!strcmp(buf, "MUP")) { sb->mouse = 1; sb->mup = 1; }
+    /* Keyboard text entry: TYPE=NAME types those characters, BKSP one
+       backspace. Both land on the frame the event starts, like a real key. */
+    else if (!strncmp(buf, "TYPE=", 5)) {
+        int n = 0;
+        const char *v = buf + 5;
+        while (*v && n < (int)sizeof(sb->text) - 1) sb->text[n++] = *v++;
+        sb->text[n] = '\0';
+    }
+    else if (!strcmp(buf, "BKSP")) { sb->text[0] = '\b'; sb->text[1] = '\0'; }
 }
 
 static void input_or_button_list(ScriptButtons *sb, const char *tok)
@@ -256,6 +266,10 @@ static ScriptButtons input_for_frame_from_events(int frame, const CommandEvent *
                     sb.mdown |= events[i].input.mdown;
                     sb.mup |= events[i].input.mup;
                 }
+            }
+            if (frame == events[i].start && events[i].input.text[0]) {
+                size_t n = strlen(sb.text);
+                snprintf(sb.text + n, sizeof(sb.text) - n, "%s", events[i].input.text);
             }
         }
     }
@@ -446,6 +460,7 @@ int main(int argc, char **argv)
     waifu_fm_init();
     waifu_fm_reset_interactive();
     set_window_icon(video);     /* needs the palette + assets init above */
+    waifu_sdl3_text_attach(waifu_sdl3_video_window(video));
     audio = waifu_sdl3_audio_create();
 
     /* One game step per presented frame is what a scripted capture needs (its
@@ -486,6 +501,7 @@ int main(int argc, char **argv)
                                         sb.click || sb.mup, sb.rclick);
                 script_mouse = 1;
             }
+            if (sb.text[0]) waifu_sdl3_text_inject(sb.text);
         }
         {
             Uint64 now = SDL_GetTicksNS();
@@ -496,6 +512,8 @@ int main(int argc, char **argv)
             if (frame_delta_ns > SDL_NS_PER_SECOND / 4) frame_delta_ns = STEP_NS;
         }
         waifu_input_update(input);
+        /* The menu takes the keyboard back from any open text field. */
+        waifu_sdl3_text_suspend(waifu_menu_active(menu));
         /* The game core sees the pointer only when it actually owns the screen:
            not behind the frontend menu, and not during a scripted capture. */
         /* A scripted run ignores the real mouse (its position would leak into a

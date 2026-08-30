@@ -15865,10 +15865,48 @@ static int story_name_char_index(char c)
     return 0;
 }
 
+/* Set once the player has typed on this visit to the name screen: the first
+   keystroke wipes the suggested name rather than overwriting its first letters,
+   the way a text field whose contents start out selected behaves. Someone who
+   wants SERENA presses RUN without touching the keyboard. */
+static int g_story_name_typed;
+
+/* Drains the frontend's keyboard queue into the name field. A no-op on every
+   console (waifu_platform_text_poll is an inline 0 there) and on a pad, which
+   keeps using the letter wheel -- both edit the same six slots, so a player can
+   type most of a name and still nudge one letter with the stick. */
+static void story_name_take_typing(void)
+{
+    int c;
+    while ((c = waifu_platform_text_poll()) != 0) {
+        if (c == '\b') {
+            /* Back up over the previous slot and blank it to the charset's
+               first letter, which is as empty as a fixed six-slot field gets. */
+            if (g_story_name_pos > 0) --g_story_name_pos;
+            g_story_name[g_story_name_pos] = story_name_chars[0];
+            g_story_name_typed = 1;
+            continue;
+        }
+        if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
+        if (c < 'A' || c > 'Z') continue;      /* the name holds A-Z only */
+        if (!g_story_name_typed) {
+            int i;
+            for (i = 0; i < STORY_NAME_LEN; ++i) g_story_name[i] = story_name_chars[0];
+            g_story_name_pos = 0;
+            g_story_name_typed = 1;
+        }
+        g_story_name[g_story_name_pos] = (char)c;
+        /* Stop on the last slot instead of wrapping to the front and eating
+           what was already typed. */
+        if (g_story_name_pos < STORY_NAME_LEN - 1) ++g_story_name_pos;
+    }
+}
+
 static void reset_story_entry(void)
 {
     memcpy(g_story_name, "SERENA", STORY_NAME_LEN + 1);
     g_story_name_pos = 0;
+    g_story_name_typed = 0;
     g_story_intro_line = 0;
     g_story_fire_line = 0;
     g_story_duel_index = 0;
@@ -15966,7 +16004,12 @@ static void draw_story_name_entry(void)
     draw_story_name_field(dx);
 
     draw_text_small(dx + 34, 166, "LEFT/RIGHT SLOT", IDX_WHITE, IDX_BLACK);
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* PC has a keyboard, so say so; the letter wheel still works for a pad. */
+    draw_text_small(dx + 34, 180, "TYPE OR UP/DOWN", IDX_WHITE, IDX_BLACK);
+#else
     draw_text_small(dx + 34, 180, "UP/DOWN GLYPH", IDX_WHITE, IDX_BLACK);
+#endif
     draw_text_small(dx + 34, 194, "A NEXT   RUN DREAM", IDX_GOLD_HI, IDX_BLACK);
     if (!g_story_name_to_intro && g_i_frame >= 0 && g_i_frame < 24) apply_black_dither_fade(q8_ratio(g_i_frame, 24));
     if (g_story_name_to_intro) apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame, 20));
@@ -18453,6 +18496,8 @@ void waifu_fm_step(const WaifuFmInput *input)
 
     case WAIFU_I_STORY_NAME:
         g_story_name_to_intro = 0;
+        waifu_platform_text_input(1);
+        story_name_take_typing();
         if (press_left) g_story_name_pos = (g_story_name_pos + STORY_NAME_LEN - 1) % STORY_NAME_LEN;
         if (press_right || press_a) g_story_name_pos = (g_story_name_pos + 1) % STORY_NAME_LEN;
         if (press_up || press_down) {
@@ -18466,6 +18511,7 @@ void waifu_fm_step(const WaifuFmInput *input)
            is entered, the only way out is the Sanctum QUIT option so a story
            session is never abandoned by an accidental Back press. */
         if (press_start) {
+            waifu_platform_text_input(0);
             g_story_name_to_intro = 1;
             g_i_state = WAIFU_I_STORY_NAME_TO_INTRO;
             g_i_frame = -1;
