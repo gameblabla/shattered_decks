@@ -293,11 +293,20 @@ static void ui_push_glyph_quad(float x0, float y0, float x1, float y1,
    font's (x+1,y+1)/(x,y) two-pass look). Returns 1 when handled so the common
    text primitives skip the 8x8 bitmap blit; returns 0 only when the font could
    not be loaded, so the caller falls back to the bitmap font. */
+static float g_glyph_scale = 1.0f;
+
+void waifu_hw2d_text_scale(int percent)
+{
+    if (percent < 10) percent = 10;
+    if (percent > 400) percent = 400;
+    g_glyph_scale = (float)percent / 100.0f;
+}
+
 int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, uint8_t fg, uint8_t shadow)
 {
     WaifuGlyphInfo gi;
     float fg_rgba[4], sh_rgba[4];
-    float sx, ox, x0, y0, x1, y1, sh;
+    float sx, sy, ox, x0, y0, x1, y1, sh;
     if (!waifu_sdl3_text_ready()) return 0;
     if (!waifu_sdl3_glyph_info(ch, &gi)) return 1;   /* space/blank: advance only */
 
@@ -305,13 +314,16 @@ int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, uint8_t fg,
        Condense to the caller's cell so both keep the same fit, then centre the
        advance box in it — a glyph left at its own bearing leaves the slack at
        the right of every cell and the line reads ragged. */
-    sx = (float)cell_w / 8.0f;
+    sy = g_glyph_scale;
+    sx = (float)cell_w / 8.0f * sy;
     ox = ((float)cell_w - gi.adv * sx) * 0.5f;
 
     x0 = (float)x + ox + gi.dx * sx;
     x1 = x0 + gi.dw * sx;
-    y0 = (float)y + gi.dy;
-    y1 = y0 + gi.dh;
+    /* A scaled glyph shrinks about the cell's own middle, so a shrunk label
+       stays centred on the plate the layout drew for it. */
+    y0 = (float)y + 4.0f + (gi.dy - 4.0f) * sy;
+    y1 = y0 + gi.dh * sy;
     /* Drop shadow offset scales with the glyph so it stays a shadow and not an
        outline at large canvas scales. */
     sh = 1.0f;

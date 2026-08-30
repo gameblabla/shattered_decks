@@ -142,6 +142,14 @@ int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
  * its opaque software draw. */
 int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alpha);
 
+/* Scale of the glyph INK inside its text cell, in percent (100 = the shipped
+ * face). Cell advances are untouched, so every authored layout still holds --
+ * only the drawn glyph shrinks about the cell's centre. Set it, draw, set it
+ * back to 100. Lets a label sized for the 8x8 bitmap font (the COM / YOU LP
+ * plates) keep its authored plate on a build whose TTF ink runs taller and
+ * wider than the cell. */
+void waifu_hw2d_text_scale(int percent);
+
 #else /* !WAIFU_PLATFORM_HW3D: inert stubs, compile out entirely */
 
 static inline int waifu_hw3d_present(void) { return 0; }
@@ -181,6 +189,7 @@ static inline int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
 { (void)pix; (void)sw; (void)sh; (void)xy; (void)gray; return 0; }
 static inline int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alpha)
 { (void)xy; (void)color; (void)alpha; return 0; }
+static inline void waifu_hw2d_text_scale(int percent) { (void)percent; }
 
 #endif /* WAIFU_PLATFORM_HW3D */
 

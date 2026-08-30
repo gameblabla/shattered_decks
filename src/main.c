@@ -3668,18 +3668,24 @@ static void draw_deck_editor_pointer_buttons(void);
 
 /* The COM / YOU tag on an LP panel: a coloured plate with the label on it.
    The PC frontend swaps the 8x8 bitmap glyph for a bold TTF face whose ink runs
-   a little taller and wider than the cell, so there the plate is a pixel taller
-   (and starts a pixel higher, keeping the label centred in it) and two pixels
-   wider, which is what stops the M of COM and the U of YOU from hanging off the
-   colour. Every console keeps the authored 23x8 plate. */
+   taller and wider than the cell, so at full size the label overran the plate
+   and the plate had to overrun the LP panel's border to cover it. Instead the
+   ink is scaled down inside the SAME authored 23x8 plate, which then sits with
+   a clear margin inside the panel. Every console keeps the bitmap face. */
+#define LP_LABEL_INK_PCT 76
 static void draw_lp_label(int x, int y, const char *s, uint8_t fill)
 {
+    /* 25 wide, not the console's 23: the three 7 px cells end exactly on 23, so
+       the last glyph's ink sat on the plate's edge. Two more pixels give it the
+       same margin the first letter has, and the plate still clears the panel. */
 #if defined(WAIFU_PLATFORM_HW3D)
-    rect_fill(x, y - 1, 25, 10, fill);
+    rect_fill(x, y, 25, 8, fill);
 #else
     rect_fill(x, y, 23, 8, fill);
 #endif
+    waifu_hw2d_text_scale(LP_LABEL_INK_PCT);
     draw_text_small(x + 2, y, s, IDX_WHITE, IDX_BLACK);
+    waifu_hw2d_text_scale(100);
 }
 
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
