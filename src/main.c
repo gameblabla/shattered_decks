@@ -98,19 +98,26 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #define FIELD_Z1 ( 653)   /*  2.55 in Q8.8 */
 #define FIELD_Y  (0)
 /* How far above the board plane a field card and the zone cursor are placed.
-   The software renderers have no depth buffer, so a card needs a real lift to
-   keep its quad painted over the tile it stands on -- but that lift also
-   magnifies the card and pushes it away from the projection centre, so a card
-   in an outer column drifted off its tile (worst at the board's left and right
-   edges, exact in the middle) and read as hovering above the board. The
-   hardware 3D path depth-tests, so a single Q8 step is enough to break the tie
-   with the tile, and the cursor can sit exactly on the plane it highlights. */
+   A lift MAGNIFIES the quad and pushes it away from the projection centre, so
+   anything drawn above the plane it is meant to mark drifts off its tile --
+   exact in the middle of the board, worst at the left and right edges.
+
+   The zone cursor and the attack reticle mark a TILE, so they sit exactly on
+   the plane, on every target: nothing is drawn under them that they could
+   z-fight with (both are painted after the board, and the hardware path
+   depth-tests with the tile at the same depth but a later draw). This is what
+   made the "square" red selector look crooked on the outer columns.
+
+   A field card is different: the software renderers have no depth buffer, so
+   the lift is what keeps its quad reading as an object standing on the tile,
+   and FM TOWNS bakes the projected corners of a turning card into
+   fmtowns_turn_card_geometry.h from this exact value. The hardware 3D path
+   depth-tests, so there a single Q8 step is enough to break the tie. */
+#define ZONE_CURSOR_Y  (0)
 #if defined(WAIFU_PLATFORM_HW3D)
 #define BOARD_CARD_Y   (1)
-#define ZONE_CURSOR_Y  (0)
 #else
 #define BOARD_CARD_Y   Q8_FRAC(115,1000)
-#define ZONE_CURSOR_Y  Q8_FRAC(10,100)
 #endif
 #define FIELD_THICK (-108) /* -0.42 in Q8.8 */
 #define FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16 (Q8_FROM_INT(4) << Q8_SHIFT)
