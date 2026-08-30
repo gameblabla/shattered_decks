@@ -1,5 +1,38 @@
 # Shattered Decks — C/headless + SDL 1.2 build v35
 
+## PC build (SDL3)
+
+`make sdl3` builds `waifu_fm_sdl3`, the desktop release: an SDL_GPU renderer
+(true colour 3D board, full-resolution card art, FreeType text) around the same
+game core every console target runs.
+
+**Display.** The view is resolution-agnostic and widescreen-native. The window
+opens at 1280x720 and follows whatever you resize it to, up to 32:9; the duel
+HUD, story scenes and the arena backdrop spread to the real screen edges, while
+menus and other fixed-layout screens stay centred in the authored column. On a
+display wide enough to leave room beside the board, the duel flanks carry the
+turn/cards-played/deck/hand dashboards.
+
+**Options** (ESC or the gamepad BACK button, in game or at the title):
+
+- *Video* — display mode (windowed / borderless / exclusive fullscreen),
+  resolution or window size, monitor, v-sync, frame limit, screen fit
+  (widescreen / pillarbox / stretch), widest view, render scale, FPS readout.
+- *Audio* — master, music and effects volume.
+- *Controls* — rebind every action to a key or a gamepad button (select a row
+  and press what you want to use), stick deadzone, vibration.
+
+The menu takes keyboard, gamepad and mouse. Every connected controller drives
+the game at once, and both sticks work as a d-pad.
+
+**Hotkeys.** F11 toggles fullscreen, F12 saves a screenshot.
+
+**Settings and screenshots** live in the platform preferences directory
+(`~/.local/share/ShatteredDecks/ShatteredDecks/` on Linux); `WAIFU_SDL3_CONFIG`
+points the game at a different `settings.cfg`. The file is plain `key value`
+text and an unknown or damaged line simply falls back to the default.
+
+
 ## v35 fixes
 
 - Failed fusion targeting an occupied player monster zone now places the surviving last hand material face-up, matching successful fusion result placement.

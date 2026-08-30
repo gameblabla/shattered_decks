@@ -22,6 +22,8 @@
 #include <SDL3/SDL_main.h>
 
 #include "game_api.h"
+#include "assets.h"
+#include "waifu_assets.h"
 #include "sdl3_video.h"
 #include "sdl3_audio.h"
 #include "sdl3_settings.h"
@@ -223,6 +225,49 @@ static ScriptButtons input_for_frame_from_events(int frame, const CommandEvent *
     return sb;
 }
 
+/* Window/taskbar icon: the card back, palette-expanded and nearest-scaled into
+   a square RGBA surface. Using the game's own art (rather than no icon at all)
+   is what makes the window read as a product in a taskbar. */
+static void set_window_icon(WaifuSdl3Video *video)
+{
+    enum { ICON = 64 };
+    const uint8_t *pix = waifu_assets_card_back();
+    const uint8_t *pal = waifu_fm_palette_rgb();
+    SDL_Window *win = waifu_sdl3_video_window(video);
+    uint32_t *rgba;
+    SDL_Surface *surf;
+    int dw, dh, ox, oy, x, y;
+
+    if (!win || !pix || !pal) return;
+
+    rgba = (uint32_t *)calloc(ICON * ICON, sizeof(uint32_t));
+    if (!rgba) return;
+
+    /* Fit the 38x54 card into the square, keeping its aspect. */
+    dh = ICON;
+    dw = WAIFU_CARD_W * ICON / WAIFU_CARD_H;
+    ox = (ICON - dw) / 2;
+    oy = (ICON - dh) / 2;
+    for (y = 0; y < dh; ++y) {
+        int sy = y * WAIFU_CARD_H / dh;
+        for (x = 0; x < dw; ++x) {
+            int sx = x * WAIFU_CARD_W / dw;
+            uint8_t idx = pix[sy * WAIFU_CARD_W + sx];
+            const uint8_t *c = pal + idx * 3;
+            rgba[(oy + y) * ICON + (ox + x)] =
+                ((uint32_t)0xFFu << 24) | ((uint32_t)c[2] << 16) |
+                ((uint32_t)c[1] << 8) | (uint32_t)c[0];
+        }
+    }
+
+    surf = SDL_CreateSurfaceFrom(ICON, ICON, SDL_PIXELFORMAT_ABGR8888, rgba, ICON * 4);
+    if (surf) {
+        SDL_SetWindowIcon(win, surf);
+        SDL_DestroySurface(surf);
+    }
+    free(rgba);
+}
+
 /* Screenshots land next to the settings file so they survive a reinstall and
    never need write access to the game directory. */
 static void save_screenshot(WaifuSdl3Video *video, WaifuMenu *menu)
@@ -284,6 +329,7 @@ int main(int argc, char **argv)
     int cli_fullscreen = 0;
     int cli_scale = 0;
     int cli_novsync = 0;
+    int volatile_settings = 0;
     const char *commands_path = NULL;
     const char *out_dir = NULL;
     uint8_t *dump_scratch = NULL;
@@ -316,8 +362,11 @@ int main(int argc, char **argv)
     if (dump_every < 0) dump_every = 0;
 
     /* Player settings first: the window opens at the size/mode last saved. The
-       command-line switches stay as scripted-capture overrides on top. */
+       command-line switches are session-only overrides on top — a run made with
+       them must not rewrite the player's file, so they also turn saving off. */
     waifu_settings_load(&settings);
+    volatile_settings = commands_path || cli_fullscreen || cli_novsync ||
+                        no_delay || cli_scale > 0;
     if (cli_fullscreen) settings.window_mode = WAIFU_WINDOW_BORDERLESS;
     if (cli_novsync) settings.vsync = 0;
     if (no_delay) settings.fps_cap = 0;
@@ -353,10 +402,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (commands_path) waifu_menu_set_persist(menu, 0);
+    if (volatile_settings) waifu_menu_set_persist(menu, 0);
 
     waifu_fm_init();
     waifu_fm_reset_interactive();
+    set_window_icon(video);     /* needs the palette + assets init above */
     audio = waifu_sdl3_audio_create();
 
     /* One game step per presented frame is what a scripted capture needs (its
@@ -411,7 +461,7 @@ int main(int argc, char **argv)
         if (!waifu_input_capturing(input)) {
             if (waifu_input_pressed(input, WAIFU_ACT_FULLSCREEN)) {
                 waifu_sdl3_video_toggle_fullscreen(video, &settings);
-                if (!commands_path) waifu_settings_save(&settings);
+                if (!volatile_settings) waifu_settings_save(&settings);
             }
             if (waifu_input_pressed(input, WAIFU_ACT_SCREENSHOT))
                 save_screenshot(video, menu);
@@ -498,8 +548,9 @@ int main(int argc, char **argv)
         }
     }
 
-    /* A scripted capture must not rewrite the player's settings file. */
-    if (!commands_path) waifu_settings_save(&settings);
+    /* A scripted capture or a run with CLI overrides must not rewrite the
+       player's settings file. */
+    if (!volatile_settings) waifu_settings_save(&settings);
     waifu_sdl3_audio_destroy(audio);
     waifu_menu_destroy(menu);
     waifu_input_destroy(input);

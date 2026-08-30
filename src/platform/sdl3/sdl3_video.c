@@ -1404,6 +1404,11 @@ void waifu_sdl3_video_note_window_size(WaifuSdl3Video *v, WaifuSettings *s)
     if (w > 0 && h > 0) { s->window_w = w; s->window_h = h; }
 }
 
+SDL_Window *waifu_sdl3_video_window(const WaifuSdl3Video *v)
+{
+    return v ? v->window : NULL;
+}
+
 void waifu_sdl3_video_window_size(const WaifuSdl3Video *v, int *w, int *h)
 {
     int ww = 0, wh = 0;

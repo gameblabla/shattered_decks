@@ -11,6 +11,8 @@
 
 #include "sdl3_settings.h"
 
+#include <SDL3/SDL.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,6 +60,9 @@ const char *waifu_sdl3_video_display_name(int index);
    waifu_sdl3_video_mode() fills one entry (w/h/refresh may be NULL). */
 int waifu_sdl3_video_mode_count(int display);
 int waifu_sdl3_video_mode(int display, int index, int *w, int *h, float *hz);
+
+/* The frontend's SDL window (icon, platform integration). */
+SDL_Window *waifu_sdl3_video_window(const WaifuSdl3Video *video);
 
 /* The window's current drawable size (what the options menu reports). */
 void waifu_sdl3_video_window_size(const WaifuSdl3Video *video, int *w, int *h);
