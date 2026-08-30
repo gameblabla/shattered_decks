@@ -87,6 +87,9 @@ uint8_t *waifu_sdl3_hires_card_decode(int card_id, int kind, int *w, int *h)
 
 #define PORTRAIT_BOX_W (124 * WAIFU_SDL3_PORTRAIT_SCALE)
 #define PORTRAIT_BOX_H (200 * WAIFU_SDL3_PORTRAIT_SCALE)
+/* Air above the hair, in box units (6 game pixels), the same for every
+   portrait -- it is what makes them line up with each other. */
+#define PORTRAIT_HEADROOM (6 * WAIFU_SDL3_PORTRAIT_SCALE)
 
 /* Alpha bounding box of an RGBA image; returns 0 if fully transparent. */
 static int alpha_bbox(const uint8_t *px, int w, int h, int *x0, int *y0, int *x1, int *y1)
@@ -189,8 +192,16 @@ uint8_t *waifu_sdl3_hires_portrait_decode(int portrait_id, int *w, int *h)
     resample_box(src, sw, bx0, by0, tw, ch, art, PORTRAIT_BOX_W, dst_h);
     free(src);
 
-    oy = PORTRAIT_BOX_H - dst_h;          /* stands on the bottom of the cell */
-    for (y = 0; y < dst_h; ++y) {
+    /* Every portrait hangs from the SAME headroom, never from the bottom of the
+       cell. The crop starts at the top of the alpha box, so a fixed top offset
+       puts every character's hair at the same height -- bottom-anchoring instead
+       made a figure that filled the cell (a narrow, tall source like Serena)
+       sit a good 27 game pixels above one that did not (the wide 1086x1448
+       sources), which is exactly how it read on screen. Anything that runs past
+       the bottom of the cell is behind the dialogue box, which covers the cell's
+       last 48 game pixels. */
+    oy = PORTRAIT_HEADROOM;
+    for (y = 0; y < dst_h && oy + y < PORTRAIT_BOX_H; ++y) {
         memcpy(box + ((size_t)(oy + y) * PORTRAIT_BOX_W) * 4,
                art + ((size_t)y * PORTRAIT_BOX_W) * 4, (size_t)PORTRAIT_BOX_W * 4);
     }
