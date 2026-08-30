@@ -5,12 +5,20 @@
    game-pixel units, scaled so the font's ascender maps to CELL_ASCENDER inside
    the game's 8 px cell, and the glyph's advance so the caller can centre it.
 
-   Two things make this read like a game font rather than a terminal:
-   the face is BOLD (the 8x8 bitmap font it replaces is effectively bold, and
-   thin strokes disappear against card art), and glyphs are stretched
-   horizontally until their advance reaches ADVANCE_FILL of the cell. A text
-   face's natural advance is only ~0.6 em against a near-square cell, so at
-   natural width every character was followed by a ragged gap. */
+   Three things make this read like a game font rather than a terminal:
+
+     - the face is BOLD (the 8x8 bitmap font it replaces is effectively bold,
+       and thin strokes disappear against card art);
+     - the size is set from the CAP HEIGHT, not the hhea ascender. DejaVu's
+       ascender is 0.94 em (it reserves room for accents), so mapping it to the
+       cell left the capitals barely two thirds of the cell tall and every
+       character followed by a ragged gap;
+     - what is left of that gap is closed by a small, fixed horizontal STRETCH
+       rather than by whatever factor it takes to fill the cell. A text face
+       advances ~0.83 of its cap height against a near-square cell, so "fill the
+       cell" meant stretching glyphs by half again their width, which reads as
+       distorted. A tenth is enough to tighten the rhythm and is not visible as
+       distortion. */
 
 #include "sdl3_text.h"
 
@@ -26,14 +34,16 @@
 #define ATLAS_W 512
 #define ATLAS_H 512
 #define RASTER_PX 48          /* rasterization size; downscaled crisp at draw */
-#define CELL_ASCENDER 7.4f    /* game px the font ascender maps to (8px cell) */
 #define CELL_W 8.0f           /* the cell these metrics are baked for */
-#define ADVANCE_FILL 0.90f    /* fraction of the cell the advance is stretched to */
+#define CELL_CAP 6.6f         /* game px a capital letter is tall in that cell */
+#define CELL_BASELINE 7.2f    /* baseline depth from the cell top */
+#define GLYPH_STRETCH 1.12f   /* horizontal-only widening, to tighten the rhythm */
 #define ATLAS_PAD 2
 
 static int g_state = 0;       /* 0 = untried, 1 = ready, -1 = failed */
 static uint32_t g_atlas[ATLAS_W * ATLAS_H];
 static WaifuGlyphInfo g_glyphs[GLYPH_COUNT];
+static float g_advance = 0.0f;   /* baked monospace advance, game px per cell */
 
 /* Bold first: it is the shipped face. The regular weights are only fallbacks
    for a tree without the bundled fonts. */
@@ -52,7 +62,7 @@ static int build_atlas(void)
     FT_Library lib = 0;
     FT_Face face = 0;
     int i;
-    float scale_y, scale_x, ascender_px, advance_px;
+    float scale_y, scale_x, ascender_px, advance_px, cap_px;
     int pen_x = ATLAS_PAD, pen_y = ATLAS_PAD, row_h = 0;
 
     if (FT_Init_FreeType(&lib) != 0) return 0;
@@ -65,18 +75,25 @@ static int build_atlas(void)
         FT_Done_Face(face); FT_Done_FreeType(lib); return 0;
     }
 
-    ascender_px = (float)(face->size->metrics.ascender >> 6);
-    if (ascender_px < 1.0f) ascender_px = (float)RASTER_PX * 0.75f;
-    scale_y = CELL_ASCENDER / ascender_px;
+    /* Cap height, measured from the rendered 'H' — the reliable way to size a
+       face against a fixed cell (the OS/2 cap-height field is often absent and
+       the hhea ascender carries accent headroom). */
+    cap_px = 0.0f;
+    if (FT_Load_Char(face, 'H', FT_LOAD_RENDER) == 0 && face->glyph->bitmap.rows > 0)
+        cap_px = (float)face->glyph->bitmap.rows;
+    if (cap_px < 1.0f) {
+        ascender_px = (float)(face->size->metrics.ascender >> 6);
+        if (ascender_px < 1.0f) ascender_px = (float)RASTER_PX * 0.75f;
+        cap_px = ascender_px * 0.78f;
+    }
+    scale_y = CELL_CAP / cap_px;
+    scale_x = scale_y * GLYPH_STRETCH;
 
-    /* Horizontal scale is set by the ADVANCE, not the ascender: stretch until
-       one character step fills ADVANCE_FILL of the cell. On a monospace face
-       every advance is the same, so measuring 'M' measures them all. */
     advance_px = (float)(face->size->metrics.max_advance >> 6);
     if (FT_Load_Char(face, 'M', FT_LOAD_DEFAULT) == 0 && face->glyph->advance.x > 0)
         advance_px = (float)(face->glyph->advance.x >> 6);
     if (advance_px < 1.0f) advance_px = (float)RASTER_PX * 0.6f;
-    scale_x = (CELL_W * ADVANCE_FILL) / advance_px;
+    g_advance = advance_px * scale_x;
 
     memset(g_atlas, 0, sizeof(g_atlas));
     memset(g_glyphs, 0, sizeof(g_glyphs));
@@ -114,7 +131,7 @@ static int build_atlas(void)
         gi->u1 = (float)(pen_x + bw) / (float)ATLAS_W;
         gi->v1 = (float)(pen_y + bh) / (float)ATLAS_H;
         gi->dx = (float)bl * scale_x;
-        gi->dy = CELL_ASCENDER - (float)bt * scale_y;
+        gi->dy = CELL_BASELINE - (float)bt * scale_y;
         gi->dw = (float)bw * scale_x;
         gi->dh = (float)bh * scale_y;
         gi->adv = (float)(g->advance.x >> 6) * scale_x;
@@ -149,7 +166,7 @@ int waifu_sdl3_glyph_info(unsigned char ch, WaifuGlyphInfo *out)
 float waifu_sdl3_glyph_advance(void)
 {
     if (g_state != 1) return 0.0f;
-    return CELL_W * ADVANCE_FILL;
+    return g_advance;
 }
 
 const uint32_t *waifu_sdl3_glyph_atlas(int *w, int *h)

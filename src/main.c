@@ -10753,6 +10753,9 @@ static void reseed_battle_deck_rng_for_game(uint32_t salt)
    shipped layout is byte-identical. */
 
 #define WING_MIN_EXTRA 120     /* < 60 px a side is not worth a panel */
+#define WING_ROW_DY    10
+#define WING_ROW_Y(n)  (16 + (n) * WING_ROW_DY)
+#define WING_PANEL_H(n) (WING_ROW_Y(n - 1) + 14)
 #define WING_MAX_W      86
 #define WING_MIN_W      58
 
@@ -10792,15 +10795,18 @@ static void draw_duel_wings(int field_ox, int lp_ox)
     lx = 6 + field_ox;
     rx = 248 + lp_ox - w;   /* lp_ox already carries the widescreen offset */
 
-    wing_panel(lx, y, w, 62, "DUEL");
-    wing_row(lx, y + 19, w, "TURN", g_b_turns);
-    wing_row(lx, y + 30, w, "PLAYED", g_b_cards_used);
-    wing_row(lx, y + 41, w, "DECK", g_i_player_deck_left);
-    wing_row(lx, y + 52, w, "HAND", hand_cards_left(g_i_player_used));
+    /* Rows start just under the title rule on a 10 px pitch, so the block sits
+       centred in the panel with even clearance top and bottom (WING_ROW_Y +
+       (n-1) * WING_ROW_DY + the glyph's descender still clears the border). */
+    wing_panel(lx, y, w, WING_PANEL_H(4), "DUEL");
+    wing_row(lx, y + WING_ROW_Y(0), w, "TURN", g_b_turns);
+    wing_row(lx, y + WING_ROW_Y(1), w, "PLAYED", g_b_cards_used);
+    wing_row(lx, y + WING_ROW_Y(2), w, "DECK", g_i_player_deck_left);
+    wing_row(lx, y + WING_ROW_Y(3), w, "HAND", hand_cards_left(g_i_player_used));
 
-    wing_panel(rx, y, w, 40, "RIVAL");
-    wing_row(rx, y + 19, w, "DECK", g_i_com_deck_left);
-    wing_row(rx, y + 30, w, "HAND", hand_cards_left(g_i_com_used));
+    wing_panel(rx, y, w, WING_PANEL_H(2), "RIVAL");
+    wing_row(rx, y + WING_ROW_Y(0), w, "DECK", g_i_com_deck_left);
+    wing_row(rx, y + WING_ROW_Y(1), w, "HAND", hand_cards_left(g_i_com_used));
 }
 
 static void sync_battle_deck_counts(void)
