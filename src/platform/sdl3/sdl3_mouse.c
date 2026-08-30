@@ -28,7 +28,7 @@ static struct {
     float last_win_x, last_win_y;
     int win_valid;
     int pending_press, pending_release, pending_rpress;
-    int injected;          /* a command script placed the pointer this frame */
+    int scripted;          /* a command script owns the pointer from here on */
 } g_ptr;
 
 static int g_display_reset;
@@ -67,7 +67,7 @@ void waifu_sdl3_mouse_handle_event(const SDL_Event *ev)
 
 void waifu_sdl3_mouse_inject(int game_x, int game_y, int press, int release, int rclick)
 {
-    g_ptr.injected = 1;
+    g_ptr.scripted = 1;
     g_ptr.gx = (float)game_x;
     g_ptr.gy = (float)game_y;
     g_ptr.last_use_ms = SDL_GetTicks();
@@ -82,9 +82,12 @@ void waifu_sdl3_mouse_update(const WaifuSdl3Video *video, int suppressed)
     float wx = 0.0f, wy = 0.0f, gx = 0.0f, gy = 0.0f;
 
     g_ptr.suppressed = suppressed;
-    if (g_ptr.injected) {
+    if (g_ptr.scripted) {
+        /* Sticky: the script's last position holds through the frames between
+           its MOUSE lines. Falling back to the real mouse on those frames would
+           teleport the cursor mid-drag and make a capture depend on where the
+           operator left their pointer. */
         g_ptr.have = 1;
-        g_ptr.injected = 0;
     } else {
         SDL_GetMouseState(&wx, &wy);
         g_ptr.have = waifu_sdl3_video_window_to_game(video, wx, wy, &gx, &gy);

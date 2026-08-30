@@ -358,6 +358,12 @@ static int g_player_hand_offset_y = 0;
 static int g_enemy_hand_offset_y = 0;
 static int g_suppress_hand_cursor = 0;
 static int g_player_hide_index = -1;
+/* Live mouse pointer, published by ptr_drive() (near waifu_fm_step) for the draw
+   side: the on-screen buttons only appear while the mouse is in use, and a hand
+   card being dragged is lifted out of the row and drawn under the cursor.
+   Always -1 / 0 on a console, where there is no pointer at all. */
+static int g_ptr_active, g_ptr_x, g_ptr_y;
+static int g_ptr_drag_hand = -1;
 static int g_enemy_hide_index = -1;
 static int g_battle_late_frame = -1;
 static int g_force_deckout_demo = 0;
@@ -12460,6 +12466,9 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
             x = lerp_i(hand_row_offscreen_x(), x0, t);
         }
         if (g_i_player_used[i]) continue;
+        /* The card the mouse is dragging leaves the row: it is drawn under the
+           cursor after the loop so it sits on top of its neighbours. */
+        if (i == g_ptr_drag_hand) continue;
         PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, cw, ch, 0,
                                  is_monster_card(g_i_player_hand[i]) && player_hand_monster_blocked()));
         if (!suppress_cursor && i == selected) draw_red_cursor(x, y, cw, ch);
@@ -12474,6 +12483,19 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
                 draw_text_small(x + 2, y + 1, badge, IDX_WHITE, IDX_BLACK);
             }
         }
+    }
+    /* The dragged card, held by its middle so it tracks the cursor exactly.
+       Drawn last and with its drop shadow, so it reads as lifted off the row
+       and above the board it is being pulled onto. */
+    if (g_ptr_drag_hand >= 0 && g_ptr_drag_hand < I_HAND &&
+        !g_i_player_used[g_ptr_drag_hand]) {
+        int card = g_i_player_hand[g_ptr_drag_hand];
+        int dx = g_ptr_x - cw / 2;
+        int dy = g_ptr_y - ch / 2;
+        draw_card_drop_shadow(dx + 3, dy + 4, cw, ch);
+        draw_hand_card_sprite_ex(card, dx, dy, cw, ch, 0,
+                                 is_monster_card(card) && player_hand_monster_blocked());
+        if (!suppress_cursor) draw_red_cursor(dx, dy, cw, ch);
     }
     ui_hud_end();
     PROFILE_HAND_END();
@@ -17787,10 +17809,6 @@ static void story_return_to_map_after_duel(void)
  * ------------------------------------------------------------------------- */
 #if defined(WAIFU_PLATFORM_HW3D)
 
-/* Live pointer, published for the draw side (the on-screen buttons appear only
-   while the mouse is actually being used, and highlight under it). */
-static int g_ptr_active, g_ptr_x, g_ptr_y;
-
 static int ui_full_w(void) { return WAIFU_FM_WIDTH + waifu_platform_ui_extra_w(); }
 /* HUD-space x of the game column's left edge. */
 static int ptr_column_dx(void) { return waifu_platform_ui_extra_w() / 2; }
@@ -17802,7 +17820,9 @@ static int ptr_in(int px, int py, int x, int y, int w, int h)
 
 /* The one on-screen button: end the turn.  Anchored to the true bottom-right of
    the duel HUD, above the card info bar. */
-#define PTR_END_TURN_W 62
+#define PTR_END_TURN_LABEL   "END TURN"
+#define PTR_END_TURN_LABEL_W (8 * 7)   /* small font advances 7 px per glyph */
+#define PTR_END_TURN_W (PTR_END_TURN_LABEL_W + 18)   /* 9 px of air each side */
 #define PTR_END_TURN_H 16
 static int ptr_end_turn_x(void) { return ui_full_w() - PTR_END_TURN_W - 6; }
 /* Above the hand row (which is taller in widescreen) and below the duel wing
@@ -17822,7 +17842,11 @@ static void draw_pointer_end_turn_button(void)
     hot = ptr_in(g_ptr_x, g_ptr_y, x, y, PTR_END_TURN_W, PTR_END_TURN_H);
     rect_fill(x, y, PTR_END_TURN_W, PTR_END_TURN_H, hot ? IDX_GOLD_DARK : IDX_UI_DARK);
     rect_outline(x, y, PTR_END_TURN_W, PTR_END_TURN_H, hot ? IDX_GOLD_HI : IDX_UI_LIGHT);
-    draw_text_small(x + 6, y + 5, "END TURN", hot ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
+    /* Centred on the box, not inset by eye: the small font advances 7 px per
+       glyph and its cell is 8 px tall. */
+    draw_text_small(x + (PTR_END_TURN_W - PTR_END_TURN_LABEL_W) / 2,
+                    y + (PTR_END_TURN_H - 8) / 2,
+                    PTR_END_TURN_LABEL, hot ? IDX_GOLD_HI : IDX_WHITE, IDX_BLACK);
 }
 
 /* Nearest board zone to a column-space point, or 0 if nothing is close enough.
@@ -17860,6 +17884,18 @@ static void ptr_drive_battle(const WaifuPointer *p, int cx, int cy,
         int hy = hand_row_y(g_player_hand_offset_y);
         int hw = hand_card_w(), hh = hand_card_h();
         int over = -1;
+        /* Which card the press started on -- the one a drag is carrying. */
+        int from = -1;
+        for (i = 0; i < I_HAND; ++i) {
+            if (ptr_in(p->drag_x, p->drag_y, hand_slot_x(i), hy, hw, hh)) from = i;
+        }
+        if (p->left_down && from >= 0 && !g_i_player_used[from]) {
+            /* Held on a card: it follows the cursor from here on, and keeps the
+               selection (and the info bar) while it is off the row. */
+            g_ptr_drag_hand = from;
+            g_b_selected_hand = from;
+            break;
+        }
         if (ptr_in(p->x, p->y, ptr_end_turn_x(), ptr_end_turn_y(),
                    PTR_END_TURN_W, PTR_END_TURN_H)) {
             if (p->left_pressed) *press_start = 1;
@@ -17871,10 +17907,6 @@ static void ptr_drive_battle(const WaifuPointer *p, int cx, int cy,
         if (over >= 0 && g_i_player_hand[over] != CARD_NONE) g_b_selected_hand = over;
         if (p->right_pressed && over >= 0) { *press_b = 1; break; }
         if (p->left_released) {
-            int from = -1;
-            for (i = 0; i < I_HAND; ++i) {
-                if (ptr_in(p->drag_x, p->drag_y, hand_slot_x(i), hy, hw, hh)) from = i;
-            }
             if (from >= 0 && p->drag_y - p->y > 12) {
                 /* Dragged a hand card up onto the field: that is exactly what
                    confirming on it does -- play it. */
@@ -17929,10 +17961,14 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
     int cx, cy, i;
 
     (void)press_left; (void)press_right;
-    if (!waifu_platform_pointer(&p)) { g_ptr_active = 0; return; }
+    if (!waifu_platform_pointer(&p)) { g_ptr_active = 0; g_ptr_drag_hand = -1; return; }
     g_ptr_active = p.active;
     g_ptr_x = p.x;
     g_ptr_y = p.y;
+    /* Re-established below for as long as the button stays down on a card; any
+       frame that does not renew it ends the drag (release, phase change, the
+       mouse going idle). */
+    g_ptr_drag_hand = -1;
     if (!p.active) return;
     cx = p.x - ptr_column_dx();
     cy = p.y;
