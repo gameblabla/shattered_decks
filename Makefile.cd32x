@@ -134,7 +134,11 @@ M68K_OBJS_S := $(patsubst %.s,$(M68K_OBJDIR)/%.o,$(CD32X_M68K_SRCS_S))
 M68K_CRT0_OBJ := $(M68K_OBJDIR)/src/platform/cd32x/cd32x_md_crt0.o
 M68K_OBJS := $(M68K_CRT0_OBJ) $(filter-out $(M68K_CRT0_OBJ),$(M68K_OBJS_S)) $(M68K_OBJS_C)
 
-.PHONY: all program cd cue clean clean-build clean-output toolchain-check layout iso-tools
+ZIP ?= zip
+CD32X_ZIP := $(CD32X_OUT).zip
+CD32X_ZIP_DIR := $(OBJDIR)/zip
+
+.PHONY: all program cd cue zip clean clean-build clean-output toolchain-check layout iso-tools
 
 all: cue
 
@@ -274,8 +278,32 @@ $(CUE): $(ISO) $(CDDA_STAMP)
 	} > $@
 	@echo "wrote $(CUE)"
 
+zip: $(CD32X_ZIP)
+
+$(CD32X_ZIP): $(ISO) $(CUE)
+	$(RM) $(CD32X_ZIP_DIR)
+	mkdir -p $(CD32X_ZIP_DIR)
+	cp $(ISO) $(CD32X_ZIP_DIR)/$(CD32X_OUT).iso
+	@{ \
+	  echo 'FILE "$(CD32X_OUT).iso" BINARY'; \
+	  echo '  TRACK 01 MODE1/2048'; \
+	  echo '    INDEX 01 00:00:00'; \
+	  n=2; \
+	  for wav in $(CDDA_TRACK_FILES); do \
+	    base=$$(basename "$$wav"); \
+	    cp "$$wav" $(CD32X_ZIP_DIR)/"$$base"; \
+	    printf 'FILE "%s" WAVE\n' "$$base"; \
+	    printf '  TRACK %02d AUDIO\n' "$$n"; \
+	    echo '    PREGAP 00:02:00'; \
+	    echo '    INDEX 01 00:00:00'; \
+	    n=$$((n+1)); \
+	  done; \
+	} > $(CD32X_ZIP_DIR)/$(CD32X_OUT).cue
+	cd $(CD32X_ZIP_DIR) && $(ZIP) -q -r ../../../$(CD32X_ZIP) .
+	@echo "wrote $(CD32X_ZIP)"
+
 clean-output:
-	$(RM) $(ISO) $(CUE)
+	$(RM) $(ISO) $(CUE) $(CD32X_ZIP)
 
 clean-build:
 	$(RM) $(OBJDIR)
