@@ -18048,7 +18048,12 @@ static void draw_deck_editor_pc(void)
             draw_deck_editor_icon(arr[i], x, y, i == g_deck_cursor);
         }
     }
-    rect_fill(gx - 8, 24, g_ui_clip_w - gx + 4, y0 - 24, IDX_UI_DARK);
+    /* The top band starts at the panel's inner edge, not at the tab row: a row
+       scrolled to the very top of the view still stands ED_SEL_PAD + its own
+       height above clip_y0, which is far enough to poke out over the DECK and
+       STORAGE tabs.  Painting the whole header back means the spill has nowhere
+       left to show.  Both the title and the tabs are drawn after this. */
+    rect_fill(gx - 8, 8, g_ui_clip_w - gx + 4, y0 - 8, IDX_UI_DARK);
     rect_fill(gx - 8, y1, g_ui_clip_w - gx + 4, WAIFU_FM_HEIGHT - 8 - y1, IDX_UI_DARK);
 
     draw_centered_text(12, "DECK EDITOR", IDX_GOLD_HI, IDX_BLACK);
