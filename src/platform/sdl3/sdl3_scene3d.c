@@ -941,16 +941,16 @@ int waifu_hw3d_image_quad(const WaifuHw3DCamera *cam, const WaifuHw3DVec3 v[4],
         }
     }
 
-    /* Card rim outline (software draws it after the two triangles), plus the
-       crossed diagonals for the grayed used-card state. */
+    /* Card rim outline (software draws it after the two triangles). The
+       console also stamps two crossed diagonals over a used card, because an
+       8bpp framebuffer cannot express "the same card, dimmed". Here it can --
+       image.frag / hires.frag already multiply a grayed card's texel by 0.55,
+       which is exactly a translucent black plate over it -- so the X is left
+       off and the dimming alone carries the used state. */
     push_line3d_raw(p[0], p[1], edge_color);
     push_line3d_raw(p[1], p[2], edge_color);
     push_line3d_raw(p[2], p[3], edge_color);
     push_line3d_raw(p[3], p[0], edge_color);
-    if (gray) {
-        push_line3d_raw(p[0], p[2], edge_color);
-        push_line3d_raw(p[1], p[3], edge_color);
-    }
     return 1;
 }
 

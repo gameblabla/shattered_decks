@@ -4951,10 +4951,34 @@ static const uint8_t *support_big_art_ptr(void)
    1900 bytes of a 38x50 hand card's 2114-byte shadow and immediately buried
    them; five cards do that every frame the hand changes.  Same pixels, drawn
    once. */
+#if defined(WAIFU_PLATFORM_HW3D)
+/* One axis-aligned translucent plate through the alpha-quad seam. */
+static void hw2d_shadow_plate(int x, int y, int w, int h, int alpha)
+{
+    int xy[8];
+    xy[0] = x;     xy[1] = y;
+    xy[2] = x + w; xy[3] = y;
+    xy[4] = x + w; xy[5] = y + h;
+    xy[6] = x;     xy[7] = y + h;
+    waifu_hw2d_quad_alpha(xy, IDX_BLACK, alpha);
+}
+#endif
+
 static void draw_card_drop_shadow(int x, int y, int w, int h)
 {
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* The PC compositor has an alpha layer, so the shadow does not have to be
+       the hard black L a palette framebuffer is stuck with. Three nested
+       translucent plates, each a little tighter and darker than the last, give
+       it a soft edge and let the board (or the card behind it in the hand row)
+       show through. The card is drawn opaquely over the middle of it. */
+    hw2d_shadow_plate(x + 1, y + 2, w + 4, h + 5, 34);
+    hw2d_shadow_plate(x + 2, y + 3, w + 3, h + 4, 46);
+    hw2d_shadow_plate(x + 3, y + 4, w + 2, h + 3, 62);
+#else
     rect_fill(x + w, y + 3, 2, h, IDX_BLACK);
     rect_fill(x + 2, y + h, w, 3, IDX_BLACK);
+#endif
 }
 
 static void draw_card_sprite(int id, int x, int y, int w, int h, int back)
@@ -7690,7 +7714,11 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
     /* The flight is laid out in HUD space (see flying_card_layout). */
     ui_hud_begin();
     /* soft black shadow under the flying card */
+#if defined(WAIFU_PLATFORM_HW3D)
+    hw2d_shadow_plate(layout.x + 3, layout.y + layout.h - 2, layout.w, 4, 70);
+#else
     rect_fill(layout.x+3, layout.y+layout.h-2, layout.w, 4, IDX_BLACK);
+#endif
     draw_card_sprite(card_id, layout.x, layout.y, layout.w, layout.h, layout.render_back);
     if (flip_to_back && layout.t >= Q8_FRAC(38,100) && layout.t < Q8_FRAC(42,100))
         rect_fill(layout.x + layout.w / 2 - 1, layout.y + 2, 2, layout.h - 4, IDX_WHITE);
