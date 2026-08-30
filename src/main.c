@@ -3846,6 +3846,54 @@ static void fmt_label_i32(char *dst, int dst_size, const char *label, int value)
     waifu_str_cat_i32(dst, dst_size, value);
 }
 
+#if defined(WAIFU_PLATFORM_HW3D)
+/* --- PC stat icons --------------------------------------------------------
+   The console layout marks ATK with the letter 'x' and DEF with an empty 6x6
+   outline — economical at 256x240, but on a desktop display the 'x' reads as a
+   typo and the square as a rendering artefact. The PC build draws a small sword
+   and shield in the same footprint, so nothing around them moves. Console
+   targets keep the original glyphs (this whole block only exists in a build
+   with the hardware 2D/3D seam, i.e. the SDL3 frontend). */
+
+#define STAT_ICON_W 7
+#define STAT_ICON_H 9
+
+/* A tapering blade over a gold crossguard and pommel. */
+static void draw_stat_icon_sword(int x, int y)
+{
+    put_px(x + 3, y, IDX_WHITE);                       /* point */
+    rect_fill(x + 2, y + 1, 3, 4, IDX_WHITE);          /* blade */
+    rect_fill(x + 4, y + 1, 1, 4, IDX_DIM);            /* shaded edge */
+    put_px(x + 2, y + 1, IDX_DIM);
+    hline(x, x + STAT_ICON_W - 1, y + 5, IDX_GOLD_HI); /* crossguard */
+    put_px(x, y + 5, IDX_GOLD_DARK);
+    put_px(x + STAT_ICON_W - 1, y + 5, IDX_GOLD_DARK);
+    rect_fill(x + 3, y + 6, 1, 2, IDX_GOLD_DARK);      /* grip */
+    hline(x + 2, x + 4, y + 8, IDX_GOLD_HI);           /* pommel */
+}
+
+/* A heater shield: light rim, blue body, tapering to a point. */
+static void draw_stat_icon_shield(int x, int y)
+{
+    int r;
+    hline(x, x + STAT_ICON_W - 1, y, IDX_UI_LIGHT);
+    for (r = 1; r <= 4; ++r) {
+        put_px(x, y + r, IDX_UI_LIGHT);
+        rect_fill(x + 1, y + r, STAT_ICON_W - 2, 1, IDX_UI_BLUE);
+        put_px(x + STAT_ICON_W - 1, y + r, IDX_UI_LIGHT);
+    }
+    put_px(x + 1, y + 5, IDX_UI_LIGHT);
+    rect_fill(x + 2, y + 5, 3, 1, IDX_UI_BLUE);
+    put_px(x + 5, y + 5, IDX_UI_LIGHT);
+    put_px(x + 2, y + 6, IDX_UI_LIGHT);
+    put_px(x + 3, y + 6, IDX_UI_BLUE);
+    put_px(x + 4, y + 6, IDX_UI_LIGHT);
+    put_px(x + 3, y + 7, IDX_UI_LIGHT);
+    /* A single highlight pip so the body does not read as a flat swatch. */
+    put_px(x + 2, y + 2, IDX_WHITE);
+}
+#endif /* WAIFU_PLATFORM_HW3D */
+
 static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, int atk, int defv)
 {
     (void)mode;
@@ -3878,11 +3926,20 @@ static void draw_bottom_info_offset_ex(int card_id, const char *mode, int yoff, 
     draw_text_small(6, base+21, line, IDX_WHITE, IDX_BLACK);
     if (atk < 0) atk = (int)waifu_card_atk[card_id];
     if (defv < 0) defv = (int)waifu_card_def[card_id];
+#if defined(WAIFU_PLATFORM_HW3D)
+    draw_stat_icon_sword(hw - 42, base + 14);
+    fmt_i32_dec(line, (int)sizeof(line), atk);
+    draw_text_small(hw - 34, base+15, line, stat_delta_color(atk - (int)waifu_card_atk[card_id]), IDX_BLACK);
+    draw_stat_icon_shield(hw - 42, base + 25);
+    fmt_i32_dec(line, (int)sizeof(line), defv);
+    draw_text_small(hw - 34, base+26, line, stat_delta_color(defv - (int)waifu_card_def[card_id]), IDX_BLACK);
+#else
     fmt_prefixed_i32(line, (int)sizeof(line), 'x', atk);
     draw_text_small(hw - 41, base+15, line, stat_delta_color(atk - (int)waifu_card_atk[card_id]), IDX_BLACK);
     fmt_i32_dec(line, (int)sizeof(line), defv);
     draw_text_small(hw - 35, base+26, line, stat_delta_color(defv - (int)waifu_card_def[card_id]), IDX_BLACK);
     rect_outline(hw - 41,base+25,6,6,IDX_WHITE);
+#endif
     ui_hud_end();
 }
 
@@ -4514,8 +4571,15 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
     if (!src || dw <= 0 || dh <= 0) return;
     /* Placement/deal animations deliberately slide whole cards beyond the
        framebuffer.  The old scaler still walked every source pixel there,
-       only to reject every destination coordinate inside its inner loop. */
-    if (x >= WAIFU_FM_WIDTH || y >= WAIFU_FM_HEIGHT || x + dw <= 0 || y + dh <= 0) return;
+       only to reject every destination coordinate inside its inner loop.
+       The cull uses the RUNTIME clip, not WAIFU_FM_WIDTH: inside the
+       widescreen HUD bracket the hand row reaches past the game-aspect column,
+       and culling at the column edge dropped every card beyond it while its
+       drop shadow -- an ordinary rect that does honour the runtime clip --
+       still drew, leaving card-shaped shadows with no cards in them. Outside
+       the bracket, and on every console, g_ui_clip_w is WAIFU_FM_WIDTH and this
+       is the original test. */
+    if (x >= g_ui_clip_w || y >= WAIFU_FM_HEIGHT || x + dw <= 0 || y + dh <= 0) return;
     if (waifu_hw2d_image(src, 0, sw, sh, x, y, dw, dh, 0, 0)) return;
     fb_damage_rect(x, y, dw, dh);
     if (dw == sw && dh == sh) {
@@ -4580,7 +4644,8 @@ static void draw_card_raw(const uint8_t *src, int sw, int sh, int x, int y, int 
 static void draw_card_raw_gray(const uint8_t *src, int sw, int sh, int x, int y, int dw, int dh)
 {
     if (!src || dw <= 0 || dh <= 0) return;
-    if (x >= WAIFU_FM_WIDTH || y >= WAIFU_FM_HEIGHT || x + dw <= 0 || y + dh <= 0) return;
+    /* Runtime clip, for the same reason as draw_card_raw(). */
+    if (x >= g_ui_clip_w || y >= WAIFU_FM_HEIGHT || x + dw <= 0 || y + dh <= 0) return;
     if (waifu_hw2d_image(src, 0, sw, sh, x, y, dw, dh, 1, 0)) return;
     if (try_draw_card_raw_fast(src, sw, sh, x, y, dw, dh, 1)) return;
     PROFILE_CARD2D_GENERIC_BEGIN();
@@ -4949,10 +5014,19 @@ static void draw_big_battle_card_stats(int id, int x, int y, int back, int atk, 
         char stats[32];
         if (atk < 0) atk = (int)waifu_card_atk[id];
         if (defv < 0) defv = (int)waifu_card_def[id];
+#if defined(WAIFU_PLATFORM_HW3D)
+        draw_stat_icon_sword(x+9, y+127);
+        fmt_i32_dec(stats, (int)sizeof(stats), atk);
+        draw_text_small(x+17, y+128, stats, stat_delta_color(atk - (int)waifu_card_atk[id]), IDX_BLACK);
+        draw_stat_icon_shield(x+55, y+127);
+        fmt_i32_dec(stats, (int)sizeof(stats), defv);
+        draw_text_small(x+63, y+128, stats, stat_delta_color(defv - (int)waifu_card_def[id]), IDX_BLACK);
+#else
         fmt_prefixed_i32(stats, (int)sizeof(stats), 'A', atk);
         draw_text_small(x+9, y+128, stats, stat_delta_color(atk - (int)waifu_card_atk[id]), IDX_BLACK);
         fmt_prefixed_i32(stats, (int)sizeof(stats), 'D', defv);
         draw_text_small(x+55, y+128, stats, stat_delta_color(defv - (int)waifu_card_def[id]), IDX_BLACK);
+#endif
         draw_text_small(x+9, y+140, waifu_card_tribe[id], IDX_WHITE, IDX_BLACK);
     }
 }
@@ -5050,35 +5124,103 @@ static void draw_red_cursor(int x, int y, int w, int h)
     }
 }
 
+/* --- the hand row --------------------------------------------------------
+   Authored for the 256-wide column: five 38x50 cards on a 47 px pitch whose
+   bottom edge rests on the info bar. On a display wider than that column the
+   same five cards are a small cluster marooned in the middle of the screen, so
+   the PC build grows them to the height the band affords and widens the pitch
+   until the row spans the real screen.
+
+   The wide layout is expressed in the widescreen HUD space (game-x over
+   [0, WAIFU_FM_WIDTH + extra]), so every drawer that uses it brackets its
+   output with ui_hud_begin()/ui_hud_end(). When there is no extra room -- every
+   console target, and a game-aspect PC display -- these return the authored
+   numbers unchanged, by construction rather than by arithmetic that happens to
+   agree. */
+#define HAND_SLOTS     5      /* == I_HAND, which is declared with the battle state */
+#define HAND_CARD_W    38
+#define HAND_CARD_H    50
+#define HAND_PITCH     47
+#define HAND_WIDE_H    68     /* card height the widescreen band affords */
+#define HAND_ROW_EDGE  14     /* keep-out at each screen edge */
+
 static int hand_final_x(int i) { return WAIFU_UI_CENTER_DX + 12 + i * 47; }
 static int hand_y(void) { return WAIFU_HAND_Y_BASE + g_player_hand_offset_y; }
 
+static int hand_row_wide(void) { return waifu_platform_ui_extra_w() > 0; }
+
+static int hand_card_h(void) { return hand_row_wide() ? HAND_WIDE_H : HAND_CARD_H; }
+
+static int hand_card_w(void)
+{
+    if (!hand_row_wide()) return HAND_CARD_W;
+    return (HAND_CARD_W * HAND_WIDE_H + HAND_CARD_H / 2) / HAND_CARD_H;
+}
+
+/* Spread the row across the real screen, but never so far that the cards stop
+   reading as one hand: the gap between neighbours is capped at three quarters
+   of a card. */
+static int hand_row_pitch(void)
+{
+    int extra = waifu_platform_ui_extra_w();
+    int w, pitch, span;
+    if (!extra) return HAND_PITCH;
+    w = hand_card_w();
+    span = WAIFU_FM_WIDTH + extra - 2 * HAND_ROW_EDGE - w;
+    pitch = span / (HAND_SLOTS - 1);
+    if (pitch > w * 7 / 4) pitch = w * 7 / 4;
+    if (pitch < w + 2) pitch = w + 2;
+    return pitch;
+}
+
+/* Hand slot x. Column space (== hand_final_x) with no extra room, HUD space
+   when the row is wide. */
+static int hand_slot_x(int i)
+{
+    int pitch, total;
+    if (!hand_row_wide()) return hand_final_x(i);
+    pitch = hand_row_pitch();
+    total = pitch * (HAND_SLOTS - 1) + hand_card_w();
+    return (WAIFU_FM_WIDTH + waifu_platform_ui_extra_w() - total) / 2 + i * pitch;
+}
+
+/* Card top for a row offset. Taller cards grow UPWARD: the bottom edge stays
+   on the info bar, which is what every animation offset is measured from. */
+static int hand_row_y(int yoff)
+{
+    return WAIFU_HAND_Y_BASE + (HAND_CARD_H - hand_card_h()) + yoff;
+}
+
+/* Where a card sliding in from off-screen starts. */
+static int hand_row_offscreen_x(void)
+{
+    int extra = waifu_platform_ui_extra_w();
+    return extra > 0 ? (WAIFU_FM_WIDTH + extra + 24) : (282 + WAIFU_UI_EXTRA_W);
+}
+
 static void draw_player_hand(int f, int selected)
 {
-    /* Widescreen: render the whole hand across the full frame (ui_hud), shifting
-       every card right by half the extra room so the hand stays centered but no
-       card is clipped at the column edge — and a card drawn in from the true
-       screen edge slides all the way in instead of popping in cropped. */
-    int extra = waifu_platform_ui_extra_w();
-    int ho = extra / 2;
+    /* Widescreen: the whole row renders across the full frame (ui_hud) at the
+       wide layout, so a card drawn in from the true screen edge slides all the
+       way in instead of popping in cropped at the column boundary. */
+    const int cw = hand_card_w(), ch = hand_card_h();
     PROFILE_HAND_BEGIN();
-    if (extra > 0) ui_hud_begin();
+    ui_hud_begin();
     for (int i = 0; i < 5; ++i) {
-        int x0 = hand_final_x(i) + ho;
-        int y = hand_y();
+        int x0 = hand_slot_x(i);
+        int y = hand_row_y(g_player_hand_offset_y);
         int x = x0;
         if (f < 116) {
             int32_t t = q8_smooth_ratio(f - (84 + i * 4), 12);
-            int start = (extra > 0) ? (WAIFU_FM_WIDTH + extra + 24) : (272 + WAIFU_UI_EXTRA_W);
-            x = lerp_i(start, x0, t);
+            x = lerp_i(hand_row_offscreen_x(), x0, t);
         }
         if (i == g_player_hide_index) continue;
         if (((f >= 150 && f < 176) || (f >= 475 && f < 505) || (f >= 910 && f < 930)) && i == selected) continue;
-        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(SUPPORT_EQUIP_CARD_ID, x, y+1, 38, 50));
-        else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, 38, 50, 0));
-        if (!g_suppress_hand_cursor && i == selected && f >= 102) draw_red_cursor(x, y, 38, 50);
+        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(SUPPORT_EQUIP_CARD_ID, x, y+1, cw, ch));
+        else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, cw, ch, 0));
+        if (!g_suppress_hand_cursor && i == selected && f >= 102) draw_red_cursor(x, y, cw, ch);
     }
-    if (extra > 0) ui_hud_end();
+    ui_hud_end();
     PROFILE_HAND_END();
 }
 
@@ -5088,29 +5230,33 @@ static void draw_player_hand_draw_sequence(int f, int start, int selected)
     /* FM-like turn-start restoration: the row scrolls up, then replacement
        cards visibly draw from the right edge.  This is deliberately slower and
        clearer than v11 so the draw is legible in the full-match video. */
+    const int cw = hand_card_w(), ch = hand_card_h();
     int draw_slots[2] = {0, 4};
     int reveal_cursor = (f >= start + 76);
     int yoff = lerp_i(92, 0, q8_smooth_ratio(f - start, 30));
 
-    if (f >= start + 20 && f < start + 78) draw_text_small(211 + WAIFU_UI_CENTER_DX, 142 + yoff / 3, "DRAW", IDX_GOLD_HI, IDX_BLACK);
+    ui_hud_begin();
+    if (f >= start + 20 && f < start + 78)
+        draw_text_small(hand_slot_x(HAND_SLOTS - 1) + cw - 27, 142 + yoff / 3, "DRAW", IDX_GOLD_HI, IDX_BLACK);
 
     for (int i = 0; i < 5; ++i) {
-        int x0 = hand_final_x(i);
-        int y = WAIFU_HAND_Y_BASE + yoff;
+        int x0 = hand_slot_x(i);
+        int y = hand_row_y(yoff);
         int x = x0;
         int visible = 1;
         for (int d = 0; d < 2; ++d) {
             if (i == draw_slots[d]) {
                 int32_t t = q8_smooth_ratio(f - (start + 24 + d * 20), 24);
                 if (t <= 0) visible = 0;
-                x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
+                x = lerp_i(hand_row_offscreen_x(), x0, t);
             }
         }
         if (!visible) continue;
-        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(SUPPORT_EQUIP_CARD_ID, x, y+1, 38, 50));
-        else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, 38, 50, 0));
-        if (reveal_cursor && i == selected) draw_red_cursor(x, y, 38, 50);
+        if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(SUPPORT_EQUIP_CARD_ID, x, y+1, cw, ch));
+        else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, cw, ch, 0));
+        if (reveal_cursor && i == selected) draw_red_cursor(x, y, cw, ch);
     }
+    ui_hud_end();
     PROFILE_HAND_END();
 }
 
@@ -7414,22 +7560,29 @@ static int flying_card_layout(Camera cam, int hand_index, int target_col, int ta
     /* PS1-style placement beat: card jumps out of the hand, hangs large at
        center, glides over the selected slot, then snaps down with a landing
        flash. The actual field state is committed only after this completes. */
-    int sx = hand_final_x(hand_index);
-    int sy = WAIFU_HAND_Y_BASE + ((target_row <= 1) ? g_enemy_hand_offset_y : g_player_hand_offset_y) - 2;
-    int midx = 104, midy = 82;
+    /* The card leaves the hand row and lands on the board, so the whole flight
+       is expressed in the widescreen HUD space the row uses: the board endpoint
+       (projected in the centred column) is shifted by half the extra room to
+       reach the same screen position. With no extra room this is the authored
+       column-space path unchanged. */
+    int ho = waifu_platform_ui_extra_w() / 2;
+    int sx = hand_slot_x(hand_index);
+    int sy = hand_row_y((target_row <= 1) ? g_enemy_hand_offset_y : g_player_hand_offset_y) - 2;
+    int sw = hand_card_w(), sh = hand_card_h();
+    int midx = 104 + ho, midy = 82;
     int midw = 48, midh = 66;
 
     ScreenPt dst = project_point(cam, v3(zone_cx(target_col), Q8_FRAC(10,100), zone_cz(target_row)));
     if (!dst.ok) return 0;
-    int dx = dst.x - 14, dy = dst.y - 20;
+    int dx = dst.x - 14 + ho, dy = dst.y - 20;
 
     int x, y, w, h;
     if (t < Q8_FRAC(28,100)) {
         int32_t a = q8_smoothstep(q8_div(t, Q8_FRAC(28,100)));
         x = lerp_i(sx, midx, a);
         y = lerp_i(sy, midy, a);
-        w = lerp_i(38, midw, a);
-        h = lerp_i(50, midh, a);
+        w = lerp_i(sw, midw, a);
+        h = lerp_i(sh, midh, a);
     } else if (t < Q8_HALF) {
         int32_t a = q8_div(t - Q8_FRAC(28,100), Q8_FRAC(22,100));
         x = midx;
@@ -7485,6 +7638,8 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
     if (!flying_card_layout(cam, hand_index, target_col, target_row,
                             frame, start, end, back, &layout)) return;
 
+    /* The flight is laid out in HUD space (see flying_card_layout). */
+    ui_hud_begin();
     /* soft black shadow under the flying card */
     rect_fill(layout.x+3, layout.y+layout.h-2, layout.w, 4, IDX_BLACK);
     draw_card_sprite(card_id, layout.x, layout.y, layout.w, layout.h, layout.render_back);
@@ -7495,6 +7650,7 @@ static void draw_flying_card(Camera cam, int card_id, int hand_index, int target
         if (((frame - start) & 3) < 2)
             rect_outline(layout.x-4,layout.y-4,layout.w+8,layout.h+8,IDX_WHITE);
     }
+    ui_hud_end();
 }
 
 static int placement_scan_col(int frame, int start, int final_col)
@@ -9086,6 +9242,7 @@ typedef enum WaifuBattlePhase {
 } WaifuBattlePhase;
 
 #define I_HAND 5
+_Static_assert(I_HAND == HAND_SLOTS, "hand row layout must match the hand size");
 #define I_FIELD 5
 #define FUSION_MAX_MATERIALS (I_HAND + 1)
 #define FUSION_FIELD_SLOT (-2)
@@ -12237,27 +12394,33 @@ static void draw_interactive_field_cards(Camera cam)
 
 static void draw_interactive_player_hand(int f, int selected, int yoff, int suppress_cursor)
 {
+    const int cw = hand_card_w(), ch = hand_card_h();
     PROFILE_HAND_BEGIN();
     int i;
-    int y = WAIFU_HAND_Y_BASE + yoff;
+    int y = hand_row_y(yoff);
     /* The placement hand settles completely below the 240-line display.
        Avoid five card dispatches (and their clipped scaler loops) once it has
        left; this changes no animation frame or visible pixel. */
-    if (y >= WAIFU_FM_HEIGHT || y + 53 <= 0) {
+    if (y >= WAIFU_FM_HEIGHT || y + ch + 3 <= 0) {
         PROFILE_HAND_END();
         return;
     }
+    /* Widescreen: the row is laid out across the full frame, so it has to be
+       captured in the HUD bracket — without it the cards render inside the
+       centred column and a card sliding in from the screen edge pops into
+       existence at the column boundary instead of sliding in. */
+    ui_hud_begin();
     for (i = 0; i < I_HAND; ++i) {
-        int x0 = hand_final_x(i);
+        int x0 = hand_slot_x(i);
         int x = x0;
         if (f < 48) {
             int32_t t = q8_smooth_ratio(f - i * 5, 18);
-            x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
+            x = lerp_i(hand_row_offscreen_x(), x0, t);
         }
         if (g_i_player_used[i]) continue;
-        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
+        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, cw, ch, 0,
                                  is_monster_card(g_i_player_hand[i]) && player_hand_monster_blocked()));
-        if (!suppress_cursor && i == selected) draw_red_cursor(x, y, 38, 50);
+        if (!suppress_cursor && i == selected) draw_red_cursor(x, y, cw, ch);
         if (!suppress_cursor) {
             int order = player_fusion_order_for_slot(i);
             if (order) {
@@ -12270,6 +12433,7 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
             }
         }
     }
+    ui_hud_end();
     PROFILE_HAND_END();
 }
 
@@ -12382,6 +12546,7 @@ static void play_player_hand_intro_draw_sfx(void)
 
 static void draw_interactive_com_hand(int f, int selected, int yoff)
 {
+    const int cw = hand_card_w(), ch = hand_card_h();
     PROFILE_HAND_BEGIN();
     int i;
     /* SDL/live play uses the same convention as the player view: the active
@@ -12389,21 +12554,23 @@ static void draw_interactive_com_hand(int f, int selected, int yoff)
        COM's hand at the top of the screen while also using a COM-facing camera,
        which made the opponent turn look upside-down and unlike the headless
        scripted presentation. */
-    int y = WAIFU_HAND_Y_BASE + yoff;
+    int y = hand_row_y(yoff);
+    ui_hud_begin();
     for (i = 0; i < I_HAND; ++i) {
-        int x0 = hand_final_x(i);
+        int x0 = hand_slot_x(i);
         int x = x0;
         if (f < WAIFU_HAND_INTRO_FRAMES) {
             int delay = (WAIFU_HAND_INTRO_FRAMES * i) / 12;
             int dur = WAIFU_HAND_INTRO_FRAMES / 3;
             if (dur < 4) dur = 4;
             int32_t t = q8_smooth_ratio(f - delay, dur);
-            x = lerp_i(282 + WAIFU_UI_EXTRA_W, x0, t);
+            x = lerp_i(hand_row_offscreen_x(), x0, t);
         }
         if (g_i_com_used[i]) continue;
-        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite(g_i_com_hand[i], x, y, 38, 50, 1));
-        if (i == selected) draw_red_cursor(x, y, 38, 50);
+        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite(g_i_com_hand[i], x, y, cw, ch, 1));
+        if (i == selected) draw_red_cursor(x, y, cw, ch);
     }
+    ui_hud_end();
     PROFILE_HAND_END();
 }
 
@@ -14030,6 +14197,7 @@ static void play_turn_draw_sfx(int f)
 
 static void draw_player_hand_turn_draw(int f, int selected)
 {
+    const int cw = hand_card_w(), ch = hand_card_h();
     PROFILE_HAND_BEGIN();
     int i;
     /* The kept cards rise quickly back into place (the hand returning after the
@@ -14038,32 +14206,27 @@ static void draw_player_hand_turn_draw(int f, int selected)
        the whole hand sliding up as one block (which read like a re-deal). */
     int rise = q8_to_int(q8_mul(Q8_FROM_INT(92),
                   Q8_ONE - q8_smooth_ratio(f, (WAIFU_PCFX_DRAW_FRAMES + 1) / 2)));
-    /* Widescreen: render the whole hand full-width, centered (see draw_player_hand),
-       so drawn cards slide in from the true screen edge and none clip. */
-    int extra = waifu_platform_ui_extra_w();
-    int ho = extra / 2;
-    if (extra > 0) ui_hud_begin();
+    ui_hud_begin();
     for (i = 0; i < I_HAND; ++i) {
-        int x0 = hand_final_x(i) + ho;
+        int x0 = hand_slot_x(i);
         int x = x0;
-        int y = WAIFU_HAND_Y_BASE;
+        int y = hand_row_y(0);
         int d = is_recent_draw_slot(i);
         if (g_i_player_used[i]) continue;
         if (d >= 0) {
             int start_frame = turn_draw_slide_start(d);
             int dur = (WAIFU_PCFX_DRAW_FRAMES * 4) / 9;
-            int start_x = (extra > 0) ? (WAIFU_FM_WIDTH + extra + 24) : (282 + WAIFU_UI_EXTRA_W);
             if (dur < 4) dur = 4;
             int32_t t = q8_smooth_ratio(f - start_frame, dur);
-            x = lerp_i(start_x, x0, t);
+            x = lerp_i(hand_row_offscreen_x(), x0, t);
         } else {
-            y = WAIFU_HAND_Y_BASE + rise;
+            y = hand_row_y(rise);
         }
-        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, 38, 50, 0,
+        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, cw, ch, 0,
                                  is_monster_card(g_i_player_hand[i]) && player_hand_monster_blocked()));
-        if (f >= WAIFU_PCFX_DRAW_FRAMES && i == selected) draw_red_cursor(x, y, 38, 50);
+        if (f >= WAIFU_PCFX_DRAW_FRAMES && i == selected) draw_red_cursor(x, y, cw, ch);
     }
-    if (extra > 0) ui_hud_end();
+    ui_hud_end();
     PROFILE_HAND_END();
 }
 
