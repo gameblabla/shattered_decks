@@ -75,6 +75,25 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
 #include "fmtowns_turn_board_cache.h"
 #include "fmtowns_turn_card_cache.h"
 #include "fmtowns_turn_card_geometry.h"
+#if defined(WAIFU_DUMP_TURN_CARD_RASTER)
+/* Host-only capture that regenerates the two turn-card headers above. It hooks
+   the live draw rather than re-deriving the geometry, so what it records is by
+   construction what the runtime would have drawn. See dump_turn_card_capture()
+   for the recipe. */
+#define TURN_CAPTURE_MAX_RECORDS 262144
+typedef struct {
+    uint16_t dst;
+    uint16_t sample;
+    uint8_t width;
+    uint8_t slot;
+} TurnCaptureRec;
+static TurnCaptureRec g_turn_capture[TURN_CAPTURE_MAX_RECORDS];
+static int g_turn_capture_count;
+static int g_turn_capture_active;
+static const uint8_t *g_turn_capture_src;
+static int g_turn_capture_geom[WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS][8];
+static int g_turn_capture_geom_ok[WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS];
+#endif
 #endif
 #ifdef WAIFU_FM_PCFX
 #include "waifu_pcfx_video.h"
@@ -108,17 +127,16 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
    depth-tests with the tile at the same depth but a later draw). This is what
    made the "square" red selector look crooked on the outer columns.
 
-   A field card is different: the software renderers have no depth buffer, so
-   the lift is what keeps its quad reading as an object standing on the tile,
-   and FM TOWNS bakes the projected corners of a turning card into
-   fmtowns_turn_card_geometry.h from this exact value. The hardware 3D path
-   depth-tests, so there a single Q8 step is enough to break the tie. */
+   A field card is drawn AFTER its tile on every target -- painter's order on
+   the software renderers, a later draw at equal depth on the hardware one --
+   so it does not need the lift either; one Q8 step (1/256 of a world unit, far
+   under a pixel at any of our resolutions) is enough everywhere to break the
+   tie without moving the card off its tile. FM TOWNS bakes the projected
+   corners AND the per-pixel writes of a turning card from this exact value
+   into fmtowns_turn_card_geometry.h and fmtowns_turn_card_cache.h, so changing
+   it means regenerating both -- see dump_turn_card_capture(). */
 #define ZONE_CURSOR_Y  (0)
-#if defined(WAIFU_PLATFORM_HW3D)
 #define BOARD_CARD_Y   (1)
-#else
-#define BOARD_CARD_Y   Q8_FRAC(115,1000)
-#endif
 #define FIELD_THICK (-108) /* -0.42 in Q8.8 */
 #define FLOOR_SAMPLE_CACHE_MAX_PERIOD_Q16 (Q8_FROM_INT(4) << Q8_SHIFT)
 #define FLOOR_SAMPLE_CACHE_SLOTS 2
@@ -1228,6 +1246,9 @@ static int fmtowns_turn_replay_card(const uint8_t *tex)
     const uint8_t *p;
     const uint8_t *end;
 
+#if defined(WAIFU_DUMP_TURN_CARD_RASTER)
+    if (g_turn_capture_active) return 0;   /* rasterize live, so we can record it */
+#endif
     if (!tex || g_fmtowns_turn_board_pose < 0 ||
         !g_fmtowns_turn_card_replay_eligible ||
         slot < 0 || slot >= WAIFU_FMTOWNS_TURN_CARD_CACHE_SLOTS ||
@@ -6818,6 +6839,31 @@ static WAIFU_CARD_ROW_NOINLINE void card_fill_row_gray(const uint8_t *src, uint8
     }
 }
 
+#if defined(WAIFU_DUMP_TURN_CARD_RASTER)
+/* One block of the 4x2 filler, as the replay will re-issue it. */
+static void turn_capture_block(const uint8_t *dst, const uint8_t *pixel, int width)
+{
+    TurnCaptureRec *r;
+    if (!g_turn_capture_active || !g_turn_capture_src) return;
+    if (g_turn_capture_count >= TURN_CAPTURE_MAX_RECORDS) return;
+    {
+        /* The affine walk can step just BEFORE the texture at the start of a
+           span (u or v rounding below zero). The live rasterizer reads it and
+           paints whatever byte precedes the card; the packed cache has only 12
+           bits for the index and cannot express it, so such a block is dropped
+           and the replay leaves the restored board showing there -- which is
+           what the cache this replaces has always done. */
+        long sample = (long)(pixel - g_turn_capture_src);
+        if (sample < 0 || sample >= 0x1000) return;
+        r = &g_turn_capture[g_turn_capture_count++];
+        r->sample = (uint16_t)sample;
+    }
+    r->dst = (uint16_t)(dst - framebuffer);
+    r->width = (uint8_t)width;
+    r->slot = (uint8_t)g_fmtowns_turn_card_slot;
+}
+#endif
+
 #if defined(__i386__)
 /* FM cards are deliberately pixel-art sized on the 256-wide display.  A
    2x2 block can therefore use one nearest-neighbour sample and two
@@ -6893,6 +6939,11 @@ static WAIFU_CARD_ROW_NOINLINE void card_fill_row_plain_block4x2(
     uint8_t *dst_next = dst + WAIFU_FM_WIDTH;
 
     if ((uintptr_t)dst & 1u) {
+        /* Deliberately NOT captured: the shipped cache has always started an
+           odd row at the next even pixel, so the replay leaves this one showing
+           the restored board. Recording it would be more faithful but grows the
+           packed cache by ~8 KB, and FM TOWNS has a hard boot ceiling. Keep the
+           regenerated header the same shape as the one it replaces. */
         *dst++ = *pixel;
         *dst_next++ = dst[-1];
         --count;
@@ -6904,6 +6955,9 @@ static WAIFU_CARD_ROW_NOINLINE void card_fill_row_plain_block4x2(
     }
     while (count >= 4) {
         uint16_t packed = (uint16_t)*pixel | ((uint16_t)*pixel << 8);
+#if defined(WAIFU_DUMP_TURN_CARD_RASTER)
+        turn_capture_block(dst, pixel, 4);
+#endif
         *(uint16_t *)dst = packed;
         *(uint16_t *)(dst + 2) = packed;
         *(uint16_t *)dst_next = packed;
@@ -6917,6 +6971,11 @@ static WAIFU_CARD_ROW_NOINLINE void card_fill_row_plain_block4x2(
         vf += dv_frac;
         if (vf >= Q8_ONE) { vf -= Q8_ONE; pixel += WAIFU_CARD_W; }
     }
+#if defined(WAIFU_DUMP_TURN_CARD_RASTER)
+    /* The tail loop never advances `pixel`, so every pixel left shares one
+       texel -- exactly the single variable-width record the replay re-issues. */
+    if (count > 0) turn_capture_block(dst, pixel, count);
+#endif
     while (count-- > 0) {
         *dst++ = *pixel;
         *dst_next++ = dst[-1];
@@ -7481,6 +7540,9 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
 {
     if (!src || sw <= 0 || sh <= 0) return;
     if (!p0.ok || !p1.ok || !p2.ok || !p3.ok) return;
+#if defined(WAIFU_DUMP_TURN_CARD_RASTER)
+    g_turn_capture_src = src;   /* sample indices are relative to this texture */
+#endif
     {
         /* Screen-space capture net for projected card quads whose callers have
            no world-space data (the board-card path captures upstream in 3D and
@@ -7624,6 +7686,9 @@ static int fmtowns_turn_card_geometry(int pose, int slot,
                                       ScreenPt *p2, ScreenPt *p3)
 {
     const uint8_t *g;
+#if defined(WAIFU_DUMP_TURN_CARD_RASTER)
+    if (g_turn_capture_active) return 0;   /* project live, so we can record it */
+#endif
     if (pose < 0 || pose >= WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_POSES ||
         slot < 0 || slot >= WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS)
         return 0;
@@ -7700,6 +7765,19 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
         if (p1.y > y1) y1 = p1.y; if (p2.y > y1) y1 = p2.y; if (p3.y > y1) y1 = p3.y;
         fmtowns_turn_record_overlay_rect(x0, y0, x1, y1);
     }
+#if defined(WAIFU_DUMP_TURN_CARD_RASTER)
+    /* The cache stores the corners as projected HERE, before the per-row
+       rotation the draw call applies, so record them at the same point. */
+    if (g_turn_capture_active && !defense) {
+        int gslot = g_fmtowns_turn_card_slot - 5;
+        if (gslot >= 0 && gslot < WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS) {
+            int *g = g_turn_capture_geom[gslot];
+            g[0] = p0.x; g[1] = p0.y; g[2] = p1.x; g[3] = p1.y;
+            g[4] = p2.x; g[5] = p2.y; g[6] = p3.x; g[7] = p3.y;
+            g_turn_capture_geom_ok[gslot] = 1;
+        }
+    }
+#endif
     g_fmtowns_turn_card_replay_eligible = !gray && !defense;
 #endif
     /* Player-side cards face YOU. COM-side cards are rotated 180 degrees on
@@ -22241,6 +22319,109 @@ static int dump_turn_board_frames(const char *path)
 }
 #endif
 
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE) && defined(WAIFU_DUMP_TURN_CARD_RASTER)
+/* Regenerate src/generated/fmtowns_turn_card_geometry.h and
+   src/generated/fmtowns_turn_card_cache.h -- required whenever the field-card
+   GEOMETRY changes (BOARD_CARD_Y, the zone/board metrics, the card's world
+   half-extents or the turn camera path). Both headers are checked-in build
+   artifacts baked from the live draw, so a geometry change without this step
+   leaves the turn transition replaying cards at their old positions:
+
+     cc -m32 -O2 -std=gnu99 -DWAIFU_FM_HEADLESS_TESTS -DWAIFU_FM_FMTOWNS \
+        -DWAIFU_DUMP_TURN_CARD_RASTER -DWAIFU_ASSET_USE_CART_ROM \
+        -Isrc/engine -Isrc/generated -Isrc/game -Isrc/record \
+        src/main.c src/game/*.c src/engine/renderer3d.c \
+        src/engine/renderer3d_fmtowns.c src/engine/common.c \
+        src/engine/bmp_writer.c src/platform/host_*.c src/record/zmbv_mkv.c \
+        tools/fmtowns/turn_dump_stubs.c -lm -lz -o /tmp/waifu_card_dump
+     /tmp/waifu_card_dump --dump-turn-card-capture /tmp/turncards
+     python3 tools/fmtowns/gen_turn_card_geometry.py /tmp/turncards/card_geometry.txt \
+        src/generated/fmtowns_turn_card_geometry.h
+     python3 tools/fmtowns/gen_turn_card_cache.py /tmp/turncards/card_raster.bin \
+        src/generated/fmtowns_turn_card_cache.h
+
+   The capture drives the REAL draw with the cache lookups forced to miss, so
+   what it records is by construction what the runtime would have drawn. Every
+   field slot is filled with a face-up attack-position monster, and the equip
+   row is left empty because the packer rejects records outside slots 5..14. */
+static int dump_turn_card_capture(const char *dir)
+{
+    char path[512];
+    FILE *raster, *geom;
+    uint32_t header[3];
+    int pose, slot, i;
+
+    snprintf(path, sizeof path, "%s/card_raster.bin", dir);
+    raster = fopen(path, "wb");
+    if (!raster) { fprintf(stderr, "dump-turn-card-capture: cannot write %s\n", path); return 1; }
+    snprintf(path, sizeof path, "%s/card_geometry.txt", dir);
+    geom = fopen(path, "w");
+    if (!geom) { fprintf(stderr, "dump-turn-card-capture: cannot write %s\n", path); fclose(raster); return 1; }
+
+    init_battle_state();
+    g_i_state = WAIFU_I_BATTLE;
+    for (i = 0; i < I_FIELD; ++i) {
+        debug_put_player_monster(i, player_summon_id, 1, 0);
+        debug_put_com_monster(i, enemy_summon_id, 1, 0);
+        g_i_player_equip_field[i] = CARD_NONE;
+        g_i_com_equip_field[i] = CARD_NONE;
+    }
+
+    header[0] = 0x54435231u;                                  /* 'TCR1' */
+    header[1] = (uint32_t)WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_POSES;
+    header[2] = 20u;                                          /* CAPTURE_SLOTS */
+    fwrite(header, sizeof header, 1, raster);
+
+    for (pose = 0; pose < WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_POSES; ++pose) {
+        uint32_t counts[20];
+        memset(counts, 0, sizeof counts);
+        memset(g_turn_capture_geom_ok, 0, sizeof g_turn_capture_geom_ok);
+        g_turn_capture_count = 0;
+        g_turn_capture_active = 1;
+        g_fmtowns_turn_board_pose = pose;
+        draw_interactive_field_cards(interactive_turn_camera(pose, WAIFU_PCFX_TURN_FRAMES, 1));
+        g_fmtowns_turn_board_pose = -1;
+        g_turn_capture_active = 0;
+
+        for (i = 0; i < g_turn_capture_count; ++i) {
+            unsigned cs = g_turn_capture[i].slot;
+            if (cs < 20u) counts[cs]++;
+        }
+        fwrite(counts, sizeof counts, 1, raster);
+        /* Records are grouped by slot, in slot order, as the packer expects. */
+        for (slot = 0; slot < 20; ++slot) {
+            for (i = 0; i < g_turn_capture_count; ++i) {
+                uint8_t rec[6];
+                if (g_turn_capture[i].slot != slot) continue;
+                rec[0] = (uint8_t)(g_turn_capture[i].dst & 0xFFu);
+                rec[1] = (uint8_t)(g_turn_capture[i].dst >> 8);
+                rec[2] = (uint8_t)(g_turn_capture[i].sample & 0xFFu);
+                rec[3] = (uint8_t)(g_turn_capture[i].sample >> 8);
+                rec[4] = g_turn_capture[i].width;
+                rec[5] = (uint8_t)slot;
+                fwrite(rec, sizeof rec, 1, raster);
+            }
+        }
+        for (slot = 0; slot < WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS; ++slot) {
+            const int *g = g_turn_capture_geom[slot];
+            if (!g_turn_capture_geom_ok[slot]) {
+                fprintf(stderr, "dump-turn-card-capture: pose %d slot %d never drew\n",
+                        pose, slot);
+                fclose(raster); fclose(geom);
+                return 1;
+            }
+            fprintf(geom, "GEOM %d %d %d %d %d %d %d %d %d %d\n", pose, slot,
+                    g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
+        }
+    }
+    fclose(raster);
+    fclose(geom);
+    printf("wrote %s/card_raster.bin and %s/card_geometry.txt: %d poses\n",
+           dir, dir, WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_POSES);
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     int frames = 3600;
@@ -22259,6 +22440,9 @@ int main(int argc, char **argv)
     const char *music_demo_state = NULL;
     const char *asset_load_demo = NULL;
     const char *dump_turn_board_path = NULL;
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE) && defined(WAIFU_DUMP_TURN_CARD_RASTER)
+    const char *dump_turn_card_dir = NULL;
+#endif
     int regression_story_save = 0;
     int regression_story_duels = 0;
     int regression_card_check = 0;
@@ -22312,6 +22496,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--fixed-pose-bench")) fixed_pose_bench = 1;
 #endif
         else if (!strcmp(argv[i], "--dump-turn-board-frames") && i + 1 < argc) dump_turn_board_path = argv[++i];
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE) && defined(WAIFU_DUMP_TURN_CARD_RASTER)
+        else if (!strcmp(argv[i], "--dump-turn-card-capture") && i + 1 < argc) dump_turn_card_dir = argv[++i];
+#endif
         else if (!strcmp(argv[i], "--deckout-demo")) g_force_deckout_demo = 1;
         else if (!strcmp(argv[i], "--lp-loss-demo")) g_force_lp_loss_demo = 1;
     }
@@ -22322,6 +22509,9 @@ int main(int argc, char **argv)
 
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
     if (dump_turn_board_path) return dump_turn_board_frames(dump_turn_board_path);
+#if defined(WAIFU_DUMP_TURN_CARD_RASTER)
+    if (dump_turn_card_dir) return dump_turn_card_capture(dump_turn_card_dir);
+#endif
 #else
     (void)dump_turn_board_path;
 #endif
