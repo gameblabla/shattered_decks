@@ -12959,6 +12959,101 @@ static void init_story_battle_state(void)
     if (story_opponent_is_boss()) { g_com_lp = 9999; g_com_lp_disp = 9999; }
 }
 
+#if defined(WAIFU_PLATFORM_HW3D)
+/* ---- deck and graveyard stacks (PC) ----------------------------------------
+   A console cannot spare the fill for two forty-card piles, so it reports the
+   deck as a number in the HUD and nothing at all for the graveyard. On PC both
+   sit beside the field the way they do on a Yu-Gi-Oh mat: the deck at the
+   owner's right, face down, and the graveyard next to it with its top card
+   face up. Each is drawn as a short run of card quads spaced up the y axis --
+   seen from the duel's low camera, their edges read as the layers of a real
+   pile -- and the pile's HEIGHT tracks the count, so the deck visibly thins as
+   it is drawn from while the number of quads stays bounded. */
+
+#define STACK_MAX_LAYERS 18
+#define STACK_UNIT_H     Q8_FRAC(6,1000)   /* world height of one card */
+
+/* Most recent card sent to each graveyard; the pile shows it on top. */
+static int g_i_player_grave_top = CARD_NONE;
+static int g_i_com_grave_top = CARD_NONE;
+
+static void note_graveyard(int owner, int card_id)
+{
+    if (card_id < 0) return;
+    if (owner == 0) g_i_player_grave_top = card_id;
+    else g_i_com_grave_top = card_id;
+}
+
+static int side_cards_in_play(const int *hand, const int *used,
+                              const int *field, const int *equip)
+{
+    int i, n = 0;
+    for (i = 0; i < I_HAND; ++i) if (!used[i] && hand[i] >= 0) ++n;
+    for (i = 0; i < I_FIELD; ++i) if (field[i] >= 0) ++n;
+    for (i = 0; i < I_FIELD; ++i) if (equip[i] >= 0) ++n;
+    return n;
+}
+
+static void draw_card_stack(Camera cam, int32_t cx, int32_t cz, int count,
+                            int top_card_id, int row)
+{
+    /* One quad per `per` cards, so a forty-card pile costs at most
+       STACK_MAX_LAYERS draws while keeping its true thickness. */
+    const int32_t hw = Q8_FRAC(36,100), hz = Q8_FRAC(50,100);
+    const uint8_t *back = waifu_assets_card_back();
+    WaifuHw3DCamera hc = hw3d_camera(cam);
+    int rot = (row <= 1) ? 2 : 0;
+    int per, layers, l;
+    if (count <= 0 || !back) return;
+    per = (count + STACK_MAX_LAYERS - 1) / STACK_MAX_LAYERS;
+    if (per < 1) per = 1;
+    layers = (count + per - 1) / per;
+    for (l = 0; l < layers; ++l) {
+        /* The layer sits at the height its share of the pile reaches, so the
+           top face lands at count * STACK_UNIT_H however many quads are used. */
+        int32_t y = (int32_t)(((int64_t)count * STACK_UNIT_H * (l + 1)) / layers);
+        const uint8_t *tex = back;
+        Vec3 w[4];
+        WaifuHw3DVec3 q[4];
+        int k;
+        if (l == layers - 1 && top_card_id >= 0)
+            tex = is_support_card(top_card_id) ? waifu_assets_support_face()
+                                               : card_face_ptr(top_card_id);
+        if (!tex) tex = back;
+        w[0] = v3(cx - hw, y, cz - hz);
+        w[1] = v3(cx + hw, y, cz - hz);
+        w[2] = v3(cx + hw, y, cz + hz);
+        w[3] = v3(cx - hw, y, cz + hz);
+        for (k = 0; k < 4; ++k) q[k] = hw3d_v(w[(rot + k) & 3]);
+        waifu_hw3d_image_quad(&hc, q, tex, WAIFU_CARD_W, WAIFU_CARD_H, 0, IDX_CARD_RIM);
+    }
+}
+
+static void draw_field_side_stacks(Camera cam)
+{
+    /* Just outside the mat's own columns, at each owner's right hand. */
+    const int32_t out_x = FIELD_X1 + Q8_FRAC(52,100);
+    int player_grave = STORY_DECK_SIZE - g_i_player_deck_left -
+        side_cards_in_play(g_i_player_hand, g_i_player_used,
+                           g_i_player_field, g_i_player_equip_field);
+    int com_grave = STORY_DECK_SIZE - g_i_com_deck_left -
+        side_cards_in_play(g_i_com_hand, g_i_com_used,
+                           g_i_com_field, g_i_com_equip_field);
+    if (player_grave < 0) player_grave = 0;
+    if (com_grave < 0) com_grave = 0;
+    draw_card_stack(cam, out_x, zone_cz(PLAYER_CARD_ROW), g_i_player_deck_left,
+                    CARD_NONE, PLAYER_CARD_ROW);
+    /* The graveyard sits one row INSIDE the deck rather than one row nearer:
+       the nearest row falls off the bottom of the duel camera. */
+    draw_card_stack(cam, out_x, zone_cz(PLAYER_CARD_ROW - 1), player_grave,
+                    g_i_player_grave_top, PLAYER_CARD_ROW);
+    draw_card_stack(cam, -out_x, zone_cz(ENEMY_CARD_ROW), g_i_com_deck_left,
+                    CARD_NONE, ENEMY_CARD_ROW);
+    draw_card_stack(cam, -out_x, zone_cz(ENEMY_CARD_ROW + 1), com_grave,
+                    g_i_com_grave_top, ENEMY_CARD_ROW);
+}
+#endif /* WAIFU_PLATFORM_HW3D */
+
 static void draw_interactive_field_cards(Camera cam)
 {
     CameraBasis basis = make_camera_basis(cam);
@@ -12967,6 +13062,9 @@ static void draw_interactive_field_cards(Camera cam)
     g_fmtowns_field_cards_lowres = g_fmtowns_motion_lowres_enabled &&
                                    !camera_is_static_board(cam);
     fmtowns_turn_overlay_begin();
+#endif
+#if defined(WAIFU_PLATFORM_HW3D)
+    draw_field_side_stacks(cam);
 #endif
     for (i = 0; i < I_FIELD; ++i) {
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
@@ -13031,6 +13129,19 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
         {
         int cy = y;
 #if defined(WAIFU_PLATFORM_HW3D)
+        /* PC: the opening five are drawn off the deck that stands at the
+           player's right, so they travel FACE DOWN and turn face up as each
+           reaches its place in the row. */
+        if (f < 48) {
+            int32_t t = q8_smooth_ratio(f - i * 5, 18);
+            float ft = (float)t / (float)Q8_ONE;
+            float flip = (ft < 0.55f) ? 3.14159265f
+                                      : (1.0f - (ft - 0.55f) / 0.45f) * 3.14159265f;
+            draw_card_spin_quad(g_i_player_hand[i], (float)x + (float)cw * 0.5f,
+                                (float)cy + (float)ch * 0.5f, (float)cw, (float)ch,
+                                0.0f, flip);
+            continue;
+        }
         /* PC: the selected card rises and falls under its spinning cursor, so
            the selection reads as motion and not only as a marker. */
         if (!suppress_cursor && i == selected) cy += hand_selected_bob();
@@ -14074,6 +14185,11 @@ static void prepare_direct_attack(int attacker_owner, int attacker_slot)
 static void clear_monster_slot(int owner, int slot)
 {
     if (slot < 0 || slot >= I_FIELD) return;
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* PC keeps a visible graveyard beside the field; this is the card that
+       lands on top of it. */
+    note_graveyard(owner, owner == 0 ? g_i_player_field[slot] : g_i_com_field[slot]);
+#endif
     if (owner == 0) {
         g_i_player_field[slot] = CARD_NONE;
         g_i_player_faceup[slot] = 1;
