@@ -16694,6 +16694,12 @@ static void draw_deck_editor_icon(int card, int x, int y, int selected)
     }
 }
 
+/* Both side margins of the widescreen deck-editor panel are wide enough to hold
+   a column of text or buttons beside the authored 256-wide block. 0 on every
+   console and on a game-aspect window, where the authored layout is all there
+   is. */
+static int deck_side_margin_room(void) { return waifu_platform_ui_extra_w() >= 160; }
+
 static void draw_deck_editor(void)
 {
     char line[96];
@@ -16732,8 +16738,22 @@ static void draw_deck_editor(void)
     draw_text_small(ed_dx + 148, 31, line, g_deck_tab == 1 ? IDX_WHITE : IDX_DIM, IDX_BLACK);
 
     recalc_story_deck_counts();
-    waifu_str_copy(line, (int)sizeof(line), "SUPPORT "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)(g_story_support_count + g_story_equip_count)); waifu_str_cat(line, (int)sizeof(line), "  EQ "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_equip_count);
-    draw_text_small(ed_dx + 76, 43, line, IDX_GOLD_HI, IDX_BLACK);
+    /* The authored spot for the deck counts is the 7 px between the tab row and
+       the first card row, which the 8 px line does not fit in: it touches the
+       tabs above and sits on the card frames below. Where the widescreen panel
+       gives a side margin, they move into it -- their own column in the left
+       margin, opposite the mouse buttons on the right, conflicting with
+       nothing. With no margin the authored position is all there is, so the
+       console layout is untouched. */
+    if (deck_side_margin_room()) {
+        waifu_str_copy(line, (int)sizeof(line), "SUPPORT "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)(g_story_support_count + g_story_equip_count));
+        draw_text_small(12, 58, line, IDX_GOLD_HI, IDX_BLACK);
+        waifu_str_copy(line, (int)sizeof(line), "EQ "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_equip_count);
+        draw_text_small(12, 70, line, IDX_GOLD_HI, IDX_BLACK);
+    } else {
+        waifu_str_copy(line, (int)sizeof(line), "SUPPORT "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)(g_story_support_count + g_story_equip_count)); waifu_str_cat(line, (int)sizeof(line), "  EQ "); waifu_str_cat_u32_z2(line, (int)sizeof(line), (unsigned)g_story_equip_count);
+        draw_text_small(ed_dx + 76, 43, line, IDX_GOLD_HI, IDX_BLACK);
+    }
 
     if (count <= 0) {
         draw_centered_text(105, "EMPTY", IDX_DIM, IDX_BLACK);
@@ -16749,8 +16769,17 @@ static void draw_deck_editor(void)
         }
     }
 
-    rect_fill(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), g_ui_clip_w - (ed_dx + 9) * 2, 36, IDX_BLACK);
-    rect_outline(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), g_ui_clip_w - (ed_dx + 9) * 2, 36, IDX_UI_LIGHT);
+    /* The bottom hint sits immediately under this box. At the authored 36 px
+       the box's lower border and the hint's glyph tops are the same pixel; PC
+       gives the box 4 px back so the two read as separate rows. Its contents
+       end 26 px in, so nothing is lost. */
+#if defined(WAIFU_PLATFORM_HW3D)
+    const int info_h = 32;
+#else
+    const int info_h = 36;
+#endif
+    rect_fill(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), g_ui_clip_w - (ed_dx + 9) * 2, info_h, IDX_BLACK);
+    rect_outline(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), g_ui_clip_w - (ed_dx + 9) * 2, info_h, IDX_UI_LIGHT);
     if (selected_card >= 0) {
         draw_text_small_ellipsis(ed_dx + 15, WAIFU_UI_BOTTOM_Y(196), deck_editor_card_name(selected_card), 25, IDX_WHITE, IDX_BLACK);
         if (is_support_card(selected_card)) {
