@@ -3713,6 +3713,10 @@ static void draw_duel_wings(int field_ox, int lp_ox);
    waifu_fm_step, and a no-op on every console. */
 static void draw_pointer_end_turn_button(void);
 static void draw_deck_editor_pointer_buttons(void);
+#if defined(WAIFU_PLATFORM_HW3D)
+/* Defined with the rest of the mouse code, used by the PC deck editor above it. */
+static void ptr_button(int x, int y, int w, int h, const char *label);
+#endif
 
 /* The COM / YOU tag on an LP panel: a coloured plate with the label on it.
    The PC frontend swaps the 8x8 bitmap glyph for a bold TTF face whose ink runs
@@ -14092,7 +14096,15 @@ static void render_interactive_card_preview_static(int card_id)
     }
 
     if (!is_monster_card(card_id)) return;
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* PC: the same path the Spell / Trap panel above takes, so a monster wears
+       its real full-resolution card front here too (with the soft translucent
+       drop shadow) instead of the hand-drawn gold frame the palette targets
+       have to build out of rectangles. */
+    draw_card_sprite(card_id, art_x, WAIFU_BATTLE_CARD_Y, 120, 160, 0);
+#else
     draw_big_battle_card(card_id, art_x, WAIFU_BATTLE_CARD_Y, 0);
+#endif
 
     draw_text_small(tx, y, "CARD CHECK", IDX_GOLD_HI, IDX_BLACK); y += 14;
     lines = draw_wrapped_text_small_box(tx, y, maxw, 4, 10, waifu_card_names[card_id], IDX_WHITE, IDX_BLACK);
@@ -15157,7 +15169,12 @@ static void draw_replacement_cards_to_com_hand(void)
             drew = 1;
         }
     }
-    if (!drew && g_i_com_deck_left > 0) {
+    /* Full live hand: the drawn card replaces slot 0, which DISCARDS that card
+       -- the anti-stall rule the player's draw carries too.  Not on the COM's
+       first turn, though: its hand is full there only because the opening deal
+       just filled it, nothing is stalling, and the discard showed up as a card
+       in the enemy graveyard before it had spent, tributed or lost anything. */
+    if (!drew && g_b_turns > 1 && g_i_com_deck_left > 0) {
         g_i_com_hand[0] = next_com_draw_id();
         g_i_com_used[0] = 0;
     }
@@ -17840,19 +17857,34 @@ static int deck_side_margin_room(void) { return waifu_platform_ui_extra_w() >= 1
 #define ED_COL_W 40
 #define ED_PANE_W 168          /* left check pane, when there is room for it */
 
+/* Width the editor is laid out across.  NOT g_ui_clip_w: that is only widened
+   between ui_hud_begin/end, and the pointer hit-tests run outside the bracket,
+   where it has snapped back to the authored 256.  Reading it there put every
+   hit test in a different place from the drawing -- the tabs and the cards
+   could not be clicked at all in the two-pane layout, and only by accident in
+   the narrow one.  The platform's extra width is the same all frame. */
+static int deck_ui_w(void) { return WAIFU_FM_WIDTH + waifu_platform_ui_extra_w(); }
+
 /* The two-pane layout needs a real left column; a game-aspect window has none,
    and there the authored single-column layout is kept (with the pixel scroll). */
-static int deck_pane_layout(void) { return g_ui_clip_w >= 380; }
+static int deck_pane_layout(void) { return deck_ui_w() >= 380; }
 static int deck_grid_x(void)
 {
     return deck_pane_layout() ? ED_PANE_W
-                              : (WAIFU_UI_CENTER_DX + ui_center_dx() + 14);
+                              : (WAIFU_UI_CENTER_DX + (deck_ui_w() - WAIFU_FM_WIDTH) / 2 + 14);
 }
 static int deck_tab_y(void) { return 27; }
+/* The gallery is clipped to [clip_y0, clip_y1) by painting the bands above and
+   below it back over whatever a part-scrolled row spilled there.  The selected
+   card's red outline stands 3 px outside its cell, so the cells themselves are
+   inset by ED_SEL_PAD from both clip edges -- otherwise the top row's outline
+   was painted away every frame and the cursor looked cut off. */
+#define ED_SEL_PAD 4
 /* Below the tab row AND the SUPPORT/EQ counters that sit under it. */
-static int deck_grid_y0(void) { return 58; }
-static int deck_grid_y1(void) { return WAIFU_UI_BOTTOM_Y(deck_pane_layout() ? 212 : 188); }
-static int deck_view_h(void) { return deck_grid_y1() - deck_grid_y0(); }
+static int deck_clip_y0(void) { return 58; }
+static int deck_clip_y1(void) { return WAIFU_UI_BOTTOM_Y(deck_pane_layout() ? 212 : 188); }
+static int deck_grid_y0(void) { return deck_clip_y0() + ED_SEL_PAD; }
+static int deck_view_h(void) { return deck_clip_y1() - ED_SEL_PAD - deck_grid_y0(); }
 static int deck_scroll_max(int count)
 {
     int rows = (count + DECK_GRID_COLS - 1) / DECK_GRID_COLS;
@@ -17897,11 +17929,11 @@ static int deck_cell_at(int px, int py)
 {
     int count = deck_editor_active_count();
     int i;
-    if (py < deck_grid_y0() || py >= deck_grid_y1()) return -1;
+    if (py < deck_clip_y0() || py >= deck_clip_y1()) return -1;
     for (i = 0; i < count; ++i) {
         int x, y;
         deck_cell_rect(i, &x, &y);
-        if (y < deck_grid_y0() - 6 || y + 34 > deck_grid_y1() + 6) continue;
+        if (y < deck_clip_y0() - 6 || y + 34 > deck_clip_y1() + 6) continue;
         if (px >= x - 3 && px < x + 29 && py >= y - 3 && py < y + 37) return i;
     }
     return -1;
@@ -17911,6 +17943,32 @@ static int deck_tab_hit(int px, int py, int tab)
 {
     int x = deck_grid_x() + tab * 122;
     return px >= x && px < x + 114 && py >= deck_tab_y() && py < deck_tab_y() + 14;
+}
+
+/* Where a DRAGGED card may be dropped to send it to `tab`.  Bigger than the tab
+   button itself: the whole header band above the gallery, over that tab's half
+   of it, so the drop does not demand the precision of a 14 px strip.  Nothing
+   else in that band reacts to the pointer. */
+static int deck_tab_drop_hit(int px, int py, int tab)
+{
+    int x = deck_grid_x() + tab * 122;
+    return px >= x && px < x + 114 && py >= 24 && py < deck_clip_y0();
+}
+
+/* THE EDITOR'S ONE MOUSE BUTTON.  The pad leaves the editor with RUN and the PC
+   layout dropped the control-hint line, so a mouse-only player had no way out
+   of the screen at all.  It sits in the band under the gallery where the panes
+   are wide enough for one, and at the right end of the info bar where they are
+   not; both are places the editor draws nothing else. */
+#define DECK_FINISH_LABEL "FINISH"
+#define DECK_FINISH_W (6 * 7 + 18)
+#define DECK_FINISH_H 16
+static void deck_finish_rect(int *x, int *y, int *w, int *h)
+{
+    *w = DECK_FINISH_W;
+    *h = DECK_FINISH_H;
+    *x = deck_ui_w() - DECK_FINISH_W - 12;
+    *y = deck_pane_layout() ? deck_clip_y1() + 3 : WAIFU_UI_BOTTOM_Y(192) + 7;
 }
 
 /* The left pane: the selected card at full size, then everything the separate
@@ -17955,14 +18013,14 @@ static void draw_deck_editor_pc(void)
 
     deck_scroll_clamp();
     gx = deck_grid_x();
-    y0 = deck_grid_y0();
-    y1 = deck_grid_y1();
+    y0 = deck_clip_y0();
+    y1 = deck_clip_y1();
 
     /* The gallery first, then the bands above and below it painted back over
        whatever a part-scrolled row spilled into them -- the cheap way to clip a
        scrolling list on a renderer with no scissor of its own. */
     if (count <= 0) {
-        draw_text_small(gx + 80, y0 + 40, "EMPTY", IDX_DIM, IDX_BLACK);
+        draw_text_small(gx + 80, y0 + 44, "EMPTY", IDX_DIM, IDX_BLACK);
     } else {
         for (i = 0; i < count; ++i) {
             int x, y;
@@ -18035,6 +18093,12 @@ static void draw_deck_editor_pc(void)
         if (g_deck_drag_card < n)
             draw_deck_editor_icon(from[g_deck_drag_card], g_deck_drag_x - 13,
                                   g_deck_drag_y - 17, 0);
+    }
+
+    if (g_ptr_active) {
+        int bx, by2, bw, bh;
+        deck_finish_rect(&bx, &by2, &bw, &bh);
+        ptr_button(bx, by2, bw, bh, DECK_FINISH_LABEL);
     }
 
     if (g_deck_flash > 0 && ((g_deck_flash / 8) & 1) == 0) {
@@ -19668,7 +19732,8 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
            else in the gallery and moving pans it. Nothing here steps a whole
            row, and there are no on-screen buttons to hit-test. */
         {
-            int cell;
+            int cell, bx, by, bw, bh;
+            deck_finish_rect(&bx, &by, &bw, &bh);
             if (p.wheel) {
                 g_deck_scroll_px[g_deck_tab] -= p.wheel * (ED_ROW_H / 2);
                 deck_scroll_clamp();
@@ -19676,6 +19741,7 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
             g_deck_drag_x = p.x;
             g_deck_drag_y = p.y;
             if (p.left_pressed) {
+                if (ptr_in(p.x, p.y, bx, by, bw, bh)) { *press_start = 1; break; }
                 if (deck_tab_hit(p.x, p.y, 0) && g_deck_tab != 0) { *press_tab = 1; break; }
                 if (deck_tab_hit(p.x, p.y, 1) && g_deck_tab != 1) { *press_tab = 1; break; }
                 cell = deck_cell_at(p.x, p.y);
@@ -19683,8 +19749,8 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
                     g_deck_cursor = cell;
                     g_deck_drag_card = cell;
                     g_deck_drag_tab = g_deck_tab;
-                } else if (p.x >= deck_grid_x() - 8 && p.y >= deck_grid_y0() &&
-                           p.y < deck_grid_y1()) {
+                } else if (p.x >= deck_grid_x() - 8 && p.y >= deck_clip_y0() &&
+                           p.y < deck_clip_y1()) {
                     g_deck_pan = 1;
                     g_deck_pan_y0 = p.y;
                     g_deck_pan_px0 = g_deck_scroll_px[g_deck_tab];
@@ -19698,9 +19764,12 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
                 }
             }
             if (g_deck_drag_card >= 0 && !p.left_down) {
-                int drop_other = deck_tab_hit(p.x, p.y, g_deck_drag_tab ? 0 : 1);
-                if (drop_other && g_deck_drag_card == g_deck_cursor &&
-                    g_deck_drag_tab == g_deck_tab) {
+                /* Dropped over the other list's header: move THAT card, which is
+                   the one the press picked up -- put the cursor on it rather
+                   than requiring it to already be there. */
+                if (g_deck_drag_tab == g_deck_tab &&
+                    deck_tab_drop_hit(p.x, p.y, g_deck_drag_tab ? 0 : 1)) {
+                    g_deck_cursor = g_deck_drag_card;
                     *press_a = 1;   /* the same move the pad's A performs */
                 }
                 g_deck_drag_card = -1;
