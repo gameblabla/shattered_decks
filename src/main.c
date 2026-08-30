@@ -16769,14 +16769,18 @@ static void draw_deck_editor(void)
         }
     }
 
-    /* The bottom hint sits immediately under this box. At the authored 36 px
-       the box's lower border and the hint's glyph tops are the same pixel; PC
-       gives the box 4 px back so the two read as separate rows. Its contents
-       end 26 px in, so nothing is lost. */
+    /* The bottom hint sits between this box and the panel's own bottom border,
+       and the authored geometry leaves room for neither gap: at 36 px the box's
+       lower edge is the hint's first row, and at y = H-14 the hint's last rows
+       are the panel's border (the panel ends at 235, the text reaches 234). PC
+       takes 6 px off the box and lifts the hint 4 px, which costs nothing --
+       the box's contents end 26 px in -- and leaves a clear row on both sides. */
 #if defined(WAIFU_PLATFORM_HW3D)
-    const int info_h = 32;
+    const int info_h = 30;
+    const int hint_y = WAIFU_FM_HEIGHT - 18;
 #else
     const int info_h = 36;
+    const int hint_y = WAIFU_FM_HEIGHT - 14;
 #endif
     rect_fill(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), g_ui_clip_w - (ed_dx + 9) * 2, info_h, IDX_BLACK);
     rect_outline(ed_dx + 9, WAIFU_UI_BOTTOM_Y(190), g_ui_clip_w - (ed_dx + 9) * 2, info_h, IDX_UI_LIGHT);
@@ -16806,7 +16810,7 @@ static void draw_deck_editor(void)
         int right = ed_dx + 247 - waifu_cstrlen(hint) * 7;
         if (x > right) x = right;
         if (x < ed_dx + 9) x = ed_dx + 9;
-        draw_text_small(x, WAIFU_FM_HEIGHT - 14, hint, IDX_WHITE, IDX_BLACK);
+        draw_text_small(x, hint_y, hint, IDX_WHITE, IDX_BLACK);
     }
     draw_deck_editor_pointer_buttons();
     ui_hud_end();
