@@ -306,15 +306,16 @@ static int g_video_fade_visible_q8 = Q8_ONE;
 static int g_frame_present_dense = 0;
 
 /* The FM loop supplies the number of complete 60 Hz periods measured before
-   this step. Static/2-D work may consume that wall-clock amount; a moving
-   camera still advances one displayed pose at a time. */
+   this step. Animation clocks consume that wall-clock amount, including
+   moving cameras, so a slower renderer cannot make a transition run in slow
+   motion. */
 static int g_frame_vblank_step = 1;
 
 /* ---- frame pacing ------------------------------------------------------
  *
- * The platform's elapsed-vblank count is wall-clock time for static/UI work.
-   Moving 3-D phase counters select one displayed pose per call instead, so a
-   slow renderer cannot skip the authored camera path. */
+ * The platform's elapsed-vblank count is wall-clock time for every animation.
+   A slow renderer may skip authored poses, but it must not stretch the
+   transition itself into slow motion. */
 static inline int frame_logic_step(void)
 {
     return g_frame_vblank_step;
@@ -327,6 +328,14 @@ static inline int frame_cue_crossed(int f, int cue)
 }
 
 static CfxRenderer3D renderer;
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+/* Marty renders moving board geometry into the same 128x120 logical surface
+   used by the retained turn poses, then expands it to the native 256x240
+   framebuffer.  Keep a second renderer state because the public 3-D renderer
+   stores its target dimensions in the opaque state. */
+static CfxRenderer3D g_fmtowns_motion_renderer;
+static int g_fmtowns_motion_renderer_ready;
+#endif
 static int g_you_lp = 8000;
 static int g_com_lp = 8000;
 /* HUD-displayed LP counters. Battle logic (win/loss, damage math) reads/writes
@@ -1079,6 +1088,32 @@ static int g_board_bg_cache_valid = 0;
 static int g_fmtowns_turn_board_pose = -1;
 static int g_fmtowns_turn_board_loaded_pose = -1;
 static int g_fmtowns_turn_overlay_tracking = 0;
+/* Marty/386SX uses the blockier renderer for every moving board camera.
+   Wider-bus 386DX and 486-class TOWNS machines retain the native-resolution
+   moving renderer. Exact static board cameras use their normal composites on
+   every tier. */
+static int g_fmtowns_motion_lowres_enabled = 1;
+/* Set for the field-card pass that follows a board render. Static endpoint
+   boards keep native card samples; only moving-board frames get the card LOD
+   as well. */
+static int g_fmtowns_field_cards_lowres = 0;
+
+static int fmtowns_performance_tier(void)
+{
+#if defined(WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER)
+    return WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER;
+#else
+    return waifu_platform_performance_tier();
+#endif
+}
+
+static void fmtowns_select_motion_renderer(void)
+{
+    /* Tier 0 is 386SX/Marty/UX.  Known wider-bus tiers get the
+         full-resolution moving board; unknown/invalid values stay safe. */
+    int tier = fmtowns_performance_tier();
+    g_fmtowns_motion_lowres_enabled = tier != 1 && tier != 2;
+}
 
 typedef struct FmtownsTurnOverlayRect {
     int x0;
@@ -1094,11 +1129,17 @@ static int g_fmtowns_turn_overlay_active;
 static int g_fmtowns_turn_card_slot = -1;
 static int g_fmtowns_turn_card_replay_eligible = 0;
 static uint8_t *fmtowns_turn_board_cache_scratch(void);
+static void fmtowns_motion_scratch_claim(void);
 static void fmtowns_turn_record_overlay_rect(int x0, int y0, int x1, int y1);
 
 static int fmtowns_turn_damage_suppressed(void)
 {
     return g_fmtowns_turn_board_pose >= 0;
+}
+
+static int fmtowns_field_cards_use_lowres(void)
+{
+    return g_fmtowns_turn_board_pose >= 0 || g_fmtowns_field_cards_lowres;
 }
 #endif
 
@@ -5551,6 +5592,263 @@ static void render_board(Camera cam)
 #endif
 }
 
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+#define FMTOWNS_MOTION_WIDTH  WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH
+#define FMTOWNS_MOTION_HEIGHT WAIFU_FMTOWNS_TURN_BOARD_CACHE_HEIGHT
+
+static void fmtowns_motion_renderer_prepare(uint8_t *logical)
+{
+    if (!g_fmtowns_motion_renderer_ready) {
+        CfxRenderer3DConfig cfg = {
+            logical,
+            (DEFAULT_INT)FMTOWNS_MOTION_WIDTH,
+            (DEFAULT_INT)FMTOWNS_MOTION_HEIGHT
+        };
+        cfx_renderer3d_init(&g_fmtowns_motion_renderer, &cfg);
+        cfx_renderer3d_set_texture_atlas(&g_fmtowns_motion_renderer,
+                                          waifu_texture_atlas,
+                                          WAIFU_TEX_TILE_SIZE,
+                                          WAIFU_TEX_TILE_SIZE * WAIFU_TEX_TILE_SIZE);
+        g_fmtowns_motion_renderer_ready = 1;
+    } else {
+        cfx_renderer3d_set_framebuffer(&g_fmtowns_motion_renderer, logical);
+    }
+}
+
+static ScreenPt fmtowns_motion_point(ScreenPt p)
+{
+    if (p.ok) {
+        p.x /= WAIFU_FMTOWNS_TURN_BOARD_CACHE_SCALE;
+        p.y /= WAIFU_FMTOWNS_TURN_BOARD_CACHE_SCALE;
+    }
+    return p;
+}
+
+static int fmtowns_motion_clamp(int v, int limit)
+{
+    if (v < 0) return 0;
+    if (v >= limit) return limit - 1;
+    return v;
+}
+
+static int fmtowns_motion_clamp_apron(int v, int limit, int apron)
+{
+    if (v < -apron) return -apron;
+    if (v >= limit + apron) return limit + apron - 1;
+    return v;
+}
+
+static void fmtowns_motion_draw_quad(ScreenPt pa, ScreenPt pb,
+                                     ScreenPt pc, ScreenPt pd, int tile)
+{
+    const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
+    Point2D p0, p1, p2, p3;
+    if (!pa.ok || !pb.ok || !pc.ok || !pd.ok) return;
+    pa = fmtowns_motion_point(pa);
+    pb = fmtowns_motion_point(pb);
+    pc = fmtowns_motion_point(pc);
+    pd = fmtowns_motion_point(pd);
+    p0.x = (DEFAULT_INT)fmtowns_motion_clamp(pa.x, FMTOWNS_MOTION_WIDTH);
+    p0.y = (DEFAULT_INT)fmtowns_motion_clamp(pa.y, FMTOWNS_MOTION_HEIGHT);
+    p0.u = 0; p0.v = 0;
+    p1.x = (DEFAULT_INT)fmtowns_motion_clamp(pb.x, FMTOWNS_MOTION_WIDTH);
+    p1.y = (DEFAULT_INT)fmtowns_motion_clamp(pb.y, FMTOWNS_MOTION_HEIGHT);
+    p1.u = uvmax; p1.v = 0;
+    p2.x = (DEFAULT_INT)fmtowns_motion_clamp(pc.x, FMTOWNS_MOTION_WIDTH);
+    p2.y = (DEFAULT_INT)fmtowns_motion_clamp(pc.y, FMTOWNS_MOTION_HEIGHT);
+    p2.u = uvmax; p2.v = uvmax;
+    p3.x = (DEFAULT_INT)fmtowns_motion_clamp(pd.x, FMTOWNS_MOTION_WIDTH);
+    p3.y = (DEFAULT_INT)fmtowns_motion_clamp(pd.y, FMTOWNS_MOTION_HEIGHT);
+    p3.u = 0; p3.v = uvmax;
+    cfx_renderer3d_draw_quad_fast_affine(&g_fmtowns_motion_renderer,
+                                          &p0, &p1, &p2, &p3,
+                                          (DEFAULT_INT)tile);
+}
+
+static void fmtowns_motion_draw_wall(ScreenPt pa, ScreenPt pb,
+                                     ScreenPt pc, ScreenPt pd, int tile)
+{
+    const DEFAULT_INT uvmax = (DEFAULT_INT)((WAIFU_TEX_TILE_SIZE - 1) << 8);
+    Point2D p0, p1, p2, p3;
+    if (!pa.ok || !pb.ok || !pc.ok || !pd.ok) return;
+    pa = fmtowns_motion_point(pa);
+    pb = fmtowns_motion_point(pb);
+    pc = fmtowns_motion_point(pc);
+    pd = fmtowns_motion_point(pd);
+    /* Keep the same small off-screen apron as the native wall path, scaled to
+       the logical surface.  The renderer clips the actual spans, while the
+       wall edge keeps its slope at the viewport boundary. */
+    p0.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pa.x, FMTOWNS_MOTION_WIDTH, 32);
+    p0.y = (DEFAULT_INT)fmtowns_motion_clamp_apron(pa.y, FMTOWNS_MOTION_HEIGHT, 8);
+    p0.u = 0; p0.v = 0;
+    p1.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pb.x, FMTOWNS_MOTION_WIDTH, 32);
+    p1.y = (DEFAULT_INT)fmtowns_motion_clamp_apron(pb.y, FMTOWNS_MOTION_HEIGHT, 8);
+    p1.u = uvmax; p1.v = 0;
+    p2.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pc.x, FMTOWNS_MOTION_WIDTH, 32);
+    p2.y = (DEFAULT_INT)fmtowns_motion_clamp_apron(pc.y, FMTOWNS_MOTION_HEIGHT, 8);
+    p2.u = uvmax; p2.v = uvmax;
+    p3.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pd.x, FMTOWNS_MOTION_WIDTH, 32);
+    p3.y = (DEFAULT_INT)fmtowns_motion_clamp_apron(pd.y, FMTOWNS_MOTION_HEIGHT, 8);
+    p3.u = 0; p3.v = uvmax;
+    cfx_renderer3d_draw_quad_fast_affine(&g_fmtowns_motion_renderer,
+                                          &p0, &p1, &p2, &p3,
+                                          (DEFAULT_INT)tile);
+}
+
+static void fmtowns_motion_draw_sides(Camera cam, const BoardProjected *bp)
+{
+    if (camera_equal(cam, battle_top_camera()) ||
+        camera_equal(cam, enemy_battle_top_camera())) return;
+
+    if (cam.eye.x >= 0) {
+        for (int r = 0; r < BOARD_ROWS; ++r)
+            fmtowns_motion_draw_wall(bp->top[r][BOARD_COLS],
+                                     bp->top[r+1][BOARD_COLS],
+                                     bp->bottom_x1[r+1], bp->bottom_x1[r],
+                                     field_side_tile_for_cell(BOARD_COLS - 1, r));
+    } else {
+        for (int r = 0; r < BOARD_ROWS; ++r)
+            fmtowns_motion_draw_wall(bp->top[r][0], bp->top[r+1][0],
+                                     bp->bottom_x0[r+1], bp->bottom_x0[r],
+                                     field_side_tile_for_cell(0, r));
+    }
+
+    if (cam.eye.z >= 0) {
+        for (int c = 0; c < BOARD_COLS; ++c)
+            fmtowns_motion_draw_wall(bp->top[BOARD_ROWS][c],
+                                     bp->top[BOARD_ROWS][c+1],
+                                     bp->bottom_z1[c+1], bp->bottom_z1[c],
+                                     field_side_tile_for_cell(c, BOARD_ROWS - 1));
+    } else {
+        for (int c = 0; c < BOARD_COLS; ++c)
+            fmtowns_motion_draw_wall(bp->top[0][c], bp->top[0][c+1],
+                                     bp->bottom_z0[c+1], bp->bottom_z0[c],
+                                     field_side_tile_for_cell(c, 0));
+    }
+}
+
+static int fmtowns_motion_mesh_point(ScreenPt p, CfxBoardPoint *out)
+{
+    if (!p.ok) return 0;
+    p = fmtowns_motion_point(p);
+    out->x = (int16_t)fmtowns_motion_clamp(p.x, FMTOWNS_MOTION_WIDTH);
+    out->y = (int16_t)fmtowns_motion_clamp(p.y, FMTOWNS_MOTION_HEIGHT);
+    return 1;
+}
+
+static void fmtowns_motion_draw_top(const BoardProjected *bp)
+{
+    CfxBoardPoint mesh_points[BOARD_ROWS + 1][BOARD_COLS + 1];
+    int mesh_valid = 1;
+    for (int r = 0; r <= BOARD_ROWS; ++r) {
+        for (int c = 0; c <= BOARD_COLS; ++c) {
+            if (!fmtowns_motion_mesh_point(bp->top[r][c], &mesh_points[r][c]))
+                mesh_valid = 0;
+        }
+    }
+    if (mesh_valid && cfx_renderer3d_draw_board_mesh_fast_affine(
+            &g_fmtowns_motion_renderer, &mesh_points[0][0], BOARD_COLS + 1,
+            BOARD_ROWS, BOARD_COLS, 1, 5)) return;
+
+    for (int r = 0; r < BOARD_ROWS; ++r) {
+        for (int c = 0; c < BOARD_COLS; ++c) {
+            int tile = ((r + c) & 1) ? 5 : 1;
+            fmtowns_motion_draw_quad(bp->top[r][c], bp->top[r][c+1],
+                                     bp->top[r+1][c+1], bp->top[r+1][c], tile);
+        }
+    }
+}
+
+static void fmtowns_motion_line(uint8_t *logical,
+                                int x0, int y0, int x1, int y1, uint8_t c)
+{
+    int dx, sx, dy, sy, err;
+    if (x0 < -8192) x0 = -8192; else if (x0 > 8192) x0 = 8192;
+    if (x1 < -8192) x1 = -8192; else if (x1 > 8192) x1 = 8192;
+    if (y0 < -8192) y0 = -8192; else if (y0 > 8192) y0 = 8192;
+    if (y1 < -8192) y1 = -8192; else if (y1 > 8192) y1 = 8192;
+    dx = x1 - x0;
+    dy = y1 - y0;
+    if (dx == 0 && dy == 0) {
+        if ((unsigned)x0 < FMTOWNS_MOTION_WIDTH &&
+            (unsigned)y0 < FMTOWNS_MOTION_HEIGHT)
+            logical[y0 * FMTOWNS_MOTION_WIDTH + x0] = c;
+        return;
+    }
+    {
+        int t0 = 0, t1 = 1 << 16;
+        int p[4] = { -dx, dx, -dy, dy };
+        int q[4] = { x0, (FMTOWNS_MOTION_WIDTH - 1) - x0,
+                     y0, (FMTOWNS_MOTION_HEIGHT - 1) - y0 };
+        for (int i = 0; i < 4; ++i) {
+            if (p[i] == 0) {
+                if (q[i] < 0) return;
+            } else {
+                int r = (q[i] << 16) / p[i];
+                if (p[i] < 0) {
+                    if (r > t1) return;
+                    if (r > t0) t0 = r;
+                } else {
+                    if (r < t0) return;
+                    if (r < t1) t1 = r;
+                }
+            }
+        }
+        if (t0 > t1) return;
+        x1 = x0 + (dx * t1) / (1 << 16);
+        y1 = y0 + (dy * t1) / (1 << 16);
+        x0 += (dx * t0) / (1 << 16);
+        y0 += (dy * t0) / (1 << 16);
+    }
+    dx = i_abs(x1 - x0);
+    sx = x0 < x1 ? 1 : -1;
+    dy = -i_abs(y1 - y0);
+    sy = y0 < y1 ? 1 : -1;
+    err = dx + dy;
+    for (;;) {
+        if ((unsigned)x0 < FMTOWNS_MOTION_WIDTH &&
+            (unsigned)y0 < FMTOWNS_MOTION_HEIGHT)
+            logical[y0 * FMTOWNS_MOTION_WIDTH + x0] = c;
+        if (x0 == x1 && y0 == y1) break;
+        {
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+    }
+}
+
+static void render_board_lowres(Camera cam)
+{
+    uint8_t *logical;
+    BoardProjected bp;
+
+    fmtowns_motion_scratch_claim();
+    logical = fmtowns_turn_board_cache_scratch();
+    fmtowns_motion_renderer_prepare(logical);
+    fill_u8_fast(logical,
+                 WAIFU_FMTOWNS_TURN_BOARD_CACHE_FRAME_BYTES, IDX_BLACK);
+    build_board_projected(cam, &bp);
+    fmtowns_motion_draw_sides(cam, &bp);
+    fmtowns_motion_draw_top(&bp);
+    for (int c = 0; c <= BOARD_COLS; ++c) {
+        ScreenPt a = fmtowns_motion_point(bp.top[0][c]);
+        ScreenPt b = fmtowns_motion_point(bp.top[BOARD_ROWS][c]);
+        if (a.ok && b.ok) fmtowns_motion_line(logical, a.x, a.y, b.x, b.y,
+                                               IDX_DARK_BROWN);
+    }
+    for (int r = 0; r <= BOARD_ROWS; ++r) {
+        ScreenPt a = fmtowns_motion_point(bp.top[r][0]);
+        ScreenPt b = fmtowns_motion_point(bp.top[r][BOARD_COLS]);
+        if (a.ok && b.ok) fmtowns_motion_line(logical, a.x, a.y, b.x, b.y,
+                                               IDX_DARK_BROWN);
+    }
+    fmtowns_turn_expand_all(logical);
+    fb_damage_all();
+    g_frame_present_dense = 1;
+}
+#endif
+
 /* A board composite is valid only for a camera that will remain unchanged
    while overlays animate.  Moving-camera frames must never enter this cache:
    caching them would turn a smooth camera path into retained keyframes. */
@@ -5558,6 +5856,7 @@ static int camera_is_static_board(Camera cam)
 {
     return camera_equal(cam, player_camera()) ||
            camera_equal(cam, enemy_camera()) ||
+           camera_equal(cam, top_camera()) ||
            camera_equal(cam, battle_top_camera()) ||
            camera_equal(cam, enemy_battle_top_camera()) ||
            camera_equal(cam, placement_camera()) ||
@@ -5566,6 +5865,14 @@ static int camera_is_static_board(Camera cam)
 
 static void render_board_cached(Camera cam)
 {
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    if (g_fmtowns_motion_lowres_enabled &&
+        g_fmtowns_turn_board_pose < 0 &&
+        !camera_is_static_board(cam)) {
+        render_board_lowres(cam);
+        return;
+    }
+#endif
 #if defined(WAIFU_BG_CACHE_DISABLE)
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
     unsigned long long _profile_render_t0 = g_profile_render_enabled ? profile_now_us() : 0;
@@ -6481,15 +6788,21 @@ static void draw_textured_tri_affine_fmtowns(const uint8_t *src, int sw, int sh,
             fb_damage_span(y, x_start, x_end + 1);
 #if defined(__i386__)
             if (!gray) {
-                raster_rows = (y < maxy) ? 2 : 1;
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
-                if (g_fmtowns_turn_board_pose >= 0)
+                if (fmtowns_field_cards_use_lowres()) {
+                    raster_rows = (y < maxy) ? 2 : 1;
                     card_fill_row_plain_block4x2(src, dst + x_start, x_end - x_start + 1,
                                                  u, v, du_dx, dv_dx);
-                else
+                } else {
+                    raster_rows = 1;
+                    card_fill_row_plain(src, dst + x_start, x_end - x_start + 1,
+                                        u, v, du_dx, dv_dx);
+                }
+#else
+                raster_rows = (y < maxy) ? 2 : 1;
+                card_fill_row_plain_block2x2(src, dst + x_start, x_end - x_start + 1,
+                                             u, v, du_dx, dv_dx);
 #endif
-                    card_fill_row_plain_block2x2(src, dst + x_start, x_end - x_start + 1,
-                                                 u, v, du_dx, dv_dx);
                 if (raster_rows == 2) fb_damage_span(y + 1, x_start, x_end + 1);
             } else {
 #else
@@ -6504,7 +6817,12 @@ static void draw_textured_tri_affine_fmtowns(const uint8_t *src, int sw, int sh,
         } else if (!gray && y < maxy) {
             /* Keep the block walker aligned with the same two authored rows
                even when this row has no covered pixels. */
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+            if (fmtowns_field_cards_use_lowres())
+                raster_rows = 2;
+#else
             raster_rows = 2;
+#endif
         }
 #undef CARD_SPAN_LO
 #undef CARD_SPAN_HI
@@ -6715,7 +7033,8 @@ static void draw_projected_card_quad_ex(const uint8_t *src, int sw, int sh,
     draw_textured_tri_affine_cd32x(src, sw, sh, a, c, d, gray);
 #elif defined(WAIFU_FIELD_CARD_FAST_AFFINE)
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
-    if (!gray && g_fmtowns_turn_board_pose >= 0) {
+    if (!gray && g_fmtowns_turn_card_replay_eligible &&
+        fmtowns_field_cards_use_lowres()) {
         draw_textured_quad_scanline_fmtowns(src, sw, sh, a, b, c, d);
     } else {
 #endif
@@ -6888,9 +7207,9 @@ static void draw_board_card_state(Camera cam, int col, int row, int card_id, int
     }
     ScreenPt p0, p1, p2, p3;
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
-    if (!defense && !fmtowns_turn_card_geometry(g_fmtowns_turn_board_pose,
-                                    g_fmtowns_turn_card_slot - 5,
-                                    &p0, &p1, &p2, &p3))
+    if (defense || !fmtowns_turn_card_geometry(g_fmtowns_turn_board_pose,
+                                   g_fmtowns_turn_card_slot - 5,
+                                   &p0, &p1, &p2, &p3))
 #endif
     {
         p0 = basis ? project_point_basis(basis, v3(cx - hw, y, cz - hz)) :
@@ -8334,6 +8653,7 @@ static void draw_card_preview_screen(int f)
 }
 
 static void draw_interactive_base(Camera cam);
+static void render_board_cached(Camera cam);
 
 static void render_duel_opening_frame(int f)
 {
@@ -8346,7 +8666,7 @@ static void render_duel_opening_frame(int f)
     Camera cam = opening_camera(18 + q8_to_int(q8_mul(Q8_FROM_INT(66), q8_smoothstep(ft))));
     /* This is an active camera path, so every displayed pose is rendered from
        its continuous perspective instead of being retained as a keyframe. */
-    render_board(cam);
+    render_board_cached(cam);
     /* Longer fade-in: the field slowly resolves out of black before the hand UI. */
     apply_black_dither_fade(q8_smoothstep(ft));
     if (f > 40) draw_hud();
@@ -8807,16 +9127,15 @@ static WaifuFmInput g_prev_input;
 static WaifuBattlePhase g_b_phase = IB_OPENING;
 static int g_b_frame = 0;
 static int g_b_phase_frame = 0;
-/* Wall-clock animation frames for static/2-D effects (equip, fusion, thunder,
-   support, cut-ins, and selection/UI beats). */
+/* Wall-clock animation frames for all battle effects, including moving
+   cameras; this is also the elapsed-time source for static/2-D effects. */
 static int g_b_anim_vblanks = 0;
 /* A phase transition is rendered at frame zero before the elapsed time from
    the preceding phase is allowed to advance it. This prevents a long CD or
    render stall from hiding the first pose of the new phase. */
 static int g_b_phase_first_frame = 1;
-/* Result uses wall-clock phase timing for its clear/music lead-in, then this
-   separate counter advances one displayed pose at a time for the moving
-   top-to-hand camera. */
+/* Result uses the phase clock for its clear/music lead-in, then this separate
+   counter drives the moving top-to-hand camera at wall-clock speed too. */
 static int g_b_result_pose_frame = 0;
 static int g_b_selected_hand = 0;
 static int g_b_selected_player_slot = 0;
@@ -9057,6 +9376,19 @@ static uint32_t g_b_fmtowns_prelude_key;
 static int g_b_fmtowns_prelude_atk_col;
 static int g_b_fmtowns_prelude_atk_row;
 static int g_b_fmtowns_prelude_late_frame;
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+static void fmtowns_motion_scratch_claim(void)
+{
+    /* The 60 KiB FM work slot is also the logical 128x120 moving-board
+       framebuffer.  Invalidate any retained camera/cut-in image before using
+       it, and force the next turn pose to start from its compressed keyframe
+       rather than interpreting this unrelated board as turn-cache data. */
+    g_b_fmtowns_work_cache.valid = 0;
+    g_b_fmtowns_work_cache_owner = FMTOWNS_WORK_CACHE_NONE;
+    g_b_fmtowns_place_static_baked = 0;
+    g_fmtowns_turn_board_loaded_pose = -1;
+}
+#endif
 #endif
 #if defined(WAIFU_FM_PCFX)
 /* Placement is static while the flying card and hand overlays move over it.
@@ -10143,22 +10475,6 @@ static void set_battle_phase(WaifuBattlePhase phase)
         /* Loss jingle is CD-DA on PC-FX and a music track on host; no PCM SFX. */
     }
     update_music_for_current_state();
-}
-
-static int battle_phase_uses_displayed_pose(WaifuBattlePhase phase)
-{
-    switch (phase) {
-    case IB_OPENING:
-    case IB_PLAYER_HAND_TO_TOP:
-    case IB_PLAYER_TOP_TO_HAND:
-    case IB_PLAYER_RETURN_TOP:
-    case IB_COM_RETURN:
-    case IB_TURN_TO_COM:
-    case IB_TURN_TO_PLAYER:
-        return 1;
-    default:
-        return 0;
-    }
 }
 
 static int battle_phase_accepts_player_input(void)
@@ -11816,6 +12132,8 @@ static void draw_interactive_field_cards(Camera cam)
     CameraBasis basis = make_camera_basis(cam);
     int i;
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    g_fmtowns_field_cards_lowres = g_fmtowns_motion_lowres_enabled &&
+                                   !camera_is_static_board(cam);
     fmtowns_turn_overlay_begin();
 #endif
     for (i = 0; i < I_FIELD; ++i) {
@@ -12142,6 +12460,12 @@ static void battle_base_cache_store(Camera cam, uint32_t key)
 {
     WaifuBattleBaseCache *cache = battle_base_cache_for_camera(cam);
     if (!cache) return; /* moving camera: rendered live, nothing to cache */
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    /* A turn pose is a reduced moving-board frame. Its live card overlays
+       intentionally use the moving LOD too; never retain that frame as the
+       native static endpoint composite. */
+    if (g_fmtowns_turn_board_pose >= 0) return;
+#endif
     copy_u8_fast(cache->pixels, framebuffer, (int)sizeof(cache->pixels));
     /* From here the framebuffer IS this composite; whatever the caller draws
        next is the overlay the next restore has to undo. */
@@ -12451,17 +12775,26 @@ static void draw_interactive_base(Camera cam)
 static void draw_interactive_turn_base(int frame, int dur, int to_enemy)
 {
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
-    int pose = to_enemy ? frame : dur - frame;
-    Camera cam = interactive_turn_camera(pose, dur, 1);
-    g_fmtowns_turn_overlay_tracking = 1;
-    g_fmtowns_turn_board_pose = pose;
-    draw_interactive_base(cam);
-    g_fmtowns_turn_board_pose = -1;
-    /* A turn pose is a complete moving board frame.  Reassert the dense
-       presentation contract after the live card/HUD overlays too: an
-       endpoint may otherwise restore a retained static composite and leave
-       only its small overlay footprint marked for presentation. */
-    g_frame_present_dense = 1;
+    if (g_fmtowns_motion_lowres_enabled) {
+        int pose = to_enemy ? frame : dur - frame;
+        Camera cam = interactive_turn_camera(pose, dur, 1);
+        g_fmtowns_turn_overlay_tracking = 1;
+        g_fmtowns_turn_board_pose = pose;
+        draw_interactive_base(cam);
+        g_fmtowns_turn_board_pose = -1;
+        /* A turn pose is a complete moving board frame.  Reassert the dense
+           presentation contract after the live card/HUD overlays too: an
+           endpoint may otherwise restore a retained static composite and leave
+           only its small overlay footprint marked for presentation. */
+        g_frame_present_dense = 1;
+    } else {
+        /* Faster TOWNS models retain the same timing and camera path, but draw
+           every moving board at the native 256x240 resolution. */
+        g_fmtowns_turn_board_pose = -1;
+        g_fmtowns_turn_overlay_tracking = 0;
+        draw_interactive_base(interactive_turn_camera(frame, dur, to_enemy));
+        g_frame_present_dense = 1;
+    }
 #else
     draw_interactive_base(interactive_turn_camera(frame, dur, to_enemy));
 #endif
@@ -14934,35 +15267,42 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 #endif
 
     /* Advance only after the current pose was rendered. A newly entered phase
-       keeps its frame-zero pose for one call; moving cameras then take one
-       displayed step, while static/2-D phases consume measured wall time. */
+       keeps its frame-zero pose for one call; after that every phase consumes
+       measured wall time. This keeps moving cameras at the same real-time
+       speed on all machines, even when Marty skips authored poses. */
     g_b_frame += frame_logic_step();
     if (g_b_phase == phase_before) {
         int phase_frame_before = g_b_phase_frame;
         int first = g_b_phase_first_frame;
-        int phase_step = first ? 1 :
-            (battle_phase_uses_displayed_pose(g_b_phase) ? 1 : frame_logic_step());
+        int phase_step = first ? 1 : frame_logic_step();
         int wall_step = first ? 1 : frame_logic_step();
         g_b_phase_frame += phase_step;
         g_b_anim_vblanks += wall_step;
         if (g_b_phase == IB_RESULT && phase_frame_before >= WAIFU_RESULT_ANIM_START_FRAMES)
-            ++g_b_result_pose_frame;
+            g_b_result_pose_frame += phase_step;
         g_b_phase_first_frame = 0;
     }
 }
 
 void waifu_fm_set_frame_vblanks(int vblanks)
 {
-    /* Static/2-D animation and global scene clocks follow elapsed time. The
-       moving battle camera has its own one-pose-per-render counter below. */
+    /* All animation and global scene clocks follow elapsed time. A moving
+       battle camera may skip authored poses when a frame overruns, but its
+       transition duration remains constant in real time. */
     if (vblanks < 1) vblanks = 1;
-    if (vblanks > 4) vblanks = 4;
+    /* fmtowns_frame_pace() caps a platform stall at eight periods. Keep the
+       full reported range so a long Marty frame cannot leave animation clocks
+       running in residual slow motion. */
+    if (vblanks > 8) vblanks = 8;
     g_frame_vblank_step = vblanks;
 }
 
 void waifu_fm_init(void)
 {
     if (g_api_initialized) return;
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    fmtowns_select_motion_renderer();
+#endif
     initDivs();
     CfxRenderer3DConfig cfg = { framebuffer, (DEFAULT_INT)WAIFU_FM_WIDTH, (DEFAULT_INT)WAIFU_FM_HEIGHT };
     cfx_renderer3d_init(&renderer, &cfg);

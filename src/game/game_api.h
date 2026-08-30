@@ -58,9 +58,9 @@ void waifu_fm_init(void);
 void waifu_fm_reset_interactive(void);
 void waifu_fm_step(const WaifuFmInput *input);
 /* Report how many hardware vblanks the previous frame actually took (>=1).
-   Static/2-D clocks consume this wall-clock step. Moving battle cameras keep
-   one displayed pose per waifu_fm_step(), so an over-budget render cannot skip
-   authored poses. Platforms that never call this keep the default 1. */
+   All animation clocks consume this wall-clock step. Moving battle cameras
+   may skip authored poses after an over-budget render, but their transitions
+   keep the same real-time duration. Platforms that never call this keep 1. */
 void waifu_fm_set_frame_vblanks(int vblanks);
 void waifu_fm_render_scripted_frame(int frame);
 uint8_t *waifu_fm_framebuffer(void);

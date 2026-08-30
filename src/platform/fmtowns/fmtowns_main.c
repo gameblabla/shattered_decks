@@ -474,9 +474,9 @@ uint32_t fmtowns_ticks_us(uint32_t ticks)
  * A frame that overruns its budget is not slowed down further: the spin only
  * ever waits out the remainder, so a heavy frame just runs late.
  *
- * The return value is handed to the core for static/2-D wall-clock timing.
- * Moving battle cameras use a separate one-displayed-pose clock, so they do
- * not skip authored poses when a frame takes multiple vblanks.
+ * The return value is handed to the core for all animation clocks. Moving
+ * battle cameras consume the same elapsed periods, so an over-budget Marty
+ * frame cannot stretch a transition into slow motion (it may skip a pose).
  *
  * Two details make the elapsed-period measurement honest:
  *
@@ -746,10 +746,9 @@ static void fmtowns_stamp_debug_state(uint8_t *frame_buffer, unsigned int frame,
 
 static void waifu_fm_game_loop(void)
 {
-    /* GAME frames, not elapsed wall-clock periods: each displayed iteration
-     * advances one logical pose.  The debug input script and stamp are indexed
-     * by this counter, which keeps replay deterministic and prevents a slow
-     * 3-D frame from jumping over visible animation states. */
+    /* The debug input script and stamp use an elapsed 60 Hz frame counter. The
+     * core also receives that elapsed count, so a slow 3-D frame advances its
+     * animation clock by the time it actually consumed. */
     unsigned int frame = 0;
     /* Retained only as a diagnostic of how many 60 Hz periods elapsed during
      * the previous iteration; it never advances the game state. */
@@ -772,8 +771,9 @@ static void waifu_fm_game_loop(void)
 #ifdef FMTOWNS_DEBUG_INPUT
         fmtowns_apply_input_script(&in, frame);
 #endif
-        /* Static/2-D animation follows the elapsed wall-clock periods. Moving
-         * battle cameras deliberately advance one displayed pose per step. */
+        /* Every animation follows the elapsed wall-clock periods. Moving
+         * battle cameras use the same clock so all machines cover the same
+         * camera path in the same real time. */
         waifu_fm_set_frame_vblanks((int)steps);
 #ifdef FMTOWNS_DEBUG_INPUT
         (void)fmtowns_prof_split();     /* close out the previous frame's tail */
