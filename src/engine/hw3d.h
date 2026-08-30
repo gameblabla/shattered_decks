@@ -142,6 +142,12 @@ int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
  * its opaque software draw. */
 int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alpha);
 
+/* The same quad in true colour rather than a palette index, for shading a
+ * platform's palette cannot name -- the lit faces of the spinning 3-D hand
+ * cursor, each a different brightness of the same red. Corner pairs may repeat
+ * to submit a triangle. Returns 0 where there is no true-colour layer. */
+int waifu_hw2d_quad_rgba(const int xy[8], uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+
 /* Scale of the glyph INK inside its text cell, in percent (100 = the shipped
  * face). Cell advances are untouched, so every authored layout still holds --
  * only the drawn glyph shrinks about the cell's centre. Set it, draw, set it
@@ -189,6 +195,8 @@ static inline int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
 { (void)pix; (void)sw; (void)sh; (void)xy; (void)gray; return 0; }
 static inline int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alpha)
 { (void)xy; (void)color; (void)alpha; return 0; }
+static inline int waifu_hw2d_quad_rgba(const int xy[8], uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{ (void)xy; (void)r; (void)g; (void)b; (void)a; return 0; }
 static inline void waifu_hw2d_text_scale(int percent) { (void)percent; }
 
 #endif /* WAIFU_PLATFORM_HW3D */

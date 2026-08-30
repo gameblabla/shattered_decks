@@ -12,6 +12,11 @@
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER)
 #include <sys/time.h>
 #endif
+#if defined(WAIFU_PLATFORM_HW3D)
+/* The PC frontend shades and spins the hand cursor on the CPU (see
+   draw_spin_cursor). Nothing a console target compiles reaches this. */
+#include <math.h>
+#endif
 #if defined(WAIFU_FIXED_POSE_BENCH) && \
     (!defined(WAIFU_FM_HEADLESS_TESTS) || !defined(WAIFU_PROFILE_RENDER) || \
      !defined(WAIFU_FM_FMTOWNS))
@@ -5262,8 +5267,115 @@ static void draw_big_battle_card_flip(int id, int x, int y, int frame, int durat
     if (w <= 8) rect_fill(x + 58, y + 3, 4, 154, IDX_WHITE);
 }
 
+#if defined(WAIFU_PLATFORM_HW3D)
+/* Free-running animation clock, defined with the story scene state further
+   down; the hand cursor and the selected card's bob ride it so they keep
+   moving across state changes. */
+static int g_story_scene_anim_frame;
+
+/* ---- the spinning hand cursor ----------------------------------------------
+   A palette framebuffer can only say "this one" by drawing a box round it, so
+   the console selector is a red outline with chevrons. The PC frontend has a
+   true-colour layer, so instead it stands a small lit gem beside the card and
+   spins it -- Forbidden Memories' own selector -- and lets the card itself rise
+   and fall. The gem is an octahedron flat-shaded on the CPU: eight triangles,
+   each Lambert-lit against one key light with a tight specular lobe, back faces
+   dropped. It is convex, so culling alone gives the right paint order and no
+   depth buffer is needed. */
+
+#define SPIN_CURSOR_TILT 0.38f   /* radians the gem leans toward the viewer */
+
+static void spin_cursor_face(const float a[3], const float b[3], const float c[3],
+                             float cx, float cy, float scale)
+{
+    static const float light[3] = { -0.42f, 0.72f, 0.55f };
+    float e0[3], e1[3], n[3], hv[3];
+    float len, diff, spec, dot;
+    int xy[8], i;
+    for (i = 0; i < 3; ++i) { e0[i] = b[i] - a[i]; e1[i] = c[i] - a[i]; }
+    n[0] = e0[1] * e1[2] - e0[2] * e1[1];
+    n[1] = e0[2] * e1[0] - e0[0] * e1[2];
+    n[2] = e0[0] * e1[1] - e0[1] * e1[0];
+    len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (len < 1e-6f) return;
+    n[0] /= len; n[1] /= len; n[2] /= len;
+    if (n[2] <= 0.0f) return;    /* back face: the viewer looks down +z */
+
+    diff = n[0] * light[0] + n[1] * light[1] + n[2] * light[2];
+    if (diff < 0.0f) diff = 0.0f;
+    /* Half vector between the key light and the (fixed) view direction. */
+    hv[0] = light[0]; hv[1] = light[1]; hv[2] = light[2] + 1.0f;
+    len = sqrtf(hv[0] * hv[0] + hv[1] * hv[1] + hv[2] * hv[2]);
+    hv[0] /= len; hv[1] /= len; hv[2] /= len;
+    dot = n[0] * hv[0] + n[1] * hv[1] + n[2] * hv[2];
+    if (dot < 0.0f) dot = 0.0f;
+    spec = dot * dot; spec *= spec; spec *= spec;       /* ^8 */
+    spec *= spec;                                        /* ^16 */
+
+    {
+        float r = 46.0f + 190.0f * diff + 210.0f * spec;
+        float g = 4.0f + 26.0f * diff + 200.0f * spec;
+        float bl = 12.0f + 34.0f * diff + 190.0f * spec;
+        if (r > 255.0f) r = 255.0f;
+        if (g > 255.0f) g = 255.0f;
+        if (bl > 255.0f) bl = 255.0f;
+        xy[0] = (int)(cx + a[0] * scale + 0.5f); xy[1] = (int)(cy - a[1] * scale + 0.5f);
+        xy[2] = (int)(cx + b[0] * scale + 0.5f); xy[3] = (int)(cy - b[1] * scale + 0.5f);
+        xy[4] = (int)(cx + c[0] * scale + 0.5f); xy[5] = (int)(cy - c[1] * scale + 0.5f);
+        xy[6] = xy[4]; xy[7] = xy[5];            /* degenerate corner: a triangle */
+        waifu_hw2d_quad_rgba(xy, (uint8_t)r, (uint8_t)g, (uint8_t)bl, 255);
+    }
+}
+
+static void draw_spin_cursor(int cx, int cy, int size, int frame)
+{
+    float ang = (float)frame * 0.075f;
+    float ct = cosf(SPIN_CURSOR_TILT), st = sinf(SPIN_CURSOR_TILT);
+    float eq[4][3], top[3], bot[3];
+    int k;
+    /* Equator ring, spun about Y and then leant toward the viewer about X. */
+    for (k = 0; k < 4; ++k) {
+        float a = ang + (float)k * 1.5707963f;
+        float x = cosf(a) * 0.74f, z = sinf(a) * 0.74f;
+        eq[k][0] = x;
+        eq[k][1] = -z * st;
+        eq[k][2] = z * ct;
+    }
+    top[0] = 0.0f; top[1] = 1.18f * ct; top[2] = 1.18f * st;
+    bot[0] = 0.0f; bot[1] = -1.18f * ct; bot[2] = -1.18f * st;
+    for (k = 0; k < 4; ++k) {
+        const float *p = eq[k], *q = eq[(k + 1) & 3];
+        spin_cursor_face(top, p, q, (float)cx, (float)cy, (float)size);
+        spin_cursor_face(bot, q, p, (float)cx, (float)cy, (float)size);
+    }
+}
+
+/* How far the selected hand card is lifted this frame: a slow 3 px breath, so
+   the card the cursor points at is the one that moves. */
+static int hand_selected_bob(void)
+{
+    float s = sinf((float)g_story_scene_anim_frame * 0.085f);
+    return (int)(s * 2.6f + (s >= 0.0f ? 0.5f : -0.5f));
+}
+#endif /* WAIFU_PLATFORM_HW3D */
+
 static void draw_red_cursor(int x, int y, int w, int h)
 {
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* The gem stands to the LEFT of the card, at its middle. On the leftmost
+       card of a row that hugs the screen edge there may be no room there, so it
+       falls back to the card's right side rather than being clipped away. */
+    int size = h / 5;
+    int gx;
+    if (size < 6) size = 6;
+    gx = x - size - 4;
+    /* The leftmost card of a row that hugs the screen edge leaves no room
+       beside it; slide the gem in against the edge rather than clipping it or
+       moving it to the far side of the card. */
+    if (gx - size < 1) gx = size + 1;
+    draw_spin_cursor(gx, y + h / 2, size, g_story_scene_anim_frame);
+    return;
+#else
     /* FM-readable red selector: full-card outline plus small red chevrons.
        This remains visible even on the first/leftmost card where a left-only
        pointer would clip offscreen. */
@@ -5277,6 +5389,7 @@ static void draw_red_cursor(int x, int y, int w, int h)
         hline(cx - r, cx + r, y - 12 + r, IDX_RED);       /* downward arrow above */
         hline(cx - r, cx + r, y + h + 11 - r, IDX_RED);   /* upward arrow below */
     }
+#endif
 }
 
 /* --- the hand row --------------------------------------------------------
@@ -5371,6 +5484,9 @@ static void draw_player_hand(int f, int selected)
         }
         if (i == g_player_hide_index) continue;
         if (((f >= 150 && f < 176) || (f >= 475 && f < 505) || (f >= 910 && f < 930)) && i == selected) continue;
+#if defined(WAIFU_PLATFORM_HW3D)
+        if (!g_suppress_hand_cursor && i == selected && f >= 102) y += hand_selected_bob();
+#endif
         if (i == 2) PROFILE_HAND_CARD_DRAW(draw_support_sprite(SUPPORT_EQUIP_CARD_ID, x, y+1, cw, ch));
         else PROFILE_HAND_CARD_DRAW(draw_card_sprite(hand_ids[i], x, y, cw, ch, 0));
         if (!g_suppress_hand_cursor && i == selected && f >= 102) draw_red_cursor(x, y, cw, ch);
@@ -12749,19 +12865,27 @@ static void draw_interactive_player_hand(int f, int selected, int yoff, int supp
         /* The card the mouse is dragging leaves the row: it is drawn under the
            cursor after the loop so it sits on top of its neighbours. */
         if (i == g_ptr_drag_hand) continue;
-        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, y, cw, ch, 0,
+        {
+        int cy = y;
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* PC: the selected card rises and falls under its spinning cursor, so
+           the selection reads as motion and not only as a marker. */
+        if (!suppress_cursor && i == selected) cy += hand_selected_bob();
+#endif
+        PROFILE_HAND_CARD_DRAW(draw_hand_card_sprite_ex(g_i_player_hand[i], x, cy, cw, ch, 0,
                                  is_monster_card(g_i_player_hand[i]) && player_hand_monster_blocked()));
-        if (!suppress_cursor && i == selected) draw_red_cursor(x, y, cw, ch);
+        if (!suppress_cursor && i == selected) draw_red_cursor(x, cy, cw, ch);
         if (!suppress_cursor) {
             int order = player_fusion_order_for_slot(i);
             if (order) {
                 char badge[2];
                 badge[0] = (char)('0' + order);
                 badge[1] = '\0';
-                rect_fill(x - 2, y - 2, 11, 11, IDX_BLACK);
-                rect_outline(x - 2, y - 2, 11, 11, IDX_GOLD_HI);
-                draw_text_small(x + 2, y + 1, badge, IDX_WHITE, IDX_BLACK);
+                rect_fill(x - 2, cy - 2, 11, 11, IDX_BLACK);
+                rect_outline(x - 2, cy - 2, 11, 11, IDX_GOLD_HI);
+                draw_text_small(x + 2, cy + 1, badge, IDX_WHITE, IDX_BLACK);
             }
+        }
         }
     }
     /* The dragged card, held by its middle so it tracks the cursor exactly.

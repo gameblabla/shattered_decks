@@ -1162,6 +1162,21 @@ int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alpha)
     return 1;
 }
 
+int waifu_hw2d_quad_rgba(const int xy[8], uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    static const float uv[8] = { -1.0f, 0.0f, -1.0f, 0.0f, -1.0f, 0.0f, -1.0f, 0.0f };
+    float rgba[4], fxy[8];
+    int i;
+    if (a <= 0) return 1;
+    rgba[0] = (float)r / 255.0f;
+    rgba[1] = (float)g / 255.0f;
+    rgba[2] = (float)b / 255.0f;
+    rgba[3] = (float)a / 255.0f;
+    for (i = 0; i < 8; ++i) fxy[i] = (float)xy[i];
+    ui_push_corner_quad(fxy, uv, rgba);
+    return 1;
+}
+
 int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
                           const int xy[8], int gray)
 {
