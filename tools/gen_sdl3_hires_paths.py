@@ -24,6 +24,14 @@ PORTRAIT_DIR = ROOT / 'assets/source/story_portraits'
 PORTRAIT_BASES = ['serena', 'opponent_0', 'opponent_1', 'opponent_2',
                   'opponent_3', 'opponent_4']
 PORTRAIT_SUFFIXES = ['_hires', '_highres', '']
+# The PC card back: a single full-resolution texture that replaces the 38x54
+# 8bpp back everywhere it is drawn (board, hand, deck stacks).
+CARD_BACK_SRC = ROOT / 'assets/source/textures/card_texture.png'
+# The two 3D board checker squares.  The console targets bake these down to the
+# 32x32 atlas cells (tools/gen_assets.py board_tile()); the PC frontend loads the
+# same files here at their original resolution and maps one per board cell.
+BOARD_TILE_SRC = [ROOT / 'assets/source/textures/sandstone_1.png',
+                  ROOT / 'assets/source/textures/sandstone_2.png']
 TITLE_SRC = ROOT / 'assets/source/title/title_16by9.png'
 ENDING_SRC = ROOT / 'assets/source/ending/ending_16by9.png'
 OUT = ROOT / 'src/generated/sdl3_card_paths.h'
@@ -83,6 +91,8 @@ def main():
     asset_ids = parse_card_data(CARD_DATA)
     card_src = [resolve_card_src(a) for a in asset_ids]
     portrait_src = [resolve_portrait_src(b) for b in PORTRAIT_BASES]
+    card_back_src = resolve_fullscreen_src(CARD_BACK_SRC)
+    board_tile_src = [resolve_fullscreen_src(p) for p in BOARD_TILE_SRC]
     title_src = resolve_fullscreen_src(TITLE_SRC)
     ending_src = resolve_fullscreen_src(ENDING_SRC)
 
@@ -102,6 +112,13 @@ def main():
         for src in portrait_src:
             f.write(f'    "{c_string(src)}",\n')
         f.write('};\n\n')
+        f.write(f'static const char *const waifu_sdl3_card_back_src = "{c_string(card_back_src)}";\n')
+        f.write(f'#define WAIFU_SDL3_BOARD_TILE_SRC_COUNT {len(board_tile_src)}\n')
+        f.write('static const char *const waifu_sdl3_board_tile_src'
+                '[WAIFU_SDL3_BOARD_TILE_SRC_COUNT] = {\n')
+        for src in board_tile_src:
+            f.write(f'    "{c_string(src)}",\n')
+        f.write('};\n')
         f.write(f'static const char *const waifu_sdl3_title_src = "{c_string(title_src)}";\n')
         f.write(f'static const char *const waifu_sdl3_ending_src = "{c_string(ending_src)}";\n\n')
         f.write('#endif /* WAIFU_SDL3_CARD_PATHS_H */\n')

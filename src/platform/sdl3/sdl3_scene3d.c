@@ -631,18 +631,39 @@ static void push_line3d_raw(const float a[3], const float b[3], uint8_t color)
     g_frame.line_vert_count += 2;
 }
 
+/* The duel board's two checker squares (atlas tiles 1 and 5). On the PC build
+   they are not the 32x32 atlas downscale at all: each cell maps one whole
+   full-resolution sandstone source (sdl3_hires board-tile textures, mipmapped),
+   which is why they leave the scene pipeline for the hi-res pass. Any other
+   tile index is ordinary atlas geometry. */
+#define BOARD_TILE_LIGHT 1
+#define BOARD_TILE_DARK  5
+
+static int board_tile_id(int tile)
+{
+    if (tile == BOARD_TILE_LIGHT) return 0;
+    if (tile == BOARD_TILE_DARK) return 1;
+    return -1;
+}
+
 int waifu_hw3d_quad(const WaifuHw3DCamera *cam, const WaifuHw3DVec3 v[4], int tile)
 {
     const SceneXform *xf = xform_for(cam);
     float p[4][3];
     float t;
     int i;
+    int board_id;
     mark_3d();
     ensure_tiles_converted();
     if (tile < 0) tile = 0;
     if (g_frame.tile_count > 0 && tile >= g_frame.tile_count) tile = g_frame.tile_count - 1;
     t = (float)tile;
     for (i = 0; i < 4; ++i) xform_point(xf, &v[i], p[i]);
+    board_id = board_tile_id(tile);
+    if (board_id >= 0 &&
+        push_hires_quad(p, board_id, WAIFU_HIRES_BOARD_TILE, 0 /* 3D */, 0.0f) >= 0) {
+        return 1;
+    }
     push_scene_vertex(p[0], 0.0f, 0.0f, t);
     push_scene_vertex(p[1], 1.0f, 0.0f, t);
     push_scene_vertex(p[2], 1.0f, 1.0f, t);
@@ -724,6 +745,18 @@ int waifu_hw3d_image_quad(const WaifuHw3DCamera *cam, const WaifuHw3DVec3 v[4],
 
     if (!pixels || w <= 0 || h <= 0) return 0;
     mark_3d();
+
+    /* PC card back: one full-resolution texture covers the WHOLE card (the art
+       carries its own gold frame), so it replaces the face rather than
+       overlaying an art window. It is coplanar with the 8bpp card drawn below
+       and the depth test is LESS_OR_EQUAL, so the later hi-res pass wins; if
+       the source image is missing the console art simply stays. */
+    if (pixels == waifu_assets_card_back()) {
+        float bp[4][3];
+        xf = xform_for(cam);
+        for (i = 0; i < 4; ++i) xform_point(xf, &v[i], bp[i]);
+        push_hires_quad(bp, 0, WAIFU_HIRES_BACK, 0 /* 3D */, g);
+    }
 
     /* Full-resolution card art (PC): a board card keeps its 8bpp framed face
        (gold frame + stat plate) and overlays hi-res art in the inner art
@@ -861,6 +894,28 @@ int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
     {
         int fi = fullimage_lookup(pix);
         if (fi) { g_frame.full_image = fi; g_frame.has_content = 1; return 1; }
+    }
+
+    /* PC card back (hand, deck stacks, face-down thumbnails): the hi-res back
+       covers the whole card rect, drawn over the 8bpp back so a missing source
+       image degrades to the console art. */
+    if (!mask && pix == waifu_assets_card_back()) {
+        float hx = (float)(g_ui_hud ? WAIFU_FM_WIDTH + g_ui_extra_w : WAIFU_FM_WIDTH) * 0.5f;
+        float hy = (float)WAIFU_FM_HEIGHT * 0.5f;
+        float p[4][3];
+        int idx;
+        e = image_atlas_add(pix, mask, sw, sh, colorkey0);
+        if (e) ui_push_quad((float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh),
+                            (float)e->x, (float)e->y, (float)(e->x + sw), (float)(e->y + sh),
+                            gray ? dim : white);
+        p[0][0] = (float)dx / hx - 1.0f;        p[0][1] = 1.0f - (float)dy / hy;        p[0][2] = 1.0f;
+        p[1][0] = (float)(dx + dw) / hx - 1.0f; p[1][1] = 1.0f - (float)dy / hy;        p[1][2] = 1.0f;
+        p[2][0] = (float)(dx + dw) / hx - 1.0f; p[2][1] = 1.0f - (float)(dy + dh) / hy; p[2][2] = 1.0f;
+        p[3][0] = (float)dx / hx - 1.0f;        p[3][1] = 1.0f - (float)(dy + dh) / hy; p[3][2] = 1.0f;
+        idx = push_hires_quad(p, 0, WAIFU_HIRES_BACK, 1 /* 2D */, gray ? 1.0f : 0.0f);
+        if (idx >= 0) ui_append_hires(idx);
+        g_frame.has_content = 1;
+        return 1;
     }
 
     /* Full-resolution card art (PC): a hand thumbnail or detail big-art blit
@@ -1139,6 +1194,29 @@ static float title_full_w(void)
     return (float)(g_ui_hud ? WAIFU_FM_WIDTH + g_ui_extra_w : WAIFU_FM_WIDTH);
 }
 
+/* Set once at start-up from the command line; see platform.h. */
+static int g_title_attract_on = 1;
+
+void waifu_sdl3_set_title_attract(int on)
+{
+    g_title_attract_on = on ? 1 : 0;
+}
+
+int waifu_platform_title_attract(void)
+{
+    return g_title_attract_on;
+}
+
+void waifu_platform_title_view(int32_t u0, int32_t v0, int32_t u1, int32_t v1)
+{
+    /* Q16 (see platform.h): the pan needs sub-source-pixel steps to drift
+       rather than tick along. */
+    g_frame.full_image_uv[0] = (float)u0 / (float)WAIFU_TITLE_VIEW_ONE;
+    g_frame.full_image_uv[1] = (float)v0 / (float)WAIFU_TITLE_VIEW_ONE;
+    g_frame.full_image_uv[2] = (float)u1 / (float)WAIFU_TITLE_VIEW_ONE;
+    g_frame.full_image_uv[3] = (float)v1 / (float)WAIFU_TITLE_VIEW_ONE;
+}
+
 int waifu_platform_title_scrim(int32_t reveal_q8)
 {
     float a = (float)reveal_q8 / 256.0f;
@@ -1262,6 +1340,8 @@ void waifu_sdl3_scene_frame_reset(void)
     g_frame.line_vert_count = 0;
     g_frame.hires_draw_count = 0;
     g_frame.full_image = 0;
+    g_frame.full_image_uv[0] = 0.0f; g_frame.full_image_uv[1] = 0.0f;
+    g_frame.full_image_uv[2] = 1.0f; g_frame.full_image_uv[3] = 1.0f;
     g_ui_hud = 0;
     g_frame.ui_vert_count = 0;
     g_frame.ui_line_vert_count = 0;

@@ -102,6 +102,14 @@ struct WaifuSdl3Video {
     SDL_GPUTexture *portrait_tex[WAIFU_SDL3_PORTRAIT_SRC_COUNT];
     unsigned char portrait_tried[WAIFU_SDL3_PORTRAIT_SRC_COUNT];
 
+    /* The shared card back, one texture for every face-down card. */
+    SDL_GPUTexture *card_back_tex;
+    unsigned char card_back_tried;
+
+    /* The two 3D board checker squares, at their source resolution. */
+    SDL_GPUTexture *board_tile_tex[WAIFU_SDL3_BOARD_TILE_SRC_COUNT];
+    unsigned char board_tile_tried[WAIFU_SDL3_BOARD_TILE_SRC_COUNT];
+
     SDL_GPUTexture *title_tex;
     SDL_GPUTexture *ending_tex;
     unsigned char title_tried, ending_tried;
@@ -244,7 +252,9 @@ static int create_pipelines(WaifuSdl3Video *v)
     SDL_GPUShader *glyph_fs = load_shader(v->dev, waifu_sdl3_glyph_frag_spv, sizeof(waifu_sdl3_glyph_frag_spv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     SDL_GPUShader *blit_vs = load_shader(v->dev, waifu_sdl3_blit_vert_spv, sizeof(waifu_sdl3_blit_vert_spv), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader *blit_fs = load_shader(v->dev, waifu_sdl3_blit_frag_spv, sizeof(waifu_sdl3_blit_frag_spv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
-    SDL_GPUShader *fullimg_fs = load_shader(v->dev, waifu_sdl3_fullimage_frag_spv, sizeof(waifu_sdl3_fullimage_frag_spv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 0);
+    /* One uniform buffer: the sub-rectangle of the source to frame (the title
+       attract's slow push across the artwork). */
+    SDL_GPUShader *fullimg_fs = load_shader(v->dev, waifu_sdl3_fullimage_frag_spv, sizeof(waifu_sdl3_fullimage_frag_spv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     int ok = scene_vs && scene_fs && env_vs && env_fs && image_vs && image_fs &&
              hires_fs && line_vs && line_fs && ui_vs && ui_fs && glyph_fs && blit_vs && blit_fs && fullimg_fs;
 
@@ -722,7 +732,14 @@ static SDL_GPUTexture *hires_ensure(WaifuSdl3Video *v, int card_id, int kind)
     uint8_t *rgba;
     int w = 0, hh = 0;
 
-    if (kind == WAIFU_HIRES_PORTRAIT) {
+    if (kind == WAIFU_HIRES_BACK) {
+        slot = &v->card_back_tex;
+        tried = &v->card_back_tried;
+    } else if (kind == WAIFU_HIRES_BOARD_TILE) {
+        if (card_id < 0 || card_id >= WAIFU_SDL3_BOARD_TILE_SRC_COUNT) return NULL;
+        slot = &v->board_tile_tex[card_id];
+        tried = &v->board_tile_tried[card_id];
+    } else if (kind == WAIFU_HIRES_PORTRAIT) {
         if (card_id < 0 || card_id >= WAIFU_SDL3_PORTRAIT_SRC_COUNT) return NULL;
         slot = &v->portrait_tex[card_id];
         tried = &v->portrait_tried[card_id];
@@ -736,7 +753,11 @@ static SDL_GPUTexture *hires_ensure(WaifuSdl3Video *v, int card_id, int kind)
     if (*slot) return *slot;
     if (*tried) return NULL;
     *tried = 1;
-    rgba = (kind == WAIFU_HIRES_PORTRAIT)
+    rgba = (kind == WAIFU_HIRES_BACK)
+         ? waifu_sdl3_hires_card_back_decode(&w, &hh)
+         : (kind == WAIFU_HIRES_BOARD_TILE)
+         ? waifu_sdl3_hires_board_tile_decode(card_id, &w, &hh)
+         : (kind == WAIFU_HIRES_PORTRAIT)
          ? waifu_sdl3_hires_portrait_decode(card_id, &w, &hh)
          : waifu_sdl3_hires_card_decode(card_id, kind, &w, &hh);
     if (!rgba) return NULL;
@@ -1169,7 +1190,12 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
                     SDL_SetGPUViewport(rp, &vp_full);
                     SDL_BindGPUGraphicsPipeline(rp, v->pl_fullimage);
                     bind_frag_texture(rp, fit, v->sampler_lin);
+                    SDL_PushGPUFragmentUniformData(cmd, 0, frame->full_image_uv,
+                                                   sizeof(frame->full_image_uv));
                     SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+                    /* Slot 0 is shared: hand it back to the UI's fade before
+                       anything else in this pass reads it. */
+                    SDL_PushGPUFragmentUniformData(cmd, 0, one4, sizeof(one4));
                 }
             }
                 SDL_SetGPUViewport(rp, &vp_col);
@@ -1622,6 +1648,12 @@ void waifu_sdl3_video_destroy(WaifuSdl3Video *v)
             int pi;
             for (pi = 0; pi < WAIFU_SDL3_PORTRAIT_SRC_COUNT; ++pi)
                 if (v->portrait_tex[pi]) SDL_ReleaseGPUTexture(v->dev, v->portrait_tex[pi]);
+        }
+        if (v->card_back_tex) SDL_ReleaseGPUTexture(v->dev, v->card_back_tex);
+        {
+            int bt;
+            for (bt = 0; bt < WAIFU_SDL3_BOARD_TILE_SRC_COUNT; ++bt)
+                if (v->board_tile_tex[bt]) SDL_ReleaseGPUTexture(v->dev, v->board_tile_tex[bt]);
         }
         if (v->title_tex) SDL_ReleaseGPUTexture(v->dev, v->title_tex);
         if (v->ending_tex) SDL_ReleaseGPUTexture(v->dev, v->ending_tex);

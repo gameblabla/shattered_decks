@@ -86,10 +86,16 @@ static const char *const waifu_sdl3_portrait_src[WAIFU_SDL3_PORTRAIT_SRC_COUNT] 
     "assets/source/story_portraits/opponent_0_hires.png",
     "assets/source/story_portraits/opponent_1_highres.png",
     "assets/source/story_portraits/opponent_2_highres.png",
-    "assets/source/story_portraits/opponent_3_highres.png.png",
+    "assets/source/story_portraits/opponent_3.png",
     "assets/source/story_portraits/opponent_4_hires.png",
 };
 
+static const char *const waifu_sdl3_card_back_src = "assets/source/textures/card_texture.png";
+#define WAIFU_SDL3_BOARD_TILE_SRC_COUNT 2
+static const char *const waifu_sdl3_board_tile_src[WAIFU_SDL3_BOARD_TILE_SRC_COUNT] = {
+    "assets/source/textures/sandstone_1.png",
+    "assets/source/textures/sandstone_2.png",
+};
 static const char *const waifu_sdl3_title_src = "assets/source/title/title_16by9.png";
 static const char *const waifu_sdl3_ending_src = "assets/source/ending/ending_16by9.png";
 

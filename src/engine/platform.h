@@ -260,6 +260,19 @@ const char *waifu_platform_prompt_label(int action);
  *   _shatter the wipe into the menu: `t_q8` 0..256 across the transition.
  * Both return 0 where there is no such frontend, and the caller draws nothing
  * extra -- consoles keep their plain title. */
+/* Frames the title artwork on a sub-rectangle of itself for the attract's slow
+ * track across it. Q16 fractions of the image, 0..65536 across each axis -- NOT
+ * the Q8 the rest of these seams speak: a Q8 step is a whole 6 source pixels
+ * wide, so a minute-long pan in Q8 moves in visible jerks instead of drifting.
+ * Reset to the whole image every frame, so a caller that says nothing gets the
+ * plain title. */
+#define WAIFU_TITLE_VIEW_ONE 65536
+void waifu_platform_title_view(int32_t u0, int32_t v0, int32_t u1, int32_t v1);
+/* 1 when the title should open with its attract sequence. A scripted run says
+ * no: the command scripts (and every regression built on them) press START on
+ * the title's first frames, and an attract they have to sit through would move
+ * every event in them. */
+int waifu_platform_title_attract(void);
 int waifu_platform_title_scrim(int32_t reveal_q8);
 int waifu_platform_title_shatter(int32_t t_q8);
 
@@ -290,6 +303,10 @@ typedef enum WaifuPromptAction {
     WAIFU_PROMPT_ASSIST
 } WaifuPromptAction;
 static inline const char *waifu_platform_prompt_label(int action) { (void)action; return 0; }
+#define WAIFU_TITLE_VIEW_ONE 65536
+static inline void waifu_platform_title_view(int32_t u0, int32_t v0, int32_t u1, int32_t v1)
+{ (void)u0; (void)v0; (void)u1; (void)v1; }
+static inline int waifu_platform_title_attract(void) { return 0; }
 static inline int waifu_platform_title_scrim(int32_t reveal_q8) { (void)reveal_q8; return 0; }
 static inline int waifu_platform_title_shatter(int32_t t_q8) { (void)t_q8; return 0; }
 

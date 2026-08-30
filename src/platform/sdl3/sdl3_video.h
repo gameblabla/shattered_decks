@@ -29,6 +29,11 @@ WaifuSdl3Video *waifu_sdl3_video_create(const char *title,
  * (hardware-style palette-intensity fade). Returns 0 on GPU failure. */
 int waifu_sdl3_video_present(WaifuSdl3Video *video, int fade_q8);
 
+/* Turns the title's attract sequence off for this run (see
+ * waifu_platform_title_attract in platform.h): scripted runs press START on the
+ * title's first frames and must not sit through it. */
+void waifu_sdl3_set_title_attract(int on);
+
 /* Renderer output resolution (the offscreen target the frame is drawn at). */
 int waifu_sdl3_video_render_width(const WaifuSdl3Video *video);
 int waifu_sdl3_video_render_height(const WaifuSdl3Video *video);

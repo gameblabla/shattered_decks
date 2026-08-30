@@ -859,11 +859,9 @@ typedef struct FixedPoseBenchSample {
     unsigned long long walls_us;
     unsigned long long board_setup_us;
     unsigned long long span_fill_us;
-    unsigned long long grid_us;
     unsigned long long overlays_us;
     unsigned long long present_compare_us;
     uint32_t clear_bytes;
-    uint32_t grid_lines;
     uint32_t damaged_groups;
     uint32_t presented_groups;
     uint32_t projection_points;
@@ -876,11 +874,6 @@ static int g_fixed_pose_bench_active;
 static FixedPoseBenchSample g_fixed_pose_bench_sample;
 static uint8_t g_fixed_pose_bench_previous[WAIFU_FM_WIDTH * WAIFU_FM_HEIGHT];
 static int g_fixed_pose_bench_have_previous;
-
-static void fixed_pose_bench_grid_line(void)
-{
-    if (g_fixed_pose_bench_active) ++g_fixed_pose_bench_sample.grid_lines;
-}
 #endif
 
 static unsigned long long profile_now_us(void)
@@ -5382,38 +5375,6 @@ static int32_t row_z0(int r) { return row_zq(Q8_FROM_INT(r)); }
 static int32_t zone_cx(int c) { return (col_x0(c) + col_x0(c+1)) / 2; }
 static int32_t zone_cz(int r) { return (row_z0(r) + row_z0(r+1)) / 2; }
 
-static void draw_grid_line(Camera cam, Vec3 a, Vec3 b, uint8_t c)
-{
-#if defined(WAIFU_FIXED_POSE_BENCH)
-    fixed_pose_bench_grid_line();
-#endif
-    {
-        WaifuHw3DCamera hc = hw3d_camera(cam);
-        WaifuHw3DVec3 ha = hw3d_v(a), hb = hw3d_v(b);
-        /* shadow_px 1 replicates the second, one-pixel-lower software line. */
-        if (waifu_hw3d_line(&hc, &ha, &hb, c, 1)) return;
-    }
-    ScreenPt pa = project_point(cam, a), pb = project_point(cam, b);
-    if (pa.ok && pb.ok) {
-        line_i(pa.x, pa.y, pb.x, pb.y, c);
-        line_i(pa.x, pa.y+1, pb.x, pb.y+1, IDX_DARK_BROWN);
-    }
-}
-
-static void draw_grid_line_projected(ScreenPt pa, ScreenPt pb, uint8_t c)
-{
-#if defined(WAIFU_FIXED_POSE_BENCH)
-    fixed_pose_bench_grid_line();
-#endif
-    if (pa.ok && pb.ok) {
-        /* These endpoints already lie on the shared projected cell boundary.
-           Unlike a free-standing 3D line, the board grid needs no one-pixel
-           drop shadow: duplicating it at y+1 makes the top-view rules two
-           pixels thick and extends the bottom/side endpoints past the board. */
-        line_i(pa.x, pa.y, pb.x, pb.y, c);
-    }
-}
-
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
 static void fmtowns_turn_copy_ram(uint8_t *dst, const uint8_t *src, unsigned count)
 {
@@ -5808,20 +5769,9 @@ static void render_board(Camera cam)
     }
 #endif
 
-#if !defined(WAIFU_BOARD_FAST_AFFINE_ENABLE)
-    for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line(cam, v3(col_x0(c),Q8_FRAC(3,100),FIELD_Z0), v3(col_x0(c),Q8_FRAC(3,100),FIELD_Z1), IDX_DARK_BROWN);
-    for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line(cam, v3(FIELD_X0,Q8_FRAC(3,100),row_z0(r)), v3(FIELD_X1,Q8_FRAC(3,100),row_z0(r)), IDX_DARK_BROWN);
-#else
-#if defined(WAIFU_FIXED_POSE_BENCH)
-    if (g_fixed_pose_bench_active) fixed_pose_t0 = profile_now_us();
-#endif
-    for (int c = 0; c <= BOARD_COLS; ++c) draw_grid_line_projected(bp.top[0][c], bp.top[BOARD_ROWS][c], IDX_DARK_BROWN);
-    for (int r = 0; r <= BOARD_ROWS; ++r) draw_grid_line_projected(bp.top[r][0], bp.top[r][BOARD_COLS], IDX_DARK_BROWN);
-#if defined(WAIFU_FIXED_POSE_BENCH)
-    if (g_fixed_pose_bench_active)
-        g_fixed_pose_bench_sample.grid_us += profile_now_us() - fixed_pose_t0;
-#endif
-#endif
+    /* No wireframe over the board.  The cell art carries its own carved stone
+       border (assets/source/textures/sandstone_[12].png), so the drawn grid
+       rules just double the seam. */
 }
 
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
@@ -5991,65 +5941,6 @@ static void fmtowns_motion_draw_top(const BoardProjected *bp)
     }
 }
 
-static void fmtowns_motion_line(uint8_t *logical,
-                                int x0, int y0, int x1, int y1, uint8_t c)
-{
-    int dx, sx, dy, sy, err;
-    if (x0 < -8192) x0 = -8192; else if (x0 > 8192) x0 = 8192;
-    if (x1 < -8192) x1 = -8192; else if (x1 > 8192) x1 = 8192;
-    if (y0 < -8192) y0 = -8192; else if (y0 > 8192) y0 = 8192;
-    if (y1 < -8192) y1 = -8192; else if (y1 > 8192) y1 = 8192;
-    dx = x1 - x0;
-    dy = y1 - y0;
-    if (dx == 0 && dy == 0) {
-        if ((unsigned)x0 < FMTOWNS_MOTION_WIDTH &&
-            (unsigned)y0 < FMTOWNS_MOTION_HEIGHT)
-            logical[y0 * FMTOWNS_MOTION_WIDTH + x0] = c;
-        return;
-    }
-    {
-        int t0 = 0, t1 = 1 << 16;
-        int p[4] = { -dx, dx, -dy, dy };
-        int q[4] = { x0, (FMTOWNS_MOTION_WIDTH - 1) - x0,
-                     y0, (FMTOWNS_MOTION_HEIGHT - 1) - y0 };
-        for (int i = 0; i < 4; ++i) {
-            if (p[i] == 0) {
-                if (q[i] < 0) return;
-            } else {
-                int r = (q[i] << 16) / p[i];
-                if (p[i] < 0) {
-                    if (r > t1) return;
-                    if (r > t0) t0 = r;
-                } else {
-                    if (r < t0) return;
-                    if (r < t1) t1 = r;
-                }
-            }
-        }
-        if (t0 > t1) return;
-        x1 = x0 + (dx * t1) / (1 << 16);
-        y1 = y0 + (dy * t1) / (1 << 16);
-        x0 += (dx * t0) / (1 << 16);
-        y0 += (dy * t0) / (1 << 16);
-    }
-    dx = i_abs(x1 - x0);
-    sx = x0 < x1 ? 1 : -1;
-    dy = -i_abs(y1 - y0);
-    sy = y0 < y1 ? 1 : -1;
-    err = dx + dy;
-    for (;;) {
-        if ((unsigned)x0 < FMTOWNS_MOTION_WIDTH &&
-            (unsigned)y0 < FMTOWNS_MOTION_HEIGHT)
-            logical[y0 * FMTOWNS_MOTION_WIDTH + x0] = c;
-        if (x0 == x1 && y0 == y1) break;
-        {
-            int e2 = 2 * err;
-            if (e2 >= dy) { err += dy; x0 += sx; }
-            if (e2 <= dx) { err += dx; y0 += sy; }
-        }
-    }
-}
-
 static void render_board_lowres(Camera cam)
 {
     uint8_t *logical;
@@ -6063,18 +5954,8 @@ static void render_board_lowres(Camera cam)
     build_board_projected(cam, &bp);
     fmtowns_motion_draw_sides(cam, &bp);
     fmtowns_motion_draw_top(&bp);
-    for (int c = 0; c <= BOARD_COLS; ++c) {
-        ScreenPt a = fmtowns_motion_point(bp.top[0][c]);
-        ScreenPt b = fmtowns_motion_point(bp.top[BOARD_ROWS][c]);
-        if (a.ok && b.ok) fmtowns_motion_line(logical, a.x, a.y, b.x, b.y,
-                                               IDX_DARK_BROWN);
-    }
-    for (int r = 0; r <= BOARD_ROWS; ++r) {
-        ScreenPt a = fmtowns_motion_point(bp.top[r][0]);
-        ScreenPt b = fmtowns_motion_point(bp.top[r][BOARD_COLS]);
-        if (a.ok && b.ok) fmtowns_motion_line(logical, a.x, a.y, b.x, b.y,
-                                               IDX_DARK_BROWN);
-    }
+    /* No grid rules here either -- the cell art carries its own border, and at
+       this LOD a drawn wireframe was the coarsest thing on screen. */
     fmtowns_turn_expand_all(logical);
     fb_damage_all();
     g_frame_present_dense = 1;
@@ -8744,46 +8625,6 @@ static void draw_title_logo(void)
     draw_centered_text_scaled(38, "DECKS", 2, IDX_WHITE, IDX_BLACK);
 }
 
-/* THE TITLE TAGLINE (PC).
-   The console title is a photograph, a logo and a blinking prompt. On a desktop
-   screen there is room -- and reason -- for the game to introduce its
-   protagonist, so the PC build lays a cinematic scrim across the bottom third
-   and types a two-line tagline onto it. The scrim is what makes the text (and
-   the prompt and copyright already down there) legible whatever the photograph
-   is doing behind them; the frontend draws it, because it wants alpha and the
-   8bpp layer has none. */
-#if defined(WAIFU_PLATFORM_HW3D)
-#define TITLE_TAG_L1 "SERENA, SCRIBE OF THE NILE"
-#define TITLE_TAG_L2 "EIGHT GUARDIANS STAND IN HER DREAM"
-#define TITLE_TAG_START 18   /* frames before the first character */
-#define TITLE_TAG_RATE  2    /* frames per character */
-
-static void draw_title_tagline(int f)
-{
-    char line[64];
-    int n1 = (int)sizeof(TITLE_TAG_L1) - 1;
-    int n2 = (int)sizeof(TITLE_TAG_L2) - 1;
-    int typed = (f - TITLE_TAG_START) / TITLE_TAG_RATE;
-    int reveal = q8_ratio(f < 40 ? f : 40, 40);
-    if (typed < 0) typed = 0;
-    ui_hud_begin();
-    waifu_platform_title_scrim(reveal);
-    if (typed > 0) {
-        int k = typed < n1 ? typed : n1;
-        waifu_str_copy_n(line, (int)sizeof(line), TITLE_TAG_L1, k);
-        draw_text_small(ui_center_x(k * 7), 160, line, IDX_GOLD_HI, IDX_BLACK);
-    }
-    if (typed > n1) {
-        int k = typed - n1;
-        if (k > n2) k = n2;
-        waifu_str_copy_n(line, (int)sizeof(line), TITLE_TAG_L2, k);
-        draw_text_small(ui_center_x(k * 7), 173, line, IDX_WHITE, IDX_BLACK);
-    }
-    ui_hud_end();
-}
-#else
-#define draw_title_tagline(f) ((void)0)
-#endif
 
 static void draw_title_prompt(int f)
 {
@@ -8793,6 +8634,163 @@ static void draw_title_prompt(int f)
     }
     draw_centered_text(208, "(C) 2026 GAMEBLABLA", IDX_WHITE, IDX_BLACK);
 }
+
+/* THE TITLE ATTRACT (PC).
+   The console title is a photograph, a logo and a blinking prompt.  A desktop
+   screen has the room -- and the reason -- to introduce the protagonist first,
+   so the PC build opens before the title exists at all, on the anime cut it is
+   imitating: a held close-up of Serena that tracks slowly left to right across
+   her, at one framing.  The shot never zooms; it fades to black at the end of
+   its track and the wide title fades up out of that black, which is the cut
+   that does the "zooming out" -- doing it as a live pull-back read as a
+   camera-move effect rather than a shot.
+   A cinematic scrim fades up under the bottom third and the two-line tagline
+   types itself onto it, and both belong to the close-up ONLY: the title screen
+   is the logo and the prompt over the whole artwork, nothing else.  START does
+   nothing until the tagline has been typed; after that it does not cut the shot
+   off but sends it straight into its closing fade, so the way into the title is
+   the same whether the player waited or not.  The player is asked for a button
+   once, on the title proper.
+   The scrim and the framing come from the frontend (platform.h): they want
+   alpha and a sub-rectangle of the source image, neither of which the 8bpp
+   software layer can express, and no console should pay for them. */
+#if defined(WAIFU_PLATFORM_HW3D)
+#define TITLE_TAG_L1 "SERENA, SCRIBE OF THE NILE"
+#define TITLE_TAG_L2 "EIGHT GUARDIANS STAND IN HER DREAM"
+#define TITLE_TAG_N1 ((int)sizeof(TITLE_TAG_L1) - 1)
+#define TITLE_TAG_N2 ((int)sizeof(TITLE_TAG_L2) - 1)
+#define TITLE_TAG_START 30   /* held shot before the first character */
+#define TITLE_TAG_RATE  2    /* frames per character */
+#define TITLE_TAG_SCRIM 40   /* frames the scrim takes to fade up */
+#define TITLE_TAG_DONE  (TITLE_TAG_START + (TITLE_TAG_N1 + TITLE_TAG_N2) * TITLE_TAG_RATE)
+
+/* The shot: long enough to read as a camera move rather than an effect, and it
+   outlasts the tagline so the track is still going when the light goes. */
+#define TITLE_ATTRACT_FRAMES 420
+#define TITLE_ATTRACT_FADE   30   /* out of the shot, and up onto the title */
+/* The window, in the view seam's Q16 fractions of the image (see platform.h):
+   a third of it, held (one zoom value drives both axes, so the window keeps the
+   image's aspect), centred on Serena's face and shoulders, tracking right
+   across her.  Q16 and not Q8 because the track is deliberately slower than
+   half a source pixel a frame: in Q8 that quantises to one 6-pixel lurch every
+   dozen frames, which is what a "smooth" pan must not do. */
+#define TITLE_VIEW_FRAC(n, d) ((int32_t)(((n) * WAIFU_TITLE_VIEW_ONE + (d) / 2) / (d)))
+#define TITLE_ATTRACT_ZOOM TITLE_VIEW_FRAC(34,100)
+#define TITLE_ATTRACT_CY   TITLE_VIEW_FRAC(31,100)
+#define TITLE_ATTRACT_CX0  TITLE_VIEW_FRAC(41,100)
+#define TITLE_ATTRACT_CX1  TITLE_VIEW_FRAC(53,100)
+
+static int g_title_attract_seen;   /* played (or skipped) once per launch */
+static int g_title_attract_skew;   /* frames a skip added to the shot's clock */
+
+/* The shot runs on its own clock so a skip can move it forward without the
+   title state's frame counter (which drives the prompt blink) jumping too. */
+static int title_attract_clock(int f)
+{
+    if (g_title_attract_seen || !waifu_platform_title_attract()) return -1;
+    return f + g_title_attract_skew;
+}
+
+static void draw_title_attract_view(int a)
+{
+    /* Linear, and interpolated at full Q16 width rather than through a Q8 ratio
+       -- the whole track is only a fifth of the image, so rounding the progress
+       first is what makes a pan step instead of drift.  Linear and not eased:
+       easing the end looked like the shot stalling before the cut, and the
+       movement has to stay alive right up to the fade. */
+    int32_t span = TITLE_ATTRACT_CX1 - TITLE_ATTRACT_CX0;
+    int32_t cx = TITLE_ATTRACT_CX0 + (span * a) / TITLE_ATTRACT_FRAMES;
+    int32_t half = TITLE_ATTRACT_ZOOM / 2;
+    int32_t u0 = cx - half, v0 = TITLE_ATTRACT_CY - half;
+    /* Keep the window inside the image. */
+    if (u0 < 0) u0 = 0;
+    if (v0 < 0) v0 = 0;
+    if (u0 + TITLE_ATTRACT_ZOOM > WAIFU_TITLE_VIEW_ONE) u0 = WAIFU_TITLE_VIEW_ONE - TITLE_ATTRACT_ZOOM;
+    if (v0 + TITLE_ATTRACT_ZOOM > WAIFU_TITLE_VIEW_ONE) v0 = WAIFU_TITLE_VIEW_ONE - TITLE_ATTRACT_ZOOM;
+    waifu_platform_title_view(u0, v0, u0 + TITLE_ATTRACT_ZOOM, v0 + TITLE_ATTRACT_ZOOM);
+}
+
+static void draw_title_attract_tagline(int a)
+{
+    char line[64];
+    int typed = (a - TITLE_TAG_START) / TITLE_TAG_RATE;
+    ui_hud_begin();
+    waifu_platform_title_scrim(q8_ratio(a < TITLE_TAG_SCRIM ? a : TITLE_TAG_SCRIM,
+                                        TITLE_TAG_SCRIM));
+    if (typed > 0) {
+        int k = typed < TITLE_TAG_N1 ? typed : TITLE_TAG_N1;
+        waifu_str_copy_n(line, (int)sizeof(line), TITLE_TAG_L1, k);
+        draw_text_small(ui_center_x(k * 7), 160, line, IDX_GOLD_HI, IDX_BLACK);
+    }
+    if (typed > TITLE_TAG_N1) {
+        int k = typed - TITLE_TAG_N1;
+        if (k > TITLE_TAG_N2) k = TITLE_TAG_N2;
+        waifu_str_copy_n(line, (int)sizeof(line), TITLE_TAG_L2, k);
+        draw_text_small(ui_center_x(k * 7), 173, line, IDX_WHITE, IDX_BLACK);
+    }
+    ui_hud_end();
+}
+
+/* One entry point for the title picture, so the state machine carries no
+   PC/console difference: the close-up while it runs, the title after it. */
+static void draw_title_scene(int f)
+{
+    int a = title_attract_clock(f);
+    if (a >= 0 && a < TITLE_ATTRACT_FRAMES) {
+        draw_title_attract_view(a);
+        draw_title_attract_tagline(a);
+        return;
+    }
+    /* Past the closing fade the attract is done with: a once-per-launch
+       opening, and the title behind the fade is already the plain one. */
+    if (a >= TITLE_ATTRACT_FRAMES + TITLE_ATTRACT_FADE) g_title_attract_seen = 1;
+    draw_title_logo();
+    draw_title_prompt(f);
+}
+
+/* The title state's fade, which is the attract's cut: up onto the close-up,
+   down to black at the end of its track, up again onto the title.  Without an
+   attract it is the plain entry fade every platform has. */
+static int32_t title_scene_fade_q8(int f)
+{
+    int a = title_attract_clock(f);
+    if (a < 0) return f < WAIFU_TITLE_FADE_FRAMES
+                    ? q8_ratio(f, WAIFU_TITLE_FADE_FRAMES) : Q8_ONE;
+    if (a < TITLE_ATTRACT_FADE) return q8_ratio(a, TITLE_ATTRACT_FADE);
+    if (a < TITLE_ATTRACT_FRAMES - TITLE_ATTRACT_FADE) return Q8_ONE;
+    if (a < TITLE_ATTRACT_FRAMES)
+        return Q8_ONE - q8_ratio(a - (TITLE_ATTRACT_FRAMES - TITLE_ATTRACT_FADE),
+                                 TITLE_ATTRACT_FADE);
+    if (a < TITLE_ATTRACT_FRAMES + TITLE_ATTRACT_FADE)
+        return q8_ratio(a - TITLE_ATTRACT_FRAMES, TITLE_ATTRACT_FADE);
+    return Q8_ONE;
+}
+
+/* START/A during the attract belongs to the attract, never to the game: it is
+   inert until the tagline has been read, and then it sends the shot into its
+   closing fade.  Returns 1 when it swallowed the press. */
+static int title_attract_take_start(int f)
+{
+    int a = title_attract_clock(f);
+    if (a < 0 || a >= TITLE_ATTRACT_FRAMES) return 0;
+    if (a >= TITLE_TAG_DONE && a < TITLE_ATTRACT_FRAMES - TITLE_ATTRACT_FADE) {
+        g_title_attract_skew += (TITLE_ATTRACT_FRAMES - TITLE_ATTRACT_FADE) - a;
+        waifu_sound_play(WAIFU_SOUND_CONFIRM);
+    }
+    return 1;
+}
+#else
+static void draw_title_scene(int f)
+{
+    draw_title_logo();
+    draw_title_prompt(f);
+}
+static int32_t title_scene_fade_q8(int f)
+{
+    return f < WAIFU_TITLE_FADE_FRAMES ? q8_ratio(f, WAIFU_TITLE_FADE_FRAMES) : Q8_ONE;
+}
+static int title_attract_take_start(int f) { (void)f; return 0; }
+#endif
 
 /* Title menu rows. The PC build appends OPTIONS -- the frontend's video / audio
    / controls screen belongs on the title screen next to the game modes, not
@@ -18559,13 +18557,14 @@ void waifu_fm_step(const WaifuFmInput *input)
         } else {
             clear_screen(IDX_BLACK);
             draw_title_background();
-            draw_title_logo();
-            draw_title_tagline(g_i_frame);
-            draw_title_prompt(g_i_frame);
+            draw_title_scene(g_i_frame);
         }
     }
-        if (g_i_frame < WAIFU_TITLE_FADE_FRAMES) apply_black_dither_fade(q8_ratio(g_i_frame, WAIFU_TITLE_FADE_FRAMES));
-        if (press_start || press_a) {
+        {
+            int32_t vis = title_scene_fade_q8(g_i_frame);
+            if (vis < Q8_ONE) apply_black_dither_fade(vis);
+        }
+        if ((press_start || press_a) && !title_attract_take_start(g_i_frame)) {
             enter_title_to_menu_fade();
         }
         break;
@@ -18583,7 +18582,6 @@ void waifu_fm_step(const WaifuFmInput *input)
             if (t >= Q8_FRAC(52,100)) {
                 draw_menu_overlay(g_i_menu_selected);
             } else {
-                draw_title_tagline(TITLE_TAG_START + 200);   /* fully typed */
                 draw_title_prompt(0);
             }
             ui_hud_begin();
@@ -20827,7 +20825,6 @@ static void fixed_pose_bench_one(const char *id, Camera cam)
     unsigned long long med_walls;
     unsigned long long med_setup;
     unsigned long long med_spans;
-    unsigned long long med_grid;
     unsigned long long med_overlays;
     unsigned long long med_present;
     unsigned long long worst_total = 0;
@@ -20860,18 +20857,17 @@ static void fixed_pose_bench_one(const char *id, Camera cam)
     FIXED_POSE_MEDIAN(walls_us, med_walls);
     FIXED_POSE_MEDIAN(board_setup_us, med_setup);
     FIXED_POSE_MEDIAN(span_fill_us, med_spans);
-    FIXED_POSE_MEDIAN(grid_us, med_grid);
     FIXED_POSE_MEDIAN(overlays_us, med_overlays);
     FIXED_POSE_MEDIAN(present_compare_us, med_present);
 #undef FIXED_POSE_MEDIAN
 
     printf("FIXED_POSE id=%s repeats=%d path=%s "
            "median_us=total:%llu clear:%llu basis:%llu transform:%llu projection:%llu "
-           "walls:%llu board_setup:%llu span_fill:%llu grid:%llu overlays:%llu present_compare:%llu "
-           "worst_total:%llu hash=%08x counters=cells:%u scanlines:%u spans:%u pixels:%u flat:%u tilted:%u runs:%u run_pixels:%u edges:%u division_ops:%u projection_points:%u projection_divisions:%u clear_bytes:%u grid_lines:%u damaged_groups:%u presented_groups:%u\n",
+           "walls:%llu board_setup:%llu span_fill:%llu overlays:%llu present_compare:%llu "
+           "worst_total:%llu hash=%08x counters=cells:%u scanlines:%u spans:%u pixels:%u flat:%u tilted:%u runs:%u run_pixels:%u edges:%u division_ops:%u projection_points:%u projection_divisions:%u clear_bytes:%u damaged_groups:%u presented_groups:%u\n",
            id, FIXED_POSE_REPEATS, fixed_pose_bench_path_name(samples[0].renderer.board_path),
            med_total, med_clear, med_basis, med_transform, med_projection,
-           med_walls, med_setup, med_spans, med_grid, med_overlays, med_present,
+           med_walls, med_setup, med_spans, med_overlays, med_present,
            worst_total,
            samples[0].framebuffer_hash,
            samples[0].renderer.cells, samples[0].renderer.scanlines,
@@ -20880,7 +20876,7 @@ static void fixed_pose_bench_one(const char *id, Camera cam)
            samples[0].renderer.runs, samples[0].renderer.run_pixels,
            samples[0].renderer.edge_setups, samples[0].renderer.division_ops,
            samples[0].projection_points, samples[0].projection_divisions,
-           samples[0].clear_bytes, samples[0].grid_lines,
+           samples[0].clear_bytes,
            samples[0].damaged_groups, samples[0].presented_groups);
 }
 
@@ -20897,6 +20893,48 @@ static int fixed_pose_bench_run(void)
     fixed_pose_bench_one("turn_mid", interactive_turn_camera(29, 58, 1));
     fixed_pose_bench_one("turn_tilt", interactive_turn_camera(15, 58, 1));
     cfx_renderer3d_set_profile(&renderer, NULL);
+    return 0;
+}
+#endif
+
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+/* Regenerate src/generated/fmtowns_turn_board_cache.h -- required whenever the
+   board art or its geometry changes, or the FM TOWNS turn transition replays a
+   stale board.  The header is a checked-in build artifact, not runtime state:
+
+     cc -m32 -O2 -std=gnu99 -DWAIFU_FM_HEADLESS_TESTS -DWAIFU_FM_FMTOWNS \
+        -DWAIFU_ASSET_USE_CART_ROM -Isrc/engine -Isrc/generated -Isrc/game \
+        -Isrc/record src/main.c src/game/*.c src/engine/renderer3d.c \
+        src/engine/renderer3d_fmtowns.c src/engine/common.c \
+        src/engine/bmp_writer.c src/platform/host_*.c src/record/zmbv_mkv.c \
+        tools/fmtowns/turn_dump_stubs.c -lm -lz -o /tmp/waifu_turn_dump
+     /tmp/waifu_turn_dump --dump-turn-board-frames /tmp/turnframes.raw
+     python3 tools/fmtowns/gen_turn_board_cache.py /tmp/turnframes.raw \
+        src/generated/fmtowns_turn_board_cache.h
+
+   The cache holds board pixels only (cards and HUD stay live draws), so no
+   duel state is needed here -- just the same pose sequence, and the same
+   render_board() the runtime would call with the cache turned off. */
+static int dump_turn_board_frames(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    int pose;
+    if (!f) {
+        fprintf(stderr, "dump-turn-board-frames: cannot write %s\n", path);
+        return 1;
+    }
+    for (pose = 0; pose < WAIFU_FMTOWNS_TURN_BOARD_CACHE_POSES; ++pose) {
+        g_fmtowns_turn_board_pose = -1;   /* render live, never decode */
+        render_board(interactive_turn_camera(pose, WAIFU_PCFX_TURN_FRAMES, 1));
+        if (fwrite(framebuffer, 1, sizeof(framebuffer), f) != sizeof(framebuffer)) {
+            fprintf(stderr, "dump-turn-board-frames: short write\n");
+            fclose(f);
+            return 1;
+        }
+    }
+    fclose(f);
+    printf("wrote %s: %d poses of %dx%d\n", path,
+           WAIFU_FMTOWNS_TURN_BOARD_CACHE_POSES, WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
     return 0;
 }
 #endif
@@ -20918,6 +20956,7 @@ int main(int argc, char **argv)
     const char *fusion_equip_scenario = NULL;
     const char *music_demo_state = NULL;
     const char *asset_load_demo = NULL;
+    const char *dump_turn_board_path = NULL;
     int regression_story_save = 0;
     int regression_story_duels = 0;
     int regression_card_check = 0;
@@ -20970,6 +21009,7 @@ int main(int argc, char **argv)
     defined(WAIFU_FIXED_POSE_BENCH)
         else if (!strcmp(argv[i], "--fixed-pose-bench")) fixed_pose_bench = 1;
 #endif
+        else if (!strcmp(argv[i], "--dump-turn-board-frames") && i + 1 < argc) dump_turn_board_path = argv[++i];
         else if (!strcmp(argv[i], "--deckout-demo")) g_force_deckout_demo = 1;
         else if (!strcmp(argv[i], "--lp-loss-demo")) g_force_lp_loss_demo = 1;
     }
@@ -20977,6 +21017,12 @@ int main(int argc, char **argv)
     if (dump_every < 1) dump_every = 1;
 
     waifu_fm_init();
+
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+    if (dump_turn_board_path) return dump_turn_board_frames(dump_turn_board_path);
+#else
+    (void)dump_turn_board_path;
+#endif
 
 #if defined(WAIFU_FM_HEADLESS_TESTS) && defined(WAIFU_PROFILE_RENDER) && \
     defined(WAIFU_FIXED_POSE_BENCH)

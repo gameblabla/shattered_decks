@@ -16,7 +16,9 @@ extern "C" {
 enum {
     WAIFU_HIRES_FACE = 0,   /* upper-torso thumbnail framing (card face) */
     WAIFU_HIRES_BIG  = 1,   /* square framing (detail big art) */
-    WAIFU_HIRES_PORTRAIT = 2 /* story dialogue portrait (id = portrait id) */
+    WAIFU_HIRES_PORTRAIT = 2, /* story dialogue portrait (id = portrait id) */
+    WAIFU_HIRES_BACK = 3,    /* the shared card back (id unused) */
+    WAIFU_HIRES_BOARD_TILE = 4 /* a 3D board checker square (id = 0 light, 1 dark) */
 };
 
 /* Scale of the decoded portrait against the game's 124x200 portrait box. The
@@ -40,6 +42,18 @@ uint8_t *waifu_sdl3_hires_card_decode(int card_id, int kind, int *w, int *h);
  * bottom-anchored and centred in the portrait box) but at
  * WAIFU_SDL3_PORTRAIT_SCALE times the size. Caller frees. NULL if unavailable. */
 uint8_t *waifu_sdl3_hires_portrait_decode(int portrait_id, int *w, int *h);
+
+/* Decode the shared card-back texture into a NEW malloc'd RGBA8 buffer (caller
+ * frees). It maps over the WHOLE 38x54 card rect -- the art carries its own
+ * gold frame -- so it is stretched, not cover-cropped: trimming to the card's
+ * aspect would clip the outer rule off the border. NULL if unavailable. */
+uint8_t *waifu_sdl3_hires_card_back_decode(int *w, int *h);
+
+/* Decode one of the two board checker textures (0 = light, 1 = dark) into a NEW
+ * malloc'd RGBA8 buffer at its original resolution -- the PC build maps the whole
+ * source across one board cell instead of the 32x32 atlas downscale the console
+ * targets bake. Caller frees. NULL if unavailable. */
+uint8_t *waifu_sdl3_hires_board_tile_decode(int index, int *w, int *h);
 
 /* Decode the 16:9 title / ending source into a NEW malloc'd RGBA8 buffer
  * (caller frees). NULL if unavailable. */

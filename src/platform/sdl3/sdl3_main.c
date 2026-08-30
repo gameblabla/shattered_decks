@@ -388,6 +388,7 @@ int main(int argc, char **argv)
     const char *commands_path = NULL;
     const char *out_dir = NULL;
     int script_mouse = 0;
+    int cli_attract = 0;
     uint8_t *dump_scratch = NULL;
     size_t dump_scratch_size = 0;
     Uint64 next_frame_ns;
@@ -405,6 +406,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--out") && i + 1 < argc) out_dir = argv[++i];
         else if (!strcmp(argv[i], "--dump-every") && i + 1 < argc) dump_every = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--attract")) cli_attract = 1;
         else if (!strcmp(argv[i], "--no-delay")) no_delay = 1;
         else if (!strcmp(argv[i], "--fullscreen")) cli_fullscreen = 1;
         else if (!strcmp(argv[i], "--no-vsync")) cli_novsync = 1;
@@ -412,7 +414,8 @@ int main(int argc, char **argv)
         else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
             fprintf(stderr, "usage: %s [--commands file] [--frames n] [--out dir] [--dump-every n]\n"
-                            "          [--no-delay] [--no-vsync] [--fullscreen] [--scale n]\n", argv[0]);
+                            "          [--no-delay] [--no-vsync] [--fullscreen] [--scale n]\n"
+                            "          [--attract]\n", argv[0]);
             return 1;
         }
     }
@@ -436,6 +439,10 @@ int main(int argc, char **argv)
     if (commands_path) {
         event_count = load_command_file(commands_path, events, MAX_COMMAND_EVENTS);
         if (event_count < 0) return 1;
+        /* Scripts press START on the title's opening frames, so the attract is
+           off under a script unless --attract asks for it (which is how the
+           attract itself is verified). */
+        waifu_sdl3_set_title_attract(cli_attract);
     }
     if (out_dir && dump_every > 0) ensure_dir(out_dir);
 

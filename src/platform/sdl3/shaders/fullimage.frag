@@ -9,7 +9,14 @@ layout(location = 0) out vec4 o_color;
 
 layout(set = 2, binding = 0) uniform sampler2D u_image;
 
+/* Sub-rectangle of the source to frame, as uv (x0,y0,x1,y1). The whole image is
+   (0,0,1,1); the title's attract sequence walks a smaller window across it. */
+layout(set = 3, binding = 0) uniform FullImageParams {
+    vec4 rect;
+} u_params;
+
 void main()
 {
-    o_color = vec4(texture(u_image, v_uv).rgb, 1.0);
+    vec2 uv = mix(u_params.rect.xy, u_params.rect.zw, v_uv);
+    o_color = vec4(texture(u_image, uv).rgb, 1.0);
 }

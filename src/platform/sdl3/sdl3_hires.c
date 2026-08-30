@@ -211,6 +211,19 @@ uint8_t *waifu_sdl3_hires_portrait_decode(int portrait_id, int *w, int *h)
     return box;
 }
 
+uint8_t *waifu_sdl3_hires_card_back_decode(int *w, int *h)
+{
+    if (!waifu_sdl3_card_back_src || !waifu_sdl3_card_back_src[0]) return NULL;
+    return waifu_sdl3_image_load_rgba(waifu_sdl3_card_back_src, w, h);
+}
+
+uint8_t *waifu_sdl3_hires_board_tile_decode(int index, int *w, int *h)
+{
+    if (index < 0 || index >= WAIFU_SDL3_BOARD_TILE_SRC_COUNT) return NULL;
+    if (!waifu_sdl3_board_tile_src[index][0]) return NULL;
+    return waifu_sdl3_image_load_rgba(waifu_sdl3_board_tile_src[index], w, h);
+}
+
 uint8_t *waifu_sdl3_hires_title_decode(int *w, int *h)
 {
     if (!waifu_sdl3_title_src || !waifu_sdl3_title_src[0]) return NULL;

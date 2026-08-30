@@ -110,11 +110,15 @@ typedef struct Sdl3UiRun {
    the per-card mipmapped texture. group 0 = 3D board card (drawn with the 3D
    solids, full-width viewport); group 1 = 2D card (hand/detail), interleaved in
    the UI run list so draw order (frames, cursors, text over the art) is kept. */
-#define SDL3_HIRES_MAX_DRAWS 64
+/* Raised from 128 when the 20 board checker squares joined the list: a duel
+   frame can carry the board, up to 20 field cards, the hand row and a portrait
+   at once, and a draw that does not fit falls back to the low-res art. */
+#define SDL3_HIRES_MAX_DRAWS 192
 typedef struct Sdl3HiresDraw {
     int first_vertex;               /* into hires_verts (6 per quad) */
     int card_id;
-    int kind;                       /* WAIFU_HIRES_FACE / WAIFU_HIRES_BIG */
+    int kind;                       /* WAIFU_HIRES_FACE / _BIG / _PORTRAIT / _BACK /
+                                       _BOARD_TILE (card_id = checker index) */
     int group;                      /* 0 = 3D solid, 1 = 2D UI */
 } Sdl3HiresDraw;
 
@@ -144,6 +148,9 @@ typedef struct Sdl3SceneFrame {
     int hires_draw_count;
     int full_image;                 /* 0 none, 1 title, 2 ending: draw the 16:9
                                        source across the full canvas (PC) */
+    float full_image_uv[4];         /* sub-rectangle of it to frame: x0,y0,x1,y1
+                                       (the whole image unless the title's
+                                       attract sequence is pushing in) */
 
     /* --- 2D UI layer --- */
     Sdl3UiVertex ui_verts[SDL3_UI_MAX_VERTS];
