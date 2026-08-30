@@ -17864,18 +17864,28 @@ static void draw_pointer_end_turn_button(void)
 
 /* Nearest board zone to a column-space point, or 0 if nothing is close enough.
    Zones are found by projecting their centres with the same camera the frame
-   drew, which keeps the hit test honest through the camera's idle sway. */
-static int ptr_board_zone(Camera cam, int cx, int cy, int *out_col, int *out_row)
+   drew, which keeps the hit test honest through the camera's idle sway.
+   `only_row` restricts the search to one row (-1 searches all): a picker that
+   can only choose along one row must not hit-test the others, or the pointer
+   sitting near a row boundary picks up their columns and the selector jitters
+   between them as the camera sways. */
+static int ptr_board_zone(Camera cam, int cx, int cy, int only_row,
+                          int *out_col, int *out_row)
 {
     int col, row, best_col = -1, best_row = -1;
     long best = 26L * 26L;   /* a zone is ~28px wide on screen at this camera */
     for (row = 0; row < BOARD_ROWS; ++row) {
+        if (only_row >= 0 && row != only_row) continue;
         for (col = 0; col < BOARD_COLS; ++col) {
             ScreenPt p = project_point(cam, v3(zone_cx(col), 0, zone_cz(row)));
             long dx, dy, d;
             if (!p.ok) continue;
             dx = (long)(p.x - cx);
             dy = (long)(p.y - cy);
+            /* A one-row picker only has a column to choose, so it reaches four
+               times as far vertically: the pointer anywhere over the board picks
+               the column under it instead of having to sit on the row itself. */
+            if (only_row >= 0) dy /= 4;
             d = dx * dx + dy * dy;
             if (d < best) { best = d; best_col = col; best_row = row; }
         }
@@ -17933,8 +17943,16 @@ static void ptr_drive_battle(const WaifuPointer *p, int cx, int cy,
                 g_b_selected_hand = from;
                 *press_down = 1;
             } else if (from < 0 && p->y < hy - 8 && p->drag_y < hy - 8) {
-                /* Clicked the board above the hand: lift to the tactical view. */
-                *press_up = 1;
+                if (g_b_fusion_count > 0 && player_can_start_fusion()) {
+                    /* Material is queued, so clicking the field means "fuse it
+                       there", which is what confirming does. Lifting to the
+                       tactical view (the click's other meaning) CLEARS the
+                       queue, so with a fusion pending it is the wrong read. */
+                    *press_a = 1;
+                } else {
+                    /* Clicked the board above the hand: lift to the tactical view. */
+                    *press_up = 1;
+                }
             }
         }
         break;
@@ -17953,12 +17971,31 @@ static void ptr_drive_battle(const WaifuPointer *p, int cx, int cy,
             if (p->left_pressed) { g_b_top_row = BOARD_ROWS - 1; *press_down = 1; }
             break;
         }
-        if (!ptr_board_zone(cam, cx, cy, &col, &row)) break;
+        if (!ptr_board_zone(cam, cx, cy, -1, &col, &row)) break;
         if (col != g_b_top_col || row != g_b_top_row) set_top_selector(col, row);
         if (p->right_pressed) *press_tab = 1;      /* attack / defence position */
         else if (p->left_pressed) *press_a = 1;    /* declare attack, pick target */
         break;
     }
+    /* The two zone pickers. Same camera as the tactical view, so the same hit
+       test: hover a zone to move the selector onto it, click to confirm,
+       right-click to back out. Without these the mouse could start a fusion or
+       an equip and then had no way to say WHERE, which stranded the player on a
+       screen whose only instruction is "select fusion zone". */
+    case IB_PLAYER_FUSION_TARGET:
+    case IB_PLAYER_EQUIP_TARGET: {
+        Camera cam = battle_top_camera();
+        /* The fusion picker walks the player's monster row only, so that is the
+           only row its hit test looks at; the equip picker is free 2-D. */
+        int only = (g_b_phase == IB_PLAYER_FUSION_TARGET) ? PLAYER_CARD_ROW : -1;
+        int col, row;
+        if (p->right_pressed) { *press_b = 1; break; }
+        if (!ptr_board_zone(cam, cx, cy, only, &col, &row)) break;
+        if (col != g_b_top_col || row != g_b_top_row) set_top_selector(col, row);
+        if (p->left_pressed) *press_a = 1;
+        break;
+    }
+
     case IB_CARD_PREVIEW:
     case IB_FIELD_CARD_PREVIEW:
         if (p->left_pressed || p->right_pressed) *press_b = 1;
