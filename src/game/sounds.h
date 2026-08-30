@@ -53,6 +53,9 @@ void waifu_sound_set_music(WaifuMusicTrack track);
 WaifuMusicTrack waifu_sound_music_track(void);
 const char *waifu_sound_music_name(WaifuMusicTrack track);
 void waifu_sound_mix_s16(int16_t *dst, int frames);
+/* Player volume trims in Q8 (256 = unity, the default).  Used by the PC
+   frontend's options menu; console targets never call it and mix unchanged. */
+void waifu_sound_set_volumes(int master_q8, int music_q8, int sfx_q8);
 int waifu_sound_sample_rate(void);
 int waifu_sound_channels(void);
 int waifu_sound_samples_per_frame(void);

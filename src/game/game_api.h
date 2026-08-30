@@ -92,6 +92,9 @@ int waifu_fm_audio_sample_rate(void);
 int waifu_fm_audio_channels(void);
 int waifu_fm_audio_samples_per_frame(void);
 void waifu_fm_audio_mix_s16(int16_t *dst, int frames);
+/* Player volume trims, 0..256 (256 = unity).  PC frontends expose these in
+   their options menu; console frontends never call it. */
+void waifu_fm_audio_set_volumes(int master_q8, int music_q8, int sfx_q8);
 WaifuFmMusicTrack waifu_fm_audio_music_track(void);
 const char *waifu_fm_audio_music_name(void);
 

@@ -9,6 +9,8 @@
 
 #include <stdint.h>
 
+#include "sdl3_settings.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -17,8 +19,8 @@ typedef struct WaifuSdl3Video WaifuSdl3Video;
 
 /* Creates the window (game resolution x scale, resizable) and GPU device.
  * Returns NULL on failure (SDL_GetError() has the reason). */
-WaifuSdl3Video *waifu_sdl3_video_create(const char *title, int scale,
-                                        int fullscreen, int vsync);
+WaifuSdl3Video *waifu_sdl3_video_create(const char *title,
+                                        const WaifuSettings *settings);
 
 /* Uploads this frame's captured geometry, draws backdrop / 3D scene / UI,
  * presents, and resets the capture. fade_q8 (0..256) scales all layers
@@ -33,7 +35,32 @@ int waifu_sdl3_video_render_height(const WaifuSdl3Video *video);
  * hold render_width * render_height * 4 bytes. Returns 0 on failure. */
 int waifu_sdl3_video_read_frame(WaifuSdl3Video *video, uint8_t *rgba);
 
-void waifu_sdl3_video_toggle_fullscreen(WaifuSdl3Video *video);
+/* Re-applies the settings the video layer owns: window mode/size, display,
+   vsync and the canvas sizing policy (render scale + aspect mode). Safe to
+   call every time the options menu changes something. */
+void waifu_sdl3_video_apply_settings(WaifuSdl3Video *video);
+
+/* Cycles windowed -> borderless fullscreen -> windowed (the F11 hotkey) and
+   writes the new mode back into the settings the video layer was given. */
+void waifu_sdl3_video_toggle_fullscreen(WaifuSdl3Video *video, WaifuSettings *settings);
+
+/* Records the current windowed size into `settings` (called on resize so the
+   size the player left the window at is what gets saved). */
+void waifu_sdl3_video_note_window_size(WaifuSdl3Video *video, WaifuSettings *settings);
+
+/* --- display enumeration for the options menu --- */
+
+/* Number of connected displays, and a human name for one. */
+int waifu_sdl3_video_display_count(void);
+const char *waifu_sdl3_video_display_name(int index);
+
+/* Distinct fullscreen modes of a display, largest first. Returns the count;
+   waifu_sdl3_video_mode() fills one entry (w/h/refresh may be NULL). */
+int waifu_sdl3_video_mode_count(int display);
+int waifu_sdl3_video_mode(int display, int index, int *w, int *h, float *hz);
+
+/* The window's current drawable size (what the options menu reports). */
+void waifu_sdl3_video_window_size(const WaifuSdl3Video *video, int *w, int *h);
 
 void waifu_sdl3_video_destroy(WaifuSdl3Video *video);
 

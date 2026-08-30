@@ -15491,6 +15491,11 @@ void waifu_fm_audio_mix_s16(int16_t *dst, int frames)
     waifu_sound_mix_s16(dst, frames);
 }
 
+void waifu_fm_audio_set_volumes(int master_q8, int music_q8, int sfx_q8)
+{
+    waifu_sound_set_volumes(master_q8, music_q8, sfx_q8);
+}
+
 WaifuFmMusicTrack waifu_fm_audio_music_track(void)
 {
     return (WaifuFmMusicTrack)waifu_sound_music_track();

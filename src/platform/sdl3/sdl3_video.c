@@ -22,6 +22,7 @@
 #include <SDL3/SDL.h>
 
 #include "sdl3_internal.h"
+#include "sdl3_overlay.h"
 #include "sdl3_shaders.h"
 #include "sdl3_hires.h"
 #include "sdl3_text.h"
@@ -60,13 +61,18 @@
 #define SEG_HIRES_SIZE  (SDL3_HIRES_MAX_DRAWS * 6 * (int)sizeof(Sdl3ImageVertex))
 #define SEG_GLYPH_OFF   (SEG_HIRES_OFF + SEG_HIRES_SIZE)
 #define SEG_GLYPH_SIZE  (SDL3_UI_MAX_GLYPH_VERTS * (int)sizeof(Sdl3UiVertex))
-#define SEG_TOTAL       (SEG_GLYPH_OFF + SEG_GLYPH_SIZE)
+#define SEG_OV_OFF      (SEG_GLYPH_OFF + SEG_GLYPH_SIZE)
+#define SEG_OV_SIZE     (SDL3_OVERLAY_MAX_VERTS * (int)sizeof(Sdl3UiVertex))
+#define SEG_OVGLYPH_OFF (SEG_OV_OFF + SEG_OV_SIZE)
+#define SEG_OVGLYPH_SIZE (SDL3_OVERLAY_MAX_GLYPHS * (int)sizeof(Sdl3UiVertex))
+#define SEG_TOTAL       (SEG_OVGLYPH_OFF + SEG_OVGLYPH_SIZE)
 
 struct WaifuSdl3Video {
     SDL_Window *window;
     SDL_GPUDevice *dev;
 
     SDL_GPUTexture *canvas;      /* persistent canvas_w x canvas_h RGBA8 */
+    SDL_GPUTexture *present_tex; /* per-frame composite: faded canvas + overlay */
     SDL_GPUTexture *depth;
     int canvas_w, canvas_h;      /* current canvas size (display aspect) */
     int canvas_scale;            /* current integer N (= canvas_h / WAIFU_FM_HEIGHT) */
@@ -105,6 +111,9 @@ struct WaifuSdl3Video {
     SDL_GPUGraphicsPipeline *pl_ui_lines;
     SDL_GPUGraphicsPipeline *pl_glyph;       /* FreeType text glyphs (linear atlas) */
     SDL_GPUGraphicsPipeline *pl_blit;
+    SDL_GPUGraphicsPipeline *pl_blit_rgba;   /* canvas -> present target */
+    SDL_GPUGraphicsPipeline *pl_ov_tris;     /* = pl_ui_tris (present target) */
+    SDL_GPUGraphicsPipeline *pl_ov_glyph;    /* = pl_glyph  (present target) */
 
     SDL_GPUTexture *glyph_tex;               /* persistent FreeType glyph atlas */
     unsigned char glyph_tried;
@@ -117,7 +126,8 @@ struct WaifuSdl3Video {
     uint32_t tile_serial_uploaded;
     int canvas_initialized;
     int debug_counts;
-    int fullscreen;
+    const WaifuSettings *cfg;    /* live player settings (owned by the frontend) */
+    int size_override;           /* WAIFU_SDL3_WIN pinned the window size */
 };
 
 /* ---- shader / pipeline helpers -------------------------------------------- */
@@ -305,9 +315,20 @@ static int create_pipelines(WaifuSdl3Video *v)
         d.color_format = v->swap_format;
         v->pl_blit = make_pipeline(v, &d);
 
+        /* Canvas -> present target (RGBA8), where the game's fade is applied
+           and the frontend overlay is composited. The overlay itself reuses the
+           2D UI/glyph programs since the present target has the canvas format. */
+        d.vs = blit_vs; d.fs = blit_fs;
+        d.attrs = NULL; d.num_attrs = 0; d.pitch = 0;
+        d.color_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        d.depth_test = 0; d.depth_write = 0; d.blend = 0;
+        v->pl_blit_rgba = make_pipeline(v, &d);
+        v->pl_ov_tris = v->pl_ui_tris;
+        v->pl_ov_glyph = v->pl_glyph;
+
         ok = v->pl_scene && v->pl_env && v->pl_image && v->pl_hires_scene &&
              v->pl_hires_ui && v->pl_fullimage && v->pl_line3d && v->pl_ui_tris &&
-             v->pl_ui_lines && v->pl_glyph && v->pl_blit;
+             v->pl_ui_lines && v->pl_glyph && v->pl_blit && v->pl_blit_rgba;
     }
 
     if (scene_vs) SDL_ReleaseGPUShader(v->dev, scene_vs);
@@ -350,21 +371,31 @@ static SDL_GPUTexture *create_texture(SDL_GPUDevice *dev, SDL_GPUTextureType typ
    height (ceil of the fit, clamped — a mild supersample the present downscale
    antialiases); width follows the drawable's aspect but never narrower than the
    game column (WAIFU_FM_WIDTH*N) and never wider than CANVAS_MAX_ASPECT. */
-static void canvas_dims_for(int sw, int sh, int *out_w, int *out_h)
+static void canvas_dims_for(const WaifuSdl3Video *v, int sw, int sh, int *out_w, int *out_h)
 {
-    float fit;
+    float fit, max_aspect = CANVAS_MAX_ASPECT;
     int n, ch, cw, minw, maxw;
+    int widescreen = 1;
     if (sw < 1) sw = 1;
     if (sh < 1) sh = 1;
+    if (v && v->cfg) {
+        widescreen = (v->cfg->aspect_mode == WAIFU_ASPECT_WIDESCREEN);
+        if (v->cfg->max_aspect_x10 > 0) max_aspect = v->cfg->max_aspect_x10 / 10.0f;
+        if (max_aspect < (float)WAIFU_FM_WIDTH / (float)WAIFU_FM_HEIGHT)
+            max_aspect = (float)WAIFU_FM_WIDTH / (float)WAIFU_FM_HEIGHT;
+    }
     fit = (float)sw / (float)WAIFU_FM_WIDTH;
     { float fh = (float)sh / (float)WAIFU_FM_HEIGHT; if (fh < fit) fit = fh; }
     n = (int)ceilf(fit);
+    if (v && v->cfg && v->cfg->render_scale > 0) n = v->cfg->render_scale;
     if (n < CANVAS_MIN_SCALE) n = CANVAS_MIN_SCALE;
     if (n > CANVAS_MAX_SCALE) n = CANVAS_MAX_SCALE;
     ch = WAIFU_FM_HEIGHT * n;
     minw = WAIFU_FM_WIDTH * n;
-    maxw = (int)(ch * CANVAS_MAX_ASPECT + 0.5f);
-    cw = (int)((float)ch * (float)sw / (float)sh + 0.5f);
+    maxw = (int)(ch * max_aspect + 0.5f);
+    /* Pillarbox / stretch keep the authored 256-wide column; only widescreen
+       mode grows the canvas to the display aspect. */
+    cw = widescreen ? (int)((float)ch * (float)sw / (float)sh + 0.5f) : minw;
     if (cw < minw) cw = minw;
     if (cw > maxw) cw = maxw;
     cw &= ~1;                    /* even width keeps the centered column integral */
@@ -381,8 +412,10 @@ static int canvas_ensure(WaifuSdl3Video *v, int w, int h)
 {
     if (v->canvas && v->canvas_w == w && v->canvas_h == h) return 1;
     if (v->canvas) SDL_ReleaseGPUTexture(v->dev, v->canvas);
+    if (v->present_tex) SDL_ReleaseGPUTexture(v->dev, v->present_tex);
     if (v->depth) SDL_ReleaseGPUTexture(v->dev, v->depth);
     v->canvas = NULL;
+    v->present_tex = NULL;
     v->depth = NULL;
     v->canvas_w = w;
     v->canvas_h = h;
@@ -390,50 +423,119 @@ static int canvas_ensure(WaifuSdl3Video *v, int w, int h)
     v->canvas = create_texture(v->dev, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                                (Uint32)v->canvas_w, (Uint32)v->canvas_h, 1,
                                SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+    v->present_tex = create_texture(v->dev, SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                    (Uint32)v->canvas_w, (Uint32)v->canvas_h, 1,
+                                    SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
     v->depth = create_texture(v->dev, SDL_GPU_TEXTURETYPE_2D, v->depth_format,
                               (Uint32)v->canvas_w, (Uint32)v->canvas_h, 1,
                               SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
     v->canvas_initialized = 0;
-    return v->canvas && v->depth;
+    return v->canvas && v->present_tex && v->depth;
 }
 
-WaifuSdl3Video *waifu_sdl3_video_create(const char *title, int scale,
-                                        int fullscreen, int vsync)
+/* ---- window mode / display handling ----------------------------------------
+   The options menu edits the settings struct in place and calls
+   waifu_sdl3_video_apply_settings(); everything below reads it live so there is
+   no second copy of the video state to keep in sync. */
+
+/* Picks the display the window should live on (settings index, clamped). */
+static SDL_DisplayID display_for(const WaifuSdl3Video *v)
+{
+    SDL_DisplayID *ids;
+    int count = 0, want = v->cfg ? v->cfg->display_index : 0;
+    SDL_DisplayID id = SDL_GetPrimaryDisplay();
+    ids = SDL_GetDisplays(&count);
+    if (ids) {
+        if (count > 0) {
+            if (want < 0 || want >= count) want = 0;
+            id = ids[want];
+        }
+        SDL_free(ids);
+    }
+    return id;
+}
+
+static void apply_window_mode(WaifuSdl3Video *v)
+{
+    int mode = v->cfg ? v->cfg->window_mode : WAIFU_WINDOW_WINDOWED;
+    SDL_DisplayID disp = display_for(v);
+
+    /* A scripted/headless capture pins the window size, so never take it
+       fullscreen behind the capture's back. */
+    if (v->size_override) mode = WAIFU_WINDOW_WINDOWED;
+
+    if (mode == WAIFU_WINDOW_WINDOWED) {
+        SDL_SetWindowFullscreen(v->window, false);
+        SDL_SyncWindow(v->window);
+        SDL_SetWindowBordered(v->window, true);
+        if (v->cfg && v->cfg->window_w > 0 && v->cfg->window_h > 0 && !v->size_override)
+            SDL_SetWindowSize(v->window, v->cfg->window_w, v->cfg->window_h);
+        SDL_SetWindowPosition(v->window, SDL_WINDOWPOS_CENTERED_DISPLAY(disp),
+                              SDL_WINDOWPOS_CENTERED_DISPLAY(disp));
+        return;
+    }
+
+    if (mode == WAIFU_WINDOW_FULLSCREEN && v->cfg->fs_w > 0 && v->cfg->fs_h > 0) {
+        SDL_DisplayMode closest;
+        if (SDL_GetClosestFullscreenDisplayMode(disp, v->cfg->fs_w, v->cfg->fs_h,
+                                                v->cfg->fs_hz, true, &closest))
+            SDL_SetWindowFullscreenMode(v->window, &closest);
+        else
+            SDL_SetWindowFullscreenMode(v->window, NULL);   /* fall back to desktop */
+    } else {
+        SDL_SetWindowFullscreenMode(v->window, NULL);       /* borderless desktop */
+    }
+    SDL_SetWindowPosition(v->window, SDL_WINDOWPOS_CENTERED_DISPLAY(disp),
+                          SDL_WINDOWPOS_CENTERED_DISPLAY(disp));
+    SDL_SetWindowFullscreen(v->window, true);
+    SDL_SyncWindow(v->window);
+}
+
+static void apply_present_mode(WaifuSdl3Video *v)
+{
+    SDL_GPUPresentMode want = SDL_GPU_PRESENTMODE_VSYNC;
+    if (v->cfg && !v->cfg->vsync &&
+        SDL_WindowSupportsGPUPresentMode(v->dev, v->window, SDL_GPU_PRESENTMODE_IMMEDIATE))
+        want = SDL_GPU_PRESENTMODE_IMMEDIATE;
+    SDL_SetGPUSwapchainParameters(v->dev, v->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, want);
+}
+
+WaifuSdl3Video *waifu_sdl3_video_create(const char *title,
+                                        const WaifuSettings *settings)
 {
     WaifuSdl3Video *v = (WaifuSdl3Video *)calloc(1, sizeof(*v));
     int win_w, win_h;
     const char *win_env;
     if (!v) return NULL;
-    if (scale < 1) scale = 1;
+    v->cfg = settings;
 
     v->debug_counts = SDL_getenv("WAIFU_SDL3_DEBUG") != NULL;
 
-    /* Initial window size: default to 16:9 on PC (the game view fills widescreen;
-       fixed-layout assets center). Height is the game height at the requested
-       scale; width is 16:9 of that. WAIFU_SDL3_WIN=WxH overrides; the canvas
-       tracks the drawable regardless, so this only sets the opening size. */
-    win_h = WAIFU_FM_HEIGHT * scale;
-    win_w = (win_h * 16 + 4) / 9;
+    /* Opening size comes from the saved settings (16:9 by default: the game
+       view fills widescreen and fixed-layout assets center). WAIFU_SDL3_WIN=WxH
+       overrides it for scripted captures; the canvas tracks the drawable
+       regardless, so this only sets the size the window opens at. */
+    win_w = settings->window_w > 0 ? settings->window_w : 1280;
+    win_h = settings->window_h > 0 ? settings->window_h : 720;
     win_env = SDL_getenv("WAIFU_SDL3_WIN");
     if (win_env) {
         int ww = 0, wh = 0;
         if (SDL_sscanf(win_env, "%dx%d", &ww, &wh) == 2 && ww > 0 && wh > 0) {
             win_w = ww;
             win_h = wh;
+            v->size_override = 1;
         }
     }
 
     v->dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, NULL);
     if (!v->dev) goto fail;
 
-    v->window = SDL_CreateWindow(title, win_w, win_h,
-                                 SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+    v->window = SDL_CreateWindow(title, win_w, win_h, SDL_WINDOW_RESIZABLE);
     if (!v->window) goto fail;
-    v->fullscreen = fullscreen;
 
     if (!SDL_ClaimWindowForGPUDevice(v->dev, v->window)) goto fail;
-    SDL_SetGPUSwapchainParameters(v->dev, v->window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
-                                  vsync ? SDL_GPU_PRESENTMODE_VSYNC : SDL_GPU_PRESENTMODE_IMMEDIATE);
+    apply_window_mode(v);
+    apply_present_mode(v);
     v->swap_format = SDL_GetGPUSwapchainTextureFormat(v->dev, v->window);
 
     if (SDL_GPUTextureSupportsFormat(v->dev, SDL_GPU_TEXTUREFORMAT_D24_UNORM,
@@ -447,7 +549,7 @@ WaifuSdl3Video *waifu_sdl3_video_create(const char *title, int scale,
 
     /* Canvas follows the window; start from the requested window size and
        re-evaluate against the actual drawable each present. */
-    canvas_dims_for(win_w, win_h, &v->pending_w, &v->pending_h);
+    canvas_dims_for(v, win_w, win_h, &v->pending_w, &v->pending_h);
     if (!canvas_ensure(v, v->pending_w, v->pending_h)) goto fail;
     v->tile_tex = create_texture(v->dev, SDL_GPU_TEXTURETYPE_2D_ARRAY, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                                  32, 32, SDL3_TILE_MAX_COUNT, SDL_GPU_TEXTUREUSAGE_SAMPLER);
@@ -752,9 +854,55 @@ static void draw_ui_runs(WaifuSdl3Video *v, SDL_GPUCommandBuffer *cmd,
     if (cur_vp == 1) SDL_SetGPUViewport(rp, vp_col);
 }
 
+/* The frontend overlay (pause menu / options): drawn straight onto the
+   swapchain over the presented frame, in its own virtual coordinate space
+   (sdl3_overlay.h), across the whole display regardless of the letterbox. It is
+   never affected by the game's fade and never touches the persistent canvas. */
+static void draw_overlay(WaifuSdl3Video *v, SDL_GPUCommandBuffer *cmd,
+                         SDL_GPURenderPass *rp, const Sdl3Overlay *ov,
+                         float sw, float sh)
+{
+    float screen[4];
+    float one[4] = { 1.0f, 0.0f, 0.0f, 0.0f };
+    SDL_GPUBufferBinding vb;
+    SDL_GPUViewport vp;
+
+    if (!ov->active || (ov->vert_count == 0 && ov->glyph_count == 0)) return;
+
+    SDL_zero(vp);
+    vp.w = sw; vp.h = sh; vp.max_depth = 1.0f;
+    SDL_SetGPUViewport(rp, &vp);
+
+    screen[0] = ov->screen_w;
+    screen[1] = ov->screen_h;
+    screen[2] = screen[3] = 0.0f;
+    SDL_PushGPUVertexUniformData(cmd, 0, screen, sizeof(screen));
+    SDL_PushGPUFragmentUniformData(cmd, 0, one, sizeof(one));
+
+    if (ov->vert_count > 0) {
+        SDL_BindGPUGraphicsPipeline(rp, v->pl_ov_tris);
+        bind_frag_texture(rp, v->image_tex, v->sampler);
+        SDL_zero(vb);
+        vb.buffer = v->vtx_buf;
+        vb.offset = SEG_OV_OFF;
+        SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
+        SDL_DrawGPUPrimitives(rp, (Uint32)ov->vert_count, 1, 0, 0);
+    }
+    if (ov->glyph_count > 0 && v->glyph_tex) {
+        SDL_BindGPUGraphicsPipeline(rp, v->pl_ov_glyph);
+        bind_frag_texture(rp, v->glyph_tex, v->sampler_mip);
+        SDL_zero(vb);
+        vb.buffer = v->vtx_buf;
+        vb.offset = SEG_OVGLYPH_OFF;
+        SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
+        SDL_DrawGPUPrimitives(rp, (Uint32)ov->glyph_count, 1, 0, 0);
+    }
+}
+
 int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
 {
     Sdl3SceneFrame *frame = waifu_sdl3_scene_frame();
+    Sdl3Overlay *ov = waifu_sdl3_overlay();
     SDL_GPUCommandBuffer *cmd;
     float fade = fade_q8 < 0 ? 0.0f : (fade_q8 > 256 ? 1.0f : fade_q8 / 256.0f);
     /* Content shaders keep a fade slot for flexibility; the global fade is
@@ -798,6 +946,7 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
         if (frame->full_image) fullimage_ensure(v, frame->full_image);
         if (frame->ui_glyph_vert_count > 0) glyph_ensure(v);
     }
+    if (ov->active && ov->glyph_count > 0) glyph_ensure(v);
 
     cmd = SDL_AcquireGPUCommandBuffer(v->dev);
     if (!cmd) return 0;
@@ -813,6 +962,10 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
         memcpy(map + SEG_UILINE_OFF, frame->ui_line_verts, (size_t)frame->ui_line_vert_count * sizeof(Sdl3UiVertex));
         memcpy(map + SEG_HIRES_OFF, frame->hires_verts, (size_t)frame->hires_draw_count * 6 * sizeof(Sdl3ImageVertex));
         memcpy(map + SEG_GLYPH_OFF, frame->ui_glyph_verts, (size_t)frame->ui_glyph_vert_count * sizeof(Sdl3UiVertex));
+        if (ov->active) {
+            memcpy(map + SEG_OV_OFF, ov->verts, (size_t)ov->vert_count * sizeof(Sdl3UiVertex));
+            memcpy(map + SEG_OVGLYPH_OFF, ov->glyphs, (size_t)ov->glyph_count * sizeof(Sdl3UiVertex));
+        }
         SDL_UnmapGPUTransferBuffer(v->dev, v->vtx_tbuf);
 
         {
@@ -847,6 +1000,10 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
                 upload_segment(cp, v->vtx_tbuf, v->vtx_buf, SEG_UILINE_OFF, frame->ui_line_vert_count * (int)sizeof(Sdl3UiVertex), &vtx_cycled);
                 upload_segment(cp, v->vtx_tbuf, v->vtx_buf, SEG_HIRES_OFF, frame->hires_draw_count * 6 * (int)sizeof(Sdl3ImageVertex), &vtx_cycled);
                 upload_segment(cp, v->vtx_tbuf, v->vtx_buf, SEG_GLYPH_OFF, frame->ui_glyph_vert_count * (int)sizeof(Sdl3UiVertex), &vtx_cycled);
+                if (ov->active) {
+                    upload_segment(cp, v->vtx_tbuf, v->vtx_buf, SEG_OV_OFF, ov->vert_count * (int)sizeof(Sdl3UiVertex), &vtx_cycled);
+                    upload_segment(cp, v->vtx_tbuf, v->vtx_buf, SEG_OVGLYPH_OFF, ov->glyph_count * (int)sizeof(Sdl3UiVertex), &vtx_cycled);
+                }
             }
             if (atlas_h > 0) {
                 SDL_GPUTextureTransferInfo src;
@@ -1058,7 +1215,53 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
         }
     }
 
-    /* --- present blit (canvas -> swapchain, letterboxed, fade applied) --- */
+    /* The menu can run with the game fully stopped, so when no game geometry
+       was captured this frame the overlay still needs its own upload. */
+    if (!frame->has_content && ov->active && (ov->vert_count || ov->glyph_count)) {
+        Uint8 *map = (Uint8 *)SDL_MapGPUTransferBuffer(v->dev, v->vtx_tbuf, true);
+        SDL_GPUCopyPass *cp;
+        int vtx_cycled = 0;
+        if (!map) { SDL_CancelGPUCommandBuffer(cmd); return 0; }
+        memcpy(map + SEG_OV_OFF, ov->verts, (size_t)ov->vert_count * sizeof(Sdl3UiVertex));
+        memcpy(map + SEG_OVGLYPH_OFF, ov->glyphs, (size_t)ov->glyph_count * sizeof(Sdl3UiVertex));
+        SDL_UnmapGPUTransferBuffer(v->dev, v->vtx_tbuf);
+        cp = SDL_BeginGPUCopyPass(cmd);
+        upload_segment(cp, v->vtx_tbuf, v->vtx_buf, SEG_OV_OFF, ov->vert_count * (int)sizeof(Sdl3UiVertex), &vtx_cycled);
+        upload_segment(cp, v->vtx_tbuf, v->vtx_buf, SEG_OVGLYPH_OFF, ov->glyph_count * (int)sizeof(Sdl3UiVertex), &vtx_cycled);
+        SDL_EndGPUCopyPass(cp);
+    }
+
+    /* --- composite pass (canvas -> present target: fade + frontend overlay) ---
+       The canvas is persistent game content, so the fade and the menu are
+       composited into a separate per-frame target instead. That target is what
+       the swapchain shows AND what read_frame downloads, so a screenshot or a
+       scripted dump contains exactly what the player sees. */
+    if (v->canvas_initialized) {
+        SDL_GPUColorTargetInfo color;
+        SDL_GPURenderPass *rp;
+        float fade4[4] = { fade, 0.0f, 0.0f, 0.0f };
+        SDL_zero(color);
+        color.texture = v->present_tex;
+        color.load_op = SDL_GPU_LOADOP_DONT_CARE;
+        color.store_op = SDL_GPU_STOREOP_STORE;
+        rp = SDL_BeginGPURenderPass(cmd, &color, 1, NULL);
+        if (rp) {
+            SDL_GPUViewport vp;
+            SDL_zero(vp);
+            vp.w = (float)v->canvas_w;
+            vp.h = (float)v->canvas_h;
+            vp.max_depth = 1.0f;
+            SDL_SetGPUViewport(rp, &vp);
+            SDL_BindGPUGraphicsPipeline(rp, v->pl_blit_rgba);
+            bind_frag_texture(rp, v->canvas, v->sampler);
+            SDL_PushGPUFragmentUniformData(cmd, 0, fade4, sizeof(fade4));
+            SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+            draw_overlay(v, cmd, rp, ov, (float)v->canvas_w, (float)v->canvas_h);
+            SDL_EndGPURenderPass(rp);
+        }
+    }
+
+    /* --- present blit (present target -> swapchain, letterboxed) --- */
     {
         SDL_GPUTexture *swap = NULL;
         Uint32 sw = 0, sh = 0;
@@ -1067,11 +1270,10 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
             return 0;
         }
         /* Size next frame's canvas to the drawable we just observed. */
-        if (sw > 0 && sh > 0) canvas_dims_for((int)sw, (int)sh, &v->pending_w, &v->pending_h);
+        if (sw > 0 && sh > 0) canvas_dims_for(v, (int)sw, (int)sh, &v->pending_w, &v->pending_h);
         if (swap && sw > 0 && sh > 0 && v->canvas_initialized) {
             SDL_GPUColorTargetInfo color;
             SDL_GPURenderPass *rp;
-            float fade4[4] = { fade, 0.0f, 0.0f, 0.0f };
             float scale_x = (float)sw / (float)v->canvas_w;
             float scale_y = (float)sh / (float)v->canvas_h;
             float s = scale_x < scale_y ? scale_x : scale_y;
@@ -1085,16 +1287,23 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
 
             rp = SDL_BeginGPURenderPass(cmd, &color, 1, NULL);
             if (rp) {
-                vp.w = v->canvas_w * s;
-                vp.h = v->canvas_h * s;
+                if (v->cfg && v->cfg->aspect_mode == WAIFU_ASPECT_STRETCH) {
+                    /* Fill the display, accepting the distortion the player
+                       asked for; the other modes preserve the canvas aspect. */
+                    vp.w = (float)sw;
+                    vp.h = (float)sh;
+                } else {
+                    vp.w = v->canvas_w * s;
+                    vp.h = v->canvas_h * s;
+                }
                 vp.x = ((float)sw - vp.w) * 0.5f;
                 vp.y = ((float)sh - vp.h) * 0.5f;
                 vp.min_depth = 0.0f;
                 vp.max_depth = 1.0f;
                 SDL_SetGPUViewport(rp, &vp);
                 SDL_BindGPUGraphicsPipeline(rp, v->pl_blit);
-                bind_frag_texture(rp, v->canvas, v->sampler_lin);
-                SDL_PushGPUFragmentUniformData(cmd, 0, fade4, sizeof(fade4));
+                bind_frag_texture(rp, v->present_tex, v->sampler_lin);
+                SDL_PushGPUFragmentUniformData(cmd, 0, one4, sizeof(one4));
                 SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
                 SDL_EndGPURenderPass(rp);
             }
@@ -1141,7 +1350,7 @@ int waifu_sdl3_video_read_frame(WaifuSdl3Video *v, uint8_t *rgba)
         SDL_GPUTextureRegion src;
         SDL_GPUTextureTransferInfo dst;
         SDL_zero(src);
-        src.texture = v->canvas;
+        src.texture = v->present_tex;
         src.w = (Uint32)v->canvas_w;
         src.h = (Uint32)v->canvas_h;
         src.d = 1;
@@ -1164,11 +1373,112 @@ int waifu_sdl3_video_read_frame(WaifuSdl3Video *v, uint8_t *rgba)
     return 1;
 }
 
-void waifu_sdl3_video_toggle_fullscreen(WaifuSdl3Video *v)
+void waifu_sdl3_video_apply_settings(WaifuSdl3Video *v)
 {
     if (!v) return;
-    v->fullscreen = !v->fullscreen;
-    SDL_SetWindowFullscreen(v->window, v->fullscreen);
+    apply_window_mode(v);
+    apply_present_mode(v);
+    /* Re-evaluate the canvas against the (possibly new) drawable immediately so
+       one frame is not presented at the old size. */
+    {
+        int w = 0, h = 0;
+        SDL_GetWindowSizeInPixels(v->window, &w, &h);
+        if (w > 0 && h > 0) canvas_dims_for(v, w, h, &v->pending_w, &v->pending_h);
+    }
+}
+
+void waifu_sdl3_video_toggle_fullscreen(WaifuSdl3Video *v, WaifuSettings *s)
+{
+    if (!v || !s) return;
+    s->window_mode = (s->window_mode == WAIFU_WINDOW_WINDOWED)
+                   ? WAIFU_WINDOW_BORDERLESS : WAIFU_WINDOW_WINDOWED;
+    waifu_sdl3_video_apply_settings(v);
+}
+
+void waifu_sdl3_video_note_window_size(WaifuSdl3Video *v, WaifuSettings *s)
+{
+    int w = 0, h = 0;
+    if (!v || !s || v->size_override) return;
+    if (s->window_mode != WAIFU_WINDOW_WINDOWED) return;
+    SDL_GetWindowSize(v->window, &w, &h);
+    if (w > 0 && h > 0) { s->window_w = w; s->window_h = h; }
+}
+
+void waifu_sdl3_video_window_size(const WaifuSdl3Video *v, int *w, int *h)
+{
+    int ww = 0, wh = 0;
+    if (v) SDL_GetWindowSizeInPixels(v->window, &ww, &wh);
+    if (w) *w = ww;
+    if (h) *h = wh;
+}
+
+int waifu_sdl3_video_display_count(void)
+{
+    int count = 0;
+    SDL_DisplayID *ids = SDL_GetDisplays(&count);
+    if (ids) SDL_free(ids);
+    return count;
+}
+
+const char *waifu_sdl3_video_display_name(int index)
+{
+    static char buf[128];
+    int count = 0;
+    SDL_DisplayID *ids = SDL_GetDisplays(&count);
+    const char *name = NULL;
+    buf[0] = '\0';
+    if (ids) {
+        if (index >= 0 && index < count) name = SDL_GetDisplayName(ids[index]);
+        SDL_free(ids);
+    }
+    SDL_snprintf(buf, sizeof(buf), "%d: %s", index + 1, name ? name : "DISPLAY");
+    return buf;
+}
+
+/* Fullscreen modes, de-duplicated on w x h (the menu picks a resolution; the
+   refresh rate follows from the closest matching mode). */
+static int enum_modes(int display, int want_index, int *ow, int *oh, float *ohz)
+{
+    SDL_DisplayID *ids;
+    SDL_DisplayMode **modes;
+    int disp_count = 0, mode_count = 0, i, kept = 0;
+    SDL_DisplayID id = 0;
+
+    ids = SDL_GetDisplays(&disp_count);
+    if (!ids) return 0;
+    if (display < 0 || display >= disp_count) display = 0;
+    if (disp_count > 0) id = ids[display];
+    SDL_free(ids);
+    if (!id) return 0;
+
+    modes = SDL_GetFullscreenDisplayModes(id, &mode_count);
+    if (!modes) return 0;
+    for (i = 0; i < mode_count; ++i) {
+        int j, dup = 0;
+        for (j = 0; j < i; ++j)
+            if (modes[j]->w == modes[i]->w && modes[j]->h == modes[i]->h) { dup = 1; break; }
+        if (dup) continue;
+        if (want_index == kept) {
+            if (ow) *ow = modes[i]->w;
+            if (oh) *oh = modes[i]->h;
+            if (ohz) *ohz = modes[i]->refresh_rate;
+            SDL_free(modes);
+            return 1;
+        }
+        ++kept;
+    }
+    SDL_free(modes);
+    return want_index < 0 ? kept : 0;
+}
+
+int waifu_sdl3_video_mode_count(int display)
+{
+    return enum_modes(display, -1, NULL, NULL, NULL);
+}
+
+int waifu_sdl3_video_mode(int display, int index, int *w, int *h, float *hz)
+{
+    return enum_modes(display, index, w, h, hz);
 }
 
 void waifu_sdl3_video_destroy(WaifuSdl3Video *v)
@@ -1187,7 +1497,9 @@ void waifu_sdl3_video_destroy(WaifuSdl3Video *v)
         if (v->pl_ui_lines) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_ui_lines);
         if (v->pl_glyph) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_glyph);
         if (v->pl_blit) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_blit);
+        if (v->pl_blit_rgba) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_blit_rgba);
         if (v->canvas) SDL_ReleaseGPUTexture(v->dev, v->canvas);
+        if (v->present_tex) SDL_ReleaseGPUTexture(v->dev, v->present_tex);
         if (v->depth) SDL_ReleaseGPUTexture(v->dev, v->depth);
         if (v->tile_tex) SDL_ReleaseGPUTexture(v->dev, v->tile_tex);
         if (v->image_tex) SDL_ReleaseGPUTexture(v->dev, v->image_tex);

@@ -471,6 +471,20 @@ void waifu_sound_play(WaifuSoundEffect effect)
 #endif
 }
 
+/* Player volume trims (Q8, 256 = unity).  Only the PC frontend sets these;
+   every console target leaves them at unity, where the multiply/shift is an
+   exact identity, so their mix is bit-for-bit unchanged. */
+static int g_vol_master_q8 = 256;
+static int g_vol_music_q8 = 256;
+static int g_vol_sfx_q8 = 256;
+
+void waifu_sound_set_volumes(int master_q8, int music_q8, int sfx_q8)
+{
+    g_vol_master_q8 = master_q8 < 0 ? 0 : (master_q8 > 256 ? 256 : master_q8);
+    g_vol_music_q8 = music_q8 < 0 ? 0 : (music_q8 > 256 ? 256 : music_q8);
+    g_vol_sfx_q8 = sfx_q8 < 0 ? 0 : (sfx_q8 > 256 ? 256 : sfx_q8);
+}
+
 void waifu_sound_mix_s16(int16_t *dst, int frames)
 {
     int f, ch;
@@ -485,6 +499,7 @@ void waifu_sound_mix_s16(int16_t *dst, int frames)
 #if defined(WAIFU_FM_PCFX)
         {
             int music = placeholder_music_sample();
+            music = (music * g_vol_music_q8) >> 8;
             left  += (music * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
             right += (music * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
         }
@@ -492,6 +507,8 @@ void waifu_sound_mix_s16(int16_t *dst, int frames)
         if (g_music_stream.fp) {
             int ml = 0, mr = 0;
             music_next_frame(&g_music_stream, &ml, &mr);
+            ml = (ml * g_vol_music_q8) >> 8;
+            mr = (mr * g_vol_music_q8) >> 8;
             left  += (ml * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
             right += (mr * WAIFU_SOUND_MUSIC_GAIN_NUM) / WAIFU_SOUND_MUSIC_GAIN_DEN;
         }
@@ -510,11 +527,14 @@ void waifu_sound_mix_s16(int16_t *dst, int frames)
                 }
             }
         }
+        sfx = (sfx * g_vol_sfx_q8) >> 8;
         left  += sfx;
         right += sfx;
 
         left  = (left  * WAIFU_SOUND_MASTER_NUM) / WAIFU_SOUND_MASTER_DEN;
         right = (right * WAIFU_SOUND_MASTER_NUM) / WAIFU_SOUND_MASTER_DEN;
+        left  = (left  * g_vol_master_q8) >> 8;
+        right = (right * g_vol_master_q8) >> 8;
 
         if (WAIFU_SOUND_CHANNELS >= 2) {
             dst[f * WAIFU_SOUND_CHANNELS + 0] = clamp_s16(left);
