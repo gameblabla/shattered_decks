@@ -13,6 +13,7 @@
 #include "sdl3_card_paths.h"
 #include "hw3d.h"
 #include "waifu_assets.h"
+#include "game_api.h"
 
 /* Copy the largest sub-rectangle of (src, sw x sh) with aspect ar = tw/th,
  * horizontally centered and vertically placed by anchor (0 = top .. 1 = bottom),
@@ -342,29 +343,144 @@ static uint32_t *stat_strip_new(int *out_w, int *out_h, float *cell_px)
     return px;
 }
 
+/* ---- stat icons in a generated strip ---------------------------------------
+ * The card's bottom band names ATK and DEF with the same small sword and
+ * shield the PC info bar draws, instead of spelling "ATK/" and "DEF/". Those
+ * two are authored as 7x9 palette stamps (0 = transparent) so the strip
+ * rasterizer can scale them to whatever the band's height turns out to be, the
+ * way the glyphs beside them scale. Kept in step with draw_stat_icon_sword /
+ * draw_stat_icon_shield in src/main.c, which draw the same shapes at 1x. */
+
+#define STAT_ICON_W 7
+#define STAT_ICON_H 9
+#define _ 0
+#define W IDX_WHITE
+#define D IDX_DIM
+#define G IDX_GOLD_HI
+#define K IDX_GOLD_DARK
+#define L IDX_UI_LIGHT
+#define B IDX_UI_BLUE
+
+static const uint8_t stat_icon_sword[STAT_ICON_H][STAT_ICON_W] = {
+    { _, _, _, W, _, _, _ },
+    { _, _, D, W, D, _, _ },
+    { _, _, W, W, D, _, _ },
+    { _, _, W, W, D, _, _ },
+    { _, _, W, W, D, _, _ },
+    { K, G, G, G, G, G, K },
+    { _, _, _, K, _, _, _ },
+    { _, _, _, K, _, _, _ },
+    { _, _, G, G, G, _, _ }
+};
+
+static const uint8_t stat_icon_shield[STAT_ICON_H][STAT_ICON_W] = {
+    { L, L, L, L, L, L, L },
+    { L, B, B, B, B, B, L },
+    { L, B, W, B, B, B, L },
+    { L, B, B, B, B, B, L },
+    { L, B, B, B, B, B, L },
+    { _, L, B, B, B, L, _ },
+    { _, _, L, B, L, _, _ },
+    { _, _, _, L, _, _, _ },
+    { _, _, _, _, _, _, _ }
+};
+
+#undef _
+#undef W
+#undef D
+#undef G
+#undef K
+#undef L
+#undef B
+
+/* Nearest-scale one stamp into an RGBA8 strip, with a one-destination-pixel
+   black skirt so it holds up over the frame's dark marbling exactly as the
+   outlined numbers beside it do. */
+static void draw_stat_icon(uint32_t *dst, int dst_w, int dst_h,
+                           float x, float y, float iw, float ih,
+                           const uint8_t stamp[STAT_ICON_H][STAT_ICON_W])
+{
+    const uint8_t *pal = waifu_fm_palette_rgb();
+    int px0 = (int)x - 1, py0 = (int)y - 1;
+    int px1 = (int)(x + iw + 2.0f), py1 = (int)(y + ih + 2.0f);
+    int px, py;
+    if (!pal || iw <= 0.0f || ih <= 0.0f) return;
+    if (px0 < 0) px0 = 0;
+    if (py0 < 0) py0 = 0;
+    if (px1 > dst_w) px1 = dst_w;
+    if (py1 > dst_h) py1 = dst_h;
+    for (py = py0; py < py1; ++py) {
+        for (px = px0; px < px1; ++px) {
+            int dx, dy, hit = 0;
+            uint8_t idx = 0;
+            /* The pixel itself, then its 8 neighbours: the first that lands on
+               an opaque stamp texel decides between ink and skirt. */
+            for (dy = 0; dy <= 2 && !idx; ++dy) {
+                for (dx = 0; dx <= 2 && !idx; ++dx) {
+                    float fx = ((float)px + 0.5f - (float)(dx - 1) - x) / iw;
+                    float fy = ((float)py + 0.5f - (float)(dy - 1) - y) / ih;
+                    int sx, sy;
+                    uint8_t v;
+                    if (fx < 0.0f || fx >= 1.0f || fy < 0.0f || fy >= 1.0f) continue;
+                    sx = (int)(fx * STAT_ICON_W);
+                    sy = (int)(fy * STAT_ICON_H);
+                    v = stamp[sy][sx];
+                    if (!v) continue;
+                    hit = 1;
+                    if (dx == 1 && dy == 1) idx = v;
+                }
+            }
+            if (!hit) continue;
+            if (idx)
+                dst[(size_t)py * dst_w + px] = 0xFF000000u |
+                    ((uint32_t)pal[idx * 3 + 2] << 16) |
+                    ((uint32_t)pal[idx * 3 + 1] << 8) |
+                    (uint32_t)pal[idx * 3 + 0];
+            else
+                dst[(size_t)py * dst_w + px] = 0xFF040608u;
+        }
+    }
+}
+
 uint8_t *waifu_sdl3_hires_stats_decode(int card_id, int *w, int *h)
 {
-    char text[32];
+    char atk[16], def[16];
     uint32_t *px;
     int sw = 0, sh = 0;
-    float cell_px = 0.0f, tw, pad;
+    float cell_px = 0.0f, pad, iw, ih, kern, group, total, x, ty, iy;
 
     if (card_id < 0 || card_id >= WAIFU_CARD_COUNT) return NULL;
     if (!waifu_sdl3_text_ready()) return NULL;
-    snprintf(text, sizeof text, "ATK/%u  DEF/%u",
-             (unsigned)waifu_card_atk[card_id], (unsigned)waifu_card_def[card_id]);
+    snprintf(atk, sizeof atk, "%u", (unsigned)waifu_card_atk[card_id]);
+    snprintf(def, sizeof def, "%u", (unsigned)waifu_card_def[card_id]);
     px = stat_strip_new(&sw, &sh, &cell_px);
     if (!px) return NULL;
-    /* Right-aligned in the band, as on a real card. If a long pair of numbers
-       overruns the band, the cell shrinks until it fits rather than clipping. */
+    /* Right-aligned in the band, as on a real card: sword, ATK, shield, DEF.
+       If a long pair of numbers overruns the band, everything shrinks together
+       until it fits rather than clipping. */
     pad = (float)sw * 0.02f;
-    tw = waifu_sdl3_text_measure(text, cell_px);
-    if (tw > (float)sw - 2.0f * pad) {
-        cell_px *= ((float)sw - 2.0f * pad) / tw;
-        tw = waifu_sdl3_text_measure(text, cell_px);
+    for (;;) {
+        iw = cell_px * (float)STAT_ICON_W / 8.0f;
+        ih = cell_px * (float)STAT_ICON_H / 8.0f;
+        kern = cell_px * 0.18f;
+        group = cell_px * 0.55f;
+        total = iw + kern + waifu_sdl3_text_measure(atk, cell_px) + group +
+                iw + kern + waifu_sdl3_text_measure(def, cell_px);
+        if (total <= (float)sw - 2.0f * pad || cell_px < 4.0f) break;
+        cell_px *= ((float)sw - 2.0f * pad) / total;
     }
-    waifu_sdl3_text_draw_rgba_outlined(px, sw, sh, (float)sw - pad - tw,
-                                       ((float)sh - cell_px) * 0.5f, cell_px, text,
+    x = (float)sw - pad - total;
+    ty = ((float)sh - cell_px) * 0.5f;
+    iy = ((float)sh - ih) * 0.5f;
+    draw_stat_icon(px, sw, sh, x, iy, iw, ih, stat_icon_sword);
+    x += iw + kern;
+    waifu_sdl3_text_draw_rgba_outlined(px, sw, sh, x, ty, cell_px, atk,
+                                       0xE8, 0xC8, 0x6A, 0x08, 0x06, 0x04,
+                                       cell_px * 0.06f);
+    x += waifu_sdl3_text_measure(atk, cell_px) + group;
+    draw_stat_icon(px, sw, sh, x, iy, iw, ih, stat_icon_shield);
+    x += iw + kern;
+    waifu_sdl3_text_draw_rgba_outlined(px, sw, sh, x, ty, cell_px, def,
                                        0xE8, 0xC8, 0x6A, 0x08, 0x06, 0x04,
                                        cell_px * 0.06f);
     *w = sw;

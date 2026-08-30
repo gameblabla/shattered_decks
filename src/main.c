@@ -3982,6 +3982,24 @@ static void draw_stat_icon_shield(int x, int y)
     /* A single highlight pip so the body does not read as a flat swatch. */
     put_px(x + 2, y + 2, IDX_WHITE);
 }
+
+/* "<sword> nnnn  <shield> nnnn" at the small-text cell, in place of spelling
+   ATK and DEF out. Returns the x just past the last digit. The icons are 9
+   tall against the cell's 8, so they hang one pixel above the baseline row. */
+static int draw_stat_icon_pair(int x, int y, unsigned atk, unsigned def, uint8_t fg)
+{
+    char n[12];
+    draw_stat_icon_sword(x, y - 1);
+    x += STAT_ICON_W + 2;
+    fmt_u32_dec(n, (int)sizeof n, atk);
+    draw_text_small(x, y, n, fg, IDX_BLACK);
+    x += (int)strlen(n) * 7 + 6;
+    draw_stat_icon_shield(x, y - 1);
+    x += STAT_ICON_W + 2;
+    fmt_u32_dec(n, (int)sizeof n, def);
+    draw_text_small(x, y, n, fg, IDX_BLACK);
+    return x + (int)strlen(n) * 7;
+}
 #endif /* WAIFU_PLATFORM_HW3D */
 
 /* THE DUEL'S BOTTOM INFO BAR.
@@ -9100,10 +9118,15 @@ static void draw_card_preview_screen(int f)
     draw_text_small(tx, y, "LORE", IDX_GOLD_HI, IDX_BLACK); y += 11;
     draw_wrapped_text_small(tx, y, waifu_card_desc[id], 20, IDX_WHITE, IDX_BLACK); y += 54;
 
+#if !defined(WAIFU_PLATFORM_HW3D)
+    /* PC draws the full-resolution front frame beside this panel, and that
+       frame carries the card's own ATK/DEF band -- repeating the numbers here
+       just says the same thing twice. */
     fmt_label_u32(line, (int)sizeof(line), "ATK", (unsigned)waifu_card_atk[id]);
     draw_text_small(tx, WAIFU_UI_BOTTOM_Y(197), line, IDX_GOLD_HI, IDX_BLACK);
     fmt_label_u32(line, (int)sizeof(line), "DEF", (unsigned)waifu_card_def[id]);
     draw_text_small(tx, WAIFU_UI_BOTTOM_Y(209), line, IDX_GOLD_HI, IDX_BLACK);
+#endif
     if (((local / 16) & 1) == 0) draw_text_small((WAIFU_FM_WIDTH - 56) / 2, WAIFU_FM_HEIGHT - 17, "B: BACK", IDX_WHITE, IDX_BLACK);
 
     if (local < 24) apply_black_dither_fade(vis);
@@ -13500,8 +13523,11 @@ static void render_interactive_card_preview_static(int card_id)
     y += lines * 10 + 7;
 
     if (y < WAIFU_UI_BOTTOM_Y(194)) y = WAIFU_UI_BOTTOM_Y(194);
+#if !defined(WAIFU_PLATFORM_HW3D)
+    /* See the card-check panel above: the PC card front already spells these. */
     draw_preview_stat_line(tx, y, "ATK", (unsigned)waifu_card_atk[card_id]);
     draw_preview_stat_line(tx, y + 12, "DEF", (unsigned)waifu_card_def[card_id]);
+#endif
 }
 
 static void draw_interactive_card_preview(int card_id, int f)
@@ -17019,8 +17045,14 @@ static void draw_deck_editor(void)
         if (is_support_card(selected_card)) {
             draw_text_small_ellipsis(ed_dx + 15, WAIFU_UI_BOTTOM_Y(208), support_card_type(selected_card), 23, IDX_GOLD_HI, IDX_BLACK);
         } else {
+#if defined(WAIFU_PLATFORM_HW3D)
+            draw_stat_icon_pair(ed_dx + 15, WAIFU_UI_BOTTOM_Y(208),
+                                (unsigned)waifu_card_atk[selected_card],
+                                (unsigned)waifu_card_def[selected_card], IDX_GOLD_HI);
+#else
             fmt_label_u32(line, (int)sizeof(line), "ATK", (unsigned)waifu_card_atk[selected_card]); waifu_str_cat(line, (int)sizeof(line), " DEF "); waifu_str_cat_u32(line, (int)sizeof(line), (unsigned)waifu_card_def[selected_card]);
             draw_text_small(ed_dx + 15, WAIFU_UI_BOTTOM_Y(208), line, IDX_GOLD_HI, IDX_BLACK);
+#endif
         }
     }
     if (g_deck_flash > 0 && ((g_deck_flash / 8) & 1) == 0) {
