@@ -31,6 +31,10 @@
 
 #define MAX_COMMAND_EVENTS 4096
 
+/* One game frame of real time: the core's logic clock is fixed at
+   WAIFU_FM_FPS regardless of how fast the display refreshes. */
+#define STEP_NS (SDL_NS_PER_SECOND / WAIFU_FM_FPS)
+
 /* A scripted frame's buttons: the game pad state plus the frontend-only
    MENU token, so a command file can drive the pause/options menu too. */
 typedef struct ScriptButtons {
@@ -285,6 +289,10 @@ int main(int argc, char **argv)
     uint8_t *dump_scratch = NULL;
     Uint64 next_frame_ns;
     Uint64 fps_window_ns;
+    Uint64 last_tick_ns;
+    Uint64 frame_delta_ns = 0;
+    Uint64 step_accum_ns = 0;
+    int fixed_step;
     int fps_window_frames = 0;
     float fps_value = 0.0f;
     int i;
@@ -351,8 +359,14 @@ int main(int argc, char **argv)
     waifu_fm_reset_interactive();
     audio = waifu_sdl3_audio_create();
 
+    /* One game step per presented frame is what a scripted capture needs (its
+       command file counts frames) and what --no-delay means. Interactive play
+       runs the accumulator instead. */
+    fixed_step = (commands_path != NULL) || no_delay;
+
     next_frame_ns = SDL_GetTicksNS();
     fps_window_ns = next_frame_ns;
+    last_tick_ns = next_frame_ns;
 
     while (running) {
         WaifuFmInput effective;
@@ -376,6 +390,14 @@ int main(int argc, char **argv)
         if (commands_path) {
             ScriptButtons sb = input_for_frame_from_events(frame, events, event_count);
             waifu_input_inject(input, &sb.in, sb.menu);
+        }
+        {
+            Uint64 now = SDL_GetTicksNS();
+            frame_delta_ns = now - last_tick_ns;
+            last_tick_ns = now;
+            /* Clamp a stall (window drag, alt-tab) so it never replays as a
+               burst of game frames. */
+            if (frame_delta_ns > SDL_NS_PER_SECOND / 4) frame_delta_ns = STEP_NS;
         }
         waifu_input_update(input);
         /* The overlay draws into the present target (canvas sized), so its
@@ -404,10 +426,28 @@ int main(int argc, char **argv)
         } else {
             if (waifu_input_pressed(input, WAIFU_ACT_MENU)) {
                 waifu_menu_open(menu);
+                step_accum_ns = 0;
             } else {
+                int steps = 1;
                 effective = input_from_actions(input);
+                /* The game logic is a fixed 60 Hz clock. Presentation is not:
+                   vsync on a 120/144 Hz display, or an uncapped limiter, would
+                   otherwise run the game at the refresh rate. So accumulate real
+                   time and step only whole game frames, catching up at most a
+                   few (a long stall must not turn into a burst of gameplay).
+                   Scripted runs keep one step per iteration so a command file's
+                   frame numbers stay exact. */
+                if (!fixed_step) {
+                    steps = 0;
+                    step_accum_ns += frame_delta_ns;
+                    while (step_accum_ns >= STEP_NS && steps < 4) {
+                        step_accum_ns -= STEP_NS;
+                        ++steps;
+                    }
+                    if (step_accum_ns > STEP_NS * 4) step_accum_ns = 0;
+                }
                 waifu_sdl3_audio_lock(audio);
-                waifu_fm_step(&effective);
+                while (steps-- > 0) waifu_fm_step(&effective);
                 waifu_sdl3_audio_unlock(audio);
             }
             waifu_menu_draw_hud(menu, win_w, win_h, settings.show_fps ? fps_value : -1.0f);
