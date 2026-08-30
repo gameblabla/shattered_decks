@@ -97,12 +97,27 @@ static const char *const waifu_sdl3_card_frame_src[WAIFU_SDL3_CARD_FRAME_SRC_COU
     "assets/source/textures/spell_card_front_template.png",
     "assets/source/textures/trap_card_front_template.png",
 };
-/* Art window inside a card front frame, as a fraction of the card rect
-   (from card_front_template_pixel_monster_original_res.txt). */
+/* The three windows inside a card front frame, as fractions of the card
+   rect (from card_front_template_pixel_monster_original_res.txt): the art window, the bottom
+   stat band and the top level-ankh band. */
 #define WAIFU_SDL3_CARD_ART_U0 0.116756f
 #define WAIFU_SDL3_CARD_ART_V0 0.189016f
 #define WAIFU_SDL3_CARD_ART_U1 0.879679f
 #define WAIFU_SDL3_CARD_ART_V1 0.768902f
+#define WAIFU_SDL3_CARD_STAT_U0 0.122103f
+#define WAIFU_SDL3_CARD_STAT_V0 0.796006f
+#define WAIFU_SDL3_CARD_STAT_U1 0.877005f
+#define WAIFU_SDL3_CARD_STAT_V1 0.923680f
+#define WAIFU_SDL3_CARD_STAR_U0 0.118538f
+#define WAIFU_SDL3_CARD_STAR_V0 0.094864f
+#define WAIFU_SDL3_CARD_STAR_U1 0.879679f
+#define WAIFU_SDL3_CARD_STAR_V1 0.165478f
+/* The template pixel size, so a band pixel aspect (and the strip
+   textures generated for it) can be recovered from the fractions above. */
+#define WAIFU_SDL3_CARD_TEMPLATE_W 1122
+#define WAIFU_SDL3_CARD_TEMPLATE_H 1402
+static const char *const waifu_sdl3_ankh_src = "assets/source/textures/ankh.png";
+#define WAIFU_SDL3_ANKH_ASPECT 0.550505f
 #define WAIFU_SDL3_BOARD_TILE_SRC_COUNT 2
 static const char *const waifu_sdl3_board_tile_src[WAIFU_SDL3_BOARD_TILE_SRC_COUNT] = {
     "assets/source/textures/sandstone_1.png",

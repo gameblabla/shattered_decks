@@ -6,8 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <stdio.h>
+
 #include "sdl3_image_load.h"
+#include "sdl3_text.h"
 #include "sdl3_card_paths.h"
+#include "hw3d.h"
 #include "waifu_assets.h"
 
 /* Copy the largest sub-rectangle of (src, sw x sh) with aspect ar = tw/th,
@@ -235,6 +239,164 @@ uint8_t *waifu_sdl3_hires_board_tile_decode(int index, int *w, int *h)
     if (index < 0 || index >= WAIFU_SDL3_BOARD_TILE_SRC_COUNT) return NULL;
     if (!waifu_sdl3_board_tile_src[index][0]) return NULL;
     return waifu_sdl3_image_load_rgba(waifu_sdl3_board_tile_src[index], w, h);
+}
+
+/* ---- front-frame band strips (level ankhs, ATK/DEF, support label) ---------
+ * The full-resolution front frame covers the whole card, so the level pips and
+ * the stat numbers the console bakes into the 8bpp face disappear underneath
+ * it. They come back as two small strip textures, each generated once and drawn
+ * over the band the template reserves for it -- one path that serves the 2D
+ * hand card and the perspective board card alike.
+ *
+ * A strip's pixel aspect is the band's aspect IN THE TEMPLATE, so placing it on
+ * the band's fraction of the card rect stretches it by exactly the amount the
+ * frame itself is stretched. */
+
+#define BAND_PX_W(u0, u1) ((float)WAIFU_SDL3_CARD_TEMPLATE_W * ((u1) - (u0)))
+#define BAND_PX_H(v0, v1) ((float)WAIFU_SDL3_CARD_TEMPLATE_H * ((v1) - (v0)))
+
+/* Strip widths. Both bands are drawn well above the size a card ever reaches on
+   screen (a hand card is ~270 device px wide at 1080p), and the GPU mip chain
+   takes them down from there. */
+#define STAR_STRIP_W 512
+#define STAT_STRIP_W 640
+
+/* Height of a strip whose width is `sw` and whose band is (v0..v1, u0..u1). */
+static int band_strip_h(int sw, float u0, float v0, float u1, float v1)
+{
+    int h = (int)((float)sw * BAND_PX_H(v0, v1) / BAND_PX_W(u0, u1) + 0.5f);
+    return h < 1 ? 1 : h;
+}
+
+int waifu_sdl3_hires_card_level(int card_id)
+{
+    int level;
+    if (card_id < 0 || card_id >= WAIFU_CARD_COUNT) return 0;
+    level = ((int)waifu_card_atk[card_id] + (int)waifu_card_def[card_id]) / 700;
+    if (level < 1) level = 1;
+    if (level > WAIFU_HIRES_MAX_LEVEL) level = WAIFU_HIRES_MAX_LEVEL;
+    return level;
+}
+
+uint8_t *waifu_sdl3_hires_stars_decode(int level, int *w, int *h)
+{
+    uint8_t *ankh, *cell, *strip;
+    int aw = 0, ah = 0, i;
+    int sw = STAR_STRIP_W;
+    int sh = band_strip_h(sw, WAIFU_SDL3_CARD_STAR_U0, WAIFU_SDL3_CARD_STAR_V0,
+                          WAIFU_SDL3_CARD_STAR_U1, WAIFU_SDL3_CARD_STAR_V1);
+    int cell_h, cell_w, gap, pitch, x0, y0;
+
+    if (level < 1 || level > WAIFU_HIRES_MAX_LEVEL) return NULL;
+    if (!waifu_sdl3_ankh_src || !waifu_sdl3_ankh_src[0]) return NULL;
+    ankh = waifu_sdl3_image_load_rgba(waifu_sdl3_ankh_src, &aw, &ah);
+    if (!ankh) return NULL;
+
+    /* One ankh stands 88% of the band tall, and the row is laid out from the
+       band's RIGHT edge leftwards -- Yu-Gi-Oh's own star order. */
+    cell_h = (int)((float)sh * 0.98f + 0.5f);
+    if (cell_h < 1) cell_h = 1;
+    cell_w = (int)((float)cell_h * WAIFU_SDL3_ANKH_ASPECT + 0.5f);
+    if (cell_w < 1) cell_w = 1;
+    gap = (int)((float)cell_w * 0.22f + 0.5f);
+    pitch = cell_w + gap;
+    /* A level-8 row must still fit the band: shrink the pitch, never the ankh. */
+    while (pitch * level - gap > sw && gap > 0) { --gap; pitch = cell_w + gap; }
+    y0 = (sh - cell_h) / 2;
+    x0 = sw - (pitch * level - gap);
+    if (x0 < 0) x0 = 0;
+
+    cell = (uint8_t *)malloc((size_t)cell_w * cell_h * 4);
+    strip = (uint8_t *)calloc((size_t)sw * sh, 4);
+    if (!cell || !strip) { free(cell); free(strip); free(ankh); return NULL; }
+    resample_box(ankh, aw, 0, 0, aw, ah, cell, cell_w, cell_h);
+    free(ankh);
+
+    for (i = 0; i < level; ++i) {
+        int x = x0 + i * pitch, y;
+        if (x + cell_w > sw) break;
+        for (y = 0; y < cell_h && y0 + y < sh; ++y)
+            memcpy(strip + ((size_t)(y0 + y) * sw + x) * 4,
+                   cell + (size_t)y * cell_w * 4, (size_t)cell_w * 4);
+    }
+    free(cell);
+    *w = sw;
+    *h = sh;
+    return strip;
+}
+
+/* The bottom band's shared geometry: a transparent strip and the text cell
+   height that fills it. */
+static uint32_t *stat_strip_new(int *out_w, int *out_h, float *cell_px)
+{
+    int sw = STAT_STRIP_W;
+    int sh = band_strip_h(sw, WAIFU_SDL3_CARD_STAT_U0, WAIFU_SDL3_CARD_STAT_V0,
+                          WAIFU_SDL3_CARD_STAT_U1, WAIFU_SDL3_CARD_STAT_V1);
+    uint32_t *px = (uint32_t *)calloc((size_t)sw * sh, 4);
+    if (!px) return NULL;
+    *out_w = sw;
+    *out_h = sh;
+    /* The 8 px cell is taller than its capitals (6.6/8); sizing the cell to
+       three quarters of the band leaves the numbers a comfortable margin. */
+    *cell_px = (float)sh * 0.78f;
+    return px;
+}
+
+uint8_t *waifu_sdl3_hires_stats_decode(int card_id, int *w, int *h)
+{
+    char text[32];
+    uint32_t *px;
+    int sw = 0, sh = 0;
+    float cell_px = 0.0f, tw, pad;
+
+    if (card_id < 0 || card_id >= WAIFU_CARD_COUNT) return NULL;
+    if (!waifu_sdl3_text_ready()) return NULL;
+    snprintf(text, sizeof text, "ATK/%u  DEF/%u",
+             (unsigned)waifu_card_atk[card_id], (unsigned)waifu_card_def[card_id]);
+    px = stat_strip_new(&sw, &sh, &cell_px);
+    if (!px) return NULL;
+    /* Right-aligned in the band, as on a real card. If a long pair of numbers
+       overruns the band, the cell shrinks until it fits rather than clipping. */
+    pad = (float)sw * 0.02f;
+    tw = waifu_sdl3_text_measure(text, cell_px);
+    if (tw > (float)sw - 2.0f * pad) {
+        cell_px *= ((float)sw - 2.0f * pad) / tw;
+        tw = waifu_sdl3_text_measure(text, cell_px);
+    }
+    waifu_sdl3_text_draw_rgba_outlined(px, sw, sh, (float)sw - pad - tw,
+                                       ((float)sh - cell_px) * 0.5f, cell_px, text,
+                                       0xE8, 0xC8, 0x6A, 0x08, 0x06, 0x04,
+                                       cell_px * 0.06f);
+    *w = sw;
+    *h = sh;
+    return (uint8_t *)px;
+}
+
+uint8_t *waifu_sdl3_hires_label_decode(int label, int *w, int *h)
+{
+    static const char *const words[3] = { "EQUIP", "SUPPORT", "TRAP" };
+    uint32_t *px;
+    int sw = 0, sh = 0;
+    float cell_px = 0.0f, tw, pad;
+
+    if (label < 0 || label > 2) return NULL;
+    if (!waifu_sdl3_text_ready()) return NULL;
+    px = stat_strip_new(&sw, &sh, &cell_px);
+    if (!px) return NULL;
+    pad = (float)sw * 0.02f;
+    tw = waifu_sdl3_text_measure(words[label], cell_px);
+    if (tw > (float)sw - 2.0f * pad) {
+        cell_px *= ((float)sw - 2.0f * pad) / tw;
+        tw = waifu_sdl3_text_measure(words[label], cell_px);
+    }
+    /* A class word is centred -- there is no second column to line up with. */
+    waifu_sdl3_text_draw_rgba_outlined(px, sw, sh, ((float)sw - tw) * 0.5f,
+                                       ((float)sh - cell_px) * 0.5f, cell_px, words[label],
+                                       0xF0, 0xE0, 0xB0, 0x08, 0x06, 0x04,
+                                       cell_px * 0.08f);
+    *w = sw;
+    *h = sh;
+    return (uint8_t *)px;
 }
 
 uint8_t *waifu_sdl3_hires_title_decode(int *w, int *h)

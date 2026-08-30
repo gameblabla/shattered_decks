@@ -44,4 +44,25 @@ float waifu_sdl3_glyph_advance(void);
    layer to upload once. Returns NULL until the font is ready. */
 const uint32_t *waifu_sdl3_glyph_atlas(int *w, int *h);
 
+/* ---- CPU string rasterizer -------------------------------------------------
+   The card front frames carry their ATK/DEF numbers and their EQUIP/SUPPORT/
+   TRAP label baked into a small per-card strip texture (sdl3_hires.c), because
+   the same strip has to land on a 2D hand card AND on a perspective board card
+   -- the GPU glyph pipeline only draws screen-space quads. These two helpers
+   rasterize the same TTF glyph atlas straight into an RGBA8 buffer.
+
+   `cell_px` is the destination height of the game's 8 px text cell, so a string
+   drawn at cell_px = 40 has capitals 6.6/8 * 40 = 33 px tall. (x, y) is the
+   top-left of that cell box. Pixels are alpha-blended over what is there. */
+float waifu_sdl3_text_measure(const char *s, float cell_px);
+void waifu_sdl3_text_draw_rgba(uint32_t *dst, int dst_w, int dst_h,
+                               float x, float y, float cell_px, const char *s,
+                               uint8_t r, uint8_t g, uint8_t b);
+/* The same string with a `px`-wide outline in (or, og, ob) laid down first --
+   what keeps a light label readable over the frame's dark marbling. */
+void waifu_sdl3_text_draw_rgba_outlined(uint32_t *dst, int dst_w, int dst_h,
+                                        float x, float y, float cell_px, const char *s,
+                                        uint8_t r, uint8_t g, uint8_t b,
+                                        uint8_t orr, uint8_t og, uint8_t ob, float px);
+
 #endif /* WAIFU_SDL3_TEXT_H */

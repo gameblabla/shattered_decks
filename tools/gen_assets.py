@@ -22,6 +22,7 @@ CD_SECTOR = 2048
 PORTRAIT_BYTES = PORTRAIT_W * PORTRAIT_H
 PORTRAIT_CD_STRIDE = ((PORTRAIT_BYTES + CD_SECTOR - 1) // CD_SECTOR) * CD_SECTOR
 PORTRAIT_DIR = ROOT/'assets/source/story_portraits'
+TEXTURE_DIR = ROOT/'assets/source/textures'
 STORY_PORTRAITS = ['serena.png','opponent_0.png','opponent_1.png','opponent_2.png','opponent_3.png','opponent_4.png']
 
 def card_macro(asset_id):
@@ -250,26 +251,29 @@ def draw_card_back():
     d.rectangle([2,2,CARD_W-3,CARD_H-3], outline=(240,169,45))
     return img
 
-def tile_gold(variant=0):
-    img=Image.new('RGB',(TILE,TILE),(190,111,18))
-    for y in range(TILE):
-        for x in range(TILE):
-            # Keep the gold board texture free of baked-in borders or hard
-            # diagonals. Those strokes were being projected with the normal
-            # per-cell two-triangle renderer and read as texture seams,
-            # especially on the bright yellow tile.  Use only soft periodic
-            # variation here; the board grid is responsible for tile borders.
-            diag=(x+y+variant*9)&31
-            wave=16-abs(diag-16)
-            grain=(x*5+y*3+variant*17)&15
-            r=194+wave*2+grain
-            g=124+wave+grain//2
-            b=22+wave//4
-            if ((x*2+y+variant*7)&31) < 9:
-                r += 16; g += 18; b += 7
-            base=(r,g,b)
-            img.putpixel((x,y), tuple(min(255,c) for c in base))
-    return img
+BOARD_TILE_SRC = ['sandstone_1.png', 'sandstone_2.png']
+# Colours kept per 32x32 board tile before the master-palette pass.  The sources
+# are photographic sandstone, and at 32x32 their per-pixel grain buys nothing on
+# a console while costing real space: the FM TOWNS turn-board cache
+# (src/generated/fmtowns_turn_board_cache.h) stores the moving board as XOR
+# deltas between poses, so every index that differs between two frames is
+# another delta byte -- the unreduced tiles pushed the FM TOWNS boot image past
+# its 0x90000 ceiling.  Twelve levels flatten the interior noise while leaving
+# the carved border crisp, because that border is an edge, not grain.
+BOARD_TILE_COLORS = 12
+
+def board_tile(index):
+    # The two board checker squares are authored artwork, not procedural noise:
+    # assets/source/textures/sandstone_1.png (light) and sandstone_2.png (dark),
+    # Lanczos-filtered down to the 32x32 atlas cell.  Each source already carries
+    # a carved border, so one board cell reads as one framed sandstone slab and
+    # the board needs no drawn grid of its own.  The SDL3 frontend loads the same
+    # two PNGs at full resolution instead of this downscale (sdl3_hires.c).
+    img = Image.open(TEXTURE_DIR / BOARD_TILE_SRC[index]).convert('RGB')
+    tile = img.resize((TILE, TILE), Image.Resampling.LANCZOS)
+    return tile.quantize(colors=BOARD_TILE_COLORS,
+                         method=Image.Quantize.MEDIANCUT,
+                         dither=Image.Dither.NONE).convert('RGB')
 
 def tile_sand():
     img=Image.new('RGB',(TILE,TILE),(198,162,96))
@@ -354,33 +358,6 @@ def tile_side_wall():
 
 def tile_dark(): return Image.new('RGB',(TILE,TILE),(0,0,0))
 
-def tile_brown():
-    # Canonical dark checker art -- kept as the palette-defining reference so the
-    # 256-colour master palette (and therefore every card/portrait it quantizes)
-    # stays byte-stable.  The BOARD renders tile_brown_board() instead (see
-    # tex_atlas_rgb below); this original is only fed to the palette builder.
-    img=Image.new('RGB',(TILE,TILE),(52,19,7)); d=ImageDraw.Draw(img)
-    for y in range(0,TILE,4): d.line([0,y,31,y], fill=(25,8,3))
-    for x in range(0,TILE,8): d.line([x,0,x,31], fill=(100,42,10))
-    return img
-
-def tile_brown_board():
-    # Low-frequency carved-wood grain for the dark board squares.  Reuse only
-    # colours from tile_brown(), which keeps the master palette byte-stable.
-    # Broad two-pixel bands survive the projected whole-texel sampling without
-    # turning into the old comb of one-pixel vertical/horizontal streaks.
-    img=Image.new('RGB',(TILE,TILE),(52,19,7)); d=ImageDraw.Draw(img)
-    dark=(25,8,3); warm=(100,42,10)
-    d.line([(0,8),(7,7),(15,9),(23,7),(31,8)], fill=dark, width=2)
-    d.line([(0,10),(7,9),(15,11),(23,9),(31,10)], fill=warm, width=2)
-    d.line([(0,23),(8,21),(16,23),(24,22),(31,24)], fill=dark, width=2)
-    d.line([(0,25),(8,23),(16,25),(24,24),(31,26)], fill=warm, width=2)
-    d.ellipse([5,14,10,18], fill=warm)
-    d.ellipse([7,15,9,17], fill=dark)
-    d.ellipse([23,2,27,5], fill=warm)
-    d.rectangle([24,3,26,4], fill=dark)
-    return img
-
 def tile_volcanic_ground():
     img = Image.new('RGB', (TILE, TILE), (74, 39, 22))
     for y in range(TILE):
@@ -436,13 +413,12 @@ support_rgb=draw_support_face()
 # rendered crisply at full size rather than upscaled from the 38x54 face.
 support_big_rgb=draw_support_emblem(BIG_W)
 back_rgb=draw_card_back()
-tex_rgb=[tile_dark(),tile_gold(0),tile_sand(),tile_stone(),tile_side_wall(),tile_brown(),tile_volcanic_ground(),tile_volcanic_slope(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
-# Art actually baked into the runtime atlas: identical to tex_rgb except the
-# dark board checker (index 5) uses the projection-safe tile_brown_board(). tex_rgb
-# (the canonical art) still drives the palette so the master palette and every
-# card/portrait quantized against it stay byte-stable; only the board tile art
-# changes.  See tile_brown_board() for why.
-tex_atlas_rgb=list(tex_rgb); tex_atlas_rgb[5]=tile_brown_board()
+tex_rgb=[tile_dark(),board_tile(0),tile_sand(),tile_stone(),tile_side_wall(),board_tile(1),tile_volcanic_ground(),tile_volcanic_slope(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
+# Art baked into the runtime atlas.  The board checkers used to differ here from
+# the palette-defining tex_rgb (a projection-safe redraw of the dark square);
+# now both lists carry the same sandstone art, so the master palette is built
+# from exactly what the board renders.
+tex_atlas_rgb=list(tex_rgb)
 story_portraits_rgba=load_story_portraits_rgba()
 
 def build_palette_image(images):
@@ -484,7 +460,15 @@ def apply_base_colors(pal_img, palette, idx_map):
         palette[i:i+3] = list(rgb)
     pal_img.putpalette(palette)
 
-common_palette_images = card_faces_rgb + big_card_rgb + [support_rgb,support_big_rgb,back_rgb] + tex_rgb
+# The board checkers are the largest continuous surface on screen during a duel,
+# but as two 32x32 tiles they are ~0.7% of the palette-builder's samples next to
+# 72 card faces, so MEDIANCUT gave the sandstone tans almost no entries and the
+# board quantized into blotches.  Weight them up so the master palette carries a
+# usable ramp of stone colours.
+BOARD_TILE_PALETTE_WEIGHT = 16
+common_palette_images = (card_faces_rgb + big_card_rgb +
+                         [support_rgb,support_big_rgb,back_rgb] + tex_rgb +
+                         [tex_rgb[1], tex_rgb[5]] * BOARD_TILE_PALETTE_WEIGHT)
 dialogue_palette_images = [p.convert('RGB') for p in story_portraits_rgba]
 pal_img,palette=build_palette_image(common_palette_images)
 dialogue_pal_img,dialogue_palette=build_palette_image(dialogue_palette_images)

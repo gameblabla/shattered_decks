@@ -91,6 +91,16 @@ uint32_t waifu_deck_runtime_seed(uint32_t salt)
        scene every run. */
     return deck_mix32(salt ^ 0x5f3a91c7u);
 #else
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* Desktop only: WAIFU_DECK_SEED=<n> pins the deal, so a scripted headless
+       capture replays the SAME duel every run. Without it the seed mixes
+       time()/clock() and two runs of the same command file diverge at the
+       first draw, which makes a before/after screenshot comparison useless. */
+    {
+        const char *env = getenv("WAIFU_DECK_SEED");
+        if (env && env[0]) return deck_mix32(salt ^ (uint32_t)strtoul(env, 0, 0));
+    }
+#endif
     static uint32_t runtime_seed_counter = 0u;
     uintptr_t stack_mix = (uintptr_t)&salt;
     uintptr_t code_mix = (uintptr_t)&waifu_deck_runtime_seed;

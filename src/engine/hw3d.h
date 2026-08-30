@@ -49,6 +49,14 @@ enum {
     WAIFU_CARD_FRAME_TRAP = 2
 };
 
+/* What a support card's front frame writes in the band where a monster writes
+   its ATK/DEF, also named through waifu_hw2d_card_frame_hint(). */
+enum {
+    WAIFU_CARD_LABEL_EQUIP = 0,
+    WAIFU_CARD_LABEL_SUPPORT = 1,
+    WAIFU_CARD_LABEL_TRAP = 2
+};
+
 #if defined(WAIFU_PLATFORM_HW3D)
 
 /* Constant per platform: 1 when a hardware 3D layer exists. Call sites use it
@@ -118,13 +126,21 @@ int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
  * frontend can pick the matching high-resolution front frame. Only support
  * cards need it -- every Spell and Trap shares one face buffer, so the pointer
  * alone cannot tell them apart -- and it applies to the next support-face draw.
+ * `label` (WAIFU_CARD_LABEL_*) is the word that frame's bottom band carries.
  * Purely cosmetic: a platform without hi-res frames ignores it. */
-void waifu_hw2d_card_frame_hint(int frame);
+void waifu_hw2d_card_frame_hint(int frame, int label);
 
 /* Screen-space textured quad (projected card animations whose corners exist
  * only as screen points). xy = 4 corner pairs, UV (0,0),(1,0),(1,1),(0,1). */
 int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
                           const int xy[8], int gray);
+
+/* Screen-space flat-coloured quad with an alpha (0..255), for overlays a
+ * palette framebuffer cannot express -- the 3D zone cursor's translucent ring
+ * and tint. xy = 4 corner pairs, in the same winding as the textured quad.
+ * Returns 0 when the platform has no alpha layer, so the caller falls back to
+ * its opaque software draw. */
+int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alpha);
 
 #else /* !WAIFU_PLATFORM_HW3D: inert stubs, compile out entirely */
 
@@ -158,10 +174,13 @@ static inline int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int 
                                    int dx, int dy, int dw, int dh, int gray, int colorkey0)
 { (void)pix; (void)mask; (void)sw; (void)sh; (void)dx; (void)dy; (void)dw; (void)dh;
   (void)gray; (void)colorkey0; return 0; }
-static inline void waifu_hw2d_card_frame_hint(int frame) { (void)frame; }
+static inline void waifu_hw2d_card_frame_hint(int frame, int label)
+{ (void)frame; (void)label; }
 static inline int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
                                         const int xy[8], int gray)
 { (void)pix; (void)sw; (void)sh; (void)xy; (void)gray; return 0; }
+static inline int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alpha)
+{ (void)xy; (void)color; (void)alpha; return 0; }
 
 #endif /* WAIFU_PLATFORM_HW3D */
 

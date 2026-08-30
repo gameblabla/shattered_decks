@@ -8,3 +8,7 @@ is where monster art should be placed at
 
 137, 1116 to 984,1295
 is where the bottom portion of card is (where ATK/DEF stats are written).
+
+133,133 to 987, 232
+is the top portion of the card, where the level ankhs (assets/source/textures/ankh.png)
+are laid out right-to-left like Yu-Gi-Oh's star row.

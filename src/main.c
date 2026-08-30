@@ -3666,6 +3666,22 @@ static void draw_duel_wings(int field_ox, int lp_ox);
 static void draw_pointer_end_turn_button(void);
 static void draw_deck_editor_pointer_buttons(void);
 
+/* The COM / YOU tag on an LP panel: a coloured plate with the label on it.
+   The PC frontend swaps the 8x8 bitmap glyph for a bold TTF face whose ink runs
+   a little taller and wider than the cell, so there the plate is a pixel taller
+   (and starts a pixel higher, keeping the label centred in it) and two pixels
+   wider, which is what stops the M of COM and the U of YOU from hanging off the
+   colour. Every console keeps the authored 23x8 plate. */
+static void draw_lp_label(int x, int y, const char *s, uint8_t fill)
+{
+#if defined(WAIFU_PLATFORM_HW3D)
+    rect_fill(x, y - 1, 25, 10, fill);
+#else
+    rect_fill(x, y, 23, 8, fill);
+#endif
+    draw_text_small(x + 2, y, s, IDX_WHITE, IDX_BLACK);
+}
+
 static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
 {
     char lpbuf[16];
@@ -3680,14 +3696,12 @@ static void draw_hud_offset(int field_ox, int field_oy, int lp_ox, int lp_oy)
        wider framebuffers (compile-time) plus the runtime widescreen room. */
     lp_ox += WAIFU_UI_EXTRA_W + waifu_platform_ui_extra_w();
     draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
-    rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
-    draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
+    draw_lp_label(179 + lp_ox, 9 + lp_oy, "COM", IDX_UI_BLUE);
     fmt_lp5(lpbuf, g_com_lp_disp);
     draw_text_small(209 + lp_ox, 9 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 
     draw_panel_rect(177 + lp_ox, 23 + lp_oy, 71, 12, IDX_UI_DARK);
-    rect_fill(179 + lp_ox, 25 + lp_oy, 23, 8, IDX_UI_RED);
-    draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
+    draw_lp_label(179 + lp_ox, 25 + lp_oy, "YOU", IDX_UI_RED);
     fmt_lp5(lpbuf, g_you_lp_disp);
     draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
     draw_duel_wings(field_ox, lp_ox);
@@ -3710,14 +3724,12 @@ static void draw_lp_counters(int lp_ox, int lp_oy)
     ui_hud_begin();
     lp_ox += WAIFU_UI_EXTRA_W + waifu_platform_ui_extra_w();
     draw_panel_rect(177 + lp_ox, 7 + lp_oy, 71, 12, IDX_UI_DARK);
-    rect_fill(179 + lp_ox, 9 + lp_oy, 23, 8, IDX_UI_BLUE);
-    draw_text_small(181 + lp_ox, 9 + lp_oy, "COM", IDX_WHITE, IDX_BLACK);
+    draw_lp_label(179 + lp_ox, 9 + lp_oy, "COM", IDX_UI_BLUE);
     fmt_lp5(lpbuf, g_com_lp_disp);
     draw_text_small(209 + lp_ox, 9 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
 
     draw_panel_rect(177 + lp_ox, 23 + lp_oy, 71, 12, IDX_UI_DARK);
-    rect_fill(179 + lp_ox, 25 + lp_oy, 23, 8, IDX_UI_RED);
-    draw_text_small(181 + lp_ox, 25 + lp_oy, "YOU", IDX_WHITE, IDX_BLACK);
+    draw_lp_label(179 + lp_ox, 25 + lp_oy, "YOU", IDX_UI_RED);
     fmt_lp5(lpbuf, g_you_lp_disp);
     draw_text_small(209 + lp_ox, 25 + lp_oy, lpbuf, IDX_GOLD_HI, IDX_BLACK);
     ui_hud_end();
@@ -5031,7 +5043,10 @@ static void draw_support_sprite(int id, int x, int y, int w, int h)
        full-resolution Spell / Trap front frame. That frame is already violet for
        a Trap, so the software recolour overlay would only paint over it. */
     waifu_hw2d_card_frame_hint(is_trap_support_card(id) ? WAIFU_CARD_FRAME_TRAP
-                                                       : WAIFU_CARD_FRAME_SPELL);
+                                                       : WAIFU_CARD_FRAME_SPELL,
+                               is_trap_support_card(id) ? WAIFU_CARD_LABEL_TRAP
+                               : is_equip_support_card(id) ? WAIFU_CARD_LABEL_EQUIP
+                                                           : WAIFU_CARD_LABEL_SUPPORT);
     draw_card_raw(waifu_assets_support_face(), WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
     if (is_trap_support_card(id) && !waifu_hw2d_active()) draw_trap_frame_overlay(x, y, w, h);
 }
@@ -7403,6 +7418,47 @@ static void draw_board_card_ex_basis(Camera cam, const CameraBasis *basis,
     draw_board_card_state(cam, col, row, card_id, back, gray, 0, basis);
 }
 
+/* The translucent zone-cursor ring (hardware 2D only). Returns 0 when the
+   platform has no alpha layer and the caller should draw its software box. */
+static int zone_cursor_ring_hw(ScreenPt p0, ScreenPt p1, ScreenPt p2, ScreenPt p3)
+{
+    /* Ring thickness in game pixels. The board zone is a big quad on screen, so
+       a fixed thickness reads the same from the flat duel camera and from the
+       top-down tactical view. */
+    const int t = 2;
+    int ox[4], oy[4], ix[4], iy[4];
+    int fill[8], band[8];
+    int cx, cy, i;
+    if (!waifu_hw2d_active()) return 0;
+    ox[0] = p0.x; oy[0] = p0.y;
+    ox[1] = p1.x; oy[1] = p1.y;
+    ox[2] = p2.x; oy[2] = p2.y;
+    ox[3] = p3.x; oy[3] = p3.y;
+    cx = (ox[0] + ox[1] + ox[2] + ox[3]) / 4;
+    cy = (oy[0] + oy[1] + oy[2] + oy[3]) / 4;
+    for (i = 0; i < 4; ++i) {
+        /* Pull each corner `t` pixels toward the centroid along its own
+           diagonal: the inset stays a similar quad, so the four bands come out
+           the same width however the zone is foreshortened. */
+        int dx = cx - ox[i], dy = cy - oy[i];
+        int d = (int)isqrt_u32((uint32_t)(dx * dx + dy * dy));
+        if (d < 1) d = 1;
+        ix[i] = ox[i] + dx * t / d;
+        iy[i] = oy[i] + dy * t / d;
+    }
+    for (i = 0; i < 4; ++i) { fill[i * 2] = ox[i]; fill[i * 2 + 1] = oy[i]; }
+    waifu_hw2d_quad_alpha(fill, IDX_RED, 46);
+    for (i = 0; i < 4; ++i) {
+        int j = (i + 1) & 3;
+        band[0] = ox[i]; band[1] = oy[i];
+        band[2] = ox[j]; band[3] = oy[j];
+        band[4] = ix[j]; band[5] = iy[j];
+        band[6] = ix[i]; band[7] = iy[i];
+        waifu_hw2d_quad_alpha(band, IDX_RED, 214);
+    }
+    return 1;
+}
+
 static void draw_zone_cursor_q(Camera cam, int32_t col, int32_t row)
 {
     int32_t x0 = col_xq(col), x1 = col_xq(col + Q8_ONE);
@@ -7420,6 +7476,13 @@ static void draw_zone_cursor_q(Camera cam, int32_t col, int32_t row)
     p1.x = p1.x < 0 ? 0 : (p1.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p1.x); p1.y = p1.y < 0 ? 0 : (p1.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p1.y);
     p2.x = p2.x < 0 ? 0 : (p2.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p2.x); p2.y = p2.y < 0 ? 0 : (p2.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p2.y);
     p3.x = p3.x < 0 ? 0 : (p3.x >= WAIFU_FM_WIDTH ? WAIFU_FM_WIDTH - 1 : p3.x); p3.y = p3.y < 0 ? 0 : (p3.y >= WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT - 1 : p3.y);
+    /* Hardware 2D: the ring is real geometry -- four bands between the zone's
+       projected outline and an inset copy of it -- instead of a Bresenham walk
+       stamping 3x3 blocks, which is what made the "square" ragged and
+       lopsided (the blocks are anchored at t/2, so opposite edges thicken
+       outwards by different amounts). Translucent, over a soft tint of the
+       zone itself, so the cursor reads as a highlight rather than a sticker. */
+    if (zone_cursor_ring_hw(p0, p1, p2, p3)) return;
     thick_line(p0.x,p0.y,p1.x,p1.y,3,IDX_RED); thick_line(p1.x,p1.y,p2.x,p2.y,3,IDX_RED);
     thick_line(p2.x,p2.y,p3.x,p3.y,3,IDX_RED); thick_line(p3.x,p3.y,p0.x,p0.y,3,IDX_RED);
 }
@@ -8031,6 +8094,13 @@ static void draw_battle_cutin_event_ex(int f, int start,
 #else
     restore_solid_screen(IDX_BLACK);
 #endif
+    /* The clash is authored for the 256-wide column, so on a widescreen display
+       the pair of cards sat in the middle of an empty black rectangle that read
+       as a 4:3 window cut into the screen. The same arena vault the duel board
+       stands in fills the frame behind it (full width, re-pushed each frame
+       because the solid restore above wipes the canvas). A no-op on every
+       console, where the screen IS the column. */
+    waifu_platform_arena_backdrop();
     ui_hud_begin();
     const int ax = WAIFU_BATTLE_CARD_X0 + ho, ay = WAIFU_BATTLE_CARD_Y;
     const int dx = WAIFU_BATTLE_CARD_X1 + ho, dy = WAIFU_BATTLE_CARD_Y;
@@ -13883,6 +13953,11 @@ static void draw_com_thunder_body(void)
 static void draw_com_thunder_anim(void)
 {
     clear_screen(IDX_BLACK);
+    /* Widescreen: this animation is authored for the 256-wide column, so a
+       bare black clear left it sitting in an empty rectangle that reads as a
+       4:3 window. The duel's own arena vault fills the frame behind it.
+       A no-op on every console. */
+    waifu_platform_arena_backdrop();
     ui_hud_begin();
     draw_com_thunder_body();
     ui_hud_end();
@@ -13997,6 +14072,11 @@ static void draw_player_one_shot_support_body(void)
 static void draw_player_one_shot_support_anim(void)
 {
     clear_screen(IDX_BLACK);
+    /* Widescreen: this animation is authored for the 256-wide column, so a
+       bare black clear left it sitting in an empty rectangle that reads as a
+       4:3 window. The duel's own arena vault fills the frame behind it.
+       A no-op on every console. */
+    waifu_platform_arena_backdrop();
     ui_hud_begin();
     draw_player_one_shot_support_body();
     ui_hud_end();
@@ -14071,6 +14151,7 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
         return;
     }
     restore_solid_screen(IDX_BLACK);
+    waifu_platform_arena_backdrop();
     local -= WAIFU_BATTLE_PRELUDE_FRAMES;
     if (atk_back && local < flip_dur) {
         draw_big_battle_card_flip(atk_id, ax, ay, local, flip_dur);
@@ -14607,6 +14688,11 @@ static void draw_player_equip_anim(void)
     int def_to = g_b_equip_base_def + g_b_equip_pending_def;
 
     clear_screen(IDX_BLACK);
+    /* Widescreen: this animation is authored for the 256-wide column, so a
+       bare black clear left it sitting in an empty rectangle that reads as a
+       4:3 window. The duel's own arena vault fills the frame behind it.
+       A no-op on every console. */
+    waifu_platform_arena_backdrop();
     /* Full-screen animation: it owns the whole display, so the flash reaches the
        real edges and the card centres on the true screen instead of sitting in a
        256-wide column with black bars beside it. */
@@ -14838,6 +14924,11 @@ static void draw_player_fusion_anim(void)
     }
 
     clear_screen(IDX_BLACK);
+    /* Widescreen: this animation is authored for the 256-wide column, so a
+       bare black clear left it sitting in an empty rectangle that reads as a
+       4:3 window. The duel's own arena vault fills the frame behind it.
+       A no-op on every console. */
+    waifu_platform_arena_backdrop();
     /* Full-screen scene: the striped ground, the panel and the flash all reach
        the true screen edges, and the card cluster re-centres on it. */
     ui_hud_begin();

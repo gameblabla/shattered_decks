@@ -623,15 +623,31 @@ static void ui_rect_clip(float x0, float y0, float x1, float y1,
 #define FACE_ART_V0 (9.0f / 54.0f)
 #define FACE_ART_V1 (39.0f / 54.0f)
 
+/* The frame's other two windows: the top band that carries the level ankhs and
+   the bottom band that carries ATK/DEF (or a support card's class word). The
+   console bakes both into the 8bpp face, which the full-resolution frame covers
+   over, so each comes back as its own generated strip texture. */
+#define CARD_STAR_U0 WAIFU_SDL3_CARD_STAR_U0
+#define CARD_STAR_U1 WAIFU_SDL3_CARD_STAR_U1
+#define CARD_STAR_V0 WAIFU_SDL3_CARD_STAR_V0
+#define CARD_STAR_V1 WAIFU_SDL3_CARD_STAR_V1
+#define CARD_STAT_U0 WAIFU_SDL3_CARD_STAT_U0
+#define CARD_STAT_U1 WAIFU_SDL3_CARD_STAT_U1
+#define CARD_STAT_V0 WAIFU_SDL3_CARD_STAT_V0
+#define CARD_STAT_V1 WAIFU_SDL3_CARD_STAT_V1
+
 /* Which front frame the next support-card face draw wants; monsters are known
    from the card id, but every Spell and Trap shares ONE 8bpp face buffer, so the
    game names the class through the hw2d seam just before drawing it. */
 static int g_card_frame_hint = WAIFU_CARD_FRAME_SPELL;
+static int g_card_label_hint = WAIFU_CARD_LABEL_SUPPORT;
 
-void waifu_hw2d_card_frame_hint(int frame)
+void waifu_hw2d_card_frame_hint(int frame, int label)
 {
     if (frame < 0 || frame >= WAIFU_SDL3_CARD_FRAME_SRC_COUNT) frame = WAIFU_CARD_FRAME_MONSTER;
+    if (label < 0 || label > 2) label = WAIFU_CARD_LABEL_SUPPORT;
     g_card_frame_hint = frame;
+    g_card_label_hint = label;
 }
 
 /* Bilinear point on the card quad (corners wound (0,0),(1,0),(1,1),(0,1)) at
@@ -694,6 +710,61 @@ static int board_tile_id(int tile)
     if (tile == BOARD_TILE_LIGHT) return 0;
     if (tile == BOARD_TILE_DARK) return 1;
     return -1;
+}
+
+/* The two generated band strips over one card. `card_id` >= 0 gives a monster
+   its level ankhs and its ATK/DEF; otherwise `label` names the support word the
+   bottom band carries and there is no ankh row. Shared by the 2D and the 3D
+   card paths through a caller-supplied quad emitter, so a hand card and a board
+   card place the bands identically. */
+static int card_band_level(int card_id)
+{
+    return (card_id >= 0) ? waifu_sdl3_hires_card_level(card_id) : 0;
+}
+
+static void ui_push_card_bands(float dx, float dy, float dw, float dh,
+                               float hx, float hy, int card_id, int label, float g)
+{
+    float p[4][3];
+    int level = card_band_level(card_id);
+    int idx;
+    if (level > 0) {
+        ui_rect_clip(dx + dw * CARD_STAR_U0, dy + dh * CARD_STAR_V0,
+                     dx + dw * CARD_STAR_U1, dy + dh * CARD_STAR_V1, hx, hy, p);
+        idx = push_hires_quad(p, level - 1, WAIFU_HIRES_STARS, 1 /* 2D */, g);
+        if (idx >= 0) ui_append_hires(idx);
+    }
+    ui_rect_clip(dx + dw * CARD_STAT_U0, dy + dh * CARD_STAT_V0,
+                 dx + dw * CARD_STAT_U1, dy + dh * CARD_STAT_V1, hx, hy, p);
+    idx = (card_id >= 0) ? push_hires_quad(p, card_id, WAIFU_HIRES_STATS, 1, g)
+                         : push_hires_quad(p, label, WAIFU_HIRES_LABEL, 1, g);
+    if (idx >= 0) ui_append_hires(idx);
+}
+
+static void scene_push_card_bands(const SceneXform *xf, const WaifuHw3DVec3 v[4],
+                                  int card_id, int label, float g)
+{
+    WaifuHw3DVec3 q[4];
+    float p[4][3];
+    int level = card_band_level(card_id);
+    int i;
+    if (level > 0) {
+        q[0] = card_bilerp(v, CARD_STAR_U0, CARD_STAR_V0);
+        q[1] = card_bilerp(v, CARD_STAR_U1, CARD_STAR_V0);
+        q[2] = card_bilerp(v, CARD_STAR_U1, CARD_STAR_V1);
+        q[3] = card_bilerp(v, CARD_STAR_U0, CARD_STAR_V1);
+        for (i = 0; i < 4; ++i) xform_point(xf, &q[i], p[i]);
+        clip_bias_toward_eye(p);
+        push_hires_quad(p, level - 1, WAIFU_HIRES_STARS, 0 /* 3D */, g);
+    }
+    q[0] = card_bilerp(v, CARD_STAT_U0, CARD_STAT_V0);
+    q[1] = card_bilerp(v, CARD_STAT_U1, CARD_STAT_V0);
+    q[2] = card_bilerp(v, CARD_STAT_U1, CARD_STAT_V1);
+    q[3] = card_bilerp(v, CARD_STAT_U0, CARD_STAT_V1);
+    for (i = 0; i < 4; ++i) xform_point(xf, &q[i], p[i]);
+    clip_bias_toward_eye(p);
+    if (card_id >= 0) push_hires_quad(p, card_id, WAIFU_HIRES_STATS, 0, g);
+    else push_hires_quad(p, label, WAIFU_HIRES_LABEL, 0, g);
 }
 
 int waifu_hw3d_quad(const WaifuHw3DCamera *cam, const WaifuHw3DVec3 v[4], int tile)
@@ -831,6 +902,7 @@ int waifu_hw3d_image_quad(const WaifuHw3DCamera *cam, const WaifuHw3DVec3 v[4],
             for (i = 0; i < 4; ++i) xform_point(xf, &aw[i], ap[i]);
             clip_bias_toward_eye(ap);
             push_hires_quad(ap, card_id, WAIFU_HIRES_FACE, 0 /* 3D */, g);
+            scene_push_card_bands(xf, v, card_id, WAIFU_CARD_LABEL_SUPPORT, g);
             (void)kind;
         }
     }
@@ -999,6 +1071,8 @@ int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
                          (float)e->x + (float)sw * FACE_ART_U0, (float)e->y + (float)sh * FACE_ART_V0,
                          (float)e->x + (float)sw * FACE_ART_U1, (float)e->y + (float)sh * FACE_ART_V1,
                          gray ? dim : white);
+        ui_push_card_bands((float)dx, (float)dy, (float)dw, (float)dh, hx, hy,
+                           -1, g_card_label_hint, gray ? 1.0f : 0.0f);
         g_frame.has_content = 1;
         return 1;
     }
@@ -1046,6 +1120,8 @@ int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
                 ui_rect_clip(ax0, ay0, ax1, ay1, hx, hy, p);
                 idx = push_hires_quad(p, card_id, kind, 1 /* 2D */, gray ? 1.0f : 0.0f);
                 if (idx >= 0) ui_append_hires(idx);
+                ui_push_card_bands((float)dx, (float)dy, (float)dw, (float)dh, hx, hy,
+                                   card_id, WAIFU_CARD_LABEL_SUPPORT, gray ? 1.0f : 0.0f);
                 g_frame.has_content = 1;
                 return 1;
             }
@@ -1058,6 +1134,19 @@ int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
                  (float)e->x, (float)e->y,
                  (float)(e->x + sw), (float)(e->y + sh),
                  gray ? dim : white);
+    return 1;
+}
+
+int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alpha)
+{
+    static const float uv[8] = { -1.0f, 0.0f, -1.0f, 0.0f, -1.0f, 0.0f, -1.0f, 0.0f };
+    float rgba[4], fxy[8];
+    int i;
+    if (alpha <= 0) return 1;
+    pal_rgba_f(color, rgba);
+    rgba[3] = (alpha >= 255) ? 1.0f : (float)alpha / 255.0f;
+    for (i = 0; i < 8; ++i) fxy[i] = (float)xy[i];
+    ui_push_corner_quad(fxy, uv, rgba);
     return 1;
 }
 

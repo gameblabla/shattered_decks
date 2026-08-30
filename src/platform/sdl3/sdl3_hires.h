@@ -19,8 +19,18 @@ enum {
     WAIFU_HIRES_PORTRAIT = 2, /* story dialogue portrait (id = portrait id) */
     WAIFU_HIRES_BACK = 3,    /* the shared card back (id unused) */
     WAIFU_HIRES_BOARD_TILE = 4, /* a 3D board checker square (id = 0 light, 1 dark) */
-    WAIFU_HIRES_FRAME = 5    /* a card front frame (id = WAIFU_CARD_FRAME_*) */
+    WAIFU_HIRES_FRAME = 5,   /* a card front frame (id = WAIFU_CARD_FRAME_*) */
+    WAIFU_HIRES_STARS = 6,   /* the level-ankh row for the frame's top band
+                                (id = level - 1, so 0..WAIFU_HIRES_MAX_LEVEL-1) */
+    WAIFU_HIRES_STATS = 7,   /* a monster's ATK/DEF strip for the bottom band
+                                (id = card id) */
+    WAIFU_HIRES_LABEL = 8    /* a support card's bottom-band word
+                                (id = WAIFU_CARD_LABEL_*) */
 };
+
+/* Highest monster level the ankh row is drawn for (Yu-Gi-Oh's own ceiling, and
+   what gen_assets.py's baked 8bpp face clamps its star pips to). */
+#define WAIFU_HIRES_MAX_LEVEL 8
 
 /* Scale of the decoded portrait against the game's 124x200 portrait box. The
    decoded buffer is exactly WAIFU_STORY_PORTRAIT_W/H * this, so it drops onto
@@ -62,6 +72,28 @@ uint8_t *waifu_sdl3_hires_card_frame_decode(int variant, int *w, int *h);
  * source across one board cell instead of the 32x32 atlas downscale the console
  * targets bake. Caller frees. NULL if unavailable. */
 uint8_t *waifu_sdl3_hires_board_tile_decode(int index, int *w, int *h);
+
+/* A card's level: how many ankhs the front frame's top band carries. Derived
+   from the card's own ATK+DEF exactly like the baked 8bpp face's star pips
+   (tools/gen_assets.py draw_card_face), so the PC card reads the same level the
+   console card does. Returns 0 for a non-monster / unknown id. */
+int waifu_sdl3_hires_card_level(int card_id);
+
+/* Build the level-ankh row for the front frame's top band: `level` ankhs laid
+   out right-to-left across a transparent strip whose pixel aspect matches that
+   band's, so it drops straight onto the band's sub-rectangle of the card.
+   Caller frees. NULL if the ankh source is unavailable. */
+uint8_t *waifu_sdl3_hires_stars_decode(int level, int *w, int *h);
+
+/* Build a monster's "ATK/nnnn  DEF/nnnn" strip for the front frame's bottom
+   band -- the numbers the console bakes into the 8bpp face, which the
+   full-resolution frame covers over. Caller frees. NULL if the font or the card
+   is unavailable. */
+uint8_t *waifu_sdl3_hires_stats_decode(int card_id, int *w, int *h);
+
+/* The same band for a support card, carrying its class word instead of numbers
+   (WAIFU_CARD_LABEL_EQUIP / _SUPPORT / _TRAP). Caller frees. */
+uint8_t *waifu_sdl3_hires_label_decode(int label, int *w, int *h);
 
 /* Decode the 16:9 title / ending source into a NEW malloc'd RGBA8 buffer
  * (caller frees). NULL if unavailable. */

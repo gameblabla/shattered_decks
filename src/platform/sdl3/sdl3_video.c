@@ -93,9 +93,17 @@ struct WaifuSdl3Video {
        flag prevents re-decoding a card that failed. */
     SDL_GPUTexture **hires_face;
     SDL_GPUTexture **hires_big;
+    SDL_GPUTexture **hires_stats;      /* generated ATK/DEF strip, per card */
     unsigned char *hires_face_tried;
     unsigned char *hires_big_tried;
+    unsigned char *hires_stats_tried;
     int hires_count;
+    /* Generated front-frame band strips shared across cards: one ankh row per
+       level, one word per support class. */
+    SDL_GPUTexture *stars_tex[WAIFU_HIRES_MAX_LEVEL];
+    unsigned char stars_tried[WAIFU_HIRES_MAX_LEVEL];
+    SDL_GPUTexture *label_tex[3];
+    unsigned char label_tried[3];
 
     /* 16:9 title / ending source textures (PC), decoded on first use. */
     /* Story dialogue portraits, same lazy-decode policy keyed on portrait id. */
@@ -633,9 +641,12 @@ WaifuSdl3Video *waifu_sdl3_video_create(const char *title,
     if (v->hires_count > 0) {
         v->hires_face = (SDL_GPUTexture **)calloc((size_t)v->hires_count, sizeof(*v->hires_face));
         v->hires_big = (SDL_GPUTexture **)calloc((size_t)v->hires_count, sizeof(*v->hires_big));
+        v->hires_stats = (SDL_GPUTexture **)calloc((size_t)v->hires_count, sizeof(*v->hires_stats));
         v->hires_face_tried = (unsigned char *)calloc((size_t)v->hires_count, 1);
         v->hires_big_tried = (unsigned char *)calloc((size_t)v->hires_count, 1);
-        if (!v->hires_face || !v->hires_big || !v->hires_face_tried || !v->hires_big_tried) goto fail;
+        v->hires_stats_tried = (unsigned char *)calloc((size_t)v->hires_count, 1);
+        if (!v->hires_face || !v->hires_big || !v->hires_stats ||
+            !v->hires_face_tried || !v->hires_big_tried || !v->hires_stats_tried) goto fail;
     }
 
     if (!create_pipelines(v)) goto fail;
@@ -743,6 +754,14 @@ static SDL_GPUTexture *hires_ensure(WaifuSdl3Video *v, int card_id, int kind)
         if (card_id < 0 || card_id >= WAIFU_SDL3_CARD_FRAME_SRC_COUNT) return NULL;
         slot = &v->card_frame_tex[card_id];
         tried = &v->card_frame_tried[card_id];
+    } else if (kind == WAIFU_HIRES_STARS) {
+        if (card_id < 0 || card_id >= WAIFU_HIRES_MAX_LEVEL) return NULL;
+        slot = &v->stars_tex[card_id];
+        tried = &v->stars_tried[card_id];
+    } else if (kind == WAIFU_HIRES_LABEL) {
+        if (card_id < 0 || card_id > 2) return NULL;
+        slot = &v->label_tex[card_id];
+        tried = &v->label_tried[card_id];
     } else if (kind == WAIFU_HIRES_BOARD_TILE) {
         if (card_id < 0 || card_id >= WAIFU_SDL3_BOARD_TILE_SRC_COUNT) return NULL;
         slot = &v->board_tile_tex[card_id];
@@ -755,6 +774,8 @@ static SDL_GPUTexture *hires_ensure(WaifuSdl3Video *v, int card_id, int kind)
         return NULL;
     } else if (kind == WAIFU_HIRES_BIG) {
         slot = &v->hires_big[card_id]; tried = &v->hires_big_tried[card_id];
+    } else if (kind == WAIFU_HIRES_STATS) {
+        slot = &v->hires_stats[card_id]; tried = &v->hires_stats_tried[card_id];
     } else {
         slot = &v->hires_face[card_id]; tried = &v->hires_face_tried[card_id];
     }
@@ -765,6 +786,12 @@ static SDL_GPUTexture *hires_ensure(WaifuSdl3Video *v, int card_id, int kind)
          ? waifu_sdl3_hires_card_back_decode(&w, &hh)
          : (kind == WAIFU_HIRES_FRAME)
          ? waifu_sdl3_hires_card_frame_decode(card_id, &w, &hh)
+         : (kind == WAIFU_HIRES_STARS)
+         ? waifu_sdl3_hires_stars_decode(card_id + 1, &w, &hh)
+         : (kind == WAIFU_HIRES_LABEL)
+         ? waifu_sdl3_hires_label_decode(card_id, &w, &hh)
+         : (kind == WAIFU_HIRES_STATS)
+         ? waifu_sdl3_hires_stats_decode(card_id, &w, &hh)
          : (kind == WAIFU_HIRES_BOARD_TILE)
          ? waifu_sdl3_hires_board_tile_decode(card_id, &w, &hh)
          : (kind == WAIFU_HIRES_PORTRAIT)
@@ -1652,12 +1679,20 @@ void waifu_sdl3_video_destroy(WaifuSdl3Video *v)
             for (c = 0; c < v->hires_count; ++c) {
                 if (v->hires_face && v->hires_face[c]) SDL_ReleaseGPUTexture(v->dev, v->hires_face[c]);
                 if (v->hires_big && v->hires_big[c]) SDL_ReleaseGPUTexture(v->dev, v->hires_big[c]);
+                if (v->hires_stats && v->hires_stats[c]) SDL_ReleaseGPUTexture(v->dev, v->hires_stats[c]);
             }
         }
         {
             int pi;
             for (pi = 0; pi < WAIFU_SDL3_PORTRAIT_SRC_COUNT; ++pi)
                 if (v->portrait_tex[pi]) SDL_ReleaseGPUTexture(v->dev, v->portrait_tex[pi]);
+        }
+        {
+            int si;
+            for (si = 0; si < WAIFU_HIRES_MAX_LEVEL; ++si)
+                if (v->stars_tex[si]) SDL_ReleaseGPUTexture(v->dev, v->stars_tex[si]);
+            for (si = 0; si < 3; ++si)
+                if (v->label_tex[si]) SDL_ReleaseGPUTexture(v->dev, v->label_tex[si]);
         }
         if (v->card_back_tex) SDL_ReleaseGPUTexture(v->dev, v->card_back_tex);
         {
@@ -1685,8 +1720,10 @@ void waifu_sdl3_video_destroy(WaifuSdl3Video *v)
     }
     free(v->hires_face);
     free(v->hires_big);
+    free(v->hires_stats);
     free(v->hires_face_tried);
     free(v->hires_big_tried);
+    free(v->hires_stats_tried);
     if (v->window) SDL_DestroyWindow(v->window);
     free(v);
 }

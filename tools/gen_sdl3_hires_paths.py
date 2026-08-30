@@ -40,6 +40,8 @@ CARD_FRAME_SRC = [ROOT / 'assets/source/textures/monster_card_front_template.png
 # parsed (rather than transcribed) so re-exporting the templates at another size
 # only means updating the .txt beside them.
 CARD_FRAME_ART_REF = ROOT / 'assets/source/textures/card_front_template_pixel_monster_original_res.txt'
+# The level "star" ankh, stamped into the frame's top band once per level.
+ANKH_SRC = ROOT / 'assets/source/textures/ankh.png'
 # The two 3D board checker squares.  The console targets bake these down to the
 # 32x32 atlas cells (tools/gen_assets.py board_tile()); the PC frontend loads the
 # same files here at their original resolution and maps one per board cell.
@@ -100,21 +102,22 @@ def png_size(path: Path):
     return (int.from_bytes(data[16:20], 'big'), int.from_bytes(data[20:24], 'big'))
 
 
-def parse_art_window(ref: Path, template: Path):
-    """Normalized (u0, v0, u1, v1) art window from the reference file's first two
-    'x, y' pairs, divided by the template's own pixel size."""
-    nums = []
-    for line in ref.read_text().splitlines():
-        pair = re.findall(r'-?\d+', line)
-        if len(pair) == 2:
-            nums.append((int(pair[0]), int(pair[1])))
-        if len(nums) == 2:
-            break
-    if len(nums) != 2:
-        raise SystemExit(f'{ref}: expected two "x, y" corner lines')
+def parse_windows(ref: Path, template: Path):
+    """The three normalized (u0, v0, u1, v1) windows the artist's reference file
+    marks out on the card front template, in file order: the ART window, the
+    bottom STAT band (ATK/DEF, or the EQUIP/SUPPORT/TRAP label), and the top
+    STAR band (the level ankhs).  Every integer in the file is read in order and
+    grouped into corner pairs, so a corner may sit on its own line or share one
+    ("137, 1116 to 984,1295") -- the file mixes both."""
+    nums = [int(n) for n in re.findall(r'-?\d+', ref.read_text())]
+    if len(nums) < 12:
+        raise SystemExit(f'{ref}: expected 3 corner-pair windows (12 numbers)')
     tw, th = png_size(template)
-    (x0, y0), (x1, y1) = nums
-    return (x0 / tw, y0 / th, x1 / tw, y1 / th)
+    wins = []
+    for i in range(3):
+        x0, y0, x1, y1 = nums[i * 4:i * 4 + 4]
+        wins.append((x0 / tw, y0 / th, x1 / tw, y1 / th))
+    return wins
 
 
 def resolve_fullscreen_src(path: Path):
@@ -131,7 +134,10 @@ def main():
     portrait_src = [resolve_portrait_src(b) for b in PORTRAIT_BASES]
     card_back_src = resolve_fullscreen_src(CARD_BACK_SRC)
     card_frame_src = [resolve_fullscreen_src(p) for p in CARD_FRAME_SRC]
-    art_win = parse_art_window(CARD_FRAME_ART_REF, CARD_FRAME_SRC[0])
+    art_win, stat_win, star_win = parse_windows(CARD_FRAME_ART_REF, CARD_FRAME_SRC[0])
+    ankh_src = resolve_fullscreen_src(ANKH_SRC)
+    ankh_w, ankh_h = png_size(ANKH_SRC) if ANKH_SRC.exists() else (1, 1)
+    tmpl_w, tmpl_h = png_size(CARD_FRAME_SRC[0])
     board_tile_src = [resolve_fullscreen_src(p) for p in BOARD_TILE_SRC]
     title_src = resolve_fullscreen_src(TITLE_SRC)
     ending_src = resolve_fullscreen_src(ENDING_SRC)
@@ -159,10 +165,18 @@ def main():
         for src in card_frame_src:
             f.write(f'    "{c_string(src)}",\n')
         f.write('};\n')
-        f.write('/* Art window inside a card front frame, as a fraction of the card rect\n'
-                '   (from %s). */\n' % CARD_FRAME_ART_REF.name)
-        for name, val in zip(('U0', 'V0', 'U1', 'V1'), art_win):
-            f.write(f'#define WAIFU_SDL3_CARD_ART_{name} {val:.6f}f\n')
+        f.write('/* The three windows inside a card front frame, as fractions of the card\n'
+                '   rect (from %s): the art window, the bottom\n'
+                '   stat band and the top level-ankh band. */\n' % CARD_FRAME_ART_REF.name)
+        for prefix, win in (('ART', art_win), ('STAT', stat_win), ('STAR', star_win)):
+            for name, val in zip(('U0', 'V0', 'U1', 'V1'), win):
+                f.write(f'#define WAIFU_SDL3_CARD_{prefix}_{name} {val:.6f}f\n')
+        f.write('/* The template pixel size, so a band pixel aspect (and the strip\n'
+                '   textures generated for it) can be recovered from the fractions above. */\n')
+        f.write(f'#define WAIFU_SDL3_CARD_TEMPLATE_W {tmpl_w}\n')
+        f.write(f'#define WAIFU_SDL3_CARD_TEMPLATE_H {tmpl_h}\n')
+        f.write(f'static const char *const waifu_sdl3_ankh_src = "{c_string(ankh_src)}";\n')
+        f.write(f'#define WAIFU_SDL3_ANKH_ASPECT {ankh_w / ankh_h:.6f}f\n')
         f.write(f'#define WAIFU_SDL3_BOARD_TILE_SRC_COUNT {len(board_tile_src)}\n')
         f.write('static const char *const waifu_sdl3_board_tile_src'
                 '[WAIFU_SDL3_BOARD_TILE_SRC_COUNT] = {\n')
