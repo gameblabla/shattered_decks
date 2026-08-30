@@ -8638,6 +8638,73 @@ static int story_save_exists(void);
 static int story_save_exists_device(int ext);
 #endif
 
+#if defined(WAIFU_PLATFORM_HW3D)
+/* ---- the result banner -----------------------------------------------------
+   The console spells YOU WIN / YOU LOSE with the scaled bitmap font, because
+   that is all a 256x240 palette frame can afford. On PC each letter arrives
+   spinning about its own vertical axis and settles in turn, Forbidden Memories'
+   own result flourish: the glyph is drawn column by column, each column's width
+   and offset taken from cos(angle), so the letter really turns edge-on and
+   comes back rather than just being squashed. A letter facing away is drawn in
+   its dark tone, and a soft rim column marks its leading edge. */
+
+#define RESULT_SPIN_SPREAD 7     /* frames between one letter starting and the next */
+#define RESULT_SPIN_FRAMES 46    /* how long one letter takes to settle */
+
+static void draw_spin_glyph(int cx, int cy, unsigned char ch, int scale,
+                            float c, uint8_t fg, uint8_t edge, uint8_t shadow)
+{
+    const uint8_t *charfont = n2DLib_font + ((uint32_t)ch * 8u);
+    float half = (float)scale * 4.0f;
+    int cw = (int)((c < 0.0f ? -c : c) * (float)scale + 0.5f);
+    int yy, xx;
+    if (cw < 1) cw = 1;
+    for (yy = 0; yy < 8; ++yy) {
+        uint8_t row = charfont[yy];
+        int py = cy + yy * scale;
+        for (xx = 0; xx < 8; ++xx) {
+            float u;
+            int px;
+            if (!(row & (uint8_t)(1u << (7 - xx)))) continue;
+            /* Column centre in glyph space, turned about the letter's middle. */
+            u = ((float)xx * (float)scale - half + (float)scale * 0.5f) * c;
+            px = cx + (int)(u + (u < 0.0f ? -0.5f : 0.5f)) - cw / 2;
+            rect_fill(px + 2, py + 2, cw, scale, shadow);
+            rect_fill(px, py, cw, scale, (c < 0.0f) ? edge : fg);
+        }
+    }
+}
+
+/* Draws `msg` centred on `cx`, letter i having spun for (anim - i*spread)
+   frames. Returns the number of letters that have finished settling, so the
+   caller can tick a cue as each one lands. */
+static int draw_result_banner(int cx, int y, const char *msg, int scale,
+                              int anim, uint8_t fg, uint8_t edge)
+{
+    int n = (int)strlen(msg);
+    int adv = 8 * scale;
+    int x0 = cx - n * adv / 2;
+    int i, landed = 0;
+    for (i = 0; i < n; ++i) {
+        int t = anim - i * RESULT_SPIN_SPREAD;
+        float c = 1.0f, drop = 0.0f;
+        if (t <= 0) continue;                       /* not on screen yet */
+        if (t < RESULT_SPIN_FRAMES) {
+            /* Three turns, easing out, plus a short fall onto the line. */
+            float k = (float)t / (float)RESULT_SPIN_FRAMES;
+            float ease = 1.0f - (1.0f - k) * (1.0f - k) * (1.0f - k);
+            c = cosf((1.0f - ease) * 3.0f * 6.2831853f);
+            drop = (1.0f - ease) * (float)scale * -5.0f;
+        } else {
+            ++landed;
+        }
+        draw_spin_glyph(x0 + i * adv + adv / 2, y + (int)drop, (unsigned char)msg[i],
+                        scale, c, fg, edge, IDX_BLACK);
+    }
+    return landed;
+}
+#endif /* WAIFU_PLATFORM_HW3D */
+
 static void draw_result_screen(int f, const char *msg)
 {
     int local = f - 1750;
@@ -8656,6 +8723,10 @@ static void draw_result_screen(int f, const char *msg)
     }
 
     if (local >= 50) {
+#if defined(WAIFU_PLATFORM_HW3D)
+        draw_result_banner(WAIFU_FM_WIDTH / 2, 100, msg, 3, local - 50,
+                           IDX_GOLD_HI, IDX_GOLD_DARK);
+#else
         int32_t e = q8_smooth_ratio(local - 50, 42);
         int scale = (local < 92) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
         int tw = (int)strlen(msg) * 8 * scale;
@@ -8663,6 +8734,7 @@ static void draw_result_screen(int f, const char *msg)
         int y = 100 - q8_to_int(q8_mul(Q8_FROM_INT(10), Q8_ONE - e));
         if (((local / 6) & 1) == 0) draw_text_scaled(x + 1, y + 1, msg, scale, IDX_WHITE, IDX_BLACK);
         draw_text_scaled(x, y, msg, scale, IDX_GOLD_HI, IDX_BLACK);
+#endif
     }
 }
 
@@ -14552,12 +14624,27 @@ static void draw_interactive_result(void)
                                               0, 0, 0, 0);
         if (anim >= WAIFU_PCFX_HANDTOP_FRAMES + 8) {
             int text_f = anim - WAIFU_PCFX_HANDTOP_FRAMES - 8;
+#if defined(WAIFU_PLATFORM_HW3D)
+            /* Each letter lands with its own tick, so the banner arrives as a
+               flourish over the result music instead of simply appearing. */
+            static int s_result_landed = 0;
+            int landed;
+            if (text_f <= 1) s_result_landed = 0;
+            landed = draw_result_banner(ui_center_x(0), 100, msg, 3, text_f,
+                                        g_b_result < 0 ? IDX_RED : IDX_GOLD_HI,
+                                        g_b_result < 0 ? IDX_UI_RED : IDX_GOLD_DARK);
+            while (s_result_landed < landed) {
+                waifu_sound_play(g_b_result < 0 ? WAIFU_SOUND_SELECT : WAIFU_SOUND_CONFIRM_ALT);
+                ++s_result_landed;
+            }
+#else
             int32_t e = q8_smooth_ratio(text_f, 42);
             int scale = (text_f < 42) ? 2 + (e > Q8_FRAC(55,100) ? 1 : 0) : 3;
             int tw = (int)strlen(msg) * 8 * scale;
             int x = (WAIFU_FM_WIDTH - tw) / 2;
             int y = 100 - q8_to_int(q8_mul(Q8_FROM_INT(10), Q8_ONE - e));
             draw_text_scaled(x, y, msg, scale, g_b_result < 0 ? IDX_RED : IDX_GOLD_HI, IDX_BLACK);
+#endif
         }
     }
 }
