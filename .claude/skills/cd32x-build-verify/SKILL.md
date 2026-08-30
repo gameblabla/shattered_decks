@@ -40,19 +40,37 @@ Size recovery (in order): (1) revert your change and rethink; (2) move const tab
 
 ## Headless verify (gate V) — BlastEm
 
+The emulator lives in the repo: `CD32X/blastem-headless` (a dependency-free
+headless BlastEm build; see `CD32X/HEADLESS.md`), with all six BIOS images
+next to it. Always drive it through the wrapper — it writes its own private
+config and prepends the BIOS-window STARTs:
+
 ```sh
-HOME=/tmp/cd32x_home BLASTEM=CD32X/blastem_headless BLASTEM_TIMEOUT=160 \
-  scripts/cd32x/blastem_headless_capture.sh waifucd32x.cue /tmp/myimage.png 12500 /tmp/cd32x_random_battle_input4.txt
+CD32X_BIOS_START_END=3000 BLASTEM_TIMEOUT=500 \
+  scripts/cd32x/blastem_headless_capture.sh waifucd32x.cue /tmp/battle.png 14000 \
+  scripts/cd32x/battle_mode_input.txt
 ```
 
-Args: `<cue> <out.png> <frames> [input-script]`. Env: `CD32X_BIOS_START_END` (default 5400) bounds the auto-generated Sega-CD BIOS-window START presses. BIOS files (`bios_CD_U/E/J.bin`, `32X_M/S/G_BIOS.BIN`) must sit next to the BlastEm executable; the script writes a minimal `blastem.cfg` there if missing.
+Args: `<cue> <out.png> <frames> [input-script]`.
+
+Env: `BLASTEM` (default `CD32X/blastem-headless`), `BLASTEM_BIOS_DIR` (default:
+the emulator's directory), `BLASTEM_HOME` (default `build/cd32x/blastem-home` —
+the run never touches `~/.config/blastem`), `BLASTEM_TIMEOUT` (default 900 s),
+`BLASTEM_LOG` (default `<out.png>.log`), `BLASTEM_WAV` / `BLASTEM_MKV` for audio
+/ video capture, `CD32X_BIOS_START_END` (default 5400) to bound the
+auto-generated Sega-CD BIOS-window START presses, and `CD32X_NO_BIOS_SKIP=1` to
+suppress them when the supplied script has its own.
+
+Ready-made input scripts in `scripts/cd32x/`:
+- `bios_skip_only_input.txt` — the BIOS-window STARTs alone (template / manual use).
+- `battle_mode_input.txt` — title → menu → Battle Mode; use with `CD32X_BIOS_START_END=3000`.
 
 Rules:
 - ALWAYS open and inspect the output PNG. A capture that ran is not a capture that passed.
-- Custom input scripts MUST begin with the BIOS-window START presses or boot never leaves the BIOS (template: `scripts/cd32x/bios_skip_only_input.txt`).
-- Do NOT spam START past the BIOS window — it enters the menu and you capture the wrong screen.
-- Input script syntax: `+gamepads.1.<button>` at a frame number. Shorthand like `DOWN` silently never registers. Known-good menu path: `+gamepads.1.down`@7000 then `+gamepads.1.a`@7400 reaches Battle Mode (game is on the MENU by ~frame 7000 because BIOS STARTs skip the title).
+- Do NOT spam START past the BIOS window — it enters the menu (and then story mode) and you capture the wrong screen. Pass `CD32X_BIOS_START_END=3000` whenever the script does its own menu navigation.
+- Input script syntax is `<frame>f:<token>`, e.g. `6800f:DOWN`. Tokens: `P`/`START`, `A`, `B`, `C`, `X`, `Y`, `Z`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `MODE`; prefix `+` to hold, `-` to release. Explicit binding names (`6800f:gamepads.1.down`) also work. `#` starts a comment.
 - Boot timing shifts with every code change → fixed frame numbers are NOT comparable across builds. Drive to a known UI state instead, and capture adjacent frames N and N+1 to detect page-flip flashing (32X has two framebuffer pages; anything not redrawn every frame appears in only one page and flashes).
+- Known-good reference points for the current build: title screen at ~frame 6000 with `CD32X_BIOS_START_END=3000`; Battle Mode field at ~frame 14000 with `battle_mode_input.txt`.
 
 ## Debug defines for fast iteration (EXTRA_CFLAGS only; throwaway — NEVER commit)
 
@@ -76,7 +94,7 @@ Example: `make -f Makefile.cd32x clean-build && make -f Makefile.cd32x EXTRA_CFL
 | 1-frame white flashes | screen composed once but pages flip, or palette entry 0 written without priority bit | full redraw every frame OR see palette rule in cd32x-architecture skill |
 | Bright dots on MD layer | MD CRAM written during active display | hold CRAM writes to vblank (`set_palette` waits for VDP vblank flag) |
 | Music stops when data loads | CD-DA not re-asserted after read | supervisor must re-assert active track/loop after each CD read |
-| Input script has no effect | missing BIOS STARTs or shorthand button names | prepend `bios_skip_only_input.txt` content; use `+gamepads.1.*` syntax |
+| Input script has no effect | missing BIOS-window STARTs, or the wrong line syntax | use the wrapper (it prepends them) and `<frame>f:<token>` lines, e.g. `6800f:DOWN` |
 | Behavior didn't change after flag edit | stale objects | `make -f Makefile.cd32x clean-build` |
 
 ## What NOT to do

@@ -1,0 +1,18 @@
+# Sega CD BIOS-window START presses.
+#
+# The Sega CD boot animation only leaves the BIOS if START is tapped while the
+# BIOS logo window is up.  Every custom input script MUST start with these
+# lines (or be passed to blastem_headless_capture.sh, which prepends an
+# equivalent block automatically) or the run never reaches the game.
+#
+# Format is BlastEm's headless input-script syntax: <frame>f:<token>
+# (see CD32X/HEADLESS.md).  Tokens: P/START, A, B, C, X, Y, Z, UP, DOWN,
+# LEFT, RIGHT, MODE.  Prefix with + to hold and - to release.
+600f:P
+1200f:P
+1800f:P
+2400f:P
+3000f:P
+3600f:P
+4200f:P
+4800f:P

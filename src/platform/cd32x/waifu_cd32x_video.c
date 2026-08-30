@@ -159,12 +159,41 @@ static uint16_t cd32x_rgb_to_cram(uint8_t r, uint8_t g, uint8_t b, int fade_q8)
     return (uint16_t)COLOR(rr >> 3, gg >> 3, bb >> 3);
 }
 
+/* 32X palette RAM may only be written while the display is not drawing:
+   the VDP arbitrates CRAM in favour of the raster, so a CPU write landing in
+   active display is dropped or shows up as a bright "CRAM dot" on the scanline
+   it hit.  All palette updates therefore go into this RAM shadow first and are
+   copied out in one burst inside vertical blank (cd32x_cram_flush_vblank).
+   The shadow lives in .bss, so it costs nothing in the staged SH-2 image. */
+static uint16_t g_cram_shadow[256];
+static uint8_t g_cram_dirty;
+
+static void cd32x_cram_flush_vblank(void)
+{
+    volatile uint16_t *cram = &MARS_CRAM;
+    const uint16_t *src = g_cram_shadow;
+    int i;
+    if (!g_cram_dirty) return;
+    /* Callers reach here right after a framebuffer flip (which the VDP honours
+       at the start of vblank), so this spin normally falls straight through.
+       Keep it anyway: it is the only thing guaranteeing the burst below cannot
+       start mid-raster.  256 words is ~0.5 ms of the ~2.4 ms NTSC vblank. */
+    while ((MARS_VDP_FBCTL & MARS_VDP_VBLK) == 0) {
+    }
+    for (i = 0; i < 256; ++i) cram[i] = src[i];
+    g_cram_dirty = 0;
+}
+
 static void cd32x_wait_fb_flip(WaifuCd32xVideo *video)
 {
     MARS_VDP_FBCTL = (uint16_t)(video->current_fb ^ 1u);
     while ((MARS_VDP_FBCTL & MARS_VDP_FS) == video->current_fb) {
     }
     video->current_fb ^= 1u;
+    /* Still inside the vblank that performed the flip: this is the one window
+       where CRAM is safe to touch, and it keeps the new palette in step with
+       the page it belongs to. */
+    cd32x_cram_flush_vblank();
     cd32x_record_frame_pacing(video);
 }
 
@@ -484,23 +513,25 @@ WaifuCd32xVideo *waifu_cd32x_video_create(void)
        and after the mode switch to guarantee no white-flash window between
        the overlay becoming active and the first game palette upload.  Entry 0
        keeps its MD-priority bit so index-0 pixels show the MD backdrop
-       (black). */
+       (black).
+       The first write happens while the 32X bitmap mode is still OFF (the BIOS
+       hands over with the display disabled), which is the one other state in
+       which CRAM is writable; the second one is after the mode switch, so it
+       goes through the vblank-gated shadow flush like every later update. */
     {
         volatile uint16_t *cram = &MARS_CRAM;
         int i;
-        cram[0] = 0x8000u;
-        for (i = 1; i < 256; ++i) cram[i] = 0;
+        g_cram_shadow[0] = 0x8000u;
+        for (i = 1; i < 256; ++i) g_cram_shadow[i] = 0;
+        for (i = 0; i < 256; ++i) cram[i] = g_cram_shadow[i];
+        g_cram_dirty = 0;
     }
 
     MARS_VDP_DISPMODE = (uint16_t)(MARS_224_LINES | MARS_VDP_MODE_256 | MARS_VDP_PRIO_32X);
 
     /* Re-blacken CRAM after DISPMODE in case the mode switch reset the palette. */
-    {
-        volatile uint16_t *cram = &MARS_CRAM;
-        int i;
-        cram[0] = 0x8000u;
-        for (i = 1; i < 256; ++i) cram[i] = 0;
-    }
+    g_cram_dirty = 1;
+    cd32x_cram_flush_vblank();
 
     cd32x_init_framebuffers(&g_video);
 
@@ -530,13 +561,16 @@ void waifu_cd32x_video_begin_8bpp(WaifuCd32xVideo *video)
 
 void waifu_cd32x_video_set_palette_rgb(WaifuCd32xVideo *video, const uint8_t *rgb, WaifuFmPaletteId palette_id, int fade_q8)
 {
-    volatile uint16_t *cram = &MARS_CRAM;
+    uint16_t *cram = g_cram_shadow;
     int i;
     if (!video || !rgb) return;
     if (fade_q8 < 0) fade_q8 = 0;
     if (fade_q8 > 256) fade_q8 = 256;
     if (palette_id == video->current_palette_id && fade_q8 == video->current_fade_q8) return;
-    /* Palette index 0 is the see-through key for the MD plane-B story sky:
+    /* Build the new palette in the RAM shadow only.  It reaches the hardware
+       from cd32x_cram_flush_vblank() during the next framebuffer flip, i.e.
+       inside vblank -- never during active display.
+       Palette index 0 is the see-through key for the MD plane-B story sky:
        with MARS_VDP_PRIO_32X the 32X pixel wins unless its CRAM entry has the
        priority bit set, so flag entry 0 (and only entry 0) as MD-priority.
        Where the MD planes are also transparent this shows the MD backdrop
@@ -549,6 +583,7 @@ void waifu_cd32x_video_set_palette_rgb(WaifuCd32xVideo *video, const uint8_t *rg
     for (i = 1; i < 256; ++i) {
         cram[i] = cd32x_rgb_to_cram(rgb[i * 3 + 0], rgb[i * 3 + 1], rgb[i * 3 + 2], fade_q8);
     }
+    g_cram_dirty = 1;
     {
         /* MD CRAM channels are 3-bit, so only ~8 fade levels are visible on
            the MD layer anyway: quantize the forwarded fade so a transition

@@ -41,6 +41,15 @@ finalizing. (Each code change shifts boot timing, so fixed-frame headless
 captures are not directly comparable; prefer driving to a known UI state, or use
 the shortcut, and capture adjacent frames N / N+1 to detect flashing.)
 
+**Headless runs go through `scripts/cd32x/blastem_headless_capture.sh`**, which
+drives the in-repo `CD32X/blastem-headless` build with the BIOS images in
+`CD32X/` and its own private config:
+
+```sh
+CD32X_BIOS_START_END=3000 scripts/cd32x/blastem_headless_capture.sh \
+    waifucd32x.cue /tmp/battle.png 14000 scripts/cd32x/battle_mode_input.txt
+```
+
 ---
 
 ## Issue 1 — White-screen flash (root cause)
@@ -285,8 +294,8 @@ Fix approach (drive layout off `WAIFU_FM_WIDTH`/`WAIFU_FM_HEIGHT`, not literal
   runs reach gameplay in ~11k frames instead of ~34k.
 - Capture **adjacent frames (N and N+1)** to detect flashing; a single frame is
   not enough. Build + capture: `make -f Makefile.cd32x all`, then from `CD32X/`:
-  `./blastem_headless -m 32xcd -b <frame> -p out.ppm ../waifucd32x.cue`
-  (BIOS: `cdbios.bin`, `32X_{M,S,G}_BIOS.bin` must sit next to the binary).
+  `scripts/cd32x/blastem_headless_capture.sh waifucd32x.cue out.png <frame>`
+  (wraps `CD32X/blastem-headless -m 32xcd`; BIOS images live in `CD32X/`).
 
 ---
 

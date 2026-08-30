@@ -1,0 +1,12 @@
+# Drive the title screen into Battle Mode (random deck, free duel).
+#
+# Use with CD32X_BIOS_START_END=3000 so no BIOS-window START leaks into the
+# game's own menu:
+#   CD32X_BIOS_START_END=3000 scripts/cd32x/blastem_headless_capture.sh \
+#       waifucd32x.cue /tmp/battle.png 14000 scripts/cd32x/battle_mode_input.txt
+#
+# Boot timing shifts with every code change, so treat these frames as a
+# starting point and re-check the capture rather than trusting the numbers.
+6200f:P      # title -> menu
+6800f:DOWN   # STORY MODE -> BATTLE MODE
+7400f:A      # enter Battle Mode

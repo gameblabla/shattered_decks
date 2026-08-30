@@ -83,8 +83,9 @@ when touching `.s` files, verify against the source rather than assuming.
 1. Two physical framebuffer pages. The CPU can write ONLY the back page (`0x24000000`); `0x24020000` is the overwrite window of that SAME page, not a second buffer. The front page is never CPU-writable.
 2. `cd32x_wait_fb_flip()` flips every frame (it is also the vblank sync). Consequence: **any screen not fully redrawn every frame exists in only one page and flashes**. Never "compose once" into the framebuffer. Never lock the FS bit (→ permanent back page → black screen, verified).
 3. Palette entry 0: the MD-priority bit `0x8000` MUST be part of entry 0's single write. Writing entry 0 bare then OR-ing the bit later gives a 1-frame near-white flash (entry 0 raw color is 246,241,239). Never touch entry 0 bare.
-4. MD CRAM data-port writes during active display render as bright dot artifacts — all MD CRAM writes must be vblank-held (`set_palette` waits for the VDP vblank flag); SH-2 quantizes forwarded MD fades to 32 steps.
-5. MD-vs-32X layer visibility is per-32X-CRAM-entry via bit 15 combined with `MARS_VDP_PRIO_32X`. The MD boot text planes must be CLEAR_A/CLEAR_B'd at handoff or they show through the 32X image.
+4. **All palette RAM is written in vblank only, on both sides.** 32X CRAM (`MARS_CRAM`) is arbitrated in favour of the raster: a CPU write landing in active display is dropped or shows as a bright dot on that scanline. `waifu_cd32x_video_set_palette_rgb()` therefore only fills the `g_cram_shadow[256]` RAM copy; `cd32x_cram_flush_vblank()` bursts it to hardware from inside `cd32x_wait_fb_flip()` (spinning on `MARS_VDP_FBCTL & MARS_VDP_VBLK` first), which is also why the palette lands in step with the page flip. The only direct CRAM write is the boot blackening in `waifu_cd32x_video_create()`, done before `DISPMODE` enables the bitmap. Never add a bare `MARS_CRAM` store anywhere else.
+5. MD CRAM data-port writes during active display render as bright dot artifacts — all MD CRAM writes must be vblank-held (`set_palette` waits for the VDP vblank flag); SH-2 quantizes forwarded MD fades to 32 steps.
+6. MD-vs-32X layer visibility is per-32X-CRAM-entry via bit 15 combined with `MARS_VDP_PRIO_32X`. The MD boot text planes must be CLEAR_A/CLEAR_B'd at handoff or they show through the 32X image.
 
 ## Defines reference
 
