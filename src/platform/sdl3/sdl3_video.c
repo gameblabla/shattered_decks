@@ -926,6 +926,13 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
         waifu_sdl3_set_ui_extra_w(extra);
     }
 
+    if ((g_sdl3_drop_atlas | g_sdl3_drop_run | g_sdl3_drop_vert | g_sdl3_drop_hires) != 0) {
+        SDL_Log("sdl3 CAPTURE DROP: atlas=%d runs=%d verts=%d hires=%d "
+                "(ui_verts=%d runs=%d images=%d) — part of this frame is missing",
+                g_sdl3_drop_atlas, g_sdl3_drop_run, g_sdl3_drop_vert, g_sdl3_drop_hires,
+                frame->ui_vert_count, frame->ui_run_count, frame->hires_draw_count);
+        g_sdl3_drop_atlas = g_sdl3_drop_run = g_sdl3_drop_vert = g_sdl3_drop_hires = 0;
+    }
     if (v->debug_counts && frame->has_content) {
         SDL_Log("sdl3 frame: cleared=%d scene=%d env(sky=%d floor=%d) img=%d hires=%d line3d=%d ui=%d uiline=%d runs=%d bg_runs=%d atlas_h=%d",
                 frame->cleared, frame->scene_vert_count, frame->env.has_sky, frame->env.has_floor,

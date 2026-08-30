@@ -6,16 +6,22 @@
    crisp, anti-aliased glyphs (linear + mipmap) instead of the upscaled 8x8
    bitmap font. Console targets (PC-FX/CD32X/headless) keep the bitmap font.
 
-   The glyphs are drawn monospaced-in-cell: each glyph keeps its natural shape,
-   bearing and size but the caller advances by the same fixed cell width the
-   bitmap font used, so every existing text layout (wrapping, centering,
-   right-align, the typewriter reveal counts) stays valid. */
+   The glyphs are drawn monospaced-in-cell: the caller advances by the same
+   fixed cell width the bitmap font used, so every existing text layout
+   (wrapping, centering, right-align, the typewriter reveal counts) stays valid.
+   Inside its cell each glyph is horizontally expanded until its advance nearly
+   fills the cell and then centred on it. A text face's natural advance is only
+   about two thirds of the game's near-square cell, so drawing at natural width
+   left a ragged gap after every character — the "spaced out" look. Expanding
+   and centring gives the even rhythm the 8x8 bitmap font had, with real
+   letterforms. */
 
 #include <stdint.h>
 
 typedef struct WaifuGlyphInfo {
     float u0, v0, u1, v1;   /* atlas UV rect, normalized */
-    float dx, dy, dw, dh;   /* draw rect relative to the cell origin, in game px */
+    float dx, dy, dw, dh;   /* draw rect relative to the glyph's own origin, game px */
+    float adv;              /* the glyph's advance width in game px */
     int drawable;           /* 0 for blank glyphs (space) */
 } WaifuGlyphInfo;
 
@@ -28,6 +34,11 @@ int waifu_sdl3_text_ready(void);
    character. Returns 1 if the glyph is drawable (not a blank/space or unknown
    code point), 0 otherwise. */
 int waifu_sdl3_glyph_info(unsigned char ch, WaifuGlyphInfo *out);
+
+/* The baked monospace advance, in game px for the 8 px cell (0 when the font
+   is not ready). Callers that lay text out themselves — the frontend overlay —
+   step by this instead of guessing the face's natural ratio. */
+float waifu_sdl3_glyph_advance(void);
 
 /* The CPU glyph atlas (RGBA8, white with coverage in alpha) for the video
    layer to upload once. Returns NULL until the font is ready. */

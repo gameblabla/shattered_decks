@@ -25,12 +25,12 @@ static const float COL_PANEL_T[4]  = { 0.055f, 0.075f, 0.20f, 0.96f };
 static const float COL_PANEL_B[4]  = { 0.020f, 0.030f, 0.09f, 0.96f };
 static const float COL_SEL[4]      = { 0.20f, 0.26f, 0.52f, 0.85f };
 
-#define PANEL_W      420.0f
+#define PANEL_W      470.0f
 #define PANEL_PAD     18.0f
 #define ROW_H         17.0f
-#define TITLE_SIZE    17.0f
-#define ITEM_SIZE     11.5f
-#define FOOT_SIZE      9.0f
+#define TITLE_SIZE    15.0f
+#define ITEM_SIZE     10.5f
+#define FOOT_SIZE      7.5f
 #define MAX_VISIBLE   14
 
 typedef enum MenuPage {

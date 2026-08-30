@@ -132,7 +132,7 @@ static void ui_append(int kind, int count_added)
         g_frame.ui_runs[g_frame.ui_run_count - 1].count += count_added;
         return;
     }
-    if (g_frame.ui_run_count >= SDL3_UI_MAX_RUNS) return;
+    if (g_frame.ui_run_count >= SDL3_UI_MAX_RUNS) { g_sdl3_drop_run++; return; }
     run = &g_frame.ui_runs[g_frame.ui_run_count++];
     run->kind = kind;
     run->first = first - count_added;
@@ -147,7 +147,7 @@ static void ui_append_hires(int draw_index)
 {
     Sdl3UiRun *run;
     if (draw_index < 0) return;
-    if (g_frame.ui_run_count >= SDL3_UI_MAX_RUNS) return;
+    if (g_frame.ui_run_count >= SDL3_UI_MAX_RUNS) { g_sdl3_drop_run++; return; }
     run = &g_frame.ui_runs[g_frame.ui_run_count++];
     run->kind = SDL3_UI_RUN_HIRES;
     run->first = draw_index;
@@ -164,7 +164,7 @@ static void ui_push_quad(float x0, float y0, float x1, float y1,
     static const int cx[6] = { 0, 1, 1, 0, 1, 0 };
     static const int cy[6] = { 0, 0, 1, 0, 1, 1 };
     int i;
-    if (g_frame.ui_vert_count + 6 > SDL3_UI_MAX_VERTS) return;
+    if (g_frame.ui_vert_count + 6 > SDL3_UI_MAX_VERTS) { g_sdl3_drop_vert++; return; }
     vt = &g_frame.ui_verts[g_frame.ui_vert_count];
     for (i = 0; i < 6; ++i) {
         vt[i].x = cx[i] ? x1 : x0;
@@ -296,17 +296,30 @@ int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, uint8_t fg,
 {
     WaifuGlyphInfo gi;
     float fg_rgba[4], sh_rgba[4];
-    (void)cell_w;
+    float sx, ox, x0, y0, x1, y1, sh;
     if (!waifu_sdl3_text_ready()) return 0;
     if (!waifu_sdl3_glyph_info(ch, &gi)) return 1;   /* space/blank: advance only */
+
+    /* Glyph metrics are baked for the 8 px cell; the compact HUD face steps 7.
+       Condense to the caller's cell so both keep the same fit, then centre the
+       advance box in it — a glyph left at its own bearing leaves the slack at
+       the right of every cell and the line reads ragged. */
+    sx = (float)cell_w / 8.0f;
+    ox = ((float)cell_w - gi.adv * sx) * 0.5f;
+
+    x0 = (float)x + ox + gi.dx * sx;
+    x1 = x0 + gi.dw * sx;
+    y0 = (float)y + gi.dy;
+    y1 = y0 + gi.dh;
+    /* Drop shadow offset scales with the glyph so it stays a shadow and not an
+       outline at large canvas scales. */
+    sh = 1.0f;
+
     pal_rgba_f(shadow, sh_rgba);
     pal_rgba_f(fg, fg_rgba);
-    ui_push_glyph_quad((float)x + gi.dx + 1.0f, (float)y + gi.dy + 1.0f,
-                       (float)x + gi.dx + gi.dw + 1.0f, (float)y + gi.dy + gi.dh + 1.0f,
+    ui_push_glyph_quad(x0 + sh, y0 + sh, x1 + sh, y1 + sh,
                        gi.u0, gi.v0, gi.u1, gi.v1, sh_rgba);
-    ui_push_glyph_quad((float)x + gi.dx, (float)y + gi.dy,
-                       (float)x + gi.dx + gi.dw, (float)y + gi.dy + gi.dh,
-                       gi.u0, gi.v0, gi.u1, gi.v1, fg_rgba);
+    ui_push_glyph_quad(x0, y0, x1, y1, gi.u0, gi.v0, gi.u1, gi.v1, fg_rgba);
     return 1;
 }
 
@@ -358,6 +371,12 @@ typedef struct ImageEntry {
     int x, y;
 } ImageEntry;
 
+/* Capture-limit diagnostics: any of these dropping a primitive shows up as a
+   piece of the frame silently missing (the classic symptom is a card whose
+   drop shadow draws but whose art does not, because the shadow is a rect and
+   the art is an atlas blit). WAIFU_SDL3_DEBUG reports them. */
+int g_sdl3_drop_atlas, g_sdl3_drop_run, g_sdl3_drop_vert, g_sdl3_drop_hires;
+
 static ImageEntry g_image_entries[SDL3_IMAGE_MAX_ENTRIES];
 static int g_image_entry_count = 0;
 static int g_shelf_x = 0, g_shelf_y = 0, g_shelf_h = 0;
@@ -374,14 +393,14 @@ static const ImageEntry *image_atlas_add(const uint8_t *pixels, const uint8_t *m
             e->colorkey0 == colorkey0)
             return e;
     }
-    if (g_image_entry_count >= SDL3_IMAGE_MAX_ENTRIES) return 0;
-    if (w > SDL3_IMAGE_ATLAS_W || h > SDL3_IMAGE_ATLAS_H) return 0;
+    if (g_image_entry_count >= SDL3_IMAGE_MAX_ENTRIES) { g_sdl3_drop_atlas++; return 0; }
+    if (w > SDL3_IMAGE_ATLAS_W || h > SDL3_IMAGE_ATLAS_H) { g_sdl3_drop_atlas++; return 0; }
     if (g_shelf_x + w > SDL3_IMAGE_ATLAS_W) {
         g_shelf_y += g_shelf_h;
         g_shelf_x = 0;
         g_shelf_h = 0;
     }
-    if (g_shelf_y + h > SDL3_IMAGE_ATLAS_H) return 0;
+    if (g_shelf_y + h > SDL3_IMAGE_ATLAS_H) { g_sdl3_drop_atlas++; return 0; }
     e = &g_image_entries[g_image_entry_count++];
     e->pixels = pixels;
     e->mask = mask;
@@ -490,7 +509,7 @@ static int push_hires_quad(const float p[4][3], int card_id, int kind, int group
     static const float uv[4][2] = { {0,0}, {1,0}, {1,1}, {0,1} };
     Sdl3HiresDraw *d;
     int i;
-    if (g_frame.hires_draw_count >= SDL3_HIRES_MAX_DRAWS) return -1;
+    if (g_frame.hires_draw_count >= SDL3_HIRES_MAX_DRAWS) { g_sdl3_drop_hires++; return -1; }
     d = &g_frame.hires_draws[g_frame.hires_draw_count];
     d->first_vertex = g_frame.hires_draw_count * 6;
     d->card_id = card_id;

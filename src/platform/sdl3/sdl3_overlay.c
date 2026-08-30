@@ -5,11 +5,18 @@
 
 #include <string.h>
 
-/* Advance per character as a fraction of the cell height. The game's own text
-   uses a square 8x8 cell; the overlay uses the font's natural monospace advance
-   so menu copy reads like a PC game's rather than a console's letter-spaced
-   bitmap font. */
-#define OVERLAY_ADVANCE 0.62f
+/* Advance per character as a fraction of the text size. The glyph atlas bakes
+   its own monospace advance (stretched to nearly fill the game's cell), so the
+   overlay steps by that same figure — guessing a different ratio would either
+   overlap the menu's text or space it out. The constant is only the fallback
+   for a build with no font. */
+#define OVERLAY_ADVANCE_FALLBACK 0.62f
+
+static float overlay_advance(void)
+{
+    float a = waifu_sdl3_text_ready() ? waifu_sdl3_glyph_advance() : 0.0f;
+    return a > 0.0f ? a / 8.0f : OVERLAY_ADVANCE_FALLBACK;
+}
 
 static Sdl3Overlay g_ov;
 
@@ -84,14 +91,14 @@ void waifu_sdl3_overlay_frame(float x, float y, float w, float h, float t,
 float waifu_sdl3_overlay_text_width(float size, const char *text)
 {
     size_t n = text ? strlen(text) : 0;
-    return (float)n * size * OVERLAY_ADVANCE;
+    return (float)n * size * overlay_advance();
 }
 
 float waifu_sdl3_overlay_text(float x, float y, float size, const char *text,
                               float r, float g, float b, float a)
 {
     const float k = size / 8.0f;     /* glyph rects are in 8px-cell units */
-    const float adv = size * OVERLAY_ADVANCE;
+    const float adv = size * overlay_advance();
     float pen = x;
     const unsigned char *p;
     float col[4];

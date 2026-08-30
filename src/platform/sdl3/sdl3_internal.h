@@ -169,6 +169,12 @@ typedef struct Sdl3SceneFrame {
     uint32_t tile_atlas_serial;     /* bumped when tile_atlas_rgba changes */
 } Sdl3SceneFrame;
 
+/* Capture-limit drop counters (sdl3_scene3d.c): a nonzero value means some
+   primitive was silently dropped this frame — the visible symptom is a piece
+   of the picture missing, e.g. a card's drop shadow drawn with no card in it.
+   Reported per frame under WAIFU_SDL3_DEBUG. */
+extern int g_sdl3_drop_atlas, g_sdl3_drop_run, g_sdl3_drop_vert, g_sdl3_drop_hires;
+
 /* Owned by sdl3_scene3d.c. */
 Sdl3SceneFrame *waifu_sdl3_scene_frame(void);
 
