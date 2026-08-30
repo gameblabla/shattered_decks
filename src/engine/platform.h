@@ -207,6 +207,7 @@ typedef struct WaifuPointer {
     int left_pressed;      /* button went down this frame */
     int left_released;     /* button came up this frame */
     int right_pressed;
+    int wheel;             /* notches since the last poll: + away, - toward */
     int drag_x, drag_y;    /* where the current/just-ended drag started */
 } WaifuPointer;
 
@@ -234,6 +235,21 @@ int waifu_platform_fire(int x, int y, int w, int h);
 void waifu_platform_text_input(int on);
 int waifu_platform_text_poll(void);
 
+/* On-screen prompts name a CONTROL, and on PC the player can rebind it (and may
+ * be holding a pad rather than a keyboard), so the prompt has to ask what it is
+ * currently called instead of printing the console's fixed button letters.
+ * Returns a short upper-case name for the control bound to `action` -- a
+ * WaifuPromptAction -- or NULL when the caller should keep its authored text
+ * (every console, where the labels are printed on the pad itself). */
+typedef enum WaifuPromptAction {
+    WAIFU_PROMPT_CONFIRM = 0,
+    WAIFU_PROMPT_CANCEL,
+    WAIFU_PROMPT_START,
+    WAIFU_PROMPT_ASSIST
+} WaifuPromptAction;
+
+const char *waifu_platform_prompt_label(int action);
+
 #else
 
 typedef struct WaifuPointer {
@@ -243,6 +259,7 @@ typedef struct WaifuPointer {
     int left_pressed;
     int left_released;
     int right_pressed;
+    int wheel;
     int drag_x, drag_y;
 } WaifuPointer;
 
@@ -253,6 +270,13 @@ static inline int waifu_platform_fire(int x, int y, int w, int h)
 { (void)x; (void)y; (void)w; (void)h; return 0; }
 static inline void waifu_platform_text_input(int on) { (void)on; }
 static inline int waifu_platform_text_poll(void) { return 0; }
+typedef enum WaifuPromptAction {
+    WAIFU_PROMPT_CONFIRM = 0,
+    WAIFU_PROMPT_CANCEL,
+    WAIFU_PROMPT_START,
+    WAIFU_PROMPT_ASSIST
+} WaifuPromptAction;
+static inline const char *waifu_platform_prompt_label(int action) { (void)action; return 0; }
 
 #endif /* WAIFU_PLATFORM_HW3D */
 

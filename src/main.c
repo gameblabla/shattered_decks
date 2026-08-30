@@ -16705,7 +16705,28 @@ static void draw_deck_editor(void)
             (g_story_deck_count == STORY_DECK_SIZE ? "DECK IS FULL" : "DECK MUST BE 40");
         draw_centered_text(WAIFU_UI_BOTTOM_Y(181), msg, IDX_RED, IDX_BLACK);
     }
-    draw_text_small(ed_dx + 15, WAIFU_FM_HEIGHT - 14, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
+    /* The control names come from the platform where they are rebindable (and
+       where the player may be on a pad), so this line cannot be a fixed string
+       there. Consoles answer NULL and keep the authored text exactly. */
+    {
+        const char *k_move = waifu_platform_prompt_label(WAIFU_PROMPT_CONFIRM);
+        const char *k_check = waifu_platform_prompt_label(WAIFU_PROMPT_CANCEL);
+        const char *k_tab = waifu_platform_prompt_label(WAIFU_PROMPT_ASSIST);
+        if (k_move && k_check && k_tab) {
+            char hint[64];
+            waifu_str_copy(hint, (int)sizeof(hint), k_move);
+            waifu_str_cat(hint, (int)sizeof(hint), " MOVE  ");
+            waifu_str_cat(hint, (int)sizeof(hint), k_check);
+            waifu_str_cat(hint, (int)sizeof(hint), " CHECK  ");
+            waifu_str_cat(hint, (int)sizeof(hint), k_tab);
+            /* "SWAP", not the console's "TAB": with the default binding the key
+               is itself called TAB, and "TAB TAB" reads as a stutter. */
+            waifu_str_cat(hint, (int)sizeof(hint), " SWAP");
+            draw_text_small(ed_dx + 9, WAIFU_FM_HEIGHT - 14, hint, IDX_WHITE, IDX_BLACK);
+        } else {
+            draw_text_small(ed_dx + 15, WAIFU_FM_HEIGHT - 14, "A MOVE  B CHECK  BTN4 TAB", IDX_WHITE, IDX_BLACK);
+        }
+    }
     draw_deck_editor_pointer_buttons();
     ui_hud_end();
 }
@@ -18178,6 +18199,12 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
         int ed_dx = ptr_column_dx() + WAIFU_UI_CENTER_DX;
         int count = deck_editor_active_count();
         int scroll = g_deck_scroll[g_deck_tab];
+        /* The wheel walks the grid a row at a time, wherever the pointer is --
+           the same thing the ROW UP / ROW DN buttons do, and what a wheel over
+           a list is expected to do. Checked before the buttons so it still
+           works while the pointer rests on one. */
+        if (p.wheel > 0) { *press_up = 1; break; }
+        if (p.wheel < 0) { *press_down = 1; break; }
         if (deck_btn_room()) {
             int b;
             for (b = 0; b < DECK_BTN_COUNT; ++b) {

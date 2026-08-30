@@ -28,6 +28,7 @@ static struct {
     float last_win_x, last_win_y;
     int win_valid;
     int pending_press, pending_release, pending_rpress;
+    int wheel;             /* notches accumulated since the core last looked */
     int scripted;          /* a command script owns the pointer from here on */
 } g_ptr;
 
@@ -56,6 +57,13 @@ void waifu_sdl3_mouse_handle_event(const SDL_Event *ev)
         if (ev->button.button == SDL_BUTTON_LEFT) g_ptr.pending_press = 1;
         else if (ev->button.button == SDL_BUTTON_RIGHT) g_ptr.pending_rpress = 1;
         break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        /* Whole notches only: a high-resolution or touchpad wheel reports
+           fractions, and a list that scrolls a row per fraction is unusable. */
+        g_ptr.last_use_ms = SDL_GetTicks();
+        if (ev->wheel.y > 0.0f) g_ptr.wheel += 1;
+        else if (ev->wheel.y < 0.0f) g_ptr.wheel -= 1;
+        break;
     case SDL_EVENT_MOUSE_BUTTON_UP:
         g_ptr.last_use_ms = SDL_GetTicks();
         if (ev->button.button == SDL_BUTTON_LEFT) g_ptr.pending_release = 1;
@@ -63,6 +71,14 @@ void waifu_sdl3_mouse_handle_event(const SDL_Event *ev)
     default:
         break;
     }
+}
+
+void waifu_sdl3_mouse_wheel_inject(int notches)
+{
+    g_ptr.scripted = 1;
+    g_ptr.wheel += notches;
+    g_ptr.last_use_ms = SDL_GetTicks();
+    if (g_ptr.last_use_ms == 0) g_ptr.last_use_ms = 1;
 }
 
 void waifu_sdl3_mouse_inject(int game_x, int game_y, int press, int release, int rclick)
@@ -120,6 +136,7 @@ void waifu_sdl3_mouse_update(const WaifuSdl3Video *video, int suppressed)
         /* The frontend menu owns the mouse: drop anything queued so a click on
            a menu row is not also played into the game underneath. */
         g_ptr.pressed = g_ptr.released = g_ptr.rpressed = 0;
+        g_ptr.wheel = 0;
         g_ptr.down = 0;
     }
 }
@@ -136,11 +153,13 @@ int waifu_platform_pointer(WaifuPointer *out)
     out->left_pressed = g_ptr.pressed;
     out->left_released = g_ptr.released;
     out->right_pressed = g_ptr.rpressed;
+    out->wheel = g_ptr.wheel;
     /* A release without travel reads as a click at the press point, so a
        click-through never looks like a zero-length drag. */
     out->drag_x = g_ptr.moved_far ? g_ptr.drag_x : out->x;
     out->drag_y = g_ptr.moved_far ? g_ptr.drag_y : out->y;
     g_ptr.pressed = g_ptr.released = g_ptr.rpressed = 0;
+    g_ptr.wheel = 0;
     return 1;
 }
 

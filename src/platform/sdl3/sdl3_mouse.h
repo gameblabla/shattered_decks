@@ -39,6 +39,9 @@ void waifu_sdl3_mouse_update(const WaifuSdl3Video *video, int suppressed);
    real drag; a plain click sets both. */
 void waifu_sdl3_mouse_inject(int game_x, int game_y, int press, int release, int rclick);
 
+/* Scripted wheel notches (+ away from the player, - toward). */
+void waifu_sdl3_mouse_wheel_inject(int notches);
+
 /* Set by the video layer whenever the canvas is rebuilt (resolution change). */
 void waifu_sdl3_display_reset_notify(void);
 

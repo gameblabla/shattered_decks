@@ -120,6 +120,15 @@ struct WaifuInput {
     int capture_is_pad;          /* 0 key, 1 pad, -1 cancelled */
 };
 
+/* ---- on-screen prompt labels (platform.h seam) -----------------------------
+   A prompt that says "A" is a lie on PC: the control is rebindable, and the
+   player may be holding a pad instead of a keyboard. The label therefore
+   follows both the current binding AND the device last used, which the update
+   below records as it scans. Kept short (a prompt line has room for a name, not
+   a sentence), so the long scancode names get an abbreviation. */
+static const WaifuSettings *g_prompt_cfg;
+static int g_prompt_pad_last;         /* 1 = the pad moved most recently */
+
 WaifuInput *waifu_input_create(const WaifuSettings *settings)
 {
     WaifuInput *in = (WaifuInput *)calloc(1, sizeof(*in));
@@ -127,6 +136,7 @@ WaifuInput *waifu_input_create(const WaifuSettings *settings)
     SDL_JoystickID *ids;
     if (!in) return NULL;
     in->cfg = settings;
+    g_prompt_cfg = settings;
     ids = SDL_GetGamepads(&count);
     if (ids) {
         for (i = 0; i < count && in->pad_count < WAIFU_INPUT_MAX_PADS; ++i) {
@@ -276,6 +286,7 @@ void waifu_input_update(WaifuInput *in)
                buttons they are bound to. */
             if (g_text_active && scancode_types_text(sc)) continue;
             in->held[a] = 1;
+            g_prompt_pad_last = 0;
         }
     }
 
@@ -285,8 +296,10 @@ void waifu_input_update(WaifuInput *in)
         for (a = 0; a < WAIFU_ACT_COUNT; ++a) {
             for (b = 0; b < WAIFU_BINDS_PER_ACTION; ++b) {
                 int btn = in->cfg->pad[a][b];
-                if (btn >= 0 && SDL_GetGamepadButton(g, (SDL_GamepadButton)btn))
+                if (btn >= 0 && SDL_GetGamepadButton(g, (SDL_GamepadButton)btn)) {
                     in->held[a] = 1;
+                    g_prompt_pad_last = 1;
+                }
             }
         }
         /* Both sticks steer the d-pad: menus and the board cursor feel the
@@ -315,6 +328,63 @@ void waifu_input_update(WaifuInput *in)
             in->repeat_timer[a] = REPEAT_RATE_FRAMES;
         }
     }
+}
+
+/* Short pad-face names. waifu_settings_pad_name() spells them out for the
+   rebinding screen ("A / CROSS"), which is too long to sit in a prompt. */
+static const char *prompt_pad_short(int button)
+{
+    static const char *const names[] = {
+        "A", "B", "X", "Y", "BACK", "GUIDE", "START",
+        "LSTICK", "RSTICK", "L1", "R1",
+        "UP", "DOWN", "LEFT", "RIGHT"
+    };
+    if (button < 0 || button >= (int)(sizeof(names) / sizeof(names[0]))) return NULL;
+    return names[button];
+}
+
+/* Abbreviations for the keys long enough to push a prompt off its line. */
+static const char *prompt_key_short(const char *name)
+{
+    static const struct { const char *full, *shortname; } k[] = {
+        { "LEFT CTRL", "LCTRL" },   { "RIGHT CTRL", "RCTRL" },
+        { "LEFT ALT", "LALT" },     { "RIGHT ALT", "RALT" },
+        { "LEFT SHIFT", "LSHIFT" }, { "RIGHT SHIFT", "RSHIFT" },
+        { "RETURN", "ENTER" },      { "BACKSPACE", "BKSP" },
+        { "ESCAPE", "ESC" }
+    };
+    int i;
+    for (i = 0; i < (int)(sizeof(k) / sizeof(k[0])); ++i)
+        if (!SDL_strcmp(name, k[i].full)) return k[i].shortname;
+    return name;
+}
+
+const char *waifu_platform_prompt_label(int action)
+{
+    static const int map[] = {
+        WAIFU_ACT_CONFIRM, WAIFU_ACT_CANCEL, WAIFU_ACT_START, WAIFU_ACT_ASSIST
+    };
+    int act, b;
+    if (!g_prompt_cfg) return NULL;
+    if (action < 0 || action >= (int)(sizeof(map) / sizeof(map[0]))) return NULL;
+    act = map[action];
+    if (g_prompt_pad_last) {
+        for (b = 0; b < WAIFU_BINDS_PER_ACTION; ++b) {
+            const char *n = prompt_pad_short(g_prompt_cfg->pad[act][b]);
+            if (n) return n;
+        }
+    }
+    for (b = 0; b < WAIFU_BINDS_PER_ACTION; ++b) {
+        int sc = g_prompt_cfg->key[act][b];
+        if (sc > 0 && sc < SDL_SCANCODE_COUNT)
+            return prompt_key_short(waifu_settings_key_name(sc));
+    }
+    /* Bound to a pad button only, whatever the player last touched. */
+    for (b = 0; b < WAIFU_BINDS_PER_ACTION; ++b) {
+        const char *n = prompt_pad_short(g_prompt_cfg->pad[act][b]);
+        if (n) return n;
+    }
+    return NULL;
 }
 
 int waifu_input_held(const WaifuInput *in, int action)

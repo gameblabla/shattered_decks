@@ -47,6 +47,7 @@ typedef struct ScriptButtons {
     int mouse_x, mouse_y;       /* game HUD space */
     int click, rclick;          /* button edges, first frame of the event only */
     int mdown, mup;             /* held-button edges, for a scripted drag */
+    int wheel;                  /* wheel notches, first frame only */
     char text[32];              /* TYPE=... characters, first frame only */
 } ScriptButtons;
 
@@ -173,6 +174,8 @@ static void input_or_button(ScriptButtons *sb, const char *tok)
     else if (!strcmp(buf, "CLICK") || !strcmp(buf, "LCLICK")) { sb->mouse = 1; sb->click = 1; }
     else if (!strcmp(buf, "RCLICK")) { sb->mouse = 1; sb->rclick = 1; }
     /* Press and release separately, so a script can drag a card. */
+    else if (!strcmp(buf, "WHEELUP")) { sb->wheel += 1; }
+    else if (!strcmp(buf, "WHEELDN")) { sb->wheel -= 1; }
     else if (!strcmp(buf, "MDOWN")) { sb->mouse = 1; sb->mdown = 1; }
     else if (!strcmp(buf, "MUP")) { sb->mouse = 1; sb->mup = 1; }
     /* Keyboard text entry: TYPE=NAME types those characters, BKSP one
@@ -267,6 +270,7 @@ static ScriptButtons input_for_frame_from_events(int frame, const CommandEvent *
                     sb.mup |= events[i].input.mup;
                 }
             }
+            if (frame == events[i].start) sb.wheel += events[i].input.wheel;
             if (frame == events[i].start && events[i].input.text[0]) {
                 size_t n = strlen(sb.text);
                 snprintf(sb.text + n, sizeof(sb.text) - n, "%s", events[i].input.text);
@@ -501,6 +505,7 @@ int main(int argc, char **argv)
                                         sb.click || sb.mup, sb.rclick);
                 script_mouse = 1;
             }
+            if (sb.wheel) { waifu_sdl3_mouse_wheel_inject(sb.wheel); script_mouse = 1; }
             if (sb.text[0]) waifu_sdl3_text_inject(sb.text);
         }
         {
