@@ -1177,6 +1177,27 @@ int waifu_hw2d_quad_rgba(const int xy[8], uint8_t r, uint8_t g, uint8_t b, uint8
     return 1;
 }
 
+/* Bilinear point on a screen-space quad wound (0,0),(1,0),(1,1),(0,1), then
+   straight into the UI clip space push_hires_quad expects. */
+static void quad_corner_clip(const float xy[8], float u, float v,
+                             float hx, float hy, float out[3])
+{
+    float tx = xy[0] + (xy[2] - xy[0]) * u, ty = xy[1] + (xy[3] - xy[1]) * u;
+    float bx = xy[6] + (xy[4] - xy[6]) * u, by = xy[7] + (xy[5] - xy[7]) * u;
+    out[0] = (tx + (bx - tx) * v) / hx - 1.0f;
+    out[1] = 1.0f - (ty + (by - ty) * v) / hy;
+    out[2] = 1.0f;
+}
+
+static void quad_sub(const float xy[8], float u0, float v0, float u1, float v1,
+                     float hx, float hy, float p[4][3])
+{
+    quad_corner_clip(xy, u0, v0, hx, hy, p[0]);
+    quad_corner_clip(xy, u1, v0, hx, hy, p[1]);
+    quad_corner_clip(xy, u1, v1, hx, hy, p[2]);
+    quad_corner_clip(xy, u0, v1, hx, hy, p[3]);
+}
+
 int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
                           const int xy[8], int gray)
 {
@@ -1184,19 +1205,58 @@ int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
     static const float dim[4] = { 0.55f, 0.55f, 0.55f, 1.0f };
     const ImageEntry *e;
     float fxy[8], uv[8];
-    int i;
+    float hx = (float)(g_ui_hud ? WAIFU_FM_WIDTH + g_ui_extra_w : WAIFU_FM_WIDTH) * 0.5f;
+    float hy = (float)WAIFU_FM_HEIGHT * 0.5f;
+    float g = gray ? 1.0f : 0.0f;
+    int card_id, kind, i;
     if (!pix || sw <= 0 || sh <= 0) return 1;
-    e = image_atlas_add(pix, 0, sw, sh, 0);
-    if (!e) return 1;
     for (i = 0; i < 4; ++i) {
         fxy[i * 2 + 0] = (float)xy[i * 2 + 0];
         fxy[i * 2 + 1] = (float)xy[i * 2 + 1];
     }
-    uv[0] = (float)e->x;        uv[1] = (float)e->y;
-    uv[2] = (float)(e->x + sw); uv[3] = (float)e->y;
-    uv[4] = (float)(e->x + sw); uv[5] = (float)(e->y + sh);
-    uv[6] = (float)e->x;        uv[7] = (float)(e->y + sh);
-    ui_push_corner_quad(fxy, uv, gray ? dim : white);
+    e = image_atlas_add(pix, 0, sw, sh, 0);
+    if (e) {
+        uv[0] = (float)e->x;        uv[1] = (float)e->y;
+        uv[2] = (float)(e->x + sw); uv[3] = (float)e->y;
+        uv[4] = (float)(e->x + sw); uv[5] = (float)(e->y + sh);
+        uv[6] = (float)e->x;        uv[7] = (float)(e->y + sh);
+        ui_push_corner_quad(fxy, uv, gray ? dim : white);
+    }
+
+    /* Same full-resolution substitution the axis-aligned blit does, so a card
+       that is turning or tumbling (the play-to-board flight, the fusion whirl)
+       keeps its real front frame instead of dropping to the 8bpp thumbnail for
+       the length of the animation. The 8bpp quad above stays underneath as the
+       fallback layer. */
+    {
+        float p[4][3];
+        int idx;
+        if (pix == waifu_assets_card_back()) {
+            quad_sub(fxy, 0.0f, 0.0f, 1.0f, 1.0f, hx, hy, p);
+            idx = push_hires_quad(p, 0, WAIFU_HIRES_BACK, 1 /* 2D */, g);
+            if (idx >= 0) ui_append_hires(idx);
+            g_frame.has_content = 1;
+            return 1;
+        }
+        if (card_lookup(pix, &card_id, &kind) && kind == WAIFU_HIRES_FACE) {
+            quad_sub(fxy, 0.0f, 0.0f, 1.0f, 1.0f, hx, hy, p);
+            idx = push_hires_quad(p, WAIFU_CARD_FRAME_MONSTER, WAIFU_HIRES_FRAME, 1, g);
+            if (idx >= 0) ui_append_hires(idx);
+            quad_sub(fxy, CARD_ART_U0, CARD_ART_V0, CARD_ART_U1, CARD_ART_V1, hx, hy, p);
+            idx = push_hires_quad(p, card_id, kind, 1, g);
+            if (idx >= 0) ui_append_hires(idx);
+            if (waifu_sdl3_hires_card_level(card_id) > 0) {
+                quad_sub(fxy, CARD_STAR_U0, CARD_STAR_V0, CARD_STAR_U1, CARD_STAR_V1, hx, hy, p);
+                idx = push_hires_quad(p, waifu_sdl3_hires_card_level(card_id) - 1,
+                                      WAIFU_HIRES_STARS, 1, g);
+                if (idx >= 0) ui_append_hires(idx);
+            }
+            quad_sub(fxy, CARD_STAT_U0, CARD_STAT_V0, CARD_STAT_U1, CARD_STAT_V1, hx, hy, p);
+            idx = push_hires_quad(p, card_id, WAIFU_HIRES_STATS, 1, g);
+            if (idx >= 0) ui_append_hires(idx);
+        }
+    }
+    g_frame.has_content = 1;
     return 1;
 }
 

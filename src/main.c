@@ -5133,6 +5133,90 @@ static void draw_hand_card_sprite_ex(int id, int x, int y, int w, int h, int bac
     else draw_card_sprite_ex(id, x, y, w, h, back, gray);
 }
 
+#if defined(WAIFU_PLATFORM_HW3D)
+/* ---- free-quad card drawing (PC) -------------------------------------------
+   A card face as an arbitrary screen-space quad: turned by `rot` radians in the
+   plane and about its own vertical axis by `spin`, so it can tumble and go
+   edge-on. The hardware seam substitutes the full-resolution front frame for
+   this quad exactly as it does for an upright card, so a card keeps its real
+   art all the way through an animation. When the card's back is toward the
+   viewer the back face is drawn instead of a mirrored front. */
+static void draw_card_spin_quad(int card_id, float cx, float cy, float w, float h,
+                                float rot, float spin)
+{
+    static const float corner_x[4] = { -1.0f, 1.0f, 1.0f, -1.0f };
+    static const float corner_y[4] = { -1.0f, -1.0f, 1.0f, 1.0f };
+    float c = cosf(rot), s = sinf(rot), face = cosf(spin);
+    float hw, hh = h * 0.5f;
+    const uint8_t *tex;
+    int xy[8], i;
+    if (face < 0.0f) {
+        tex = waifu_assets_card_back();
+        hw = w * -0.5f * face;
+    } else {
+        tex = is_support_card(card_id) ? waifu_assets_support_face() : card_face_ptr(card_id);
+        hw = w * 0.5f * face;
+    }
+    if (!tex || hw < 0.25f) return;
+    for (i = 0; i < 4; ++i) {
+        float lx = corner_x[i] * hw, ly = corner_y[i] * hh;
+        xy[i * 2 + 0] = (int)(cx + lx * c - ly * s + (cx < 0.0f ? -0.5f : 0.5f));
+        xy[i * 2 + 1] = (int)(cy + lx * s + ly * c + (cy < 0.0f ? -0.5f : 0.5f));
+    }
+    if (is_support_card(card_id) && face >= 0.0f)
+        waifu_hw2d_card_frame_hint(is_trap_support_card(card_id) ? WAIFU_CARD_FRAME_TRAP
+                                                                 : WAIFU_CARD_FRAME_SPELL,
+                                   is_trap_support_card(card_id) ? WAIFU_CARD_LABEL_TRAP
+                                   : is_equip_support_card(card_id) ? WAIFU_CARD_LABEL_EQUIP
+                                                                    : WAIFU_CARD_LABEL_SUPPORT);
+    waifu_hw2d_image_quad(tex, WAIFU_CARD_W, WAIFU_CARD_H, xy, 0);
+}
+
+/* A filled square of side 2r centred on (x, y), used for sparks and rays. */
+static void draw_fx_dot(float x, float y, float r, uint8_t cr, uint8_t cg, uint8_t cb, int a)
+{
+    int xy[8];
+    if (r < 0.5f) r = 0.5f;
+    xy[0] = (int)(x - r); xy[1] = (int)(y - r);
+    xy[2] = (int)(x + r); xy[3] = (int)(y - r);
+    xy[4] = (int)(x + r); xy[5] = (int)(y + r);
+    xy[6] = (int)(x - r); xy[7] = (int)(y + r);
+    waifu_hw2d_quad_rgba(xy, cr, cg, cb, (uint8_t)(a < 0 ? 0 : (a > 255 ? 255 : a)));
+}
+
+/* One tapering ray from (cx, cy) at `ang`, spanning r0..r1 from the centre. */
+static void draw_fx_ray(float cx, float cy, float ang, float r0, float r1,
+                        float half_w, uint8_t cr, uint8_t cg, uint8_t cb, int a)
+{
+    float c = cosf(ang), s = sinf(ang);
+    float nx = -s * half_w, ny = c * half_w;
+    int xy[8];
+    if (a <= 0) return;
+    xy[0] = (int)(cx + c * r0 + nx); xy[1] = (int)(cy + s * r0 + ny);
+    xy[2] = (int)(cx + c * r1);      xy[3] = (int)(cy + s * r1);
+    xy[4] = (int)(cx + c * r1);      xy[5] = (int)(cy + s * r1);
+    xy[6] = (int)(cx + c * r0 - nx); xy[7] = (int)(cy + s * r0 - ny);
+    waifu_hw2d_quad_rgba(xy, cr, cg, cb, (uint8_t)(a > 255 ? 255 : a));
+}
+
+/* The swirl of sparks that tightens as the materials converge. */
+static void draw_fusion_sparks(float cx, float cy, int f, float ease)
+{
+    int i;
+    for (i = 0; i < 40; ++i) {
+        float a = (float)f * 0.11f + (float)i * 0.9424778f;
+        float rad = (1.0f - ease) * 78.0f + 10.0f + (float)((i * 37) % 23);
+        float wob = sinf((float)f * 0.17f + (float)i);
+        float x = cx + cosf(a) * (rad + wob * 5.0f);
+        float y = cy + sinf(a) * (rad + wob * 5.0f) * 0.55f;
+        int alpha = 90 + (int)(120.0f * ease) + (int)(50.0f * wob);
+        if ((i & 3) == 0) draw_fx_dot(x, y, 1.6f, 255, 255, 220, alpha);
+        else if (i & 1)   draw_fx_dot(x, y, 1.2f, 120, 255, 170, alpha);
+        else              draw_fx_dot(x, y, 1.2f, 255, 210, 90, alpha);
+    }
+}
+#endif /* WAIFU_PLATFORM_HW3D */
+
 static void draw_big_battle_card_stats(int id, int x, int y, int back, int atk, int defv)
 {
     /* 120x160-ish duel cut-in card with a 112x112 art window. This matches the
@@ -15276,6 +15360,89 @@ static void draw_player_fusion_anim(void)
     draw_panel_rect(WAIFU_UI_CENTER_DX + 20, 26, g_ui_clip_w - 40 - 2 * WAIFU_UI_CENTER_DX, 178, IDX_UI_DARK);
     draw_centered_text(39, "FUSION", IDX_GOLD_HI, IDX_BLACK);
 
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* PC: the materials do not slide into a row and flash white. They orbit
+       the centre, tumbling about their own axis, while a swirl of sparks winds
+       in with them; the merge breaks in a ray burst instead of a flat fill;
+       and the result turns out of the light. Every console keeps the authored
+       animation below. */
+    {
+        float fcx = (float)(g_ui_clip_w / 2), fcy = 103.0f;
+        float t = (float)merge_t / (float)Q8_ONE;
+        float ease = t * t * (3.0f - 2.0f * t);
+        if (f < fusion_flash_start) {
+            /* Kept inside the fusion panel at its widest, so a material never
+               swings out over the HUD. */
+            float radius = (1.0f - ease) * (float)(g_ui_clip_w / 2 - 62) + 5.0f;
+            float shrink = 1.0f - 0.42f * ease;
+            for (i = 0; i < count; ++i) {
+                float a = (float)f * 0.085f + (float)i * 6.2831853f / (float)count;
+                float x = fcx + cosf(a) * radius;
+                float y = fcy + sinf(a) * radius * 0.36f;
+                draw_card_spin_quad(g_b_fusion_anim_cards[i], x, y,
+                                    (float)w * shrink, (float)h * shrink,
+                                    sinf(a) * 0.22f, (float)f * 0.15f + (float)i * 1.3f);
+                if (g_b_fusion_anim_slots[i] == FUSION_FIELD_SLOT && ease < 0.5f)
+                    draw_text_small((int)x - 10, (int)(y + (float)h * shrink * 0.5f) + 3,
+                                    "FLD", IDX_GOLD_HI, IDX_BLACK);
+            }
+            draw_fusion_sparks(fcx, fcy, f, ease);
+        } else if (f < fusion_flash_end) {
+            int k;
+            float bt = (float)(f - fusion_flash_start) /
+                       (float)(fusion_flash_end - fusion_flash_start);
+            float reach = 30.0f + bt * (float)g_ui_clip_w * 0.75f;
+            int core = (int)(255.0f * (1.0f - bt));
+            for (k = 0; k < 16; ++k) {
+                float a = (float)k * 0.3926991f + (float)f * 0.04f;
+                draw_fx_ray(fcx, fcy, a, 4.0f, reach * ((k & 1) ? 1.0f : 0.62f),
+                            9.0f * (1.0f - bt) + 1.0f, 255, 240, 190, core);
+            }
+            draw_fx_dot(fcx, fcy, 8.0f + 46.0f * bt, 255, 255, 245, core);
+            /* A short white wash at the very peak, not for the whole beat. */
+            if (bt < 0.35f) {
+                int xy[8];
+                xy[0] = 0; xy[1] = 0; xy[2] = g_ui_clip_w; xy[3] = 0;
+                xy[4] = g_ui_clip_w; xy[5] = WAIFU_FM_HEIGHT; xy[6] = 0; xy[7] = WAIFU_FM_HEIGHT;
+                waifu_hw2d_quad_rgba(xy, 255, 252, 235, (uint8_t)(220.0f * (1.0f - bt / 0.35f)));
+            }
+        } else if (g_b_fusion_anim_success) {
+            float rt = (float)reveal_t / (float)Q8_ONE;
+            float ease2 = 1.0f - (1.0f - rt) * (1.0f - rt) * (1.0f - rt);
+            float ry = 97.0f + 10.0f * ease2;
+            int k;
+            for (k = 0; k < 12; ++k) {
+                float a = (float)k * 0.5235988f - (float)f * 0.03f;
+                draw_fx_ray(fcx, ry, a, 26.0f, 34.0f + 44.0f * (1.0f - ease2), 5.0f,
+                            255, 224, 120, (int)(150.0f * (1.0f - ease2)) + 40);
+            }
+            draw_card_spin_quad(g_b_fusion_anim_result, fcx, ry,
+                                (float)w * (0.6f + 0.4f * ease2),
+                                (float)h * (0.6f + 0.4f * ease2),
+                                0.0f, (1.0f - ease2) * 3.0f * 6.2831853f);
+            draw_fusion_sparks(fcx, ry, f, 1.0f);
+            draw_centered_text(166, "FUSION SUCCESS", IDX_GREEN, IDX_BLACK);
+        } else if (!g_b_fusion_anim_equip_only) {
+            /* Failure keeps the authored presentation; only the merge above is
+               restaged, so the outcome still reads the way it always has. */
+            for (i = 0; i < count; ++i) {
+                int x = first_target_x + i * 34;
+                draw_hand_card_sprite(g_b_fusion_anim_cards[i], x, 82, 38, 50, 0);
+            }
+            draw_centered_text(166, "FUSION FAILED", IDX_RED, IDX_BLACK);
+            draw_centered_text(181, "CARDS DISCARDED", IDX_WHITE, IDX_BLACK);
+        }
+        if (f >= fusion_flash_end && g_b_fusion_anim_equip_only) {
+            for (i = 0; i < count; ++i)
+                draw_hand_card_sprite(g_b_fusion_anim_cards[i], first_target_x + i * 34, 82, 38, 50, 0);
+            draw_centered_text(166, "EQUIP APPLIED", IDX_GREEN, IDX_BLACK);
+            draw_centered_text(181, "PLACING CARD", IDX_WHITE, IDX_BLACK);
+        }
+        (void)pulse; (void)cy;
+        ui_hud_end();
+        return;
+    }
+#endif
     if (f < fusion_flash_start) {
         for (i = 0; i < count; ++i) {
             int slot = g_b_fusion_anim_slots[i];
