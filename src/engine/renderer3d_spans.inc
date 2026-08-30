@@ -178,8 +178,8 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_fast_pair_pc
             /* Two packed pixel-pairs per iteration.  This is intentionally
                compact instead of fully unrolled: the hot body is four byte LUT
                fetches, four source-step adds, two packs, and two ST.H writes.
-               V810 LD.B sign-extends: masking each low/right lane keeps palette
-               indices >= 128 from overwriting its pair's high/left lane.  No
+               V810 LD.B sign-extends: masking each unshifted left lane keeps
+               palette indices >= 128 from overwriting its pair's other lane. No
                per-pixel address rebuild and no KING reads. */
             "ld.b 0[%[src]],%[c0]\n"
             "add %[step],%[src]\n"
@@ -189,14 +189,14 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_fast_pair_pc
             "add %[step],%[src]\n"
             "ld.b 0[%[src]],%[c3]\n"
             "add %[step],%[src]\n"
-            "andi 255,%[c1],%[c1]\n"
-            "andi 255,%[c3],%[c3]\n"
-            "shl 8,%[c0]\n"
-            "or %[c1],%[c0]\n"
-            "st.h %[c0],0[%[dst]]\n"
-            "shl 8,%[c2]\n"
-            "or %[c3],%[c2]\n"
-            "st.h %[c2],2[%[dst]]\n"
+            "andi 255,%[c0],%[c0]\n"
+            "andi 255,%[c2],%[c2]\n"
+            "shl 8,%[c1]\n"
+            "or %[c0],%[c1]\n"
+            "st.h %[c1],0[%[dst]]\n"
+            "shl 8,%[c3]\n"
+            "or %[c2],%[c3]\n"
+            "st.h %[c3],2[%[dst]]\n"
             "add 4,%[dst]\n"
             "add -1,%[groups]\n"
             "bne 1b\n"
@@ -211,10 +211,10 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_fast_pair_pc
             "ld.b 0[%[src]],%[c0]\n"
             "add %[step],%[src]\n"
             "ld.b 0[%[src]],%[c1]\n"
-            "andi 255,%[c1],%[c1]\n"
-            "shl 8,%[c0]\n"
-            "or %[c1],%[c0]\n"
-            "st.h %[c0],0[%[dst]]\n"
+            "andi 255,%[c0],%[c0]\n"
+            "shl 8,%[c1]\n"
+            "or %[c0],%[c1]\n"
+            "st.h %[c1],0[%[dst]]\n"
             : [dst] "+r" (dst), [src] "+r" (src),
               [c0] "=&r" (c0), [c1] "=&r" (c1)
             : [step] "r" (step)
@@ -292,7 +292,7 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_fast_pair_pc
         src += step;
         uint8_t b = *src;
         src += step;
-        cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(a, b));
+        cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(a, b));
     }
 }
 
@@ -621,7 +621,7 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_safe_pair(ui
         uint8_t c1 = cfx_fetch_texel(cfx_pack_tex_state(u, v));
         u = (uint8_t)(u + (uint8_t)step_u);
         v = (uint8_t)(v + (uint8_t)step_v);
-        *dst++ = cfx_pack_pixel_pair(c0, c1);
+        *dst++ = cfx_pack_framebuffer_pixel_pair(c0, c1);
     }
 }
 
@@ -708,7 +708,7 @@ static inline __attribute__((always_inline)) void cfx_draw_scanline_safe_pair_kr
         uint8_t c1 = cfx_fetch_texel(cfx_pack_tex_state(u, v));
         u = (uint8_t)(u + (uint8_t)step_u);
         v = (uint8_t)(v + (uint8_t)step_v);
-        cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
+        cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c0, c1));
     }
 }
 
@@ -760,7 +760,7 @@ static inline void cfx_draw_span_kram(const CfxRenderer3DState *renderer, int16_
             uint16_t prev_state = cfx_advance_tex_state(tex_state, (int8_t)-step_u, (int8_t)-step_v);
             uint8_t prev = cfx_fetch_texel(prev_state);
             uint8_t edge = cfx_fetch_texel(tex_state);
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(prev, edge));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(prev, edge));
         }
         tex_state = cfx_advance_tex_state(tex_state, step_u, step_v);
         --span;
@@ -777,7 +777,7 @@ static inline void cfx_draw_span_kram(const CfxRenderer3DState *renderer, int16_
         {
             uint8_t edge = cfx_fetch_texel(tex_state);
             uint8_t next = cfx_fetch_texel(cfx_advance_tex_state(tex_state, step_u, step_v));
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, next));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, next));
         }
     }
 }
@@ -794,7 +794,7 @@ static inline __attribute__((always_inline)) void cfx_draw_span_kram_nowrap_uncl
         uint16_t prev_state = cfx_advance_tex_state(tex_state, (int8_t)-step_u, (int8_t)-step_v);
         uint8_t prev = cfx_fetch_texel(prev_state);
         uint8_t edge = cfx_fetch_texel(tex_state);
-        cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(prev, edge));
+        cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(prev, edge));
         tex_state = cfx_advance_tex_state(tex_state, step_u, step_v);
         --span;
     }
@@ -811,7 +811,7 @@ static inline __attribute__((always_inline)) void cfx_draw_span_kram_nowrap_uncl
     if (span > 0) {
         uint8_t edge = cfx_fetch_texel(tex_state);
         uint8_t next = cfx_fetch_texel(cfx_advance_tex_state(tex_state, step_u, step_v));
-        cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, next));
+        cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, next));
     }
 }
 
@@ -935,7 +935,7 @@ void cfx_draw_span_kram_fp_exact(const CfxRenderer3DState *renderer, int16_t y, 
 
     if (xs & 1) {
         uint8_t edge = cfx_fetch_texel_fp(u_fp, v_fp);
-        cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+        cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, edge));
         u_fp += du_fp;
         v_fp += dv_fp;
         --span;
@@ -948,7 +948,7 @@ void cfx_draw_span_kram_fp_exact(const CfxRenderer3DState *renderer, int16_t y, 
         span = (int16_t)(span - (int16_t)(pairs << 1));
         if (span > 0) {
             uint8_t edge = cfx_fetch_texel_fp(u_fp, v_fp);
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, edge));
         }
         return;
     }
@@ -961,26 +961,28 @@ void cfx_draw_span_kram_fp_exact(const CfxRenderer3DState *renderer, int16_t y, 
         uint8_t c1 = cfx_fetch_texel_fp(u_fp, v_fp);
         u_fp += du_fp;
         v_fp += dv_fp;
-        cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
+        cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c0, c1));
         span = (int16_t)(span - 2);
     }
 
     if (span > 0) {
         uint8_t edge = cfx_fetch_texel_fp(u_fp, v_fp);
-        cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+        cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, edge));
     }
 }
 #endif
 
 #if CFX_RENDERER_MULTI_LUT
+/* Legacy PC-FX LUT path: this is also CPU-framebuffer staging, not a KING
+   data-port write, so it follows the V810's little-endian byte layout. */
 static inline void cfx_put_even_pixel_word_pcfx(uint16_t *word, uint8_t color)
 {
-    *word = (uint16_t)((*word & 0x00ffu) | ((uint16_t)color << 8));
+    *word = (uint16_t)((*word & 0xff00u) | (uint16_t)color);
 }
 
 static inline void cfx_put_odd_pixel_word_pcfx(uint16_t *word, uint8_t color)
 {
-    *word = (uint16_t)((*word & 0xff00u) | (uint16_t)color);
+    *word = (uint16_t)((*word & 0x00ffu) | ((uint16_t)color << 8));
 }
 
 static inline void cfx_draw_span_pcfx_exact_words(const CfxRenderer3DState *renderer, int16_t y, int16_t xs, int16_t span, uint16_t tex_state, int16_t tex_step_linear, int8_t step_u, int8_t step_v)
@@ -1011,8 +1013,9 @@ static inline void cfx_draw_span_pcfx_exact_words(const CfxRenderer3DState *rend
         return;
     }
 
-    /* Keep the PC-FX/KING byte order fixed: even/left pixel in the high byte,
-       odd/right pixel in the low byte.  The earlier all-pair expansion kept
+    /* This legacy path stages into the CPU framebuffer: even/left belongs in
+       the low byte and odd/right in the high byte.  The earlier all-pair
+       expansion kept
        every write as a full 16-bit store, but it also drew one texel outside
        odd/even triangle edges.  At steep title-cube angles that outside texel
        could be sampled after a 16-bit UV wrap, giving the visible bottom-edge
@@ -1471,7 +1474,7 @@ void cfx_board_fill(uint8_t *dst, int n,
                 uint8_t p1 = tile[(((uint32_t)v >> 3) & 0x3e0) | (((uint32_t)u >> 8) & 0x1f)];
                 u += du;
                 v += dv;
-                *dst16++ = cfx_pack_pixel_pair(p0, p1);
+                *dst16++ = cfx_pack_framebuffer_pixel_pair(p0, p1);
                 n -= 2;
             }
 
@@ -1564,14 +1567,14 @@ static inline __attribute__((always_inline)) void cfx_draw_row_lut_pair_pcfx_now
             "add %[step],%[src]\n"
             "ld.b 0[%[src]],%[c3]\n"
             "add %[step],%[src]\n"
-            "andi 255,%[c1],%[c1]\n"
-            "andi 255,%[c3],%[c3]\n"
-            "shl 8,%[c0]\n"
-            "or %[c1],%[c0]\n"
-            "st.h %[c0],0[%[dst]]\n"
-            "shl 8,%[c2]\n"
-            "or %[c3],%[c2]\n"
-            "st.h %[c2],2[%[dst]]\n"
+            "andi 255,%[c0],%[c0]\n"
+            "andi 255,%[c2],%[c2]\n"
+            "shl 8,%[c1]\n"
+            "or %[c0],%[c1]\n"
+            "st.h %[c1],0[%[dst]]\n"
+            "shl 8,%[c3]\n"
+            "or %[c2],%[c3]\n"
+            "st.h %[c3],2[%[dst]]\n"
             "add 4,%[dst]\n"
             "add -1,%[groups]\n"
             "bne 1b\n"
@@ -1586,10 +1589,10 @@ static inline __attribute__((always_inline)) void cfx_draw_row_lut_pair_pcfx_now
             "ld.b 0[%[src]],%[c0]\n"
             "add %[step],%[src]\n"
             "ld.b 0[%[src]],%[c1]\n"
-            "andi 255,%[c1],%[c1]\n"
-            "shl 8,%[c0]\n"
-            "or %[c1],%[c0]\n"
-            "st.h %[c0],0[%[dst]]\n"
+            "andi 255,%[c0],%[c0]\n"
+            "shl 8,%[c1]\n"
+            "or %[c0],%[c1]\n"
+            "st.h %[c1],0[%[dst]]\n"
             : [dst] "+r" (dst), [src] "+r" (src),
               [c0] "=&r" (c0), [c1] "=&r" (c1)
             : [step] "r" ((int32_t)step)
@@ -1661,7 +1664,7 @@ static inline __attribute__((always_inline)) void cfx_draw_row_lut_pair_pcfx_kra
         src += step;
         uint8_t b = *src;
         src += step;
-        cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(a, b));
+        cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(a, b));
     }
 }
 
@@ -1679,7 +1682,7 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row_
         if (xs & 1) {
             {
                 uint8_t edge = row[u];
-                cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+                cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, edge));
             }
             u = (uint8_t)(u + (uint8_t)step_u);
             --span;
@@ -1699,7 +1702,7 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row_
                     u = (uint8_t)(u + (uint8_t)step_u);
                     uint8_t c1 = row[u];
                     u = (uint8_t)(u + (uint8_t)step_u);
-                    cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
+                    cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c0, c1));
                     span = (int16_t)(span - 2);
                 }
             }
@@ -1707,7 +1710,7 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row_
         if (span > 0) {
             {
             uint8_t edge = row[u];
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, edge));
         }
         }
         return;
@@ -1736,7 +1739,7 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row_
                 u = (uint8_t)(u + (uint8_t)step_u);
                 uint8_t c1 = row[u];
                 u = (uint8_t)(u + (uint8_t)step_u);
-                *dst++ = cfx_pack_pixel_pair(c0, c1);
+                *dst++ = cfx_pack_framebuffer_pixel_pair(c0, c1);
                 span = (int16_t)(span - 2);
             }
         }
@@ -1816,7 +1819,7 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
         if (xs & 1) {
             {
             uint8_t edge = cfx_fetch_direct_row_texel(row, u);
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, edge));
         }
             u = (uint8_t)(u + (uint8_t)step_u);
             --span;
@@ -1830,8 +1833,8 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
             u = (uint8_t)(u + (uint8_t)step_u);
             const uint8_t c3 = cfx_fetch_direct_row_texel(row, u);
             u = (uint8_t)(u + (uint8_t)step_u);
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c2, c3));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c0, c1));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c2, c3));
             span = (int16_t)(span - 4);
         }
         if (span >= 2) {
@@ -1839,13 +1842,13 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
             u = (uint8_t)(u + (uint8_t)step_u);
             const uint8_t c1 = cfx_fetch_direct_row_texel(row, u);
             u = (uint8_t)(u + (uint8_t)step_u);
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c0, c1));
             span = (int16_t)(span - 2);
         }
         if (span > 0) {
             {
             uint8_t edge = cfx_fetch_direct_row_texel(row, u);
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, edge));
         }
         }
         return;
@@ -1855,7 +1858,8 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
     if (xs & 1) {
         cfx_put_odd_pixel_word(dst, cfx_fetch_direct_row_texel(row, u));
 #if CFX_RENDERER_DIRECT_KRAM
-        if (direct_kram) cfx_pcfx_kram_write_word(*dst);
+        if (direct_kram) cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(
+            cfx_fetch_direct_row_texel(row, u), cfx_fetch_direct_row_texel(row, u)));
 #endif
         u = (uint8_t)(u + (uint8_t)step_u);
         ++dst;
@@ -1869,7 +1873,8 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
        is dropped -- and the two trailing st.h fill the loop branch's flag-read
        slot so bne no longer stalls on the just-decremented count.  All four
        texels come from the single source row (same DRAM page); pixel-identical
-       to the C body: left texel in the high byte, u advances per pixel. */
+       to the C body: left texel in the low byte of the CPU framebuffer,
+       u advances per pixel. */
     if (span >= 4) {
         uint16_t iters = (uint16_t)((uint16_t)span >> 2);
         uint32_t uu = u;
@@ -1885,11 +1890,11 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
             "add %[su],%[u]\n" "andi 255,%[u],%[u]\n"
             "mov %[u],%[ta]\n" "shr 3,%[ta]\n" "add %[row],%[ta]\n" "ld.b 0[%[ta]],%[a3]\n"
             "add %[su],%[u]\n" "andi 255,%[u],%[u]\n"
-            "andi 255,%[a1],%[a1]\n" "andi 255,%[a3],%[a3]\n"
-            "shl 8,%[a0]\n" "or %[a1],%[a0]\n"
-            "shl 8,%[a2]\n" "or %[a3],%[a2]\n"
+            "andi 255,%[a0],%[a0]\n" "andi 255,%[a2],%[a2]\n"
+            "shl 8,%[a1]\n" "or %[a0],%[a1]\n"
+            "shl 8,%[a3]\n" "or %[a2],%[a3]\n"
             "add 4,%[dst]\n" "add -1,%[iters]\n"
-            "st.h %[a0],-4[%[dst]]\n" "st.h %[a2],-2[%[dst]]\n"
+            "st.h %[a1],-4[%[dst]]\n" "st.h %[a3],-2[%[dst]]\n"
             "bne 1b\n"
             : [dst] "+r" (dst), [iters] "+r" (iters), [u] "+r" (uu),
               [a0] "=&r" (a0), [a1] "=&r" (a1), [a2] "=&r" (a2), [a3] "=&r" (a3),
@@ -1909,12 +1914,12 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
         u = (uint8_t)(u + (uint8_t)step_u);
         const uint8_t c3 = cfx_fetch_direct_row_texel(row, u);
         u = (uint8_t)(u + (uint8_t)step_u);
-        dst[0] = cfx_pack_pixel_pair(c0, c1);
-        dst[1] = cfx_pack_pixel_pair(c2, c3);
+        dst[0] = cfx_pack_framebuffer_pixel_pair(c0, c1);
+        dst[1] = cfx_pack_framebuffer_pixel_pair(c2, c3);
 #if CFX_RENDERER_DIRECT_KRAM
         if (direct_kram) {
-            cfx_pcfx_kram_write_word(dst[0]);
-            cfx_pcfx_kram_write_word(dst[1]);
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c0, c1));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c2, c3));
         }
 #endif
         dst += 2;
@@ -1928,10 +1933,10 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
         const uint8_t c1 = cfx_fetch_direct_row_texel(row, u);
         u = (uint8_t)(u + (uint8_t)step_u);
         {
-            uint16_t packed = cfx_pack_pixel_pair(c0, c1);
+            uint16_t packed = cfx_pack_framebuffer_pixel_pair(c0, c1);
             *dst++ = packed;
 #if CFX_RENDERER_DIRECT_KRAM
-            if (direct_kram) cfx_pcfx_kram_write_word(packed);
+            if (direct_kram) cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c0, c1));
 #endif
         }
         span = (int16_t)(span - 2);
@@ -1940,7 +1945,8 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
     if (span > 0) {
         cfx_put_even_pixel_word(dst, cfx_fetch_direct_row_texel(row, u));
 #if CFX_RENDERER_DIRECT_KRAM
-        if (direct_kram) cfx_pcfx_kram_write_word(*dst);
+        if (direct_kram) cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(
+            cfx_fetch_direct_row_texel(row, u), cfx_fetch_direct_row_texel(row, u)));
 #endif
     }
 }
@@ -1956,8 +1962,8 @@ static inline __attribute__((always_inline)) void cfx_draw_span_direct_tile_row(
    Pixel-identical to cfx_fetch_direct_texel(): texel offset is
    ((v>>3)&31)*32 + ((u>>3)&31), expressed as ((v<<2)&0x3e0) | ((u>>3)&0x1f).
    u/v run as 32-bit accumulators; the &0x3e0 / &0x1f masks make the high bits
-   irrelevant, so no per-step 8-bit wrap is needed.  Two pixels per ST.H, left
-   pixel in the high byte to match the KING byte order. */
+   irrelevant, so no per-step 8-bit wrap is needed. This writes the byte-linear
+   CPU framebuffer, so the logical left pixel goes in the low byte of ST.H. */
 static inline __attribute__((always_inline)) void cfx_draw_board_pair_nowrap(
     uint16_t *dst, uint16_t pairs, uint8_t *up, uint8_t *vp,
     int8_t step_u, int8_t step_v, const uint8_t *tile)
@@ -1979,8 +1985,8 @@ static inline __attribute__((always_inline)) void cfx_draw_board_pair_nowrap(
             "mov %[u],%[ru]\n" "shr 3,%[ru]\n" "andi 0x1f,%[ru],%[ru]\n"
             "add %[rv],%[ru]\n" "add %[tile],%[ru]\n" "ld.b 0[%[ru]],%[c1]\n"
             "add %[su],%[u]\n" "add %[sv],%[v]\n"
-            "andi 255,%[c1],%[c1]\n"
-            "shl 8,%[c0]\n" "or %[c1],%[c0]\n" "st.h %[c0],0[%[dst]]\n"
+            "andi 255,%[c0],%[c0]\n"
+            "shl 8,%[c1]\n" "or %[c0],%[c1]\n" "st.h %[c1],0[%[dst]]\n"
             "add 2,%[dst]\n" "add -1,%[pairs]\n" "bne 1b\n"
             : [dst] "+r" (dst), [pairs] "+r" (pairs), [u] "+r" (u), [v] "+r" (v),
               [c0] "=&r" (c0), [c1] "=&r" (c1), [ru] "=&r" (ru), [rv] "=&r" (rv)
@@ -2155,7 +2161,7 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
         if (xs & 1) {
             {
             uint8_t edge = cfx_fetch_direct_texel(renderer, tile, u, v);
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, edge));
         }
             u = (uint8_t)(u + (uint8_t)step_u);
             v = (uint8_t)(v + (uint8_t)step_v);
@@ -2168,13 +2174,13 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
             uint8_t c1 = cfx_fetch_direct_texel(renderer, tile, u, v);
             u = (uint8_t)(u + (uint8_t)step_u);
             v = (uint8_t)(v + (uint8_t)step_v);
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(c0, c1));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c0, c1));
             span = (int16_t)(span - 2);
         }
         if (span > 0) {
             {
             uint8_t edge = cfx_fetch_direct_texel(renderer, tile, u, v);
-            cfx_pcfx_kram_write_word(cfx_pack_pixel_pair(edge, edge));
+            cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(edge, edge));
         }
         }
         return;
@@ -2184,7 +2190,8 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
     if (xs & 1) {
         cfx_put_odd_pixel_word(dst, cfx_fetch_direct_texel(renderer, tile, u, v));
 #if CFX_RENDERER_DIRECT_KRAM
-        if (direct_kram) cfx_pcfx_kram_write_word(*dst);
+        if (direct_kram) cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(
+            cfx_fetch_direct_texel(renderer, tile, u, v), cfx_fetch_direct_texel(renderer, tile, u, v)));
 #endif
         u = (uint8_t)(u + (uint8_t)step_u);
         v = (uint8_t)(v + (uint8_t)step_v);
@@ -2211,10 +2218,10 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
         u = (uint8_t)(u + (uint8_t)step_u);
         v = (uint8_t)(v + (uint8_t)step_v);
         {
-            uint16_t packed = cfx_pack_pixel_pair(c0, c1);
+            uint16_t packed = cfx_pack_framebuffer_pixel_pair(c0, c1);
             *dst++ = packed;
 #if CFX_RENDERER_DIRECT_KRAM
-            if (direct_kram) cfx_pcfx_kram_write_word(packed);
+            if (direct_kram) cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(c0, c1));
 #endif
         }
         span = (int16_t)(span - 2);
@@ -2223,7 +2230,8 @@ void cfx_draw_span_direct_tile(const CfxRenderer3DState *renderer, const uint8_t
     if (span > 0) {
         cfx_put_even_pixel_word(dst, cfx_fetch_direct_texel(renderer, tile, u, v));
 #if CFX_RENDERER_DIRECT_KRAM
-        if (direct_kram) cfx_pcfx_kram_write_word(*dst);
+        if (direct_kram) cfx_pcfx_kram_write_word(cfx_pack_kram_pixel_pair(
+            cfx_fetch_direct_texel(renderer, tile, u, v), cfx_fetch_direct_texel(renderer, tile, u, v)));
 #endif
     }
 }
