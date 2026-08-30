@@ -1,0 +1,162 @@
+# Shattered Decks — PC (desktop) build file.
+#
+# Builds the SDL3 release frontend: the SDL_GPU renderer (true-colour 3D board,
+# full-resolution card art, FreeType text) plus the release shell (persisted
+# settings, action-based keyboard/gamepad input, pause + options menu) around
+# the same platform-agnostic game core every console target runs.
+#
+#   make -f Makefile.sdl3            # build ./shattered_decks
+#   make -f Makefile.sdl3 run        # build and play
+#   make -f Makefile.sdl3 debug      # -O0 -g build with sanitizers off
+#   make -f Makefile.sdl3 shaders    # regenerate the embedded SPIR-V header
+#   make -f Makefile.sdl3 card-paths # regenerate the hi-res source path table
+#   make -f Makefile.sdl3 clean
+#
+# Dependencies (pkg-config): sdl3, libpng, libwebp, freetype2, zlib.
+# glslc (shaderc) is needed ONLY by the `shaders` target — the generated header
+# is checked in, so a plain build needs no shader tools.
+
+CC ?= gcc
+PKG_CONFIG ?= pkg-config
+RM = rm -rf
+
+# The shipped executable name. Overridable for packaging:
+#   make -f Makefile.sdl3 SDL3_TARGET=shattered-decks-linux-x86_64
+SDL3_TARGET ?= shattered_decks
+
+OBJDIR := build/sdl3
+
+# ---- dependencies ----------------------------------------------------------
+
+SDL3_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl3 2>/dev/null)
+SDL3_LIBS ?= $(shell $(PKG_CONFIG) --libs sdl3 2>/dev/null)
+# Full-resolution card / title / ending art decodes the source PNG/WebP.
+SDL3_IMG_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags libpng libwebp 2>/dev/null)
+SDL3_IMG_LIBS ?= $(shell $(PKG_CONFIG) --libs libpng libwebp 2>/dev/null)
+# High-resolution TTF text.
+SDL3_FT_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags freetype2 2>/dev/null)
+SDL3_FT_LIBS ?= $(shell $(PKG_CONFIG) --libs freetype2 2>/dev/null)
+
+# ---- flags -----------------------------------------------------------------
+
+INCLUDES := -Isrc/engine -Isrc/generated -Isrc/record -Isrc/game -Isrc/platform/sdl3
+
+# WAIFU_PLATFORM_HW3D routes every 2D/3D primitive through the capture seams
+# (src/engine/hw3d.h) instead of the software rasterizer. The CPU pixel caches
+# cache software-rendered framebuffer content that never exists here, so they
+# are compiled out to keep the capture stream complete every frame.
+DEFINES := -DPLATFORM=5 -DBY16=1 -DHARDWARE_DIV=1 \
+  -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_PLATFORM_HW3D=1 \
+  -DWAIFU_BG_CACHE_DISABLE -DWAIFU_BATTLE_BASE_CACHE_DISABLE
+
+WARNINGS ?= -Wall -Wextra -Wno-unused-parameter
+OPT ?= -O2
+
+CFLAGS ?= $(OPT) -std=c99 $(WARNINGS)
+ALL_CFLAGS := $(CFLAGS) $(DEFINES) $(INCLUDES) \
+  $(SDL3_CFLAGS) $(SDL3_IMG_CFLAGS) $(SDL3_FT_CFLAGS) $(EXTRA_CFLAGS)
+
+LDFLAGS ?=
+LIBS := $(SDL3_LIBS) $(SDL3_IMG_LIBS) $(SDL3_FT_LIBS) -lm -lz
+
+# ---- sources ---------------------------------------------------------------
+
+# The PC frontend: renderer + release shell.
+SDL3_PLATFORM_SRCS := \
+  src/platform/sdl3/sdl3_main.c \
+  src/platform/sdl3/sdl3_video.c \
+  src/platform/sdl3/sdl3_audio.c \
+  src/platform/sdl3/sdl3_scene3d.c \
+  src/platform/sdl3/sdl3_image_load.c \
+  src/platform/sdl3/sdl3_hires.c \
+  src/platform/sdl3/sdl3_text.c \
+  src/platform/sdl3/sdl3_settings.c \
+  src/platform/sdl3/sdl3_input.c \
+  src/platform/sdl3/sdl3_overlay.c \
+  src/platform/sdl3/sdl3_menu.c
+
+# The shared game core and engine, identical to every console target.
+SDL3_CORE_SRCS := \
+  src/main.c \
+  src/game/ai.c \
+  src/game/deck.c \
+  src/game/palette.c \
+  src/game/sounds.c \
+  src/game/assets.c \
+  src/engine/renderer3d.c \
+  src/engine/renderer3d_generic.c \
+  src/engine/common.c \
+  src/engine/bmp_writer.c \
+  src/platform/host_storage.c \
+  src/platform/host_assets.c
+
+SDL3_SRCS := $(SDL3_PLATFORM_SRCS) $(SDL3_CORE_SRCS)
+SDL3_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(SDL3_SRCS))
+SDL3_DEPS := $(SDL3_OBJS:.o=.d)
+
+# Generated headers the build consumes (all checked in).
+GENERATED := \
+  src/generated/sdl3_shaders.h \
+  src/generated/sdl3_card_paths.h \
+  src/generated/waifu_assets.h \
+  src/generated/deck_pools.h \
+  src/generated/title_asset.h \
+  src/generated/sound_assets.h
+
+# ---- rules -----------------------------------------------------------------
+
+.PHONY: all run debug shaders card-paths assets toolchain-check clean clean-build
+
+all: $(SDL3_TARGET)
+
+$(SDL3_TARGET): $(SDL3_OBJS)
+	$(CC) $(LDFLAGS) $(SDL3_OBJS) $(LIBS) -o $@
+
+$(OBJDIR)/%.o: %.c $(GENERATED)
+	@mkdir -p $(dir $@)
+	$(CC) $(ALL_CFLAGS) -MMD -MP -c $< -o $@
+
+run: $(SDL3_TARGET)
+	./$(SDL3_TARGET)
+
+# Unoptimized build with symbols, in its own object tree so it never collides
+# with the release objects.
+debug:
+	$(MAKE) -f Makefile.sdl3 OPT="-O0 -g3 -fno-omit-frame-pointer" \
+	  OBJDIR=build/sdl3-debug SDL3_TARGET=$(SDL3_TARGET)-debug
+
+# Regenerates src/generated/sdl3_shaders.h from src/platform/sdl3/shaders/.
+# Needs glslc; the header is checked in, so a plain build never runs this.
+shaders:
+	python3 tools/gen_sdl3_shaders.py
+
+# Regenerates the card_id -> source-art path table used by the hi-res loader.
+card-paths:
+	python3 tools/gen_sdl3_hires_paths.py
+
+# Full asset regeneration (shared with the console targets).
+assets:
+	$(MAKE) assets
+
+# Reports whether every library this build needs is installed.
+toolchain-check:
+	@ok=1; \
+	for p in sdl3 libpng libwebp freetype2 zlib; do \
+	  if $(PKG_CONFIG) --exists $$p; then \
+	    echo "  ok      $$p $$($(PKG_CONFIG) --modversion $$p)"; \
+	  else \
+	    echo "  MISSING $$p"; ok=0; \
+	  fi; \
+	done; \
+	command -v glslc >/dev/null 2>&1 \
+	  && echo "  ok      glslc (only needed by 'make -f Makefile.sdl3 shaders')" \
+	  || echo "  absent  glslc (only needed by 'make -f Makefile.sdl3 shaders')"; \
+	test $$ok -eq 1 || { echo "install the missing packages and re-run"; exit 1; }
+
+clean-build:
+	$(RM) $(OBJDIR) build/sdl3-debug
+
+clean: clean-build
+	$(RM) $(SDL3_TARGET) $(SDL3_TARGET)-debug
+
+-include $(SDL3_DEPS)

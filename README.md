@@ -2,9 +2,21 @@
 
 ## PC build (SDL3)
 
-`make sdl3` builds `waifu_fm_sdl3`, the desktop release: an SDL_GPU renderer
-(true colour 3D board, full-resolution card art, FreeType text) around the same
-game core every console target runs.
+`make -f Makefile.sdl3` builds `./shattered_decks`, the desktop release: an
+SDL_GPU renderer (true colour 3D board, full-resolution card art, FreeType text)
+plus the release shell (settings, gamepad input, options menu) around the same
+game core every console target runs. `make sdl3` forwards to the same file.
+
+    make -f Makefile.sdl3 toolchain-check   # are the libraries installed?
+    make -f Makefile.sdl3                   # build ./shattered_decks
+    make -f Makefile.sdl3 run               # build and play
+    make -f Makefile.sdl3 debug             # ./shattered_decks-debug, -O0 -g3
+    make -f Makefile.sdl3 clean
+
+It needs SDL3, libpng, libwebp, FreeType and zlib (via pkg-config). The build is
+incremental with header dependency tracking, in `build/sdl3/`. `glslc` is only
+needed by `make -f Makefile.sdl3 shaders`, which regenerates the embedded SPIR-V
+header — that header is checked in, so a normal build needs no shader tools.
 
 **Display.** The view is resolution-agnostic and widescreen-native. The window
 opens at 1280x720 and follows whatever you resize it to, up to 32:9; the duel
