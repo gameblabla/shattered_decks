@@ -11,6 +11,7 @@ checked-in-generated-file convention.
 
 Usage: python3 tools/gen_sdl3_hires_paths.py
 """
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,18 @@ PORTRAIT_SUFFIXES = ['_hires', '_highres', '']
 # The PC card back: a single full-resolution texture that replaces the 38x54
 # 8bpp back everywhere it is drawn (board, hand, deck stacks).
 CARD_BACK_SRC = ROOT / 'assets/source/textures/card_texture.png'
+# The PC card FRONT frames, one per card class, in WAIFU_CARD_FRAME_* order
+# (monster, spell, trap).  Like the back, each is a full-resolution texture that
+# covers the whole 38x54 card rect; the art window inside it is empty and the
+# frontend fills it with the card's own art.
+CARD_FRAME_SRC = [ROOT / 'assets/source/textures/monster_card_front_template.png',
+                  ROOT / 'assets/source/textures/spell_card_front_template.png',
+                  ROOT / 'assets/source/textures/trap_card_front_template.png']
+# Where the art goes inside those frames, as pixel coordinates in the template's
+# own resolution.  The artist's reference file gives two corner lines; it is
+# parsed (rather than transcribed) so re-exporting the templates at another size
+# only means updating the .txt beside them.
+CARD_FRAME_ART_REF = ROOT / 'assets/source/textures/card_front_template_pixel_monster_original_res.txt'
 # The two 3D board checker squares.  The console targets bake these down to the
 # 32x32 atlas cells (tools/gen_assets.py board_tile()); the PC frontend loads the
 # same files here at their original resolution and maps one per board cell.
@@ -79,6 +92,31 @@ def resolve_portrait_src(base: str):
     return ''
 
 
+def png_size(path: Path):
+    """(width, height) from a PNG's IHDR -- avoids a Pillow dependency here."""
+    data = path.read_bytes()[:33]
+    if data[:8] != b'\x89PNG\r\n\x1a\n' or data[12:16] != b'IHDR':
+        raise SystemExit(f'{path}: not a PNG')
+    return (int.from_bytes(data[16:20], 'big'), int.from_bytes(data[20:24], 'big'))
+
+
+def parse_art_window(ref: Path, template: Path):
+    """Normalized (u0, v0, u1, v1) art window from the reference file's first two
+    'x, y' pairs, divided by the template's own pixel size."""
+    nums = []
+    for line in ref.read_text().splitlines():
+        pair = re.findall(r'-?\d+', line)
+        if len(pair) == 2:
+            nums.append((int(pair[0]), int(pair[1])))
+        if len(nums) == 2:
+            break
+    if len(nums) != 2:
+        raise SystemExit(f'{ref}: expected two "x, y" corner lines')
+    tw, th = png_size(template)
+    (x0, y0), (x1, y1) = nums
+    return (x0 / tw, y0 / th, x1 / tw, y1 / th)
+
+
 def resolve_fullscreen_src(path: Path):
     return path.relative_to(ROOT).as_posix() if path.exists() else ''
 
@@ -92,6 +130,8 @@ def main():
     card_src = [resolve_card_src(a) for a in asset_ids]
     portrait_src = [resolve_portrait_src(b) for b in PORTRAIT_BASES]
     card_back_src = resolve_fullscreen_src(CARD_BACK_SRC)
+    card_frame_src = [resolve_fullscreen_src(p) for p in CARD_FRAME_SRC]
+    art_win = parse_art_window(CARD_FRAME_ART_REF, CARD_FRAME_SRC[0])
     board_tile_src = [resolve_fullscreen_src(p) for p in BOARD_TILE_SRC]
     title_src = resolve_fullscreen_src(TITLE_SRC)
     ending_src = resolve_fullscreen_src(ENDING_SRC)
@@ -113,6 +153,16 @@ def main():
             f.write(f'    "{c_string(src)}",\n')
         f.write('};\n\n')
         f.write(f'static const char *const waifu_sdl3_card_back_src = "{c_string(card_back_src)}";\n')
+        f.write(f'#define WAIFU_SDL3_CARD_FRAME_SRC_COUNT {len(card_frame_src)}\n')
+        f.write('static const char *const waifu_sdl3_card_frame_src'
+                '[WAIFU_SDL3_CARD_FRAME_SRC_COUNT] = {\n')
+        for src in card_frame_src:
+            f.write(f'    "{c_string(src)}",\n')
+        f.write('};\n')
+        f.write('/* Art window inside a card front frame, as a fraction of the card rect\n'
+                '   (from %s). */\n' % CARD_FRAME_ART_REF.name)
+        for name, val in zip(('U0', 'V0', 'U1', 'V1'), art_win):
+            f.write(f'#define WAIFU_SDL3_CARD_ART_{name} {val:.6f}f\n')
         f.write(f'#define WAIFU_SDL3_BOARD_TILE_SRC_COUNT {len(board_tile_src)}\n')
         f.write('static const char *const waifu_sdl3_board_tile_src'
                 '[WAIFU_SDL3_BOARD_TILE_SRC_COUNT] = {\n')

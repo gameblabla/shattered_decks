@@ -1,0 +1,10 @@
+131,265
+to
+987, 1078
+
+is where monster art should be placed at
+(at lower resolution, adjust accordingly)
+
+
+137, 1116 to 984,1295
+is where the bottom portion of card is (where ATK/DEF stats are written).

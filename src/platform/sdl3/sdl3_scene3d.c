@@ -576,13 +576,63 @@ static int push_hires_quad(const float p[4][3], int card_id, int kind, int group
     return g_frame.hires_draw_count++;
 }
 
-/* The card-face art window inside the 38x54 framed thumbnail (gen_assets pastes
-   the 30x30 art at (4,9)). The gold frame / stat plate stay on the 8bpp face;
-   only this inner window is overlaid with hi-res art. */
-#define CARD_ART_U0 (4.0f / 38.0f)
-#define CARD_ART_U1 (34.0f / 38.0f)
-#define CARD_ART_V0 (9.0f / 54.0f)
-#define CARD_ART_V1 (39.0f / 54.0f)
+/* Pull a clip-space quad a hair toward the eye. Scaling x, y and w together
+   leaves the projected position identical (x and y are premultiplied by w) but
+   shortens the depth, which is what decides a coplanar decal: the art window
+   drawn over a card front frame is exactly coplanar with it, and an exact depth
+   tie under LESS_OR_EQUAL is not reliably won by the later draw -- on the board
+   the art vanished behind the frame entirely. */
+#define CLIP_DECAL_BIAS 0.999f
+
+static void clip_bias_toward_eye(float p[4][3])
+{
+    int i;
+    for (i = 0; i < 4; ++i) {
+        p[i][0] *= CLIP_DECAL_BIAS;
+        p[i][1] *= CLIP_DECAL_BIAS;
+        p[i][2] *= CLIP_DECAL_BIAS;
+    }
+}
+
+/* Clip-space corners of a game-screen rect, wound like push_hires_quad expects
+   ((0,0),(1,0),(1,1),(0,1)). hx/hy are the half-extents of the UI transform's
+   screen space (widened in the HUD bracket). */
+static void ui_rect_clip(float x0, float y0, float x1, float y1,
+                         float hx, float hy, float p[4][3])
+{
+    p[0][0] = x0 / hx - 1.0f; p[0][1] = 1.0f - y0 / hy; p[0][2] = 1.0f;
+    p[1][0] = x1 / hx - 1.0f; p[1][1] = 1.0f - y0 / hy; p[1][2] = 1.0f;
+    p[2][0] = x1 / hx - 1.0f; p[2][1] = 1.0f - y1 / hy; p[2][2] = 1.0f;
+    p[3][0] = x0 / hx - 1.0f; p[3][1] = 1.0f - y1 / hy; p[3][2] = 1.0f;
+}
+
+/* The art window inside the full-resolution card FRONT frame, from the
+   template's own reference file (see tools/gen_sdl3_hires_paths.py). The frame
+   texture covers the whole card and its window is empty; this is where the
+   card's art goes. */
+#define CARD_ART_U0 WAIFU_SDL3_CARD_ART_U0
+#define CARD_ART_U1 WAIFU_SDL3_CARD_ART_U1
+#define CARD_ART_V0 WAIFU_SDL3_CARD_ART_V0
+#define CARD_ART_V1 WAIFU_SDL3_CARD_ART_V1
+
+/* The same window in the baked 8bpp face (gen_assets pastes the 30x30 art at
+   (4,9) of the 38x54 card). Only the support sigil is still read from there --
+   support cards have no high-resolution source art of their own. */
+#define FACE_ART_U0 (4.0f / 38.0f)
+#define FACE_ART_U1 (34.0f / 38.0f)
+#define FACE_ART_V0 (9.0f / 54.0f)
+#define FACE_ART_V1 (39.0f / 54.0f)
+
+/* Which front frame the next support-card face draw wants; monsters are known
+   from the card id, but every Spell and Trap shares ONE 8bpp face buffer, so the
+   game names the class through the hw2d seam just before drawing it. */
+static int g_card_frame_hint = WAIFU_CARD_FRAME_SPELL;
+
+void waifu_hw2d_card_frame_hint(int frame)
+{
+    if (frame < 0 || frame >= WAIFU_SDL3_CARD_FRAME_SRC_COUNT) frame = WAIFU_CARD_FRAME_MONSTER;
+    g_card_frame_hint = frame;
+}
 
 /* Bilinear point on the card quad (corners wound (0,0),(1,0),(1,1),(0,1)) at
    fractional (u, w); used to carve the art-window sub-quad from a board card. */
@@ -758,22 +808,28 @@ int waifu_hw3d_image_quad(const WaifuHw3DCamera *cam, const WaifuHw3DVec3 v[4],
         push_hires_quad(bp, 0, WAIFU_HIRES_BACK, 0 /* 3D */, g);
     }
 
-    /* Full-resolution card art (PC): a board card keeps its 8bpp framed face
-       (gold frame + stat plate) and overlays hi-res art in the inner art
-       window only, so the card still reads as a framed card. */
+    /* Full-resolution card front (PC): the board card gets the monster front
+       frame across its whole face and the hi-res art inside that frame's art
+       window. Both go through the group-0 hi-res pass, which draws after the
+       8bpp faces (image_verts) below -- so the baked 8bpp face is what shows if
+       either source image is missing. Support cards keep their 8bpp face here:
+       their only art is the baked sigil, which cannot draw over the frame in
+       this pass, and a support card only reaches a monster zone through stale
+       state anyway. */
     {
         int card_id, kind;
         if (card_lookup(pixels, &card_id, &kind)) {
             WaifuHw3DVec3 aw[4];
             float ap[4][3];
             xf = xform_for(cam);
+            for (i = 0; i < 4; ++i) xform_point(xf, &v[i], ap[i]);
+            push_hires_quad(ap, WAIFU_CARD_FRAME_MONSTER, WAIFU_HIRES_FRAME, 0 /* 3D */, g);
             aw[0] = card_bilerp(v, CARD_ART_U0, CARD_ART_V0);
             aw[1] = card_bilerp(v, CARD_ART_U1, CARD_ART_V0);
             aw[2] = card_bilerp(v, CARD_ART_U1, CARD_ART_V1);
             aw[3] = card_bilerp(v, CARD_ART_U0, CARD_ART_V1);
             for (i = 0; i < 4; ++i) xform_point(xf, &aw[i], ap[i]);
-            /* Overlay drawn with the group-0 hi-res pass, after the 8bpp faces
-               (image_verts) below, so it lands on this card's art window. */
+            clip_bias_toward_eye(ap);
             push_hires_quad(ap, card_id, WAIFU_HIRES_FACE, 0 /* 3D */, g);
             (void)kind;
         }
@@ -918,6 +974,35 @@ int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
         return 1;
     }
 
+    /* PC support cards (Spell / Trap): the full-resolution front frame covers
+       the whole card, and the sigil is lifted out of the baked 8bpp face's art
+       window and re-blitted into the frame's window -- support cards have no
+       high-resolution source art of their own. The 8bpp face still goes down
+       first, so a missing template simply leaves the console look (and the two
+       art windows very nearly coincide, so the sigil lands right either way). */
+    if (!mask && waifu_assets_support_face() && pix == waifu_assets_support_face()) {
+        float hx = (float)(g_ui_hud ? WAIFU_FM_WIDTH + g_ui_extra_w : WAIFU_FM_WIDTH) * 0.5f;
+        float hy = (float)WAIFU_FM_HEIGHT * 0.5f;
+        float p[4][3];
+        int idx;
+        e = image_atlas_add(pix, mask, sw, sh, colorkey0);
+        if (e) ui_push_quad((float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh),
+                            (float)e->x, (float)e->y, (float)(e->x + sw), (float)(e->y + sh),
+                            gray ? dim : white);
+        ui_rect_clip((float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh), hx, hy, p);
+        idx = push_hires_quad(p, g_card_frame_hint, WAIFU_HIRES_FRAME, 1 /* 2D */,
+                              gray ? 1.0f : 0.0f);
+        if (idx >= 0) ui_append_hires(idx);
+        if (e)
+            ui_push_quad((float)dx + (float)dw * CARD_ART_U0, (float)dy + (float)dh * CARD_ART_V0,
+                         (float)dx + (float)dw * CARD_ART_U1, (float)dy + (float)dh * CARD_ART_V1,
+                         (float)e->x + (float)sw * FACE_ART_U0, (float)e->y + (float)sh * FACE_ART_V0,
+                         (float)e->x + (float)sw * FACE_ART_U1, (float)e->y + (float)sh * FACE_ART_V1,
+                         gray ? dim : white);
+        g_frame.has_content = 1;
+        return 1;
+    }
+
     /* Full-resolution card art (PC): a hand thumbnail or detail big-art blit
        becomes a hi-res quad, inserted into the UI run list at this exact point
        so any frame/cursor/stat text drawn afterwards still lands on top. The
@@ -943,8 +1028,9 @@ int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
                 idx = push_hires_quad(p, card_id, kind, 1 /* 2D */, gray ? 1.0f : 0.0f);
                 if (idx >= 0) { ui_append_hires(idx); g_frame.has_content = 1; return 1; }
             } else {
-                /* Card face: keep the 8bpp framed thumbnail (drawn below) and
-                   overlay hi-res art in the inner art window only. */
+                /* Card face: the 8bpp framed thumbnail goes down first as the
+                   fallback layer, the full-resolution monster front frame covers
+                   it, and the hi-res art fills that frame's art window. */
                 float ax0 = (float)dx + (float)dw * CARD_ART_U0, ax1 = (float)dx + (float)dw * CARD_ART_U1;
                 float ay0 = (float)dy + (float)dh * CARD_ART_V0, ay1 = (float)dy + (float)dh * CARD_ART_V1;
                 float p[4][3];
@@ -953,10 +1039,11 @@ int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
                 if (e) ui_push_quad((float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh),
                                     (float)e->x, (float)e->y, (float)(e->x + sw), (float)(e->y + sh),
                                     gray ? dim : white);
-                p[0][0] = ax0 / hx - 1.0f; p[0][1] = 1.0f - ay0 / hy; p[0][2] = 1.0f;
-                p[1][0] = ax1 / hx - 1.0f; p[1][1] = 1.0f - ay0 / hy; p[1][2] = 1.0f;
-                p[2][0] = ax1 / hx - 1.0f; p[2][1] = 1.0f - ay1 / hy; p[2][2] = 1.0f;
-                p[3][0] = ax0 / hx - 1.0f; p[3][1] = 1.0f - ay1 / hy; p[3][2] = 1.0f;
+                ui_rect_clip((float)dx, (float)dy, (float)(dx + dw), (float)(dy + dh), hx, hy, p);
+                idx = push_hires_quad(p, WAIFU_CARD_FRAME_MONSTER, WAIFU_HIRES_FRAME,
+                                      1 /* 2D */, gray ? 1.0f : 0.0f);
+                if (idx >= 0) ui_append_hires(idx);
+                ui_rect_clip(ax0, ay0, ax1, ay1, hx, hy, p);
                 idx = push_hires_quad(p, card_id, kind, 1 /* 2D */, gray ? 1.0f : 0.0f);
                 if (idx >= 0) ui_append_hires(idx);
                 g_frame.has_content = 1;

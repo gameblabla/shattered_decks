@@ -91,6 +91,18 @@ static const char *const waifu_sdl3_portrait_src[WAIFU_SDL3_PORTRAIT_SRC_COUNT] 
 };
 
 static const char *const waifu_sdl3_card_back_src = "assets/source/textures/card_texture.png";
+#define WAIFU_SDL3_CARD_FRAME_SRC_COUNT 3
+static const char *const waifu_sdl3_card_frame_src[WAIFU_SDL3_CARD_FRAME_SRC_COUNT] = {
+    "assets/source/textures/monster_card_front_template.png",
+    "assets/source/textures/spell_card_front_template.png",
+    "assets/source/textures/trap_card_front_template.png",
+};
+/* Art window inside a card front frame, as a fraction of the card rect
+   (from card_front_template_pixel_monster_original_res.txt). */
+#define WAIFU_SDL3_CARD_ART_U0 0.116756f
+#define WAIFU_SDL3_CARD_ART_V0 0.189016f
+#define WAIFU_SDL3_CARD_ART_U1 0.879679f
+#define WAIFU_SDL3_CARD_ART_V1 0.768902f
 #define WAIFU_SDL3_BOARD_TILE_SRC_COUNT 2
 static const char *const waifu_sdl3_board_tile_src[WAIFU_SDL3_BOARD_TILE_SRC_COUNT] = {
     "assets/source/textures/sandstone_1.png",

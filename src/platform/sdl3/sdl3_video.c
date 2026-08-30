@@ -106,6 +106,10 @@ struct WaifuSdl3Video {
     SDL_GPUTexture *card_back_tex;
     unsigned char card_back_tried;
 
+    /* The card front frames (monster / spell / trap), one texture each. */
+    SDL_GPUTexture *card_frame_tex[WAIFU_SDL3_CARD_FRAME_SRC_COUNT];
+    unsigned char card_frame_tried[WAIFU_SDL3_CARD_FRAME_SRC_COUNT];
+
     /* The two 3D board checker squares, at their source resolution. */
     SDL_GPUTexture *board_tile_tex[WAIFU_SDL3_BOARD_TILE_SRC_COUNT];
     unsigned char board_tile_tried[WAIFU_SDL3_BOARD_TILE_SRC_COUNT];
@@ -735,6 +739,10 @@ static SDL_GPUTexture *hires_ensure(WaifuSdl3Video *v, int card_id, int kind)
     if (kind == WAIFU_HIRES_BACK) {
         slot = &v->card_back_tex;
         tried = &v->card_back_tried;
+    } else if (kind == WAIFU_HIRES_FRAME) {
+        if (card_id < 0 || card_id >= WAIFU_SDL3_CARD_FRAME_SRC_COUNT) return NULL;
+        slot = &v->card_frame_tex[card_id];
+        tried = &v->card_frame_tried[card_id];
     } else if (kind == WAIFU_HIRES_BOARD_TILE) {
         if (card_id < 0 || card_id >= WAIFU_SDL3_BOARD_TILE_SRC_COUNT) return NULL;
         slot = &v->board_tile_tex[card_id];
@@ -755,6 +763,8 @@ static SDL_GPUTexture *hires_ensure(WaifuSdl3Video *v, int card_id, int kind)
     *tried = 1;
     rgba = (kind == WAIFU_HIRES_BACK)
          ? waifu_sdl3_hires_card_back_decode(&w, &hh)
+         : (kind == WAIFU_HIRES_FRAME)
+         ? waifu_sdl3_hires_card_frame_decode(card_id, &w, &hh)
          : (kind == WAIFU_HIRES_BOARD_TILE)
          ? waifu_sdl3_hires_board_tile_decode(card_id, &w, &hh)
          : (kind == WAIFU_HIRES_PORTRAIT)
@@ -1650,6 +1660,11 @@ void waifu_sdl3_video_destroy(WaifuSdl3Video *v)
                 if (v->portrait_tex[pi]) SDL_ReleaseGPUTexture(v->dev, v->portrait_tex[pi]);
         }
         if (v->card_back_tex) SDL_ReleaseGPUTexture(v->dev, v->card_back_tex);
+        {
+            int cf;
+            for (cf = 0; cf < WAIFU_SDL3_CARD_FRAME_SRC_COUNT; ++cf)
+                if (v->card_frame_tex[cf]) SDL_ReleaseGPUTexture(v->dev, v->card_frame_tex[cf]);
+        }
         {
             int bt;
             for (bt = 0; bt < WAIFU_SDL3_BOARD_TILE_SRC_COUNT; ++bt)

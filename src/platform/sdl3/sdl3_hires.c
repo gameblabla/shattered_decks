@@ -8,6 +8,7 @@
 
 #include "sdl3_image_load.h"
 #include "sdl3_card_paths.h"
+#include "waifu_assets.h"
 
 /* Copy the largest sub-rectangle of (src, sw x sh) with aspect ar = tw/th,
  * horizontally centered and vertically placed by anchor (0 = top .. 1 = bottom),
@@ -71,7 +72,12 @@ uint8_t *waifu_sdl3_hires_card_decode(int card_id, int kind, int *w, int *h)
         ar = 1.0f;          /* square, matching the 112x112 big-art cover */
         anchor = 0.40f;
     } else {
-        ar = 1.0f;          /* the card-face art window is a 30x30 square */
+        /* The card-face art fills the front frame's art window, so it is cropped
+           to THAT window's aspect as it lands on the 38x54 card rect -- not the
+           old 30x30 square of the baked 8bpp face -- or the art would be
+           stretched inside the frame. */
+        ar = (WAIFU_SDL3_CARD_ART_U1 - WAIFU_SDL3_CARD_ART_U0) * (float)WAIFU_CARD_W /
+             ((WAIFU_SDL3_CARD_ART_V1 - WAIFU_SDL3_CARD_ART_V0) * (float)WAIFU_CARD_H);
         anchor = 0.12f;     /* bias toward the top (face / upper torso) */
     }
     crop = cover_crop(src, sw, sh, ar, anchor, w, h);
@@ -215,6 +221,13 @@ uint8_t *waifu_sdl3_hires_card_back_decode(int *w, int *h)
 {
     if (!waifu_sdl3_card_back_src || !waifu_sdl3_card_back_src[0]) return NULL;
     return waifu_sdl3_image_load_rgba(waifu_sdl3_card_back_src, w, h);
+}
+
+uint8_t *waifu_sdl3_hires_card_frame_decode(int variant, int *w, int *h)
+{
+    if (variant < 0 || variant >= WAIFU_SDL3_CARD_FRAME_SRC_COUNT) return NULL;
+    if (!waifu_sdl3_card_frame_src[variant][0]) return NULL;
+    return waifu_sdl3_image_load_rgba(waifu_sdl3_card_frame_src[variant], w, h);
 }
 
 uint8_t *waifu_sdl3_hires_board_tile_decode(int index, int *w, int *h)

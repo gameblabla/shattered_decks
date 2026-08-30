@@ -5027,8 +5027,13 @@ static void draw_support_sprite(int id, int x, int y, int w, int h)
         return;
     }
 #endif
+    /* Hardware 2D (PC): name the class so the frontend can swap in the
+       full-resolution Spell / Trap front frame. That frame is already violet for
+       a Trap, so the software recolour overlay would only paint over it. */
+    waifu_hw2d_card_frame_hint(is_trap_support_card(id) ? WAIFU_CARD_FRAME_TRAP
+                                                       : WAIFU_CARD_FRAME_SPELL);
     draw_card_raw(waifu_assets_support_face(), WAIFU_CARD_W, WAIFU_CARD_H, x, y, w, h);
-    if (is_trap_support_card(id)) draw_trap_frame_overlay(x, y, w, h);
+    if (is_trap_support_card(id) && !waifu_hw2d_active()) draw_trap_frame_overlay(x, y, w, h);
 }
 
 static void draw_hand_card_sprite(int id, int x, int y, int w, int h, int back)

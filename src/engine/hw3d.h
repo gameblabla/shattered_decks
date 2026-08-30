@@ -42,6 +42,13 @@ typedef struct WaifuHw3DCamera {
     int32_t focal;                      /* Q8.8, isotropic pinhole focal */
 } WaifuHw3DCamera;
 
+/* Card front frame classes, for waifu_hw2d_card_frame_hint(). */
+enum {
+    WAIFU_CARD_FRAME_MONSTER = 0,
+    WAIFU_CARD_FRAME_SPELL = 1,
+    WAIFU_CARD_FRAME_TRAP = 2
+};
+
 #if defined(WAIFU_PLATFORM_HW3D)
 
 /* Constant per platform: 1 when a hardware 3D layer exists. Call sites use it
@@ -107,6 +114,13 @@ int waifu_hw2d_line(int x0, int y0, int x1, int y1, uint8_t color);
 int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int sw, int sh,
                      int dx, int dy, int dw, int dh, int gray, int colorkey0);
 
+/* Names the class of the card whose 8bpp face is about to be captured, so the
+ * frontend can pick the matching high-resolution front frame. Only support
+ * cards need it -- every Spell and Trap shares one face buffer, so the pointer
+ * alone cannot tell them apart -- and it applies to the next support-face draw.
+ * Purely cosmetic: a platform without hi-res frames ignores it. */
+void waifu_hw2d_card_frame_hint(int frame);
+
 /* Screen-space textured quad (projected card animations whose corners exist
  * only as screen points). xy = 4 corner pairs, UV (0,0),(1,0),(1,1),(0,1). */
 int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
@@ -144,6 +158,7 @@ static inline int waifu_hw2d_image(const uint8_t *pix, const uint8_t *mask, int 
                                    int dx, int dy, int dw, int dh, int gray, int colorkey0)
 { (void)pix; (void)mask; (void)sw; (void)sh; (void)dx; (void)dy; (void)dw; (void)dh;
   (void)gray; (void)colorkey0; return 0; }
+static inline void waifu_hw2d_card_frame_hint(int frame) { (void)frame; }
 static inline int waifu_hw2d_image_quad(const uint8_t *pix, int sw, int sh,
                                         const int xy[8], int gray)
 { (void)pix; (void)sw; (void)sh; (void)xy; (void)gray; return 0; }
