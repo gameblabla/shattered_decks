@@ -1,6 +1,8 @@
 #ifndef WAIFU_FM_PLATFORM_H
 #define WAIFU_FM_PLATFORM_H
 
+#include <stdint.h>
+
 /* ---------------------------------------------------------------------------
  * Platform service seams.
  *
@@ -250,6 +252,17 @@ typedef enum WaifuPromptAction {
 
 const char *waifu_platform_prompt_label(int action);
 
+/* Title-screen presentation the PC frontend draws for itself, over whatever the
+ * core has already put on screen. Both are called inside a HUD bracket, so they
+ * reach the true screen edges.
+ *   _scrim   a cinematic bottom scrim (and its gold rule) behind the tagline,
+ *            fading in with `reveal_q8` 0..256 as the title settles.
+ *   _shatter the wipe into the menu: `t_q8` 0..256 across the transition.
+ * Both return 0 where there is no such frontend, and the caller draws nothing
+ * extra -- consoles keep their plain title. */
+int waifu_platform_title_scrim(int32_t reveal_q8);
+int waifu_platform_title_shatter(int32_t t_q8);
+
 #else
 
 typedef struct WaifuPointer {
@@ -277,6 +290,8 @@ typedef enum WaifuPromptAction {
     WAIFU_PROMPT_ASSIST
 } WaifuPromptAction;
 static inline const char *waifu_platform_prompt_label(int action) { (void)action; return 0; }
+static inline int waifu_platform_title_scrim(int32_t reveal_q8) { (void)reveal_q8; return 0; }
+static inline int waifu_platform_title_shatter(int32_t t_q8) { (void)t_q8; return 0; }
 
 #endif /* WAIFU_PLATFORM_HW3D */
 

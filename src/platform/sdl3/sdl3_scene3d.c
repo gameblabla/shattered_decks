@@ -1125,6 +1125,117 @@ int waifu_platform_story_portrait(int portrait_id, int x, int y)
     return 1;
 }
 
+/* ---- title-screen presentation (PC) ------------------------------------------
+ * The title is a 16:9 photograph with the logo over it, which on a desktop
+ * screen leaves the tagline and prompt sitting on whatever the artwork happens
+ * to be doing behind them, and the jump into the menu was an instant cut. Both
+ * are fixed here rather than in the core: they are pure presentation, they want
+ * alpha and diagonals the 8bpp software layer has no way to express, and no
+ * console should pay for them.
+ * --------------------------------------------------------------------------- */
+
+static float title_full_w(void)
+{
+    return (float)(g_ui_hud ? WAIFU_FM_WIDTH + g_ui_extra_w : WAIFU_FM_WIDTH);
+}
+
+int waifu_platform_title_scrim(int32_t reveal_q8)
+{
+    float a = (float)reveal_q8 / 256.0f;
+    float w = title_full_w();
+    const float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    float dark[4] = { 0.02f, 0.02f, 0.05f, 0.0f };
+    float rule[4] = { 0.93f, 0.78f, 0.36f, 0.0f };
+    float half;
+
+    if (a < 0.0f) a = 0.0f;
+    if (a > 1.0f) a = 1.0f;
+    dark[3] = 0.82f * a;
+    rule[3] = 0.85f * a;
+
+    /* A gradient into the bottom third, then a solid tail: the tagline, the
+       prompt and the copyright all sit on it, so none of them depends on the
+       photograph being dark in that spot. */
+    ui_push_quad_grad(0.0f, 118.0f, w, 174.0f, clear, dark);
+    ui_push_quad(0.0f, 174.0f, w, (float)WAIFU_FM_HEIGHT, -1.0f, 0.0f, -1.0f, 0.0f, dark);
+
+    /* A gold rule that opens from the centre as the tagline types itself in. */
+    half = w * 0.44f * a;
+    ui_push_quad(w * 0.5f - half, 152.0f, w * 0.5f + half, 153.0f,
+                 -1.0f, 0.0f, -1.0f, 0.0f, rule);
+    return 1;
+}
+
+/* The wipe into the menu. The screen is cut into vertical shards that sweep
+   through it in alternating directions, each with a slanted leading edge lit
+   gold, over a white impact flash and a black beat at the crossing point. The
+   deck is called Shattered; the transition may as well say so. */
+int waifu_platform_title_shatter(int32_t t_q8)
+{
+    enum { SHARDS = 9 };
+    float t = (float)t_q8 / 256.0f;
+    float w = title_full_w();
+    float h = (float)WAIFU_FM_HEIGHT;
+    const float slant = 30.0f;
+    float band = h + 2.0f * slant;
+    const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    float rim[4] = { 1.0f, 0.86f, 0.42f, 0.9f };
+    int i;
+
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+
+    for (i = 0; i < SHARDS; ++i) {
+        float x0 = w * (float)i / (float)SHARDS;
+        float x1 = w * (float)(i + 1) / (float)SHARDS;
+        /* A small per-shard lead so they do not move as one slab. The black
+           veil below covers the gaps this opens at the crossing point. */
+        float lead = ((i * 37) % 11) / 11.0f * 0.10f;
+        float tt = (t - lead) / (1.0f - lead);
+        float top, s = (i & 1) ? slant : -slant;
+        float xy[8], uv[8];
+        int c;
+        if (tt <= 0.0f) tt = 0.0f;
+        if (tt >= 1.0f) tt = 1.0f;
+        /* Odd shards sweep up, even ones down; both start clear of the screen
+           and finish clear of the far side. */
+        top = (i & 1) ? (h - tt * (h + band)) : (tt * (h + band) - band);
+        for (c = 0; c < 4; ++c) { uv[c * 2] = -1.0f; uv[c * 2 + 1] = 0.0f; }
+        xy[0] = x0; xy[1] = top;
+        xy[2] = x1; xy[3] = top + s;
+        xy[4] = x1; xy[5] = top + band + s;
+        xy[6] = x0; xy[7] = top + band;
+        ui_push_corner_quad(xy, uv, black);
+
+        /* The lit edge, on whichever side is leading. */
+        if (tt > 0.0f && tt < 1.0f) {
+            float e = (i & 1) ? top : top + band;
+            float xy2[8];
+            xy2[0] = x0; xy2[1] = e;
+            xy2[2] = x1; xy2[3] = e + s;
+            xy2[4] = x1; xy2[5] = e + s + ((i & 1) ? -2.0f : 2.0f);
+            xy2[6] = x0; xy2[7] = e + ((i & 1) ? -2.0f : 2.0f);
+            ui_push_corner_quad(xy2, uv, rim);
+        }
+    }
+
+    /* A solid black beat where the shards cross, so the menu is never revealed
+       through the seams between them. */
+    {
+        float veil = 1.0f - fabsf(t - 0.52f) / 0.20f;
+        if (veil > 0.0f) {
+            float c[4] = { 0.0f, 0.0f, 0.0f, veil > 1.0f ? 1.0f : veil };
+            ui_push_quad(0.0f, 0.0f, w, h, -1.0f, 0.0f, -1.0f, 0.0f, c);
+        }
+    }
+    /* The impact: a hard white flash on the first few frames. */
+    if (t < 0.16f) {
+        float c[4] = { 1.0f, 0.98f, 0.90f, (0.16f - t) / 0.16f * 0.75f };
+        ui_push_quad(0.0f, 0.0f, w, h, -1.0f, 0.0f, -1.0f, 0.0f, c);
+    }
+    return 1;
+}
+
 /* ---- frame lifecycle ---------------------------------------------------------- */
 
 Sdl3SceneFrame *waifu_sdl3_scene_frame(void)

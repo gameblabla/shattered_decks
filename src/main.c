@@ -247,6 +247,8 @@ static uint8_t waifu_texture_atlas[(size_t)WAIFU_TEX_TILE_COUNT *
    and the 256x240 builds), so those screens are byte-for-byte unchanged; on a
    wider framebuffer (e.g. CD32X 320) they push the right-edge LP panel to the
    edge and re-center the card hand in the extra horizontal space. */
+/* Length of the PC title -> menu shatter wipe. */
+#define WAIFU_TITLE_SHATTER_FRAMES 34
 #define WAIFU_UI_EXTRA_W   (WAIFU_FM_WIDTH - 256)
 #define WAIFU_UI_CENTER_DX ((WAIFU_FM_WIDTH - 256) / 2)
 #define WAIFU_UI_EXTRA_H   (WAIFU_FM_HEIGHT - 240)
@@ -8742,6 +8744,47 @@ static void draw_title_logo(void)
     draw_centered_text_scaled(38, "DECKS", 2, IDX_WHITE, IDX_BLACK);
 }
 
+/* THE TITLE TAGLINE (PC).
+   The console title is a photograph, a logo and a blinking prompt. On a desktop
+   screen there is room -- and reason -- for the game to introduce its
+   protagonist, so the PC build lays a cinematic scrim across the bottom third
+   and types a two-line tagline onto it. The scrim is what makes the text (and
+   the prompt and copyright already down there) legible whatever the photograph
+   is doing behind them; the frontend draws it, because it wants alpha and the
+   8bpp layer has none. */
+#if defined(WAIFU_PLATFORM_HW3D)
+#define TITLE_TAG_L1 "SERENA, SCRIBE OF THE NILE"
+#define TITLE_TAG_L2 "EIGHT GUARDIANS STAND IN HER DREAM"
+#define TITLE_TAG_START 18   /* frames before the first character */
+#define TITLE_TAG_RATE  2    /* frames per character */
+
+static void draw_title_tagline(int f)
+{
+    char line[64];
+    int n1 = (int)sizeof(TITLE_TAG_L1) - 1;
+    int n2 = (int)sizeof(TITLE_TAG_L2) - 1;
+    int typed = (f - TITLE_TAG_START) / TITLE_TAG_RATE;
+    int reveal = q8_ratio(f < 40 ? f : 40, 40);
+    if (typed < 0) typed = 0;
+    ui_hud_begin();
+    waifu_platform_title_scrim(reveal);
+    if (typed > 0) {
+        int k = typed < n1 ? typed : n1;
+        waifu_str_copy_n(line, (int)sizeof(line), TITLE_TAG_L1, k);
+        draw_text_small(ui_center_x(k * 7), 160, line, IDX_GOLD_HI, IDX_BLACK);
+    }
+    if (typed > n1) {
+        int k = typed - n1;
+        if (k > n2) k = n2;
+        waifu_str_copy_n(line, (int)sizeof(line), TITLE_TAG_L2, k);
+        draw_text_small(ui_center_x(k * 7), 173, line, IDX_WHITE, IDX_BLACK);
+    }
+    ui_hud_end();
+}
+#else
+#define draw_title_tagline(f) ((void)0)
+#endif
+
 static void draw_title_prompt(int f)
 {
     if (((f / 24) & 1) == 0) {
@@ -11857,10 +11900,16 @@ static void enter_menu_after_assets(void)
 
 static void enter_title_to_menu_fade(void)
 {
-    /* RUN/A on the title should reveal the title-backed menu immediately.
-       Fade-to-black is reserved for actually leaving the title/menu scene
-       into story or battle content. */
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* PC: the shatter wipe carries the menu in. On a console RUN/A still
+       reveals the title-backed menu immediately -- a black fade is reserved for
+       actually leaving the title scene, and those targets have no alpha layer
+       to draw a wipe on anyway. */
+    g_i_state = WAIFU_I_TITLE_TO_MENU;
+    g_i_frame = -1;
+#else
     enter_menu_after_assets();
+#endif
 }
 
 static void enter_menu_to_story_fade(void)
@@ -18511,6 +18560,7 @@ void waifu_fm_step(const WaifuFmInput *input)
             clear_screen(IDX_BLACK);
             draw_title_background();
             draw_title_logo();
+            draw_title_tagline(g_i_frame);
             draw_title_prompt(g_i_frame);
         }
     }
@@ -18521,10 +18571,33 @@ void waifu_fm_step(const WaifuFmInput *input)
         break;
 
     case WAIFU_I_TITLE_TO_MENU:
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* The shards sweep through the title and leave the menu behind them:
+           the scene is redrawn every frame with the menu panel appearing once
+           the wipe is at its blackest, so the reveal happens under cover. */
+        {
+            int32_t t = q8_ratio(g_i_frame, WAIFU_TITLE_SHATTER_FRAMES);
+            clear_screen(IDX_BLACK);
+            draw_title_background();
+            draw_title_logo();
+            if (t >= Q8_FRAC(52,100)) {
+                draw_menu_overlay(g_i_menu_selected);
+            } else {
+                draw_title_tagline(TITLE_TAG_START + 200);   /* fully typed */
+                draw_title_prompt(0);
+            }
+            ui_hud_begin();
+            waifu_platform_title_shatter(t);
+            ui_hud_end();
+        }
+        if (g_i_frame >= WAIFU_TITLE_SHATTER_FRAMES) enter_menu_after_assets();
+        break;
+#else
         /* Compatibility fallback only.  The normal title RUN path now goes
            straight to MENU, without a black fade. */
         enter_menu_after_assets();
         break;
+#endif
 
     case WAIFU_I_MENU:
     {
