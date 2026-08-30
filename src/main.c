@@ -16703,10 +16703,22 @@ static int g_story_name_typed;
    console (waifu_platform_text_poll is an inline 0 there) and on a pad, which
    keeps using the letter wheel -- both edit the same six slots, so a player can
    type most of a name and still nudge one letter with the stick. */
+#if defined(WAIFU_PLATFORM_HW3D)
+/* The PC name screen is a keyboard field first. The on-screen keyboard below is
+   for a player holding a pad, and only appears once they touch it -- the first
+   physical keystroke puts it away again. */
+static int g_story_vkbd = 0;
+static int g_story_vkbd_row = 0;
+static int g_story_vkbd_col = 0;
+#endif
+
 static void story_name_take_typing(void)
 {
     int c;
     while ((c = waifu_platform_text_poll()) != 0) {
+#if defined(WAIFU_PLATFORM_HW3D)
+        g_story_vkbd = 0;
+#endif
         if (c == '\b') {
             /* Back up over the previous slot and blank it to the charset's
                first letter, which is as empty as a fixed six-slot field gets. */
@@ -16735,6 +16747,11 @@ static void reset_story_entry(void)
     memcpy(g_story_name, "SERENA", STORY_NAME_LEN + 1);
     g_story_name_pos = 0;
     g_story_name_typed = 0;
+#if defined(WAIFU_PLATFORM_HW3D)
+    g_story_vkbd = 0;
+    g_story_vkbd_row = 0;
+    g_story_vkbd_col = 0;
+#endif
     g_story_intro_line = 0;
     g_story_fire_line = 0;
     g_story_duel_index = 0;
@@ -16788,8 +16805,167 @@ static void draw_story_name_field(int dx)
     }
 }
 
+#if defined(WAIFU_PLATFORM_HW3D)
+/* ---- the PC name screen ----------------------------------------------------
+   A console has no keyboard, so it asks for the name six glyph slots at a time
+   with a letter wheel and prints the controls for it. On PC the screen is a
+   question and a field: one sentence, the name under it with a caret, and one
+   dim line saying how to accept. The letter grid only appears for a player
+   holding a pad, and the first keystroke puts it away. */
+
+#define VKBD_ROWS 4
+#define VKBD_KEY_W 21
+#define VKBD_KEY_H 19
+#define VKBD_TOP   150
+static const char *const story_vkbd_rows[VKBD_ROWS] = {
+    "ABCDEFGHI",
+    "JKLMNOPQR",
+    "STUVWXYZ",
+    "<>"           /* '<' erases, '>' accepts */
+};
+
+static int vkbd_row_len(int r)
+{
+    return (r >= 0 && r < VKBD_ROWS) ? (int)strlen(story_vkbd_rows[r]) : 0;
+}
+
+/* Geometry of one key. The bottom row's two commands are three cells wide each
+   so they read as buttons and not as two more letters. */
+static void vkbd_key_rect(int r, int c, int *x, int *y, int *w, int *h)
+{
+    int wide = (r == VKBD_ROWS - 1);
+    int cells = wide ? 3 : 1;
+    int n = vkbd_row_len(r);
+    int row_w = n * cells * VKBD_KEY_W;
+    *w = cells * VKBD_KEY_W - 3;
+    *h = VKBD_KEY_H - 3;
+    *x = ui_center_x(row_w) + c * cells * VKBD_KEY_W;
+    *y = VKBD_TOP + r * VKBD_KEY_H;
+}
+
+static void story_name_set_letter(char ch)
+{
+    if (!g_story_name_typed) {
+        int i;
+        for (i = 0; i < STORY_NAME_LEN; ++i) g_story_name[i] = story_name_chars[0];
+        g_story_name_pos = 0;
+        g_story_name_typed = 1;
+    }
+    g_story_name[g_story_name_pos] = ch;
+    if (g_story_name_pos < STORY_NAME_LEN - 1) ++g_story_name_pos;
+}
+
+/* Returns 1 when the player accepted the name. */
+static int story_name_entry_input_pc(int up, int down, int left, int right, int a)
+{
+    int n;
+    if (!(up || down || left || right || a)) return 0;
+    if (!g_story_vkbd) {
+        /* First touch of the pad raises the grid; it does not also press a key. */
+        g_story_vkbd = 1;
+        return 0;
+    }
+    if (up) g_story_vkbd_row = (g_story_vkbd_row + VKBD_ROWS - 1) % VKBD_ROWS;
+    if (down) g_story_vkbd_row = (g_story_vkbd_row + 1) % VKBD_ROWS;
+    n = vkbd_row_len(g_story_vkbd_row);
+    if (n < 1) n = 1;
+    if (left) g_story_vkbd_col = (g_story_vkbd_col + n - 1) % n;
+    if (right) g_story_vkbd_col = (g_story_vkbd_col + 1) % n;
+    if (g_story_vkbd_col >= n) g_story_vkbd_col = n - 1;
+    if (a) {
+        char k = story_vkbd_rows[g_story_vkbd_row][g_story_vkbd_col];
+        if (k == '>') return 1;
+        if (k == '<') {
+            if (g_story_name_pos > 0) --g_story_name_pos;
+            g_story_name[g_story_name_pos] = story_name_chars[0];
+            g_story_name_typed = 1;
+        } else {
+            story_name_set_letter(k);
+        }
+    }
+    return 0;
+}
+
+static void draw_story_name_entry_pc(void)
+{
+    const int scale = 3;
+    int name_w = STORY_NAME_LEN * 8 * scale;
+    int caret_on = ((g_story_scene_anim_frame / 18) & 1) == 0;
+    int nx, ny = 96;
+    int i;
+
+    clear_screen(IDX_BLACK);
+    /* The bracket has to be open before anything is centred: ui_center_x reads
+       the clip width the bracket widens. */
+    ui_hud_begin();
+    nx = ui_center_x(name_w);
+    draw_centered_text(52, "What is the name", IDX_WHITE, IDX_BLACK);
+    draw_centered_text(68, "of your adventurer?", IDX_WHITE, IDX_BLACK);
+
+    /* The letters go through the ordinary text seam with the ink scaled up, not
+       through draw_text_scaled: that one stamps the 8x8 bitmap as blocks, and a
+       screen whose only other element is a crisp sentence should not answer it
+       in pixel art. The cell advance is widened by hand to match the ink. */
+    waifu_hw2d_text_scale(100 * scale);
+    for (i = 0; i < STORY_NAME_LEN; ++i) {
+        char ch[2];
+        int cx = nx + i * 8 * scale;
+        ch[0] = g_story_name[i];
+        ch[1] = '\0';
+        draw_text(cx + (8 * scale - 8) / 2, ny, ch, IDX_GOLD_HI, IDX_BLACK);
+    }
+    waifu_hw2d_text_scale(100);
+    for (i = 0; i < STORY_NAME_LEN; ++i) {
+        int cx = nx + i * 8 * scale;
+        /* A hairline under every slot; the current one is solid, and its caret
+           blinks, so the field reads as a place to type. */
+        hline(cx + 3, cx + 8 * scale - 5, ny + 18,
+              i == g_story_name_pos ? IDX_GOLD_HI : IDX_DIM);
+        if (i == g_story_name_pos && caret_on)
+            rect_fill(cx + 3, ny + 20, 8 * scale - 7, 2, IDX_GOLD_HI);
+    }
+
+    if (g_story_vkbd) {
+        int r, c;
+        for (r = 0; r < VKBD_ROWS; ++r) {
+            int n = vkbd_row_len(r);
+            for (c = 0; c < n; ++c) {
+                int x, y, w, h, sel = (r == g_story_vkbd_row && c == g_story_vkbd_col);
+                char k = story_vkbd_rows[r][c];
+                const char *cap = (k == '<') ? "DEL" : (k == '>') ? "OK" : 0;
+                char ch[2];
+                vkbd_key_rect(r, c, &x, &y, &w, &h);
+                rect_fill(x, y, w, h, sel ? IDX_GOLD_DARK : IDX_UI_DARK);
+                rect_outline(x, y, w, h, sel ? IDX_GOLD_HI : IDX_DIM);
+                if (cap) {
+                    draw_text_small(x + (w - (int)strlen(cap) * 7) / 2, y + (h - 8) / 2,
+                                    cap, sel ? IDX_WHITE : IDX_UI_LIGHT, IDX_BLACK);
+                } else {
+                    ch[0] = k; ch[1] = '\0';
+                    draw_text(x + (w - 8) / 2, y + (h - 8) / 2, ch,
+                              sel ? IDX_WHITE : IDX_UI_LIGHT, IDX_BLACK);
+                }
+            }
+        }
+    } else {
+        const char *hint = prompt_text("PRESS RUN TO BEGIN", "%s TO BEGIN");
+        draw_text_small(ui_center_x((int)strlen(hint) * 7), WAIFU_UI_BOTTOM_Y(206),
+                        hint, IDX_DIM, IDX_BLACK);
+    }
+
+    if (!g_story_name_to_intro && g_i_frame >= 0 && g_i_frame < 24)
+        apply_black_dither_fade(q8_ratio(g_i_frame, 24));
+    if (g_story_name_to_intro)
+        apply_black_dither_fade(Q8_ONE - q8_ratio(g_i_frame, 20));
+    ui_hud_end();
+}
+#endif /* WAIFU_PLATFORM_HW3D */
+
 static void draw_story_name_entry(void)
 {
+#if defined(WAIFU_PLATFORM_HW3D)
+    draw_story_name_entry_pc();
+#else
     int dx;
     /* A dither fade rewrites every pixel, so the retained picture is only good
        for the frames between them. */
@@ -16845,6 +17021,7 @@ static void draw_story_name_entry(void)
     /* Last, so the fades above (which invalidate it) win. */
     if (!fading) ui_retain(UI_TAG_NAME_ENTRY);
     ui_hud_end();
+#endif /* WAIFU_PLATFORM_HW3D */
 }
 
 static void draw_blue_gradient_box(int x, int y, int w, int h)
@@ -19025,6 +19202,11 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
         break;
 
     case WAIFU_I_STORY_NAME:
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* The PC screen is a typed field, not a row of glyph cells: there is
+           nothing here for the pointer to pick. */
+        break;
+#endif
         /* Each glyph cell picks that slot; the wheel/keys still change letters,
            and confirming is the A the click raises once a slot is picked. */
         for (i = 0; i < STORY_NAME_LEN; ++i) {
@@ -19495,10 +19677,17 @@ void waifu_fm_step(const WaifuFmInput *input)
     }
 #endif
 
-    case WAIFU_I_STORY_NAME:
+    case WAIFU_I_STORY_NAME: {
+        int name_done = press_start;
         g_story_name_to_intro = 0;
         waifu_platform_text_input(1);
         story_name_take_typing();
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* PC drives the field from the keyboard; the pad raises the on-screen
+           letter grid and works it, and OK there accepts the name. */
+        if (story_name_entry_input_pc(press_up, press_down, press_left, press_right, press_a))
+            name_done = 1;
+#else
         if (press_left) g_story_name_pos = (g_story_name_pos + STORY_NAME_LEN - 1) % STORY_NAME_LEN;
         if (press_right || press_a) g_story_name_pos = (g_story_name_pos + 1) % STORY_NAME_LEN;
         if (press_up || press_down) {
@@ -19507,17 +19696,19 @@ void waifu_fm_step(const WaifuFmInput *input)
             idx = (idx + (press_up ? 1 : count - 1)) % count;
             g_story_name[g_story_name_pos] = story_name_chars[idx];
         }
+#endif
         draw_story_name_entry();
         /* No B-button shortcut back to the mode-select menu: once story mode
            is entered, the only way out is the Sanctum QUIT option so a story
            session is never abandoned by an accidental Back press. */
-        if (press_start) {
+        if (name_done) {
             waifu_platform_text_input(0);
             g_story_name_to_intro = 1;
             g_i_state = WAIFU_I_STORY_NAME_TO_INTRO;
             g_i_frame = -1;
         }
         break;
+    }
 
     case WAIFU_I_STORY_NAME_TO_INTRO:
         g_story_name_to_intro = 1;
