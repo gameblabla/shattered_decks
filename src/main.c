@@ -285,6 +285,22 @@ static int g_turn_capture_geom_ok[WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS];
 #define WAIFU_DIRECT_LUNGE_FRAMES 40
 #define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES 38
 #endif
+
+#if defined(WAIFU_PLATFORM_HW3D)
+/* PC/SDL3 only: the direct attack ends in one authored 1.2 s impact beat
+   (draw_direct_attack_fx) instead of the console slash overlay, so its lunge
+   is tightened and the hold is derived from the FX length.  The FX starts at
+   the lunge midpoint, hence LUNGE/2 + FX must fit inside LUNGE + HOLD.
+   Console/headless builds keep the shared timings above unchanged. */
+#undef WAIFU_DIRECT_SLIDE_FRAMES
+#undef WAIFU_DIRECT_LUNGE_FRAMES
+#undef WAIFU_DIRECT_DAMAGE_HOLD_FRAMES
+#define WAIFU_DIRECT_SLIDE_FRAMES 20
+#define WAIFU_DIRECT_LUNGE_FRAMES 32
+#define WAIFU_DIRECT_FX_FRAMES 72
+#define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES (WAIFU_DIRECT_FX_FRAMES - WAIFU_DIRECT_LUNGE_FRAMES / 2)
+#endif
+
 #define DUEL_PREVIEW_END 270
 #define DUEL_SCRIPT_OFFSET (DUEL_PREVIEW_END - 84)
 
@@ -8282,6 +8298,238 @@ static void draw_direct_attack_slash(int target_x, int target_y, int frame, int 
     }
 }
 
+#if defined(WAIFU_PLATFORM_HW3D)
+/* ---------------------------------------------------------------------------
+ * PC/SDL3 direct-attack impact FX.
+ *
+ * Forbidden Memories staging: one blade sweep, a white-hot shock ring that
+ * heats down to red as it expands, and the damage readout punched over the
+ * dying rays.  The whole beat is WAIFU_DIRECT_FX_FRAMES (1.2 s at 60 Hz).
+ * Console targets keep draw_direct_attack_slash() above, untouched.
+ * ------------------------------------------------------------------------- */
+
+/* White -> red cooling ramp, picked out of the shared 256-entry palette
+   (index 0 is the hardware transparency key, so the white end is IDX_WHITE). */
+static const uint8_t k_direct_fx_ramp[8] = {
+    IDX_WHITE,  /* 232,232,224 */
+    4,          /* 243,223,150 pale yellow */
+    15,         /* 255,221, 72 yellow */
+    40,         /* 246,112, 12 orange */
+    137,        /* 220, 14, 14 red */
+    140,        /* 128, 28,  8 deep red */
+    153,        /*  72,  6, 24 dark red */
+    199         /*  36,  3,  6 near black */
+};
+
+/* q in Q8 [0,1] -> ramp entry, biased by `shift` steps toward the cool end. */
+static uint8_t direct_fx_heat(int32_t q, int shift)
+{
+    int i = q8_to_int(q8_mul(Q8_FROM_INT(7), q8_clamp(q, 0, Q8_ONE))) + shift;
+    if (i < 0) i = 0;
+    if (i > 7) i = 7;
+    return k_direct_fx_ramp[i];
+}
+
+/* Annulus of outer radius r and thickness th, drawn as two clipped spans per
+   row like draw_disc() does for the solid case. */
+static void draw_ring(int cx, int cy, int r, int th, uint8_t c)
+{
+    int r1 = r + th / 2;
+    int r0 = r1 - th;
+    if (r1 <= 0) return;
+    if (r0 < 0) r0 = 0;
+    int rr1 = r1 * r1, rr0 = r0 * r0;
+    for (int yy = -r1; yy <= r1; ++yy) {
+        int y2 = yy * yy;
+        int outer = 0, inner = 0;
+        if (y2 > rr1) continue;
+        while ((outer + 1) <= r1 && (outer + 1) * (outer + 1) + y2 <= rr1) ++outer;
+        if (y2 >= rr0) { hline(cx - outer, cx + outer, cy + yy, c); continue; }
+        while ((inner + 1) <= r0 && (inner + 1) * (inner + 1) + y2 <= rr0) ++inner;
+        hline(cx - outer, cx - inner, cy + yy, c);
+        hline(cx + inner, cx + outer, cy + yy, c);
+    }
+}
+
+/* Chunky integer-scaled font blit.  The damage readout wants to be far bigger
+   than the 8x8 cell, and scaling the bitmap keeps the arcade look of the
+   reference frames instead of the smooth TTF the HUD uses. */
+static int direct_fx_number_width(const char *s, int scale)
+{
+    int n = 0;
+    for (; s && *s; ++s) n += 8 * scale;
+    return n;
+}
+
+static void draw_direct_fx_number(int x, int y, const char *s, int scale, uint8_t fg, uint8_t edge)
+{
+    for (; *s; ++s) {
+        const uint8_t *charfont = n2DLib_font + ((uint32_t)(unsigned char)*s * 8u);
+        for (int yy = 0; yy < 8; ++yy) {
+            uint8_t row = charfont[yy];
+            for (int xx = 0; xx < 8; ++xx) {
+                if (!(row & (uint8_t)(1u << (7 - xx)))) continue;
+                int px = x + xx * scale, py = y + yy * scale;
+                /* Outline first so neighbouring cells cannot punch holes in it. */
+                rect_fill(px - scale, py, scale * 3, scale, edge);
+                rect_fill(px, py - scale, scale, scale * 3, edge);
+            }
+        }
+        for (int yy = 0; yy < 8; ++yy) {
+            uint8_t row = charfont[yy];
+            for (int xx = 0; xx < 8; ++xx) {
+                if (row & (uint8_t)(1u << (7 - xx)))
+                    rect_fill(x + xx * scale, y + yy * scale, scale, scale, fg);
+            }
+        }
+        x += 8 * scale;
+    }
+}
+
+/* Solid wash over the whole HUD-wide screen.  Deliberately NOT an ordered
+   dither: on the hardware-2D seam every stippled pixel would be captured as
+   its own quad and blow the per-frame UI vertex budget (the capture reports
+   "CAPTURE DROP" and loses the rest of the frame).  One rect is also what the
+   reference wants -- the arena is simply gone behind the burst. */
+static void direct_fx_wash(uint8_t c)
+{
+    rect_fill(0, 0, g_ui_clip_w, WAIFU_FM_HEIGHT, c);
+}
+
+/* One blade sweep through the impact point.  head/tail are Q8 progress along
+   the stroke, so the streak draws itself on and then slides off. */
+static void direct_fx_blade(int cx, int cy, int dir, int32_t head, int32_t tail, uint8_t core, int th)
+{
+    const int reach = 104;
+    int ax = cx - dir * reach, ay = cy - 78;
+    int bx = cx + dir * reach, by = cy + 78;
+    int x0 = lerp_i(ax, bx, q8_clamp(tail, 0, Q8_ONE));
+    int y0 = lerp_i(ay, by, q8_clamp(tail, 0, Q8_ONE));
+    int x1 = lerp_i(ax, bx, q8_clamp(head, 0, Q8_ONE));
+    int y1 = lerp_i(ay, by, q8_clamp(head, 0, Q8_ONE));
+    for (int off = -th; off <= th; ++off) {
+        uint8_t c = (i_abs(off) <= th / 3) ? core
+                  : ((i_abs(off) <= (2 * th) / 3) ? k_direct_fx_ramp[2] : k_direct_fx_ramp[4]);
+        line_i(x0 + off, y0, x1 + off, y1, c);
+    }
+}
+
+static void draw_direct_attack_fx(int target_x, int target_y, int t, int attacker_owner,
+                                  const char *damage_text)
+{
+    const int dir = (attacker_owner == 0) ? 1 : -1;
+    /* A direct attack has no defender card to land on, so the burst is staged
+       on the screen centre (the same anchor the damage readout centres to)
+       rather than on the empty defender lane. */
+    const int cx = g_ui_clip_w / 2;
+    const int cy = WAIFU_FM_HEIGHT / 2 - 8;
+    (void)target_x; (void)target_y;
+
+    if (t < 0) return;
+    if (t >= WAIFU_DIRECT_FX_FRAMES) {
+        /* The event's settle frames come after the beat; hold the blackout so
+           the arena does not pop back for a few frames before the phase ends. */
+        direct_fx_wash(IDX_BLACK);
+        return;
+    }
+
+    /* --- 1. blade sweep (0 .. 13), over the live arena ----------------- */
+    if (t < 14) {
+        int32_t head = q8_clamp(q8_ratio(t + 1, 7), 0, Q8_ONE);
+        int32_t tail = q8_clamp(q8_ratio(t - 3, 7), 0, Q8_ONE);
+        int th = (t < 7) ? 6 : (6 - (t - 7));
+        if (th > 0)
+            direct_fx_blade(cx, cy, dir, q8_smoothstep(head), q8_smoothstep(tail),
+                            (t & 1) ? IDX_WHITE : k_direct_fx_ramp[1], th);
+    }
+
+    /* --- 2. impact whiteout (8 .. 10), then black (11 .. end) --------- */
+    if (t >= 8 && t < 11) {
+        direct_fx_wash(t < 10 ? IDX_WHITE : k_direct_fx_ramp[1]);
+    } else if (t >= 11) {
+        direct_fx_wash(IDX_BLACK);
+        /* Dull red bloom under the rays: swells with the shock and then sinks
+           back so the last frames dim out instead of holding a flat disc. */
+        int gr = (t < 26)
+               ? lerp_i(22, 92, q8_smoothstep(q8_ratio(t - 11, 15)))
+               : lerp_i(92, 26, q8_smoothstep(q8_clamp(q8_ratio(t - 26, 45), 0, Q8_ONE)));
+        draw_disc(cx, cy, gr, k_direct_fx_ramp[7]);
+        draw_disc(cx, cy, (gr * 5) / 8, k_direct_fx_ramp[6]);
+    }
+
+    /* --- 3. shock ring + rays (8 .. end) ------------------------------ */
+    if (t >= 8) {
+        int32_t u = q8_clamp(q8_ratio(t - 8, 56), 0, Q8_ONE);
+        /* ease-out cubic so the ring leaps out and then coasts */
+        int32_t inv = Q8_ONE - u;
+        int32_t ease = Q8_ONE - q8_mul(inv, q8_mul(inv, inv));
+        int ring_r = lerp_i(10, 118, ease);
+        int core_r = (u < Q8_FRAC(32, 100))
+                   ? lerp_i(6, 44, q8_smoothstep(q8_div(u, Q8_FRAC(32, 100))))
+                   : lerp_i(44, 0, q8_smoothstep(q8_clamp(q8_div(u - Q8_FRAC(32, 100), Q8_FRAC(42, 100)), 0, Q8_ONE)));
+        /* Past three quarters of the beat everything pulls back in and cools
+           an extra ramp step, so the effect resolves instead of stopping. */
+        int32_t decay = (u > Q8_FRAC(72, 100))
+                      ? q8_smoothstep(q8_div(u - Q8_FRAC(72, 100), Q8_FRAC(28, 100))) : 0;
+        int cool = decay > Q8_HALF ? 2 : (decay > 0 ? 1 : 0);
+        int pull = q8_to_int(q8_mul(Q8_FROM_INT(34), decay));
+
+        /* Rays: 32 spokes with a per-spoke length jitter, drawn under the core
+           so the disc always reads as the hot centre. */
+        for (int i = 0; i < 32; ++i) {
+            int32_t a = (int32_t)i * (65536 / 32) + (int32_t)(pseudo_rand(i * 61) & 511);
+            int32_t sn = q8_sin_turn(a), cs = q8_cos_turn(a);
+            int jitter = (int)(pseudo_rand(i * 977) % 38);
+            int r_in  = core_r > 4 ? (core_r * 3) / 4 : 2;
+            int r_out = ring_r + jitter - 16 - pull;
+            if (r_out <= r_in) continue;
+            uint8_t c = direct_fx_heat(u, cool + ((i & 3) ? 1 : 0));
+            int x0 = cx + q8_to_int(q8_mul(Q8_FROM_INT(r_in), cs));
+            int y0 = cy + q8_to_int(q8_mul(Q8_FROM_INT(r_in), sn));
+            int x1 = cx + q8_to_int(q8_mul(Q8_FROM_INT(r_out), cs));
+            int y1 = cy + q8_to_int(q8_mul(Q8_FROM_INT(r_out), sn));
+            line_i(x0, y0, x1, y1, c);
+            /* thicken the near half so the spokes taper outward */
+            int xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+            line_i(x0, y0 + 1, xm, ym + 1, c);
+            line_i(x0 + 1, y0, xm + 1, ym, c);
+        }
+
+        /* Expanding shock ring, cooling as it goes. */
+        if (ring_r - pull > 8) {
+            int th = lerp_i(9, 2, u);
+            draw_ring(cx, cy, ring_r - pull, th, direct_fx_heat(u, cool + 1));
+            draw_ring(cx, cy, ring_r - pull, th / 2 + 1, direct_fx_heat(u, cool));
+        }
+
+        /* White-hot core fading through the ramp to nothing. */
+        if (core_r > 0) {
+            draw_disc(cx, cy, core_r, direct_fx_heat(u, 1));
+            if (core_r > 6) draw_disc(cx, cy, (core_r * 3) / 4, direct_fx_heat(u, 0));
+            if (core_r > 12 && u < Q8_FRAC(50, 100)) draw_disc(cx, cy, core_r / 2, IDX_WHITE);
+        }
+    }
+
+    /* --- 4. damage readout (28 .. end) -------------------------------- */
+    if (t >= 28) {
+        /* Punch in from an oversized scale over 4 frames, then hold. */
+        int e = t - 28;
+        int scale = (e < 2) ? 5 : ((e < 4) ? 4 : 3);
+        uint8_t fg = (e < 3) ? IDX_WHITE : IDX_GOLD_HI;
+        /* Black outline once settled: the readout sits straight on top of the
+           still-hot core, and a red-on-orange outline vanished into it. */
+        uint8_t edge = (e < 3) ? k_direct_fx_ramp[3] : IDX_BLACK;
+        int tw = direct_fx_number_width(damage_text, scale);
+        int tx = ui_center_x(tw);
+        int ty = cy - (8 * scale) / 2;
+        if (t >= WAIFU_DIRECT_FX_FRAMES - 6) fg = k_direct_fx_ramp[3];
+        if (tx < 2) tx = 2;
+        draw_direct_fx_number(tx, ty, damage_text, scale, fg, edge);
+    }
+}
+
+#endif /* WAIFU_PLATFORM_HW3D */
+
 static void draw_big_battle_card_hit_flash_overlay(int x, int y, int phase)
 {
     if (((phase / 2) & 1) == 0) {
@@ -15004,6 +15252,12 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     draw_cutin_battle_card(atk_id, card_x, ay, 0, 1);
     {
         int slash_start = WAIFU_DIRECT_SLIDE_FRAMES + (WAIFU_DIRECT_LUNGE_FRAMES / 2);
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* PC: one self-contained beat that owns both the slash and the damage
+           readout, so there is no second, differently-timed text pass. */
+        draw_direct_attack_fx(target_x, target_y, local - slash_start, g_b_battle_atk_owner,
+                              g_b_damage_text);
+#else
         int damage_start = WAIFU_DIRECT_SLIDE_FRAMES + WAIFU_DIRECT_LUNGE_FRAMES - 2;
         if (local >= slash_start && local < slash_start + WAIFU_DIRECT_DAMAGE_HOLD_FRAMES) {
             draw_direct_attack_slash(target_x, target_y, local - slash_start, g_b_battle_atk_owner);
@@ -15011,6 +15265,7 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
         if (local >= damage_start && local < damage_start + WAIFU_DIRECT_DAMAGE_HOLD_FRAMES) {
             draw_centered_damage_text_in_card(target_x - 20, 36, g_b_damage_text);
         }
+#endif
     }
     ui_hud_end();
     fb_damage_force_overlay_history();
