@@ -300,7 +300,22 @@ static int g_turn_capture_geom_ok[WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS];
 #define WAIFU_DIRECT_FX_FRAMES 72
 /* Frame within the beat at which the damage readout punches in. */
 #define WAIFU_DIRECT_FX_TEXT_START 28
-#define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES (WAIFU_DIRECT_FX_FRAMES - WAIFU_DIRECT_LUNGE_FRAMES / 2)
+/* Contact is the frame the attacker is DEEPEST into the target, which is where
+   the lunge easing peaks (62% of the lunge, see draw_direct_attack_event), not
+   its midpoint.  impact.frag flashes at FLASH_AT = 0.115 of the beat, so the
+   beat has to open that far ahead of contact for the flash to land on it --
+   opening it at the midpoint put the flash four frames late, after the card had
+   already started pulling back.  Both halves are derived here so retiming the
+   lunge retimes the burst with it. */
+#define WAIFU_DIRECT_LUNGE_PEAK_PCT 62
+#define WAIFU_DIRECT_CONTACT_FRAME \
+    (WAIFU_DIRECT_SLIDE_FRAMES + \
+     (WAIFU_DIRECT_LUNGE_FRAMES * WAIFU_DIRECT_LUNGE_PEAK_PCT) / 100)
+#define WAIFU_DIRECT_FX_FLASH_FRAME ((WAIFU_DIRECT_FX_FRAMES * 115) / 1000)
+#define WAIFU_DIRECT_FX_START (WAIFU_DIRECT_CONTACT_FRAME - WAIFU_DIRECT_FX_FLASH_FRAME)
+#define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES \
+    (WAIFU_DIRECT_FX_START + WAIFU_DIRECT_FX_FRAMES - \
+     WAIFU_DIRECT_SLIDE_FRAMES - WAIFU_DIRECT_LUNGE_FRAMES)
 #endif
 
 #define DUEL_PREVIEW_END 270
@@ -8416,16 +8431,12 @@ static void direct_fx_blade(int cx, int cy, int dir, int32_t head, int32_t tail,
     }
 }
 
-static void draw_direct_attack_fx_software(int target_x, int target_y, int t, int attacker_owner,
+static void draw_direct_attack_fx_software(int impact_x, int impact_y, int t, int attacker_owner,
                                            const char *damage_text)
 {
     const int dir = (attacker_owner == 0) ? 1 : -1;
-    /* A direct attack has no defender card to land on, so the burst is staged
-       on the screen centre (the same anchor the damage readout centres to)
-       rather than on the empty defender lane. */
-    const int cx = g_ui_clip_w / 2;
-    const int cy = WAIFU_FM_HEIGHT / 2 - 8;
-    (void)target_x; (void)target_y;
+    const int cx = impact_x;
+    const int cy = impact_y;
 
     if (t < 0) return;
     if (t >= WAIFU_DIRECT_FX_FRAMES) {
@@ -8537,11 +8548,9 @@ static void draw_direct_attack_fx_software(int target_x, int target_y, int t, in
    dark outline and a graded gold fill.  Both seams return 0 on a build with no
    true-colour layer (or if the TTF failed to load), and the beat above then
    draws the same choreography with the software primitives. */
-static void draw_direct_attack_fx(int target_x, int target_y, int t, int attacker_owner,
+static void draw_direct_attack_fx(int impact_x, int impact_y, int t, int attacker_owner,
                                   const char *damage_text)
 {
-    const int cx = g_ui_clip_w / 2;
-    const int cy = WAIFU_FM_HEIGHT / 2 - 8;
     int t_q8, cap_px, glow_q8, alpha_q8, e;
 
     if (t < 0) return;
@@ -8549,8 +8558,8 @@ static void draw_direct_attack_fx(int target_x, int target_y, int t, int attacke
        the pass so it holds its blackout instead of popping back to the arena. */
     t_q8 = q8_ratio(t, WAIFU_DIRECT_FX_FRAMES);
 
-    if (!waifu_hw2d_impact_fx(cx, cy, t_q8, (attacker_owner == 0) ? 1 : -1)) {
-        draw_direct_attack_fx_software(target_x, target_y, t, attacker_owner, damage_text);
+    if (!waifu_hw2d_impact_fx(impact_x, impact_y, t_q8, (attacker_owner == 0) ? 1 : -1)) {
+        draw_direct_attack_fx_software(impact_x, impact_y, t, attacker_owner, damage_text);
         return;
     }
 
@@ -8563,12 +8572,16 @@ static void draw_direct_attack_fx(int target_x, int target_y, int t, int attacke
     glow_q8 = (e < 10) ? lerp_i(Q8_ONE * 5 / 2, Q8_ONE, q8_smooth_ratio(e, 10)) : Q8_ONE;
     if (t >= WAIFU_DIRECT_FX_FRAMES - 5)
         alpha_q8 = q8_mul(alpha_q8, Q8_ONE - q8_ratio(t - (WAIFU_DIRECT_FX_FRAMES - 5), 5));
-    if (!waifu_hw2d_impact_text(cx, cy, cap_px, damage_text, glow_q8, alpha_q8)) {
+    /* The readout sits on the burst's line but stays centred across the screen:
+       the burst is anchored on the target lane, well off centre, and a number
+       this size centred on it would run off the edge. */
+    if (!waifu_hw2d_impact_text(g_ui_clip_w / 2, impact_y, cap_px, damage_text,
+                                glow_q8, alpha_q8)) {
         int scale = (e < 2) ? 5 : ((e < 4) ? 4 : 3);
         int tw = direct_fx_number_width(damage_text, scale);
         int tx = ui_center_x(tw);
         if (tx < 2) tx = 2;
-        draw_direct_fx_number(tx, cy - (8 * scale) / 2, damage_text, scale,
+        draw_direct_fx_number(tx, impact_y - (8 * scale) / 2, damage_text, scale,
                               IDX_GOLD_HI, IDX_BLACK);
     }
 }
@@ -15254,9 +15267,13 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     const int ho = extra_w / 2;
     int ax = ((g_b_battle_atk_owner == 0) ? WAIFU_BATTLE_CARD_X0 : WAIFU_BATTLE_CARD_X1) + ho;
     int ay = WAIFU_BATTLE_CARD_Y;
+#if !defined(WAIFU_PLATFORM_HW3D)
+    /* Console slash anchor.  The PC burst derives its own impact point from the
+       lunge instead (see below), so these would be unused there. */
     int target_x = ((g_b_battle_atk_owner == 0) ? (WAIFU_BATTLE_CARD_X1 + 22)
                                                 : (WAIFU_BATTLE_CARD_X0 + 24)) + ho;
     int target_y = WAIFU_BATTLE_CARD_Y;
+#endif
     int card_x = ax;
     if (local < WAIFU_BATTLE_PRELUDE_FRAMES) {
 #if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
@@ -15281,7 +15298,12 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     if (atk_back) local -= flip_dur;
     if (frame_cue_crossed(local, WAIFU_DIRECT_SLIDE_FRAMES)) waifu_sound_play(WAIFU_SOUND_LASER_SHOOT);
     {
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* Fire the hit on the frame the burst flashes, not the lunge midpoint. */
+        int hit_frame = WAIFU_DIRECT_CONTACT_FRAME;
+#else
         int hit_frame = WAIFU_DIRECT_SLIDE_FRAMES + (WAIFU_DIRECT_LUNGE_FRAMES / 2);
+#endif
         if (frame_cue_crossed(local, hit_frame)) waifu_sound_play(WAIFU_SOUND_DIRECT_HIT);
     }
     if (local < WAIFU_DIRECT_SLIDE_FRAMES) {
@@ -15296,13 +15318,23 @@ static void draw_direct_attack_event(int f, int atk_id, int atk_col, int atk_row
     }
     draw_cutin_battle_card(atk_id, card_x, ay, 0, 1);
     {
-        int slash_start = WAIFU_DIRECT_SLIDE_FRAMES + (WAIFU_DIRECT_LUNGE_FRAMES / 2);
 #if defined(WAIFU_PLATFORM_HW3D)
         /* PC: one self-contained beat that owns both the slash and the damage
-           readout, so there is no second, differently-timed text pass. */
-        draw_direct_attack_fx(target_x, target_y, local - slash_start, g_b_battle_atk_owner,
-                              g_b_damage_text);
+           readout, so there is no second, differently-timed text pass.  It is
+           staged on the point the lunge actually reaches -- the leading edge of
+           the attacker at full extension, on the card's vertical middle -- so
+           the burst lands on the target instead of in the middle of the
+           screen. */
+        {
+            int lunge_dir = (g_b_battle_atk_owner == 0) ? 1 : -1;
+            int impact_x = ax + lunge_dir * 64 +
+                           ((lunge_dir > 0) ? WAIFU_BATTLE_CARD_W : 0);
+            int impact_y = ay + WAIFU_BATTLE_CARD_H / 2;
+            draw_direct_attack_fx(impact_x, impact_y, local - WAIFU_DIRECT_FX_START,
+                                  g_b_battle_atk_owner, g_b_damage_text);
+        }
 #else
+        int slash_start = WAIFU_DIRECT_SLIDE_FRAMES + (WAIFU_DIRECT_LUNGE_FRAMES / 2);
         int damage_start = WAIFU_DIRECT_SLIDE_FRAMES + WAIFU_DIRECT_LUNGE_FRAMES - 2;
         if (local >= slash_start && local < slash_start + WAIFU_DIRECT_DAMAGE_HOLD_FRAMES) {
             draw_direct_attack_slash(target_x, target_y, local - slash_start, g_b_battle_atk_owner);
