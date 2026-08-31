@@ -331,6 +331,10 @@ static void ui_hud_end(void)
    the game column normally, the true screen inside a HUD bracket. Identical to
    the authored (WAIFU_FM_WIDTH - w) / 2 on every console. */
 static int ui_center_x(int w) { return (g_ui_clip_w - w) / 2; }
+#if defined(WAIFU_PLATFORM_HW3D)
+/* The true screen width, HUD bracket or not. */
+static int ui_full_w(void);
+#endif
 /* Half the widescreen surplus: what a centred element inside a HUD bracket has
    to be shifted by when its x was written against the 256-wide column. */
 static int ui_center_dx(void) { return (g_ui_clip_w - WAIFU_FM_WIDTH) / 2; }
@@ -10185,11 +10189,39 @@ static int g_b_player_monster_played_this_turn = 0;
 static int g_b_com_monster_played_this_turn = 0;
 
 #define STORY_NAME_LEN 6
+#define STORY_NAME_DEFAULT "SERENA"
 #define STORY_DECK_SIZE 40
 #define STORY_SAVE_PATH "waifu_story.sav"
 static int g_story_battle_active = 0;
-static char g_story_name[STORY_NAME_LEN + 1] = "SERENA";
+/* The name is a NUL-terminated string of 0..STORY_NAME_LEN letters, not six
+   always-filled cells: the PC field opens EMPTY (SERENA shows behind it as a
+   placeholder) and only fills out as the player types, so g_story_name_len is
+   what is actually in it.  The console letter wheel still edits six fixed
+   slots, so there the length simply stays at STORY_NAME_LEN.
+   g_story_name_pos is the caret: a slot index on the wheel, an insertion point
+   (0..len) in the PC field. */
+static char g_story_name[STORY_NAME_LEN + 1] = STORY_NAME_DEFAULT;
+static int g_story_name_len = STORY_NAME_LEN;
 static int g_story_name_pos = 0;
+
+/* Trims the buffer to the letters it really holds and re-derives the length.
+   Every path that writes the name from outside the editor -- both save
+   formats, the debug shortcuts -- ends here, so a name shorter than six
+   characters survives a round trip instead of being padded back out with the
+   'A's the fixed-width reader used to invent. An empty result falls back to
+   the default, which is the name the story prose is written around. */
+static void story_name_sanitize(void)
+{
+    int i = 0;
+    while (i < STORY_NAME_LEN && g_story_name[i] >= 'A' && g_story_name[i] <= 'Z') ++i;
+    if (i == 0) {
+        memcpy(g_story_name, STORY_NAME_DEFAULT, STORY_NAME_LEN + 1);
+        i = STORY_NAME_LEN;
+    }
+    while (i <= STORY_NAME_LEN) g_story_name[i++] = '\0';
+    g_story_name_len = (int)strlen(g_story_name);
+    if (g_story_name_pos > g_story_name_len) g_story_name_pos = g_story_name_len;
+}
 
 /* Substitute the player's chosen name in place of the default "Serena"/"SERENA"
    in story prose, returning a pointer to a rotating static buffer so several
@@ -12131,11 +12163,9 @@ static int save_parse_blob(const u8 *buf, u32 len)
     stored = (u16)buf[121] | ((u16)buf[122] << 8);
     if (cksum != stored) return 0;
 
-    for (i = 0; i < STORY_NAME_LEN; ++i) {
-        char c = (char)buf[5 + i];
-        g_story_name[i] = (c >= 'A' && c <= 'Z') ? c : 'A';
-    }
+    for (i = 0; i < STORY_NAME_LEN; ++i) g_story_name[i] = (char)buf[5 + i];
     g_story_name[STORY_NAME_LEN] = '\0';
+    story_name_sanitize();
     g_story_progress = (int)buf[11];
     if (g_story_progress < 0) g_story_progress = 0;
     if (g_story_progress >= STORY_MAX_DUELS) g_story_progress = STORY_MAX_DUELS - 1;
@@ -12377,10 +12407,7 @@ static int read_story_save_device(int device)
 
     memset(g_story_name, 0, sizeof(g_story_name));
     strncpy(g_story_name, saved_name, STORY_NAME_LEN);
-    for (int i = 0; i < STORY_NAME_LEN; ++i) {
-        if (g_story_name[i] < 'A' || g_story_name[i] > 'Z') g_story_name[i] = 'A';
-    }
-    g_story_name[STORY_NAME_LEN] = '\0';
+    story_name_sanitize();
     g_story_progress = duel;
     if (g_story_progress < 0) g_story_progress = 0;
     if (g_story_progress >= STORY_MAX_DUELS) g_story_progress = STORY_MAX_DUELS - 1;
@@ -16969,12 +16996,6 @@ static int story_name_char_index(char c)
     return 0;
 }
 
-/* Set once the player has typed on this visit to the name screen: the first
-   keystroke wipes the suggested name rather than overwriting its first letters,
-   the way a text field whose contents start out selected behaves. Someone who
-   wants SERENA presses RUN without touching the keyboard. */
-static int g_story_name_typed;
-
 /* Drains the frontend's keyboard queue into the name field. A no-op on every
    console (waifu_platform_text_poll is an inline 0 there) and on a pad, which
    keeps using the letter wheel -- both edit the same six slots, so a player can
@@ -16988,41 +17009,92 @@ static int g_story_vkbd_row = 0;
 static int g_story_vkbd_col = 0;
 #endif
 
+/* ---- the name field's edit primitives -------------------------------------
+   An ordinary insert-mode text field: the caret sits BETWEEN characters, from
+   0 to len, typing pushes what follows to the right, and both erase keys work
+   the way every other text box in the world works.  The old field could not do
+   any of this -- it was six always-filled cells with an overwrite cursor and a
+   "the first keystroke wipes the suggestion" rule, which is why editing a
+   letter you had already typed was guesswork. */
+
+static void story_name_insert(char ch)
+{
+    int i;
+    if (ch < 'A' || ch > 'Z') return;
+    if (g_story_name_len >= STORY_NAME_LEN) return;    /* full: keep what is there */
+    if (g_story_name_pos > g_story_name_len) g_story_name_pos = g_story_name_len;
+    for (i = g_story_name_len; i > g_story_name_pos; --i)
+        g_story_name[i] = g_story_name[i - 1];
+    g_story_name[g_story_name_pos] = ch;
+    ++g_story_name_len;
+    ++g_story_name_pos;
+    g_story_name[g_story_name_len] = '\0';
+}
+
+/* Removes the character at `at`; backspace passes pos-1, delete passes pos. */
+static void story_name_erase_at(int at)
+{
+    int i;
+    if (at < 0 || at >= g_story_name_len) return;
+    for (i = at; i < g_story_name_len - 1; ++i)
+        g_story_name[i] = g_story_name[i + 1];
+    --g_story_name_len;
+    g_story_name[g_story_name_len] = '\0';
+    if (g_story_name_pos > g_story_name_len) g_story_name_pos = g_story_name_len;
+    else if (g_story_name_pos > at) --g_story_name_pos;
+}
+
+#if defined(WAIFU_PLATFORM_HW3D)
+/* Only the PC field has a movable caret; the console wheel walks fixed slots. */
+static void story_name_move_caret(int delta)
+{
+    int p = g_story_name_pos + delta;
+    if (p < 0) p = 0;
+    if (p > g_story_name_len) p = g_story_name_len;
+    g_story_name_pos = p;
+}
+#endif
+
+/* Called the moment the player accepts. An untouched (or fully erased) field
+   is not an error to refuse -- it is the player taking the default, which is
+   the name the placeholder was showing them all along. */
+static void story_name_commit(void)
+{
+    story_name_sanitize();
+}
+
 static void story_name_take_typing(void)
 {
     int c;
     while ((c = waifu_platform_text_poll()) != 0) {
 #if defined(WAIFU_PLATFORM_HW3D)
+        /* Touching the keyboard puts the pad's letter grid away; it is only
+           ever raised for a player who has no keys to type with. */
         g_story_vkbd = 0;
 #endif
-        if (c == '\b') {
-            /* Back up over the previous slot and blank it to the charset's
-               first letter, which is as empty as a fixed six-slot field gets. */
-            if (g_story_name_pos > 0) --g_story_name_pos;
-            g_story_name[g_story_name_pos] = story_name_chars[0];
-            g_story_name_typed = 1;
-            continue;
-        }
+        if (c == '\b') { story_name_erase_at(g_story_name_pos - 1); continue; }
+        if (c == 0x7F)  { story_name_erase_at(g_story_name_pos); continue; }
+        if (c == WAIFU_TEXT_HOME) { g_story_name_pos = 0; continue; }
+        if (c == WAIFU_TEXT_END)  { g_story_name_pos = g_story_name_len; continue; }
         if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
-        if (c < 'A' || c > 'Z') continue;      /* the name holds A-Z only */
-        if (!g_story_name_typed) {
-            int i;
-            for (i = 0; i < STORY_NAME_LEN; ++i) g_story_name[i] = story_name_chars[0];
-            g_story_name_pos = 0;
-            g_story_name_typed = 1;
-        }
-        g_story_name[g_story_name_pos] = (char)c;
-        /* Stop on the last slot instead of wrapping to the front and eating
-           what was already typed. */
-        if (g_story_name_pos < STORY_NAME_LEN - 1) ++g_story_name_pos;
+        story_name_insert((char)c);            /* anything but A-Z is dropped */
     }
 }
 
 static void reset_story_entry(void)
 {
-    memcpy(g_story_name, "SERENA", STORY_NAME_LEN + 1);
+#if defined(WAIFU_PLATFORM_HW3D)
+    /* PC: the field opens EMPTY, with the default showing behind it as a
+       placeholder. Nothing has to be erased before a name can be typed, and
+       accepting an empty field still gives the player SERENA. */
+    g_story_name[0] = '\0';
+    g_story_name_len = 0;
+#else
+    /* Console: the letter wheel spins six fixed slots, so they stay filled. */
+    memcpy(g_story_name, STORY_NAME_DEFAULT, STORY_NAME_LEN + 1);
+    g_story_name_len = STORY_NAME_LEN;
+#endif
     g_story_name_pos = 0;
-    g_story_name_typed = 0;
 #if defined(WAIFU_PLATFORM_HW3D)
     g_story_vkbd = 0;
     g_story_vkbd_row = 0;
@@ -17092,12 +17164,12 @@ static void draw_story_name_field(int dx)
 #define VKBD_ROWS 4
 #define VKBD_KEY_W 21
 #define VKBD_KEY_H 19
-#define VKBD_TOP   150
+#define VKBD_TOP   126
 static const char *const story_vkbd_rows[VKBD_ROWS] = {
     "ABCDEFGHI",
     "JKLMNOPQR",
     "STUVWXYZ",
-    "<>"           /* '<' erases, '>' accepts */
+    "{}<>"        /* caret left, caret right, DEL, OK */
 };
 
 static int vkbd_row_len(int r)
@@ -17105,42 +17177,87 @@ static int vkbd_row_len(int r)
     return (r >= 0 && r < VKBD_ROWS) ? (int)strlen(story_vkbd_rows[r]) : 0;
 }
 
-/* Geometry of one key. The bottom row's two commands are three cells wide each
-   so they read as buttons and not as two more letters. */
+/* The caption a command key carries; NULL for a plain letter. */
+static const char *vkbd_key_caption(char k)
+{
+    switch (k) {
+    case '{': return "<";
+    case '}': return ">";
+    case '<': return "DEL";
+    case '>': return "OK";
+    default:  return 0;
+    }
+}
+
+/* Centring that does not depend on the HUD bracket being open, so the pointer
+   can hit-test exactly the rectangles the draw puts on screen. */
+static int name_center_x(int w) { return (ui_full_w() - w) / 2; }
+
+/* Geometry of one key. The bottom row's four commands are two cells wide each
+   so they read as buttons and not as four more letters. */
 static void vkbd_key_rect(int r, int c, int *x, int *y, int *w, int *h)
 {
     int wide = (r == VKBD_ROWS - 1);
-    int cells = wide ? 3 : 1;
+    int cells = wide ? 2 : 1;
     int n = vkbd_row_len(r);
     int row_w = n * cells * VKBD_KEY_W;
     *w = cells * VKBD_KEY_W - 3;
     *h = VKBD_KEY_H - 3;
-    *x = ui_center_x(row_w) + c * cells * VKBD_KEY_W;
+    *x = name_center_x(row_w) + c * cells * VKBD_KEY_W;
     *y = VKBD_TOP + r * VKBD_KEY_H;
 }
 
-static void story_name_set_letter(char ch)
+/* Works the key under the grid cursor. Returns 1 when it was OK. */
+static int story_name_press_vkbd_key(void)
 {
-    if (!g_story_name_typed) {
-        int i;
-        for (i = 0; i < STORY_NAME_LEN; ++i) g_story_name[i] = story_name_chars[0];
-        g_story_name_pos = 0;
-        g_story_name_typed = 1;
+    char k = story_vkbd_rows[g_story_vkbd_row][g_story_vkbd_col];
+    switch (k) {
+    case '>': return 1;
+    case '<': story_name_erase_at(g_story_name_pos - 1); break;
+    case '{': story_name_move_caret(-1); break;
+    case '}': story_name_move_caret(1); break;
+    default:  story_name_insert(k); break;
     }
-    g_story_name[g_story_name_pos] = ch;
-    if (g_story_name_pos < STORY_NAME_LEN - 1) ++g_story_name_pos;
+    return 0;
 }
 
-/* Returns 1 when the player accepted the name. */
-static int story_name_entry_input_pc(int up, int down, int left, int right, int a)
+/* The whole name screen's button handling, for both the typed field and the
+   on-screen grid. Returns 1 when the player accepted the name.
+
+   Which reading the d-pad gets is the crux. A keyboard player types into the
+   field and wants Left/Right to move the caret, so the grid stays out of their
+   way until they ask for it; a pad player has no other way to enter a letter,
+   so their first press raises the grid and the d-pad works it. The frontend
+   already knows which device was touched last, so the screen asks rather than
+   guessing from what was pressed -- the old rule ("any direction raises the
+   grid") stole the arrow keys from every keyboard player. */
+static int story_name_entry_input_pc(int up, int down, int left, int right,
+                                     int a, int b, int start, int assist)
 {
     int n;
-    if (!(up || down || left || right || a)) return 0;
-    if (!g_story_vkbd) {
-        /* First touch of the pad raises the grid; it does not also press a key. */
-        g_story_vkbd = 1;
+    /* ASSIST shows or hides the grid on demand, whatever the device. */
+    if (assist) {
+        g_story_vkbd = !g_story_vkbd;
         return 0;
     }
+    /* CANCEL is backspace everywhere on this screen -- the shortcut every
+       console name entry has, so a pad never has to walk to DEL for a typo. */
+    if (b) {
+        story_name_erase_at(g_story_name_pos - 1);
+        return 0;
+    }
+
+    if (!g_story_vkbd) {
+        if (waifu_platform_input_is_pad()) {
+            /* First pad press raises the grid; it does not also work a key. */
+            if (up || down || left || right || a) g_story_vkbd = 1;
+            return 0;
+        }
+        if (left) story_name_move_caret(-1);
+        if (right) story_name_move_caret(1);
+        return (a || start) ? 1 : 0;
+    }
+
     if (up) g_story_vkbd_row = (g_story_vkbd_row + VKBD_ROWS - 1) % VKBD_ROWS;
     if (down) g_story_vkbd_row = (g_story_vkbd_row + 1) % VKBD_ROWS;
     n = vkbd_row_len(g_story_vkbd_row);
@@ -17148,25 +17265,21 @@ static int story_name_entry_input_pc(int up, int down, int left, int right, int 
     if (left) g_story_vkbd_col = (g_story_vkbd_col + n - 1) % n;
     if (right) g_story_vkbd_col = (g_story_vkbd_col + 1) % n;
     if (g_story_vkbd_col >= n) g_story_vkbd_col = n - 1;
-    if (a) {
-        char k = story_vkbd_rows[g_story_vkbd_row][g_story_vkbd_col];
-        if (k == '>') return 1;
-        if (k == '<') {
-            if (g_story_name_pos > 0) --g_story_name_pos;
-            g_story_name[g_story_name_pos] = story_name_chars[0];
-            g_story_name_typed = 1;
-        } else {
-            story_name_set_letter(k);
-        }
-    }
+    if (a) return story_name_press_vkbd_key();
+    /* START accepts from the grid too -- but Enter is bound to CONFIRM *and*
+       START on the keyboard, and there it has just pressed a key, so only a
+       START that arrived on its own is an accept. */
+    if (start) return 1;
     return 0;
 }
 
 static void draw_story_name_entry_pc(void)
 {
     const int scale = 3;
-    int name_w = STORY_NAME_LEN * 8 * scale;
+    const int cw = 8 * scale;               /* one glyph cell */
+    int name_w = STORY_NAME_LEN * cw;
     int caret_on = ((g_story_scene_anim_frame / 18) & 1) == 0;
+    const char *hint;
     int nx, ny = 96;
     int i;
 
@@ -17174,7 +17287,7 @@ static void draw_story_name_entry_pc(void)
     /* The bracket has to be open before anything is centred: ui_center_x reads
        the clip width the bracket widens. */
     ui_hud_begin();
-    nx = ui_center_x(name_w);
+    nx = name_center_x(name_w);
     draw_centered_text(52, "What is the name", IDX_WHITE, IDX_BLACK);
     draw_centered_text(68, "of your adventurer?", IDX_WHITE, IDX_BLACK);
 
@@ -17183,23 +17296,35 @@ static void draw_story_name_entry_pc(void)
        screen whose only other element is a crisp sentence should not answer it
        in pixel art. The cell advance is widened by hand to match the ink. */
     waifu_hw2d_text_scale(100 * scale);
-    for (i = 0; i < STORY_NAME_LEN; ++i) {
-        char ch[2];
-        int cx = nx + i * 8 * scale;
-        ch[0] = g_story_name[i];
-        ch[1] = '\0';
-        draw_text(cx + (8 * scale - 8) / 2, ny, ch, IDX_GOLD_HI, IDX_BLACK);
+    if (g_story_name_len == 0) {
+        /* Nothing typed: the default stands in the field, ghosted, so what
+           accepting an empty field gives you is on screen rather than in a
+           sentence somewhere. */
+        for (i = 0; i < STORY_NAME_LEN; ++i) {
+            char ch[2];
+            ch[0] = STORY_NAME_DEFAULT[i];
+            ch[1] = '\0';
+            draw_text(nx + i * cw + (cw - 8) / 2, ny, ch, IDX_DIM, IDX_BLACK);
+        }
+    } else {
+        for (i = 0; i < g_story_name_len; ++i) {
+            char ch[2];
+            ch[0] = g_story_name[i];
+            ch[1] = '\0';
+            draw_text(nx + i * cw + (cw - 8) / 2, ny, ch, IDX_GOLD_HI, IDX_BLACK);
+        }
     }
     waifu_hw2d_text_scale(100);
+
+    /* A hairline under every cell marks out how long the name may be; the
+       caret is a bar BETWEEN characters, at the insertion point, the way a
+       text box anywhere else draws it. */
     for (i = 0; i < STORY_NAME_LEN; ++i) {
-        int cx = nx + i * 8 * scale;
-        /* A hairline under every slot; the current one is solid, and its caret
-           blinks, so the field reads as a place to type. */
-        hline(cx + 3, cx + 8 * scale - 5, ny + 18,
-              i == g_story_name_pos ? IDX_GOLD_HI : IDX_DIM);
-        if (i == g_story_name_pos && caret_on)
-            rect_fill(cx + 3, ny + 20, 8 * scale - 7, 2, IDX_GOLD_HI);
+        int cx = nx + i * cw;
+        hline(cx + 3, cx + cw - 5, ny + 18, i < g_story_name_len ? IDX_GOLD_DARK : IDX_DIM);
     }
+    if (caret_on)
+        rect_fill(nx + g_story_name_pos * cw - 1, ny - 3, 2, cw - 1, IDX_GOLD_HI);
 
     if (g_story_vkbd) {
         int r, c;
@@ -17208,7 +17333,7 @@ static void draw_story_name_entry_pc(void)
             for (c = 0; c < n; ++c) {
                 int x, y, w, h, sel = (r == g_story_vkbd_row && c == g_story_vkbd_col);
                 char k = story_vkbd_rows[r][c];
-                const char *cap = (k == '<') ? "DEL" : (k == '>') ? "OK" : 0;
+                const char *cap = vkbd_key_caption(k);
                 char ch[2];
                 vkbd_key_rect(r, c, &x, &y, &w, &h);
                 rect_fill(x, y, w, h, sel ? IDX_GOLD_DARK : IDX_UI_DARK);
@@ -17223,11 +17348,17 @@ static void draw_story_name_entry_pc(void)
                 }
             }
         }
+        hint = prompt_text("A PICK  B ERASE  RUN ACCEPT",
+                           "%a PICK  %b ERASE  %s ACCEPT  %t HIDE KEYS");
+    } else if (g_story_name_len == 0) {
+        hint = prompt_text("PRESS RUN TO BEGIN",
+                           "TYPE A NAME  %a KEEPS " STORY_NAME_DEFAULT "  %t KEYS");
     } else {
-        const char *hint = prompt_text("PRESS RUN TO BEGIN", "%s TO BEGIN");
-        draw_text_small(ui_center_x((int)strlen(hint) * 7), WAIFU_UI_BOTTOM_Y(206),
-                        hint, IDX_DIM, IDX_BLACK);
+        hint = prompt_text("PRESS RUN TO BEGIN",
+                           "%a ACCEPT  BACKSPACE ERASE  %t KEYS");
     }
+    draw_text_small(name_center_x((int)strlen(hint) * 7), WAIFU_UI_BOTTOM_Y(206),
+                    hint, IDX_DIM, IDX_BLACK);
 
     if (!g_story_name_to_intro && g_i_frame >= 0 && g_i_frame < 24)
         apply_black_dither_fade(q8_ratio(g_i_frame, 24));
@@ -19767,9 +19898,38 @@ static void ptr_drive(int *press_up, int *press_down, int *press_left, int *pres
 
     case WAIFU_I_STORY_NAME:
 #if defined(WAIFU_PLATFORM_HW3D)
-        /* The PC screen is a typed field, not a row of glyph cells: there is
-           nothing here for the pointer to pick. */
+    {
+        /* The PC screen is a text box, so the pointer does what it does to a
+           text box: click in it to put the caret between two letters (past the
+           last one lands at the end), and click a key on the on-screen grid to
+           press it. */
+        const int cw = 8 * 3;
+        int nx = name_center_x(STORY_NAME_LEN * cw);
+        if (p.left_pressed && ptr_in(p.x, p.y, nx - 6, 88, STORY_NAME_LEN * cw + 12, 34)) {
+            int slot = (p.x - nx + cw / 2) / cw;
+            if (slot < 0) slot = 0;
+            if (slot > g_story_name_len) slot = g_story_name_len;
+            g_story_name_pos = slot;
+            g_story_vkbd = 0;
+        }
+        if (g_story_vkbd) {
+            int r, c;
+            for (r = 0; r < VKBD_ROWS; ++r) {
+                int n = vkbd_row_len(r);
+                for (c = 0; c < n; ++c) {
+                    int x, y, w, h;
+                    vkbd_key_rect(r, c, &x, &y, &w, &h);
+                    if (!ptr_in(p.x, p.y, x, y, w, h)) continue;
+                    /* Hovering moves the grid cursor, so the pad and the mouse
+                       never disagree about which key is live. */
+                    g_story_vkbd_row = r;
+                    g_story_vkbd_col = c;
+                    if (p.left_pressed) *press_a = 1;
+                }
+            }
+        }
         break;
+    }
 #endif
         /* Each glyph cell picks that slot; the wheel/keys still change letters,
            and confirming is the A the click raises once a slot is picked. */
@@ -20297,22 +20457,21 @@ void waifu_fm_step(const WaifuFmInput *input)
 #endif
 
     case WAIFU_I_STORY_NAME: {
+#if defined(WAIFU_PLATFORM_HW3D)
+        /* PC owns the whole decision, including which presses accept: Enter is
+           bound to CONFIRM *and* START, so a bare `press_start` here would let
+           one Enter both work an on-screen key and leave the screen. */
+        int name_done = story_name_entry_input_pc(press_up, press_down, press_left,
+                                                  press_right, press_a, press_b,
+                                                  press_start, press_tab);
+        g_story_name_to_intro = 0;
+        waifu_platform_text_input(1);
+        story_name_take_typing();
+#else
         int name_done = press_start;
         g_story_name_to_intro = 0;
         waifu_platform_text_input(1);
         story_name_take_typing();
-#if defined(WAIFU_PLATFORM_HW3D)
-        /* PC drives the field from the keyboard; the pad raises the on-screen
-           letter grid and works it, and OK there accepts the name. */
-        /* Enter is bound to CONFIRM *and* START on the keyboard.  While the
-           letter grid is up that made one Enter both press a key and accept
-           the name, so the screen skipped away mid-word; there, CONFIRM works
-           the grid only and OK ('>') is what accepts.  With the grid down
-           (the player is typing) Enter still accepts, as it should. */
-        if (press_a && g_story_vkbd) name_done = 0;
-        if (story_name_entry_input_pc(press_up, press_down, press_left, press_right, press_a))
-            name_done = 1;
-#else
         if (press_left) g_story_name_pos = (g_story_name_pos + STORY_NAME_LEN - 1) % STORY_NAME_LEN;
         if (press_right || press_a) g_story_name_pos = (g_story_name_pos + 1) % STORY_NAME_LEN;
         if (press_up || press_down) {
@@ -20327,6 +20486,9 @@ void waifu_fm_step(const WaifuFmInput *input)
            is entered, the only way out is the Sanctum QUIT option so a story
            session is never abandoned by an accidental Back press. */
         if (name_done) {
+            /* An empty (or fully erased) field is the player taking the
+               default the placeholder was showing them. */
+            story_name_commit();
             waifu_platform_text_input(0);
             g_story_name_to_intro = 1;
             g_i_state = WAIFU_I_STORY_NAME_TO_INTRO;
@@ -20912,8 +21074,8 @@ static void debug_prepare_story_save_fixture(void)
     generate_story_storage_pool();
     memset(g_story_name, 0, sizeof(g_story_name));
     /* Keep scripted/regression captures representative of the default heroine. */
-    strncpy(g_story_name, "SERENA", STORY_NAME_LEN);
-    g_story_name[STORY_NAME_LEN] = '\0';
+    strncpy(g_story_name, STORY_NAME_DEFAULT, STORY_NAME_LEN);
+    story_name_sanitize();
     g_story_duel_index = 3;
     g_story_progress = 3;
     g_story_map_cursor = 1;
@@ -20978,7 +21140,32 @@ static int debug_regression_story_save_roundtrip(void)
                 (int)g_i_state, g_story_save_status);
         return 1;
     }
-    printf("REGRESSION story_save_roundtrip OK hash=%08x duel=%d deck=%d storage=%d save_exists=%d\n",
+    /* A name SHORTER than the six slots has to survive the trip. The readers
+       used to force every byte to A-Z, so "BOB" came back as "BOBAAA"; now
+       they stop at the terminator, which is what makes the blank-by-default
+       field safe to ship. */
+    waifu_str_copy(g_story_name, (int)sizeof(g_story_name), "BOB");
+    story_name_sanitize();
+    if (!write_story_save()) {
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: short-name write failed\n");
+        return 1;
+    }
+    memset(g_story_name, 0, sizeof(g_story_name));
+    if (!read_story_save() || strcmp(g_story_name, "BOB") != 0 || g_story_name_len != 3) {
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: short name came back as '%s' (len=%d)\n",
+                g_story_name, g_story_name_len);
+        return 1;
+    }
+    /* And an empty name is never written out: accepting a blank field takes
+       the default, so a save can only ever hold a real one. */
+    g_story_name[0] = '\0';
+    story_name_sanitize();
+    if (strcmp(g_story_name, STORY_NAME_DEFAULT) != 0 || g_story_name_len != STORY_NAME_LEN) {
+        fprintf(stderr, "REGRESSION story_save_roundtrip FAIL: empty name did not default: '%s'\n",
+                g_story_name);
+        return 1;
+    }
+    printf("REGRESSION story_save_roundtrip OK hash=%08x duel=%d deck=%d storage=%d save_exists=%d short_name=BOB\n",
            (unsigned)after_hash, g_story_duel_index, g_story_deck_count, g_story_storage_count,
            story_save_exists());
     return 0;
@@ -21661,6 +21848,7 @@ static int debug_regression_trap_counter(void)
         return 1;
     }
     waifu_str_copy(g_story_name, (int)sizeof(g_story_name), "SERENA");
+    story_name_sanitize();
     generate_story_starter_deck();
     for (int i = 0; i < g_story_deck_count; ++i) {
         if (g_story_player_deck[i] == SUPPORT_TRAP_CARD_ID) ++starter_traps;
@@ -21686,6 +21874,7 @@ static int debug_regression_trap_counter(void)
             }
             name[STORY_NAME_LEN] = '\0';
             waifu_str_copy(g_story_name, (int)sizeof(g_story_name), name);
+            story_name_sanitize();
             generate_story_starter_deck();
             for (int i = 0; i < g_story_deck_count; ++i) {
                 if (g_story_player_deck[i] == SUPPORT_TRAP_CARD_ID) ++traps;
@@ -21706,6 +21895,7 @@ static int debug_regression_trap_counter(void)
         }
     }
     waifu_str_copy(g_story_name, (int)sizeof(g_story_name), "SERENA");
+    story_name_sanitize();
 
     /* --- Scenario 1: COM attacks a face-down player monster. The trap fires
        before the battle step: COM attacker is destroyed, the player's face-down

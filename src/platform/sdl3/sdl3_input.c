@@ -209,7 +209,21 @@ void waifu_input_handle_event(WaifuInput *in, const SDL_Event *ev)
         }
         break;
     case SDL_EVENT_KEY_DOWN:
-        if (g_text_active && ev->key.scancode == SDL_SCANCODE_BACKSPACE) text_push('\b');
+        /* The editing keys a text box needs. They are queued alongside the
+           typed characters (and repeat with the key, like the characters do)
+           rather than read off the action layer, so holding Backspace or
+           Delete clears the field at the OS's own repeat rate. Left/Right stay
+           on the action layer: the caret is only one of the two things they
+           drive on this screen. */
+        if (g_text_active) {
+            switch (ev->key.scancode) {
+            case SDL_SCANCODE_BACKSPACE: text_push('\b'); break;
+            case SDL_SCANCODE_DELETE:    text_push(0x7F); break;
+            case SDL_SCANCODE_HOME:      text_push(WAIFU_TEXT_HOME); break;
+            case SDL_SCANCODE_END:       text_push(WAIFU_TEXT_END); break;
+            default: break;
+            }
+        }
         if (in->capturing && !ev->key.repeat) {
             in->capturing = 0;
             in->captured = 1;
@@ -303,15 +317,21 @@ void waifu_input_update(WaifuInput *in)
             }
         }
         /* Both sticks steer the d-pad: menus and the board cursor feel the
-           same whichever stick the player reaches for. */
-        if (axis_dir(g, SDL_GAMEPAD_AXIS_LEFTY, 0, in->cfg->deadzone) ||
-            axis_dir(g, SDL_GAMEPAD_AXIS_RIGHTY, 0, in->cfg->deadzone)) in->held[WAIFU_ACT_UP] = 1;
-        if (axis_dir(g, SDL_GAMEPAD_AXIS_LEFTY, 1, in->cfg->deadzone) ||
-            axis_dir(g, SDL_GAMEPAD_AXIS_RIGHTY, 1, in->cfg->deadzone)) in->held[WAIFU_ACT_DOWN] = 1;
-        if (axis_dir(g, SDL_GAMEPAD_AXIS_LEFTX, 0, in->cfg->deadzone) ||
-            axis_dir(g, SDL_GAMEPAD_AXIS_RIGHTX, 0, in->cfg->deadzone)) in->held[WAIFU_ACT_LEFT] = 1;
-        if (axis_dir(g, SDL_GAMEPAD_AXIS_LEFTX, 1, in->cfg->deadzone) ||
-            axis_dir(g, SDL_GAMEPAD_AXIS_RIGHTX, 1, in->cfg->deadzone)) in->held[WAIFU_ACT_RIGHT] = 1;
+           same whichever stick the player reaches for. A stick counts as the
+           pad having been touched exactly like a button does -- the prompts
+           and the name screen's d-pad reading both key off that. */
+        {
+            int axes = 0;
+            if (axis_dir(g, SDL_GAMEPAD_AXIS_LEFTY, 0, in->cfg->deadzone) ||
+                axis_dir(g, SDL_GAMEPAD_AXIS_RIGHTY, 0, in->cfg->deadzone)) axes = in->held[WAIFU_ACT_UP] = 1;
+            if (axis_dir(g, SDL_GAMEPAD_AXIS_LEFTY, 1, in->cfg->deadzone) ||
+                axis_dir(g, SDL_GAMEPAD_AXIS_RIGHTY, 1, in->cfg->deadzone)) axes = in->held[WAIFU_ACT_DOWN] = 1;
+            if (axis_dir(g, SDL_GAMEPAD_AXIS_LEFTX, 0, in->cfg->deadzone) ||
+                axis_dir(g, SDL_GAMEPAD_AXIS_RIGHTX, 0, in->cfg->deadzone)) axes = in->held[WAIFU_ACT_LEFT] = 1;
+            if (axis_dir(g, SDL_GAMEPAD_AXIS_LEFTX, 1, in->cfg->deadzone) ||
+                axis_dir(g, SDL_GAMEPAD_AXIS_RIGHTX, 1, in->cfg->deadzone)) axes = in->held[WAIFU_ACT_RIGHT] = 1;
+            if (axes) g_prompt_pad_last = 1;
+        }
     }
 
     for (a = 0; a < WAIFU_ACT_COUNT; ++a) {
@@ -357,6 +377,11 @@ static const char *prompt_key_short(const char *name)
     for (i = 0; i < (int)(sizeof(k) / sizeof(k[0])); ++i)
         if (!SDL_strcmp(name, k[i].full)) return k[i].shortname;
     return name;
+}
+
+int waifu_platform_input_is_pad(void)
+{
+    return g_prompt_pad_last;
 }
 
 const char *waifu_platform_prompt_label(int action)

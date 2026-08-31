@@ -203,6 +203,12 @@ int waifu_platform_story_portrait(int portrait_id, int x, int y);
  * Everything below exists only on a build with a hardware 3D/2D frontend
  * (WAIFU_PLATFORM_HW3D). Console targets compile the inert static-inline stubs,
  * which fold away completely, so their behaviour stays byte-identical. */
+/* Editing keys a text field needs but ASCII has no printable code for. 0x7F
+ * (DEL) is the forward delete; these two sit in the C0 range, which the
+ * frontend never queues as text. */
+#define WAIFU_TEXT_HOME 0x11
+#define WAIFU_TEXT_END  0x12
+
 #if defined(WAIFU_PLATFORM_HW3D)
 
 /* Mouse pointer, reported in the game's widescreen HUD space: x runs
@@ -241,9 +247,16 @@ int waifu_platform_fire(int x, int y, int w, int h);
  * open; while it is on the frontend stops routing text-producing keys to the
  * action layer (so typing a name cannot also press buttons) and queues what was
  * typed. waifu_platform_text_poll() takes one edit off that queue: a character
- * code, '\b' for backspace, or 0 when there is nothing left. */
+ * code, one of the WAIFU_TEXT_* editing codes below, or 0 when there is
+ * nothing left. */
 void waifu_platform_text_input(int on);
 int waifu_platform_text_poll(void);
+
+/* 1 when the control the player touched most recently was a gamepad, 0 for a
+ * keyboard or mouse. A screen that has to serve both -- the name field, whose
+ * text box wants the arrow keys for its caret while a pad wants them for the
+ * on-screen letter grid -- asks this to decide which reading applies. */
+int waifu_platform_input_is_pad(void);
 
 /* On-screen prompts name a CONTROL, and on PC the player can rebind it (and may
  * be holding a pad rather than a keyboard), so the prompt has to ask what it is
@@ -304,6 +317,7 @@ static inline int waifu_platform_fire(int x, int y, int w, int h)
 { (void)x; (void)y; (void)w; (void)h; return 0; }
 static inline void waifu_platform_text_input(int on) { (void)on; }
 static inline int waifu_platform_text_poll(void) { return 0; }
+static inline int waifu_platform_input_is_pad(void) { return 0; }
 typedef enum WaifuPromptAction {
     WAIFU_PROMPT_CONFIRM = 0,
     WAIFU_PROMPT_CANCEL,
