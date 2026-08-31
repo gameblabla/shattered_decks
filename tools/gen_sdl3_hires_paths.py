@@ -25,6 +25,11 @@ PORTRAIT_DIR = ROOT / 'assets/source/story_portraits'
 PORTRAIT_BASES = ['serena', 'opponent_0', 'opponent_1', 'opponent_2',
                   'opponent_3', 'opponent_4']
 PORTRAIT_SUFFIXES = ['_hires', '_highres', '']
+# The 'pc_hires_' set is the PC-specific re-render of every portrait and wins
+# over any other variant.  Serena's file is spelt 'serana' there, so each base
+# carries the spellings its files actually use.
+PORTRAIT_PREFIXES = ['pc_hires_', '']
+PORTRAIT_ALIASES = {'serena': ['serena', 'serana']}
 # The PC card back: a single full-resolution texture that replaces the 38x54
 # 8bpp back everywhere it is drawn (board, hand, deck stacks).
 CARD_BACK_SRC = ROOT / 'assets/source/textures/card_texture.png'
@@ -84,13 +89,16 @@ def resolve_card_src(asset_id: str):
 
 
 def resolve_portrait_src(base: str):
-    """Highest-resolution source for one story portrait. '.png.png' is a real
-    filename in the tree, so every suffix is tried with both endings."""
-    for suffix in PORTRAIT_SUFFIXES:
-        for ext in ('.png', '.png.png', '.webp', '.jpg'):
-            p = PORTRAIT_DIR / (base + suffix + ext)
-            if p.exists():
-                return p.relative_to(ROOT).as_posix()
+    """Highest-resolution source for one story portrait. The PC re-renders
+    ('pc_hires_') come first; '.png.png' is a real filename in the tree, so
+    every combination is tried with both endings."""
+    for prefix in PORTRAIT_PREFIXES:
+        for name in PORTRAIT_ALIASES.get(base, [base]):
+            for suffix in PORTRAIT_SUFFIXES:
+                for ext in ('.png', '.png.png', '.webp', '.jpg'):
+                    p = PORTRAIT_DIR / (prefix + name + suffix + ext)
+                    if p.exists():
+                        return p.relative_to(ROOT).as_posix()
     return ''
 
 

@@ -13260,6 +13260,65 @@ static void draw_field_side_stacks(Camera cam)
     draw_card_stack(cam, -out_x, zone_cz(ENEMY_CARD_ROW + 1), com_grave,
                     g_i_com_grave_top, ENEMY_CARD_ROW);
 }
+
+/* ---- Equip -> monster link arcs (PC only) --------------------------------
+   An equip card sits in its own row, one zone behind (or ahead of) the
+   monster it powers, and with several of them on the mat nothing said which
+   card fed which monster.  On the hardware 3D layer we can afford to draw the
+   attachment: a chain of short world-space segments bowed up over the board,
+   with a bright pulse travelling equip -> monster so the direction reads too.
+   The console targets keep the plain board -- they have neither the per-frame
+   line budget nor the fill to spare. */
+#define EQUIP_LINK_SEGS 16
+
+static void draw_equip_link(Camera cam, int32_t x0, int32_t z0,
+                            int32_t x1, int32_t z1, int phase)
+{
+    WaifuHw3DCamera hc = hw3d_camera(cam);
+    /* Bow height follows the span, so a link reaching across the mat rises
+       clear of the cards between its ends instead of grazing them. */
+    int32_t dx = x1 - x0, dz = z1 - z0;
+    int32_t span = (dx < 0 ? -dx : dx) + (dz < 0 ? -dz : dz);
+    int32_t peak = Q8_FRAC(15,100) + span / 4;
+    WaifuHw3DVec3 prev;
+    int k;
+    for (k = 0; k <= EQUIP_LINK_SEGS; ++k) {
+        int32_t t = (int32_t)(((int32_t)k * Q8_ONE) / EQUIP_LINK_SEGS);
+        int32_t y = q8_mul(peak, q8_sin_rad(q8_mul(t, CFX_PI_Q8)));
+        WaifuHw3DVec3 p = hw3d_v(v3(x0 + q8_mul(dx, t), y, z0 + q8_mul(dz, t)));
+        if (k > 0) {
+            /* A solid gold tether, doubled a pixel down so it reads over the
+               mat, with a two-segment white head that `phase` walks from the
+               equip card toward the monster -- the direction of the bond. */
+            int cell = ((k - 1) - phase) % EQUIP_LINK_SEGS;
+            if (cell < 0) cell += EQUIP_LINK_SEGS;
+            waifu_hw3d_line(&hc, &prev, &p, IDX_GOLD_HI, 1);
+            if (cell < 2) waifu_hw3d_line(&hc, &prev, &p, IDX_BLUE_WHITE, 1);
+        }
+        prev = p;
+    }
+}
+
+static void draw_equip_links(Camera cam)
+{
+    /* One shared phase, so every link on the board pulses in step. */
+    int phase = g_story_scene_anim_frame / 4;
+    int i;
+    for (i = 0; i < I_FIELD; ++i) {
+        int t = g_i_player_equip_target[i];
+        if (g_i_player_equip_field[i] < 0 || t < 0 || t >= I_FIELD) continue;
+        if (g_i_player_field[t] < 0) continue;
+        draw_equip_link(cam, zone_cx(i), zone_cz(PLAYER_CARD_ROW + 1),
+                        zone_cx(t), zone_cz(PLAYER_CARD_ROW), phase);
+    }
+    for (i = 0; i < I_FIELD; ++i) {
+        int t = g_i_com_equip_target[i];
+        if (g_i_com_equip_field[i] < 0 || t < 0 || t >= I_FIELD) continue;
+        if (g_i_com_field[t] < 0) continue;
+        draw_equip_link(cam, zone_cx(i), zone_cz(ENEMY_CARD_ROW - 1),
+                        zone_cx(t), zone_cz(ENEMY_CARD_ROW), phase);
+    }
+}
 #endif /* WAIFU_PLATFORM_HW3D */
 
 static void draw_interactive_field_cards(Camera cam)
@@ -13300,6 +13359,9 @@ static void draw_interactive_field_cards(Camera cam)
             draw_board_card_ex_basis(cam, &basis, i, PLAYER_CARD_ROW + 1, g_i_player_equip_field[i],
                                      is_trap_support_card(g_i_player_equip_field[i]) ? 1 : 0, 0);
     }
+#if defined(WAIFU_PLATFORM_HW3D)
+    draw_equip_links(cam);
+#endif
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
     g_fmtowns_turn_card_slot = -1;
 #endif
@@ -20242,6 +20304,12 @@ void waifu_fm_step(const WaifuFmInput *input)
 #if defined(WAIFU_PLATFORM_HW3D)
         /* PC drives the field from the keyboard; the pad raises the on-screen
            letter grid and works it, and OK there accepts the name. */
+        /* Enter is bound to CONFIRM *and* START on the keyboard.  While the
+           letter grid is up that made one Enter both press a key and accept
+           the name, so the screen skipped away mid-word; there, CONFIRM works
+           the grid only and OK ('>') is what accepts.  With the grid down
+           (the player is typing) Enter still accepts, as it should. */
+        if (press_a && g_story_vkbd) name_done = 0;
         if (story_name_entry_input_pc(press_up, press_down, press_left, press_right, press_a))
             name_done = 1;
 #else
