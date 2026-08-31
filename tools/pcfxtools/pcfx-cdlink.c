@@ -5,6 +5,7 @@
 Copyright (C) 2011        Alex Marshall "trap15" <trap15@raidenii.net>
 Copyright (C) 2007        Ryphecha / Mednafen
 Additional append/lbaheader support for non-RAM CD assets, 2026.
+Additional cddaheader/cddadir support for Red Book audio tracks, 2026.
 
 # This code is licensed to you under the terms of the MIT license;
 # see file LICENSE or http://www.opensource.org/licenses/mit-license.php
@@ -33,6 +34,11 @@ Additional append/lbaheader support for non-RAM CD assets, 2026.
 #define BOOT_SECTORS 2u
 #define MIN_DISC_SECTORS (75u * 4u)
 #define MAX_APPEND_FILES 256
+/* Real (embedded-bytes) pregap at the audio-track1 -> data-track2 boundary,
+   and again at the data-track2 -> first-CDDA-track3 boundary, matching every
+   retail/PC-FXGA disc surveyed (Team Innocent, N-nyuu, Same Game FX): 2
+   seconds, INDEX 00/01 within the SAME file, not a synthesized PREGAP line. */
+#define DATA_PREGAP_SECTORS 150u
 
 uint32_t le32(uint32_t i)
 {
@@ -442,13 +448,20 @@ static int resample_to_cd_s16(const float *in, size_t in_frames, uint32_t in_rat
     return 0;
 }
 
-/* Write raw CD audio sectors (LE s16 stereo), zero-padded to a 2352-byte sector. */
-static int write_audio_bin(const char *path, const int16_t *pcm, size_t frames)
+/* Write raw CD audio sectors (LE s16 stereo), zero-padded to a 2352-byte
+   sector. If pregap_sectors is nonzero, that many silent 2352-byte sectors
+   are physically written FIRST (real embedded-bytes pregap, addressed via
+   the cue's INDEX 00/01 pair within this same file). */
+static int write_audio_bin(const char *path, const int16_t *pcm, size_t frames, uint32_t pregap_sectors)
 {
     FILE *f = fopen(path, "wb");
     uint64_t bytes = (uint64_t)frames * 4u;
     uint64_t padded = ((bytes + CD_AUDIO_SECTOR - 1u) / CD_AUDIO_SECTOR) * CD_AUDIO_SECTOR;
     if(!f) { perror(path); return -1; }
+    if(pregap_sectors && write_zeroes(f, (uint64_t)pregap_sectors * CD_AUDIO_SECTOR) != 0) {
+        fclose(f);
+        return -1;
+    }
     if(bytes && fwrite(pcm, 1, (size_t)bytes, f) != (size_t)bytes) {
         perror(path);
         fclose(f);
@@ -468,10 +481,12 @@ static int bin_is_fresh(const char *wavpath, const char *binpath)
     return sb.st_mtime > sw.st_mtime;
 }
 
-/* Decode wavpath, resample to CD audio, and write binpath.
+/* Decode wavpath, resample to CD audio, and write binpath, optionally with
+   pregap_sectors of silence physically embedded ahead of the real audio.
    If the bin already exists and is newer than the wav, skip conversion and
    just measure the existing bin.  Returns 0 on success. */
-static int convert_wav_to_cd_bin(const char *wavpath, const char *binpath, uint32_t *out_sectors)
+static int convert_wav_to_cd_bin_pregap(const char *wavpath, const char *binpath,
+                                        uint32_t pregap_sectors, uint32_t *out_sectors)
 {
     if(bin_is_fresh(wavpath, binpath)) {
         /* Reuse existing bin — just measure its size for the sector count. */
@@ -496,12 +511,18 @@ static int convert_wav_to_cd_bin(const char *wavpath, const char *binpath, uint3
             return -1;
         }
         free(fbuf);
-        if(write_audio_bin(binpath, pcm, out_frames) != 0) { free(pcm); return -1; }
+        if(write_audio_bin(binpath, pcm, out_frames, pregap_sectors) != 0) { free(pcm); return -1; }
         free(pcm);
         if(out_sectors)
-            *out_sectors = (uint32_t)(((uint64_t)out_frames * 4u + CD_AUDIO_SECTOR - 1u) / CD_AUDIO_SECTOR);
+            *out_sectors = pregap_sectors +
+                (uint32_t)(((uint64_t)out_frames * 4u + CD_AUDIO_SECTOR - 1u) / CD_AUDIO_SECTOR);
         return 0;
     }
+}
+
+static int convert_wav_to_cd_bin(const char *wavpath, const char *binpath, uint32_t *out_sectors)
+{
+    return convert_wav_to_cd_bin_pregap(wavpath, binpath, 0, out_sectors);
 }
 
 static int write_lba_header(const char *path, CdFile *files, int file_count)
@@ -546,6 +567,8 @@ int main(int argc, char *argv[])
     char binname[512] = "\0";
     char lbaheader[512] = "\0";
     char cddaheader[512] = "\0";
+    char cddadir[512] = "\0";
+    char track1audio[512] = "\0";
     int binblocks = 0;
     CdFile files[MAX_APPEND_FILES + 1];
     int file_count = 0;
@@ -571,6 +594,10 @@ int main(int argc, char *argv[])
             copy_field(lbaheader, sizeof(lbaheader), tmpbuf + 10);
         } else if(memcmp(tmpbuf, "cddaheader ", 11) == 0) {
             copy_field(cddaheader, sizeof(cddaheader), tmpbuf + 11);
+        } else if(memcmp(tmpbuf, "cddadir ", 8) == 0) {
+            copy_field(cddadir, sizeof(cddadir), tmpbuf + 8);
+        } else if(memcmp(tmpbuf, "track1audio ", 12) == 0) {
+            copy_field(track1audio, sizeof(track1audio), tmpbuf + 12);
         } else if(memcmp(tmpbuf, "name ", 5) == 0) {
             copy_field(BootHeader.title, 0x20, tmpbuf + 5);
             BootHeader.title[0x1F] = 0;
@@ -614,7 +641,28 @@ int main(int argc, char *argv[])
     }
     files[0].sectors = (uint32_t)binblocks;
 
-    uint32_t cur_lba = BOOT_SECTORS;
+    /* If a track1audio warning/lead track is configured, it (and the real
+       2-second pregap embedded ahead of the data track) physically precedes
+       the data track on the disc, so every disc-absolute LBA we bake for our
+       own runtime (lbaheader -> eris_cd_read) needs that length added as a
+       base offset. BootHeader.sect_off/prog_off stay track-relative (the
+       BIOS resolves the data track's own start via the TOC), so they are
+       untouched below. */
+    char track1_binpath[600] = "";
+    uint32_t track1_sectors = 0;
+    if(track1audio[0]) {
+        snprintf(track1_binpath, sizeof(track1_binpath), "%s_t01.bin", argv[2]);
+        if(convert_wav_to_cd_bin(track1audio, track1_binpath, &track1_sectors) != 0) {
+            fprintf(stderr, "Failed to convert track1audio: %s\n", track1audio);
+            return EXIT_FAILURE;
+        }
+        printf("CDDA Track 01 (lead/warning track): %s -> %s (%u sectors, 44100Hz/16-bit/stereo)\n",
+               track1audio, track1_binpath, track1_sectors);
+    }
+    uint32_t lba_base = BOOT_SECTORS;
+    if(track1audio[0]) lba_base += track1_sectors + DATA_PREGAP_SECTORS;
+
+    uint32_t cur_lba = lba_base;
     for(i = 0; i < file_count; i++) {
         files[i].lba = cur_lba;
         cur_lba += files[i].sectors;
@@ -629,7 +677,7 @@ int main(int argc, char *argv[])
            (unsigned long long)files[0].size, sector_count);
     if(file_count > 1) {
         printf("External CD assets: %d files, %u sectors not loaded by boot header\n",
-               file_count - 1, cur_lba - BOOT_SECTORS - sector_count);
+               file_count - 1, cur_lba - lba_base - sector_count);
     }
     int32_t sh_size = (1024 * 2048) - ((int32_t)sector_count * 2048) - 0x8000 - 2048;
     if(sh_size < 0) {
@@ -653,6 +701,19 @@ int main(int argc, char *argv[])
         perror("Error opening output file");
         free(obinname);
         return EXIT_FAILURE;
+    }
+
+    if(track1audio[0]) {
+        /* Real (non-synthesized) 2-second pregap physically embedded ahead
+           of the data track's own content, addressed via the cue's own
+           INDEX 00/01 pair within this same file -- BIOS/BootHeader-relative
+           offsets (sect_off etc.) are unaffected since they count from
+           INDEX 01, not from byte 0 of the file. */
+        if(write_zeroes(out_fp, (uint64_t)DATA_PREGAP_SECTORS * SECTOR_SIZE) != 0) {
+            fclose(out_fp);
+            free(obinname);
+            return EXIT_FAILURE;
+        }
     }
 
     if(fwrite(&BootHeader, 1, sizeof(BootHeader), out_fp) != sizeof(BootHeader)) {
@@ -693,16 +754,26 @@ int main(int argc, char *argv[])
         printf("Wrote LBA header: %s\n", lbaheader);
     }
 
-    /* Scan for WAV audio tracks in standard directories relative to CWD. */
+    /* Scan for WAV audio tracks. An explicit `cddadir` wins; otherwise fall
+       back to the conventional directory names, relative to CWD. */
     static const char *wav_scan_dirs[] = {
         "Music", "music", "MUSIC", "cdda", "CDDA", NULL
     };
     WavEntry wav_entries[MAX_WAV_FILES];
     int wav_count = 0;
     int di;
-    for(di = 0; wav_scan_dirs[di] != NULL; di++) {
-        if(scan_wav_dir(wav_scan_dirs[di], wav_entries + wav_count, &wav_count))
-            break; /* use first directory that exists and has WAVs */
+    if(cddadir[0]) {
+        if(!scan_wav_dir(cddadir, wav_entries, &wav_count)) {
+            fprintf(stderr, "cddadir: cannot open directory: %s\n", cddadir);
+            return EXIT_FAILURE;
+        }
+        if(wav_count == 0)
+            fprintf(stderr, "Warning: cddadir has no .wav files: %s\n", cddadir);
+    } else {
+        for(di = 0; wav_scan_dirs[di] != NULL; di++) {
+            if(scan_wav_dir(wav_scan_dirs[di], wav_entries + wav_count, &wav_count))
+                break; /* use first directory that exists and has WAVs */
+        }
     }
     if(wav_count > 1)
         qsort(wav_entries, (size_t)wav_count, sizeof(WavEntry), wav_cmp);
@@ -716,16 +787,53 @@ int main(int argc, char *argv[])
         free(obinname);
         return EXIT_FAILURE;
     }
-    fprintf(fp, "FILE \"%s\" BINARY\n", obinname);
-    fprintf(fp, "  TRACK 01 MODE1/2048\n");
-    fprintf(fp, "    INDEX 01 00:00:00\n");
+    /* Track layout matches every retail/PC-FXGA disc surveyed (Team
+       Innocent, N-nyuu, Same Game FX): audio track 01 first (a short
+       lead/warning track, same convention as "do not play this track on a
+       CD player"), then the MODE1 data track. A real (embedded-bytes)
+       2-second pregap sits at the audio1->data2 boundary and again at the
+       data2->first-CDDA-track boundary, expressed as INDEX 00/01 within the
+       track's own file - never a synthesized PREGAP line, and never on
+       audio-to-audio splices. If no track1audio is configured, fall back to
+       the old data-track-first layout with no pregaps at all. */
+    int first_cdda_track;
+    if(track1audio[0]) {
+        fprintf(fp, "FILE \"%s\" BINARY\n", track1_binpath);
+        fprintf(fp, "  TRACK 01 AUDIO\n");
+        fprintf(fp, "    INDEX 01 00:00:00\n");
+        fprintf(fp, "FILE \"%s\" BINARY\n", obinname);
+        fprintf(fp, "  TRACK 02 MODE1/2048\n");
+        fprintf(fp, "    INDEX 00 00:00:00\n");
+        fprintf(fp, "    INDEX 01 00:02:00\n");
+        first_cdda_track = 3;
+    } else {
+        fprintf(fp, "FILE \"%s\" BINARY\n", obinname);
+        fprintf(fp, "  TRACK 01 MODE1/2048\n");
+        fprintf(fp, "    INDEX 01 00:00:00\n");
+        first_cdda_track = 2;
+    }
     for(i = 0; i < wav_count; i++) {
         char wavpath[600];
         char binpath[600];
+        char stem[512];
         uint32_t sectors = 0;
+        int track_num = first_cdda_track + i;
+        /* Only the CD-DA track immediately following the data track carries
+           the embedded pregap - every later audio-to-audio splice gets none. */
+        int needs_pregap = track1audio[0] && (i == 0);
         snprintf(wavpath, sizeof(wavpath), "%s/%s", wav_entries[i].dir, wav_entries[i].name);
-        snprintf(binpath, sizeof(binpath), "%s_t%02d.bin", argv[2], 2 + i);
-        if(convert_wav_to_cd_bin(wavpath, binpath, &sectors) != 0) {
+        /* Keyed by the wav's own stem, NOT track_num: track_num is positional
+           and shifts whenever the track layout changes (e.g. adding/removing
+           track1audio moves every CD-DA track up or down by one). Naming the
+           cache file after the track number let a stale bin from a previous
+           layout - still newer than its wav per mtime - get silently reused
+           under a NEW track number, splicing a different song's audio onto
+           that track. Naming it after the source file's identity instead
+           means bin_is_fresh() below can only ever compare a wav against the
+           bin that was actually converted from it. */
+        cleanup_wav_stem(wav_entries[i].name, stem, sizeof(stem));
+        snprintf(binpath, sizeof(binpath), "%s_%s.bin", argv[2], stem);
+        if(convert_wav_to_cd_bin_pregap(wavpath, binpath, needs_pregap ? DATA_PREGAP_SECTORS : 0, &sectors) != 0) {
             fprintf(stderr, "Failed to convert audio track: %s\n", wavpath);
             fclose(fp);
             free(cuename);
@@ -735,17 +843,22 @@ int main(int argc, char *argv[])
         /* ImgBurn-style layout: each CD-DA track is its own raw 2352-byte
            BINARY file, signed-16 LE stereo at 44100 Hz. */
         fprintf(fp, "FILE \"%s\" BINARY\n", binpath);
-        fprintf(fp, "  TRACK %02d AUDIO\n", 2 + i);
-        fprintf(fp, "    INDEX 01 00:00:00\n");
+        fprintf(fp, "  TRACK %02d AUDIO\n", track_num);
+        if(needs_pregap) {
+            fprintf(fp, "    INDEX 00 00:00:00\n");
+            fprintf(fp, "    INDEX 01 00:02:00\n");
+        } else {
+            fprintf(fp, "    INDEX 01 00:00:00\n");
+        }
         printf("CDDA Track %02d: %s -> %s (%u sectors, 44100Hz/16-bit/stereo)\n",
-               2 + i, wavpath, binpath, sectors);
+               track_num, wavpath, binpath, sectors);
     }
     fclose(fp);
     free(cuename);
     free(obinname);
 
     if(cddaheader[0] && wav_count > 0) {
-        if(write_cdda_header(cddaheader, wav_entries, wav_count, 2) != 0)
+        if(write_cdda_header(cddaheader, wav_entries, wav_count, first_cdda_track) != 0)
             return EXIT_FAILURE;
         printf("Wrote CDDA track header: %s\n", cddaheader);
     }

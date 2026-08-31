@@ -1,0 +1,1319 @@
+╭─── Claude Code v2.1.217 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                Welcome back Albert!                │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Added emoji shortcode … │
+│    Opus 4.8 · Claude Pro ·                         │ Added warnings when tr… │
+│    mysticalrainbow@protonmail.com's Organization   │ Fixed a memory leak wh… │
+│     ~/Documents/DEV/Anime_card/waifu_card_game     │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+❯ /clear                                                                        
+
+❯ Resume from   >                                                               
+  2026-07-22-113524-local-command-caveatcaveat-the-messages-below.txt.          
+
+● I see a resume pointer but no specific task yet. Let me check that resume file
+  to understand where we left off.
+
+  Read 1 file (ctrl+o to expand)
+
+● Let me re-orient by reading the relevant memory and the current state of the
+  migration investigation.
+
+  Recalled 1 memory (ctrl+o to expand)
+
+● Bash(git log --oneline -1 9b87456 2>/dev/null && echo "--- files touched by
+      migration ---" && git show --stat 9b87456 2>/dev/null | head -40)
+  ⎿  9b87456 PC-FX: migrate liberis -> libpcfx and fix fresh-boot hangs
+     --- files touched by migration ---
+     commit 9b87456f317dee706ad8135df7be2574f04d2f1a
+     … +38 lines (ctrl+o to expand)
+
+● The memory's "RESOLVED" note was about the CD-asset read hang — but per the
+  last transcript the user clarified the black screen happens before LOADING and
+  regressed much earlier, at the liberis→libpcfx migration (9b87456, Jul 18).
+  That's a video-init regression, not CD. Let me look at exactly what that
+  migration changed in the video init/display-enable path.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      git show 9b87456 -- src/platform/pcfx/waifu_pcfx_video.c 2>/dev/null |
+      grep -nE '^[+-].*(king_init|t…)
+  ⎿  54:+   libpcfx's VDC layer (vdc_setreg + friends) is register-oriented
+      and, unlike
+     55:+   the old liberis eris_low_sup_* API, has no set_control / set_vi
+     … +88 lines (ctrl+o to expand)
+
+● Here's the accurate state of play, corrected from the last transcript:
+
+  Where things actually stand
+
+  - The CD-asset read hang in libpcfx/src/cd.c is genuinely fixed and
+  HW-confirmed ([LIB] read_kram WORKS). That's real, keep it.
+  - But that was never this bug. The black screen happens before "LOADING…" ever
+  draws — i.e. before any asset read — so the cd.c fix could not have addressed
+  it. The memory's "RESOLVED" note conflated the two.
+  - The real regression boundary is the liberis→libpcfx migration 9b87456 
+  (Jul 18) — the known-good hardware zip predates it. Everything after
+  black-screens on real HW after the BIOS logo. It was only ever verified on
+  pcfx-headless (emulator), never hardware — the classic "boots on emulator,
+  black on hardware" signature.
+  - That migration rewrote 377 lines of waifu_pcfx_video.c (the whole
+  KING/VDC/VCE/TETSU register layer) plus the waifu_vdc_* shims. This is a 
+  video-init regression.
+
+  The one hard constraint
+
+  The checkpoint diagnostics (both builds) already told us: even a
+  video-independent busy-wait hold showed no color at all on HW — yet the cdtest
+  harness proved the 4bpp VDC romfont displays fine on the same HW. So the
+  suspect narrows to: the KING 8bpp display path itself produces no output on 
+  real hardware (VCE/KING background-plane setup), while VDC overlay output
+  works. The emulator is lenient about whatever KING/VCE register the migration
+  got wrong.
+
+  What I can do without hardware
+
+  Diff the migration's KING 8bpp bring-up (king_init defaults, the VCE/tetsu
+  video-mode + display-enable, king_set_bg_prio/scan-mode, and
+  set_king_8bpp_video/begin_8bpp) against the liberis version
+  register-for-register, and find where a bit that the real KING requires got
+  dropped or reordered.
+
+  How would you like to proceed?
+
+● User answered Claude's questions:
+  ⎿  · How do you want to attack the KING 8bpp black-screen regression next? → 
+     Diff KING/VCE init register-for-register
+
+● Let me find the KING 8bpp bring-up functions in both versions.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "===== CURRENT (libpcfx) function list in video.c ====="…)
+  ⎿  ===== CURRENT (libpcfx) function list in video.c =====
+     40:static void waifu_vdc_set_control(int chip, int increment, int bg_s
+     how, int spr_show)
+     … +46 lines (ctrl+o to expand)
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      grep -nE 'king_init|tetsu_init|king_video|set_king_8bpp|begin_8bpp|king_se
+      t_bg|king_set_scroll|king_…)
+  ⎿  21:   the old liberis eris_low_sup_* API, has no set_control / set_vid
+     eo_mode /
+     22:   set_access_width helpers and cannot read registers back.  These
+     … +71 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+● Now the pre-migration (liberis) equivalents:
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "===== liberis: set_king_8bpp_video + video_create + tetsu/king init
+      ====="…)
+  ⎿  ===== liberis: set_king_8bpp_video + video_create + tetsu/king init ==
+     ===
+     1603:    eris_king_set_bg_prio(KING_BGPRIO_HIDE, KING_BGPRIO_HIDE, KIN
+     … +34 lines (ctrl+o to expand)
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      git show 9b87456^:src/platform/pcfx/waifu_pcfx_video.c 2>/dev/null | sed
+      -n '2256,2300p')
+  ⎿  static void set_king_8bpp_video(int display_page)
+     {
+         /* Keep the front VDC overlay intact until the new 8bpp KING page
+     … +42 lines (ctrl+o to expand)
+
+● Now let me isolate the migration commit's own before/after for the boot video
+  path (since that's the confirmed regression boundary — the affine microprogram
+  change came later):
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "======== MIGRATION set_king_8bpp_video before->after ========"…)
+  ⎿  ======== MIGRATION set_king_8bpp_video before->after ========
+     6c6
+     <     eris_tetsu_set_priorities(1, 0, 7, 0, 0, 0, 0);
+     … +54 lines (ctrl+o to expand)
+● The migration's game-side set_king_8bpp_video is a clean 1:1 API rename — same
+  registers, same order. So the regression must live in the libpcfx library 
+  implementations of king_init/tetsu_init/tetsu_set_video_mode/king_set_bg_mode
+  diverging from liberis's eris_* equivalents. Let me locate both libraries and
+  compare the KING/VCE bring-up.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== libpcfx location ==="; ls -d libpcfx/src 2>/dev/null && ls
+      libpcfx/src/*.S libpcfx/src/*.c…)
+  ⎿  === libpcfx location ===
+     libpcfx/src
+     libpcfx/src/bkupmem.S
+     … +34 lines (ctrl+o to expand)
+
+● Both libraries are in the tree. Let me compare the VCE (tetsu) init and
+  video-mode programming — that's what actually drives display output.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "############## libpcfx tetsu.S : tetsu_init ##############"…)
+  ⎿  ############## libpcfx tetsu.S : tetsu_init ##############
+     _tetsu_init:
+        set_reg 0, r10
+     … +58 lines (ctrl+o to expand)
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "############## liberis src/tetsu.S : eris_tetsu_init
+      ##############"…)
+  ⎿  ############## liberis src/tetsu.S : eris_tetsu_init ##############
+     _eris_tetsu_init:
+        set_reg 0, r10
+     … +28 lines (ctrl+o to expand)
+
+● tetsu_init is byte-identical. Let me diff the KING bring-up and the rest of
+  tetsu between the two libraries directly.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "############## king_init: libpcfx vs liberis ##############"…)
+  ⎿  ############## king_init: libpcfx vs liberis ##############
+     1c1
+     < _king_init:
+     … +3 lines (ctrl+o to expand)
+
+● king_init also identical. Let me normalize the eris_ prefix and diff the whole
+  KING and tetsu files structurally to catch any real divergence.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      norm(){ sed -E 's/\beris_//g; s/[ \t]+/ /g; s/^ //; s/ $//; /^$/d; /^;/d;
+      /^#/d' "$1"; }…)
+  ⎿  ===== king.S structural diff (eris_ normalized) =====
+     2,3c2
+     < libpcfx -- A set of libraries for controlling the NEC PC-FX
+     … +162 lines (ctrl+o to expand)
+
+● The KING and VCE (tetsu) library code is functionally identical — only
+  label/copyright differences. So KING/VCE register programming is not the
+  regression. That shifts the suspect to what else the migration swapped that
+  runs before the first frame: the crt0 / BIOS handoff. The pre-migration build
+  linked liberis's crt0; the post-migration build links libpcfx's. Let me diff
+  them.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      norm(){ sed -E 's/\beris_//g; s/[ \t]+/ /g; s/^ //; s/ $//; /^$/d; /^;/d'
+      "$1"; }…)
+  ⎿  liberis/src/crt0.S
+     --- crt0 diff (normalized) ---
+     ==========================================
+     diff line count: 0
+
+● Important negative result: KING, VCE (tetsu), and crt0 library code are 
+  byte-identical (modulo the eris_ label rename) between libpcfx and the 
+  known-good liberis. So "the migration changed KING/VCE video registers" is
+  false — that path is unchanged. The one video subsystem the migration
+  genuinely rewrote is the VDC layer (eris_low_sup_* → libpcfx vdc_* + the
+  waifu_vdc_* shims). Let me examine that divergence — specifically the
+  CR-shadow assumption the migration introduced.
+
+  Read 1 file (ctrl+o to expand)
+
+● The VDC shim only affects the overlay layer (which cdtest already proved works
+  on HW), not the KING background. Let me close the loop on the one
+  register-level difference that does separate the current build from the
+  known-good one — the affine BG0 rework (post-migration 21fef51), which
+  replaced the linear CG microprogram with KING_CODE_ROTATE and added affine
+  coefficients. Let me verify how those affine coefficient functions are
+  implemented in each library.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== does libpcfx king.S implement the affine coefficient / rotate
+      symbols the game calls? ==="…)
+  ⎿  === does libpcfx king.S implement the affine coefficient / rotate symb
+     ols the game calls? ===
+     libpcfx/include/pcfx/king.h:132:   KING_CODE_ROTATE      = KING_CODE(0, 0
+     … +7 lines (ctrl+o to expand)
+
+
+● Neither library implements the affine coefficient functions the game calls.
+  Let me find where eris_king_set_bg0_affine_coefficient_a is actually defined
+  and how it's linked.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      grep -rln 'set_bg0_affine_coefficient_a\|affine_coefficient_a' .
+      --include=*.c --include=*.h --inclu…)
+  ⎿  src/platform/pcfx/fastking.h
+     src/platform/pcfx/waifu_pcfx_video.c
+     --- Makefile.pcfx: what libs/objs are linked ---
+     … +16 lines (ctrl+o to expand)
+
+● The game uses its own KING driver — fastking.s/fastking.h — for the hot path,
+  not the library's king.S. The affine functions live there. Let me check
+  whether fastking and its affine path existed in the known-good pre-migration
+  build.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== history of fastking + affine in set_king_8bpp_video ==="…)
+  ⎿  === history of fastking + affine in set_king_8bpp_video ===
+     6c11e3e Newer changes, some regressions..
+     --- when did KING_CODE_ROTATE / affine_coefficient enter waifu_pcfx_vi
+     … +9 lines (ctrl+o to expand)
+
+● This is decisive. Here's the register-for-register verdict:
+
+  Findings — the migration is cleared
+
+  ┌────────────────────────────┬──────────────────────────────┬─────────────┐
+  │         Component          │    libpcfx vs known-good     │   Verdict   │
+  │                            │           liberis            │             │
+  ├────────────────────────────┼──────────────────────────────┼─────────────┤
+  │ king.S (KING regs)         │ byte-identical (label rename │ unchanged   │
+  │                            │  only)                       │             │
+  ├────────────────────────────┼──────────────────────────────┼─────────────┤
+  │ tetsu.S (VCE/display)      │ byte-identical               │ unchanged   │
+  ├────────────────────────────┼──────────────────────────────┼─────────────┤
+  │ crt0.S (BIOS handoff)      │ byte-identical               │ unchanged   │
+  ├────────────────────────────┼──────────────────────────────┼─────────────┤
+  │ fastking.s (game's real    │ present in both pre- and     │ unchanged   │
+  │ KING driver)               │ post-migration               │             │
+  ├────────────────────────────┼──────────────────────────────┼─────────────┤
+  │ game set_king_8bpp_video   │ 1:1 API rename, same         │ unchanged   │
+  │                            │ regs/order                   │             │
+  ├────────────────────────────┼──────────────────────────────┼─────────────┤
+  │ VDC layer                  │ rewritten, but overlay-only  │ not the     │
+  │ (eris_low_sup_*→vdc_*)     │ — cdtest proved VDC works on │ black-out   │
+  │                            │  HW                          │             │
+  └────────────────────────────┴──────────────────────────────┴─────────────┘
+
+  The migration did not change one KING/VCE display register. So "it regressed
+  at the migration" is not supported by the code — that path is
+  register-identical to the build that works on hardware.
+
+  The one register-level change that does separate current from known-good
+
+  21fef51 "Use affine 512px BG0 on PC-FX" — committed after the migration — is
+  the only thing that rewrote the KING BG0 fetch:
+  - microprogram KING_CODE_BG0_CG_0..3 (linear char-gen) → 16× KING_CODE_ROTATE
+  (affine)
+  - BG0 size 256×256 → 512-wide affine source + affine coefficients (A=0x200,
+  D=0x100)
+
+  At the migration commit the microprogram was still linear CG (verified: 0
+  occurrences of KING_CODE_ROTATE/affine_coefficient in 9b87456). And every 
+  hardware-black test recorded in memory was run on a post-affine build — there
+  is no clean test of a pre-affine build showing black on HW.
+
+  Reconciliation
+
+  Affine KING BG0 rotation is exactly the kind of thing an emulator renders
+  happily but a real KING won't if the coefficients/microprogram aren't exactly
+  right → black background, VDC overlay still fine, which matches every hardware
+  symptom. The recollection that "it broke at the migration" is most likely a
+  misattributed boundary, since a pre-affine migration build was never isolated
+  on hardware.
+
+  Recommended decisive test
+
+  Revert only the KING BG0 display path to the known-good linear-CG / 256×256
+  configuration (keep the migration and the cd.c fix), rebuild, and test on
+  hardware. If the background appears, affine-on-hardware is confirmed and we
+  make it permanent or fix the affine setup properly.
+
+  Let me record this correction to memory, then I can prepare that revert if you
+  want it.
+
+  Wrote 1 memory (ctrl+o to expand)
+
+● Memory updated with the correction.
+
+  Summary
+
+  The register-for-register diff you asked for gives a clean, actionable result:
+
+  - The migration is cleared. king.S, tetsu.S, crt0.S are byte-identical to the
+  known-good liberis; fastking.s (the game's actual KING driver) exists
+  unchanged in both trees; and the migration's set_king_8bpp_video is a pure API
+  rename. Zero KING/VCE display registers changed. It is not the video
+  regression.
+  - The real divergence from the known-good build is the post-migration affine 
+  rework 21fef51 — the KING_CODE_ROTATE microprogram + 512-wide affine BG0 +
+  affine coefficients. That's the textbook "works in emu, black on real KING"
+  change, and every hardware-black test on record was run on a post-affine
+  build.
+
+  Recommended next step: revert only the BG0 display path back to the known-good
+  linear-CG / 256×256 setup (keeping the migration and the cd.c fix), rebuild,
+  and burn it to test on hardware.
+
+  Want me to prepare that revert? It's a contained change to set_king_8bpp_video
+  (microprogram → KING_CODE_BG0_CG_0..3, BG size → 256, drop the affine
+  coefficient calls and the pcfx_king_refresh_8bpp_affine_state), plus the
+  paired WAIFU_PCFX_BG_SOURCE_W/present-path adjustments so the framebuffer
+  packing matches 256-wide again. I'd verify it boots in pcfx-headless before
+  handing it to you to burn.
+✻ Churned for 7m 13s
+
+❯ DOn't revert to that as i've tried similar code with maka and it shows up on  
+  real hardware. The only issue i did encounter is that if you don't update     
+  coefficients/center every frame/vsync, it would hang                          
+
+● That's the key hardware fact — affine works, but the KING affine engine hangs
+  on real hardware if the coefficients/center aren't rewritten every vsync. Let
+  me look at where the affine state is currently written and whether it's
+  refreshed each frame.
+
+  Read 1 file (ctrl+o to expand)
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== call sites of pcfx_king_refresh_8bpp_affine_state ==="…)
+  ⎿  === call sites of pcfx_king_refresh_8bpp_affine_state ===
+     381:static inline __attribute__((always_inline)) void pcfx_king_refres
+     h_8bpp_affine_state(void)
+     … +49 lines (ctrl+o to expand)
+
+● Two call sites: setup (2663) and inside wait_vblank (3164). Let me see the
+  wait_vblank body to check whether the affine refresh actually fires every
+  vsync unconditionally.
+
+  Read 1 file (ctrl+o to expand)
+
+● The current code does refresh the affine state every field (line 3164) — but
+  only inside wait_vblank, which is cooperative: it fires only when the game
+  calls it. That's the gap. During boot and asset loading (CD reads /
+  decompression before "LOADING…"), the main loop isn't pumping wait_vblank
+  every field — so the coefficients go un-refreshed for many fields and the KING
+  affine engine wedges, exactly the hang you described. Let me confirm there's
+  no interrupt-driven vsync refresh and check what the load path does.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== any IRQ / vsync interrupt handler installed? ==="…)
+  ⎿  === any IRQ / vsync interrupt handler installed? ===
+     src/platform/pcfx/waifu_pcfx_cdrom.c:182:   the raster/vsync interrupt
+     .  The KING SCSI "phase-mismatch" CD interrupt (control
+     … +45 lines (ctrl+o to expand)
+
+● Confirmed: there is no interrupt-driven vsync handler — the affine refresh is
+  purely cooperative, tied to wait_vblank. So the question is whether the
+  boot/asset-load path lets many fields pass without calling wait_vblank. Let me
+  check the load path.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== who calls waifu_pcfx_video_wait_vblank / present_8bpp (core loop
+      vs load) ==="…)
+  ⎿  === who calls waifu_pcfx_video_wait_vblank / present_8bpp (core loop v
+     s load) ===
+     src/platform/pcfx/pcfx_main.c:26:        waifu_pcfx_video_present_8bpp
+     … +66 lines (ctrl+o to expand)
+
+● The CD read/retry loops never refresh the affine state. Let me read the boot
+  sequence in pcfx_main.c to see the gap between affine setup and the first
+  wait_vblank.
+
+  Read 1 file (ctrl+o to expand)
+
+● The load is driven inside waifu_fm_step() (line 24) — the main loop only
+  reaches wait_vblank when step returns. So the real question is whether asset
+  loading is incremental (yields to the loop each field, refreshing affine) or
+  blocking (one long step doing many CD reads with no refresh). Let me check.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== loading state: incremental or blocking? (assets loading step)
+      ==="…)
+  ⎿  === loading state: incremental or blocking? (assets loading step) ===
+     src/game/assets.c:221:static int g_load_step = 0;
+     src/game/assets.c:231:   avoids the per-frame stale-page flash. */
+     … +24 lines (ctrl+o to expand)
+
+● That confirms the picture. waifu_assets_load_step() is incremental (one
+  g_load_step per call), so during the LOADING screen wait_vblank fires each
+  field and the affine state stays refreshed. But you said the hang is before
+  LOADING appears — which points at the one place with no cooperative
+  wait_vblank: a blocking CD read that spans many fields inside a single 
+  waifu_fm_step() / waifu_fm_init() / boot preload, with the affine coefficients
+  set only once by set_king_8bpp_video.
+
+  Diagnosis
+
+  - Affine BG0 works on real hardware (you've proven it with maka) only if the 
+  coefficients/center are rewritten every field, or the KING affine engine
+  wedges.
+  - This build refreshes them only inside wait_vblank (waifu_pcfx_video.c:3164)
+  — a cooperative call. There is no interrupt-driven vsync handler (verified).
+  - The CD read/retry loops in waifu_pcfx_cdrom.c and the boot preload never
+  refresh the affine state and can span many fields. During that window the
+  affine engine starves → hang before LOADING. The emulator's KING doesn't
+  require the per-field refresh, so it boots there.
+
+  This matches every symptom and is consistent with the migration being
+  register-clean (the migration was pre-affine, so it never had this problem —
+  the affine rework 21fef51 introduced it, and the recollection of "before the
+  cd/affine work" is the affine commit specifically).
+
+  Fix — the design choice is yours
+
+  One caveat worth your call: the cdrom code notes (waifu_pcfx_cdrom.c:180) that
+  during CD reads the KING SCSI phase-mismatch IRQ can hold the KING IRQ line
+  high and stall the BIOS vsync path — i.e. an interrupt-based refresh could
+  itself be starved during the very CD reads that cause the hang (unless
+  scsi_clear_phase_irq keeps it clear).
+
+● User answered Claude's questions:
+  ⎿  · How should the per-field affine coefficient/center refresh be guaranteed 
+     during blocking CD reads and boot preload? → Vsync IRQ handler (maka-style)
+
+● Good — vsync IRQ handler it is. Let me reference how maka does it (you cited
+  it working on hardware) and check libpcfx's interrupt support.
+
+● Bash(cd /home/anonymous/Documents/DEV
+      echo "=== find maka's vsync/IRQ handler ==="…)
+  ⎿  === find maka's vsync/IRQ handler ===
+     --- DoomPCFX/maka_apple_pcfx_project_accuratefps_cd ---
+     DoomPCFX/maka_apple_pcfx_project_accuratefps_cd/src/engine/renderer3d_
+     … +15 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to 
+     /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ /home/anonymous/Documents/DEV/PCFX3D/maka_apple_pcfx_project_accuratefps_cd/  
+  use this one. Continue                                                        
+
+● Bash(cd /home/anonymous/Documents/DEV/PCFX3D/maka_apple_pcfx_project_accuratef
+      ps_cd
+      echo "=== interrupt / vsync setup in maka ==="…)
+  ⎿  === interrupt / vsync setup in maka ===
+     src/main.c:64:   V810 because every interrupt saves/restores the compl
+     ete register file.
+     … +48 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to 
+     /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+● This is a critical discovery. Let me read maka's own interrupt comments
+  precisely.
+
+  Read 1 file (ctrl+o to expand)
+
+● This flips the plan. Maka's own hardware notes say the opposite of a vsync IRQ
+  handler — and they describe exactly the waifu symptom. Let me read maka's
+  wait_vblank and confirm how it times fields and refreshes KING state without
+  interrupts.
+
+  Read 1 file (ctrl+o to expand)
+
+● I need to stop and flag a hard contradiction before writing any IRQ handler —
+  the maka reference proves the vsync-IRQ approach is wrong for hardware, and
+  points straight at the actual bug.
+
+  What maka actually does on real hardware
+
+  Maka removed the vsync IRQ and runs with no interrupts at all:
+
+  - main.c:220 — "The VDC-A vblank IRQ was removed for real-hardware bring-up. 
+  It read the VD status bit at 0x80000400… that bit only latches cleanly under 
+  pcfxemu. On real hardware… it can starve the level-9 timer IRQ and stall the 
+  render loop (black BG0)."
+  - main.c:242 — "run with NO interrupts at all. Real hardware showed the KING 
+  BG layer stay black / the machine destabilize whenever an interval-timer IRQ 
+  was armed… while it is fine under pcfxemu. So we mask every source AND disable
+  interrupts at the CPU." (irq_set_mask(0x7F); irq_disable();)
+  - wait_vblank (main.c:1027) polls the TETSU raster (eris_tetsu_get_raster,
+  double-read for stability) with bounded spins — never the VDC VD-status bit,
+  never an IRQ.
+
+  Now look at what waifu's wait_vblank currently does (waifu_pcfx_video.c:3128)
+
+  - Polls *(u16*)0x80000400 & 0x0020 — the exact VD-status bit maka says only 
+  latches under pcfxemu.
+  - Re-arms the VDC vblank IRQ every frame — i.e. it relies on BIOS interrupts
+  being live.
+  - Both poll loops are UNBOUNDED (while ((*sr & 0x0020u) == 0) {}) — so if that
+  bit never latches on hardware, wait_vblank spins forever → hang → black 
+  screen.
+
+  Waifu is doing precisely the three things maka identified as the cause of
+  black-BG0-on-silicon. That — not a missing IRQ — is almost certainly your bug.
+  Adding a vsync IRQ handler would make it worse, per maka's own notes.
+
+  Corrected fix (maka-proven)
+
+  1. Kill all interrupts at boot: irq_set_mask(0x7F) + irq_disable(); stop
+  re-arming the VDC vblank IRQ.
+  2. Rewrite wait_vblank to poll the TETSU raster with bounded spins (port
+  maka's tetsu_raster_stable + the <240 / >=240 wait), instead of the VD-status
+  bit.
+  3. No IRQ handler. The per-field affine refresh happens in the raster-polled
+  main loop; and with interrupts gone, the "black BG0 unless coefficients
+  refreshed" instability maka saw may itself have been interrupt-induced.
+
+  This reverses the option you picked (which was based on "maka-style" = IRQ —
+  but maka explicitly removed the IRQ). I don't want to build the wrong thing.
+
+● User answered Claude's questions:
+  ⎿  · The maka reference proves the vsync-IRQ approach causes the black-BG0 
+     symptom on hardware; maka runs with NO interrupts and polls the TETSU 
+     raster. How should I proceed? → Adopt maka no-IRQ + raster poll
+
+● This is the right call and matches the hardware evidence. Let me record this
+  pivotal finding to memory and gather the exact API I need (irq + raster
+  functions) to implement it.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== irq_set_mask / irq_disable — where defined? (libpcfx) ==="…)
+  ⎿  === irq_set_mask / irq_disable — where defined? (libpcfx) ===
+     libpcfx/src/v810.S:94:     .global _irq_enable
+     libpcfx/src/v810.S:95:     .global _irq_disable
+     … +35 lines (ctrl+o to expand)
+
+● libpcfx provides all three (irq_set_mask, irq_disable, tetsu_get_raster). Let
+  me confirm the header/signatures and check what pcfx.h (the game's platform
+  header) already includes.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== irq function declarations ==="…)
+  ⎿  === irq function declarations ===
+     libpcfx/include/pcfx/timer.h:28://      irq_set_mask(x);   -- see exam
+     ple code
+     … +31 lines (ctrl+o to expand)
+
+● All needed APIs are already included. Before I write the global irq_disable,
+  let me check two things: any other code that depends on the VD-status latch,
+  and whether audio (CD-DA/ADPCM) relies on BIOS interrupts (disabling them
+  globally could kill music).
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== any other users of the 0x80000400 VD-status latch? ==="…)
+  ⎿  === any other users of the 0x80000400 VD-status latch? ===
+     src/platform/pcfx/waifu_pcfx_video.c:3130:    volatile uint16_t * cons
+     t sr = (volatile uint16_t *)0x80000400u;
+     … +35 lines (ctrl+o to expand)
+
+● VD-status latch is used only in wait_vblank (the two lines I'm replacing) —
+  clean. Audio uses BIOS eris_cdda_*; CD-DA hardware playback continues
+  autonomously without interrupts, though track-end/looping may need polling —
+  I'll flag that as a test risk. Proceeding with the maka no-IRQ + raster-poll
+  implementation.
+
+  Edit 1 — disable all interrupts at boot (pcfx_main.c):
+
+● Update(src/platform/pcfx/pcfx_main.c)
+  ⎿  Added 14 lines
+       5  #include "waifu_pcfx_input.h"
+       6  #include "waifu_pcfx_video.h"
+       7  #include "pcfx.h"
+       8 +#include <pcfx/v810.h>                                         
+       9  
+      10  int main(void)
+      11  {
+      12 +    /* Real-hardware bring-up: run with NO interrupts at all.  
+         +On real PC-FX                                                  
+      13 +       hardware any armed IRQ (the BIOS vsync handler, an inter
+         +val timer, the                                                 
+      14 +       KING VD-status vblank IRQ) can starve the single highest
+         +-priority source                                               
+      15 +       the controller delivers, stall the render loop and leave
+         + the KING BG                                                   
+      16 +       layer BLACK -- while pcfxemu tolerates it and looks fine
+         +.  Masking every                                               
+      17 +       source at the controller AND disabling at the CPU (PSW) 
+         +means no ISR ever                                              
+      18 +       runs, so nothing corrupts a KING register write or the V
+         +DC control                                                     
+      19 +       register.  Field timing is done by polling the TETSU ras
+         +ter in                                                         
+      20 +       waifu_pcfx_video_wait_vblank instead (matches the maka/d
+         +oom-pcfx hardware                                              
+      21 +       path). */                                               
+      22 +    irq_set_mask(0x7F);   /* mask every maskable source at the 
+         +controller */                                                  
+      23 +    irq_disable();        /* and disable at the CPU (PSW) -- no
+         + ISR ever runs */                                              
+      24 +                                                               
+      25      WaifuPcfxCdrom *cdrom = waifu_pcfx_cdrom_create();
+      26      WaifuPcfxVideo *video = waifu_pcfx_video_create();
+      27      WaifuPcfxInput *input = waifu_pcfx_input_create();
+
+● Edit 2 — replace the VD-status poll with a bounded TETSU-raster poll and drop
+  the vblank IRQ re-arm (waifu_pcfx_video.c):
+
+● Update(src/platform/pcfx/waifu_pcfx_video.c)
+  ⎿  Added 30 lines, removed 16 lines
+      3125      pcfx_present_title_16m(video, framebuffer);
+      3126  }
+      3127  
+      3128 +/* Read the HuC6261 (TETSU/VCE) raster line counter with a st
+           +able double-read.                                            
+      3129 +   A lone read can latch a bogus transitional value on real h
+           +ardware, which would                                         
+      3130 +   flip the vblank predicate at the wrong scanline; require t
+           +wo agreeing reads                                            
+      3131 +   (bounded retries).  pcfxemu returns a clean value, so this
+           + is a no-op there. */                                        
+      3132 +static int pcfx_tetsu_raster_stable(void)                    
+      3133 +{                                                            
+      3134 +    int a = tetsu_get_raster();                              
+      3135 +    for (int tries = 0; tries < 8; ++tries) {                
+      3136 +        int b = tetsu_get_raster();                          
+      3137 +        if (a == b) return a;                                
+      3138 +        a = b;                                               
+      3139 +    }                                                        
+      3140 +    return a;                                                
+      3141 +}                                                            
+      3142 +                                                             
+      3143  void waifu_pcfx_video_wait_vblank(WaifuPcfxVideo *video)
+      3144  {
+      3130 -    volatile uint16_t * const sr = (volatile uint16_t *)0x800
+           -00400u;                                                      
+      3131 -    /* Re-arm VDC-0's vblank-IRQ enable (CR bit 0x08) every f
+           -rame.  The BIOS                                              
+      3132 -       vsync handler keeps rewriting this VDC's control regis
+           -ter for its own use                                          
+      3133 -       and drops the enable bit; the VDC only latches its VD 
+           -status bit (which we                                         
+      3134 -       poll just below) at vblank when the enable is set, so 
+           -without this the                                             
+      3135 -       poll spins forever.  Writing it here re-arms it just b
+           -efore the wait, and                                          
+      3136 -       VD latches at the next vblank before the BIOS handler 
+           -runs. */                                                     
+      3137 -    /* Keep VDC0's sprite plane enabled while waiting for the
+           - next vblank.                                                
+      3138 -     * Story portraits are combined 256-colour sprites: VDC0 
+           -carries their                                                
+      3139 -     * high nibble and VDC1 the low nibble.  Re-arming the vb
+           -lank IRQ with                                                
+      3140 -     * 0x88 used to clear VDC0's sprite-enable bit immediatel
+           -y after the                                                  
+      3141 -     * story flush, leaving a portrait visible only for the b
+           -rief interval                                                
+      3142 -     * between the flush and this wait. */                   
+      3143 -    waifu_vdc_setreg(VDC_CHIP_0, VDC_REG_CR,                 
+      3144 -                     VDC_CR_IRQ_VC | VDC_CR_BB | VDC_CR_SB); 
+      3145 -    while ((*sr & 0x0020u) == 0) { }                         
+      3145 +    /* Time fields by polling the TETSU raster, NOT the VDC V
+           +D-status latch at                                            
+      3146 +       0x80000400.  That bit only latches cleanly under pcfxe
+           +mu; on real hardware                                         
+      3147 +       it behaves differently, and with all interrupts disabl
+           +ed (see main) the                                            
+      3148 +       BIOS no longer re-arms it -- the old poll then spun FO
+           +REVER, leaving the                                           
+      3149 +       KING BG black.  Active display is 240 lines; raster >=
+           + 240 is the vblank                                           
+      3150 +       window.  Every spin is bounded so a misbehaving VCE de
+           +grades to slow,                                              
+      3151 +       never hangs.  No VDC vblank IRQ is armed. */          
+      3152 +    uint32_t spin;                                           
+      3153 +    /* Keep VDC0's BG + sprite planes enabled (story portrait
+           +s are combined                                               
+      3154 +       256-colour sprites split across VDC0/VDC1) WITHOUT the
+           + vblank IRQ-enable                                           
+      3155 +       bit -- interrupts are off, nothing services it. */    
+      3156 +    waifu_vdc_setreg(VDC_CHIP_0, VDC_REG_CR, VDC_CR_BB | VDC_
+           +CR_SB);                                                      
+      3157 +    /* Wait for the start of the vblank window. */           
+      3158 +    spin = 0;                                                
+      3159 +    while (pcfx_tetsu_raster_stable() < 240 && spin++ < 20000
+           +00u) { }                                                     
+      3160      if (video && video->pending_title_page_flip) {
+      3161          pcfx_king_set_bg_kram_page_inline(0);
+      3162          pcfx_king_set_bg0_page_inline(title16m_bg_cg_page(vid
+            eo->pending_title_kram_page));
+  ⎿  Found 10 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● The clang diagnostics are LSP false positives — clangd doesn't have the
+  Makefile's -Ilibpcfx/include path, so it can't find pcfx/v810.h (which I
+  confirmed exists at libpcfx/include/pcfx/v810.h) or the core headers. The real
+  check is the actual V810 build. Let me build the PC-FX target.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      grep -nE '^(cd|all|\.PHONY|%\.o|waifu.*:)' Makefile.pcfx | head; echo
+      "---- V810GCC ----"; grep -n '…)
+  ⎿  137:.PHONY: all program clean clean-build clean-output cd zip toolchai
+     n-check pcfxtools regression-pcfx-hand-card regression-pcfx-battle-car
+     d regression-pcfx-battle-card-stripe
+     … +10 lines (ctrl+o to expand)
+  ⎿  Found 10 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● All LSP false positives (missing -I paths). Let me run the real build.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      ls /opt/v810/bin 2>/dev/null | head -3 || echo "no /opt/v810"…)
+  ⎿  === building PC-FX CD image ===
+     rm -f waifupcfx.cue waifupcfx.bin waifupcfx_t*.bin waifupcfx_pyramid.c
+     ue lbas.h cdda_tracks.h
+     … +51 lines (ctrl+o to expand)
+● I need to fix the second wait loop (line 3187) which still references the
+  removed sr. Let me view and fix it.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src/platform/pcfx/waifu_pcfx_video.c)
+  ⎿  Added 3 lines, removed 1 line
+      3184           * complete paired SAT on the next field. */
+      3185          pcfx_story_layers_flush(video);
+      3186      }
+      3187 -    while ((*sr & 0x0020u) != 0) { }                         
+      3187 +    /* Wait out the vblank window so the next call catches th
+           +e following field. */                                        
+      3188 +    spin = 0;                                                
+      3189 +    while (pcfx_tetsu_raster_stable() >= 240 && spin++ < 2000
+           +000u) { }                                                    
+      3190      if (video && video->mode == WAIFU_PCFX_VIDEO_MODE_KING_8B
+            PP && video->vdc_overlay_shutdown_countdown > 0) {
+      3191          --video->vdc_overlay_shutdown_countdown;
+      3192          if (video->vdc_overlay_shutdown_countdown == 0) pcfx_
+            vdc_overlay_shutdown(video);
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      make -f Makefile.pcfx cd 2>&1 | grep -iE
+      'error|\.cue|\bcd\b.*done|cdlink|generated|waifupcfx\.(cue|…)
+  ⎿  LBA 1575: assets/generated/rainbow_stone.bin (11724 bytes, 6 sectors)
+     LBA 1581: assets/generated/rainbow_ember.bin (12743 bytes, 7 sectors)
+     LBA 1588: assets/generated/rainbow_sky.bin (6772 bytes, 4 sectors)
+     … +32 lines (ctrl+o to expand)
+  ⎿  Found 10 new diagnostic issues in 1 file (ctrl+o to expand)
+
+● Build succeeded — waifupcfx.cue + waifupcfx.bin produced, no errors (remaining
+  clang diagnostics are the same LSP include-path false positives). Now I need
+  to confirm it still boots on the accurate emulator. Let me use the
+  build-verify skill for the correct capture flow.
+
+● Skill(pcfx-build-verify)
+  ⎿  Successfully loaded skill
+
+● Gate B passed. Now gate V — boot in the accurate emulator and look. Let me
+  capture a broad boot window.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      command -v pcfx-headless >/dev/null && echo "have pcfx-headless" || echo
+      "NO pcfx-headless"…)
+  ⎿  have pcfx-headless
+     === booting (2700 frames, auto-run) ===
+     [KING] PIO-read erratum ENABLED (doom-pcfx boot-hang model; PCFX_KING_
+     … +25 lines (ctrl+o to expand)
+
+● Frames extracted. Let me look at the loading screen and the title.
+
+  Read 1 file (ctrl+o to expand)
+
+● That's the BIOS logo. Let me look at the later frames (title screen).
+
+  Read 1 file (ctrl+o to expand)
+
+● Title renders perfectly on the emulator — boot works with interrupts disabled
+  + raster-polled wait_vblank. Now let me confirm the KING 8bpp affine gameplay 
+  path (where the affine BG0 lives) still renders, by driving into Battle Mode
+  from the boot state.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      S=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-gam
+      e/c1ee7840-5255-4d85-b4cb-…)
+  ⎿  === driving into Battle Mode (KING 8bpp affine) ===
+     [KING] PIO-read erratum ENABLED (doom-pcfx boot-hang model; PCFX_KING_
+     PIO_ERRATUM=0 to disable)
+     … +16 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+● The KING 8bpp affine gameplay board renders perfectly — affine BG0
+  checkerboard field, VDC HUD overlay, card sprites, all correct. Both gates 
+  pass on the emulator: the no-IRQ + raster-poll changes don't break anything,
+  and the full affine path still works.
+
+  Let me record the implemented fix to memory.
+
+  Wrote 1 memory (ctrl+o to expand)
+
+● Done. Here's where things stand.
+
+  What I changed (maka-proven, no-IRQ + raster-poll)
+
+  src/platform/pcfx/pcfx_main.c — at the very top of main(), before any
+  subsystem init:
+  irq_set_mask(0x7F);   /* mask every maskable source at the controller */
+  irq_disable();        /* and disable at the CPU (PSW) -- no ISR ever runs */
+
+  src/platform/pcfx/waifu_pcfx_video.c — rewrote wait_vblank:
+  - Added pcfx_tetsu_raster_stable() (double-read tetsu_get_raster, matching
+  maka's fix for the HuC6261's bogus lone-read).
+  - Replaced both unbounded *(u16*)0x80000400 & 0x0020 VD-status spins with
+  bounded raster polls (< 240 then ≥ 240, capped at 2,000,000).
+  - Dropped VDC_CR_IRQ_VC from the CR write (kept VDC_CR_BB|VDC_CR_SB so
+  story-portrait planes stay enabled). No vblank IRQ is armed.
+
+  The page flip, affine-coefficient refresh, and overlay/story flushes still
+  happen inside the vblank window exactly as before.
+
+  Verification
+
+  - Gate B: builds clean (waifupcfx.cue/.bin produced).
+  - Gate V (pcfx-headless): BIOS logo → SHATTERED DECKS title → Battle Mode KING
+  8bpp affine board all render correctly (saw the checkerboard field + HUD +
+  card sprites). The change doesn't regress the emulator.
+
+  Why this should fix the hardware black screen
+
+  The old wait_vblank did the three exact things maka's notes blame for
+  black-BG0-on-silicon: polled the VD-status bit that "only latches under
+  pcfxemu," re-armed a VDC vblank IRQ, and relied on live BIOS interrupts — with
+  an unbounded spin that hangs forever if that bit never latches on real
+  hardware. All three are now gone.
+
+  Your move + one risk to watch
+
+  Burn waifupcfx.cue and test on hardware. Watch for: disabling all interrupts
+  could affect BIOS CD-DA (eris_cdda) music track-end/looping — the audio
+  hardware streams autonomously, so playback should continue, but if a track
+  fails to loop, the fix is to poll it in waifu_pcfx_audio_pump. If that
+  happens, tell me and I'll wire it up.
+
+  Nothing committed yet — I'll commit once you confirm on hardware, or sooner if
+  you want.
+
+✻ Baked for 7m 9s
+
+❯ I want you to fix another issue : CD-DA music is not playing.                 
+
+● Let me investigate the CD-DA path — this may be a consequence of disabling all
+  interrupts (which I flagged), or a separate issue. Let me look at how CD-DA
+  music is started and serviced.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== eris_cdda_* usage in audio module ==="…)
+  ⎿  === eris_cdda_* usage in audio module ===
+     6:#include <eris/cdda.h>
+     17:/* cdda_tracks.h is generated by pcfx-cdlink when cddaheader is set
+     … +38 lines (ctrl+o to expand)
+
+● The game compiles libpcfx's cdda.c directly. Let me read how CD-DA playback
+  and pump work, to see if there's an interrupt dependency or a SCSI-contention
+  issue.
+
+  Read 1 file (ctrl+o to expand)
+● CD-DA playback is fully polled SCSI (no interrupt dependency), so my interrupt
+  change shouldn't have broken it. Let me look at the game-side flow —
+  set_music, audio_pump, the track mapping, and the generated track table.
+
+  Read 1 file (ctrl+o to expand)
+
+● Let me check the generated track table and the actual CD layout — if the WAV
+  tracks aren't in the image or the table fell back to zero, everything maps to
+  silence.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== cdda_tracks.h ==="…)
+  ⎿  === cdda_tracks.h ===
+     #ifndef _CDDA_TRACKS_H_
+     #define _CDDA_TRACKS_H_
+     … +51 lines (ctrl+o to expand)
+
+● The track table and cue look correct (Track 1 audio lead, Track 2 data boot,
+  Tracks 3–10 music). CD-DA is fully polled, so my interrupt change shouldn't be
+  the cause. Before I go deeper, let me check whether the emulator even
+  exercises CD-DA (so I know if I can verify here) and whether the named audio
+  bins exist.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== named audio track bins present? ==="…)
+  ⎿  === named audio track bins present? ===
+     -rw-r--r-- 1 anonymous anonymous 40042800 Jul 21 20:03 waifupcfx_BATTL
+     E.bin
+     … +18 lines (ctrl+o to expand)
+
+● The emulator supports --wav capture and all track bins exist. Let me capture
+  audio through the title screen and check whether CD-DA is actually playing.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      S=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-gam
+      e/c1ee7840-5255-4d85-b4cb-…)
+  ⎿  === boot + capture audio (title music should start after fade-in) ===
+     [KING] PIO-read erratum ENABLED (doom-pcfx boot-hang model; PCFX_KING_
+     PIO_ERRATUM=0 to disable)
+     … +18 lines (ctrl+o to expand)
+
+● There is audio (max -7 dB), but I need to know if it's CD-DA music or just
+  ADPCM/PSG. Let me get a per-second RMS timeline and correlate with when the
+  title appears.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      S=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-gam
+      e/c1ee7840-5255-4d85-b4cb-…)
+  ⎿  === RMS per 5-second window across the 60s capture ===
+     RMS_level=-inf
+     RMS_level=-inf
+     … +19 lines (ctrl+o to expand)
+
+● The windowed astats is unreliable here. Let me do clean per-segment
+  volumedetect — title shows from ~frame 1500 (25s), so if CD-DA title music
+  plays, segments after 25s should be loud.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      S=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-gam
+      e/c1ee7840-5255-4d85-b4cb-…)
+  ⎿  t=00s-10s: mean_volume: -28.1 dB max_volume: -7.0 dB
+     t=10s-20s: mean_volume: -91.0 dB max_volume: -91.0 dB
+     t=20s-30s: mean_volume: -91.0 dB max_volume: -91.0 dB
+     … +3 lines (ctrl+o to expand)
+
+● Key finding: audio only in the first 10s, then digital silence (−91 dB) for 
+  the entire title-screen period (25s+) — so the title CD-DA music isn't playing
+  on the emulator either. But I need to know whether pcfx-headless supports
+  CD-DA at all (else I can't verify here). Let me check the volume constants and
+  test the known-good old build's CD-DA on the same emulator.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== CD-DA volume constants ==="…)
+  ⎿  === CD-DA volume constants ===
+     libpcfx/include/eris/cdda.h:36:#define CDDA_MODE_NORMAL 0x01
+     libpcfx/include/eris/cdda.h:38:#define CDDA_MODE_LOOP   0x04
+     … +26 lines (ctrl+o to expand)
+
+● The old build has identical tracks — let me test whether it plays CD-DA title
+  music on the same emulator. That tells me both whether pcfx-headless supports
+  CD-DA and whether this is a regression.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      S=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-gam
+      e/c1ee7840-5255-4d85-b4cb-…)
+  ⎿  === booting OLD known-good build, capturing audio ===
+     [KING] PIO-read erratum ENABLED (doom-pcfx boot-hang model; PCFX_KING_
+     PIO_ERRATUM=0 to disable)
+     … +8 lines (ctrl+o to expand)
+
+● Decisive: the old build plays sustained CD-DA music (−25 dB through the title)
+  while the new build is silent from 10s on. So (1) pcfx-headless does support
+  CD-DA, and (2) this is a regression. Now I must isolate whether my
+  interrupt-disable change caused it or a prior commit did. Let me test HEAD
+  without my uncommitted changes.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== stashing my uncommitted changes to test HEAD ==="…)
+  ⎿  === stashing my uncommitted changes to test HEAD ===
+     Saved working directory and index state WIP on fix/revert-vdc-text-rai
+     nbow: ea5bbbb Increase story text speed fivefold
+     … +40 lines (ctrl+o to expand)
+
+● HEAD built (my changes stashed). Let me capture its audio to see if CD-DA
+  plays without my interrupt change.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      S=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-gam
+      e/c1ee7840-5255-4d85-b4cb-…)
+  ⎿  === boot HEAD (no irq change), capture audio ===
+     [KING] PIO-read erratum ENABLED (doom-pcfx boot-hang model; PCFX_KING_
+     PIO_ERRATUM=0 to disable)
+     … +8 lines (ctrl+o to expand)
+
+● Conclusive: HEAD is also silent from 20s — my interrupt change did NOT cause 
+  this. CD-DA regressed somewhere between the old build (07-19, which plays
+  music) and HEAD. Let me restore my changes and find the culprit commit.
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      git stash pop 2>&1 | tail -2…)
+  ⎿  no changes added to commit (use "git add" and/or "git commit -a")
+     Dropped refs/stash@{0} (2f002fc9b1a6412797c9cb36fcdf500b04a7585d)
+     === commits after 2026-07-19 touching audio/cdda ===
+     … +35 lines (ctrl+o to expand)
+
+● There's a commit literally titled "Improve PC-FX dialogue and CD-DA playback"
+  (10a4499). Let me check its date and what it changed in the CD-DA path.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== date of 10a4499 vs old-zip build time (07-19 15:36) ==="…)
+  ⎿  === date of 10a4499 vs old-zip build time (07-19 15:36) ===
+     2026-07-21 23:37:56 +0200 10a4499 Improve PC-FX dialogue and CD-DA pla
+     yback
+     … +161 lines (ctrl+o to expand)
+
+● The regression is commit 10a4499 (07-21) — it swapped the game's own working
+  CD-DA code for libpcfx's eris_cdda_music_* manager. The old build predates it
+  and plays music. Let me compare the OLD working
+  waifu_pcfx_cdda_play/set_volume against the new library
+  eris_cdda_play/cdda_set_volume to find what diverged.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== OLD working CD-DA primitives (pre-10a4499): find their
+      definitions ==="…)
+  ⎿  === OLD working CD-DA primitives (pre-10a4499): find their definitions
+      ===
+     10a4499^:src/platform/pcfx/waifu_pcfx_cdrom.c:414:void waifu_pcfx_cdda
+     … +59 lines (ctrl+o to expand)
+
+● The SCSI play/stop/volume primitives are essentially identical (both do D8/D9,
+  both call cdda_set_volume). So the regression is in the manager logic or the 
+  music-request gating. Let me check the base-volume constant and what 10a4499
+  changed in pcfx_main.c's music-request path.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== BASE/DUCK volume constants ==="…)
+  ⎿  === BASE/DUCK volume constants ===
+     src/platform/pcfx/waifu_pcfx_audio.c:54:#define WAIFU_PCFX_CDDA_BASE_V
+     OLUME 56u   /* Slight music trim; 63 is full-scale. */
+     … +18 lines (ctrl+o to expand)
+
+● 10a4499 didn't touch pcfx_main.c (gating unchanged), volume is 56 (fine). The
+  managers are logically identical — so the suspect is timing. The library
+  comment warns "the drive ignores the second half of the D8/D9 pair if it 
+  arrives too soon after the first." Let me compare the old inter-command
+  cdda_wait delay against the library's 0x800.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== OLD cdda_wait (pre-10a4499) ==="…)
+  ⎿  === OLD cdda_wait (pre-10a4499) ===
+     static void cdda_wait(void)
+     {
+     … +15 lines (ctrl+o to expand)
+
+● The cdda_wait is 0x800 in both — identical. Every CD-DA primitive is
+  byte-identical between old and new. So the breakage is environmental: the new
+  pump only issues the play on a quiet frame (no CD read that frame). If the
+  current build reads CD every frame, that gate never opens. Let me check what
+  bumps waifu_pcfx_cd_read_seq and whether it churns continuously.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== what increments waifu_pcfx_cd_read_seq? ==="…)
+  ⎿  === what increments waifu_pcfx_cd_read_seq? ===
+     src/platform/pcfx/waifu_pcfx_cdrom.c:213:static volatile uint32_t g_cd
+     _read_seq = 0;
+     … +10 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+● Found the muddled wiring: waifu_pcfx_note_cd_read() (line 219) calls
+  eris_cdda_notify_cd_read() directly, and waifu_pcfx_audio_pump() calls it
+  again for the same read — a double-bump. Let me check commit dates to confirm
+  whether 10a4499 (the audio refactor) is really the only CD-DA-affecting change
+  after the working 07-19 build, or if the CD-reader rewrites are also in the
+  window.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== dates of suspect commits vs old-zip build (2026-07-19 15:36)
+      ==="…)
+  ⎿  === dates of suspect commits vs old-zip build (2026-07-19 15:36) ===
+     2026-07-20 06:54:28 +0200 24a7265 pcfx: read CD via count-0 phase-driv
+     en KING DMA (fixes black boot)
+     … +7 lines (ctrl+o to expand)
+
+● All suspects are after the working 07-19 build, so dates alone don't isolate
+  it. The CD-DA SCSI primitives are byte-identical, so either the audio refactor
+  (10a4499) or the new CD readers (1d5a775/24a7265) left the bus in a state
+  that breaks CD-DA. Let me settle it decisively with a clean worktree build of
+  10a4499^ (new CD readers + affine, but the old game-local CD-DA manager).
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      WT=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-ga
+      me/c1ee7840-5255-4d85-b4cb…)
+  ⎿  Preparing worktree (detached HEAD 243f9d8)
+     Updating files:   4% (19/393)Updating files:   5% (20/393)Updating fil
+     es:   6% (24/393)Updating files:   7% (28/393)Updating files:   8% (32
+     … +43 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to 
+     /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+
+● Worktree ready at 10a4499^. Let me build and test its CD-DA on the emulator.
+
+● Bash(WT=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-g
+      ame/c1ee7840-5255-4d85-b4cb-61a8dcc724ef/scratchpad/wt_before_audio
+      cd "$WT"…)
+  ⎿  === build 10a4499^ ===
+     make: *** [Makefile.pcfx:174: src/generated/pcfx_sfx_adpcm.h] Error 1
+     BUILD FAILED
+  ⎿  Shell cwd was reset to 
+     /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+
+● Bash(WT=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-g
+      ame/c1ee7840-5255-4d85-b4cb-61a8dcc724ef/scratchpad/wt_before_audio
+      cd "$WT"…)
+  ⎿  rm -f waifupcfx.cue waifupcfx.bin waifupcfx_t*.bin waifupcfx_pyramid.c
+     ue lbas.h cdda_tracks.h
+     python3 tools/gen_pcfx_sfx_adpcm.py
+     … +13 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to 
+     /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+● The worktree build fails on a missing source asset (SlashAttack.wav not
+  committed) — not worth fixing. Let me remove it and pursue the more likely
+  root cause directly: the new retail-DMA CD reader may leave the SCSI bus in a
+  non-BUS_FREE phase, so the CD-DA D8/D9 commands issued afterward silently fail
+  (the memory's own "next command sees phase=5 and fails" finding). Let me
+  check whether the current CD read path drains the bus.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      git worktree remove --force
+      /tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-gam…)
+  ⎿  === bus draining in libpcfx cd.c (post-read) ===
+     27: *    - recovers the bus (drain -> abort -> reset escalation) inste
+     ad of     *
+     … +23 lines (ctrl+o to expand)
+
+● The current cd.c (with my fix) does drain to BUS_FREE after reads, so the
+  bus-phase theory is weaker than I thought. I've now verified primitives,
+  volume, manager logic, and bus draining are all sound — yet the emulator
+  reproduces the silence and the old build plays. Rather than keep bisecting by
+  expensive builds, let me quantify how much audio.c/cdrom.c changed after the
+  refactor, to see whether reverting to the proven game-local manager in-place
+  is clean.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== commits touching audio.c / cdrom.c AFTER 10a4499 ==="…)
+  ⎿  === commits touching audio.c / cdrom.c AFTER 10a4499 ===
+
+     === net diff size audio.c: 10a4499 vs HEAD ===
+     … +5 lines (ctrl+o to expand)
+
+● Decisive finding: audio.c, cdrom.c, and cdda.c are identical between 10a4499 
+  and HEAD — the CD-DA code is the first-and-only version of this refactor and
+  was never revisited (much like the never-HW-verified migration). Since I've
+  verified the primitives/volume/logic all look equivalent yet it's silent, let
+  me run the decisive empirical test: revert audio.c+cdrom.c to the proven
+  game-local manager (10a4499^) and rebuild. This confirms the culprit and
+  doubles as the fix.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== back up current (refactored) versions to scratchpad ==="…)
+  ⎿  === back up current (refactored) versions to scratchpad ===
+     === restore game-local CD-DA manager from 10a4499^ ===
+     diff line counts vs HEAD:
+     … +3 lines (ctrl+o to expand)
+
+● Interesting — only audio.c changed; cdrom.c at 10a4499^ is identical to HEAD,
+  meaning 10a4499 only touched audio.c (the primitives were never actually
+  removed from cdrom.c). Let me confirm the game-local primitives still exist in
+  HEAD's cdrom.c so the reverted audio.c links, then build and test.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== do game-local primitives exist in current cdrom.c? ==="…)
+  ⎿  === do game-local primitives exist in current cdrom.c? ===
+     414:void waifu_pcfx_cdda_play(uint8_t start_track, uint8_t end_track,
+     uint8_t mode)
+     … +16 lines (ctrl+o to expand)
+
+● Need the WAIFU_CDDA_LOOP/NORMAL macros too — 10a4499 removed them from
+  cdrom.h. Let me restore that header from 10a4499^ (only if nothing after
+  10a4499 changed it) and rebuild.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== commits touching cdrom.h after 10a4499 (should be none) ==="…)
+  ⎿  === commits touching cdrom.h after 10a4499 (should be none) ===
+     === what 10a4499 removed from cdrom.h ===
+     -/* CDDA playback — standalone (no cdrom context required). */
+     … +7 lines (ctrl+o to expand)
+
+● Built with the game-local manager (plus my video fix still in place). Let me
+  test CD-DA on the emulator.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      S=/tmp/claude-1000/-home-anonymous-Documents-DEV-Anime-card-waifu-card-gam
+      e/c1ee7840-5255-4d85-b4cb-…)
+  ⎿  === boot reverted-manager build, capture audio ===
+     [KING] PIO-read erratum ENABLED (doom-pcfx boot-hang model; PCFX_KING_
+     PIO_ERRATUM=0 to disable)
+     … +8 lines (ctrl+o to expand)
+
+● Confirmed and fixed. CD-DA music now plays — sustained −25 to −28 dB through
+  the title, matching the old known-good build almost exactly (old:
+  −26.3/−25.2/−25.5/−27.9; fixed: −26.1/−25.2/−25.7/−27.7). And the
+  reverted-manager build still booted to the title (music only ramps after title
+  load+fade), so my video fix is intact alongside it.
+
+  Root cause confirmed: commit 10a4499's audio refactor — swapping the game's
+  working CD-DA manager for libpcfx's eris_cdda_music_* manager — broke playback
+  (it was committed but evidently never actually verified to produce sound).
+  Reverting audio.c + cdrom.h to the proven game-local manager restores it.
+
+  Let me review the final change set.
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== my uncommitted source changes (video fix + CD-DA fix) ==="…)
+  ⎿  === my uncommitted source changes (video fix + CD-DA fix) ===
+      src/platform/pcfx/pcfx_main.c        | 14 +++++
+      src/platform/pcfx/waifu_pcfx_audio.c | 99 +++++++++++++++++++++++++++
+     … +10 lines (ctrl+o to expand)
+
+● Clean result. Let me record this CD-DA fix to memory.
+
+  Wrote 2 memories (ctrl+o to expand)
+
+● CD-DA music is fixed. Here's the summary.
+
+  Root cause
+
+  Commit 10a4499 "Improve PC-FX dialogue and CD-DA playback" (07-21) swapped the
+  game's working CD-DA manager for libpcfx's eris_cdda_music_* manager. The
+  SCSI D8/D9/DA commands, the 0x800 inter-command delay, and the KING
+  volume-port writes are all byte-identical between the two, and the manager
+  logic looks equivalent — but the eris_cdda_music path produces no sound. It
+  was committed but never actually verified to play (same pattern as the
+  never-HW-verified video migration).
+
+  How I confirmed it
+
+  - The old build (ShatteredDecks_PCFX_gbb_2026.zip, 07-19) plays sustained
+  music on pcfx-headless (~−25 dB through the title); HEAD is digital silence
+  (−91 dB) — so the emulator does support CD-DA and this is a real regression,
+  not caused by my interrupt change (HEAD without my change is also silent).
+  - Reverting audio.c restored music at the exact same levels as the old build
+  (−26.1/−25.2/−25.7/−27.7 dB vs old −26.3/−25.2/−25.5/−27.9).
+
+  The fix (emulator-verified)
+
+  Reverted two files to 10a4499^, undoing only the CD-DA refactor:
+  - src/platform/pcfx/waifu_pcfx_audio.c → game-local CD-DA manager
+  - src/platform/pcfx/waifu_pcfx_cdrom.h → restores the WAIFU_CDDA_LOOP/NORMAL
+  macros
+
+  cdrom.c is untouched (the waifu_pcfx_cdda_play/stop/set_volume primitives it
+  needs are still there). I deliberately did not revert 10a4499's
+  src/main.c/Makefile.pcfx changes — those are the separate "dialogue" work.
+
+  Current uncommitted change set (two independent fixes)
+
+  ┌────────────────────────────────────┬────────────────────────────────────┐
+  │                Fix                 │               Files                │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ Video (no-IRQ + raster-poll        │ pcfx_main.c, waifu_pcfx_video.c    │
+  │ wait_vblank)                       │                                    │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ CD-DA (revert to game-local        │ waifu_pcfx_audio.c,                │
+  │ manager)                           │ waifu_pcfx_cdrom.h                 │
+  └────────────────────────────────────┴────────────────────────────────────┘
+
+  Both build clean and verify on the emulator (title/battle render; music
+  plays).
+
+  Note
+
+  libpcfx/src/cdda.c is now dead code (still compiled, garbage-collected out).
+  The clean long-term option is to actually fix the eris_cdda_music manager in
+  the lib, but the revert is the proven fix. Nothing committed yet — say the
+  word and I'll commit both fixes (separately, since they're independent), or
+  you can burn and confirm on hardware first.
+
+✻ Cooked for 17m 5s
+
+※ recap: Goal: get the PC-FX build working on real hardware. I fixed two emulator-verified issues (black-screen video and silent CD-DA music), both uncommitted. Next: you burn the disc and confirm on hardware, or I commit the two fixes.
+
+❯ Does waifupcfx.cue/bin have both fixes ?                                      
+
+● Let me verify the current artifacts were built with all four changed sources
+  in place (none newer than the binary).
+
+● Bash(cd /home/anonymous/Documents/DEV/Anime_card/waifu_card_game
+      echo "=== artifact mtime ==="…)
+  ⎿  === artifact mtime ===
+     2026-07-22 12:11:07.678635144 +0200 waifupcfx.bin
+     2026-07-22 12:11:07.680800923 +0200 waifupcfx.cue
+     … +17 lines (ctrl+o to expand)
+
+● Yes — the current waifupcfx.cue/waifupcfx.bin (built 12:11:07) contains both 
+  fixes:
+
+  - All four changed sources have mtimes older than the binary, and their .o
+  files were recompiled at 12:11:00–01 (the cd target does a clean build) and
+  linked into the 12:11:07 image.
+  - Content was grep-verified after that build: irq-disable fix: PRESENT, video 
+  raster-poll fix: PRESENT, audio: game-local manager restored (GOOD).
+
+  And it was the exact image I audio-tested — it booted to the title with CD-DA 
+  music playing, and the earlier video-fix capture confirmed title + battle
+  render.
+
+  So the disc you'd burn right now has:
+  1. Video — no-IRQ + raster-polled wait_vblank (the black-screen fix)
+  2. CD-DA — game-local manager restored (music plays)
+
+  If you'd like, I can do one final clean rebuild for total certainty before you
+  burn, but it's not necessary — the artifacts are current.
+✻ Baked for 30s

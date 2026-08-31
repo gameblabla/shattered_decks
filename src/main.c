@@ -1145,6 +1145,12 @@ typedef struct FusionRule {
     int result;
 } FusionRule;
 
+typedef struct FusionChainRule {
+    const char *attribute;
+    int min_monsters;
+    int result;
+} FusionChainRule;
+
 static const FusionRule g_fusion_rules[] = {
     {WAIFU_CARD_ID_COCINELLE, WAIFU_CARD_ID_BEE_WOMAN, WAIFU_CARD_ID_INSECT_QUEEN},
     {WAIFU_CARD_ID_COCINELLE, WAIFU_CARD_ID_REPTILE, WAIFU_CARD_ID_INSECT_QUEEN},
@@ -1158,6 +1164,12 @@ static const FusionRule g_fusion_rules[] = {
     {WAIFU_CARD_ID_INSECT_BOMB, WAIFU_CARD_ID_INSECT_SOLDIER, WAIFU_CARD_ID_INSECT_QUEEN_WOMAN},
     {WAIFU_CARD_ID_ELEC_WOLF, WAIFU_CARD_ID_CROW, WAIFU_CARD_ID_YOKAI},
     {WAIFU_CARD_ID_STREET, WAIFU_CARD_ID_BEE_WOMAN, WAIFU_CARD_ID_WARRIOR},
+};
+
+/* Chain recipes consume every monster material at once.  Equip materials are
+   carried through independently by the normal fusion bookkeeping. */
+static const FusionChainRule g_fusion_chain_rules[] = {
+    {"Water", 4, WAIFU_CARD_ID_ANGEL_FISHWOMAN},
 };
 
 static int fusion_result_for_cards(int a, int b)
@@ -11178,16 +11190,24 @@ static int player_fusion_should_resolve_hand_before_field(int field_card)
            is_monster_card(fusion_result_for_cards(current, field_card));
 }
 
-static int fusion_chain_is_four_water_monsters(const int *cards, int count)
+static int fusion_result_for_chain(const int *cards, int count)
 {
-    int i;
-    int water_count = 0;
-    for (i = 0; i < count; ++i) {
-        if (fusion_material_is_equip(cards[i])) continue;
-        if (!is_monster_card(cards[i]) || strcmp(waifu_card_attr[cards[i]], "Water") != 0) return 0;
-        ++water_count;
+    int rule_index;
+    for (rule_index = 0;
+         rule_index < (int)(sizeof(g_fusion_chain_rules) / sizeof(g_fusion_chain_rules[0]));
+         ++rule_index) {
+        const FusionChainRule *rule = &g_fusion_chain_rules[rule_index];
+        int i;
+        int monster_count = 0;
+        for (i = 0; i < count; ++i) {
+            int card = cards[i];
+            if (fusion_material_is_equip(card)) continue;
+            if (!is_monster_card(card) || strcmp(waifu_card_attr[card], rule->attribute) != 0) break;
+            ++monster_count;
+        }
+        if (i == count && monster_count >= rule->min_monsters) return rule->result;
     }
-    return water_count >= 4;
+    return CARD_NONE;
 }
 
 static int prepare_player_fusion_anim(int target_slot)
@@ -11209,7 +11229,7 @@ static int prepare_player_fusion_anim(int target_slot)
     int pending_equip_count = 0;
     int performed_fusion = 0;
     int failed_pair = 0;
-    int four_water_fusion = 0;
+    int chain_result = CARD_NONE;
     if (g_b_fusion_count <= 0) return 0;
     if (target_slot < 0 || target_slot >= I_FIELD) return 0;
 
@@ -11257,7 +11277,7 @@ static int prepare_player_fusion_anim(int target_slot)
     }
 
     g_b_fusion_anim_count = out;
-    four_water_fusion = fusion_chain_is_four_water_monsters(g_b_fusion_anim_cards, g_b_fusion_anim_count);
+    chain_result = fusion_result_for_chain(g_b_fusion_anim_cards, g_b_fusion_anim_count);
 
     for (i = 0; i < g_b_fusion_anim_count; ++i) {
         int card = g_b_fusion_anim_cards[i];
@@ -11292,7 +11312,7 @@ static int prepare_player_fusion_anim(int target_slot)
                                          &current_atk_bonus, &current_def_bonus);
             }
             fusion_clear_local_equips(pending_equips, pending_equip_srcs, &pending_equip_count);
-        } else {
+        } else if (!is_monster_card(chain_result)) {
             int fused = fusion_result_for_cards(current, card);
             if (is_monster_card(fused)) {
                 current = fused;
@@ -11313,16 +11333,13 @@ static int prepare_player_fusion_anim(int target_slot)
         }
     }
 
-    /* Four Water monsters are a direct recipe for Seraphina.  Resolve this
-       after walking the chain so the normal equip bookkeeping is preserved,
-       while avoiding the failed intermediate pair that a binary chain would
-       otherwise create. */
-    if (four_water_fusion) {
-        current = WAIFU_CARD_ID_ANGEL_FISHWOMAN;
+    if (is_monster_card(chain_result)) {
+        current = chain_result;
         current_source = -1;
         current_from_fusion = 1;
+        fusion_keep_hand_equips(current_equips, current_equip_srcs, &current_equip_count,
+                                &current_atk_bonus, &current_def_bonus);
         performed_fusion = 1;
-        failed_pair = 0;
     }
 
     if (is_monster_card(current)) {
@@ -22560,19 +22577,21 @@ static int debug_regression_fusion_equip_only(void)
 
     /* Four weak WATER monsters are also a direct recipe for Seraphina, even
        though their left-to-right binary chain would otherwise hit a failed
-       mixed-strength pair after the first Thalassa. */
+       mixed-strength pair after the first Thalassa.  An interleaved equip is
+       not a recipe ingredient, but still lands on the result. */
     {
         int k;
         debug_setup_fusion_equip_scenario("fusion-then-equip");
         for (k = 0; k < I_HAND; ++k) g_i_player_used[k] = 1;
         g_i_player_hand[0] = WAIFU_CARD_ID_PENGUIN;
         g_i_player_hand[1] = WAIFU_CARD_ID_SLIME;
-        g_i_player_hand[2] = WAIFU_CARD_ID_EEL;
-        g_i_player_hand[3] = WAIFU_CARD_ID_JELLYFISH;
-        for (k = 0; k < 4; ++k) g_i_player_used[k] = 0;
+        g_i_player_hand[2] = SUPPORT_EQUIP_CARD_ID;
+        g_i_player_hand[3] = WAIFU_CARD_ID_EEL;
+        g_i_player_hand[4] = WAIFU_CARD_ID_JELLYFISH;
+        for (k = 0; k < I_HAND; ++k) g_i_player_used[k] = 0;
         g_b_player_monster_played_this_turn = 0;
         clear_player_fusion_queue();
-        for (k = 0; k < 4; ++k) {
+        for (k = 0; k < I_HAND; ++k) {
             if (try_queue_player_fusion_slot(k) != k + 1) {
                 fprintf(stderr, "REGRESSION fusion_four_water FAIL: queue_count=%d\n", g_b_fusion_count);
                 return 1;
@@ -22589,15 +22608,19 @@ static int debug_regression_fusion_equip_only(void)
         }
         finish_player_fusion_anim();
         if (g_i_player_field[0] != WAIFU_CARD_ID_ANGEL_FISHWOMAN ||
+            g_i_player_equip_field[0] != SUPPORT_EQUIP_CARD_ID ||
+            g_i_player_atk_bonus[0] != equip_atk_bonus(SUPPORT_EQUIP_CARD_ID) ||
             !g_i_player_used[0] || !g_i_player_used[1] ||
-            !g_i_player_used[2] || !g_i_player_used[3]) {
-            fprintf(stderr, "REGRESSION fusion_four_water FAIL: field=%d used=%d/%d/%d/%d\n",
+            !g_i_player_used[2] || !g_i_player_used[3] || !g_i_player_used[4]) {
+            fprintf(stderr, "REGRESSION fusion_four_water FAIL: field=%d equip=%d atk_bonus=%d used=%d/%d/%d/%d/%d\n",
                     g_i_player_field[0],
+                    g_i_player_equip_field[0], g_i_player_atk_bonus[0],
                     g_i_player_used[0], g_i_player_used[1],
-                    g_i_player_used[2], g_i_player_used[3]);
+                    g_i_player_used[2], g_i_player_used[3], g_i_player_used[4]);
             return 1;
         }
-        printf("REGRESSION fusion_four_water OK field=%d\n", g_i_player_field[0]);
+        printf("REGRESSION fusion_four_water OK field=%d equip=%d atk_bonus=%d\n",
+               g_i_player_field[0], g_i_player_equip_field[0], g_i_player_atk_bonus[0]);
     }
 
     /* Equip queued BEFORE a later fusion in the chain (chain order

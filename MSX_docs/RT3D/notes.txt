@@ -1,0 +1,16 @@
+Those sources are still somewhere on a disk in the attic at my parents house. If I visit them again I might look for them (and then I need to find a diskdrive for my current PC so that I can read them :-\ )
+
+Now that I have released Compass (https://github.com/turbor/compass-1.2-sources/releases), it might be a good idea to dig those old files up. Now that the compiler is available for everybody people could actually read the asm files and build those sources on their own.
+
+If you just want to know how they work I did talk about it on msx.org
+Since it is written in pure Z80 assembly, the first thing you should read is the trick that allowed fast multiplication on Z80 (https://www.msxcomputermagazine.nl/mccw/92/Multiplication/en.html)
+
+I did a short explanation about the routine here https://www.msx.org/forum/msx-talk/development/3d-rasterisation?page=1#comment-317636
+
+One of the things I didn't mention online is that the data structure stored the x,y and z coordinates in an array so that each vertex didn't store it's actual (x,y,z) but for each vertex stored it as (index_in_x_array, index_in_y_array,index_in_z_array)
+This way, when calculating the matrix rotation for all the x,y and z coordinates I could store those multiplied values for each x,y and z in a cache/buffer for each of the 9 values in the rotation matrix. Then for each point I could pick the values from these caches/buffers using the index and add them together. This way I avoided doing too much multiplications and it speed up the calculations a lot. :-)
+
+The entire idea is, try to do each calculation only once. And if you do not need a value, don't calculate it! (So first check if a triangle is visible, only then calculate the corner points, if that point is already calculated because it was part of an adjacent triangle fetch it from an array were you cached the value... etc etc )
+
+I'm currently working on some other projects but once those are finished I will make work of looking for those sources.
+

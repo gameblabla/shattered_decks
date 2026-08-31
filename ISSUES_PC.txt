@@ -1,0 +1,9 @@
+On PC/SDL3, Enter during name entry also skips to next screen, that needs to be fixed.
+
+On PC/SDL3, there needs to be a visual animation showing that equip cards are linked to each monster (with a fancy 'line' going from equip card to monster, if there are multiple)
+
+PC versions, 
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/assets/source/story_portraits/
+
+pc_hires needs to be used instead for portraits on PC.
+

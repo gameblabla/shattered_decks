@@ -10,6 +10,12 @@ build/verify loop plus the hardware rules whose violation shipped real bugs. A
 skill does not make the risk disappear: it tells you what to check and how to
 confirm it empirically instead of guessing.
 
+FM TOWNS work is covered by `fmtowns-build-verify` and `fmtowns-architecture`.
+As of 2026-08-27 the owner has confirmed that the current game and its updated
+CD-ROM access work on real FM TOWNS hardware; older blanket “never run on real
+hardware” statements are stale. Keep uncertainty scoped to the exact subsystem
+or scene that lacks evidence.
+
 ---
 
 ## 1. CD32X SH-2 image size limit (131072 bytes)

@@ -65,3 +65,38 @@ src/platform/fmtowns/**/*.d
 # SDL3 host build binary
 /waifu_fm_sdl3
 /waifu_fm_headless_cdrom_2mb
+
+# Vendored toolchains / emulators / reference material (not part of the game)
+/MSXgl-main/
+/doom-pcfx/
+/libpcfx/
+/pcfxemu_old/
+/pcfx_uploader/
+/CD32X/
+/FMT/
+/FMTROMS/
+/TEST/
+/PSX-DOOM-FIRE-FOR-FM-TOWNS/
+/midi-conv
+/slash/
+
+# Local scratch: captures, session transcripts, archives
+/artifacts/
+/out/
+/headless_frames/
+/screenshots/
+/pcfx_save_debug/
+/pcfx_story_save_smoke/
+codex-session-*.md
+pi-session-*.html
+20??-??-??-??????-*.txt
+*.zip
+*.mov
+*.pdf
+*.mcr
+*.wav
+*.m4a
+.cdout.txt
+/waifu_fm_sdl12
+/shattered_decks
+tools/pcfxtools/pcfx-cdlink

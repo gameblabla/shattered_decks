@@ -1,0 +1,427 @@
+
+
+  You are fixing the current FM TOWNS/Marty regressions in waifu_card_game.
+
+  ## Objective
+
+  Restore fast static/2D behavior while preserving this policy:
+
+  - Moving 3D cameras render a genuinely new perspective for every displayed pose.
+  - Only truly static cameras/composites may be cached.
+  - Do not restore camera-anchor caches, prerecorded animation frames, or runtime pose skipping for moving 3D.
+  - Do not claim acceptable Marty performance unless measured observable output supports it.
+
+  ## Required preparation
+
+  Read completely:
+
+  - AGENTS.md
+  - .claude/skills/headless-core/SKILL.md
+  - .claude/skills/fmtowns-architecture/SKILL.md
+  - .claude/skills/fmtowns-build-verify/SKILL.md
+  - codex-session-01a04aa7-2db6-7562-a038-a410f2e86202.md
+
+  Inspect git status and the complete relevant diff first. The worktree is dirty and the previous session’s src/
+  main.c/presenter changes are uncommitted. Preserve all unrelated user changes. Do not revert whole files.
+
+  ## 1. Repair the static top-view cache
+
+  In the WAIFU_FM_FMTOWNS branch of battle_base_cache_for_camera():
+
+  - Map both battle_top_camera() and enemy_battle_top_camera() to g_b_base_cache_top.
+  - Keep player/enemy hand cameras in g_b_base_cache.
+  - Keep placement cameras in g_b_fmtowns_work_cache.
+  - Do not enable the generic g_board_bg_cache; WAIFU_BG_CACHE_DISABLE must remain because Marty lacks the required
+    BSS.
+
+  - Confirm fmtowns_prewarm_battle_views_while_loading() now actually prewarms battle_top_camera() instead of
+    returning because its cache pointer is NULL.
+
+  The existing idle UI_TAG_BATTLE_TOP retention is only an unchanged-frame shortcut. It must not substitute for the
+  board composite cache: selector movement should restore the cached board and redraw overlays, not rasterize the
+  board again.
+
+  Also handle the battle prelude:
+
+  - side_battle_camera(atk_row) is fixed during the 16-frame tactical prelude.
+  - It is therefore eligible for static caching.
+  - Reuse g_b_fmtowns_work_cache; do not allocate another 61,440-byte buffer.
+  - Respect FMTOWNS_WORK_CACHE_CUTIN ownership. The 2D cut-in may take over and invalidate this scratch slot after
+    the prelude.
+
+  ## 2. Separate moving-3D pose time from 2D wall-clock time
+
+  The previous session incorrectly made frame_logic_step() return 1 globally and discarded elapsed vblanks. This
+  slowed every FM TOWNS phase.
+
+  Restore collection of real elapsed periods:
+
+  - Pass steps back through waifu_fm_set_frame_vblanks((int)steps).
+  - Restore a bounded FM TOWNS elapsed-step value.
+  - Avoid applying a CD/loading stall as a large jump on the first frame of a new phase.
+
+  Do not use one global step for everything. Establish two explicit clocks:
+
+  - Moving-3D pose clock: advances exactly 1 per displayed frame.
+  - Wall-clock animation clock: advances by measured elapsed vblanks.
+
+  Moving-camera phases that must use the one-pose step include:
+
+  - IB_OPENING once the flyover becomes visible.
+  - IB_PLAYER_HAND_TO_TOP
+  - IB_PLAYER_TOP_TO_HAND
+  - IB_TURN_TO_COM
+  - IB_TURN_TO_PLAYER
+  - The interpolated portion of IB_PLAYER_RETURN_TOP
+  - The interpolated portion of IB_COM_RETURN
+  - The camera-moving portion of IB_RESULT
+
+  Static/2D phases should use elapsed wall-clock advancement, including:
+
+  - Equip
+  - Fusion’s 2D portion and its static placement-camera landing
+  - Thunder/support effects
+  - Battle cut-ins after the static tactical prelude
+  - Card flips, RAM/burn effects, selection, draw, tally and reward UI
+
+  Audit frame_cue_crossed() and every exact-frame cue. A cue must use the step belonging to its clock so wall-clock
+  catch-up cannot silently lose sounds or state transitions.
+
+  Do not simply restore the old global catch-up: that would make turns skip camera poses again.
+
+  ## 3. Repair the 2D presentation regression
+
+  The new presenter treats full damage as proof that every final framebuffer byte changed and calls
+  fmt_put_image_full(). That assumption is false.
+
+  Examples such as equip call clear_screen() and then redraw a mostly-black composition. They declare full damage,
+  but many final 64-byte groups are unchanged.
+
+  Perform an A/B measurement:
+
+  - Current unconditional full upload.
+  - Previous fmt_put_image_dirty_rows(framebuffer, NULL, NULL) behavior.
+
+  Measure both sparse 2D scenes and dense moving 3D. At minimum cover:
+
+  - profile battle
+  - profile direct
+  - profile name
+  - profile turn
+  - profile fire
+
+  If dirty comparison wins for sparse 2D but direct upload wins for dense moving 3D, introduce an explicit dense-
+  frame hint. Do not infer density from g_frame_dirty_full.
+
+  Only live board/floor frames that truly replace nearly the whole image may select the direct full upload. Equip,
+  cut-ins, text screens, retained black backgrounds, and other sparse 2D scenes must keep dirty comparison/partial
+  presentation.
+
+  Prefer converting suitable black-background animations to the existing retained-solid/composite mechanism so old
+  overlay footprints are restored without full-screen clears. Do not break the two-page dirty history.
+
+  ## 4. Measure moving 3D honestly
+
+  After the functional fixes, profile:
+
+  ./fmtowns.sh profile board
+  ./fmtowns.sh profile board 'EXTRA_CORE_DEFINES=-DWAIFU_BATTLE_BASE_CACHE_DISABLE'
+  ./fmtowns.sh profile place
+  ./fmtowns.sh profile lift
+  ./fmtowns.sh profile turn
+  ./fmtowns.sh profile battle
+  ./fmtowns.sh profile direct
+
+  For each capture:
+
+  - Decode the frame stamp.
+  - Visually inspect the PNG.
+  - Compare equivalent states.
+  - Use step + present; do not infer physical Marty timing from Tsugaru.
+  - Confirm consecutive moving-camera captures show distinct continuous perspectives, not retained anchors.
+
+  Acceptance criteria:
+
+  - Default parked top view is materially cheaper than the cache-disabled top view.
+  - Moving the top selector does not invoke a fresh 3D board render.
+  - Battle prelude renders its fixed camera once per visual key, then restores it.
+  - Equip and other 2D effects finish according to wall-clock timing instead of requiring 120 rendered iterations.
+  - Moving turns/opening still show every authored pose.
+  - No moving-camera cache entries or quantized anchor helpers return.
+  - No new full-screen BSS allocation.
+  - Payload stays below 0x90000; .bss stays below the 2 MiB Marty limit.
+
+  Current live-turn evidence was roughly 71–111 ms step plus 22 ms present, only 7–10 fps. If the result remains
+  above 33.3 ms total, say so plainly. Do not disguise the miss using anchors, frame skipping, reduced texture
+  detail, removed walls, or unsupported hardware claims.
+
+  ## 5. Regression and target gates
+
+  Because src/main.c is shared:
+
+  make regression-story
+  ./waifu_fm_headless_cdrom_2mb --regression-story-all --frames 1 --no-png
+
+  Run the damage verifier and byte-identical/reference comparisons for changed cache/presenter paths.
+
+  Then:
+
+  ./fmtowns.sh build
+
+  Also build PC-FX and CD32X after reading their required skills. Visually verify affected output where runnable
+  tooling exists. Do not call a successful build visual proof.
+
+  ## 6. Commit discipline
+
+  Once verified:
+
+  - Stage only intended files.
+  - Review git diff --cached.
+  - Commit unsigned with git commit --no-gpg-sign.
+  - Verify the commit object contains no gpgsig.
+  - Leave unrelated dirty-worktree changes untouched.
+
+  The final report must distinguish emulator-calibrated performance from physical-hardware evidence and list any
+  target that could not be visually verified.
+
+
+
+• The broken checkpoint remains at 886b3da64fe320d59c34de85d0070e275751c95a. Give Luna xhigh this renderer addendum
+  after the correctness-repair plan:
+
+  ———
+
+  ## FM TOWNS Marty 3D renderer optimization plan
+
+  Work from commit 886b3da, which is intentionally marked BROKEN/WIP. First repair the static top-view cache,
+  elapsed-vblank logic, and full-damage presenter regressions already identified. Do not profile renderer changes
+  until those are fixed because they contaminate both timing and scene selection.
+
+  Read completely before editing:
+
+  - .claude/skills/headless-core/SKILL.md
+  - .claude/skills/fmtowns-build-verify/SKILL.md
+  - .claude/skills/fmtowns-architecture/SKILL.md
+
+  ### Requirements
+
+  - Moving cameras must be rendered live. No camera anchors, retained keyframes, temporal frame omission, or fake
+    caches.
+
+  - Static player/enemy/top views must remain cached.
+  - Preserve resolution, textures, walls, grid lines, cards, and camera path unless explicitly authorized otherwise.
+  - Target a stable calibrated step + present <= 33.3 ms for moving-board frames. This is a Tsugaru calibrated
+    proxy, not a physical-hardware claim.
+
+  - Physical Marty verification is the final authority.
+  - Make one optimization hypothesis per commit. Revert changes that do not produce a repeatable improvement.
+
+  ### Why the current renderer is still slow
+
+  The board is only 5×4—20 cells—so scanning the cells to classify the mesh is not the principal problem.
+  Concentrate on:
+
+  - build_board_projected() projects 52 board/slab points every frame, normally performing two fixed-point divisions
+    per point.
+
+  - The general moving-camera path repeatedly sets up and walks cell edges per scanline.
+  - cfx_draw_board_span_tilted() performs integer division inside its texture-run loop.
+  - The trapezoid path still contains variable 255 / span divisions.
+  - render_board() clears the entire 61,440-byte framebuffer.
+  - Walls and the board call fb_damage_all(), leading to dense/full presentation.
+  - The current i386 fillers already pack four pixels per store, so an assembly rewrite is not automatically the
+    largest available gain.
+
+  The latest valid moving-turn capture measured roughly 71–111 ms step plus 22 ms present. The older 43–50 ms
+  numbers came from a materially different state and must not be used as the current baseline.
+
+  ### Phase 1: build a trustworthy renderer benchmark
+
+  Add a profiling-only fixed-pose benchmark containing three real projected camera states:
+
+  1. Static axis/top view.
+  2. Middle of player-to-enemy turn.
+  3. Most tilted/expensive turn pose.
+
+  These fixed inputs are only for benchmarking; they must not become runtime camera caches.
+
+  Measure these regions separately:
+
+  - camera-basis construction;
+  - point transformation;
+  - projection divisions;
+  - framebuffer clear;
+  - slab walls;
+  - board edge/setup work;
+  - board span fill;
+  - grid lines;
+  - cards/overlays;
+  - presentation.
+
+  Also collect counts for:
+
+  - selected board path;
+  - cells, scanlines, spans and pixels;
+  - tilted versus flat spans;
+  - integer divisions;
+  - average span and run lengths;
+  - cleared bytes;
+  - damaged/presented 32- or 64-byte groups.
+
+  Use identical logical pose IDs between builds. Report medians and worst cases over repeated samples. Do not use
+  the settled profile board screen if UI retention bypasses rendering and produces the bogus approximately 0.5 ms
+  result.
+
+  Use the existing attribution defines, including the reference mesh, skip-spans and skip-board-fill variants, but
+  verify every capture visually.
+
+  ### Phase 2: remove divisions from raster hot loops
+
+  Start here because it is low-risk and the 386SX integer divider is expensive.
+
+  In cfx_draw_board_span_tilted():
+
+  - Replace the positive and negative “pixels until next 8-pixel texture boundary” divisions with a 64-byte
+    ceil(distance / magnitude) lookup for distances and magnitudes 1–8.
+
+  - Any magnitude at least 8 produces a one-pixel run.
+  - Handle step == 0 and -128 explicitly.
+  - Confirm the compiler emits no idiv in the span loop.
+
+  In the trapezoid scanline path:
+
+  - Replace variable 255 / denom and ceil(255 / denom) operations with exact lookup results for denominators 1–256.
+  - Preserve the current signed int8_t wrapping and truncation exactly.
+  - Do not silently substitute the approximate reciprocal helper where it changes pixels.
+
+  Gate: framebuffer output must be byte-identical for every benchmark pose. Keep the change only if it wins
+  repeatably.
+
+  ### Phase 3: optimize projection before rewriting fillers
+
+  Refactor build_board_projected() so the regular board grid does not perform complete dot products independently
+  for all 52 points.
+
+  Precompute, per camera:
+
+  - X-axis contributions for the six board columns;
+  - Z-axis contributions for the five board rows;
+  - Y contributions for FIELD_Y and FIELD_THICK;
+  - contributions for camera-space X, Y and Z separately.
+
+  Compose each point using additions in the same arithmetic order as vdot() so results remain exact. Derive slab-
+  bottom points from the same contribution tables instead of transforming them again.
+
+  Then measure the projection divides separately. If they remain significant:
+
+  - compute or approximate reciprocal Z once per vertex and use it for both projected coordinates;
+  - correct the estimated quotient to reproduce the existing toward-zero result exactly;
+  - avoid 64-bit/libgcc arithmetic in the hot path;
+  - compare every projected point and final framebuffer against the reference path.
+
+  Do not use a faster approximate projection unless all scripted camera states remain pixel-identical.
+
+  ### Phase 4: replace the generic moving mesh walker
+
+  Create an FM TOWNS-specialized 5×4 planar-grid path, retaining the generic implementation as a reference/fallback.
+
+  The new path should:
+
+  - build each unique projected grid edge once;
+  - process scanlines outermost;
+  - maintain active edge state incrementally;
+  - share boundaries between adjacent cells;
+  - avoid reconstructing four quad edges for every cell;
+  - emit the same per-cell affine U/V spans as the existing renderer;
+  - select the two board textures directly without generic atlas/tile dispatch;
+  - use exact reciprocal/step tables rather than per-span division.
+
+  Do not replace the board with one globally projective-textured polygon: that changes the current piecewise-affine
+  pixels. A different image is not an optimization.
+
+  Gate this phase against the generic reference at all turn poses, clipping cases, and both turn directions.
+
+  ### Phase 5: batch the slab walls
+
+  Profile the nine visible wall segments independently. If material:
+
+  - share their projected boundary edges;
+  - batch adjacent segments by scanline;
+  - use a wall-specific span kernel;
+  - keep the already-existing camera-away-wall culling;
+  - preserve the repeating per-cell wall texture.
+
+  Do not optimize hidden walls or generic quads before demonstrating that visible wall rasterization is significant.
+
+  ### Phase 6: reduce clearing and damage traffic
+
+  This is essential to total frame time even though it crosses the renderer/presenter seam.
+
+  Replace the unconditional full-screen clear for live 3D frames with a conservative union of:
+
+  - the previous frame’s 3D scene bounds;
+  - the current board/wall bounds;
+  - any moving cards or overlays that need erasing.
+
+  Clear that union to black and report its exact damage. Do not call fb_damage_all() merely because a 3D primitive
+  was drawn.
+
+  The damage system must remain correct across:
+
+  - both FM TOWNS display pages;
+  - static-cache entry and exit;
+  - turn direction changes;
+  - cards crossing the board boundary;
+  - scene transitions;
+  - animation completion.
+
+  Use the damage-bar diagnostic and screenshots to look for trails. Sparse 2D effects must return to dirty-group
+  presentation; dense presentation should only be selected when its measured cost is lower.
+
+  ### Phase 7: optimize i386 fillers only after attribution
+
+  Inspect the generated i386 code first. The existing direct fillers already use four-pixel packed stores.
+
+  Possible experiments, one at a time:
+
+  - align the destination once and use paired dword stores for long constant runs;
+  - specialize the two board tiles and reuse prepacked colors;
+  - remove repeated tile-address calculations;
+  - unroll only where measured run lengths justify it;
+  - compare manual dword stores with rep stosl on the calibrated Marty configuration.
+
+  Keep i386 assembly local to the FM backend. Do not change the global ABI or shared calling convention. Reject
+  changes that grow the payload significantly for noise-level gains.
+
+  ### Verification after every accepted patch
+
+  Run:
+
+  - relevant headless regressions;
+  - FM TOWNS build and payload/map size checks;
+  - fixed-pose renderer comparisons;
+  - ./fmtowns.sh profile turn;
+  - ./fmtowns.sh profile lift;
+  - a forced-live static-board benchmark;
+  - visually inspected captures with valid frame/state stamps.
+
+  If shared renderer code changes, also read the relevant PC-FX/CD32X skills and build and visually verify every
+  affected target.
+
+  ### Completion gates
+
+  Do not call the work complete until:
+
+  - static top views are cached;
+  - moving cameras render live;
+  - normal overload accounting remains enabled;
+  - no steady-state camera frames are skipped because the complete frame fits its budget;
+  - renderer/reference images match exactly;
+  - sparse 2D animations no longer pay for a background full upload;
+  - moving-turn calibrated timing is repeatably at or below 33.3 ms total, or remaining component costs are reported
+    honestly with measurements;
+
+  - a final build is tested on a physical Marty.
+
+  Record every before/after timing, capture path, compiler define and payload-size change in a dedicated FM TOWNS
+  renderer performance document.

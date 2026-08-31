@@ -1,0 +1,91 @@
+sauce
+ — 
+8/12/26, 5:55 PM
+https://github.com/gameblabla/fmt_playground_unreal/blob/audio/cd-pcm-streaming/src/common/cdrom.c#L159
+GitHub
+fmt_playground_unreal/src/common/cdrom.c at audio/cd-pcm-streaming ...
+Contribute to gameblabla/fmt_playground_unreal development by creating an account on GitHub.
+Contribute to gameblabla/fmt_playground_unreal development by creating an account on GitHub.
+CaptainYS
+ — 
+8/12/26, 5:58 PM
+This is the second program I see that is using the CPU-transfer mode.   Was it not transferring data bytes?  Or was the status incorrect?
+sauce
+ — 
+8/12/26, 5:58 PM
+it's almost certainly not ideal
+sauce
+ — 
+8/12/26, 5:58 PM
+I was using one assembly listing i found as basis for it
+and i noticed a difference vs MAME
+But i didn't pay too much attention with the two
+CaptainYS
+ — 
+8/13/26, 4:42 PM
+That's interesting.  In your source, MAME is returning status 0x21 after each sector, but 0x21 is supposed to be an error.  Based on my memo, only the other program I know that is using the CD-ROM software transfer is Windows 95 CD-ROM driver, and I implemented it based on what it was expecting.  It needs an experiment on the real hardware.
+sauce
+ — 
+8/14/26, 7:36 PM
+Sooo did anyone test ?
+ateam
+ — 
+8/14/26, 7:55 PM
+Haven't been able to yet.
+ateam
+ — 
+Yesterday at 1:31 PM
+@sauce i will test this today on Marty, as my 20F and Fresh E are not setup presently (moving across the country is hard lol)
+ateam
+ — 
+Yesterday at 3:14 PM
+@sauce hangs here, and I don’t imagine those vertical bars are intended.
+ateam
+ — 
+Yesterday at 3:28 PM
+i fired it up in tsugaru, presentation is really nice!
+sauce
+ — 
+Yesterday at 9:53 PM
+So i guess @CaptainYS was correct
+:/
+And those white bars are definitively not supposed to happen
+lol
+so much fun
+fseidel
+ — 
+Yesterday at 10:07 PM
+Looks like bad VRAM
+sauce
+ — 
+Yesterday at 10:27 PM
+But i assume that he already tried other games no ?
+more likely the way i'm writing to VRAM instead
+fseidel
+ — 
+Yesterday at 10:36 PM
+Oh this is your software, I see
+I should have noticed the channel name
+l_oliveira
+ — 
+2:50 AM
+or bad traces
+Marty has problems with capacitors leaking and eating traces, I've repaired a couple over the years
+BCC
+ — 
+3:49 AM
+I think this is not hardware problem. 256-color mode uses only a single screen layer, but should set the CRTC settings to the same values for both layers.
+In the 256-color mode of the actual FM TOWNS hardware, the CRTC settings are referenced for every 32 bits (4 pixels). however, I have not found any emulator that accurately reproduces this behavior. 
+sauce
+ — 
+3:51 AM
+Very likely to be the issue as i kinda guessed setting up the 256 colors mode
+BCC
+ — 
+3:54 AM
+CRTC Register (Tsugaru command: PRI CRTC)
+HSW1:0060 VST1:0000 HDS0:00CA HDE0:02CA VDS0:0046 VDE0:0406 FA0 :1E00 HAJ0:00CA FO0 :0000 LO0 :0020
+HSW2:02C0 VST2:0004 HDS1:00CA HDE1:02CA VDS1:0046 VDE1:0406 FA1 :0000 HAJ1:00CA FO1 :0000 LO1 :0020
+HST :031F EET :0000 VST :0419 EHAJ:0058 EVAJ:0001 ZOOM:1111 CR0 :8003 CR1 :0002 CR2 :0192 FR  :0000
+
+FA1 is not set.

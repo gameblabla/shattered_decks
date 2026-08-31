@@ -1,0 +1,718 @@
+• I’ll pick up from the saved run log, trace the title-screen failure, make the smallest safe correction, verify the relevant build, and create an unsigned local commit.
+  I’m using the repo’s headless-core guidance because this touches shared game/platform behavior.
+
+• Ran sed -n '1,240p' 2026-08-11-213812-the-game-works-on-marty-but-fails-to-run-when-run.txt && printf '\n--- skills ---\n' && sed -n '1,240p' .claude/skills/
+  │ headless-core/SKILL.md && printf '\n--- status ---\n' && git status --short
+  └  ▐▛███▜▌   Claude Code v2.1.227
+    ▝▜█████▛▘  Sonnet 5 · Claude Pro
+    … +477 lines (ctrl + t to view transcript)
+    ?? waifupcfx_slot1.mcr
+    ?? waifupcfx_slot1_portrait_disappear.mcr
+
+• Ran rg -n -i "title occurs|title.*screen|white screen|FMTOWNS|fmt_machine|VRAM" 2026-08-11-213812-the-game-works-on-marty-but-fails-to-run-when-run.txt | tail -100 && git
+  │ log --oneline -12 && git status --short -- FMTOWNSCD_EXAMPLE_Cube src/platform/fmtowns Makefile.fmtowns && find FMTOWNSCD_EXAMPLE_Cube -maxdepth 3 -type f \( -name
+  │ 'machine.c' -o -name 'machine.h' -o -name 'main.c' \) -print
+  └ 7:  FMTROMS roms, ./Tsugaru_CUI.elf "FMTROMS" -TOWNSTYPE FMTOWNS -CD
+    9:  on white screen, this does not occur in Marty mode. Look at TOWNSEMU to fix
+    … +91 lines (ctrl + t to view transcript)
+    FMTOWNSCD_EXAMPLE_Cube/src/main.c
+    FMTOWNSCD_EXAMPLE_Cube/fmtowns_playground/main.c
+
+• Ran sed -n '420,760p' 2026-08-11-213812-the-game-works-on-marty-but-fails-to-run-when-run.txt && printf '\n--- relevant main repo diff ---\n' && git diff -- fmtowns.sh
+  │ tools/fmtowns/headless_shot.sh && printf '\n--- fmt status/log ---\n' && git -C FMTOWNSCD_EXAMPLE_Cube status --short && git -C FMTOWNSCD_EXAMPLE_Cube log --oneline
+  │ -5
+  └   Ran 1 shell command (ctrl+o to expand)
+      ⎿  PostToolUse:Bash says: Tip: Run /ultrareview before you push to catch bugs
+    … +397 lines (ctrl + t to view transcript)
+    ec5dea8 Add MBV, the block video codec from video.txt, with player and encoder
+    19a6136 Add in-machine timing probes for the DAC paths
+
+• Explored
+  └ Search UX|MX|slow|performance|title screen|title in STATUS.md
+    Read machine.c
+    Read machine.h
+    Read STATUS.md
+    Read STATUS.md, fmtowns_main.c, fmtowns.sh
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The saved profiling points to the pacing loop rather than VRAM: the large regression begins exactly when the live title/game loop starts, after boot and title-asset
+  reads. I’m checking the FM TOWNS timer model now; a model-dependent timer rate would explain the immediate 8–10× slowdown and admits a tightly scoped fix.
+
+• Ran rg -n "0x0042|0x42|PIT|307200|MachineID|TOWNSIO_MACHINE_ID|TOWNSCPU_80386SX|TOWNSCPU_80486" FMTOWNSCD_EXAMPLE_Cube/TOWNSEMU FMTOWNSCD_EXAMPLE_Cube/FM -g '*.
+  │ {cpp,h,md,txt}' | head -300 && printf '\n--- timer reference ---\n' && rg -n "clock|timer|PIT|0x004[026]" FMTOWNSCD_EXAMPLE_Cube/FMTOWNS_Technical_Databook_Errata.md
+  │ FMTOWNSCD_EXAMPLE_Cube/FM_20TOWNS_20Technical_20Databook.md 2>/dev/null | head -180
+  └ FMTOWNSCD_EXAMPLE_Cube/TOWNSEMU/src/i8253/i8253.h:9:// Goal: Use this class from TownsTimer::State.  i8253/i8254 is used from Towns on-board PIT and MIDI card.
+    FMTOWNSCD_EXAMPLE_Cube/TOWNSEMU/src/i8253/i8253.h:11:// Memo: Redbook p.617 tells the resolution of PIT on MIDI card is 1/480,000,000 seconds.  480MHz?
+    … +423 lines (ctrl + t to view transcript)
+    FMTOWNSCD_EXAMPLE_Cube/FM_20TOWNS_20Technical_20Databook.md:14098:    - 0 = Internal clock
+    FMTOWNSCD_EXAMPLE_Cube/FM_20TOWNS_20Technical_20Databook.md:14099:    - 1 = External clock
+
+• Explored
+  └ Read FM_20TOWNS_20Technical_20Databook.md
+    Search TOWNSIO_TIMER1_COUNT|timer.|i8253|PIT1|307200|153600|30720 in towns
+    Search cpuType|TOWNSCPU_80386SX|TOWNSCPU_80486DX|cpuFrequency|CPU frequency|freq in towns
+    Read towns.cpp, towns.h, timer.h, timer.cpp
+
+• Ran tail -80 /tmp/fmt-marty/emulator.log; ls -lh /tmp/fmt-marty; find /tmp/fmt-marty -name '*.png' -printf '%f %s\n'
+  └ YM2612 Emulator for Tsugaru [Tsugaru-Ben]
+    Warning: TownsHighResPCM is experimental and not included in state-save at this time.
+    … +6 lines (ctrl + t to view transcript)
+    -rw-r--r-- 1 anonymous anonymous 124 Aug 11 21:40 monitor.txt
+    -rw-r--r-- 1 anonymous anonymous 180 Aug 11 21:40 parked_input.txt
+
+• Ran FMTOWNS_TOWNSTYPE=MARTY FMTOWNS_ROM="$PWD/FMTROMS" FMTOWNS_SHOTS=/tmp/fmt-marty RUN_TIMEOUT=120 ./fmtowns.sh profile hand
+  └ input script: 3 steps, ends at frame 404 (~6s of game time)
+    gcc -c -Ibuild/fmtowns -Isrc/platform/fmtowns/boot -Isrc/platform/fmtowns/common -Isrc/platform/fmtowns -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated
+    … +174 lines (ctrl + t to view transcript)
+    Track 9: /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/build/fmtowns/cdda/Youlost.wav -> 162 sectors at 17:55:63
+    Built output.bin + output.cue (80850 sectors total)
+
+• Ran tail -100 /tmp/fmt-marty/emulator.log; find /tmp/fmt-marty -maxdepth 1 -type f -printf '%f %s\n'
+  └ YM2612 Emulator for Tsugaru [Tsugaru-Ben]
+    Warning: TownsHighResPCM is experimental and not included in state-save at this time.
+    … +6 lines (ctrl + t to view transcript)
+    monitor.txt 124
+    parked_input.txt 180
+
+• Ran FMTOWNS_SHOTS=/tmp/fmt-marty RUN_TIMEOUT=120 ./fmtowns.sh profile hand
+  └ ld -s --gc-sections --warn-constructors --warn-common -static -T src/platform/fmtowns/boot/mygame_shared.lds \
+        -o build/fmtowns/mygame_shared src/platform/fmtowns/boot/head.o src/platform/fmtowns/boot/reloc.o src/platform/fmtowns/fmtowns_main.o src/platform/fmtowns/
+    … +35 lines (ctrl + t to view transcript)
+    Track 9: /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/build/fmtowns/cdda/Youlost.wav -> 162 sectors at 17:55:63
+    Built output.bin + output.cue (80850 sectors total)
+
+• Explored
+  └ Search VRAMWait|mainRAMWait|currentFreq|fastModeFreq|Set.*Wait|Set.*Mode|FASTMode in towns.cpp
+    Read towns.cpp
+    Read towns.h
+    Search TownsTypeToCPUType|cpuType|TOWNSCPU_80386SX|i486|i386|CPU\(\)|cpu\. in towns.cpp
+    Read towns.cpp
+    Read townsio.cpp
+    Search AdjustMachineSpeedForMemoryWait in towns
+    Search FREQUENCY_DEFAULT in TOWNSEMU
+    Search 5E[026]|FASTMODE|fast mode|FAST mode in fmtowns
+    Search 0x05EC|0x5EC|fast mode|FAST mode|memory wait in FM_20TOWNS_20Technical_20Databook.md
+    Search 0x5EC|FASTMODE|fast mode in townsdef.h
+    Search fmt_machine_detect|fmt_set_mode|start_main in fmtowns_main.c
+    Read towns.cpp, townsio.cpp, fmtowns_main.c, common.c, libfmt.h
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The likely fast fix is to force the FM TOWNS into FAST mode at payload startup. The boot firmware can leave non-Marty models with 6-cycle main-RAM/VRAM waits; our bare-
+  metal payload inherits that state, while Marty normally arrives fast. The register is designed for this (0x5EC, bit 0), and setting it before the title loop makes the
+  behavior explicit rather than BIOS/model-dependent.
+
+• Edited src/platform/fmtowns/common/machine.c (+14 -0)
+     6
+     7 +/* TOWNSIO_FASTMODE in TOWNSEMU's townsdef.h and the FM TOWNS Technical
+     8 + * Databook.  The firmware may leave this model-dependent: standard TOWNS
+     9 + * BIOSes can retain six main-RAM/VRAM wait states while Marty's boot path
+    10 + * usually arrives already fast.  This bare-metal game owns its execution
+    11 + * environment, so select the documented fast setting once at startup rather
+    12 + * than inheriting a firmware choice that makes identical game code much
+    13 + * slower immediately after the title screen appears. */
+    14 +#define FMT_IO_FAST_MODE         0x05ecu
+    15 +#define FMT_FAST_MODE_ENABLE     0x01u
+    16 +
+    17  /* FMTownsCommon::MachineID()'s CPU-class field, low byte, genuine FM TOWNS
+       ⋮
+    40      }
+    41 +
+    42 +    /* This applies equally to the narrow Marty/UX and wide standard maps;
+    43 +     * it changes bus wait policy, never the VRAM address chosen above. */
+    44 +    outb(FMT_FAST_MODE_ENABLE, FMT_IO_FAST_MODE);
+    45  }
+
+• Explored
+  └ Read STATUS.md
+
+• Edited src/platform/fmtowns/STATUS.md (+13 -8)
+    710    VRAM (`fmt_set_mode()`, any present call).
+    711 +- **The same startup call now explicitly enables FAST mode** through I/O
+    712 +  `0x5EC` (bit 0).  Firmware can leave a standard-model boot with six
+    713 +  main-RAM and VRAM wait states even when Marty happened to boot fast.  The
+    714 +  bare-metal payload must not inherit that BIOS choice: it selects the
+    715 +  documented fast bus setting before the title/game loop, on both memory-map
+    716 +  classes.  This is independent of (and does not alter) the VRAM-base branch.
+    717  - **`Makefile.fmtowns`** builds `$(COMMONDIR)/machine.o` into the payload.
+        ⋮
+    796    has actually been captured running past the title on a non-Marty model.
+    791 -- **Performance on non-Marty is unmeasured.** Everything in "Frame pacing
+    792 -  and the 3D rasterizer" above was profiled against Marty's 80386SX timing
+    793 -  only. A 486DX/Pentium-class standard model has a materially different
+    794 -  CPU, and this payload's PIT-channel-1-based pacing
+    795 -  (`fmtowns_frame_pace()`) should still hold it to 60 Hz correctly (it
+    796 -  paces off wall-clock hardware time, not instruction count), but the
+    797 -  *cost* of a moving-camera frame (currently 30 ms / ~30 fps on Marty) has
+    798 -  not been measured on a faster CPU class and may differ substantially.
+    797 +- **Non-Marty performance remains a verification scope, not a separate
+    798 +  renderer/code-path project.** The startup FAST-mode write removes the
+    799 +  known BIOS-inherited wait-state discrepancy that appears exactly when the
+    800 +  live title loop begins.  The normal FM TOWNS target still needs a full
+    801 +  title-to-duel capture and frame-stamp comparison against Marty before it
+    802 +  can make a parity claim; no model-specific render duplication or second
+    803 +  binary is warranted unless that controlled check finds a remaining gap.
+    804  - **`fmt_machine_is_narrow_map()` has no caller yet** beyond
+
+• Ran make -f Makefile.fmtowns
+  └ gcc -c -Ibuild/fmtowns -Isrc/platform/fmtowns/boot -Isrc/platform/fmtowns/common -Isrc/platform/fmtowns -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated
+    -DWAIFU_FM_FMTOWNS -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_NO_STDIO -DWAIFU_ASSET_USE_CDROM -DWAIFU_ASSET_BIG_CACHE_SLOTS=40 -DWAIFU_ASSET_RAM_BUDGET=1048576
+    … +174 lines (ctrl + t to view transcript)
+    Track 9: /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/build/fmtowns/cdda/Youlost.wav -> 162 sectors at 17:55:63
+    Built output.bin + output.cue (80850 sectors total)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The FM TOWNS image now builds with the FAST-mode initialization, retaining 45,480 bytes of boot-loader headroom. The available GUI capture route is currently failing
+  before boot with Tsugaru’s “Cannot Open Display,” so I’m not going to overstate an emulator result; the compile/link verification is clean and the runtime change is a
+  single documented I/O write.
+
+• Ran git diff --check && objdump -dr src/platform/fmtowns/common/machine.o | sed -n '1,180p' && git diff --stat -- fmtowns.sh tools/fmtowns/headless_shot.sh src/platform/
+  │ fmtowns/common/machine.c src/platform/fmtowns/STATUS.md && git diff -- fmtowns.sh tools/fmtowns/headless_shot.sh src/platform/fmtowns/common/machine.c src/platform/
+  │ fmtowns/STATUS.md
+  └
+    src/platform/fmtowns/common/machine.o:     file format elf32-i386
+    … +191 lines (ctrl + t to view transcript)
+         -NORMALFD -DONTUSEFPU -NOWAITBOOT $EXTRA_TSUGARU \
+         -GAMEPORT0 KEY -KEYBOARD DIRECT
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The generated machine object contains the expected out $0x5ec, $0x01 immediately after VRAM-map detection. I’m committing only the FM TOWNS fix, its verification-scope
+  note, and the existing model-selectable test harness changes—leaving the unrelated dirty worktree untouched.
+
+• Ran git add fmtowns.sh tools/fmtowns/headless_shot.sh src/platform/fmtowns/common/machine.c src/platform/fmtowns/STATUS.md && git commit --no-gpg-sign -m "FM TOWNS: force
+  │ fast mode at startup" && git status --short && git log -1 --oneline
+  └ [fix/revert-vdc-text-rainbow e04f491] FM TOWNS: force fast mode at startup
+     4 files changed, 50 insertions(+), 11 deletions(-)
+    … +87 lines (ctrl + t to view transcript)
+    ?? waifupcfx_slot1_portrait_disappear.mcr
+    e04f491 FM TOWNS: force fast mode at startup
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Implemented and committed the scoped FM TOWNS fix.
+
+  - Forces FAST mode (0x5EC = 1) at payload startup, eliminating BIOS-inherited RAM/VRAM wait states that begin affecting performance at the live title loop.
+  - Keeps one runtime-detected binary for Marty/UX and standard FM TOWNS VRAM maps.
+  - Adds model/ROM/memory overrides to the FM TOWNS run/profile harness.
+  - Documents that non-Marty parity still needs a complete title-to-duel capture, not a separate renderer implementation.
+
+  Build passed: make -f Makefile.fmtowns.
+
+  Committed unsigned as:
+
+  e04f491 FM TOWNS: force fast mode at startup
+
+  I left all unrelated worktree changes untouched.
+
+─ Worked for 4m 30s ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› Merge that change back to /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/FMTOWNSCD_EXAMPLE_Cube/ and its libfmt
+
+
+• I’ll mirror the FAST-mode initialization into the upstream example toolkit’s libfmt implementation, build it there, and make a separate unsigned commit in that nested
+  repository.
+
+• Ran git -C FMTOWNSCD_EXAMPLE_Cube status --short && git -C FMTOWNSCD_EXAMPLE_Cube log --oneline -3 && sed -n '1,120p' FMTOWNSCD_EXAMPLE_Cube/src/common/machine.c && sed
+  │ -n '1,100p' FMTOWNSCD_EXAMPLE_Cube/src/common/machine.h && rg -n "fmt_machine_detect|machine.o" FMTOWNSCD_EXAMPLE_Cube/src FMTOWNSCD_EXAMPLE_Cube/Makefile
+  └  M run_icm.sh
+    ?? .vexp/
+    … +189 lines (ctrl + t to view transcript)
+    FMTOWNSCD_EXAMPLE_Cube/src/common/machine.h:57:/* VRAM0's physical base address for the machine fmt_machine_detect() found:
+    FMTOWNSCD_EXAMPLE_Cube/src/common/libfmt.c:10: * 386DX/486/Pentium map -- whichever fmt_machine_detect() found this
+
+• Edited FMTOWNSCD_EXAMPLE_Cube/src/common/machine.c (+12 -0)
+     6
+     7 +/* TOWNSIO_FASTMODE in TOWNSEMU's townsdef.h and the FM TOWNS Technical
+     8 + * Databook.  Firmware can leave this model-dependent: standard TOWNS BIOSes
+     9 + * may retain six main-RAM/VRAM wait states while Marty's boot path usually
+    10 + * arrives already fast.  A bare-metal payload must choose the documented
+    11 + * fast setting itself rather than inherit a model-dependent BIOS choice. */
+    12 +#define FMT_IO_FAST_MODE         0x05ecu
+    13 +#define FMT_FAST_MODE_ENABLE     0x01u
+    14 +
+    15  /* FMTownsCommon::MachineID()'s CPU-class field, low byte, genuine FM TOWNS
+       ⋮
+    38      }
+    39 +
+    40 +    /* This changes only bus wait policy; it is independent of the narrow/
+    41 +     * wide VRAM address branch above and applies to both machine classes. */
+    42 +    outb(FMT_FAST_MODE_ENABLE, FMT_IO_FAST_MODE);
+    43  }
+
+• Ran make -C FMTOWNSCD_EXAMPLE_Cube
+  └ make: Entering directory '/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/FMTOWNSCD_EXAMPLE_Cube'
+    gcc -c -Ibuild -Isrc/boot -Isrc/common -Isrc -Wall -march=i386 -std=gnu99 -m32 -Os -fomit-frame-pointer -fno-builtin -ffreestanding -fPIC -Wno-stack-protector
+    … +12 lines (ctrl + t to view transcript)
+    cp -f mygame_shared.bin CD/SYSTEM.BIN
+    make: Leaving directory '/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/FMTOWNSCD_EXAMPLE_Cube'
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The toolkit’s libfmt build completes with the same startup write and retains ample loader/RAM headroom. I’ll now create the requested separate unsigned commit there,
+  without including its unrelated run_icm.sh edit or untracked files.
+
+• Ran git -C FMTOWNSCD_EXAMPLE_Cube diff --check && git -C FMTOWNSCD_EXAMPLE_Cube diff -- src/common/machine.c && git -C FMTOWNSCD_EXAMPLE_Cube add src/common/machine.c &&
+  │ git -C FMTOWNSCD_EXAMPLE_Cube commit --no-gpg-sign -m "libfmt: force fast mode at startup" && git -C FMTOWNSCD_EXAMPLE_Cube status --short && git -C
+  │ FMTOWNSCD_EXAMPLE_Cube log -1 --oneline
+  └ diff --git a/src/common/machine.c b/src/common/machine.c
+    index 66a8cd6..49ab7c1 100644
+    … +107 lines (ctrl + t to view transcript)
+    ?? video.txt
+    ff88923 libfmt: force fast mode at startup
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Merged into the example toolkit’s libfmt and committed separately, unsigned:
+
+  ff88923 libfmt: force fast mode at startup
+
+  Verified with make -C FMTOWNSCD_EXAMPLE_Cube. Unrelated nested-repo changes remain untouched.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› It boots in mame but then fails to load past initial loading screen at title. (/home/anonymous/Documents/DEV/gps3/mame-master/ for reference). I understand that MAME in
+  general is inaccurate compared to TOWNSEMU and the SCSI reference code i got /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/FMTOWNSCD_EXAMPLE_Cube/FM/TOWNS/)
+  but some retail games still work, although they talk through DOS rather.
+
+
+• I’ll trace the post-boot CD asset path against MAME’s FM TOWNS implementation and the reference SCSI code. Since it reaches the initial loading screen, the boot sector
+  and video path are healthy; the likely fault is the bare-metal CD read protocol used for title assets rather than the new model/FAST initialization.
+
+• Explored
+  └ Search fmt_media_load|fmt_cdrom_read|SCSI|scsi|CDROM|CD-ROM|0x[0-9A-Fa-f]+ in cdrom.c
+    Read cdrom.c
+    Search fmtowns|towns.*cd|scsi|cdrom in fujitsu
+    Read cdrom.c
+    Read fmtowns.cpp
+    Read fmtowns.cpp
+    Read cdrom.h
+    Search CD.*0x4c|0x4c.*CD|mode1read|CDCMD_MODE1READ|software transfer in TOWNS
+
+• Ran rg -n -A90 -B20 "towns_cdrom_read_byte_software|towns_cd_set_status|towns_cdrom_read\(" /home/anonymous/Documents/DEV/gps3/mame-master/src/mame/fujitsu/fmtowns.cpp &&
+  │ diff -u FMTOWNSCD_EXAMPLE_Cube/src/common/cdrom.c src/platform/fmtowns/common/cdrom.c | head -240 && rg -n "CDDA|fmt_cdc|fmt_cdrom_read|ISO" FMTOWNSCD_EXAMPLE_Cube/
+  │ src/main.c | head -100 && sed -n '310,365p' FMTOWNSCD_EXAMPLE_Cube/src/main.c
+  └ 1131-                    m_towns_cd.status |= 0x40;
+    1132-            }
+    … +654 lines (ctrl + t to view transcript)
+            fmt_vgm_play();
+            fmt_vgm_stop();
+
+• Explored
+  └ Search case TOWNSIO_CDROM_TRANSFER|CPUTransfer|CDROM_TRANSFER|IOWriteByte in cdrom.cpp
+    Search #define TOWNSIO_CDROM|CDROM_TRANSFER in townsdef.h
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Found the concrete protocol mismatch. MAME’s CDC emits 0x21 for subsequent PIO sectors, whereas the reader only accepts 0x22; it also needs PIO selected before it issues
+  a multi-sector read. The boot loader succeeds because its fixed initial load bypasses this path, and one-sector ISO metadata reads can succeed—then the multi-sector title
+  asset stalls. I’m correcting the shared reader and mirroring it to the example libfmt.
+
+• Edited 2 files (+26 -4)
+  └ FMTOWNSCD_EXAMPLE_Cube/src/common/cdrom.c (+13 -2)
+     41  #define CDSTAT_READ_DONE          0x06  /* All requested sectors transferred */
+     42 -#define CDSTAT_DATA_READY         0x22  /* One sector is ready to be transferred */
+     42 +/* 0x22 is the generic/DMA data-ready status.  A PIO transfer can report
+     43 + * 0x21 instead; MAME does so for every sector after the first, while
+     44 + * TOWNSEMU reports 0x22.  Both mean the same thing to this polled reader. */
+     45 +#define CDSTAT_DATA_READY_DMA     0x22
+     46 +#define CDSTAT_DATA_READY_PIO     0x21
+     47
+        ⋮
+    167      build_read_command(lba, count, cmd);
+    168 +
+    169 +    /* Select CPU/PIO transfer before the eighth parameter starts the
+    170 +     * command.  MAME snapshots this mode when it accepts MODE1READ; setting
+    171 +     * it only after the first ready status makes a multi-sector read begin
+    172 +     * as DMA and changes the following status sequence.  Real hardware and
+    173 +     * TOWNSEMU also accept this documented ordering. */
+    174 +    outb(0x08, CD_TRANSFER_CTRL);
+    175      fmt_cdc_issue(cmd[0], &cmd[1]);
+        ⋮
+    187          }
+    177 -        if (status != CDSTAT_DATA_READY) {
+    188 +        if (status != CDSTAT_DATA_READY_DMA && status != CDSTAT_DATA_READY_PIO) {
+    189              return -1;
+
+  └ src/platform/fmtowns/common/cdrom.c (+13 -2)
+     41  #define CDSTAT_READ_DONE          0x06  /* All requested sectors transferred */
+     42 -#define CDSTAT_DATA_READY         0x22  /* One sector is ready to be transferred */
+     42 +/* 0x22 is the generic/DMA data-ready status.  A PIO transfer can report
+     43 + * 0x21 instead; MAME does so for every sector after the first, while
+     44 + * TOWNSEMU reports 0x22.  Both mean the same thing to this polled reader. */
+     45 +#define CDSTAT_DATA_READY_DMA     0x22
+     46 +#define CDSTAT_DATA_READY_PIO     0x21
+     47
+        ⋮
+    167      build_read_command(lba, count, cmd);
+    168 +
+    169 +    /* Select CPU/PIO transfer before the eighth parameter starts the
+    170 +     * command.  MAME snapshots this mode when it accepts MODE1READ; setting
+    171 +     * it only after the first ready status makes a multi-sector read begin
+    172 +     * as DMA and changes the following status sequence.  Real hardware and
+    173 +     * TOWNSEMU also accept this documented ordering. */
+    174 +    outb(0x08, CD_TRANSFER_CTRL);
+    175      fmt_cdc_issue(cmd[0], &cmd[1]);
+        ⋮
+    187          }
+    177 -        if (status != CDSTAT_DATA_READY) {
+    188 +        if (status != CDSTAT_DATA_READY_DMA && status != CDSTAT_DATA_READY_PIO) {
+    189              return -1;
+
+• Ran make -f Makefile.fmtowns && make -C FMTOWNSCD_EXAMPLE_Cube
+  └ gcc -c -Ibuild/fmtowns -Isrc/platform/fmtowns/boot -Isrc/platform/fmtowns/common -Isrc/platform/fmtowns -I. -Isrc -Isrc/engine -Isrc/game -Isrc/generated
+    -DWAIFU_FM_FMTOWNS -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_ASSET_NO_STDIO -DWAIFU_ASSET_USE_CDROM -DWAIFU_ASSET_BIG_CACHE_SLOTS=40 -DWAIFU_ASSET_RAM_BUDGET=1048576
+    … +7 lines (ctrl + t to view transcript)
+    src/platform/fmtowns/common/cdrom.c:310:21: note: each undeclared identifier is reported only once for each function it appears in
+    make: *** [Makefile.fmtowns:372: src/platform/fmtowns/common/cdrom.o] Error 1
+
+• Edited 2 files (+8 -2)
+  └ FMTOWNSCD_EXAMPLE_Cube/src/common/cdrom.c (+4 -1)
+    270
+    271 +        /* As with the blocking reader, PIO must already be selected when
+    272 +         * the final command parameter starts this run. */
+    273 +        outb(0x08, CD_TRANSFER_CTRL);
+    274          build_read_command(st->lba + st->sector, (uint16_t)run, st->cmd);
+        ⋮
+    312          (void)inb(CD_COMMAND_STATUS);
+    310 -        if (code == CDSTAT_DATA_READY) {
+    313 +        if (code == CDSTAT_DATA_READY_DMA || code == CDSTAT_DATA_READY_PIO) {
+    314              outb(0x08, CD_TRANSFER_CTRL); /* STS=1, DTS=0: software transfer. */
+
+  └ src/platform/fmtowns/common/cdrom.c (+4 -1)
+    270
+    271 +        /* As with the blocking reader, PIO must already be selected when
+    272 +         * the final command parameter starts this run. */
+    273 +        outb(0x08, CD_TRANSFER_CTRL);
+    274          build_read_command(st->lba + st->sector, (uint16_t)run, st->cmd);
+        ⋮
+    312          (void)inb(CD_COMMAND_STATUS);
+    310 -        if (code == CDSTAT_DATA_READY) {
+    313 +        if (code == CDSTAT_DATA_READY_DMA || code == CDSTAT_DATA_READY_PIO) {
+    314              outb(0x08, CD_TRANSFER_CTRL); /* STS=1, DTS=0: software transfer. */
+
+• Ran make -f Makefile.fmtowns && make -C FMTOWNSCD_EXAMPLE_Cube
+  └ Warning: creating filesystem that does not conform to ISO-9660.
+    Total translation table size: 0
+    … +23 lines (ctrl + t to view transcript)
+    cp -f mygame_shared.bin CD/SYSTEM.BIN
+    make: Leaving directory '/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/FMTOWNSCD_EXAMPLE_Cube'
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Both builds pass. The fix is narrow and protocol-correct: select PIO before MODE1READ and accept both valid PIO/DMA-ready statuses (0x21/0x22) in blocking and streamed
+  reads. I’ll now check the local MAME target invocation so this can be validated against the emulator that exposed it.
+
+• Ran find /home/anonymous/Documents/DEV/gps3/mame-master -maxdepth 3 -type f \( -name 'mame' -o -name 'mame64' -o -name 'mame*' \) -perm -111 -printf '%p\n' | head -40 &&
+  │ rg -n "COMP\(|CONS\(" /home/anonymous/Documents/DEV/gps3/mame-master/src/mame/fujitsu/fmtowns.cpp | tail -40 && git status --short -- src/platform/fmtowns/common/
+  │ cdrom.c && git -C FMTOWNSCD_EXAMPLE_Cube status --short -- src/common/cdrom.c
+  └ 3004:COMP( 1989, fmtowns,    0,        0,      towns,    towns, towns_state,   empty_init, "Fujitsu", "FM-Towns (Model 1 / 2)",                  MACHINE_NOT_WORKING)
+    3005:COMP( 1991, fmtownsv03, fmtowns,  0,      towns,    towns, towns_state,   empty_init, "Fujitsu", "FM-Towns (unknown, V03 L01 00 91/07/09)", MACHINE_NOT_WORKING)
+    … +8 lines (ctrl + t to view transcript)
+     M src/platform/fmtowns/common/cdrom.c
+     M src/common/cdrom.c
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• There is no built MAME executable in the supplied reference tree, and its FM TOWNS drivers are explicitly marked MACHINE_NOT_WORKING, so I can’t run an end-to-end local
+  capture here. The code path is nevertheless directly matched to MAME’s implementation. I’m committing the game and standalone-libfmt fixes separately, keeping unrelated
+  changes untouched.
+
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.
+
+
+› You can try mame fmtowns -cdrom (linktocue) instead
+
+
+• I’ll try the installed mame command with the fmtowns driver and the rebuilt cue image, using the CD-ROM device option.
+
+• Ran command -v mame || true
+  │ mame -listmedia fmtowns 2>&1 | head -120
+  │ mame -listslots fmtowns 2>&1 | head -160
+  └ SYSTEM           SLOT NAME        SLOT OPTIONS     SLOT DEVICE NAME
+    ---------------- ---------------- ---------------- ----------------------------
+    … +48 lines (ctrl + t to view transcript)
+                     scsislot         fmt121           FMT-121 SCSI Card
+
+
+• Ran timeout -s KILL 25 mame fmtowns -cdrom "$PWD/build/fmtowns/output.cue" -video none -sound none -skip_gameinfo -seconds_to_run 12 2>&1
+  └ Average speed: 100.00% (11 seconds)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• MAME is installed and accepts the cue through -cdrom; it ran at 100% for 11 seconds. I’ll capture a short MAME video next so we can inspect whether the corrected multi-
+  sector CD path reaches the title rather than only proving that the machine remains running.
+
+✔ You approved codex to always run commands that start with rm -f /tmp/fmtowns-mame.avi && xvfb-run -a timeout -s KILL 35 mame fmtowns -c...
+
+• Ran rm -f /tmp/fmtowns-mame.avi && xvfb-run -a timeout -s KILL 35 mame fmtowns -cdrom "$PWD/build/fmtowns/output.cue" -window -sound none -skip_gameinfo -seconds_to_run
+  │ 18 -aviwrite /tmp/fmtowns-mame.avi 2>&1 && ls -lh /tmp/fmtowns-mame.avi && ffmpeg -hide_banner -loglevel error -y -sseof -1 -i /tmp/fmtowns-mame.avi -frames:v 1 /tmp/
+  │ fmtowns-mame-last.png && file /tmp/fmtowns-mame-last.png
+  └ ALSA lib seq_hw.c:540:(snd_seq_hw_open) [error.sequencer] open /dev/snd/seq failed: No such file or directory
+    Average speed: 100.00% (17 seconds)
+
+• Ran ls -lh /tmp/fmtowns-mame.avi /tmp/fmtowns-mame-last.png 2>&1; file /tmp/fmtowns-mame.avi 2>&1; mame -showconfig | rg -n "snap|avi|video" | head -40
+  └ ls: cannot access '/tmp/fmtowns-mame-last.png': No such file or directory
+    -rw-r--r-- 1 anonymous anonymous 1.2G Aug 11 21:53 /tmp/fmtowns-mame.avi
+    … +9 lines (ctrl + t to view transcript)
+    359:sdlvideofps               0
+    402:videodriver               auto
+
+• Ran ffmpeg -hide_banner -loglevel error -y -ss 00:00:16 -i /tmp/fmtowns-mame.avi -frames:v 1 /tmp/fmtowns-mame-last.png && file /tmp/fmtowns-mame-last.png && ls -lh /tmp/
+  │ fmtowns-mame-last.png
+  └ /tmp/fmtowns-mame-last.png: PNG image data, 768 x 512, 8-bit/color RGB, non-interlaced
+    -rw-r--r-- 1 anonymous anonymous 1.6K Aug 11 21:53 /tmp/fmtowns-mame-last.png
+
+• Viewed Image
+  └ /tmp/fmtowns-mame-last.png
+
+• Explored
+  └ Search TITLE [0-9]|LOADING|loading|TITLE in fmtowns
+    Read fmtowns_main.c
+    Read waifu_fmtowns_cdrom.c
+    Read iso9660.c
+
+• Ran rg -n "loading_percent|loading_label|needs_loading|service_load|service.*load|g_load" src/game/assets.c | head -260 && sed -n '690,1010p' src/game/assets.c && sed -n
+  │ '5440,5470p' src/main.c && find /home/anonymous/.mame -type f \( -name '*.log' -o -name 'error.log' \) -printf '%p %s\n' 2>/dev/null | head -60
+  └ 218:static int g_ending_loaded = 0;
+    221:static int g_load_step = 0;
+    … +414 lines (ctrl + t to view transcript)
+        clear_screen(IDX_BLACK);
+        draw_centered_text(96, "BACKUP RAM", IDX_GOLD_HI, IDX_BLACK);
+
+• Ran rg -n "read_blob_platform|waifu_assets_platform_read_blob\(" src/game/assets.c src/platform/fmtowns -g '*.{c,h}' && sed -n '380,470p' src/game/assets.c && sed -n
+  │ '1015,1085p' src/game/assets.c && nm -g build/fmtowns/mygame_shared | rg 'waifu_assets_platform_read_blob' || true
+  └ src/game/assets.c:78:static int read_blob_platform(WaifuAssetBlobId blob, uint8_t *dst, size_t bytes)
+    src/game/assets.c:778:    return read_blob_platform(blob, dst, bytes);
+    … +161 lines (ctrl + t to view transcript)
+    {
+    nm: build/fmtowns/mygame_shared: no symbols
+
+• Explored
+  └ Read assets.c
+    Search waifu_assets_platform_read_blob in .
+    Read waifu_fmtowns_platform.c
+
+✔ You approved codex to always run commands that start with rm -f error.log && timeout -s KILL 12 mame fmtowns -cdrom "$PWD/build/fmtowns...
+
+• Ran rm -f error.log && timeout -s KILL 12 mame fmtowns -cdrom "$PWD/build/fmtowns/output.cue" -video none -sound none -skip_gameinfo -seconds_to_run 7 -log 2>&1; ls -lh
+  │ error.log 2>&1; rg -n "CD:|fmtowns|error|unknown" error.log 2>/dev/null | tail -240
+  └ Ignoring MAME exception: running_machine::run: unable to open error.log file
+    Fatal error: running_machine::run: unable to open error.log file
+    ls: cannot access 'error.log': No such file or directory
+
+• Ran mame -help | head -20; git -C /home/anonymous/Documents/DEV/gps3/mame-master log -1 --oneline; rg -n "#define LOG_CD|LOG_CD" /home/anonymous/Documents/DEV/gps3/
+  │ mame-master/src/mame/fujitsu/fmtowns.cpp | head -100; sed -n '1,120p' /home/anonymous/Documents/DEV/gps3/mame-master/src/mame/fujitsu/fmtowns.cpp
+  └ MAME v0.282 (unknown)
+    Copyright MAMEdev and contributors
+    … +160 lines (ctrl + t to view transcript)
+     * 0x04da   : YM3438 data port A / status
+     * 0x04dc   : YM3438 control port B / status
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The MAME capture is still at LOADING… TITLE 0%, so its current CDC model is blocking before the first multi-sector title request completes. I’m testing a conservative
+  compatibility fallback: issue one data sector per command from the FM TOWNS asset backend. That preserves the normal CDC reader and is a clean way to distinguish MAME’s
+  multi-sector PIO behavior from an ISO/layout problem.
+
+• Edited src/platform/fmtowns/waifu_fmtowns_cdrom.c (+6 -0)
+    76              uint16_t count = (uint16_t)(whole / FMT_CD_SECTOR_BYTES);
+    77 +            /* MAME's FM TOWNS CDC currently stalls a multi-sector PIO
+    78 +             * MODE1READ after the IPL has booted.  One-sector commands use
+    79 +             * the same documented protocol and keep real/TOWNSEMU behaviour
+    80 +             * correct while providing a conservative emulator fallback. */
+    81 +            if (count > 1u) count = 1u;
+    82              if (fmt_cdrom_read(lba, count, out) != 0) return 0;
+    83 +            whole = (size_t)count * FMT_CD_SECTOR_BYTES;
+    84              out += whole;
+
+✔ You approved codex to always run commands that start with make -f Makefile.fmtowns >/tmp/fmtowns-build.log && rm -f /tmp/fmtowns-mame.a...
+
+• Ran make -f Makefile.fmtowns >/tmp/fmtowns-build.log && rm -f /tmp/fmtowns-mame.avi /tmp/fmtowns-mame-last.png && xvfb-run -a timeout -s KILL 25 mame fmtowns -cdrom
+  │ "$PWD/build/fmtowns/output.cue" -window -sound none -skip_gameinfo -seconds_to_run 12 -aviwrite /tmp/fmtowns-mame.avi >/tmp/fmtowns-mame.log 2>&1 && ffmpeg
+  │ -hide_banner -loglevel error -y -ss 00:00:10 -i /tmp/fmtowns-mame.avi -frames:v 1 /tmp/fmtowns-mame-last.png && rm -f /tmp/fmtowns-mame.avi && file /tmp/
+  │ … +1 lines
+  └ Warning: creating filesystem that does not conform to ISO-9660.
+    Total translation table size: 0
+    … +3 lines (ctrl + t to view transcript)
+    Max brk space used 0
+    1125 extents written (2 MB)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The one-sector experiment made MAME stop advancing altogether—the guest is now blocked inside the first CDC transaction—so MAME’s internal PIO implementation is not
+  merely returning the alternate status. I’m cleaning up the temporary capture and will retain the protocol improvement only after separating it from this MAME-specific
+  dead end.
+
+✔ You approved codex to run ps -eo pid,etime,cmd | rg '[m]ame|[X]vfb' || true ... this time
+
+• Ran ps -eo pid,etime,cmd | rg '[m]ame|[X]vfb' || true
+  │ ls -lh /tmp/fmtowns-mame.avi /tmp/fmtowns-mame-last.png /tmp/fmtowns-mame.log 2>&1
+  │ rm -f /tmp/fmtowns-mame.avi /tmp/fmtowns-mame-last.png
+  │ … +2 lines
+  └ ALSA lib seq_hw.c:540:(snd_seq_hw_open) [error.sequencer] open /dev/snd/seq failed: No such file or directory
+    Average speed: 99.99% (11 seconds)
+    … +75 lines (ctrl + t to view transcript)
+                 offset += whole;
+                 bytes -= whole;
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The capture command itself ran for 11 emulated seconds, but MAME returns a nonzero exit after AVI capture, so the extraction step did not run. I’ve separated the two
+  hypotheses: I’m reverting the premature PIO pre-arm and one-sector experiment, while retaining acceptance of MAME’s valid 0x21 PIO-ready status. That leaves the original,
+  TOWNSEMU-proven transfer ordering intact.
+
+• Edited 3 files (+0 -24)
+  └ FMTOWNSCD_EXAMPLE_Cube/src/common/cdrom.c (+0 -9)
+    168
+    169 -    /* Select CPU/PIO transfer before the eighth parameter starts the
+    170 -     * command.  MAME snapshots this mode when it accepts MODE1READ; setting
+    171 -     * it only after the first ready status makes a multi-sector read begin
+    172 -     * as DMA and changes the following status sequence.  Real hardware and
+    173 -     * TOWNSEMU also accept this documented ordering. */
+    174 -    outb(0x08, CD_TRANSFER_CTRL);
+    169      fmt_cdc_issue(cmd[0], &cmd[1]);
+        ⋮
+    264
+    271 -        /* As with the blocking reader, PIO must already be selected when
+    272 -         * the final command parameter starts this run. */
+    273 -        outb(0x08, CD_TRANSFER_CTRL);
+    265          build_read_command(st->lba + st->sector, (uint16_t)run, st->cmd);
+
+  └ src/platform/fmtowns/common/cdrom.c (+0 -9)
+    168
+    169 -    /* Select CPU/PIO transfer before the eighth parameter starts the
+    170 -     * command.  MAME snapshots this mode when it accepts MODE1READ; setting
+    171 -     * it only after the first ready status makes a multi-sector read begin
+    172 -     * as DMA and changes the following status sequence.  Real hardware and
+    173 -     * TOWNSEMU also accept this documented ordering. */
+    174 -    outb(0x08, CD_TRANSFER_CTRL);
+    169      fmt_cdc_issue(cmd[0], &cmd[1]);
+        ⋮
+    264
+    271 -        /* As with the blocking reader, PIO must already be selected when
+    272 -         * the final command parameter starts this run. */
+    273 -        outb(0x08, CD_TRANSFER_CTRL);
+    265          build_read_command(st->lba + st->sector, (uint16_t)run, st->cmd);
+
+  └ src/platform/fmtowns/waifu_fmtowns_cdrom.c (+0 -6)
+    76              uint16_t count = (uint16_t)(whole / FMT_CD_SECTOR_BYTES);
+    77 -            /* MAME's FM TOWNS CDC currently stalls a multi-sector PIO
+    78 -             * MODE1READ after the IPL has booted.  One-sector commands use
+    79 -             * the same documented protocol and keep real/TOWNSEMU behaviour
+    80 -             * correct while providing a conservative emulator fallback. */
+    81 -            if (count > 1u) count = 1u;
+    77              if (fmt_cdrom_read(lba, count, out) != 0) return 0;
+    83 -            whole = (size_t)count * FMT_CD_SECTOR_BYTES;
+    78              out += whole;
+
+• Context compacted
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I’ve retained the focused CDC compatibility change: accepting MAME’s PIO continuation status (0x21) alongside the normal ready status. I’m rebuilding both copies now,
+  then I’ll capture the MAME boot using -cdrom and verify whether title loading advances.
+
+• Ran make -f Makefile.fmtowns && make -C FMTOWNSCD_EXAMPLE_Cube
+  └ loaded image ends at 0x84e58 / 0x90000 (45480 bytes spare, boot-sector ceiling)
+    .bss ends at 0x1e3700 / 0x200000 (116992 bytes spare)
+    … +32 lines (ctrl + t to view transcript)
+    cp -f mygame_shared.bin CD/SYSTEM.BIN
+    make: Leaving directory '/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/FMTOWNSCD_EXAMPLE_Cube'
+
+✔ You approved codex to always run commands that start with rm -f /tmp/fmtowns-mame.avi /tmp/fmtowns-mame.log && xvfb-run -a timeout -s K...
+
+• Ran rm -f /tmp/fmtowns-mame.avi /tmp/fmtowns-mame.log && xvfb-run -a timeout -s KILL 25 mame fmtowns -cdrom /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/
+  │ build/fmtowns/output.cue -window -sound none -skip_gameinfo -seconds_to_run 12 -aviwrite /tmp/fmtowns-mame.avi >/tmp/fmtowns-mame.log 2>&1
+  └ (no output)
+
+✔ You approved codex to always run commands that start with rm -f /tmp/fmtowns-mame.avi
+
+• Ran ffmpeg -hide_banner -loglevel error -y -ss 00:00:10 -i /tmp/fmtowns-mame.avi -frames:v 1 /tmp/fmtowns-mame-last.png && ls -lh /tmp/fmtowns-mame.avi /tmp/
+  │ fmtowns-mame-last.png && rm -f /tmp/fmtowns-mame.avi
+  └ (no output)
+
+• Viewed Image
+  └ /tmp/fmtowns-mame-last.png
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The status compatibility alone is not sufficient: a 10-second MAME frame is still at TITLE 0%. The CD image itself is accepted and the boot path runs, so I’m narrowing
+  this to the first PIO-sector handshake rather than video or ISO layout.
+
+• Explored
+  └ Read cdrom.c, fmtowns.cpp
+
+• Ran rg -n "fmt_cdc_issue|MODE1READ|0x4C2|CD_COMMAND_STATUS|CD_TRANSFER_CTRL|cdrom.*read" /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/FMTOWNSCD_EXAMPLE_Cube /
+  │ home/anonymous/Documents/DEV/Anime_card/waifu_card_game/src/platform/fmtowns /home/anonymous/Documents/DEV/gps3/mame-master/src/mame/fujitsu -g '*.{c,h,cpp}' | head
+  │ -240 && rg -n "IOWriteByte.*4c2|0x4c2|MODE1READ" /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/FMTOWNSCD_EXAMPLE_Cube/FM/TOWNS 2>/dev/null | head -160
+  └ /home/anonymous/Documents/DEV/gps3/mame-master/src/mame/fujitsu/fmtowns.cpp:1175:TIMER_CALLBACK_MEMBER(towns_state::towns_cdrom_read_byte)
+    /home/anonymous/Documents/DEV/gps3/mame-master/src/mame/fujitsu/fmtowns.cpp:1217:                m_cdrom->read_data(+
+    … +141 lines (ctrl + t to view transcript)
+    AL,CDCCMD_MODE1READ
+    /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/FMTOWNSCD_EXAMPLE_Cube/FM/TOWNS/EXPERIMENTS/CDREAD/CDREAD.ASM:678:CDC_SHOOT_MODE1READ            ENDP
+
+• Explored
+  └ Read cdrom.h, CDREAD.ASM, cdrom.cpp
+    Search 0x30|machine.*id|MACHINE_ID|fmt_machine|inb\( in fmtowns
+    Read machine.c
+    Search case 0x30|0x0030|0x30 in fmtowns.cpp
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• The reference confirms the blocker is MAME’s CDC model, not the game’s asset loader: it executes a read command immediately when 0x4c2 is written, before the protocol’s
+  eight parameter bytes arrive. The documented/TOWNSEMU sequence is command first, then parameters, with execution on byte eight. I’ll keep the harmless 0x21 continuation
+  compatibility in both libraries and commit it; MAME needs a small upstream-driver correction before this bare-metal CDC path can load assets.
+
+• Ran git diff --check -- src/platform/fmtowns/common/cdrom.c src/platform/fmtowns/waifu_fmtowns_cdrom.c && git diff -- src/platform/fmtowns/common/cdrom.c src/platform/
+  │ fmtowns/waifu_fmtowns_cdrom.c && git -C FMTOWNSCD_EXAMPLE_Cube diff --check -- src/common/cdrom.c && git -C FMTOWNSCD_EXAMPLE_Cube diff -- src/common/cdrom.c && git
+  │ status --short -- src/platform/fmtowns/common/cdrom.c src/platform/fmtowns/waifu_fmtowns_cdrom.c && git -C FMTOWNSCD_EXAMPLE_Cube status --short -- src/common/cdrom.c
+  └ diff --git a/src/platform/fmtowns/common/cdrom.c b/src/platform/fmtowns/common/cdrom.c
+    index 9c78829..4665b9f 100644
+    … +84 lines (ctrl + t to view transcript)
+     M src/platform/fmtowns/common/cdrom.c
+     M src/common/cdrom.c
+
+• Edited 2 files (+0 -2)
+  └ FMTOWNSCD_EXAMPLE_Cube/src/common/cdrom.c (+0 -1)
+    167      build_read_command(lba, count, cmd);
+    168 -
+    168      fmt_cdc_issue(cmd[0], &cmd[1]);
+
+  └ src/platform/fmtowns/common/cdrom.c (+0 -1)
+    167      build_read_command(lba, count, cmd);
+    168 -
+    168      fmt_cdc_issue(cmd[0], &cmd[1]);
+
+✔ You approved codex to always run commands that start with git -C FMTOWNSCD_EXAMPLE_Cube add src/common/cdrom.c
+
+• Ran git -C FMTOWNSCD_EXAMPLE_Cube add src/common/cdrom.c && git -C FMTOWNSCD_EXAMPLE_Cube -c commit.gpgSign=false commit -m "libfmt: accept PIO CD sector status" && git
+  │ add src/platform/fmtowns/common/cdrom.c && git -c commit.gpgSign=false commit -m "FM TOWNS: accept PIO CD sector status"
+  └ [audio/cd-pcm-streaming b6f0a93] libfmt: accept PIO CD sector status
+     1 file changed, 7 insertions(+), 3 deletions(-)
+    [fix/revert-vdc-text-rainbow 9459848] FM TOWNS: accept PIO CD sector status
+     1 file changed, 7 insertions(+), 3 deletions(-)
+
+✔ You approved codex to always run commands that start with rm -f /tmp/fmtowns-mame-last.png /tmp/fmtowns-mame.log
+
+• Ran rm -f /tmp/fmtowns-mame-last.png /tmp/fmtowns-mame.log && git status --short -- src/platform/fmtowns/common/cdrom.c && git -C FMTOWNSCD_EXAMPLE_Cube status --short --
+  │ src/common/cdrom.c
+  └ (no output)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Tested with mame fmtowns -cdrom build/fmtowns/output.cue: it still stalls at LOADING… TITLE 0%.
+
+  Cause is MAME’s CDC emulation: it executes MODE1READ when the command byte is written, but the real/TOWNSEMU protocol supplies eight parameters afterward and executes on
+  the final parameter. Thus MAME begins the read with stale parameters. This is an MAME driver issue, not a game asset-layout issue.
+
+  I committed the compatible PIO-status handling needed once that driver path is corrected:
+
+  - Game: 9459848 — FM TOWNS: accept PIO CD sector status
+  - libfmt: b6f0a93 — libfmt: accept PIO CD sector status
+
+  Both FM builds pass. Temporary MAME captures were removed.
