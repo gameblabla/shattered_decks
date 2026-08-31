@@ -93,8 +93,20 @@ typedef enum Sdl3UiRunKind {
     SDL3_UI_RUN_TRIS = 0,
     SDL3_UI_RUN_LINES = 1,
     SDL3_UI_RUN_HIRES = 2,          /* one hi-res card (index into hires_draws) */
-    SDL3_UI_RUN_GLYPH = 3           /* run of FreeType text glyph quads */
+    SDL3_UI_RUN_GLYPH = 3,          /* run of FreeType text glyph quads */
+    SDL3_UI_RUN_IMPACT = 4          /* one procedural impact burst (impact_fx index) */
 } Sdl3UiRunKind;
+
+/* Direct-attack impact burst: a whole-viewport shader pass (sdl3_video.c:
+   pl_impact) rather than captured geometry, submitted through the UI run list
+   so its draw order against the card under it and the damage readout over it is
+   exactly the order the game issued. See shaders/impact.frag. */
+#define SDL3_MAX_IMPACT_FX 4
+typedef struct Sdl3ImpactFx {
+    float cx, cy;                   /* burst centre, game screen space */
+    float t;                        /* beat progress; >= 1 holds the final dim */
+    float dir;                      /* +1 / -1 blade sweep direction */
+} Sdl3ImpactFx;
 
 typedef struct Sdl3UiRun {
     int kind;                       /* Sdl3UiRunKind */
@@ -166,6 +178,8 @@ typedef struct Sdl3SceneFrame {
     int ui_glyph_vert_count;
     Sdl3UiRun ui_runs[SDL3_UI_MAX_RUNS];
     int ui_run_count;
+    Sdl3ImpactFx impact_fx[SDL3_MAX_IMPACT_FX];
+    int impact_fx_count;
     int bg_runs;                    /* runs captured before the first 3D
                                        primitive (-1 = no 3D this frame) */
 

@@ -157,6 +157,21 @@ static void ui_append_hires(int draw_index)
     g_run_open_kind = -1;   /* hi-res runs never coalesce with adjacent tris */
 }
 
+/* Same idea for a procedural impact burst: its own run, never coalesced, so
+   the shader pass lands exactly where the game issued it in the 2D order. */
+static void ui_append_impact(int fx_index)
+{
+    Sdl3UiRun *run;
+    if (fx_index < 0) return;
+    if (g_frame.ui_run_count >= SDL3_UI_MAX_RUNS) { g_sdl3_drop_run++; return; }
+    run = &g_frame.ui_runs[g_frame.ui_run_count++];
+    run->kind = SDL3_UI_RUN_IMPACT;
+    run->first = fx_index;
+    run->count = 0;
+    run->hud = g_ui_hud;
+    g_run_open_kind = -1;
+}
+
 static void ui_push_quad(float x0, float y0, float x1, float y1,
                          float u0, float v0, float u1, float v1,
                          const float rgba[4])
@@ -333,6 +348,115 @@ int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, uint8_t fg,
     ui_push_glyph_quad(x0 + sh, y0 + sh, x1 + sh, y1 + sh,
                        gi.u0, gi.v0, gi.u1, gi.v1, sh_rgba);
     ui_push_glyph_quad(x0, y0, x1, y1, gi.u0, gi.v0, gi.u1, gi.v1, fg_rgba);
+    return 1;
+}
+
+/* ---------------------------------------------------------------------------
+ * Direct-attack impact burst (src/engine/hw3d.h).
+ *
+ * The burst itself is not geometry: it is one whole-viewport shader pass
+ * (shaders/impact.frag) queued as its own UI run, so the attacker card
+ * captured before it stays underneath and the damage readout captured after it
+ * stays on top. Only the choreography's progress crosses the seam -- the look
+ * lives entirely in the shader.
+ * ------------------------------------------------------------------------- */
+int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir)
+{
+    Sdl3ImpactFx *fx;
+    if (g_frame.impact_fx_count >= SDL3_MAX_IMPACT_FX) return 1;  /* drawn once already */
+    fx = &g_frame.impact_fx[g_frame.impact_fx_count];
+    fx->cx = (float)cx;
+    fx->cy = (float)cy;
+    fx->t = (float)t_q8 / 256.0f;
+    fx->dir = (dir < 0) ? -1.0f : 1.0f;
+    ui_append_impact(g_frame.impact_fx_count);
+    g_frame.impact_fx_count++;
+    g_frame.has_content = 1;
+    return 1;
+}
+
+/* The damage readout over that burst. The glyph atlas is scalable, so this is
+ * laid out directly in game pixels rather than through the 8 px text cell:
+ * a warm outer glow (offset copies at low alpha), a dark outline, then the
+ * fill. Cap height drives the size, so `cap_px` reads as the number's actual
+ * height on screen. */
+int waifu_hw2d_impact_text(int cx, int cy, int cap_px, const char *s,
+                           int glow_q8, int alpha_q8)
+{
+    /* Ring of unit offsets for the glow and the outline passes. */
+    static const float ring[8][2] = {
+        { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
+        { 0.7f, 0.7f }, { -0.7f, 0.7f }, { 0.7f, -0.7f }, { -0.7f, -0.7f }
+    };
+    const char *p;
+    float scale, adv, total, pen, top;
+    float glow, alpha;
+    int i;
+
+    if (!s || !*s) return 1;
+    if (!waifu_sdl3_text_ready()) return 0;   /* no scalable glyphs: caller falls back */
+
+    /* The atlas metrics are baked for the 8 px cell, in which a capital is
+       CELL_CAP tall; scale so the caller's cap height is what it asks for. */
+    scale = (float)cap_px / 6.6f;
+    adv = waifu_sdl3_glyph_advance() * scale;
+    if (adv <= 0.0f) adv = 8.0f * scale;
+
+    total = 0.0f;
+    for (p = s; *p; ++p) total += adv;
+    pen = (float)cx - total * 0.5f;
+    top = (float)cy - 4.0f * scale;   /* the 8 px cell's middle on the centre */
+
+    glow = (float)glow_q8 / 256.0f;
+    alpha = (float)alpha_q8 / 256.0f;
+    if (alpha <= 0.0f) return 1;
+    if (alpha > 1.0f) alpha = 1.0f;
+
+    /* Three passes over the whole string so the outline of one glyph never
+       lands on top of the fill of the one before it. */
+    for (i = 0; i < 3; ++i) {
+        float x = pen;
+        for (p = s; *p; ++p, x += adv) {
+            WaifuGlyphInfo gi;
+            float x0, y0, x1, y1;
+            int k;
+            if (!waifu_sdl3_glyph_info((unsigned char)*p, &gi)) continue;
+            x0 = x + (adv - gi.adv * scale) * 0.5f + gi.dx * scale;
+            x1 = x0 + gi.dw * scale;
+            y0 = top + gi.dy * scale;
+            y1 = y0 + gi.dh * scale;
+            if (i == 0) {
+                /* Outer glow: wide, warm, additive-looking low-alpha copies. */
+                float c[4] = { 1.0f, 0.42f, 0.06f, 0.0f };
+                float spread = (float)cap_px * 0.16f;
+                c[3] = 0.13f * glow * alpha;
+                if (c[3] <= 0.0f) continue;
+                for (k = 0; k < 8; ++k)
+                    ui_push_glyph_quad(x0 + ring[k][0] * spread, y0 + ring[k][1] * spread,
+                                       x1 + ring[k][0] * spread, y1 + ring[k][1] * spread,
+                                       gi.u0, gi.v0, gi.u1, gi.v1, c);
+            } else if (i == 1) {
+                /* Dark outline: the readout sits on the still-hot core, and a
+                   warm outline vanished into it. */
+                float c[4] = { 0.06f, 0.01f, 0.02f, alpha };
+                float w = (float)cap_px * 0.075f;
+                if (w < 1.0f) w = 1.0f;
+                for (k = 0; k < 8; ++k)
+                    ui_push_glyph_quad(x0 + ring[k][0] * w, y0 + ring[k][1] * w,
+                                       x1 + ring[k][0] * w, y1 + ring[k][1] * w,
+                                       gi.u0, gi.v0, gi.u1, gi.v1, c);
+            } else {
+                /* Fill: pale gold at the top falling to amber, so the number
+                   reads as lit from above rather than as flat paint. */
+                float hi[4] = { 1.00f, 0.97f, 0.78f, alpha };
+                float lo[4] = { 1.00f, 0.72f, 0.13f, alpha };
+                float mid = (y0 + y1) * 0.5f;
+                float vm = (gi.v0 + gi.v1) * 0.5f;
+                ui_push_glyph_quad(x0, y0, x1, mid, gi.u0, gi.v0, gi.u1, vm, hi);
+                ui_push_glyph_quad(x0, mid, x1, y1, gi.u0, vm, gi.u1, gi.v1, lo);
+            }
+        }
+    }
     return 1;
 }
 
@@ -1653,6 +1777,7 @@ void waifu_sdl3_scene_frame_reset(void)
     g_frame.ui_line_vert_count = 0;
     g_frame.ui_glyph_vert_count = 0;
     g_frame.ui_run_count = 0;
+    g_frame.impact_fx_count = 0;
     g_frame.bg_runs = -1;
     g_frame.image_atlas_used_h = 0;
     g_image_entry_count = 0;

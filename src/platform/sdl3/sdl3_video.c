@@ -136,6 +136,7 @@ struct WaifuSdl3Video {
     SDL_GPUGraphicsPipeline *pl_ui_tris;
     SDL_GPUGraphicsPipeline *pl_ui_lines;
     SDL_GPUGraphicsPipeline *pl_glyph;       /* FreeType text glyphs (linear atlas) */
+    SDL_GPUGraphicsPipeline *pl_impact;      /* procedural impact burst (premultiplied) */
     SDL_GPUGraphicsPipeline *pl_blit;
     SDL_GPUGraphicsPipeline *pl_blit_rgba;   /* canvas -> present target */
     SDL_GPUGraphicsPipeline *pl_ov_tris;     /* = pl_ui_tris (present target) */
@@ -183,7 +184,7 @@ typedef struct PipelineDesc {
     SDL_GPUPrimitiveType primitive;
     int depth_test;
     int depth_write;
-    int blend;
+    int blend;          /* 1 = straight alpha; 2 = premultiplied (see pl_impact) */
     SDL_GPUTextureFormat color_format;
     int has_depth;
 } PipelineDesc;
@@ -196,7 +197,17 @@ static SDL_GPUGraphicsPipeline *make_pipeline(WaifuSdl3Video *v, const PipelineD
 
     SDL_zero(color);
     color.format = d->color_format;
-    if (d->blend) {
+    if (d->blend == 2) {
+        /* Premultiplied: rgb is added as-is and alpha only attenuates what is
+           already there, so one pass can add light AND darken behind it. */
+        color.blend_state.enable_blend = true;
+        color.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        color.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        color.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        color.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        color.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        color.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    } else if (d->blend) {
         color.blend_state.enable_blend = true;
         color.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
         color.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
@@ -262,13 +273,16 @@ static int create_pipelines(WaifuSdl3Video *v)
     SDL_GPUShader *ui_vs = load_shader(v->dev, waifu_sdl3_ui_vert_spv, sizeof(waifu_sdl3_ui_vert_spv), SDL_GPU_SHADERSTAGE_VERTEX, 0, 1);
     SDL_GPUShader *ui_fs = load_shader(v->dev, waifu_sdl3_ui_frag_spv, sizeof(waifu_sdl3_ui_frag_spv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     SDL_GPUShader *glyph_fs = load_shader(v->dev, waifu_sdl3_glyph_frag_spv, sizeof(waifu_sdl3_glyph_frag_spv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
+    SDL_GPUShader *impact_vs = load_shader(v->dev, waifu_sdl3_impact_vert_spv, sizeof(waifu_sdl3_impact_vert_spv), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
+    SDL_GPUShader *impact_fs = load_shader(v->dev, waifu_sdl3_impact_frag_spv, sizeof(waifu_sdl3_impact_frag_spv), SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 1);
     SDL_GPUShader *blit_vs = load_shader(v->dev, waifu_sdl3_blit_vert_spv, sizeof(waifu_sdl3_blit_vert_spv), SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
     SDL_GPUShader *blit_fs = load_shader(v->dev, waifu_sdl3_blit_frag_spv, sizeof(waifu_sdl3_blit_frag_spv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     /* One uniform buffer: the sub-rectangle of the source to frame (the title
        attract's slow push across the artwork). */
     SDL_GPUShader *fullimg_fs = load_shader(v->dev, waifu_sdl3_fullimage_frag_spv, sizeof(waifu_sdl3_fullimage_frag_spv), SDL_GPU_SHADERSTAGE_FRAGMENT, 1, 1);
     int ok = scene_vs && scene_fs && env_vs && env_fs && image_vs && image_fs &&
-             hires_fs && line_vs && line_fs && ui_vs && ui_fs && glyph_fs && blit_vs && blit_fs && fullimg_fs;
+             hires_fs && line_vs && line_fs && ui_vs && ui_fs && glyph_fs && blit_vs && blit_fs && fullimg_fs &&
+             impact_vs && impact_fs;
 
     if (ok) {
         PipelineDesc d;
@@ -330,6 +344,14 @@ static int create_pipelines(WaifuSdl3Video *v)
         d.depth_test = 0; d.depth_write = 0; d.blend = 1;
         v->pl_glyph = make_pipeline(v, &d);
 
+        /* Impact burst: fullscreen triangle over the current viewport, no
+           vertex buffer, premultiplied so the one pass both adds the burst's
+           light and darkens the arena behind it (shaders/impact.frag). */
+        d.vs = impact_vs; d.fs = impact_fs;
+        d.attrs = NULL; d.num_attrs = 0; d.pitch = 0;
+        d.depth_test = 0; d.depth_write = 0; d.blend = 2;
+        v->pl_impact = make_pipeline(v, &d);
+
         /* 16:9 title/ending: fullscreen triangle into the canvas (opaque). */
         d.vs = blit_vs; d.fs = fullimg_fs;
         d.attrs = NULL; d.num_attrs = 0; d.pitch = 0;
@@ -356,7 +378,7 @@ static int create_pipelines(WaifuSdl3Video *v)
 
         ok = v->pl_scene && v->pl_env && v->pl_image && v->pl_hires_scene &&
              v->pl_hires_ui && v->pl_fullimage && v->pl_line3d && v->pl_ui_tris &&
-             v->pl_ui_lines && v->pl_glyph && v->pl_blit && v->pl_blit_rgba;
+             v->pl_ui_lines && v->pl_glyph && v->pl_impact && v->pl_blit && v->pl_blit_rgba;
     }
 
     if (scene_vs) SDL_ReleaseGPUShader(v->dev, scene_vs);
@@ -878,10 +900,15 @@ static void bind_frag_texture(SDL_GPURenderPass *rp, SDL_GPUTexture *tex, SDL_GP
    centered column (normal 2D) and the full canvas (widescreen HUD runs), and
    between the UI transform, the widescreen-HUD transform, and the hi-res card
    transform — tracked as state and re-pushed only on change. Hi-res card runs
-   (PC) are interleaved here to preserve draw order. */
+   (PC) are interleaved here to preserve draw order.
+
+   `frag_uni` is the fragment uniform (the pass fade) every UI/glyph pipeline
+   expects at slot 0; the impact pass borrows that slot for its own parameters,
+   so it is re-pushed afterwards. */
 static void draw_ui_runs(WaifuSdl3Video *v, SDL_GPUCommandBuffer *cmd,
                          SDL_GPURenderPass *rp, Sdl3SceneFrame *frame,
                          const float ui_screen[4], const float hud_screen[4],
+                         const float frag_uni[4],
                          const SDL_GPUViewport *vp_col, const SDL_GPUViewport *vp_full,
                          int first_run, int run_end)
 {
@@ -910,6 +937,23 @@ static void draw_ui_runs(WaifuSdl3Video *v, SDL_GPUCommandBuffer *cmd,
             vb.offset = (Uint32)(SEG_HIRES_OFF + hd->first_vertex * (int)sizeof(Sdl3ImageVertex));
             SDL_BindGPUVertexBuffers(rp, 0, &vb, 1);
             SDL_DrawGPUPrimitives(rp, 6, 1, 0, 0);
+            continue;
+        }
+        if (run->kind == SDL3_UI_RUN_IMPACT) {
+            /* Whole-viewport procedural burst: the fragment shader needs the
+               viewport's game-space extent to map NDC back into the units the
+               centre is expressed in, which is exactly the UI transform's
+               screen vector for this run. */
+            const Sdl3ImpactFx *fx = &frame->impact_fx[run->first];
+            const float *screen = run->hud ? hud_screen : ui_screen;
+            float ip[8];
+            ip[0] = screen[0]; ip[1] = screen[1]; ip[2] = fx->cx; ip[3] = fx->cy;
+            ip[4] = fx->t;     ip[5] = fx->dir;   ip[6] = 0.0f;   ip[7] = 0.0f;
+            SDL_BindGPUGraphicsPipeline(rp, v->pl_impact);
+            bound = v->pl_impact;
+            SDL_PushGPUFragmentUniformData(cmd, 0, ip, sizeof(ip));
+            SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+            SDL_PushGPUFragmentUniformData(cmd, 0, frag_uni, 4 * sizeof(float));
             continue;
         }
         if (run->count <= 0) continue;
@@ -1238,7 +1282,7 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
                 SDL_SetGPUViewport(rp, &vp_col);
 
             /* 1. backdrop (2D captured before the first 3D primitive) */
-            draw_ui_runs(v, cmd, rp, frame, ui_screen, hud_screen, &vp_col, &vp_full, 0, bg_runs);
+            draw_ui_runs(v, cmd, rp, frame, ui_screen, hud_screen, one4, &vp_col, &vp_full, 0, bg_runs);
 
             /* 2-3. the 3D view fills the full width. */
             SDL_SetGPUViewport(rp, &vp_full);
@@ -1326,7 +1370,7 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
             /* 4. UI above the scene: back to the centered column. */
             SDL_SetGPUViewport(rp, &vp_col);
             SDL_PushGPUVertexUniformData(cmd, 0, ui_screen, sizeof(ui_screen));
-            draw_ui_runs(v, cmd, rp, frame, ui_screen, hud_screen, &vp_col, &vp_full, bg_runs, frame->ui_run_count);
+            draw_ui_runs(v, cmd, rp, frame, ui_screen, hud_screen, one4, &vp_col, &vp_full, bg_runs, frame->ui_run_count);
             }
 
             SDL_EndGPURenderPass(rp);
@@ -1667,6 +1711,7 @@ void waifu_sdl3_video_destroy(WaifuSdl3Video *v)
         if (v->pl_ui_tris) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_ui_tris);
         if (v->pl_ui_lines) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_ui_lines);
         if (v->pl_glyph) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_glyph);
+        if (v->pl_impact) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_impact);
         if (v->pl_blit) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_blit);
         if (v->pl_blit_rgba) SDL_ReleaseGPUGraphicsPipeline(v->dev, v->pl_blit_rgba);
         if (v->canvas) SDL_ReleaseGPUTexture(v->dev, v->canvas);

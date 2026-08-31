@@ -156,6 +156,27 @@ int waifu_hw2d_quad_rgba(const int xy[8], uint8_t r, uint8_t g, uint8_t b, uint8
  * wider than the cell. */
 void waifu_hw2d_text_scale(int percent);
 
+/* Procedural impact burst for the direct attack, drawn by the frontend as one
+ * shader pass over the whole viewport: a swept blade, a contact flash, a
+ * blooming core, an expanding shockwave ring, hashed ray fans and embers, all
+ * smooth analytic falloffs composited with premultiplied alpha (the pass adds
+ * light AND darkens the arena behind it). None of that is expressible in a
+ * palette framebuffer -- an 8bpp target can only stamp hard-edged discs of one
+ * of 256 colours -- so this returns 0 everywhere else and the caller keeps its
+ * software slash. `t_q8` is the beat progress in Q8 (256 = one full beat;
+ * larger values hold the final dim through the event's settle frames), `dir`
+ * is +1/-1 for the slash direction. (cx, cy) is the burst centre in game
+ * screen space. */
+int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir);
+
+/* The damage readout for that burst: `s` centred on (cx, cy) with a cap height
+ * of `cap_px` game pixels, drawn from the scalable glyph atlas as a warm outer
+ * glow, a dark outline and a graded gold fill. `glow_q8` scales the glow and
+ * `alpha_q8` the whole readout (both Q8). Returns 0 without a scalable glyph
+ * layer, so the caller keeps its integer-scaled bitmap number. */
+int waifu_hw2d_impact_text(int cx, int cy, int cap_px, const char *s,
+                           int glow_q8, int alpha_q8);
+
 #else /* !WAIFU_PLATFORM_HW3D: inert stubs, compile out entirely */
 
 static inline int waifu_hw3d_present(void) { return 0; }
@@ -198,6 +219,11 @@ static inline int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alph
 static inline int waifu_hw2d_quad_rgba(const int xy[8], uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 { (void)xy; (void)r; (void)g; (void)b; (void)a; return 0; }
 static inline void waifu_hw2d_text_scale(int percent) { (void)percent; }
+static inline int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir)
+{ (void)cx; (void)cy; (void)t_q8; (void)dir; return 0; }
+static inline int waifu_hw2d_impact_text(int cx, int cy, int cap_px, const char *s,
+                                         int glow_q8, int alpha_q8)
+{ (void)cx; (void)cy; (void)cap_px; (void)s; (void)glow_q8; (void)alpha_q8; return 0; }
 
 #endif /* WAIFU_PLATFORM_HW3D */
 

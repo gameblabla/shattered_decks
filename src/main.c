@@ -298,6 +298,8 @@ static int g_turn_capture_geom_ok[WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS];
 #define WAIFU_DIRECT_SLIDE_FRAMES 20
 #define WAIFU_DIRECT_LUNGE_FRAMES 32
 #define WAIFU_DIRECT_FX_FRAMES 72
+/* Frame within the beat at which the damage readout punches in. */
+#define WAIFU_DIRECT_FX_TEXT_START 28
 #define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES (WAIFU_DIRECT_FX_FRAMES - WAIFU_DIRECT_LUNGE_FRAMES / 2)
 #endif
 
@@ -8414,8 +8416,8 @@ static void direct_fx_blade(int cx, int cy, int dir, int32_t head, int32_t tail,
     }
 }
 
-static void draw_direct_attack_fx(int target_x, int target_y, int t, int attacker_owner,
-                                  const char *damage_text)
+static void draw_direct_attack_fx_software(int target_x, int target_y, int t, int attacker_owner,
+                                           const char *damage_text)
 {
     const int dir = (attacker_owner == 0) ? 1 : -1;
     /* A direct attack has no defender card to land on, so the burst is staged
@@ -8525,6 +8527,49 @@ static void draw_direct_attack_fx(int target_x, int target_y, int t, int attacke
         if (t >= WAIFU_DIRECT_FX_FRAMES - 6) fg = k_direct_fx_ramp[3];
         if (tx < 2) tx = 2;
         draw_direct_fx_number(tx, ty, damage_text, scale, fg, edge);
+    }
+}
+
+/* The shipped PC path.  The frontend draws the burst as one procedural shader
+   pass -- smooth analytic falloffs composited with premultiplied alpha, so the
+   ring, rays and core are soft, blown-out light rather than stamped palette
+   discs -- and the readout from the scalable glyph atlas with a warm glow, a
+   dark outline and a graded gold fill.  Both seams return 0 on a build with no
+   true-colour layer (or if the TTF failed to load), and the beat above then
+   draws the same choreography with the software primitives. */
+static void draw_direct_attack_fx(int target_x, int target_y, int t, int attacker_owner,
+                                  const char *damage_text)
+{
+    const int cx = g_ui_clip_w / 2;
+    const int cy = WAIFU_FM_HEIGHT / 2 - 8;
+    int t_q8, cap_px, glow_q8, alpha_q8, e;
+
+    if (t < 0) return;
+    /* Past the beat the caller is in the event's settle frames: keep feeding
+       the pass so it holds its blackout instead of popping back to the arena. */
+    t_q8 = q8_ratio(t, WAIFU_DIRECT_FX_FRAMES);
+
+    if (!waifu_hw2d_impact_fx(cx, cy, t_q8, (attacker_owner == 0) ? 1 : -1)) {
+        draw_direct_attack_fx_software(target_x, target_y, t, attacker_owner, damage_text);
+        return;
+    }
+
+    if (t < WAIFU_DIRECT_FX_TEXT_START) return;
+    e = t - WAIFU_DIRECT_FX_TEXT_START;
+    /* Punch in from oversized and settle, then hold; the glow blooms with the
+       entry and eases off so the number stops competing with the rays. */
+    cap_px = (e < 6) ? lerp_i(52, 30, q8_smooth_ratio(e, 6)) : 30;
+    alpha_q8 = (e < 3) ? q8_ratio(e + 1, 3) : Q8_ONE;
+    glow_q8 = (e < 10) ? lerp_i(Q8_ONE * 5 / 2, Q8_ONE, q8_smooth_ratio(e, 10)) : Q8_ONE;
+    if (t >= WAIFU_DIRECT_FX_FRAMES - 5)
+        alpha_q8 = q8_mul(alpha_q8, Q8_ONE - q8_ratio(t - (WAIFU_DIRECT_FX_FRAMES - 5), 5));
+    if (!waifu_hw2d_impact_text(cx, cy, cap_px, damage_text, glow_q8, alpha_q8)) {
+        int scale = (e < 2) ? 5 : ((e < 4) ? 4 : 3);
+        int tw = direct_fx_number_width(damage_text, scale);
+        int tx = ui_center_x(tw);
+        if (tx < 2) tx = 2;
+        draw_direct_fx_number(tx, cy - (8 * scale) / 2, damage_text, scale,
+                              IDX_GOLD_HI, IDX_BLACK);
     }
 }
 
