@@ -8278,8 +8278,17 @@ static void draw_centered_damage_text_in_card(int card_x, int card_y, const char
     int tw = text_pixel_width(damage_text);
     int tx = card_x + (120 - tw) / 2;
     int ty = card_y + 63;
+    /* The PC card face uses the larger FreeType glyphs for ordinary monster
+       clashes.  Keep the damage readout inside the same authored cell, but
+       give it a little more breathing room than the labels around it. */
+#if defined(WAIFU_PLATFORM_HW3D)
+    waifu_hw2d_text_scale(88);
+#endif
     if (tx < card_x + 4) tx = card_x + 4;
     draw_text(tx, ty, damage_text, IDX_GOLD_HI, IDX_BLACK);
+#if defined(WAIFU_PLATFORM_HW3D)
+    waifu_hw2d_text_scale(100);
+#endif
 }
 
 static void draw_direct_attack_slash(int target_x, int target_y, int frame, int attacker_owner)
@@ -8567,20 +8576,19 @@ static void draw_direct_attack_fx(int impact_x, int impact_y, int t, int attacke
     e = t - WAIFU_DIRECT_FX_TEXT_START;
     /* Punch in from oversized and settle, then hold; the glow blooms with the
        entry and eases off so the number stops competing with the rays. */
-    cap_px = (e < 6) ? lerp_i(52, 30, q8_smooth_ratio(e, 6)) : 30;
+    cap_px = (e < 6) ? lerp_i(48, 27, q8_smooth_ratio(e, 6)) : 27;
     alpha_q8 = (e < 3) ? q8_ratio(e + 1, 3) : Q8_ONE;
     glow_q8 = (e < 10) ? lerp_i(Q8_ONE * 5 / 2, Q8_ONE, q8_smooth_ratio(e, 10)) : Q8_ONE;
     if (t >= WAIFU_DIRECT_FX_FRAMES - 5)
         alpha_q8 = q8_mul(alpha_q8, Q8_ONE - q8_ratio(t - (WAIFU_DIRECT_FX_FRAMES - 5), 5));
-    /* The readout sits on the burst's line but stays centred across the screen:
-       the burst is anchored on the target lane, well off centre, and a number
-       this size centred on it would run off the edge. */
-    if (!waifu_hw2d_impact_text(g_ui_clip_w / 2, impact_y, cap_px, damage_text,
+    /* Centre the readout on the burst itself.  The impact can be on either
+       target lane, so using the screen midpoint makes the number appear
+       detached from the hit. */
+    if (!waifu_hw2d_impact_text(impact_x, impact_y, cap_px, damage_text,
                                 glow_q8, alpha_q8)) {
         int scale = (e < 2) ? 5 : ((e < 4) ? 4 : 3);
         int tw = direct_fx_number_width(damage_text, scale);
-        int tx = ui_center_x(tw);
-        if (tx < 2) tx = 2;
+        int tx = impact_x - tw / 2;
         draw_direct_fx_number(tx, impact_y - (8 * scale) / 2, damage_text, scale,
                               IDX_GOLD_HI, IDX_BLACK);
     }
