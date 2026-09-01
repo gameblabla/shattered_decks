@@ -48,9 +48,14 @@
 #define M_TARGET     3   // an attacker is chosen, picking the defender
 #define M_COM        4   // the COM turn, one rules step at a time
 #define M_OVER       5   // the duel is decided
+#define M_TURN       6   // the table is swinging to the other player's chair
+
+#define BOARD_VIEW_PLAYER  MSX2_VIEW_TOP
+#define BOARD_VIEW_COM     MSX2_VIEW_COM
 
 static u8  g_stage;
 static u8  g_mode;
+static u8  g_view;
 static u8  g_zone;
 static u8  g_sel;
 static u8  g_hand_pick;
@@ -72,6 +77,34 @@ static u8  g_cursor_col_at[MSX2_VIDEO_PAGES];
 static u8  g_panel_left;         // pages still owing a HUD/info repaint
 
 static c8  g_name[MSX2_NAME_STRIDE];
+
+// ── Presentation events ─────────────────────────────────────────────────────
+// Rules are committed immediately, but the screen holds the result back for a
+// few frames so a player can read what happened.  The effect is painted on the
+// hidden page; the other page is clean, so alternating flips erase it without a
+// framebuffer or a second copy of the arena.
+#define FX_NONE       0
+#define FX_SUMMON     1
+#define FX_FUSION     2
+#define FX_EQUIP      3
+#define FX_SUPPORT    4
+#define FX_ATTACK     5
+#define FX_POSITION   6
+#define FX_COM_CHOOSE 7
+#define FX_COM_PLACE  8
+#define FX_COM_ATTACK 9
+#define FX_FRAME_NONE 0xFFu
+
+static u8 g_fx_kind;
+static u8 g_fx_followup;
+static u8 g_fx_frames;
+static u8 g_fx_cleanup;
+static u8 g_fx_card;
+static u8 g_fx_hand;
+static u8 g_fx_field;
+static u8 g_fx_owner;
+static u8 g_suppress_slot;
+static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Reading the rules
@@ -123,6 +156,7 @@ static void Msx2_BoardQueueToggle(u8 hand_slot)
 static void Msx2_BoardSnapshot(void)
 {
 	u8 i;
+	u8 hand_owner = (g_view == BOARD_VIEW_COM) ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER;
 	for(i = 0; i < FIELD_ROW; ++i)
 	{
 		const Msx2Side* com = &g_duel.side[MSX2_OWNER_COM];
@@ -136,8 +170,13 @@ static void Msx2_BoardSnapshot(void)
 		g_flag[SLOT_OF(ZONE_FIELD, i)] = (u8)(F_FACEUP
 		                                  | (you->defense[i] ? F_DEFENSE : 0));
 
-		g_want[SLOT_OF(ZONE_HAND, i)] = you->hand[i];
+		g_want[SLOT_OF(ZONE_HAND, i)] = g_duel.side[hand_owner].hand[i];
 		g_flag[SLOT_OF(ZONE_HAND, i)] = (u8)(F_FACEUP | F_QUEUE(Msx2_BoardQueueOrder(i)));
+	}
+	if(g_suppress_slot != MSX2_SLOT_NONE)
+	{
+		g_want[g_suppress_slot] = MSX2_CARD_NONE;
+		g_flag[g_suppress_slot] = 0;
 	}
 }
 
@@ -148,6 +187,11 @@ static u8 Msx2_BoardHovered(void)
 	if((g_zone == ZONE_COM) && !(g_flag[slot] & F_FACEUP))
 		return MSX2_CARD_NONE;          // a set monster gives nothing away
 	return g_want[slot];
+}
+
+static u8 Msx2_BoardFieldSlot(u8 owner, u8 field_slot)
+{
+	return SLOT_OF((owner == MSX2_OWNER_COM) ? ZONE_COM : ZONE_FIELD, field_slot);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -205,8 +249,9 @@ static void Msx2_BoardBlitSlot(u8 slot)
 		// Empty: the arena's own pixels for this slot on this stage, cut out of
 		// the quantised capture.  A fill would flatten the floor the board is
 		// standing on, and the ring around the slot with it.
-		const u8* box = g_msx2_slot_box[slot];
-		tile = (u16)g_stage * MSX2_SLOT_ART_PER_STAGE + slot;
+		const u8* box = g_msx2_slot_box[g_view][slot];
+		tile = (u16)(((u16)g_stage * MSX2_BOARD_VIEWS + g_view)
+		             * MSX2_SLOT_ART_PER_VIEW + slot);
 		Msx2_StreamRect((u16)(MSX2_SLOT_ART_SEGMENT + tile / MSX2_SLOT_ART_PER_SEG),
 		                (u16)((tile % MSX2_SLOT_ART_PER_SEG) * MSX2_SLOT_ART_STRIDE),
 		                box[0], box[1], box[2], box[3]);
@@ -214,6 +259,7 @@ static void Msx2_BoardBlitSlot(u8 slot)
 	}
 
 	index = (g_flag[slot] & F_FACEUP) ? card : MSX2_CARD_BACK_INDEX;
+	Msx2_RasterSetView(g_view);
 	Msx2_RasterCard(index, slot);
 
 	// Defence position: the other targets turn the card sideways on the board
@@ -221,7 +267,7 @@ static void Msx2_BoardBlitSlot(u8 slot)
 	// carries for a state a word states more clearly at this size.
 	if(g_flag[slot] & F_DEFENSE)
 	{
-		const u8* box = g_msx2_slot_box[slot];
+		const u8* box = g_msx2_slot_box[g_view][slot];
 		u8 x = (u8)(box[0] + (box[2] >> 1) - 11);
 		u8 y = (u8)(box[1] + box[3] - 12);
 		Msx2_Fill(x, y, 24, 8, MSX2_DEEP_BLUE);
@@ -244,7 +290,7 @@ static void Msx2_BoardCursor(u8 slot, u8 color)
 		               MSX2_CARD_H + 2, color);
 		return;
 	}
-	Msx2_QuadOutline(g_msx2_slot_quad[slot], color);
+	Msx2_QuadOutline(g_msx2_slot_quad[g_view][slot], color);
 }
 
 // What "erase the cursor" means depends on which strip the slot is in: the
@@ -259,6 +305,8 @@ static u8 Msx2_BoardRestColor(u8 slot)
 static u8 Msx2_BoardCursorColor(void)
 {
 	if(g_mode == M_TARGET)
+		return MSX2_RED;
+	if(g_mode == M_COM)
 		return MSX2_RED;
 	if((g_mode == M_PLACE) || (g_mode == M_EQUIP))
 		return MSX2_TEAL;
@@ -363,6 +411,436 @@ static void Msx2_BoardInfo(void)
 	Msx2_TextCenter((u8)(MSX2_INFO_Y + 21), Msx2_BoardPrompt());
 }
 
+static bool Msx2_BoardPaint(void);
+
+static void Msx2_BoardFxBanner(const c8* text, u8 color)
+{
+	Msx2_Fill(1, (u8)(MSX2_INFO_Y + 1), MSX2_SCREEN_W - 2,
+	          MSX2_SCREEN_H - MSX2_INFO_Y - 2, MSX2_PANEL_COLOR);
+	Msx2_TextColor(color, MSX2_PANEL_COLOR);
+	Msx2_TextCenter((u8)(MSX2_INFO_Y + 3), text);
+}
+
+static u8 Msx2_BoardClampPx(i16 value)
+{
+	if(value < 0)
+		return 0;
+	if(value > (MSX2_SCREEN_W - 1))
+		return (MSX2_SCREEN_W - 1);
+	return (u8)value;
+}
+
+static u8 Msx2_BoardBoxCenterX(u8 slot)
+{
+	const u8* box = g_msx2_slot_box[g_view][slot];
+	return (u8)(box[0] + (box[2] >> 1));
+}
+
+static u8 Msx2_BoardBoxCenterY(u8 slot)
+{
+	const u8* box = g_msx2_slot_box[g_view][slot];
+	return (u8)(box[1] + (box[3] >> 1));
+}
+
+// The VDP has no transparent sprite path for a 40x48 card.  A reversible
+// outline gives the hand-to-field flight the same visual cue without painting
+// opaque pixels over an unknown floor texture; the fully warped card is
+// revealed by the retained model when the flight lands.
+static void Msx2_BoardFxCardFlight(u8 dest_slot, u8 dest_x, u8 dest_y)
+{
+	i16 sx = (g_fx_hand == MSX2_SLOT_NONE) ? 108 : HAND_X(g_fx_hand);
+	i16 sy = MSX2_HAND_Y;
+	i16 ex = dest_x;
+	i16 ey = dest_y;
+	i16 progress;
+	i16 total;
+	i16 x;
+	i16 y;
+
+	if(g_fx_card >= MSX2_CARD_ART_COUNT)
+		return;
+	total = (g_fx_kind == FX_EQUIP) ? 12 : 14;
+	progress = (i16)(total - g_fx_frames);
+	x = sx + ((ex - sx) * progress) / total;
+	y = sy + ((ey - sy) * progress) / total;
+	Msx2_FrameRectXor(Msx2_BoardClampPx(x), Msx2_BoardClampPx(y),
+	                  MSX2_CARD_W, MSX2_CARD_H,
+	                  (g_fx_frames & 2) ? MSX2_GOLD : MSX2_WHITE);
+	(void)dest_slot;
+}
+
+static void Msx2_BoardFxAttackPath(u8 attacker, u8 defender)
+{
+	i16 sx = Msx2_BoardBoxCenterX(attacker);
+	i16 sy = Msx2_BoardBoxCenterY(attacker);
+	i16 ex;
+	i16 ey;
+	i16 px;
+	i16 py;
+	i16 progress;
+	i16 total = (g_fx_kind == FX_COM_ATTACK) ? 16 : 14;
+	u8 beam = (g_fx_frames & 2) ? MSX2_WHITE : MSX2_GOLD;
+
+	if(attacker == MSX2_SLOT_NONE)
+		return;
+
+	if(g_duel.last_trap_fired)
+	{
+		// A trap is a counter, not a hit on the defender: make the crossed
+		// return bolt land on the attacking card and keep the old battle damage
+		// from being mistaken for this action.
+		Msx2_LineXor(Msx2_BoardClampPx(sx - 14), Msx2_BoardClampPx(sy - 14),
+		             Msx2_BoardClampPx(sx + 14), Msx2_BoardClampPx(sy + 14), MSX2_RED);
+		Msx2_LineXor(Msx2_BoardClampPx(sx + 14), Msx2_BoardClampPx(sy - 14),
+		             Msx2_BoardClampPx(sx - 14), Msx2_BoardClampPx(sy + 14), MSX2_RED);
+		return;
+	}
+
+	if(defender == MSX2_SLOT_NONE)
+	{
+		// Direct attacks travel to the centre of the opponent's half of the
+		// arena, where the impact is easy to read without a second camera.
+		ex = 128;
+		ey = (g_view == BOARD_VIEW_COM) ? 45 : 85;
+	}
+	else
+	{
+		ex = Msx2_BoardBoxCenterX(defender);
+		ey = Msx2_BoardBoxCenterY(defender);
+	}
+	progress = (i16)(total - g_fx_frames);
+	px = sx + ((ex - sx) * progress) / total;
+	py = sy + ((ey - sy) * progress) / total;
+	Msx2_LineXor(Msx2_BoardClampPx(sx), Msx2_BoardClampPx(sy),
+	             Msx2_BoardClampPx(px), Msx2_BoardClampPx(py), beam);
+	Msx2_LineXor(Msx2_BoardClampPx(sx + 1), Msx2_BoardClampPx(sy),
+	             Msx2_BoardClampPx(px + 1), Msx2_BoardClampPx(py), MSX2_TEAL);
+
+	if(progress >= (total / 2))
+	{
+		// Three rays make the impact a 2D cel without a bitmap or a framebuffer.
+		Msx2_LineXor(Msx2_BoardClampPx(ex - 10), Msx2_BoardClampPx(ey),
+		             Msx2_BoardClampPx(ex + 10), Msx2_BoardClampPx(ey), MSX2_WHITE);
+		Msx2_LineXor(Msx2_BoardClampPx(ex), Msx2_BoardClampPx(ey - 10),
+		             Msx2_BoardClampPx(ex), Msx2_BoardClampPx(ey + 10), MSX2_WHITE);
+		Msx2_LineXor(Msx2_BoardClampPx(ex - 7), Msx2_BoardClampPx(ey - 7),
+		             Msx2_BoardClampPx(ex + 7), Msx2_BoardClampPx(ey + 7), beam);
+	}
+}
+
+static void Msx2_BoardFxDraw(bool erase)
+{
+	u8 flash = (g_fx_frames & 2) ? MSX2_GOLD : MSX2_WHITE;
+	u8 attacker;
+	u8 defender;
+
+	switch(g_fx_kind)
+	{
+	case FX_COM_CHOOSE:
+		if(!erase)
+			Msx2_BoardFxBanner("OPPONENT CHOOSES A CARD", MSX2_RED);
+		if(g_fx_hand != MSX2_SLOT_NONE)
+		{
+			u8 x = HAND_X(g_fx_hand);
+			if(!erase && (g_fx_card < MSX2_CARD_ART_COUNT))
+			{
+				Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + g_fx_card / MSX2_CARD_ART_PER_SEG),
+				                (u16)((g_fx_card % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
+				                x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H);
+			}
+			Msx2_FrameRectXor((u8)(x - 2), (u8)(MSX2_HAND_Y - 2),
+			                  MSX2_CARD_W + 4, MSX2_CARD_H + 4, flash);
+		}
+		else
+		{
+			// Attacks have no hand card left to point at; show the attacker as a
+			// compact 2-D cut-in while the battle banner changes on the next beat.
+			if(g_fx_field != MSX2_SLOT_NONE)
+				Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
+		}
+		break;
+
+	case FX_COM_PLACE:
+		if(!erase)
+			Msx2_BoardFxBanner("OPPONENT PLACES THE CARD", MSX2_RED);
+		if(g_fx_field != MSX2_SLOT_NONE)
+		{
+			Msx2_BoardFxCardFlight(g_fx_field,
+			                       (u8)(Msx2_BoardBoxCenterX(g_fx_field) - 20),
+			                       (u8)(Msx2_BoardBoxCenterY(g_fx_field) - 24));
+			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
+		}
+		break;
+
+	case FX_COM_ATTACK:
+		if(!erase)
+			Msx2_BoardFxBanner("OPPONENT ATTACKS", MSX2_RED);
+		attacker = g_fx_field;
+		if((attacker != MSX2_SLOT_NONE) &&
+		   (g_duel.last_defender_slot != MSX2_SLOT_NONE))
+		{
+			defender = Msx2_BoardFieldSlot(g_fx_owner ? MSX2_OWNER_PLAYER : MSX2_OWNER_COM,
+			                               g_duel.last_defender_slot);
+			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][attacker], flash);
+			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][defender], MSX2_RED);
+			Msx2_BoardFxAttackPath(attacker, defender);
+		}
+		else if(g_duel.last_trap_fired)
+		{
+			if(!erase)
+			{
+				Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+				Msx2_TextCenter(82, "TRAP COUNTER");
+			}
+			Msx2_BoardFxAttackPath(attacker, MSX2_SLOT_NONE);
+		}
+		else
+		{
+			Msx2_FrameRectXor(88, 72, 80, 30, flash);
+			if(!erase)
+			{
+				Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+				Msx2_TextCenter(82, "DIRECT HIT");
+			}
+			Msx2_BoardFxAttackPath(attacker, MSX2_SLOT_NONE);
+		}
+		if(!erase && !g_duel.last_trap_fired && (g_duel.last_battle.damage > 0))
+		{
+			Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+			Msx2_TextAt(108, 98, "-");
+			Msx2_NumAt(120, 98, g_duel.last_battle.damage);
+		}
+		break;
+
+	case FX_SUMMON:
+		if(!erase)
+			Msx2_BoardFxBanner("SUMMON", MSX2_TEAL);
+		if(g_fx_field != MSX2_SLOT_NONE)
+		{
+			Msx2_BoardFxCardFlight(g_fx_field,
+			                       (u8)(Msx2_BoardBoxCenterX(g_fx_field) - 20),
+			                       (u8)(Msx2_BoardBoxCenterY(g_fx_field) - 24));
+			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
+		}
+		break;
+
+	case FX_FUSION:
+		if(!erase)
+			Msx2_BoardFxBanner("FUSION SUMMON", MSX2_TEAL);
+		if(g_fx_field != MSX2_SLOT_NONE)
+		{
+			Msx2_BoardFxCardFlight(g_fx_field,
+			                       (u8)(Msx2_BoardBoxCenterX(g_fx_field) - 20),
+			                       (u8)(Msx2_BoardBoxCenterY(g_fx_field) - 24));
+			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
+			Msx2_FrameRectXor(84, 70, 88, 34, flash);
+			if(!erase)
+			{
+				Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+				Msx2_TextCenter(82, "FUSION");
+			}
+		}
+		break;
+
+	case FX_EQUIP:
+		if(!erase)
+			Msx2_BoardFxBanner("EQUIP POWER", MSX2_GOLD);
+		if(g_fx_field != MSX2_SLOT_NONE)
+			Msx2_BoardFxCardFlight(g_fx_field,
+			                       (u8)(Msx2_BoardBoxCenterX(g_fx_field) - 20),
+			                       (u8)(Msx2_BoardBoxCenterY(g_fx_field) - 24));
+		break;
+
+	case FX_SUPPORT:
+		if(!erase)
+		{
+			Msx2_BoardFxBanner("SUPPORT ACTIVATED", MSX2_TEAL);
+			Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+			Msx2_TextCenter(82, "EFFECT");
+		}
+		Msx2_FrameRectXor(84, 70, 88, 34, flash);
+		break;
+
+	case FX_POSITION:
+		if(!erase)
+			Msx2_BoardFxBanner(g_fx_owner == MSX2_OWNER_COM ? "OPPONENT CHANGES POSITION"
+			                                                : "CHANGE POSITION", MSX2_GOLD);
+		if(g_fx_field != MSX2_SLOT_NONE)
+			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
+		break;
+	}
+}
+
+static void Msx2_BoardFxErase(u8 frame)
+{
+	u8 page = Msx2_VideoGetDrawPage();
+
+	// The chosen COM card is the only opaque effect layer.  It is painted over
+	// an empty hand slot, so restoring that slot is enough; all other effect
+	// geometry is XOR and is removed by replaying the same commands.
+	if((g_fx_kind == FX_COM_CHOOSE) && (g_fx_hand != MSX2_SLOT_NONE))
+	{
+		u8 slot = SLOT_OF(ZONE_HAND, g_fx_hand);
+		Msx2_BoardBlitSlot(slot);
+		g_shown[page][slot] = g_want[slot];
+		g_shown_flag[page][slot] = g_flag[slot];
+	}
+	Msx2_BoardInfo();
+	g_fx_frames = frame;
+	Msx2_BoardFxDraw(TRUE);
+}
+
+static void Msx2_BoardStartFx(void)
+{
+	u8 action = g_duel.last_action;
+	u8 owner;
+	if(action == MSX2_ACTION_NONE || g_fx_kind != FX_NONE)
+		return;
+
+	owner = g_duel.last_action_owner;
+	g_fx_owner = owner;
+	g_fx_card = g_duel.last_action_card;
+	g_fx_hand = g_duel.last_action_hand_slot;
+	g_fx_field = (g_duel.last_action_field_slot == MSX2_SLOT_NONE)
+	           ? MSX2_SLOT_NONE
+	           : Msx2_BoardFieldSlot(owner, g_duel.last_action_field_slot);
+	g_fx_followup = FX_NONE;
+	g_suppress_slot = MSX2_SLOT_NONE;
+
+	if((action == MSX2_ACTION_PLACE) || (action == MSX2_ACTION_FUSION))
+	{
+		g_suppress_slot = g_fx_field;
+		if(owner == MSX2_OWNER_COM)
+		{
+			g_fx_kind = FX_COM_CHOOSE;
+			g_fx_followup = FX_COM_PLACE;
+		}
+		else
+			g_fx_kind = (action == MSX2_ACTION_FUSION) ? FX_FUSION : FX_SUMMON;
+	}
+	else if(action == MSX2_ACTION_ATTACK)
+	{
+		if(owner == MSX2_OWNER_COM)
+		{
+			g_fx_kind = FX_COM_CHOOSE;
+			g_fx_followup = FX_COM_ATTACK;
+			g_fx_hand = MSX2_SLOT_NONE;
+		}
+		else
+			g_fx_kind = FX_ATTACK;
+	}
+	else if(action == MSX2_ACTION_EQUIP)
+	{
+		g_fx_kind = (owner == MSX2_OWNER_COM) ? FX_COM_CHOOSE : FX_EQUIP;
+		if(owner == MSX2_OWNER_COM)
+			g_fx_followup = FX_EQUIP;
+	}
+	else if(action == MSX2_ACTION_POSITION)
+		g_fx_kind = FX_POSITION;
+	else
+		g_fx_kind = (owner == MSX2_OWNER_COM) ? FX_COM_CHOOSE : FX_SUPPORT;
+
+	Msx2_ClearActionEvent();
+	Msx2_BoardSnapshot();
+	g_panel_left = MSX2_VIDEO_PAGES;
+	g_fx_frames = (g_fx_kind == FX_COM_CHOOSE) ? 12 : 14;
+	g_fx_cleanup = FALSE;
+	g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+}
+
+static void Msx2_BoardFinishFx(void)
+{
+	u8 next = g_fx_followup;
+	if(next == FX_COM_PLACE)
+	{
+		// Keep the newly chosen card off the field while its outline travels
+		// from the COM hand to the destination.  The settled projected card is
+		// revealed by the final cleanup pass.
+		g_suppress_slot = g_fx_field;
+		Msx2_BoardSnapshot();
+		g_panel_left = MSX2_VIDEO_PAGES;
+		g_fx_kind = FX_COM_PLACE;
+		g_fx_followup = FX_NONE;
+		g_fx_frames = 14;
+		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+		return;
+	}
+	if(next == FX_COM_ATTACK)
+	{
+		g_fx_kind = FX_COM_ATTACK;
+		g_fx_followup = FX_NONE;
+		g_fx_frames = 16;
+		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+		return;
+	}
+	if(next == FX_EQUIP)
+	{
+		g_fx_kind = FX_EQUIP;
+		g_fx_followup = FX_NONE;
+		g_fx_frames = 12;
+		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+		return;
+	}
+
+	g_suppress_slot = MSX2_SLOT_NONE;
+	Msx2_BoardSnapshot();
+	g_panel_left = MSX2_VIDEO_PAGES;
+	g_fx_kind = FX_NONE;
+	g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+}
+
+static bool Msx2_BoardRunFx(void)
+{
+	if(g_fx_kind == FX_NONE)
+		return FALSE;
+
+	if(g_fx_cleanup)
+	{
+		// The page we draw now did not receive the previous effect, so it is the
+		// clean copy.  Finish all retained repairs there, then copy that clean
+		// page over the page that held the last flash.  Without the copy, the
+		// next turn would eventually flip back to a page with a stale beam/card
+		// flight because the effect overlay is intentionally not in g_shown[].
+		u8 page = Msx2_VideoGetDrawPage();
+		u8 i;
+		if(g_fx_page_frame[page] != FX_FRAME_NONE)
+			Msx2_BoardFxErase(g_fx_page_frame[page]);
+		for(i = 0; i < 32; ++i)
+			if(!Msx2_BoardPaint())
+				break;
+		Msx2_VideoCopyPage(page, (u8)(page ^ 1));
+		for(i = 0; i < SLOT_COUNT; ++i)
+		{
+			g_shown[0][i] = g_shown[1][i] = g_want[i];
+			g_shown_flag[0][i] = g_shown_flag[1][i] = g_flag[i];
+		}
+		g_cursor_at[0] = g_cursor_at[1] = SLOT_OF(g_zone, g_sel);
+		g_cursor_col_at[0] = g_cursor_col_at[1] = Msx2_BoardCursorColor();
+		g_fx_cleanup = FALSE;
+		Msx2_VideoFlipRequest();
+		Msx2_BoardFinishFx();
+		return TRUE;
+	}
+
+	{
+		u8 page = Msx2_VideoGetDrawPage();
+		u8 frame = g_fx_frames;
+		if(g_fx_page_frame[page] != FX_FRAME_NONE)
+		{
+			Msx2_BoardFxErase(g_fx_page_frame[page]);
+			g_fx_frames = frame;
+		}
+		Msx2_BoardPaint();
+		Msx2_BoardFxDraw(FALSE);
+		g_fx_page_frame[page] = g_fx_frames;
+	}
+	Msx2_VideoFlipRequest();
+	--g_fx_frames;
+	if(g_fx_frames == 0)
+		g_fx_cleanup = TRUE;
+	return TRUE;
+}
+
 // Repaint whatever the page in front of us is not showing.  Bounded: a card is
 // about a frame of VDP time, so at most two per frame, and the rest waits.
 static bool Msx2_BoardPaint(void)
@@ -417,12 +895,19 @@ void Msx2_BoardEnter(u8 stage)
 
 	g_stage = stage;
 	g_mode = M_IDLE;
+	g_view = BOARD_VIEW_PLAYER;
 	g_zone = ZONE_HAND;
 	g_sel = 0;
 	g_hand_pick = MSX2_SLOT_NONE;
 	g_atk_pick = MSX2_SLOT_NONE;
 	g_place_def = FALSE;
 	g_queue_n = 0;
+	g_fx_kind = FX_NONE;
+	g_fx_followup = FX_NONE;
+	g_fx_frames = 0;
+	g_fx_cleanup = FALSE;
+	g_suppress_slot = MSX2_SLOT_NONE;
+	g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 	Msx2_BoardSnapshot();
 
 	Msx2_RasterInit();
@@ -430,7 +915,7 @@ void Msx2_BoardEnter(u8 stage)
 	// The arena first, whole: the captured board with its HUD, hand band and
 	// info panel already in the picture.
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
-	Msx2_StreamScene(MSX2_VIEW_SEGMENT(stage), MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_VIEW_SEGMENT(stage, g_view), MSX2_PAGE_1);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
 
 	// §4.6: the opening camera move, played straight onto the page the VDP is
@@ -467,6 +952,48 @@ void Msx2_BoardEnter(u8 stage)
 	g_cursor_at[0] = g_cursor_at[1] = SLOT_OF(g_zone, g_sel);
 	g_cursor_col_at[0] = g_cursor_col_at[1] = Msx2_BoardCursorColor();
 	g_panel_left = 0;
+}
+
+// Stream the empty-board turn strip onto the visible page, then duplicate that
+// completed pose to the hidden page.  The cards are deliberately absent during
+// the swing: they are re-rasterised into the destination view immediately after
+// it lands, which avoids showing a card with the wrong projection.
+static void Msx2_BoardSwitchView(u8 view, bool forward)
+{
+	u8 show = Msx2_VideoGetShowPage();
+	u8 i;
+
+	if(view == g_view)
+		return;
+
+	g_mode = M_TURN;
+	Msx2_VideoDrawPage(show);
+	for(i = 0; i < MSX2_MOVE_TURN_POSES; ++i)
+	{
+		u8 pose = forward ? i : (u8)(MSX2_MOVE_TURN_POSES - 1 - i);
+		Msx2_StreamBand((u16)(MSX2_MOVE_TURN_SEGMENT
+		                      + (u16)pose * MSX2_MOVE_POSE_SEGS),
+		                MSX2_BAND_Y, MSX2_BAND_H);
+	}
+	Msx2_VideoCopyPage(show, (u8)(show ^ 1));
+	Msx2_VideoDrawPage((u8)(show ^ 1));
+
+	g_view = view;
+	Msx2_RasterSetView(g_view);
+	g_suppress_slot = MSX2_SLOT_NONE;
+	Msx2_BoardSnapshot();
+	for(i = 0; i < SLOT_COUNT; ++i)
+	{
+		// The streamed turn pose is an empty board and still contains the
+		// previous hand panel.  Treat every card as needing a fresh draw; empty
+		// slots already match and cost nothing.
+		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
+		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
+	}
+	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
+	g_cursor_col_at[0] = g_cursor_col_at[1] = 0;
+	g_panel_left = MSX2_VIDEO_PAGES;
+	g_mode = (view == BOARD_VIEW_COM) ? M_COM : M_IDLE;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -672,6 +1199,12 @@ u8 Msx2_BoardStep(void)
 	u8 before_zone = g_zone;
 	u8 before_sel = g_sel;
 
+	// Effects own the frame while they are on screen.  Input is intentionally
+	// ignored, so a held button cannot skip the COM's card choice or a battle
+	// result.
+	if(Msx2_BoardRunFx())
+		return MSX2_BOARD_BUSY;
+
 	if(g_mode == M_OVER)
 	{
 #ifdef MSX2_DEBUG_AUTOPLAY
@@ -693,13 +1226,29 @@ u8 Msx2_BoardStep(void)
 		{
 			Msx2_DuelStep();
 			Msx2_BoardTouch();
+			if((g_duel.turn_owner == MSX2_OWNER_PLAYER) &&
+			   (g_duel.result == 0))
+			{
+				// The COM has finished its rules work.  Hand the camera back
+				// before the player is allowed to act again.
+				g_zone = ZONE_HAND;
+				g_sel = 0;
+				Msx2_BoardSwitchView(BOARD_VIEW_PLAYER, FALSE);
+			}
 		}
 		else
 		{
-			g_mode = M_IDLE;
-			g_zone = ZONE_HAND;
-			g_sel = 0;
-			g_panel_left = MSX2_VIDEO_PAGES;
+			if(g_duel.result == 0)
+			{
+				g_zone = ZONE_HAND;
+				g_sel = 0;
+				Msx2_BoardSwitchView(BOARD_VIEW_PLAYER, FALSE);
+			}
+			else
+			{
+				g_mode = M_IDLE;
+				g_panel_left = MSX2_VIDEO_PAGES;
+			}
 		}
 	}
 	else
@@ -712,7 +1261,10 @@ u8 Msx2_BoardStep(void)
 		Msx2_DuelStep();
 		Msx2_BoardTouch();
 		if(g_duel.turn_owner == MSX2_OWNER_COM)
+		{
 			g_mode = M_COM;
+			Msx2_BoardSwitchView(BOARD_VIEW_COM, TRUE);
+		}
 #else
 		if(pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT | MSX2_BTN_UP | MSX2_BTN_DOWN))
 			Msx2_BoardMove(pressed);
@@ -733,7 +1285,7 @@ u8 Msx2_BoardStep(void)
 				Msx2_EndTurn();
 				g_queue_n = 0;
 				g_mode = M_COM;
-				Msx2_BoardTouch();
+				Msx2_BoardSwitchView(BOARD_VIEW_COM, TRUE);
 			}
 		}
 #endif
@@ -750,6 +1302,10 @@ u8 Msx2_BoardStep(void)
 		g_mode = M_OVER;
 		Msx2_BoardTouch();
 	}
+
+	Msx2_BoardStartFx();
+	if(Msx2_BoardRunFx())
+		return MSX2_BOARD_BUSY;
 
 	if(Msx2_BoardPaint())
 		Msx2_VideoFlipRequest();

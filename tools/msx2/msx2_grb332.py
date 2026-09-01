@@ -2,10 +2,16 @@
 """GRB332 conversion shared by every MSX2 asset generator.
 
 GRAPHIC 7 has no palette: a byte *is* a colour, (G<<5)|(R<<2)|B, with three
-bits of green, three of red and only two of blue.  Blue is therefore the
-channel that bands, which is why everything here is dithered in the image
-rather than quantised per pixel -- a per-pixel nearest-colour pass turns a
-sunset into four flat stripes.
+bits of green, three of red and only two of blue.
+
+**Nothing here is dithered.**  An error-diffused or ordered pattern buys back
+some of the blue channel's four levels in theory, and on a 256x212 screen of
+flat-lit 3D artwork it reads as crawling grain over every surface -- which is
+worse than the banding it removes, and worse still on the duel board, where the
+same picture is on screen for the whole duel and the grain never resolves.  So
+a pixel takes its nearest representable colour and nothing else.  Where a
+gradient would band visibly, the fix is in the art (a flatter grade, a tint the
+palette can actually hold), not in the quantiser.
 
 Everything in this module works on 8-bit GRB332 byte strings, row-major, no
 header: that is exactly the layout the VDP wants, so a blob written here is
@@ -15,7 +21,7 @@ pushed at the data port unchanged.
 import struct
 import zlib
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 # The exact levels the VDP shows, in 0..255.
 R_LEVELS = [i * 255 // 7 for i in range(8)]
@@ -54,34 +60,24 @@ def unpack(byte):
 
 
 def quantize(img, size):
-    """Floyd-Steinberg dither to GRB332, serpentine to avoid a diagonal grain."""
+    """Nearest-colour GRB332, no dithering (see the module docstring).
+
+    Done with three channel LUTs through `Image.point`, so the whole picture is
+    converted inside PIL rather than a pixel at a time in Python -- which is
+    what makes re-baking every view, every camera-move pose and 78 cards a
+    few seconds instead of a few minutes."""
     width, height = size
     src = img.convert("RGB")
     if src.size != size:
         src = src.resize(size, Image.LANCZOS)
-    pixels = [[[float(c) for c in src.getpixel((x, y))] for x in range(width)]
-              for y in range(height)]
-
-    out = bytearray(width * height)
-    for y in range(height):
-        columns = range(width) if (y % 2 == 0) else range(width - 1, -1, -1)
-        ahead = 1 if (y % 2 == 0) else -1
-        for x in columns:
-            old = pixels[y][x]
-            ri = R_LUT[clamp8(old[0])]
-            gi = G_LUT[clamp8(old[1])]
-            bi = B_LUT[clamp8(old[2])]
-            new = (R_LEVELS[ri], G_LEVELS[gi], B_LEVELS[bi])
-            out[y * width + x] = (gi << 5) | (ri << 2) | bi
-
-            err = [old[c] - new[c] for c in range(3)]
-            for dx, dy, weight in ((ahead, 0, 7 / 16.0), (-ahead, 1, 3 / 16.0),
-                                   (0, 1, 5 / 16.0), (ahead, 1, 1 / 16.0)):
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < width and 0 <= ny < height:
-                    for c in range(3):
-                        pixels[ny][nx][c] += err[c] * weight
-    return bytes(out)
+    r, g, b = src.split()
+    # Each channel is mapped straight to its packed field, so the three bands
+    # can then simply be added together.
+    r = r.point([R_LUT[v] << 2 for v in range(256)])
+    g = g.point([G_LUT[v] << 5 for v in range(256)])
+    b = b.point([B_LUT[v] for v in range(256)])
+    packed = ImageChops.add(ImageChops.add(r, g), b)
+    return packed.tobytes()
 
 
 def write_preview(path, data, size):

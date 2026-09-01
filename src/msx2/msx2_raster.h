@@ -35,6 +35,11 @@
 // resident before anything had been read at all.
 void Msx2_RasterInit(void);
 
+// Select the captured camera geometry used by subsequent field-card draws.
+// MSX2_VIEW_TOP is the player's tactical view; MSX2_VIEW_COM is the same board
+// from the opponent's chair.
+void Msx2_RasterSetView(u8 view);
+
 // Pull one card texture and one slot's span program in from the cartridge.
 // Both are RAM-resident for the draw: that is what keeps the inner loop free of
 // bank switching, and it is why the two buffers are worth their four kilobytes.

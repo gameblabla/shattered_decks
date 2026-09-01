@@ -17,6 +17,12 @@
    draw_spin_cursor). Nothing a console target compiles reaches this. */
 #include <math.h>
 #endif
+#if defined(WAIFU_MSX2_VIEW_DUMP) && !defined(WAIFU_PLATFORM_HW3D)
+/* The MSX2 view probe is a host-only capture tool. Its authored turn orbit
+   uses the ordinary C trig functions; the MSX2 cartridge never compiles this
+   path. */
+#include <math.h>
+#endif
 #if defined(WAIFU_FIXED_POSE_BENCH) && \
     (!defined(WAIFU_FM_HEADLESS_TESTS) || !defined(WAIFU_PROFILE_RENDER) || \
      !defined(WAIFU_FM_FMTOWNS))
@@ -23216,49 +23222,94 @@ static int32_t msx2_env_q8(const char *name, int32_t fallback)
 
 static Camera msx2_top_camera(void)
 {
-    /* Raked, not straight down.  A pure top-down camera projects every slot to
-       an axis-aligned rectangle, which would make §8's quad rasterizer an
-       elaborate way of blitting -- and would lose the thing the directive is
-       actually about, which is that the cards lie on a board receding away from
-       the player.  Tilting the eye back buys real trapezoids: the COM row reads
-       as further away because it is. */
-    int32_t h  = msx2_env_q8("MSX2_TOP_H", Q8_FRAC(400,100));
-    int32_t z  = msx2_env_q8("MSX2_TOP_Z", Q8_FRAC(120,100));
-    int32_t tz = msx2_env_q8("MSX2_TOP_TZ", Q8_FRAC(-20,100));
-    int32_t f  = msx2_env_q8("MSX2_TOP_F", Q8_FROM_INT(165));
+    /* The FM TOWNS tactical view, framed for a 256x212 window.
+       The owner's directive on this port is that the MSX2 duel must LOOK like
+       the FM TOWNS one, so the numbers below are fitted to reproduce that
+       screen: all four board rows in frame, the board filling the window edge
+       to edge, and only a bar of UI under it.  The rake is small but real --
+       the far row is smaller than the near one, so the slots project to
+       trapezoids and the cards lie on the board rather than standing on it.
+       (FM TOWNS' own top_camera() is exactly overhead; at 256 pixels across a
+       4:3 screen the two are all but indistinguishable, and a raked eye is
+       what keeps the perspective the port is built around.)
+       The numbers are readable from the environment so the pose can be fitted
+       against a real capture instead of guessed. */
+    int32_t h  = msx2_env_q8("MSX2_TOP_H", Q8_FRAC(460,100));
+    int32_t z  = msx2_env_q8("MSX2_TOP_Z", Q8_FRAC(110,100));
+    int32_t tz = msx2_env_q8("MSX2_TOP_TZ", Q8_FRAC(-10,100));
+    int32_t f  = msx2_env_q8("MSX2_TOP_F", Q8_FROM_INT(170));
     return make_camera(v3(0, h, z), v3(0, 0, tz), v3(0,Q8_ONE,0), f);
 }
 
-/* Where the duel opens from: the same top-down look from much higher up and
-   much wider, so the sweep down to the resting pose is a descent onto the
-   arena rather than a pan across it.  A pan would leave the board half outside
-   the board band the baked strip covers (§4.6.2). */
+/* The same view from the opponent's chair: the top pose orbited half a turn
+   about the middle of the board.  The MSX2 duel really does hand the table
+   over -- when the player ends a turn the camera swings round, the COM plays
+   from its own side of the board, and it swings back -- so this is a pose the
+   cartridge carries a whole picture of, not a mirror of the other one.  A
+   mirror would put the COM's cards where the player's are and read as a swap
+   rather than as a turn. */
+static Camera msx2_com_camera(void)
+{
+    int32_t h  = msx2_env_q8("MSX2_TOP_H", Q8_FRAC(460,100));
+    int32_t z  = msx2_env_q8("MSX2_TOP_Z", Q8_FRAC(110,100));
+    int32_t tz = msx2_env_q8("MSX2_TOP_TZ", Q8_FRAC(-10,100));
+    int32_t f  = msx2_env_q8("MSX2_TOP_F", Q8_FROM_INT(170));
+    return make_camera(v3(0, h, -z), v3(0, 0, -tz), v3(0,Q8_ONE,0), f);
+}
+
+/* Where the duel opens from: the same look from much higher up and much
+   wider, so the sweep down to the resting pose is a descent onto the arena
+   rather than a pan across it.  A pan would leave the board half outside the
+   band the baked strip covers (§4.6.2). */
 static Camera msx2_open_camera(void)
 {
-    return make_camera(v3(0, Q8_FRAC(880,100), Q8_FRAC(264,100)),
-                       v3(0, 0, Q8_FRAC(-20,100)), v3(0,Q8_ONE,0), Q8_FROM_INT(96));
+    return make_camera(v3(0, Q8_FRAC(980,100), Q8_FRAC(264,100)),
+                       v3(0, 0, Q8_FRAC(-10,100)), v3(0,Q8_ONE,0), Q8_FROM_INT(104));
 }
 
 #define MSX2_MOVE_OPENING  0
+#define MSX2_MOVE_TURN     1
 
-/* Only ONE camera move is baked, and the reason is a constraint of the
-   technique rather than an omission.  A baked pose is a picture of the EMPTY
-   board (§4.6.1): cards depend on duel state, so they cannot be in it.  That is
-   truthful for the opening sweep, which plays before a card is on the field,
-   and it is a visible defect for any mid-duel push -- every monster would
-   blink out for the second the camera moved.  The mid-duel moves §4.6 lists
-   therefore wait for the card rasterizer to be fast enough to repaint the
-   fifteen quads inside a pose's own streaming time; the strip player below is
-   already general, so what they need is speed, not new machinery. */
+/* Two baked moves, and the second one is what makes the turn readable:
+
+     OPENING  the descent onto the arena, played once when a duel is dealt.
+     TURN     the half orbit from the player's chair to the opponent's, played
+              forwards when the player ends a turn and backwards when the COM
+              gives it back.  One strip serves both directions, because a
+              camera move played in reverse IS the return move -- which halves
+              what the cartridge carries and what the bake costs.
+
+   A baked pose is a picture of the EMPTY board (§4.6.1), so a move can only
+   play where the board's contents are allowed to be absent for its duration.
+   The opening qualifies because no card is on the field yet.  The turn
+   qualifies because the port repaints every card the moment the move lands --
+   the cards are gone for the swing and back before the COM acts, which reads
+   as the table turning rather than as a defect.  It is also why the strip is
+   short: five poses, about two seconds. */
 static const struct { const char *name; int kind; int poses; } g_msx2_moves[] = {
-    { "OPENING",  MSX2_MOVE_OPENING,  8 },
+    { "OPENING",  MSX2_MOVE_OPENING,  6 },
+    { "TURN",     MSX2_MOVE_TURN,     5 },
 };
 #define MSX2_MOVE_COUNT ((int)(sizeof g_msx2_moves / sizeof g_msx2_moves[0]))
 
 static Camera msx2_move_camera(int kind, int pose, int poses)
 {
     int32_t t = q8_ratio(pose, poses - 1);
-    (void)kind;
+
+    if (kind == MSX2_MOVE_TURN) {
+        /* A half orbit about the middle of the board rather than a lerp from
+           one chair to the other: a straight line between the two eyes passes
+           through the point the camera is looking at, where the look-at basis
+           is degenerate and the picture tears.  Going round keeps the eye at
+           a constant height and the board turning under it. */
+        double a = 3.14159265358979 * (double)pose / (double)(poses - 1);
+        double r = 1.10, tr = -0.10;
+        return make_camera(v3((int32_t)(sin(a) * r * Q8_ONE), Q8_FRAC(460,100),
+                              (int32_t)(cos(a) * r * Q8_ONE)),
+                           v3((int32_t)(sin(a) * tr * Q8_ONE), 0,
+                              (int32_t)(cos(a) * tr * Q8_ONE)),
+                           v3(0,Q8_ONE,0), Q8_FROM_INT(170));
+    }
     /* The opening ENDS on the resting pose, so the last frame of the strip is
        the picture the duel is played on and no settle stream follows it. */
     return lerp_camera(msx2_open_camera(), msx2_top_camera(), t);
@@ -23345,6 +23396,9 @@ static int dump_msx2_views(const char *dir)
 
     fprintf(meta, "VIEW TOP\n");
     if (msx2_write_pose(dir, "TOP", msx2_top_camera(), meta)) { fclose(meta); return 1; }
+
+    fprintf(meta, "VIEW COM\n");
+    if (msx2_write_pose(dir, "COM", msx2_com_camera(), meta)) { fclose(meta); return 1; }
 
     for (i = 0; i < MSX2_MOVE_COUNT; ++i) {
         int pose;

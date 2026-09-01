@@ -315,9 +315,9 @@ def paint_panels(img):
     return img
 
 
-def build_view(cap, stage):
-    quads = cap.poses["TOP"]
-    img = composite_arena(cap, "TOP", stage)
+def build_view(cap, stage, tag):
+    quads = cap.poses[tag]
+    img = composite_arena(cap, tag, stage)
     draw_slot_rings(img, quads)
     paint_panels(img)
     return img
@@ -331,7 +331,15 @@ def build_move_strip(cap, stage, move, poses):
     lever §4.6.2 leaves for playback rate."""
     frames = []
     for pose in range(poses):
-        img = composite_arena(cap, "MOVE_%s_%d" % (move, pose), stage)
+        tag = "MOVE_%s_%d" % (move, pose)
+        img = composite_arena(cap, tag, stage)
+        # The turn strip is also the empty COM-side resting view at its last
+        # pose.  Carry the slot rings through the strip so the destination can
+        # be populated and the cursor can be erased without repairing a full
+        # board image.  (The opening is deliberately ring-free until it lands
+        # on TOP, where the normal view already contains the rings.)
+        if move == "TURN":
+            draw_slot_rings(img, cap.poses[tag])
         band = img.crop((0, BAND_Y, WIDTH, BAND_Y + BAND_H))
         frames.append(pad_segments(grb.quantize(band, (WIDTH, BAND_H))))
     return b"".join(frames)
@@ -526,24 +534,31 @@ def bake_spans(cap, tags):
 def bake(quiet=False, capture=True):
     """Everything this module owns, as blobs plus the numbers the header needs."""
     cap = run_capture(quiet) if capture else read_capture()
-    quads = cap.poses["TOP"]
-
-    views = []
+    view_tags = ("TOP", "COM")
+    views = {tag: [] for tag in view_tags}
     slots = bytearray()
     moves = {name: bytearray() for name, _n in cap.moves}
-    boxes = None
+    # Geometry does not change with the stage tint.  Keep one box list per
+    # camera view; the slot blob below still has a stage/view copy because its
+    # pixels do change with the captured stage image.
+    boxes = {tag: None for tag in view_tags}
     for stage in range(len(STAGE_BG)):
-        data = grb.quantize(build_view(cap, stage), (WIDTH, HEIGHT))
-        tiles, boxes = cut_slot_tiles(data, quads)
-        views.append(pad_segments(data))
-        slots += tiles
+        for tag in view_tags:
+            quads = cap.poses[tag]
+            data = grb.quantize(build_view(cap, stage, tag), (WIDTH, HEIGHT))
+            tiles, stage_boxes = cut_slot_tiles(data, quads)
+            views[tag].append(pad_segments(data))
+            slots += tiles
+            if boxes[tag] is None:
+                boxes[tag] = stage_boxes
         for name, poses in cap.moves:
             moves[name] += build_move_strip(cap, stage, name, poses)
         if not quiet:
-            print("BOARD_%-8s view %d bytes, %d slot tiles"
-                  % (STAGE_BG[stage][:-4].upper(), len(data), FIELD_SLOTS))
+            print("BOARD_%-8s %d views x %d bytes, %d slot tiles each"
+                  % (STAGE_BG[stage][:-4].upper(), len(view_tags),
+                     WIDTH * HEIGHT, FIELD_SLOTS))
 
-    spans, span_off, span_max = bake_spans(cap, ["TOP"])
+    spans, span_off, span_max = bake_spans(cap, list(view_tags))
     if not quiet:
         print("SPANS    %d programs -> %d bytes (longest %d B)"
               % (len(span_off), len(spans), span_max))
@@ -552,14 +567,21 @@ def bake(quiet=False, capture=True):
                   % (name, poses, BAND_H, len(moves[name])))
 
     return {
-        "views": views,
+        # Runtime addressing interleaves camera views inside each stage:
+        # stage 0 TOP, stage 0 COM, stage 1 TOP, stage 1 COM, ... .  Keep the
+        # flattened blob in that same order; grouping by tag here would make
+        # MSX2_VIEW_SEGMENT(stage, view) select the wrong arena tint.
+        "views": [views[tag][stage]
+                  for stage in range(len(STAGE_BG))
+                  for tag in view_tags],
+        "view_tags": view_tags,
         "slots": bytes(slots),
         "slot_boxes": boxes,
         "moves": [(name, poses, bytes(moves[name])) for name, poses in cap.moves],
         "spans": spans,
         "span_offsets": span_off,
         "span_max": span_max,
-        "quads": quads,
+        "quads": {tag: cap.poses[tag] for tag in view_tags},
     }
 
 
@@ -572,8 +594,12 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("// tools/msx2/gen_msx_views.py bakes these out of --dump-msx2-views, so the")
     a("// arena, the perspective and the slot layout are the ones every other")
     a("// target renders (MSX2_PORT_PLAN.md §4.3).  Nothing here is drawn offline.")
-    a("#define MSX2_VIEW_SEGMENT(stage)  (%d + (stage) * MSX2_SCENE_SEG_SPAN)" % view_seg)
-    a("#define MSX2_VIEW_STAGES        %d" % len(baked["views"]))
+    a("#define MSX2_VIEW_TOP          0")
+    a("#define MSX2_VIEW_COM          1")
+    a("#define MSX2_BOARD_VIEWS       %d" % len(baked["view_tags"]))
+    a("#define MSX2_VIEW_SEGMENT(stage, view)  (%d + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))" % view_seg)
+    a("#define MSX2_VIEW_STAGES        %d" %
+      (len(baked["views"]) // len(baked["view_tags"])))
     a("#define MSX2_BAND_Y             %d" % BAND_Y)
     a("#define MSX2_BAND_H             %d" % BAND_H)
     a("#define MSX2_HUD_H              %d" % HUD_H)
@@ -594,17 +620,23 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("// The projected corners of every field slot, window pixels, in the corner")
     a("// order the shared renderer hands its rasterizer -- so texture corner 0")
     a("// lands on the same physical corner here as it does on the PC.")
-    a("static const unsigned char g_msx2_slot_quad[MSX2_FIELD_SLOTS][8] = {")
-    for quad in baked["quads"]:
-        a("\t{ %s }," % ", ".join("%d" % max(0, min(255, int(round(v))))
-                                  for p in quad for v in p))
+    a("static const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][8] = {")
+    for tag in baked["view_tags"]:
+        a("\t{")
+        for quad in baked["quads"][tag]:
+            a("\t\t{ %s }," % ", ".join("%d" % max(0, min(255, int(round(v))))
+                                           for p in quad for v in p))
+        a("\t},")
     a("};")
     a("")
     a("// The box a slot's ring and card occupy: what an empty slot restores, and")
     a("// what a repaint has to cover.")
-    a("static const unsigned char g_msx2_slot_box[MSX2_FIELD_SLOTS][4] = {")
-    for box in baked["slot_boxes"]:
-        a("\t{ %d, %d, %d, %d }," % box)
+    a("static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4] = {")
+    for tag in baked["view_tags"]:
+        a("\t{")
+        for box in baked["slot_boxes"][tag]:
+            a("\t\t{ %d, %d, %d, %d }," % box)
+        a("\t},")
     a("};")
     a("")
     a("// ── §8.4 Tier A span programs ─────────────────────────────────────────")
@@ -624,15 +656,19 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("#define MSX2_OP_END             0x%02X" % OP_END)
     a("#define MSX2_OP_RUN_MASK        0x%02X" % OP_MAX_RUN)
     a("// Slot -> which SPAN_STRIDE-sized record in the blob holds its program.")
-    a("static const unsigned char g_msx2_span_record[MSX2_FIELD_SLOTS] = {")
-    a("\t%s" % ", ".join(str(v) for v in baked["span_offsets"]))
+    a("static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {")
+    for view in range(len(baked["view_tags"])):
+        start = view * FIELD_SLOTS
+        a("\t{ %s }," % ", ".join(str(v) for v in
+                                      baked["span_offsets"][start:start + FIELD_SLOTS]))
     a("};")
     a("")
     a("// ── Empty-slot tiles ──────────────────────────────────────────────────")
     a("#define MSX2_SLOT_ART_SEGMENT   %d" % slot_seg)
     a("#define MSX2_SLOT_ART_STRIDE    %d" % SLOT_STRIDE)
     a("#define MSX2_SLOT_ART_PER_SEG   %d" % (16384 // SLOT_STRIDE))
-    a("#define MSX2_SLOT_ART_PER_STAGE %d" % FIELD_SLOTS)
+    a("#define MSX2_SLOT_ART_PER_VIEW  %d" % FIELD_SLOTS)
+    a("#define MSX2_SLOT_ART_VIEWS     %d" % len(baked["view_tags"]))
     a("")
     a("// ── §4.6 baked camera moves ───────────────────────────────────────────")
     a("// A strip of whole pictures of the board band, streamed one after the")

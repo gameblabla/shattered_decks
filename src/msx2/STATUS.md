@@ -16,7 +16,7 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M1b — timing truth ROM (OUTI spacing, HMMM/LMMV throughput) | not started |
 | M2 — VRAM map, compositor skeleton, glyphs, page flip | **done**: GRAPHIC 7 layer, double-buffered page flip, glyphs, fills, the duel board |
 | M3 — asset pipeline, title screen | **done**: every picture the game shows is baked from `assets/source/` and streamed from the cartridge |
-| M4 — the duel screen, played by a person | **done**: place, fuse, attack, end turn on real input, on the game's own 3D arena, with the cards mapped into their true projected quads and a baked camera move at the door |
+| M4 — the duel screen, played by a person | **done**: place, fuse, attack, end turn on real input, on the game's own 3D arena, with true projected quads, player↔COM turn views, and retained-board action cels |
 | M5 — story mode | **done**: opening, sanctum map, dialogue, five duels, ending, with the dialogue a composited visual-novel scene — both speakers on the shipped painting at once |
 
 ### The title screen
@@ -24,7 +24,7 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 `./msx2.sh shot --page 1` after the default key sequence:
 
 * the backdrop is `assets/source/title/title256_msx2.png`, the same picture the
-  other targets show, dithered to GRB332 offline and **streamed out of the
+  other targets show, nearest-colour quantised to GRB332 offline and **streamed out of the
   cartridge** — segments 4-7, 54,272 bytes, never linked into the Z80's 32 KB;
 * the logo is drawn over it transparently with a hard shadow (the 6x8 bitmap
   font expanded 2x as runs of fills, since the printer has no scaler);
@@ -65,10 +65,11 @@ targets render (`MSX2_PORT_PLAN.md` §0.3.1, §4.3). A view whose art disagrees
 with the other targets is a capture bug, not a styling choice, which is the
 whole point of taking this route.
 
-The pose is `msx2_top_camera()` — raked, not straight down. A pure top-down
-camera projects every slot to an axis-aligned rectangle, and the perspective
+The player pose is `msx2_top_camera()` — raked, not straight down. The COM pose
+is the same authored view from the opposite chair. A pure top-down camera
+projects every slot to an axis-aligned rectangle, and the perspective
 rasterizer would then be an elaborate way of blitting; raking the eye back buys
-real trapezoids, so the COM row reads as further away because it is.
+real trapezoids, so the far row reads as further away because it is.
 
 **The cards are drawn into those trapezoids**, by the §8 Tier A span rasterizer:
 
@@ -96,20 +97,23 @@ generator bakes just outside every quad, so erasing it is the same four VDP
 it stays five axis-aligned 40x48 blits in a baked band — which also keeps the
 cards a player is choosing between at a readable size.
 
-**A duel opens on a baked camera move** (§4.6): eight whole pictures of the
-114-row board band, streamed one after the next by the ordinary §6.2 path, about
-a quarter of a second each. The last pose is byte for byte the resting view, so
-the move ends already showing the picture the duel is played on and needs no
-settle stream after it. There is no codec and no decoder anywhere in the port.
-The write front crawling down the screen is visible and is the artefact §4.6.3
-predicted; at these durations it reads as a deliberate transition.
+**A duel opens on a baked camera move** (§4.6): six whole pictures of the
+114-row board band, streamed one after the next by the ordinary §6.2 path. The
+last pose is byte for byte the resting view, so the move ends already showing
+the picture the duel is played on and needs no settle stream after it. At the
+end of a player turn, a five-pose strip swings the table to the COM chair; the
+reverse strip returns it to the player. Both destination views re-rasterise the
+settled cards with their own projected quads, so the COM sees its hand and card
+faces from the correct side. There is no codec and no decoder anywhere in the
+port.
 
-Mid-duel camera moves are **not** done, and the reason is worth writing down: a
-baked pose is a picture of the *empty* board, because cards depend on duel
-state. That is truthful for an opening sweep and would be a visible defect for
-any push during a turn — every monster would blink out for the second the camera
-moved. They wait on the rasterizer being fast enough to repaint fifteen quads
-inside a pose's own streaming time.
+Actions now have short 2D presentation beats on the retained board: COM choice
+and placement, summon/fusion/equip/support, position changes, and attacks. Card
+placement uses a reversible hand-to-field outline, while attacks use reversible
+beam, impact-ray and trap-counter cels; the rules state is committed before the
+beat and the retained board is revealed when it lands. The full authored battle
+camera cuts are still not done: an empty-board baked pose cannot be used after
+cards are on the field without repainting every affected quad.
 
 The player places monsters in attack or defence, plays supports and equips,
 builds a multi-card fusion chain out of the hand, attacks, and ends the turn.
@@ -175,12 +179,12 @@ and the AI all run on a Z80 inside the RAM budget.
 The duel count is far lower than the 417 the renderer-less M1a build managed in
 900 seconds, and that is the soak measuring the *presented* game: it takes one
 rules step every frame (a person takes one every few seconds), streams a fresh
-54 KB arena and plays a two-second camera move for every duel, and rasterises
+54 KB arena, plays the opening and turn presentation strips, and rasterises
 cards into perspective quads underneath all of it. The number to watch here is
 `status`, not the rate.
 
-Footprint (`./msx2.sh ram`): 4,964 bytes of static RAM (8.2 KB free below the
-stack) and 27,731 bytes in `_CODE`. The RAM went up by the rasterizer's two
+Footprint (`./msx2.sh ram`): 5,150 bytes of static RAM (8,034 bytes free below
+the stack) and 28,570 bytes in `_CODE`. The RAM went up by the rasterizer's two
 buffers -- the 1,920-byte card texture and the 1,198-byte span program -- which
 is what keeps its inner loop clear of the mapper.
 
@@ -261,7 +265,7 @@ crash into a number instead of a black screen.
 |---|---|
 | `msx2_main.c` | boot, vblank ISR, the scene loop, the blind autoplay driver |
 | `msx2_title.c/.h` | title screen: streamed art, logo, attract prompt, menu |
-| `msx2_board.c/.h` | the duel screen: the ten projected slots, the hand strip, the cursor, the HUD, the opening camera move |
+| `msx2_board.c/.h` | the duel screen: the ten projected slots, both chair views, the hand strip, cursor, HUD, turn strip, and action cels |
 | `msx2_raster.c/.h` | §8 Tier A: the baked span-program card rasterizer |
 | `msx2_story.c/.h` | story mode: the opening, the sanctum map, dialogue, the ending |
 | `msx2_video.c/.h` | GRAPHIC 7 layer: pages, fills, glyphs, 2x text |
@@ -282,7 +286,8 @@ Shared code compiled unmodified: `src/game/deck.c`, `src/game/ai.c`, plus
 Generated: `src/generated/msx2_card_tables.h` from `tools/msx2/gen_msx_tables.py`
 (ATK/DEF/attribute/tribe lifted out of `waifu_assets.h`, 432 bytes of ROM), and
 `src/generated/msx2_scenes.h` plus `src/msx2/assets/*.bin` from
-`tools/msx2/gen_msx_scenes.py` (full-screen art dithered to GRB332).
+`tools/msx2/gen_msx_scenes.py` (full-screen art nearest-colour quantised to
+GRB332, without dithering).
 
 `tools/msx2/gen_msx_views.py` is the board's own generator, imported by
 `gen_msx_scenes.py` so the cartridge segment map stays owned by one tool. It
@@ -347,13 +352,12 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
 4. **Sound is stubs.** `msx2_audio.c` records the requested track and reserves
    700 bytes for the Arkos AKG + ayFX state, so the RAM is already spent.
 
-5. **Mid-duel camera moves are not baked** (`MSX2_PORT_PLAN.md` §21.2). A
-   baked pose is a picture of the empty board, so a push during a turn would
-   blink every monster off the field for a second. The strip player is already
-   general; what the mid-duel moves need is a rasterizer fast enough to repaint
-   fifteen quads inside a pose's own streaming time. Card flight (§4.5) is the
-   other half of the same gap: the offline rasteriser can already turn a quad
-   into a span program, it just does not yet interpolate a quad along a path.
+5. **Full authored battle camera moves remain** (`MSX2_PORT_PLAN.md` §21.2).
+   The player↔COM turn handoff is implemented as a five-pose empty-board strip,
+   and the destination cards are re-rasterised. The remaining battle-top and
+   per-row cuts need the same repaint budget for every live card. Card flight is
+   currently a reversible outline cue rather than interpolated warped card
+   cels; opaque card art is revealed by the retained board at the destination.
 
 6. **No name entry.** The other targets let the player name Serena before the
    first dream; here she is always SERENA, and the title's help line says so.

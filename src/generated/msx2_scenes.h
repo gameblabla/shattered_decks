@@ -32,7 +32,10 @@
 // tools/msx2/gen_msx_views.py bakes these out of --dump-msx2-views, so the
 // arena, the perspective and the slot layout are the ones every other
 // target renders (MSX2_PORT_PLAN.md §4.3).  Nothing here is drawn offline.
-#define MSX2_VIEW_SEGMENT(stage)  (64 + (stage) * MSX2_SCENE_SEG_SPAN)
+#define MSX2_VIEW_TOP          0
+#define MSX2_VIEW_COM          1
+#define MSX2_BOARD_VIEWS       2
+#define MSX2_VIEW_SEGMENT(stage, view)  (64 + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))
 #define MSX2_VIEW_STAGES        4
 #define MSX2_BAND_Y             14
 #define MSX2_BAND_H             114
@@ -54,32 +57,60 @@
 // The projected corners of every field slot, window pixels, in the corner
 // order the shared renderer hands its rasterizer -- so texture corner 0
 // lands on the same physical corner here as it does on the PC.
-static const unsigned char g_msx2_slot_quad[MSX2_FIELD_SLOTS][8] = {
-	{ 46, 47, 18, 47, 25, 14, 52, 14 },
-	{ 94, 47, 66, 47, 70, 14, 97, 14 },
-	{ 141, 47, 114, 47, 116, 14, 140, 14 },
-	{ 190, 47, 161, 47, 158, 14, 186, 14 },
-	{ 238, 47, 210, 47, 204, 14, 230, 14 },
-	{ 15, 57, 44, 57, 37, 100, 5, 100 },
-	{ 65, 57, 94, 57, 90, 100, 59, 100 },
-	{ 114, 57, 142, 57, 143, 100, 113, 100 },
-	{ 162, 57, 191, 57, 197, 100, 165, 100 },
-	{ 211, 57, 241, 57, 251, 100, 219, 100 },
+static const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][8] = {
+	{
+		{ 53, 45, 28, 45, 32, 12, 57, 12 },
+		{ 97, 45, 71, 45, 74, 12, 99, 12 },
+		{ 140, 45, 116, 45, 117, 12, 139, 12 },
+		{ 185, 45, 158, 45, 157, 12, 181, 12 },
+		{ 228, 45, 203, 45, 199, 12, 224, 12 },
+		{ 26, 52, 52, 52, 47, 90, 20, 90 },
+		{ 71, 52, 97, 52, 95, 90, 67, 90 },
+		{ 116, 52, 140, 52, 141, 90, 115, 90 },
+		{ 159, 52, 185, 52, 189, 90, 161, 90 },
+		{ 204, 52, 230, 52, 236, 90, 208, 90 },
+	},
+	{
+		{ 207, 53, 234, 53, 240, 92, 211, 92 },
+		{ 160, 53, 187, 53, 191, 92, 162, 92 },
+		{ 115, 53, 141, 53, 141, 92, 115, 92 },
+		{ 69, 53, 96, 53, 94, 92, 65, 92 },
+		{ 22, 53, 49, 53, 45, 92, 16, 92 },
+		{ 232, 45, 205, 45, 201, 11, 227, 11 },
+		{ 187, 45, 159, 45, 158, 11, 183, 11 },
+		{ 141, 45, 115, 45, 116, 11, 140, 11 },
+		{ 97, 45, 69, 45, 73, 11, 98, 11 },
+		{ 51, 45, 24, 45, 29, 11, 55, 11 },
+	},
 };
 
 // The box a slot's ring and card occupy: what an empty slot restores, and
 // what a repaint has to cover.
-static const unsigned char g_msx2_slot_box[MSX2_FIELD_SLOTS][4] = {
-	{ 15, 14, 41, 38 },
-	{ 63, 14, 38, 38 },
-	{ 111, 14, 34, 38 },
-	{ 155, 14, 39, 38 },
-	{ 201, 14, 41, 38 },
-	{ 2, 53, 46, 52 },
-	{ 56, 53, 42, 52 },
-	{ 110, 53, 37, 52 },
-	{ 159, 53, 42, 52 },
-	{ 208, 53, 47, 52 },
+static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4] = {
+	{
+		{ 25, 14, 36, 36 },
+		{ 68, 14, 35, 36 },
+		{ 113, 14, 31, 36 },
+		{ 154, 14, 35, 36 },
+		{ 196, 14, 36, 36 },
+		{ 17, 48, 39, 47 },
+		{ 64, 48, 37, 47 },
+		{ 112, 48, 33, 47 },
+		{ 156, 48, 37, 47 },
+		{ 201, 48, 39, 47 },
+	},
+	{
+		{ 204, 49, 40, 48 },
+		{ 157, 49, 38, 48 },
+		{ 112, 49, 33, 48 },
+		{ 62, 49, 38, 48 },
+		{ 13, 49, 40, 48 },
+		{ 198, 14, 38, 36 },
+		{ 155, 14, 36, 36 },
+		{ 112, 14, 33, 36 },
+		{ 66, 14, 36, 36 },
+		{ 21, 14, 38, 36 },
+	},
 };
 
 // ── §8.4 Tier A span programs ─────────────────────────────────────────
@@ -87,10 +118,10 @@ static const unsigned char g_msx2_slot_box[MSX2_FIELD_SLOTS][4] = {
 // as run lengths.  The Z80 replays it with block I/O and does no
 // arithmetic at all; that is what makes fifteen perspective cards
 // affordable on a 3.58 MHz machine.
-#define MSX2_SPAN_SEGMENT       90
+#define MSX2_SPAN_SEGMENT       116
 #define MSX2_SPAN_STRIDE        2048
 #define MSX2_SPAN_PER_SEG       8
-#define MSX2_SPAN_MAX           1198
+#define MSX2_SPAN_MAX           1366
 #define MSX2_OP_COPY            0x00
 #define MSX2_OP_DUP             0x20
 #define MSX2_OP_SKIP            0x40
@@ -99,15 +130,17 @@ static const unsigned char g_msx2_slot_box[MSX2_FIELD_SLOTS][4] = {
 #define MSX2_OP_END             0xA0
 #define MSX2_OP_RUN_MASK        0x1F
 // Slot -> which SPAN_STRIDE-sized record in the blob holds its program.
-static const unsigned char g_msx2_span_record[MSX2_FIELD_SLOTS] = {
-	0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {
+	{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 },
+	{ 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 },
 };
 
 // ── Empty-slot tiles ──────────────────────────────────────────────────
-#define MSX2_SLOT_ART_SEGMENT   80
+#define MSX2_SLOT_ART_SEGMENT   96
 #define MSX2_SLOT_ART_STRIDE    4096
 #define MSX2_SLOT_ART_PER_SEG   4
-#define MSX2_SLOT_ART_PER_STAGE 10
+#define MSX2_SLOT_ART_PER_VIEW  10
+#define MSX2_SLOT_ART_VIEWS     2
 
 // ── §4.6 baked camera moves ───────────────────────────────────────────
 // A strip of whole pictures of the board band, streamed one after the
@@ -116,8 +149,10 @@ static const unsigned char g_msx2_span_record[MSX2_FIELD_SLOTS] = {
 // is a held cinematic push and the art is authored for that (§4.6.2).
 #define MSX2_MOVE_POSE_BYTES    29184
 #define MSX2_MOVE_POSE_SEGS     2
-#define MSX2_MOVE_OPENING_SEGMENT  92
-#define MSX2_MOVE_OPENING_POSES    8
+#define MSX2_MOVE_OPENING_SEGMENT  119
+#define MSX2_MOVE_OPENING_POSES    6
+#define MSX2_MOVE_TURN_SEGMENT  167
+#define MSX2_MOVE_TURN_POSES    5
 
 // ── Story screens ──────────────────────────────────────────────────────
 #define MSX2_MAP_SEGMENT(stage)   (MSX2_SCENE_MAP_0_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)
@@ -135,7 +170,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 // lit and dimmed, from the SAME alpha mask -- so the two variants cover
 // byte for byte the same pixels and swapping which speaker is lit is a
 // pure overwrite with no background repair at all.
-#define MSX2_PORTRAIT_SEGMENT   156
+#define MSX2_PORTRAIT_SEGMENT   207
 #define MSX2_PORTRAIT_SEGS      2
 #define MSX2_PORTRAIT_CHARS     6
 #define MSX2_PORTRAIT_W         124
@@ -167,7 +202,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_MAP_PANEL_H        156
 
 // ── String table ───────────────────────────────────────────────────────
-#define MSX2_TEXT_SEGMENT       180
+#define MSX2_TEXT_SEGMENT       231
 #define MSX2_NAME_STRIDE        24
 #define MSX2_NAME_COUNT         78
 #define MSX2_NAME_OFFSET        0
@@ -184,5 +219,5 @@ static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  4
-#define MSX2_SCENE_SEGMENT_LAST   180
-#define MSX2_ASSET_ROM_KB         2896
+#define MSX2_SCENE_SEGMENT_LAST   231
+#define MSX2_ASSET_ROM_KB         3712

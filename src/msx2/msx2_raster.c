@@ -18,20 +18,35 @@ static u8 g_prog[MSX2_SPAN_MAX];
 // read.  0xFFFF is "nothing".
 static u16 g_tex_loaded;
 static u8  g_prog_loaded;
+static u8  g_view;
 
 #define TEX_KEY(card, mirror)  (u16)(((u16)(card) << 1) | (mirror))
 #define TEX_NONE               0xFFFF
 #define PROG_NONE              0xFF
 
-// Slots 0..4 are the COM row.  They are the mirrored ones because the shared
-// renderer rotates COM-side cards 180 degrees on the board plane so they face
-// the opponent rather than always facing YOU.
+// Slots 0..4 are the physical COM row.  Which row is mirrored is selected
+// below from the camera chair: the far row faces the current viewer's
+// opponent, while the near row faces the viewer.
 #define COM_SLOTS  (MSX2_FIELD_SLOTS / 2)
 
 void Msx2_RasterInit(void)
 {
 	g_tex_loaded = TEX_NONE;
 	g_prog_loaded = PROG_NONE;
+	g_view = MSX2_VIEW_TOP;
+}
+
+void Msx2_RasterSetView(u8 view)
+{
+	if(view >= MSX2_BOARD_VIEWS)
+		view = MSX2_VIEW_TOP;
+	if(g_view != view)
+	{
+		g_view = view;
+		// A view owns a different span table.  The card texture is reusable,
+		// but the loaded program is not.
+		g_prog_loaded = PROG_NONE;
+	}
 }
 
 void Msx2_RasterLoad(u8 card_index, u8 slot)
@@ -39,7 +54,15 @@ void Msx2_RasterLoad(u8 card_index, u8 slot)
 	// The COM row is drawn from the mirrored blob (see the header): its span
 	// programs walk their texels backwards, and reading a mirrored texture
 	// forwards is the same picture with no second inner loop.
-	u8  mirror = (slot < COM_SLOTS) ? 1 : 0;
+    // The camera view changes which side is "ours".  In the player view the
+    // COM row is the far row and is rotated away from the player; after the
+    // turn orbit the COM row is nearest the camera and the player's row is the
+    // one that must be read upside down.  Key this from the view, not from the
+    // physical row, or the opponent would sit at its own chair looking at its
+    // cards backwards.
+    u8  mirror = (g_view == MSX2_VIEW_TOP)
+               ? ((slot < COM_SLOTS) ? 1 : 0)
+               : ((slot < COM_SLOTS) ? 0 : 1);
 	u16 key = TEX_KEY(card_index, mirror);
 
 	if(g_tex_loaded != key)
@@ -54,7 +77,7 @@ void Msx2_RasterLoad(u8 card_index, u8 slot)
 
 	if(g_prog_loaded != slot)
 	{
-		u8 record = g_msx2_span_record[slot];
+		u8 record = g_msx2_span_record[g_view][slot];
 		Msx2_RomReadLong((u16)(MSX2_SPAN_SEGMENT + record / MSX2_SPAN_PER_SEG),
 		                 (u16)((record % MSX2_SPAN_PER_SEG) * MSX2_SPAN_STRIDE),
 		                 g_prog, MSX2_SPAN_MAX);

@@ -1851,20 +1851,23 @@ runtime's selection bracket is four VDP `LINE` commands into that ring.
 
 ### 21.2 Nothing in the duel moves — **partly closed**
 
-A duel now opens on §4.6's baked camera move: eight whole pictures of the board
+A duel now opens on §4.6's baked camera move: six whole pictures of the board
 band, streamed one after the next by the ordinary §6.2 path, the last of which
-is byte for byte the resting view. There is no codec and no decoder anywhere in
-the port, and the machinery (`Msx2_StreamBand`, the strip layout, the capture
-tool's move loop) is general.
+is byte for byte the resting player view. At the turn boundary, a five-pose
+strip moves to the COM view and the reverse strip returns to the player. The
+two authored resting views carry their own projected quads, slot crops and span
+records, so the destination page can repaint the live cards after the empty
+strip lands. There is no codec and no decoder anywhere in the port.
 
-What is **not** done, and the reason is a constraint of the technique rather
-than an omission: a baked pose is a picture of the EMPTY board (§4.6.1), because
-cards depend on duel state and cannot be in it. That is truthful for an opening
-sweep, which plays before a card is on the field, and it would be a visible
-defect for any mid-duel push — every monster would blink out for the second the
-camera moved. The mid-duel moves §4.6 lists therefore wait on the card
-rasterizer being fast enough to repaint the fifteen quads inside a pose's own
-streaming time. They need speed, not new machinery.
+The short action presentation layer is also closed for the core duel loop:
+choice, placement, summon/fusion/equip/support, position, attack, direct hit and
+trap counter all have retained-board effects. The card-flight cue is an XOR
+outline for page safety and the final card is revealed by the model cleanup.
+
+What remains is the full §4.6 battle camera family (`battle_top` and the
+per-row side cuts). Those moves still need the rasterizer to repaint the fifteen
+live quads inside the strip's streaming time; streaming an empty pose alone
+would blink every monster off the field.
 
 ### 21.3 The dialogue scene shows one character on a synthesised floor — **closed**
 
@@ -1897,9 +1900,10 @@ skip-list inner loop. Same arithmetic, same cost, one fewer piece of assembly.
 
 ### 21.5 What is left
 
-1. **Mid-duel camera moves** (§21.2). Blocked on the rasterizer, not on the
+1. **Full battle camera moves** (§21.2). The turn handoff strip is implemented;
+   the remaining authored battle views are blocked on repaint cost, not on the
    strip player.
-2. **Card flight** — §4.5's hand-to-field arc as baked span programs over the
-   static view. The generator already rasterises a quad offline; what it does
-   not yet do is interpolate the corners along a path.
+2. **Baked card flight** — §4.5's interpolated warped card cels. The runtime
+   currently shows a reversible outline during flight and the retained warped
+   card at the destination.
 3. The rest of §21.4's untouched list, which was never in question.

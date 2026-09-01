@@ -40,6 +40,11 @@ void Msx2_VideoShowPage(u8 page)
 	VDP_SetPage(page);
 }
 
+u8 Msx2_VideoGetShowPage(void)
+{
+	return g_show_page;
+}
+
 void Msx2_VideoFlipRequest(void)
 {
 	g_flip_pending = TRUE;
@@ -96,6 +101,19 @@ void Msx2_FrameRect(u8 x, u8 y, u16 w, u8 h, u8 color)
 	Msx2_Fill((u8)(x + w - 1), y, 1, h, color);
 }
 
+void Msx2_FrameRectXor(u8 x, u8 y, u16 w, u8 h, u8 color)
+{
+	Msx2_LineXor(x, y, (u8)(x + w - 1), y, color);
+	Msx2_LineXor(x, (u8)(y + h - 1), (u8)(x + w - 1),
+	             (u8)(y + h - 1), color);
+	if(h > 2)
+	{
+		Msx2_LineXor(x, (u8)(y + 1), x, (u8)(y + h - 2), color);
+		Msx2_LineXor((u8)(x + w - 1), (u8)(y + 1),
+		             (u8)(x + w - 1), (u8)(y + h - 2), color);
+	}
+}
+
 // All 256 rows, so the offscreen stashes a scene bakes below the visible 212
 // travel with the picture and the second buffer is a true duplicate.
 void Msx2_VideoCopyPage(u8 src, u8 dst)
@@ -107,7 +125,7 @@ void Msx2_VideoCopyPage(u8 src, u8 dst)
 // One line through the VDP's LINE command.  The direction and major-axis bits
 // have to be worked out here because the command takes a length along the major
 // axis and a delta along the minor one, not two endpoints.
-static void Msx2_Line(u8 x1, u8 y1, u8 x2, u8 y2, u8 color)
+static void Msx2_LineOp(u8 x1, u8 y1, u8 x2, u8 y2, u8 color, u8 op)
 {
 	u16 sy = Msx2_PageY(y1);
 	u16 dx, dy, nx, ny;
@@ -122,18 +140,39 @@ static void Msx2_Line(u8 x1, u8 y1, u8 x2, u8 y2, u8 color)
 	else        { arg |= VDP_ARG_MAJ_V; nx = dy; ny = dx; }
 
 	VDP_CommandWait();
-	VDP_CommandLINE(x1, sy, nx, ny, color, arg, VDP_OP_IMP);
+	VDP_CommandLINE(x1, sy, nx, ny, color, arg, op);
 }
 
-void Msx2_QuadOutline(const u8* quad, u8 color)
+void Msx2_Line(u8 x1, u8 y1, u8 x2, u8 y2, u8 color)
+
+{
+	Msx2_LineOp(x1, y1, x2, y2, color, VDP_OP_IMP);
+}
+
+void Msx2_LineXor(u8 x1, u8 y1, u8 x2, u8 y2, u8 color)
+{
+	Msx2_LineOp(x1, y1, x2, y2, color, VDP_OP_XOR);
+}
+
+static void Msx2_QuadOutlineOp(const u8* quad, u8 color, u8 op)
 {
 	u8 i;
 	for(i = 0; i < 4; ++i)
 	{
 		u8 j = (u8)((i + 1) & 3);
-		Msx2_Line(quad[i * 2], quad[i * 2 + 1], quad[j * 2], quad[j * 2 + 1],
-		          color);
+		Msx2_LineOp(quad[i * 2], quad[i * 2 + 1],
+		            quad[j * 2], quad[j * 2 + 1], color, op);
 	}
+}
+
+void Msx2_QuadOutline(const u8* quad, u8 color)
+{
+	Msx2_QuadOutlineOp(quad, color, VDP_OP_IMP);
+}
+
+void Msx2_QuadOutlineXor(const u8* quad, u8 color)
+{
+	Msx2_QuadOutlineOp(quad, color, VDP_OP_XOR);
 }
 
 void Msx2_CopyRect(u8 sx, u8 sy, u8 dx, u8 dy, u16 w, u8 h)

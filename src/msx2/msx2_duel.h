@@ -52,6 +52,21 @@ enum Msx2BattleOutcome
 	MSX2_BATTLE_DIRECT,
 };
 
+// A rules action is retained for one presentation pass.  The Z80 rules model
+// applies an action atomically, then the board uses this small record to show
+// the card choosing/landing or battle effect without putting rendering back in
+// the rules module.
+enum Msx2ActionEvent
+{
+	MSX2_ACTION_NONE = 0,
+	MSX2_ACTION_PLACE,
+	MSX2_ACTION_FUSION,
+	MSX2_ACTION_EQUIP,
+	MSX2_ACTION_SUPPORT,
+	MSX2_ACTION_ATTACK,
+	MSX2_ACTION_POSITION
+};
+
 // One side of the board.  Two of these plus a handful of scalars is the whole
 // duel state.
 typedef struct Msx2Side
@@ -116,6 +131,12 @@ typedef struct Msx2Duel
 	u8  last_attacker_card;
 	u8  last_defender_card;
 	u8  last_trap_fired;
+	u8  last_action;                // enum Msx2ActionEvent
+	u8  last_action_card;
+	u8  last_action_hand_slot;
+	u8  last_action_field_slot;
+	u8  last_action_owner;
+	u8  last_action_defense;
 } Msx2Duel;
 
 extern Msx2Duel g_duel;
@@ -167,3 +188,7 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot);
 bool Msx2_Attack(u8 owner, u8 attacker_slot, u8 defender_slot); // MSX2_SLOT_NONE = direct
 void Msx2_EndTurn(void);
+
+// Consume the most recent rules action.  It is deliberately separate from the
+// action itself: a presentation can spend several frames showing it.
+void Msx2_ClearActionEvent(void);

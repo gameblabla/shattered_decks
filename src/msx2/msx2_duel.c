@@ -24,6 +24,22 @@
 
 Msx2Duel g_duel;
 
+static void Msx2_RecordAction(u8 action, u8 owner, u8 card, u8 hand_slot,
+                              u8 field_slot, bool defense)
+{
+	g_duel.last_action = action;
+	g_duel.last_action_owner = owner;
+	g_duel.last_action_card = card;
+	g_duel.last_action_hand_slot = hand_slot;
+	g_duel.last_action_field_slot = field_slot;
+	g_duel.last_action_defense = defense ? TRUE : FALSE;
+}
+
+void Msx2_ClearActionEvent(void)
+{
+	g_duel.last_action = MSX2_ACTION_NONE;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Card queries
 // ─────────────────────────────────────────────────────────────────────────────
@@ -412,8 +428,14 @@ bool Msx2_Attack(u8 owner, u8 attacker_slot, u8 defender_slot)
 		return FALSE;
 
 	g_duel.last_trap_fired = FALSE;
+	g_duel.last_attacker_card = atk_side->field[attacker_slot];
 	if(Msx2_TryTriggerTrap(def_owner, owner, attacker_slot))
+	{
+		Msx2_RecordAction(MSX2_ACTION_ATTACK, owner,
+		                  g_duel.last_attacker_card, MSX2_SLOT_NONE,
+		                  attacker_slot, FALSE);
 		return TRUE;                              // attack cancelled by the trap
+	}
 
 	// Hard rule: a direct attack is illegal while the opponent holds a monster.
 	if((defender_slot == MSX2_SLOT_NONE) && (Msx2_LiveMonsterCount(def_owner) > 0))
@@ -466,6 +488,8 @@ bool Msx2_Attack(u8 owner, u8 attacker_slot, u8 defender_slot)
 	}
 
 	g_duel.last_battle = bc;
+	Msx2_RecordAction(MSX2_ACTION_ATTACK, owner, g_duel.last_attacker_card,
+	                  MSX2_SLOT_NONE, attacker_slot, FALSE);
 	Msx2_CheckResult();
 	return TRUE;
 }
@@ -506,6 +530,7 @@ static u8 Msx2_Draw(u8 owner)
 bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense)
 {
 	Msx2Side* s = &g_duel.side[owner];
+	u8 action = MSX2_ACTION_PLACE;
 	if((hand_slot >= MSX2_HAND) || (field_slot >= MSX2_FIELD))
 		return FALSE;
 	if(s->used[hand_slot])
@@ -527,6 +552,7 @@ bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense)
 		if(!Msx2_IsMonster(fused))
 			return FALSE;
 		card = fused;
+		action = MSX2_ACTION_FUSION;
 		// The consumed monster's equips go with it, exactly as they do in the
 		// multi-card chain (fusion_keep_hand_equips in src/main.c keeps only
 		// equips the player put into the chain, and a single-card fusion has
@@ -546,6 +572,7 @@ bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense)
 	s->used[hand_slot] = TRUE;
 	s->hand[hand_slot] = MSX2_CARD_NONE;
 	s->monster_played = TRUE;
+	Msx2_RecordAction(action, owner, card, hand_slot, field_slot, defense);
 	return TRUE;
 }
 
@@ -735,6 +762,8 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 	s->atk_bonus[field_slot] = (i16)(hand_atk + field_atk);
 	s->def_bonus[field_slot] = (i16)(hand_def + field_def);
 	s->monster_played = TRUE;
+	Msx2_RecordAction(MSX2_ACTION_FUSION, owner, current, hand_slots[0],
+	                  field_slot, defense);
 	return TRUE;
 }
 
@@ -746,6 +775,7 @@ bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot)
 	Msx2Side* s = &g_duel.side[owner];
 	u8 other = owner ? MSX2_OWNER_PLAYER : MSX2_OWNER_COM;
 	u8 i;
+	u8 action = MSX2_ACTION_SUPPORT;
 
 	if(hand_slot >= MSX2_HAND)
 		return FALSE;
@@ -770,6 +800,7 @@ bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot)
 		s->equip_target[zone] = (i8)target_slot;
 		s->atk_bonus[target_slot] += Msx2_EquipAtkBonus(card);
 		s->def_bonus[target_slot] += Msx2_EquipDefBonus(card);
+		action = MSX2_ACTION_EQUIP;
 		break;
 	}
 
@@ -810,6 +841,7 @@ bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot)
 
 	s->used[hand_slot] = TRUE;
 	s->hand[hand_slot] = MSX2_CARD_NONE;
+	Msx2_RecordAction(action, owner, card, hand_slot, target_slot, FALSE);
 	return TRUE;
 }
 
@@ -1007,6 +1039,12 @@ void Msx2_DuelInit(u32 seed, u8 story_duel_index)
 	g_duel.phase = MSX2_PHASE_TURN_START;
 	g_duel.result = 0;
 	g_duel.last_trap_fired = FALSE;
+	g_duel.last_action = MSX2_ACTION_NONE;
+	g_duel.last_action_card = MSX2_CARD_NONE;
+	g_duel.last_action_hand_slot = MSX2_SLOT_NONE;
+	g_duel.last_action_field_slot = MSX2_SLOT_NONE;
+	g_duel.last_action_owner = MSX2_OWNER_PLAYER;
+	g_duel.last_action_defense = FALSE;
 	g_duel.last_battle.outcome = MSX2_BATTLE_NONE;
 	g_duel.last_attacker_card = MSX2_CARD_NONE;
 	g_duel.last_defender_card = MSX2_CARD_NONE;
@@ -1108,8 +1146,14 @@ bool Msx2_DuelStep(void)
 			}
 			++g_duel.main_actions;
 			if(act.field_slot >= 0)
+			{
 				g_duel.side[owner].defense[act.field_slot] =
 					(act.kind == WAIFU_AI_ACTION_SET_DEFENSE) ? TRUE : FALSE;
+				Msx2_RecordAction(MSX2_ACTION_POSITION, owner,
+				                  g_duel.side[owner].field[act.field_slot],
+				                  MSX2_SLOT_NONE, (u8)act.field_slot,
+				                  act.kind == WAIFU_AI_ACTION_SET_DEFENSE);
+			}
 			return TRUE;
 		case WAIFU_AI_ACTION_ATTACK_MONSTER:
 			if(!Msx2_Attack(owner, (u8)act.attacker_slot, (u8)act.defender_slot))

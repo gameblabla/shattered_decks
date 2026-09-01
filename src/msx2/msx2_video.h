@@ -56,6 +56,7 @@ void Msx2_VideoInit(void);
 // screen from scratch, not for per-frame updates -- it writes R#2 immediately,
 // so call it while the display is blanked or during V-blank.
 void Msx2_VideoShowPage(u8 page);
+u8   Msx2_VideoGetShowPage(void);
 
 // Ask for the hidden page to become visible at the next V-blank.
 void Msx2_VideoFlipRequest(void);
@@ -83,6 +84,16 @@ void Msx2_ClearPage(u8 color);
 // A 1-pixel outline, drawn as four fills.
 void Msx2_FrameRect(u8 x, u8 y, u16 w, u8 h, u8 color);
 
+// A single pixel line in the current draw page.  Effects use this for the
+// short-lived beam and impact rays; the retained board itself only needs the
+// quad helper below.
+void Msx2_Line(u8 x1, u8 y1, u8 x2, u8 y2, u8 color);
+void Msx2_LineXor(u8 x1, u8 y1, u8 x2, u8 y2, u8 color);
+
+// XOR outlines are reversible, which lets a short-lived effect be removed
+// from the next retained page without restoring the whole captured arena.
+void Msx2_FrameRectXor(u8 x, u8 y, u16 w, u8 h, u8 color);
+
 // A 1-pixel outline around an arbitrary quad, drawn with four VDP LINE
 // commands.  The duel board's slots are projected trapezoids rather than
 // rectangles (MSX2_PORT_PLAN.md §4.3), so the selection bracket has to follow
@@ -90,6 +101,7 @@ void Msx2_FrameRect(u8 x, u8 y, u16 w, u8 h, u8 color);
 // quad is eight bytes -- x0,y0..x3,y3 -- which is exactly what the generated
 // slot table holds.
 void Msx2_QuadOutline(const u8* quad, u8 color);
+void Msx2_QuadOutlineXor(const u8* quad, u8 color);
 
 // VRAM to VRAM inside the draw page, via HMMM -- the command engine does it all.
 // Used to stash and restore strips of a streamed picture in the offscreen rows
