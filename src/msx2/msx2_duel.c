@@ -106,6 +106,20 @@ static const Msx2FusionRule g_fusion_rules[] =
 
 #define MSX2_FUSION_RULE_COUNT (sizeof(g_fusion_rules) / sizeof(g_fusion_rules[0]))
 
+// Chain recipes consume every monster material at once, and only fire when the
+// whole chain is one attribute.  Equip materials are carried through by the
+// ordinary bookkeeping and do not break the run (g_fusion_chain_rules in
+// src/main.c).
+typedef struct Msx2FusionChainRule { u8 attr, min_monsters, result; } Msx2FusionChainRule;
+
+static const Msx2FusionChainRule g_fusion_chain_rules[] =
+{
+	{ MSX2_ATTR_WATER, 4, WAIFU_CARD_ID_ANGEL_FISHWOMAN },
+};
+
+#define MSX2_FUSION_CHAIN_COUNT \
+	(sizeof(g_fusion_chain_rules) / sizeof(g_fusion_chain_rules[0]))
+
 u8 Msx2_FusionResult(u8 a, u8 b)
 {
 	u8 i;
@@ -135,6 +149,28 @@ u8 Msx2_FusionResult(u8 a, u8 b)
 
 // The final story duel is fought on a water field: Water/Fish/Aqua gain 500 ATK
 // and DEF, Fire/Insect/Machine lose 500 (story_water_field_bonus in main.c).
+u8 Msx2_FusionChainResult(const u8* cards, u8 count)
+{
+	u8 rule;
+	for(rule = 0; rule < MSX2_FUSION_CHAIN_COUNT; ++rule)
+	{
+		u8 monsters = 0;
+		u8 i;
+		for(i = 0; i < count; ++i)
+		{
+			u8 card = cards[i];
+			if(Msx2_IsEquipSupport(card))
+				continue;                      // equips ride along, they do not break the run
+			if(!Msx2_IsMonster(card) || (g_msx2_card_attr[card] != g_fusion_chain_rules[rule].attr))
+				break;
+			++monsters;
+		}
+		if((i == count) && (monsters >= g_fusion_chain_rules[rule].min_monsters))
+			return g_fusion_chain_rules[rule].result;
+	}
+	return MSX2_CARD_NONE;
+}
+
 static i16 Msx2_WaterFieldBonus(u8 card)
 {
 	if(!g_duel.story_active || !Msx2_IsMonster(card))
@@ -438,6 +474,27 @@ bool Msx2_Attack(u8 owner, u8 attacker_slot, u8 defender_slot)
 //  Placement and support cards
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Equips attached to a monster are consumed with it when it becomes fusion
+// material: fusion_keep_hand_equips() in src/main.c keeps only the equip cards
+// the player put into the chain themselves, and drops what was already on the
+// field card.
+static void Msx2_DropFieldEquips(u8 owner, u8 slot)
+{
+	Msx2Side* s = &g_duel.side[owner];
+	u8 i;
+	s->atk_bonus[slot] = 0;
+	s->def_bonus[slot] = 0;
+	for(i = 0; i < MSX2_FIELD; ++i)
+	{
+		if((s->equip_target[i] == (i8)slot) && Msx2_IsEquipSupport(s->equip_field[i]))
+		{
+			s->equip_field[i] = MSX2_CARD_NONE;
+			s->equip_target[i] = -1;
+		}
+	}
+}
+
+
 static u8 Msx2_Draw(u8 owner)
 {
 	int card = waifu_deck_draw(&g_duel.side[owner].deck);
@@ -470,7 +527,11 @@ bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense)
 		if(!Msx2_IsMonster(fused))
 			return FALSE;
 		card = fused;
-		// The fused monster inherits the field slot's equip bonuses.
+		// The consumed monster's equips go with it, exactly as they do in the
+		// multi-card chain (fusion_keep_hand_equips in src/main.c keeps only
+		// equips the player put into the chain, and a single-card fusion has
+		// none).
+		Msx2_DropFieldEquips(owner, field_slot);
 	}
 	else
 	{
@@ -484,6 +545,195 @@ bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense)
 	s->attacked[field_slot] = FALSE;
 	s->used[hand_slot] = TRUE;
 	s->hand[hand_slot] = MSX2_CARD_NONE;
+	s->monster_played = TRUE;
+	return TRUE;
+}
+
+// Whether the hand chain should resolve before the monster already standing in
+// the target slot is folded in.  It should when the hand alone fuses cleanly
+// and that result then fuses with the field card -- otherwise the field card
+// would be consumed by the first hand card and the chain would be thrown away
+// (player_fusion_should_resolve_hand_before_field in src/main.c).
+static bool Msx2_FusionHandFirst(const Msx2Side* s, const u8* hand_slots, u8 count,
+                                 u8 field_card)
+{
+	u8 current = MSX2_CARD_NONE;
+	bool performed = FALSE;
+	bool failed = FALSE;
+	u8 i;
+
+	if(!Msx2_IsMonster(field_card))
+		return FALSE;
+
+	for(i = 0; i < count; ++i)
+	{
+		u8 slot = hand_slots[i];
+		u8 card;
+		if((slot >= MSX2_HAND) || s->used[slot])
+			return FALSE;
+		card = s->hand[slot];
+		if(!Msx2_IsMonster(card))
+			continue;
+		if(!Msx2_IsMonster(current))
+			current = card;
+		else
+		{
+			u8 fused = Msx2_FusionResult(current, card);
+			if(Msx2_IsMonster(fused))
+			{
+				current = fused;
+				performed = TRUE;
+			}
+			else
+			{
+				current = card;
+				failed = TRUE;
+			}
+		}
+	}
+
+	return performed && !failed && Msx2_IsMonster(current) &&
+	       Msx2_IsMonster(Msx2_FusionResult(current, field_card));
+}
+
+// A fusion summon.  The materials fold left to right in the order the player
+// chose them, a chain recipe short-circuits the whole fold, and a chain that
+// contains a pair the recipes do not know is refused rather than silently
+// eating the cards.
+//
+// One divergence from src/main.c, and it is presentational: the equip cards
+// kept by the chain are applied to the result as ATK/DEF bonuses but are not
+// re-seated in the support row.  The MSX2 duel screen has no support row to
+// show them in -- three rows of 48-pixel cards use all 212 lines -- so the
+// bonus is the whole of their observable effect.
+bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
+                      bool defense)
+{
+	Msx2Side* s = &g_duel.side[owner];
+	u8 mat[MSX2_FUSION_MAX];
+	u8 mat_field[MSX2_FUSION_MAX];       // TRUE for the material that is the field card
+	u8 n = 0;
+	u8 i;
+	u8 field_card;
+	u8 current = MSX2_CARD_NONE;
+	u8 chain;
+	i16 hand_atk = 0, hand_def = 0;      // from equip cards the player queued
+	i16 field_atk = 0, field_def = 0;    // from what was already on the field card
+	i16 pend_atk = 0, pend_def = 0;      // equips seen before any monster
+	bool performed = FALSE;
+	bool failed = FALSE;
+	bool hand_first;
+
+	if((count == 0) || (field_slot >= MSX2_FIELD))
+		return FALSE;
+	if(s->monster_played)
+		return FALSE;
+
+	field_card = s->field[field_slot];
+	hand_first = Msx2_FusionHandFirst(s, hand_slots, count, field_card);
+
+	if(Msx2_IsMonster(field_card) && !hand_first)
+	{
+		mat_field[n] = TRUE;
+		mat[n++] = field_card;
+	}
+	for(i = 0; i < count; ++i)
+	{
+		u8 slot = hand_slots[i];
+		if((slot >= MSX2_HAND) || s->used[slot])
+			return FALSE;
+		if(n >= MSX2_FUSION_MAX)
+			return FALSE;
+		mat_field[n] = FALSE;
+		mat[n++] = s->hand[slot];
+	}
+	if(Msx2_IsMonster(field_card) && hand_first)
+	{
+		if(n >= MSX2_FUSION_MAX)
+			return FALSE;
+		mat_field[n] = TRUE;
+		mat[n++] = field_card;
+	}
+
+	chain = Msx2_FusionChainResult(mat, n);
+
+	for(i = 0; i < n; ++i)
+	{
+		u8 card = mat[i];
+
+		if(Msx2_IsEquipSupport(card))
+		{
+			if(Msx2_IsMonster(current))
+			{
+				hand_atk += Msx2_EquipAtkBonus(card);
+				hand_def += Msx2_EquipDefBonus(card);
+			}
+			else
+			{
+				pend_atk += Msx2_EquipAtkBonus(card);
+				pend_def += Msx2_EquipDefBonus(card);
+			}
+			continue;
+		}
+		if(!Msx2_IsMonster(card))
+			continue;                     // a one-shot support forced into a chain is lost
+
+		if(!Msx2_IsMonster(current))
+		{
+			current = card;
+			field_atk = field_def = 0;
+			if(mat_field[i])
+			{
+				field_atk = s->atk_bonus[field_slot];
+				field_def = s->def_bonus[field_slot];
+			}
+			hand_atk += pend_atk;
+			hand_def += pend_def;
+			pend_atk = pend_def = 0;
+		}
+		else if(!Msx2_IsMonster(chain))
+		{
+			u8 fused = Msx2_FusionResult(current, card);
+			// Either way the field card's own equips are gone: only the equips
+			// the player chose survive the step.
+			field_atk = field_def = 0;
+			if(Msx2_IsMonster(fused))
+			{
+				current = fused;
+				performed = TRUE;
+			}
+			else
+			{
+				current = card;
+				failed = TRUE;
+			}
+		}
+	}
+
+	if(Msx2_IsMonster(chain))
+	{
+		current = chain;
+		field_atk = field_def = 0;
+		performed = TRUE;
+	}
+
+	if(!performed || failed || !Msx2_IsMonster(current))
+		return FALSE;
+
+	// Only now is anything spent.  A refused chain must leave the hand alone.
+	for(i = 0; i < count; ++i)
+	{
+		s->used[hand_slots[i]] = TRUE;
+		s->hand[hand_slots[i]] = MSX2_CARD_NONE;
+	}
+	Msx2_DropFieldEquips(owner, field_slot);
+
+	s->field[field_slot] = current;
+	s->faceup[field_slot] = TRUE;
+	s->defense[field_slot] = defense ? TRUE : FALSE;
+	s->attacked[field_slot] = FALSE;
+	s->atk_bonus[field_slot] = (i16)(hand_atk + field_atk);
+	s->def_bonus[field_slot] = (i16)(hand_def + field_def);
 	s->monster_played = TRUE;
 	return TRUE;
 }

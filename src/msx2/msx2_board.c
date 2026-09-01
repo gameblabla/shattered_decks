@@ -30,10 +30,13 @@
 
 static const u8 g_row_y[3] = { MSX2_ROW_COM_Y, MSX2_ROW_PLAYER_Y, MSX2_ROW_HAND_Y };
 
-// Slot flags, tracked alongside the card id so a repaint knows a face-down
-// card and a face-up one are different pictures.
+// Slot flags, tracked alongside the card id so a repaint knows a face-down card,
+// a face-up one and the third card in a fusion chain are different pictures.
+// The queue position lives in the high nibble, 0 meaning "not queued".
 #define F_FACEUP     0x01
 #define F_DEFENSE    0x02
+#define F_QUEUE(n)   (u8)((n) << 4)
+#define F_QUEUE_OF(f) (u8)((f) >> 4)
 
 // ── Interaction ──────────────────────────────────────────────────────────────
 #define M_IDLE       0   // walking the board, nothing chosen
@@ -50,6 +53,11 @@ static u8  g_sel;
 static u8  g_hand_pick;
 static u8  g_atk_pick;
 static u8  g_place_def;
+
+// The fusion chain the player is building, in the order they chose it -- the
+// order is part of the rule, because the materials fold left to right.
+static u8  g_queue[MSX2_HAND];
+static u8  g_queue_n;
 
 // What the board should look like, and what each page is actually showing.
 static u8  g_want[SLOT_COUNT];
@@ -77,6 +85,36 @@ u8 Msx2_BoardStageForStory(u8 story_duel_index)
 	return 0;
 }
 
+// Where a hand slot sits in the fusion chain, 1-based, or 0 if it is not in it.
+static u8 Msx2_BoardQueueOrder(u8 hand_slot)
+{
+	u8 i;
+	for(i = 0; i < g_queue_n; ++i)
+		if(g_queue[i] == hand_slot)
+			return (u8)(i + 1);
+	return 0;
+}
+
+static void Msx2_BoardQueueToggle(u8 hand_slot)
+{
+	u8 order = Msx2_BoardQueueOrder(hand_slot);
+	u8 i;
+
+	if(order != 0)
+	{
+		// Taking a card out closes the gap, so the remaining order is still
+		// the order the player chose.
+		for(i = (u8)(order - 1); i + 1 < g_queue_n; ++i)
+			g_queue[i] = g_queue[i + 1];
+		--g_queue_n;
+	}
+	else if((g_queue_n < MSX2_HAND) &&
+	        (g_duel.side[MSX2_OWNER_PLAYER].hand[hand_slot] != MSX2_CARD_NONE))
+	{
+		g_queue[g_queue_n++] = hand_slot;
+	}
+}
+
 // Rebuild the wanted picture from the duel state.  Called after every action;
 // the paint pass works out what that actually costs.
 static void Msx2_BoardSnapshot(void)
@@ -96,7 +134,7 @@ static void Msx2_BoardSnapshot(void)
 		                                  | (you->defense[i] ? F_DEFENSE : 0));
 
 		g_want[SLOT_OF(ZONE_HAND, i)] = you->hand[i];
-		g_flag[SLOT_OF(ZONE_HAND, i)] = F_FACEUP;
+		g_flag[SLOT_OF(ZONE_HAND, i)] = (u8)(F_FACEUP | F_QUEUE(Msx2_BoardQueueOrder(i)));
 	}
 }
 
@@ -138,14 +176,23 @@ static void Msx2_BoardBlitSlot(u8 slot)
 	                (u16)((index % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
 	                x, y, MSX2_CARD_W, MSX2_CARD_H);
 
-	// Defence position.  The other targets turn the card sideways; a Z80 cannot
-	// rotate a bitmap for free, so the card says so instead -- written over the
-	// stat band, which carries no information at this size anyway.
+	// Badges go over the stat band, which carries no information at this size.
+	// Defence position: the other targets turn the card sideways, and a Z80
+	// cannot rotate a bitmap for free, so the card says so in words instead.
 	if(g_flag[slot] & F_DEFENSE)
 	{
 		Msx2_Fill((u8)(x + 4), (u8)(y + 39), MSX2_CARD_W - 8, 7, MSX2_DEEP_BLUE);
 		Msx2_TextColor(MSX2_WHITE, MSX2_DEEP_BLUE);
 		Msx2_TextAt((u8)(x + 11), (u8)(y + 39), "DEF");
+	}
+	else if(F_QUEUE_OF(g_flag[slot]) != 0)
+	{
+		// A fusion material, numbered: the fold is left to right in the order
+		// the player picked, so the order has to be visible.
+		Msx2_Fill((u8)(x + 4), (u8)(y + 39), MSX2_CARD_W - 8, 7, MSX2_TEAL);
+		Msx2_TextColor(MSX2_BLACK, MSX2_TEAL);
+		Msx2_TextAt((u8)(x + 12), (u8)(y + 39), "F");
+		Msx2_NumAt((u8)(x + 20), (u8)(y + 39), (i16)F_QUEUE_OF(g_flag[slot]));
 	}
 }
 
@@ -206,7 +253,12 @@ static const c8* Msx2_BoardPrompt(void)
 	case M_COM:    return "THE OPPONENT IS THINKING";
 	case M_OVER:   return "SPACE RETURNS TO THE TITLE";
 	default:
-		if(g_zone == ZONE_HAND)  return "SPACE PLAYS  -  ESC ENDS TURN";
+		if(g_queue_n != 0)
+		{
+			if(g_zone == ZONE_HAND) return "DOWN PICKS MATERIALS - ESC CLEARS";
+			return "SPACE FUSES HERE  -  ESC CLEARS";
+		}
+		if(g_zone == ZONE_HAND)  return "SPACE PLAYS  -  DOWN FUSES";
 		if(g_zone == ZONE_FIELD) return "SPACE ATTACKS  -  ESC ENDS TURN";
 		return "OPPONENT ROW - DOWN TO GO BACK";
 	}
@@ -327,6 +379,7 @@ void Msx2_BoardEnter(u8 stage)
 	g_hand_pick = MSX2_SLOT_NONE;
 	g_atk_pick = MSX2_SLOT_NONE;
 	g_place_def = FALSE;
+	g_queue_n = 0;
 	Msx2_BoardSnapshot();
 
 	// Compose page 1 whole -- the backdrop stream alone is far longer than a
@@ -434,6 +487,18 @@ static void Msx2_BoardConfirm(void)
 		}
 		else if(g_zone == ZONE_FIELD)
 		{
+			if(g_queue_n != 0)
+			{
+				// A chain is waiting: this row picks where it lands, and the
+				// slot may be empty or hold the monster the chain folds into.
+				if(Msx2_PlaceFusion(MSX2_OWNER_PLAYER, g_queue, g_queue_n,
+				                    g_sel, FALSE))
+				{
+					Msx2_SfxPlay(MSX2_SFX_CONFIRM);
+					g_queue_n = 0;
+				}
+				break;
+			}
 			if(!Msx2_IsMonster(g_duel.side[MSX2_OWNER_PLAYER].field[g_sel]))
 				return;
 			g_atk_pick = g_sel;
@@ -520,8 +585,20 @@ static void Msx2_BoardMove(u8 pressed)
 
 	if((pressed & MSX2_BTN_UP) && (g_zone > low))
 		--g_zone;
-	if((pressed & MSX2_BTN_DOWN) && (g_zone < high))
-		++g_zone;
+	if(pressed & MSX2_BTN_DOWN)
+	{
+		if(g_zone < high)
+			++g_zone;
+		else if(g_zone == ZONE_HAND)
+		{
+			// Already on the bottom row, so down is free to mean the other
+			// thing a hand card can be: material for a fusion chain.
+			Msx2_BoardQueueToggle(g_sel);
+			Msx2_SfxPlay(MSX2_SFX_SELECT);
+			Msx2_BoardSnapshot();
+			g_panel_left = MSX2_VIDEO_PAGES;
+		}
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -585,9 +662,15 @@ u8 Msx2_BoardStep(void)
 		{
 			if(g_mode != M_IDLE)
 				Msx2_BoardCancel();
+			else if(g_queue_n != 0)
+			{
+				g_queue_n = 0;
+				Msx2_BoardTouch();
+			}
 			else
 			{
 				Msx2_EndTurn();
+				g_queue_n = 0;
 				g_mode = M_COM;
 				Msx2_BoardTouch();
 			}

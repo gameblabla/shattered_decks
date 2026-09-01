@@ -128,6 +128,14 @@ u16  Msx2_CardAtk(u8 card);
 u16  Msx2_CardDef(u8 card);
 u8   Msx2_FusionResult(u8 a, u8 b);
 
+// The most materials one fusion can consume: five hand cards plus the monster
+// already standing in the target slot (FUSION_MAX_MATERIALS in src/main.c).
+#define MSX2_FUSION_MAX     6
+
+// The chain recipes, which consume every monster material at once rather than
+// folding them in pairs.  Returns MSX2_CARD_NONE when no rule matches.
+u8   Msx2_FusionChainResult(const u8* cards, u8 count);
+
 // ── Board queries ───────────────────────────────────────────────────────────
 i16  Msx2_FieldAtk(u8 owner, u8 slot);
 i16  Msx2_FieldDef(u8 owner, u8 slot);
@@ -150,6 +158,12 @@ bool Msx2_DuelStep(void);
 
 // ── Actions (the presentation layer calls these for the human player) ────────
 bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense);
+
+// A fusion summon from several hand cards at once, optionally onto the monster
+// already in `field_slot`.  `hand_slots` is the order the player chose them in,
+// which is part of the rule: the materials fold left to right.
+bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
+                      bool defense);
 bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot);
 bool Msx2_Attack(u8 owner, u8 attacker_slot, u8 defender_slot); // MSX2_SLOT_NONE = direct
 void Msx2_EndTurn(void);
