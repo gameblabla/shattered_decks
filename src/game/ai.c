@@ -142,7 +142,10 @@ static int choose_attack_target(const WaifuAiState *s, int attacker_slot)
     const WaifuAiCardView *attacker;
     int i;
     int best_slot = -1;
-    int best_score = -999999;
+    /* Sentinel only: real scores stay well inside +/-10000 (see target_score).
+       Kept inside 16-bit int range so this file is portable to compilers where
+       int is 16 bits. */
+    int best_score = -30000;
     int probe_wall;
     if (attacker_slot < 0 || attacker_slot >= WAIFU_AI_FIELD) return -1;
     attacker = &s->com_field[attacker_slot];

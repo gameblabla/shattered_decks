@@ -100,3 +100,9 @@ pi-session-*.html
 /waifu_fm_sdl12
 /shattered_decks
 tools/pcfxtools/pcfx-cdlink
+
+# MSX2 build output
+src/msx2/out/
+src/msx2/emul/
+src/msx2/lib/
+*.tar.gz

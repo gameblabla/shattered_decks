@@ -22,6 +22,9 @@ Read the relevant `SKILL.md` completely before editing or diagnosing that area:
 - CD32X: `.claude/skills/cd32x-build-verify/SKILL.md`,
   `.claude/skills/cd32x-architecture/SKILL.md`, and, for optimization work,
   `.claude/skills/cd32x-improvements/SKILL.md`
+- MSX2: `MSX2_PORT_PLAN.md` (design) and `src/msx2/STATUS.md` (state, build,
+  verification). This target is a fork: it never compiles `src/main.c`, and MSX
+  code stays inside `src/msx2/` and `tools/msx2/`.
 
 ## Project ground truth
 
@@ -42,6 +45,10 @@ Read the relevant `SKILL.md` completely before editing or diagnosing that area:
   `tools/fmtowns/`, `src/platform/fmtowns/STATUS.md`
 - PC-FX: `Makefile.pcfx`, `src/platform/pcfx/`
 - CD32X: `Makefile.cd32x`, `src/platform/cd32x/`, `docs/cd32x/`
+- MSX2: `Makefile.msx2`, `msx2.sh`, `src/msx2/`, `tools/msx2/`,
+  `src/msx2/STATUS.md`. Verify with real openMSX, never with the
+  openmsx-headless bundled in MSXgl -- its Z80 does not implement
+  `LD r,(IX+d)`/`LD (IX+d),r`, so no SDCC-compiled C survives on it.
 
 ## Working rules
 

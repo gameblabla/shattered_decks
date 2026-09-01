@@ -1,0 +1,64 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Makefile.msx2 — MSX2 / NEO-16 cartridge target
+#
+#  Wraps MSXgl's node build.  MSXGL_PATH points at the engine tree (vendored,
+#  not committed), so nothing here depends on where the SDK happens to live.
+#
+#      make -f Makefile.msx2                 # regenerate tables, build the ROM
+#      make -f Makefile.msx2 verify          # build, then run it headless
+#      make -f Makefile.msx2 ROM_SIZE_KB=16384
+#
+#  See MSX2_PORT_PLAN.md, and src/msx2/STATUS.md for where the port stands.
+# ─────────────────────────────────────────────────────────────────────────────
+
+MSXGL_PATH   ?= MSXgl-main
+PROJ_DIR     := src/msx2
+BUILD_JS     := $(abspath $(MSXGL_PATH))/engine/script/js/build.js
+OUT_DIR      := $(PROJ_DIR)/out
+ROM          := $(OUT_DIR)/waifu_msx2.rom
+MAP          := $(OUT_DIR)/waifu_msx2.map
+
+# NEO-16 spans 1 MB to 64 MB.  Bring-up uses the smallest legal size so the
+# build-and-verify loop stays fast; the shipping cartridge is 16384.
+ROM_SIZE_KB  ?= 1024
+
+# Headless verification (see msx2.sh for the full flow).
+OPENMSX      := $(MSXGL_PATH)/openmsx-headless-21.0-capture-neo1.2-planarfix-linux-x86_64/openmsx
+MSX2_BIOS    := $(MSXGL_PATH)/msx2.rom
+FRAMES       ?= 600
+
+GENERATED    := src/generated/msx2_card_tables.h
+
+SOURCES := $(wildcard $(PROJ_DIR)/*.c) $(wildcard $(PROJ_DIR)/*.h) \
+           $(wildcard $(PROJ_DIR)/*.s) $(PROJ_DIR)/project_config.js \
+           $(PROJ_DIR)/msxgl_config.h \
+           src/game/deck.c src/game/ai.c
+
+.PHONY: all rom tables verify clean check-sdk
+
+all: rom
+
+check-sdk:
+	@test -f "$(BUILD_JS)" || { \
+	  echo "MSXgl not found at $(MSXGL_PATH). Set MSXGL_PATH=/path/to/MSXgl."; \
+	  exit 1; }
+
+# The generated card tables are lifted out of the shared asset header; the
+# regenerate-or-desync trap that bites the other targets is closed by making
+# every build depend on them.
+tables: $(GENERATED)
+
+$(GENERATED): tools/msx2/gen_msx_tables.py src/generated/waifu_assets.h
+	python3 tools/msx2/gen_msx_tables.py
+
+rom: $(ROM)
+
+$(ROM): $(SOURCES) $(GENERATED) | check-sdk
+	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) node $(BUILD_JS)
+	@ls -l $(ROM)
+
+verify: rom
+	./msx2.sh verify --frames $(FRAMES)
+
+clean:
+	rm -rf $(OUT_DIR) $(PROJ_DIR)/emul $(PROJ_DIR)/lib
