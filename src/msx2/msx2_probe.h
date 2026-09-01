@@ -99,9 +99,11 @@ void Msx2_ProbeUpdate(void);
 #define MSX2_STAGE_LOOP  2   // entering the frame loop
 #define MSX2_STAGE_TITLE 3   // title screen composed and shown
 #define MSX2_STAGE_DUEL  4   // first duel dealt
+#define MSX2_STAGE_STORY 5   // story mode entered
 
 // Which screen the game is on.  The blind soak needs to tell "waiting on the
 // title for a button" apart from "playing", or a run that never got past the
 // menu would read as a run that never finished a duel.
 #define MSX2_SCENE_TITLE 0
 #define MSX2_SCENE_DUEL  1
+#define MSX2_SCENE_STORY 2

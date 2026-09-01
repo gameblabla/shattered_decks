@@ -47,10 +47,11 @@ LibModules = [ "system", "bios", "vdp", "print", "input", "memory" ];
 Machine = "2";
 
 //-- NEO-16: 16 KB segments, up to 64 MB.  The shipping cartridge is 16 MB; the
-//   bring-up ROM stays at 1 MB so a build-and-verify cycle is seconds, not
-//   minutes.  MSX2_ROM_SIZE_KB overrides it from Makefile.msx2.
+//   bring-up ROM is the smallest size the baked assets fit in, so a
+//   build-and-verify cycle is seconds, not minutes.  MSX2_ROM_SIZE_KB
+//   overrides it from Makefile.msx2.
 Target = "ROM_NEO16";
-ROMSize = Number(process.env.MSX2_ROM_SIZE_KB || 1024);
+ROMSize = Number(process.env.MSX2_ROM_SIZE_KB || 2048);
 
 CheckVersion = true;
 AddROMSignature = true;

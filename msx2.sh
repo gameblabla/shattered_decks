@@ -27,7 +27,7 @@
 #
 #  Usage:
 #      ./msx2.sh build                     # build the ROM
-#      ./msx2.sh verify [--seconds N|--frames N] # build, run, read probe
+#      ./msx2.sh verify [--seconds N|--frames N] # build the SOAK rom, run, read probe
 #      ./msx2.sh run    [--seconds N|--frames N] # run without rebuilding
 #      ./msx2.sh shot   [--seconds N|--frames N] # PNG of the final frame (VRAM decode)
 #      ./msx2.sh shot --keys "2.0:space 2.6:down" # ... after driving the menu
@@ -113,6 +113,12 @@ emit_key_script() {
 }
 
 do_build() { make -f Makefile.msx2 rom || die "build failed"; }
+
+# The blind probe only means anything on a ROM that plays itself: the shipping
+# build waits for a hand on the joystick, so a `verify` against it would sit on
+# turn 1 for the whole run and report a hang that is really an empty chair.
+# `make soak` is the same ROM with the player's turn handed to the COM's AI.
+do_soak_build() { make -f Makefile.msx2 soak || die "soak build failed"; }
 do_mapper_test() { need_tool; "$OPENMSX_TOOL" neo-test || die "NEO mapper regression failed"; }
 
 # Only the original build/run/shot commands consume these wrapper options.
@@ -230,7 +236,7 @@ case "$CMD" in
 		;;
 
 	verify)
-		do_build
+		do_soak_build
 		do_mapper_test
 		do_run
 		echo

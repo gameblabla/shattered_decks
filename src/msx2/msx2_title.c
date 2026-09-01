@@ -68,7 +68,7 @@ static const c8* const g_rows[MSX2_TITLE_ROWS] =
 
 static const c8* const g_help[MSX2_TITLE_ROWS] =
 {
-	"ENTER NAME / FIRST DREAM",
+	"THE FIRST DREAM / FIVE DUELS",
 	"RANDOM DECK / FREE DUEL",
 	"NO SAVE FILE FOUND",
 };

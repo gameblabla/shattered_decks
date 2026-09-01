@@ -14,13 +14,28 @@
 #define MSX2_SCENE_BOARD_STONE_SEGMENT 16
 #define MSX2_SCENE_BOARD_EMBER_SEGMENT 20
 #define MSX2_SCENE_BOARD_SKY_SEGMENT 24
+#define MSX2_SCENE_MAP_0_SEGMENT  28
+#define MSX2_SCENE_MAP_1_SEGMENT  32
+#define MSX2_SCENE_MAP_2_SEGMENT  36
+#define MSX2_SCENE_MAP_3_SEGMENT  40
+#define MSX2_SCENE_TALK_0_SERENA_SEGMENT 44
+#define MSX2_SCENE_TALK_0_FOE_SEGMENT 48
+#define MSX2_SCENE_TALK_1_SERENA_SEGMENT 52
+#define MSX2_SCENE_TALK_1_FOE_SEGMENT 56
+#define MSX2_SCENE_TALK_2_SERENA_SEGMENT 60
+#define MSX2_SCENE_TALK_2_FOE_SEGMENT 64
+#define MSX2_SCENE_TALK_3_SERENA_SEGMENT 68
+#define MSX2_SCENE_TALK_3_FOE_SEGMENT 72
+#define MSX2_SCENE_TALK_4_SERENA_SEGMENT 76
+#define MSX2_SCENE_TALK_4_FOE_SEGMENT 80
+#define MSX2_SCENE_TALK_INTRO_SEGMENT 84
 
 // The four duel backdrops, in story-stage order.
 #define MSX2_BOARD_SEGMENT(stage)  (MSX2_SCENE_BOARD_DESERT_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)
 #define MSX2_BOARD_STAGES       4
 
 // ── Card textures ───────────────────────────────────────────────────────
-#define MSX2_CARD_ART_SEGMENT   28
+#define MSX2_CARD_ART_SEGMENT   88
 #define MSX2_CARD_ART_STRIDE    2048
 #define MSX2_CARD_ART_PER_SEG   8
 #define MSX2_CARD_ART_COUNT     79
@@ -48,16 +63,51 @@
 // backdrop's own quantised bytes.  Clearing a destroyed monster blits the
 // tile for (stage, slot); that is the only way to put a textured board
 // back exactly without re-streaming the whole picture.
-#define MSX2_SLOT_ART_SEGMENT   38
+#define MSX2_SLOT_ART_SEGMENT   98
 #define MSX2_SLOT_ART_STRIDE    2048
 #define MSX2_SLOT_ART_PER_SEG   8
 #define MSX2_SLOT_ART_PER_STAGE 15
 
+// ── Story screens ──────────────────────────────────────────────────────
+#define MSX2_MAP_SEGMENT(stage)   (MSX2_SCENE_MAP_0_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)
+// speaker: 0 = Serena, 1 = the opponent.
+#define MSX2_TALK_SEGMENT(duel, speaker)  (MSX2_SCENE_TALK_0_SERENA_SEGMENT +\
+     ((duel) * 2 + (speaker)) * MSX2_SCENE_SEG_SPAN)
+#define MSX2_STORY_DUELS        5
+#define MSX2_TALK_BOX_Y         140
+#define MSX2_TALK_NAME_Y        144
+#define MSX2_TALK_LINE0_Y       158
+#define MSX2_TALK_LINE_STEP     12
+#define MSX2_TALK_LINES         3
+#define MSX2_TALK_PROMPT_Y      196
+#define MSX2_TALK_TEXT_X        8
+#define MSX2_TALK_TEXT_W        240
+#define MSX2_TALK_COLS          40
+#define MSX2_TALK_NAME_X        10
+#define MSX2_PANEL_COLOR        0x00
+#define MSX2_PLATE_COLOR        0x24
+#define MSX2_MAP_PANEL_X        20
+#define MSX2_MAP_PANEL_Y        30
+#define MSX2_MAP_PANEL_W        216
+#define MSX2_MAP_PANEL_H        156
+
 // ── String table ───────────────────────────────────────────────────────
-#define MSX2_TEXT_SEGMENT       46
+#define MSX2_TEXT_SEGMENT       106
 #define MSX2_NAME_STRIDE        24
 #define MSX2_NAME_COUNT         78
+#define MSX2_NAME_OFFSET        0
+#define MSX2_OPP_OFFSET         1872
+#define MSX2_OPP_STRIDE         32
+#define MSX2_LINE_STRIDE        112
+#define MSX2_LINES_PER_DUEL     12
+#define MSX2_DIALOGUE_OFFSET    2032
+#define MSX2_INTRO_OFFSET       8752
+#define MSX2_INTRO_COUNT        4
+#define MSX2_ENDING_OFFSET      9424
+#define MSX2_ENDING_COUNT       4
+static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
+	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  4
-#define MSX2_SCENE_SEGMENT_LAST   46
-#define MSX2_ASSET_ROM_KB         752
+#define MSX2_SCENE_SEGMENT_LAST   106
+#define MSX2_ASSET_ROM_KB         1712

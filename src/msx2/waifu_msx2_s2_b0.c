@@ -18,6 +18,10 @@
 //   * it costs nothing at runtime: all three banks are mapped at once, so a
 //     call from _CODE into here is an ordinary CALL.
 //
+//  The streamer is here because of the first property; the two scenes are here
+//  because of the second -- _CODE has no room for them, and moving a whole
+//  scene costs nothing once its file is compiled into this bank.
+//
 //  MSXgl compiles exactly one file per (segment, bank), so the modules that
 //  live here are #included rather than listed in ProjModules.  They are
 //  ordinary .c files and are written as such; this file is the placement.
@@ -25,3 +29,4 @@
 
 #include "msx2_stream.c"
 #include "msx2_board.c"
+#include "msx2_story.c"

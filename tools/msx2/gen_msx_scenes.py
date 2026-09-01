@@ -42,6 +42,8 @@ HEADER = os.path.join(ROOT, "src", "generated", "msx2_scenes.h")
 CARD_DIR = os.path.join(ROOT, "assets", "source", "cards")
 CARD_DATA = os.path.join(CARD_DIR, "card_data.txt")
 BG_DIR = os.path.join(ROOT, "assets", "source", "bg")
+PORTRAIT_DIR = os.path.join(ROOT, "assets", "source", "story_portraits")
+MAIN_C = os.path.join(ROOT, "src", "main.c")
 
 WIDTH = 256
 HEIGHT = 212
@@ -81,6 +83,39 @@ PANEL_RGB = (10, 8, 14)
 SUPPORT_VARIANTS = 6
 NAME_STRIDE = 24
 CARD_STRIDE = 2048   # 8 cards per segment, so no card ever straddles one
+
+# ── Story dialogue ───────────────────────────────────────────────────────────
+#
+# One composite per (duel, speaker): backdrop, character and an *empty* text box
+# flattened into a single 54,272-byte picture, exactly as MSX2_PORT_PLAN.md
+# §14.2 specifies.  A dialogue beat is then one stream and nothing else -- the
+# alternative, streaming a backdrop and then blitting a portrait over it, costs
+# two copies for a picture that sits perfectly still for ten seconds.
+STORY_DUELS = 5
+TALK_BOX_Y = 140
+TALK_NAME_Y = 144
+TALK_LINE_Y = (158, 170, 182)
+TALK_PROMPT_Y = 196
+TALK_PORTRAIT_H = TALK_BOX_Y
+TALK_PORTRAIT_W = 116
+TALK_TEXT_X = 8          # 40 columns of the 6-pixel font, with a margin
+TALK_NAME_X = 10
+TALK_PLATE_RGB = (28, 22, 40)
+
+# The sanctum map's list panel, baked empty and filled with rows at runtime.
+MAP_PANEL_X = 20
+MAP_PANEL_Y = 30
+MAP_PANEL_W = WIDTH - 40
+MAP_PANEL_H = 156
+
+# Story text records: a speaker byte then a NUL-terminated line.  Fixed stride
+# because the Z80 indexes them, and out of line in the cartridge because eight
+# kilobytes of prose is eight kilobytes the 32 KB code budget does not have.
+LINE_STRIDE = 112
+LINES_PER_DUEL = 12
+INTRO_LINES = 6
+ENDING_LINES = 6
+OPP_STRIDE = 32          # name and title, 16 bytes each
 
 
 def card_ident(asset_id):
@@ -362,6 +397,152 @@ def duel_board(sky_src, texture, dim, tint, edge):
     return img
 
 
+# ── Story text, lifted out of src/main.c ─────────────────────────────────────
+#
+# Parsed rather than retyped.  The MSX2 build is a fork of the frontend, not of
+# the writing, and a second copy of five thousand words of dialogue is a second
+# copy that goes stale.
+
+def c_strings(body):
+    """Every "..." literal in a chunk of C, unescaped."""
+    out = []
+    for raw in re.findall(r'"((?:[^"\\]|\\.)*)"', body):
+        out.append(raw.replace('\\"', '"').replace("\\\\", "\\"))
+    return out
+
+
+def c_array_body(text, name):
+    start = text.index(name)
+    start = text.index("{", start)
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    raise SystemExit("unterminated array %s in src/main.c" % name)
+
+
+SPEAKER = {"STORY_SPK_SERENA": 0, "STORY_SPK_OPPONENT": 1, "STORY_SPK_NARRATOR": 2}
+
+
+def parse_story():
+    text = open(MAIN_C).read()
+
+    dialogue = []
+    for duel in range(STORY_DUELS):
+        body = c_array_body(text, "g_story_duel%d_dialogue[]" % duel)
+        lines = []
+        for speaker, line in re.findall(
+                r'\{\s*(STORY_SPK_\w+)\s*,\s*"((?:[^"\\]|\\.)*)"\s*\}', body):
+            lines.append((SPEAKER[speaker], line))
+        if len(lines) > LINES_PER_DUEL:
+            sys.exit("duel %d has %d dialogue lines, more than LINES_PER_DUEL"
+                     % (duel, len(lines)))
+        dialogue.append(lines)
+
+    intro = c_strings(c_array_body(text, "story_intro_lines[]"))
+    ending = c_strings(c_array_body(text, "story_ending_lines[]"))
+
+    opponents = []
+    body = c_array_body(text, "g_story_opponents[STORY_MAX_DUELS]")
+    for name, title in re.findall(
+            r'\{\s*"([^"]*)"\s*,\s*"([^"]*)"', body):
+        opponents.append((name, title))
+    if len(opponents) != STORY_DUELS:
+        sys.exit("expected %d story opponents, parsed %d" % (STORY_DUELS, len(opponents)))
+
+    return dialogue, intro, ending, opponents
+
+
+def line_record(speaker, text):
+    body = text.upper()[:LINE_STRIDE - 2].encode("ascii", "replace")
+    return bytes((speaker,)) + body + bytes(LINE_STRIDE - 1 - len(body))
+
+
+# ── Story screens ────────────────────────────────────────────────────────────
+
+# The dialogue and map screens have no HUD eating the top of the frame, so their
+# horizon sits far lower than the duel board's and the stage's own sky gradient
+# is actually visible behind the speaker.
+STORY_HORIZON = 72
+
+
+def arena_bg(sky_src, texture, dim, tint):
+    """The stage without a board on it -- what the map and the dialogue
+    composites stand on."""
+    horizon = STORY_HORIZON
+    img = Image.new("RGB", (WIDTH, HEIGHT))
+    img.paste(sky_band(sky_src, horizon), (0, 0))
+    img.paste(perspective_floor(texture, HEIGHT - horizon, dim), (0, horizon))
+    return Image.blend(img, Image.new("RGB", (WIDTH, HEIGHT), tint), 0.22)
+
+
+STAGE_BG = [
+    ("desert.png", "sandstone_1.png", 0.08, (28, 18, 6)),
+    ("stone.png", "sandstone_2.png", 0.06, (16, 18, 22)),
+    ("ember.png", "sandstone_1.png", 0.12, (40, 8, 4)),
+    ("sky.png", "pyramid_beige.png", 0.10, (8, 10, 30)),
+]
+
+STAGE_FOR_DUEL = [0, 0, 1, 2, 3]
+
+
+def portrait(filename, size):
+    """A story portrait, trimmed and fitted the way gen_assets.py fits them for
+    every other target: upper body, pinned to the bottom of its area."""
+    img = Image.open(os.path.join(PORTRAIT_DIR, filename)).convert("RGBA")
+    bbox = img.getbbox()
+    if bbox:
+        img = img.crop(bbox)
+    w, h = img.size
+    img = img.crop((int(w * 0.05), int(h * 0.01),
+                    max(1, int(w * 0.95)), max(2, int(h * 0.80))))
+    art = ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
+    out = Image.new("RGBA", size, (0, 0, 0, 0))
+    out.alpha_composite(art, ((size[0] - art.width) // 2, size[1] - art.height))
+    return out
+
+
+def dialogue_scene(stage, portrait_file, on_right):
+    img = arena_bg(*STAGE_BG[stage])
+    px = WIDTH - TALK_PORTRAIT_W - 8 if on_right else 8
+
+    # A pool of shadow behind the figure: GRB332 has no palette to separate a
+    # portrait from a sunlit floor with, so the separation is baked.  It is
+    # blurred rather than drawn as a rectangle -- a hard-edged darker box reads
+    # as a UI panel the artist forgot to fill, which is exactly what the first
+    # cut of these composites looked like.
+    mask = Image.new("L", (WIDTH, HEIGHT), 0)
+    ImageDraw.Draw(mask).rectangle(
+        [px + 10, -24, px + TALK_PORTRAIT_W - 11, TALK_BOX_Y - 1], fill=118)
+    mask = mask.filter(ImageFilter.GaussianBlur(10))
+    img = Image.composite(Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0)), img, mask)
+
+    img = img.convert("RGBA")
+    img.alpha_composite(portrait(portrait_file, (TALK_PORTRAIT_W, TALK_PORTRAIT_H)),
+                        (px, 0))
+    img = img.convert("RGB")
+
+    d = ImageDraw.Draw(img)
+    gold = (198, 152, 54)
+    draw_panel(d, 0, TALK_BOX_Y, WIDTH, HEIGHT - TALK_BOX_Y, PANEL_RGB, gold)
+    d.rectangle([6, TALK_NAME_Y - 3, 150, TALK_NAME_Y + 9], fill=TALK_PLATE_RGB,
+                outline=gold)
+    return img
+
+
+def map_scene(stage):
+    img = arena_bg(*STAGE_BG[stage])
+    d = ImageDraw.Draw(img)
+    gold = (198, 152, 54)
+    draw_panel(d, MAP_PANEL_X, MAP_PANEL_Y, MAP_PANEL_W, MAP_PANEL_H,
+               PANEL_RGB, gold)
+    return img
+
+
 SCENES = [
     ("TITLE", lambda: Image.open(
         os.path.join(ROOT, "assets/source/title/title256_msx2.png"))),
@@ -376,6 +557,21 @@ SCENES = [
     ("BOARD_SKY", lambda: duel_board("sky.png", "pyramid_beige.png", 0.10,
                                      (8, 10, 30), (156, 186, 232))),
 ]
+
+# The sanctum map, one per stage, and the dialogue composites: for each story
+# duel, the picture with Serena speaking and the picture with the opponent
+# speaking.  Both are indexed arithmetically at runtime, so they are appended
+# to SCENES in exactly this order and the header emits the base of each run.
+for _stage in range(len(STAGE_BG)):
+    SCENES.append(("MAP_%d" % _stage,
+                   (lambda st: lambda: map_scene(st))(_stage)))
+for _duel in range(STORY_DUELS):
+    _stage = STAGE_FOR_DUEL[_duel]
+    SCENES.append(("TALK_%d_SERENA" % _duel,
+                   (lambda st: lambda: dialogue_scene(st, "serena.png", False))(_stage)))
+    SCENES.append(("TALK_%d_FOE" % _duel,
+                   (lambda st, d: lambda: dialogue_scene(st, "opponent_%d.png" % d, True))(_stage, _duel)))
+SCENES.append(("TALK_INTRO", lambda: dialogue_scene(0, "serena.png", False)))
 
 
 def build_card_blob(cards, quiet):
@@ -432,17 +628,52 @@ def cut_slot_tiles(scene):
     return bytes(blob)
 
 
-def build_text_blob(cards):
-    """Fixed-stride, NUL-padded strings.  Fixed stride so the Z80 indexes them
-    with a shift instead of walking the table, and out of line in a cartridge
-    segment because 1.8 KB of names would be 1.8 KB the 32 KB code budget does
-    not have."""
+def build_text_blob(cards, story):
+    """Every string the game shows, at fixed strides.
+
+    Fixed stride so the Z80 indexes a record with arithmetic instead of walking
+    the table, and out of line in a cartridge segment because ten kilobytes of
+    card names and dialogue is ten kilobytes the 32 KB code budget does not
+    have.  The sections are laid out in a fixed order and their offsets are
+    emitted into the generated header."""
+    dialogue, intro, ending, opponents = story
     blob = bytearray()
+    offsets = {}
+
+    def section(name):
+        offsets[name] = len(blob)
+
+    section("NAME")
     names = [name for _id, name in cards] + SUPPORT_NAMES
     for name in names:
         text = name.upper()[:NAME_STRIDE - 1].encode("ascii", "replace")
         blob += text + bytes(NAME_STRIDE - len(text))
-    return bytes(blob), len(names)
+
+    section("OPPONENT")
+    for name, title in opponents:
+        for field in (name, title):
+            text = field.upper()[:OPP_STRIDE // 2 - 1].encode("ascii", "replace")
+            blob += text + bytes(OPP_STRIDE // 2 - len(text))
+
+    section("DIALOGUE")
+    counts = []
+    for lines in dialogue:
+        counts.append(len(lines))
+        for speaker, text in lines:
+            blob += line_record(speaker, text)
+        blob += bytes(LINE_STRIDE * (LINES_PER_DUEL - len(lines)))
+
+    section("INTRO")
+    for text in intro[:INTRO_LINES]:
+        blob += line_record(2, text)
+    blob += bytes(LINE_STRIDE * (INTRO_LINES - len(intro[:INTRO_LINES])))
+
+    section("ENDING")
+    for text in ending[:ENDING_LINES]:
+        blob += line_record(2, text)
+    blob += bytes(LINE_STRIDE * (ENDING_LINES - len(ending[:ENDING_LINES])))
+
+    return bytes(blob), len(names), offsets, counts, len(intro), len(ending)
 
 
 def main():
@@ -486,7 +717,9 @@ def main():
               % (len(slot_blob) // CARD_STRIDE, len(slot_blob), slot_segment,
                  segment - 1))
 
-    text_blob, name_count = build_text_blob(cards)
+    story = parse_story()
+    text_blob, name_count, text_off, dialogue_counts, intro_n, ending_n = \
+        build_text_blob(cards, story)
     with open(os.path.join(ASSET_DIR, "text.bin"), "wb") as f:
         f.write(text_blob)
     text_segment = segment
@@ -554,17 +787,57 @@ def main():
         f.write("#define MSX2_SLOT_ART_PER_SEG   %d\n" % (SEGMENT_BYTES // CARD_STRIDE))
         f.write("#define MSX2_SLOT_ART_PER_STAGE %d\n\n" % (3 * SLOTS))
 
+        f.write("// ── Story screens ──────────────────────────────────────────────────────\n")
+        f.write("#define MSX2_MAP_SEGMENT(stage)   "
+                "(MSX2_SCENE_MAP_0_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)\n")
+        f.write("// speaker: 0 = Serena, 1 = the opponent.\n")
+        f.write("#define MSX2_TALK_SEGMENT(duel, speaker)  "
+                "(MSX2_SCENE_TALK_0_SERENA_SEGMENT +\\\n"
+                "     ((duel) * 2 + (speaker)) * MSX2_SCENE_SEG_SPAN)\n")
+        f.write("#define MSX2_STORY_DUELS        %d\n" % STORY_DUELS)
+        f.write("#define MSX2_TALK_BOX_Y         %d\n" % TALK_BOX_Y)
+        f.write("#define MSX2_TALK_NAME_Y        %d\n" % TALK_NAME_Y)
+        f.write("#define MSX2_TALK_LINE0_Y       %d\n" % TALK_LINE_Y[0])
+        f.write("#define MSX2_TALK_LINE_STEP     %d\n" % (TALK_LINE_Y[1] - TALK_LINE_Y[0]))
+        f.write("#define MSX2_TALK_LINES         %d\n" % len(TALK_LINE_Y))
+        f.write("#define MSX2_TALK_PROMPT_Y      %d\n" % TALK_PROMPT_Y)
+        f.write("#define MSX2_TALK_TEXT_X        %d\n" % TALK_TEXT_X)
+        f.write("#define MSX2_TALK_TEXT_W        %d\n" % (WIDTH - 2 * TALK_TEXT_X))
+        f.write("#define MSX2_TALK_COLS          %d\n" % ((WIDTH - 2 * TALK_TEXT_X) // 6))
+        f.write("#define MSX2_TALK_NAME_X        %d\n" % TALK_NAME_X)
+        # The baked panels are flat colours run through the ditherer, so they
+        # are not flat bytes -- anything drawn over them is drawn over a fill in
+        # the quantised colour, which is what these two are for.
+        f.write("#define MSX2_PANEL_COLOR        0x%02X\n" % grb.pack(*PANEL_RGB))
+        f.write("#define MSX2_PLATE_COLOR        0x%02X\n" % grb.pack(*TALK_PLATE_RGB))
+        f.write("#define MSX2_MAP_PANEL_X        %d\n" % MAP_PANEL_X)
+        f.write("#define MSX2_MAP_PANEL_Y        %d\n" % MAP_PANEL_Y)
+        f.write("#define MSX2_MAP_PANEL_W        %d\n" % MAP_PANEL_W)
+        f.write("#define MSX2_MAP_PANEL_H        %d\n\n" % MAP_PANEL_H)
+
         f.write("// ── String table ───────────────────────────────────────────────────────\n")
         f.write("#define MSX2_TEXT_SEGMENT       %d\n" % text_segment)
         f.write("#define MSX2_NAME_STRIDE        %d\n" % NAME_STRIDE)
-        f.write("#define MSX2_NAME_COUNT         %d\n\n" % name_count)
+        f.write("#define MSX2_NAME_COUNT         %d\n" % name_count)
+        f.write("#define MSX2_NAME_OFFSET        %d\n" % text_off["NAME"])
+        f.write("#define MSX2_OPP_OFFSET         %d\n" % text_off["OPPONENT"])
+        f.write("#define MSX2_OPP_STRIDE         %d\n" % OPP_STRIDE)
+        f.write("#define MSX2_LINE_STRIDE        %d\n" % LINE_STRIDE)
+        f.write("#define MSX2_LINES_PER_DUEL     %d\n" % LINES_PER_DUEL)
+        f.write("#define MSX2_DIALOGUE_OFFSET    %d\n" % text_off["DIALOGUE"])
+        f.write("#define MSX2_INTRO_OFFSET       %d\n" % text_off["INTRO"])
+        f.write("#define MSX2_INTRO_COUNT        %d\n" % intro_n)
+        f.write("#define MSX2_ENDING_OFFSET      %d\n" % text_off["ENDING"])
+        f.write("#define MSX2_ENDING_COUNT       %d\n" % ending_n)
+        f.write("static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =\n")
+        f.write("\t{ %s };\n\n" % ", ".join(str(c) for c in dialogue_counts))
 
         f.write("#define MSX2_SCENE_SEGMENT_FIRST  %d\n" % FIRST_ASSET_SEGMENT)
         f.write("#define MSX2_SCENE_SEGMENT_LAST   %d\n" % (segment - 1))
         f.write("#define MSX2_ASSET_ROM_KB         %d\n" % (segment * SEGMENT_BYTES // 1024))
 
     if not quiet:
-        print("TEXT     %d names -> %d bytes, segment %d"
+        print("TEXT     %d names + story -> %d bytes, segment %d"
               % (name_count, len(text_blob), text_segment))
         print("cartridge assets end at segment %d (%d KB)"
               % (segment - 1, segment * SEGMENT_BYTES // 1024))

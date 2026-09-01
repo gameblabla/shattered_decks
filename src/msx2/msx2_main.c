@@ -5,8 +5,10 @@
 //  The loop shape is the one the plan specifies: HALT to vblank, take input,
 //  advance the game by a bounded amount of work, then present.
 //
-//  Two scenes exist: TITLE (msx2_title.c) and DUEL (msx2_board.c).  Both are
-//  driven by the player through the same latched input.
+//  Three scenes exist: TITLE (msx2_title.c), STORY (msx2_story.c) and DUEL
+//  (msx2_board.c), all driven by the player through the same latched input.
+//  Story mode owns the run between duels: it asks for one and is handed the
+//  result back, which is what keeps the board itself ignorant of the story.
 //
 //  Building with -DMSX2_DEBUG_AUTOPLAY hands the player's turn to the same AI
 //  the COM uses, which is how the blind soak still works on a build that draws
@@ -24,6 +26,7 @@
 #include "msx2_input.h"
 #include "msx2_title.h"
 #include "msx2_board.h"
+#include "msx2_story.h"
 
 // A duel the SOAK has not resolved within this many frames is not a long duel,
 // it is a bug, and the watchdog turns what would be a silent hang into a status
@@ -59,14 +62,10 @@ static u32 Msx2_NextSeed(void)
 	return g_seed;
 }
 
-static void Msx2_StartDuel(void)
+// Deal a duel against `story` (MSX2_STORY_NONE for a free battle) and compose
+// the board for it.
+static void Msx2_DealDuel(u8 story)
 {
-	// Cycle the five story opponents, then a free battle, so the scripted decks
-	// and the water-field duel are all covered by a single blind run.
-	u8 story = (u8)(g_stat_duels % (MSX2_STORY_MAX_DUELS + 1));
-	if(story == MSX2_STORY_MAX_DUELS)
-		story = MSX2_STORY_NONE;
-
 	Msx2_DuelInit(Msx2_NextSeed(), story);
 	Msx2_MusicPlay((story == MSX2_STORY_FINAL_DUEL) ? MSX2_MUSIC_FINAL_BOSS : MSX2_MUSIC_BATTLE);
 	g_stat_steps = 0;
@@ -75,6 +74,20 @@ static void Msx2_StartDuel(void)
 	g_stat_scene = MSX2_SCENE_DUEL;
 	g_stat_menu_cursor = 0xFF;
 }
+
+// The soak's duel: cycle the five story opponents, then a free battle, so the
+// scripted decks and the water-field duel are all covered by a single blind run.
+static void Msx2_StartDuel(void)
+{
+	u8 story = (u8)(g_stat_duels % (MSX2_STORY_MAX_DUELS + 1));
+	if(story == MSX2_STORY_MAX_DUELS)
+		story = MSX2_STORY_NONE;
+	Msx2_DealDuel(story);
+}
+
+// Whether the duel on screen belongs to a story run, and therefore whether its
+// result goes back to the story scene or straight to the title.
+static bool g_in_story;
 
 // Cheap invariant check.  A duel state that has gone out of range is worth
 // catching in the blind run, where nothing is drawn and nothing else would
@@ -109,10 +122,34 @@ static void Msx2_SceneTitle(void)
 	if(choice == MSX2_TITLE_BUSY)
 		return;
 
-	// STORY MODE has no story flow on this target yet, so both playable rows
-	// enter the same duel; they diverge the moment the story scenes land, and
-	// the seam is already here.
-	Msx2_StartDuel();
+	if(choice == MSX2_TITLE_STORY)
+	{
+		g_in_story = TRUE;
+		Msx2_StoryBegin();
+		g_stat_scene = MSX2_SCENE_STORY;
+		g_stat_menu_cursor = 0xFF;
+		return;
+	}
+
+	g_in_story = FALSE;
+	Msx2_DealDuel(MSX2_STORY_NONE);
+}
+
+static void Msx2_SceneStory(void)
+{
+	u8 want = Msx2_StoryStep();
+
+	if(want == MSX2_STORY_FIGHT)
+	{
+		Msx2_DealDuel(Msx2_StoryDuelIndex());
+	}
+	else if(want == MSX2_STORY_QUIT)
+	{
+		g_in_story = FALSE;
+		Msx2_TitleEnter();
+		g_stat_scene = MSX2_SCENE_TITLE;
+		MSX2_STAGE(MSX2_STAGE_TITLE);
+	}
 }
 
 void main(void)
@@ -149,6 +186,13 @@ void main(void)
 			continue;
 		}
 
+		if(g_stat_scene == MSX2_SCENE_STORY)
+		{
+			Msx2_SceneStory();
+			Msx2_ProbeUpdate();
+			continue;
+		}
+
 		if(g_stat_status == MSX2_PROBE_OK)
 		{
 			u8 outcome = Msx2_BoardStep();
@@ -167,7 +211,24 @@ void main(void)
 				else
 					++g_stat_wins_com;
 				++g_stat_duels;
+#ifdef MSX2_DEBUG_AUTOPLAY
 				Msx2_StartDuel();
+#else
+				if(g_in_story)
+				{
+					Msx2_StoryDuelDone(outcome == MSX2_BOARD_WIN);
+					g_stat_scene = MSX2_SCENE_STORY;
+					MSX2_STAGE(MSX2_STAGE_STORY);
+				}
+				else
+				{
+					// A free battle answers to nothing, so it goes back where
+					// it was dealt from.
+					Msx2_TitleEnter();
+					g_stat_scene = MSX2_SCENE_TITLE;
+					MSX2_STAGE(MSX2_STAGE_TITLE);
+				}
+#endif
 			}
 		}
 
