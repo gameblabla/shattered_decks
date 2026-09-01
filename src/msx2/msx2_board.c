@@ -50,6 +50,7 @@
 #define M_OVER       5   // the duel is decided
 #define M_TURN       6   // the table is swinging to the other player's chair
 #define M_OPENING    7   // the shared opening camera path is being streamed
+#define M_DEAL       8   // the UI has just appeared and the hand is flying in
 
 #define BOARD_VIEW_PLAYER  MSX2_VIEW_TOP
 #define BOARD_VIEW_COM     MSX2_VIEW_COM
@@ -65,6 +66,16 @@ static u8  g_place_def;
 static u8  g_move_pose;
 static u8  g_move_target;
 static u8  g_move_forward;
+
+// The opening deal.  g_deal_slot is the hand position currently in flight,
+// left to right so a card never crosses one that has already landed;
+// g_deal_reveal is how many of them the retained painter is allowed to see.
+#define DEAL_STEPS   6
+#define DEAL_START_X 216
+static u8  g_deal_slot;
+static u8  g_deal_step;
+static u8  g_deal_reveal;
+static u8  g_deal_px[MSX2_VIDEO_PAGES];
 
 // The fusion chain the player is building, in the order they chose it -- the
 // order is part of the rule, because the materials fold left to right.
@@ -174,7 +185,10 @@ static void Msx2_BoardSnapshot(void)
 		g_flag[SLOT_OF(ZONE_FIELD, i)] = (u8)(F_FACEUP
 		                                  | (you->defense[i] ? F_DEFENSE : 0));
 
-		g_want[SLOT_OF(ZONE_HAND, i)] = g_duel.side[hand_owner].hand[i];
+		// A hand position the opening deal has not delivered yet is empty as
+		// far as the retained painter is concerned.
+		g_want[SLOT_OF(ZONE_HAND, i)] = (i < g_deal_reveal)
+		       ? g_duel.side[hand_owner].hand[i] : MSX2_CARD_NONE;
 		// The COM chair is a presentation view, not permission to look at the
 		// opponent's hand.  Keep the real id in the model for placement, but draw
 		// the common cover and expose no metadata to the player.
@@ -957,6 +971,97 @@ static bool Msx2_BoardPaint(void)
 //  Entry
 // ─────────────────────────────────────────────────────────────────────────────
 
+// A duel opens on nothing: no HUD, no hand row, no info panel, and a black
+// board band for the camera arc to fill.  The interface arrives only once the
+// camera has settled into the player's chair, the way the other ports open.
+static void Msx2_BoardBlankAll(void)
+{
+	Msx2_Fill(0, 0, MSX2_SCREEN_W, MSX2_SCREEN_H, MSX2_BLACK);
+}
+
+// The baked panel grounds, put back by hand.  Restreaming the whole resting
+// view would do it too, but that needs the display blanked for 54 KB and the
+// flash would land in the middle of the opening.
+static void Msx2_BoardRevealPanels(void)
+{
+	u8 i;
+
+	Msx2_Fill(0, 0, MSX2_SCREEN_W, MSX2_HUD_H, MSX2_PANEL_COLOR);
+	Msx2_FrameRect(0, 0, MSX2_SCREEN_W, MSX2_HUD_H, MSX2_GOLD_COLOR);
+	Msx2_Fill(0, MSX2_INFO_Y, MSX2_SCREEN_W,
+	          (u8)(MSX2_SCREEN_H - MSX2_INFO_Y), MSX2_PANEL_COLOR);
+	Msx2_FrameRect(0, MSX2_INFO_Y, MSX2_SCREEN_W,
+	               (u8)(MSX2_SCREEN_H - MSX2_INFO_Y), MSX2_GOLD_COLOR);
+	for(i = 0; i < MSX2_HAND_SLOTS; ++i)
+		Msx2_FrameRect((u8)(HAND_X(i) - 1), (u8)(MSX2_HAND_Y - 1),
+		               MSX2_CARD_W + 2, MSX2_CARD_H + 2, MSX2_GOLD_COLOR);
+}
+
+// One frame of the opening deal: the card in flight is erased from this page
+// at the position it last had here, redrawn one step further left, and the
+// hand's gold frames are put back where it crossed them.
+static void Msx2_BoardStepDeal(void)
+{
+	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
+	u8 card;
+	u8 x;
+	u8 i;
+
+	Msx2_VideoDrawPage(page);
+
+	if(g_deal_px[page] != MSX2_SLOT_NONE)
+	{
+		Msx2_Fill(g_deal_px[page], MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H,
+		          MSX2_BLACK);
+		for(i = 0; i < MSX2_HAND_SLOTS; ++i)
+			Msx2_FrameRect((u8)(HAND_X(i) - 1), (u8)(MSX2_HAND_Y - 1),
+			               MSX2_CARD_W + 2, MSX2_CARD_H + 2, MSX2_GOLD_COLOR);
+		g_deal_px[page] = MSX2_SLOT_NONE;
+	}
+
+	card = g_duel.side[MSX2_OWNER_PLAYER].hand[g_deal_slot];
+	if((card != MSX2_CARD_NONE) && (card < MSX2_CARD_ART_COUNT))
+	{
+		u8 target = HAND_X(g_deal_slot);
+		x = (u8)(DEAL_START_X
+		         - (u16)(DEAL_START_X - target) * g_deal_step / DEAL_STEPS);
+		Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + card / MSX2_CARD_ART_PER_SEG),
+		                (u16)((card % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
+		                x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H);
+		g_deal_px[page] = x;
+	}
+
+	Msx2_BoardPaint();
+	Msx2_VideoFlipRequest();
+
+	if(g_deal_step < DEAL_STEPS)
+	{
+		++g_deal_step;
+		return;
+	}
+
+	// Landed.  The retained model owns this position from here, so the copy the
+	// flight left on this page is exactly what the painter would have drawn.
+	if(card != MSX2_CARD_NONE)
+	{
+		u8 slot = SLOT_OF(ZONE_HAND, g_deal_slot);
+		g_deal_reveal = (u8)(g_deal_slot + 1);
+		Msx2_BoardSnapshot();
+		g_shown[page][slot] = g_want[slot];
+		g_shown_flag[page][slot] = g_flag[slot];
+	}
+	g_deal_px[page] = MSX2_SLOT_NONE;
+	g_deal_step = 0;
+	++g_deal_slot;
+	if(g_deal_slot >= MSX2_HAND_SLOTS)
+	{
+		g_deal_reveal = MSX2_HAND_SLOTS;
+		Msx2_BoardSnapshot();
+		g_mode = M_IDLE;
+		g_panel_left = MSX2_VIDEO_PAGES;
+	}
+}
+
 void Msx2_BoardEnter(u8 stage)
 {
 	u8 i;
@@ -980,6 +1085,10 @@ void Msx2_BoardEnter(u8 stage)
 	g_move_pose = 0;
 	g_move_target = BOARD_VIEW_PLAYER;
 	g_move_forward = TRUE;
+	g_deal_slot = 0;
+	g_deal_step = 0;
+	g_deal_reveal = 0;
+	g_deal_px[0] = g_deal_px[1] = MSX2_SLOT_NONE;
 	Msx2_BoardSnapshot();
 
 	Msx2_RasterInit();
@@ -996,9 +1105,9 @@ void Msx2_BoardEnter(u8 stage)
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(stage, g_view), page);
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
 	Msx2_VideoDrawPage(page);
-	Msx2_Fill(0, MSX2_BAND_Y, MSX2_SCREEN_W, MSX2_BAND_H, MSX2_BLACK);
+	Msx2_BoardBlankAll();
 	Msx2_VideoDrawPage((u8)(page ^ 1));
-	Msx2_Fill(0, MSX2_BAND_Y, MSX2_SCREEN_W, MSX2_BAND_H, MSX2_BLACK);
+	Msx2_BoardBlankAll();
 	Msx2_VideoShowPage(page);
 	VDP_EnableDisplay(TRUE);
 
@@ -1012,7 +1121,7 @@ void Msx2_BoardEnter(u8 stage)
 	}
 	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
 	g_cursor_col_at[0] = g_cursor_col_at[1] = 0;
-	g_panel_left = MSX2_VIDEO_PAGES;
+	g_panel_left = 0;
 }
 
 // Begin a turn handoff.  Playback itself is one pose per BoardStep on the
@@ -1066,6 +1175,15 @@ static void Msx2_BoardStepCameraMove(void)
 	   flip cannot reveal the penultimate camera pose. */
 	Msx2_VideoCopyPage(show, page);
 	Msx2_VideoDrawPage(page);
+	if(g_mode == M_OPENING)
+	{
+		// The camera has arrived.  Put the interface on both pages now, so the
+		// hand can be dealt into a screen that already has somewhere to put it.
+		Msx2_BoardRevealPanels();
+		Msx2_VideoDrawPage(show);
+		Msx2_BoardRevealPanels();
+		Msx2_VideoDrawPage(page);
+	}
 	g_view = g_move_target;
 	Msx2_RasterSetView(g_view);
 	g_suppress_slot = MSX2_SLOT_NONE;
@@ -1078,6 +1196,14 @@ static void Msx2_BoardStepCameraMove(void)
 	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
 	g_cursor_col_at[0] = g_cursor_col_at[1] = 0;
 	g_panel_left = MSX2_VIDEO_PAGES;
+	if(g_mode == M_OPENING)
+	{
+		g_mode = M_DEAL;
+		g_deal_slot = 0;
+		g_deal_step = 0;
+		g_deal_px[0] = g_deal_px[1] = MSX2_SLOT_NONE;
+		return;
+	}
 	g_mode = (g_view == BOARD_VIEW_COM) ? M_COM : M_IDLE;
 }
 
@@ -1287,6 +1413,12 @@ u8 Msx2_BoardStep(void)
 	if((g_mode == M_OPENING) || (g_mode == M_TURN))
 	{
 		Msx2_BoardStepCameraMove();
+		return MSX2_BOARD_BUSY;
+	}
+
+	if(g_mode == M_DEAL)
+	{
+		Msx2_BoardStepDeal();
 		return MSX2_BOARD_BUSY;
 	}
 
