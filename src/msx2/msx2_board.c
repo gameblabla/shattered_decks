@@ -227,9 +227,9 @@ static void Msx2_BoardBlitSlot(u8 slot)
 		if(card == MSX2_CARD_NONE)
 		{
 			// An empty hand position keeps its baked frame: the band under it is
-			// a flat panel, so putting it back is a fill and an outline rather
-			// than anything read from the cartridge.
-			Msx2_Fill(x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_PANEL_COLOR);
+			// black, so putting it back is a fill and an outline rather than
+			// anything read from the cartridge.
+			Msx2_Fill(x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_BLACK);
 			Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1), MSX2_CARD_W + 2,
 			               MSX2_CARD_H + 2, MSX2_GOLD_COLOR);
 			return;

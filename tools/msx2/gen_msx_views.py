@@ -284,9 +284,15 @@ def paint_panels(img):
     every turn and GRAPHIC 7 has no way to erase back to artwork except by
     putting the artwork there again."""
     d = ImageDraw.Draw(img)
-    for y0, h in ((0, HUD_H), (HAND_BAND_Y, HAND_BAND_H), (INFO_Y, HEIGHT - INFO_Y)):
+    for y0, h in ((0, HUD_H), (INFO_Y, HEIGHT - INFO_Y)):
         d.rectangle([0, y0, WIDTH - 1, y0 + h - 1], fill=PANEL_RGB,
                     outline=GOLD_RGB)
+    # The hand row has no panel of its own.  A slab of flat violet behind the
+    # five cards is a dialogue box where the table should be, and it breaks the
+    # illusion that the hand is being held over the arena; the cards sit on
+    # black instead, which is what PC-FX and FM TOWNS show.
+    d.rectangle([0, HAND_BAND_Y, WIDTH - 1, HAND_BAND_Y + HAND_BAND_H - 1],
+                fill=(0, 0, 0))
     # A gold hairline under the hand row's slot pitch, so the five hand
     # positions read as positions before a card is in them.
     for i in range(HAND_SLOTS):
