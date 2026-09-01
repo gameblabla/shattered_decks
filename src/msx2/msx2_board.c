@@ -131,6 +131,23 @@ static u8 g_fx_bend;
 static u8 g_fx_hold;
 static u8 g_fx_dest_x;
 
+// The 2-D battle cut-in.  The cards do not just sit on the black stage and
+// flash at each other: the attacker closes the gap in visible steps, the
+// contact beat lands where they meet, and the result is held long enough to
+// read.  A cut-in card is 88x120, which is six frames of streaming, so the
+// lunge is five long steps rather than a smooth slide.
+#define BATT_STEPS   5
+#define BATT_DX      8
+#define BATT_HOLD    56
+static u8 g_batt_phase;
+static u8 g_batt_step;
+static u8 g_batt_ax;
+static u8 g_batt_dx;
+static u8 g_batt_dir;
+static u8 g_batt_direct;
+static u8 g_batt_trap;
+static u8 g_batt_px[MSX2_VIDEO_PAGES];
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Reading the rules
 // ─────────────────────────────────────────────────────────────────────────────
@@ -570,24 +587,53 @@ static void Msx2_BoardDrawBattleBase(u8 direct, u8 trap, u8 ax, u8 dx)
 static void Msx2_BoardShowBattleCutin(void)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-	u8 direct = (g_duel.last_battle.outcome == MSX2_BATTLE_DIRECT);
-	u8 trap = g_duel.last_trap_fired;
-	u8 ax = direct ? 84 : (g_fx_owner == MSX2_OWNER_PLAYER ? 12 : 156);
-	u8 dx = (g_fx_owner == MSX2_OWNER_PLAYER) ? 156 : 12;
 
-	/* Compose a clean PC-FX-style card page and an impact page while output is
-	   blank.  Playback alternates them only through V-blank flip requests; no
+	g_batt_direct = (g_duel.last_battle.outcome == MSX2_BATTLE_DIRECT);
+	g_batt_trap = g_duel.last_trap_fired;
+	g_batt_ax = g_batt_direct ? 84 : (g_fx_owner == MSX2_OWNER_PLAYER ? 12 : 156);
+	g_batt_dx = (g_fx_owner == MSX2_OWNER_PLAYER) ? 156 : 12;
+	// Which way the attacker has to move to reach what it is attacking.  A
+	// direct hit has nothing in front of it, so it drives at the opponent's
+	// side of the screen instead.
+	g_batt_dir = g_batt_direct ? (g_fx_owner == MSX2_OWNER_PLAYER)
+	                           : (g_batt_dx > g_batt_ax);
+	g_batt_phase = 0;
+	g_batt_step = 0;
+	g_batt_px[0] = g_batt_px[1] = g_batt_ax;
+
+	/* Compose the clean card page while output is blank.  The contact beat's
+	   second page is built later, once the two cards have actually met; no
 	   effect command ever touches the page being scanned. */
 	VDP_EnableDisplay(FALSE);
 	Msx2_VideoDrawPage(page);
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
-	Msx2_BoardDrawBattleBase(direct, trap, ax, dx);
+	Msx2_BoardDrawBattleBase(g_batt_direct, g_batt_trap, g_batt_ax, g_batt_dx);
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
-	Msx2_VideoDrawPage((u8)(page ^ 1));
-	Msx2_BoardBattleImpact(direct, trap, ax, dx);
 	Msx2_VideoShowPage(page);
 	VDP_EnableDisplay(TRUE);
+}
+
+// One step of the attacker closing on its target: erase where this page last
+// had the card, put it down further along, and carry its ATK figure with it.
+static void Msx2_BoardBattleLungeStep(void)
+{
+	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
+	u8 travel = (u8)(g_batt_step * BATT_DX);
+	u8 x = g_batt_dir ? (u8)(g_batt_ax + travel) : (u8)(g_batt_ax - travel);
+
+	Msx2_VideoDrawPage(page);
+	Msx2_Fill(g_batt_px[page], 23, MSX2_BATTLE_CARD_W, MSX2_BATTLE_CARD_H,
+	          MSX2_BLACK);
+	Msx2_Fill(g_batt_px[page], 149, MSX2_BATTLE_CARD_W, 8, MSX2_BLACK);
+	Msx2_BoardBattleCard(g_duel.last_attacker_card, x, 23);
+	if(!g_batt_trap)
+	{
+		Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
+		Msx2_TextAt((u8)(x + 10), 149, "ATK");
+		Msx2_NumAt((u8)(x + 38), 149, g_duel.last_battle.attacker_atk);
+	}
+	g_batt_px[page] = x;
 }
 
 static void Msx2_BoardRestoreFromCutin(void)
@@ -950,25 +996,64 @@ static bool Msx2_BoardRunFx(void)
 		return FALSE;
 	if(Msx2_BoardFxIsBattle())
 	{
-		if(g_fx_frames != 0)
+		u8 page;
+		switch(g_batt_phase)
 		{
-			/* Clean/impact flashes are two already-composed pages.  Four
-			   V-blank swaps create the contact beat without drawing over the
-			   scanned page; the result is then added to the hidden impact page
-			   and flipped in for the readable hold. */
-			if((g_fx_frames == 54) || (g_fx_frames == 50) ||
-			   (g_fx_frames == 46) || (g_fx_frames == 42))
-				Msx2_VideoFlipRequest();
-			else if(g_fx_frames == 38)
+		case 0:
+			/* The attacker closes.  One 88x120 blit is about six V-blanks, so
+			   five steps is roughly a second of visible approach. */
+			++g_batt_step;
+			Msx2_BoardBattleLungeStep();
+			Msx2_VideoFlipRequest();
+			if(g_batt_step >= BATT_STEPS)
 			{
-				Msx2_BoardBattleResult(g_duel.last_trap_fired);
-				Msx2_VideoFlipRequest();
+				g_batt_ax = g_batt_px[Msx2_VideoGetShowPage() ^ 1];
+				g_batt_phase = 1;
+				g_batt_step = 0;
 			}
-			--g_fx_frames;
+			return TRUE;
+
+		case 1:
+			/* Level the pages at the meeting position, then build the contact
+			   beat's second page on the one that is not being scanned. */
+			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
+			Msx2_VideoCopyPage((u8)(page ^ 1), page);
+			Msx2_VideoDrawPage(page);
+			Msx2_BoardBattleImpact(g_batt_direct, g_batt_trap,
+			                       g_batt_ax, g_batt_dx);
+			g_batt_phase = 2;
+			g_batt_step = 0;
+			return TRUE;
+
+		case 2:
+			/* Six swaps between the clean page and the impact page: the flash
+			   is a page flip, so nothing is ever drawn over live scan-out. */
+			Msx2_VideoFlipRequest();
+			if(++g_batt_step >= 6)
+			{
+				g_batt_phase = 3;
+				g_batt_step = 0;
+			}
+			return TRUE;
+
+		case 3:
+			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
+			Msx2_VideoDrawPage(page);
+			Msx2_BoardBattleResult(g_batt_trap);
+			Msx2_VideoFlipRequest();
+			g_batt_phase = 4;
+			g_fx_frames = BATT_HOLD;
+			return TRUE;
+
+		default:
+			if(g_fx_frames != 0)
+			{
+				--g_fx_frames;
+				return TRUE;
+			}
+			Msx2_BoardRestoreFromCutin();
 			return TRUE;
 		}
-		Msx2_BoardRestoreFromCutin();
-		return TRUE;
 	}
 
 	if(g_fx_cleanup && (g_fx_bend != 0))
