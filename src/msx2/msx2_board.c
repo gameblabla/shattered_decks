@@ -121,6 +121,16 @@ static u8 g_fx_owner;
 static u8 g_suppress_slot;
 static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 
+// A card landing on the field takes the hand off the screen, slides the real
+// 2-D thumbnail across the emptied band, bends the board under it and then
+// holds the bare top view while the new card is read.  These carry that.
+#define FX_BEND_POSES  2
+#define FX_HOLD_FRAMES 24
+static u8 g_hand_hidden;
+static u8 g_fx_bend;
+static u8 g_fx_hold;
+static u8 g_fx_dest_x;
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Reading the rules
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,7 +197,7 @@ static void Msx2_BoardSnapshot(void)
 
 		// A hand position the opening deal has not delivered yet is empty as
 		// far as the retained painter is concerned.
-		g_want[SLOT_OF(ZONE_HAND, i)] = (i < g_deal_reveal)
+		g_want[SLOT_OF(ZONE_HAND, i)] = ((i < g_deal_reveal) && !g_hand_hidden)
 		       ? g_duel.side[hand_owner].hand[i] : MSX2_CARD_NONE;
 		// The COM chair is a presentation view, not permission to look at the
 		// opponent's hand.  Keep the real id in the model for placement, but draw
@@ -244,8 +254,10 @@ static void Msx2_BoardBlitSlot(u8 slot)
 			// black, so putting it back is a fill and an outline rather than
 			// anything read from the cartridge.
 			Msx2_Fill(x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_BLACK);
-			Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1), MSX2_CARD_W + 2,
-			               MSX2_CARD_H + 2, MSX2_GOLD_COLOR);
+			if(!g_hand_hidden)
+				Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1),
+				               MSX2_CARD_W + 2, MSX2_CARD_H + 2,
+				               MSX2_GOLD_COLOR);
 			return;
 		}
 
@@ -309,7 +321,12 @@ static void Msx2_BoardCursor(u8 slot, u8 color)
 {
 	if(IS_HAND(slot))
 	{
-		u8 x = HAND_X(slot - MSX2_FIELD_SLOTS);
+		u8 x;
+		// The hand is off the screen for a landing, and a bracket around a
+		// position that is not there reads as a stray white box.
+		if(g_hand_hidden)
+			return;
+		x = HAND_X(slot - MSX2_FIELD_SLOTS);
 		Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1), MSX2_CARD_W + 2,
 		               MSX2_CARD_H + 2, color);
 		return;
@@ -443,6 +460,23 @@ static void Msx2_BoardFxBanner(const c8* text, u8 color)
 	          MSX2_SCREEN_H - MSX2_INFO_Y - 2, MSX2_PANEL_COLOR);
 	Msx2_TextColor(color, MSX2_PANEL_COLOR);
 	Msx2_TextCenter((u8)(MSX2_INFO_Y + 3), text);
+}
+
+// The five hand frames, put back after the band has been blacked out.
+static void Msx2_BoardHandFrames(void)
+{
+	u8 i;
+	for(i = 0; i < MSX2_HAND_SLOTS; ++i)
+		Msx2_FrameRect((u8)(HAND_X(i) - 1), (u8)(MSX2_HAND_Y - 1),
+		               MSX2_CARD_W + 2, MSX2_CARD_H + 2, MSX2_GOLD_COLOR);
+}
+
+// The effects that put a card down on the board, and so get the hand-off-screen
+// flight, the board bend and the bare top-view hold.
+static bool Msx2_BoardFxIsLanding(void)
+{
+	return (g_fx_kind == FX_SUMMON) || (g_fx_kind == FX_FUSION)
+	    || (g_fx_kind == FX_EQUIP) || (g_fx_kind == FX_COM_PLACE);
 }
 
 static bool Msx2_BoardFxIsBattle(void)
@@ -604,37 +638,36 @@ static u8 Msx2_BoardBoxCenterX(u8 slot)
 	return (u8)(box[0] + (box[2] >> 1));
 }
 
-static u8 Msx2_BoardBoxCenterY(u8 slot)
-{
-	const u8* box = g_msx2_slot_box[g_view][slot];
-	return (u8)(box[1] + (box[3] >> 1));
-}
 
-// The VDP has no transparent sprite path for a 40x48 card.  A reversible
-// outline gives the hand-to-field flight the same visual cue without painting
-// opaque pixels over an unknown floor texture; the fully warped card is
-// revealed by the retained model when the flight lands.
-static void Msx2_BoardFxCardFlight(u8 dest_slot, u8 dest_x, u8 dest_y)
+// The card that is being played, drawn as itself.
+//
+// The hand has been taken off the screen for the duration, so the band the
+// card crosses is flat black and erasing it is a fill -- which is what buys
+// an opaque 40x48 thumbnail here instead of the reversible XOR outline this
+// used to be.  The path is horizontal, from the hand position to the column
+// the destination slot is in; the rise onto the board is the board's own bend,
+// not the card's.
+static void Msx2_BoardFxCardFlight(bool erase)
 {
 	i16 sx = (g_fx_hand == MSX2_SLOT_NONE) ? 108 : HAND_X(g_fx_hand);
-	i16 sy = MSX2_HAND_Y;
-	i16 ex = dest_x;
-	i16 ey = dest_y;
-	i16 progress;
-	i16 total;
-	i16 x;
-	i16 y;
+	i16 total = (g_fx_kind == FX_EQUIP) ? 12 : 14;
+	i16 progress = (i16)(total - g_fx_frames);
+	u8  x;
 
 	if(g_fx_card >= MSX2_CARD_ART_COUNT)
 		return;
-	total = (g_fx_kind == FX_EQUIP) ? 12 : 14;
-	progress = (i16)(total - g_fx_frames);
-	x = sx + ((ex - sx) * progress) / total;
-	y = sy + ((ey - sy) * progress) / total;
-	Msx2_FrameRectXor(Msx2_BoardClampPx(x), Msx2_BoardClampPx(y),
-	                  MSX2_CARD_W, MSX2_CARD_H,
-	                  (g_fx_frames & 2) ? MSX2_GOLD : MSX2_WHITE);
-	(void)dest_slot;
+	x = Msx2_BoardClampPx(sx + (((i16)g_fx_dest_x - sx) * progress) / total);
+	if(x > (MSX2_SCREEN_W - MSX2_CARD_W))
+		x = (MSX2_SCREEN_W - MSX2_CARD_W);
+
+	if(erase)
+	{
+		Msx2_Fill(x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_BLACK);
+		return;
+	}
+	Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + g_fx_card / MSX2_CARD_ART_PER_SEG),
+	                (u16)((g_fx_card % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
+	                x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H);
 }
 
 static void Msx2_BoardFxDraw(bool erase)
@@ -672,9 +705,7 @@ static void Msx2_BoardFxDraw(bool erase)
 			Msx2_BoardFxBanner("OPPONENT PLACES THE CARD", MSX2_RED);
 		if(g_fx_field != MSX2_SLOT_NONE)
 		{
-			Msx2_BoardFxCardFlight(g_fx_field,
-			                       (u8)(Msx2_BoardBoxCenterX(g_fx_field) - 20),
-			                       (u8)(Msx2_BoardBoxCenterY(g_fx_field) - 24));
+			Msx2_BoardFxCardFlight(erase);
 			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
 		}
 		break;
@@ -684,9 +715,7 @@ static void Msx2_BoardFxDraw(bool erase)
 			Msx2_BoardFxBanner("SUMMON", MSX2_TEAL);
 		if(g_fx_field != MSX2_SLOT_NONE)
 		{
-			Msx2_BoardFxCardFlight(g_fx_field,
-			                       (u8)(Msx2_BoardBoxCenterX(g_fx_field) - 20),
-			                       (u8)(Msx2_BoardBoxCenterY(g_fx_field) - 24));
+			Msx2_BoardFxCardFlight(erase);
 			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
 		}
 		break;
@@ -696,9 +725,7 @@ static void Msx2_BoardFxDraw(bool erase)
 			Msx2_BoardFxBanner("FUSION SUMMON", MSX2_TEAL);
 		if(g_fx_field != MSX2_SLOT_NONE)
 		{
-			Msx2_BoardFxCardFlight(g_fx_field,
-			                       (u8)(Msx2_BoardBoxCenterX(g_fx_field) - 20),
-			                       (u8)(Msx2_BoardBoxCenterY(g_fx_field) - 24));
+			Msx2_BoardFxCardFlight(erase);
 			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
 			Msx2_FrameRectXor(84, 70, 88, 34, flash);
 			if(!erase)
@@ -713,9 +740,7 @@ static void Msx2_BoardFxDraw(bool erase)
 		if(!erase)
 			Msx2_BoardFxBanner("EQUIP POWER", MSX2_GOLD);
 		if(g_fx_field != MSX2_SLOT_NONE)
-			Msx2_BoardFxCardFlight(g_fx_field,
-			                       (u8)(Msx2_BoardBoxCenterX(g_fx_field) - 20),
-			                       (u8)(Msx2_BoardBoxCenterY(g_fx_field) - 24));
+			Msx2_BoardFxCardFlight(erase);
 		break;
 
 	case FX_SUPPORT:
@@ -755,6 +780,70 @@ static void Msx2_BoardFxErase(u8 frame)
 	Msx2_BoardInfo();
 	g_fx_frames = frame;
 	Msx2_BoardFxDraw(TRUE);
+}
+
+// Take the hand off the screen for a landing.  The band goes flat black on
+// both pages at once -- it is nearly black already, so the cards simply stop
+// being there -- which is what makes the opaque flight above erasable, and is
+// also the bare top view the card is meant to land into.
+static void Msx2_BoardHideHand(void)
+{
+	u8 show = Msx2_VideoGetShowPage();
+	u8 i;
+
+	if(g_hand_hidden || !Msx2_BoardFxIsLanding())
+		return;
+	g_hand_hidden = TRUE;
+	g_fx_dest_x = (g_fx_field == MSX2_SLOT_NONE)
+	            ? 108
+	            : Msx2_BoardClampPx((i16)Msx2_BoardBoxCenterX(g_fx_field)
+	                                - MSX2_CARD_W / 2);
+	g_fx_bend = FX_BEND_POSES;
+	g_fx_hold = 0;
+	Msx2_BoardSnapshot();
+
+	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
+	{
+		Msx2_VideoDrawPage(i);
+		Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
+		          MSX2_BLACK);
+	}
+	Msx2_VideoDrawPage((u8)(show ^ 1));
+
+	for(i = MSX2_FIELD_SLOTS; i < SLOT_COUNT; ++i)
+	{
+		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
+		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
+	}
+	if(IS_HAND(g_cursor_at[0])) g_cursor_at[0] = MSX2_SLOT_NONE;
+	if(IS_HAND(g_cursor_at[1])) g_cursor_at[1] = MSX2_SLOT_NONE;
+}
+
+// One pose of the board's bend under the landing card.  The turn strip's end
+// poses ARE the two resting views, so its first step away from the resting
+// pose is a real camera lurch that comes back to exactly where it started --
+// the 8-bit cartridge version of the board tilting on the other targets.
+static void Msx2_BoardStepBend(void)
+{
+	u8 home = (g_view == BOARD_VIEW_COM) ? (u8)(MSX2_MOVE_TURN_POSES - 1) : 0;
+	u8 pose = (g_fx_bend > 1) ? ((g_view == BOARD_VIEW_COM) ? (u8)(home - 1)
+	                                                        : (u8)(home + 1))
+	                          : home;
+	u8 i;
+
+	Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H, MSX2_BLACK);
+	Msx2_StreamBand((u16)(MSX2_MOVE_TURN_SEGMENT(g_stage)
+	                      + (u16)pose * MSX2_MOVE_POSE_SEGS),
+	                MSX2_BAND_Y, MSX2_BAND_H);
+	// The pose is a picture of the empty board, so every live card on this page
+	// is gone and the cleanup repaint below has to put all of them back.
+	for(i = 0; i < MSX2_FIELD_SLOTS; ++i)
+	{
+		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
+		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
+	}
+	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
+	--g_fx_bend;
 }
 
 static void Msx2_BoardStartFx(void)
@@ -814,6 +903,7 @@ static void Msx2_BoardStartFx(void)
 		g_fx_frames = 60;
 		Msx2_BoardShowBattleCutin();
 	}
+	Msx2_BoardHideHand();
 }
 
 static void Msx2_BoardFinishFx(void)
@@ -831,6 +921,7 @@ static void Msx2_BoardFinishFx(void)
 		g_fx_followup = FX_NONE;
 		g_fx_frames = 14;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+		Msx2_BoardHideHand();
 		return;
 	}
 	if(next == FX_EQUIP)
@@ -839,10 +930,14 @@ static void Msx2_BoardFinishFx(void)
 		g_fx_followup = FX_NONE;
 		g_fx_frames = 12;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+		Msx2_BoardHideHand();
 		return;
 	}
 
 	g_suppress_slot = MSX2_SLOT_NONE;
+	g_hand_hidden = FALSE;
+	g_fx_bend = 0;
+	g_fx_hold = 0;
 	Msx2_BoardSnapshot();
 	g_panel_left = MSX2_VIDEO_PAGES;
 	g_fx_kind = FX_NONE;
@@ -873,6 +968,51 @@ static bool Msx2_BoardRunFx(void)
 			return TRUE;
 		}
 		Msx2_BoardRestoreFromCutin();
+		return TRUE;
+	}
+
+	if(g_fx_cleanup && (g_fx_bend != 0))
+	{
+		Msx2_VideoDrawPage(Msx2_VideoGetDrawPage());
+		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+		Msx2_BoardStepBend();
+		Msx2_VideoFlipRequest();
+		if(g_fx_bend == 0)
+			g_fx_hold = FX_HOLD_FRAMES;
+		return TRUE;
+	}
+
+	if(g_fx_hold != 0)
+	{
+		// The bare top view: the card is on the board, the hand is still off
+		// the screen and only the bottom panel is under it.  Repaint into it
+		// for the first frames, then simply hold it.
+		u8 page = Msx2_VideoGetDrawPage();
+		u8 i;
+		if(g_fx_hold == FX_HOLD_FRAMES)
+		{
+			// The bend left its last pose on the page that is now on screen and
+			// its previous pose on the other.  Level them, or the hold would
+			// flicker between two camera positions.
+			Msx2_VideoCopyPage((u8)(page ^ 1), page);
+			--g_fx_hold;
+			return TRUE;
+		}
+		for(i = 0; i < 4; ++i)
+			if(!Msx2_BoardPaint())
+				break;
+		if(i != 0)
+			Msx2_VideoFlipRequest();
+		--g_fx_hold;
+		if(g_fx_hold == 0)
+		{
+			g_hand_hidden = FALSE;
+			Msx2_BoardSnapshot();
+			Msx2_VideoDrawPage(page);
+			Msx2_BoardHandFrames();
+			g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
+			g_panel_left = MSX2_VIDEO_PAGES;
+		}
 		return TRUE;
 	}
 
@@ -992,9 +1132,7 @@ static void Msx2_BoardRevealPanels(void)
 	          (u8)(MSX2_SCREEN_H - MSX2_INFO_Y), MSX2_PANEL_COLOR);
 	Msx2_FrameRect(0, MSX2_INFO_Y, MSX2_SCREEN_W,
 	               (u8)(MSX2_SCREEN_H - MSX2_INFO_Y), MSX2_GOLD_COLOR);
-	for(i = 0; i < MSX2_HAND_SLOTS; ++i)
-		Msx2_FrameRect((u8)(HAND_X(i) - 1), (u8)(MSX2_HAND_Y - 1),
-		               MSX2_CARD_W + 2, MSX2_CARD_H + 2, MSX2_GOLD_COLOR);
+	Msx2_BoardHandFrames();
 }
 
 // One frame of the opening deal: the card in flight is erased from this page
@@ -1013,9 +1151,7 @@ static void Msx2_BoardStepDeal(void)
 	{
 		Msx2_Fill(g_deal_px[page], MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H,
 		          MSX2_BLACK);
-		for(i = 0; i < MSX2_HAND_SLOTS; ++i)
-			Msx2_FrameRect((u8)(HAND_X(i) - 1), (u8)(MSX2_HAND_Y - 1),
-			               MSX2_CARD_W + 2, MSX2_CARD_H + 2, MSX2_GOLD_COLOR);
+		Msx2_BoardHandFrames();
 		g_deal_px[page] = MSX2_SLOT_NONE;
 	}
 
