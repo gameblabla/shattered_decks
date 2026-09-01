@@ -28,5 +28,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msx2_stream.c"
+#include "msx2_raster.c"
 #include "msx2_board.c"
 #include "msx2_story.c"

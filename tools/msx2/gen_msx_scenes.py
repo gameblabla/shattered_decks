@@ -35,6 +35,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import msx2_grb332 as grb  # noqa: E402
+import gen_msx_views as views  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ASSET_DIR = os.path.join(ROOT, "src", "msx2", "assets")
@@ -57,27 +58,14 @@ FIRST_ASSET_SEGMENT = 4
 
 # ── The duel board ───────────────────────────────────────────────────────────
 #
-# These numbers are the contract between the baked backdrop and msx2_board.c:
-# the plinths below are drawn at exactly the coordinates the renderer blits
-# cards to, so a card lands in its recess and not next to it.  They are emitted
-# into the generated header so there is one definition, not two.
-CARD_W, CARD_H = 40, 48
-SLOTS = 5
-SLOT_X0 = 12
-SLOT_PITCH = 48
-ROW_COM_Y = 16
-ROW_PLAYER_Y = 70
-ROW_HAND_Y = 126
-HUD_H = 13
-INFO_Y = 178
-
-# A flat ring of a known colour is baked around every slot, and the selection
-# cursor is drawn *into that ring* rather than over the card.  That is what
-# makes moving the cursor four VDP fills instead of two card re-blits: erasing
-# it is a fill of RING_RGB, and no artwork underneath ever has to be restored.
-RING = 2
-RING_RGB = (72, 40, 8)
-PANEL_RGB = (10, 8, 14)
+# The board is NOT drawn here.  MSX2_PORT_PLAN.md §0.3.1 makes the duel's arena
+# the game's own arena, captured out of `waifu_fm_headless`, so everything about
+# it -- the picture, the projected card quads, the empty-slot tiles and the
+# baked camera move -- comes from gen_msx_views.py.  What is left in this file
+# is the card art that gets drawn INTO those quads, and the screens that are
+# genuinely 2-D.
+CARD_W, CARD_H = views.CARD_W, views.CARD_H
+PANEL_RGB = views.PANEL_RGB
 
 # 72 monsters + 6 support variants + 1 card back.
 SUPPORT_VARIANTS = 6
@@ -96,11 +84,29 @@ TALK_BOX_Y = 140
 TALK_NAME_Y = 144
 TALK_LINE_Y = (158, 170, 182)
 TALK_PROMPT_Y = 196
-TALK_PORTRAIT_H = TALK_BOX_Y
-TALK_PORTRAIT_W = 116
 TALK_TEXT_X = 8          # 40 columns of the 6-pixel font, with a margin
 TALK_NAME_X = 10
 TALK_PLATE_RGB = (28, 22, 40)
+
+# ── §14.2: the composited visual-novel scene ─────────────────────────────────
+#
+# Both speakers stand on the shipped painting at once, the inactive one dimmed,
+# and only the two portrait rects change when the speaker does.  The busts are
+# blitted at runtime from baked run-length skip lists, so a transparent pixel
+# costs one VRAM address re-set and an opaque one costs an OUTI -- which is what
+# makes two figures cheaper than the single flattened composite this replaces.
+PORTRAIT_W = 124
+PORTRAIT_H = TALK_BOX_Y - 16     # everything above the text box
+PORTRAIT_LEFT_X = 2
+PORTRAIT_RIGHT_X = WIDTH - PORTRAIT_W - 2
+PORTRAIT_LEFT_Y = 16
+PORTRAIT_RIGHT_Y = 22            # the six-pixel stagger the other targets use
+# The inactive speaker is dimmed rather than removed.  Both variants are cut
+# from the SAME alpha mask, so they cover byte for byte the same pixels and a
+# speaker change is a pure overwrite with no background repair at all.
+PORTRAIT_DIM = 0.45
+PORTRAIT_STRIDE = 32768          # two whole segments per baked bust
+PORTRAIT_CHARS = 1 + STORY_DUELS # Serena, then one opponent per duel
 
 # The sanctum map's list panel, baked empty and filled with rows at runtime.
 MAP_PANEL_X = 20
@@ -299,102 +305,11 @@ def draw_card_back():
     return img
 
 
-# ── The duel board backdrop ──────────────────────────────────────────────────
-
-TEXTURE_DIR = os.path.join(ROOT, "assets", "source", "textures")
-
-
-def sky_band(name, height):
-    """The upper part of a stage's environment gradient, which is what the 3D
-    targets put above their horizon too."""
-    img = Image.open(os.path.join(BG_DIR, name)).convert("RGB")
-    band = img.crop((0, 0, img.width, max(1, img.height // 3)))
-    return band.resize((WIDTH, height), Image.Resampling.LANCZOS)
-
-
-def perspective_floor(texture, height, dim):
-    """A receding stone floor, built by warping a tiled material.
-
-    The arena the other targets draw is 3D; this one is a picture of the same
-    material seen from the same place.  The source quad is wide at the top and
-    narrow at the bottom, so the top of the destination rectangle samples a
-    span far wider than the screen -- which is what recession is.  The tile is
-    scaled down first: at its native 1254 pixels one tile would cover the whole
-    plane and the floor would have no grain to recede with."""
-    tile = Image.open(os.path.join(TEXTURE_DIR, texture)).convert("RGB")
-    tile = tile.resize((128, 128), Image.Resampling.LANCZOS)
-    plane = Image.new("RGB", (512, 512))
-    for y in range(0, 512, 128):
-        for x in range(0, 512, 128):
-            plane.paste(tile, (x, y))
-    floor = plane.transform((WIDTH, height), Image.Transform.QUAD,
-                            data=(0, 0, 160, 512, 352, 512, 512, 0),
-                            resample=Image.Resampling.BILINEAR)
-    # Haze toward the horizon: distance is the only depth cue a flat image has,
-    # and the far end of the floor also has to stop competing with the cards
-    # standing on it.
-    dark = Image.new("RGB", (WIDTH, height), (0, 0, 0))
-    mask = Image.new("L", (1, height))
-    for y in range(height):
-        far = 1.0 - (y / float(height - 1))
-        mask.putpixel((0, y), int(255 * (dim + (0.78 - dim) * far * far)))
-    return Image.composite(dark, floor, mask.resize((WIDTH, height)))
-
-
-def draw_plinth(img, x, y, edge):
-    """One empty card recess, drawn at exactly the rect msx2_board.c blits a
-    card into.
-
-    The well is allowed to be textured -- the floor material shows through it,
-    which matters because ten of the fifteen slots are empty when a duel opens.
-    Putting a destroyed monster's slot back is therefore not a fill but a blit
-    of the SLOTS blob, which is cut out of this very image after it has been
-    quantised, so the restore is the backdrop's own bytes.
-
-    The RING around it is flat, and that part is load-bearing: the selection
-    cursor is drawn into the ring and erased with a fill of MSX2_RING_COLOR."""
-    d = ImageDraw.Draw(img)
-    d.rectangle([x - RING, y - RING, x + CARD_W - 1 + RING, y + CARD_H - 1 + RING],
-                fill=RING_RGB)
-    well = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 56))
-    ImageDraw.Draw(well).rectangle([0, 0, CARD_W - 1, CARD_H - 1],
-                                   outline=edge + (190,))
-    img.alpha_composite(well, (x, y))
-
+# ── 2-D screen furniture ─────────────────────────────────────────────────────
 
 def draw_panel(d, x, y, w, h, fill, edge):
     d.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
     d.rectangle([x, y, x + w - 1, y + h - 1], outline=edge)
-
-
-def duel_board(sky_src, texture, dim, tint, edge):
-    # The horizon sits exactly under the HUD.  There is no room for a sky on
-    # this screen -- three rows of 48-pixel cards and two panels use all 212
-    # lines -- and a three-pixel band of it peeking out above the top row read
-    # as blue rubbish rather than as distance.
-    horizon = HUD_H
-    img = Image.new("RGB", (WIDTH, HEIGHT))
-    img.paste(sky_band(sky_src, horizon), (0, 0))
-    img.paste(perspective_floor(texture, HEIGHT - horizon, dim), (0, horizon))
-    # A stage tint, so the four arenas read as four places and not as one
-    # sandstone floor under four skies.
-    img = Image.blend(img, Image.new("RGB", (WIDTH, HEIGHT), tint), 0.16)
-
-    img = img.convert("RGBA")
-    for row_y in (ROW_COM_Y, ROW_PLAYER_Y, ROW_HAND_Y):
-        for i in range(SLOTS):
-            draw_plinth(img, SLOT_X0 + i * SLOT_PITCH, row_y, edge)
-    img = img.convert("RGB")
-
-    d = ImageDraw.Draw(img)
-    gold = (198, 152, 54)
-    # HUD strip and info panel: flat dark ground, because live text is written
-    # over them every turn and GRAPHIC 7 has no way to erase back to artwork
-    # except by putting the artwork there again.
-    draw_panel(d, 0, 0, WIDTH, HUD_H, PANEL_RGB, gold)
-    draw_panel(d, 0, INFO_Y, WIDTH, HEIGHT - INFO_Y, PANEL_RGB, gold)
-    d.rectangle([8, ROW_HAND_Y - 5, WIDTH - 9, ROW_HAND_Y - 4], fill=gold)
-    return img
 
 
 # ── Story text, lifted out of src/main.c ─────────────────────────────────────
@@ -463,35 +378,29 @@ def line_record(speaker, text):
 
 
 # ── Story screens ────────────────────────────────────────────────────────────
+#
+# §14.2 and §21.3: the backdrop is one of the paintings the other targets
+# already show, whole, centred on the 212-row window -- not a sky band over a
+# floor this generator invented.  They are 256x240 and therefore already the
+# right width, so the crop is rows 14..225 and nothing else.
 
-# The dialogue and map screens have no HUD eating the top of the frame, so their
-# horizon sits far lower than the duel board's and the stage's own sky gradient
-# is actually visible behind the speaker.
-STORY_HORIZON = 72
+BG_CROP_Y = 14
 
-
-def arena_bg(sky_src, texture, dim, tint):
-    """The stage without a board on it -- what the map and the dialogue
-    composites stand on."""
-    horizon = STORY_HORIZON
-    img = Image.new("RGB", (WIDTH, HEIGHT))
-    img.paste(sky_band(sky_src, horizon), (0, 0))
-    img.paste(perspective_floor(texture, HEIGHT - horizon, dim), (0, horizon))
-    return Image.blend(img, Image.new("RGB", (WIDTH, HEIGHT), tint), 0.22)
-
-
-STAGE_BG = [
-    ("desert.png", "sandstone_1.png", 0.08, (28, 18, 6)),
-    ("stone.png", "sandstone_2.png", 0.06, (16, 18, 22)),
-    ("ember.png", "sandstone_1.png", 0.12, (40, 8, 4)),
-    ("sky.png", "pyramid_beige.png", 0.10, (8, 10, 30)),
-]
-
+STAGE_BG = ["desert.png", "stone.png", "ember.png", "sky.png"]
 STAGE_FOR_DUEL = [0, 0, 1, 2, 3]
 
 
+def stage_painting(stage):
+    img = Image.open(os.path.join(BG_DIR, STAGE_BG[stage])).convert("RGB")
+    if img.width != WIDTH:
+        img = img.resize((WIDTH, img.height * WIDTH // img.width),
+                         Image.Resampling.LANCZOS)
+    top = max(0, min(BG_CROP_Y, img.height - HEIGHT))
+    return img.crop((0, top, WIDTH, top + HEIGHT))
+
+
 def portrait(filename, size):
-    """A story portrait, trimmed and fitted the way gen_assets.py fits them for
+    """A story bust, trimmed and fitted the way gen_assets.py fits them for
     every other target: upper body, pinned to the bottom of its area."""
     img = Image.open(os.path.join(PORTRAIT_DIR, filename)).convert("RGBA")
     bbox = img.getbbox()
@@ -506,26 +415,103 @@ def portrait(filename, size):
     return out
 
 
-def dialogue_scene(stage, portrait_file, on_right):
-    img = arena_bg(*STAGE_BG[stage])
-    px = WIDTH - TALK_PORTRAIT_W - 8 if on_right else 8
+PORTRAIT_MAX_RUNS = 3            # opaque runs per row the index can hold
+PORTRAIT_ROW_STRIDE = 1 + PORTRAIT_MAX_RUNS * 2
+PORTRAIT_INDEX_BYTES = 1024      # the run table, ahead of the pixels
 
-    # A pool of shadow behind the figure: GRB332 has no palette to separate a
-    # portrait from a sunlit floor with, so the separation is baked.  It is
-    # blurred rather than drawn as a rectangle -- a hard-edged darker box reads
-    # as a UI panel the artist forgot to fill, which is exactly what the first
-    # cut of these composites looked like.
-    mask = Image.new("L", (WIDTH, HEIGHT), 0)
-    ImageDraw.Draw(mask).rectangle(
-        [px + 10, -24, px + TALK_PORTRAIT_W - 11, TALK_BOX_Y - 1], fill=118)
-    mask = mask.filter(ImageFilter.GaussianBlur(10))
-    img = Image.composite(Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0)), img, mask)
 
-    img = img.convert("RGBA")
-    img.alpha_composite(portrait(portrait_file, (TALK_PORTRAIT_W, TALK_PORTRAIT_H)),
-                        (px, 0))
-    img = img.convert("RGB")
+def portrait_runs(alpha, y, w):
+    """The opaque runs of one row, merged down to PORTRAIT_MAX_RUNS.
 
+    A bust is a single figure, so a row is one run and occasionally two (an arm
+    away from the body).  Anything past the third run is folded in by absorbing
+    the narrowest transparent gap -- a couple of background pixels drawn over,
+    against a fixed-size table the Z80 can index with a shift."""
+    apx = alpha.load()
+    runs = []
+    x = 0
+    while x < w:
+        while x < w and apx[x, y] <= 96:
+            x += 1
+        if x >= w:
+            break
+        start = x
+        while x < w and apx[x, y] > 96:
+            x += 1
+        runs.append([start, x - start])
+    while len(runs) > PORTRAIT_MAX_RUNS:
+        gaps = [(runs[i + 1][0] - (runs[i][0] + runs[i][1]), i)
+                for i in range(len(runs) - 1)]
+        _gap, i = min(gaps)
+        runs[i][1] = runs[i + 1][0] + runs[i + 1][1] - runs[i][0]
+        del runs[i + 1]
+    # A run has to be blittable as one rectangle row, so 255 is the cap.
+    return [(a, min(b, 255)) for a, b in runs]
+
+
+def portrait_blob(bust, dim):
+    """One bust as a run table plus a packed pixel stream (§1.2, §14.2).
+
+    Splitting the two is what lets the runtime blit a portrait with the ordinary
+    rectangle copy it already has: it reads the small table into RAM, then walks
+    it issuing one row-blit per opaque run.  A transparent pixel costs nothing
+    at all -- not even a VRAM write -- and no new inner loop had to be written
+    for it.
+
+    The two brightness variants are cut from the SAME alpha mask, so they have
+    identical tables and cover byte for byte the same pixels: swapping which
+    speaker is lit is a pure overwrite with no background repair."""
+    w, h = bust.size
+    alpha = bust.getchannel("A")
+    rgb = bust.convert("RGB")
+    if dim:
+        rgb = Image.blend(Image.new("RGB", bust.size, (0, 0, 0)), rgb,
+                          PORTRAIT_DIM)
+    quant = grb.quantize(rgb, (w, h))
+
+    index = bytearray()
+    pixels = bytearray()
+    for y in range(h):
+        runs = portrait_runs(alpha, y, w)
+        index.append(len(runs))
+        for i in range(PORTRAIT_MAX_RUNS):
+            if i < len(runs):
+                index += bytes(runs[i])
+                pixels += quant[y * w + runs[i][0]:y * w + runs[i][0] + runs[i][1]]
+            else:
+                index += b"\x00\x00"
+    if len(index) > PORTRAIT_INDEX_BYTES:
+        sys.exit("portrait run table is %d bytes, past %d"
+                 % (len(index), PORTRAIT_INDEX_BYTES))
+    body = index + bytes(PORTRAIT_INDEX_BYTES - len(index)) + pixels
+    if len(body) > PORTRAIT_STRIDE:
+        sys.exit("portrait is %d bytes, past the %d stride"
+                 % (len(body), PORTRAIT_STRIDE))
+    return body + bytes(PORTRAIT_STRIDE - len(body))
+
+
+def build_portrait_blob(quiet):
+    """Serena and the five opponents, lit and dimmed."""
+    blob = bytearray()
+    files = ["serena.png"] + ["opponent_%d.png" % d for d in range(STORY_DUELS)]
+    size = (PORTRAIT_W, PORTRAIT_H)
+    for name in files:
+        bust = portrait(name, size)
+        for dim in (False, True):
+            blob += portrait_blob(bust, dim)
+    if not quiet:
+        print("PORTRAIT %d busts x 2 variants -> %d bytes"
+              % (len(files), len(blob)))
+    return bytes(blob)
+
+
+def vn_scene(stage):
+    """The dialogue backdrop: the painting, the text box and the name plate.
+
+    The busts are NOT in it -- that is the whole of §14.2.  A speaker change
+    touches two rects instead of streaming 54 KB, and both characters are on
+    screen at once, which the flattened composite could never manage."""
+    img = stage_painting(stage)
     d = ImageDraw.Draw(img)
     gold = (198, 152, 54)
     draw_panel(d, 0, TALK_BOX_Y, WIDTH, HEIGHT - TALK_BOX_Y, PANEL_RGB, gold)
@@ -535,11 +521,11 @@ def dialogue_scene(stage, portrait_file, on_right):
 
 
 def map_scene(stage):
-    img = arena_bg(*STAGE_BG[stage])
+    """The sanctum map takes the same backdrop treatment (§14.4)."""
+    img = stage_painting(stage)
     d = ImageDraw.Draw(img)
-    gold = (198, 152, 54)
     draw_panel(d, MAP_PANEL_X, MAP_PANEL_Y, MAP_PANEL_W, MAP_PANEL_H,
-               PANEL_RGB, gold)
+               PANEL_RGB, (198, 152, 54))
     return img
 
 
@@ -548,30 +534,15 @@ SCENES = [
         os.path.join(ROOT, "assets/source/title/title256_msx2.png"))),
     ("ENDING", lambda: Image.open(
         os.path.join(ROOT, "assets/source/ending/ending256x212.png"))),
-    ("BOARD_DESERT", lambda: duel_board("desert.png", "sandstone_1.png", 0.08,
-                                        (28, 18, 6), (198, 152, 54))),
-    ("BOARD_STONE", lambda: duel_board("stone.png", "sandstone_2.png", 0.06,
-                                       (16, 18, 22), (176, 178, 168))),
-    ("BOARD_EMBER", lambda: duel_board("ember.png", "sandstone_1.png", 0.12,
-                                       (40, 8, 4), (232, 120, 52))),
-    ("BOARD_SKY", lambda: duel_board("sky.png", "pyramid_beige.png", 0.10,
-                                     (8, 10, 30), (156, 186, 232))),
 ]
 
-# The sanctum map, one per stage, and the dialogue composites: for each story
-# duel, the picture with Serena speaking and the picture with the opponent
-# speaking.  Both are indexed arithmetically at runtime, so they are appended
-# to SCENES in exactly this order and the header emits the base of each run.
+# The sanctum map, one per stage, then the dialogue backdrop, one per stage.
+# Both are indexed arithmetically at runtime, so they are appended in exactly
+# this order and the header emits the base of each run.
 for _stage in range(len(STAGE_BG)):
-    SCENES.append(("MAP_%d" % _stage,
-                   (lambda st: lambda: map_scene(st))(_stage)))
-for _duel in range(STORY_DUELS):
-    _stage = STAGE_FOR_DUEL[_duel]
-    SCENES.append(("TALK_%d_SERENA" % _duel,
-                   (lambda st: lambda: dialogue_scene(st, "serena.png", False))(_stage)))
-    SCENES.append(("TALK_%d_FOE" % _duel,
-                   (lambda st, d: lambda: dialogue_scene(st, "opponent_%d.png" % d, True))(_stage, _duel)))
-SCENES.append(("TALK_INTRO", lambda: dialogue_scene(0, "serena.png", False)))
+    SCENES.append(("MAP_%d" % _stage, (lambda st: lambda: map_scene(st))(_stage)))
+for _stage in range(len(STAGE_BG)):
+    SCENES.append(("TALK_%d" % _stage, (lambda st: lambda: vn_scene(st))(_stage)))
 
 
 def build_card_blob(cards, quiet):
@@ -588,10 +559,17 @@ def build_card_blob(cards, quiet):
         faces.append(draw_support_card(kind))
     faces.append(draw_card_back())
 
+    mirror = bytearray()
     for face in faces:
         data = grb.quantize(face, (CARD_W, CARD_H))
-        blob += data
-        blob += bytes(CARD_STRIDE - len(data))
+        blob += data + bytes(CARD_STRIDE - len(data))
+        # The mirrored set exists for the COM row.  Its cards are rotated 180
+        # degrees on the board plane, so the span programs walk their texels
+        # backwards (§8.4); reading a mirrored texture forwards is the same
+        # picture and costs a second blob instead of a second inner loop.
+        flipped = grb.quantize(face.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
+                               (CARD_W, CARD_H))
+        mirror += flipped + bytes(CARD_STRIDE - len(flipped))
 
     # A contact sheet, decoded straight back out of the blob, so the art can be
     # checked without an emulator and without trusting the drawing code.
@@ -607,25 +585,9 @@ def build_card_blob(cards, quiet):
     grb.write_preview(os.path.join(ASSET_DIR, "cards.png"), bytes(sheet),
                       (columns * CARD_W, rows * CARD_H))
     if not quiet:
-        print("CARDS    %d textures -> %d bytes" % (len(faces), len(blob)))
-    return bytes(blob), len(faces)
-
-
-def cut_slot_tiles(scene):
-    """The fifteen empty-slot rectangles of one backdrop, at the card stride.
-
-    Cut out of the quantised scene rather than re-rendered, so a tile is byte
-    for byte what the streamed backdrop put on that part of the screen."""
-    blob = bytearray()
-    for row_y in (ROW_COM_Y, ROW_PLAYER_Y, ROW_HAND_Y):
-        for i in range(SLOTS):
-            x = SLOT_X0 + i * SLOT_PITCH
-            tile = bytearray()
-            for y in range(CARD_H):
-                start = (row_y + y) * WIDTH + x
-                tile += scene[start:start + CARD_W]
-            blob += tile + bytes(CARD_STRIDE - len(tile))
-    return bytes(blob)
+        print("CARDS    %d textures -> %d bytes (+ the mirrored set)"
+              % (len(faces), len(blob)))
+    return bytes(blob), bytes(mirror), len(faces)
 
 
 def build_text_blob(cards, story):
@@ -683,13 +645,15 @@ def main():
 
     cards = parse_cards()
 
+    # The board comes out of the game's own renderer before anything else, both
+    # because it is the expensive step and because its geometry is emitted into
+    # the same header every screen below shares.
+    board = views.bake(quiet)
+
     segment = FIRST_ASSET_SEGMENT
     entries = []
-    slot_blob = bytearray()
     for name, build in SCENES:
         data = grb.quantize(build(), (WIDTH, HEIGHT))
-        if name.startswith("BOARD_"):
-            slot_blob += cut_slot_tiles(data)
         binpath = os.path.join(ASSET_DIR, name.lower() + ".bin")
         with open(binpath, "wb") as f:
             f.write(data)
@@ -702,28 +666,43 @@ def main():
                   % (name, len(data), segment, segment + span - 1))
         segment += span
 
-    card_blob, card_count = build_card_blob(cards, quiet)
-    with open(os.path.join(ASSET_DIR, "cards.bin"), "wb") as f:
-        f.write(card_blob)
-    card_segment = segment
-    segment += (len(card_blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES
+    def place(name, blob):
+        """Write a blob out and take the whole segments it needs.
 
-    with open(os.path.join(ASSET_DIR, "slots.bin"), "wb") as f:
-        f.write(slot_blob)
-    slot_segment = segment
-    segment += (len(slot_blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES
-    if not quiet:
-        print("SLOTS    %d tiles -> %d bytes, segments %d..%d"
-              % (len(slot_blob) // CARD_STRIDE, len(slot_blob), slot_segment,
-                 segment - 1))
+        Every asset is segment-aligned: the streamer maps a segment and pushes
+        it at the VDP, so an asset that started mid-segment would have to be
+        addressed as a bank plus an offset on every single access."""
+        nonlocal segment
+        with open(os.path.join(ASSET_DIR, name + ".bin"), "wb") as f:
+            f.write(blob)
+        first = segment
+        segment += (len(blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES
+        extra.append((name.upper(), first, name))
+        if not quiet:
+            print("%-13s %d bytes, segments %d..%d"
+                  % (name.upper(), len(blob), first, segment - 1))
+        return first
+
+    extra = []
+
+    card_blob, card_mirror, card_count = build_card_blob(cards, quiet)
+    card_segment = place("cards", card_blob)
+    card_mirror_segment = place("cards_mirror", card_mirror)
+
+    # ── The captured board (§4.3, §4.6, §8.4) ────────────────────────────────
+    view_segment = place("board_views", b"".join(board["views"]))
+    slot_segment = place("board_slots", board["slots"])
+    span_segment = place("card_spans", board["spans"])
+    move_segments = [place("board_move_" + name.lower(), blob)
+                     for name, _poses, blob in board["moves"]]
+
+    portrait_blob = build_portrait_blob(quiet)
+    portrait_segment = place("portraits", portrait_blob)
 
     story = parse_story()
     text_blob, name_count, text_off, dialogue_counts, intro_n, ending_n = \
         build_text_blob(cards, story)
-    with open(os.path.join(ASSET_DIR, "text.bin"), "wb") as f:
-        f.write(text_blob)
-    text_segment = segment
-    segment += (len(text_blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES
+    text_segment = place("text", text_blob)
 
     # The packer works from this manifest rather than by scraping the header:
     # "where does each blob go" is data, and re-deriving it from C macros with a
@@ -732,9 +711,8 @@ def main():
         f.write("# name  first-segment  file   (written by gen_msx_scenes.py)\n")
         for name, seg, _span in entries:
             f.write("%s %d %s.bin\n" % (name, seg, name.lower()))
-        f.write("CARDS %d cards.bin\n" % card_segment)
-        f.write("SLOTS %d slots.bin\n" % slot_segment)
-        f.write("TEXT %d text.bin\n" % text_segment)
+        for name, seg, base in extra:
+            f.write("%s %d %s.bin\n" % (name, seg, base))
 
     with open(HEADER, "w") as f:
         f.write("// Generated by tools/msx2/gen_msx_scenes.py -- do not edit.\n")
@@ -748,53 +726,54 @@ def main():
                 % ((WIDTH * HEIGHT + SEGMENT_BYTES - 1) // SEGMENT_BYTES))
         for name, seg, _span in entries:
             f.write("#define MSX2_SCENE_%-14s %d\n" % (name + "_SEGMENT", seg))
-        f.write("\n// The four duel backdrops, in story-stage order.\n")
-        f.write("#define MSX2_BOARD_SEGMENT(stage)  "
-                "(MSX2_SCENE_BOARD_DESERT_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)\n")
-        f.write("#define MSX2_BOARD_STAGES       4\n\n")
 
         f.write("// ── Card textures ───────────────────────────────────────────────────────\n")
         f.write("#define MSX2_CARD_ART_SEGMENT   %d\n" % card_segment)
+        f.write("// The same textures mirrored left to right, for the COM row (§8.4).\n")
+        f.write("#define MSX2_CARD_MIRROR_SEGMENT %d\n" % card_mirror_segment)
         f.write("#define MSX2_CARD_ART_STRIDE    %d\n" % CARD_STRIDE)
         f.write("#define MSX2_CARD_ART_PER_SEG   %d\n" % (SEGMENT_BYTES // CARD_STRIDE))
         f.write("#define MSX2_CARD_ART_COUNT     %d\n" % card_count)
         f.write("#define MSX2_CARD_BACK_INDEX    %d\n" % (card_count - 1))
-        f.write("#define MSX2_CARD_W             %d\n" % CARD_W)
-        f.write("#define MSX2_CARD_H             %d\n\n" % CARD_H)
+        f.write("// MSX2_CARD_W / MSX2_CARD_H come from the board section below:\n")
+        f.write("// the texture size and the quads it is mapped into are one decision.\n")
 
-        f.write("// ── Board geometry, shared with the baked backdrop ──────────────────────\n")
-        f.write("#define MSX2_SLOTS              %d\n" % SLOTS)
-        f.write("#define MSX2_SLOT_X0            %d\n" % SLOT_X0)
-        f.write("#define MSX2_SLOT_PITCH         %d\n" % SLOT_PITCH)
-        f.write("#define MSX2_ROW_COM_Y          %d\n" % ROW_COM_Y)
-        f.write("#define MSX2_ROW_PLAYER_Y       %d\n" % ROW_PLAYER_Y)
-        f.write("#define MSX2_ROW_HAND_Y         %d\n" % ROW_HAND_Y)
-        f.write("#define MSX2_HUD_H              %d\n" % HUD_H)
-        f.write("#define MSX2_INFO_Y             %d\n" % INFO_Y)
-        f.write("#define MSX2_SLOT_RING          %d\n" % RING)
-        f.write("// The exact GRB332 bytes the backdrop was baked with, so a fill\n")
-        f.write("// erases back to the picture instead of to something close to it.\n")
-        f.write("#define MSX2_RING_COLOR         0x%02X\n" % grb.pack(*RING_RGB))
-        f.write("#define MSX2_PANEL_COLOR        0x%02X\n\n" % grb.pack(*PANEL_RGB))
-
-        f.write("// ── Empty-slot tiles ───────────────────────────────────────────────────\n")
-        f.write("// One 40x48 cut-out of each backdrop at each of the fifteen slots, in the\n")
-        f.write("// backdrop's own quantised bytes.  Clearing a destroyed monster blits the\n")
-        f.write("// tile for (stage, slot); that is the only way to put a textured board\n")
-        f.write("// back exactly without re-streaming the whole picture.\n")
-        f.write("#define MSX2_SLOT_ART_SEGMENT   %d\n" % slot_segment)
-        f.write("#define MSX2_SLOT_ART_STRIDE    %d\n" % CARD_STRIDE)
-        f.write("#define MSX2_SLOT_ART_PER_SEG   %d\n" % (SEGMENT_BYTES // CARD_STRIDE))
-        f.write("#define MSX2_SLOT_ART_PER_STAGE %d\n\n" % (3 * SLOTS))
+        f.write("\n".join(views.header_lines(board, view_segment, slot_segment,
+                                              move_segments, span_segment)))
+        f.write("\n")
 
         f.write("// ── Story screens ──────────────────────────────────────────────────────\n")
         f.write("#define MSX2_MAP_SEGMENT(stage)   "
                 "(MSX2_SCENE_MAP_0_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)\n")
-        f.write("// speaker: 0 = Serena, 1 = the opponent.\n")
-        f.write("#define MSX2_TALK_SEGMENT(duel, speaker)  "
-                "(MSX2_SCENE_TALK_0_SERENA_SEGMENT +\\\n"
-                "     ((duel) * 2 + (speaker)) * MSX2_SCENE_SEG_SPAN)\n")
+        f.write("// §14.2: the dialogue scene is composited at runtime.  The backdrop is\n")
+        f.write("// the shipped painting with the text box baked in, one per stage, and it\n")
+        f.write("// is streamed ONCE per scene; the two busts are blitted over it from the\n")
+        f.write("// skip lists below and a speaker change touches nothing else.\n")
+        f.write("#define MSX2_TALK_SEGMENT(stage)  "
+                "(MSX2_SCENE_TALK_0_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)\n")
         f.write("#define MSX2_STORY_DUELS        %d\n" % STORY_DUELS)
+        f.write("static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =\n")
+        f.write("\t{ %s };\n" % ", ".join(str(v) for v in STAGE_FOR_DUEL))
+        f.write("\n// ── Story busts (§14.2) ────────────────────────────────────────────────\n")
+        f.write("// Character 0 is Serena and 1..5 are the opponents; each is baked twice,\n")
+        f.write("// lit and dimmed, from the SAME alpha mask -- so the two variants cover\n")
+        f.write("// byte for byte the same pixels and swapping which speaker is lit is a\n")
+        f.write("// pure overwrite with no background repair at all.\n")
+        f.write("#define MSX2_PORTRAIT_SEGMENT   %d\n" % portrait_segment)
+        f.write("#define MSX2_PORTRAIT_SEGS      %d\n" % (PORTRAIT_STRIDE // SEGMENT_BYTES))
+        f.write("#define MSX2_PORTRAIT_CHARS     %d\n" % PORTRAIT_CHARS)
+        f.write("#define MSX2_PORTRAIT_W         %d\n" % PORTRAIT_W)
+        f.write("#define MSX2_PORTRAIT_H         %d\n" % PORTRAIT_H)
+        f.write("#define MSX2_PORTRAIT_LEFT_X    %d\n" % PORTRAIT_LEFT_X)
+        f.write("#define MSX2_PORTRAIT_LEFT_Y    %d\n" % PORTRAIT_LEFT_Y)
+        f.write("#define MSX2_PORTRAIT_RIGHT_X   %d\n" % PORTRAIT_RIGHT_X)
+        f.write("#define MSX2_PORTRAIT_RIGHT_Y   %d\n" % PORTRAIT_RIGHT_Y)
+        f.write("#define MSX2_PORTRAIT_MAX_RUNS  %d\n" % PORTRAIT_MAX_RUNS)
+        f.write("#define MSX2_PORTRAIT_ROW_STRIDE %d\n" % PORTRAIT_ROW_STRIDE)
+        f.write("#define MSX2_PORTRAIT_INDEX_BYTES %d\n" % PORTRAIT_INDEX_BYTES)
+        f.write("// (character, lit) -> the segment its skip list starts in.\n")
+        f.write("#define MSX2_PORTRAIT_SEG(chr, lit)  (MSX2_PORTRAIT_SEGMENT +\\\n")
+        f.write("     (((chr) * 2 + ((lit) ? 0 : 1)) * MSX2_PORTRAIT_SEGS))\n")
         f.write("#define MSX2_TALK_BOX_Y         %d\n" % TALK_BOX_Y)
         f.write("#define MSX2_TALK_NAME_Y        %d\n" % TALK_NAME_Y)
         f.write("#define MSX2_TALK_LINE0_Y       %d\n" % TALK_LINE_Y[0])
@@ -806,9 +785,8 @@ def main():
         f.write("#define MSX2_TALK_COLS          %d\n" % ((WIDTH - 2 * TALK_TEXT_X) // 6))
         f.write("#define MSX2_TALK_NAME_X        %d\n" % TALK_NAME_X)
         # The baked panels are flat colours run through the ditherer, so they
-        # are not flat bytes -- anything drawn over them is drawn over a fill in
-        # the quantised colour, which is what these two are for.
-        f.write("#define MSX2_PANEL_COLOR        0x%02X\n" % grb.pack(*PANEL_RGB))
+        # are not flat bytes on screen -- anything written over one is written
+        # over a fill in the quantised colour first, which is what this is for.
         f.write("#define MSX2_PLATE_COLOR        0x%02X\n" % grb.pack(*TALK_PLATE_RGB))
         f.write("#define MSX2_MAP_PANEL_X        %d\n" % MAP_PANEL_X)
         f.write("#define MSX2_MAP_PANEL_Y        %d\n" % MAP_PANEL_Y)

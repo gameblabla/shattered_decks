@@ -10,10 +10,10 @@ and measurements each decision rests on.
 
 ---
 
-## 0. Two corrections to the brief, stated up front
+## 0. Corrections to the brief, and the owner's directive on presentation
 
-Both change the design, so they are settled here rather than discovered in month
-three. Neither blocks the plan; the plan below already accounts for them.
+All three change the design, so they are settled here rather than discovered
+in month three. None blocks the plan; the plan below accounts for all of them.
 
 **0.1 — "512x212 at screen mode 8" does not exist.** On the V9938 the two are
 different modes:
@@ -47,6 +47,46 @@ pre-rendered dimmed copies in ROM (ROM is what we have), dithered wipes via the
 VDP `HMMV`/`LMMV` fill commands, or a hard cut behind a 2-frame white/black
 flash. This is a genuine loss of polish relative to the PC-FX and PC builds and
 should be budgeted for in art, not fought in code.
+
+**0.3 — Owner's directive: the 3D board and the visual-novel dialogue are not
+optional.** This supersedes the earlier draft of §4.5 and the whole of the
+earlier §14.2. Two decisions were taken by the owner after seeing the first
+playable build, and they are binding on the rest of this document:
+
+1. **The duel is played on the same 3D board field the other five targets
+   render** — the same arena, the same perspective, the same slot layout. It is
+   *pre-rendered*, not rasterised live (§1 still holds; the Z80 cannot render a
+   frame), but the pre-rendering source must be **the game's own renderer**, not
+   a lookalike drawn offline in PIL. Concretely: the views are captured out of
+   `waifu_fm_headless` exactly as `tools/fmtowns/gen_turn_board_cache.py`
+   already captures FM TOWNS board poses, and the cards are drawn into their
+   true projected quads by the scoped rasterizer of §8 — which is therefore a
+   **required** component, not a stretch goal.
+2. **The camera moves.** The hand→top lift, the board's opening sweep and the
+   battle camera changes are *animations*, pre-rendered offline as
+   **strips of whole baked images in the cartridge**, streamed one after the
+   other by the ordinary §6.2 path — no codec, no reconstruction (§4.6).
+   Cuts-behind-a-flash, the earlier design, are demoted to a fallback for beats
+   that measurement proves cannot afford a move. What this costs is frame rate:
+   baked playback runs at a few frames a second (§4.6.2), so a camera move is a
+   held cinematic push, and the art has to be authored for that.
+3. **Story dialogue is a Japanese-style MSX2 visual novel scene, composited at
+   runtime.** The backdrop is one of the shipped paintings in
+   `assets/source/bg/` (256x240, already the right width — centred to 256x212),
+   *not* a floor synthesised by the generator. Serena and the opponent stand
+   **side by side, both on screen at once**, in the same left/right arrangement
+   the PC-FX and FM TOWNS builds use, and they are **software-blitted over the
+   backdrop at runtime** through the skip-list path of §1.2. The
+   bake-one-flat-composite-per-speaker design is withdrawn; §14.2 is rewritten
+   around the composited scene and the arithmetic that makes it affordable.
+
+One thing these directives cannot buy back is a true palette fade: GRAPHIC 7
+has no palette at all (§0.2), so "fade in/out" on this target means a baked
+brightness ladder or a dithered wipe, both costed in §7.4 and §4.6. The only
+route to a real palette fade is the optional MSX2+ path (§17.4).
+
+§21 records, item by item, where the build currently in the tree diverges from
+these directives and what has to change.
 
 ---
 
@@ -112,8 +152,8 @@ all three:
 
 A 96x160 portrait at ~70 % coverage is roughly 10,700 opaque pixels ≈ 4-5 frames
 of budget. That is entirely affordable for a one-shot. So software blitting of
-portraits and cards is **available and used**; where §14.2 nonetheless bakes the
-full-screen dialogue art, the reason is cost per beat, not capability.
+portraits and cards is **available and used** — it is how the two story portraits
+reach the screen (§14.2) and how every card lands on the board (§8).
 
 ---
 
@@ -264,13 +304,15 @@ New tooling under `tools/msx2/`:
 
 | Tool | Output |
 |---|---|
-| `gen_msx_views.py` | Renders each authored duel camera pose (empty board, no cards) at 256x212, quantises to GRB332, emits a raw ROM bitmap. |
+| `gen_msx_views.py` | **Captures** each authored duel camera pose from `waifu_fm_headless` (empty board, no cards), crops 256x212, quantises to GRB332, emits a raw ROM bitmap. It draws nothing itself (§4.3). |
+| `gen_msx_moves.py` | Captures the camera moves between those views as strips of whole baked images, raw and uncompressed (§4.6). |
+| `gen_msx_fade.py` | Brightness ladders for the board fade in/out, from the same captures (§4.6.4). |
 | `gen_msx_cards.py` | Renders each card's single master texture (x3 shading variants), its big preview art and its deck-editor icon; quantises; emits raw tiles (§4.4). |
 | `gen_msx_quads.py` | Per (view, slot): the projected destination quad, its cache bounding box, and the **baked span program** the rasterizer executes (§8.4). Reuses the projection that already produces `fmtowns_turn_card_geometry.h`. |
 | `gen_msx_paths.py` | Card-flight keyframe quads per (hand slot → field slot) path, plus their baked poses (§8.4, §8.6). |
 | `gen_msx_scenes.py` | Full-screen 2D scenes: title, ending, 5 duel-intro backdrops, sanctum map, plaza, deck-editor frame. |
 | `gen_msx_cels.py` | Localised animation cels (attack, card flip, fusion burst, thunder) as fixed-size sprite strips. |
-| `gen_msx_dialogue.py` | **Flattened** dialogue scenes: backdrop + character + empty text box baked into one 256x212 image per (scene, speaker, expression). See §14.2 — no runtime portrait compositing exists on this target. |
+| `gen_msx_dialogue.py` | The visual-novel scene, in **three separate pieces** (§14.2): the `assets/source/bg/` painting centred to 256x212, the two portrait busts as skip-list transparent blits in lit and dimmed variants, and the text-box frame. Composited at runtime, not flattened. |
 | `gen_msx2p.py` | Optional MSX2+ variants of the named enhanced images: SCREEN 10 (YJK+YAE) or SCREEN 12 (YJK) encodings of the same sources. See §17. |
 | `gen_msx_text.py` | Dialogue and UI strings, tokenised and word-wrapped offline to the 32-column layout. |
 | `gen_msx_rom.py` | Packs everything into 16 KB segments, emits the segment table and `msx2_asset_index.h`. |
@@ -303,13 +345,39 @@ Pipeline per source image:
 Deliverable: `tools/msx2/grb332.py` with a `--preview` mode that writes
 side-by-side PNGs, so art can be reviewed before a 16 MB ROM is built.
 
-### 4.3 Duel presentation: fixed views, not free cameras
+### 4.3 Duel presentation: the real board, captured from the real renderer
 
-The current duel uses continuously interpolated cameras (`lerp_camera`,
-`interactive_turn_camera`, `turn_camera`). Continuous camera motion requires
-full-screen redraws at animation rates — impossible (§1).
+The duel is played on the game's own 3D arena (§0.3). Nothing about that arena
+is re-imagined for this target: the floor, the plinths, the arena walls, the
+backdrop and the slot layout are whatever `waifu_fm_step()` draws for the other
+five targets, captured pose by pose and quantised.
 
-**Design: a small set of fixed views, with cuts (not moves) between them.**
+**Capture, not imitation.** `gen_msx_views.py` does not draw anything. It runs
+the headless build at a fixed camera pose with an empty board and reads the
+framebuffer back, the same way `tools/fmtowns/gen_turn_board_cache.py` reads the
+FM TOWNS turn poses today:
+
+```
+./waifu_fm_headless --frames 1 --commands scripts/msx2_view_<name>.txt \
+                    --out out_frames --dump-every 1
+```
+
+The capture is 256x240 indexed; the MSX2 window is 256x212, so the generator
+crops the same 212 rows the target will show (top-aligned to the HUD) and
+quantises through `grb332.py` (§4.2). A view whose art disagrees with the other
+targets is a *capture bug*, not a styling choice — that is the point of taking
+this route, and it is the acceptance test for M5.
+
+> **Do not synthesise the board offline.** The first playable build drew the
+> arena in PIL (`duel_board()` / `perspective_floor()` in
+> `tools/msx2/gen_msx_scenes.py`): a sky band, a warped stone tile and fifteen
+> axis-aligned 40x48 recesses. It ships a picture of a board rather than the
+> board, the cards sit in a grid rather than in perspective, and no capture can
+> ever reconcile it with the other targets. §21.1.
+
+**The resting views.** Continuous free camera motion is still impossible (§1),
+so the duel rests in a small set of authored poses and *animates between them*
+(§4.6) rather than interpolating a camera live.
 
 | View | Source camera in `main.c` | Purpose |
 |---|---|---|
@@ -328,9 +396,12 @@ Ten to twelve views. Each is one 54,272-byte ROM bitmap of the **empty board**
 For each view, `gen_msx_views.py` also emits, per board slot and per hand slot,
 the **destination quad** the card occupies — the four projected corners, derived
 exactly as `gen_turn_card_geometry.py` already derives them for the FM TOWNS
-target. These are true perspective quads, not bounding boxes: the cards are drawn
-into them by the scoped rasterizer of §8, so no approximation is made and the
-views can be chosen for composition rather than to hide one.
+target, from the same `GEOM pose slot x0 y0 ... y3` probe lines. These are true
+perspective quads, not bounding boxes: the cards are drawn into them by the
+scoped rasterizer of §8, so no approximation is made and the views can be chosen
+for composition rather than to hide one. **§8 is consequently on the critical
+path** — a board captured in perspective cannot be populated with axis-aligned
+blits.
 
 This yields a compact runtime contract:
 
@@ -347,6 +418,7 @@ typedef struct MsxView {
     u16 seg; u16 off;      /* ROM location of the 54,272-byte base image */
     MsxSlotQuad field[10]; /* 2 rows x 5 board slots, back-to-front order */
     MsxSlotQuad hand[5];
+    u16 anim_to[MSX2_VIEWS];  /* pose-sequence id reaching each other view, §4.6 */
 } MsxView;
 ```
 
@@ -374,14 +446,158 @@ Only the board and hand cards go through §8.
 
 ### 4.5 What replaces camera motion
 
+Not a cut. A **baked pose sequence** (§4.6). Cuts survive only where §4.6's
+arithmetic says a move does not fit, and each such place is named here.
+
 | Current effect | MSX2 realisation |
 |---|---|
-| Smooth hand→top camera lift (`IB_PLAYER_HAND_TO_TOP`) | Hard cut behind a 2-frame VDP `HMMV` white flash, or a 6-step vertical box wipe (§7.4) revealing the pre-staged view in the hidden page. |
+| Smooth hand→top camera lift (`IB_PLAYER_HAND_TO_TOP`) | **6 whole baked images streamed in sequence** over the board window, ~2.0 s, on the visible page; the last image *is* the destination view (§4.6). |
+| Board opening sweep at duel start | **8 baked full-screen images** out of the same capture run, preceded by a 3-step brightness ramp up from black (§4.6.4). |
+| Battle camera changes (`battle_top`, `side_battle_camera(row)`) | Baked strips between the resting views, same machinery; 4–5 images, and the per-row side views are cropped to a band so they play at ~5 fps (§4.6.2). |
 | COM cursor walking the row (`IB_COM_TARGET`) | Hardware sprite cursor moving over the static `V_TOP` view. Free. |
 | Card flying from hand to field | 12 baked pose quads per path, drawn by the §8 rasterizer (Tier A span programs, ~102 KB for all 50 paths) over a static background with per-frame rect repair (§7.5). Tier B covers any pose that was not enumerated. |
 | Direct-attack impact burst | 10-frame 64x48 cel over the impact point. 3,072 B/frame — comfortably inside the 2,300 B/frame budget at 15 Hz. |
 | Fusion / thunder / equip animations | Same cel technique, authored per effect. |
 | Battle "burn wipe" consuming a card | Pre-rendered 8-frame generic cel (not per-card), software blitted over the card's cache rect. |
+| Fade to/from black on a duel entry or exit | Three baked brightness steps, streamed like any other image (§4.6.4). There is no palette to fade (§0.2). |
+
+---
+
+### 4.6 Baked camera moves: a sequence of whole images in ROM
+
+This section exists because of §0.3.2. It is the one place in this port where
+something genuinely animates across the board, so its arithmetic is set out in
+full. **Every number here is an estimate until M1 measures it**, and M1's table
+is what the implementation is built against.
+
+#### 4.6.1 What a camera move is, exactly
+
+A **strip of finished pictures in the cartridge, played back in order**. Frame N
+of the hand→top lift is a complete, already-quantised GRB332 image of what the
+screen should show at that instant. Playback is the streamer of §6.2 and nothing
+else: `ROM bank window → OUTI → VDP data port`, one image after the next, no RAM
+buffer, no decode step, no reconstruction of any kind.
+
+This is §5.4's rule ("store every VRAM-bound asset raw and uncompressed") applied
+to animation, and it is the whole technique. There is no delta codec, no
+half-resolution reconstruction, no line-doubling trick, no XOR walker. Those
+were an earlier draft of this section and are withdrawn: they trade the one thing
+this cartridge has in abundance — ROM — for CPU time, which is the trade this
+port exists to make in the *opposite* direction.
+
+The capture is the same one §4.3 uses. `gen_msx_moves.py` drives
+`waifu_fm_headless` along an authored camera path, takes one framebuffer per
+pose, crops, quantises (§4.2), and writes the frames end to end into ROM
+segments. The runtime plays a sequence by its index.
+
+#### 4.6.2 The frame rate this buys, which is the whole design question
+
+The cost of one animation frame is its byte count times the per-byte streaming
+cost, and the per-byte cost depends on whether the display is on:
+
+| | |
+|---|---|
+| Display blanked, tight `OUTI` (§6.1) | 18 T/byte |
+| **Active display, GRAPHIC 7** (§6.1) | **~29 T/byte** |
+| Z80 T-states per 60 Hz frame | 59,720 |
+
+An animation must be *visible*, so it streams with the display on and pays 29 T.
+Nothing else in the frame competes — a camera move is non-interactive, so the
+whole CPU is the streamer's. That gives, per animation frame:
+
+| Baked image | Bytes | Video frames | Playback rate |
+|---|---|---|---|
+| Whole screen, 256 x 212 | 54,272 | 26.4 | **2.3 fps** |
+| Board window, 256 x 160 | 40,960 | 19.9 | **3.0 fps** |
+| Board band, 256 x 96 | 24,576 | 11.9 | **5.0 fps** |
+| Centre panel, 160 x 96 | 15,360 | 7.5 | **8.0 fps** |
+
+**This is the fact the whole section turns on: baked-image playback runs at a few
+frames a second, and the only lever is how big the baked image is.** It is not a
+lever that more ROM, a faster mapper or better code can move — 29 T-states per
+byte against 59,720 T-states per frame is the machine.
+
+So a camera move here is not a smooth lift. It is a **short cinematic push of a
+handful of held poses** — closer to a manga panel sequence or a cut-in than to
+the FM TOWNS turn animation. Authored as such it reads as deliberate; authored
+as an attempt at 30 fps it reads as a slideshow. The art direction has to know
+this before a single pose is captured.
+
+Recommended shape, to be confirmed at M1:
+
+| Move | Region | Poses | Duration |
+|---|---|---|---|
+| hand → top lift (reversed for top → hand) | board window | 6 | ~2.0 s |
+| top ↔ battle-top, per side | board window | 5 | ~1.7 s |
+| top ↔ side view, per row | board band | 4 | ~0.8 s |
+| Duel opening sweep | whole screen | 8 | ~3.5 s |
+
+If a move must be faster than its row above, the answer is a **smaller baked
+image**, not a cleverer runtime: crop the sequence to the region that actually
+changes and leave the rest of the screen alone. That stays entirely within the
+directive — it is still whole baked pictures streamed from ROM, just smaller
+ones.
+
+#### 4.6.3 Where the frames are streamed to
+
+Straight onto the **visible page**, top to bottom, single-buffered.
+
+Page-flipping each pose would halve nothing (the stream cost is the same) and
+would double the ROM (each page needs its own settled state), so the flip is
+kept for the two ends of a move: the sequence is entered from a completed page,
+and the last pose *is* the destination view, so the move ends already showing
+what the duel resumes on. No separate settle stream.
+
+At ~20 video frames per pose the write front crawls down the screen slowly
+enough to be seen. That is a real artefact and there are two honest answers,
+both to be decided by eye at M5b: let it read as a wipe (it is top-to-bottom and
+regular, and at these durations it looks like a deliberate transition), or hold
+each pose long enough that the crawl is over well before the eye settles.
+
+`page_valid` (§7.5) needs a third state, *mid-sequence*, in which the visible
+page is known-divergent and no repair may be journaled against it.
+
+#### 4.6.4 Fades, given that there is no palette
+
+`waifu_fm_video_fade_q8()` has no equivalent here (§0.2). A fade is the same
+technique as a move: **baked brightness steps, streamed as whole images.**
+
+- Three steps between full brightness and black, captured from the same run and
+  dimmed offline. At the board window that is 3 x 40,960 = 122,880 B per view
+  that fades, ~20 video frames per step, **~1.0 s for the full ramp**. A duel
+  opens on the ramp up and closes on the ramp down.
+- A cheaper fade, where a second is too long: §7.4's dithered `HMMV` wipe costs
+  the command engine and no CPU at all. Use it for scene changes; use the baked
+  ramp where the picture itself has to dim.
+- **MSX2+ only:** SCREEN 10/12 restores a palette and with it a true, free fade
+  (§17.4). The ROM is one ROM; the 2+ simply takes the better path.
+
+#### 4.6.5 ROM cost
+
+Raw, uncompressed, which is the point:
+
+| Sequence | Poses | Region | Bytes |
+|---|---|---|---|
+| hand → top (reversible, covers top → hand) | 6 | board window | 246 KB |
+| top ↔ battle-top, both sides | 5 x 2 | board window | 410 KB |
+| top ↔ side view, 4 rows | 4 x 4 | board band | 393 KB |
+| Duel opening sweep | 8 | whole screen | 434 KB |
+| Brightness ladders, 4 fading views | 3 x 4 | board window | 492 KB |
+| **Total** | | | **~1.9 MB** |
+
+Under two megabytes of a sixteen-megabyte cartridge for the entire camera
+identity of the game, and every byte of it goes to the VDP exactly as it sits in
+ROM. This is the trade the cartridge exists to make.
+
+#### 4.6.6 Tooling
+
+| Tool | Output |
+|---|---|
+| `gen_msx_moves.py` | Drives `waifu_fm_headless` along an authored camera path, captures N poses, crops each to the sequence's region, quantises (§4.2), and writes the frames end to end as raw ROM images plus a sequence-table entry (region rect, frame count, first segment). |
+| `gen_msx_fade.py` | The brightness ladders, dimmed offline from the same captures and emitted the same way. |
+
+Both are additions to the §4.1 table. Neither emits a codec, and the runtime has
+no decoder to go with them.
 
 ---
 
@@ -436,21 +652,21 @@ ones. Track resident size in CI from the map file and fail the build over 30 KB.
 | Resident code (segments 0, 2) | 32 KB | hard limit |
 | Banked code | 96 KB | scene presentation, deck editor, ending |
 | Duel view bases (12 x 54,272) | 636 KB | §4.3 |
-| Dimmed view variants (4 views x 3 steps) | 636 KB | for fades, §7.4 |
+| **Baked camera-move image strips (incl. brightness ladders)** | **~1,900 KB** | **§4.6 — hand→top, battle cameras, opening sweep, fades; raw whole images** |
 | Card master textures x 3 shading variants (78 cards) | 720 KB | §4.4, §8.7 — replaces the old size ladder and the pre-skewed variants |
 | Card big preview art (96x96) | 719 KB | §4.4, software blitted |
 | Card backs, deck-editor icons | 80 KB | |
 | Baked span programs (views + card-flight paths) | 133 KB | §8.4 |
 | Full-screen 2D scenes (~24) | 1,272 KB | title, ending, 5 intros, map, plaza, editor, results, loss |
-| **Pre-composited dialogue scenes (~50)** | **2,650 KB** | **§14.2 — backdrop+character+box baked flat; replaces any runtime portrait set** |
+| **Dialogue backdrops (4) + portrait busts (6 x lit/dim, skip-list)** | **410 KB** | **§14.2 — composited at runtime; replaces the withdrawn 2.65 MB composite set** |
 | Animation cels (attack, flip, fusion, thunder, burn, UI) | 2,400 KB | the big discretionary pool |
 | PSG music (Arkos AKM, ~10 tracks) | 150 KB | |
 | MSX-Audio FM banks + optional ADPCM | 1,200 KB | optional hardware, §12.3 |
 | MSX2+ enhanced image variants (~24) | 1,272 KB | optional, §17 — additive, never replaces the MSX2 set |
 | Text, dialogue, tables | 80 KB | 5 duels x ~30 lines + UI |
 | Font strips (8x8 + 8x16 outline) | 16 KB | |
-| **Subtotal** | **~11.9 MB** | |
-| **Slack** | **~4.1 MB** | more animation, more expressions, more views, more MSX2+ variants |
+| **Subtotal** | **~11.3 MB** | |
+| **Slack** | **~4.7 MB** | more animation, more expressions, more views, more MSX2+ variants |
 
 The slack is deliberate. The whole reason for a 16 MB cartridge is that **ROM is
 how this port buys back the frames the Z80 cannot render**, and the honest
@@ -669,7 +885,9 @@ concurrent), `LMMM` them on, then flip. The cut is stream-bound.
 
 ### 7.4 Fades and wipes without a palette
 
-Per §0.2, no hardware fades. Three tools:
+Per §0.2, no hardware fades. Three tools — plus, for the duel board, the baked
+brightness ladder of §4.6.4, which is simply three more images streamed the way
+everything else on this target is streamed:
 
 1. **Pre-rendered dim steps.** For the four views that actually fade (`V_TOP`,
    title, ending, results), store 3 progressively darkened GRB332 copies. 3 x
@@ -940,7 +1158,7 @@ New target defines: `WAIFU_FM_MSX2`, `WAIFU_PLATFORM_NO_FRAMEBUFFER`.
 | `waifu_platform_performance_tier` | 0 (baseline) |
 | `waifu_platform_glyph` | 0 — MSX uses its own VDP glyph path, not the core bitmap font |
 | `waifu_platform_text_overlay*` | Hardware: 1. Text panels are composed by the MSX compositor, and `_is_hardware()` returns 1, which already tells the shared code not to recompose the framebuffer behind them |
-| `waifu_platform_story_portrait` | 1 — always. Portraits are baked into the flattened dialogue composites (§14.2); the core must never attempt a portrait blit on this target |
+| `waifu_platform_story_portrait` | **Draws it.** The MSX2 skip-list blit (§1.2) for the requested portrait id at the requested rect, then returns 1 to tell the core its own framebuffer path is not wanted. Both portraits are on screen at once (§14.2) |
 | `WAIFU_PLATFORM_HW3D` block | not defined; the inert stubs compile away |
 
 `waifu_platform_text_overlay_is_hardware() == 1` is a good fit and worth calling
@@ -1135,67 +1353,85 @@ Attract mode: cycle 3 pre-rendered art frames at 4 s intervals via page flip
 (each 24 frames of background streaming — plenty of time inside 4 s). Menu rows
 are glyph runs from the font strip; the menu cursor is a sprite.
 
-### 14.2 Story dialogue — entirely 2D, fully pre-composited
+### 14.2 Story dialogue — a composited MSX2 visual novel
 
-**Decision: dialogue scenes are flat 2D images baked whole. No portrait is ever
-composited at runtime.** Streaming a backdrop and then laying a large portrait
-over it is the wasteful path and is dropped from the design.
+**Decision (§0.3.3): the dialogue scene is built at runtime from three pieces —
+a painted backdrop, two portrait busts side by side, and a text box.** The
+earlier design, which baked one flat 54,272-byte composite per (scene, speaker,
+expression), is withdrawn. It cost 2.65 MB, it could only ever show one
+character at a time, and it made the scene a picture of a conversation rather
+than a conversation.
 
-**To be precise about why** — the reason is cost per beat, not capability. A
-transparent portrait blit is entirely possible: §1.2's run-length skip-list path
-draws a 96x160 portrait at ~70 % coverage in about 4-5 frames of budget, and the
-same technique draws cards, cut-ins and effect cels everywhere else in this port.
-What makes it the wrong choice *here* is the arithmetic of a dialogue beat:
+This is the form the genre settled on: a still painting, both speakers standing
+on it facing each other, the inactive one dimmed, and a box of text along the
+bottom. Every Japanese MSX2 visual novel with 256 colours looks like this, and
+so do the PC-FX and FM TOWNS builds of this game.
 
-- Composited at runtime, a beat costs **two streams** — the backdrop (24 frames)
-  and then the portrait (4-5 frames) — plus a VRAM address re-set per transparent
-  run, for a picture that then sits perfectly still for ten seconds.
-- Baked, the same beat costs **one stream** and nothing else.
-- The hardware alternative is not available: `LMMM`, the transparent-capable
-  logical move, is VRAM→VRAM only, and the 18.4 KB offscreen budget (§3.2) is
-  already committed to the font strip and the card cache (§7.3) — there is
-  nowhere to park a portrait to copy *from*. The CPU→VRAM logical command `LMMC`
-  is slower than a plain `OUTI` stream.
-- And the composite is *never* partially reused: the backdrop is never shown
-  without a character, so the second stream buys no reuse at all.
+#### The backdrop
 
-So the runtime path costs roughly 30 frames per beat to produce exactly what one
-24-frame stream produces. That is the whole argument, and it is a ROM-versus-work
-trade — the trade this cartridge exists to make.
+`assets/source/bg/{desert,stone,ember,sky}.png` — the paintings the other
+targets already use, 256x240 and therefore **already the right width**. The
+generator centres them to the 212-row window (crop rows 14..225) and quantises
+through §4.2. No sky band, no synthesised floor, no PIL geometry: the shipped
+painting, whole.
 
-What we do instead: `gen_msx_dialogue.py` bakes, offline, one complete 256x212
-GRB332 image per **(scene, speaker, expression)** — backdrop, character, framing
-and an *empty* text box, all flattened into a single 54,272-byte asset. At
-runtime a dialogue beat is one stream and nothing else.
+Four backdrops at 54,272 bytes = **217 KB**, streamed **once per scene** — not
+once per beat, which is the whole saving. A speaker change touches only the two
+portrait rects.
 
-- **Text is the only live element.** The empty box is baked in; glyphs are
-  `HMMM` runs from the offscreen font strip at ~250 T-states each, so the
-  typewriter reveal is effectively free and the shared
-  `story-text-typewriter-and-ending` behaviour is preserved exactly. Clearing
-  the box between lines is one `HMMV` — command engine, no CPU.
-- **The typewriter hides the streaming.** A line takes 1–2 seconds to type
-  (60–120 frames); a composite streams in 24 budgeted frames. So while the
-  current line is still typing, the *next* speaker/expression composite is
-  already being streamed into the hidden page. On line advance we flip, and the
-  expression change is instantaneous on screen. This is the single most
-  valuable consequence of baking: it converts the expensive operation into one
-  that is completely hidden by a beat the player is already waiting through.
-- **No flip when nothing changed.** If the next line has the same speaker and
-  expression, do not flip: `HMMV` the box on the visible page and type into it.
-  Flips are reserved for actual composite changes, which keeps `page_valid`
-  (§7.5) simple — each page holds one composite, and only the box region ever
-  diverges.
-- Same treatment for the opening dream, the plaza beats, the reward beat and the
-  ending narration: all flat, all baked.
+#### The portraits
 
-Cost: ~50 composites (5 duels x [Serena + opponent] x 3 expressions, plus
-establishing shots and the non-duel beats) at 54,272 bytes = **~2.65 MB**, which
-replaces the 276 KB portrait set in §5.3. That is exactly the trade this
-cartridge exists to make — several megabytes of ROM to remove a runtime
-compositing problem the Z80 cannot afford. `WAIFU_STORY_PORTRAIT_COUNT`,
-`waifu_assets_story_portrait_pixels()` and `waifu_platform_story_portrait()` are
-consequently unused on this target; the seam returns 1 (§9) so the shared code
-never attempts a portrait blit.
+Serena on the left, the opponent on the right, in the same arrangement the
+shared code uses (`src/main.c`, `draw_story_dialogue`: Serena pinned to the left
+edge, the opponent to the right, both bottom-aligned into the box). The shared
+assets are `WAIFU_STORY_PORTRAIT_W` x `_H` = 124x200 on a 240-row screen; scaled
+to the 212-row window that is **124x176**, placed at x=2 and x=130, y=16 and
+y=22 — the same six-pixel stagger the other targets use so the two figures do
+not read as a mirrored pair.
+
+They are drawn with the **run-length skip-list blit of §1.2**, baked offline:
+`(skip n, copy n, ...)` per row, so transparent pixels cost one VRAM address
+re-set (~50 T) and opaque pixels cost an `OUTI` (~18-21 T). At 124x176 =
+21,824 pixels and roughly 60 % coverage, a portrait is ~13,000 opaque pixels
+≈ **3.9 frames** of budget. Both portraits together: ~8 frames, an eighth of a
+second, once per scene.
+
+**The speaker change is where this design earns itself.** Each portrait is baked
+twice — lit, and dimmed to about 45 % — from the *same alpha mask*, so the two
+variants cover byte-for-byte the same pixels. Swapping which character is lit is
+therefore a pure overwrite of both rects with no background repair at all: ~8
+frames, fully hidden behind the typewriter of the line that is already running.
+No stream, no flip, no page divergence.
+
+- **Text is live, exactly as before.** The box frame is baked; glyphs are `HMMM`
+  runs from the offscreen font strip at ~250 T-states each, so the typewriter
+  reveal is effectively free and the shared `story-text-typewriter-and-ending`
+  behaviour is preserved. Clearing the box between lines is one `HMMV`.
+- **Expressions**, if the writing wants them, are additional portrait variants
+  sharing the same mask and the same rect — ~16 KB each, not 54 KB, so they are
+  now affordable per-line rather than per-scene.
+- **Entrances.** The other targets slide the portraits in (`story_slide_x`).
+  Here they appear with the scene: a slide would mean repairing the backdrop
+  behind a moving 124-wide rect every frame, which is a full-screen stream's
+  worth of work spread over an entrance. Dropped; the scene fades up instead
+  (§7.4's dithered wipe).
+
+#### Cost, against the design it replaces
+
+| | Old (baked composites) | New (composited) |
+|---|---|---|
+| ROM | ~50 x 54,272 = **2.65 MB** | 217 KB backdrops + 6 characters x 2 variants x ~16 KB ≈ **410 KB** |
+| Scene entry | 24 frames | 24 frames (backdrop) + 8 (portraits) = 32 |
+| **Speaker change** | **24 frames + a flip** | **~8 frames, no flip** |
+| Characters on screen | 1 | **2** |
+
+`WAIFU_STORY_PORTRAIT_COUNT`, `waifu_assets_story_portrait_pixels()` and
+`waifu_platform_story_portrait()` are **used** on this target — the earlier
+instruction that the seam returns 1 so shared code never blits a portrait is
+reversed (§9).
+
+The sanctum map (§14.4) takes the same backdrop treatment: the shipped painting,
+centred, with the list panel over it.
 
 ### 14.3 Ending / credits
 Optional SCREEN 7 (512x212, 16 colours) for the credits crawl: at 16 colours a
@@ -1219,7 +1455,8 @@ is 7 frames of budgeted streaming per page turn — acceptable with a brief wipe
 Do not attempt a smoothly scrolling collection list.
 
 ### 14.6 Duel
-The core case, fully described in §4.3, §7.
+The core case: the captured 3D views of §4.3, populated by the rasterizer of §8,
+moved between by the pose sequences of §4.6, composited by §7.
 
 ### 14.7 Results / reward / loss
 Pre-rendered backdrops + `SZ_BIG` (96x96) reward card art + glyph text.
@@ -1251,8 +1488,9 @@ MSXgl-main/openmsx-headless-.../openmsx emu build/msx2/waifu.rom 300 \
 | **M2** | VRAM map + compositor skeleton: font strip in offscreen VRAM, glyph `HMMM`, sprite cursor, page flip with `page_valid` journaling, **and a transparent-`LMMM` probe in GRAPHIC 7** | Screenshot: text + moving sprite cursor over a streamed still, both pages consistent across 10 flips. **Transparent `LMMM` confirmed to skip source colour 0 in G7** — §8.5 depends on it and must not proceed on assumption |
 | **M2b** | **Rasterizer bring-up.** `msx2_raster.s` Tier A against one baked quad; `msx2_blit.s` opaque + skip-list paths | Screenshot: one card correctly warped into a board quad from its master texture, compared against the offline reference render; measured cost within the §8.4 band |
 | **M3** | Asset pipeline: `grb332.py`, `gen_msx_scenes.py`, `gen_msx_rom.py`, 16 MB packer, NEO segment table | Title screen streams from segment N and matches its `--preview` PNG within a stated ΔE |
-| **M4** | Title → menu → story-dialogue chain: baked 2D composites (§14.2), hidden-page prestream during the typewriter, PSG music, ayFX | 30 s MKV showing the full opening with music, and a speaker change with **no visible load** |
-| **M5** | Duel presentation: `gen_msx_views.py` + `gen_msx_quads.py`, view cuts, the warped-card VRAM cache, slot model, HUD. Tier B rasterizer if any authored pose is not enumerable | Screenshot of a fully populated board in `V_TOP` and `V_HAND_P` with all 15 cards correctly warped; view cut stream-bound (rasterisation fully hidden behind the base stream) |
+| **M4** | Title → menu → story-dialogue chain: the §14.2 visual-novel scene — `assets/source/bg/` backdrop centred, **both portraits blitted side by side**, lit/dim speaker swap, text box, PSG music, ayFX | 30 s MKV showing the full opening with music; **both characters visible in every beat**; a speaker change costs no stream and shows **no visible load** |
+| **M5** | Duel presentation: `gen_msx_views.py` + `gen_msx_quads.py` **capturing the real renderer** (§4.3), the warped-card VRAM cache, slot model, HUD. Tier B rasterizer if any authored pose is not enumerable | Screenshot of a fully populated board in `V_TOP` and `V_HAND_P` with all 15 cards correctly warped, **diffed against the headless reference render of the same pose** — a board that does not match the other targets fails this milestone |
+| **M5b** | **Camera moves** (§4.6): `gen_msx_moves.py`, the sequence player (nothing but the §6.2 streamer walking a strip of images), the mid-sequence `page_valid` state, the §4.6.4 brightness ladder | MKV of the hand→top lift and the duel-opening sweep with its fade-up. **The acceptance judgement is by eye, on the write-front crawl** (§4.6.3): if a move reads as a slideshow rather than a push, the region is cropped smaller until it does not |
 | **M6** | Full duel loop: rules + AI coroutine + all phases + cel animations for place/attack/destroy | Scripted run completes duel 1 with correct LP and outcome, matching a headless reference run |
 | **M7** | Story mode end-to-end: 5 duels, deck editor, rewards, password save/load, ending | Full playthrough MKV; password round-trips |
 | **M8** | Stretch: MSX-Audio FM/ADPCM detection, PCM stings, SCREEN 7 credits, attract mode | Runs identically with and without a Y8950 |
@@ -1464,7 +1702,10 @@ oversight.
 | **12 KB RAM ceiling** | Same | Budget table maintained in `STATUS.md`; Phase-2 page-0 RAM as contingency (§3.3) |
 | **Bank/ISR race** (§5.5) | Silent, rare corruption; the classic MegaROM bug | Save/restore rule + `MSX2_DEBUG_BANK` magic-value assertion |
 | **Page-flip staleness** | Flicker, half-drawn boards | `page_valid` journaling (§7.5); test explicitly in M2 |
-| **No palette → fades look bad** | Perceived polish regression | Decided up front (§0.2, §7.4); art direction leans on dithered wipes and cuts |
+| **No palette → fades look bad** | Perceived polish regression | Decided up front (§0.2, §7.4); the duel's own fade is the §4.6.4 baked brightness ladder, elsewhere dithered wipes; a true fade exists only on MSX2+ (§17.4) |
+| **Baked playback is ~2-3 fps at full board size** (§4.6.2) | A camera move reads as a slideshow rather than a move — this is arithmetic, not a bug, and it is the single biggest presentation risk in the port | Authored as a held cinematic push from the start, not as a smooth lift. The only lever is a smaller baked image: crop each sequence to the region that changes. M1 fixes the active-display T/byte figure the whole table rests on; the pose counts in §4.6.2 are re-derived from it before any capture pass |
+| **Active-display `OUTI` spacing in GRAPHIC 7 is worse than ~29 T/byte** | Every number in §4.6.2 stretches proportionally; a 6-pose move goes from 2 s to 3 s | Measured at M1 (§6.1) before content work. If it is materially worse, moves lose poses rather than gaining a codec |
+| **Headless capture and the MSX2 view disagree** (crop, aspect, slot highlight) | The board looks subtly unlike every other target — the exact failure §0.3 exists to prevent | The M5 acceptance test is a diff against the reference render, not a screenshot review |
 | **Transparent `LMMM` does not skip colour 0 in GRAPHIC 7** | §8.5 collapses; every card redraw becomes a CPU blit instead of a free command | Probed at M2 before anything is built on it. Fallback: redraw the card's rect from the view base and re-run its Tier A span program (~0.44 frame), which caps simultaneous card redraws at ~2/frame and pushes more work behind wipes |
 | **Rasterizer inner loop slower than the §8.4 band** | View cuts stop being stream-bound; card flight drops below 15 Hz | Measured at M1 before content work; levers in order: re-warp only the cards that actually changed, smaller master textures, more baked poses, fewer views |
 | **Master-texture magnification looks soft** | Cards read blurry against crisp pre-rendered board art | 48x64 masters are larger than every destination quad, so the common case is minification; shading variants are baked from the full-resolution source (§8.7) |
@@ -1491,11 +1732,12 @@ oversight.
    a 64 KB-VRAM MSX2 in scope? If so, page flipping is impossible and the whole
    §7.5 design changes — recommend requiring 128 KB and refusing to boot
    otherwise with a clear message.
-4. **Scope of the 3D feel.** How much does the duel's camera motion matter to
-   the identity of the game? §4.5 replaces every camera move with a cut. If
-   smooth motion is essential to one specific beat (e.g. the final boss's
-   opening), that beat can get a bespoke small-window cel animation — but it
-   must be named now, because it is ROM and authoring work, not code.
+4. ~~**Scope of the 3D feel.**~~ **Answered (§0.3): it is essential.** The duel
+   is played on the captured 3D board (§4.3) and the camera moves are baked pose
+   sequences (§4.6), not cuts. The remaining sub-question is a budget one: §4.6.5
+   provisions five sequences. Which *further* beats deserve one — the final
+   boss's entrance, a fusion summon, a direct attack — needs naming before M5b,
+   because each is ROM and a capture pass, not code.
 5. **MSX-Audio.** Build the FM/ADPCM path at all? It is roughly a milestone of
    work (§12.3) and doubles the music authoring effort.
 6. **MSX2+ scope.** §17 is written as strictly optional and additive. Which of
@@ -1568,3 +1810,96 @@ oversight.
 - `.claude/skills/headless-core/SKILL.md` — the headless harness used as this
   port's offline renderer, and the regenerate-or-desync rules the MSX asset
   pipeline must follow.
+
+
+---
+
+## 21. Deviation register: the build in the tree vs. this plan
+
+The port reached a playable state (title → story → dialogue → duel → ending,
+verified headlessly) before §0.3 was written, and it took the cheap road at
+every point §0.3 now closes. This section is the work list, not a complaint: the
+rules, the streaming path, the banking, the text pipeline, the page-flip model
+and the story flow are all sound and are **kept**. What follows is what changes.
+
+### 21.1 The duel board is not the game's board — **closed**
+
+`tools/msx2/gen_msx_scenes.py::duel_board()` used to synthesise the arena in
+PIL: a sky band cropped from `bg/*.png`, a `perspective_floor()` built by
+warping a tiled material through `Image.Transform.QUAD`, a stage tint, and
+fifteen axis-aligned 40x48 recesses at a fixed pitch. It looked like a board
+and it was not the board. It is gone.
+
+| | Was | Is |
+|---|---|---|
+| Source of the arena | PIL, `perspective_floor()` | `--dump-msx2-views` in `src/main.c`, rendering `render_board()` at an authored MSX2 pose |
+| Card placement | 15 axis-aligned 40x48 rects on a fixed pitch | true projected quads per slot, `g_msx2_slot_quad[]` |
+| Card drawing | opaque rect blit | §8 Tier A span program from the master texture |
+| Empty-slot restore | `SLOTS` blob cut from the baked backdrop | same blob, cut from the *captured* view at each quad's box |
+
+The pose is `msx2_top_camera()` in `src/main.c`: raked rather than straight
+down, because a pure top-down camera projects every slot to an axis-aligned
+rectangle and the rasterizer would then be an elaborate way of blitting. The
+far row is visibly smaller than the near one, which is what a receding board
+means. The stage no longer changes the board's geometry — one arena, four
+paintings behind it and four grades over it.
+
+The ring trick survives as §21.1 predicted it would, through the fallback that
+section named: the capture carries no slot highlight of its own, so
+`gen_msx_views.py` draws a flat ring just outside every projected quad, and the
+runtime's selection bracket is four VDP `LINE` commands into that ring.
+
+### 21.2 Nothing in the duel moves — **partly closed**
+
+A duel now opens on §4.6's baked camera move: eight whole pictures of the board
+band, streamed one after the next by the ordinary §6.2 path, the last of which
+is byte for byte the resting view. There is no codec and no decoder anywhere in
+the port, and the machinery (`Msx2_StreamBand`, the strip layout, the capture
+tool's move loop) is general.
+
+What is **not** done, and the reason is a constraint of the technique rather
+than an omission: a baked pose is a picture of the EMPTY board (§4.6.1), because
+cards depend on duel state and cannot be in it. That is truthful for an opening
+sweep, which plays before a card is on the field, and it would be a visible
+defect for any mid-duel push — every monster would blink out for the second the
+camera moved. The mid-duel moves §4.6 lists therefore wait on the card
+rasterizer being fast enough to repaint the fifteen quads inside a pose's own
+streaming time. They need speed, not new machinery.
+
+### 21.3 The dialogue scene shows one character on a synthesised floor — **closed**
+
+`dialogue_scene()`'s flattened composites are gone, and with them ~2.2 MB of
+ROM. A dialogue beat is now §14.2's composited scene: the shipped `bg/*.png`
+painting with the text box baked into it, streamed **once per scene**, and both
+busts blitted over it at runtime from baked run tables — Serena on the left,
+the opponent on the right, the inactive one dimmed. The two brightness variants
+are cut from the same alpha mask, so a speaker change is a pure overwrite of two
+rects with no background repair at all.
+
+The one departure from §14.2's letter: the run table and the pixels are stored
+apart rather than interleaved, so a bust is blitted with the rectangle copy the
+port already had (`Msx2_StreamRect`, one call per opaque run) instead of a new
+skip-list inner loop. Same arithmetic, same cost, one fewer piece of assembly.
+
+`map_scene()` takes the same treatment (§14.4).
+
+### 21.4 What is kept, unchanged
+
+- `msx2_stream.c` / the NEO segment window / the blanked-display `OTIR` copy.
+- The page-flip model and per-page dirty masks in `msx2_video.c`.
+- The text pipeline: story prose parsed out of `src/main.c` by the generator
+  into fixed-stride cartridge records, and the per-page typewriter cursor. This
+  is exactly right and §14.2's rewrite does not touch it.
+- `msx2_duel.c`'s rules, phases and hand/fusion/attack flow; `msx2_story.c`'s
+  scene sequencing and the frontier-vs-selection distinction.
+- The title screen, including the baked blink strips in offscreen VRAM.
+- `msx2.sh verify` and the soak ROM.
+
+### 21.5 What is left
+
+1. **Mid-duel camera moves** (§21.2). Blocked on the rasterizer, not on the
+   strip player.
+2. **Card flight** — §4.5's hand-to-field arc as baked span programs over the
+   static view. The generator already rasterises a quad offline; what it does
+   not yet do is interpolate the corners along a path.
+3. The rest of §21.4's untouched list, which was never in question.

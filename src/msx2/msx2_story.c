@@ -64,7 +64,7 @@ static u8  g_drawn[MSX2_VIDEO_PAGES];
 static u8  g_line;          // which record of the run is up
 static u8  g_line_count;
 static u8  g_speaker;       // 0 Serena, 1 the opponent, 2 the narrator
-static u8  g_shot;          // which composite is on screen, 0 or 1
+static u8  g_shot;          // which speaker is lit, 0 or 1; 0xFF before the scene is built
 
 // Bitmasks of pages that still owe a repaint.  A partial repaint only ever
 // reaches the page it was drawn on, so every change is carried until both
@@ -201,7 +201,7 @@ static void Msx2_StoryDressLine(void)
 {
 	const c8* who;
 
-	Msx2_Fill(BOX_X, (u8)BOX_Y, (u16)BOX_W, (u8)BOX_H, MSX2_BLACK);
+	Msx2_Fill(BOX_X, (u8)BOX_Y, (u16)BOX_W, (u8)BOX_H, MSX2_PANEL_COLOR);
 	if(g_phase == PH_NARRATE)
 		Msx2_FrameRect(0, MSX2_TALK_BOX_Y, (u16)MSX2_SCREEN_W,
 		               (u8)(MSX2_SCREEN_H - MSX2_TALK_BOX_Y), MSX2_GOLD);
@@ -215,7 +215,7 @@ static void Msx2_StoryDressLine(void)
 		Msx2_TextColor(MSX2_GOLD, MSX2_PLATE_COLOR);
 		Msx2_TextAt(MSX2_TALK_NAME_X, MSX2_TALK_NAME_Y, who);
 	}
-	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
+	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
 }
 
 // Start speaking the wrapped line.  Both pages owe the whole of it.
@@ -232,20 +232,103 @@ static void Msx2_StoryBeginLine(void)
 //  Dialogue
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The picture a speaker needs.  A narrator line keeps whichever composite is
-// already up: re-streaming 54 KB to say one sentence in nobody's voice would
-// black the screen for half a second for no gain.
+// ── §14.2: the composited visual-novel scene ─────────────────────────────────
+//
+// The backdrop is one of the shipped paintings with the text box baked into it,
+// and it is streamed ONCE per scene.  Both speakers stand on it at the same
+// time -- Serena on the left, the opponent on the right, the six-pixel stagger
+// the other targets use -- and the inactive one is dimmed rather than removed.
+// A speaker change is therefore two rect overwrites and nothing else: no
+// stream, no flip, no page divergence, and two characters on screen where the
+// flattened composite this replaces could only ever show one.
+
+// One bust, from its baked run table.  A row is a handful of opaque runs, and a
+// transparent pixel costs nothing at all -- not a VRAM write, not an address
+// re-set -- which is what makes a 124-wide figure affordable (§1.2).
+static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
+{
+	u16 seg = MSX2_PORTRAIT_SEG(chr, lit);
+	u16 pix = MSX2_PORTRAIT_INDEX_BYTES;   // the pixels follow the run table
+	u8  rec[MSX2_PORTRAIT_ROW_STRIDE];
+	u8  row, k;
+
+	for(row = 0; row < MSX2_PORTRAIT_H; ++row)
+	{
+		Msx2_RomRead(seg, (u16)((u16)row * MSX2_PORTRAIT_ROW_STRIDE), rec,
+		             MSX2_PORTRAIT_ROW_STRIDE);
+		for(k = 0; k < rec[0]; ++k)
+		{
+			u8  rx = rec[1 + k * 2];
+			u8  rn = rec[2 + k * 2];
+			u16 s = seg;
+			u16 o = pix;
+			u8  head;
+
+			while(o >= 0x4000u) { o -= 0x4000u; ++s; }
+			// A run may straddle the segment boundary, so the tail is a second
+			// blit rather than a read that runs off the end of the window.
+			head = ((u16)rn > (0x4000u - o)) ? (u8)(0x4000u - o) : rn;
+			Msx2_StreamRect(s, o, (u8)(x + rx), (u8)(y + row), head, 1);
+			if(head != rn)
+				Msx2_StreamRect((u16)(s + 1), 0, (u8)(x + rx + head),
+				                (u8)(y + row), (u8)(rn - head), 1);
+			pix = (u16)(pix + rn);
+		}
+	}
+}
+
+// Both busts, with `speaker` lit and the other dimmed.  The two brightness
+// variants are cut from the same alpha mask, so this covers byte for byte the
+// pixels the previous pair covered and nothing behind them has to be repaired.
+static void Msx2_StoryBusts(u8 speaker)
+{
+	Msx2_StoryBlitBust(0, MSX2_PORTRAIT_LEFT_X, MSX2_PORTRAIT_LEFT_Y,
+	                   speaker != 1);
+	Msx2_StoryBlitBust((u8)(1 + g_duel_index), MSX2_PORTRAIT_RIGHT_X,
+	                   MSX2_PORTRAIT_RIGHT_Y, speaker == 1);
+}
+
+// Change who is speaking.  Both pages are painted here and now rather than
+// journalled: it is an eighth of a second, it happens once a line at most, and
+// carrying it in a dirty mask would mean the two buffers disagreed about which
+// character was lit for a frame.
 static void Msx2_StoryShowShot(u8 shot)
 {
-	u16 segment = (g_phase == PH_TALK)
-	            ? MSX2_TALK_SEGMENT(g_duel_index, shot)
-	            : (u16)((g_narr_which == NARR_INTRO) ? MSX2_SCENE_TALK_INTRO_SEGMENT
-	                                                 : MSX2_SCENE_ENDING_SEGMENT);
+	if(g_phase != PH_TALK)
+	{
+		// Narration has no second speaker: the opening is Serena remembering
+		// over her own scene, the ending is a voice over the closing painting.
+		u16 segment = (g_narr_which == NARR_INTRO)
+		            ? MSX2_TALK_SEGMENT(0) : MSX2_SCENE_ENDING_SEGMENT;
+		Msx2_VideoDrawPage(MSX2_PAGE_1);
+		Msx2_StreamScene(segment, MSX2_PAGE_1);
+		if(g_narr_which == NARR_INTRO)
+			Msx2_StoryBlitBust(0, MSX2_PORTRAIT_LEFT_X, MSX2_PORTRAIT_LEFT_Y,
+			                   TRUE);
+		Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
+		Msx2_VideoShowPage(MSX2_PAGE_1);
+		g_shot = shot;
+		return;
+	}
 
-	Msx2_VideoDrawPage(MSX2_PAGE_1);
-	Msx2_StreamScene(segment, MSX2_PAGE_1);
-	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
-	Msx2_VideoShowPage(MSX2_PAGE_1);
+	if(g_shot == 0xFF)
+	{
+		// First line of the scene: the painting, then both figures on it.
+		Msx2_VideoDrawPage(MSX2_PAGE_1);
+		Msx2_StreamScene(MSX2_TALK_SEGMENT(g_msx2_stage_for_duel[g_duel_index]),
+		                 MSX2_PAGE_1);
+		Msx2_StoryBusts(shot);
+		Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
+		Msx2_VideoShowPage(MSX2_PAGE_1);
+	}
+	else
+	{
+		u8 shown = Msx2_VideoGetDrawPage();
+		Msx2_VideoDrawPage((u8)(shown ^ 1));
+		Msx2_StoryBusts(shot);
+		Msx2_VideoDrawPage(shown);
+		Msx2_StoryBusts(shot);
+	}
 	g_shot = shot;
 }
 
@@ -271,6 +354,9 @@ static void Msx2_StoryEnterTalk(void)
 	g_line_count = g_msx2_dialogue_count[g_duel_index];
 	g_shot = 0xFF;                       // nothing is up yet, so force a stream
 	Msx2_MusicPlay(MSX2_MUSIC_OPENING);
+	// The scene is built once, here, whoever speaks first -- including a
+	// narrator line, which changes no portrait and so would never build it.
+	Msx2_StoryShowShot(0);
 	Msx2_StoryLoadTalkLine();
 }
 
@@ -332,9 +418,9 @@ static void Msx2_StoryMapPaint(void)
 	u8 i;
 
 	Msx2_Fill((u8)(MSX2_MAP_PANEL_X + 1), (u8)(MSX2_MAP_PANEL_Y + 1),
-	          (u16)(MSX2_MAP_PANEL_W - 2), (u8)(MSX2_MAP_PANEL_H - 2), MSX2_BLACK);
+	          (u16)(MSX2_MAP_PANEL_W - 2), (u8)(MSX2_MAP_PANEL_H - 2), MSX2_PANEL_COLOR);
 
-	Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(MAP_HEAD_Y, Msx2_StoryStageName());
 
 	for(i = 0; i < MSX2_STORY_MAX_DUELS; ++i)
@@ -344,13 +430,13 @@ static void Msx2_StoryMapPaint(void)
 
 		if(i == g_cursor)
 		{
-			Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
+			Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 			Msx2_TextAt(MAP_CURSOR_X, y, ">");
 		}
 
 		if(!open)
 		{
-			Msx2_TextColor(MSX2_DARK_SAND, MSX2_BLACK);
+			Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
 			Msx2_TextAt(MAP_NAME_X, y, "- SEALED -");
 			continue;
 		}
@@ -358,23 +444,23 @@ static void Msx2_StoryMapPaint(void)
 		Msx2_StoryReadOpp(i, 0);
 		Msx2_TextColor((i == g_cursor) ? MSX2_WHITE
 		                              : ((i < g_progress) ? MSX2_SAND : MSX2_TEAL),
-		               MSX2_BLACK);
+		               MSX2_PANEL_COLOR);
 		Msx2_TextAt(MAP_NAME_X, y, g_opp);
 		Msx2_StoryReadOpp(i, 1);
-		Msx2_TextColor(MSX2_DARK_SAND, MSX2_BLACK);
+		Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
 		Msx2_TextAt(MAP_TITLE_X, y, g_opp);
 	}
 
 	if(g_cursor == MSX2_STORY_MAX_DUELS)
 	{
-		Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
+		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 		Msx2_TextAt(MAP_CURSOR_X, MAP_BACK_Y, ">");
 	}
 	Msx2_TextColor((g_cursor == MSX2_STORY_MAX_DUELS) ? MSX2_WHITE : MSX2_SAND,
-	               MSX2_BLACK);
+	               MSX2_PANEL_COLOR);
 	Msx2_TextAt(MAP_NAME_X, MAP_BACK_Y, "LEAVE THE ROAD");
 
-	Msx2_TextColor(MSX2_DARK_SAND, MSX2_BLACK);
+	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(MAP_HELP_Y, "SPACE CHOOSES  -  UP/DOWN MOVES");
 }
 
@@ -483,7 +569,7 @@ static bool Msx2_StoryTextStep(void)
 		painted = TRUE;
 	}
 
-	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
+	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
 	while(g_drawn[page] < g_reveal)
 	{
 		Msx2_StoryDrawChar(g_drawn[page]);
@@ -495,7 +581,7 @@ static bool Msx2_StoryTextStep(void)
 	{
 		if(!(g_prompt & (u8)(1u << page)))
 		{
-			Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
+			Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 			Msx2_TextCenter(MSX2_TALK_PROMPT_Y, "PUSH SPACE");
 			g_prompt |= (u8)(1u << page);
 			painted = TRUE;

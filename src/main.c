@@ -23177,6 +23177,197 @@ static int dump_turn_card_capture(const char *dir)
 }
 #endif
 
+#if defined(WAIFU_MSX2_VIEW_DUMP)
+/* Capture the MSX2 port's duel board out of the game's OWN renderer.
+   MSX2_PORT_PLAN.md §4.3 is explicit that the MSX2 board must be this arena and
+   not a lookalike drawn offline, so the cartridge's board image, its camera
+   moves and its per-slot card quads all come from here:
+
+     cc -O2 -std=gnu99 -DWAIFU_FM_HEADLESS_TESTS -DWAIFU_MSX2_VIEW_DUMP \
+        -Isrc/engine -Isrc/generated -Isrc/game -Isrc/record \
+        src/main.c src/game/*.c src/engine/renderer3d.c \
+        src/engine/renderer3d_generic.c src/engine/common.c \
+        src/engine/bmp_writer.c src/platform/host_*.c src/record/zmbv_mkv.c \
+        -lm -lz -o /tmp/waifu_msx2_dump
+     /tmp/waifu_msx2_dump --dump-msx2-views /tmp/msx2views
+
+   What lands in the directory is one 256x240 indexed framebuffer per pose -- the
+   EMPTY board, floor and slab sides, with no cards, no HUD and no text -- plus
+   views.txt, which carries the palette those indices mean and the projected card
+   quads.  The quads are emitted in the corner order draw_board_card_state()
+   hands to the rasterizer, its per-row rotation already applied, so texture
+   corner 0 lands on the same physical corner on the MSX2 as it does here.
+   tools/msx2/gen_msx_views.py crops, quantises and packs all of it.  */
+
+/* The MSX2 window is 212 rows and a HUD strip, a hand row and an info panel eat
+   nearly half of them, so the tactical pose has to pack the two card rows into
+   the ~95 rows that are left -- higher and tighter than top_camera(), which is
+   framed for a 240-row screen with nothing over it.  This is an authored pose of
+   the game's own camera (§4.3 explicitly authorises that), not a different
+   board: same arena, same projection, same slot layout.  The numbers are
+   readable from the environment so the pose can be fitted against a real
+   capture instead of guessed. */
+static int32_t msx2_env_q8(const char *name, int32_t fallback)
+{
+    const char *v = getenv(name);
+    if (!v || !*v) return fallback;
+    return (int32_t)(atof(v) * (double)Q8_ONE);
+}
+
+static Camera msx2_top_camera(void)
+{
+    /* Raked, not straight down.  A pure top-down camera projects every slot to
+       an axis-aligned rectangle, which would make §8's quad rasterizer an
+       elaborate way of blitting -- and would lose the thing the directive is
+       actually about, which is that the cards lie on a board receding away from
+       the player.  Tilting the eye back buys real trapezoids: the COM row reads
+       as further away because it is. */
+    int32_t h  = msx2_env_q8("MSX2_TOP_H", Q8_FRAC(400,100));
+    int32_t z  = msx2_env_q8("MSX2_TOP_Z", Q8_FRAC(120,100));
+    int32_t tz = msx2_env_q8("MSX2_TOP_TZ", Q8_FRAC(-20,100));
+    int32_t f  = msx2_env_q8("MSX2_TOP_F", Q8_FROM_INT(165));
+    return make_camera(v3(0, h, z), v3(0, 0, tz), v3(0,Q8_ONE,0), f);
+}
+
+/* Where the duel opens from: the same top-down look from much higher up and
+   much wider, so the sweep down to the resting pose is a descent onto the
+   arena rather than a pan across it.  A pan would leave the board half outside
+   the board band the baked strip covers (§4.6.2). */
+static Camera msx2_open_camera(void)
+{
+    return make_camera(v3(0, Q8_FRAC(880,100), Q8_FRAC(264,100)),
+                       v3(0, 0, Q8_FRAC(-20,100)), v3(0,Q8_ONE,0), Q8_FROM_INT(96));
+}
+
+#define MSX2_MOVE_OPENING  0
+
+/* Only ONE camera move is baked, and the reason is a constraint of the
+   technique rather than an omission.  A baked pose is a picture of the EMPTY
+   board (§4.6.1): cards depend on duel state, so they cannot be in it.  That is
+   truthful for the opening sweep, which plays before a card is on the field,
+   and it is a visible defect for any mid-duel push -- every monster would
+   blink out for the second the camera moved.  The mid-duel moves §4.6 lists
+   therefore wait for the card rasterizer to be fast enough to repaint the
+   fifteen quads inside a pose's own streaming time; the strip player below is
+   already general, so what they need is speed, not new machinery. */
+static const struct { const char *name; int kind; int poses; } g_msx2_moves[] = {
+    { "OPENING",  MSX2_MOVE_OPENING,  8 },
+};
+#define MSX2_MOVE_COUNT ((int)(sizeof g_msx2_moves / sizeof g_msx2_moves[0]))
+
+static Camera msx2_move_camera(int kind, int pose, int poses)
+{
+    int32_t t = q8_ratio(pose, poses - 1);
+    (void)kind;
+    /* The opening ENDS on the resting pose, so the last frame of the strip is
+       the picture the duel is played on and no settle stream follows it. */
+    return lerp_camera(msx2_open_camera(), msx2_top_camera(), t);
+}
+
+/* One field slot's projected quad, in the corner order the textured draw gets.
+   This mirrors draw_board_card_state()'s attack-position path exactly -- same
+   half-extents, same BOARD_CARD_Y, same per-row rotation -- so a quad here is
+   the quad the other five targets fill with card art. */
+static void msx2_field_quad(Camera cam, int slot, int out[8])
+{
+    int col = slot % I_FIELD;
+    int row = (slot < I_FIELD) ? ENEMY_CARD_ROW : PLAYER_CARD_ROW;
+    int32_t cx = zone_cx(col), cz = zone_cz(row);
+    int32_t hw = Q8_FRAC(36,100), hz = Q8_FRAC(50,100);
+    int32_t y = BOARD_CARD_Y;
+    ScreenPt p[4], q[4];
+    int k, rot;
+
+    p[0] = project_point(cam, v3(cx - hw, y, cz - hz));
+    p[1] = project_point(cam, v3(cx + hw, y, cz - hz));
+    p[2] = project_point(cam, v3(cx + hw, y, cz + hz));
+    p[3] = project_point(cam, v3(cx - hw, y, cz + hz));
+    /* COM-side cards face the opponent: the draw call rotates the corner order
+       by two, which is what keeps the art the right way up from that side. */
+    rot = (row <= 1) ? 2 : 0;
+    for (k = 0; k < 4; ++k) q[k] = p[(rot + k) & 3];
+    for (k = 0; k < 4; ++k) { out[k * 2] = q[k].x; out[k * 2 + 1] = q[k].y; }
+}
+
+static int msx2_write_pose(const char *dir, const char *tag, Camera cam, FILE *meta)
+{
+    char path[512];
+    FILE *f;
+    int slot;
+
+    snprintf(path, sizeof path, "%s/%s.raw", dir, tag);
+    f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "dump-msx2-views: cannot write %s\n", path); return 1; }
+    render_board(cam);
+    if (fwrite(framebuffer, 1, sizeof framebuffer, f) != sizeof framebuffer) {
+        fprintf(stderr, "dump-msx2-views: short write on %s\n", path);
+        fclose(f);
+        return 1;
+    }
+    fclose(f);
+
+    fprintf(meta, "POSE %s\n", tag);
+    for (slot = 0; slot < 2 * I_FIELD; ++slot) {
+        int g[8];
+        msx2_field_quad(cam, slot, g);
+        fprintf(meta, "QUAD %d %d %d %d %d %d %d %d %d\n", slot,
+                g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7]);
+    }
+    return 0;
+}
+
+static int dump_msx2_views(const char *dir)
+{
+    char path[512];
+    FILE *meta;
+    int i;
+
+    snprintf(path, sizeof path, "%s/views.txt", dir);
+    meta = fopen(path, "w");
+    if (!meta) { fprintf(stderr, "dump-msx2-views: cannot write %s\n", path); return 1; }
+
+    fprintf(meta, "SIZE %d %d\n", WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
+    fprintf(meta, "FIELD_SLOTS %d\n", 2 * I_FIELD);
+    fprintf(meta, "CARD_TEX %d %d\n", WAIFU_CARD_W, WAIFU_CARD_H);
+    /* render_board() clears to this index and paints nothing behind the arena
+       -- every console target puts its own backdrop there -- so it is exactly
+       "this pixel is not the arena", and the MSX2 stage painting shows through
+       it.  Emitted rather than assumed: it is not index 0. */
+    fprintf(meta, "BG_INDEX %d\n", IDX_BLACK);
+    /* The captured frames are 8-bit indices, so the palette they were rendered
+       against travels with them: the MSX2 generator quantises RGB, not indices,
+       and a palette read from anywhere else is a palette that drifts. */
+    {
+        const unsigned char *pal = waifu_fm_palette_rgb();
+        for (i = 0; i < 256; ++i)
+            fprintf(meta, "PAL %d %d %d %d\n", i, pal[i*3], pal[i*3+1], pal[i*3+2]);
+    }
+
+    fprintf(meta, "VIEW TOP\n");
+    if (msx2_write_pose(dir, "TOP", msx2_top_camera(), meta)) { fclose(meta); return 1; }
+
+    for (i = 0; i < MSX2_MOVE_COUNT; ++i) {
+        int pose;
+        fprintf(meta, "MOVE %s %d\n", g_msx2_moves[i].name, g_msx2_moves[i].poses);
+        for (pose = 0; pose < g_msx2_moves[i].poses; ++pose) {
+            char tag[128];
+            snprintf(tag, sizeof tag, "MOVE_%s_%d", g_msx2_moves[i].name, pose);
+            if (msx2_write_pose(dir, tag,
+                                msx2_move_camera(g_msx2_moves[i].kind, pose,
+                                                 g_msx2_moves[i].poses), meta)) {
+                fclose(meta);
+                return 1;
+            }
+        }
+    }
+
+    fclose(meta);
+    printf("wrote %s/views.txt: the resting view and %d camera moves\n",
+           dir, MSX2_MOVE_COUNT);
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     int frames = 3600;
@@ -23195,6 +23386,9 @@ int main(int argc, char **argv)
     const char *music_demo_state = NULL;
     const char *asset_load_demo = NULL;
     const char *dump_turn_board_path = NULL;
+#if defined(WAIFU_MSX2_VIEW_DUMP)
+    const char *dump_msx2_views_dir = NULL;
+#endif
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE) && defined(WAIFU_DUMP_TURN_CARD_RASTER)
     const char *dump_turn_card_dir = NULL;
 #endif
@@ -23251,6 +23445,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--fixed-pose-bench")) fixed_pose_bench = 1;
 #endif
         else if (!strcmp(argv[i], "--dump-turn-board-frames") && i + 1 < argc) dump_turn_board_path = argv[++i];
+#if defined(WAIFU_MSX2_VIEW_DUMP)
+        else if (!strcmp(argv[i], "--dump-msx2-views") && i + 1 < argc) dump_msx2_views_dir = argv[++i];
+#endif
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE) && defined(WAIFU_DUMP_TURN_CARD_RASTER)
         else if (!strcmp(argv[i], "--dump-turn-card-capture") && i + 1 < argc) dump_turn_card_dir = argv[++i];
 #endif
@@ -23262,6 +23459,9 @@ int main(int argc, char **argv)
 
     waifu_fm_init();
 
+#if defined(WAIFU_MSX2_VIEW_DUMP)
+    if (dump_msx2_views_dir) return dump_msx2_views(dump_msx2_views_dir);
+#endif
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
     if (dump_turn_board_path) return dump_turn_board_frames(dump_turn_board_path);
 #if defined(WAIFU_DUMP_TURN_CARD_RASTER)

@@ -10,70 +10,146 @@
 
 #define MSX2_SCENE_TITLE_SEGMENT  4
 #define MSX2_SCENE_ENDING_SEGMENT 8
-#define MSX2_SCENE_BOARD_DESERT_SEGMENT 12
-#define MSX2_SCENE_BOARD_STONE_SEGMENT 16
-#define MSX2_SCENE_BOARD_EMBER_SEGMENT 20
-#define MSX2_SCENE_BOARD_SKY_SEGMENT 24
-#define MSX2_SCENE_MAP_0_SEGMENT  28
-#define MSX2_SCENE_MAP_1_SEGMENT  32
-#define MSX2_SCENE_MAP_2_SEGMENT  36
-#define MSX2_SCENE_MAP_3_SEGMENT  40
-#define MSX2_SCENE_TALK_0_SERENA_SEGMENT 44
-#define MSX2_SCENE_TALK_0_FOE_SEGMENT 48
-#define MSX2_SCENE_TALK_1_SERENA_SEGMENT 52
-#define MSX2_SCENE_TALK_1_FOE_SEGMENT 56
-#define MSX2_SCENE_TALK_2_SERENA_SEGMENT 60
-#define MSX2_SCENE_TALK_2_FOE_SEGMENT 64
-#define MSX2_SCENE_TALK_3_SERENA_SEGMENT 68
-#define MSX2_SCENE_TALK_3_FOE_SEGMENT 72
-#define MSX2_SCENE_TALK_4_SERENA_SEGMENT 76
-#define MSX2_SCENE_TALK_4_FOE_SEGMENT 80
-#define MSX2_SCENE_TALK_INTRO_SEGMENT 84
-
-// The four duel backdrops, in story-stage order.
-#define MSX2_BOARD_SEGMENT(stage)  (MSX2_SCENE_BOARD_DESERT_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)
-#define MSX2_BOARD_STAGES       4
-
+#define MSX2_SCENE_MAP_0_SEGMENT  12
+#define MSX2_SCENE_MAP_1_SEGMENT  16
+#define MSX2_SCENE_MAP_2_SEGMENT  20
+#define MSX2_SCENE_MAP_3_SEGMENT  24
+#define MSX2_SCENE_TALK_0_SEGMENT 28
+#define MSX2_SCENE_TALK_1_SEGMENT 32
+#define MSX2_SCENE_TALK_2_SEGMENT 36
+#define MSX2_SCENE_TALK_3_SEGMENT 40
 // ── Card textures ───────────────────────────────────────────────────────
-#define MSX2_CARD_ART_SEGMENT   88
+#define MSX2_CARD_ART_SEGMENT   44
+// The same textures mirrored left to right, for the COM row (§8.4).
+#define MSX2_CARD_MIRROR_SEGMENT 54
 #define MSX2_CARD_ART_STRIDE    2048
 #define MSX2_CARD_ART_PER_SEG   8
 #define MSX2_CARD_ART_COUNT     79
 #define MSX2_CARD_BACK_INDEX    78
+// MSX2_CARD_W / MSX2_CARD_H come from the board section below:
+// the texture size and the quads it is mapped into are one decision.
+// ── The duel board, captured from the game's own renderer ──────────────
+// tools/msx2/gen_msx_views.py bakes these out of --dump-msx2-views, so the
+// arena, the perspective and the slot layout are the ones every other
+// target renders (MSX2_PORT_PLAN.md §4.3).  Nothing here is drawn offline.
+#define MSX2_VIEW_SEGMENT(stage)  (64 + (stage) * MSX2_SCENE_SEG_SPAN)
+#define MSX2_VIEW_STAGES        4
+#define MSX2_BAND_Y             14
+#define MSX2_BAND_H             114
+#define MSX2_HUD_H              13
+#define MSX2_HAND_BAND_Y        128
+#define MSX2_HAND_BAND_H        54
+#define MSX2_INFO_Y             182
 #define MSX2_CARD_W             40
 #define MSX2_CARD_H             48
-
-// ── Board geometry, shared with the baked backdrop ──────────────────────
-#define MSX2_SLOTS              5
-#define MSX2_SLOT_X0            12
-#define MSX2_SLOT_PITCH         48
-#define MSX2_ROW_COM_Y          16
-#define MSX2_ROW_PLAYER_Y       70
-#define MSX2_ROW_HAND_Y         126
-#define MSX2_HUD_H              13
-#define MSX2_INFO_Y             178
-#define MSX2_SLOT_RING          2
-// The exact GRB332 bytes the backdrop was baked with, so a fill
-// erases back to the picture instead of to something close to it.
+#define MSX2_HAND_X0            12
+#define MSX2_HAND_PITCH         47
+#define MSX2_HAND_Y             131
+#define MSX2_FIELD_SLOTS        10
+#define MSX2_HAND_SLOTS         5
 #define MSX2_RING_COLOR         0x28
-#define MSX2_PANEL_COLOR        0x00
+#define MSX2_PANEL_COLOR        0x25
+#define MSX2_GOLD_COLOR         0x95
 
-// ── Empty-slot tiles ───────────────────────────────────────────────────
-// One 40x48 cut-out of each backdrop at each of the fifteen slots, in the
-// backdrop's own quantised bytes.  Clearing a destroyed monster blits the
-// tile for (stage, slot); that is the only way to put a textured board
-// back exactly without re-streaming the whole picture.
-#define MSX2_SLOT_ART_SEGMENT   98
-#define MSX2_SLOT_ART_STRIDE    2048
-#define MSX2_SLOT_ART_PER_SEG   8
-#define MSX2_SLOT_ART_PER_STAGE 15
+// The projected corners of every field slot, window pixels, in the corner
+// order the shared renderer hands its rasterizer -- so texture corner 0
+// lands on the same physical corner here as it does on the PC.
+static const unsigned char g_msx2_slot_quad[MSX2_FIELD_SLOTS][8] = {
+	{ 46, 47, 18, 47, 25, 14, 52, 14 },
+	{ 94, 47, 66, 47, 70, 14, 97, 14 },
+	{ 141, 47, 114, 47, 116, 14, 140, 14 },
+	{ 190, 47, 161, 47, 158, 14, 186, 14 },
+	{ 238, 47, 210, 47, 204, 14, 230, 14 },
+	{ 15, 57, 44, 57, 37, 100, 5, 100 },
+	{ 65, 57, 94, 57, 90, 100, 59, 100 },
+	{ 114, 57, 142, 57, 143, 100, 113, 100 },
+	{ 162, 57, 191, 57, 197, 100, 165, 100 },
+	{ 211, 57, 241, 57, 251, 100, 219, 100 },
+};
+
+// The box a slot's ring and card occupy: what an empty slot restores, and
+// what a repaint has to cover.
+static const unsigned char g_msx2_slot_box[MSX2_FIELD_SLOTS][4] = {
+	{ 15, 14, 41, 38 },
+	{ 63, 14, 38, 38 },
+	{ 111, 14, 34, 38 },
+	{ 155, 14, 39, 38 },
+	{ 201, 14, 41, 38 },
+	{ 2, 53, 46, 52 },
+	{ 56, 53, 42, 52 },
+	{ 110, 53, 37, 52 },
+	{ 159, 53, 42, 52 },
+	{ 208, 53, 47, 52 },
+};
+
+// ── §8.4 Tier A span programs ─────────────────────────────────────────
+// One offline rasterisation of the card texture into each slot's quad,
+// as run lengths.  The Z80 replays it with block I/O and does no
+// arithmetic at all; that is what makes fifteen perspective cards
+// affordable on a 3.58 MHz machine.
+#define MSX2_SPAN_SEGMENT       90
+#define MSX2_SPAN_STRIDE        2048
+#define MSX2_SPAN_PER_SEG       8
+#define MSX2_SPAN_MAX           1198
+#define MSX2_OP_COPY            0x00
+#define MSX2_OP_DUP             0x20
+#define MSX2_OP_SKIP            0x40
+#define MSX2_OP_ADV             0x60
+#define MSX2_OP_ENDROW          0x80
+#define MSX2_OP_END             0xA0
+#define MSX2_OP_RUN_MASK        0x1F
+// Slot -> which SPAN_STRIDE-sized record in the blob holds its program.
+static const unsigned char g_msx2_span_record[MSX2_FIELD_SLOTS] = {
+	0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+};
+
+// ── Empty-slot tiles ──────────────────────────────────────────────────
+#define MSX2_SLOT_ART_SEGMENT   80
+#define MSX2_SLOT_ART_STRIDE    4096
+#define MSX2_SLOT_ART_PER_SEG   4
+#define MSX2_SLOT_ART_PER_STAGE 10
+
+// ── §4.6 baked camera moves ───────────────────────────────────────────
+// A strip of whole pictures of the board band, streamed one after the
+// next by the ordinary §6.2 path.  There is no codec and no decoder: at
+// 29 T-states a byte a band pose is about twelve video frames, so a move
+// is a held cinematic push and the art is authored for that (§4.6.2).
+#define MSX2_MOVE_POSE_BYTES    29184
+#define MSX2_MOVE_POSE_SEGS     2
+#define MSX2_MOVE_OPENING_SEGMENT  92
+#define MSX2_MOVE_OPENING_POSES    8
 
 // ── Story screens ──────────────────────────────────────────────────────
 #define MSX2_MAP_SEGMENT(stage)   (MSX2_SCENE_MAP_0_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)
-// speaker: 0 = Serena, 1 = the opponent.
-#define MSX2_TALK_SEGMENT(duel, speaker)  (MSX2_SCENE_TALK_0_SERENA_SEGMENT +\
-     ((duel) * 2 + (speaker)) * MSX2_SCENE_SEG_SPAN)
+// §14.2: the dialogue scene is composited at runtime.  The backdrop is
+// the shipped painting with the text box baked in, one per stage, and it
+// is streamed ONCE per scene; the two busts are blitted over it from the
+// skip lists below and a speaker change touches nothing else.
+#define MSX2_TALK_SEGMENT(stage)  (MSX2_SCENE_TALK_0_SEGMENT + (stage) * MSX2_SCENE_SEG_SPAN)
 #define MSX2_STORY_DUELS        5
+static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
+	{ 0, 0, 1, 2, 3 };
+
+// ── Story busts (§14.2) ────────────────────────────────────────────────
+// Character 0 is Serena and 1..5 are the opponents; each is baked twice,
+// lit and dimmed, from the SAME alpha mask -- so the two variants cover
+// byte for byte the same pixels and swapping which speaker is lit is a
+// pure overwrite with no background repair at all.
+#define MSX2_PORTRAIT_SEGMENT   156
+#define MSX2_PORTRAIT_SEGS      2
+#define MSX2_PORTRAIT_CHARS     6
+#define MSX2_PORTRAIT_W         124
+#define MSX2_PORTRAIT_H         124
+#define MSX2_PORTRAIT_LEFT_X    2
+#define MSX2_PORTRAIT_LEFT_Y    16
+#define MSX2_PORTRAIT_RIGHT_X   130
+#define MSX2_PORTRAIT_RIGHT_Y   22
+#define MSX2_PORTRAIT_MAX_RUNS  3
+#define MSX2_PORTRAIT_ROW_STRIDE 7
+#define MSX2_PORTRAIT_INDEX_BYTES 1024
+// (character, lit) -> the segment its skip list starts in.
+#define MSX2_PORTRAIT_SEG(chr, lit)  (MSX2_PORTRAIT_SEGMENT +\
+     (((chr) * 2 + ((lit) ? 0 : 1)) * MSX2_PORTRAIT_SEGS))
 #define MSX2_TALK_BOX_Y         140
 #define MSX2_TALK_NAME_Y        144
 #define MSX2_TALK_LINE0_Y       158
@@ -84,7 +160,6 @@
 #define MSX2_TALK_TEXT_W        240
 #define MSX2_TALK_COLS          40
 #define MSX2_TALK_NAME_X        10
-#define MSX2_PANEL_COLOR        0x00
 #define MSX2_PLATE_COLOR        0x24
 #define MSX2_MAP_PANEL_X        20
 #define MSX2_MAP_PANEL_Y        30
@@ -92,7 +167,7 @@
 #define MSX2_MAP_PANEL_H        156
 
 // ── String table ───────────────────────────────────────────────────────
-#define MSX2_TEXT_SEGMENT       106
+#define MSX2_TEXT_SEGMENT       180
 #define MSX2_NAME_STRIDE        24
 #define MSX2_NAME_COUNT         78
 #define MSX2_NAME_OFFSET        0
@@ -109,5 +184,5 @@ static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  4
-#define MSX2_SCENE_SEGMENT_LAST   106
-#define MSX2_ASSET_ROM_KB         1712
+#define MSX2_SCENE_SEGMENT_LAST   180
+#define MSX2_ASSET_ROM_KB         2896

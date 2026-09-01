@@ -104,6 +104,38 @@ void Msx2_VideoCopyPage(u8 src, u8 dst)
 	VDP_CommandHMMM(0, (u16)src << 8, 0, (u16)dst << 8, MSX2_SCREEN_W, 256);
 }
 
+// One line through the VDP's LINE command.  The direction and major-axis bits
+// have to be worked out here because the command takes a length along the major
+// axis and a delta along the minor one, not two endpoints.
+static void Msx2_Line(u8 x1, u8 y1, u8 x2, u8 y2, u8 color)
+{
+	u16 sy = Msx2_PageY(y1);
+	u16 dx, dy, nx, ny;
+	u8 arg = 0;
+
+	if(x1 > x2) { arg |= VDP_ARG_DIX_LEFT;  dx = (u16)(x1 - x2); }
+	else        { arg |= VDP_ARG_DIX_RIGHT; dx = (u16)(x2 - x1); }
+	if(y1 > y2) { arg |= VDP_ARG_DIY_UP;    dy = (u16)(y1 - y2); }
+	else        { arg |= VDP_ARG_DIY_DOWN;  dy = (u16)(y2 - y1); }
+
+	if(dx > dy) { arg |= VDP_ARG_MAJ_H; nx = dx; ny = dy; }
+	else        { arg |= VDP_ARG_MAJ_V; nx = dy; ny = dx; }
+
+	VDP_CommandWait();
+	VDP_CommandLINE(x1, sy, nx, ny, color, arg, VDP_OP_IMP);
+}
+
+void Msx2_QuadOutline(const u8* quad, u8 color)
+{
+	u8 i;
+	for(i = 0; i < 4; ++i)
+	{
+		u8 j = (u8)((i + 1) & 3);
+		Msx2_Line(quad[i * 2], quad[i * 2 + 1], quad[j * 2], quad[j * 2 + 1],
+		          color);
+	}
+}
+
 void Msx2_CopyRect(u8 sx, u8 sy, u8 dx, u8 dy, u16 w, u8 h)
 {
 	VDP_CommandWait();

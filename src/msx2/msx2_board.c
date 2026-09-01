@@ -9,26 +9,29 @@
 #include "msx2_audio.h"
 #include "msx2_duel.h"
 #include "msx2_cards.h"
+#include "msx2_raster.h"
 #include "msx2_scenes.h"
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 //
-// The three rows are one array so a slot is a single number 0..14 everywhere
-// below: 0-4 the COM monsters, 5-9 the player's, 10-14 the player's hand.  The
-// coordinates themselves are generated (src/generated/msx2_scenes.h) from the
-// same constants the backdrop was baked with.
+// Slots 0..9 are the field, in the order the capture emitted them: 0-4 the COM
+// row, 5-9 the player's.  Slots 10..14 are the player's hand, which is a flat
+// HUD strip rather than board geometry.  The field quads and their boxes come
+// out of the capture (src/generated/msx2_scenes.h) -- there is no second
+// definition of where a card goes, which is the whole point of §4.3.
 
 #define ZONE_COM     0
 #define ZONE_FIELD   1
 #define ZONE_HAND    2
-#define SLOT_COUNT   (3 * MSX2_SLOTS)
+#define FIELD_ROW    (MSX2_FIELD_SLOTS / 2)
+#define SLOT_COUNT   (MSX2_FIELD_SLOTS + MSX2_HAND_SLOTS)
 
-#define SLOT_X(i)         (u8)(MSX2_SLOT_X0 + (u8)(i) * MSX2_SLOT_PITCH)
-#define SLOT_OF(z, i)     (u8)((u8)(z) * MSX2_SLOTS + (u8)(i))
-#define SLOT_ZONE(s)      (u8)((s) / MSX2_SLOTS)
-#define SLOT_INDEX(s)     (u8)((s) % MSX2_SLOTS)
+#define SLOT_OF(z, i)     (u8)((u8)(z) * FIELD_ROW + (u8)(i))
+#define SLOT_ZONE(s)      (u8)((s) / FIELD_ROW)
+#define SLOT_INDEX(s)     (u8)((s) % FIELD_ROW)
+#define IS_HAND(s)        ((s) >= MSX2_FIELD_SLOTS)
 
-static const u8 g_row_y[3] = { MSX2_ROW_COM_Y, MSX2_ROW_PLAYER_Y, MSX2_ROW_HAND_Y };
+#define HAND_X(i)         (u8)(MSX2_HAND_X0 + (u8)(i) * MSX2_HAND_PITCH)
 
 // Slot flags, tracked alongside the card id so a repaint knows a face-down card,
 // a face-up one and the third card in a fusion chain are different pictures.
@@ -120,7 +123,7 @@ static void Msx2_BoardQueueToggle(u8 hand_slot)
 static void Msx2_BoardSnapshot(void)
 {
 	u8 i;
-	for(i = 0; i < MSX2_SLOTS; ++i)
+	for(i = 0; i < FIELD_ROW; ++i)
 	{
 		const Msx2Side* com = &g_duel.side[MSX2_OWNER_COM];
 		const Msx2Side* you = &g_duel.side[MSX2_OWNER_PLAYER];
@@ -151,65 +154,104 @@ static u8 Msx2_BoardHovered(void)
 //  Drawing
 // ─────────────────────────────────────────────────────────────────────────────
 
-// One card face, straight out of the cartridge.  A face-down monster is the
-// card back, which is simply the last texture in the blob.
+// One card, drawn where the arena says it goes.
+//
+// A field slot is a projected quad, so the card is mapped into it by the §8
+// span rasterizer -- that is the whole of §0.3.1 in one call.  A hand slot is a
+// flat strip, so it is an ordinary rectangle straight out of the cartridge,
+// which also keeps the cards a player is choosing between at a readable size.
 static void Msx2_BoardBlitSlot(u8 slot)
 {
-	u8 x = SLOT_X(SLOT_INDEX(slot));
-	u8 y = g_row_y[SLOT_ZONE(slot)];
-	u8 card = g_want[slot];
-	u16 index;
+	u8  card = g_want[slot];
+	u8  index;
+	u16 tile;
+
+	if(IS_HAND(slot))
+	{
+		u8 x = HAND_X(slot - MSX2_FIELD_SLOTS);
+
+		if(card == MSX2_CARD_NONE)
+		{
+			// An empty hand position keeps its baked frame: the band under it is
+			// a flat panel, so putting it back is a fill and an outline rather
+			// than anything read from the cartridge.
+			Msx2_Fill(x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_PANEL_COLOR);
+			Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1), MSX2_CARD_W + 2,
+			               MSX2_CARD_H + 2, MSX2_GOLD_COLOR);
+			return;
+		}
+
+		index = card;
+		Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + index / MSX2_CARD_ART_PER_SEG),
+		                (u16)((index % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
+		                x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H);
+
+		if(F_QUEUE_OF(g_flag[slot]) != 0)
+		{
+			// A fusion material, numbered: the fold is left to right in the
+			// order the player picked, so the order has to be visible.
+			Msx2_Fill((u8)(x + 4), (u8)(MSX2_HAND_Y + 39), MSX2_CARD_W - 8, 7,
+			          MSX2_TEAL);
+			Msx2_TextColor(MSX2_BLACK, MSX2_TEAL);
+			Msx2_TextAt((u8)(x + 12), (u8)(MSX2_HAND_Y + 39), "F");
+			Msx2_NumAt((u8)(x + 20), (u8)(MSX2_HAND_Y + 39),
+			           (i16)F_QUEUE_OF(g_flag[slot]));
+		}
+		return;
+	}
 
 	if(card == MSX2_CARD_NONE)
 	{
-		// Empty: the backdrop's own pixels for this slot on this arena.  A fill
-		// would flatten the floor the board is standing on.
-		index = (u16)g_stage * MSX2_SLOT_ART_PER_STAGE + slot;
-		Msx2_StreamRect((u16)(MSX2_SLOT_ART_SEGMENT + index / MSX2_SLOT_ART_PER_SEG),
-		                (u16)((index % MSX2_SLOT_ART_PER_SEG) * MSX2_SLOT_ART_STRIDE),
-		                x, y, MSX2_CARD_W, MSX2_CARD_H);
+		// Empty: the arena's own pixels for this slot on this stage, cut out of
+		// the quantised capture.  A fill would flatten the floor the board is
+		// standing on, and the ring around the slot with it.
+		const u8* box = g_msx2_slot_box[slot];
+		tile = (u16)g_stage * MSX2_SLOT_ART_PER_STAGE + slot;
+		Msx2_StreamRect((u16)(MSX2_SLOT_ART_SEGMENT + tile / MSX2_SLOT_ART_PER_SEG),
+		                (u16)((tile % MSX2_SLOT_ART_PER_SEG) * MSX2_SLOT_ART_STRIDE),
+		                box[0], box[1], box[2], box[3]);
 		return;
 	}
 
 	index = (g_flag[slot] & F_FACEUP) ? card : MSX2_CARD_BACK_INDEX;
-	Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + index / MSX2_CARD_ART_PER_SEG),
-	                (u16)((index % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
-	                x, y, MSX2_CARD_W, MSX2_CARD_H);
+	Msx2_RasterCard(index, slot);
 
-	// Badges go over the stat band, which carries no information at this size.
-	// Defence position: the other targets turn the card sideways, and a Z80
-	// cannot rotate a bitmap for free, so the card says so in words instead.
+	// Defence position: the other targets turn the card sideways on the board
+	// plane, and warping a second quad for that would double what the cartridge
+	// carries for a state a word states more clearly at this size.
 	if(g_flag[slot] & F_DEFENSE)
 	{
-		Msx2_Fill((u8)(x + 4), (u8)(y + 39), MSX2_CARD_W - 8, 7, MSX2_DEEP_BLUE);
+		const u8* box = g_msx2_slot_box[slot];
+		u8 x = (u8)(box[0] + (box[2] >> 1) - 11);
+		u8 y = (u8)(box[1] + box[3] - 12);
+		Msx2_Fill(x, y, 24, 8, MSX2_DEEP_BLUE);
 		Msx2_TextColor(MSX2_WHITE, MSX2_DEEP_BLUE);
-		Msx2_TextAt((u8)(x + 11), (u8)(y + 39), "DEF");
-	}
-	else if(F_QUEUE_OF(g_flag[slot]) != 0)
-	{
-		// A fusion material, numbered: the fold is left to right in the order
-		// the player picked, so the order has to be visible.
-		Msx2_Fill((u8)(x + 4), (u8)(y + 39), MSX2_CARD_W - 8, 7, MSX2_TEAL);
-		Msx2_TextColor(MSX2_BLACK, MSX2_TEAL);
-		Msx2_TextAt((u8)(x + 12), (u8)(y + 39), "F");
-		Msx2_NumAt((u8)(x + 20), (u8)(y + 39), (i16)F_QUEUE_OF(g_flag[slot]));
+		Msx2_TextAt((u8)(x + 3), y, "DEF");
 	}
 }
 
-// The selection bracket, drawn into the flat ring the backdrop bakes around
-// every slot.  Erasing it is the same four fills in MSX2_RING_COLOR, so no
-// artwork ever has to be restored.
+// The selection bracket.  A field slot's follows its projected quad -- a
+// rectangle around a trapezoid sits visibly beside the card it is selecting --
+// and it is drawn INTO the flat ring the generator baked just outside every
+// quad, so erasing it is the same four lines in MSX2_RING_COLOR and no artwork
+// underneath is ever repaired.  A hand slot's is the baked gold frame, redrawn.
 static void Msx2_BoardCursor(u8 slot, u8 color)
 {
-	u8 x = (u8)(SLOT_X(SLOT_INDEX(slot)) - MSX2_SLOT_RING);
-	u8 y = (u8)(g_row_y[SLOT_ZONE(slot)] - MSX2_SLOT_RING);
-	u8 w = MSX2_CARD_W + 2 * MSX2_SLOT_RING;
-	u8 h = MSX2_CARD_H + 2 * MSX2_SLOT_RING;
+	if(IS_HAND(slot))
+	{
+		u8 x = HAND_X(slot - MSX2_FIELD_SLOTS);
+		Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1), MSX2_CARD_W + 2,
+		               MSX2_CARD_H + 2, color);
+		return;
+	}
+	Msx2_QuadOutline(g_msx2_slot_quad[slot], color);
+}
 
-	Msx2_Fill(x, y, w, MSX2_SLOT_RING, color);
-	Msx2_Fill(x, (u8)(y + h - MSX2_SLOT_RING), w, MSX2_SLOT_RING, color);
-	Msx2_Fill(x, y, MSX2_SLOT_RING, h, color);
-	Msx2_Fill((u8)(x + w - MSX2_SLOT_RING), y, MSX2_SLOT_RING, h, color);
+// What "erase the cursor" means depends on which strip the slot is in: the
+// board's baked ring, or the hand band's baked gold frame.
+static u8 Msx2_BoardRestColor(u8 slot)
+{
+	return IS_HAND(slot) ? MSX2_GOLD_COLOR : MSX2_RING_COLOR;
 }
 
 // Gold to choose with, red to attack with: the cursor colour is the only place
@@ -227,17 +269,17 @@ static u8 Msx2_BoardCursorColor(void)
 
 static void Msx2_BoardHud(void)
 {
-	Msx2_Fill(1, 1, MSX2_SCREEN_W - 2, MSX2_HUD_H - 2, MSX2_BLACK);
+	Msx2_Fill(1, 1, MSX2_SCREEN_W - 2, MSX2_HUD_H - 2, MSX2_PANEL_COLOR);
 
-	Msx2_TextColor(MSX2_RED, MSX2_BLACK);
+	Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
 	Msx2_TextAt(4, 3, "COM");
 	Msx2_NumAt(28, 3, g_duel.side[MSX2_OWNER_COM].lp);
 
-	Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 	Msx2_TextAt(100, 3, "TURN");
 	Msx2_NumAt(130, 3, (i16)g_duel.turns);
 
-	Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
+	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
 	Msx2_TextAt(196, 3, "YOU");
 	Msx2_NumAt(220, 3, g_duel.side[MSX2_OWNER_PLAYER].lp);
 }
@@ -269,12 +311,12 @@ static void Msx2_BoardInfo(void)
 	u8 card = Msx2_BoardHovered();
 
 	Msx2_Fill(1, (u8)(MSX2_INFO_Y + 1), MSX2_SCREEN_W - 2,
-	          MSX2_SCREEN_H - MSX2_INFO_Y - 2, MSX2_BLACK);
+	          MSX2_SCREEN_H - MSX2_INFO_Y - 2, MSX2_PANEL_COLOR);
 
 	if(g_mode == M_OVER)
 	{
-		Msx2_TextColor((g_duel.result > 0) ? MSX2_GOLD : MSX2_RED, MSX2_BLACK);
-		Msx2_TextCenter((u8)(MSX2_INFO_Y + 4),
+		Msx2_TextColor((g_duel.result > 0) ? MSX2_GOLD : MSX2_RED, MSX2_PANEL_COLOR);
+		Msx2_TextCenter((u8)(MSX2_INFO_Y + 3),
 		                (g_duel.result > 0) ? "YOU WIN THE DUEL" : "YOU HAVE LOST");
 	}
 	else if(card != MSX2_CARD_NONE)
@@ -284,41 +326,41 @@ static void Msx2_BoardInfo(void)
 		Msx2_RomRead(MSX2_TEXT_SEGMENT, (u16)card * MSX2_NAME_STRIDE,
 		             (u8*)g_name, MSX2_NAME_STRIDE);
 		g_name[MSX2_NAME_STRIDE - 1] = 0;
-		Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
-		Msx2_TextCenter((u8)(MSX2_INFO_Y + 4), g_name);
+		Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+		Msx2_TextCenter((u8)(MSX2_INFO_Y + 3), g_name);
 
 		if(Msx2_IsMonster(card))
 		{
 			u8 slot = SLOT_OF(g_zone, g_sel);
-			Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
-			Msx2_TextAt(56, (u8)(MSX2_INFO_Y + 14), "ATK");
-			Msx2_TextAt(140, (u8)(MSX2_INFO_Y + 14), "DEF");
-			Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
+			Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+			Msx2_TextAt(56, (u8)(MSX2_INFO_Y + 12), "ATK");
+			Msx2_TextAt(140, (u8)(MSX2_INFO_Y + 12), "DEF");
+			Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
 			// On the board the equips count; in the hand there is nothing to
 			// equip yet, so the printed figure is the card's own.
 			if(g_zone == ZONE_HAND)
 			{
-				Msx2_NumAt(82, (u8)(MSX2_INFO_Y + 14), (i16)Msx2_CardAtk(card));
-				Msx2_NumAt(166, (u8)(MSX2_INFO_Y + 14), (i16)Msx2_CardDef(card));
+				Msx2_NumAt(82, (u8)(MSX2_INFO_Y + 12), (i16)Msx2_CardAtk(card));
+				Msx2_NumAt(166, (u8)(MSX2_INFO_Y + 12), (i16)Msx2_CardDef(card));
 			}
 			else
 			{
 				u8 owner = (g_zone == ZONE_COM) ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER;
-				Msx2_NumAt(82, (u8)(MSX2_INFO_Y + 14),
+				Msx2_NumAt(82, (u8)(MSX2_INFO_Y + 12),
 				           Msx2_FieldAtk(owner, SLOT_INDEX(slot)));
-				Msx2_NumAt(166, (u8)(MSX2_INFO_Y + 14),
+				Msx2_NumAt(166, (u8)(MSX2_INFO_Y + 12),
 				           Msx2_FieldDef(owner, SLOT_INDEX(slot)));
 			}
 		}
 		else
 		{
-			Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
-			Msx2_TextCenter((u8)(MSX2_INFO_Y + 14), "SUPPORT CARD");
+			Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
+			Msx2_TextCenter((u8)(MSX2_INFO_Y + 12), "SUPPORT CARD");
 		}
 	}
 
-	Msx2_TextColor(MSX2_SAND, MSX2_BLACK);
-	Msx2_TextCenter((u8)(MSX2_INFO_Y + 24), Msx2_BoardPrompt());
+	Msx2_TextColor(MSX2_SAND, MSX2_PANEL_COLOR);
+	Msx2_TextCenter((u8)(MSX2_INFO_Y + 21), Msx2_BoardPrompt());
 }
 
 // Repaint whatever the page in front of us is not showing.  Bounded: a card is
@@ -340,7 +382,7 @@ static bool Msx2_BoardPaint(void)
 		painted = TRUE;
 	}
 
-	for(i = 0; (i < SLOT_COUNT) && (cards < 2); ++i)
+	for(i = 0; (i < SLOT_COUNT) && (cards < 1); ++i)
 	{
 		if((g_shown[page][i] == g_want[i]) && (g_shown_flag[page][i] == g_flag[i]))
 			continue;
@@ -354,7 +396,8 @@ static bool Msx2_BoardPaint(void)
 	if((g_cursor_at[page] != cursor) || (g_cursor_col_at[page] != color))
 	{
 		if(g_cursor_at[page] != MSX2_SLOT_NONE)
-			Msx2_BoardCursor(g_cursor_at[page], MSX2_RING_COLOR);
+			Msx2_BoardCursor(g_cursor_at[page],
+			                 Msx2_BoardRestColor(g_cursor_at[page]));
 		Msx2_BoardCursor(cursor, color);
 		g_cursor_at[page] = cursor;
 		g_cursor_col_at[page] = color;
@@ -382,17 +425,35 @@ void Msx2_BoardEnter(u8 stage)
 	g_queue_n = 0;
 	Msx2_BoardSnapshot();
 
-	// Compose page 1 whole -- the backdrop stream alone is far longer than a
-	// frame -- then hand page 0 a copy of it with one HMMM rather than doing
-	// all of it twice.
+	Msx2_RasterInit();
+
+	// The arena first, whole: the captured board with its HUD, hand band and
+	// info panel already in the picture.
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
-	Msx2_StreamScene(MSX2_BOARD_SEGMENT(stage), MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_VIEW_SEGMENT(stage), MSX2_PAGE_1);
+	Msx2_VideoShowPage(MSX2_PAGE_1);
+
+	// §4.6: the opening camera move, played straight onto the page the VDP is
+	// showing.  Each pose is a finished picture of the board band -- 114 rows,
+	// about a quarter of a second to stream with the display up -- and the LAST
+	// pose is byte for byte the resting view, so the move ends already showing
+	// the picture the duel is played on and needs no settle stream after it.
+	// Page 0 still holds whatever was there, which is why the copy below is
+	// after the move rather than before it.
+	Msx2_VideoDrawPage(MSX2_PAGE_1);
+	for(i = 0; i < MSX2_MOVE_OPENING_POSES; ++i)
+		Msx2_StreamBand((u16)(MSX2_MOVE_OPENING_SEGMENT
+		                      + (u16)i * MSX2_MOVE_POSE_SEGS),
+		                MSX2_BAND_Y, MSX2_BAND_H);
+
 	for(i = 0; i < SLOT_COUNT; ++i)
 		if(g_want[i] != MSX2_CARD_NONE)
 			Msx2_BoardBlitSlot(i);
 	Msx2_BoardHud();
 	Msx2_BoardInfo();
 	Msx2_BoardCursor(SLOT_OF(g_zone, g_sel), Msx2_BoardCursorColor());
+	// Hand page 0 a copy with one HMMM rather than streaming the cartridge and
+	// re-rasterising ten cards a second time.
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
 
@@ -567,9 +628,9 @@ static void Msx2_BoardMove(u8 pressed)
 		low = high = ZONE_COM;
 
 	if(pressed & MSX2_BTN_LEFT)
-		g_sel = (u8)((g_sel == 0) ? (MSX2_SLOTS - 1) : (g_sel - 1));
+		g_sel = (u8)((g_sel == 0) ? (FIELD_ROW - 1) : (g_sel - 1));
 	if(pressed & MSX2_BTN_RIGHT)
-		g_sel = (u8)((g_sel + 1) % MSX2_SLOTS);
+		g_sel = (u8)((g_sel + 1) % FIELD_ROW);
 
 	if(g_mode == M_PLACE)
 	{

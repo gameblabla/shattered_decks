@@ -20,9 +20,10 @@ MAP          := $(OUT_DIR)/waifu_msx2.map
 
 # NEO-16 spans 1 MB to 64 MB.  The default is the smallest size the baked
 # assets actually fit in (gen_msx_scenes.py prints MSX2_ASSET_ROM_KB, currently
-# ~1.7 MB), so the build-and-verify loop stays as fast as it can be; the
-# shipping cartridge is 16384.
-ROM_SIZE_KB  ?= 2048
+# ~2.9 MB -- the captured board, its camera move and the story busts are most of
+# it), so the build-and-verify loop stays as fast as it can be; the shipping
+# cartridge is 16384.
+ROM_SIZE_KB  ?= 4096
 
 # Headless verification (see msx2.sh for the full flow).
 OPENMSX      := $(MSXGL_PATH)/openmsx-headless-21.0-capture-neo1.2-planarfix-linux-x86_64/openmsx
@@ -30,7 +31,9 @@ MSX2_BIOS    := $(MSXGL_PATH)/msx2.rom
 FRAMES       ?= 600
 
 GENERATED    := src/generated/msx2_card_tables.h src/generated/msx2_scenes.h
-SCENE_BINS   := $(PROJ_DIR)/assets/title.bin $(PROJ_DIR)/assets/ending.bin
+SCENE_BINS   := $(PROJ_DIR)/assets/title.bin $(PROJ_DIR)/assets/ending.bin \
+                $(PROJ_DIR)/assets/board_views.bin \
+                $(PROJ_DIR)/assets/card_spans.bin
 SCENE_SRC    := assets/source/title/title256_msx2.png \
                 assets/source/ending/ending256x212.png
 
@@ -58,7 +61,11 @@ src/generated/msx2_card_tables.h: tools/msx2/gen_msx_tables.py src/generated/wai
 
 # The scene binaries and the header naming their segments are one output:
 # regenerating either alone would desync the ROM from the streamer.
-src/generated/msx2_scenes.h $(SCENE_BINS) &: tools/msx2/gen_msx_scenes.py $(SCENE_SRC)
+# The board is captured out of the shared renderer, so src/main.c is one of the
+# inputs: a change to the arena, the card geometry or the MSX2 camera pose has
+# to re-bake the cartridge or the two disagree about where a card goes.
+src/generated/msx2_scenes.h $(SCENE_BINS) &: tools/msx2/gen_msx_scenes.py \
+        tools/msx2/gen_msx_views.py src/main.c $(SCENE_SRC)
 	python3 tools/msx2/gen_msx_scenes.py
 
 rom: $(ROM)

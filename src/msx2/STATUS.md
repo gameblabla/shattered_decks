@@ -16,8 +16,8 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M1b — timing truth ROM (OUTI spacing, HMMM/LMMV throughput) | not started |
 | M2 — VRAM map, compositor skeleton, glyphs, page flip | **done**: GRAPHIC 7 layer, double-buffered page flip, glyphs, fills, the duel board |
 | M3 — asset pipeline, title screen | **done**: every picture the game shows is baked from `assets/source/` and streamed from the cartridge |
-| M4 — the duel screen, played by a person | **done**: place, fuse, attack, end turn, all on real input |
-| M5 — story mode | **done**: opening, sanctum map, dialogue, five duels, ending |
+| M4 — the duel screen, played by a person | **done**: place, fuse, attack, end turn on real input, on the game's own 3D arena, with the cards mapped into their true projected quads and a baked camera move at the door |
+| M5 — story mode | **done**: opening, sanctum map, dialogue, five duels, ending, with the dialogue a composited visual-novel scene — both speakers on the shipped painting at once |
 
 ### The title screen
 
@@ -57,52 +57,104 @@ the ROM.
 
 ### The duel screen
 
-Fifteen 40x48 card rectangles on a baked arena — five COM monsters, five of the
-player's, and the player's hand — over one of four streamed backdrops chosen by
-how far the story has got. Nothing about it moves: a Z80 cannot redraw a 54 KB
-screen at animation rates, so the presentation is a fixed view and a card that
-changes is the one rectangle that changes (`Msx2_StreamRect`, about a frame per
-card with the display running). A slot that empties is put back with the
-backdrop's own quantised bytes out of the SLOTS blob, and the selection cursor
-lives inside a flat ring baked around every slot, so moving it is four fills and
-repairs nothing.
+**The board is the game's board.** Nothing about the arena is drawn offline:
+`tools/msx2/gen_msx_views.py` builds the capture tool out of `src/main.c`, runs
+it with `--dump-msx2-views`, and bakes what `render_board()` drew. The floor,
+the slab sides, the perspective and the slot layout are whatever the other five
+targets render (`MSX2_PORT_PLAN.md` §0.3.1, §4.3). A view whose art disagrees
+with the other targets is a capture bug, not a styling choice, which is the
+whole point of taking this route.
+
+The pose is `msx2_top_camera()` — raked, not straight down. A pure top-down
+camera projects every slot to an axis-aligned rectangle, and the perspective
+rasterizer would then be an elaborate way of blitting; raking the eye back buys
+real trapezoids, so the COM row reads as further away because it is.
+
+**The cards are drawn into those trapezoids**, by the §8 Tier A span rasterizer:
+
+* `gen_msx_views.py` rasterises the 40x48 master texture into each slot's quad
+  *offline* and serialises the result as run lengths — `COPY n` (texels straight
+  from RAM to the VDP data port), `DUP n` (magnification, the same byte pushed
+  again, no source read and no address re-set) and `ADV n` (minification). The
+  Z80 does no arithmetic at all;
+* a row whose texels run backwards — every COM-side card, which the shared
+  renderer rotates 180 degrees on the board plane — reads the **mirrored** copy
+  of the texture forwards instead. One extra 158 KB blob buys that; a reverse
+  block copy would have been a second inner loop earning nothing else;
+* the texture and the program are pulled into RAM for the draw (1,920 + 1,198
+  bytes), so the inner loop never touches the mapper. About two frames a card,
+  paid when a card *arrives*: a settled board costs nothing;
+* an emptied slot is put back from the SLOTS blob, which is the *captured*
+  arena's own quantised bytes at that quad's bounding box.
+
+The selection bracket follows the quad — a rectangle around a trapezoid sits
+visibly beside the card it is selecting — and it is drawn into a flat ring the
+generator bakes just outside every quad, so erasing it is the same four VDP
+`LINE` commands in `MSX2_RING_COLOR` and no artwork underneath is ever repaired.
+
+**The hand is not board geometry.** It is a flat HUD strip on every target, so
+it stays five axis-aligned 40x48 blits in a baked band — which also keeps the
+cards a player is choosing between at a readable size.
+
+**A duel opens on a baked camera move** (§4.6): eight whole pictures of the
+114-row board band, streamed one after the next by the ordinary §6.2 path, about
+a quarter of a second each. The last pose is byte for byte the resting view, so
+the move ends already showing the picture the duel is played on and needs no
+settle stream after it. There is no codec and no decoder anywhere in the port.
+The write front crawling down the screen is visible and is the artefact §4.6.3
+predicted; at these durations it reads as a deliberate transition.
+
+Mid-duel camera moves are **not** done, and the reason is worth writing down: a
+baked pose is a picture of the *empty* board, because cards depend on duel
+state. That is truthful for an opening sweep and would be a visible defect for
+any push during a turn — every monster would blink out for the second the camera
+moved. They wait on the rasterizer being fast enough to repaint fifteen quads
+inside a pose's own streaming time.
 
 The player places monsters in attack or defence, plays supports and equips,
 builds a multi-card fusion chain out of the hand, attacks, and ends the turn.
 Both pages are tracked separately: this screen remembers what each buffer is
-showing and paints the difference, at most two cards a frame.
+showing and paints the difference, at most one card a frame.
 
 ### Story mode
 
 `STORY MODE` from the title runs the whole thing:
 
-* the **opening** — Serena's four remembered lines, typed into the text box of a
-  baked composite;
+* the **opening** — Serena's four remembered lines, typed into the text box over
+  the desert painting with her bust standing on it;
 * the **sanctum map** — the stage the frontier has reached, the five opponents
   with their titles, everything past the frontier shown `- SEALED -`, and
   `LEAVE THE ROAD` back to the title. A cleared opponent can be replayed without
   moving the frontier, which is `g_story_progress` versus `g_story_duel_index`
   in `src/main.c` by another name;
 * the **dialogue** — the nine or ten lines before each duel, in the writing's own
-  order, alternating between Serena's composite and the opponent's;
+  order;
 * the **duel**, dealt against the selected opponent on the stage's arena;
 * the **ending** — the four closing lines over the ending painting, once the
   fifth opponent falls.
 
-Two things make this affordable on a Z80. Each dialogue beat is **one whole
-picture**: backdrop, character and an empty text box flattened into a single
-54,272-byte GRAPHIC 7 screen at bake time, so changing speaker is one stream and
-nothing else — the alternative, blitting a portrait over a backdrop, is two
-copies for a picture that then sits perfectly still. And the text is a
-**fixed-stride record table in the cartridge**, parsed straight out of
-`src/main.c` by `gen_msx_scenes.py`: ten kilobytes of prose is ten kilobytes the
-32 KB code budget does not have, and a second hand-copy of five thousand words
-of dialogue is a second copy that goes stale.
+**A dialogue beat is a composited visual-novel scene** (§14.2), not a flattened
+picture of one. The backdrop is one of the shipped `assets/source/bg/`
+paintings with the text box baked into it, streamed **once per scene**. Serena
+stands on the left and the opponent on the right, both on screen at the same
+time, blitted at runtime from baked run tables; the inactive speaker is dimmed
+rather than removed. The two brightness variants are cut from the same alpha
+mask, so they cover byte for byte the same pixels and a speaker change is a pure
+overwrite of two rects — no stream, no flip, no background repair. That replaced
+about 2.2 MB of per-(duel, speaker) composites with 393 KB of busts.
 
-The typewriter is per page, not per frame. A partial repaint reaches only the
-buffer it was drawn on, so each page carries its own character cursor and
-catches up to the reveal on its own turn; that is what lets a line appear
-character by character on a double-buffered screen without redrawing the box.
+The run table and the pixels are stored apart rather than interleaved, which is
+the one departure from §14.2's letter: a bust is then blitted with the rectangle
+copy the port already had, one call per opaque run, instead of a new skip-list
+inner loop. Same arithmetic, one fewer piece of assembly.
+
+The text pipeline is untouched. Story prose is still a **fixed-stride record
+table in the cartridge**, parsed straight out of `src/main.c` by
+`gen_msx_scenes.py`: ten kilobytes of prose is ten kilobytes the 32 KB code
+budget does not have, and a second hand-copy of five thousand words of dialogue
+is a second copy that goes stale. The typewriter is still per page, so a line
+appears character by character on a double-buffered screen without the box being
+redrawn.
 
 ### M1a evidence
 
@@ -113,7 +165,7 @@ own AI) and reads the state probe back out of a RAM dump:
 ```
 status       OK
 duels done   2   player 2  /  com 0
-RAM          data ends 0xC72F, SP 0xF361, 11314 bytes free between them
+RAM          data ends 0xD364, SP 0xF361, 8189 bytes free between them
 ```
 
 Complete duels, cycling the five story opponents and free battle, with no
@@ -123,11 +175,14 @@ and the AI all run on a Z80 inside the RAM budget.
 The duel count is far lower than the 417 the renderer-less M1a build managed in
 900 seconds, and that is the soak measuring the *presented* game: it takes one
 rules step every frame (a person takes one every few seconds), streams a fresh
-54 KB arena for every duel, and repaints cards underneath both. The number to
-watch here is `status`, not the rate.
+54 KB arena and plays a two-second camera move for every duel, and rasterises
+cards into perspective quads underneath all of it. The number to watch here is
+`status`, not the rate.
 
-Footprint (`./msx2.sh ram`): 1839 bytes of static RAM (11.3 KB free below the
-stack), 27,201 bytes in `_CODE` and 5,817 in the page-0 bank.
+Footprint (`./msx2.sh ram`): 4,964 bytes of static RAM (8.2 KB free below the
+stack) and 27,731 bytes in `_CODE`. The RAM went up by the rasterizer's two
+buffers -- the 1,920-byte card texture and the 1,198-byte span program -- which
+is what keeps its inner loop clear of the mapper.
 
 ---
 
@@ -206,7 +261,8 @@ crash into a number instead of a black screen.
 |---|---|
 | `msx2_main.c` | boot, vblank ISR, the scene loop, the blind autoplay driver |
 | `msx2_title.c/.h` | title screen: streamed art, logo, attract prompt, menu |
-| `msx2_board.c/.h` | the duel screen: the fifteen card rectangles, the cursor, the HUD |
+| `msx2_board.c/.h` | the duel screen: the ten projected slots, the hand strip, the cursor, the HUD, the opening camera move |
+| `msx2_raster.c/.h` | §8 Tier A: the baked span-program card rasterizer |
 | `msx2_story.c/.h` | story mode: the opening, the sanctum map, dialogue, the ending |
 | `msx2_video.c/.h` | GRAPHIC 7 layer: pages, fills, glyphs, 2x text |
 | `msx2_input.c/.h` | joystick + keyboard, latched once per frame |
@@ -227,6 +283,15 @@ Generated: `src/generated/msx2_card_tables.h` from `tools/msx2/gen_msx_tables.py
 (ATK/DEF/attribute/tribe lifted out of `waifu_assets.h`, 432 bytes of ROM), and
 `src/generated/msx2_scenes.h` plus `src/msx2/assets/*.bin` from
 `tools/msx2/gen_msx_scenes.py` (full-screen art dithered to GRB332).
+
+`tools/msx2/gen_msx_views.py` is the board's own generator, imported by
+`gen_msx_scenes.py` so the cartridge segment map stays owned by one tool. It
+compiles `src/main.c` with `-DWAIFU_MSX2_VIEW_DUMP` into
+`build/msx2_capture/waifu_msx2_dump`, runs `--dump-msx2-views`, and bakes the
+resting view, the empty-slot tiles, the span programs and the camera-move strip
+out of what the shared renderer drew. **`src/main.c` is therefore a build input
+of the cartridge**: a change to the arena, to the card geometry or to
+`msx2_top_camera()` re-bakes it, and `Makefile.msx2` says so.
 `tools/msx2/pack_msx_rom.py` writes those binaries into the built cartridge at
 the segments the header names, and fails the build if the streamer has drifted
 above 0x8000.
@@ -252,7 +317,7 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
 
 ## Open issues, in priority order
 
-1. **Code is 10.6 KB past 0x8000.** SDCC links `_CODE` contiguously from 0x4000,
+1. **Code is 11.3 KB past 0x8000.** SDCC links `_CODE` contiguously from 0x4000,
    so it spills into page 2 — the *switched* streaming window. Streaming lives
    with this today only because the streamer is itself below 0x8000 and runs
    with interrupts off, so nothing in the swapped-out window is reachable while
@@ -282,7 +347,15 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
 4. **Sound is stubs.** `msx2_audio.c` records the requested track and reserves
    700 bytes for the Arkos AKG + ayFX state, so the RAM is already spent.
 
-5. **No name entry.** The other targets let the player name Serena before the
+5. **Mid-duel camera moves are not baked** (`MSX2_PORT_PLAN.md` §21.2). A
+   baked pose is a picture of the empty board, so a push during a turn would
+   blink every monster off the field for a second. The strip player is already
+   general; what the mid-duel moves need is a rasterizer fast enough to repaint
+   fifteen quads inside a pose's own streaming time. Card flight (§4.5) is the
+   other half of the same gap: the offline rasteriser can already turn a quad
+   into a span program, it just does not yet interpolate a quad along a path.
+
+6. **No name entry.** The other targets let the player name Serena before the
    first dream; here she is always SERENA, and the title's help line says so.
 
 ---

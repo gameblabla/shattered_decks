@@ -83,6 +83,14 @@ void Msx2_ClearPage(u8 color);
 // A 1-pixel outline, drawn as four fills.
 void Msx2_FrameRect(u8 x, u8 y, u16 w, u8 h, u8 color);
 
+// A 1-pixel outline around an arbitrary quad, drawn with four VDP LINE
+// commands.  The duel board's slots are projected trapezoids rather than
+// rectangles (MSX2_PORT_PLAN.md §4.3), so the selection bracket has to follow
+// the perspective or it sits visibly beside the card it is selecting.  The
+// quad is eight bytes -- x0,y0..x3,y3 -- which is exactly what the generated
+// slot table holds.
+void Msx2_QuadOutline(const u8* quad, u8 color);
+
 // VRAM to VRAM inside the draw page, via HMMM -- the command engine does it all.
 // Used to stash and restore strips of a streamed picture in the offscreen rows
 // below the visible 212, which is how anything drawn over artwork gets undone

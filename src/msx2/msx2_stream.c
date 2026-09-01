@@ -189,6 +189,130 @@ void Msx2_StreamRect(u16 segment, u16 offset, u8 x, u8 y, u8 w, u8 h)
 	}
 }
 
+// A whole band of full-width rows.  Same inner loop as a rectangle -- the width
+// is 256, which is exactly what a zero byte count means to `outi`, so the row
+// blitter needs no change to carry it.
+void Msx2_StreamBand(u16 segment, u8 y, u8 h)
+{
+	VDP_CommandWait();
+
+	u8 page = Msx2_VideoGetDrawPage();
+	u16 offset = 0;
+	u8 row;
+
+	g_blit_len = 0;                     // 0 means 256 to the djnz-style loop
+	g_blit_lo = 0;
+
+	for(row = 0; row < h; ++row)
+	{
+		u16 line = (u16)y + row;
+		g_blit_r14 = (u8)(((u16)page << 2) | (u8)(line >> 6));
+		g_blit_hi = (u8)((u8)(line & 0x3F) | 0x40);
+		g_blit_segment = segment;
+		g_blit_src = (u16)(MSX2_NEO_WINDOW + offset);
+		Msx2_BlitRow();
+
+		offset = (u16)(offset + 256);
+		if(offset >= MSX2_NEO_SEGMENT_SZ)
+		{
+			offset = 0;
+			++segment;
+		}
+	}
+}
+
+// The DUP of §8.4.  The VDP's write address auto-advances, so a magnified run
+// is n OUTs and nothing else -- no source pointer, no address re-set.  The
+// padding is the same 32 T-states per byte the rectangle blitter pays: with the
+// display on, GRAPHIC 7 drops bytes the VDP was not ready for, and a dropped
+// byte shows up as tearing rather than as an error.
+static u8 g_poke_value;
+static u8 g_poke_count;
+
+void Msx2_PokeRun(u8 value, u8 n)
+{
+	if(n == 0)
+		return;
+	g_poke_value = value;
+	g_poke_count = n;
+	__asm
+		ld		a, (_g_poke_count)
+		ld		b, a
+		ld		a, (_g_poke_value)
+		ld		c, #0x98
+		// A local label, not a named one: a named label ends the assembler's
+		// local-label scope, and the compiler's own "00103$" branch out of the
+		// early return above is then undefined at the point it is used.
+	00090$:
+		out		(c), a
+		nop
+		nop
+		djnz	00090$
+	__endasm;
+}
+
+static const u8* g_poke_src;
+
+void Msx2_PokeBlock(const u8* src, u8 n)
+{
+	if(n == 0)
+		return;
+	g_poke_src = src;
+	g_poke_count = n;
+	__asm
+		ld		hl, (_g_poke_src)
+		ld		a, (_g_poke_count)
+		ld		b, a
+		ld		c, #0x98
+	00091$:
+		outi
+		nop
+		jr		nz, 00091$
+	__endasm;
+}
+
+void Msx2_PokeAt(u8 x, u8 y)
+{
+	u16 line = (u16)y + ((u16)Msx2_VideoGetDrawPage() << 8);
+
+	VDP_CommandWait();
+	g_blit_r14 = (u8)(line >> 6);
+	g_blit_lo = x;
+	g_blit_hi = (u8)((u8)(line & 0x3F) | 0x40);
+	__asm
+		di
+		ld		a, (_g_blit_r14)
+		out		(#0x99), a
+		ld		a, #(14 | 0x80)
+		out		(#0x99), a
+		ld		a, (_g_blit_lo)
+		out		(#0x99), a
+		ld		a, (_g_blit_hi)
+		out		(#0x99), a
+		ei
+	__endasm;
+}
+
+void Msx2_RomReadLong(u16 segment, u16 offset, u8* dst, u16 len)
+{
+	while(len != 0)
+	{
+		u16 room = (u16)(MSX2_NEO_SEGMENT_SZ - offset);
+		u8 chunk = (len > 255) ? 255 : (u8)len;
+		if((u16)chunk > room)
+			chunk = (u8)room;
+		Msx2_RomRead(segment, offset, dst, chunk);
+		dst += chunk;
+		len = (u16)(len - chunk);
+		offset = (u16)(offset + chunk);
+		if(offset >= MSX2_NEO_SEGMENT_SZ)
+		{
+			offset = 0;
+			++segment;
+		}
+	}
+}
+
 void Msx2_RomRead(u16 segment, u16 offset, u8* dst, u8 len)
 {
 	g_blit_segment = segment;
