@@ -77,18 +77,21 @@
 // - VDP_UNIT_X16 ................. X use 16-bits and Y use 8-bits values
 // - VDP_UNIT_Y16 ................. X use 8-bits and Y use 16-bits values
 // - VDP_UNIT_U16 ................. X and Y use 16-bits values
-#define VDP_UNIT					VDP_UNIT_X16
+// GRAPHIC 7 double buffering puts page 1 at command-engine Y 256-511, so Y must
+// be 16-bit; X reaches 255 here but 16-bit both ways keeps the compositor's
+// coordinate maths uniform.
+#define VDP_UNIT					VDP_UNIT_U16
 
 // VDP screen modes (additionnal limitations come from the selected MSX_VERSION)
-#define VDP_USE_MODE_T1				TRUE	// MSX1		Screen 0 Width 40
-#define VDP_USE_MODE_G1				TRUE	// MSX1		Screen 1
-#define VDP_USE_MODE_G2				TRUE	// MSX1		Screen 2
-#define VDP_USE_MODE_MC				TRUE	// MSX1		Screen 3
-#define VDP_USE_MODE_T2				TRUE	// MSX2		Screen 0 Width 80
-#define VDP_USE_MODE_G3				TRUE	// MSX2		Screen 4
-#define VDP_USE_MODE_G4				TRUE	// MSX2		Screen 5
-#define VDP_USE_MODE_G5				TRUE	// MSX2		Screen 6
-#define VDP_USE_MODE_G6				TRUE	// MSX2		Screen 7
+#define VDP_USE_MODE_T1				FALSE	// MSX1		Screen 0 Width 40
+#define VDP_USE_MODE_G1				FALSE	// MSX1		Screen 1
+#define VDP_USE_MODE_G2				FALSE	// MSX1		Screen 2
+#define VDP_USE_MODE_MC				FALSE	// MSX1		Screen 3
+#define VDP_USE_MODE_T2				FALSE	// MSX2		Screen 0 Width 80
+#define VDP_USE_MODE_G3				FALSE	// MSX2		Screen 4
+#define VDP_USE_MODE_G4				FALSE	// MSX2		Screen 5
+#define VDP_USE_MODE_G5				FALSE	// MSX2		Screen 6
+#define VDP_USE_MODE_G6				FALSE	// MSX2		Screen 7
 #define VDP_USE_MODE_G7				TRUE	// MSX2/2+	Screen 8, 10, 11 & 12
 
 #define VDP_USE_VRAM16K				TRUE	// Use 16K VRAM access functions on MSX2
@@ -205,18 +208,18 @@
 //-----------------------------------------------------------------------------
 
 // Print module setting
-#define PRINT_USE_TEXT				TRUE	// Allow use of Text font (T1-T2, G1-G3)
+#define PRINT_USE_TEXT				FALSE	// Allow use of Text font (T1-T2, G1-G3)
 #define PRINT_USE_BITMAP			TRUE	// Allow use of Bitmap font (G4-G7)
-#define PRINT_USE_VRAM				TRUE	// Allow use of VRAM stored font (G4-G7)
-#define PRINT_USE_SPRITE			TRUE	// Allow use of Sprite font (G3-G7)
-#define PRINT_USE_FX_SHADOW			TRUE	// [Bitmap] Allow use of text shadow
-#define PRINT_USE_FX_OUTLINE		TRUE	// [Bitmap] Allow use of text outline
+#define PRINT_USE_VRAM				FALSE	// Allow use of VRAM stored font (G4-G7)
+#define PRINT_USE_SPRITE			FALSE	// Allow use of Sprite font (G3-G7)
+#define PRINT_USE_FX_SHADOW			FALSE	// [Bitmap] Allow use of text shadow
+#define PRINT_USE_FX_OUTLINE		FALSE	// [Bitmap] Allow use of text outline
 #define PRINT_USE_2_PASS_FX			FALSE	// [Bitmap] Allow use 2-pass FX render to prevent character overlap
-#define PRINT_USE_GRAPH				TRUE	// Allow use of character lines and boxes
+#define PRINT_USE_GRAPH				FALSE	// Allow use of character lines and boxes
 #define PRINT_USE_VALIDATOR			TRUE	// Add validator character code
 #define PRINT_USE_UNIT				FALSE	// Display integer type (h: hexadecimal, b: binary)
-#define PRINT_USE_FORMAT			TRUE	// Add printf type function
-#define PRINT_USE_32B				TRUE	// Allow to print 32-bits integers
+#define PRINT_USE_FORMAT			FALSE	// Add printf type function
+#define PRINT_USE_32B				FALSE	// Allow to print 32-bits integers
 #define PRINT_USE_MULTIFONT			FALSE	// Use multiple fonts (each one with its own data structure)
 #define PRINT_SKIP_SPACE			TRUE	// Skill space character
 #define PRINT_COLOR_NUM				12		// 1 color per line

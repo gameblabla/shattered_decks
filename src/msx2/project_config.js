@@ -22,6 +22,9 @@ ProjName = "waifu_msx2";
 //   this port never compiles it (MSX2_PORT_PLAN.md §1.1).
 ProjModules = [
 	"msx2_main",
+	"msx2_title",
+	"msx2_video",
+	"msx2_input",
 	"msx2_duel",
 	"msx2_cards",
 	"msx2_probe",

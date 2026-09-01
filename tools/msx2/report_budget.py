@@ -68,13 +68,13 @@ def main():
                                                      bar(code_size, PAGE1_END - 0x4000)))
     if code_end > PAGE1_END:
         over = code_end - PAGE1_END
-        print("         WARNING: %d bytes past 0x8000 -- that is the NEO streaming"
+        print("         NOTE: %d bytes sit past 0x8000, inside the NEO streaming"
               % over)
-        print("         window (segment 1 at boot).  Fine while nothing switches"
-              " bank 2,")
-        print("         fatal the moment the asset streamer does.  Bank this code or"
-              " move")
-        print("         it to page 0 before streaming lands.")
+        print("         window (segment 1 at boot).  None of it exists while a scene")
+        print("         is streaming, which is why the streamer is linked below")
+        print("         0x8000 and runs with interrupts off; pack_msx_rom.py fails")
+        print("         the build if that stops being true.  Anything that must run")
+        print("         *during* a stream has to live below 0x8000 too.")
     if code_end > PAGE2_END:
         print("         FATAL: code runs past 0xBFFF, into RAM.")
     print("  home                    %6d bytes" % home)

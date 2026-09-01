@@ -27,7 +27,10 @@ OPENMSX      := $(MSXGL_PATH)/openmsx-headless-21.0-capture-neo1.2-planarfix-lin
 MSX2_BIOS    := $(MSXGL_PATH)/msx2.rom
 FRAMES       ?= 600
 
-GENERATED    := src/generated/msx2_card_tables.h
+GENERATED    := src/generated/msx2_card_tables.h src/generated/msx2_scenes.h
+SCENE_BINS   := $(PROJ_DIR)/assets/title.bin $(PROJ_DIR)/assets/ending.bin
+SCENE_SRC    := assets/source/title/title256_msx2.png \
+                assets/source/ending/ending256x212.png
 
 SOURCES := $(wildcard $(PROJ_DIR)/*.c) $(wildcard $(PROJ_DIR)/*.h) \
            $(wildcard $(PROJ_DIR)/*.s) $(PROJ_DIR)/project_config.js \
@@ -48,13 +51,19 @@ check-sdk:
 # every build depend on them.
 tables: $(GENERATED)
 
-$(GENERATED): tools/msx2/gen_msx_tables.py src/generated/waifu_assets.h
+src/generated/msx2_card_tables.h: tools/msx2/gen_msx_tables.py src/generated/waifu_assets.h
 	python3 tools/msx2/gen_msx_tables.py
+
+# The scene binaries and the header naming their segments are one output:
+# regenerating either alone would desync the ROM from the streamer.
+src/generated/msx2_scenes.h $(SCENE_BINS) &: tools/msx2/gen_msx_scenes.py $(SCENE_SRC)
+	python3 tools/msx2/gen_msx_scenes.py
 
 rom: $(ROM)
 
-$(ROM): $(SOURCES) $(GENERATED) | check-sdk
+$(ROM): $(SOURCES) $(GENERATED) $(SCENE_BINS) tools/msx2/pack_msx_rom.py | check-sdk
 	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) node $(BUILD_JS)
+	python3 tools/msx2/pack_msx_rom.py $(ROM)
 	@ls -l $(ROM)
 
 verify: rom

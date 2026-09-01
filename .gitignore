@@ -105,4 +105,7 @@ tools/pcfxtools/pcfx-cdlink
 src/msx2/out/
 src/msx2/emul/
 src/msx2/lib/
+# Baked GRAPHIC 7 scene data and its previews, regenerated from assets/source
+# by tools/msx2/gen_msx_scenes.py.
+src/msx2/assets/
 *.tar.gz
