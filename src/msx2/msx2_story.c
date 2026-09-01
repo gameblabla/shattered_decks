@@ -15,6 +15,11 @@
 #define PH_NARRATE   0   // the opening or the ending: one voice, no portrait
 #define PH_TALK      1   // pre-duel dialogue, two speakers, two composites
 #define PH_MAP       2   // the sanctum road: pick an opponent, or leave
+#define PH_NAME      3   // eight-letter player name entry
+#define PH_CODE_IN   4   // continue-code entry
+#define PH_CODE_OUT  5   // continue code shown at the sanctum
+#define PH_DECK      6   // compact deck editor
+#define PH_REWARD    7   // a story-win card reveal
 
 // Which run of records the narration is reading, so the end of it knows where
 // to go: the opening leads to the map, the ending leads back to the title.
@@ -40,14 +45,41 @@
 #define REVEAL_RATE  2   // characters per frame: a full three-row line in a second
 
 // Map geometry, inside the panel the backdrop was baked with.
-#define MAP_HEAD_Y   38
-#define MAP_ROW_Y(n) (u8)(58 + (n) * 20)
-#define MAP_BACK_Y   160
-#define MAP_HELP_Y   174
+#define MAP_HEAD_Y   36
+#define MAP_ROW_Y(n) (u8)(46 + (n) * 15)
+#define MAP_DECK_Y   127
+#define MAP_CODE_Y   145
+#define MAP_BACK_Y   163
+#define MAP_HELP_Y   176
 #define MAP_CURSOR_X 34
 #define MAP_NAME_X   48
 #define MAP_TITLE_X  132
-#define MAP_ROWS     (MSX2_STORY_MAX_DUELS + 1)   // the opponents, then LEAVE
+#define MAP_DECK_ROW (MSX2_STORY_MAX_DUELS)
+#define MAP_CODE_ROW (MSX2_STORY_MAX_DUELS + 1)
+#define MAP_BACK_ROW (MSX2_STORY_MAX_DUELS + 2)
+#define MAP_ROWS     (MSX2_STORY_MAX_DUELS + 3)
+
+#define STORY_DECK_SIZE       WAIFU_DECK_SIZE
+#define STORY_STORAGE_SIZE    64
+#define STORY_NAME_LEN        8
+#define STORY_CODE_LEN        16
+#define STORY_EDIT_SLOTS      4
+#define EDIT_DECK_Y           44
+#define EDIT_STORAGE_Y        139
+#define EDIT_CARD_X(n)        (u8)(8 + (u8)(n) * 49)
+
+#define CODE_ALPHABET "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+extern u8 Msx2_StoryGridCursor(u8 cursor, u8 cols, u8 count, u8 pressed);
+extern u32 Msx2_StoryNameHash(const c8* name, u8 len);
+extern u8 Msx2_StoryStageForProgress(u8 progress);
+extern const c8* Msx2_StoryStageNameForProgress(u8 progress);
+extern void Msx2_StoryDrawCardThumb(u8 card, u8 x, u8 y);
+extern void Msx2_StoryBuildCode(c8* code, u8 progress, const c8* name,
+	                             const u8* deck);
+extern bool Msx2_StoryDecodeCode(const c8* code, u8 len, u8* progress,
+	                                c8* name, u8* swaps);
+extern bool Msx2_StoryTakeStorageCard(u8* storage, u8* count, u8 card);
 
 static u8  g_phase;
 static u8  g_progress;      // the frontier: the furthest opponent unlocked
@@ -76,6 +108,21 @@ static u8  g_map_dirty;
 
 static u8  g_cursor;
 
+static c8  g_player_name[STORY_NAME_LEN + 1];
+static u8  g_name_len;
+static u8  g_name_cursor;
+static c8  g_code[STORY_CODE_LEN + 1];
+static u8  g_code_len;
+static u8  g_code_cursor;
+static u8  g_code_error;
+static u8  g_editor_target;
+static u8  g_editor_storage_cursor;
+static u8  g_editor_storage_mode;
+static u8  g_story_deck[STORY_DECK_SIZE];
+static u8  g_story_storage[STORY_STORAGE_SIZE];
+static u8  g_story_storage_count;
+static u8  g_reward_card;
+
 static c8  g_text[MSX2_LINE_STRIDE];
 static c8  g_opp[MSX2_OPP_STRIDE / 2];
 
@@ -100,6 +147,60 @@ static void Msx2_StoryReadOpp(u8 duel, u8 field)
 	                   + (u16)field * (MSX2_OPP_STRIDE / 2)),
 	             (u8*)g_opp, MSX2_OPP_STRIDE / 2);
 	g_opp[MSX2_OPP_STRIDE / 2 - 1] = 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Story collection and continue codes
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void Msx2_StoryBuildStarterDeck(void)
+{
+	WaifuDeck deck;
+	WaifuDeckRng rng;
+	u8 i;
+
+	waifu_deck_rng_seed(&rng, Msx2_StoryNameHash(g_player_name, STORY_NAME_LEN));
+	waifu_deck_build_random(&deck, &rng, 0);
+	for(i = 0; i < STORY_DECK_SIZE; ++i)
+		g_story_deck[i] = (u8)deck.cards[i];
+	g_story_storage_count = 0;
+	for(i = 0; i < STORY_STORAGE_SIZE; ++i)
+		g_story_storage[i] = MSX2_CARD_NONE;
+	/* Rewards use the duel index as their stable identity, so the collection
+	   can be reconstructed from the progress bits in a continue code. */
+	for(i = 0; i < g_progress && i < MSX2_STORY_MAX_DUELS; ++i)
+		g_story_storage[g_story_storage_count++] =
+			(u8)((i * 13 + 7) % MSX2_CARD_COUNT);
+}
+
+static bool Msx2_StoryParseCode(void)
+{
+	u8 swaps[STORY_EDIT_SLOTS];
+	u8 i;
+	if(!Msx2_StoryDecodeCode(g_code, g_code_len, &g_progress,
+	                         g_player_name, swaps))
+		return FALSE;
+	if(g_progress > MSX2_STORY_MAX_DUELS)
+		g_progress = MSX2_STORY_MAX_DUELS;
+	Msx2_StoryBuildStarterDeck();
+	for(i = 0; i < STORY_EDIT_SLOTS; ++i)
+	{
+		if(swaps[i] != g_story_deck[i])
+		{
+			/* A saved override is an exchange with the collection, not a free
+			   card injection.  Reject a checksum-valid code that asks for a
+			   card the player could not have earned or stored. */
+			if(!Msx2_StoryTakeStorageCard(g_story_storage,
+			                              &g_story_storage_count, swaps[i]))
+				return FALSE;
+			if(g_story_storage_count < STORY_STORAGE_SIZE)
+				g_story_storage[g_story_storage_count++] = g_story_deck[i];
+		}
+		g_story_deck[i] = swaps[i];
+	}
+	g_duel_index = (g_progress >= MSX2_STORY_MAX_DUELS)
+		? (MSX2_STORY_MAX_DUELS - 1) : g_progress;
+	return TRUE;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -185,7 +286,7 @@ static void Msx2_StoryDrawChar(u8 index)
 static const c8* Msx2_StorySpeakerName(void)
 {
 	if(g_speaker == 0)
-		return "SERENA";
+		return g_player_name;
 	if(g_speaker == 1)
 	{
 		Msx2_StoryReadOpp(g_duel_index, 0);
@@ -389,29 +490,144 @@ static void Msx2_StoryEnterNarration(u8 which)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  The map
+//  Name and continue-code screens
 // ─────────────────────────────────────────────────────────────────────────────
 
-static u8 Msx2_StoryStage(void)
+static void Msx2_StoryUiDirty(void)
 {
-	// story_scene_for_progress() in src/main.c: the road changes under the
-	// player as the frontier moves, not as the selection does.
-	if(g_progress >= 4) return 3;
-	if(g_progress >= 3) return 2;
-	if(g_progress >= 2) return 1;
-	return 0;
+	g_map_dirty = ALL_PAGES;
 }
 
-static const c8* Msx2_StoryStageName(void)
+static void Msx2_StoryNamePaint(void)
 {
-	switch(Msx2_StoryStage())
+	u8 i;
+	c8 one[2];
+
+	Msx2_Fill(18, 22, 220, 164, MSX2_PANEL_COLOR);
+	Msx2_FrameRect(18, 22, 220, 164, MSX2_GOLD);
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(30, "NAME YOUR DUELIST");
+	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(48, "CHOOSE EIGHT LETTERS");
+	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
+	Msx2_TextAt(70, 68, "NAME:");
+	for(i = 0; i < STORY_NAME_LEN; ++i)
 	{
-	case 1:  return "STONE TEMPLE";
-	case 2:  return "EMBER CRATER";
-	case 3:  return "THE VOID";
-	default: return "DESERT ROAD";
+		one[0] = (i < g_name_len) ? g_player_name[i] : '_';
+		one[1] = 0;
+		Msx2_TextColor((i == g_name_len) ? MSX2_GOLD : MSX2_WHITE,
+		               MSX2_PANEL_COLOR);
+		Msx2_TextAt((u8)(111 + i * 12), 68, one);
 	}
+
+	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+	Msx2_TextAt(45, 100, "ABCDEFGHIJKLM");
+	Msx2_TextAt(45, 120, "NOPQRSTUVWXYZ");
+	one[0] = (c8)('A' + g_name_cursor);
+	one[1] = 0;
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextAt((u8)(45 + (g_name_cursor % 13) * 13),
+	            (u8)(100 + (g_name_cursor / 13) * 20), one);
+	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(140, "SPACE: LETTER / RETURN: ACCEPT");
+	Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(153, "ESC: DELETE");
 }
+
+static void Msx2_StoryEnterName(void)
+{
+	g_phase = PH_NAME;
+	g_name_len = 0;
+	g_name_cursor = 0;
+	g_player_name[0] = 0;
+	Msx2_VideoDrawPage(MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_SCENE_TITLE_SEGMENT, MSX2_PAGE_1);
+	Msx2_StoryNamePaint();
+	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
+	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_MusicPlay(MSX2_MUSIC_OPENING);
+	g_map_dirty = 0;
+}
+
+static bool Msx2_StoryAcceptName(void)
+{
+	if(g_name_len == 0)
+		return FALSE;
+	while(g_name_len < STORY_NAME_LEN)
+		g_player_name[g_name_len++] = 'A';
+	g_player_name[STORY_NAME_LEN] = 0;
+	g_progress = 0;
+	g_duel_index = 0;
+	Msx2_StoryBuildStarterDeck();
+	Msx2_StoryEnterNarration(NARR_INTRO);
+	return TRUE;
+}
+
+static void Msx2_StoryCodePaint(void)
+{
+	c8 one[2];
+	Msx2_Fill(14, 20, 228, 170, MSX2_PANEL_COLOR);
+	Msx2_FrameRect(14, 20, 228, 170, MSX2_GOLD);
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(30, (g_phase == PH_CODE_OUT) ? "CONTINUE CODE" : "ENTER CONTINUE CODE");
+	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(48, g_code);
+	if(g_phase == PH_CODE_OUT)
+	{
+		Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
+		Msx2_TextCenter(68, "WRITE THIS DOWN");
+		Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
+		Msx2_TextCenter(139, "ENTER IT ON THE TITLE SCREEN");
+		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+		Msx2_TextCenter(153, "SPACE / ESC: RETURN TO ROAD");
+		return;
+	}
+	if(g_phase != PH_CODE_OUT)
+	{
+		Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+		Msx2_TextAt(27, 82, "ABCDEFGH");
+		Msx2_TextAt(27, 96, "JKLMNPQR");
+		Msx2_TextAt(27, 110, "STUVWXYZ");
+		Msx2_TextAt(27, 124, "23456789");
+		one[0] = (c8)CODE_ALPHABET[g_code_cursor];
+		one[1] = 0;
+		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+		Msx2_TextAt((u8)(27 + (g_code_cursor % 8) * 27),
+		            (u8)(82 + (g_code_cursor / 8) * 14), one);
+	}
+	Msx2_TextColor(g_code_error ? MSX2_RED : MSX2_DARK_SAND, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(143, g_code_error ? "INVALID CODE - TRY AGAIN" : "SPACE: LETTER / RETURN: LOAD");
+	Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(155, "ESC: DELETE / EMPTY ESC: BACK");
+}
+
+static void Msx2_StoryEnterCodeInput(void)
+{
+	g_phase = PH_CODE_IN;
+	g_code_len = 0;
+	g_code[0] = 0;
+	g_code_cursor = 0;
+	g_code_error = 0;
+	Msx2_VideoDrawPage(MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_SCENE_TITLE_SEGMENT, MSX2_PAGE_1);
+	Msx2_StoryCodePaint();
+	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
+	Msx2_VideoShowPage(MSX2_PAGE_1);
+	g_map_dirty = 0;
+}
+
+static void Msx2_StoryEnterCodeOutput(void)
+{
+	g_phase = PH_CODE_OUT;
+	Msx2_StoryBuildCode(g_code, g_progress, g_player_name, g_story_deck);
+	Msx2_StoryUiDirty();
+}
+
+static void Msx2_StoryEnterDeck(void);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  The map
+// ─────────────────────────────────────────────────────────────────────────────
 
 static void Msx2_StoryMapPaint(void)
 {
@@ -421,7 +637,7 @@ static void Msx2_StoryMapPaint(void)
 	          (u16)(MSX2_MAP_PANEL_W - 2), (u8)(MSX2_MAP_PANEL_H - 2), MSX2_PANEL_COLOR);
 
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(MAP_HEAD_Y, Msx2_StoryStageName());
+	Msx2_TextCenter(MAP_HEAD_Y, Msx2_StoryStageNameForProgress(g_progress));
 
 	for(i = 0; i < MSX2_STORY_MAX_DUELS; ++i)
 	{
@@ -451,12 +667,30 @@ static void Msx2_StoryMapPaint(void)
 		Msx2_TextAt(MAP_TITLE_X, y, g_opp);
 	}
 
-	if(g_cursor == MSX2_STORY_MAX_DUELS)
+	if(g_cursor == MAP_DECK_ROW)
+	{
+		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+		Msx2_TextAt(MAP_CURSOR_X, MAP_DECK_Y, ">");
+	}
+	Msx2_TextColor((g_cursor == MAP_DECK_ROW) ? MSX2_WHITE : MSX2_SAND,
+	               MSX2_PANEL_COLOR);
+	Msx2_TextAt(MAP_NAME_X, MAP_DECK_Y, "DECK EDITOR");
+
+	if(g_cursor == MAP_CODE_ROW)
+	{
+		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+		Msx2_TextAt(MAP_CURSOR_X, MAP_CODE_Y, ">");
+	}
+	Msx2_TextColor((g_cursor == MAP_CODE_ROW) ? MSX2_WHITE : MSX2_SAND,
+	               MSX2_PANEL_COLOR);
+	Msx2_TextAt(MAP_NAME_X, MAP_CODE_Y, "CONTINUE CODE");
+
+	if(g_cursor == MAP_BACK_ROW)
 	{
 		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 		Msx2_TextAt(MAP_CURSOR_X, MAP_BACK_Y, ">");
 	}
-	Msx2_TextColor((g_cursor == MSX2_STORY_MAX_DUELS) ? MSX2_WHITE : MSX2_SAND,
+	Msx2_TextColor((g_cursor == MAP_BACK_ROW) ? MSX2_WHITE : MSX2_SAND,
 	               MSX2_PANEL_COLOR);
 	Msx2_TextAt(MAP_NAME_X, MAP_BACK_Y, "LEAVE THE ROAD");
 
@@ -474,7 +708,7 @@ static void Msx2_StoryEnterMap(void)
 
 	Msx2_MusicPlay(MSX2_MUSIC_TITLE);
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
-	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStage()), MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStageForProgress(g_progress)), MSX2_PAGE_1);
 	Msx2_StoryMapPaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
@@ -489,12 +723,16 @@ static u8 Msx2_StoryMapStep(void)
 
 	if((pressed & MSX2_BTN_UP) && (g_cursor != 0))
 		--g_cursor;
-	if((pressed & MSX2_BTN_DOWN) && (g_cursor < MSX2_STORY_MAX_DUELS))
+	if((pressed & MSX2_BTN_DOWN) && (g_cursor < MAP_BACK_ROW))
 	{
 		// A locked opponent is shown but never reachable, so the cursor steps
-		// straight from the frontier to LEAVE.
-		g_cursor = (g_cursor < g_progress) ? (u8)(g_cursor + 1)
-		                                   : MSX2_STORY_MAX_DUELS;
+		// straight from the frontier to the utility rows.
+		if(g_cursor < g_progress)
+			++g_cursor;
+		else if(g_cursor == g_progress)
+			g_cursor = MAP_DECK_ROW;
+		else
+			++g_cursor;
 	}
 	if(g_cursor != before)
 	{
@@ -505,7 +743,17 @@ static u8 Msx2_StoryMapStep(void)
 	if(pressed & MSX2_BTN_A)
 	{
 		Msx2_SfxPlay(MSX2_SFX_CONFIRM);
-		if(g_cursor == MSX2_STORY_MAX_DUELS)
+		if(g_cursor == MAP_DECK_ROW)
+		{
+			Msx2_StoryEnterDeck();
+			return MSX2_STORY_BUSY;
+		}
+		if(g_cursor == MAP_CODE_ROW)
+		{
+			Msx2_StoryEnterCodeOutput();
+			return MSX2_STORY_BUSY;
+		}
+		if(g_cursor == MAP_BACK_ROW)
 			return MSX2_STORY_QUIT;
 		g_duel_index = g_cursor;
 		Msx2_StoryEnterTalk();
@@ -533,6 +781,12 @@ static bool Msx2_StoryTextStep(void)
 	u8 pressed = Msx2_InputPressed();
 	u8 page = Msx2_VideoGetDrawPage();
 	bool painted = FALSE;
+
+#ifdef MSX2_DEBUG_STORY_AUTOPLAY
+	/* The story soak advances every text beat without adding input behavior to
+	   the shipping build. */
+	pressed |= MSX2_BTN_A;
+#endif
 
 	if(pressed & (MSX2_BTN_A | MSX2_BTN_B))
 	{
@@ -594,15 +848,301 @@ static bool Msx2_StoryTextStep(void)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Compact deck editor
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void Msx2_StoryDeckPaint(void)
+{
+	u8 i;
+
+	Msx2_Fill(2, 18, 252, 176, MSX2_PANEL_COLOR);
+	Msx2_FrameRect(2, 18, 252, 176, MSX2_GOLD);
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(25, "DECK EDITOR");
+	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(35, "CHOOSE A CARD TO REPLACE");
+
+	for(i = 0; i < STORY_EDIT_SLOTS; ++i)
+	{
+		u8 x = EDIT_CARD_X(i);
+		Msx2_StoryDrawCardThumb(g_story_deck[i], x, EDIT_DECK_Y);
+	}
+	Msx2_FrameRect((u8)(EDIT_CARD_X(g_editor_target) - 1), (u8)(EDIT_DECK_Y - 1),
+	               MSX2_CARD_W + 2, MSX2_CARD_H + 2,
+	               g_editor_storage_mode ? MSX2_GOLD : MSX2_RED);
+
+	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
+	Msx2_TextAt(8, 118, "STORAGE");
+	if(g_story_storage_count == 0)
+	{
+		Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
+		Msx2_TextAt(61, 118, "EMPTY - WIN DUELS TO EARN CARDS");
+	}
+	else
+	{
+		/* The collection is a carousel rather than a second grid.  It keeps the
+		   whole reward card visible and makes left/right work even after a
+		   continue code has restored a longer collection. */
+		Msx2_StoryDrawCardThumb(g_story_storage[g_editor_storage_cursor], 8,
+		                       (u8)(EDIT_STORAGE_Y - 5));
+		Msx2_FrameRect(7, (u8)(EDIT_STORAGE_Y - 6), (u16)(MSX2_CARD_W + 2),
+		               (u8)(MSX2_CARD_H + 2),
+		               g_editor_storage_mode ? MSX2_RED : MSX2_GOLD);
+		Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+		Msx2_TextAt(61, 135, "CARD");
+		Msx2_NumAt(91, 135, (i16)g_story_storage[g_editor_storage_cursor]);
+		Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
+		Msx2_TextAt(61, 151, "ITEM");
+		Msx2_NumAt(91, 151, (i16)(g_editor_storage_cursor + 1));
+		Msx2_TextAt(111, 151, "OF");
+		Msx2_NumAt(128, 151, (i16)g_story_storage_count);
+	}
+
+	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(197, g_editor_storage_mode
+		? "L/R PICK  SPACE SWAP  ESC BACK"
+		: "L/R TARGET  DOWN PICK  ESC EXIT");
+}
+
+static void Msx2_StoryEnterDeck(void)
+{
+	g_phase = PH_DECK;
+	g_editor_target = 0;
+	g_editor_storage_cursor = 0;
+	g_editor_storage_mode = FALSE;
+	Msx2_VideoDrawPage(MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStageForProgress(g_progress)), MSX2_PAGE_1);
+	Msx2_StoryDeckPaint();
+	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
+	Msx2_VideoShowPage(MSX2_PAGE_1);
+	g_map_dirty = 0;
+	Msx2_MusicPlay(MSX2_MUSIC_DECK_EDITOR);
+}
+
+static void Msx2_StoryDeckStep(void)
+{
+	u8 pressed = Msx2_InputPressed();
+
+	if(g_editor_storage_mode)
+	{
+		if(pressed & MSX2_BTN_LEFT)
+			g_editor_storage_cursor = (g_editor_storage_cursor == 0)
+			                         ? (u8)(g_story_storage_count - 1)
+			                         : (u8)(g_editor_storage_cursor - 1);
+		if(pressed & MSX2_BTN_RIGHT)
+			g_editor_storage_cursor = (u8)((g_editor_storage_cursor + 1 ==
+			                               g_story_storage_count) ? 0
+			                              : (g_editor_storage_cursor + 1));
+		if(pressed & MSX2_BTN_UP)
+			g_editor_storage_mode = FALSE;
+		if((pressed & MSX2_BTN_A) && (g_story_storage_count != 0))
+		{
+			u8 old = g_story_deck[g_editor_target];
+			g_story_deck[g_editor_target] = g_story_storage[g_editor_storage_cursor];
+			g_story_storage[g_editor_storage_cursor] = old;
+			Msx2_SfxPlay(MSX2_SFX_CONFIRM);
+			g_editor_storage_mode = FALSE;
+		}
+	}
+	else
+	{
+		if(pressed & MSX2_BTN_LEFT)
+		{
+			g_editor_target = (g_editor_target == 0) ? (STORY_EDIT_SLOTS - 1)
+			                                      : (g_editor_target - 1);
+		}
+		if(pressed & MSX2_BTN_RIGHT)
+		{
+			g_editor_target = (u8)((g_editor_target + 1) % STORY_EDIT_SLOTS);
+		}
+		if((pressed & MSX2_BTN_DOWN) && (g_story_storage_count != 0))
+		{
+			g_editor_storage_mode = TRUE;
+		}
+		if(pressed & MSX2_BTN_A && (g_story_storage_count != 0))
+		{
+			g_editor_storage_mode = TRUE;
+		}
+	}
+
+	if(pressed & MSX2_BTN_B)
+	{
+		if(g_editor_storage_mode)
+		{
+			g_editor_storage_mode = FALSE;
+		}
+		else
+		{
+			Msx2_StoryEnterMap();
+			return;
+		}
+	}
+	if(pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT | MSX2_BTN_UP |
+	              MSX2_BTN_DOWN | MSX2_BTN_A | MSX2_BTN_B))
+	{
+		Msx2_SfxPlay(MSX2_SFX_SELECT);
+		Msx2_StoryUiDirty();
+	}
+	if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
+	{
+		Msx2_StoryDeckPaint();
+		g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
+		Msx2_VideoFlipRequest();
+	}
+}
+
+static void Msx2_StoryCodeInputStep(void)
+{
+	u8 pressed = Msx2_InputPressed();
+	u8 changed = (pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT |
+	                         MSX2_BTN_UP | MSX2_BTN_DOWN)) ? TRUE : FALSE;
+	g_code_cursor = Msx2_StoryGridCursor(g_code_cursor, 8, 32, pressed);
+	if(pressed & MSX2_BTN_A)
+	{
+		if(g_code_len < STORY_CODE_LEN)
+		{
+			g_code[g_code_len++] = (c8)CODE_ALPHABET[g_code_cursor];
+			g_code[g_code_len] = 0;
+			g_code_error = 0;
+			changed = TRUE;
+		}
+		else if(Msx2_StoryParseCode())
+		{
+			Msx2_StoryEnterMap();
+			return;
+		}
+		else
+		{
+			g_code_error = TRUE;
+			changed = TRUE;
+		}
+	}
+	if(pressed & MSX2_BTN_B)
+	{
+		if(g_code_len != 0)
+		{
+			--g_code_len;
+			g_code[g_code_len] = 0;
+			g_code_error = 0;
+			changed = TRUE;
+		}
+		else
+		{
+			/* The title is still underneath; redraw the map in full on the hidden
+			   page before handing control back to the story scene. */
+			Msx2_StoryEnterMap();
+			return;
+		}
+	}
+	if(changed)
+		Msx2_StoryUiDirty();
+	if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
+	{
+		Msx2_StoryCodePaint();
+		g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
+		Msx2_VideoFlipRequest();
+	}
+}
+
+static void Msx2_StoryCodeOutputStep(void)
+{
+	u8 pressed = Msx2_InputPressed();
+	if(pressed & (MSX2_BTN_A | MSX2_BTN_B))
+	{
+		Msx2_StoryEnterMap();
+		return;
+	}
+	if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
+	{
+		Msx2_StoryCodePaint();
+		g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
+		Msx2_VideoFlipRequest();
+	}
+}
+
+static void Msx2_StoryRewardPaint(void)
+{
+	Msx2_Fill(30, 22, 196, 166, MSX2_PANEL_COLOR);
+	Msx2_FrameRect(30, 22, 196, 166, MSX2_GOLD);
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(34, "DUEL CLEARED");
+	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(48, "NEW CARD EARNED");
+	Msx2_StoryDrawCardThumb(g_reward_card, 108, 62);
+	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(119, "CARD");
+	Msx2_NumAt(140, 119, (i16)g_reward_card);
+	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(145, "STORED IN YOUR COLLECTION");
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(170, "SPACE: CONTINUE");
+}
+
+static void Msx2_StoryEnterReward(void)
+{
+	g_phase = PH_REWARD;
+	Msx2_VideoDrawPage(MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStageForProgress(g_progress)), MSX2_PAGE_1);
+	Msx2_StoryRewardPaint();
+	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
+	Msx2_VideoShowPage(MSX2_PAGE_1);
+	g_map_dirty = 0;
+	Msx2_MusicPlay(MSX2_MUSIC_RESULT);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  The scene
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Msx2_StoryBegin(void)
 {
+	/* A new run starts with the same name-entry affordance as the other
+	   targets.  Collection/deck creation happens only after the name is
+	   accepted, so a cancelled entry cannot leave stale save data behind. */
 	g_progress = 0;
 	g_duel_index = 0;
+	g_reward_card = MSX2_CARD_NONE;
 	MSX2_STAGE(MSX2_STAGE_STORY);
-	Msx2_StoryEnterNarration(NARR_INTRO);
+	Msx2_StoryEnterName();
+}
+
+void Msx2_StoryBeginAutoplay(void)
+{
+#ifdef MSX2_DEBUG_STORY_AUTOPLAY
+	u8 i;
+	g_progress = 0;
+	g_duel_index = 0;
+	g_reward_card = MSX2_CARD_NONE;
+	for(i = 0; i < STORY_NAME_LEN; ++i)
+		g_player_name[i] = "AUTOPLAY"[i];
+	g_player_name[STORY_NAME_LEN] = 0;
+	g_name_len = STORY_NAME_LEN;
+	Msx2_StoryBuildStarterDeck();
+	/* Exercise the exact builder/parser pair used by the title's load screen;
+	   a bad checksum or a non-canonical spare bit makes the soak fail early. */
+	Msx2_StoryBuildCode(g_code, g_progress, g_player_name, g_story_deck);
+	g_code_len = STORY_CODE_LEN;
+	if(!Msx2_StoryParseCode())
+	{
+		g_stat_status = MSX2_PROBE_BADSTATE;
+		return;
+	}
+	MSX2_STAGE(MSX2_STAGE_STORY);
+	/* Story-soak validates state transitions, not the renderer.  Avoid streaming
+	   the same map/reward paintings ten times so the five-duel gate completes in
+	   a bounded emulator run; the shipping build still enters every screen. */
+	g_phase = PH_MAP;
+#endif
+}
+
+void Msx2_StoryBeginLoad(void)
+{
+	Msx2_StoryEnterCodeInput();
+}
+
+void Msx2_StoryPrepareDuelDeck(void)
+{
+	Msx2_DuelSetPlayerDeck(g_story_deck, STORY_DECK_SIZE);
 }
 
 u8 Msx2_StoryDuelIndex(void)
@@ -614,23 +1154,121 @@ void Msx2_StoryDuelDone(bool won)
 {
 	if(won && (g_duel_index == g_progress))
 	{
+		/* Rewards are deliberately deterministic on this target: a continue code
+		   can reproduce the exact collection without a 64-bit RNG payload. */
+		g_reward_card = (u8)((g_duel_index * 13 + 7) % MSX2_CARD_COUNT);
+		if(g_story_storage_count < STORY_STORAGE_SIZE)
+			g_story_storage[g_story_storage_count++] = g_reward_card;
 		++g_progress;
 		if(g_progress >= MSX2_STORY_MAX_DUELS)
 		{
 			// The road is walked.  Progress stays at the end so a replay of the
 			// last opponent cannot advance it again.
-			g_progress = MSX2_STORY_MAX_DUELS - 1;
 			g_duel_index = MSX2_STORY_MAX_DUELS - 1;
-			Msx2_StoryEnterNarration(NARR_ENDING);
+#ifdef MSX2_DEBUG_STORY_AUTOPLAY
+			g_phase = PH_REWARD;
+#else
+			Msx2_StoryEnterReward();
+#endif
 			return;
 		}
 		g_duel_index = g_progress;
+#ifdef MSX2_DEBUG_STORY_AUTOPLAY
+		g_phase = PH_REWARD;
+#else
+		Msx2_StoryEnterReward();
+#endif
+		return;
 	}
 	Msx2_StoryEnterMap();
 }
 
 u8 Msx2_StoryStep(void)
 {
+#ifdef MSX2_DEBUG_STORY_AUTOPLAY
+	if(g_phase == PH_MAP)
+	{
+		g_duel_index = (g_progress >= MSX2_STORY_MAX_DUELS)
+			? (MSX2_STORY_MAX_DUELS - 1) : g_progress;
+		return MSX2_STORY_FIGHT;
+	}
+	if(g_phase == PH_REWARD)
+	{
+		if(g_progress >= MSX2_STORY_MAX_DUELS &&
+		   g_duel_index == MSX2_STORY_MAX_DUELS - 1)
+			Msx2_StoryEnterNarration(NARR_ENDING);
+		else
+			g_phase = PH_MAP;
+		return MSX2_STORY_BUSY;
+	}
+#endif
+	if(g_phase == PH_NAME)
+	{
+		u8 pressed = Msx2_InputPressed();
+		u8 changed = (pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT |
+		                         MSX2_BTN_UP | MSX2_BTN_DOWN)) ? TRUE : FALSE;
+		g_name_cursor = Msx2_StoryGridCursor(g_name_cursor, 13, 26, pressed);
+		if(pressed & MSX2_BTN_A)
+		{
+			if(g_name_len < STORY_NAME_LEN)
+			{
+				g_player_name[g_name_len++] = (c8)('A' + g_name_cursor);
+				g_player_name[g_name_len] = 0;
+				changed = TRUE;
+			}
+			else if(Msx2_StoryAcceptName())
+				return MSX2_STORY_BUSY;
+		}
+		if(pressed & MSX2_BTN_B)
+		{
+			if(g_name_len != 0)
+			{
+				--g_name_len;
+				g_player_name[g_name_len] = 0;
+				changed = TRUE;
+			}
+			else
+				return MSX2_STORY_QUIT;
+		}
+		if(changed)
+			Msx2_StoryUiDirty();
+		if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
+		{
+			Msx2_StoryNamePaint();
+			g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
+			Msx2_VideoFlipRequest();
+		}
+		return MSX2_STORY_BUSY;
+	}
+	if(g_phase == PH_CODE_IN)
+	{
+		Msx2_StoryCodeInputStep();
+		return MSX2_STORY_BUSY;
+	}
+	if(g_phase == PH_CODE_OUT)
+	{
+		Msx2_StoryCodeOutputStep();
+		return MSX2_STORY_BUSY;
+	}
+	if(g_phase == PH_DECK)
+	{
+		Msx2_StoryDeckStep();
+		return MSX2_STORY_BUSY;
+	}
+	if(g_phase == PH_REWARD)
+	{
+		if(Msx2_InputPressed() & (MSX2_BTN_A | MSX2_BTN_B))
+		{
+			if(g_progress >= MSX2_STORY_MAX_DUELS &&
+			   g_duel_index == MSX2_STORY_MAX_DUELS - 1)
+			{
+				Msx2_StoryEnterNarration(NARR_ENDING);
+			}
+			else
+				Msx2_StoryEnterMap();
+		}
+		return MSX2_STORY_BUSY;
+	}
 	if(g_phase == PH_MAP)
 		return Msx2_StoryMapStep();
 

@@ -24,6 +24,9 @@
 
 Msx2Duel g_duel;
 
+static u8 g_player_deck_override[WAIFU_DECK_SIZE];
+static u8 g_player_deck_override_valid;
+
 static void Msx2_RecordAction(u8 action, u8 owner, u8 card, u8 hand_slot,
                               u8 field_slot, bool defense)
 {
@@ -1019,7 +1022,17 @@ void Msx2_DuelInit(u32 seed, u8 story_duel_index)
 
 	if(g_duel.story_active)
 	{
-		waifu_deck_build_random(&g_duel.side[MSX2_OWNER_PLAYER].deck, &g_duel.rng, 0);
+		if(g_player_deck_override_valid)
+		{
+			waifu_deck_clear(&g_duel.side[MSX2_OWNER_PLAYER].deck);
+			for(i = 0; i < WAIFU_DECK_SIZE; ++i)
+				g_duel.side[MSX2_OWNER_PLAYER].deck.cards[i] =
+					(int)g_player_deck_override[i];
+			g_duel.side[MSX2_OWNER_PLAYER].deck.count = WAIFU_DECK_SIZE;
+			waifu_deck_shuffle(&g_duel.side[MSX2_OWNER_PLAYER].deck, &g_duel.rng);
+		}
+		else
+			waifu_deck_build_random(&g_duel.side[MSX2_OWNER_PLAYER].deck, &g_duel.rng, 0);
 		waifu_deck_build_opponent_story(&g_duel.side[MSX2_OWNER_COM].deck,
 		                                story_duel_index, &g_duel.rng, 1);
 	}
@@ -1048,6 +1061,22 @@ void Msx2_DuelInit(u32 seed, u8 story_duel_index)
 	g_duel.last_battle.outcome = MSX2_BATTLE_NONE;
 	g_duel.last_attacker_card = MSX2_CARD_NONE;
 	g_duel.last_defender_card = MSX2_CARD_NONE;
+}
+
+void Msx2_DuelSetPlayerDeck(const u8* cards, u8 count)
+{
+	u8 i;
+
+	g_player_deck_override_valid = FALSE;
+	if(!cards || (count != WAIFU_DECK_SIZE))
+		return;
+	for(i = 0; i < WAIFU_DECK_SIZE; ++i)
+	{
+		if(cards[i] >= MSX2_TOTAL_CARDS)
+			return;
+		g_player_deck_override[i] = cards[i];
+	}
+	g_player_deck_override_valid = TRUE;
 }
 
 void Msx2_EndTurn(void)

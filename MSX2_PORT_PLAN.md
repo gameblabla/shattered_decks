@@ -449,7 +449,7 @@ arithmetic says a move does not fit, and each such place is named here.
 | Player ↔ COM turn handoff | **5 captured orbit poses**, played forward or backward; destination cards are repainted into that chair's true quads. |
 | Monster battle / direct attack | A separate black full-screen **2-D** scene with one or two 88x120 source-art cards, live names/ATK/DEF, a clean↔impact page-flipped beat, then outcome and damage. The retained 3-D board is reconstructed only after the result hold. |
 | COM cursor walking the row (`IB_COM_TARGET`) | Hardware sprite cursor moving over the static `V_TOP` view. Free. |
-| Card flying from hand to field | 12 baked pose quads per path, drawn by the §8 rasterizer (Tier A span programs, ~102 KB for all 50 paths) over a static background with per-frame rect repair (§7.5). Tier B covers any pose that was not enumerated. |
+| Card flying from hand to field | The real 40x48 face thumbnail slides across the temporarily black hand band to the destination column. The captured board then bends one turn-strip pose away and back underneath it, before holding the populated player-chair/top view with the hand still hidden. |
 | Fusion / thunder / equip animations | Same cel technique, authored per effect. |
 | Battle "burn wipe" consuming a card | Pre-rendered 8-frame generic cel (not per-card), software blitted over the card's cache rect. |
 | Fade to/from black on a duel entry or exit | Three baked brightness steps, streamed like any other image (§4.6.4). There is no palette to fade (§0.2). |
@@ -1880,7 +1880,8 @@ skip-list inner loop. Same arithmetic, same cost, one fewer piece of assembly.
 
 ### 21.5 What is left
 
-1. **Baked card flight** — §4.5's interpolated warped card cels. The runtime
-   currently shows a reversible outline during flight and the retained warped
-   card at the destination.
-2. The rest of §21.4's untouched list, which was never in question.
+The presentation deviations covered by §21 are closed. Placement follows the
+owner's later, more specific direction instead of §8's earlier warped-cel idea:
+the 2-D thumbnail itself travels over the hidden-hand band, the captured 3-D
+board bends underneath it, and the populated top view holds before the hand
+returns. The rest of §21.4's untouched list remains unchanged.

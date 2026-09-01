@@ -17,6 +17,8 @@ BUILD_JS     := $(abspath $(MSXGL_PATH))/engine/script/js/build.js
 OUT_DIR      := $(PROJ_DIR)/out
 ROM          := $(OUT_DIR)/waifu_msx2.rom
 MAP          := $(OUT_DIR)/waifu_msx2.map
+AUTOPLAY_TAG := $(if $(MSX2_STORY_AUTOPLAY),story-soak,$(if $(MSX2_AUTOPLAY),soak,shipping))
+VARIANT_STAMP := $(OUT_DIR)/.variant-$(AUTOPLAY_TAG)
 
 # NEO-16 spans 1 MB to 64 MB.  The default is the smallest size the baked
 # assets actually fit in (gen_msx_scenes.py prints MSX2_ASSET_ROM_KB, currently
@@ -42,7 +44,7 @@ SOURCES := $(wildcard $(PROJ_DIR)/*.c) $(wildcard $(PROJ_DIR)/*.h) \
            $(PROJ_DIR)/msxgl_config.h \
            src/game/deck.c src/game/ai.c
 
-.PHONY: all rom tables verify soak clean check-sdk
+.PHONY: all rom tables verify soak story-soak clean check-sdk
 
 all: rom
 
@@ -70,8 +72,17 @@ src/generated/msx2_scenes.h $(SCENE_BINS) &: tools/msx2/gen_msx_scenes.py \
 
 rom: $(ROM)
 
-$(ROM): $(SOURCES) $(GENERATED) $(SCENE_BINS) tools/msx2/pack_msx_rom.py | check-sdk
+# MSXgl's incremental builder does not track changed -D flags.  Keep the build
+# variant in the dependency graph so a plain shipping build after `make soak`
+# cannot silently reuse the autoplay cartridge (and vice versa).
+$(VARIANT_STAMP):
+	@mkdir -p $(OUT_DIR)
+	@rm -f $(OUT_DIR)/.variant-*
+	@touch $@
+
+$(ROM): $(SOURCES) $(GENERATED) $(SCENE_BINS) tools/msx2/pack_msx_rom.py $(VARIANT_STAMP) | check-sdk
 	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) MSX2_AUTOPLAY=$(MSX2_AUTOPLAY) \
+	    MSX2_STORY_AUTOPLAY=$(MSX2_STORY_AUTOPLAY) \
 	    node $(BUILD_JS)
 	python3 tools/msx2/pack_msx_rom.py $(ROM)
 	@ls -l $(ROM)
@@ -87,6 +98,13 @@ verify: rom
 soak:
 	rm -rf $(OUT_DIR)
 	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1
+
+# Story progression soak.  Full AI duels belong to `soak`; this variant crosses
+# the real story fight boundary as a win so rewards, passwords, five-duel
+# progression and the ending are deterministic without synthetic input.
+story-soak:
+	rm -rf $(OUT_DIR)
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1 MSX2_STORY_AUTOPLAY=1
 
 clean:
 	rm -rf $(OUT_DIR) $(PROJ_DIR)/emul $(PROJ_DIR)/lib

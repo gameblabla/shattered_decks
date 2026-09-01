@@ -704,7 +704,7 @@ static void Msx2_BoardFxCardFlight(bool erase)
 		return;
 	x = Msx2_BoardClampPx(sx + (((i16)g_fx_dest_x - sx) * progress) / total);
 	if(x > (MSX2_SCREEN_W - MSX2_CARD_W))
-		x = (MSX2_SCREEN_W - MSX2_CARD_W);
+		x = (u8)(MSX2_SCREEN_W - MSX2_CARD_W);
 
 	if(erase)
 	{
@@ -750,20 +750,14 @@ static void Msx2_BoardFxDraw(bool erase)
 		if(!erase)
 			Msx2_BoardFxBanner("OPPONENT PLACES THE CARD", MSX2_RED);
 		if(g_fx_field != MSX2_SLOT_NONE)
-		{
 			Msx2_BoardFxCardFlight(erase);
-			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
-		}
 		break;
 
 	case FX_SUMMON:
 		if(!erase)
 			Msx2_BoardFxBanner("SUMMON", MSX2_TEAL);
 		if(g_fx_field != MSX2_SLOT_NONE)
-		{
 			Msx2_BoardFxCardFlight(erase);
-			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
-		}
 		break;
 
 	case FX_FUSION:
@@ -772,7 +766,6 @@ static void Msx2_BoardFxDraw(bool erase)
 		if(g_fx_field != MSX2_SLOT_NONE)
 		{
 			Msx2_BoardFxCardFlight(erase);
-			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
 			Msx2_FrameRectXor(84, 70, 88, 34, flash);
 			if(!erase)
 			{
@@ -851,6 +844,11 @@ static void Msx2_BoardHideHand(void)
 	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
 	{
 		Msx2_VideoDrawPage(i);
+		if(g_cursor_at[i] != MSX2_SLOT_NONE)
+		{
+			Msx2_BoardCursor(g_cursor_at[i], Msx2_BoardRestColor(g_cursor_at[i]));
+			g_cursor_at[i] = MSX2_SLOT_NONE;
+		}
 		Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
 		          MSX2_BLACK);
 	}
@@ -1063,7 +1061,14 @@ static bool Msx2_BoardRunFx(void)
 		Msx2_BoardStepBend();
 		Msx2_VideoFlipRequest();
 		if(g_fx_bend == 0)
+		{
+			// The board has accepted the card.  Reveal it now, while the hand is
+			// still absent, so the landing hold shows the actual new field state
+			// rather than an empty destination until the normal HUD returns.
+			g_suppress_slot = MSX2_SLOT_NONE;
+			Msx2_BoardSnapshot();
 			g_fx_hold = FX_HOLD_FRAMES;
+		}
 		return TRUE;
 	}
 
@@ -1153,7 +1158,7 @@ static bool Msx2_BoardRunFx(void)
 static bool Msx2_BoardPaint(void)
 {
 	u8 page = Msx2_VideoGetDrawPage();
-	u8 cursor = SLOT_OF(g_zone, g_sel);
+	u8 cursor = g_hand_hidden ? MSX2_SLOT_NONE : SLOT_OF(g_zone, g_sel);
 	u8 color = Msx2_BoardCursorColor();
 	bool painted = FALSE;
 	u8 cards = 0;
@@ -1209,8 +1214,6 @@ static void Msx2_BoardBlankAll(void)
 // flash would land in the middle of the opening.
 static void Msx2_BoardRevealPanels(void)
 {
-	u8 i;
-
 	Msx2_Fill(0, 0, MSX2_SCREEN_W, MSX2_HUD_H, MSX2_PANEL_COLOR);
 	Msx2_FrameRect(0, 0, MSX2_SCREEN_W, MSX2_HUD_H, MSX2_GOLD_COLOR);
 	Msx2_Fill(0, MSX2_INFO_Y, MSX2_SCREEN_W,
@@ -1228,7 +1231,6 @@ static void Msx2_BoardStepDeal(void)
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 	u8 card;
 	u8 x;
-	u8 i;
 
 	Msx2_VideoDrawPage(page);
 

@@ -18,7 +18,8 @@ CompileOpt = `-I${ToolsDir}sdcc/include`
            // The blind soak needs the player's turn played by the AI; see
            // MSX2_DEBUG_AUTOPLAY in msx2_board.c.  Driven from the environment
            // so `make -f Makefile.msx2 soak` is the only thing that knows.
-           + (process.env.MSX2_AUTOPLAY ? ` -DMSX2_DEBUG_AUTOPLAY` : ``);
+           + (process.env.MSX2_AUTOPLAY ? ` -DMSX2_DEBUG_AUTOPLAY` : ``)
+           + (process.env.MSX2_STORY_AUTOPLAY ? ` -DMSX2_DEBUG_STORY_AUTOPLAY` : ``);
 
 ProjName = "waifu_msx2";
 
@@ -39,6 +40,7 @@ ProjModules = [
 AddSources = [
 	"../game/deck.c",
 	"../game/ai.c",
+	"msx2_story_utils.c",
 	"msx2_libc.c",
 ];
 

@@ -68,16 +68,14 @@ static const c8* const g_rows[MSX2_TITLE_ROWS] =
 
 static const c8* const g_help[MSX2_TITLE_ROWS] =
 {
-	"THE FIRST DREAM / FIVE DUELS",
+	"NAME / FIRST DREAM / FIVE DUELS",
 	"RANDOM DECK / FREE DUEL",
-	"NO SAVE FILE FOUND",
+	"ENTER A CONTINUE CODE",
 };
 
-// There is no save back-end on this target yet, so LOAD STORY is drawn dim and
-// refuses the button rather than pretending.
 static bool Msx2_TitleRowEnabled(u8 row)
 {
-	return row != MSX2_TITLE_LOAD;
+	return row < MSX2_TITLE_ROWS;
 }
 
 // ── The backdrop ─────────────────────────────────────────────────────────────

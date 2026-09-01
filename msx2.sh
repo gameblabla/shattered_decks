@@ -157,6 +157,7 @@ do_run() {
 	need_rom; need_emu
 	local script="$OUT_DIR/run.tcl"
 	mkdir -p "$OUT_DIR"
+	rm -f "$RAM"
 	cat > "$script" <<EOF
 set renderer none
 set throttle off

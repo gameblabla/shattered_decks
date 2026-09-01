@@ -17,7 +17,9 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M2 — VRAM map, compositor skeleton, glyphs, page flip | **done**: GRAPHIC 7 layer, double-buffered page flip, glyphs, fills, the duel board |
 | M3 — asset pipeline, title screen | **done**: every picture the game shows is baked from `assets/source/` and streamed from the cartridge |
 | M4 — the duel screen, played by a person | **done**: place, fuse, attack, end turn on real input; shared-renderer 3D arena and turn views, hidden COM hand covers, and board-free 2D attack cut-ins |
-| M5 — story mode | **done**: opening, sanctum map, dialogue, five duels, ending, with the dialogue a composited visual-novel scene — both speakers on the shipped painting at once |
+| M5 — story presentation | **done**: opening, sanctum map, dialogue, and ending, with both speakers composited over the shipped painting |
+| M6 — full duel loop | **done**: person-playable placement, fusion, support, attacks, turn handoff, results, and the real shared-renderer board |
+| M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, compact deck editor, 16-symbol password save/load, and ending transition |
 
 ### The title screen
 
@@ -46,10 +48,11 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 * the second buffer is built with one `Msx2_VideoCopyPage` (a whole-page
   `HMMM`, offscreen stashes included) rather than by streaming the cartridge a
   second time;
-* SPACE opens the three-row menu (`STORY MODE` / `BATTLE MODE` / `LOAD STORY`,
-  the last one dim because this target has no save back-end yet), and confirming
-  a row deals a duel.  The help line lives *inside* the panel: it changes with
-  the cursor, and anything redrawn over artwork would have to restore it.
+* SPACE opens the three-row menu (`STORY MODE` / `BATTLE MODE` / `LOAD STORY`),
+  and confirming a row enters the selected flow.  `LOAD STORY` accepts the
+  16-symbol continue code described below.  The help line lives *inside* the
+  panel: it changes with the cursor, and anything redrawn over artwork would
+  have to restore it.
 
 Input is real: `msx2.sh` drives the openMSX keyboard matrix from Tcl, so the
 menu is walked exactly as a player would walk it. There is no self-play code in
@@ -109,6 +112,11 @@ never expose an opponent card id or info-panel metadata. There is no codec and
 no decoder anywhere in the port.
 
 Placement, summon/fusion/equip/support and position changes retain the arena.
+For a placement the hand disappears, the real 40x48 card face slides across its
+black band, and the captured arena bends one turn-pose away and back underneath
+it. The populated player-chair/top view then holds with only the normal HUD and
+bottom information panel before the hand returns; no travelling outline stands
+in for the card.
 **Attacks do not.** Monster-versus-monster, direct-hit and trap-counter actions
 switch to a black full-screen 2D cut-in, with one or two 88x120 cards rendered
 from the same source paintings as the other targets plus live names and
@@ -160,6 +168,14 @@ is a second copy that goes stale. The typewriter is still per page, so a line
 appears character by character on a double-buffered screen without the box being
 redrawn.
 
+The story loop is now completeable on the shipping build.  A run starts with an
+eight-letter name, advances through five frontier duels, stores one deterministic
+reward after each win, and enters the ending after the fifth reward.  The map also
+offers a compact deck editor and a continue-code screen.  Codes contain 3 progress
+bits, 40 name bits, four 7-bit deck overrides, and an 8-bit checksum, packed into
+16 symbols from a 32-character alphabet.  Loading reconstructs the starter deck
+and the earned reward collection before applying the four saved overrides.
+
 ### M1a evidence
 
 `./msx2.sh verify --seconds 300` builds the **soak** ROM (`make -f Makefile.msx2
@@ -169,7 +185,7 @@ own AI) and reads the state probe back out of a RAM dump:
 ```
 status       OK
 duels done   1   player 1  /  com 0
-RAM          data ends 0xD128, SP 0xF361, 8761 bytes free between them
+RAM          data ends 0xD1EF, SP 0xF361, 8562 bytes free between them
 ```
 
 Complete duels, cycling the five story opponents and free battle, with no
@@ -183,10 +199,24 @@ rules step every frame (a person takes one every few seconds), streams a fresh
 cards into perspective quads underneath all of it. The number to watch here is
 `status`, not the rate.
 
-Footprint (`./msx2.sh ram`): 4,392 bytes of static RAM (8,792 bytes free below
-the stack) and 28,570 bytes in `_CODE`. The rasterizer's two buffers are the
-1,920-byte card texture and the 605-byte maximum span program, which
-is what keeps its inner loop clear of the mapper.
+Footprint (`./msx2.sh ram`): the shipping link uses 30,556 bytes in `_CODE` and
+15,745 bytes in the fixed segment-2 bank.  Its RAM report is 4,591 bytes used
+from `0xC000` through `0xD1EF`, with 8,593 bytes free to `HIMEM` (`0xF380`);
+the runtime probe measured 8,562 bytes between static data and the live stack.
+The segment-2 bank remains below its 16 KB placement limit, including the ISR
+reservation.
+
+### M7 evidence
+
+`make -f Makefile.msx2 story-soak` builds a test-only variant that enters the
+real story scene, advances its dialogue and reward screens, and crosses each
+requested fight boundary as a win.  Complete rules/board duels remain covered
+by the ordinary soak; keeping those gates separate makes story completion
+deterministic.  A real openMSX run with `./msx2.sh run --seconds 2000 --no-keys`
+completed all five story fights and entered the ending with `status OK` and
+`duels done 5`.
+The shipping path is separately exercised through real keyboard-matrix captures
+of the name-entry, visual-novel, map, deck-editor, and continue-code screens.
 
 ---
 
@@ -202,7 +232,10 @@ make -f Makefile.msx2 soak       # ... the same ROM, playing itself
 **`verify` builds the soak ROM, and leaves it in `out/`.** The shipping build
 waits for a hand on the joystick, so a blind run against it sits on turn 1 for
 the whole run and reports a hang that is really an empty chair. Rebuild with
-plain `make -f Makefile.msx2` before taking screenshots of the played game.
+plain `make -f Makefile.msx2` before taking screenshots of the played game. A
+variant stamp now makes that command rebuild automatically when `out/` contains
+the soak ROM; MSXgl's incremental builder does not track changed `-D` flags by
+itself.
 
 `MSXGL_PATH` selects the MSXgl tree (default `MSXgl-main`), `ROM_SIZE_KB` the
 cartridge size. The default is now 8192: the packed assets use 6,004 KB after
@@ -268,7 +301,8 @@ crash into a number instead of a black screen.
 | `msx2_title.c/.h` | title screen: streamed art, logo, attract prompt, menu |
 | `msx2_board.c/.h` | the duel screen: the ten projected slots, both chair views, the hand strip, cursor, HUD, turn strip, and action cels |
 | `msx2_raster.c/.h` | §8 Tier A: the baked span-program card rasterizer |
-| `msx2_story.c/.h` | story mode: the opening, the sanctum map, dialogue, the ending |
+| `msx2_story.c/.h` | story mode: name entry, map, dialogue, deck editor, rewards, continue codes, ending |
+| `msx2_story_utils.c` | resident story hashing, card thumbnails, grid navigation, and password codec |
 | `msx2_video.c/.h` | GRAPHIC 7 layer: pages, fills, glyphs, 2x text |
 | `msx2_input.c/.h` | joystick + keyboard, latched once per frame |
 | `msx2_stream.c/.h` | cartridge segment -> VRAM streaming through the 0x8000 window |
@@ -323,20 +357,10 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
 
 ## Open issues, in priority order
 
-1. **Code is 11.9 KB past 0x8000.** SDCC links `_CODE` contiguously from 0x4000,
-   so it spills into page 2 — the *switched* streaming window. Streaming lives
-   with this today only because the streamer is itself below 0x8000 and runs
-   with interrupts off, so nothing in the swapped-out window is reachable while
-   a chunk is in flight (see above). That is a real constraint, not a
-   workaround to remove: every future routine that runs *during* a stream —
-   a music replayer tick, a progress bar — has the same rule, and the
-   build-time check in `pack_msx_rom.py` is what keeps it honest. Trimming
-   MSXgl to GRAPHIC 7 and bitmap printing only (unused modes and print
-   back-ends off in `msxgl_config.h`) took resident code from 31.4 KB to
-   24.7 KB, and the duel screen and story mode were then compiled into the
-   page-0 bank (`waifu_msx2_s2_b0.c`) rather than into `_CODE` — that bank still
-   has ~5.4 KB free, and is where the next big scene should go. Banked code
-   through `SUPPORT_BANKED_CALL` is the answer if that runs out too.
+1. **M1b timing truth is not started.** The current budgets are still engineering
+   estimates; a dedicated timing ROM must measure OUTI spacing, VDP commands, the
+   span path, and eventual sound replay before those figures can be called
+   hardware measurements.
 
 2. **The AI is slow.** Roughly 80 ms per rules step, most of it in
    `waifu_ai_choose_com_*` plus rebuilding `WaifuAiState` (226 bytes) for every
@@ -345,21 +369,19 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
    must be measured properly at M1b, and the state build should be made
    incremental if a turn ever visibly hangs.
 
-3. **There is no save back-end.** `LOAD STORY` is drawn dim on the title and
-   refuses the button, story progress lives only in RAM, and a run always starts
-   at the first opponent. The MSX2 route is SRAM in a mapper segment or a disk
-   file; neither is chosen yet.
+3. **There is no SRAM/disk save back-end.** The guaranteed password save/load path
+   is implemented and is the shipping persistence mechanism.  Cartridge SRAM or
+   an MSX-DOS file remains optional secondary storage, and is not exposed as a
+   separate menu feature.
 
 4. **Sound is stubs.** `msx2_audio.c` records the requested track and reserves
    700 bytes for the Arkos AKG + ayFX state, so the RAM is already spent.
 
-5. **Card flight is still an outline cue.** The player↔COM turn handoff and the
-   2D-only battle cut-ins are complete, but placement currently uses a reversible
-   outline rather than interpolated warped card cels; opaque card art is revealed
-   by the retained board at the destination.
-
-6. **No name entry.** The other targets let the player name Serena before the
-   first dream; here she is always SERENA, and the title's help line says so.
+5. **Deck-editor UX is intentionally compact.** The plan's 5x4 paginated icon
+   grid is reduced to a four-slot thumbnail row plus a one-card collection
+   carousel to stay inside the current ROM/RAM and page-flip budget.  It still
+   supports selecting a deck slot, swapping a reward card, and returning to the
+   map.
 
 ---
 

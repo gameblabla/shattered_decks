@@ -13,7 +13,10 @@ Usage:
     tools/msx2/read_probe.py src/msx2/out/waifu_msx2.snap [--json]
 """
 
+import argparse
 import json
+import os
+import re
 import struct
 import sys
 
@@ -22,7 +25,7 @@ EXPECT_VERSION = 2
 
 STATUS = {0: "OK", 1: "STUCK (duel exceeded step watchdog)", 2: "BADSTATE (invariant failed)"}
 PHASE = {0: "TURN_START", 1: "MAIN", 2: "BATTLE", 3: "TURN_END", 4: "RESULT"}
-SCENE = {0: "TITLE", 1: "DUEL"}
+SCENE = {0: "TITLE", 1: "DUEL", 2: "STORY"}
 
 # Layout of struct Msx2Probe.  SDCC packs structs without padding on z80, and
 # every member here is already naturally ordered, so this is a straight read.
@@ -73,29 +76,59 @@ def find(blob):
         found.append(probe)
 
 
+def probe_address(map_path):
+    """Read g_probe's linker-authoritative RAM address when a map exists."""
+    if not map_path or not os.path.isfile(map_path):
+        return None
+    pattern = re.compile(r"^\s*([0-9A-Fa-f]{8})\s+_g_probe\b")
+    with open(map_path, encoding="utf-8", errors="replace") as source:
+        for line in source:
+            match = pattern.match(line)
+            if match:
+                return int(match.group(1), 16)
+    return None
+
+
 def card(v):
     return "--" if v == 0xFF else str(v)
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    as_json = "--json" in sys.argv[1:]
-    if len(args) != 1:
-        sys.exit(__doc__)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("dump")
+    parser.add_argument("--map", dest="map_path")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
 
-    blob = open(args[0], "rb").read()
-    hits = sorted((p for p in find(blob) if p["checksum_ok"]),
+    blob = open(args.dump, "rb").read()
+    map_path = args.map_path
+    if map_path is None:
+        map_path = os.path.splitext(args.dump)[0] + ".map"
+    base = probe_address(map_path)
+    if base is None:
+        candidates = find(blob)
+    else:
+        candidates = []
+        for offset in (base, base + SIZE):
+            if offset + SIZE <= len(blob) and blob[offset:offset + 4] == MAGIC:
+                probe = parse(blob, offset)
+                if probe["version"] == EXPECT_VERSION:
+                    probe["offset"] = offset
+                    candidates.append(probe)
+    hits = sorted((p for p in candidates if p["checksum_ok"]),
                   key=lambda p: p["frame"], reverse=True)
     if not hits:
-        raw = find(blob)
+        raw = candidates
         if raw:
             sys.exit("%d probe slot(s) found (first at 0x%04X) and none checksums "
                      "-- the struct layout changed: bump MSX2_PROBE_VERSION and "
                      "this script together" % (len(raw), raw[0]["offset"]))
-        sys.exit("no probe found in %s: the ROM never reached Msx2_ProbeInit" % args[0])
+        suffix = " at linker address 0x%04X" % base if base is not None else ""
+        sys.exit("no probe found in %s%s: the ROM never reached Msx2_ProbeInit"
+                 % (args.dump, suffix))
 
     p = hits[0]
-    if as_json:
+    if args.json:
         p.pop("magic")
         print(json.dumps(p, indent=2))
         return

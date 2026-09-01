@@ -66,6 +66,10 @@ static u32 Msx2_NextSeed(void)
 // the board for it.
 static void Msx2_DealDuel(u8 story)
 {
+	if(story != MSX2_STORY_NONE)
+		Msx2_StoryPrepareDuelDeck();
+	else
+		Msx2_DuelSetPlayerDeck(NULL, 0);
 	Msx2_DuelInit(Msx2_NextSeed(), story);
 	Msx2_MusicPlay((story == MSX2_STORY_FINAL_DUEL) ? MSX2_MUSIC_FINAL_BOSS : MSX2_MUSIC_BATTLE);
 	g_stat_steps = 0;
@@ -130,6 +134,14 @@ static void Msx2_SceneTitle(void)
 		g_stat_menu_cursor = 0xFF;
 		return;
 	}
+	if(choice == MSX2_TITLE_LOAD)
+	{
+		g_in_story = TRUE;
+		Msx2_StoryBeginLoad();
+		g_stat_scene = MSX2_SCENE_STORY;
+		g_stat_menu_cursor = 0xFF;
+		return;
+	}
 
 	g_in_story = FALSE;
 	Msx2_DealDuel(MSX2_STORY_NONE);
@@ -141,7 +153,17 @@ static void Msx2_SceneStory(void)
 
 	if(want == MSX2_STORY_FIGHT)
 	{
+#ifdef MSX2_DEBUG_STORY_AUTOPLAY
+		/* The ordinary soak owns complete rules/board duels.  This variant owns
+		   the story boundary: record the requested fight as a win and exercise
+		   its real reward, progress, password and ending transitions without
+		   making M7's runtime depend on the duration of five random AI fights. */
+		++g_stat_wins_player;
+		++g_stat_duels;
+		Msx2_StoryDuelDone(TRUE);
+#else
 		Msx2_DealDuel(Msx2_StoryDuelIndex());
+#endif
 	}
 	else if(want == MSX2_STORY_QUIT)
 	{
@@ -161,7 +183,12 @@ void main(void)
 	Msx2_InputInit();
 	MSX2_STAGE(MSX2_STAGE_BOOT);
 
-#ifdef MSX2_DEBUG_AUTOPLAY
+#ifdef MSX2_DEBUG_STORY_AUTOPLAY
+	g_in_story = TRUE;
+	Msx2_StoryBeginAutoplay();
+	g_stat_scene = MSX2_SCENE_STORY;
+	g_stat_menu_cursor = 0xFF;
+#elif defined(MSX2_DEBUG_AUTOPLAY)
 	// The soak has no hands, so it does not walk the menu either: it deals
 	// straight into a duel and plays both sides.
 	Msx2_StartDuel();
@@ -197,7 +224,6 @@ void main(void)
 		{
 			u8 outcome = Msx2_BoardStep();
 			++g_stat_steps;
-
 			if(!Msx2_StateIsSane())
 				g_stat_status = MSX2_PROBE_BADSTATE;
 #ifdef MSX2_DEBUG_AUTOPLAY
@@ -211,7 +237,22 @@ void main(void)
 				else
 					++g_stat_wins_com;
 				++g_stat_duels;
-#ifdef MSX2_DEBUG_AUTOPLAY
+#ifdef MSX2_DEBUG_STORY_AUTOPLAY
+				/* Defensive fallback if the story test is ever explicitly routed
+				   through a board instead of its normal direct fight boundary. */
+				if(g_in_story)
+				{
+					Msx2_StoryDuelDone(TRUE);
+					g_stat_scene = MSX2_SCENE_STORY;
+					MSX2_STAGE(MSX2_STAGE_STORY);
+				}
+				else
+				{
+					Msx2_TitleEnter();
+					g_stat_scene = MSX2_SCENE_TITLE;
+					MSX2_STAGE(MSX2_STAGE_TITLE);
+				}
+#elif defined(MSX2_DEBUG_AUTOPLAY)
 				Msx2_StartDuel();
 #else
 				if(g_in_story)

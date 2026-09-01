@@ -171,6 +171,11 @@ bool Msx2_FirstTurnAttackLocked(void);
 // index, which selects the scripted COM deck and the final duel's water field.
 void Msx2_DuelInit(u32 seed, u8 story_duel_index);
 
+// Story mode can hand the rules the edited 40-card deck before a duel starts.
+// Passing NULL (or a count other than 40) restores the normal random-deck
+// path, which is what free battle uses.
+void Msx2_DuelSetPlayerDeck(const u8* cards, u8 count);
+
 // One rules step: performs at most one discrete action (a draw, a placement, an
 // attack, a phase change) and returns TRUE while the duel is still running.
 // The COM side is driven from here, and so is the player's in the soak build
