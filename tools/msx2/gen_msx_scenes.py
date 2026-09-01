@@ -74,7 +74,7 @@ INFO_Y = 178
 # makes moving the cursor four VDP fills instead of two card re-blits: erasing
 # it is a fill of RING_RGB, and no artwork underneath ever has to be restored.
 RING = 2
-RING_RGB = (26, 20, 12)
+RING_RGB = (72, 40, 8)
 PANEL_RGB = (10, 8, 14)
 
 # 72 monsters + 6 support variants + 1 card back.
@@ -306,17 +306,25 @@ def perspective_floor(texture, height, dim):
     return Image.composite(dark, floor, mask.resize((WIDTH, height)))
 
 
-def draw_plinth(overlay, x, y, edge):
+def draw_plinth(img, x, y, edge):
     """One empty card recess, drawn at exactly the rect msx2_board.c blits a
-    card into.  Deliberately understated -- a card covers it completely, so the
-    only job of the empty state is to say "a card goes here" without turning
-    the board into a grid of boxes -- and drawn into an alpha overlay so the
-    floor material still reads through the well."""
-    d = ImageDraw.Draw(overlay)
-    d.rectangle([x, y, x + CARD_W - 1, y + CARD_H - 1], fill=(0, 0, 0, 90))
-    d.rectangle([x, y, x + CARD_W - 1, y + CARD_H - 1], outline=edge + (170,))
-    d.line([x + 1, y + CARD_H - 2, x + CARD_W - 2, y + CARD_H - 2],
-           fill=(0, 0, 0, 210))
+    card into.
+
+    The well is allowed to be textured -- the floor material shows through it,
+    which matters because ten of the fifteen slots are empty when a duel opens.
+    Putting a destroyed monster's slot back is therefore not a fill but a blit
+    of the SLOTS blob, which is cut out of this very image after it has been
+    quantised, so the restore is the backdrop's own bytes.
+
+    The RING around it is flat, and that part is load-bearing: the selection
+    cursor is drawn into the ring and erased with a fill of MSX2_RING_COLOR."""
+    d = ImageDraw.Draw(img)
+    d.rectangle([x - RING, y - RING, x + CARD_W - 1 + RING, y + CARD_H - 1 + RING],
+                fill=RING_RGB)
+    well = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 56))
+    ImageDraw.Draw(well).rectangle([0, 0, CARD_W - 1, CARD_H - 1],
+                                   outline=edge + (190,))
+    img.alpha_composite(well, (x, y))
 
 
 def draw_panel(d, x, y, w, h, fill, edge):
@@ -324,8 +332,12 @@ def draw_panel(d, x, y, w, h, fill, edge):
     d.rectangle([x, y, x + w - 1, y + h - 1], outline=edge)
 
 
-def duel_board(sky_src, texture, dim, edge, tint):
-    horizon = ROW_COM_Y + 10
+def duel_board(sky_src, texture, dim, tint, edge):
+    # The horizon sits exactly under the HUD.  There is no room for a sky on
+    # this screen -- three rows of 48-pixel cards and two panels use all 212
+    # lines -- and a three-pixel band of it peeking out above the top row read
+    # as blue rubbish rather than as distance.
+    horizon = HUD_H
     img = Image.new("RGB", (WIDTH, HEIGHT))
     img.paste(sky_band(sky_src, horizon), (0, 0))
     img.paste(perspective_floor(texture, HEIGHT - horizon, dim), (0, horizon))
@@ -333,19 +345,11 @@ def duel_board(sky_src, texture, dim, edge, tint):
     # sandstone floor under four skies.
     img = Image.blend(img, Image.new("RGB", (WIDTH, HEIGHT), tint), 0.16)
 
-    ring = ImageDraw.Draw(img)
+    img = img.convert("RGBA")
     for row_y in (ROW_COM_Y, ROW_PLAYER_Y, ROW_HAND_Y):
         for i in range(SLOTS):
-            x = SLOT_X0 + i * SLOT_PITCH
-            ring.rectangle([x - RING, row_y - RING,
-                            x + CARD_W - 1 + RING, row_y + CARD_H - 1 + RING],
-                           fill=RING_RGB)
-
-    overlay = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
-    for row_y in (ROW_COM_Y, ROW_PLAYER_Y, ROW_HAND_Y):
-        for i in range(SLOTS):
-            draw_plinth(overlay, SLOT_X0 + i * SLOT_PITCH, row_y, edge)
-    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+            draw_plinth(img, SLOT_X0 + i * SLOT_PITCH, row_y, edge)
+    img = img.convert("RGB")
 
     d = ImageDraw.Draw(img)
     gold = (198, 152, 54)
@@ -363,14 +367,14 @@ SCENES = [
         os.path.join(ROOT, "assets/source/title/title256_msx2.png"))),
     ("ENDING", lambda: Image.open(
         os.path.join(ROOT, "assets/source/ending/ending256x212.png"))),
-    ("BOARD_DESERT", lambda: duel_board("desert.png", "sandstone_1.png", 0.16,
-                                        (176, 132, 48), (28, 18, 6))),
-    ("BOARD_STONE", lambda: duel_board("stone.png", "sandstone_2.png", 0.14,
-                                       (168, 164, 148), (16, 18, 22))),
-    ("BOARD_EMBER", lambda: duel_board("ember.png", "sandstone_1.png", 0.20,
-                                       (224, 108, 44), (40, 8, 4))),
-    ("BOARD_SKY", lambda: duel_board("sky.png", "pyramid_beige.png", 0.22,
-                                     (150, 178, 224), (8, 10, 30))),
+    ("BOARD_DESERT", lambda: duel_board("desert.png", "sandstone_1.png", 0.08,
+                                        (28, 18, 6), (198, 152, 54))),
+    ("BOARD_STONE", lambda: duel_board("stone.png", "sandstone_2.png", 0.06,
+                                       (16, 18, 22), (176, 178, 168))),
+    ("BOARD_EMBER", lambda: duel_board("ember.png", "sandstone_1.png", 0.12,
+                                       (40, 8, 4), (232, 120, 52))),
+    ("BOARD_SKY", lambda: duel_board("sky.png", "pyramid_beige.png", 0.10,
+                                     (8, 10, 30), (156, 186, 232))),
 ]
 
 
@@ -411,6 +415,23 @@ def build_card_blob(cards, quiet):
     return bytes(blob), len(faces)
 
 
+def cut_slot_tiles(scene):
+    """The fifteen empty-slot rectangles of one backdrop, at the card stride.
+
+    Cut out of the quantised scene rather than re-rendered, so a tile is byte
+    for byte what the streamed backdrop put on that part of the screen."""
+    blob = bytearray()
+    for row_y in (ROW_COM_Y, ROW_PLAYER_Y, ROW_HAND_Y):
+        for i in range(SLOTS):
+            x = SLOT_X0 + i * SLOT_PITCH
+            tile = bytearray()
+            for y in range(CARD_H):
+                start = (row_y + y) * WIDTH + x
+                tile += scene[start:start + CARD_W]
+            blob += tile + bytes(CARD_STRIDE - len(tile))
+    return bytes(blob)
+
+
 def build_text_blob(cards):
     """Fixed-stride, NUL-padded strings.  Fixed stride so the Z80 indexes them
     with a shift instead of walking the table, and out of line in a cartridge
@@ -433,8 +454,11 @@ def main():
 
     segment = FIRST_ASSET_SEGMENT
     entries = []
+    slot_blob = bytearray()
     for name, build in SCENES:
         data = grb.quantize(build(), (WIDTH, HEIGHT))
+        if name.startswith("BOARD_"):
+            slot_blob += cut_slot_tiles(data)
         binpath = os.path.join(ASSET_DIR, name.lower() + ".bin")
         with open(binpath, "wb") as f:
             f.write(data)
@@ -453,6 +477,15 @@ def main():
     card_segment = segment
     segment += (len(card_blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES
 
+    with open(os.path.join(ASSET_DIR, "slots.bin"), "wb") as f:
+        f.write(slot_blob)
+    slot_segment = segment
+    segment += (len(slot_blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES
+    if not quiet:
+        print("SLOTS    %d tiles -> %d bytes, segments %d..%d"
+              % (len(slot_blob) // CARD_STRIDE, len(slot_blob), slot_segment,
+                 segment - 1))
+
     text_blob, name_count = build_text_blob(cards)
     with open(os.path.join(ASSET_DIR, "text.bin"), "wb") as f:
         f.write(text_blob)
@@ -467,6 +500,7 @@ def main():
         for name, seg, _span in entries:
             f.write("%s %d %s.bin\n" % (name, seg, name.lower()))
         f.write("CARDS %d cards.bin\n" % card_segment)
+        f.write("SLOTS %d slots.bin\n" % slot_segment)
         f.write("TEXT %d text.bin\n" % text_segment)
 
     with open(HEADER, "w") as f:
@@ -509,6 +543,16 @@ def main():
         f.write("// erases back to the picture instead of to something close to it.\n")
         f.write("#define MSX2_RING_COLOR         0x%02X\n" % grb.pack(*RING_RGB))
         f.write("#define MSX2_PANEL_COLOR        0x%02X\n\n" % grb.pack(*PANEL_RGB))
+
+        f.write("// ── Empty-slot tiles ───────────────────────────────────────────────────\n")
+        f.write("// One 40x48 cut-out of each backdrop at each of the fifteen slots, in the\n")
+        f.write("// backdrop's own quantised bytes.  Clearing a destroyed monster blits the\n")
+        f.write("// tile for (stage, slot); that is the only way to put a textured board\n")
+        f.write("// back exactly without re-streaming the whole picture.\n")
+        f.write("#define MSX2_SLOT_ART_SEGMENT   %d\n" % slot_segment)
+        f.write("#define MSX2_SLOT_ART_STRIDE    %d\n" % CARD_STRIDE)
+        f.write("#define MSX2_SLOT_ART_PER_SEG   %d\n" % (SEGMENT_BYTES // CARD_STRIDE))
+        f.write("#define MSX2_SLOT_ART_PER_STAGE %d\n\n" % (3 * SLOTS))
 
         f.write("// ── String table ───────────────────────────────────────────────────────\n")
         f.write("#define MSX2_TEXT_SEGMENT       %d\n" % text_segment)

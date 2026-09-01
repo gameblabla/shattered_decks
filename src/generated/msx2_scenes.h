@@ -40,14 +40,24 @@
 #define MSX2_SLOT_RING          2
 // The exact GRB332 bytes the backdrop was baked with, so a fill
 // erases back to the picture instead of to something close to it.
-#define MSX2_RING_COLOR         0x24
+#define MSX2_RING_COLOR         0x28
 #define MSX2_PANEL_COLOR        0x00
 
+// ── Empty-slot tiles ───────────────────────────────────────────────────
+// One 40x48 cut-out of each backdrop at each of the fifteen slots, in the
+// backdrop's own quantised bytes.  Clearing a destroyed monster blits the
+// tile for (stage, slot); that is the only way to put a textured board
+// back exactly without re-streaming the whole picture.
+#define MSX2_SLOT_ART_SEGMENT   38
+#define MSX2_SLOT_ART_STRIDE    2048
+#define MSX2_SLOT_ART_PER_SEG   8
+#define MSX2_SLOT_ART_PER_STAGE 15
+
 // ── String table ───────────────────────────────────────────────────────
-#define MSX2_TEXT_SEGMENT       38
+#define MSX2_TEXT_SEGMENT       46
 #define MSX2_NAME_STRIDE        24
 #define MSX2_NAME_COUNT         78
 
 #define MSX2_SCENE_SEGMENT_FIRST  4
-#define MSX2_SCENE_SEGMENT_LAST   38
-#define MSX2_ASSET_ROM_KB         624
+#define MSX2_SCENE_SEGMENT_LAST   46
+#define MSX2_ASSET_ROM_KB         752

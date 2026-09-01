@@ -37,7 +37,7 @@ SOURCES := $(wildcard $(PROJ_DIR)/*.c) $(wildcard $(PROJ_DIR)/*.h) \
            $(PROJ_DIR)/msxgl_config.h \
            src/game/deck.c src/game/ai.c
 
-.PHONY: all rom tables verify clean check-sdk
+.PHONY: all rom tables verify soak clean check-sdk
 
 all: rom
 
@@ -62,12 +62,22 @@ src/generated/msx2_scenes.h $(SCENE_BINS) &: tools/msx2/gen_msx_scenes.py $(SCEN
 rom: $(ROM)
 
 $(ROM): $(SOURCES) $(GENERATED) $(SCENE_BINS) tools/msx2/pack_msx_rom.py | check-sdk
-	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) node $(BUILD_JS)
+	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) MSX2_AUTOPLAY=$(MSX2_AUTOPLAY) \
+	    node $(BUILD_JS)
 	python3 tools/msx2/pack_msx_rom.py $(ROM)
 	@ls -l $(ROM)
 
 verify: rom
 	./msx2.sh verify --frames $(FRAMES)
+
+# The soak ROM.  Identical to the shipping one except that the player's turn is
+# played by the AI, so a headless run finishes whole duels with no input --
+# which is the only way the M1a evidence survives now that the duel is a screen
+# a human drives.  The object tree is dropped first because MSXgl's incremental
+# compile does not know about a changed -D.
+soak:
+	rm -rf $(OUT_DIR)
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1
 
 clean:
 	rm -rf $(OUT_DIR) $(PROJ_DIR)/emul $(PROJ_DIR)/lib

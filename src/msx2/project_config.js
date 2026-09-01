@@ -14,7 +14,11 @@
 //   header (must precede src/generated), then the shared game logic.
 CompileOpt = `-I${ToolsDir}sdcc/include`
            + ` -I./compat -I../game -I../generated`
-           + ` --opt-code-size`;
+           + ` --opt-code-size`
+           // The blind soak needs the player's turn played by the AI; see
+           // MSX2_DEBUG_AUTOPLAY in msx2_board.c.  Driven from the environment
+           // so `make -f Makefile.msx2 soak` is the only thing that knows.
+           + (process.env.MSX2_AUTOPLAY ? ` -DMSX2_DEBUG_AUTOPLAY` : ``);
 
 ProjName = "waifu_msx2";
 

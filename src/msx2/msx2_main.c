@@ -5,11 +5,13 @@
 //  The loop shape is the one the plan specifies: HALT to vblank, take input,
 //  advance the game by a bounded amount of work, then present.
 //
-//  Two scenes exist so far.  TITLE is drawn (msx2_title.c) and driven by the
-//  player.  DUEL still has no renderer -- it is milestone 1's blind autoplay,
-//  where both sides are played by the AI and the state is stamped into RAM
-//  every frame (msx2_probe.c) for tools/msx2/read_probe.py to read back.  It
-//  draws only a status line, which is enough to prove the scene changed.
+//  Two scenes exist: TITLE (msx2_title.c) and DUEL (msx2_board.c).  Both are
+//  driven by the player through the same latched input.
+//
+//  Building with -DMSX2_DEBUG_AUTOPLAY hands the player's turn to the same AI
+//  the COM uses, which is how the blind soak still works on a build that draws
+//  a board: the ROM plays itself for hundreds of duels and stamps its state
+//  into RAM every frame (msx2_probe.c) for tools/msx2/read_probe.py.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msxgl.h"
@@ -21,18 +23,13 @@
 #include "msx2_video.h"
 #include "msx2_input.h"
 #include "msx2_title.h"
+#include "msx2_board.h"
 
-// A duel that has not resolved within this many rules steps is not a long duel,
-// it is a bug.  The watchdog turns what would be a silent hang into a status
-// byte the headless reader can see.
-#define MSX2_DUEL_STEP_WATCHDOG   4000
-
-// Rules steps per frame.  One discrete action per frame is what the presented
-// game will want (each step is a beat the player watches); the blind build runs
-// hotter so a headless run covers whole duels in a few hundred frames.
-#ifndef MSX2_STEPS_PER_FRAME
-	#define MSX2_STEPS_PER_FRAME  16
-#endif
+// A duel the SOAK has not resolved within this many frames is not a long duel,
+// it is a bug, and the watchdog turns what would be a silent hang into a status
+// byte the headless reader can see.  It applies to the soak only: a person is
+// perfectly entitled to spend two minutes on one turn.
+#define MSX2_DUEL_FRAME_WATCHDOG  4000
 
 static u32 g_seed;
 
@@ -73,6 +70,10 @@ static void Msx2_StartDuel(void)
 	Msx2_DuelInit(Msx2_NextSeed(), story);
 	Msx2_MusicPlay((story == MSX2_STORY_FINAL_DUEL) ? MSX2_MUSIC_FINAL_BOSS : MSX2_MUSIC_BATTLE);
 	g_stat_steps = 0;
+	MSX2_STAGE(MSX2_STAGE_DUEL);
+	Msx2_BoardEnter(Msx2_BoardStageForStory(story));
+	g_stat_scene = MSX2_SCENE_DUEL;
+	g_stat_menu_cursor = 0xFF;
 }
 
 // Cheap invariant check.  A duel state that has gone out of range is worth
@@ -101,36 +102,6 @@ static bool Msx2_StateIsSane(void)
 	return TRUE;
 }
 
-// The duel screen is milestone 2 work.  Until it exists, the scene paints a
-// black page and a single line of state, repainted a few times a second: enough
-// that a screenshot shows the game left the title and is playing, and cheap
-// enough that it cannot be what makes a frame late.
-static void Msx2_DuelEnter(void)
-{
-	// Both pages, so the status line below can repaint one of them without the
-	// other being blank underneath it.
-	Msx2_VideoDrawPage(MSX2_PAGE_0);
-	Msx2_ClearPage(MSX2_BLACK);
-	Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
-	Msx2_TextCenter(90, "DUEL IN PROGRESS");
-	Msx2_VideoCopyPage(MSX2_PAGE_0, MSX2_PAGE_1);
-	Msx2_VideoShowPage(MSX2_PAGE_0);
-}
-
-// Erase-then-redraw on the visible page is exactly what flickers, so the status
-// line is written on the hidden page and shown by a flip.  It is redrawn from
-// the live state every time, so the page that comes up is always the fresh one.
-static void Msx2_DuelDrawStatus(void)
-{
-	Msx2_Fill(0, 106, MSX2_SCREEN_W, 8, MSX2_BLACK);
-	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
-	Msx2_TextAt(72, 106, "LP");
-	Msx2_NumAt(90, 106, g_duel.side[MSX2_OWNER_PLAYER].lp);
-	Msx2_TextAt(140, 106, "COM");
-	Msx2_NumAt(166, 106, g_duel.side[MSX2_OWNER_COM].lp);
-	Msx2_VideoFlipRequest();
-}
-
 static void Msx2_SceneTitle(void)
 {
 	u8 choice = Msx2_TitleStep();
@@ -138,20 +109,14 @@ static void Msx2_SceneTitle(void)
 	if(choice == MSX2_TITLE_BUSY)
 		return;
 
-	// STORY MODE has no name entry and no story flow on this target yet, so
-	// both playable rows enter the same blind duel; they diverge the moment
-	// the story scenes land, and the seam is already here.
+	// STORY MODE has no story flow on this target yet, so both playable rows
+	// enter the same duel; they diverge the moment the story scenes land, and
+	// the seam is already here.
 	Msx2_StartDuel();
-	MSX2_STAGE(MSX2_STAGE_DUEL);
-	Msx2_DuelEnter();
-	g_stat_scene = MSX2_SCENE_DUEL;
-	g_stat_menu_cursor = 0xFF;
 }
 
 void main(void)
 {
-	u8 i;
-
 	g_seed = 0x1234ABCDu;
 	Msx2_AudioInit();
 	Msx2_ProbeInit();
@@ -159,9 +124,15 @@ void main(void)
 	Msx2_InputInit();
 	MSX2_STAGE(MSX2_STAGE_BOOT);
 
+#ifdef MSX2_DEBUG_AUTOPLAY
+	// The soak has no hands, so it does not walk the menu either: it deals
+	// straight into a duel and plays both sides.
+	Msx2_StartDuel();
+#else
 	Msx2_TitleEnter();
 	g_stat_scene = MSX2_SCENE_TITLE;
 	MSX2_STAGE(MSX2_STAGE_TITLE);
+#endif
 
 	MSX2_STAGE(MSX2_STAGE_LOOP);
 	for(;;)
@@ -180,37 +151,24 @@ void main(void)
 
 		if(g_stat_status == MSX2_PROBE_OK)
 		{
-			for(i = 0; i < MSX2_STEPS_PER_FRAME; ++i)
-			{
-				if(g_duel.result != 0)
-					break;
-				Msx2_DuelStep();
-				++g_stat_steps;
+			u8 outcome = Msx2_BoardStep();
+			++g_stat_steps;
 
-				if(!Msx2_StateIsSane())
-				{
-					g_stat_status = MSX2_PROBE_BADSTATE;
-					break;
-				}
-				if(g_stat_steps > MSX2_DUEL_STEP_WATCHDOG)
-				{
-					g_stat_status = MSX2_PROBE_STUCK;
-					break;
-				}
-			}
-
-			if((g_stat_status == MSX2_PROBE_OK) && (g_duel.result != 0))
+			if(!Msx2_StateIsSane())
+				g_stat_status = MSX2_PROBE_BADSTATE;
+#ifdef MSX2_DEBUG_AUTOPLAY
+			else if(g_stat_steps > MSX2_DUEL_FRAME_WATCHDOG)
+				g_stat_status = MSX2_PROBE_STUCK;
+#endif
+			else if(outcome != MSX2_BOARD_BUSY)
 			{
-				if(g_duel.result > 0)
+				if(outcome == MSX2_BOARD_WIN)
 					++g_stat_wins_player;
 				else
 					++g_stat_wins_com;
 				++g_stat_duels;
 				Msx2_StartDuel();
 			}
-
-			if((g_stat_frame & 7) == 0)
-				Msx2_DuelDrawStatus();
 		}
 
 		Msx2_ProbeUpdate();
