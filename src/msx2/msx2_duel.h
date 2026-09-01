@@ -152,8 +152,8 @@ void Msx2_DuelInit(u32 seed, u8 story_duel_index);
 
 // One rules step: performs at most one discrete action (a draw, a placement, an
 // attack, a phase change) and returns TRUE while the duel is still running.
-// The AI side and, for now, the player side are both driven from here, so a
-// duel plays to completion without any input or video.
+// The COM side is driven from here, and so is the player's in the soak build
+// (-DMSX2_DEBUG_AUTOPLAY), where a duel plays to completion with no input.
 bool Msx2_DuelStep(void);
 
 // ── Actions (the presentation layer calls these for the human player) ────────

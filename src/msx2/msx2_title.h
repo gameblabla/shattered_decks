@@ -1,12 +1,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  msx2_title.h — the title screen and its menu
 //
-//  The shipping title is a streamed 256x212 GRB332 painting (plan §14.1); the
-//  asset pipeline that bakes it is M3 and does not exist yet.  Until it does,
-//  the backdrop is *drawn* out of VDP fills -- sky gradient, sun, pyramids,
-//  sand -- which costs no ROM and, more usefully, gives the scene, the menu,
-//  the input path and the page flip something real to be verified against now.
-//  When the streamer lands, only Msx2_TitleBackdrop() changes.
+//  The backdrop is the shipping 256x212 GRB332 painting (plan §14.1): the same
+//  picture the other targets show, dithered offline by
+//  tools/msx2/gen_msx_scenes.py and streamed out of the cartridge.  The logo,
+//  the attract prompt and the menu are drawn over it, which is why they are all
+//  outlined or shadowed -- a colour that reads on the bright sky does not read
+//  on the dark rock, and vice versa.
 //
 //  Layout is deliberately identical to the framebuffer targets' title screen in
 //  src/main.c (same 256x212 canvas, same panel and row geometry), so the two
