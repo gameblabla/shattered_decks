@@ -1,8 +1,9 @@
 # MSX2 Port Plan — SCREEN 8 / NEO-16 16 MB Cartridge
 
 Target: MSX2 (Z80A 3.58 MHz, V9938, 128 KB VRAM), NEO-16 mapper ROM up to 16 MB,
-built with MSXgl + SDCC, verified with the bundled `openmsx-headless` (NEO 1.2 +
-planar-page fix) against a real `msx2.rom` BIOS.
+built with MSXgl + SDCC, verified with real openMSX. The bundled
+`openmsx-headless` remains useful for mapper/VDP tooling but its incomplete Z80
+core cannot execute SDCC-compiled C (see `src/msx2/STATUS.md`).
 
 This document is the complete design. It is written against the actual state of
 this repository as of the current branch, and it names the exact files, budgets
@@ -62,14 +63,13 @@ playable build, and they are binding on the rest of this document:
    already captures FM TOWNS board poses, and the cards are drawn into their
    true projected quads by the scoped rasterizer of §8 — which is therefore a
    **required** component, not a stretch goal.
-2. **The camera moves.** The hand→top lift, the board's opening sweep and the
-   battle camera changes are *animations*, pre-rendered offline as
+2. **The board camera moves, but combat is 2-D.** The board's opening sweep and
+   the player↔opponent turn handoff are *animations*, pre-rendered offline as
    **strips of whole baked images in the cartridge**, streamed one after the
-   other by the ordinary §6.2 path — no codec, no reconstruction (§4.6).
-   Cuts-behind-a-flash, the earlier design, are demoted to a fallback for beats
-   that measurement proves cannot afford a move. What this costs is frame rate:
-   baked playback runs at a few frames a second (§4.6.2), so a camera move is a
-   held cinematic push, and the art has to be authored for that.
+   other by the ordinary §6.2 path — no codec, no reconstruction (§4.6). Every
+   attack, whether monster-versus-monster or direct, leaves the 3-D arena for a
+   full-screen 2-D card cut-in. This matches the owner's final division of
+   labour: 3-D for the field and turn handoff, 2-D for battle resolution.
 3. **Story dialogue is a Japanese-style MSX2 visual novel scene, composited at
    runtime.** The backdrop is one of the shipped paintings in
    `assets/source/bg/` (256x240, already the right width — centred to 256x212),
@@ -381,16 +381,10 @@ so the duel rests in a small set of authored poses and *animates between them*
 
 | View | Source camera in `main.c` | Purpose |
 |---|---|---|
-| `V_HAND_P` | `player_camera()` | player hand, low angle |
-| `V_TOP` | `top_camera()` | tactical top-down board |
-| `V_PLACE_P` | `placement_camera()` | placing a card |
-| `V_PLACE_E` | `enemy_placement_camera()` | COM placing |
-| `V_BATTLE_TOP` | `battle_top_camera()` | attack resolution, player side |
-| `V_BATTLE_TOP_E` | `enemy_battle_top_camera()` | attack resolution, COM side |
-| `V_SIDE_0..3` | `side_battle_camera(row)` | per-row side view during an attack |
-| `V_HAND_E` | `enemy_camera()` | COM hand |
+| `V_TOP` | `msx2_top_camera()` = shared `player_camera()` | player-chair board reached by the PC-FX/headless opening |
+| `V_COM` | `msx2_com_camera()` = shared `enemy_camera()` | opponent-chair board during the COM turn |
 
-Ten to twelve views. Each is one 54,272-byte ROM bitmap of the **empty board**
+Two views. Each is one 54,272-byte ROM bitmap of the **empty board**
 (floor, arena walls, backdrop, HUD frame — everything except cards and text).
 
 For each view, `gen_msx_views.py` also emits, per board slot and per hand slot,
@@ -451,12 +445,11 @@ arithmetic says a move does not fit, and each such place is named here.
 
 | Current effect | MSX2 realisation |
 |---|---|
-| Smooth hand→top camera lift (`IB_PLAYER_HAND_TO_TOP`) | **6 whole baked images streamed in sequence** over the board window, ~2.0 s, on the visible page; the last image *is* the destination view (§4.6). |
-| Board opening sweep at duel start | **8 baked full-screen images** out of the same capture run, preceded by a 3-step brightness ramp up from black (§4.6.4). |
-| Battle camera changes (`battle_top`, `side_battle_camera(row)`) | Baked strips between the resting views, same machinery; 4–5 images, and the per-row side views are cropped to a band so they play at ~5 fps (§4.6.2). |
+| Board opening sweep at duel start | **16 samples of the shared PC-FX/headless `opening_camera()` arc** over the 114-row arena band. The last image *is* the player-chair destination view (§4.6). |
+| Player ↔ COM turn handoff | **5 captured orbit poses**, played forward or backward; destination cards are repainted into that chair's true quads. |
+| Monster battle / direct attack | A separate black full-screen **2-D** scene with one or two 88x120 source-art cards, live names/ATK/DEF, a clean↔impact page-flipped beat, then outcome and damage. The retained 3-D board is reconstructed only after the result hold. |
 | COM cursor walking the row (`IB_COM_TARGET`) | Hardware sprite cursor moving over the static `V_TOP` view. Free. |
 | Card flying from hand to field | 12 baked pose quads per path, drawn by the §8 rasterizer (Tier A span programs, ~102 KB for all 50 paths) over a static background with per-frame rect repair (§7.5). Tier B covers any pose that was not enumerated. |
-| Direct-attack impact burst | 10-frame 64x48 cel over the impact point. 3,072 B/frame — comfortably inside the 2,300 B/frame budget at 15 Hz. |
 | Fusion / thunder / equip animations | Same cel technique, authored per effect. |
 | Battle "burn wipe" consuming a card | Pre-rendered 8-frame generic cel (not per-card), software blitted over the card's cache rect. |
 | Fade to/from black on a duel entry or exit | Three baked brightness steps, streamed like any other image (§4.6.4). There is no palette to fade (§0.2). |
@@ -527,10 +520,8 @@ Recommended shape, to be confirmed at M1:
 
 | Move | Region | Poses | Duration |
 |---|---|---|---|
-| hand → top lift (reversed for top → hand) | board window | 6 | ~2.0 s |
-| top ↔ battle-top, per side | board window | 5 | ~1.7 s |
-| top ↔ side view, per row | board band | 4 | ~0.8 s |
-| Duel opening sweep | whole screen | 8 | ~3.5 s |
+| Player ↔ COM turn orbit | board band | 5 | ~1.3 s |
+| Duel opening arc | 114-row board band | 16 | ~4.1 s |
 
 If a move must be faster than its row above, the answer is a **smaller baked
 image**, not a cleverer runtime: crop the sequence to the region that actually
@@ -540,22 +531,16 @@ ones.
 
 #### 4.6.3 Where the frames are streamed to
 
-Straight onto the **visible page**, top to bottom, single-buffered.
+Every pose is streamed to the **hidden page**. Only after all 29,184 bytes have
+landed does the runtime request a page flip, and the main loop applies it just
+after `HALT`, inside V-blank. The next pose is then written to the other hidden
+page. ROM cost is unchanged: the same pose bytes alternate between the two VRAM
+pages.
 
-Page-flipping each pose would halve nothing (the stream cost is the same) and
-would double the ROM (each page needs its own settled state), so the flip is
-kept for the two ends of a move: the sequence is entered from a completed page,
-and the last pose *is* the destination view, so the move ends already showing
-what the duel resumes on. No separate settle stream.
-
-At ~20 video frames per pose the write front crawls down the screen slowly
-enough to be seen. That is a real artefact and there are two honest answers,
-both to be decided by eye at M5b: let it read as a wipe (it is top-to-bottom and
-regular, and at these durations it looks like a deliberate transition), or hold
-each pose long enough that the crawl is over well before the eye settles.
-
-`page_valid` (§7.5) needs a third state, *mid-sequence*, in which the visible
-page is known-divergent and no repair may be journaled against it.
+The last pose *is* the destination view. After its flip the runtime copies that
+completed visible page to the hidden page with one VDP `HMMM`, preventing a
+later retained update from revealing the penultimate camera pose. No write
+front is visible and no mid-sequence page is treated as settled state.
 
 #### 4.6.4 Fades, given that there is no palette
 
@@ -578,14 +563,11 @@ Raw, uncompressed, which is the point:
 
 | Sequence | Poses | Region | Bytes |
 |---|---|---|---|
-| hand → top (reversible, covers top → hand) | 6 | board window | 246 KB |
-| top ↔ battle-top, both sides | 5 x 2 | board window | 410 KB |
-| top ↔ side view, 4 rows | 4 x 4 | board band | 393 KB |
-| Duel opening sweep | 8 | whole screen | 434 KB |
-| Brightness ladders, 4 fading views | 3 x 4 | board window | 492 KB |
-| **Total** | | | **~1.9 MB** |
+| Duel opening arc, four stages | 16 x 4 | 114-row board band | 2,048 KB padded |
+| Player ↔ COM turn orbit, four stages | 5 x 4 | 114-row board band | 640 KB padded |
+| **Total board camera strips** | | | **2,688 KB** |
 
-Under two megabytes of a sixteen-megabyte cartridge for the entire camera
+About 2.7 megabytes of the cartridge for the entire camera
 identity of the game, and every byte of it goes to the VDP exactly as it sits in
 ROM. This is the trade the cartridge exists to make.
 
@@ -652,7 +634,7 @@ ones. Track resident size in CI from the map file and fail the build over 30 KB.
 | Resident code (segments 0, 2) | 32 KB | hard limit |
 | Banked code | 96 KB | scene presentation, deck editor, ending |
 | Duel view bases (12 x 54,272) | 636 KB | §4.3 |
-| **Baked camera-move image strips (incl. brightness ladders)** | **~1,900 KB** | **§4.6 — hand→top, battle cameras, opening sweep, fades; raw whole images** |
+| **Baked board-camera strips** | **2,688 KB** | **§4.6 — sixteen-pose shared opening arc and five-pose turn orbit for four stages; raw whole images** |
 | Card master textures x 3 shading variants (78 cards) | 720 KB | §4.4, §8.7 — replaces the old size ladder and the pre-skewed variants |
 | Card big preview art (96x96) | 719 KB | §4.4, software blitted |
 | Card backs, deck-editor icons | 80 KB | |
@@ -1837,37 +1819,35 @@ and it was not the board. It is gone.
 | Card drawing | opaque rect blit | §8 Tier A span program from the master texture |
 | Empty-slot restore | `SLOTS` blob cut from the baked backdrop | same blob, cut from the *captured* view at each quad's box |
 
-The pose is `msx2_top_camera()` in `src/main.c`: raked rather than straight
-down, because a pure top-down camera projects every slot to an axis-aligned
-rectangle and the rasterizer would then be an elaborate way of blitting. The
-far row is visibly smaller than the near one, which is what a receding board
-means. The stage no longer changes the board's geometry — one arena, four
-paintings behind it and four grades over it.
+The pose is `msx2_top_camera()` in `src/main.c`, now exactly the shared
+`player_camera()` that PC-FX/headless land on after their duel opening. The COM
+pose is the shared `enemy_camera()`. Their true player-chair rake exposes the
+slab walls and projects the far row smaller than the near one. The surround is
+literal black, like PC-FX; story-stage paintings and grades no longer leak into
+the duel arena.
 
 The ring trick survives as §21.1 predicted it would, through the fallback that
 section named: the capture carries no slot highlight of its own, so
 `gen_msx_views.py` draws a flat ring just outside every projected quad, and the
 runtime's selection bracket is four VDP `LINE` commands into that ring.
 
-### 21.2 Nothing in the duel moves — **partly closed**
+### 21.2 Nothing in the duel moves — **closed for the chosen presentation**
 
-A duel now opens on §4.6's baked camera move: six whole pictures of the board
-band, streamed one after the next by the ordinary §6.2 path, the last of which
-is byte for byte the resting player view. At the turn boundary, a five-pose
+A duel now opens on §4.6's baked camera move: sixteen samples of the exact
+shared `opening_camera()` arc, the last of which is byte for byte the resting
+player view. Every pose is completed on the hidden page and flipped in V-blank.
+At the turn boundary, a five-pose
 strip moves to the COM view and the reverse strip returns to the player. The
 two authored resting views carry their own projected quads, slot crops and span
 records, so the destination page can repaint the live cards after the empty
 strip lands. There is no codec and no decoder anywhere in the port.
 
-The short action presentation layer is also closed for the core duel loop:
-choice, placement, summon/fusion/equip/support, position, attack, direct hit and
-trap counter all have retained-board effects. The card-flight cue is an XOR
-outline for page safety and the final card is revealed by the model cleanup.
-
-What remains is the full §4.6 battle camera family (`battle_top` and the
-per-row side cuts). Those moves still need the rasterizer to repaint the fifteen
-live quads inside the strip's streaming time; streaming an empty pose alone
-would blink every monster off the field.
+Choice, placement, summon/fusion/equip/support and position changes retain the
+board. Attacks do not: monster battles, direct hits and trap counters switch to
+the black full-screen 2-D battle scene with large card art and a page-flipped
+clean/impact/result beat, then rebuild the retained board. Battle-top and
+side-camera strips are intentionally retired; they would
+violate the owner's 2-D-only combat requirement.
 
 ### 21.3 The dialogue scene shows one character on a synthesised floor — **closed**
 
@@ -1900,10 +1880,7 @@ skip-list inner loop. Same arithmetic, same cost, one fewer piece of assembly.
 
 ### 21.5 What is left
 
-1. **Full battle camera moves** (§21.2). The turn handoff strip is implemented;
-   the remaining authored battle views are blocked on repaint cost, not on the
-   strip player.
-2. **Baked card flight** — §4.5's interpolated warped card cels. The runtime
+1. **Baked card flight** — §4.5's interpolated warped card cels. The runtime
    currently shows a reversible outline during flight and the retained warped
    card at the destination.
-3. The rest of §21.4's untouched list, which was never in question.
+2. The rest of §21.4's untouched list, which was never in question.

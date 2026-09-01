@@ -73,15 +73,10 @@ static void Msx2_StreamChunk(void)
 	__endasm;
 }
 
-void Msx2_StreamScene(u16 segment, u8 page)
+void Msx2_StreamSceneBlanked(u16 segment, u8 page)
 {
 	u16 remaining = MSX2_SCENE_BYTES;
 	u8 chunk = 0;
-
-	// GRAPHIC 7 cannot keep up with OTIR while it is scanning out; blanking is
-	// what makes the copy legal, and it is invisible anyway because a streamed
-	// scene is always presented by a page flip afterwards.
-	VDP_EnableDisplay(FALSE);
 
 	while(remaining != 0)
 	{
@@ -95,6 +90,15 @@ void Msx2_StreamScene(u16 segment, u8 page)
 		++chunk;
 	}
 
+}
+
+void Msx2_StreamScene(u16 segment, u8 page)
+{
+	// GRAPHIC 7 cannot keep up with OTIR while it is scanning out; blanking is
+	// what makes the copy legal, and it is invisible anyway because a streamed
+	// scene is always presented by a page flip afterwards.
+	VDP_EnableDisplay(FALSE);
+	Msx2_StreamSceneBlanked(segment, page);
 	VDP_EnableDisplay(TRUE);
 }
 

@@ -20,10 +20,10 @@ MAP          := $(OUT_DIR)/waifu_msx2.map
 
 # NEO-16 spans 1 MB to 64 MB.  The default is the smallest size the baked
 # assets actually fit in (gen_msx_scenes.py prints MSX2_ASSET_ROM_KB, currently
-# ~2.9 MB -- the captured board, its camera move and the story busts are most of
+# 6.0 MB -- the captured board moves and the large 2-D battle cards are most of
 # it), so the build-and-verify loop stays as fast as it can be; the shipping
 # cartridge is 16384.
-ROM_SIZE_KB  ?= 4096
+ROM_SIZE_KB  ?= 8192
 
 # Headless verification (see msx2.sh for the full flow).
 OPENMSX      := $(MSXGL_PATH)/openmsx-headless-21.0-capture-neo1.2-planarfix-linux-x86_64/openmsx

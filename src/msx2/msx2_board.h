@@ -14,8 +14,9 @@
 //  on every target, so it stays a row of five axis-aligned card blits -- which
 //  also keeps the cards a player is choosing between at a readable size.
 //
-//  A duel opens on §4.6's baked camera move: eight whole pictures of the board
-//  band, streamed one after the other, the last of which IS the resting view.
+//  A duel opens on §4.6's baked camera move: sixteen samples of the shared
+//  PC-FX/headless opening arc. Each is completed on the hidden page and flipped
+//  in V-blank; the last pose IS the resting player-chair view.
 //  There is no codec and no decoder anywhere in the port.
 //
 //  Both pages are tracked separately.  A partial repaint reaches only the page
@@ -32,10 +33,9 @@
 #define MSX2_BOARD_WIN    0
 #define MSX2_BOARD_LOSE   1
 
-// Which arena to light the duel with; the four stages match the story's four
-// places (STORY_SCENE_DESERT/_TEMPLE/_VOLCANO/_VOID in src/main.c).  The board
-// itself is one captured board -- the stage changes the painting behind it and
-// its grade, not its geometry.
+// Which copy of the captured arena to use. Four story-stage entries remain in
+// the ROM layout, but all use the PC-FX black surround and identical ungraded
+// arena geometry.
 u8 Msx2_BoardStageForStory(u8 story_duel_index);
 
 // Compose the whole screen on the hidden page and show it, after playing the

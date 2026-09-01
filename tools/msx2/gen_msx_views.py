@@ -11,7 +11,7 @@ authored MSX2 poses and prints the projected corner list for every field slot.
 Three things come out:
 
   * `board_view_<stage>.bin` -- the 256x212 resting picture: the captured board,
-    the stage's own shipped backdrop painting behind it, a flat ring around every
+    the same black surround as PC-FX, a flat ring around every
     slot, and the three baked UI panels.  One per story stage.
   * `board_move_<stage>_<move>.bin` -- §4.6's baked camera move: a strip of whole
     pictures of the board band, played back in order by the ordinary streamer.
@@ -37,7 +37,6 @@ import msx2_grb332 as grb  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ASSET_DIR = os.path.join(ROOT, "src", "msx2", "assets")
-BG_DIR = os.path.join(ROOT, "assets", "source", "bg")
 CAPTURE_DIR = os.path.join(ROOT, "build", "msx2_capture")
 DUMP_BIN = os.path.join(CAPTURE_DIR, "waifu_msx2_dump")
 
@@ -102,18 +101,8 @@ SRC_NORMAL = 0
 SRC_MIRROR = 1
 OP_MAX_RUN = 31
 
-STAGE_BG = ["desert.png", "stone.png", "ember.png", "sky.png"]
-# The backdrop is the shipped painting, dimmed: it stands *behind* a lit arena,
-# and at full brightness it competes with the board for every one of GRB332's
-# 256 colours.
-BACKDROP_DIM = 0.55
-
-# The tactical pose fills the window with arena, so almost none of the painting
-# behind it is visible and the four stages would be one picture.  A light tint
-# of the stage's own key colour is what tells them apart; it is graded, not
-# drawn, so it changes no geometry and the board stays the captured board.
-STAGE_TINT = [(30, 20, 6), (16, 18, 22), (44, 10, 4), (10, 12, 34)]
-STAGE_TINT_MIX = 0.14
+STAGE_NAMES = ("DESERT", "STONE", "EMBER", "SKY")
+BOARD_STAGES = len(STAGE_NAMES)
 
 
 # ── The capture ──────────────────────────────────────────────────────────────
@@ -208,15 +197,9 @@ def read_capture():
 # ── The resting picture ──────────────────────────────────────────────────────
 
 def backdrop(stage):
-    """The stage's shipped painting, behind the arena.
-
-    §14.2's rule for the dialogue scene applies here too: the backdrop is one of
-    the paintings the other targets already use, not a gradient synthesised from
-    a slice of one."""
-    img = Image.open(os.path.join(BG_DIR, STAGE_BG[stage])).convert("RGB")
-    img = img.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
-    return Image.blend(Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0)), img,
-                       BACKDROP_DIM)
+    """The PC-FX/headless battle surround: ungraded, literal black."""
+    del stage
+    return Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
 
 
 _ARENA_CACHE = {}
@@ -227,7 +210,7 @@ def arena_layer(cap, tag):
 
     `render_board()` clears to index 0 and draws nothing behind the arena --
     every console target paints its own backdrop there -- so index 0 is exactly
-    'this pixel is not the arena', and the stage painting shows through it.  The
+    'this pixel is not the arena', and the PC-FX-black surround shows through. The
     mask depends only on the capture, so it is cut once and reused by all four
     stages."""
     if tag in _ARENA_CACHE:
@@ -252,9 +235,7 @@ def arena_layer(cap, tag):
 
 def composite_arena(cap, tag, stage):
     board, mask = arena_layer(cap, tag)
-    img = Image.composite(backdrop(stage), board, mask)
-    return Image.blend(img, Image.new("RGB", img.size, STAGE_TINT[stage]),
-                       STAGE_TINT_MIX)
+    return Image.composite(backdrop(stage), board, mask)
 
 
 def pad_segments(data):
@@ -339,6 +320,11 @@ def build_move_strip(cap, stage, move, poses):
         # board image.  (The opening is deliberately ring-free until it lands
         # on TOP, where the normal view already contains the rings.)
         if move == "TURN":
+            draw_slot_rings(img, cap.poses[tag])
+        elif pose == poses - 1:
+            # The shared opening lands exactly on TOP.  Carry its rings on the
+            # last pose so the animation truly ends on the retained base frame
+            # rather than flashing them in one presentation later.
             draw_slot_rings(img, cap.poses[tag])
         band = img.crop((0, BAND_Y, WIDTH, BAND_Y + BAND_H))
         frames.append(pad_segments(grb.quantize(band, (WIDTH, BAND_H))))
@@ -542,7 +528,7 @@ def bake(quiet=False, capture=True):
     # camera view; the slot blob below still has a stage/view copy because its
     # pixels do change with the captured stage image.
     boxes = {tag: None for tag in view_tags}
-    for stage in range(len(STAGE_BG)):
+    for stage in range(BOARD_STAGES):
         for tag in view_tags:
             quads = cap.poses[tag]
             data = grb.quantize(build_view(cap, stage, tag), (WIDTH, HEIGHT))
@@ -555,7 +541,7 @@ def bake(quiet=False, capture=True):
             moves[name] += build_move_strip(cap, stage, name, poses)
         if not quiet:
             print("BOARD_%-8s %d views x %d bytes, %d slot tiles each"
-                  % (STAGE_BG[stage][:-4].upper(), len(view_tags),
+                  % (STAGE_NAMES[stage], len(view_tags),
                      WIDTH * HEIGHT, FIELD_SLOTS))
 
     spans, span_off, span_max = bake_spans(cap, list(view_tags))
@@ -572,7 +558,7 @@ def bake(quiet=False, capture=True):
         # flattened blob in that same order; grouping by tag here would make
         # MSX2_VIEW_SEGMENT(stage, view) select the wrong arena tint.
         "views": [views[tag][stage]
-                  for stage in range(len(STAGE_BG))
+                  for stage in range(BOARD_STAGES)
                   for tag in view_tags],
         "view_tags": view_tags,
         "slots": bytes(slots),
@@ -679,7 +665,8 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("#define MSX2_MOVE_POSE_SEGS     %d"
       % ((WIDTH * BAND_H + 16383) // 16384))
     for (name, poses, _blob), seg in zip(baked["moves"], move_segs):
-        a("#define MSX2_MOVE_%s_SEGMENT  %d" % (name, seg))
+        a("#define MSX2_MOVE_%s_SEGMENT(stage)  (%d + (stage) * %d * MSX2_MOVE_POSE_SEGS)"
+          % (name, seg, poses))
         a("#define MSX2_MOVE_%s_POSES    %d" % (name, poses))
     a("")
     return out

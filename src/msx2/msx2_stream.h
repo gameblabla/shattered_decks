@@ -30,6 +30,11 @@
 // the duration and restores it; the caller decides which page to show after.
 void Msx2_StreamScene(u16 segment, u8 page);
 
+// The same transfer when the caller already blanked the display and needs it
+// to stay blank while composing/copying both pages.  Used by animated scene
+// transitions so an intermediate page is never scanned out.
+void Msx2_StreamSceneBlanked(u16 segment, u8 page);
+
 // Copy a w x h rectangle out of the cartridge into the current draw page, with
 // the display running.  `segment`/`offset` address the first byte of the
 // rectangle; rows are contiguous and w bytes apart, which is how every baked

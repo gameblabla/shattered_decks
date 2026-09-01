@@ -23213,32 +23213,13 @@ static int dump_turn_card_capture(const char *dir)
    board: same arena, same projection, same slot layout.  The numbers are
    readable from the environment so the pose can be fitted against a real
    capture instead of guessed. */
-static int32_t msx2_env_q8(const char *name, int32_t fallback)
-{
-    const char *v = getenv(name);
-    if (!v || !*v) return fallback;
-    return (int32_t)(atof(v) * (double)Q8_ONE);
-}
-
 static Camera msx2_top_camera(void)
 {
-    /* The FM TOWNS tactical view, framed for a 256x212 window.
-       The owner's directive on this port is that the MSX2 duel must LOOK like
-       the FM TOWNS one, so the numbers below are fitted to reproduce that
-       screen: all four board rows in frame, the board filling the window edge
-       to edge, and only a bar of UI under it.  The rake is small but real --
-       the far row is smaller than the near one, so the slots project to
-       trapezoids and the cards lie on the board rather than standing on it.
-       (FM TOWNS' own top_camera() is exactly overhead; at 256 pixels across a
-       4:3 screen the two are all but indistinguishable, and a raked eye is
-       what keeps the perspective the port is built around.)
-       The numbers are readable from the environment so the pose can be fitted
-       against a real capture instead of guessed. */
-    int32_t h  = msx2_env_q8("MSX2_TOP_H", Q8_FRAC(460,100));
-    int32_t z  = msx2_env_q8("MSX2_TOP_Z", Q8_FRAC(110,100));
-    int32_t tz = msx2_env_q8("MSX2_TOP_TZ", Q8_FRAC(-10,100));
-    int32_t f  = msx2_env_q8("MSX2_TOP_F", Q8_FROM_INT(170));
-    return make_camera(v3(0, h, z), v3(0, 0, tz), v3(0,Q8_ONE,0), f);
+    /* The resting MSX2 field is the same player-chair pose that the shared
+       PC-FX/headless opening lands on.  The previous near-overhead MSX-only
+       camera flattened the slab and forced the opening to end on a frame no
+       other target ever shows. */
+    return player_camera();
 }
 
 /* The same view from the opponent's chair: the top pose orbited half a turn
@@ -23250,21 +23231,7 @@ static Camera msx2_top_camera(void)
    rather than as a turn. */
 static Camera msx2_com_camera(void)
 {
-    int32_t h  = msx2_env_q8("MSX2_TOP_H", Q8_FRAC(460,100));
-    int32_t z  = msx2_env_q8("MSX2_TOP_Z", Q8_FRAC(110,100));
-    int32_t tz = msx2_env_q8("MSX2_TOP_TZ", Q8_FRAC(-10,100));
-    int32_t f  = msx2_env_q8("MSX2_TOP_F", Q8_FROM_INT(170));
-    return make_camera(v3(0, h, -z), v3(0, 0, -tz), v3(0,Q8_ONE,0), f);
-}
-
-/* Where the duel opens from: the same look from much higher up and much
-   wider, so the sweep down to the resting pose is a descent onto the arena
-   rather than a pan across it.  A pan would leave the board half outside the
-   band the baked strip covers (§4.6.2). */
-static Camera msx2_open_camera(void)
-{
-    return make_camera(v3(0, Q8_FRAC(980,100), Q8_FRAC(264,100)),
-                       v3(0, 0, Q8_FRAC(-10,100)), v3(0,Q8_ONE,0), Q8_FROM_INT(104));
+    return enemy_camera();
 }
 
 #define MSX2_MOVE_OPENING  0
@@ -23287,7 +23254,10 @@ static Camera msx2_open_camera(void)
    as the table turning rather than as a defect.  It is also why the strip is
    short: five poses, about two seconds. */
 static const struct { const char *name; int kind; int poses; } g_msx2_moves[] = {
-    { "OPENING",  MSX2_MOVE_OPENING,  6 },
+    /* Sixteen samples of the exact shared opening path.  This is still sparse
+       beside the live 56-frame PC-FX render, but it is the practical 8-bit
+       cartridge version: each 29 KB pose takes several V-blanks to stream. */
+    { "OPENING",  MSX2_MOVE_OPENING, 16 },
     { "TURN",     MSX2_MOVE_TURN,     5 },
 };
 #define MSX2_MOVE_COUNT ((int)(sizeof g_msx2_moves / sizeof g_msx2_moves[0]))
@@ -23297,22 +23267,13 @@ static Camera msx2_move_camera(int kind, int pose, int poses)
     int32_t t = q8_ratio(pose, poses - 1);
 
     if (kind == MSX2_MOVE_TURN) {
-        /* A half orbit about the middle of the board rather than a lerp from
-           one chair to the other: a straight line between the two eyes passes
-           through the point the camera is looking at, where the look-at basis
-           is degenerate and the picture tears.  Going round keeps the eye at
-           a constant height and the board turning under it. */
-        double a = 3.14159265358979 * (double)pose / (double)(poses - 1);
-        double r = 1.10, tr = -0.10;
-        return make_camera(v3((int32_t)(sin(a) * r * Q8_ONE), Q8_FRAC(460,100),
-                              (int32_t)(cos(a) * r * Q8_ONE)),
-                           v3((int32_t)(sin(a) * tr * Q8_ONE), 0,
-                              (int32_t)(cos(a) * tr * Q8_ONE)),
-                           v3(0,Q8_ONE,0), Q8_FROM_INT(170));
+        return interactive_turn_camera(pose, poses - 1, 1);
     }
-    /* The opening ENDS on the resting pose, so the last frame of the strip is
-       the picture the duel is played on and no settle stream follows it. */
-    return lerp_camera(msx2_open_camera(), msx2_top_camera(), t);
+    /* This is the exact camera expression in render_duel_opening_frame(): the
+       outer smoothstep chooses a sample from opening_camera()'s authored arc.
+       The final sample is player_camera(), which is also our resting pose. */
+    return opening_camera(18 + q8_to_int(q8_mul(Q8_FROM_INT(66),
+                             q8_smoothstep(t))));
 }
 
 /* One field slot's projected quad, in the corner order the textured draw gets.
@@ -23382,7 +23343,7 @@ static int dump_msx2_views(const char *dir)
     fprintf(meta, "CARD_TEX %d %d\n", WAIFU_CARD_W, WAIFU_CARD_H);
     /* render_board() clears to this index and paints nothing behind the arena
        -- every console target puts its own backdrop there -- so it is exactly
-       "this pixel is not the arena", and the MSX2 stage painting shows through
+       "this pixel is not the arena", and the MSX2 PC-FX-black surround shows through
        it.  Emitted rather than assumed: it is not index 0. */
     fprintf(meta, "BG_INDEX %d\n", IDX_BLACK);
     /* The captured frames are 8-bit indices, so the palette they were rendered

@@ -10,24 +10,32 @@
 
 #define MSX2_SCENE_TITLE_SEGMENT  4
 #define MSX2_SCENE_ENDING_SEGMENT 8
-#define MSX2_SCENE_MAP_0_SEGMENT  12
-#define MSX2_SCENE_MAP_1_SEGMENT  16
-#define MSX2_SCENE_MAP_2_SEGMENT  20
-#define MSX2_SCENE_MAP_3_SEGMENT  24
-#define MSX2_SCENE_TALK_0_SEGMENT 28
-#define MSX2_SCENE_TALK_1_SEGMENT 32
-#define MSX2_SCENE_TALK_2_SEGMENT 36
-#define MSX2_SCENE_TALK_3_SEGMENT 40
+#define MSX2_SCENE_BATTLE_SEGMENT 12
+#define MSX2_SCENE_MAP_0_SEGMENT  16
+#define MSX2_SCENE_MAP_1_SEGMENT  20
+#define MSX2_SCENE_MAP_2_SEGMENT  24
+#define MSX2_SCENE_MAP_3_SEGMENT  28
+#define MSX2_SCENE_TALK_0_SEGMENT 32
+#define MSX2_SCENE_TALK_1_SEGMENT 36
+#define MSX2_SCENE_TALK_2_SEGMENT 40
+#define MSX2_SCENE_TALK_3_SEGMENT 44
 // ── Card textures ───────────────────────────────────────────────────────
-#define MSX2_CARD_ART_SEGMENT   44
+#define MSX2_CARD_ART_SEGMENT   48
 // The same textures mirrored left to right, for the COM row (§8.4).
-#define MSX2_CARD_MIRROR_SEGMENT 54
+#define MSX2_CARD_MIRROR_SEGMENT 58
 #define MSX2_CARD_ART_STRIDE    2048
 #define MSX2_CARD_ART_PER_SEG   8
 #define MSX2_CARD_ART_COUNT     79
 #define MSX2_CARD_BACK_INDEX    78
 // MSX2_CARD_W / MSX2_CARD_H come from the board section below:
 // the texture size and the quads it is mapped into are one decision.
+
+// Large 2-D monster cards for the board-free battle cut-in.
+#define MSX2_BATTLE_CARD_SEGMENT 68
+#define MSX2_BATTLE_CARD_STRIDE  16384
+#define MSX2_BATTLE_CARD_W       88
+#define MSX2_BATTLE_CARD_H       120
+#define MSX2_BATTLE_CARD_COUNT   72
 // ── The duel board, captured from the game's own renderer ──────────────
 // tools/msx2/gen_msx_views.py bakes these out of --dump-msx2-views, so the
 // arena, the perspective and the slot layout are the ones every other
@@ -35,7 +43,7 @@
 #define MSX2_VIEW_TOP          0
 #define MSX2_VIEW_COM          1
 #define MSX2_BOARD_VIEWS       2
-#define MSX2_VIEW_SEGMENT(stage, view)  (64 + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))
+#define MSX2_VIEW_SEGMENT(stage, view)  (140 + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))
 #define MSX2_VIEW_STAGES        4
 #define MSX2_BAND_Y             14
 #define MSX2_BAND_H             114
@@ -59,28 +67,28 @@
 // lands on the same physical corner here as it does on the PC.
 static const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][8] = {
 	{
-		{ 53, 45, 28, 45, 32, 12, 57, 12 },
-		{ 97, 45, 71, 45, 74, 12, 99, 12 },
-		{ 140, 45, 116, 45, 117, 12, 139, 12 },
-		{ 185, 45, 158, 45, 157, 12, 181, 12 },
-		{ 228, 45, 203, 45, 199, 12, 224, 12 },
-		{ 26, 52, 52, 52, 47, 90, 20, 90 },
-		{ 71, 52, 97, 52, 95, 90, 67, 90 },
-		{ 116, 52, 140, 52, 141, 90, 115, 90 },
-		{ 159, 52, 185, 52, 189, 90, 161, 90 },
-		{ 204, 52, 230, 52, 236, 90, 208, 90 },
+		{ 74, 45, 55, 45, 65, 37, 82, 37 },
+		{ 106, 45, 87, 45, 93, 37, 109, 37 },
+		{ 137, 45, 119, 45, 120, 37, 136, 37 },
+		{ 169, 45, 150, 45, 147, 37, 163, 37 },
+		{ 201, 45, 182, 45, 174, 37, 191, 37 },
+		{ 52, 49, 72, 49, 60, 63, 37, 63 },
+		{ 85, 49, 105, 49, 100, 63, 76, 63 },
+		{ 119, 49, 137, 49, 139, 63, 117, 63 },
+		{ 151, 49, 170, 49, 179, 63, 155, 63 },
+		{ 184, 49, 204, 49, 219, 63, 196, 63 },
 	},
 	{
-		{ 207, 53, 234, 53, 240, 92, 211, 92 },
-		{ 160, 53, 187, 53, 191, 92, 162, 92 },
-		{ 115, 53, 141, 53, 141, 92, 115, 92 },
-		{ 69, 53, 96, 53, 94, 92, 65, 92 },
-		{ 22, 53, 49, 53, 45, 92, 16, 92 },
-		{ 232, 45, 205, 45, 201, 11, 227, 11 },
-		{ 187, 45, 159, 45, 158, 11, 183, 11 },
-		{ 141, 45, 115, 45, 116, 11, 140, 11 },
-		{ 97, 45, 69, 45, 73, 11, 98, 11 },
-		{ 51, 45, 24, 45, 29, 11, 55, 11 },
+		{ 185, 49, 204, 49, 220, 63, 196, 63 },
+		{ 151, 49, 171, 49, 180, 63, 156, 63 },
+		{ 119, 49, 137, 49, 139, 63, 117, 63 },
+		{ 85, 49, 105, 49, 100, 63, 76, 63 },
+		{ 52, 49, 71, 49, 60, 63, 36, 63 },
+		{ 202, 45, 182, 45, 175, 37, 191, 37 },
+		{ 169, 45, 150, 45, 147, 37, 163, 37 },
+		{ 137, 45, 119, 45, 120, 37, 136, 37 },
+		{ 106, 45, 87, 45, 93, 37, 109, 37 },
+		{ 74, 45, 54, 45, 65, 37, 81, 37 },
 	},
 };
 
@@ -88,28 +96,28 @@ static const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][
 // what a repaint has to cover.
 static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4] = {
 	{
-		{ 25, 14, 36, 36 },
-		{ 68, 14, 35, 36 },
-		{ 113, 14, 31, 36 },
-		{ 154, 14, 35, 36 },
-		{ 196, 14, 36, 36 },
-		{ 17, 48, 39, 47 },
-		{ 64, 48, 37, 47 },
-		{ 112, 48, 33, 47 },
-		{ 156, 48, 37, 47 },
-		{ 201, 48, 39, 47 },
+		{ 51, 34, 36, 15 },
+		{ 83, 34, 31, 14 },
+		{ 115, 35, 27, 13 },
+		{ 143, 34, 31, 14 },
+		{ 170, 34, 36, 15 },
+		{ 33, 45, 44, 23 },
+		{ 72, 46, 38, 21 },
+		{ 113, 46, 31, 21 },
+		{ 147, 46, 37, 21 },
+		{ 180, 45, 44, 23 },
 	},
 	{
-		{ 204, 49, 40, 48 },
-		{ 157, 49, 38, 48 },
-		{ 112, 49, 33, 48 },
-		{ 62, 49, 38, 48 },
-		{ 13, 49, 40, 48 },
-		{ 198, 14, 38, 36 },
-		{ 155, 14, 36, 36 },
-		{ 112, 14, 33, 36 },
-		{ 66, 14, 36, 36 },
-		{ 21, 14, 38, 36 },
+		{ 181, 45, 44, 23 },
+		{ 147, 46, 38, 21 },
+		{ 113, 46, 31, 21 },
+		{ 72, 46, 38, 21 },
+		{ 32, 45, 44, 23 },
+		{ 171, 33, 36, 16 },
+		{ 143, 34, 31, 14 },
+		{ 115, 35, 27, 13 },
+		{ 83, 34, 31, 14 },
+		{ 50, 33, 36, 16 },
 	},
 };
 
@@ -118,10 +126,10 @@ static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4
 // as run lengths.  The Z80 replays it with block I/O and does no
 // arithmetic at all; that is what makes fifteen perspective cards
 // affordable on a 3.58 MHz machine.
-#define MSX2_SPAN_SEGMENT       116
+#define MSX2_SPAN_SEGMENT       192
 #define MSX2_SPAN_STRIDE        2048
 #define MSX2_SPAN_PER_SEG       8
-#define MSX2_SPAN_MAX           1366
+#define MSX2_SPAN_MAX           605
 #define MSX2_OP_COPY            0x00
 #define MSX2_OP_DUP             0x20
 #define MSX2_OP_SKIP            0x40
@@ -136,7 +144,7 @@ static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS
 };
 
 // ── Empty-slot tiles ──────────────────────────────────────────────────
-#define MSX2_SLOT_ART_SEGMENT   96
+#define MSX2_SLOT_ART_SEGMENT   172
 #define MSX2_SLOT_ART_STRIDE    4096
 #define MSX2_SLOT_ART_PER_SEG   4
 #define MSX2_SLOT_ART_PER_VIEW  10
@@ -149,9 +157,9 @@ static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS
 // is a held cinematic push and the art is authored for that (§4.6.2).
 #define MSX2_MOVE_POSE_BYTES    29184
 #define MSX2_MOVE_POSE_SEGS     2
-#define MSX2_MOVE_OPENING_SEGMENT  119
-#define MSX2_MOVE_OPENING_POSES    6
-#define MSX2_MOVE_TURN_SEGMENT  167
+#define MSX2_MOVE_OPENING_SEGMENT(stage)  (195 + (stage) * 16 * MSX2_MOVE_POSE_SEGS)
+#define MSX2_MOVE_OPENING_POSES    16
+#define MSX2_MOVE_TURN_SEGMENT(stage)  (323 + (stage) * 5 * MSX2_MOVE_POSE_SEGS)
 #define MSX2_MOVE_TURN_POSES    5
 
 // ── Story screens ──────────────────────────────────────────────────────
@@ -170,7 +178,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 // lit and dimmed, from the SAME alpha mask -- so the two variants cover
 // byte for byte the same pixels and swapping which speaker is lit is a
 // pure overwrite with no background repair at all.
-#define MSX2_PORTRAIT_SEGMENT   207
+#define MSX2_PORTRAIT_SEGMENT   363
 #define MSX2_PORTRAIT_SEGS      2
 #define MSX2_PORTRAIT_CHARS     6
 #define MSX2_PORTRAIT_W         124
@@ -202,7 +210,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_MAP_PANEL_H        156
 
 // ── String table ───────────────────────────────────────────────────────
-#define MSX2_TEXT_SEGMENT       231
+#define MSX2_TEXT_SEGMENT       387
 #define MSX2_NAME_STRIDE        24
 #define MSX2_NAME_COUNT         78
 #define MSX2_NAME_OFFSET        0
@@ -219,5 +227,5 @@ static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  4
-#define MSX2_SCENE_SEGMENT_LAST   231
-#define MSX2_ASSET_ROM_KB         3712
+#define MSX2_SCENE_SEGMENT_LAST   387
+#define MSX2_ASSET_ROM_KB         6208

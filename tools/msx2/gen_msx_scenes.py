@@ -72,6 +72,13 @@ SUPPORT_VARIANTS = 6
 NAME_STRIDE = 24
 CARD_STRIDE = 2048   # 8 cards per segment, so no card ever straddles one
 
+# Full-size monster cut-ins used only by the separate 2-D battle screen.  One
+# card occupies one cartridge segment, so Msx2_StreamRect can walk every row
+# without a row ever crossing a mapper boundary.
+BATTLE_CARD_W = 88
+BATTLE_CARD_H = 120
+BATTLE_CARD_STRIDE = SEGMENT_BYTES
+
 # ── Story dialogue ───────────────────────────────────────────────────────────
 #
 # One composite per (duel, speaker): backdrop, character and an *empty* text box
@@ -305,11 +312,51 @@ def draw_card_back():
     return img
 
 
+def draw_battle_card(asset_id, atk, deff):
+    """A large 2-D card for attack resolution.
+
+    This deliberately does not scale the 40x48 board texture.  It goes back to
+    the same source painting as the PC-FX/headless/FM TOWNS cut-in, preserving
+    enough art detail for a full-screen battle beat at SCREEN 8 resolution.
+    Stats remain live text so field bonuses and equips are always truthful.
+    """
+    img = Image.new("RGB", (BATTLE_CARD_W, BATTLE_CARD_H), (54, 28, 10))
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, BATTLE_CARD_W - 1, BATTLE_CARD_H - 1],
+                fill=(212, 151, 43), outline=(34, 18, 6))
+    d.rectangle([3, 3, BATTLE_CARD_W - 4, BATTLE_CARD_H - 4],
+                fill=(72, 40, 14), outline=(247, 192, 66))
+    d.rectangle([6, 6, BATTLE_CARD_W - 7, 14], fill=(225, 177, 61))
+    art = card_thumb(Image.open(find_card_image(asset_id)),
+                     (BATTLE_CARD_W - 12, BATTLE_CARD_H - 34))
+    art = art.filter(ImageFilter.SHARPEN)
+    img.paste(art, (6, 18))
+    d.rectangle([5, 17, BATTLE_CARD_W - 6, BATTLE_CARD_H - 16],
+                outline=(24, 12, 5))
+    d.rectangle([6, BATTLE_CARD_H - 13, BATTLE_CARD_W - 7,
+                 BATTLE_CARD_H - 7], fill=(42, 27, 20))
+    stars = max(1, min(8, (atk + deff) // 700))
+    for s in range(stars):
+        x = 8 + s * 8
+        d.ellipse([x, 8, x + 3, 11], fill=(175, 20, 14))
+    return img
+
+
 # ── 2-D screen furniture ─────────────────────────────────────────────────────
 
 def draw_panel(d, x, y, w, h, fill, edge):
     d.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
     d.rectangle([x, y, x + w - 1, y + h - 1], outline=edge)
+
+
+def battle_scene():
+    """The board-free 2-D screen used for every attack.
+
+    PC-FX presents the two large cards on literal black.  Card art, names,
+    numbers, impact and the result are composited by the Z80 because they
+    depend on the current duel state.
+    """
+    return Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
 
 
 # ── Story text, lifted out of src/main.c ─────────────────────────────────────
@@ -534,6 +581,7 @@ SCENES = [
         os.path.join(ROOT, "assets/source/title/title256_msx2.png"))),
     ("ENDING", lambda: Image.open(
         os.path.join(ROOT, "assets/source/ending/ending256x212.png"))),
+    ("BATTLE", battle_scene),
 ]
 
 # The sanctum map, one per stage, then the dialogue backdrop, one per stage.
@@ -588,6 +636,22 @@ def build_card_blob(cards, quiet):
         print("CARDS    %d textures -> %d bytes (+ the mirrored set)"
               % (len(faces), len(blob)))
     return bytes(blob), bytes(mirror), len(faces)
+
+
+def build_battle_card_blob(cards, quiet):
+    blob = bytearray()
+    sheet = Image.new("RGB", (BATTLE_CARD_W * 8,
+                              BATTLE_CARD_H * ((len(cards) + 7) // 8)))
+    for i, (asset_id, _name) in enumerate(cards):
+        card = draw_battle_card(asset_id, *CARD_STATS[asset_id])
+        data = grb.quantize(card, (BATTLE_CARD_W, BATTLE_CARD_H))
+        blob += data + bytes(BATTLE_CARD_STRIDE - len(data))
+        sheet.paste(card, ((i % 8) * BATTLE_CARD_W,
+                           (i // 8) * BATTLE_CARD_H))
+    sheet.save(os.path.join(ASSET_DIR, "battle_cards.png"))
+    if not quiet:
+        print("BATTLE CARDS %d cut-ins -> %d bytes" % (len(cards), len(blob)))
+    return bytes(blob), len(cards)
 
 
 def build_text_blob(cards, story):
@@ -688,6 +752,8 @@ def main():
     card_blob, card_mirror, card_count = build_card_blob(cards, quiet)
     card_segment = place("cards", card_blob)
     card_mirror_segment = place("cards_mirror", card_mirror)
+    battle_card_blob, battle_card_count = build_battle_card_blob(cards, quiet)
+    battle_card_segment = place("battle_cards", battle_card_blob)
 
     # ── The captured board (§4.3, §4.6, §8.4) ────────────────────────────────
     view_segment = place("board_views", b"".join(board["views"]))
@@ -737,6 +803,13 @@ def main():
         f.write("#define MSX2_CARD_BACK_INDEX    %d\n" % (card_count - 1))
         f.write("// MSX2_CARD_W / MSX2_CARD_H come from the board section below:\n")
         f.write("// the texture size and the quads it is mapped into are one decision.\n")
+
+        f.write("\n// Large 2-D monster cards for the board-free battle cut-in.\n")
+        f.write("#define MSX2_BATTLE_CARD_SEGMENT %d\n" % battle_card_segment)
+        f.write("#define MSX2_BATTLE_CARD_STRIDE  %d\n" % BATTLE_CARD_STRIDE)
+        f.write("#define MSX2_BATTLE_CARD_W       %d\n" % BATTLE_CARD_W)
+        f.write("#define MSX2_BATTLE_CARD_H       %d\n" % BATTLE_CARD_H)
+        f.write("#define MSX2_BATTLE_CARD_COUNT   %d\n" % battle_card_count)
 
         f.write("\n".join(views.header_lines(board, view_segment, slot_segment,
                                               move_segments, span_segment)))
