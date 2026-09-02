@@ -70,6 +70,45 @@ def check_resident(mapfile):
     return bad
 
 
+# main() wipes _DATA above the bytes crt0 has already filled in, because SDCC
+# puts uninitialised statics there and MSXgl's ROM crt0 never clears them.  The
+# size of that reserved prefix is a constant in msx2_main.c, so the link has to
+# be checked against it: a game variable that lands inside the prefix would keep
+# its boot garbage, and a crt0 that grew past it would have its own state wiped.
+CRT0_DATA_BYTES = 15
+CRT0_MODULES = ("crt0",)
+
+
+def check_data_prefix(mapfile):
+    """Return (name, address) for any non-crt0 _DATA symbol below the prefix,
+    and the crt0 symbols that sit at or above it."""
+    if not os.path.exists(mapfile):
+        return [], []
+    in_data = False
+    start = None
+    intruders = []
+    overrun = []
+    for line in open(mapfile):
+        head = re.match(r"^(\S+)\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=", line)
+        if head:
+            in_data = head.group(1) == "_DATA"
+            if in_data:
+                start = int(head.group(2), 16)
+            continue
+        if not in_data or start is None:
+            continue
+        row = re.match(r"^\s+([0-9A-F]{8})\s+(_\S+)\s+(\S+)\s*$", line)
+        if not row:
+            continue
+        at, name, module = int(row.group(1), 16), row.group(2), row.group(3)
+        if module in CRT0_MODULES:
+            if at >= start + CRT0_DATA_BYTES:
+                overrun.append((name, at))
+        elif at < start + CRT0_DATA_BYTES:
+            intruders.append((name, at))
+    return intruders, overrun
+
+
 def check_code_banks(mapfile):
     """Return linker areas whose low-16-bit end crosses their mapped bank."""
     if not os.path.exists(mapfile):
@@ -98,6 +137,16 @@ def main():
     rompath = sys.argv[1]
     rom = bytearray(open(rompath, "rb").read())
     mapfile = os.path.splitext(rompath)[0] + ".map"
+
+    intruders, overrun = check_data_prefix(mapfile)
+    if intruders or overrun:
+        for name, at in intruders:
+            print("%s is at 0x%04X, inside the _DATA prefix main() does not wipe"
+                  % (name, at), file=sys.stderr)
+        for name, at in overrun:
+            print("crt0's %s is at 0x%04X, past the %d-byte prefix main() keeps"
+                  % (name, at, CRT0_DATA_BYTES), file=sys.stderr)
+        sys.exit("MSX2_CRT0_DATA_BYTES in msx2_main.c no longer matches the link")
 
     overflow = check_code_banks(mapfile)
     if overflow:

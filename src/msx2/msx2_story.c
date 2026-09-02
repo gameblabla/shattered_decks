@@ -119,6 +119,10 @@ static u8  g_editor_target;
 static u8  g_editor_storage_cursor;
 static u8  g_editor_storage_mode;
 static u8  g_story_deck[STORY_DECK_SIZE];
+// Whether g_story_deck holds a real deck yet.  The soak deals a story duel
+// without ever walking into story mode, and the RAM it reads is now genuinely
+// zero rather than accidentally card-shaped.
+static u8  g_story_deck_ready;
 static u8  g_story_storage[STORY_STORAGE_SIZE];
 static u8  g_story_storage_count;
 static u8  g_reward_card;
@@ -159,6 +163,7 @@ static void Msx2_StoryBuildStarterDeck(void)
 	WaifuDeckRng rng;
 	u8 i;
 
+	g_story_deck_ready = TRUE;
 	waifu_deck_rng_seed(&rng, Msx2_StoryNameHash(g_player_name, STORY_NAME_LEN));
 	waifu_deck_build_random(&deck, &rng, 0);
 	for(i = 0; i < STORY_DECK_SIZE; ++i)
@@ -1142,6 +1147,8 @@ void Msx2_StoryBeginLoad(void)
 
 void Msx2_StoryPrepareDuelDeck(void)
 {
+	if(!g_story_deck_ready)
+		Msx2_StoryBuildStarterDeck();
 	Msx2_DuelSetPlayerDeck(g_story_deck, STORY_DECK_SIZE);
 }
 

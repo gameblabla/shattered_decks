@@ -112,11 +112,22 @@ never expose an opponent card id or info-panel metadata. There is no codec and
 no decoder anywhere in the port.
 
 Placement, summon/fusion/equip/support and position changes retain the arena.
-For a placement the hand disappears, the real 40x48 card face slides across its
-black band, and the captured arena bends one turn-pose away and back underneath
-it. The populated player-chair/top view then holds with only the normal HUD and
-bottom information panel before the hand returns; no travelling outline stands
-in for the card.
+For a placement the hand disappears and the real 40x48 card face travels in
+**both axes** -- out of its hand position and up to the middle of the projected
+slot it is going into. Each pose saves the arena underneath it into the drawing
+page's own offscreen rows before the card is blitted, and puts those exact
+pixels back when that page comes round again, so the flight is the opaque card
+art rather than an XOR outline and scan-out only ever sees finished poses. The
+board then settles -- the resting band is restored from the cartridge and every
+card is re-rasterised into its quad -- and the populated view holds with only
+the HUD and information panel before the hand returns.
+
+There is no camera lurch under the landing any more. That effect borrowed the
+turn strip's neighbour of the resting pose, and because that strip is a half
+orbit sampled five times the neighbour is a *quarter turn* away: what played was
+a one-frame jump-cut to a completely different camera. Nothing on any other
+target moves the camera when a card is placed, so the settle is now one restore
+frame and a landing costs one 29 KB stream instead of two.
 **Attacks do not.** Monster-versus-monster, direct-hit and trap-counter actions
 switch to a black full-screen 2D cut-in, with one or two 88x120 cards rendered
 from the same source paintings as the other targets plus live names and
@@ -181,6 +192,29 @@ bits, 40 name bits, four 7-bit deck overrides, and an 8-bit checksum, packed int
 16 symbols from a 32-character alphabet.  Loading reconstructs the starter deck
 and the earned reward collection before applying the four saved overrides.
 
+### Uninitialised statics are not zero on this target
+
+SDCC puts every zero-initialised static in `_DATA`, and MSXgl's ROM crt0 never
+clears it -- it only copies `_INITIALIZER` over `_INITIALIZED`. A static that is
+not given a value explicitly therefore starts as whatever the machine left in
+RAM. That is not a theoretical hazard: it froze the board. `g_hand_hidden`
+booted non-zero, so a summon never took the hand off the screen and never
+computed the card's destination; `g_fx_bend` booted at 102 instead of 2, so the
+cleanup pass streamed a hundred camera poses -- half a minute of a board stuck
+in a mid-orbit pose -- before the effect could end.
+
+`main()` now wipes `_DATA` once, above the fifteen bytes crt0 has already filled
+in (heap pointer, ROM slot id, ROM/MSX version, NEO segment shadow), with a
+single `LDIR` and interrupts held off. `pack_msx_rom.py` fails the build if the
+link ever puts a game variable inside that reserved prefix, or moves a crt0
+variable out of it. `Msx2_BoardEnter()` separately resets the landing state, so
+a *second* duel starts from rest as well -- the boot wipe only runs once.
+
+The wipe also exposed a second latent bug it had been hiding: the soak deals a
+story duel without ever walking into story mode, so it was dealing whatever
+`g_story_deck` happened to contain. `Msx2_StoryPrepareDuelDeck()` now builds the
+starter deck if one has never been built.
+
 ### M1a evidence
 
 `./msx2.sh verify --seconds 300` builds the **soak** ROM (`make -f Makefile.msx2
@@ -204,8 +238,10 @@ rules step every frame (a person takes one every few seconds), streams a fresh
 cards into perspective quads underneath all of it. The number to watch here is
 `status`, not the rate.
 
-Footprint (`./msx2.sh ram`): the shipping link uses 31,932 bytes in `_CODE` and
-15,545 bytes in the fixed segment-2 bank.  Its RAM report is 4,595 bytes used
+Footprint (`./msx2.sh ram`): the shipping link uses 31,951 bytes in `_CODE` and
+15,955 bytes in the fixed segment-2 bank (173 below its 16,128-byte limit; the
+soak and story-soak variants are larger still, so segment 2 is the budget that
+binds first and every change has to be checked against all three builds).  Its RAM report is 4,595 bytes used
 from `0xC000` through `0xD1F3`, with 8,589 bytes free to `HIMEM` (`0xF380`);
 the runtime probe measured 8,558 bytes between static data and the live stack.
 The segment-2 bank remains below its 16 KB placement limit, including the ISR

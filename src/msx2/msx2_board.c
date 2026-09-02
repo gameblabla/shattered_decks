@@ -125,12 +125,15 @@ static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 // A card landing on the field takes the hand off the screen, slides the real
 // 2-D thumbnail across the emptied band, bends the board under it and then
 // holds the bare top view while the new card is read.  These carry that.
-#define FX_BEND_POSES  2
+#define FX_BEND_POSES  1
+// Every landing flight is the same length, so one easing curve serves them all.
+#define FX_LANDING_FRAMES 14
 #define FX_HOLD_FRAMES 24
 static u8 g_hand_hidden;
 static u8 g_fx_bend;
 static u8 g_fx_hold;
 static u8 g_fx_dest_x;
+static u8 g_fx_dest_y;
 
 // The 2-D battle cut-in.  The cards do not just sit on the black stage and
 // flash at each other: the attacker closes the gap in visible steps, the
@@ -691,51 +694,61 @@ static void Msx2_BoardRestoreFromCutin(void)
 	g_fx_followup = FX_NONE;
 }
 
-static u8 Msx2_BoardClampPx(i16 value)
-{
-	if(value < 0)
-		return 0;
-	if(value > (MSX2_SCREEN_W - 1))
-		return (MSX2_SCREEN_W - 1);
-	return (u8)value;
-}
+// A 40x48 face does not fit in the 44 offscreen rows below GRAPHIC 7's
+// visible page.  Split its backing store into two 40x24 tiles side by side.
+// Each retained page owns its own copy automatically because Msx2_CopyRect()
+// addresses the current draw page.
+#define FX_STASH_Y       216
+#define FX_STASH_HALF_H  (MSX2_CARD_H / 2)
 
-static u8 Msx2_BoardBoxCenterX(u8 slot)
+static void Msx2_BoardFxCardBacking(bool restore, u8 x, u8 y)
 {
-	const u8* box = g_msx2_slot_box[g_view][slot];
-	return (u8)(box[0] + (box[2] >> 1));
+	u8 i;
+	for(i = 0; i < 2; ++i)
+	{
+		u8 sx = (u8)(i * MSX2_CARD_W);
+		u8 cy = (u8)(y + i * FX_STASH_HALF_H);
+		if(restore)
+			Msx2_CopyRect(sx, FX_STASH_Y, x, cy, MSX2_CARD_W, FX_STASH_HALF_H);
+		else
+			Msx2_CopyRect(x, cy, sx, FX_STASH_Y, MSX2_CARD_W, FX_STASH_HALF_H);
+	}
 }
 
 
 // The card that is being played, drawn as itself.
 //
-// The hand has been taken off the screen for the duration, so the band the
-// card crosses is flat black and erasing it is a fill -- which is what buys
-// an opaque 40x48 thumbnail here instead of the reversible XOR outline this
-// used to be.  The path is horizontal, from the hand position to the column
-// the destination slot is in; the rise onto the board is the board's own bend,
-// not the card's.
+// It leaves its hand position and travels in both axes to the projected slot.
+// Before each opaque pose, the hidden page saves the 40x48 arena underneath in
+// its offscreen rows; when that page comes round again the exact pixels are put
+// back first.  This keeps the real card face instead of falling back to an XOR
+// outline, and scan-out only ever sees completed poses.
 static void Msx2_BoardFxCardFlight(bool erase)
 {
 	i16 sx = (g_fx_hand == MSX2_SLOT_NONE) ? 108 : HAND_X(g_fx_hand);
-	i16 total = (g_fx_kind == FX_EQUIP) ? 12 : 14;
-	i16 progress = (i16)(total - g_fx_frames);
-	u8  x;
+	// A flight is FX_LANDING_FRAMES long and g_fx_frames counts it down to 1,
+	// so progress runs 0..13.  progress + progress/4 maps that onto 0..16
+	// exactly, which turns the interpolation into a shift and keeps a signed
+	// divider out of the nearly-full resident bank.
+	u8 progress = (u8)(FX_LANDING_FRAMES - g_fx_frames);
+	u8 ease = (u8)(progress + (progress >> 2));
+	i16 ex = g_fx_dest_x;
+	i16 ey = g_fx_dest_y;
+	u8 x, y;
+	u8 card = (g_fx_owner == MSX2_OWNER_COM) ? MSX2_CARD_BACK_INDEX : g_fx_card;
 
-	if(g_fx_card >= MSX2_CARD_ART_COUNT)
-		return;
-	x = Msx2_BoardClampPx(sx + (((i16)g_fx_dest_x - sx) * progress) / total);
-	if(x > (MSX2_SCREEN_W - MSX2_CARD_W))
-		x = (u8)(MSX2_SCREEN_W - MSX2_CARD_W);
+	x = (u8)(sx + (((ex - sx) * ease) >> 4));
+	y = (u8)(MSX2_HAND_Y + (((ey - MSX2_HAND_Y) * ease) >> 4));
 
 	if(erase)
 	{
-		Msx2_Fill(x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_BLACK);
+		Msx2_BoardFxCardBacking(TRUE, x, y);
 		return;
 	}
-	Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + g_fx_card / MSX2_CARD_ART_PER_SEG),
-	                (u16)((g_fx_card % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
-	                x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H);
+	Msx2_BoardFxCardBacking(FALSE, x, y);
+	Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + card / MSX2_CARD_ART_PER_SEG),
+	                (u16)((card % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
+	                x, y, MSX2_CARD_W, MSX2_CARD_H);
 }
 
 static void Msx2_BoardFxDraw(bool erase)
@@ -768,16 +781,19 @@ static void Msx2_BoardFxDraw(bool erase)
 		}
 		break;
 
+	// The three plain landings differ only in what the panel says.
 	case FX_COM_PLACE:
-		if(!erase)
-			Msx2_BoardFxBanner("OPPONENT PLACES THE CARD", MSX2_RED);
-		if(g_fx_field != MSX2_SLOT_NONE)
-			Msx2_BoardFxCardFlight(erase);
-		break;
-
 	case FX_SUMMON:
+	case FX_EQUIP:
 		if(!erase)
-			Msx2_BoardFxBanner("SUMMON", MSX2_TEAL);
+		{
+			if(g_fx_kind == FX_COM_PLACE)
+				Msx2_BoardFxBanner("OPPONENT PLACES THE CARD", MSX2_RED);
+			else if(g_fx_kind == FX_SUMMON)
+				Msx2_BoardFxBanner("SUMMON", MSX2_TEAL);
+			else
+				Msx2_BoardFxBanner("EQUIP POWER", MSX2_GOLD);
+		}
 		if(g_fx_field != MSX2_SLOT_NONE)
 			Msx2_BoardFxCardFlight(erase);
 		break;
@@ -795,13 +811,6 @@ static void Msx2_BoardFxDraw(bool erase)
 				Msx2_TextCenter(82, "FUSION");
 			}
 		}
-		break;
-
-	case FX_EQUIP:
-		if(!erase)
-			Msx2_BoardFxBanner("EQUIP POWER", MSX2_GOLD);
-		if(g_fx_field != MSX2_SLOT_NONE)
-			Msx2_BoardFxCardFlight(erase);
 		break;
 
 	case FX_SUPPORT:
@@ -855,10 +864,13 @@ static void Msx2_BoardHideHand(void)
 	if(g_hand_hidden || !Msx2_BoardFxIsLanding())
 		return;
 	g_hand_hidden = TRUE;
-	g_fx_dest_x = (g_fx_field == MSX2_SLOT_NONE)
-	            ? 108
-	            : Msx2_BoardClampPx((i16)Msx2_BoardBoxCenterX(g_fx_field)
-	                                - MSX2_CARD_W / 2);
+	// Every landing action has a field destination; StartFx filters all other
+	// effects before this path.
+	{
+		const u8* box = g_msx2_slot_box[g_view][g_fx_field];
+		g_fx_dest_x = (u8)(box[0] + (box[2] >> 1) - MSX2_CARD_W / 2);
+		g_fx_dest_y = (u8)(box[1] + (box[3] >> 1) - MSX2_CARD_H / 2);
+	}
 	g_fx_bend = FX_BEND_POSES;
 	g_fx_hold = 0;
 	Msx2_BoardSnapshot();
@@ -885,16 +897,19 @@ static void Msx2_BoardHideHand(void)
 	if(IS_HAND(g_cursor_at[1])) g_cursor_at[1] = MSX2_SLOT_NONE;
 }
 
-// One pose of the board's bend under the landing card.  The turn strip's end
-// poses ARE the two resting views, so its first step away from the resting
-// pose is a real camera lurch that comes back to exactly where it started --
-// the 8-bit cartridge version of the board tilting on the other targets.
+// The board settling under the card that just landed on it.
+//
+// This used to borrow the turn strip's neighbour of the resting pose as a
+// "bend".  That strip is a half orbit sampled five times, so its neighbour is a
+// quarter turn away: what played was a one-frame jump-cut to a completely
+// different camera, and nothing on any other target lurches when a card is
+// placed.  What is left is the part that was actually doing work -- putting the
+// resting board band back from the cartridge so the cleanup repaint can draw
+// every card into its own projected quad -- and the landing costs one 29 KB
+// stream instead of two.
 static void Msx2_BoardStepBend(void)
 {
-	u8 home = (g_view == BOARD_VIEW_COM) ? (u8)(MSX2_MOVE_TURN_POSES - 1) : 0;
-	u8 pose = (g_fx_bend > 1) ? ((g_view == BOARD_VIEW_COM) ? (u8)(home - 1)
-	                                                        : (u8)(home + 1))
-	                          : home;
+	u8 pose = (g_view == BOARD_VIEW_COM) ? (u8)(MSX2_MOVE_TURN_POSES - 1) : 0;
 	u8 i;
 
 	Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H, MSX2_BLACK);
@@ -961,7 +976,7 @@ static void Msx2_BoardStartFx(void)
 	Msx2_ClearActionEvent();
 	Msx2_BoardSnapshot();
 	g_panel_left = MSX2_VIDEO_PAGES;
-	g_fx_frames = (g_fx_kind == FX_COM_CHOOSE) ? 12 : 14;
+	g_fx_frames = (g_fx_kind == FX_COM_CHOOSE) ? 12 : FX_LANDING_FRAMES;
 	g_fx_cleanup = FALSE;
 	g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 	if(Msx2_BoardFxIsBattle())
@@ -985,7 +1000,7 @@ static void Msx2_BoardFinishFx(void)
 		g_panel_left = MSX2_VIDEO_PAGES;
 		g_fx_kind = FX_COM_PLACE;
 		g_fx_followup = FX_NONE;
-		g_fx_frames = 14;
+		g_fx_frames = FX_LANDING_FRAMES;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 		Msx2_BoardHideHand();
 		return;
@@ -994,7 +1009,7 @@ static void Msx2_BoardFinishFx(void)
 	{
 		g_fx_kind = FX_EQUIP;
 		g_fx_followup = FX_NONE;
-		g_fx_frames = 12;
+		g_fx_frames = FX_LANDING_FRAMES;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 		Msx2_BoardHideHand();
 		return;
@@ -1387,6 +1402,13 @@ void Msx2_BoardEnter(u8 stage)
 	g_fx_followup = FX_NONE;
 	g_fx_frames = 0;
 	g_fx_cleanup = FALSE;
+	// The landing beats are their own little state machine, and a duel that is
+	// entered a second time has to start it from rest: a stale g_hand_hidden
+	// makes the next summon skip taking the hand off the screen, and a stale
+	// g_fx_bend makes the cleanup pass stream that many camera poses.
+	g_hand_hidden = FALSE;
+	g_fx_bend = 0;
+	g_fx_hold = 0;
 	g_suppress_slot = MSX2_SLOT_NONE;
 	g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 	g_move_pose = 0;

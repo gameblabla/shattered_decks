@@ -34,6 +34,38 @@
 // perfectly entitled to spend two minutes on one turn.
 #define MSX2_DUEL_FRAME_WATCHDOG  4000
 
+// SDCC puts every zero-initialised static in `_DATA`, and MSXgl's ROM crt0
+// never clears it -- it only copies `_INITIALIZER` over `_INITIALIZED`.  So a
+// static that is *not* given a value explicitly starts as whatever the machine
+// left in RAM, which is exactly the class of bug that made a summon freeze the
+// board for half a minute: `g_hand_hidden` booted non-zero, the hand was never
+// taken off the screen, and `g_fx_bend` booted at 102 instead of 2 and streamed
+// a hundred camera poses before the effect could end.
+//
+// The whole area is therefore wiped once, before any scene exists.  The first
+// bytes belong to crt0 (heap pointer, ROM slot id, ROM/MSX version and the NEO
+// mapper's segment shadow) and are already live by the time main() runs, so the
+// wipe starts above them.  `tools/msx2/pack_msx_rom.py` fails the build if the
+// link ever puts a game variable inside that reserved prefix.
+#define MSX2_CRT0_DATA_BYTES  15
+
+// `s__DATA` and `l__DATA` are the linker's own area symbols, so they are named
+// without the C underscore and can only be reached from assembly.  One LDIR is
+// also the whole wipe; the V-blank handler is held off for it because it counts
+// ticks and drives the sound state, both of which live in the range.
+static void Msx2_ClearStaticRam(void)
+{
+__asm
+	di
+	ld	hl, #(s__DATA + 15)
+	ld	de, #(s__DATA + 16)
+	ld	bc, #(l__DATA - 16)
+	ld	(hl), #0x00
+	ldir
+	ei
+__endasm;
+}
+
 static u32 g_seed;
 
 // Frames counted by the vblank ISR.  MSXgl's crt0 installs its own handler in
@@ -176,6 +208,7 @@ static void Msx2_SceneStory(void)
 
 void main(void)
 {
+	Msx2_ClearStaticRam();
 	g_seed = 0x1234ABCDu;
 	Msx2_AudioInit();
 	Msx2_ProbeInit();
