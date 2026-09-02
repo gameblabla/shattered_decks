@@ -91,6 +91,7 @@ static u8  g_shown_flag[MSX2_VIDEO_PAGES][SLOT_COUNT];
 static u8  g_cursor_at[MSX2_VIDEO_PAGES];
 static u8  g_cursor_col_at[MSX2_VIDEO_PAGES];
 static u8  g_panel_left;         // pages still owing a HUD/info repaint
+static u8  g_hand_left;          // pages still owing the whole hand strip
 
 static c8  g_name[MSX2_NAME_STRIDE];
 
@@ -1257,8 +1258,15 @@ static bool Msx2_BoardRunFx(void)
 static bool Msx2_BoardPaint(void)
 {
 	u8 page = Msx2_VideoGetDrawPage();
-	u8 cursor = g_hand_hidden ? MSX2_SLOT_NONE : SLOT_OF(g_zone, g_sel);
+	u8 cursor = SLOT_OF(g_zone, g_sel);
 	u8 color = Msx2_BoardCursorColor();
+
+	// With the strip off the screen a bracket around a hand position is a
+	// stray white box; on the board it is still the cursor, and hiding it
+	// while the player is choosing a slot is what made the top view unusable.
+	// An effect owns the whole screen, so nothing is bracketed under one.
+	if((g_hand_hidden && IS_HAND(cursor)) || (g_fx_kind != FX_NONE))
+		cursor = MSX2_SLOT_NONE;
 	bool painted = FALSE;
 	u8 cards = 0;
 	u8 i;
@@ -1268,6 +1276,29 @@ static bool Msx2_BoardPaint(void)
 		Msx2_BoardHud();
 		Msx2_BoardInfo();
 		--g_panel_left;
+		painted = TRUE;
+	}
+
+	// THE WHOLE HAND STRIP AT ONCE.
+	// The loop below repaints one card a frame, which is the right budget for
+	// a card arriving on the board -- but when the strip changes hands, all
+	// five change together, and the opponent's first effect owns the screen
+	// long before a one-a-frame painter has finished.  What stayed on the
+	// screen through the opponent's turn was the player's own hand.
+	if(g_hand_left != 0)
+	{
+		u8 j;
+		Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
+		          MSX2_BLACK);
+		if(!g_hand_hidden)
+			Msx2_BoardHandFrames();
+		for(j = MSX2_FIELD_SLOTS; j < SLOT_COUNT; ++j)
+		{
+			Msx2_BoardBlitSlot(j);
+			g_shown[page][j] = g_want[j];
+			g_shown_flag[page][j] = g_flag[j];
+		}
+		--g_hand_left;
 		painted = TRUE;
 	}
 
@@ -1481,6 +1512,7 @@ void Msx2_BoardEnter(u8 stage)
 	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
 	g_cursor_col_at[0] = g_cursor_col_at[1] = 0;
 	g_panel_left = 0;
+	g_hand_left = 0;
 }
 
 // Begin a turn handoff.  Playback itself is one pose per BoardStep on the
@@ -1555,6 +1587,9 @@ static void Msx2_BoardStepCameraMove(void)
 	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
 	g_cursor_col_at[0] = g_cursor_col_at[1] = 0;
 	g_panel_left = MSX2_VIDEO_PAGES;
+	// A chair change hands the strip to the other player: five cards at once,
+	// not one a frame.  The opening deals its own hand and owes nothing here.
+	g_hand_left = (g_mode == M_OPENING) ? 0 : MSX2_VIDEO_PAGES;
 	if(g_mode == M_OPENING)
 	{
 		g_mode = M_DEAL;
@@ -1569,6 +1604,22 @@ static void Msx2_BoardStepCameraMove(void)
 // ─────────────────────────────────────────────────────────────────────────────
 //  The player's turn
 // ─────────────────────────────────────────────────────────────────────────────
+
+// THE TOP VIEW (the other targets' up-from-the-hand).
+// Walking up out of the hand takes the strip off the screen: the board is what
+// the player is reading now, and the bottom panel keeps naming whatever the
+// cursor is over, with its attack and defence.  Walking back down brings the
+// five cards back.  Nothing about the board picture changes -- there is one
+// captured arena per chair -- so this is the strip, the frames and the cards.
+static void Msx2_BoardHandVisible(bool on)
+{
+	if(g_hand_hidden == (u8)!on)
+		return;
+	g_hand_hidden = (u8)!on;
+	Msx2_BoardSnapshot();
+	g_hand_left = MSX2_VIDEO_PAGES;
+	g_panel_left = MSX2_VIDEO_PAGES;
+}
 
 static void Msx2_BoardTouch(void)
 {
@@ -1878,6 +1929,8 @@ u8 Msx2_BoardStep(void)
 		Msx2_SfxPlay(MSX2_SFX_SELECT);
 		g_panel_left = MSX2_VIDEO_PAGES;
 	}
+	if((g_fx_kind == FX_NONE) && (g_mode != M_TURN) && (g_mode != M_COM))
+		Msx2_BoardHandVisible(g_zone == ZONE_HAND);
 	if(g_mode == M_TURN)
 	{
 		Msx2_BoardStepCameraMove();
