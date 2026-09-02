@@ -11,6 +11,7 @@
 #include "msx2_cards.h"
 #include "msx2_raster.h"
 #include "msx2_scenes.h"
+#include "msx2_battle_fx.h"
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 //
@@ -140,6 +141,7 @@ static u8 g_fx_dest_x;
 // the cut-in made the result appear to teleport it back onto the 3-D field.
 #define BATT_STEPS   5
 #define BATT_DX      8
+#define BATT_BURN_DY 20
 #define BATT_HOLD    56
 static u8 g_batt_phase;
 static u8 g_batt_step;
@@ -148,7 +150,9 @@ static u8 g_batt_dx;
 static u8 g_batt_dir;
 static u8 g_batt_direct;
 static u8 g_batt_trap;
+static u8 g_batt_counter;
 static u8 g_batt_px[MSX2_VIDEO_PAGES];
+static u8 g_batt_dpx[MSX2_VIDEO_PAGES];
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Reading the rules
@@ -522,37 +526,6 @@ static void Msx2_BoardBattleName(u8 card, u8 y)
 	Msx2_TextAt(4, y, g_name);
 }
 
-static void Msx2_BoardBattleImpact(u8 direct, u8 trap, u8 ax, u8 dx)
-{
-	u8 x = trap ? (u8)(ax + MSX2_BATTLE_CARD_W / 2)
-	       : direct ? (g_fx_owner == MSX2_OWNER_PLAYER ? 220 : 36)
-	       : (u8)(dx + MSX2_BATTLE_CARD_W / 2);
-	u8 y = 83;
-	Msx2_Line((u8)(x - 24), y, (u8)(x + 24), y, MSX2_WHITE);
-	Msx2_Line(x, (u8)(y - 24), x, (u8)(y + 24), MSX2_WHITE);
-	Msx2_Line((u8)(x - 17), (u8)(y - 17),
-	          (u8)(x + 17), (u8)(y + 17), MSX2_GOLD);
-	Msx2_Line((u8)(x + 17), (u8)(y - 17),
-	          (u8)(x - 17), (u8)(y + 17), MSX2_GOLD);
-	Msx2_FrameRect((u8)(x - 10), (u8)(y - 10), 21, 21,
-	               trap ? MSX2_RED : MSX2_WHITE);
-}
-
-static void Msx2_BoardBattleResult(u8 trap)
-{
-	Msx2_Fill(0, 181, MSX2_SCREEN_W, 31, MSX2_BLACK);
-	Msx2_TextColor(trap ? MSX2_RED : MSX2_GOLD, MSX2_BLACK);
-	if(trap)
-		Msx2_TextCenter(190, "ATTACKER DESTROYED");
-	else if(g_duel.last_battle.damage > 0)
-	{
-		Msx2_TextAt(82, 190, "DAMAGE");
-		Msx2_NumAt(132, 190, g_duel.last_battle.damage);
-	}
-	else
-		Msx2_TextCenter(190, "NO BATTLE DAMAGE");
-}
-
 static void Msx2_BoardDrawBattleBase(u8 direct, u8 trap, u8 ax, u8 dx)
 {
 	Msx2_BoardBattleName(g_duel.last_attacker_card, 3);
@@ -601,7 +574,9 @@ static void Msx2_BoardShowBattleCutin(void)
 	                           : (g_batt_dx > g_batt_ax);
 	g_batt_phase = 0;
 	g_batt_step = 0;
+	g_batt_counter = FALSE;
 	g_batt_px[0] = g_batt_px[1] = g_batt_ax;
+	g_batt_dpx[0] = g_batt_dpx[1] = g_batt_dx;
 
 	/* Compose the clean card page while output is blank.  The contact beat's
 	   second page is built later, once the two cards have actually met; no
@@ -636,6 +611,51 @@ static void Msx2_BoardBattleMoveAttacker(void)
 		Msx2_NumAt((u8)(x + 38), 149, g_duel.last_battle.attacker_atk);
 	}
 	g_batt_px[page] = x;
+}
+
+// When the defender wins an attack-position clash, PC-FX gives it the answer:
+// it drives back into the attacker, then returns before the losing card burns.
+// Keep separate per-page positions so neither half of that round trip can
+// expose the previous pose when the pages alternate.
+static void Msx2_BoardBattleMoveDefender(void)
+{
+	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
+	u8 travel = (u8)(g_batt_step * BATT_DX);
+	u8 x = g_batt_dir ? (u8)(g_batt_dx - travel)
+	                  : (u8)(g_batt_dx + travel);
+
+	Msx2_VideoDrawPage(page);
+	Msx2_Fill(g_batt_dpx[page], 23, MSX2_BATTLE_CARD_W,
+	          MSX2_BATTLE_CARD_H, MSX2_BLACK);
+	Msx2_Fill(g_batt_dpx[page], 149, MSX2_BATTLE_CARD_W, 8, MSX2_BLACK);
+	Msx2_BoardBattleCard(g_duel.last_defender_card, x, 23);
+	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
+	Msx2_TextAt((u8)(x + 8), 149,
+	            g_duel.last_battle.defender_passive ? "DEF" : "ATK");
+	Msx2_NumAt((u8)(x + 36), 149, g_duel.last_battle.defender_value);
+	g_batt_dpx[page] = x;
+}
+
+// The shared/PC-FX cut-in burns a destroyed card away instead of leaving it
+// whole until the board cut.  SCREEN 8 has no alpha or palette fade, so the
+// MSX2 equivalent is a six-band wipe with a hot edge, composed on the hidden
+// page and revealed only after the command engine has finished it.
+static void Msx2_BoardBattleBurnStep(void)
+{
+	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
+	u8 h = (u8)(g_batt_step * BATT_BURN_DY);
+	u8 outcome = g_duel.last_battle.outcome;
+
+	// Carry the preceding wipe stage forward, then extend it.  No page can
+	// reveal an older band or a half-issued fill while the other is scanned.
+	Msx2_VideoCopyPage((u8)(page ^ 1), page);
+	Msx2_VideoDrawPage(page);
+	if(g_batt_trap || outcome == MSX2_BATTLE_DESTROY_ATTACKER ||
+	   outcome == MSX2_BATTLE_DESTROY_BOTH)
+		Msx2_BattleFxBurnCard(g_batt_ax, h, g_batt_step);
+	if(outcome == MSX2_BATTLE_DESTROY_DEFENDER ||
+	   outcome == MSX2_BATTLE_DESTROY_BOTH)
+		Msx2_BattleFxBurnCard(g_batt_dx, h, g_batt_step);
 }
 
 static void Msx2_BoardRestoreFromCutin(void)
@@ -1000,10 +1020,12 @@ static bool Msx2_BoardRunFx(void)
 		switch(g_batt_phase)
 		{
 		case 0:
-			/* The attacker closes.  One 88x120 blit is about six V-blanks, so
-			   five steps is roughly a second of visible approach. */
+			/* The attacker closes, or the stronger defender answers.  One
+			   88x120 blit is about six V-blanks, so five steps is roughly a
+			   second of visible approach. */
 			++g_batt_step;
-			Msx2_BoardBattleMoveAttacker();
+			if(g_batt_counter) Msx2_BoardBattleMoveDefender();
+			else               Msx2_BoardBattleMoveAttacker();
 			Msx2_VideoFlipRequest();
 			if(g_batt_step >= BATT_STEPS)
 			{
@@ -1017,10 +1039,16 @@ static bool Msx2_BoardRunFx(void)
 			   beat's second page on the one that is not being scanned. */
 			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 			Msx2_VideoCopyPage((u8)(page ^ 1), page);
-			g_batt_px[page] = g_batt_px[page ^ 1];
+			if(g_batt_counter) g_batt_dpx[page] = g_batt_dpx[page ^ 1];
+			else               g_batt_px[page] = g_batt_px[page ^ 1];
 			Msx2_VideoDrawPage(page);
-			Msx2_BoardBattleImpact(g_batt_direct, g_batt_trap,
-			                       g_batt_px[page], g_batt_dx);
+			Msx2_BattleFxImpact(g_batt_trap
+			                     ? (u8)(g_batt_px[page] + MSX2_BATTLE_CARD_W / 2)
+			                     : g_batt_direct
+			                       ? (g_fx_owner == MSX2_OWNER_PLAYER ? 220 : 36)
+			                       : (u8)((g_batt_counter ? g_batt_ax : g_batt_dx)
+			                              + MSX2_BATTLE_CARD_W / 2),
+			                     g_batt_trap);
 			g_batt_phase = 2;
 			g_batt_step = 0;
 			return TRUE;
@@ -1038,22 +1066,63 @@ static bool Msx2_BoardRunFx(void)
 
 		case 3:
 			/* Remove the impact marks from the other page before the retreat.
-			   Both pages now contain the attacker at full extension, so each
+			   Both pages now contain the moving card at full extension, so each
 			   backwards step can be composed off-screen and revealed in V-blank. */
 			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 			Msx2_VideoCopyPage((u8)(page ^ 1), page);
-			g_batt_px[page] = g_batt_px[page ^ 1];
+			if(g_batt_counter) g_batt_dpx[page] = g_batt_dpx[page ^ 1];
+			else               g_batt_px[page] = g_batt_px[page ^ 1];
 			g_batt_phase = 4;
 			return TRUE;
 
 		case 4:
 			--g_batt_step;
-			Msx2_BoardBattleMoveAttacker();
+			if(g_batt_counter) Msx2_BoardBattleMoveDefender();
+			else               Msx2_BoardBattleMoveAttacker();
 			if(g_batt_step == 0)
 			{
-				Msx2_BoardBattleResult(g_batt_trap);
-				g_batt_phase = 5;
+				if(!g_batt_counter && !g_batt_trap &&
+				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_ATTACKER)
+				{
+					// First reveal the attacker home; case 5 levels the other
+					// page before the defender starts its own round trip.
+					g_batt_phase = 5;
+				}
+				else if(g_batt_trap ||
+				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_ATTACKER ||
+				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_DEFENDER ||
+				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_BOTH)
+				{
+					g_batt_step = 0;
+					g_batt_phase = 6;
+				}
+				else
+				{
+					Msx2_BattleFxResult(FALSE);
+					g_fx_frames = BATT_HOLD;
+					g_batt_phase = 7;
+				}
+			}
+			Msx2_VideoFlipRequest();
+			return TRUE;
+
+		case 5:
+			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
+			Msx2_VideoCopyPage((u8)(page ^ 1), page);
+			g_batt_counter = TRUE;
+			g_batt_dpx[0] = g_batt_dpx[1] = g_batt_dx;
+			g_batt_step = 0;
+			g_batt_phase = 0;
+			return TRUE;
+
+		case 6:
+			++g_batt_step;
+			Msx2_BoardBattleBurnStep();
+			if(g_batt_step >= MSX2_BATTLE_BURN_STEPS)
+			{
+				Msx2_BattleFxResult(g_batt_trap);
 				g_fx_frames = BATT_HOLD;
+				g_batt_phase = 7;
 			}
 			Msx2_VideoFlipRequest();
 			return TRUE;

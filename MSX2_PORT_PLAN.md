@@ -1847,8 +1847,10 @@ board. Attacks do not: monster battles, direct hits and trap counters switch to
 the black full-screen 2-D battle scene with large card art and a page-flipped
 approach/impact/retreat/result beat, then rebuild the retained board. The
 attacker retraces every approach pose before the result appears, so returning
-to the 3-D field no longer teleports it out of its contact position. Battle-top
-and side-camera strips are intentionally retired; they would
+to the 3-D field no longer teleports it out of its contact position. A stronger
+attack-position defender then counter-lunges and returns in the same fashion;
+destroyed cards leave through the six-stage red/gold burn wipe before damage is
+held. Battle-top and side-camera strips are intentionally retired; they would
 violate the owner's 2-D-only combat requirement.
 
 ### 21.3 The dialogue scene shows one character on a synthesised floor — **closed**
