@@ -454,8 +454,11 @@ def portrait(filename, size):
     if bbox:
         img = img.crop(bbox)
     w, h = img.size
-    img = img.crop((int(w * 0.05), int(h * 0.01),
-                    max(1, int(w * 0.95)), max(2, int(h * 0.80))))
+    # No side trim.  gen_assets.py takes 5% off each edge for the framebuffer
+    # targets, whose portrait area is much wider than the figure; here the area
+    # is a 124-square the bust is fitted into by height, so those 5% came
+    # straight off the character -- Anpu and Rahotep lost both elbows.
+    img = img.crop((0, int(h * 0.01), w, max(2, int(h * 0.80))))
     art = ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
     out = Image.new("RGBA", size, (0, 0, 0, 0))
     out.alpha_composite(art, ((size[0] - art.width) // 2, size[1] - art.height))
@@ -654,6 +657,26 @@ def build_battle_card_blob(cards, quiet):
     return bytes(blob), len(cards)
 
 
+UI_STRIDE = 36                   # the longest interface line is 33 characters
+UI_DEF = os.path.join(ROOT, "src", "msx2", "msx2_ui_strings.def")
+
+
+def parse_ui_strings():
+    """The interface words, out of src/msx2/msx2_ui_strings.def.
+
+    They are cartridge data rather than code because segment 2 -- the duel and
+    story screens -- is a hard 16 KB and their literals were 1.6 KB of it."""
+    out = []
+    for line in open(UI_DEF, encoding="utf-8"):
+        m = re.match(r'\s*S\(\s*(\w+)\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)', line)
+        if m:
+            if len(m.group(2)) >= UI_STRIDE:
+                sys.exit("UI string %r is past the %d stride"
+                         % (m.group(2), UI_STRIDE))
+            out.append((m.group(1), m.group(2)))
+    return out
+
+
 def build_text_blob(cards, story):
     """Every string the game shows, at fixed strides.
 
@@ -699,7 +722,13 @@ def build_text_blob(cards, story):
         blob += line_record(2, text)
     blob += bytes(LINE_STRIDE * (ENDING_LINES - len(ending[:ENDING_LINES])))
 
-    return bytes(blob), len(names), offsets, counts, len(intro), len(ending)
+    section("UI")
+    ui = parse_ui_strings()
+    for _name, text in ui:
+        body = text.encode("ascii", "replace")[:UI_STRIDE - 1]
+        blob += body + bytes(UI_STRIDE - len(body))
+
+    return bytes(blob), len(names), offsets, counts, len(intro), len(ending), ui
 
 
 def main():
@@ -766,7 +795,7 @@ def main():
     portrait_segment = place("portraits", portrait_blob)
 
     story = parse_story()
-    text_blob, name_count, text_off, dialogue_counts, intro_n, ending_n = \
+    text_blob, name_count, text_off, dialogue_counts, intro_n, ending_n, ui = \
         build_text_blob(cards, story)
     text_segment = place("text", text_blob)
 
@@ -880,6 +909,11 @@ def main():
         f.write("#define MSX2_INTRO_COUNT        %d\n" % intro_n)
         f.write("#define MSX2_ENDING_OFFSET      %d\n" % text_off["ENDING"])
         f.write("#define MSX2_ENDING_COUNT       %d\n" % ending_n)
+        f.write("#define MSX2_UI_OFFSET          %d\n" % text_off["UI"])
+        f.write("#define MSX2_UI_STRIDE          %d\n" % UI_STRIDE)
+        f.write("#define MSX2_UI_COUNT           %d\n" % len(ui))
+        for i, (name, _text) in enumerate(ui):
+            f.write("#define MSX2_S_%-28s %d\n" % (name, i))
         f.write("static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =\n")
         f.write("\t{ %s };\n\n" % ", ".join(str(c) for c in dialogue_counts))
 

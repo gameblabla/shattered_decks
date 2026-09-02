@@ -4,9 +4,27 @@
 
 #include "msx2_video.h"
 
+#include "msx2_stream.h"
+
 // An 8x8 bitmap font from MSXgl's content set.  The shipping game wants its own
 // outlined font strip in offscreen VRAM (plan §7.2); this is the bring-up one.
 #include "font/font_mgl_sample6.h"
+
+// THE TEXT WRITER, AND WHY IT IS NOT MSXgl's.
+//
+// Print_DrawText goes through the command engine, one HMMC per character, and
+// measured at roughly four milliseconds a letter on this machine: a duel-screen
+// repaint -- the HUD, the card name, the stats and the prompt -- took twenty-two
+// frames, so every cursor move in the hand cost a third of a second before the
+// bracket followed it, twice over because both pages owe the repaint.
+//
+// A glyph is 6x8 bytes of flat colour in GRAPHIC 7, which is exactly what the
+// streamer's own padded write loop already moves.  So a string is built one
+// scanline at a time into a RAM row -- the whole string, not one character --
+// and each row goes out as a single set-address plus block write.  That is five
+// times faster, and it drops MSXgl's print module from the link entirely.
+#define MSX2_TEXT_MAX_CHARS  42
+static u8 g_text_row[MSX2_TEXT_MAX_CHARS * MSX2_FONT_W_PX];
 
 static u8 g_draw_page;
 static u8 g_show_page;
@@ -20,7 +38,6 @@ void Msx2_VideoInit(void)
 	VDP_SetColor(MSX2_BLACK);
 	VDP_EnableVBlank(TRUE);
 
-	Print_SetBitmapFont(g_Font_MGL_Sample6);
 	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
 
 	// Both pages start black, so a flip can never reveal boot garbage.
@@ -185,17 +202,42 @@ void Msx2_TextColor(u8 fg, u8 bg)
 {
 	g_text_fg = fg;
 	g_text_bg = bg;
-	Print_SetColor(fg, bg);
 }
 
-// MSXgl's bitmap printer draws with the command engine (HMMC), whose Y axis
-// spans both pages, so text reaches the hidden page by adding 256 -- no R#2
-// fiddling, and no risk of briefly displaying the page being composed.
+// One string, on the draw page, a scanline at a time.  Msx2_PokeAt() sets the
+// VDP write address for (x, y) on whichever page is being drawn -- the same
+// call the card streamer uses -- and Msx2_PokeBlock() pushes the row out with
+// the padding GRAPHIC 7 needs while the display is on.
 void Msx2_TextAt(u8 x, u8 y, const c8* text)
 {
+	const u8* patterns = g_Font_MGL_Sample6 + 4;
+	u8 first = g_Font_MGL_Sample6[2];
+	u8 n = 0;
+	u8 row;
+
+	// Clip to the screen by whole characters: a glyph running off the right
+	// edge would wrap onto the next scanline, which is worse than losing it.
+	while((text[n] != 0) && (n < MSX2_TEXT_MAX_CHARS) &&
+	      ((u16)x + (u16)(n + 1) * MSX2_FONT_W_PX <= MSX2_SCREEN_W))
+		++n;
+	if(n == 0)
+		return;
+
 	VDP_CommandWait();
-	Print_SetPosition(x, Msx2_PageY(y));
-	Print_DrawText(text);
+	for(row = 0; row < MSX2_FONT_H_PX; ++row)
+	{
+		u8* d = g_text_row;
+		u8 i;
+		for(i = 0; i < n; ++i)
+		{
+			u8 bits = patterns[(u16)((u8)text[i] - first) * MSX2_FONT_H_PX + row];
+			u8 c;
+			for(c = 0; c < MSX2_FONT_W_PX; ++c)
+				*d++ = (bits & (u8)(0x80 >> c)) ? g_text_fg : g_text_bg;
+		}
+		Msx2_PokeAt(x, (u8)(y + row));
+		Msx2_PokeBlock(g_text_row, (u8)(n * MSX2_FONT_W_PX));
+	}
 }
 
 u8 Msx2_TextWidth(const c8* text)
@@ -203,7 +245,7 @@ u8 Msx2_TextWidth(const c8* text)
 	u8 n = 0;
 	while(*text++)
 		++n;
-	return (u8)(n * 6);   // font_mgl_sample6 is 6 pixels wide
+	return (u8)(n * MSX2_FONT_W_PX);
 }
 
 void Msx2_TextCenter(u8 y, const c8* text)
@@ -214,9 +256,32 @@ void Msx2_TextCenter(u8 y, const c8* text)
 
 void Msx2_NumAt(u8 x, u8 y, i16 value)
 {
-	VDP_CommandWait();
-	Print_SetPosition(x, Msx2_PageY(y));
-	Print_DrawInt(value);
+	c8 buf[7];
+	u8 n = 0;
+	u16 v;
+	u8 i;
+
+	if(value < 0)
+	{
+		buf[n++] = '-';
+		v = (u16)(-value);
+	}
+	else
+		v = (u16)value;
+
+	// Digits come out backwards, so they are laid down from the end of a
+	// six-digit field and the string starts wherever they stopped.
+	i = 6;
+	buf[6] = 0;
+	do
+	{
+		buf[--i] = (c8)('0' + (v % 10));
+		v /= 10;
+	}
+	while(v != 0);
+	if(n != 0)
+		buf[--i] = '-';
+	Msx2_TextAt(x, y, &buf[i]);
 }
 
 // ── Double-size text ─────────────────────────────────────────────────────────
@@ -226,8 +291,8 @@ void Msx2_NumAt(u8 x, u8 y, i16 value)
 // with the leftmost pixel in bit 7.  Reading it here rather than hardcoding 6x8
 // means swapping in the shipping font later changes nothing else.
 
-#define MSX2_FONT_W 6
-#define MSX2_FONT_H 8
+#define MSX2_FONT_W MSX2_FONT_W_PX
+#define MSX2_FONT_H MSX2_FONT_H_PX
 #define MSX2_BIG_W  (MSX2_FONT_W * 2)
 #define MSX2_BIG_H  (MSX2_FONT_H * 2)
 

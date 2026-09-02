@@ -14,11 +14,57 @@
 
 static u8 g_held;
 static u8 g_pressed;
+static c8 g_typed;
+// Rows 0..5 of the matrix carry the digits and the whole alphabet.  The
+// previous scan is kept so a held key types once, exactly like the latch above.
+static u8 g_key_held[6];
 
 void Msx2_InputInit(void)
 {
+	u8 i;
 	g_held = 0;
 	g_pressed = 0;
+	g_typed = 0;
+	for(i = 0; i < 6; ++i)
+		g_key_held[i] = 0;
+}
+
+// The MSX keyboard matrix, in the order the rows report it:
+//   row 0: 0 1 2 3 4 5 6 7      row 3: C D E F G H I J
+//   row 1: 8 9 - = \ [ ] ;      row 4: K L M N O P Q R
+//   row 2: ' ` , . / _ A B      row 5: S T U V W X Y Z
+// so the printable characters this game needs are one flat table.
+static const c8 g_key_char[6][8] =
+{
+	{ '0', '1', '2', '3', '4', '5', '6', '7' },
+	{ '8', '9',   0,   0,   0,   0,   0,   0 },
+	{   0,   0,   0,   0,   0,   0, 'A', 'B' },
+	{ 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J' },
+	{ 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R' },
+	{ 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z' },
+};
+
+// Scan the printable rows and report the first key that went down this frame.
+static void Msx2_InputScanTyped(void)
+{
+	u8 r;
+	g_typed = 0;
+	for(r = 0; r < 6; ++r)
+	{
+		u8 now = (u8)~Keyboard_Read(r);
+		u8 fresh = (u8)(now & ~g_key_held[r]);
+		g_key_held[r] = now;
+		if((fresh != 0) && (g_typed == 0))
+		{
+			u8 b;
+			for(b = 0; b < 8; ++b)
+				if((fresh & (u8)(1 << b)) && (g_key_char[r][b] != 0))
+				{
+					g_typed = g_key_char[r][b];
+					break;
+				}
+		}
+	}
 }
 
 // Row 8 of the MSX keyboard matrix carries SPACE and all four cursor keys, so
@@ -40,8 +86,9 @@ void Msx2_InputUpdate(void)
 	if(row & (1 << KEY_IDX(KEY_SPACE))) now |= MSX2_BTN_A;
 
 	row = ~Keyboard_Read(KROW_CONTROL);
-	if(row & (1 << KEY_IDX(KEY_RETURN))) now |= MSX2_BTN_A;
+	if(row & (1 << KEY_IDX(KEY_RETURN))) now |= (MSX2_BTN_A | MSX2_BTN_ENTER);
 	if(row & (1 << KEY_IDX(KEY_ESC)))    now |= MSX2_BTN_B;
+	if(row & (1 << KEY_IDX(KEY_BS)))     now |= (MSX2_BTN_B | MSX2_BTN_DEL);
 
 	// Both joystick ports drive the same latch: whichever one the player
 	// plugged into is the one that works, with no setup screen to get wrong.
@@ -52,7 +99,10 @@ void Msx2_InputUpdate(void)
 
 	g_pressed = (u8)(now & ~g_held);
 	g_held = now;
+
+	Msx2_InputScanTyped();
 }
 
 u8 Msx2_InputHeld(void)    { return g_held; }
 u8 Msx2_InputPressed(void) { return g_pressed; }
+c8 Msx2_InputTyped(void)   { return g_typed; }

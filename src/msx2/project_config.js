@@ -26,6 +26,12 @@ ProjName = "waifu_msx2";
 //-- Every module compiled into the ROM.  src/main.c is deliberately absent:
 //   this port never compiles it (MSX2_PORT_PLAN.md §1.1).
 ProjModules = [
+	//-- FIRST, and that placement is load-bearing.  The streamer switches the
+	//   0x8000 window to cartridge data, so none of the code up there exists
+	//   while it runs -- itself included.  Linking it ahead of everything else
+	//   puts it just past crt0, far below the window; pack_msx_rom.py fails the
+	//   build if that ever stops being true.
+	"msx2_stream",
 	"msx2_main",
 	"msx2_title",
 	"msx2_video",
@@ -46,7 +52,7 @@ AddSources = [
 	"msx2_libc.c",
 ];
 
-LibModules = [ "system", "bios", "vdp", "print", "input", "memory" ];
+LibModules = [ "system", "bios", "vdp", "input", "memory" ];
 
 Machine = "2";
 

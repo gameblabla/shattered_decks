@@ -69,3 +69,7 @@ void Msx2_PokeBlock(const u8* src, u8 n);
 // Point the VDP's write pointer at (x, y) on the draw page, so the two calls
 // above can then write straight through it.
 void Msx2_PokeAt(u8 x, u8 y);
+
+// One interface line from the cartridge string table, by id (MSX2_S_*).  The
+// buffer is shared, so use the pointer before asking for the next one.
+const c8* Msx2_UiText(u8 id);

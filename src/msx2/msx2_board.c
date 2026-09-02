@@ -391,7 +391,7 @@ static void Msx2_BoardHud(void)
 	Msx2_NumAt(28, 3, g_duel.side[MSX2_OWNER_COM].lp);
 
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextAt(100, 3, "TURN");
+	Msx2_TextAt(100, 3, Msx2_UiText(MSX2_S_TURN));
 	Msx2_NumAt(130, 3, (i16)g_duel.turns);
 
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
@@ -403,21 +403,21 @@ static const c8* Msx2_BoardPrompt(void)
 {
 	switch(g_mode)
 	{
-	case M_PLACE:  return g_place_def ? "PLACE IN DEFENCE - UP/DOWN ATK"
-	                                  : "PLACE IN ATTACK - UP/DOWN DEF";
-	case M_EQUIP:  return "PICK A MONSTER TO EQUIP";
-	case M_TARGET: return "PICK THE TARGET - ESC CANCELS";
-	case M_COM:    return "THE OPPONENT IS THINKING";
-	case M_OVER:   return "SPACE RETURNS TO THE TITLE";
+	case M_PLACE:  return g_place_def ? Msx2_UiText(MSX2_S_PLACE_IN_DEFENCE_UP_DOWN_ATK)
+	                                  : Msx2_UiText(MSX2_S_PLACE_IN_ATTACK_UP_DOWN_DEF);
+	case M_EQUIP:  return Msx2_UiText(MSX2_S_PICK_A_MONSTER_TO_EQUIP);
+	case M_TARGET: return Msx2_UiText(MSX2_S_PICK_THE_TARGET_ESC_CANCELS);
+	case M_COM:    return Msx2_UiText(MSX2_S_THE_OPPONENT_IS_THINKING);
+	case M_OVER:   return Msx2_UiText(MSX2_S_SPACE_RETURNS_TO_THE_TITLE);
 	default:
 		if(g_queue_n != 0)
 		{
-			if(g_zone == ZONE_HAND) return "DOWN PICKS MATERIALS - ESC CLEARS";
-			return "SPACE FUSES HERE  -  ESC CLEARS";
+			if(g_zone == ZONE_HAND) return Msx2_UiText(MSX2_S_DOWN_PICKS_MATERIALS_ESC_CLE);
+			return Msx2_UiText(MSX2_S_SPACE_FUSES_HERE_ESC_CLEARS);
 		}
-		if(g_zone == ZONE_HAND)  return "SPACE PLAYS  -  DOWN FUSES";
-		if(g_zone == ZONE_FIELD) return "SPACE ATTACKS  -  ESC ENDS TURN";
-		return "OPPONENT ROW - DOWN TO GO BACK";
+		if(g_zone == ZONE_HAND)  return Msx2_UiText(MSX2_S_SPACE_PLAYS_DOWN_FUSES);
+		if(g_zone == ZONE_FIELD) return Msx2_UiText(MSX2_S_SPACE_ATTACKS_ESC_ENDS_TURN);
+		return Msx2_UiText(MSX2_S_OPPONENT_ROW_DOWN_TO_GO_BACK);
 	}
 }
 
@@ -432,7 +432,7 @@ static void Msx2_BoardInfo(void)
 	{
 		Msx2_TextColor((g_duel.result > 0) ? MSX2_GOLD : MSX2_RED, MSX2_PANEL_COLOR);
 		Msx2_TextCenter((u8)(MSX2_INFO_Y + 3),
-		                (g_duel.result > 0) ? "YOU WIN THE DUEL" : "YOU HAVE LOST");
+		                (g_duel.result > 0) ? Msx2_UiText(MSX2_S_YOU_WIN_THE_DUEL) : Msx2_UiText(MSX2_S_YOU_HAVE_LOST));
 	}
 	else if(card != MSX2_CARD_NONE)
 	{
@@ -470,7 +470,7 @@ static void Msx2_BoardInfo(void)
 		else
 		{
 			Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-			Msx2_TextCenter((u8)(MSX2_INFO_Y + 12), "SUPPORT CARD");
+			Msx2_TextCenter((u8)(MSX2_INFO_Y + 12), Msx2_UiText(MSX2_S_SUPPORT_CARD));
 		}
 	}
 
@@ -541,7 +541,7 @@ static void Msx2_BoardDrawBattleBase(u8 direct, u8 trap, u8 ax, u8 dx)
 	else
 	{
 		Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
-		Msx2_TextAt(4, 171, trap ? "TRAP COUNTER" : "DIRECT ATTACK");
+		Msx2_TextAt(4, 171, trap ? Msx2_UiText(MSX2_S_TRAP_COUNTER) : Msx2_UiText(MSX2_S_DIRECT_ATTACK));
 	}
 
 	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
@@ -759,7 +759,7 @@ static void Msx2_BoardFxDraw(bool erase)
 	{
 	case FX_COM_CHOOSE:
 		if(!erase)
-			Msx2_BoardFxBanner("OPPONENT CHOOSES A CARD", MSX2_RED);
+			Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_OPPONENT_CHOOSES_A_CARD), MSX2_RED);
 		if(g_fx_hand != MSX2_SLOT_NONE)
 		{
 			u8 x = HAND_X(g_fx_hand);
@@ -788,11 +788,11 @@ static void Msx2_BoardFxDraw(bool erase)
 		if(!erase)
 		{
 			if(g_fx_kind == FX_COM_PLACE)
-				Msx2_BoardFxBanner("OPPONENT PLACES THE CARD", MSX2_RED);
+				Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_OPPONENT_PLACES_THE_CARD), MSX2_RED);
 			else if(g_fx_kind == FX_SUMMON)
-				Msx2_BoardFxBanner("SUMMON", MSX2_TEAL);
+				Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_SUMMON), MSX2_TEAL);
 			else
-				Msx2_BoardFxBanner("EQUIP POWER", MSX2_GOLD);
+				Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_EQUIP_POWER), MSX2_GOLD);
 		}
 		if(g_fx_field != MSX2_SLOT_NONE)
 			Msx2_BoardFxCardFlight(erase);
@@ -800,7 +800,7 @@ static void Msx2_BoardFxDraw(bool erase)
 
 	case FX_FUSION:
 		if(!erase)
-			Msx2_BoardFxBanner("FUSION SUMMON", MSX2_TEAL);
+			Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_FUSION_SUMMON), MSX2_TEAL);
 		if(g_fx_field != MSX2_SLOT_NONE)
 		{
 			Msx2_BoardFxCardFlight(erase);
@@ -808,7 +808,7 @@ static void Msx2_BoardFxDraw(bool erase)
 			if(!erase)
 			{
 				Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-				Msx2_TextCenter(82, "FUSION");
+				Msx2_TextCenter(82, Msx2_UiText(MSX2_S_FUSION));
 			}
 		}
 		break;
@@ -816,17 +816,17 @@ static void Msx2_BoardFxDraw(bool erase)
 	case FX_SUPPORT:
 		if(!erase)
 		{
-			Msx2_BoardFxBanner("SUPPORT ACTIVATED", MSX2_TEAL);
+			Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_SUPPORT_ACTIVATED), MSX2_TEAL);
 			Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-			Msx2_TextCenter(82, "EFFECT");
+			Msx2_TextCenter(82, Msx2_UiText(MSX2_S_EFFECT));
 		}
 		Msx2_FrameRectXor(84, 70, 88, 34, flash);
 		break;
 
 	case FX_POSITION:
 		if(!erase)
-			Msx2_BoardFxBanner(g_fx_owner == MSX2_OWNER_COM ? "OPPONENT CHANGES POSITION"
-			                                                : "CHANGE POSITION", MSX2_GOLD);
+			Msx2_BoardFxBanner(g_fx_owner == MSX2_OWNER_COM ? Msx2_UiText(MSX2_S_OPPONENT_CHANGES_POSITION)
+			                                                : Msx2_UiText(MSX2_S_CHANGE_POSITION), MSX2_GOLD);
 		if(g_fx_field != MSX2_SLOT_NONE)
 			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
 		break;

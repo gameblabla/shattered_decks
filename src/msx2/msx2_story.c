@@ -137,10 +137,55 @@ static c8  g_opp[MSX2_OPP_STRIDE / 2];
 // ─────────────────────────────────────────────────────────────────────────────
 
 // One dialogue/narration record: a speaker byte then a NUL-terminated line.
+// The prose calls the heroine SERENA by name, and the player may have called
+// her something else.  The other targets substitute at draw time; here the
+// record is rewritten once, in the buffer, right after it is read -- the
+// typewriter downstream then reveals the player's own name character by
+// character with nothing else changed.
+static void Msx2_StoryNameSub(void)
+{
+	c8* p = &g_text[1];
+	u8 nlen = STORY_NAME_LEN;
+	u8 len, i, j;
+
+	while((nlen != 0) && (g_player_name[nlen - 1] == ' '))
+		--nlen;
+	if(nlen == 0)
+		return;
+	for(len = 0; p[len] != 0; ++len)
+		;
+	for(i = 0; (u8)(i + 6) <= len; ++i)
+	{
+		if((p[i] != 'S') || (p[i + 1] != 'E') || (p[i + 2] != 'R') ||
+		   (p[i + 3] != 'E') || (p[i + 4] != 'N') || (p[i + 5] != 'A'))
+			continue;
+		if(nlen > 6)
+		{
+			u8 grow = (u8)(nlen - 6);
+			if((u16)(len + grow) >= MSX2_LINE_STRIDE - 2)
+				return;
+			for(j = (u8)(len + grow); j > (u8)(i + 5); --j)
+				p[j] = p[j - grow];
+			len = (u8)(len + grow);
+		}
+		else if(nlen < 6)
+		{
+			u8 shrink = (u8)(6 - nlen);
+			for(j = (u8)(i + nlen); j <= (u8)(len - shrink); ++j)
+				p[j] = p[j + shrink];
+			len = (u8)(len - shrink);
+		}
+		for(j = 0; j < nlen; ++j)
+			p[i + j] = g_player_name[j];
+		i = (u8)(i + nlen - 1);
+	}
+}
+
 static void Msx2_StoryReadLine(u16 offset)
 {
 	Msx2_RomRead(MSX2_TEXT_SEGMENT, offset, (u8*)g_text, MSX2_LINE_STRIDE);
 	g_text[MSX2_LINE_STRIDE - 1] = 0;
+	Msx2_StoryNameSub();
 }
 
 // `field` 0 is the opponent's name, 1 their title.
@@ -360,6 +405,11 @@ static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 
 	for(row = 0; row < MSX2_PORTRAIT_H; ++row)
 	{
+		// The right-hand bust stands six pixels lower than the left one, so its
+		// last rows fall inside the text box.  They are clipped here rather
+		// than by moving the figure: the run table still has to be walked to
+		// keep the pixel cursor in step, only the blit is skipped.
+		bool visible = ((u8)(y + row) < MSX2_TALK_BOX_Y);
 		Msx2_RomRead(seg, (u16)((u16)row * MSX2_PORTRAIT_ROW_STRIDE), rec,
 		             MSX2_PORTRAIT_ROW_STRIDE);
 		for(k = 0; k < rec[0]; ++k)
@@ -374,10 +424,13 @@ static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 			// A run may straddle the segment boundary, so the tail is a second
 			// blit rather than a read that runs off the end of the window.
 			head = ((u16)rn > (0x4000u - o)) ? (u8)(0x4000u - o) : rn;
-			Msx2_StreamRect(s, o, (u8)(x + rx), (u8)(y + row), head, 1);
-			if(head != rn)
-				Msx2_StreamRect((u16)(s + 1), 0, (u8)(x + rx + head),
-				                (u8)(y + row), (u8)(rn - head), 1);
+			if(visible)
+			{
+				Msx2_StreamRect(s, o, (u8)(x + rx), (u8)(y + row), head, 1);
+				if(head != rn)
+					Msx2_StreamRect((u16)(s + 1), 0, (u8)(x + rx + head),
+					                (u8)(y + row), (u8)(rn - head), 1);
+			}
 			pix = (u16)(pix + rn);
 		}
 	}
@@ -511,11 +564,11 @@ static void Msx2_StoryNamePaint(void)
 	Msx2_Fill(18, 22, 220, 164, MSX2_PANEL_COLOR);
 	Msx2_FrameRect(18, 22, 220, 164, MSX2_GOLD);
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(30, "NAME YOUR DUELIST");
+	Msx2_TextCenter(30, Msx2_UiText(MSX2_S_NAME_YOUR_DUELIST));
 	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(48, "CHOOSE EIGHT LETTERS");
+	Msx2_TextCenter(48, Msx2_UiText(MSX2_S_CHOOSE_EIGHT_LETTERS));
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-	Msx2_TextAt(70, 68, "NAME:");
+	Msx2_TextAt(70, 68, Msx2_UiText(MSX2_S_NAME));
 	for(i = 0; i < STORY_NAME_LEN; ++i)
 	{
 		one[0] = (i < g_name_len) ? g_player_name[i] : '_';
@@ -526,17 +579,17 @@ static void Msx2_StoryNamePaint(void)
 	}
 
 	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextAt(45, 100, "ABCDEFGHIJKLM");
-	Msx2_TextAt(45, 120, "NOPQRSTUVWXYZ");
+	Msx2_TextAt(45, 100, Msx2_UiText(MSX2_S_ABCDEFGHIJKLM));
+	Msx2_TextAt(45, 120, Msx2_UiText(MSX2_S_NOPQRSTUVWXYZ));
 	one[0] = (c8)('A' + g_name_cursor);
 	one[1] = 0;
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 	Msx2_TextAt((u8)(45 + (g_name_cursor % 13) * 13),
 	            (u8)(100 + (g_name_cursor / 13) * 20), one);
 	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(140, "SPACE: LETTER / RETURN: ACCEPT");
+	Msx2_TextCenter(140, Msx2_UiText(MSX2_S_SPACE_LETTER_RETURN_ACCEPT));
 	Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(153, "ESC: DELETE");
+	Msx2_TextCenter(153, Msx2_UiText(MSX2_S_ESC_DELETE));
 }
 
 static void Msx2_StoryEnterName(void)
@@ -568,42 +621,84 @@ static bool Msx2_StoryAcceptName(void)
 	return TRUE;
 }
 
+// THE CODE, WRITTEN OUT THE WAY A PASSWORD SCREEN WRITES IT.
+// Sixteen characters at the font's own six-pixel pitch are a solid word: a
+// player copying one off the screen onto paper cannot tell where one letter
+// ends and the next begins.  So the code is laid out as two rows of eight
+// cells, each character alone in its own sunken box, exactly as the cartridge
+// password screens this is borrowing from do it.
+#define CODE_COLS     8
+#define CODE_CELL_W   24
+#define CODE_CELL_H   14
+#define CODE_GRID_X   ((MSX2_SCREEN_W - CODE_COLS * CODE_CELL_W) / 2)
+#define CODE_GRID_Y   44
+#define CODE_ROW_STEP 18
+
+static void Msx2_StoryCodeCells(void)
+{
+	c8 one[2];
+	u8 i;
+
+	one[1] = 0;
+	for(i = 0; i < STORY_CODE_LEN; ++i)
+	{
+		u8 x = (u8)(CODE_GRID_X + (i % CODE_COLS) * CODE_CELL_W);
+		u8 y = (u8)(CODE_GRID_Y + (i / CODE_COLS) * CODE_ROW_STEP);
+		bool here = (g_phase == PH_CODE_IN) && (i == g_code_len);
+
+		Msx2_Fill((u8)(x + 1), (u8)(y + 1), CODE_CELL_W - 4, CODE_CELL_H - 2,
+		          MSX2_PLATE_COLOR);
+		Msx2_FrameRect(x, y, CODE_CELL_W - 2, CODE_CELL_H,
+		               here ? MSX2_GOLD : MSX2_DARK_SAND);
+		if(i < g_code_len)
+		{
+			one[0] = g_code[i];
+			Msx2_TextColor(MSX2_WHITE, MSX2_PLATE_COLOR);
+		}
+		else
+		{
+			one[0] = '-';
+			Msx2_TextColor(here ? MSX2_GOLD : MSX2_DARK_SAND, MSX2_PLATE_COLOR);
+		}
+		Msx2_TextAt((u8)(x + (CODE_CELL_W - 2 - 6) / 2), (u8)(y + 3), one);
+	}
+}
+
 static void Msx2_StoryCodePaint(void)
 {
 	c8 one[2];
 	Msx2_Fill(14, 20, 228, 170, MSX2_PANEL_COLOR);
 	Msx2_FrameRect(14, 20, 228, 170, MSX2_GOLD);
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(30, (g_phase == PH_CODE_OUT) ? "CONTINUE CODE" : "ENTER CONTINUE CODE");
-	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(48, g_code);
+	Msx2_TextCenter(30, (g_phase == PH_CODE_OUT) ? Msx2_UiText(MSX2_S_CONTINUE_CODE) : Msx2_UiText(MSX2_S_ENTER_CONTINUE_CODE));
+	Msx2_StoryCodeCells();
 	if(g_phase == PH_CODE_OUT)
 	{
 		Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-		Msx2_TextCenter(68, "WRITE THIS DOWN");
+		Msx2_TextCenter(90, Msx2_UiText(MSX2_S_WRITE_THIS_DOWN));
 		Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-		Msx2_TextCenter(139, "ENTER IT ON THE TITLE SCREEN");
+		Msx2_TextCenter(139, Msx2_UiText(MSX2_S_ENTER_IT_ON_THE_TITLE_SCREEN));
 		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-		Msx2_TextCenter(153, "SPACE / ESC: RETURN TO ROAD");
+		Msx2_TextCenter(153, Msx2_UiText(MSX2_S_SPACE_ESC_RETURN_TO_ROAD));
 		return;
 	}
-	if(g_phase != PH_CODE_OUT)
-	{
-		Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-		Msx2_TextAt(27, 82, "ABCDEFGH");
-		Msx2_TextAt(27, 96, "JKLMNPQR");
-		Msx2_TextAt(27, 110, "STUVWXYZ");
-		Msx2_TextAt(27, 124, "23456789");
-		one[0] = (c8)CODE_ALPHABET[g_code_cursor];
-		one[1] = 0;
-		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-		Msx2_TextAt((u8)(27 + (g_code_cursor % 8) * 27),
-		            (u8)(82 + (g_code_cursor / 8) * 14), one);
-	}
+
+	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+	Msx2_TextAt(27, 90, Msx2_UiText(MSX2_S_ABCDEFGH));
+	Msx2_TextAt(27, 102, Msx2_UiText(MSX2_S_JKLMNPQR));
+	Msx2_TextAt(27, 114, Msx2_UiText(MSX2_S_STUVWXYZ));
+	Msx2_TextAt(27, 126, Msx2_UiText(MSX2_S_23456789));
+	one[0] = (c8)CODE_ALPHABET[g_code_cursor];
+	one[1] = 0;
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextAt((u8)(27 + (g_code_cursor % 8) * 27),
+	            (u8)(90 + (g_code_cursor / 8) * 12), one);
+
 	Msx2_TextColor(g_code_error ? MSX2_RED : MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(143, g_code_error ? "INVALID CODE - TRY AGAIN" : "SPACE: LETTER / RETURN: LOAD");
+	Msx2_TextCenter(143, g_code_error ? Msx2_UiText(MSX2_S_INVALID_CODE_TRY_AGAIN)
+	                                  : Msx2_UiText(MSX2_S_TYPE_IT_OR_PICK_AND_PRESS_SP));
 	Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(155, "ESC: DELETE / EMPTY ESC: BACK");
+	Msx2_TextCenter(155, Msx2_UiText(MSX2_S_ESC_DELETE_EMPTY_ESC_BACK));
 }
 
 static void Msx2_StoryEnterCodeInput(void)
@@ -658,7 +753,7 @@ static void Msx2_StoryMapPaint(void)
 		if(!open)
 		{
 			Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-			Msx2_TextAt(MAP_NAME_X, y, "- SEALED -");
+			Msx2_TextAt(MAP_NAME_X, y, Msx2_UiText(MSX2_S_SEALED));
 			continue;
 		}
 
@@ -679,7 +774,7 @@ static void Msx2_StoryMapPaint(void)
 	}
 	Msx2_TextColor((g_cursor == MAP_DECK_ROW) ? MSX2_WHITE : MSX2_SAND,
 	               MSX2_PANEL_COLOR);
-	Msx2_TextAt(MAP_NAME_X, MAP_DECK_Y, "DECK EDITOR");
+	Msx2_TextAt(MAP_NAME_X, MAP_DECK_Y, Msx2_UiText(MSX2_S_DECK_EDITOR));
 
 	if(g_cursor == MAP_CODE_ROW)
 	{
@@ -688,7 +783,7 @@ static void Msx2_StoryMapPaint(void)
 	}
 	Msx2_TextColor((g_cursor == MAP_CODE_ROW) ? MSX2_WHITE : MSX2_SAND,
 	               MSX2_PANEL_COLOR);
-	Msx2_TextAt(MAP_NAME_X, MAP_CODE_Y, "CONTINUE CODE");
+	Msx2_TextAt(MAP_NAME_X, MAP_CODE_Y, Msx2_UiText(MSX2_S_CONTINUE_CODE));
 
 	if(g_cursor == MAP_BACK_ROW)
 	{
@@ -697,10 +792,10 @@ static void Msx2_StoryMapPaint(void)
 	}
 	Msx2_TextColor((g_cursor == MAP_BACK_ROW) ? MSX2_WHITE : MSX2_SAND,
 	               MSX2_PANEL_COLOR);
-	Msx2_TextAt(MAP_NAME_X, MAP_BACK_Y, "LEAVE THE ROAD");
+	Msx2_TextAt(MAP_NAME_X, MAP_BACK_Y, Msx2_UiText(MSX2_S_LEAVE_THE_ROAD));
 
 	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(MAP_HELP_Y, "SPACE CHOOSES  -  UP/DOWN MOVES");
+	Msx2_TextCenter(MAP_HELP_Y, Msx2_UiText(MSX2_S_SPACE_CHOOSES_UP_DOWN_MOVES));
 }
 
 static void Msx2_StoryEnterMap(void)
@@ -841,7 +936,7 @@ static bool Msx2_StoryTextStep(void)
 		if(!(g_prompt & (u8)(1u << page)))
 		{
 			Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-			Msx2_TextCenter(MSX2_TALK_PROMPT_Y, "PUSH SPACE");
+			Msx2_TextCenter(MSX2_TALK_PROMPT_Y, Msx2_UiText(MSX2_S_PUSH_SPACE));
 			g_prompt |= (u8)(1u << page);
 			painted = TRUE;
 		}
@@ -863,9 +958,9 @@ static void Msx2_StoryDeckPaint(void)
 	Msx2_Fill(2, 18, 252, 176, MSX2_PANEL_COLOR);
 	Msx2_FrameRect(2, 18, 252, 176, MSX2_GOLD);
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(25, "DECK EDITOR");
+	Msx2_TextCenter(25, Msx2_UiText(MSX2_S_DECK_EDITOR));
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(35, "CHOOSE A CARD TO REPLACE");
+	Msx2_TextCenter(35, Msx2_UiText(MSX2_S_CHOOSE_A_CARD_TO_REPLACE));
 
 	for(i = 0; i < STORY_EDIT_SLOTS; ++i)
 	{
@@ -877,11 +972,11 @@ static void Msx2_StoryDeckPaint(void)
 	               g_editor_storage_mode ? MSX2_GOLD : MSX2_RED);
 
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-	Msx2_TextAt(8, 118, "STORAGE");
+	Msx2_TextAt(8, 118, Msx2_UiText(MSX2_S_STORAGE));
 	if(g_story_storage_count == 0)
 	{
 		Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-		Msx2_TextAt(61, 118, "EMPTY - WIN DUELS TO EARN CARDS");
+		Msx2_TextAt(61, 118, Msx2_UiText(MSX2_S_EMPTY_WIN_DUELS_TO_EARN_CARD));
 	}
 	else
 	{
@@ -894,10 +989,10 @@ static void Msx2_StoryDeckPaint(void)
 		               (u8)(MSX2_CARD_H + 2),
 		               g_editor_storage_mode ? MSX2_RED : MSX2_GOLD);
 		Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-		Msx2_TextAt(61, 135, "CARD");
+		Msx2_TextAt(61, 135, Msx2_UiText(MSX2_S_CARD));
 		Msx2_NumAt(91, 135, (i16)g_story_storage[g_editor_storage_cursor]);
 		Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-		Msx2_TextAt(61, 151, "ITEM");
+		Msx2_TextAt(61, 151, Msx2_UiText(MSX2_S_ITEM));
 		Msx2_NumAt(91, 151, (i16)(g_editor_storage_cursor + 1));
 		Msx2_TextAt(111, 151, "OF");
 		Msx2_NumAt(128, 151, (i16)g_story_storage_count);
@@ -905,8 +1000,8 @@ static void Msx2_StoryDeckPaint(void)
 
 	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(197, g_editor_storage_mode
-		? "L/R PICK  SPACE SWAP  ESC BACK"
-		: "L/R TARGET  DOWN PICK  ESC EXIT");
+		? Msx2_UiText(MSX2_S_L_R_PICK_SPACE_SWAP_ESC_BACK)
+		: Msx2_UiText(MSX2_S_L_R_TARGET_DOWN_PICK_ESC_EXI));
 }
 
 static void Msx2_StoryEnterDeck(void)
@@ -996,12 +1091,55 @@ static void Msx2_StoryDeckStep(void)
 	}
 }
 
+// Is `ch` one of the letters the code alphabet uses, and where?
+static u8 Msx2_StoryCodeSlot(c8 ch)
+{
+	u8 i;
+	for(i = 0; i < 32; ++i)
+		if(CODE_ALPHABET[i] == ch)
+			return i;
+	return 0xFF;
+}
+
 static void Msx2_StoryCodeInputStep(void)
 {
 	u8 pressed = Msx2_InputPressed();
+	c8 typed = Msx2_InputTyped();
 	u8 changed = (pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT |
 	                         MSX2_BTN_UP | MSX2_BTN_DOWN)) ? TRUE : FALSE;
 	g_code_cursor = Msx2_StoryGridCursor(g_code_cursor, 8, 32, pressed);
+	if((typed != 0) && (g_code_len < STORY_CODE_LEN))
+	{
+		// A typed character that is not in the alphabet is ignored rather than
+		// substituted: I and O are absent on purpose, so silently turning them
+		// into 1 and 0 would hand the player a code they never wrote down.
+		u8 slot = Msx2_StoryCodeSlot(typed);
+		if(slot != 0xFF)
+		{
+			g_code_cursor = slot;
+			g_code[g_code_len++] = typed;
+			g_code[g_code_len] = 0;
+			g_code_error = 0;
+			changed = TRUE;
+			pressed &= (u8)~MSX2_BTN_A;
+		}
+	}
+	if(pressed & MSX2_BTN_ENTER)
+	{
+		// RETURN submits a full code; on a short one it does nothing, which is
+		// what stops a stray press from reporting the code invalid.
+		pressed &= (u8)~MSX2_BTN_A;
+		if(g_code_len == STORY_CODE_LEN)
+		{
+			if(Msx2_StoryParseCode())
+			{
+				Msx2_StoryEnterMap();
+				return;
+			}
+			g_code_error = TRUE;
+			changed = TRUE;
+		}
+	}
 	if(pressed & MSX2_BTN_A)
 	{
 		if(g_code_len < STORY_CODE_LEN)
@@ -1070,17 +1208,17 @@ static void Msx2_StoryRewardPaint(void)
 	Msx2_Fill(30, 22, 196, 166, MSX2_PANEL_COLOR);
 	Msx2_FrameRect(30, 22, 196, 166, MSX2_GOLD);
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(34, "DUEL CLEARED");
+	Msx2_TextCenter(34, Msx2_UiText(MSX2_S_DUEL_CLEARED));
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(48, "NEW CARD EARNED");
+	Msx2_TextCenter(48, Msx2_UiText(MSX2_S_NEW_CARD_EARNED));
 	Msx2_StoryDrawCardThumb(g_reward_card, 108, 62);
 	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(119, "CARD");
+	Msx2_TextCenter(119, Msx2_UiText(MSX2_S_CARD));
 	Msx2_NumAt(140, 119, (i16)g_reward_card);
 	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(145, "STORED IN YOUR COLLECTION");
+	Msx2_TextCenter(145, Msx2_UiText(MSX2_S_STORED_IN_YOUR_COLLECTION));
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(170, "SPACE: CONTINUE");
+	Msx2_TextCenter(170, Msx2_UiText(MSX2_S_SPACE_CONTINUE));
 }
 
 static void Msx2_StoryEnterReward(void)
@@ -1119,7 +1257,7 @@ void Msx2_StoryBeginAutoplay(void)
 	g_duel_index = 0;
 	g_reward_card = MSX2_CARD_NONE;
 	for(i = 0; i < STORY_NAME_LEN; ++i)
-		g_player_name[i] = "AUTOPLAY"[i];
+		g_player_name[i] = Msx2_UiText(MSX2_S_AUTOPLAY)[i];
 	g_player_name[STORY_NAME_LEN] = 0;
 	g_name_len = STORY_NAME_LEN;
 	Msx2_StoryBuildStarterDeck();
@@ -1212,10 +1350,26 @@ u8 Msx2_StoryStep(void)
 	if(g_phase == PH_NAME)
 	{
 		u8 pressed = Msx2_InputPressed();
+		c8 typed = Msx2_InputTyped();
 		u8 changed = (pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT |
 		                         MSX2_BTN_UP | MSX2_BTN_DOWN)) ? TRUE : FALSE;
 		g_name_cursor = Msx2_StoryGridCursor(g_name_cursor, 13, 26, pressed);
-		if(pressed & MSX2_BTN_A)
+		// RETURN accepts whatever is in the box, at any length: the machine
+		// with a keyboard types the name and finishes, and the machine with
+		// only a stick still walks the grid below and confirms with the
+		// trigger.  RETURN raises A as well, so it is tested first.
+		if(pressed & MSX2_BTN_ENTER)
+		{
+			if(Msx2_StoryAcceptName())
+				return MSX2_STORY_BUSY;
+		}
+		else if((typed >= 'A') && (typed <= 'Z') && (g_name_len < STORY_NAME_LEN))
+		{
+			g_player_name[g_name_len++] = typed;
+			g_player_name[g_name_len] = 0;
+			changed = TRUE;
+		}
+		else if(pressed & MSX2_BTN_A)
 		{
 			if(g_name_len < STORY_NAME_LEN)
 			{

@@ -18,6 +18,10 @@
 #define MSX2_SCREEN_W   256
 #define MSX2_SCREEN_H   212
 
+// The bring-up font: 6 pixels wide inside an 8x8 cell, leftmost pixel in bit 7.
+#define MSX2_FONT_W_PX  6
+#define MSX2_FONT_H_PX  8
+
 // GRB332 helper.  g, r in 0..7, b in 0..3.
 #define MSX2_RGB(r, g, b)  (u8)(((g) << 5) | ((r) << 2) | (b))
 
@@ -109,7 +113,7 @@ void Msx2_QuadOutlineXor(const u8* quad, u8 color);
 // without re-streaming it.
 void Msx2_CopyRect(u8 sx, u8 sy, u8 dx, u8 dy, u16 w, u8 h);
 
-// Text, through MSXgl's bitmap-font printer.  x and y are pixels.
+// Text.  x and y are pixels; the writer is in msx2_video.c, not MSXgl.
 void Msx2_TextColor(u8 fg, u8 bg);
 void Msx2_TextAt(u8 x, u8 y, const c8* text);
 void Msx2_TextCenter(u8 y, const c8* text);

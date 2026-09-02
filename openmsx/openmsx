@@ -1,0 +1,815 @@
+#!/usr/bin/env python3
+"""Project command layer for the supplied openMSX headless build.
+
+The archive contains a useful deterministic headless binary whose command set
+predates scripted input.  This front end adds the workflow commands and builds
+an input-enabled cache copy of that exact backend.  Existing headless commands
+are passed through unchanged.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Optional
+
+from patch_backend import BackendPatchError, ensure_input_backend
+
+
+VERSION = "openMSX project command layer 1.1-input"
+FRAME_RATE = 60
+
+
+class CliError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Event:
+    frame: int
+    operation: str
+    token: str
+    line: int
+
+
+@dataclass(frozen=True)
+class InputSchedule:
+    events: tuple[Event, ...]
+    source: Path
+
+    @property
+    def last_frame(self) -> int:
+        return max((event.frame for event in self.events), default=0)
+
+
+# MSX keyboard matrix positions from openMSX's own Keyboard.cc.  The low
+# three bits are the column; the value is the bit mask accepted by
+# keymatrixdown/keymatrixup.
+MSX_MATRIX = {
+    **{str(i): (0, 1 << i) for i in range(8)},
+    **{str(i): (1, 1 << (i - 8)) for i in range(8, 16)},
+    "QUOTE": (2, 0x01), "APOSTROPHE": (2, 0x01), "GRAVE": (2, 0x02),
+    "BACKQUOTE": (2, 0x02), "COMMA": (2, 0x04), "PERIOD": (2, 0x08),
+    "SLASH": (2, 0x10), "ACC": (2, 0x20), "A": (2, 0x40),
+    "B": (2, 0x80),
+    "C": (3, 0x01), "D": (3, 0x02), "E": (3, 0x04), "F": (3, 0x08),
+    "G": (3, 0x10), "H": (3, 0x20), "I": (3, 0x40), "J": (3, 0x80),
+    "K": (4, 0x01), "L": (4, 0x02), "M": (4, 0x04), "N": (4, 0x08),
+    "O": (4, 0x10), "P": (4, 0x20), "Q": (4, 0x40), "R": (4, 0x80),
+    "S": (5, 0x01), "T": (5, 0x02), "U": (5, 0x04), "V": (5, 0x08),
+    "W": (5, 0x10), "X": (5, 0x20), "Y": (5, 0x40), "Z": (5, 0x80),
+    "SHIFT": (6, 0x01), "CTRL": (6, 0x02), "GRAPH": (6, 0x04),
+    "CAPS": (6, 0x08), "CODE": (6, 0x10), "F1": (6, 0x20),
+    "F2": (6, 0x40), "F3": (6, 0x80), "F4": (7, 0x01),
+    "F5": (7, 0x02), "ESC": (7, 0x04), "TAB": (7, 0x08),
+    "STOP": (7, 0x10), "BACKSPACE": (7, 0x20), "BS": (7, 0x20),
+    "SELECT": (7, 0x40), "RETURN": (7, 0x80), "ENTER": (7, 0x80),
+    "SPACE": (8, 0x01), "HOME": (8, 0x02), "INSERT": (8, 0x04),
+    "DELETE": (8, 0x08), "LEFT": (8, 0x10), "UP": (8, 0x20),
+    "DOWN": (8, 0x40), "RIGHT": (8, 0x80),
+}
+
+# The project's MSX2 input contract uses space/escape for the two action
+# buttons.  This also makes BlastEm's P/A/B vocabulary useful on MSX.
+TOKEN_ALIASES = {
+    "P": "A", "START": "A", "FIRE": "A", "BUTTON1": "A",
+    "TRIGGER": "A", "BUTTONA": "A", "BUTTON2": "B", "TRIGGERB": "B",
+    "BUTTONB": "B", "SELECT": "SELECT", "MODE": "SELECT",
+    "ESCAPE": "ESC", "RETURN": "RETURN", "ENTER": "RETURN",
+}
+
+JOYSTICK_BITS = {
+    "UP": 0x01, "DOWN": 0x02, "LEFT": 0x04, "RIGHT": 0x08,
+    "A": 0x10, "B": 0x20,
+}
+
+
+def usage() -> str:
+    return """openMSX project command layer
+
+Existing deterministic headless commands:
+  openmsx header <rom.bin>
+  openmsx disasm <rom.bin> [output.asm [coverage.cov]]
+  openmsx reasm <input.asm> [output.bin|output-dir/]
+  openmsx cov <rom.bin> <coverage.cov> [frames] [--bios bios.rom] [--direct-cart]
+  openmsx snap <rom.bin> [frames] [--bios bios.rom] [--direct-cart]
+  openmsx step <rom.bin> [instructions] [--bios bios.rom] [--direct-cart]
+  openmsx emu <rom.bin> [frames] [--bios bios.rom] [--direct-cart]
+      [--screenshot out.png] [--record out.mkv]
+
+Added workflow commands:
+  openmsx asm <input.asm> [output.bin] [-o output.bin]
+  openmsx cov summary <coverage.cov> [--json] [--top N]
+  openmsx neo-test
+  openmsx input check <script> [--frames N]
+  openmsx input compile <script> [output] [--format normalized|blastem|openmsx|json]
+  openmsx input run <rom> <script> [frames] [--bios bios.rom] [--direct-cart]
+  openmsx input <rom> <script> [frames]       (short form of input run)
+
+Input scripts use BlastEm's frame syntax, for example:
+  120f:+RIGHT
+  180f:-RIGHT
+  240f:A                 # one-frame tap
+  300f:+P
+  360f:-P
+
+The bundled headless binary is selected from OPENMSX_BASE, the repository's
+MSXgl copy, or the supplied ZIP.  `input run` patches that backend's MSX PPI
+keyboard-read path and runs the schedule in the same deterministic machine.
+"""
+
+
+def die(message: str) -> int:
+    print(f"openmsx: {message}", file=sys.stderr)
+    return 2
+
+
+def canonical_token(raw: str, line: int) -> str:
+    token = raw.strip().upper()
+    token = token.replace("-", "_")
+    if token.startswith("KEY_"):
+        token = token[4:]
+    if token in TOKEN_ALIASES:
+        token = TOKEN_ALIASES[token]
+    if token.startswith("MATRIX:"):
+        parts = token.split(":")
+        if len(parts) != 3:
+            raise CliError(f"line {line}: matrix token must be MATRIX:<row>:<mask>")
+        try:
+            row = int(parts[1], 0)
+            mask = int(parts[2], 0)
+        except ValueError as exc:
+            raise CliError(f"line {line}: invalid matrix row/mask: {raw}") from exc
+        if not 0 <= row <= 15 or not 0 <= mask <= 0xFF or not mask:
+            raise CliError(f"line {line}: matrix row/mask out of range: {raw}")
+        return f"MATRIX:{row}:{mask:#x}"
+    if token in {"SCREENSHOT", "PAUSE", "EXIT"}:
+        return token
+    if token not in MSX_MATRIX:
+        raise CliError(f"line {line}: unknown input token {raw!r}")
+    return token
+
+
+def parse_frame(raw: str, line: int) -> int:
+    value = raw.strip().lower()
+    if value.endswith("f"):
+        value = value[:-1]
+    if value.endswith(":"):
+        value = value[:-1]
+    try:
+        frame = int(value, 0 if value.lower().startswith("0x") else 10)
+    except ValueError as exc:
+        raise CliError(f"line {line}: invalid frame {raw!r}") from exc
+    if frame < 0:
+        raise CliError(f"line {line}: frame cannot be negative")
+    return frame
+
+
+def split_script_line(line: str, line_number: int) -> tuple[int, list[str], bool]:
+    # The comment convention intentionally matches BlastEm.  Input tokens do
+    # not contain quoted spaces, so shlex gives useful errors for malformed
+    # lines while still permitting comments after an event.
+    text = line.split("#", 1)[0].strip()
+    if not text:
+        return 0, [], False
+
+    match = re.match(r"^(\d+)\s*f\s*:\s*(.*)$", text, re.IGNORECASE)
+    if match:
+        frame = parse_frame(match.group(1), line_number)
+        rest = match.group(2)
+        try:
+            return frame, shlex.split(rest), True
+        except ValueError as exc:
+            raise CliError(f"line {line_number}: {exc}") from exc
+
+    try:
+        parts = shlex.split(text)
+    except ValueError as exc:
+        raise CliError(f"line {line_number}: {exc}") from exc
+    if not parts:
+        return 0, [], False
+    if parts[0].lower() == "frame":
+        if len(parts) < 2:
+            raise CliError(f"line {line_number}: frame requires a number")
+        parts.pop(0)
+    frame = parse_frame(parts.pop(0), line_number)
+    if parts and parts[0] == ":":
+        parts.pop(0)
+    return frame, parts, False
+
+
+def parse_input_script(path: Path) -> InputSchedule:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise CliError(f"cannot read input script {path}: {exc}") from exc
+
+    events: list[Event] = []
+    for line_number, source_line in enumerate(lines, 1):
+        frame, parts, blastem_style = split_script_line(source_line, line_number)
+        if not parts:
+            continue
+
+        operation = "tap"
+        # DOWN/UP are valid MSX direction tokens.  Treat a word as an
+        # operation only when another token follows it ("120 hold A").  A
+        # one-token BlastEm line such as "180f:DOWN" is a button tap.
+        if len(parts) > 1 and parts[0].lower() in {"down", "press", "hold", "up", "release", "tap"}:
+            operation = parts.pop(0).lower()
+        if not parts:
+            raise CliError(f"line {line_number}: missing input token")
+
+        hold = 1
+        repeat_count, repeat_period = 1, 0
+        if parts[-1].lower().startswith("x"):
+            repeat = parts.pop()[1:]
+            count_text, separator, period_text = repeat.partition("@")
+            try:
+                repeat_count = int(count_text, 0)
+                repeat_period = int(period_text, 0) if separator else 0
+            except ValueError as exc:
+                raise CliError(f"line {line_number}: bad repeat x{repeat!r}; use xCOUNT@PERIOD") from exc
+            if repeat_count < 1 or (repeat_count > 1 and repeat_period < 1):
+                raise CliError(f"line {line_number}: repeat needs count >= 1 and period >= 1")
+        if parts and re.fullmatch(r"\d+", parts[-1]) and operation == "tap":
+            hold = int(parts.pop(), 10)
+            if hold < 1:
+                raise CliError(f"line {line_number}: hold must be >= 1")
+        if not parts:
+            raise CliError(f"line {line_number}: missing input token")
+
+        for repeat_index in range(repeat_count):
+            event_frame = frame + repeat_index * repeat_period
+            for raw_token in parts:
+                # TOWNS-style scripts permit UP+RIGHT on one line.  A leading
+                # edge marker is kept outside the split so +A+B means two
+                # simultaneous presses rather than an empty first token.
+                edge = ""
+                if raw_token[:1] in {"+", "-"}:
+                    edge, raw_token = raw_token[0], raw_token[1:]
+                token_parts = raw_token.split("+") if "+" in raw_token else [raw_token]
+                for token_part in token_parts:
+                    if not token_part:
+                        raise CliError(f"line {line_number}: empty input token")
+                    edge_token = edge + token_part
+                    explicit = operation
+                    raw_token_for_match = edge_token
+                    if raw_token_for_match.startswith("+"):
+                        explicit, raw_token_for_match = "down", raw_token_for_match[1:]
+                    elif raw_token_for_match.startswith("-"):
+                        explicit, raw_token_for_match = "up", raw_token_for_match[1:]
+                    match = re.match(r"^(.+?)[=:](down|press|hold|up|release|tap)$", raw_token_for_match, re.IGNORECASE)
+                    if match:
+                        raw_token_for_match, explicit = match.group(1), match.group(2).lower()
+                    if not raw_token_for_match:
+                        raise CliError(f"line {line_number}: empty input token")
+                    token = canonical_token(raw_token_for_match, line_number)
+                    if explicit in {"down", "press", "hold"}:
+                        events.append(Event(event_frame, "down", token, line_number))
+                        if hold > 1:
+                            events.append(Event(event_frame + hold, "up", token, line_number))
+                    elif explicit in {"up", "release"}:
+                        events.append(Event(event_frame, "up", token, line_number))
+                    else:
+                        events.append(Event(event_frame, "down", token, line_number))
+                        events.append(Event(event_frame + hold, "up", token, line_number))
+
+    events.sort(key=lambda event: (event.frame, 0 if event.operation == "down" else 1, event.line))
+    return InputSchedule(tuple(events), path)
+
+
+def matrix_position(token: str) -> tuple[int, int]:
+    if token.startswith("MATRIX:"):
+        _, row, mask = token.split(":")
+        return int(row, 10), int(mask, 0)
+    # P/A/B/START are game-button vocabulary.  The MSX2 port maps them to
+    # space/escape in its keyboard fallback.
+    token = {"A": "SPACE", "B": "ESC"}.get(token, token)
+    return MSX_MATRIX[token]
+
+
+def validate_frames(schedule: InputSchedule, frames: Optional[int]) -> None:
+    if frames is not None and frames < 0:
+        raise CliError("frame count cannot be negative")
+    # A bare tap on the last emulated frame releases at frame == frames.  The
+    # release is scheduled at the run boundary and is valid; only an event
+    # after that boundary is out of range.
+    if frames is not None and schedule.events and schedule.last_frame > frames:
+        raise CliError(
+            f"input event at frame {schedule.last_frame} is outside the {frames}-frame run"
+        )
+
+
+def schedule_summary(schedule: InputSchedule) -> dict:
+    down = sum(event.operation == "down" for event in schedule.events)
+    up = sum(event.operation == "up" for event in schedule.events)
+    held = set()
+    for event in schedule.events:
+        if event.operation == "down":
+            held.add(event.token)
+        else:
+            held.discard(event.token)
+    return {
+        "source": str(schedule.source),
+        "events": len(schedule.events),
+        "presses": down,
+        "releases": up,
+        "last_frame": schedule.last_frame,
+        "unreleased": sorted(held),
+    }
+
+
+def write_text_or_stdout(text: str, output: Optional[Path]) -> None:
+    if output is None or str(output) == "-":
+        sys.stdout.write(text)
+        if text and not text.endswith("\n"):
+            sys.stdout.write("\n")
+        return
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise CliError(f"cannot write {output}: {exc}") from exc
+    print(f"wrote {output}")
+
+
+def normalized_input(schedule: InputSchedule) -> str:
+    lines = ["# openMSX project input schedule v1"]
+    lines.extend(f"{event.frame:06d} {event.operation:5s} {event.token}" for event in schedule.events)
+    return "\n".join(lines) + "\n"
+
+
+def blastem_input(schedule: InputSchedule) -> str:
+    lines = ["# BlastEm-compatible frame input generated by openmsx"]
+    for event in schedule.events:
+        prefix = "+" if event.operation == "down" else "-"
+        lines.append(f"{event.frame}f:{prefix}{event.token}")
+    return "\n".join(lines) + "\n"
+
+
+def tcl_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = escaped.replace("\n", "\\n").replace("\r", "\\r")
+    return f'"{escaped}"'
+
+
+def openmsx_tcl_input(schedule: InputSchedule, frames: Optional[int] = None) -> str:
+    validate_frames(schedule, frames)
+    lines = [
+        "# openMSX timed keyboard-matrix script generated by openmsx input compile",
+        "set throttle off",
+    ]
+    active: set[str] = set()
+    for event in schedule.events:
+        if event.token in {"SCREENSHOT", "PAUSE", "EXIT"}:
+            if event.token == "PAUSE":
+                command = "set pause on"
+            elif event.token == "EXIT":
+                command = "exit"
+            else:
+                command = "# SCREENSHOT requires an output path in input run"
+        else:
+            row, mask = matrix_position(event.token)
+            command_name = "keymatrixdown" if event.operation == "down" else "keymatrixup"
+            command = f"{command_name} {row} {mask:#x}"
+        seconds = event.frame / FRAME_RATE
+        lines.append(f"after time {seconds:.9f} {{{command}}}")
+        if event.operation == "down":
+            active.add(event.token)
+        else:
+            active.discard(event.token)
+    # Do not leave a key pressed when the timed run ends.  This matters for
+    # scripts intentionally using +TOKEN/-TOKEN around the last frame.
+    if frames is not None:
+        end = frames / FRAME_RATE
+        for token in sorted(active):
+            if token in {"SCREENSHOT", "PAUSE", "EXIT"}:
+                continue
+            row, mask = matrix_position(token)
+            lines.append(f"after time {end:.9f} {{keymatrixup {row} {mask:#x}}}")
+    return "\n".join(lines) + "\n"
+
+
+def json_input(schedule: InputSchedule) -> str:
+    payload = schedule_summary(schedule)
+    payload["events"] = [
+        {"frame": event.frame, "operation": event.operation, "token": event.token, "line": event.line}
+        for event in schedule.events
+    ]
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def command_input_check(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="openmsx input check")
+    parser.add_argument("script", type=Path)
+    parser.add_argument("--frames", type=int)
+    args = parser.parse_args(argv)
+    schedule = parse_input_script(args.script)
+    validate_frames(schedule, args.frames)
+    summary = schedule_summary(schedule)
+    print(
+        f"input: {summary['events']} events, {summary['presses']} presses, "
+        f"{summary['releases']} releases, last frame {summary['last_frame']}"
+    )
+    if summary["unreleased"]:
+        print("warning: unreleased: " + ", ".join(summary["unreleased"]), file=sys.stderr)
+    return 0
+
+
+def command_input_compile(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="openmsx input compile")
+    parser.add_argument("script", type=Path)
+    parser.add_argument("output", nargs="?", type=Path)
+    parser.add_argument("--format", choices=("normalized", "blastem", "openmsx", "json"), default="normalized")
+    parser.add_argument("--frames", type=int)
+    args = parser.parse_args(argv)
+    schedule = parse_input_script(args.script)
+    validate_frames(schedule, args.frames)
+    if args.format == "normalized":
+        result = normalized_input(schedule)
+    elif args.format == "blastem":
+        result = blastem_input(schedule)
+    elif args.format == "openmsx":
+        result = openmsx_tcl_input(schedule, args.frames)
+    else:
+        result = json_input(schedule)
+    write_text_or_stdout(result, args.output)
+    return 0
+
+
+def input_rom_bytes(rom: Path, schedule: InputSchedule, frames: int) -> bytes:
+    """Append the active-low keyboard/joystick schedule consumed by the hook."""
+
+    if frames > 10_000_000:
+        raise CliError("input run is limited to 10,000,000 frames")
+    try:
+        result = bytearray(rom.read_bytes())
+    except OSError as exc:
+        raise CliError(f"cannot read ROM {rom}: {exc}") from exc
+
+    events_by_frame: dict[int, list[Event]] = {}
+    for event in schedule.events:
+        if event.token in {"SCREENSHOT", "PAUSE", "EXIT"}:
+            raise CliError(f"{event.token} is not supported by the deterministic input backend")
+        row, _ = matrix_position(event.token)
+        if row > 8:
+            raise CliError(f"line {event.line}: keyboard matrix row {row} is outside the emulated MSX keyboard")
+        events_by_frame.setdefault(event.frame, []).append(event)
+
+    held: set[str] = set()
+    rows = bytearray([0xFF]) * (frames * 11)
+    for frame in range(frames):
+        for event in events_by_frame.get(frame, ()):
+            if event.operation == "down":
+                held.add(event.token)
+            else:
+                held.discard(event.token)
+        frame_rows = [0xFF] * 9
+        joystick = 0x3F
+        for token in held:
+            row, mask = matrix_position(token)
+            frame_rows[row] &= (~mask) & 0xFF
+            if token in JOYSTICK_BITS:
+                joystick &= ~JOYSTICK_BITS[token]
+        frame_offset = frame * 11
+        rows[frame_offset : frame_offset + 11] = bytes(frame_rows + [joystick, joystick])
+
+    # The hook uses a footer so the original ROM bytes and the schedule length
+    # remain discoverable without adding any new machine-object state.
+    result.extend(rows)
+    result.extend(frames.to_bytes(4, "little"))
+    result.extend(b"KXMI")
+    return bytes(result)
+
+
+def find_input_backend(explicit: Optional[str]) -> Path:
+    if explicit:
+        source = Path(explicit)
+        if not source.is_file() or not os.access(source, os.X_OK):
+            raise CliError(f"input backend is not executable: {source}")
+    else:
+        source = find_headless_base(raw=True)
+        if not source:
+            raise CliError("headless openMSX not found; set OPENMSX_BASE=/path/to/openmsx")
+    destination = Path(__file__).resolve().parent / ".cache" / "openmsx-headless-input"
+    try:
+        return ensure_input_backend(source, destination)
+    except BackendPatchError as exc:
+        raise CliError(str(exc)) from exc
+
+
+def command_input_run(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="openmsx input run")
+    parser.add_argument("rom", type=Path)
+    parser.add_argument("script", type=Path)
+    parser.add_argument("frames", nargs="?", type=int, default=600)
+    parser.add_argument("--frames", dest="frames_option", type=int)
+    parser.add_argument("--bios", type=Path)
+    parser.add_argument("--direct-cart", action="store_true")
+    parser.add_argument("--backend", "--emulator", dest="backend")
+    parser.add_argument("--screenshot", "--png", dest="screenshot", type=Path)
+    parser.add_argument("--record", "--record-mkv", dest="record", type=Path)
+    parser.add_argument("--capture-fps", type=int, default=60)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    frames = args.frames_option if args.frames_option is not None else args.frames
+    if frames < 0:
+        raise CliError("frame count cannot be negative")
+    if args.capture_fps < 1:
+        raise CliError("--capture-fps must be positive")
+    if not args.rom.is_file():
+        raise CliError(f"ROM not found: {args.rom}")
+    if args.bios and not args.bios.is_file():
+        raise CliError(f"BIOS not found: {args.bios}")
+    schedule = parse_input_script(args.script)
+    validate_frames(schedule, frames)
+    backend = find_input_backend(args.backend)
+    summary = schedule_summary(schedule)
+
+    if args.dry_run:
+        print(f"backend: {backend}")
+        print(f"frames: {frames}")
+        print(f"events: {summary['events']} ({summary['presses']} presses, {summary['releases']} releases)")
+        print(f"input trailer: {frames * 11 + 8} bytes")
+        return 0
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="openmsx-input-") as temp:
+            augmented = Path(temp) / args.rom.name
+            augmented.write_bytes(input_rom_bytes(args.rom, schedule, frames))
+            command = [str(backend), "emu", str(augmented), str(frames)]
+            if args.bios:
+                command.extend(("--bios", str(args.bios)))
+            if args.direct_cart:
+                command.append("--direct-cart")
+            if args.screenshot:
+                args.screenshot.parent.mkdir(parents=True, exist_ok=True)
+                command.extend(("--screenshot", str(args.screenshot)))
+            if args.record:
+                args.record.parent.mkdir(parents=True, exist_ok=True)
+                command.extend(("--record", str(args.record), "--capture-fps", str(args.capture_fps)))
+            print(
+                f"input: {summary['events']} events, {summary['presses']} presses, "
+                f"{summary['releases']} releases; bundled backend {backend}"
+            )
+            return subprocess.run(command).returncode
+    except OSError as exc:
+        raise CliError(f"cannot prepare input run: {exc}") from exc
+
+
+def command_input(argv: list[str]) -> int:
+    if not argv:
+        raise CliError("usage: openmsx input {check|compile|run} ...")
+    if argv[0] in {"check", "validate"}:
+        return command_input_check(argv[1:])
+    if argv[0] in {"compile", "build"}:
+        return command_input_compile(argv[1:])
+    if argv[0] == "run":
+        return command_input_run(argv[1:])
+    # Convenient BlastEm-like shorthand: input ROM SCRIPT [frames].
+    return command_input_run(argv)
+
+
+def parse_cov(path: Path) -> tuple[dict[str, str], list[tuple[int, int]]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise CliError(f"cannot read coverage file {path}: {exc}") from exc
+    if not lines or lines[0].strip() != "OPENMSX-COV 1":
+        raise CliError(f"not an OPENMSX-COV 1 file: {path}")
+    header: dict[str, str] = {}
+    records: list[tuple[int, int]] = []
+    for line_number, line in enumerate(lines[1:], 2):
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        if "=" in text:
+            key, value = text.split("=", 1)
+            header[key.strip()] = value.strip()
+            continue
+        parts = text.split()
+        if len(parts) != 2:
+            raise CliError(f"coverage line {line_number}: expected offset and count")
+        try:
+            records.append((int(parts[0], 16), int(parts[1], 10)))
+        except ValueError as exc:
+            raise CliError(f"coverage line {line_number}: invalid record") from exc
+    return header, records
+
+
+def coverage_ranges(records: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    offsets = sorted({offset for offset, _ in records})
+    if not offsets:
+        return []
+    ranges: list[tuple[int, int]] = []
+    start = previous = offsets[0]
+    for offset in offsets[1:]:
+        if offset != previous + 1:
+            ranges.append((start, previous))
+            start = offset
+        previous = offset
+    ranges.append((start, previous))
+    return ranges
+
+
+def command_cov_summary(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="openmsx cov summary")
+    parser.add_argument("coverage", type=Path)
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--top", type=int, default=10)
+    args = parser.parse_args(argv)
+    if args.top < 0:
+        raise CliError("--top cannot be negative")
+    header, records = parse_cov(args.coverage)
+    ranges = coverage_ranges(records)
+    payload = {
+        "header": header,
+        "records": len(records),
+        "covered_bytes": len(records),
+        "total_hits": sum(count for _, count in records),
+        "ranges": [{"start": start, "end": end, "bytes": end - start + 1} for start, end in ranges],
+        "top": [{"offset": f"0x{offset:08X}", "count": count} for offset, count in sorted(records, key=lambda item: (-item[1], item[0]))[:args.top]],
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(f"coverage: {args.coverage}")
+    for key in ("rom_crc32", "rom_size", "mapper", "frames"):
+        if key in header:
+            print(f"{key}: {header[key]}")
+    print(f"covered bytes: {payload['covered_bytes']}")
+    print(f"total hits: {payload['total_hits']}")
+    print(f"contiguous ranges: {len(ranges)}")
+    if payload["top"]:
+        print("hot offsets:")
+        for item in payload["top"]:
+            print(f"  {item['offset']}  {item['count']}")
+    return 0
+
+
+def command_cov(argv: list[str]) -> int:
+    if argv and argv[0] in {"summary", "report", "stats"}:
+        return command_cov_summary(argv[1:])
+    if argv and argv[0] == "--summary":
+        return command_cov_summary(argv[1:])
+    return delegate("cov", argv)
+
+
+def command_asm(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="openmsx asm")
+    parser.add_argument("input", nargs="?", help="Merlin/Z80 assembly source, or - for stdin")
+    parser.add_argument("output_pos", nargs="?")
+    parser.add_argument("-o", "--output", dest="output")
+    parser.add_argument("--text", help="assemble source text supplied on the command line")
+    args = parser.parse_args(argv)
+    if args.text is not None:
+        # With --text, argparse naturally places the single trailing path in
+        # the first positional slot ("asm --text '...' out.bin").
+        if args.output_pos:
+            raise CliError("asm --text accepts one output path")
+        output = args.output or args.input
+        if not output:
+            raise CliError("asm --text requires an output path")
+        source_file = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".asm", delete=False) as handle:
+                handle.write(args.text)
+                source_file = Path(handle.name)
+            return delegate("reasm", [str(source_file), output])
+        finally:
+            if source_file:
+                try:
+                    source_file.unlink()
+                except OSError:
+                    pass
+    if not args.input:
+        raise CliError("asm requires an input file or exactly one --text value")
+    if args.output and args.output_pos:
+        raise CliError("asm accepts either a positional output or -o/--output")
+    output = args.output or args.output_pos
+    if args.input == "-":
+        if not output:
+            raise CliError("asm reading stdin requires an output path")
+        source_file = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".asm", delete=False) as handle:
+                handle.write(sys.stdin.read())
+                source_file = Path(handle.name)
+            return delegate("reasm", [str(source_file), output])
+        finally:
+            if source_file:
+                try:
+                    source_file.unlink()
+                except OSError:
+                    pass
+    forwarded = [args.input]
+    if output:
+        forwarded.append(output)
+    return delegate("reasm", forwarded)
+
+
+def find_headless_base(raw: bool = False) -> Optional[Path]:
+    here = Path(__file__).resolve().parent
+    repo = here.parent
+    candidates: list[Path] = []
+    if os.environ.get("OPENMSX_BASE"):
+        candidates.append(Path(os.environ["OPENMSX_BASE"]))
+    if not raw:
+        candidates.append(here / ".cache" / "openmsx-headless-input")
+    candidates.extend([
+        here / ".cache" / "openmsx-headless",
+        repo / "MSXgl-main" / "openmsx-headless-21.0-capture-neo1.2-planarfix-linux-x86_64" / "openmsx",
+        repo / "MSXgl-main" / "openmsx-headless",
+    ])
+    this_file = Path(__file__).resolve()
+    for candidate in candidates:
+        try:
+            if candidate.resolve() == this_file:
+                continue
+        except OSError:
+            pass
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            if raw:
+                return candidate
+            destination = here / ".cache" / "openmsx-headless-input"
+            try:
+                return ensure_input_backend(candidate, destination)
+            except BackendPatchError as exc:
+                raise CliError(str(exc)) from exc
+
+    archive = repo / "openmsx-headless-21.0-capture-neo1.2-planarfix-linux-x86_64.zip"
+    if archive.is_file():
+        destination = here / ".cache" / "openmsx-headless"
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(archive) as bundle:
+                member = next((item for item in bundle.infolist() if Path(item.filename).name == "openmsx"), None)
+                if member is None:
+                    raise CliError(f"no openmsx executable in {archive}")
+                with bundle.open(member) as source, destination.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+            destination.chmod(0o755)
+            if raw:
+                return destination
+            try:
+                return ensure_input_backend(destination, here / ".cache" / "openmsx-headless-input")
+            except BackendPatchError as exc:
+                raise CliError(str(exc)) from exc
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise CliError(f"cannot unpack headless openMSX from {archive}: {exc}") from exc
+    return None
+
+
+def delegate(command: str, argv: list[str]) -> int:
+    base = find_headless_base()
+    if not base:
+        raise CliError("headless openMSX not found; set OPENMSX_BASE=/path/to/openmsx")
+    return subprocess.run([str(base), command, *argv]).returncode
+
+
+def command_neo_test() -> int:
+    base = find_headless_base()
+    if not base:
+        raise CliError("headless openMSX not found; set OPENMSX_BASE=/path/to/openmsx")
+    test = Path(__file__).resolve().parent / "neo_mapper_test.py"
+    if not test.is_file():
+        raise CliError(f"NEO mapper regression script is missing: {test}")
+    return subprocess.run([sys.executable, str(test), str(base)]).returncode
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in {"-h", "--help", "help"}:
+        print(usage())
+        return 0
+    command = argv[0].lower()
+    rest = argv[1:]
+    if command in {"asm", "assemble"}:
+        return command_asm(rest)
+    if command in {"cov", "coverage"}:
+        return command_cov(rest)
+    if command == "input":
+        return command_input(rest)
+    if command in {"neo-test", "mapper-test", "mapper12-test"}:
+        return command_neo_test()
+    aliases = {
+        "info": "header", "rominfo": "header", "trace": "step",
+        "run": "emu", "record": "emu",
+    }
+    return delegate(aliases.get(command, command), rest)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except CliError as exc:
+        raise SystemExit(die(str(exc)))

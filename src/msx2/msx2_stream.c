@@ -297,6 +297,23 @@ void Msx2_PokeAt(u8 x, u8 y)
 	__endasm;
 }
 
+// One interface line, out of the cartridge.
+//
+// The words the duel and story screens print are cartridge data, not code:
+// segment 2 holds both screens in a hard 16 KB, and their literals were 1.6 KB
+// of it.  A caller uses the returned pointer straight away -- there is one
+// buffer, so two live strings at once would be one string twice.
+static c8 g_ui_text[MSX2_UI_STRIDE];
+
+const c8* Msx2_UiText(u8 id)
+{
+	Msx2_RomRead(MSX2_TEXT_SEGMENT,
+	             (u16)(MSX2_UI_OFFSET + (u16)id * MSX2_UI_STRIDE),
+	             (u8*)g_ui_text, MSX2_UI_STRIDE);
+	g_ui_text[MSX2_UI_STRIDE - 1] = 0;
+	return g_ui_text;
+}
+
 void Msx2_RomReadLong(u16 segment, u16 offset, u8* dst, u16 len)
 {
 	while(len != 0)
