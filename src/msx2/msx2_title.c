@@ -16,11 +16,10 @@
 #define MENU_PANEL_X      41
 #define MENU_PANEL_Y      122
 #define MENU_PANEL_W      174
-#define MENU_PANEL_H      74
+#define MENU_PANEL_H      56
 #define MENU_ROW_X        72
 #define MENU_ROW_Y(n)     (133 + (n) * 18)
 #define MENU_CURSOR_X     54
-#define MENU_HELP_Y       183   // inside the panel: it never has to undo artwork
 #define MENU_PROMPT_Y     188
 #define TITLE_COPY_Y      203
 
@@ -50,7 +49,6 @@
 #define TITLE_DIRTY_PROMPT  0x01
 #define TITLE_DIRTY_PANEL   0x02
 #define TITLE_DIRTY_ROWS    0x04
-#define TITLE_DIRTY_HELP    0x08
 
 static u8  g_phase;
 static u8  g_cursor;
@@ -64,13 +62,6 @@ static const c8* const g_rows[MSX2_TITLE_ROWS] =
 	"STORY MODE",
 	"BATTLE MODE",
 	"LOAD STORY",
-};
-
-static const c8* const g_help[MSX2_TITLE_ROWS] =
-{
-	"NAME / FIRST DREAM / FIVE DUELS",
-	"RANDOM DECK / FREE DUEL",
-	"ENTER A CONTINUE CODE",
 };
 
 static bool Msx2_TitleRowEnabled(u8 row)
@@ -152,16 +143,6 @@ static void Msx2_TitleMenuRow(u8 row)
 	}
 }
 
-static void Msx2_TitleHelp(void)
-{
-	u8 fg = Msx2_TitleRowEnabled(g_cursor) ? MSX2_WHITE : MSX2_RED;
-	// The help line lives inside the panel, on its black: it changes with the
-	// cursor, and anything that redraws over artwork would have to restore it.
-	Msx2_Fill((u8)(MENU_PANEL_X + 1), MENU_HELP_Y, MENU_PANEL_W - 2, 8, MSX2_BLACK);
-	Msx2_TextColor(fg, MSX2_BLACK);
-	Msx2_TextCenter(MENU_HELP_Y, g_help[g_cursor]);
-}
-
 static void Msx2_TitleMenuPanel(void)
 {
 	u8 row;
@@ -173,8 +154,6 @@ static void Msx2_TitleMenuPanel(void)
 
 	for(row = 0; row < MSX2_TITLE_ROWS; ++row)
 		Msx2_TitleMenuRow(row);
-
-	Msx2_TitleHelp();
 }
 
 // ── Scene ────────────────────────────────────────────────────────────────────
@@ -196,18 +175,13 @@ static void Msx2_TitlePaint(void)
 
 	if(g_dirty & TITLE_DIRTY_PANEL)
 	{
-		Msx2_TitleMenuPanel();   // draws the rows and the help line itself
+		Msx2_TitleMenuPanel();   // draws the rows itself
 	}
-	else
+	else if(g_dirty & TITLE_DIRTY_ROWS)
 	{
-		if(g_dirty & TITLE_DIRTY_ROWS)
-		{
-			u8 row;
-			for(row = 0; row < MSX2_TITLE_ROWS; ++row)
-				Msx2_TitleMenuRow(row);
-		}
-		if(g_dirty & TITLE_DIRTY_HELP)
-			Msx2_TitleHelp();
+		u8 row;
+		for(row = 0; row < MSX2_TITLE_ROWS; ++row)
+			Msx2_TitleMenuRow(row);
 	}
 }
 
@@ -282,7 +256,7 @@ u8 Msx2_TitleStep(void)
 			// Every row, not just the two that changed: the page being painted
 			// is a frame behind, so it may not be showing the cursor where this
 			// page was showing it.
-			Msx2_TitleDirty(TITLE_DIRTY_ROWS | TITLE_DIRTY_HELP);
+			Msx2_TitleDirty(TITLE_DIRTY_ROWS);
 		}
 
 		if(pressed & MSX2_BTN_B)

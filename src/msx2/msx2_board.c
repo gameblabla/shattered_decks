@@ -1333,6 +1333,36 @@ static void Msx2_BoardStepDeal(void)
 
 	Msx2_VideoDrawPage(page);
 
+	// THE LAST CARD'S LEFTOVER.
+	// A flight alternates pages, and each pass erases the copy THIS page was
+	// left holding before drawing the next one.  The final pose therefore
+	// cleans only the page it lands on: the other one still carries the card a
+	// couple of pixels short of the slot, and the two columns that stick out
+	// past the settled card flickered on every flip for the rest of the duel.
+	// Every slot but the last was cleaned up by the following card's first
+	// pass, which is exactly why it was only ever the last one.  So the deal
+	// ends with one more pass, on that page, doing nothing but the erase.
+	if(g_deal_slot >= MSX2_HAND_SLOTS)
+	{
+		u8 i;
+		if(g_deal_px[page] != MSX2_SLOT_NONE)
+		{
+			Msx2_Fill(g_deal_px[page], MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H,
+			          MSX2_BLACK);
+			Msx2_BoardHandFrames();
+			g_deal_px[page] = MSX2_SLOT_NONE;
+			for(i = MSX2_FIELD_SLOTS; i < SLOT_COUNT; ++i)
+				g_shown[page][i] = MSX2_CARD_NONE;
+		}
+		for(i = 0; i < SLOT_COUNT; ++i)
+			if(!Msx2_BoardPaint())
+				break;
+		Msx2_VideoFlipRequest();
+		g_mode = M_IDLE;
+		g_panel_left = MSX2_VIDEO_PAGES;
+		return;
+	}
+
 	if(g_deal_px[page] != MSX2_SLOT_NONE)
 	{
 		Msx2_Fill(g_deal_px[page], MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H,
@@ -1377,9 +1407,9 @@ static void Msx2_BoardStepDeal(void)
 	++g_deal_slot;
 	if(g_deal_slot >= MSX2_HAND_SLOTS)
 	{
+		// The hand is dealt, but the other page still owes the erase above.
 		g_deal_reveal = MSX2_HAND_SLOTS;
 		Msx2_BoardSnapshot();
-		g_mode = M_IDLE;
 		g_panel_left = MSX2_VIDEO_PAGES;
 	}
 }
