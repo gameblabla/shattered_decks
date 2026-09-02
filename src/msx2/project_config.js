@@ -30,6 +30,7 @@ ProjModules = [
 	"msx2_title",
 	"msx2_video",
 	"msx2_input",
+	"msx2_raster",
 	"msx2_duel",
 	"msx2_cards",
 	"msx2_probe",

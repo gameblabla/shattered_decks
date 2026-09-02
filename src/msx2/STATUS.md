@@ -120,8 +120,10 @@ in for the card.
 **Attacks do not.** Monster-versus-monster, direct-hit and trap-counter actions
 switch to a black full-screen 2D cut-in, with one or two 88x120 cards rendered
 from the same source paintings as the other targets plus live names and
-ATK/DEF. Clean and impact pages alternate through V-blank flips before the
-outcome/damage hold. The runtime then reconstructs the correct 3D resting view.
+ATK/DEF. The attacker advances through five page-flipped poses, clean and impact
+pages alternate at contact, and then the attacker retraces all five poses before
+the outcome/damage hold. The runtime then reconstructs the correct 3D resting
+view; no card teleports from the contact point back to the field.
 
 The player places monsters in attack or defence, plays supports and equips,
 builds a multi-card fusion chain out of the hand, attacks, and ends the turn.
@@ -199,12 +201,13 @@ rules step every frame (a person takes one every few seconds), streams a fresh
 cards into perspective quads underneath all of it. The number to watch here is
 `status`, not the rate.
 
-Footprint (`./msx2.sh ram`): the shipping link uses 30,556 bytes in `_CODE` and
-15,745 bytes in the fixed segment-2 bank.  Its RAM report is 4,591 bytes used
-from `0xC000` through `0xD1EF`, with 8,593 bytes free to `HIMEM` (`0xF380`);
-the runtime probe measured 8,562 bytes between static data and the live stack.
+Footprint (`./msx2.sh ram`): the shipping link uses 31,340 bytes in `_CODE` and
+15,292 bytes in the fixed segment-2 bank.  Its RAM report is 4,592 bytes used
+from `0xC000` through `0xD1F0`, with 8,592 bytes free to `HIMEM` (`0xF380`);
+the runtime probe measured 8,561 bytes between static data and the live stack.
 The segment-2 bank remains below its 16 KB placement limit, including the ISR
-reservation.
+reservation.  `pack_msx_rom.py` now rejects either resident code area if its
+linker-reported end crosses the mapped bank boundary.
 
 ### M7 evidence
 

@@ -135,7 +135,9 @@ static u8 g_fx_dest_x;
 // flash at each other: the attacker closes the gap in visible steps, the
 // contact beat lands where they meet, and the result is held long enough to
 // read.  A cut-in card is 88x120, which is six frames of streaming, so the
-// lunge is five long steps rather than a smooth slide.
+// lunge is five long steps rather than a smooth slide.  The same steps then
+// run backwards after contact: leaving the attacker parked in the middle of
+// the cut-in made the result appear to teleport it back onto the 3-D field.
 #define BATT_STEPS   5
 #define BATT_DX      8
 #define BATT_HOLD    56
@@ -616,7 +618,7 @@ static void Msx2_BoardShowBattleCutin(void)
 
 // One step of the attacker closing on its target: erase where this page last
 // had the card, put it down further along, and carry its ATK figure with it.
-static void Msx2_BoardBattleLungeStep(void)
+static void Msx2_BoardBattleMoveAttacker(void)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 	u8 travel = (u8)(g_batt_step * BATT_DX);
@@ -1001,11 +1003,10 @@ static bool Msx2_BoardRunFx(void)
 			/* The attacker closes.  One 88x120 blit is about six V-blanks, so
 			   five steps is roughly a second of visible approach. */
 			++g_batt_step;
-			Msx2_BoardBattleLungeStep();
+			Msx2_BoardBattleMoveAttacker();
 			Msx2_VideoFlipRequest();
 			if(g_batt_step >= BATT_STEPS)
 			{
-				g_batt_ax = g_batt_px[Msx2_VideoGetShowPage() ^ 1];
 				g_batt_phase = 1;
 				g_batt_step = 0;
 			}
@@ -1016,9 +1017,10 @@ static bool Msx2_BoardRunFx(void)
 			   beat's second page on the one that is not being scanned. */
 			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 			Msx2_VideoCopyPage((u8)(page ^ 1), page);
+			g_batt_px[page] = g_batt_px[page ^ 1];
 			Msx2_VideoDrawPage(page);
 			Msx2_BoardBattleImpact(g_batt_direct, g_batt_trap,
-			                       g_batt_ax, g_batt_dx);
+			                       g_batt_px[page], g_batt_dx);
 			g_batt_phase = 2;
 			g_batt_step = 0;
 			return TRUE;
@@ -1030,17 +1032,30 @@ static bool Msx2_BoardRunFx(void)
 			if(++g_batt_step >= 6)
 			{
 				g_batt_phase = 3;
-				g_batt_step = 0;
+				g_batt_step = BATT_STEPS;
 			}
 			return TRUE;
 
 		case 3:
+			/* Remove the impact marks from the other page before the retreat.
+			   Both pages now contain the attacker at full extension, so each
+			   backwards step can be composed off-screen and revealed in V-blank. */
 			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-			Msx2_VideoDrawPage(page);
-			Msx2_BoardBattleResult(g_batt_trap);
-			Msx2_VideoFlipRequest();
+			Msx2_VideoCopyPage((u8)(page ^ 1), page);
+			g_batt_px[page] = g_batt_px[page ^ 1];
 			g_batt_phase = 4;
-			g_fx_frames = BATT_HOLD;
+			return TRUE;
+
+		case 4:
+			--g_batt_step;
+			Msx2_BoardBattleMoveAttacker();
+			if(g_batt_step == 0)
+			{
+				Msx2_BoardBattleResult(g_batt_trap);
+				g_batt_phase = 5;
+				g_fx_frames = BATT_HOLD;
+			}
+			Msx2_VideoFlipRequest();
 			return TRUE;
 
 		default:

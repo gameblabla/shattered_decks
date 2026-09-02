@@ -10,6 +10,8 @@ The pass also enforces the one invariant the streamer depends on: the routine
 that swaps the 0x8000 window must itself live *below* 0x8000, because while the
 window holds picture data none of the code up there exists.  A link that drifts
 past that line is a crash on the first stream, so it fails the build instead.
+It also rejects either resident code area crossing its physical 16/32 KB bank
+boundary; SDCC can otherwise emit an apparently successful, wrapped image.
 
 Usage:
     tools/msx2/pack_msx_rom.py src/msx2/out/waifu_msx2.rom
@@ -24,6 +26,8 @@ ASSET_DIR = os.path.join(ROOT, "src", "msx2", "assets")
 MANIFEST = os.path.join(ASSET_DIR, "manifest.txt")
 SEGMENT_BYTES = 16 * 1024
 WINDOW = 0x8000
+CODE_END = 0xC000
+SEG2_END = 0x4000
 
 # Symbols that must be resident while the streaming window is swapped out.
 # They live in the page-0 code bank (src/msx2/waifu_msx2_s2_b0.c), which the
@@ -66,13 +70,43 @@ def check_resident(mapfile):
     return bad
 
 
+def check_code_banks(mapfile):
+    """Return linker areas whose low-16-bit end crosses their mapped bank."""
+    if not os.path.exists(mapfile):
+        return []
+    limits = {"_CODE": CODE_END, "_SEG2": SEG2_END}
+    found = {}
+    pattern = re.compile(r"^\s*(_CODE|_SEG2)\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=")
+    for line in open(mapfile):
+        match = pattern.match(line)
+        if match:
+            found[match.group(1)] = (int(match.group(2), 16),
+                                     int(match.group(3), 16))
+    bad = []
+    for name, limit in limits.items():
+        if name in found:
+            start, size = found[name]
+            end = (start & 0xFFFF) + size
+            if end > limit:
+                bad.append((name, end, limit))
+    return bad
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     rompath = sys.argv[1]
     rom = bytearray(open(rompath, "rb").read())
+    mapfile = os.path.splitext(rompath)[0] + ".map"
 
-    bad = check_resident(os.path.splitext(rompath)[0] + ".map")
+    overflow = check_code_banks(mapfile)
+    if overflow:
+        for name, end, limit in overflow:
+            print("%s ends at 0x%04X, past its 0x%04X bank boundary"
+                  % (name, end, limit), file=sys.stderr)
+        sys.exit("resident code crossed a mapper bank boundary")
+
+    bad = check_resident(mapfile)
     if bad:
         for name, at in bad:
             print("%s is linked at 0x%04X, inside the streaming window" % (name, at),
