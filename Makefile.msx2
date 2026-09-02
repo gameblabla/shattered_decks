@@ -67,6 +67,7 @@ src/generated/msx2_card_tables.h: tools/msx2/gen_msx_tables.py src/generated/wai
 # inputs: a change to the arena, the card geometry or the MSX2 camera pose has
 # to re-bake the cartridge or the two disagree about where a card goes.
 src/generated/msx2_scenes.h $(SCENE_BINS) &: tools/msx2/gen_msx_scenes.py \
+        $(PROJ_DIR)/msx2_ui_strings.def \
         tools/msx2/gen_msx_views.py src/main.c $(SCENE_SRC)
 	python3 tools/msx2/gen_msx_scenes.py
 

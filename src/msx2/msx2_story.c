@@ -566,7 +566,7 @@ static void Msx2_StoryNamePaint(void)
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(30, Msx2_UiText(MSX2_S_NAME_YOUR_DUELIST));
 	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(48, Msx2_UiText(MSX2_S_CHOOSE_EIGHT_LETTERS));
+	Msx2_TextCenter(48, Msx2_UiText(MSX2_S_UP_TO_EIGHT_LETTERS));
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
 	Msx2_TextAt(70, 68, Msx2_UiText(MSX2_S_NAME));
 	for(i = 0; i < STORY_NAME_LEN; ++i)
@@ -587,17 +587,27 @@ static void Msx2_StoryNamePaint(void)
 	Msx2_TextAt((u8)(45 + (g_name_cursor % 13) * 13),
 	            (u8)(100 + (g_name_cursor / 13) * 20), one);
 	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(140, Msx2_UiText(MSX2_S_SPACE_LETTER_RETURN_ACCEPT));
+	Msx2_TextCenter(140, Msx2_UiText(MSX2_S_TYPE_IT_OR_PICK_WITH_THE_ST));
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(153, Msx2_UiText(MSX2_S_RETURN_OR_SPACE_ACCEPTS));
 	Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(153, Msx2_UiText(MSX2_S_ESC_DELETE));
+	Msx2_TextCenter(166, Msx2_UiText(MSX2_S_ESC_OR_BACKSPACE_DELETES));
 }
+
+// The name the story is written around.  It is pre-filled rather than left
+// blank so a player who just presses RETURN is Serena -- who is who the prose
+// calls her, and who every other target defaults to.
+static const c8 g_name_default[] = "SERENA";
 
 static void Msx2_StoryEnterName(void)
 {
+	u8 i;
 	g_phase = PH_NAME;
-	g_name_len = 0;
 	g_name_cursor = 0;
-	g_player_name[0] = 0;
+	for(i = 0; g_name_default[i] != 0; ++i)
+		g_player_name[i] = g_name_default[i];
+	g_player_name[i] = 0;
+	g_name_len = i;
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
 	Msx2_StreamScene(MSX2_SCENE_TITLE_SEGMENT, MSX2_PAGE_1);
 	Msx2_StoryNamePaint();
@@ -611,8 +621,11 @@ static bool Msx2_StoryAcceptName(void)
 {
 	if(g_name_len == 0)
 		return FALSE;
+	// The hash and the continue code are both fixed width, so a short name is
+	// padded with spaces rather than with letters: padding with 'A' turned
+	// SERENA into SERENAAA on the name plate.
 	while(g_name_len < STORY_NAME_LEN)
-		g_player_name[g_name_len++] = 'A';
+		g_player_name[g_name_len++] = ' ';
 	g_player_name[STORY_NAME_LEN] = 0;
 	g_progress = 0;
 	g_duel_index = 0;
