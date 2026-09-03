@@ -219,17 +219,14 @@ static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 static u8 g_hand_hidden;
 static u8 g_fx_bend;
 static u8 g_fx_hold;
+// These are the actual rectangle origins used by the flight.  They are
+// snapped when the effect starts; they must not be inferred later from the
+// hand-visibility flag, because walking from the hand to the field hides the
+// hand before the rules action is presented.
+static u8 g_fx_start_x;
+static u8 g_fx_start_y;
 static u8 g_fx_dest_x;
 static u8 g_fx_dest_y;
-// ... and how big the card is when it gets there.  A slot in a chair view is a
-// PROJECTED quad -- 44x23 for the nearest one, 27x13 for the furthest -- and
-// the card that flies is the 40x48 hand thumbnail.  Landing it at its own size
-// put a card twice the height of the slot on the board, standing up out of it
-// and reaching most of the way to the far edge; what the player saw was the
-// summon flying past where it was going.  So the drawn rectangle closes on the
-// slot's own box along with the position, and the last pose is exactly the box.
-static u8 g_fx_dest_w;
-static u8 g_fx_dest_h;
 
 // THE 2-D BATTLE CUT-IN: THE CARDS STAND STILL AND THE ATTACK IS THE ANIMATION.
 //
@@ -1067,6 +1064,82 @@ static void Msx2_BoardFxCacheCard(void)
 	Msx2_VideoDrawPage(keep);
 }
 
+// Take the destination from the same table that draws the settled card.  This
+// is deliberately called from StartFx/FinishFx, not from HideHand(): the
+// latter is also called after the cursor has already hidden the hand.
+static void Msx2_BoardFxSetDestination(void)
+{
+	u8 i;
+
+	if(!Msx2_BoardFxIsLanding() || (g_fx_field == MSX2_SLOT_NONE))
+		return;
+
+	g_fx_start_x = (g_fx_hand == MSX2_SLOT_NONE) ? 108 : HAND_X(g_fx_hand);
+	g_fx_start_y = MSX2_HAND_Y;
+
+	if(g_view == MSX2_VIEW_OVER)
+	{
+		// The overhead card is copied at exactly this origin by
+		// Msx2_BoardBlitSlot().  In particular, slot 5 is (17, 98), so the
+		// flight must end at (17, 98), not at a box centre or a stale default.
+		const u8* at = g_msx2_over_card_xy[g_fx_field];
+		g_fx_dest_x = at[0];
+		g_fx_dest_y = at[1];
+		return;
+	}
+
+	// A chair-view card is drawn into a projected quad.  The flight still uses
+	// the readable 40x48 thumbnail, so aim its centre at the quad's centre.
+	// Compute the quad bounds in signed temporaries before narrowing anything;
+	// a wrapped unsigned intermediate here was the source of the off-screen
+	// Y path seen when a player placed a card by hand.
+	{
+		const u8* q = g_msx2_slot_quad[g_view][g_fx_field];
+		u8 x0 = q[0], x1 = q[0], y0 = q[1], y1 = q[1];
+		for(i = 1; i < 4; ++i)
+		{
+			u8 qx = q[i * 2], qy = q[i * 2 + 1];
+			if(qx < x0) x0 = qx;
+			if(qx > x1) x1 = qx;
+			if(qy < y0) y0 = qy;
+			if(qy > y1) y1 = qy;
+		}
+		{
+			i16 x = (i16)x0 + (i16)(x1 - x0 + 1) / 2
+			       - MSX2_CARD_W / 2;
+			i16 y = (i16)y0 + (i16)(y1 - y0 + 1) / 2
+			       - MSX2_CARD_H / 2;
+			if(x < 0) x = 0;
+			if(y < MSX2_BAND_Y) y = MSX2_BAND_Y;
+			if(x > (i16)(MSX2_SCREEN_W - MSX2_CARD_W))
+				x = (i16)(MSX2_SCREEN_W - MSX2_CARD_W);
+			if(y > (i16)(MSX2_SCREEN_H - MSX2_CARD_H))
+				y = (i16)(MSX2_SCREEN_H - MSX2_CARD_H);
+			g_fx_dest_x = (u8)x;
+			g_fx_dest_y = (u8)y;
+		}
+	}
+}
+
+// Interpolate only values that have already been clamped to the screen.  The
+// old expression mixed signed deltas with u8 coordinates at the call site;
+// on SDCC a negative delta could be narrowed before the add and wrap a valid
+// destination toward the top of the screen.  This form keeps the magnitude
+// positive and therefore cannot overshoot either endpoint.
+static u8 Msx2_BoardFxLerp(u8 start, u8 dest, u8 weight)
+{
+	i16 delta = (i16)dest - (i16)start;
+	i16 value;
+
+	if(delta < 0)
+		value = (i16)start - ((i16)(-delta) * (i16)weight) / 16;
+	else
+		value = (i16)start + (delta * (i16)weight) / 16;
+	if(value < 0) value = 0;
+	if(value > 255) value = 255;
+	return (u8)value;
+}
+
 // THE EASING, AND WHY IT IS A TABLE.
 // The interpolation is a 4.4 fixed-point weight, so the last pose has to reach
 // exactly 16 or the card stops short of the slot and then jumps into it when
@@ -1106,8 +1179,10 @@ static void Msx2_BoardFxCardFlight(bool erase)
 	bool over = (g_view == MSX2_VIEW_OVER);
 	u8 cw   = over ? MSX2_OVER_CARD_W : MSX2_CARD_W;
 	u8 ch   = over ? MSX2_OVER_CARD_H : MSX2_CARD_H;
-	u8 ease = g_fx_ease[FX_LANDING_FRAMES - g_fx_frames];
-	i16 sx = (g_fx_hand == MSX2_SLOT_NONE) ? 108 : HAND_X(g_fx_hand);
+	u8 pose = (g_fx_frames == 0) || (g_fx_frames > FX_LANDING_FRAMES)
+	        ? (u8)(FX_LANDING_FRAMES - 1)
+	        : (u8)(FX_LANDING_FRAMES - g_fx_frames);
+	u8 ease = g_fx_ease[pose];
 	u8 x, y, w, ha, hb;
 
 	if(!over && (ease == 16))
@@ -1131,16 +1206,11 @@ static void Msx2_BoardFxCardFlight(bool erase)
 		return;
 	}
 
-	// Everything before it: the whole card, its middle easing from the hand
-	// position to the middle of the slot it is going into.
-	{
-		i16 ex = (i16)((i16)g_fx_dest_x + (i16)(g_fx_dest_w >> 1) - (i16)(cw >> 1));
-		i16 ey = (i16)((i16)g_fx_dest_y + (i16)(g_fx_dest_h >> 1) - (i16)(ch >> 1));
-		if(ex < 0) ex = 0;
-		if(ey < MSX2_BAND_Y) ey = MSX2_BAND_Y;
-		x = (u8)(sx + (((ex - sx) * ease) >> 4));
-		y = (u8)(MSX2_HAND_Y + (((ey - MSX2_HAND_Y) * ease) >> 4));
-	}
+	// Everything before it: the whole card, easing from the snapped hand
+	// origin to the snapped destination origin.  For overhead the last pose is
+	// therefore exactly the same (x,y) that the board painter uses.
+	x = Msx2_BoardFxLerp(g_fx_start_x, g_fx_dest_x, ease);
+	y = Msx2_BoardFxLerp(g_fx_start_y, g_fx_dest_y, ease);
 	w  = cw;
 	ha = (u8)(ch >> 1);
 	hb = (u8)(ch - ha);
@@ -1268,58 +1338,16 @@ static void Msx2_BoardHideHand(void)
 	u8 show = Msx2_VideoGetShowPage();
 	u8 i;
 
-	if(g_hand_hidden || !Msx2_BoardFxIsLanding())
+	if(!Msx2_BoardFxIsLanding() || g_hand_hidden)
 		return;
-	g_hand_hidden = TRUE;
-	// Every landing action has a field destination; StartFx filters all other
-	// effects before this path.
-	if(g_view == MSX2_VIEW_OVER)
-	{
-		// Not the centre of the slot box: the exact origin the retained painter
-		// uses for this slot, so the last pose of the flight and the card the
-		// board keeps are the same rectangle in the same place.  Overhead the
-		// slot is 42x42 and the card baked for it is 32x42, so the card already
-		// is its own destination size.
-		const u8* at = g_msx2_over_card_xy[g_fx_field];
-		g_fx_dest_x = at[0];
-		g_fx_dest_y = at[1];
-		g_fx_dest_w = MSX2_OVER_CARD_W;
-		g_fx_dest_h = MSX2_OVER_CARD_H;
-	}
-	else
-	{
-		// THE DESTINATION IS THE QUAD, NOT THE SLOT'S BOX.
-		// The box is the quad plus a four-pixel margin -- it exists so that a
-		// span program rounding a texel outward still has somewhere to be
-		// erased from -- so landing on it left the card a margin out of place
-		// and eight pixels too big in each axis, and the board then took it and
-		// redrew it a few pixels over.  What the rasterizer actually fills is
-		// the QUAD, so that is where the flight has to stop: the bounding box
-		// of the four projected corners, which is the rectangle the settled
-		// card occupies to the pixel.
-		const u8* q = g_msx2_slot_quad[g_view][g_fx_field];
-		u8 x0 = q[0], x1 = q[0], y0 = q[1], y1 = q[1];
-		for(i = 1; i < 4; ++i)
-		{
-			u8 qx = q[i * 2], qy = q[i * 2 + 1];
-			if(qx < x0) x0 = qx;
-			if(qx > x1) x1 = qx;
-			if(qy < y0) y0 = qy;
-			if(qy > y1) y1 = qy;
-		}
-		g_fx_dest_w = (u8)(x1 - x0 + 1);
-		g_fx_dest_h = (u8)(y1 - y0 + 1);
-		// A projected slot is smaller than the 40x48 thumbnail in both axes at
-		// every camera this port uses, but the flight crops rather than scales,
-		// so it must never be asked for more of the card than there is.
-		if(g_fx_dest_w > MSX2_CARD_W) g_fx_dest_w = MSX2_CARD_W;
-		if(g_fx_dest_h > MSX2_CARD_H) g_fx_dest_h = MSX2_CARD_H;
-		g_fx_dest_x = x0;
-		g_fx_dest_y = y0;
-	}
+	// The destination was already snapped by StartFx/FinishFx.  Hand
+	// visibility is only a drawing concern; it is not allowed to alter the
+	// flight path or leave it using the previous action's coordinates.
 	g_fx_bend = FX_BEND_POSES;
 	g_fx_hold = 0;
 	Msx2_BoardSnapshot();
+
+	g_hand_hidden = TRUE;
 
 	if(g_view != MSX2_VIEW_OVER)
 	{
@@ -1368,6 +1396,27 @@ static void Msx2_BoardStepBend(void)
 	Msx2_VideoDrawPage(show);
 	g_fx_frames = keep;
 	--g_fx_bend;
+}
+
+// Replace the flight with the retained board card before the flight layer is
+// allowed to disappear.  Both pages are updated in this same command batch, so
+// the V-blank can never expose the gap between the last flight pose and the
+// card painter catching up on the next frame.
+static void Msx2_BoardFxCommitLanding(void)
+{
+	u8 show = Msx2_VideoGetDrawPage();
+	u8 p;
+
+	if(g_fx_field == MSX2_SLOT_NONE)
+		return;
+	for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
+	{
+		Msx2_VideoDrawPage(p);
+		Msx2_BoardBlitSlot(g_fx_field);
+		g_shown[p][g_fx_field] = g_want[g_fx_field];
+		g_shown_flag[p][g_fx_field] = g_flag[g_fx_field];
+	}
+	Msx2_VideoDrawPage(show);
 }
 
 static void Msx2_BoardStartFx(void)
@@ -1452,6 +1501,7 @@ static void Msx2_BoardStartFx(void)
 			g_fx_followup = FX_SUPPORT;
 	}
 
+	Msx2_BoardFxSetDestination();
 	Msx2_ClearActionEvent();
 	// The selector goes now, not on the next frame's Msx2_BoardShowCursor():
 	// a cut-in composes inside this call, and the frame it appears on would
@@ -1517,6 +1567,7 @@ static void Msx2_BoardFinishFx(void)
 		g_fx_followup = FX_NONE;
 		g_fx_frames = FX_LANDING_FRAMES;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+		Msx2_BoardFxSetDestination();
 		Msx2_BoardHideHand();
 		Msx2_BoardFxCacheCard();
 		return;
@@ -1648,11 +1699,12 @@ static bool Msx2_BoardRunFx(void)
 		Msx2_VideoFlipRequest();
 		if(g_fx_bend == 0)
 		{
-			// The board has accepted the card.  Reveal it now, while the hand is
-			// still absent, so the landing hold shows the actual new field state
-			// rather than an empty destination until the normal HUD returns.
+			// The board has accepted the card.  Put it on both pages before the
+			// final flight pose is allowed to disappear: the landing hold must
+			// show the actual new field state, never an empty destination.
 			g_suppress_slot = MSX2_SLOT_NONE;
 			Msx2_BoardSnapshot();
+			Msx2_BoardFxCommitLanding();
 			g_fx_hold = FX_HOLD_FRAMES;
 		}
 		return TRUE;
@@ -2009,6 +2061,8 @@ void Msx2_BoardEnter_In(u8 stage)
 	g_hand_hidden = FALSE;
 	g_fx_bend = 0;
 	g_fx_hold = 0;
+	g_fx_start_x = g_fx_start_y = 0;
+	g_fx_dest_x = g_fx_dest_y = 0;
 	g_suppress_slot = MSX2_SLOT_NONE;
 	g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 	g_move_pose = 0;
