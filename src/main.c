@@ -23262,18 +23262,55 @@ static const struct { const char *name; int kind; int poses; } g_msx2_moves[] = 
 };
 #define MSX2_MOVE_COUNT ((int)(sizeof g_msx2_moves / sizeof g_msx2_moves[0]))
 
+/* PIN A BAKED PATH TO THE POSES IT IS SUPPOSED TO JOIN.
+   A move's endpoint is not automatically the resting view it hands over to:
+   turn_camera() orbits at radius 5.35 about the middle of the board, while
+   player_camera() sits at 5.05 and looks a little past it, and the opening's
+   last authored sample is near player_camera() rather than on it.  On the five
+   full-screen targets that is a fraction of a frame's difference between two
+   live renders and nobody sees it; on the MSX2 the arrival frame STAYS on the
+   screen -- the retained painter then draws cards into it with span programs
+   built from the resting view's quads, and repairs an emptied slot with a tile
+   cut out of the resting view's picture.  A board that is a few per cent off
+   that view shows every one of those as a patch.
+   So the residual at each end is carried across the path and cancelled: exact
+   at both endpoints, spread smoothly over everything between, and the arc's
+   shape in the middle is the shared one. */
+static Camera msx2_camera_pin(Camera c, int32_t t,
+                              Camera have0, Camera want0,
+                              Camera have1, Camera want1)
+{
+#define MSX2_PIN(field)     c.field = c.field + q8_mul(Q8_ONE - t, want0.field - have0.field)                       + q8_mul(t, want1.field - have1.field)
+    MSX2_PIN(eye.x);    MSX2_PIN(eye.y);    MSX2_PIN(eye.z);
+    MSX2_PIN(target.x); MSX2_PIN(target.y); MSX2_PIN(target.z);
+    MSX2_PIN(up.x);     MSX2_PIN(up.y);     MSX2_PIN(up.z);
+    MSX2_PIN(focal);
+#undef MSX2_PIN
+    c.up = vnorm(c.up);
+    return c;
+}
+
 static Camera msx2_move_camera(int kind, int pose, int poses)
 {
     int32_t t = q8_ratio(pose, poses - 1);
+    Camera c;
 
     if (kind == MSX2_MOVE_TURN) {
-        return interactive_turn_camera(pose, poses - 1, 1);
+        c = interactive_turn_camera(pose, poses - 1, 1);
+        return msx2_camera_pin(c, t,
+                               interactive_turn_camera(0, poses - 1, 1),
+                               msx2_top_camera(),
+                               interactive_turn_camera(poses - 1, poses - 1, 1),
+                               msx2_com_camera());
     }
     /* This is the exact camera expression in render_duel_opening_frame(): the
        outer smoothstep chooses a sample from opening_camera()'s authored arc.
-       The final sample is player_camera(), which is also our resting pose. */
-    return opening_camera(18 + q8_to_int(q8_mul(Q8_FROM_INT(66),
-                             q8_smoothstep(t))));
+       Only the end is pinned -- the descent starts off the board, where there
+       is no resting pose to agree with. */
+    c = opening_camera(18 + q8_to_int(q8_mul(Q8_FROM_INT(66),
+                          q8_smoothstep(t))));
+    return msx2_camera_pin(c, t, c, c, opening_camera(18 + 66),
+                           msx2_top_camera());
 }
 
 /* One field slot's projected quad, in the corner order the textured draw gets.

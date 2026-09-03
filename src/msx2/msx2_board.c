@@ -278,6 +278,20 @@ static void Msx2_BoardSnapshot(void)
 		g_want[g_suppress_slot] = MSX2_CARD_NONE;
 		g_flag[g_suppress_slot] = 0;
 	}
+
+	// AN EMPTY SLOT HAS NO FLAGS.
+	// Face-up and defence describe a card, and the loop above sets them from
+	// the duel's parallel arrays whether or not there is one in the slot -- so
+	// an empty player field slot carried F_FACEUP, and an empty hand position
+	// carried F_FACEUP too.  Every place that has just put a whole arena on the
+	// screen tells the painter so by writing CARD_NONE and flag 0 into
+	// g_shown[]; a stale flag on an empty slot made that comparison fail, and
+	// the painter answered by stamping ten empty-slot tiles over a board that
+	// was already showing exactly them.  Normalising here is what lets "this
+	// slot is empty" be one value on both sides of the comparison.
+	for(i = 0; i < SLOT_COUNT; ++i)
+		if(g_want[i] == MSX2_CARD_NONE)
+			g_flag[i] = 0;
 }
 
 // The card the cursor is over, for the info panel.
