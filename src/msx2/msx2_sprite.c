@@ -141,22 +141,49 @@ u8 Msx2_SpriteWord(const c8* text)
 	return n;
 }
 
-void Msx2_SpriteShowWord(const c8* text, u8 y, u8 color)
+// SLIDING ON FROM OFF THE SCREEN.
+// A sprite's X is one unsigned byte, so there is no such place as -20 -- and a
+// word that simply appeared at the left edge would pop rather than arrive.
+// The V9938 has the answer in the sprite's own colour byte: bit 7, "early
+// clock", displays that sprite thirty-two pixels further left than its X says.
+// So a letter between -32 and -1 is placed at x + 32 with EC set, which is
+// exactly the partial letter the hardware clips against the border for us, and
+// anything further out is simply not on the screen yet.
+#define SPR_EARLY_CLOCK 0x80
+
+void Msx2_SpriteWordAt(const c8* text, u8 n, i16 x, u8 y, u8 color)
 {
-	u8 n = Msx2_SpriteWord(text);
-	u8 x = (u8)((MSX2_SCREEN_W - (u16)n * 26) / 2);
 	u8 i;
 
 	for(i = 0; i < n; ++i)
 	{
+		i16 lx = (i16)(x + (i16)((u16)i * MSX2_SPR_WORD_PITCH));
+
 		if(text[i] == ' ')
 			Msx2_SpriteHide(i);
+		else if(lx >= 0)
+		{
+			if(lx > 255)
+				Msx2_SpriteHide(i);
+			else
+				Msx2_SpriteAt(i, (u8)lx, y, (u8)(MSX2_SPR_LETTER0 + i), color);
+		}
+		else if(lx >= -32)
+			Msx2_SpriteAt(i, (u8)(lx + 32), y, (u8)(MSX2_SPR_LETTER0 + i),
+			              (u8)(color | SPR_EARLY_CLOCK));
 		else
-			Msx2_SpriteAt(i, (u8)(x + i * 26), y,
-			              (u8)(MSX2_SPR_LETTER0 + i), color);
+			Msx2_SpriteHide(i);
 	}
 	for(; i < MSX2_SPR_LETTER_N; ++i)
 		Msx2_SpriteHide(i);
+}
+
+void Msx2_SpriteShowWord(const c8* text, u8 y, u8 color)
+{
+	u8 n = Msx2_SpriteWord(text);
+	i16 x = (i16)((MSX2_SCREEN_W - (u16)n * MSX2_SPR_WORD_PITCH) / 2);
+
+	Msx2_SpriteWordAt(text, n, x, y, color);
 }
 
 // The three tints of each cursor colour, darkest first, indexed by the flat

@@ -84,6 +84,16 @@ u8   Msx2_SpriteWord(const c8* text);
 // short words: YOU WIN, YOU LOSE, FUSION.
 void Msx2_SpriteShowWord(const c8* text, u8 y, u8 color);
 
+// How far apart Msx2_SpriteShowWord puts two letters.  Public because a caller
+// that slides a word has to know how wide the whole of it is.
+#define MSX2_SPR_WORD_PITCH 26
+
+// The same word with its LEFT EDGE at `x`, which may be negative or past the
+// right of the screen -- that is what lets a result banner slide on from off
+// the side.  `text` and the letter count must be the ones a preceding
+// Msx2_SpriteWord() uploaded; this call only moves what is already there.
+void Msx2_SpriteWordAt(const c8* text, u8 n, i16 x, u8 y, u8 color);
+
 // The selector, at (x, y) -- the top-left of the gem, not of the sprite cell --
 // spinning at `frame`.  `color` is MSX2_SPR_RED or MSX2_SPR_TEAL; the shadow
 // and highlight tints come with it.  Call it every frame.

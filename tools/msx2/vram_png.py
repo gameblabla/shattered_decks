@@ -98,9 +98,18 @@ def main():
                 break
             sx = vread(0xFA00 + spr * 4 + 1)
             pat = vread(0xFA00 + spr * 4 + 2) & 0xFC
-            col = vread(0xF800 + spr * 16) & 0x0F
+            attr = vread(0xF800 + spr * 16)
+            col = attr & 0x0F
             if col == 0:
                 continue
+            # Sprite mode 2 keeps "early clock" in bit 7 of the colour byte, and
+            # it shifts the sprite thirty-two pixels LEFT -- which is the only
+            # way a sprite can be partly off the left edge, and so the only way
+            # a result banner can slide on from outside the screen.  Ignoring it
+            # photographed the entering letters stacked on top of the settled
+            # ones and made a correct slide look like a corrupt one.
+            if attr & 0x80:
+                sx -= 32
             top = (sy + 1) & 0xFF
             for py in range(16):
                 left = vread(0xF000 + pat * 8 + py)

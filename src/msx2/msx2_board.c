@@ -132,6 +132,22 @@ static u8  g_hand_left;          // pages still owing the whole hand strip
 
 static c8  g_name[MSX2_NAME_STRIDE];
 
+// ── The result banner ───────────────────────────────────────────────────────
+// The word is held here rather than being read out of the cartridge each frame:
+// Msx2_UiText() answers out of ONE shared buffer that every panel painter
+// overwrites, so a pointer into it does not survive the frame it was taken in.
+#define OVER_SLIDE_STEPS 30
+// The band of bare table between the HUD and the opponent's row.  The two card
+// rows overhead are flush -- 54..96 and 96..138 -- so there is no gap between
+// them to put a thirty-two row word in, and the middle of the board is the one
+// place a result banner must NOT be: the board it is announcing is the whole
+// point of the screen, and every card has to stay readable under it.
+#define MSX2_OVER_WORD_Y 18
+static c8  g_over_text[MSX2_SPR_LETTER_N + 1];
+static u8  g_over_n;
+static u8  g_over_color;
+static u8  g_over_step;
+
 // ── Presentation events ─────────────────────────────────────────────────────
 // Rules are committed immediately, but the screen holds the result back for a
 // few frames so a player can read what happened.  The effect is painted on the
@@ -2285,6 +2301,89 @@ static void Msx2_BoardMove(u8 pressed)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  The result
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The duel is decided.  What the player is owed here is the board that decided
+// it: the tactical view from above, with the last exchange already settled into
+// it -- whatever died in it gone, whatever survived still standing where it was
+// -- and only then the word.
+//
+// Both pages are brought all the way up to the snapshot before anything is
+// announced.  The retained painter is deliberately bounded to one card a frame,
+// which is right while a duel is being played and wrong here: it would deal the
+// final board back onto the screen a card at a time under a banner that had
+// already arrived.  The display is off for it, the way it is for a camera cut,
+// so none of that repaint is seen.
+static void Msx2_BoardOverBegin(void)
+{
+	const c8* word;
+	u8 p, i;
+
+	g_mode = M_OVER;
+	Msx2_BoardTouch();
+	// The banner's board is the overhead one whichever chair the last blow was
+	// struck from: it is the only view that shows both rows whole.
+	Msx2_BoardCutTo(MSX2_VIEW_OVER);
+
+	VDP_EnableDisplay(FALSE);
+	for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
+	{
+		Msx2_VideoDrawPage(p);
+		// One card and the three panel regions per pass, so a slot count of
+		// passes clears the whole queue with room to spare.
+		for(i = 0; i < SLOT_COUNT + 4; ++i)
+			if(!Msx2_BoardPaint())
+				break;
+	}
+	Msx2_VideoDrawPage((u8)(Msx2_VideoGetShowPage() ^ 1));
+	VDP_EnableDisplay(TRUE);
+
+	word = (g_duel.result > 0) ? Msx2_UiText(MSX2_S_YOU_WIN)
+	                           : Msx2_UiText(MSX2_S_YOU_LOSE);
+	for(i = 0; (i < MSX2_SPR_LETTER_N) && (word[i] != 0); ++i)
+		g_over_text[i] = word[i];
+	g_over_text[i] = 0;
+	g_over_color = (g_duel.result > 0) ? MSX2_SPR_GOLD : MSX2_SPR_RED;
+	g_over_n = Msx2_SpriteWord(g_over_text);
+	g_over_step = 0;
+}
+
+// One frame of the word coming in.  It starts wholly off the left edge and
+// eases to the middle: a quadratic on the REMAINING distance, so it arrives
+// slowing down rather than stopping dead.
+//
+// The arithmetic is deliberately two divisions rather than one.  The word is up
+// to eight letters at a 26-pixel pitch, so the distance travelled is about 230,
+// and 230 * 30 * 30 does not fit in the 16 bits a Z80 multiplies in.  Dividing
+// between the two multiplications keeps every intermediate under four thousand.
+static void Msx2_BoardStepOverWord(void)
+{
+	i16 span, home, rem, x;
+
+	if(g_over_step > OVER_SLIDE_STEPS)
+		return;
+
+	span = (i16)((u16)g_over_n * MSX2_SPR_WORD_PITCH);
+	home = (i16)((MSX2_SCREEN_W - span) / 2);
+	rem  = (i16)(OVER_SLIDE_STEPS - g_over_step);
+	x    = (i16)(home - ((((home + span) * rem) / OVER_SLIDE_STEPS) * rem)
+	                    / OVER_SLIDE_STEPS);
+
+	Msx2_SpriteWordAt(g_over_text, g_over_n, x, MSX2_OVER_WORD_Y, g_over_color);
+	++g_over_step;
+}
+
+// The word has arrived and the player has had a moment with the board.  Only
+// then is a button worth anything: without this, a held A -- or the soak's
+// permanently held one -- ended the duel on the frame the banner was created
+// and the screen this whole path exists to show was never on the screen.
+static bool Msx2_BoardOverIsSettled(void)
+{
+	return g_over_step > OVER_SLIDE_STEPS;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  The frame
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2337,7 +2436,7 @@ u8 Msx2_BoardStep_In(void)
 		// first result screen measures one duel.
 		pressed |= MSX2_BTN_A;
 #endif
-		if(pressed & (MSX2_BTN_A | MSX2_BTN_B))
+		if((pressed & (MSX2_BTN_A | MSX2_BTN_B)) && Msx2_BoardOverIsSettled())
 		{
 			Msx2_SpriteClear();
 			return (g_duel.result > 0) ? MSX2_BOARD_WIN : MSX2_BOARD_LOSE;
@@ -2448,8 +2547,14 @@ u8 Msx2_BoardStep_In(void)
 		if(g_zone != before_zone)
 			g_prompt_left = PAGES_ALL;
 	}
+	// A decided duel is not walked around any more.  Without the result test
+	// here the camera answered the cursor's row one last time -- a blanked
+	// stream of a whole view -- and Msx2_BoardOverBegin() then cut straight
+	// back out of it: half a second of black on the way to a screen that was
+	// always going to be the overhead one.
 	if((g_fx_kind == FX_NONE) && (g_mode != M_TURN) && (g_mode != M_COM) &&
-	   (g_mode != M_DEAL) && (g_mode != M_OVER) && (g_view != BOARD_VIEW_COM))
+	   (g_mode != M_DEAL) && (g_mode != M_OVER) && (g_duel.result == 0) &&
+	   (g_view != BOARD_VIEW_COM))
 	{
 		bool in_hand = (g_zone == ZONE_HAND);
 		Msx2_BoardHandVisible(in_hand);
@@ -2461,26 +2566,27 @@ u8 Msx2_BoardStep_In(void)
 		return MSX2_BOARD_BUSY;
 	}
 
-	if((g_duel.result != 0) && (g_mode != M_OVER))
-	{
-		g_mode = M_OVER;
-		Msx2_BoardTouch();
-		// The result, in letters the size of the cards.  A word built out of
-		// sprites floats over both pages and over the arena without a pixel of
-		// it being drawn into either, which is the only way this screen can
-		// say it big and still put the board back underneath.
-		if(g_duel.result > 0)
-			Msx2_SpriteShowWord(Msx2_UiText(MSX2_S_YOU_WIN), 70, MSX2_SPR_GOLD);
-		else
-			Msx2_SpriteShowWord(Msx2_UiText(MSX2_S_YOU_LOSE), 70, MSX2_SPR_RED);
-	}
-
 	Msx2_BoardStartFx();
 	if(Msx2_BoardRunFx())
 		return MSX2_BOARD_BUSY;
 
+	// THE RESULT COMES LAST.
+	// This used to be tested before Msx2_BoardStartFx(), on the frame the rules
+	// set it -- which is the very frame the winning attack is still owed its
+	// damage screen.  The banner went up, and then the full-screen battle
+	// cut-in played over the top of it and put the board back underneath a word
+	// nobody had been given a chance to read.  The test belongs here, past
+	// StartFx and past a running effect: by the time it is reached the last
+	// action has had its screen, the bend has put the arena back, and the
+	// snapshot below is of a field the destroyed monster has already left.
+	if((g_duel.result != 0) && (g_mode != M_OVER))
+		Msx2_BoardOverBegin();
+
 	if(Msx2_BoardPaint())
 		Msx2_VideoFlipRequest();
+
+	if(g_mode == M_OVER)
+		Msx2_BoardStepOverWord();
 
 	return MSX2_BOARD_BUSY;
 }
