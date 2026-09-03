@@ -134,18 +134,16 @@ def main():
     body.append(emit_rows(tribe_i, 16))
     body.append("};")
     body.append("")
-    body.append("const char* const g_msx2_card_name[MSX2_CARD_COUNT] = {")
-    for n in short:
-        body.append('    "%s",' % n.replace('"', '\\"'))
-    body.append("};")
-    body.append("")
+    # No name table.  The card names the game prints come out of the
+    # cartridge's TEXT segment (MSX2_NAME_OFFSET), which is where 78 of them at
+    # a fixed stride belong; a second copy as C string literals was 1.1 KB of a
+    # 32 KB code budget that nothing ever read.
     body.append("#else /* !MSX2_CARD_TABLES_IMPL */")
     body.append("")
     body.append("extern const u16 g_msx2_card_atk[MSX2_CARD_COUNT];")
     body.append("extern const u16 g_msx2_card_def[MSX2_CARD_COUNT];")
     body.append("extern const u8  g_msx2_card_attr[MSX2_CARD_COUNT];")
     body.append("extern const u8  g_msx2_card_tribe[MSX2_CARD_COUNT];")
-    body.append("extern const char* const g_msx2_card_name[MSX2_CARD_COUNT];")
     body.append("")
     body.append("#endif /* MSX2_CARD_TABLES_IMPL */")
     body.append("")

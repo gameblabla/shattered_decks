@@ -12,6 +12,8 @@
 #include "msx2_raster.h"
 #include "msx2_scenes.h"
 #include "msx2_battle_fx.h"
+#include "msx2_sprite.h"
+#include "msx2_screens.h"
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 //
@@ -52,6 +54,7 @@
 #define M_TURN       6   // the table is swinging to the other player's chair
 #define M_OPENING    7   // the shared opening camera path is being streamed
 #define M_DEAL       8   // the UI has just appeared and the hand is flying in
+#define M_CHECK      9   // the card check screen is up over the duel
 
 #define BOARD_VIEW_PLAYER  MSX2_VIEW_TOP
 #define BOARD_VIEW_COM     MSX2_VIEW_COM
@@ -82,6 +85,14 @@ static u8  g_deal_px[MSX2_VIDEO_PAGES];
 // order is part of the rule, because the materials fold left to right.
 static u8  g_queue[MSX2_HAND];
 static u8  g_queue_n;
+
+// The cards a fusion consumed, kept because the cut-in shows them and the
+// rules have already taken them out of the hand by the time it runs.
+static u8  g_fuse_mat[MSX2_FUSION_MATS];
+static u8  g_fuse_mat_n;
+// Frames left on the "those two do not fuse" line.  A refused chain used to be
+// completely silent, which reads as the button not working.
+static u8  g_refuse;
 
 // What the board should look like, and what each page is actually showing.
 static u8  g_want[SLOT_COUNT];
@@ -402,6 +413,8 @@ static void Msx2_BoardHud(void)
 
 static const c8* Msx2_BoardPrompt(void)
 {
+	if(g_refuse != 0)
+		return Msx2_UiText(MSX2_S_THOSE_CARDS_DO_NOT_FUSE);
 	switch(g_mode)
 	{
 	case M_PLACE:  return g_place_def ? Msx2_UiText(MSX2_S_PLACE_IN_DEFENCE_UP_DOWN_ATK)
@@ -409,6 +422,7 @@ static const c8* Msx2_BoardPrompt(void)
 	case M_EQUIP:  return Msx2_UiText(MSX2_S_PICK_A_MONSTER_TO_EQUIP);
 	case M_TARGET: return Msx2_UiText(MSX2_S_PICK_THE_TARGET_ESC_CANCELS);
 	case M_COM:    return Msx2_UiText(MSX2_S_THE_OPPONENT_IS_THINKING);
+	case M_CHECK:  return Msx2_UiText(MSX2_S_SPACE_RETURNS_TO_THE_DUEL);
 	case M_OVER:   return Msx2_UiText(MSX2_S_SPACE_RETURNS_TO_THE_TITLE);
 	default:
 		if(g_queue_n != 0)
@@ -416,9 +430,9 @@ static const c8* Msx2_BoardPrompt(void)
 			if(g_zone == ZONE_HAND) return Msx2_UiText(MSX2_S_DOWN_PICKS_MATERIALS_ESC_CLE);
 			return Msx2_UiText(MSX2_S_SPACE_FUSES_HERE_ESC_CLEARS);
 		}
-		if(g_zone == ZONE_HAND)  return Msx2_UiText(MSX2_S_SPACE_PLAYS_DOWN_FUSES);
+		if(g_zone == ZONE_HAND)  return Msx2_UiText(MSX2_S_SPACE_PLAYS_DOWN_FUSES_C_CHE);
 		if(g_zone == ZONE_FIELD) return Msx2_UiText(MSX2_S_SPACE_ATTACKS_ESC_ENDS_TURN);
-		return Msx2_UiText(MSX2_S_OPPONENT_ROW_DOWN_TO_GO_BACK);
+		return Msx2_UiText(MSX2_S_OPPONENT_ROW_SPACE_CHECKS);
 	}
 }
 
@@ -502,8 +516,8 @@ static void Msx2_BoardHandFrames(void)
 // flight, the board bend and the bare top-view hold.
 static bool Msx2_BoardFxIsLanding(void)
 {
-	return (g_fx_kind == FX_SUMMON) || (g_fx_kind == FX_FUSION)
-	    || (g_fx_kind == FX_EQUIP) || (g_fx_kind == FX_COM_PLACE);
+	return (g_fx_kind == FX_SUMMON) || (g_fx_kind == FX_EQUIP)
+	    || (g_fx_kind == FX_COM_PLACE);
 }
 
 static bool Msx2_BoardFxIsBattle(void)
@@ -799,21 +813,6 @@ static void Msx2_BoardFxDraw(bool erase)
 			Msx2_BoardFxCardFlight(erase);
 		break;
 
-	case FX_FUSION:
-		if(!erase)
-			Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_FUSION_SUMMON), MSX2_TEAL);
-		if(g_fx_field != MSX2_SLOT_NONE)
-		{
-			Msx2_BoardFxCardFlight(erase);
-			Msx2_FrameRectXor(84, 70, 88, 34, flash);
-			if(!erase)
-			{
-				Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-				Msx2_TextCenter(82, Msx2_UiText(MSX2_S_FUSION));
-			}
-		}
-		break;
-
 	case FX_SUPPORT:
 		if(!erase)
 		{
@@ -950,11 +949,21 @@ static void Msx2_BoardStartFx(void)
 		g_suppress_slot = g_fx_field;
 		if(owner == MSX2_OWNER_COM)
 		{
+			// The opponent's fusion keeps the retained board beat: the cut-in
+			// below shows the materials the PLAYER chose, and there is no
+			// record of the opponent's.
 			g_fx_kind = FX_COM_CHOOSE;
 			g_fx_followup = FX_COM_PLACE;
 		}
+		else if(action == MSX2_ACTION_FUSION)
+		{
+			// A fusion leaves the arena the way an attack does: it is the one
+			// beat where the player is owed a look at what they just made.
+			g_fx_kind = FX_FUSION;
+			g_suppress_slot = MSX2_SLOT_NONE;
+		}
 		else
-			g_fx_kind = (action == MSX2_ACTION_FUSION) ? FX_FUSION : FX_SUMMON;
+			g_fx_kind = FX_SUMMON;
 	}
 	else if(action == MSX2_ACTION_ATTACK)
 	{
@@ -985,6 +994,8 @@ static void Msx2_BoardStartFx(void)
 		g_fx_frames = 60;
 		Msx2_BoardShowBattleCutin();
 	}
+	else if(g_fx_kind == FX_FUSION)
+		Msx2_FusionBegin(g_fuse_mat, g_fuse_mat_n, g_duel.last_action_card);
 	Msx2_BoardHideHand();
 }
 
@@ -1030,6 +1041,12 @@ static bool Msx2_BoardRunFx(void)
 {
 	if(g_fx_kind == FX_NONE)
 		return FALSE;
+	if(g_fx_kind == FX_FUSION)
+	{
+		if(!Msx2_FusionStep())
+			Msx2_BoardRestoreFromCutin();
+		return TRUE;
+	}
 	if(Msx2_BoardFxIsBattle())
 	{
 		u8 page;
@@ -1070,11 +1087,23 @@ static bool Msx2_BoardRunFx(void)
 			return TRUE;
 
 		case 2:
-			/* Six swaps between the clean page and the impact page: the flash
-			   is a page flip, so nothing is ever drawn over live scan-out. */
+			/* The flash is a page flip, so nothing is ever drawn over live
+			   scan-out -- and the explosion over it is sprites, which cost one
+			   attribute write a frame and need no repair at all.  That is what
+			   buys eight frames of it where the bitmap could afford one held
+			   pose. */
+			Msx2_BattleFxBurst(g_batt_trap
+			                   ? (u8)(g_batt_px[Msx2_VideoGetShowPage()]
+			                          + MSX2_BATTLE_CARD_W / 2)
+			                   : g_batt_direct
+			                     ? (g_fx_owner == MSX2_OWNER_PLAYER ? 220 : 36)
+			                     : (u8)((g_batt_counter ? g_batt_ax : g_batt_dx)
+			                            + MSX2_BATTLE_CARD_W / 2),
+			                   83, g_batt_step);
 			Msx2_VideoFlipRequest();
-			if(++g_batt_step >= 6)
+			if(++g_batt_step >= MSX2_SPR_BURST_N)
 			{
+				Msx2_BattleFxBurst(0, 0, MSX2_SPR_BURST_N);
 				g_batt_phase = 3;
 				g_batt_step = BATT_STEPS;
 			}
@@ -1459,6 +1488,7 @@ void Msx2_BoardEnter(u8 stage)
 	g_atk_pick = MSX2_SLOT_NONE;
 	g_place_def = FALSE;
 	g_queue_n = 0;
+	g_refuse = 0;
 	g_fx_kind = FX_NONE;
 	g_fx_followup = FX_NONE;
 	g_fx_frames = 0;
@@ -1482,6 +1512,7 @@ void Msx2_BoardEnter(u8 stage)
 	Msx2_BoardSnapshot();
 
 	Msx2_RasterInit();
+	Msx2_SpriteClear();
 
 	/* Build both retained pages while the display is blank.  Their board bands
 	   start black; Msx2_BoardStep() then streams one complete pose into the
@@ -1653,6 +1684,32 @@ static u8 Msx2_BoardFirstFree(void)
 	return (slot == MSX2_SLOT_NONE) ? 0 : slot;
 }
 
+// THE CARD CHECK SCREEN.
+// A duel is played on cards the size of a postage stamp, so there has to be a
+// way to look at one properly.  The cursor is already on a card, so the screen
+// asks nothing more of the player: SPACE on the opponent's row -- which meant
+// nothing at all before -- opens it, and so does C on the keyboard anywhere.
+// A set card gives nothing away; Msx2_BoardHovered() has already refused it.
+static void Msx2_BoardCheck(void)
+{
+	u8 card = Msx2_BoardHovered();
+	u8 slot;
+	u8 owner;
+
+	if(card == MSX2_CARD_NONE)
+		return;
+	slot = SLOT_OF(g_zone, g_sel);
+	owner = (g_zone == ZONE_COM) ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER;
+	Msx2_SfxPlay(MSX2_SFX_CONFIRM);
+	g_mode = M_CHECK;
+	if(g_zone == ZONE_HAND)
+		Msx2_CardCheckCompose(card, (i16)Msx2_CardAtk(card),
+		                      (i16)Msx2_CardDef(card));
+	else
+		Msx2_CardCheckCompose(card, Msx2_FieldAtk(owner, SLOT_INDEX(slot)),
+		                      Msx2_FieldDef(owner, SLOT_INDEX(slot)));
+}
+
 static void Msx2_BoardConfirm(void)
 {
 	u8 card;
@@ -1694,18 +1751,31 @@ static void Msx2_BoardConfirm(void)
 					Msx2_SfxPlay(MSX2_SFX_CONFIRM);
 			}
 		}
+		else if(g_zone == ZONE_COM)
+		{
+			Msx2_BoardCheck();
+			return;
+		}
 		else if(g_zone == ZONE_FIELD)
 		{
 			if(g_queue_n != 0)
 			{
 				// A chain is waiting: this row picks where it lands, and the
 				// slot may be empty or hold the monster the chain folds into.
+				u8 m;
+				g_fuse_mat_n = (g_queue_n > MSX2_FUSION_MATS)
+				             ? MSX2_FUSION_MATS : g_queue_n;
+				for(m = 0; m < g_fuse_mat_n; ++m)
+					g_fuse_mat[m] =
+						g_duel.side[MSX2_OWNER_PLAYER].hand[g_queue[m]];
 				if(Msx2_PlaceFusion(MSX2_OWNER_PLAYER, g_queue, g_queue_n,
 				                    g_sel, FALSE))
 				{
 					Msx2_SfxPlay(MSX2_SFX_CONFIRM);
 					g_queue_n = 0;
 				}
+				else
+					g_refuse = 96;      // no recipe, or no summon left this turn
 				break;
 			}
 			if(!Msx2_IsMonster(g_duel.side[MSX2_OWNER_PLAYER].field[g_sel]))
@@ -1832,6 +1902,18 @@ u8 Msx2_BoardStep(void)
 		return MSX2_BOARD_BUSY;
 	}
 
+	if(g_mode == M_CHECK)
+	{
+		// Nothing else happens while a card is being read.  The rules have not
+		// moved, so putting the board back is the cut-in's own restore.
+		if(pressed & (MSX2_BTN_A | MSX2_BTN_B))
+		{
+			g_mode = M_IDLE;
+			Msx2_BoardRestoreFromCutin();
+		}
+		return MSX2_BOARD_BUSY;
+	}
+
 	// Effects own the frame while they are on screen.  Input is intentionally
 	// ignored, so a held button cannot skip the COM's card choice or a battle
 	// result.
@@ -1846,7 +1928,10 @@ u8 Msx2_BoardStep(void)
 		pressed |= MSX2_BTN_A;
 #endif
 		if(pressed & (MSX2_BTN_A | MSX2_BTN_B))
+		{
+			Msx2_SpriteClear();
 			return (g_duel.result > 0) ? MSX2_BOARD_WIN : MSX2_BOARD_LOSE;
+		}
 	}
 	else if(g_mode == M_COM)
 	{
@@ -1902,6 +1987,12 @@ u8 Msx2_BoardStep(void)
 		if(pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT | MSX2_BTN_UP | MSX2_BTN_DOWN))
 			Msx2_BoardMove(pressed);
 
+		if((Msx2_InputTyped() == 'C') && (g_mode == M_IDLE))
+		{
+			Msx2_BoardCheck();
+			return MSX2_BOARD_BUSY;
+		}
+
 		if(pressed & MSX2_BTN_A)
 			Msx2_BoardConfirm();
 		else if(pressed & MSX2_BTN_B)
@@ -1924,6 +2015,12 @@ u8 Msx2_BoardStep(void)
 #endif
 	}
 
+	if(g_refuse != 0)
+	{
+		--g_refuse;
+		if((g_refuse == 0) || (g_refuse == 95))
+			g_panel_left = MSX2_VIDEO_PAGES;
+	}
 	if((g_zone != before_zone) || (g_sel != before_sel))
 	{
 		Msx2_SfxPlay(MSX2_SFX_SELECT);
@@ -1941,6 +2038,14 @@ u8 Msx2_BoardStep(void)
 	{
 		g_mode = M_OVER;
 		Msx2_BoardTouch();
+		// The result, in letters the size of the cards.  A word built out of
+		// sprites floats over both pages and over the arena without a pixel of
+		// it being drawn into either, which is the only way this screen can
+		// say it big and still put the board back underneath.
+		if(g_duel.result > 0)
+			Msx2_SpriteShowWord(Msx2_UiText(MSX2_S_YOU_WIN), 70, MSX2_SPR_GOLD);
+		else
+			Msx2_SpriteShowWord(Msx2_UiText(MSX2_S_YOU_LOSE), 70, MSX2_SPR_RED);
 	}
 
 	Msx2_BoardStartFx();

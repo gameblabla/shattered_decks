@@ -40,6 +40,11 @@
 
 void Msx2_VideoInit(void);
 
+// Pull the bitmap font out of the cartridge into RAM.  Call it once, before
+// anything prints; the glyphs are cartridge data, not a C array (msx2_video.c).
+void Msx2_VideoLoadFont(void);
+extern u8 g_msx2_font[];
+
 // ── Presentation ─────────────────────────────────────────────────────────────
 //
 // NOTHING IS EVER DRAWN ON THE PAGE THE VDP IS SCANNING OUT.  128 KB of VRAM is

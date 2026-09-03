@@ -23,6 +23,7 @@
 #include "msx2_probe.h"
 #include "msx2_audio.h"
 #include "msx2_video.h"
+#include "msx2_sprite.h"
 #include "msx2_input.h"
 #include "msx2_title.h"
 #include "msx2_board.h"
@@ -212,7 +213,9 @@ void main(void)
 	g_seed = 0x1234ABCDu;
 	Msx2_AudioInit();
 	Msx2_ProbeInit();
+	Msx2_VideoLoadFont();
 	Msx2_VideoInit();
+	Msx2_SpriteInit();
 	Msx2_InputInit();
 	MSX2_STAGE(MSX2_STAGE_BOOT);
 

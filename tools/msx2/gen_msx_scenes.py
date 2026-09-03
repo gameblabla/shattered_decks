@@ -657,6 +657,24 @@ def build_battle_card_blob(cards, quiet):
     return bytes(blob), len(cards)
 
 
+# The bitmap font.  MSXgl ships it as a 1540-byte C array, which is 1540 bytes
+# of a 32 KB code budget for 192 characters of which the game prints 64.  The
+# printable slice is cartridge data instead, read into RAM once at boot.
+FONT_H = os.path.join(ROOT, "MSXgl-main", "engine", "content", "font",
+                      "font_mgl_sample6.h")
+FONT_FIRST = 32                  # space
+FONT_LAST = 95                   # underscore
+
+
+def font_glyphs():
+    text = open(FONT_H, encoding="latin1").read()
+    body = text[text.index("g_Font_MGL_Sample6[] ="):]
+    data = bytes(int(b, 16) for b in re.findall(r"0x([0-9A-Fa-f]{2})", body))
+    first = data[2]
+    start = 4 + (FONT_FIRST - first) * 8
+    return data[start:start + (FONT_LAST - FONT_FIRST + 1) * 8]
+
+
 UI_STRIDE = 36                   # the longest interface line is 33 characters
 UI_DEF = os.path.join(ROOT, "src", "msx2", "msx2_ui_strings.def")
 
@@ -721,6 +739,9 @@ def build_text_blob(cards, story):
     for text in ending[:ENDING_LINES]:
         blob += line_record(2, text)
     blob += bytes(LINE_STRIDE * (ENDING_LINES - len(ending[:ENDING_LINES])))
+
+    section("FONT")
+    blob += font_glyphs()
 
     section("UI")
     ui = parse_ui_strings()
@@ -909,6 +930,10 @@ def main():
         f.write("#define MSX2_INTRO_COUNT        %d\n" % intro_n)
         f.write("#define MSX2_ENDING_OFFSET      %d\n" % text_off["ENDING"])
         f.write("#define MSX2_ENDING_COUNT       %d\n" % ending_n)
+        f.write("#define MSX2_FONT_OFFSET        %d\n" % text_off["FONT"])
+        f.write("#define MSX2_FONT_FIRST         %d\n" % FONT_FIRST)
+        f.write("#define MSX2_FONT_BYTES         %d\n"
+                % ((FONT_LAST - FONT_FIRST + 1) * 8))
         f.write("#define MSX2_UI_OFFSET          %d\n" % text_off["UI"])
         f.write("#define MSX2_UI_STRIDE          %d\n" % UI_STRIDE)
         f.write("#define MSX2_UI_COUNT           %d\n" % len(ui))

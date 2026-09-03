@@ -223,9 +223,12 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_INTRO_COUNT        4
 #define MSX2_ENDING_OFFSET      9424
 #define MSX2_ENDING_COUNT       4
-#define MSX2_UI_OFFSET          10096
+#define MSX2_FONT_OFFSET        10096
+#define MSX2_FONT_FIRST         32
+#define MSX2_FONT_BYTES         512
+#define MSX2_UI_OFFSET          10608
 #define MSX2_UI_STRIDE          36
-#define MSX2_UI_COUNT           67
+#define MSX2_UI_COUNT           83
 #define MSX2_S_TURN                         0
 #define MSX2_S_PLACE_IN_DEFENCE_UP_DOWN_ATK 1
 #define MSX2_S_PLACE_IN_ATTACK_UP_DOWN_DEF  2
@@ -293,6 +296,22 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_S_RETURN_OR_SPACE_ACCEPTS      64
 #define MSX2_S_ESC_OR_BACKSPACE_DELETES     65
 #define MSX2_S_UP_TO_EIGHT_LETTERS          66
+#define MSX2_S_CARD_CHECK                   67
+#define MSX2_S_SPACE_RETURNS_TO_THE_DUEL    68
+#define MSX2_S_OPPONENT_ROW_SPACE_CHECKS    69
+#define MSX2_S_SPACE_PLAYS_DOWN_FUSES_C_CHE 70
+#define MSX2_S_YOU_WIN                      71
+#define MSX2_S_YOU_LOSE                     72
+#define MSX2_S_STORY_MODE                   73
+#define MSX2_S_BATTLE_MODE                  74
+#define MSX2_S_LOAD_STORY                   75
+#define MSX2_S_SHATTERED                    76
+#define MSX2_S_DECKS                        77
+#define MSX2_S_VBLANK                       78
+#define MSX2_S_ATTACKER_DESTROYED           79
+#define MSX2_S_DAMAGE                       80
+#define MSX2_S_NO_BATTLE_DAMAGE             81
+#define MSX2_S_THOSE_CARDS_DO_NOT_FUSE      82
 static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 

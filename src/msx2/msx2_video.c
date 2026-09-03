@@ -5,10 +5,21 @@
 #include "msx2_video.h"
 
 #include "msx2_stream.h"
+#include "msx2_sprite.h"
+#include "msx2_scenes.h"
 
-// An 8x8 bitmap font from MSXgl's content set.  The shipping game wants its own
-// outlined font strip in offscreen VRAM (plan §7.2); this is the bring-up one.
-#include "font/font_mgl_sample6.h"
+// THE FONT LIVES IN THE CARTRIDGE.
+// MSXgl ships this one as a 1540-byte C array -- 192 characters, of which the
+// game prints 64 -- and that is 1540 bytes of a hard 32 KB code budget spent on
+// glyphs the cartridge has megabytes of room for.  The printable slice, ASCII
+// 32 to 95, is read into RAM once at boot instead.
+u8 g_msx2_font[MSX2_FONT_BYTES];
+
+void Msx2_VideoLoadFont(void)
+{
+	Msx2_RomReadLong(MSX2_TEXT_SEGMENT, MSX2_FONT_OFFSET, g_msx2_font,
+	                 MSX2_FONT_BYTES);
+}
 
 // THE TEXT WRITER, AND WHY IT IS NOT MSXgl's.
 //
@@ -131,12 +142,16 @@ void Msx2_FrameRectXor(u8 x, u8 y, u16 w, u8 h, u8 color)
 	}
 }
 
-// All 256 rows, so the offscreen stashes a scene bakes below the visible 212
-// travel with the picture and the second buffer is a true duplicate.
+// Rows 0..239, not all 256.  The offscreen stashes a scene bakes below the
+// visible 212 have to travel with the picture, so the copy cannot stop at 212 --
+// but rows 240..250 of page 0 are the sprite pattern, colour and attribute
+// tables (msx2_sprite.h), and a page copy over them would take the sprites
+// down with it.  Every stash in the port is therefore below row 240.
 void Msx2_VideoCopyPage(u8 src, u8 dst)
 {
 	VDP_CommandWait();
-	VDP_CommandHMMM(0, (u16)src << 8, 0, (u16)dst << 8, MSX2_SCREEN_W, 256);
+	VDP_CommandHMMM(0, (u16)src << 8, 0, (u16)dst << 8, MSX2_SCREEN_W,
+	                MSX2_SPRITE_VRAM_ROW);
 }
 
 // One line through the VDP's LINE command.  The direction and major-axis bits
@@ -210,8 +225,7 @@ void Msx2_TextColor(u8 fg, u8 bg)
 // the padding GRAPHIC 7 needs while the display is on.
 void Msx2_TextAt(u8 x, u8 y, const c8* text)
 {
-	const u8* patterns = g_Font_MGL_Sample6 + 4;
-	u8 first = g_Font_MGL_Sample6[2];
+	const u8* patterns = g_msx2_font;
 	u8 n = 0;
 	u8 row;
 
@@ -230,7 +244,8 @@ void Msx2_TextAt(u8 x, u8 y, const c8* text)
 		u8 i;
 		for(i = 0; i < n; ++i)
 		{
-			u8 bits = patterns[(u16)((u8)text[i] - first) * MSX2_FONT_H_PX + row];
+			u8 bits = patterns[(u16)((u8)text[i] - MSX2_FONT_FIRST)
+			                   * MSX2_FONT_H_PX + row];
 			u8 c;
 			for(c = 0; c < MSX2_FONT_W_PX; ++c)
 				*d++ = (bits & (u8)(0x80 >> c)) ? g_text_fg : g_text_bg;
@@ -332,9 +347,7 @@ static void Msx2_BigGlyphRuns(u8 x, u8 y, const u8* glyph, u8 color)
 
 void Msx2_TextBigShadow(u8 y, const c8* text, u8 fg, u8 shadow)
 {
-	const u8* font = g_Font_MGL_Sample6;
-	u8 first = font[2];
-	const u8* patterns = font + 4;
+	const u8* patterns = g_msx2_font;
 	u8 pass;
 
 	// Shadow first, then the face over it: two passes over the string rather
@@ -345,7 +358,7 @@ void Msx2_TextBigShadow(u8 y, const c8* text, u8 fg, u8 shadow)
 		const c8* p = text;
 		while(*p)
 		{
-			const u8* glyph = patterns + (u16)((u8)*p - first) * MSX2_FONT_H;
+			const u8* glyph = patterns + (u16)((u8)*p - MSX2_FONT_FIRST) * MSX2_FONT_H;
 			if(pass == 0)
 				Msx2_BigGlyphRuns((u8)(x + 2), (u8)(y + 2), glyph, shadow);
 			else
@@ -398,9 +411,7 @@ static void Msx2_MaskRuns(u8 x, u8 y, u8 bits, u8 color)
 
 void Msx2_TextOutline(u8 x, u8 y, const c8* text, u8 fg, u8 outline)
 {
-	const u8* font = g_Font_MGL_Sample6;
-	u8 first = font[2];
-	const u8* patterns = font + 4;
+	const u8* patterns = g_msx2_font;
 
 	// The whole string is outlined before any of it is filled, or a letter
 	// would outline over the face of the one before it.
@@ -411,7 +422,7 @@ void Msx2_TextOutline(u8 x, u8 y, const c8* text, u8 fg, u8 outline)
 		const c8* p = text;
 		while(*p)
 		{
-			const u8* glyph = patterns + (u16)((u8)*p - first) * MSX2_FONT_H;
+			const u8* glyph = patterns + (u16)((u8)*p - MSX2_FONT_FIRST) * MSX2_FONT_H;
 			u8 row;
 			for(row = 0; row < MSX2_OUTLINE_ROWS; ++row)
 			{

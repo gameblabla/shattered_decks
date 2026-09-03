@@ -81,14 +81,51 @@ def main():
     if len(vram) < 2 * PAGE_BYTES:
         sys.exit("dump is %d bytes: expected a full 128 KiB of VRAM" % len(vram))
 
+    # SPRITES.
+    # The dump is the bitmap only: the V9938 composites its sprite plane at
+    # scan-out, so a decoded page shows none of it.  With --sprites the plane is
+    # drawn on top the way the chip would, out of the same tables msx2_sprite.c
+    # writes -- patterns at 0xF000, colours at 0xF800, attributes at 0xFA00, all
+    # in page 0, 16x16 magnified to 32x32.  Without it an explosion or a result
+    # word is invisible in a screenshot and reads as a bug that is not there.
+    overlay = {}
+    if "--sprites" in sys.argv:
+        def vread(addr):
+            return vram[addr >> 1 | (addr & 1) * PAGE_BYTES]
+        for spr in range(32):
+            sy = vread(0xFA00 + spr * 4)
+            if sy == 216:
+                break
+            sx = vread(0xFA00 + spr * 4 + 1)
+            pat = vread(0xFA00 + spr * 4 + 2) & 0xFC
+            col = vread(0xF800 + spr * 16) & 0x0F
+            if col == 0:
+                continue
+            top = (sy + 1) & 0xFF
+            for py in range(16):
+                left = vread(0xF000 + pat * 8 + py)
+                right = vread(0xF000 + pat * 8 + 16 + py)
+                bits = (left << 8) | right
+                for px in range(16):
+                    if not (bits & (0x8000 >> px)):
+                        continue
+                    for dy in range(2):
+                        for dx in range(2):
+                            overlay[(sx + px * 2 + dx, top + py * 2 + dy)] = col
+    # A rough palette for the sprite indices msx2_sprite.c sets.
+    SPRITE_RGB = {1: (255, 255, 255), 2: (255, 190, 0), 3: (255, 40, 40),
+                  4: (0, 210, 190), 5: (90, 140, 255)}
+
     rows = []
     for y in range(HEIGHT):
         logical = base + y * WIDTH
         line = bytes(vram[(logical + x) >> 1 | ((logical + x) & 1) * PAGE_BYTES]
                      for x in range(WIDTH))
         row = bytearray()
-        for byte in line:
+        for x, byte in enumerate(line):
             r, g, b = grb332_rgb(byte)
+            if (x, y) in overlay:
+                r, g, b = SPRITE_RGB.get(overlay[(x, y)], (255, 0, 255))
             row += bytes((r, g, b)) * scale
         for _ in range(scale):
             rows.append(row)

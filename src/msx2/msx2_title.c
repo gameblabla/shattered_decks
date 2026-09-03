@@ -33,7 +33,9 @@
 #define TITLE_STRIP_Y     186
 #define TITLE_STRIP_H     12
 #define TITLE_STASH_CLEAN 216   // the artwork strip, untouched
-#define TITLE_STASH_TEXT  232   // the same strip with the prompt drawn on it
+#define TITLE_STASH_TEXT  228   // the same strip with the prompt drawn on it
+                                // (both below row 240: the sprite tables live
+                                //  there and a page copy stops short of them)
 
 // Phases.  ATTRACT is the logo and the blinking prompt; MENU is the panel.
 #define TITLE_ATTRACT     0
@@ -57,11 +59,14 @@ static u8  g_blink_on;
 static u8  g_dirty;
 static u8  g_dirty_left;
 
-static const c8* const g_rows[MSX2_TITLE_ROWS] =
+// The row labels are cartridge strings, so the table holds their ids: a C
+// initialiser cannot call anything, and there is no reason for these three
+// words to sit in the code budget when every other line of the game does not.
+static const u8 g_rows[MSX2_TITLE_ROWS] =
 {
-	"STORY MODE",
-	"BATTLE MODE",
-	"LOAD STORY",
+	MSX2_S_STORY_MODE,
+	MSX2_S_BATTLE_MODE,
+	MSX2_S_LOAD_STORY,
 };
 
 static bool Msx2_TitleRowEnabled(u8 row)
@@ -87,8 +92,8 @@ static void Msx2_TitleLogo(void)
 	// No band behind the letters any more: the artwork is the background, so
 	// the logo is drawn transparently with a hard shadow, which is what keeps
 	// it readable over both the bright sky and the dark rock.
-	Msx2_TextBigShadow(TITLE_LOGO_Y1, "SHATTERED", MSX2_GOLD, MSX2_BLACK);
-	Msx2_TextBigShadow(TITLE_LOGO_Y2, "DECKS", MSX2_WHITE, MSX2_BLACK);
+	Msx2_TextBigShadow(TITLE_LOGO_Y1, Msx2_UiText(MSX2_S_SHATTERED), MSX2_GOLD, MSX2_BLACK);
+	Msx2_TextBigShadow(TITLE_LOGO_Y2, Msx2_UiText(MSX2_S_DECKS), MSX2_WHITE, MSX2_BLACK);
 }
 
 // ── The attract prompt ───────────────────────────────────────────────────────
@@ -126,7 +131,7 @@ static void Msx2_TitleMenuRow(u8 row)
 		fg = MSX2_WHITE;
 
 	Msx2_TextColor(fg, MSX2_BLACK);
-	Msx2_TextAt(MENU_ROW_X, y, g_rows[row]);
+	Msx2_TextAt(MENU_ROW_X, y, Msx2_UiText(g_rows[row]));
 
 	// A right-pointing triangle, nine rows tall so it centres on the 8-pixel
 	// glyph.  The erase covers the whole nine rows, or the tail of the previous
