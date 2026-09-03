@@ -141,8 +141,12 @@ static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 // holds the bare top view while the new card is read.  These carry that.
 #define FX_BEND_POSES  1
 // Every landing flight is the same length, so one easing curve serves them all.
-#define FX_LANDING_FRAMES 14
-#define FX_HOLD_FRAMES 24
+// Eight poses, not fourteen: a pose is a 40x48 stream out of the cartridge plus
+// a save and a restore of what was under it, which is nearly two video frames
+// of VDP on its own.  Fourteen of those, then a bend, then twenty-four frames
+// of hold, was the best part of two seconds to put one card down.
+#define FX_LANDING_FRAMES 8
+#define FX_HOLD_FRAMES 12
 static u8 g_hand_hidden;
 static u8 g_fx_bend;
 static u8 g_fx_hold;
@@ -464,6 +468,23 @@ static void Msx2_BoardInfo(void)
 
 	Msx2_Fill(1, (u8)(MSX2_INFO_Y + 1), MSX2_SCREEN_W - 2,
 	          MSX2_SCREEN_H - MSX2_INFO_Y - 2, MSX2_PANEL_COLOR);
+
+	// THE TURN IS NOT THE PLAYER'S.
+	// The panel names whatever the cursor is over, and across a chair change
+	// there is no cursor: what stayed on it was the last card the player had
+	// been reading, with its attack and defence, for the whole of the
+	// opponent's turn.  It goes blank -- with one line, while the camera is
+	// still, saying whose turn it now is.
+	if((g_mode == M_TURN) || (g_mode == M_COM) || (g_mode == M_DEAL) ||
+	   (g_view == BOARD_VIEW_COM))
+	{
+		if(g_mode == M_COM)
+		{
+			Msx2_TextColor(MSX2_SAND, MSX2_PANEL_COLOR);
+			Msx2_TextCenter((u8)(MSX2_INFO_Y + 21), Msx2_BoardPrompt());
+		}
+		return;
+	}
 
 	if(g_mode == M_OVER)
 	{
@@ -894,11 +915,14 @@ static void Msx2_BoardHideHand(void)
 	g_fx_hold = 0;
 	Msx2_BoardSnapshot();
 
-	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
+	if(g_view != MSX2_VIEW_OVER)
 	{
-		Msx2_VideoDrawPage(i);
-		Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
-		          MSX2_BLACK);
+		for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
+		{
+			Msx2_VideoDrawPage(i);
+			Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
+			          MSX2_BLACK);
+		}
 	}
 	Msx2_VideoDrawPage((u8)(show ^ 1));
 
@@ -909,32 +933,34 @@ static void Msx2_BoardHideHand(void)
 	}
 }
 
-// The board settling under the card that just landed on it.
+// Taking the flight back off the board.
 //
-// This used to borrow the turn strip's neighbour of the resting pose as a
-// "bend".  That strip is a half orbit sampled five times, so its neighbour is a
-// quarter turn away: what played was a one-frame jump-cut to a completely
-// different camera, and nothing on any other target lurches when a card is
-// placed.  What is left is the part that was actually doing work -- putting the
-// resting board band back from the cartridge so the cleanup repaint can draw
-// every card into its own projected quad -- and the landing costs one 29 KB
-// stream instead of two.
+// This used to re-stream the whole resting board band out of the cartridge --
+// twenty-nine kilobytes, blanked -- and then repaint all ten slots, because the
+// picture that came back was empty.  It was a third of a second on its own, and
+// it was wrong in the overhead view, where the board goes on down through the
+// hand's rows and the band is only part of the picture.
+//
+// The flight already saves the 40x48 of arena it is about to cover, on each
+// page separately, and already knows which pose each page is still holding.  So
+// putting the board back is that restore, twice -- one command pair per page --
+// and the ten slots the repaint would have had to redraw were never disturbed.
 static void Msx2_BoardStepBend(void)
 {
-	u8 pose = (g_view == BOARD_VIEW_COM) ? (u8)(MSX2_MOVE_TURN_POSES - 1) : 0;
+	u8 show = Msx2_VideoGetDrawPage();
+	u8 keep = g_fx_frames;
 	u8 i;
 
-	Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H, MSX2_BLACK);
-	Msx2_StreamBand((u16)(MSX2_MOVE_TURN_SEGMENT(g_stage)
-	                      + (u16)pose * MSX2_MOVE_POSE_SEGS),
-	                MSX2_BAND_Y, MSX2_BAND_H);
-	// The pose is a picture of the empty board, so every live card on this page
-	// is gone and the cleanup repaint below has to put all of them back.
-	for(i = 0; i < MSX2_FIELD_SLOTS; ++i)
+	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
 	{
-		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
-		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
+		if(g_fx_page_frame[i] == FX_FRAME_NONE)
+			continue;
+		Msx2_VideoDrawPage(i);
+		Msx2_BoardFxErase(g_fx_page_frame[i]);
+		g_fx_page_frame[i] = FX_FRAME_NONE;
 	}
+	Msx2_VideoDrawPage(show);
+	g_fx_frames = keep;
 	--g_fx_bend;
 }
 
@@ -1196,8 +1222,6 @@ static bool Msx2_BoardRunFx(void)
 
 	if(g_fx_cleanup && (g_fx_bend != 0))
 	{
-		Msx2_VideoDrawPage(Msx2_VideoGetDrawPage());
-		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 		Msx2_BoardStepBend();
 		Msx2_VideoFlipRequest();
 		if(g_fx_bend == 0)
@@ -1380,6 +1404,41 @@ static void Msx2_BoardRevealPanels(void)
 // One frame of the opening deal: the card in flight is erased from this page
 // at the position it last had here, redrawn one step further left, and the
 // hand's gold frames are put back where it crossed them.
+// THE FLICKER IN THE DEAL.
+//
+// A card in flight is erased by blacking out the forty-eight rows it was on and
+// putting the five gold frames back.  That is right for the band and wrong for
+// anything already settled in it: the flight comes in from the right and lands
+// on the left, so on the step after a landing the black rectangle sits exactly
+// on top of the card that just arrived -- and the retained painter was never
+// told, because g_shown[] still said that slot was drawn.
+//
+// The two pages hold different flights, so each blacked out a different card
+// and each kept it blacked out.  What the player saw was the whole hand
+// blinking, one card at a time, for the length of the deal.
+//
+// So the erase repairs what it damaged, here rather than a frame later: at most
+// two settled cards can overlap a forty-pixel rectangle, and only on the step
+// after a landing.
+static void Msx2_BoardDealErase(u8 page)
+{
+	u8 px = g_deal_px[page];
+	u8 i;
+
+	if(px == MSX2_SLOT_NONE)
+		return;
+	Msx2_Fill(px, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_BLACK);
+	Msx2_BoardHandFrames();
+	g_deal_px[page] = MSX2_SLOT_NONE;
+
+	for(i = 0; i < g_deal_reveal; ++i)
+	{
+		u8 hx = HAND_X(i);
+		if(((u8)(hx + MSX2_CARD_W) > px) && (hx < (u8)(px + MSX2_CARD_W)))
+			Msx2_BoardBlitSlot(SLOT_OF(ZONE_HAND, i));
+	}
+}
+
 static void Msx2_BoardStepDeal(void)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
@@ -1402,10 +1461,7 @@ static void Msx2_BoardStepDeal(void)
 		u8 i;
 		if(g_deal_px[page] != MSX2_SLOT_NONE)
 		{
-			Msx2_Fill(g_deal_px[page], MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H,
-			          MSX2_BLACK);
-			Msx2_BoardHandFrames();
-			g_deal_px[page] = MSX2_SLOT_NONE;
+			Msx2_BoardDealErase(page);
 			for(i = MSX2_FIELD_SLOTS; i < SLOT_COUNT; ++i)
 				g_shown[page][i] = MSX2_CARD_NONE;
 		}
@@ -1413,20 +1469,24 @@ static void Msx2_BoardStepDeal(void)
 			if(!Msx2_BoardPaint())
 				break;
 		Msx2_VideoFlipRequest();
-		g_mode = M_IDLE;
+		g_mode = (g_view == BOARD_VIEW_COM) ? M_COM : M_IDLE;
 		g_panel_left = MSX2_VIDEO_PAGES;
 		return;
 	}
 
-	if(g_deal_px[page] != MSX2_SLOT_NONE)
-	{
-		Msx2_Fill(g_deal_px[page], MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H,
-		          MSX2_BLACK);
-		Msx2_BoardHandFrames();
-		g_deal_px[page] = MSX2_SLOT_NONE;
-	}
+	Msx2_BoardDealErase(page);
 
-	card = g_duel.side[MSX2_OWNER_PLAYER].hand[g_deal_slot];
+	// THE HAND BELONGS TO WHOEVER'S CHAIR THIS IS.
+	// The opponent's five arrive the same way the player's do and from the same
+	// side of the screen -- as the common back, because the face of a card in
+	// the opponent's hand is not the player's to see.  The strip used to simply
+	// appear, all five at once, which read as a redraw rather than as a deal.
+	{
+		u8 owner = (g_view == BOARD_VIEW_COM) ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER;
+		card = g_duel.side[owner].hand[g_deal_slot];
+		if(card != MSX2_CARD_NONE)
+			card = (owner == MSX2_OWNER_COM) ? MSX2_CARD_BACK_INDEX : card;
+	}
 	if((card != MSX2_CARD_NONE) && (card < MSX2_CARD_ART_COUNT))
 	{
 		u8 target = HAND_X(g_deal_slot);
@@ -1654,18 +1714,16 @@ static void Msx2_BoardStepCameraMove(void)
 		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
 	}
 	g_panel_left = MSX2_VIDEO_PAGES;
-	// A chair change hands the strip to the other player: five cards at once,
-	// not one a frame.  The opening deals its own hand and owes nothing here.
-	g_hand_left = (g_mode == M_OPENING) ? 0 : MSX2_VIDEO_PAGES;
-	if(g_mode == M_OPENING)
-	{
-		g_mode = M_DEAL;
-		g_deal_slot = 0;
-		g_deal_step = 0;
-		g_deal_px[0] = g_deal_px[1] = MSX2_SLOT_NONE;
-		return;
-	}
-	g_mode = (g_view == BOARD_VIEW_COM) ? M_COM : M_IDLE;
+	// EVERY chair change deals, not only the opening.  The strip used to be
+	// handed over all five at once, which is a redraw and not a deal; and on
+	// the way back it is also how the player sees the cards drawn to replace
+	// what they spent last turn.
+	g_hand_left = 0;
+	g_mode = M_DEAL;
+	g_deal_slot = 0;
+	g_deal_step = 0;
+	g_deal_reveal = 0;
+	g_deal_px[0] = g_deal_px[1] = MSX2_SLOT_NONE;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1926,6 +1984,12 @@ u8 Msx2_BoardStep_In(void)
 	u8 before_zone = g_zone;
 	u8 before_sel = g_sel;
 
+	// The selector is a sprite: it has to be taken off the screen by something,
+	// and every branch below can return before the paint.  Doing it here, once,
+	// covers all of them -- at the cost of the cursor being one frame behind a
+	// press, which at 20 pixels and sixty hertz is not a thing anyone can see.
+	Msx2_BoardShowCursor();
+
 	if((g_mode == M_OPENING) || (g_mode == M_TURN))
 	{
 		Msx2_BoardStepCameraMove();
@@ -2100,7 +2164,6 @@ u8 Msx2_BoardStep_In(void)
 	if(Msx2_BoardRunFx())
 		return MSX2_BOARD_BUSY;
 
-	Msx2_BoardShowCursor();
 	if(Msx2_BoardPaint())
 		Msx2_VideoFlipRequest();
 
