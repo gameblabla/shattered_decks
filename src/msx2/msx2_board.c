@@ -99,8 +99,10 @@ static u8  g_want[SLOT_COUNT];
 static u8  g_flag[SLOT_COUNT];
 static u8  g_shown[MSX2_VIDEO_PAGES][SLOT_COUNT];
 static u8  g_shown_flag[MSX2_VIDEO_PAGES][SLOT_COUNT];
-static u8  g_cursor_at[MSX2_VIDEO_PAGES];
-static u8  g_cursor_col_at[MSX2_VIDEO_PAGES];
+// The selector's animation phase.  It is a sprite, so it is not per page and
+// it is not journalled: it floats over both, changes with one attribute write,
+// and nothing under it is ever disturbed.
+static u8  g_gem_tick;
 static u8  g_panel_left;         // pages still owing a HUD/info repaint
 static u8  g_hand_left;          // pages still owing the whole hand strip
 
@@ -355,43 +357,63 @@ static void Msx2_BoardBlitSlot(u8 slot)
 // and it is drawn INTO the flat ring the generator baked just outside every
 // quad, so erasing it is the same four lines in MSX2_RING_COLOR and no artwork
 // underneath is ever repaired.  A hand slot's is the baked gold frame, redrawn.
-static void Msx2_BoardCursor(u8 slot, u8 color)
-{
-	if(IS_HAND(slot))
-	{
-		u8 x;
-		// The hand is off the screen for a landing, and a bracket around a
-		// position that is not there reads as a stray white box.
-		if(g_hand_hidden)
-			return;
-		x = HAND_X(slot - MSX2_FIELD_SLOTS);
-		Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1), MSX2_CARD_W + 2,
-		               MSX2_CARD_H + 2, color);
-		return;
-	}
-	Msx2_QuadOutline(g_msx2_slot_quad[g_view][slot], color);
-}
-
-// What "erase the cursor" means depends on which strip the slot is in: the
-// board's baked ring, or the hand band's baked gold frame.
-static u8 Msx2_BoardRestColor(u8 slot)
-{
-	return IS_HAND(slot) ? MSX2_GOLD_COLOR : MSX2_RING_COLOR;
-}
-
-// Gold to choose with, red to attack with: the cursor colour is the only place
-// the mode is stated without words.
+// ── The selector ────────────────────────────────────────────────────────────
+//
+// It used to be a rectangle drawn INTO the bitmap: a white frame round the
+// chosen hand card, an outline round the chosen quad.  Both had to be erased
+// again, on each page separately, by redrawing the exact colour that was under
+// them -- which is why the hand row has a baked gold frame and every slot has a
+// baked ring, and why half a dozen places in this file had to remember where
+// the cursor was on which page.
+//
+// It is a sprite now: the spinning red gem the PC build draws beside the chosen
+// card (draw_spin_cursor in src/main.c), projected offline into eight sprite
+// patterns by tools/msx2/gen_msx_scenes.py.  A sprite floats over both GRAPHIC
+// 7 pages, so there is one cursor rather than two, it moves for the cost of one
+// attribute write, and nothing underneath it is ever touched -- which is what
+// lets it animate at all on a Z80.
+//
+// Teal to place with, red otherwise: the colour is still the only place the
+// mode is stated without words.
 static u8 Msx2_BoardCursorColor(void)
 {
-	if(g_mode == M_TARGET)
-		return MSX2_RED;
-	if(g_mode == M_COM)
-		return MSX2_RED;
 	if((g_mode == M_PLACE) || (g_mode == M_EQUIP))
-		return MSX2_TEAL;
-	// White, not gold: every card already has a gold frame, and a gold cursor
-	// on top of one is invisible.
-	return MSX2_WHITE;
+		return MSX2_SPR_TEAL;
+	return MSX2_SPR_RED;
+}
+
+// The gem stands on the left edge of whatever the cursor is over, half on and
+// half off it -- there are seven pixels between two hand cards, which is not
+// room for a twenty-pixel gem beside one.
+static void Msx2_BoardShowCursor(void)
+{
+	u8 slot = SLOT_OF(g_zone, g_sel);
+	u8 x, y;
+
+	if((g_fx_kind != FX_NONE) || (g_mode == M_COM) || (g_mode == M_TURN) ||
+	   (g_mode == M_OPENING) || (g_mode == M_DEAL) || (g_mode == M_CHECK) ||
+	   (g_mode == M_OVER) || (g_hand_hidden && IS_HAND(slot)))
+	{
+		Msx2_SpriteHide(MSX2_SPR_CURSOR);
+		return;
+	}
+
+	if(IS_HAND(slot))
+	{
+		x = HAND_X(slot - MSX2_FIELD_SLOTS);
+		y = (u8)(MSX2_HAND_Y + (MSX2_CARD_H - MSX2_GEM_SCREEN) / 2);
+	}
+	else
+	{
+		const u8* box = g_msx2_slot_box[g_view][slot];
+		u8 mid = (u8)(box[1] + box[3] / 2);
+		x = box[0];
+		y = (mid > MSX2_GEM_SCREEN / 2) ? (u8)(mid - MSX2_GEM_SCREEN / 2) : 0;
+	}
+	x = (x > MSX2_GEM_SCREEN / 2) ? (u8)(x - MSX2_GEM_SCREEN / 2) : 0;
+
+	++g_gem_tick;
+	Msx2_SpriteGem(x, y, (u8)(g_gem_tick >> 2), Msx2_BoardCursorColor());
 }
 
 static void Msx2_BoardHud(void)
@@ -692,7 +714,6 @@ static void Msx2_BoardRestoreFromCutin(void)
 			Msx2_BoardBlitSlot(i);
 	Msx2_BoardHud();
 	Msx2_BoardInfo();
-	Msx2_BoardCursor(SLOT_OF(g_zone, g_sel), Msx2_BoardCursorColor());
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
 	Msx2_VideoShowPage(page);
 	VDP_EnableDisplay(TRUE);
@@ -702,8 +723,6 @@ static void Msx2_BoardRestoreFromCutin(void)
 		g_shown[0][i] = g_shown[1][i] = g_want[i];
 		g_shown_flag[0][i] = g_shown_flag[1][i] = g_flag[i];
 	}
-	g_cursor_at[0] = g_cursor_at[1] = SLOT_OF(g_zone, g_sel);
-	g_cursor_col_at[0] = g_cursor_col_at[1] = Msx2_BoardCursorColor();
 	g_panel_left = 0;
 	g_fx_kind = FX_NONE;
 	g_fx_followup = FX_NONE;
@@ -878,11 +897,6 @@ static void Msx2_BoardHideHand(void)
 	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
 	{
 		Msx2_VideoDrawPage(i);
-		if(g_cursor_at[i] != MSX2_SLOT_NONE)
-		{
-			Msx2_BoardCursor(g_cursor_at[i], Msx2_BoardRestColor(g_cursor_at[i]));
-			g_cursor_at[i] = MSX2_SLOT_NONE;
-		}
 		Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
 		          MSX2_BLACK);
 	}
@@ -893,8 +907,6 @@ static void Msx2_BoardHideHand(void)
 		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
 		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
 	}
-	if(IS_HAND(g_cursor_at[0])) g_cursor_at[0] = MSX2_SLOT_NONE;
-	if(IS_HAND(g_cursor_at[1])) g_cursor_at[1] = MSX2_SLOT_NONE;
 }
 
 // The board settling under the card that just landed on it.
@@ -923,7 +935,6 @@ static void Msx2_BoardStepBend(void)
 		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
 		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
 	}
-	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
 	--g_fx_bend;
 }
 
@@ -1229,7 +1240,6 @@ static bool Msx2_BoardRunFx(void)
 			Msx2_BoardSnapshot();
 			Msx2_VideoDrawPage(page);
 			Msx2_BoardHandFrames();
-			g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
 			g_panel_left = MSX2_VIDEO_PAGES;
 		}
 		return TRUE;
@@ -1255,8 +1265,6 @@ static bool Msx2_BoardRunFx(void)
 			g_shown[0][i] = g_shown[1][i] = g_want[i];
 			g_shown_flag[0][i] = g_shown_flag[1][i] = g_flag[i];
 		}
-		g_cursor_at[0] = g_cursor_at[1] = SLOT_OF(g_zone, g_sel);
-		g_cursor_col_at[0] = g_cursor_col_at[1] = Msx2_BoardCursorColor();
 		g_fx_cleanup = FALSE;
 		Msx2_VideoFlipRequest();
 		Msx2_BoardFinishFx();
@@ -1287,15 +1295,6 @@ static bool Msx2_BoardRunFx(void)
 static bool Msx2_BoardPaint(void)
 {
 	u8 page = Msx2_VideoGetDrawPage();
-	u8 cursor = SLOT_OF(g_zone, g_sel);
-	u8 color = Msx2_BoardCursorColor();
-
-	// With the strip off the screen a bracket around a hand position is a
-	// stray white box; on the board it is still the cursor, and hiding it
-	// while the player is choosing a slot is what made the top view unusable.
-	// An effect owns the whole screen, so nothing is bracketed under one.
-	if((g_hand_hidden && IS_HAND(cursor)) || (g_fx_kind != FX_NONE))
-		cursor = MSX2_SLOT_NONE;
 	bool painted = FALSE;
 	u8 cards = 0;
 	u8 i;
@@ -1346,17 +1345,6 @@ static bool Msx2_BoardPaint(void)
 		g_shown[page][i] = g_want[i];
 		g_shown_flag[page][i] = g_flag[i];
 		++cards;
-		painted = TRUE;
-	}
-
-	if((g_cursor_at[page] != cursor) || (g_cursor_col_at[page] != color))
-	{
-		if(g_cursor_at[page] != MSX2_SLOT_NONE)
-			Msx2_BoardCursor(g_cursor_at[page],
-			                 Msx2_BoardRestColor(g_cursor_at[page]));
-		Msx2_BoardCursor(cursor, color);
-		g_cursor_at[page] = cursor;
-		g_cursor_col_at[page] = color;
 		painted = TRUE;
 	}
 
@@ -1547,8 +1535,6 @@ void Msx2_BoardEnter_In(u8 stage)
 		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
 		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
 	}
-	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
-	g_cursor_col_at[0] = g_cursor_col_at[1] = 0;
 	g_panel_left = 0;
 	g_hand_left = 0;
 }
@@ -1590,8 +1576,6 @@ static void Msx2_BoardCutTo(u8 view)
 		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
 		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
 	}
-	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
-	g_cursor_col_at[0] = g_cursor_col_at[1] = 0;
 	g_panel_left = MSX2_VIDEO_PAGES;
 	g_hand_left = MSX2_VIDEO_PAGES;
 	Msx2_BoardSnapshot();
@@ -1669,8 +1653,6 @@ static void Msx2_BoardStepCameraMove(void)
 		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
 		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
 	}
-	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
-	g_cursor_col_at[0] = g_cursor_col_at[1] = 0;
 	g_panel_left = MSX2_VIDEO_PAGES;
 	// A chair change hands the strip to the other player: five cards at once,
 	// not one a frame.  The opening deals its own hand and owes nothing here.
@@ -2118,6 +2100,7 @@ u8 Msx2_BoardStep_In(void)
 	if(Msx2_BoardRunFx())
 		return MSX2_BOARD_BUSY;
 
+	Msx2_BoardShowCursor();
 	if(Msx2_BoardPaint())
 		Msx2_VideoFlipRequest();
 

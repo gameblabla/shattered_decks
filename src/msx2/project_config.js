@@ -51,7 +51,6 @@ ProjModules = [
 AddSources = [
 	"../game/deck.c",
 	"../game/ai.c",
-	"msx2_story_load.c",
 	"msx2_libc.c",
 ];
 

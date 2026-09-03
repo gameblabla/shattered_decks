@@ -23,6 +23,7 @@
 #pragma once
 
 #include "msxgl.h"
+#include "msx2_scenes.h"
 
 // The last VRAM row a page copy may touch.  Above it are the sprite tables.
 #define MSX2_SPRITE_VRAM_ROW  240
@@ -38,8 +39,18 @@
 // and the attribute's pattern byte is slot * 4.
 #define MSX2_SPR_BURST0  0    // eight frames of an expanding burst
 #define MSX2_SPR_BURST_N 8
-#define MSX2_SPR_LETTER0 8    // eight slots for a word, built from the font
+#define MSX2_SPR_GEM0    8    // eight frames of the spinning selector
+#define MSX2_SPR_GEM_N   MSX2_GEM_FRAMES
+// Slots 0..15 are exactly the cartridge's pattern blob, in order, which is what
+// lets Msx2_SpriteInit() upload it as one run.  The letters come after, because
+// they are the only patterns still built at runtime -- out of the font.
+#define MSX2_SPR_LETTER0 16
 #define MSX2_SPR_LETTER_N 8
+
+// The sprite the selector uses.  The last one, so it is behind everything the
+// effects put up (the V9938 gives the lower id the higher priority) and can
+// never take one of the eight-per-line slots a burst wants.
+#define MSX2_SPR_CURSOR  31
 
 void Msx2_SpriteInit(void);
 
@@ -61,3 +72,7 @@ u8   Msx2_SpriteWord(const c8* text);
 // letter is two sprite lines wide in the eight-per-line budget, so this is for
 // short words: YOU WIN, YOU LOSE, FUSION.
 void Msx2_SpriteShowWord(const c8* text, u8 y, u8 color);
+
+// The selector, at (x, y) -- the top-left of the gem, not of the sprite cell --
+// spinning at `frame`.  Call it every frame; it is three VRAM writes.
+void Msx2_SpriteGem(u8 x, u8 y, u8 frame, u8 color);

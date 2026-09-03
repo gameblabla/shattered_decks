@@ -27,6 +27,7 @@ Usage:
     tools/msx2/gen_msx_scenes.py [--quiet]
 """
 
+import math
 import os
 import re
 import sys
@@ -677,6 +678,119 @@ def title_words(data):
     return bytes(buf), bytes(strip)
 
 
+# ── The cursor gem ───────────────────────────────────────────────────────────
+#
+# The PC build's selector is a small red octahedron spinning beside the chosen
+# card (draw_spin_cursor in src/main.c).  It is drawn there with a hardware 3-D
+# quad per face; here the same solid is projected once per frame offline into
+# sprite patterns, which is the only affordable way to have a spinning anything
+# on a Z80 -- and it is a sprite, so it floats over both GRAPHIC 7 pages and
+# costs the bitmap nothing at all.
+#
+# Ten pixels square inside the 16x16 pattern, because sprites are magnified 2x
+# for the explosion and the result word: that puts a 20-pixel gem beside a
+# 40x48 card.  Eight frames cover a quarter turn, which is the whole cycle -- an
+# octahedron's equator is four-fold symmetric.
+
+GEM_FRAMES = 8
+GEM_SIZE = 10
+GEM_TILT = 0.55          # the same lean toward the viewer the PC build uses
+
+
+def gem_frames():
+    """The spinning selector, as GEM_SIZE-wide row masks (bit 15 leftmost)."""
+    supersample = 8
+    out = []
+    for f in range(GEM_FRAMES):
+        ang = f * (math.pi / 2) / GEM_FRAMES
+        ct, st = math.cos(GEM_TILT), math.sin(GEM_TILT)
+        equator = []
+        for k in range(4):
+            a = ang + k * math.pi / 2
+            x, z = math.cos(a) * 0.74, math.sin(a) * 0.74
+            equator.append((x, -z * st, z * ct))
+        top = (0.0, 1.18 * ct, 1.18 * st)
+        bottom = (0.0, -1.18 * ct, -1.18 * st)
+
+        side = GEM_SIZE * supersample
+        img = Image.new("L", (side, side), 0)
+        draw = ImageDraw.Draw(img)
+        centre = side / 2.0
+        scale = side / 2.0 / 1.22
+        project = lambda v: (centre + v[0] * scale, centre - v[1] * scale)
+
+        for k in range(4):
+            p, q = equator[k], equator[(k + 1) & 3]
+            for tri in ((top, p, q), (bottom, q, p)):
+                a, b, c = [project(v) for v in tri]
+                # Screen-space winding is the back-face test: a face turned away
+                # would otherwise paint over the one in front of it.
+                if (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]) <= 0:
+                    continue
+                draw.polygon([a, b, c], fill=255)
+        # The near half of the equator is cut back out.  In one colour the
+        # silhouette alone barely changes as the solid turns; the seam crossing
+        # it is what actually reads as a spin.
+        for k in range(4):
+            p, q = equator[k], equator[(k + 1) & 3]
+            if p[2] + q[2] > 0.05:
+                draw.line([project(p), project(q)], fill=0, width=supersample)
+
+        small = img.resize((GEM_SIZE, GEM_SIZE), Image.Resampling.BOX)
+        rows = []
+        for y in range(GEM_SIZE):
+            bits = 0
+            for x in range(GEM_SIZE):
+                if small.getpixel((x, y)) > 105:
+                    bits |= 0x8000 >> x
+            rows.append(bits)
+        out.append(rows)
+    return out
+
+
+# ── The sprite patterns ──────────────────────────────────────────────────────
+#
+# Sixteen 16x16 patterns: eight frames of the explosion burst, then eight of the
+# selector gem.  They are cartridge data, not a table in msx2_sprite.c, for the
+# same reason the interface strings are: _CODE is 32 KB and the cartridge is six
+# megabytes.  They are also emitted in the V9938's own layout -- four 8x8
+# quarters, top-left, bottom-left, top-right, bottom-right -- so Msx2_SpriteInit
+# reads thirty-two bytes and hands them straight to VRAM with no shuffling.
+
+# A ring that opens, breaks up and blows apart: the outer edge is ragged and the
+# inside empties out from frame three, so what plays is an explosion rather than
+# a circle getting bigger.
+BURST = [
+    [0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0180, 0x02E0, 0x07E0, 0x0380, 0x0180, 0x0200, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000],
+    [0x0000, 0x0000, 0x0000, 0x0180, 0x07E0, 0x07E0, 0x1FF0, 0x1FF8, 0x0FF0, 0x0FE0, 0x1FF0, 0x0B80, 0x0440, 0x0000, 0x0000, 0x0000],
+    [0x0000, 0x0440, 0x0B80, 0x1FF8, 0x2FF8, 0x7FFC, 0x3FF8, 0x1FFC, 0x3FFE, 0x7FFC, 0x1FF8, 0x1FF8, 0x0FE0, 0x0760, 0x0080, 0x0000],
+    [0x0180, 0x0BB8, 0x0FF4, 0x3FFE, 0x3FFC, 0xBEBE, 0x7C3E, 0x783E, 0xF81F, 0xB83F, 0x7E7E, 0x7FFE, 0x1FF8, 0x1FF8, 0x07E0, 0x0260],
+    [0x0980, 0x1FD0, 0x2FFC, 0x7E7C, 0xB81C, 0x701D, 0x600E, 0x6006, 0xF00F, 0xF00F, 0x700E, 0x741E, 0x3FB8, 0x1FF8, 0x07E0, 0x0640],
+    [0x0640, 0x07E0, 0x1918, 0x3808, 0x6006, 0x6006, 0xC003, 0xC003, 0x4006, 0x6002, 0x4001, 0xA00C, 0x7004, 0x2E3C, 0x1FD0, 0x0980],
+    [0x0260, 0x0460, 0x1808, 0x0004, 0x6002, 0x4002, 0x8001, 0x8001, 0x0002, 0x4000, 0x8000, 0x0001, 0x2006, 0x3004, 0x0898, 0x0190],
+    [0x0190, 0x0818, 0x2004, 0x2002, 0x0001, 0x8000, 0x0000, 0x0000, 0x8001, 0x8001, 0x0000, 0x4002, 0x0000, 0x0008, 0x0000, 0x0260],
+]
+
+
+def vdp_pattern(rows):
+    """One 16x16 sprite, as the V9938 stores it: four 8x8 quarters."""
+    pat = bytearray(32)
+    for y, bits in enumerate(rows):
+        q = (y & 7) + (8 if (y & 8) else 0)
+        pat[q] = (bits >> 8) & 0xFF
+        pat[16 + q] = bits & 0xFF
+    return bytes(pat)
+
+
+def sprite_patterns():
+    blob = bytearray()
+    for rows in BURST:
+        blob += vdp_pattern(rows)
+    for rows in gem_frames():
+        blob += vdp_pattern(rows + [0] * (16 - len(rows)))
+    return bytes(blob)
+
+
 SCENES = [
     ("TITLE", lambda: Image.open(
         os.path.join(ROOT, "assets/source/title/title256_msx2.png"))),
@@ -905,6 +1019,7 @@ def main():
     # offscreen stash and streams this into the other; a blink is then a single
     # command-engine move between them, exactly as it was.
     title_prompt_segment = place("title_prompt", prompt_strip)
+    sprite_segment = place("sprites", sprite_patterns())
 
     card_blob, card_mirror, card_count = build_card_blob(cards, quiet)
     card_segment = place("cards", card_blob)
@@ -1041,6 +1156,23 @@ def main():
         f.write("#define MSX2_TITLE_STRIP_Y      %d\n" % TITLE_STRIP_Y)
         f.write("#define MSX2_TITLE_STRIP_H      %d\n" % TITLE_STRIP_H)
         f.write("#define MSX2_FONT_OFFSET        %d\n" % text_off["FONT"])
+
+        f.write("\n// ── Sprite patterns ───────────────────────────────────────\n")
+        f.write("// Sixteen 16x16 patterns in the V9938's own quarter layout: eight\n")
+        f.write("// frames of the burst, then eight of the selector.  Cartridge data\n")
+        f.write("// rather than a table in msx2_sprite.c, and already shuffled, so the\n")
+        f.write("// sprite layer reads 32 bytes and hands them straight to VRAM.\n")
+        f.write("#define MSX2_SPRITE_PAT_SEGMENT %d\n" % sprite_segment)
+        f.write("#define MSX2_SPRITE_PAT_BYTES   32\n")
+        f.write("// The selector is the PC build's spinning red gem (draw_spin_cursor\n")
+        f.write("// in src/main.c), projected offline: %d frames of a quarter turn, %d\n"
+                % (GEM_FRAMES, GEM_SIZE))
+        f.write("// pixels square inside the pattern, which the 2x magnification puts\n")
+        f.write("// on the screen at %d.\n" % (GEM_SIZE * 2))
+        f.write("#define MSX2_GEM_FRAMES         %d\n" % GEM_FRAMES)
+        f.write("#define MSX2_GEM_SIZE           %d\n" % GEM_SIZE)
+        f.write("#define MSX2_GEM_SCREEN         %d\n" % (GEM_SIZE * 2))
+
         f.write("#define MSX2_FONT_FIRST         %d\n" % FONT_FIRST)
         f.write("#define MSX2_FONT_BYTES         %d\n"
                 % ((FONT_LAST - FONT_FIRST + 1) * 8))

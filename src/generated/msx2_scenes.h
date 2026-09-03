@@ -20,9 +20,9 @@
 #define MSX2_SCENE_TALK_2_SEGMENT 44
 #define MSX2_SCENE_TALK_3_SEGMENT 48
 // ── Card textures ───────────────────────────────────────────────────────
-#define MSX2_CARD_ART_SEGMENT   53
+#define MSX2_CARD_ART_SEGMENT   54
 // The same textures mirrored left to right, for the COM row (§8.4).
-#define MSX2_CARD_MIRROR_SEGMENT 63
+#define MSX2_CARD_MIRROR_SEGMENT 64
 #define MSX2_CARD_ART_STRIDE    2048
 #define MSX2_CARD_ART_PER_SEG   8
 #define MSX2_CARD_ART_COUNT     79
@@ -31,7 +31,7 @@
 // the texture size and the quads it is mapped into are one decision.
 
 // Large 2-D monster cards for the board-free battle cut-in.
-#define MSX2_BATTLE_CARD_SEGMENT 73
+#define MSX2_BATTLE_CARD_SEGMENT 74
 #define MSX2_BATTLE_CARD_STRIDE  16384
 #define MSX2_BATTLE_CARD_W       88
 #define MSX2_BATTLE_CARD_H       120
@@ -49,7 +49,7 @@
 #define MSX2_OVER_Y            14
 #define MSX2_OVER_H            168
 #define MSX2_BOARD_VIEWS       3
-#define MSX2_VIEW_SEGMENT(stage, view)  (145 + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))
+#define MSX2_VIEW_SEGMENT(stage, view)  (146 + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))
 #define MSX2_VIEW_STAGES        4
 #define MSX2_BAND_Y             14
 #define MSX2_BAND_H             114
@@ -156,7 +156,7 @@ static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4
 // as run lengths.  The Z80 replays it with block I/O and does no
 // arithmetic at all; that is what makes fifteen perspective cards
 // affordable on a 3.58 MHz machine.
-#define MSX2_SPAN_SEGMENT       223
+#define MSX2_SPAN_SEGMENT       224
 #define MSX2_SPAN_STRIDE        2048
 #define MSX2_SPAN_PER_SEG       8
 #define MSX2_SPAN_MAX           605
@@ -175,7 +175,7 @@ static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS
 };
 
 // ── Empty-slot tiles ──────────────────────────────────────────────────
-#define MSX2_SLOT_ART_SEGMENT   193
+#define MSX2_SLOT_ART_SEGMENT   194
 #define MSX2_SLOT_ART_STRIDE    4096
 #define MSX2_SLOT_ART_PER_SEG   4
 #define MSX2_SLOT_ART_PER_VIEW  10
@@ -188,9 +188,9 @@ static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS
 // is a held cinematic push and the art is authored for that (§4.6.2).
 #define MSX2_MOVE_POSE_BYTES    29184
 #define MSX2_MOVE_POSE_SEGS     2
-#define MSX2_MOVE_OPENING_SEGMENT(stage)  (227 + (stage) * 16 * MSX2_MOVE_POSE_SEGS)
+#define MSX2_MOVE_OPENING_SEGMENT(stage)  (228 + (stage) * 16 * MSX2_MOVE_POSE_SEGS)
 #define MSX2_MOVE_OPENING_POSES    16
-#define MSX2_MOVE_TURN_SEGMENT(stage)  (355 + (stage) * 5 * MSX2_MOVE_POSE_SEGS)
+#define MSX2_MOVE_TURN_SEGMENT(stage)  (356 + (stage) * 5 * MSX2_MOVE_POSE_SEGS)
 #define MSX2_MOVE_TURN_POSES    5
 
 // ── Story screens ──────────────────────────────────────────────────────
@@ -209,7 +209,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 // lit and dimmed, from the SAME alpha mask -- so the two variants cover
 // byte for byte the same pixels and swapping which speaker is lit is a
 // pure overwrite with no background repair at all.
-#define MSX2_PORTRAIT_SEGMENT   395
+#define MSX2_PORTRAIT_SEGMENT   396
 #define MSX2_PORTRAIT_SEGS      2
 #define MSX2_PORTRAIT_CHARS     6
 #define MSX2_PORTRAIT_W         124
@@ -241,7 +241,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_MAP_PANEL_H        156
 
 // ── String table ───────────────────────────────────────────────────────
-#define MSX2_TEXT_SEGMENT       419
+#define MSX2_TEXT_SEGMENT       420
 #define MSX2_NAME_STRIDE        24
 #define MSX2_NAME_COUNT         78
 #define MSX2_NAME_OFFSET        0
@@ -258,6 +258,21 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_TITLE_STRIP_Y      186
 #define MSX2_TITLE_STRIP_H      12
 #define MSX2_FONT_OFFSET        10096
+
+// ── Sprite patterns ───────────────────────────────────────
+// Sixteen 16x16 patterns in the V9938's own quarter layout: eight
+// frames of the burst, then eight of the selector.  Cartridge data
+// rather than a table in msx2_sprite.c, and already shuffled, so the
+// sprite layer reads 32 bytes and hands them straight to VRAM.
+#define MSX2_SPRITE_PAT_SEGMENT 53
+#define MSX2_SPRITE_PAT_BYTES   32
+// The selector is the PC build's spinning red gem (draw_spin_cursor
+// in src/main.c), projected offline: 8 frames of a quarter turn, 10
+// pixels square inside the pattern, which the 2x magnification puts
+// on the screen at 20.
+#define MSX2_GEM_FRAMES         8
+#define MSX2_GEM_SIZE           10
+#define MSX2_GEM_SCREEN         20
 #define MSX2_FONT_FIRST         32
 #define MSX2_FONT_BYTES         512
 #define MSX2_UI_OFFSET          10608
@@ -360,5 +375,5 @@ static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  8
-#define MSX2_SCENE_SEGMENT_LAST   419
-#define MSX2_ASSET_ROM_KB         6720
+#define MSX2_SCENE_SEGMENT_LAST   420
+#define MSX2_ASSET_ROM_KB         6736

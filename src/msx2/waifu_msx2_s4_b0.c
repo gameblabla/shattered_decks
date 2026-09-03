@@ -13,9 +13,11 @@
 //  each gets a whole 16 KB.  msx2_bank.h has the rule that governs what code in
 //  here may call.
 //
-//  msx2_story_utils.c is here too, and only for room: nothing outside the story
-//  calls it, and it was 1.8 KB of _CODE that the disk layer needed instead.
+//  msx2_story_utils.c and msx2_story_load.c are here too, and only for room:
+//  nothing outside the story calls either, and together they were 2.5 KB of
+//  _CODE that the disk layer and the sprite selector needed instead.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msx2_story_utils.c"
+#include "msx2_story_load.c"
 #include "msx2_story.c"

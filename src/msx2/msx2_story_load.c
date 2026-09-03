@@ -14,7 +14,7 @@
 #define LOAD_ROW_Y(n)  (u8)(84 + (n) * 22)
 #define LOAD_CODE_LEN  16
 
-static c8* g_code;
+static c8* g_pick_code;
 static u8  g_pick;
 static u8  g_refused;
 static u8  g_dirty;          // pages that still owe a repaint
@@ -59,7 +59,7 @@ static void Msx2_StoryLoadPickPaint(void)
 
 void Msx2_StoryLoadPickEnter(c8* code)
 {
-	g_code = code;
+	g_pick_code = code;
 	g_pick = Msx2_DiskPresent() ? 0 : 1;
 	g_refused = 0;
 	g_dirty = 0;
@@ -92,7 +92,7 @@ u8 Msx2_StoryLoadPickStep(void)
 	{
 		if(g_pick != 0)
 			return MSX2_LOADPICK_PASSWORD;
-		if(Msx2_DiskLoad(g_code) && (g_code[LOAD_CODE_LEN - 1] != 0))
+		if(Msx2_DiskLoad(g_pick_code) && (g_pick_code[LOAD_CODE_LEN - 1] != 0))
 			return MSX2_LOADPICK_LOADED;
 		Msx2_StoryLoadPickRefused();
 	}

@@ -274,7 +274,7 @@ EOF
 		SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" \
 			-cart "$ROM" -romtype NEO-16 -script "$local_script" 2>&1 | head -10
 		[ -f "$VRAM" ] || die "no VRAM dump written -- the emulator never reached the timer"
-		python3 tools/msx2/vram_png.py "$VRAM" "$SHOT" --page "$SHOT_PAGE" --scale 2
+		python3 tools/msx2/vram_png.py "$VRAM" "$SHOT" --page "$SHOT_PAGE" --scale 2 --sprites
 		;;
 
 	ram)

@@ -6,6 +6,7 @@
 #include "msx2_video.h"
 
 #include "msx2_scenes.h"
+#include "msx2_stream.h"
 
 #define SPR_PAT_ADDR   0xF000u
 #define SPR_COL_ADDR   0xF800u
@@ -20,18 +21,6 @@
 static u8 g_pat[32];
 static u8 g_col[16];
 static u8 g_atr[4];
-
-static const u16 g_burst[MSX2_SPR_BURST_N][16] =
-{
-	{ 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0180, 0x02E0, 0x07E0, 0x0380, 0x0180, 0x0200, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 },
-	{ 0x0000, 0x0000, 0x0000, 0x0180, 0x07E0, 0x07E0, 0x1FF0, 0x1FF8, 0x0FF0, 0x0FE0, 0x1FF0, 0x0B80, 0x0440, 0x0000, 0x0000, 0x0000 },
-	{ 0x0000, 0x0440, 0x0B80, 0x1FF8, 0x2FF8, 0x7FFC, 0x3FF8, 0x1FFC, 0x3FFE, 0x7FFC, 0x1FF8, 0x1FF8, 0x0FE0, 0x0760, 0x0080, 0x0000 },
-	{ 0x0180, 0x0BB8, 0x0FF4, 0x3FFE, 0x3FFC, 0xBEBE, 0x7C3E, 0x783E, 0xF81F, 0xB83F, 0x7E7E, 0x7FFE, 0x1FF8, 0x1FF8, 0x07E0, 0x0260 },
-	{ 0x0980, 0x1FD0, 0x2FFC, 0x7E7C, 0xB81C, 0x701D, 0x600E, 0x6006, 0xF00F, 0xF00F, 0x700E, 0x741E, 0x3FB8, 0x1FF8, 0x07E0, 0x0640 },
-	{ 0x0640, 0x07E0, 0x1918, 0x3808, 0x6006, 0x6006, 0xC003, 0xC003, 0x4006, 0x6002, 0x4001, 0xA00C, 0x7004, 0x2E3C, 0x1FD0, 0x0980 },
-	{ 0x0260, 0x0460, 0x1808, 0x0004, 0x6002, 0x4002, 0x8001, 0x8001, 0x0002, 0x4000, 0x8000, 0x0001, 0x2006, 0x3004, 0x0898, 0x0190 },
-	{ 0x0190, 0x0818, 0x2004, 0x2002, 0x0001, 0x8000, 0x0000, 0x0000, 0x8001, 0x8001, 0x0000, 0x4002, 0x0000, 0x0008, 0x0000, 0x0260 },
-};
 
 void Msx2_SpriteInit(void)
 {
@@ -60,27 +49,19 @@ void Msx2_SpriteInit(void)
 	// zero.  Every write below waits for the engine before it starts.
 	VDP_CommandWait();
 
-	// EIGHT FRAMES OF A BURST, as sixteen row masks each.
-	// A ring that opens, breaks up and blows apart: the outer edge is ragged
-	// and the inside empties out from frame three, so what plays is an
-	// explosion rather than a circle getting bigger.  They are a table because
-	// the arithmetic that drew them (a distance per pixel, and a hash for the
-	// ragged edge) costs more code than the 256 bytes it would save.
-	for(f = 0; f < MSX2_SPR_BURST_N; ++f)
+	// THE PATTERNS, out of the cartridge.
+	// Sixteen of them -- eight frames of the burst, then eight of the spinning
+	// selector -- baked by tools/msx2/gen_msx_scenes.py in the V9938's own
+	// quarter layout, so this is a read and a write and no shuffling at all.
+	// They are cartridge data for the same reason the interface strings are:
+	// _CODE is 32 KB and there are six megabytes on the other side of the
+	// mapper.
+	for(f = 0; f < (MSX2_SPR_BURST_N + MSX2_SPR_GEM_N); ++f)
 	{
-		u8 y;
-		for(y = 0; y < 16; ++y)
-		{
-			u16 bits = g_burst[f][y];
-			// A 16x16 pattern is four 8x8 quarters: top-left, bottom-left,
-			// then top-right, bottom-right.
-			u8 q = (u8)((y & 7) + ((y & 8) ? 8 : 0));
-			g_pat[q]      = (u8)(bits >> 8);
-			g_pat[16 + q] = (u8)(bits & 0xFF);
-		}
-		VDP_WriteVRAM(g_pat,
-		              (u16)(SPR_PAT_ADDR + (u16)(MSX2_SPR_BURST0 + f) * 32),
-		              0, 32);
+		Msx2_RomRead(MSX2_SPRITE_PAT_SEGMENT,
+		             (u16)((u16)f * MSX2_SPRITE_PAT_BYTES), g_pat,
+		             MSX2_SPRITE_PAT_BYTES);
+		VDP_WriteVRAM(g_pat, (u16)(SPR_PAT_ADDR + (u16)f * 32), 0, 32);
 	}
 
 	Msx2_SpriteClear();
@@ -168,4 +149,10 @@ void Msx2_SpriteShowWord(const c8* text, u8 y, u8 color)
 	}
 	for(; i < MSX2_SPR_LETTER_N; ++i)
 		Msx2_SpriteHide(i);
+}
+
+void Msx2_SpriteGem(u8 x, u8 y, u8 frame, u8 color)
+{
+	Msx2_SpriteAt(MSX2_SPR_CURSOR, x, y,
+	              (u8)(MSX2_SPR_GEM0 + (frame & (MSX2_GEM_FRAMES - 1))), color);
 }
