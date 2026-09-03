@@ -201,6 +201,11 @@ static u8 g_fx_hand;
 static u8 g_fx_field;
 static u8 g_fx_owner;
 static u8 g_suppress_slot;
+// The hand position the opponent's wind-up beat is pointing at.  The rules
+// have already taken that card out of the hand, so the snapshot reports the
+// position empty -- and the beat exists to say WHICH card came out of it, so
+// the cover is held in place for as long as the selector stands on it.
+static u8 g_hold_hand;
 static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 
 // A card landing on the field takes the hand off the screen, slides the real
@@ -367,6 +372,11 @@ static void Msx2_BoardSnapshot(void)
 	{
 		g_want[g_suppress_slot] = MSX2_CARD_NONE;
 		g_flag[g_suppress_slot] = 0;
+	}
+	if(g_hold_hand != MSX2_SLOT_NONE)
+	{
+		g_want[g_hold_hand] = MSX2_CARD_BACK_INDEX;
+		g_flag[g_hold_hand] = 0;
 	}
 
 	// AN EMPTY SLOT HAS NO FLAGS.
@@ -584,18 +594,9 @@ static u8 Msx2_BoardCursorColor(void)
 // The gem stands on the left edge of whatever the cursor is over, half on and
 // half off it -- there are seven pixels between two hand cards, which is not
 // room for a twenty-pixel gem beside one.
-static void Msx2_BoardShowCursor(void)
+static void Msx2_BoardGemOnSlot(u8 slot, u8 color)
 {
-	u8 slot = SLOT_OF(g_zone, g_sel);
 	u8 x, y;
-
-	if((g_fx_kind != FX_NONE) || (g_mode == M_COM) || (g_mode == M_TURN) ||
-	   (g_mode == M_OPENING) || (g_mode == M_DEAL) || (g_mode == M_CHECK) ||
-	   (g_mode == M_OVER) || (g_hand_hidden && IS_HAND(slot)))
-	{
-		Msx2_SpriteHideGem();
-		return;
-	}
 
 	if(IS_HAND(slot))
 	{
@@ -622,7 +623,39 @@ static void Msx2_BoardShowCursor(void)
 	x = (x > MSX2_GEM_SCREEN / 2) ? (u8)(x - MSX2_GEM_SCREEN / 2) : 0;
 
 	++g_gem_tick;
-	Msx2_SpriteGem(x, y, (u8)(g_gem_tick >> 2), Msx2_BoardCursorColor());
+	Msx2_SpriteGem(x, y, (u8)(g_gem_tick >> 2), color);
+}
+
+static void Msx2_BoardShowCursor(void)
+{
+	u8 slot = SLOT_OF(g_zone, g_sel);
+
+	// THE OPPONENT POINTS WITH THE SAME CURSOR THE PLAYER DOES.
+	// Its wind-up beat used to draw its own thing into the bitmap -- the card
+	// cover restamped over the hand position plus an XOR frame flashing round
+	// it -- which is the drawn-in selector this port stopped using everywhere
+	// else, and had to be unpicked again on both pages afterwards.  The gem is
+	// a sprite over both pages, so the beat is one attribute write and there is
+	// nothing to erase.
+	if(g_fx_kind == FX_COM_CHOOSE)
+	{
+		u8 at = (g_hold_hand != MSX2_SLOT_NONE) ? g_hold_hand : g_fx_field;
+		if(at == MSX2_SLOT_NONE)
+			Msx2_SpriteHideGem();
+		else
+			Msx2_BoardGemOnSlot(at, MSX2_SPR_RED);
+		return;
+	}
+
+	if((g_fx_kind != FX_NONE) || (g_mode == M_COM) || (g_mode == M_TURN) ||
+	   (g_mode == M_OPENING) || (g_mode == M_DEAL) || (g_mode == M_CHECK) ||
+	   (g_mode == M_OVER) || (g_hand_hidden && IS_HAND(slot)))
+	{
+		Msx2_SpriteHideGem();
+		return;
+	}
+
+	Msx2_BoardGemOnSlot(slot, Msx2_BoardCursorColor());
 }
 
 static void Msx2_BoardHud(void)
@@ -942,6 +975,7 @@ static void Msx2_BoardRestoreFromCutin(void)
 	u8 i;
 
 	g_suppress_slot = MSX2_SLOT_NONE;
+	g_hold_hand = MSX2_SLOT_NONE;
 	Msx2_BoardSnapshot();
 	VDP_EnableDisplay(FALSE);
 	// Nothing of the cut-in may survive onto the board, and the strike's layer
@@ -1266,27 +1300,13 @@ static void Msx2_BoardFxDraw(bool erase)
 	switch(g_fx_kind)
 	{
 	case FX_COM_CHOOSE:
+		// The banner and nothing else.  What the beat POINTS at -- the held
+		// cover in the opponent's hand, or the attacker on its row when there
+		// is no hand card left -- is the sprite selector, placed by
+		// Msx2_BoardShowCursor() exactly as it is for the player.  Nothing is
+		// drawn into the bitmap, so there is nothing here to erase either.
 		if(!erase)
 			Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_OPPONENT_CHOOSES_A_CARD), MSX2_RED);
-		if(g_fx_hand != MSX2_SLOT_NONE)
-		{
-			u8 x = HAND_X(g_fx_hand);
-			if(!erase && (g_fx_card < MSX2_CARD_ART_COUNT))
-			{
-				Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + MSX2_CARD_BACK_INDEX / MSX2_CARD_ART_PER_SEG),
-				                (u16)((MSX2_CARD_BACK_INDEX % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
-				                x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H);
-			}
-			Msx2_FrameRectXor((u8)(x - 2), (u8)(MSX2_HAND_Y - 2),
-			                  MSX2_CARD_W + 4, MSX2_CARD_H + 4, flash);
-		}
-		else
-		{
-			// Attacks have no hand card left to point at; show the attacker as a
-			// compact 2-D cut-in while the battle banner changes on the next beat.
-			if(g_fx_field != MSX2_SLOT_NONE)
-				Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
-		}
 		break;
 
 	case FX_EQUIP:
@@ -1381,18 +1401,6 @@ static void Msx2_BoardPrepareLanding(void)
 
 static void Msx2_BoardFxErase(u8 frame)
 {
-	u8 page = Msx2_VideoGetDrawPage();
-
-	// The chosen COM card is the only opaque effect layer.  It is painted over
-	// an empty hand slot, so restoring that slot is enough; all other effect
-	// geometry is XOR and is removed by replaying the same commands.
-	if((g_fx_kind == FX_COM_CHOOSE) && (g_fx_hand != MSX2_SLOT_NONE))
-	{
-		u8 slot = SLOT_OF(ZONE_HAND, g_fx_hand);
-		Msx2_BoardBlitSlot(slot);
-		g_shown[page][slot] = g_want[slot];
-		g_shown_flag[page][slot] = g_flag[slot];
-	}
 	// A LANDING'S PANEL IS THE BANNER, AND THE BANNER IS CONSTANT.
 	// Repainting the info panel here wiped it every pose, so every pose had to
 	// write it again -- and Msx2_BoardInfo() is not cheap: the card lines read
@@ -1424,16 +1432,48 @@ static void Msx2_BoardHideHand(void)
 
 	g_hand_hidden = TRUE;
 
+	// ONLY THE CARD THAT IS BEING PLAYED LEAVES THE HAND.
+	// The whole band used to go flat black on both pages, which is right for
+	// the player -- the camera is overhead by then and the strip is not on the
+	// screen at all -- but the opponent plays from its own chair, with its five
+	// covers in front of it, and every card it played wiped all five off and
+	// dealt them back afterwards.  The card that flies is the only one that has
+	// left the hand, so it is the only one erased: a fill and the position's
+	// own baked frame, on both pages, and the other four are never touched.
 	if(g_view != MSX2_VIEW_OVER)
 	{
+		u8 hand_slot = (g_fx_hand < MSX2_HAND_SLOTS)
+		             ? SLOT_OF(ZONE_HAND, g_fx_hand) : MSX2_SLOT_NONE;
 		for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
 		{
 			Msx2_VideoDrawPage(i);
-			Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
-			          MSX2_BLACK);
+			if(hand_slot == MSX2_SLOT_NONE)
+				Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W,
+				          MSX2_HAND_BAND_H, MSX2_BLACK);
+			else
+			{
+				u8 x = HAND_X(g_fx_hand);
+				Msx2_Fill(x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H,
+				          MSX2_BLACK);
+				Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1),
+				               MSX2_CARD_W + 2, MSX2_CARD_H + 2,
+				               MSX2_GOLD_COLOR);
+			}
+		}
+		Msx2_VideoDrawPage((u8)(show ^ 1));
+		if(hand_slot != MSX2_SLOT_NONE)
+		{
+			// The strip is still on the screen, so the snapshot must keep
+			// reporting the other four: g_hand_hidden stays clear, and only the
+			// emptied position is marked as drawn.
+			g_hand_hidden = FALSE;
+			g_shown[0][hand_slot] = g_shown[1][hand_slot] = MSX2_CARD_NONE;
+			g_shown_flag[0][hand_slot] = g_shown_flag[1][hand_slot] = 0;
+			return;
 		}
 	}
-	Msx2_VideoDrawPage((u8)(show ^ 1));
+	else
+		Msx2_VideoDrawPage((u8)(show ^ 1));
 
 	for(i = MSX2_FIELD_SLOTS; i < SLOT_COUNT; ++i)
 	{
@@ -1524,6 +1564,7 @@ static void Msx2_BoardStartFx(void)
 	           : Msx2_BoardFieldSlot(owner, g_duel.last_action_field_slot);
 	g_fx_followup = FX_NONE;
 	g_suppress_slot = MSX2_SLOT_NONE;
+	g_hold_hand = MSX2_SLOT_NONE;
 
 	if((action == MSX2_ACTION_PLACE) || (action == MSX2_ACTION_FUSION))
 	{
@@ -1605,6 +1646,12 @@ static void Msx2_BoardStartFx(void)
 			g_fx_followup = FX_SUPPORT;
 	}
 
+	// The wind-up beat says which card came out of the opponent's hand, so the
+	// cover stays in the position the selector is standing on until the beat is
+	// over.  The rules emptied it before any of this ran.
+	if((g_fx_kind == FX_COM_CHOOSE) && (g_fx_hand < MSX2_HAND_SLOTS))
+		g_hold_hand = SLOT_OF(ZONE_HAND, g_fx_hand);
+
 	Msx2_BoardFxSetDestination();
 	Msx2_ClearActionEvent();
 	// The selector goes now, not on the next frame's Msx2_BoardShowCursor():
@@ -1658,6 +1705,10 @@ static void Msx2_BoardStartFx(void)
 static void Msx2_BoardFinishFx(void)
 {
 	u8 next = g_fx_followup;
+
+	// The wind-up is over: the held cover leaves the hand now, which is what
+	// the flight that follows is carrying.
+	g_hold_hand = MSX2_SLOT_NONE;
 	if(next == FX_COM_PLACE)
 	{
 		// Keep the newly chosen card off the field while its outline travels
@@ -2188,6 +2239,7 @@ void Msx2_BoardEnter_In(u8 stage)
 	g_fx_start_x = g_fx_start_y = 0;
 	g_fx_dest_x = g_fx_dest_y = 0;
 	g_suppress_slot = MSX2_SLOT_NONE;
+	g_hold_hand = MSX2_SLOT_NONE;
 	g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 	g_move_pose = 0;
 	g_move_target = BOARD_VIEW_PLAYER;
@@ -2422,6 +2474,7 @@ static void Msx2_BoardStepCameraMove(void)
 	g_view = g_move_target;
 	Msx2_RasterSetView(g_view);
 	g_suppress_slot = MSX2_SLOT_NONE;
+	g_hold_hand = MSX2_SLOT_NONE;
 	Msx2_BoardSnapshot();
 	for(i = 0; i < SLOT_COUNT; ++i)
 	{
