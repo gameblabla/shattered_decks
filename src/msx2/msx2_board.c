@@ -17,16 +17,33 @@
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 //
-// Slots 0..9 are the field, in the order the capture emitted them: 0-4 the COM
-// row, 5-9 the player's.  Slots 10..14 are the player's hand, which is a flat
-// HUD strip rather than board geometry.  The field quads and their boxes come
-// out of the capture (src/generated/msx2_scenes.h) -- there is no second
-// definition of where a card goes, which is the whole point of §4.3.
-
-#define ZONE_COM     0
-#define ZONE_FIELD   1
-#define ZONE_HAND    2
-#define FIELD_ROW    (MSX2_FIELD_SLOTS / 2)
+// Slots 0..19 are the field, in the order the capture emitted them: 0-4 the COM
+// monster row, 5-9 the player's, 10-14 the COM's SUPPORT row and 15-19 the
+// player's.  Slots 20..24 are the player's hand, which is a flat HUD strip
+// rather than board geometry.  The field quads and their boxes come out of the
+// capture (src/generated/msx2_scenes.h) -- there is no second definition of
+// where a card goes, which is the whole point of §4.3.
+//
+// THE SUPPORT ROWS ARE ROWS OF THE BOARD, NOT A LIST BESIDE IT.
+// An equip or a set trap lives at ENEMY_CARD_ROW-1 / PLAYER_CARD_ROW+1 on every
+// other target, and it is drawn there in perspective like any other card.  This
+// port used to have nowhere to put one: an equip flew a card across the board
+// and then vanished, so a duel could be decided by cards that were never on the
+// screen.  The capture now projects all four rows, so they are ordinary slots
+// with ordinary quads, tiles and span programs.
+//
+// They are display-only.  Nothing the player does targets a support slot -- an
+// equip is aimed at the MONSTER it attaches to -- so the cursor still walks
+// COM -> FIELD -> HAND and never stops on one.  That is why the two support
+// zones sit BETWEEN the field and the hand in the numbering: the numbering is
+// the slot layout the capture emitted, and the cursor's three rows are picked
+// out of it by name rather than by counting.
+#define ZONE_COM      0
+#define ZONE_FIELD    1
+#define ZONE_COM_SUP  2
+#define ZONE_SUP      3
+#define ZONE_HAND     4
+#define FIELD_ROW    (MSX2_FIELD_SLOTS / 4)
 #define SLOT_COUNT   (MSX2_FIELD_SLOTS + MSX2_HAND_SLOTS)
 
 #define SLOT_OF(z, i)     (u8)((u8)(z) * FIELD_ROW + (u8)(i))
@@ -42,6 +59,10 @@
 #define F_FACEUP     0x01
 #define F_DEFENSE    0x02
 #define F_QUEUE(n)   (u8)((n) << 4)
+// A value no real flag word can hold (the queue lives in the high nibble and
+// only bits 0 and 1 are used below it), written into g_shown_flag[] to mean
+// "this page is showing something that is no longer right, whatever it thinks".
+#define F_STALE      0x08
 #define F_QUEUE_OF(f) (u8)((f) >> 4)
 
 // ── Interaction ──────────────────────────────────────────────────────────────
@@ -193,6 +214,8 @@ static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 // of hold, was the best part of two seconds to put one card down.
 #define FX_LANDING_FRAMES 8
 #define FX_HOLD_FRAMES 6
+// The equip banner, which has to stand on its own now that no card flies.
+#define FX_EQUIP_FRAMES 26
 static u8 g_hand_hidden;
 static u8 g_fx_bend;
 static u8 g_fx_hold;
@@ -272,6 +295,16 @@ static void Msx2_BoardQueueToggle(u8 hand_slot)
 	}
 }
 
+// A support card on the row: face up unless it is a trap, which is set.
+// Msx2_PlaySupport() puts nothing else on the row, and the rules take a trap
+// off it on the frame it fires, so a face-down card here is always a trap that
+// has not gone off yet.
+static bool Msx2_BoardSupportFaceUp(u8 card)
+{
+	return Msx2_IsSupport(card) &&
+	       (Msx2_SupportKind(card) != MSX2_SUP_TRAP);
+}
+
 // Rebuild the wanted picture from the duel state.  Called after every action;
 // the paint pass works out what that actually costs.
 static void Msx2_BoardSnapshot(void)
@@ -296,6 +329,18 @@ static void Msx2_BoardSnapshot(void)
 		g_want[SLOT_OF(ZONE_FIELD, i)] = you->field[i];
 		g_flag[SLOT_OF(ZONE_FIELD, i)] = (u8)((you->faceup[i] ? F_FACEUP : 0)
 		                                  | (you->defense[i] ? F_DEFENSE : 0));
+
+		// The support rows.  An equip is played openly and shows its face; a
+		// trap is SET, so it shows the common back until it fires -- and the
+		// rules take it off the row on the frame it does, so a face-down card
+		// on this row is always a trap that has not gone off yet.  Neither is
+		// ever in defence position: the row has no position to be in.
+		g_want[SLOT_OF(ZONE_COM_SUP, i)] = com->equip_field[i];
+		g_flag[SLOT_OF(ZONE_COM_SUP, i)] =
+		    Msx2_BoardSupportFaceUp(com->equip_field[i]) ? F_FACEUP : 0;
+		g_want[SLOT_OF(ZONE_SUP, i)] = you->equip_field[i];
+		g_flag[SLOT_OF(ZONE_SUP, i)] =
+		    Msx2_BoardSupportFaceUp(you->equip_field[i]) ? F_FACEUP : 0;
 
 		// A hand position the opening deal has not delivered yet is empty as
 		// far as the retained painter is concerned.
@@ -369,6 +414,24 @@ static void Msx2_BoardSlotGround(u8 slot)
 	                box[0], box[1], box[2], box[3]);
 }
 
+// A slot's restore tile is its quad plus a four-pixel margin, and in a chair
+// view the four board rows recede close enough together that the margin reaches
+// into the same column of the row in front of it and the row behind.  Emptying
+// a slot therefore takes a bite out of whatever is standing in those, and the
+// retained painter would never put it back -- as far as it is concerned those
+// slots still show exactly what they showed.  So tell it they do not.  It costs
+// at most three extra card draws, and only on the frame a slot is emptied.
+static void Msx2_BoardSlotGroundNeighbours(u8 slot)
+{
+	u8 page = Msx2_VideoGetDrawPage();
+	u8 col = SLOT_INDEX(slot);
+	u8 i;
+
+	for(i = col; i < MSX2_FIELD_SLOTS; i = (u8)(i + FIELD_ROW))
+		if((i != slot) && (g_want[i] != MSX2_CARD_NONE))
+			g_shown_flag[page][i] |= F_STALE;
+}
+
 static void Msx2_BoardBlitSlot(u8 slot)
 {
 	u8  card = g_want[slot];
@@ -413,6 +476,7 @@ static void Msx2_BoardBlitSlot(u8 slot)
 	if(card == MSX2_CARD_NONE)
 	{
 		Msx2_BoardSlotGround(slot);
+		Msx2_BoardSlotGroundNeighbours(slot);
 		return;
 	}
 
@@ -426,7 +490,11 @@ static void Msx2_BoardBlitSlot(u8 slot)
 		// face their own chair.
 		const u8* at = g_msx2_over_card_xy[slot];
 		bool def = (g_flag[slot] & F_DEFENSE) != 0;
-		u16 base = (SLOT_ZONE(slot) == ZONE_COM)
+		// Both of the opponent's rows read the half-turned set: seen from
+		// above, its monsters and its supports alike face its own chair.
+		bool com_row = (SLOT_ZONE(slot) == ZONE_COM) ||
+		               (SLOT_ZONE(slot) == ZONE_COM_SUP);
+		u16 base = com_row
 		         ? (def ? MSX2_OVER_DEF_MIRROR_SEGMENT : MSX2_OVER_CARD_MIRROR_SEGMENT)
 		         : (def ? MSX2_OVER_DEF_SEGMENT : MSX2_OVER_CARD_SEGMENT);
 		if(def)
@@ -687,8 +755,13 @@ static void Msx2_BoardHandFrames(void)
 // flight, the board bend and the bare top-view hold.
 static bool Msx2_BoardFxIsLanding(void)
 {
-	return (g_fx_kind == FX_SUMMON) || (g_fx_kind == FX_EQUIP)
-	    || (g_fx_kind == FX_COM_PLACE);
+	// AN EQUIP IS NOT FLOWN ONTO THE BOARD ANY MORE.
+	// It used to travel from the hand to the MONSTER it attaches to and then
+	// stop existing, because there was nowhere on the board for it to land.
+	// Its own support row is there now, so the rules put it down and the board
+	// simply has it -- in perspective, in the second row, on whichever side
+	// played it.  What is left of the beat is the banner naming it.
+	return (g_fx_kind == FX_SUMMON) || (g_fx_kind == FX_COM_PLACE);
 }
 
 static bool Msx2_BoardFxIsBattle(void)
@@ -947,7 +1020,8 @@ static void Msx2_BoardFxCacheCard(void)
 	{
 		// The opponent's row is the half-turned set, exactly as the settled
 		// card will be drawn -- otherwise the card spins as it lands.
-		u16 base = (SLOT_ZONE(g_fx_field) == ZONE_COM)
+		u16 base = ((SLOT_ZONE(g_fx_field) == ZONE_COM) ||
+		            (SLOT_ZONE(g_fx_field) == ZONE_COM_SUP))
 		         ? MSX2_OVER_CARD_MIRROR_SEGMENT : MSX2_OVER_CARD_SEGMENT;
 		seg = (u16)(base + card / MSX2_OVER_CARD_PER_SEG);
 		off = (u16)((card % MSX2_OVER_CARD_PER_SEG) * MSX2_OVER_CARD_STRIDE);
@@ -1053,10 +1127,19 @@ static void Msx2_BoardFxDraw(bool erase)
 		}
 		break;
 
-	// The three plain landings differ only in what the panel says.
+	case FX_EQUIP:
+		// The board already has the card, in its own row, so the beat is the
+		// banner naming it and an outline round the MONSTER it attached to --
+		// which is the one thing the row itself cannot say.
+		if(!erase)
+			Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_EQUIP_POWER), MSX2_GOLD);
+		if(g_fx_field != MSX2_SLOT_NONE)
+			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
+		break;
+
+	// The two plain landings differ only in what the panel says.
 	case FX_COM_PLACE:
 	case FX_SUMMON:
-	case FX_EQUIP:
 		if(!erase)
 		{
 			// Once a page.  Msx2_BoardPaint() puts the real panel back on a
@@ -1069,10 +1152,8 @@ static void Msx2_BoardFxDraw(bool erase)
 			{
 				if(g_fx_kind == FX_COM_PLACE)
 					Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_OPPONENT_PLACES_THE_CARD), MSX2_RED);
-				else if(g_fx_kind == FX_SUMMON)
-					Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_SUMMON), MSX2_TEAL);
 				else
-					Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_EQUIP_POWER), MSX2_GOLD);
+					Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_SUMMON), MSX2_TEAL);
 				g_fx_banner_left &= (u8)~bit;
 			}
 		}
@@ -1287,7 +1368,12 @@ static void Msx2_BoardStartFx(void)
 	Msx2_SpriteHideGem();
 	Msx2_BoardSnapshot();
 	PANEL_ALL();
-	g_fx_frames = (g_fx_kind == FX_COM_CHOOSE) ? 12 : FX_LANDING_FRAMES;
+	// A flight IS the beat for a landing, so eight poses is the beat.  An equip
+	// no longer has one -- the card is simply on its row -- so its banner is
+	// given long enough to be read instead.
+	g_fx_frames = (g_fx_kind == FX_COM_CHOOSE) ? 12
+	            : (g_fx_kind == FX_EQUIP)      ? FX_EQUIP_FRAMES
+	            :                                FX_LANDING_FRAMES;
 	g_fx_cleanup = FALSE;
 	g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 	if(Msx2_BoardFxIsBattle())
@@ -1337,10 +1423,8 @@ static void Msx2_BoardFinishFx(void)
 	{
 		g_fx_kind = FX_EQUIP;
 		g_fx_followup = FX_NONE;
-		g_fx_frames = FX_LANDING_FRAMES;
+		g_fx_frames = FX_EQUIP_FRAMES;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
-		Msx2_BoardHideHand();
-		Msx2_BoardFxCacheCard();
 		return;
 	}
 
@@ -2314,12 +2398,16 @@ static void Msx2_BoardMove(u8 pressed)
 		return;
 	}
 
+	// The cursor's rows are COM, FIELD and HAND.  The two support zones lie
+	// between FIELD and HAND in the slot numbering and are display-only, so a
+	// step names the next row rather than counting to it; the low/high clamps
+	// above still work, because the numbering keeps the three in order.
 	if((pressed & MSX2_BTN_UP) && (g_zone > low))
-		--g_zone;
+		g_zone = (g_zone == ZONE_HAND) ? ZONE_FIELD : ZONE_COM;
 	if(pressed & MSX2_BTN_DOWN)
 	{
 		if(g_zone < high)
-			++g_zone;
+			g_zone = (g_zone == ZONE_COM) ? ZONE_FIELD : ZONE_HAND;
 		else if(g_zone == ZONE_HAND)
 		{
 			// Already on the bottom row, so down is free to mean the other

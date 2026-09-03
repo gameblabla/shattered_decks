@@ -41,6 +41,9 @@ import gen_msx_views as views  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ASSET_DIR = os.path.join(ROOT, "src", "msx2", "assets")
 HEADER = os.path.join(ROOT, "src", "generated", "msx2_scenes.h")
+# The board geometry tables the header only DECLARES, so that one translation
+# unit carries them instead of every file that includes the header.
+GEOMETRY = os.path.join(ROOT, "src", "generated", "msx2_scene_geometry.h")
 CARD_DIR = os.path.join(ROOT, "assets", "source", "cards")
 CARD_DATA = os.path.join(CARD_DIR, "card_data.txt")
 BG_DIR = os.path.join(ROOT, "assets", "source", "bg")
@@ -1539,12 +1542,17 @@ def main():
         f.write("#define MSX2_SCENE_SEGMENT_LAST   %d\n" % (segment - 1))
         f.write("#define MSX2_ASSET_ROM_KB         %d\n" % (segment * SEGMENT_BYTES // 1024))
 
+    with open(GEOMETRY, "w") as f:
+        f.write("\n".join(views.data_lines(board)))
+        f.write("\n")
+
     if not quiet:
         print("TEXT     %d names + story -> %d bytes, segment %d"
               % (name_count, len(text_blob), text_segment))
         print("cartridge assets end at segment %d (%d KB)"
               % (segment - 1, segment * SEGMENT_BYTES // 1024))
-        print("wrote %s" % os.path.relpath(HEADER, ROOT))
+        print("wrote %s and %s"
+              % (os.path.relpath(HEADER, ROOT), os.path.relpath(GEOMETRY, ROOT)))
 
 
 def load_card_stats():

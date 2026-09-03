@@ -3,12 +3,14 @@
 //
 //  The duel is played on the game's own 3D arena (MSX2_PORT_PLAN.md §0.3.1).
 //  The picture is captured out of `waifu_fm_headless` at an authored MSX2 pose
-//  and streamed from the cartridge; the ten field cards are drawn into their
+//  and streamed from the cartridge; the twenty field cards are drawn into their
 //  TRUE projected quads by the §8 span rasterizer, so they lie on a board that
 //  recedes away from the player rather than standing in a grid of upright
 //  rectangles.  Nothing about the arena is re-imagined here: the floor, the
 //  slab sides, the perspective and the slot layout are whatever the other five
-//  targets render.
+//  targets render -- including the board's FOUR rows.  The two outer ones are
+//  the support rows, where an equip or a set trap lives; they used to be
+//  missing here, so an equip flew across the board and then existed nowhere.
 //
 //  The hand is the one part that is not board geometry.  It is a flat HUD strip
 //  on every target, so it stays a row of five axis-aligned card blits -- which

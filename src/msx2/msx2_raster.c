@@ -29,10 +29,11 @@ static u8  g_view;
 #define PROG_KEY(slot, def)    (u8)(((slot) << 1) | (def))
 #define PROG_NONE              0xFF
 
-// Slots 0..4 are the physical COM row.  Which row is mirrored is selected
-// below from the camera chair: the far row faces the current viewer's
-// opponent, while the near row faces the viewer.
-#define COM_SLOTS  (MSX2_FIELD_SLOTS / 2)
+// The board is four rows of five: the COM's monsters, the player's monsters,
+// the COM's supports, the player's supports.  Rows 0 and 2 are the COM's, which
+// is what an even row index means below.  Which of them is mirrored is selected
+// from the camera chair: the far rows face the current viewer's opponent, while
+// the near rows face the viewer.
 
 void Msx2_RasterInit(void)
 {
@@ -65,9 +66,9 @@ void Msx2_RasterLoad(u8 card_index, u8 slot, u8 defense)
     // one that must be read upside down.  Key this from the view, not from the
     // physical row, or the opponent would sit at its own chair looking at its
     // cards backwards.
-    u8  mirror = (g_view == MSX2_VIEW_TOP)
-               ? ((slot < COM_SLOTS) ? 1 : 0)
-               : ((slot < COM_SLOTS) ? 0 : 1);
+    bool com_row = (((slot / (MSX2_FIELD_SLOTS / 4)) & 1) == 0);
+    u8  mirror = (g_view == MSX2_VIEW_TOP) ? (com_row ? 1 : 0)
+                                           : (com_row ? 0 : 1);
 	u16 key = TEX_KEY(card_index, mirror, defense);
 
 	if(g_tex_loaded != key)

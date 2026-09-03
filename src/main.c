@@ -23317,10 +23317,20 @@ static Camera msx2_move_camera(int kind, int pose, int poses)
    This mirrors draw_board_card_state()'s attack-position path exactly -- same
    half-extents, same BOARD_CARD_Y, same per-row rotation -- so a quad here is
    the quad the other five targets fill with card art. */
+/* Slots 0..4 are the opponent's monster row and 5..9 the player's, exactly as
+   they always were; 10..14 and 15..19 are the two SUPPORT rows behind them --
+   the opponent's beyond its monsters and the player's in front of its own,
+   which is the four-row grid every other target plays on (an equip or a set
+   trap lives at row ENEMY_CARD_ROW-1 or PLAYER_CARD_ROW+1 there).  Appending
+   them rather than interleaving keeps the ten monster slots at the slot
+   numbers the MSX2 board and its baked tables already use. */
 static void msx2_field_quad(Camera cam, int slot, int out[8])
 {
     int col = slot % I_FIELD;
-    int row = (slot < I_FIELD) ? ENEMY_CARD_ROW : PLAYER_CARD_ROW;
+    int row = (slot < I_FIELD)     ? ENEMY_CARD_ROW
+            : (slot < 2 * I_FIELD) ? PLAYER_CARD_ROW
+            : (slot < 3 * I_FIELD) ? ENEMY_CARD_ROW - 1
+                                   : PLAYER_CARD_ROW + 1;
     int32_t cx = zone_cx(col), cz = zone_cz(row);
     int32_t hw = Q8_FRAC(36,100), hz = Q8_FRAC(50,100);
     int32_t y = BOARD_CARD_Y;
@@ -23356,7 +23366,7 @@ static int msx2_write_pose(const char *dir, const char *tag, Camera cam, FILE *m
     fclose(f);
 
     fprintf(meta, "POSE %s\n", tag);
-    for (slot = 0; slot < 2 * I_FIELD; ++slot) {
+    for (slot = 0; slot < 4 * I_FIELD; ++slot) {
         int g[8];
         msx2_field_quad(cam, slot, g);
         fprintf(meta, "QUAD %d %d %d %d %d %d %d %d %d\n", slot,
@@ -23376,7 +23386,7 @@ static int dump_msx2_views(const char *dir)
     if (!meta) { fprintf(stderr, "dump-msx2-views: cannot write %s\n", path); return 1; }
 
     fprintf(meta, "SIZE %d %d\n", WAIFU_FM_WIDTH, WAIFU_FM_HEIGHT);
-    fprintf(meta, "FIELD_SLOTS %d\n", 2 * I_FIELD);
+    fprintf(meta, "FIELD_SLOTS %d\n", 4 * I_FIELD);
     fprintf(meta, "CARD_TEX %d %d\n", WAIFU_CARD_W, WAIFU_CARD_H);
     /* render_board() clears to this index and paints nothing behind the arena
        -- every console target puts its own backdrop there -- so it is exactly

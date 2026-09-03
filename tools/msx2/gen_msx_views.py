@@ -65,7 +65,11 @@ HAND_X0 = 12
 HAND_PITCH = 47
 HAND_Y = HAND_BAND_Y + 3
 
-FIELD_SLOTS = 10
+# Twenty, not ten: the two monster rows keep slots 0..9, and the two SUPPORT
+# rows -- where an equip or a set trap lives on every other target -- are
+# appended as 10..19.  Appending rather than interleaving is what keeps the
+# monster slots at the numbers the board and its baked tables already use.
+FIELD_SLOTS = 20
 HAND_SLOTS = 5
 
 # The margin a slot's restore tile keeps around the quad.  It used to be a flat
@@ -130,8 +134,11 @@ OVER_H = HAND_BAND_Y + HAND_BAND_H - BAND_Y     # ... and runs to the panel
 # y=0, with a four-pixel gutter of border between rows.
 OVER_TILE_X0, OVER_TILE_PITCH_X, OVER_TILE_W = 12, 48, 43
 OVER_TILE_Y0, OVER_TILE_PITCH_Y, OVER_TILE_H = 0, 42, 38
-OVER_COM_ROW = 1                     # which tile row each side plays on
-OVER_YOU_ROW = 2
+# Which tile row each of the board's four rows plays on.  The artwork is a
+# five-by-four grid and the outer two rows used to be "the table around them";
+# they are the two support rows, which is the same four-row board the perspective
+# views project.  The order is the slot order: monsters first, supports after.
+OVER_SLOT_ROWS = (1, 2, 0, 3)
 
 # A card on the overhead board is drawn at its own size out of the cartridge
 # (gen_msx_scenes.py's overhead set), not rasterised into a quad, so this is a
@@ -282,13 +289,21 @@ def arena_layer(cap, tag):
 
 
 def over_card_xy():
-    """The top-left of each overhead slot's 32x42 card, in window pixels."""
+    """The top-left of each overhead slot's 32x42 card, in window pixels.
+
+    The card is as tall as the tile pitch, so the four rows tile the picture
+    exactly: y is the row's own top, not the tile interior's centre less half a
+    card.  Centring is what the two-row board did, and it put the grid two
+    pixels ABOVE the picture -- which the interior rows could afford and the
+    outer two, now that they are the support rows, cannot: the top one would
+    have overhung the HUD and its restore tile would have overlapped the row
+    below it."""
     out = []
-    for row in (OVER_COM_ROW, OVER_YOU_ROW):
-        cy = OVER_Y + OVER_TILE_Y0 + row * OVER_TILE_PITCH_Y + OVER_TILE_H // 2
-        for col in range(FIELD_SLOTS // 2):
+    for row in OVER_SLOT_ROWS:
+        y = OVER_Y + OVER_TILE_Y0 + row * OVER_TILE_PITCH_Y
+        for col in range(FIELD_SLOTS // 4):
             cx = OVER_TILE_X0 + col * OVER_TILE_PITCH_X + OVER_TILE_W // 2
-            out.append((cx - OVER_CARD_W // 2, cy - OVER_CARD_H // 2))
+            out.append((cx - OVER_CARD_W // 2, y))
     return out
 
 
@@ -300,16 +315,21 @@ def over_quads():
     its own chair, exactly as the captured COM row does -- nothing rasterises
     through these quads any more, but the empty-slot tiles and the cursor
     geometry are still cut from them, so the winding has to stay honest."""
+    per_row = FIELD_SLOTS // 4
     quads = []
     for i, (x0, y0) in enumerate(over_card_xy()):
         # The LAST pixel of the card, not one past it: quad_box rounds a corner
         # up and adds one, so an exclusive edge here would make every restore
         # box a pixel too wide and a pixel too tall -- and the rows are flush.
         x1, y1 = x0 + OVER_CARD_W - 1, y0 + OVER_CARD_H - 1
-        if i >= FIELD_SLOTS // 2:                       # the player's row
-            quads.append([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
-        else:
+        # The opponent's two rows -- its monsters (0..4) and its supports
+        # (10..14) -- are wound half a turn round so their cards face its own
+        # chair, exactly as the captured COM rows are.
+        com = (i // per_row) in (0, 2)
+        if com:
             quads.append([(x1, y1), (x0, y1), (x0, y0), (x1, y0)])
+        else:
+            quads.append([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
     return quads
 
 
@@ -669,28 +689,41 @@ def bake(quiet=False, capture=True):
     slots = bytearray()
     moves = {name: bytearray() for name, _n in cap.moves}
     # Geometry does not change with the stage tint.  Keep one box list per
-    # camera view; the slot blob below still has a stage/view copy because its
-    # pixels do change with the captured stage image.
+    # camera view.
+    #
+    # ONE SLOT BLOB FOR ALL FOUR STAGES.  It used to carry a stage/view copy on
+    # the grounds that a slot tile is cut from the captured stage IMAGE and so
+    # follows the tint.  There is no tint: backdrop() ignores the stage and
+    # every stage builds the same ungraded arena on the same black surround, so
+    # the four copies were byte-for-byte identical -- 480 KB of cartridge for
+    # one picture.  Doubling the slot count to take in the two support rows
+    # would have made that 960 KB, which does not fit at all; deduplicating
+    # instead makes the whole change SMALLER than what was there before.  If a
+    # stage ever really does grade the arena, this loop is where the stage index
+    # comes back.
     boxes = {tag: None for tag in view_tags}
+    for tag in view_tags:
+        quads = cap.poses[tag]
+        over = (tag == "OVER")
+        bottom = (HAND_BAND_Y + HAND_BAND_H) if over else (BAND_Y + BAND_H)
+        data = grb.quantize(build_view(cap, 0, tag), (WIDTH, HEIGHT))
+        tiles, stage_boxes = cut_slot_tiles(data, quads, bottom,
+                                            0.0 if over else SLOT_PAD,
+                                            OVER_DEF_PADX if over else 0.0)
+        slots += tiles
+        boxes[tag] = stage_boxes
     for stage in range(BOARD_STAGES):
         for tag in view_tags:
-            quads = cap.poses[tag]
-            over = (tag == "OVER")
-            bottom = (HAND_BAND_Y + HAND_BAND_H) if over else (BAND_Y + BAND_H)
             data = grb.quantize(build_view(cap, stage, tag), (WIDTH, HEIGHT))
-            tiles, stage_boxes = cut_slot_tiles(data, quads, bottom,
-                                                0.0 if over else SLOT_PAD,
-                                                OVER_DEF_PADX if over else 0.0)
             views[tag].append(pad_segments(data))
-            slots += tiles
-            if boxes[tag] is None:
-                boxes[tag] = stage_boxes
         for name, poses in cap.moves:
             moves[name] += build_move_strip(cap, stage, name, poses)
         if not quiet:
-            print("BOARD_%-8s %d views x %d bytes, %d slot tiles each"
-                  % (STAGE_NAMES[stage], len(view_tags),
-                     WIDTH * HEIGHT, FIELD_SLOTS))
+            print("BOARD_%-8s %d views x %d bytes"
+                  % (STAGE_NAMES[stage], len(view_tags), WIDTH * HEIGHT))
+    if not quiet:
+        print("SLOTS    %d views x %d tiles, shared by every stage"
+              % (len(view_tags), FIELD_SLOTS))
 
     spans, span_off, span_def_off, span_max = bake_spans(cap, list(view_tags))
     if not quiet:
@@ -761,32 +794,20 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("#define MSX2_PANEL_COLOR        0x%02X" % grb.pack(*PANEL_RGB))
     a("#define MSX2_GOLD_COLOR         0x%02X" % grb.pack(*GOLD_RGB))
     a("")
-    a("static const unsigned char g_msx2_over_card_xy[MSX2_FIELD_SLOTS][2] = {")
-    for x, y in over_card_xy():
-        a("\t{ %d, %d }," % (x, y))
-    a("};")
-    a("")
+    a("// ONE COPY OF THE GEOMETRY, NOT ONE PER TRANSLATION UNIT.")
+    a("// These four tables used to be `static const` in this header, which a")
+    a("// dozen files include -- so every one of them carried its own copy, and")
+    a("// projecting the two support rows would have doubled all of them at once.")
+    a("// They are declared here and DEFINED once, in msx2_cards.c, which is the")
+    a("// translation unit that already exists to hold generated tables.")
+    a("extern const unsigned char g_msx2_over_card_xy[MSX2_FIELD_SLOTS][2];")
     a("// The projected corners of every field slot, window pixels, in the corner")
     a("// order the shared renderer hands its rasterizer -- so texture corner 0")
     a("// lands on the same physical corner here as it does on the PC.")
-    a("static const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][8] = {")
-    for tag in baked["view_tags"]:
-        a("\t{")
-        for quad in baked["quads"][tag]:
-            a("\t\t{ %s }," % ", ".join("%d" % max(0, min(255, int(round(v))))
-                                           for p in quad for v in p))
-        a("\t},")
-    a("};")
-    a("")
+    a("extern const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][8];")
     a("// The box a slot's ring and card occupy: what an empty slot restores, and")
     a("// what a repaint has to cover.")
-    a("static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4] = {")
-    for tag in baked["view_tags"]:
-        a("\t{")
-        for box in baked["slot_boxes"][tag]:
-            a("\t\t{ %d, %d, %d, %d }," % box)
-        a("\t},")
-    a("};")
+    a("extern const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4];")
     a("")
     a("// ── §8.4 Tier A span programs ─────────────────────────────────────────")
     a("// One offline rasterisation of the card texture into each slot's quad,")
@@ -805,23 +826,14 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("#define MSX2_OP_END             0x%02X" % OP_END)
     a("#define MSX2_OP_RUN_MASK        0x%02X" % OP_MAX_RUN)
     a("// Slot -> which SPAN_STRIDE-sized record in the blob holds its program.")
-    a("static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {")
-    for view in range(len(baked["view_tags"])):
-        start = view * FIELD_SLOTS
-        a("\t{ %s }," % ", ".join(str(v) for v in
-                                      baked["span_offsets"][start:start + FIELD_SLOTS]))
-    a("};")
-    a("")
+    a("extern const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS];")
     a("// The same slots for a card in DEFENCE position: turned a quarter turn and")
     a("// scaled to fit the slot, sampling the pre-turned 48x40 texture set.")
-    a("static const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {")
-    for view in range(len(baked["view_tags"])):
-        start = view * FIELD_SLOTS
-        a("\t{ %s }," % ", ".join(str(v) for v in
-                                      baked["span_def_offsets"][start:start + FIELD_SLOTS]))
-    a("};")
+    a("extern const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS];")
     a("")
     a("// ── Empty-slot tiles ──────────────────────────────────────────────────")
+    a("// One set for every stage: the arena is ungraded, so the four stages cut")
+    a("// the same pixels and the blob carried four identical copies of them.")
     a("#define MSX2_SLOT_ART_SEGMENT   %d" % slot_seg)
     a("#define MSX2_SLOT_ART_STRIDE    %d" % SLOT_STRIDE)
     a("#define MSX2_SLOT_ART_PER_SEG   %d" % (16384 // SLOT_STRIDE))
@@ -840,6 +852,57 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
         a("#define MSX2_MOVE_%s_SEGMENT(stage)  (%d + (stage) * %d * MSX2_MOVE_POSE_SEGS)"
           % (name, seg, poses))
         a("#define MSX2_MOVE_%s_POSES    %d" % (name, poses))
+    a("")
+    return out
+
+
+def data_lines(baked):
+    """The definitions of the four geometry tables declared in the header.
+
+    They live in their own generated file so that exactly one translation unit
+    (msx2_cards.c) carries them: a `static const` in a header that a dozen files
+    include is a dozen copies in the ROM, and the board's geometry is nearly a
+    kilobyte of it."""
+    out = []
+    a = out.append
+    a("// Generated by tools/msx2/gen_msx_views.py -- do not edit.")
+    a("// Included by exactly one translation unit; see msx2_scenes.h.")
+    a("")
+    a("const unsigned char g_msx2_over_card_xy[MSX2_FIELD_SLOTS][2] = {")
+    for x, y in over_card_xy():
+        a("\t{ %d, %d }," % (x, y))
+    a("};")
+    a("")
+    a("const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][8] = {")
+    for tag in baked["view_tags"]:
+        a("\t{")
+        for quad in baked["quads"][tag]:
+            a("\t\t{ %s }," % ", ".join("%d" % max(0, min(255, int(round(v))))
+                                           for p in quad for v in p))
+        a("\t},")
+    a("};")
+    a("")
+    a("const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4] = {")
+    for tag in baked["view_tags"]:
+        a("\t{")
+        for box in baked["slot_boxes"][tag]:
+            a("\t\t{ %d, %d, %d, %d }," % box)
+        a("\t},")
+    a("};")
+    a("")
+    a("const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {")
+    for view in range(len(baked["view_tags"])):
+        start = view * FIELD_SLOTS
+        a("\t{ %s }," % ", ".join(str(v) for v in
+                                      baked["span_offsets"][start:start + FIELD_SLOTS]))
+    a("};")
+    a("")
+    a("const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {")
+    for view in range(len(baked["view_tags"])):
+        start = view * FIELD_SLOTS
+        a("\t{ %s }," % ", ".join(str(v) for v in
+                                      baked["span_def_offsets"][start:start + FIELD_SLOTS]))
+    a("};")
     a("")
     return out
 
