@@ -43,6 +43,7 @@
 #define MSX2_SPR_TEAL_HI  9
 // The heat between gold and red, for the blade sweep.
 #define MSX2_SPR_ORANGE  10
+#define MSX2_SPR_BLACK   11
 
 // Pattern slots.  A 16x16 sprite is four 8x8 quarters, so a slot is 32 bytes
 // and the attribute's pattern byte is slot * 4.
@@ -64,6 +65,12 @@
 #define MSX2_SPR_SLASH0  (MSX2_SPR_LETTER0 + MSX2_SPR_LETTER_N)
 #define MSX2_SPR_SLASH_R MSX2_SPR_SLASH0
 #define MSX2_SPR_SLASH_L (MSX2_SPR_SLASH0 + 1)
+
+// Twenty-four of the ordinary sprite ids form two 3x4 card wipes.  Their
+// 32-pixel rows are deliberately not vertically overlapped: both cards can
+// wipe at once without exceeding the V9938's eight-sprites-per-scanline limit.
+#define MSX2_SPR_BURN_PATTERN 42
+#define MSX2_SPR_BURN_CARD_IDS 12
 
 // The sprites the selector uses: the last MSX2_GEM_PLANES of the thirty-two,
 // so they are behind everything the effects put up (the V9938 gives the lower
@@ -115,6 +122,11 @@ void Msx2_SpriteWordAt(const c8* text, u8 n, i16 x, u8 y, u8 color);
 #define MSX2_SPR_SLASH_ID    3
 void Msx2_SpriteSlash(u8 x, u8 y, u8 grown_a, u8 grown_b, u8 core);
 void Msx2_SpriteSlashHide(void);
+
+// Cover one battle card with opaque black 32x32 sprite tiles.  `which` is 0
+// for the left lane and 1 for the right lane; step is 0..6.
+void Msx2_SpriteBurnCard(u8 which, u8 x, u8 y, u8 step);
+void Msx2_SpriteBurnHide(void);
 
 // The selector, at (x, y) -- the top-left of the gem, not of the sprite cell --
 // spinning at `frame`.  `color` is MSX2_SPR_RED or MSX2_SPR_TEAL; the shadow

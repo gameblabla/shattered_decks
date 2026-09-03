@@ -239,7 +239,6 @@ static u8 g_fx_dest_y;
 // lane -- with the damage climbing under it from -0 to the real figure.  This is
 // what the PC build does (draw_direct_attack_slash() plus its damage readout);
 // the only thing the console version was missing was the blade.
-#define BATT_BURN_DY 20
 #define BATT_HOLD    56
 // The struck lane's centre, which is where every strike lands: a direct attack
 // has nothing in the right lane and drives at it anyway, and a trap turns the
@@ -641,7 +640,7 @@ static const c8* Msx2_BoardPrompt(void)
 			return Msx2_UiText(MSX2_S_SPACE_FUSES_HERE_ESC_CLEARS);
 		}
 		if(g_zone == ZONE_HAND)  return Msx2_UiText(MSX2_S_SPACE_PLAYS_DOWN_FUSES_C_CHE);
-		if(g_zone == ZONE_FIELD) return Msx2_UiText(MSX2_S_SPACE_ATTACKS_ESC_ENDS_TURN);
+		if(g_zone == ZONE_FIELD) return Msx2_UiText(MSX2_S_SPACE_ATK_X_TURN_ESC_PASS);
 		return Msx2_UiText(MSX2_S_OPPONENT_ROW_SPACE_CHECKS);
 	}
 }
@@ -899,19 +898,20 @@ static void Msx2_BoardBattleStrike(u8 step)
 static void Msx2_BoardBattleBurnStep(void)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-	u8 h = (u8)(g_batt_step * BATT_BURN_DY);
 	u8 outcome = g_duel.last_battle.outcome;
 
-	// Carry the preceding wipe stage forward, then extend it.  No page can
-	// reveal an older band or a half-issued fill while the other is scanned.
-	Msx2_VideoCopyPage((u8)(page ^ 1), page);
+	// The wipe itself is a sprite overlay shared by both bitmap pages.  Only the
+	// final stat-line cleanup needs a bitmap copy; copying 60,000 pixels for
+	// every band was the slow part of the old black wipe.
 	Msx2_VideoDrawPage(page);
 	if(g_batt_trap || outcome == MSX2_BATTLE_DESTROY_ATTACKER ||
 	   outcome == MSX2_BATTLE_DESTROY_BOTH)
-		Msx2_BattleFxBurnCard(g_batt_ax, h, g_batt_step);
+		Msx2_BattleFxBurnCard(g_batt_ax, MSX2_BATTLE_CARD_H, g_batt_step);
 	if(outcome == MSX2_BATTLE_DESTROY_DEFENDER ||
 	   outcome == MSX2_BATTLE_DESTROY_BOTH)
-		Msx2_BattleFxBurnCard(g_batt_dx, h, g_batt_step);
+		Msx2_BattleFxBurnCard(g_batt_dx, MSX2_BATTLE_CARD_H, g_batt_step);
+	if(g_batt_step >= MSX2_BATTLE_BURN_STEPS)
+		Msx2_VideoCopyPage(page, (u8)(page ^ 1));
 }
 
 static void Msx2_BoardRestoreFromCutin(void)
@@ -924,6 +924,7 @@ static void Msx2_BoardRestoreFromCutin(void)
 	// is sprites, which no repaint of the bitmap can reach.
 	Msx2_BattleFxBurst(0, 0, MSX2_SPR_BURST_N);
 	Msx2_SpriteSlashHide();
+	Msx2_SpriteBurnHide();
 	Msx2_BoardSnapshot();
 	VDP_EnableDisplay(FALSE);
 	Msx2_VideoDrawPage(page);
@@ -1303,6 +1304,44 @@ static void Msx2_BoardFxDraw(bool erase)
 	}
 }
 
+// Prime both pages with the first flight pose while output is blank.  A
+// landing used to blacken the hand, then rely on the next visible-page pass to
+// put the card back; a busy VDP could show that empty hand for a frame before
+// the cached card arrived.  The source pose now exists on both pages before
+// the display is re-enabled, so the flight is continuous from the old hand.
+static void Msx2_BoardHideHand(void);
+
+static void Msx2_BoardPrimeLanding(void)
+{
+	u8 keep = Msx2_VideoGetDrawPage();
+	u8 p;
+
+	if(!Msx2_BoardFxIsLanding())
+		return;
+	for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
+	{
+		Msx2_VideoDrawPage(p);
+		Msx2_BoardFxDraw(FALSE);
+		g_fx_page_frame[p] = g_fx_frames;
+	}
+	Msx2_VideoDrawPage(keep);
+}
+
+static void Msx2_BoardPrepareLanding(void)
+{
+	if(!Msx2_BoardFxIsLanding())
+		return;
+	// Hand removal, cartridge caching and the first pose are one composition.
+	// Keep output blank for all of it; otherwise the visible page can show the
+	// blackened hand before the cached card has reached its source position.
+	VDP_EnableDisplay(FALSE);
+	Msx2_BoardHideHand();
+	Msx2_BoardFxCacheCard();
+	Msx2_BoardPrimeLanding();
+	VDP_CommandWait();
+	VDP_EnableDisplay(TRUE);
+}
+
 static void Msx2_BoardFxErase(u8 frame)
 {
 	u8 page = Msx2_VideoGetDrawPage();
@@ -1548,8 +1587,7 @@ static void Msx2_BoardStartFx(void)
 		Msx2_FusionBegin(g_fuse_mat, g_fuse_mat_n, g_duel.last_action_card);
 	else if(g_fx_kind == FX_SUPPORT)
 		Msx2_EffectBegin(g_fx_card, FALSE);
-	Msx2_BoardHideHand();
-	Msx2_BoardFxCacheCard();
+	Msx2_BoardPrepareLanding();
 }
 
 static void Msx2_BoardFinishFx(void)
@@ -1568,8 +1606,7 @@ static void Msx2_BoardFinishFx(void)
 		g_fx_frames = FX_LANDING_FRAMES;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 		Msx2_BoardFxSetDestination();
-		Msx2_BoardHideHand();
-		Msx2_BoardFxCacheCard();
+		Msx2_BoardPrepareLanding();
 		return;
 	}
 	if(next == FX_SUPPORT)
@@ -1696,7 +1733,6 @@ static bool Msx2_BoardRunFx(void)
 	if(g_fx_cleanup && (g_fx_bend != 0))
 	{
 		Msx2_BoardStepBend();
-		Msx2_VideoFlipRequest();
 		if(g_fx_bend == 0)
 		{
 			// The board has accepted the card.  Put it on both pages before the
@@ -1707,6 +1743,10 @@ static bool Msx2_BoardRunFx(void)
 			Msx2_BoardFxCommitLanding();
 			g_fx_hold = FX_HOLD_FRAMES;
 		}
+		// Request the flip only after the restore and settled card have both
+		// been queued.  Asking first let V-blank reveal the erased destination
+		// before the landing card was committed.
+		Msx2_VideoFlipRequest();
 		return TRUE;
 	}
 
@@ -1818,6 +1858,12 @@ static bool Msx2_BoardPaint(void)
 			painted = TRUE;
 		}
 	}
+	// Interactive panel updates are the latency-sensitive part of a cursor
+	// move.  Do not queue a field-card stream behind them in the same frame;
+	// the card can catch up on the next hidden-page pass without delaying the
+	// name/prompt flip the player is waiting to see.
+	if(painted)
+		return TRUE;
 
 	// THE WHOLE HAND STRIP AT ONCE.
 	// The loop below repaints one card a frame, which is the right budget for
@@ -2372,6 +2418,10 @@ static void Msx2_BoardCheck(void)
 	slot = SLOT_OF(g_zone, g_sel);
 	owner = (g_zone == ZONE_COM) ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER;
 	Msx2_SfxPlay(MSX2_SFX_CONFIRM);
+	// C is a keyboard-only card check.  Hide the gem before composing the
+	// check page so the selector cannot flash over the enlarged card for one
+	// frame while the hidden-page copy is being prepared.
+	Msx2_SpriteHideGem();
 	g_mode = M_CHECK;
 	if(g_zone == ZONE_HAND)
 		Msx2_CardCheckCompose(card, (i16)Msx2_CardAtk(card),
@@ -2671,6 +2721,7 @@ u8 Msx2_BoardStep_In(void)
 	u8 pressed = Msx2_InputPressed();
 	u8 before_zone = g_zone;
 	u8 before_sel = g_sel;
+	bool cursor_moved = FALSE;
 
 	// The selector is a sprite: it has to be taken off the screen by something,
 	// and every branch below can return before the paint.  Doing it here, once,
@@ -2780,12 +2831,26 @@ u8 Msx2_BoardStep_In(void)
 		}
 #else
 		if(pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT | MSX2_BTN_UP | MSX2_BTN_DOWN))
+		{
+			// Remove the old location before doing any page/card work.  The next
+			// location is shown again below in this same frame, eliminating the
+			// one-frame lag that made hand card 1 -> 2 feel sticky.
+			Msx2_SpriteHideGem();
+			cursor_moved = TRUE;
 			Msx2_BoardMove(pressed);
+		}
 
 		if((Msx2_InputTyped() == 'C') && (g_mode == M_IDLE))
 		{
 			Msx2_BoardCheck();
 			return MSX2_BOARD_BUSY;
+		}
+
+		if(Msx2_InputXKey() && (g_mode == M_IDLE) && (g_zone == ZONE_FIELD) &&
+		   (Msx2_BoardHovered() != MSX2_CARD_NONE) &&
+		   Msx2_ChangePosition(MSX2_OWNER_PLAYER, g_sel))
+		{
+			Msx2_SfxPlay(MSX2_SFX_CONFIRM);
 		}
 
 		if(pressed & MSX2_BTN_A)
@@ -2839,6 +2904,10 @@ u8 Msx2_BoardStep_In(void)
 		Msx2_BoardHandVisible(in_hand);
 		Msx2_BoardCutTo(in_hand ? BOARD_VIEW_PLAYER : MSX2_VIEW_OVER);
 	}
+	if(cursor_moved && (g_fx_kind == FX_NONE) && (g_mode != M_TURN) &&
+	   (g_mode != M_COM) && (g_mode != M_DEAL) && (g_mode != M_CHECK) &&
+	   (g_mode != M_OVER))
+		Msx2_BoardShowCursor();
 	if(g_mode == M_TURN)
 	{
 		Msx2_BoardStepCameraMove();

@@ -856,6 +856,22 @@ bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot)
 	return TRUE;
 }
 
+bool Msx2_ChangePosition(u8 owner, u8 field_slot)
+{
+	Msx2Side* s;
+
+	if((owner > MSX2_OWNER_COM) || (field_slot >= MSX2_FIELD))
+		return FALSE;
+	s = &g_duel.side[owner];
+	if(!Msx2_IsMonster(s->field[field_slot]) || s->attacked[field_slot])
+		return FALSE;
+	s->defense[field_slot] = s->defense[field_slot] ? FALSE : TRUE;
+	Msx2_RecordAction(MSX2_ACTION_POSITION, owner, s->field[field_slot],
+	                  MSX2_SLOT_NONE, field_slot,
+	                  s->defense[field_slot] ? TRUE : FALSE);
+	return TRUE;
+}
+
 // draw_replacement_cards_to_hand(): refill every spent slot, and if nothing was
 // spent, replace slot 0 anyway (the anti-stall discard) -- but never on the
 // opening turn, where a full hand just means the deal has happened.

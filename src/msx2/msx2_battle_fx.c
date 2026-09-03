@@ -53,11 +53,12 @@ void Msx2_BattleFxResult(bool trap)
 
 void Msx2_BattleFxBurnCard(u8 x, u8 h, u8 step)
 {
-	Msx2_Fill(x, 23, MSX2_BATTLE_CARD_W, h, MSX2_BLACK);
-	if(step < MSX2_BATTLE_BURN_STEPS)
-		Msx2_Line(x, (u8)(23 + h), (u8)(x + MSX2_BATTLE_CARD_W - 1),
-		          (u8)(23 + h), (step & 1) ? MSX2_GOLD : MSX2_RED);
-	else
+	(void)h;
+	// The wipe is a sprite overlay, so its edge is immediate and costs only
+	// attribute writes.  The card's stat line is bitmap UI and is cleared once
+	// at the end of the wipe.
+	Msx2_SpriteBurnCard((x >= (MSX2_SCREEN_W / 2)) ? 1 : 0, x, 23, step);
+	if(step >= MSX2_BATTLE_BURN_STEPS)
 		Msx2_Fill(x, 149, MSX2_BATTLE_CARD_W, 8, MSX2_BLACK);
 }
 

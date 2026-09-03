@@ -25,6 +25,8 @@ static u8 g_key_held[6];
 #define KBIT_F1      5
 static u8 g_f1_held;
 static u8 g_f1_press;
+static u8 g_x_held;
+static u8 g_x_press;
 
 void Msx2_InputInit(void)
 {
@@ -34,6 +36,8 @@ void Msx2_InputInit(void)
 	g_typed = 0;
 	g_f1_held = 0;
 	g_f1_press = 0;
+	g_x_held = 0;
+	g_x_press = 0;
 	for(i = 0; i < 6; ++i)
 		g_key_held[i] = 0;
 }
@@ -116,9 +120,19 @@ void Msx2_InputUpdate(void)
 		g_f1_press = (u8)(f1 && !g_f1_held);
 		g_f1_held = f1;
 	}
+
+	// X shares the printable matrix with the typewriter, but it is also a
+	// duel command.  Keep its edge separate so entering a name/code still
+	// receives the typed character while the board gets one position press.
+	{
+		u8 x = (u8)((~Keyboard_Read(5)) & (u8)(1 << 5));
+		g_x_press = (u8)(x && !g_x_held);
+		g_x_held = x;
+	}
 }
 
 u8 Msx2_InputHeld(void)    { return g_held; }
 u8 Msx2_InputPressed(void) { return g_pressed; }
 c8 Msx2_InputTyped(void)   { return g_typed; }
 bool Msx2_InputDiskKey(void) { return g_f1_press ? TRUE : FALSE; }
+bool Msx2_InputXKey(void) { return g_x_press ? TRUE : FALSE; }

@@ -35,3 +35,7 @@ c8   Msx2_InputTyped(void);
 // F1, this frame.  It is the disk key, and it is deliberately not a character:
 // the screens that offer a disk are the ones the player types into.
 bool Msx2_InputDiskKey(void);
+
+// X is not one of the eight joystick-latch bits.  It is a keyboard-only
+// position switch on the duel screen and is edge-triggered like the buttons.
+bool Msx2_InputXKey(void);

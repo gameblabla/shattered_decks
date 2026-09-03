@@ -23,6 +23,7 @@ static u8 g_col[16];
 static u8 g_atr[4];
 
 static void Msx2_SpriteBuildSlash(void);
+static void Msx2_SpriteBuildBurn(void);
 
 void Msx2_SpriteInit(void)
 {
@@ -44,6 +45,7 @@ void Msx2_SpriteInit(void)
 	VDP_SetPaletteEntry(MSX2_SPR_TEAL_DK, 0x0102);
 	VDP_SetPaletteEntry(MSX2_SPR_TEAL_HI, 0x4607);
 	VDP_SetPaletteEntry(MSX2_SPR_ORANGE,  0x7003);
+	VDP_SetPaletteEntry(MSX2_SPR_BLACK,   0x0000);
 
 	// 16x16, magnified to 32x32: an explosion or a letter has to read at the
 	// same size the 88x120 cut-in cards do.
@@ -76,6 +78,7 @@ void Msx2_SpriteInit(void)
 	}
 
 	Msx2_SpriteBuildSlash();
+	Msx2_SpriteBuildBurn();
 	Msx2_SpriteClear();
 }
 
@@ -198,6 +201,18 @@ static void Msx2_SpriteBuildSlash(void)
 	              0, 32);
 }
 
+static void Msx2_SpriteBuildBurn(void)
+{
+	u8 i;
+
+	for(i = 0; i < 32; ++i)
+		g_pat[i] = 0xFF;
+	VDP_CommandWait();
+	VDP_WriteVRAM(g_pat,
+	              (u16)(SPR_PAT_ADDR + (u16)MSX2_SPR_BURN_PATTERN * 32),
+	              0, 32);
+}
+
 // Is this segment inside the innermost `grown` of the stroke?
 #define SEG_IN(seg, grown) \
 	(((seg) >= (u8)((MSX2_SPR_SLASH_SEGS - (grown)) / 2)) && \
@@ -251,6 +266,34 @@ void Msx2_SpriteSlashHide(void)
 	u8 i;
 	for(i = 0; i < (MSX2_SPR_SLASH_SEGS * 2); ++i)
 		Msx2_SpriteHide((u8)(MSX2_SPR_SLASH_ID + i));
+}
+
+void Msx2_SpriteBurnCard(u8 which, u8 x, u8 y, u8 step)
+{
+	u8 base = which ? MSX2_SPR_BURN_CARD_IDS : 0;
+	u8 rows = (u8)((step * 4 + 5) / 6);
+	u8 row, col;
+
+	if(rows > 4)
+		rows = 4;
+	for(row = 0; row < 4; ++row)
+		for(col = 0; col < 3; ++col)
+		{
+			u8 id = (u8)(base + row * 3 + col);
+			if(row < rows)
+				Msx2_SpriteAt(id, (u8)(x + col * 28),
+				              (u8)(y + row * 32),
+				              MSX2_SPR_BURN_PATTERN, MSX2_SPR_BLACK);
+			else
+				Msx2_SpriteHide(id);
+		}
+}
+
+void Msx2_SpriteBurnHide(void)
+{
+	u8 i;
+	for(i = 0; i < MSX2_SPR_BURN_CARD_IDS * 2; ++i)
+		Msx2_SpriteHide(i);
 }
 
 // SLIDING ON FROM OFF THE SCREEN.

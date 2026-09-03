@@ -123,7 +123,7 @@ void Msx2_StoryBuildCode(c8* code, u8 progress, const c8* name,
 	for(i = 0; i < STORY_NAME_LEN; ++i)
 		Msx2_StoryCodeSetBits(bytes, (u8)(3 + i * 5), 5,
 		                      (u8)((name[i] >= 'A' && name[i] <= 'Z')
-		                           ? (name[i] - 'A') : 0));
+		                           ? (name[i] - 'A') : 26));
 	for(i = 0; i < STORY_EDIT_SLOTS; ++i)
 		Msx2_StoryCodeSetBits(bytes, (u8)(43 + i * 7), 7, deck[i]);
 	for(i = 0; i < 9; ++i)
@@ -166,7 +166,12 @@ bool Msx2_StoryDecodeCode(const c8* code, u8 len, u8* progress,
 
 	*progress = Msx2_StoryCodeGetBits(bytes, 0, 3);
 	for(i = 0; i < STORY_NAME_LEN; ++i)
-		name[i] = (c8)('A' + Msx2_StoryCodeGetBits(bytes, (u8)(3 + i * 5), 5) % 26);
+	{
+		u16 value = Msx2_StoryCodeGetBits(bytes, (u8)(3 + i * 5), 5);
+		if(value > 26)
+			return FALSE;
+		name[i] = (value == 26) ? ' ' : (c8)('A' + value);
+	}
 	name[STORY_NAME_LEN] = 0;
 	for(i = 0; i < STORY_EDIT_SLOTS; ++i)
 	{

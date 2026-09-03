@@ -192,6 +192,7 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
                       bool defense);
 bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot);
 bool Msx2_Attack(u8 owner, u8 attacker_slot, u8 defender_slot); // MSX2_SLOT_NONE = direct
+bool Msx2_ChangePosition(u8 owner, u8 field_slot);
 void Msx2_EndTurn(void);
 
 // Consume the most recent rules action.  It is deliberately separate from the

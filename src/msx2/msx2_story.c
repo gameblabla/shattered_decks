@@ -24,6 +24,7 @@
 #define PH_DECK      6   // compact deck editor
 #define PH_REWARD    7   // a story-win card reveal
 #define PH_LOAD_PICK 8   // LOAD STORY: is the save on a disk or on paper?
+#define PH_SAVE_PICK 9   // SAVE GAME: floppy or password
 
 // Which run of records the narration is reading, so the end of it knows where
 // to go: the opening leads to the map, the ending leads back to the title.
@@ -122,6 +123,7 @@ static u8  g_code_error;
 // What the disk last did, so the screen can say it: 0 nothing, 1 saved,
 // 2 failed, 3 loaded, 4 nothing to load.
 static u8  g_disk_msg;
+static u8  g_save_pick;
 // The flag the code screen raises when the player backs out of an empty code:
 // the phase steppers return void, and this one has to leave the whole scene.
 static u8  g_want_quit;
@@ -463,19 +465,28 @@ static void Msx2_StoryBusts(u8 speaker)
 // character was lit for a frame.
 static void Msx2_StoryShowShot(u8 shot)
 {
+	u8 show = Msx2_VideoGetShowPage();
+	u8 page = (u8)(show ^ 1);
+
 	if(g_phase != PH_TALK)
 	{
 		// Narration has no second speaker: the opening is Serena remembering
 		// over her own scene, the ending is a voice over the closing painting.
 		u16 segment = (g_narr_which == NARR_INTRO)
 		            ? MSX2_TALK_SEGMENT(0) : MSX2_SCENE_ENDING_SEGMENT;
-		Msx2_VideoDrawPage(MSX2_PAGE_1);
-		Msx2_StreamScene(segment, MSX2_PAGE_1);
+		// Stream and compose only while the display is blank.  The old opening
+		// and Kasem paths streamed page 1, re-enabled the display, and then
+		// blitted the portrait into whichever page happened to be visible.  A
+		// scan could therefore catch half a backdrop and half a bust.
+		VDP_EnableDisplay(FALSE);
+		Msx2_VideoDrawPage(page);
+		Msx2_StreamSceneBlanked(segment, page);
 		if(g_narr_which == NARR_INTRO)
 			Msx2_StoryBlitBust(0, MSX2_PORTRAIT_LEFT_X, MSX2_PORTRAIT_LEFT_Y,
-			                   TRUE);
-		Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
-		Msx2_VideoShowPage(MSX2_PAGE_1);
+		                   TRUE);
+		Msx2_VideoCopyPage(page, show);
+		Msx2_VideoShowPage(page);
+		VDP_EnableDisplay(TRUE);
 		g_shot = shot;
 		return;
 	}
@@ -483,20 +494,27 @@ static void Msx2_StoryShowShot(u8 shot)
 	if(g_shot == 0xFF)
 	{
 		// First line of the scene: the painting, then both figures on it.
-		Msx2_VideoDrawPage(MSX2_PAGE_1);
-		Msx2_StreamScene(MSX2_TALK_SEGMENT(g_msx2_stage_for_duel[g_duel_index]),
-		                 MSX2_PAGE_1);
+		VDP_EnableDisplay(FALSE);
+		Msx2_VideoDrawPage(page);
+		Msx2_StreamSceneBlanked(
+			MSX2_TALK_SEGMENT(g_msx2_stage_for_duel[g_duel_index]), page);
 		Msx2_StoryBusts(shot);
-		Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
-		Msx2_VideoShowPage(MSX2_PAGE_1);
+		Msx2_VideoCopyPage(page, show);
+		Msx2_VideoShowPage(page);
+		VDP_EnableDisplay(TRUE);
 	}
 	else
 	{
-		u8 shown = Msx2_VideoGetDrawPage();
-		Msx2_VideoDrawPage((u8)(shown ^ 1));
+		// A speaker change is still a two-page update, but both composites are
+		// completed off-screen and the old visible page is copied only while
+		// output is disabled.  This keeps Kasem's backdrop and the two busts a
+		// single atomic picture even when the command queue is busy.
+		VDP_EnableDisplay(FALSE);
+		Msx2_VideoDrawPage(page);
 		Msx2_StoryBusts(shot);
-		Msx2_VideoDrawPage(shown);
-		Msx2_StoryBusts(shot);
+		Msx2_VideoCopyPage(page, show);
+		Msx2_VideoShowPage(page);
+		VDP_EnableDisplay(TRUE);
 	}
 	g_shot = shot;
 }
@@ -715,14 +733,16 @@ static void Msx2_StoryDiskLine(u8 y)
 {
 	u8 id;
 
-	if(!Msx2_DiskPresent())
-		return;
 	if(g_disk_msg == 1)      id = MSX2_S_SAVED_TO_DISK;
 	else if(g_disk_msg == 2) id = MSX2_S_DISK_ERROR_USE_A_BLANK_DISK;
+	else if(g_disk_msg == 4) id = MSX2_S_NO_DRIVE_ANSWERED;
 	else if(g_disk_msg == 3) id = MSX2_S_NO_SAVE_ON_THIS_DISK;
+	else if(!Msx2_DiskPresent())
+		return;
 	else if(g_phase == PH_CODE_OUT) id = MSX2_S_F1_SAVES_TO_DISK;
 	else                     id = MSX2_S_F1_LOADS_FROM_DISK;
-	Msx2_TextColor((g_disk_msg == 2) || (g_disk_msg == 3) ? MSX2_RED : MSX2_TEAL,
+	Msx2_TextColor((g_disk_msg == 2) || (g_disk_msg == 3) || (g_disk_msg == 4)
+	               ? MSX2_RED : MSX2_TEAL,
 	               MSX2_PANEL_COLOR);
 	Msx2_TextCenter(y, Msx2_UiText(id));
 }
@@ -816,9 +836,101 @@ static void Msx2_StoryEnterCodeInput(void)
 static void Msx2_StoryEnterCodeOutput(void)
 {
 	g_phase = PH_CODE_OUT;
-	g_disk_msg = 0;
 	Msx2_StoryBuildCode(g_code, g_progress, g_player_name, g_story_deck);
 	Msx2_StoryUiDirty();
+}
+
+// Saving is an explicit choice, rather than the old map item that silently
+// dropped straight into a password screen.  The code is built before the
+// choice so either destination produces the same save, and the code screen is
+// always shown afterwards as a paper backup.
+#define SAVE_ROW_Y(n)  (u8)(84 + (n) * 22)
+
+static void Msx2_StoryEnterMap(void);
+
+static void Msx2_StorySavePickPaint(void)
+{
+	bool disk = Msx2_DiskPresent();
+	u8 i;
+
+	Msx2_Fill(38, 52, 180, 108, MSX2_PANEL_COLOR);
+	Msx2_FrameRect(38, 52, 180, 108, MSX2_GOLD);
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(62, Msx2_UiText(MSX2_S_SAVE_GAME));
+	for(i = 0; i < 2; ++i)
+	{
+		u8 y = SAVE_ROW_Y(i);
+		bool live = (i != 0) || disk;
+		Msx2_Fill(52, (u8)(y - 2), 12, 11, MSX2_PANEL_COLOR);
+		if(i == g_save_pick)
+		{
+			Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
+			Msx2_TextAt(54, y, ">");
+		}
+		Msx2_TextColor(live ? ((i == g_save_pick) ? MSX2_WHITE : MSX2_SAND)
+		                    : MSX2_DARK_SAND, MSX2_PANEL_COLOR);
+		Msx2_TextAt(72, y, Msx2_UiText((i == 0) ? MSX2_S_FLOPPY_DISK
+		                                        : MSX2_S_PASSWORD));
+	}
+
+	Msx2_Fill(40, 128, 176, 10, MSX2_PANEL_COLOR);
+	if(!disk && g_save_pick == 0)
+	{
+		Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
+		Msx2_TextCenter(130, Msx2_UiText(MSX2_S_NO_DRIVE_ANSWERED));
+	}
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextCenter(146, Msx2_UiText(MSX2_S_SPACE_PICKS_ESC_RETURNS));
+}
+
+static void Msx2_StoryEnterSavePick(void)
+{
+	g_phase = PH_SAVE_PICK;
+	g_save_pick = Msx2_DiskPresent() ? 0 : 1;
+	g_disk_msg = 0;
+	Msx2_StoryBuildCode(g_code, g_progress, g_player_name, g_story_deck);
+	Msx2_VideoDrawPage(MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_SCENE_TITLE_SEGMENT, MSX2_PAGE_1);
+	Msx2_StorySavePickPaint();
+	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
+	Msx2_VideoShowPage(MSX2_PAGE_1);
+	g_map_dirty = 0;
+}
+
+static void Msx2_StorySavePickStep(void)
+{
+	u8 pressed = Msx2_InputPressed();
+
+	if(pressed & (MSX2_BTN_UP | MSX2_BTN_DOWN))
+	{
+		g_save_pick ^= 1;
+		Msx2_SfxPlay(MSX2_SFX_SELECT);
+		Msx2_StoryUiDirty();
+	}
+	if(pressed & MSX2_BTN_B)
+	{
+		Msx2_StoryEnterMap();
+		return;
+	}
+	if(pressed & (MSX2_BTN_A | MSX2_BTN_ENTER))
+	{
+		Msx2_SfxPlay(MSX2_SFX_CONFIRM);
+		if(g_save_pick == 0)
+		{
+			g_disk_msg = !Msx2_DiskPresent() ? 4
+			            : (Msx2_DiskSave(g_code) ? 1 : 2);
+		}
+		else
+			g_disk_msg = 0;
+		Msx2_StoryEnterCodeOutput();
+		return;
+	}
+	if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
+	{
+		Msx2_StorySavePickPaint();
+		g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
+		Msx2_VideoFlipRequest();
+	}
 }
 
 static void Msx2_StoryEnterDeck(void);
@@ -881,7 +993,7 @@ static void Msx2_StoryMapPaint(void)
 	}
 	Msx2_TextColor((g_cursor == MAP_CODE_ROW) ? MSX2_WHITE : MSX2_SAND,
 	               MSX2_PANEL_COLOR);
-	Msx2_TextAt(MAP_NAME_X, MAP_CODE_Y, Msx2_UiText(MSX2_S_CONTINUE_CODE));
+	Msx2_TextAt(MAP_NAME_X, MAP_CODE_Y, Msx2_UiText(MSX2_S_SAVE_GAME));
 
 	if(g_cursor == MAP_BACK_ROW)
 	{
@@ -948,7 +1060,7 @@ static u8 Msx2_StoryMapStep(void)
 		}
 		if(g_cursor == MAP_CODE_ROW)
 		{
-			Msx2_StoryEnterCodeOutput();
+			Msx2_StoryEnterSavePick();
 			return MSX2_STORY_BUSY;
 		}
 		if(g_cursor == MAP_BACK_ROW)
@@ -1547,6 +1659,11 @@ u8 Msx2_StoryStep_In(void)
 			else
 				Msx2_StoryLoadPickRefused();
 		}
+		return MSX2_STORY_BUSY;
+	}
+	if(g_phase == PH_SAVE_PICK)
+	{
+		Msx2_StorySavePickStep();
 		return MSX2_STORY_BUSY;
 	}
 	if(g_phase == PH_CODE_IN)
