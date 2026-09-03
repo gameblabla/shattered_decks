@@ -170,6 +170,18 @@ void Msx2_StreamRect(u16 segment, u16 offset, u8 x, u8 y, u8 w, u8 h)
 	u8 page = Msx2_VideoGetDrawPage();
 	u8 row;
 
+	// Normalise the offset the way Msx2_RomReadLong does, and for the same
+	// reason: a caller that addresses part of an asset -- the second half of a
+	// card, say -- computes its offset by adding rows, and that sum can land
+	// past the 16 KB window.  The loop below already carries the offset over
+	// as it walks; without this the FIRST row could be read from the wrong
+	// segment at a wrapped address.
+	while(offset >= MSX2_NEO_SEGMENT_SZ)
+	{
+		offset = (u16)(offset - MSX2_NEO_SEGMENT_SZ);
+		++segment;
+	}
+
 	g_blit_len = w;
 	g_blit_lo = x;
 

@@ -275,8 +275,14 @@ static void Msx2_BoardSnapshot(void)
 		g_flag[SLOT_OF(ZONE_COM, i)] = (u8)((com->faceup[i] ? F_FACEUP : 0)
 		                                  | (com->defense[i] ? F_DEFENSE : 0));
 
+		// The player's own row reads its face-up flag now, exactly as the
+		// opponent's does.  It used to be hard-wired face up, which is why a
+		// monster the player had just set still showed its face on the board
+		// while the rules -- and every other port -- had it hidden.  Reading
+		// what is under it is still the player's privilege: the info panel
+		// redacts a set card in ZONE_COM and nowhere else.
 		g_want[SLOT_OF(ZONE_FIELD, i)] = you->field[i];
-		g_flag[SLOT_OF(ZONE_FIELD, i)] = (u8)(F_FACEUP
+		g_flag[SLOT_OF(ZONE_FIELD, i)] = (u8)((you->faceup[i] ? F_FACEUP : 0)
 		                                  | (you->defense[i] ? F_DEFENSE : 0));
 
 		// A hand position the opening deal has not delivered yet is empty as
@@ -871,6 +877,28 @@ static void Msx2_BoardRestoreFromCutin(void)
 #define FX_STASH_Y       216
 #define FX_STASH_HALF_H  (MSX2_CARD_H / 2)
 
+// THE FLYING CARD IS CACHED IN VRAM, NOT RE-READ EVERY POSE.
+// A pose used to be Msx2_StreamRect() out of the cartridge: the Z80 maps a NEO
+// segment in and pushes 1,344 bytes (32x42, overhead) or 1,920 (40x48) through
+// the VDP data port at the padded 32 T-states a byte GRAPHIC 7 needs while it
+// is scanning out -- roughly a frame of the CPU, per pose, per page, and a
+// landing is eight poses on each of two pages.
+//
+// But every pose of a flight shows the SAME picture; only its position moves.
+// So it is read once, into offscreen rows of both pages, and each pose is two
+// Msx2_CopyRect() calls -- VDP-to-VDP block copies the command engine does on
+// its own while the CPU goes back to the rest of the frame.  Sixteen cartridge
+// streams become two.
+//
+// It sits beside the flight's own backing store, which owns x 0..80 of the same
+// rows.  Split in half for the same reason the backing is: a 48-row card does
+// not fit in the 44 rows GRAPHIC 7 leaves below the visible 212.
+#define FX_CACHE_X       128
+
+// Pages that still owe the landing's banner.  The words never change for the
+// length of a flight, so writing them once a page is the whole of it.
+static u8 g_fx_banner_left;
+
 static void Msx2_BoardFxCardBacking(bool restore, u8 x, u8 y, u8 w, u8 half)
 {
 	u8 i;
@@ -885,6 +913,66 @@ static void Msx2_BoardFxCardBacking(bool restore, u8 x, u8 y, u8 w, u8 half)
 	}
 }
 
+// What a landing carries.
+//
+// A monster put into a field slot is SET: face down, whoever played it -- the
+// rules say so for both sides now -- so what travels is the one back cover, and
+// the same cached picture serves the player's summon and the opponent's.  An
+// equip is not set; it is played openly, and the player's own equip flies its
+// own face.
+static u8 Msx2_BoardFxFlightCard(void)
+{
+	if((g_fx_kind == FX_SUMMON) || (g_fx_kind == FX_COM_PLACE))
+		return MSX2_CARD_BACK_INDEX;
+	return (g_fx_owner == MSX2_OWNER_COM) ? MSX2_CARD_BACK_INDEX : g_fx_card;
+}
+
+// Read the flight's card into the offscreen cache of both pages.  Called once,
+// when a landing begins.
+static void Msx2_BoardFxCacheCard(void)
+{
+	bool over = (g_view == MSX2_VIEW_OVER);
+	u8   card = Msx2_BoardFxFlightCard();
+	u8   cw   = over ? MSX2_OVER_CARD_W : MSX2_CARD_W;
+	u8   half = (u8)((over ? MSX2_OVER_CARD_H : MSX2_CARD_H) >> 1);
+	u16  seg, off;
+	u8   keep = Msx2_VideoGetDrawPage();
+	u8   p;
+
+	// Every caller is "a presentation beat has just started"; only some of them
+	// are flights, so the test lives here rather than at three call sites.
+	if(!Msx2_BoardFxIsLanding() || (g_fx_field == MSX2_SLOT_NONE))
+		return;
+	g_fx_banner_left = PAGES_ALL;
+
+	if(over)
+	{
+		// The opponent's row is the half-turned set, exactly as the settled
+		// card will be drawn -- otherwise the card spins as it lands.
+		u16 base = (SLOT_ZONE(g_fx_field) == ZONE_COM)
+		         ? MSX2_OVER_CARD_MIRROR_SEGMENT : MSX2_OVER_CARD_SEGMENT;
+		seg = (u16)(base + card / MSX2_OVER_CARD_PER_SEG);
+		off = (u16)((card % MSX2_OVER_CARD_PER_SEG) * MSX2_OVER_CARD_STRIDE);
+	}
+	else
+	{
+		seg = (u16)(MSX2_CARD_ART_SEGMENT + card / MSX2_CARD_ART_PER_SEG);
+		off = (u16)((card % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE);
+	}
+
+	// The blob is row-major, so the bottom half of a card starts exactly half
+	// its rows in.  Msx2_StreamRect() normalises an offset that runs past the
+	// 16 KB window, so the sum needs no care here.
+	for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
+	{
+		Msx2_VideoDrawPage(p);
+		Msx2_StreamRect(seg, off, FX_CACHE_X, FX_STASH_Y, cw, half);
+		Msx2_StreamRect(seg, (u16)(off + (u16)half * cw),
+		                (u8)(FX_CACHE_X + MSX2_CARD_W), FX_STASH_Y, cw, half);
+	}
+	Msx2_VideoDrawPage(keep);
+}
+
 // THE EASING, AND WHY IT IS A TABLE.
 // The interpolation is a 4.4 fixed-point weight, so the last pose has to reach
 // exactly 16 or the card stops short of the slot and then jumps into it when
@@ -897,13 +985,13 @@ static void Msx2_BoardFxCardBacking(bool restore, u8 x, u8 y, u8 w, u8 half)
 static const u8 g_fx_ease[FX_LANDING_FRAMES] = { 0, 1, 4, 7, 10, 13, 15, 16 };
 
 
-// The card that is being played, drawn as itself.
+// The card that is being played, as a picture rather than an outline.
 //
 // It leaves its hand position and travels in both axes to the projected slot.
 // Before each opaque pose, the hidden page saves the 40x48 arena underneath in
 // its offscreen rows; when that page comes round again the exact pixels are put
-// back first.  This keeps the real card face instead of falling back to an XOR
-// outline, and scan-out only ever sees completed poses.
+// back first.  So this is a real card moving over the board, not an XOR frame,
+// and scan-out only ever sees completed poses.
 static void Msx2_BoardFxCardFlight(bool erase)
 {
 	// Overhead -- which is where every landing happens, because choosing a
@@ -918,8 +1006,7 @@ static void Msx2_BoardFxCardFlight(bool erase)
 	u8 ease = g_fx_ease[FX_LANDING_FRAMES - g_fx_frames];
 	i16 ex = g_fx_dest_x;
 	i16 ey = g_fx_dest_y;
-	u8 x, y;
-	u8 card = (g_fx_owner == MSX2_OWNER_COM) ? MSX2_CARD_BACK_INDEX : g_fx_card;
+	u8 x, y, i;
 
 	x = (u8)(sx + (((ex - sx) * ease) >> 4));
 	y = (u8)(MSX2_HAND_Y + (((ey - MSX2_HAND_Y) * ease) >> 4));
@@ -930,21 +1017,12 @@ static void Msx2_BoardFxCardFlight(bool erase)
 		return;
 	}
 	Msx2_BoardFxCardBacking(FALSE, x, y, cw, half);
-	if(over)
-	{
-		// The opponent's row is the half-turned set, exactly as the settled
-		// card will be drawn -- otherwise the card spins as it lands.
-		u16 base = (SLOT_ZONE(g_fx_field) == ZONE_COM)
-		         ? MSX2_OVER_CARD_MIRROR_SEGMENT : MSX2_OVER_CARD_SEGMENT;
-		Msx2_StreamRect((u16)(base + card / MSX2_OVER_CARD_PER_SEG),
-		                (u16)((card % MSX2_OVER_CARD_PER_SEG)
-		                      * MSX2_OVER_CARD_STRIDE),
-		                x, y, MSX2_OVER_CARD_W, MSX2_OVER_CARD_H);
-		return;
-	}
-	Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + card / MSX2_CARD_ART_PER_SEG),
-	                (u16)((card % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
-	                x, y, MSX2_CARD_W, MSX2_CARD_H);
+	// Out of the offscreen cache Msx2_BoardFxCacheCard() filled, in the same
+	// two halves it was stored in: two command-engine copies, and not one byte
+	// through the data port.
+	for(i = 0; i < 2; ++i)
+		Msx2_CopyRect((u8)(FX_CACHE_X + i * MSX2_CARD_W), FX_STASH_Y,
+		              x, (u8)(y + i * half), cw, half);
 }
 
 static void Msx2_BoardFxDraw(bool erase)
@@ -983,12 +1061,22 @@ static void Msx2_BoardFxDraw(bool erase)
 	case FX_EQUIP:
 		if(!erase)
 		{
-			if(g_fx_kind == FX_COM_PLACE)
-				Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_OPPONENT_PLACES_THE_CARD), MSX2_RED);
-			else if(g_fx_kind == FX_SUMMON)
-				Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_SUMMON), MSX2_TEAL);
-			else
-				Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_EQUIP_POWER), MSX2_GOLD);
+			// Once a page.  Msx2_BoardPaint() puts the real panel back on a
+			// page the first time it draws there -- PANEL_ALL() is set when the
+			// effect starts -- and it runs before this, so the banner always
+			// lands on top of a panel that has just been repainted.  After that
+			// nothing disturbs it, so nothing has to rewrite it.
+			u8 bit = PAGE_BIT(Msx2_VideoGetDrawPage());
+			if(g_fx_banner_left & bit)
+			{
+				if(g_fx_kind == FX_COM_PLACE)
+					Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_OPPONENT_PLACES_THE_CARD), MSX2_RED);
+				else if(g_fx_kind == FX_SUMMON)
+					Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_SUMMON), MSX2_TEAL);
+				else
+					Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_EQUIP_POWER), MSX2_GOLD);
+				g_fx_banner_left &= (u8)~bit;
+			}
 		}
 		if(g_fx_field != MSX2_SLOT_NONE)
 			Msx2_BoardFxCardFlight(erase);
@@ -1018,7 +1106,14 @@ static void Msx2_BoardFxErase(u8 frame)
 		g_shown[page][slot] = g_want[slot];
 		g_shown_flag[page][slot] = g_flag[slot];
 	}
-	Msx2_BoardInfo();
+	// A LANDING'S PANEL IS THE BANNER, AND THE BANNER IS CONSTANT.
+	// Repainting the info panel here wiped it every pose, so every pose had to
+	// write it again -- and Msx2_BoardInfo() is not cheap: the card lines read
+	// the hovered card's NAME out of the cartridge and then push three strings
+	// through the data port, all to produce the picture that was already on the
+	// screen.  For a flight, neither half of that repetition is needed.
+	if(!Msx2_BoardFxIsLanding())
+		Msx2_BoardInfo();
 	g_fx_frames = frame;
 	Msx2_BoardFxDraw(TRUE);
 }
@@ -1142,23 +1237,21 @@ static void Msx2_BoardStartFx(void)
 		}
 		else
 		{
-			// THE PLAYER'S OWN SUMMON IS NOT ANIMATED.
-			// The flight is there to say "this card is going into that slot",
-			// which is the one thing the player has just chosen and already
-			// knows.  It cost the hand coming off the screen, eight frames of
-			// an opaque 40x48 card crossing the board, the bend that puts the
-			// arena back and a six-frame hold: a second and a half of watching
-			// per summon.  The card simply appears on the board now, with the
-			// cursor left on it in the overhead view -- which is the picture
-			// that carries the information.  The OPPONENT's placement keeps
-			// its flight, because there the player did not choose it.
-			g_suppress_slot = MSX2_SLOT_NONE;
-			g_fx_kind = FX_NONE;
+			// THE PLAYER'S OWN SUMMON IS A SET, AND IT IS ANIMATED LIKE ONE.
+			// A monster put into a field slot goes down face down for both
+			// sides, so the card that lands is not the one the player picked
+			// out of their hand -- it is the back cover, and the flight is what
+			// says which of five slots it went into and that it is now hidden.
+			// It was dropped once as a second and a half of watching per
+			// summon, and most of that was the cartridge: eight poses on each
+			// of two pages, each one 1,344 bytes pushed through the data port.
+			// Msx2_BoardFxCacheCard() reads it twice for the whole flight now,
+			// and the poses themselves are command-engine copies.
+			// The cursor still ends on the slot, which is what the overhead
+			// view is for.
+			g_fx_kind = FX_SUMMON;
 			g_zone = ZONE_FIELD;
 			g_sel = g_duel.last_action_field_slot;
-			Msx2_ClearActionEvent();
-			Msx2_BoardTouch();
-			return;
 		}
 	}
 	else if(action == MSX2_ACTION_ATTACK)
@@ -1209,6 +1302,7 @@ static void Msx2_BoardStartFx(void)
 	else if(g_fx_kind == FX_SUPPORT)
 		Msx2_EffectBegin(g_fx_card, FALSE);
 	Msx2_BoardHideHand();
+	Msx2_BoardFxCacheCard();
 }
 
 static void Msx2_BoardFinishFx(void)
@@ -1227,6 +1321,7 @@ static void Msx2_BoardFinishFx(void)
 		g_fx_frames = FX_LANDING_FRAMES;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 		Msx2_BoardHideHand();
+		Msx2_BoardFxCacheCard();
 		return;
 	}
 	if(next == FX_SUPPORT)
@@ -1247,6 +1342,7 @@ static void Msx2_BoardFinishFx(void)
 		g_fx_frames = FX_LANDING_FRAMES;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 		Msx2_BoardHideHand();
+		Msx2_BoardFxCacheCard();
 		return;
 	}
 

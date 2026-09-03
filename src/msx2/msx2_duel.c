@@ -569,7 +569,15 @@ bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense)
 	}
 
 	s->field[field_slot] = card;
-	s->faceup[field_slot] = (owner == MSX2_OWNER_PLAYER) ? TRUE : FALSE;
+	// A PLACED MONSTER IS SET, WHOEVER PLAYS IT.
+	// This used to keep the player's own summons face up while the opponent's
+	// went down, which is not what src/main.c does (g_i_player_faceup[slot] = 0
+	// on the same beat) and cost the player's side of the board the whole
+	// face-down layer of the game: the opponent's AI could read every monster
+	// it was deciding whether to attack into, and a set the player had just
+	// made announced itself.  A fusion is the exception and sets it back to
+	// TRUE below -- what comes out of a fusion is played openly.
+	s->faceup[field_slot] = FALSE;
 	s->defense[field_slot] = defense ? TRUE : FALSE;
 	s->attacked[field_slot] = FALSE;
 	s->used[hand_slot] = TRUE;
