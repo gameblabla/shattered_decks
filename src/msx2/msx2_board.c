@@ -137,6 +137,12 @@ static c8  g_name[MSX2_NAME_STRIDE];
 // Msx2_UiText() answers out of ONE shared buffer that every panel painter
 // overwrites, so a pointer into it does not survive the frame it was taken in.
 #define OVER_SLIDE_STEPS 30
+// AND THEN IT STAYS.  The word arriving is not the beat -- the beat is the
+// board it arrived over, with everything the last attack left standing on it,
+// and a slide that ends the instant it lands gives a player no time to look at
+// either.  The duel loop runs at about thirty-five iterations a second, so this
+// is a little over two seconds before a button is worth anything.
+#define OVER_HOLD_STEPS  76
 // The band of bare table between the HUD and the opponent's row.  The two card
 // rows overhead are flush -- 54..96 and 96..138 -- so there is no gap between
 // them to put a thirty-two row word in, and the middle of the board is the one
@@ -193,27 +199,33 @@ static u8 g_fx_hold;
 static u8 g_fx_dest_x;
 static u8 g_fx_dest_y;
 
-// The 2-D battle cut-in.  The cards do not just sit on the black stage and
-// flash at each other: the attacker closes the gap in visible steps, the
-// contact beat lands where they meet, and the result is held long enough to
-// read.  A cut-in card is 88x120, which is six frames of streaming, so the
-// lunge is five long steps rather than a smooth slide.  The same steps then
-// run backwards after contact: leaving the attacker parked in the middle of
-// the cut-in made the result appear to teleport it back onto the 3-D field.
-#define BATT_STEPS   5
-#define BATT_DX      8
+// THE 2-D BATTLE CUT-IN: THE CARDS STAND STILL AND THE ATTACK IS THE ANIMATION.
+//
+// The cards used to close the gap between them -- five 88x120 blits forward and
+// five back, on each of two pages, before anything happened.  That is about six
+// V-blanks a step for a beat that says nothing the lanes do not already say, and
+// it cost the strike itself the frames it needed.  So the attacker is parked in
+// the left lane and what it is striking in the right one, neither moves, and the
+// whole of the animation is the blade sweep and the burst landing on the right
+// lane -- with the damage climbing under it from -0 to the real figure.  This is
+// what the PC build does (draw_direct_attack_slash() plus its damage readout);
+// the only thing the console version was missing was the blade.
 #define BATT_BURN_DY 20
 #define BATT_HOLD    56
+// The struck lane's centre, which is where every strike lands: a direct attack
+// has nothing in the right lane and drives at it anyway, and a trap turns the
+// strike back onto the attacker's own lane instead.
+#define BATT_LANE_L  12
+#define BATT_LANE_R  156
+#define BATT_HIT_X(lane)  (u8)((lane) + MSX2_BATTLE_CARD_W / 2)
 static u8 g_batt_phase;
 static u8 g_batt_step;
 static u8 g_batt_ax;
 static u8 g_batt_dx;
-static u8 g_batt_dir;
+static u8 g_batt_fx_x;      // where the blade, the burst and the figure land
 static u8 g_batt_direct;
 static u8 g_batt_trap;
-static u8 g_batt_counter;
-static u8 g_batt_px[MSX2_VIDEO_PAGES];
-static u8 g_batt_dpx[MSX2_VIDEO_PAGES];
+static i16 g_batt_damage;   // 0 when there is no figure to count
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Reading the rules
@@ -742,18 +754,19 @@ static void Msx2_BoardShowBattleCutin(void)
 
 	g_batt_direct = (g_duel.last_battle.outcome == MSX2_BATTLE_DIRECT);
 	g_batt_trap = g_duel.last_trap_fired;
-	g_batt_ax = g_batt_direct ? 84 : (g_fx_owner == MSX2_OWNER_PLAYER ? 12 : 156);
-	g_batt_dx = (g_fx_owner == MSX2_OWNER_PLAYER) ? 156 : 12;
-	// Which way the attacker has to move to reach what it is attacking.  A
-	// direct hit has nothing in front of it, so it drives at the opponent's
-	// side of the screen instead.
-	g_batt_dir = g_batt_direct ? (g_fx_owner == MSX2_OWNER_PLAYER)
-	                           : (g_batt_dx > g_batt_ax);
+	// The attacker is in the left lane whoever owns it, and whatever it is
+	// striking is in the right one.  Which chair the blow came from is already
+	// said twice over -- by the two name lines and by the board the cut-in
+	// returns to -- and a fixed pair of lanes is what lets the strike always
+	// play in the same place.
+	g_batt_ax = BATT_LANE_L;
+	g_batt_dx = BATT_LANE_R;
+	// A trap turns the attack back on the card that declared it, so that is the
+	// lane the blade falls on.
+	g_batt_fx_x = g_batt_trap ? BATT_HIT_X(g_batt_ax) : BATT_HIT_X(g_batt_dx);
+	g_batt_damage = g_batt_trap ? 0 : (i16)g_duel.last_battle.damage;
 	g_batt_phase = 0;
 	g_batt_step = 0;
-	g_batt_counter = FALSE;
-	g_batt_px[0] = g_batt_px[1] = g_batt_ax;
-	g_batt_dpx[0] = g_batt_dpx[1] = g_batt_dx;
 
 	/* Compose the clean card page while output is blank.  The contact beat's
 	   second page is built later, once the two cards have actually met; no
@@ -768,49 +781,34 @@ static void Msx2_BoardShowBattleCutin(void)
 	VDP_EnableDisplay(TRUE);
 }
 
-// One step of the attacker closing on its target: erase where this page last
-// had the card, put it down further along, and carry its ATK figure with it.
-static void Msx2_BoardBattleMoveAttacker(void)
+// One pose of the strike: the blade sweep, and the damage figure climbing under
+// the lane it fell on.
+//
+// Both are drawn onto a page that has just been levelled from the other one, so
+// the sweep's previous poses are already there and only the new one is added.
+// The figure is the exception -- it is a different number every pose -- and it
+// owns a plate of its own, which is the whole of taking the old one back off.
+static void Msx2_BoardBattleStrike(u8 step)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-	u8 travel = (u8)(g_batt_step * BATT_DX);
-	u8 x = g_batt_dir ? (u8)(g_batt_ax + travel) : (u8)(g_batt_ax - travel);
 
+	Msx2_VideoCopyPage((u8)(page ^ 1), page);
 	Msx2_VideoDrawPage(page);
-	Msx2_Fill(g_batt_px[page], 23, MSX2_BATTLE_CARD_W, MSX2_BATTLE_CARD_H,
-	          MSX2_BLACK);
-	Msx2_Fill(g_batt_px[page], 149, MSX2_BATTLE_CARD_W, 8, MSX2_BLACK);
-	Msx2_BoardBattleCard(g_duel.last_attacker_card, x, 23);
-	if(!g_batt_trap)
+	if(step < MSX2_BATTLE_SLASH_STEPS)
+		Msx2_BattleFxSlash(g_batt_fx_x, step);
+	if(g_batt_damage > 0)
 	{
-		Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
-		Msx2_TextAt((u8)(x + 10), 149, "ATK");
-		Msx2_NumAt((u8)(x + 38), 149, g_duel.last_battle.attacker_atk);
+		// -0 on the frame the blade lands, the real figure on the last frame of
+		// the burst.  The count is (damage / 16) * t rather than
+		// (damage * t) / 16: the second form reaches 128000 on the way and the
+		// Z80 multiplies in sixteen bits.  The last step is the figure itself,
+		// so the sixteenths never have to add back up to it.
+		u8 t = (u8)(step + 1);
+		Msx2_BattleFxDamageCount(g_batt_fx_x,
+		    (t >= MSX2_BATTLE_COUNT_STEPS)
+		        ? g_batt_damage
+		        : (i16)((g_batt_damage / MSX2_BATTLE_COUNT_STEPS) * t));
 	}
-	g_batt_px[page] = x;
-}
-
-// When the defender wins an attack-position clash, PC-FX gives it the answer:
-// it drives back into the attacker, then returns before the losing card burns.
-// Keep separate per-page positions so neither half of that round trip can
-// expose the previous pose when the pages alternate.
-static void Msx2_BoardBattleMoveDefender(void)
-{
-	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-	u8 travel = (u8)(g_batt_step * BATT_DX);
-	u8 x = g_batt_dir ? (u8)(g_batt_dx - travel)
-	                  : (u8)(g_batt_dx + travel);
-
-	Msx2_VideoDrawPage(page);
-	Msx2_Fill(g_batt_dpx[page], 23, MSX2_BATTLE_CARD_W,
-	          MSX2_BATTLE_CARD_H, MSX2_BLACK);
-	Msx2_Fill(g_batt_dpx[page], 149, MSX2_BATTLE_CARD_W, 8, MSX2_BLACK);
-	Msx2_BoardBattleCard(g_duel.last_defender_card, x, 23);
-	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
-	Msx2_TextAt((u8)(x + 8), 149,
-	            g_duel.last_battle.defender_passive ? "DEF" : "ATK");
-	Msx2_NumAt((u8)(x + 36), 149, g_duel.last_battle.defender_value);
-	g_batt_dpx[page] = x;
 }
 
 // The shared/PC-FX cut-in burns a destroyed card away instead of leaving it
@@ -1390,115 +1388,53 @@ static bool Msx2_BoardRunFx(void)
 	}
 	if(Msx2_BoardFxIsBattle())
 	{
-		u8 page;
 		switch(g_batt_phase)
 		{
 		case 0:
-			/* The attacker closes, or the stronger defender answers.  One
-			   88x120 blit is about six V-blanks, so five steps is roughly a
-			   second of visible approach. */
-			++g_batt_step;
-			if(g_batt_counter) Msx2_BoardBattleMoveDefender();
-			else               Msx2_BoardBattleMoveAttacker();
+			/* The blade sweep.  Eight poses, each one the last plus a little
+			   more, over a stage that never moves -- so the whole beat is
+			   seven LINE commands and a plate a frame instead of two 88x120
+			   card blits.  The contact mark goes down with the last pose, so
+			   it is carried onto the other page by the next levelling rather
+			   than living on one page and flickering under the burst. */
+			Msx2_BoardBattleStrike(g_batt_step);
+			if(g_batt_step == MSX2_BATTLE_SLASH_STEPS - 1)
+				Msx2_BattleFxImpact(g_batt_fx_x, g_batt_trap);
 			Msx2_VideoFlipRequest();
-			if(g_batt_step >= BATT_STEPS)
-			{
-				g_batt_phase = 1;
-				g_batt_step = 0;
-			}
-			return TRUE;
-
-		case 1:
-			/* Level the pages at the meeting position, then build the contact
-			   beat's second page on the one that is not being scanned. */
-			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-			Msx2_VideoCopyPage((u8)(page ^ 1), page);
-			if(g_batt_counter) g_batt_dpx[page] = g_batt_dpx[page ^ 1];
-			else               g_batt_px[page] = g_batt_px[page ^ 1];
-			Msx2_VideoDrawPage(page);
-			Msx2_BattleFxImpact(g_batt_trap
-			                     ? (u8)(g_batt_px[page] + MSX2_BATTLE_CARD_W / 2)
-			                     : g_batt_direct
-			                       ? (g_fx_owner == MSX2_OWNER_PLAYER ? 220 : 36)
-			                       : (u8)((g_batt_counter ? g_batt_ax : g_batt_dx)
-			                              + MSX2_BATTLE_CARD_W / 2),
-			                     g_batt_trap);
-			g_batt_phase = 2;
-			g_batt_step = 0;
+			if(++g_batt_step >= MSX2_BATTLE_SLASH_STEPS)
+				g_batt_phase = 2;
 			return TRUE;
 
 		case 2:
-			/* The flash is a page flip, so nothing is ever drawn over live
-			   scan-out -- and the explosion over it is sprites, which cost one
-			   attribute write a frame and need no repair at all.  That is what
-			   buys eight frames of it where the bitmap could afford one held
-			   pose. */
-			Msx2_BattleFxBurst(g_batt_trap
-			                   ? (u8)(g_batt_px[Msx2_VideoGetShowPage()]
-			                          + MSX2_BATTLE_CARD_W / 2)
-			                   : g_batt_direct
-			                     ? (g_fx_owner == MSX2_OWNER_PLAYER ? 220 : 36)
-			                     : (u8)((g_batt_counter ? g_batt_ax : g_batt_dx)
-			                            + MSX2_BATTLE_CARD_W / 2),
-			                   83, g_batt_step);
+			/* The explosion over the mark is SPRITES, which cost one attribute
+			   write a frame and need no repair at all -- that is what buys
+			   eight frames of it where the bitmap could afford one held pose.
+			   The page underneath is still levelled every frame, which both
+			   carries the contact mark across and gives the damage figure a
+			   clean plate to climb on. */
+			Msx2_BattleFxBurst(g_batt_fx_x, 83,
+			                   (u8)(g_batt_step - MSX2_BATTLE_SLASH_STEPS));
+			Msx2_BoardBattleStrike(g_batt_step);
 			Msx2_VideoFlipRequest();
-			if(++g_batt_step >= MSX2_SPR_BURST_N)
+			if(++g_batt_step >= MSX2_BATTLE_COUNT_STEPS)
 			{
 				Msx2_BattleFxBurst(0, 0, MSX2_SPR_BURST_N);
-				g_batt_phase = 3;
-				g_batt_step = BATT_STEPS;
-			}
-			return TRUE;
-
-		case 3:
-			/* Remove the impact marks from the other page before the retreat.
-			   Both pages now contain the moving card at full extension, so each
-			   backwards step can be composed off-screen and revealed in V-blank. */
-			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-			Msx2_VideoCopyPage((u8)(page ^ 1), page);
-			if(g_batt_counter) g_batt_dpx[page] = g_batt_dpx[page ^ 1];
-			else               g_batt_px[page] = g_batt_px[page ^ 1];
-			g_batt_phase = 4;
-			return TRUE;
-
-		case 4:
-			--g_batt_step;
-			if(g_batt_counter) Msx2_BoardBattleMoveDefender();
-			else               Msx2_BoardBattleMoveAttacker();
-			if(g_batt_step == 0)
-			{
-				if(!g_batt_counter && !g_batt_trap &&
-				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_ATTACKER)
-				{
-					// First reveal the attacker home; case 5 levels the other
-					// page before the defender starts its own round trip.
-					g_batt_phase = 5;
-				}
-				else if(g_batt_trap ||
+				g_batt_step = 0;
+				if(g_batt_trap ||
 				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_ATTACKER ||
 				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_DEFENDER ||
 				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_BOTH)
-				{
-					g_batt_step = 0;
 					g_batt_phase = 6;
-				}
 				else
 				{
+					/* Msx2_BoardBattleStrike() has just left the draw page
+					   levelled and current, so the result line goes straight
+					   onto the page this frame's flip is about to show. */
 					Msx2_BattleFxResult(FALSE);
 					g_fx_frames = BATT_HOLD;
 					g_batt_phase = 7;
 				}
 			}
-			Msx2_VideoFlipRequest();
-			return TRUE;
-
-		case 5:
-			page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-			Msx2_VideoCopyPage((u8)(page ^ 1), page);
-			g_batt_counter = TRUE;
-			g_batt_dpx[0] = g_batt_dpx[1] = g_batt_dx;
-			g_batt_step = 0;
-			g_batt_phase = 0;
 			return TRUE;
 
 		case 6:
@@ -2457,8 +2393,15 @@ static void Msx2_BoardStepOverWord(void)
 {
 	i16 span, home, rem, x;
 
-	if(g_over_step > OVER_SLIDE_STEPS)
+	if(g_over_step > OVER_SLIDE_STEPS + OVER_HOLD_STEPS)
 		return;
+	if(g_over_step >= OVER_SLIDE_STEPS)
+	{
+		// Landed.  The sprites are already where they belong and nothing under
+		// them moves, so the hold costs nothing but the count.
+		++g_over_step;
+		return;
+	}
 
 	span = (i16)((u16)g_over_n * MSX2_SPR_WORD_PITCH);
 	home = (i16)((MSX2_SCREEN_W - span) / 2);
@@ -2476,7 +2419,7 @@ static void Msx2_BoardStepOverWord(void)
 // and the screen this whole path exists to show was never on the screen.
 static bool Msx2_BoardOverIsSettled(void)
 {
-	return g_over_step > OVER_SLIDE_STEPS;
+	return g_over_step > OVER_SLIDE_STEPS + OVER_HOLD_STEPS;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

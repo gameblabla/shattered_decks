@@ -33,6 +33,11 @@
 #define MSX2_DARK_SAND  MSX2_RGB(3, 2, 0)
 #define MSX2_RED        MSX2_RGB(7, 0, 0)
 #define MSX2_TEAL       MSX2_RGB(0, 5, 2)
+// The two heats between gold and red.  A blade sweep that is one flat red reads
+// as a scratch; the ramp white -> gold -> orange -> flame -> red is what makes
+// it read as a cut.
+#define MSX2_ORANGE     MSX2_RGB(7, 3, 0)
+#define MSX2_FLAME      MSX2_RGB(6, 1, 0)
 
 // Page 0 is VRAM lines 0-255, page 1 is 256-511; only 0-211 of each shows.
 #define MSX2_PAGE_0     0
