@@ -41,6 +41,8 @@
 #define MSX2_SPR_RED_HI   7
 #define MSX2_SPR_TEAL_DK  8
 #define MSX2_SPR_TEAL_HI  9
+// The heat between gold and red, for the blade sweep.
+#define MSX2_SPR_ORANGE  10
 
 // Pattern slots.  A 16x16 sprite is four 8x8 quarters, so a slot is 32 bytes
 // and the attribute's pattern byte is slot * 4.
@@ -55,6 +57,13 @@
 // they are the only patterns still built at runtime -- out of the font.
 #define MSX2_SPR_LETTER0 (MSX2_SPR_GEM0 + MSX2_SPR_GEM_N)
 #define MSX2_SPR_LETTER_N 8
+// Two more built at runtime: one segment of a blade leaning down-right, and its
+// mirror.  A stroke is four of them stacked, and the bar inside a segment
+// drifts exactly as far across as the next segment is offset, so four cells
+// read as one unbroken cut.
+#define MSX2_SPR_SLASH0  (MSX2_SPR_LETTER0 + MSX2_SPR_LETTER_N)
+#define MSX2_SPR_SLASH_R MSX2_SPR_SLASH0
+#define MSX2_SPR_SLASH_L (MSX2_SPR_SLASH0 + 1)
 
 // The sprites the selector uses: the last MSX2_GEM_PLANES of the thirty-two,
 // so they are behind everything the effects put up (the V9938 gives the lower
@@ -93,6 +102,19 @@ void Msx2_SpriteShowWord(const c8* text, u8 y, u8 color);
 // the side.  `text` and the letter count must be the ones a preceding
 // Msx2_SpriteWord() uploaded; this call only moves what is already there.
 void Msx2_SpriteWordAt(const c8* text, u8 n, i16 x, u8 y, u8 color);
+
+// ── The blade sweep ─────────────────────────────────────────────────────────
+// Two crossing strokes of four 32x32 segments each, centred on (x, y).  `grown`
+// is how many segments of each stroke to show, 0..MSX2_SPR_SLASH_SEGS, and it
+// is the whole of the animation: a sprite that is not shown costs one byte to
+// hide and a sprite that is costs twenty to place, so a growing cut needs no
+// part of the screen under it saved, restored, or levelled between pages.
+#define MSX2_SPR_SLASH_SEGS  4
+// Sprites 3..10.  0..2 are the burst, which plays over the top of this, and the
+// three at the end belong to the selector.
+#define MSX2_SPR_SLASH_ID    3
+void Msx2_SpriteSlash(u8 x, u8 y, u8 grown_a, u8 grown_b, u8 core);
+void Msx2_SpriteSlashHide(void);
 
 // The selector, at (x, y) -- the top-left of the gem, not of the sprite cell --
 // spinning at `frame`.  `color` is MSX2_SPR_RED or MSX2_SPR_TEAL; the shadow

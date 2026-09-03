@@ -221,6 +221,15 @@ static u8 g_fx_bend;
 static u8 g_fx_hold;
 static u8 g_fx_dest_x;
 static u8 g_fx_dest_y;
+// ... and how big the card is when it gets there.  A slot in a chair view is a
+// PROJECTED quad -- 44x23 for the nearest one, 27x13 for the furthest -- and
+// the card that flies is the 40x48 hand thumbnail.  Landing it at its own size
+// put a card twice the height of the slot on the board, standing up out of it
+// and reaching most of the way to the far edge; what the player saw was the
+// summon flying past where it was going.  So the drawn rectangle closes on the
+// slot's own box along with the position, and the last pose is exactly the box.
+static u8 g_fx_dest_w;
+static u8 g_fx_dest_h;
 
 // THE 2-D BATTLE CUT-IN: THE CARDS STAND STILL AND THE ATTACK IS THE ANIMATION.
 //
@@ -854,33 +863,35 @@ static void Msx2_BoardShowBattleCutin(void)
 	VDP_EnableDisplay(TRUE);
 }
 
-// One pose of the strike: the blade sweep, and the damage figure climbing under
-// the lane it fell on.
+// One pose of the strike: the blade sweep, the explosion over it, and the damage
+// figure climbing under the lane the blade fell on.
 //
-// Both are drawn onto a page that has just been levelled from the other one, so
-// the sweep's previous poses are already there and only the new one is added.
-// The figure is the exception -- it is a different number every pose -- and it
-// owns a plate of its own, which is the whole of taking the old one back off.
+// The first two are sprites and cost the picture nothing, which is why this no
+// longer begins by levelling the hidden page from the other one -- sixty
+// thousand pixels a frame, sixteen frames, for a beat that never changed the
+// stage.  The figure is the one bitmap part, so it is written on the draw page
+// and only allowed to change on every SECOND step: each value then lands on
+// both pages before the next one, and the number stops flickering between two
+// readings.
 static void Msx2_BoardBattleStrike(u8 step)
 {
-	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-
-	Msx2_VideoCopyPage((u8)(page ^ 1), page);
-	Msx2_VideoDrawPage(page);
-	if(step < MSX2_BATTLE_SLASH_STEPS)
-		Msx2_BattleFxSlash(g_batt_fx_x, step);
+	Msx2_BattleFxSlash(g_batt_fx_x, step);
+	if(step >= MSX2_BATTLE_SLASH_STEPS)
+		Msx2_BattleFxBurst(g_batt_fx_x, 83,
+		                   (u8)(step - MSX2_BATTLE_SLASH_STEPS));
 	if(g_batt_damage > 0)
 	{
-		// -0 on the frame the blade lands, the real figure on the last frame of
-		// the burst.  The count is (damage / 16) * t rather than
-		// (damage * t) / 16: the second form reaches 128000 on the way and the
-		// Z80 multiplies in sixteen bits.  The last step is the figure itself,
-		// so the sixteenths never have to add back up to it.
-		u8 t = (u8)(step + 1);
+		// -0 on the frame the blade lands, the real figure on the last pair.
+		// The count is (damage / 8) * t rather than (damage * t) / 8: the
+		// second form reaches 64000 on the way and the Z80 multiplies in
+		// sixteen bits.  The last pair IS the figure, so the eighths never have
+		// to add back up to it.
+		u8 t = (u8)((step >> 1) + 1);
+		Msx2_VideoDrawPage((u8)(Msx2_VideoGetShowPage() ^ 1));
 		Msx2_BattleFxDamageCount(g_batt_fx_x,
-		    (t >= MSX2_BATTLE_COUNT_STEPS)
+		    (t >= (MSX2_BATTLE_COUNT_STEPS / 2))
 		        ? g_batt_damage
-		        : (i16)((g_batt_damage / MSX2_BATTLE_COUNT_STEPS) * t));
+		        : (i16)((g_batt_damage / (MSX2_BATTLE_COUNT_STEPS / 2)) * t));
 	}
 }
 
@@ -912,6 +923,10 @@ static void Msx2_BoardRestoreFromCutin(void)
 	u8 i;
 
 	g_suppress_slot = MSX2_SLOT_NONE;
+	// Nothing of the cut-in may survive onto the board, and the strike's layer
+	// is sprites, which no repaint of the bitmap can reach.
+	Msx2_BattleFxBurst(0, 0, MSX2_SPR_BURST_N);
+	Msx2_SpriteSlashHide();
 	Msx2_BoardSnapshot();
 	VDP_EnableDisplay(FALSE);
 	Msx2_VideoDrawPage(page);
@@ -970,17 +985,18 @@ static void Msx2_BoardRestoreFromCutin(void)
 // length of a flight, so writing them once a page is the whole of it.
 static u8 g_fx_banner_left;
 
-static void Msx2_BoardFxCardBacking(bool restore, u8 x, u8 y, u8 w, u8 half)
+static void Msx2_BoardFxCardBacking(bool restore, u8 x, u8 y, u8 w,
+                                    u8 ha, u8 hb)
 {
-	u8 i;
-	for(i = 0; i < 2; ++i)
+	if(restore)
 	{
-		u8 sx = (u8)(i * MSX2_CARD_W);
-		u8 cy = (u8)(y + i * half);
-		if(restore)
-			Msx2_CopyRect(sx, FX_STASH_Y, x, cy, w, half);
-		else
-			Msx2_CopyRect(x, cy, sx, FX_STASH_Y, w, half);
+		Msx2_CopyRect(0, FX_STASH_Y, x, y, w, ha);
+		Msx2_CopyRect(MSX2_CARD_W, FX_STASH_Y, x, (u8)(y + ha), w, hb);
+	}
+	else
+	{
+		Msx2_CopyRect(x, y, 0, FX_STASH_Y, w, ha);
+		Msx2_CopyRect(x, (u8)(y + ha), MSX2_CARD_W, FX_STASH_Y, w, hb);
 	}
 }
 
@@ -1066,35 +1082,47 @@ static const u8 g_fx_ease[FX_LANDING_FRAMES] = { 0, 1, 4, 7, 10, 13, 15, 16 };
 // and scan-out only ever sees completed poses.
 static void Msx2_BoardFxCardFlight(bool erase)
 {
-	// Overhead -- which is where every landing happens, because choosing a
-	// field slot walks the cursor out of the hand -- the card that is going to
-	// sit in the slot is the 32x42 one baked for that view.  Flying the 40x48
-	// hand thumbnail there was both a third more cartridge per pose and a card
-	// that changed size the instant it arrived.
+	// Overhead the card that is going to sit in the slot is the 32x42 one baked
+	// for that view, and the slot is 42x42, so the card lands at its own size.
+	// In a chair view the slot is a projected quad and is smaller than the card
+	// in both axes, so the drawn rectangle closes on the slot's box as the card
+	// travels -- by taking a smaller and smaller CENTRED window out of the
+	// cached picture, which the command engine does for free by being asked for
+	// a different source rectangle.  The last pose is the box exactly, so the
+	// card stops where it lands instead of standing up out of it.
 	bool over = (g_view == MSX2_VIEW_OVER);
-	u8 cw = over ? MSX2_OVER_CARD_W : MSX2_CARD_W;
-	u8 half = (u8)((over ? MSX2_OVER_CARD_H : MSX2_CARD_H) >> 1);
+	u8 cw   = over ? MSX2_OVER_CARD_W : MSX2_CARD_W;
+	u8 ch   = over ? MSX2_OVER_CARD_H : MSX2_CARD_H;
+	u8 half = (u8)(ch >> 1);
 	i16 sx = (g_fx_hand == MSX2_SLOT_NONE) ? 108 : HAND_X(g_fx_hand);
 	u8 ease = g_fx_ease[FX_LANDING_FRAMES - g_fx_frames];
-	i16 ex = g_fx_dest_x;
-	i16 ey = g_fx_dest_y;
-	u8 x, y, i;
+	u8 x, y, w, h, t, l, ha, hb;
 
-	x = (u8)(sx + (((ex - sx) * ease) >> 4));
-	y = (u8)(MSX2_HAND_Y + (((ey - MSX2_HAND_Y) * ease) >> 4));
+	w = (u8)(cw + ((((i16)g_fx_dest_w - (i16)cw) * ease) >> 4));
+	h = (u8)(ch + ((((i16)g_fx_dest_h - (i16)ch) * ease) >> 4));
+	x = (u8)(sx + ((((i16)g_fx_dest_x - sx) * ease) >> 4));
+	y = (u8)(MSX2_HAND_Y + ((((i16)g_fx_dest_y - MSX2_HAND_Y) * ease) >> 4));
+
+	// The window into the cached card, centred: t rows down and l columns in.
+	// t is never past the halfway split (h can only shrink from ch), so the two
+	// cached halves always both contribute exactly one copy.
+	t = (u8)((ch - h) >> 1);
+	l = (u8)((cw - w) >> 1);
+	ha = (u8)(half - t);
+	hb = (u8)(h - ha);
 
 	if(erase)
 	{
-		Msx2_BoardFxCardBacking(TRUE, x, y, cw, half);
+		Msx2_BoardFxCardBacking(TRUE, x, y, w, ha, hb);
 		return;
 	}
-	Msx2_BoardFxCardBacking(FALSE, x, y, cw, half);
+	Msx2_BoardFxCardBacking(FALSE, x, y, w, ha, hb);
 	// Out of the offscreen cache Msx2_BoardFxCacheCard() filled, in the same
 	// two halves it was stored in: two command-engine copies, and not one byte
 	// through the data port.
-	for(i = 0; i < 2; ++i)
-		Msx2_CopyRect((u8)(FX_CACHE_X + i * MSX2_CARD_W), FX_STASH_Y,
-		              x, (u8)(y + i * half), cw, half);
+	Msx2_CopyRect((u8)(FX_CACHE_X + l), (u8)(FX_STASH_Y + t), x, y, w, ha);
+	Msx2_CopyRect((u8)(FX_CACHE_X + MSX2_CARD_W + l), FX_STASH_Y,
+	              x, (u8)(y + ha), w, hb);
 }
 
 static void Msx2_BoardFxDraw(bool erase)
@@ -1215,16 +1243,24 @@ static void Msx2_BoardHideHand(void)
 	{
 		// Not the centre of the slot box: the exact origin the retained painter
 		// uses for this slot, so the last pose of the flight and the card the
-		// board keeps are the same rectangle in the same place.
+		// board keeps are the same rectangle in the same place.  Overhead the
+		// slot is 42x42 and the card baked for it is 32x42, so the card already
+		// is its own destination size.
 		const u8* at = g_msx2_over_card_xy[g_fx_field];
 		g_fx_dest_x = at[0];
 		g_fx_dest_y = at[1];
+		g_fx_dest_w = MSX2_OVER_CARD_W;
+		g_fx_dest_h = MSX2_OVER_CARD_H;
 	}
 	else
 	{
+		// A chair slot is smaller than the card in both axes more often than
+		// not, so the destination is the box itself, never anything larger.
 		const u8* box = g_msx2_slot_box[g_view][g_fx_field];
-		g_fx_dest_x = (u8)(box[0] + (box[2] >> 1) - MSX2_CARD_W / 2);
-		g_fx_dest_y = (u8)(box[1] + (box[3] >> 1) - MSX2_CARD_H / 2);
+		g_fx_dest_w = (box[2] < MSX2_CARD_W) ? box[2] : MSX2_CARD_W;
+		g_fx_dest_h = (box[3] < MSX2_CARD_H) ? box[3] : MSX2_CARD_H;
+		g_fx_dest_x = (u8)(box[0] + ((box[2] - g_fx_dest_w) >> 1));
+		g_fx_dest_y = (u8)(box[1] + ((box[3] - g_fx_dest_h) >> 1));
 	}
 	g_fx_bend = FX_BEND_POSES;
 	g_fx_hold = 0;
@@ -1366,7 +1402,29 @@ static void Msx2_BoardStartFx(void)
 	// a cut-in composes inside this call, and the frame it appears on would
 	// otherwise still carry the gem sitting on the card that was just played.
 	Msx2_SpriteHideGem();
-	Msx2_BoardSnapshot();
+	// THE BOARD MUST NOT SHOW THE CONSEQUENCE BEFORE THE SCREEN SHOWS THE CAUSE.
+	// The rules commit the instant the opponent acts, and Msx2_BoardTouchRules()
+	// has already snapshotted the result -- so for THUNDER the player's whole
+	// row was empty in g_want before this ran.  The opponent's wind-up beat is
+	// played ON the board, and the cut-in that NAMES the card is two beats
+	// after it, so the row swept itself clear and the screen explained why
+	// afterwards.  A wind-up that hands over to a full-screen cut-in therefore
+	// puts back the board that is actually on the screen and leaves it there;
+	// the cut-in owns the display from the frame it starts, and
+	// Msx2_BoardRestoreFromCutin() is what shows the new state, once the card
+	// has been named.
+	if(g_fx_followup == FX_SUPPORT)
+	{
+		u8 show = Msx2_VideoGetShowPage();
+		u8 i;
+		for(i = 0; i < SLOT_COUNT; ++i)
+		{
+			g_want[i] = g_shown[show][i];
+			g_flag[i] = (u8)(g_shown_flag[show][i] & (u8)~F_STALE);
+		}
+	}
+	else
+		Msx2_BoardSnapshot();
 	PANEL_ALL();
 	// A flight IS the beat for a landing, so eight poses is the beat.  An equip
 	// no longer has one -- the card is simply on its row -- so its banner is
@@ -1475,34 +1533,17 @@ static bool Msx2_BoardRunFx(void)
 		switch(g_batt_phase)
 		{
 		case 0:
-			/* The blade sweep.  Eight poses, each one the last plus a little
-			   more, over a stage that never moves -- so the whole beat is
-			   seven LINE commands and a plate a frame instead of two 88x120
-			   card blits.  The contact mark goes down with the last pose, so
-			   it is carried onto the other page by the next levelling rather
-			   than living on one page and flickering under the burst. */
-			Msx2_BoardBattleStrike(g_batt_step);
-			if(g_batt_step == MSX2_BATTLE_SLASH_STEPS - 1)
-				Msx2_BattleFxImpact(g_batt_fx_x, g_batt_trap);
-			Msx2_VideoFlipRequest();
-			if(++g_batt_step >= MSX2_BATTLE_SLASH_STEPS)
-				g_batt_phase = 2;
-			return TRUE;
-
-		case 2:
-			/* The explosion over the mark is SPRITES, which cost one attribute
-			   write a frame and need no repair at all -- that is what buys
-			   eight frames of it where the bitmap could afford one held pose.
-			   The page underneath is still levelled every frame, which both
-			   carries the contact mark across and gives the damage figure a
-			   clean plate to climb on. */
-			Msx2_BattleFxBurst(g_batt_fx_x, 83,
-			                   (u8)(g_batt_step - MSX2_BATTLE_SLASH_STEPS));
+			/* The whole strike: the blade opening and crossing, the explosion
+			   taking the crossing point, and the figure climbing under it.
+			   Sprites, so a pose is a handful of attribute bytes and the stage
+			   under them is never touched -- there is no page copy, no save and
+			   no restore anywhere in these sixteen frames. */
 			Msx2_BoardBattleStrike(g_batt_step);
 			Msx2_VideoFlipRequest();
 			if(++g_batt_step >= MSX2_BATTLE_COUNT_STEPS)
 			{
 				Msx2_BattleFxBurst(0, 0, MSX2_SPR_BURST_N);
+				Msx2_SpriteSlashHide();
 				g_batt_step = 0;
 				if(g_batt_trap ||
 				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_ATTACKER ||
@@ -1511,9 +1552,11 @@ static bool Msx2_BoardRunFx(void)
 					g_batt_phase = 6;
 				else
 				{
-					/* Msx2_BoardBattleStrike() has just left the draw page
-					   levelled and current, so the result line goes straight
-					   onto the page this frame's flip is about to show. */
+					/* Level the other page once, here, so the result line and
+					   the settled figure are on both of them for the hold. */
+					u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
+					Msx2_VideoCopyPage((u8)(page ^ 1), page);
+					Msx2_VideoDrawPage(page);
 					Msx2_BattleFxResult(FALSE);
 					g_fx_frames = BATT_HOLD;
 					g_batt_phase = 7;

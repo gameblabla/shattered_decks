@@ -22,6 +22,8 @@ static u8 g_pat[32];
 static u8 g_col[16];
 static u8 g_atr[4];
 
+static void Msx2_SpriteBuildSlash(void);
+
 void Msx2_SpriteInit(void)
 {
 	u8 f;
@@ -41,6 +43,7 @@ void Msx2_SpriteInit(void)
 	VDP_SetPaletteEntry(MSX2_SPR_RED_HI,  0x7405);
 	VDP_SetPaletteEntry(MSX2_SPR_TEAL_DK, 0x0102);
 	VDP_SetPaletteEntry(MSX2_SPR_TEAL_HI, 0x4607);
+	VDP_SetPaletteEntry(MSX2_SPR_ORANGE,  0x7003);
 
 	// 16x16, magnified to 32x32: an explosion or a letter has to read at the
 	// same size the 88x120 cut-in cards do.
@@ -72,6 +75,7 @@ void Msx2_SpriteInit(void)
 		VDP_WriteVRAM(g_pat, (u16)(SPR_PAT_ADDR + (u16)f * 32), 0, 32);
 	}
 
+	Msx2_SpriteBuildSlash();
 	Msx2_SpriteClear();
 }
 
@@ -139,6 +143,105 @@ u8 Msx2_SpriteWord(const c8* text)
 		++n;
 	}
 	return n;
+}
+
+// ── The blade sweep ─────────────────────────────────────────────────────────
+//
+// THE ATTACK IS SPRITES NOW, AND THAT IS THE WHOLE OF WHY IT IS FAST.
+// The sweep used to be seven V9938 LINE commands a pose drawn INTO the bitmap,
+// which meant every pose had to start by levelling the hidden page from the
+// other one -- a 256x240 HMMM, sixty thousand pixels, once a frame, for sixteen
+// frames.  That is what made an attack crawl, and levelling one page from
+// another that is one pose behind is also what made it flicker.  As sprites the
+// same figure is twenty bytes a segment and nothing underneath it is ever
+// touched, so there is nothing to put back and no page to level.
+//
+// One stroke is MSX2_SPR_SLASH_SEGS cells of 32x32, stacked at exactly 32 rows
+// and stepped SLASH_DX across.  The bar inside a cell drifts the same distance
+// over its sixteen pattern rows, so the four cells join into one unbroken cut.
+#define SLASH_DX      18       // screen pixels a segment is offset from the last
+#define SLASH_THICK    4       // pattern columns; doubled by the magnification
+
+static void Msx2_SpriteBuildSlash(void)
+{
+	u8 r;
+
+	VDP_CommandWait();
+	for(r = 0; r < 16; ++r)
+	{
+		// The bar's left column at this row: it crosses SLASH_DX/2 pattern
+		// columns over the sixteen rows, which is the offset to the next cell.
+		u8 c = (u8)(3 + (u8)(((u16)r * (SLASH_DX / 2)) / 16));
+		u16 bar = 0;
+		u8 i;
+
+		for(i = 0; i < SLASH_THICK; ++i)
+			bar |= (u16)(0x8000u >> (c + i));
+		g_pat[r]      = (u8)(bar >> 8);
+		g_pat[16 + r] = (u8)(bar & 0xFF);
+	}
+	VDP_WriteVRAM(g_pat, (u16)(SPR_PAT_ADDR + (u16)MSX2_SPR_SLASH_R * 32),
+	              0, 32);
+	// The mirror, column by column, for the stroke that leans the other way.
+	for(r = 0; r < 16; ++r)
+	{
+		u16 bar = (u16)(((u16)g_pat[r] << 8) | g_pat[16 + r]);
+		u16 flip = 0;
+		u8 i;
+		for(i = 0; i < 16; ++i)
+			if(bar & (u16)(0x8000u >> i))
+				flip |= (u16)(1u << i);
+		g_pat[r]      = (u8)(flip >> 8);
+		g_pat[16 + r] = (u8)(flip & 0xFF);
+	}
+	VDP_WriteVRAM(g_pat, (u16)(SPR_PAT_ADDR + (u16)MSX2_SPR_SLASH_L * 32),
+	              0, 32);
+}
+
+// The heat of a segment by how far out from the crossing point it is: the ends
+// are the cooling tail of the cut and the middle is where the blade bit.
+static u8 Msx2_SpriteSlashHeat(u8 seg, u8 core)
+{
+	if((seg == 0) || (seg == MSX2_SPR_SLASH_SEGS - 1))
+		return MSX2_SPR_RED;
+	return core;
+}
+
+void Msx2_SpriteSlash(u8 x, u8 y, u8 grown_a, u8 grown_b, u8 core)
+{
+	// The stroke's own half-width and half-height, in screen pixels.  A cell is
+	// 32 tall, so four of them reach 64 either side of the middle.
+	const u8 half_h = (u8)(MSX2_SPR_SLASH_SEGS * 16);
+	const u8 half_w = (u8)((MSX2_SPR_SLASH_SEGS - 1) * SLASH_DX / 2);
+	u8 seg;
+
+	for(seg = 0; seg < MSX2_SPR_SLASH_SEGS; ++seg)
+	{
+		u8 sy = (u8)(y - half_h + seg * 32);
+		u8 id = (u8)(MSX2_SPR_SLASH_ID + seg);
+
+		if(seg < grown_a)
+			Msx2_SpriteAt(id,
+			              (u8)(x - half_w + seg * SLASH_DX - 16), sy,
+			              MSX2_SPR_SLASH_R, Msx2_SpriteSlashHeat(seg, core));
+		else
+			Msx2_SpriteHide(id);
+
+		id = (u8)(MSX2_SPR_SLASH_ID + MSX2_SPR_SLASH_SEGS + seg);
+		if(seg < grown_b)
+			Msx2_SpriteAt(id,
+			              (u8)(x + half_w - seg * SLASH_DX - 16), sy,
+			              MSX2_SPR_SLASH_L, Msx2_SpriteSlashHeat(seg, core));
+		else
+			Msx2_SpriteHide(id);
+	}
+}
+
+void Msx2_SpriteSlashHide(void)
+{
+	u8 i;
+	for(i = 0; i < (MSX2_SPR_SLASH_SEGS * 2); ++i)
+		Msx2_SpriteHide((u8)(MSX2_SPR_SLASH_ID + i));
 }
 
 // SLIDING ON FROM OFF THE SCREEN.

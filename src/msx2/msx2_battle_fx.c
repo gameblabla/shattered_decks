@@ -9,24 +9,12 @@
 #include "msx2_stream.h"
 #include "msx2_sprite.h"
 
-void Msx2_BattleFxImpact(u8 x, bool trap)
-{
-	u8 y = 83;
-	Msx2_Line((u8)(x - 24), y, (u8)(x + 24), y, MSX2_WHITE);
-	Msx2_Line(x, (u8)(y - 24), x, (u8)(y + 24), MSX2_WHITE);
-	Msx2_Line((u8)(x - 17), (u8)(y - 17),
-	          (u8)(x + 17), (u8)(y + 17), MSX2_GOLD);
-	Msx2_Line((u8)(x + 17), (u8)(y - 17),
-	          (u8)(x - 17), (u8)(y + 17), MSX2_GOLD);
-	Msx2_FrameRect((u8)(x - 10), (u8)(y - 10), 21, 21,
-	               trap ? MSX2_RED : MSX2_WHITE);
-}
-
 // THE IMPACT, AS SPRITES.
-// The bitmap starburst above is one pose held for six flips, because putting
-// eight of them into the page would mean saving and restoring the arena under
-// each one, twice.  The V9938 draws sprites over both pages from an absolute
-// table, so the same explosion animated costs one attribute write a frame --
+// There used to be a bitmap starburst under this, one pose held for six flips,
+// because putting eight of them into the page would have meant saving and
+// restoring the arena under each one, twice.  Nothing in the strike is bitmap
+// any more, so it is gone.  The V9938 draws sprites over both pages from an
+// absolute table, so an animated explosion costs one attribute write a frame --
 // which is the whole reason the sprite layer exists.  Three of them, a frame
 // apart and in three colours, read as one blast rather than three.
 void Msx2_BattleFxBurst(u8 x, u8 y, u8 step)
@@ -73,65 +61,42 @@ void Msx2_BattleFxBurnCard(u8 x, u8 h, u8 step)
 		Msx2_Fill(x, 149, MSX2_BATTLE_CARD_W, 8, MSX2_BLACK);
 }
 
-// THE BLADE SWEEP.
+// THE BLADE SWEEP, AS SPRITES.
 //
-// The PC build's draw_direct_attack_slash() is a thick diagonal stroke through
-// the struck card, a second stroke across it, and a hot burst on its far side,
-// all in the white -> gold -> orange -> flame -> red ramp.  This is the same
-// figure in seven V9938 LINE commands a pose: the port has no framebuffer to
-// draw a blade into, and a line is the one primitive the command engine draws
-// as fast as it fills.
+// It was seven V9938 LINE commands a pose drawn into the bitmap, and the pose
+// before it was still there -- so every frame began by levelling the hidden page
+// from the other one, a 256x240 HMMM.  Sixty thousand pixels a frame for sixteen
+// frames is what made an attack crawl, and levelling from a page one pose behind
+// is what made it flicker.  The figure is the same; the layer is not.  Sprites
+// float over both pages from an absolute table, so nothing under the cut is ever
+// saved, restored, or copied, and a pose is twenty bytes a segment.
 //
-// It only grows.  Every pose is drawn onto a page that has just been levelled
-// from the other one, so the previous pose is already there and nothing has to
-// be taken back off -- which is what lets the whole sweep run without a single
-// save-and-restore of the stage under it.
+// The animation is which segments are up.  Stroke A opens the cut from the
+// middle out, stroke B crosses it, and both then withdraw from the ends inwards
+// while the sprite explosion takes the crossing point -- so the blade is gone by
+// the time the burst is at its widest, rather than sitting under it.
 void Msx2_BattleFxSlash(u8 x, u8 step)
 {
-	u8 y = 83;
-	u8 len = (u8)(18 + step * 6);
-	u8 i;
+	u8 a, b, core;
 
-	if(len > 56) len = 56;
-	// The core stroke, seven pixels thick, hottest in the middle.  It runs
-	// upper-left to lower-right because the attacker is always in the left
-	// lane and what it is cutting is always in the right one.
-	for(i = 0; i < 7; ++i)
+	if(step < MSX2_BATTLE_SLASH_STEPS)
 	{
-		u8 c = (i == 3) ? ((step & 1) ? MSX2_WHITE : MSX2_ORANGE)
-		     : ((i >= 2) && (i <= 4)) ? MSX2_ORANGE
-		     : ((i == 1) || (i == 5)) ? MSX2_FLAME : MSX2_RED;
-		Msx2_Line((u8)(x - (len >> 1) + i - 3), (u8)(y - len),
-		          (u8)(x + (len >> 1) + i - 3), (u8)(y + len), c);
+		// Opening.  Two segments of the first stroke, then all four, then the
+		// second stroke the same way; from there both are whole.
+		a = (step >= 1) ? MSX2_SPR_SLASH_SEGS : 2;
+		b = (step >= 3) ? MSX2_SPR_SLASH_SEGS : (step >= 2) ? 2 : 0;
 	}
-	if(step >= 2)
+	else
 	{
-		// The counter-stroke, the other way across.  One cut is a scratch; two
-		// crossing is a strike.  It is given the same steep angle as the first
-		// so the two read as blades rather than as a grid.
-		u8 h = (u8)(len - (len >> 2));
-		for(i = 0; i < 5; ++i)
-		{
-			u8 c = (i == 2) ? MSX2_ORANGE
-			     : ((i == 1) || (i == 3)) ? MSX2_FLAME : MSX2_RED;
-			Msx2_Line((u8)(x + (h >> 1) + i - 2), (u8)(y - h),
-			          (u8)(x - (h >> 1) + i - 2), (u8)(y + h), c);
-		}
+		// Withdrawing, a segment every two frames, never quite to nothing until
+		// the caller takes it off.
+		u8 gone = (u8)((step - MSX2_BATTLE_SLASH_STEPS) >> 1);
+		a = (gone >= MSX2_SPR_SLASH_SEGS - 1)
+		  ? 1 : (u8)(MSX2_SPR_SLASH_SEGS - gone);
+		b = a;
 	}
-	if(step >= 4)
-	{
-		// And the sparks thrown off the crossing point, opening as the sweep
-		// finishes.  The sprite explosion lands on the same point on the next
-		// beat, so these are what carry the eye into it.
-		u8 r = (u8)(14 + (step - 4) * 6);
-		u8 q = (u8)(r >> 1);
-		Msx2_Line((u8)(x - r), (u8)(y - q), (u8)(x + r), (u8)(y + q),
-		          MSX2_ORANGE);
-		Msx2_Line((u8)(x - r), (u8)(y + q), (u8)(x + r), (u8)(y - q),
-		          MSX2_ORANGE);
-		Msx2_Line((u8)(x - r), y, (u8)(x + r), y, MSX2_FLAME);
-		Msx2_Line(x, (u8)(y - r), x, (u8)(y + r), MSX2_FLAME);
-	}
+	core = (step & 1) ? MSX2_SPR_WHITE : MSX2_SPR_ORANGE;
+	Msx2_SpriteSlash(x, 83, a, b, core);
 }
 
 // THE DAMAGE READOUT, COUNTING.
