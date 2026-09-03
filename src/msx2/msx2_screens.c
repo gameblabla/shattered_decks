@@ -47,7 +47,7 @@ static void Msx2_ScreenSmallCard(u8 card, u8 x, u8 y)
 
 // ── The card check screen ───────────────────────────────────────────────────
 
-void Msx2_CardCheckCompose(u8 card, i16 atk, i16 def)
+void Msx2_CardCheckCompose_In(u8 card, i16 atk, i16 def)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 
@@ -109,7 +109,7 @@ static u8 Msx2_FuseMatX(u8 i)
 	return (u8)((MSX2_SCREEN_W - span) / 2 + i * (MSX2_CARD_W + 14));
 }
 
-void Msx2_FusionBegin(const u8* materials, u8 count, u8 result)
+void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 	u8 i;
@@ -134,7 +134,7 @@ void Msx2_FusionBegin(const u8* materials, u8 count, u8 result)
 	VDP_EnableDisplay(TRUE);
 }
 
-bool Msx2_FusionStep(void)
+bool Msx2_FusionStep_In(void)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 

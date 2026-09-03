@@ -36,7 +36,7 @@ ProjModules = [
 	"msx2_title",
 	"msx2_video",
 	"msx2_sprite",
-	"msx2_screens",
+	"msx2_bank",
 	"msx2_input",
 	"msx2_battle_fx",
 	"msx2_raster",
@@ -57,6 +57,14 @@ AddSources = [
 LibModules = [ "system", "bios", "vdp", "input", "memory" ];
 
 Machine = "2";
+
+//-- The interrupt handler goes into RAM page 3 rather than into cartridge
+//   segment 2 at 0x0038.  That is what makes page 0 a SWITCHABLE code window:
+//   with the ISR in ROM, mapping any other segment at 0x0000 would take the
+//   handler away with it and the next interrupt would run whatever byte landed
+//   there.  It costs 452 bytes of page-3 RAM and puts the Z80 in IM 2.
+//   See waifu_msx2_s3_b0.c and msx2_bank.c for what the window is used for.
+InstallRAMISR = "RAMISR_PAGE3";
 
 //-- NEO-16: 16 KB segments, up to 64 MB.  The shipping cartridge is 16 MB; the
 //   bring-up ROM is the smallest size the baked assets fit in, so a
