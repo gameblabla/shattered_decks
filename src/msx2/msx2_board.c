@@ -278,10 +278,12 @@ static u8 Msx2_BoardFieldSlot(u8 owner, u8 field_slot)
 
 // One card, drawn where the arena says it goes.
 //
-// A field slot is a projected quad, so the card is mapped into it by the §8
-// span rasterizer -- that is the whole of §0.3.1 in one call.  A hand slot is a
-// flat strip, so it is an ordinary rectangle straight out of the cartridge,
-// which also keeps the cards a player is choosing between at a readable size.
+// In a chair view a field slot is a projected quad, so the card is mapped into
+// it by the §8 span rasterizer -- that is the whole of §0.3.1 in one call.
+// Overhead the slot is a rectangle and so is the card: its own 32x42 texture,
+// copied straight out of the cartridge.  A hand slot is a flat strip, and the
+// same kind of copy at 40x48, which keeps the cards a player is choosing
+// between at a readable size.
 static void Msx2_BoardBlitSlot(u8 slot)
 {
 	u8  card = g_want[slot];
@@ -339,8 +341,26 @@ static void Msx2_BoardBlitSlot(u8 slot)
 	}
 
 	index = (g_flag[slot] & F_FACEUP) ? card : MSX2_CARD_BACK_INDEX;
-	Msx2_RasterSetView(g_view);
-	Msx2_RasterCard(index, slot);
+	if(g_view == MSX2_VIEW_OVER)
+	{
+		// Overhead the slots are axis-aligned, so a card is a rectangle copy of
+		// a texture baked at that size -- sharper than minifying the 40x48
+		// board master through a span program, and a great deal quicker.  The
+		// opponent's row reads the half-turned set: seen from above their cards
+		// face their own chair.
+		const u8* at = g_msx2_over_card_xy[slot];
+		u16 base = (SLOT_ZONE(slot) == ZONE_COM)
+		         ? MSX2_OVER_CARD_MIRROR_SEGMENT : MSX2_OVER_CARD_SEGMENT;
+		Msx2_StreamRect((u16)(base + index / MSX2_OVER_CARD_PER_SEG),
+		                (u16)((index % MSX2_OVER_CARD_PER_SEG)
+		                      * MSX2_OVER_CARD_STRIDE),
+		                at[0], at[1], MSX2_OVER_CARD_W, MSX2_OVER_CARD_H);
+	}
+	else
+	{
+		Msx2_RasterSetView(g_view);
+		Msx2_RasterCard(index, slot);
+	}
 
 	// Defence position: the other targets turn the card sideways on the board
 	// plane, and warping a second quad for that would double what the cartridge

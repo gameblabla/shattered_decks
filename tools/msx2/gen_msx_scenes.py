@@ -75,6 +75,7 @@ SUPPORT_VARIANTS = 6
 NAME_STRIDE = 32   # the longest card name is 31 characters
 DESC_STRIDE = 80   # the longest card sentence is 75 characters
 CARD_STRIDE = 2048   # 8 cards per segment, so no card ever straddles one
+OVER_CARD_STRIDE = 2048   # the overhead set, same rule
 
 # Full-size monster cut-ins used only by the separate 2-D battle screen.  One
 # card occupies one cartridge segment, so Msx2_StreamRect can walk every row
@@ -822,6 +823,130 @@ for _stage in range(len(STAGE_BG)):
     SCENES.append(("TALK_%d" % _stage, (lambda st: lambda: vn_scene(st))(_stage)))
 
 
+# ── The overhead card ────────────────────────────────────────────────────────
+#
+# The overhead view does not use the span rasteriser.  Its slots are ordinary
+# axis-aligned rectangles, so a card there is a plain rectangle copy out of the
+# cartridge -- which is both faster than replaying a span program and sharper,
+# because the art is drawn AT this size rather than minified from the 40x48
+# board texture.  32x42 centred in a 43x38 tile interior, so a card overhangs
+# its tile by two rows into the four-row gutter and touches nothing.
+#
+# The frame is redrawn rather than resampled: every line in it is one pixel, and
+# one pixel does not survive a resample.
+
+OVER_CARD_W, OVER_CARD_H = 32, 42
+OVER_ART_X, OVER_ART_Y, OVER_ART_W, OVER_ART_H = 3, 9, 26, 24
+
+
+def over_card_frame(outer, inner, mid, strip):
+    img = Image.new("RGB", (OVER_CARD_W, OVER_CARD_H), inner)
+    d = ImageDraw.Draw(img)
+    d.rectangle([1, 0, OVER_CARD_W - 2, OVER_CARD_H - 1], fill=outer)
+    d.rectangle([2, 2, OVER_CARD_W - 3, OVER_CARD_H - 3], fill=inner)
+    d.rectangle([3, 3, OVER_CARD_W - 4, OVER_CARD_H - 4], fill=mid)
+    d.rectangle([4, 4, OVER_CARD_W - 5, 7], fill=strip)      # type strip
+    return img
+
+
+def over_card_footer(img, band, well, marks, pips, pip_color):
+    d = ImageDraw.Draw(img)
+    d.rectangle([3, 34, OVER_CARD_W - 4, 38], fill=band)
+    d.rectangle([4, 35, OVER_CARD_W - 5, 37], fill=well)
+    d.line([6, 36, 13, 36], fill=marks)
+    d.line([18, 36, 26, 36], fill=marks)
+    for s in range(pips):
+        x = 5 + s * 3
+        d.ellipse([x, 5, x + 1, 6], fill=pip_color)
+
+
+def draw_over_monster_card(asset_id, atk, deff):
+    img = over_card_frame((213, 156, 48), (72, 42, 16), (192, 132, 39),
+                          (228, 181, 63))
+    art = card_thumb(Image.open(find_card_image(asset_id)),
+                     (OVER_ART_W, OVER_ART_H)).filter(ImageFilter.SHARPEN)
+    img.paste(art, (OVER_ART_X, OVER_ART_Y))
+    ImageDraw.Draw(img).rectangle(
+        [OVER_ART_X, OVER_ART_Y, OVER_ART_X + OVER_ART_W - 1,
+         OVER_ART_Y + OVER_ART_H - 1], outline=(32, 19, 8))
+    stars = max(1, min(8, (atk + deff) // 700))
+    over_card_footer(img, (230, 190, 96), (54, 42, 28), (236, 220, 150),
+                     stars, (170, 24, 18))
+    return img
+
+
+def draw_over_support_card(kind):
+    bright, dark, mid = SUPPORT_TINTS[kind]
+    img = over_card_frame(bright, dark, mid,
+                          tuple(min(255, c + 40) for c in bright))
+    img.paste(draw_support_emblem(kind, OVER_ART_W).resize(
+        (OVER_ART_W, OVER_ART_H)), (OVER_ART_X, OVER_ART_Y))
+    ImageDraw.Draw(img).rectangle(
+        [OVER_ART_X, OVER_ART_Y, OVER_ART_X + OVER_ART_W - 1,
+         OVER_ART_Y + OVER_ART_H - 1], outline=dark)
+    over_card_footer(img, tuple(min(255, c + 40) for c in bright), dark,
+                     tuple(min(255, c + 60) for c in bright), 4,
+                     (248, 236, 140))
+    return img
+
+
+def draw_over_card_back():
+    img = Image.new("RGB", (OVER_CARD_W, OVER_CARD_H), (46, 24, 8))
+    d = ImageDraw.Draw(img)
+    d.rectangle([1, 0, OVER_CARD_W - 2, OVER_CARD_H - 1], fill=(205, 132, 35))
+    d.rectangle([3, 3, OVER_CARD_W - 4, OVER_CARD_H - 4], fill=(15, 8, 4))
+    cx, cy = OVER_CARD_W // 2, OVER_CARD_H // 2
+    colors = [(230, 136, 18), (140, 70, 8), (250, 187, 34)]
+    for k in range(12):
+        r = 3 + k * 2
+        d.arc([cx - r, cy - r, cx + r, cy + r], k * 22, k * 22 + 230,
+              fill=colors[k % 3], width=2)
+    d.rectangle([1, 0, OVER_CARD_W - 2, OVER_CARD_H - 1], outline=(35, 19, 7))
+    d.rectangle([2, 2, OVER_CARD_W - 3, OVER_CARD_H - 3], outline=(240, 169, 45))
+    return img
+
+
+def build_over_card_blob(cards, quiet):
+    """The overhead set, upright and turned half round.
+
+    The opposing row is a HALF TURN, not a mirror: seen from above, the
+    opponent's cards face their own chair, and a card reflected instead of
+    rotated would have its art mirrored.  (The 40x48 set's second copy IS a
+    left-right flip, because the span programs walk their texels backwards and
+    the two together come out as the same half turn -- that trick only works
+    when something is already reading the texture backwards, and a plain
+    rectangle copy is not.)"""
+    blob = bytearray()
+    mirror = bytearray()
+    faces = [draw_over_monster_card(asset_id, *CARD_STATS[asset_id])
+             for asset_id, _name, _desc in cards]
+    faces += [draw_over_support_card(kind) for kind in range(SUPPORT_VARIANTS)]
+    faces.append(draw_over_card_back())
+
+    for face in faces:
+        data = grb.quantize(face, (OVER_CARD_W, OVER_CARD_H))
+        blob += data + bytes(OVER_CARD_STRIDE - len(data))
+        turned = grb.quantize(face.transpose(Image.Transpose.ROTATE_180),
+                              (OVER_CARD_W, OVER_CARD_H))
+        mirror += turned + bytes(OVER_CARD_STRIDE - len(turned))
+
+    columns = 10
+    rows = (len(faces) + columns - 1) // columns
+    sheet = bytearray(columns * OVER_CARD_W * rows * OVER_CARD_H)
+    for i in range(len(faces)):
+        cx, cy = (i % columns) * OVER_CARD_W, (i // columns) * OVER_CARD_H
+        for y in range(OVER_CARD_H):
+            src = i * OVER_CARD_STRIDE + y * OVER_CARD_W
+            dst = (cy + y) * columns * OVER_CARD_W + cx
+            sheet[dst:dst + OVER_CARD_W] = blob[src:src + OVER_CARD_W]
+    grb.write_preview(os.path.join(ASSET_DIR, "over_cards.png"), bytes(sheet),
+                      (columns * OVER_CARD_W, rows * OVER_CARD_H))
+    if not quiet:
+        print("OVER CARDS %d textures -> %d bytes (+ the half-turned set)"
+              % (len(faces), len(blob)))
+    return bytes(blob), bytes(mirror), len(faces)
+
+
 def build_card_blob(cards, quiet):
     """Every card texture at a fixed 2 KB stride.
 
@@ -1050,6 +1175,9 @@ def main():
     card_mirror_segment = place("cards_mirror", card_mirror)
     battle_card_blob, battle_card_count = build_battle_card_blob(cards, quiet)
     battle_card_segment = place("battle_cards", battle_card_blob)
+    over_blob, over_mirror, _over_count = build_over_card_blob(cards, quiet)
+    over_card_segment = place("over_cards", over_blob)
+    over_mirror_segment = place("over_cards_mirror", over_mirror)
 
     # ── The captured board (§4.3, §4.6, §8.4) ────────────────────────────────
     view_segment = place("board_views", b"".join(board["views"]))
@@ -1093,6 +1221,16 @@ def main():
         f.write("#define MSX2_CARD_ART_SEGMENT   %d\n" % card_segment)
         f.write("// The same textures mirrored left to right, for the COM row (§8.4).\n")
         f.write("#define MSX2_CARD_MIRROR_SEGMENT %d\n" % card_mirror_segment)
+        f.write("\n// The overhead board's own card set: drawn at 32x42 rather than\n")
+        f.write("// minified from the 40x48 board texture, so its one-pixel frame\n")
+        f.write("// survives, and copied as a plain rectangle because the overhead\n")
+        f.write("// slots are axis-aligned.  The second copy is a HALF TURN, not a\n")
+        f.write("// mirror: the opponent's cards face their own chair, and a card\n")
+        f.write("// reflected instead of rotated would have its art mirrored.\n")
+        f.write("#define MSX2_OVER_CARD_SEGMENT  %d\n" % over_card_segment)
+        f.write("#define MSX2_OVER_CARD_MIRROR_SEGMENT %d\n" % over_mirror_segment)
+        f.write("#define MSX2_OVER_CARD_STRIDE   %d\n" % OVER_CARD_STRIDE)
+        f.write("#define MSX2_OVER_CARD_PER_SEG  %d\n" % (SEGMENT_BYTES // OVER_CARD_STRIDE))
         f.write("#define MSX2_CARD_ART_STRIDE    %d\n" % CARD_STRIDE)
         f.write("#define MSX2_CARD_ART_PER_SEG   %d\n" % (SEGMENT_BYTES // CARD_STRIDE))
         f.write("#define MSX2_CARD_ART_COUNT     %d\n" % card_count)

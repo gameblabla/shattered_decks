@@ -122,13 +122,20 @@ BOARD_STAGES = len(STAGE_NAMES)
 OVER_ART = os.path.join(ROOT, "assets", "source", "msx2", "msx2_3d_top_view.png")
 OVER_Y = BAND_Y                      # the picture starts under the HUD
 OVER_H = HAND_BAND_Y + HAND_BAND_H - BAND_Y     # ... and runs to the panel
-OVER_COL_X0 = 7                      # the artwork's own grid, measured off it
-OVER_COL_W = 48
-OVER_ROW_H = 42
-OVER_INSET_X = 3                     # tile border to card edge
-OVER_INSET_Y = 3
+
+# The artwork's own grid, measured off it: tile interiors are 43 wide at a
+# 48-pixel pitch starting at x=12, and 38 tall at a 42-pixel pitch starting at
+# y=0, with a four-pixel gutter of border between rows.
+OVER_TILE_X0, OVER_TILE_PITCH_X, OVER_TILE_W = 12, 48, 43
+OVER_TILE_Y0, OVER_TILE_PITCH_Y, OVER_TILE_H = 0, 42, 38
 OVER_COM_ROW = 1                     # which tile row each side plays on
 OVER_YOU_ROW = 2
+
+# A card on the overhead board is drawn at its own size out of the cartridge
+# (gen_msx_scenes.py's overhead set), not rasterised into a quad, so this is a
+# rectangle and not a projection.  32x42 centred on a 43x38 tile interior:
+# two rows of overhang each way, into the gutter, touching no neighbour.
+OVER_CARD_W, OVER_CARD_H = 32, 42
 
 
 # ── The capture ──────────────────────────────────────────────────────────────
@@ -259,23 +266,35 @@ def arena_layer(cap, tag):
     return board, mask
 
 
+def over_card_xy():
+    """The top-left of each overhead slot's 32x42 card, in window pixels."""
+    out = []
+    for row in (OVER_COM_ROW, OVER_YOU_ROW):
+        cy = OVER_Y + OVER_TILE_Y0 + row * OVER_TILE_PITCH_Y + OVER_TILE_H // 2
+        for col in range(FIELD_SLOTS // 2):
+            cx = OVER_TILE_X0 + col * OVER_TILE_PITCH_X + OVER_TILE_W // 2
+            out.append((cx - OVER_CARD_W // 2, cy - OVER_CARD_H // 2))
+    return out
+
+
 def over_quads():
-    """The ten field slots of the overhead view, as axis-aligned rectangles.
+    """The ten field slots of the overhead view, as the card rectangles.
 
     Corner order is the capture's: texture top-left, top-right, bottom-right,
     bottom-left.  The COM's row is wound half a turn round so its cards face
-    its own chair, exactly as the captured COM row does."""
+    its own chair, exactly as the captured COM row does -- nothing rasterises
+    through these quads any more, but the empty-slot tiles and the cursor
+    geometry are still cut from them, so the winding has to stay honest."""
     quads = []
-    for row, mine in ((OVER_COM_ROW, False), (OVER_YOU_ROW, True)):
-        y0 = OVER_Y + row * OVER_ROW_H + OVER_INSET_Y
-        y1 = OVER_Y + (row + 1) * OVER_ROW_H - OVER_INSET_Y
-        for col in range(FIELD_SLOTS // 2):
-            x0 = OVER_COL_X0 + col * OVER_COL_W + OVER_INSET_X
-            x1 = OVER_COL_X0 + (col + 1) * OVER_COL_W - OVER_INSET_X
-            if mine:
-                quads.append([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
-            else:
-                quads.append([(x1, y1), (x0, y1), (x0, y0), (x1, y0)])
+    for i, (x0, y0) in enumerate(over_card_xy()):
+        # The LAST pixel of the card, not one past it: quad_box rounds a corner
+        # up and adds one, so an exclusive edge here would make every restore
+        # box a pixel too wide and a pixel too tall -- and the rows are flush.
+        x1, y1 = x0 + OVER_CARD_W - 1, y0 + OVER_CARD_H - 1
+        if i >= FIELD_SLOTS // 2:                       # the player's row
+            quads.append([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        else:
+            quads.append([(x1, y1), (x0, y1), (x0, y0), (x1, y0)])
     return quads
 
 
@@ -370,7 +389,12 @@ def paint_panels(img, hand_row=True):
 def build_view(cap, stage, tag):
     quads = cap.poses[tag]
     img = over_scene(stage) if tag == "OVER" else composite_arena(cap, tag, stage)
-    draw_slot_rings(img, quads)
+    # No rings overhead.  They existed so the cursor could be erased by
+    # redrawing them, and the cursor is a sprite now; the artwork's own tile
+    # borders already say where a slot is, and a second box drawn inside one
+    # only muddles it.
+    if tag != "OVER":
+        draw_slot_rings(img, quads)
     # The overhead view owns the hand's rows, so it must not be given the five
     # empty hand frames -- there is no hand on this screen.
     paint_panels(img, hand_row=(tag != "OVER"))
@@ -404,14 +428,14 @@ def build_move_strip(cap, stage, move, poses):
     return b"".join(frames)
 
 
-def cut_slot_tiles(scene, quads, bottom=BAND_Y + BAND_H):
+def cut_slot_tiles(scene, quads, bottom=BAND_Y + BAND_H, pad=RING + 2.0):
     """The empty-slot rectangle of one arena at each slot, in the arena's own
     quantised bytes -- so putting a destroyed monster back is the picture, not
     something close to it."""
     blob = bytearray()
     boxes = []
     for quad in quads:
-        x0, y0, x1, y1 = quad_box(quad, bottom)
+        x0, y0, x1, y1 = quad_box(quad, bottom, pad)
         tile = bytearray()
         for y in range(y0, y1):
             start = y * WIDTH + x0
@@ -424,12 +448,19 @@ def cut_slot_tiles(scene, quads, bottom=BAND_Y + BAND_H):
     return bytes(blob), boxes
 
 
-def quad_box(quad, bottom=BAND_Y + BAND_H):
+def quad_box(quad, bottom=BAND_Y + BAND_H, pad=RING + 2.0):
     """The pixel box a quad's ring and card occupy, clamped to the view.
 
     `bottom` is the last row the view's picture reaches: the two captured
-    chairs stop at the hand row, the overhead view goes on through it."""
-    outer = expand_quad(quad, RING + 2.0)
+    chairs stop at the hand row, the overhead view goes on through it.
+
+    `pad` is the margin around the quad.  A chair view needs one, for the ring
+    drawn outside the slot; the overhead view must NOT have one, because its
+    two rows of cards are flush -- a card overhangs its tile by two rows into
+    the four-row gutter, from both sides -- so a padded box would take the
+    bottom of the opponent's card with it every time the slot below was
+    emptied, and the retained painter would never put it back."""
+    outer = expand_quad(quad, pad)
     x0 = max(0, int(math.floor(min(p[0] for p in outer))))
     x1 = min(WIDTH, int(math.ceil(max(p[0] for p in outer))) + 1)
     y0 = max(BAND_Y, int(math.floor(min(p[1] for p in outer))))
@@ -613,10 +644,11 @@ def bake(quiet=False, capture=True):
     for stage in range(BOARD_STAGES):
         for tag in view_tags:
             quads = cap.poses[tag]
-            bottom = (HAND_BAND_Y + HAND_BAND_H) if tag == "OVER" \
-                     else (BAND_Y + BAND_H)
+            over = (tag == "OVER")
+            bottom = (HAND_BAND_Y + HAND_BAND_H) if over else (BAND_Y + BAND_H)
             data = grb.quantize(build_view(cap, stage, tag), (WIDTH, HEIGHT))
-            tiles, stage_boxes = cut_slot_tiles(data, quads, bottom)
+            tiles, stage_boxes = cut_slot_tiles(data, quads, bottom,
+                                                0.0 if over else RING + 2.0)
             views[tag].append(pad_segments(data))
             slots += tiles
             if boxes[tag] is None:
@@ -672,6 +704,10 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("#define MSX2_VIEW_OVER         2")
     a("#define MSX2_OVER_Y            %d" % OVER_Y)
     a("#define MSX2_OVER_H            %d" % OVER_H)
+    a("// A card on the overhead board is a rectangle copy at its own baked")
+    a("// size, not a span program: the slots are axis-aligned there.")
+    a("#define MSX2_OVER_CARD_W       %d" % OVER_CARD_W)
+    a("#define MSX2_OVER_CARD_H       %d" % OVER_CARD_H)
     a("#define MSX2_BOARD_VIEWS       %d" % len(baked["view_tags"]))
     a("#define MSX2_VIEW_SEGMENT(stage, view)  (%d + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))" % view_seg)
     a("#define MSX2_VIEW_STAGES        %d" %
@@ -692,6 +728,11 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("#define MSX2_RING_COLOR         0x%02X" % grb.pack(*RING_RGB))
     a("#define MSX2_PANEL_COLOR        0x%02X" % grb.pack(*PANEL_RGB))
     a("#define MSX2_GOLD_COLOR         0x%02X" % grb.pack(*GOLD_RGB))
+    a("")
+    a("static const unsigned char g_msx2_over_card_xy[MSX2_FIELD_SLOTS][2] = {")
+    for x, y in over_card_xy():
+        a("\t{ %d, %d }," % (x, y))
+    a("};")
     a("")
     a("// The projected corners of every field slot, window pixels, in the corner")
     a("// order the shared renderer hands its rasterizer -- so texture corner 0")
