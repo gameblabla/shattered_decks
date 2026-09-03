@@ -186,7 +186,7 @@ static u8  g_over_step;
 #define FX_EQUIP      3
 #define FX_SUPPORT    4
 #define FX_ATTACK     5
-#define FX_POSITION   6
+// (there is no FX for a position change: see Msx2_BoardStartFx)
 #define FX_COM_CHOOSE 7
 #define FX_COM_PLACE  8
 #define FX_COM_ATTACK 9
@@ -206,7 +206,9 @@ static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 // A card landing on the field takes the hand off the screen, slides the real
 // 2-D thumbnail across the emptied band, bends the board under it and then
 // holds the bare top view while the new card is read.  These carry that.
-#define FX_BEND_POSES  1
+// One per page: a bend step is allowed to touch the hidden page only, so it
+// takes two of them to put the landing on both.
+#define FX_BEND_POSES  2
 // Every landing flight is the same length, so one easing curve serves them all.
 // Eight poses, not fourteen: a pose is a 40x48 stream out of the cartridge plus
 // a save and a restore of what was under it, which is nearly two video frames
@@ -217,6 +219,10 @@ static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 // The equip banner, which has to stand on its own now that no card flies.
 #define FX_EQUIP_FRAMES 26
 static u8 g_hand_hidden;
+// Did this landing take the hand off the screen?  Only then is the strip owed
+// back when the hold ends: in the top view those rows are board, and putting
+// five gold hand frames on them punches the table full of holes.
+static u8 g_fx_hand_back;
 static u8 g_fx_bend;
 static u8 g_fx_hold;
 // These are the actual rectangle origins used by the flight.  They are
@@ -486,6 +492,21 @@ static void Msx2_BoardBlitSlot(u8 slot)
 	}
 
 	index = (g_flag[slot] & F_FACEUP) ? card : MSX2_CARD_BACK_INDEX;
+
+	// A CARD LYING DOWN IS WIDER THAN THE SLOT IT STANDS IN.
+	// The defence draw already puts the table back before it draws, because it
+	// covers ground the upright card does not.  Coming back the other way was
+	// never given the same treatment: the upright card was simply stamped over
+	// the middle of the turned one and left its two ends on the board.  Turning
+	// twice therefore left a card with wings.  Whichever way the position moves
+	// the ground goes back first.
+	if(((g_shown_flag[Msx2_VideoGetDrawPage()][slot] ^ g_flag[slot])
+	    & F_DEFENSE) != 0)
+	{
+		Msx2_BoardSlotGround(slot);
+		Msx2_BoardSlotGroundNeighbours(slot);
+	}
+
 	if(g_view == MSX2_VIEW_OVER)
 	{
 		// Overhead the slots are axis-aligned, so a card is a rectangle copy of
@@ -510,6 +531,7 @@ static void Msx2_BoardBlitSlot(u8 slot)
 			// is cut wide enough for exactly this.
 			const u8* box = g_msx2_slot_box[g_view][slot];
 			Msx2_BoardSlotGround(slot);
+			Msx2_BoardSlotGroundNeighbours(slot);
 			Msx2_StreamRect((u16)(base + index / MSX2_OVER_CARD_PER_SEG),
 			                (u16)((index % MSX2_OVER_CARD_PER_SEG)
 			                      * MSX2_OVER_CARD_STRIDE),
@@ -920,13 +942,20 @@ static void Msx2_BoardRestoreFromCutin(void)
 	u8 i;
 
 	g_suppress_slot = MSX2_SLOT_NONE;
+	Msx2_BoardSnapshot();
+	VDP_EnableDisplay(FALSE);
 	// Nothing of the cut-in may survive onto the board, and the strike's layer
 	// is sprites, which no repaint of the bitmap can reach.
+	//
+	// THE OUTPUT IS OFF BEFORE THEY GO.  The wipe is what is standing where a
+	// destroyed card still is: the cut-in's own picture is underneath it,
+	// whole, until this call composes the new board.  Taking the sprites off
+	// first handed the scanner one frame of the card the burn had just put out
+	// -- the destroyed monster flashing back into existence on its way off the
+	// screen.  Blank first, then hide, and there is no frame to show it in.
 	Msx2_BattleFxBurst(0, 0, MSX2_SPR_BURST_N);
 	Msx2_SpriteSlashHide();
 	Msx2_SpriteBurnHide();
-	Msx2_BoardSnapshot();
-	VDP_EnableDisplay(FALSE);
 	Msx2_VideoDrawPage(page);
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, g_view), page);
 	Msx2_VideoDrawPage(page);
@@ -1294,13 +1323,6 @@ static void Msx2_BoardFxDraw(bool erase)
 			Msx2_BoardFxCardFlight(erase);
 		break;
 
-	case FX_POSITION:
-		if(!erase)
-			Msx2_BoardFxBanner(g_fx_owner == MSX2_OWNER_COM ? Msx2_UiText(MSX2_S_OPPONENT_CHANGES_POSITION)
-			                                                : Msx2_UiText(MSX2_S_CHANGE_POSITION), MSX2_GOLD);
-		if(g_fx_field != MSX2_SLOT_NONE)
-			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
-		break;
 	}
 }
 
@@ -1331,6 +1353,21 @@ static void Msx2_BoardPrepareLanding(void)
 {
 	if(!Msx2_BoardFxIsLanding())
 		return;
+	// THE BEND BELONGS TO THE LANDING, NOT TO THE HAND.
+	// It used to be armed inside Msx2_BoardHideHand(), which returns at once
+	// when the hand is already off the screen -- and it always is when a card
+	// is placed, because choosing the destination slot walks the cursor onto
+	// the field and the camera cuts to the top view before the flight starts.
+	// So the one case the player actually plays had no bend: the flight ended,
+	// the cleanup pass restored the arena under the last pose on both pages,
+	// and the settled card was only put back afterwards by the ordinary
+	// painter, one page per frame.  The card the player had just played
+	// vanished for about a second and then came back.  Arming it here means a
+	// landing always gets its two commit poses, whatever the hand was doing.
+	g_fx_bend = FX_BEND_POSES;
+	g_fx_hold = 0;
+	// Only a landing that actually took the strip off the screen owes it back.
+	g_fx_hand_back = (u8)!g_hand_hidden;
 	// Hand removal, cartridge caching and the first pose are one composition.
 	// Keep output blank for all of it; otherwise the visible page can show the
 	// blackened hand before the cached card has reached its source position.
@@ -1381,9 +1418,8 @@ static void Msx2_BoardHideHand(void)
 		return;
 	// The destination was already snapped by StartFx/FinishFx.  Hand
 	// visibility is only a drawing concern; it is not allowed to alter the
-	// flight path or leave it using the previous action's coordinates.
-	g_fx_bend = FX_BEND_POSES;
-	g_fx_hold = 0;
+	// flight path or leave it using the previous action's coordinates -- nor,
+	// since Msx2_BoardPrepareLanding() arms them, the landing's bend poses.
 	Msx2_BoardSnapshot();
 
 	g_hand_hidden = TRUE;
@@ -1418,22 +1454,40 @@ static void Msx2_BoardHideHand(void)
 // page separately, and already knows which pose each page is still holding.  So
 // putting the board back is that restore, twice -- one command pair per page --
 // and the ten slots the repaint would have had to redraw were never disturbed.
+static void Msx2_BoardFxCommitLanding(void);
+
+// ONE PAGE PER FRAME, AND THE CARD GOES BACK BEFORE THE PAGE IS SHOWN.
+// This used to erase the flight from BOTH pages and only then draw the settled
+// card into the slot -- and one of those two pages was the one the VDP was
+// scanning out.  Between the restore and the card, that page showed an empty
+// destination, and the card is not cheap to put back: a chair-view slot is a
+// 1,920-byte cartridge read and a span program.  What the player saw was the
+// card they had just played blinking out of existence and then reappearing.
+//
+// So a bend step now touches the hidden page only: it takes the flight off it,
+// puts the board's own card into the slot, and asks for the flip.  The page
+// that was visible still holds the last flight pose -- which, by construction,
+// is the same picture -- and gets the same treatment on the next frame, once
+// the flip has made it the hidden one.
 static void Msx2_BoardStepBend(void)
 {
-	u8 show = Msx2_VideoGetDrawPage();
+	u8 page = Msx2_VideoGetDrawPage();
 	u8 keep = g_fx_frames;
-	u8 i;
 
-	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
+	if(g_fx_page_frame[page] != FX_FRAME_NONE)
 	{
-		if(g_fx_page_frame[i] == FX_FRAME_NONE)
-			continue;
-		Msx2_VideoDrawPage(i);
-		Msx2_BoardFxErase(g_fx_page_frame[i]);
-		g_fx_page_frame[i] = FX_FRAME_NONE;
+		Msx2_BoardFxErase(g_fx_page_frame[page]);
+		g_fx_page_frame[page] = FX_FRAME_NONE;
+		g_fx_frames = keep;
 	}
-	Msx2_VideoDrawPage(show);
-	g_fx_frames = keep;
+	// The rules have already taken the card; the board is only now allowed to
+	// say so.  Snapshot once, on the first of the two pages.
+	if(g_suppress_slot != MSX2_SLOT_NONE)
+	{
+		g_suppress_slot = MSX2_SLOT_NONE;
+		Msx2_BoardSnapshot();
+	}
+	Msx2_BoardFxCommitLanding();
 	--g_fx_bend;
 }
 
@@ -1441,21 +1495,17 @@ static void Msx2_BoardStepBend(void)
 // allowed to disappear.  Both pages are updated in this same command batch, so
 // the V-blank can never expose the gap between the last flight pose and the
 // card painter catching up on the next frame.
+// The settled card, into the slot, on the page being drawn -- which is always
+// the hidden one.  See Msx2_BoardStepBend for why it is not both at once.
 static void Msx2_BoardFxCommitLanding(void)
 {
-	u8 show = Msx2_VideoGetDrawPage();
-	u8 p;
+	u8 page = Msx2_VideoGetDrawPage();
 
 	if(g_fx_field == MSX2_SLOT_NONE)
 		return;
-	for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
-	{
-		Msx2_VideoDrawPage(p);
-		Msx2_BoardBlitSlot(g_fx_field);
-		g_shown[p][g_fx_field] = g_want[g_fx_field];
-		g_shown_flag[p][g_fx_field] = g_flag[g_fx_field];
-	}
-	Msx2_VideoDrawPage(show);
+	Msx2_BoardBlitSlot(g_fx_field);
+	g_shown[page][g_fx_field] = g_want[g_fx_field];
+	g_shown_flag[page][g_fx_field] = g_flag[g_fx_field];
 }
 
 static void Msx2_BoardStartFx(void)
@@ -1526,7 +1576,22 @@ static void Msx2_BoardStartFx(void)
 			g_fx_followup = FX_EQUIP;
 	}
 	else if(action == MSX2_ACTION_POSITION)
-		g_fx_kind = FX_POSITION;
+	{
+		// TURNING A CARD IS NOT AN EVENT, IT IS A REDRAW.
+		// It used to be a presentation beat like a summon: eight frames of an
+		// XOR outline flashing round the quad, a banner, a whole-panel repaint
+		// and a two-page cleanup copy -- the best part of a second to answer a
+		// keypress, and the outline was itself the thing the owner asked not to
+		// be drawn.  The card's own art already says which way it is lying, so
+		// the answer is simply to let the retained painter put the other art in
+		// the slot.  Only the card lines move with it; the life points and the
+		// prompt are the words they already were.
+		Msx2_ClearActionEvent();
+		Msx2_BoardSnapshot();
+		g_card_left = PAGES_ALL;
+		g_fx_kind = FX_NONE;
+		return;
+	}
 	else
 	{
 		// A support card is the same card whoever plays it, and the 2-D cut-in
@@ -1734,15 +1799,7 @@ static bool Msx2_BoardRunFx(void)
 	{
 		Msx2_BoardStepBend();
 		if(g_fx_bend == 0)
-		{
-			// The board has accepted the card.  Put it on both pages before the
-			// final flight pose is allowed to disappear: the landing hold must
-			// show the actual new field state, never an empty destination.
-			g_suppress_slot = MSX2_SLOT_NONE;
-			Msx2_BoardSnapshot();
-			Msx2_BoardFxCommitLanding();
 			g_fx_hold = FX_HOLD_FRAMES;
-		}
 		// Request the flip only after the restore and settled card have both
 		// been queued.  Asking first let V-blank reveal the erased destination
 		// before the landing card was committed.
@@ -1774,10 +1831,17 @@ static bool Msx2_BoardRunFx(void)
 		--g_fx_hold;
 		if(g_fx_hold == 0)
 		{
-			g_hand_hidden = FALSE;
-			Msx2_BoardSnapshot();
-			Msx2_VideoDrawPage(page);
-			Msx2_BoardHandFrames();
+			// ... and only if it was this landing that took it away.  A card
+			// placed from the top view never had a strip on the screen, and
+			// giving it one here draws the hand's frames -- and then its cards
+			// -- over the middle of the table.
+			if(g_fx_hand_back)
+			{
+				g_hand_hidden = FALSE;
+				Msx2_BoardSnapshot();
+				Msx2_VideoDrawPage(page);
+				Msx2_BoardHandFrames();
+			}
 			PANEL_ALL();
 		}
 		return TRUE;
@@ -1862,8 +1926,22 @@ static bool Msx2_BoardPaint(void)
 	// move.  Do not queue a field-card stream behind them in the same frame;
 	// the card can catch up on the next hidden-page pass without delaying the
 	// name/prompt flip the player is waiting to see.
+	//
+	// ONLY WHILE THE BOARD ITSELF IS UP TO DATE HERE, THOUGH.  Returning early
+	// asks for a flip, and a flip to a page that is still showing the old art
+	// of a slot that has changed puts that art back on the screen: a card
+	// turned face-down flickered between its two positions for exactly that
+	// reason.  A cursor move leaves nothing stale, so it still takes this path.
 	if(painted)
-		return TRUE;
+	{
+		u8 j;
+		for(j = 0; j < SLOT_COUNT; ++j)
+			if((g_shown[page][j] != g_want[j]) ||
+			   (g_shown_flag[page][j] != g_flag[j]))
+				break;
+		if(j == SLOT_COUNT)
+			return TRUE;
+	}
 
 	// THE WHOLE HAND STRIP AT ONCE.
 	// The loop below repaints one card a frame, which is the right budget for
@@ -2172,9 +2250,11 @@ void Msx2_BoardEnter_In(u8 stage)
 static void Msx2_BoardCutTo(u8 view)
 {
 	u8 i;
+	u8 page;
 
 	if(view == g_view)
 		return;
+	page = Msx2_VideoGetDrawPage();
 
 	g_view = view;
 	Msx2_RasterSetView(view);
@@ -2183,16 +2263,53 @@ static void Msx2_BoardCutTo(u8 view)
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, view), MSX2_PAGE_1);
 	VDP_EnableDisplay(TRUE);
 
-	// The picture underneath every retained card is a different picture now,
-	// so the painter owes both pages everything.
-	for(i = 0; i < SLOT_COUNT; ++i)
-	{
-		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
-		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
-	}
-	PANEL_ALL();
-	g_hand_left = PAGES_ALL;
+	// THE VIEW ARRIVES FINISHED.
+	// The picture underneath every retained card is a different picture now, so
+	// the cut owes both pages everything -- and it used to hand that debt to
+	// the ordinary painter, which pays it back at one card per page per frame.
+	// A game step on this machine is a fifth of a second, so the board the
+	// camera cut to spent the best part of two seconds rebuilding itself in
+	// front of the player, and the card that had just been played was the last
+	// thing to appear on it.  The display is already blanked here for the two
+	// arena streams; the whole board goes into both pages inside the same
+	// blank, and what comes back is complete.
+	//
+	// Only occupied slots are drawn: an empty one is exactly what the arena
+	// stream has just put down.
 	Msx2_BoardSnapshot();
+	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
+	{
+		u8 j;
+		Msx2_VideoDrawPage(i);
+		if(view != MSX2_VIEW_OVER)
+		{
+			Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
+			          MSX2_BLACK);
+			if(!g_hand_hidden)
+				Msx2_BoardHandFrames();
+		}
+		for(j = 0; j < SLOT_COUNT; ++j)
+		{
+			// Recorded before it is drawn: the slot draw compares against this
+			// to decide whether the ground has to go back first, and after an
+			// arena stream it never does.
+			g_shown[i][j] = g_want[j];
+			g_shown_flag[i][j] = g_flag[j];
+			if((g_want[j] != MSX2_CARD_NONE) &&
+			   (!IS_HAND(j) || (view != MSX2_VIEW_OVER)))
+				Msx2_BoardBlitSlot(j);
+		}
+		// A slot draw can mark its neighbours stale; on this path they have
+		// just been drawn too, so nothing is owed.
+		for(j = 0; j < SLOT_COUNT; ++j)
+			g_shown_flag[i][j] = g_flag[j];
+		Msx2_BoardHud();
+		Msx2_BoardCardLines();
+		Msx2_BoardPromptLine();
+	}
+	Msx2_VideoDrawPage(page);
+	g_hud_left = g_card_left = g_prompt_left = 0;
+	g_hand_left = 0;
 }
 
 // THE HAND GOES WITH THE TURN, NOT WITH THE CAMERA.

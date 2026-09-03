@@ -28,7 +28,24 @@
 // The last VRAM row a page copy may touch.  Above it are the sprite tables.
 #define MSX2_SPRITE_VRAM_ROW  240
 
-// Sprite colours, as palette indices.  Index 0 is transparent on a sprite.
+// SPRITE COLOURS IN GRAPHIC 7 ARE NOT THE PALETTE.
+// This is the one mode where the sixteen palette registers do not reach the
+// sprite plane: the V9938 colours a GRAPHIC 7 sprite out of a FIXED table
+// burnt into the chip (data book p.98), so VDP_SetPaletteEntry() below is
+// documentation of intent and nothing else.  What each index actually is, as
+// GRB with three bits a channel:
+//
+//   0 000 black*  1 002 dk blue  2 030 dk red   3 032 dk magenta
+//   4 300 dk grn  5 302 dk teal  6 330 dk yell  7 332 grey
+//   8 472 orange  9 007 blue    10 070 red     11 077 magenta
+//  12 700 green  13 707 cyan    14 770 yellow  15 777 white
+//
+// (*) Index 0 is the sprite's transparent code, so black is not ordinarily
+// available at all -- see MSX2_SPR_BLACK.
+//
+// The names below are the colour each index was CHOSEN for; several of them
+// are a shade or two away from what the chip draws.  They are left as they are
+// because the screens they build were signed off as they look.
 #define MSX2_SPR_WHITE   1
 #define MSX2_SPR_GOLD    2
 #define MSX2_SPR_RED     3
@@ -43,7 +60,15 @@
 #define MSX2_SPR_TEAL_HI  9
 // The heat between gold and red, for the blade sweep.
 #define MSX2_SPR_ORANGE  10
-#define MSX2_SPR_BLACK   11
+// OPAQUE BLACK, WHICH THE FIXED TABLE DOES NOT OTHERWISE HAVE.
+// The wipe that takes a destroyed card off the board has to be BLACK, and
+// every index from 1 up is a colour: the burn was drawn in 11 and came out
+// bright magenta.  Index 0 IS black in the table -- it is only unavailable
+// because a sprite treats code 0 as transparent, and that is exactly what R#8
+// bit 5 (TP) turns off.  So the burn clears TP for as long as it is on the
+// screen and paints in code 0; nothing else in the port draws a code-0 sprite,
+// and in GRAPHIC 7 the bit reaches nothing but the sprite plane.
+#define MSX2_SPR_BLACK   0
 
 // Pattern slots.  A 16x16 sprite is four 8x8 quarters, so a slot is 32 bytes
 // and the attribute's pattern byte is slot * 4.

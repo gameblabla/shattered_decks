@@ -747,44 +747,170 @@ static void Msx2_StoryDiskLine(u8 y)
 	Msx2_TextCenter(y, Msx2_UiText(id));
 }
 
-static void Msx2_StoryCodeCells(void)
+// THE GRID IS DRAWN AT THE PITCH THE MARKER MOVES AT.
+// The four alphabet rows were one solid eight-character string at the font's
+// own six-pixel pitch, while the gold marker was placed at twenty-seven pixels
+// a column: they agreed on the first letter of a row and on nothing after it,
+// so the letter the marker sat on was never the letter the button would take --
+// and the marker landed clean off the end of the row it belonged to, where a
+// partial repaint then had nothing to erase it with.  One pitch now serves
+// both: a space after every letter, which is twelve pixels.
+#define CODE_GRID_COLS 8
+#define CODE_GRID_ROWS 4
+#define CODE_PITCH     12
+#define CODE_ALPHA_X   27
+#define CODE_ALPHA_Y   90
+
+static void Msx2_StoryCodeAlphaRow(u8 first, u8 y)
 {
-	c8 one[2];
+	c8 row[CODE_GRID_COLS * 2];
 	u8 i;
 
-	one[1] = 0;
-	for(i = 0; i < STORY_CODE_LEN; ++i)
+	for(i = 0; i < CODE_GRID_COLS; ++i)
 	{
-		u8 x = (u8)(CODE_GRID_X + (i % CODE_COLS) * CODE_CELL_W);
-		u8 y = (u8)(CODE_GRID_Y + (i / CODE_COLS) * CODE_ROW_STEP);
-		bool here = (g_phase == PH_CODE_IN) && (i == g_code_len);
+		row[i * 2] = (c8)CODE_ALPHABET[first + i];
+		row[i * 2 + 1] = ' ';
+	}
+	row[CODE_GRID_COLS * 2 - 1] = 0;
+	Msx2_TextAt(CODE_ALPHA_X, y, row);
+}
 
-		Msx2_Fill((u8)(x + 1), (u8)(y + 1), CODE_CELL_W - 4, CODE_CELL_H - 2,
-		          MSX2_PLATE_COLOR);
-		Msx2_FrameRect(x, y, CODE_CELL_W - 2, CODE_CELL_H,
-		               here ? MSX2_GOLD : MSX2_DARK_SAND);
-		if(i < g_code_len)
+// ONE CELL, AND ONLY THE CELLS A KEYSTROKE TOUCHES.
+// Sixteen cells is sixteen fills, sixteen borders and sixteen single-character
+// draws, and this screen redraws on every letter of a code -- on each of two
+// pages.  On this machine that is long enough for the next letter to be pressed
+// and released before the keyboard is looked at again, so typing a code at an
+// ordinary speed lost letters.  A keystroke moves exactly two cells: the one
+// that gains the character and the one the marker moves to.  Each page
+// remembers the length it was last drawn at, so a page that missed a beat
+// redraws the whole span it missed rather than just the last cell.
+static u8 g_code_seen[MSX2_VIDEO_PAGES];
+// The picker letter and the message state each page was last drawn with, so a
+// refresh knows the two letters and the one line it actually has to touch.
+static u8 g_code_cur_seen[MSX2_VIDEO_PAGES];
+static u8 g_code_msg_seen[MSX2_VIDEO_PAGES];
+
+static void Msx2_StoryCodeCell(u8 i)
+{
+	u8 x = (u8)(CODE_GRID_X + (i % CODE_COLS) * CODE_CELL_W);
+	u8 y = (u8)(CODE_GRID_Y + (i / CODE_COLS) * CODE_ROW_STEP);
+	bool here = (g_phase == PH_CODE_IN) && (i == g_code_len);
+	// THE CODE SCREEN HAS TO SHOW THE CODE.
+	// `g_code_len` counts what the player has TYPED, and nothing types on the
+	// way out -- so the screen that exists to be copied onto paper drew sixteen
+	// empty cells.  Coming out, every cell is filled by definition:
+	// Msx2_StoryBuildCode() wrote all STORY_CODE_LEN of them.
+	bool filled = (g_phase == PH_CODE_OUT) || (i < g_code_len);
+	c8 one[2];
+
+	one[1] = 0;
+	// Two fills, not five: the border is the whole cell painted in the frame
+	// colour with the plate laid back on top of it.  Msx2_FrameRect is four
+	// separate commands.
+	Msx2_Fill(x, y, CODE_CELL_W - 2, CODE_CELL_H,
+	          here ? MSX2_GOLD : MSX2_DARK_SAND);
+	Msx2_Fill((u8)(x + 1), (u8)(y + 1), CODE_CELL_W - 4, CODE_CELL_H - 2,
+	          MSX2_PLATE_COLOR);
+	if(filled)
+	{
+		one[0] = g_code[i];
+		Msx2_TextColor(MSX2_WHITE, MSX2_PLATE_COLOR);
+	}
+	else
+	{
+		one[0] = '-';
+		Msx2_TextColor(here ? MSX2_GOLD : MSX2_DARK_SAND, MSX2_PLATE_COLOR);
+	}
+	Msx2_TextAt((u8)(x + (CODE_CELL_W - 2 - 6) / 2), (u8)(y + 3), one);
+}
+
+static void Msx2_StoryCodeCells(bool all)
+{
+	u8 page = Msx2_VideoGetDrawPage();
+	u8 first = 0;
+	u8 last = STORY_CODE_LEN - 1;
+	u8 i;
+
+	if(!all)
+	{
+		u8 seen = g_code_seen[page];
+		first = (seen < g_code_len) ? seen : g_code_len;
+		last = (seen > g_code_len) ? seen : g_code_len;
+		if(last >= STORY_CODE_LEN)
+			last = STORY_CODE_LEN - 1;
+	}
+	for(i = first; i <= last; ++i)
+		Msx2_StoryCodeCell(i);
+	g_code_seen[page] = g_code_len;
+}
+
+// One letter of the picker grid, in the colour it is wanted.
+static void Msx2_StoryCodeAlphaCell(u8 i, u8 color)
+{
+	c8 one[2];
+
+	one[0] = (c8)CODE_ALPHABET[i];
+	one[1] = 0;
+	Msx2_TextColor(color, MSX2_PANEL_COLOR);
+	Msx2_TextAt((u8)(CODE_ALPHA_X + (i % CODE_GRID_COLS) * CODE_PITCH),
+	            (u8)(CODE_ALPHA_Y + (i / CODE_GRID_COLS) * 12), one);
+}
+
+// EVERYTHING A KEYPRESS CHANGES, AND NOTHING ELSE.
+// A code screen used to be repainted whole for every letter -- the panel fill,
+// the gold frame, the title, two help lines that never change, all sixteen
+// cells and all thirty-two picker letters -- and each of those help lines is a
+// string read out of the cartridge with interrupts held off.  On this machine
+// that adds up to longer than a person leaves a key down, which is why typing a
+// continue code lost letters.  A keystroke moves two cells and two picker
+// letters; a message line changes only when a result does.  `all` is the
+// compose on entry, which of course draws the lot.
+static void Msx2_StoryCodeRefresh(bool all)
+{
+	u8 page = Msx2_VideoGetDrawPage();
+	u8 msg = (u8)((g_code_error ? 0x80 : 0) | g_disk_msg);
+
+	Msx2_StoryCodeCells(all);
+
+	if(g_phase == PH_CODE_IN)
+	{
+		if(all)
 		{
-			one[0] = g_code[i];
-			Msx2_TextColor(MSX2_WHITE, MSX2_PLATE_COLOR);
+			u8 row;
+			Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+			for(row = 0; row < CODE_GRID_ROWS; ++row)
+				Msx2_StoryCodeAlphaRow((u8)(row * CODE_GRID_COLS),
+				                       (u8)(CODE_ALPHA_Y + row * 12));
 		}
-		else
+		else if(g_code_cur_seen[page] != g_code_cursor)
+			Msx2_StoryCodeAlphaCell(g_code_cur_seen[page], MSX2_WHITE);
+		Msx2_StoryCodeAlphaCell(g_code_cursor, MSX2_GOLD);
+		g_code_cur_seen[page] = g_code_cursor;
+	}
+
+	if(all || (g_code_msg_seen[page] != msg))
+	{
+		if(g_phase == PH_CODE_IN)
 		{
-			one[0] = '-';
-			Msx2_TextColor(here ? MSX2_GOLD : MSX2_DARK_SAND, MSX2_PLATE_COLOR);
+			Msx2_Fill(15, 141, 226, 10, MSX2_PANEL_COLOR);
+			Msx2_TextColor(g_code_error ? MSX2_RED : MSX2_DARK_SAND,
+			               MSX2_PANEL_COLOR);
+			Msx2_TextCenter(143, g_code_error
+			                ? Msx2_UiText(MSX2_S_INVALID_CODE_TRY_AGAIN)
+			                : Msx2_UiText(MSX2_S_TYPE_IT_OR_PICK_AND_PRESS_SP));
 		}
-		Msx2_TextAt((u8)(x + (CODE_CELL_W - 2 - 6) / 2), (u8)(y + 3), one);
+		Msx2_Fill(15, 162, 226, 10, MSX2_PANEL_COLOR);
+		Msx2_StoryDiskLine(167);
+		g_code_msg_seen[page] = msg;
 	}
 }
 
 static void Msx2_StoryCodePaint(void)
 {
-	c8 one[2];
 	Msx2_Fill(14, 20, 228, 170, MSX2_PANEL_COLOR);
 	Msx2_FrameRect(14, 20, 228, 170, MSX2_GOLD);
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(30, (g_phase == PH_CODE_OUT) ? Msx2_UiText(MSX2_S_CONTINUE_CODE) : Msx2_UiText(MSX2_S_ENTER_CONTINUE_CODE));
-	Msx2_StoryCodeCells();
 	if(g_phase == PH_CODE_OUT)
 	{
 		Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
@@ -793,27 +919,27 @@ static void Msx2_StoryCodePaint(void)
 		Msx2_TextCenter(139, Msx2_UiText(MSX2_S_ENTER_IT_ON_THE_TITLE_SCREEN));
 		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 		Msx2_TextCenter(153, Msx2_UiText(MSX2_S_SPACE_ESC_RETURN_TO_ROAD));
-		Msx2_StoryDiskLine(167);
-		return;
 	}
+	else
+	{
+		Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
+		Msx2_TextCenter(155, Msx2_UiText(MSX2_S_ESC_DELETE_EMPTY_ESC_BACK));
+	}
+	Msx2_StoryCodeRefresh(TRUE);
+}
 
-	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextAt(27, 90, Msx2_UiText(MSX2_S_ABCDEFGH));
-	Msx2_TextAt(27, 102, Msx2_UiText(MSX2_S_JKLMNPQR));
-	Msx2_TextAt(27, 114, Msx2_UiText(MSX2_S_STUVWXYZ));
-	Msx2_TextAt(27, 126, Msx2_UiText(MSX2_S_23456789));
-	one[0] = (c8)CODE_ALPHABET[g_code_cursor];
-	one[1] = 0;
-	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextAt((u8)(27 + (g_code_cursor % 8) * 27),
-	            (u8)(90 + (g_code_cursor / 8) * 12), one);
-
-	Msx2_TextColor(g_code_error ? MSX2_RED : MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(143, g_code_error ? Msx2_UiText(MSX2_S_INVALID_CODE_TRY_AGAIN)
-	                                  : Msx2_UiText(MSX2_S_TYPE_IT_OR_PICK_AND_PRESS_SP));
-	Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(155, Msx2_UiText(MSX2_S_ESC_DELETE_EMPTY_ESC_BACK));
-	Msx2_StoryDiskLine(167);
+// The compose draws one page and copies it to the other, so tell both pages
+// what they are now showing -- otherwise the copied page's first incremental
+// refresh would repair a span that is already right, or worse, miss one.
+static void Msx2_StoryCodeSeenAll(void)
+{
+	u8 i;
+	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
+	{
+		g_code_seen[i] = g_code_len;
+		g_code_cur_seen[i] = g_code_cursor;
+		g_code_msg_seen[i] = (u8)((g_code_error ? 0x80 : 0) | g_disk_msg);
+	}
 }
 
 static void Msx2_StoryEnterCodeInput(void)
@@ -830,6 +956,7 @@ static void Msx2_StoryEnterCodeInput(void)
 	Msx2_StoryCodePaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_StoryCodeSeenAll();
 	g_map_dirty = 0;
 }
 
@@ -837,7 +964,19 @@ static void Msx2_StoryEnterCodeOutput(void)
 {
 	g_phase = PH_CODE_OUT;
 	Msx2_StoryBuildCode(g_code, g_progress, g_player_name, g_story_deck);
-	Msx2_StoryUiDirty();
+	// It used to mark the pages dirty and leave the backdrop to whatever the
+	// previous screen happened to have streamed -- which was the title picture
+	// the save picker brought with it.  Compose it here, on the road, exactly
+	// as the map and the picker do, so both pages are finished before either is
+	// shown.
+	Msx2_VideoDrawPage(MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStageForProgress(g_progress)),
+	                 MSX2_PAGE_1);
+	Msx2_StoryCodePaint();
+	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
+	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_StoryCodeSeenAll();
+	g_map_dirty = 0;
 }
 
 // Saving is an explicit choice, rather than the old map item that silently
@@ -889,8 +1028,14 @@ static void Msx2_StoryEnterSavePick(void)
 	g_save_pick = Msx2_DiskPresent() ? 0 : 1;
 	g_disk_msg = 0;
 	Msx2_StoryBuildCode(g_code, g_progress, g_player_name, g_story_deck);
+	// THE ROAD, NOT THE TITLE SCREEN.
+	// SAVE GAME is reached from the sanctum road and returns to it, so it wears
+	// the road's own artwork.  Streaming the title picture put the logo and the
+	// copyright line -- and whatever the title screen had left in the sprite
+	// planes -- behind a panel that belongs to the middle of a run.
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
-	Msx2_StreamScene(MSX2_SCENE_TITLE_SEGMENT, MSX2_PAGE_1);
+	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStageForProgress(g_progress)),
+	                 MSX2_PAGE_1);
 	Msx2_StorySavePickPaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
@@ -1409,7 +1554,7 @@ static void Msx2_StoryCodeInputStep(void)
 		Msx2_StoryUiDirty();
 	if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
 	{
-		Msx2_StoryCodePaint();
+		Msx2_StoryCodeRefresh(FALSE);
 		g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
 		Msx2_VideoFlipRequest();
 	}
@@ -1430,7 +1575,7 @@ static void Msx2_StoryCodeOutputStep(void)
 	}
 	if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
 	{
-		Msx2_StoryCodePaint();
+		Msx2_StoryCodeRefresh(FALSE);
 		g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
 		Msx2_VideoFlipRequest();
 	}

@@ -86,6 +86,11 @@ need_tool() {
 # with interrupts off in 16 KB chunks, during which no key is latched.
 KEY_SEQ_DEFAULT="6.0:space 6.8:down 7.6:space"
 KEY_SEQ=""
+# How long a scripted key is held, in emulated seconds.  The V-blank handler
+# latches the matrix and accumulates edges (src/msx2/msx2_input.c), so a press
+# only has to outlast one frame -- but a script that needs a longer one can say
+# so: KEY_HOLD=0.4 ./msx2.sh shot ...
+KEY_HOLD="${KEY_HOLD:-0.15}"
 
 key_matrix() {
 	case "$1" in
@@ -96,8 +101,15 @@ key_matrix() {
 		right)  echo "8 0x80" ;;
 		return) echo "7 0x80" ;;
 		esc)    echo "7 0x04" ;;
-		c)      echo "3 0x01" ;;
-		d)      echo "3 0x02" ;;
+		# Every printable key the game reads, in the order the matrix reports
+		# each row -- so a scripted run can type a name or a continue code.
+		[0-7])  echo "0 $(printf '0x%02x' $((1 << $1)))" ;;
+		8)      echo "1 0x01" ;;
+		9)      echo "1 0x02" ;;
+		[ab])   echo "2 $(printf '0x%02x' $((1 << (6 + $(printf '%d' \'$1) - 97))))" ;;
+		[c-j])  echo "3 $(printf '0x%02x' $((1 << ($(printf '%d' \'$1) - 99))))" ;;
+		[k-r])  echo "4 $(printf '0x%02x' $((1 << ($(printf '%d' \'$1) - 107))))" ;;
+		[s-z])  echo "5 $(printf '0x%02x' $((1 << ($(printf '%d' \'$1) - 115))))" ;;
 		*)      echo "" ;;
 	esac
 }
@@ -109,8 +121,8 @@ emit_key_script() {
 		key="${entry##*:}"
 		rm="$(key_matrix "$key")"
 		[ -n "$rm" ] || die "unknown key '$key' in key sequence"
-		printf 'after time %s { keymatrixdown %s ; after time 0.15 { keymatrixup %s } }\n' \
-			"$at" "$rm" "$rm"
+		printf 'after time %s { keymatrixdown %s ; after time %s { keymatrixup %s } }\n' \
+			"$at" "$rm" "$KEY_HOLD" "$rm"
 	done
 }
 
@@ -245,6 +257,14 @@ case "$CMD" in
 		echo
 		echo "── blind-play probe after ${SECONDS_RUN}s of emulated time ──────────"
 		python3 tools/msx2/read_probe.py "$RAM" || die "probe check failed"
+		# WHAT IS LEFT IN out/ IS THE SOAK ROM, NOT THE GAME.  It plays itself,
+		# which means a `shot` or a `run` straight after a `verify` photographs a
+		# build that boots into a duel and ignores the keyboard -- and the
+		# screenshot looks exactly like a game that has lost its title screen.
+		# Rebuild before photographing anything.
+		echo
+		echo "note: src/msx2/out holds the SOAK rom now; run './msx2.sh build'"
+		echo "      before 'shot' or 'run', or you will photograph the self-play build."
 		;;
 
 	run)

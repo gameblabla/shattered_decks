@@ -29,8 +29,11 @@ void Msx2_SpriteInit(void)
 {
 	u8 f;
 
-	// The sixteen palette registers apply to sprites only in GRAPHIC 7, so
-	// this palette costs the bitmap nothing.  Colour is (R,G,B) in 3 bits each,
+	// The bitmap is direct colour in GRAPHIC 7, so these registers cost it
+	// nothing -- and, as msx2_sprite.h sets out, they do not reach the sprite
+	// plane in this mode either: the chip colours a GRAPHIC 7 sprite from a
+	// fixed table.  They are kept because they are the intent, and because a
+	// mode that is not GRAPHIC 7 would honour them.  Colour is (R,G,B) in 3 bits each,
 	// packed as MSXgl wants it: 0xRRRB, 0x0GGG.
 	VDP_SetPaletteEntry(MSX2_SPR_WHITE, 0x7707);
 	VDP_SetPaletteEntry(MSX2_SPR_GOLD,  0x7005);
@@ -45,7 +48,6 @@ void Msx2_SpriteInit(void)
 	VDP_SetPaletteEntry(MSX2_SPR_TEAL_DK, 0x0102);
 	VDP_SetPaletteEntry(MSX2_SPR_TEAL_HI, 0x4607);
 	VDP_SetPaletteEntry(MSX2_SPR_ORANGE,  0x7003);
-	VDP_SetPaletteEntry(MSX2_SPR_BLACK,   0x0000);
 
 	// 16x16, magnified to 32x32: an explosion or a letter has to read at the
 	// same size the 88x120 cut-in cards do.
@@ -271,6 +273,9 @@ void Msx2_SpriteSlashHide(void)
 void Msx2_SpriteBurnCard(u8 which, u8 x, u8 y, u8 step)
 {
 	u8 base = which ? MSX2_SPR_BURN_CARD_IDS : 0;
+	// Code 0 is the only black the fixed GRAPHIC 7 sprite table has, and a
+	// sprite only draws it while colour 0 is not transparent.
+	VDP_EnableTransparency(FALSE);
 	u8 rows = (u8)((step * 4 + 5) / 6);
 	u8 row, col;
 
@@ -294,6 +299,8 @@ void Msx2_SpriteBurnHide(void)
 	u8 i;
 	for(i = 0; i < MSX2_SPR_BURN_CARD_IDS * 2; ++i)
 		Msx2_SpriteHide(i);
+	// Colour 0 goes back to meaning transparent the moment the wipe is gone.
+	VDP_EnableTransparency(TRUE);
 }
 
 // SLIDING ON FROM OFF THE SCREEN.

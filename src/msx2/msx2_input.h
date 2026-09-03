@@ -22,7 +22,12 @@
 #define MSX2_BTN_DEL    0x80   // backspace / delete only
 
 void Msx2_InputInit(void);
+// Consume everything the V-blank scan has accumulated since the last call.
 void Msx2_InputUpdate(void);
+// Scan the keyboard matrix.  Called from the V-blank handler ONLY: a game step
+// can be several V-blanks long, and a press that began and ended inside one was
+// never seen when the scan lived in the main loop.
+void Msx2_InputLatch(void);
 
 u8   Msx2_InputHeld(void);      // buttons currently down
 u8   Msx2_InputPressed(void);   // buttons that went down this frame

@@ -100,7 +100,14 @@ def main():
             pat = vread(0xFA00 + spr * 4 + 2) & 0xFC
             attr = vread(0xF800 + spr * 16)
             col = attr & 0x0F
-            if col == 0:
+            # COLOUR 0 IS NOT ALWAYS NOTHING.
+            # It is the transparent code only while R#8's TP bit is set, and
+            # the destroyed-card wipe deliberately clears it: index 0 of the
+            # fixed GRAPHIC 7 sprite table is the only black there is (see
+            # src/msx2/msx2_sprite.h).  A dump carries no registers, so the
+            # wipe is drawn as the black it is; a genuinely transparent code-0
+            # sprite is never placed on the screen by this port.
+            if col == 0 and sy >= 212:
                 continue
             # Sprite mode 2 keeps "early clock" in bit 7 of the colour byte, and
             # it shifts the sprite thirty-two pixels LEFT -- which is the only
@@ -122,7 +129,7 @@ def main():
                         for dx in range(2):
                             overlay[(sx + px * 2 + dx, top + py * 2 + dy)] = col
     # A rough palette for the sprite indices msx2_sprite.c sets.
-    SPRITE_RGB = {1: (255, 255, 255), 2: (255, 190, 0), 3: (255, 40, 40),
+    SPRITE_RGB = {0: (0, 0, 0), 1: (255, 255, 255), 2: (255, 190, 0), 3: (255, 40, 40),
                   4: (0, 210, 190), 5: (90, 140, 255),
                   # The selector's shadow and highlight either side of 3 and 4:
                   # without these a shaded gem photographs as the unknown-index

@@ -83,6 +83,13 @@ void VDP_InterruptHandler(void)
 {
 	++g_msx2_ticks;
 	Msx2_AudioTick();
+	// The keyboard is scanned here rather than in the main loop because a game
+	// step on this target is regularly longer than one V-blank -- a panel
+	// repaint, a cartridge read, a slot rasterised into its quad -- and a press
+	// that began and ended inside one was simply never seen.  It is two I/O
+	// instructions per row on the PPI and touches neither the VDP nor the PSG,
+	// so it is safe next to the audio tick.
+	Msx2_InputLatch();
 }
 
 // xorshift on the frame counter: the blind run must play *different* duels, or
