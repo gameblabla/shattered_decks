@@ -198,6 +198,11 @@ static void Msx2_SpriteBuildSlash(void)
 	              0, 32);
 }
 
+// Is this segment inside the innermost `grown` of the stroke?
+#define SEG_IN(seg, grown) \
+	(((seg) >= (u8)((MSX2_SPR_SLASH_SEGS - (grown)) / 2)) && \
+	 ((seg) <  (u8)((MSX2_SPR_SLASH_SEGS + (grown) + 1) / 2)))
+
 // The heat of a segment by how far out from the crossing point it is: the ends
 // are the cooling tail of the cut and the middle is where the blade bit.
 static u8 Msx2_SpriteSlashHeat(u8 seg, u8 core)
@@ -215,12 +220,16 @@ void Msx2_SpriteSlash(u8 x, u8 y, u8 grown_a, u8 grown_b, u8 core)
 	const u8 half_w = (u8)((MSX2_SPR_SLASH_SEGS - 1) * SLASH_DX / 2);
 	u8 seg;
 
+	// A stroke opens from the middle out and withdraws the same way, so the
+	// visible segments are the `grown` innermost ones rather than the first
+	// `grown`.  Taking them off the bottom up instead left the cut as a V while
+	// the burst was at its widest, which reads as half a picture.
 	for(seg = 0; seg < MSX2_SPR_SLASH_SEGS; ++seg)
 	{
 		u8 sy = (u8)(y - half_h + seg * 32);
 		u8 id = (u8)(MSX2_SPR_SLASH_ID + seg);
 
-		if(seg < grown_a)
+		if(SEG_IN(seg, grown_a))
 			Msx2_SpriteAt(id,
 			              (u8)(x - half_w + seg * SLASH_DX - 16), sy,
 			              MSX2_SPR_SLASH_R, Msx2_SpriteSlashHeat(seg, core));
@@ -228,7 +237,7 @@ void Msx2_SpriteSlash(u8 x, u8 y, u8 grown_a, u8 grown_b, u8 core)
 			Msx2_SpriteHide(id);
 
 		id = (u8)(MSX2_SPR_SLASH_ID + MSX2_SPR_SLASH_SEGS + seg);
-		if(seg < grown_b)
+		if(SEG_IN(seg, grown_b))
 			Msx2_SpriteAt(id,
 			              (u8)(x + half_w - seg * SLASH_DX - 16), sy,
 			              MSX2_SPR_SLASH_L, Msx2_SpriteSlashHeat(seg, core));

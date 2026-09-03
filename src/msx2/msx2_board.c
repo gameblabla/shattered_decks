@@ -962,6 +962,12 @@ static void Msx2_BoardRestoreFromCutin(void)
 // addresses the current draw page.
 #define FX_STASH_Y       216
 #define FX_STASH_HALF_H  (MSX2_CARD_H / 2)
+// How far apart the two backing tiles sit.  It used to be MSX2_CARD_W, which
+// was enough while the only thing ever saved was a 40-wide card; the arrival
+// pose saves a whole SLOT BOX, and a near slot's box is wider than that -- at
+// forty the two tiles would have overlapped and each would have eaten the
+// other's rows back.
+#define FX_STASH_PITCH   64
 
 // THE FLYING CARD IS CACHED IN VRAM, NOT RE-READ EVERY POSE.
 // A pose used to be Msx2_StreamRect() out of the cartridge: the Z80 maps a NEO
@@ -991,12 +997,12 @@ static void Msx2_BoardFxCardBacking(bool restore, u8 x, u8 y, u8 w,
 	if(restore)
 	{
 		Msx2_CopyRect(0, FX_STASH_Y, x, y, w, ha);
-		Msx2_CopyRect(MSX2_CARD_W, FX_STASH_Y, x, (u8)(y + ha), w, hb);
+		Msx2_CopyRect(FX_STASH_PITCH, FX_STASH_Y, x, (u8)(y + ha), w, hb);
 	}
 	else
 	{
 		Msx2_CopyRect(x, y, 0, FX_STASH_Y, w, ha);
-		Msx2_CopyRect(x, (u8)(y + ha), MSX2_CARD_W, FX_STASH_Y, w, hb);
+		Msx2_CopyRect(x, (u8)(y + ha), FX_STASH_PITCH, FX_STASH_Y, w, hb);
 	}
 }
 
@@ -1083,33 +1089,61 @@ static const u8 g_fx_ease[FX_LANDING_FRAMES] = { 0, 1, 4, 7, 10, 13, 15, 16 };
 static void Msx2_BoardFxCardFlight(bool erase)
 {
 	// Overhead the card that is going to sit in the slot is the 32x42 one baked
-	// for that view, and the slot is 42x42, so the card lands at its own size.
-	// In a chair view the slot is a projected quad and is smaller than the card
-	// in both axes, so the drawn rectangle closes on the slot's box as the card
-	// travels -- by taking a smaller and smaller CENTRED window out of the
-	// cached picture, which the command engine does for free by being asked for
-	// a different source rectangle.  The last pose is the box exactly, so the
-	// card stops where it lands instead of standing up out of it.
+	// for that view and the slot is 42x42, so the whole flight is one rectangle
+	// moving: no size ever changes and the last pose IS the settled card.
+	//
+	// A CHAIR VIEW CANNOT DO THAT, AND MUST NOT PRETEND TO.
+	// A projected slot is about 30x15 and the thumbnail is 40x48, and the
+	// command engine copies rectangles -- it does not scale.  Shrinking the
+	// thumbnail into the slot by taking a smaller and smaller window out of it
+	// arrives in the right place with the wrong picture: thirty by fifteen out
+	// of the middle of a card back is a smear, not a card.  So the flight
+	// carries the WHOLE card, centred on where the card is going, and the
+	// arrival pose is the settled card itself -- drawn into its quad by the
+	// same span program the board is about to use, which is the only thing on
+	// this machine that can put a card into a projected slot at all.  The
+	// picture is then continuous from the flight into the board taking it.
 	bool over = (g_view == MSX2_VIEW_OVER);
 	u8 cw   = over ? MSX2_OVER_CARD_W : MSX2_CARD_W;
 	u8 ch   = over ? MSX2_OVER_CARD_H : MSX2_CARD_H;
-	u8 half = (u8)(ch >> 1);
-	i16 sx = (g_fx_hand == MSX2_SLOT_NONE) ? 108 : HAND_X(g_fx_hand);
 	u8 ease = g_fx_ease[FX_LANDING_FRAMES - g_fx_frames];
-	u8 x, y, w, h, t, l, ha, hb;
+	i16 sx = (g_fx_hand == MSX2_SLOT_NONE) ? 108 : HAND_X(g_fx_hand);
+	u8 x, y, w, ha, hb;
 
-	w = (u8)(cw + ((((i16)g_fx_dest_w - (i16)cw) * ease) >> 4));
-	h = (u8)(ch + ((((i16)g_fx_dest_h - (i16)ch) * ease) >> 4));
-	x = (u8)(sx + ((((i16)g_fx_dest_x - sx) * ease) >> 4));
-	y = (u8)(MSX2_HAND_Y + ((((i16)g_fx_dest_y - MSX2_HAND_Y) * ease) >> 4));
+	if(!over && (ease == 16))
+	{
+		// The arrival.  What is saved and put back is the slot's own restore
+		// box -- the quad plus its margin -- because that is the rectangle a
+		// span program is allowed to round a texel into.
+		const u8* box = g_msx2_slot_box[g_view][g_fx_field];
+		hb = (u8)(box[3] >> 1);
+		ha = (u8)(box[3] - hb);
+		if(erase)
+		{
+			Msx2_BoardFxCardBacking(TRUE, box[0], box[1], box[2], ha, hb);
+			return;
+		}
+		Msx2_BoardFxCardBacking(FALSE, box[0], box[1], box[2], ha, hb);
+		Msx2_RasterSetView(g_view);
+		Msx2_RasterCard(Msx2_BoardFxFlightCard(), g_fx_field,
+		                g_duel.side[g_fx_owner].defense[SLOT_INDEX(g_fx_field)]
+		                    ? 1 : 0);
+		return;
+	}
 
-	// The window into the cached card, centred: t rows down and l columns in.
-	// t is never past the halfway split (h can only shrink from ch), so the two
-	// cached halves always both contribute exactly one copy.
-	t = (u8)((ch - h) >> 1);
-	l = (u8)((cw - w) >> 1);
-	ha = (u8)(half - t);
-	hb = (u8)(h - ha);
+	// Everything before it: the whole card, its middle easing from the hand
+	// position to the middle of the slot it is going into.
+	{
+		i16 ex = (i16)((i16)g_fx_dest_x + (i16)(g_fx_dest_w >> 1) - (i16)(cw >> 1));
+		i16 ey = (i16)((i16)g_fx_dest_y + (i16)(g_fx_dest_h >> 1) - (i16)(ch >> 1));
+		if(ex < 0) ex = 0;
+		if(ey < MSX2_BAND_Y) ey = MSX2_BAND_Y;
+		x = (u8)(sx + (((ex - sx) * ease) >> 4));
+		y = (u8)(MSX2_HAND_Y + (((ey - MSX2_HAND_Y) * ease) >> 4));
+	}
+	w  = cw;
+	ha = (u8)(ch >> 1);
+	hb = (u8)(ch - ha);
 
 	if(erase)
 	{
@@ -1120,8 +1154,8 @@ static void Msx2_BoardFxCardFlight(bool erase)
 	// Out of the offscreen cache Msx2_BoardFxCacheCard() filled, in the same
 	// two halves it was stored in: two command-engine copies, and not one byte
 	// through the data port.
-	Msx2_CopyRect((u8)(FX_CACHE_X + l), (u8)(FX_STASH_Y + t), x, y, w, ha);
-	Msx2_CopyRect((u8)(FX_CACHE_X + MSX2_CARD_W + l), FX_STASH_Y,
+	Msx2_CopyRect(FX_CACHE_X, FX_STASH_Y, x, y, w, ha);
+	Msx2_CopyRect((u8)(FX_CACHE_X + MSX2_CARD_W), FX_STASH_Y,
 	              x, (u8)(y + ha), w, hb);
 }
 
@@ -1254,13 +1288,34 @@ static void Msx2_BoardHideHand(void)
 	}
 	else
 	{
-		// A chair slot is smaller than the card in both axes more often than
-		// not, so the destination is the box itself, never anything larger.
-		const u8* box = g_msx2_slot_box[g_view][g_fx_field];
-		g_fx_dest_w = (box[2] < MSX2_CARD_W) ? box[2] : MSX2_CARD_W;
-		g_fx_dest_h = (box[3] < MSX2_CARD_H) ? box[3] : MSX2_CARD_H;
-		g_fx_dest_x = (u8)(box[0] + ((box[2] - g_fx_dest_w) >> 1));
-		g_fx_dest_y = (u8)(box[1] + ((box[3] - g_fx_dest_h) >> 1));
+		// THE DESTINATION IS THE QUAD, NOT THE SLOT'S BOX.
+		// The box is the quad plus a four-pixel margin -- it exists so that a
+		// span program rounding a texel outward still has somewhere to be
+		// erased from -- so landing on it left the card a margin out of place
+		// and eight pixels too big in each axis, and the board then took it and
+		// redrew it a few pixels over.  What the rasterizer actually fills is
+		// the QUAD, so that is where the flight has to stop: the bounding box
+		// of the four projected corners, which is the rectangle the settled
+		// card occupies to the pixel.
+		const u8* q = g_msx2_slot_quad[g_view][g_fx_field];
+		u8 x0 = q[0], x1 = q[0], y0 = q[1], y1 = q[1];
+		for(i = 1; i < 4; ++i)
+		{
+			u8 qx = q[i * 2], qy = q[i * 2 + 1];
+			if(qx < x0) x0 = qx;
+			if(qx > x1) x1 = qx;
+			if(qy < y0) y0 = qy;
+			if(qy > y1) y1 = qy;
+		}
+		g_fx_dest_w = (u8)(x1 - x0 + 1);
+		g_fx_dest_h = (u8)(y1 - y0 + 1);
+		// A projected slot is smaller than the 40x48 thumbnail in both axes at
+		// every camera this port uses, but the flight crops rather than scales,
+		// so it must never be asked for more of the card than there is.
+		if(g_fx_dest_w > MSX2_CARD_W) g_fx_dest_w = MSX2_CARD_W;
+		if(g_fx_dest_h > MSX2_CARD_H) g_fx_dest_h = MSX2_CARD_H;
+		g_fx_dest_x = x0;
+		g_fx_dest_y = y0;
 	}
 	g_fx_bend = FX_BEND_POSES;
 	g_fx_hold = 0;

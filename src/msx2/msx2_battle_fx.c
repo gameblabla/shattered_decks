@@ -88,9 +88,10 @@ void Msx2_BattleFxSlash(u8 x, u8 step)
 	}
 	else
 	{
-		// Withdrawing, a segment every two frames, never quite to nothing until
-		// the caller takes it off.
-		u8 gone = (u8)((step - MSX2_BATTLE_SLASH_STEPS) >> 1);
+		// Withdrawing, from the ends of the cut inwards, a segment every three
+		// frames -- so it is down to its core by the time the burst is at its
+		// widest rather than sitting whole underneath it.
+		u8 gone = (u8)((step - MSX2_BATTLE_SLASH_STEPS) / 3);
 		a = (gone >= MSX2_SPR_SLASH_SEGS - 1)
 		  ? 1 : (u8)(MSX2_SPR_SLASH_SEGS - gone);
 		b = a;

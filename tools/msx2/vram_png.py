@@ -128,7 +128,9 @@ def main():
                   # without these a shaded gem photographs as the unknown-index
                   # magenta and the shot says nothing about the shading.
                   6: (109, 0, 0), 7: (255, 182, 145),
-                  8: (0, 72, 36), 9: (145, 218, 255)}
+                  8: (0, 72, 36), 9: (145, 218, 255),
+                  # The blade sweep's core heat (MSX2_SPR_ORANGE).
+                  10: (255, 110, 0)}
 
     rows = []
     for y in range(HEIGHT):
