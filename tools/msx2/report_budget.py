@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report the MSX2 port's code and RAM footprint against its hard budgets.
 
-The port lives inside two ceilings that are easy to blow through silently:
+The port lives inside several ceilings that are easy to blow through silently:
 
   * Resident code.  SDCC links _CODE contiguously from 0x4000.  Page 1
     (0x4000-0x7FFF) is NEO segment 0 and is always mapped; page 2
@@ -9,8 +9,14 @@ The port lives inside two ceilings that are easy to blow through silently:
     MSXgl's crt0 only happens to map segment 1 there at boot.  So any code that
     spills past 0x8000 is living in the streaming window on borrowed time: the
     first bank switch under it is a crash.  16 KB is the honest resident-code
-    budget until banked code (SUPPORT_BANKED_CALL) or a page-0 code segment is
-    in place.
+    budget on paper; in practice _CODE uses the whole 32 KB and the streamer is
+    kept below the line, which pack_msx_rom.py checks on every build.
+
+  * The page-0 code banks.  Page 0 (0x0000-0x3FFF) is a switched window over
+    cartridge segments 2 (the duel screen), 3 (the modal screens) and 4 (the
+    story) -- see src/msx2/msx2_bank.h.  Each is a hard 16 KB of its own and
+    they are where the two biggest screens in the port actually live, so these
+    are usually the budget that binds first.
 
   * Working RAM.  _DATA starts at 0xC000 and the stack starts at HIMEM
     (0xF380).  Everything statically allocated plus the deepest stack the game
@@ -79,6 +85,17 @@ def main():
         print("         FATAL: code runs past 0xBFFF, into RAM.")
     print("  home                    %6d bytes" % home)
     print()
+    # The page-0 banks.  All three are mapped at 0x0000 and each is its own
+    # 16 KB; msx2_bank.h says which screen is in which.
+    for seg, what in ((2, "duel screen"), (3, "modal screens"), (4, "story")):
+        name = "_SEG%d" % seg
+        if name not in a:
+            continue
+        size = a[name][1]
+        print("  seg %d  %-14s %6d bytes  %s" % (seg, what, size, bar(size, 0x4000)))
+        if size > 0x4000:
+            print("         FATAL: bank %d does not fit in its 16 KB window." % seg)
+    print()
     print("  RAM    0x%04X-0x%04X  %6d bytes used, %d free to HIMEM (0x%04X)"
           % (RAM_BASE, ram_end, ram_used, ram_free, HIMEM))
     print("         %s" % bar(ram_used, HIMEM - RAM_BASE))
@@ -87,7 +104,8 @@ def main():
           " the")
     print("  ROM itself measures is in the blind-play probe (./msx2.sh run).")
 
-    if code_end > PAGE2_END or ram_free <= 0:
+    banks_over = any(a.get("_SEG%d" % seg, (0, 0))[1] > 0x4000 for seg in (2, 3, 4))
+    if code_end > PAGE2_END or ram_free <= 0 or banks_over:
         sys.exit(1)
 
 

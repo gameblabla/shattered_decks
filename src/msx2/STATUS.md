@@ -19,7 +19,34 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M4 — the duel screen, played by a person | **done**: place, fuse, attack, end turn on real input; shared-renderer 3D arena and turn views, hidden COM hand covers, and board-free 2D attack cut-ins |
 | M5 — story presentation | **done**: opening, sanctum map, dialogue, and ending, with both speakers composited over the shipped painting |
 | M6 — full duel loop | **done**: person-playable placement, fusion, support, attacks, turn handoff, results, and the real shared-renderer board |
-| M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, compact deck editor, 16-symbol password save/load, and ending transition |
+| M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, compact deck editor, 16-symbol password save/load, floppy save/load where a drive answers, and ending transition |
+
+### Where the code lives, since 2026-09-03
+
+The port ran out of both of its code areas at once, and the fix reshaped the
+memory map, so this is the first thing to know about the build:
+
+* `_CODE` is 0x4000-0xBFFF, a hard **32 KB** (cartridge segments 0 and 1).
+* **Page 0 (0x0000-0x3FFF) is a switched window** over three more 16 KB code
+  banks: segment 2 is the duel screen, segment 3 the modal screens (card check,
+  fusion cut-in), segment 4 the story screens.  `src/msx2/msx2_bank.h` is the
+  contract; `msx2_bank.c` holds a trampoline per entry point, and each restores
+  whatever bank it displaced, so a modal screen opened from the story lands back
+  in the story.
+* **The one rule:** code in a page-0 bank may call `_CODE` and its own bank, and
+  no other bank — those do not exist while it runs.  The trampolines are the
+  only way in, which is what enforces it.
+* This works only because the interrupt handler moved to **RAM page 3**
+  (`InstallRAMISR = "RAMISR_PAGE3"`, IM 2, 452 bytes).  With the ISR at 0x0038
+  in ROM, mapping any other segment at 0x0000 would take the handler with it.
+* It is also why **the disk layer is not in a bank**: it needs the BIOS back at
+  0x0000 for RDSLT and CALSLT, and a bank that has to disappear for the call to
+  work cannot be the bank the call is made from.  `msx2_disk.c` is in `_CODE`
+  and swaps page 0's primary slot around each BIOS call.
+* Cartridge segments **0-7 are reserved for code**; assets start at 8, so adding
+  a bank is not a re-bake of six megabytes of artwork.
+
+`./msx2.sh ram` reports all four areas and fails on any of them.
 
 ### The title screen
 
@@ -73,6 +100,26 @@ pose is the shared `enemy_camera()`. The opening therefore lands on the same
 player-chair view instead of an MSX-only near-overhead frame. The black surround
 also comes directly from the PC-FX presentation: story-stage paintings no
 longer sit behind or grade the arena.
+
+**There is a third view, and it is not captured.** The two chairs are the game's
+own cameras, and their perspective squeezes a field slot down to 36x15 pixels —
+a picture of a board rather than a board you can read. Walking up out of the
+hand therefore puts the camera overhead, as it does on PC-FX and on the PC
+build: `MSX2_VIEW_OVER` is the flat table of
+`assets/source/msx2/msx2_3d_top_view.png` with ten hand-authored quads pushed
+into the capture beside the two chairs, so the rings, the empty-slot tiles, the
+span programs and the geometry tables all come out of the same generator code.
+A slot is 42x36 there. It takes the hand's rows as well as the board band —
+it is the view with no hand on it — so the painter must not black those rows
+out or frame five hand positions in them. Getting there is a cut, not a camera
+move: the baked path runs between the two chairs only.
+
+**The selector is a sprite.** It was a rectangle drawn into the bitmap, which
+meant it had to be erased from the bitmap on each page separately; it is now the
+PC build's spinning red gem (`draw_spin_cursor` in `src/main.c`), the same
+octahedron projected offline into eight sprite patterns. A sprite floats over
+both GRAPHIC 7 pages, so there is one cursor rather than two, and nothing under
+it is ever touched — which is what lets it animate at all.
 
 **The cards are drawn into those trapezoids**, by the §8 Tier A span rasterizer:
 
@@ -238,15 +285,17 @@ rules step every frame (a person takes one every few seconds), streams a fresh
 cards into perspective quads underneath all of it. The number to watch here is
 `status`, not the rate.
 
-Footprint (`./msx2.sh ram`): the shipping link uses 31,951 bytes in `_CODE` and
-15,955 bytes in the fixed segment-2 bank (173 below its 16,128-byte limit; the
-soak and story-soak variants are larger still, so segment 2 is the budget that
-binds first and every change has to be checked against all three builds).  Its RAM report is 4,595 bytes used
-from `0xC000` through `0xD1F3`, with 8,589 bytes free to `HIMEM` (`0xF380`);
-the runtime probe measured 8,558 bytes between static data and the live stack.
-The segment-2 bank remains below its 16 KB placement limit, including the ISR
-reservation.  `pack_msx_rom.py` now rejects either resident code area if its
-linker-reported end crosses the mapped bank boundary.
+Footprint (`./msx2.sh ram`, 2026-09-03): 30,800 bytes in `_CODE`, and the three
+page-0 banks at 9,414 (duel), 1,831 (modal) and 9,391 (story) of 16,384 each.
+Before the split, the duel and story screens shared segment 2 and were within a
+couple of hundred bytes of filling it, which is not a budget you can add a
+feature to; the soak and story-soak variants are larger still, so every change
+has to be checked against all three builds.  Its RAM report is 6,538 bytes used
+from `0xC000` through `0xD98A`, with 6,646 bytes free to `HIMEM` (`0xF380`);
+the runtime probe measured 6,615 bytes between static data and the live stack.
+The RAM ISR accounts for 452 of the difference from the earlier figure and the
+disk sector buffer for 512.  `pack_msx_rom.py` rejects any of the four code
+areas if its linker-reported end crosses the mapped bank boundary.
 
 ### M7 evidence
 
@@ -352,7 +401,14 @@ crash into a number instead of a black screen.
 | `msx2_duel.c/.h` | the duel rules: board, LP, battle, supports, fusion, turn order |
 | `msx2_cards.c/.h` | card stat tables (generated) |
 | `msx2_probe.c/.h` | the headless observation channel |
-| `waifu_msx2_s2_b0.c` | the page-0 code bank: where the streamer and the two big scenes are compiled |
+| `msx2_bank.c/.h` | the switchable page-0 code window, and the trampoline per banked entry point |
+| `msx2_screens.c/.h` | the card check screen and the fusion cut-in (modal bank) |
+| `msx2_sprite.c/.h` | the V9938 sprite layer: burst, result word, the spinning selector |
+| `msx2_disk.c/.h` | the continue code on a floppy, through the disk ROM's DSKIO |
+| `msx2_story_load.c/.h` | LOAD STORY: is the save on a disk or on paper? |
+| `waifu_msx2_s2_b0.c` | page-0 bank, segment 2: the duel screen |
+| `waifu_msx2_s3_b0.c` | page-0 bank, segment 3: the modal screens |
+| `waifu_msx2_s4_b0.c` | page-0 bank, segment 4: the story screens |
 | `msx2_audio.c/.h` | silent stubs that reserve the sound driver's 700 bytes of RAM |
 | `msx2_libc.c` | `time()`/`clock()` for the shared deck builder |
 | `compat/waifu_assets.h` | shim so `src/game/deck.c` compiles without the 5.3 MB asset header |
@@ -412,10 +468,13 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
    must be measured properly at M1b, and the state build should be made
    incremental if a turn ever visibly hangs.
 
-3. **There is no SRAM/disk save back-end.** The guaranteed password save/load path
-   is implemented and is the shipping persistence mechanism.  Cartridge SRAM or
-   an MSX-DOS file remains optional secondary storage, and is not exposed as a
-   separate menu feature.
+3. **The floppy save is written but has never run against a drive.**  LOAD STORY
+   offers FLOPPY DISK or PASSWORD, the slot probe is exercised (it correctly
+   reports "no drive answered" on C-BIOS), and the BIOS-in-page-0 swap that the
+   probe needs is proven by the fact that selecting LOAD STORY no longer hangs.
+   What is NOT proven is DSKIO itself: no emulator configuration here has a disk
+   ROM, so the read and the write have never executed.  The password path
+   remains the guaranteed persistence mechanism.
 
 4. **Sound is stubs.** `msx2_audio.c` records the requested track and reserves
    700 bytes for the Arkos AKG + ayFX state, so the RAM is already spent.
