@@ -173,7 +173,7 @@ static u8 g_batt_dpx[MSX2_VIDEO_PAGES];
 //  Reading the rules
 // ─────────────────────────────────────────────────────────────────────────────
 
-u8 Msx2_BoardStageForStory(u8 story_duel_index)
+u8 Msx2_BoardStageForStory_In(u8 story_duel_index)
 {
 	// story_scene_for_progress() in src/main.c, by another name.
 	if(story_duel_index == MSX2_STORY_NONE)
@@ -1474,7 +1474,7 @@ static void Msx2_BoardStepDeal(void)
 	}
 }
 
-void Msx2_BoardEnter(u8 stage)
+void Msx2_BoardEnter_In(u8 stage)
 {
 	u8 i;
 	u8 page;
@@ -1884,7 +1884,7 @@ static void Msx2_BoardMove(u8 pressed)
 //  The frame
 // ─────────────────────────────────────────────────────────────────────────────
 
-u8 Msx2_BoardStep(void)
+u8 Msx2_BoardStep_In(void)
 {
 	u8 pressed = Msx2_InputPressed();
 	u8 before_zone = g_zone;
@@ -1945,10 +1945,17 @@ u8 Msx2_BoardStep(void)
 			Msx2_DuelStep();
 			Msx2_BoardTouch();
 			if((g_duel.turn_owner == MSX2_OWNER_PLAYER) &&
+			   (g_duel.phase != MSX2_PHASE_TURN_START) &&
 			   (g_duel.result == 0))
 			{
-				// The COM has finished its rules work.  Hand the camera back
-				// before the player is allowed to act again.
+				// The COM has finished its rules work AND the player's own turn
+				// start has run.  Both halves matter: the step that flips the
+				// owner over is the COM's end-of-turn, and the player's draw is
+				// the NEXT one.  Handing the camera back on the first of the two
+				// left the rules parked in TURN_START for the whole turn --
+				// nothing else steps them once the board is idle -- so a hand
+				// that had spent a card stayed one card short, and the turn
+				// after that two.  It is one extra frame in the COM chair.
 				g_zone = ZONE_HAND;
 				g_sel = 0;
 				Msx2_BoardSwitchView(BOARD_VIEW_PLAYER, FALSE);

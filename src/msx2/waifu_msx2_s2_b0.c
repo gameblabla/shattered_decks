@@ -18,12 +18,13 @@
 //   * it costs nothing at runtime: all three banks are mapped at once, so a
 //     call from _CODE into here is an ordinary CALL.
 //
-//  The two scenes are here because of the second property: _CODE has no room
-//  for them, and moving a whole scene costs nothing once its file is compiled
-//  into this bank.  The streamer used to be here too, for the first property;
-//  it is now the first module of _CODE instead, which lands it just past crt0
-//  and so equally far below the window -- and that gave segment 2 back the
-//  1.2 KB the duel screen needed.
+//  The duel screen is here because _CODE has no room for it, and it is here
+//  ALONE: the story screens used to share this bank and the two together came
+//  within a couple of hundred bytes of filling it, which is not a budget you
+//  can add a feature to.  They are in segment 4 now (waifu_msx2_s4_b0.c).  The
+//  split costs nothing because the two never run at the same time and never
+//  call each other -- the scene loop in msx2_main.c is the only thing that
+//  knows both -- so each simply gets its own sixteen kilobytes.
 //
 //  MSXgl compiles exactly one file per (segment, bank), so the modules that
 //  live here are #included rather than listed in ProjModules.  They are
@@ -31,4 +32,3 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msx2_board.c"
-#include "msx2_story.c"

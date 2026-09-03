@@ -46,3 +46,14 @@ void Msx2_StoryDuelDone(bool won);
 
 // The opponent the next (or last) duel is against.
 u8 Msx2_StoryDuelIndex(void);
+
+// The implementations, in the page-0 bank this screen is compiled into.  The
+// names above are the resident trampolines in msx2_bank.c and are what callers
+// use; these exist only while that bank is mapped.  See msx2_bank.h.
+void Msx2_StoryBegin_In(void);
+void Msx2_StoryBeginAutoplay_In(void);
+void Msx2_StoryBeginLoad_In(void);
+void Msx2_StoryPrepareDuelDeck_In(void);
+u8 Msx2_StoryStep_In(void);
+void Msx2_StoryDuelDone_In(bool won);
+u8 Msx2_StoryDuelIndex_In(void);

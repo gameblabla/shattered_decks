@@ -37,6 +37,7 @@ ProjModules = [
 	"msx2_video",
 	"msx2_sprite",
 	"msx2_bank",
+	"msx2_disk",
 	"msx2_input",
 	"msx2_battle_fx",
 	"msx2_raster",
@@ -50,7 +51,7 @@ ProjModules = [
 AddSources = [
 	"../game/deck.c",
 	"../game/ai.c",
-	"msx2_story_utils.c",
+	"msx2_story_load.c",
 	"msx2_libc.c",
 ];
 

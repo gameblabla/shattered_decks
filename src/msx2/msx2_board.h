@@ -45,3 +45,10 @@ void Msx2_BoardEnter(u8 stage);
 
 // One frame: input, at most one rules step, and a bounded repaint.
 u8 Msx2_BoardStep(void);
+
+// The implementations, in the page-0 bank this screen is compiled into.  The
+// names above are the resident trampolines in msx2_bank.c and are what callers
+// use; these exist only while that bank is mapped.  See msx2_bank.h.
+u8 Msx2_BoardStageForStory_In(u8 story_duel_index);
+void Msx2_BoardEnter_In(u8 stage);
+u8 Msx2_BoardStep_In(void);

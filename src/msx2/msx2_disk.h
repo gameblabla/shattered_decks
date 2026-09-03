@@ -24,11 +24,8 @@
 // Is there a disk system, and did a drive answer?  Cached after the first call.
 // Everything below returns FALSE when this does.
 bool Msx2_DiskPresent(void);
-bool Msx2_DiskPresent_In(void);
 
 // The continue code, to and from the disk.  `code` is the 16 characters plus
 // its terminator; Msx2_DiskLoad fills it only on success.
 bool Msx2_DiskSave(const c8* code);
 bool Msx2_DiskLoad(c8* code);
-bool Msx2_DiskSave_In(const c8* code);
-bool Msx2_DiskLoad_In(c8* code);

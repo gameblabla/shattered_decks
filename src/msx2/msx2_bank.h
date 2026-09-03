@@ -6,10 +6,12 @@
 //  sits at 0x0000-0x3FFF (16 KB, the duel and story screens).  Neither can
 //  grow, and the duel screen still has whole features to gain.
 //
-//  So page 0 became a WINDOW.  Segment 2 is what it holds almost all of the
-//  time; segment 3 holds code that only runs while a modal screen is up -- the
-//  card check screen, the fusion cut-in, the disk save.  Two things make this
-//  legal, and both are why the ISR moved to RAM page 3 (project_config.js):
+//  So page 0 became a WINDOW.  Segment 2 holds the duel screen, segment 4 the
+//  story screens -- the two biggest things in the port, which never run at the
+//  same time -- and segment 3 the modal screens that either of them can step
+//  out into: the card check, the fusion cut-in, the disk save.  Two things make
+//  this legal, and both are why the ISR moved to RAM page 3
+//  (project_config.js):
 //
 //   * the interrupt handler is no longer at 0x0038 in segment 2, so swapping
 //     the window no longer takes the handler with it;
@@ -19,16 +21,18 @@
 //     that was mapped the whole time.  Segment 2's caller only resumes after
 //     its own bank is back.
 //
-//  THE ONE RULE: code in segment 3 may call _CODE and itself, and nothing in
-//  segment 2 -- that bank does not exist while it runs.  The same holds the
-//  other way round, which is what the trampolines exist to enforce.
+//  THE ONE RULE: code in a page-0 bank may call _CODE and its own bank, and no
+//  other bank -- those do not exist while it runs.  The trampolines are what
+//  enforce it: they are the only way in, and each one leaves the window as it
+//  found it.
 // ─────────────────────────────────────────────────────────────────────────────
 #pragma once
 
 #include "msxgl.h"
 
-#define MSX2_BANK0_MAIN   2   // duel + story screens (waifu_msx2_s2_b0.c)
+#define MSX2_BANK0_DUEL   2   // the duel screen      (waifu_msx2_s2_b0.c)
 #define MSX2_BANK0_MODAL  3   // modal screens        (waifu_msx2_s3_b0.c)
+#define MSX2_BANK0_STORY  4   // the story screens    (waifu_msx2_s4_b0.c)
 
 // Map `segment` at 0x0000 and return whatever was there, for Msx2_Bank0Leave.
 u16  Msx2_Bank0Enter(u16 segment);

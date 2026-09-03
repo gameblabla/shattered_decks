@@ -50,11 +50,13 @@ WIDTH = 256
 HEIGHT = 212
 SEGMENT_BYTES = 16 * 1024
 
-# Segments 0 and 1 are the resident code the cartridge boots into, and segment 2
-# is the page-0 code bank (the ISR plus the scene code that must stay mapped
-# while the 0x8000 window holds picture data).  Asset data starts clear of all
-# of them; the packer asserts it never lands on top of code.
-FIRST_ASSET_SEGMENT = 4
+# Segments 0 and 1 are the resident code the cartridge boots into.  Segments 2
+# onwards are the page-0 code window (src/msx2/msx2_bank.h): 2 is the duel
+# screen, 3 the modal screens, 4 the story.  Eight are reserved rather than four
+# so that adding a code bank is not a re-bake of six megabytes of artwork; asset
+# data starts clear of all of them, and the packer asserts it never lands on top
+# of code.
+FIRST_ASSET_SEGMENT = 8
 
 # ── The duel board ───────────────────────────────────────────────────────────
 #

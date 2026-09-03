@@ -8,8 +8,9 @@
 //
 //  What belongs here: a screen that takes the whole display, runs, and gives it
 //  back.  What does not: anything the duel or story screens call while their
-//  own bank has to stay mapped.
+//  own bank has to stay mapped -- and nothing that needs the BIOS, which lives
+//  at 0x0000 in another slot and so is exactly what this bank displaces.  That
+//  is why the disk layer is in _CODE (msx2_disk.c) and not here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msx2_screens.c"
-#include "msx2_disk.c"

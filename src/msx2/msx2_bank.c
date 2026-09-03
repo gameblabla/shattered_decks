@@ -4,7 +4,8 @@
 
 #include "msx2_bank.h"
 #include "msx2_screens.h"
-#include "msx2_disk.h"
+#include "msx2_story.h"
+#include "msx2_board.h"
 
 // NEO-16's page-0 bank register.  Writing a 16-bit segment number to it maps
 // that segment at 0x0000; the address itself is ROM, so the write only ever
@@ -13,7 +14,7 @@
 
 // The mapper is write-only, so the current segment is tracked here.  It starts
 // at segment 2 because that is what crt0 maps at boot.
-static u16 g_bank0 = MSX2_BANK0_MAIN;
+static u16 g_bank0 = MSX2_BANK0_DUEL;
 
 u16 Msx2_Bank0Enter(u16 segment)
 {
@@ -36,8 +37,11 @@ void Msx2_Bank0Leave(u16 segment)
 }
 
 // ── The trampolines ─────────────────────────────────────────────────────────
-// One per entry point into segment 3.  They are the public names: nothing
-// outside this file knows the window moved.
+// One per entry point into a banked screen.  They are the public names:
+// nothing outside this file knows the window moved.  Each restores whatever
+// bank it displaced rather than assuming one, so a modal screen opened from
+// the story lands back in the story and one opened from the duel lands back in
+// the duel.
 
 void Msx2_CardCheckCompose(u8 card, i16 atk, i16 def)
 {
@@ -62,29 +66,84 @@ bool Msx2_FusionStep(void)
 	return more;
 }
 
-bool Msx2_DiskPresent(void)
+// ── The duel screen ─────────────────────────────────────────────────────────
+
+u8 Msx2_BoardStageForStory(u8 story_duel_index)
 {
-	bool present;
-	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
-	present = Msx2_DiskPresent_In();
+	u8 stage;
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_DUEL);
+	stage = Msx2_BoardStageForStory_In(story_duel_index);
 	Msx2_Bank0Leave(back);
-	return present;
+	return stage;
 }
 
-bool Msx2_DiskSave(const c8* code)
+void Msx2_BoardEnter(u8 stage)
 {
-	bool ok;
-	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
-	ok = Msx2_DiskSave_In(code);
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_DUEL);
+	Msx2_BoardEnter_In(stage);
 	Msx2_Bank0Leave(back);
-	return ok;
 }
 
-bool Msx2_DiskLoad(c8* code)
+u8 Msx2_BoardStep(void)
 {
-	bool ok;
-	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
-	ok = Msx2_DiskLoad_In(code);
+	u8 what;
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_DUEL);
+	what = Msx2_BoardStep_In();
 	Msx2_Bank0Leave(back);
-	return ok;
+	return what;
+}
+
+// ── The story screens ───────────────────────────────────────────────────────
+
+void Msx2_StoryBegin(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_STORY);
+	Msx2_StoryBegin_In();
+	Msx2_Bank0Leave(back);
+}
+
+void Msx2_StoryBeginAutoplay(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_STORY);
+	Msx2_StoryBeginAutoplay_In();
+	Msx2_Bank0Leave(back);
+}
+
+void Msx2_StoryBeginLoad(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_STORY);
+	Msx2_StoryBeginLoad_In();
+	Msx2_Bank0Leave(back);
+}
+
+void Msx2_StoryPrepareDuelDeck(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_STORY);
+	Msx2_StoryPrepareDuelDeck_In();
+	Msx2_Bank0Leave(back);
+}
+
+u8 Msx2_StoryDuelIndex(void)
+{
+	u8 index;
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_STORY);
+	index = Msx2_StoryDuelIndex_In();
+	Msx2_Bank0Leave(back);
+	return index;
+}
+
+void Msx2_StoryDuelDone(bool won)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_STORY);
+	Msx2_StoryDuelDone_In(won);
+	Msx2_Bank0Leave(back);
+}
+
+u8 Msx2_StoryStep(void)
+{
+	u8 what;
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_STORY);
+	what = Msx2_StoryStep_In();
+	Msx2_Bank0Leave(back);
+	return what;
 }

@@ -28,9 +28,11 @@ SEGMENT_BYTES = 16 * 1024
 WINDOW = 0x8000
 CODE_END = 0xC000
 SEG2_END = 0x4000
-# Segment 3 is the switchable page-0 code bank (src/msx2/waifu_msx2_s3_b0.c);
-# it is mapped at the same address as segment 2, so it has the same ceiling.
+# Segments 3 and 4 are the other page-0 code banks (waifu_msx2_s3_b0.c, the
+# modal screens, and waifu_msx2_s4_b0.c, the story).  All three are mapped at
+# the same address as segment 2, so they share its ceiling.
 SEG3_END = 0x4000
+SEG4_END = 0x4000
 
 # Symbols that must be resident while the streaming window is swapped out.
 # They live in the page-0 code bank (src/msx2/waifu_msx2_s2_b0.c), which the
@@ -116,9 +118,9 @@ def check_code_banks(mapfile):
     """Return linker areas whose low-16-bit end crosses their mapped bank."""
     if not os.path.exists(mapfile):
         return []
-    limits = {"_CODE": CODE_END, "_SEG2": SEG2_END, "_SEG3": SEG3_END}
+    limits = {"_CODE": CODE_END, "_SEG2": SEG2_END, "_SEG3": SEG3_END, "_SEG4": SEG4_END}
     found = {}
-    pattern = re.compile(r"^\s*(_CODE|_SEG2|_SEG3)\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=")
+    pattern = re.compile(r"^\s*(_CODE|_SEG2|_SEG3|_SEG4)\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=")
     for line in open(mapfile):
         match = pattern.match(line)
         if match:

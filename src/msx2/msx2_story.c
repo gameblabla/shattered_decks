@@ -8,9 +8,11 @@
 #include "msx2_stream.h"
 #include "msx2_audio.h"
 #include "msx2_duel.h"
+#include "msx2_cards.h"
 #include "msx2_probe.h"
 #include "msx2_scenes.h"
 #include "msx2_disk.h"
+#include "msx2_story_load.h"
 
 // ── Phases ───────────────────────────────────────────────────────────────────
 #define PH_NARRATE   0   // the opening or the ending: one voice, no portrait
@@ -21,6 +23,7 @@
 #define PH_CODE_OUT  5   // continue code shown at the sanctum
 #define PH_DECK      6   // compact deck editor
 #define PH_REWARD    7   // a story-win card reveal
+#define PH_LOAD_PICK 8   // LOAD STORY: is the save on a disk or on paper?
 
 // Which run of records the narration is reading, so the end of it knows where
 // to go: the opening leads to the map, the ending leads back to the title.
@@ -119,6 +122,9 @@ static u8  g_code_error;
 // What the disk last did, so the screen can say it: 0 nothing, 1 saved,
 // 2 failed, 3 loaded, 4 nothing to load.
 static u8  g_disk_msg;
+// The flag the code screen raises when the player backs out of an empty code:
+// the phase steppers return void, and this one has to leave the whole scene.
+static u8  g_want_quit;
 static u8  g_editor_target;
 static u8  g_editor_storage_cursor;
 static u8  g_editor_storage_mode;
@@ -750,6 +756,7 @@ static void Msx2_StoryEnterCodeInput(void)
 	g_code_cursor = 0;
 	g_code_error = 0;
 	g_disk_msg = 0;
+	g_want_quit = 0;
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
 	Msx2_StreamScene(MSX2_SCENE_TITLE_SEGMENT, MSX2_PAGE_1);
 	Msx2_StoryCodePaint();
@@ -1231,9 +1238,10 @@ static void Msx2_StoryCodeInputStep(void)
 		}
 		else
 		{
-			/* The title is still underneath; redraw the map in full on the hidden
-			   page before handing control back to the story scene. */
-			Msx2_StoryEnterMap();
+			// Backing out of an empty code is backing out of LOAD STORY, and
+			// LOAD STORY was reached from the title.  It used to fall into the
+			// map instead, which started a run the player had not loaded.
+			g_want_quit = TRUE;
 			return;
 		}
 	}
@@ -1302,7 +1310,7 @@ static void Msx2_StoryEnterReward(void)
 //  The scene
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Msx2_StoryBegin(void)
+void Msx2_StoryBegin_In(void)
 {
 	/* A new run starts with the same name-entry affordance as the other
 	   targets.  Collection/deck creation happens only after the name is
@@ -1314,7 +1322,7 @@ void Msx2_StoryBegin(void)
 	Msx2_StoryEnterName();
 }
 
-void Msx2_StoryBeginAutoplay(void)
+void Msx2_StoryBeginAutoplay_In(void)
 {
 #ifdef MSX2_DEBUG_STORY_AUTOPLAY
 	u8 i;
@@ -1343,24 +1351,28 @@ void Msx2_StoryBeginAutoplay(void)
 #endif
 }
 
-void Msx2_StoryBeginLoad(void)
+void Msx2_StoryBeginLoad_In(void)
 {
-	Msx2_StoryEnterCodeInput();
+	g_phase = PH_LOAD_PICK;
+	g_want_quit = 0;
+	g_map_dirty = 0;
+	Msx2_MusicPlay(MSX2_MUSIC_OPENING);
+	Msx2_StoryLoadPickEnter(g_code);
 }
 
-void Msx2_StoryPrepareDuelDeck(void)
+void Msx2_StoryPrepareDuelDeck_In(void)
 {
 	if(!g_story_deck_ready)
 		Msx2_StoryBuildStarterDeck();
 	Msx2_DuelSetPlayerDeck(g_story_deck, STORY_DECK_SIZE);
 }
 
-u8 Msx2_StoryDuelIndex(void)
+u8 Msx2_StoryDuelIndex_In(void)
 {
 	return g_duel_index;
 }
 
-void Msx2_StoryDuelDone(bool won)
+void Msx2_StoryDuelDone_In(bool won)
 {
 	if(won && (g_duel_index == g_progress))
 	{
@@ -1393,7 +1405,7 @@ void Msx2_StoryDuelDone(bool won)
 	Msx2_StoryEnterMap();
 }
 
-u8 Msx2_StoryStep(void)
+u8 Msx2_StoryStep_In(void)
 {
 #ifdef MSX2_DEBUG_STORY_AUTOPLAY
 	if(g_phase == PH_MAP)
@@ -1466,10 +1478,30 @@ u8 Msx2_StoryStep(void)
 		}
 		return MSX2_STORY_BUSY;
 	}
+	if(g_phase == PH_LOAD_PICK)
+	{
+		u8 what = Msx2_StoryLoadPickStep();
+		if(what == MSX2_LOADPICK_QUIT)
+			return MSX2_STORY_QUIT;
+		if(what == MSX2_LOADPICK_PASSWORD)
+			Msx2_StoryEnterCodeInput();
+		else if(what == MSX2_LOADPICK_LOADED)
+		{
+			// The disk carries the same sixteen characters the player would
+			// have typed, so it goes through the same parser: a sector holding
+			// something else fails exactly where a mistyped code fails.
+			g_code_len = STORY_CODE_LEN;
+			if(Msx2_StoryParseCode())
+				Msx2_StoryEnterMap();
+			else
+				Msx2_StoryLoadPickRefused();
+		}
+		return MSX2_STORY_BUSY;
+	}
 	if(g_phase == PH_CODE_IN)
 	{
 		Msx2_StoryCodeInputStep();
-		return MSX2_STORY_BUSY;
+		return g_want_quit ? MSX2_STORY_QUIT : MSX2_STORY_BUSY;
 	}
 	if(g_phase == PH_CODE_OUT)
 	{
