@@ -31,3 +31,7 @@ u8   Msx2_InputPressed(void);   // buttons that went down this frame
 // continue-code entry accept this as well as the on-screen grid, so a machine
 // with a keyboard types and a machine with only a joystick still plays.
 c8   Msx2_InputTyped(void);
+
+// F1, this frame.  It is the disk key, and it is deliberately not a character:
+// the screens that offer a disk are the ones the player types into.
+bool Msx2_InputDiskKey(void);

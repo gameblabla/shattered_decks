@@ -60,8 +60,8 @@
 #define BIOS_USE_MAINROM			TRUE	// Allow use of Main-ROM routines
 #define BIOS_USE_VDP				TRUE	// Give access to Main-ROM routines related to VDP
 #define BIOS_USE_PSG				TRUE	// Give access to Main-ROM routines related to PSG
-#define BIOS_USE_SUBROM				TRUE	// Allow use of Sub-ROM routines (MSX2/2+/turbo R)
-#define BIOS_USE_DISKROM			TRUE	// Allow use of Disk-ROM routines
+#define BIOS_USE_SUBROM				FALSE	// Allow use of Sub-ROM routines (MSX2/2+/turbo R)
+#define BIOS_USE_DISKROM			FALSE	// Allow use of Disk-ROM routines
 
 //-----------------------------------------------------------------------------
 // VDP MODULE
@@ -94,12 +94,12 @@
 #define VDP_USE_MODE_G6				FALSE	// MSX2		Screen 7
 #define VDP_USE_MODE_G7				TRUE	// MSX2/2+	Screen 8, 10, 11 & 12
 
-#define VDP_USE_VRAM16K				TRUE	// Use 16K VRAM access functions on MSX2
+#define VDP_USE_VRAM16K				FALSE	// Use 16K VRAM access functions on MSX2
 #define VDP_USE_SPRITE				TRUE	// Use sprite handling functions
 #define VDP_USE_COMMAND				TRUE	// Use VDP commands wrapper functions
 #define VDP_USE_CUSTOM_CMD			FALSE	// Use custom VDP commands through data buffer
 #define VDP_AUTO_INIT				TRUE	// Call VDP_Initialize() at the first call to VDP_SetMode()
-#define VDP_USE_UNDOCUMENTED		TRUE	// Allow the use of undocumented screen mode (WIP)
+#define VDP_USE_UNDOCUMENTED		FALSE	// Allow the use of undocumented screen mode (WIP)
 #define VDP_USE_VALIDATOR			TRUE	// Handle some option specific for each VDP mode (highly recommended)
 #define VDP_USE_DEFAULT_PALETTE		FALSE	// Add data for default MSX2 palette
 #define VDP_USE_MSX1_PALETTE		FALSE	// Add data for default MSX1 palette

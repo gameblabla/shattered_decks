@@ -85,29 +85,17 @@ static void Msx2_TitleBackdrop(void)
 	Msx2_StreamScene(MSX2_SCENE_TITLE_SEGMENT, Msx2_VideoGetDrawPage());
 }
 
-// ── The logo ─────────────────────────────────────────────────────────────────
-
-static void Msx2_TitleLogo(void)
-{
-	// No band behind the letters any more: the artwork is the background, so
-	// the logo is drawn transparently with a hard shadow, which is what keeps
-	// it readable over both the bright sky and the dark rock.
-	Msx2_TextBigShadow(TITLE_LOGO_Y1, Msx2_UiText(MSX2_S_SHATTERED), MSX2_GOLD, MSX2_BLACK);
-	Msx2_TextBigShadow(TITLE_LOGO_Y2, Msx2_UiText(MSX2_S_DECKS), MSX2_WHITE, MSX2_BLACK);
-}
-
 // ── The attract prompt ───────────────────────────────────────────────────────
 
-#define PROMPT_TEXT   "PRESS SPACE TO START"
-#define COPY_TEXT     "(C) 2026 GAMEBLABLA"
-
 // Bake the two states of the prompt strip into offscreen VRAM.  Called once,
-// on the composed page, before it is shown.
+// on the composed page, before it is shown.  Neither state is drawn: the clean
+// one is the artwork as it arrived, and the lit one is twelve rows of the same
+// artwork with the words already painted into them, baked by the scene
+// generator and streamed straight out of the cartridge.
 static void Msx2_TitleBakePrompt(void)
 {
 	Msx2_CopyRect(0, TITLE_STRIP_Y, 0, TITLE_STASH_CLEAN, MSX2_SCREEN_W, TITLE_STRIP_H);
-	Msx2_TextOutlineCenter(MENU_PROMPT_Y, PROMPT_TEXT, MSX2_WHITE, MSX2_BLACK);
-	Msx2_CopyRect(0, TITLE_STRIP_Y, 0, TITLE_STASH_TEXT, MSX2_SCREEN_W, TITLE_STRIP_H);
+	Msx2_StreamBand(MSX2_TITLE_PROMPT_SEGMENT, TITLE_STASH_TEXT, TITLE_STRIP_H);
 }
 
 static void Msx2_TitlePrompt(bool on)
@@ -193,12 +181,11 @@ static void Msx2_TitlePaint(void)
 // Build the whole screen on the draw page, from the streamed backdrop up.
 static void Msx2_TitleCompose(void)
 {
+	// The logo and the copyright line are painted into the picture itself
+	// (tools/msx2/gen_msx_scenes.py), so the backdrop arrives finished.
 	Msx2_TitleBackdrop();
-	Msx2_TitleLogo();
-	Msx2_TextOutlineCenter(TITLE_COPY_Y, COPY_TEXT, MSX2_WHITE, MSX2_BLACK);
-	Msx2_TitleBakePrompt();      // leaves the prompt lit, and both stashes baked
-	if(!g_blink_on)
-		Msx2_TitlePrompt(FALSE);
+	Msx2_TitleBakePrompt();
+	Msx2_TitlePrompt(g_blink_on);
 	if(g_phase == TITLE_MENU)
 		Msx2_TitleMenuPanel();
 }

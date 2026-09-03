@@ -127,18 +127,5 @@ void Msx2_NumAt(u8 x, u8 y, i16 value);
 // Width in pixels the current font would take for `text` -- used for centring.
 u8   Msx2_TextWidth(const c8* text);
 
-// Double-size text.  The bitmap printer has no scaler -- its "character size"
-// is only an advance width -- so a 2x glyph is drawn here as runs of fills,
-// which also makes it transparent: whatever is already on the page shows
-// through, which is what lets the logo sit on streamed artwork.  A hard offset
-// shadow keeps it readable over both bright sky and dark rock.  Costs a couple
-// of dozen commands per character, so this is composition, never per frame.
-void Msx2_TextBigShadow(u8 y, const c8* text, u8 fg, u8 shadow);
-u8   Msx2_TextBigWidth(const c8* text);
-
-// Normal-size text with a 1-pixel outline all round, drawn as runs of fills so
-// the artwork shows through everywhere the glyph does not.  This is what text
-// over a streamed picture uses: an outline reads on both a bright sky and a
-// dark rock, where a plain colour reads on neither.
-void Msx2_TextOutline(u8 x, u8 y, const c8* text, u8 fg, u8 outline);
-void Msx2_TextOutlineCenter(u8 y, const c8* text, u8 fg, u8 outline);
+// The title's logo, prompt and copyright are painted into the picture by the
+// scene generator, not drawn at runtime -- see msx2_video.c and msx2_title.c.

@@ -10,6 +10,7 @@
 #include "msx2_duel.h"
 #include "msx2_probe.h"
 #include "msx2_scenes.h"
+#include "msx2_disk.h"
 
 // ── Phases ───────────────────────────────────────────────────────────────────
 #define PH_NARRATE   0   // the opening or the ending: one voice, no portrait
@@ -115,6 +116,9 @@ static c8  g_code[STORY_CODE_LEN + 1];
 static u8  g_code_len;
 static u8  g_code_cursor;
 static u8  g_code_error;
+// What the disk last did, so the screen can say it: 0 nothing, 1 saved,
+// 2 failed, 3 loaded, 4 nothing to load.
+static u8  g_disk_msg;
 static u8  g_editor_target;
 static u8  g_editor_storage_cursor;
 static u8  g_editor_storage_mode;
@@ -647,6 +651,28 @@ static bool Msx2_StoryAcceptName(void)
 #define CODE_GRID_Y   44
 #define CODE_ROW_STEP 18
 
+// THE FLOPPY, WHEN THERE IS ONE.
+// The cartridge has no battery, so the save is a code the player copies down.
+// A machine with a drive can copy it down instead: one sector, written through
+// the disk ROM (msx2_disk.c).  The offer only appears when a drive answered,
+// and it is on F1 rather than on a letter because both of these screens are
+// screens the player types into.
+static void Msx2_StoryDiskLine(u8 y)
+{
+	u8 id;
+
+	if(!Msx2_DiskPresent())
+		return;
+	if(g_disk_msg == 1)      id = MSX2_S_SAVED_TO_DISK;
+	else if(g_disk_msg == 2) id = MSX2_S_DISK_ERROR_USE_A_BLANK_DISK;
+	else if(g_disk_msg == 3) id = MSX2_S_NO_SAVE_ON_THIS_DISK;
+	else if(g_phase == PH_CODE_OUT) id = MSX2_S_F1_SAVES_TO_DISK;
+	else                     id = MSX2_S_F1_LOADS_FROM_DISK;
+	Msx2_TextColor((g_disk_msg == 2) || (g_disk_msg == 3) ? MSX2_RED : MSX2_TEAL,
+	               MSX2_PANEL_COLOR);
+	Msx2_TextCenter(y, Msx2_UiText(id));
+}
+
 static void Msx2_StoryCodeCells(void)
 {
 	c8 one[2];
@@ -693,6 +719,7 @@ static void Msx2_StoryCodePaint(void)
 		Msx2_TextCenter(139, Msx2_UiText(MSX2_S_ENTER_IT_ON_THE_TITLE_SCREEN));
 		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
 		Msx2_TextCenter(153, Msx2_UiText(MSX2_S_SPACE_ESC_RETURN_TO_ROAD));
+		Msx2_StoryDiskLine(167);
 		return;
 	}
 
@@ -712,6 +739,7 @@ static void Msx2_StoryCodePaint(void)
 	                                  : Msx2_UiText(MSX2_S_TYPE_IT_OR_PICK_AND_PRESS_SP));
 	Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(155, Msx2_UiText(MSX2_S_ESC_DELETE_EMPTY_ESC_BACK));
+	Msx2_StoryDiskLine(167);
 }
 
 static void Msx2_StoryEnterCodeInput(void)
@@ -721,6 +749,7 @@ static void Msx2_StoryEnterCodeInput(void)
 	g_code[0] = 0;
 	g_code_cursor = 0;
 	g_code_error = 0;
+	g_disk_msg = 0;
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
 	Msx2_StreamScene(MSX2_SCENE_TITLE_SEGMENT, MSX2_PAGE_1);
 	Msx2_StoryCodePaint();
@@ -732,6 +761,7 @@ static void Msx2_StoryEnterCodeInput(void)
 static void Msx2_StoryEnterCodeOutput(void)
 {
 	g_phase = PH_CODE_OUT;
+	g_disk_msg = 0;
 	Msx2_StoryBuildCode(g_code, g_progress, g_player_name, g_story_deck);
 	Msx2_StoryUiDirty();
 }
@@ -1137,6 +1167,23 @@ static void Msx2_StoryCodeInputStep(void)
 			pressed &= (u8)~MSX2_BTN_A;
 		}
 	}
+	if(Msx2_InputDiskKey())
+	{
+		if(Msx2_DiskLoad(g_code) && (g_code[STORY_CODE_LEN - 1] != 0))
+		{
+			g_code_len = STORY_CODE_LEN;
+			g_disk_msg = 0;
+			if(Msx2_StoryParseCode())
+			{
+				Msx2_StoryEnterMap();
+				return;
+			}
+			g_code_error = TRUE;
+		}
+		else
+			g_disk_msg = 3;
+		changed = TRUE;
+	}
 	if(pressed & MSX2_BTN_ENTER)
 	{
 		// RETURN submits a full code; on a short one it does nothing, which is
@@ -1203,6 +1250,11 @@ static void Msx2_StoryCodeInputStep(void)
 static void Msx2_StoryCodeOutputStep(void)
 {
 	u8 pressed = Msx2_InputPressed();
+	if(Msx2_InputDiskKey())
+	{
+		g_disk_msg = Msx2_DiskSave(g_code) ? 1 : 2;
+		Msx2_StoryUiDirty();
+	}
 	if(pressed & (MSX2_BTN_A | MSX2_BTN_B))
 	{
 		Msx2_StoryEnterMap();

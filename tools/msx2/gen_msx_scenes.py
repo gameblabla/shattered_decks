@@ -579,6 +579,102 @@ def map_scene(stage):
     return img
 
 
+
+# ── The title's words, painted into the picture ──────────────────────────────
+#
+# The logo, the copyright and the blinking prompt never change, and drawing
+# them on the Z80 cost 780 bytes of a code budget with nothing left in it: two
+# glyph renderers, one for double-size text with a shadow and one for text with
+# a one-pixel outline, for three lines.  They are stamped into the quantised
+# picture here instead, at the same sizes, in exact GRB332 so the ditherer
+# never sees them.  The prompt gets its own twelve-row strip so the title can
+# still blink it by copying between two offscreen stashes.
+
+TITLE_LOGO_Y1 = 20
+TITLE_LOGO_Y2 = 40
+TITLE_COPY_Y = 203
+TITLE_STRIP_Y = 186
+TITLE_STRIP_H = 12
+TITLE_PROMPT_Y = 188
+TITLE_PROMPT = "PRESS SPACE TO START"
+
+GRB_BLACK = 0x00
+GRB_WHITE = (7 << 5) | (7 << 2) | 3
+GRB_GOLD = (5 << 5) | (7 << 2)
+
+
+def glyph_rows(ch):
+    """The eight row masks of one character, leftmost pixel in bit 7."""
+    data = font_glyphs()
+    idx = (ord(ch) - FONT_FIRST) * 8
+    if idx < 0 or idx + 8 > len(data):
+        idx = 0
+    return data[idx:idx + 8]
+
+
+def stamp(buf, width, x, y, mask_rows, color, scale):
+    for ry, bits in enumerate(mask_rows):
+        for rx in range(6):
+            if not (bits & (0x80 >> rx)):
+                continue
+            for dy in range(scale):
+                for dx in range(scale):
+                    px = x + rx * scale + dx
+                    py = y + ry * scale + dy
+                    if 0 <= px < width and 0 <= py * width + px < len(buf):
+                        buf[py * width + px] = color
+
+
+def stamp_big(buf, width, y, text, fg, shadow):
+    """Double size with a hard offset shadow, centred -- the logo."""
+    w = len(text) * 12
+    x0 = (width - w) // 2
+    for pas in (0, 1):
+        for i, ch in enumerate(text):
+            rows = glyph_rows(ch)
+            if pas == 0:
+                stamp(buf, width, x0 + i * 12 + 2, y + 2, rows, shadow, 2)
+            else:
+                stamp(buf, width, x0 + i * 12, y, rows, fg, 2)
+
+
+def stamp_outline(buf, width, y, text, fg, outline, x0=None):
+    """Normal size with a one-pixel outline all round, centred by default."""
+    if x0 is None:
+        x0 = (width - len(text) * 6) // 2
+    for pas in (0, 1):
+        for i, ch in enumerate(text):
+            rows = list(glyph_rows(ch))
+            if pas == 0:
+                # An eight-connected dilation of the glyph, minus the glyph.
+                padded = [0] + [r >> 1 for r in rows] + [0]
+                grown = []
+                for j in range(1, len(padded) - 1):
+                    band = padded[j - 1] | padded[j] | padded[j + 1]
+                    grown.append((band | (band << 1) | (band >> 1)) & 0xFF)
+                for j, bits in enumerate(grown):
+                    face = padded[j + 1]
+                    stamp(buf, width, x0 + i * 6 - 1, y - 1 + j,
+                          [bits & ~face], outline, 1)
+            else:
+                stamp(buf, width, x0 + i * 6, y, rows, fg, 1)
+
+
+def title_words(data):
+    """Stamp the title picture, and cut the prompt strip out of it."""
+    buf = bytearray(data)
+    stamp_big(buf, WIDTH, TITLE_LOGO_Y1, "SHATTERED", GRB_GOLD, GRB_BLACK)
+    stamp_big(buf, WIDTH, TITLE_LOGO_Y2, "DECKS", GRB_WHITE, GRB_BLACK)
+    stamp_outline(buf, WIDTH, TITLE_COPY_Y, "(C) 2026 GAMEBLABLA",
+                  GRB_WHITE, GRB_BLACK)
+
+    strip = bytearray(buf[TITLE_STRIP_Y * WIDTH:
+                          (TITLE_STRIP_Y + TITLE_STRIP_H) * WIDTH])
+    stamp_outline(strip, WIDTH, TITLE_PROMPT_Y - TITLE_STRIP_Y, TITLE_PROMPT,
+                  GRB_WHITE, GRB_BLACK)
+    return bytes(buf), bytes(strip)
+
+
 SCENES = [
     ("TITLE", lambda: Image.open(
         os.path.join(ROOT, "assets/source/title/title256_msx2.png"))),
@@ -766,8 +862,11 @@ def main():
 
     segment = FIRST_ASSET_SEGMENT
     entries = []
+    prompt_strip = None
     for name, build in SCENES:
         data = grb.quantize(build(), (WIDTH, HEIGHT))
+        if name == "TITLE":
+            data, prompt_strip = title_words(data)
         binpath = os.path.join(ASSET_DIR, name.lower() + ".bin")
         with open(binpath, "wb") as f:
             f.write(data)
@@ -798,6 +897,12 @@ def main():
         return first
 
     extra = []
+
+    # The title's blinking prompt, as the twelve rows of picture it sits on
+    # with the words already in them.  The title copies the clean rows into one
+    # offscreen stash and streams this into the other; a blink is then a single
+    # command-engine move between them, exactly as it was.
+    title_prompt_segment = place("title_prompt", prompt_strip)
 
     card_blob, card_mirror, card_count = build_card_blob(cards, quiet)
     card_segment = place("cards", card_blob)
@@ -930,6 +1035,9 @@ def main():
         f.write("#define MSX2_INTRO_COUNT        %d\n" % intro_n)
         f.write("#define MSX2_ENDING_OFFSET      %d\n" % text_off["ENDING"])
         f.write("#define MSX2_ENDING_COUNT       %d\n" % ending_n)
+        f.write("#define MSX2_TITLE_PROMPT_SEGMENT %d\n" % title_prompt_segment)
+        f.write("#define MSX2_TITLE_STRIP_Y      %d\n" % TITLE_STRIP_Y)
+        f.write("#define MSX2_TITLE_STRIP_H      %d\n" % TITLE_STRIP_H)
         f.write("#define MSX2_FONT_OFFSET        %d\n" % text_off["FONT"])
         f.write("#define MSX2_FONT_FIRST         %d\n" % FONT_FIRST)
         f.write("#define MSX2_FONT_BYTES         %d\n"

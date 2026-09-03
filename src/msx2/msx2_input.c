@@ -18,6 +18,13 @@ static c8 g_typed;
 // Rows 0..5 of the matrix carry the digits and the whole alphabet.  The
 // previous scan is kept so a held key types once, exactly like the latch above.
 static u8 g_key_held[6];
+// F1, kept apart from the letter scan: it is the only key the game reads that
+// must not also be a character, because the screens that offer the disk are
+// the two the player types a name and a continue code into.
+#define KROW_FN      6
+#define KBIT_F1      5
+static u8 g_f1_held;
+static u8 g_f1_press;
 
 void Msx2_InputInit(void)
 {
@@ -25,6 +32,8 @@ void Msx2_InputInit(void)
 	g_held = 0;
 	g_pressed = 0;
 	g_typed = 0;
+	g_f1_held = 0;
+	g_f1_press = 0;
 	for(i = 0; i < 6; ++i)
 		g_key_held[i] = 0;
 }
@@ -101,8 +110,15 @@ void Msx2_InputUpdate(void)
 	g_held = now;
 
 	Msx2_InputScanTyped();
+
+	{
+		u8 f1 = (u8)((~Keyboard_Read(KROW_FN)) & (u8)(1 << KBIT_F1));
+		g_f1_press = (u8)(f1 && !g_f1_held);
+		g_f1_held = f1;
+	}
 }
 
 u8 Msx2_InputHeld(void)    { return g_held; }
 u8 Msx2_InputPressed(void) { return g_pressed; }
 c8 Msx2_InputTyped(void)   { return g_typed; }
+bool Msx2_InputDiskKey(void) { return g_f1_press ? TRUE : FALSE; }
