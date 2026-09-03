@@ -98,6 +98,7 @@ static u8  g_fuse_mat_n;
 // Frames left on the "those two do not fuse" line.  A refused chain used to be
 // completely silent, which reads as the button not working.
 static u8  g_refuse;
+static u8  g_refuse_text;   // which refusal the prompt line is showing
 
 // What the board should look like, and what each page is actually showing.
 static u8  g_want[SLOT_COUNT];
@@ -483,7 +484,7 @@ static void Msx2_BoardHud(void)
 static const c8* Msx2_BoardPrompt(void)
 {
 	if(g_refuse != 0)
-		return Msx2_UiText(MSX2_S_THOSE_CARDS_DO_NOT_FUSE);
+		return Msx2_UiText(g_refuse_text);
 	switch(g_mode)
 	{
 	case M_PLACE:  return g_place_def ? Msx2_UiText(MSX2_S_PLACE_IN_DEFENCE_UP_DOWN_ATK)
@@ -791,6 +792,11 @@ static void Msx2_BoardRestoreFromCutin(void)
 	Msx2_VideoDrawPage(page);
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, g_view), page);
 	Msx2_VideoDrawPage(page);
+	// The stream put the resting picture back, which does not carry the five
+	// gold hand frames -- they are drawn, not baked -- so a slot the cut-in
+	// emptied would come back as a hole in the strip.
+	if(!g_hand_hidden && (g_view != MSX2_VIEW_OVER))
+		Msx2_BoardHandFrames();
 	for(i = 0; i < SLOT_COUNT; ++i)
 		if(g_want[i] != MSX2_CARD_NONE)
 			Msx2_BoardBlitSlot(i);
@@ -1087,7 +1093,25 @@ static void Msx2_BoardStartFx(void)
 			g_suppress_slot = MSX2_SLOT_NONE;
 		}
 		else
-			g_fx_kind = FX_SUMMON;
+		{
+			// THE PLAYER'S OWN SUMMON IS NOT ANIMATED.
+			// The flight is there to say "this card is going into that slot",
+			// which is the one thing the player has just chosen and already
+			// knows.  It cost the hand coming off the screen, eight frames of
+			// an opaque 40x48 card crossing the board, the bend that puts the
+			// arena back and a six-frame hold: a second and a half of watching
+			// per summon.  The card simply appears on the board now, with the
+			// cursor left on it in the overhead view -- which is the picture
+			// that carries the information.  The OPPONENT's placement keeps
+			// its flight, because there the player did not choose it.
+			g_suppress_slot = MSX2_SLOT_NONE;
+			g_fx_kind = FX_NONE;
+			g_zone = ZONE_FIELD;
+			g_sel = g_duel.last_action_field_slot;
+			Msx2_ClearActionEvent();
+			Msx2_BoardTouch();
+			return;
+		}
 	}
 	else if(action == MSX2_ACTION_ATTACK)
 	{
@@ -1190,13 +1214,12 @@ static bool Msx2_BoardRunFx(void)
 		   ((g_fx_frames != 0) ||
 		    !(Msx2_InputPressed() & (MSX2_BTN_A | MSX2_BTN_B))))
 			return TRUE;
-		// A support that needs no target changes the BOARD, not the hand, so
-		// the screen it comes back to is the overhead one.  Walking the cursor
-		// out of the hand row is what asks for that view; doing it here rather
-		// than cutting directly keeps the one place that owns the camera.
+		// The cut-in has already said what the card did, in a full-screen
+		// picture with the text under it.  Sending the camera overhead
+		// afterwards is a second of blanked streaming to show a board the
+		// player was not asking about -- so the screen it comes back to is the
+		// hand it was played from, which is where the cursor still is.
 		Msx2_BoardRestoreFromCutin();
-		g_zone = ZONE_FIELD;
-		g_sel = 0;
 		PANEL_ALL();
 		return TRUE;
 	}
@@ -1691,6 +1714,7 @@ void Msx2_BoardEnter_In(u8 stage)
 	g_place_def = FALSE;
 	g_queue_n = 0;
 	g_refuse = 0;
+	g_refuse_text = MSX2_S_THOSE_CARDS_DO_NOT_FUSE;
 	g_fx_kind = FX_NONE;
 	g_fx_followup = FX_NONE;
 	g_fx_frames = 0;
@@ -1788,6 +1812,49 @@ static void Msx2_BoardCutTo(u8 view)
 	Msx2_BoardSnapshot();
 }
 
+// THE HAND GOES WITH THE TURN, NOT WITH THE CAMERA.
+// A chair change plays a baked path that restreams the BOARD BAND only, and
+// the hand is dealt after it arrives -- so for the whole of the swing the strip
+// still held five cards belonging to the player whose turn had just ended: the
+// player's own hand on the way out, the opponent's five covers on the way back.
+// Blacking the band here is one fill a page, and it leaves the empty gold
+// frames the deal is about to fly cards into.
+static void Msx2_BoardClearHandBand(void)
+{
+	u8 draw = Msx2_VideoGetDrawPage();
+	u8 i;
+
+	// The incoming chair always has a strip.  Walking up into the board before
+	// ending the turn used to leave this set across the handoff, and the
+	// snapshot then reported every hand position empty -- so the deal drew five
+	// cards the retained painter immediately wiped off again.
+	g_hand_hidden = FALSE;
+	g_deal_reveal = 0;
+	g_deal_slot = 0;
+	g_deal_step = 0;
+	g_deal_px[0] = g_deal_px[1] = MSX2_SLOT_NONE;
+	Msx2_BoardSnapshot();
+
+	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
+	{
+		Msx2_VideoDrawPage(i);
+		Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
+		          MSX2_BLACK);
+		Msx2_BoardHandFrames();
+	}
+	Msx2_VideoDrawPage(draw);
+
+	// Both pages now show exactly what the snapshot asks for -- nothing -- so
+	// the retained painter has no repair to make and cannot put the outgoing
+	// hand back a card at a time under the swing.
+	for(i = MSX2_FIELD_SLOTS; i < SLOT_COUNT; ++i)
+	{
+		g_shown[0][i] = g_shown[1][i] = g_want[i];
+		g_shown_flag[0][i] = g_shown_flag[1][i] = g_flag[i];
+	}
+	g_hand_left = 0;
+}
+
 static void Msx2_BoardSwitchView(u8 view, bool forward)
 {
 	// The baked camera path runs between the two chairs and nowhere else, and
@@ -1799,6 +1866,7 @@ static void Msx2_BoardSwitchView(u8 view, bool forward)
 	if(view == g_view)
 		return;
 
+	Msx2_BoardClearHandBand();
 	g_mode = M_TURN;
 	g_move_pose = 0;
 	g_move_target = view;
@@ -1990,6 +2058,19 @@ static void Msx2_BoardConfirm(void)
 				return;
 			if(Msx2_IsMonster(card))
 			{
+				// ONE MONSTER A TURN.
+				// The rules already know (Msx2Side::monster_played), but the
+				// only place that asked was Msx2_PlaceMonster -- so a second
+				// monster walked the cursor into the field row, offered the
+				// attack/defence choice, and then silently did nothing, with
+				// M_PLACE stuck until ESC.  Refuse here instead, on the card.
+				if(g_duel.side[MSX2_OWNER_PLAYER].monster_played)
+				{
+					g_refuse_text = MSX2_S_ONE_MONSTER_A_TURN;
+					g_refuse = 96;
+					Msx2_BoardTouch();
+					return;
+				}
 				g_hand_pick = g_sel;
 				g_mode = M_PLACE;
 				g_zone = ZONE_FIELD;
@@ -2041,7 +2122,11 @@ static void Msx2_BoardConfirm(void)
 					g_queue_n = 0;
 				}
 				else
-					g_refuse = 96;      // no recipe, or no summon left this turn
+				{
+					// no recipe, or no summon left this turn
+					g_refuse_text = MSX2_S_THOSE_CARDS_DO_NOT_FUSE;
+					g_refuse = 96;
+				}
 				break;
 			}
 			if(!Msx2_IsMonster(g_duel.side[MSX2_OWNER_PLAYER].field[g_sel]))

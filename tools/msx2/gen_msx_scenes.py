@@ -678,18 +678,28 @@ def stamp(buf, width, x, y, mask_rows, color, scale, cols=6):
 def outline_rows(rows):
     """The eight-connected dilation of a glyph minus the glyph itself.
 
-    Returned as ten rows of eight columns, anchored one pixel up and one to the
+    Returned as TEN rows of eight columns, anchored one pixel up and one to the
     left of the glyph -- so the caller stamps it at (x - 1, y - 1) with
     ``cols=8``.  Both of those matter: the glyph occupies bits 7..2, growing it
     sideways needs bits 8 and 1, and ``stamp``'s default of six columns used to
     cut the right-hand half of every letter's outline off.
+
+    Ten rows, not eight.  A glyph row ``r`` is drawn at output row ``r + 1``, so
+    the band needs one row above the first and one below the last, and output
+    row ``k`` is the neighbourhood of glyph row ``k - 1``.  Walking the padded
+    list from index 1 got both wrong at once: every row of outline sat one row
+    too high, and the row below the last one was never emitted at all.  What
+    that looked like at 2x is what the logo shipped with -- a four-pixel black
+    cap over the letters, nothing under them, and the outline eaten out of the
+    middle wherever the glyph two rows down happened to have a pixel.
     """
-    padded = [0] + [r >> 1 for r in rows] + [0]
-    grown = []
-    for j in range(1, len(padded) - 1):
-        band = padded[j - 1] | padded[j] | padded[j + 1]
-        grown.append(((band | (band << 1) | (band >> 1)) & 0xFF, padded[j]))
-    return [(bits & ~face) for bits, face in grown]
+    padded = [0, 0] + [r >> 1 for r in rows] + [0, 0]
+    out = []
+    for k in range(len(rows) + 2):
+        band = padded[k] | padded[k + 1] | padded[k + 2]
+        grown = (band | (band << 1) | (band >> 1)) & 0xFF
+        out.append(grown & ~padded[k + 1])
+    return out
 
 
 def stamp_big(buf, width, y, text, fg, outline):

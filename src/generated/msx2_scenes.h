@@ -311,7 +311,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_FONT_BYTES         512
 #define MSX2_UI_OFFSET          17472
 #define MSX2_UI_STRIDE          36
-#define MSX2_UI_COUNT           93
+#define MSX2_UI_COUNT           94
 #define MSX2_S_TURN                         0
 #define MSX2_S_PLACE_IN_DEFENCE_UP_DOWN_ATK 1
 #define MSX2_S_PLACE_IN_ATTACK_UP_DOWN_DEF  2
@@ -395,16 +395,17 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_S_DAMAGE                       80
 #define MSX2_S_NO_BATTLE_DAMAGE             81
 #define MSX2_S_THOSE_CARDS_DO_NOT_FUSE      82
-#define MSX2_S_F1_SAVES_TO_DISK             83
-#define MSX2_S_F1_LOADS_FROM_DISK           84
-#define MSX2_S_SAVED_TO_DISK                85
-#define MSX2_S_DISK_ERROR_USE_A_BLANK_DISK  86
-#define MSX2_S_NO_SAVE_ON_THIS_DISK         87
-#define MSX2_S_FLOPPY_DISK                  88
-#define MSX2_S_PASSWORD                     89
-#define MSX2_S_WHERE_IS_THE_SAVE            90
-#define MSX2_S_NO_DRIVE_ANSWERED            91
-#define MSX2_S_SPACE_PICKS_ESC_RETURNS      92
+#define MSX2_S_ONE_MONSTER_A_TURN           83
+#define MSX2_S_F1_SAVES_TO_DISK             84
+#define MSX2_S_F1_LOADS_FROM_DISK           85
+#define MSX2_S_SAVED_TO_DISK                86
+#define MSX2_S_DISK_ERROR_USE_A_BLANK_DISK  87
+#define MSX2_S_NO_SAVE_ON_THIS_DISK         88
+#define MSX2_S_FLOPPY_DISK                  89
+#define MSX2_S_PASSWORD                     90
+#define MSX2_S_WHERE_IS_THE_SAVE            91
+#define MSX2_S_NO_DRIVE_ANSWERED            92
+#define MSX2_S_SPACE_PICKS_ESC_RETURNS      93
 static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
