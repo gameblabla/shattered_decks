@@ -114,7 +114,12 @@ def main():
                             overlay[(sx + px * 2 + dx, top + py * 2 + dy)] = col
     # A rough palette for the sprite indices msx2_sprite.c sets.
     SPRITE_RGB = {1: (255, 255, 255), 2: (255, 190, 0), 3: (255, 40, 40),
-                  4: (0, 210, 190), 5: (90, 140, 255)}
+                  4: (0, 210, 190), 5: (90, 140, 255),
+                  # The selector's shadow and highlight either side of 3 and 4:
+                  # without these a shaded gem photographs as the unknown-index
+                  # magenta and the shot says nothing about the shading.
+                  6: (109, 0, 0), 7: (255, 182, 145),
+                  8: (0, 72, 36), 9: (145, 218, 255)}
 
     rows = []
     for y in range(HEIGHT):

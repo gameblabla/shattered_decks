@@ -34,6 +34,13 @@ void Msx2_SpriteInit(void)
 	VDP_SetPaletteEntry(MSX2_SPR_RED,   0x7000);
 	VDP_SetPaletteEntry(MSX2_SPR_TEAL,  0x0305);
 	VDP_SetPaletteEntry(MSX2_SPR_BLUE,  0x2306);
+	// The selector's bands.  Two steps either side of the flat colour, far
+	// enough apart that eight faces of a turning solid separate at 20 pixels
+	// square, and all three still read as the one gem.
+	VDP_SetPaletteEntry(MSX2_SPR_RED_DK,  0x3000);
+	VDP_SetPaletteEntry(MSX2_SPR_RED_HI,  0x7405);
+	VDP_SetPaletteEntry(MSX2_SPR_TEAL_DK, 0x0102);
+	VDP_SetPaletteEntry(MSX2_SPR_TEAL_HI, 0x4607);
 
 	// 16x16, magnified to 32x32: an explosion or a letter has to read at the
 	// same size the 88x120 cut-in cards do.
@@ -50,9 +57,10 @@ void Msx2_SpriteInit(void)
 	VDP_CommandWait();
 
 	// THE PATTERNS, out of the cartridge.
-	// Sixteen of them -- eight frames of the burst, then eight of the spinning
-	// selector -- baked by tools/msx2/gen_msx_scenes.py in the V9938's own
-	// quarter layout, so this is a read and a write and no shuffling at all.
+	// Eight frames of the burst, then the selector's eight frames of
+	// MSX2_GEM_PLANES planes each -- baked by tools/msx2/gen_msx_scenes.py in
+	// the V9938's own quarter layout, so this is a read and a write and no
+	// shuffling at all.
 	// They are cartridge data for the same reason the interface strings are:
 	// _CODE is 32 KB and there are six megabytes on the other side of the
 	// mapper.
@@ -151,8 +159,32 @@ void Msx2_SpriteShowWord(const c8* text, u8 y, u8 color)
 		Msx2_SpriteHide(i);
 }
 
+// The three tints of each cursor colour, darkest first, indexed by the flat
+// colour the board asks for.  A table rather than a pair of branches: the gem
+// is placed every frame the cursor is on the screen.
+static const u8 g_gem_tint[2][MSX2_GEM_PLANES] =
+{
+	{ MSX2_SPR_RED_DK,  MSX2_SPR_RED,  MSX2_SPR_RED_HI  },
+	{ MSX2_SPR_TEAL_DK, MSX2_SPR_TEAL, MSX2_SPR_TEAL_HI },
+};
+
 void Msx2_SpriteGem(u8 x, u8 y, u8 frame, u8 color)
 {
-	Msx2_SpriteAt(MSX2_SPR_CURSOR, x, y,
-	              (u8)(MSX2_SPR_GEM0 + (frame & (MSX2_GEM_FRAMES - 1))), color);
+	// One sprite a shade, all at the same place: the planes are disjoint masks
+	// of one solid, so what the viewer sees is a single shaded gem and not
+	// three sprites on top of each other.
+	const u8* tint = g_gem_tint[(color == MSX2_SPR_TEAL) ? 1 : 0];
+	u8 slot = (u8)(MSX2_SPR_GEM0 +
+	               (frame & (MSX2_GEM_FRAMES - 1)) * MSX2_GEM_PLANES);
+	u8 p;
+
+	for(p = 0; p < MSX2_GEM_PLANES; ++p)
+		Msx2_SpriteAt((u8)(MSX2_SPR_CURSOR + p), x, y, (u8)(slot + p), tint[p]);
+}
+
+void Msx2_SpriteHideGem(void)
+{
+	u8 p;
+	for(p = 0; p < MSX2_GEM_PLANES; ++p)
+		Msx2_SpriteHide((u8)(MSX2_SPR_CURSOR + p));
 }

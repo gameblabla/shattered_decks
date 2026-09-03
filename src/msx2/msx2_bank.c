@@ -66,6 +66,22 @@ bool Msx2_FusionStep(void)
 	return more;
 }
 
+void Msx2_EffectBegin(u8 card)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	Msx2_EffectBegin_In(card);
+	Msx2_Bank0Leave(back);
+}
+
+bool Msx2_EffectStep(void)
+{
+	bool more;
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	more = Msx2_EffectStep_In();
+	Msx2_Bank0Leave(back);
+	return more;
+}
+
 // ── The duel screen ─────────────────────────────────────────────────────────
 
 u8 Msx2_BoardStageForStory(u8 story_duel_index)

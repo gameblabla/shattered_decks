@@ -566,11 +566,73 @@ static void Msx2_StoryUiDirty(void)
 	g_map_dirty = ALL_PAGES;
 }
 
-static void Msx2_StoryNamePaint(void)
+// THE GRID IS DRAWN AT THE PITCH THE CURSOR MOVES AT.
+// The two alphabet rows used to be one solid thirteen-character string at the
+// font's own six-pixel pitch, while the gold highlight was placed at thirteen
+// pixels a column.  The two disagreed from the second letter on: choosing C
+// put a gold C on top of the E in the row, so the letter under the marker was
+// never the letter the button was going to take.  One pitch now serves both --
+// a space between every letter, which is twelve pixels and also the spacing
+// the screen wanted anyway.
+#define NAME_PITCH    12
+#define NAME_ROW_CH   13
+#define NAME_GRID_X   ((MSX2_SCREEN_W - (NAME_ROW_CH * 2 - 1) * MSX2_FONT_W_PX) / 2)
+#define NAME_ROW0_Y   100
+#define NAME_ROW1_Y   120
+#define NAME_BOX_X    111
+#define NAME_BOX_Y    68
+
+// One alphabet row, letters separated by a space so the pitch is NAME_PITCH.
+// Written as a single string rather than thirteen calls: a call is a VDP
+// address set-up per scanline, and this screen is repainted on every keypress.
+static void Msx2_StoryAlphaRow(u8 first, u8 y)
+{
+	c8 row[NAME_ROW_CH * 2];
+	u8 i;
+
+	for(i = 0; i < NAME_ROW_CH; ++i)
+	{
+		row[i * 2] = (c8)('A' + first + i);
+		row[i * 2 + 1] = ' ';
+	}
+	row[NAME_ROW_CH * 2 - 1] = 0;
+	Msx2_TextAt(NAME_GRID_X, y, row);
+}
+
+// Everything on this screen that a keypress changes: the eight name cells and
+// the two alphabet rows with the marker on one of them.  The frame, the title
+// and the three help lines are painted once on entry and never again -- they
+// were most of the cost of a repaint, and none of them ever changes.
+//
+// Nothing is filled first.  Msx2_TextAt writes the background colour for every
+// pixel of every cell it covers, so redrawing a row is also what erases the
+// gold letter the last frame left in it.
+static void Msx2_StoryNameLetters(void)
 {
 	u8 i;
 	c8 one[2];
 
+	one[1] = 0;
+	for(i = 0; i < STORY_NAME_LEN; ++i)
+	{
+		one[0] = (i < g_name_len) ? g_player_name[i] : '_';
+		Msx2_TextColor((i == g_name_len) ? MSX2_GOLD : MSX2_WHITE,
+		               MSX2_PANEL_COLOR);
+		Msx2_TextAt((u8)(NAME_BOX_X + i * 12), NAME_BOX_Y, one);
+	}
+
+	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
+	Msx2_StoryAlphaRow(0, NAME_ROW0_Y);
+	Msx2_StoryAlphaRow(NAME_ROW_CH, NAME_ROW1_Y);
+
+	one[0] = (c8)('A' + g_name_cursor);
+	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
+	Msx2_TextAt((u8)(NAME_GRID_X + (g_name_cursor % NAME_ROW_CH) * NAME_PITCH),
+	            (g_name_cursor < NAME_ROW_CH) ? NAME_ROW0_Y : NAME_ROW1_Y, one);
+}
+
+static void Msx2_StoryNamePaint(void)
+{
 	Msx2_Fill(18, 22, 220, 164, MSX2_PANEL_COLOR);
 	Msx2_FrameRect(18, 22, 220, 164, MSX2_GOLD);
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
@@ -578,24 +640,10 @@ static void Msx2_StoryNamePaint(void)
 	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(48, Msx2_UiText(MSX2_S_UP_TO_EIGHT_LETTERS));
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-	Msx2_TextAt(70, 68, Msx2_UiText(MSX2_S_NAME));
-	for(i = 0; i < STORY_NAME_LEN; ++i)
-	{
-		one[0] = (i < g_name_len) ? g_player_name[i] : '_';
-		one[1] = 0;
-		Msx2_TextColor((i == g_name_len) ? MSX2_GOLD : MSX2_WHITE,
-		               MSX2_PANEL_COLOR);
-		Msx2_TextAt((u8)(111 + i * 12), 68, one);
-	}
+	Msx2_TextAt(70, NAME_BOX_Y, Msx2_UiText(MSX2_S_NAME));
 
-	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextAt(45, 100, Msx2_UiText(MSX2_S_ABCDEFGHIJKLM));
-	Msx2_TextAt(45, 120, Msx2_UiText(MSX2_S_NOPQRSTUVWXYZ));
-	one[0] = (c8)('A' + g_name_cursor);
-	one[1] = 0;
-	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextAt((u8)(45 + (g_name_cursor % 13) * 13),
-	            (u8)(100 + (g_name_cursor / 13) * 20), one);
+	Msx2_StoryNameLetters();
+
 	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(140, Msx2_UiText(MSX2_S_TYPE_IT_OR_PICK_WITH_THE_ST));
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
@@ -1472,7 +1520,10 @@ u8 Msx2_StoryStep_In(void)
 			Msx2_StoryUiDirty();
 		if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
 		{
-			Msx2_StoryNamePaint();
+			// Only the letters, not the whole panel: the fill, the frame, the
+			// title and the three help lines are already on both pages and
+			// were what made this screen answer a keypress three frames late.
+			Msx2_StoryNameLetters();
 			g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
 			Msx2_VideoFlipRequest();
 		}

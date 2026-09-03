@@ -360,6 +360,38 @@ def draw_battle_card(asset_id, atk, deff):
     return img
 
 
+def draw_battle_support_card(kind):
+    """A support card at cut-in size.
+
+    Supports have no source painting, so the big version is the same emblem the
+    board thumbnail carries, drawn at its own size rather than magnified: the
+    sigils are built out of single-pixel outlines and a 2.2x nearest-neighbour
+    blow-up of one is a staircase.  It exists because the two screens that show
+    a card whole -- the card check and the effect cut-in -- used to fall back to
+    the 40x48 thumbnail for these, which is a postage stamp in the middle of a
+    black stage.
+    """
+    bright, dark, mid = SUPPORT_TINTS[kind]
+    img = Image.new("RGB", (BATTLE_CARD_W, BATTLE_CARD_H), dark)
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, BATTLE_CARD_W - 1, BATTLE_CARD_H - 1],
+                fill=bright, outline=tuple(c // 3 for c in bright))
+    d.rectangle([3, 3, BATTLE_CARD_W - 4, BATTLE_CARD_H - 4],
+                fill=dark, outline=tuple(min(255, c + 40) for c in bright))
+    d.rectangle([6, 6, BATTLE_CARD_W - 7, 14], fill=mid)
+    art_w = BATTLE_CARD_W - 12
+    img.paste(draw_support_emblem(kind, art_w).resize(
+        (art_w, BATTLE_CARD_H - 34), Image.NEAREST), (6, 18))
+    d.rectangle([5, 17, BATTLE_CARD_W - 6, BATTLE_CARD_H - 16],
+                outline=tuple(c // 3 for c in bright))
+    d.rectangle([6, BATTLE_CARD_H - 13, BATTLE_CARD_W - 7,
+                 BATTLE_CARD_H - 7], fill=tuple(c // 2 for c in dark))
+    for s in range(4):
+        x = 8 + s * 8
+        d.ellipse([x, 8, x + 3, 11], fill=(248, 236, 140))
+    return img
+
+
 # ── 2-D screen furniture ─────────────────────────────────────────────────────
 
 def draw_panel(d, x, y, w, h, fill, edge):
@@ -630,9 +662,9 @@ def glyph_rows(ch):
     return data[idx:idx + 8]
 
 
-def stamp(buf, width, x, y, mask_rows, color, scale):
+def stamp(buf, width, x, y, mask_rows, color, scale, cols=6):
     for ry, bits in enumerate(mask_rows):
-        for rx in range(6):
+        for rx in range(cols):
             if not (bits & (0x80 >> rx)):
                 continue
             for dy in range(scale):
@@ -643,15 +675,38 @@ def stamp(buf, width, x, y, mask_rows, color, scale):
                         buf[py * width + px] = color
 
 
-def stamp_big(buf, width, y, text, fg, shadow):
-    """Double size with a hard offset shadow, centred -- the logo."""
+def outline_rows(rows):
+    """The eight-connected dilation of a glyph minus the glyph itself.
+
+    Returned as ten rows of eight columns, anchored one pixel up and one to the
+    left of the glyph -- so the caller stamps it at (x - 1, y - 1) with
+    ``cols=8``.  Both of those matter: the glyph occupies bits 7..2, growing it
+    sideways needs bits 8 and 1, and ``stamp``'s default of six columns used to
+    cut the right-hand half of every letter's outline off.
+    """
+    padded = [0] + [r >> 1 for r in rows] + [0]
+    grown = []
+    for j in range(1, len(padded) - 1):
+        band = padded[j - 1] | padded[j] | padded[j + 1]
+        grown.append(((band | (band << 1) | (band >> 1)) & 0xFF, padded[j]))
+    return [(bits & ~face) for bits, face in grown]
+
+
+def stamp_big(buf, width, y, text, fg, outline):
+    """Double size with an outline all round, centred -- the logo.
+
+    The outline is the 1x dilation stamped at 2x, which puts a two-pixel band
+    round a two-pixel-thick letter: heavy enough to hold the gold off a bright
+    sky without closing up the counters of the small glyphs.
+    """
     w = len(text) * 12
     x0 = (width - w) // 2
     for pas in (0, 1):
         for i, ch in enumerate(text):
-            rows = glyph_rows(ch)
+            rows = list(glyph_rows(ch))
             if pas == 0:
-                stamp(buf, width, x0 + i * 12 + 2, y + 2, rows, shadow, 2)
+                stamp(buf, width, x0 + i * 12 - 2, y - 2, outline_rows(rows),
+                      outline, 2, cols=8)
             else:
                 stamp(buf, width, x0 + i * 12, y, rows, fg, 2)
 
@@ -664,16 +719,8 @@ def stamp_outline(buf, width, y, text, fg, outline, x0=None):
         for i, ch in enumerate(text):
             rows = list(glyph_rows(ch))
             if pas == 0:
-                # An eight-connected dilation of the glyph, minus the glyph.
-                padded = [0] + [r >> 1 for r in rows] + [0]
-                grown = []
-                for j in range(1, len(padded) - 1):
-                    band = padded[j - 1] | padded[j] | padded[j + 1]
-                    grown.append((band | (band << 1) | (band >> 1)) & 0xFF)
-                for j, bits in enumerate(grown):
-                    face = padded[j + 1]
-                    stamp(buf, width, x0 + i * 6 - 1, y - 1 + j,
-                          [bits & ~face], outline, 1)
+                stamp(buf, width, x0 + i * 6 - 1, y - 1, outline_rows(rows),
+                      outline, 1, cols=8)
             else:
                 stamp(buf, width, x0 + i * 6, y, rows, fg, 1)
 
@@ -710,10 +757,25 @@ def title_words(data):
 GEM_FRAMES = 8
 GEM_SIZE = 10
 GEM_TILT = 0.55          # the same lean toward the viewer the PC build uses
+GEM_PLANES = 3           # shadow, body, highlight -- one sprite each
+GEM_LIGHT = (-0.42, 0.72, 0.55)   # draw_spin_cursor's key light, unchanged
 
 
 def gem_frames():
-    """The spinning selector, as GEM_SIZE-wide row masks (bit 15 leftmost)."""
+    """The spinning selector, as GEM_PLANES row-mask planes per frame.
+
+    THREE SPRITES, NOT ONE.
+    A V9938 sprite is one bit deep, so a solid drawn as a single sprite is a
+    silhouette: the gem turned and nothing about it changed except its outline,
+    which is why the old version needed a seam scratched across the equator
+    before a spin read at all.  The eight faces are flat-shaded here exactly as
+    spin_cursor_face() shades them on the PC -- lambert plus a ^16 specular --
+    and the result is banded into GEM_PLANES masks that are stacked as that many
+    sprites in three tints of the one colour.  The faces are disjoint, so the
+    planes never overlap and the V9938's per-pixel priority never has to choose.
+
+    Row masks are GEM_SIZE wide with bit 15 leftmost, outermost list per frame.
+    """
     supersample = 8
     out = []
     for f in range(GEM_FRAMES):
@@ -737,36 +799,76 @@ def gem_frames():
         for k in range(4):
             p, q = equator[k], equator[(k + 1) & 3]
             for tri in ((top, p, q), (bottom, q, p)):
+                band = gem_face_band(tri)
+                if band < 0:
+                    continue          # turned away from the viewer
                 a, b, c = [project(v) for v in tri]
-                # Screen-space winding is the back-face test: a face turned away
-                # would otherwise paint over the one in front of it.
-                if (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]) <= 0:
-                    continue
-                draw.polygon([a, b, c], fill=255)
-        # The near half of the equator is cut back out.  In one colour the
-        # silhouette alone barely changes as the solid turns; the seam crossing
-        # it is what actually reads as a spin.
-        for k in range(4):
-            p, q = equator[k], equator[(k + 1) & 3]
-            if p[2] + q[2] > 0.05:
-                draw.line([project(p), project(q)], fill=0, width=supersample)
+                # Every face is painted with its own band index, so the
+                # downsample below is a vote between shades and not between
+                # a solid and the background.
+                draw.polygon([a, b, c], fill=(band + 1) * 60)
 
-        small = img.resize((GEM_SIZE, GEM_SIZE), Image.Resampling.BOX)
-        rows = []
+        # One output pixel is a supersample x supersample block: it is lit if
+        # enough of the block is, and takes whichever shade holds most of it.
+        px = img.load()
+        planes = [[0] * GEM_SIZE for _ in range(GEM_PLANES)]
         for y in range(GEM_SIZE):
-            bits = 0
             for x in range(GEM_SIZE):
-                if small.getpixel((x, y)) > 105:
-                    bits |= 0x8000 >> x
-            rows.append(bits)
-        out.append(rows)
+                votes = [0] * (GEM_PLANES + 1)
+                for sy in range(supersample):
+                    for sx in range(supersample):
+                        votes[px[x * supersample + sx,
+                                 y * supersample + sy] // 60] += 1
+                lit = sum(votes[1:])
+                if lit * 5 < supersample * supersample * 2:
+                    continue
+                band = votes.index(max(votes[1:]), 1)
+                planes[band - 1][y] |= 0x8000 >> x
+        out.append(planes)
     return out
+
+
+def gem_face_band(tri):
+    """Which shade band a face falls in, or -1 if it is turned away.
+
+    The same arithmetic as spin_cursor_face(): a lambert term off the key light
+    and a narrow ^16 specular, summed into one brightness.  Only the last step
+    differs -- the PC turns it into an RGB triple, and three sprites can only
+    turn it into one of three.
+    """
+    a, b, c = tri
+    e0 = [b[i] - a[i] for i in range(3)]
+    e1 = [c[i] - a[i] for i in range(3)]
+    n = [e0[1] * e1[2] - e0[2] * e1[1],
+         e0[2] * e1[0] - e0[0] * e1[2],
+         e0[0] * e1[1] - e0[1] * e1[0]]
+    length = math.sqrt(sum(v * v for v in n))
+    if length < 1e-6:
+        return -1
+    n = [v / length for v in n]
+    if n[2] <= 0.0:
+        return -1
+    diff = max(0.0, sum(n[i] * GEM_LIGHT[i] for i in range(3)))
+    hv = [GEM_LIGHT[0], GEM_LIGHT[1], GEM_LIGHT[2] + 1.0]
+    length = math.sqrt(sum(v * v for v in hv))
+    hv = [v / length for v in hv]
+    spec = max(0.0, sum(n[i] * hv[i] for i in range(3))) ** 16
+    # The thresholds are picked off the solid's own spread: eight faces of a
+    # tilted octahedron under this light run 0.18..0.80, so a third each way is
+    # what actually puts three tints on the screen at once.
+    lit = 0.18 + 0.82 * diff + spec
+    if lit < 0.35:
+        return 0
+    if lit < 0.70:
+        return 1
+    return 2
 
 
 # ── The sprite patterns ──────────────────────────────────────────────────────
 #
-# Sixteen 16x16 patterns: eight frames of the explosion burst, then eight of the
-# selector gem.  They are cartridge data, not a table in msx2_sprite.c, for the
+# 16x16 patterns: eight frames of the explosion burst, then the selector gem --
+# GEM_FRAMES of it, GEM_PLANES one-bit shade planes each.  They are cartridge
+# data, not a table in msx2_sprite.c, for the
 # same reason the interface strings are: _CODE is 32 KB and the cartridge is six
 # megabytes.  They are also emitted in the V9938's own layout -- four 8x8
 # quarters, top-left, bottom-left, top-right, bottom-right -- so Msx2_SpriteInit
@@ -801,14 +903,31 @@ def sprite_patterns():
     blob = bytearray()
     for rows in BURST:
         blob += vdp_pattern(rows)
-    for rows in gem_frames():
-        blob += vdp_pattern(rows + [0] * (16 - len(rows)))
+    for planes in gem_frames():
+        for rows in planes:
+            blob += vdp_pattern(rows + [0] * (16 - len(rows)))
     return bytes(blob)
 
 
+def title_scene():
+    """The title backdrop, as ready-made GRAPHIC 7 bytes.
+
+    This one picture is hand-dithered outside the tree (``title256_msx2.gl8``,
+    a headered SCREEN 8 dump) rather than nearest-colour quantised like every
+    other scene.  It is a photographic sky over a desert, which is exactly the
+    case the quantiser's no-dither rule bands badly, and it is on screen alone
+    for as long as the player leaves it there -- so the grain the rule exists to
+    avoid has nothing to crawl over.  Handed back as bytes, which ``main`` takes
+    verbatim.
+    """
+    with open(os.path.join(ROOT, "assets/source/msx2/title256_msx2.gl8"),
+              "rb") as f:
+        raw = f.read()
+    return raw[len(raw) - WIDTH * HEIGHT:]
+
+
 SCENES = [
-    ("TITLE", lambda: Image.open(
-        os.path.join(ROOT, "assets/source/title/title256_msx2.png"))),
+    ("TITLE", title_scene),
     ("ENDING", lambda: Image.open(
         os.path.join(ROOT, "assets/source/ending/ending256x212.png"))),
     ("BATTLE", battle_scene),
@@ -993,19 +1112,24 @@ def build_card_blob(cards, quiet):
 
 
 def build_battle_card_blob(cards, quiet):
+    # The supports follow the monsters in the same order the card ids run, so
+    # one index addresses this blob, the board blob and the name table alike.
+    faces = [draw_battle_card(asset_id, *CARD_STATS[asset_id])
+             for asset_id, _name, _desc in cards]
+    faces += [draw_battle_support_card(kind) for kind in range(SUPPORT_VARIANTS)]
+
     blob = bytearray()
     sheet = Image.new("RGB", (BATTLE_CARD_W * 8,
-                              BATTLE_CARD_H * ((len(cards) + 7) // 8)))
-    for i, (asset_id, _name, _desc) in enumerate(cards):
-        card = draw_battle_card(asset_id, *CARD_STATS[asset_id])
+                              BATTLE_CARD_H * ((len(faces) + 7) // 8)))
+    for i, card in enumerate(faces):
         data = grb.quantize(card, (BATTLE_CARD_W, BATTLE_CARD_H))
         blob += data + bytes(BATTLE_CARD_STRIDE - len(data))
         sheet.paste(card, ((i % 8) * BATTLE_CARD_W,
                            (i // 8) * BATTLE_CARD_H))
     sheet.save(os.path.join(ASSET_DIR, "battle_cards.png"))
     if not quiet:
-        print("BATTLE CARDS %d cut-ins -> %d bytes" % (len(cards), len(blob)))
-    return bytes(blob), len(cards)
+        print("BATTLE CARDS %d cut-ins -> %d bytes" % (len(faces), len(blob)))
+    return bytes(blob), len(faces)
 
 
 # The bitmap font.  MSXgl ships it as a 1540-byte C array, which is 1540 bytes
@@ -1129,7 +1253,10 @@ def main():
     entries = []
     prompt_strip = None
     for name, build in SCENES:
-        data = grb.quantize(build(), (WIDTH, HEIGHT))
+        built = build()
+        # A builder may hand back finished GRAPHIC 7 bytes instead of a picture.
+        data = (built if isinstance(built, (bytes, bytearray))
+                else grb.quantize(built, (WIDTH, HEIGHT)))
         if name == "TITLE":
             data, prompt_strip = title_words(data)
         binpath = os.path.join(ASSET_DIR, name.lower() + ".bin")
@@ -1322,8 +1449,8 @@ def main():
         f.write("#define MSX2_FONT_OFFSET        %d\n" % text_off["FONT"])
 
         f.write("\n// ── Sprite patterns ───────────────────────────────────────\n")
-        f.write("// Sixteen 16x16 patterns in the V9938's own quarter layout: eight\n")
-        f.write("// frames of the burst, then eight of the selector.  Cartridge data\n")
+        f.write("// 16x16 patterns in the V9938's own quarter layout: eight frames\n")
+        f.write("// of the burst, then the selector's frames, planes and all.  Cartridge data\n")
         f.write("// rather than a table in msx2_sprite.c, and already shuffled, so the\n")
         f.write("// sprite layer reads 32 bytes and hands them straight to VRAM.\n")
         f.write("#define MSX2_SPRITE_PAT_SEGMENT %d\n" % sprite_segment)
@@ -1336,6 +1463,11 @@ def main():
         f.write("#define MSX2_GEM_FRAMES         %d\n" % GEM_FRAMES)
         f.write("#define MSX2_GEM_SIZE           %d\n" % GEM_SIZE)
         f.write("#define MSX2_GEM_SCREEN         %d\n" % (GEM_SIZE * 2))
+        f.write("// Each frame is %d one-bit planes -- shadow, body, highlight --\n"
+                % GEM_PLANES)
+        f.write("// stacked as that many sprites in three tints of one colour, which\n")
+        f.write("// is how a one-bit sprite gets the PC build's shaded faces.\n")
+        f.write("#define MSX2_GEM_PLANES         %d\n" % GEM_PLANES)
 
         f.write("#define MSX2_FONT_FIRST         %d\n" % FONT_FIRST)
         f.write("#define MSX2_FONT_BYTES         %d\n"

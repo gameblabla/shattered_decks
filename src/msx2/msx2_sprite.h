@@ -34,23 +34,34 @@
 #define MSX2_SPR_RED     3
 #define MSX2_SPR_TEAL    4
 #define MSX2_SPR_BLUE    5
+// The selector's two families, each a shadow and a highlight around the flat
+// colour above: a one-bit sprite has no shades of its own, so the gem gets one
+// sprite per band and the bands get their tints from here.
+#define MSX2_SPR_RED_DK   6
+#define MSX2_SPR_RED_HI   7
+#define MSX2_SPR_TEAL_DK  8
+#define MSX2_SPR_TEAL_HI  9
 
 // Pattern slots.  A 16x16 sprite is four 8x8 quarters, so a slot is 32 bytes
 // and the attribute's pattern byte is slot * 4.
 #define MSX2_SPR_BURST0  0    // eight frames of an expanding burst
 #define MSX2_SPR_BURST_N 8
-#define MSX2_SPR_GEM0    8    // eight frames of the spinning selector
-#define MSX2_SPR_GEM_N   MSX2_GEM_FRAMES
-// Slots 0..15 are exactly the cartridge's pattern blob, in order, which is what
+// Eight frames of the spinning selector, MSX2_GEM_PLANES one-bit planes each,
+// frame after frame: the plane of a frame is GEM0 + frame * PLANES + plane.
+#define MSX2_SPR_GEM0    8
+#define MSX2_SPR_GEM_N   (MSX2_GEM_FRAMES * MSX2_GEM_PLANES)
+// Slots 0..31 are exactly the cartridge's pattern blob, in order, which is what
 // lets Msx2_SpriteInit() upload it as one run.  The letters come after, because
 // they are the only patterns still built at runtime -- out of the font.
-#define MSX2_SPR_LETTER0 16
+#define MSX2_SPR_LETTER0 (MSX2_SPR_GEM0 + MSX2_SPR_GEM_N)
 #define MSX2_SPR_LETTER_N 8
 
-// The sprite the selector uses.  The last one, so it is behind everything the
-// effects put up (the V9938 gives the lower id the higher priority) and can
-// never take one of the eight-per-line slots a burst wants.
-#define MSX2_SPR_CURSOR  31
+// The sprites the selector uses: the last MSX2_GEM_PLANES of the thirty-two,
+// so they are behind everything the effects put up (the V9938 gives the lower
+// id the higher priority) and can never take one of the eight-per-line slots a
+// burst wants.  The planes are disjoint masks of one solid, so stacking them
+// costs nothing but attribute bytes.
+#define MSX2_SPR_CURSOR  (32 - MSX2_GEM_PLANES)
 
 void Msx2_SpriteInit(void);
 
@@ -74,5 +85,9 @@ u8   Msx2_SpriteWord(const c8* text);
 void Msx2_SpriteShowWord(const c8* text, u8 y, u8 color);
 
 // The selector, at (x, y) -- the top-left of the gem, not of the sprite cell --
-// spinning at `frame`.  Call it every frame; it is three VRAM writes.
+// spinning at `frame`.  `color` is MSX2_SPR_RED or MSX2_SPR_TEAL; the shadow
+// and highlight tints come with it.  Call it every frame.
 void Msx2_SpriteGem(u8 x, u8 y, u8 frame, u8 color);
+
+// Take the selector off the screen, all of its planes.
+void Msx2_SpriteHideGem(void);

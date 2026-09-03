@@ -30,3 +30,12 @@ void Msx2_FusionBegin(const u8* materials, u8 count, u8 result);
 bool Msx2_FusionStep(void);
 void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result);
 bool Msx2_FusionStep_In(void);
+
+// ── The effect cut-in ───────────────────────────────────────────────────────
+// A support card that resolves on its own: the card at cut-in size with the
+// sentence that says what it does.  Begin composes it, Step counts the hold
+// down and returns FALSE when the board should come back.
+void Msx2_EffectBegin(u8 card);
+bool Msx2_EffectStep(void);
+void Msx2_EffectBegin_In(u8 card);
+bool Msx2_EffectStep_In(void);

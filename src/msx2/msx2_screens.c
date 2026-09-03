@@ -65,14 +65,20 @@ static void Msx2_ScreenSmallCard(u8 card, u8 x, u8 y)
 #define CHECK_DESC_Y   102
 #define CHECK_LINE_H   11
 
-static c8 g_desc[MSX2_DESC_STRIDE];
-static c8 g_line[CHECK_COL_COLS + 1];
+#define CHECK_COL_MAX  40           // the widest column the line buffer holds
 
-// One paragraph, broken on spaces into the column and drawn from `y` down.
-static void Msx2_ScreenParagraph(const c8* text, u8 y, u8 color)
+static c8 g_desc[MSX2_DESC_STRIDE];
+static c8 g_line[CHECK_COL_MAX + 1];
+
+// One paragraph, broken on spaces into a column `cols` characters wide and
+// drawn from `y` down.  The column is a parameter because the effect screen
+// below runs the same prose across the whole width instead of beside the art.
+static void Msx2_ScreenParagraph(const c8* text, u8 x, u8 cols, u8 y, u8 color)
 {
 	u8 at = 0;
 
+	if(cols > CHECK_COL_MAX)
+		cols = CHECK_COL_MAX;
 	Msx2_TextColor(color, MSX2_BLACK);
 	while(text[at] != 0)
 	{
@@ -81,7 +87,7 @@ static void Msx2_ScreenParagraph(const c8* text, u8 y, u8 color)
 		u8 i;
 
 		// How much of what is left fits, and where the last space inside it is.
-		while((take < CHECK_COL_COLS) && (text[at + take] != 0))
+		while((take < cols) && (text[at + take] != 0))
 		{
 			if(text[at + take] == ' ')
 				fits = take;
@@ -95,7 +101,7 @@ static void Msx2_ScreenParagraph(const c8* text, u8 y, u8 color)
 		for(i = 0; i < take; ++i)
 			g_line[i] = text[at + i];
 		g_line[take] = 0;
-		Msx2_TextAt(CHECK_COL_X, y, g_line);
+		Msx2_TextAt(x, y, g_line);
 		y = (u8)(y + CHECK_LINE_H);
 
 		at = (u8)(at + take);
@@ -122,7 +128,8 @@ void Msx2_CardCheckCompose_In(u8 card, i16 atk, i16 def)
 	Msx2_RomRead(MSX2_TEXT_SEGMENT, (u16)card * MSX2_NAME_STRIDE,
 	             (u8*)g_name, MSX2_NAME_STRIDE);
 	g_name[MSX2_NAME_STRIDE - 1] = 0;
-	Msx2_ScreenParagraph(g_name, CHECK_NAME_Y, MSX2_WHITE);
+	Msx2_ScreenParagraph(g_name, CHECK_COL_X, CHECK_COL_COLS,
+	                     CHECK_NAME_Y, MSX2_WHITE);
 
 	if(Msx2_IsMonster(card))
 	{
@@ -143,7 +150,8 @@ void Msx2_CardCheckCompose_In(u8 card, i16 atk, i16 def)
 	             (u16)(MSX2_DESC_OFFSET + (u16)card * MSX2_DESC_STRIDE),
 	             (u8*)g_desc, MSX2_DESC_STRIDE);
 	g_desc[MSX2_DESC_STRIDE - 1] = 0;
-	Msx2_ScreenParagraph(g_desc, CHECK_DESC_Y, MSX2_SAND);
+	Msx2_ScreenParagraph(g_desc, CHECK_COL_X, CHECK_COL_COLS,
+	                     CHECK_DESC_Y, MSX2_SAND);
 
 	Msx2_TextColor(MSX2_SAND, MSX2_BLACK);
 	Msx2_TextCenter(196, Msx2_UiText(MSX2_S_SPACE_RETURNS_TO_THE_DUEL));
@@ -277,4 +285,67 @@ bool Msx2_FusionStep_In(void)
 
 	Msx2_SpriteClear();
 	return FALSE;
+}
+
+
+// ── The effect cut-in ───────────────────────────────────────────────────────
+//
+// A support card that needs no target -- draw, heal, thunder, a trap -- used to
+// resolve as a word in the bottom panel and a rectangle flashing on the board,
+// which says nothing about what the card just did.  It is a beat of its own
+// now: the card alone on the black stage at the size the battle cut-in shows
+// one, its name under it, and the sentence out of the cartridge under that.
+//
+// The old version also left "EFFECT" written into the arena.  It was drawn
+// opaquely at y=82 and only ever "erased" by replaying the XOR frame beside it,
+// so the word stayed on the board for the rest of the duel.  Nothing here
+// touches the board at all: the whole screen is composed on the hidden page and
+// the duel's own Msx2_BoardRestoreFromCutin() streams the arena back.
+
+#define EFFECT_CARD_Y  30
+#define EFFECT_NAME_Y  156
+#define EFFECT_DESC_Y  174
+#define EFFECT_COLS    38
+#define EFFECT_HOLD    96
+
+static u8 g_effect_left;
+
+void Msx2_EffectBegin_In(u8 card)
+{
+	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
+
+	g_effect_left = EFFECT_HOLD;
+
+	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDrawPage(page);
+	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
+	Msx2_VideoDrawPage(page);
+
+	Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
+	Msx2_TextCenter(12, Msx2_UiText(MSX2_S_SUPPORT_ACTIVATED));
+	Msx2_ScreenBigCard(card, (u8)((MSX2_SCREEN_W - MSX2_BATTLE_CARD_W) / 2),
+	                   EFFECT_CARD_Y);
+	Msx2_ScreenName(card, EFFECT_NAME_Y, MSX2_GOLD);
+
+	Msx2_RomRead(MSX2_TEXT_SEGMENT,
+	             (u16)(MSX2_DESC_OFFSET + (u16)card * MSX2_DESC_STRIDE),
+	             (u8*)g_desc, MSX2_DESC_STRIDE);
+	g_desc[MSX2_DESC_STRIDE - 1] = 0;
+	Msx2_ScreenParagraph(g_desc,
+	                     (u8)((MSX2_SCREEN_W - EFFECT_COLS * MSX2_FONT_W_PX) / 2),
+	                     EFFECT_COLS, EFFECT_DESC_Y, MSX2_SAND);
+
+	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
+	Msx2_VideoShowPage(page);
+	VDP_EnableDisplay(TRUE);
+}
+
+bool Msx2_EffectStep_In(void)
+{
+	// Both pages already hold the finished picture, so the hold is a countdown
+	// and nothing else -- no repaint, no flip, no work for the VDP at all.
+	if(g_effect_left == 0)
+		return FALSE;
+	--g_effect_left;
+	return TRUE;
 }
