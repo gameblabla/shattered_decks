@@ -23,6 +23,11 @@
 #define MSX2_CARD_ART_SEGMENT   54
 // The same textures mirrored left to right, for the COM row (§8.4).
 #define MSX2_CARD_MIRROR_SEGMENT 64
+// The same set again, lying a quarter turn round for DEFENCE
+// position, and stored turned: 48 wide by 40 tall, so a span
+// program still walks one texture row per destination row.
+#define MSX2_CARD_DEF_SEGMENT   74
+#define MSX2_CARD_DEF_MIRROR_SEGMENT 84
 
 // The overhead board's own card set: drawn at 32x42 rather than
 // minified from the 40x48 board texture, so its one-pixel frame
@@ -30,8 +35,14 @@
 // slots are axis-aligned.  The second copy is a HALF TURN, not a
 // mirror: the opponent's cards face their own chair, and a card
 // reflected instead of rotated would have its art mirrored.
-#define MSX2_OVER_CARD_SEGMENT  152
-#define MSX2_OVER_CARD_MIRROR_SEGMENT 162
+#define MSX2_OVER_CARD_SEGMENT  172
+#define MSX2_OVER_CARD_MIRROR_SEGMENT 182
+// ... and lying down, at OVER_CARD_H x OVER_CARD_W.  Overhead a
+// turned card is drawn at FULL size: the tile pitch is 48 and the
+// card is 42, so there is room sideways that a chair view has not
+// got.  MSX2_SLOT_ART for the overhead view is cut that wide.
+#define MSX2_OVER_DEF_SEGMENT   192
+#define MSX2_OVER_DEF_MIRROR_SEGMENT 202
 #define MSX2_OVER_CARD_STRIDE   2048
 #define MSX2_OVER_CARD_PER_SEG  8
 #define MSX2_CARD_ART_STRIDE    2048
@@ -42,7 +53,7 @@
 // the texture size and the quads it is mapped into are one decision.
 
 // Large 2-D monster cards for the board-free battle cut-in.
-#define MSX2_BATTLE_CARD_SEGMENT 74
+#define MSX2_BATTLE_CARD_SEGMENT 94
 #define MSX2_BATTLE_CARD_STRIDE  16384
 #define MSX2_BATTLE_CARD_W       88
 #define MSX2_BATTLE_CARD_H       120
@@ -64,7 +75,7 @@
 #define MSX2_OVER_CARD_W       32
 #define MSX2_OVER_CARD_H       42
 #define MSX2_BOARD_VIEWS       3
-#define MSX2_VIEW_SEGMENT(stage, view)  (172 + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))
+#define MSX2_VIEW_SEGMENT(stage, view)  (212 + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))
 #define MSX2_VIEW_STAGES        4
 #define MSX2_BAND_Y             14
 #define MSX2_BAND_H             114
@@ -79,7 +90,6 @@
 #define MSX2_HAND_Y             131
 #define MSX2_FIELD_SLOTS        10
 #define MSX2_HAND_SLOTS         5
-#define MSX2_RING_COLOR         0x28
 #define MSX2_PANEL_COLOR        0x25
 #define MSX2_GOLD_COLOR         0x95
 
@@ -166,16 +176,16 @@ static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4
 		{ 50, 33, 36, 16 },
 	},
 	{
-		{ 17, 54, 32, 42 },
-		{ 65, 54, 32, 42 },
-		{ 113, 54, 32, 42 },
-		{ 161, 54, 32, 42 },
-		{ 209, 54, 32, 42 },
-		{ 17, 96, 32, 42 },
-		{ 65, 96, 32, 42 },
-		{ 113, 96, 32, 42 },
-		{ 161, 96, 32, 42 },
-		{ 209, 96, 32, 42 },
+		{ 12, 54, 42, 42 },
+		{ 60, 54, 42, 42 },
+		{ 108, 54, 42, 42 },
+		{ 156, 54, 42, 42 },
+		{ 204, 54, 42, 42 },
+		{ 12, 96, 42, 42 },
+		{ 60, 96, 42, 42 },
+		{ 108, 96, 42, 42 },
+		{ 156, 96, 42, 42 },
+		{ 204, 96, 42, 42 },
 	},
 };
 
@@ -184,10 +194,10 @@ static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4
 // as run lengths.  The Z80 replays it with block I/O and does no
 // arithmetic at all; that is what makes fifteen perspective cards
 // affordable on a 3.58 MHz machine.
-#define MSX2_SPAN_SEGMENT       250
+#define MSX2_SPAN_SEGMENT       290
 #define MSX2_SPAN_STRIDE        2048
 #define MSX2_SPAN_PER_SEG       8
-#define MSX2_SPAN_MAX           1026
+#define MSX2_SPAN_MAX           1190
 #define MSX2_OP_COPY            0x00
 #define MSX2_OP_DUP             0x20
 #define MSX2_OP_SKIP            0x40
@@ -202,8 +212,16 @@ static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS
 	{ 20, 21, 22, 23, 24, 25, 26, 27, 28, 29 },
 };
 
+// The same slots for a card in DEFENCE position: turned a quarter turn and
+// scaled to fit the slot, sampling the pre-turned 48x40 texture set.
+static const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {
+	{ 30, 31, 32, 33, 34, 35, 36, 37, 38, 39 },
+	{ 40, 41, 42, 43, 44, 45, 46, 47, 48, 49 },
+	{ 50, 51, 52, 53, 54, 55, 56, 57, 58, 59 },
+};
+
 // ── Empty-slot tiles ──────────────────────────────────────────────────
-#define MSX2_SLOT_ART_SEGMENT   220
+#define MSX2_SLOT_ART_SEGMENT   260
 #define MSX2_SLOT_ART_STRIDE    4096
 #define MSX2_SLOT_ART_PER_SEG   4
 #define MSX2_SLOT_ART_PER_VIEW  10
@@ -216,9 +234,9 @@ static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS
 // is a held cinematic push and the art is authored for that (§4.6.2).
 #define MSX2_MOVE_POSE_BYTES    29184
 #define MSX2_MOVE_POSE_SEGS     2
-#define MSX2_MOVE_OPENING_SEGMENT(stage)  (254 + (stage) * 16 * MSX2_MOVE_POSE_SEGS)
+#define MSX2_MOVE_OPENING_SEGMENT(stage)  (298 + (stage) * 16 * MSX2_MOVE_POSE_SEGS)
 #define MSX2_MOVE_OPENING_POSES    16
-#define MSX2_MOVE_TURN_SEGMENT(stage)  (382 + (stage) * 5 * MSX2_MOVE_POSE_SEGS)
+#define MSX2_MOVE_TURN_SEGMENT(stage)  (426 + (stage) * 5 * MSX2_MOVE_POSE_SEGS)
 #define MSX2_MOVE_TURN_POSES    5
 
 // ── Story screens ──────────────────────────────────────────────────────
@@ -237,7 +255,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 // lit and dimmed, from the SAME alpha mask -- so the two variants cover
 // byte for byte the same pixels and swapping which speaker is lit is a
 // pure overwrite with no background repair at all.
-#define MSX2_PORTRAIT_SEGMENT   422
+#define MSX2_PORTRAIT_SEGMENT   466
 #define MSX2_PORTRAIT_SEGS      2
 #define MSX2_PORTRAIT_CHARS     6
 #define MSX2_PORTRAIT_W         124
@@ -269,7 +287,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_MAP_PANEL_H        156
 
 // ── String table ───────────────────────────────────────────────────────
-#define MSX2_TEXT_SEGMENT       446
+#define MSX2_TEXT_SEGMENT       490
 #define MSX2_NAME_STRIDE        32
 #define MSX2_DESC_OFFSET        2496
 #define MSX2_DESC_STRIDE        80
@@ -311,7 +329,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_FONT_BYTES         512
 #define MSX2_UI_OFFSET          17472
 #define MSX2_UI_STRIDE          36
-#define MSX2_UI_COUNT           94
+#define MSX2_UI_COUNT           95
 #define MSX2_S_TURN                         0
 #define MSX2_S_PLACE_IN_DEFENCE_UP_DOWN_ATK 1
 #define MSX2_S_PLACE_IN_ATTACK_UP_DOWN_DEF  2
@@ -336,79 +354,80 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_S_FUSION_SUMMON                21
 #define MSX2_S_FUSION                       22
 #define MSX2_S_SUPPORT_ACTIVATED            23
-#define MSX2_S_EFFECT                       24
-#define MSX2_S_OPPONENT_CHANGES_POSITION    25
-#define MSX2_S_CHANGE_POSITION              26
-#define MSX2_S_NAME_YOUR_DUELIST            27
-#define MSX2_S_CHOOSE_EIGHT_LETTERS         28
-#define MSX2_S_NAME                         29
-#define MSX2_S_ABCDEFGHIJKLM                30
-#define MSX2_S_NOPQRSTUVWXYZ                31
-#define MSX2_S_SPACE_LETTER_RETURN_ACCEPT   32
-#define MSX2_S_ESC_DELETE                   33
-#define MSX2_S_CONTINUE_CODE                34
-#define MSX2_S_ENTER_CONTINUE_CODE          35
-#define MSX2_S_WRITE_THIS_DOWN              36
-#define MSX2_S_ENTER_IT_ON_THE_TITLE_SCREEN 37
-#define MSX2_S_SPACE_ESC_RETURN_TO_ROAD     38
-#define MSX2_S_ABCDEFGH                     39
-#define MSX2_S_JKLMNPQR                     40
-#define MSX2_S_STUVWXYZ                     41
-#define MSX2_S_23456789                     42
-#define MSX2_S_INVALID_CODE_TRY_AGAIN       43
-#define MSX2_S_TYPE_IT_OR_PICK_AND_PRESS_SP 44
-#define MSX2_S_ESC_DELETE_EMPTY_ESC_BACK    45
-#define MSX2_S_SEALED                       46
-#define MSX2_S_DECK_EDITOR                  47
-#define MSX2_S_LEAVE_THE_ROAD               48
-#define MSX2_S_SPACE_CHOOSES_UP_DOWN_MOVES  49
-#define MSX2_S_PUSH_SPACE                   50
-#define MSX2_S_CHOOSE_A_CARD_TO_REPLACE     51
-#define MSX2_S_STORAGE                      52
-#define MSX2_S_EMPTY_WIN_DUELS_TO_EARN_CARD 53
-#define MSX2_S_CARD                         54
-#define MSX2_S_ITEM                         55
-#define MSX2_S_L_R_PICK_SPACE_SWAP_ESC_BACK 56
-#define MSX2_S_L_R_TARGET_DOWN_PICK_ESC_EXI 57
-#define MSX2_S_DUEL_CLEARED                 58
-#define MSX2_S_NEW_CARD_EARNED              59
-#define MSX2_S_STORED_IN_YOUR_COLLECTION    60
-#define MSX2_S_SPACE_CONTINUE               61
-#define MSX2_S_AUTOPLAY                     62
-#define MSX2_S_TYPE_IT_OR_PICK_WITH_THE_ST  63
-#define MSX2_S_RETURN_OR_SPACE_ACCEPTS      64
-#define MSX2_S_ESC_OR_BACKSPACE_DELETES     65
-#define MSX2_S_UP_TO_EIGHT_LETTERS          66
-#define MSX2_S_CARD_CHECK                   67
-#define MSX2_S_SPACE_RETURNS_TO_THE_DUEL    68
-#define MSX2_S_OPPONENT_ROW_SPACE_CHECKS    69
-#define MSX2_S_SPACE_PLAYS_DOWN_FUSES_C_CHE 70
-#define MSX2_S_YOU_WIN                      71
-#define MSX2_S_YOU_LOSE                     72
-#define MSX2_S_STORY_MODE                   73
-#define MSX2_S_BATTLE_MODE                  74
-#define MSX2_S_LOAD_STORY                   75
-#define MSX2_S_SHATTERED                    76
-#define MSX2_S_DECKS                        77
-#define MSX2_S_VBLANK                       78
-#define MSX2_S_ATTACKER_DESTROYED           79
-#define MSX2_S_DAMAGE                       80
-#define MSX2_S_NO_BATTLE_DAMAGE             81
-#define MSX2_S_THOSE_CARDS_DO_NOT_FUSE      82
-#define MSX2_S_ONE_MONSTER_A_TURN           83
-#define MSX2_S_F1_SAVES_TO_DISK             84
-#define MSX2_S_F1_LOADS_FROM_DISK           85
-#define MSX2_S_SAVED_TO_DISK                86
-#define MSX2_S_DISK_ERROR_USE_A_BLANK_DISK  87
-#define MSX2_S_NO_SAVE_ON_THIS_DISK         88
-#define MSX2_S_FLOPPY_DISK                  89
-#define MSX2_S_PASSWORD                     90
-#define MSX2_S_WHERE_IS_THE_SAVE            91
-#define MSX2_S_NO_DRIVE_ANSWERED            92
-#define MSX2_S_SPACE_PICKS_ESC_RETURNS      93
+#define MSX2_S_OPPONENT_SUPPORT_ACTIVATED   24
+#define MSX2_S_EFFECT                       25
+#define MSX2_S_OPPONENT_CHANGES_POSITION    26
+#define MSX2_S_CHANGE_POSITION              27
+#define MSX2_S_NAME_YOUR_DUELIST            28
+#define MSX2_S_CHOOSE_EIGHT_LETTERS         29
+#define MSX2_S_NAME                         30
+#define MSX2_S_ABCDEFGHIJKLM                31
+#define MSX2_S_NOPQRSTUVWXYZ                32
+#define MSX2_S_SPACE_LETTER_RETURN_ACCEPT   33
+#define MSX2_S_ESC_DELETE                   34
+#define MSX2_S_CONTINUE_CODE                35
+#define MSX2_S_ENTER_CONTINUE_CODE          36
+#define MSX2_S_WRITE_THIS_DOWN              37
+#define MSX2_S_ENTER_IT_ON_THE_TITLE_SCREEN 38
+#define MSX2_S_SPACE_ESC_RETURN_TO_ROAD     39
+#define MSX2_S_ABCDEFGH                     40
+#define MSX2_S_JKLMNPQR                     41
+#define MSX2_S_STUVWXYZ                     42
+#define MSX2_S_23456789                     43
+#define MSX2_S_INVALID_CODE_TRY_AGAIN       44
+#define MSX2_S_TYPE_IT_OR_PICK_AND_PRESS_SP 45
+#define MSX2_S_ESC_DELETE_EMPTY_ESC_BACK    46
+#define MSX2_S_SEALED                       47
+#define MSX2_S_DECK_EDITOR                  48
+#define MSX2_S_LEAVE_THE_ROAD               49
+#define MSX2_S_SPACE_CHOOSES_UP_DOWN_MOVES  50
+#define MSX2_S_PUSH_SPACE                   51
+#define MSX2_S_CHOOSE_A_CARD_TO_REPLACE     52
+#define MSX2_S_STORAGE                      53
+#define MSX2_S_EMPTY_WIN_DUELS_TO_EARN_CARD 54
+#define MSX2_S_CARD                         55
+#define MSX2_S_ITEM                         56
+#define MSX2_S_L_R_PICK_SPACE_SWAP_ESC_BACK 57
+#define MSX2_S_L_R_TARGET_DOWN_PICK_ESC_EXI 58
+#define MSX2_S_DUEL_CLEARED                 59
+#define MSX2_S_NEW_CARD_EARNED              60
+#define MSX2_S_STORED_IN_YOUR_COLLECTION    61
+#define MSX2_S_SPACE_CONTINUE               62
+#define MSX2_S_AUTOPLAY                     63
+#define MSX2_S_TYPE_IT_OR_PICK_WITH_THE_ST  64
+#define MSX2_S_RETURN_OR_SPACE_ACCEPTS      65
+#define MSX2_S_ESC_OR_BACKSPACE_DELETES     66
+#define MSX2_S_UP_TO_EIGHT_LETTERS          67
+#define MSX2_S_CARD_CHECK                   68
+#define MSX2_S_SPACE_RETURNS_TO_THE_DUEL    69
+#define MSX2_S_OPPONENT_ROW_SPACE_CHECKS    70
+#define MSX2_S_SPACE_PLAYS_DOWN_FUSES_C_CHE 71
+#define MSX2_S_YOU_WIN                      72
+#define MSX2_S_YOU_LOSE                     73
+#define MSX2_S_STORY_MODE                   74
+#define MSX2_S_BATTLE_MODE                  75
+#define MSX2_S_LOAD_STORY                   76
+#define MSX2_S_SHATTERED                    77
+#define MSX2_S_DECKS                        78
+#define MSX2_S_VBLANK                       79
+#define MSX2_S_ATTACKER_DESTROYED           80
+#define MSX2_S_DAMAGE                       81
+#define MSX2_S_NO_BATTLE_DAMAGE             82
+#define MSX2_S_THOSE_CARDS_DO_NOT_FUSE      83
+#define MSX2_S_ONE_MONSTER_A_TURN           84
+#define MSX2_S_F1_SAVES_TO_DISK             85
+#define MSX2_S_F1_LOADS_FROM_DISK           86
+#define MSX2_S_SAVED_TO_DISK                87
+#define MSX2_S_DISK_ERROR_USE_A_BLANK_DISK  88
+#define MSX2_S_NO_SAVE_ON_THIS_DISK         89
+#define MSX2_S_FLOPPY_DISK                  90
+#define MSX2_S_PASSWORD                     91
+#define MSX2_S_WHERE_IS_THE_SAVE            92
+#define MSX2_S_NO_DRIVE_ANSWERED            93
+#define MSX2_S_SPACE_PICKS_ESC_RETURNS      94
 static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  8
-#define MSX2_SCENE_SEGMENT_LAST   447
-#define MSX2_ASSET_ROM_KB         7168
+#define MSX2_SCENE_SEGMENT_LAST   491
+#define MSX2_ASSET_ROM_KB         7872

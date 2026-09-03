@@ -1052,12 +1052,24 @@ def build_over_card_blob(cards, quiet):
     faces += [draw_over_support_card(kind) for kind in range(SUPPORT_VARIANTS)]
     faces.append(draw_over_card_back())
 
+    defence = bytearray()
+    def_mirror = bytearray()
     for face in faces:
         data = grb.quantize(face, (OVER_CARD_W, OVER_CARD_H))
         blob += data + bytes(OVER_CARD_STRIDE - len(data))
         turned = grb.quantize(face.transpose(Image.Transpose.ROTATE_180),
                               (OVER_CARD_W, OVER_CARD_H))
         mirror += turned + bytes(OVER_CARD_STRIDE - len(turned))
+        # Defence position is the card lying a quarter turn round, clockwise,
+        # so its top edge points to the holder's right -- the same thing a
+        # player does to a card on a real table.  The opposing row's copy is
+        # that turned card given the same half turn the upright set gets.
+        lying = face.transpose(Image.Transpose.ROTATE_270)
+        data = grb.quantize(lying, (OVER_CARD_H, OVER_CARD_W))
+        defence += data + bytes(OVER_CARD_STRIDE - len(data))
+        data = grb.quantize(lying.transpose(Image.Transpose.ROTATE_180),
+                            (OVER_CARD_H, OVER_CARD_W))
+        def_mirror += data + bytes(OVER_CARD_STRIDE - len(data))
 
     columns = 10
     rows = (len(faces) + columns - 1) // columns
@@ -1071,9 +1083,9 @@ def build_over_card_blob(cards, quiet):
     grb.write_preview(os.path.join(ASSET_DIR, "over_cards.png"), bytes(sheet),
                       (columns * OVER_CARD_W, rows * OVER_CARD_H))
     if not quiet:
-        print("OVER CARDS %d textures -> %d bytes (+ the half-turned set)"
-              % (len(faces), len(blob)))
-    return bytes(blob), bytes(mirror), len(faces)
+        print("OVER CARDS %d textures -> %d bytes (x4: upright, half-turned, "
+              "and both lying down)" % (len(faces), len(blob)))
+    return bytes(blob), bytes(mirror), bytes(defence), bytes(def_mirror), len(faces)
 
 
 def build_card_blob(cards, quiet):
@@ -1091,9 +1103,23 @@ def build_card_blob(cards, quiet):
     faces.append(draw_card_back())
 
     mirror = bytearray()
+    defence = bytearray()
+    def_mirror = bytearray()
     for face in faces:
         data = grb.quantize(face, (CARD_W, CARD_H))
         blob += data + bytes(CARD_STRIDE - len(data))
+        # The defence set is the card turned a quarter turn CLOCKWISE and stored
+        # turned -- 48 wide by 40 tall.  §8.4's interpreter walks one texture row
+        # forwards per destination row, so a card that is rotated at replay time
+        # would be one ADV per texel; rotated in the art it is the same three
+        # opcodes the upright card uses.  Its mirror exists for the same reason
+        # the upright one does (see below).
+        lying = face.transpose(Image.Transpose.ROTATE_270)
+        data = grb.quantize(lying, (CARD_H, CARD_W))
+        defence += data + bytes(CARD_STRIDE - len(data))
+        data = grb.quantize(lying.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
+                            (CARD_H, CARD_W))
+        def_mirror += data + bytes(CARD_STRIDE - len(data))
         # The mirrored set exists for the COM row.  Its cards are rotated 180
         # degrees on the board plane, so the span programs walk their texels
         # backwards (§8.4); reading a mirrored texture forwards is the same
@@ -1116,9 +1142,9 @@ def build_card_blob(cards, quiet):
     grb.write_preview(os.path.join(ASSET_DIR, "cards.png"), bytes(sheet),
                       (columns * CARD_W, rows * CARD_H))
     if not quiet:
-        print("CARDS    %d textures -> %d bytes (+ the mirrored set)"
-              % (len(faces), len(blob)))
-    return bytes(blob), bytes(mirror), len(faces)
+        print("CARDS    %d textures -> %d bytes (x4: upright, mirrored, and "
+              "both lying down)" % (len(faces), len(blob)))
+    return bytes(blob), bytes(mirror), bytes(defence), bytes(def_mirror), len(faces)
 
 
 def build_battle_card_blob(cards, quiet):
@@ -1307,14 +1333,20 @@ def main():
     title_prompt_segment = place("title_prompt", prompt_strip)
     sprite_segment = place("sprites", sprite_patterns())
 
-    card_blob, card_mirror, card_count = build_card_blob(cards, quiet)
+    card_blob, card_mirror, card_def, card_def_mirror, card_count = \
+        build_card_blob(cards, quiet)
     card_segment = place("cards", card_blob)
     card_mirror_segment = place("cards_mirror", card_mirror)
+    card_def_segment = place("cards_def", card_def)
+    card_def_mirror_segment = place("cards_def_mirror", card_def_mirror)
     battle_card_blob, battle_card_count = build_battle_card_blob(cards, quiet)
     battle_card_segment = place("battle_cards", battle_card_blob)
-    over_blob, over_mirror, _over_count = build_over_card_blob(cards, quiet)
+    over_blob, over_mirror, over_def, over_def_mirror, _over_count = \
+        build_over_card_blob(cards, quiet)
     over_card_segment = place("over_cards", over_blob)
     over_mirror_segment = place("over_cards_mirror", over_mirror)
+    over_def_segment = place("over_cards_def", over_def)
+    over_def_mirror_segment = place("over_cards_def_mirror", over_def_mirror)
 
     # ── The captured board (§4.3, §4.6, §8.4) ────────────────────────────────
     view_segment = place("board_views", b"".join(board["views"]))
@@ -1358,6 +1390,12 @@ def main():
         f.write("#define MSX2_CARD_ART_SEGMENT   %d\n" % card_segment)
         f.write("// The same textures mirrored left to right, for the COM row (§8.4).\n")
         f.write("#define MSX2_CARD_MIRROR_SEGMENT %d\n" % card_mirror_segment)
+        f.write("// The same set again, lying a quarter turn round for DEFENCE\n")
+        f.write("// position, and stored turned: 48 wide by 40 tall, so a span\n")
+        f.write("// program still walks one texture row per destination row.\n")
+        f.write("#define MSX2_CARD_DEF_SEGMENT   %d\n" % card_def_segment)
+        f.write("#define MSX2_CARD_DEF_MIRROR_SEGMENT %d\n"
+                % card_def_mirror_segment)
         f.write("\n// The overhead board's own card set: drawn at 32x42 rather than\n")
         f.write("// minified from the 40x48 board texture, so its one-pixel frame\n")
         f.write("// survives, and copied as a plain rectangle because the overhead\n")
@@ -1366,6 +1404,13 @@ def main():
         f.write("// reflected instead of rotated would have its art mirrored.\n")
         f.write("#define MSX2_OVER_CARD_SEGMENT  %d\n" % over_card_segment)
         f.write("#define MSX2_OVER_CARD_MIRROR_SEGMENT %d\n" % over_mirror_segment)
+        f.write("// ... and lying down, at OVER_CARD_H x OVER_CARD_W.  Overhead a\n")
+        f.write("// turned card is drawn at FULL size: the tile pitch is 48 and the\n")
+        f.write("// card is 42, so there is room sideways that a chair view has not\n")
+        f.write("// got.  MSX2_SLOT_ART for the overhead view is cut that wide.\n")
+        f.write("#define MSX2_OVER_DEF_SEGMENT   %d\n" % over_def_segment)
+        f.write("#define MSX2_OVER_DEF_MIRROR_SEGMENT %d\n"
+                % over_def_mirror_segment)
         f.write("#define MSX2_OVER_CARD_STRIDE   %d\n" % OVER_CARD_STRIDE)
         f.write("#define MSX2_OVER_CARD_PER_SEG  %d\n" % (SEGMENT_BYTES // OVER_CARD_STRIDE))
         f.write("#define MSX2_CARD_ART_STRIDE    %d\n" % CARD_STRIDE)

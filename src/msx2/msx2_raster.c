@@ -20,8 +20,13 @@ static u16 g_tex_loaded;
 static u8  g_prog_loaded;
 static u8  g_view;
 
-#define TEX_KEY(card, mirror)  (u16)(((u16)(card) << 1) | (mirror))
+#define TEX_KEY(card, mirror, def) \
+	(u16)(((u16)(card) << 2) | ((u16)(def) << 1) | (mirror))
 #define TEX_NONE               0xFFFF
+// The program cache key is the slot and the position it is holding: a slot
+// whose card lies down uses a different program in the same slot, so the slot
+// number alone would have kept the upright one.
+#define PROG_KEY(slot, def)    (u8)(((slot) << 1) | (def))
 #define PROG_NONE              0xFF
 
 // Slots 0..4 are the physical COM row.  Which row is mirrored is selected
@@ -49,7 +54,7 @@ void Msx2_RasterSetView(u8 view)
 	}
 }
 
-void Msx2_RasterLoad(u8 card_index, u8 slot)
+void Msx2_RasterLoad(u8 card_index, u8 slot, u8 defense)
 {
 	// The COM row is drawn from the mirrored blob (see the header): its span
 	// programs walk their texels backwards, and reading a mirrored texture
@@ -63,11 +68,17 @@ void Msx2_RasterLoad(u8 card_index, u8 slot)
     u8  mirror = (g_view == MSX2_VIEW_TOP)
                ? ((slot < COM_SLOTS) ? 1 : 0)
                : ((slot < COM_SLOTS) ? 0 : 1);
-	u16 key = TEX_KEY(card_index, mirror);
+	u16 key = TEX_KEY(card_index, mirror, defense);
 
 	if(g_tex_loaded != key)
 	{
-		u16 base = mirror ? MSX2_CARD_MIRROR_SEGMENT : MSX2_CARD_ART_SEGMENT;
+		// A card in defence position is turned a quarter turn on the board.
+		// The turn is in the ART -- the defence set is stored 48 wide by 40
+		// tall -- so the interpreter below is untouched by it: it still walks
+		// one texture row forwards per destination row.
+		u16 base = defense
+		         ? (mirror ? MSX2_CARD_DEF_MIRROR_SEGMENT : MSX2_CARD_DEF_SEGMENT)
+		         : (mirror ? MSX2_CARD_MIRROR_SEGMENT : MSX2_CARD_ART_SEGMENT);
 		Msx2_RomReadLong((u16)(base + card_index / MSX2_CARD_ART_PER_SEG),
 		                 (u16)((card_index % MSX2_CARD_ART_PER_SEG)
 		                       * MSX2_CARD_ART_STRIDE),
@@ -75,13 +86,14 @@ void Msx2_RasterLoad(u8 card_index, u8 slot)
 		g_tex_loaded = key;
 	}
 
-	if(g_prog_loaded != slot)
+	if(g_prog_loaded != PROG_KEY(slot, defense))
 	{
-		u8 record = g_msx2_span_record[g_view][slot];
+		u8 record = defense ? g_msx2_span_def_record[g_view][slot]
+		                    : g_msx2_span_record[g_view][slot];
 		Msx2_RomReadLong((u16)(MSX2_SPAN_SEGMENT + record / MSX2_SPAN_PER_SEG),
 		                 (u16)((record % MSX2_SPAN_PER_SEG) * MSX2_SPAN_STRIDE),
 		                 g_prog, MSX2_SPAN_MAX);
-		g_prog_loaded = slot;
+		g_prog_loaded = PROG_KEY(slot, defense);
 	}
 }
 
@@ -127,8 +139,8 @@ void Msx2_RasterDraw(void)
 	}
 }
 
-void Msx2_RasterCard(u8 card_index, u8 slot)
+void Msx2_RasterCard(u8 card_index, u8 slot, u8 defense)
 {
-	Msx2_RasterLoad(card_index, slot);
+	Msx2_RasterLoad(card_index, slot, defense);
 	Msx2_RasterDraw();
 }

@@ -138,10 +138,20 @@ it is ever touched — which is what lets it animate at all.
 * an emptied slot is put back from the SLOTS blob, which is the *captured*
   arena's own quantised bytes at that quad's bounding box.
 
-The selection bracket follows the quad — a rectangle around a trapezoid sits
-visibly beside the card it is selecting — and it is drawn into a flat ring the
-generator bakes just outside every quad, so erasing it is the same four VDP
-`LINE` commands in `MSX2_RING_COLOR` and no artwork underneath is ever repaired.
+The selector is a sprite — the spinning gem, projected offline into eight
+patterns — so it floats over both GRAPHIC 7 pages and nothing underneath it is
+ever touched.  The generator used to bake a flat brown ring just outside every
+quad so that a bracket drawn *into* the bitmap could be erased by redrawing a
+known colour; with the sprite there is nothing to erase, and the ring was only
+paint over the arena, so it is gone.
+
+**A card in defence position is turned a quarter turn**, the way it is on a
+table, rather than labelled.  The turn is in the art: the cartridge carries the
+card set stored turned (48x40, and 42x32 for the overhead board), so a span
+program still walks one texture row forwards per destination row.  In a chair
+view the turned card is *inscribed* in its slot — the slots there sit shoulder
+to shoulder, and every erase is the slot's own restore tile — while overhead it
+is drawn at full size, because the tile pitch is 48 and the card is 42.
 
 **The hand is not board geometry.** It is a flat HUD strip on every target, so
 it stays five axis-aligned 40x48 blits in a baked band — which also keeps the

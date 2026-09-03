@@ -310,7 +310,7 @@ bool Msx2_FusionStep_In(void)
 
 static u8 g_effect_left;
 
-void Msx2_EffectBegin_In(u8 card)
+void Msx2_EffectBegin_In(u8 card, u8 by_com)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 
@@ -321,8 +321,9 @@ void Msx2_EffectBegin_In(u8 card)
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
 
-	Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
-	Msx2_TextCenter(12, Msx2_UiText(MSX2_S_SUPPORT_ACTIVATED));
+	Msx2_TextColor(by_com ? MSX2_RED : MSX2_TEAL, MSX2_BLACK);
+	Msx2_TextCenter(12, Msx2_UiText(by_com ? MSX2_S_OPPONENT_SUPPORT_ACTIVATED
+	                                       : MSX2_S_SUPPORT_ACTIVATED));
 	Msx2_ScreenBigCard(card, (u8)((MSX2_SCREEN_W - MSX2_BATTLE_CARD_W) / 2),
 	                   EFFECT_CARD_Y);
 	Msx2_ScreenName(card, EFFECT_NAME_Y, MSX2_GOLD);

@@ -308,11 +308,23 @@ static u8 Msx2_BoardFieldSlot(u8 owner, u8 field_slot)
 // copied straight out of the cartridge.  A hand slot is a flat strip, and the
 // same kind of copy at 40x48, which keeps the cards a player is choosing
 // between at a readable size.
+// The bare slot: the arena's own pixels for it on this stage, cut out of the
+// quantised capture.  A fill would flatten the floor the board is standing on.
+// It is what an empty slot shows, and what a card lying down leaves uncovered.
+static void Msx2_BoardSlotGround(u8 slot)
+{
+	const u8* box = g_msx2_slot_box[g_view][slot];
+	u16 tile = (u16)(((u16)g_stage * MSX2_BOARD_VIEWS + g_view)
+	                 * MSX2_SLOT_ART_PER_VIEW + slot);
+	Msx2_StreamRect((u16)(MSX2_SLOT_ART_SEGMENT + tile / MSX2_SLOT_ART_PER_SEG),
+	                (u16)((tile % MSX2_SLOT_ART_PER_SEG) * MSX2_SLOT_ART_STRIDE),
+	                box[0], box[1], box[2], box[3]);
+}
+
 static void Msx2_BoardBlitSlot(u8 slot)
 {
 	u8  card = g_want[slot];
 	u8  index;
-	u16 tile;
 
 	if(IS_HAND(slot))
 	{
@@ -352,15 +364,7 @@ static void Msx2_BoardBlitSlot(u8 slot)
 
 	if(card == MSX2_CARD_NONE)
 	{
-		// Empty: the arena's own pixels for this slot on this stage, cut out of
-		// the quantised capture.  A fill would flatten the floor the board is
-		// standing on, and the ring around the slot with it.
-		const u8* box = g_msx2_slot_box[g_view][slot];
-		tile = (u16)(((u16)g_stage * MSX2_BOARD_VIEWS + g_view)
-		             * MSX2_SLOT_ART_PER_VIEW + slot);
-		Msx2_StreamRect((u16)(MSX2_SLOT_ART_SEGMENT + tile / MSX2_SLOT_ART_PER_SEG),
-		                (u16)((tile % MSX2_SLOT_ART_PER_SEG) * MSX2_SLOT_ART_STRIDE),
-		                box[0], box[1], box[2], box[3]);
+		Msx2_BoardSlotGround(slot);
 		return;
 	}
 
@@ -373,46 +377,50 @@ static void Msx2_BoardBlitSlot(u8 slot)
 		// opponent's row reads the half-turned set: seen from above their cards
 		// face their own chair.
 		const u8* at = g_msx2_over_card_xy[slot];
+		bool def = (g_flag[slot] & F_DEFENSE) != 0;
 		u16 base = (SLOT_ZONE(slot) == ZONE_COM)
-		         ? MSX2_OVER_CARD_MIRROR_SEGMENT : MSX2_OVER_CARD_SEGMENT;
+		         ? (def ? MSX2_OVER_DEF_MIRROR_SEGMENT : MSX2_OVER_CARD_MIRROR_SEGMENT)
+		         : (def ? MSX2_OVER_DEF_SEGMENT : MSX2_OVER_CARD_SEGMENT);
+		if(def)
+		{
+			// A card lying down is wider and shorter than the slot's upright
+			// footprint, so the strip of table it uncovers above and below has
+			// to be put back before it is drawn -- the slot's own restore tile
+			// is cut wide enough for exactly this.
+			const u8* box = g_msx2_slot_box[g_view][slot];
+			Msx2_BoardSlotGround(slot);
+			Msx2_StreamRect((u16)(base + index / MSX2_OVER_CARD_PER_SEG),
+			                (u16)((index % MSX2_OVER_CARD_PER_SEG)
+			                      * MSX2_OVER_CARD_STRIDE),
+			                box[0],
+			                (u8)(at[1] + (MSX2_OVER_CARD_H - MSX2_OVER_CARD_W) / 2),
+			                MSX2_OVER_CARD_H, MSX2_OVER_CARD_W);
+			return;
+		}
 		Msx2_StreamRect((u16)(base + index / MSX2_OVER_CARD_PER_SEG),
 		                (u16)((index % MSX2_OVER_CARD_PER_SEG)
 		                      * MSX2_OVER_CARD_STRIDE),
 		                at[0], at[1], MSX2_OVER_CARD_W, MSX2_OVER_CARD_H);
-	}
-	else
-	{
-		Msx2_RasterSetView(g_view);
-		Msx2_RasterCard(index, slot);
+		return;
 	}
 
-	// Defence position: the other targets turn the card sideways on the board
-	// plane, and warping a second quad for that would double what the cartridge
-	// carries for a state a word states more clearly at this size.
-	if(g_flag[slot] & F_DEFENSE)
-	{
-		const u8* box = g_msx2_slot_box[g_view][slot];
-		u8 x = (u8)(box[0] + (box[2] >> 1) - 11);
-		u8 y = (u8)(box[1] + box[3] - 12);
-		Msx2_Fill(x, y, 24, 8, MSX2_DEEP_BLUE);
-		Msx2_TextColor(MSX2_WHITE, MSX2_DEEP_BLUE);
-		Msx2_TextAt((u8)(x + 3), y, "DEF");
-	}
+	// Defence position in a chair view: the same quarter turn, done by the span
+	// program and the pre-turned texture set rather than by printing "DEF" over
+	// the card, which is what used to say it.
+	Msx2_RasterSetView(g_view);
+	Msx2_RasterCard(index, slot, (g_flag[slot] & F_DEFENSE) ? 1 : 0);
 }
 
-// The selection bracket.  A field slot's follows its projected quad -- a
-// rectangle around a trapezoid sits visibly beside the card it is selecting --
-// and it is drawn INTO the flat ring the generator baked just outside every
-// quad, so erasing it is the same four lines in MSX2_RING_COLOR and no artwork
-// underneath is ever repaired.  A hand slot's is the baked gold frame, redrawn.
 // ── The selector ────────────────────────────────────────────────────────────
 //
 // It used to be a rectangle drawn INTO the bitmap: a white frame round the
 // chosen hand card, an outline round the chosen quad.  Both had to be erased
 // again, on each page separately, by redrawing the exact colour that was under
-// them -- which is why the hand row has a baked gold frame and every slot has a
-// baked ring, and why half a dozen places in this file had to remember where
-// the cursor was on which page.
+// them -- which is why the hand row has a baked gold frame, and why half a
+// dozen places in this file had to remember where the cursor was on which page.
+// (Every slot also carried a flat brown ring for the same reason.  It was paint
+// over the arena that said nothing once the cursor stopped being drawn into it,
+// so the generator does not bake one any more.)
 //
 // It is a sprite now: the spinning red gem the PC build draws beside the chosen
 // card (draw_spin_cursor in src/main.c), projected offline into eight sprite
@@ -450,6 +458,16 @@ static void Msx2_BoardShowCursor(void)
 	{
 		x = HAND_X(slot - MSX2_FIELD_SLOTS);
 		y = (u8)(MSX2_HAND_Y + (MSX2_CARD_H - MSX2_GEM_SCREEN) / 2);
+	}
+	else if(g_view == MSX2_VIEW_OVER)
+	{
+		// Not the slot's restore box overhead: that is cut wide enough for a
+		// card lying down, and the gem would stand five pixels out in the
+		// gutter instead of on the edge of the card it is selecting.
+		const u8* at = g_msx2_over_card_xy[slot];
+		u8 mid = (u8)(at[1] + MSX2_OVER_CARD_H / 2);
+		x = at[0];
+		y = (mid > MSX2_GEM_SCREEN / 2) ? (u8)(mid - MSX2_GEM_SCREEN / 2) : 0;
 	}
 	else
 	{
@@ -1129,7 +1147,17 @@ static void Msx2_BoardStartFx(void)
 	else if(action == MSX2_ACTION_POSITION)
 		g_fx_kind = FX_POSITION;
 	else
+	{
+		// A support card is the same card whoever plays it, and the 2-D cut-in
+		// is the only place the port ever says what one DID.  The opponent's
+		// used to get the retained-board "chooses a card" flash and nothing
+		// else, so THUNDER took a monster off the player's row with no screen
+		// naming it.  The opponent keeps the wind-up beat -- it is what says
+		// the card came out of the opponent's hand -- and the cut-in follows it.
 		g_fx_kind = (owner == MSX2_OWNER_COM) ? FX_COM_CHOOSE : FX_SUPPORT;
+		if(owner == MSX2_OWNER_COM)
+			g_fx_followup = FX_SUPPORT;
+	}
 
 	Msx2_ClearActionEvent();
 	// The selector goes now, not on the next frame's Msx2_BoardShowCursor():
@@ -1149,7 +1177,7 @@ static void Msx2_BoardStartFx(void)
 	else if(g_fx_kind == FX_FUSION)
 		Msx2_FusionBegin(g_fuse_mat, g_fuse_mat_n, g_duel.last_action_card);
 	else if(g_fx_kind == FX_SUPPORT)
-		Msx2_EffectBegin(g_fx_card);
+		Msx2_EffectBegin(g_fx_card, FALSE);
 	Msx2_BoardHideHand();
 }
 
@@ -1169,6 +1197,17 @@ static void Msx2_BoardFinishFx(void)
 		g_fx_frames = FX_LANDING_FRAMES;
 		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
 		Msx2_BoardHideHand();
+		return;
+	}
+	if(next == FX_SUPPORT)
+	{
+		// The opponent's support card, now that its wind-up beat has run: the
+		// same full-screen cut-in the player's own gets.
+		g_fx_kind = FX_SUPPORT;
+		g_fx_followup = FX_NONE;
+		g_fx_frames = FX_LANDING_FRAMES;
+		g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+		Msx2_EffectBegin(g_fx_card, TRUE);
 		return;
 	}
 	if(next == FX_EQUIP)

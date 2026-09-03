@@ -43,7 +43,11 @@ void Msx2_RasterSetView(u8 view);
 // Pull one card texture and one slot's span program in from the cartridge.
 // Both are RAM-resident for the draw: that is what keeps the inner loop free of
 // bank switching, and it is why the two buffers are worth their four kilobytes.
-void Msx2_RasterLoad(u8 card_index, u8 slot);
+// `defense` selects the pre-turned 48x40 texture set and the span program that
+// lays the card a quarter turn round inside its slot -- the position a real
+// table states by turning the card, and this port used to state with the word
+// "DEF" printed over it.
+void Msx2_RasterLoad(u8 card_index, u8 slot, u8 defense);
 
 // Replay the loaded program onto the draw page.  Roughly two frames of VDP time
 // for one card, paid when a card ARRIVES rather than every frame -- the board
@@ -51,4 +55,4 @@ void Msx2_RasterLoad(u8 card_index, u8 slot);
 void Msx2_RasterDraw(void);
 
 // The two together, which is what every caller actually wants.
-void Msx2_RasterCard(u8 card_index, u8 slot);
+void Msx2_RasterCard(u8 card_index, u8 slot, u8 defense);

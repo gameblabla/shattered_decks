@@ -11,8 +11,8 @@ authored MSX2 poses and prints the projected corner list for every field slot.
 Three things come out:
 
   * `board_view_<stage>.bin` -- the 256x212 resting picture: the captured board,
-    the same black surround as PC-FX, a flat ring around every
-    slot, and the three baked UI panels.  One per story stage.
+    the same black surround as PC-FX, and the three baked UI panels.
+    One per story stage.
   * `board_move_<stage>_<move>.bin` -- §4.6's baked camera move: a strip of whole
     pictures of the board band, played back in order by the ordinary streamer.
     No codec, no reconstruction; that is the entire technique.
@@ -68,11 +68,13 @@ HAND_Y = HAND_BAND_Y + 3
 FIELD_SLOTS = 10
 HAND_SLOTS = 5
 
-# The ring baked around every slot.  §8.5's transparency key is colour 0, and
-# this is its counterpart: the cursor is drawn INTO the ring, so erasing it is a
-# redraw in this exact colour and no artwork underneath is ever repaired.
-RING = 2
-RING_RGB = (72, 40, 8)
+# The margin a slot's restore tile keeps around the quad.  It used to be a flat
+# brown ring drawn just outside every slot, back when the cursor was a rectangle
+# in the bitmap and had to be erased by redrawing a known colour.  The cursor is
+# a sprite now, so the ring was a box of paint over the arena that said nothing;
+# the margin it needed stays, because a span program can round a texel past the
+# quad and the restore has to cover it.
+SLOT_PAD = 4.0
 PANEL_RGB = (40, 34, 48)
 GOLD_RGB = (198, 152, 54)
 
@@ -136,6 +138,19 @@ OVER_YOU_ROW = 2
 # rectangle and not a projection.  32x42 centred on a 43x38 tile interior:
 # two rows of overhang each way, into the gutter, touching no neighbour.
 OVER_CARD_W, OVER_CARD_H = 32, 42
+
+# A card in defence position is turned a quarter turn, the way it is on a real
+# table, so overhead it occupies OVER_CARD_H x OVER_CARD_W.  It is drawn at full
+# size -- the tile pitch is 48 and there are sixteen pixels of gutter between two
+# cards, so a 42-wide card still touches no neighbour -- and this is how much
+# wider than the upright card the slot's restore tile therefore has to be.
+OVER_DEF_PADX = (OVER_CARD_H - OVER_CARD_W) // 2
+
+# The same card turned in a CHAIR view cannot have that room: the slots there are
+# a projected 40x48 and they sit shoulder to shoulder.  So a turned card is
+# scaled to fit the slot it is in -- 48 units of card across 40 units of slot --
+# and its footprint inside the slot's own (u, v) is this tall, centred.
+DEF_FIT = (CARD_W / float(CARD_H)) ** 2
 
 
 # ── The capture ──────────────────────────────────────────────────────────────
@@ -341,24 +356,6 @@ def expand_quad(quad, amount):
     return out
 
 
-def draw_slot_rings(img, quads):
-    """A flat ring just outside every slot's quad.
-
-    §21.1 keeps `msx2_board.c`'s ring trick and notes that the captured arena
-    carries no highlight of its own, so the generator draws one -- which is the
-    fallback that section names.  It is drawn OUTSIDE the quad so a card never
-    covers it, and it is flat so the runtime can erase a cursor by redrawing
-    the ring colour rather than by repairing artwork."""
-    mask = Image.new("L", img.size, 0)
-    d = ImageDraw.Draw(mask)
-    for quad in quads:
-        d.polygon(expand_quad(quad, RING + 1.5), fill=255)
-    for quad in quads:
-        d.polygon(expand_quad(quad, 0.5), fill=0)
-    img.paste(Image.new("RGB", img.size, RING_RGB), (0, 0), mask)
-    return img
-
-
 def paint_panels(img, hand_row=True):
     """The three baked UI grounds.
 
@@ -389,12 +386,6 @@ def paint_panels(img, hand_row=True):
 def build_view(cap, stage, tag):
     quads = cap.poses[tag]
     img = over_scene(stage) if tag == "OVER" else composite_arena(cap, tag, stage)
-    # No rings overhead.  They existed so the cursor could be erased by
-    # redrawing them, and the cursor is a sprite now; the artwork's own tile
-    # borders already say where a slot is, and a second box drawn inside one
-    # only muddles it.
-    if tag != "OVER":
-        draw_slot_rings(img, quads)
     # The overhead view owns the hand's rows, so it must not be given the five
     # empty hand frames -- there is no hand on this screen.
     paint_panels(img, hand_row=(tag != "OVER"))
@@ -411,31 +402,20 @@ def build_move_strip(cap, stage, move, poses):
     for pose in range(poses):
         tag = "MOVE_%s_%d" % (move, pose)
         img = composite_arena(cap, tag, stage)
-        # The turn strip is also the empty COM-side resting view at its last
-        # pose.  Carry the slot rings through the strip so the destination can
-        # be populated and the cursor can be erased without repairing a full
-        # board image.  (The opening is deliberately ring-free until it lands
-        # on TOP, where the normal view already contains the rings.)
-        if move == "TURN":
-            draw_slot_rings(img, cap.poses[tag])
-        elif pose == poses - 1:
-            # The shared opening lands exactly on TOP.  Carry its rings on the
-            # last pose so the animation truly ends on the retained base frame
-            # rather than flashing them in one presentation later.
-            draw_slot_rings(img, cap.poses[tag])
         band = img.crop((0, BAND_Y, WIDTH, BAND_Y + BAND_H))
         frames.append(pad_segments(grb.quantize(band, (WIDTH, BAND_H))))
     return b"".join(frames)
 
 
-def cut_slot_tiles(scene, quads, bottom=BAND_Y + BAND_H, pad=RING + 2.0):
+def cut_slot_tiles(scene, quads, bottom=BAND_Y + BAND_H, pad=SLOT_PAD,
+                   padx=0.0):
     """The empty-slot rectangle of one arena at each slot, in the arena's own
     quantised bytes -- so putting a destroyed monster back is the picture, not
     something close to it."""
     blob = bytearray()
     boxes = []
     for quad in quads:
-        x0, y0, x1, y1 = quad_box(quad, bottom, pad)
+        x0, y0, x1, y1 = quad_box(quad, bottom, pad, padx)
         tile = bytearray()
         for y in range(y0, y1):
             start = y * WIDTH + x0
@@ -448,27 +428,63 @@ def cut_slot_tiles(scene, quads, bottom=BAND_Y + BAND_H, pad=RING + 2.0):
     return bytes(blob), boxes
 
 
-def quad_box(quad, bottom=BAND_Y + BAND_H, pad=RING + 2.0):
+def quad_box(quad, bottom=BAND_Y + BAND_H, pad=SLOT_PAD, padx=0.0):
     """The pixel box a quad's ring and card occupy, clamped to the view.
 
     `bottom` is the last row the view's picture reaches: the two captured
     chairs stop at the hand row, the overhead view goes on through it.
 
-    `pad` is the margin around the quad.  A chair view needs one, for the ring
-    drawn outside the slot; the overhead view must NOT have one, because its
-    two rows of cards are flush -- a card overhangs its tile by two rows into
-    the four-row gutter, from both sides -- so a padded box would take the
-    bottom of the opponent's card with it every time the slot below was
-    emptied, and the retained painter would never put it back."""
+    `pad` is the margin around the quad, and the overhead view must NOT have
+    one, because its two rows of cards are flush -- a card overhangs its tile by
+    two rows into the four-row gutter, from both sides -- so a padded box would
+    take the bottom of the opponent's card with it every time the slot below was
+    emptied, and the retained painter would never put it back.
+
+    `padx` widens the box in x alone.  That is what a defence card needs
+    overhead: turned a quarter turn it is OVER_CARD_H wide rather than
+    OVER_CARD_W, and the tile that restores the slot has to cover the widest
+    thing that can ever be drawn in it.  There is room for it sideways -- the
+    tile pitch is 48 and the card is 42 -- and none of it vertically, which is
+    exactly why this is one number and not two."""
     outer = expand_quad(quad, pad)
-    x0 = max(0, int(math.floor(min(p[0] for p in outer))))
-    x1 = min(WIDTH, int(math.ceil(max(p[0] for p in outer))) + 1)
+    x0 = max(0, int(math.floor(min(p[0] for p in outer) - padx)))
+    x1 = min(WIDTH, int(math.ceil(max(p[0] for p in outer) + padx)) + 1)
     y0 = max(BAND_Y, int(math.floor(min(p[1] for p in outer))))
     y1 = min(bottom, int(math.ceil(max(p[1] for p in outer))) + 1)
     return x0, y0, x1, y1
 
 
 # ── §8.4: the baked span programs ────────────────────────────────────────────
+
+def bilinear_point(quad, u, v):
+    """The window pixel a quad's own (u, v) lands on -- inverse_bilinear's
+    forward direction, which is what places a turned card inside a slot."""
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = quad
+    return ((1 - u) * (1 - v) * x0 + u * (1 - v) * x1 + u * v * x2 +
+            (1 - u) * v * x3,
+            (1 - u) * (1 - v) * y0 + u * (1 - v) * y1 + u * v * y2 +
+            (1 - u) * v * y3)
+
+
+def defence_quad(quad):
+    """The footprint of a card lying a quarter turn round in this slot.
+
+    It is INSCRIBED in the upright quad -- the full width, DEF_FIT of the height,
+    centred -- rather than sticking out sideways the way the overhead board can
+    afford to.  Two reasons, and both of them are the retained painter's: the
+    chair slots sit shoulder to shoulder, and every erase in this file is the
+    slot's own restore tile, which is cut from the upright quad.  A card that
+    reached past it would leave a strip of itself behind for the rest of the
+    duel.
+
+    The corner order is the upright quad's, so a span program baked through it
+    reads the pre-turned texture upright and the turn comes entirely out of the
+    art (gen_msx_scenes.py's defence card blob).  Nothing here rotates pixels."""
+    v0 = (1.0 - DEF_FIT) / 2.0
+    v1 = 1.0 - v0
+    return [bilinear_point(quad, u, v)
+            for u, v in ((0.0, v0), (1.0, v0), (1.0, v1), (0.0, v1))]
+
 
 def inverse_bilinear(quad, x, y):
     """Where (x, y) sits in the quad's own (u, v), or None if outside.
@@ -606,20 +622,35 @@ def bake_span_program(quad, tex_w, tex_h):
 
 
 def bake_spans(cap, tags):
-    """Every span program, at the stride the streamer can address it by."""
+    """Every span program, at the stride the streamer can address it by.
+
+    Two per slot: the upright card, and the same card lying a quarter turn round
+    for defence position.  The turned one samples a texture that is already
+    turned -- 48 wide by 40 tall -- so its destination rows still walk one
+    texture row forwards and the interpreter is the same three opcodes it always
+    was.  Rotating at replay time would have made every texel its own ADV."""
     blob = bytearray()
     offsets = []
+    def_offsets = []
     longest = 0
+
+    def emit(quad, tex_w, tex_h, into):
+        nonlocal longest
+        into.append(len(blob) // SPAN_STRIDE)
+        prog, _rows = bake_span_program(quad, tex_w, tex_h)
+        longest = max(longest, len(prog))
+        if len(prog) > SPAN_STRIDE:
+            raise SystemExit("gen_msx_views: a span program is %d bytes, "
+                             "past the %d stride" % (len(prog), SPAN_STRIDE))
+        return prog + bytes(SPAN_STRIDE - len(prog))
+
     for tag in tags:
         for quad in cap.poses[tag]:
-            offsets.append(len(blob) // SPAN_STRIDE)
-            prog, _rows = bake_span_program(quad, CARD_W, CARD_H)
-            longest = max(longest, len(prog))
-            if len(prog) > SPAN_STRIDE:
-                raise SystemExit("gen_msx_views: a span program is %d bytes, "
-                                 "past the %d stride" % (len(prog), SPAN_STRIDE))
-            blob += prog + bytes(SPAN_STRIDE - len(prog))
-    return bytes(blob), offsets, longest
+            blob += emit(quad, CARD_W, CARD_H, offsets)
+    for tag in tags:
+        for quad in cap.poses[tag]:
+            blob += emit(defence_quad(quad), CARD_H, CARD_W, def_offsets)
+    return bytes(blob), offsets, def_offsets, longest
 
 
 # ── Driving it all ───────────────────────────────────────────────────────────
@@ -648,7 +679,8 @@ def bake(quiet=False, capture=True):
             bottom = (HAND_BAND_Y + HAND_BAND_H) if over else (BAND_Y + BAND_H)
             data = grb.quantize(build_view(cap, stage, tag), (WIDTH, HEIGHT))
             tiles, stage_boxes = cut_slot_tiles(data, quads, bottom,
-                                                0.0 if over else RING + 2.0)
+                                                0.0 if over else SLOT_PAD,
+                                                OVER_DEF_PADX if over else 0.0)
             views[tag].append(pad_segments(data))
             slots += tiles
             if boxes[tag] is None:
@@ -660,7 +692,7 @@ def bake(quiet=False, capture=True):
                   % (STAGE_NAMES[stage], len(view_tags),
                      WIDTH * HEIGHT, FIELD_SLOTS))
 
-    spans, span_off, span_max = bake_spans(cap, list(view_tags))
+    spans, span_off, span_def_off, span_max = bake_spans(cap, list(view_tags))
     if not quiet:
         print("SPANS    %d programs -> %d bytes (longest %d B)"
               % (len(span_off), len(spans), span_max))
@@ -682,6 +714,7 @@ def bake(quiet=False, capture=True):
         "moves": [(name, poses, bytes(moves[name])) for name, poses in cap.moves],
         "spans": spans,
         "span_offsets": span_off,
+        "span_def_offsets": span_def_off,
         "span_max": span_max,
         "quads": {tag: cap.poses[tag] for tag in view_tags},
     }
@@ -725,7 +758,6 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("#define MSX2_HAND_Y             %d" % HAND_Y)
     a("#define MSX2_FIELD_SLOTS        %d" % FIELD_SLOTS)
     a("#define MSX2_HAND_SLOTS         %d" % HAND_SLOTS)
-    a("#define MSX2_RING_COLOR         0x%02X" % grb.pack(*RING_RGB))
     a("#define MSX2_PANEL_COLOR        0x%02X" % grb.pack(*PANEL_RGB))
     a("#define MSX2_GOLD_COLOR         0x%02X" % grb.pack(*GOLD_RGB))
     a("")
@@ -778,6 +810,15 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
         start = view * FIELD_SLOTS
         a("\t{ %s }," % ", ".join(str(v) for v in
                                       baked["span_offsets"][start:start + FIELD_SLOTS]))
+    a("};")
+    a("")
+    a("// The same slots for a card in DEFENCE position: turned a quarter turn and")
+    a("// scaled to fit the slot, sampling the pre-turned 48x40 texture set.")
+    a("static const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {")
+    for view in range(len(baked["view_tags"])):
+        start = view * FIELD_SLOTS
+        a("\t{ %s }," % ", ".join(str(v) for v in
+                                      baked["span_def_offsets"][start:start + FIELD_SLOTS]))
     a("};")
     a("")
     a("// ── Empty-slot tiles ──────────────────────────────────────────────────")

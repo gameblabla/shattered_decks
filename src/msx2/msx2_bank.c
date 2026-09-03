@@ -66,10 +66,10 @@ bool Msx2_FusionStep(void)
 	return more;
 }
 
-void Msx2_EffectBegin(u8 card)
+void Msx2_EffectBegin(u8 card, u8 by_com)
 {
 	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
-	Msx2_EffectBegin_In(card);
+	Msx2_EffectBegin_In(card, by_com);
 	Msx2_Bank0Leave(back);
 }
 

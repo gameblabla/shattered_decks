@@ -34,8 +34,10 @@ bool Msx2_FusionStep_In(void);
 // ── The effect cut-in ───────────────────────────────────────────────────────
 // A support card that resolves on its own: the card at cut-in size with the
 // sentence that says what it does.  Begin composes it, Step counts the hold
-// down and returns FALSE when the board should come back.
-void Msx2_EffectBegin(u8 card);
+// down and returns FALSE when the board should come back.  `by_com` only
+// changes the line over the card: the opponent's THUNDER is the same card doing
+// the same thing, and the player is owed the same look at it.
+void Msx2_EffectBegin(u8 card, u8 by_com);
 bool Msx2_EffectStep(void);
-void Msx2_EffectBegin_In(u8 card);
+void Msx2_EffectBegin_In(u8 card, u8 by_com);
 bool Msx2_EffectStep_In(void);
