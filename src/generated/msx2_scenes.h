@@ -242,22 +242,24 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 
 // ── String table ───────────────────────────────────────────────────────
 #define MSX2_TEXT_SEGMENT       420
-#define MSX2_NAME_STRIDE        24
+#define MSX2_NAME_STRIDE        32
+#define MSX2_DESC_OFFSET        2496
+#define MSX2_DESC_STRIDE        80
 #define MSX2_NAME_COUNT         78
 #define MSX2_NAME_OFFSET        0
-#define MSX2_OPP_OFFSET         1872
+#define MSX2_OPP_OFFSET         8736
 #define MSX2_OPP_STRIDE         32
 #define MSX2_LINE_STRIDE        112
 #define MSX2_LINES_PER_DUEL     12
-#define MSX2_DIALOGUE_OFFSET    2032
-#define MSX2_INTRO_OFFSET       8752
+#define MSX2_DIALOGUE_OFFSET    8896
+#define MSX2_INTRO_OFFSET       15616
 #define MSX2_INTRO_COUNT        4
-#define MSX2_ENDING_OFFSET      9424
+#define MSX2_ENDING_OFFSET      16288
 #define MSX2_ENDING_COUNT       4
 #define MSX2_TITLE_PROMPT_SEGMENT 52
 #define MSX2_TITLE_STRIP_Y      186
 #define MSX2_TITLE_STRIP_H      12
-#define MSX2_FONT_OFFSET        10096
+#define MSX2_FONT_OFFSET        16960
 
 // ── Sprite patterns ───────────────────────────────────────
 // Sixteen 16x16 patterns in the V9938's own quarter layout: eight
@@ -275,7 +277,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_GEM_SCREEN         20
 #define MSX2_FONT_FIRST         32
 #define MSX2_FONT_BYTES         512
-#define MSX2_UI_OFFSET          10608
+#define MSX2_UI_OFFSET          17472
 #define MSX2_UI_STRIDE          36
 #define MSX2_UI_COUNT           93
 #define MSX2_S_TURN                         0
@@ -375,5 +377,5 @@ static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  8
-#define MSX2_SCENE_SEGMENT_LAST   420
-#define MSX2_ASSET_ROM_KB         6736
+#define MSX2_SCENE_SEGMENT_LAST   421
+#define MSX2_ASSET_ROM_KB         6752

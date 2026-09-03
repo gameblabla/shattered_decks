@@ -316,6 +316,14 @@ const c8* Msx2_UiText(u8 id)
 
 void Msx2_RomReadLong(u16 segment, u16 offset, u8* dst, u16 len)
 {
+	// Same normalisation as Msx2_RomRead, and for the same reason: the room
+	// left in the segment is computed here, and an offset past the window
+	// turned that subtraction into a very large number.
+	while(offset >= MSX2_NEO_SEGMENT_SZ)
+	{
+		offset = (u16)(offset - MSX2_NEO_SEGMENT_SZ);
+		++segment;
+	}
 	while(len != 0)
 	{
 		u16 room = (u16)(MSX2_NEO_SEGMENT_SZ - offset);
@@ -336,6 +344,26 @@ void Msx2_RomReadLong(u16 segment, u16 offset, u8* dst, u16 len)
 
 void Msx2_RomRead(u16 segment, u16 offset, u8* dst, u8 len)
 {
+	// AN OFFSET IS NOT A WINDOW POSITION.
+	// Callers address a blob by its first segment and a byte offset into it,
+	// and blobs outgrow 16 KB: the text table did, the moment card
+	// descriptions went into it, and every string past the boundary silently
+	// came back as whatever happened to be at the same place in the first
+	// segment.  Normalise here, once, rather than at each of the dozen call
+	// sites -- and split a record that straddles the seam.
+	while(offset >= MSX2_NEO_SEGMENT_SZ)
+	{
+		offset = (u16)(offset - MSX2_NEO_SEGMENT_SZ);
+		++segment;
+	}
+	if((u16)(offset + len) > MSX2_NEO_SEGMENT_SZ)
+	{
+		u8 head = (u8)(MSX2_NEO_SEGMENT_SZ - offset);
+		Msx2_RomRead(segment, offset, dst, head);
+		Msx2_RomRead((u16)(segment + 1), 0, dst + head, (u8)(len - head));
+		return;
+	}
+
 	g_blit_segment = segment;
 	g_blit_src = (u16)(MSX2_NEO_WINDOW + offset);
 	g_blit_dst = dst;

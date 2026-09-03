@@ -46,6 +46,63 @@ static void Msx2_ScreenSmallCard(u8 card, u8 x, u8 y)
 }
 
 // ── The card check screen ───────────────────────────────────────────────────
+//
+// Art on the left, everything the card says on the right: its name, its two
+// figures, and the sentence describing it.  The sentence is the point -- the
+// screen used to be a big picture with a name under it, which the bottom panel
+// of the duel already tells you, so there was no reason to leave the board.
+//
+// The prose lives in the cartridge with the names (MSX2_DESC_OFFSET) and is
+// wrapped here rather than offline, because one column width is one number and
+// a wrapper is cheaper than eighty bytes a card of pre-broken lines.
+
+#define CHECK_ART_X    14
+#define CHECK_ART_Y    44
+#define CHECK_COL_X    116          // the right column, and its width in
+#define CHECK_COL_COLS 22           // ... six-pixel characters
+#define CHECK_NAME_Y   44
+#define CHECK_STAT_Y   76
+#define CHECK_DESC_Y   102
+#define CHECK_LINE_H   11
+
+static c8 g_desc[MSX2_DESC_STRIDE];
+static c8 g_line[CHECK_COL_COLS + 1];
+
+// One paragraph, broken on spaces into the column and drawn from `y` down.
+static void Msx2_ScreenParagraph(const c8* text, u8 y, u8 color)
+{
+	u8 at = 0;
+
+	Msx2_TextColor(color, MSX2_BLACK);
+	while(text[at] != 0)
+	{
+		u8 take = 0;
+		u8 fits = 0;
+		u8 i;
+
+		// How much of what is left fits, and where the last space inside it is.
+		while((take < CHECK_COL_COLS) && (text[at + take] != 0))
+		{
+			if(text[at + take] == ' ')
+				fits = take;
+			++take;
+		}
+		// Break on that space unless the whole remainder fits, or there is no
+		// space at all -- a single word longer than the column is simply cut.
+		if((text[at + take] != 0) && (fits != 0))
+			take = fits;
+
+		for(i = 0; i < take; ++i)
+			g_line[i] = text[at + i];
+		g_line[take] = 0;
+		Msx2_TextAt(CHECK_COL_X, y, g_line);
+		y = (u8)(y + CHECK_LINE_H);
+
+		at = (u8)(at + take);
+		while(text[at] == ' ')
+			++at;
+	}
+}
 
 void Msx2_CardCheckCompose_In(u8 card, i16 atk, i16 def)
 {
@@ -57,27 +114,39 @@ void Msx2_CardCheckCompose_In(u8 card, i16 atk, i16 def)
 	Msx2_VideoDrawPage(page);
 
 	Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
-	Msx2_TextCenter(6, Msx2_UiText(MSX2_S_CARD_CHECK));
-	Msx2_ScreenBigCard(card, (u8)((MSX2_SCREEN_W - MSX2_BATTLE_CARD_W) / 2), 26);
-	Msx2_ScreenName(card, 156, MSX2_WHITE);
+	Msx2_TextCenter(8, Msx2_UiText(MSX2_S_CARD_CHECK));
+	Msx2_ScreenBigCard(card, CHECK_ART_X, CHECK_ART_Y);
+
+	// The name goes through the wrapper too: several of them are longer than
+	// the column, and a name cut in half is worse than a name on two lines.
+	Msx2_RomRead(MSX2_TEXT_SEGMENT, (u16)card * MSX2_NAME_STRIDE,
+	             (u8*)g_name, MSX2_NAME_STRIDE);
+	g_name[MSX2_NAME_STRIDE - 1] = 0;
+	Msx2_ScreenParagraph(g_name, CHECK_NAME_Y, MSX2_WHITE);
 
 	if(Msx2_IsMonster(card))
 	{
 		Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
-		Msx2_TextAt(56, 172, "ATK");
-		Msx2_TextAt(140, 172, "DEF");
+		Msx2_TextAt(CHECK_COL_X, CHECK_STAT_Y, "ATK");
+		Msx2_TextAt((u8)(CHECK_COL_X + 72), CHECK_STAT_Y, "DEF");
 		Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
-		Msx2_NumAt(82, 172, atk);
-		Msx2_NumAt(166, 172, def);
+		Msx2_NumAt((u8)(CHECK_COL_X + 26), CHECK_STAT_Y, atk);
+		Msx2_NumAt((u8)(CHECK_COL_X + 98), CHECK_STAT_Y, def);
 	}
 	else
 	{
 		Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
-		Msx2_TextCenter(172, Msx2_UiText(MSX2_S_SUPPORT_CARD));
+		Msx2_TextAt(CHECK_COL_X, CHECK_STAT_Y, Msx2_UiText(MSX2_S_SUPPORT_CARD));
 	}
 
+	Msx2_RomRead(MSX2_TEXT_SEGMENT,
+	             (u16)(MSX2_DESC_OFFSET + (u16)card * MSX2_DESC_STRIDE),
+	             (u8*)g_desc, MSX2_DESC_STRIDE);
+	g_desc[MSX2_DESC_STRIDE - 1] = 0;
+	Msx2_ScreenParagraph(g_desc, CHECK_DESC_Y, MSX2_SAND);
+
 	Msx2_TextColor(MSX2_SAND, MSX2_BLACK);
-	Msx2_TextCenter(194, Msx2_UiText(MSX2_S_SPACE_RETURNS_TO_THE_DUEL));
+	Msx2_TextCenter(196, Msx2_UiText(MSX2_S_SPACE_RETURNS_TO_THE_DUEL));
 
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
 	Msx2_VideoShowPage(page);

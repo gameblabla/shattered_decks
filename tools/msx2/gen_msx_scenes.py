@@ -72,7 +72,8 @@ PANEL_RGB = views.PANEL_RGB
 
 # 72 monsters + 6 support variants + 1 card back.
 SUPPORT_VARIANTS = 6
-NAME_STRIDE = 24
+NAME_STRIDE = 32   # the longest card name is 31 characters
+DESC_STRIDE = 80   # the longest card sentence is 75 characters
 CARD_STRIDE = 2048   # 8 cards per segment, so no card ever straddles one
 
 # Full-size monster cut-ins used only by the separate 2-D battle screen.  One
@@ -141,7 +142,7 @@ def card_ident(asset_id):
 
 
 def parse_cards():
-    """(asset_id, display_name) per monster, in card-id order."""
+    """(asset_id, display_name, description) per monster, in card-id order."""
     cards = []
     with open(CARD_DATA) as f:
         for raw in f:
@@ -150,7 +151,8 @@ def parse_cards():
                 continue
             parts = [p.strip() for p in line.split("|")]
             if parts[0] == "card":
-                cards.append((parts[1], parts[2]))
+                cards.append((parts[1], parts[2],
+                              parts[7] if len(parts) > 7 else ""))
     return cards
 
 
@@ -161,6 +163,18 @@ SUPPORT_NAMES = [
     "OASIS LIGHT",
     "THUNDER",
     "MIRROR VEIL",
+]
+
+# The six supports are the only cards with no line in card_data.txt, because
+# they are not monsters and have no art of their own.  The card check screen
+# still owes the player a sentence saying what one does.
+SUPPORT_DESCS = [
+    "Bolts bronze plating onto one of your monsters, raising its attack.",
+    "Shields one of your monsters, raising the defence it holds the line with.",
+    "The deck answers: draw a fresh card into the slot this one leaves.",
+    "Light off the oasis closes your wounds and restores life points.",
+    "Calls down a bolt that destroys one monster on the opposing field.",
+    "A veil set face down that turns the next attack back on its owner.",
 ]
 
 # Support cards are one frame in six colourways, so the kind is readable at a
@@ -816,7 +830,7 @@ def build_card_blob(cards, quiet):
     divides 16,384 exactly, so it never can."""
     blob = bytearray()
     faces = []
-    for asset_id, _name in cards:
+    for asset_id, _name, _desc in cards:
         faces.append(draw_monster_card(asset_id, *CARD_STATS[asset_id]))
     for kind in range(SUPPORT_VARIANTS):
         faces.append(draw_support_card(kind))
@@ -857,7 +871,7 @@ def build_battle_card_blob(cards, quiet):
     blob = bytearray()
     sheet = Image.new("RGB", (BATTLE_CARD_W * 8,
                               BATTLE_CARD_H * ((len(cards) + 7) // 8)))
-    for i, (asset_id, _name) in enumerate(cards):
+    for i, (asset_id, _name, _desc) in enumerate(cards):
         card = draw_battle_card(asset_id, *CARD_STATS[asset_id])
         data = grb.quantize(card, (BATTLE_CARD_W, BATTLE_CARD_H))
         blob += data + bytes(BATTLE_CARD_STRIDE - len(data))
@@ -923,10 +937,20 @@ def build_text_blob(cards, story):
         offsets[name] = len(blob)
 
     section("NAME")
-    names = [name for _id, name in cards] + SUPPORT_NAMES
+    names = [name for _id, name, _d in cards] + SUPPORT_NAMES
     for name in names:
         text = name.upper()[:NAME_STRIDE - 1].encode("ascii", "replace")
         blob += text + bytes(NAME_STRIDE - len(text))
+
+    # THE CARD CHECK SCREEN'S SENTENCE.
+    # One per card, at a fixed stride, wrapped on the Z80 rather than here: the
+    # screen has one column width and the runtime already has a word wrapper's
+    # worth of work to do laying the name out beside the art.
+    section("DESC")
+    descs = [desc for _id, _n, desc in cards] + SUPPORT_DESCS
+    for desc in descs:
+        text = desc.upper()[:DESC_STRIDE - 1].encode("ascii", "replace")
+        blob += text + bytes(DESC_STRIDE - len(text))
 
     section("OPPONENT")
     for name, title in opponents:
@@ -1141,6 +1165,8 @@ def main():
         f.write("// ── String table ───────────────────────────────────────────────────────\n")
         f.write("#define MSX2_TEXT_SEGMENT       %d\n" % text_segment)
         f.write("#define MSX2_NAME_STRIDE        %d\n" % NAME_STRIDE)
+        f.write("#define MSX2_DESC_OFFSET        %d\n" % text_off["DESC"])
+        f.write("#define MSX2_DESC_STRIDE        %d\n" % DESC_STRIDE)
         f.write("#define MSX2_NAME_COUNT         %d\n" % name_count)
         f.write("#define MSX2_NAME_OFFSET        %d\n" % text_off["NAME"])
         f.write("#define MSX2_OPP_OFFSET         %d\n" % text_off["OPPONENT"])

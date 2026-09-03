@@ -96,6 +96,8 @@ key_matrix() {
 		right)  echo "8 0x80" ;;
 		return) echo "7 0x80" ;;
 		esc)    echo "7 0x04" ;;
+		c)      echo "3 0x01" ;;
+		d)      echo "3 0x02" ;;
 		*)      echo "" ;;
 	esac
 }
