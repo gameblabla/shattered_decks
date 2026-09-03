@@ -104,6 +104,32 @@ OP_MAX_RUN = 31
 STAGE_NAMES = ("DESERT", "STONE", "EMBER", "SKY")
 BOARD_STAGES = len(STAGE_NAMES)
 
+# ── The overhead view ────────────────────────────────────────────────────────
+#
+# The two captured views are the duellists' own chairs: the arena in
+# perspective, which is what the game looks like, and which squeezes a field
+# slot down to about 36x15 pixels.  That is a picture, not a board you can
+# read, and every other target answers the same way -- PC-FX and the PC build
+# put the camera overhead when the player walks up out of the hand, so the ten
+# slots become ten legible rectangles and the bottom panel keeps naming
+# whatever the cursor is on.
+#
+# This one is not captured.  It is the board drawn flat, supplied as artwork
+# (assets/source/msx2/msx2_3d_top_view.png) -- a five-by-four table of tiles --
+# and it takes the hand's rows as well as the board band, because in this view
+# there is no hand on the screen.  The two middle rows of tiles are the two
+# players' fields; the outer two are the table around them.
+OVER_ART = os.path.join(ROOT, "assets", "source", "msx2", "msx2_3d_top_view.png")
+OVER_Y = BAND_Y                      # the picture starts under the HUD
+OVER_H = HAND_BAND_Y + HAND_BAND_H - BAND_Y     # ... and runs to the panel
+OVER_COL_X0 = 7                      # the artwork's own grid, measured off it
+OVER_COL_W = 48
+OVER_ROW_H = 42
+OVER_INSET_X = 3                     # tile border to card edge
+OVER_INSET_Y = 3
+OVER_COM_ROW = 1                     # which tile row each side plays on
+OVER_YOU_ROW = 2
+
 
 # ── The capture ──────────────────────────────────────────────────────────────
 
@@ -233,6 +259,43 @@ def arena_layer(cap, tag):
     return board, mask
 
 
+def over_quads():
+    """The ten field slots of the overhead view, as axis-aligned rectangles.
+
+    Corner order is the capture's: texture top-left, top-right, bottom-right,
+    bottom-left.  The COM's row is wound half a turn round so its cards face
+    its own chair, exactly as the captured COM row does."""
+    quads = []
+    for row, mine in ((OVER_COM_ROW, False), (OVER_YOU_ROW, True)):
+        y0 = OVER_Y + row * OVER_ROW_H + OVER_INSET_Y
+        y1 = OVER_Y + (row + 1) * OVER_ROW_H - OVER_INSET_Y
+        for col in range(FIELD_SLOTS // 2):
+            x0 = OVER_COL_X0 + col * OVER_COL_W + OVER_INSET_X
+            x1 = OVER_COL_X0 + (col + 1) * OVER_COL_W - OVER_INSET_X
+            if mine:
+                quads.append([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+            else:
+                quads.append([(x1, y1), (x0, y1), (x0, y0), (x1, y0)])
+    return quads
+
+
+_OVER_CACHE = []
+
+
+def over_scene(stage):
+    """The overhead table, on the same 212-row screen as a captured view."""
+    del stage                       # the flat board does not take the tint
+    if not _OVER_CACHE:
+        art = Image.open(OVER_ART).convert("RGB")
+        if art.width != WIDTH:
+            art = art.resize((WIDTH, art.height), Image.Resampling.LANCZOS)
+        _OVER_CACHE.append(art)
+    art = _OVER_CACHE[0]
+    img = Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
+    img.paste(art.crop((0, 0, WIDTH, min(art.height, OVER_H))), (0, OVER_Y))
+    return img
+
+
 def composite_arena(cap, tag, stage):
     board, mask = arena_layer(cap, tag)
     return Image.composite(backdrop(stage), board, mask)
@@ -277,7 +340,7 @@ def draw_slot_rings(img, quads):
     return img
 
 
-def paint_panels(img):
+def paint_panels(img, hand_row=True):
     """The three baked UI grounds.
 
     They are flat, and that is load-bearing: live text is written over them
@@ -291,6 +354,8 @@ def paint_panels(img):
     # five cards is a dialogue box where the table should be, and it breaks the
     # illusion that the hand is being held over the arena; the cards sit on
     # black instead, which is what PC-FX and FM TOWNS show.
+    if not hand_row:
+        return img
     d.rectangle([0, HAND_BAND_Y, WIDTH - 1, HAND_BAND_Y + HAND_BAND_H - 1],
                 fill=(0, 0, 0))
     # A gold hairline under the hand row's slot pitch, so the five hand
@@ -304,9 +369,11 @@ def paint_panels(img):
 
 def build_view(cap, stage, tag):
     quads = cap.poses[tag]
-    img = composite_arena(cap, tag, stage)
+    img = over_scene(stage) if tag == "OVER" else composite_arena(cap, tag, stage)
     draw_slot_rings(img, quads)
-    paint_panels(img)
+    # The overhead view owns the hand's rows, so it must not be given the five
+    # empty hand frames -- there is no hand on this screen.
+    paint_panels(img, hand_row=(tag != "OVER"))
     return img
 
 
@@ -337,14 +404,14 @@ def build_move_strip(cap, stage, move, poses):
     return b"".join(frames)
 
 
-def cut_slot_tiles(scene, quads):
+def cut_slot_tiles(scene, quads, bottom=BAND_Y + BAND_H):
     """The empty-slot rectangle of one arena at each slot, in the arena's own
     quantised bytes -- so putting a destroyed monster back is the picture, not
     something close to it."""
     blob = bytearray()
     boxes = []
     for quad in quads:
-        x0, y0, x1, y1 = quad_box(quad)
+        x0, y0, x1, y1 = quad_box(quad, bottom)
         tile = bytearray()
         for y in range(y0, y1):
             start = y * WIDTH + x0
@@ -357,13 +424,16 @@ def cut_slot_tiles(scene, quads):
     return bytes(blob), boxes
 
 
-def quad_box(quad):
-    """The pixel box a quad's ring and card occupy, clamped to the band."""
+def quad_box(quad, bottom=BAND_Y + BAND_H):
+    """The pixel box a quad's ring and card occupy, clamped to the view.
+
+    `bottom` is the last row the view's picture reaches: the two captured
+    chairs stop at the hand row, the overhead view goes on through it."""
     outer = expand_quad(quad, RING + 2.0)
     x0 = max(0, int(math.floor(min(p[0] for p in outer))))
     x1 = min(WIDTH, int(math.ceil(max(p[0] for p in outer))) + 1)
     y0 = max(BAND_Y, int(math.floor(min(p[1] for p in outer))))
-    y1 = min(BAND_Y + BAND_H, int(math.ceil(max(p[1] for p in outer))) + 1)
+    y1 = min(bottom, int(math.ceil(max(p[1] for p in outer))) + 1)
     return x0, y0, x1, y1
 
 
@@ -526,7 +596,13 @@ def bake_spans(cap, tags):
 def bake(quiet=False, capture=True):
     """Everything this module owns, as blobs plus the numbers the header needs."""
     cap = run_capture(quiet) if capture else read_capture()
-    view_tags = ("TOP", "COM")
+    # The overhead view is authored, not captured, so its quads are put into
+    # the capture here and every consumer below -- rings, empty-slot tiles,
+    # span programs, the generated geometry tables -- treats it as one more
+    # pose.  That is the point: there is still exactly one definition of where
+    # a card goes in a view.
+    cap.poses["OVER"] = over_quads()
+    view_tags = ("TOP", "COM", "OVER")
     views = {tag: [] for tag in view_tags}
     slots = bytearray()
     moves = {name: bytearray() for name, _n in cap.moves}
@@ -537,8 +613,10 @@ def bake(quiet=False, capture=True):
     for stage in range(BOARD_STAGES):
         for tag in view_tags:
             quads = cap.poses[tag]
+            bottom = (HAND_BAND_Y + HAND_BAND_H) if tag == "OVER" \
+                     else (BAND_Y + BAND_H)
             data = grb.quantize(build_view(cap, stage, tag), (WIDTH, HEIGHT))
-            tiles, stage_boxes = cut_slot_tiles(data, quads)
+            tiles, stage_boxes = cut_slot_tiles(data, quads, bottom)
             views[tag].append(pad_segments(data))
             slots += tiles
             if boxes[tag] is None:
@@ -588,6 +666,12 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("// target renders (MSX2_PORT_PLAN.md §4.3).  Nothing here is drawn offline.")
     a("#define MSX2_VIEW_TOP          0")
     a("#define MSX2_VIEW_COM          1")
+    a("// The overhead view is not captured: it is the flat board of")
+    a("// assets/source/msx2/msx2_3d_top_view.png, and it takes the hand's rows")
+    a("// as well as the board band, because it is the view with no hand on it.")
+    a("#define MSX2_VIEW_OVER         2")
+    a("#define MSX2_OVER_Y            %d" % OVER_Y)
+    a("#define MSX2_OVER_H            %d" % OVER_H)
     a("#define MSX2_BOARD_VIEWS       %d" % len(baked["view_tags"]))
     a("#define MSX2_VIEW_SEGMENT(stage, view)  (%d + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))" % view_seg)
     a("#define MSX2_VIEW_STAGES        %d" %

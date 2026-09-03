@@ -1317,13 +1317,20 @@ static bool Msx2_BoardPaint(void)
 	if(g_hand_left != 0)
 	{
 		u8 j;
-		Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
-		          MSX2_BLACK);
-		if(!g_hand_hidden)
-			Msx2_BoardHandFrames();
+		// Overhead, those rows are board: blacking them out and framing five
+		// empty hand positions would punch the table full of holes.  The strip
+		// is still marked painted so the retained loop below leaves it alone.
+		if(g_view != MSX2_VIEW_OVER)
+		{
+			Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
+			          MSX2_BLACK);
+			if(!g_hand_hidden)
+				Msx2_BoardHandFrames();
+		}
 		for(j = MSX2_FIELD_SLOTS; j < SLOT_COUNT; ++j)
 		{
-			Msx2_BoardBlitSlot(j);
+			if(g_view != MSX2_VIEW_OVER)
+				Msx2_BoardBlitSlot(j);
 			g_shown[page][j] = g_want[j];
 			g_shown_flag[page][j] = g_flag[j];
 		}
@@ -1549,8 +1556,55 @@ void Msx2_BoardEnter_In(u8 stage)
 // Begin a turn handoff.  Playback itself is one pose per BoardStep on the
 // hidden page, followed by a V-blank flip; this function never touches the
 // scanned page.
+// ── The overhead view ───────────────────────────────────────────────────────
+//
+// Walking up out of the hand puts the camera over the table, the way it does
+// on PC-FX and on the PC build.  It is a cut, not a move: there is no baked
+// camera path between a duellist's chair and straight down, and the two are
+// not the same picture in any case -- the overhead board takes the hand's rows
+// as well as the board band, because in this view there is no hand.
+//
+// A cut costs a blanked stream of the whole view into both pages, about a
+// quarter of a second of black.  That is affordable HERE and nowhere else: it
+// happens when the player deliberately walks off the hand strip or back onto
+// it, not on every press, and the port already spends more than that on a
+// chair change.
+static void Msx2_BoardCutTo(u8 view)
+{
+	u8 i;
+
+	if(view == g_view)
+		return;
+
+	g_view = view;
+	Msx2_RasterSetView(view);
+	VDP_EnableDisplay(FALSE);
+	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, view), MSX2_PAGE_0);
+	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, view), MSX2_PAGE_1);
+	VDP_EnableDisplay(TRUE);
+
+	// The picture underneath every retained card is a different picture now,
+	// so the painter owes both pages everything.
+	for(i = 0; i < SLOT_COUNT; ++i)
+	{
+		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
+		g_shown_flag[0][i] = g_shown_flag[1][i] = 0;
+	}
+	g_cursor_at[0] = g_cursor_at[1] = MSX2_SLOT_NONE;
+	g_cursor_col_at[0] = g_cursor_col_at[1] = 0;
+	g_panel_left = MSX2_VIDEO_PAGES;
+	g_hand_left = MSX2_VIDEO_PAGES;
+	Msx2_BoardSnapshot();
+}
+
 static void Msx2_BoardSwitchView(u8 view, bool forward)
 {
+	// The baked camera path runs between the two chairs and nowhere else, and
+	// it only redraws the board band -- so it cannot start from overhead,
+	// where the picture goes on down through the hand's rows.  Come back down
+	// to the player's chair first.
+	if(g_view == MSX2_VIEW_OVER)
+		Msx2_BoardCutTo(BOARD_VIEW_PLAYER);
 	if(view == g_view)
 		return;
 
@@ -2033,8 +2087,13 @@ u8 Msx2_BoardStep_In(void)
 		Msx2_SfxPlay(MSX2_SFX_SELECT);
 		g_panel_left = MSX2_VIDEO_PAGES;
 	}
-	if((g_fx_kind == FX_NONE) && (g_mode != M_TURN) && (g_mode != M_COM))
-		Msx2_BoardHandVisible(g_zone == ZONE_HAND);
+	if((g_fx_kind == FX_NONE) && (g_mode != M_TURN) && (g_mode != M_COM) &&
+	   (g_mode != M_DEAL) && (g_mode != M_OVER) && (g_view != BOARD_VIEW_COM))
+	{
+		bool in_hand = (g_zone == ZONE_HAND);
+		Msx2_BoardHandVisible(in_hand);
+		Msx2_BoardCutTo(in_hand ? BOARD_VIEW_PLAYER : MSX2_VIEW_OVER);
+	}
 	if(g_mode == M_TURN)
 	{
 		Msx2_BoardStepCameraMove();

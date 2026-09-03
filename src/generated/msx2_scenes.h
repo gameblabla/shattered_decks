@@ -42,7 +42,13 @@
 // target renders (MSX2_PORT_PLAN.md §4.3).  Nothing here is drawn offline.
 #define MSX2_VIEW_TOP          0
 #define MSX2_VIEW_COM          1
-#define MSX2_BOARD_VIEWS       2
+// The overhead view is not captured: it is the flat board of
+// assets/source/msx2/msx2_3d_top_view.png, and it takes the hand's rows
+// as well as the board band, because it is the view with no hand on it.
+#define MSX2_VIEW_OVER         2
+#define MSX2_OVER_Y            14
+#define MSX2_OVER_H            168
+#define MSX2_BOARD_VIEWS       3
 #define MSX2_VIEW_SEGMENT(stage, view)  (145 + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))
 #define MSX2_VIEW_STAGES        4
 #define MSX2_BAND_Y             14
@@ -90,6 +96,18 @@ static const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][
 		{ 106, 45, 87, 45, 93, 37, 109, 37 },
 		{ 74, 45, 54, 45, 65, 37, 81, 37 },
 	},
+	{
+		{ 52, 95, 10, 95, 10, 59, 52, 59 },
+		{ 100, 95, 58, 95, 58, 59, 100, 59 },
+		{ 148, 95, 106, 95, 106, 59, 148, 59 },
+		{ 196, 95, 154, 95, 154, 59, 196, 59 },
+		{ 244, 95, 202, 95, 202, 59, 244, 59 },
+		{ 10, 101, 52, 101, 52, 137, 10, 137 },
+		{ 58, 101, 100, 101, 100, 137, 58, 137 },
+		{ 106, 101, 148, 101, 148, 137, 106, 137 },
+		{ 154, 101, 196, 101, 196, 137, 154, 137 },
+		{ 202, 101, 244, 101, 244, 137, 202, 137 },
+	},
 };
 
 // The box a slot's ring and card occupy: what an empty slot restores, and
@@ -119,6 +137,18 @@ static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4
 		{ 83, 34, 31, 14 },
 		{ 50, 33, 36, 16 },
 	},
+	{
+		{ 6, 56, 51, 43 },
+		{ 54, 56, 51, 43 },
+		{ 102, 56, 51, 43 },
+		{ 150, 56, 51, 43 },
+		{ 198, 56, 51, 43 },
+		{ 6, 98, 51, 43 },
+		{ 54, 98, 51, 43 },
+		{ 102, 98, 51, 43 },
+		{ 150, 98, 51, 43 },
+		{ 198, 98, 51, 43 },
+	},
 };
 
 // ── §8.4 Tier A span programs ─────────────────────────────────────────
@@ -126,7 +156,7 @@ static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4
 // as run lengths.  The Z80 replays it with block I/O and does no
 // arithmetic at all; that is what makes fifteen perspective cards
 // affordable on a 3.58 MHz machine.
-#define MSX2_SPAN_SEGMENT       197
+#define MSX2_SPAN_SEGMENT       223
 #define MSX2_SPAN_STRIDE        2048
 #define MSX2_SPAN_PER_SEG       8
 #define MSX2_SPAN_MAX           605
@@ -141,14 +171,15 @@ static const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4
 static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {
 	{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 },
 	{ 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 },
+	{ 20, 21, 22, 23, 24, 25, 26, 27, 28, 29 },
 };
 
 // ── Empty-slot tiles ──────────────────────────────────────────────────
-#define MSX2_SLOT_ART_SEGMENT   177
+#define MSX2_SLOT_ART_SEGMENT   193
 #define MSX2_SLOT_ART_STRIDE    4096
 #define MSX2_SLOT_ART_PER_SEG   4
 #define MSX2_SLOT_ART_PER_VIEW  10
-#define MSX2_SLOT_ART_VIEWS     2
+#define MSX2_SLOT_ART_VIEWS     3
 
 // ── §4.6 baked camera moves ───────────────────────────────────────────
 // A strip of whole pictures of the board band, streamed one after the
@@ -157,9 +188,9 @@ static const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS
 // is a held cinematic push and the art is authored for that (§4.6.2).
 #define MSX2_MOVE_POSE_BYTES    29184
 #define MSX2_MOVE_POSE_SEGS     2
-#define MSX2_MOVE_OPENING_SEGMENT(stage)  (200 + (stage) * 16 * MSX2_MOVE_POSE_SEGS)
+#define MSX2_MOVE_OPENING_SEGMENT(stage)  (227 + (stage) * 16 * MSX2_MOVE_POSE_SEGS)
 #define MSX2_MOVE_OPENING_POSES    16
-#define MSX2_MOVE_TURN_SEGMENT(stage)  (328 + (stage) * 5 * MSX2_MOVE_POSE_SEGS)
+#define MSX2_MOVE_TURN_SEGMENT(stage)  (355 + (stage) * 5 * MSX2_MOVE_POSE_SEGS)
 #define MSX2_MOVE_TURN_POSES    5
 
 // ── Story screens ──────────────────────────────────────────────────────
@@ -178,7 +209,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 // lit and dimmed, from the SAME alpha mask -- so the two variants cover
 // byte for byte the same pixels and swapping which speaker is lit is a
 // pure overwrite with no background repair at all.
-#define MSX2_PORTRAIT_SEGMENT   368
+#define MSX2_PORTRAIT_SEGMENT   395
 #define MSX2_PORTRAIT_SEGS      2
 #define MSX2_PORTRAIT_CHARS     6
 #define MSX2_PORTRAIT_W         124
@@ -210,7 +241,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_MAP_PANEL_H        156
 
 // ── String table ───────────────────────────────────────────────────────
-#define MSX2_TEXT_SEGMENT       392
+#define MSX2_TEXT_SEGMENT       419
 #define MSX2_NAME_STRIDE        24
 #define MSX2_NAME_COUNT         78
 #define MSX2_NAME_OFFSET        0
@@ -329,5 +360,5 @@ static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  8
-#define MSX2_SCENE_SEGMENT_LAST   392
-#define MSX2_ASSET_ROM_KB         6288
+#define MSX2_SCENE_SEGMENT_LAST   419
+#define MSX2_ASSET_ROM_KB         6720
