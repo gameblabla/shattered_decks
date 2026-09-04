@@ -1,0 +1,201 @@
+
+Metalion's picture
+
+28-08-2019, 16:29
+
+Hi everyone,
+
+We all know the speed measurements done by Grauw on several VDP commands (HMMV, LMMV, ...).
+But so far, I have not found any measurement of the LINE command speed.
+
+Does someone have information on this ?
+Ideally, I'd like something like : x pixels/Z80 cycle
+
+Thank you.
+
+PS : Hey !!! It's my 1000th message ! Big smile
+
+By Grauw
+
+Ascended (11196)
+Grauw's picture
+
+28-08-2019, 17:29
+
+Congrats! Big smile
+
+Check this openMSX research:
+
+http://map.grauw.nl/articles/vdp-vram-timing/vdp-timing.html
+Quote:
+
+The following table summarizes the timing for all measured commands:
+
+Command	Per pixel	Per line
+LINE	88 R 24 W 	32
+
+For the LINE command the meaning of the columns 'Per pixel' and 'Per line' may not be immediately clear:
+
+    The VDP uses the Bresenham algorithm the calculate which pixels are part of the line.
+    This algorithm takes at each iteration one step in the major direction. The timings for such an iteration are written in the 'Per pixel' column for the LINE command.
+    Depending on the slope of the line, in some iterations the Bresenham algorithm also takes a step in the minor direction. For the VDP such a minor step takes some extra time (32 cycles). This is written in the 'Per line' column of the LINE command. (If you look back at the very beginning of this text, these major and minor steps explain the general octagonal shapes in the images. The uneven distribution of the access slots explain the irregularities.)
+
+Unit is VDP cycles (21,477,273 MHz), so that means about 3200 pixels / 60 Hz frame for a horizontal line (262 * 1368 / 112), and about 2500 pixels / 60 Hz frame for a vertical line (262 * 1368 / 144).
+
+Note this is under optimal conditions (during blanking). If less access slots are available, during active display, with sprites enabled, the speed will decrease. Probably proportionally to LMMV which also uses relatively few access slots per pixel, a little less even, so I guesstimate it’s about 20% slower with both display and sprites enabled.
+
+Note I did this all on pen & paper without actual measurements :). In reality you need to add command setup overhead, as you can’t draw a single 3200-pixel wide line so by nature it needs to be split up into many smaller ones, so take a huge chunk off those numbers mentioned above to account for that.
+
+By Metalion
+
+Paragon (1723)
+Metalion's picture
+
+28-08-2019, 17:38
+
+Thank you very much for this analysis.
+I'm not sure I understand everything, but I'll try harder reading the full article tonight Smile
+
+Specifically, I'm interested in LINE vs LMMV. Let me explain.
+I need to draw fast a filled right triangle (so with a 90° angle).
+
+I'm looking at 2 solutions :
+- draw the hypothenuse with LINE and then "weave" lines between the X and Y axis with LINE
+- use a LMMV command and change fast dx,nx between each line to create the triangle
+
+Which solution is the fastest ?
+
+By Grauw
+
+Ascended (11196)
+Grauw's picture
+
+28-08-2019, 19:22
+
+If you look at the table that's in the "Command engine timing" section (that's where the above quote is from), LINE takes 112 VDP cycles per pixel + 32 extra cycles when the Y increases. LMMV takes 96 cycles per pixel + 64 extra cycles when the line increases. So LMMV is faster for horizontal lines and slower for vertical lines.
+
+So for your case (scan line algorithm) LMMV is faster, however HMMV would be an even better choice. I guess the 2-pixels-per-byte in screen 5 is the reason you go for LMMV? You could also use HMMV and while the VDP is executing it draw the odd pixels at the beginning / end of the line with the CPU VRAM access. Or you could draw a LINE on the hypotenuse to the same effect; probably simpler, maybe faster.
+
+Or use HMMV in screen 8, it will still be faster than LMMV in screen 5.
+
+p.s. One CPU cycle equals 6 VDP cycles.
+
+By Metalion
+
+Paragon (1723)
+Metalion's picture
+
+28-08-2019, 20:29
+Grauw wrote:
+
+If you look at the table that's in the "Command engine timing" section (that's where the above quote is from), LINE takes 112 VDP cycles per pixel + 32 extra cycles when the Y increases. LMMV takes 96 cycles per pixel + 64 extra cycles when the line increases. So LMMV is faster for horizontal lines and slower for vertical lines.
+
+Thank you, that's very helpful.
+
+So, for example, if I draw a 16x16 right triangle :
+
+    #
+   ##
+  ###
+ ####
+#####
+
+1) LINE would need 16 x (112+32) + 15 x (112+32) + ... = 19 584 VDP cycles
+2) LMMV would need 16 x 96 + 15 x 96 + 14 x 96 + ... + 16 x 64 = 14 080 VDP cycles
+so a difference of 5504 VDP cycles (917 Z80 cycles).
+Grauw wrote:
+
+So for your case (scan line algorithm) LMMV is faster, however HMMV would be an even better choice. I guess the 2-pixels-per-byte in screen 5 is the reason you go for LMMV?
+
+Yes that's the reason.
+Grauw wrote:
+
+You could also use HMMV and while the VDP is executing it draw the odd pixels at the beginning / end of the line with the CPU VRAM access. Or you could draw a LINE on the hypotenuse to the same effect; probably simpler, maybe faster.
+
+I already thought about using HMMV.
+
+But there are 3 problems :
+
+1) as HMMV is faster, the time needed for the code to change dx & nx implies that it needs a larger base to start with. HMMV draws 30 px minimum before the code can change those 2 parameters (around 128 cycles). Which is trickier to implement.
+
+2) it's much more difficult to get a correct timing between each line, because it is faster, once again. Which means it can draw incorrectly some lines.
+
+3) As I'm drawing in fact a polygon, I'm needing 2 of those triangles and a rectangle in between. The rectangle is done with a HMMV, and I'm using the time needed by the VDP to draw it to make computation for a next frame. If I draw larger triangles because of the HMMV command, it reduces the size of the rectangle and therefore the time available for computations. Of course, it's a balance between the 2, and the gain on drawing speed could also be used. But that needs to be checked.
+
+I'm going to do tests tonight.
+I'll keep you posted.
+
+By Metalion
+
+Paragon (1723)
+Metalion's picture
+
+28-08-2019, 21:48
+
+Well, here are some partial results.
+
+My test was done drawing 96 16x16 filled right triangles in SC5.
+
+- It took 12 frames to draw them using only LINE
+- It took 7 frames to draw them using the LMMV command and changing nx,dx each line
+(so a gain of 42%).
+
+And it took 4 frames to draw them using the HMMV command and changing nx,dx each line. I think it may even be faster than that because my changing loop may have been longer than the draw itself at some point. However, as I already stated, it is much more difficult to "harness" the HMMV command on small pixel areas, because of its (relatively) high speed.
+
+Another difficulty is that speed is different in VBLANK and out of it. Which means that in order to have a constant control over the LMMV command, you need to take that into account (and I'm not even talking about commands which might be crossing the line between the two).
+
+By Grauw
+
+Ascended (11196)
+Grauw's picture
+
+28-08-2019, 22:34
+Metalion wrote:
+
+So, for example, if I draw a 16x16 right triangle :
+
+    #
+   ##
+  ###
+ ####
+#####
+
+1) LINE would need 16 x (112+32) + 15 x (112+32) + ... = 19 584 VDP cycles
+2) LMMV would need 16 x 96 + 15 x 96 + 14 x 96 + ... + 16 x 64 = 14 080 VDP cycles
+so a difference of 5504 VDP cycles (917 Z80 cycles).
+
+Correct. Especially when comparing command speeds amongst each other, it’s totally fine to completely ignore access slots and just compare the VDP cycles directly with each other like this.
+
+For comparing with CPU speeds of course access slots come into play, and even during blanking every once in a while the VDP uses an access slot to refresh the DRAM memory, so it always runs a little slower in reality, especially during active display and with sprites enabled.
+Metalion wrote:
+
+3) As I'm drawing in fact a polygon, I'm needing 2 of those triangles and a rectangle in between. The rectangle is done with a HMMV, and I'm using the time needed by the VDP to draw it to make computation for a next frame. If I draw larger triangles because of the HMMV command, it reduces the size of the rectangle and therefore the time available for computations. Of course, it's a balance between the 2, and the gain on drawing speed could also be used. But that needs to be checked.
+
+Aha, interesting! I was already wondering what you needed right triangles for Smile. I would implement scan line algorithm with two Bresenham functions, one for the left edge and one for the right of a flat-base or flat-top triangle.
+
+But if I understand correctly you’re aiming to exploit larger block fills to optimise the performance, by rendering the triangle in groups of lines at a time (say 8), and then filling the inner area that doesn’t have any edges with HMMV while using something slower for the corners. Or differently put, rendering with HMMV as it were at a lower resolution.
+
+Although in that case to maximise CPU-VDP parallelism my first thought would be to render the corners completely by the CPU, so that it can be done in parallel with the HMMV execution.
+
+Interesting approach! Worth a mention here :). I’ll crosspost this bit just for the record.
+
+By Metalion
+
+Paragon (1723)
+Metalion's picture
+
+29-08-2019, 11:56
+Grauw wrote:
+
+Although in that case to maximise CPU-VDP parallelism my first thought would be to render the corners completely by the CPU, so that it can be done in parallel with the HMMV execution.
+
+I thought about that too.
+
+Although a Bresenham driven by CPU is slower than a LINE command, it does give the advantage of an filling with ease the triangle by going right or left after each pixel of the hypothenuse is drawn.
+
+That being said, it would need to dramatically increase the speed of the drawing to be really interesting. Because writing directly to VRAM takes 4 OUTs. That means a minimum of 60 CPU cycles for 2 pixels (and sometimes only 1).
+Grauw wrote:
+
+Interesting approach! Worth a mention here :). I’ll crosspost this bit just for the record.
+
+Thank you. My first idea was to generate a full polygon (well only a trapeze in fact) only with a LMMV or HMMV command, tweaking the left and right side by changing the dx and nx registers, following a CPU driven Bresenham. But unfortunately, it is very difficult to handle, because it needs very precise timings (and they change out and in VBLANK).

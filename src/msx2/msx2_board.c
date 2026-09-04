@@ -10,6 +10,7 @@
 #include "msx2_duel.h"
 #include "msx2_cards.h"
 #include "msx2_raster.h"
+#include "msx2_arena.h"
 #include "msx2_scenes.h"
 #include "msx2_battle_fx.h"
 #include "msx2_sprite.h"
@@ -18,6 +19,16 @@
 #include "msx2_probe.h"
 #include "msx2_regression.h"
 #endif
+
+// ── The board is drawn, not streamed ─────────────────────────────────────────
+//
+// Every one of these calls used to be Msx2_StreamSceneBlanked() on a 54,272-byte
+// picture of the arena -- a quarter of a second of blanked display, and 3.9 MB
+// of cartridge across the poses and the stages.  msx2_arena.c draws the same
+// board out of 157 bytes of projected geometry (see its header), so what is
+// left here is the two flat panels the picture also carried and the black hand
+// band under them.
+static void Msx2_BoardPaintView(u8 view, u8 page);
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 //
@@ -454,11 +465,20 @@ static u8 Msx2_BoardFieldSlot(u8 owner, u8 field_slot)
 static void Msx2_BoardSlotGround(u8 slot)
 {
 	const u8* box = g_msx2_slot_box[g_view][slot];
-	u16 tile = (u16)(((u16)g_stage * MSX2_BOARD_VIEWS + g_view)
-	                 * MSX2_SLOT_ART_PER_VIEW + slot);
-	Msx2_StreamRect((u16)(MSX2_SLOT_ART_SEGMENT + tile / MSX2_SLOT_ART_PER_SEG),
-	                (u16)((tile % MSX2_SLOT_ART_PER_SEG) * MSX2_SLOT_ART_STRIDE),
-	                box[0], box[1], box[2], box[3]);
+
+	// The arena again, inside this box and nowhere else.  It used to be a
+	// 4,096-byte tile cut out of the captured picture and streamed back --
+	// sixty of them, 240 KB, for twenty slots in three views.  The board is
+	// drawn now, so putting one slot's worth of it back is the same draw with
+	// a clip window on it, and it costs no cartridge at all.
+	if(g_view == MSX2_VIEW_OVER)
+	{
+		Msx2_ArenaDrawOverBox(box[0], box[1], box[2], box[3]);
+		return;
+	}
+	Msx2_ArenaPose((g_view == BOARD_VIEW_COM) ? MSX2_MESH_POSE_COM
+	                                          : MSX2_MESH_POSE_TOP);
+	Msx2_ArenaDrawBox(box[0], box[1], box[2], box[3]);
 }
 
 // A slot's restore tile is its quad plus a four-pixel margin, and in a chair
@@ -1028,8 +1048,7 @@ static void Msx2_BoardRestoreFromCutin(void)
 	Msx2_BattleFxBurst(0, 0, MSX2_SPR_BURST_N);
 	Msx2_SpriteSlashHide();
 	Msx2_SpriteBurnHide();
-	Msx2_VideoDrawPage(page);
-	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, g_view), page);
+	Msx2_BoardPaintView(g_view, page);
 	Msx2_VideoDrawPage(page);
 	for(i = 0; i < SLOT_COUNT; ++i)
 		if((g_want[i] != MSX2_CARD_NONE) &&
@@ -2117,6 +2136,31 @@ static void Msx2_BoardRevealPanels(void)
 	               (u8)(MSX2_SCREEN_H - MSX2_INFO_Y), MSX2_GOLD_COLOR);
 }
 
+// The resting view, painted.  `view` is a camera chair or the overhead table;
+// what the old streamed picture carried besides the arena was these two panels
+// and a black hand band, so that is what is left to do by hand.
+static void Msx2_BoardPaintView(u8 view, u8 page)
+{
+	u8 prev = Msx2_VideoGetDrawPage();
+
+	Msx2_VideoDrawPage(page);
+	Msx2_BoardRevealPanels();
+	if(view == MSX2_VIEW_OVER)
+	{
+		// The overhead table owns the hand's rows: there is no hand on it.
+		Msx2_ArenaDrawOver();
+	}
+	else
+	{
+		Msx2_ArenaPose((view == BOARD_VIEW_COM) ? MSX2_MESH_POSE_COM
+		                                        : MSX2_MESH_POSE_TOP);
+		Msx2_ArenaDraw();
+		Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
+		          MSX2_BLACK);
+	}
+	Msx2_VideoDrawPage(prev);
+}
+
 // One frame of the opening deal: the card in flight is erased from this page
 // at the position it last had here and redrawn one step further left.
 // THE FLICKER IN THE DEAL.
@@ -2321,9 +2365,11 @@ void Msx2_BoardEnter_In(u8 stage)
 	   double-buffered. */
 	page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 	Msx2_VideoDisplayBlank();
-	Msx2_VideoDrawPage(page);
-	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(stage, g_view), page);
-	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
+	// No arena is put down here.  A duel opens on black -- the camera arc
+	// fills the band pose by pose -- and the streamed view that used to land
+	// on both pages was blacked out by the two calls below before a single
+	// scan line ever showed it.  That was a quarter of a second of cartridge
+	// per duel, spent on a picture nobody saw.
 	Msx2_VideoDrawPage(page);
 	Msx2_BoardBlankAll();
 	Msx2_VideoDrawPage((u8)(page ^ 1));
@@ -2372,8 +2418,8 @@ static void Msx2_BoardCutTo(u8 view)
 	Msx2_RasterSetView(view);
 	Msx2_SpriteTransitionBegin();
 	Msx2_VideoDisplayBlank();
-	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, view), MSX2_PAGE_0);
-	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, view), MSX2_PAGE_1);
+	Msx2_BoardPaintView(view, MSX2_PAGE_0);
+	Msx2_BoardPaintView(view, MSX2_PAGE_1);
 	Msx2_VideoDisplayRestore();
 
 	// THE VIEW ARRIVES FINISHED.
@@ -2509,9 +2555,8 @@ static void Msx2_BoardStepCameraMove(void)
 		if(g_move_pose < MSX2_MOVE_OPENING_POSES)
 		{
 			Msx2_VideoDrawPage(page);
-			Msx2_StreamBand((u16)(MSX2_MOVE_OPENING_SEGMENT(g_stage)
-			                      + (u16)g_move_pose * MSX2_MOVE_POSE_SEGS),
-			                MSX2_BAND_Y, MSX2_BAND_H);
+			Msx2_ArenaPose(MSX2_MESH_POSE_OPENING(g_move_pose));
+			Msx2_ArenaDraw();
 			++g_move_pose;
 			Msx2_VideoFlipRequest();
 			return;
@@ -2522,9 +2567,8 @@ static void Msx2_BoardStepCameraMove(void)
 		u8 pose = g_move_forward ? g_move_pose
 		          : (u8)(MSX2_MOVE_TURN_POSES - 1 - g_move_pose);
 		Msx2_VideoDrawPage(page);
-		Msx2_StreamBand((u16)(MSX2_MOVE_TURN_SEGMENT(g_stage)
-		                      + (u16)pose * MSX2_MOVE_POSE_SEGS),
-		                MSX2_BAND_Y, MSX2_BAND_H);
+		Msx2_ArenaPose(MSX2_MESH_POSE_TURN(pose));
+		Msx2_ArenaDraw();
 		++g_move_pose;
 		Msx2_VideoFlipRequest();
 		return;

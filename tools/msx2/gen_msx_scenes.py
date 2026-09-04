@@ -1375,6 +1375,9 @@ def main():
     span_segment = place("card_spans", board["spans"])
     move_segments = [place("board_move_" + name.lower(), blob)
                      for name, _poses, blob in board["moves"]]
+    # The same board as geometry: 157 bytes a pose instead of 54,272, drawn by
+    # the VDP's command engine rather than streamed.
+    mesh_segment = place("board_mesh", board["mesh"])
 
     portrait_blob = build_portrait_blob(quiet)
     portrait_segment = place("portraits", portrait_blob)
@@ -1472,7 +1475,8 @@ def main():
         f.write("#define MSX2_BATTLE_CARD_COUNT   %d\n" % battle_card_count)
 
         f.write("\n".join(views.header_lines(board, view_segment, slot_segment,
-                                              move_segments, span_segment)))
+                                              move_segments, span_segment,
+                                              mesh_segment)))
         f.write("\n")
 
         f.write("// ── Story screens ──────────────────────────────────────────────────────\n")

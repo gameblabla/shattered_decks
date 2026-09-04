@@ -72,6 +72,16 @@
 #define MSX2_OVER_H            168
 // A card on the overhead board is a rectangle copy at its own baked
 // size, not a span program: the slots are axis-aligned there.
+// The table's own grid, so the overhead view can be DRAWN as flat
+// rectangles rather than streamed as a picture of one.
+#define MSX2_OVER_TILE_X0      12
+#define MSX2_OVER_TILE_PITCH_X 48
+#define MSX2_OVER_TILE_W       43
+#define MSX2_OVER_TILE_Y0      0
+#define MSX2_OVER_TILE_PITCH_Y 42
+#define MSX2_OVER_TILE_H       38
+#define MSX2_OVER_TILE_ROWS    4
+#define MSX2_OVER_TILE_COLS    5
 #define MSX2_OVER_CARD_W       32
 #define MSX2_OVER_CARD_H       42
 #define MSX2_BOARD_VIEWS       3
@@ -139,6 +149,39 @@ extern const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_S
 #define MSX2_SLOT_ART_PER_VIEW  20
 #define MSX2_SLOT_ART_VIEWS     3
 
+// ── The live board: geometry, not a picture ───────────────────────────
+// docs/MSX2_REALTIME_POLYGON_FINDINGS.md: the V9938 fills a flat
+// rectangle four times faster than the Z80 can push bytes at the data
+// port, so the arena is drawn by the command engine from the projected
+// mesh below rather than streamed as 54 KB of pixels a pose.  One record
+// is 52 corners (x as int16, y as a byte) plus the flags that say which
+// two slab walls face the camera.
+#define MSX2_MESH_SEGMENT       458
+#define MSX2_MESH_STRIDE        256
+#define MSX2_MESH_PER_SEG       64
+#define MSX2_MESH_POINTS        52
+#define MSX2_MESH_ROWS          4
+#define MSX2_MESH_COLS          5
+#define MSX2_MESH_TOP(r, c)     ((r) * (MSX2_MESH_COLS + 1) + (c))
+#define MSX2_MESH_BX0           30
+#define MSX2_MESH_BX1           35
+#define MSX2_MESH_BZ0           40
+#define MSX2_MESH_BZ1           46
+// bit 0: the +X wall faces the camera.  bit 1: the +Z wall does.
+#define MSX2_MESH_FLAG_XPOS     0x01
+#define MSX2_MESH_FLAG_ZPOS     0x02
+// Pose indices inside the blob.
+#define MSX2_MESH_POSE_TOP       0
+#define MSX2_MESH_POSE_COM       1
+#define MSX2_MESH_POSE_OPENING(pose)  (2 + (pose))
+#define MSX2_MESH_POSE_TURN(pose)  (18 + (pose))
+// The arena's own colours, measured off the capture: a texture the MSX2
+// cannot afford is honestly stood in for by its average.
+#define MSX2_BOARD_TILE_A       0x95   // (row + col) even
+#define MSX2_BOARD_TILE_B       0x70
+#define MSX2_BOARD_WALL_Z       0x28   // the long facing wall
+#define MSX2_BOARD_WALL_X       0x71   // the side lip
+
 // ── §4.6 baked camera moves ───────────────────────────────────────────
 // A strip of whole pictures of the board band, streamed one after the
 // next by the ordinary §6.2 path.  There is no codec and no decoder: at
@@ -167,7 +210,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 // lit and dimmed, from the SAME alpha mask -- so the two variants cover
 // byte for byte the same pixels and swapping which speaker is lit is a
 // pure overwrite with no background repair at all.
-#define MSX2_PORTRAIT_SEGMENT   458
+#define MSX2_PORTRAIT_SEGMENT   459
 #define MSX2_PORTRAIT_SEGS      2
 #define MSX2_PORTRAIT_CHARS     6
 #define MSX2_PORTRAIT_W         124
@@ -199,7 +242,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_MAP_PANEL_H        156
 
 // ── String table ───────────────────────────────────────────────────────
-#define MSX2_TEXT_SEGMENT       482
+#define MSX2_TEXT_SEGMENT       483
 #define MSX2_NAME_STRIDE        32
 #define MSX2_DESC_OFFSET        2496
 #define MSX2_DESC_STRIDE        80
@@ -332,8 +375,8 @@ static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  8
-#define MSX2_SCENE_SEGMENT_LAST   492
-#define MSX2_ASSET_ROM_KB         7888
+#define MSX2_SCENE_SEGMENT_LAST   493
+#define MSX2_ASSET_ROM_KB         7904
 
 // ── PSG lVGM recordings ────────────────────────────────────────────────
 // Streams are split at 16 KB boundaries and notify the resident
@@ -349,30 +392,30 @@ extern const Msx2MusicAsset g_msx2_music_assets[MSX2_MUSIC_ASSET_COUNT];
 #define MSX2_MUSIC_NONE_SEGMENT 0
 #define MSX2_MUSIC_NONE_SEGMENTS 0
 #define MSX2_MUSIC_NONE_LOOP 0
-#define MSX2_MUSIC_TITLE_SEGMENT 484
+#define MSX2_MUSIC_TITLE_SEGMENT 485
 #define MSX2_MUSIC_TITLE_SEGMENTS 2
 #define MSX2_MUSIC_TITLE_LOOP 1
-#define MSX2_MUSIC_OPENING_SEGMENT 486
+#define MSX2_MUSIC_OPENING_SEGMENT 487
 #define MSX2_MUSIC_OPENING_SEGMENTS 1
 #define MSX2_MUSIC_OPENING_LOOP 1
-#define MSX2_MUSIC_OVERWORLD_SEGMENT 486
+#define MSX2_MUSIC_OVERWORLD_SEGMENT 487
 #define MSX2_MUSIC_OVERWORLD_SEGMENTS 1
 #define MSX2_MUSIC_OVERWORLD_LOOP 1
-#define MSX2_MUSIC_DECK_EDITOR_SEGMENT 486
+#define MSX2_MUSIC_DECK_EDITOR_SEGMENT 487
 #define MSX2_MUSIC_DECK_EDITOR_SEGMENTS 1
 #define MSX2_MUSIC_DECK_EDITOR_LOOP 1
-#define MSX2_MUSIC_BATTLE_SEGMENT 487
+#define MSX2_MUSIC_BATTLE_SEGMENT 488
 #define MSX2_MUSIC_BATTLE_SEGMENTS 2
 #define MSX2_MUSIC_BATTLE_LOOP 1
-#define MSX2_MUSIC_BOSS_SEGMENT 489
+#define MSX2_MUSIC_BOSS_SEGMENT 490
 #define MSX2_MUSIC_BOSS_SEGMENTS 1
 #define MSX2_MUSIC_BOSS_LOOP 1
-#define MSX2_MUSIC_FINAL_BOSS_SEGMENT 490
+#define MSX2_MUSIC_FINAL_BOSS_SEGMENT 491
 #define MSX2_MUSIC_FINAL_BOSS_SEGMENTS 1
 #define MSX2_MUSIC_FINAL_BOSS_LOOP 1
-#define MSX2_MUSIC_RESULT_SEGMENT 491
+#define MSX2_MUSIC_RESULT_SEGMENT 492
 #define MSX2_MUSIC_RESULT_SEGMENTS 1
 #define MSX2_MUSIC_RESULT_LOOP 0
-#define MSX2_MUSIC_LOST_SEGMENT 492
+#define MSX2_MUSIC_LOST_SEGMENT 493
 #define MSX2_MUSIC_LOST_SEGMENTS 1
 #define MSX2_MUSIC_LOST_LOOP 0

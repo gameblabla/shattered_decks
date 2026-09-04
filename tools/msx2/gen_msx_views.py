@@ -209,6 +209,10 @@ class Capture(object):
         self.moves = []      # (name, poses)
         self.bg_index = 0    # the index render_board() clears to
         self.card_tex = (CARD_W, CARD_H)
+        # tag -> the projected arena mesh, in the same window space as the
+        # quads.  This is what the cartridge carries INSTEAD of a picture of the
+        # board; see MESH_POINTS below for the point order.
+        self.mesh = {}
 
     def frame(self, tag):
         """One captured pose as a 256x240 RGB image."""
@@ -238,6 +242,20 @@ def read_capture():
             elif parts[0] == "POSE":
                 tag = parts[1]
                 cap.poses[tag] = [None] * FIELD_SLOTS
+            elif parts[0] == "MESH":
+                kind = parts[1]
+                i, j = int(parts[2]), int(parts[3])
+                x, y = int(parts[4]), int(parts[5]) - CROP_Y
+                m = cap.mesh.setdefault(tag, {})
+                if kind == "SIDE":
+                    # x and y are the two "which wall faces us" flags, not a
+                    # point; they are carried in the same lines so the pose
+                    # record stays one contiguous block.
+                    m["SIDE"] = (int(parts[4]), int(parts[5]))
+                elif kind == "TOP":
+                    m[("TOP", i, j)] = (x, y)
+                else:
+                    m[(kind, i)] = (x, y)
             elif parts[0] == "QUAD":
                 # Into window space here and nowhere else, so every consumer
                 # below is talking about the same 212 rows the VDP shows.
@@ -673,6 +691,162 @@ def bake_spans(cap, tags):
 
 # ── Driving it all ───────────────────────────────────────────────────────────
 
+# ── The board as geometry (docs/MSX2_REALTIME_POLYGON_FINDINGS.md) ───────────
+#
+# The cartridge used to carry a 54,272-byte picture of the arena for every
+# camera pose -- 3.9 MB once the opening and the turn orbit were counted -- and
+# the Z80 pushed those bytes at the VDP data port at 32 T-states each.  The
+# V9938's command engine fills a flat rectangle at 8 T-states a byte and leaves
+# the CPU free while it does it, so the arena is now DRAWN: the cartridge
+# carries the projected mesh (157 bytes a pose) and the flat colours the capture
+# measures, and the Z80 issues one HMMV per scanline of every tile.
+#
+# The mesh is projected HERE, by the game's own renderer, and not on the Z80.
+# That is the same rule as the card quads: MSX2_PORT_PLAN.md §4.3 wants the MSX2
+# board to BE the shared board, and a Z80 reimplementation of project_point()
+# would drift from it.  Projection is also the one part of the frame that is
+# genuinely free to bake -- the camera path is authored -- while the fill is the
+# part that is not, which is exactly the split the findings document argues for.
+
+# The point order inside a pose record.  It is the mesh of BoardProjected:
+# the (BOARD_ROWS+1) x (BOARD_COLS+1) top surface, then the underside of the
+# four slab edges, from which the two camera-facing walls are built.
+MESH_ROWS, MESH_COLS = 4, 5
+MESH_TOP_PTS = (MESH_ROWS + 1) * (MESH_COLS + 1)          # 30
+MESH_BX0 = MESH_TOP_PTS                                    # 30..34
+MESH_BX1 = MESH_BX0 + (MESH_ROWS + 1)                      # 35..39
+MESH_BZ0 = MESH_BX1 + (MESH_ROWS + 1)                      # 40..45
+MESH_BZ1 = MESH_BZ0 + (MESH_COLS + 1)                      # 46..51
+MESH_POINTS = MESH_BZ1 + (MESH_COLS + 1)                   # 52
+
+# One pose record: 52 signed 16-bit x, 52 unsigned y, one flags byte.  x is
+# 16-bit because the arena runs off both sides of the screen during the opening
+# descent; y is a byte because no projected corner of it ever leaves the 212
+# rows.  The stride is a power of two so a record can never straddle a segment.
+MESH_STRIDE = 256
+
+
+def mesh_index_top(r, c):
+    return r * (MESH_COLS + 1) + c
+
+
+def mesh_points(cap, tag):
+    """One pose as (points, flags), in the point order above."""
+    m = cap.mesh[tag]
+    pts = [None] * MESH_POINTS
+    for r in range(MESH_ROWS + 1):
+        for c in range(MESH_COLS + 1):
+            pts[mesh_index_top(r, c)] = m[("TOP", r, c)]
+    for r in range(MESH_ROWS + 1):
+        pts[MESH_BX0 + r] = m[("BX0", r)]
+        pts[MESH_BX1 + r] = m[("BX1", r)]
+    for c in range(MESH_COLS + 1):
+        pts[MESH_BZ0 + c] = m[("BZ0", c)]
+        pts[MESH_BZ1 + c] = m[("BZ1", c)]
+    side_x, side_z = m["SIDE"]
+    return pts, (side_x | (side_z << 1))
+
+
+def mesh_pose_tags(cap):
+    """Every pose the cartridge can draw, in the order it indexes them."""
+    tags = ["TOP", "COM"]
+    for name, poses in cap.moves:
+        tags += ["MOVE_%s_%d" % (name, pose) for pose in range(poses)]
+    return tags
+
+
+def board_mesh_blob(cap):
+    blob = bytearray()
+    for tag in mesh_pose_tags(cap):
+        pts, flags = mesh_points(cap, tag)
+        rec = bytearray()
+        for x, _y in pts:
+            # Clamped, not asserted: a pose only has to be drawable, and the
+            # filler clips to the screen anyway.  The bound is what fits the
+            # Z80 filler's 16-bit Bresenham without overflow.
+            x = max(-512, min(511, int(round(x))))
+            rec += (x & 0xFFFF).to_bytes(2, "little")
+        for _x, y in pts:
+            rec.append(max(0, min(255, int(round(y)))))
+        rec.append(flags)
+        if len(rec) > MESH_STRIDE:
+            raise SystemExit("gen_msx_views: mesh record overflows the stride")
+        blob += rec + bytes(MESH_STRIDE - len(rec))
+    return bytes(blob)
+
+
+def region_mean(cap, tag, poly):
+    """The captured arena's own mean colour inside one projected polygon.
+
+    Measured rather than chosen: the shared renderer paints the board with
+    textures the MSX2 cannot afford, and the honest flat stand-in for a texture
+    is its average.  Reading it out of the capture also means a change to the
+    arena's materials shows up here without anyone editing a constant."""
+    raw = open(os.path.join(CAPTURE_DIR, tag + ".raw"), "rb").read()
+    mask = Image.new("L", (WIDTH, HEIGHT), 0)
+    ImageDraw.Draw(mask).polygon([(int(round(x)), int(round(y)))
+                                  for x, y in poly], fill=255)
+    mpx = mask.load()
+    rs = gs = bs = n = 0
+    for y in range(HEIGHT):
+        cy = y + CROP_Y
+        if cy >= CAPTURE_H:
+            break
+        for x in range(WIDTH):
+            if not mpx[x, y]:
+                continue
+            index = raw[cy * WIDTH + x]
+            if index == cap.bg_index:
+                continue
+            r, g_, b = cap.palette[index]
+            rs += r
+            gs += g_
+            bs += b
+            n += 1
+    if not n:
+        return None
+    return (rs // n, gs // n, bs // n)
+
+
+def board_colors(cap):
+    """The four flat colours the live board is drawn in, from the capture."""
+    pts, flags = mesh_points(cap, "TOP")
+    def p(i):
+        return pts[i]
+    acc = {0: [0, 0, 0, 0], 1: [0, 0, 0, 0]}
+    for r in range(MESH_ROWS):
+        for c in range(MESH_COLS):
+            poly = [p(mesh_index_top(r, c)), p(mesh_index_top(r, c + 1)),
+                    p(mesh_index_top(r + 1, c + 1)), p(mesh_index_top(r + 1, c))]
+            mean = region_mean(cap, "TOP", poly)
+            if mean is None:
+                continue
+            a = acc[(r + c) & 1]
+            a[0] += mean[0]; a[1] += mean[1]; a[2] += mean[2]; a[3] += 1
+    tiles = []
+    for parity in (0, 1):
+        a = acc[parity]
+        tiles.append((a[0] // a[3], a[1] // a[3], a[2] // a[3]))
+    # The two walls the tactical pose shows.  Which pair faces the camera moves
+    # with the pose; the colours do not, so they are measured once here.
+    zr = MESH_ROWS if (flags & 2) else 0
+    zb = MESH_BZ1 if (flags & 2) else MESH_BZ0
+    zwall = region_mean(cap, "TOP",
+                        [p(mesh_index_top(zr, 0)), p(mesh_index_top(zr, MESH_COLS)),
+                         p(zb + MESH_COLS), p(zb)])
+    xc = MESH_COLS if (flags & 1) else 0
+    xb = MESH_BX1 if (flags & 1) else MESH_BX0
+    xwall = region_mean(cap, "TOP",
+                        [p(mesh_index_top(0, xc)), p(mesh_index_top(MESH_ROWS, xc)),
+                         p(xb + MESH_ROWS), p(xb)])
+    return {
+        "tile_a": tiles[0],
+        "tile_b": tiles[1],
+        "wall_z": zwall or (72, 43, 19),
+        "wall_x": xwall or (150, 110, 50),
+    }
+
+
 def bake(quiet=False, capture=True):
     """Everything this module owns, as blobs plus the numbers the header needs."""
     cap = run_capture(quiet) if capture else read_capture()
@@ -731,7 +905,16 @@ def bake(quiet=False, capture=True):
             print("MOVE_%-8s %d poses x %d rows -> %d bytes"
                   % (name, poses, BAND_H, len(moves[name])))
 
+    mesh = board_mesh_blob(cap)
+    colors = board_colors(cap)
+    if not quiet:
+        print("MESH     %d poses x %d bytes -> %d bytes, colours %s"
+              % (len(mesh) // MESH_STRIDE, MESH_STRIDE, len(mesh), colors))
+
     return {
+        "mesh": mesh,
+        "mesh_tags": mesh_pose_tags(cap),
+        "colors": colors,
         # Runtime addressing interleaves camera views inside each stage:
         # stage 0 TOP, stage 0 COM, stage 1 TOP, stage 1 COM, ... .  Keep the
         # flattened blob in that same order; grouping by tag here would make
@@ -751,7 +934,7 @@ def bake(quiet=False, capture=True):
     }
 
 
-def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
+def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     """The generated constants.  Emitted from here so the board's geometry has
     exactly one definition and `msx2_board.c` cannot drift from the capture."""
     out = []
@@ -770,6 +953,16 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("#define MSX2_OVER_H            %d" % OVER_H)
     a("// A card on the overhead board is a rectangle copy at its own baked")
     a("// size, not a span program: the slots are axis-aligned there.")
+    a("// The table's own grid, so the overhead view can be DRAWN as flat")
+    a("// rectangles rather than streamed as a picture of one.")
+    a("#define MSX2_OVER_TILE_X0      %d" % OVER_TILE_X0)
+    a("#define MSX2_OVER_TILE_PITCH_X %d" % OVER_TILE_PITCH_X)
+    a("#define MSX2_OVER_TILE_W       %d" % OVER_TILE_W)
+    a("#define MSX2_OVER_TILE_Y0      %d" % OVER_TILE_Y0)
+    a("#define MSX2_OVER_TILE_PITCH_Y %d" % OVER_TILE_PITCH_Y)
+    a("#define MSX2_OVER_TILE_H       %d" % OVER_TILE_H)
+    a("#define MSX2_OVER_TILE_ROWS    %d" % len(OVER_SLOT_ROWS))
+    a("#define MSX2_OVER_TILE_COLS    %d" % MESH_COLS)
     a("#define MSX2_OVER_CARD_W       %d" % OVER_CARD_W)
     a("#define MSX2_OVER_CARD_H       %d" % OVER_CARD_H)
     a("#define MSX2_BOARD_VIEWS       %d" % len(baked["view_tags"]))
@@ -837,6 +1030,42 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg):
     a("#define MSX2_SLOT_ART_PER_SEG   %d" % (16384 // SLOT_STRIDE))
     a("#define MSX2_SLOT_ART_PER_VIEW  %d" % FIELD_SLOTS)
     a("#define MSX2_SLOT_ART_VIEWS     %d" % len(baked["view_tags"]))
+    a("")
+    a("// ── The live board: geometry, not a picture ───────────────────────────")
+    a("// docs/MSX2_REALTIME_POLYGON_FINDINGS.md: the V9938 fills a flat")
+    a("// rectangle four times faster than the Z80 can push bytes at the data")
+    a("// port, so the arena is drawn by the command engine from the projected")
+    a("// mesh below rather than streamed as 54 KB of pixels a pose.  One record")
+    a("// is 52 corners (x as int16, y as a byte) plus the flags that say which")
+    a("// two slab walls face the camera.")
+    a("#define MSX2_MESH_SEGMENT       %d" % mesh_seg)
+    a("#define MSX2_MESH_STRIDE        %d" % MESH_STRIDE)
+    a("#define MSX2_MESH_PER_SEG       %d" % (SEGMENT_BYTES // MESH_STRIDE))
+    a("#define MSX2_MESH_POINTS        %d" % MESH_POINTS)
+    a("#define MSX2_MESH_ROWS          %d" % MESH_ROWS)
+    a("#define MSX2_MESH_COLS          %d" % MESH_COLS)
+    a("#define MSX2_MESH_TOP(r, c)     ((r) * (MSX2_MESH_COLS + 1) + (c))")
+    a("#define MSX2_MESH_BX0           %d" % MESH_BX0)
+    a("#define MSX2_MESH_BX1           %d" % MESH_BX1)
+    a("#define MSX2_MESH_BZ0           %d" % MESH_BZ0)
+    a("#define MSX2_MESH_BZ1           %d" % MESH_BZ1)
+    a("// bit 0: the +X wall faces the camera.  bit 1: the +Z wall does.")
+    a("#define MSX2_MESH_FLAG_XPOS     0x01")
+    a("#define MSX2_MESH_FLAG_ZPOS     0x02")
+    a("// Pose indices inside the blob.")
+    for i, tag in enumerate(baked["mesh_tags"]):
+        if tag in ("TOP", "COM"):
+            a("#define MSX2_MESH_POSE_%-9s %d" % (tag, i))
+    for name, poses, _blob in baked["moves"]:
+        first = baked["mesh_tags"].index("MOVE_%s_0" % name)
+        a("#define MSX2_MESH_POSE_%s(pose)  (%d + (pose))" % (name, first))
+    a("// The arena's own colours, measured off the capture: a texture the MSX2")
+    a("// cannot afford is honestly stood in for by its average.")
+    c = baked["colors"]
+    a("#define MSX2_BOARD_TILE_A       0x%02X   // (row + col) even" % grb.pack(*c["tile_a"]))
+    a("#define MSX2_BOARD_TILE_B       0x%02X" % grb.pack(*c["tile_b"]))
+    a("#define MSX2_BOARD_WALL_Z       0x%02X   // the long facing wall" % grb.pack(*c["wall_z"]))
+    a("#define MSX2_BOARD_WALL_X       0x%02X   // the side lip" % grb.pack(*c["wall_x"]))
     a("")
     a("// ── §4.6 baked camera moves ───────────────────────────────────────────")
     a("// A strip of whole pictures of the board band, streamed one after the")

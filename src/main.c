@@ -23348,6 +23348,52 @@ static void msx2_field_quad(Camera cam, int slot, int out[8])
     for (k = 0; k < 4; ++k) { out[k * 2] = q[k].x; out[k * 2 + 1] = q[k].y; }
 }
 
+/* THE BOARD AS GEOMETRY, NOT AS A PICTURE.
+   The MSX2 cartridge used to carry a 54 KB bitmap of this arena for every pose
+   -- 3.9 MB of board once the camera moves were counted -- and the V9938's
+   command engine can fill flat rectangles four times faster than the Z80 can
+   push bytes at the data port (docs/MSX2_REALTIME_POLYGON_FINDINGS.md).  So the
+   cartridge now carries the PROJECTED MESH instead: the same corners this
+   renderer computes, in the same window coordinates, at 208 bytes a pose.  The
+   Z80 fills them with HMMV and the board is drawn rather than replayed.
+
+   Projecting on the Z80 instead would have been the other option and it is the
+   wrong one: the two would drift, and MSX2_PORT_PLAN.md 4.3's whole point is
+   that the MSX2 board IS this board.  A projected corner emitted here cannot
+   disagree with the one the PC draws, because it is the same corner. */
+static void msx2_write_mesh(FILE *meta, Camera cam)
+{
+    int r, c;
+
+    for (r = 0; r <= BOARD_ROWS; ++r)
+        for (c = 0; c <= BOARD_COLS; ++c) {
+            ScreenPt p = project_point(cam, v3(col_x0(c), FIELD_Y, row_z0(r)));
+            fprintf(meta, "MESH TOP %d %d %d %d %d\n", r, c, p.x, p.y, p.ok);
+        }
+    /* The slab's underside, which is what turns the four top edges into the
+       thickness the arena is seen to have.  Only ever two of the four walls can
+       face the camera and the renderer draws exactly those (see
+       draw_field_slab_sides_fast), so all four are emitted and the cartridge
+       picks the same two. */
+    for (r = 0; r <= BOARD_ROWS; ++r) {
+        ScreenPt a = project_point(cam, v3(FIELD_X0, FIELD_THICK, row_z0(r)));
+        ScreenPt b = project_point(cam, v3(FIELD_X1, FIELD_THICK, row_z0(r)));
+        fprintf(meta, "MESH BX0 %d 0 %d %d %d\n", r, a.x, a.y, a.ok);
+        fprintf(meta, "MESH BX1 %d 0 %d %d %d\n", r, b.x, b.y, b.ok);
+    }
+    for (c = 0; c <= BOARD_COLS; ++c) {
+        ScreenPt a = project_point(cam, v3(col_x0(c), FIELD_THICK, FIELD_Z0));
+        ScreenPt b = project_point(cam, v3(col_x0(c), FIELD_THICK, FIELD_Z1));
+        fprintf(meta, "MESH BZ0 %d 0 %d %d %d\n", c, a.x, a.y, a.ok);
+        fprintf(meta, "MESH BZ1 %d 0 %d %d %d\n", c, b.x, b.y, b.ok);
+    }
+    /* Which side of the board the camera is on decides which two walls the
+       shared renderer paints; emitting the test rather than the result keeps
+       the cartridge from having to know the camera at all. */
+    fprintf(meta, "MESH SIDE 0 0 %d %d 1\n",
+            cam.eye.x >= 0 ? 1 : 0, cam.eye.z >= 0 ? 1 : 0);
+}
+
 static int msx2_write_pose(const char *dir, const char *tag, Camera cam, FILE *meta)
 {
     char path[512];
@@ -23366,6 +23412,7 @@ static int msx2_write_pose(const char *dir, const char *tag, Camera cam, FILE *m
     fclose(f);
 
     fprintf(meta, "POSE %s\n", tag);
+    msx2_write_mesh(meta, cam);
     for (slot = 0; slot < 4 * I_FIELD; ++slot) {
         int g[8];
         msx2_field_quad(cam, slot, g);
