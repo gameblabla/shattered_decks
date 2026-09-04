@@ -37,6 +37,7 @@
 #      ./msx2.sh input <script> [frames]  # check/compile/run scripted input
 #      ./msx2.sh tool <command> ...       # pass through to openmsx/
 #      ./msx2.sh ram                       # RAM/code budget from the link map
+#      ./msx2.sh trace --times "6.0 7.0" # capture a transient sequence
 # ─────────────────────────────────────────────────────────────────────────────
 set -u
 
@@ -161,6 +162,81 @@ case "$CMD" in
 		if [ "$KEY_SEQ_SET" = "0" ] && [ "$CMD" != "shot" ]; then
 			KEY_SEQ="$KEY_SEQ_DEFAULT"
 		fi
+		;;
+	trace)
+		# Trace uses the real openMSX executable and records the exact bytes the
+		# transient regressions care about: full VRAM, the sprite attribute table,
+		# and the RAM probe at each requested emulated time.  The PNG conversion
+		# happens after the machine exits so a missing frame is a hard error.
+		need_rom; need_emu
+		TRACE_TIMES=""
+		while [ $# -gt 0 ]; do
+			case "$1" in
+				--times) [ $# -ge 2 ] || die "--times requires space-separated seconds"; TRACE_TIMES="$2"; shift 2 ;;
+				--out) [ $# -ge 2 ] || die "--out requires a directory"; TRACE_OUT="$2"; shift 2 ;;
+				--keys) [ $# -ge 2 ] || die "--keys requires a sequence"; KEY_SEQ="$2"; KEY_SEQ_SET=1; shift 2 ;;
+				*) die "unknown trace option: $1" ;;
+			esac
+		done
+		[ -n "$TRACE_TIMES" ] || die "usage: ./msx2.sh trace --times '6.0 7.0' [--out dir]"
+		TRACE_OUT="${TRACE_OUT:-$OUT_DIR/trace}"
+		mkdir -p "$TRACE_OUT"
+		TRACE_SCRIPT="$TRACE_OUT/trace.tcl"
+		TRACE_INDEX=0
+		TRACE_TCL="set renderer none\nset throttle off\n"
+		[ "$KEY_SEQ_SET" = "0" ] && KEY_SEQ="$KEY_SEQ_DEFAULT"
+		TRACE_TCL="$TRACE_TCL$(emit_key_script)\n"
+		for TRACE_TIME in $TRACE_TIMES; do
+			TRACE_TAG=$(printf '%s' "$TRACE_TIME" | tr '.-' '__')
+			TRACE_TCL="$TRACE_TCL$(cat <<EOF
+after time $TRACE_TIME {
+    set f [open "$PWD/$TRACE_OUT/frame_${TRACE_TAG}.vram" w]
+    fconfigure \\\$f -translation binary
+    puts -nonewline \\\$f [debug read_block {physical VRAM} 0 131072]
+    close \\\$f
+    set f [open "$PWD/$TRACE_OUT/frame_${TRACE_TAG}.sat" w]
+    fconfigure \\\$f -translation binary
+    puts -nonewline \\\$f [debug read_block {physical VRAM} 64000 128]
+    close \\\$f
+    set f [open "$PWD/$TRACE_OUT/frame_${TRACE_TAG}.ram" w]
+    fconfigure \\\$f -translation binary
+    puts -nonewline \\\$f [debug read_block memory 0 65536]
+    close \\\$f
+}
+EOF
+)"
+			TRACE_INDEX=$((TRACE_INDEX + 1))
+		done
+		TRACE_TCL="$TRACE_TCL$(cat <<EOF
+after time [expr {max(1.0, [lindex [lsort -real [list $TRACE_TIMES]] end] + 0.25)}] { exit 0 }
+EOF
+)"
+		# shellcheck disable=SC2059
+		printf '%b' "$TRACE_TCL" > "$TRACE_SCRIPT"
+		SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" \
+			-cart "$ROM" -romtype NEO-16 -script "$TRACE_SCRIPT" 2>&1 | head -20
+		python3 - "$TRACE_OUT" "$TRACE_TIMES" <<'PY'
+import json, sys
+from pathlib import Path
+out = Path(sys.argv[1])
+frames = []
+for time in sys.argv[2].split():
+    tag = time.replace('.', '_').replace('-', '__')
+    vram = out / ('frame_%s.vram' % tag)
+    sat = out / ('frame_%s.sat' % tag)
+    ram = out / ('frame_%s.ram' % tag)
+    if not vram.exists() or not sat.exists() or not ram.exists():
+        raise SystemExit('trace frame %s was not written' % time)
+    frames.append({'time': float(time), 'vram': str(vram), 'sat': str(sat), 'ram': str(ram),
+                   'png': str(out / ('frame_%s.png' % tag))})
+(out / 'manifest.json').write_text(json.dumps({'frames': frames}, indent=2))
+PY
+		for TRACE_TIME in $TRACE_TIMES; do
+			TRACE_TAG=$(printf '%s' "$TRACE_TIME" | tr '.-' '__')
+			python3 tools/msx2/vram_png.py "$TRACE_OUT/frame_${TRACE_TAG}.vram" \
+				"$TRACE_OUT/frame_${TRACE_TAG}.png" --page 0 --scale 1 --sprites
+		done
+		exit 0
 		;;
 esac
 

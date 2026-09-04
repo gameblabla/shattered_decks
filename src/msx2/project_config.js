@@ -19,7 +19,10 @@ CompileOpt = `-I${ToolsDir}sdcc/include`
            // MSX2_DEBUG_AUTOPLAY in msx2_board.c.  Driven from the environment
            // so `make -f Makefile.msx2 soak` is the only thing that knows.
            + (process.env.MSX2_AUTOPLAY ? ` -DMSX2_DEBUG_AUTOPLAY` : ``)
-           + (process.env.MSX2_STORY_AUTOPLAY ? ` -DMSX2_DEBUG_STORY_AUTOPLAY` : ``);
+           + (process.env.MSX2_STORY_AUTOPLAY ? ` -DMSX2_DEBUG_STORY_AUTOPLAY` : ``)
+           + (process.env.MSX2_REGRESSION ? ` -DMSX2_DEBUG_REGRESSION` : ``)
+           + (process.env.MSX2_TEST_SEED ? ` -DMSX2_TEST_SEED=${process.env.MSX2_TEST_SEED}u` : ``)
+           + (process.env.MSX2_TEST_FIXTURE ? ` -DMSX2_TEST_FIXTURE=${process.env.MSX2_TEST_FIXTURE}` : ``);
 
 ProjName = "waifu_msx2";
 
@@ -44,6 +47,7 @@ ProjModules = [
 	"msx2_duel",
 	"msx2_cards",
 	"msx2_probe",
+	"msx2_regression",
 	"msx2_audio",
 ];
 

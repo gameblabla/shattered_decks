@@ -29,7 +29,7 @@ SCENE = {0: "TITLE", 1: "DUEL", 2: "STORY"}
 
 # Layout of struct Msx2Probe.  SDCC packs structs without padding on z80, and
 # every member here is already naturally ordered, so this is a straight read.
-LAYOUT = "<4sBB" + "HHHHHH" + "BBb" + "hh" + "BB" + "5s5s5s5s" + "HHH" + "BB" + "H" + "BB"
+BASE_LAYOUT = "<4sBB" + "HHHHHH" + "BBb" + "hh" + "BB" + "5s5s5s5s" + "HHH" + "BB" + "H" + "BB"
 FIELDS = [
     "magic", "version", "status",
     "frame", "steps", "duels_done", "wins_player", "wins_com", "turns",
@@ -39,17 +39,33 @@ FIELDS = [
     "field_player", "field_com", "hand_player", "hand_com",
     "data_end", "sp", "ram_free", "scene", "menu_cursor", "checksum", "stage", "pad",
 ]
-SIZE = struct.calcsize(LAYOUT)
+REG_FIELDS = [
+    "board_mode", "board_view", "draw_page", "show_page", "deal_slot",
+    "deal_step", "deal_reveal", "deal_target_mask", "deal_landed0",
+    "deal_landed1", "hand_left", "hand_hidden", "camera_active", "gem_visible",
+    "gem_x", "gem_y", "full_view_streams", "band_streams", "blank_pairs",
+    "page_flips", "story_phase", "save_row", "music_track", "music_segment",
+    "music_pointer", "music_frames", "music_loops", "music_errors",
+    "initial_seed", "duel_seed", "entropy_sources",
+]
+REG_LAYOUT = "<" + "BBBBBBBBBB" + "BBBBBB" + "HHHH" + "BB" + "B" + "HHHHB" + "II" + "B"
+LAYOUTS = {2: BASE_LAYOUT, 3: BASE_LAYOUT + REG_LAYOUT[1:]}
+FIELDS_BY_VERSION = {2: FIELDS, 3: FIELDS + REG_FIELDS}
+SIZES = {version: struct.calcsize(layout) for version, layout in LAYOUTS.items()}
 
 
-def parse(blob, offset):
-    values = struct.unpack_from(LAYOUT, blob, offset)
-    probe = dict(zip(FIELDS, values))
+def parse(blob, offset, version=None):
+    if version is None:
+        version = blob[offset + 4]
+    layout = LAYOUTS[version]
+    values = struct.unpack_from(layout, blob, offset)
+    probe = dict(zip(FIELDS_BY_VERSION[version], values))
     for key in ("field_player", "field_com", "hand_player", "hand_com"):
         probe[key] = list(probe[key])
     # The checksum covers everything before the checksum field itself; `stage`
     # and the pad byte follow it and are written asynchronously.
-    body = blob[offset:offset + SIZE - 4]
+    checksum_at = offset + struct.calcsize(BASE_LAYOUT) - 4
+    body = blob[offset:checksum_at]
     probe["checksum_ok"] = (sum(body) & 0xFFFF) == probe["checksum"]
     return probe
 
@@ -67,10 +83,11 @@ def find(blob):
         if at < 0:
             return found
         start = at + 1
-        if at + SIZE > len(blob):
+        version = blob[at + 4] if at + 4 < len(blob) else 0
+        if version not in SIZES or at + SIZES[version] > len(blob):
             continue
-        probe = parse(blob, at)
-        if probe["version"] != EXPECT_VERSION:
+        probe = parse(blob, at, version)
+        if probe["version"] not in SIZES:
             continue
         probe["offset"] = at
         found.append(probe)
@@ -109,10 +126,11 @@ def main():
         candidates = find(blob)
     else:
         candidates = []
-        for offset in (base, base + SIZE):
-            if offset + SIZE <= len(blob) and blob[offset:offset + 4] == MAGIC:
-                probe = parse(blob, offset)
-                if probe["version"] == EXPECT_VERSION:
+        for offset in (base, base + SIZES[EXPECT_VERSION], base + SIZES.get(3, 0)):
+            version = blob[offset + 4] if offset + 4 < len(blob) else 0
+            if version in SIZES and offset + SIZES[version] <= len(blob) and blob[offset:offset + 4] == MAGIC:
+                probe = parse(blob, offset, version)
+                if probe["version"] in SIZES:
                     probe["offset"] = offset
                     candidates.append(probe)
     hits = sorted((p for p in candidates if p["checksum_ok"]),
@@ -154,6 +172,16 @@ def main():
              " ".join(card(c) for c in p["hand_com"])))
     print("RAM          data ends 0x%04X, SP 0x%04X, %d bytes free between them"
           % (p["data_end"], p["sp"], p["ram_free"]))
+
+    if p["version"] >= 3:
+        print("regression   view %d mode %d, deal target 0x%02X landed 0x%02X/0x%02X, "
+              "streams %d bands %d flips %d"
+              % (p["board_view"], p["board_mode"], p["deal_target_mask"],
+                 p["deal_landed0"], p["deal_landed1"], p["full_view_streams"],
+                 p["band_streams"], p["page_flips"]))
+        print("audio        track %d segment %d frame %d loop %d errors %d; entropy 0x%02X"
+              % (p["music_track"], p["music_segment"], p["music_frames"],
+                 p["music_loops"], p["music_errors"], p["entropy_sources"]))
 
     if p["status"] != 0:
         sys.exit(1)

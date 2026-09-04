@@ -17,7 +17,7 @@ BUILD_JS     := $(abspath $(MSXGL_PATH))/engine/script/js/build.js
 OUT_DIR      := $(PROJ_DIR)/out
 ROM          := $(OUT_DIR)/waifu_msx2.rom
 MAP          := $(OUT_DIR)/waifu_msx2.map
-AUTOPLAY_TAG := $(if $(MSX2_STORY_AUTOPLAY),story-soak,$(if $(MSX2_AUTOPLAY),soak,shipping))
+AUTOPLAY_TAG := $(if $(MSX2_REGRESSION),regression,$(if $(MSX2_STORY_AUTOPLAY),story-soak,$(if $(MSX2_AUTOPLAY),soak,shipping)))
 VARIANT_STAMP := $(OUT_DIR)/.variant-$(AUTOPLAY_TAG)
 
 # NEO-16 spans 1 MB to 64 MB.  The default is the smallest size the baked
@@ -44,7 +44,7 @@ SOURCES := $(wildcard $(PROJ_DIR)/*.c) $(wildcard $(PROJ_DIR)/*.h) \
            $(PROJ_DIR)/msxgl_config.h \
            src/game/deck.c src/game/ai.c
 
-.PHONY: all rom tables verify soak story-soak clean check-sdk
+.PHONY: all rom tables verify soak story-soak regression clean check-sdk
 
 all: rom
 
@@ -83,7 +83,8 @@ $(VARIANT_STAMP):
 
 $(ROM): $(SOURCES) $(GENERATED) $(SCENE_BINS) tools/msx2/pack_msx_rom.py $(VARIANT_STAMP) | check-sdk
 	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) MSX2_AUTOPLAY=$(MSX2_AUTOPLAY) \
-	    MSX2_STORY_AUTOPLAY=$(MSX2_STORY_AUTOPLAY) \
+	    MSX2_STORY_AUTOPLAY=$(MSX2_STORY_AUTOPLAY) MSX2_REGRESSION=$(MSX2_REGRESSION) \
+	    MSX2_TEST_SEED=$(MSX2_TEST_SEED) MSX2_TEST_FIXTURE=$(MSX2_TEST_FIXTURE) \
 	    node $(BUILD_JS)
 	python3 tools/msx2/pack_msx_rom.py $(ROM)
 	@ls -l $(ROM)
@@ -106,6 +107,16 @@ soak:
 story-soak:
 	rm -rf $(OUT_DIR)
 	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1 MSX2_STORY_AUTOPLAY=1
+
+# The regression ROM keeps the same real input path as shipping, but exposes
+# the versioned probe diagnostics and accepts a fixed seed/fixture.  It is a
+# separate variant because MSXgl does not notice changed -D flags in its
+# incremental object tree.
+regression:
+	rm -rf $(OUT_DIR)
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_REGRESSION=1 \
+		MSX2_TEST_SEED=$(or $(MSX2_TEST_SEED),0x1234ABCD) \
+		MSX2_TEST_FIXTURE=$(or $(MSX2_TEST_FIXTURE),0)
 
 clean:
 	rm -rf $(OUT_DIR) $(PROJ_DIR)/emul $(PROJ_DIR)/lib

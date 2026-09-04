@@ -27,7 +27,11 @@
 #define MSX2_PROBE_MAGIC1   '2'
 #define MSX2_PROBE_MAGIC2   'P'
 #define MSX2_PROBE_MAGIC3   'B'
+#ifdef MSX2_DEBUG_REGRESSION
+#define MSX2_PROBE_VERSION  3
+#else
 #define MSX2_PROBE_VERSION  2
+#endif
 
 // Why the run stopped being interesting, if it did.
 #define MSX2_PROBE_OK       0
@@ -66,7 +70,78 @@ typedef struct Msx2Probe
 	// placed after the checksum and excluded from it.
 	u8  stage;             // last point main() reached, for bring-up bisection
 	u8  pad;
+#ifdef MSX2_DEBUG_REGRESSION
+	// Regression-only state follows the stable probe.  Keeping it out of the
+	// shipping wire format preserves the tiny normal observation channel.
+	u8  board_mode;
+	u8  board_view;
+	u8  draw_page;
+	u8  show_page;
+	u8  deal_slot;
+	u8  deal_step;
+	u8  deal_reveal;
+	u8  deal_target_mask;
+	u8  deal_landed[2];
+	u8  hand_left;
+	u8  hand_hidden;
+	u8  camera_active;
+	u8  gem_visible;
+	u8  gem_x;
+	u8  gem_y;
+	u16 full_view_streams;
+	u16 band_streams;
+	u16 blank_pairs;
+	u16 page_flips;
+	u8  story_phase;
+	u8  save_row;
+	u8  music_track;
+	u16 music_segment;
+	u16 music_pointer;
+	u16 music_frames;
+	u16 music_loops;
+	u8  music_errors;
+	u32 initial_seed;
+	u32 duel_seed;
+	u8  entropy_sources;
+#endif
 } Msx2Probe;
+
+#ifdef MSX2_DEBUG_REGRESSION
+typedef struct Msx2RegressionDiag
+{
+	u8 board_mode;
+	u8 board_view;
+	u8 draw_page;
+	u8 show_page;
+	u8 deal_slot;
+	u8 deal_step;
+	u8 deal_reveal;
+	u8 deal_target_mask;
+	u8 deal_landed[2];
+	u8 hand_left;
+	u8 hand_hidden;
+	u8 camera_active;
+	u8 gem_visible;
+	u8 gem_x;
+	u8 gem_y;
+	u16 full_view_streams;
+	u16 band_streams;
+	u16 blank_pairs;
+	u16 page_flips;
+	u8 story_phase;
+	u8 save_row;
+	u8 music_track;
+	u16 music_segment;
+	u16 music_pointer;
+	u16 music_frames;
+	u16 music_loops;
+	u8 music_errors;
+	u32 initial_seed;
+	u32 duel_seed;
+	u8 entropy_sources;
+} Msx2RegressionDiag;
+extern Msx2RegressionDiag g_msx2_regression_diag;
+#endif
 
 // The live counters.  Nothing outside Msx2_ProbeUpdate() may touch g_probe's
 // checksummed region, or the struct is inconsistent whenever the emulator

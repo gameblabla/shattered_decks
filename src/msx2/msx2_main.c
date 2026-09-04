@@ -28,6 +28,7 @@
 #include "msx2_title.h"
 #include "msx2_board.h"
 #include "msx2_story.h"
+#include "msx2_regression.h"
 
 // A duel the SOAK has not resolved within this many frames is not a long duel,
 // it is a bug, and the watchdog turns what would be a silent hang into a status
@@ -68,6 +69,12 @@ __endasm;
 }
 
 static u32 g_seed;
+
+#ifdef MSX2_TEST_SEED
+#define MSX2_BUILD_SEED ((u32)MSX2_TEST_SEED)
+#else
+#define MSX2_BUILD_SEED 0x1234ABCDu
+#endif
 
 // Frames counted by the vblank ISR.  MSXgl's crt0 installs its own handler in
 // page 0 for a mapped ROM, which means the BIOS interrupt routine -- and its
@@ -217,9 +224,10 @@ static void Msx2_SceneStory(void)
 void main(void)
 {
 	Msx2_ClearStaticRam();
-	g_seed = 0x1234ABCDu;
+	g_seed = MSX2_BUILD_SEED;
 	Msx2_AudioInit();
 	Msx2_ProbeInit();
+	Msx2_RegressionInit();
 	Msx2_VideoLoadFont();
 	Msx2_VideoInit();
 	Msx2_SpriteInit();
