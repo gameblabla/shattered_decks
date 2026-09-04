@@ -157,6 +157,20 @@ static u8  g_gem_tick;
 #define PAGE_BIT(p)    ((u8)(1u << (p)))
 #define PANEL_ALL()    (g_hud_left = g_card_left = g_prompt_left = PAGES_ALL)
 
+// ... AND A BIT IS STILL ONLY A PROMISE.  A page mask says who owes a repaint;
+// it cannot say what a page is actually showing, and several paths level the
+// two buffers with a straight VRAM copy (a landing's hold, a cut-in's restore,
+// the last camera pose) that can put an old top strip back on a page whose bit
+// has already been spent.  That is how the turn number could end up reading 6
+// on one flip and 5 on the next for the whole of the opponent's turn.  So each
+// page also records the three figures it was last PAINTED with, and
+// Msx2_BoardHudSync() re-owes any page whose record has drifted from the rules.
+// The state cannot stick: whatever put a stale strip there, the next frame
+// notices and repaints it.
+static i16 g_hud_page_com_lp[MSX2_VIDEO_PAGES];
+static i16 g_hud_page_you_lp[MSX2_VIDEO_PAGES];
+static u16 g_hud_page_turns[MSX2_VIDEO_PAGES];
+
 static u8  g_hud_left;           // pages still owing the top strip
 static u8  g_card_left;          // pages still owing the name/ATK/DEF lines
 static u8  g_prompt_left;        // pages still owing the bottom prompt line
@@ -682,6 +696,25 @@ static void Msx2_BoardHud(void)
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
 	Msx2_TextAt(196, 3, "YOU");
 	Msx2_NumAt(220, 3, g_duel.side[MSX2_OWNER_PLAYER].lp);
+
+	{
+		u8 page = Msx2_VideoGetDrawPage();
+		g_hud_page_com_lp[page] = g_duel.side[MSX2_OWNER_COM].lp;
+		g_hud_page_you_lp[page] = g_duel.side[MSX2_OWNER_PLAYER].lp;
+		g_hud_page_turns[page] = g_duel.turns;
+	}
+}
+
+// Re-owe the top strip on any page that is not showing the figures the rules
+// currently hold.  Cheap enough to run every frame: three comparisons a page.
+static void Msx2_BoardHudSync(void)
+{
+	u8 p;
+	for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
+		if((g_hud_page_com_lp[p] != g_duel.side[MSX2_OWNER_COM].lp) ||
+		   (g_hud_page_you_lp[p] != g_duel.side[MSX2_OWNER_PLAYER].lp) ||
+		   (g_hud_page_turns[p] != g_duel.turns))
+			g_hud_left |= PAGE_BIT(p);
 }
 
 static const c8* Msx2_BoardPrompt(void)
@@ -1958,6 +1991,8 @@ static bool Msx2_BoardPaint(void)
 	u8 cards = 0;
 	u8 i;
 
+	Msx2_BoardHudSync();
+
 	{
 		u8 bit = PAGE_BIT(page);
 		if(g_hud_left & bit)
@@ -2247,6 +2282,11 @@ void Msx2_BoardEnter_In(u8 stage)
 	g_deal_target_mask = 0;
 	g_deal_visible_mask = 0;
 	g_deal_landed_mask[0] = g_deal_landed_mask[1] = 0;
+	// No page has been painted with any figure yet, and a duel entered a second
+	// time must not inherit the last one's record: 0xFFFF is a turn number no
+	// duel reaches, so both pages start owing the strip.
+	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
+		g_hud_page_turns[i] = 0xFFFF;
 	Msx2_BoardSnapshot();
 
 	Msx2_RasterInit();
@@ -2409,6 +2449,17 @@ static void Msx2_BoardClearHandBand(void)
 
 static void Msx2_BoardSwitchView(u8 view, bool forward)
 {
+	// THE SELECTOR GOES BEFORE THE PICTURE UNDER IT DOES.
+	// The gem is a sprite over both pages, and the next thing to reach the
+	// screen is a different board: the overhead cut below, or -- when the pass
+	// starts from a chair, where there is no cut -- the swing's first pose,
+	// which is flipped in at the very next V-blank.  Msx2_BoardShowCursor()
+	// does take it off on M_TURN, but that is the TOP of the next frame, one
+	// flip too late: the gem was left standing at its old coordinates over the
+	// new picture for that frame.  Hiding it here costs one attribute write and
+	// covers every direction the camera moves in.
+	Msx2_SpriteTransitionBegin();
+
 	// The baked camera path runs between the two chairs and nowhere else, and
 	// it only redraws the board band -- so it cannot start from overhead,
 	// where the picture goes on down through the hand's rows.  Come back down
@@ -2534,24 +2585,12 @@ static void Msx2_BoardTouch(void)
 // strings on each of two pages, and asking for one every frame was most of what
 // made the opponent's turn crawl -- the flip could only come round once the
 // painter had finished, so the board itself was updating a few times a second.
-// Nothing in the panel changes unless a figure in it does, so that is what is
-// tested.
-static i16 g_hud_com_lp;
-static i16 g_hud_you_lp;
-static u8  g_hud_turns;
-
+// Nothing in the panel changes unless a figure in it does, and that is what
+// Msx2_BoardHudSync() tests, per page, against what each page was painted with.
 static void Msx2_BoardTouchRules(void)
 {
 	Msx2_BoardSnapshot();
-	if((g_duel.side[MSX2_OWNER_COM].lp != g_hud_com_lp) ||
-	   (g_duel.side[MSX2_OWNER_PLAYER].lp != g_hud_you_lp) ||
-	   (g_duel.turns != g_hud_turns))
-	{
-		g_hud_com_lp = g_duel.side[MSX2_OWNER_COM].lp;
-		g_hud_you_lp = g_duel.side[MSX2_OWNER_PLAYER].lp;
-		g_hud_turns = g_duel.turns;
-		g_hud_left = PAGES_ALL;
-	}
+	Msx2_BoardHudSync();
 }
 
 static void Msx2_BoardCancel(void)

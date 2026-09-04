@@ -85,6 +85,7 @@ static void Msx2_AudioStartRequested(void)
 {
 	u8 requested = g_music_requested;
 	const Msx2MusicAsset* asset;
+	u8 loop;
 	u16 back;
 
 	if(requested == g_music_active)
@@ -107,6 +108,15 @@ static void Msx2_AudioStartRequested(void)
 	if(asset->segment_count == 0)
 		return;
 
+	// THE TABLE IS IN THE WINDOW THIS FUNCTION IS ABOUT TO MOVE.
+	// g_msx2_music_assets is const data, so the linker puts it in the code
+	// area -- and the code area runs past 0x8000, which is the NEO window the
+	// recording is mapped through.  Reading asset->loop as an argument to
+	// LVGM_Play() therefore read a byte of the music stream instead of the
+	// flag: every one-shot cue (Victory, Fail) started with LVGM_STATE_LOOP
+	// set and played for ever.  Every field this function needs is taken here,
+	// while the window still holds the code segment.
+	loop = asset->loop;
 	g_music_first_segment = asset->first_segment;
 	g_music_segment = asset->first_segment;
 	g_music_segment_count = asset->segment_count;
@@ -122,7 +132,7 @@ static void Msx2_AudioStartRequested(void)
 #endif
 
 	back = Msx2_Bank2Enter(g_music_segment);
-	if(LVGM_Play((const void*)0x8000, asset->loop))
+	if(LVGM_Play((const void*)0x8000, loop))
 		g_music_active = requested;
 	else
 	{

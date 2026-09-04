@@ -218,6 +218,45 @@ debug, regression, and fixed-seed builds retain deterministic seeds. The
 regression ROM records these boundaries in the RAM probe rather than relying on
 an all-black screenshot or on an emulator process merely staying alive.
 
+### Second pass on the same report
+
+Three of the four issues re-reported after that pass were reproduced in real
+openMSX and fixed.
+
+**The result cues looped.**  `g_msx2_music_assets` is `const`, so the linker
+puts it in the code area -- and the code area runs past 0x8000, which is the
+NEO window `Msx2_AudioStartRequested()` maps the recording through.  The `loop`
+flag was still being read from the table as the argument to `LVGM_Play()`,
+*after* that mapping, so what reached the player was a byte of the music
+stream: Victory and Fail started with `LVGM_STATE_LOOP` set and never stopped.
+Every asset field is now taken before the window moves.  Measured through
+`g_LVGM_State` at 0xC221 in the regression fixtures: win 0x82 -> 0x80 and the
+player idle after 13 s, loss idle after 19 s, while the title track still shows
+0x82 with an advancing pointer after 100 s.
+
+**The selector survived a turn handoff.**  Passing from a chair takes the
+overhead cut nobody makes -- there is none between two chairs -- so nothing hid
+the gem before `Msx2_BoardStepCameraMove()` flipped its first pose in.
+`Msx2_BoardShowCursor()` does hide it on `M_TURN`, but that is the top of the
+NEXT frame.  Sprite attribute 29 measured at Y=144 for 0.45 s of swing before
+the fix and hidden within one frame of the press after it;
+`Msx2_BoardSwitchView()` now calls `Msx2_SpriteTransitionBegin()` first.
+
+**The turn number could read two different values on the two pages.**  The page
+mask says who owes a repaint; it cannot say what a page is showing, and several
+paths level the buffers with a VRAM copy that can put an old strip back on a
+page whose bit was already spent.  Each page now records the three figures it
+was painted with and `Msx2_BoardHudSync()` re-owes any page that has drifted,
+every frame, so the alternating state cannot persist.
+
+**SAVE GAME returning to the title was not reproduced.**  The map row, the
+picker, FLOPPY/PASSWORD, and the continue-code screen were driven with scripted
+keys on `C-BIOS_MSX2` and on `C-BIOS_MSX2_DISK`, from a fresh story and after a
+completed story duel: the picker opens every time.  Whatever the reported
+machine does differently -- a real BIOS in an expanded slot 0, or a real disk
+interface answering the `Msx2_DiskFind()` probe -- is not visible here, and the
+probe is the one thing that screen does which the deck editor does not.
+
 Music is now banked PSG lVGM. `tools/msx2/gen_msx_audio.py` validates the
 AY-only VGM sources in `msx_music/`, runs `vgm_cmp -justtmr`, checks timed AY
 register events and rendered PCM, then invokes MSXzip with `--simplify
