@@ -72,9 +72,53 @@
 #define STORY_NAME_LEN        8
 #define STORY_CODE_LEN        16
 #define STORY_EDIT_SLOTS      4
-#define EDIT_DECK_Y           44
-#define EDIT_STORAGE_Y        139
-#define EDIT_CARD_X(n)        (u8)(8 + (u8)(n) * 49)
+
+// ── The deck editor, laid out the way the PC-FX one is ───────────────────────
+//
+// Two tabs over one browsable list, an art panel for whatever the cursor is
+// on, and one button that moves a card between the two sides.  What the other
+// targets draw as a 6x3 grid of card faces is a NAMED LIST here, and that is
+// the only real departure: a card face is 1,920 bytes streamed at the padded
+// 32 T-state pitch Msx2_StreamRect has to use with the display on, so eighteen
+// of them is a third of a second of repaint per keypress.  One face beside a
+// list of names costs one, reads better on a 256-wide screen, and is the only
+// version of this screen that answers the joystick at once.
+#define ED_TITLE_Y            6
+#define ED_TAB_Y              17
+#define ED_TAB_H              13
+#define ED_TAB0_X             6
+#define ED_TAB1_X             134
+#define ED_TAB_W              116
+#define ED_STATUS_Y           35
+#define ED_LIST_X             6
+#define ED_LIST_W             190
+#define ED_LIST_Y             48
+#define ED_ROW_H              13
+#define ED_ROWS               10
+#define ED_TEXT_X             10
+#define ED_TEXT_COLS          30
+#define ED_ART_X              204
+#define ED_ART_Y              50
+#define ED_INFO_X             202
+#define ED_STAT_Y             104
+#define ED_COUNT_Y            126
+#define ED_MSG_Y              180
+#define ED_HINT_Y             192
+#define ED_HINT2_Y            202
+#define ED_NONE               0xFFu
+
+// How long a held direction waits before it repeats, and how often after that.
+// Forty cards is four screenfuls; one press per row would be eighty presses to
+// walk the deck and back.
+#define ED_REP_DELAY          20
+#define ED_REP_RATE           4
+
+// Repaint levels, in the order they cost.  A cursor step only owes the two rows
+// that changed and the art panel; a scroll or a tab owes the whole list; the
+// tabs, the status line and the hints only change when the mode does.
+#define ED_DIRTY_SEL          1
+#define ED_DIRTY_LIST         2
+#define ED_DIRTY_ALL          3
 
 #define CODE_ALPHABET "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -132,10 +176,34 @@ static u8  g_save_pick;
 // The flag the code screen raises when the player backs out of an empty code:
 // the phase steppers return void, and this one has to leave the whole scene.
 static u8  g_want_quit;
-static u8  g_editor_target;
-static u8  g_editor_storage_cursor;
-static u8  g_editor_storage_mode;
+// The editor: one cursor and one scroll per tab, so stepping across and back
+// lands where it left.
+static u8  g_ed_tab;
+static u8  g_ed_cursor[2];
+static u8  g_ed_scroll[2];
+// The half-finished exchange: the row picked on the other tab, or ED_NONE.
+static u8  g_ed_pending;
+static u8  g_ed_pending_tab;
+// A refusal the screen is still showing; cleared by the next button.
+static u8  g_ed_msg;
+static u8  g_ed_rep;
+static u8  g_ed_rep_dir;
+static u8  g_ed_dirty[MSX2_VIDEO_PAGES];
+static u8  g_ed_prev[MSX2_VIDEO_PAGES];
+// The deck is browsed in card order, not in the order the slots happen to hold:
+// the deck is shuffled before every duel, so slot order means nothing to the
+// game, and a sorted list puts a card's copies together where they can be
+// counted.  It also hides the one thing the save format forces -- see
+// Msx2_StoryDeckHostSlot.
+static u8  g_ed_view[STORY_DECK_SIZE];
+// The ten names on screen, read once per scroll rather than once per page: a
+// repaint has to happen twice, and the cartridge read is the same both times.
+static c8  g_ed_names[ED_ROWS][MSX2_NAME_STRIDE];
 static u8  g_story_deck[STORY_DECK_SIZE];
+// The first four cards of the generated starter deck.  The continue code has
+// room for exactly four replaced slots (STORY_EDIT_SLOTS x 7 bits), so a slot
+// still holding its starter card is a slot a change can be saved in.
+static u8  g_story_base[STORY_EDIT_SLOTS];
 // Whether g_story_deck holds a real deck yet.  The soak deals a story duel
 // without ever walking into story mode, and the RAM it reads is now genuinely
 // zero rather than accidentally card-shaped.
@@ -230,6 +298,11 @@ static void Msx2_StoryBuildStarterDeck(void)
 	waifu_deck_build_random(&deck, &rng, 0);
 	for(i = 0; i < STORY_DECK_SIZE; ++i)
 		g_story_deck[i] = (u8)deck.cards[i];
+	/* Remembered before any swap is applied: the code writes slots 0-3 out
+	   raw, so "this slot still holds what the seed dealt" is what tells the
+	   editor a change can still be recorded there. */
+	for(i = 0; i < STORY_EDIT_SLOTS; ++i)
+		g_story_base[i] = g_story_deck[i];
 	g_story_storage_count = 0;
 	for(i = 0; i < STORY_STORAGE_SIZE; ++i)
 		g_story_storage[i] = MSX2_CARD_NONE;
@@ -1215,129 +1288,445 @@ static bool Msx2_StoryTextStep(void)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Compact deck editor
+//  The deck editor
+//
+//  The same screen the other targets have: a DECK tab and a STORAGE tab, the
+//  whole of whichever one is up listed on screen, an art panel showing the card
+//  under the cursor, and one button that moves a card from one side to the
+//  other.  Left and right change tabs -- the list is one column, so the two
+//  directions the cursor does not need are the tab keys.
+//
+//  THE ONE RULE THIS SCREEN HAS AND THE OTHERS DO NOT: an exchange, not an
+//  add and a remove.  The cartridge has no battery, so the save is the
+//  sixteen-symbol continue code, and the code carries four card ids
+//  (STORY_EDIT_SLOTS x 7 bits) against a deck the seed regenerates.  A deck
+//  that could grow or shrink could not be written down at all, and no more than
+//  four of its cards can differ from the dealt one.  So the deck is always
+//  forty cards, a swap always trades one of them for one in storage, and the
+//  editor refuses the fifth change rather than making one it cannot save.
 // ─────────────────────────────────────────────────────────────────────────────
 
-static void Msx2_StoryDeckPaint(void)
+static u8 Msx2_StoryDeckCount(void)
+{
+	return g_ed_tab ? g_story_storage_count : (u8)STORY_DECK_SIZE;
+}
+
+static u8 Msx2_StoryDeckCardAt(u8 idx)
+{
+	return g_ed_tab ? g_story_storage[idx] : g_story_deck[g_ed_view[idx]];
+}
+
+// Card order for the deck list.  Insertion sort over an index array: the deck
+// itself must keep its slots where they are, because slots 0-3 are what the
+// continue code writes out.
+static void Msx2_StoryDeckSortView(void)
+{
+	u8 i, j, v;
+
+	for(i = 0; i < STORY_DECK_SIZE; ++i)
+		g_ed_view[i] = i;
+	for(i = 1; i < STORY_DECK_SIZE; ++i)
+	{
+		v = g_ed_view[i];
+		j = i;
+		while((j != 0) && (g_story_deck[g_ed_view[j - 1]] > g_story_deck[v]))
+		{
+			g_ed_view[j] = g_ed_view[j - 1];
+			--j;
+		}
+		g_ed_view[j] = v;
+	}
+}
+
+// Storage has no slot identity at all -- the code decoder finds a card in it by
+// value -- so it is sorted in place.
+static void Msx2_StoryDeckSortStorage(void)
+{
+	u8 i, j, v;
+
+	for(i = 1; i < g_story_storage_count; ++i)
+	{
+		v = g_story_storage[i];
+		j = i;
+		while((j != 0) && (g_story_storage[j - 1] > v))
+		{
+			g_story_storage[j] = g_story_storage[j - 1];
+			--j;
+		}
+		g_story_storage[j] = v;
+	}
+}
+
+// Which physical deck slot a change to `phys` can be recorded in, moving the
+// picked card into it if it is not already there.  Slots 0-3 are the four the
+// continue code has room for; a slot still holding its dealt card is free.
+// The exchange of two deck slots is invisible: the deck is a bag that gets
+// shuffled before every duel, and the list is drawn in card order.
+static u8 Msx2_StoryDeckHostSlot(u8 phys)
+{
+	u8 j;
+
+	if(phys < STORY_EDIT_SLOTS)
+		return phys;
+	for(j = 0; j < STORY_EDIT_SLOTS; ++j)
+	{
+		if(g_story_deck[j] == g_story_base[j])
+		{
+			u8 tmp = g_story_deck[j];
+			g_story_deck[j] = g_story_deck[phys];
+			g_story_deck[phys] = tmp;
+			return j;
+		}
+	}
+	return ED_NONE;
+}
+
+static void Msx2_StoryDeckDirty(u8 level)
 {
 	u8 i;
+	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
+		if(g_ed_dirty[i] < level)
+			g_ed_dirty[i] = level;
+}
 
-	Msx2_Fill(2, 18, 252, 176, MSX2_PANEL_COLOR);
-	Msx2_FrameRect(2, 18, 252, 176, MSX2_GOLD);
-	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(25, Msx2_UiText(MSX2_S_DECK_EDITOR));
-	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(35, Msx2_UiText(MSX2_S_CHOOSE_A_CARD_TO_REPLACE));
+// The ten names the window is showing, out of the cartridge and into RAM.
+static void Msx2_StoryDeckCacheNames(void)
+{
+	u8 count = Msx2_StoryDeckCount();
+	u8 i;
 
-	for(i = 0; i < STORY_EDIT_SLOTS; ++i)
+	for(i = 0; i < ED_ROWS; ++i)
 	{
-		u8 x = EDIT_CARD_X(i);
-		Msx2_StoryDrawCardThumb(g_story_deck[i], x, EDIT_DECK_Y);
+		u8 idx = (u8)(g_ed_scroll[g_ed_tab] + i);
+		g_ed_names[i][0] = 0;
+		if(idx >= count)
+			continue;
+		Msx2_RomRead(MSX2_TEXT_SEGMENT,
+		             (u16)Msx2_StoryDeckCardAt(idx) * MSX2_NAME_STRIDE,
+		             (u8*)g_ed_names[i], MSX2_NAME_STRIDE);
+		g_ed_names[i][ED_TEXT_COLS] = 0;
 	}
-	Msx2_FrameRect((u8)(EDIT_CARD_X(g_editor_target) - 1), (u8)(EDIT_DECK_Y - 1),
-	               MSX2_CARD_W + 2, MSX2_CARD_H + 2,
-	               g_editor_storage_mode ? MSX2_GOLD : MSX2_RED);
+}
 
-	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-	Msx2_TextAt(8, 118, Msx2_UiText(MSX2_S_STORAGE));
-	if(g_story_storage_count == 0)
+static void Msx2_StoryDeckRow(u8 i)
+{
+	u8 y = (u8)(ED_LIST_Y + i * ED_ROW_H);
+	u8 idx = (u8)(g_ed_scroll[g_ed_tab] + i);
+	bool sel = (idx == g_ed_cursor[g_ed_tab]);
+	bool held = ((g_ed_pending != ED_NONE) && (g_ed_pending_tab == g_ed_tab) &&
+	             (g_ed_pending == idx));
+	u8 bg = sel ? MSX2_DEEP_BLUE : MSX2_BLACK;
+
+	Msx2_Fill(ED_LIST_X, y, ED_LIST_W, (u8)(ED_ROW_H - 1), bg);
+	if((idx >= Msx2_StoryDeckCount()) || (g_ed_names[i][0] == 0))
+		return;
+	Msx2_TextColor(held ? MSX2_GOLD : (sel ? MSX2_WHITE : MSX2_SAND), bg);
+	Msx2_TextAt(ED_TEXT_X, (u8)(y + 2), g_ed_names[i]);
+}
+
+// The art panel: the card the cursor is on, its two figures, and where it sits
+// in the list.  One 40x48 stream, which is the whole per-keypress cost.
+static void Msx2_StoryDeckInfo(void)
+{
+	u8 count = Msx2_StoryDeckCount();
+	u8 cursor = g_ed_cursor[g_ed_tab];
+	u8 card;
+
+	Msx2_Fill((u8)(ED_ART_X - 1), (u8)(ED_ART_Y - 1), MSX2_CARD_W + 2,
+	          (u8)(MSX2_CARD_H + 2), MSX2_BLACK);
+	Msx2_Fill(ED_INFO_X, ED_STAT_Y, 52, (u8)(ED_COUNT_Y + 8 - ED_STAT_Y),
+	          MSX2_BLACK);
+	if(count == 0)
+		return;
+
+	card = Msx2_StoryDeckCardAt(cursor);
+	Msx2_StoryDrawCardThumb(card, ED_ART_X, ED_ART_Y);
+	Msx2_FrameRect((u8)(ED_ART_X - 1), (u8)(ED_ART_Y - 1), MSX2_CARD_W + 2,
+	               (u8)(MSX2_CARD_H + 2), MSX2_GOLD);
+
+	if(Msx2_IsMonster(card))
 	{
-		Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-		Msx2_TextAt(61, 118, Msx2_UiText(MSX2_S_EMPTY_WIN_DUELS_TO_EARN_CARD));
+		Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
+		Msx2_TextAt(ED_INFO_X, ED_STAT_Y, "ATK");
+		Msx2_TextAt(ED_INFO_X, (u8)(ED_STAT_Y + 10), "DEF");
+		Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
+		Msx2_NumAt((u8)(ED_INFO_X + 24), ED_STAT_Y, (i16)Msx2_CardAtk(card));
+		Msx2_NumAt((u8)(ED_INFO_X + 24), (u8)(ED_STAT_Y + 10),
+		           (i16)Msx2_CardDef(card));
 	}
 	else
 	{
-		/* The collection is a carousel rather than a second grid.  It keeps the
-		   whole reward card visible and makes left/right work even after a
-		   continue code has restored a longer collection. */
-		Msx2_StoryDrawCardThumb(g_story_storage[g_editor_storage_cursor], 8,
-		                       (u8)(EDIT_STORAGE_Y - 5));
-		Msx2_FrameRect(7, (u8)(EDIT_STORAGE_Y - 6), (u16)(MSX2_CARD_W + 2),
-		               (u8)(MSX2_CARD_H + 2),
-		               g_editor_storage_mode ? MSX2_RED : MSX2_GOLD);
-		Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-		Msx2_TextAt(61, 135, Msx2_UiText(MSX2_S_CARD));
-		Msx2_NumAt(91, 135, (i16)g_story_storage[g_editor_storage_cursor]);
-		Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-		Msx2_TextAt(61, 151, Msx2_UiText(MSX2_S_ITEM));
-		Msx2_NumAt(91, 151, (i16)(g_editor_storage_cursor + 1));
-		Msx2_TextAt(111, 151, "OF");
-		Msx2_NumAt(128, 151, (i16)g_story_storage_count);
+		Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
+		Msx2_TextAt(ED_INFO_X, ED_STAT_Y, "SUPPORT");
 	}
 
-	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(197, g_editor_storage_mode
-		? Msx2_UiText(MSX2_S_L_R_PICK_SPACE_SWAP_ESC_BACK)
-		: Msx2_UiText(MSX2_S_L_R_TARGET_DOWN_PICK_ESC_EXI));
+	Msx2_TextColor(MSX2_DARK_SAND, MSX2_BLACK);
+	Msx2_NumAt(ED_INFO_X, ED_COUNT_Y, (i16)(cursor + 1));
+	Msx2_TextAt((u8)(ED_INFO_X + 18), ED_COUNT_Y, "/");
+	Msx2_NumAt((u8)(ED_INFO_X + 26), ED_COUNT_Y, (i16)count);
+}
+
+static void Msx2_StoryDeckList(void)
+{
+	u8 i;
+
+	for(i = 0; i < ED_ROWS; ++i)
+		Msx2_StoryDeckRow(i);
+	if(g_ed_tab && (g_story_storage_count == 0))
+	{
+		Msx2_TextColor(MSX2_DARK_SAND, MSX2_BLACK);
+		Msx2_TextAt(ED_TEXT_X, (u8)(ED_LIST_Y + 2),
+		            Msx2_UiText(MSX2_S_EMPTY_WIN_DUELS_TO_EARN_CARD));
+	}
+	Msx2_StoryDeckInfo();
+}
+
+static void Msx2_StoryDeckTab(u8 which, u8 x, u8 id, u8 count)
+{
+	bool on = (g_ed_tab == which);
+	u8 bg = on ? MSX2_DEEP_BLUE : MSX2_BLACK;
+
+	Msx2_Fill(x, ED_TAB_Y, ED_TAB_W, ED_TAB_H, bg);
+	Msx2_FrameRect(x, ED_TAB_Y, ED_TAB_W, ED_TAB_H,
+	               on ? MSX2_GOLD : MSX2_DARK_SAND);
+	Msx2_TextColor(on ? MSX2_WHITE : MSX2_DARK_SAND, bg);
+	Msx2_TextAt((u8)(x + 10), (u8)(ED_TAB_Y + 3), Msx2_UiText(id));
+	Msx2_NumAt((u8)(x + 70), (u8)(ED_TAB_Y + 3), (i16)count);
+}
+
+static void Msx2_StoryDeckPaint(void)
+{
+	bool pending = (g_ed_pending != ED_NONE);
+
+	Msx2_ClearPage(MSX2_BLACK);
+
+	Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
+	Msx2_TextCenter(ED_TITLE_Y, Msx2_UiText(MSX2_S_DECK_EDITOR));
+
+	Msx2_StoryDeckTab(0, ED_TAB0_X, MSX2_S_DECK, STORY_DECK_SIZE);
+	Msx2_StoryDeckTab(1, ED_TAB1_X, MSX2_S_STORAGE, g_story_storage_count);
+
+	Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
+	Msx2_TextCenter(ED_STATUS_Y, Msx2_UiText(pending
+		? MSX2_S_PICK_THE_CARD_TO_SWAP
+		: MSX2_S_CHOOSE_A_CARD_TO_REPLACE));
+
+	Msx2_StoryDeckList();
+
+	if(g_ed_msg)
+	{
+		Msx2_TextColor(MSX2_RED, MSX2_BLACK);
+		Msx2_TextCenter(ED_MSG_Y, Msx2_UiText(g_ed_msg));
+	}
+
+	Msx2_TextColor(MSX2_DARK_SAND, MSX2_BLACK);
+	Msx2_TextCenter(ED_HINT_Y, Msx2_UiText(MSX2_S_UP_DOWN_PICKS_L_R_CHANGES_TAB));
+	Msx2_TextColor(MSX2_SAND, MSX2_BLACK);
+	Msx2_TextCenter(ED_HINT2_Y, Msx2_UiText(pending
+		? MSX2_S_SPACE_SWAPS_HERE_ESC_CANCELS
+		: MSX2_S_SPACE_EXCHANGES_ESC_LEAVES));
 }
 
 static void Msx2_StoryEnterDeck(void)
 {
 	g_phase = PH_DECK;
-	g_editor_target = 0;
-	g_editor_storage_cursor = 0;
-	g_editor_storage_mode = FALSE;
+	g_ed_tab = 0;
+	g_ed_cursor[0] = 0;
+	g_ed_cursor[1] = 0;
+	g_ed_scroll[0] = 0;
+	g_ed_scroll[1] = 0;
+	g_ed_pending = ED_NONE;
+	g_ed_pending_tab = 0;
+	g_ed_msg = 0;
+	g_ed_rep = 0;
+	g_ed_rep_dir = 0;
+	g_ed_prev[0] = 0;
+	g_ed_prev[1] = 0;
+	Msx2_StoryDeckSortStorage();
+	Msx2_StoryDeckSortView();
+	Msx2_StoryDeckCacheNames();
+
+	/* Black, not the road: the list wants the whole screen, and a picture
+	   under it would have to be restored under every row that changes. */
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
-	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStageForProgress(g_progress)), MSX2_PAGE_1);
 	Msx2_StoryDeckPaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
 	Msx2_InputFlush();
+	g_ed_dirty[0] = 0;
+	g_ed_dirty[1] = 0;
 	g_map_dirty = 0;
 	Msx2_MusicPlay(MSX2_MUSIC_DECK_EDITOR);
+}
+
+// Keep the cursor inside the window.  The window moves a whole screenful at a
+// time rather than a row: a scroll costs ten names and ten lines of glyphs on
+// both pages, and paying that on every step past the edge is what made the
+// list feel stuck.  Stepping off the bottom starts the next page at the cursor;
+// stepping off the top ends the previous page at it.
+static bool Msx2_StoryDeckClamp(u8 dir)
+{
+	u8 cur = g_ed_cursor[g_ed_tab];
+	u8 was = g_ed_scroll[g_ed_tab];
+	u8 sc = was;
+
+	if(cur < sc)
+		sc = (dir & MSX2_BTN_UP)
+			? ((cur >= (u8)(ED_ROWS - 1)) ? (u8)(cur - ED_ROWS + 1) : 0)
+			: cur;
+	else if(cur >= (u8)(sc + ED_ROWS))
+		sc = cur;
+	if(sc == was)
+		return FALSE;
+	g_ed_scroll[g_ed_tab] = sc;
+	return TRUE;
+}
+
+static void Msx2_StoryDeckSwitchTab(void)
+{
+	u8 count;
+
+	g_ed_tab ^= 1;
+	count = Msx2_StoryDeckCount();
+	if(count == 0)
+	{
+		g_ed_cursor[g_ed_tab] = 0;
+		g_ed_scroll[g_ed_tab] = 0;
+	}
+	else
+	{
+		if(g_ed_cursor[g_ed_tab] >= count)
+			g_ed_cursor[g_ed_tab] = (u8)(count - 1);
+		if(g_ed_scroll[g_ed_tab] >= count)
+			g_ed_scroll[g_ed_tab] = 0;
+		(void)Msx2_StoryDeckClamp(0);
+	}
+	Msx2_StoryDeckCacheNames();
+	Msx2_StoryDeckDirty(ED_DIRTY_ALL);
+}
+
+// Trade the deck card at view row `deck_row` for the storage card at
+// `store_row`.  Both lists are re-sorted afterwards, which is also what hides
+// the slot shuffle Msx2_StoryDeckHostSlot may have done.
+static void Msx2_StoryDeckExchange(u8 deck_row, u8 store_row)
+{
+	u8 slot = Msx2_StoryDeckHostSlot(g_ed_view[deck_row]);
+	u8 old;
+
+	if(slot == ED_NONE)
+	{
+		g_ed_msg = MSX2_S_ONLY_FOUR_CARDS_CAN_BE_SWAPPED;
+		Msx2_StoryDeckDirty(ED_DIRTY_ALL);
+		return;
+	}
+	old = g_story_deck[slot];
+	g_story_deck[slot] = g_story_storage[store_row];
+	g_story_storage[store_row] = old;
+	Msx2_StoryDeckSortStorage();
+	Msx2_StoryDeckSortView();
+	Msx2_SfxPlay(MSX2_SFX_CONFIRM);
 }
 
 static void Msx2_StoryDeckStep(void)
 {
 	u8 pressed = Msx2_InputPressed();
+	u8 held = Msx2_InputHeld();
+	u8 page = Msx2_VideoGetDrawPage();
+	u8 move = (u8)(pressed & (MSX2_BTN_UP | MSX2_BTN_DOWN));
+	u8 count;
 
-	if(g_editor_storage_mode)
+	// A held direction repeats, because forty cards is four screenfuls.
+	if(move != 0)
 	{
-		if(pressed & MSX2_BTN_LEFT)
-			g_editor_storage_cursor = (g_editor_storage_cursor == 0)
-			                         ? (u8)(g_story_storage_count - 1)
-			                         : (u8)(g_editor_storage_cursor - 1);
-		if(pressed & MSX2_BTN_RIGHT)
-			g_editor_storage_cursor = (u8)((g_editor_storage_cursor + 1 ==
-			                               g_story_storage_count) ? 0
-			                              : (g_editor_storage_cursor + 1));
-		if(pressed & MSX2_BTN_UP)
-			g_editor_storage_mode = FALSE;
-		if((pressed & MSX2_BTN_A) && (g_story_storage_count != 0))
-		{
-			u8 old = g_story_deck[g_editor_target];
-			g_story_deck[g_editor_target] = g_story_storage[g_editor_storage_cursor];
-			g_story_storage[g_editor_storage_cursor] = old;
-			Msx2_SfxPlay(MSX2_SFX_CONFIRM);
-			g_editor_storage_mode = FALSE;
-		}
+		g_ed_rep_dir = move;
+		g_ed_rep = 0;
+	}
+	else if((g_ed_rep_dir != 0) && (held & g_ed_rep_dir))
+	{
+		++g_ed_rep;
+		if((g_ed_rep >= ED_REP_DELAY) &&
+		   (((u8)(g_ed_rep - ED_REP_DELAY) % ED_REP_RATE) == 0))
+			move = g_ed_rep_dir;
 	}
 	else
+		g_ed_rep_dir = 0;
+
+	if(g_ed_msg && (pressed != 0))
 	{
-		if(pressed & MSX2_BTN_LEFT)
+		g_ed_msg = 0;
+		Msx2_StoryDeckDirty(ED_DIRTY_ALL);
+	}
+
+	count = Msx2_StoryDeckCount();
+	if((move != 0) && (count != 0))
+	{
+		u8 cur = g_ed_cursor[g_ed_tab];
+		if(move & MSX2_BTN_UP)
+			cur = (cur == 0) ? (u8)(count - 1) : (u8)(cur - 1);
+		else
+			cur = (u8)((cur + 1 == count) ? 0 : (cur + 1));
+		if(cur != g_ed_cursor[g_ed_tab])
 		{
-			g_editor_target = (g_editor_target == 0) ? (STORY_EDIT_SLOTS - 1)
-			                                      : (g_editor_target - 1);
+			g_ed_cursor[g_ed_tab] = cur;
+			Msx2_SfxPlay(MSX2_SFX_SELECT);
+			if(Msx2_StoryDeckClamp(move))
+			{
+				Msx2_StoryDeckCacheNames();
+				Msx2_StoryDeckDirty(ED_DIRTY_LIST);
+			}
+			else
+				Msx2_StoryDeckDirty(ED_DIRTY_SEL);
 		}
-		if(pressed & MSX2_BTN_RIGHT)
+	}
+
+	if(pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT))
+	{
+		Msx2_SfxPlay(MSX2_SFX_SELECT);
+		Msx2_StoryDeckSwitchTab();
+	}
+
+	if(pressed & MSX2_BTN_A)
+	{
+		if((g_story_storage_count == 0) || (count == 0))
 		{
-			g_editor_target = (u8)((g_editor_target + 1) % STORY_EDIT_SLOTS);
+			g_ed_msg = MSX2_S_EMPTY_WIN_DUELS_TO_EARN_CARD;
+			Msx2_StoryDeckDirty(ED_DIRTY_ALL);
 		}
-		if((pressed & MSX2_BTN_DOWN) && (g_story_storage_count != 0))
+		else if((g_ed_pending != ED_NONE) && (g_ed_pending_tab != g_ed_tab))
 		{
-			g_editor_storage_mode = TRUE;
+			// The other half.  Which row is which follows from the side the
+			// first pick was made on, not from the side we are standing on --
+			// the player is free to walk back and forth in between.
+			u8 deck_row = g_ed_tab ? g_ed_pending : g_ed_cursor[0];
+			u8 store_row = g_ed_tab ? g_ed_cursor[1] : g_ed_pending;
+			g_ed_pending = ED_NONE;
+			Msx2_StoryDeckExchange(deck_row, store_row);
+			// Land on the deck, which is the side the change is judged on.
+			if(g_ed_tab != 0)
+				Msx2_StoryDeckSwitchTab();
+			if(g_ed_cursor[1] >= g_story_storage_count)
+				g_ed_cursor[1] = 0;
+			g_ed_scroll[1] = 0;
+			Msx2_StoryDeckCacheNames();
+			Msx2_StoryDeckDirty(ED_DIRTY_ALL);
 		}
-		if(pressed & MSX2_BTN_A && (g_story_storage_count != 0))
+		else
 		{
-			g_editor_storage_mode = TRUE;
+			// Half an exchange: hold this card and cross to the other side.
+			g_ed_pending = g_ed_cursor[g_ed_tab];
+			g_ed_pending_tab = g_ed_tab;
+			Msx2_SfxPlay(MSX2_SFX_SELECT);
+			Msx2_StoryDeckSwitchTab();
 		}
 	}
 
 	if(pressed & MSX2_BTN_B)
 	{
-		if(g_editor_storage_mode)
+		if(g_ed_pending != ED_NONE)
 		{
-			g_editor_storage_mode = FALSE;
+			g_ed_pending = ED_NONE;
+			Msx2_SfxPlay(MSX2_SFX_SELECT);
+			Msx2_StoryDeckSwitchTab();
 		}
 		else
 		{
@@ -1345,16 +1734,24 @@ static void Msx2_StoryDeckStep(void)
 			return;
 		}
 	}
-	if(pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT | MSX2_BTN_UP |
-	              MSX2_BTN_DOWN | MSX2_BTN_A | MSX2_BTN_B))
+
+	if(g_ed_dirty[page] != 0)
 	{
-		Msx2_SfxPlay(MSX2_SFX_SELECT);
-		Msx2_StoryUiDirty();
-	}
-	if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
-	{
-		Msx2_StoryDeckPaint();
-		g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
+		if(g_ed_dirty[page] == ED_DIRTY_SEL)
+		{
+			// Only the row that lost the cursor and the row that took it.
+			u8 sc = g_ed_scroll[g_ed_tab];
+			if((g_ed_prev[page] >= sc) && (g_ed_prev[page] < (u8)(sc + ED_ROWS)))
+				Msx2_StoryDeckRow((u8)(g_ed_prev[page] - sc));
+			Msx2_StoryDeckRow((u8)(g_ed_cursor[g_ed_tab] - sc));
+			Msx2_StoryDeckInfo();
+		}
+		else if(g_ed_dirty[page] == ED_DIRTY_LIST)
+			Msx2_StoryDeckList();
+		else
+			Msx2_StoryDeckPaint();
+		g_ed_prev[page] = g_ed_cursor[g_ed_tab];
+		g_ed_dirty[page] = 0;
 		Msx2_VideoFlipRequest();
 	}
 }
@@ -1511,9 +1908,15 @@ static void Msx2_StoryRewardPaint(void)
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(48, Msx2_UiText(MSX2_S_NEW_CARD_EARNED));
 	Msx2_StoryDrawCardThumb(g_reward_card, 108, 62);
+	/* The card's own name, not "CARD 37": the id was a placeholder from before
+	   the cartridge carried the name table, and the deck editor now names every
+	   card the player owns, so the screen that hands one over must too.  g_text
+	   is the story's line buffer and holds nothing between a duel and the map. */
+	Msx2_RomRead(MSX2_TEXT_SEGMENT, (u16)g_reward_card * MSX2_NAME_STRIDE,
+	             (u8*)g_text, MSX2_NAME_STRIDE);
+	g_text[MSX2_NAME_STRIDE - 1] = 0;
 	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(119, Msx2_UiText(MSX2_S_CARD));
-	Msx2_NumAt(140, 119, (i16)g_reward_card);
+	Msx2_TextCenter(119, g_text);
 	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(145, Msx2_UiText(MSX2_S_STORED_IN_YOUR_COLLECTION));
 	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);

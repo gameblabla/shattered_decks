@@ -19,7 +19,7 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M4 — the duel screen, played by a person | **done**: place, fuse, attack, end turn on real input; shared-renderer 3D arena and turn views, hidden COM hand covers, and board-free 2D attack cut-ins |
 | M5 — story presentation | **done**: opening, sanctum map, dialogue, and ending, with both speakers composited over the shipped painting |
 | M6 — full duel loop | **done**: person-playable placement, fusion, support, attacks, turn handoff, results, and the real shared-renderer board |
-| M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, compact deck editor, 16-symbol password save/load, floppy save/load where a drive answers, and ending transition |
+| M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, a tabbed deck editor, 16-symbol password save/load, floppy save/load where a drive answers, and ending transition |
 
 ### Where the code lives, since 2026-09-03
 
@@ -365,10 +365,34 @@ redrawn.
 The story loop is now completeable on the shipping build.  A run starts with an
 eight-letter name, advances through five frontier duels, stores one deterministic
 reward after each win, and enters the ending after the fifth reward.  The map also
-offers a compact deck editor and a continue-code screen.  Codes contain 3 progress
+offers a deck editor and a continue-code screen.  Codes contain 3 progress
 bits, 40 name bits, four 7-bit deck overrides, and an 8-bit checksum, packed into
 16 symbols from a 32-character alphabet.  Loading reconstructs the starter deck
 and the earned reward collection before applying the four saved overrides.
+
+The deck editor is the one the other targets have -- a DECK tab and a STORAGE
+tab, the whole of whichever is up listed on screen, an art panel for the card
+under the cursor, and one button that trades a card between the two sides --
+with two departures the hardware and the save format force:
+
+* **A named list, not a grid of faces.** A card face is 1,920 bytes and
+  `Msx2_StreamRect` has to pace itself at 32 T-states a byte with the display
+  on, so the eighteen faces of the PC-FX grid would be a third of a second of
+  repaint per keypress. One face beside a list of names costs one, fits a
+  256-wide screen, and answers the joystick at once. The list is drawn in card
+  order so a card's copies sit together, the window pages a screenful at a time
+  rather than a row (a scroll is ten names and ten lines of glyphs, twice), and
+  a cursor step repaints only the two rows that changed and the art panel.
+* **An exchange, not an add and a remove.** The cartridge has no battery, so the
+  save is the continue code, and the code carries four card ids against a deck
+  the seed regenerates. A deck that could grow or shrink could not be written
+  down at all, and no more than four of its cards may differ from the dealt one.
+  So the deck is always forty cards and a swap always trades one of them for one
+  in storage. The player may pick *any* of the forty: the editor moves the
+  chosen card into one of the four slots the code can record before swapping it,
+  which is invisible because the deck is shuffled before every duel and the list
+  is sorted. The fifth distinct change is refused with a message rather than
+  made and lost.
 
 ### Uninitialised statics are not zero on this target
 
