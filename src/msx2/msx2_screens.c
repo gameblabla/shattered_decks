@@ -114,7 +114,7 @@ void Msx2_CardCheckCompose_In(u8 card, i16 atk, i16 def)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 
-	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDisplayBlank();
 	Msx2_VideoDrawPage(page);
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
@@ -158,7 +158,7 @@ void Msx2_CardCheckCompose_In(u8 card, i16 atk, i16 def)
 
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
 	Msx2_VideoShowPage(page);
-	VDP_EnableDisplay(TRUE);
+	Msx2_VideoDisplayRestore();
 }
 
 // ── The fusion cut-in ───────────────────────────────────────────────────────
@@ -198,7 +198,7 @@ void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result)
 	g_fuse_phase = 0;
 	g_fuse_step = 0;
 
-	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDisplayBlank();
 	Msx2_VideoDrawPage(page);
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
@@ -208,7 +208,7 @@ void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result)
 		Msx2_ScreenSmallCard(g_fuse_mat[i], Msx2_FuseMatX(i), FUSE_MAT_Y);
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
 	Msx2_VideoShowPage(page);
-	VDP_EnableDisplay(TRUE);
+	Msx2_VideoDisplayRestore();
 }
 
 bool Msx2_FusionStep_In(void)
@@ -316,7 +316,7 @@ void Msx2_EffectBegin_In(u8 card, u8 by_com)
 
 	g_effect_left = EFFECT_HOLD;
 
-	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDisplayBlank();
 	Msx2_VideoDrawPage(page);
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
@@ -338,7 +338,7 @@ void Msx2_EffectBegin_In(u8 card, u8 by_com)
 
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
 	Msx2_VideoShowPage(page);
-	VDP_EnableDisplay(TRUE);
+	Msx2_VideoDisplayRestore();
 }
 
 bool Msx2_EffectStep_In(void)
