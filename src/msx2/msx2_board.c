@@ -14,6 +14,10 @@
 #include "msx2_battle_fx.h"
 #include "msx2_sprite.h"
 #include "msx2_screens.h"
+#ifdef MSX2_DEBUG_REGRESSION
+#include "msx2_probe.h"
+#include "msx2_regression.h"
+#endif
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 //
@@ -896,14 +900,14 @@ static void Msx2_BoardShowBattleCutin(void)
 	/* Compose the clean card page while output is blank.  The contact beat's
 	   second page is built later, once the two cards have actually met; no
 	   effect command ever touches the page being scanned. */
-	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDisplayBlank();
 	Msx2_VideoDrawPage(page);
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
 	Msx2_BoardDrawBattleBase(g_batt_direct, g_batt_trap, g_batt_ax, g_batt_dx);
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
 	Msx2_VideoShowPage(page);
-	VDP_EnableDisplay(TRUE);
+	Msx2_VideoDisplayRestore();
 }
 
 // One pose of the strike: the blade sweep, the explosion over it, and the damage
@@ -982,7 +986,7 @@ static void Msx2_BoardRestoreFromCutin(void)
 		Msx2_RasterSetView(g_view);
 	}
 	Msx2_BoardSnapshot();
-	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDisplayBlank();
 	// Nothing of the cut-in may survive onto the board, and the strike's layer
 	// is sprites, which no repaint of the bitmap can reach.
 	//
@@ -1006,7 +1010,7 @@ static void Msx2_BoardRestoreFromCutin(void)
 	Msx2_BoardInfo();
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
 	Msx2_VideoShowPage(page);
-	VDP_EnableDisplay(TRUE);
+	Msx2_VideoDisplayRestore();
 
 	for(i = 0; i < SLOT_COUNT; ++i)
 	{
@@ -2833,6 +2837,9 @@ static void Msx2_BoardOverBegin(void)
 	u8 p, i;
 
 	g_mode = M_OVER;
+	// The result hold owns the one-shot cue.  Music requests are idempotent, so
+	// repeated result-entry checks cannot restart it while the word settles.
+	Msx2_MusicPlay((g_duel.result > 0) ? MSX2_MUSIC_RESULT : MSX2_MUSIC_LOST);
 	Msx2_BoardTouch();
 	// The banner's board is the overhead one whichever chair the last blow was
 	// struck from: it is the only view that shows both rows whole.
@@ -2846,7 +2853,7 @@ static void Msx2_BoardOverBegin(void)
 	// changes, and it is three regions, not a board.
 	if(Msx2_BoardOwesSlots())
 	{
-		VDP_EnableDisplay(FALSE);
+		Msx2_VideoDisplayBlank();
 		for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
 		{
 			Msx2_VideoDrawPage(p);
@@ -2857,7 +2864,7 @@ static void Msx2_BoardOverBegin(void)
 					break;
 		}
 		Msx2_VideoDrawPage((u8)(Msx2_VideoGetShowPage() ^ 1));
-		VDP_EnableDisplay(TRUE);
+		Msx2_VideoDisplayRestore();
 	}
 	else
 	{
@@ -3151,3 +3158,86 @@ u8 Msx2_BoardStep_In(void)
 
 	return MSX2_BOARD_BUSY;
 }
+
+#ifdef MSX2_DEBUG_REGRESSION
+void Msx2_BoardRegressionStamp_In(void)
+{
+	g_msx2_regression_diag.board_mode = g_mode;
+	g_msx2_regression_diag.board_view = g_view;
+	g_msx2_regression_diag.draw_page = Msx2_VideoGetDrawPage();
+	g_msx2_regression_diag.show_page = Msx2_VideoGetShowPage();
+	g_msx2_regression_diag.deal_slot = g_deal_slot;
+	g_msx2_regression_diag.deal_step = g_deal_step;
+	g_msx2_regression_diag.deal_reveal = g_deal_reveal;
+	g_msx2_regression_diag.deal_target_mask = g_deal_target_mask;
+	g_msx2_regression_diag.deal_landed[0] = g_deal_landed_mask[0];
+	g_msx2_regression_diag.deal_landed[1] = g_deal_landed_mask[1];
+	g_msx2_regression_diag.hand_left = g_hand_left;
+	g_msx2_regression_diag.hand_hidden = g_hand_hidden;
+	g_msx2_regression_diag.camera_active =
+		(g_mode == M_OPENING) || (g_mode == M_TURN);
+}
+
+void Msx2_BoardRegressionFixture_In(u8 fixture)
+{
+	u8 i;
+	u8 owner;
+
+	if(fixture == MSX2_FIXTURE_COM_TURN4_HAND)
+	{
+		// Use the real view cut and deal machine, but begin with a partially
+		// used COM hand.  The normal turn-start rules have already refilled it
+		// in the harness, so this fixture isolates the two-page presentation.
+		Msx2_BoardCutTo(BOARD_VIEW_COM);
+		Msx2_BoardClearHandBand();
+		g_mode = M_DEAL;
+		g_deal_slot = 0;
+		g_deal_step = 0;
+		g_deal_reveal = 0;
+		g_deal_px[0] = g_deal_px[1] = MSX2_SLOT_NONE;
+		g_deal_visible_mask = 0;
+		g_deal_landed_mask[0] = g_deal_landed_mask[1] = 0;
+		owner = MSX2_OWNER_COM;
+		g_deal_target_mask = 0;
+		for(i = 0; i < MSX2_HAND_SLOTS; ++i)
+			if(g_duel.side[owner].hand[i] != MSX2_CARD_NONE)
+				g_deal_target_mask |= (u8)(1u << i);
+		Msx2_BoardSnapshot();
+		return;
+	}
+
+	if(fixture == MSX2_FIXTURE_PLAYER_TOP_PLACE)
+	{
+		Msx2_BoardCutTo(MSX2_VIEW_OVER);
+		g_hand_hidden = TRUE;
+		g_mode = M_PLACE;
+		g_zone = ZONE_FIELD;
+		g_sel = 0;
+		g_hand_pick = 0;
+		g_place_def = FALSE;
+		Msx2_BoardSnapshot();
+		PANEL_ALL();
+		return;
+	}
+
+	if(fixture == MSX2_FIXTURE_TOP_PASS_TURN)
+	{
+		Msx2_BoardCutTo(MSX2_VIEW_OVER);
+		g_hand_hidden = TRUE;
+		g_mode = M_IDLE;
+		g_zone = ZONE_FIELD;
+		g_sel = 0;
+		Msx2_BoardSnapshot();
+		PANEL_ALL();
+		return;
+	}
+
+	if((fixture == MSX2_FIXTURE_DUEL_RESULT_WIN) ||
+	   (fixture == MSX2_FIXTURE_DUEL_RESULT_LOSE))
+	{
+		g_duel.result = (fixture == MSX2_FIXTURE_DUEL_RESULT_WIN) ? 1 : -1;
+		g_duel.phase = MSX2_PHASE_RESULT;
+		Msx2_BoardOverBegin();
+	}
+}
+#endif

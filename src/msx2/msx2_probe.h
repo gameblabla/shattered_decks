@@ -141,6 +141,8 @@ typedef struct Msx2RegressionDiag
 	u8 entropy_sources;
 } Msx2RegressionDiag;
 extern Msx2RegressionDiag g_msx2_regression_diag;
+void Msx2_ProbeRegressionCopy(Msx2Probe* probe);
+void Msx2_ProbeRegressionCopy_In(Msx2Probe* probe);
 #endif
 
 // The live counters.  Nothing outside Msx2_ProbeUpdate() may touch g_probe's

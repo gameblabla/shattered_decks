@@ -22,3 +22,8 @@ enum Msx2RegressionFixture
 
 void Msx2_RegressionInit(void);
 u8   Msx2_RegressionFixture(void);
+
+#define MSX2_REGRESSION_START_NONE  0
+#define MSX2_REGRESSION_START_DUEL  1
+#define MSX2_REGRESSION_START_STORY 2
+u8 Msx2_RegressionStart(void);

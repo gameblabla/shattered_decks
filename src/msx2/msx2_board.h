@@ -54,3 +54,7 @@ u8 Msx2_BoardStep(void);
 u8 Msx2_BoardStageForStory_In(u8 story_duel_index);
 void Msx2_BoardEnter_In(u8 stage);
 u8 Msx2_BoardStep_In(void);
+#ifdef MSX2_DEBUG_REGRESSION
+void Msx2_BoardRegressionFixture_In(u8 fixture);
+void Msx2_BoardRegressionStamp_In(void);
+#endif

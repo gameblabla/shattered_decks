@@ -102,6 +102,10 @@ void Msx2_ProbeUpdate(void)
 	probe->scene = g_stat_scene;
 	probe->menu_cursor = g_stat_menu_cursor;
 
+#ifdef MSX2_DEBUG_REGRESSION
+	Msx2_ProbeRegressionCopy(probe);
+#endif
+
 	// Everything up to (not including) the checksum field.  `stage` sits after
 	// it and is excluded on purpose: it is written asynchronously.
 	for(i = 0; i < (u16)((const u8*)&probe->checksum - (const u8*)probe); ++i)

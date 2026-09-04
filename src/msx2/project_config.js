@@ -41,6 +41,7 @@ ProjModules = [
 	"msx2_psg",
 	"msx2_lvgm",
 	"msx2_audio",
+	"msx2_entropy",
 	"msx2_main",
 	"msx2_title",
 	"msx2_video",

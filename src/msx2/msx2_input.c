@@ -36,6 +36,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msx2_input.h"
+#include "msx2_entropy.h"
 
 static u8 g_held;
 static u8 g_pressed;
@@ -285,6 +286,7 @@ void Msx2_InputUpdate(void)
 	g_pressed = (u8)(edge | (u8)(joy_now & ~g_joy_held));
 	g_joy_held = joy_now;
 	g_held = (u8)(now | joy_now);
+	Msx2_EntropyMixInput(g_held, g_pressed, g_typed);
 }
 
 u8 Msx2_InputHeld(void)    { return g_held; }

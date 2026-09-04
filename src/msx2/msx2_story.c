@@ -13,6 +13,10 @@
 #include "msx2_scenes.h"
 #include "msx2_disk.h"
 #include "msx2_story_load.h"
+#include "msx2_bank.h"
+#ifdef MSX2_DEBUG_REGRESSION
+#include "msx2_regression.h"
+#endif
 
 // ── Phases ───────────────────────────────────────────────────────────────────
 #define PH_NARRATE   0   // the opening or the ending: one voice, no portrait
@@ -479,7 +483,7 @@ static void Msx2_StoryShowShot(u8 shot)
 		// and Kasem paths streamed page 1, re-enabled the display, and then
 		// blitted the portrait into whichever page happened to be visible.  A
 		// scan could therefore catch half a backdrop and half a bust.
-		VDP_EnableDisplay(FALSE);
+		Msx2_VideoDisplayBlank();
 		Msx2_VideoDrawPage(page);
 		Msx2_StreamSceneBlanked(segment, page);
 		if(g_narr_which == NARR_INTRO)
@@ -487,7 +491,7 @@ static void Msx2_StoryShowShot(u8 shot)
 		                   TRUE);
 		Msx2_VideoCopyPage(page, show);
 		Msx2_VideoShowPage(page);
-		VDP_EnableDisplay(TRUE);
+		Msx2_VideoDisplayRestore();
 		g_shot = shot;
 		return;
 	}
@@ -495,14 +499,14 @@ static void Msx2_StoryShowShot(u8 shot)
 	if(g_shot == 0xFF)
 	{
 		// First line of the scene: the painting, then both figures on it.
-		VDP_EnableDisplay(FALSE);
+		Msx2_VideoDisplayBlank();
 		Msx2_VideoDrawPage(page);
 		Msx2_StreamSceneBlanked(
 			MSX2_TALK_SEGMENT(g_msx2_stage_for_duel[g_duel_index]), page);
 		Msx2_StoryBusts(shot);
 		Msx2_VideoCopyPage(page, show);
 		Msx2_VideoShowPage(page);
-		VDP_EnableDisplay(TRUE);
+		Msx2_VideoDisplayRestore();
 	}
 	else
 	{
@@ -1063,7 +1067,7 @@ static void Msx2_StoryEnterMap(void)
 		g_cursor = g_progress;
 	g_map_dirty = ALL_PAGES;
 
-	Msx2_MusicPlay(MSX2_MUSIC_TITLE);
+	Msx2_MusicPlay(MSX2_MUSIC_OVERWORLD);
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
 	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStageForProgress(g_progress)), MSX2_PAGE_1);
 	Msx2_StoryMapPaint();
@@ -1700,3 +1704,25 @@ u8 Msx2_StoryStep_In(void)
 	}
 	return MSX2_STORY_QUIT;
 }
+
+#ifdef MSX2_DEBUG_REGRESSION
+void Msx2_StoryRegressionStamp_In(void)
+{
+	g_msx2_regression_diag.story_phase = g_phase;
+	g_msx2_regression_diag.save_row =
+		(g_phase == PH_SAVE_PICK) ? g_save_pick : g_cursor;
+}
+
+void Msx2_StoryRegressionFixture_In(u8 fixture)
+{
+	if(fixture != MSX2_FIXTURE_STORY_SAVE_ROW)
+		return;
+
+	// Enter the map through the same composed path used after opening, a reward,
+	// or a loaded code.  The next A edge therefore exercises the real map-to-save
+	// phase boundary rather than a synthetic picker screen.
+	Msx2_StoryEnterMap();
+	g_cursor = MAP_CODE_ROW;
+	g_map_dirty = ALL_PAGES;
+}
+#endif

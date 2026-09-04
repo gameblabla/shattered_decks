@@ -22,6 +22,7 @@
 #include "msx2_cards.h"
 #include "msx2_probe.h"
 #include "msx2_audio.h"
+#include "msx2_entropy.h"
 #include "msx2_video.h"
 #include "msx2_sprite.h"
 #include "msx2_input.h"
@@ -68,14 +69,6 @@ __asm
 __endasm;
 }
 
-static u32 g_seed;
-
-#ifdef MSX2_TEST_SEED
-#define MSX2_BUILD_SEED ((u32)MSX2_TEST_SEED)
-#else
-#define MSX2_BUILD_SEED 0x1234ABCDu
-#endif
-
 // Frames counted by the vblank ISR.  MSXgl's crt0 installs its own handler in
 // page 0 for a mapped ROM, which means the BIOS interrupt routine -- and its
 // JIFFY counter -- is not running: this is the port's only clock.
@@ -99,16 +92,6 @@ void VDP_InterruptHandler(void)
 	Msx2_InputLatch();
 }
 
-// xorshift on the frame counter: the blind run must play *different* duels, or
-// it only ever exercises one path through the rules.
-static u32 Msx2_NextSeed(void)
-{
-	g_seed ^= g_seed << 13;
-	g_seed ^= g_seed >> 17;
-	g_seed ^= g_seed << 5;
-	return g_seed;
-}
-
 // Deal a duel against `story` (MSX2_STORY_NONE for a free battle) and compose
 // the board for it.
 static void Msx2_DealDuel(u8 story)
@@ -117,8 +100,10 @@ static void Msx2_DealDuel(u8 story)
 		Msx2_StoryPrepareDuelDeck();
 	else
 		Msx2_DuelSetPlayerDeck(NULL, 0);
-	Msx2_DuelInit(Msx2_NextSeed(), story);
-	Msx2_MusicPlay((story == MSX2_STORY_FINAL_DUEL) ? MSX2_MUSIC_FINAL_BOSS : MSX2_MUSIC_BATTLE);
+	Msx2_DuelInit(Msx2_EntropyNextSeed(), story);
+	Msx2_MusicPlay((story == MSX2_STORY_FINAL_DUEL) ? MSX2_MUSIC_FINAL_BOSS
+	               : (story == MSX2_STORY_NONE) ? MSX2_MUSIC_BATTLE
+               : MSX2_MUSIC_BOSS);
 	g_stat_steps = 0;
 	MSX2_STAGE(MSX2_STAGE_DUEL);
 	Msx2_BoardEnter(Msx2_BoardStageForStory(story));
@@ -224,7 +209,7 @@ static void Msx2_SceneStory(void)
 void main(void)
 {
 	Msx2_ClearStaticRam();
-	g_seed = MSX2_BUILD_SEED;
+	Msx2_EntropyInit();
 	Msx2_AudioInit();
 	Msx2_ProbeInit();
 	Msx2_RegressionInit();
@@ -234,7 +219,31 @@ void main(void)
 	Msx2_InputInit();
 	MSX2_STAGE(MSX2_STAGE_BOOT);
 
-#ifdef MSX2_DEBUG_STORY_AUTOPLAY
+#ifdef MSX2_DEBUG_REGRESSION
+	{
+		u8 regression_start = Msx2_RegressionStart();
+		if(regression_start == MSX2_REGRESSION_START_DUEL)
+		{
+			g_in_story = FALSE;
+			g_stat_scene = MSX2_SCENE_DUEL;
+			g_stat_menu_cursor = 0xFF;
+			MSX2_STAGE(MSX2_STAGE_DUEL);
+		}
+		else if(regression_start == MSX2_REGRESSION_START_STORY)
+		{
+			g_in_story = TRUE;
+			g_stat_scene = MSX2_SCENE_STORY;
+			g_stat_menu_cursor = 0xFF;
+			MSX2_STAGE(MSX2_STAGE_STORY);
+		}
+		else
+		{
+			Msx2_TitleEnter();
+			g_stat_scene = MSX2_SCENE_TITLE;
+			MSX2_STAGE(MSX2_STAGE_TITLE);
+		}
+	}
+#elif defined(MSX2_DEBUG_STORY_AUTOPLAY)
 	g_in_story = TRUE;
 	Msx2_StoryBeginAutoplay();
 	g_stat_scene = MSX2_SCENE_STORY;

@@ -57,3 +57,7 @@ void Msx2_StoryPrepareDuelDeck_In(void);
 u8 Msx2_StoryStep_In(void);
 void Msx2_StoryDuelDone_In(bool won);
 u8 Msx2_StoryDuelIndex_In(void);
+#ifdef MSX2_DEBUG_REGRESSION
+void Msx2_StoryRegressionFixture_In(u8 fixture);
+void Msx2_StoryRegressionStamp_In(void);
+#endif
