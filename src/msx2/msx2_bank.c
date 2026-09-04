@@ -47,24 +47,31 @@ u16 Msx2_Bank0Current(void)
 	return g_bank0;
 }
 
+// THE 0x8000 WINDOW IS WRITTEN EVERY TIME, NOT ONLY WHEN THE SHADOW DISAGREES.
+// Half of _CODE lives above 0x8000 -- the sprite calls the duel's cursor makes
+// every frame are up there -- so the main loop is regularly executing out of
+// this window, and the only reason it survives is that whoever borrowed the
+// window put the code segment back before interrupts came on again.  The
+// register is write-only, so `g_bank2` is a shadow of what was last written,
+// and skipping the write when the shadow already matches trusts that shadow
+// with the machine: any single divergence -- a write that did not land, a
+// borrower that updated one and not the other -- becomes an instruction
+// fetched out of a music segment, which is what a crashed Waifu_msx2.oms
+// caught (a HALT fetched in the middle of VDP_SetSpriteUniColor).  The write
+// costs sixteen T-states and it happens twice a frame, so the guard was never
+// worth what it risked.
 u16 Msx2_Bank2Enter(u16 segment)
 {
 	u16 previous = g_bank2;
-	if(segment != previous)
-	{
-		g_bank2 = segment;
-		*(u16*)MSX2_NEO_BANK2_REG = segment;
-	}
+	g_bank2 = segment;
+	*(u16*)MSX2_NEO_BANK2_REG = segment;
 	return previous;
 }
 
 void Msx2_Bank2Leave(u16 segment)
 {
-	if(segment != g_bank2)
-	{
-		g_bank2 = segment;
-		*(u16*)MSX2_NEO_BANK2_REG = segment;
-	}
+	g_bank2 = segment;
+	*(u16*)MSX2_NEO_BANK2_REG = segment;
 }
 
 // ── The trampolines ─────────────────────────────────────────────────────────

@@ -93,8 +93,22 @@ static void Msx2_LvgmDecodePsg(void)
 	}
 }
 
+// A FRAME HAS TO END.
+// The parser below runs inside the V-blank handler, with interrupts off and
+// the music segment mapped over the resident code at 0x8000, and it only hands
+// the frame back when it meets a wait (0xEx) or the end of the song.  A
+// recording that never presents one -- a stream packed wrong, a pointer that
+// walked out of its segment, a segment that failed to map -- therefore does not
+// play badly: it never returns, and the machine is dead with interrupts
+// disabled.  A frame of this music is a couple of dozen commands, so a budget
+// this size cannot be reached by a healthy song, and reaching it stops the
+// track.  Silence is recoverable; a wedged V-blank is not.
+#define LVGM_FRAME_COMMAND_BUDGET  512
+
 void LVGM_Decode(void)
 {
+	u16 budget = LVGM_FRAME_COMMAND_BUDGET;
+
 	if(!(g_LVGM_State & LVGM_STATE_PLAY))
 		return;
 	if(g_LVGM_Wait != 0)
@@ -106,6 +120,13 @@ void LVGM_Decode(void)
 	while(TRUE)
 	{
 		u8 op = *g_LVGM_Pointer & 0xF0;
+
+		if(--budget == 0)
+		{
+			// Whatever this stream is, it is not a frame of music.
+			LVGM_Stop();
+			return;
+		}
 		if(op == 0xE0)
 		{
 			g_LVGM_Wait = (u8)(g_LVGM_Wait + (*g_LVGM_Pointer & 0x0F));
@@ -119,7 +140,12 @@ void LVGM_Decode(void)
 				case LVGM_OP_NOTIFY:
 					if(Msx2_LvgmNotify(*++g_LVGM_Pointer))
 						continue;
-					break;
+					// The callback refused the marker: the only refusal it has
+					// is a segment end with no segment after it, and carrying
+					// on would parse whatever lies past the recording as if it
+					// were music, for ever.  Stop the track instead.
+					LVGM_Stop();
+					return;
 				case LVGM_OP_LOOP:
 					Msx2_LvgmNotify(LVGM_NOTIFY_LOOP_MARK);
 					g_LVGM_LoopAddr = g_LVGM_Pointer + 1;
