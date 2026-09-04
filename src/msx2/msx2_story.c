@@ -18,7 +18,6 @@
 #define PH_NARRATE   0   // the opening or the ending: one voice, no portrait
 #define PH_TALK      1   // pre-duel dialogue, two speakers, two composites
 #define PH_MAP       2   // the sanctum road: pick an opponent, or leave
-#define PH_NAME      3   // eight-letter player name entry
 #define PH_CODE_IN   4   // continue-code entry
 #define PH_CODE_OUT  5   // continue code shown at the sanctum
 #define PH_DECK      6   // compact deck editor
@@ -113,9 +112,11 @@ static u8  g_map_dirty;
 
 static u8  g_cursor;
 
-static c8  g_player_name[STORY_NAME_LEN + 1];
-static u8  g_name_len;
-static u8  g_name_cursor;
+// The duelist's name is fixed on this target.  Typing eight letters in on a
+// V9938 text screen cost a full repaint per keypress and was the slowest,
+// fiddliest screen in the port, so the story simply runs as SERENA -- who the
+// prose calls her, and who every other target defaults to.
+static c8  g_player_name[STORY_NAME_LEN + 1] = "SERENA  ";
 static c8  g_code[STORY_CODE_LEN + 1];
 static u8  g_code_len;
 static u8  g_code_cursor;
@@ -589,138 +590,12 @@ static void Msx2_StoryEnterNarration(u8 which)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Name and continue-code screens
+//  Continue-code screens
 // ─────────────────────────────────────────────────────────────────────────────
 
 static void Msx2_StoryUiDirty(void)
 {
 	g_map_dirty = ALL_PAGES;
-}
-
-// THE GRID IS DRAWN AT THE PITCH THE CURSOR MOVES AT.
-// The two alphabet rows used to be one solid thirteen-character string at the
-// font's own six-pixel pitch, while the gold highlight was placed at thirteen
-// pixels a column.  The two disagreed from the second letter on: choosing C
-// put a gold C on top of the E in the row, so the letter under the marker was
-// never the letter the button was going to take.  One pitch now serves both --
-// a space between every letter, which is twelve pixels and also the spacing
-// the screen wanted anyway.
-#define NAME_PITCH    12
-#define NAME_ROW_CH   13
-#define NAME_GRID_X   ((MSX2_SCREEN_W - (NAME_ROW_CH * 2 - 1) * MSX2_FONT_W_PX) / 2)
-#define NAME_ROW0_Y   100
-#define NAME_ROW1_Y   120
-#define NAME_BOX_X    111
-#define NAME_BOX_Y    68
-
-// One alphabet row, letters separated by a space so the pitch is NAME_PITCH.
-// Written as a single string rather than thirteen calls: a call is a VDP
-// address set-up per scanline, and this screen is repainted on every keypress.
-static void Msx2_StoryAlphaRow(u8 first, u8 y)
-{
-	c8 row[NAME_ROW_CH * 2];
-	u8 i;
-
-	for(i = 0; i < NAME_ROW_CH; ++i)
-	{
-		row[i * 2] = (c8)('A' + first + i);
-		row[i * 2 + 1] = ' ';
-	}
-	row[NAME_ROW_CH * 2 - 1] = 0;
-	Msx2_TextAt(NAME_GRID_X, y, row);
-}
-
-// Everything on this screen that a keypress changes: the eight name cells and
-// the two alphabet rows with the marker on one of them.  The frame, the title
-// and the three help lines are painted once on entry and never again -- they
-// were most of the cost of a repaint, and none of them ever changes.
-//
-// Nothing is filled first.  Msx2_TextAt writes the background colour for every
-// pixel of every cell it covers, so redrawing a row is also what erases the
-// gold letter the last frame left in it.
-static void Msx2_StoryNameLetters(void)
-{
-	u8 i;
-	c8 one[2];
-
-	one[1] = 0;
-	for(i = 0; i < STORY_NAME_LEN; ++i)
-	{
-		one[0] = (i < g_name_len) ? g_player_name[i] : '_';
-		Msx2_TextColor((i == g_name_len) ? MSX2_GOLD : MSX2_WHITE,
-		               MSX2_PANEL_COLOR);
-		Msx2_TextAt((u8)(NAME_BOX_X + i * 12), NAME_BOX_Y, one);
-	}
-
-	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_StoryAlphaRow(0, NAME_ROW0_Y);
-	Msx2_StoryAlphaRow(NAME_ROW_CH, NAME_ROW1_Y);
-
-	one[0] = (c8)('A' + g_name_cursor);
-	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextAt((u8)(NAME_GRID_X + (g_name_cursor % NAME_ROW_CH) * NAME_PITCH),
-	            (g_name_cursor < NAME_ROW_CH) ? NAME_ROW0_Y : NAME_ROW1_Y, one);
-}
-
-static void Msx2_StoryNamePaint(void)
-{
-	Msx2_Fill(18, 22, 220, 164, MSX2_PANEL_COLOR);
-	Msx2_FrameRect(18, 22, 220, 164, MSX2_GOLD);
-	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(30, Msx2_UiText(MSX2_S_NAME_YOUR_DUELIST));
-	Msx2_TextColor(MSX2_WHITE, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(48, Msx2_UiText(MSX2_S_UP_TO_EIGHT_LETTERS));
-	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
-	Msx2_TextAt(70, NAME_BOX_Y, Msx2_UiText(MSX2_S_NAME));
-
-	Msx2_StoryNameLetters();
-
-	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(140, Msx2_UiText(MSX2_S_TYPE_IT_OR_PICK_WITH_THE_ST));
-	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(153, Msx2_UiText(MSX2_S_RETURN_OR_SPACE_ACCEPTS));
-	Msx2_TextColor(MSX2_RED, MSX2_PANEL_COLOR);
-	Msx2_TextCenter(166, Msx2_UiText(MSX2_S_ESC_OR_BACKSPACE_DELETES));
-}
-
-// The name the story is written around.  It is pre-filled rather than left
-// blank so a player who just presses RETURN is Serena -- who is who the prose
-// calls her, and who every other target defaults to.
-static const c8 g_name_default[] = "SERENA";
-
-static void Msx2_StoryEnterName(void)
-{
-	u8 i;
-	g_phase = PH_NAME;
-	g_name_cursor = 0;
-	for(i = 0; g_name_default[i] != 0; ++i)
-		g_player_name[i] = g_name_default[i];
-	g_player_name[i] = 0;
-	g_name_len = i;
-	Msx2_VideoDrawPage(MSX2_PAGE_1);
-	Msx2_StreamScene(MSX2_SCENE_TITLE_SEGMENT, MSX2_PAGE_1);
-	Msx2_StoryNamePaint();
-	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
-	Msx2_VideoShowPage(MSX2_PAGE_1);
-	Msx2_MusicPlay(MSX2_MUSIC_OPENING);
-	g_map_dirty = 0;
-}
-
-static bool Msx2_StoryAcceptName(void)
-{
-	if(g_name_len == 0)
-		return FALSE;
-	// The hash and the continue code are both fixed width, so a short name is
-	// padded with spaces rather than with letters: padding with 'A' turned
-	// SERENA into SERENAAA on the name plate.
-	while(g_name_len < STORY_NAME_LEN)
-		g_player_name[g_name_len++] = ' ';
-	g_player_name[STORY_NAME_LEN] = 0;
-	g_progress = 0;
-	g_duel_index = 0;
-	Msx2_StoryBuildStarterDeck();
-	Msx2_StoryEnterNarration(NARR_INTRO);
-	return TRUE;
 }
 
 // THE CODE, WRITTEN OUT THE WAY A PASSWORD SCREEN WRITES IT.
@@ -1630,14 +1505,15 @@ static void Msx2_StoryEnterReward(void)
 
 void Msx2_StoryBegin_In(void)
 {
-	/* A new run starts with the same name-entry affordance as the other
-	   targets.  Collection/deck creation happens only after the name is
-	   accepted, so a cancelled entry cannot leave stale save data behind. */
+	/* No name entry on this target: the run starts as SERENA and goes
+	   straight into the opening narration. */
 	g_progress = 0;
 	g_duel_index = 0;
 	g_reward_card = MSX2_CARD_NONE;
 	MSX2_STAGE(MSX2_STAGE_STORY);
-	Msx2_StoryEnterName();
+	Msx2_StoryBuildStarterDeck();
+	Msx2_MusicPlay(MSX2_MUSIC_OPENING);
+	Msx2_StoryEnterNarration(NARR_INTRO);
 }
 
 void Msx2_StoryBeginAutoplay_In(void)
@@ -1650,7 +1526,6 @@ void Msx2_StoryBeginAutoplay_In(void)
 	for(i = 0; i < STORY_NAME_LEN; ++i)
 		g_player_name[i] = Msx2_UiText(MSX2_S_AUTOPLAY)[i];
 	g_player_name[STORY_NAME_LEN] = 0;
-	g_name_len = STORY_NAME_LEN;
 	Msx2_StoryBuildStarterDeck();
 	/* Exercise the exact builder/parser pair used by the title's load screen;
 	   a bad checksum or a non-canonical spare bit makes the soak fail early. */
@@ -1742,63 +1617,6 @@ u8 Msx2_StoryStep_In(void)
 		return MSX2_STORY_BUSY;
 	}
 #endif
-	if(g_phase == PH_NAME)
-	{
-		u8 pressed = Msx2_InputPressed();
-		c8 typed = Msx2_InputTyped();
-		u8 changed = (pressed & (MSX2_BTN_LEFT | MSX2_BTN_RIGHT |
-		                         MSX2_BTN_UP | MSX2_BTN_DOWN)) ? TRUE : FALSE;
-		g_name_cursor = Msx2_StoryGridCursor(g_name_cursor, 13, 26, pressed);
-		// RETURN accepts whatever is in the box, at any length: the machine
-		// with a keyboard types the name and finishes, and the machine with
-		// only a stick still walks the grid below and confirms with the
-		// trigger.  RETURN raises A as well, so it is tested first.
-		if(pressed & MSX2_BTN_ENTER)
-		{
-			if(Msx2_StoryAcceptName())
-				return MSX2_STORY_BUSY;
-		}
-		else if((typed >= 'A') && (typed <= 'Z') && (g_name_len < STORY_NAME_LEN))
-		{
-			g_player_name[g_name_len++] = typed;
-			g_player_name[g_name_len] = 0;
-			changed = TRUE;
-		}
-		else if(pressed & MSX2_BTN_A)
-		{
-			if(g_name_len < STORY_NAME_LEN)
-			{
-				g_player_name[g_name_len++] = (c8)('A' + g_name_cursor);
-				g_player_name[g_name_len] = 0;
-				changed = TRUE;
-			}
-			else if(Msx2_StoryAcceptName())
-				return MSX2_STORY_BUSY;
-		}
-		if(pressed & MSX2_BTN_B)
-		{
-			if(g_name_len != 0)
-			{
-				--g_name_len;
-				g_player_name[g_name_len] = 0;
-				changed = TRUE;
-			}
-			else
-				return MSX2_STORY_QUIT;
-		}
-		if(changed)
-			Msx2_StoryUiDirty();
-		if(g_map_dirty & (u8)(1u << Msx2_VideoGetDrawPage()))
-		{
-			// Only the letters, not the whole panel: the fill, the frame, the
-			// title and the three help lines are already on both pages and
-			// were what made this screen answer a keypress three frames late.
-			Msx2_StoryNameLetters();
-			g_map_dirty &= (u8)~(1u << Msx2_VideoGetDrawPage());
-			Msx2_VideoFlipRequest();
-		}
-		return MSX2_STORY_BUSY;
-	}
 	if(g_phase == PH_LOAD_PICK)
 	{
 		u8 what = Msx2_StoryLoadPickStep();
