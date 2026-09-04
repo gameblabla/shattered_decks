@@ -1,0 +1,4 @@
+- First priority:
+
+Waifu_msx2.oms (its an openmsx save state) shows a hanging issue that can happen (DI HALT) if you simply let the music running in duel doing absolutely nothing.
+I believe it happens when music track reaches completion.

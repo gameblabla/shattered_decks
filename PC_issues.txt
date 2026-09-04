@@ -1,0 +1,3 @@
+- Use the new sounds/ wav files.
+- When you place a card face down on the field, garbage card art on the card may be briefly visible during animation
+- IMPROVEMENT : The direct attack animation, the intensity of animation should change depending on damage inflicted (as it is now, it should be ATK>2900, ATK>1900 should be smaller, and below that smaller etc... like Yugioh forbidden memories)

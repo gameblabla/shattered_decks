@@ -93,6 +93,11 @@
 #define MSX2_HAND_BAND_Y        128
 #define MSX2_HAND_BAND_H        54
 #define MSX2_INFO_Y             182
+// A card in DEFENCE position is inscribed in its slot: the full width,
+// DEF_FIT of the height, centred.  This is the inset at each end, in
+// 1/256ths of the slot's own height, so the runtime mapper cuts exactly
+// the footprint the baked programs used to.
+#define MSX2_DEF_INSET          39
 #define MSX2_CARD_W             40
 #define MSX2_CARD_H             48
 #define MSX2_HAND_X0            12

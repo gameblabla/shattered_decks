@@ -103,6 +103,8 @@ into an off-screen VRAM cache, then restore it with a transparent VDP move. Do
 not re-rasterize every settled card after every page flip. This is why a
 texture-mapped card path can coexist with the current retained board.
 
+(note, the game already does texture mapping with the cards but its a bit on the slow side versus RT3D binary)
+
 ## ROM budget comparison
 
 The current generated MSX2 card set uses 79 textures at a 2,048-byte stride
@@ -117,27 +119,6 @@ described by a genuinely small model and a small set of textures. A painted
 story background usually cannot: its bitmap is already the most direct
 representation. The right ROM-saving target is therefore card pose data and
 small 3D effects, not the story paintings themselves.
-
-## MSX2+ assessment
-
-MSX2+ adds V9958 presentation features, not a 3D accelerator or a faster Z80.
-SCREEN 10/11/12 can improve colour quality and MSX-MUSIC can provide YM2413
-audio on machines that have it, but polygon edge walks, span fills, and
-texture-map texel writes remain CPU work.
-
-The useful MSX2+ additions are additive:
-
-* use SCREEN 10 for painted art with sharp UI/text and SCREEN 12 for art-only
-  images;
-* optionally use horizontal scroll for a parallax map layer;
-* keep the duel in SCREEN 8 and use the same polygon/card path on MSX2 and
-  MSX2+ so game state and timing do not diverge;
-* switch modes only at full-screen scene boundaries and re-establish sprite
-  tables on every switch.
-
-YJK reduces colour quantization, but it does not reduce the one-byte-per-pixel
-  stream size or the CPU cost of a software texture mapper. It is therefore a
-  presentation upgrade, not the reason to choose live polygons.
 
 ## Recommended implementation gates
 
