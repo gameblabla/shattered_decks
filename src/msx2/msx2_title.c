@@ -208,6 +208,7 @@ void Msx2_TitleEnter(void)
 	Msx2_TitleCompose();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);   // ... and drawing moves to page 0
+	Msx2_InputFlush();
 
 	Msx2_MusicPlay(MSX2_MUSIC_TITLE);
 }

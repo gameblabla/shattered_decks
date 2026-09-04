@@ -562,6 +562,7 @@ static void Msx2_StoryEnterTalk(void)
 	// The scene is built once, here, whoever speaks first -- including a
 	// narrator line, which changes no portrait and so would never build it.
 	Msx2_StoryShowShot(0);
+	Msx2_InputFlush();
 	Msx2_StoryLoadTalkLine();
 }
 
@@ -590,6 +591,7 @@ static void Msx2_StoryEnterNarration(u8 which)
 	g_line_count = (which == NARR_INTRO) ? MSX2_INTRO_COUNT : MSX2_ENDING_COUNT;
 	Msx2_MusicPlay((which == NARR_INTRO) ? MSX2_MUSIC_OPENING : MSX2_MUSIC_RESULT);
 	Msx2_StoryShowShot(0);
+	Msx2_InputFlush();
 	Msx2_StoryLoadNarrLine();
 }
 
@@ -848,6 +850,7 @@ static void Msx2_StoryEnterCodeInput(void)
 	Msx2_StoryCodePaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_InputFlush();
 	Msx2_StoryCodeSeenAll();
 	g_map_dirty = 0;
 }
@@ -867,6 +870,7 @@ static void Msx2_StoryEnterCodeOutput(void)
 	Msx2_StoryCodePaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_InputFlush();
 	Msx2_StoryCodeSeenAll();
 	g_map_dirty = 0;
 }
@@ -935,6 +939,7 @@ static void Msx2_StoryEnterSavePick(void)
 	Msx2_StorySavePickPaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_InputFlush();
 	g_map_dirty = 0;
 }
 
@@ -1073,6 +1078,7 @@ static void Msx2_StoryEnterMap(void)
 	Msx2_StoryMapPaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_InputFlush();
 	g_map_dirty = 0;
 }
 
@@ -1276,6 +1282,7 @@ static void Msx2_StoryEnterDeck(void)
 	Msx2_StoryDeckPaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_InputFlush();
 	g_map_dirty = 0;
 	Msx2_MusicPlay(MSX2_MUSIC_DECK_EDITOR);
 }
@@ -1474,7 +1481,15 @@ static void Msx2_StoryCodeOutputStep(void)
 		g_disk_msg = Msx2_DiskSave(g_code) ? 1 : 2;
 		Msx2_StoryUiDirty();
 	}
-	if(pressed & (MSX2_BTN_A | MSX2_BTN_B))
+	// ESC, AND NOT THE CONFIRM BUTTON.
+	// This screen is the last of the three SAVE GAME composes, and the confirm
+	// button is the one that got the player here.  Leaving on it too means a
+	// key that is repeating -- by the host, by the emulator's keyboard mapping,
+	// by anything the game cannot see -- walks out of the save flow and starts
+	// whatever the road's cursor is on.  Every step INTO the flow is the
+	// confirm button and the one step out of it is ESC, so no amount of
+	// confirm can leave.  The prompt says so.
+	if(pressed & MSX2_BTN_B)
 	{
 		Msx2_StoryEnterMap();
 		return;
@@ -1513,6 +1528,7 @@ static void Msx2_StoryEnterReward(void)
 	Msx2_StoryRewardPaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_InputFlush();
 	g_map_dirty = 0;
 	Msx2_MusicPlay(MSX2_MUSIC_RESULT);
 }

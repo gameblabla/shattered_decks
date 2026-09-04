@@ -113,6 +113,9 @@ static void Msx2_DealDuel(u8 story)
 	g_stat_steps = 0;
 	MSX2_STAGE(MSX2_STAGE_DUEL);
 	Msx2_BoardEnter(Msx2_BoardStageForStory(story));
+	// The board is composed and on the display now.  Whatever was pressed while
+	// it was being built belonged to the screen the player left.
+	Msx2_InputFlush();
 	Msx2_MusicPlay(track);
 	g_stat_scene = MSX2_SCENE_DUEL;
 	g_stat_menu_cursor = 0xFF;

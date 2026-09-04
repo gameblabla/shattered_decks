@@ -32,6 +32,12 @@ void Msx2_InputLatch(void);
 u8   Msx2_InputHeld(void);      // buttons currently down
 u8   Msx2_InputPressed(void);   // buttons that went down this frame
 void Msx2_InputConsume(u8 mask); // discard an opening edge at a phase boundary
+// Drop everything the V-blank scan has collected and disarm the confirm latch.
+// Call it when a screen becomes visible: what was pressed while it was being
+// composed was aimed at the screen before it, and the player must let go before
+// the new one answers.  That is what stops one held key walking a chain of
+// screens (SAVE GAME -> picker -> continue code -> ...).
+void Msx2_InputFlush(void);
 
 // A letter or digit typed on the MSX keyboard this frame, or 0.  Name and
 // continue-code entry accept this as well as the on-screen grid, so a machine

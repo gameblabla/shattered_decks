@@ -68,6 +68,7 @@ void Msx2_StoryLoadPickEnter(c8* code)
 	Msx2_StoryLoadPickPaint();
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);
+	Msx2_InputFlush();
 }
 
 void Msx2_StoryLoadPickRefused(void)

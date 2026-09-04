@@ -270,12 +270,34 @@ cursor is now on.  The deck editor is a single screen and does not show it.
 Reproduced by injecting a 20 Hz repeat for two seconds: before, it walked to the
 road and past it; after, one press is one answer and the picker stays.
 
-The filter is in `msx2_input.c`, not in the story: the confirm buttons re-arm
-only after CONFIRM_REARM (4) consecutive V-blanks with none of them down --
-counted in the ISR, because a main-loop pass here is one V-blank or thirty -- and
-two honoured confirms are at least CONFIRM_GAP (10) V-blanks apart.  An
-auto-repeated key never shows four quiet frames in a row; a player letting go
-always does.  Directions are deliberately not filtered.
+The first attempt at this rate-limited the confirm button by counting quiet
+V-blanks, and it did not hold: it is a guess about how a host repeats a key, and
+the report came back unchanged.  What is in the ROM now has no durations in it
+at all.
+
+* The V-blank scan records BOTH edges -- `g_msx2_kb_edge` for presses,
+  `g_msx2_kb_up` for releases -- so a press and its release inside one long
+  main-loop pass are both seen.
+* A confirm counts only while the latch is armed.  Only a release arms it; an
+  honoured confirm disarms it.  A key that is held is not released, so it cannot
+  answer twice however long it is held, and a key that is tapped answers every
+  time however fast.
+* `Msx2_InputFlush()` drops everything the scan collected and leaves the latch
+  disarmed.  Every screen calls it at the moment it becomes visible: a press
+  made while a screen was being composed was aimed at the screen before it, and
+  a blanked stream is long enough for several.  Map, save picker, continue code,
+  deck editor, reward, dialogue, narration, load picker, title and the duel
+  board all do this.
+* The continue-code screen leaves on ESC only.  Every step into the save flow is
+  the confirm button and the one step out of it is not, so no amount of confirm
+  -- from a repeat the game cannot see, or from a player leaning on the key --
+  can walk out of the flow and start something on the road.  The prompt reads
+  `ESC: RETURN TO THE ROAD`.
+
+Directions are deliberately not filtered: walking a menu with a held key is
+reasonable, and a repeated direction only moves a cursor the screen then shows.
+Three seconds of injected 20 Hz repeats on the SAVE row now stop at the continue
+code; deliberate presses still walk the whole flow and ESC still returns.
 
 **The earlier note, kept because it bounds the search:**  The map row, the
 picker, FLOPPY/PASSWORD, and the continue-code screen were driven with scripted
