@@ -93,8 +93,12 @@ static u8  g_move_target;
 static u8  g_move_forward;
 
 // The opening deal.  g_deal_slot is the hand position currently in flight,
-// left to right so a card never crosses one that has already landed;
-// g_deal_reveal is how many of them the retained painter is allowed to see.
+// left to right so a card never crosses one that has already landed.
+// g_deal_target_mask is the logical hand occupancy captured at turn start;
+// g_deal_visible_mask is the subset the retained painter may show while the
+// deal is in flight, and each page has its own completion mask.  A positional
+// reveal frontier cannot describe a hand with a hole, or prove that both
+// buffers have received the same settled card.
 // A deal step is a black fill, up to two settled cards put
 // back where the erase box crossed them and one 40x48 card streamed out of the
 // cartridge -- four kilobytes of VDP, which is several video frames.  Four
@@ -106,6 +110,9 @@ static u8  g_deal_slot;
 static u8  g_deal_step;
 static u8  g_deal_reveal;
 static u8  g_deal_px[MSX2_VIDEO_PAGES];
+static u8  g_deal_target_mask;
+static u8  g_deal_visible_mask;
+static u8  g_deal_landed_mask[MSX2_VIDEO_PAGES];
 
 // The fusion chain the player is building, in the order they chose it -- the
 // order is part of the rule, because the materials fold left to right.
@@ -358,9 +365,12 @@ static void Msx2_BoardSnapshot(void)
 		g_flag[SLOT_OF(ZONE_SUP, i)] =
 		    Msx2_BoardSupportFaceUp(you->equip_field[i]) ? F_FACEUP : 0;
 
-		// A hand position the opening deal has not delivered yet is empty as
-		// far as the retained painter is concerned.
-		g_want[SLOT_OF(ZONE_HAND, i)] = ((i < g_deal_reveal) && !g_hand_hidden)
+		// During a deal, only cards whose destination has completed are visible.
+		// The mask is occupancy, not a left-to-right frontier, so a sparse hand
+		// cannot make later cards appear early or make an earlier card vanish.
+		g_want[SLOT_OF(ZONE_HAND, i)] =
+		       (((g_mode == M_DEAL) ? (g_deal_visible_mask & (u8)(1u << i))
+		                            : (u8)!g_hand_hidden) != 0)
 		       ? g_duel.side[hand_owner].hand[i] : MSX2_CARD_NONE;
 		// The COM chair is a presentation view, not permission to look at the
 		// opponent's hand.  Keep the real id in the model for placement, but draw
@@ -682,7 +692,7 @@ static const c8* Msx2_BoardPrompt(void)
 	case M_TARGET: return Msx2_UiText(MSX2_S_PICK_THE_TARGET_ESC_CANCELS);
 	case M_COM:    return Msx2_UiText(MSX2_S_THE_OPPONENT_IS_THINKING);
 	case M_CHECK:  return Msx2_UiText(MSX2_S_SPACE_RETURNS_TO_THE_DUEL);
-	case M_OVER:   return Msx2_UiText(MSX2_S_SPACE_RETURNS_TO_THE_TITLE);
+	case M_OVER:   return "";
 	default:
 		if(g_queue_n != 0)
 		{
@@ -733,12 +743,8 @@ static void Msx2_BoardCardLines(void)
 		return;
 
 	if(g_mode == M_OVER)
-	{
-		Msx2_TextColor((g_duel.result > 0) ? MSX2_GOLD : MSX2_RED, MSX2_PANEL_COLOR);
-		Msx2_TextCenter((u8)(MSX2_INFO_Y + 3),
-		                (g_duel.result > 0) ? Msx2_UiText(MSX2_S_YOU_WIN_THE_DUEL) : Msx2_UiText(MSX2_S_YOU_HAVE_LOST));
-	}
-	else if(card != MSX2_CARD_NONE)
+		return;
+	if(card != MSX2_CARD_NONE)
 	{
 		// Names live in the cartridge, not in the 32 KB of code: 78 of them at
 		// a fixed stride is 1.8 KB the link cannot spare.
@@ -1330,7 +1336,12 @@ static void Msx2_BoardFxDraw(bool erase)
 				if(g_fx_kind == FX_COM_PLACE)
 					Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_OPPONENT_PLACES_THE_CARD), MSX2_RED);
 				else
-					Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_SUMMON), MSX2_TEAL);
+				{
+					// The landing itself is the player's summon cue.  Keeping the
+					// panel blank here avoids a redundant fill and text pass on
+					// every page while the card is in flight.
+					g_fx_banner_left &= (u8)~bit;
+				}
 				g_fx_banner_left &= (u8)~bit;
 			}
 		}
@@ -1386,6 +1397,7 @@ static void Msx2_BoardPrepareLanding(void)
 	// Hand removal, cartridge caching and the first pose are one composition.
 	// Keep output blank for all of it; otherwise the visible page can show the
 	// blackened hand before the cached card has reached its source position.
+	Msx2_SpriteTransitionBegin();
 	VDP_EnableDisplay(FALSE);
 	Msx2_BoardHideHand();
 	Msx2_BoardFxCacheCard();
@@ -2078,8 +2090,10 @@ static void Msx2_BoardDealErase(u8 page)
 	Msx2_Fill(px, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_BLACK);
 	g_deal_px[page] = MSX2_SLOT_NONE;
 
-	for(i = 0; i < g_deal_reveal; ++i)
+	for(i = 0; i < MSX2_HAND_SLOTS; ++i)
 	{
+		if(!(g_deal_visible_mask & (u8)(1u << i)))
+			continue;
 		u8 hx = HAND_X(i);
 		if(((u8)(hx + MSX2_CARD_W) > px) && (hx < (u8)(px + MSX2_CARD_W)))
 			Msx2_BoardBlitSlot(SLOT_OF(ZONE_HAND, i));
@@ -2091,8 +2105,12 @@ static void Msx2_BoardStepDeal(void)
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 	u8 card;
 	u8 x;
+	u8 bit;
 
 	Msx2_VideoDrawPage(page);
+	while((g_deal_slot < MSX2_HAND_SLOTS) &&
+	      !(g_deal_target_mask & (u8)(1u << g_deal_slot)))
+		++g_deal_slot;
 
 	// THE LAST CARD'S LEFTOVER.
 	// A flight alternates pages, and each pass erases the copy THIS page was
@@ -2105,17 +2123,14 @@ static void Msx2_BoardStepDeal(void)
 	// ends with one more pass, on that page, doing nothing but the erase.
 	if(g_deal_slot >= MSX2_HAND_SLOTS)
 	{
-		u8 i;
 		if(g_deal_px[page] != MSX2_SLOT_NONE)
-		{
 			Msx2_BoardDealErase(page);
-			for(i = MSX2_FIELD_SLOTS; i < SLOT_COUNT; ++i)
-				g_shown[page][i] = MSX2_CARD_NONE;
+		if((g_deal_landed_mask[0] == g_deal_target_mask) &&
+		   (g_deal_landed_mask[1] == g_deal_target_mask))
+		{
+			g_deal_visible_mask = g_deal_target_mask;
+			Msx2_BoardSnapshot();
 		}
-		for(i = 0; i < SLOT_COUNT; ++i)
-			if(!Msx2_BoardPaint())
-				break;
-		Msx2_VideoFlipRequest();
 		g_mode = (g_view == BOARD_VIEW_COM) ? M_COM : M_IDLE;
 		PANEL_ALL();
 		return;
@@ -2167,30 +2182,23 @@ static void Msx2_BoardStepDeal(void)
 	{
 		u8 slot = SLOT_OF(ZONE_HAND, g_deal_slot);
 		u8 p;
-		g_deal_reveal = (u8)(g_deal_slot + 1);
+		bit = (u8)(1u << g_deal_slot);
+		g_deal_visible_mask |= bit;
+		++g_deal_reveal;
 		Msx2_BoardSnapshot();
 		for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
 		{
-			if(p != page)
-			{
-				Msx2_VideoDrawPage(p);
-				Msx2_BoardBlitSlot(slot);
-			}
+			Msx2_VideoDrawPage(p);
+			Msx2_BoardBlitSlot(slot);
 			g_shown[p][slot] = g_want[slot];
 			g_shown_flag[p][slot] = g_flag[slot];
+			g_deal_landed_mask[p] |= bit;
 		}
 		Msx2_VideoDrawPage(page);
 	}
 	g_deal_px[page] = MSX2_SLOT_NONE;
 	g_deal_step = 0;
 	++g_deal_slot;
-	if(g_deal_slot >= MSX2_HAND_SLOTS)
-	{
-		// The hand is dealt, but the other page still owes the erase above.
-		g_deal_reveal = MSX2_HAND_SLOTS;
-		Msx2_BoardSnapshot();
-		PANEL_ALL();
-	}
 }
 
 void Msx2_BoardEnter_In(u8 stage)
@@ -2232,10 +2240,13 @@ void Msx2_BoardEnter_In(u8 stage)
 	g_deal_step = 0;
 	g_deal_reveal = 0;
 	g_deal_px[0] = g_deal_px[1] = MSX2_SLOT_NONE;
+	g_deal_target_mask = 0;
+	g_deal_visible_mask = 0;
+	g_deal_landed_mask[0] = g_deal_landed_mask[1] = 0;
 	Msx2_BoardSnapshot();
 
 	Msx2_RasterInit();
-	Msx2_SpriteClear();
+	Msx2_SpriteTransitionBegin();
 
 	/* Build both retained pages while the display is blank.  Their board bands
 	   start black; Msx2_BoardStep() then streams one complete pose into the
@@ -2294,6 +2305,7 @@ static void Msx2_BoardCutTo(u8 view)
 
 	g_view = view;
 	Msx2_RasterSetView(view);
+	Msx2_SpriteTransitionBegin();
 	VDP_EnableDisplay(FALSE);
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, view), MSX2_PAGE_0);
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, view), MSX2_PAGE_1);
@@ -2367,6 +2379,9 @@ static void Msx2_BoardClearHandBand(void)
 	g_deal_slot = 0;
 	g_deal_step = 0;
 	g_deal_px[0] = g_deal_px[1] = MSX2_SLOT_NONE;
+	g_deal_target_mask = 0;
+	g_deal_visible_mask = 0;
+	g_deal_landed_mask[0] = g_deal_landed_mask[1] = 0;
 	Msx2_BoardSnapshot();
 
 	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
@@ -2456,7 +2471,6 @@ static void Msx2_BoardStepCameraMove(void)
 	Msx2_RasterSetView(g_view);
 	g_suppress_slot = MSX2_SLOT_NONE;
 	g_hold_hand = MSX2_SLOT_NONE;
-	Msx2_BoardSnapshot();
 	for(i = 0; i < SLOT_COUNT; ++i)
 	{
 		g_shown[0][i] = g_shown[1][i] = MSX2_CARD_NONE;
@@ -2473,6 +2487,16 @@ static void Msx2_BoardStepCameraMove(void)
 	g_deal_step = 0;
 	g_deal_reveal = 0;
 	g_deal_px[0] = g_deal_px[1] = MSX2_SLOT_NONE;
+	g_deal_visible_mask = 0;
+	g_deal_landed_mask[0] = g_deal_landed_mask[1] = 0;
+	{
+		u8 owner = (g_view == BOARD_VIEW_COM) ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER;
+		g_deal_target_mask = 0;
+		for(i = 0; i < MSX2_HAND_SLOTS; ++i)
+			if(g_duel.side[owner].hand[i] != MSX2_CARD_NONE)
+				g_deal_target_mask |= (u8)(1u << i);
+	}
+	Msx2_BoardSnapshot();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
