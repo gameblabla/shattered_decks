@@ -1398,12 +1398,12 @@ static void Msx2_BoardPrepareLanding(void)
 	// Keep output blank for all of it; otherwise the visible page can show the
 	// blackened hand before the cached card has reached its source position.
 	Msx2_SpriteTransitionBegin();
-	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDisplayBlank();
 	Msx2_BoardHideHand();
 	Msx2_BoardFxCacheCard();
 	Msx2_BoardPrimeLanding();
 	VDP_CommandWait();
-	VDP_EnableDisplay(TRUE);
+	Msx2_VideoDisplayRestore();
 }
 
 static void Msx2_BoardFxErase(u8 frame)
@@ -2255,7 +2255,7 @@ void Msx2_BoardEnter_In(u8 stage)
 	   band visible as a horizontal tear despite the rest of the game being
 	   double-buffered. */
 	page = (u8)(Msx2_VideoGetShowPage() ^ 1);
-	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDisplayBlank();
 	Msx2_VideoDrawPage(page);
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(stage, g_view), page);
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
@@ -2264,7 +2264,7 @@ void Msx2_BoardEnter_In(u8 stage)
 	Msx2_VideoDrawPage((u8)(page ^ 1));
 	Msx2_BoardBlankAll();
 	Msx2_VideoShowPage(page);
-	VDP_EnableDisplay(TRUE);
+	Msx2_VideoDisplayRestore();
 
 	// No live card or cursor has been painted yet.  The final opening pose is
 	// the retained player view; after it lands the ordinary bounded painter
@@ -2306,10 +2306,10 @@ static void Msx2_BoardCutTo(u8 view)
 	g_view = view;
 	Msx2_RasterSetView(view);
 	Msx2_SpriteTransitionBegin();
-	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDisplayBlank();
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, view), MSX2_PAGE_0);
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, view), MSX2_PAGE_1);
-	VDP_EnableDisplay(TRUE);
+	Msx2_VideoDisplayRestore();
 
 	// THE VIEW ARRIVES FINISHED.
 	// The picture underneath every retained card is a different picture now, so

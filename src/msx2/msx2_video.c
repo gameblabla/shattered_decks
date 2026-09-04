@@ -7,6 +7,9 @@
 #include "msx2_stream.h"
 #include "msx2_sprite.h"
 #include "msx2_scenes.h"
+#ifdef MSX2_DEBUG_REGRESSION
+#include "msx2_probe.h"
+#endif
 
 // THE FONT LIVES IN THE CARTRIDGE.
 // MSXgl ships this one as a 1540-byte C array -- 192 characters, of which the
@@ -86,7 +89,23 @@ void Msx2_VideoPresent(void)
 	g_show_page = g_draw_page;
 	g_draw_page = (u8)(g_draw_page ^ 1);
 	VDP_SetPage(g_show_page);
+#ifdef MSX2_DEBUG_REGRESSION
+	++g_msx2_regression_diag.page_flips;
+#endif
 }
+
+#ifdef MSX2_DEBUG_REGRESSION
+void Msx2_VideoDisplayBlank(void)
+{
+	VDP_EnableDisplay(FALSE);
+	++g_msx2_regression_diag.blank_pairs;
+}
+
+void Msx2_VideoDisplayRestore(void)
+{
+	VDP_EnableDisplay(TRUE);
+}
+#endif
 
 void Msx2_VideoDrawPage(u8 page)
 {

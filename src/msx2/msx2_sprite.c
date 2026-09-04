@@ -7,6 +7,9 @@
 
 #include "msx2_scenes.h"
 #include "msx2_stream.h"
+#ifdef MSX2_DEBUG_REGRESSION
+#include "msx2_probe.h"
+#endif
 
 #define SPR_PAT_ADDR   0xF000u
 #define SPR_COL_ADDR   0xF800u
@@ -89,6 +92,17 @@ void Msx2_SpriteClear(void)
 	u8 i;
 	for(i = 0; i < SPR_COUNT; ++i)
 		Msx2_SpriteHide(i);
+#ifdef MSX2_DEBUG_REGRESSION
+	g_msx2_regression_diag.gem_visible = FALSE;
+#endif
+}
+
+void Msx2_SpriteTransitionBegin(void)
+{
+	Msx2_SpriteHideGem();
+	Msx2_SpriteSlashHide();
+	Msx2_SpriteBurnHide();
+	VDP_CommandWait();
 }
 
 void Msx2_SpriteHide(u8 id)
@@ -369,6 +383,11 @@ void Msx2_SpriteGem(u8 x, u8 y, u8 frame, u8 color)
 
 	for(p = 0; p < MSX2_GEM_PLANES; ++p)
 		Msx2_SpriteAt((u8)(MSX2_SPR_CURSOR + p), x, y, (u8)(slot + p), tint[p]);
+#ifdef MSX2_DEBUG_REGRESSION
+	g_msx2_regression_diag.gem_visible = TRUE;
+	g_msx2_regression_diag.gem_x = x;
+	g_msx2_regression_diag.gem_y = y;
+#endif
 }
 
 void Msx2_SpriteHideGem(void)
@@ -376,4 +395,7 @@ void Msx2_SpriteHideGem(void)
 	u8 p;
 	for(p = 0; p < MSX2_GEM_PLANES; ++p)
 		Msx2_SpriteHide((u8)(MSX2_SPR_CURSOR + p));
+#ifdef MSX2_DEBUG_REGRESSION
+	g_msx2_regression_diag.gem_visible = FALSE;
+#endif
 }

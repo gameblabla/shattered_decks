@@ -79,6 +79,16 @@ void Msx2_VideoFlipRequest(void);
 // R#2 changes inside the blanking interval and the swap itself never tears.
 void Msx2_VideoPresent(void);
 
+// Pair these around a composition that must not be seen.  The regression
+// build counts the boundaries; the shipping build is the same VDP operation.
+#ifdef MSX2_DEBUG_REGRESSION
+void Msx2_VideoDisplayBlank(void);
+void Msx2_VideoDisplayRestore(void);
+#else
+#define Msx2_VideoDisplayBlank()   VDP_EnableDisplay(FALSE)
+#define Msx2_VideoDisplayRestore() VDP_EnableDisplay(TRUE)
+#endif
+
 // Which page drawing goes to.  Set explicitly only while composing both pages;
 // the flip keeps it pointed at the hidden one the rest of the time.
 void Msx2_VideoDrawPage(u8 page);

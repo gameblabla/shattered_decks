@@ -106,6 +106,12 @@
 
 void Msx2_SpriteInit(void);
 
+// Hide every transient sprite group before a scene or camera coordinate space
+// changes.  The bitmap page is not exposed until the VDP command queue has
+// also completed, so an old gem/slash/burn cannot ride over the first frame of
+// the destination scene.
+void Msx2_SpriteTransitionBegin(void);
+
 // Take every sprite off the screen.  Cheap: it writes one byte per sprite.
 void Msx2_SpriteClear(void);
 
