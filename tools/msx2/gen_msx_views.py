@@ -392,14 +392,12 @@ def paint_panels(img, hand_row=True):
     # black instead, which is what PC-FX and FM TOWNS show.
     if not hand_row:
         return img
+    # Plain black, with no frame round the slot pitch.  The gold hairline that
+    # used to be baked here was the same outline the drawn one was removed for:
+    # the card art carries its own border, so the extra ring only read as a
+    # brown box around every cover.  The HUD and info panel keep theirs.
     d.rectangle([0, HAND_BAND_Y, WIDTH - 1, HAND_BAND_Y + HAND_BAND_H - 1],
                 fill=(0, 0, 0))
-    # A gold hairline under the hand row's slot pitch, so the five hand
-    # positions read as positions before a card is in them.
-    for i in range(HAND_SLOTS):
-        x = HAND_X0 + i * HAND_PITCH
-        d.rectangle([x - 1, HAND_Y - 1, x + CARD_W, HAND_Y + CARD_H],
-                    outline=GOLD_RGB)
     return img
 
 
