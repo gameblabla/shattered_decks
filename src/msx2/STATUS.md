@@ -258,7 +258,26 @@ page whose bit was already spent.  Each page now records the three figures it
 was painted with and `Msx2_BoardHudSync()` re-owes any page that has drifted,
 every frame, so the alternating state cannot persist.
 
-**SAVE GAME returning to the title was not reproduced.**  The map row, the
+**SAVE GAME leaving the road was an input-repeat chain.**  The screen itself is
+correct -- the map row, the picker, both destinations and the continue code were
+driven with scripted keys on `C-BIOS_MSX2` and on `C-BIOS_MSX2_DISK`, from a
+fresh story and after a completed story duel, and every one opened.  What the
+report describes is a HELD key: SAVE GAME is the only three-screen chain on the
+road (picker -> continue code -> back to the road, each composed with a blanked
+stream), so a confirm arriving once per transition walks the player straight
+through it and out the far side, where the next press starts whatever the road's
+cursor is now on.  The deck editor is a single screen and does not show it.
+Reproduced by injecting a 20 Hz repeat for two seconds: before, it walked to the
+road and past it; after, one press is one answer and the picker stays.
+
+The filter is in `msx2_input.c`, not in the story: the confirm buttons re-arm
+only after CONFIRM_REARM (4) consecutive V-blanks with none of them down --
+counted in the ISR, because a main-loop pass here is one V-blank or thirty -- and
+two honoured confirms are at least CONFIRM_GAP (10) V-blanks apart.  An
+auto-repeated key never shows four quiet frames in a row; a player letting go
+always does.  Directions are deliberately not filtered.
+
+**The earlier note, kept because it bounds the search:**  The map row, the
 picker, FLOPPY/PASSWORD, and the continue-code screen were driven with scripted
 keys on `C-BIOS_MSX2` and on `C-BIOS_MSX2_DISK`, from a fresh story and after a
 completed story duel: the picker opens every time.  Whatever the reported

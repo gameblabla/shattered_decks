@@ -42,6 +42,36 @@ static u8 g_held;
 static u8 g_pressed;
 static c8 g_typed;
 
+// ONE HELD BUTTON IS ONE ANSWER, NOT A STREAM OF THEM.
+// A screen here is a phase in a chain -- SAVE GAME opens a picker, the picker
+// opens the continue code, the code screen goes back to the road -- and each
+// one is composed with a blanked stream that takes a good fraction of a second.
+// A confirm arriving for every one of those transitions walks the player
+// through the whole chain and out the far side of it, which is what "SAVE GAME
+// is unusually sensitive: hold SPACE too long and it leaves" was.  One physical
+// press must be one edge whatever the host or the emulator does with a key that
+// is held down (openMSX's character mapping re-types a repeating host key, so
+// the matrix really does see press after press), so:
+//
+//   * the confirm buttons re-arm only after a sample in which none of them is
+//     down -- a key that is never released can never answer twice; and
+//   * two honoured confirms are at least CONFIRM_GAP V-blanks apart, because a
+//     re-typed key DOES show a released frame between repeats.  The gap is
+//     counted in the ISR's own tick, not in main-loop passes: a pass here can
+//     be one V-blank or thirty, so counting passes would measure the screen
+//     rather than the player.  A sixth of a second is a rate no one taps a
+//     menu at deliberately and no auto-repeat is slower than.
+//
+// Directions are deliberately NOT filtered: walking a menu with a held key is
+// something a player may reasonably want, and a repeated direction only moves a
+// cursor the screen then shows.
+extern volatile u16 g_msx2_ticks;
+#define CONFIRM_MASK   (u8)(MSX2_BTN_A | MSX2_BTN_B | MSX2_BTN_ENTER | MSX2_BTN_DEL)
+#define CONFIRM_GAP    10
+#define CONFIRM_REARM  4
+static u8  g_confirm_armed;
+static u16 g_confirm_tick;
+
 // ── Written by the ISR, consumed by the main loop ────────────────────────────
 // Plain globals rather than statics so the assembly below can name them.
 // `now`   the instantaneous button state,
@@ -55,6 +85,11 @@ volatile u8 g_msx2_kb_edge;
 volatile u8 g_msx2_kb_held;
 volatile u8 g_msx2_kb_fresh[KB_ROWS];
 volatile u8 g_msx2_kb_prev[KB_ROWS];
+// `up`    consecutive V-blanks in which no confirm key was down, saturating.
+//         Counted here rather than in the main loop because a main-loop pass is
+//         one V-blank or thirty, so a pass count would measure the screen and
+//         not the player.  See the confirm filter below.
+volatile u8 g_msx2_kb_up;
 
 // A SHORT QUEUE, NOT A SINGLE SLOT.
 // One slot meant that two characters typed inside one game step kept the first
@@ -88,6 +123,8 @@ void Msx2_InputInit(void)
 	g_f1_press = 0;
 	g_x_press = 0;
 	g_joy_held = 0;
+	g_confirm_armed = 1;
+	g_confirm_tick = 0;
 	g_kb_typed_n = 0;
 	g_msx2_kb_now = 0;
 	g_msx2_kb_edge = 0;
@@ -182,6 +219,19 @@ __asm
 	ld	a, b
 	ld	(_g_msx2_kb_held), a
 	ld	(_g_msx2_kb_now), a
+
+	; ---- how long the confirm keys have been up, in V-blanks --------------
+	and	#0x30			; SPACE/RETURN -> A, ESC/BS -> B
+	jr	NZ, 11$
+	ld	a, (_g_msx2_kb_up)
+	inc	a
+	jr	Z, 12$			; saturate rather than wrap round to nothing
+	ld	(_g_msx2_kb_up), a
+	jr	12$
+11$:
+	xor	a
+	ld	(_g_msx2_kb_up), a
+12$:
 
 	; ---- rows 0..6: fresh[r] |= now & ~prev[r] ; prev[r] = now -------------
 	ld	hl, #_g_msx2_kb_prev
@@ -286,6 +336,25 @@ void Msx2_InputUpdate(void)
 	g_pressed = (u8)(edge | (u8)(joy_now & ~g_joy_held));
 	g_joy_held = joy_now;
 	g_held = (u8)(now | joy_now);
+
+	// Released -- by the keyboard for long enough to be a release and not the
+	// gap inside a repeat, and by the joystick now -- so the next press counts.
+	// An auto-repeated key never shows CONFIRM_REARM quiet V-blanks in a row;
+	// a player letting go of one always does.
+	if((g_msx2_kb_up >= CONFIRM_REARM) && ((joy_now & CONFIRM_MASK) == 0))
+		g_confirm_armed = 1;
+	if((g_pressed & CONFIRM_MASK) != 0)
+	{
+		u16 tick = g_msx2_ticks;
+		if(g_confirm_armed && ((u16)(tick - g_confirm_tick) >= CONFIRM_GAP))
+		{
+			g_confirm_armed = 0;
+			g_confirm_tick = tick;
+		}
+		else
+			g_pressed &= (u8)~CONFIRM_MASK;
+	}
+
 	Msx2_EntropyMixInput(g_held, g_pressed, g_typed);
 }
 
