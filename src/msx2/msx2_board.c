@@ -956,6 +956,10 @@ static void Msx2_BoardShowBattleCutin(void)
 static void Msx2_BoardBattleStrike(u8 step)
 {
 	Msx2_BattleFxSlash(g_batt_fx_x, step);
+	// The impact is the frame the explosion opens on, not the frame the blade
+	// starts moving -- the sweep has its own cue at the declaration.
+	if(step == MSX2_BATTLE_SLASH_STEPS)
+		Msx2_SfxPlay(MSX2_SFX_DIRECT_HIT);
 	if(step >= MSX2_BATTLE_SLASH_STEPS)
 		Msx2_BattleFxBurst(g_batt_fx_x, 83,
 		                   (u8)(step - MSX2_BATTLE_SLASH_STEPS));
@@ -1747,6 +1751,12 @@ static void Msx2_BoardFinishFx(void)
 {
 	u8 next = g_fx_followup;
 
+	// The card is down.  The cue belongs here rather than to the start of the
+	// flight: what it is voicing is the landing, and the flight is eight frames.
+	if((g_fx_kind == FX_SUMMON) || (g_fx_kind == FX_COM_PLACE) ||
+	   (g_fx_kind == FX_EQUIP))
+		Msx2_SfxPlay(MSX2_SFX_CARD_PLACED);
+
 	// AND THE SELECTOR LEAVES WITH IT.
 	// Msx2_BoardStartFx() hides the gem, but FX_COM_CHOOSE is the one beat that
 	// puts it back: Msx2_BoardShowCursor() stands it on the cover the opponent
@@ -1859,7 +1869,10 @@ static bool Msx2_BoardRunFx(void)
 				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_ATTACKER ||
 				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_DEFENDER ||
 				   g_duel.last_battle.outcome == MSX2_BATTLE_DESTROY_BOTH)
+				{
+					Msx2_SfxPlay(MSX2_SFX_CARD_DESTROYED);
 					g_batt_phase = 6;
+				}
 				else
 				{
 					/* Level the other page once, here, so the result line and
@@ -2198,6 +2211,9 @@ static void Msx2_BoardStepDeal(void)
 		if(card != MSX2_CARD_NONE)
 			card = (owner == MSX2_OWNER_COM) ? MSX2_CARD_BACK_INDEX : card;
 	}
+	// One cue per card, on the frame its flight leaves the deck.
+	if((g_deal_step == 0) && (card != MSX2_CARD_NONE))
+		Msx2_SfxPlay(MSX2_SFX_CARD_DRAWN);
 	if((card != MSX2_CARD_NONE) && (card < MSX2_CARD_ART_COUNT))
 	{
 		u8 target = HAND_X(g_deal_slot);
@@ -2480,6 +2496,7 @@ static void Msx2_BoardSwitchView(u8 view, bool forward)
 		return;
 
 	Msx2_BoardClearHandBand();
+	Msx2_SfxPlay(MSX2_SFX_TURN_PASSED);
 	g_mode = M_TURN;
 	g_move_pose = 0;
 	g_move_target = view;
@@ -2889,6 +2906,10 @@ static void Msx2_BoardOverBegin(void)
 	// The result hold owns the one-shot cue.  Music requests are idempotent, so
 	// repeated result-entry checks cannot restart it while the word settles.
 	Msx2_MusicPlay((g_duel.result > 0) ? MSX2_MUSIC_RESULT : MSX2_MUSIC_LOST);
+	// Over the first half-second of the jingle, on the one channel an effect
+	// borrows: the sting a loss wants and the tune cannot start with.
+	if(g_duel.result < 0)
+		Msx2_SfxPlay(MSX2_SFX_YOU_LOST);
 	Msx2_BoardTouch();
 	// The banner's board is the overhead one whichever chair the last blow was
 	// struck from: it is the only view that shows both rows whole.

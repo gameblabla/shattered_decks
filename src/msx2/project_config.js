@@ -49,7 +49,8 @@ ProjModules = [
 	"msx2_bank",
 	"msx2_disk",
 	"msx2_input",
-	"msx2_battle_fx",
+	// msx2_battle_fx is NOT here: it is #included into waifu_msx2_s2_b0.c,
+	// because the duel screen is its only caller and _CODE had run out.
 	"msx2_raster",
 	"msx2_duel",
 	"msx2_cards",

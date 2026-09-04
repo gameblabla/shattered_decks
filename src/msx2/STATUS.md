@@ -658,11 +658,13 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
    ROM, so the read and the write have never executed.  The password path
    remains the guaranteed persistence mechanism.
 
-4. **Physical sound and SFX remain unverified.** The shipping build now plays
-   the seven PSG lVGM tracks in real openMSX, but no physical MSX2 audio test
-   has been run here. `Msx2_SfxPlay()` remains a queued placeholder and does
-   not yet synthesize the nine short effects; the music path is the completed
-   part of the issue-plan sound milestone.
+4. **Physical sound remains unverified.** The shipping build now plays the
+   seven PSG lVGM tracks in real openMSX, and `Msx2_SfxPlay()` now synthesizes
+   nine short PSG cues on channel C: selection, confirmation, card placement,
+   destruction, draw, turn hand-off, laser, direct hit, and loss.  The effect
+   temporarily borrows channel C, then restores the music register state; no
+   physical MSX2 audio test has been run here, so its tempo and mix still need
+   confirmation on hardware.
 
 5. **Deck-editor UX is intentionally compact.** The plan's 5x4 paginated icon
    grid is reduced to a four-slot thumbnail row plus a one-card collection

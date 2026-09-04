@@ -31,4 +31,10 @@
 //  ordinary .c files and are written as such; this file is the placement.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// The battle cut-in's blade, burst, burn and damage figure.  It lives in this
+// bank rather than in _CODE for room: msx2_board.c is its only caller, a call
+// inside a bank is an ordinary CALL, and _CODE was thirty bytes over the line
+// the day the PSG effects went in.  It reaches the sprite layer and the video
+// layer, both of which are in _CODE, which is what a bank is allowed to do.
+#include "msx2_battle_fx.c"
 #include "msx2_board.c"
