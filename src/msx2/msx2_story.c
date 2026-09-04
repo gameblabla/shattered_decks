@@ -6,6 +6,7 @@
 #include "msx2_video.h"
 #include "msx2_input.h"
 #include "msx2_stream.h"
+#include "msx2_sprite.h"
 #include "msx2_audio.h"
 #include "msx2_duel.h"
 #include "msx2_cards.h"
@@ -59,7 +60,12 @@
 #define MAP_CODE_Y   145
 #define MAP_BACK_Y   163
 #define MAP_HELP_Y   176
-#define MAP_CURSOR_X 34
+// The selector is a sprite now, so what used to be the ">" column is the
+// square the gem stands in: 20 pixels of it, ending where the names start.
+#define MAP_GEM_X    28
+// A row's text is eight pixels tall and the gem is twenty, so it sits six
+// above the line to be centred on it.
+#define MAP_GEM_RISE 6
 #define MAP_NAME_X   48
 #define MAP_TITLE_X  132
 #define MAP_DECK_ROW (MSX2_STORY_MAX_DUELS)
@@ -95,7 +101,10 @@
 #define ED_LIST_Y             48
 #define ED_ROW_H              13
 #define ED_ROWS               10
-#define ED_TEXT_X             10
+// The gem's column, and the text pushed clear of it.  20 pixels of selector
+// sit at ED_GEM_X; a name starts after them.
+#define ED_GEM_X              8
+#define ED_TEXT_X             34
 #define ED_TEXT_COLS          30
 #define ED_ART_X              204
 #define ED_ART_Y              50
@@ -113,10 +122,18 @@
 #define ED_REP_DELAY          20
 #define ED_REP_RATE           4
 
-// Repaint levels, in the order they cost.  A cursor step only owes the two rows
-// that changed and the art panel; a scroll or a tab owes the whole list; the
-// tabs, the status line and the hints only change when the mode does.
-#define ED_DIRTY_SEL          1
+// How many quiet frames the cursor has to stand still before the card art
+// under it is redrawn.  The art is the ONE thing a cursor step still costs --
+// a 40x48 stream, twice, once per page -- and it is worth nothing at all while
+// the list is scrolling past.  Longer than ED_REP_RATE on purpose: a held
+// direction therefore draws no art until it is let go.
+#define ED_ART_SETTLE         7
+
+// Repaint levels, in the order they cost.  A settled cursor owes the art panel
+// and nothing else -- the selector itself is a sprite and owes no page any
+// pixels; a scroll or a tab owes the whole list; the tabs, the status line and
+// the hints only change when the mode does.
+#define ED_DIRTY_ART          1
 #define ED_DIRTY_LIST         2
 #define ED_DIRTY_ALL          3
 
@@ -160,6 +177,21 @@ static u8  g_map_dirty;
 
 static u8  g_cursor;
 
+// ── The selector ────────────────────────────────────────────────────────────
+// The sanctum road and the deck editor both used to mark the cursor by drawing
+// into the picture: a ">" in the panel, a filled row behind a name.  Both then
+// owed a repaint on every step -- and on this machine the map's repaint was
+// the WHOLE panel, five opponent names read back out of the cartridge
+// included, and the editor's was two rows of glyphs, twice, once per page.
+//
+// It is the duel screen's spinning gem instead.  A V9938 sprite floats over
+// both bitmap pages and is placed by writing a handful of bytes, so a cursor
+// step now costs nothing in the picture at all, and the only thing either
+// screen still repaints when the cursor moves is the editor's card art --
+// which is deferred until the cursor settles (see ED_ART_SETTLE).
+static u8  g_gem_tick;
+static u8  g_gem_up;
+
 // The duelist's name is fixed on this target.  Typing eight letters in on a
 // V9938 text screen cost a full repaint per keypress and was the slowest,
 // fiddliest screen in the port, so the story simply runs as SERENA -- who the
@@ -189,7 +221,9 @@ static u8  g_ed_msg;
 static u8  g_ed_rep;
 static u8  g_ed_rep_dir;
 static u8  g_ed_dirty[MSX2_VIDEO_PAGES];
-static u8  g_ed_prev[MSX2_VIDEO_PAGES];
+// Frames left before the settled cursor's card art is drawn, or 0 for "the art
+// on the screen is the card the cursor is on".
+static u8  g_ed_art_wait;
 // The deck is browsed in card order, not in the order the slots happen to hold:
 // the deck is shuffled before every duel, so slot order means nothing to the
 // game, and a sorted list puts a card's copies together where they can be
@@ -1064,6 +1098,29 @@ static void Msx2_StorySavePickStep(void)
 
 static void Msx2_StoryEnterDeck(void);
 
+// The selector, at (x, y) -- the top-left of the gem itself.  Call it every
+// frame the screen is up: `frame >> 2` is the same quarter-turn every four
+// V-blanks the duel screen spins it at, so the two screens agree.
+static void Msx2_StoryGem(u8 x, u8 y)
+{
+	++g_gem_tick;
+	Msx2_SpriteGem(x, y, (u8)(g_gem_tick >> 2), MSX2_SPR_RED);
+	g_gem_up = TRUE;
+}
+
+// Take it down on the way to a screen that has no list.  Msx2_StreamScene()
+// clears the whole sprite plane, so this is only for the screens that do not
+// stream -- and it is one test, not three attribute writes, on every other
+// frame of the run.
+static void Msx2_StoryGemHide(void)
+{
+	if(g_gem_up)
+	{
+		Msx2_SpriteHideGem();
+		g_gem_up = FALSE;
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  The map
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1083,12 +1140,6 @@ static void Msx2_StoryMapPaint(void)
 		u8 y = MAP_ROW_Y(i);
 		bool open = (i <= g_progress);
 
-		if(i == g_cursor)
-		{
-			Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-			Msx2_TextAt(MAP_CURSOR_X, y, ">");
-		}
-
 		if(!open)
 		{
 			Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
@@ -1097,8 +1148,10 @@ static void Msx2_StoryMapPaint(void)
 		}
 
 		Msx2_StoryReadOpp(i, 0);
-		Msx2_TextColor((i == g_cursor) ? MSX2_WHITE
-		                              : ((i < g_progress) ? MSX2_SAND : MSX2_TEAL),
+		// Cleared opponents in sand, the frontier in teal.  Nothing here
+		// depends on where the cursor is any more -- that is what lets the
+		// panel be painted once and then left alone.
+		Msx2_TextColor((i < g_progress) ? MSX2_SAND : MSX2_TEAL,
 		               MSX2_PANEL_COLOR);
 		Msx2_TextAt(MAP_NAME_X, y, g_opp);
 		Msx2_StoryReadOpp(i, 1);
@@ -1106,35 +1159,30 @@ static void Msx2_StoryMapPaint(void)
 		Msx2_TextAt(MAP_TITLE_X, y, g_opp);
 	}
 
-	if(g_cursor == MAP_DECK_ROW)
-	{
-		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-		Msx2_TextAt(MAP_CURSOR_X, MAP_DECK_Y, ">");
-	}
-	Msx2_TextColor((g_cursor == MAP_DECK_ROW) ? MSX2_WHITE : MSX2_SAND,
-	               MSX2_PANEL_COLOR);
+	Msx2_TextColor(MSX2_SAND, MSX2_PANEL_COLOR);
 	Msx2_TextAt(MAP_NAME_X, MAP_DECK_Y, Msx2_UiText(MSX2_S_DECK_EDITOR));
 
-	if(g_cursor == MAP_CODE_ROW)
-	{
-		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-		Msx2_TextAt(MAP_CURSOR_X, MAP_CODE_Y, ">");
-	}
-	Msx2_TextColor((g_cursor == MAP_CODE_ROW) ? MSX2_WHITE : MSX2_SAND,
-	               MSX2_PANEL_COLOR);
+	Msx2_TextColor(MSX2_SAND, MSX2_PANEL_COLOR);
 	Msx2_TextAt(MAP_NAME_X, MAP_CODE_Y, Msx2_UiText(MSX2_S_SAVE_GAME));
 
-	if(g_cursor == MAP_BACK_ROW)
-	{
-		Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-		Msx2_TextAt(MAP_CURSOR_X, MAP_BACK_Y, ">");
-	}
-	Msx2_TextColor((g_cursor == MAP_BACK_ROW) ? MSX2_WHITE : MSX2_SAND,
-	               MSX2_PANEL_COLOR);
+	Msx2_TextColor(MSX2_SAND, MSX2_PANEL_COLOR);
 	Msx2_TextAt(MAP_NAME_X, MAP_BACK_Y, Msx2_UiText(MSX2_S_LEAVE_THE_ROAD));
 
 	Msx2_TextColor(MSX2_DARK_SAND, MSX2_PANEL_COLOR);
 	Msx2_TextCenter(MAP_HELP_Y, Msx2_UiText(MSX2_S_SPACE_CHOOSES_UP_DOWN_MOVES));
+}
+
+// The screen line the cursor's row is written on.  The three utility rows are
+// not on the duel rows' pitch, so this is a lookup and not arithmetic.
+static u8 Msx2_StoryMapRowY(void)
+{
+	if(g_cursor == MAP_DECK_ROW)
+		return MAP_DECK_Y;
+	if(g_cursor == MAP_CODE_ROW)
+		return MAP_CODE_Y;
+	if(g_cursor == MAP_BACK_ROW)
+		return MAP_BACK_Y;
+	return MAP_ROW_Y(g_cursor);
 }
 
 static void Msx2_StoryEnterMap(void)
@@ -1175,10 +1223,7 @@ static u8 Msx2_StoryMapStep(void)
 			++g_cursor;
 	}
 	if(g_cursor != before)
-	{
 		Msx2_SfxPlay(MSX2_SFX_SELECT);
-		g_map_dirty = ALL_PAGES;
-	}
 
 	if(pressed & MSX2_BTN_A)
 	{
@@ -1201,6 +1246,10 @@ static u8 Msx2_StoryMapStep(void)
 	}
 	if(pressed & MSX2_BTN_B)
 		return MSX2_STORY_QUIT;
+
+	// The whole of the cursor: a few attribute writes, no flip, and the panel
+	// underneath untouched since the screen was composed.
+	Msx2_StoryGem(MAP_GEM_X, (u8)(Msx2_StoryMapRowY() - MAP_GEM_RISE));
 
 	if(g_map_dirty & (u8)(1u << page))
 	{
@@ -1408,19 +1457,21 @@ static void Msx2_StoryDeckCacheNames(void)
 	}
 }
 
+// A row of the list.  NOTHING here depends on where the cursor is: that is the
+// point of the sprite selector, and it is what lets a cursor step repaint no
+// rows whatever.  The one row that is still coloured differently is the one
+// holding a half-finished exchange, which changes at most twice a swap.
 static void Msx2_StoryDeckRow(u8 i)
 {
 	u8 y = (u8)(ED_LIST_Y + i * ED_ROW_H);
 	u8 idx = (u8)(g_ed_scroll[g_ed_tab] + i);
-	bool sel = (idx == g_ed_cursor[g_ed_tab]);
 	bool held = ((g_ed_pending != ED_NONE) && (g_ed_pending_tab == g_ed_tab) &&
 	             (g_ed_pending == idx));
-	u8 bg = sel ? MSX2_DEEP_BLUE : MSX2_BLACK;
 
-	Msx2_Fill(ED_LIST_X, y, ED_LIST_W, (u8)(ED_ROW_H - 1), bg);
+	Msx2_Fill(ED_LIST_X, y, ED_LIST_W, (u8)(ED_ROW_H - 1), MSX2_BLACK);
 	if((idx >= Msx2_StoryDeckCount()) || (g_ed_names[i][0] == 0))
 		return;
-	Msx2_TextColor(held ? MSX2_GOLD : (sel ? MSX2_WHITE : MSX2_SAND), bg);
+	Msx2_TextColor(held ? MSX2_GOLD : MSX2_SAND, MSX2_BLACK);
 	Msx2_TextAt(ED_TEXT_X, (u8)(y + 2), g_ed_names[i]);
 }
 
@@ -1540,8 +1591,7 @@ static void Msx2_StoryEnterDeck(void)
 	g_ed_msg = 0;
 	g_ed_rep = 0;
 	g_ed_rep_dir = 0;
-	g_ed_prev[0] = 0;
-	g_ed_prev[1] = 0;
+	g_ed_art_wait = 0;
 	Msx2_StoryDeckSortStorage();
 	Msx2_StoryDeckSortView();
 	Msx2_StoryDeckCacheNames();
@@ -1669,13 +1719,15 @@ static void Msx2_StoryDeckStep(void)
 		{
 			g_ed_cursor[g_ed_tab] = cur;
 			Msx2_SfxPlay(MSX2_SFX_SELECT);
+			// The selector answers on this frame whatever else happens: it is
+			// a sprite, and it is placed at the bottom of this function.  The
+			// art is what waits.
+			g_ed_art_wait = ED_ART_SETTLE;
 			if(Msx2_StoryDeckClamp(move))
 			{
 				Msx2_StoryDeckCacheNames();
 				Msx2_StoryDeckDirty(ED_DIRTY_LIST);
 			}
-			else
-				Msx2_StoryDeckDirty(ED_DIRTY_SEL);
 		}
 	}
 
@@ -1735,22 +1787,30 @@ static void Msx2_StoryDeckStep(void)
 		}
 	}
 
+	// The cursor has stood still long enough: the card it is on may now be
+	// drawn, on both pages.  A walk down the list draws none of them.
+	if(g_ed_art_wait != 0)
+	{
+		--g_ed_art_wait;
+		if(g_ed_art_wait == 0)
+			Msx2_StoryDeckDirty(ED_DIRTY_ART);
+	}
+
+	// The selector, every frame, wherever the cursor is: twenty pixels of gem
+	// in the margin the names were moved out of.
+	Msx2_StoryGem(ED_GEM_X,
+	              (u8)(ED_LIST_Y +
+	                   (u8)(g_ed_cursor[g_ed_tab] - g_ed_scroll[g_ed_tab]) *
+	                   ED_ROW_H - 4));
+
 	if(g_ed_dirty[page] != 0)
 	{
-		if(g_ed_dirty[page] == ED_DIRTY_SEL)
-		{
-			// Only the row that lost the cursor and the row that took it.
-			u8 sc = g_ed_scroll[g_ed_tab];
-			if((g_ed_prev[page] >= sc) && (g_ed_prev[page] < (u8)(sc + ED_ROWS)))
-				Msx2_StoryDeckRow((u8)(g_ed_prev[page] - sc));
-			Msx2_StoryDeckRow((u8)(g_ed_cursor[g_ed_tab] - sc));
+		if(g_ed_dirty[page] == ED_DIRTY_ART)
 			Msx2_StoryDeckInfo();
-		}
 		else if(g_ed_dirty[page] == ED_DIRTY_LIST)
 			Msx2_StoryDeckList();
 		else
 			Msx2_StoryDeckPaint();
-		g_ed_prev[page] = g_ed_cursor[g_ed_tab];
 		g_ed_dirty[page] = 0;
 		Msx2_VideoFlipRequest();
 	}
@@ -2037,6 +2097,10 @@ void Msx2_StoryDuelDone_In(bool won)
 
 u8 Msx2_StoryStep_In(void)
 {
+	// One place, rather than a hide in each of the eight Enter functions: the
+	// two screens that own the selector put it up again on their own frame.
+	if((g_phase != PH_MAP) && (g_phase != PH_DECK))
+		Msx2_StoryGemHide();
 #ifdef MSX2_DEBUG_STORY_AUTOPLAY
 	if(g_phase == PH_MAP)
 	{

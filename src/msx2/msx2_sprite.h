@@ -43,23 +43,23 @@
 // (*) Index 0 is the sprite's transparent code, so black is not ordinarily
 // available at all -- see MSX2_SPR_BLACK.
 //
-// The names below are the colour each index was CHOSEN for; several of them
-// are a shade or two away from what the chip draws.  They are left as they are
-// because the screens they build were signed off as they look.
-#define MSX2_SPR_WHITE   1
-#define MSX2_SPR_GOLD    2
-#define MSX2_SPR_RED     3
-#define MSX2_SPR_TEAL    4
-#define MSX2_SPR_BLUE    5
+// Use the fixed-table indices themselves.  In particular, the selector's
+// primary family must be the chip's red (10), not dark magenta (3); the old
+// names were palette-register intentions and therefore looked wrong in G7.
+#define MSX2_SPR_WHITE   15
+#define MSX2_SPR_GOLD    14
+#define MSX2_SPR_RED     10
+#define MSX2_SPR_TEAL    5
+#define MSX2_SPR_BLUE    9
 // The selector's two families, each a shadow and a highlight around the flat
 // colour above: a one-bit sprite has no shades of its own, so the gem gets one
 // sprite per band and the bands get their tints from here.
-#define MSX2_SPR_RED_DK   6
-#define MSX2_SPR_RED_HI   7
-#define MSX2_SPR_TEAL_DK  8
-#define MSX2_SPR_TEAL_HI  9
+#define MSX2_SPR_RED_DK   2
+#define MSX2_SPR_RED_HI   8
+#define MSX2_SPR_TEAL_DK  4
+#define MSX2_SPR_TEAL_HI  13
 // The heat between gold and red, for the blade sweep.
-#define MSX2_SPR_ORANGE  10
+#define MSX2_SPR_ORANGE  8
 // OPAQUE BLACK, WHICH THE FIXED TABLE DOES NOT OTHERWISE HAVE.
 // The wipe that takes a destroyed card off the board has to be BLACK, and
 // every index from 1 up is a colour: the burn was drawn in 11 and came out
