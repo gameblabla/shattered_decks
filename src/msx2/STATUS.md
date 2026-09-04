@@ -201,6 +201,34 @@ builds a multi-card fusion chain out of the hand, attacks, and ends the turn.
 Both pages are tracked separately: this screen remembers what each buffer is
 showing and paints the difference, at most one card a frame.
 
+### Final issue pass
+
+The seven issues in `MSX2_ISSUES_LAST_PLAN.md` are implemented. The hand deal
+now has separate target and landed masks for each VRAM page, so a five-card COM
+hand cannot be painted as three cards on one page and five on the other. The
+overhead placement path composes one hidden page, copies it to the other page,
+and presents the completed result; transition entry hides the selector, attack,
+and destruction sprite layers before any stream or view cut. The old `SUMMON`,
+result verdict, and title-return instructions are no longer emitted.
+
+SAVE GAME stays in its save picker phase: disk absence and write failure are
+messages in that phase, while B returns to the map. Human duel seeds combine
+the RTC when valid, the Z80 refresh register, frame timing, and input timing;
+debug, regression, and fixed-seed builds retain deterministic seeds. The
+regression ROM records these boundaries in the RAM probe rather than relying on
+an all-black screenshot or on an emulator process merely staying alive.
+
+Music is now banked PSG lVGM. `tools/msx2/gen_msx_audio.py` validates the
+AY-only VGM sources in `msx_music/`, runs `vgm_cmp -justtmr`, checks timed AY
+register events and rendered PCM, then invokes MSXzip with `--simplify
+--split 16K`. All seven current optimizer candidates were rejected because
+`vgm2wav` rendered their alternate long-wait encodings differently; the
+original recordings are therefore intentionally retained as the final lVGM
+inputs. The resident player maps one 16 KB segment per V-blank tick, handles
+segment and loop markers, applies the PSG buffer, and restores the code bank.
+The final openMSX trace reached the battle stream with valid segment progress,
+loop/error counters, and a valid probe checksum.
+
 ### Story mode
 
 `STORY MODE` from the title runs the whole thing:
@@ -319,6 +347,27 @@ completed all five story fights and entered the ending with `status OK` and
 The shipping path is separately exercised through real keyboard-matrix captures
 of the name-entry, visual-novel, map, deck-editor, and continue-code screens.
 
+### Final issue verification — 2026-09-04
+
+The final regression ROM was run with `/usr/local/bin/openmsx` 20.0-rc1, not
+the bundled broken headless Z80. The 20-second probe reported battle turn 4,
+`deal_target_mask=0x1F`, `deal_landed0=0x1F`, `deal_landed1=0x1F`, 44 page
+flips, three full-view streams, three blank pairs, music track 5 in segment
+487, decoder pointer 486, 792 audio ticks, zero loops/errors, and
+`checksum_ok=true`. The 60-second probe remained checksummed and advanced the
+same stream to pointer 4265 after 3,176 audio ticks. Both decoded PNG frames
+were non-black and `tools/msx2/compare_sequence.py` accepted the capture.
+
+The final regression link measured `_CODE=32,261`, segment 2 at 12,727 bytes,
+segment 3 at 2,174 bytes, and segment 4 at 9,374 bytes. The shipping link
+measured `_CODE=31,790`, segment 2 at 12,502 bytes, segment 3 at 2,480 bytes,
+and segment 4 at 9,361 bytes. The mapper check passed with
+`./msx2.sh neo-test`.
+
+This is emulator evidence only. Physical MSX2 verification of audio tempo and
+segment crossing, RTC entropy, selector/hand transitions, and floppy DSKIO is
+still pending; no physical-hardware result is inferred from the openMSX run.
+
 ---
 
 ## Build and verify
@@ -419,7 +468,7 @@ crash into a number instead of a black screen.
 | `waifu_msx2_s2_b0.c` | page-0 bank, segment 2: the duel screen |
 | `waifu_msx2_s3_b0.c` | page-0 bank, segment 3: the modal screens |
 | `waifu_msx2_s4_b0.c` | page-0 bank, segment 4: the story screens |
-| `msx2_audio.c/.h` | silent stubs that reserve the sound driver's 700 bytes of RAM |
+| `msx2_audio.c/.h`, `msx2_lvgm.c`, `msx2_psg.c` | resident V-blank PSG lVGM playback, bank seam, and probe counters |
 | `msx2_libc.c` | `time()`/`clock()` for the shared deck builder |
 | `compat/waifu_assets.h` | shim so `src/game/deck.c` compiles without the 5.3 MB asset header |
 | `project_config.js`, `msxgl_config.h` | MSXgl build configuration |
@@ -486,8 +535,11 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
    ROM, so the read and the write have never executed.  The password path
    remains the guaranteed persistence mechanism.
 
-4. **Sound is stubs.** `msx2_audio.c` records the requested track and reserves
-   700 bytes for the Arkos AKG + ayFX state, so the RAM is already spent.
+4. **Physical sound and SFX remain unverified.** The shipping build now plays
+   the seven PSG lVGM tracks in real openMSX, but no physical MSX2 audio test
+   has been run here. `Msx2_SfxPlay()` remains a queued placeholder and does
+   not yet synthesize the nine short effects; the music path is the completed
+   part of the issue-plan sound milestone.
 
 5. **Deck-editor UX is intentionally compact.** The plan's 5x4 paginated icon
    grid is reduced to a four-slot thumbnail row plus a one-card collection

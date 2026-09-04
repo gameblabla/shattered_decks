@@ -191,24 +191,24 @@ case "$CMD" in
 			TRACE_TCL="$TRACE_TCL$(cat <<EOF
 after time $TRACE_TIME {
     set f [open "$PWD/$TRACE_OUT/frame_${TRACE_TAG}.vram" w]
-    fconfigure \\\$f -translation binary
-    puts -nonewline \\\$f [debug read_block {physical VRAM} 0 131072]
-    close \\\$f
+    fconfigure \$f -translation binary
+    puts -nonewline \$f [debug read_block {physical VRAM} 0 131072]
+    close \$f
     set f [open "$PWD/$TRACE_OUT/frame_${TRACE_TAG}.sat" w]
-    fconfigure \\\$f -translation binary
-    puts -nonewline \\\$f [debug read_block {physical VRAM} 64000 128]
-    close \\\$f
+    fconfigure \$f -translation binary
+    puts -nonewline \$f [debug read_block {physical VRAM} 64000 128]
+    close \$f
     set f [open "$PWD/$TRACE_OUT/frame_${TRACE_TAG}.ram" w]
-    fconfigure \\\$f -translation binary
-    puts -nonewline \\\$f [debug read_block memory 0 65536]
-    close \\\$f
+    fconfigure \$f -translation binary
+    puts -nonewline \$f [debug read_block memory 0 65536]
+    close \$f
 }
 EOF
-)"
+)\n"
 			TRACE_INDEX=$((TRACE_INDEX + 1))
 		done
 		TRACE_TCL="$TRACE_TCL$(cat <<EOF
-after time [expr {max(1.0, [lindex [lsort -real [list $TRACE_TIMES]] end] + 0.25)}] { exit 0 }
+after time [expr {[lindex [lsort -real [list $TRACE_TIMES]] end] + 0.25}] { exit 0 }
 EOF
 )"
 		# shellcheck disable=SC2059
