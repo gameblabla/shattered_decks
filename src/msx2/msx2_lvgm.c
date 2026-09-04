@@ -10,6 +10,7 @@
 // so their code and the mapper seam are both safe in the ISR.
 
 #include "vgm/lvgm_player.h"
+#include "msx2_audio.h"
 
 const LVGM_Header* g_LVGM_Header;
 const u8* g_LVGM_Pointer;
@@ -116,17 +117,17 @@ void LVGM_Decode(void)
 			switch(*g_LVGM_Pointer)
 			{
 				case LVGM_OP_NOTIFY:
-					if(g_LVGM_Callback(*++g_LVGM_Pointer))
+					if(Msx2_LvgmNotify(*++g_LVGM_Pointer))
 						continue;
 					break;
 				case LVGM_OP_LOOP:
-					g_LVGM_Callback(LVGM_NOTIFY_LOOP_MARK);
+					Msx2_LvgmNotify(LVGM_NOTIFY_LOOP_MARK);
 					g_LVGM_LoopAddr = g_LVGM_Pointer + 1;
 					break;
 				case LVGM_OP_END:
 					if(g_LVGM_State & LVGM_STATE_LOOP)
 					{
-						g_LVGM_Callback(LVGM_NOTIFY_LOOP_JUMP);
+						Msx2_LvgmNotify(LVGM_NOTIFY_LOOP_JUMP);
 						g_LVGM_Pointer = g_LVGM_LoopAddr;
 						continue;
 					}

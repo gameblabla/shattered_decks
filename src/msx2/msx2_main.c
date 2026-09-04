@@ -96,17 +96,24 @@ void VDP_InterruptHandler(void)
 // the board for it.
 static void Msx2_DealDuel(u8 story)
 {
+	u8 track = (story == MSX2_STORY_FINAL_DUEL) ? MSX2_MUSIC_FINAL_BOSS
+	           : (story == MSX2_STORY_NONE) ? MSX2_MUSIC_BATTLE
+	           : MSX2_MUSIC_BOSS;
+
 	if(story != MSX2_STORY_NONE)
 		Msx2_StoryPrepareDuelDeck();
 	else
 		Msx2_DuelSetPlayerDeck(NULL, 0);
 	Msx2_DuelInit(Msx2_EntropyNextSeed(), story);
-	Msx2_MusicPlay((story == MSX2_STORY_FINAL_DUEL) ? MSX2_MUSIC_FINAL_BOSS
-	               : (story == MSX2_STORY_NONE) ? MSX2_MUSIC_BATTLE
-               : MSX2_MUSIC_BOSS);
+	// Board entry is a long, interruptible composition path.  Stop the previous
+	// track before it starts and queue the new track only after both pages are
+	// complete, so the resident ISR never remaps the audio window in the middle
+	// of the page-0 setup.
+	Msx2_MusicStop();
 	g_stat_steps = 0;
 	MSX2_STAGE(MSX2_STAGE_DUEL);
 	Msx2_BoardEnter(Msx2_BoardStageForStory(story));
+	Msx2_MusicPlay(track);
 	g_stat_scene = MSX2_SCENE_DUEL;
 	g_stat_menu_cursor = 0xFF;
 }

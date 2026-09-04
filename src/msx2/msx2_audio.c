@@ -38,7 +38,7 @@ static u16 g_music_frames;
 static u16 g_music_loops;
 #endif
 
-static bool Msx2_LvgmNotify(u8 id)
+bool Msx2_LvgmNotify(u8 id)
 {
 	if(id == LVGM_NOTIFY_SEG_END)
 	{

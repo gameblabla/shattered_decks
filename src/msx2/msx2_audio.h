@@ -47,6 +47,11 @@ void Msx2_SfxPlay(u8 sfx);
 void Msx2_AudioTick(void);   // called once per V-blank from the resident ISR
 u8   Msx2_MusicCurrent(void);
 
+// The resident lVGM parser calls this directly from the V-blank path.  Keep
+// the callback in fixed code; the generic function-pointer dispatch is not
+// safe while the music stream is mapped through the 0x8000 window.
+bool Msx2_LvgmNotify(u8 id);
+
 #ifdef MSX2_DEBUG_REGRESSION
 void Msx2_AudioRegressionStamp(void);
 #endif
