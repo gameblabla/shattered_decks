@@ -49,15 +49,102 @@ static void Msx2_RasterLoad(u8 card_index, u8 defense)
 //
 // One destination row: `n` bytes at the VDP's current write address, sampled
 // from `src` with a fractional step.  GRAPHIC 7 will not accept two data-port
-// writes closer than 32 T-states while the display is on, and this loop is
-// about sixty, so the stepping is free -- it happens inside the spacing the
-// hardware demands anyway.  That is the whole reason a live mapper costs no
-// more than replaying a baked program did.
+// writes closer than 32 T-states while the display is on, so 32 is the floor
+// this loop is written against and every T-state above it is wasted time.
+//
+// THERE ARE TWO OF THEM, AND THE FAST ONE IS THE POINT.
+//
+// The general walk below carries the source as a pointer plus a separate
+// fractional accumulator, which costs four register moves and a carry branch
+// per pixel -- about sixty T-states, nearly twice the floor.  The fast walk
+// carries the whole position in HL instead, with H the source address's LOW
+// byte and L the fraction, so ONE `add hl,bc` is the entire step, carry
+// included; the fetch is `ld e,h` / `ld a,(de)` with D holding the page.  That
+// works only while the source row stays inside one 256-byte page, which is a
+// property of where the row happens to land in g_tex -- true for about five
+// rows in six, and the general walk is what draws the sixth.
+//
+// A backward row needs no second loop: the step is simply negated, and
+// position + (-step) borrows out of the fraction into the address byte exactly
+// as the forward one carries.
+//
+// Sixteen pixels are unrolled with a computed entry (the run is entered part
+// way into the block so it ends on the last pixel), which leaves the loop
+// overhead at under three T-states a pixel.  The `nop` in the body is
+// deliberate: without it the body is 33 T-states and the hardware's floor is
+// 32, and one T-state is not a margin worth shipping to real machines.
 static const u8* g_dda_src;
 static u8 g_dda_n;
 static u8 g_dda_int;        // whole texels per destination pixel
 static u8 g_dda_frac;       // and the fraction, in 1/256ths
 static u8 g_dda_back;       // 1 when the row's texels run right to left
+
+// The fast walk's state.
+static u16 g_dda_pos;       // H = the source address's low byte, L = the fraction
+static u16 g_dda_step;      // 8.8 texels per pixel, negated for a backward row
+static u8  g_dda_hi;        // the page the source row lives in
+static u8  g_dda_grp;       // sixteen-pixel groups still to run
+
+#define DDA_UNROLL  16
+#define DDA_MAX_N   128     // the computed entry's arithmetic stays in a byte
+
+// One row, the fast way.  Every register is spoken for: HL is the position,
+// BC the step, D the page, E the scratch the fetch addresses through, A the
+// texel.  The group counter is therefore in memory -- 42 T-states once every
+// sixteen pixels, which is cheaper than anything that would free a register.
+static void Msx2_RasterRunFast(void)
+{
+	__asm
+		ld		a, (_g_dda_n)
+		or		a
+		ret		z
+		ld		c, a
+		add		a, #(DDA_UNROLL - 1)
+		rrca							// n + 15, then / 16 -- the low bits are
+		rrca							// zero-filled because n <= 128 keeps the
+		rrca							// sum inside a byte
+		rrca
+		and		#0x0F
+		ld		(_g_dda_grp), a
+		ld		a, c
+		and		#(DDA_UNROLL - 1)		// pixels in the short first group
+		neg
+		and		#(DDA_UNROLL - 1)		// bodies to skip
+		ld		l, a
+		ld		h, #0
+		add		hl, hl					// x2
+		ld		d, h
+		ld		e, l
+		add		hl, hl					// x4
+		add		hl, de					// x6 -- one body is six bytes
+		ld		de, #00210$
+		add		hl, de
+		push	hl						// the entry, taken by the ret below
+
+		ld		hl, (_g_dda_pos)
+		ld		bc, (_g_dda_step)
+		ld		a, (_g_dda_hi)
+		ld		d, a
+		ret
+
+		// Sixteen of these.  Six bytes and 37 T-states each; the assembler
+		// would happily let the block drift out of step with the arithmetic
+		// above, so nothing else may be inserted here.
+	00210$:
+		.rept	DDA_UNROLL
+		ld		e, h
+		ld		a, (de)
+		out		(#0x98), a
+		add		hl, bc
+		nop
+		.endm
+
+		ld		a, (_g_dda_grp)
+		dec		a
+		ld		(_g_dda_grp), a
+		jr		nz, 00210$
+	__endasm;
+}
 
 static void Msx2_RasterRun(void)
 {
@@ -196,25 +283,27 @@ static void Msx2_RasterDraw(u8 defense)
 		u16 width;
 		u16 step;
 		u8 x0;
+		const u8* rowbase;
 
 		if(row < 0)
 			row = 0;
 		else if(row >= (i16)tex_h)
 			row = (i16)(tex_h - 1);
 
+		rowbase = &g_tex[(u16)row * tex_w];
 		if(xr >= xl)
 		{
 			x0 = xl;
 			width = (u16)((u16)(xr - xl) + 1);
 			g_dda_back = 0;
-			g_dda_src = &g_tex[(u16)row * tex_w];
+			g_dda_src = rowbase;
 		}
 		else
 		{
 			x0 = xr;
 			width = (u16)((u16)(xl - xr) + 1);
 			g_dda_back = 1;
-			g_dda_src = &g_tex[(u16)row * tex_w + (tex_w - 1)];
+			g_dda_src = rowbase + (tex_w - 1);
 		}
 
 		// A row is written straight at the data port, so a run that reaches
@@ -228,12 +317,31 @@ static void Msx2_RasterDraw(u8 defense)
 		// narrower than the card in every chair view, so this is nearly always
 		// a minification and the fractional part carries it.
 		step = (u16)(((u16)tex_w << 8) / width);
-		g_dda_int = (u8)(step >> 8);
-		g_dda_frac = (u8)step;
 		g_dda_n = (u8)width;
 
 		Msx2_PokeAt(x0, y);
-		Msx2_RasterRun();
+		// Which walk this row gets is decided by where the row happens to sit
+		// in g_tex: the fast one keeps the source address's low byte in a
+		// register half and cannot carry into the page.
+		// A row wider than the texture is magnifying it, and the last pixel of
+		// such a run can step one texel off the end -- where the two walks
+		// disagree about the page byte.  It cannot happen with a projected
+		// slot (every one of them is narrower than the card), and the general
+		// walk keeps whatever it always did there.
+		if((width <= (u16)tex_w) && (width <= DDA_MAX_N) &&
+		   ((((u16)rowbase & 0x00FFu) + tex_w) <= 256u))
+		{
+			g_dda_hi = (u8)((u16)rowbase >> 8);
+			g_dda_pos = (u16)((((u16)g_dda_src & 0x00FFu) << 8) | 0x0080u);
+			g_dda_step = g_dda_back ? (u16)(0u - step) : step;
+			Msx2_RasterRunFast();
+		}
+		else
+		{
+			g_dda_int = (u8)(step >> 8);
+			g_dda_frac = (u8)step;
+			Msx2_RasterRun();
+		}
 
 		g_lx = (i16)(g_lx + g_ldx);
 		g_rx = (i16)(g_rx + g_rdx);
