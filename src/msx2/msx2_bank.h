@@ -34,6 +34,8 @@
 #define MSX2_BANK0_MODAL  3   // modal screens        (waifu_msx2_s3_b0.c)
 #define MSX2_BANK0_STORY  4   // the story screens    (waifu_msx2_s4_b0.c)
 
+void Msx2_VideoBakeFont_In(void);
+
 // Map `segment` at 0x0000 and return whatever was there, for Msx2_Bank0Leave.
 u16  Msx2_Bank0Enter(u16 segment);
 void Msx2_Bank0Leave(u16 segment);

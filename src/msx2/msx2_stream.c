@@ -315,8 +315,14 @@ void Msx2_PokeBlock(const u8* src, u8 n)
 
 void Msx2_PokeAt(u8 x, u8 y)
 {
-	u16 line = (u16)y + ((u16)Msx2_VideoGetDrawPage() << 8);
+	Msx2_PokeAtLine(x, (u16)((u16)y + ((u16)Msx2_VideoGetDrawPage() << 8)));
+}
 
+// The same address set-up against an absolute VRAM line, which is how the
+// offscreen rows above the visible page -- where the font mask lives -- are
+// written without pretending they belong to a draw page.
+void Msx2_PokeAtLine(u8 x, u16 line)
+{
 	VDP_CommandWait();
 	g_blit_r14 = (u8)(line >> 6);
 	g_blit_lo = x;

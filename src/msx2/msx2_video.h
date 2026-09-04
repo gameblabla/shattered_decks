@@ -50,6 +50,22 @@ void Msx2_VideoInit(void);
 void Msx2_VideoLoadFont(void);
 extern u8 g_msx2_font[];
 
+// ── The font mask ────────────────────────────────────────────────────────────
+//
+// A string is drawn by the command engine out of a mask baked into VRAM once
+// (msx2_video.c explains the arithmetic).  It lives in page 1's lines 240..255,
+// the one part of VRAM nothing else can want: page 0's same lines are the
+// sprite tables, Msx2_VideoCopyPage stops at 240, and so does Msx2_ClearPage.
+#define MSX2_TEXT_MAX_CHARS   42
+#define MSX2_FONT_MASK_LINE   496   // page 1 (256) + MSX2_SPRITE_VRAM_ROW
+#define MSX2_FONT_MASK_COLS   MSX2_TEXT_MAX_CHARS   // glyphs a band, 42*6 = 252
+#define MSX2_FONT_GLYPHS      64    // MSX2_FONT_BYTES / MSX2_FONT_H_PX
+
+// Expand the glyphs into those lines.  Msx2_VideoInit() calls it; nothing may
+// print before it has run.  The body is banked (msx2_video_bank.c) because
+// _CODE has no room for a routine that runs once.
+void Msx2_VideoBakeFont(void);
+
 // ── Presentation ─────────────────────────────────────────────────────────────
 //
 // NOTHING IS EVER DRAWN ON THE PAGE THE VDP IS SCANNING OUT.  128 KB of VRAM is

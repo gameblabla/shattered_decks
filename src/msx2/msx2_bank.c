@@ -7,6 +7,7 @@
 #include "msx2_story.h"
 #include "msx2_board.h"
 #include "msx2_probe.h"
+#include "msx2_video.h"
 
 // NEO-16's page-0 bank register.  Writing a 16-bit segment number to it maps
 // that segment at 0x0000; the address itself is ROM, so the write only ever
@@ -80,6 +81,13 @@ void Msx2_Bank2Leave(u16 segment)
 // bank it displaced rather than assuming one, so a modal screen opened from
 // the story lands back in the story and one opened from the duel lands back in
 // the duel.
+
+void Msx2_VideoBakeFont(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	Msx2_VideoBakeFont_In();
+	Msx2_Bank0Leave(back);
+}
 
 void Msx2_CardCheckCompose(u8 card, i16 atk, i16 def)
 {

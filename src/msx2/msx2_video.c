@@ -32,13 +32,11 @@ void Msx2_VideoLoadFont(void)
 // frames, so every cursor move in the hand cost a third of a second before the
 // bracket followed it, twice over because both pages owe the repaint.
 //
-// A glyph is 6x8 bytes of flat colour in GRAPHIC 7, which is exactly what the
-// streamer's own padded write loop already moves.  So a string is built one
-// scanline at a time into a RAM row -- the whole string, not one character --
-// and each row goes out as a single set-address plus block write.  That is five
-// times faster, and it drops MSXgl's print module from the link entirely.
-#define MSX2_TEXT_MAX_CHARS  42
-static u8 g_text_row[MSX2_TEXT_MAX_CHARS * MSX2_FONT_W_PX];
+// This one is below, and it is the command engine again -- but copying a mask
+// that is already in VRAM instead of pushing pixels through the port.
+// R#32..R#46 in the order the indirect port takes them: SX, SY, DX, DY, NX, NY,
+// CLR, ARG, CMD.  One array, one `otir`, one command.
+static u8 g_cmd[15];
 
 static u8 g_draw_page;
 static u8 g_show_page;
@@ -61,6 +59,20 @@ void Msx2_VideoInit(void)
 	g_draw_page = MSX2_PAGE_0;
 	Msx2_ClearPage(MSX2_BLACK);
 	Msx2_VideoShowPage(MSX2_PAGE_0);
+
+	// The command fields that never vary: nothing a string draws is ever
+	// taller than a glyph, wider than a screen, or drawn right to left.
+	g_cmd[1] = 0;                       // the mask never starts past column 255
+	g_cmd[3] = (u8)(MSX2_FONT_MASK_LINE >> 8);
+	g_cmd[5] = 0;
+	g_cmd[9] = 0;
+	g_cmd[10] = MSX2_FONT_H_PX;
+	g_cmd[11] = 0;
+	g_cmd[13] = 0;
+
+	// After the clears, because the mask lives above the lines they touch and
+	// before anything prints, because every string is a copy out of it.
+	Msx2_VideoBakeFont();
 }
 
 void Msx2_VideoShowPage(u8 page)
@@ -133,11 +145,15 @@ void Msx2_Fill(u8 x, u8 y, u16 w, u8 h, u8 color)
 
 void Msx2_ClearPage(u8 color)
 {
-	// Clear all 256 lines of the page, not just the 212 displayed: the
-	// offscreen strip is where the font and card caches will live, and leaving
-	// boot garbage there makes later bugs unreadable.
+	// Clear the offscreen strip as well as the 212 displayed lines -- it is
+	// where the card caches live, and leaving boot garbage there makes later
+	// bugs unreadable -- but STOP AT LINE 240.  Above it are page 0's sprite
+	// tables and page 1's baked font mask, neither of which belongs to a
+	// screen: a story transition clearing its page would otherwise erase every
+	// glyph the text writer owns and print blank rectangles from then on.
 	VDP_CommandWait();
-	VDP_CommandHMMV(0, g_draw_page ? 256u : 0u, MSX2_SCREEN_W, 256, color);
+	VDP_CommandHMMV(0, g_draw_page ? 256u : 0u, MSX2_SCREEN_W,
+	                MSX2_SPRITE_VRAM_ROW, color);
 }
 
 void Msx2_FrameRect(u8 x, u8 y, u16 w, u8 h, u8 color)
@@ -238,15 +254,91 @@ void Msx2_TextColor(u8 fg, u8 bg)
 	g_text_bg = bg;
 }
 
-// One string, on the draw page, a scanline at a time.  Msx2_PokeAt() sets the
-// VDP write address for (x, y) on whichever page is being drawn -- the same
-// call the card streamer uses -- and Msx2_PokeBlock() pushes the row out with
-// the padding GRAPHIC 7 needs while the display is on.
+// ── The font mask, and the three commands a string costs ─────────────────────
+//
+// The row-at-a-time writer above this one was five times faster than MSXgl's
+// per-character HMMC, and it was still the single most expensive thing the game
+// did: a sampling profile of a duel put 22% of the whole machine inside
+// Msx2_TextAt, at 44 ms a string.  The reason is that GRAPHIC 7 makes a glyph
+// forty-eight BYTES -- the Z80 expanded every one of them from a bitmap and then
+// pushed it through the data port at the 32 T-states a byte the VDP demands
+// while it is scanning out, so a line of text was a hundred thousand T-states
+// of pure byte-shovelling.
+//
+// The command engine can move those bytes on its own, and it is four times
+// faster at it -- but only if the pixels already exist in VRAM.  So the font is
+// BAKED ONCE into the sixteen offscreen lines above page 1, as a MASK: 0xFF
+// where the glyph has ink and 0x00 where it does not.  Colour is then pure
+// arithmetic on the destination, and it is exact for any pair of colours:
+//
+//     dest = bg XOR (mask AND (fg XOR bg))
+//
+// which is one LMMV to lay down fg^bg over the whole string, one LMMM an
+// AND per character, and one LMMV to XOR bg back over it.  The CPU writes
+// fifteen bytes a command and never touches a pixel; a twenty-character string
+// went from 22 ms to under 3, and the command engine does most of that while
+// the Z80 has already moved on.
+//
+// Page 1's lines 240..255 are the one part of VRAM nothing else can want: the
+// sprite tables live at the same lines of page 0 (0xF000 up), Msx2_VideoCopyPage
+// stops at 240, and Msx2_ClearPage stops there too so a screen change cannot
+// wipe the font out from under the writer.
+
+// The CE poll and the register burst, with the same debt to S#0 the polygon
+// filler pays: the interrupt handler reads whatever R#15 selects, so S#2 may
+// never outlive the DI window that selected it.
+static void Msx2_CmdOut(void)
+{
+	__asm
+		di
+		ld		a, #2
+		out		(#0x99), a
+		ld		a, #(15 | 0x80)
+		out		(#0x99), a
+	00060$:
+		in		a, (#0x99)
+		rra								// S#2 bit 0 = CE
+		jr		c, 00060$
+		xor		a
+		out		(#0x99), a
+		ld		a, #(15 | 0x80)
+		out		(#0x99), a
+
+		ld		a, #32					// R#17 -> R#32, autoincrementing
+		out		(#0x99), a
+		ld		a, #(17 | 0x80)
+		out		(#0x99), a
+		ld		hl, #_g_cmd
+		ld		c, #0x9B
+		ld		b, #15
+		otir
+		ei
+	__endasm;
+}
+
+// Only four of the fifteen registers change between the three commands a
+// string costs: the destination x, the width, the colour and the command
+// itself.  The rest -- the high halves that are always zero, the eight-line
+// height, the source, the destination line -- are written by the caller once
+// per string or once at boot, which is the difference between a call SDCC has
+// to push six arguments for and one it does not.
+static void Msx2_CmdRect(u8 dx, u8 nx, u8 color, u8 cmd)
+{
+	g_cmd[4] = dx;
+	g_cmd[8] = nx;
+	g_cmd[12] = color;
+	g_cmd[14] = cmd;
+	Msx2_CmdOut();
+}
+
+// One string, on the draw page: fg^bg down, the glyphs ANDed over it, bg XORed
+// back.  Everything after the character count is the command engine's.
 void Msx2_TextAt(u8 x, u8 y, const c8* text)
 {
-	const u8* patterns = g_msx2_font;
-	u8 n = 0;
-	u8 row;
+	u8  n = 0;
+	u8  i;
+	u8  dx;
+	u16 line;
 
 	// Clip to the screen by whole characters: a glyph running off the right
 	// edge would wrap onto the next scanline, which is worse than losing it.
@@ -256,22 +348,36 @@ void Msx2_TextAt(u8 x, u8 y, const c8* text)
 	if(n == 0)
 		return;
 
-	VDP_CommandWait();
-	for(row = 0; row < MSX2_FONT_H_PX; ++row)
+	line = (u16)y + ((u16)Msx2_VideoGetDrawPage() << 8);
+	g_cmd[6] = (u8)line;
+	g_cmd[7] = (u8)(line >> 8);
+	// The first pass has nothing to combine with, so it goes through the
+	// byte-mode fill rather than the logical one -- same registers, and the
+	// command engine paints it half again as fast.
+	Msx2_CmdRect(x, (u8)(n * MSX2_FONT_W_PX),
+	             (u8)(g_text_fg ^ g_text_bg), VDP_CMD_HMMV);
+
+	dx = x;
+	for(i = 0; i < n; ++i)
 	{
-		u8* d = g_text_row;
-		u8 i;
-		for(i = 0; i < n; ++i)
+		u8 g = (u8)((u8)text[i] - MSX2_FONT_FIRST);
+		u8 sy = (u8)MSX2_FONT_MASK_LINE;
+
+		if(g >= MSX2_FONT_GLYPHS)
+			g = 0;                       // anything unprintable prints as space
+		if(g >= MSX2_FONT_MASK_COLS)
 		{
-			u8 bits = patterns[(u16)((u8)text[i] - MSX2_FONT_FIRST)
-			                   * MSX2_FONT_H_PX + row];
-			u8 c;
-			for(c = 0; c < MSX2_FONT_W_PX; ++c)
-				*d++ = (bits & (u8)(0x80 >> c)) ? g_text_fg : g_text_bg;
+			g = (u8)(g - MSX2_FONT_MASK_COLS);
+			sy = (u8)(MSX2_FONT_MASK_LINE + MSX2_FONT_H_PX);
 		}
-		Msx2_PokeAt(x, (u8)(y + row));
-		Msx2_PokeBlock(g_text_row, (u8)(n * MSX2_FONT_W_PX));
+		g_cmd[0] = (u8)(g * MSX2_FONT_W_PX);
+		g_cmd[2] = sy;
+		Msx2_CmdRect(dx, MSX2_FONT_W_PX, 0, VDP_CMD_LMMM | VDP_OP_AND);
+		dx = (u8)(dx + MSX2_FONT_W_PX);
 	}
+
+	Msx2_CmdRect(x, (u8)(n * MSX2_FONT_W_PX), g_text_bg,
+	             VDP_CMD_LMMV | VDP_OP_XOR);
 }
 
 u8 Msx2_TextWidth(const c8* text)

@@ -14,5 +14,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msx2_screens.c"
+#include "msx2_video_bank.c"
 #include "msx2_probe_bank.c"
 #include "msx2_entropy_bank.c"
