@@ -363,14 +363,20 @@ same stream to pointer 4265 after 3,176 audio ticks. Both decoded PNG frames
 were non-black and `tools/msx2/compare_sequence.py` accepted the capture.
 
 The final regression link measured `_CODE=32,253`, segment 2 at 12,727 bytes,
-segment 3 at 2,174 bytes, and segment 4 at 9,374 bytes. The shipping link
-measured `_CODE=31,782`, segment 2 at 12,502 bytes, segment 3 at 2,480 bytes,
+segment 3 at 2,671 bytes, and segment 4 at 9,374 bytes. The shipping link
+measured `_CODE=31,782`, segment 2 at 12,502 bytes, segment 3 at 2,977 bytes,
 and segment 4 at 9,361 bytes. The mapper check passed with
 `./msx2.sh neo-test`.
 
 This is emulator evidence only. Physical MSX2 verification of audio tempo and
 segment crossing, RTC entropy, selector/hand transitions, and floppy DSKIO is
 still pending; no physical-hardware result is inferred from the openMSX run.
+
+After the diagnostic pass was removed, the clean shipping-source soak was run
+again with `./msx2.sh verify --seconds 300`. Real openMSX ended with `status OK`,
+one completed duel (`duels done 1`, player 1 / COM 0), turn 10, and 1,234
+current-duel steps; the mapper check passed in the same run. The soak ROM was
+then replaced by the shipping build before the final title capture.
 
 ---
 
