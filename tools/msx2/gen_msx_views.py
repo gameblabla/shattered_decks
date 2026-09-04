@@ -8,17 +8,10 @@ a grid of upright rectangles.  Nothing here draws an arena.  The capture comes
 from `--dump-msx2-views` in `src/main.c`, which renders `render_board()` at the
 authored MSX2 poses and prints the projected corner list for every field slot.
 
-Three things come out:
-
-  * `board_view_<stage>.bin` -- the 256x212 resting picture: the captured board,
-    the same black surround as PC-FX, and the three baked UI panels.
-    One per story stage.
-  * `board_move_<stage>_<move>.bin` -- §4.6's baked camera move: a strip of whole
-    pictures of the board band, played back in order by the ordinary streamer.
-    No codec, no reconstruction; that is the entire technique.
-  * `card_spans.bin` -- §8.4's Tier A span programs.  For each (pose, slot) an
-    offline rasterisation of the card texture into the projected quad, expressed
-    as run lengths so the Z80 replays it with block I/O and no arithmetic.
+The output is one compact pose stream. Each record contains the projected arena
+mesh and the upright and defence quads for all twenty field slots. The Z80
+fills that mesh and maps live card textures into those quads; no board picture,
+camera strip, restore tile, or card span program is baked into the ROM.
 
 `gen_msx_scenes.py` imports this module so the cartridge segment map stays
 owned by one tool; running this file directly bakes the same outputs and prints
@@ -699,8 +692,8 @@ def bake_spans(cap, tags):
 # the Z80 pushed those bytes at the VDP data port at 32 T-states each.  The
 # V9938's command engine fills a flat rectangle at 8 T-states a byte and leaves
 # the CPU free while it does it, so the arena is now DRAWN: the cartridge
-# carries the projected mesh (157 bytes a pose) and the flat colours the capture
-# measures, and the Z80 issues one HMMV per scanline of every tile.
+# carries a 512-byte pose record (mesh plus all card quads) and the flat colours
+# the capture measures, and the Z80 issues one HMMV per scanline of every tile.
 #
 # The mesh is projected HERE, by the game's own renderer, and not on the Z80.
 # That is the same rule as the card quads: MSX2_PORT_PLAN.md §4.3 wants the MSX2
@@ -857,62 +850,23 @@ def board_colors(cap):
 
 
 def bake(quiet=False, capture=True):
-    """Everything this module owns, as blobs plus the numbers the header needs."""
+    """The live arena mesh plus the small retained-view geometry tables."""
     cap = run_capture(quiet) if capture else read_capture()
     # The overhead view is authored, not captured, so its quads are put into
-    # the capture here and every consumer below -- rings, empty-slot tiles,
-    # span programs, the generated geometry tables -- treats it as one more
-    # pose.  That is the point: there is still exactly one definition of where
-    # a card goes in a view.
+    # the capture here and every geometry consumer treats it as one more pose.
+    # There is still exactly one definition of where a card goes in a view.
     cap.poses["OVER"] = over_quads()
     view_tags = ("TOP", "COM", "OVER")
-    views = {tag: [] for tag in view_tags}
-    slots = bytearray()
-    moves = {name: bytearray() for name, _n in cap.moves}
-    # Geometry does not change with the stage tint.  Keep one box list per
-    # camera view.
-    #
-    # ONE SLOT BLOB FOR ALL FOUR STAGES.  It used to carry a stage/view copy on
-    # the grounds that a slot tile is cut from the captured stage IMAGE and so
-    # follows the tint.  There is no tint: backdrop() ignores the stage and
-    # every stage builds the same ungraded arena on the same black surround, so
-    # the four copies were byte-for-byte identical -- 480 KB of cartridge for
-    # one picture.  Doubling the slot count to take in the two support rows
-    # would have made that 960 KB, which does not fit at all; deduplicating
-    # instead makes the whole change SMALLER than what was there before.  If a
-    # stage ever really does grade the arena, this loop is where the stage index
-    # comes back.
-    boxes = {tag: None for tag in view_tags}
+    boxes = {}
     for tag in view_tags:
         quads = cap.poses[tag]
         over = (tag == "OVER")
         bottom = (HAND_BAND_Y + HAND_BAND_H) if over else (BAND_Y + BAND_H)
-        data = grb.quantize(build_view(cap, 0, tag), (WIDTH, HEIGHT))
-        tiles, stage_boxes = cut_slot_tiles(data, quads, bottom,
-                                            0.0 if over else SLOT_PAD,
-                                            OVER_DEF_PADX if over else 0.0)
-        slots += tiles
-        boxes[tag] = stage_boxes
-    for stage in range(BOARD_STAGES):
-        for tag in view_tags:
-            data = grb.quantize(build_view(cap, stage, tag), (WIDTH, HEIGHT))
-            views[tag].append(pad_segments(data))
-        for name, poses in cap.moves:
-            moves[name] += build_move_strip(cap, stage, name, poses)
-        if not quiet:
-            print("BOARD_%-8s %d views x %d bytes"
-                  % (STAGE_NAMES[stage], len(view_tags), WIDTH * HEIGHT))
-    if not quiet:
-        print("SLOTS    %d views x %d tiles, shared by every stage"
-              % (len(view_tags), FIELD_SLOTS))
-
-    spans, span_off, span_def_off, span_max = bake_spans(cap, list(view_tags))
-    if not quiet:
-        print("SPANS    %d programs -> %d bytes (longest %d B)"
-              % (len(span_off), len(spans), span_max))
-        for name, poses in cap.moves:
-            print("MOVE_%-8s %d poses x %d rows -> %d bytes"
-                  % (name, poses, BAND_H, len(moves[name])))
+        pad = 0.0 if over else SLOT_PAD
+        padx = OVER_DEF_PADX if over else 0.0
+        boxes[tag] = [tuple((x0, y0, x1 - x0, y1 - y0))
+                      for x0, y0, x1, y1 in
+                      (quad_box(q, bottom, pad, padx) for q in quads)]
 
     mesh = board_mesh_blob(cap)
     colors = board_colors(cap)
@@ -924,26 +878,13 @@ def bake(quiet=False, capture=True):
         "mesh": mesh,
         "mesh_tags": mesh_pose_tags(cap),
         "colors": colors,
-        # Runtime addressing interleaves camera views inside each stage:
-        # stage 0 TOP, stage 0 COM, stage 1 TOP, stage 1 COM, ... .  Keep the
-        # flattened blob in that same order; grouping by tag here would make
-        # MSX2_VIEW_SEGMENT(stage, view) select the wrong arena tint.
-        "views": [views[tag][stage]
-                  for stage in range(BOARD_STAGES)
-                  for tag in view_tags],
         "view_tags": view_tags,
-        "slots": bytes(slots),
         "slot_boxes": boxes,
-        "moves": [(name, poses, bytes(moves[name])) for name, poses in cap.moves],
-        "spans": spans,
-        "span_offsets": span_off,
-        "span_def_offsets": span_def_off,
-        "span_max": span_max,
-        "quads": {tag: cap.poses[tag] for tag in view_tags},
+        "moves": list(cap.moves),
     }
 
 
-def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
+def header_lines(baked, mesh_seg):
     """The generated constants.  Emitted from here so the board's geometry has
     exactly one definition and `msx2_board.c` cannot drift from the capture."""
     out = []
@@ -961,7 +902,7 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     a("#define MSX2_OVER_Y            %d" % OVER_Y)
     a("#define MSX2_OVER_H            %d" % OVER_H)
     a("// A card on the overhead board is a rectangle copy at its own baked")
-    a("// size, not a span program: the slots are axis-aligned there.")
+    a("// size; the slots are axis-aligned there.")
     a("// The table's own grid, so the overhead view can be DRAWN as flat")
     a("// rectangles rather than streamed as a picture of one.")
     a("#define MSX2_OVER_TILE_X0      %d" % OVER_TILE_X0)
@@ -975,20 +916,12 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     a("#define MSX2_OVER_CARD_W       %d" % OVER_CARD_W)
     a("#define MSX2_OVER_CARD_H       %d" % OVER_CARD_H)
     a("#define MSX2_BOARD_VIEWS       %d" % len(baked["view_tags"]))
-    a("#define MSX2_VIEW_SEGMENT(stage, view)  (%d + (((stage) * MSX2_BOARD_VIEWS + (view)) * MSX2_SCENE_SEG_SPAN))" % view_seg)
-    a("#define MSX2_VIEW_STAGES        %d" %
-      (len(baked["views"]) // len(baked["view_tags"])))
     a("#define MSX2_BAND_Y             %d" % BAND_Y)
     a("#define MSX2_BAND_H             %d" % BAND_H)
     a("#define MSX2_HUD_H              %d" % HUD_H)
     a("#define MSX2_HAND_BAND_Y        %d" % HAND_BAND_Y)
     a("#define MSX2_HAND_BAND_H        %d" % HAND_BAND_H)
     a("#define MSX2_INFO_Y             %d" % INFO_Y)
-    a("// A card in DEFENCE position is inscribed in its slot: the full width,")
-    a("// DEF_FIT of the height, centred.  This is the inset at each end, in")
-    a("// 1/256ths of the slot's own height, so the runtime mapper cuts exactly")
-    a("// the footprint the baked programs used to.")
-    a("#define MSX2_DEF_INSET          %d" % int(round((1.0 - DEF_FIT) / 2.0 * 256)))
     a("#define MSX2_CARD_W             %d" % CARD_W)
     a("#define MSX2_CARD_H             %d" % CARD_H)
     a("#define MSX2_HAND_X0            %d" % HAND_X0)
@@ -1008,32 +941,6 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     a("// The box a slot's ring and card occupy: what an empty slot restores, and")
     a("// what a repaint has to cover.")
     a("extern const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4];")
-    a("")
-    a("// ── §8.4 Tier A span programs ─────────────────────────────────────────")
-    a("// One offline rasterisation of the card texture into each slot's quad,")
-    a("// as run lengths.  The Z80 replays it with block I/O and does no")
-    a("// arithmetic at all; that is what makes fifteen perspective cards")
-    a("// affordable on a 3.58 MHz machine.")
-    a("#define MSX2_SPAN_SEGMENT       %d" % span_seg)
-    a("#define MSX2_SPAN_STRIDE        %d" % SPAN_STRIDE)
-    a("#define MSX2_SPAN_PER_SEG       %d" % (SEGMENT_BYTES // SPAN_STRIDE))
-    a("#define MSX2_SPAN_MAX           %d" % baked["span_max"])
-    a("#define MSX2_OP_COPY            0x%02X" % OP_COPY)
-    a("#define MSX2_OP_DUP             0x%02X" % OP_DUP)
-    a("#define MSX2_OP_SKIP            0x%02X" % OP_SKIP)
-    a("#define MSX2_OP_ADV             0x%02X" % OP_ADV)
-    a("#define MSX2_OP_ENDROW          0x%02X" % OP_ENDROW)
-    a("#define MSX2_OP_END             0x%02X" % OP_END)
-    a("#define MSX2_OP_RUN_MASK        0x%02X" % OP_MAX_RUN)
-    a("")
-    a("// ── Empty-slot tiles ──────────────────────────────────────────────────")
-    a("// One set for every stage: the arena is ungraded, so the four stages cut")
-    a("// the same pixels and the blob carried four identical copies of them.")
-    a("#define MSX2_SLOT_ART_SEGMENT   %d" % slot_seg)
-    a("#define MSX2_SLOT_ART_STRIDE    %d" % SLOT_STRIDE)
-    a("#define MSX2_SLOT_ART_PER_SEG   %d" % (16384 // SLOT_STRIDE))
-    a("#define MSX2_SLOT_ART_PER_VIEW  %d" % FIELD_SLOTS)
-    a("#define MSX2_SLOT_ART_VIEWS     %d" % len(baked["view_tags"]))
     a("")
     a("// ── The live board: geometry, not a picture ───────────────────────────")
     a("// docs/MSX2_REALTIME_POLYGON_FINDINGS.md: the V9938 fills a flat")
@@ -1062,9 +969,10 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     for i, tag in enumerate(baked["mesh_tags"]):
         if tag in ("TOP", "COM"):
             a("#define MSX2_MESH_POSE_%-9s %d" % (tag, i))
-    for name, poses, _blob in baked["moves"]:
+    for name, poses in baked["moves"]:
         first = baked["mesh_tags"].index("MOVE_%s_0" % name)
         a("#define MSX2_MESH_POSE_%s(pose)  (%d + (pose))" % (name, first))
+        a("#define MSX2_MOVE_%s_POSES        %d" % (name, poses))
     a("// The arena's own colours, measured off the capture: a texture the MSX2")
     a("// cannot afford is honestly stood in for by its average.")
     c = baked["colors"]
@@ -1073,24 +981,11 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     a("#define MSX2_BOARD_WALL_Z       0x%02X   // the long facing wall" % grb.pack(*c["wall_z"]))
     a("#define MSX2_BOARD_WALL_X       0x%02X   // the side lip" % grb.pack(*c["wall_x"]))
     a("")
-    a("// ── §4.6 baked camera moves ───────────────────────────────────────────")
-    a("// A strip of whole pictures of the board band, streamed one after the")
-    a("// next by the ordinary §6.2 path.  There is no codec and no decoder: at")
-    a("// 29 T-states a byte a band pose is about twelve video frames, so a move")
-    a("// is a held cinematic push and the art is authored for that (§4.6.2).")
-    a("#define MSX2_MOVE_POSE_BYTES    %d" % (WIDTH * BAND_H))
-    a("#define MSX2_MOVE_POSE_SEGS     %d"
-      % ((WIDTH * BAND_H + 16383) // 16384))
-    for (name, poses, _blob), seg in zip(baked["moves"], move_segs):
-        a("#define MSX2_MOVE_%s_SEGMENT(stage)  (%d + (stage) * %d * MSX2_MOVE_POSE_SEGS)"
-          % (name, seg, poses))
-        a("#define MSX2_MOVE_%s_POSES    %d" % (name, poses))
-    a("")
     return out
 
 
 def data_lines(baked):
-    """The definitions of the four geometry tables declared in the header.
+    """Definitions of the two small retained-view tables in the header.
 
     They live in their own generated file so that exactly one translation unit
     (msx2_cards.c) carries them: a `static const` in a header that a dozen files
@@ -1121,9 +1016,8 @@ def main():
     quiet = "--quiet" in sys.argv
     os.makedirs(ASSET_DIR, exist_ok=True)
     baked = bake(quiet)
-    total = sum(len(v) for v in baked["views"]) + len(baked["slots"]) + \
-        len(baked["spans"]) + sum(len(b) for _n, _p, b in baked["moves"])
-    print("board assets: %d bytes (%d KB)" % (total, total // 1024))
+    total = len(baked["mesh"])
+    print("board pose stream: %d bytes (%d KB)" % (total, total // 1024))
 
 
 if __name__ == "__main__":

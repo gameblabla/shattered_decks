@@ -2,9 +2,9 @@
 //  msx2_board.h — the duel screen
 //
 //  The duel is played on the game's own 3D arena (MSX2_PORT_PLAN.md §0.3.1).
-//  The picture is captured out of `waifu_fm_headless` at an authored MSX2 pose
-//  and streamed from the cartridge; the twenty field cards are drawn into their
-//  TRUE projected quads by the §8 span rasterizer, so they lie on a board that
+//  Its authored mesh is captured out of `waifu_fm_headless`; the Z80 draws it
+//  live, and the twenty field cards are mapped into their TRUE projected quads
+//  by the affine rasterizer, so they lie on a board that
 //  recedes away from the player rather than standing in a grid of upright
 //  rectangles.  Nothing about the arena is re-imagined here: the floor, the
 //  slab sides, the perspective and the slot layout are whatever the other five
@@ -16,10 +16,9 @@
 //  on every target, so it stays a row of five axis-aligned card blits -- which
 //  also keeps the cards a player is choosing between at a readable size.
 //
-//  A duel opens on §4.6's baked camera move: sixteen samples of the shared
-//  PC-FX/headless opening arc. Each is completed on the hidden page and flipped
-//  in V-blank; the last pose IS the resting player-chair view.
-//  There is no codec and no decoder anywhere in the port.
+//  A duel opens along sixteen samples of the shared PC-FX/headless arc. Each
+//  pose draws the arena and every occupied card on the hidden page before the
+//  V-blank flip; the last pose IS the resting player-chair view.
 //
 //  Both pages are tracked separately.  A partial repaint reaches only the page
 //  it was drawn on, so this file remembers what each page is showing and paints
@@ -35,9 +34,7 @@
 #define MSX2_BOARD_WIN    0
 #define MSX2_BOARD_LOSE   1
 
-// Which copy of the captured arena to use. Four story-stage entries remain in
-// the ROM layout, but all use the PC-FX black surround and identical ungraded
-// arena geometry.
+// Which authored view of the live arena to use.
 u8 Msx2_BoardStageForStory(u8 story_duel_index);
 
 // Compose the whole screen on the hidden page and show it, after playing the

@@ -45,8 +45,7 @@ AUDIO_SRC    := $(wildcard msx_music/*.vgm)
 VGM_TOOL_SRC := FMTOWNSCD_EXAMPLE_Cube/vgmtools/CMakeLists.txt \
                 FMTOWNSCD_EXAMPLE_Cube/vgmtools/vgm_cmp.c
 SCENE_BINS   := $(PROJ_DIR)/assets/title.bin $(PROJ_DIR)/assets/ending.bin \
-                $(PROJ_DIR)/assets/board_views.bin \
-                $(PROJ_DIR)/assets/card_spans.bin
+                $(PROJ_DIR)/assets/board_mesh.bin
 SCENE_SRC    := assets/source/title/title256_msx2.png \
                 assets/source/ending/ending256x212.png
 

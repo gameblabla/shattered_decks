@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  msx2_arena.c — one pose of the board, from 157 bytes of geometry
+//  msx2_arena.c — one pose of the board and its card quads
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msx2_arena.h"

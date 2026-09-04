@@ -51,19 +51,15 @@ void Msx2_RomRead(u16 segment, u16 offset, u8* dst, u8 len);
 void Msx2_RomReadLong(u16 segment, u16 offset, u8* dst, u16 len);
 
 // Stream a full-width band of `h` rows into the draw page with the display
-// running.  This is §4.6's camera-move player: a baked pose is a picture of the
-// board band and nothing else, so playing a move is this call in a loop and
-// there is no decoder anywhere in the port.
+// running. The title screen uses it to restore its small prompt strip.
 void Msx2_StreamBand(u16 segment, u8 y, u8 h);
 
 // Push `n` copies of one byte at the VDP data port, continuing from wherever
-// the last write left the address.  This is the §8.4 rasterizer's DUP: a run of
-// magnified texels costs no source reads and no address re-set at all.
+// the last write left the address.
 void Msx2_PokeRun(u8 value, u8 n);
 
 // Push `n` bytes of RAM at the VDP data port, again continuing from the current
-// address.  This is the rasterizer's COPY: the card texture is pulled into RAM
-// once per card, so replaying its span program costs no bank switching at all.
+// address. Text rows use this after expanding their glyphs into RAM.
 void Msx2_PokeBlock(const u8* src, u8 n);
 
 // Point the VDP's write pointer at (x, y) on the draw page, so the two calls

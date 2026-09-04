@@ -101,18 +101,12 @@ player-chair view instead of an MSX-only near-overhead frame. The black surround
 also comes directly from the PC-FX presentation: story-stage paintings no
 longer sit behind or grade the arena.
 
-**There is a third view, and it is not captured.** The two chairs are the game's
-own cameras, and their perspective squeezes a field slot down to 36x15 pixels —
-a picture of a board rather than a board you can read. Walking up out of the
-hand therefore puts the camera overhead, as it does on PC-FX and on the PC
-build: `MSX2_VIEW_OVER` is the flat table of
-`assets/source/msx2/msx2_3d_top_view.png` with ten hand-authored quads pushed
-into the capture beside the two chairs, so the rings, the empty-slot tiles, the
-span programs and the geometry tables all come out of the same generator code.
-A slot is 42x36 there. It takes the hand's rows as well as the board band —
-it is the view with no hand on it — so the painter must not black those rows
-out or frame five hand positions in them. Getting there is a cut, not a camera
-move: the baked path runs between the two chairs only.
+**There is a third, tactical view.** The chair perspective squeezes a field
+slot down to about 36x15 pixels, so walking up from the hand cuts straight
+overhead. It is deliberately plain: twenty contiguous tiles alternating the
+arena's captured dark-beige and beige face colours, with no bevel, gutter,
+ring, or slot outline. Cards are sharp axis-aligned 32x42 copies in this view.
+The table takes the hand rows because there is no hand HUD while reading it.
 
 **The selector is a sprite.** It was a rectangle drawn into the bitmap, which
 meant it had to be erased from the bitmap on each page separately; it is now the
@@ -121,22 +115,13 @@ octahedron projected offline into eight sprite patterns. A sprite floats over
 both GRAPHIC 7 pages, so there is one cursor rather than two, and nothing under
 it is ever touched — which is what lets it animate at all.
 
-**The cards are drawn into those trapezoids**, by the §8 Tier A span rasterizer:
-
-* `gen_msx_views.py` rasterises the 40x48 master texture into each slot's quad
-  *offline* and serialises the result as run lengths — `COPY n` (texels straight
-  from RAM to the VDP data port), `DUP n` (magnification, the same byte pushed
-  again, no source read and no address re-set) and `ADV n` (minification). The
-  Z80 does no arithmetic at all;
-* a row whose texels run backwards — every COM-side card, which the shared
-  renderer rotates 180 degrees on the board plane — reads the **mirrored** copy
-  of the texture forwards instead. One extra 158 KB blob buys that; a reverse
-  block copy would have been a second inner loop earning nothing else;
-* the texture and the program are pulled into RAM for the draw (1,920 + 1,198
-  bytes), so the inner loop never touches the mapper. About two frames a card,
-  paid when a card *arrives*: a settled board costs nothing;
-* an emptied slot is put back from the SLOTS blob, which is the *captured*
-  arena's own quantised bytes at that quad's bounding box.
+**The cards are drawn into those trapezoids by a live affine mapper.** Every
+authored pose record contains the shared renderer's projected upright and
+defence quads for all twenty field cells. The 1,920-byte texture is read to RAM,
+then an inline-Z80 DDA samples it directly to the VDP data port. A backwards
+quad walks the source pointer backwards, so the old mirrored chair texture set
+is gone. Empty slots are repaired by redrawing the live arena through a clipped
+box; there is no captured slot-art blob.
 
 The selector is a sprite — the spinning gem, projected offline into eight
 patterns — so it floats over both GRAPHIC 7 pages and nothing underneath it is
@@ -157,16 +142,12 @@ is drawn at full size, because the tile pitch is 48 and the card is 42.
 it stays five axis-aligned 40x48 blits in a baked band — which also keeps the
 cards a player is choosing between at a readable size.
 
-**A duel opens on a baked camera move** (§4.6): sixteen samples of the exact
-shared `opening_camera()` arc over the 114-row board band. Each pose is completed
-on the hidden page and flipped only in V-blank; no scanout ever sees the stream
-front. The last pose is byte for byte the resting view. At the
-end of a player turn, a five-pose strip swings the table to the COM chair; the
-reverse strip returns it to the player. Both destination views re-rasterise the
-settled cards with their own projected quads. The COM hand is always rendered
-with the common spiral cover: the hand strip, selected card and placement flight
-never expose an opponent card id or info-panel metadata. There is no codec and
-no decoder anywhere in the port.
+**A duel opens and changes chairs from live geometry.** Sixteen projected mesh
+samples form the shared `opening_camera()` arc; five form the player↔COM orbit.
+For every sample the hidden page receives the filled 3-D slab and every occupied
+field card in that pose's projected quad before the V-blank flip. Cards therefore
+stay attached to the table throughout rotation instead of disappearing between
+the endpoint views. The COM hand still uses the common spiral cover.
 
 Placement, summon/fusion/equip/support and position changes retain the arena.
 For a placement the hand disappears and the real 40x48 card face travels in
@@ -175,8 +156,8 @@ slot it is going into. Each pose saves the arena underneath it into the drawing
 page's own offscreen rows before the card is blitted, and puts those exact
 pixels back when that page comes round again, so the flight is the opaque card
 art rather than an XOR outline and scan-out only ever sees finished poses. The
-board then settles -- the resting band is restored from the cartridge and every
-card is re-rasterised into its quad -- and the populated view holds with only
+board then settles -- the live resting arena and every card are redrawn into
+their quads -- and the populated view holds with only
 the HUD and information panel before the hand returns.
 
 There is no camera lurch under the landing any more. That effect borrowed the
@@ -574,7 +555,7 @@ crash into a number instead of a black screen.
 | `msx2_title.c/.h` | title screen: streamed art, logo, attract prompt, menu |
 | `msx2_board.c/.h` | the duel screen: the ten projected slots, both chair views, the hand strip, cursor, HUD, turn strip, and action cels |
 | `msx2_battle_fx.c/.h` | resident 2-D cut-in primitives: impact burst, result text and the staged destruction wipe |
-| `msx2_raster.c/.h` | §8 Tier A: the baked span-program card rasterizer |
+| `msx2_raster.c/.h` | live affine card mapper with an inline-Z80 texel DDA |
 | `msx2_story.c/.h` | story mode: name entry, map, dialogue, deck editor, rewards, continue codes, ending |
 | `msx2_story_utils.c` | resident story hashing, card thumbnails, grid navigation, and password codec |
 | `msx2_video.c/.h` | GRAPHIC 7 layer: pages, fills, glyphs, 2x text |
@@ -608,11 +589,14 @@ GRB332, without dithering).
 `tools/msx2/gen_msx_views.py` is the board's own generator, imported by
 `gen_msx_scenes.py` so the cartridge segment map stays owned by one tool. It
 compiles `src/main.c` with `-DWAIFU_MSX2_VIEW_DUMP` into
-`build/msx2_capture/waifu_msx2_dump`, runs `--dump-msx2-views`, and bakes the
-resting view, the empty-slot tiles, the span programs and the camera-move strip
-out of what the shared renderer drew. **`src/main.c` is therefore a build input
-of the cartridge**: a change to the arena, to the card geometry or to
-`msx2_top_camera()` re-bakes it, and `Makefile.msx2` says so.
+`build/msx2_capture/waifu_msx2_dump`, runs `--dump-msx2-views`, and serialises
+the projected arena mesh plus upright/defence card quads for every resting and
+camera-move pose. **`src/main.c` is therefore a build input of the cartridge**:
+a change to the arena, card geometry, or camera re-bakes those records, and
+`Makefile.msx2` says so. The former board pictures, empty-slot tiles, span
+programs, camera strips, and mirrored chair textures are no longer packed.
+That moves the last asset from segment 493 to 227 and reduces packed cartridge
+use from about 7.5 MiB to 3.2 MiB (the ROM container remains 8 MiB).
 `tools/msx2/pack_msx_rom.py` writes those binaries into the built cartridge at
 the segments the header names, and fails the build if the streamer has drifted
 above 0x8000.
@@ -640,7 +624,7 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
 
 1. **M1b timing truth is not started.** The current budgets are still engineering
    estimates; a dedicated timing ROM must measure OUTI spacing, VDP commands, the
-   span path, and eventual sound replay before those figures can be called
+   affine-card path, and eventual sound replay before those figures can be called
    hardware measurements.
 
 2. **The AI is slow.** Roughly 80 ms per rules step, most of it in

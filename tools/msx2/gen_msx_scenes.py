@@ -84,10 +84,9 @@ FIRST_ASSET_SEGMENT = 8
 #
 # The board is NOT drawn here.  MSX2_PORT_PLAN.md §0.3.1 makes the duel's arena
 # the game's own arena, captured out of `waifu_fm_headless`, so everything about
-# it -- the picture, the projected card quads, the empty-slot tiles and the
-# baked camera move -- comes from gen_msx_views.py.  What is left in this file
-# is the card art that gets drawn INTO those quads, and the screens that are
-# genuinely 2-D.
+# it -- the projected mesh and card quads -- comes from gen_msx_views.py. What
+# is left in this file is the card art drawn INTO those quads, and the screens
+# that are genuinely 2-D.
 CARD_W, CARD_H = views.CARD_W, views.CARD_H
 PANEL_RGB = views.PANEL_RGB
 
@@ -977,7 +976,7 @@ for _stage in range(len(STAGE_BG)):
 #
 # The overhead view does not use the span rasteriser.  Its slots are ordinary
 # axis-aligned rectangles, so a card there is a plain rectangle copy out of the
-# cartridge -- which is both faster than replaying a span program and sharper,
+# cartridge -- which is both faster than affine mapping and sharper,
 # because the art is drawn AT this size rather than minified from the 40x48
 # board texture.  32x42 centred in a 43x38 tile interior, so a card overhangs
 # its tile by two rows into the four-row gutter and touches nothing.
@@ -1062,10 +1061,8 @@ def build_over_card_blob(cards, quiet):
     The opposing row is a HALF TURN, not a mirror: seen from above, the
     opponent's cards face their own chair, and a card reflected instead of
     rotated would have its art mirrored.  (The 40x48 set's second copy IS a
-    left-right flip, because the span programs walk their texels backwards and
-    the two together come out as the same half turn -- that trick only works
-    when something is already reading the texture backwards, and a plain
-    rectangle copy is not.)"""
+    left-right flip, because the affine mapper can walk its source pointer in
+    reverse. A plain rectangle copy cannot.)"""
     blob = bytearray()
     mirror = bytearray()
     faces = [draw_over_monster_card(asset_id, *CARD_STATS[asset_id])
@@ -1123,31 +1120,15 @@ def build_card_blob(cards, quiet):
         faces.append(draw_support_card(kind))
     faces.append(draw_card_back())
 
-    mirror = bytearray()
     defence = bytearray()
-    def_mirror = bytearray()
     for face in faces:
         data = grb.quantize(face, (CARD_W, CARD_H))
         blob += data + bytes(CARD_STRIDE - len(data))
-        # The defence set is the card turned a quarter turn CLOCKWISE and stored
-        # turned -- 48 wide by 40 tall.  §8.4's interpreter walks one texture row
-        # forwards per destination row, so a card that is rotated at replay time
-        # would be one ADV per texel; rotated in the art it is the same three
-        # opcodes the upright card uses.  Its mirror exists for the same reason
-        # the upright one does (see below).
+        # Defence is turned clockwise in the art and stored 48x40, so the live
+        # mapper still consumes one texture row per destination row.
         lying = face.transpose(Image.Transpose.ROTATE_270)
         data = grb.quantize(lying, (CARD_H, CARD_W))
         defence += data + bytes(CARD_STRIDE - len(data))
-        data = grb.quantize(lying.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
-                            (CARD_H, CARD_W))
-        def_mirror += data + bytes(CARD_STRIDE - len(data))
-        # The mirrored set exists for the COM row.  Its cards are rotated 180
-        # degrees on the board plane, so the span programs walk their texels
-        # backwards (§8.4); reading a mirrored texture forwards is the same
-        # picture and costs a second blob instead of a second inner loop.
-        flipped = grb.quantize(face.transpose(Image.Transpose.FLIP_LEFT_RIGHT),
-                               (CARD_W, CARD_H))
-        mirror += flipped + bytes(CARD_STRIDE - len(flipped))
 
     # A contact sheet, decoded straight back out of the blob, so the art can be
     # checked without an emulator and without trusting the drawing code.
@@ -1163,9 +1144,9 @@ def build_card_blob(cards, quiet):
     grb.write_preview(os.path.join(ASSET_DIR, "cards.png"), bytes(sheet),
                       (columns * CARD_W, rows * CARD_H))
     if not quiet:
-        print("CARDS    %d textures -> %d bytes (x4: upright, mirrored, and "
-              "both lying down)" % (len(faces), len(blob)))
-    return bytes(blob), bytes(mirror), bytes(defence), bytes(def_mirror), len(faces)
+        print("CARDS    %d textures -> %d bytes x2 (upright + defence)"
+              % (len(faces), len(blob)))
+    return bytes(blob), bytes(defence), len(faces)
 
 
 def build_battle_card_blob(cards, quiet):
@@ -1354,12 +1335,9 @@ def main():
     title_prompt_segment = place("title_prompt", prompt_strip)
     sprite_segment = place("sprites", sprite_patterns())
 
-    card_blob, card_mirror, card_def, card_def_mirror, card_count = \
-        build_card_blob(cards, quiet)
+    card_blob, card_def, card_count = build_card_blob(cards, quiet)
     card_segment = place("cards", card_blob)
-    card_mirror_segment = place("cards_mirror", card_mirror)
     card_def_segment = place("cards_def", card_def)
-    card_def_mirror_segment = place("cards_def_mirror", card_def_mirror)
     battle_card_blob, battle_card_count = build_battle_card_blob(cards, quiet)
     battle_card_segment = place("battle_cards", battle_card_blob)
     over_blob, over_mirror, over_def, over_def_mirror, _over_count = \
@@ -1369,14 +1347,8 @@ def main():
     over_def_segment = place("over_cards_def", over_def)
     over_def_mirror_segment = place("over_cards_def_mirror", over_def_mirror)
 
-    # ── The captured board (§4.3, §4.6, §8.4) ────────────────────────────────
-    view_segment = place("board_views", b"".join(board["views"]))
-    slot_segment = place("board_slots", board["slots"])
-    span_segment = place("card_spans", board["spans"])
-    move_segments = [place("board_move_" + name.lower(), blob)
-                     for name, _poses, blob in board["moves"]]
-    # The same board as geometry: 157 bytes a pose instead of 54,272, drawn by
-    # the VDP's command engine rather than streamed.
+    # The board is geometry only: mesh plus pose-local card quads, drawn by the
+    # VDP command engine and live affine mapper rather than streamed pictures.
     mesh_segment = place("board_mesh", board["mesh"])
 
     portrait_blob = build_portrait_blob(quiet)
@@ -1435,14 +1407,9 @@ def main():
 
         f.write("// ── Card textures ───────────────────────────────────────────────────────\n")
         f.write("#define MSX2_CARD_ART_SEGMENT   %d\n" % card_segment)
-        f.write("// The same textures mirrored left to right, for the COM row (§8.4).\n")
-        f.write("#define MSX2_CARD_MIRROR_SEGMENT %d\n" % card_mirror_segment)
         f.write("// The same set again, lying a quarter turn round for DEFENCE\n")
-        f.write("// position, and stored turned: 48 wide by 40 tall, so a span\n")
-        f.write("// program still walks one texture row per destination row.\n")
+        f.write("// position, stored turned at 48 wide by 40 tall.\n")
         f.write("#define MSX2_CARD_DEF_SEGMENT   %d\n" % card_def_segment)
-        f.write("#define MSX2_CARD_DEF_MIRROR_SEGMENT %d\n"
-                % card_def_mirror_segment)
         f.write("\n// The overhead board's own card set: drawn at 32x42 rather than\n")
         f.write("// minified from the 40x48 board texture, so its one-pixel frame\n")
         f.write("// survives, and copied as a plain rectangle because the overhead\n")
@@ -1474,9 +1441,7 @@ def main():
         f.write("#define MSX2_BATTLE_CARD_H       %d\n" % BATTLE_CARD_H)
         f.write("#define MSX2_BATTLE_CARD_COUNT   %d\n" % battle_card_count)
 
-        f.write("\n".join(views.header_lines(board, view_segment, slot_segment,
-                                              move_segments, span_segment,
-                                              mesh_segment)))
+        f.write("\n".join(views.header_lines(board, mesh_segment)))
         f.write("\n")
 
         f.write("// ── Story screens ──────────────────────────────────────────────────────\n")

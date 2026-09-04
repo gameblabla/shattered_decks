@@ -25,7 +25,7 @@
 // Every one of these calls used to be Msx2_StreamSceneBlanked() on a 54,272-byte
 // picture of the arena -- a quarter of a second of blanked display, and 3.9 MB
 // of cartridge across the poses and the stages.  msx2_arena.c draws the same
-// board out of 157 bytes of projected geometry (see its header), so what is
+// board out of one compact pose record (see its header), so what is
 // left here is the two flat panels the picture also carried and the black hand
 // band under them.
 static void Msx2_BoardPaintView(u8 view, u8 page);
@@ -562,7 +562,7 @@ static void Msx2_BoardBlitSlot(u8 slot)
 	{
 		// Overhead the slots are axis-aligned, so a card is a rectangle copy of
 		// a texture baked at that size -- sharper than minifying the 40x48
-		// board master through a span program, and a great deal quicker.  The
+		// board master through the affine mapper, and a great deal quicker. The
 		// opponent's row reads the half-turned set: seen from above their cards
 		// face their own chair.
 		const u8* at = g_msx2_over_card_xy[slot];
@@ -1285,7 +1285,7 @@ static void Msx2_BoardFxCardFlight(bool erase)
 	// of the middle of a card back is a smear, not a card.  So the flight
 	// carries the WHOLE card, centred on where the card is going, and the
 	// arrival pose is the settled card itself -- drawn into its quad by the
-	// same span program the board is about to use, which is the only thing on
+	// same affine mapper the board is about to use, which is what can
 	// this machine that can put a card into a projected slot at all.  The
 	// picture is then continuous from the flight into the board taking it.
 	bool over = (g_view == MSX2_VIEW_OVER);
@@ -1301,7 +1301,7 @@ static void Msx2_BoardFxCardFlight(bool erase)
 	{
 		// The arrival.  What is saved and put back is the slot's own restore
 		// box -- the quad plus its margin -- because that is the rectangle a
-		// span program is allowed to round a texel into.
+		// affine mapper is allowed to round a texel into.
 		const u8* box = g_msx2_slot_box[g_view][g_fx_field];
 		hb = (u8)(box[3] >> 1);
 		ha = (u8)(box[3] - hb);
@@ -1551,7 +1551,7 @@ static void Msx2_BoardFxCommitLanding(void);
 // card into the slot -- and one of those two pages was the one the VDP was
 // scanning out.  Between the restore and the card, that page showed an empty
 // destination, and the card is not cheap to put back: a chair-view slot is a
-// 1,920-byte cartridge read and a span program.  What the player saw was the
+// 1,920-byte cartridge read and an affine map. What the player saw was the
 // card they had just played blinking out of existence and then reappearing.
 //
 // So a bend step now touches the hidden page only: it takes the flight off it,
@@ -2520,7 +2520,7 @@ static void Msx2_BoardSwitchView(u8 view, bool forward)
 	// covers every direction the camera moves in.
 	Msx2_SpriteTransitionBegin();
 
-	// The baked camera path runs between the two chairs and nowhere else, and
+	// The authored camera path runs between the two chairs and nowhere else, and
 	// it only redraws the board band -- so it cannot start from overhead,
 	// where the picture goes on down through the hand's rows.  Come back down
 	// to the player's chair first.
@@ -2644,7 +2644,7 @@ static void Msx2_BoardStepCameraMove(void)
 // the player is reading now, and the bottom panel keeps naming whatever the
 // cursor is over, with its attack and defence.  Walking back down brings the
 // five cards back.  Nothing about the board picture changes -- there is one
-// captured arena per chair -- so this is the strip, the frames and the cards.
+// fixed arena pose per chair -- so this is the strip, the frames and the cards.
 static void Msx2_BoardHandVisible(bool on)
 {
 	if(g_hand_hidden == (u8)!on)

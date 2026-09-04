@@ -7,9 +7,9 @@
 //  Z80's own `outi` loop at 32 T-states a byte -- a quarter of a second for one
 //  band.
 //
-//  What it carries now is the same arena's PROJECTED MESH, 157 bytes a pose
-//  (`gen_msx_views.py`, `MSX2_MESH_SEGMENT`), and the board is filled by the
-//  V9938's command engine one HMMV per scanline.  Same corners, same
+//  What it carries now is the same arena's PROJECTED MESH and card quads in a
+//  512-byte pose record (`gen_msx_views.py`, `MSX2_MESH_SEGMENT`), and the
+//  board is filled by the V9938 command engine one HMMV per scanline. Same
 //  perspective, same checker: the mesh comes out of `render_board()`'s own
 //  projection, so MSX2_PORT_PLAN.md §4.3's rule that the MSX2 board IS the
 //  shared board survives the change intact -- the pixels stopped being baked,

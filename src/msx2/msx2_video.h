@@ -115,7 +115,7 @@ void Msx2_Line(u8 x1, u8 y1, u8 x2, u8 y2, u8 color);
 void Msx2_LineXor(u8 x1, u8 y1, u8 x2, u8 y2, u8 color);
 
 // XOR outlines are reversible, which lets a short-lived effect be removed
-// from the next retained page without restoring the whole captured arena.
+// from the next retained page without redrawing the live arena.
 void Msx2_FrameRectXor(u8 x, u8 y, u16 w, u8 h, u8 color);
 
 // A 1-pixel outline around an arbitrary quad, drawn with four VDP LINE
