@@ -915,6 +915,10 @@ static void Msx2_StoryEnterSavePick(void)
 	g_phase = PH_SAVE_PICK;
 	g_save_pick = Msx2_DiskPresent() ? 0 : 1;
 	g_disk_msg = 0;
+	// The A edge that selected SAVE GAME belongs to the map phase.  Consume it
+	// at the destination boundary so a slow frame cannot also activate the
+	// picker (or a future phase handler) with the same edge.
+	Msx2_InputConsume(MSX2_BTN_A | MSX2_BTN_ENTER | MSX2_BTN_B);
 	Msx2_StoryBuildCode(g_code, g_progress, g_player_name, g_story_deck);
 	// THE ROAD, NOT THE TITLE SCREEN.
 	// SAVE GAME is reached from the sanctum road and returns to it, so it wears
@@ -950,8 +954,18 @@ static void Msx2_StorySavePickStep(void)
 		Msx2_SfxPlay(MSX2_SFX_CONFIRM);
 		if(g_save_pick == 0)
 		{
-			g_disk_msg = !Msx2_DiskPresent() ? 4
-			            : (Msx2_DiskSave(g_code) ? 1 : 2);
+			if(!Msx2_DiskPresent())
+			{
+				g_disk_msg = 4;
+				Msx2_StoryUiDirty();
+				return;
+			}
+			g_disk_msg = Msx2_DiskSave(g_code) ? 1 : 2;
+			if(g_disk_msg == 2)
+			{
+				Msx2_StoryUiDirty();
+				return;
+			}
 		}
 		else
 			g_disk_msg = 0;

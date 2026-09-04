@@ -289,6 +289,7 @@ void Msx2_InputUpdate(void)
 
 u8 Msx2_InputHeld(void)    { return g_held; }
 u8 Msx2_InputPressed(void) { return g_pressed; }
+void Msx2_InputConsume(u8 mask) { g_pressed &= (u8)~mask; }
 c8 Msx2_InputTyped(void)   { return g_typed; }
 bool Msx2_InputDiskKey(void) { return g_f1_press ? TRUE : FALSE; }
 bool Msx2_InputXKey(void) { return g_x_press ? TRUE : FALSE; }

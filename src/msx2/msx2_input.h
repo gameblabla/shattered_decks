@@ -31,6 +31,7 @@ void Msx2_InputLatch(void);
 
 u8   Msx2_InputHeld(void);      // buttons currently down
 u8   Msx2_InputPressed(void);   // buttons that went down this frame
+void Msx2_InputConsume(u8 mask); // discard an opening edge at a phase boundary
 
 // A letter or digit typed on the MSX keyboard this frame, or 0.  Name and
 // continue-code entry accept this as well as the on-screen grid, so a machine

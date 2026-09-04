@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msx2_disk.h"
+#include "msx2_bank.h"
 
 #define DISK_SECTOR_BYTES  512
 #define DISK_CODE_LEN      16
@@ -189,6 +190,9 @@ bool Msx2_DiskPresent(void)
 // a guessed one.
 static bool Msx2_DiskSector(u16* sector, bool write)
 {
+	u16 bank = Msx2_Bank0Current();
+	bool ok;
+
 	if(!Msx2_DiskPresent())
 		return FALSE;
 
@@ -205,15 +209,22 @@ static bool Msx2_DiskSector(u16* sector, bool write)
 		Msx2_DiskIo();
 		Msx2_DiskBiosOut();
 		if(g_err)
+		{
+			Msx2_Bank0Leave(bank);
 			return FALSE;
+		}
 		{
 			u16 total = (u16)(g_buf[BOOT_TOTAL_SECTORS] |
 			                  ((u16)g_buf[BOOT_TOTAL_SECTORS + 1] << 8));
 			if(total < 16)
+			{
+				Msx2_Bank0Leave(bank);
 				return FALSE;        // not a formatted disk
+			}
 			g_media = g_buf[BOOT_MEDIA_ID];
 			*sector = (u16)(total - 1);
 		}
+		Msx2_Bank0Leave(bank);
 		return TRUE;
 	}
 
@@ -222,7 +233,9 @@ static bool Msx2_DiskSector(u16* sector, bool write)
 	Msx2_DiskBiosIn();
 	Msx2_DiskIo();
 	Msx2_DiskBiosOut();
-	return (g_err == 0);
+	ok = (g_err == 0);
+	Msx2_Bank0Leave(bank);
+	return ok;
 }
 
 bool Msx2_DiskSave(const c8* code)

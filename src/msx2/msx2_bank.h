@@ -37,3 +37,4 @@
 // Map `segment` at 0x0000 and return whatever was there, for Msx2_Bank0Leave.
 u16  Msx2_Bank0Enter(u16 segment);
 void Msx2_Bank0Leave(u16 segment);
+u16  Msx2_Bank0Current(void);

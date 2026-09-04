@@ -36,6 +36,11 @@ void Msx2_Bank0Leave(u16 segment)
 	}
 }
 
+u16 Msx2_Bank0Current(void)
+{
+	return g_bank0;
+}
+
 // ── The trampolines ─────────────────────────────────────────────────────────
 // One per entry point into a banked screen.  They are the public names:
 // nothing outside this file knows the window moved.  Each restores whatever
