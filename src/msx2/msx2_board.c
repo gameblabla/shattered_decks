@@ -146,7 +146,7 @@ static u8  g_gem_tick;
 // every Msx2_BoardPaint().  Two of the callers below run the painter several
 // times in a row on the SAME page, which spent both credits there and left the
 // other page holding the previous panel for the rest of the duel: that is why
-// the turn number read 2 on one flip and 3 on the next, for a whole turn.  A
+// the panel could disagree across the two retained pages for a whole turn.  A
 // bit per page cannot be spent twice on one page.
 //
 // It is also three masks rather than one.  Walking the hand changes the card
@@ -161,15 +161,13 @@ static u8  g_gem_tick;
 // it cannot say what a page is actually showing, and several paths level the
 // two buffers with a straight VRAM copy (a landing's hold, a cut-in's restore,
 // the last camera pose) that can put an old top strip back on a page whose bit
-// has already been spent.  That is how the turn number could end up reading 6
-// on one flip and 5 on the next for the whole of the opponent's turn.  So each
-// page also records the three figures it was last PAINTED with, and
+// has already been spent.  So each page also records the two LP figures it was
+// last PAINTED with, and
 // Msx2_BoardHudSync() re-owes any page whose record has drifted from the rules.
 // The state cannot stick: whatever put a stale strip there, the next frame
 // notices and repaints it.
 static i16 g_hud_page_com_lp[MSX2_VIDEO_PAGES];
 static i16 g_hud_page_you_lp[MSX2_VIDEO_PAGES];
-static u16 g_hud_page_turns[MSX2_VIDEO_PAGES];
 
 static u8  g_hud_left;           // pages still owing the top strip
 static u8  g_card_left;          // pages still owing the name/ATK/DEF lines
@@ -689,10 +687,6 @@ static void Msx2_BoardHud(void)
 	Msx2_TextAt(4, 3, "COM");
 	Msx2_NumAt(28, 3, g_duel.side[MSX2_OWNER_COM].lp);
 
-	Msx2_TextColor(MSX2_GOLD, MSX2_PANEL_COLOR);
-	Msx2_TextAt(100, 3, Msx2_UiText(MSX2_S_TURN));
-	Msx2_NumAt(130, 3, (i16)g_duel.turns);
-
 	Msx2_TextColor(MSX2_TEAL, MSX2_PANEL_COLOR);
 	Msx2_TextAt(196, 3, "YOU");
 	Msx2_NumAt(220, 3, g_duel.side[MSX2_OWNER_PLAYER].lp);
@@ -701,19 +695,17 @@ static void Msx2_BoardHud(void)
 		u8 page = Msx2_VideoGetDrawPage();
 		g_hud_page_com_lp[page] = g_duel.side[MSX2_OWNER_COM].lp;
 		g_hud_page_you_lp[page] = g_duel.side[MSX2_OWNER_PLAYER].lp;
-		g_hud_page_turns[page] = g_duel.turns;
 	}
 }
 
 // Re-owe the top strip on any page that is not showing the figures the rules
-// currently hold.  Cheap enough to run every frame: three comparisons a page.
+// currently hold.  Cheap enough to run every frame: two comparisons a page.
 static void Msx2_BoardHudSync(void)
 {
 	u8 p;
 	for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
 		if((g_hud_page_com_lp[p] != g_duel.side[MSX2_OWNER_COM].lp) ||
-		   (g_hud_page_you_lp[p] != g_duel.side[MSX2_OWNER_PLAYER].lp) ||
-		   (g_hud_page_turns[p] != g_duel.turns))
+		   (g_hud_page_you_lp[p] != g_duel.side[MSX2_OWNER_PLAYER].lp))
 			g_hud_left |= PAGE_BIT(p);
 }
 
@@ -2309,10 +2301,13 @@ void Msx2_BoardEnter_In(u8 stage)
 	g_deal_visible_mask = 0;
 	g_deal_landed_mask[0] = g_deal_landed_mask[1] = 0;
 	// No page has been painted with any figure yet, and a duel entered a second
-	// time must not inherit the last one's record: 0xFFFF is a turn number no
-	// duel reaches, so both pages start owing the strip.
+	// time must not inherit the last one's record, so both pages start owing the
+	// strip.
 	for(i = 0; i < MSX2_VIDEO_PAGES; ++i)
-		g_hud_page_turns[i] = 0xFFFF;
+	{
+		g_hud_page_com_lp[i] = -1;
+		g_hud_page_you_lp[i] = -1;
+	}
 	Msx2_BoardSnapshot();
 
 	Msx2_RasterInit();

@@ -12,7 +12,6 @@
 //  the ids into src/generated/msx2_scenes.h.  Add a line here and use the id;
 //  nothing else has to change.
 // -----------------------------------------------------------------------------
-S(TURN, "TURN")
 S(PLACE_IN_DEFENCE_UP_DOWN_ATK, "PLACE IN DEFENCE - UP/DOWN ATK")
 S(PLACE_IN_ATTACK_UP_DOWN_DEF, "PLACE IN ATTACK - UP/DOWN DEF")
 S(PICK_A_MONSTER_TO_EQUIP, "PICK A MONSTER TO EQUIP")

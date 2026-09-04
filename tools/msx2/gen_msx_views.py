@@ -53,7 +53,7 @@ CAPTURE_H = 240
 # `msx2_top_camera()` and this number have to move together.
 CROP_Y = 75
 
-HUD_H = 13                  # rows 0..12      -- LP, turn counter
+HUD_H = 13                  # rows 0..12      -- LP
 BAND_Y = 14                 # rows 14..127    -- the board itself
 BAND_H = 114
 HAND_BAND_Y = BAND_Y + BAND_H   # rows 128..181 -- the player's hand
