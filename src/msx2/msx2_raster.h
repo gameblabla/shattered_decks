@@ -39,13 +39,8 @@
 // anything had been read at all.
 void Msx2_RasterInit(void);
 
-// Select the camera geometry used by subsequent field-card draws.
-// MSX2_VIEW_TOP is the player's tactical view; MSX2_VIEW_COM is the same board
-// from the opponent's chair.
-void Msx2_RasterSetView(u8 view);
-
 // Read one card texture in from the cartridge and map it into one slot's
-// projected quad on the draw page.  The texture is RAM-resident for the draw,
+// projected quad of the arena's current pose.  The texture is RAM-resident,
 // which is what keeps the inner loop free of bank switching and is why the
 // buffer is worth its 1,920 bytes; a repaint of the same card skips the read.
 // `defense` selects the pre-turned 48x40 texture set -- the position a real

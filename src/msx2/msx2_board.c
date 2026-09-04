@@ -45,7 +45,7 @@ static void Msx2_BoardPaintView(u8 view, u8 page);
 // port used to have nowhere to put one: an equip flew a card across the board
 // and then vanished, so a duel could be decided by cards that were never on the
 // screen.  The capture now projects all four rows, so they are ordinary slots
-// with ordinary quads, tiles and span programs.
+// with ordinary projected quads and tiles.
 //
 // They are display-only.  Nothing the player does targets a support slot -- an
 // equip is aimed at the MONSTER it attaches to -- so the cursor still walks
@@ -598,10 +598,8 @@ static void Msx2_BoardBlitSlot(u8 slot)
 		return;
 	}
 
-	// Defence position in a chair view: the same quarter turn, done by the span
-	// program and the pre-turned texture set rather than by printing "DEF" over
-	// the card, which is what used to say it.
-	Msx2_RasterSetView(g_view);
+	// Defence position in a chair view: the same quarter turn, done by the live
+	// mapper and pre-turned texture set rather than by printing "DEF" over it.
 	Msx2_RasterCard(index, slot, (g_flag[slot] & F_DEFENSE) ? 1 : 0);
 }
 
@@ -1030,10 +1028,7 @@ static void Msx2_BoardRestoreFromCutin(void)
 	// first of the two was a picture nothing was going to be shown on.  There
 	// is only one board worth restoring here, so restore that one.
 	if(g_duel.result != 0)
-	{
 		g_view = MSX2_VIEW_OVER;
-		Msx2_RasterSetView(g_view);
-	}
 	Msx2_BoardSnapshot();
 	Msx2_VideoDisplayBlank();
 	// Nothing of the cut-in may survive onto the board, and the strike's layer
@@ -1211,7 +1206,7 @@ static void Msx2_BoardFxSetDestination(void)
 	// a wrapped unsigned intermediate here was the source of the off-screen
 	// Y path seen when a player placed a card by hand.
 	{
-		const u8* q = g_msx2_slot_quad[g_view][g_fx_field];
+		const u8* q = Msx2_ArenaCardQuad(g_fx_field, 0);
 		u8 x0 = q[0], x1 = q[0], y0 = q[1], y1 = q[1];
 		for(i = 1; i < 4; ++i)
 		{
@@ -1316,7 +1311,6 @@ static void Msx2_BoardFxCardFlight(bool erase)
 			return;
 		}
 		Msx2_BoardFxCardBacking(FALSE, box[0], box[1], box[2], ha, hb);
-		Msx2_RasterSetView(g_view);
 		Msx2_RasterCard(Msx2_BoardFxFlightCard(), g_fx_field,
 		                g_duel.side[g_fx_owner].defense[SLOT_INDEX(g_fx_field)]
 		                    ? 1 : 0);
@@ -1369,7 +1363,7 @@ static void Msx2_BoardFxDraw(bool erase)
 		if(!erase)
 			Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_EQUIP_POWER), MSX2_GOLD);
 		if(g_fx_field != MSX2_SLOT_NONE)
-			Msx2_QuadOutlineXor(g_msx2_slot_quad[g_view][g_fx_field], flash);
+			Msx2_QuadOutlineXor(Msx2_ArenaCardQuad(g_fx_field, 0), flash);
 		break;
 
 	// The two plain landings differ only in what the panel says.
@@ -2415,7 +2409,6 @@ static void Msx2_BoardCutTo(u8 view)
 	page = Msx2_VideoGetDrawPage();
 
 	g_view = view;
-	Msx2_RasterSetView(view);
 	Msx2_SpriteTransitionBegin();
 	Msx2_VideoDisplayBlank();
 	Msx2_BoardPaintView(view, MSX2_PAGE_0);
@@ -2544,6 +2537,27 @@ static void Msx2_BoardSwitchView(u8 view, bool forward)
 	g_move_forward = forward;
 }
 
+// A camera pose is not only the slab underneath the duel.  Every occupied
+// field cell belongs to that pose too: its texture corners were projected by
+// the shared renderer beside the mesh and loaded by Msx2_ArenaPose().  Drawing
+// these before the flip keeps the cards physically on the table throughout a
+// turn orbit instead of replacing the populated field with five empty boards.
+static void Msx2_BoardDrawPoseCards(void)
+{
+	u8 slot;
+
+	for(slot = 0; slot < MSX2_FIELD_SLOTS; ++slot)
+	{
+		u8 card = g_want[slot];
+		u8 index;
+
+		if(card == MSX2_CARD_NONE)
+			continue;
+		index = (g_flag[slot] & F_FACEUP) ? card : MSX2_CARD_BACK_INDEX;
+		Msx2_RasterCard(index, slot, (g_flag[slot] & F_DEFENSE) ? 1 : 0);
+	}
+}
+
 static void Msx2_BoardStepCameraMove(void)
 {
 	u8 show = Msx2_VideoGetShowPage();
@@ -2557,6 +2571,7 @@ static void Msx2_BoardStepCameraMove(void)
 			Msx2_VideoDrawPage(page);
 			Msx2_ArenaPose(MSX2_MESH_POSE_OPENING(g_move_pose));
 			Msx2_ArenaDraw();
+			Msx2_BoardDrawPoseCards();
 			++g_move_pose;
 			Msx2_VideoFlipRequest();
 			return;
@@ -2569,6 +2584,7 @@ static void Msx2_BoardStepCameraMove(void)
 		Msx2_VideoDrawPage(page);
 		Msx2_ArenaPose(MSX2_MESH_POSE_TURN(pose));
 		Msx2_ArenaDraw();
+		Msx2_BoardDrawPoseCards();
 		++g_move_pose;
 		Msx2_VideoFlipRequest();
 		return;
@@ -2589,7 +2605,6 @@ static void Msx2_BoardStepCameraMove(void)
 		Msx2_VideoDrawPage(page);
 	}
 	g_view = g_move_target;
-	Msx2_RasterSetView(g_view);
 	g_suppress_slot = MSX2_SLOT_NONE;
 	g_hold_hand = MSX2_SLOT_NONE;
 	for(i = 0; i < SLOT_COUNT; ++i)

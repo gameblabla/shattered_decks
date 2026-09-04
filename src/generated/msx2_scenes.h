@@ -109,16 +109,11 @@
 #define MSX2_GOLD_COLOR         0x95
 
 // ONE COPY OF THE GEOMETRY, NOT ONE PER TRANSLATION UNIT.
-// These four tables used to be `static const` in this header, which a
-// dozen files include -- so every one of them carried its own copy, and
-// projecting the two support rows would have doubled all of them at once.
-// They are declared here and DEFINED once, in msx2_cards.c, which is the
+// The small retained-view tables live in one translation unit rather than
+// being duplicated by every source that includes this header.
+// It is declared here and DEFINED once, in msx2_cards.c, which is the
 // translation unit that already exists to hold generated tables.
 extern const unsigned char g_msx2_over_card_xy[MSX2_FIELD_SLOTS][2];
-// The projected corners of every field slot, window pixels, in the corner
-// order the shared renderer hands its rasterizer -- so texture corner 0
-// lands on the same physical corner here as it does on the PC.
-extern const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][8];
 // The box a slot's ring and card occupy: what an empty slot restores, and
 // what a repaint has to cover.
 extern const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4];
@@ -139,11 +134,6 @@ extern const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4
 #define MSX2_OP_ENDROW          0x80
 #define MSX2_OP_END             0xA0
 #define MSX2_OP_RUN_MASK        0x1F
-// Slot -> which SPAN_STRIDE-sized record in the blob holds its program.
-extern const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS];
-// The same slots for a card in DEFENCE position: turned a quarter turn and
-// scaled to fit the slot, sampling the pre-turned 48x40 texture set.
-extern const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS];
 
 // ── Empty-slot tiles ──────────────────────────────────────────────────
 // One set for every stage: the arena is ungraded, so the four stages cut
@@ -159,11 +149,11 @@ extern const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_S
 // rectangle four times faster than the Z80 can push bytes at the data
 // port, so the arena is drawn by the command engine from the projected
 // mesh below rather than streamed as 54 KB of pixels a pose.  One record
-// is 52 corners (x as int16, y as a byte) plus the flags that say which
-// two slab walls face the camera.
+// is 52 corners (x as int16, y as a byte), the facing-wall flags, and
+// attack/defence card quads for all twenty cells.
 #define MSX2_MESH_SEGMENT       458
-#define MSX2_MESH_STRIDE        256
-#define MSX2_MESH_PER_SEG       64
+#define MSX2_MESH_STRIDE        512
+#define MSX2_MESH_PER_SEG       32
 #define MSX2_MESH_POINTS        52
 #define MSX2_MESH_ROWS          4
 #define MSX2_MESH_COLS          5
@@ -175,6 +165,8 @@ extern const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_S
 // bit 0: the +X wall faces the camera.  bit 1: the +Z wall does.
 #define MSX2_MESH_FLAG_XPOS     0x01
 #define MSX2_MESH_FLAG_ZPOS     0x02
+#define MSX2_MESH_QUAD_OFFSET   157
+#define MSX2_MESH_QUAD_BYTES    160
 // Pose indices inside the blob.
 #define MSX2_MESH_POSE_TOP       0
 #define MSX2_MESH_POSE_COM       1

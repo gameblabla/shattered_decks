@@ -6,6 +6,7 @@
 #include "msx2_video.h"
 #include "msx2_stream.h"
 #include "msx2_scenes.h"
+#include "msx2_arena.h"
 
 // The card being drawn.  It lives in RAM for the duration: a texel fetch is
 // then an ordinary `ld a,(hl)`, so the inner loop never touches the mapper and
@@ -16,7 +17,6 @@ static u8 g_tex[MSX2_CARD_W * MSX2_CARD_H];
 // the common case, once per page -- skips the 1,920-byte read.  0xFFFF is
 // "nothing".
 static u16 g_tex_loaded;
-static u8  g_view;
 
 #define TEX_KEY(card, def)  (u16)(((u16)(card) << 1) | (def))
 #define TEX_NONE            0xFFFF
@@ -24,14 +24,6 @@ static u8  g_view;
 void Msx2_RasterInit(void)
 {
 	g_tex_loaded = TEX_NONE;
-	g_view = MSX2_VIEW_TOP;
-}
-
-void Msx2_RasterSetView(u8 view)
-{
-	if(view >= MSX2_BOARD_VIEWS)
-		view = MSX2_VIEW_TOP;
-	g_view = view;
 }
 
 static void Msx2_RasterLoad(u8 card_index, u8 defense)
@@ -233,42 +225,13 @@ static void Msx2_RasterDraw(u8 defense)
 
 void Msx2_RasterCard(u8 card_index, u8 slot, u8 defense)
 {
-	const u8* q = g_msx2_slot_quad[g_view][slot];
+	const u8* q = Msx2_ArenaCardQuad(slot, defense);
 	u8 i;
 
 	for(i = 0; i < 4; ++i)
 	{
 		g_qx[i] = q[i * 2];
 		g_qy[i] = q[i * 2 + 1];
-	}
-	if(defense)
-	{
-		// A CARD LYING DOWN IS INSCRIBED IN THE SLOT, NOT LAID ACROSS IT.
-		// The chair slots sit shoulder to shoulder and every erase on this
-		// board is the slot's own footprint, so a turned card that reached
-		// past it would leave a strip of itself behind for the rest of the
-		// duel.  It keeps the full width and MSX2_DEF_INSET of the height at
-		// each end -- the same inset the baked programs used.
-		u8 j;
-		u8 nx[4], ny[4];
-
-		for(j = 0; j < 2; ++j)
-		{
-			u8 a = j;                    // 0 -> 3 and 1 -> 2 are the side edges
-			u8 b = (u8)(3 - j);
-			i16 dx = (i16)((i16)g_qx[b] - (i16)g_qx[a]);
-			i16 dy = (i16)((i16)g_qy[b] - (i16)g_qy[a]);
-
-			nx[a] = (u8)(g_qx[a] + ((dx * MSX2_DEF_INSET) >> 8));
-			ny[a] = (u8)(g_qy[a] + ((dy * MSX2_DEF_INSET) >> 8));
-			nx[b] = (u8)(g_qx[b] - ((dx * MSX2_DEF_INSET) >> 8));
-			ny[b] = (u8)(g_qy[b] - ((dy * MSX2_DEF_INSET) >> 8));
-		}
-		for(j = 0; j < 4; ++j)
-		{
-			g_qx[j] = nx[j];
-			g_qy[j] = ny[j];
-		}
 	}
 	Msx2_RasterLoad(card_index, defense);
 	Msx2_RasterDraw(defense);

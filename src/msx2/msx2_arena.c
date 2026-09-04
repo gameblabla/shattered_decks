@@ -13,6 +13,7 @@
 static i16 g_mesh_x[MSX2_MESH_POINTS];
 static u8  g_mesh_y[MSX2_MESH_POINTS];
 static u8  g_mesh_flags;
+static u8  g_mesh_quad[2][MSX2_FIELD_SLOTS][8];
 static u8  g_pose = 0xFF;
 
 void Msx2_ArenaPose(u8 pose)
@@ -29,6 +30,16 @@ void Msx2_ArenaPose(u8 pose)
 	Msx2_RomRead(segment, (u16)(offset + MSX2_MESH_POINTS * 2), g_mesh_y,
 	             MSX2_MESH_POINTS);
 	Msx2_RomRead(segment, (u16)(offset + MSX2_MESH_POINTS * 3), &g_mesh_flags, 1);
+	// Forty quads are 320 bytes.  The short reader's length is u8, so using it
+	// here would silently wrap to 64 and leave sixteen cards with stale/zero
+	// corners -- exactly the kind of half-populated orbit this record prevents.
+	Msx2_RomReadLong(segment, (u16)(offset + MSX2_MESH_QUAD_OFFSET),
+	                 &g_mesh_quad[0][0][0], MSX2_MESH_QUAD_BYTES * 2);
+}
+
+const u8* Msx2_ArenaCardQuad(u8 slot, u8 defense)
+{
+	return g_mesh_quad[defense ? 1 : 0][slot];
 }
 
 u8 Msx2_ArenaCurrentPose(void)
@@ -91,9 +102,9 @@ void Msx2_ArenaDrawBox(u8 x, u8 y, u8 w, u8 h)
 //
 // Not a projection: this view is the board seen straight down, so its twenty
 // slots are axis-aligned rectangles.  Every one of them is a single HMMV with
-// NY set -- Msx2_Fill's own command -- so the whole table is 21 rectangles and
-// 80 hairlines rather than the 54 KB picture of itself it used to be streamed
-// as.  It is the one view where drawing costs almost nothing at all.
+// NY set -- Msx2_Fill's own command -- so the whole table is one black ground
+// and twenty beige tiles rather than the 54 KB picture of itself it used to be
+// streamed as.  It is the one view where drawing costs almost nothing at all.
 
 // The rectangle actually painted is the caller's box intersected with the clip
 // window, so one function serves both the whole view and the repair of a single
@@ -120,10 +131,13 @@ static void Msx2_ArenaOverBody(void)
 {
 	u8 r, c;
 
-	// The gutter between the tiles is the table itself, and it is the same
-	// dark wood as the slab's facing wall in the chair views.
+	// Straight down means there are no visible slab walls, bevels or slot
+	// outlines: this view is literally the board's alternating dark-beige and
+	// beige top faces.  Fill the whole pitch so adjacent tiles meet; the old
+	// four-pixel wall-coloured gutters and inverse-colour hairlines were what
+	// made the tactical view look like a grid of outlined buttons.
 	Msx2_ArenaOverFill(0, MSX2_OVER_Y, MSX2_SCREEN_W, MSX2_OVER_H,
-	                   MSX2_BOARD_WALL_Z);
+	                   MSX2_BLACK);
 	for(r = 0; r < MSX2_OVER_TILE_ROWS; ++r)
 	{
 		i16 ty = (i16)(MSX2_OVER_Y + MSX2_OVER_TILE_Y0
@@ -132,17 +146,9 @@ static void Msx2_ArenaOverBody(void)
 		{
 			i16 tx = (i16)(MSX2_OVER_TILE_X0 + c * MSX2_OVER_TILE_PITCH_X);
 			u8 face = ((r + c) & 1) ? MSX2_BOARD_TILE_B : MSX2_BOARD_TILE_A;
-			u8 edge = ((r + c) & 1) ? MSX2_BOARD_TILE_A : MSX2_BOARD_TILE_B;
 
-			Msx2_ArenaOverFill(tx, ty, MSX2_OVER_TILE_W, MSX2_OVER_TILE_H, face);
-			// The bevel the artwork had: one ring of the other gold, which is
-			// what keeps twenty flat rectangles from reading as one slab.
-			Msx2_ArenaOverFill(tx, ty, MSX2_OVER_TILE_W, 1, edge);
-			Msx2_ArenaOverFill(tx, (i16)(ty + MSX2_OVER_TILE_H - 1),
-			                   MSX2_OVER_TILE_W, 1, edge);
-			Msx2_ArenaOverFill(tx, ty, 1, MSX2_OVER_TILE_H, edge);
-			Msx2_ArenaOverFill((i16)(tx + MSX2_OVER_TILE_W - 1), ty, 1,
-			                   MSX2_OVER_TILE_H, edge);
+			Msx2_ArenaOverFill(tx, ty, MSX2_OVER_TILE_PITCH_X,
+			                   MSX2_OVER_TILE_PITCH_Y, face);
 		}
 	}
 }

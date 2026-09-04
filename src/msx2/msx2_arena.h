@@ -23,12 +23,16 @@
 
 #include "msxgl.h"
 
-// Read one pose's mesh out of the cartridge.  Poses are named by the
-// MSX2_MESH_POSE_* macros in the generated header.
+// Read one pose's mesh and card quads out of the cartridge.  Poses are named
+// by the MSX2_MESH_POSE_* macros in the generated header.
 void Msx2_ArenaPose(u8 pose);
 
 // Which pose is loaded, so a caller can avoid re-reading the resting one.
 u8 Msx2_ArenaCurrentPose(void);
+
+// The projected texture corners belonging to the currently loaded pose.
+// `defense` selects the inscribed quarter-turned footprint.
+const u8* Msx2_ArenaCardQuad(u8 slot, u8 defense);
 
 // Paint the whole board band on the draw page: the two camera-facing slab
 // walls, the twenty floor tiles, and black everywhere the arena is not.

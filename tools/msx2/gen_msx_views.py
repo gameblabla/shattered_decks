@@ -129,9 +129,10 @@ OVER_ART = os.path.join(ROOT, "assets", "source", "msx2", "msx2_3d_top_view.png"
 OVER_Y = BAND_Y                      # the picture starts under the HUD
 OVER_H = HAND_BAND_Y + HAND_BAND_H - BAND_Y     # ... and runs to the panel
 
-# The artwork's own grid, measured off it: tile interiors are 43 wide at a
-# 48-pixel pitch starting at x=12, and 38 tall at a 42-pixel pitch starting at
-# y=0, with a four-pixel gutter of border between rows.
+# The artwork's own grid, measured off it.  The live overhead renderer fills
+# each complete 48x42 pitch with one of the board's two beige face colours: no
+# bevel, outline, or wall-coloured gutter is visible from straight above.  The
+# narrower interior dimensions remain the card-placement reference.
 OVER_TILE_X0, OVER_TILE_PITCH_X, OVER_TILE_W = 12, 48, 43
 OVER_TILE_Y0, OVER_TILE_PITCH_Y, OVER_TILE_H = 0, 42, 38
 # Which tile row each of the board's four rows plays on.  The artwork is a
@@ -719,11 +720,13 @@ MESH_BZ0 = MESH_BX1 + (MESH_ROWS + 1)                      # 40..45
 MESH_BZ1 = MESH_BZ0 + (MESH_COLS + 1)                      # 46..51
 MESH_POINTS = MESH_BZ1 + (MESH_COLS + 1)                   # 52
 
-# One pose record: 52 signed 16-bit x, 52 unsigned y, one flags byte.  x is
-# 16-bit because the arena runs off both sides of the screen during the opening
-# descent; y is a byte because no projected corner of it ever leaves the 212
-# rows.  The stride is a power of two so a record can never straddle a segment.
-MESH_STRIDE = 256
+# One pose record: 52 signed 16-bit x, 52 unsigned y, one flags byte, then the
+# attack- and defence-position card quads for all twenty field cells.  The card
+# corners are already emitted by the shared renderer for every pose; carrying
+# them here is what lets a turn orbit redraw the occupied field on the moving
+# board instead of flipping five empty arenas.  The 512-byte stride keeps every
+# record inside one mapper segment.
+MESH_STRIDE = 512
 
 
 def mesh_index_top(r, c):
@@ -769,6 +772,12 @@ def board_mesh_blob(cap):
         for _x, y in pts:
             rec.append(max(0, min(255, int(round(y)))))
         rec.append(flags)
+        for quads in (cap.poses[tag],
+                      [defence_quad(q) for q in cap.poses[tag]]):
+            for quad in quads:
+                for x, y in quad:
+                    rec.append(max(0, min(255, int(round(x)))))
+                    rec.append(max(0, min(255, int(round(y)))))
         if len(rec) > MESH_STRIDE:
             raise SystemExit("gen_msx_views: mesh record overflows the stride")
         blob += rec + bytes(MESH_STRIDE - len(rec))
@@ -991,16 +1000,11 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     a("#define MSX2_GOLD_COLOR         0x%02X" % grb.pack(*GOLD_RGB))
     a("")
     a("// ONE COPY OF THE GEOMETRY, NOT ONE PER TRANSLATION UNIT.")
-    a("// These four tables used to be `static const` in this header, which a")
-    a("// dozen files include -- so every one of them carried its own copy, and")
-    a("// projecting the two support rows would have doubled all of them at once.")
-    a("// They are declared here and DEFINED once, in msx2_cards.c, which is the")
+    a("// The small retained-view tables live in one translation unit rather than")
+    a("// being duplicated by every source that includes this header.")
+    a("// It is declared here and DEFINED once, in msx2_cards.c, which is the")
     a("// translation unit that already exists to hold generated tables.")
     a("extern const unsigned char g_msx2_over_card_xy[MSX2_FIELD_SLOTS][2];")
-    a("// The projected corners of every field slot, window pixels, in the corner")
-    a("// order the shared renderer hands its rasterizer -- so texture corner 0")
-    a("// lands on the same physical corner here as it does on the PC.")
-    a("extern const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][8];")
     a("// The box a slot's ring and card occupy: what an empty slot restores, and")
     a("// what a repaint has to cover.")
     a("extern const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4];")
@@ -1021,11 +1025,6 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     a("#define MSX2_OP_ENDROW          0x%02X" % OP_ENDROW)
     a("#define MSX2_OP_END             0x%02X" % OP_END)
     a("#define MSX2_OP_RUN_MASK        0x%02X" % OP_MAX_RUN)
-    a("// Slot -> which SPAN_STRIDE-sized record in the blob holds its program.")
-    a("extern const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS];")
-    a("// The same slots for a card in DEFENCE position: turned a quarter turn and")
-    a("// scaled to fit the slot, sampling the pre-turned 48x40 texture set.")
-    a("extern const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS];")
     a("")
     a("// ── Empty-slot tiles ──────────────────────────────────────────────────")
     a("// One set for every stage: the arena is ungraded, so the four stages cut")
@@ -1041,8 +1040,8 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     a("// rectangle four times faster than the Z80 can push bytes at the data")
     a("// port, so the arena is drawn by the command engine from the projected")
     a("// mesh below rather than streamed as 54 KB of pixels a pose.  One record")
-    a("// is 52 corners (x as int16, y as a byte) plus the flags that say which")
-    a("// two slab walls face the camera.")
+    a("// is 52 corners (x as int16, y as a byte), the facing-wall flags, and")
+    a("// attack/defence card quads for all twenty cells.")
     a("#define MSX2_MESH_SEGMENT       %d" % mesh_seg)
     a("#define MSX2_MESH_STRIDE        %d" % MESH_STRIDE)
     a("#define MSX2_MESH_PER_SEG       %d" % (SEGMENT_BYTES // MESH_STRIDE))
@@ -1057,6 +1056,8 @@ def header_lines(baked, view_seg, slot_seg, move_segs, span_seg, mesh_seg):
     a("// bit 0: the +X wall faces the camera.  bit 1: the +Z wall does.")
     a("#define MSX2_MESH_FLAG_XPOS     0x01")
     a("#define MSX2_MESH_FLAG_ZPOS     0x02")
+    a("#define MSX2_MESH_QUAD_OFFSET   %d" % (MESH_POINTS * 3 + 1))
+    a("#define MSX2_MESH_QUAD_BYTES    %d" % (FIELD_SLOTS * 8))
     a("// Pose indices inside the blob.")
     for i, tag in enumerate(baked["mesh_tags"]):
         if tag in ("TOP", "COM"):
@@ -1105,35 +1106,12 @@ def data_lines(baked):
         a("\t{ %d, %d }," % (x, y))
     a("};")
     a("")
-    a("const unsigned char g_msx2_slot_quad[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][8] = {")
-    for tag in baked["view_tags"]:
-        a("\t{")
-        for quad in baked["quads"][tag]:
-            a("\t\t{ %s }," % ", ".join("%d" % max(0, min(255, int(round(v))))
-                                           for p in quad for v in p))
-        a("\t},")
-    a("};")
-    a("")
     a("const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4] = {")
     for tag in baked["view_tags"]:
         a("\t{")
         for box in baked["slot_boxes"][tag]:
             a("\t\t{ %d, %d, %d, %d }," % box)
         a("\t},")
-    a("};")
-    a("")
-    a("const unsigned char g_msx2_span_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {")
-    for view in range(len(baked["view_tags"])):
-        start = view * FIELD_SLOTS
-        a("\t{ %s }," % ", ".join(str(v) for v in
-                                      baked["span_offsets"][start:start + FIELD_SLOTS]))
-    a("};")
-    a("")
-    a("const unsigned char g_msx2_span_def_record[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS] = {")
-    for view in range(len(baked["view_tags"])):
-        start = view * FIELD_SLOTS
-        a("\t{ %s }," % ", ".join(str(v) for v in
-                                      baked["span_def_offsets"][start:start + FIELD_SLOTS]))
     a("};")
     a("")
     return out
