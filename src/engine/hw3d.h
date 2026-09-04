@@ -165,9 +165,10 @@ void waifu_hw2d_text_scale(int percent);
  * of 256 colours -- so this returns 0 everywhere else and the caller keeps its
  * software slash. `t_q8` is the beat progress in Q8 (256 = one full beat;
  * larger values hold the final dim through the event's settle frames), `dir`
- * is +1/-1 for the slash direction. (cx, cy) is the burst centre in game
+ * is +1/-1 for the slash direction. `intensity_q8` is the damage tier in Q8
+ * (256 = the full-strength >2900 hit). (cx, cy) is the burst centre in game
  * screen space. */
-int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir);
+int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir, int intensity_q8);
 
 /* The damage readout for that burst: `s` centred on (cx, cy) with a cap height
  * of `cap_px` game pixels, drawn from the scalable glyph atlas as a warm outer
@@ -219,8 +220,8 @@ static inline int waifu_hw2d_quad_alpha(const int xy[8], uint8_t color, int alph
 static inline int waifu_hw2d_quad_rgba(const int xy[8], uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 { (void)xy; (void)r; (void)g; (void)b; (void)a; return 0; }
 static inline void waifu_hw2d_text_scale(int percent) { (void)percent; }
-static inline int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir)
-{ (void)cx; (void)cy; (void)t_q8; (void)dir; return 0; }
+static inline int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir, int intensity_q8)
+{ (void)cx; (void)cy; (void)t_q8; (void)dir; (void)intensity_q8; return 0; }
 static inline int waifu_hw2d_impact_text(int cx, int cy, int cap_px, const char *s,
                                          int glow_q8, int alpha_q8)
 { (void)cx; (void)cy; (void)cap_px; (void)s; (void)glow_q8; (void)alpha_q8; return 0; }

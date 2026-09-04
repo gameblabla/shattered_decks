@@ -30,7 +30,7 @@ layout(location = 0) out vec4 o_color;
 
 layout(set = 3, binding = 0) uniform ImpactParams {
     vec4 p0;    /* xy = viewport extent in game units, zw = burst centre */
-    vec4 p1;    /* x = beat progress 0..1(+), y = slash direction, zw = unused */
+    vec4 p1;    /* x = beat progress, y = slash direction, z = damage intensity */
 } u_fx;
 
 const float TAU = 6.28318530718;
@@ -78,6 +78,9 @@ void main()
     vec2 centre = u_fx.p0.zw;
     float t = max(u_fx.p1.x, 0.0);
     float dir = u_fx.p1.y;
+    float intensity = clamp(u_fx.p1.z, 0.0, 1.0);
+    float radius_scale = mix(0.52, 1.0, intensity);
+    float light_scale = mix(0.48, 1.0, intensity);
 
     /* NDC -> game screen space (y down, matching the 2D UI transform). */
     vec2 g = vec2((v_ndc.x * 0.5 + 0.5) * extent.x, (0.5 - v_ndc.y * 0.5) * extent.y);
@@ -88,9 +91,11 @@ void main()
     /* Burst sub-progress, and its late pull-back so the beat resolves. */
     float b = clamp((t - BURST_FROM) / (1.0 - BURST_FROM), 0.0, 1.0);
     float settle = smoothstep(0.72, 1.0, b);
-    float R = (12.0 + 118.0 * (1.0 - pow(1.0 - b, 3.0))) * (1.0 - 0.26 * settle);
-    float ringw = mix(9.0, 2.4, b);
-    float core = mix(9.0, 46.0, smoothstep(0.0, 0.22, b)) * (1.0 - smoothstep(0.22, 0.74, b));
+    float R = (12.0 + 118.0 * (1.0 - pow(1.0 - b, 3.0))) *
+              (1.0 - 0.26 * settle) * radius_scale;
+    float ringw = mix(9.0, 2.4, b) * radius_scale;
+    float core = mix(9.0, 46.0, smoothstep(0.0, 0.22, b)) *
+                 (1.0 - smoothstep(0.22, 0.74, b)) * radius_scale;
 
     vec3 light = vec3(0.0);
 
@@ -159,12 +164,12 @@ void main()
        The relief around the centre only exists so the hottest part of the
        burst is not sitting on pure black; it has to stay tight, because any
        wider and it is the attacker's card that shows through it. */
-    float dim = 0.97 * smoothstep(0.09, 0.24, t);
+    float dim = mix(0.40, 0.97, intensity) * smoothstep(0.09, 0.24, t);
     dim *= 1.0 - 0.35 * gauss(r, 40.0);
 
     /* Everything releases over the last tenth of the beat; past t = 1 the
        caller is holding the settle frames, so only the dim remains. */
-    light *= 1.0 - smoothstep(0.90, 1.02, t);
+    light *= light_scale * (1.0 - smoothstep(0.90, 1.02, t));
 
     o_color = vec4(light, clamp(dim, 0.0, 1.0));
 }

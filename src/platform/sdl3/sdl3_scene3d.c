@@ -357,10 +357,10 @@ int waifu_platform_glyph(int x, int y, int cell_w, unsigned char ch, uint8_t fg,
  * The burst itself is not geometry: it is one whole-viewport shader pass
  * (shaders/impact.frag) queued as its own UI run, so the attacker card
  * captured before it stays underneath and the damage readout captured after it
- * stays on top. Only the choreography's progress crosses the seam -- the look
- * lives entirely in the shader.
+ * stays on top. The choreography's progress and damage tier cross the seam;
+ * the look lives entirely in the shader.
  * ------------------------------------------------------------------------- */
-int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir)
+int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir, int intensity_q8)
 {
     Sdl3ImpactFx *fx;
     if (g_frame.impact_fx_count >= SDL3_MAX_IMPACT_FX) return 1;  /* drawn once already */
@@ -369,6 +369,8 @@ int waifu_hw2d_impact_fx(int cx, int cy, int t_q8, int dir)
     fx->cy = (float)cy;
     fx->t = (float)t_q8 / 256.0f;
     fx->dir = (dir < 0) ? -1.0f : 1.0f;
+    fx->intensity = (float)(intensity_q8 < 0 ? 0 :
+                            intensity_q8 > 256 ? 256 : intensity_q8) / 256.0f;
     ui_append_impact(g_frame.impact_fx_count);
     g_frame.impact_fx_count++;
     g_frame.has_content = 1;

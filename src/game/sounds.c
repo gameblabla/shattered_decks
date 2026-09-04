@@ -5,7 +5,7 @@
 
 /* Consoles that have their own sound hardware do not use the portable
  * software mixer below, and must not link src/generated/sound_assets.h with
- * it: that header is ~190 KB of PCM, and on FM TOWNS the payload has a hard
+ * it: that header is several MiB of PCM, and on FM TOWNS the payload has a hard
  * 512 KiB boot ceiling (see Makefile.fmtowns's PAYLOAD_LIMIT).  --gc-sections
  * cannot drop it there either, because the payload's final link is
  * -shared -Bsymbolic, which makes every global an export and therefore a GC
@@ -38,12 +38,16 @@ extern void waifu_fmtowns_sfx_play(int effect);
 typedef struct WaifuSoundVoice {
     int active;
     WaifuSoundEffect effect;
+    int variant;
     int pos;
 } WaifuSoundVoice;
 
 static WaifuSoundVoice g_voices[WAIFU_SOUND_MAX_VOICES];
 static WaifuMusicTrack g_music_track = WAIFU_MUSIC_NONE;
 static uint32_t g_music_pos = 0;
+#if defined(WAIFU_SOUND_USE_STREAMED_MUSIC)
+static unsigned char g_next_sound_variant[WAIFU_SOUND_EFFECT_COUNT];
+#endif
 
 static int16_t clamp_s16(int v)
 {
@@ -252,44 +256,46 @@ static void music_next_frame(WaifuMusicStream *st, int *l, int *r)
 #endif /* WAIFU_SOUND_USE_STREAMED_MUSIC */
 
 #if defined(WAIFU_FM_PCFX) || defined(WAIFU_FM_CD32X) || defined(WAIFU_FM_FMTOWNS)
-static int asset_count(void)
-{
-    return WAIFU_SOUND_EFFECT_COUNT;
-}
-
-static int asset_length(WaifuSoundEffect effect)
+static int asset_length(WaifuSoundEffect effect, int variant)
 {
     (void)effect;
+    (void)variant;
     return 0;
 }
 
-static int16_t asset_sample_s16(WaifuSoundEffect effect, int pos)
+static int16_t asset_sample_s16(WaifuSoundEffect effect, int variant, int pos)
 {
     (void)effect;
+    (void)variant;
     (void)pos;
     return 0;
 }
 #else
-static int asset_count(void)
+static int asset_variant_count(WaifuSoundEffect effect)
 {
-    return (int)(sizeof(waifu_sound_assets) / sizeof(waifu_sound_assets[0]));
+    if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return 0;
+    return waifu_sound_assets[(int)effect].variant_count;
 }
 
-static int16_t asset_sample_s16(WaifuSoundEffect effect, int pos)
+static int asset_length(WaifuSoundEffect effect, int variant)
 {
+    const WaifuSoundAssetSet *set;
+    if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return 0;
+    set = &waifu_sound_assets[(int)effect];
+    if (variant < 0 || variant >= set->variant_count) return 0;
+    return waifu_sound_asset_variants[set->first_variant + variant].frame_count;
+}
+
+static int16_t asset_sample_s16(WaifuSoundEffect effect, int variant, int pos)
+{
+    const WaifuSoundAssetSet *set;
     const WaifuSoundAsset *a;
     if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return 0;
-    if ((int)effect >= asset_count()) return 0;
-    a = &waifu_sound_assets[(int)effect];
+    set = &waifu_sound_assets[(int)effect];
+    if (variant < 0 || variant >= set->variant_count) return 0;
+    a = &waifu_sound_asset_variants[set->first_variant + variant];
     if (pos < 0 || pos >= a->frame_count) return 0;
     return (int16_t)(((int)a->pcm_u8[pos] - 128) << 8);
-}
-
-static int asset_length(WaifuSoundEffect effect)
-{
-    if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return 0;
-    if ((int)effect >= asset_count()) return 0;
-    return waifu_sound_assets[(int)effect].frame_count;
 }
 
 #endif
@@ -381,6 +387,7 @@ void waifu_sound_init(void)
     g_music_track = WAIFU_MUSIC_NONE;
     g_music_pos = 0;
 #if defined(WAIFU_SOUND_USE_STREAMED_MUSIC)
+    memset(g_next_sound_variant, 0, sizeof(g_next_sound_variant));
     music_stream_close(&g_music_stream);
 #endif
 }
@@ -391,6 +398,7 @@ void waifu_sound_reset(void)
     g_music_track = WAIFU_MUSIC_NONE;
     g_music_pos = 0;
 #if defined(WAIFU_SOUND_USE_STREAMED_MUSIC)
+    memset(g_next_sound_variant, 0, sizeof(g_next_sound_variant));
     music_stream_close(&g_music_stream);
 #endif
 }
@@ -446,8 +454,17 @@ void waifu_sound_play(WaifuSoundEffect effect)
 #else
     int i;
     int best = -1;
+    int variant;
+    int variants;
     if (effect < 0 || effect >= WAIFU_SOUND_EFFECT_COUNT) return;
-    if (asset_length(effect) <= 0) return;
+    variants = asset_variant_count(effect);
+    if (variants <= 0) return;
+    variant = 0;
+#if defined(WAIFU_SOUND_USE_STREAMED_MUSIC)
+    variant = g_next_sound_variant[(int)effect] % (unsigned char)variants;
+    g_next_sound_variant[(int)effect] = (unsigned char)((variant + 1) % variants);
+#endif
+    if (asset_length(effect, variant) <= 0) return;
 
     for (i = 0; i < WAIFU_SOUND_MAX_VOICES; ++i) {
         if (!g_voices[i].active) {
@@ -467,6 +484,7 @@ void waifu_sound_play(WaifuSoundEffect effect)
     if (best < 0) return;
     g_voices[best].active = 1;
     g_voices[best].effect = effect;
+    g_voices[best].variant = variant;
     g_voices[best].pos = 0;
 #endif
 }
@@ -517,11 +535,13 @@ void waifu_sound_mix_s16(int16_t *dst, int frames)
         /* Sound effects are mono and play centred on both channels. */
         for (i = 0; i < WAIFU_SOUND_MAX_VOICES; ++i) {
             if (g_voices[i].active) {
-                int len = asset_length(g_voices[i].effect);
+                int len = asset_length(g_voices[i].effect, g_voices[i].variant);
                 if (g_voices[i].pos >= len) {
                     g_voices[i].active = 0;
                 } else {
-                    int s = asset_sample_s16(g_voices[i].effect, g_voices[i].pos++);
+                    int s = asset_sample_s16(g_voices[i].effect,
+                                             g_voices[i].variant,
+                                             g_voices[i].pos++);
                     sfx += (s * WAIFU_SOUND_SFX_GAIN_NUM) / WAIFU_SOUND_SFX_GAIN_DEN;
                     if (g_voices[i].pos >= len) g_voices[i].active = 0;
                 }

@@ -106,6 +106,7 @@ typedef struct Sdl3ImpactFx {
     float cx, cy;                   /* burst centre, game screen space */
     float t;                        /* beat progress; >= 1 holds the final dim */
     float dir;                      /* +1 / -1 blade sweep direction */
+    float intensity;                /* damage tier, 0..1 */
 } Sdl3ImpactFx;
 
 typedef struct Sdl3UiRun {

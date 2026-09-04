@@ -948,7 +948,7 @@ static void draw_ui_runs(WaifuSdl3Video *v, SDL_GPUCommandBuffer *cmd,
             const float *screen = run->hud ? hud_screen : ui_screen;
             float ip[8];
             ip[0] = screen[0]; ip[1] = screen[1]; ip[2] = fx->cx; ip[3] = fx->cy;
-            ip[4] = fx->t;     ip[5] = fx->dir;   ip[6] = 0.0f;   ip[7] = 0.0f;
+            ip[4] = fx->t;     ip[5] = fx->dir;   ip[6] = fx->intensity; ip[7] = 0.0f;
             SDL_BindGPUGraphicsPipeline(rp, v->pl_impact);
             bound = v->pl_impact;
             SDL_PushGPUFragmentUniformData(cmd, 0, ip, sizeof(ip));

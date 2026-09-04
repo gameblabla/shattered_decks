@@ -322,6 +322,13 @@ static int g_turn_capture_geom_ok[WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS];
 #define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES \
     (WAIFU_DIRECT_FX_START + WAIFU_DIRECT_FX_FRAMES - \
      WAIFU_DIRECT_SLIDE_FRAMES - WAIFU_DIRECT_LUNGE_FRAMES)
+#define WAIFU_FACE_DOWN_PLACE_BACK 1
+#else
+/* The palette-console placement beat retains its authored front-to-back flip.
+   The desktop renderer submits full-resolution card art asynchronously, so a
+   face-down placement starts on the back immediately and never queues a stale
+   front texture during the flight. */
+#define WAIFU_FACE_DOWN_PLACE_BACK 2
 #endif
 
 #define DUEL_PREVIEW_END 270
@@ -1030,6 +1037,7 @@ static int g_b_top_prev_col = 0;
 static int g_b_top_prev_row = 2;
 static int g_b_top_cursor_anim = 8;
 static int g_b_attack_attacker_slot = -1;
+static int g_b_direct_damage = 0;
 
 #if defined(WAIFU_FM_PCFX)
 #define BATTLE_BURN_DUR 12
@@ -8374,6 +8382,22 @@ static uint8_t direct_fx_heat(int32_t q, int shift)
     return k_direct_fx_ramp[i];
 }
 
+/* Forbidden Memories makes a direct hit feel proportional to the attacker's
+   strength. Keep the three familiar thresholds from the reference while
+   avoiding a binary on/off jump at the boundary. */
+static int direct_attack_intensity_q8(int damage)
+{
+    if (damage > 2900) return Q8_ONE;
+    if (damage > 1900) return Q8_FRAC(3, 4);
+    return Q8_HALF;
+}
+
+static int direct_fx_scale(int value, int intensity_q8)
+{
+    int scaled = (value * intensity_q8 + Q8_HALF) >> Q8_SHIFT;
+    return scaled < 1 ? 1 : scaled;
+}
+
 /* Annulus of outer radius r and thickness th, drawn as two clipped spans per
    row like draw_disc() does for the solid case. */
 static void draw_ring(int cx, int cy, int r, int th, uint8_t c)
@@ -8459,7 +8483,7 @@ static void direct_fx_blade(int cx, int cy, int dir, int32_t head, int32_t tail,
 }
 
 static void draw_direct_attack_fx_software(int impact_x, int impact_y, int t, int attacker_owner,
-                                           const char *damage_text)
+                                           const char *damage_text, int intensity_q8)
 {
     const int dir = (attacker_owner == 0) ? 1 : -1;
     const int cx = impact_x;
@@ -8491,8 +8515,10 @@ static void draw_direct_attack_fx_software(int impact_x, int impact_y, int t, in
         /* Dull red bloom under the rays: swells with the shock and then sinks
            back so the last frames dim out instead of holding a flat disc. */
         int gr = (t < 26)
-               ? lerp_i(22, 92, q8_smoothstep(q8_ratio(t - 11, 15)))
-               : lerp_i(92, 26, q8_smoothstep(q8_clamp(q8_ratio(t - 26, 45), 0, Q8_ONE)));
+               ? lerp_i(direct_fx_scale(22, intensity_q8), direct_fx_scale(92, intensity_q8),
+                        q8_smoothstep(q8_ratio(t - 11, 15)))
+               : lerp_i(direct_fx_scale(92, intensity_q8), direct_fx_scale(26, intensity_q8),
+                        q8_smoothstep(q8_clamp(q8_ratio(t - 26, 45), 0, Q8_ONE)));
         draw_disc(cx, cy, gr, k_direct_fx_ramp[7]);
         draw_disc(cx, cy, (gr * 5) / 8, k_direct_fx_ramp[6]);
     }
@@ -8503,16 +8529,19 @@ static void draw_direct_attack_fx_software(int impact_x, int impact_y, int t, in
         /* ease-out cubic so the ring leaps out and then coasts */
         int32_t inv = Q8_ONE - u;
         int32_t ease = Q8_ONE - q8_mul(inv, q8_mul(inv, inv));
-        int ring_r = lerp_i(10, 118, ease);
+        int ring_r = lerp_i(direct_fx_scale(10, intensity_q8),
+                            direct_fx_scale(118, intensity_q8), ease);
         int core_r = (u < Q8_FRAC(32, 100))
-                   ? lerp_i(6, 44, q8_smoothstep(q8_div(u, Q8_FRAC(32, 100))))
-                   : lerp_i(44, 0, q8_smoothstep(q8_clamp(q8_div(u - Q8_FRAC(32, 100), Q8_FRAC(42, 100)), 0, Q8_ONE)));
+                   ? lerp_i(direct_fx_scale(6, intensity_q8), direct_fx_scale(44, intensity_q8),
+                            q8_smoothstep(q8_div(u, Q8_FRAC(32, 100))))
+                   : lerp_i(direct_fx_scale(44, intensity_q8), 0,
+                            q8_smoothstep(q8_clamp(q8_div(u - Q8_FRAC(32, 100), Q8_FRAC(42, 100)), 0, Q8_ONE)));
         /* Past three quarters of the beat everything pulls back in and cools
            an extra ramp step, so the effect resolves instead of stopping. */
         int32_t decay = (u > Q8_FRAC(72, 100))
                       ? q8_smoothstep(q8_div(u - Q8_FRAC(72, 100), Q8_FRAC(28, 100))) : 0;
         int cool = decay > Q8_HALF ? 2 : (decay > 0 ? 1 : 0);
-        int pull = q8_to_int(q8_mul(Q8_FROM_INT(34), decay));
+        int pull = direct_fx_scale(q8_to_int(q8_mul(Q8_FROM_INT(34), decay)), intensity_q8);
 
         /* Rays: 32 spokes with a per-spoke length jitter, drawn under the core
            so the disc always reads as the hot centre. */
@@ -8521,7 +8550,8 @@ static void draw_direct_attack_fx_software(int impact_x, int impact_y, int t, in
             int32_t sn = q8_sin_turn(a), cs = q8_cos_turn(a);
             int jitter = (int)(pseudo_rand(i * 977) % 38);
             int r_in  = core_r > 4 ? (core_r * 3) / 4 : 2;
-            int r_out = ring_r + jitter - 16 - pull;
+            int r_out = ring_r + direct_fx_scale(jitter, intensity_q8) -
+                        direct_fx_scale(16, intensity_q8) - pull;
             if (r_out <= r_in) continue;
             uint8_t c = direct_fx_heat(u, cool + ((i & 3) ? 1 : 0));
             int x0 = cx + q8_to_int(q8_mul(Q8_FROM_INT(r_in), cs));
@@ -8537,7 +8567,7 @@ static void draw_direct_attack_fx_software(int impact_x, int impact_y, int t, in
 
         /* Expanding shock ring, cooling as it goes. */
         if (ring_r - pull > 8) {
-            int th = lerp_i(9, 2, u);
+            int th = direct_fx_scale(lerp_i(9, 2, u), intensity_q8);
             draw_ring(cx, cy, ring_r - pull, th, direct_fx_heat(u, cool + 1));
             draw_ring(cx, cy, ring_r - pull, th / 2 + 1, direct_fx_heat(u, cool));
         }
@@ -8579,14 +8609,18 @@ static void draw_direct_attack_fx(int impact_x, int impact_y, int t, int attacke
                                   const char *damage_text)
 {
     int t_q8, cap_px, glow_q8, alpha_q8, e;
+    int intensity_q8 = direct_attack_intensity_q8(g_b_direct_damage);
 
     if (t < 0) return;
     /* Past the beat the caller is in the event's settle frames: keep feeding
        the pass so it holds its blackout instead of popping back to the arena. */
     t_q8 = q8_ratio(t, WAIFU_DIRECT_FX_FRAMES);
 
-    if (!waifu_hw2d_impact_fx(impact_x, impact_y, t_q8, (attacker_owner == 0) ? 1 : -1)) {
-        draw_direct_attack_fx_software(impact_x, impact_y, t, attacker_owner, damage_text);
+    if (!waifu_hw2d_impact_fx(impact_x, impact_y, t_q8,
+                              (attacker_owner == 0) ? 1 : -1,
+                              intensity_q8)) {
+        draw_direct_attack_fx_software(impact_x, impact_y, t, attacker_owner,
+                                       damage_text, intensity_q8);
         return;
     }
 
@@ -8594,9 +8628,12 @@ static void draw_direct_attack_fx(int impact_x, int impact_y, int t, int attacke
     e = t - WAIFU_DIRECT_FX_TEXT_START;
     /* Punch in from oversized and settle, then hold; the glow blooms with the
        entry and eases off so the number stops competing with the rays. */
-    cap_px = (e < 6) ? lerp_i(48, 27, q8_smooth_ratio(e, 6)) : 27;
+    cap_px = direct_fx_scale((e < 6) ? lerp_i(48, 27, q8_smooth_ratio(e, 6)) : 27,
+                             intensity_q8);
     alpha_q8 = (e < 3) ? q8_ratio(e + 1, 3) : Q8_ONE;
-    glow_q8 = (e < 10) ? lerp_i(Q8_ONE * 5 / 2, Q8_ONE, q8_smooth_ratio(e, 10)) : Q8_ONE;
+    glow_q8 = direct_fx_scale((e < 10)
+                                  ? lerp_i(Q8_ONE * 5 / 2, Q8_ONE, q8_smooth_ratio(e, 10))
+                                  : Q8_ONE, intensity_q8);
     if (t >= WAIFU_DIRECT_FX_FRAMES - 5)
         alpha_q8 = q8_mul(alpha_q8, Q8_ONE - q8_ratio(t - (WAIFU_DIRECT_FX_FRAMES - 5), 5));
     /* Centre the readout on the burst itself.  The impact can be on either
@@ -8604,7 +8641,7 @@ static void draw_direct_attack_fx(int impact_x, int impact_y, int t, int attacke
        detached from the hit. */
     if (!waifu_hw2d_impact_text(impact_x, impact_y, cap_px, damage_text,
                                 glow_q8, alpha_q8)) {
-        int scale = (e < 2) ? 5 : ((e < 4) ? 4 : 3);
+        int scale = direct_fx_scale((e < 2) ? 5 : ((e < 4) ? 4 : 3), intensity_q8);
         int tw = direct_fx_number_width(damage_text, scale);
         int tx = impact_x - tw / 2;
         draw_direct_fx_number(tx, impact_y - (8 * scale) / 2, damage_text, scale,
@@ -10507,7 +10544,6 @@ static int g_i_com_attacked[I_FIELD];
 static int g_b_draw_slots[I_HAND];
 static int g_b_draw_count = 0;
 static int g_b_player_hand_intro_pending = 1;
-static int g_b_direct_damage = 0;
 static int g_i_player_deck_left = 35;
 static int g_i_com_deck_left = 35;
 static WaifuDeck g_i_player_deck;
@@ -14036,7 +14072,8 @@ static int battle_base_cache_restore(Camera cam, uint32_t key)
             for (int path_frame = 0; path_frame <= WAIFU_PCFX_PLACE_FRAMES; ++path_frame) {
                 if (flying_card_layout(cam, g_b_place_hand, g_b_place_slot, row,
                                        path_frame, 0, WAIFU_PCFX_PLACE_FRAMES,
-                                       g_b_phase == IB_PLAYER_PLACE ? 2 : 1, &path_card)) {
+                                       g_b_phase == IB_PLAYER_PLACE ? WAIFU_FACE_DOWN_PLACE_BACK : 1,
+                                       &path_card)) {
                     int px0 = path_card.x - 4;
                     int py0 = path_card.y - 4;
                     int px1 = path_card.x + path_card.w + 4;
@@ -16417,10 +16454,10 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
                     set_battle_phase(IB_PLAYER_EQUIP_TARGET);
                 } else if (is_trap_support_card(selected_card)) {
                     /* Set the Trap face-down on the support (equip) row; it
-                       auto-fires when a COM monster declares an attack.  Run the
-                       same flying-card placement animation as a monster summon
-                       (back=2 flips it face-down on landing) instead of snapping
-                       it straight onto the field. */
+                       auto-fires when a COM monster declares an attack. Run
+                       the same flying-card placement animation as a monster
+                       summon, with the desktop path showing the card back from
+                       the first frame so a stale front texture cannot flash. */
                     int free_slot = first_free_player_equip_slot();
                     if (free_slot >= 0) {
                         clear_player_fusion_queue();
@@ -16549,7 +16586,7 @@ static void step_battle_interactive(const WaifuFmInput *input, int press_up, int
 #else
         draw_zone_cursor(placement_camera(), g_b_place_slot, place_row);
 #endif
-        draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, place_row, g_b_phase_frame, 0, WAIFU_PCFX_PLACE_FRAMES, 2);
+        draw_flying_card(placement_camera(), g_b_place_card, g_b_place_hand, g_b_place_slot, place_row, g_b_phase_frame, 0, WAIFU_PCFX_PLACE_FRAMES, WAIFU_FACE_DOWN_PLACE_BACK);
         draw_interactive_player_hand(999, g_b_place_hand, q8_to_int(q8_mul(Q8_FROM_INT(92), q8_smooth_ratio(g_b_phase_frame, WAIFU_PCFX_PLACE_SETTLE_FRAMES))), 1);
 #if !(defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE))
         draw_bottom_info(g_b_place_card, g_b_place_trap ? "SET" : "PLACE");
