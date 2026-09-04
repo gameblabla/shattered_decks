@@ -35,6 +35,12 @@ ProjModules = [
 	//   puts it just past crt0, far below the window; pack_msx_rom.py fails the
 	//   build if that ever stops being true.
 	"msx2_stream",
+	// These MSXgl modules are explicit project objects so they are placed
+	// beside the streamer, below the 0x8000 window.  Keeping them in LibModules
+	// would make the linker pull them after every project object.
+	"msx2_psg",
+	"msx2_lvgm",
+	"msx2_audio",
 	"msx2_main",
 	"msx2_title",
 	"msx2_video",
@@ -48,7 +54,6 @@ ProjModules = [
 	"msx2_cards",
 	"msx2_probe",
 	"msx2_regression",
-	"msx2_audio",
 ];
 
 //-- Shared, platform-neutral game logic, compiled unmodified.

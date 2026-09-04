@@ -6,6 +6,9 @@
 #include "msx2_sprite.h"
 #include "msx2_video.h"
 #include "msx2_scenes.h"
+#ifdef MSX2_DEBUG_REGRESSION
+#include "msx2_probe.h"
+#endif
 
 // NEO-16 maps three 16 KB banks; writing a 16-bit segment number to the bank's
 // magic address switches it.  Bank 2 is 0x8000-0xBFFF -- the streaming window.
@@ -70,14 +73,19 @@ static void Msx2_StreamChunk(void)
 
 		ld		hl, #MSX2_NEO_CODE_SEGMENT
 		ld		(#MSX2_NEO_BANK2_REG), hl	// map the code back
-		ei
+		ld		(_g_bank2), hl				// keep the ISR's shadow coherent
 	__endasm;
+	__asm ei __endasm;
 }
 
 void Msx2_StreamSceneBlanked(u16 segment, u8 page)
 {
 	u16 remaining = MSX2_SCENE_BYTES;
 	u8 chunk = 0;
+
+#ifdef MSX2_DEBUG_REGRESSION
+	++g_msx2_regression_diag.full_view_streams;
+#endif
 
 	while(remaining != 0)
 	{
@@ -110,9 +118,9 @@ void Msx2_StreamScene(u16 segment, u8 page)
 	// GRAPHIC 7 cannot keep up with OTIR while it is scanning out; blanking is
 	// what makes the copy legal, and it is invisible anyway because a streamed
 	// scene is always presented by a page flip afterwards.
-	VDP_EnableDisplay(FALSE);
+	Msx2_VideoDisplayBlank();
 	Msx2_StreamSceneBlanked(segment, page);
-	VDP_EnableDisplay(TRUE);
+	Msx2_VideoDisplayRestore();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,8 +178,9 @@ static void Msx2_BlitRow(void)
 
 		ld		hl, #MSX2_NEO_CODE_SEGMENT
 		ld		(#MSX2_NEO_BANK2_REG), hl
-		ei
+		ld		(_g_bank2), hl				// keep the ISR's shadow coherent
 	__endasm;
+	__asm ei __endasm;
 }
 
 void Msx2_StreamRect(u16 segment, u16 offset, u8 x, u8 y, u8 w, u8 h)
@@ -224,6 +233,10 @@ void Msx2_StreamRect(u16 segment, u16 offset, u8 x, u8 y, u8 w, u8 h)
 void Msx2_StreamBand(u16 segment, u8 y, u8 h)
 {
 	VDP_CommandWait();
+
+#ifdef MSX2_DEBUG_REGRESSION
+	++g_msx2_regression_diag.band_streams;
+#endif
 
 	u8 page = Msx2_VideoGetDrawPage();
 	u16 offset = 0;
@@ -407,6 +420,7 @@ void Msx2_RomRead(u16 segment, u16 offset, u8* dst, u8 len)
 
 		ld		hl, #MSX2_NEO_CODE_SEGMENT
 		ld		(#MSX2_NEO_BANK2_REG), hl
-		ei
+		ld		(_g_bank2), hl				// keep the ISR's shadow coherent
 	__endasm;
+	__asm ei __endasm;
 }

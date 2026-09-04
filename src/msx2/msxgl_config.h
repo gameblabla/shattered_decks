@@ -479,9 +479,9 @@
 
 // LVGM replayer options
 #define LVGM_USE_PSG				TRUE	// Add parser for PSG data
-#define LVGM_USE_MSXMUSIC			TRUE	// Add parser for MSX-Music data
-#define LVGM_USE_MSXAUDIO			TRUE	// Add parser for MSX-Audio data
-#define LVGM_USE_SCC				TRUE	// Add parser for Konami SCC data
+#define LVGM_USE_MSXMUSIC			FALSE	// PSG-only cartridge recordings
+#define LVGM_USE_MSXAUDIO			FALSE	// PSG-only cartridge recordings
+#define LVGM_USE_SCC				FALSE	// PSG-only cartridge recordings
 #define LVGM_USE_SCCI				FALSE	// Add parser for Konami SCC+ data
 #define LVGM_USE_PSG2				FALSE	// Add parser for secondary PSG data
 #define LVGM_USE_OPL4				FALSE	// Add parser for OPL4 data

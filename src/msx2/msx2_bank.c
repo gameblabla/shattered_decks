@@ -6,15 +6,21 @@
 #include "msx2_screens.h"
 #include "msx2_story.h"
 #include "msx2_board.h"
+#include "msx2_probe.h"
 
 // NEO-16's page-0 bank register.  Writing a 16-bit segment number to it maps
 // that segment at 0x0000; the address itself is ROM, so the write only ever
 // reaches the mapper.
 #define MSX2_NEO_BANK0_REG  0x5000
+#define MSX2_NEO_BANK2_REG  0x7000
+#define MSX2_BANK2_CODE     1
 
 // The mapper is write-only, so the current segment is tracked here.  It starts
 // at segment 2 because that is what crt0 maps at boot.
 static u16 g_bank0 = MSX2_BANK0_DUEL;
+// The streamer restores bank 2 in inline assembly while interrupts are still
+// disabled; it updates this shadow directly before re-enabling them.
+u16 g_bank2 = MSX2_BANK2_CODE;
 
 u16 Msx2_Bank0Enter(u16 segment)
 {
@@ -39,6 +45,26 @@ void Msx2_Bank0Leave(u16 segment)
 u16 Msx2_Bank0Current(void)
 {
 	return g_bank0;
+}
+
+u16 Msx2_Bank2Enter(u16 segment)
+{
+	u16 previous = g_bank2;
+	if(segment != previous)
+	{
+		g_bank2 = segment;
+		*(u16*)MSX2_NEO_BANK2_REG = segment;
+	}
+	return previous;
+}
+
+void Msx2_Bank2Leave(u16 segment)
+{
+	if(segment != g_bank2)
+	{
+		g_bank2 = segment;
+		*(u16*)MSX2_NEO_BANK2_REG = segment;
+	}
 }
 
 // ── The trampolines ─────────────────────────────────────────────────────────
@@ -114,6 +140,29 @@ u8 Msx2_BoardStep(void)
 	return what;
 }
 
+#ifdef MSX2_DEBUG_REGRESSION
+void Msx2_ProbeRegressionCopy(Msx2Probe* probe)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	Msx2_ProbeRegressionCopy_In(probe);
+	Msx2_Bank0Leave(back);
+}
+
+void Msx2_BoardRegressionFixture(u8 fixture)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_DUEL);
+	Msx2_BoardRegressionFixture_In(fixture);
+	Msx2_Bank0Leave(back);
+}
+
+void Msx2_BoardRegressionStamp(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_DUEL);
+	Msx2_BoardRegressionStamp_In();
+	Msx2_Bank0Leave(back);
+}
+#endif
+
 // ── The story screens ───────────────────────────────────────────────────────
 
 void Msx2_StoryBegin(void)
@@ -168,3 +217,19 @@ u8 Msx2_StoryStep(void)
 	Msx2_Bank0Leave(back);
 	return what;
 }
+
+#ifdef MSX2_DEBUG_REGRESSION
+void Msx2_StoryRegressionFixture(u8 fixture)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_STORY);
+	Msx2_StoryRegressionFixture_In(fixture);
+	Msx2_Bank0Leave(back);
+}
+
+void Msx2_StoryRegressionStamp(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_STORY);
+	Msx2_StoryRegressionStamp_In();
+	Msx2_Bank0Leave(back);
+}
+#endif

@@ -38,3 +38,16 @@
 u16  Msx2_Bank0Enter(u16 segment);
 void Msx2_Bank0Leave(u16 segment);
 u16  Msx2_Bank0Current(void);
+
+// The 0x8000 window is shared by the streamer and the resident audio ISR.
+// Both users save and restore this shadow rather than assuming that segment 1
+// is still mapped after another banked operation has returned.
+u16  Msx2_Bank2Enter(u16 segment);
+void Msx2_Bank2Leave(u16 segment);
+
+#ifdef MSX2_DEBUG_REGRESSION
+void Msx2_BoardRegressionFixture(u8 fixture);
+void Msx2_BoardRegressionStamp(void);
+void Msx2_StoryRegressionFixture(u8 fixture);
+void Msx2_StoryRegressionStamp(void);
+#endif

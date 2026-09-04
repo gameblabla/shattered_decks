@@ -40,6 +40,9 @@ SEG4_END = 0x4000
 RESIDENT_SYMBOLS = [
     "_Msx2_StreamChunk", "_Msx2_StreamSetVramChunk", "_Msx2_StreamScene",
     "_Msx2_BlitRow", "_Msx2_StreamRect", "_Msx2_RomRead",
+    "_Msx2_AudioTick", "_Msx2_LvgmNotify", "_Msx2_Bank2Enter",
+    "_Msx2_Bank2Leave", "_LVGM_Play", "_LVGM_Stop", "_LVGM_Decode",
+    "_LVGM_DecodePSG", "_PSG_Apply", "_PSG_Mute",
 ]
 
 
