@@ -146,12 +146,10 @@ static Msx2Edge g_eb;
 static u8  g_run_rows;      // scanlines this call walks
 static u8  g_run_draw;      // 0 = step the edges but paint nothing
 static u8  g_run_color;
-static u8  g_cov_index;     // row - g_band_y0
-static u16 g_run_yv;        // VRAM row of the current one, page included
+static u16 g_cov_lp;        // cursors into g_cov_l / g_cov_r for this row
+static u16 g_cov_rp;
 static u16 g_clip0b;        // the clip window, biased
 static u16 g_clip1b;
-static u16 g_tmp_xl;
-static u16 g_tmp_xr;
 
 // THE ROW LOOP IS ASSEMBLY, AND THAT IS THE WHOLE PERFORMANCE STORY.
 //
@@ -176,86 +174,94 @@ static void Msx2_PolyRun(void)
 	__asm
 	00200$:
 		// ── order the two chains: the smaller x is the left edge ──────────
+		// The pair stays in HL and DE from here to the width; ordering them
+		// through two memory temporaries and reading them back for the clip
+		// cost more than the clip did.
 		ld		hl, (_g_ea + 0)
 		ld		de, (_g_eb + 0)
-		ld		(_g_tmp_xl), hl
-		ld		(_g_tmp_xr), de
+		push	hl
 		or		a
 		sbc		hl, de
+		pop		hl
 		jr		c, 00201$				// A is left of B: already in order
-		ld		hl, (_g_eb + 0)
-		ld		(_g_tmp_xl), hl
-		ld		hl, (_g_ea + 0)
-		ld		(_g_tmp_xr), hl
+		ex		de, hl					// B is
 	00201$:
 		ld		a, (_g_run_draw)
 		or		a
-		jp		z, 00230$
+		jp		z, 00229$
 
-		// ── clip ─────────────────────────────────────────────────────────
-		ld		hl, (_g_tmp_xl)
-		ld		de, (_g_clip0b)
+		// ── clip: hl = max(hl, clip0b), de = min(de, clip1b) ──────────────
+		ld		bc, (_g_clip0b)
+		push	hl
 		or		a
-		sbc		hl, de
+		sbc		hl, bc
+		pop		hl
 		jr		nc, 00202$
-		ld		(_g_tmp_xl), de
+		ld		h, b
+		ld		l, c
 	00202$:
-		ld		hl, (_g_tmp_xr)
-		ld		de, (_g_clip1b)
+		ld		bc, (_g_clip1b)
+		push	hl
+		ld		h, d
+		ld		l, e
 		or		a
-		sbc		hl, de
+		sbc		hl, bc
+		pop		hl
 		jr		c, 00203$
-		ld		(_g_tmp_xr), de
+		ld		d, b
+		ld		e, c
 	00203$:
 		// width = xr - xl.  Zero or negative means the span missed the window.
-		ld		hl, (_g_tmp_xr)
-		ld		de, (_g_tmp_xl)
+		ex		de, hl					// hl = xr, de = xl
 		or		a
 		sbc		hl, de
-		jr		z, 00230$
+		jr		z, 00229$
 		bit		7, h
-		jr		nz, 00230$
+		jr		nz, 00229$
 		ld		(_g_span_n), hl
 
-		// x = xl - the bias, which is a byte again by construction
-		ex		de, hl					// hl = xl (biased)
-		ld		de, #0xFE00				// -POLY_XBIAS
-		add		hl, de
-		ld		a, l
+		// x is xl minus the bias, and the bias is 512: its low byte is zero,
+		// so the subtraction is already done -- E is the first pixel.
+		ld		a, e
 		ld		(_g_span_x), a
 
 		// ── coverage, so the backdrop knows what it need NOT fill ─────────
-		ld		c, a					// c = the span's first pixel
-		ld		a, (_g_cov_index)
-		ld		e, a
-		ld		d, #0
-		ld		hl, #_g_cov_l
-		add		hl, de
-		ld		a, c
+		// Two cursors that walk with the rows, rather than base + index
+		// rebuilt from g_cov_index every time.
+		ld		e, a					// e = the span's first pixel
+		ld		hl, (_g_cov_lp)
 		cp		a, (hl)
 		jr		nc, 00210$
 		ld		(hl), a
 	00210$:
-		ld		hl, #_g_cov_r
-		add		hl, de
-		ld		de, (_g_span_n)
-		ld		b, #0
-		push	hl
-		ld		h, b
-		ld		l, c					// hl = first pixel
+		inc		hl
+		ld		(_g_cov_lp), hl
+		ld		hl, (_g_span_n)
+		ld		d, #0
 		add		hl, de
 		dec		hl						// last pixel = first + n - 1
 		ld		a, l
-		pop		hl
+		ld		hl, (_g_cov_rp)
 		cp		a, (hl)
 		jr		c, 00211$
 		ld		(hl), a
 	00211$:
-		ld		hl, (_g_run_yv)
-		ld		(_g_span_y), hl
-		ld		a, (_g_run_color)
-		ld		(_g_span_color), a
+		inc		hl
+		ld		(_g_cov_rp), hl
+		// g_span_y IS the walker's row counter, and g_span_color was set for
+		// the whole run: nothing is copied into the emitter here.
 		call	_Msx2_PolySpanOut
+
+		// A row outside the clip window, or one the run only walks, still
+		// advances the cursors: they index the band, not the spans.
+		jr		00230$
+	00229$:
+		ld		hl, (_g_cov_lp)
+		inc		hl
+		ld		(_g_cov_lp), hl
+		ld		hl, (_g_cov_rp)
+		inc		hl
+		ld		(_g_cov_rp), hl
 
 		// ── step both edges ──────────────────────────────────────────────
 		// bc = whole pixels this row, plus one if the accumulator carried.
@@ -313,12 +319,9 @@ static void Msx2_PolyRun(void)
 		ld		(_g_eb + 0), hl
 
 		// ── next row ─────────────────────────────────────────────────────
-		ld		hl, (_g_run_yv)
+		ld		hl, (_g_span_y)
 		inc		hl
-		ld		(_g_run_yv), hl
-		ld		a, (_g_cov_index)
-		inc		a
-		ld		(_g_cov_index), a
+		ld		(_g_span_y), hl
 		ld		a, (_g_run_rows)
 		dec		a
 		ld		(_g_run_rows), a
@@ -505,8 +508,13 @@ static void Msx2_PolyRunRows(u8 rows, u8 y, u8 draw)
 		return;
 	g_run_rows = rows;
 	g_run_draw = draw;
-	g_run_yv = (u16)y + (Msx2_VideoGetDrawPage() ? 256u : 0u);
-	g_cov_index = (u8)(y - g_band_y0);
+	// The emitter's own fields are set here rather than per row: the colour
+	// does not change inside a run, and the row counter is the emitter's line.
+	g_span_y = (u16)y + (Msx2_VideoGetDrawPage() ? 256u : 0u);
+	g_span_color = g_run_color;
+	g_span_ny = 1;
+	g_cov_lp = (u16)(g_cov_l + (u8)(y - g_band_y0));
+	g_cov_rp = (u16)(g_cov_r + (u8)(y - g_band_y0));
 	Msx2_PolyRun();
 }
 
