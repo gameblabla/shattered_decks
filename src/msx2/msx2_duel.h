@@ -188,6 +188,17 @@ bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense);
 // A fusion summon from several hand cards at once, optionally onto the monster
 // already in `field_slot`.  `hand_slots` is the order the player chose them in,
 // which is part of the rule: the materials fold left to right.
+// Why a chain will not summon.  The screen owes the player the true answer:
+// "those cards do not fuse" is a lie when the cards fuse and the side has
+// simply already summoned this turn.
+#define MSX2_FUSE_OK          0
+#define MSX2_FUSE_NO_RECIPE   1
+#define MSX2_FUSE_SPENT       2
+
+// Fold a chain without spending it -- the same answer Msx2_PlaceFusion() acts
+// on, so the prompt cannot disagree with what SPACE will do.
+u8   Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot);
+
 bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
                       bool defense);
 bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot);

@@ -634,18 +634,29 @@ static bool Msx2_FusionHandFirst(const Msx2Side* s, const u8* hand_slots, u8 cou
 	       Msx2_IsMonster(Msx2_FusionResult(current, field_card));
 }
 
-// A fusion summon.  The materials fold left to right in the order the player
-// chose them, a chain recipe short-circuits the whole fold, and a chain that
-// contains a pair the recipes do not know is refused rather than silently
-// eating the cards.
+// A fusion summon, folded but not yet spent.  The materials fold left to right
+// in the order the player chose them, a chain recipe short-circuits the whole
+// fold, and a chain that contains a pair the recipes do not know is refused
+// rather than silently eating the cards.
 //
 // One divergence from src/main.c, and it is presentational: the equip cards
 // kept by the chain are applied to the result as ATK/DEF bonuses but are not
 // re-seated in the support row.  The MSX2 duel screen has no support row to
 // show them in -- three rows of 48-pixel cards use all 212 lines -- so the
 // bonus is the whole of their observable effect.
-bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
-                      bool defense)
+//
+// NOTHING IS SPENT HERE.  It is split out of
+// Msx2_PlaceFusion() so the SCREEN can ask the same question the rules answer:
+// a chain that will not summon used to be refused with "THOSE CARDS DO NOT
+// FUSE" whatever was actually wrong with it -- including the case where the
+// cards fuse perfectly well and the side has simply already had its one summon
+// this turn.  The results land in these globals rather than through five
+// pointer arguments; the caller that commits reads them straight afterwards.
+static i16 g_fuse_hand_atk, g_fuse_hand_def;
+static i16 g_fuse_field_atk, g_fuse_field_def;
+static u8  g_fuse_card;                  // what the chain makes, when it makes one
+
+u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 {
 	Msx2Side* s = &g_duel.side[owner];
 	u8 mat[MSX2_FUSION_MAX];
@@ -663,9 +674,10 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 	bool hand_first;
 
 	if((count == 0) || (field_slot >= MSX2_FIELD))
-		return FALSE;
+		return MSX2_FUSE_NO_RECIPE;
+	// ONE SUMMON A TURN, AND SAY SO.  This is not a fact about the cards.
 	if(s->monster_played)
-		return FALSE;
+		return MSX2_FUSE_SPENT;
 
 	field_card = s->field[field_slot];
 	hand_first = Msx2_FusionHandFirst(s, hand_slots, count, field_card);
@@ -679,16 +691,16 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 	{
 		u8 slot = hand_slots[i];
 		if((slot >= MSX2_HAND) || s->used[slot])
-			return FALSE;
+			return MSX2_FUSE_NO_RECIPE;
 		if(n >= MSX2_FUSION_MAX)
-			return FALSE;
+			return MSX2_FUSE_NO_RECIPE;
 		mat_field[n] = FALSE;
 		mat[n++] = s->hand[slot];
 	}
 	if(Msx2_IsMonster(field_card) && hand_first)
 	{
 		if(n >= MSX2_FUSION_MAX)
-			return FALSE;
+			return MSX2_FUSE_NO_RECIPE;
 		mat_field[n] = TRUE;
 		mat[n++] = field_card;
 	}
@@ -756,7 +768,28 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 	}
 
 	if(!performed || failed || !Msx2_IsMonster(current))
+		return MSX2_FUSE_NO_RECIPE;
+
+	g_fuse_card = current;
+	g_fuse_hand_atk = hand_atk;
+	g_fuse_hand_def = hand_def;
+	g_fuse_field_atk = field_atk;
+	g_fuse_field_def = field_def;
+	return MSX2_FUSE_OK;
+}
+
+// A fusion summon: the fold above, and then the only part of it that spends
+// anything.
+bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
+                      bool defense)
+{
+	Msx2Side* s = &g_duel.side[owner];
+	u8 current;
+	u8 i;
+
+	if(Msx2_FusionPreview(owner, hand_slots, count, field_slot) != MSX2_FUSE_OK)
 		return FALSE;
+	current = g_fuse_card;
 
 	// Only now is anything spent.  A refused chain must leave the hand alone.
 	for(i = 0; i < count; ++i)
@@ -770,8 +803,8 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 	s->faceup[field_slot] = TRUE;
 	s->defense[field_slot] = defense ? TRUE : FALSE;
 	s->attacked[field_slot] = FALSE;
-	s->atk_bonus[field_slot] = (i16)(hand_atk + field_atk);
-	s->def_bonus[field_slot] = (i16)(hand_def + field_def);
+	s->atk_bonus[field_slot] = (i16)(g_fuse_hand_atk + g_fuse_field_atk);
+	s->def_bonus[field_slot] = (i16)(g_fuse_hand_def + g_fuse_field_def);
 	s->monster_played = TRUE;
 	Msx2_RecordAction(MSX2_ACTION_FUSION, owner, current, hand_slots[0],
 	                  field_slot, defense);

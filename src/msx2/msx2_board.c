@@ -743,8 +743,23 @@ static const c8* Msx2_BoardPrompt(void)
 	default:
 		if(g_queue_n != 0)
 		{
-			if(g_zone == ZONE_HAND) return Msx2_UiText(MSX2_S_DOWN_PICKS_MATERIALS_ESC_CLE);
-			return Msx2_UiText(MSX2_S_SPACE_FUSES_HERE_ESC_CLEARS);
+			// A CHAIN THAT WILL NOT FUSE SHOULD SAY SO BEFORE SPACE IS PRESSED.
+			// The hand row used to promise "SPACE FUSES HERE" over every slot
+			// on the board, and the refusal came afterwards -- so picking two
+			// cards that have no recipe looked like the summon was simply
+			// being ignored.  The row the cursor is standing on is asked the
+			// same question the confirm will ask, and answers it here.
+			if(g_zone == ZONE_HAND)
+				return Msx2_UiText(MSX2_S_UP_THEN_SPACE_FUSES);
+			if(g_zone != ZONE_FIELD)
+				return Msx2_UiText(MSX2_S_SPACE_FUSES_HERE_ESC_CLEARS);
+			switch(Msx2_FusionPreview(MSX2_OWNER_PLAYER, g_queue, g_queue_n,
+			                          g_sel))
+			{
+			case MSX2_FUSE_OK:    return Msx2_UiText(MSX2_S_SPACE_FUSES_HERE_ESC_CLEARS);
+			case MSX2_FUSE_SPENT: return Msx2_UiText(MSX2_S_ONE_MONSTER_A_TURN);
+			default:              return Msx2_UiText(MSX2_S_THOSE_CARDS_DO_NOT_FUSE);
+			}
 		}
 		if(g_zone == ZONE_HAND)  return Msx2_UiText(MSX2_S_SPACE_PLAYS_DOWN_FUSES_C_CHE);
 		if(g_zone == ZONE_FIELD) return Msx2_UiText(MSX2_S_SPACE_ATK_X_TURN_ESC_PASS);
@@ -1363,7 +1378,30 @@ static void Msx2_BoardFxDraw(bool erase)
 		if(!erase)
 			Msx2_BoardFxBanner(Msx2_UiText(MSX2_S_EQUIP_POWER), MSX2_GOLD);
 		if(g_fx_field != MSX2_SLOT_NONE)
-			Msx2_QuadOutlineXor(Msx2_ArenaCardQuad(g_fx_field, 0), flash);
+		{
+			// AN OUTLINE HAS TO BE DRAWN ROUND THE CARD THAT IS ON THE SCREEN.
+			// Choosing what to equip walks the cursor onto the field, which
+			// cuts to the overhead table -- where a slot is an axis-aligned
+			// 32x42 rectangle, not the chair view's projected quad.  Drawing
+			// the quad there put the frame across the middle of the board,
+			// nowhere near the monster it names.  And in a chair view a
+			// monster lying in defence is drawn into the QUARTER-TURNED
+			// footprint, so the outline owes that quad rather than the
+			// upright one: every other beat picks its geometry the same way.
+			if(g_view == MSX2_VIEW_OVER)
+			{
+				const u8* at = g_msx2_over_card_xy[g_fx_field];
+				Msx2_FrameRectXor(at[0], at[1], MSX2_OVER_CARD_W,
+				                  MSX2_OVER_CARD_H, flash);
+			}
+			else
+			{
+				u8 def = g_duel.side[g_fx_owner]
+				         .defense[SLOT_INDEX(g_fx_field)] ? 1 : 0;
+				Msx2_QuadOutlineXor(Msx2_ArenaCardQuad(g_fx_field, def),
+				                    flash);
+			}
+		}
 		break;
 
 	// The two plain landings differ only in what the panel says.
@@ -2809,8 +2847,15 @@ static void Msx2_BoardConfirm(void)
 				}
 				else
 				{
-					// no recipe, or no summon left this turn
-					g_refuse_text = MSX2_S_THOSE_CARDS_DO_NOT_FUSE;
+					// Name the reason the rules actually gave.  A side that
+					// has already summoned is refused for that, not for the
+					// cards it chose.
+					g_refuse_text =
+						(Msx2_FusionPreview(MSX2_OWNER_PLAYER, g_queue,
+						                    g_queue_n, g_sel)
+						 == MSX2_FUSE_SPENT)
+						? MSX2_S_ONE_MONSTER_A_TURN
+						: MSX2_S_THOSE_CARDS_DO_NOT_FUSE;
 					g_refuse = 96;
 				}
 				break;
