@@ -242,6 +242,15 @@ NEXT frame.  Sprite attribute 29 measured at Y=144 for 0.45 s of swing before
 the fix and hidden within one frame of the press after it;
 `Msx2_BoardSwitchView()` now calls `Msx2_SpriteTransitionBegin()` first.
 
+The gem leaks in two places, not one.  The other is the opponent's wind-up
+beat: `FX_COM_CHOOSE` is the one effect that deliberately stands the selector on
+the cover the opponent is holding, once a frame, so
+`Msx2_BoardStartFx()`'s hide does not hold for it -- and the followup composed
+in `Msx2_BoardFinishFx()` (a support card's full-screen cut-in, THUNDER among
+them) arrived with the gem still on the screen.  `Msx2_BoardFinishFx()` now
+hides it before anything composes.  This one is fixed by inspection of that
+path, not by capture: a COM support play is not schedulable in the soak.
+
 **The turn number could read two different values on the two pages.**  The page
 mask says who owes a repaint; it cannot say what a page is showing, and several
 paths level the buffers with a VRAM copy that can put an old strip back on a

@@ -1747,6 +1747,16 @@ static void Msx2_BoardFinishFx(void)
 {
 	u8 next = g_fx_followup;
 
+	// AND THE SELECTOR LEAVES WITH IT.
+	// Msx2_BoardStartFx() hides the gem, but FX_COM_CHOOSE is the one beat that
+	// puts it back: Msx2_BoardShowCursor() stands it on the cover the opponent
+	// is holding, once a frame, for as long as the beat runs.  The followup
+	// below composes over that -- a support card's full-screen cut-in
+	// (THUNDER), or the flight of a placement -- and the gem was still on the
+	// screen when it arrived, because nothing takes it off again until the top
+	// of the NEXT frame.  One attribute write here, before anything composes.
+	Msx2_SpriteHideGem();
+
 	// The wind-up is over: the held cover leaves the hand now, which is what
 	// the flight that follows is carrying.
 	g_hold_hand = MSX2_SLOT_NONE;
