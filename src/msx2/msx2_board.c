@@ -95,7 +95,7 @@ static u8  g_move_forward;
 // The opening deal.  g_deal_slot is the hand position currently in flight,
 // left to right so a card never crosses one that has already landed;
 // g_deal_reveal is how many of them the retained painter is allowed to see.
-// A deal step is a black fill, the hand frames, up to two settled cards put
+// A deal step is a black fill, up to two settled cards put
 // back where the erase box crossed them and one 40x48 card streamed out of the
 // cartridge -- four kilobytes of VDP, which is several video frames.  Four
 // poses a card is what keeps a five-card deal about a second; six was nearly
@@ -226,7 +226,7 @@ static u8 g_fx_page_frame[MSX2_VIDEO_PAGES];
 static u8 g_hand_hidden;
 // Did this landing take the hand off the screen?  Only then is the strip owed
 // back when the hold ends: in the top view those rows are board, and putting
-// five gold hand frames on them punches the table full of holes.
+// five hand positions on them punches the table full of holes.
 static u8 g_fx_hand_back;
 static u8 g_fx_bend;
 static u8 g_fx_hold;
@@ -464,14 +464,9 @@ static void Msx2_BoardBlitSlot(u8 slot)
 
 		if(card == MSX2_CARD_NONE)
 		{
-			// An empty hand position keeps its baked frame: the band under it is
-			// black, so putting it back is a fill and an outline rather than
-			// anything read from the cartridge.
+			// An empty hand position is just black: the band under it is black
+			// and the positions carry no outline of their own.
 			Msx2_Fill(x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_BLACK);
-			if(!g_hand_hidden)
-				Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1),
-				               MSX2_CARD_W + 2, MSX2_CARD_H + 2,
-				               MSX2_GOLD_COLOR);
 			return;
 		}
 
@@ -569,7 +564,7 @@ static void Msx2_BoardBlitSlot(u8 slot)
 // It used to be a rectangle drawn INTO the bitmap: a white frame round the
 // chosen hand card, an outline round the chosen quad.  Both had to be erased
 // again, on each page separately, by redrawing the exact colour that was under
-// them -- which is why the hand row has a baked gold frame, and why half a
+// them -- which is why the hand row is drawn plainly, and why half a
 // dozen places in this file had to remember where the cursor was on which page.
 // (Every slot also carried a flat brown ring for the same reason.  It was paint
 // over the arena that said nothing once the cursor stopped being drawn into it,
@@ -802,15 +797,6 @@ static void Msx2_BoardFxBanner(const c8* text, u8 color)
 	Msx2_TextCenter((u8)(MSX2_INFO_Y + 3), text);
 }
 
-// The five hand frames, put back after the band has been blacked out.
-static void Msx2_BoardHandFrames(void)
-{
-	u8 i;
-	for(i = 0; i < MSX2_HAND_SLOTS; ++i)
-		Msx2_FrameRect((u8)(HAND_X(i) - 1), (u8)(MSX2_HAND_Y - 1),
-		               MSX2_CARD_W + 2, MSX2_CARD_H + 2, MSX2_GOLD_COLOR);
-}
-
 // The effects that put a card down on the board, and so get the hand-off-screen
 // flight, the board bend and the bare top-view hold.
 static bool Msx2_BoardFxIsLanding(void)
@@ -1006,11 +992,6 @@ static void Msx2_BoardRestoreFromCutin(void)
 	Msx2_VideoDrawPage(page);
 	Msx2_StreamSceneBlanked(MSX2_VIEW_SEGMENT(g_stage, g_view), page);
 	Msx2_VideoDrawPage(page);
-	// The stream put the resting picture back, which does not carry the five
-	// gold hand frames -- they are drawn, not baked -- so a slot the cut-in
-	// emptied would come back as a hole in the strip.
-	if(!g_hand_hidden && (g_view != MSX2_VIEW_OVER))
-		Msx2_BoardHandFrames();
 	for(i = 0; i < SLOT_COUNT; ++i)
 		if((g_want[i] != MSX2_CARD_NONE) &&
 		   (!IS_HAND(i) || (g_view != MSX2_VIEW_OVER)))
@@ -1469,9 +1450,6 @@ static void Msx2_BoardHideHand(void)
 				u8 x = HAND_X(g_fx_hand);
 				Msx2_Fill(x, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H,
 				          MSX2_BLACK);
-				Msx2_FrameRect((u8)(x - 1), (u8)(MSX2_HAND_Y - 1),
-				               MSX2_CARD_W + 2, MSX2_CARD_H + 2,
-				               MSX2_GOLD_COLOR);
 			}
 		}
 		Msx2_VideoDrawPage((u8)(show ^ 1));
@@ -1898,14 +1876,12 @@ static bool Msx2_BoardRunFx(void)
 		{
 			// ... and only if it was this landing that took it away.  A card
 			// placed from the top view never had a strip on the screen, and
-			// giving it one here draws the hand's frames -- and then its cards
-			// -- over the middle of the table.
+			// giving it one here draws its cards over the middle of the table.
 			if(g_fx_hand_back)
 			{
 				g_hand_hidden = FALSE;
 				Msx2_BoardSnapshot();
 				Msx2_VideoDrawPage(page);
-				Msx2_BoardHandFrames();
 			}
 			PANEL_ALL();
 		}
@@ -2017,15 +1993,13 @@ static bool Msx2_BoardPaint(void)
 	if(g_hand_left & PAGE_BIT(page))
 	{
 		u8 j;
-		// Overhead, those rows are board: blacking them out and framing five
-		// empty hand positions would punch the table full of holes.  The strip
+		// Overhead, those rows are board: blacking them out would punch the
+		// table full of holes.  The strip
 		// is still marked painted so the retained loop below leaves it alone.
 		if(g_view != MSX2_VIEW_OVER)
 		{
 			Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
 			          MSX2_BLACK);
-			if(!g_hand_hidden)
-				Msx2_BoardHandFrames();
 		}
 		for(j = MSX2_FIELD_SLOTS; j < SLOT_COUNT; ++j)
 		{
@@ -2075,16 +2049,13 @@ static void Msx2_BoardRevealPanels(void)
 	          (u8)(MSX2_SCREEN_H - MSX2_INFO_Y), MSX2_PANEL_COLOR);
 	Msx2_FrameRect(0, MSX2_INFO_Y, MSX2_SCREEN_W,
 	               (u8)(MSX2_SCREEN_H - MSX2_INFO_Y), MSX2_GOLD_COLOR);
-	Msx2_BoardHandFrames();
 }
 
 // One frame of the opening deal: the card in flight is erased from this page
-// at the position it last had here, redrawn one step further left, and the
-// hand's gold frames are put back where it crossed them.
+// at the position it last had here and redrawn one step further left.
 // THE FLICKER IN THE DEAL.
 //
-// A card in flight is erased by blacking out the forty-eight rows it was on and
-// putting the five gold frames back.  That is right for the band and wrong for
+// A card in flight is erased by blacking out the forty-eight rows it was on.  That is right for the band and wrong for
 // anything already settled in it: the flight comes in from the right and lands
 // on the left, so on the step after a landing the black rectangle sits exactly
 // on top of the card that just arrived -- and the retained painter was never
@@ -2105,7 +2076,6 @@ static void Msx2_BoardDealErase(u8 page)
 	if(px == MSX2_SLOT_NONE)
 		return;
 	Msx2_Fill(px, MSX2_HAND_Y, MSX2_CARD_W, MSX2_CARD_H, MSX2_BLACK);
-	Msx2_BoardHandFrames();
 	g_deal_px[page] = MSX2_SLOT_NONE;
 
 	for(i = 0; i < g_deal_reveal; ++i)
@@ -2351,8 +2321,6 @@ static void Msx2_BoardCutTo(u8 view)
 		{
 			Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
 			          MSX2_BLACK);
-			if(!g_hand_hidden)
-				Msx2_BoardHandFrames();
 		}
 		for(j = 0; j < SLOT_COUNT; ++j)
 		{
@@ -2406,7 +2374,6 @@ static void Msx2_BoardClearHandBand(void)
 		Msx2_VideoDrawPage(i);
 		Msx2_Fill(0, MSX2_HAND_BAND_Y, MSX2_SCREEN_W, MSX2_HAND_BAND_H,
 		          MSX2_BLACK);
-		Msx2_BoardHandFrames();
 	}
 	Msx2_VideoDrawPage(draw);
 
