@@ -14,6 +14,10 @@ static u8  g_span_x;
 static u16 g_span_y;        // VRAM row, page included
 static u16 g_span_n;
 static u8  g_span_color;
+// How many rows the one command covers.  The walker always says one -- its rows
+// differ by construction -- but the backdrop's do not, and a black band above
+// the arena is one command a hundred rows tall instead of a hundred of them.
+static u8  g_span_ny;
 
 // One HMMV.
 //
@@ -75,7 +79,7 @@ static void Msx2_PolySpanOut(void)
 		out		(#0x9B), a				// NX low
 		ld		a, h
 		out		(#0x9B), a				// NX high
-		ld		a, #1
+		ld		a, (_g_span_ny)
 		out		(#0x9B), a				// NY low
 		xor		a
 		out		(#0x9B), a				// NY high
@@ -114,14 +118,26 @@ static u8 g_cov_r[MSX2_POLY_MAX_ROWS];
 
 // One edge of the shape, as the row loop wants it.  The field ORDER is part of
 // the contract: the assembly below addresses these by offset.
+//
+// THE STEP IS DIVIDED OUT ONCE, NOT COUNTED PER PIXEL.  The row loop used to
+// carry |dx| and repeat `while(err >= dy) { err -= dy; x += s; }`, which is
+// eight instructions for every PIXEL an edge moves sideways -- and the near row
+// of the board is short and wide, so its edges move ten and fifteen pixels a
+// scanline.  A sampling profile put 13% of the whole machine in that loop.
+// |dx|/dy and |dx|%dy make the same walk O(1) a row: add the quotient, add the
+// remainder to the accumulator, and carry at most one extra pixel.  It is the
+// same walk to the pixel -- floor((err + adx) / dy) is exactly q plus that one
+// carry, because err is always less than dy -- so the tiles still share their
+// edges exactly and the board still has no seams.
 typedef struct
 {
 	u16 x;          // +0  current x, biased
-	u16 err;        // +2  Bresenham accumulator
-	u16 adx;        // +4  |dx| of this edge
+	u16 err;        // +2  Bresenham accumulator, always < dy
+	u16 rem;        // +4  |dx| % dy
 	u16 dy;         // +6  its height, never zero
 	u8  dir;        // +8  0 = x increases, 1 = x decreases
 	u8  pad;        // +9
+	u16 step;       // +10 |dx| / dy, the whole pixels every row moves
 } Msx2Edge;
 
 static Msx2Edge g_ea;
@@ -242,54 +258,59 @@ static void Msx2_PolyRun(void)
 		call	_Msx2_PolySpanOut
 
 		// ── step both edges ──────────────────────────────────────────────
+		// bc = whole pixels this row, plus one if the accumulator carried.
 	00230$:
 		ld		hl, (_g_ea + 2)			// err
-		ld		de, (_g_ea + 4)			// adx
+		ld		de, (_g_ea + 4)			// rem
 		add		hl, de
 		ld		de, (_g_ea + 6)			// dy
-		ld		bc, (_g_ea + 0)			// x
-		ld		a, (_g_ea + 8)			// direction
-		or		a						// clear carry for the first sbc
-	00231$:
+		ld		bc, (_g_ea + 10)		// step
+		or		a
 		sbc		hl, de
-		jr		c, 00234$
-		or		a						// dir: 0 = right, 1 = left
-		jr		nz, 00232$
+		jr		nc, 00231$				// err >= dy: leave it reduced
+		add		hl, de					// err < dy: put dy back
+		jr		00232$
+	00231$:
 		inc		bc
-		jr		00233$
 	00232$:
-		dec		bc
-	00233$:
-		or		a						// clear carry for the next sbc
-		jr		00231$
-	00234$:
-		add		hl, de					// put the borrowed dy back
 		ld		(_g_ea + 2), hl
-		ld		(_g_ea + 0), bc
+		ld		hl, (_g_ea + 0)			// x
+		ld		a, (_g_ea + 8)			// dir: 0 = right, 1 = left
+		or		a
+		jr		nz, 00233$
+		add		hl, bc
+		jr		00234$
+	00233$:
+		or		a
+		sbc		hl, bc
+	00234$:
+		ld		(_g_ea + 0), hl
 
 		ld		hl, (_g_eb + 2)
 		ld		de, (_g_eb + 4)
 		add		hl, de
 		ld		de, (_g_eb + 6)
-		ld		bc, (_g_eb + 0)
+		ld		bc, (_g_eb + 10)
+		or		a
+		sbc		hl, de
+		jr		nc, 00241$
+		add		hl, de
+		jr		00242$
+	00241$:
+		inc		bc
+	00242$:
+		ld		(_g_eb + 2), hl
+		ld		hl, (_g_eb + 0)
 		ld		a, (_g_eb + 8)
 		or		a
-	00241$:
-		sbc		hl, de
-		jr		c, 00244$
-		or		a
-		jr		nz, 00242$
-		inc		bc
-		jr		00243$
-	00242$:
-		dec		bc
+		jr		nz, 00243$
+		add		hl, bc
+		jr		00244$
 	00243$:
 		or		a
-		jr		00241$
+		sbc		hl, bc
 	00244$:
-		add		hl, de
-		ld		(_g_eb + 2), hl
-		ld		(_g_eb + 0), bc
+		ld		(_g_eb + 0), hl
 
 		// ── next row ─────────────────────────────────────────────────────
 		ld		hl, (_g_run_yv)
@@ -317,6 +338,7 @@ void Msx2_PolyBegin(u8 y0, u8 h)
 	g_clip_x1 = 256;
 	g_clip0b = POLY_XBIAS;
 	g_clip1b = POLY_XBIAS + 256;
+	g_span_ny = 1;
 	for(i = 0; i < h; ++i)
 	{
 		g_cov_l[i] = 255;
@@ -332,6 +354,18 @@ void Msx2_PolyClipX(u8 x0, u16 x1)
 	g_clip1b = (u16)(POLY_XBIAS + x1);
 }
 
+// The backdrop's own emitter: colour, page and height are already set, so a
+// span is two stores rather than the four arguments and the page enquiry
+// Msx2_PolySpanAt has to unpack every time.
+static void Msx2_PolyBackdropSpan(u8 x, u16 n)
+{
+	if(n == 0)
+		return;
+	g_span_x = x;
+	g_span_n = n;
+	Msx2_PolySpanOut();
+}
+
 void Msx2_PolySpanAt(u8 x, u8 y, u16 n, u8 color)
 {
 	if(n == 0)
@@ -340,6 +374,7 @@ void Msx2_PolySpanAt(u8 x, u8 y, u16 n, u8 color)
 	g_span_y = (u16)y + (Msx2_VideoGetDrawPage() ? 256u : 0u);
 	g_span_n = n;
 	g_span_color = color;
+	g_span_ny = 1;
 	Msx2_PolySpanOut();
 }
 
@@ -360,39 +395,109 @@ void Msx2_PolySpanAt(u8 x, u8 y, u16 n, u8 color)
 static u8 g_a_idx, g_b_idx;      // the corner each chain's current edge ends at
 static u8 g_a_left, g_b_left;    // rows still to walk on it
 
+// |dx| / dy and |dx| % dy in one pass.  dy is a difference of two screen rows,
+// so it never exceeds 255 and the remainder always fits in a byte; the
+// numerator is a screen-width difference, so the quotient always fits in
+// sixteen bits.
+static u16 g_div_n;      // numerator in, quotient out
+static u8  g_div_d;      // divisor
+static u8  g_div_r;      // remainder out
+
+static void Msx2_DivMod(void)
+{
+	__asm
+		ld		hl, (_g_div_n)
+		ld		a, (_g_div_d)
+		ld		c, a
+		xor		a
+		ld		b, #16
+	00300$:
+		add		hl, hl
+		rla
+		jr		c, 00301$				// past eight bits: certainly >= c
+		cp		a, c
+		jr		c, 00302$
+	00301$:
+		sub		a, c
+		inc		l						// the bit just shifted in was zero
+	00302$:
+		djnz	00300$
+		ld		(_g_div_n), hl
+		ld		(_g_div_r), a
+	__endasm;
+}
+
 // Take a chain to the next corner that is genuinely lower.  A horizontal edge
 // contributes no rows; sliding along it rather than drawing it is what keeps a
 // flat-topped or flat-bottomed quad -- which every tile of a board row is --
 // from being drawn a pixel narrow.
-static void Msx2_PolyEdge(const Msx2Point* p, Msx2Edge* e, u8* idx, i8 dir,
-                          u8* left)
-{
-	for(;;)
-	{
-		u8 here = *idx;
-		u8 next = (u8)((here + (dir > 0 ? 1 : 3)) & 3);
-		i16 dx;
+//
+// IT IS WRITTEN TWICE, ONCE PER CHAIN, AND THAT IS DELIBERATE.  As one function
+// taking the quad, the edge, the corner index and the row counter as pointers,
+// SDCC gave it a twenty-byte frame and reached every field through IX: 3,570
+// T-states a call, eighty-five calls a pose, eighty-five milliseconds of a
+// half-second board.  Expanded per chain over globals, every one of those
+// accesses is a direct load or store.  The corners are copied into g_pts for
+// the same reason -- a parameter would put the array back behind a pointer.
+static Msx2Point g_pts[4];
 
-		if(p[next].y > p[here].y)
-		{
-			e->x = (u16)(p[here].x + POLY_XBIAS);
-			e->dy = (u16)(p[next].y - p[here].y);
-			dx = (i16)(p[next].x - p[here].x);
-			e->dir = (dx < 0) ? 1 : 0;
-			e->adx = (u16)((dx < 0) ? -dx : dx);
-			e->err = (u16)(e->dy >> 1);
-			*left = (u8)e->dy;
-			*idx = next;
-			return;
-		}
-		if(p[next].y < p[here].y)
-		{
-			*left = 0;               // past the bottom corner: nothing left
-			return;
-		}
-		*idx = next;                 // horizontal: slide along and keep looking
-	}
+#define MSX2_POLY_EDGE(NAME, E, IDX, LEFT, ADV)                                \
+static void NAME(void)                                                         \
+{                                                                              \
+	for(;;)                                                                    \
+	{                                                                          \
+		u8  here = IDX;                                                        \
+		u8  next = (u8)((here + ADV) & 3);                                     \
+		u8  yh = g_pts[here].y;                                                \
+		u8  yn = g_pts[next].y;                                                \
+		i16 dx;                                                                \
+		u8  h;                                                                 \
+                                                                               \
+		if(yn == yh)                                                           \
+		{                                                                      \
+			IDX = next;              /* horizontal: slide along it */          \
+			continue;                                                          \
+		}                                                                      \
+		if(yn < yh)                                                            \
+		{                                                                      \
+			LEFT = 0;                /* past the bottom corner */              \
+			return;                                                            \
+		}                                                                      \
+		h = (u8)(yn - yh);                                                     \
+		E.x = (u16)(g_pts[here].x + POLY_XBIAS);                               \
+		E.dy = (u16)h;                                                         \
+		E.err = (u16)(h >> 1);                                                 \
+		dx = (i16)(g_pts[next].x - g_pts[here].x);                             \
+		if(dx < 0)                                                             \
+		{                                                                      \
+			E.dir = 1;                                                         \
+			dx = (i16)(-dx);                                                   \
+		}                                                                      \
+		else                                                                   \
+			E.dir = 0;                                                         \
+		/* A steep edge -- most of a tile's are -- moves less than a pixel a  */\
+		/* row, so the divide has nothing to find.                           */\
+		if((u16)dx < (u16)h)                                                   \
+		{                                                                      \
+			E.step = 0;                                                        \
+			E.rem = (u16)dx;                                                   \
+		}                                                                      \
+		else                                                                   \
+		{                                                                      \
+			g_div_n = (u16)dx;                                                 \
+			g_div_d = h;                                                       \
+			Msx2_DivMod();                                                     \
+			E.step = g_div_n;                                                  \
+			E.rem = (u16)g_div_r;                                              \
+		}                                                                      \
+		LEFT = h;                                                              \
+		IDX = next;                                                            \
+		return;                                                                \
+	}                                                                          \
 }
+
+MSX2_POLY_EDGE(Msx2_PolyEdgeA, g_ea, g_a_idx, g_a_left, 1)
+MSX2_POLY_EDGE(Msx2_PolyEdgeB, g_eb, g_b_idx, g_b_left, 3)
 
 static void Msx2_PolyRunRows(u8 rows, u8 y, u8 draw)
 {
@@ -410,8 +515,9 @@ void Msx2_PolyQuad(const Msx2Point* p, u8 color)
 	u8 i, top = 0, bottom = 0;
 	u8 y;
 
-	for(i = 1; i < 4; ++i)
+	for(i = 0; i < 4; ++i)
 	{
+		g_pts[i] = p[i];
 		if(p[i].y < p[top].y)
 			top = i;
 		if(p[i].y >= p[bottom].y)
@@ -421,8 +527,8 @@ void Msx2_PolyQuad(const Msx2Point* p, u8 color)
 		return;                          // edge-on: no rows to fill
 
 	g_a_idx = g_b_idx = top;
-	Msx2_PolyEdge(p, &g_ea, &g_a_idx, 1, &g_a_left);
-	Msx2_PolyEdge(p, &g_eb, &g_b_idx, -1, &g_b_left);
+	Msx2_PolyEdgeA();
+	Msx2_PolyEdgeB();
 	g_run_color = color;
 
 	y = p[top].y;
@@ -431,9 +537,9 @@ void Msx2_PolyQuad(const Msx2Point* p, u8 color)
 		u8 rows;
 
 		if(g_a_left == 0)
-			Msx2_PolyEdge(p, &g_ea, &g_a_idx, 1, &g_a_left);
+			Msx2_PolyEdgeA();
 		if(g_b_left == 0)
-			Msx2_PolyEdge(p, &g_eb, &g_b_idx, -1, &g_b_left);
+			Msx2_PolyEdgeB();
 		if((g_a_left == 0) || (g_b_left == 0))
 			break;
 		if(y >= g_band_y1)
@@ -466,22 +572,48 @@ void Msx2_PolyQuad(const Msx2Point* p, u8 color)
 
 void Msx2_PolyBackdrop(u8 color)
 {
-	u8 y;
+	const u8* pl = g_cov_l;
+	const u8* pr = g_cov_r;
+	u8 y = g_band_y0;
+	u8 x0 = g_clip_x0;
+	u16 x1 = g_clip_x1;
 
-	for(y = g_band_y0; y < g_band_y1; ++y)
+	// The coverage is walked with two pointers rather than an index: SDCC
+	// recomputes `base + (y - band_y0)` from scratch for every subscript, and
+	// this loop runs a hundred and fourteen times a pose.
+	//
+	// Consecutive EMPTY rows go out as one command.  Rows the arena covers do
+	// not merge -- their edges are slanted, so l and r differ row by row -- and
+	// testing for it there costs more than the commands it would save, which is
+	// what the same merge inside the walker's span loop was measured to do.
+	g_span_color = color;
+	g_span_y = (u16)(Msx2_VideoGetDrawPage() ? 256u : 0u);
+	while(y < g_band_y1)
 	{
-		u8  idx = (u8)(y - g_band_y0);
-		u16 l = g_cov_l[idx];
-		u16 r = (u16)g_cov_r[idx] + 1;      // one past the last covered pixel
+		u8 l = *pl++;
+		u8 r = *pr++;
 
-		if(l >= r)
+		g_span_y = (u16)((g_span_y & 0xFF00u) | y);
+		++y;
+		if(l > r)
 		{
-			Msx2_PolySpanAt(g_clip_x0, y, (u16)(g_clip_x1 - g_clip_x0), color);
+			u8 h = 1;
+
+			while((y < g_band_y1) && (*pl > *pr))
+			{
+				++pl;
+				++pr;
+				++y;
+				++h;
+			}
+			g_span_ny = h;
+			Msx2_PolyBackdropSpan(x0, (u16)(x1 - x0));
+			g_span_ny = 1;
 			continue;
 		}
-		if(l > (u16)g_clip_x0)
-			Msx2_PolySpanAt(g_clip_x0, y, (u16)(l - g_clip_x0), color);
-		if(r < g_clip_x1)
-			Msx2_PolySpanAt((u8)r, y, (u16)(g_clip_x1 - r), color);
+		if(l > x0)
+			Msx2_PolyBackdropSpan(x0, (u16)((u16)l - x0));
+		if((u16)r + 1 < x1)
+			Msx2_PolyBackdropSpan((u8)(r + 1), (u16)(x1 - (u16)r - 1));
 	}
 }
