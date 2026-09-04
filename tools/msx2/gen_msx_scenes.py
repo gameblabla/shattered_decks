@@ -28,6 +28,7 @@ Usage:
 """
 
 import math
+import json
 import os
 import re
 import sys
@@ -49,10 +50,27 @@ CARD_DATA = os.path.join(CARD_DIR, "card_data.txt")
 BG_DIR = os.path.join(ROOT, "assets", "source", "bg")
 PORTRAIT_DIR = os.path.join(ROOT, "assets", "source", "story_portraits")
 MAIN_C = os.path.join(ROOT, "src", "main.c")
+AUDIO_META = os.path.join(ASSET_DIR, "music.json")
 
 WIDTH = 256
 HEIGHT = 212
 SEGMENT_BYTES = 16 * 1024
+
+# The C-facing track enum has aliases for scenes that share a recording.  The
+# generated asset table keeps the alias cheap: one packed stream, one segment
+# range, and several public ids pointing at it.
+MUSIC_PUBLIC_ASSETS = [
+    ("NONE", None),
+    ("TITLE", "title"),
+    ("OPENING", "overworld"),
+    ("OVERWORLD", "overworld"),
+    ("DECK_EDITOR", "overworld"),
+    ("BATTLE", "battle"),
+    ("BOSS", "boss"),
+    ("FINAL_BOSS", "final_boss"),
+    ("RESULT", "result"),
+    ("LOST", "lost"),
+]
 
 # Segments 0 and 1 are the resident code the cartridge boots into.  Segments 2
 # onwards are the page-0 code window (src/msx2/msx2_bank.h): 2 is the duel
@@ -1366,6 +1384,29 @@ def main():
         build_text_blob(cards, story)
     text_segment = place("text", text_blob)
 
+    # lVGM streams are data assets too.  Place each unique recording once;
+    # msx2_audio.c indexes the public table emitted below, where OPENING and
+    # DECK_EDITOR intentionally alias the overworld recording.
+    with open(AUDIO_META) as f:
+        audio_meta = json.load(f)
+    audio_by_id = {}
+    for asset in audio_meta.get("assets", []):
+        path = os.path.join(ASSET_DIR, asset["file"])
+        if not os.path.exists(path):
+            raise SystemExit("%s is missing: run tools/msx2/gen_msx_audio.py" % path)
+        audio_by_id[asset["id"]] = (asset, open(path, "rb").read())
+    audio_segments = {}
+    for _public, asset_id in MUSIC_PUBLIC_ASSETS:
+        if asset_id is None or asset_id in audio_segments:
+            continue
+        if asset_id not in audio_by_id:
+            raise SystemExit("music.json has no asset named %s" % asset_id)
+        asset, blob = audio_by_id[asset_id]
+        first = place("music_" + asset_id, blob)
+        audio_segments[asset_id] = (first,
+                                     (len(blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES,
+                                     bool(asset["loop"]))
+
     # The packer works from this manifest rather than by scraping the header:
     # "where does each blob go" is data, and re-deriving it from C macros with a
     # regular expression is how the two drift apart.
@@ -1541,6 +1582,26 @@ def main():
         f.write("#define MSX2_SCENE_SEGMENT_FIRST  %d\n" % FIRST_ASSET_SEGMENT)
         f.write("#define MSX2_SCENE_SEGMENT_LAST   %d\n" % (segment - 1))
         f.write("#define MSX2_ASSET_ROM_KB         %d\n" % (segment * SEGMENT_BYTES // 1024))
+
+        f.write("\n// ── PSG lVGM recordings ────────────────────────────────────────────────\n")
+        f.write("// Streams are split at 16 KB boundaries and notify the resident\n")
+        f.write("// ISR before the mapper window changes.  The table is defined once\n")
+        f.write("// in msx2_cards.c so including this header does not duplicate it.\n")
+        f.write("typedef struct Msx2MusicAsset {\n")
+        f.write("\tunsigned short first_segment;\n")
+        f.write("\tunsigned char segment_count;\n")
+        f.write("\tunsigned char loop;\n")
+        f.write("} Msx2MusicAsset;\n")
+        f.write("#define MSX2_MUSIC_ASSET_COUNT %d\n" % len(MUSIC_PUBLIC_ASSETS))
+        f.write("extern const Msx2MusicAsset g_msx2_music_assets[MSX2_MUSIC_ASSET_COUNT];\n")
+        for name, asset_id in MUSIC_PUBLIC_ASSETS:
+            if asset_id is None:
+                first, count, loop = 0, 0, 0
+            else:
+                first, count, loop = audio_segments[asset_id]
+            f.write("#define MSX2_MUSIC_%s_SEGMENT %d\n" % (name, first))
+            f.write("#define MSX2_MUSIC_%s_SEGMENTS %d\n" % (name, count))
+            f.write("#define MSX2_MUSIC_%s_LOOP %d\n" % (name, loop))
 
     with open(GEOMETRY, "w") as f:
         f.write("\n".join(views.data_lines(board)))

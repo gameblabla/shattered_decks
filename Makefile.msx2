@@ -33,6 +33,17 @@ MSX2_BIOS    := $(MSXGL_PATH)/msx2.rom
 FRAMES       ?= 600
 
 GENERATED    := src/generated/msx2_card_tables.h src/generated/msx2_scenes.h
+MUSIC_BINS   := $(PROJ_DIR)/assets/music_title.bin \
+                $(PROJ_DIR)/assets/music_overworld.bin \
+                $(PROJ_DIR)/assets/music_battle.bin \
+                $(PROJ_DIR)/assets/music_boss.bin \
+                $(PROJ_DIR)/assets/music_final_boss.bin \
+                $(PROJ_DIR)/assets/music_result.bin \
+                $(PROJ_DIR)/assets/music_lost.bin
+AUDIO_META   := $(PROJ_DIR)/assets/music.json
+AUDIO_SRC    := $(wildcard msx_music/*.vgm)
+VGM_TOOL_SRC := FMTOWNSCD_EXAMPLE_Cube/vgmtools/CMakeLists.txt \
+                FMTOWNSCD_EXAMPLE_Cube/vgmtools/vgm_cmp.c
 SCENE_BINS   := $(PROJ_DIR)/assets/title.bin $(PROJ_DIR)/assets/ending.bin \
                 $(PROJ_DIR)/assets/board_views.bin \
                 $(PROJ_DIR)/assets/card_spans.bin
@@ -44,7 +55,7 @@ SOURCES := $(wildcard $(PROJ_DIR)/*.c) $(wildcard $(PROJ_DIR)/*.h) \
            $(PROJ_DIR)/msxgl_config.h \
            src/game/deck.c src/game/ai.c
 
-.PHONY: all rom tables verify soak story-soak regression clean check-sdk
+.PHONY: all rom tables audio verify soak story-soak regression clean check-sdk
 
 all: rom
 
@@ -58,6 +69,11 @@ check-sdk:
 # every build depend on them.
 tables: $(GENERATED)
 
+audio: $(AUDIO_META) $(MUSIC_BINS)
+
+$(AUDIO_META) $(MUSIC_BINS) &: tools/msx2/gen_msx_audio.py $(AUDIO_SRC) $(VGM_TOOL_SRC)
+	python3 tools/msx2/gen_msx_audio.py
+
 src/generated/msx2_card_tables.h: tools/msx2/gen_msx_tables.py src/generated/waifu_assets.h
 	python3 tools/msx2/gen_msx_tables.py
 
@@ -68,7 +84,8 @@ src/generated/msx2_card_tables.h: tools/msx2/gen_msx_tables.py src/generated/wai
 # to re-bake the cartridge or the two disagree about where a card goes.
 src/generated/msx2_scenes.h $(SCENE_BINS) &: tools/msx2/gen_msx_scenes.py \
         $(PROJ_DIR)/msx2_ui_strings.def \
-        tools/msx2/gen_msx_views.py src/main.c $(SCENE_SRC)
+        tools/msx2/gen_msx_views.py src/main.c $(SCENE_SRC) \
+        $(AUDIO_META) $(MUSIC_BINS)
 	python3 tools/msx2/gen_msx_scenes.py
 
 rom: $(ROM)
@@ -81,7 +98,8 @@ $(VARIANT_STAMP):
 	@rm -f $(OUT_DIR)/.variant-*
 	@touch $@
 
-$(ROM): $(SOURCES) $(GENERATED) $(SCENE_BINS) tools/msx2/pack_msx_rom.py $(VARIANT_STAMP) | check-sdk
+$(ROM): $(SOURCES) $(GENERATED) $(SCENE_BINS) $(MUSIC_BINS) $(AUDIO_META) \
+        tools/msx2/pack_msx_rom.py $(VARIANT_STAMP) | check-sdk
 	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) MSX2_AUTOPLAY=$(MSX2_AUTOPLAY) \
 	    MSX2_STORY_AUTOPLAY=$(MSX2_STORY_AUTOPLAY) MSX2_REGRESSION=$(MSX2_REGRESSION) \
 	    MSX2_TEST_SEED=$(MSX2_TEST_SEED) MSX2_TEST_FIXTURE=$(MSX2_TEST_FIXTURE) \
@@ -99,14 +117,16 @@ verify: rom
 # compile does not know about a changed -D.
 soak:
 	rm -rf $(OUT_DIR)
-	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1 \
+		MSX2_TEST_SEED=$(or $(MSX2_TEST_SEED),0x534F414B)
 
 # Story progression soak.  Full AI duels belong to `soak`; this variant crosses
 # the real story fight boundary as a win so rewards, passwords, five-duel
 # progression and the ending are deterministic without synthetic input.
 story-soak:
 	rm -rf $(OUT_DIR)
-	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1 MSX2_STORY_AUTOPLAY=1
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1 MSX2_STORY_AUTOPLAY=1 \
+		MSX2_TEST_SEED=$(or $(MSX2_TEST_SEED),0x53544F52)
 
 # The regression ROM keeps the same real input path as shipping, but exposes
 # the versioned probe diagnostics and accepts a fixed seed/fixture.  It is a
