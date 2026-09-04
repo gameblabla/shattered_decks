@@ -122,15 +122,27 @@ static void Msx2_RasterRun(void)
 static u8 g_qx[4], g_qy[4];
 
 // Edge state, in 8.8: x across the screen and v down the texture.
-static i16 g_lx, g_lv, g_ldx, g_ldv;
-static i16 g_rx, g_rv, g_rdx, g_rdv;
+//
+// X IS UNSIGNED, and that is not a detail.  A screen x of 136 is 0x8800 in 8.8,
+// which as an i16 is NEGATIVE -- so an edge right of the halfway column read
+// back as x-256 while an edge left of it read back as itself, and the span
+// between them came out the width of the screen.  The run then walked off the
+// end of its row into the next ones: the streaks across the far half of the
+// board that only ever appeared on the middle column's slots, the two whose
+// quad straddles x=128.  msx2_poly.c's walker carries x biased by 512 for the
+// same reason; this one keeps it unsigned, which is the same fix a byte
+// cheaper.  The steps stay signed and are added modulo 65536.
+static u16 g_lx, g_rx;
+static i16 g_lv, g_ldx, g_ldv;
+static i16 g_rv, g_rdx, g_rdv;
 
 // One side edge, as an x and a v that step once per INCREASING row -- so the
 // edge's own direction cancels itself inside the division and the row loop
 // never asks which way round the quad is.  The result lands in these four
 // globals rather than through pointer arguments: SDCC reaches a pointed-to i16
 // through IX twice for every read, and this is called four times a card.
-static i16 g_ex, g_ev, g_edx, g_edv;
+static u16 g_ex;
+static i16 g_ev, g_edx, g_edv;
 
 static void Msx2_RasterEdge(u8 a, u8 b, u8 tex_h)
 {
@@ -138,7 +150,7 @@ static void Msx2_RasterEdge(u8 a, u8 b, u8 tex_h)
 
 	if(h == 0)
 	{
-		g_ex = (i16)((u16)g_qx[a] << 8);
+		g_ex = (u16)((u16)g_qx[a] << 8);
 		g_ev = 0;
 		g_edx = 0;
 		g_edv = 0;
@@ -148,12 +160,12 @@ static void Msx2_RasterEdge(u8 a, u8 b, u8 tex_h)
 	g_edv = (i16)((((i16)tex_h) << 8) / h);
 	if(h > 0)
 	{
-		g_ex = (i16)((u16)g_qx[a] << 8);
+		g_ex = (u16)((u16)g_qx[a] << 8);
 		g_ev = 0;
 	}
 	else
 	{
-		g_ex = (i16)((u16)g_qx[b] << 8);
+		g_ex = (u16)((u16)g_qx[b] << 8);
 		g_ev = (i16)((u16)tex_h << 8);
 	}
 }
@@ -178,8 +190,8 @@ static void Msx2_RasterDraw(u8 defense)
 
 	for(y = ytop; y < ybot; ++y)
 	{
-		i16 xl = (i16)(g_lx >> 8);
-		i16 xr = (i16)(g_rx >> 8);
+		u8 xl = (u8)(g_lx >> 8);
+		u8 xr = (u8)(g_rx >> 8);
 		i16 row = (i16)(((g_lv >> 1) + (g_rv >> 1)) >> 8);
 		u16 width;
 		u16 step;
@@ -192,18 +204,25 @@ static void Msx2_RasterDraw(u8 defense)
 
 		if(xr >= xl)
 		{
-			x0 = (u8)xl;
-			width = (u16)(xr - xl + 1);
+			x0 = xl;
+			width = (u16)((u16)(xr - xl) + 1);
 			g_dda_back = 0;
 			g_dda_src = &g_tex[(u16)row * tex_w];
 		}
 		else
 		{
-			x0 = (u8)xr;
-			width = (u16)(xl - xr + 1);
+			x0 = xr;
+			width = (u16)((u16)(xl - xr) + 1);
 			g_dda_back = 1;
 			g_dda_src = &g_tex[(u16)row * tex_w + (tex_w - 1)];
 		}
+
+		// A row is written straight at the data port, so a run that reaches
+		// past column 255 does not clip -- it carries on into the rows below
+		// it.  Nothing should produce one now, and this is what makes sure a
+		// quad that ever does costs a short card instead of a striped board.
+		if((u16)x0 + width > MSX2_SCREEN_W)
+			width = (u16)(MSX2_SCREEN_W - x0);
 
 		// How much of the texture each destination pixel is worth.  A slot is
 		// narrower than the card in every chair view, so this is nearly always
