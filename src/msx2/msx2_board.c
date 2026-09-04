@@ -976,6 +976,19 @@ static void Msx2_BoardRestoreFromCutin(void)
 
 	g_suppress_slot = MSX2_SLOT_NONE;
 	g_hold_hand = MSX2_SLOT_NONE;
+	// A DECIDED DUEL COMES BACK STRAIGHT INTO THE VIEW IT IS ANNOUNCED IN.
+	// The blow that ends a duel is an attack, so its cut-in restored the chair
+	// board -- a blanked stream of the whole view on both pages plus ten slot
+	// blits -- and Msx2_BoardOverBegin() then cut from that to the overhead
+	// view, which is the same work again.  The player saw the board rebuild
+	// itself twice, through two black gaps, before the word arrived, and the
+	// first of the two was a picture nothing was going to be shown on.  There
+	// is only one board worth restoring here, so restore that one.
+	if(g_duel.result != 0)
+	{
+		g_view = MSX2_VIEW_OVER;
+		Msx2_RasterSetView(g_view);
+	}
 	Msx2_BoardSnapshot();
 	VDP_EnableDisplay(FALSE);
 	// Nothing of the cut-in may survive onto the board, and the strike's layer
@@ -999,7 +1012,8 @@ static void Msx2_BoardRestoreFromCutin(void)
 	if(!g_hand_hidden && (g_view != MSX2_VIEW_OVER))
 		Msx2_BoardHandFrames();
 	for(i = 0; i < SLOT_COUNT; ++i)
-		if(g_want[i] != MSX2_CARD_NONE)
+		if((g_want[i] != MSX2_CARD_NONE) &&
+		   (!IS_HAND(i) || (g_view != MSX2_VIEW_OVER)))
 			Msx2_BoardBlitSlot(i);
 	Msx2_BoardHud();
 	Msx2_BoardInfo();
@@ -2807,6 +2821,21 @@ static void Msx2_BoardMove(u8 pressed)
 // final board back onto the screen a card at a time under a banner that had
 // already arrived.  The display is off for it, the way it is for a camera cut,
 // so none of that repaint is seen.
+// Does either page still owe a CARD?  The panel regions are excluded on
+// purpose: they are the three small regions the ordinary painter writes live
+// every frame of a duel, and they are never worth blanking the screen for.
+static bool Msx2_BoardOwesSlots(void)
+{
+	u8 p, i;
+
+	for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
+		for(i = 0; i < SLOT_COUNT; ++i)
+			if((g_shown[p][i] != g_want[i]) ||
+			   (g_shown_flag[p][i] != g_flag[i]))
+				return TRUE;
+	return FALSE;
+}
+
 static void Msx2_BoardOverBegin(void)
 {
 	const c8* word;
@@ -2818,18 +2847,41 @@ static void Msx2_BoardOverBegin(void)
 	// struck from: it is the only view that shows both rows whole.
 	Msx2_BoardCutTo(MSX2_VIEW_OVER);
 
-	VDP_EnableDisplay(FALSE);
-	for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
+	// ... AND ONLY IF ANYTHING IS ACTUALLY OWED.
+	// The restore that brought the final board back has already put every slot
+	// on both pages, so the queue is usually empty here -- and blanking the
+	// output to run a loop that paints nothing is a black frame the player is
+	// shown for no reason at all.  The panel is the one thing the result
+	// changes, and it is three regions, not a board.
+	if(Msx2_BoardOwesSlots())
 	{
-		Msx2_VideoDrawPage(p);
-		// One card and the three panel regions per pass, so a slot count of
-		// passes clears the whole queue with room to spare.
-		for(i = 0; i < SLOT_COUNT + 4; ++i)
-			if(!Msx2_BoardPaint())
-				break;
+		VDP_EnableDisplay(FALSE);
+		for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
+		{
+			Msx2_VideoDrawPage(p);
+			// One card and the three panel regions per pass, so a slot count of
+			// passes clears the whole queue with room to spare.
+			for(i = 0; i < SLOT_COUNT + 4; ++i)
+				if(!Msx2_BoardPaint())
+					break;
+		}
+		Msx2_VideoDrawPage((u8)(Msx2_VideoGetShowPage() ^ 1));
+		VDP_EnableDisplay(TRUE);
 	}
-	Msx2_VideoDrawPage((u8)(Msx2_VideoGetShowPage() ^ 1));
-	VDP_EnableDisplay(TRUE);
+	else
+	{
+		// Only the words under the board have changed.  They go on with the
+		// output up: three regions a page, which is less than the painter does
+		// on an ordinary frame.
+		for(p = 0; p < MSX2_VIDEO_PAGES; ++p)
+		{
+			Msx2_VideoDrawPage(p);
+			for(i = 0; i < 4; ++i)
+				if(!Msx2_BoardPaint())
+					break;
+		}
+		Msx2_VideoDrawPage((u8)(Msx2_VideoGetShowPage() ^ 1));
+	}
 
 	word = (g_duel.result > 0) ? Msx2_UiText(MSX2_S_YOU_WIN)
 	                           : Msx2_UiText(MSX2_S_YOU_LOSE);

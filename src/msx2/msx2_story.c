@@ -505,16 +505,29 @@ static void Msx2_StoryShowShot(u8 shot)
 	}
 	else
 	{
-		// A speaker change is still a two-page update, but both composites are
-		// completed off-screen and the old visible page is copied only while
-		// output is disabled.  This keeps Kasem's backdrop and the two busts a
-		// single atomic picture even when the command queue is busy.
-		VDP_EnableDisplay(FALSE);
+		// A SPEAKER CHANGE IS A REDRAW OF TWO FIGURES, NOT OF THE SCREEN.
+		// It used to blank the output for the whole of it -- and relighting two
+		// 124-wide busts out of the cartridge is an eighth of a second, so the
+		// scene went black between every pair of lines.  Nothing here touches
+		// the backdrop, and the port has two pages: the new pair is composed on
+		// the hidden one with the output up, and the flip is the only moment
+		// anything changes on the screen.
+		//
+		// The hidden page is levelled off the visible one FIRST.  It is a whole
+		// frame behind -- the typewriter draws one page a frame -- so composing
+		// straight onto it published the PREVIOUS line's text, half-typed,
+		// under the new speaker's name.  That is the flicker that looked like a
+		// page-flip fault on the way from one speaker to the next.
 		Msx2_VideoDrawPage(page);
+		Msx2_VideoCopyPage(show, page);
 		Msx2_StoryBusts(shot);
-		Msx2_VideoCopyPage(page, show);
+		// The box goes with them.  The caller is about to type a new line into
+		// it, one page a frame, and without this the old line stayed on screen
+		// underneath the new name plate until the frame after the flip.
+		Msx2_StoryDressLine();
+		VDP_CommandWait();
 		Msx2_VideoShowPage(page);
-		VDP_EnableDisplay(TRUE);
+		Msx2_VideoCopyPage(page, show);
 	}
 	g_shot = shot;
 }
