@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "msx2_stream.h"
+#include "msx2_sprite.h"
 #include "msx2_video.h"
 #include "msx2_scenes.h"
 
@@ -94,6 +95,18 @@ void Msx2_StreamSceneBlanked(u16 segment, u8 page)
 
 void Msx2_StreamScene(u16 segment, u8 page)
 {
+	// THE SPRITE PLANE IS NOT PART OF THE PAGE FLIP.
+	// This entry point is only ever the switch to another screen -- the title,
+	// the sanctum map, a talk, the deck editor, the code screens.  None of them
+	// uses a sprite, but the selector is an attribute in VRAM and nothing about
+	// streaming a new picture takes it down: the gem stayed standing over the
+	// new screen until whatever came next happened to hide it, which is the
+	// frame or two of it that was visible on every transition.  Clearing here
+	// costs 32 attribute writes and cannot flicker the duel's own selector,
+	// because the board and the cut-ins stream through
+	// Msx2_StreamSceneBlanked() instead.
+	Msx2_SpriteClear();
+
 	// GRAPHIC 7 cannot keep up with OTIR while it is scanning out; blanking is
 	// what makes the copy legal, and it is invisible anyway because a streamed
 	// scene is always presented by a page flip afterwards.
