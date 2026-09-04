@@ -1,0 +1,17 @@
+- There's an issue when, on turn 4 (for opponent's), the cards in hand don't get dranw properly, it may draw like 3 cards and then only the full 5 cards may get drawn properly.
+
+MsxGL has lVGM/VGM engine for /home/anonymous/Documents/DEV/Anime_card/waifu_card_game/msx_music/ music.
+You need to implement music playback to the game.
+
+- When placing a game from hand for top view, it is redrawing the top view twice (with visible black frame in between),
+even though nothing changed on the board (it needs to be done only once).
+
+
+- Remove the text "SUMMON", it's useless. ALso remove the "YOU WIN THE DUEL" or "YOU LOSE THE DUEL" and "SPACE RETURNS TO THE TITLE", also useless as these have visible clearing
+
+- Implement random seed etc... by using the MSX2 RTC chip if possible and other sources like the Z80's R register.
+
+- When passing turn on opponent's turn, the text for turn 5 or whatever, goes from turn 6, turn 5... over and over again until its player's turn
+- For some reasons, press "SAVE" in story mode, just brings you back to the titlescreen, instead in making you select a save device and then floppy disk or password screen showing your code.
+- "You lose" or "You win" tunes, should only play once (not looped)
+- The selector gem thing sprite remains briefly visible during screen transitions at old X/Y (when going from top view to normal view when passing turn for instance), that should be fixed

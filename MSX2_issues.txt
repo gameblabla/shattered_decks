@@ -1,0 +1,38 @@
+- When turning, drawing is extremely slow. On top of this, if i turn twice, there's still garbage for defense mode cart. it shouldn't be drawing any "outline" either. (FIXED)
+- Save screen for some reasons goes to titlescreen graphics + selector, and then it doesn't show the password anyway. (FIXED)
+
+- The card sprite should not disappear until it has been already printed/drawn on the board. A previous git commit attampted a fix and failed.
+  (FIXED FOR REAL.  The bend -- the two poses that put the settled card on both pages before the flight is
+  taken off them -- was armed inside Msx2_BoardHideHand(), which returns at once when the hand is already
+  off the screen.  Placing a card ALWAYS reaches that state: choosing the destination slot walks the cursor
+  onto the field and the camera cuts to the top view first.  So the one case a player ever plays had no bend
+  at all: the cleanup pass restored the arena under the last pose on both pages and the card came back
+  afterwards from the ordinary painter, one page per frame.  Measured on real openMSX, frame by frame: the
+  shown page went 0.41 card coverage -> 0.00 for about a second -> 0.41.  It is armed by
+  Msx2_BoardPrepareLanding() now, and the coverage on the shown page rises monotonically 0.03 .. 0.41 and
+  never falls.)
+- There are graphical glitches during story mode when talking to Kasem, related to the 2D background being drawn. (FIXED)
+- IT is not possible to save to disk. Likewise, going to "CONTINUE CODE" does nothing. Instead what it should do is "SAVE GAME",
+then offer option to save to floppy disk OR password code, and then show password code.
+Note that password code should work even for initial screen, because generated deck may be different. (FIXED for the password half;
+the floppy half is UNVERIFIED -- no emulated machine here has a drive, so FLOPPY DISK is always greyed out with "NO DRIVE ANSWERED"
+and only real hardware / a disk machine can confirm the write.)
+
+
+- It's not clear how we can turn a card into defense position (is it implemented ? the "SPACE ATTACKS - ESC pass" should be more like "SPACE=ATK X=TURN ESC=PASS" (FIXED)
+- During player's turn, going from card 1 to card 2 in hand, takes too much time, too much latency. This needs to be more responsive. (FIXED)
+- When doing card check on a card in battle, the selector's sprite is briefly visible (it needs to be hidden before that)
+  (FIXED: Msx2_BoardCheck() hides the gem before composing.  Verified frame by frame -- the three gem sprites
+  are down on the same frame the display blanks for the check page, and never up while it is on screen.)
+- When a card is destroyed during battle animation and gets slowly cleared to black, this is too slow. Use sprites in ZOOM 2X (only during this moment) to cover them with black opaque sprites and smooth clearing effect (we don't use MSX2 sprites, MSX1 sprites will do at 16x16 + ZOOM 2X). using 16 sprites should be sufficient (more if needed). (DONE, then WRONG, now FIXED.  The wipe was drawn in sprite colour 11 and came out bright magenta:
+  GRAPHIC 7 is the one mode where the palette registers do not reach the sprite plane, so
+  VDP_SetPaletteEntry(11, 0x0000) did nothing and the chip's own fixed table has 11 as 0x077.  There is no
+  black in that table above index 0 -- and 0 is the transparent code.  So the burn now clears R#8's TP bit
+  for as long as it is up and paints in code 0, which is a true black.  It also came down one frame too
+  early: Msx2_BoardRestoreFromCutin() hid the sprites BEFORE blanking the output, handing the scanner one
+  frame of the destroyed card whole.  Blank first, then hide.  Both verified frame by frame.)
+
+--- noticed while fixing the above, not yet addressed ---
+- The continue-code picker grid was drawn at a six-pixel pitch while its gold marker moved at
+  twenty-seven, so the highlighted letter was never the letter SPACE would take. (FIXED)
+- Story dialogue shows the SERENA name plate on lines the opponent is speaking.
