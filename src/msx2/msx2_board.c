@@ -2449,8 +2449,13 @@ static void Msx2_BoardCutTo(u8 view)
 	g_view = view;
 	Msx2_SpriteTransitionBegin();
 	Msx2_VideoDisplayBlank();
+	// PAINTED ONCE, COPIED ONCE.  The two pages get the same picture -- the
+	// same arena pose, the same panels, the same empty hand band -- and drawing
+	// the projected board is half a second of Z80 while the command engine
+	// duplicates a whole page on its own.  Painting it twice was a second of
+	// black for a picture the VDP can clone.
 	Msx2_BoardPaintView(view, MSX2_PAGE_0);
-	Msx2_BoardPaintView(view, MSX2_PAGE_1);
+	Msx2_VideoCopyPage(MSX2_PAGE_0, MSX2_PAGE_1);
 	Msx2_VideoDisplayRestore();
 
 	// THE VIEW ARRIVES FINISHED.
