@@ -1860,6 +1860,19 @@ static void Msx2_BoardFinishFx(void)
 	}
 	if(next == FX_EQUIP)
 	{
+		// THE CARD HAS TO LEAVE THE HAND WHEN THE BANNER SAYS IT DID.
+		// Every other followup re-reads the model before its beat runs -- a
+		// placement snapshots for its flight, a support cut-in snapshots on
+		// the way back from the full-screen picture -- and this one did not.
+		// So the cover the wind-up was holding stayed in the opponent's hand
+		// row for the whole EQUIP POWER beat and beyond, because g_want still
+		// carried it and the retained painter had nothing to repair; the row
+		// only caught up at the next beat that happened to snapshot, which in
+		// practice was the attack.  The rules emptied the slot the instant the
+		// card was played, and clearing g_hold_hand just above is the whole of
+		// what was needed to see it -- the snapshot is what tells the painter.
+		Msx2_BoardSnapshot();
+		PANEL_ALL();
 		g_fx_kind = FX_EQUIP;
 		g_fx_followup = FX_NONE;
 		g_fx_frames = FX_EQUIP_FRAMES;
