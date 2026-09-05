@@ -545,17 +545,17 @@ bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense)
 	if(!Msx2_IsMonster(card))
 		return FALSE;
 
-	// Placing onto an occupied slot is a fusion attempt (the pairwise recipe of
-	// fusion_result_for_cards); a failed pair simply replaces nothing and the
-	// placement is refused, as the shared code refuses it.
+	// An incompatible pair consumes the old monster and keeps the incoming
+	// one, just like the ordered hand chain. This also allows discarding cards.
 	u8 occupant = s->field[field_slot];
 	if(Msx2_IsMonster(occupant))
 	{
 		u8 fused = Msx2_FusionResult(occupant, card);
-		if(!Msx2_IsMonster(fused))
-			return FALSE;
-		card = fused;
-		action = MSX2_ACTION_FUSION;
+		if(Msx2_IsMonster(fused))
+		{
+			card = fused;
+			action = MSX2_ACTION_FUSION;
+		}
 		// The consumed monster's equips go with it, exactly as they do in the
 		// multi-card chain (fusion_keep_hand_equips in src/main.c keeps only
 		// equips the player put into the chain, and a single-card fusion has
@@ -636,8 +636,8 @@ static bool Msx2_FusionHandFirst(const Msx2Side* s, const u8* hand_slots, u8 cou
 
 // A fusion summon, folded but not yet spent.  The materials fold left to right
 // in the order the player chose them, a chain recipe short-circuits the whole
-// fold, and a chain that contains a pair the recipes do not know is refused
-// rather than silently eating the cards.
+// fold. An incompatible pair discards the earlier monster and keeps the next;
+// the player may deliberately use this to spend unwanted materials.
 //
 // One divergence from src/main.c, and it is presentational: the equip cards
 // kept by the chain are applied to the result as ATK/DEF bonuses but are not
@@ -669,11 +669,9 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 	i16 hand_atk = 0, hand_def = 0;      // from equip cards the player queued
 	i16 field_atk = 0, field_def = 0;    // from what was already on the field card
 	i16 pend_atk = 0, pend_def = 0;      // equips seen before any monster
-	bool performed = FALSE;
-	bool failed = FALSE;
 	bool hand_first;
 
-	if((count == 0) || (field_slot >= MSX2_FIELD))
+	if((count == 0) || (count > MSX2_HAND) || (field_slot >= MSX2_FIELD))
 		return MSX2_FUSE_NO_RECIPE;
 	// ONE SUMMON A TURN, AND SAY SO.  This is not a fact about the cards.
 	if(s->monster_played)
@@ -690,8 +688,13 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 	for(i = 0; i < count; ++i)
 	{
 		u8 slot = hand_slots[i];
-		if((slot >= MSX2_HAND) || s->used[slot])
+		u8 j;
+		if((slot >= MSX2_HAND) || s->used[slot] ||
+		   (s->hand[slot] == MSX2_CARD_NONE))
 			return MSX2_FUSE_NO_RECIPE;
+		for(j = 0; j < i; ++j)
+			if(hand_slots[j] == slot)
+				return MSX2_FUSE_NO_RECIPE;
 		if(n >= MSX2_FUSION_MAX)
 			return MSX2_FUSE_NO_RECIPE;
 		mat_field[n] = FALSE;
@@ -750,12 +753,10 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 			if(Msx2_IsMonster(fused))
 			{
 				current = fused;
-				performed = TRUE;
 			}
 			else
 			{
 				current = card;
-				failed = TRUE;
 			}
 		}
 	}
@@ -764,13 +765,12 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 	{
 		current = chain;
 		field_atk = field_def = 0;
-		performed = TRUE;
 	}
 
-	if(!performed || failed || !Msx2_IsMonster(current))
-		return MSX2_FUSE_NO_RECIPE;
-
 	g_fuse_card = current;
+	// A support-only chain is a discard with no summoned card or bonuses.
+	if(!Msx2_IsMonster(current))
+		hand_atk = hand_def = field_atk = field_def = 0;
 	g_fuse_hand_atk = hand_atk;
 	g_fuse_hand_def = hand_def;
 	g_fuse_field_atk = field_atk;
@@ -800,8 +800,8 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 	Msx2_DropFieldEquips(owner, field_slot);
 
 	s->field[field_slot] = current;
-	s->faceup[field_slot] = TRUE;
-	s->defense[field_slot] = defense ? TRUE : FALSE;
+	s->faceup[field_slot] = Msx2_IsMonster(current);
+	s->defense[field_slot] = Msx2_IsMonster(current) && defense;
 	s->attacked[field_slot] = FALSE;
 	s->atk_bonus[field_slot] = (i16)(g_fuse_hand_atk + g_fuse_field_atk);
 	s->def_bonus[field_slot] = (i16)(g_fuse_hand_def + g_fuse_field_def);

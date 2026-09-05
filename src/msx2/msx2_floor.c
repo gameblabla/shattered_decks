@@ -445,6 +445,10 @@ static void Msx2_FloorPoke(void) __naked
 static void Msx2_FloorSlivers(void) __naked
 {
     __asm
+        // Slivers are not contiguous with the last textured span.  Even a
+        // short CPU fill must set its own VRAM address.
+        xor a
+        ld (_g_fp_atok), a
         ld a, (_g_fp_ol)
         ld c, a
         ld a, (_g_fp_or)
@@ -484,6 +488,8 @@ static void Msx2_FloorSlivers(void) __naked
         xor a
         ld (_g_fp_mat), a
     00938$:
+        xor a
+        ld (_g_fp_atok), a
         ld a, e                 // right sliver: (nr, or]
         cp b
         ret nc
@@ -676,9 +682,13 @@ static void Msx2_FloorDouble(void) __naked
         inc a
         ld l, a
         ld h, #0
+        jr nz, 00965$
+        inc h                         // full-width silhouette: NX = 256
+    00965$:
         ld (#_g_VDP_Command + 8), hl    // NX
         ld a, (_g_bd_extra)
         ld l, a
+        ld h, #0
         ld (#_g_VDP_Command + 10), hl   // NY
         xor a
         ld (#_g_VDP_Command + 13), a    // ARG
@@ -883,8 +893,16 @@ static void Msx2_FloorBand(u8 allow_delta, u8 stride)
         // whole backdrop; they are also the fastest part of the motion, so
         // they take the coarsest rows whatever the pose asked for.
         if(allow_delta)
+        {
             stride = 3;
-        Msx2_FloorBackdrop();
+            // The baked backdrop follows the exact rows, not the repeated
+            // silhouette.  Clear the initial page so narrower repeated rows
+            // cannot leave pixels from the previous pose outside the arena.
+            Msx2_Fill(0, MSX2_BAND_Y, MSX2_SCREEN_W, MSX2_BAND_H, MSX2_BLACK);
+            g_fp_busy = 1;
+        }
+        else
+            Msx2_FloorBackdrop();
     }
     g_fp_seg = (u16)(MSX2_FLOOR_SPAN_SEG + g_floor_segments[g_msx2_arena_pose]);
     g_bd_at = (u16)g_floor_rows;
@@ -978,6 +996,9 @@ static void Msx2_FloorDraw(u8 x0, u8 y0, u8 x1, u8 y1)
     u16 segment = MSX2_FLOOR_SPAN_SEG + g_floor_segments[g_msx2_arena_pose];
 
     Msx2_FloorLoad();
+    // A previous camera step can leave a two/three-row flat-fill height.
+    // Rectangle repairs walk every row and must never inherit that height.
+    g_fp_h = 1;
     if(y0 < MSX2_BAND_Y) y0 = MSX2_BAND_Y;
     if(y1 > MSX2_BAND_Y + MSX2_BAND_H) y1 = MSX2_BAND_Y + MSX2_BAND_H;
     for(y = y0; y < y1; ++y)

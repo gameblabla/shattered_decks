@@ -234,6 +234,8 @@ static i16 g_ev, g_edx, g_edv;
 static void Msx2_RasterEdge(u8 a, u8 b, u8 tex_h)
 {
 	i16 h = (i16)((i16)g_qy[b] - (i16)g_qy[a]);
+	i16 dx = (i16)((i16)g_qx[b] - (i16)g_qx[a]);
+	u16 step;
 
 	if(h == 0)
 	{
@@ -243,7 +245,11 @@ static void Msx2_RasterEdge(u8 a, u8 b, u8 tex_h)
 		g_edv = 0;
 		return;
 	}
-	g_edx = (i16)((((i16)g_qx[b] - (i16)g_qx[a]) << 8) / h);
+	// Scale the unsigned magnitude: signed dx << 8 overflows beyond 127
+	// pixels (and shifting a negative dx is undefined). Divide before signing.
+	step = (u16)(((u16)(dx < 0 ? -dx : dx) << 8) /
+	             (u16)(h < 0 ? -h : h));
+	g_edx = (i16)(((dx < 0) != (h < 0)) ? (u16)(0u - step) : step);
 	g_edv = (i16)((((i16)tex_h) << 8) / h);
 	if(h > 0)
 	{

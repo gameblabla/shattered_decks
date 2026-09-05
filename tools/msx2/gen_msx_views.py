@@ -315,7 +315,9 @@ def over_card_xy():
         y = OVER_Y + OVER_TILE_Y0 + row * OVER_TILE_PITCH_Y
         for col in range(FIELD_SLOTS // 4):
             cx = OVER_TILE_X0 + col * OVER_TILE_PITCH_X + OVER_TILE_W // 2
-            out.append((cx - OVER_CARD_W // 2, y))
+            # Owner's measured alignment correction. Derive quads, defence
+            # restore boxes, cursors and landing positions from this too.
+            out.append((cx - OVER_CARD_W // 2 + 4, y))
     return out
 
 

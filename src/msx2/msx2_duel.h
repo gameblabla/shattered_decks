@@ -188,6 +188,9 @@ bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense);
 // A fusion summon from several hand cards at once, optionally onto the monster
 // already in `field_slot`.  `hand_slots` is the order the player chose them in,
 // which is part of the rule: the materials fold left to right.
+// Unknown pairs consume the earlier monster and keep the later one; a chain
+// of only supports can be spent as a discard. Invalid/empty hand slots remain
+// rejected, and the one-summon-per-turn restriction still applies.
 // Why a chain will not summon.  The screen owes the player the true answer:
 // "those cards do not fuse" is a lie when the cards fuse and the side has
 // simply already summoned this turn.

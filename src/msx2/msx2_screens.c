@@ -203,7 +203,8 @@ void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result)
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
 	Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
-	Msx2_TextCenter(20, Msx2_UiText(MSX2_S_FUSION_SUMMON));
+	Msx2_TextCenter(20, (result == MSX2_CARD_NONE) ? "CARDS DISCARDED"
+	                                              : Msx2_UiText(MSX2_S_FUSION_SUMMON));
 	for(i = 0; i < g_fuse_n; ++i)
 		Msx2_ScreenSmallCard(g_fuse_mat[i], Msx2_FuseMatX(i), FUSE_MAT_Y);
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));
@@ -253,6 +254,9 @@ bool Msx2_FusionStep_In(void)
 			{
 				Msx2_VideoDrawPage(p);
 				Msx2_Fill(0, 40, MSX2_SCREEN_W, 120, MSX2_BLACK);
+				// A discarded support-only chain has no result art or name.
+				if(g_fuse_result == MSX2_CARD_NONE)
+					continue;
 				Msx2_ScreenBigCard(g_fuse_result,
 				                   (u8)((MSX2_SCREEN_W - MSX2_BATTLE_CARD_W) / 2),
 				                   38);

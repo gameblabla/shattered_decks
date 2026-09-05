@@ -21,6 +21,27 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M6 — full duel loop | **done**: person-playable placement, fusion, support, attacks, turn handoff, results, and the real shared-renderer board |
 | M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, a tabbed deck editor, 16-symbol password save/load, floppy save/load where a drive answers, and ending transition |
 
+### WIP bug fixes — 2026-09-05 (not tested)
+
+Implemented by source inspection of `msx2_bugs.txt` and the Claude transcripts:
+
+* Failed fusion pairs now consume the earlier material and retain the next
+  monster. Support-only chains can be discarded without reading result art for
+  an empty card. Hand-slot validation and the summon limit remain enforced.
+* Overhead card coordinates move right four pixels in `gen_msx_views.py`, so
+  generated upright/defence placement, repair boxes and cursors move together.
+* Floor sliver cleanup resets the VRAM pointer before each separate fill;
+  clipped repairs reset the fill height to one row. Initial repeated-row camera
+  frames clear the band because the exact-row backdrop has different coverage.
+  A full-width row repeat explicitly uses a 256-pixel command width.
+* Card-edge Q8.8 slopes divide unsigned magnitudes before applying their sign,
+  avoiding overflow in the signed scaled x difference.
+
+No build, asset regeneration, tests or emulator runs were performed for this
+pass, as requested. The next normal Makefile.msx2 build must regenerate the
+overhead geometry; the ROM and earlier measurements below predate these edits.
+The initial camera-page clears may cost more time and remain unmeasured.
+
 ### The textured floor, measured — 2026-09-05
 
 The perspective arena and the overhead tiles sample the two supplied sandstone
