@@ -31,6 +31,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import numpy as np                                             # noqa: E402
 from PIL import Image                                          # noqa: E402
 
 import gen_msx_scenes as scenes                                # noqa: E402
@@ -67,6 +68,9 @@ YJK_SCENES = ["TITLE", "ENDING"] + \
 # the hue it could not reach -- so diffusing it is worth more here than in a
 # paletted mode, and it is what keeps a sky from banding into ribbons.
 DITHER = 0.9
+
+# See bust_blob: the MSX2 build's 0.45 is too dark for YJK.
+PLUS_PORTRAIT_DIM = 0.62
 
 # Eight palette entries are the interface's (msx2_yjk.UI_PALETTE) and eight are
 # fitted to each picture, because YJK's weak end is the dark end and a scene's
@@ -171,46 +175,155 @@ def bake_scenes(dither, quiet):
 
 # ── The story busts ──────────────────────────────────────────────────────────
 
-def bust_runs(alpha, y, w):
-    """The opaque runs of one row, rounded INWARD to chroma groups.
+# TWO THRESHOLDS, BECAUSE THE TWO QUESTIONS ARE DIFFERENT.
+#
+# "Is this pixel part of the figure?" is the MSX2 build's question and its
+# answer is the MSX2 build's: anything past 96/255 is drawn.  Raising that is
+# what put HOLES in the busts -- the art's antialiased hair is a long way from
+# opaque, and every strand of it below the bar stopped being blitted at all.
+#
+# "Should this pixel have a say in the colour of the four it shares a chroma
+# group with?" is the question YJK adds, and there the bar has to be high: the
+# paintings are cut out against black, so a pixel at 40% alpha carries almost
+# no colour, and letting it into the group's mean blackened its three
+# neighbours as well.  That is the fringe the first plus cartridge drew.
+BUST_SOLID = 96          # ... is drawn
+BUST_CHROMA = 176        # ... and gets a vote on the hue
 
-    A bust is blitted over a picture, so only the pixels it actually covers may
-    be written -- and a YJK pixel cannot be written alone, because three of its
-    neighbours share its hue.  Rounding a run inward to the next multiple of
-    four is what makes a partial group somebody else's business: the silhouette
-    loses up to three pixels of its antialiased edge and the backdrop shows
-    through them, which is invisible next to the alternative (a fringe of the
-    character's own colour, or of black, three pixels wide all the way round).
+
+def opaque_runs(alpha, y, w):
+    """scenes.portrait_runs, said again here so the threshold is this file's."""
+    apx = alpha.load()
+    runs = []
+    x = 0
+    while x < w:
+        while x < w and apx[x, y] < BUST_SOLID:
+            x += 1
+        if x >= w:
+            break
+        start = x
+        while x < w and apx[x, y] >= BUST_SOLID:
+            x += 1
+        runs.append([start, x - start])
+    while len(runs) > scenes.PORTRAIT_MAX_RUNS:
+        gaps = [(runs[i + 1][0] - (runs[i][0] + runs[i][1]), i)
+                for i in range(len(runs) - 1)]
+        _gap, i = min(gaps)
+        runs[i][1] = runs[i + 1][0] + runs[i + 1][1] - runs[i][0]
+        del runs[i + 1]
+    return [(a, min(b, 255)) for a, b in runs]
+
+
+def bust_runs(alpha, y, w):
+    """The opaque runs of one row, rounded INWARD to whole chroma groups.
+
+    A YJK pixel cannot be written alone -- three of its neighbours share its
+    hue, and those hues live in the low bits of the four bytes -- so a plain
+    rectangle blit has to cover whole groups of four.  Which way that is
+    rounded used to be the whole question and both answers were wrong: inward
+    dropped up to three pixels of silhouette a side, outward WROTE three, and
+    what it wrote was this art's own black outline smeared into a four-pixel
+    block.  That is the black halo the report is about.
+
+    So a run now covers only the groups the figure fills completely, and the
+    pixels left over -- the ones in a group it shares with the backdrop -- are
+    not the blitter's problem at all.  They are handed to bust_fringe() and
+    written one at a time, keeping the chroma bits already in VRAM, which is
+    the only way a cut-out gets a per-pixel edge in this mode.
 
     Both bust positions on screen are multiples of four (msx2_story.c pins them
-    there for this reason), so a run aligned inside the rectangle is aligned on
-    the screen too.
+    there), so a run aligned inside the rectangle is aligned on the screen too.
     """
+    apx = alpha.load()
+    groups = w // 4
+
+    def full(g):
+        return all(apx[x, y] >= BUST_SOLID
+                   for x in range(g * 4, min(g * 4 + 4, w)))
+
     runs = []
-    for start, length in scenes.portrait_runs(alpha, y, w):
-        first = (start + 3) & ~3
-        last = (start + length) & ~3
-        if last - first >= 4:
-            runs.append((first, min(last - first, 252)))
-    return runs
+    g = 0
+    while g < groups:
+        if not full(g):
+            g += 1
+            continue
+        first = g
+        while g < groups and full(g):
+            g += 1
+        runs.append([first * 4, (g - first) * 4])
+    # Three runs is what the row record holds; anything past that is folded in
+    # by absorbing the narrowest gap, exactly as the MSX2 table does it.
+    while len(runs) > scenes.PORTRAIT_MAX_RUNS:
+        gaps = [(runs[i + 1][0] - (runs[i][0] + runs[i][1]), i)
+                for i in range(len(runs) - 1)]
+        _gap, i = min(gaps)
+        runs[i][1] = runs[i + 1][0] + runs[i + 1][1] - runs[i][0]
+        del runs[i + 1]
+    return [(a, min(b, 252)) for a, b in runs]
+
+
+# The fringe record a row may hold.  Seventeen is the worst row in the shipped
+# art (a spray of hair strands, each of them its own partial group); twenty is
+# what the runtime's RAM record is sized for, and going past it is an error
+# rather than a silently thinner figure.
+FRINGE_MAX = 20
+FRINGE_BYTES = 2048      # the whole table, between the runs and the pixels
+
+
+def bust_fringe(alpha, y, w, runs):
+    """The solid pixels of one row that no whole-group run covers.
+
+    These are the edge of the figure: one to three pixels sharing a chroma
+    group with the backdrop behind them.  Each is emitted as (column, Y byte)
+    and the runtime merges it into VRAM -- its own brightness, the BACKDROP's
+    hue, because the hue is not its to change.  At the silhouette that is the
+    dark outline of the drawing, which carries almost no colour of its own, so
+    borrowing the sky's costs nothing and buys a per-pixel edge.
+    """
+    apx = alpha.load()
+    covered = bytearray(w)
+    for start, length in runs:
+        for x in range(start, min(start + length, w)):
+            covered[x] = 1
+    return [x for x in range(w)
+            if not covered[x] and apx[x, y] >= BUST_SOLID]
 
 
 def bust_blob(bust, dim, dither):
-    """One bust, YJK, with its own run table -- the MSX2 layout, byte for byte.
+    """One bust, YJK: a run table, a fringe table, then the packed pixels.
+
+    The MSX2 layout with one table inserted -- the runs and the pixels mean
+    exactly what they mean in the paletted build, and the fringe between them
+    is the edge this mode cannot blit (see bust_runs).
 
     PURE YJK, NO YAE.  The palette belongs to whatever scene the bust is
     standing on and its top half changes with every screen; a bust that borrowed
     an entry would change colour when the backdrop did.
+
+    THE MASK GOES THROUGH THE ENCODER.  It is not an optimisation: the cut-out
+    ground is black, a group of four shares one hue, and an encoder that cannot
+    see which of the four are real fits that hue -- and its dithering error --
+    to the hole.  msx2_yjk.encode takes the mask for exactly this.
     """
     w, h = bust.size
     alpha = bust.getchannel("A")
     rgb = bust.convert("RGB")
     if dim:
+        # A HIGHER FLOOR THAN THE MSX2 BUILD'S.
+        # YJK's weak end is the dark end -- Y moves in steps of two, and the
+        # chroma a group shares is fitted to colours that have almost none --
+        # so the 0.45 the paletted build dims a listening speaker to comes out
+        # as a black cut-out with the hair lost inside it.  The intent is
+        # "not the one speaking", and 0.62 says that in a mode that cannot
+        # spend brightness it does not have.
         rgb = Image.blend(Image.new("RGB", bust.size, (0, 0, 0)), rgb,
-                          scenes.PORTRAIT_DIM)
-    quant, _pal = yjk.encode(rgb, dither=dither, allow_yae=False)
+                          PLUS_PORTRAIT_DIM)
+    a = np.asarray(alpha, dtype=np.int32)
+    quant, _pal = yjk.encode(rgb, dither=dither, allow_yae=False,
+                             mask=a >= BUST_CHROMA, solid=a >= BUST_SOLID)
 
     index = bytearray()
+    fringe = bytearray()
     pixels = bytearray()
     for y in range(h):
         runs = bust_runs(alpha, y, w)[:scenes.PORTRAIT_MAX_RUNS]
@@ -222,10 +335,26 @@ def bust_blob(bust, dim, dither):
                                 y * w + runs[i][0] + runs[i][1]]
             else:
                 index += b"\x00\x00"
+        edge = bust_fringe(alpha, y, w, runs)
+        if len(edge) > FRINGE_MAX:
+            sys.exit("row %d has %d fringe pixels, past %d"
+                     % (y, len(edge), FRINGE_MAX))
+        # A count and then (column, Y byte) pairs, row after row: the runtime
+        # walks the rows in order anyway, so the record costs no padding.
+        fringe.append(len(edge))
+        for x in edge:
+            # The Y bits and nothing else.  Bit 3 is the YAE flag and a YJK Y
+            # is even, so masking to 0xF8 keeps the brightness and leaves the
+            # low three bits -- the group's share of the chroma -- to VRAM.
+            fringe += bytes((x, quant[y * w + x] & 0xF8))
     if len(index) > scenes.PORTRAIT_INDEX_BYTES:
         sys.exit("portrait run table is %d bytes, past %d"
                  % (len(index), scenes.PORTRAIT_INDEX_BYTES))
-    body = index + bytes(scenes.PORTRAIT_INDEX_BYTES - len(index)) + pixels
+    if len(fringe) > FRINGE_BYTES:
+        sys.exit("portrait fringe table is %d bytes, past %d"
+                 % (len(fringe), FRINGE_BYTES))
+    body = index + bytes(scenes.PORTRAIT_INDEX_BYTES - len(index)) \
+         + fringe + bytes(FRINGE_BYTES - len(fringe)) + pixels
     if len(body) > scenes.PORTRAIT_STRIDE:
         sys.exit("portrait is %d bytes, past the %d stride"
                  % (len(body), scenes.PORTRAIT_STRIDE))
@@ -346,6 +475,17 @@ def main():
         f.write("#define MSX2_CARD_ART_YJK_SEGMENT  %d\n" % last)
         f.write("#define MSX2_SCENE_PALETTE_OFFSET  %d\n" % (WIDTH * HEIGHT))
         f.write("#define MSX2_SCENE_PALETTE_BYTES   32\n")
+        f.write("\n// A YJK bust is blitted as whole chroma groups and then\n"
+                "// EDGED one pixel at a time: a pixel that shares its group\n"
+                "// with the backdrop keeps the chroma bits already in VRAM,\n"
+                "// which is what gives a cut-out a per-pixel silhouette in a\n"
+                "// mode whose hue is four pixels wide.  The fringe table sits\n"
+                "// between the run table and the pixels.\n")
+        f.write("#define MSX2_PORTRAIT_FRINGE_OFF   %d\n"
+                % scenes.PORTRAIT_INDEX_BYTES)
+        f.write("#define MSX2_PORTRAIT_FRINGE_MAX   %d\n" % FRINGE_MAX)
+        f.write("#define MSX2_PORTRAIT_PIXELS_OFF   %d\n"
+                % (scenes.PORTRAIT_INDEX_BYTES + FRINGE_BYTES))
         f.write("\n#endif\n")
 
     if not quiet:

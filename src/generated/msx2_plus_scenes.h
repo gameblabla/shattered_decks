@@ -7,8 +7,18 @@
 #ifndef MSX2_PLUS_SCENES_H
 #define MSX2_PLUS_SCENES_H
 
-#define MSX2_CARD_ART_YJK_SEGMENT  251
+#define MSX2_CARD_ART_YJK_SEGMENT  259
 #define MSX2_SCENE_PALETTE_OFFSET  54272
 #define MSX2_SCENE_PALETTE_BYTES   32
+
+// A YJK bust is blitted as whole chroma groups and then
+// EDGED one pixel at a time: a pixel that shares its group
+// with the backdrop keeps the chroma bits already in VRAM,
+// which is what gives a cut-out a per-pixel silhouette in a
+// mode whose hue is four pixels wide.  The fringe table sits
+// between the run table and the pixels.
+#define MSX2_PORTRAIT_FRINGE_OFF   1024
+#define MSX2_PORTRAIT_FRINGE_MAX   20
+#define MSX2_PORTRAIT_PIXELS_OFF   3072
 
 #endif

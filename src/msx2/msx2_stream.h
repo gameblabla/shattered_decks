@@ -67,6 +67,13 @@ void Msx2_PokeBlock(const u8* src, u8 n);
 void Msx2_PokeAt(u8 x, u8 y);
 void Msx2_PokeAtLine(u8 x, u16 line);
 
+// Merge `n` (column, value) pairs into one VRAM line, keeping the low three
+// bits of every byte that is already there.  Those bits are the SCREEN 10
+// chroma a group of four pixels shares, so this is how a shape whose edge
+// falls inside a group is drawn without stealing the hue of the picture
+// behind it; `line` is absolute, page included, as Msx2_PokeAtLine takes it.
+void Msx2_MergeRow(const u8* rec, u8 n, u16 line);
+
 // One interface line from the cartridge string table, by id (MSX2_S_*).  The
 // buffer is shared, so use the pointer before asking for the next one.
 const c8* Msx2_UiText(u8 id);

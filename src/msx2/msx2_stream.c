@@ -390,6 +390,88 @@ void Msx2_PokeAtLine(u8 x, u16 line)
 	__endasm;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  One pixel at a time, keeping the chroma that is already there
+//
+//  SCREEN 10 spends the low three bits of every byte on a hue its whole group
+//  of four shares, so a byte written blind carries a quarter of a colour that
+//  belongs to the three pixels beside it.  Anything that draws a shape whose
+//  edge does not land on a group boundary -- a cut-out bust, and only that so
+//  far -- has to read the byte back, keep those three bits and change nothing
+//  but the brightness.  That is the whole of this routine, and it is what
+//  gives a figure a per-pixel silhouette in a mode whose hue is four pixels
+//  wide.
+//
+//  It is a VRAM READ with the display running, so it obeys the same rule the
+//  rectangle blitter does: the VDP needs its ~29 T-states between accesses,
+//  and the register set-up between one pixel and the next is far more than
+//  that.  Interrupts stay off for the row -- the address is two writes to
+//  0x99 and an ISR that touched the VDP between them would put the pixel
+//  somewhere else entirely.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static const u8* g_merge_rec;
+static u8 g_merge_n;
+
+// `rec` is `n` (column, value) pairs; each value is a whole byte whose low
+// three bits are zero.  All of them land on one VRAM line.
+void Msx2_MergeRow(const u8* rec, u8 n, u16 line)
+{
+	VDP_CommandWait();
+
+	g_merge_rec = rec;
+	g_merge_n = n;
+	g_blit_r14 = (u8)(line >> 6);
+	g_blit_hi = (u8)(line & 0x3F);          // bit 6 clear: a READ address
+
+	__asm
+		di
+		ld		a, (_g_merge_n)
+		or		a
+		jr		z, merge_done
+		ld		hl, (_g_merge_rec)
+		ld		b, a
+	merge_px:
+		ld		e, (hl)						// column
+		inc		hl
+		ld		d, (hl)						// the Y bits, low three clear
+		inc		hl
+		push	hl
+
+		ld		a, (_g_blit_r14)			// point at it for reading
+		out		(#0x99), a
+		ld		a, #(14 | 0x80)
+		out		(#0x99), a
+		ld		a, e
+		out		(#0x99), a
+		ld		a, (_g_blit_hi)
+		out		(#0x99), a
+		ex		(sp), hl					// the VDP's read latency, spent
+		ex		(sp), hl					// on something rather than on nops
+		in		a, (#0x98)
+		and		#0x07						// the group's chroma stays
+		or		d
+		ld		c, a
+
+		ld		a, (_g_blit_r14)			// and again for writing
+		out		(#0x99), a
+		ld		a, #(14 | 0x80)
+		out		(#0x99), a
+		ld		a, e
+		out		(#0x99), a
+		ld		a, (_g_blit_hi)
+		or		#0x40
+		out		(#0x99), a
+		ld		a, c
+		out		(#0x98), a
+
+		pop		hl
+		djnz	merge_px
+	merge_done:
+	__endasm;
+	__asm ei __endasm;
+}
+
 // One interface line, out of the cartridge.
 //
 // The words the duel and story screens print are cartridge data, not code:

@@ -17,6 +17,17 @@
 #include "msx2_bank.h"
 // SCREEN 10 in the MSX2+ cartridge: this unit's ink is YAE (msx2_plus.h).
 #include "msx2_plus.h"
+#ifdef MSX2_PLUS
+// The plus cartridge's own asset symbols: the busts carry a fringe table the
+// paletted ones have no use for (Msx2_StoryBlitBust).
+#include "msx2_plus_scenes.h"
+#endif
+
+// The MSX2 cartridge's busts are GRAPHIC 7 bytes and every pixel of one is its
+// own colour, so there is no fringe table between the runs and the pixels.
+#ifndef MSX2_PORTRAIT_PIXELS_OFF
+#define MSX2_PORTRAIT_PIXELS_OFF  MSX2_PORTRAIT_INDEX_BYTES
+#endif
 #ifdef MSX2_DEBUG_REGRESSION
 #include "msx2_regression.h"
 #endif
@@ -525,9 +536,18 @@ static void Msx2_StoryBeginLine(void)
 static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 {
 	u16 seg = MSX2_PORTRAIT_SEG(chr, lit);
-	u16 pix = MSX2_PORTRAIT_INDEX_BYTES;   // the pixels follow the run table
+	u16 pix = MSX2_PORTRAIT_PIXELS_OFF;    // the pixels follow the tables
 	u8  rec[MSX2_PORTRAIT_ROW_STRIDE];
 	u8  row, k;
+#ifdef MSX2_PORTRAIT_FRINGE_OFF
+	// The edge of the figure, one pixel at a time (msx2_stream.c): a bust is
+	// blitted as whole chroma groups here, and every solid pixel that shares
+	// its group with the backdrop is in this table instead.  The records are
+	// variable-length and the rows are walked in order, so the cursor carries
+	// from row to row exactly as the pixel cursor does.
+	u16 fringe = MSX2_PORTRAIT_FRINGE_OFF;
+	u8  edge[1 + MSX2_PORTRAIT_FRINGE_MAX * 2];
+#endif
 
 	for(row = 0; row < MSX2_PORTRAIT_H; ++row)
 	{
@@ -559,6 +579,27 @@ static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 			}
 			pix = (u16)(pix + rn);
 		}
+#ifdef MSX2_PORTRAIT_FRINGE_OFF
+		// The whole record in one read: it is bounded, and the fringe table
+		// is small enough that it never leaves the bust's first segment.
+		Msx2_RomRead(seg, fringe, edge, sizeof(edge));
+		if(edge[0])
+		{
+			if(visible)
+			{
+				for(k = 0; k < edge[0]; ++k)
+					edge[1 + k * 2] = (u8)(edge[1 + k * 2] + x);
+				Msx2_MergeRow(edge + 1, edge[0],
+				              (u16)(((u16)Msx2_VideoGetDrawPage() << 8)
+				                    + (u8)(y + row)));
+			}
+			fringe = (u16)(fringe + 1 + (u16)edge[0] * 2);
+		}
+		else
+		{
+			++fringe;
+		}
+#endif
 	}
 }
 
