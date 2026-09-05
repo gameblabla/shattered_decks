@@ -9,6 +9,7 @@
 #include "msx2_bank.h"
 #include "msx2_board.h"
 #include "msx2_duel.h"
+#include "msx2_cards.h"
 #include "msx2_story.h"
 #include "msx2_entropy.h"
 #include "msx2_audio.h"
@@ -79,6 +80,15 @@ u8 Msx2_RegressionStart(void)
 			g_duel.side[MSX2_OWNER_PLAYER].field[1] = 2;
 			g_duel.side[MSX2_OWNER_PLAYER].faceup[1] = TRUE;
 			g_duel.side[MSX2_OWNER_PLAYER].defense[1] = TRUE;
+			// An equip on each support row.  The owner's report ties the stray
+			// sliver to a support card being on the table while the camera
+			// swings, so the orbit fixture has to have one.
+			g_duel.side[MSX2_OWNER_COM].equip_field[0] = MSX2_CARD_COUNT;
+			g_duel.side[MSX2_OWNER_COM].equip_target[0] = 0;
+			g_duel.side[MSX2_OWNER_PLAYER].equip_field[0] = MSX2_CARD_COUNT;
+			g_duel.side[MSX2_OWNER_PLAYER].equip_target[0] = 0;
+			g_duel.side[MSX2_OWNER_PLAYER].equip_field[1] = MSX2_CARD_COUNT;
+			g_duel.side[MSX2_OWNER_PLAYER].equip_target[1] = 1;
 		}
 	}
 

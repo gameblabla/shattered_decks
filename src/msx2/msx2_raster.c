@@ -269,33 +269,49 @@ static void Msx2_RasterDraw(u8 defense)
 	// and nothing here rotates a pixel.
 	u8 tex_w = defense ? MSX2_CARD_H : MSX2_CARD_W;
 	u8 tex_h = defense ? MSX2_CARD_W : MSX2_CARD_H;
-	u8 ytop, ybot, y;
+	u8 ytop, ybot, y, i;
+	u8 la, lb, ra, rb;             // each chain's current edge, as corner pairs
 
-	Msx2_RasterEdge(0, 3, tex_h);
-	g_lx = g_ex; g_lv = g_ev; g_ldx = g_edx; g_ldv = g_edv;
-	Msx2_RasterEdge(1, 2, tex_h);
-	g_rx = g_ex; g_rv = g_ev; g_rdx = g_edx; g_rdv = g_edv;
-
-	// The LEFT edge owns the row range.  Most captured poses give the card a
-	// genuine trapezoid, but several give a parallelogram whose two horizontal
-	// edges are several rows apart, and there the two side edges barely overlap
-	// at all: clipping to the rows they share would draw two rows of card.  The
-	// right edge is extrapolated over the difference instead, which is what has
-	// always been drawn.
-	ytop = (g_qy[0] < g_qy[3]) ? g_qy[0] : g_qy[3];
-	ybot = (g_qy[0] < g_qy[3]) ? g_qy[3] : g_qy[0];
+	// The quad owns the row range, not one of its edges.
+	ytop = ybot = g_qy[0];
+	la = 0;
+	for(i = 1; i < 4; ++i)
+	{
+		if(g_qy[i] < ytop) { ytop = g_qy[i]; la = i; }
+		if(g_qy[i] > ybot) ybot = g_qy[i];
+	}
 	if(ybot <= ytop)
 		return;
+	lb = ra = rb = la;
 
 	for(y = ytop; y < ybot; ++y)
 	{
-		u8 xl = (u8)(g_lx >> 8);
-		u8 xr = (u8)(g_rx >> 8);
-		i16 row = (i16)(((g_lv >> 1) + (g_rv >> 1)) >> 8);
+		u8 xl, xr, x0;
+		i16 row;
 		u16 width;
 		u16 step;
-		u8 x0;
 		const u8* rowbase;
+
+		// Whichever edge of the chain covers this row.  The step is taken when
+		// the row reaches the corner the current edge ends on, so the new edge
+		// always starts exactly here and there is no catching up to do; a flat
+		// edge is stepped straight over.  The bottom corner is below every row
+		// the loop runs, so neither walk can leave the quad.
+		if(g_qy[lb] <= y)
+		{
+			do { la = lb; lb = (u8)((la + 3) & 3); } while(g_qy[lb] <= y);
+			Msx2_RasterEdge(la, lb, tex_h);
+			g_lx = g_ex; g_lv = g_ev; g_ldx = g_edx; g_ldv = g_edv;
+		}
+		if(g_qy[rb] <= y)
+		{
+			do { ra = rb; rb = (u8)((ra + 1) & 3); } while(g_qy[rb] <= y);
+			Msx2_RasterEdge(ra, rb, tex_h);
+			g_rx = g_ex; g_rv = g_ev; g_rdx = g_edx; g_rdv = g_edv;
+		}
+		xl = (u8)(g_lx >> 8);
+		xr = (u8)(g_rx >> 8);
+		row = (i16)(((g_lv >> 1) + (g_rv >> 1)) >> 8);
 
 		if(row < 0)
 			row = 0;

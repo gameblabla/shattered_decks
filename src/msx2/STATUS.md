@@ -57,14 +57,53 @@ Eight reports from the owner, worked through in source and rebuilt:
   mask, so the card drawn to replace what that side spent flies in with the
   rest instead of appearing when the deal is over.
 
-Not fixed: the stray green sliver reported alongside the missing cards. The
-owner tied it to the same frame, so it may go with the quad fix; the general
-row clip that would have covered its whole class was tried and reverted --
-several poses give the card a parallelogram whose two side edges barely
-overlap, and clipping to the shared rows drew two rows of card.
-
 Built and packaged (resident ROM ends at `0xBF13`, 237 bytes spare); a 90 s
 blind soak completed one duel and was mid-second with the probe reporting OK.
+
+### The stray sliver beside an equip — 2026-09-05
+
+The last item on the list, and it is geometry rather than an overflow.
+
+`Msx2_RasterDraw()` treated every projected slot as a trapezoid: it walked the
+0->3 and 1->2 side edges over the rows the LEFT one spanned. That holds in a
+chair, where a board row projects with horizontal ends. Half way through a turn
+orbit it does not: the slot leans, and its 0-1 edge slopes by several rows. At
+`MOVE_TURN_1` the player's first support cell is (52,45) (65,49) (42,61)
+(29,55), so rows 45..55 were drawn with the 1->2 edge started four rows above
+where it begins -- the card's top right corner was painted ABOVE its own top
+edge, out over the black past the board's rim, and its bottom six rows were
+never drawn at all. That overhang is the sliver, which is why it only showed
+with a card in a support row (they sit nearest the rim) and only during a
+swing.
+
+The row range is now the whole quad and each side is a CHAIN of edges. Every
+quad the capture emits is wound the same way -- all 920 checked -- so from the
+topmost corner the forward walk is the right-hand boundary and the backward
+walk the left; each is followed edge by edge to the bottom corner, and `v` is
+whatever texture row the corner carries (0 and 1 the top, 2 and 3 the bottom).
+On a chair pose the first edge of each chain is the flat 0-1 top and covers no
+rows, which leaves exactly the two edges this used to walk, so the trapezoid is
+now the degenerate case rather than the assumption. `Msx2_RasterEdge()` got
+smaller in the process: a chain only descends, so the sign juggling for an
+upward edge is gone.
+
+Measured over all 920 baked quads: quads painting more than two pixels outside
+their own outline went from 353 (worst 12.2 px) to none (worst 0.71 px, which
+is rasterizer rounding), and the 550 that drew fewer rows than their height to
+none. Confirmed on hardware-accurate openMSX by dumping the band every frame of
+every turn orbit in a long soak: before, the support card at that pose covered
+screen rows 45..54 with a run out to x=65 on its first row; after, it covers
+46..59 and its first row is x=50..55, which is the quad's own left and top edge
+to the pixel.
+
+Cost 154 bytes: the shipping ROM now ends at `0xBFAD`, 83 bytes spare. A 90 s
+blind soak completed one duel with the probe reporting OK.
+
+Note for whoever picks this up next: `make -f Makefile.msx2 regression` does
+not package and has not since before this pass -- the probe diagnostics push
+resident ROM past `0xC000`. `MSX2_FIXTURE_TOP_PASS_TURN` now also puts an equip
+on each support row, so it reproduces this report directly once there is room
+to build it again.
 
 ### WIP build follow-up — 2026-09-05
 
