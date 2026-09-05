@@ -161,8 +161,12 @@ extern u8  g_stat_menu_cursor;
 #define MSX2_PROBE_SLOTS 2
 extern Msx2Probe g_probe[MSX2_PROBE_SLOTS];
 
+// The trampolines (msx2_bank.c); the bodies are in the modal bank.
 void Msx2_ProbeInit(void);
 void Msx2_ProbeUpdate(void);
+void Msx2_ProbeInit_In(void);
+void Msx2_ProbeUpdate_In(void);
+extern u8 g_probe_slot;
 
 // Bring-up bisection: mark how far execution got, so a crash shows up as a
 // stage number in the RAM dump instead of a blank screen.  Sprinkle

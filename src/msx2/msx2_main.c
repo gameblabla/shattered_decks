@@ -226,8 +226,10 @@ void main(void)
 {
 	Msx2_ClearStaticRam();
 	Msx2_EntropyInit();
-	Msx2_AudioInit();
+	// Before the audio init, so that a fault inside the boot-bank chip probe
+	// still shows up as a stage number instead of an unfindable probe.
 	Msx2_ProbeInit();
+	Msx2_AudioInit();
 	Msx2_RegressionInit();
 	Msx2_VideoLoadFont();
 	Msx2_VideoInit();

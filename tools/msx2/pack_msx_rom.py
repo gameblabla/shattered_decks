@@ -33,6 +33,10 @@ SEG2_END = 0x4000
 # the same address as segment 2, so they share its ceiling.
 SEG3_END = 0x4000
 SEG4_END = 0x4000
+# Segment 5 is the boot bank (waifu_msx2_s5_b2.c).  It is linked at 0x8000, in
+# the streaming window rather than at page 0, so its ceiling is the top of that
+# window and not 0x4000.
+SEG5_END = 0xC000
 
 # Symbols that must be resident while the streaming window is swapped out.
 # They live in the page-0 code bank (src/msx2/waifu_msx2_s2_b0.c), which the
@@ -77,6 +81,46 @@ def check_resident(mapfile):
         if at is not None and at >= WINDOW:
             bad.append((name, at))
     return bad
+
+
+# The boot bank (waifu_msx2_s5_b2.c) is the one code bank that is mapped into
+# the 0x8000 STREAMING window rather than at page 0, so while it runs the upper
+# half of _CODE does not exist.  It may therefore call nothing but itself -- and
+# that includes the calls SDCC makes on your behalf, ___sdcc_enter_ix for a
+# stack frame and ___memcpy for a struct assignment, both of which link into
+# _CODE near 0xBA00.  Either one silently executes bank bytes instead, which
+# resets the machine on the third instruction; this check is what turns that
+# into a build failure.
+BOOT_BANK_ASM = "waifu_msx2_s5_b2.asm"
+
+# msx2_lvgm.c is the other file that runs with something else mapped over the
+# upper half of _CODE: every one of its functions is called from the V-blank
+# handler with the current music segment in the 0x8000 window.  The SDCC
+# library helpers it might call live at about 0xBB00, so a stack frame
+# (___sdcc_enter_ix) or a struct copy (___memcpy) in there is a call into the
+# recording.  That cost a session to find once; it is a build failure now.
+ISR_WINDOW_ASM = "msx2_lvgm.asm"
+
+
+def check_isr_window(mapfile):
+    """Return the SDCC helpers the window-swapped ISR code calls."""
+    asmfile = os.path.join(os.path.dirname(mapfile), ISR_WINDOW_ASM)
+    if not os.path.exists(asmfile):
+        return []
+    text = open(asmfile).read()
+    return sorted(set(re.findall(r"^\s+(?:call|jp)\s+(___[A-Za-z0-9_]+)",
+                                 text, re.M)))
+
+
+def check_boot_bank(mapfile):
+    """Return the symbols the boot bank calls but does not define."""
+    asmfile = os.path.join(os.path.dirname(mapfile), BOOT_BANK_ASM)
+    if not os.path.exists(asmfile):
+        return []
+    text = open(asmfile).read()
+    defined = set(re.findall(r"^(_[A-Za-z0-9_]+)::?", text, re.M))
+    called = set(re.findall(r"^\s+(?:call|jp)\s+(_[A-Za-z0-9_]+)", text, re.M))
+    return sorted(called - defined)
 
 
 # main() wipes _DATA above the bytes crt0 has already filled in, because SDCC
@@ -126,7 +170,8 @@ def check_code_banks(mapfile):
     # alone can report space left while _INITIALIZER already overlaps bank 2.
     limits = {name: CODE_END for name in
               ("_CODE", "_HOME", "_RODATA", "_INITIALIZER", "_GSINIT", "_GSFINAL")}
-    limits.update({"_SEG2": SEG2_END, "_SEG3": SEG3_END, "_SEG4": SEG4_END})
+    limits.update({"_SEG2": SEG2_END, "_SEG3": SEG3_END, "_SEG4": SEG4_END,
+                   "_SEG5": SEG5_END})
     found = {}
     pattern = re.compile(r"^\s*(" + "|".join(limits) + r")\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=")
     for line in open(mapfile):
@@ -175,6 +220,23 @@ def main():
                   file=sys.stderr)
         sys.exit("the streamer must be linked below 0x%04X -- reorder ProjModules "
                  "or move code out of bank 2" % WINDOW)
+
+    escapes = check_boot_bank(mapfile)
+    if escapes:
+        for name in escapes:
+            print("the boot bank calls %s, which is not in the boot bank" % name,
+                  file=sys.stderr)
+        sys.exit("code in waifu_msx2_s5_b2.c may only call itself: it runs with "
+                 "the 0x8000 half of _CODE swapped out")
+
+    helpers = check_isr_window(mapfile)
+    if helpers:
+        for name in helpers:
+            print("%s calls %s, an SDCC helper linked above 0x%04X"
+                  % (ISR_WINDOW_ASM, name, WINDOW), file=sys.stderr)
+        sys.exit("the lVGM decoder runs with the music segment over 0x%04X and "
+                 "may not call a helper that lives there: give the function "
+                 "file-static locals so SDCC builds no stack frame" % WINDOW)
 
     placed = 0
     total = 0

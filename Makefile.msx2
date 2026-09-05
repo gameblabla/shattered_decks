@@ -35,15 +35,16 @@ MSX2_BIOS    := $(MSXGL_PATH)/msx2.rom
 FRAMES       ?= 600
 
 GENERATED    := src/generated/msx2_card_tables.h src/generated/msx2_scenes.h
-MUSIC_BINS   := $(PROJ_DIR)/assets/music_title.bin \
-                $(PROJ_DIR)/assets/music_overworld.bin \
-                $(PROJ_DIR)/assets/music_battle.bin \
-                $(PROJ_DIR)/assets/music_boss.bin \
-                $(PROJ_DIR)/assets/music_final_boss.bin \
-                $(PROJ_DIR)/assets/music_result.bin \
-                $(PROJ_DIR)/assets/music_lost.bin
+# One lVGM stream per (sound chip, track).  The FM sets have no title theme;
+# msx2_audio.c plays the PSG recording for a track its chip's set is missing,
+# so only the PSG set is required to be complete.
+MUSIC_TRACKS := title overworld battle boss final_boss result lost
+MUSIC_BINS   := $(addprefix $(PROJ_DIR)/assets/music_,$(addsuffix .bin,$(MUSIC_TRACKS)))
 AUDIO_META   := $(PROJ_DIR)/assets/music.json
-AUDIO_SRC    := $(wildcard msx_music/*.vgm)
+# Two of the three source directories have a space in their name ("MSX OPLL"),
+# and $(wildcard) has no way to say so.  find + sed escapes them the one way a
+# prerequisite list understands.
+AUDIO_SRC    := $(shell find msx_music -name '*.vgm' | sed 's/ /\\ /g')
 VGM_TOOL_SRC := FMTOWNSCD_EXAMPLE_Cube/vgmtools/CMakeLists.txt \
                 FMTOWNSCD_EXAMPLE_Cube/vgmtools/vgm_cmp.c
 SCENE_BINS   := $(PROJ_DIR)/assets/title.bin $(PROJ_DIR)/assets/ending.bin \

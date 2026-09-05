@@ -72,9 +72,21 @@ MUSIC_PUBLIC_ASSETS = [
     ("LOST", "lost"),
 ]
 
+# One table per sound chip, in the order msx2_audio.c's Msx2AudioChip enum
+# names them.  The prefix is what gen_msx_audio.py put in front of the asset
+# ids of that set; the PSG set is unprefixed.  A set that has no recording for
+# a public track gets a zero segment count, which msx2_audio.c reads as "play
+# the PSG one instead" -- there is no FM rendition of the title theme.
+MUSIC_CHIP_TABLES = [
+    ("PSG", ""),
+    ("OPLL", "opll_"),
+    ("MSXAUDIO", "msxaudio_"),
+]
+
 # Segments 0 and 1 are the resident code the cartridge boots into.  Segments 2
-# onwards are the page-0 code window (src/msx2/msx2_bank.h): 2 is the duel
-# screen, 3 the modal screens, 4 the story.  Eight are reserved rather than four
+# onwards are code banks (src/msx2/msx2_bank.h): 2 is the duel
+# screen, 3 the modal screens, 4 the story, and 5 the boot-time bank in the
+# 0x8000 window.  Eight are reserved rather than five
 # so that adding a code bank is not a re-bake of six megabytes of artwork; asset
 # data starts clear of all of them, and the packer asserts it never lands on top
 # of code.
@@ -1371,16 +1383,22 @@ def main():
             raise SystemExit("%s is missing: run tools/msx2/gen_msx_audio.py" % path)
         audio_by_id[asset["id"]] = (asset, open(path, "rb").read())
     audio_segments = {}
-    for _public, asset_id in MUSIC_PUBLIC_ASSETS:
-        if asset_id is None or asset_id in audio_segments:
-            continue
-        if asset_id not in audio_by_id:
-            raise SystemExit("music.json has no asset named %s" % asset_id)
-        asset, blob = audio_by_id[asset_id]
-        first = place("music_" + asset_id, blob)
-        audio_segments[asset_id] = (first,
-                                     (len(blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES,
-                                     bool(asset["loop"]))
+    for _chip, prefix in MUSIC_CHIP_TABLES:
+        for _public, asset_id in MUSIC_PUBLIC_ASSETS:
+            if asset_id is None:
+                continue
+            full_id = prefix + asset_id
+            if full_id in audio_segments:
+                continue
+            if full_id not in audio_by_id:
+                if prefix == "":
+                    raise SystemExit("music.json has no asset named %s" % full_id)
+                continue   # this chip has no rendition of this track
+            asset, blob = audio_by_id[full_id]
+            first = place("music_" + full_id, blob)
+            audio_segments[full_id] = (
+                first, (len(blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES,
+                bool(asset["loop"]))
 
     # The packer works from this manifest rather than by scraping the header:
     # "where does each blob go" is data, and re-deriving it from C macros with a
@@ -1552,25 +1570,27 @@ def main():
         f.write("#define MSX2_SCENE_SEGMENT_LAST   %d\n" % (segment - 1))
         f.write("#define MSX2_ASSET_ROM_KB         %d\n" % (segment * SEGMENT_BYTES // 1024))
 
-        f.write("\n// ── PSG lVGM recordings ────────────────────────────────────────────────\n")
+        f.write("\n// ── lVGM recordings, one set per sound chip ────────────────────────────\n")
         f.write("// Streams are split at 16 KB boundaries and notify the resident\n")
-        f.write("// ISR before the mapper window changes.  The table is defined once\n")
-        f.write("// in msx2_cards.c so including this header does not duplicate it.\n")
+        f.write("// ISR before the mapper window changes.  The tables are defined once\n")
+        f.write("// in msx2_cards.c so including this header does not duplicate them.\n")
+        f.write("// A zero segment count means this chip has no rendition of that\n")
+        f.write("// track; the boot bank stands the PSG record in for it.\n")
         f.write("typedef struct Msx2MusicAsset {\n")
         f.write("\tunsigned short first_segment;\n")
         f.write("\tunsigned char segment_count;\n")
         f.write("\tunsigned char loop;\n")
         f.write("} Msx2MusicAsset;\n")
         f.write("#define MSX2_MUSIC_ASSET_COUNT %d\n" % len(MUSIC_PUBLIC_ASSETS))
-        f.write("extern const Msx2MusicAsset g_msx2_music_assets[MSX2_MUSIC_ASSET_COUNT];\n")
-        for name, asset_id in MUSIC_PUBLIC_ASSETS:
-            if asset_id is None:
-                first, count, loop = 0, 0, 0
-            else:
-                first, count, loop = audio_segments[asset_id]
-            f.write("#define MSX2_MUSIC_%s_SEGMENT %d\n" % (name, first))
-            f.write("#define MSX2_MUSIC_%s_SEGMENTS %d\n" % (name, count))
-            f.write("#define MSX2_MUSIC_%s_LOOP %d\n" % (name, loop))
+        for chip, prefix in MUSIC_CHIP_TABLES:
+            f.write("#define MSX2_MUSIC_TABLE_%s \\\n" % chip)
+            rows = []
+            for name, asset_id in MUSIC_PUBLIC_ASSETS:
+                record = audio_segments.get(
+                    prefix + asset_id) if asset_id is not None else None
+                first, count, loop = record if record else (0, 0, 0)
+                rows.append("\t{ %d, %d, %d }   /* %s */" % (first, count, loop, name))
+            f.write("{ \\\n" + ", \\\n".join(rows) + " \\\n}\n")
 
     with open(GEOMETRY, "w") as f:
         f.write("\n".join(views.data_lines(board)))

@@ -327,47 +327,57 @@ static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  8
-#define MSX2_SCENE_SEGMENT_LAST   227
-#define MSX2_ASSET_ROM_KB         3648
+#define MSX2_SCENE_SEGMENT_LAST   242
+#define MSX2_ASSET_ROM_KB         3888
 
-// ── PSG lVGM recordings ────────────────────────────────────────────────
+// ── lVGM recordings, one set per sound chip ────────────────────────────
 // Streams are split at 16 KB boundaries and notify the resident
-// ISR before the mapper window changes.  The table is defined once
-// in msx2_cards.c so including this header does not duplicate it.
+// ISR before the mapper window changes.  The tables are defined once
+// in msx2_cards.c so including this header does not duplicate them.
+// A zero segment count means this chip has no rendition of that
+// track; the boot bank stands the PSG record in for it.
 typedef struct Msx2MusicAsset {
 	unsigned short first_segment;
 	unsigned char segment_count;
 	unsigned char loop;
 } Msx2MusicAsset;
 #define MSX2_MUSIC_ASSET_COUNT 10
-extern const Msx2MusicAsset g_msx2_music_assets[MSX2_MUSIC_ASSET_COUNT];
-#define MSX2_MUSIC_NONE_SEGMENT 0
-#define MSX2_MUSIC_NONE_SEGMENTS 0
-#define MSX2_MUSIC_NONE_LOOP 0
-#define MSX2_MUSIC_TITLE_SEGMENT 219
-#define MSX2_MUSIC_TITLE_SEGMENTS 2
-#define MSX2_MUSIC_TITLE_LOOP 1
-#define MSX2_MUSIC_OPENING_SEGMENT 221
-#define MSX2_MUSIC_OPENING_SEGMENTS 1
-#define MSX2_MUSIC_OPENING_LOOP 1
-#define MSX2_MUSIC_OVERWORLD_SEGMENT 221
-#define MSX2_MUSIC_OVERWORLD_SEGMENTS 1
-#define MSX2_MUSIC_OVERWORLD_LOOP 1
-#define MSX2_MUSIC_DECK_EDITOR_SEGMENT 221
-#define MSX2_MUSIC_DECK_EDITOR_SEGMENTS 1
-#define MSX2_MUSIC_DECK_EDITOR_LOOP 1
-#define MSX2_MUSIC_BATTLE_SEGMENT 222
-#define MSX2_MUSIC_BATTLE_SEGMENTS 2
-#define MSX2_MUSIC_BATTLE_LOOP 1
-#define MSX2_MUSIC_BOSS_SEGMENT 224
-#define MSX2_MUSIC_BOSS_SEGMENTS 1
-#define MSX2_MUSIC_BOSS_LOOP 1
-#define MSX2_MUSIC_FINAL_BOSS_SEGMENT 225
-#define MSX2_MUSIC_FINAL_BOSS_SEGMENTS 1
-#define MSX2_MUSIC_FINAL_BOSS_LOOP 1
-#define MSX2_MUSIC_RESULT_SEGMENT 226
-#define MSX2_MUSIC_RESULT_SEGMENTS 1
-#define MSX2_MUSIC_RESULT_LOOP 0
-#define MSX2_MUSIC_LOST_SEGMENT 227
-#define MSX2_MUSIC_LOST_SEGMENTS 1
-#define MSX2_MUSIC_LOST_LOOP 0
+#define MSX2_MUSIC_TABLE_PSG \
+{ \
+	{ 0, 0, 0 }   /* NONE */, \
+	{ 219, 2, 1 }   /* TITLE */, \
+	{ 221, 1, 1 }   /* OPENING */, \
+	{ 221, 1, 1 }   /* OVERWORLD */, \
+	{ 221, 1, 1 }   /* DECK_EDITOR */, \
+	{ 222, 2, 1 }   /* BATTLE */, \
+	{ 224, 1, 1 }   /* BOSS */, \
+	{ 225, 1, 1 }   /* FINAL_BOSS */, \
+	{ 226, 1, 0 }   /* RESULT */, \
+	{ 227, 1, 0 }   /* LOST */ \
+}
+#define MSX2_MUSIC_TABLE_OPLL \
+{ \
+	{ 0, 0, 0 }   /* NONE */, \
+	{ 0, 0, 0 }   /* TITLE */, \
+	{ 228, 1, 1 }   /* OPENING */, \
+	{ 228, 1, 1 }   /* OVERWORLD */, \
+	{ 228, 1, 1 }   /* DECK_EDITOR */, \
+	{ 229, 2, 1 }   /* BATTLE */, \
+	{ 231, 1, 1 }   /* BOSS */, \
+	{ 232, 1, 1 }   /* FINAL_BOSS */, \
+	{ 233, 1, 0 }   /* RESULT */, \
+	{ 234, 1, 0 }   /* LOST */ \
+}
+#define MSX2_MUSIC_TABLE_MSXAUDIO \
+{ \
+	{ 0, 0, 0 }   /* NONE */, \
+	{ 0, 0, 0 }   /* TITLE */, \
+	{ 235, 1, 1 }   /* OPENING */, \
+	{ 235, 1, 1 }   /* OVERWORLD */, \
+	{ 235, 1, 1 }   /* DECK_EDITOR */, \
+	{ 236, 2, 1 }   /* BATTLE */, \
+	{ 238, 2, 1 }   /* BOSS */, \
+	{ 240, 1, 1 }   /* FINAL_BOSS */, \
+	{ 241, 1, 0 }   /* RESULT */, \
+	{ 242, 1, 0 }   /* LOST */ \
+}

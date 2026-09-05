@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 """Convert the MSX2 music sources to bankable MSXgl lVGM streams.
 
-The source recordings are VGM files containing AY/PSG writes only.  MSXzip is
-the MSXgl tool that owns the lVGM conversion, simplification and 16K split
-format, so this wrapper validates the input and output around that tool and
-leaves a reproducible manifest for the scene packer.
+The cartridge carries THREE renditions of the soundtrack, because an MSX2 may
+have any of three sound chips and the port plays the best one it finds:
+
+    msx_music/*.vgm             AY-3-8910 / YM2149     (the PSG, always there)
+    msx_music/MSX OPLL/*.vgm    YM2413                 (MSX-MUSIC / FM-PAC)
+    msx_music/MSX-AUDIO/*.vgm   Y8950                  (MSX-AUDIO)
+
+MSXzip is the MSXgl tool that owns the lVGM conversion, simplification and 16K
+split format, so this wrapper validates the input and output around that tool
+and leaves a reproducible manifest for the scene packer.  The FM sets are not
+complete -- there is no FM rendition of the title theme -- and that is
+expected: a public track with no recording in the selected set is emitted with
+a zero segment count, and msx2_audio.c falls back to the PSG recording.
 
 The generated files are deliberately not checked in: they are cartridge
 outputs, just like the scene binaries.  The VGM sources and this script are
 the inputs that make them.
+
+Source VGMs are shrunk in place by tools/msx2/optimize_vgm_sources.py; the
+vgm_cmp pass here is what keeps that true for a recording added later.
 """
 
 import hashlib
@@ -18,7 +30,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-import wave
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,9 +41,31 @@ VGMTOOLS = ROOT / "FMTOWNSCD_EXAMPLE_Cube" / "vgmtools"
 VGM_CMP_BUILD = ROOT / "build" / "msx2_vgmtools"
 SEGMENT_BYTES = 16 * 1024
 
+# VGM register-write opcode and header clock offset per supported chip, keyed
+# by the lVGM device bit the converted stream must end up declaring.
+LVGM_CHIP_PSG = 0x01
+LVGM_CHIP_MSXMUSIC = 0x02
+LVGM_CHIP_MSXAUDIO = 0x04
+CHIP_WRITE_OP = {LVGM_CHIP_PSG: 0xA0, LVGM_CHIP_MSXMUSIC: 0x51,
+                 LVGM_CHIP_MSXAUDIO: 0x5C}
+CHIP_CLOCK_OFFSET = {LVGM_CHIP_PSG: 0x74, LVGM_CHIP_MSXMUSIC: 0x10,
+                     LVGM_CHIP_MSXAUDIO: 0x58}
+CHIP_NAME = {LVGM_CHIP_PSG: "PSG", LVGM_CHIP_MSXMUSIC: "MSX-MUSIC",
+             LVGM_CHIP_MSXAUDIO: "MSX-AUDIO"}
+
+# The three sets, in the order msx2_audio.c's Msx2AudioChip enum names them.
+# The prefix is what makes an asset id unique; the PSG set keeps the bare
+# names it has always had, so nothing downstream has to be renamed.
+CHIP_SETS = (
+    ("", "", LVGM_CHIP_PSG),
+    ("opll_", "MSX OPLL", LVGM_CHIP_MSXMUSIC),
+    ("msxaudio_", "MSX-AUDIO", LVGM_CHIP_MSXAUDIO),
+)
+
 # These names are the stable interface used by msx2_audio.c.  A track can be
 # an alias of another source; the scene generator places each output once and
-# emits one record for every public id.
+# emits one record for every public id.  A set that has no file for a track
+# simply does not contribute one.
 TRACKS = (
     ("title", "titlescreen.vgm", True),
     ("overworld", "Overworld.vgm", True),
@@ -48,14 +81,21 @@ def fail(path, message):
     raise SystemExit("%s: %s" % (path, message))
 
 
-def validate_vgm(path):
-    """Check that *path* is a bounded, AY-only VGM command stream."""
+def validate_vgm(path, chip):
+    """Check that *path* is a bounded command stream for exactly *chip*."""
     data = path.read_bytes()
-    if len(data) < 0x40 or data[:4] != b"Vgm ":
+    if len(data) < 0x80 or data[:4] != b"Vgm ":
         fail(path, "not a VGM file")
     version = int.from_bytes(data[0x08:0x0C], "little")
     if version < 0x00000150:
         fail(path, "VGM version is too old for the declared data offset")
+    for bit, offset in CHIP_CLOCK_OFFSET.items():
+        clock = int.from_bytes(data[offset:offset + 4], "little")
+        if bool(clock) != (bit == chip):
+            fail(path, "expected a %s recording, but the %s clock is %d"
+                 % (CHIP_NAME[chip], CHIP_NAME[bit], clock))
+    write_op = CHIP_WRITE_OP[chip]
+
     data_offset = int.from_bytes(data[0x34:0x38], "little")
     cursor = 0x40 if data_offset == 0 else 0x34 + data_offset
     if cursor >= len(data):
@@ -73,11 +113,11 @@ def validate_vgm(path):
             size = 1
         elif 0x70 <= op <= 0x7F:
             size = 1
-        elif op == 0xA0:  # AY-3-8910 / YM2149 register write
+        elif op == write_op:
             size = 3
             if cursor + size > len(data):
-                fail(path, "truncated AY write")
-            if data[cursor + 1] > 15:
+                fail(path, "truncated %s write" % CHIP_NAME[chip])
+            if chip == LVGM_CHIP_PSG and data[cursor + 1] > 15:
                 fail(path, "AY register is outside 0..15")
         else:
             fail(path, "unsupported VGM opcode 0x%02X at 0x%X" % (op, cursor))
@@ -89,16 +129,19 @@ def validate_vgm(path):
     return data
 
 
-def vgm_events(path):
-    """Return the timed AY writes that *path* presents to the PSG.
+def vgm_events(path, chip):
+    """Return the timed register writes that *path* presents to the chip.
 
-    ``vgm_cmp -justtmr`` is intentionally used before MSXzip, but its output
-    is accepted only if this event stream is byte-for-byte equivalent to the
-    source.  Comparing decoded register events also catches an optimizer that
-    preserves file headers while changing a note, effect, or wait.
+    This is the equivalence the optimizer is held to.  Comparing decoded
+    register events -- not file bytes, and not rendered PCM -- is what catches
+    an optimizer that preserves headers while changing a note, effect or wait,
+    and it is the only comparison that is exactly as strict as the hardware:
+    a renderer resamples at its own command boundaries, so re-spelling one
+    wait as two shifts a few samples by an LSB while the chip sees no
+    difference at all.
     """
-    data = validate_vgm(path)
-    version = int.from_bytes(data[0x08:0x0C], "little")
+    data = validate_vgm(path, chip)
+    write_op = CHIP_WRITE_OP[chip]
     data_offset = int.from_bytes(data[0x34:0x38], "little")
     cursor = 0x40 if data_offset == 0 else 0x34 + data_offset
     ticks = 0
@@ -119,7 +162,7 @@ def vgm_events(path):
         elif 0x70 <= op <= 0x7F:
             ticks += (op & 0x0F) + 1
             cursor += 1
-        elif op == 0xA0:
+        elif op == write_op:
             events.append((ticks, data[cursor + 1], data[cursor + 2]))
             cursor += 3
         else:
@@ -167,91 +210,78 @@ def find_vgm_cmp():
     fail(VGM_CMP_BUILD, "vgm_cmp build produced no executable")
 
 
-def find_vgm_renderer():
-    configured = os.environ.get("VGM2WAV")
-    executable = Path(configured) if configured else shutil.which("vgm2wav")
-    if executable is None or not Path(executable).exists():
-        fail(ROOT / "vgm2wav",
-             "VGM2WAV or vgm2wav is required for the rendered-audio check")
-    return Path(executable)
-
-
-def normalize_header(source, output):
-    """Keep non-data metadata stable after vgm_cmp rewrites its header."""
-    original = source.read_bytes()
-    optimized = bytearray(output.read_bytes())
-    if len(original) < 0x80 or len(optimized) < 0x80:
-        fail(source, "VGM header is shorter than 0x80 bytes")
-    original_start = 0x40 if int.from_bytes(original[0x34:0x38], "little") == 0 \
-        else 0x34 + int.from_bytes(original[0x34:0x38], "little")
-    optimized_start = 0x40 if int.from_bytes(optimized[0x34:0x38], "little") == 0 \
-        else 0x34 + int.from_bytes(optimized[0x34:0x38], "little")
-    if original_start != optimized_start:
-        fail(source, "vgm_cmp moved the command stream data offset")
-    optimized[:0x80] = original[:0x80]
-    optimized[0x04:0x08] = (len(optimized) - 4).to_bytes(4, "little")
-    output.write_bytes(optimized)
-
-
-def rendered_audio_signature(path, renderer, output):
-    """Render one deterministic pass and return its PCM signature."""
-    output.unlink(missing_ok=True)
-    try:
-        subprocess.run([str(renderer), str(path), str(output)], check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError as exc:
-        fail(path, "VGM2WAV failed with exit status %d" % exc.returncode)
-    try:
-        with wave.open(str(output), "rb") as wav:
-            params = (wav.getnchannels(), wav.getsampwidth(),
-                      wav.getframerate(), wav.getnframes())
-            pcm_hash = hashlib.sha256(wav.readframes(wav.getnframes())).hexdigest()
-    finally:
-        output.unlink(missing_ok=True)
-    return params, pcm_hash
-
-
-def optimize(source, output, optimizer, renderer):
-    """Run vgm_cmp and accept its output only after both lossless checks."""
+def optimize(source, output, optimizer, chip):
+    """Run vgm_cmp and accept its output only if the chip cannot tell."""
     output.unlink(missing_ok=True)
     try:
         subprocess.run([
-            str(optimizer), "-justtmr", str(source), str(output),
+            str(optimizer), str(source), str(output),
         ], check=True, stdout=subprocess.DEVNULL)
     except subprocess.CalledProcessError as exc:
         fail(source, "vgm_cmp failed with exit status %d" % exc.returncode)
-    # vgm_cmp does not write a second file when no compression is possible.
+    # vgm_cmp does not write a second file when no compression is possible,
+    # which is the normal case now that the sources are optimized in place.
     if not output.exists():
         shutil.copyfile(source, output)
-    normalize_header(source, output)
-    original_events = vgm_events(source)
-    optimized_events = vgm_events(output)
-    if original_events != optimized_events:
-        fail(source, "vgm_cmp -justtmr changed timed AY register events")
-    original_audio = rendered_audio_signature(
-        source, renderer, VGM_CMP_BUILD / (source.name + ".original.wav"))
-    optimized_audio = rendered_audio_signature(
-        output, renderer, VGM_CMP_BUILD / (source.name + ".optimized.wav"))
-    if original_audio != optimized_audio:
-        # vgm_cmp preserves the timed AY event list, but some VGM renderers
-        # treat its alternate long-wait encoding differently.  Keep the
-        # optimized candidate for diagnostics and feed the original to MSXzip:
-        # the final asset must never trade audible equivalence for bytes.
-        return source, False, "rendered PCM mismatch"
+        return source, True, ""
+    if vgm_events(source, chip) != vgm_events(output, chip):
+        return source, False, "changed timed register events"
     return output, True, ""
 
 
-def validate_lvgm(path):
-    """Validate MSXzip's PSG-only lVGM and its 16K notification seams."""
+def lvgm_command_size(data, cursor, chip, path):
+    """Bytes consumed by one lVGM chip command, mirroring msx2_lvgm.c."""
+    op = data[cursor]
+    if chip == LVGM_CHIP_MSXMUSIC:
+        high = op >> 4
+        if high <= 0x3:
+            return 2                                     # R#op = nn
+        if high == 0x4:
+            return 1 + (8, 9, 9, 9, 3, 3, 3)[op & 0x0F]  # 4x nn[] copy a run
+        if high == 0x5:
+            return 2                                     # 5x nn fill a run
+        if high == 0x6:
+            return 3                                     # 6n rr vv
+        # 7n rr vv[]: the opcode, the first register, and n+3 values.
+        if high == 0x7:
+            return 5 + (op & 0x0F)
+        if 0x8 <= high <= 0xB:
+            return 1                                     # R#(op & 7F) = 0
+        fail(path, "unsupported lVGM OPLL opcode 0x%02X at 0x%X" % (op, cursor))
+    if chip == LVGM_CHIP_MSXAUDIO:
+        return 2                                         # rr vv
+    # PSG direct writes are either the two-byte "R#0n = nn" form (00..0f, in
+    # which the WHOLE byte is the register number), a compact register/value
+    # opcode (10..cf), or a common-value write (d0..df).  The two-byte form is
+    # the entire 0x low nibble range, not just 00: msx2_lvgm.c switches on
+    # `*ptr & 0xF0`, so 02 F2 is "R#2 = F2" and not two commands.  Reading it
+    # the narrow way desynchronised this walker on almost every recording --
+    # it then resynchronised by chance and still found the end marker, which
+    # is why the mistake survived.
+    return 2 if (op & 0xF0) == 0x00 else 1
+
+
+def validate_lvgm(path, chip):
+    """Validate MSXzip's lVGM stream and its 16K notification seams."""
     data = path.read_bytes()
     if len(data) < 7 or data[:4] != b"lVGM":
         fail(path, "MSXzip did not produce an lVGM stream")
     option = data[4]
+    cursor = 5
     if option & 0x04:
-        fail(path, "device-list lVGM output is not expected")
-    # With no device list, byte five is the common PSG value and byte six is
-    # the first command.  MSXzip emits a common value even when it is zero.
-    cursor = 6
+        devices = data[cursor]
+        cursor += 1
+    else:
+        devices = LVGM_CHIP_PSG
+    if devices != chip:
+        fail(path, "lVGM declares devices 0x%02X, expected 0x%02X"
+             % (devices, chip))
+    if devices & LVGM_CHIP_PSG:
+        # MSXzip emits the common PSG value even when it is zero.
+        cursor += 1
+
+    # Chunk markers select the chip; a stream that emits none is PSG data.
+    current = LVGM_CHIP_PSG
     saw_end = False
     while cursor < len(data):
         op = data[cursor]
@@ -263,34 +293,45 @@ def validate_lvgm(path):
                 fail(path, "truncated lVGM notification")
             cursor += 2
             continue
-        if op == 0xFE or op == 0xF0:
+        if op == 0xFE:
             cursor += 1
             continue
-        if op == 0xE0:
+        if op in (0xF0, 0xF1, 0xF2):
+            current = (LVGM_CHIP_PSG, LVGM_CHIP_MSXMUSIC,
+                       LVGM_CHIP_MSXAUDIO)[op & 0x0F]
             cursor += 1
             continue
-        # PSG direct writes are either the register-0/value pair (00), a
-        # compact register/value opcode (10..cf, plus 01..0f), or a
-        # common-value write (d0..df).  MSXgl's lVGM format reserves only 00
-        # as the two-byte form; 07, for example, is compact register 0.
-        if op == 0x00:
-            cursor += 2
-        else:
+        if 0xF3 <= op <= 0xFC:
+            fail(path, "lVGM selects an unsupported chip (0x%02X)" % op)
+        if (op & 0xF0) == 0xE0:
             cursor += 1
+            continue
+        cursor += lvgm_command_size(data, cursor, current, path)
         if cursor > len(data):
             fail(path, "truncated lVGM command")
     if not saw_end:
         fail(path, "lVGM stream has no end marker")
 
+    # Every 16K seam must be reached through an FD 00 notification, which is
+    # what hands msx2_audio.c the chance to map the next cartridge segment
+    # before the decoder reads another byte.  MSXzip emits the marker as soon
+    # as the NEXT command would not fit and then pads the segment out with
+    # zeroes, so the marker sits at the end of the segment but not necessarily
+    # in its last two bytes -- a command that is eighteen bytes long pushes it
+    # further back.  The padding is never decoded: the callback retargets the
+    # pointer at 0x8000 and the parser resumes there.
     segment_count = (len(data) + SEGMENT_BYTES - 1) // SEGMENT_BYTES
     for segment in range(1, segment_count):
         seam = segment * SEGMENT_BYTES
-        if data[seam - 2:seam] != b"\xFD\x00":
+        tail = seam
+        while tail > 2 and data[tail - 1] == 0x00 and data[tail - 2] != 0xFD:
+            tail -= 1
+        if data[tail - 2:tail] != b"\xFD\x00":
             fail(path, "missing FD 00 segment notification before 0x%X" % seam)
     return data, segment_count
 
 
-def convert(source, output):
+def convert(source, output, chip):
     output.unlink(missing_ok=True)
     executable = Path(os.environ.get("MSXZIP", str(MSXZIP)))
     if not executable.exists():
@@ -303,49 +344,57 @@ def convert(source, output):
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as exc:
         fail(source, "MSXzip failed with exit status %d" % exc.returncode)
-    return validate_lvgm(output)
+    return validate_lvgm(output, chip)
 
 
 def main():
     quiet = "--quiet" in sys.argv
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    VGM_CMP_BUILD.mkdir(parents=True, exist_ok=True)
     optimizer = find_vgm_cmp()
-    renderer = find_vgm_renderer()
     assets = []
-    for name, filename, loop in TRACKS:
-        source = SOURCE_DIR / filename
-        if not source.exists():
-            fail(source, "music source is missing")
-        validate_vgm(source)
-        candidate = VGM_CMP_BUILD / (filename + ".optimized.vgm")
-        input_path, optimizer_accepted, optimizer_rejection = optimize(
-            source, candidate, optimizer, renderer)
-        output = ASSET_DIR / ("music_" + name + ".bin")
-        data, segments = convert(input_path, output)
-        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-        candidate_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
-        assets.append({
-            "id": name,
-            "source": str(source.relative_to(ROOT)),
-            "file": output.name,
-            "bytes": len(data),
-            "segments": segments,
-            "loop": bool(loop),
-            "sha256": source_hash,
-            "optimized_bytes": candidate.stat().st_size,
-            "optimized_sha256": candidate_hash,
-            "optimizer_accepted": optimizer_accepted,
-            "optimizer_rejection": optimizer_rejection,
-            "input": str(input_path.relative_to(ROOT)),
-        })
-        if not quiet:
-            print("%-10s %6d bytes, %d segments <- %s" %
-                  (name, len(data), segments, source.relative_to(ROOT)))
+    for prefix, subdir, chip in CHIP_SETS:
+        directory = SOURCE_DIR / subdir if subdir else SOURCE_DIR
+        for name, filename, loop in TRACKS:
+            source = directory / filename
+            if not source.exists():
+                if prefix == "":
+                    fail(source, "music source is missing")
+                # An FM set that has no rendition of this track is expected;
+                # msx2_audio.c plays the PSG recording for it.
+                continue
+            validate_vgm(source, chip)
+            candidate = VGM_CMP_BUILD / (prefix + filename + ".optimized.vgm")
+            input_path, accepted, rejection = optimize(
+                source, candidate, optimizer, chip)
+            asset_id = prefix + name
+            output = ASSET_DIR / ("music_" + asset_id + ".bin")
+            data, segments = convert(input_path, output, chip)
+            assets.append({
+                "id": asset_id,
+                "chip": CHIP_NAME[chip],
+                "chip_bit": chip,
+                "track": name,
+                "source": str(source.relative_to(ROOT)),
+                "file": output.name,
+                "bytes": len(data),
+                "segments": segments,
+                "loop": bool(loop),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "optimized_bytes": candidate.stat().st_size,
+                "optimizer_accepted": accepted,
+                "optimizer_rejection": rejection,
+                "input": str(input_path.relative_to(ROOT)),
+            })
+            if not quiet:
+                print("%-11s %-20s %6d bytes, %d segments <- %s"
+                      % (CHIP_NAME[chip], asset_id, len(data), segments,
+                         source.relative_to(ROOT)))
 
     payload = {
-        "format": 1,
+        "format": 2,
         "converter": "MSXzip --simplify --split 16K",
-        "optimizer": "vgm_cmp -justtmr",
+        "optimizer": "vgm_cmp",
         "optimizer_source": str(VGMTOOLS.relative_to(ROOT)),
         "segment_bytes": SEGMENT_BYTES,
         "assets": assets,

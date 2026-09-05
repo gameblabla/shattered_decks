@@ -9,6 +9,7 @@
 #include "msx2_probe.h"
 #include "msx2_video.h"
 #include "msx2_title.h"
+#include "msx2_audio.h"
 
 // NEO-16's page-0 bank register.  Writing a 16-bit segment number to it maps
 // that segment at 0x0000; the address itself is ROM, so the write only ever
@@ -47,6 +48,28 @@ void Msx2_Bank0Leave(u16 segment)
 u16 Msx2_Bank0Current(void)
 {
 	return g_bank0;
+}
+
+// The boot bank, through the 0x8000 window.  This trampoline is in _CODE and
+// so is every byte of the return path, which is the whole requirement: the
+// probe itself, and nothing else, runs with segment 5 in the window.
+//
+// INTERRUPTS ARE OFF FOR THE WHOLE CALL, and that is not belt-and-braces: the
+// V-blank handler runs the audio tick, which reads the resident lVGM decoder
+// out of _CODE -- and half of _CODE is above 0x8000, which is exactly what
+// segment 5 is standing in.  The slot scan inside takes many milliseconds, so
+// leaving them on is not a race that might happen but one that does, every
+// boot.  Msx2_AudioSetup_In() therefore never turns them back on either.
+u8 Msx2_AudioSetup(struct Msx2MusicAsset* table)
+{
+	u8 chip;
+	u16 back;
+	__asm di __endasm;
+	back = Msx2_Bank2Enter(MSX2_BANK2_BOOT);
+	chip = Msx2_AudioSetup_In(table);
+	Msx2_Bank2Leave(back);
+	__asm ei __endasm;
+	return chip;
 }
 
 // THE 0x8000 WINDOW IS WRITTEN EVERY TIME, NOT ONLY WHEN THE SHADOW DISAGREES.
@@ -179,6 +202,22 @@ u8 Msx2_BoardStep(void)
 	what = Msx2_BoardStep_In();
 	Msx2_Bank0Leave(back);
 	return what;
+}
+
+// The probe stamps.  Both bodies live in the modal bank; these are the only
+// way in.  Not regression-only: the shipping ROM stamps the probe too.
+void Msx2_ProbeInit(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	Msx2_ProbeInit_In();
+	Msx2_Bank0Leave(back);
+}
+
+void Msx2_ProbeUpdate(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	Msx2_ProbeUpdate_In();
+	Msx2_Bank0Leave(back);
 }
 
 #ifdef MSX2_DEBUG_REGRESSION

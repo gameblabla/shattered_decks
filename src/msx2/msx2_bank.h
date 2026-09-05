@@ -34,6 +34,12 @@
 #define MSX2_BANK0_MODAL  3   // modal screens        (waifu_msx2_s3_b0.c)
 #define MSX2_BANK0_STORY  4   // the story screens    (waifu_msx2_s4_b0.c)
 
+// A bank in the OTHER window.  Segment 5 is linked at 0x8000 and holds code
+// that runs once at boot (waifu_msx2_s5_b2.c); it is mapped through the same
+// Msx2_Bank2Enter/Leave pair the streamer and the music use, so nothing in it
+// may be reachable from the ISR.
+#define MSX2_BANK2_BOOT   5
+
 void Msx2_VideoBakeFont_In(void);
 
 // Map `segment` at 0x0000 and return whatever was there, for Msx2_Bank0Leave.
@@ -46,6 +52,11 @@ u16  Msx2_Bank0Current(void);
 // is still mapped after another banked operation has returned.
 u16  Msx2_Bank2Enter(u16 segment);
 void Msx2_Bank2Leave(u16 segment);
+
+// Probe the machine's sound chips and resolve its music table.  Returns a
+// <Msx2AudioChip>; see msx2_audio_probe.c for why neither is in _CODE.
+struct Msx2MusicAsset;
+u8   Msx2_AudioSetup(struct Msx2MusicAsset* table);
 
 #ifdef MSX2_DEBUG_REGRESSION
 void Msx2_BoardRegressionFixture(u8 fixture);

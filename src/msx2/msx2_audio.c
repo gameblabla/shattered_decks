@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  msx2_audio.c — resident PSG lVGM player
+//  msx2_audio.c — resident lVGM player, and the boot-time chip probe
 //
 //  The lVGM decoder is deliberately kept in the V-blank path.  A recording is
 //  a banked asset, not linked code: the ISR maps its current 16K segment into
@@ -32,6 +32,13 @@ static u8 g_music_segment_count;
 static u16 g_music_loop_segment;
 static u16 g_music_loop_offset;
 static u8 g_audio_error;
+static u8 g_audio_chip;
+// The winning chip's asset table, resolved once at boot into RAM.  In RAM and
+// not in _CODE for two reasons: three chip tables is 120 bytes of an area that
+// has tens to spare, and RAM is mapped whatever the 0x8000 window holds -- the
+// const table this replaces was read THROUGH that window, which is what once
+// made every one-shot cue read its loop flag out of the music stream.
+static Msx2MusicAsset g_music_table[MSX2_MUSIC_ASSET_COUNT];
 static u8 g_sfx_pending;
 #ifdef MSX2_DEBUG_REGRESSION
 static u16 g_music_frames;
@@ -277,7 +284,10 @@ static void Msx2_AudioStartRequested(void)
 		g_music_requested = MSX2_MUSIC_NONE;
 		return;
 	}
-	asset = &g_msx2_music_assets[requested];
+	// Already resolved: the boot bank filled this table with the winning
+	// chip's records, standing the PSG recording in wherever that chip has no
+	// rendition of a track.
+	asset = &g_music_table[requested];
 	if(asset->segment_count == 0)
 		return;
 
@@ -294,10 +304,12 @@ static void Msx2_AudioStartRequested(void)
 	g_music_segment = asset->first_segment;
 	g_music_segment_count = asset->segment_count;
 	g_music_loop_segment = asset->first_segment;
-	// If a file has no FE marker, this is the first command after the lVGM
-	// header.  Files produced by gen_msx_audio.py do contain a marker, but the
-	// fallback makes the resident player safe for a hand-authored stream too.
-	g_music_loop_offset = 6;
+	// Filled in from LVGM_Play() below, which is the only thing that knows how
+	// long this stream's header is: a PSG recording has a common-value byte
+	// and no device list, an FM one has a device list and no common value.  It
+	// is the fallback loop address for a stream with no FE marker; every file
+	// gen_msx_audio.py produces does have one.
+	g_music_loop_offset = 0;
 	g_audio_error = 0;
 #ifdef MSX2_DEBUG_REGRESSION
 	g_music_frames = 0;
@@ -306,7 +318,10 @@ static void Msx2_AudioStartRequested(void)
 
 	back = Msx2_Bank2Enter(g_music_segment);
 	if(LVGM_Play((const void*)0x8000, loop))
+	{
 		g_music_active = requested;
+		g_music_loop_offset = (u16)(g_LVGM_Pointer - (const u8*)0x8000);
+	}
 	else
 	{
 		g_audio_error = 1;
@@ -324,8 +339,14 @@ void Msx2_AudioInit(void)
 	g_music_segment = 0;
 	g_music_segment_count = 0;
 	g_music_loop_segment = 0;
-	g_music_loop_offset = 6;
+	g_music_loop_offset = 0;
 	g_audio_error = 0;
+	// Nothing is playing yet, so LVGM_Pause() must not go poking at FM chips
+	// this machine may not have.
+	g_LVGM_Devices = 0;
+	// The probe and the tables are a boot bank, not resident code:
+	// msx2_audio_probe.c says why, and Msx2_AudioSetup() is the trampoline.
+	g_audio_chip = Msx2_AudioSetup(g_music_table);
 	g_sfx_pending = MSX2_SFX_COUNT;
 	g_sfx_idx = SFX_IDLE;
 	g_sfx_restore = 0;
@@ -398,6 +419,11 @@ void Msx2_AudioTick(void)
 u8 Msx2_MusicCurrent(void)
 {
 	return g_music_active;
+}
+
+u8 Msx2_AudioChip(void)
+{
+	return g_audio_chip;
 }
 
 #ifdef MSX2_DEBUG_REGRESSION

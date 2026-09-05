@@ -48,6 +48,12 @@ OPENMSX="${OPENMSX:-/usr/local/bin/openmsx}"
 MSXGL_PATH="${MSXGL_PATH:-MSXgl-main}"
 MSX2_BIOS="${MSX2_BIOS:-$MSXGL_PATH/msx2.rom}"
 MACHINE="${MSX2_MACHINE:-C-BIOS_MSX2}"
+# Extra hardware to plug in, as openMSX extension names separated by spaces.
+# The sound-chip probe is the reason this exists: MSX2_EXT=fmpac exercises the
+# MSX-MUSIC path and MSX2_EXT=audio the MSX-AUDIO one, neither of which the
+# bare machine has.  Deliberately unquoted where it is used, so it can be empty.
+EXTENSIONS=""
+for ext in ${MSX2_EXT:-}; do EXTENSIONS="$EXTENSIONS -ext $ext"; done
 OUT_DIR="src/msx2/out"
 ROM="$OUT_DIR/waifu_msx2.rom"
 MAP="$OUT_DIR/waifu_msx2.map"
@@ -213,7 +219,7 @@ EOF
 )"
 		# shellcheck disable=SC2059
 		printf '%b' "$TRACE_TCL" > "$TRACE_SCRIPT"
-		SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" \
+		SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" $EXTENSIONS \
 			-cart "$ROM" -romtype NEO-16 -script "$TRACE_SCRIPT" 2>&1 | head -20
 		python3 - "$TRACE_OUT" "$TRACE_TIMES" <<'PY'
 import json, sys
@@ -260,7 +266,7 @@ after time $SECONDS_RUN {
     exit 0
 }
 EOF
-	SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" \
+	SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" $EXTENSIONS \
 		-cart "$ROM" -romtype NEO-16 -script "$script" 2>&1 |
 		grep -vE "^$" | head -20
 	[ -f "$RAM" ] || die "no RAM dump written -- the emulator never reached the timer"
@@ -369,7 +375,7 @@ after time $SECONDS_RUN {
 }
 EOF
 		rm -f "$VRAM" "$SHOT"
-		SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" \
+		SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" $EXTENSIONS \
 			-cart "$ROM" -romtype NEO-16 -script "$local_script" 2>&1 | head -10
 		[ -f "$VRAM" ] || die "no VRAM dump written -- the emulator never reached the timer"
 		python3 tools/msx2/vram_png.py "$VRAM" "$SHOT" --page "$SHOT_PAGE" --scale 2 --sprites
