@@ -3022,6 +3022,21 @@ static void Msx2_BoardMove(u8 pressed)
 		{
 			// Already on the bottom row, so down is free to mean the other
 			// thing a hand card can be: material for a fusion chain.
+			//
+			// AN EMPTY HAND POSITION IS NOT A MATERIAL, AND SAYS SO.
+			// Msx2_BoardQueueToggle() has always refused one, but the row
+			// answered with the select blip anyway and queued nothing -- so a
+			// player who walked the cursor over a gap and pressed DOWN
+			// believed they had chosen a card.  The chain was empty, and the
+			// SPACE that should have summoned on the field row a moment later
+			// did nothing at all, with no line to explain either half of it.
+			if(g_duel.side[MSX2_OWNER_PLAYER].hand[g_sel] == MSX2_CARD_NONE)
+			{
+				g_refuse_text = MSX2_S_NO_CARD_IN_THAT_SLOT;
+				g_refuse = 96;
+				Msx2_BoardTouch();
+				return;
+			}
 			Msx2_BoardQueueToggle(g_sel);
 			Msx2_SfxPlay(MSX2_SFX_SELECT);
 			Msx2_BoardSnapshot();
