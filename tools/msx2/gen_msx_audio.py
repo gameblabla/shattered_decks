@@ -210,6 +210,86 @@ def find_vgm_cmp():
     fail(VGM_CMP_BUILD, "vgm_cmp build produced no executable")
 
 
+# -----------------------------------------------------------------------------
+#  Dead air at the head of a recording
+#
+#  These are machine transcriptions, and several of them open with the chip
+#  setup at sample 0 and then simply nothing: the MSX-MUSIC and MSX-AUDIO
+#  battle themes wait FIFTEEN SECONDS before their first note.  On a cartridge
+#  that is not merely rude, it is fifteen seconds of a duel with no music and
+#  several hundred bytes of encoded silence, and it comes back every time the
+#  track loops.
+#
+#  What is removed is only the wait commands that run from the last of the
+#  opening register writes to the first write that happens after any time has
+#  passed.  No register write lives inside that span -- that is the definition
+#  of it -- so the chip is handed exactly the same setup in exactly the same
+#  order, just without the gap.  A track whose first note is genuinely at
+#  sample 0, or that interleaves writes with its lead-in, loses nothing.
+# -----------------------------------------------------------------------------
+def trim_leadin(source, output, chip):
+    """Write *source* to *output* without its silent lead-in; return its ticks."""
+    data = source.read_bytes()
+    write_op = CHIP_WRITE_OP[chip]
+    start = 0x34 + int.from_bytes(data[0x34:0x38], "little")
+
+    cursor = start
+    ticks = 0
+    waits = []          # (offset, size) of every wait before the first note
+    while cursor < len(data):
+        op = data[cursor]
+        if op == 0x66:
+            break
+        if op == 0x61:
+            ticks += int.from_bytes(data[cursor + 1:cursor + 3], "little")
+            waits.append((cursor, 3))
+            cursor += 3
+        elif op in (0x62, 0x63):
+            ticks += 735 if op == 0x62 else 882
+            waits.append((cursor, 1))
+            cursor += 1
+        elif 0x70 <= op <= 0x7F:
+            ticks += (op & 0x0F) + 1
+            waits.append((cursor, 1))
+            cursor += 1
+        elif op == write_op:
+            if ticks:
+                break   # the first write after time has passed: stop here
+            cursor += 3
+        else:
+            fail(source, "unsupported VGM opcode 0x%02X at 0x%X" % (op, cursor))
+
+    if not ticks:
+        shutil.copyfile(source, output)
+        return 0
+
+    kept = bytearray(data[:start])
+    at = start
+    for offset, size in waits:
+        kept += data[at:offset]
+        at = offset + size
+    kept += data[at:]
+    dropped = len(data) - len(kept)
+
+    # Every offset in the header past the command stream moved, and the song
+    # is shorter by exactly the silence that was taken out of it.
+    def shift(field, base):
+        value = int.from_bytes(kept[field:field + 4], "little")
+        if value:
+            kept[field:field + 4] = (value - dropped).to_bytes(4, "little")
+    shift(0x04, 0x04)   # EOF offset
+    shift(0x14, 0x14)   # GD3 offset
+    total = int.from_bytes(kept[0x18:0x1C], "little")
+    kept[0x18:0x1C] = max(0, total - ticks).to_bytes(4, "little")
+    # These recordings carry no loop point (the game loops on lVGM's own FE
+    # marker), so there is no loop offset to move.  Refuse rather than corrupt
+    # one if that ever changes.
+    if int.from_bytes(kept[0x1C:0x20], "little"):
+        fail(source, "has a VGM loop point; trim_leadin would have to move it")
+    output.write_bytes(bytes(kept))
+    return ticks
+
+
 def optimize(source, output, optimizer, chip):
     """Run vgm_cmp and accept its output only if the chip cannot tell."""
     output.unlink(missing_ok=True)
@@ -364,9 +444,11 @@ def main():
                 # msx2_audio.c plays the PSG recording for it.
                 continue
             validate_vgm(source, chip)
+            trimmed = VGM_CMP_BUILD / (prefix + filename + ".trimmed.vgm")
+            lead = trim_leadin(source, trimmed, chip)
             candidate = VGM_CMP_BUILD / (prefix + filename + ".optimized.vgm")
             input_path, accepted, rejection = optimize(
-                source, candidate, optimizer, chip)
+                trimmed, candidate, optimizer, chip)
             asset_id = prefix + name
             output = ASSET_DIR / ("music_" + asset_id + ".bin")
             data, segments = convert(input_path, output, chip)
@@ -381,14 +463,17 @@ def main():
                 "segments": segments,
                 "loop": bool(loop),
                 "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "lead_in_samples": lead,
                 "optimized_bytes": candidate.stat().st_size,
                 "optimizer_accepted": accepted,
                 "optimizer_rejection": rejection,
                 "input": str(input_path.relative_to(ROOT)),
             })
             if not quiet:
-                print("%-11s %-20s %6d bytes, %d segments <- %s"
+                print("%-11s %-20s %6d bytes, %d segments%s <- %s"
                       % (CHIP_NAME[chip], asset_id, len(data), segments,
+                         "" if not lead else
+                         ", trimmed %.2fs of lead-in" % (lead / 44100.0),
                          source.relative_to(ROOT)))
 
     payload = {

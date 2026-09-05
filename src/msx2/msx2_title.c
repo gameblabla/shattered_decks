@@ -199,6 +199,13 @@ void Msx2_TitleEnter_In(void)
 	g_dirty = 0;
 	g_dirty_left = 0;
 
+	// BEFORE the artwork, not after it.  Composing the title is a few hundred
+	// milliseconds of cartridge streaming, and the V-blank handler keeps
+	// decoding music right through it -- the streamer only holds interrupts off
+	// for one chunk at a time -- so there is no reason for the machine to load
+	// in silence.
+	Msx2_MusicPlay(MSX2_MUSIC_TITLE);
+
 	// Compose page 1 -- streaming the artwork and laying the text over it takes
 	// far longer than a frame -- then hand the second buffer a copy of it with a
 	// single HMMM rather than streaming the cartridge a second time.  Both pages
@@ -209,8 +216,6 @@ void Msx2_TitleEnter_In(void)
 	Msx2_VideoCopyPage(MSX2_PAGE_1, MSX2_PAGE_0);
 	Msx2_VideoShowPage(MSX2_PAGE_1);   // ... and drawing moves to page 0
 	Msx2_InputFlush();
-
-	Msx2_MusicPlay(MSX2_MUSIC_TITLE);
 }
 
 u8 Msx2_TitleStep_In(void)
