@@ -155,6 +155,10 @@ PORTRAIT_RIGHT_Y = 22            # the six-pixel stagger the other targets use
 # from the SAME alpha mask, so they cover byte for byte the same pixels and a
 # speaker change is a pure overwrite with no background repair at all.
 PORTRAIT_DIM = 0.45
+# How much of the quantisation error a bust carries into its neighbours.  Full
+# strength is as loud as the banding it replaces; 0.9 keeps the grades and
+# quiets the pattern in the flat areas.
+PORTRAIT_DITHER = 0.9
 PORTRAIT_STRIDE = 32768          # two whole segments per baked bust
 PORTRAIT_CHARS = 1 + STORY_DUELS # Serena, then one opponent per duel
 
@@ -662,7 +666,12 @@ def portrait_blob(bust, dim):
     if dim:
         rgb = Image.blend(Image.new("RGB", bust.size, (0, 0, 0)), rgb,
                           PORTRAIT_DIM)
-    quant = grb.quantize(rgb, (w, h))
+    # THE ONE DITHERED ASSET IN THE PROJECT.  A bust is a painting with skin
+    # and cloth grades in it and it stands still on the screen; nearest-colour
+    # GRB332 posterises that into flat slabs.  Everything else stays undithered
+    # (msx2_grb332's docstring says why); the mask goes with it so the cut-out
+    # ground cannot bleed a rim of dirt around the silhouette.
+    quant = grb.dither(rgb, (w, h), PORTRAIT_DITHER, alpha)
 
     index = bytearray()
     pixels = bytearray()

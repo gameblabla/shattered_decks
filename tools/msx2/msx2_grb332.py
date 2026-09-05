@@ -80,6 +80,72 @@ def quantize(img, size):
     return packed.tobytes()
 
 
+def dither(img, size, strength=0.9, alpha=None):
+    """Floyd-Steinberg GRB332, for the STORY BUSTS AND NOTHING ELSE.
+
+    The module docstring's rule -- nearest colour, never dithered -- is about
+    the things that fill the screen: flat-lit 3D artwork and board furniture,
+    where an error-diffused pattern reads as grain crawling over every surface
+    for the whole of a duel.  A bust is the opposite case.  It is a painting
+    with skin and cloth grades in it, it is 124 pixels wide, it stands still,
+    and the two blue bits are nowhere near enough for a face -- so nearest
+    colour bands it into poster paint, and diffusing the error is the only way
+    the grades survive at all.
+
+    `strength` scales the error carried into the neighbours: at 1.0 the grain
+    is as loud as the banding it replaces, so the busts are baked at 0.9, which
+    keeps the grades and takes the edge off the pattern in the flat areas.
+
+    `alpha` is the bust's own mask.  Error is neither taken from nor pushed
+    into transparent pixels: those are pixels the runtime never blits, and
+    letting the cut-out ground bleed into the figure would put a rim of dirt
+    around every silhouette.
+    """
+    width, height = size
+    src = img.convert("RGB")
+    if src.size != size:
+        src = src.resize(size, Image.LANCZOS)
+    px = list(src.getdata())
+    mask = None
+    if alpha is not None:
+        if alpha.size != size:
+            alpha = alpha.resize(size, Image.LANCZOS)
+        mask = list(alpha.getdata())
+
+    # One float error plane per channel, carried a row at a time.
+    err = [[0.0, 0.0, 0.0] for _ in range(width * height)]
+    out = bytearray(width * height)
+    for y in range(height):
+        for x in range(width):
+            i = y * width + x
+            if mask is not None and mask[i] <= 96:
+                out[i] = 0
+                continue
+            r, g, b = px[i]
+            e = err[i]
+            r = clamp8(r + e[0])
+            g = clamp8(g + e[1])
+            b = clamp8(b + e[2])
+            ri, gi, bi = R_LUT[r], G_LUT[g], B_LUT[b]
+            out[i] = (gi << 5) | (ri << 2) | bi
+            dr = (r - R_LEVELS[ri]) * strength
+            dg = (g - G_LEVELS[gi]) * strength
+            db = (b - B_LEVELS[bi]) * strength
+            for dx, dy, share in ((1, 0, 7.0 / 16.0), (-1, 1, 3.0 / 16.0),
+                                  (0, 1, 5.0 / 16.0), (1, 1, 1.0 / 16.0)):
+                nx, ny = x + dx, y + dy
+                if nx < 0 or nx >= width or ny >= height:
+                    continue
+                n = ny * width + nx
+                if mask is not None and mask[n] <= 96:
+                    continue
+                ne = err[n]
+                ne[0] += dr * share
+                ne[1] += dg * share
+                ne[2] += db * share
+    return bytes(out)
+
+
 def write_preview(path, data, size):
     """Decode a GRB332 blob back to a PNG, so a conversion can be eyeballed
     without an emulator.  Written by hand rather than through PIL so the
