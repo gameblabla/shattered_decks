@@ -21,6 +21,84 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M6 — full duel loop | **done**: person-playable placement, fusion, support, attacks, turn handoff, results, and the real shared-renderer board |
 | M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, a tabbed deck editor, 16-symbol password save/load, floppy save/load where a drive answers, and ending transition |
 
+### The textured floor, measured — 2026-09-05
+
+The perspective arena and the overhead tiles sample the two supplied sandstone
+materials in SCREEN 8 GRB332; the walls stay flat.  The duel bank includes
+`msx2_floor.c` instead of the old per-quad polygon walker, and
+`tools/msx2/gen_msx_floor.py` (run by `Makefile.msx2`) bakes, per authored pose,
+what each of the band's 114 rows shows: 92 KB of span records in 106,750 packed
+bytes over seven segments, plus 2,560 bytes of texture.  Records carry material
+and UV coefficients, never destination pixels.
+
+**Measured, real openMSX, `tools/msx2/bench_floor.py`, C-BIOS_MSX2, 60 Hz:**
+
+| | camera move, empty board | populated turn move |
+|---|---|---|
+| before this pass | 0.77 fps (1306 ms a frame) | — |
+| now | **5.13 fps** (195 ms mean, 232 worst) | 3.6 fps (275 ms mean) |
+
+The populated figure is no longer the floor's: an arena step there is 164-247 ms
+and the rest is `Msx2_RasterCard` drawing up to ten cards over it, which this
+pass did not touch.
+
+#### Where the 6.7x came from, in the order it was worth doing
+
+1. **The C span walker was over half the frame** (2,800 T-states a record;
+   SDCC keeps that many locals in an IX frame).  `Msx2_FloorRow`,
+   `Msx2_FloorBandRows` and the row fetch are assembly now, and the samplers
+   pop their state off the record with a borrowed SP instead of being handed it.
+2. **The samplers.** A constant-v span is 33 T-states a pixel: the generator
+   folds v's texture row into the address, so the accumulator's high byte *is*
+   the texel's low address byte and `ld c,h / ld a,(bc) / out / add hl,de` is
+   the whole mapper.  A rotating span walks v in IY scaled by sixteen with its
+   step in SP, and writes each sample twice -- the second write is what fills
+   the VDP's own 29-T-state spacing, so the doubling is free.  The old loop was
+   215 T-states a pixel.
+3. **Black stopped being painted per span.**  A pose carries a dozen backdrop
+   rectangles that cover every black pixel (a V9938 command is ~300 T-states of
+   set-up and then ~2.25 us a pixel, so one command is worth 360 filled pixels,
+   and there were two hundred black spans a frame).  Inside a camera move it is
+   not painted at all: each page remembers what its arena covered last time, and
+   only the two ends of that silhouette that the new one no longer covers go
+   back to black -- a few pixels a row.
+4. **A moving frame draws every second or third row** and has the command
+   engine repeat it (`Msx2_FloorDouble`, one HMMM whose overlap propagates down
+   the group).  That divides the sampling, the record walk, the row fetch and
+   the span set-up all at once.  Which of 2 or 3 a pose takes is baked by the
+   generator: a distant board loses its slab wall to trebling, a near one does
+   not, and a two-row pose trebles anyway below the band row where the tiles
+   are tall.  **The pose the camera stops on is redrawn line by line**, so
+   nothing the player sits and looks at is doubled.
+
+Rotating poses sample a 16x16 mip of each material and resting poses the fine
+32x32, whole-pose either way so no two tiles of one picture carry different
+detail.
+
+#### What was measured and does not work
+
+* `YMMM` instead of `HMMM` for the row repeat: two orders of magnitude slower
+  in openMSX (a full-width copy, and NX is not ignored the way the manual
+  reads).  `HMMM` over the silhouette only.
+* Painting the whole band black first: 66 ms of command engine, and every span
+  after it waits.
+* Horizontal replication beyond two for the moving-v sampler: the interval
+  between writes is already the VDP's, so a third pixel buys 12%, not 33%.
+
+#### State and limits
+
+Shipping ROM: duel bank 16,127 of 16,384 bytes, static RAM 9,726 with 3,458 to
+HIMEM (the blind soak reports 3,427 free between `data ends` and SP).  A 150 s
+soak completes a duel and stays `status OK`.  **The `regression` variant does
+not link**: it needs 524 bytes of `_CODE` and only 506 are free -- that ceiling
+is not this pass's and no code moved into `_CODE` here.
+
+Projection is still the 23 authored mesh poses; arbitrary runtime camera
+projection and card occlusion rejection are not implemented.  UV is
+perspective-correct at scanline ends and affine between them.  No physical
+hardware test: everything above is stock-machine emulator timing.  The
+measurement recipe is in `tools/msx2/FLOOR_BENCH.md`.
+
 ### Where the code lives, since 2026-09-03
 
 The port ran out of both of its code areas at once, and the fix reshaped the

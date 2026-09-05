@@ -31,12 +31,7 @@
 //  ordinary .c files and are written as such; this file is the placement.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The live board: the flat-polygon span emitter and the arena that draws one
-// pose of it out of one compact projected-geometry record. They are here rather than
-// in _CODE because the duel screen is their only caller, a call inside a bank
-// is an ordinary CALL, and _CODE has under a kilobyte left.  They are what took
-// 3.9 MB of baked arena pictures out of the cartridge.
-#include "msx2_poly.c"
+// The arena span compositor and texture sampler live beside their duel caller.
 #include "msx2_arena.c"
 
 // The battle cut-in's blade, burst, burn and damage figure.  It lives in this

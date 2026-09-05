@@ -49,7 +49,8 @@ RESIDENT_SYMBOLS = [
 def assets():
     """(name, first segment, binary) triples, in segment order."""
     out = []
-    for raw in open(MANIFEST):
+    for raw in (open(MANIFEST).readlines() +
+                open(os.path.join(ASSET_DIR, "floor_manifest.txt")).readlines()):
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue

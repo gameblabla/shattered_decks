@@ -1,0 +1,69 @@
+• Yes—a small, flexible textured 3D renderer targeting 5 fps is plausible on MSX2. But texturing the entire current
+  board, with all cards and unrestricted camera movement, would need compromises. Delta drawing helps most when the
+  camera is stationary; it cannot guarantee that frame rate during rotation.
+
+  RT3D demonstrates the relevant approach: transform shared vertices, reject invisible faces, use painter ordering,
+  then texture horizontal spans through CPU writes to SCREEN 8. Turbor describes affine texture stepping without
+  perspective correction. The VDP handles solid fills and copies; it does not perform texture mapping. RT3D author’s
+  explanation.
+
+  The budget at 5 fps is 200 ms, approximately 716,000 Z80 T-states. Using the current card mapper’s best inner-loop
+  figure:
+
+   Textured destination pixels    At approximately 39 T/pixel
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   8,000                                                87 ms
+  ─────────────────────────────  ─────────────────────────────
+   12,000                                              131 ms
+  ─────────────────────────────  ─────────────────────────────
+   18,000                                              196 ms
+
+  Those figures exclude geometry, clipping, row setup, texture loading, music, and other game work. The current
+  chair-view arena covers roughly 18,000 pixels including its walls. Texturing all that already consumes almost the
+  entire budget under optimistic conditions.
+
+  There is also a limitation in the existing card mapper (src/msx2/msx2_raster.c): its fast loop walks one texture
+  row per screen row. It does not interpolate arbitrary U and V across a span. A rotating floor generally needs
+  both. We can reuse its output loop techniques, texture caching, and fixed-point stepping, but a flexible mapper
+  needs a new general path—and its cost must be measured rather than assumed to remain 39 T/pixel.
+
+  The delta approach has three distinct opportunities:
+
+  - Stationary camera: excellent. Retain the textured board and repaint only card footprints and changed effects. A
+    textured background then costs nothing most frames.
+
+  - Camera translation or rotation: much weaker. Pixels inside an unchanged polygon outline can sample different
+    texels. The flat-color delta counts in my plan therefore do not carry over to textures.
+
+  - Occlusion: useful even during motion. Determine which floor spans cards cover before sampling the floor, then
+    draw only visible surfaces. This saves both texture calculations and VRAM writes.
+
+  Comparing newly rendered pixels with old pixels only saves transfers after paying to generate the new pixels.
+  Reading the old screen back from VRAM adds more work, while two RAM copies of the arena require about 58 KiB—well
+  beyond this port’s current working allocation. Compact descriptions of unchanged surfaces are a better starting
+  point than full pixel comparison.
+
+  I would design the engine around these constraints:
+
+  1. Runtime geometry with shared vertices, fixed-point transforms, clipping, and bounded polygon counts. No per-
+     camera bitmap assets.
+
+  2. Two texture paths: a specialized floor/card path where the projection permits it, plus a general affine
+     triangle path for arbitrary orientations.
+
+  3. Visibility before texturing, avoiding hidden floor and repeated overdraw.
+  4. Small reusable textures and mip levels. Distant material becomes coarse or flat; walls can remain solid. Four
+     16×16 textures cost only 1 KiB before optional variants.
+
+  5. Per-page retained state, with conservative invalidation when camera or texture mapping changes.
+  6. A measured texture budget, initially around 8,000–10,000 visible textured pixels per moving frame, shared
+     between board and cards. This is a prototype target, not a demonstrated limit.
+
+  Merely enlarging texels does not eliminate the cost of writing their destination pixels. Coarser textures help
+  when they produce long same-color runs that can become HMMV fills, or when they reduce sampling work enough to
+  matter.
+
+  My recommendation is to pursue 5 fps with a textured floor, solid walls, distance-based detail, and live geometry.
+  That can be flexible and economical in ROM. The decisive prototype is an oblique rotating view with populated
+  cards and music—not an empty stationary board. It should establish whether full-resolution texturing fits, or
+  whether motion needs reduced detail.

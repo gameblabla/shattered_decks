@@ -11,6 +11,8 @@
 #  See MSX2_PORT_PLAN.md, and src/msx2/STATUS.md for where the port stands.
 # ─────────────────────────────────────────────────────────────────────────────
 
+.DEFAULT_GOAL := all
+
 MSXGL_PATH   ?= MSXgl-main
 PROJ_DIR     := src/msx2
 BUILD_JS     := $(abspath $(MSXGL_PATH))/engine/script/js/build.js
@@ -48,6 +50,14 @@ SCENE_BINS   := $(PROJ_DIR)/assets/title.bin $(PROJ_DIR)/assets/ending.bin \
                 $(PROJ_DIR)/assets/board_mesh.bin
 SCENE_SRC    := assets/source/title/title256_msx2.png \
                 assets/source/ending/ending256x212.png
+
+FLOOR_OUTPUTS := $(PROJ_DIR)/msx2_floor_data.h $(PROJ_DIR)/assets/floor_textures.bin \
+                 $(PROJ_DIR)/assets/floor_spans.bin $(PROJ_DIR)/assets/floor_manifest.txt
+
+$(FLOOR_OUTPUTS) &: tools/msx2/gen_msx_floor.py tools/msx2/msx2_grb332.py \
+        $(SCENE_BINS) src/generated/msx2_scenes.h \
+        assets/source/textures/sandstone_1.png assets/source/textures/sandstone_2.png
+	python3 tools/msx2/gen_msx_floor.py
 
 SOURCES := $(wildcard $(PROJ_DIR)/*.c) $(wildcard $(PROJ_DIR)/*.h) \
            $(wildcard $(PROJ_DIR)/*.s) $(PROJ_DIR)/project_config.js \
@@ -97,7 +107,7 @@ $(VARIANT_STAMP):
 	@rm -f $(OUT_DIR)/.variant-*
 	@touch $@
 
-$(ROM): $(SOURCES) $(GENERATED) $(SCENE_BINS) $(MUSIC_BINS) $(AUDIO_META) \
+$(ROM): $(FLOOR_OUTPUTS) $(SOURCES) $(GENERATED) $(SCENE_BINS) $(MUSIC_BINS) $(AUDIO_META) \
         tools/msx2/pack_msx_rom.py $(VARIANT_STAMP) | check-sdk
 	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) MSX2_AUTOPLAY=$(MSX2_AUTOPLAY) \
 	    MSX2_STORY_AUTOPLAY=$(MSX2_STORY_AUTOPLAY) MSX2_REGRESSION=$(MSX2_REGRESSION) \

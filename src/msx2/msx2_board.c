@@ -2366,6 +2366,7 @@ void Msx2_BoardEnter_In(u8 stage)
 	g_suppress_slot = MSX2_SLOT_NONE;
 	g_hold_hand = MSX2_SLOT_NONE;
 	g_fx_page_frame[0] = g_fx_page_frame[1] = FX_FRAME_NONE;
+	Msx2_ArenaMoveStart();
 	g_move_pose = 0;
 	g_move_target = BOARD_VIEW_PLAYER;
 	g_move_forward = TRUE;
@@ -2575,6 +2576,9 @@ static void Msx2_BoardSwitchView(u8 view, bool forward)
 	Msx2_BoardClearHandBand();
 	Msx2_SfxPlay(MSX2_SFX_TURN_PASSED);
 	g_mode = M_TURN;
+	// From here to the last pose only the arena and its cards paint inside the
+	// band, which is what lets the steps repaint black as a delta.
+	Msx2_ArenaMoveStart();
 	g_move_pose = 0;
 	g_move_target = view;
 	g_move_forward = forward;
@@ -2601,7 +2605,8 @@ static void Msx2_BoardDrawPoseCards(void)
 	}
 }
 
-static void Msx2_BoardStepCameraMove(void)
+// Public symbol lets the external timing harness measure this exact build.
+void Msx2_BoardStepCameraMove(void)
 {
 	u8 show = Msx2_VideoGetShowPage();
 	u8 page = (u8)(show ^ 1);
@@ -2613,7 +2618,12 @@ static void Msx2_BoardStepCameraMove(void)
 		{
 			Msx2_VideoDrawPage(page);
 			Msx2_ArenaPose(MSX2_MESH_POSE_OPENING(g_move_pose));
-			Msx2_ArenaDraw();
+			// The pose the camera stops on is the one the player then sits
+			// and looks at, so it is drawn line by line, not doubled.
+			if(g_move_pose + 1 == MSX2_MOVE_OPENING_POSES)
+				Msx2_ArenaDraw();
+			else
+				Msx2_ArenaDrawStep();
 			Msx2_BoardDrawPoseCards();
 			++g_move_pose;
 			Msx2_VideoFlipRequest();
@@ -2626,7 +2636,10 @@ static void Msx2_BoardStepCameraMove(void)
 		          : (u8)(MSX2_MOVE_TURN_POSES - 1 - g_move_pose);
 		Msx2_VideoDrawPage(page);
 		Msx2_ArenaPose(MSX2_MESH_POSE_TURN(pose));
-		Msx2_ArenaDraw();
+		if(g_move_pose + 1 == MSX2_MOVE_TURN_POSES)
+			Msx2_ArenaDraw();
+		else
+			Msx2_ArenaDrawStep();
 		Msx2_BoardDrawPoseCards();
 		++g_move_pose;
 		Msx2_VideoFlipRequest();
