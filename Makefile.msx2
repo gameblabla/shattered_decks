@@ -23,17 +23,23 @@ AUTOPLAY_TAG := $(if $(MSX2_PLUS),plus,$(if $(MSX2_REGRESSION),regression,$(if $
 VARIANT_STAMP := $(OUT_DIR)/.variant-$(AUTOPLAY_TAG)
 
 # NEO-16 spans 1 MB to 64 MB in powers of two.  The cartridge is the smallest
-# of those the baked assets fit in: the last asset segment is 244, so the image
-# has to reach 3,920 KB and 4,096 is the next boundary up.  This is both the
-# bring-up and the shipping size -- there is nothing to gain from a larger one,
-# and pack_msx_rom.py prints the headroom and fails the build if a segment ever
-# runs off the end.
+# of those the baked assets fit in: the last asset segment is 256, so the image
+# has to reach 4,105 KB and 8,192 is the next boundary up.  This is both the
+# bring-up and the shipping size, and pack_msx_rom.py prints the headroom and
+# fails the build if a segment ever runs off the end.
 #
-# The next boundary DOWN, 2 MB, is not reachable by packing alone.  The assets
-# hold 2,558 KB of real bytes inside their 3,792 KB of segment-aligned strides,
-# so even a perfectly packed cartridge would need about 2,654 KB with the code;
-# 2 MB needs either compression or fewer assets, not tighter placement.
-ROM_SIZE_KB  ?= 4096
+# 4 MB was the size until the FM soundtracks were packed correctly.  Dropping
+# MSXzip's --simplify (see tools/msx2/gen_msx_audio.py, which explains why the
+# flag silently deleted half of every FM track's note attacks) costs the FM
+# streams about half their size again, three segments in all, and the last of
+# the three is the one that runs off the end of a 4 MB image.  The alternative
+# was to spend one of the reserved code-bank segments and ship with 7 KB of
+# cartridge left; the padding is worth more than that.
+#
+# The next boundary DOWN, 4 MB, therefore needs either a smaller FM encoding or
+# fewer assets.  It is NOT reachable by tighter placement: the assets hold
+# 3,574 KB of real bytes inside 4,105 KB of segment-aligned strides.
+ROM_SIZE_KB  ?= 8192
 
 # Headless verification (see msx2.sh for the full flow).
 OPENMSX      := $(MSXGL_PATH)/openmsx-headless-21.0-capture-neo1.2-planarfix-linux-x86_64/openmsx

@@ -10,10 +10,10 @@ have any of three sound chips and the port plays the best one it finds:
 
 MSXzip is the MSXgl tool that owns the lVGM conversion, simplification and 16K
 split format, so this wrapper validates the input and output around that tool
-and leaves a reproducible manifest for the scene packer.  The FM sets are not
-complete -- there is no FM rendition of the title theme -- and that is
-expected: a public track with no recording in the selected set is emitted with
-a zero segment count, and msx2_audio.c falls back to the PSG recording.
+and leaves a reproducible manifest for the scene packer.  The FM sets may omit
+a track, in which case a public track with no recording in the selected set is
+emitted with a zero segment count and msx2_audio.c falls back to the PSG
+recording.  The title theme has native recordings in all three sets.
 
 The generated files are deliberately not checked in: they are cartridge
 outputs, just like the scene binaries.  The VGM sources and this script are
@@ -67,7 +67,7 @@ CHIP_SETS = (
 # emits one record for every public id.  A set that has no file for a track
 # simply does not contribute one.
 TRACKS = (
-    ("title", "titlescreen.vgm", True),
+    ("title", "Title.vgm", True),
     ("overworld", "Overworld.vgm", True),
     ("battle", "Battle.vgm", True),
     ("boss", "Boss.vgm", True),
@@ -309,6 +309,12 @@ def optimize(source, output, optimizer, chip):
     return output, True, ""
 
 
+# lVGM's OPLL run opcodes name a register run by index; msx2_lvgm.c carries
+# the same two tables.
+LVGM_OPLL_CNT = (8, 9, 9, 9, 3, 3, 3)
+LVGM_OPLL_REG = (0x00, 0x10, 0x20, 0x30, 0x16, 0x26, 0x36)
+
+
 def lvgm_command_size(data, cursor, chip, path):
     """Bytes consumed by one lVGM chip command, mirroring msx2_lvgm.c."""
     op = data[cursor]
@@ -317,7 +323,7 @@ def lvgm_command_size(data, cursor, chip, path):
         if high <= 0x3:
             return 2                                     # R#op = nn
         if high == 0x4:
-            return 1 + (8, 9, 9, 9, 3, 3, 3)[op & 0x0F]  # 4x nn[] copy a run
+            return 1 + LVGM_OPLL_CNT[op & 0x0F]          # 4x nn[] copy a run
         if high == 0x5:
             return 2                                     # 5x nn fill a run
         if high == 0x6:
@@ -411,6 +417,136 @@ def validate_lvgm(path, chip):
     return data, segment_count
 
 
+# -----------------------------------------------------------------------------
+#  Why the FM sets are converted WITHOUT --simplify
+#
+#  MSXzip's --simplify buckets a frame's register writes into a map keyed by
+#  the register number, so it (a) keeps only the LAST write to a register in
+#  any 1/60 s frame and (b) re-emits the frame sorted by register number.
+#
+#  On the PSG both are free: its registers are levels, the chip does not care
+#  what order a frame's values arrive in, and a value written twice in one
+#  frame is only ever the second one.  Measured on this soundtrack it drops
+#  three writes across four tracks.
+#
+#  On an FM chip both are wrong, because its registers are not all levels.
+#  R#20-28 (OPLL) and R#B0-B8 (Y8950) carry the KEY bit: a note is retriggered
+#  by keying off and on again, and both of those writes land in the same frame,
+#  so --simplify threw away exactly one of every pair -- half the note attacks
+#  in the recording.  It also dropped half of R#30-38, the instrument/volume
+#  register, which is what makes a voice change instrument at all; and sorting
+#  a frame by register number moves the instrument select (R#3x) to AFTER the
+#  key-on (R#2x) that is supposed to use it.  That is the "missing
+#  instruments" the OPLL and MSX-AUDIO builds played with.
+#
+#  Losing the compact run opcodes costs roughly 50% more bytes per FM track.
+#  verify_lvgm() below is what keeps this honest from now on.
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+#  The conversion is checked against the recording, not trusted
+#
+#  An FM lVGM stream is a transparent re-spelling of the VGM's register writes:
+#  same registers, same values, same order, bucketed into 1/60 s frames.  So
+#  the whole conversion can be checked by decoding the cartridge stream back
+#  and comparing it to the source, which is what catches a converter flag that
+#  silently drops or reorders writes -- the bug this pass was written for.
+#
+#  MSXzip's one legitimate reduction is dropping a write whose value the
+#  register already holds (ExportValue), so the source side is filtered the
+#  same way.  The PSG format is deliberately NOT transparent -- it masks values
+#  to each register's width, forces bit 7 of R#7, and substitutes the stream's
+#  most common byte -- so this check covers the two FM chips only.
+# -----------------------------------------------------------------------------
+def lvgm_events(path, chip):
+    """Decode a packed lVGM stream back into (frame, register, value)."""
+    data, _ = validate_lvgm(path, chip)
+    option = data[4]
+    cursor = 5
+    if option & 0x04:
+        cursor += 1
+    cursor += 1 if chip == LVGM_CHIP_PSG else 0
+    current = LVGM_CHIP_PSG
+    frame = 0
+    events = []
+    while cursor < len(data):
+        op = data[cursor]
+        if op == 0xFF:
+            return events
+        if op == 0xFD:
+            marker = data[cursor + 1]
+            cursor += 2
+            if marker == 0x00:
+                # The segment's tail is padding; the player resumes the stream
+                # at the start of the next one.
+                cursor = -(-cursor // SEGMENT_BYTES) * SEGMENT_BYTES
+            continue
+        if op == 0xFE:
+            cursor += 1
+            continue
+        if op in (0xF0, 0xF1, 0xF2):
+            current = (LVGM_CHIP_PSG, LVGM_CHIP_MSXMUSIC,
+                       LVGM_CHIP_MSXAUDIO)[op & 0x0F]
+            cursor += 1
+            continue
+        if (op & 0xF0) == 0xE0:
+            frame += (op & 0x0F) + 1
+            cursor += 1
+            continue
+        size = lvgm_command_size(data, cursor, current, path)
+        if current == LVGM_CHIP_MSXMUSIC:
+            high = op >> 4
+            if high <= 0x3:
+                events.append((frame, op, data[cursor + 1]))
+            elif high <= 0x5:
+                count = LVGM_OPLL_CNT[op & 0x0F]
+                reg = LVGM_OPLL_REG[op & 0x0F]
+                for i in range(count):
+                    events.append((frame, reg + i, data[cursor + 1 + (
+                        0 if high == 0x5 else i)]))
+            elif high <= 0x7:
+                count = (op & 0x0F) + 3
+                reg = data[cursor + 1]
+                for i in range(count):
+                    events.append((frame, reg + i, data[cursor + 2 + (
+                        0 if high == 0x6 else i)]))
+            else:
+                events.append((frame, op & 0x7F, 0))
+        elif current == LVGM_CHIP_MSXAUDIO:
+            events.append((frame, op, data[cursor + 1]))
+        cursor += size
+    fail(path, "lVGM stream ended before its end marker")
+
+
+def vgm_frame_events(path, chip, hz=60):
+    """The source's writes, bucketed into frames and deduplicated as MSXzip is."""
+    events, _ = vgm_events(path, chip)
+    samples = 44100 // hz
+    held = {}
+    framed = []
+    for ticks, reg, val in events:
+        if held.get(reg) == val:
+            continue
+        held[reg] = val
+        framed.append((ticks // samples, reg, val))
+    return framed
+
+
+def verify_lvgm(source, output, chip):
+    """Fail unless the packed stream presents the recording's own writes."""
+    expected = vgm_frame_events(source, chip)
+    produced = lvgm_events(output, chip)
+    if expected == produced:
+        return
+    for index, (want, got) in enumerate(zip(expected, produced)):
+        if want != got:
+            fail(output, "write %d of the %s stream is frame %d R#%02X=%02X, "
+                 "but %s has frame %d R#%02X=%02X"
+                 % (index, CHIP_NAME[chip], got[0], got[1], got[2],
+                    source.name, want[0], want[1], want[2]))
+    fail(output, "the %s stream has %d writes; %s has %d"
+         % (CHIP_NAME[chip], len(produced), source.name, len(expected)))
+
+
 def convert(source, output, chip):
     output.unlink(missing_ok=True)
     executable = Path(os.environ.get("MSXZIP", str(MSXZIP)))
@@ -418,13 +554,18 @@ def convert(source, output, chip):
         fail(executable, "MSXzip is missing; set MSXZIP to the MSXgl converter")
     command = [
         str(executable), str(source), "-o", str(output), "-bin", "-lVGM",
-        "--simplify", "--split", "16K", "-nodate", "-nodeco",
+        "--split", "16K", "-nodate", "-nodeco",
     ]
+    if chip == LVGM_CHIP_PSG:
+        command.append("--simplify")
     try:
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as exc:
         fail(source, "MSXzip failed with exit status %d" % exc.returncode)
-    return validate_lvgm(output, chip)
+    data, segments = validate_lvgm(output, chip)
+    if chip != LVGM_CHIP_PSG:
+        verify_lvgm(source, output, chip)
+    return data, segments
 
 
 def main():

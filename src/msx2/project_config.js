@@ -84,12 +84,13 @@ Machine = process.env.MSX2_PLUS ? "2P" : "2";
 InstallRAMISR = "RAMISR_PAGE3";
 
 //-- NEO-16: 16 KB segments, 1 MB to 64 MB in powers of two.  The cartridge is
-//   the smallest of those the baked assets fit in -- 4 MB, for a last asset
-//   segment of 244 -- and that is both the bring-up and the shipping size.
+//   the smallest of those the baked assets fit in -- 8 MB, for a last asset
+//   segment of 256 -- and that is both the bring-up and the shipping size.
 //   MSX2_ROM_SIZE_KB overrides it from Makefile.msx2, which carries the note on
-//   why 2 MB is out of reach without compressing or dropping assets.
+//   what pushed the image past 4 MB and why 4 MB is out of reach without a
+//   smaller FM encoding or fewer assets.
 Target = "ROM_NEO16";
-ROMSize = Number(process.env.MSX2_ROM_SIZE_KB || 4096);
+ROMSize = Number(process.env.MSX2_ROM_SIZE_KB || 8192);
 
 CheckVersion = true;
 AddROMSignature = true;
