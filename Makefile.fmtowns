@@ -224,6 +224,7 @@ IPLBIN          = $(OBJDIR)/IPL.BIN
 PAYLOAD_ELF     = $(OBJDIR)/mygame_shared
 PAYLOAD_BIN     = $(OBJDIR)/mygame_shared.bin
 OUTPUT_ISO      = $(OBJDIR)/output.iso
+OUTPUT_BIN      = $(OBJDIR)/output.bin
 
 # CD-DA music: the game's whole soundtrack, one Red Book audio track per
 # WAV behind the ISO9660 data track 1 (tools/fmtowns/mkcd.sh), played by
@@ -247,6 +248,10 @@ MUSIC_SRCS      = $(patsubst %,Music/%.wav,$(MUSIC_STEMS))
 MUSIC_TRACKS    = $(patsubst %,$(OBJDIR)/cdda/%.wav,$(MUSIC_STEMS))
 CDDA_TRACKS_H   = $(OBJDIR)/fmtowns_cdda_tracks.h
 OUTPUT_CUE      = $(OBJDIR)/output.cue
+FMTOWNS_BIN     = $(OBJDIR)/waifu_fmt.bin
+FMTOWNS_CUE     = $(OBJDIR)/waifu_fmt.cue
+FMTOWNS_ZIP     = $(OBJDIR)/waifu_fmt.zip
+ZIP             ?= zip
 
 .DEFAULT_GOAL   := all
 
@@ -446,6 +451,11 @@ CD_ASSET_FILES  = PORTRAIT.BIN PORTMASK.BIN CARDFACE.BIN CARDBIG.BIN \
                   CARDBACK.BIN SUPFACE.BIN SUPBIG.BIN TEXATLAS.BIN
 CD_ASSET_TARGETS = $(addprefix $(CDROOT)/,$(CD_ASSET_FILES))
 
+# Keep the ignored raw card-back blob synchronized when this target is built
+# directly; gen_assets.py also refreshes the other shared asset outputs.
+assets/generated/card_back.bin: tools/gen_assets.py assets/source/textures/card_texture.png
+	python3 tools/gen_assets.py
+
 $(CDROOT)/PORTRAIT.BIN: assets/generated/story_portraits.bin | $(CDROOT)
 	cp -f $< $@
 $(CDROOT)/PORTMASK.BIN: assets/generated/story_portrait_mask.bin | $(CDROOT)
@@ -515,6 +525,22 @@ $(CDDA_TRACKS_H): Makefile.fmtowns | $(OBJDIR)
 # Tsugaru's -CD flag accepts either.
 $(OUTPUT_CUE): $(IPLBIN) $(CDROOT)/SYSTEM.BIN $(CDROOT)/TITLE.BIN $(CDROOT)/TITLE.PAL $(CD_ASSET_TARGETS) $(MUSIC_TRACKS) tools/fmtowns/mkcd.sh tools/fmtowns/inject_ipl.py tools/fmtowns/iso_sort.txt
 	cd $(OBJDIR) && $(MKCD) $(abspath $(MUSIC_TRACKS))
+
+# Release package: rename the generated image and update the CUE's FILE line
+# so the two files remain self-contained when extracted from the archive.
+$(FMTOWNS_BIN): $(OUTPUT_CUE)
+	cp -f $(OUTPUT_BIN) $@
+
+$(FMTOWNS_CUE): $(OUTPUT_CUE)
+	sed 's/^FILE "output.bin" BINARY$$/FILE "waifu_fmt.bin" BINARY/' $< > $@
+
+$(FMTOWNS_ZIP): $(FMTOWNS_BIN) $(FMTOWNS_CUE) Makefile.fmtowns
+	rm -f $@
+	cd $(OBJDIR) && $(ZIP) -q $(notdir $@) $(notdir $(FMTOWNS_BIN)) $(notdir $(FMTOWNS_CUE))
+
+.PHONY: zip
+zip: $(FMTOWNS_ZIP)
+	@echo "wrote $(FMTOWNS_ZIP) ($$(du -h $(FMTOWNS_ZIP) | cut -f1))"
 
 .PHONY: run run-iso
 run: $(OUTPUT_CUE)

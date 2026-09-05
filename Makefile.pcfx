@@ -71,7 +71,8 @@ PCFX_SRCS_C := \
   src/engine/common.c
 PCFX_SRCS_S := src/platform/pcfx/fastking.s src/platform/pcfx/pcfx_biosfs_asm.s
 
-CARD_SOURCE_FILES := $(shell find assets/source/cards -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
+CARD_SOURCE_FILES := $(shell find assets/source/cards -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g') \
+  assets/source/textures/card_texture.png
 STORY_PORTRAIT_FILES := $(shell find assets/source/story_portraits -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
 SFX_SOURCE_FILES := $(shell find sounds assets/sounds -type f 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
 # Full-screen title/ending art is resolution-driven: gen_title_asset.py reads

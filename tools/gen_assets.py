@@ -236,7 +236,7 @@ def draw_support_face():
         d.ellipse([x,5,x+1,6], fill=(248,236,140))
     return img
 
-def draw_card_back():
+def draw_procedural_card_back():
     img = Image.new('RGB', (CARD_W,CARD_H), (46,24,8))
     d = ImageDraw.Draw(img)
     d.rectangle([1,0,CARD_W-2,CARD_H-1], fill=(205,132,35))
@@ -250,6 +250,21 @@ def draw_card_back():
     d.rectangle([1,0,CARD_W-2,CARD_H-1], outline=(35,19,7))
     d.rectangle([2,2,CARD_W-3,CARD_H-3], outline=(240,169,45))
     return img
+
+def draw_card_back():
+    # The original procedural back was only a placeholder. Keep the
+    # high-resolution painting as the source of truth, but fit it to the same
+    # 38x54 indexed-card dimensions used by FM TOWNS and PC-FX.
+    with Image.open(TEXTURE_DIR / 'card_texture.png') as source:
+        fitted = ImageOps.fit(source.convert('RGB'), (CARD_W, CARD_H),
+                              method=Image.Resampling.LANCZOS,
+                              centering=(0.5, 0.5))
+    # The source is designed for high-resolution display.  Without restoring
+    # contrast after the large reduction, its fine gold lines average into the
+    # navy ground before the console palette pass.
+    fitted = fitted.point([max(0, min(255, int((v - 28) * 2.2)))
+                           for v in range(256)] * 3)
+    return fitted.filter(ImageFilter.SHARPEN)
 
 BOARD_TILE_SRC = ['sandstone_1.png', 'sandstone_2.png']
 # Colours kept per 32x32 board tile before the master-palette pass.  The sources
@@ -413,7 +428,11 @@ support_rgb=draw_support_face()
 # rendered crisply at full size rather than upscaled from the 38x54 face.
 support_big_rgb=draw_support_emblem(BIG_W)
 back_rgb=draw_card_back()
-tex_rgb=[tile_dark(),board_tile(0),tile_sand(),tile_stone(),tile_side_wall(),board_tile(1),tile_volcanic_ground(),tile_volcanic_slope(),back_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
+back_palette_rgb=draw_procedural_card_back()
+# The atlas's final slot is legacy board geometry, not the card-back renderer;
+# keep it on the procedural palette reference so changing the card cover does
+# not perturb unrelated 3D materials.
+tex_rgb=[tile_dark(),board_tile(0),tile_sand(),tile_stone(),tile_side_wall(),board_tile(1),tile_volcanic_ground(),tile_volcanic_slope(),back_palette_rgb.resize((TILE,TILE), Image.Resampling.NEAREST)]
 # Art baked into the runtime atlas.  The board checkers used to differ here from
 # the palette-defining tex_rgb (a projection-safe redraw of the dark square);
 # now both lists carry the same sandstone art, so the master palette is built
@@ -467,7 +486,7 @@ def apply_base_colors(pal_img, palette, idx_map):
 # usable ramp of stone colours.
 BOARD_TILE_PALETTE_WEIGHT = 16
 common_palette_images = (card_faces_rgb + big_card_rgb +
-                         [support_rgb,support_big_rgb,back_rgb] + tex_rgb +
+                         [support_rgb,support_big_rgb,back_palette_rgb] + tex_rgb +
                          [tex_rgb[1], tex_rgb[5]] * BOARD_TILE_PALETTE_WEIGHT)
 dialogue_palette_images = [p.convert('RGB') for p in story_portraits_rgba]
 pal_img,palette=build_palette_image(common_palette_images)

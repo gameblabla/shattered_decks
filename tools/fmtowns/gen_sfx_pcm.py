@@ -28,6 +28,7 @@ Two things differ from the Sega CD version, both from the chip's own rules
 Usage: gen_sfx_pcm.py sounds_dir out.h
 """
 import os
+import struct
 import sys
 import wave
 
@@ -55,15 +56,58 @@ NORM_PERCENTILE = 0.995   # loudness reference; see encode_sign_magnitude()
 GAIN_MAX = 12             # ceiling on how far a near-silent effect is lifted
 
 
-def read_wav_u8_mono(path):
+def read_wav_mono(path):
+    """Read supported 44.1 kHz PCM WAV data as signed, 8-bit mono samples.
+
+    The source effects are a mixture of unsigned 8-bit mono and signed
+    16-bit mono/stereo PCM.  Downmix stereo before reducing 16-bit samples to
+    the signed 8-bit range used by the existing RF5C68 encoder; this keeps
+    the resampler and loudness normalisation independent of the WAV format.
+    """
     with wave.open(path, "rb") as w:
-        if w.getnchannels() != 1 or w.getsampwidth() != 1 or w.getframerate() != SRC_RATE:
-            raise SystemExit(f"{path}: expected unsigned 8-bit mono {SRC_RATE} Hz WAV")
-        return w.readframes(w.getnframes())
+        channels = w.getnchannels()
+        width = w.getsampwidth()
+        rate = w.getframerate()
+        comptype = w.getcomptype()
+        frames = w.getnframes()
+        raw = w.readframes(frames)
+
+    if comptype != "NONE":
+        raise SystemExit(f"{path}: compressed WAV is not supported ({comptype})")
+    if channels not in (1, 2):
+        raise SystemExit(f"{path}: expected mono or stereo WAV, got {channels} channels")
+    if width not in (1, 2):
+        raise SystemExit(f"{path}: expected 8-bit or 16-bit PCM, got {width * 8}-bit")
+    if rate != SRC_RATE:
+        raise SystemExit(f"{path}: expected {SRC_RATE} Hz WAV, got {rate} Hz")
+
+    if width == 1:
+        # PCM WAV stores 8-bit samples unsigned.  Centre each channel before
+        # downmixing so stereo balance is preserved around zero.
+        samples = [sample - 128 for sample in raw]
+        if channels == 1:
+            return samples
+        return [
+            (samples[i] + samples[i + 1]) // 2
+            for i in range(0, len(samples) - 1, 2)
+        ]
+
+    # PCM WAV stores 16-bit samples as signed little-endian integers.  Shift
+    # after downmixing so the stereo average has the same scale as 8-bit PCM.
+    sample_count = len(raw) // 2
+    samples = struct.unpack("<%dh" % sample_count, raw[:sample_count * 2])
+    if channels == 1:
+        return [sample >> 8 for sample in samples]
+    return [
+        ((samples[i] + samples[i + 1]) // 2) >> 8
+        for i in range(0, len(samples) - 1, 2)
+    ]
 
 
 def resample_to_signed(data, dst_rate):
     """Box-filter down to dst_rate, returning samples centred on zero."""
+    if not data:
+        return []
     out_len = max(1, (len(data) * dst_rate + SRC_RATE // 2) // SRC_RATE)
     out = []
     for i in range(out_len):
@@ -72,7 +116,7 @@ def resample_to_signed(data, dst_rate):
         b = max(b, a + 1)
         a = min(a, len(data) - 1)
         b = min(b, len(data))
-        out.append(sum(data[a:b]) // (b - a) - 128)
+        out.append(sum(data[a:b]) // (b - a))
     return out
 
 
@@ -159,9 +203,9 @@ def main():
             entries.append((name, offset, length, rate))
             continue
 
-        raw = read_wav_u8_mono(os.path.join(src_dir, filename))
-        rate = fit_rate(len(raw))
-        pcm = encode_sign_magnitude(resample_to_signed(raw, rate))
+        samples = read_wav_mono(os.path.join(src_dir, filename))
+        rate = fit_rate(len(samples))
+        pcm = encode_sign_magnitude(resample_to_signed(samples, rate))
         if len(pcm) > MAX_SAMPLE_BYTES:
             pcm = pcm[:MAX_SAMPLE_BYTES]
         offset = len(bank)
