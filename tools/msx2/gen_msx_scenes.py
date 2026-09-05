@@ -601,13 +601,17 @@ def portrait(base, size):
 
     img = portrait_trim(portrait_source(base))
     w, h = img.size
-    top = int(h * 0.01)
-    keep = max(2, min(h - top, int(round(w / shape))))
+    # FROM THE VERY TOP OF THE FIGURE.  There used to be a 1% top trim here,
+    # which on a 200-row source was the two rows of stray alpha it was meant
+    # for and on a 1409-row re-render is fourteen -- exactly the tip of
+    # Serena's ahoge, cut off flat against the top of the square.  The trim is
+    # a fraction and the thing it removes is not, so it goes.
+    keep = max(2, min(h, int(round(w / shape))))
     # No side trim.  gen_assets.py takes 5% off each edge for the framebuffer
     # targets, whose portrait area is much wider than the figure; here the area
     # is a 124-square the bust is fitted into by height, so those 5% came
     # straight off the character -- Anpu and Rahotep lost both elbows.
-    img = img.crop((0, top, w, top + keep))
+    img = img.crop((0, 0, w, keep))
     art = ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
     out = Image.new("RGBA", size, (0, 0, 0, 0))
     out.alpha_composite(art, ((size[0] - art.width) // 2, size[1] - art.height))
