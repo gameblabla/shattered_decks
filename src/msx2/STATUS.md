@@ -105,6 +105,50 @@ resident ROM past `0xC000`. `MSX2_FIXTURE_TOP_PASS_TURN` now also puts an equip
 on each support row, so it reproduces this report directly once there is room
 to build it again.
 
+### The green line off the rim — 2026-09-05
+
+The quad fix above was not all of it, and the rest is not geometry at all.
+
+A camera-move frame draws one row in every two or three and has the command
+engine repeat it down the group (`Msx2_FloorDouble`). The group grid is fixed
+to the band, not to the pose, so the group that straddles the top of the arena
+leads on a row the board does not reach yet, fetches an empty span record and
+comes out blank: at `MOVE_TURN_2` the board's own first row is band 10, but
+nothing is painted above band 12. `Msx2_RasterCard()` maps a card row by row
+and skips nothing, so a card in a far row -- which is where an equip lives --
+put pixels down on rows the floor had left black.
+
+Two things went wrong from that. The card's top edge hung over the board's rim
+with black under it; and, worse, the erase bookkeeping (`g_ext_l`/`g_ext_r`)
+records only what the FLOOR covered, so those rows were remembered as empty and
+never blacked again. Page 0 draws poses 22, 20 and 18 of a five-pose orbit, and
+the equip's top row from pose 22 -- 15 pixels of `0xA9`, bright green, at screen
+row 28 -- was still sitting outside the board when pose 20 went up two frames
+later. That is the line the owner reported: it wanted a support card (they are
+the far rows), it only showed while the table was turning, and passing the turn
+from the opponent's chair is what puts pose 22 and pose 20 on the same page.
+
+`Msx2_FloorBand()` now publishes `g_msx2_arena_top`, the first screen row this
+pose is actually painted on -- `BAND_Y + ceil(row0 / stride) * stride` -- and
+`Msx2_RasterDraw()` steps its chains over any row above it instead of drawing
+there. A resting pose has a stride of one, so the value is the board's own top
+row and nothing is clipped; a moving frame gives up the one or two rows of a
+far card that the coarse floor was never going to stand on. Nothing a card
+draws can now land outside a row the silhouette knows about.
+
+Confirmed by scripting the owner's setup into a real duel (the debugger writes
+a green GUARD support into the player's support row and a monster on the
+field, then the opponent's pass drives the orbit): before, band row 14 of the
+half-way frame ends `... 95 00 20 A9 A9 A9 x14` -- the board's last pixel, then
+the stray card edge fifteen pixels out over the black; after, the row ends at
+the board and the far cards start level with the floor. A 400-frame sweep of
+every turn orbit in a long soak has no detached fragment bigger than a single
+floor-coloured pixel.
+
+Resident ROM ends at `0xBF74`, 140 bytes spare (the row skip let SDCC emit less
+than the chain walk cost); the duel bank has 73. A 90 s blind soak completed one
+duel with the probe reporting OK.
+
 ### WIP build follow-up — 2026-09-05
 
 The first WIP overflowed resident ROM by 155 bytes once SDCC's `_HOME` and

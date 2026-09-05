@@ -309,6 +309,13 @@ static void Msx2_RasterDraw(u8 defense)
 			Msx2_RasterEdge(ra, rb, tex_h);
 			g_rx = g_ex; g_rv = g_ev; g_rdx = g_edx; g_rdv = g_edv;
 		}
+		// A row the board is not painted on this frame is stepped over, not
+		// drawn: the chains still advance, so the rows below it land exactly
+		// where they would have.  See g_msx2_arena_top in msx2_arena.h -- a
+		// resting pose paints every row and clips nothing here.
+		if(y < g_msx2_arena_top)
+			goto step;
+
 		xl = (u8)(g_lx >> 8);
 		xr = (u8)(g_rx >> 8);
 		row = (i16)(((g_lv >> 1) + (g_rv >> 1)) >> 8);
@@ -371,6 +378,7 @@ static void Msx2_RasterDraw(u8 defense)
 			Msx2_RasterRun();
 		}
 
+	step:
 		g_lx = (i16)(g_lx + g_ldx);
 		g_rx = (i16)(g_rx + g_rdx);
 		g_lv = (i16)(g_lv + g_ldv);

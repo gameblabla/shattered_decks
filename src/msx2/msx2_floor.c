@@ -45,6 +45,7 @@
 // reachable by changing one address byte), then the two fine 32x32 materials.
 static u8 g_floor_mem[MSX2_FLOOR_TEX_BYTES + 256];
 static u8 g_floor_page;                 // high byte of the aligned base
+u8 g_msx2_arena_top;                    // see msx2_arena.h
 static u8 g_floor_ready;
 
 // One header per pose: 115 row offsets (the last closes row 113), then the
@@ -918,6 +919,13 @@ static void Msx2_FloorBand(u8 allow_delta, u8 stride)
     g_bd_y1 = (u8)(MSX2_BAND_Y + g_floor_row1);
     g_bd_stride_1 = (u8)(stride - 1);
     g_bd_split = (stride == 2) ? (u8)(MSX2_BAND_Y + g_floor_split) : 255;
+    // The row a group of `stride` leads on is fixed to the band, not to the
+    // pose, so the group straddling the arena's top row leads above it and
+    // draws nothing at all -- the board starts one whole group down.  Cards
+    // clip to that, or they hang over the rim and are never erased again; see
+    // msx2_arena.h.
+    g_msx2_arena_top = (u8)(MSX2_BAND_Y +
+        (u8)((u8)((g_floor_row0 + stride - 1) / stride) * stride));
     Msx2_FloorBandRows();
     g_ext_ok[page] = 1;
     Msx2_FloorFinish();
