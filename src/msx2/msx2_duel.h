@@ -204,6 +204,9 @@ u8   Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 
 bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
                       bool defense);
+
+// Whether the last fold fired a recipe or merely kept the last material.
+bool Msx2_FusionSucceeded(void);
 bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot);
 bool Msx2_Attack(u8 owner, u8 attacker_slot, u8 defender_slot); // MSX2_SLOT_NONE = direct
 bool Msx2_ChangePosition(u8 owner, u8 field_slot);

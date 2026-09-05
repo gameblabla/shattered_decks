@@ -26,9 +26,9 @@ void Msx2_CardCheckCompose_In(u8 card, i16 atk, i16 def);
 // Msx2_FusionBegin() composes the first beat; Msx2_FusionStep() advances one
 // frame and returns FALSE when the beat is over and the board should come back.
 #define MSX2_FUSION_MATS  3
-void Msx2_FusionBegin(const u8* materials, u8 count, u8 result);
+void Msx2_FusionBegin(const u8* materials, u8 count, u8 result, u8 fused);
 bool Msx2_FusionStep(void);
-void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result);
+void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result, u8 fused);
 bool Msx2_FusionStep_In(void);
 
 // ── The effect cut-in ───────────────────────────────────────────────────────

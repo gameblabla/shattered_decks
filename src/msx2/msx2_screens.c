@@ -186,7 +186,7 @@ static u8 Msx2_FuseMatX(u8 i)
 	return (u8)((MSX2_SCREEN_W - span) / 2 + i * (MSX2_CARD_W + 14));
 }
 
-void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result)
+void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result, u8 fused)
 {
 	u8 page = (u8)(Msx2_VideoGetShowPage() ^ 1);
 	u8 i;
@@ -203,8 +203,13 @@ void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result)
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
 	Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
-	Msx2_TextCenter(20, (result == MSX2_CARD_NONE) ? "CARDS DISCARDED"
-	                                              : Msx2_UiText(MSX2_S_FUSION_SUMMON));
+	// SAY WHICH OF THE THREE THINGS JUST HAPPENED, the way the other targets
+	// do: a recipe fired, or the chain simply spent its materials and left the
+	// last card standing, or there was no card left to stand at all.
+	Msx2_TextCenter(20, (result == MSX2_CARD_NONE)
+	                        ? "CARDS DISCARDED"
+	                        : Msx2_UiText(fused ? MSX2_S_FUSION_SUMMON
+	                                            : MSX2_S_FUSION_FAILED));
 	for(i = 0; i < g_fuse_n; ++i)
 		Msx2_ScreenSmallCard(g_fuse_mat[i], Msx2_FuseMatX(i), FUSE_MAT_Y);
 	Msx2_VideoCopyPage(page, (u8)(page ^ 1));

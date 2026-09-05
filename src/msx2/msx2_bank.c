@@ -97,10 +97,10 @@ void Msx2_CardCheckCompose(u8 card, i16 atk, i16 def)
 	Msx2_Bank0Leave(back);
 }
 
-void Msx2_FusionBegin(const u8* materials, u8 count, u8 result)
+void Msx2_FusionBegin(const u8* materials, u8 count, u8 result, u8 fused)
 {
 	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
-	Msx2_FusionBegin_In(materials, count, result);
+	Msx2_FusionBegin_In(materials, count, result, fused);
 	Msx2_Bank0Leave(back);
 }
 

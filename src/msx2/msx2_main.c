@@ -96,9 +96,15 @@ void VDP_InterruptHandler(void)
 // the board for it.
 static void Msx2_DealDuel(u8 story)
 {
-	u8 track = (story == MSX2_STORY_FINAL_DUEL) ? MSX2_MUSIC_FINAL_BOSS
-	           : (story == MSX2_STORY_NONE) ? MSX2_MUSIC_BATTLE
-	           : MSX2_MUSIC_BOSS;
+	// THE STORY'S FIVE DUELS ARE NOT ALL BOSS FIGHTS.
+	// The ordinary battle theme carries the first three, the boss theme the
+	// fourth, and the final duel its own; a free battle is an ordinary one.
+	// Every story duel used to open on the boss theme, which left the fourth
+	// saying nothing and the run with one tune for five opponents.
+	u8 track = (story == MSX2_STORY_NONE) ? MSX2_MUSIC_BATTLE
+	           : (story >= MSX2_STORY_FINAL_DUEL) ? MSX2_MUSIC_FINAL_BOSS
+	           : (story >= (MSX2_STORY_FINAL_DUEL - 1)) ? MSX2_MUSIC_BOSS
+	           : MSX2_MUSIC_BATTLE;
 
 	if(story != MSX2_STORY_NONE)
 		Msx2_StoryPrepareDuelDeck();

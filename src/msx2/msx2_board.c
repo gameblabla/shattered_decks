@@ -138,6 +138,7 @@ static u8  g_queue_n;
 // rules have already taken them out of the hand by the time it runs.
 static u8  g_fuse_mat[MSX2_FUSION_MATS];
 static u8  g_fuse_mat_n;
+static u8  g_fuse_ok;       // did the chain the cut-in is about fire a recipe?
 // Frames left on the "those two do not fuse" line.  A refused chain used to be
 // completely silent, which reads as the button not working.
 static u8  g_refuse;
@@ -1461,6 +1462,8 @@ static void Msx2_BoardPrimeLanding(void)
 
 static void Msx2_BoardPrepareLanding(void)
 {
+	u8 blank;
+
 	if(!Msx2_BoardFxIsLanding())
 		return;
 	// THE BEND BELONGS TO THE LANDING, NOT TO THE HAND.
@@ -1478,16 +1481,29 @@ static void Msx2_BoardPrepareLanding(void)
 	g_fx_hold = 0;
 	// Only a landing that actually took the strip off the screen owes it back.
 	g_fx_hand_back = (u8)!g_hand_hidden;
-	// Hand removal, cartridge caching and the first pose are one composition.
-	// Keep output blank for all of it; otherwise the visible page can show the
-	// blackened hand before the cached card has reached its source position.
+	// Hand removal, cartridge caching and the first pose are one composition,
+	// and the visible page must not show the blackened hand before the cached
+	// card has reached its source position.
+	//
+	// BLANKING IS FOR THE WHOLE-STRIP WIPE ONLY.  It used to be unconditional,
+	// and the two cases that actually play -- the player's summon, where the
+	// cursor has already walked onto the field and taken the strip off the
+	// screen, and the opponent's, where only the one card it is playing is
+	// erased -- have nothing to hide: the composition is a 40x48 fill and the
+	// same card put straight back at its flight start.  A whole black frame was
+	// being spent to cover a picture that does not change, on every single card
+	// either side placed.
+	blank = (u8)(!g_hand_hidden &&
+	             ((g_view == MSX2_VIEW_OVER) || (g_fx_hand >= MSX2_HAND_SLOTS)));
 	Msx2_SpriteTransitionBegin();
-	Msx2_VideoDisplayBlank();
+	if(blank)
+		Msx2_VideoDisplayBlank();
 	Msx2_BoardHideHand();
 	Msx2_BoardFxCacheCard();
 	Msx2_BoardPrimeLanding();
 	VDP_CommandWait();
-	Msx2_VideoDisplayRestore();
+	if(blank)
+		Msx2_VideoDisplayRestore();
 }
 
 static void Msx2_BoardFxErase(u8 frame)
@@ -1784,7 +1800,8 @@ static void Msx2_BoardStartFx(void)
 		Msx2_BoardShowBattleCutin();
 	}
 	else if(g_fx_kind == FX_FUSION)
-		Msx2_FusionBegin(g_fuse_mat, g_fuse_mat_n, g_duel.last_action_card);
+		Msx2_FusionBegin(g_fuse_mat, g_fuse_mat_n, g_duel.last_action_card,
+		                 g_fuse_ok);
 	else if(g_fx_kind == FX_SUPPORT)
 		Msx2_EffectBegin(g_fx_card, FALSE);
 	Msx2_BoardPrepareLanding();
@@ -2350,6 +2367,7 @@ void Msx2_BoardEnter_In(u8 stage)
 	g_queue_n = 0;
 	g_refuse = 0;
 	g_refuse_text = MSX2_S_THOSE_CARDS_DO_NOT_FUSE;
+	g_fuse_ok = 0;
 	g_fx_kind = FX_NONE;
 	g_fx_followup = FX_NONE;
 	g_fx_frames = 0;
@@ -2683,6 +2701,19 @@ void Msx2_BoardStepCameraMove(void)
 	g_deal_landed_mask[0] = g_deal_landed_mask[1] = 0;
 	{
 		u8 owner = (g_view == BOARD_VIEW_COM) ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER;
+		// DEAL THE HAND THE RULES ARE ABOUT TO HAVE, NOT THE ONE THEY HAD.
+		// The turn-start refill is the first rules step of the new turn, and
+		// that step runs after this chair change -- so the card drawn to
+		// replace whatever this side spent last turn was not in the mask.  The
+		// cards it had kept flew in properly and the replacement simply
+		// appeared once the deal was over, which is what made the opponent's
+		// draw read differently from the player's.  Taking the turn-start step
+		// here puts the replacement in the hand before the mask is read; it
+		// spends no extra frame, because the step machine would have run it on
+		// the next one anyway.
+		while((g_duel.result == 0) &&
+		      (g_duel.phase == MSX2_PHASE_TURN_START))
+			Msx2_DuelStep();
 		g_deal_target_mask = 0;
 		for(i = 0; i < MSX2_HAND_SLOTS; ++i)
 			if(g_duel.side[owner].hand[i] != MSX2_CARD_NONE)
@@ -2860,6 +2891,9 @@ static void Msx2_BoardConfirm(void)
 				if(Msx2_PlaceFusion(MSX2_OWNER_PLAYER, g_queue, g_queue_n,
 				                    g_sel, FALSE))
 				{
+					// Read before anything else can fold a chain: the cut-in
+					// runs frames later and titles itself from this.
+					g_fuse_ok = (u8)Msx2_FusionSucceeded();
 					Msx2_SfxPlay(MSX2_SFX_CONFIRM);
 					g_queue_n = 0;
 				}
@@ -2880,6 +2914,18 @@ static void Msx2_BoardConfirm(void)
 			}
 			if(!Msx2_IsMonster(g_duel.side[MSX2_OWNER_PLAYER].field[g_sel]))
 				return;
+			// A DEFENDING MONSTER CANNOT DECLARE AN ATTACK.
+			// Msx2_Attack() has always refused one, but the screen offered the
+			// whole target row first and then did nothing, leaving M_TARGET
+			// stuck until ESC.  Refuse on the attacker instead, and name the
+			// key that makes it legal.
+			if(g_duel.side[MSX2_OWNER_PLAYER].defense[g_sel])
+			{
+				g_refuse_text = MSX2_S_CHANGE_POSITION;
+				g_refuse = 96;
+				Msx2_BoardTouch();
+				return;
+			}
 			g_atk_pick = g_sel;
 			if(Msx2_LiveMonsterCount(MSX2_OWNER_COM) == 0)
 			{

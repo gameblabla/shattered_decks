@@ -652,6 +652,7 @@ static bool Msx2_FusionHandFirst(const Msx2Side* s, const u8* hand_slots, u8 cou
 // cards fuse perfectly well and the side has simply already had its one summon
 // this turn.  The results land in these globals rather than through five
 // pointer arguments; the caller that commits reads them straight afterwards.
+static bool g_fuse_real;                 // TRUE when a recipe actually fired
 static i16 g_fuse_hand_atk, g_fuse_hand_def;
 static i16 g_fuse_field_atk, g_fuse_field_def;
 static u8  g_fuse_card;                  // what the chain makes, when it makes one
@@ -676,6 +677,7 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 	// ONE SUMMON A TURN, AND SAY SO.  This is not a fact about the cards.
 	if(s->monster_played)
 		return MSX2_FUSE_SPENT;
+	g_fuse_real = FALSE;
 
 	field_card = s->field[field_slot];
 	hand_first = Msx2_FusionHandFirst(s, hand_slots, count, field_card);
@@ -685,21 +687,34 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 		mat_field[n] = TRUE;
 		mat[n++] = field_card;
 	}
+	// A STALE OR IMPOSSIBLE MATERIAL IS DROPPED, NOT A REFUSAL.
+	// A chain is chosen over several frames, and a hand slot in it can stop
+	// being playable in the middle of that -- pressing SPACE on a hand card
+	// with a chain already queued plays that card, which empties its slot.
+	// The whole chain then answered MSX2_FUSE_NO_RECIPE for the rest of the
+	// turn and the screen said "THOSE CARDS DO NOT FUSE" about cards that fuse
+	// perfectly well.  Skipping the dead entry is also the rule the player is
+	// owed for the cards themselves: a combination with no recipe is a way to
+	// spend cards, not a move the game refuses -- src/main.c folds it the same
+	// way and places whatever is left standing.
 	for(i = 0; i < count; ++i)
 	{
 		u8 slot = hand_slots[i];
 		u8 j;
+		bool dup = FALSE;
 		if((slot >= MSX2_HAND) || s->used[slot] ||
 		   (s->hand[slot] == MSX2_CARD_NONE))
-			return MSX2_FUSE_NO_RECIPE;
+			continue;
 		for(j = 0; j < i; ++j)
 			if(hand_slots[j] == slot)
-				return MSX2_FUSE_NO_RECIPE;
-		if(n >= MSX2_FUSION_MAX)
-			return MSX2_FUSE_NO_RECIPE;
+				dup = TRUE;
+		if(dup || (n >= MSX2_FUSION_MAX))
+			continue;
 		mat_field[n] = FALSE;
 		mat[n++] = s->hand[slot];
 	}
+	if(n == 0)
+		return MSX2_FUSE_NO_RECIPE;
 	if(Msx2_IsMonster(field_card) && hand_first)
 	{
 		if(n >= MSX2_FUSION_MAX)
@@ -753,10 +768,12 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 			if(Msx2_IsMonster(fused))
 			{
 				current = fused;
+				g_fuse_real = TRUE;
 			}
 			else
 			{
 				current = card;
+				g_fuse_real = FALSE;
 			}
 		}
 	}
@@ -765,6 +782,7 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 	{
 		current = chain;
 		field_atk = field_def = 0;
+		g_fuse_real = TRUE;
 	}
 
 	g_fuse_card = current;
@@ -791,11 +809,17 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 		return FALSE;
 	current = g_fuse_card;
 
-	// Only now is anything spent.  A refused chain must leave the hand alone.
+	// Only now is anything spent.  A refused chain must leave the hand alone,
+	// and a slot the fold above skipped was never a material, so it is not
+	// spent either.
 	for(i = 0; i < count; ++i)
 	{
-		s->used[hand_slots[i]] = TRUE;
-		s->hand[hand_slots[i]] = MSX2_CARD_NONE;
+		u8 slot = hand_slots[i];
+		if((slot >= MSX2_HAND) || s->used[slot] ||
+		   (s->hand[slot] == MSX2_CARD_NONE))
+			continue;
+		s->used[slot] = TRUE;
+		s->hand[slot] = MSX2_CARD_NONE;
 	}
 	Msx2_DropFieldEquips(owner, field_slot);
 
@@ -809,6 +833,14 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 	Msx2_RecordAction(MSX2_ACTION_FUSION, owner, current, hand_slots[0],
 	                  field_slot, defense);
 	return TRUE;
+}
+
+// Whether the last fold actually fired a recipe, rather than ending on the
+// material that happened to be left standing.  The cut-in reads it to say
+// FUSION SUMMON or FUSION FAILED, the way the other targets do.
+bool Msx2_FusionSucceeded(void)
+{
+	return g_fuse_real;
 }
 
 // Thunder destroys every monster on the opposing field; equip/guard attach to a

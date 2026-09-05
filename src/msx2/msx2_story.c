@@ -1228,6 +1228,13 @@ static u8 Msx2_StoryMapStep(void)
 	if(pressed & MSX2_BTN_A)
 	{
 		Msx2_SfxPlay(MSX2_SFX_CONFIRM);
+		// TAKE THE SELECTOR DOWN BEFORE THE NEXT SCREEN IS BUILT.
+		// Msx2_StoryStep_In() hides it on the frame AFTER the phase changes,
+		// and the screens below compose themselves inside this call -- so the
+		// red gem was still standing on the talk scene while its portrait was
+		// being streamed in, for as long as that took.  The two screens that
+		// own a selector put it back up on their own frame.
+		Msx2_StoryGemHide();
 		if(g_cursor == MAP_DECK_ROW)
 		{
 			Msx2_StoryEnterDeck();

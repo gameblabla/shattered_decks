@@ -21,6 +21,51 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M6 — full duel loop | **done**: person-playable placement, fusion, support, attacks, turn handoff, results, and the real shared-renderer board |
 | M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, a tabbed deck editor, 16-symbol password save/load, floppy save/load where a drive answers, and ending transition |
 
+### `msx2_bugs.txt` pass — 2026-09-05
+
+Eight reports from the owner, worked through in source and rebuilt:
+
+* **A chain is never refused for "those cards do not fuse".** A material slot
+  that stopped being playable while the chain was being chosen -- SPACE on a
+  hand card plays it and empties its slot -- used to make
+  `Msx2_FusionPreview()` refuse the whole chain for the rest of the turn.
+  Dead entries are skipped now and only real materials are spent, so an
+  unfusable pick always goes through the cut-in and leaves the last card
+  standing, as on PC. The cut-in titles itself FUSION SUMMON / FUSION FAILED /
+  CARDS DISCARDED from `Msx2_FusionSucceeded()`.
+* **The cards come back at the square-on turn pose.** Every quad in
+  `MOVE_TURN_2` is a quarter turn round: 0->1 is the edge that runs down the
+  screen, not 0->3, so the mapper measured a zero-height span and drew nothing
+  for that whole frame. The turned art already exists (the defence set is the
+  upright card rotated clockwise), so `Msx2_RasterCard()` relabels the corners
+  and swaps texture sets. Checked against the baked capture: 40 quads at that
+  pose went from zero rows to real ones, and the nine that stay under three
+  rows are the far support cells, which are that small in the picture.
+* The map's red selector is taken down on the frame the opponent is chosen,
+  not on the frame after, so it no longer stands on the talk scene while the
+  portrait streams in.
+* A landing no longer blanks the display unless the whole hand strip is being
+  wiped. The player's summon (strip already off) and the opponent's (one card
+  erased) were each spending a black frame to hide a picture that does not
+  change.
+* Story duels 1-3 play the battle theme, duel 4 the boss theme and duel 5 the
+  final-boss theme. Every story duel used to open on the boss theme.
+* A monster in defence position is refused as an attacker on the card, with
+  CHANGE POSITION as the prompt, instead of offering the target row and then
+  silently doing nothing.
+* The chair change takes the rules' turn-start step before it reads the deal
+  mask, so the card drawn to replace what that side spent flies in with the
+  rest instead of appearing when the deal is over.
+
+Not fixed: the stray green sliver reported alongside the missing cards. The
+owner tied it to the same frame, so it may go with the quad fix; the general
+row clip that would have covered its whole class was tried and reverted --
+several poses give the card a parallelogram whose two side edges barely
+overlap, and clipping to the shared rows drew two rows of card.
+
+Built and packaged (resident ROM ends at `0xBF13`, 237 bytes spare); a 90 s
+blind soak completed one duel and was mid-second with the probe reporting OK.
+
 ### WIP build follow-up — 2026-09-05
 
 The first WIP overflowed resident ROM by 155 bytes once SDCC's `_HOME` and

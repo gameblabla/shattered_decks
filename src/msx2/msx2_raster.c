@@ -276,6 +276,12 @@ static void Msx2_RasterDraw(u8 defense)
 	Msx2_RasterEdge(1, 2, tex_h);
 	g_rx = g_ex; g_rv = g_ev; g_rdx = g_edx; g_rdv = g_edv;
 
+	// The LEFT edge owns the row range.  Most captured poses give the card a
+	// genuine trapezoid, but several give a parallelogram whose two horizontal
+	// edges are several rows apart, and there the two side edges barely overlap
+	// at all: clipping to the rows they share would draw two rows of card.  The
+	// right edge is extrapolated over the difference instead, which is what has
+	// always been drawn.
 	ytop = (g_qy[0] < g_qy[3]) ? g_qy[0] : g_qy[3];
 	ybot = (g_qy[0] < g_qy[3]) ? g_qy[3] : g_qy[0];
 	if(ybot <= ytop)
@@ -356,16 +362,47 @@ static void Msx2_RasterDraw(u8 defense)
 	}
 }
 
+// ONE POSE SEES THE CARD A QUARTER TURN ROUND, AND IT IS NOT A BROKEN QUAD.
+//
+// The mapper walks one texture ROW per screen row, so it needs the quad's
+// 0->3 and 1->2 edges to be the ones that span rows.  That holds for every
+// captured pose but the middle of the turn orbit, where the camera is square
+// on to the board and the projected card's texture axes swap: 0->1 is the edge
+// that runs down the screen and 0->3 is horizontal.  Msx2_RasterDraw() saw a
+// zero-height span there and drew nothing -- every card on the board vanished
+// for that one frame of the turn.
+//
+// Nothing has to be rotated to fix it, because the turned art already exists:
+// the defence set is the upright card given a quarter turn clockwise, and
+// relabelling the corners is exactly the same quad said in that set's own
+// corner order.  Clockwise rotation sends (TL,TR,BR,BL) to (BL,TL,TR,BR), so
+// an upright card at this pose is the defence texture through corners
+// (3,0,1,2) and a card already lying in defence is the upright texture through
+// (1,2,3,0) -- one add and a mask, and the row walk is untouched.
 void Msx2_RasterCard(u8 card_index, u8 slot, u8 defense)
 {
 	const u8* q = Msx2_ArenaCardQuad(slot, defense);
 	u8 i;
+	u8 k = 0;                      // the first corner, as a byte offset
+	u8 tex_def = defense;
+	u8 y0 = q[1];
+	u8 d03 = (u8)((q[7] > y0) ? (q[7] - y0) : (y0 - q[7]));
+	u8 d01 = (u8)((q[3] > y0) ? (q[3] - y0) : (y0 - q[3]));
+
+	if(d01 > d03)
+	{
+		k = defense ? 2 : 6;
+		tex_def = (u8)!defense;
+	}
 
 	for(i = 0; i < 4; ++i)
 	{
-		g_qx[i] = q[i * 2];
-		g_qy[i] = q[i * 2 + 1];
+		g_qx[i] = q[k];
+		g_qy[i] = q[k + 1];
+		k += 2;
+		if(k >= 8)
+			k = 0;
 	}
-	Msx2_RasterLoad(card_index, defense);
-	Msx2_RasterDraw(defense);
+	Msx2_RasterLoad(card_index, tex_def);
+	Msx2_RasterDraw(tex_def);
 }
