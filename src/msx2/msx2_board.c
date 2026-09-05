@@ -2835,6 +2835,20 @@ static void Msx2_BoardConfirm(void)
 	case M_IDLE:
 		if(g_zone == ZONE_HAND)
 		{
+			// A WAITING CHAIN OWNS SPACE ON THE HAND ROW.
+			// The chain is chosen with DOWN and summoned with SPACE on the
+			// field row, but nothing stopped SPACE on the hand row from
+			// taking the ordinary single-card path first: that played the
+			// hovered card on its own, left the rest of the chain sitting in
+			// the hand, and no fusion ever happened -- which reads exactly
+			// like the button ignoring the selection.  Carry the chain to the
+			// field row instead, where it picks the slot it lands in.
+			if(g_queue_n != 0)
+			{
+				g_zone = ZONE_FIELD;
+				g_sel = Msx2_BoardFirstFree();
+				break;
+			}
 			card = g_duel.side[MSX2_OWNER_PLAYER].hand[g_sel];
 			if(card == MSX2_CARD_NONE)
 				return;
