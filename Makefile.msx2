@@ -19,15 +19,21 @@ BUILD_JS     := $(abspath $(MSXGL_PATH))/engine/script/js/build.js
 OUT_DIR      := $(PROJ_DIR)/out
 ROM          := $(OUT_DIR)/waifu_msx2.rom
 MAP          := $(OUT_DIR)/waifu_msx2.map
-AUTOPLAY_TAG := $(if $(MSX2_REGRESSION),regression,$(if $(MSX2_STORY_AUTOPLAY),story-soak,$(if $(MSX2_AUTOPLAY),soak,shipping)))
+AUTOPLAY_TAG := $(if $(MSX2_PLUS),plus,$(if $(MSX2_REGRESSION),regression,$(if $(MSX2_STORY_AUTOPLAY),story-soak,$(if $(MSX2_AUTOPLAY),soak,shipping))))
 VARIANT_STAMP := $(OUT_DIR)/.variant-$(AUTOPLAY_TAG)
 
-# NEO-16 spans 1 MB to 64 MB.  The default is the smallest size the baked
-# assets actually fit in (gen_msx_scenes.py prints MSX2_ASSET_ROM_KB, currently
-# 6.0 MB -- the captured board moves and the large 2-D battle cards are most of
-# it), so the build-and-verify loop stays as fast as it can be; the shipping
-# cartridge is 16384.
-ROM_SIZE_KB  ?= 8192
+# NEO-16 spans 1 MB to 64 MB in powers of two.  The cartridge is the smallest
+# of those the baked assets fit in: the last asset segment is 244, so the image
+# has to reach 3,920 KB and 4,096 is the next boundary up.  This is both the
+# bring-up and the shipping size -- there is nothing to gain from a larger one,
+# and pack_msx_rom.py prints the headroom and fails the build if a segment ever
+# runs off the end.
+#
+# The next boundary DOWN, 2 MB, is not reachable by packing alone.  The assets
+# hold 2,558 KB of real bytes inside their 3,792 KB of segment-aligned strides,
+# so even a perfectly packed cartridge would need about 2,654 KB with the code;
+# 2 MB needs either compression or fewer assets, not tighter placement.
+ROM_SIZE_KB  ?= 4096
 
 # Headless verification (see msx2.sh for the full flow).
 OPENMSX      := $(MSXGL_PATH)/openmsx-headless-21.0-capture-neo1.2-planarfix-linux-x86_64/openmsx
@@ -65,7 +71,7 @@ SOURCES := $(wildcard $(PROJ_DIR)/*.c) $(wildcard $(PROJ_DIR)/*.h) \
            $(PROJ_DIR)/msxgl_config.h \
            src/game/deck.c src/game/ai.c
 
-.PHONY: all rom tables audio verify soak story-soak regression clean check-sdk
+.PHONY: all rom tables audio verify soak story-soak regression plus plus-assets clean check-sdk
 
 all: rom
 
@@ -112,9 +118,10 @@ $(ROM): $(FLOOR_OUTPUTS) $(SOURCES) $(GENERATED) $(SCENE_BINS) $(MUSIC_BINS) $(A
         tools/msx2/pack_msx_rom.py $(VARIANT_STAMP) | check-sdk
 	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) MSX2_AUTOPLAY=$(MSX2_AUTOPLAY) \
 	    MSX2_STORY_AUTOPLAY=$(MSX2_STORY_AUTOPLAY) MSX2_REGRESSION=$(MSX2_REGRESSION) \
+	    MSX2_PLUS=$(MSX2_PLUS) \
 	    MSX2_TEST_SEED=$(MSX2_TEST_SEED) MSX2_TEST_FIXTURE=$(MSX2_TEST_FIXTURE) \
 	    node $(BUILD_JS)
-	python3 tools/msx2/pack_msx_rom.py $(ROM)
+	MSX2_PLUS=$(MSX2_PLUS) python3 tools/msx2/pack_msx_rom.py $(ROM)
 	@ls -l $(ROM)
 
 verify: rom
@@ -147,6 +154,35 @@ regression:
 	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_REGRESSION=1 \
 		MSX2_TEST_SEED=$(or $(MSX2_TEST_SEED),0x1234ABCD) \
 		MSX2_TEST_FIXTURE=$(or $(MSX2_TEST_FIXTURE),0)
+
+# ── The MSX2+ cartridge ──────────────────────────────────────────────────────
+#
+# The same game, with every 2-D picture screen re-encoded for the V9958's YJK
+# mode: SCREEN 10, a brightness per pixel and a hue per group of four, with the
+# interface drawn in the 16-colour YAE half of the same byte so a word never
+# takes its colour from the painting beside it.  The duel stays in GRAPHIC 7 --
+# it is rasterised live, and its card textures are shared with the hand.
+#
+# It is a separate cartridge, not a runtime check: the pictures ARE the
+# difference, and one ROM cannot hold both encodings of all of them.  The only
+# asset it adds rather than replaces is the YJK copy of the 40x48 thumbnails
+# the story's own screens draw, which is why it needs the next ROM size up.
+PLUS_ROM     := $(OUT_DIR)/waifu_msx2p.rom
+PLUS_ASSETS  := $(PROJ_DIR)/assets/plus/manifest_plus.txt
+
+plus-assets: $(PLUS_ASSETS)
+
+$(PLUS_ASSETS): tools/msx2/gen_msx_plus.py tools/msx2/msx2_yjk.py \
+        tools/msx2/gen_msx_scenes.py src/generated/msx2_scenes.h \
+        assets/source/msx2/title256_msx2plus.png \
+        assets/source/msx2/ending256x212_msx2plus.png
+	python3 tools/msx2/gen_msx_plus.py
+
+plus: $(PLUS_ASSETS)
+	rm -rf $(OUT_DIR)
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_PLUS=1 ROM_SIZE_KB=8192
+	cp $(ROM) $(PLUS_ROM)
+	@ls -l $(PLUS_ROM)
 
 clean:
 	rm -rf $(OUT_DIR) $(PROJ_DIR)/emul $(PROJ_DIR)/lib

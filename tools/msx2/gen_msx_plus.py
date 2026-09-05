@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""Bake the MSX2+ asset set: the 2-D screens in SCREEN 10 (YJK + YAE).
+
+WHAT THIS IS FOR
+----------------
+The MSX2 build draws everything in GRAPHIC 7, whose 256 colours are three bits
+of green, three of red and TWO OF BLUE -- which is why every painting in this
+game arrives as a poster and every sky bands.  A V9958 has the same 256-byte
+line and the same two pages, but it can read those bytes as YJK: a brightness
+per pixel and a hue shared by each group of four, which on artwork of this kind
+is worth about fifteen thousand colours.
+
+So the MSX2+ cartridge is the same game with the same code, and only the
+PICTURE SCREENS re-encoded: the title, the story -- narration, the talks, the
+sanctum road, the continue-code screens, the deck editor -- and the ending.
+The duel itself stays in GRAPHIC 7, cards and all: the board is rasterised live
+by the Z80 and its card textures are shared with the hand, so YJK would buy it
+nothing and cost it a chroma group on every card edge.
+
+Nothing here changes the layout of a byte, a segment or a screen.  Every asset
+this writes is the same size and lands at the same segment as the MSX2 one it
+stands in for, so the plus ROM is packed by the same tool from the same
+manifest; only `cards_yjk` is new, and it is emitted into a plus-only manifest
+and header so the MSX2 cartridge never carries it.
+
+    python3 tools/msx2/gen_msx_plus.py [--no-dither] [--quiet]
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from PIL import Image                                          # noqa: E402
+
+import gen_msx_scenes as scenes                                # noqa: E402
+import msx2_yjk as yjk                                         # noqa: E402
+
+ROOT = scenes.ROOT
+ASSET_DIR = scenes.ASSET_DIR
+PLUS_DIR = os.path.join(ASSET_DIR, "plus")
+MANIFEST = os.path.join(PLUS_DIR, "manifest_plus.txt")
+HEADER = os.path.join(ROOT, "src", "generated", "msx2_plus_scenes.h")
+
+WIDTH, HEIGHT = scenes.WIDTH, scenes.HEIGHT
+SEGMENT_BYTES = scenes.SEGMENT_BYTES
+
+# The screens this build re-encodes, and the SCREEN 8 ones it deliberately does
+# not.  BATTLE is the attack cut-in: it is drawn by the duel's own translation
+# unit out of the duel's card textures, so it stays where the board is.
+# Two of them have their own source art: the MSX2 title and ending are
+# pre-dithered GRAPHIC 7 dumps (a hand-tuned SCREEN 8 conversion of a
+# photographic sky), and there is nothing to re-encode in a picture that has
+# already been through a 256-colour quantiser.  The plus build goes back to the
+# paintings.
+PLUS_SOURCE = {
+    "TITLE": "assets/source/msx2/title256_msx2plus.png",
+    "ENDING": "assets/source/msx2/ending256x212_msx2plus.png",
+}
+
+YJK_SCENES = ["TITLE", "ENDING"] + \
+             ["MAP_%d" % s for s in range(4)] + \
+             ["TALK_%d" % s for s in range(4)]
+
+# Floyd-Steinberg, at the same strength the story busts are dithered at in the
+# MSX2 build.  YJK's error is structured -- a whole group of four pixels shares
+# the hue it could not reach -- so diffusing it is worth more here than in a
+# paletted mode, and it is what keeps a sky from banding into ribbons.
+DITHER = 0.9
+
+# Eight palette entries are the interface's (msx2_yjk.UI_PALETTE) and eight are
+# fitted to each picture, because YJK's weak end is the dark end and a scene's
+# own shadows are the colours worth spending them on.
+FIT = 8
+
+# The interface's ink, as SCREEN 10 pixel bytes: entry in the high nibble, the
+# YAE bit set.  The low three bits are the group's chroma and belong to the
+# picture, so a stamp keeps them (see stamp_yae).
+YAE_BLACK = 0x08
+YAE_GOLD = (2 << 4) | 8
+YAE_WHITE = (7 << 4) | 8
+
+
+def yae(index):
+    return (index << 4) | 8
+
+
+def stamp_yae(buf, width, x, y, w, h, index):
+    """Paint a rectangle in a palette colour, keeping each pixel's chroma bits.
+
+    A YAE pixel's low three bits are still read as part of its group's J or K,
+    so a box that zeroed them would drag the colour out of up to three picture
+    pixels at each of its vertical edges.  Keeping them costs one OR."""
+    ink = yae(index)
+    for row in range(y, min(y + h, HEIGHT)):
+        base = row * width
+        for col in range(x, min(x + w, width)):
+            buf[base + col] = ink | (buf[base + col] & 7)
+
+
+def encode_scene(img, dither):
+    data, palette = yjk.encode(img, dither=dither, fit_yae=FIT)
+    return bytearray(data), palette
+
+
+def scene_blob(data, palette):
+    """The picture, then its palette in the tail of the last segment.
+
+    A scene is 54,272 bytes inside four 16 KB segments, so there are eleven
+    kilobytes of slack after it that the packer already writes as padding.  The
+    palette goes at the front of that slack: the runtime reads 32 bytes from
+    (scene segment, MSX2_SCENE_BYTES) after streaming, and no asset, segment
+    number or header symbol had to be added to carry it."""
+    blob = bytearray(data)
+    blob += yjk.palette_bytes(palette)
+    return bytes(blob)
+
+
+def bake_scenes(dither, quiet):
+    """Every full-screen picture, re-encoded, plus the title's prompt strip."""
+    out = {}
+    strip = None
+    for name, build in scenes.SCENES:
+        if name not in YJK_SCENES:
+            continue
+        if name in PLUS_SOURCE:
+            built = Image.open(os.path.join(ROOT, PLUS_SOURCE[name]))
+        else:
+            built = build()
+        if isinstance(built, (bytes, bytearray)):
+            raise SystemExit("scene %s is pre-quantised and has no plus source"
+                             % name)
+        img = built.convert("RGB")
+        if img.size != (WIDTH, HEIGHT):
+            img = img.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+        data, palette = encode_scene(img, dither)
+
+        if name.startswith("TALK"):
+            # The text box is interface, not painting: it is stamped flat in the
+            # panel colour so the words that land in it keep their own edges.
+            stamp_yae(data, WIDTH, 0, scenes.TALK_BOX_Y, WIDTH,
+                      HEIGHT - scenes.TALK_BOX_Y, 1)
+        if name.startswith("MAP"):
+            stamp_yae(data, WIDTH, scenes.MAP_PANEL_X, scenes.MAP_PANEL_Y,
+                      scenes.MAP_PANEL_W, scenes.MAP_PANEL_H, 1)
+        if name == "TITLE":
+            # The words are stamped into the picture exactly as the MSX2 build
+            # stamps them, but in palette ink -- and the prompt strip is cut out
+            # of the result the same way, so the blink is still one command.
+            scenes.stamp_big(data, WIDTH, scenes.TITLE_LOGO_Y1, "SHATTERED",
+                             YAE_GOLD, YAE_BLACK)
+            scenes.stamp_big(data, WIDTH, scenes.TITLE_LOGO_Y2, "DECKS",
+                             YAE_WHITE, YAE_BLACK)
+            scenes.stamp_outline(data, WIDTH, scenes.TITLE_COPY_Y,
+                                 "(C) 2026 GAMEBLABLA", YAE_WHITE, YAE_BLACK)
+            strip = bytearray(data[scenes.TITLE_STRIP_Y * WIDTH:
+                                   (scenes.TITLE_STRIP_Y + scenes.TITLE_STRIP_H)
+                                   * WIDTH])
+            scenes.stamp_outline(strip, WIDTH,
+                                 scenes.TITLE_PROMPT_Y - scenes.TITLE_STRIP_Y,
+                                 scenes.TITLE_PROMPT, YAE_WHITE, YAE_BLACK)
+
+        out[name] = scene_blob(data, palette)
+        if not quiet:
+            print("%-13s %d bytes YJK+YAE" % (name, len(out[name])))
+    if strip is None:
+        raise SystemExit("no TITLE scene: the prompt strip has nowhere to come from")
+    out["title_prompt"] = bytes(strip)
+    return out
+
+
+# ── The story busts ──────────────────────────────────────────────────────────
+
+def bust_runs(alpha, y, w):
+    """The opaque runs of one row, rounded INWARD to chroma groups.
+
+    A bust is blitted over a picture, so only the pixels it actually covers may
+    be written -- and a YJK pixel cannot be written alone, because three of its
+    neighbours share its hue.  Rounding a run inward to the next multiple of
+    four is what makes a partial group somebody else's business: the silhouette
+    loses up to three pixels of its antialiased edge and the backdrop shows
+    through them, which is invisible next to the alternative (a fringe of the
+    character's own colour, or of black, three pixels wide all the way round).
+
+    Both bust positions on screen are multiples of four (msx2_story.c pins them
+    there for this reason), so a run aligned inside the rectangle is aligned on
+    the screen too.
+    """
+    runs = []
+    for start, length in scenes.portrait_runs(alpha, y, w):
+        first = (start + 3) & ~3
+        last = (start + length) & ~3
+        if last - first >= 4:
+            runs.append((first, min(last - first, 252)))
+    return runs
+
+
+def bust_blob(bust, dim, dither):
+    """One bust, YJK, with its own run table -- the MSX2 layout, byte for byte.
+
+    PURE YJK, NO YAE.  The palette belongs to whatever scene the bust is
+    standing on and its top half changes with every screen; a bust that borrowed
+    an entry would change colour when the backdrop did.
+    """
+    w, h = bust.size
+    alpha = bust.getchannel("A")
+    rgb = bust.convert("RGB")
+    if dim:
+        rgb = Image.blend(Image.new("RGB", bust.size, (0, 0, 0)), rgb,
+                          scenes.PORTRAIT_DIM)
+    quant, _pal = yjk.encode(rgb, dither=dither, allow_yae=False)
+
+    index = bytearray()
+    pixels = bytearray()
+    for y in range(h):
+        runs = bust_runs(alpha, y, w)[:scenes.PORTRAIT_MAX_RUNS]
+        index.append(len(runs))
+        for i in range(scenes.PORTRAIT_MAX_RUNS):
+            if i < len(runs):
+                index += bytes(runs[i])
+                pixels += quant[y * w + runs[i][0]:
+                                y * w + runs[i][0] + runs[i][1]]
+            else:
+                index += b"\x00\x00"
+    if len(index) > scenes.PORTRAIT_INDEX_BYTES:
+        sys.exit("portrait run table is %d bytes, past %d"
+                 % (len(index), scenes.PORTRAIT_INDEX_BYTES))
+    body = index + bytes(scenes.PORTRAIT_INDEX_BYTES - len(index)) + pixels
+    if len(body) > scenes.PORTRAIT_STRIDE:
+        sys.exit("portrait is %d bytes, past the %d stride"
+                 % (len(body), scenes.PORTRAIT_STRIDE))
+    return body + bytes(scenes.PORTRAIT_STRIDE - len(body))
+
+
+def bake_portraits(dither, quiet):
+    blob = bytearray()
+    size = (scenes.PORTRAIT_W, scenes.PORTRAIT_H)
+    names = ["serena"] + ["opponent_%d" % d for d in range(scenes.STORY_DUELS)]
+    for name in names:
+        bust = scenes.portrait(name, size)
+        for dim in (False, True):
+            blob += bust_blob(bust, dim, dither)
+    if not quiet:
+        print("PORTRAITS     %d bytes YJK" % len(blob))
+    return bytes(blob)
+
+
+# ── The 40x48 card thumbnails, for the story's own screens ───────────────────
+
+def bake_cards(cards, dither, quiet):
+    """A YJK copy of the hand thumbnails.
+
+    The deck editor and the story's reward reveal are SCREEN 10 screens that
+    show one card, and the MSX2 blob they used is GRAPHIC 7 bytes.  This is the
+    only asset the plus cartridge ADDS rather than replaces, which is why it is
+    written into a manifest and a header of its own: the MSX2 cartridge is full
+    and must not carry it.
+    """
+    blob = bytearray()
+    faces = [scenes.draw_monster_card(asset_id, *scenes.CARD_STATS[asset_id])
+             for asset_id, _name, _desc in cards]
+    faces += [scenes.draw_support_card(kind)
+              for kind in range(scenes.SUPPORT_VARIANTS)]
+    faces.append(scenes.draw_card_back())
+    for face in faces:
+        data, _pal = yjk.encode(face.convert("RGB"), dither=dither,
+                                allow_yae=False)
+        blob += data + bytes(scenes.CARD_STRIDE - len(data))
+    if not quiet:
+        print("CARDS_YJK     %d bytes YJK (%d faces)" % (len(blob), len(faces)))
+    return bytes(blob)
+
+
+# ── Output ───────────────────────────────────────────────────────────────────
+
+def base_manifest():
+    out = []
+    for raw in open(os.path.join(ASSET_DIR, "manifest.txt")):
+        line = raw.split("#", 1)[0].strip()
+        if line:
+            name, seg, binary = line.split()
+            out.append((name, int(seg), binary))
+    return out
+
+
+def main():
+    quiet = "--quiet" in sys.argv
+    dither = 0.0 if "--no-dither" in sys.argv else DITHER
+    os.makedirs(PLUS_DIR, exist_ok=True)
+
+    written = {}
+    for name, blob in bake_scenes(dither, quiet).items():
+        path = os.path.join(PLUS_DIR, name.lower() + ".bin")
+        with open(path, "wb") as f:
+            f.write(blob)
+        written[name.lower() + ".bin"] = path
+        if name in YJK_SCENES:
+            yjk.decode(blob[:WIDTH * HEIGHT],
+                       yjk.palette_from_bytes(blob[WIDTH * HEIGHT:]),
+                       (WIDTH, HEIGHT)).save(
+                os.path.join(PLUS_DIR, name.lower() + ".png"))
+
+    blob = bake_portraits(dither, quiet)
+    with open(os.path.join(PLUS_DIR, "portraits.bin"), "wb") as f:
+        f.write(blob)
+    written["portraits.bin"] = os.path.join(PLUS_DIR, "portraits.bin")
+
+    cards = scenes.parse_cards()
+    card_blob = bake_cards(cards, dither, quiet)
+    card_path = os.path.join(PLUS_DIR, "cards_yjk.bin")
+    with open(card_path, "wb") as f:
+        f.write(card_blob)
+
+    # The plus-only asset goes after everything the MSX2 cartridge holds.
+    base = base_manifest()
+    last = max(seg + (os.path.getsize(os.path.join(ASSET_DIR, b))
+                      + SEGMENT_BYTES - 1) // SEGMENT_BYTES
+               for _n, seg, b in base)
+    for raw in open(os.path.join(ASSET_DIR, "floor_manifest.txt")):
+        line = raw.split("#", 1)[0].strip()
+        if line:
+            _n, seg, b = line.split()
+            span = (os.path.getsize(os.path.join(ASSET_DIR, b))
+                    + SEGMENT_BYTES - 1) // SEGMENT_BYTES
+            last = max(last, int(seg) + span)
+
+    with open(MANIFEST, "w") as f:
+        f.write("# MSX2+ (SCREEN 10) asset set -- written by "
+                "tools/msx2/gen_msx_plus.py.\n"
+                "# Every line replaces the MSX2 binary of the same name at the "
+                "same segment,\n# except CARDS_YJK, which the MSX2 cartridge "
+                "does not carry at all.\n")
+        for name, seg, binary in base:
+            if binary in written:
+                f.write("%s %d plus/%s\n" % (name, seg, binary))
+        f.write("CARDS_YJK %d plus/cards_yjk.bin\n" % last)
+
+    with open(HEADER, "w") as f:
+        f.write("// Generated by tools/msx2/gen_msx_plus.py -- do not edit.\n"
+                "//\n"
+                "// The MSX2+ build's own asset symbols.  Everything else it\n"
+                "// uses is at the segment msx2_scenes.h already names: the\n"
+                "// plus cartridge REPLACES those binaries with SCREEN 10\n"
+                "// encodings of the same pictures, at the same sizes.\n"
+                "#ifndef MSX2_PLUS_SCENES_H\n#define MSX2_PLUS_SCENES_H\n\n")
+        f.write("#define MSX2_CARD_ART_YJK_SEGMENT  %d\n" % last)
+        f.write("#define MSX2_SCENE_PALETTE_OFFSET  %d\n" % (WIDTH * HEIGHT))
+        f.write("#define MSX2_SCENE_PALETTE_BYTES   32\n")
+        f.write("\n#endif\n")
+
+    if not quiet:
+        span = (len(card_blob) + SEGMENT_BYTES - 1) // SEGMENT_BYTES
+        print("CARDS_YJK     segments %d..%d (plus-only)"
+              % (last, last + span - 1))
+        print("wrote %s and %s" % (MANIFEST, HEADER))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

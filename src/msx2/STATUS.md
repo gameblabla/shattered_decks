@@ -900,6 +900,118 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
 
 ---
 
+## The music does not stop for the screen any more — 2026-09-05
+
+The lVGM decoder has always run in the V-blank handler, so "the tune hangs on a
+note whenever the screen changes" was never about the player: it was about the
+handler not being *reached*.  Two places held interrupts off for far longer than
+a frame.
+
+* **The scene streamer.** `Msx2_StreamChunk()` disabled interrupts for a whole
+  16 KB OTIR -- about 344,000 T-states, six V-blanks -- because the ISR executes
+  out of the same 0x8000 window the picture is mapped into.  It now gives the
+  window back every 256-byte page and opens one instruction of EI there, so a
+  pending V-blank is taken between pages.  The VDP's write pointer survives it
+  untouched, because the ISR does no VRAM work at all -- that rule is what makes
+  this legal.
+* **The command-engine wait.** `Msx2_CmdOut()` polled CE inside the same DI as
+  its fifteen-register burst.  A line of text drawn straight after a page copy
+  waits on an LMMM over 54,000 pixels, tens of milliseconds, every one of them a
+  frame the music never got.  The poll now closes and reopens the window each
+  turn; S#2 still never outlives a DI, which is the debt it owed all along.
+
+Measured off `g_msx2_ticks`, which the ISR increments and nothing else touches,
+on the same scripted run before and after:
+
+| Window | Frames expected | Before | After |
+|---|---|---|---|
+| Title into the story, 8.0-12.6 s | 276 | 256 | **276** |
+| The whole run, 8.0-20.0 s | 720 | 699 | **719** |
+| Duel entry and the first cut-ins, 22-30 s | 480 | 462 | **479** |
+
+---
+
+## The MSX2+ cartridge (`make -f Makefile.msx2 plus`)
+
+A second ROM, `src/msx2/out/waifu_msx2p.rom`, built from the same sources with
+`-DMSX2_PLUS` and `Machine = "2P"`.  It runs on an MSX2+ or turboR and puts
+every 2-D picture screen in **SCREEN 10 (YJK + YAE)**.
+
+**Why it is a separate cartridge and not a runtime check.** The difference IS
+the pictures: a YJK byte and a GRAPHIC 7 byte are the same byte read two ways,
+so one image cannot hold both encodings of the title, the story and the busts.
+Everything else -- the code, the segment map, the streamer, the page flip, the
+command engine, the sprite plane -- is identical, and `gen_msx_plus.py` writes
+its assets at exactly the sizes and segments the MSX2 set uses so the same
+packer places them.
+
+**What is YJK and what is not.**
+
+| Screen | Mode | Why |
+|---|---|---|
+| Title, ending, story narration, talks, sanctum road, continue code, save/load, deck editor, reward | SCREEN 10 | They are paintings and text |
+| The duel board, the attack cut-in, the fusion cut-in, the card check | GRAPHIC 7 | The board is rasterised live by the Z80 and its 40x48 card textures are shared with the hand; a chroma group four pixels wide would cost every card edge for nothing the eye gets back.  This is also what the owner asked for: in game it stays SCREEN 8, thumbnails included |
+
+The mode is decided by the door a screen comes in at, not by a flag each screen
+sets: `Msx2_StreamScene()` is the switch to a picture screen and declares YJK;
+the duel and its cut-ins stream through `Msx2_StreamSceneBlanked()` and declare
+GRAPHIC 7 (`Msx2_VideoModeG7()` in `Msx2_BoardEnter`).
+
+**Text is YAE, and that is the point.** In SCREEN 10 a byte with bit 3 set is a
+palette colour at full accuracy owing its neighbours nothing; every other byte
+is a brightness plus a share of its group's hue.  Interface has to be the first
+kind or a word takes its colour from the painting three pixels away, so the
+SCREEN 10 translation units get their ink from `msx2_plus.h`, which redefines
+`MSX2_GOLD` and the rest as YAE pixels.  The panels behind the words are stamped
+flat in the baked picture for the same reason.
+
+**The palette.** Sixteen entries: 0..7 are the interface's, identical in every
+scene, and 8..15 are fitted to each picture by k-means over the pixels YJK
+reproduces worst -- which is the dark end, where Y moves in steps of two.  That
+fit is worth about 3.3 dB and is the whole difference between this encoder and a
+good one.  A scene carries its own 32 bytes in the slack after it (a 54,272-byte
+picture inside four 16 KB segments leaves eleven kilobytes), so no asset,
+segment or header symbol had to be added to hold them; `Msx2_VideoScenePalette()`
+reads them straight after the stream.  Sprites are unaffected either way: in
+GRAPHIC 7 and its YJK derivatives the V9938/58 colours sprites from a fixed
+table, not the palette.
+
+**The one asset it adds.** `cards_yjk` -- a YJK copy of the 40x48 thumbnails --
+because the deck editor and the reward reveal are SCREEN 10 screens that show a
+card and the duel still needs the GRAPHIC 7 originals.  It is emitted into a
+plus-only manifest and header (`src/generated/msx2_plus_scenes.h`) so the MSX2
+cartridge never carries it; it is also why the plus ROM is 8 MB where the MSX2
+one is 4.
+
+**Busts.** A bust is blitted over a picture, and a YJK pixel cannot be written
+alone -- three of its neighbours share its hue.  Every opaque run is therefore
+rounded INWARD to a chroma group, so the silhouette loses up to three pixels of
+its antialiased edge and the backdrop shows through them.  The alternative was a
+three-pixel fringe of the character's own colour all the way round.  Both bust
+positions are pinned to multiples of four for the same reason.
+
+**The converter.** `tools/msx2/msx2_yjk.py` encodes and decodes YJK/YJK+YAE with
+optional Floyd-Steinberg (`--dither 0.9`, what the assets are baked with), an
+optional per-picture palette fit (`--fit-yae 8`), SCREEN 12 support, and a
+`compare` mode.  Checked against the owner's Dadither reference conversion of
+the same title art (`assets/source/msx2/title256_msx2plus.gla`): 37.07 dB
+against 37.17 dB, and visually indistinguishable.
+
+**Is a YJK 3-D rasteriser possible?** In theory yes, and it would be slower than
+what is there.  The span filler writes one byte per pixel either way, so a flat
+span costs the same -- but a card edge or a floor tile boundary that falls
+inside a group of four cannot change hue there, so either the quad snaps its
+edges to multiples of four (visible stair-stepping on every rotation) or the
+filler reads back the group, merges the chroma and writes it again, which turns
+a `outi` stream into a read-modify-write and roughly doubles the cost of the one
+loop the duel's frame time is already made of.  The board's own art would also
+have to be re-baked per rotation pose, because a texture's chroma groups only
+line up with the screen's if the quad lands on a multiple of four.  A YJK
+*background* (the floor, which is flat-shaded bands) would be affordable; a YJK
+board with cards on it is not, at 3.58 MHz.
+
+---
+
 ## Deliberate divergences from `src/main.c`
 
 Noted here so they are decisions, not drift:

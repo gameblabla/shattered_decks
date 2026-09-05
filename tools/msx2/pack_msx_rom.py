@@ -50,8 +50,17 @@ RESIDENT_SYMBOLS = [
 ]
 
 
+PLUS_MANIFEST = os.path.join(ASSET_DIR, "plus", "manifest_plus.txt")
+
+
 def assets():
-    """(name, first segment, binary) triples, in segment order."""
+    """(name, first segment, binary) triples, in segment order.
+
+    With MSX2_PLUS set, the SCREEN 10 set is laid over the GRAPHIC 7 one: an
+    entry of the same name REPLACES the MSX2 binary at the same segment (the
+    encodings are the same size, which is the whole point), and any name the
+    MSX2 manifest does not have is a plus-only asset appended after it.
+    """
     out = []
     for raw in (open(MANIFEST).readlines() +
                 open(os.path.join(ASSET_DIR, "floor_manifest.txt")).readlines()):
@@ -60,6 +69,18 @@ def assets():
             continue
         name, seg, binary = line.split()
         out.append((name, int(seg), binary))
+    if os.environ.get("MSX2_PLUS"):
+        by_name = {name: i for i, (name, _s, _b) in enumerate(out)}
+        for raw in open(PLUS_MANIFEST):
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            name, seg, binary = line.split()
+            entry = (name, int(seg), binary)
+            if name in by_name:
+                out[by_name[name]] = entry
+            else:
+                out.append(entry)
     return sorted(out, key=lambda entry: entry[1])
 
 
@@ -262,8 +283,20 @@ def main():
               % (name, len(data), segment, at))
 
     open(rompath, "wb").write(bytes(rom))
-    print("%s: %d assets packed, %d KB of cartridge used"
-          % (os.path.relpath(rompath, ROOT), placed, total // 1024))
+    # The image is padded to a whole cartridge size, so "used" is where the last
+    # asset ends, not how many bytes carry data.  Print both, and the next
+    # power-of-two boundary down, so an image that has grown a spare megabyte of
+    # padding is visible in the build log rather than only in `ls -l`.
+    end = max(seg * SEGMENT_BYTES + os.path.getsize(os.path.join(ASSET_DIR, b))
+              for _, seg, b in assets())
+    fits = 1024
+    while fits * 1024 < end:
+        fits *= 2
+    print("%s: %d assets packed, %d KB of data, last byte at %d KB"
+          % (os.path.relpath(rompath, ROOT), placed, total // 1024,
+             (end + 1023) // 1024))
+    print("cartridge %d KB, smallest that fits %d KB, %d KB of tail padding"
+          % (len(rom) // 1024, fits, (len(rom) - end) // 1024))
 
 
 if __name__ == "__main__":

@@ -46,11 +46,27 @@ static void Msx2_StreamSetVramChunk(u8 r14)
 }
 
 // Copy g_chunk_bytes from the 0x8000 window to the VDP data port, with the
-// cartridge segment g_chunk_segment mapped there.  Interrupts stay off for the
-// whole chunk because the ISR does not exist while the window is swapped.
+// cartridge segment g_chunk_segment mapped there.
 //
 // The byte count is always a multiple of 256 (segments are, and so is the
 // 5,120-byte tail of a 54,272-byte scene), so the loop is whole OTIR pages.
+//
+// THE MUSIC KEEPS ITS FRAME BETWEEN PAGES.
+// Interrupts have to be off while the window holds the picture -- the ISR
+// executes out of that window and remaps it for the lVGM stream -- but they do
+// not have to be off for the whole chunk, and they used to be: a 16 KB OTIR is
+// about 344,000 T-states, six V-blanks the audio tick never got, and a scene
+// is four of those chunks.  That is the note the tune hangs on whenever a
+// screen changes, and it is why a transition sounds like the machine stalled.
+//
+// So each 256-byte page ends with the code segment back in the window and one
+// instruction of EI: a pending V-blank is taken there, the ISR decodes its
+// lVGM frame and latches the keyboard out of the resident bank exactly as it
+// would from the main loop, and the picture is mapped back afterwards.  The
+// VDP's own write pointer is untouched by any of that -- the ISR does no VRAM
+// work at all, which is the rule that makes this safe -- so the copy resumes
+// where it left off.  It costs about 40 T-states a page against 5,400, and the
+// window it opens is one page long instead of one chunk.
 static void Msx2_StreamChunk(void)
 {
 	__asm
@@ -68,6 +84,24 @@ static void Msx2_StreamChunk(void)
 		ld		b, #0
 		otir
 		dec		a
+		jr		z, stream_done				// the last page needs no window
+
+		// One interrupt window, with the resident code mapped back.  The page
+		// counter and the source pointer go on the stack rather than into the
+		// alternate set: the ISR is allowed to use AF'/BC'/DE'/HL'.
+		push	af
+		push	hl
+		ld		hl, #MSX2_NEO_CODE_SEGMENT
+		ld		(#MSX2_NEO_BANK2_REG), hl
+		ld		(_g_bank2), hl
+		ei
+		nop									// the ISR is taken here, if pending
+		di
+		ld		hl, (_g_chunk_segment)
+		ld		(#MSX2_NEO_BANK2_REG), hl
+		ld		(_g_bank2), hl
+		pop		hl
+		pop		af
 		jr		stream_page
 	stream_done:
 
@@ -99,6 +133,12 @@ void Msx2_StreamSceneBlanked(u16 segment, u8 page)
 		++chunk;
 	}
 
+	// A SCREEN 10 picture brings its own sixteen colours, in the slack after
+	// it.  The screen has already said which mode it is (Msx2_VideoModeYjk),
+	// so this is the one place that has to know: the duel's own streams are
+	// GRAPHIC 7 and never ask.
+	if(Msx2_VideoIsYjk())
+		Msx2_VideoScenePalette(segment);
 }
 
 void Msx2_StreamScene(u16 segment, u8 page)
@@ -114,6 +154,15 @@ void Msx2_StreamScene(u16 segment, u8 page)
 	// because the board and the cut-ins stream through
 	// Msx2_StreamSceneBlanked() instead.
 	Msx2_SpriteClear();
+
+	// EVERY SCREEN THAT COMES THROUGH HERE IS A PICTURE SCREEN.
+	// This entry point is the switch to another 2-D screen -- the title, the
+	// sanctum road, the continue code, the reward -- and in the MSX2+ build
+	// every one of those is SCREEN 10.  The duel and its cut-ins stream through
+	// Msx2_StreamSceneBlanked() and stay in GRAPHIC 7, so the mode is decided
+	// by which door a screen came in at, not by a flag each screen has to
+	// remember to set.
+	Msx2_VideoModeYjk();
 
 	// GRAPHIC 7 cannot keep up with OTIR while it is scanning out; blanking is
 	// what makes the copy legal, and it is invisible anyway because a streamed

@@ -15,6 +15,8 @@
 #include "msx2_disk.h"
 #include "msx2_story_load.h"
 #include "msx2_bank.h"
+// SCREEN 10 in the MSX2+ cartridge: this unit's ink is YAE (msx2_plus.h).
+#include "msx2_plus.h"
 #ifdef MSX2_DEBUG_REGRESSION
 #include "msx2_regression.h"
 #endif
@@ -591,8 +593,10 @@ static void Msx2_StoryShowShot(u8 shot)
 		// blitted the portrait into whichever page happened to be visible.  A
 		// scan could therefore catch half a backdrop and half a bust.
 		Msx2_VideoDisplayBlank();
+		Msx2_VideoModeYjk();
 		Msx2_VideoDrawPage(page);
 		Msx2_StreamSceneBlanked(segment, page);
+		Msx2_VideoScenePalette(segment);
 		if(g_narr_which == NARR_INTRO)
 			Msx2_StoryBlitBust(0, MSX2_PORTRAIT_LEFT_X, MSX2_PORTRAIT_LEFT_Y,
 		                   TRUE);
@@ -607,9 +611,12 @@ static void Msx2_StoryShowShot(u8 shot)
 	{
 		// First line of the scene: the painting, then both figures on it.
 		Msx2_VideoDisplayBlank();
+		Msx2_VideoModeYjk();
 		Msx2_VideoDrawPage(page);
 		Msx2_StreamSceneBlanked(
 			MSX2_TALK_SEGMENT(g_msx2_stage_for_duel[g_duel_index]), page);
+		Msx2_VideoScenePalette(
+			MSX2_TALK_SEGMENT(g_msx2_stage_for_duel[g_duel_index]));
 		Msx2_StoryBusts(shot);
 		Msx2_VideoCopyPage(page, show);
 		Msx2_VideoShowPage(page);

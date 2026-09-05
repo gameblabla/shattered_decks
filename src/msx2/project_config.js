@@ -21,6 +21,10 @@ CompileOpt = `-I${ToolsDir}sdcc/include`
            + (process.env.MSX2_AUTOPLAY ? ` -DMSX2_DEBUG_AUTOPLAY` : ``)
            + (process.env.MSX2_STORY_AUTOPLAY ? ` -DMSX2_DEBUG_STORY_AUTOPLAY` : ``)
            + (process.env.MSX2_REGRESSION ? ` -DMSX2_DEBUG_REGRESSION` : ``)
+           // The MSX2+ cartridge: the 2-D screens in SCREEN 10 (YJK+YAE)
+           // instead of GRAPHIC 7.  Same code, same segments, different
+           // pictures -- see tools/msx2/gen_msx_plus.py.
+           + (process.env.MSX2_PLUS ? ` -DMSX2_PLUS` : ``)
            + (process.env.MSX2_TEST_SEED ? ` -DMSX2_TEST_SEED=${process.env.MSX2_TEST_SEED}u` : ``)
            + (process.env.MSX2_TEST_FIXTURE ? ` -DMSX2_TEST_FIXTURE=${process.env.MSX2_TEST_FIXTURE}` : ``);
 
@@ -67,7 +71,9 @@ AddSources = [
 
 LibModules = [ "system", "bios", "vdp", "input", "memory" ];
 
-Machine = "2";
+//-- "2P" for the MSX2+ cartridge: it is what puts MSX_VERSION at MSX_2P, and
+//   that is what compiles VDP_MODE_SCREEN10 and R#25 into MSXgl at all.
+Machine = process.env.MSX2_PLUS ? "2P" : "2";
 
 //-- The interrupt handler goes into RAM page 3 rather than into cartridge
 //   segment 2 at 0x0038.  That is what makes page 0 a SWITCHABLE code window:
@@ -77,12 +83,13 @@ Machine = "2";
 //   See waifu_msx2_s3_b0.c and msx2_bank.c for what the window is used for.
 InstallRAMISR = "RAMISR_PAGE3";
 
-//-- NEO-16: 16 KB segments, up to 64 MB.  The shipping cartridge is 16 MB; the
-//   bring-up ROM is the smallest size the baked assets fit in, so a
-//   build-and-verify cycle is seconds, not minutes.  MSX2_ROM_SIZE_KB
-//   overrides it from Makefile.msx2.
+//-- NEO-16: 16 KB segments, 1 MB to 64 MB in powers of two.  The cartridge is
+//   the smallest of those the baked assets fit in -- 4 MB, for a last asset
+//   segment of 244 -- and that is both the bring-up and the shipping size.
+//   MSX2_ROM_SIZE_KB overrides it from Makefile.msx2, which carries the note on
+//   why 2 MB is out of reach without compressing or dropping assets.
 Target = "ROM_NEO16";
-ROMSize = Number(process.env.MSX2_ROM_SIZE_KB || 2048);
+ROMSize = Number(process.env.MSX2_ROM_SIZE_KB || 4096);
 
 CheckVersion = true;
 AddROMSignature = true;

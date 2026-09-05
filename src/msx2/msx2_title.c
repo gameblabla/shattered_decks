@@ -8,6 +8,8 @@
 #include "msx2_audio.h"
 #include "msx2_stream.h"
 #include "msx2_scenes.h"
+// SCREEN 10 in the MSX2+ cartridge: this unit's ink is YAE (msx2_plus.h).
+#include "msx2_plus.h"
 
 // ── Geometry, lifted from src/main.c so the two builds frame the same screen ──
 #define TITLE_LOGO_Y1     20

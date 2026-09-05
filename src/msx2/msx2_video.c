@@ -44,6 +44,71 @@ static u8 g_flip_pending;
 static u8 g_text_fg;
 static u8 g_text_bg;
 
+#ifdef MSX2_PLUS
+#include "msx2_plus_scenes.h"
+
+// SCREEN 10 IS GRAPHIC 7 WITH TWO BITS OF R#25 SET.
+// Everything else about the mode -- the 256-byte line, the two pages, the
+// command engine, the sprite plane and its FIXED colour table -- is unchanged,
+// which is the whole reason this port can carry a second cartridge at all: one
+// register write, and the same code draws the same screens out of pictures
+// baked in the other encoding.
+static bool g_yjk;
+
+void Msx2_VideoModeYjk(void)
+{
+	if(!g_yjk)
+	{
+		g_yjk = TRUE;
+		VDP_SetYJK(VDP_YJK_YAE);
+	}
+}
+
+void Msx2_VideoModeG7(void)
+{
+	if(g_yjk)
+	{
+		g_yjk = FALSE;
+		VDP_SetYJK(VDP_YJK_OFF);
+	}
+}
+
+bool Msx2_VideoIsYjk(void)
+{
+	return g_yjk;
+}
+
+// A picture's own sixteen colours, out of the slack after it.
+// Entries 0..7 are the interface's and are the same in every scene; 8..15 are
+// fitted to this one picture, which is where most of YJK's dark end comes from.
+static u8 g_pal[MSX2_SCENE_PALETTE_BYTES];
+
+// ALL SIXTEEN ENTRIES, FROM ENTRY ZERO.
+// MSXgl's VDP_SetPalette starts at index 1 unless VDP_USE_PALETTE16 is
+// configured -- it is written for the modes where colour 0 is the border and
+// nothing else -- and a palette written one entry late is every colour on the
+// screen shifted by one, which is what the first plus capture showed.  Entry 0
+// is the interface's black here and has to land where the picture expects it,
+// so this writes the register and pushes the thirty-two bytes itself.
+void Msx2_VideoScenePalette(u16 segment)
+{
+	Msx2_RomRead(segment, MSX2_SCENE_PALETTE_OFFSET, g_pal,
+	             MSX2_SCENE_PALETTE_BYTES);
+	__asm
+		di
+		xor		a						// palette pointer = entry 0
+		out		(#0x99), a
+		ld		a, #(16 | 0x80)
+		out		(#0x99), a
+		ld		hl, #_g_pal
+		ld		c, #0x9A				// the palette port, auto-incrementing
+		ld		b, #32
+		otir
+		ei
+	__endasm;
+}
+#endif
+
 void Msx2_VideoInit(void)
 {
 	VDP_SetMode(VDP_MODE_GRAPHIC7);
@@ -287,22 +352,39 @@ void Msx2_TextColor(u8 fg, u8 bg)
 // The CE poll and the register burst, with the same debt to S#0 the polygon
 // filler pays: the interrupt handler reads whatever R#15 selects, so S#2 may
 // never outlive the DI window that selected it.
+//
+// THE WAIT IS NOT PART OF THE BURST.
+// The two used to share one DI, and the wait is the long half: a caller that
+// prints a line straight after a page copy is waiting on an LMMM over 54,000
+// pixels, which is tens of milliseconds -- every one of them a V-blank the
+// music never got, on a screen that is only being repainted.  The poll now
+// closes and reopens the window on each turn, so S#2 still never outlives its
+// DI (the ISR reads whatever R#15 selects) but the tune is decoded on time.
+// The burst itself is fifteen `out`s and stays inside one window.
 static void Msx2_CmdOut(void)
 {
 	__asm
+	00061$:
 		di
 		ld		a, #2
 		out		(#0x99), a
 		ld		a, #(15 | 0x80)
 		out		(#0x99), a
-	00060$:
 		in		a, (#0x99)
-		rra								// S#2 bit 0 = CE
-		jr		c, 00060$
+		push	af
 		xor		a
-		out		(#0x99), a
+		out		(#0x99), a				// S#0 back before anything else runs
 		ld		a, #(15 | 0x80)
 		out		(#0x99), a
+		pop		af
+		rra								// S#2 bit 0 = CE
+		jr		nc, 00062$
+		ei
+		nop								// the ISR is taken here, if pending
+		jr		00061$
+	00062$:
+		// Still inside the DI that read the last status: the engine is idle
+		// and the fifteen registers can go out.
 
 		ld		a, #32					// R#17 -> R#32, autoincrementing
 		out		(#0x99), a

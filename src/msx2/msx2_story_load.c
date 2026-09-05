@@ -9,6 +9,8 @@
 #include "msx2_disk.h"
 #include "msx2_audio.h"
 #include "msx2_scenes.h"
+// SCREEN 10 in the MSX2+ cartridge: this unit's ink is YAE (msx2_plus.h).
+#include "msx2_plus.h"
 
 #define LOAD_ROWS      2
 #define LOAD_ROW_Y(n)  (u8)(84 + (n) * 22)

@@ -3,12 +3,20 @@
 // guarantee that keeps the streamer and board in waifu_msx2_s2_b0.c.
 
 #include "msx2_story.h"
+#ifdef MSX2_PLUS
+#include "msx2_plus_scenes.h"
+#define MSX2_CARD_ART_BASE MSX2_CARD_ART_YJK_SEGMENT
+#else
+#define MSX2_CARD_ART_BASE MSX2_CARD_ART_SEGMENT
+#endif
 #include "msx2_input.h"
 #include "msx2_video.h"
 #include "msx2_stream.h"
 #include "msx2_duel.h"
 #include "msx2_cards.h"
 #include "msx2_scenes.h"
+// SCREEN 10 in the MSX2+ cartridge: this unit's ink is YAE (msx2_plus.h).
+#include "msx2_plus.h"
 
 #define CODE_ALPHABET "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 #define STORY_NAME_LEN 8
@@ -70,7 +78,12 @@ void Msx2_StoryDrawCardThumb(u8 card, u8 x, u8 y)
 		Msx2_Fill(x, y, MSX2_CARD_W, MSX2_CARD_H, MSX2_BLACK);
 		return;
 	}
-	Msx2_StreamRect((u16)(MSX2_CARD_ART_SEGMENT + card / MSX2_CARD_ART_PER_SEG),
+	// THE STORY'S OWN THUMBNAIL, IN THE STORY'S OWN MODE.
+	// The deck editor and the reward reveal are SCREEN 10 screens in the MSX2+
+	// build, and the 40x48 art the duel uses is GRAPHIC 7 bytes -- the one
+	// asset that cartridge ADDS rather than replaces (gen_msx_plus.py), because
+	// the board still needs the other one.
+	Msx2_StreamRect((u16)(MSX2_CARD_ART_BASE + card / MSX2_CARD_ART_PER_SEG),
 	                (u16)((card % MSX2_CARD_ART_PER_SEG) * MSX2_CARD_ART_STRIDE),
 	                x, y, MSX2_CARD_W, MSX2_CARD_H);
 }

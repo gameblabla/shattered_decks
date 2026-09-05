@@ -961,6 +961,7 @@ static void Msx2_BoardShowBattleCutin(void)
 	   effect command ever touches the page being scanned. */
 	Msx2_VideoDisplayBlank();
 	Msx2_VideoDrawPage(page);
+	Msx2_VideoModeG7();
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
 	Msx2_BoardDrawBattleBase(g_batt_direct, g_batt_trap, g_batt_ax, g_batt_dx);
@@ -2353,6 +2354,14 @@ static void Msx2_BoardStepDeal(void)
 
 void Msx2_BoardEnter_In(u8 stage)
 {
+	// THE DUEL IS GRAPHIC 7, IN BOTH CARTRIDGES.
+	// The MSX2+ build draws its picture screens in SCREEN 10, but the board is
+	// rasterised live out of card textures the hand shares, and a chroma group
+	// four pixels wide would cost every card edge on the table for nothing the
+	// eye would get back.  The title and the story set the other mode as they
+	// take over; this is where it comes back.
+	Msx2_VideoModeG7();
+
 	u8 i;
 	u8 page;
 

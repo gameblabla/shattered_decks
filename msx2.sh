@@ -208,6 +208,14 @@ after time $TRACE_TIME {
     fconfigure \$f -translation binary
     puts -nonewline \$f [debug read_block memory 0 65536]
     close \$f
+    set f [open "$PWD/$TRACE_OUT/frame_${TRACE_TAG}.reg" w]
+    fconfigure \$f -translation binary
+    puts -nonewline \$f [debug read_block {VDP regs} 0 64]
+    close \$f
+    set f [open "$PWD/$TRACE_OUT/frame_${TRACE_TAG}.pal" w]
+    fconfigure \$f -translation binary
+    puts -nonewline \$f [debug read_block {VDP palette} 0 32]
+    close \$f
 }
 EOF
 )\n"
@@ -237,10 +245,23 @@ for time in sys.argv[2].split():
                    'png': str(out / ('frame_%s.png' % tag))})
 (out / 'manifest.json').write_text(json.dumps({'frames': frames}, indent=2))
 PY
+		# SCREEN 10 IS THE SAME BYTES READ DIFFERENTLY.
+		# The MSX2+ cartridge puts its picture screens in YJK+YAE, and a VRAM
+		# dump cannot say so on its own -- decoding one as GRAPHIC 7 gives a
+		# fully-formed picture in wrong colours, which reads as a rendering bug
+		# that is not there.  R#25 bit 3 is the machine's own answer, and the
+		# palette beside it is what the YAE half of every byte means.
 		for TRACE_TIME in $TRACE_TIMES; do
 			TRACE_TAG=$(printf '%s' "$TRACE_TIME" | tr '.-' '__')
+			TRACE_MODE=""
+			if [ -f "$TRACE_OUT/frame_${TRACE_TAG}.reg" ] &&
+			   [ "$(python3 -c "import sys;d=open(sys.argv[1],'rb').read();print((d[25]>>3)&1)" \
+			        "$TRACE_OUT/frame_${TRACE_TAG}.reg")" = "1" ]; then
+				TRACE_MODE="--yjk --palette $TRACE_OUT/frame_${TRACE_TAG}.pal"
+			fi
 			python3 tools/msx2/vram_png.py "$TRACE_OUT/frame_${TRACE_TAG}.vram" \
-				"$TRACE_OUT/frame_${TRACE_TAG}.png" --page 0 --scale 1 --sprites
+				"$TRACE_OUT/frame_${TRACE_TAG}.png" --page 0 --scale 1 --sprites \
+				$TRACE_MODE
 		done
 		exit 0
 		;;

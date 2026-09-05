@@ -116,6 +116,7 @@ void Msx2_CardCheckCompose_In(u8 card, i16 atk, i16 def)
 
 	Msx2_VideoDisplayBlank();
 	Msx2_VideoDrawPage(page);
+	Msx2_VideoModeG7();
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
 
@@ -200,6 +201,7 @@ void Msx2_FusionBegin_In(const u8* materials, u8 count, u8 result, u8 fused)
 
 	Msx2_VideoDisplayBlank();
 	Msx2_VideoDrawPage(page);
+	Msx2_VideoModeG7();
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
 	Msx2_TextColor(MSX2_TEAL, MSX2_BLACK);
@@ -327,6 +329,7 @@ void Msx2_EffectBegin_In(u8 card, u8 by_com)
 
 	Msx2_VideoDisplayBlank();
 	Msx2_VideoDrawPage(page);
+	Msx2_VideoModeG7();
 	Msx2_StreamSceneBlanked(MSX2_SCENE_BATTLE_SEGMENT, page);
 	Msx2_VideoDrawPage(page);
 

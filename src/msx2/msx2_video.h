@@ -45,6 +45,31 @@
 
 void Msx2_VideoInit(void);
 
+// ── SCREEN 10, in the MSX2+ build only ───────────────────────────────────────
+//
+// A V9958 reads the same 256-byte lines and the same two pages as GRAPHIC 7,
+// so nothing about the streamer, the page flip, the command engine or the
+// sprite plane changes: the ONLY difference is R#25's YJK/YAE pair, which says
+// whether a byte is a GRB332 colour or a brightness plus a share of its group's
+// hue.  A screen therefore declares which it is as it takes over, and the
+// picture it streams is baked to match (tools/msx2/gen_msx_plus.py).
+//
+// The two calls are nothing at all in the MSX2 build, which is what lets the
+// title and story sources carry them unconditionally.
+#ifdef MSX2_PLUS
+void Msx2_VideoModeYjk(void);
+void Msx2_VideoModeG7(void);
+bool Msx2_VideoIsYjk(void);
+// The sixteen palette entries a streamed SCREEN 10 picture carries in the tail
+// of its last segment.  Called by the streamer itself, so no screen has to.
+void Msx2_VideoScenePalette(u16 segment);
+#else
+#define Msx2_VideoModeYjk()        ((void)0)
+#define Msx2_VideoModeG7()         ((void)0)
+#define Msx2_VideoIsYjk()          FALSE
+#define Msx2_VideoScenePalette(s)  ((void)(s))
+#endif
+
 // Pull the bitmap font out of the cartridge into RAM.  Call it once, before
 // anything prints; the glyphs are cartridge data, not a C array (msx2_video.c).
 void Msx2_VideoLoadFont(void);

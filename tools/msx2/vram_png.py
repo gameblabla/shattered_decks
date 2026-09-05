@@ -19,8 +19,17 @@ address A lives at physical (A >> 1) in bank (A & 1).  The emulator's
 picture twice at half width -- which is the de-interleaved image, not a bug in
 the ROM.  This decoder undoes the interleave.
 
+SCREEN 10.  The MSX2+ cartridge puts its picture screens in YJK+YAE, which is
+the same 256-byte line and the same two pages read differently: brightness per
+pixel, hue per group of four, and any pixel with bit 3 set is a palette colour
+instead (tools/msx2/msx2_yjk.py has the arithmetic).  A dump carries no
+registers, so --yjk says to decode that way and --palette names the 32 bytes of
+palette the machine had at the time -- ./msx2.sh trace saves both beside the
+VRAM, and passes them automatically.
+
 Usage:
     tools/msx2/vram_png.py dump.vram out.png [--page N] [--scale N]
+                           [--yjk [--palette pal32]]
 """
 
 import struct
@@ -30,6 +39,40 @@ import zlib
 WIDTH = 256
 HEIGHT = 212
 PAGE_BYTES = 0x10000
+
+
+def yjk_line(line, palette):
+    """One SCREEN 10 line as (r, g, b) triples, 0..255."""
+    out = []
+    for x0 in range(0, WIDTH, 4):
+        b = line[x0:x0 + 4]
+        k = (b[0] & 7) | ((b[1] & 7) << 3)
+        j = (b[2] & 7) | ((b[3] & 7) << 3)
+        if k > 31:
+            k -= 64
+        if j > 31:
+            j -= 64
+        for i in range(4):
+            v = b[i]
+            if v & 8:                       # YAE: a palette colour, exactly
+                out.append(palette[(v >> 4) & 15])
+                continue
+            y = v >> 3
+            r = min(31, max(0, y + j))
+            g = min(31, max(0, y + k))
+            bl = min(31, max(0, (5 * y - 2 * j - k) // 4))
+            out.append((r * 255 // 31, g * 255 // 31, bl * 255 // 31))
+    return out
+
+
+def read_palette(path):
+    """32 VDP bytes -> sixteen RGB triples.  0RRR0BBB, then 00000GGG."""
+    data = open(path, "rb").read()[:32]
+    if len(data) < 32:
+        data += bytes(32 - len(data))
+    return [(((data[i * 2] >> 4) & 7) * 255 // 7,
+             (data[i * 2 + 1] & 7) * 255 // 7,
+             (data[i * 2] & 7) * 255 // 7) for i in range(16)]
 
 
 def grb332_rgb(byte):
@@ -69,10 +112,16 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     page = int_option("--page", 0)
     scale = int_option("--scale", 1)
+    yjk = "--yjk" in sys.argv
+    palette = None
+    if "--palette" in sys.argv:
+        palette = read_palette(sys.argv[sys.argv.index("--palette") + 1])
     # The option values are positional args too; drop them.
-    for name in ("--page", "--scale"):
+    for name in ("--page", "--scale", "--palette"):
         if name in sys.argv:
             args.remove(sys.argv[sys.argv.index(name) + 1])
+    if palette is None:
+        palette = [(i * 17, i * 17, i * 17) for i in range(16)]
     if len(args) != 2:
         sys.exit(__doc__)
 
@@ -145,8 +194,9 @@ def main():
         line = bytes(vram[(logical + x) >> 1 | ((logical + x) & 1) * PAGE_BYTES]
                      for x in range(WIDTH))
         row = bytearray()
+        decoded = yjk_line(line, palette) if yjk else None
         for x, byte in enumerate(line):
-            r, g, b = grb332_rgb(byte)
+            r, g, b = decoded[x] if yjk else grb332_rgb(byte)
             if (x, y) in overlay:
                 r, g, b = SPRITE_RGB.get(overlay[(x, y)], (255, 0, 255))
             row += bytes((r, g, b)) * scale
