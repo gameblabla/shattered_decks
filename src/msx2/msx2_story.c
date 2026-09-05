@@ -661,6 +661,11 @@ static void Msx2_StoryLoadTalkLine(void)
 
 static void Msx2_StoryEnterTalk(void)
 {
+	// The seal, once more at the door: no path into a duel may name an
+	// opponent past the frontier, whatever the map did with its cursor.
+	if((g_duel_index >= MSX2_STORY_MAX_DUELS) || (g_duel_index > g_progress))
+		g_duel_index = (g_progress >= MSX2_STORY_MAX_DUELS)
+			? (MSX2_STORY_MAX_DUELS - 1) : g_progress;
 	g_phase = PH_TALK;
 	g_line = 0;
 	g_line_count = g_msx2_dialogue_count[g_duel_index];
@@ -1172,6 +1177,18 @@ static void Msx2_StoryMapPaint(void)
 	Msx2_TextCenter(MAP_HELP_Y, Msx2_UiText(MSX2_S_SPACE_CHOOSES_UP_DOWN_MOVES));
 }
 
+// IS THIS ROW A SEALED OPPONENT?
+// The list shows every opponent, cleared, current and sealed, because the road
+// ahead is part of what the screen is for -- but a sealed one is not a place
+// the cursor may stand.  DOWN has always stepped over them; UP walked straight
+// into them from DECK EDITOR / SAVE GAME / LEAVE THE ROAD, and SPACE there
+// started the duel, so the whole story could be played out of order from the
+// bottom of the list upwards.  Both directions and the confirm ask this now.
+static bool Msx2_StoryRowSealed(u8 row)
+{
+	return (row < MSX2_STORY_MAX_DUELS) && (row > g_progress);
+}
+
 // The screen line the cursor's row is written on.  The three utility rows are
 // not on the duel rows' pitch, so this is a lookup and not arithmetic.
 static u8 Msx2_StoryMapRowY(void)
@@ -1210,7 +1227,12 @@ static u8 Msx2_StoryMapStep(void)
 	u8 page = Msx2_VideoGetDrawPage();
 
 	if((pressed & MSX2_BTN_UP) && (g_cursor != 0))
+	{
 		--g_cursor;
+		// Up out of the utility rows lands on the frontier, never past it.
+		if(Msx2_StoryRowSealed(g_cursor))
+			g_cursor = g_progress;
+	}
 	if((pressed & MSX2_BTN_DOWN) && (g_cursor < MAP_BACK_ROW))
 	{
 		// A locked opponent is shown but never reachable, so the cursor steps
@@ -1227,6 +1249,13 @@ static u8 Msx2_StoryMapStep(void)
 
 	if(pressed & MSX2_BTN_A)
 	{
+		// Nothing may open a sealed opponent, whatever put the cursor there.
+		if(Msx2_StoryRowSealed(g_cursor))
+		{
+			g_cursor = g_progress;
+			Msx2_SfxPlay(MSX2_SFX_SELECT);
+			return MSX2_STORY_BUSY;
+		}
 		Msx2_SfxPlay(MSX2_SFX_CONFIRM);
 		// TAKE THE SELECTOR DOWN BEFORE THE NEXT SCREEN IS BUILT.
 		// Msx2_StoryStep_In() hides it on the frame AFTER the phase changes,

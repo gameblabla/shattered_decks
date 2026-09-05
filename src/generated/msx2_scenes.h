@@ -234,7 +234,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_FONT_BYTES         512
 #define MSX2_UI_OFFSET          17472
 #define MSX2_UI_STRIDE          36
-#define MSX2_UI_COUNT           88
+#define MSX2_UI_COUNT           89
 #define MSX2_S_PLACE_IN_DEFENCE_UP_DOWN_ATK 0
 #define MSX2_S_PLACE_IN_ATTACK_UP_DOWN_DEF  1
 #define MSX2_S_PICK_A_MONSTER_TO_EQUIP      2
@@ -323,6 +323,7 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_S_WHERE_IS_THE_SAVE            85
 #define MSX2_S_NO_DRIVE_ANSWERED            86
 #define MSX2_S_SPACE_PICKS_ESC_RETURNS      87
+#define MSX2_S_NO_CARD_IN_THAT_SLOT         88
 static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 

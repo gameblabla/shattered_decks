@@ -49,6 +49,12 @@ CARD_DIR = os.path.join(ROOT, "assets", "source", "cards")
 CARD_DATA = os.path.join(CARD_DIR, "card_data.txt")
 BG_DIR = os.path.join(ROOT, "assets", "source", "bg")
 PORTRAIT_DIR = os.path.join(ROOT, "assets", "source", "story_portraits")
+TEXTURE_DIR = os.path.join(ROOT, "assets", "source", "textures")
+# The card back is a painting, not a pattern.  Every other target draws this
+# file (tools/gen_sdl3_hires_paths.py CARD_BACK_SRC); the MSX2 build used to
+# draw its own concentric arcs instead, so a face-down card here was the only
+# one in the project that was not the same card.
+CARD_BACK_SRC = os.path.join(TEXTURE_DIR, "card_texture.png")
 MAIN_C = os.path.join(ROOT, "src", "main.c")
 AUDIO_META = os.path.join(ASSET_DIR, "music.json")
 
@@ -346,20 +352,30 @@ def draw_support_card(kind):
     return img
 
 
+def card_back(size):
+    """The cover art, fitted to a card rect.
+
+    Fitted to the WHOLE rect, the way the PC frontend maps this same file over
+    its 38x54 back: the painting is a 3:4 poster and a card is not, so a crop
+    that preserved the aspect would cut the gold rule off the top and bottom
+    edges -- and that frame, with its corner flourishes, is most of what the
+    picture still is at 40x48.
+
+    The curve is the part that is not a resize.  GRB332 holds four levels of
+    blue, so the navy ground quantises to a muddy dark GREEN; pulling the
+    blacks down to black and lifting what is left leaves a black ground and a
+    gold rose, which is the palette this painting can actually be held in.
+    The sharpen afterwards puts back the single-pixel rules LANCZOS averages
+    into the ground."""
+    img = Image.open(CARD_BACK_SRC).convert("RGB").resize(
+        size, Image.Resampling.LANCZOS)
+    img = img.point([max(0, min(255, int((v - 28) * 2.2)))
+                     for v in range(256)] * 3)
+    return img.filter(ImageFilter.SHARPEN)
+
+
 def draw_card_back():
-    img = Image.new("RGB", (CARD_W, CARD_H), (46, 24, 8))
-    d = ImageDraw.Draw(img)
-    d.rectangle([1, 0, CARD_W - 2, CARD_H - 1], fill=(205, 132, 35))
-    d.rectangle([3, 3, CARD_W - 4, CARD_H - 4], fill=(15, 8, 4))
-    cx, cy = CARD_W // 2, CARD_H // 2
-    colors = [(230, 136, 18), (140, 70, 8), (250, 187, 34)]
-    for k in range(14):
-        r = 3 + k * 2
-        d.arc([cx - r, cy - r, cx + r, cy + r], k * 22, k * 22 + 230,
-              fill=colors[k % 3], width=2)
-    d.rectangle([1, 0, CARD_W - 2, CARD_H - 1], outline=(35, 19, 7))
-    d.rectangle([2, 2, CARD_W - 3, CARD_H - 3], outline=(240, 169, 45))
-    return img
+    return card_back((CARD_W, CARD_H))
 
 
 def draw_battle_card(asset_id, atk, deff):
@@ -528,19 +544,66 @@ def stage_painting(stage):
     return img.crop((0, top, WIDTH, top + HEIGHT))
 
 
-def portrait(filename, size):
-    """A story bust, trimmed and fitted the way gen_assets.py fits them for
-    every other target: upper body, pinned to the bottom of its area."""
-    img = Image.open(os.path.join(PORTRAIT_DIR, filename)).convert("RGBA")
+# The busts have two sets of source art: the 180x240 files the console assets
+# were built from, and a high-resolution re-render of the same character.  The
+# PC frontend already prefers the big one (tools/gen_sdl3_hires_paths.py); at
+# 124 pixels the difference is still worth having, because everything here is a
+# downscale and a downscale of the small file is a downscale of a downscale.
+# The suffixes in the tree are inconsistent, so every spelling is tried in
+# preference order and the small file is the last resort.
+PORTRAIT_BASES = ["serena"] + ["opponent_%d" % d for d in range(5)]
+PORTRAIT_PREFIXES = ["pc_hires_", ""]
+PORTRAIT_SUFFIXES = ["_hires", "_highres", ""]
+PORTRAIT_ALIASES = {"serena": ["serena", "serana"]}
+PORTRAIT_EXTS = [".png", ".png.png"]
+
+
+def portrait_source(base):
+    """The best available art for one bust, and the small file it is framed
+    like.  '.png.png' is a real filename in the tree, hence the extension
+    list."""
+    for prefix in PORTRAIT_PREFIXES:
+        for name in PORTRAIT_ALIASES.get(base, [base]):
+            for suffix in PORTRAIT_SUFFIXES:
+                for ext in PORTRAIT_EXTS:
+                    path = os.path.join(PORTRAIT_DIR, prefix + name + suffix + ext)
+                    if os.path.exists(path):
+                        return path
+    sys.exit("no source art for portrait %s" % base)
+
+
+def portrait_trim(path):
+    """The figure, with its transparent margin taken off."""
+    img = Image.open(path).convert("RGBA")
     bbox = img.getbbox()
-    if bbox:
-        img = img.crop(bbox)
+    return img.crop(bbox) if bbox else img
+
+
+def portrait(base, size):
+    """A story bust, trimmed and fitted the way gen_assets.py fits them for
+    every other target: upper body, pinned to the bottom of its area.
+
+    ONLY THE UPPER PORTION, AND THE SAME UPPER PORTION AS BEFORE.  The small
+    files are already framed at the chest; the high-resolution re-renders are
+    not -- most of them are full figures down to the knees or the floor -- so a
+    fixed fraction of the height would put a doll in the 124-square instead of
+    a bust.  The small file is therefore the reference: the big art is cut from
+    the top to the SHAPE the little one already has, so swapping the source
+    changes the sharpness and nothing about the framing."""
+    ref = portrait_trim(os.path.join(PORTRAIT_DIR, base + ".png"))
+    rw, rh = ref.size
+    # The reference's own bust crop, and the proportion it stands in.
+    shape = rw / float(max(2, int(rh * 0.80) - int(rh * 0.01)))
+
+    img = portrait_trim(portrait_source(base))
     w, h = img.size
+    top = int(h * 0.01)
+    keep = max(2, min(h - top, int(round(w / shape))))
     # No side trim.  gen_assets.py takes 5% off each edge for the framebuffer
     # targets, whose portrait area is much wider than the figure; here the area
     # is a 124-square the bust is fitted into by height, so those 5% came
     # straight off the character -- Anpu and Rahotep lost both elbows.
-    img = img.crop((0, int(h * 0.01), w, max(2, int(h * 0.80))))
+    img = img.crop((0, top, w, top + keep))
     art = ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
     out = Image.new("RGBA", size, (0, 0, 0, 0))
     out.alpha_composite(art, ((size[0] - art.width) // 2, size[1] - art.height))
@@ -625,7 +688,7 @@ def portrait_blob(bust, dim):
 def build_portrait_blob(quiet):
     """Serena and the five opponents, lit and dimmed."""
     blob = bytearray()
-    files = ["serena.png"] + ["opponent_%d.png" % d for d in range(STORY_DUELS)]
+    files = ["serena"] + ["opponent_%d" % d for d in range(STORY_DUELS)]
     size = (PORTRAIT_W, PORTRAIT_H)
     for name in files:
         bust = portrait(name, size)
@@ -1052,19 +1115,7 @@ def draw_over_support_card(kind):
 
 
 def draw_over_card_back():
-    img = Image.new("RGB", (OVER_CARD_W, OVER_CARD_H), (46, 24, 8))
-    d = ImageDraw.Draw(img)
-    d.rectangle([1, 0, OVER_CARD_W - 2, OVER_CARD_H - 1], fill=(205, 132, 35))
-    d.rectangle([3, 3, OVER_CARD_W - 4, OVER_CARD_H - 4], fill=(15, 8, 4))
-    cx, cy = OVER_CARD_W // 2, OVER_CARD_H // 2
-    colors = [(230, 136, 18), (140, 70, 8), (250, 187, 34)]
-    for k in range(12):
-        r = 3 + k * 2
-        d.arc([cx - r, cy - r, cx + r, cy + r], k * 22, k * 22 + 230,
-              fill=colors[k % 3], width=2)
-    d.rectangle([1, 0, OVER_CARD_W - 2, OVER_CARD_H - 1], outline=(35, 19, 7))
-    d.rectangle([2, 2, OVER_CARD_W - 3, OVER_CARD_H - 3], outline=(240, 169, 45))
-    return img
+    return card_back((OVER_CARD_W, OVER_CARD_H))
 
 
 def build_over_card_blob(cards, quiet):
