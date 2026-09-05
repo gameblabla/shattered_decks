@@ -59,6 +59,9 @@ def main():
 
     code_addr, code_size = a.get("_CODE", (0x4000, 0))
     code_end = code_addr + code_size
+    resident_end = max(addr + size for name, (addr, size) in a.items()
+                       if name in ("_CODE", "_HOME", "_RODATA", "_INITIALIZER",
+                                   "_GSINIT", "_GSFINAL"))
     home = a.get("_HOME", (0, 0))[1]
     data_addr, data_size = a.get("_DATA", (RAM_BASE, 0))
     bss = a.get("_BSS", (0, 0))[1]
@@ -81,9 +84,11 @@ def main():
         print("         0x8000 and runs with interrupts off; pack_msx_rom.py fails")
         print("         the build if that stops being true.  Anything that must run")
         print("         *during* a stream has to live below 0x8000 too.")
-    if code_end > PAGE2_END:
-        print("         FATAL: code runs past 0xBFFF, into RAM.")
+    if resident_end > PAGE2_END:
+        print("         FATAL: resident ROM areas run past 0xBFFF, into RAM.")
     print("  home                    %6d bytes" % home)
+    print("  resident ROM ends at 0x%04X; %d bytes free (runtime areas included)"
+          % (resident_end, PAGE2_END - resident_end))
     print()
     # The page-0 banks.  All three are mapped at 0x0000 and each is its own
     # 16 KB; msx2_bank.h says which screen is in which.
@@ -105,7 +110,7 @@ def main():
     print("  ROM itself measures is in the blind-play probe (./msx2.sh run).")
 
     banks_over = any(a.get("_SEG%d" % seg, (0, 0))[1] > 0x4000 for seg in (2, 3, 4))
-    if code_end > PAGE2_END or ram_free <= 0 or banks_over:
+    if resident_end > PAGE2_END or ram_free <= 0 or banks_over:
         sys.exit(1)
 
 

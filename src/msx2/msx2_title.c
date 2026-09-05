@@ -190,7 +190,7 @@ static void Msx2_TitleCompose(void)
 		Msx2_TitleMenuPanel();
 }
 
-void Msx2_TitleEnter(void)
+void Msx2_TitleEnter_In(void)
 {
 	g_phase = TITLE_ATTRACT;
 	g_cursor = MSX2_TITLE_STORY;
@@ -213,7 +213,7 @@ void Msx2_TitleEnter(void)
 	Msx2_MusicPlay(MSX2_MUSIC_TITLE);
 }
 
-u8 Msx2_TitleStep(void)
+u8 Msx2_TitleStep_In(void)
 {
 	u8 pressed = Msx2_InputPressed();
 	u8 choice = MSX2_TITLE_BUSY;
@@ -256,7 +256,7 @@ u8 Msx2_TitleStep(void)
 		{
 			// Back out of the menu to the attract prompt, so the button always
 			// means the same thing.
-			Msx2_TitleEnter();
+			Msx2_TitleEnter_In();
 			return MSX2_TITLE_BUSY;
 		}
 
@@ -284,7 +284,7 @@ u8 Msx2_TitleStep(void)
 	return choice;
 }
 
-u8 Msx2_TitleCursor(void)
+u8 Msx2_TitleCursor_In(void)
 {
 	return (u8)((g_phase == TITLE_ATTRACT) ? 0xFF : g_cursor);
 }

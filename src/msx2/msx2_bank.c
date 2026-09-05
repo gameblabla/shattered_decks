@@ -8,6 +8,7 @@
 #include "msx2_board.h"
 #include "msx2_probe.h"
 #include "msx2_video.h"
+#include "msx2_title.h"
 
 // NEO-16's page-0 bank register.  Writing a 16-bit segment number to it maps
 // that segment at 0x0000; the address itself is ROM, so the write only ever
@@ -129,6 +130,31 @@ bool Msx2_EffectStep(void)
 }
 
 // ── The duel screen ─────────────────────────────────────────────────────────
+
+void Msx2_TitleEnter(void)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	Msx2_TitleEnter_In();
+	Msx2_Bank0Leave(back);
+}
+
+u8 Msx2_TitleStep(void)
+{
+	u8 choice;
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	choice = Msx2_TitleStep_In();
+	Msx2_Bank0Leave(back);
+	return choice;
+}
+
+u8 Msx2_TitleCursor(void)
+{
+	u8 cursor;
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	cursor = Msx2_TitleCursor_In();
+	Msx2_Bank0Leave(back);
+	return cursor;
+}
 
 u8 Msx2_BoardStageForStory(u8 story_duel_index)
 {

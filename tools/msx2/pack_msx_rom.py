@@ -122,9 +122,13 @@ def check_code_banks(mapfile):
     """Return linker areas whose low-16-bit end crosses their mapped bank."""
     if not os.path.exists(mapfile):
         return []
-    limits = {"_CODE": CODE_END, "_SEG2": SEG2_END, "_SEG3": SEG3_END, "_SEG4": SEG4_END}
+    # SDCC appends these resident ROM areas after _CODE. Counting _CODE
+    # alone can report space left while _INITIALIZER already overlaps bank 2.
+    limits = {name: CODE_END for name in
+              ("_CODE", "_HOME", "_RODATA", "_INITIALIZER", "_GSINIT", "_GSFINAL")}
+    limits.update({"_SEG2": SEG2_END, "_SEG3": SEG3_END, "_SEG4": SEG4_END})
     found = {}
-    pattern = re.compile(r"^\s*(_CODE|_SEG2|_SEG3|_SEG4)\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=")
+    pattern = re.compile(r"^\s*(" + "|".join(limits) + r")\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=")
     for line in open(mapfile):
         match = pattern.match(line)
         if match:

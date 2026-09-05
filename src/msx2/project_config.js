@@ -43,7 +43,7 @@ ProjModules = [
 	"msx2_audio",
 	"msx2_entropy",
 	"msx2_main",
-	"msx2_title",
+	// Title presentation lives in the modal bank; public calls use msx2_bank.
 	"msx2_video",
 	"msx2_sprite",
 	"msx2_bank",

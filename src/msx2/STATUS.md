@@ -21,7 +21,22 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M6 — full duel loop | **done**: person-playable placement, fusion, support, attacks, turn handoff, results, and the real shared-renderer board |
 | M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, a tabbed deck editor, 16-symbol password save/load, floppy save/load where a drive answers, and ending transition |
 
-### WIP bug fixes — 2026-09-05 (not tested)
+### WIP build follow-up — 2026-09-05
+
+The first WIP overflowed resident ROM by 155 bytes once SDCC's `_HOME` and
+initialization sections were included. Title presentation now lives in the
+modal bank behind the usual resident wrappers. Shipping and fixed-seed autoplay
+ROMs both package successfully: shipping ends at `0xBE6F` (401 bytes spare),
+autoplay at `0xBE44` (444 spare). The budget report and packer now include the
+resident runtime sections in their bounds checks. Overhead geometry has been
+regenerated through the Makefile.
+
+A host harness passed 18 fusion/discard assertions, including valid recipes,
+incompatible pairs, support-only discards and rejected selections. The owner
+tried the game and reported no obvious issues. The longer emulator soak was
+stopped at the owner's request; no completed soak result is claimed here.
+
+### WIP bug fixes — 2026-09-05 (initial source-only pass)
 
 Implemented by source inspection of `msx2_bugs.txt` and the Claude transcripts:
 

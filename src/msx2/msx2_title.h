@@ -34,3 +34,8 @@ u8 Msx2_TitleStep(void);
 // Which row the cursor is on -- stamped into the probe so a headless run can
 // see the menu being driven.
 u8 Msx2_TitleCursor(void);
+
+// Modal-bank entry points, called only by the resident wrappers.
+void Msx2_TitleEnter_In(void);
+u8 Msx2_TitleStep_In(void);
+u8 Msx2_TitleCursor_In(void);
