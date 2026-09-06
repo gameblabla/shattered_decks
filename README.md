@@ -2,7 +2,8 @@
 
 
 ![titlescreen of Shaterred Decks](https://github.com/gameblabla/shattered_decks/blob/main/screenshots/title_waifu.png?raw=true)
-![Ingame screenshot for Shaterred Decks](https://github.com/gameblabla/shattered_decks/blob/main/screenshots/waifu_ingame.png?raw=true)
+<img width="256" height="240" alt="waifupcfx_shot_1902" src="https://github.com/user-attachments/assets/230b7cc9-49f7-4bc1-9ef6-01ef3ee698c5" />
+
 
 
 Shattered Decks is a card homebrew game for the NEC PC-FX, Sega CD32X, and FM TOWNS (Marty/computers) inspired by Forbidden Memories except with monsters based on anime women.
