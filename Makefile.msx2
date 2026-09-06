@@ -4,8 +4,9 @@
 #  Wraps MSXgl's node build.  MSXGL_PATH points at the engine tree (vendored,
 #  not committed), so nothing here depends on where the SDK happens to live.
 #
-#      make -f Makefile.msx2                 # regenerate tables, build NEO-16
-#      make -f Makefile.msx2 MAPPER=ascii16x # build ASCII16-X
+#      make -f Makefile.msx2                 # all four shipping cartridges
+#      make -f Makefile.msx2 rom             # regenerate tables, build NEO-16
+#      make -f Makefile.msx2 MAPPER=ascii16x rom  # build ASCII16-X
 #      make -f Makefile.msx2 verify          # build, then run it headless
 #      make -f Makefile.msx2 ROM_SIZE_KB=16384
 #
@@ -91,9 +92,24 @@ SOURCES := $(wildcard $(PROJ_DIR)/*.c) $(wildcard $(PROJ_DIR)/*.h) \
            $(PROJ_DIR)/msxgl_config.h \
            src/game/deck.c src/game/ai.c
 
-.PHONY: all rom tables audio verify soak story-soak regression plus plus-assets clean check-sdk
+.PHONY: all cartridges rom tables audio verify soak story-soak regression plus plus-assets clean check-sdk
 
-all: rom
+# THE SHIPPING SET IS FOUR CARTRIDGES, NOT ONE.  Both mappers carry both
+# encodings -- NEO-16 for the flash carts, ASCII16-X for the ones that only
+# speak a standard mapper -- and building one of them by default meant an
+# MSX2+-only or ASCII16-X-only breakage (a _CODE overflow, a stale plus
+# manifest) sat undetected until someone happened to ask for that variant.
+#
+# Serial by construction: the four share one generated-asset tree and one
+# MSXgl object directory per tag, so a parallel make would have them
+# regenerating the same tables underneath each other.
+all: cartridges
+
+cartridges:
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom  MAPPER=neo16
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) plus MAPPER=neo16
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom  MAPPER=ascii16x
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) plus MAPPER=ascii16x
 
 check-sdk:
 	@test -f "$(BUILD_JS)" || { \
