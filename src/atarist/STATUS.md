@@ -46,31 +46,60 @@ more.
 
 | file | what | bytes |
 |---|---|---|
-| `DAT/ARENA.TEX` | 128x128 chunky ground: sandstone + the board grid | 16,384 |
+| `DAT/ARENA.TEX` | 128x128 chunky board slab: a sandstone checkerboard | 16,384 |
 | `DAT/FIELD.CRD` | 79 card faces, 32x32 chunky, ARENA palette | 80,896 |
 | `DAT/HAND.CRD` | the same 79 faces, 32x24 planar, CARD palette | 30,336 |
 | `DAT/TITLE.SCR` | the title painting, 320x200 planar + 25 palettes | 33,262 |
 
-**The palettes are fitted, not written.**  `src/generated/atarist_art.h` holds
-the two sixteen-colour sets; the structural entries (sky, sand, grid, panel,
-HUD ink) are sampled from the real textures and then PINNED, and the entries
-left over -- five in the arena set, seven in the card set -- are k-means
-centres over every card thumbnail at the size it is actually shown.  Pinning
-matters: fitting the free entries without the structural ones in the assignment
-spends two of five on colours the sand already provides.
+**Eight colours to the board, eight greys to the cards.**  Both sixteen-colour
+sets (`src/generated/atarist_art.h`) are cut the same way: entries 0..7 are the
+structural colours of that half of the screen -- the checkerboard's two tiles
+and their grain, the groove, the slab's rim, the slot gold; or the HUD's panel,
+gold, red and green -- and entries 8..13 plus black and white are an eight-step
+GREY RAMP that the card paintings are dithered into, at the same indices in
+both palettes, so one dithered picture reads identically in the hand and on the
+3D board.
 
-Three conversion rules were each worth more than the palette fit:
+The six greys are the ST's own levels.  Three bits a channel is eight greys
+(0, 36, 73, 109, 145, 182, 218, 255), so black + these six + white is an
+exactly even eight-step ramp on the hardware with no two steps sharing a
+bucket.
 
-* **Low-pass before dithering.**  These paintings carry far more detail than 32
-  pixels hold; sharp detail at that scale becomes high-frequency dither noise
-  and the monster stops having a silhouette.  A 0.7-pixel blur first leaves
-  flat regions the palette can hold.
-* **Damped error diffusion** (0.30, not 1.0).  Full-strength Floyd-Steinberg is
-  right when the palette can nearly hold the image; with seven colours shared
-  by seventy-eight paintings it turns every card into confetti.
+Colour on the cards was tried twice and lost twice, and the reasons are worth
+keeping:
+
+* **Fitted colour entries.**  Five (arena) or seven (card) k-means centres over
+  every thumbnail is the average of seventy-eight paintings, so every card came
+  back the same washed blue-grey and no card had its own colour anyway.
+* **A palette per scanline, split five ways.**  The shifter really will reload
+  sixteen entries every line, which would give each of the five hand slots
+  three private colours per row -- but a monster drawn in three colours a line
+  is noise, and the row-to-row palette drift streaks it.  Eight greys spend no
+  entry on hue and every entry on tone.
+
+The conversion rules that survived:
+
+* **Equalise, do not stretch.**  These paintings are dark; a contrast stretch
+  leaves most pixels inside the bottom step of the ramp and a card comes back a
+  black rectangle with a white face in it.
+* **Low-pass before dithering** (1.0 px, harder than the colour path's 0.7).
+  What an eight-level dither carries is broad tonal massing; detail finer than
+  that only becomes speckle that hides it.
+* **FULL-strength error diffusion.**  The damping the old scattered palette
+  needed is exactly wrong for a ramp: the error one level cannot hold is
+  precisely what the next one can, and full diffusion is what turns eight
+  levels into continuous tone.  The ground keeps its damped dither, because
+  sand tones are not a ramp.
+* **Sigils and the card back skip both.**  They are drawn, not photographed --
+  a few flat tones on a flat field -- and equalising plus blurring turned all
+  six supports into the same grey blob.  Equip and guard also had to be given
+  different SHAPES, having been told apart by tint alone.
 * **Spread the sand terciles.**  Sandstone is a low-contrast photograph and its
   three levels come back within a few units of each other, which makes the
   board a flat wash with no texture in it.
+* **The tile grain hash must MIX.**  `(x*7 + y*13 + x*y) % 7` is linear in x
+  for a fixed y: whole columns of a tile satisfied it at once and the board
+  came out as plaid.
 
 The same painting is converted twice, once per palette, because the board half
 and the hand half of the screen do not share one.
@@ -148,10 +177,10 @@ python3 tools/atarist/verify.py --image ... --script "START:2,0:30,A:2"
 | probe + headless harness | done |
 | YM2149 music: converter, floppy streams, player | done, verified (recorded and analysed) |
 | GEMDOS disk layer | done |
-| 3D board rasteriser (textured ground, textured card quads, flat rim) | done, verified |
+| 3D board rasteriser (textured slab, flat-lying card quads, rim) | done, verified |
 | planar 2D layer (rects, 8x8 text, masked blits) | done, verified |
 | duel presentation over `msx2_duel.c` | done, playable, verified |
-| card art from real sources | done, verified (converter + floppy files) |
+| card art from real sources, eight-grey ramp | done, verified (on screen) |
 | title screen + menu, scene flow title<->duel | done, verified (real painting, 25 splits) |
 | multi-palette raster split list (25-band title picture) | done, verified |
 | Blitter block copy, used for the ground cache | done, verified on both builds |

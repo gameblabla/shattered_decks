@@ -15,7 +15,7 @@ what lets five or seven free entries carry seventy-eight monsters.
 
 Outputs (--out, default build/atarist/data):
 
-  DAT/ARENA.TEX   128x128 chunky ground texture, sandstone + the board grid
+  DAT/ARENA.TEX   128x128 chunky board texture: the sandstone checkerboard
   DAT/FIELD.CRD   79 card faces, 32x32 chunky, ARENA palette (the 3D board)
   DAT/HAND.CRD    79 card faces, 32x24 planar 4bpp, CARD palette (the hand)
   DAT/TITLE.SCR   the title painting: 320x200 planar + one palette per band
@@ -52,9 +52,6 @@ BG_DIR = os.path.join(ROOT, "assets", "source", "bg")
 TITLE_SRC = os.path.join(ROOT, "assets", "source", "title", "title_320x200_atarist.png")
 CARD_BACK_SRC = os.path.join(TEXTURE_DIR, "card_texture.png")
 SAND_SRC = os.path.join(TEXTURE_DIR, "sandstone_1.png")
-# bg/sky.png is a black plate in the tree; the desert backdrop is where the
-# game's actual sky lives, and its top third is the gradient the arena copies.
-SKY_SRC = os.path.join(BG_DIR, "desert.png")
 HEADER = os.path.join(ROOT, "src", "generated", "atarist_art.h")
 
 # ── The two palettes ─────────────────────────────────────────────────────────
@@ -63,22 +60,48 @@ HEADER = os.path.join(ROOT, "src", "generated", "atarist_art.h")
 # below are the ones the C macros carry.  "None" marks an entry this tool is
 # free to choose, and those are the entries the card art gets fitted into.
 
-ARENA_SLOTS = ["BLACK", "SKY_DARK", "SKY_MID", "SKY_LIGHT",
-               "SAND_DARK", "SAND_MID", "SAND_LIGHT", "GRID", "SLOT",
-               None, None, None, None, None,
+# The board is a FINITE SLAB over black, not an infinite plane: a checkerboard
+# of tiles with a groove between them and a thick front rim, which is what the
+# MSX2 and PC-FX boards are and what the ST one now matches.  Nothing is spent
+# on a sky any more -- the surround is entry 0 -- and the three entries that
+# used to hold one went to the card art.
+ARENA_SLOTS = ["BLACK", "GROOVE", "TILE_DARK", "TILE_LIGHT", "TILE_LIGHT2",
+               "RIM_SIDE", "RIM_TOP", "SLOT",
+               "ART_K1", "ART_K2", "ART_K3", "ART_K4", "ART_K5", "ART_K6",
                "WHITE", "HILIGHT"]
 CARD_SLOTS = ["BLACK", "PANEL_DARK", "PANEL_MID", "PANEL_LIGHT",
-              "GOLD", "RED", "GREEN",
-              None, None, None, None, None, None, None,
+              "GOLD", "RED", "GREEN", None,
+              "ART_K1", "ART_K2", "ART_K3", "ART_K4", "ART_K5", "ART_K6",
               "WHITE", "YELLOW"]
+
+# THE CARD PAINTINGS ARE DRAWN IN EIGHT GREYS, in both palettes and at both
+# sizes: black, six greys, white.  Colour was tried twice and lost twice.
+# Fitting five to seven free entries across seventy-eight paintings gives every
+# card the same washed blue-grey, because that is the average of seventy-eight
+# paintings; and fitting three entries PER SLOT PER SCANLINE -- a palette
+# reloaded on every line of the hand row, which is what the shifter can
+# actually do -- buys colour at the price of a three-colour picture per line,
+# and a monster in three colours a line is noise.  A grey ramp spends no entry
+# on hue and every entry on tone, and the ramp is the same on every card, so
+# the hand reads as a row of cards rather than a colour chart.  It leaves the
+# other eight entries whole for the board, which is the half of the screen
+# that does need colour.
+#
+# THE SIX ARE THE ST'S OWN LEVELS.  Three bits a channel is eight greys --
+# 0, 36, 73, 109, 145, 182, 218, 255 -- so black, these six and white are an
+# exactly even eight-step ramp on the hardware, with no two steps landing in
+# the same bucket and none of the banding a hand-picked ramp gets.
+ART_GREYS = [(36, 36, 36), (73, 73, 73), (109, 109, 109),
+             (145, 145, 145), (182, 182, 182), (218, 218, 218)]
+ART_GREY_FIXED = dict(("ART_K%d" % (i + 1), c) for i, c in enumerate(ART_GREYS))
 
 ARENA_FIXED = {
     "BLACK": (0, 0, 0),
-    "GRID": (64, 48, 32),
     "SLOT": (224, 176, 56),
     "WHITE": (248, 248, 248),
     "HILIGHT": (248, 232, 96),
 }
+ARENA_FIXED.update(ART_GREY_FIXED)
 CARD_FIXED = {
     "BLACK": (0, 0, 0),
     "PANEL_DARK": (24, 24, 40),
@@ -90,9 +113,11 @@ CARD_FIXED = {
     "WHITE": (248, 248, 248),
     "YELLOW": (248, 232, 96),
 }
+CARD_FIXED.update(ART_GREY_FIXED)
 
 ARENA_TEX_W = 128
-TEXELS_PER_UNIT = 8          # must equal ATARIST_TEXELS_PER_UNIT
+TEXELS_PER_UNIT = 16         # must equal ATARIST_TEXELS_PER_UNIT
+BOARD_COLS, BOARD_ROWS = 5, 4   # must equal ATARIST_COLS / ATARIST_ROWS
 FIELD_W = FIELD_H = 32       # 3D board card texture
 HAND_W, HAND_H = 32, 24      # hand card art window
 TITLE_W, TITLE_H = 320, 200
@@ -182,12 +207,13 @@ def dither(img, palette, allow=None, strength=0.30):
     `allow` restricts the usable entries (the ground uses only its sand tones;
     letting it reach for the sky blues put blue speckle in the sand).
 
-    `strength` scales the diffused error.  Full-strength diffusion is right for
-    a photograph into a palette that can nearly hold it; here the palette is
-    seven colours shared by seventy-eight paintings, and full strength turns a
-    32-pixel monster into confetti -- every pixel carries a large error into its
-    neighbour and the result reads as noise, not as a figure.  Damping it keeps
-    the dominant colour of each region intact and lets the dither only shade."""
+    `strength` scales the diffused error.  It is DAMPED for a palette of
+    scattered colours -- the ground's sand tones -- because a large error
+    carried into a neighbour that has no near colour to absorb it reads as
+    noise rather than as shading.  The card art is the opposite case and takes
+    it at full strength: four evenly spaced greys are a ramp, so the error a
+    pixel cannot hold is exactly what the next one can, and full diffusion is
+    what turns four levels into a continuous tone."""
     pal = np.array(palette, dtype=np.float64)
     idx = list(range(16)) if allow is None else list(allow)
     sub = pal[idx]
@@ -227,6 +253,42 @@ def to_planar(idx):
                         word |= 0x8000 >> i
                 words += struct.pack(">H", word)
     return bytes(words)
+
+
+def st3(c):
+    """What a plain ST actually shows: three bits a channel.
+
+    Every structural colour is checked against this, because the board's browns
+    do not survive the quantisation by accident.  RIM_SIDE was (125,102,55) and
+    came back OLIVE: 125 and 102 land in the same three-bit bucket, red stops
+    leading green, and the slab's front face turned into a green plank on the
+    hardware while looking correct in every 24-bit preview this tool writes."""
+    return tuple((int(max(0, min(255, round(v)))) >> 5) * 255 // 7 for v in c)
+
+
+def art_grey(img, flat=False):
+    """A painting as luminance, EQUALISED and then low-passed.
+
+    Two steps, both measured against the alternatives on a sheet of eight
+    cards.  Equalise rather than autocontrast: these paintings are dark, and a
+    plain contrast stretch leaves three quarters of the pixels inside the
+    bottom step of a four-level ramp, so the card comes back a black rectangle
+    with a white face in it.  Equalisation spends all four steps.
+
+    Then blur, HARDER than the colour path's 0.7, because four levels cannot
+    hold texture: what survives a four-level dither is the broad tonal
+    massing, and any detail finer than that only turns into speckle that hides
+    the massing.  1.0 keeps the silhouette and drops the noise."""
+    g = img.convert("L")
+    if flat:
+        # A support sigil and the card back are DRAWN, not photographed: they
+        # are already three or four flat tones on a flat field.  Equalising
+        # one spreads those few tones across the whole ramp and blurring it
+        # rounds the shape off, and all six supports came back as the same
+        # grey blob.  A plain stretch keeps the emblem's edges.
+        return ImageOps.autocontrast(g, cutoff=1).convert("RGB")
+    g = ImageOps.equalize(g)
+    return g.filter(ImageFilter.GaussianBlur(1.0)).convert("RGB")
 
 
 def preview(idx, palette):
@@ -322,7 +384,14 @@ def support_art(kind, size):
     if kind in (0, 1):                                  # equip / guard: shield
         d.polygon([(cx, 4), (58, 14), (54, 54), (cx, 60), (10, 54), (6, 14)],
                   fill=mid, outline=bright)
-        d.line([cx, 12, cx, 52], fill=bright, width=4)
+        # The two shields must differ by SHAPE, not by tint.  They were told
+        # apart by arcane blue against jade, and the eight-grey card art threw
+        # the tint away: equip and guard came back as the same emblem.
+        if kind == 0:
+            d.line([cx, 12, cx, 52], fill=bright, width=4)      # equip: a bar
+        else:
+            d.line([14, cy - 2, 50, cy - 2], fill=bright, width=4)
+            d.line([cx, 12, cx, 24], fill=bright, width=4)      # guard: a cross
     elif kind == 2:                                     # draw: stacked cards
         for k, off in enumerate((12, 6, 0)):
             d.rectangle([10 + off, 12 + off, 44 + off, 52 + off],
@@ -372,30 +441,82 @@ def face_image(tag, src, size):
 # ── The ground ───────────────────────────────────────────────────────────────
 
 def build_arena_texture(pal):
-    """Sandstone, with the board's grid and slot outlines baked in.
+    """The board slab's top surface: a checkerboard of sandstone tiles.
 
-    THE BOARD IS CENTRED ON TEXEL (0,0), NOT ON THE TEXTURE'S MIDDLE: the
-    ground rasteriser samples u = world_x * texels with no origin offset.
-    Building the markings around the centre instead puts the playfield eight
-    world units away, out by the horizon."""
-    sand = Image.open(SAND_SRC).convert("RGB").resize(
-        (ARENA_TEX_W, ARENA_TEX_W), Image.Resampling.LANCZOS)
-    sand = ImageOps.autocontrast(sand, cutoff=3)
-    idx = dither(sand, pal, allow=(4, 5, 6))          # SAND_DARK/MID/LIGHT
+    THE BOARD IS CENTRED ON TEXEL (0,0), NOT ON THE TEXTURE'S MIDDLE: the plane
+    rasteriser samples u = world_x * texels with no origin offset.  Building
+    the markings around the centre instead puts the playfield eight world units
+    away, out by the horizon.
+
+    Tiles are one world unit square, so a tile is TEXELS_PER_UNIT across.  The
+    five columns are centred on the origin and the four rows straddle it, which
+    puts the column edges at texel 8 (mod 16) and the row edges at 0 (mod 16).
+    A one-texel groove on each edge is what separates the tiles; at the near
+    end of the board that groove is three screen pixels, which is the dark line
+    the MSX2 and PC-FX boards read by."""
+    # Two dithers of the same photograph, one per tile colour, so both tiles
+    # carry the same grain and only their tone differs.  Restricting each to
+    # its own pair is what stops a light tile speckling with the dark tone.
+    # ONE TILE, DRAWN, REPEATED -- not a 128x128 photograph cut into tiles.
+    # Two earlier versions failed for opposite reasons.  Tiling the photograph
+    # directly picked up its large-scale luminance drift, so some light tiles
+    # dithered almost entirely to the darker of their two tones and others to
+    # the lighter, and the board came out blotchy.  Dithering one 16x16 crop
+    # of it and repeating that gave every tile the same stone, but the crop's
+    # own structure became a camouflage blob repeated twenty times.
+    #
+    # What a tile actually needs is a flat face, a shaded inner edge along the
+    # two sides facing away from the light, and grain fine enough to stay
+    # grain when a near tile magnifies one texel to three screen pixels.  So it
+    # is drawn: the bevel is what makes a tile read as a raised slab, and the
+    # grain is a fixed hash rather than noise so it is the same on every run.
+    t = TEXELS_PER_UNIT
+
+    def tile_cell(base, shade_idx, grain_idx):
+        # THE GRAIN HASH MUST MIX, NOT ADD.  The first version of this was
+        # `(xx*7 + yy*13 + xx*yy) % 7`, which is linear in xx for every fixed
+        # yy: whole columns of a tile satisfied it at once and the board came
+        # out as plaid -- two bright vertical stripes through every tile,
+        # which is exactly what a checkerboard must not have.  An integer
+        # bit-mix has no such structure and is still deterministic.
+        cell = np.full((t, t), base, dtype=np.uint8)
+        for yy in range(t):
+            for xx in range(t):
+                h = (xx * 0x2545F491) ^ (yy * 0x9E3779B1)
+                h ^= (h >> 13)
+                h = (h * 0x27220A95) & 0xFFFFFFFF
+                h ^= (h >> 15)
+                if (h % 5) == 0:              # about one texel in five
+                    cell[yy, xx] = grain_idx
+        # One shaded edge, on the two sides away from the light.  Two texels
+        # of bevel at sixteen texels per unit is a third of a screen pixel at
+        # the far end and three at the near one, which is the whole point of
+        # baking the bevel rather than drawing tile borders in the rasteriser.
+        cell[t - 1, :] = shade_idx
+        cell[:, t - 1] = shade_idx
+        return cell
+
+    # The dark tile's grain is a LIGHTER fleck (RIM_SIDE), not the groove: a
+    # near-black speckle on the dark tile reads as dirt, and at three screen
+    # pixels a texel the near row of tiles looked mouldy.  Its bevel is still
+    # the groove, because a bevel is a shadow.
+    light = np.tile(tile_cell(3, 4, 4), (ARENA_TEX_W // t, ARENA_TEX_W // t))
+    dark = np.tile(tile_cell(2, 1, 5), (ARENA_TEX_W // t, ARENA_TEX_W // t))
+    idx = np.zeros((ARENA_TEX_W, ARENA_TEX_W), dtype=np.uint8)
     for y in range(ARENA_TEX_W):
-        cy = y if y < ARENA_TEX_W // 2 else y - ARENA_TEX_W
+        cz = y if y < ARENA_TEX_W // 2 else y - ARENA_TEX_W
+        gy = cz % t
+        row = cz // t
         for x in range(ARENA_TEX_W):
             cx = x if x < ARENA_TEX_W // 2 else x - ARENA_TEX_W
-            half = TEXELS_PER_UNIT * 5 // 2
-            if not (-half <= cx < half and -half <= cy < half):
-                continue
-            gx = (cx + TEXELS_PER_UNIT * 8) % TEXELS_PER_UNIT
-            gy = (cy + TEXELS_PER_UNIT * 8) % TEXELS_PER_UNIT
+            gx = (cx - t // 2) % t
+            col = (cx - t // 2) // t
             if gx == 0 or gy == 0:
-                idx[y, x] = 7                          # GRID
-            elif (gx in (1, TEXELS_PER_UNIT - 1) or
-                  gy in (1, TEXELS_PER_UNIT - 1)):
-                idx[y, x] = 8                          # SLOT
+                idx[y, x] = 1                              # GROOVE
+            elif (col + row) & 1:
+                idx[y, x] = dark[y, x]
+            else:
+                idx[y, x] = light[y, x]
     return idx
 
 
@@ -482,26 +603,51 @@ def main():
     arena_fixed = dict(ARENA_FIXED)
     # Sandstone is a low-contrast photograph: its three terciles come back
     # within a few units of each other, and three near-identical entries make
-    # the ground a flat wash with no texture in it at all.  Pushing them apart
-    # from their own mean is what puts grain back into the board.
+    # the board a flat wash with no texture in it at all.  Pushing them apart
+    # from their own mean is what puts grain back into the tiles.
     sand = quantize_levels(Image.open(SAND_SRC), 3)
     sand_mid = tuple(sum(c[i] for c in sand) / 3.0 for i in range(3))
     sand = [tuple(int(max(0, min(255, round(sand_mid[i] +
                                            (c[i] - sand_mid[i]) * 2.2))))
                   for i in range(3)) for c in sand]
-    # The desert sky is a flat blue field, so terciles of it return three
-    # indistinguishable entries.  Its colour is the source; the three steps are
-    # a ramp built from it, which is what a horizon needs anyway.
-    sky_img = Image.open(SKY_SRC)
-    sky_base = quantize_levels(sky_img, 1,
-                               crop=(0, 0, sky_img.width, sky_img.height // 4),
-                               contrast=False)[0]
-    sky = [tuple(int(max(0, min(255, round(c * k)))) for c in sky_base)
-           for k in (0.45, 0.75, 1.05)]
-    for name, c in zip(("SAND_DARK", "SAND_MID", "SAND_LIGHT"), sand):
-        arena_fixed[name] = c
-    for name, c in zip(("SKY_DARK", "SKY_MID", "SKY_LIGHT"), sky):
-        arena_fixed[name] = c
+
+    def shade(c, k):
+        return tuple(int(max(0, min(255, round(v * k)))) for v in c)
+
+    def warm(c, k):
+        """Pull a sandstone tone towards the board's gold.
+
+        The photograph is a neutral cream and a neutral cream checkerboard
+        reads as a chessboard, not as this game's arena.  Mixing every tile
+        tone towards ARENA_SLOT's gold is what gives the board the same
+        gold-on-brown identity the MSX2 and PC-FX ones have."""
+        g = ARENA_FIXED["SLOT"]
+        return tuple(int(max(0, min(255, round(c[i] * (1 - k) + g[i] * k))))
+                     for i in range(3))
+
+    def keep_hue(c):
+        """Nudge a brown until red still leads green after `st3`."""
+        r, g, b = c
+        while (r >> 5) <= (g >> 5) and g > 0:
+            g -= 8
+        return (r, max(0, g), b)
+
+    # The checkerboard's contrast is what makes the board read as a board: two
+    # tones of warmed sandstone carry the light tile, a darkened one the dark
+    # tile, and the groove between them is darker again.
+    arena_fixed["TILE_LIGHT"] = keep_hue(warm(sand[2], 0.45))
+    arena_fixed["TILE_LIGHT2"] = keep_hue(shade(warm(sand[1], 0.55), 0.88))
+    arena_fixed["TILE_DARK"] = keep_hue(shade(warm(sand[0], 0.35), 0.80))
+    arena_fixed["GROOVE"] = keep_hue(shade(arena_fixed["TILE_DARK"], 0.55))
+    # The slab's front face and the lit edge along the top of it.  Without the
+    # two the board is a rug rather than a solid object.
+    arena_fixed["RIM_SIDE"] = keep_hue(shade(arena_fixed["TILE_DARK"], 1.35))
+    arena_fixed["RIM_TOP"] = keep_hue(shade(arena_fixed["TILE_LIGHT"], 1.12))
+    if not quiet:
+        for name in ("TILE_LIGHT", "TILE_LIGHT2", "TILE_DARK", "GROOVE",
+                     "RIM_SIDE", "RIM_TOP"):
+            print("ARENA    %-11s %-16s -> ST %s"
+                  % (name, arena_fixed[name], st3(arena_fixed[name])))
 
     arena_pal = fit_palette(ARENA_SLOTS, arena_fixed, sample)
     card_pal = fit_palette(CARD_SLOTS, CARD_FIXED, sample)
@@ -518,15 +664,30 @@ def main():
     hand = bytearray()
     sheet_f = Image.new("RGB", (FIELD_W * 10, FIELD_H * ((len(faces) + 9) // 10)))
     sheet_h = Image.new("RGB", (HAND_W * 10, HAND_H * ((len(faces) + 9) // 10)))
+    # The eight-step ramp, by index, in each palette.  Passed to the dither as
+    # its whole allowed set: letting a card reach for the board's sandstone or
+    # the panel's blues is what made the old cards blotchy.  The two ramps sit
+    # at the SAME indices in both palettes, so one dithered picture serves the
+    # hand and the 3D board and a card reads identically in each.
+    def ramp(slots):
+        return ([slots.index("BLACK")] +
+                [slots.index("ART_K%d" % k) for k in range(1, 7)] +
+                [slots.index("WHITE")])
+
+    arena_k = ramp(ARENA_SLOTS)
+    card_k = ramp(CARD_SLOTS)
+
     for i, (tag, img) in enumerate(thumbs):
-        fi = dither(img, arena_pal)
-        fi[0, :] = fi[-1, :] = 8                      # SLOT: the card's rim
-        fi[:, 0] = fi[:, -1] = 8
+        flat = not tag.startswith("m:")
+        fi = dither(art_grey(img, flat), arena_pal, allow=arena_k, strength=1.0)
+        fi[0, :] = fi[-1, :] = 7                      # SLOT: the card's rim
+        fi[:, 0] = fi[:, -1] = 7
         field += (fi << 2).astype(np.uint8).tobytes()
         sheet_f.paste(preview(fi, arena_pal), ((i % 10) * FIELD_W, (i // 10) * FIELD_H))
 
         tag2, src = faces[i]
-        hi = dither(face_image(tag2, src, (HAND_W, HAND_H)), card_pal)
+        hi = dither(art_grey(face_image(tag2, src, (HAND_W, HAND_H)), flat),
+                    card_pal, allow=card_k, strength=1.0)
         hand += to_planar(hi)
         sheet_h.paste(preview(hi, card_pal), ((i % 10) * HAND_W, (i // 10) * HAND_H))
     write(os.path.join(dat, "FIELD.CRD"), bytes(field), quiet, "FIELD")

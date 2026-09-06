@@ -4,12 +4,15 @@
  *  Two rasterisers, both writing 8-bit indices into the chunky board buffer,
  *  because that is the only surface the C2P reads:
  *
- *    * the GROUND is a perspective-correct textured plane.  It is not a general
- *      polygon: a plane through the camera has an exact closed form per screen
- *      row (depth = height * focal / (row - horizon)), so each row is one
- *      divide and then two adds per pixel.  That is what makes a textured board
- *      affordable on an 8 MHz 68000 at all, and it is what the requirement's
- *      "texture mapping for 3D board tiles" is satisfied by.
+ *    * the BOARD PLANE is a perspective-correct textured plane, CLIPPED TO THE
+ *      SLAB.  It is not a general polygon: a plane through the camera has an
+ *      exact closed form per screen row (depth = height * focal / (row -
+ *      horizon)), so each row is one divide and then two adds per pixel.  That
+ *      is what makes a textured board affordable on an 8 MHz 68000 at all.
+ *      The board is FINITE -- five columns by four rows of checkerboard with a
+ *      groove between the tiles, floating over black -- because that is what
+ *      the MSX2 and PC-FX boards are; an unbounded sand plane with a grid
+ *      painted on it reads as a road, not as a duel field.
  *
  *    * CARDS and the board RIM are convex quads.  Cards are texture mapped with
  *      a per-polygon affine gradient (one plane solve, then two adds per pixel);
@@ -32,6 +35,17 @@
 #define ATARIST_ROW_COM_MONSTER  1
 #define ATARIST_ROW_YOU_MONSTER  2
 #define ATARIST_ROW_YOU_SUPPORT  3
+
+/* The slab, in world units.  Tiles are one unit square: five columns centred
+ * on the origin (x in -2.5 .. 2.5) and four rows straddling it (z in -2 .. 2),
+ * which is exactly the checkerboard tools/atarist/gen_atarist_assets.py bakes
+ * into ARENA.TEX.  Everything outside is the black surround. */
+#define ATARIST_BOARD_HALF_X  ((int32_t)(5 << 15))      /* 2.5 */
+#define ATARIST_BOARD_Z_NEAR  (-(int32_t)(2 << 16))
+#define ATARIST_BOARD_Z_FAR   ((int32_t)(2 << 16))
+/* How thick the slab is.  It is the front face of this that gives the board a
+ * solid edge instead of looking like a rug. */
+#define ATARIST_BOARD_THICK   ((int32_t)18350)          /* 0.28 */
 
 typedef struct AtaristCamera {
     int32_t x, z;      /* world position, 16.16 */
@@ -85,15 +99,20 @@ void Atarist_ChunkyFill(uint8_t *dst, int count, int value);
 /* A flat block move between chunky surfaces. */
 void Atarist_ChunkyCopy(uint8_t *dst, const uint8_t *src, int bytes);
 
-/* ── Ground ──────────────────────────────────────────────────────────────── */
-/* Fill rows above the horizon with `sky` and texture every row below it.
- * `world_to_texel` is how many 16.16 texels one world unit spans. */
-/* `texel_log2` is how many texels one world unit spans, as a power of two.  It
+/* ── The board plane ─────────────────────────────────────────────────────── */
+/* Texture the slab and fill everything around it with `backdrop`.
+ *
+ * `texel_log2` is how many texels one world unit spans, as a power of two.  It
  * is a shift and not a factor because that is three fixed-point multiplies per
- * scanline the 68000 does not have to make. */
-void Atarist_DrawGround(const AtaristViewport *vp, const AtaristCamera *cam,
-                        const AtaristTexture *tex, int texel_log2,
-                        uint8_t sky);
+ * scanline the 68000 does not have to make.
+ *
+ * The bounds cost two extra divides a row and nothing per pixel: depth is
+ * constant along a scanline, so the two screen columns where the slab's side
+ * edges fall are a closed form, exactly as the row's depth is. */
+void Atarist_DrawBoardPlane(const AtaristViewport *vp, const AtaristCamera *cam,
+                            const AtaristTexture *tex, int texel_log2,
+                            int32_t half_x, int32_t z_near, int32_t z_far,
+                            uint8_t backdrop);
 
 /* ── Quads ───────────────────────────────────────────────────────────────── */
 void Atarist_FillQuad(const AtaristViewport *vp, const AtaristVert *quad,

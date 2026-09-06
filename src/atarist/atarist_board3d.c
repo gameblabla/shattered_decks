@@ -69,15 +69,15 @@ void Atarist_SlotCentre(int row, int col, int32_t *wx, int32_t *wz)
     /* Rows 0..3 far to near; the two monster rows sit closer together than the
      * support rows so the fighting line reads as the middle of the board. */
     {
-        /* The support rows are pushed well behind their monster rows rather
-         * than half a unit back.  At the duel camera's angle a half unit of
-         * depth is three screen rows, and the two rows landed on top of each
-         * other; 2.5 is what separates them into readable bands. */
+        /* One row per board rank, on the same one-unit pitch the columns use,
+         * so a slot is a whole checkerboard tile and a card sits inside one.
+         * The rows straddle the origin: z = 1.5 .. -1.5 inside a slab that
+         * runs -2 .. 2. */
         static const int32_t row_z[ATARIST_ROWS] = {
-            (int32_t)(5 << 15),      /*  2.5  COM supports, farthest */
-            (int32_t)(1 << 16),      /*  1.0  COM monsters */
-            (int32_t)(-(1 << 16)),   /* -1.0  your monsters */
-            (int32_t)(-(5 << 15))    /* -2.5  your supports, nearest */
+            (int32_t)(3 << 15),      /*  1.5  COM supports, farthest */
+            (int32_t)(1 << 15),      /*  0.5  COM monsters */
+            (int32_t)(-(1 << 15)),   /* -0.5  your monsters */
+            (int32_t)(-(3 << 15))    /* -1.5  your supports, nearest */
         };
         *wz = row_z[row];
     }
@@ -119,11 +119,12 @@ int Atarist_Project(const AtaristCamera *cam, const AtaristViewport *vp,
     return 1;
 }
 
-/* ── Ground plane ────────────────────────────────────────────────────────── */
+/* ── The board plane ─────────────────────────────────────────────────────── */
 
-void Atarist_DrawGround(const AtaristViewport *vp, const AtaristCamera *cam,
-                        const AtaristTexture *tex, int texel_log2,
-                        uint8_t sky)
+void Atarist_DrawBoardPlane(const AtaristViewport *vp, const AtaristCamera *cam,
+                            const AtaristTexture *tex, int texel_log2,
+                            int32_t half_x, int32_t z_near, int32_t z_far,
+                            uint8_t backdrop)
 {
     const uint8_t *texels = tex->texels;
     int u_mask = (1 << tex->w_log2) - 1;
@@ -137,49 +138,52 @@ void Atarist_DrawGround(const AtaristViewport *vp, const AtaristCamera *cam,
     int32_t hf = fxmul(cam->height, cam->focal);
     int32_t u_camera = cam->x << texel_log2;
     int32_t v_camera = cam->z << texel_log2;
+    /* The slab's near and far edges as depths.  These are what replace the old
+     * far clamp, and they do it exactly: a row whose depth is outside them has
+     * no board on it at all, so the horizon's u/v blow-up -- which used to
+     * paint the top of the board as wide bands of one colour -- cannot be
+     * reached rather than merely being clamped away. */
+    int32_t d_near = z_near - cam->z;
+    int32_t d_far = z_far - cam->z;
     int y;
 
-    /* THE FAR CLAMP IS NOT COSMETIC.  Depth goes to infinity as a row
-     * approaches the horizon, and u/v are 16.16: a row a fraction of a pixel
-     * below the horizon asks for tens of thousands of texels across the span
-     * and the texture coordinate wraps into nonsense, which paints the top of
-     * the board as wide horizontal bands of one colour.  Rows beyond the far
-     * plane are the backdrop instead. */
-#define GROUND_FAR (24 << 16)
-
-    /* Above the horizon there is no ground: that band is the arena backdrop,
-     * and one fill per row is cheaper than any gradient the board can afford
-     * while the camera is moving. */
-    {
-        int rows = horizon < vp->h ? horizon : vp->h;
-        uint8_t *p = vp->pixels;
-        int r;
-        for (r = 0; r < rows; ++r) {
-            Atarist_ChunkyFill(p, vp->w, sky);
-            p += vp->stride;
-        }
-    }
-
-    for (y = (horizon > 0 ? horizon : 0); y < vp->h; ++y) {
+    for (y = 0; y < vp->h; ++y) {
         uint8_t *dst = vp->pixels + (size_t)y * vp->stride;
         int32_t rows_below = ((int32_t)(y - horizon) << 16) + (1 << 15);
         int32_t depth, u, v, du;
+        int x0, x1;
 
-        if (rows_below <= 0) continue;
+        if (rows_below <= 0) {
+            Atarist_ChunkyFill(dst, vp->w, backdrop);
+            continue;
+        }
         /* Exact perspective for a plane: every pixel on this row has the same
          * depth, so one divide serves the whole scanline and the texture step
          * is constant along it. */
         depth = fxdiv(hf, rows_below);
-        if (depth > GROUND_FAR || depth <= 0) {
-            Atarist_ChunkyFill(dst, vp->w, sky);
+        if (depth < d_near || depth > d_far) {
+            Atarist_ChunkyFill(dst, vp->w, backdrop);
             continue;
         }
         du = fxdiv(depth, cam->focal) << texel_log2;   /* texels per pixel */
-        v = v_camera + (depth << texel_log2);
-        u = u_camera - du * half_w;
+        /* Where the slab's two side edges land on this row.  Same closed form
+         * as the depth: x = focal * (world_x - cam_x) / depth. */
+        x0 = half_w + (int)(fxdiv(fxmul(-half_x - cam->x, cam->focal), depth) >> 16);
+        x1 = half_w + (int)(fxdiv(fxmul(half_x - cam->x, cam->focal), depth) >> 16);
+        if (x0 < 0) x0 = 0;
+        if (x1 > vp->w) x1 = vp->w;
+        if (x1 <= x0) {
+            Atarist_ChunkyFill(dst, vp->w, backdrop);
+            continue;
+        }
+        if (x0 > 0) Atarist_ChunkyFill(dst, x0, backdrop);
+        if (x1 < vp->w) Atarist_ChunkyFill(dst + x1, vp->w - x1, backdrop);
 
-        Atarist_GroundSpan(dst, texels + (((v >> 16) & v_mask) << v_shift),
-                           (uint32_t)u, (uint32_t)du, vp->w, u_mask);
+        v = v_camera + (depth << texel_log2);
+        u = u_camera + du * (x0 - half_w);
+        Atarist_GroundSpan(dst + x0,
+                           texels + (((v >> 16) & v_mask) << v_shift),
+                           (uint32_t)u, (uint32_t)du, x1 - x0, u_mask);
     }
 }
 

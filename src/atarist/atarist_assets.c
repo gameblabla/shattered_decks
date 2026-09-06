@@ -41,7 +41,7 @@ static AtaristTexture g_faces[ATARIST_ART_FACES];
 static AtaristImage   g_hand_img[ATARIST_ART_FACES];
 static uint8_t g_have_art;
 
-/* What the board shows when the art did not load: flat sand with the slot
+/* What the board shows when the art did not load: a flat tile with the slot
  * outline the geometry needs to stay readable. */
 static uint8_t g_fallback_tex[FIELD_BYTES];
 
@@ -52,7 +52,7 @@ static void build_fallback(void)
         for (x = 0; x < FIELD_W; ++x) {
             int edge = (x == 0 || y == 0 || x == FIELD_W - 1 || y == FIELD_H - 1);
             g_fallback_tex[y * FIELD_W + x] =
-                (uint8_t)((edge ? ARENA_SLOT : ARENA_SAND_MID) << 2);
+                (uint8_t)((edge ? ARENA_SLOT : ARENA_TILE_LIGHT) << 2);
         }
     }
 }

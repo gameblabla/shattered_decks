@@ -35,18 +35,35 @@
 #include "msx2_cards.h"
 
 /* ── Camera ──────────────────────────────────────────────────────────────────
- *  Chosen against the row spacing in Atarist_SlotCentre(): with the camera six
- *  units back and 1.875 up, the four rows land at roughly viewport rows
- *  49 / 57 / 74 / 100 at full resolution and the player's monster row is 160
- *  pixels wide, which is what makes a card on it big enough to read.
+ *  Framed against the slab, not guessed.  With the camera six units back and
+ *  2.28 up at a focal length of 220, the board's near edge (z = -2, depth 4)
+ *  lands on viewport row 95 and its far edge (z = 2, depth 8) on row 33, and
+ *  the near edge is 275 of the 320 pixels wide.  Those are the proportions the
+ *  MSX2 board has -- a wide near edge, a far edge half its width, the whole
+ *  slab in the lower two thirds of its band and black above it.
+ *
+ *  THE HORIZON IS ABOVE THE SCREEN (row -30), which is what "looking down at a
+ *  table" means and is why nothing here draws a sky: the vanishing point is
+ *  off the top of the viewport and the plane never reaches it.
+ *
  *  All of it is derived from the viewport, so the halved moving view and the
  *  full still view frame the identical picture. */
-#define CAM_FOCAL_FULL   160     /* pixels at 320 wide */
-#define CAM_HEIGHT_Q16   (15 << 13)         /* 1.875 world units */
-#define CAM_Z_Q16        (-(6 << 16))       /* behind the player's near row */
-#define CARD_W_Q16       (45875)            /* 0.70 world units */
-#define CARD_H_Q16       (58982)            /* 0.90 world units */
-#define WORLD_TO_TEXEL_LOG2  3      /* ATARIST_TEXELS_PER_UNIT == 8 */
+#define CAM_FOCAL_FULL   220     /* pixels at 320 wide */
+#define CAM_HEIGHT_Q16   (149504)           /* 2.28125 world units */
+#define CAM_Z_Q16        (-(6 << 16))       /* behind the slab's near edge */
+#define CAM_HORIZON_FULL (-30)              /* viewport row, at 112 tall */
+/* A card LIES FLAT on its tile, as it does on the MSX2 board.  Standing them
+ * up was what made the old board unreadable: four rows one unit apart, seen
+ * from a low camera, means the near card covers all but a few rows of the one
+ * behind it, and the COM's board was invisible.  Flat, nothing occludes
+ * anything, and the tile a card is on stays obvious.  0.70 x 0.90 is a card's
+ * own aspect, laid out along x and z. */
+#define CARD_W_Q16       (45875)            /* 0.70 world units across */
+#define CARD_D_Q16       (58982)            /* 0.90 world units deep */
+/* Lifted a hair off the plane so it reads as sitting ON the tile rather than
+ * painted into it. */
+#define CARD_LIFT_Q16    (3277)             /* 0.05 */
+#define WORLD_TO_TEXEL_LOG2  4      /* ATARIST_TEXELS_PER_UNIT == 16 */
 
 /* Whether the board is re-rendered at the full 320x112 once it comes to rest.
  * It costs a visible settle on a plain 8 MHz ST; the STE build and anything
@@ -154,36 +171,66 @@ static void camera_for(const AtaristViewport *vp)
 {
     int32_t focal = (int32_t)((CAM_FOCAL_FULL * vp->w / ATARIST_SCREEN_W) << 16);
     Atarist_CameraSet(&g_cam, 0, CAM_Z_Q16, CAM_HEIGHT_Q16, 0, focal);
-    g_cam.horizon = vp->h / 8;
+    g_cam.horizon = (int32_t)(CAM_HORIZON_FULL * vp->h / ATARIST_SPLIT_Y);
 }
 
-/* A card standing upright on a slot, as a screen-space quad.  The board camera
- * never rolls, so the billboard's two vertical edges are exactly vertical on
- * screen and the quad needs only the projected centre plus a projected height:
- * no rotation, and no per-vertex divide beyond the two the projection costs. */
+/* A card lying flat on its slot, as a screen-space quad.  All four corners are
+ * on the board plane, so this is four projections and no billboard maths at
+ * all; the quad is a trapezoid, which is exactly what the affine texture
+ * mapper wants.  Vertex 0 is the far-left corner and the texture's top-left,
+ * so a painting's top points away from the camera. */
 static int card_quad(const AtaristViewport *vp, int row, int col,
                      AtaristVert *q, int tex_w, int tex_h)
 {
-    int32_t wx, wz, bx, by, tx, ty, half;
+    static const int8_t sx[4] = { -1, 1, 1, -1 };
+    static const int8_t sz[4] = {  1, 1, -1, -1 };
+    int32_t wx, wz;
+    int i;
 
     Atarist_SlotCentre(row, col, &wx, &wz);
-    if (!Atarist_Project(&g_cam, vp, wx, wz, 0, &bx, &by)) return 0;
-    if (!Atarist_Project(&g_cam, vp, wx, wz, CARD_H_Q16, &tx, &ty)) return 0;
-    /* Half width in screen pixels: the same projection applied to a point one
-     * half-card to the side, which keeps the aspect honest at every depth. */
-    {
-        int32_t ex, ey;
-        if (!Atarist_Project(&g_cam, vp, wx + CARD_W_Q16 / 2, wz, 0, &ex, &ey))
+    for (i = 0; i < 4; ++i) {
+        int32_t ox, oy;
+        if (!Atarist_Project(&g_cam, vp,
+                             wx + sx[i] * (CARD_W_Q16 / 2),
+                             wz + sz[i] * (CARD_D_Q16 / 2),
+                             CARD_LIFT_Q16, &ox, &oy))
             return 0;
-        half = ex - bx;
-        if (half < (1 << 16)) half = 1 << 16;
+        q[i].x = ox;
+        q[i].y = oy;
+        q[i].u = (i == 1 || i == 2) ? (int32_t)tex_w << 16 : 0;
+        q[i].v = (i >= 2) ? (int32_t)tex_h << 16 : 0;
     }
-
-    q[0].x = bx - half; q[0].y = ty; q[0].u = 0;                q[0].v = 0;
-    q[1].x = bx + half; q[1].y = ty; q[1].u = tex_w << 16;      q[1].v = 0;
-    q[2].x = bx + half; q[2].y = by; q[2].u = tex_w << 16;      q[2].v = tex_h << 16;
-    q[3].x = bx - half; q[3].y = by; q[3].u = 0;                q[3].v = tex_h << 16;
     return 1;
+}
+
+/* The slab's front face.  It is a plain rectangle, not a trapezoid: both of
+ * its corner pairs sit at the same depth, and screen x depends only on world x
+ * and depth, so the face's sides are vertical.  A lit line along the top of it
+ * and the darker face below is the whole of the board's thickness, and it is
+ * what stops the board reading as a rug painted on the backdrop. */
+static void draw_board_rim(const AtaristViewport *vp)
+{
+    AtaristVert q[4];
+    int32_t lx, rx, ty, by, edge, junk;
+
+    if (!Atarist_Project(&g_cam, vp, -ATARIST_BOARD_HALF_X,
+                         ATARIST_BOARD_Z_NEAR, 0, &lx, &ty)) return;
+    if (!Atarist_Project(&g_cam, vp, ATARIST_BOARD_HALF_X,
+                         ATARIST_BOARD_Z_NEAR, 0, &rx, &junk)) return;
+    if (!Atarist_Project(&g_cam, vp, -ATARIST_BOARD_HALF_X,
+                         ATARIST_BOARD_Z_NEAR, -ATARIST_BOARD_THICK,
+                         &junk, &by)) return;
+
+    edge = ty + (2 << 16);
+    if (edge > by) edge = by;
+
+    q[0].x = lx; q[0].y = ty;   q[1].x = rx; q[1].y = ty;
+    q[2].x = rx; q[2].y = edge; q[3].x = lx; q[3].y = edge;
+    Atarist_FillQuad(vp, q, (uint8_t)(ARENA_RIM_TOP << 2));
+
+    q[0].y = edge; q[1].y = edge;
+    q[2].y = by;   q[3].y = by;
+    Atarist_FillQuad(vp, q, (uint8_t)(ARENA_RIM_SIDE << 2));
 }
 
 /* A flat marker lying on the board, used for the cursor and for the slot the
@@ -195,8 +242,9 @@ static void draw_slot_marker(const AtaristViewport *vp, int row, int col,
 {
     int32_t wx, wz;
     AtaristVert q[4];
-    int32_t hx = CARD_W_Q16 / 2 + (1 << 13);
-    int32_t hz = (int32_t)(1 << 14);   /* a quarter unit deep */
+    /* A whole tile, less a hair, so the groove around it still shows. */
+    int32_t hx = (int32_t)30802;       /* 0.47 */
+    int32_t hz = (int32_t)30802;
     int i;
     static const int8_t sx[4] = { -1, 1, 1, -1 };
     static const int8_t sz[4] = { 1, 1, -1, -1 };
@@ -250,8 +298,15 @@ static void render_board(int moving)
     if (cached && !g_ground_valid[slot]) {
         AtaristViewport cache = vp;
         cache.pixels = cached;
-        Atarist_DrawGround(&cache, &g_cam, Atarist_ArenaTexture(),
-                           WORLD_TO_TEXEL_LOG2, (uint8_t)(ARENA_SKY_MID << 2));
+        Atarist_DrawBoardPlane(&cache, &g_cam, Atarist_ArenaTexture(),
+                               WORLD_TO_TEXEL_LOG2,
+                               ATARIST_BOARD_HALF_X, ATARIST_BOARD_Z_NEAR,
+                               ATARIST_BOARD_Z_FAR,
+                               (uint8_t)(ARENA_BLACK << 2));
+        {
+            AtaristViewport rim = cache;
+            draw_board_rim(&rim);
+        }
         g_ground_valid[slot] = 1;
     }
 
@@ -262,9 +317,14 @@ static void render_board(int moving)
         else
             Atarist_ChunkyCopy(vp.pixels, cached, bytes);
     }
-    else
-        Atarist_DrawGround(&vp, &g_cam, Atarist_ArenaTexture(),
-                           WORLD_TO_TEXEL_LOG2, (uint8_t)(ARENA_SKY_MID << 2));
+    else {
+        Atarist_DrawBoardPlane(&vp, &g_cam, Atarist_ArenaTexture(),
+                               WORLD_TO_TEXEL_LOG2,
+                               ATARIST_BOARD_HALF_X, ATARIST_BOARD_Z_NEAR,
+                               ATARIST_BOARD_Z_FAR,
+                               (uint8_t)(ARENA_BLACK << 2));
+        draw_board_rim(&vp);
+    }
 
     cur_slot = cursor_board_slot(&cur_row);
     if (cur_slot >= 0)
