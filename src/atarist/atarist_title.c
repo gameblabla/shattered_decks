@@ -1,15 +1,19 @@
 /* ─────────────────────────────────────────────────────────────────────────────
  *  atarist_title.c — the title screen.
  *
- *  Everything here is drawn planar at the full 320x200; there is no 3D and no
- *  C2P.  The colour comes from the raster split list instead: TITLE_BANDS
- *  palettes down the screen, each one a step of the same gradient, which puts
- *  roughly forty distinct colours on a sixteen-colour screen.
+ *  The backdrop is the game's own title painting, converted by
+ *  tools/atarist/gen_atarist_assets.py into 320x200 planar plus ONE PALETTE
+ *  PER EIGHT SCANLINES.  The screen shows sixteen colours at a time and about
+ *  four hundred over its height, which is what makes a photographic backdrop
+ *  possible in ST low resolution at all.
  *
- *  Only three palette entries mean the same thing in every band -- black, the
- *  text white and the highlight -- so text and the menu can be drawn anywhere
- *  without caring which band they land in.  Everything else is free to vary,
- *  and does.
+ *  Three palette entries mean the same thing in every band -- black, the
+ *  highlight and white -- so the menu can be drawn anywhere over the picture
+ *  without knowing which band a glyph landed in.  Everything else varies per
+ *  band, and does.
+ *
+ *  The picture is a whole screen, so it is not blitted: it is copied over the
+ *  back buffer, which is byte-for-byte the same layout.
  * ───────────────────────────────────────────────────────────────────────────── */
 
 #include <stdint.h>
@@ -17,119 +21,202 @@
 #include "atarist_title.h"
 #include "atarist_video.h"
 #include "atarist_draw.h"
+#include "atarist_board3d.h"
+#include "atarist_blitter.h"
 #include "atarist_input.h"
 #include "atarist_audio.h"
 #include "atarist_disk.h"
+#include "atarist_assets.h"
 #include "atarist_probe.h"
+#include "atarist_os.h"
 
 /* Palette slots that are the same in every band. */
 #define T_BLACK     0
-#define T_BACK      1      /* the gradient step -- different in every band */
-#define T_BACK2     2      /* its darker companion, for the banner */
-#define T_ACCENT    3
-#define T_WHITE    14
-#define T_HILITE   15
+#define T_HILITE   14
+#define T_WHITE    15
 
-#define TITLE_BANDS      12
-#define TITLE_BAND_ROWS  (ATARIST_SCREEN_H / TITLE_BANDS)
+/* The file: a header, one 8-bit RGB palette per band, then the bitmap.  RGB
+ * rather than packed palette words because the same floppy boots an ST and an
+ * STE, and only the running machine knows how many bits a channel has. */
+#define TITLE_MAGIC  0x53545343u    /* 'STSC' */
+#define TITLE_HDR    12
+#define TITLE_BAND_RGB (2 + 16 * 3)
+#define TITLE_MAX_BANDS (ATARIST_MAX_SPLITS - 1)
+#define TITLE_FILE_MAX (TITLE_HDR + TITLE_MAX_BANDS * TITLE_BAND_RGB + \
+                        ATARIST_SCREEN_BYTES)
+
+/* The fallback gradient, for a floppy with no DAT\TITLE.SCR on it. */
+#define FALLBACK_BANDS 12
 
 #define MENU_ITEMS   2
 #define MENU_Y      120
 #define MENU_PITCH   16
 
+/* The menu plate, in pixels.  Kept on 16-pixel boundaries so restoring it is
+ * whole words out of the picture, which is what lets the blinking caret
+ * repaint 40 rows instead of the whole screen. */
+#define PLATE_X      64
+#define PLATE_Y     (MENU_Y - 8)
+#define PLATE_W     192
+#define PLATE_H     (MENU_ITEMS * MENU_PITCH + 12)
+
 static uint8_t  g_choice;
 static uint8_t  g_cursor;
-static uint8_t  g_redraw;
+static uint8_t  g_redraw;      /* whole screen, both buffers */
+static uint8_t  g_blink;       /* just the menu plate */
 static uint16_t g_anim;
+
+static uint8_t *g_file;             /* the loaded TITLE.SCR, or null */
+static const uint8_t *g_picture;    /* into g_file: the 32000-byte bitmap */
 
 static const char *const g_menu[MENU_ITEMS] = {
     "FREE BATTLE",
     "STORY DUEL"
 };
 
-/* One gradient step.  `t` runs 0..TITLE_BANDS-1 from the top of the screen:
- * a deep blue night at the top falling to a warm horizon at the bottom, which
- * is the same palette family the arena uses so the cut to the duel does not
- * look like a different game. */
-static void band_palette(int t, uint16_t *pal)
+static uint32_t be32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | p[3];
+}
+
+static uint16_t be16(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+/* ── The picture ─────────────────────────────────────────────────────────── */
+
+static int title_load(void)
+{
+    int32_t got;
+    uint16_t w, h, bands, rows;
+    static AtaristSplit splits[TITLE_MAX_BANDS];
+    int b, i;
+    const uint8_t *p;
+
+    if (g_picture) return 1;
+    if (!g_file) {
+        g_file = (uint8_t *)st_malloc(TITLE_FILE_MAX);
+        if (!g_file) return 0;
+    }
+    got = Atarist_DiskLoad("DAT\\TITLE.SCR", g_file, TITLE_FILE_MAX);
+    if (got < (int32_t)(TITLE_HDR + ATARIST_SCREEN_BYTES)) return 0;
+    if (be32(g_file) != TITLE_MAGIC) return 0;
+
+    w = be16(g_file + 4);
+    h = be16(g_file + 6);
+    bands = be16(g_file + 8);
+    rows = be16(g_file + 10);
+    if (w != ATARIST_SCREEN_W || h != ATARIST_SCREEN_H) return 0;
+    if (bands == 0 || bands > TITLE_MAX_BANDS || rows == 0) return 0;
+    if (got != (int32_t)(TITLE_HDR + bands * TITLE_BAND_RGB +
+                         ATARIST_SCREEN_BYTES))
+        return 0;
+
+    p = g_file + TITLE_HDR;
+    for (b = 0; b < bands; ++b) {
+        splits[b].line = be16(p);
+        p += 2;
+        for (i = 0; i < 16; ++i, p += 3)
+            splits[b].pal[i] = Atarist_PackRGB(p[0], p[1], p[2]);
+    }
+    Atarist_SetSplits(splits, bands);
+    g_picture = p;
+    return 1;
+}
+
+/* One step of the gradient the port drew before it had a title painting.  It
+ * is still here because a floppy is allowed to ship without every file, and a
+ * blind run that comes up black cannot say whether the game hung. */
+static void fallback_palettes(void)
+{
+    static AtaristSplit splits[FALLBACK_BANDS];
+    int t, i;
+    for (t = 0; t < FALLBACK_BANDS; ++t) {
+        int r = 24 + t * 16, g = 24 + t * 12, b = 96 - t * 4;
+        if (r > 248) r = 248;
+        if (g > 248) g = 248;
+        if (b < 32) b = 32;
+        splits[t].line = (uint16_t)(t * (ATARIST_SCREEN_H / FALLBACK_BANDS));
+        for (i = 0; i < 16; ++i) splits[t].pal[i] = Atarist_PackRGB(0, 0, 0);
+        splits[t].pal[1] = Atarist_PackRGB((uint8_t)r, (uint8_t)g, (uint8_t)b);
+        splits[t].pal[T_HILITE] = Atarist_PackRGB(248, 232, 96);
+        splits[t].pal[T_WHITE] = Atarist_PackRGB(248, 248, 248);
+    }
+    Atarist_SetSplits(splits, FALLBACK_BANDS);
+}
+
+static void paint_backdrop(void)
+{
+    uint8_t *dst = Atarist_BackBuffer();
+    if (!g_picture) {
+        int t;
+        for (t = 0; t < FALLBACK_BANDS; ++t)
+            Atarist_FillRect(0, t * (ATARIST_SCREEN_H / FALLBACK_BANDS),
+                             ATARIST_SCREEN_W,
+                             ATARIST_SCREEN_H / FALLBACK_BANDS, 1);
+        return;
+    }
+    /* A whole screen of planar data in the shifter's own layout: one block
+     * move, and the Blitter takes it when there is one. */
+    if (Atarist_BlitterUsable(dst, g_picture, ATARIST_SCREEN_BYTES))
+        Atarist_BlitterCopy(dst, g_picture, ATARIST_SCREEN_BYTES);
+    else
+        Atarist_ChunkyCopy(dst, g_picture, ATARIST_SCREEN_BYTES);
+}
+
+/* ── The screen ──────────────────────────────────────────────────────────── */
+
+/* One horizontal band of the picture, back into the buffer.  The caret blinks
+ * twice a second and the picture is 32,000 bytes; repainting all of it for a
+ * one-glyph change is a vblank and a half of copying, every time. */
+static void restore_plate(void)
+{
+    int row;
+    const int groups = PLATE_W / 16;
+    const int stride = ATARIST_SCREEN_W / 16 * 4;      /* words per row */
+    uint16_t *dst = (uint16_t *)Atarist_BackBuffer() +
+                    (size_t)PLATE_Y * stride + (PLATE_X / 16) * 4;
+    const uint16_t *src = (const uint16_t *)g_picture +
+                          (size_t)PLATE_Y * stride + (PLATE_X / 16) * 4;
+    for (row = 0; row < PLATE_H; ++row) {
+        int i;
+        for (i = 0; i < groups * 4; ++i) dst[i] = src[i];
+        dst += stride;
+        src += stride;
+    }
+}
+
+static void draw_menu(void)
 {
     int i;
-    int r = 24 + t * 16;
-    int g = 24 + t * 12;
-    int b = 96 - t * 4;
-    if (r > 248) r = 248;
-    if (g > 248) g = 248;
-    if (b < 32) b = 32;
 
-    for (i = 0; i < 16; ++i) pal[i] = Atarist_PackRGB(0, 0, 0);
-    pal[T_BACK]   = Atarist_PackRGB((uint8_t)r, (uint8_t)g, (uint8_t)b);
-    pal[T_BACK2]  = Atarist_PackRGB((uint8_t)(r / 2), (uint8_t)(g / 2),
-                                    (uint8_t)(b / 2));
-    pal[T_ACCENT] = Atarist_PackRGB((uint8_t)((r + 248) / 2),
-                                    (uint8_t)((g + 200) / 2),
-                                    (uint8_t)((b + 96) / 2));
-    pal[T_WHITE]  = Atarist_PackRGB(248, 248, 248);
-    pal[T_HILITE] = Atarist_PackRGB(248, 232, 96);
-    return;
-}
-
-static void title_palettes(void)
-{
-    static AtaristSplit splits[TITLE_BANDS];
-    int t;
-    for (t = 0; t < TITLE_BANDS; ++t) {
-        splits[t].line = (uint16_t)(t * TITLE_BAND_ROWS);
-        band_palette(t, splits[t].pal);
-    }
-    Atarist_SetSplits(splits, TITLE_BANDS);
-}
-
-/* The name, drawn twice the size the 8x8 font gives, by stamping each glyph
- * into a scratch band and then doubling it.  Doing it with the font rather
- * than with a bitmap keeps the floppy free of a logo the game does not have
- * yet, and the whole screen still costs one repaint. */
-static void draw_banner(const char *text, int cy, uint8_t colour, uint8_t shadow)
-{
-    int w = Atarist_TextWidth(text);
-    int x = (160 - w / 2) & ~7;
-    /* Doubling in x would need a second buffer; doubling in y is free, because
-     * two passes one pixel apart read as a heavier face at this size. */
-    Atarist_DrawText(x, cy, text, colour, shadow);
-    Atarist_DrawText(x, cy + 1, text, colour, shadow);
-}
-
-static void title_draw(void)
-{
-    int t, i;
-
-    /* The gradient itself: one solid band per palette.  Index T_BACK is a
-     * different colour in each, which is the whole trick. */
-    for (t = 0; t < TITLE_BANDS; ++t)
-        Atarist_FillRect(0, t * TITLE_BAND_ROWS, ATARIST_SCREEN_W,
-                         TITLE_BAND_ROWS, T_BACK);
-
-    /* A darker plate behind the name and the menu, so the text keeps its
-     * contrast where the gradient is brightest. */
-    Atarist_FillRect(32, 40, 256, 40, T_BACK2);
-    Atarist_FillRect(64, MENU_Y - 8, 192, MENU_ITEMS * MENU_PITCH + 12, T_BACK2);
-
-    draw_banner("SHATTERED DECKS", 48, T_WHITE, T_BLACK);
-    Atarist_DrawTextCentred(160, 64, "ATARI ST", T_ACCENT, T_ACCENT);
+    /* A black plate behind the menu.  The painting is busy exactly where the
+     * menu sits, and eight-pixel text with a one-pixel shadow does not survive
+     * that on its own. */
+    Atarist_FillRect(PLATE_X, PLATE_Y, PLATE_W, PLATE_H, T_BLACK);
+    Atarist_FrameRect(PLATE_X, PLATE_Y, PLATE_W, PLATE_H, T_HILITE);
 
     for (i = 0; i < MENU_ITEMS; ++i) {
         int y = MENU_Y + i * MENU_PITCH;
         uint8_t c = (i == g_cursor) ? T_HILITE : T_WHITE;
-        Atarist_DrawTextCentred(160, y, g_menu[i], c, c);
+        Atarist_DrawTextCentred(160, y, g_menu[i], c, T_BLACK);
         if (i == g_cursor) {
             /* The caret blinks off the frame clock, so it keeps time even when
              * a frame runs long. */
             if ((g_anim >> 4) & 1)
-                Atarist_DrawText(72, y, ">", T_HILITE, T_HILITE);
+                Atarist_DrawText(72, y, ">", T_HILITE, T_BLACK);
         }
     }
+}
 
-    Atarist_DrawTextCentred(160, 176, "CURSOR KEYS  RETURN", T_ACCENT, T_ACCENT);
-    Atarist_DrawTextCentred(160, 188, "ESC QUITS TO DESKTOP", T_ACCENT, T_ACCENT);
+static void title_draw(void)
+{
+    paint_backdrop();
+    draw_menu();
+    Atarist_DrawTextCentred(160, 176, "CURSOR KEYS  RETURN", T_WHITE, T_BLACK);
+    Atarist_DrawTextCentred(160, 188, "ESC QUITS TO DESKTOP", T_WHITE, T_BLACK);
 }
 
 void Atarist_TitleEnter(void)
@@ -138,7 +225,11 @@ void Atarist_TitleEnter(void)
     g_cursor = 0;
     g_anim = 0;
     g_redraw = 2;
-    title_palettes();
+    g_blink = 0;
+    if (!title_load()) {
+        g_picture = 0;
+        fallback_palettes();
+    }
     Atarist_InputFlush();
     Atarist_ClearPlanar(T_BLACK);
     Atarist_MusicLoadTrack(ATARIST_MUSIC_TITLE);
@@ -153,22 +244,28 @@ void Atarist_TitleStep(int vblanks)
     /* The caret is the only thing that changes on its own, so the screen is
      * repainted when it flips and not otherwise -- the same rule the duel
      * board follows, for the same reason. */
-    if (((before >> 4) & 1) != ((g_anim >> 4) & 1)) g_redraw = 2;
+    if (((before >> 4) & 1) != ((g_anim >> 4) & 1)) g_blink = 2;
 
     if (Atarist_InputRepeat(ATARIST_BTN_UP, 14)) {
         g_cursor = (uint8_t)((g_cursor + MENU_ITEMS - 1) % MENU_ITEMS);
-        g_redraw = 2;
+        g_blink = 2;
     }
     if (Atarist_InputRepeat(ATARIST_BTN_DOWN, 14)) {
         g_cursor = (uint8_t)((g_cursor + 1) % MENU_ITEMS);
-        g_redraw = 2;
+        g_blink = 2;
     }
     if (g_atarist_input.pressed & (ATARIST_BTN_A | ATARIST_BTN_START))
         g_choice = (uint8_t)(ATARIST_TITLE_FREE_BATTLE + g_cursor);
 
+    /* Both counters run to two, because the screen is double buffered and a
+     * single repaint leaves the other buffer one present behind. */
     if (g_redraw) {
         title_draw();
         --g_redraw;
+    } else if (g_blink) {
+        if (g_picture) restore_plate();
+        draw_menu();
+        --g_blink;
     }
     g_atarist_probe.menu_cursor = g_cursor;
 }

@@ -19,8 +19,8 @@ counts display-enable pulses, so its handler loads the next palette and re-arms
 itself with the GAP to the one after -- gaps, not absolute lines, because the
 subtraction would otherwise happen inside a level 6 interrupt on every split.
 
-The duel uses two entries; the title screen uses twelve, which is what puts a
-smooth vertical gradient and roughly forty colours on a sixteen-colour screen.
+The duel uses two entries; the title screen uses twenty-five -- one per eight
+scanlines -- which is what lets it show a photographic backdrop.
 `Atarist_SetSplitEnabled(1)` *sets* the count to two rather than raising it, so
 a scene that installed a gradient can hand the screen back as two halves.
 
@@ -37,6 +37,57 @@ Verified by recording: the MCP `record` tool writes Matroska with PCM audio,
 and a Goertzel sweep over the result shows the dominant pitch moving from
 second to second -- a still RMS level alone would not tell a tune from a stuck
 drone.
+
+## Art
+
+Every picture in the port comes off the floppy, converted from `assets/source/`
+by `tools/atarist/gen_atarist_assets.py`.  Nothing is drawn procedurally any
+more.
+
+| file | what | bytes |
+|---|---|---|
+| `DAT/ARENA.TEX` | 128x128 chunky ground: sandstone + the board grid | 16,384 |
+| `DAT/FIELD.CRD` | 79 card faces, 32x32 chunky, ARENA palette | 80,896 |
+| `DAT/HAND.CRD` | the same 79 faces, 32x24 planar, CARD palette | 30,336 |
+| `DAT/TITLE.SCR` | the title painting, 320x200 planar + 25 palettes | 33,262 |
+
+**The palettes are fitted, not written.**  `src/generated/atarist_art.h` holds
+the two sixteen-colour sets; the structural entries (sky, sand, grid, panel,
+HUD ink) are sampled from the real textures and then PINNED, and the entries
+left over -- five in the arena set, seven in the card set -- are k-means
+centres over every card thumbnail at the size it is actually shown.  Pinning
+matters: fitting the free entries without the structural ones in the assignment
+spends two of five on colours the sand already provides.
+
+Three conversion rules were each worth more than the palette fit:
+
+* **Low-pass before dithering.**  These paintings carry far more detail than 32
+  pixels hold; sharp detail at that scale becomes high-frequency dither noise
+  and the monster stops having a silhouette.  A 0.7-pixel blur first leaves
+  flat regions the palette can hold.
+* **Damped error diffusion** (0.30, not 1.0).  Full-strength Floyd-Steinberg is
+  right when the palette can nearly hold the image; with seven colours shared
+  by seventy-eight paintings it turns every card into confetti.
+* **Spread the sand terciles.**  Sandstone is a low-contrast photograph and its
+  three levels come back within a few units of each other, which makes the
+  board a flat wash with no texture in it.
+
+The same painting is converted twice, once per palette, because the board half
+and the hand half of the screen do not share one.
+
+The title screen carries **one palette per eight scanlines** -- 25 raster
+splits, about four hundred colours on a screen that shows sixteen.  Black, the
+menu highlight and white are pinned in every band so the menu can be drawn over
+the picture without knowing which band a glyph landed in.  The picture is a
+whole screen in the shifter's own layout, so it is a block move, not a blit;
+the blinking caret restores only the menu plate (40 rows), which took the title
+from 7 vblanks a repaint to 3.
+
+Boot now reads about 160 KB before the title appears -- roughly 950 vblanks,
+nineteen seconds on the hardware -- so `Atarist_AssetsInit` puts LOADING on the
+screen first.  A machine that cannot spare the 127 KB, or a floppy without the
+files, still runs: the port falls back to flat colours and the probe reports
+`NOMEM` / `NOFILE` with `mark` saying which read failed.
 
 ## Verification
 
@@ -100,14 +151,14 @@ python3 tools/atarist/verify.py --image ... --script "START:2,0:30,A:2"
 | 3D board rasteriser (textured ground, textured card quads, flat rim) | done, verified |
 | planar 2D layer (rects, 8x8 text, masked blits) | done, verified |
 | duel presentation over `msx2_duel.c` | done, playable, verified |
-| card art from real sources | generated placeholders; converter not yet |
-| title screen + menu, scene flow title<->duel | done, verified |
-| multi-palette raster split list (12-band title gradient) | done, verified |
+| card art from real sources | done, verified (converter + floppy files) |
+| title screen + menu, scene flow title<->duel | done, verified (real painting, 25 splits) |
+| multi-palette raster split list (25-band title picture) | done, verified |
 | Blitter block copy, used for the ground cache | done, verified on both builds |
 | STE build (4-bit palettes, Blitter assumed) | boots and plays, verified |
 | story mode beyond duel selection | not started |
 | 416x276 overscan screens | not started |
-| card art from real sources, >48-colour trick | not started |
+| >48-colours-per-scanline trick | not started |
 | STE DMA sound / MOD player | not started |
 
 ## Measured

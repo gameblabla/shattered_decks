@@ -285,9 +285,10 @@ static void render_board(int moving)
             int face;
 
             if (card == MSX2_CARD_NONE) continue;
-            face = is_support ? ATARIST_CARD_FACE_BACK
-                              : Atarist_CardFaceForCard(card,
-                                    s->faceup[col] ? 1 : 0);
+            /* A support in play is face up and has a painting of its own;
+             * only a set monster shows the back. */
+            face = Atarist_CardFaceForCard(card,
+                        (is_support || s->faceup[col]) ? 1 : 0);
             tex = Atarist_CardFace(face);
             if (!card_quad(&vp, row, col, q, 1 << tex->w_log2, 1 << tex->h_log2))
                 continue;
@@ -305,22 +306,20 @@ static void render_board(int moving)
 
 /* ── The card half ───────────────────────────────────────────────────────── */
 
-static uint8_t hand_card_colour(u8 card)
-{
-    static const uint8_t by_attr[6] = {
-        CARD_RED, CARD_BLUE, CARD_GREEN, CARD_PURPLE, CARD_ORANGE, CARD_CYAN
-    };
-    if (card == MSX2_CARD_NONE) return CARD_PANEL_DARK;
-    if (Msx2_IsSupport(card)) return CARD_GOLD;
-    if (card >= MSX2_CARD_COUNT) return CARD_GREY;
-    return by_attr[g_msx2_card_attr[card] % 6];
-}
+/* The art window: 16-pixel aligned inside the card, which is what keeps the
+ * blit whole-word (see STATUS.md -- a misaligned blit is a read-modify-write
+ * per group per row).  ART_H + one stat row is exactly the card's height. */
+#define HAND_ART_X      16
+#define HAND_ART_Y       2
+#define HAND_ATK_Y      27
+#define HAND_DEF_Y      35
 
 static void draw_hand_card(int i, u8 card, int selected, int used)
 {
     int x = HAND_X0 + i * HAND_PITCH;
-    uint8_t body = hand_card_colour(card);
     uint8_t frame = selected ? CARD_YELLOW : CARD_SILVER;
+    uint8_t ink = used ? CARD_PANEL_LIGHT : CARD_WHITE;
+    const AtaristImage *art;
 
     Atarist_FillRect(x, HAND_Y, HAND_CARD_W, HAND_CARD_H,
                      used ? CARD_PANEL_DARK : CARD_PANEL_MID);
@@ -330,18 +329,31 @@ static void draw_hand_card(int i, u8 card, int selected, int used)
                           CARD_YELLOW);
     if (card == MSX2_CARD_NONE) return;
 
-    /* The art window, then the stat strip.  Both are the same shapes the board
-     * card texture uses, so a card reads the same in hand as on the field. */
-    Atarist_FillRect(x + 16, HAND_Y + 4, 32, 18, used ? CARD_GREY : body);
+    /* The card's own painting, converted for the CARD palette.  The board
+     * shows the same picture converted for the ARENA one, so a card reads the
+     * same in hand as on the field. */
+    art = Atarist_CardHandImage(Atarist_CardFaceForCard(card, 1));
+    if (art)
+        Atarist_BlitImage(art, x + HAND_ART_X, HAND_Y + HAND_ART_Y);
+    else
+        Atarist_FillRect(x + HAND_ART_X, HAND_Y + HAND_ART_Y,
+                         ATARIST_ART_HAND_W, ATARIST_ART_HAND_H,
+                         Msx2_IsSupport(card) ? CARD_GOLD : CARD_PANEL_LIGHT);
+
+    /* Two stat rows under the art, right aligned.  Side by side they fit --
+     * four digits at eight pixels is exactly half the card each -- but a
+     * 2300 and a 2100 printed adjacent read as one eight-digit number, which
+     * is what the first build of this layout actually looked like. */
     if (Msx2_IsSupport(card)) {
-        Atarist_DrawText(x + 8, HAND_Y + 26, "SUP", CARD_WHITE, CARD_WHITE);
-        Atarist_DrawNumber(x + 56, HAND_Y + 34, Msx2_SupportKind(card),
-                           CARD_YELLOW, CARD_YELLOW);
+        Atarist_DrawText(x + 8, HAND_Y + HAND_ATK_Y, "SUP", CARD_GOLD,
+                         CARD_BLACK);
+        Atarist_DrawNumber(x + 56, HAND_Y + HAND_DEF_Y, Msx2_SupportKind(card),
+                           CARD_YELLOW, CARD_BLACK);
     } else {
-        Atarist_DrawNumber(x + 56, HAND_Y + 26, Msx2_CardAtk(card),
-                           CARD_WHITE, CARD_WHITE);
-        Atarist_DrawNumber(x + 56, HAND_Y + 34, Msx2_CardDef(card),
-                           CARD_SILVER, CARD_SILVER);
+        Atarist_DrawNumber(x + 56, HAND_Y + HAND_ATK_Y, Msx2_CardAtk(card),
+                           ink, CARD_BLACK);
+        Atarist_DrawNumber(x + 56, HAND_Y + HAND_DEF_Y, Msx2_CardDef(card),
+                           used ? CARD_PANEL_LIGHT : CARD_GREEN, CARD_BLACK);
     }
 }
 

@@ -103,7 +103,7 @@ $(OBJ)/shared_ai.o: src/game/ai.c | $(OBJ)
 $(OBJ)/shared_deck.o: src/game/deck.c | $(OBJ)
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
-$(PRG): check-sdk $(OBJS)
+$(PRG): check-sdk $(ART_STAMP) $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $@ $(LDFLAGS) -lgcc
 	@$(SIZE) $@ || true
 
@@ -117,14 +117,40 @@ $(MUSIC_STAMP): tools/atarist/gen_atarist_audio.py $(MUSIC_SRC)
 	python3 tools/atarist/gen_atarist_audio.py --out $(BUILD)/data/MUS
 	@touch $@
 
-data: $(MUSIC_STAMP)
+# The art: card faces, the ground texture and the title screen, converted from
+# assets/source/ by tools/atarist/gen_atarist_assets.py.  It also writes
+# src/generated/atarist_art.h -- the two palettes it FITTED to the paintings --
+# so the conversion has to run before anything that includes it compiles.
+ART_SRC := tools/atarist/gen_atarist_assets.py \
+           assets/source/cards/card_data.txt \
+           assets/source/title/title_320x200_atarist.png \
+           assets/source/textures/sandstone_1.png \
+           assets/source/textures/card_texture.png \
+           assets/source/bg/desert.png
+ART_STAMP := $(BUILD)/data/.art
+ART_HDR   := src/generated/atarist_art.h
+
+$(ART_STAMP): $(ART_SRC)
+	@mkdir -p $(BUILD)/data/DAT
+	python3 tools/atarist/gen_atarist_assets.py --out $(BUILD)/data \
+	    --preview $(BUILD)/preview
+	@touch $@
+
+$(ART_HDR): $(ART_STAMP)
+# EVERY object, not just the assets one: the header carries the art's
+# dimensions, the duel screen lays its hand cards out from them, and an object
+# built against a stale copy asks the loader for a file size the floppy no
+# longer has -- which comes back as a silent NOFILE and a game with no art.
+$(OBJS): $(ART_HDR)
+
+data: $(MUSIC_STAMP) $(ART_STAMP)
 
 # The floppy: a plain 720 KB FAT12 image with the program in AUTO\, which is
 # what makes it self-booting under TOS/EmuTOS.
-$(DISK): $(PRG) $(MUSIC_STAMP)
+$(DISK): $(PRG) $(MUSIC_STAMP) $(ART_STAMP)
 	@mkdir -p $(BUILD)/disk/AUTO
 	cp $(PRG) $(BUILD)/disk/AUTO/WAIFU.PRG
-	@if [ -d $(BUILD)/data ]; then cp -r $(BUILD)/data/. $(BUILD)/disk/; rm -f $(BUILD)/disk/.music; fi
+	@if [ -d $(BUILD)/data ]; then cp -r $(BUILD)/data/. $(BUILD)/disk/; rm -f $(BUILD)/disk/.music $(BUILD)/disk/.art; fi
 	rm -f $@
 	truncate -s 737280 $@
 	mkfs.msdos -I $@ >/dev/null

@@ -66,7 +66,10 @@ void Atarist_VideoWaitVbl(void);
  *  The duel uses two -- board and cards -- but a static screen may use every
  *  slot, which is how a title or a portrait shows far more than sixteen
  *  colours at once. */
-#define ATARIST_MAX_SPLITS  16
+/* Twenty-five is the title screen: one palette per eight scanlines, which is
+ * what lets a photographic backdrop hold several hundred colours on a screen
+ * that shows sixteen.  The handler cost is one short interrupt per band. */
+#define ATARIST_MAX_SPLITS  26
 
 typedef struct AtaristSplit {
     uint16_t line;          /* first scanline this palette applies to */
