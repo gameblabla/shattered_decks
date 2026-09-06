@@ -42,6 +42,11 @@
 
 void Msx2_VideoBakeFont_In(void);
 
+// Put a turbo R on its R800, from _CODE, with the BIOS briefly in page 0 --
+// and put this port's own interrupt vector back afterwards, which is the part
+// that is not optional (msx2_bank.c).  A no-op on every other machine.
+void Msx2_CpuFast(void);
+
 // Map `segment` at 0x0000 and return whatever was there, for Msx2_Bank0Leave.
 u16  Msx2_Bank0Enter(u16 segment);
 void Msx2_Bank0Leave(u16 segment);
@@ -53,10 +58,13 @@ u16  Msx2_Bank0Current(void);
 u16  Msx2_Bank2Enter(u16 segment);
 void Msx2_Bank2Leave(u16 segment);
 
-// Probe the machine's sound chips and resolve its music table.  Returns a
-// <Msx2AudioChip>; see msx2_audio_probe.c for why neither is in _CODE.
+// Probe the machine's sound chips and resolve its music and sound-effect
+// tables.  Returns a <Msx2AudioChip>; see msx2_audio_probe.c for why none of
+// the three is in _CODE.
+#include "msx2_audio.h"
 struct Msx2MusicAsset;
-u8   Msx2_AudioSetup(struct Msx2MusicAsset* table);
+u8   Msx2_AudioSetup(struct Msx2MusicAsset* table, Msx2SfxStep* steps,
+                     u8* first);
 
 #ifdef MSX2_DEBUG_REGRESSION
 void Msx2_BoardRegressionFixture(u8 fixture);

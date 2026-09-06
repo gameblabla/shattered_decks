@@ -10,6 +10,7 @@
 #include "msx2_video.h"
 #include "msx2_title.h"
 #include "msx2_audio.h"
+#include "msx2_battle_fx.h"
 
 // NEO-16's page-0 bank register.  Writing a 16-bit segment number to it maps
 // that segment at 0x0000; the address itself is ROM, so the write only ever
@@ -60,13 +61,13 @@ u16 Msx2_Bank0Current(void)
 // segment 5 is standing in.  The slot scan inside takes many milliseconds, so
 // leaving them on is not a race that might happen but one that does, every
 // boot.  Msx2_AudioSetup_In() therefore never turns them back on either.
-u8 Msx2_AudioSetup(struct Msx2MusicAsset* table)
+u8 Msx2_AudioSetup(struct Msx2MusicAsset* table, Msx2SfxStep* steps, u8* first)
 {
 	u8 chip;
 	u16 back;
 	__asm di __endasm;
 	back = Msx2_Bank2Enter(MSX2_BANK2_BOOT);
-	chip = Msx2_AudioSetup_In(table);
+	chip = Msx2_AudioSetup_In(table, steps, first);
 	Msx2_Bank2Leave(back);
 	__asm ei __endasm;
 	return chip;
@@ -150,6 +151,81 @@ bool Msx2_EffectStep(void)
 	more = Msx2_EffectStep_In();
 	Msx2_Bank0Leave(back);
 	return more;
+}
+
+// ── The R800 ────────────────────────────────────────────────────────────────
+//
+// A turbo R boots as a Z80 and stays one until CHGCPU (0x0180 of the main ROM)
+// is asked for the other processor: A holds the mode -- 1 is the R800 with
+// external memory still read as ROM, which is what a cartridge game wants --
+// and bit 7 lights the machine's own front-panel LED.
+//
+// IT PUTS THE INTERRUPT VECTOR BACK, AND THAT IS THE WHOLE TRICK.
+// CHGCPU reinitialises the machine's interrupt system on its way through, and
+// this port does not use the machine's: crt0 copies its ISR into RAM at 0xC101
+// and runs interrupt mode 2 off a vector table at 0xC000 (INSTALL_RAM_ISR in
+// MSXgl's macros.asm), because the ROM's own 0x0038 is this cartridge's duel
+// bank.  Coming back in mode 1 therefore sent the very next V-blank into
+// whatever byte the duel screen happens to have at 0x0038 -- the machine died
+// inside the first cartridge read after the switch, executing at 0x00CC with a
+// stack that was not ours.  Reinstating I and IM 2 here is what makes the R800
+// usable at all; it cost a day to find, so it is written down.
+//
+// IT IS CALLED FROM _CODE, NOT FROM THE BOOT BANK BESIDE THE CHIP PROBE.
+// Everything in msx2_audio_probe.c runs with segment 5 in the 0x8000 window,
+// standing where the resident lVGM decoder the V-blank handler calls normally
+// is, and CHGCPU turns interrupts back on.  Here the window holds the code
+// segment throughout.
+//
+// What the faster processor is spent on: the duel's camera moves draw every
+// line of the board instead of every second or third one, and walk twice as
+// many poses of the turn (msx2_arena.c, msx2_board.c, both asking
+// MSX2_TURBO_R()).  Measured against the same soak on the same machine, the
+// R800 build was three hundred frames further into its second duel at the 90 s
+// mark WITH both of those on.
+u8 g_msx2_r800;
+
+void Msx2_CpuFast(void)
+{
+	if(g_msx2_msxver < 3)
+		return;
+	__asm
+		di
+		in		a, (#0xA8)
+		ld		b, a
+		and		a, #0xFC
+		ld		hl, #_g_EXPTBL
+		or		a, (hl)
+		and		a, #0x03
+		ld		c, a
+		ld		a, b
+		and		a, #0xFC
+		or		a, c
+		push	bc
+		out		(#0xA8), a				// the BIOS, over segment 2
+		ld		a, #0x81				// R800/ROM, and light the LED
+		call	#0x0180					// CHGCPU
+		di
+		ld		a, #0xC0				// the RAM vector table crt0 installed
+		ld		i, a
+		im		2
+		pop		bc
+		ld		a, b
+		out		(#0xA8), a				// segment 2 back
+		ei
+	__endasm;
+	g_msx2_r800 = 1;
+}
+
+// The attack cut-in, which moved into the modal bank when segment 2 filled up.
+// One trampoline for all five effects (msx2_battle_fx.h says why): every one of
+// these is called from the duel bank, several of them every frame of a strike,
+// and a bank write is sixteen T-states.
+void Msx2_BattleFx(u8 op, u8 x, u8 y, i16 value)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	Msx2_BattleFx_In(op, x, y, value);
+	Msx2_Bank0Leave(back);
 }
 
 // ── The duel screen ─────────────────────────────────────────────────────────

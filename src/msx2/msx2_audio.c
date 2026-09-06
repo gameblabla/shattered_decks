@@ -98,13 +98,7 @@ bool Msx2_LvgmNotify(u8 id)
 //  heard over the tune rather than instead of it, and a third of the music is
 //  a cheaper thing to lose for eight frames than a whole voice.
 //
-//  An effect is a run of STEPS.  A step holds the channel for `len` V-blanks
-//  with a tone period that walks by `slide` every tick and a volume that falls
-//  by `decay`, plus an optional noise period -- which covers every cue this
-//  game has: a blip is one step, a two-note confirm is two, an explosion is
-//  three widening bands of noise.  Nothing here is a general sound driver; it
-//  is the smallest thing that covers the list, because _CODE has under a
-//  kilobyte left and every byte of this is resident.
+//  An effect is a run of STEPS, and the step table is in msx2_audio.h.
 //
 //  HANDING THE CHANNEL BACK.  lVGM writes register CHANGES, not a whole frame
 //  of registers, so a channel an effect scribbles on stays scribbled until the
@@ -122,56 +116,11 @@ bool Msx2_LvgmNotify(u8 id)
 // stores the complement), so these two are cleared to make a sound.
 #define SFX_MIX_C   0x24u   // tone C (bit 2) and noise C (bit 5)
 
-typedef struct
-{
-	u16 period;   // tone period, or 0 for a step with no tone at all
-	i16 slide;    // added to the period every tick: a rise, a fall, a zap
-	u8  noise;    // noise period 1..31, or 0 for a step with no noise
-	u8  vol;      // 0..15 at the start of the step
-	u8  decay;    // sixteenths of a volume step lost per tick
-	u8  len;      // ticks
-} Msx2SfxStep;
-
-// The cues, one run of steps each, in the order of enum Msx2Sfx.  Periods are
-// the PSG's own: frequency is 111861 / period, so 190 is a 589 Hz blip and 900
-// is the 124 Hz thump under a card landing.  No step may slide its period out
-// of the chip's twelve bits over its own length -- the walk below does not
-// clamp, and none of these comes near it.
-static const Msx2SfxStep g_sfx_steps[] =
-{
-	// SELECT: the cursor moved.  One bright click, gone in four frames.
-	{  190,    0,  0, 10, 56,  4 },
-	// CONFIRM: C5 then G5, the two-note "yes" of a menu.
-	{  213,    0,  0, 12,  0,  3 },
-	{  142,    0,  0, 12, 24,  8 },
-	// CARD_PLACED: a clack -- a short noise transient over a low tone.
-	{  900,    0,  6, 14,  0,  2 },
-	{ 1100,    0, 10, 10, 48,  5 },
-	// CARD_DESTROYED: three widening bands of noise, each quieter, which is a
-	// falling explosion without an envelope generator to spend on it.
-	{    0,    0,  2, 15,  4,  6 },
-	{    0,    0,  6, 11,  6,  8 },
-	{    0,    0, 14,  7,  8, 10 },
-	// CARD_DRAWN: paper.  Fine noise, very short.
-	{    0,    0,  3,  8, 40,  5 },
-	// TURN_PASSED: two notes down, the handover.
-	{  250,    0,  0, 11,  0,  5 },
-	{  375,    0,  0, 11, 22, 10 },
-	// LASER_SHOOT: one tone falling fast over a quarter of a second.
-	{   90,   18,  0, 13,  8, 16 },
-	// DIRECT_HIT: an impact -- noise, then a tone dropping away under it.
-	{    0,    0,  3, 15,  0,  3 },
-	{  700,   90,  8, 14, 12, 12 },
-	// YOU_LOST: three notes down, the last one held and fading.
-	{  320,    0,  0, 12,  0,  8 },
-	{  400,    0,  0, 12,  0,  8 },
-	{  505,    0,  0, 12, 10, 24 },
-};
-
-// Where each cue's steps start.  One entry past the end, so a cue's run is
-// [first[id], first[id + 1]).
-static const u8 g_sfx_first[MSX2_SFX_COUNT + 1] =
-	{ 0, 1, 3, 5, 8, 9, 11, 12, 14, 17 };
+// The cue table itself is in msx2_audio.h and in the boot bank: it is const
+// data, and const data is _CODE, which is the area this port is out of.  These
+// are the RAM copies Msx2_AudioSetup() fills; see the header for why.
+static Msx2SfxStep g_sfx_steps[MSX2_SFX_STEP_COUNT];
+static u8 g_sfx_first[MSX2_SFX_COUNT + 1];
 
 #define SFX_IDLE   0xFFu
 
@@ -206,8 +155,7 @@ static void Msx2_SfxLoadStep(void)
 }
 
 // Called from the V-blank, after the music has decoded its frame and after the
-// bank window has been given back to the code segment -- the step table is
-// const data, so it lives in _CODE, and half of _CODE is that window.
+// bank window has been given back to the code segment.
 static void Msx2_SfxTick(void)
 {
 	if(g_sfx_restore)
@@ -346,7 +294,7 @@ void Msx2_AudioInit(void)
 	g_LVGM_Devices = 0;
 	// The probe and the tables are a boot bank, not resident code:
 	// msx2_audio_probe.c says why, and Msx2_AudioSetup() is the trampoline.
-	g_audio_chip = Msx2_AudioSetup(g_music_table);
+	g_audio_chip = Msx2_AudioSetup(g_music_table, g_sfx_steps, g_sfx_first);
 	g_sfx_pending = MSX2_SFX_COUNT;
 	g_sfx_idx = SFX_IDLE;
 	g_sfx_restore = 0;

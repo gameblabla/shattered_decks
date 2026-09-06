@@ -1,6 +1,6 @@
 // A small resident lVGM player for the formats this port packs: 60 Hz PSG,
-// MSX-MUSIC (YM2413/OPLL) and MSX-AUDIO (Y8950) streams with optional FD
-// notifications and FE/FF loop markers.
+// MSX-MUSIC (YM2413/OPLL), MSX-AUDIO (Y8950) and MoonSound (YMF278B/OPL4)
+// streams with optional FD notifications and FE/FF loop markers.
 //
 // MSXgl's generic player dispatches every PSG command through a function
 // pointer.  That path is useful for a multi-chip desktop sample, but it is a
@@ -11,10 +11,62 @@
 // here so their code and the mapper seam are both safe in the ISR.  Which
 // chip a track plays on is a property of the RECORDING, not of this file: a
 // stream names its chips in the header device list and switches chunks with
-// the F0/F1/F2 markers, and msx2_audio.c picks the recording.
+// the F0/F1/F2/F7 markers, and msx2_audio.c picks the recording.
 
 #include "vgm/lvgm_player.h"
 #include "msx2_audio.h"
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  The MoonSound's four I/O ports
+//
+//  MSXgl's system_port.h stops at the chips MSXgl itself plays, so the OPL4's
+//  are named here.  They are two independent halves of one cartridge:
+//
+//    7E/7F   the WAVE (PCM) half -- 24 sample channels, register index then
+//            data, and the half these recordings are almost entirely made of
+//    C4/C5   the FM half's register bank 0 (it is an OPL3), index then data
+//    C6/C7   the same for bank 1, which is where NEW2 lives
+//
+//  A read of C4 is the status byte, which is what the boot probe uses.
+// ─────────────────────────────────────────────────────────────────────────────
+#define MSX2_MOON_WAVE_INDEX   0x7E
+#define MSX2_MOON_WAVE_DATA    0x7F
+#define MSX2_MOON_FM0_INDEX    0xC4
+#define MSX2_MOON_FM0_DATA     0xC5
+#define MSX2_MOON_FM1_INDEX    0xC6
+#define MSX2_MOON_FM1_DATA     0xC7
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  WHY THE OPL4 IS ASKED WHETHER IT IS READY, AND THE OTHER TWO CHIPS ARE NOT
+//
+//  The OPLL and the Y8950 above are given a gap of counted T-states between an
+//  index write and its data, which works because their datasheets state the gap
+//  in CHIP clocks and the chip clock is the 3.58 MHz the Z80 runs at: a fixed
+//  number of instructions is a fixed number of chip clocks, on every MSX2 ever
+//  made.
+//
+//  The OPL4's clock is its own 33.868 MHz crystal, so its gaps are a fixed
+//  TIME -- about 4.1 us on the wave half, 2.6 on the FM half -- and a fixed
+//  number of instructions is only a fixed time if the CPU speed is fixed.  It
+//  is not: msx2_bank.c puts a turbo R on its R800 at boot (Msx2_CpuFast), and
+//  an R800 runs the two loads between those two writes in well under a
+//  microsecond.  The delay that is right for a Z80 is a quarter of what the
+//  chip needs there, and a register write that lands while the chip is busy is
+//  simply lost -- which on this soundtrack is a note that never keys on, on the
+//  one machine the port goes out of its way to run fastest.
+//
+//  So the chip is asked.  Bit 0 of the status byte at C4 is BUSY, and it is
+//  clear again the moment the previous access has been taken.  Twenty-two
+//  T-states on a Z80, where it is never actually set; as many microseconds as
+//  an R800 needs, on an R800.  Reading the status has no side effects.
+//
+//  It does not have a bail-out count, deliberately.  The stream is bounded, the
+//  mapper window is bounded, and the parser checks both -- but BUSY clearing is
+//  a property of a chip that answered a two-stage probe at boot, and a bound
+//  here could only ever fire on a cartridge that had stopped responding
+//  mid-song.  A count would cost seven T-states in the busiest loop this port
+//  has to buy a check against hardware failure.
+// ─────────────────────────────────────────────────────────────────────────────
 
 const LVGM_Header* g_LVGM_Header;
 const u8* g_LVGM_Pointer;
@@ -105,6 +157,68 @@ static void Msx2_LvgmOpl1Mute(void)
 		Msx2_LvgmOpl1Write((u8)(0xB0 + i), 0x00);
 }
 
+// The MoonSound, silenced the way its own recordings start.
+//
+// DAMP rather than key-off: bit 6 of R#68+n runs the wave channel's envelope
+// down to zero at the damp rate instead of releasing it, which is what stops a
+// held sample immediately rather than letting it ring out over the next screen.
+// Every one of these recordings opens by writing 0x40 into all twenty-four of
+// those registers, so this is the state the next track expects to start from.
+//
+// The FM half is an OPL3 and gets the same key-off the other two chips get, in
+// both register banks.  These recordings do not use it -- they set it up and
+// key it off at bar one -- but a chip left keyed on by a track that did would
+// hold that note under the whole menu.
+static void Msx2_LvgmOpl4Mute(void) __naked
+{
+	// Four runs of consecutive registers, each (index port, first register,
+	// count, value).  Written as a table rather than as four unrolled loops
+	// because every one of the ten register writes below needs its own BUSY
+	// poll in front of it, and ten copies of the poll is most of what the two
+	// resident code areas have left.  The data port is always the index port
+	// plus one, on both halves of the chip.
+	__asm
+		ld		hl, #2$
+	1$:
+		ld		c, (hl)			; index port -- a zero ends the table
+		inc		hl
+		ld		a, c
+		or		a, a
+		ret		Z
+		ld		e, (hl)			; first register
+		inc		hl
+		ld		b, (hl)			; how many of them
+		inc		hl
+		ld		d, (hl)			; the value they all take
+		inc		hl
+		push	hl
+	3$:
+		in		a, (#0xC4)
+		rra
+		jr		C, 3$
+		ld		a, e
+		out		(c), a
+		inc		c				; ... and the data port is the next one along
+	4$:
+		in		a, (#0xC4)
+		rra
+		jr		C, 4$
+		ld		a, d
+		out		(c), a
+		dec		c
+		inc		e
+		djnz	3$
+		pop		hl
+		jr		1$
+	2$:
+		.db		0x7E, 0x68, 24, 0x40	; DAMP the 24 wave channels
+		.db		0xC4, 0xB0,  9, 0x00	; key-off, FM register bank 0
+		.db		0xC6, 0xB0,  9, 0x00	; key-off, FM register bank 1
+		.db		0xC4, 0xBD,  1, 0x00	; and out of rhythm mode
+		.db		0x00
+	__endasm;
+}
+
 void LVGM_Pause(void)
 {
 	g_LVGM_State &= (u8)~LVGM_STATE_PLAY;
@@ -116,6 +230,8 @@ void LVGM_Pause(void)
 		Msx2_LvgmOpllMute();
 	if(g_LVGM_Devices & LVGM_CHIP_MSXAUDIO)
 		Msx2_LvgmOpl1Mute();
+	if(g_LVGM_Devices & LVGM_CHIP_MOONSOUND)
+		Msx2_LvgmOpl4Mute();
 }
 
 bool LVGM_Play(const void* addr, bool loop)
@@ -263,6 +379,105 @@ static void Msx2_LvgmDecodeOpl1(void)
 	Msx2_LvgmOpl1Write(reg, *++g_LVGM_Pointer);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  A MoonSound chunk, which is where this port's V-blank budget actually goes
+//
+//  Every command is three bytes -- port, register, value -- and one busy frame
+//  of the boss theme is over 180 of them.  Two I/O writes each, each waiting on
+//  the chip's BUSY bit first, is why this one decoder is written out in
+//  assembly while the other three are C: at ~140 T-states a write it is already
+//  four tenths of the worst frame in the soundtrack, and the C the other
+//  decoders compile to is half as fast again.  It also consumes the WHOLE run
+//  rather than one command, so the outer parser's per-command overhead is paid
+//  once for a hundred writes instead of a hundred times.
+//
+//  A is the poll's own register, so the byte on its way to the chip waits in E
+//  between the poll and the write.
+//
+//  The run ends on anything that is not a port number: a wait (Ex), a marker
+//  (Fx), or a byte that is neither, which cannot be a valid command and would
+//  otherwise be played into the chip as one.  On that byte the pointer is left
+//  one BEFORE it, because the outer parser advances once more -- the same
+//  convention the other three decoders keep.
+//
+//  It also stops after 256 writes, which is what `djnz` gives for free.  That
+//  is not a music limit (nothing here writes that many in a frame); it is the
+//  bound that keeps a stream which has walked out of its own segment from
+//  running the ISR off the end of the mapper window, and LVGM_Decode() checks
+//  the pointer against the window when it comes back.
+// ─────────────────────────────────────────────────────────────────────────────
+static void Msx2_LvgmDecodeOpl4(void) __naked
+{
+	__asm
+		ld		hl, (_g_LVGM_Pointer)
+		ld		b, #0			; 256 writes, then hand the frame back
+	1$:
+		ld		a, (hl)			; the port: 0 and 1 the FM banks, 2 the wave
+		sub		a, #2
+		jr		NZ, 3$
+
+		; ---- port 2, the wave half at 7E/7F: almost every command --------
+		inc		hl
+		ld		e, (hl)
+		inc		hl
+	6$:
+		in		a, (#0xC4)
+		rra
+		jr		C, 6$
+		ld		a, e
+		out		(#0x7E), a		; MSX2_MOON_WAVE_INDEX
+		ld		e, (hl)
+		inc		hl
+	7$:
+		in		a, (#0xC4)
+		rra
+		jr		C, 7$
+		ld		a, e
+		out		(#0x7F), a		; MSX2_MOON_WAVE_DATA
+		djnz	1$
+		jr		2$				; 256 writes: come back for the rest
+
+		; ---- the terminator, and the two FM banks ------------------------
+		; The FM half is forty writes in the whole soundtrack -- an init and a
+		; key-off at bar one -- so unlike the wave half it does not get its own
+		; unrolled path: the index port comes out of the port number (0 -> C4,
+		; 1 -> C6) and the write goes through BC.
+	3$:
+		add		a, #2			; the port byte again
+		cp		a, #2
+		jr		NC, 2$			; not a port at all: the run ends here
+		add		a, a
+		add		a, #0xC4
+		ld		c, a
+		inc		hl
+		ld		e, (hl)
+		inc		hl
+	8$:
+		in		a, (#0xC4)
+		rra
+		jr		C, 8$
+		ld		a, e
+		out		(c), a			; the index port
+		inc		c
+		ld		e, (hl)
+		inc		hl
+	9$:
+		in		a, (#0xC4)
+		rra
+		jr		C, 9$
+		ld		a, e
+		out		(c), a			; ... and the data port beside it
+		djnz	1$
+
+		; Both exits leave HL on the byte the parser should look at next, and
+		; the parser increments before it looks: step back over it.
+	2$:
+		dec		hl
+		ld		(_g_LVGM_Pointer), hl
+		ret
+	__endasm;
+}
+
 // A FRAME HAS TO END.
 // The parser below runs inside the V-blank handler, with interrupts off and
 // the music segment mapped over the resident code at 0x8000, and it only hands
@@ -319,6 +534,9 @@ void LVGM_Decode(void)
 				case LVGM_OP_OPL1:
 					g_LVGM_CurChip = LVGM_CHIP_MSXAUDIO;
 					break;
+				case LVGM_OP_OPL4:
+					g_LVGM_CurChip = LVGM_CHIP_MOONSOUND;
+					break;
 
 				case LVGM_OP_NOTIFY:
 					if(Msx2_LvgmNotify(*++g_LVGM_Pointer))
@@ -348,6 +566,21 @@ void LVGM_Decode(void)
 			Msx2_LvgmDecodeOpll();
 		else if(g_LVGM_CurChip == LVGM_CHIP_MSXAUDIO)
 			Msx2_LvgmDecodeOpl1();
+		else if(g_LVGM_CurChip == LVGM_CHIP_MOONSOUND)
+		{
+			Msx2_LvgmDecodeOpl4();
+			// The only thing that can leave the pointer above the mapper
+			// window is a stream that ran past its own segment without the
+			// FD 00 that would have mapped the next one.  Past the window is
+			// RAM, and a run of RAM read as OPL4 commands is a chip full of
+			// noise; the budget below would stop it eventually, but only
+			// after a few hundred thousand register writes.
+			if((u16)g_LVGM_Pointer >= 0xC000)
+			{
+				LVGM_Stop();
+				return;
+			}
+		}
 		else
 			Msx2_LvgmDecodePsg();
 		++g_LVGM_Pointer;

@@ -136,7 +136,7 @@ extern const unsigned char g_msx2_slot_box[MSX2_BOARD_VIEWS][MSX2_FIELD_SLOTS][4
 #define MSX2_MESH_POSE_OPENING(pose)  (2 + (pose))
 #define MSX2_MOVE_OPENING_POSES        16
 #define MSX2_MESH_POSE_TURN(pose)  (18 + (pose))
-#define MSX2_MOVE_TURN_POSES        5
+#define MSX2_MOVE_TURN_POSES        9
 // The arena's own colours, measured off the capture: a texture the MSX2
 // cannot afford is honestly stood in for by its average.
 #define MSX2_BOARD_TILE_A       0x95   // (row + col) even
@@ -328,8 +328,8 @@ static const unsigned char g_msx2_dialogue_count[MSX2_STORY_DUELS] =
 	{ 9, 10, 10, 10, 10 };
 
 #define MSX2_SCENE_SEGMENT_FIRST  8
-#define MSX2_SCENE_SEGMENT_LAST   242
-#define MSX2_ASSET_ROM_KB         3888
+#define MSX2_SCENE_SEGMENT_LAST   289
+#define MSX2_ASSET_ROM_KB         4640
 
 // ── lVGM recordings, one set per sound chip ────────────────────────────
 // Streams are split at 16 KB boundaries and notify the resident
@@ -351,34 +351,47 @@ typedef struct Msx2MusicAsset {
 	{ 221, 1, 1 }   /* OVERWORLD */, \
 	{ 221, 1, 1 }   /* DECK_EDITOR */, \
 	{ 222, 2, 1 }   /* BATTLE */, \
-	{ 224, 1, 1 }   /* BOSS */, \
-	{ 225, 1, 1 }   /* FINAL_BOSS */, \
-	{ 226, 1, 0 }   /* RESULT */, \
-	{ 227, 1, 0 }   /* LOST */ \
+	{ 224, 2, 1 }   /* BOSS */, \
+	{ 226, 1, 1 }   /* FINAL_BOSS */, \
+	{ 227, 1, 0 }   /* RESULT */, \
+	{ 228, 1, 0 }   /* LOST */ \
 }
 #define MSX2_MUSIC_TABLE_OPLL \
 { \
 	{ 0, 0, 0 }   /* NONE */, \
-	{ 0, 0, 0 }   /* TITLE */, \
-	{ 228, 1, 1 }   /* OPENING */, \
-	{ 228, 1, 1 }   /* OVERWORLD */, \
-	{ 228, 1, 1 }   /* DECK_EDITOR */, \
-	{ 229, 2, 1 }   /* BATTLE */, \
-	{ 231, 1, 1 }   /* BOSS */, \
-	{ 232, 1, 1 }   /* FINAL_BOSS */, \
-	{ 233, 1, 0 }   /* RESULT */, \
-	{ 234, 1, 0 }   /* LOST */ \
+	{ 229, 2, 1 }   /* TITLE */, \
+	{ 231, 1, 1 }   /* OPENING */, \
+	{ 231, 1, 1 }   /* OVERWORLD */, \
+	{ 231, 1, 1 }   /* DECK_EDITOR */, \
+	{ 232, 1, 1 }   /* BATTLE */, \
+	{ 233, 2, 1 }   /* BOSS */, \
+	{ 235, 2, 1 }   /* FINAL_BOSS */, \
+	{ 237, 1, 0 }   /* RESULT */, \
+	{ 238, 1, 0 }   /* LOST */ \
 }
 #define MSX2_MUSIC_TABLE_MSXAUDIO \
 { \
 	{ 0, 0, 0 }   /* NONE */, \
-	{ 0, 0, 0 }   /* TITLE */, \
-	{ 235, 1, 1 }   /* OPENING */, \
-	{ 235, 1, 1 }   /* OVERWORLD */, \
-	{ 235, 1, 1 }   /* DECK_EDITOR */, \
-	{ 236, 2, 1 }   /* BATTLE */, \
-	{ 238, 2, 1 }   /* BOSS */, \
-	{ 240, 1, 1 }   /* FINAL_BOSS */, \
-	{ 241, 1, 0 }   /* RESULT */, \
-	{ 242, 1, 0 }   /* LOST */ \
+	{ 239, 3, 1 }   /* TITLE */, \
+	{ 242, 1, 1 }   /* OPENING */, \
+	{ 242, 1, 1 }   /* OVERWORLD */, \
+	{ 242, 1, 1 }   /* DECK_EDITOR */, \
+	{ 243, 1, 1 }   /* BATTLE */, \
+	{ 244, 2, 1 }   /* BOSS */, \
+	{ 246, 2, 1 }   /* FINAL_BOSS */, \
+	{ 248, 1, 0 }   /* RESULT */, \
+	{ 249, 1, 0 }   /* LOST */ \
+}
+#define MSX2_MUSIC_TABLE_MOONSOUND \
+{ \
+	{ 0, 0, 0 }   /* NONE */, \
+	{ 250, 9, 1 }   /* TITLE */, \
+	{ 259, 1, 1 }   /* OPENING */, \
+	{ 259, 1, 1 }   /* OVERWORLD */, \
+	{ 259, 1, 1 }   /* DECK_EDITOR */, \
+	{ 260, 7, 1 }   /* BATTLE */, \
+	{ 267, 11, 1 }   /* BOSS */, \
+	{ 278, 10, 1 }   /* FINAL_BOSS */, \
+	{ 288, 1, 0 }   /* RESULT */, \
+	{ 289, 1, 0 }   /* LOST */ \
 }

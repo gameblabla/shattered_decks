@@ -83,11 +83,12 @@ MUSIC_PUBLIC_ASSETS = [
 # names them.  The prefix is what gen_msx_audio.py put in front of the asset
 # ids of that set; the PSG set is unprefixed.  A set that has no recording for
 # a public track gets a zero segment count, which msx2_audio.c reads as "play
-# the PSG one instead".  The title has native recordings in all three sets.
+# the PSG one instead".  The title has native recordings in all four sets.
 MUSIC_CHIP_TABLES = [
     ("PSG", ""),
     ("OPLL", "opll_"),
     ("MSXAUDIO", "msxaudio_"),
+    ("MOONSOUND", "moon_"),
 ]
 
 # Segments 0 and 1 are the resident code the cartridge boots into.  Segments 2

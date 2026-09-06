@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """Convert the MSX2 music sources to bankable MSXgl lVGM streams.
 
-The cartridge carries THREE renditions of the soundtrack, because an MSX2 may
-have any of three sound chips and the port plays the best one it finds:
+The cartridge carries FOUR renditions of the soundtrack, because an MSX2 may
+have any of four sound chips and the port plays the best one it finds:
 
     msx_music/*.vgm             AY-3-8910 / YM2149     (the PSG, always there)
     msx_music/MSX OPLL/*.vgm    YM2413                 (MSX-MUSIC / FM-PAC)
     msx_music/MSX-AUDIO/*.vgm   Y8950                  (MSX-AUDIO)
+    msx_music/MoonSound/*.vgm   YMF278B                (MoonSound / OPL4)
 
 MSXzip is the MSXgl tool that owns the lVGM conversion, simplification and 16K
 split format, so this wrapper validates the input and output around that tool
 and leaves a reproducible manifest for the scene packer.  The FM sets may omit
 a track, in which case a public track with no recording in the selected set is
 emitted with a zero segment count and msx2_audio.c falls back to the PSG
-recording.  The title theme has native recordings in all three sets.
+recording.  The title theme has native recordings in all four sets.
 
 The generated files are deliberately not checked in: they are cartridge
 outputs, just like the scene binaries.  The VGM sources and this script are
@@ -46,20 +47,29 @@ SEGMENT_BYTES = 16 * 1024
 LVGM_CHIP_PSG = 0x01
 LVGM_CHIP_MSXMUSIC = 0x02
 LVGM_CHIP_MSXAUDIO = 0x04
+LVGM_CHIP_MOONSOUND = 0x80
 CHIP_WRITE_OP = {LVGM_CHIP_PSG: 0xA0, LVGM_CHIP_MSXMUSIC: 0x51,
-                 LVGM_CHIP_MSXAUDIO: 0x5C}
+                 LVGM_CHIP_MSXAUDIO: 0x5C, LVGM_CHIP_MOONSOUND: 0xD0}
 CHIP_CLOCK_OFFSET = {LVGM_CHIP_PSG: 0x74, LVGM_CHIP_MSXMUSIC: 0x10,
-                     LVGM_CHIP_MSXAUDIO: 0x58}
+                     LVGM_CHIP_MSXAUDIO: 0x58, LVGM_CHIP_MOONSOUND: 0x60}
 CHIP_NAME = {LVGM_CHIP_PSG: "PSG", LVGM_CHIP_MSXMUSIC: "MSX-MUSIC",
-             LVGM_CHIP_MSXAUDIO: "MSX-AUDIO"}
+             LVGM_CHIP_MSXAUDIO: "MSX-AUDIO", LVGM_CHIP_MOONSOUND: "MoonSound"}
 
-# The three sets, in the order msx2_audio.c's Msx2AudioChip enum names them.
+# The OPL4 is the one chip here whose register file is not flat: a write names
+# a PORT as well as a register, and the three ports are three different halves
+# of the cartridge -- 0 and 1 the two OPL3 register banks at I/O C4-C7, 2 the
+# wave (PCM) half at 7E/7F.  Every event tuple in this file therefore carries a
+# port, and it is 0 for the chips that have only one.
+MOONSOUND_PORTS = 3
+
+# The four sets, in the order msx2_audio.c's Msx2AudioChip enum names them.
 # The prefix is what makes an asset id unique; the PSG set keeps the bare
 # names it has always had, so nothing downstream has to be renamed.
 CHIP_SETS = (
     ("", "", LVGM_CHIP_PSG),
     ("opll_", "MSX OPLL", LVGM_CHIP_MSXMUSIC),
     ("msxaudio_", "MSX-AUDIO", LVGM_CHIP_MSXAUDIO),
+    ("moon_", "MoonSound", LVGM_CHIP_MOONSOUND),
 )
 
 # These names are the stable interface used by msx2_audio.c.  A track can be
@@ -89,17 +99,32 @@ def validate_vgm(path, chip):
     version = int.from_bytes(data[0x08:0x0C], "little")
     if version < 0x00000150:
         fail(path, "VGM version is too old for the declared data offset")
-    for bit, offset in CHIP_CLOCK_OFFSET.items():
-        clock = int.from_bytes(data[offset:offset + 4], "little")
-        if bool(clock) != (bit == chip):
-            fail(path, "expected a %s recording, but the %s clock is %d"
-                 % (CHIP_NAME[chip], CHIP_NAME[bit], clock))
     write_op = CHIP_WRITE_OP[chip]
 
     data_offset = int.from_bytes(data[0x34:0x38], "little")
     cursor = 0x40 if data_offset == 0 else 0x34 + data_offset
     if cursor >= len(data):
         fail(path, "data offset is outside the file")
+
+    # A CLOCK FIELD ONLY EXISTS IF THE HEADER REACHES IT.  A VGM header is as
+    # long as its data offset says and no longer, and the chips were added to
+    # it one version at a time: the AY-3-8910 clock at 0x74 arrived in 1.51 and
+    # the YMF278B at 0x60 in 1.51 as well, so in a 1.50 file (header 0x40, as
+    # msx_music/Battle.vgm still is) every one of these offsets is command
+    # data.  Reading them anyway is how a perfectly good PSG recording came to
+    # be rejected for "having an MSX-AUDIO clock" -- the bytes at 0x58 were two
+    # notes.  Only the fields the header actually contains are compared; what
+    # keeps the check strict for the rest is the walk below, which rejects
+    # every opcode that is not this chip's own write.
+    for bit, offset in CHIP_CLOCK_OFFSET.items():
+        if offset + 4 > cursor:
+            continue
+        clock = int.from_bytes(data[offset:offset + 4], "little")
+        if clock and bit != chip:
+            fail(path, "expected a %s recording, but the %s clock is %d"
+                 % (CHIP_NAME[chip], CHIP_NAME[bit], clock))
+        if not clock and bit == chip:
+            fail(path, "the %s clock is zero" % CHIP_NAME[chip])
 
     saw_end = False
     while cursor < len(data):
@@ -114,11 +139,18 @@ def validate_vgm(path, chip):
         elif 0x70 <= op <= 0x7F:
             size = 1
         elif op == write_op:
-            size = 3
+            # D0 pp aa dd -- the OPL4 alone spends a byte on the port.
+            size = 4 if chip == LVGM_CHIP_MOONSOUND else 3
             if cursor + size > len(data):
                 fail(path, "truncated %s write" % CHIP_NAME[chip])
             if chip == LVGM_CHIP_PSG and data[cursor + 1] > 15:
                 fail(path, "AY register is outside 0..15")
+            if chip == LVGM_CHIP_MOONSOUND and data[cursor + 1] >= MOONSOUND_PORTS:
+                # The resident decoder reads this byte as a port and stops the
+                # run on anything else, so a fourth port would silently
+                # truncate the frame rather than play wrong.
+                fail(path, "OPL4 port %d is outside 0..%d"
+                     % (data[cursor + 1], MOONSOUND_PORTS - 1))
         else:
             fail(path, "unsupported VGM opcode 0x%02X at 0x%X" % (op, cursor))
         cursor += size
@@ -133,6 +165,10 @@ def vgm_events(path, chip):
     """Return the timed register writes that *path* presents to the chip.
 
     This is the equivalence the optimizer is held to.  Comparing decoded
+    An event is (samples, port, register, value); every chip but the OPL4 has
+    a single port and reports 0 for it.
+
+    Comparing decoded
     register events -- not file bytes, and not rendered PCM -- is what catches
     an optimizer that preserves headers while changing a note, effect or wait,
     and it is the only comparison that is exactly as strict as the hardware:
@@ -163,8 +199,13 @@ def vgm_events(path, chip):
             ticks += (op & 0x0F) + 1
             cursor += 1
         elif op == write_op:
-            events.append((ticks, data[cursor + 1], data[cursor + 2]))
-            cursor += 3
+            if chip == LVGM_CHIP_MOONSOUND:
+                events.append((ticks, data[cursor + 1], data[cursor + 2],
+                               data[cursor + 3]))
+                cursor += 4
+            else:
+                events.append((ticks, 0, data[cursor + 1], data[cursor + 2]))
+                cursor += 3
         else:
             # validate_vgm() has already rejected this.  Keep the branch
             # explicit so a future supported command cannot be silently
@@ -255,7 +296,7 @@ def trim_leadin(source, output, chip):
         elif op == write_op:
             if ticks:
                 break   # the first write after time has passed: stop here
-            cursor += 3
+            cursor += 4 if chip == LVGM_CHIP_MOONSOUND else 3
         else:
             fail(source, "unsupported VGM opcode 0x%02X at 0x%X" % (op, cursor))
 
@@ -290,6 +331,85 @@ def trim_leadin(source, output, chip):
     return ticks
 
 
+# -----------------------------------------------------------------------------
+#  A quarter of a MoonSound recording is a register being told what it already
+#  holds
+#
+#  These transcriptions re-state a voice's whole parameter block whenever the
+#  sequencer touches it, so a channel that keeps playing the same instrument has
+#  its envelope, LFO, panning and level rewritten every few frames with the
+#  values already in the chip.  On the PSG and the two FM chips MSXzip drops
+#  that itself; its OPL4 exporter does not, and neither does vgm_cmp -- whose
+#  ymf278b_write() only tracks the two OPL3 ports and passes the whole wave half
+#  through untouched, which is exactly where all of this chip's traffic is.
+#
+#  It matters twice over.  It is a quarter of ~850 KB of cartridge, and it is a
+#  quarter of the register writes the V-blank handler has to push through two
+#  I/O ports at 96 T-states each -- and the busiest frame in this soundtrack
+#  writes over 180 of them.
+#
+#  What is dropped is only a write whose (port, register) already holds that
+#  exact value, in stream order, so the chip is left in the same state after
+#  every command that survives.  The registers where a write has an effect
+#  BEYOND the value it leaves behind are exempt: the wave half's memory address
+#  and memory data ports (R#03-06) advance an internal pointer, so writing the
+#  same byte twice is not the same as writing it once.  Nothing else on this
+#  chip is a strobe -- a key-on is bit 7 of R#68+n, so a retrigger is a 00/80
+#  pair whose two values differ and which therefore both survive.
+# -----------------------------------------------------------------------------
+MOONSOUND_STROBE_REGS = range(0x03, 0x07)   # wave half: memory pointer + data
+
+
+def strip_redundant(source, output, chip):
+    """Copy *source* to *output* without its no-op register writes."""
+    data = source.read_bytes()
+    write_op = CHIP_WRITE_OP[chip]
+    size = 4 if chip == LVGM_CHIP_MOONSOUND else 3
+    start = 0x34 + int.from_bytes(data[0x34:0x38], "little")
+    if int.from_bytes(data[0x1C:0x20], "little"):
+        fail(source, "has a VGM loop point; strip_redundant would have to move it")
+
+    kept = bytearray(data[:start])
+    held = {}
+    cursor = start
+    dropped = 0
+    while cursor < len(data):
+        op = data[cursor]
+        if op == 0x66:
+            kept += data[cursor:]
+            break
+        if op == 0x61:
+            step = 3
+        elif op in (0x62, 0x63) or 0x70 <= op <= 0x7F:
+            step = 1
+        elif op == write_op:
+            step = size
+            if size == 4:
+                port, reg, val = (data[cursor + 1], data[cursor + 2],
+                                  data[cursor + 3])
+            else:
+                port, reg, val = 0, data[cursor + 1], data[cursor + 2]
+            if held.get((port, reg)) == val and not (
+                    chip == LVGM_CHIP_MOONSOUND and port == 2
+                    and reg in MOONSOUND_STROBE_REGS):
+                dropped += 1
+                cursor += step
+                continue
+            held[(port, reg)] = val
+        else:
+            fail(source, "unsupported VGM opcode 0x%02X at 0x%X" % (op, cursor))
+        kept += data[cursor:cursor + step]
+        cursor += step
+
+    shrank = len(data) - len(kept)
+    for field in (0x04, 0x14):   # EOF offset, GD3 offset
+        value = int.from_bytes(kept[field:field + 4], "little")
+        if value:
+            kept[field:field + 4] = (value - shrank).to_bytes(4, "little")
+    output.write_bytes(bytes(kept))
+    return dropped
+
+
 def optimize(source, output, optimizer, chip):
     """Run vgm_cmp and accept its output only if the chip cannot tell."""
     output.unlink(missing_ok=True)
@@ -308,6 +428,16 @@ def optimize(source, output, optimizer, chip):
         return source, False, "changed timed register events"
     return output, True, ""
 
+
+# Which chip an Fx chunk marker selects.  msx2_lvgm.c switches on the same
+# three constants; F7 is the Moonsound chunk lVGM has always reserved and that
+# the OPL4 set is the first recording here to use.
+CHUNK_MARKER = {
+    0xF0: LVGM_CHIP_PSG,
+    0xF1: LVGM_CHIP_MSXMUSIC,
+    0xF2: LVGM_CHIP_MSXAUDIO,
+    0xF7: LVGM_CHIP_MOONSOUND,
+}
 
 # lVGM's OPLL run opcodes name a register run by index; msx2_lvgm.c carries
 # the same two tables.
@@ -336,6 +466,8 @@ def lvgm_command_size(data, cursor, chip, path):
         fail(path, "unsupported lVGM OPLL opcode 0x%02X at 0x%X" % (op, cursor))
     if chip == LVGM_CHIP_MSXAUDIO:
         return 2                                         # rr vv
+    if chip == LVGM_CHIP_MOONSOUND:
+        return 3                                         # pp rr vv
     # PSG direct writes are either the two-byte "R#0n = nn" form (00..0f, in
     # which the WHOLE byte is the register number), a compact register/value
     # opcode (10..cf), or a common-value write (d0..df).  The two-byte form is
@@ -377,14 +509,25 @@ def validate_lvgm(path, chip):
         if op == 0xFD:
             if cursor + 1 >= len(data):
                 fail(path, "truncated lVGM notification")
+            marker = data[cursor + 1]
             cursor += 2
+            if marker == 0x00:
+                # END OF SEGMENT: the rest of this 16 KB is padding, and the
+                # player resumes at the start of the next one.  Walking the
+                # padding instead used to work by luck -- a zero byte is a
+                # two-byte command in every format this cartridge carried, so
+                # the walk stayed aligned to the seam.  An OPL4 command is
+                # THREE bytes, so the same walk arrives at the next segment one
+                # or two bytes out and reads the middle of a write as an
+                # opcode (which is where the "unsupported chip 0xF6" came
+                # from).
+                cursor = -(-cursor // SEGMENT_BYTES) * SEGMENT_BYTES
             continue
         if op == 0xFE:
             cursor += 1
             continue
-        if op in (0xF0, 0xF1, 0xF2):
-            current = (LVGM_CHIP_PSG, LVGM_CHIP_MSXMUSIC,
-                       LVGM_CHIP_MSXAUDIO)[op & 0x0F]
+        if op in CHUNK_MARKER:
+            current = CHUNK_MARKER[op]
             cursor += 1
             continue
         if 0xF3 <= op <= 0xFC:
@@ -483,9 +626,8 @@ def lvgm_events(path, chip):
         if op == 0xFE:
             cursor += 1
             continue
-        if op in (0xF0, 0xF1, 0xF2):
-            current = (LVGM_CHIP_PSG, LVGM_CHIP_MSXMUSIC,
-                       LVGM_CHIP_MSXAUDIO)[op & 0x0F]
+        if op in CHUNK_MARKER:
+            current = CHUNK_MARKER[op]
             cursor += 1
             continue
         if (op & 0xF0) == 0xE0:
@@ -496,23 +638,25 @@ def lvgm_events(path, chip):
         if current == LVGM_CHIP_MSXMUSIC:
             high = op >> 4
             if high <= 0x3:
-                events.append((frame, op, data[cursor + 1]))
+                events.append((frame, 0, op, data[cursor + 1]))
             elif high <= 0x5:
                 count = LVGM_OPLL_CNT[op & 0x0F]
                 reg = LVGM_OPLL_REG[op & 0x0F]
                 for i in range(count):
-                    events.append((frame, reg + i, data[cursor + 1 + (
+                    events.append((frame, 0, reg + i, data[cursor + 1 + (
                         0 if high == 0x5 else i)]))
             elif high <= 0x7:
                 count = (op & 0x0F) + 3
                 reg = data[cursor + 1]
                 for i in range(count):
-                    events.append((frame, reg + i, data[cursor + 2 + (
+                    events.append((frame, 0, reg + i, data[cursor + 2 + (
                         0 if high == 0x6 else i)]))
             else:
-                events.append((frame, op & 0x7F, 0))
+                events.append((frame, 0, op & 0x7F, 0))
         elif current == LVGM_CHIP_MSXAUDIO:
-            events.append((frame, op, data[cursor + 1]))
+            events.append((frame, 0, op, data[cursor + 1]))
+        elif current == LVGM_CHIP_MOONSOUND:
+            events.append((frame, op, data[cursor + 1], data[cursor + 2]))
         cursor += size
     fail(path, "lVGM stream ended before its end marker")
 
@@ -523,11 +667,11 @@ def vgm_frame_events(path, chip, hz=60):
     samples = 44100 // hz
     held = {}
     framed = []
-    for ticks, reg, val in events:
-        if held.get(reg) == val:
+    for ticks, port, reg, val in events:
+        if held.get((port, reg)) == val:
             continue
-        held[reg] = val
-        framed.append((ticks // samples, reg, val))
+        held[(port, reg)] = val
+        framed.append((ticks // samples, port, reg, val))
     return framed
 
 
@@ -539,10 +683,9 @@ def verify_lvgm(source, output, chip):
         return
     for index, (want, got) in enumerate(zip(expected, produced)):
         if want != got:
-            fail(output, "write %d of the %s stream is frame %d R#%02X=%02X, "
-                 "but %s has frame %d R#%02X=%02X"
-                 % (index, CHIP_NAME[chip], got[0], got[1], got[2],
-                    source.name, want[0], want[1], want[2]))
+            fail(output, "write %d of the %s stream is frame %d P%d R#%02X=%02X"
+                 ", but %s has frame %d P%d R#%02X=%02X"
+                 % ((index, CHIP_NAME[chip]) + got + (source.name,) + want))
     fail(output, "the %s stream has %d writes; %s has %d"
          % (CHIP_NAME[chip], len(produced), source.name, len(expected)))
 
@@ -587,6 +730,16 @@ def main():
             validate_vgm(source, chip)
             trimmed = VGM_CMP_BUILD / (prefix + filename + ".trimmed.vgm")
             lead = trim_leadin(source, trimmed, chip)
+            # The OPL4 is the one chip whose no-op writes nothing upstream
+            # removes; see strip_redundant().  Running it BEFORE vgm_cmp means
+            # the optimizer still gets its usual shot at what is left, and
+            # finds the two OPL3 ports already deduplicated the way it would
+            # have done itself.
+            stripped = 0
+            if chip == LVGM_CHIP_MOONSOUND:
+                lean = VGM_CMP_BUILD / (prefix + filename + ".stripped.vgm")
+                stripped = strip_redundant(trimmed, lean, chip)
+                trimmed = lean
             candidate = VGM_CMP_BUILD / (prefix + filename + ".optimized.vgm")
             input_path, accepted, rejection = optimize(
                 trimmed, candidate, optimizer, chip)
@@ -605,16 +758,19 @@ def main():
                 "loop": bool(loop),
                 "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "lead_in_samples": lead,
+                "redundant_writes_dropped": stripped,
                 "optimized_bytes": candidate.stat().st_size,
                 "optimizer_accepted": accepted,
                 "optimizer_rejection": rejection,
                 "input": str(input_path.relative_to(ROOT)),
             })
             if not quiet:
-                print("%-11s %-20s %6d bytes, %d segments%s <- %s"
+                print("%-11s %-20s %6d bytes, %d segments%s%s <- %s"
                       % (CHIP_NAME[chip], asset_id, len(data), segments,
                          "" if not lead else
                          ", trimmed %.2fs of lead-in" % (lead / 44100.0),
+                         "" if not stripped else
+                         ", dropped %d no-op writes" % stripped,
                          source.relative_to(ROOT)))
 
     payload = {
