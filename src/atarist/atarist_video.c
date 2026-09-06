@@ -19,10 +19,15 @@ volatile uint32_t g_atarist_vbl;
 /* Read by atarist_isr.S. */
 uint8_t *g_atarist_front;
 uint8_t *g_atarist_back;
-uint16_t g_atarist_pal_arena[16];
-uint16_t g_atarist_pal_card[16];
+/* Read by the two interrupt handlers (atarist_isr.S), which is why the palette
+ * list is a flat array of sixteen-word entries and the line list is a gap per
+ * entry rather than an absolute line: the handler adds nothing and subtracts
+ * nothing, it just stores. */
+uint16_t g_atarist_split_pal[ATARIST_MAX_SPLITS][16];
+uint8_t  g_atarist_split_gap[ATARIST_MAX_SPLITS];
+volatile uint16_t g_atarist_split_count = 2;
+volatile uint16_t g_atarist_split_index;
 uint8_t  g_atarist_split_on;
-uint8_t  g_atarist_split_line = ATARIST_SPLIT_Y;
 uint32_t g_atarist_old_vbl;
 
 static void Atarist_C2PInit(void);
@@ -75,16 +80,54 @@ uint16_t Atarist_PackRGB(uint8_t r, uint8_t g, uint8_t b)
     return (uint16_t)(((r >> 5) << 8) | ((g >> 5) << 4) | (b >> 5));
 }
 
+/* The list is read by a level 6 interrupt, so it is edited with interrupts
+ * masked: a half-written entry is a frame of wrong colours, and a half-written
+ * gap is a split on the wrong line. */
+static void splits_begin(void) { __asm__ volatile("move.w #0x2700,%%sr" : : : "cc"); }
+static void splits_end(void)   { __asm__ volatile("move.w #0x2300,%%sr" : : : "cc"); }
+
+void Atarist_SetSplits(const AtaristSplit *list, int count)
+{
+    int i, j, prev = 0;
+
+    if (count < 1) count = 1;
+    if (count > ATARIST_MAX_SPLITS) count = ATARIST_MAX_SPLITS;
+
+    splits_begin();
+    for (i = 0; i < count; ++i) {
+        int line = (i == 0) ? 0 : (int)list[i].line;
+        int gap;
+        if (line > ATARIST_SCREEN_H) line = ATARIST_SCREEN_H;
+        if (line < prev) line = prev;
+        gap = line - prev;
+        /* Timer B counts down from the value written, so a gap of zero would
+         * be a 256-line count -- a split that never fires this frame. */
+        if (i && gap < 1) gap = 1;
+        g_atarist_split_gap[i] = (uint8_t)gap;
+        for (j = 0; j < 16; ++j) g_atarist_split_pal[i][j] = list[i].pal[j];
+        prev = line;
+    }
+    g_atarist_split_count = (uint16_t)count;
+    g_atarist_split_on = (uint8_t)(count > 1);
+    splits_end();
+}
+
 void Atarist_SetArenaPalette(const uint16_t *pal16)
 {
     int i;
-    for (i = 0; i < 16; ++i) g_atarist_pal_arena[i] = pal16[i];
+    splits_begin();
+    for (i = 0; i < 16; ++i) g_atarist_split_pal[0][i] = pal16[i];
+    splits_end();
 }
 
 void Atarist_SetCardPalette(const uint16_t *pal16)
 {
     int i;
-    for (i = 0; i < 16; ++i) g_atarist_pal_card[i] = pal16[i];
+    splits_begin();
+    for (i = 0; i < 16; ++i) g_atarist_split_pal[1][i] = pal16[i];
+    g_atarist_split_gap[1] = ATARIST_SPLIT_Y;
+    if (g_atarist_split_count < 2) g_atarist_split_count = 2;
+    splits_end();
 }
 
 void Atarist_SetWholePalette(const uint16_t *pal16)
@@ -93,9 +136,20 @@ void Atarist_SetWholePalette(const uint16_t *pal16)
     Atarist_SetCardPalette(pal16);
 }
 
+/* Enabling the split means the DUEL's two-way split specifically, so the count
+ * is set, not raised: a scene that installed a twelve-entry gradient (the
+ * title) has to be able to hand the screen back as two halves again. */
 void Atarist_SetSplitEnabled(int on)
 {
+    splits_begin();
     g_atarist_split_on = (uint8_t)(on ? 1 : 0);
+    if (on) {
+        g_atarist_split_gap[1] = ATARIST_SPLIT_Y;
+        g_atarist_split_count = 2;
+    } else {
+        g_atarist_split_count = 1;
+    }
+    splits_end();
 }
 
 /* ── Buffers ─────────────────────────────────────────────────────────────── */
@@ -222,12 +276,15 @@ int Atarist_VideoInit(void)
      * rather than sixteen shades of black. */
     for (i = 0; i < 16; ++i) {
         uint8_t v = (uint8_t)(i * 17);
-        g_atarist_pal_arena[i] = g_atarist_pal_card[i] =
+        g_atarist_split_pal[0][i] = g_atarist_split_pal[1][i] =
             Atarist_PackRGB(v, v, v);
     }
 
+    g_atarist_split_gap[0] = 0;
+    g_atarist_split_gap[1] = ATARIST_SPLIT_Y;
+    g_atarist_split_count = 2;
+    g_atarist_split_index = 0;
     g_atarist_split_on = 1;
-    g_atarist_split_line = ATARIST_SPLIT_Y;
 
     __asm__ volatile("move.w #0x2700,%%sr" : : : "cc");
     g_old_timb_vec = ST_VEC_MFP_TIMB;

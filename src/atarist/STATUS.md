@@ -12,6 +12,18 @@ make -f Makefile.atarist verify       # build, boot headless, read the probe
 
 The output is a self-booting 720 KB FAT12 floppy: TOS runs `AUTO\WAIFU.PRG`.
 
+## Raster splits
+
+The screen carries a LIST of palettes (`Atarist_SetSplits`), not two.  Timer B
+counts display-enable pulses, so its handler loads the next palette and re-arms
+itself with the GAP to the one after -- gaps, not absolute lines, because the
+subtraction would otherwise happen inside a level 6 interrupt on every split.
+
+The duel uses two entries; the title screen uses twelve, which is what puts a
+smooth vertical gradient and roughly forty colours on a sixteen-colour screen.
+`Atarist_SetSplitEnabled(1)` *sets* the count to two rather than raising it, so
+a scene that installed a gradient can hand the screen back as two halves.
+
 ## Audio
 
 `tools/atarist/gen_atarist_audio.py` converts `msx_music/*.vgm` -- the same
@@ -89,8 +101,14 @@ python3 tools/atarist/verify.py --image ... --script "START:2,0:30,A:2"
 | planar 2D layer (rects, 8x8 text, masked blits) | done, verified |
 | duel presentation over `msx2_duel.c` | done, playable, verified |
 | card art from real sources | generated placeholders; converter not yet |
-| title / story / deck editor, 416x276 screens | not started |
-| STE blitter + DMA sound | detection only |
+| title screen + menu, scene flow title<->duel | done, verified |
+| multi-palette raster split list (12-band title gradient) | done, verified |
+| Blitter block copy, used for the ground cache | done, verified on both builds |
+| STE build (4-bit palettes, Blitter assumed) | boots and plays, verified |
+| story mode beyond duel selection | not started |
+| 416x276 overscan screens | not started |
+| card art from real sources, >48-colour trick | not started |
+| STE DMA sound / MOD player | not started |
 
 ## Measured
 
@@ -101,6 +119,10 @@ Duel screen, plain ST, EmuTOS, Hatari:
 | nothing moving | 1 |
 | board moving (160x56 + doubling C2P) | 3 |
 | the two settle frames (320x112 + 1:1 C2P + hand repaint) | 16 |
+| a scene change that loads a music track from floppy | ~170 |
+
+The last one is a real floppy read of up to 29 KB and is what it costs on the
+hardware; it happens once when a scene opens, never inside one.
 
 `worst_vbls` in the probe is the number to read; `frame_vbls` only sees the last
 frame, and this screen is quiet most of the time.  Poke `worst_vbls` back to

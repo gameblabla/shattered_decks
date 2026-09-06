@@ -1,12 +1,15 @@
 /* ─────────────────────────────────────────────────────────────────────────────
  *  atarist_scene.c — scene dispatch, plus the bring-up self test.
  *
- *  The bring-up scene is not a placeholder for its own sake: it is what proves,
+ *  atarist_main.c owns the frame loop and knows nothing about what is on
+ *  screen; this decides which scene is running and hands the next one its
+ *  state.  Scenes never call each other.
+ *
+ *  The bring-up scene is not a placeholder for its own sake: it is what proved,
  *  on a blind headless run, that the four things the rest of the port sits on
- *  are working — the chunky->planar path into the top half, direct planar
- *  drawing into the bottom half, the Timer B raster split that gives the two
- *  halves different palettes, and the IKBD latch.  It stays in the tree behind
- *  ATARIST_DEBUG_BRINGUP for exactly that reason.
+ *  were working -- the chunky->planar path into the top half, direct planar
+ *  drawing into the bottom half, the Timer B raster split, and the IKBD latch.
+ *  It stays in the tree behind ATARIST_DEBUG_BRINGUP for exactly that reason.
  * ───────────────────────────────────────────────────────────────────────────── */
 
 #include <stdint.h>
@@ -17,6 +20,10 @@
 #include "atarist_probe.h"
 #include "atarist_assets.h"
 #include "atarist_duel.h"
+#include "atarist_title.h"
+
+#include "msxgl.h"
+#include "msx2_duel.h"
 
 #ifndef ATARIST_DEBUG_BRINGUP
 #define ATARIST_DEBUG_BRINGUP 0
@@ -24,10 +31,21 @@
 
 static uint8_t g_scene;
 static uint16_t g_anim;
+/* How far the player has got in story mode.  It is not saved anywhere yet --
+ * there is no save file on this target -- so it lasts as long as the session. */
+static uint8_t g_story_progress;
 
+/* A seed that is unpredictable to a player and repeatable to the harness: the
+ * vblank counter at the moment the duel opens, which a scripted run reaches on
+ * a fixed frame. */
+static uint32_t scene_seed(void)
+{
+    return g_atarist_vbl * 2654435761u + 1u;
+}
+
+#if ATARIST_DEBUG_BRINGUP
 /* Two visibly different sixteens, so a screenshot shows at a glance whether the
  * split fired: the board half is a warm desert ramp, the card half a cool one. */
-#if ATARIST_DEBUG_BRINGUP
 static void Atarist_BringupPalettes(void)
 {
     uint16_t arena[16], card[16];
@@ -85,40 +103,69 @@ static void Atarist_BringupCards(void)
         }
     }
 }
-
 #endif /* ATARIST_DEBUG_BRINGUP */
+
+static void enter_title(void)
+{
+    g_scene = ATARIST_SCENE_TITLE;
+    Atarist_TitleEnter();
+    g_atarist_probe.scene = g_scene;
+}
+
+static void enter_duel(uint8_t story_index)
+{
+    g_scene = ATARIST_SCENE_DUEL;
+    ATARIST_STAGE(ATARIST_STAGE_DUEL);
+    Atarist_DuelEnter(scene_seed(), story_index);
+    g_atarist_probe.scene = g_scene;
+}
 
 void Atarist_SceneInit(void)
 {
     g_anim = 0;
+    g_story_progress = 0;
 #if ATARIST_DEBUG_BRINGUP
     g_scene = ATARIST_SCENE_BRINGUP;
     Atarist_BringupPalettes();
-#else
-    g_scene = ATARIST_SCENE_DUEL;
-    ATARIST_STAGE(ATARIST_STAGE_DUEL);
-    /* The free-battle seed is the vblank counter at the moment the duel opens,
-     * which is unpredictable to a player and perfectly repeatable to the
-     * harness, because a scripted run reaches this line on a fixed frame. */
-    Atarist_DuelEnter(g_atarist_vbl * 2654435761u + 1u, 0xFFu);
-#endif
     g_atarist_probe.scene = g_scene;
+#else
+    enter_title();
+#endif
 }
 
 void Atarist_SceneStep(int vblanks)
 {
     g_anim = (uint16_t)(g_anim + vblanks);
     switch (g_scene) {
+    case ATARIST_SCENE_TITLE:
+        Atarist_TitleStep(vblanks);
+        switch (Atarist_TitleChoice()) {
+        case ATARIST_TITLE_FREE_BATTLE:
+            enter_duel(MSX2_STORY_NONE);
+            break;
+        case ATARIST_TITLE_STORY:
+            enter_duel(g_story_progress);
+            break;
+        default:
+            break;
+        }
+        break;
+
     case ATARIST_SCENE_DUEL:
         Atarist_DuelStep(vblanks);
         if (Atarist_DuelFinished()) {
-            /* Free battle restarts: there is no title screen to fall back to
-             * yet, and a blind run that ends on a dead screen cannot be told
-             * apart from one that crashed. */
-            Atarist_DuelEnter(g_atarist_vbl * 2654435761u + 1u, 0xFFu);
+            if (Atarist_DuelResult() > 0) {
+                ++g_atarist_probe.wins_player;
+                if (g_story_progress < MSX2_STORY_MAX_DUELS - 1)
+                    ++g_story_progress;
+            } else {
+                ++g_atarist_probe.wins_com;
+            }
             ++g_atarist_probe.duels;
+            enter_title();
         }
         break;
+
 #if ATARIST_DEBUG_BRINGUP
     default:
         Atarist_BringupBoard();

@@ -28,6 +28,7 @@
 #include "atarist_os.h"
 #include "atarist_audio.h"
 #include "atarist_disk.h"
+#include "atarist_blitter.h"
 
 #include "msxgl.h"
 #include "msx2_duel.h"
@@ -254,8 +255,13 @@ static void render_board(int moving)
         g_ground_valid[slot] = 1;
     }
 
-    if (cached)
-        Atarist_ChunkyCopy(vp.pixels, cached, vp.w * vp.h);
+    if (cached) {
+        int32_t bytes = (int32_t)vp.w * vp.h;
+        if (Atarist_BlitterUsable(vp.pixels, cached, bytes))
+            Atarist_BlitterCopy(vp.pixels, cached, bytes);
+        else
+            Atarist_ChunkyCopy(vp.pixels, cached, bytes);
+    }
     else
         Atarist_DrawGround(&vp, &g_cam, Atarist_ArenaTexture(),
                            WORLD_TO_TEXEL_LOG2, (uint8_t)(ARENA_SKY_MID << 2));

@@ -57,13 +57,34 @@ uint8_t *Atarist_Chunky(void);
 int  Atarist_VideoPresent(void);
 void Atarist_VideoWaitVbl(void);
 
-/* Palette halves.  Sixteen ST/STE colour words each; they take effect on the
- * next frame, so a mid-frame change never tears. */
+/* ── Raster splits ─────────────────────────────────────────────────────────
+ *  The screen carries a LIST of palettes, each taking effect at a scanline:
+ *  entry 0 from the top of the frame, entry i from its own line down.  Timer B
+ *  counts display-enable pulses, so the handler simply re-arms itself with the
+ *  gap to the next entry (atarist_isr.S).
+ *
+ *  The duel uses two -- board and cards -- but a static screen may use every
+ *  slot, which is how a title or a portrait shows far more than sixteen
+ *  colours at once. */
+#define ATARIST_MAX_SPLITS  16
+
+typedef struct AtaristSplit {
+    uint16_t line;          /* first scanline this palette applies to */
+    uint16_t pal[16];
+} AtaristSplit;
+
+/* Install a whole list.  `list[0].line` is ignored (it is always the top of
+ * the frame) and entries must be in increasing line order.  Takes effect at
+ * the next vblank, so a mid-frame change never tears. */
+void Atarist_SetSplits(const AtaristSplit *list, int count);
+
+/* The duel's two halves, kept as named helpers because that is what every call
+ * site means.  They edit the same two-entry list. */
 void Atarist_SetArenaPalette(const uint16_t *pal16);
 void Atarist_SetCardPalette(const uint16_t *pal16);
-/* Both halves at once, for the screens that have no split (title, story). */
+/* One palette for the whole screen, for scenes that have no split. */
 void Atarist_SetWholePalette(const uint16_t *pal16);
-/* Enable/disable the split.  Disabled, the arena palette covers the screen. */
+/* Enable/disable the split.  Disabled, entry 0 covers the screen. */
 void Atarist_SetSplitEnabled(int on);
 
 /* Pack an 8-bit-per-channel RGB triple into this machine's palette word.  The
