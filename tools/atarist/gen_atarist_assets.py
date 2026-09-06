@@ -153,6 +153,12 @@ SUPPORT_VARIANTS = 6
 # saturated entries -- the HUD's red and green -- and speckles a grey robe with
 # confetti.  0.75 keeps the shading and drops the confetti.
 ART_DIFFUSION = 0.75
+# How much the dark slab is darkened on top of being the darker photograph.
+# The two stones as shot are only about fifty units of luminance apart, and a
+# checkerboard that close reads as one texture with a seam in it.  BOTH the
+# palette tones and the texel the dither reads are scaled by this -- see
+# tile_cell.
+DARK_TILE_SHADE = 0.72
 
 
 def quantize_levels(img, n, crop=None, contrast=True):
@@ -230,6 +236,24 @@ def fit_palette(slots, fixed_map, sample):
 
 
 # ── Dither ───────────────────────────────────────────────────────────────────
+
+def quantize(img, palette, allow=None):
+    """Nearest-colour, NO error diffusion.  What the card FRAME is drawn with.
+
+    A frame is not a photograph: it is a few flat tones, two gold rules and a
+    black keyline, and every one of them is already in the palette exactly.
+    Running it through the same Floyd-Steinberg the painting takes is what made
+    the sheet look like seventy-nine speckled brown blobs -- the diffusion had
+    nothing to gain (the colour it wanted was there) and it broke every rule
+    into a dotted line.  Flat quantisation keeps the rules solid, which is the
+    only thing that says "card" at thirty-two pixels across."""
+    pal = np.array(palette, dtype=np.float64)
+    idx = list(range(16)) if allow is None else list(allow)
+    sub = pal[idx]
+    src = np.asarray(img.convert("RGB"), dtype=np.float64)
+    d = ((src[:, :, None, :] - sub[None, None, :, :]) ** 2).sum(axis=3)
+    return np.array(idx, dtype=np.uint8)[d.argmin(axis=2)]
+
 
 def dither(img, palette, allow=None, strength=0.30):
     """Floyd-Steinberg an RGB image into palette indices.
@@ -507,7 +531,10 @@ def frame_windows():
 
 
 def framed_card(art, size, kind=0, flat=False):
-    """A card front: the template's frame with the painting in its window.
+    """A card front as an RGB preview: the template's frame with the painting
+    in its window.  Only the previews and the palette sample use this; what is
+    written to the floppy comes out of `framed_card_indices`, which composites
+    in INDEX space so the frame never goes through a dither.
 
     The frame is squashed to `size` rather than letterboxed, and that is
     correct rather than sloppy: on the board a card is a 0.70 x 0.90 quad, so a
@@ -518,20 +545,44 @@ def framed_card(art, size, kind=0, flat=False):
     in the HUD font underneath.
 
     THE ART IS PREPARED AT THE SIZE IT LANDS AT, and the frame is not prepared
-    at all.  Blurring and stretching the composite instead -- which is what
-    this did first -- softens the frame's gold rules into brown smears, and
-    those rules are the only thing that says "card" at twenty-four pixels
-    across."""
+    at all."""
     base = Image.open(FRAME_SRC[kind]).convert("RGB").resize(
         size, Image.Resampling.LANCZOS)
-    fx0, fy0, fx1, fy1 = frame_windows()[0]
-    x0, y0 = int(round(fx0 * size[0])), int(round(fy0 * size[1]))
-    x1, y1 = int(round(fx1 * size[0])), int(round(fy1 * size[1]))
-    x1, y1 = max(x0 + 1, x1), max(y0 + 1, y1)
+    x0, y0, x1, y1 = art_window(size)
     win = ImageOps.fit(art.convert("RGB"), (x1 - x0, y1 - y0),
                        method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
     base.paste(art_prep(win, flat), (x0, y0))
     return base
+
+
+def art_window(size):
+    """The art window inside a card front at `size`, in whole pixels."""
+    fx0, fy0, fx1, fy1 = frame_windows()[0]
+    x0, y0 = int(round(fx0 * size[0])), int(round(fy0 * size[1]))
+    x1, y1 = int(round(fx1 * size[0])), int(round(fy1 * size[1]))
+    return x0, y0, max(x0 + 1, x1), max(y0 + 1, y1)
+
+
+def framed_card_indices(art, size, pal, frame_allow, kind=0, flat=False,
+                        art_allow=None):
+    """A card front as PALETTE INDICES, composited the way it is displayed.
+
+    THE FRAME IS QUANTISED AND THE PAINTING IS DITHERED, and keeping those two
+    apart is the whole point of building the card in index space rather than in
+    RGB.  A frame is flat tones, two gold rules and a black keyline, every one
+    of which the palette holds exactly; Floyd-Steinberg over it gains nothing
+    and turns each rule into a dotted line, which at thirty-two pixels is the
+    difference between a card and a speckled brown blob.  The painting inside
+    the window is the opposite case and still takes the full diffusion."""
+    base = Image.open(FRAME_SRC[kind]).convert("RGB").resize(
+        size, Image.Resampling.LANCZOS)
+    idx = quantize(base, pal, allow=frame_allow)
+    x0, y0, x1, y1 = art_window(size)
+    win = ImageOps.fit(art.convert("RGB"), (x1 - x0, y1 - y0),
+                       method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+    idx[y0:y1, x0:x1] = dither(art_prep(win, flat), pal, allow=art_allow,
+                               strength=ART_DIFFUSION)
+    return idx
 
 
 # The support kinds, in SUPPORT_TINTS order, mapped onto the PC's three card
@@ -560,39 +611,133 @@ def face_art(tag, src, size):
     return card_back_art(size)
 
 
+def face_kind(tag):
+    return 0 if tag.startswith("m:") else SUPPORT_FRAME[int(tag[2:])]
+
+
 def face_image(tag, src, size):
-    """A whole card at `size`: frame plus art.  The back has no frame -- it is
-    the frame, on its other side -- so it is the one face prepared here."""
+    """A whole card at `size` as RGB -- previews and the palette sample only."""
     if tag == "back":
         return card_back_art(size)
-    kind = 0 if tag.startswith("m:") else SUPPORT_FRAME[int(tag[2:])]
     # The art is drawn at four times the window it lands in and resampled down
     # by the frame: fitting straight into a twenty-four pixel window throws
     # away the detail the LANCZOS kernel needs to keep an edge.
     return framed_card(face_art(tag, src, (size[0] * 4, size[1] * 4)),
-                       size, kind, flat=not tag.startswith("m:"))
+                       size, face_kind(tag), flat=not tag.startswith("m:"))
 
 
-def hand_image(tag, src, size):
-    """The hand's window: the same card, cropped to its art window plus the
-    frame's inner rule.  The hand slot is landscape and only sixty-four pixels
-    across, with the ATK/DEF numbers drawn under it in the HUD font, so it
-    cannot hold a whole portrait card -- what it shows is the picture inside
-    its gold rule, which is the part of the frame that reads at this size."""
+def field_indices(tag, src, pal, frame_allow, art_allow=None):
+    """The 32x32 board texture for a face, as indices."""
     if tag == "back":
-        return card_back_art(size)
-    tall = (size[0], int(round(size[0] * 1.25)))     # the card's own aspect
-    card = face_image(tag, src, (tall[0] * 4, tall[1] * 4))
-    fx0, fy0, fx1, fy1 = frame_windows()[0]
+        return dither(card_back_art((FIELD_W, FIELD_H)), pal, allow=art_allow,
+                      strength=ART_DIFFUSION)
+    return framed_card_indices(
+        face_art(tag, src, (FIELD_W * 4, FIELD_H * 4)),
+        (FIELD_W, FIELD_H), pal, frame_allow, face_kind(tag),
+        flat=not tag.startswith("m:"), art_allow=art_allow)
+
+
+def hand_indices(tag, src, pal, frame_allow, art_allow=None):
+    """The hand's window: the card's art window plus the frame's inner gold
+    rule, as indices.
+
+    The card is built at whatever height makes that band exactly HAND_H rows
+    tall and then the band is CUT OUT OF THE INDEX ARRAY.  The earlier version
+    rendered a whole card, cropped it as RGB and resampled the crop -- which
+    resamples a dithered picture, i.e. blends dither noise into new colours and
+    then quantises those, and it is why the hand row looked muddier than the
+    board did.  Nothing here resamples an index."""
+    if tag == "back":
+        return dither(card_back_art((HAND_W, HAND_H)), pal, allow=art_allow,
+                      strength=ART_DIFFUSION)
+    _, fy0, _, fy1 = frame_windows()[0]
     m = 0.045                                        # keep the gold rule
-    box = (0, max(0, int((fy0 - m) * card.height)),
-           card.width, min(card.height, int((fy1 + m) * card.height)))
-    return card.crop(box).resize(size, Image.Resampling.LANCZOS)
+    top, bot = max(0.0, fy0 - m), min(1.0, fy1 + m)
+    tall = int(round(HAND_H / (bot - top)))
+    idx = framed_card_indices(
+        face_art(tag, src, (HAND_W * 4, HAND_H * 4)),
+        (HAND_W, tall), pal, frame_allow, face_kind(tag),
+        flat=not tag.startswith("m:"), art_allow=art_allow)
+    y0 = min(tall - HAND_H, max(0, int(round(top * tall))))
+    return idx[y0:y0 + HAND_H]
+
+
+# ── The big battle card ──────────────────────────────────────────────────────
+#
+# The battle animation shows ONE card at a time, filling the screen, and that
+# changes the whole palette arithmetic: with nothing else on screen there is no
+# structure to reserve entries for, so a big card gets its OWN sixteen -- black,
+# white, and FOURTEEN fitted to that one painting.  Two cards therefore cannot
+# be shown together, which is exactly why the animation slides the attacker off
+# the left before the defender comes in from the right: the palette swap
+# happens while the screen is empty.
+#
+# The size is 96x96 and not the 112x112 the split's board half is tall, and the
+# reason is the floppy rather than the screen.  A 112x112 4bpp face is 6,272
+# bytes; seventy-nine of them are 495 KB, and a 720 KB disk that already holds
+# the program, 161 KB of board/hand/title art and 117 KB of music has about
+# 390 KB left.  The art does not compress either -- measured, a byte RLE saves
+# 2% and zlib 19% -- so the largest sixteen-pixel-aligned square that fits is
+# 96, at 4,608 bytes a face plus its own palette.
+#
+# ONLY MONSTERS GET ONE.  A support card is never an attacker and never a
+# defender, and a face-down monster is turned face up by the attack itself, so
+# the six sigils and the card back would be seven records nothing can ever ask
+# for -- 32 KB, which on this disk is the difference between six kilobytes of
+# headroom and thirty-eight.
+
+BIG_W = BIG_H = 96
+BIG_PAL_BYTES = 16 * 3
+BIG_PLANE_BYTES = (BIG_W // 16) * BIG_H * 4 * 2
+BIG_RECORD = BIG_PAL_BYTES + BIG_PLANE_BYTES
+
+
+def big_art(tag, src):
+    """The painting at battle size.
+
+    A gentler crop and a lighter blur than the 32-pixel thumbnail takes.  Both
+    of those exist to survive a scale where a face is a dozen pixels wide; at
+    ninety-six the detail is affordable, and pulling the crop in as hard as the
+    thumbnail does would show a nose."""
+    if not tag.startswith("m:"):
+        return face_art(tag, src, (BIG_W, BIG_H))
+    l, t, r, b = card_content_bbox(src)
+    cw, ch = r - l, b - t
+    l += int(cw * 0.12)
+    r -= int(cw * 0.12)
+    b -= int(ch * 0.20)
+    img = src.crop((l, t, max(l + 1, r), max(t + 1, b))).convert("RGB")
+    out = ImageOps.fit(img, (BIG_W, BIG_H), method=Image.Resampling.LANCZOS,
+                       centering=(0.5, 0.06))
+    out = ImageOps.autocontrast(out, cutoff=2)
+    out = ImageEnhance.Color(out).enhance(1.15)
+    return out.filter(ImageFilter.GaussianBlur(0.35))
+
+
+def big_card(tag, src):
+    """One battle card: a sixteen-colour palette fitted to this painting alone,
+    and the painting dithered against it.
+
+    BLACK AND WHITE ARE PINNED AND THE OTHER FOURTEEN ARE FREE.  Black because
+    the frame the animation draws round the card is a black keyline and the
+    screen behind it is black; white because the ATK/DEF figures are printed
+    over the card and have to stay legible whatever the painting is made of.
+    Nothing else is reserved -- there is no board, no hand and no HUD panel on
+    screen while this is up."""
+    art = big_art(tag, src)
+    px = np.asarray(art, dtype=np.float64).reshape(-1, 3)
+    fixed = np.array([(0, 0, 0), (248, 248, 248)], dtype=np.float64)
+    cen = kmeans(px, 14, fixed)
+    order = np.argsort(cen.sum(axis=1))
+    pal = [(0, 0, 0)]
+    pal += [tuple(int(max(0, min(255, round(v)))) for v in cen[o]) for o in order]
+    pal.append((248, 248, 248))
+    return dither(art, pal, strength=ART_DIFFUSION), pal
 
 
 # ── The ground ───────────────────────────────────────────────────────────────
 
-def tile_cell(path, pal, allow, t):
+def tile_cell(path, pal, allow, t, contrast=1.35, scale=1.0):
     """One board tile: the photograph itself, dithered into its own tones.
 
     The stone is REAL now.  The drawn tile this replaces -- a flat face, a
@@ -626,7 +771,17 @@ def tile_cell(path, pal, allow, t):
     tone = img.resize((t, t), Image.Resampling.BOX)
     grain = img.resize((t, t), Image.Resampling.NEAREST)
     img = Image.blend(tone, grain, 0.30)
-    img = ImageEnhance.Contrast(img).enhance(1.35)
+    img = ImageEnhance.Contrast(img).enhance(contrast)
+    # THE TILE IS SHADED BY WHATEVER ITS PALETTE TONES WERE SHADED BY.  The
+    # dark slab's three entries are its terciles times 0.72 -- it is darkened
+    # on top of being the darker photograph, or the two stones read as one
+    # texture with a seam in it -- but the photograph the dither reads was not
+    # darkened, so its whole luminance range sat ABOVE the three tones it was
+    # allowed to use and every texel clamped to the brightest of them.  That is
+    # what made the dark tile flat, and it survived the tone-separation fix
+    # because separation cannot help a distribution that misses the palette.
+    if scale != 1.0:
+        img = ImageEnhance.Brightness(img).enhance(scale)
     # DAMPED diffusion, as everywhere else that a scattered palette is the
     # target: four tile tones are not a ramp, and a large error carried into a
     # neighbour with no near colour to absorb it reads as noise, not shading.
@@ -739,17 +894,33 @@ def main():
     cards = parse_cards()
     faces = card_faces(cards)
 
+    # The entries a card FRAME may be quantised into: the structural ten, never
+    # the six fitted to the paintings.  A frame that could reach for the art
+    # entries picks up their hues -- the gold rule came back mauve -- and the
+    # frame is the one part of a card whose colours the palette already holds
+    # exactly.
+    arena_frame_allow = [i for i, sl in enumerate(ARENA_SLOTS) if sl is not None]
+    card_frame_allow = [i for i, sl in enumerate(CARD_SLOTS) if sl is not None]
+    # THE HUD'S TWO SATURATED INKS ARE KEPT OUT OF THE ART.  CARD_RED and
+    # CARD_GREEN exist so an ATK figure can be red and a DEF figure green; they
+    # are the only two entries in either palette with no neighbour, so the
+    # error diffusion reaches for them constantly and a grey robe comes back
+    # sprayed with red and green confetti.  Damping the diffusion hid it and
+    # posterised everything else; excluding the two entries fixes it outright,
+    # and the six fitted entries carry whatever red a painting actually needs.
+    card_art_allow = [i for i in range(16)
+                      if i not in (CARD_SLOTS.index("RED"),
+                                   CARD_SLOTS.index("GREEN"))]
+
     # The sample the six free entries are fitted to is the PAINTINGS ONLY, at
     # the size the window inside a card frame shows them.  Fitting on the
     # composited card instead spends free entries on the frame's stone and
     # gold, which the structural ten already hold exactly.
     sample = []
-    thumbs = []
     win = frame_windows()[0]
     wx = int(round((win[2] - win[0]) * FIELD_W))
     wy = int(round((win[3] - win[1]) * FIELD_H))
     for tag, src in faces:
-        thumbs.append((tag, face_image(tag, src, (FIELD_W, FIELD_H))))
         art = face_art(tag, src, (wx * 4, wy * 4))
         art = ImageOps.fit(art.convert("RGB"), (wx, wy),
                            method=Image.Resampling.LANCZOS)
@@ -801,29 +972,57 @@ def main():
                     mid[i] + (c[i] - mid[i]) * spread)))) for i in range(3)))
                 for c in lv]
 
-    def separate(tones):
+    def st3_lum(c):
+        r, g, b = st3(c)
+        return 0.299 * r + 0.587 * g + 0.114 * b
+
+    def separate(tones, step=30.0):
         """Push a stone's three tones apart until the HARDWARE can tell them.
 
-        Three bits a channel is 512 colours, and two tones of one photograph
-        forty units apart routinely land in the same bucket -- TILE_LIGHT and
-        TILE_LIGHT2 came back identical, which costs a palette entry and makes
-        the tile flat.  Walking up from the darkest and lifting each tone until
-        `st3` differs from the one below is cheap and keeps the stone's hue."""
-        out = [tones[0]]
-        for c in tones[1:]:
-            c = list(c)
-            for _ in range(24):
-                if st3(tuple(c)) != st3(out[-1]):
-                    break
-                c = [min(255, v + 10) for v in c]
-            out.append(keep_hue(tuple(c)))
-        return out
+        The criterion is LUMINANCE, and getting that wrong is what made the
+        dark tile a flat brown square.  The first cut of this only asked that
+        `st3` be a different TUPLE, and TILE_DARK (99,68,30) against RIM_SIDE
+        (107,77,34) passes that test -- they differ in the blue bucket alone,
+        by one step, on a colour with almost no blue in it.  So the dark stone
+        had one usable tone plus a near-black groove, every texel dithered to
+        the same entry, and the checkerboard's dark squares came back as paint
+        while the light ones (whose terciles happened to land three steps
+        apart) kept their grain.
 
-    lo = separate(terciles(SAND_LIGHT_SRC, 2.0))    # dark, mid, bright
+        THE MIDDLE TONE IS THE ANCHOR and the other two move outward from it,
+        which is the second thing this got wrong.  Lifting upward from the
+        darkest tone separates them just as well but drags the whole stone
+        brighter -- the light slab came back as gold foil, because its mid tone
+        had been pushed to (228,180,98) and its highlight to (255,216,142) to
+        clear it.  Spreading about the middle leaves a stone at the brightness
+        the photograph was shot at.
+
+        One three-bit step is 36 units of luminance, so 30 is "at least most of
+        a step, in the channel that carries the tone".  `keep_hue` re-imposes
+        r > g > b afterwards, so a stone stays brown.
+        """
+        mid = list(tones[1])
+        dark, bright = list(tones[0]), list(tones[2])
+        for _ in range(48):
+            if st3_lum(tuple(mid)) - st3_lum(tuple(dark)) >= step:
+                break
+            dark = [max(0, v - 8) for v in dark]
+        for _ in range(48):
+            if st3_lum(tuple(bright)) - st3_lum(tuple(mid)) >= step:
+                break
+            bright = [min(255, v + 8) for v in bright]
+        return [keep_hue(tuple(dark)), keep_hue(tuple(mid)),
+                keep_hue(tuple(bright))]
+
+    lo = separate(terciles(SAND_LIGHT_SRC, 2.4))    # dark, mid, bright
     # The dark slab is darkened again on top of being the darker photograph.
     # The two stones as shot are only about fifty units apart in luminance, and
-    # a checkerboard that close reads as one texture with a seam in it.
-    hi = separate([shade(c, 0.72) for c in terciles(SAND_DARK_SRC, 2.0)])
+    # a checkerboard that close reads as one texture with a seam in it.  The
+    # shade comes FIRST and the separation after it, because shading three
+    # tones by a common factor shrinks the gaps between them by that factor
+    # too, and it is the gaps the hardware has to be able to show.
+    hi = separate([shade(c, DARK_TILE_SHADE)
+                   for c in terciles(SAND_DARK_SRC, 2.4)])
 
     # Six of the eight structural entries are the two stones; the other two are
     # the gold (a card frame's rule and the cursor tint) and the highlight.
@@ -832,9 +1031,17 @@ def main():
     arena_fixed["TILE_LIGHT"] = lo[1]
     arena_fixed["TILE_LIGHT2"] = lo[0]
     arena_fixed["RIM_TOP"] = lo[2]
+    # THE DARK TILE'S THREE TONES ARE GROOVE, TILE_DARK AND RIM_SIDE, in that
+    # order, and the groove really is the darkest of them rather than a fourth
+    # colour of its own.  The dark stone only has three entries available in a
+    # palette this tight, so spending one of them on a line makes the tile a
+    # two-tone -- which, with the tuple-equality bug above, was one tone.  The
+    # groove still reads: it is the darkest brown on the board and it runs
+    # unbroken along a tile edge, while inside a tile the same entry appears
+    # only as scattered texels of the stone's own shadow.
+    arena_fixed["GROOVE"] = hi[0]
     arena_fixed["TILE_DARK"] = hi[1]
     arena_fixed["RIM_SIDE"] = hi[2]
-    arena_fixed["GROOVE"] = keep_hue(shade(hi[0], 0.55))
     # The hand's frame stone: the dark slab's mid tone, so a card in hand wears
     # the same stone the board's cards do.
     card_fixed["FRAME_STONE"] = hi[1]
@@ -860,7 +1067,7 @@ def main():
     tile_dark = tile_cell(SAND_DARK_SRC, arena_pal,
                           [ARENA_SLOTS.index(n) for n in
                            ("GROOVE", "TILE_DARK", "RIM_SIDE")],
-                          TEXELS_PER_UNIT)
+                          TEXELS_PER_UNIT, contrast=1.45, scale=DARK_TILE_SHADE)
     ground = build_arena_texture(arena_pal, tile_light, tile_dark)
     write(os.path.join(dat, "ARENA.TEX"), (ground << 2).astype(np.uint8).tobytes(),
           quiet, "GROUND")
@@ -883,20 +1090,33 @@ def main():
     # entries fitted to these paintings are dense enough that the error one
     # pixel cannot hold is genuinely what its neighbour can, and damping it
     # only posterises the result.
-    for i, (tag, img) in enumerate(thumbs):
-        fi = dither(img, arena_pal, strength=ART_DIFFUSION)
+    big = bytearray()
+    sheet_b = Image.new("RGB", (BIG_W * 6, BIG_H * ((len(cards) + 5) // 6)))
+    for i, (tag, src) in enumerate(faces):
+        fi = field_indices(tag, src, arena_pal, arena_frame_allow)
         field += (fi << 2).astype(np.uint8).tobytes()
         sheet_f.paste(preview(fi, arena_pal), ((i % 10) * FIELD_W, (i // 10) * FIELD_H))
 
-        tag2, src = faces[i]
-        hi = dither(hand_image(tag2, src, (HAND_W, HAND_H)), card_pal,
-                    strength=ART_DIFFUSION)
+        hi = hand_indices(tag, src, card_pal, card_frame_allow, card_art_allow)
         hand += to_planar(hi)
         sheet_h.paste(preview(hi, card_pal), ((i % 10) * HAND_W, (i // 10) * HAND_H))
+
+        # The battle card, with its own sixteen.  Fixed-size records, so the
+        # loader is one Fseek and one Fread rather than an index table.
+        if tag.startswith("m:"):
+            bi, bpal = big_card(tag, src)
+            for c in bpal:
+                big += bytes(c)
+            big += to_planar(bi)
+            sheet_b.paste(preview(bi, bpal),
+                          ((i % 6) * BIG_W, (i // 6) * BIG_H))
     write(os.path.join(dat, "FIELD.CRD"), bytes(field), quiet, "FIELD")
     write(os.path.join(dat, "HAND.CRD"), bytes(hand), quiet, "HAND")
+    assert len(big) == len(cards) * BIG_RECORD
+    write(os.path.join(dat, "BIG.CRD"), bytes(big), quiet, "BIG")
     sheet_f.save(os.path.join(prev, "field_cards.png"))
     sheet_h.save(os.path.join(prev, "hand_cards.png"))
+    sheet_b.save(os.path.join(prev, "big_cards.png"))
 
     # Title.
     tidx, tpals = build_title(quiet)
@@ -940,6 +1160,15 @@ def main():
         f.write("#define ATARIST_ART_HAND_W     %d\n" % HAND_W)
         f.write("#define ATARIST_ART_HAND_H     %d\n" % HAND_H)
         f.write("#define ATARIST_ART_ARENA_W    %d\n" % ARENA_TEX_W)
+        f.write("#define ATARIST_ART_BIG_W      %d\n" % BIG_W)
+        f.write("#define ATARIST_ART_BIG_H      %d\n" % BIG_H)
+        f.write("/* One DAT/BIG.CRD record: sixteen RGB triples, then the\n"
+                " * planar image.  Fixed size, so a face is one Fseek. */\n")
+        f.write("#define ATARIST_ART_BIG_PAL    %d\n" % BIG_PAL_BYTES)
+        f.write("#define ATARIST_ART_BIG_BYTES  %d\n" % BIG_PLANE_BYTES)
+        f.write("#define ATARIST_ART_BIG_RECORD %d\n" % BIG_RECORD)
+        f.write("/* Monsters only: nothing else can attack or be attacked. */\n")
+        f.write("#define ATARIST_ART_BIG_FACES  %d\n" % len(cards))
         f.write("#define ATARIST_ART_TITLE_BAND %d\n\n" % TITLE_BAND_ROWS)
         f.write(pal_c("g_atarist_arena_rgb", arena_pal, ARENA_SLOTS))
         f.write("\n\n")
@@ -948,7 +1177,8 @@ def main():
     if not quiet:
         print("HEADER   %-28s" % os.path.relpath(HEADER, ROOT))
         print("total on floppy: %d bytes" %
-              (len(field) + len(hand) + len(blob) + ARENA_TEX_W * ARENA_TEX_W))
+              (len(field) + len(hand) + len(big) + len(blob) +
+               ARENA_TEX_W * ARENA_TEX_W))
 
 
 if __name__ == "__main__":

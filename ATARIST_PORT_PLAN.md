@@ -149,6 +149,71 @@ Everything that does not fit in RAM at once is loaded per scene through
 is: the game keeps TOS resident and simply owns the screen and the interrupts).
 `lz4w` (`AtariST/Other/lz4w.S`) decompresses the larger blobs.
 
+## 7b. The battle animation
+
+An attack is presented full screen, **one card at a time**, and that is a
+palette decision before it is a staging one.
+
+`DAT/BIG.CRD` holds a 96x96 painting per monster with **its own sixteen
+colours**: black and white pinned, and the other **fourteen fitted by k-means to
+that one painting**.  Nothing else is on screen while a battle card is up --
+there is no board, no hand and no HUD panel -- so nothing has to be reserved,
+and a card gets roughly twice the colour budget of the six free entries it has
+on the duel screen.  The cost is that **two cards can never share the screen**:
+the second would have to be dithered into the first one's sixteen and would come
+back as sludge.
+
+That constraint is what dictates the choreography, which follows the PC-FX and
+MSX2 presentations with a palette swap slipped into the gap:
+
+1. **The attacker enters alone** from the right and holds in the centre with its
+   ATK printed under it.
+2. **It slides off to the left** and leaves the screen empty.
+3. **The palette changes** -- this is the one moment nothing is drawn, and it is
+   why the attacker has to leave before the defender arrives.
+4. **The defender enters from the right** to the centre, with its ATK or DEF
+   shown according to its position.
+5. **The attempted attack is shown whether or not it lands**: the screen flashes
+   and the card is struck and shakes.  Showing an outcome without the blow read
+   as a slide show.
+6. **The verdict.**  The defender is destroyed and dissolves; or neither falls;
+   or the attack *fails and is countered*, in which case the palette swaps back
+   over an empty screen, the attacker returns from the left, and it is the
+   attacker that dissolves.  A set trap that fired takes the same counter path
+   with the attacker dying and no defender ever shown.
+
+A direct attack has no defender to bring on: the attacker leaves, the palette
+stays its own, and the strike lands with the damage printed.
+
+Mechanics that the 68000 imposes:
+
+* **Every horizontal position is a multiple of sixteen.**  The card slides in
+  whole 16-pixel groups, so the blit is four `move.w` per group with no shifting
+  and no read-modify-write, and the panel behind it is an aligned rectangle with
+  no masked edge groups.  Slowing the slide holds each step for more frames
+  rather than shrinking it, so the grid holds at any speed.
+* **The shake is vertical.**  A horizontal one would take the panel off the
+  group grid for the sake of four pixels; moving a row pointer is free.
+* **The flash is a palette write**, not a white rectangle: nothing to draw and
+  nothing to undo.
+* **The frame round the card is black and white only.**  Reserving an entry for
+  a gold rule would take it off the painting, which is the one thing on screen.
+* **Records are streamed.**  `DAT/BIG.CRD` is 327 KB -- monsters only, since a
+  support is never an attacker or a defender and a face-down monster is turned
+  face up by the attack itself -- and the two cards a battle needs are read with
+  a seek and a read each (`Atarist_DiskLoadAt`).  Fixed-size records, so a face
+  is `index * record`.
+* `-DATARIST_BATTLE_TIME_SCALE=n` slows the whole animation proportionally.  It
+  exists for verification: headless Hatari runs about fifteen times real time,
+  so the shipping four-second animation is a quarter second of wall clock and a
+  screenshot sweep steps straight over it.
+
+Why 96x96 and not the 112 the board half is tall: a 112x112 4bpp face is 6,272
+bytes and seventy-two of them are 451 KB, against about 390 KB free on a 720 KB
+disk that already carries the program, 161 KB of board/hand/title art and 117 KB
+of music.  The art does not compress -- measured, a byte RLE saves 2% and zlib
+19% -- so 96 is the largest 16-pixel-aligned square that fits.
+
 ## 8. Verification
 
 The bundled headless Hatari MCP build (`AtariST/hatari-headless-mcp` +

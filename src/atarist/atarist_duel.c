@@ -29,6 +29,7 @@
 #include "atarist_audio.h"
 #include "atarist_disk.h"
 #include "atarist_blitter.h"
+#include "atarist_battle.h"
 
 #include "msxgl.h"
 #include "msx2_duel.h"
@@ -106,6 +107,11 @@ static uint8_t  g_com_delay;
 static uint8_t  g_finished;
 static uint16_t g_msg_timer;
 static const char *g_msg;
+/* Set while the attack animation owns the screen, so the frame it hands the
+ * duel back on repaints everything: the animation ran without the raster split
+ * and with a battle card's palette, and both halves of the duel screen are
+ * stale under it. */
+static uint8_t g_battle_return;
 static AtaristCamera g_cam;
 
 /* THE GROUND IS RENDERED ONCE, NOT ONCE A FRAME.  The duel camera is fixed --
@@ -489,6 +495,15 @@ static void move_cursor(int count)
     }
 }
 
+/* Hand an attack that has already been resolved to the animation.  Both call
+ * sites -- the player declaring one and the COM's turn producing one -- have to
+ * do this BEFORE Msx2_ClearActionEvent, which is what says an attack happened
+ * at all. */
+static void show_attack(void)
+{
+    if (Atarist_BattleBegin()) g_battle_return = 1;
+}
+
 static void begin_battle_phase(void)
 {
     g_duel.phase = MSX2_PHASE_BATTLE;
@@ -610,6 +625,8 @@ static void step_player(void)
             u8 target = direct ? MSX2_SLOT_NONE : g_cursor;
             if (!Msx2_Attack(MSX2_OWNER_PLAYER, g_chosen_hand, target))
                 duel_say("THAT ATTACK IS ILLEGAL");
+            else
+                show_attack();
             Msx2_ClearActionEvent();
             g_ui = UI_ATTACKER;
             g_cursor = g_chosen_hand;
@@ -641,7 +658,6 @@ void Atarist_DuelEnter(uint32_t seed, uint8_t story_index)
             g_ground_cache[0] = block;
             g_ground_cache[1] = block + GROUND_HALF_BYTES;
         }
-        g_ground_valid[0] = g_ground_valid[1] = 0;
     }
     Msx2_DuelInit(seed, story_index);
     /* Loading the track reads the floppy, which is why it happens here and not
@@ -659,6 +675,7 @@ void Atarist_DuelEnter(uint32_t seed, uint8_t story_index)
     g_chosen_hand = 0;
     g_com_delay = 4;
     g_finished = 0;
+    g_battle_return = 0;
     g_msg = NULL;
     g_msg_timer = 0;
     g_redraw = ATARIST_BUFFERS;
@@ -669,6 +686,28 @@ void Atarist_DuelEnter(uint32_t seed, uint8_t story_index)
 
 void Atarist_DuelStep(int vblanks)
 {
+    /* THE ANIMATION OWNS THE WHOLE FRAME WHILE IT RUNS.  It has taken the
+     * split down and installed a battle card's own sixteen colours, so nothing
+     * else may draw, and the rules must not advance underneath a picture of an
+     * attack that has already been applied. */
+    if (Atarist_BattleActive()) {
+        Atarist_BattleStep(vblanks);
+        return;
+    }
+    if (g_battle_return) {
+        g_battle_return = 0;
+        Atarist_ApplyArenaPalette();
+        Atarist_ApplyCardPalette();
+        Atarist_SetSplitEnabled(1);
+        Atarist_InputFlush();
+        /* Both buffers still hold the animation's last frame. */
+        Atarist_ClearPlanar(0);
+        g_redraw = ATARIST_BUFFERS;
+        g_hud_redraw = ATARIST_BUFFERS;
+        g_ground_valid[0] = g_ground_valid[1] = 0;
+        duel_touch(2);
+    }
+
     if (g_msg_timer) {
         g_msg_timer = (uint16_t)(g_msg_timer > vblanks ? g_msg_timer - vblanks : 0);
         /* The status line changes when the message expires, so the frame it
@@ -703,6 +742,7 @@ void Atarist_DuelStep(int vblanks)
         } else {
             g_com_delay = 10;
             Msx2_DuelStep();
+            show_attack();
             Msx2_ClearActionEvent();
             duel_touch(12);
         }

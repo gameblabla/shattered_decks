@@ -40,6 +40,43 @@ int32_t Atarist_DiskLoad(const char *path, void *buf, int32_t max)
     return got;
 }
 
+int16_t Atarist_DiskOpen(const char *path)
+{
+    int16_t handle = st_fopen(path, 0);
+    g_atarist_probe.spare = (uint16_t)handle;
+    return handle;
+}
+
+int32_t Atarist_DiskReadAt(int16_t handle, int32_t offset, void *buf,
+                           int32_t len)
+{
+    int32_t got;
+    if (handle < 0) return -1;
+    /* Mode 0 is "from the start of the file", which is the only seek this
+     * needs: BIG.CRD's records are fixed size, so a face is offset * record. */
+    if (st_fseek(offset, handle, 0) < 0) return -1;
+    got = st_fread(handle, len, buf);
+    g_atarist_probe.spare = (uint16_t)got;
+    return got;
+}
+
+void Atarist_DiskClose(int16_t handle)
+{
+    if (handle >= 0) st_fclose(handle);
+}
+
+int32_t Atarist_DiskLoadAt(const char *path, int32_t offset, void *buf,
+                           int32_t len)
+{
+    int16_t handle = Atarist_DiskOpen(path);
+    int32_t got;
+
+    if (handle < 0) return -1;
+    got = Atarist_DiskReadAt(handle, offset, buf, len);
+    Atarist_DiskClose(handle);
+    return got;
+}
+
 int Atarist_DiskInit(void)
 {
     if (!g_music_buf)

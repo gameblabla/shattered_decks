@@ -49,6 +49,16 @@ more.
 | `DAT/ARENA.TEX` | 128x128 chunky board slab: a sandstone checkerboard | 16,384 |
 | `DAT/FIELD.CRD` | 79 card faces, 32x32 chunky, ARENA palette | 80,896 |
 | `DAT/HAND.CRD` | the same 79 faces, 32x24 planar, CARD palette | 30,336 |
+| `DAT/BIG.CRD` | 72 battle cards, 96x96 planar + a palette each | 335,232 |
+
+`BIG.CRD` is streamed, not resident: the two cards an attack needs are read
+when the animation starts.  That read is the duel's worst frame, and getting it
+there took two passes — four opens a battle (a palette and an image per card)
+stalled for 251 vblanks; one whole-record read per card brought it to 185; and
+holding the handle open for the life of the program brought it to 166, which is
+below the music-track load the duel already pays on entry.  **The open is the
+expensive half**, not the transfer: GEMDOS walks the directory and then the FAT
+chain to a file read from 300 KB in.
 | `DAT/TITLE.SCR` | the title painting, 320x200 planar + 25 palettes | 33,262 |
 
 **Eight to structure, two to black and white, six fitted to the paintings.**
@@ -131,14 +141,48 @@ The conversion rules that survived:
 * **A tile may only reach for its own stone.**  The dark tile allowed the light
   stone's tones (the brighter half of the palette, which the dither wants) came
   back as the same tile, and the checkerboard disappeared.
-* **Separate the tones under `st3`.**  Three bits a channel is coarse: two
-  tones of one photograph forty units apart land in the same bucket, which
-  costs an entry and flattens the tile.  Terciles are also read with
-  `contrast=False`, since a per-channel stretch neutralises a one-hue stone and
-  the first run came back pink.
+* **Separate the tones by LUMINANCE under `st3`, about the middle one.**  This
+  is what made the dark tile a flat brown square for a whole session.  The
+  first cut only asked that `st3` be a different *tuple*, and TILE_DARK
+  (99,68,30) against RIM_SIDE (107,77,34) passes that -- they differ in the blue
+  bucket alone, by one step, on a colour with almost no blue in it.  The second
+  cut separated by luminance but lifted upward from the darkest tone, which
+  dragged the light slab to gold foil.  Anchor on the middle tone, push the
+  other two outward, and require ~30 units of `st3` luminance (a full three-bit
+  step is 36).  Terciles are also read with `contrast=False`, since a
+  per-channel stretch neutralises a one-hue stone and the first run came pink.
+* **The dark slab's shade applies to the TEXEL AS WELL AS THE ENTRY.**  Its
+  three palette entries are its terciles times 0.72 -- it is darkened on top of
+  being the darker photograph, or the two stones read as one texture with a
+  seam -- but the photograph the dither read was not, so its whole luminance
+  range sat *above* the three tones it was allowed and every texel clamped to
+  the brightest.  This survived the separation fix: separation cannot help a
+  distribution that misses its palette.
+* **The groove is the dark stone's own darkest tone**, not a fourth colour.
+  The dark stone has three entries in a palette this tight, and spending one on
+  a line leaves it a two-tone.  The line still reads: it is the darkest brown
+  on the board and it runs unbroken along a tile edge.
+* **The card frame is QUANTISED, the painting is DITHERED.**  A frame is flat
+  tones, two gold rules and a black keyline, every one of which the palette
+  holds exactly; Floyd-Steinberg over it gains nothing and turns each rule into
+  a dotted line.  The card is therefore composited in INDEX space
+  (`framed_card_indices`), and the hand's band is cut out of that array rather
+  than cropped and resampled as RGB -- resampling a dithered picture blends its
+  noise into new colours and re-quantises them, which is why the hand row used
+  to look muddier than the board.
+* **The HUD's two saturated inks are kept out of the art.**  CARD_RED and
+  CARD_GREEN have no neighbour in the palette, so the diffusion reached for
+  them constantly and sprayed a grey robe with red and green confetti.  Damping
+  the diffusion hid it and posterised everything else; excluding the two
+  entries fixes it outright.
 
 The same painting is converted twice, once per palette, because the board half
-and the hand half of the screen do not share one.
+and the hand half of the screen do not share one.  It is converted a **third**
+time for `DAT/BIG.CRD`, where the rules are different again: the battle
+animation shows one card filling the screen with nothing else on it, so black
+and white are pinned and the **other fourteen entries are fitted to that one
+painting**.  See ATARIST_PORT_PLAN.md section 7b for the animation those drive,
+and why the size is 96x96 rather than 112 (the disk, not the screen).
 
 The title screen carries **one palette per eight scanlines** -- 25 raster
 splits, about four hundred colours on a screen that shows sixteen.  Black, the
@@ -172,6 +216,20 @@ key-injection tool, so:
   as idle.  `Hatari.poke()` now takes real bytes and formats them.
 * Probe field offsets are computed from the struct format, not written down:
   adding two fields silently redirected the `script_len` poke at `mark`.
+* **A poke longer than about fifty bytes writes NOTHING and reports success.**
+  Measured against a live probe: 48 bytes lands, 64 bytes does not, and the
+  call is silent about it.  A scripted-input queue of more than a dozen entries
+  therefore arrived as a block of zeros, which the game reads as "every entry
+  lasts one frame" -- so the whole script fired in a dozen frames while the
+  title was still coming up, and a blind run looked exactly as though the game
+  had ignored its input.  `Hatari.poke()` now splits at 32 bytes.
+* **A transient cannot be caught by a screenshot sweep.**  Headless Hatari runs
+  about fifteen times real time, so the four-second attack animation is a
+  quarter second of wall clock; and the MCP `screenshot` tool pauses the
+  emulator, so sweeping it stalls the very thing being watched.  Build with
+  `EXTRA_CFLAGS=-DATARIST_BATTLE_TIME_SCALE=16` and bracket `--run-seconds`
+  across separate `verify.py` runs instead: each run is clean, and the
+  animation is then seconds wide.
 
 ```sh
 python3 tools/atarist/verify.py --image build/atarist/waifu.st --machine st

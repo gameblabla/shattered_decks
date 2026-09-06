@@ -19,23 +19,32 @@
 #define ATARIST_ART_HAND_W     32
 #define ATARIST_ART_HAND_H     24
 #define ATARIST_ART_ARENA_W    128
+#define ATARIST_ART_BIG_W      96
+#define ATARIST_ART_BIG_H      96
+/* One DAT/BIG.CRD record: sixteen RGB triples, then the
+ * planar image.  Fixed size, so a face is one Fseek. */
+#define ATARIST_ART_BIG_PAL    48
+#define ATARIST_ART_BIG_BYTES  4608
+#define ATARIST_ART_BIG_RECORD 4656
+/* Monsters only: nothing else can attack or be attacked. */
+#define ATARIST_ART_BIG_FACES  72
 #define ATARIST_ART_TITLE_BAND 8
 
 static const uint8_t g_atarist_arena_rgb[16][3] = {
     {  0,   0,   0},   /*  0 BLACK */
-    { 48,  26,   0},   /*  1 GROOVE */
+    { 85,  60,  24},   /*  1 GROOVE */
     { 99,  68,  30},   /*  2 TILE_DARK */
-    {214, 166,  84},   /*  3 TILE_LIGHT */
-    {194, 146,  66},   /*  4 TILE_LIGHT2 */
-    {107,  77,  34},   /*  5 RIM_SIDE */
-    {232, 186, 104},   /*  6 RIM_TOP */
+    {204, 156,  74},   /*  3 TILE_LIGHT */
+    {168, 120,  40},   /*  4 TILE_LIGHT2 */
+    {133, 102,  59},   /*  5 RIM_SIDE */
+    {230, 184, 102},   /*  6 RIM_TOP */
     {224, 176,  56},   /*  7 SLOT */
-    { 37,  38,  51},   /*  8 art */
-    { 55,  44, 138},   /*  9 art */
-    { 85,  78,  90},   /* 10 art */
-    {135, 124, 133},   /* 11 art */
-    { 86, 121, 205},   /* 12 art */
-    {181, 177, 192},   /* 13 art */
+    { 28,  29,  34},   /*  8 art */
+    { 55,  50,  84},   /*  9 art */
+    {102,  93, 110},   /* 10 art */
+    { 71,  85, 188},   /* 11 art */
+    {147, 139, 149},   /* 12 art */
+    {184, 185, 200},   /* 13 art */
     {248, 248, 248},   /* 14 WHITE */
     {248, 232,  96},   /* 15 HILIGHT */
 };

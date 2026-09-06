@@ -94,6 +94,15 @@ class Hatari(object):
         self.tool("emu", action="continue")
         return out
 
+    # The MCP `reasm` tool silently drops a long write.  Measured against a
+    # live probe: 48 bytes lands, 64 bytes writes NOTHING AT ALL and still
+    # reports success, so a scripted-input queue of more than a dozen entries
+    # arrived as a block of zeros -- which the game reads as "every entry lasts
+    # one frame", fires the whole script in a dozen frames while the title is
+    # still coming up, and leaves a blind run looking as though the game had
+    # ignored its input.  32 is half the smallest failing size.
+    POKE_CHUNK = 32
+
     def poke(self, address, data):
         """Write exact bytes at `address`.  `data` is bytes or a hex string.
 
@@ -102,11 +111,16 @@ class Hatari(object):
         zero in it silently shifts everything after it -- which is how the
         scripted-input queue arrived as garbage and every duel measurement
         looked idle.  Byte pairs separated by spaces are taken literally.
+
+        AND IT MUST BE SPLIT.  See POKE_CHUNK above.
         """
         if isinstance(data, str):
             data = bytes.fromhex(data.replace(" ", ""))
-        hexbytes = " ".join("%02x" % b for b in data)
-        out = self.tool("reasm", address=address, bytes=hexbytes)
+        out = ""
+        for off in range(0, len(data), self.POKE_CHUNK):
+            part = data[off:off + self.POKE_CHUNK]
+            hexbytes = " ".join("%02x" % b for b in part)
+            out = self.tool("reasm", address=address + off, bytes=hexbytes)
         self.tool("emu", action="continue")
         return out
 
