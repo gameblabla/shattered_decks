@@ -636,6 +636,11 @@ static void Msx2_FloorFetch(void) __naked
 	// segment restored.
 	Msx2_RomRead(g_fp_seg, (u16)(g_fp_src - MSX2_MAPPER_WINDOW),
 	             g_floor_row, g_fp_len);
+	// This function is naked so the NEO inline path can own its complete
+	// return sequence. Keep the same explicit return for ASCII16-X: without
+	// it the generated C call falls through into Msx2_FloorDouble after the
+	// read, issuing a stale copy command and leaving pixels below the arena.
+	__asm ret __endasm;
 	#else
     __asm
         .globl _g_bank2
