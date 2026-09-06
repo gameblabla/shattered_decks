@@ -47,9 +47,9 @@ MSX2_BIOS    := $(MSXGL_PATH)/msx2.rom
 FRAMES       ?= 600
 
 GENERATED    := src/generated/msx2_card_tables.h src/generated/msx2_scenes.h
-# One lVGM stream per (sound chip, track).  The FM sets have no title theme;
-# msx2_audio.c plays the PSG recording for a track its chip's set is missing,
-# so only the PSG set is required to be complete.
+# One lVGM stream per (sound chip, track).  Each chip has its own title
+# rendition; msx2_audio.c only falls back to PSG when another track is missing
+# from the detected chip's set.
 MUSIC_TRACKS := title overworld battle boss final_boss result lost
 MUSIC_BINS   := $(addprefix $(PROJ_DIR)/assets/music_,$(addsuffix .bin,$(MUSIC_TRACKS)))
 AUDIO_META   := $(PROJ_DIR)/assets/music.json
@@ -178,8 +178,14 @@ PLUS_ASSETS  := $(PROJ_DIR)/assets/plus/manifest_plus.txt
 
 plus-assets: $(PLUS_ASSETS)
 
+# The floor manifest is a real input, not a courtesy: gen_msx_plus.py places
+# its one extra asset AFTER everything the MSX2 cartridge carries, and the
+# floor spans are the last of those.  A camera move that gains poses moves that
+# boundary, and a stale plus manifest then lands CARDS_YJK on top of them --
+# which the packer catches, after a full rebuild.
 $(PLUS_ASSETS): tools/msx2/gen_msx_plus.py tools/msx2/msx2_yjk.py \
         tools/msx2/gen_msx_scenes.py src/generated/msx2_scenes.h \
+        $(PROJ_DIR)/assets/floor_manifest.txt \
         assets/source/msx2/title256_msx2plus.png \
         assets/source/msx2/ending256x212_msx2plus.png
 	python3 tools/msx2/gen_msx_plus.py
