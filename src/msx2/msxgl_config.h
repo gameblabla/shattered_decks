@@ -103,7 +103,14 @@
 #define VDP_USE_VALIDATOR			TRUE	// Handle some option specific for each VDP mode (highly recommended)
 #define VDP_USE_DEFAULT_PALETTE		FALSE	// Add data for default MSX2 palette
 #define VDP_USE_MSX1_PALETTE		FALSE	// Add data for default MSX1 palette
-#define VDP_USE_DEFAULT_SETTINGS	TRUE	// Auto-initialization of common VDP feature
+// FALSE, BECAUSE ITS LAST ACT IS TO TURN THE DISPLAY ON.
+// VDP_SetMode's default-settings tail ends with VDP_EnableDisplay(TRUE), and
+// the two milliseconds of it that run before Msx2_VideoInit can blank the
+// screen again were showing 128 KB of not-yet-cleared VRAM as a 256-colour
+// bitmap: the garbage seen right after the MSX logo.  Msx2_VideoInit applies
+// the two settings this port actually needs (212 lines, no interlace or page
+// alternance) itself, with the display never leaving the blanked state.
+#define VDP_USE_DEFAULT_SETTINGS	FALSE	// Auto-initialization of common VDP feature
 #define VDP_USE_16X16_SPRITE		TRUE	// Use 16x16 sprites mode
 #define VDP_USE_RESTORE_S0			TRUE	// Do restore of status register pointer to S#0 (needed onlt for default BIOS ISR)
 #define VDP_USE_PALETTE16			FALSE	// Use 16 entries palette (use only 15 entries otherwise)
@@ -479,8 +486,8 @@
 
 // LVGM replayer options
 #define LVGM_USE_PSG				TRUE	// Add parser for PSG data
-#define LVGM_USE_MSXMUSIC			FALSE	// PSG-only cartridge recordings
-#define LVGM_USE_MSXAUDIO			FALSE	// PSG-only cartridge recordings
+#define LVGM_USE_MSXMUSIC			TRUE	// Allow MSX-MUSIC / YM2413 data
+#define LVGM_USE_MSXAUDIO			TRUE	// Allow MSX-AUDIO / Y8950 data
 #define LVGM_USE_SCC				FALSE	// PSG-only cartridge recordings
 #define LVGM_USE_SCCI				FALSE	// Add parser for Konami SCC+ data
 #define LVGM_USE_PSG2				FALSE	// Add parser for secondary PSG data

@@ -225,11 +225,29 @@ static void Msx2_SceneStory(void)
 void main(void)
 {
 	Msx2_ClearStaticRam();
+
+	// THE SCREEN GOES DARK HERE, NOT IN Msx2_VideoInit.
+	// The BIOS hands the cartridge a live display still showing its own logo
+	// screen, and everything between this point and Msx2_VideoInit -- the chip
+	// probe, the audio init, the font read out of the cartridge -- is worth
+	// several frames on a real machine.  The VDP is still in the BIOS's text
+	// mode reading the BIOS's tables, and whatever those rows hold once the
+	// probes have run over VRAM's low pages is the garbage that showed after
+	// the logo.  R#1 blanks it before any of that happens.  Only the display
+	// bit goes: the V-blank interrupt bit stays set, because the BIOS's own
+	// interrupt handler is still the one running until Msx2_VideoInit takes
+	// over.
+	VDP_RegWrite(1, R01_IE0);
+
 	Msx2_EntropyInit();
 	// Before the audio init, so that a fault inside the boot-bank chip probe
 	// still shows up as a stage number instead of an unfindable probe.
 	Msx2_ProbeInit();
 	Msx2_AudioInit();
+	// The audio probe is what reads the machine's version byte, so this is the
+	// first point at which the port knows it is on a turbo R.  It does nothing
+	// unless the R800 has been brought up (msx2_bank.c, MSX2_R800).
+	Msx2_CpuFast();
 	Msx2_RegressionInit();
 	Msx2_VideoLoadFont();
 	Msx2_VideoInit();

@@ -117,16 +117,29 @@ void Msx2_VideoScenePalette(u16 segment)
 
 void Msx2_VideoInit(void)
 {
+	// THE MODE SWITCH ITSELF USED TO UNBLANK THE SCREEN.
+	// VDP_SetMode initialises the VDP module on its first call by copying the
+	// BIOS's own register shadow into g_VDP_REGSAV, then writes R#1 back out
+	// of it with only the mode bits changed -- so the BIOS's display-enable
+	// bit came straight back, and every millisecond the rest of VDP_SetMode
+	// took was 128 KB of uncleared VRAM on screen as a 256-colour bitmap.
+	// Doing that initialisation here instead, and stamping the shadow with a
+	// blanked R#1 before the switch, is what keeps the switch dark.  R#1's
+	// V-blank bit stays on throughout: the BIOS interrupt is live during boot.
+	VDP_Initialize();
+	VDP_RegWriteBak(1, R01_IE0);
+
 	VDP_SetMode(VDP_MODE_GRAPHIC7);
 	VDP_SetColor(MSX2_BLACK);
 
-	// VBlank on, display off, in the one register write: VDP_SetMode's own
-	// default settings just turned the display back on, and the sweep below
-	// takes long enough at 512 lines that it was visible as a wipe over
-	// whatever the BIOS left on screen. Both bits live in R#1, so one masked
-	// write does what VDP_EnableVBlank(TRUE) + VDP_EnableDisplay(FALSE) would
-	// have cost as two calls.
-	VDP_RegWriteBakMask(1, (u8)~R01_BL, R01_IE0);
+	// What VDP_SetMode's default-settings tail used to apply, minus the parts
+	// this port does not want from it: the display staying off is the whole
+	// point, the V-blank bit is already set above, and sprites stay disabled
+	// until Msx2_SpriteInit has filled their tables.  212 lines is the mode
+	// this game draws in, and neither interlace nor page alternance may be on
+	// or the two pages stop being two independent pages.
+	VDP_SetLineCount(VDP_LINE_212);
+	VDP_SetFrameRender(0);
 
 	// THE WHOLE 128 KB, ONCE, BEFORE ANYTHING ELSE ASSUMES ITS CONTENTS.
 	// A hard reset (or a flash cart with no power-on VRAM clear) can leave
@@ -138,6 +151,14 @@ void Msx2_VideoInit(void)
 	// they start out clean. (VDP_CommandHMMV's own VDP_CommandSetupR36
 	// already waits for the engine to be free, so no separate wait here.)
 	VDP_CommandHMMV(0, 0, MSX2_SCREEN_W, 512, MSX2_BLACK);
+
+	// HMMV only STARTS the fill: the command engine keeps running it while the
+	// CPU moves on.  The wait belongs here rather than just before the display
+	// comes back, because the font bake below pokes the mask straight through
+	// the VRAM port into lines 496..511 -- the last rows the fill covers -- so
+	// letting it run on would both fight the engine for the port and wipe the
+	// glyphs it had just written.
+	VDP_CommandWait();
 
 	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
 
@@ -156,12 +177,6 @@ void Msx2_VideoInit(void)
 	// After the clears, because the mask lives above the lines they touch and
 	// before anything prints, because every string is a copy out of it.
 	Msx2_VideoBakeFont();
-
-	// VDP_CommandHMMV above only STARTS the 512-line fill -- the command
-	// engine keeps running it in the background while the CPU moves on, and
-	// without this wait the display could come back before the fill had
-	// finished, showing one frame of a half-cleared screen instead of none.
-	VDP_CommandWait();
 
 	// Everything the screen can show is clean now.
 	VDP_EnableDisplay(TRUE);
