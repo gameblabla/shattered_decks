@@ -147,17 +147,21 @@ void Msx2_VideoInit(void)
 
 	// The command fields that never vary: nothing a string draws is ever
 	// taller than a glyph, wider than a screen, or drawn right to left.
-	g_cmd[1] = 0;                       // the mask never starts past column 255
+	// Msx2_VideoInit runs exactly once, right after Msx2_ClearStaticRam has
+	// zeroed every static -- g_cmd included -- so the fields that never vary
+	// AT zero need no assignment here; only the two that don't are set.
 	g_cmd[3] = (u8)(MSX2_FONT_MASK_LINE >> 8);
-	g_cmd[5] = 0;
-	g_cmd[9] = 0;
 	g_cmd[10] = MSX2_FONT_H_PX;
-	g_cmd[11] = 0;
-	g_cmd[13] = 0;
 
 	// After the clears, because the mask lives above the lines they touch and
 	// before anything prints, because every string is a copy out of it.
 	Msx2_VideoBakeFont();
+
+	// VDP_CommandHMMV above only STARTS the 512-line fill -- the command
+	// engine keeps running it in the background while the CPU moves on, and
+	// without this wait the display could come back before the fill had
+	// finished, showing one frame of a half-cleared screen instead of none.
+	VDP_CommandWait();
 
 	// Everything the screen can show is clean now.
 	VDP_EnableDisplay(TRUE);
