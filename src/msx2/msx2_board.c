@@ -2193,6 +2193,19 @@ static void Msx2_BoardRevealPanels(void)
 {
 	Msx2_Fill(0, 0, MSX2_SCREEN_W, MSX2_HUD_H, MSX2_PANEL_COLOR);
 	Msx2_FrameRect(0, 0, MSX2_SCREEN_W, MSX2_HUD_H, MSX2_GOLD_COLOR);
+#if MSX2_BAND_Y > MSX2_HUD_H
+	// THE ROW BETWEEN THE PANEL AND THE BAND BELONGS TO NOBODY ELSE.
+	// The HUD fill stops at MSX2_HUD_H and the arena band starts at
+	// MSX2_BAND_Y, so the rows in between are painted by whatever last had
+	// the whole screen.  A full-screen cut-in does: its caption sits high
+	// enough to cross them, and Msx2_BoardRestoreFromCutin() repaints the
+	// panel, the band and the hand row but never that gap -- so the top
+	// scanline of SUPPORT ACTIVATED (or of any other caption) stayed under
+	// the panel for the rest of the duel, and Msx2_VideoCopyPage put it on
+	// the other page too.  Black is what the streamed view carried there.
+	Msx2_Fill(0, MSX2_HUD_H, MSX2_SCREEN_W,
+	          (u8)(MSX2_BAND_Y - MSX2_HUD_H), MSX2_BLACK);
+#endif
 	Msx2_Fill(0, MSX2_INFO_Y, MSX2_SCREEN_W,
 	          (u8)(MSX2_SCREEN_H - MSX2_INFO_Y), MSX2_PANEL_COLOR);
 	Msx2_FrameRect(0, MSX2_INFO_Y, MSX2_SCREEN_W,
