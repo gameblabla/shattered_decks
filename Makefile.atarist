@@ -49,7 +49,7 @@ PRG := $(BUILD)/WAIFU_$(TARGET_TAG).PRG
 CFLAGS := -m68000 -O2 -fomit-frame-pointer -std=c99 -nostdlib \
           -Wall -Wextra -Wno-unused-parameter \
           -fno-builtin-time -fno-builtin-clock \
-          $(MACHINE_DEF)
+          $(MACHINE_DEF) $(EXTRA_CFLAGS)
 ASFLAGS := -m68000 -Wa,--register-prefix-optional
 LDFLAGS := -Wl,-e,_start -Wl,--gc-sections
 

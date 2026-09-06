@@ -18,6 +18,7 @@
 #include "atarist_audio.h"
 #include "atarist_probe.h"
 #include "atarist_scene.h"
+#include "atarist_assets.h"
 
 /* Boot bring-up in the order the probe stages name, so a machine that dies
  * early still reports where. */
@@ -42,6 +43,10 @@ static int Atarist_Boot(void)
     ATARIST_STAGE(ATARIST_STAGE_AUDIO);
     Atarist_AudioInit();
     ATARIST_STAGE(ATARIST_STAGE_ASSETS);
+    if (!Atarist_AssetsInit()) {
+        g_atarist_probe.status = ATARIST_PROBE_NOMEM;
+        return 0;
+    }
     Atarist_SceneInit();
     return 1;
 }
@@ -73,6 +78,11 @@ void atarist_main(void)
 
         vblanks = Atarist_VideoPresent();
         g_atarist_probe.frame_vbls = (uint16_t)vblanks;
+        /* The first few frames are boot: palettes, the first full board and a
+         * cold cache, and they are not what the renderer should be judged on. */
+        if (g_atarist_probe.frame > 8 &&
+            (uint16_t)vblanks > g_atarist_probe.worst_vbls)
+            g_atarist_probe.worst_vbls = (uint16_t)vblanks;
     }
 
     Atarist_Quit();

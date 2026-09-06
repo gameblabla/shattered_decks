@@ -28,6 +28,8 @@ void Atarist_ProbeInit(void)
     g_atarist_probe.script_pos = 0;
     g_atarist_probe.script_hold = 0;
     g_atarist_probe.mark = 0;
+    g_atarist_probe.worst_vbls = 0;
+    g_atarist_probe.spare = 0;
     for (i = 0; i < ATARIST_PROBE_SCRIPT; ++i) g_atarist_probe.script[i] = 0;
     g_atarist_probe.magic_end = ATARIST_PROBE_MAGIC_END;
 }

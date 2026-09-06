@@ -94,7 +94,18 @@ class Hatari(object):
         self.tool("emu", action="continue")
         return out
 
-    def poke(self, address, hexbytes):
+    def poke(self, address, data):
+        """Write exact bytes at `address`.  `data` is bytes or a hex string.
+
+        THE BYTES MUST BE SPACE SEPARATED.  The MCP `reasm` tool parses a bare
+        hex run as a number, so "0011" writes one byte and a payload with a
+        zero in it silently shifts everything after it -- which is how the
+        scripted-input queue arrived as garbage and every duel measurement
+        looked idle.  Byte pairs separated by spaces are taken literally.
+        """
+        if isinstance(data, str):
+            data = bytes.fromhex(data.replace(" ", ""))
+        hexbytes = " ".join("%02x" % b for b in data)
         out = self.tool("reasm", address=address, bytes=hexbytes)
         self.tool("emu", action="continue")
         return out

@@ -79,6 +79,13 @@ typedef struct AtaristProbe {
      * screen and no frame counter yet, so each step stamps this and a blind
      * run can say which one died. */
     uint16_t mark;
+    /* Worst frame since boot, in vblanks.  A duel screen that is quiet most of
+     * the time hides its cost from a two-sample average, and the frames that
+     * matter are exactly the ones that move; this is the number to read when
+     * judging whether the renderer fits its budget.  `spare` keeps the script
+     * array on a four-byte boundary. */
+    uint16_t worst_vbls;
+    uint16_t spare;
     uint32_t script[ATARIST_PROBE_SCRIPT];
 
     uint32_t magic_end;

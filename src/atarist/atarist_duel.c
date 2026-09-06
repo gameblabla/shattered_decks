@@ -1,0 +1,651 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ *  atarist_duel.c — the duel screen.
+ *
+ *  The board is rasterised into the chunky buffer at one of two internal
+ *  resolutions and converted by the C2P; the hand and the HUD are drawn planar
+ *  at the full 320x200.  That division is the requirement, not an optimisation
+ *  detail: the 3D view is allowed to lose resolution while it moves, the cards
+ *  never are.
+ *
+ *  WHAT MAKES THE CAMERA "MOVING".  It is not whether the camera is animating
+ *  right now -- it is whether anything on screen will change next frame.  A
+ *  cursor step, a placement, an attack and the settle after one all raise
+ *  g_motion; when it reaches zero the same view is re-rendered once at full
+ *  320x112 and then left alone.  A still board therefore costs nothing at all
+ *  per frame, which is what buys the moving frames their budget.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "atarist_duel.h"
+#include "atarist_video.h"
+#include "atarist_draw.h"
+#include "atarist_board3d.h"
+#include "atarist_assets.h"
+#include "atarist_input.h"
+#include "atarist_probe.h"
+#include "atarist_os.h"
+
+#include "msxgl.h"
+#include "msx2_duel.h"
+#include "msx2_cards.h"
+
+/* ── Camera ──────────────────────────────────────────────────────────────────
+ *  Chosen against the row spacing in Atarist_SlotCentre(): with the camera six
+ *  units back and 1.875 up, the four rows land at roughly viewport rows
+ *  49 / 57 / 74 / 100 at full resolution and the player's monster row is 160
+ *  pixels wide, which is what makes a card on it big enough to read.
+ *  All of it is derived from the viewport, so the halved moving view and the
+ *  full still view frame the identical picture. */
+#define CAM_FOCAL_FULL   160     /* pixels at 320 wide */
+#define CAM_HEIGHT_Q16   (15 << 13)         /* 1.875 world units */
+#define CAM_Z_Q16        (-(6 << 16))       /* behind the player's near row */
+#define CARD_W_Q16       (45875)            /* 0.70 world units */
+#define CARD_H_Q16       (58982)            /* 0.90 world units */
+#define WORLD_TO_TEXEL_LOG2  3      /* ATARIST_TEXELS_PER_UNIT == 8 */
+
+/* Whether the board is re-rendered at the full 320x112 once it comes to rest.
+ * It costs a visible settle on a plain 8 MHz ST; the STE build and anything
+ * with cycles to spare wants it on. */
+#ifndef ATARIST_BOARD_STILL_FULLRES
+#define ATARIST_BOARD_STILL_FULLRES 1
+#endif
+
+/* ── Layout of the card half ─────────────────────────────────────────────── */
+/* EVERY X HERE IS A MULTIPLE OF 16 (rectangles) OR 8 (text), and that is a
+ * performance decision, not a tidiness one: an aligned rectangle is written
+ * with whole 32-bit stores, while a misaligned one pays a read-modify-write
+ * per edge group per scanline.  The first version of this layout used a
+ * 63-pixel pitch starting at x=5 and the hand alone cost eight vblanks. */
+#define HAND_Y        118
+#define HAND_CARD_W    64
+#define HAND_CARD_H    44
+#define HAND_PITCH     64
+#define HAND_X0         0
+#define HUD_Y         166
+#define PROMPT_Y      178
+#define STATUS_Y      190
+
+/* ── UI state machine ────────────────────────────────────────────────────── */
+enum {
+    UI_HAND = 0,        /* choosing a card in hand */
+    UI_PLACE,           /* choosing where a monster goes */
+    UI_EQUIP_TARGET,    /* choosing the monster an equip attaches to */
+    UI_ATTACKER,        /* choosing which of your monsters attacks */
+    UI_DEFENDER,        /* choosing what it attacks */
+    UI_COM,             /* the opponent is thinking */
+    UI_RESULT
+};
+
+static uint8_t  g_ui;
+static uint8_t  g_cursor;        /* hand slot or field slot, per state */
+static uint8_t  g_chosen_hand;
+static uint8_t  g_motion;        /* frames of "something is changing" left */
+static uint8_t  g_com_delay;
+static uint8_t  g_finished;
+static uint16_t g_msg_timer;
+static const char *g_msg;
+static AtaristCamera g_cam;
+
+/* THE GROUND IS RENDERED ONCE, NOT ONCE A FRAME.  The duel camera is fixed --
+ * the board does not orbit, only the cards on it change -- so the textured
+ * plane is the same picture every frame, and it is by a wide margin the most
+ * expensive thing the board draws.  Rasterising it into a cache and copying
+ * the cache in took a moving frame from ten vblanks to three.  The cache is
+ * per resolution, because the halved moving view and the full still view are
+ * different pictures; `g_ground_res` says which one is in there. */
+#define GROUND_HALF_BYTES (ATARIST_SCREEN_W / 2 * (ATARIST_SPLIT_Y / 2))
+#define GROUND_FULL_BYTES (ATARIST_SCREEN_W * ATARIST_SPLIT_Y)
+/* BOTH RESOLUTIONS ARE CACHED, not one slot reused.  A single slot is rebuilt
+ * every time the board settles and then again the moment it moves, which put
+ * a full-resolution ground rasterisation -- twenty-eight vblanks -- on every
+ * single action.  Two slots cost 44 KB and are each built once. */
+static uint8_t *g_ground_cache[2];
+static uint8_t  g_ground_valid[2];
+
+/* HOW MANY BUFFERS STILL OWE A REDRAW.  The screen is double buffered, so
+ * "nothing changed, skip the frame" has to skip TWICE before it is safe: the
+ * buffer that is not being drawn into is one present behind, and going quiet
+ * after a single repaint flips between the new picture and the old one.  Two
+ * settling frames, then the duel screen costs nothing at all until the player
+ * or the opponent does something -- which is what leaves the whole frame
+ * budget to the frames that do move. */
+#define ATARIST_BUFFERS 2
+static uint8_t g_redraw;
+/* The hand and the HUD are counted separately from the board, because they do
+ * not animate: a twelve-frame board settle used to repaint the five hand cards
+ * twelve times for an identical result, and the hand is the most expensive
+ * thing on the screen after the ground. */
+static uint8_t g_hud_redraw;
+
+static void duel_touch(int frames)
+{
+    if (frames > 255) frames = 255;
+    if (g_motion < frames) g_motion = (uint8_t)frames;
+    g_redraw = ATARIST_BUFFERS;
+    g_hud_redraw = ATARIST_BUFFERS;
+}
+
+static void duel_say(const char *msg)
+{
+    g_msg = msg;
+    g_msg_timer = 90;
+}
+
+/* ── Board rendering ─────────────────────────────────────────────────────── */
+
+/* The chunky surface a board render works on: compact, one byte per pixel,
+ * `w` bytes per row -- not the 320-byte chunky stride.  The C2P is told the
+ * stride, and a compact surface makes the ground cache one flat copy. */
+static void viewport_for(AtaristViewport *vp, int moving)
+{
+    vp->pixels = Atarist_Chunky();
+    vp->half   = moving;
+    vp->w      = moving ? ATARIST_SCREEN_W / 2 : ATARIST_SCREEN_W;
+    vp->h      = moving ? ATARIST_SPLIT_Y / 2 : ATARIST_SPLIT_Y;
+    vp->stride = vp->w;
+}
+
+static void camera_for(const AtaristViewport *vp)
+{
+    int32_t focal = (int32_t)((CAM_FOCAL_FULL * vp->w / ATARIST_SCREEN_W) << 16);
+    Atarist_CameraSet(&g_cam, 0, CAM_Z_Q16, CAM_HEIGHT_Q16, 0, focal);
+    g_cam.horizon = vp->h / 8;
+}
+
+/* A card standing upright on a slot, as a screen-space quad.  The board camera
+ * never rolls, so the billboard's two vertical edges are exactly vertical on
+ * screen and the quad needs only the projected centre plus a projected height:
+ * no rotation, and no per-vertex divide beyond the two the projection costs. */
+static int card_quad(const AtaristViewport *vp, int row, int col,
+                     AtaristVert *q, int tex_w, int tex_h)
+{
+    int32_t wx, wz, bx, by, tx, ty, half;
+
+    Atarist_SlotCentre(row, col, &wx, &wz);
+    if (!Atarist_Project(&g_cam, vp, wx, wz, 0, &bx, &by)) return 0;
+    if (!Atarist_Project(&g_cam, vp, wx, wz, CARD_H_Q16, &tx, &ty)) return 0;
+    /* Half width in screen pixels: the same projection applied to a point one
+     * half-card to the side, which keeps the aspect honest at every depth. */
+    {
+        int32_t ex, ey;
+        if (!Atarist_Project(&g_cam, vp, wx + CARD_W_Q16 / 2, wz, 0, &ex, &ey))
+            return 0;
+        half = ex - bx;
+        if (half < (1 << 16)) half = 1 << 16;
+    }
+
+    q[0].x = bx - half; q[0].y = ty; q[0].u = 0;                q[0].v = 0;
+    q[1].x = bx + half; q[1].y = ty; q[1].u = tex_w << 16;      q[1].v = 0;
+    q[2].x = bx + half; q[2].y = by; q[2].u = tex_w << 16;      q[2].v = tex_h << 16;
+    q[3].x = bx - half; q[3].y = by; q[3].u = 0;                q[3].v = tex_h << 16;
+    return 1;
+}
+
+/* A flat marker lying on the board, used for the cursor and for the slot the
+ * COM is acting on.  Flat filled -- the requirement allows the non-texture
+ * surfaces to be, and a marker that costs a texture fetch per pixel would be
+ * paid for every frame the cursor moves. */
+static void draw_slot_marker(const AtaristViewport *vp, int row, int col,
+                             uint8_t colour)
+{
+    int32_t wx, wz;
+    AtaristVert q[4];
+    int32_t hx = CARD_W_Q16 / 2 + (1 << 13);
+    int32_t hz = (int32_t)(1 << 14);   /* a quarter unit deep */
+    int i;
+    static const int8_t sx[4] = { -1, 1, 1, -1 };
+    static const int8_t sz[4] = { 1, 1, -1, -1 };
+
+    Atarist_SlotCentre(row, col, &wx, &wz);
+    for (i = 0; i < 4; ++i) {
+        int32_t ox, oy;
+        if (!Atarist_Project(&g_cam, vp, wx + sx[i] * hx, wz + sz[i] * hz, 0,
+                             &ox, &oy))
+            return;
+        q[i].x = ox; q[i].y = oy; q[i].u = 0; q[i].v = 0;
+    }
+    Atarist_FillQuad(vp, q, colour);
+}
+
+/* Which board row a field slot of `owner` occupies. */
+static int monster_row(int owner)
+{
+    return owner ? ATARIST_ROW_COM_MONSTER : ATARIST_ROW_YOU_MONSTER;
+}
+/* The cursor's board position, or -1 when the cursor is not on the board. */
+static int cursor_board_slot(int *row)
+{
+    switch (g_ui) {
+    case UI_PLACE:
+    case UI_EQUIP_TARGET:
+    case UI_ATTACKER:
+        *row = monster_row(MSX2_OWNER_PLAYER);
+        break;
+    case UI_DEFENDER:
+        *row = monster_row(MSX2_OWNER_COM);
+        break;
+    default:
+        return -1;
+    }
+    /* A support play that needs no target parks the cursor on MSX2_SLOT_NONE
+     * for one frame; that is not a column. */
+    return (g_cursor < ATARIST_COLS) ? g_cursor : -1;
+}
+
+static void render_board(int moving)
+{
+    AtaristViewport vp;
+    int row, col, cur_row, cur_slot;
+    int slot = moving ? 0 : 1;
+    uint8_t *cached = g_ground_cache[slot];
+
+    viewport_for(&vp, moving);
+    camera_for(&vp);
+
+    if (cached && !g_ground_valid[slot]) {
+        AtaristViewport cache = vp;
+        cache.pixels = cached;
+        Atarist_DrawGround(&cache, &g_cam, Atarist_ArenaTexture(),
+                           WORLD_TO_TEXEL_LOG2, (uint8_t)(ARENA_SKY_MID << 2));
+        g_ground_valid[slot] = 1;
+    }
+
+    if (cached)
+        Atarist_ChunkyCopy(vp.pixels, cached, vp.w * vp.h);
+    else
+        Atarist_DrawGround(&vp, &g_cam, Atarist_ArenaTexture(),
+                           WORLD_TO_TEXEL_LOG2, (uint8_t)(ARENA_SKY_MID << 2));
+
+    cur_slot = cursor_board_slot(&cur_row);
+    if (cur_slot >= 0)
+        draw_slot_marker(&vp, cur_row, cur_slot, (uint8_t)(ARENA_HILIGHT << 2));
+
+    /* Far to near, so a nearer card overdraws a farther one with no z buffer.
+     * The board rows are already stored in that order. */
+    for (row = 0; row < ATARIST_ROWS; ++row) {
+        int owner = (row <= ATARIST_ROW_COM_MONSTER) ? MSX2_OWNER_COM
+                                                     : MSX2_OWNER_PLAYER;
+        int is_support = (row == ATARIST_ROW_COM_SUPPORT ||
+                          row == ATARIST_ROW_YOU_SUPPORT);
+        const Msx2Side *s = &g_duel.side[owner];
+        for (col = 0; col < ATARIST_COLS; ++col) {
+            u8 card = is_support ? s->equip_field[col] : s->field[col];
+            AtaristVert q[4];
+            const AtaristTexture *tex;
+            int face;
+
+            if (card == MSX2_CARD_NONE) continue;
+            face = is_support ? ATARIST_CARD_FACE_BACK
+                              : Atarist_CardFaceForCard(card,
+                                    s->faceup[col] ? 1 : 0);
+            tex = Atarist_CardFace(face);
+            if (!card_quad(&vp, row, col, q, 1 << tex->w_log2, 1 << tex->h_log2))
+                continue;
+            Atarist_TexQuad(&vp, q, tex);
+        }
+    }
+
+    if (moving)
+        Atarist_C2P_Double(vp.pixels, Atarist_BackBuffer(),
+                           ATARIST_SPLIT_Y / 2, vp.stride);
+    else
+        Atarist_C2P_Direct(vp.pixels, Atarist_BackBuffer(),
+                           ATARIST_SPLIT_Y, vp.stride);
+}
+
+/* ── The card half ───────────────────────────────────────────────────────── */
+
+static uint8_t hand_card_colour(u8 card)
+{
+    static const uint8_t by_attr[6] = {
+        CARD_RED, CARD_BLUE, CARD_GREEN, CARD_PURPLE, CARD_ORANGE, CARD_CYAN
+    };
+    if (card == MSX2_CARD_NONE) return CARD_PANEL_DARK;
+    if (Msx2_IsSupport(card)) return CARD_GOLD;
+    if (card >= MSX2_CARD_COUNT) return CARD_GREY;
+    return by_attr[g_msx2_card_attr[card] % 6];
+}
+
+static void draw_hand_card(int i, u8 card, int selected, int used)
+{
+    int x = HAND_X0 + i * HAND_PITCH;
+    uint8_t body = hand_card_colour(card);
+    uint8_t frame = selected ? CARD_YELLOW : CARD_SILVER;
+
+    Atarist_FillRect(x, HAND_Y, HAND_CARD_W, HAND_CARD_H,
+                     used ? CARD_PANEL_DARK : CARD_PANEL_MID);
+    Atarist_FrameRect(x, HAND_Y, HAND_CARD_W, HAND_CARD_H, frame);
+    if (selected)
+        Atarist_FrameRect(x + 1, HAND_Y + 1, HAND_CARD_W - 2, HAND_CARD_H - 2,
+                          CARD_YELLOW);
+    if (card == MSX2_CARD_NONE) return;
+
+    /* The art window, then the stat strip.  Both are the same shapes the board
+     * card texture uses, so a card reads the same in hand as on the field. */
+    Atarist_FillRect(x + 16, HAND_Y + 4, 32, 18, used ? CARD_GREY : body);
+    if (Msx2_IsSupport(card)) {
+        Atarist_DrawText(x + 8, HAND_Y + 26, "SUP", CARD_WHITE, CARD_WHITE);
+        Atarist_DrawNumber(x + 56, HAND_Y + 34, Msx2_SupportKind(card),
+                           CARD_YELLOW, CARD_YELLOW);
+    } else {
+        Atarist_DrawNumber(x + 56, HAND_Y + 26, Msx2_CardAtk(card),
+                           CARD_WHITE, CARD_WHITE);
+        Atarist_DrawNumber(x + 56, HAND_Y + 34, Msx2_CardDef(card),
+                           CARD_SILVER, CARD_SILVER);
+    }
+}
+
+static const char *prompt_text(void)
+{
+    switch (g_ui) {
+    case UI_HAND:         return "A:PLAY  SPACE:BATTLE  TAB:END";
+    case UI_PLACE:        return "A:ATTACK POS   B:DEFENCE POS";
+    case UI_EQUIP_TARGET: return "PICK A MONSTER TO EQUIP";
+    case UI_ATTACKER:     return "PICK AN ATTACKER  TAB:END TURN";
+    case UI_DEFENDER:     return "PICK A TARGET  B:DIRECT";
+    case UI_COM:          return "OPPONENT THINKING";
+    default:              return "";
+    }
+}
+
+static void draw_hud(void)
+{
+    const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+    const Msx2Side *com = &g_duel.side[MSX2_OWNER_COM];
+    int i;
+
+    Atarist_ClearPlanarBand(ATARIST_SPLIT_Y, ATARIST_SCREEN_H, CARD_PANEL_DARK);
+    Atarist_HLine(0, ATARIST_SPLIT_Y, ATARIST_SCREEN_W, CARD_GOLD);
+
+    for (i = 0; i < MSX2_HAND; ++i)
+        draw_hand_card(i, you->hand[i],
+                       (g_ui == UI_HAND && g_cursor == i) ||
+                       (g_ui != UI_HAND && g_chosen_hand == i &&
+                        g_ui != UI_ATTACKER && g_ui != UI_DEFENDER &&
+                        g_ui != UI_COM),
+                       you->used[i]);
+
+    /* Shadowless: the HUD sits on a flat panel, and a shadow would double the
+     * glyph cost for nothing.  Text over card art keeps its shadow. */
+    Atarist_DrawText(0, HUD_Y, "YOU", CARD_WHITE, CARD_WHITE);
+    Atarist_DrawNumber(80, HUD_Y, you->lp, CARD_GREEN, CARD_GREEN);
+    Atarist_DrawText(160, HUD_Y, "COM", CARD_WHITE, CARD_WHITE);
+    Atarist_DrawNumber(240, HUD_Y, com->lp, CARD_RED, CARD_RED);
+    Atarist_DrawText(256, HUD_Y, "T", CARD_SILVER, CARD_SILVER);
+    Atarist_DrawNumber(320, HUD_Y, g_duel.turns, CARD_SILVER, CARD_SILVER);
+
+    if (g_ui == UI_RESULT) {
+        Atarist_DrawTextCentred(160, PROMPT_Y,
+                                g_duel.result > 0 ? "YOU WIN" : "YOU LOSE",
+                                CARD_YELLOW, CARD_YELLOW);
+        Atarist_DrawTextCentred(160, STATUS_Y, "PRESS SPACE",
+                                CARD_WHITE, CARD_WHITE);
+        return;
+    }
+
+    Atarist_DrawTextCentred(160, PROMPT_Y, prompt_text(), CARD_WHITE, CARD_WHITE);
+    if (g_msg_timer && g_msg)
+        Atarist_DrawTextCentred(160, STATUS_Y, g_msg, CARD_YELLOW, CARD_YELLOW);
+    else
+        Atarist_DrawTextCentred(160, STATUS_Y,
+                                g_duel.turn_owner == MSX2_OWNER_PLAYER
+                                    ? "YOUR TURN" : "OPPONENT TURN",
+                                CARD_SILVER, CARD_SILVER);
+}
+
+/* ── Input ───────────────────────────────────────────────────────────────── */
+
+static void move_cursor(int count)
+{
+    if (Atarist_InputRepeat(ATARIST_BTN_LEFT, 12)) {
+        g_cursor = (uint8_t)((g_cursor + count - 1) % count);
+        duel_touch(4);
+    }
+    if (Atarist_InputRepeat(ATARIST_BTN_RIGHT, 12)) {
+        g_cursor = (uint8_t)((g_cursor + 1) % count);
+        duel_touch(4);
+    }
+}
+
+static void begin_battle_phase(void)
+{
+    g_duel.phase = MSX2_PHASE_BATTLE;
+    g_ui = UI_ATTACKER;
+    g_cursor = 0;
+    duel_touch(8);
+}
+
+static void end_player_turn(void)
+{
+    Msx2_EndTurn();
+    g_ui = UI_COM;
+    g_com_delay = 12;
+    duel_touch(8);
+}
+
+static void place_chosen(int defense)
+{
+    u8 card = g_duel.side[MSX2_OWNER_PLAYER].hand[g_chosen_hand];
+    if (Msx2_IsSupport(card)) {
+        if (!Msx2_PlaySupport(MSX2_OWNER_PLAYER, g_chosen_hand, g_cursor))
+            duel_say("CANNOT PLAY THAT");
+    } else if (!Msx2_PlaceMonster(MSX2_OWNER_PLAYER, g_chosen_hand, g_cursor,
+                                  defense ? TRUE : FALSE)) {
+        duel_say("CANNOT PLACE THERE");
+    }
+    Msx2_ClearActionEvent();
+    g_ui = UI_HAND;
+    g_cursor = g_chosen_hand;
+    duel_touch(20);
+}
+
+static void step_player(void)
+{
+    const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+
+    switch (g_ui) {
+    case UI_HAND:
+        move_cursor(MSX2_HAND);
+        if (g_atarist_input.pressed & ATARIST_BTN_A) {
+            u8 card = you->hand[g_cursor];
+            if (card == MSX2_CARD_NONE || you->used[g_cursor]) {
+                duel_say("NOTHING THERE");
+            } else if (Msx2_IsSupport(card)) {
+                u8 kind = Msx2_SupportKind(card);
+                g_chosen_hand = g_cursor;
+                if (kind == MSX2_SUP_EQUIP || kind == MSX2_SUP_GUARD) {
+                    g_ui = UI_EQUIP_TARGET;
+                    g_cursor = 0;
+                } else {
+                    g_cursor = MSX2_SLOT_NONE;
+                    place_chosen(0);
+                }
+                duel_touch(8);
+            } else {
+                g_chosen_hand = g_cursor;
+                g_ui = UI_PLACE;
+                g_cursor = Msx2_FirstFreeSlot(MSX2_OWNER_PLAYER);
+                if (g_cursor == MSX2_SLOT_NONE) g_cursor = 0;
+                duel_touch(8);
+            }
+        }
+        if (g_atarist_input.pressed & ATARIST_BTN_START) begin_battle_phase();
+        if (g_atarist_input.pressed & ATARIST_BTN_TAB) end_player_turn();
+        break;
+
+    case UI_PLACE:
+        move_cursor(MSX2_FIELD);
+        if (g_atarist_input.pressed & ATARIST_BTN_A) place_chosen(0);
+        else if (g_atarist_input.pressed & ATARIST_BTN_B) place_chosen(1);
+        else if (g_atarist_input.pressed & ATARIST_BTN_START) {
+            g_ui = UI_HAND;
+            g_cursor = g_chosen_hand;
+            duel_touch(8);
+        }
+        break;
+
+    case UI_EQUIP_TARGET:
+        move_cursor(MSX2_FIELD);
+        if (g_atarist_input.pressed & ATARIST_BTN_A) place_chosen(0);
+        else if (g_atarist_input.pressed & ATARIST_BTN_START) {
+            g_ui = UI_HAND;
+            g_cursor = g_chosen_hand;
+            duel_touch(8);
+        }
+        break;
+
+    case UI_ATTACKER:
+        move_cursor(MSX2_FIELD);
+        if (g_atarist_input.pressed & ATARIST_BTN_A) {
+            if (!Msx2_IsMonster(you->field[g_cursor])) {
+                duel_say("NO MONSTER THERE");
+            } else if (you->attacked[g_cursor]) {
+                duel_say("ALREADY ATTACKED");
+            } else if (Msx2_FirstTurnAttackLocked()) {
+                duel_say("NO ATTACK ON TURN ONE");
+            } else {
+                g_chosen_hand = g_cursor;       /* reused: the attacker slot */
+                g_ui = UI_DEFENDER;
+                g_cursor = Msx2_FirstLiveSlot(MSX2_OWNER_COM);
+                if (g_cursor == MSX2_SLOT_NONE) g_cursor = 0;
+                duel_touch(8);
+            }
+        }
+        if (g_atarist_input.pressed & ATARIST_BTN_B) {
+            /* Position switch: the one main-phase action still legal in
+             * battle, and the rules model exposes it as its own call. */
+            if (Msx2_ChangePosition(MSX2_OWNER_PLAYER, g_cursor)) duel_touch(12);
+            else duel_say("CANNOT TURN THAT");
+        }
+        if (g_atarist_input.pressed & ATARIST_BTN_TAB) end_player_turn();
+        break;
+
+    case UI_DEFENDER: {
+        int direct = (Msx2_LiveMonsterCount(MSX2_OWNER_COM) == 0) ||
+                     (g_atarist_input.pressed & ATARIST_BTN_B) != 0;
+        move_cursor(MSX2_FIELD);
+        if ((g_atarist_input.pressed & ATARIST_BTN_A) || direct) {
+            u8 target = direct ? MSX2_SLOT_NONE : g_cursor;
+            if (!Msx2_Attack(MSX2_OWNER_PLAYER, g_chosen_hand, target))
+                duel_say("THAT ATTACK IS ILLEGAL");
+            Msx2_ClearActionEvent();
+            g_ui = UI_ATTACKER;
+            g_cursor = g_chosen_hand;
+            duel_touch(24);
+        }
+        if (g_atarist_input.pressed & ATARIST_BTN_START) {
+            g_ui = UI_ATTACKER;
+            g_cursor = g_chosen_hand;
+            duel_touch(8);
+        }
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+/* ── Entry points ────────────────────────────────────────────────────────── */
+
+void Atarist_DuelEnter(uint32_t seed, uint8_t story_index)
+{
+    if (!g_ground_cache[0]) {
+        /* Losing the allocation is survivable -- the board falls back to
+         * rasterising the ground every frame -- so it is not a boot failure. */
+        uint8_t *block = (uint8_t *)st_malloc(GROUND_HALF_BYTES +
+                                              GROUND_FULL_BYTES);
+        if (block) {
+            g_ground_cache[0] = block;
+            g_ground_cache[1] = block + GROUND_HALF_BYTES;
+        }
+        g_ground_valid[0] = g_ground_valid[1] = 0;
+    }
+    Msx2_DuelInit(seed, story_index);
+    Atarist_ApplyArenaPalette();
+    Atarist_ApplyCardPalette();
+    Atarist_SetSplitEnabled(1);
+    Atarist_InputFlush();
+
+    g_ui = UI_COM;              /* TURN_START runs first, for either side */
+    g_cursor = 0;
+    g_chosen_hand = 0;
+    g_com_delay = 4;
+    g_finished = 0;
+    g_msg = NULL;
+    g_msg_timer = 0;
+    g_redraw = ATARIST_BUFFERS;
+    g_hud_redraw = ATARIST_BUFFERS;
+    g_motion = 30;
+    Atarist_ClearPlanar(0);
+}
+
+void Atarist_DuelStep(int vblanks)
+{
+    if (g_msg_timer) {
+        g_msg_timer = (uint16_t)(g_msg_timer > vblanks ? g_msg_timer - vblanks : 0);
+        /* The status line changes when the message expires, so the frame it
+         * expires on is a frame that has to be repainted. */
+        if (!g_msg_timer) duel_touch(1);
+    }
+
+    if (g_duel.result != 0 && g_ui != UI_RESULT) {
+        g_ui = UI_RESULT;
+        duel_touch(30);
+    }
+
+    if (g_ui == UI_RESULT) {
+        if (g_atarist_input.pressed & (ATARIST_BTN_START | ATARIST_BTN_A))
+            g_finished = 1;
+    } else if (g_duel.turn_owner == MSX2_OWNER_PLAYER &&
+               (g_duel.phase == MSX2_PHASE_MAIN ||
+                g_duel.phase == MSX2_PHASE_BATTLE)) {
+        /* The player's own phases are the only ones the rules model does not
+         * drive itself; everything else -- including the player's draw at
+         * TURN_START -- goes through Msx2_DuelStep. */
+        if (g_ui == UI_COM) {
+            g_ui = (g_duel.phase == MSX2_PHASE_MAIN) ? UI_HAND : UI_ATTACKER;
+            g_cursor = 0;
+            duel_touch(12);
+        }
+        step_player();
+    } else {
+        g_ui = UI_COM;
+        if (g_com_delay > vblanks) {
+            g_com_delay = (uint8_t)(g_com_delay - vblanks);
+        } else {
+            g_com_delay = 10;
+            Msx2_DuelStep();
+            Msx2_ClearActionEvent();
+            duel_touch(12);
+        }
+    }
+
+    if (g_motion) {
+        g_motion = (uint8_t)(g_motion > vblanks ? g_motion - vblanks : 0);
+        g_redraw = ATARIST_BUFFERS;
+    }
+
+    /* A moving frame renders the board at half resolution; the settling frames
+     * after it render it once per buffer at the full 320x112 and then the
+     * screen goes quiet. */
+    if (g_redraw) {
+        render_board(ATARIST_BOARD_STILL_FULLRES ? (g_motion != 0) : 1);
+        if (!g_motion) --g_redraw;
+    }
+    if (g_hud_redraw) {
+        draw_hud();
+        --g_hud_redraw;
+    }
+
+    g_atarist_probe.phase = g_duel.phase;
+    g_atarist_probe.turns = g_duel.turns;
+    g_atarist_probe.lp_player = g_duel.side[MSX2_OWNER_PLAYER].lp;
+    g_atarist_probe.lp_com = g_duel.side[MSX2_OWNER_COM].lp;
+    g_atarist_probe.menu_cursor = g_cursor;
+}
+
+int Atarist_DuelFinished(void) { return g_finished; }
+int Atarist_DuelResult(void)   { return g_duel.result; }

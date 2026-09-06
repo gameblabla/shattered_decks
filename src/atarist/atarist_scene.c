@@ -15,12 +15,19 @@
 #include "atarist_video.h"
 #include "atarist_input.h"
 #include "atarist_probe.h"
+#include "atarist_assets.h"
+#include "atarist_duel.h"
+
+#ifndef ATARIST_DEBUG_BRINGUP
+#define ATARIST_DEBUG_BRINGUP 0
+#endif
 
 static uint8_t g_scene;
 static uint16_t g_anim;
 
 /* Two visibly different sixteens, so a screenshot shows at a glance whether the
  * split fired: the board half is a warm desert ramp, the card half a cool one. */
+#if ATARIST_DEBUG_BRINGUP
 static void Atarist_BringupPalettes(void)
 {
     uint16_t arena[16], card[16];
@@ -79,11 +86,22 @@ static void Atarist_BringupCards(void)
     }
 }
 
+#endif /* ATARIST_DEBUG_BRINGUP */
+
 void Atarist_SceneInit(void)
 {
-    g_scene = ATARIST_SCENE_BRINGUP;
     g_anim = 0;
+#if ATARIST_DEBUG_BRINGUP
+    g_scene = ATARIST_SCENE_BRINGUP;
     Atarist_BringupPalettes();
+#else
+    g_scene = ATARIST_SCENE_DUEL;
+    ATARIST_STAGE(ATARIST_STAGE_DUEL);
+    /* The free-battle seed is the vblank counter at the moment the duel opens,
+     * which is unpredictable to a player and perfectly repeatable to the
+     * harness, because a scripted run reaches this line on a fixed frame. */
+    Atarist_DuelEnter(g_atarist_vbl * 2654435761u + 1u, 0xFFu);
+#endif
     g_atarist_probe.scene = g_scene;
 }
 
@@ -91,9 +109,23 @@ void Atarist_SceneStep(int vblanks)
 {
     g_anim = (uint16_t)(g_anim + vblanks);
     switch (g_scene) {
+    case ATARIST_SCENE_DUEL:
+        Atarist_DuelStep(vblanks);
+        if (Atarist_DuelFinished()) {
+            /* Free battle restarts: there is no title screen to fall back to
+             * yet, and a blind run that ends on a dead screen cannot be told
+             * apart from one that crashed. */
+            Atarist_DuelEnter(g_atarist_vbl * 2654435761u + 1u, 0xFFu);
+            ++g_atarist_probe.duels;
+        }
+        break;
+#if ATARIST_DEBUG_BRINGUP
     default:
         Atarist_BringupBoard();
         Atarist_BringupCards();
+        break;
+#endif
+    default:
         break;
     }
     g_atarist_probe.scene = g_scene;

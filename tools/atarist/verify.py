@@ -35,7 +35,7 @@ STAGES = ["ENTRY", "VIDEO", "INPUT", "AUDIO", "ASSETS", "LOOP",
 STATUS = ["OK", "BADSTATE", "STUCK", "NOMEM", "NOFILE"]
 
 # struct AtaristProbe, big endian, up to (but not including) the script array.
-HEAD_FMT = ">IHH II HH HHHHH hh HH HHH HHHH"
+HEAD_FMT = ">IHH II HH HHHHH hh HH HHH HHHH HH"
 HEAD_SIZE = struct.calcsize(HEAD_FMT)
 HEAD_FIELDS = [
     "magic", "version", "stage", "frame", "vbl", "frame_vbls", "status",
@@ -43,8 +43,17 @@ HEAD_FIELDS = [
     "lp_player", "lp_com", "turns", "phase",
     "is_ste", "has_blitter", "machine_ram_kb",
     "script_len", "script_pos", "script_hold", "mark",
+    "worst_vbls", "spare",
 ]
 PROBE_SIZE = HEAD_SIZE + SCRIPT_SLOTS * 4 + 4
+
+# Byte offset of a named head field.  Computed rather than written down: the
+# script_len poke used to be spelled HEAD_SIZE - 8, and adding two fields to
+# the probe silently redirected it at `mark`, so the scripted input stopped
+# arriving and every measurement looked idle.
+def head_offset(name):
+    return struct.calcsize(">" + "".join(
+        HEAD_FMT.replace(" ", "")[1:][:HEAD_FIELDS.index(name)]))
 
 
 def find_probe(ram, base=0):
@@ -91,10 +100,10 @@ def describe(p):
     stage = STAGES[p["stage"]] if p["stage"] < len(STAGES) else p["stage"]
     status = STATUS[p["status"]] if p["status"] < len(STATUS) else p["status"]
     return ("probe @ 0x%06x  stage=%s status=%s frame=%d vbl=%d "
-            "frame_vbls=%d scene=%d mark=%d ste=%d blitter=%d ram=%dK"
+            "frame_vbls=%d worst=%d scene=%d mark=%d ste=%d blitter=%d ram=%dK"
             % (p["_addr"], stage, status, p["frame"], p["vbl"],
-               p["frame_vbls"], p["scene"], p["mark"], p["is_ste"], p["has_blitter"],
-               p["machine_ram_kb"]))
+               p["frame_vbls"], p["worst_vbls"], p["scene"], p["mark"],
+               p["is_ste"], p["has_blitter"], p["machine_ram_kb"]))
 
 
 def main():
@@ -135,9 +144,10 @@ def main():
             entries = parse_script(a.script)
             payload = b"".join(struct.pack(">I", e) for e in entries)
             script_addr = addr + HEAD_SIZE
-            h.poke(script_addr, payload.hex())
+            h.poke(script_addr, payload)
             # script_len last, so the game never reads a half-written queue.
-            h.poke(addr + HEAD_SIZE - 8, struct.pack(">H", len(entries)).hex())
+            h.poke(addr + head_offset("script_len"),
+                   struct.pack(">H", len(entries)))
             print("script: %d entries at 0x%06x" % (len(entries), script_addr))
 
         first_frame = probe["frame"]
