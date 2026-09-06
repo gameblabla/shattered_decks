@@ -682,13 +682,6 @@ static bool g_fuse_real;                 // TRUE when a recipe actually fired
 static i16 g_fuse_hand_atk, g_fuse_hand_def;
 static i16 g_fuse_field_atk, g_fuse_field_def;
 static u8  g_fuse_card;                  // what the chain makes, when it makes one
-// The equip cards the chain keeps, in the order they were folded in, so the
-// commit can seat them on the support row.  They track the bonuses above
-// exactly: an equip queued before any monster waits in the pending list and
-// joins the kept list with its bonus, and a chain that summons nothing keeps
-// neither.
-static u8  g_fuse_equip[MSX2_FUSION_MAX];
-static u8  g_fuse_equip_n;
 
 u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 {
@@ -703,8 +696,6 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 	i16 hand_atk = 0, hand_def = 0;      // from equip cards the player queued
 	i16 field_atk = 0, field_def = 0;    // from what was already on the field card
 	i16 pend_atk = 0, pend_def = 0;      // equips seen before any monster
-	u8 pend_equip[MSX2_FUSION_MAX];
-	u8 pend_equip_n = 0;
 	bool hand_first;
 
 	if((count == 0) || (count > MSX2_HAND) || (field_slot >= MSX2_FIELD))
@@ -713,7 +704,6 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 	if(s->monster_played)
 		return MSX2_FUSE_SPENT;
 	g_fuse_real = FALSE;
-	g_fuse_equip_n = 0;
 
 	field_card = s->field[field_slot];
 	hand_first = Msx2_FusionHandFirst(s, hand_slots, count, field_card);
@@ -764,7 +754,6 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 	for(i = 0; i < n; ++i)
 	{
 		u8 card = mat[i];
-		u8 j;
 
 		if(Msx2_IsEquipSupport(card))
 		{
@@ -772,15 +761,11 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 			{
 				hand_atk += Msx2_EquipAtkBonus(card);
 				hand_def += Msx2_EquipDefBonus(card);
-				if(g_fuse_equip_n < MSX2_FUSION_MAX)
-					g_fuse_equip[g_fuse_equip_n++] = card;
 			}
 			else
 			{
 				pend_atk += Msx2_EquipAtkBonus(card);
 				pend_def += Msx2_EquipDefBonus(card);
-				if(pend_equip_n < MSX2_FUSION_MAX)
-					pend_equip[pend_equip_n++] = card;
 			}
 			continue;
 		}
@@ -799,10 +784,6 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 			hand_atk += pend_atk;
 			hand_def += pend_def;
 			pend_atk = pend_def = 0;
-			for(j = 0; j < pend_equip_n; ++j)
-				if(g_fuse_equip_n < MSX2_FUSION_MAX)
-					g_fuse_equip[g_fuse_equip_n++] = pend_equip[j];
-			pend_equip_n = 0;
 		}
 		else if(!Msx2_IsMonster(chain))
 		{
@@ -833,10 +814,7 @@ u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
 	g_fuse_card = current;
 	// A support-only chain is a discard with no summoned card or bonuses.
 	if(!Msx2_IsMonster(current))
-	{
 		hand_atk = hand_def = field_atk = field_def = 0;
-		g_fuse_equip_n = 0;
-	}
 	g_fuse_hand_atk = hand_atk;
 	g_fuse_hand_def = hand_def;
 	g_fuse_field_atk = field_atk;
@@ -857,19 +835,36 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 		return FALSE;
 	current = g_fuse_card;
 
+	// The consumed monster's own equips go first, so the row has room for the
+	// ones the chain keeps.
+	Msx2_DropFieldEquips(owner, field_slot);
+
 	// Only now is anything spent.  A refused chain must leave the hand alone,
 	// and a slot the fold above skipped was never a material, so it is not
-	// spent either.
+	// spent either.  An equip material is spent too, but it does not vanish:
+	// the fold gave its bonus to the result, so it is re-seated on the support
+	// row attached to that monster -- a bonus with no card standing under it
+	// read as a bug, and the equip could then never be destroyed with it.
 	for(i = 0; i < count; ++i)
 	{
 		u8 slot = hand_slots[i];
+		u8 card;
 		if((slot >= MSX2_HAND) || s->used[slot] ||
 		   (s->hand[slot] == MSX2_CARD_NONE))
 			continue;
+		card = s->hand[slot];
 		s->used[slot] = TRUE;
 		s->hand[slot] = MSX2_CARD_NONE;
+		if(Msx2_IsMonster(current) && Msx2_IsEquipSupport(card))
+		{
+			u8 zone = Msx2_FirstFreeEquipSlot(owner);
+			if(zone != MSX2_SLOT_NONE)
+			{
+				s->equip_field[zone] = card;
+				s->equip_target[zone] = (i8)field_slot;
+			}
+		}
 	}
-	Msx2_DropFieldEquips(owner, field_slot);
 
 	s->field[field_slot] = current;
 	s->faceup[field_slot] = Msx2_IsMonster(current);
@@ -878,17 +873,6 @@ bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
 	s->atk_bonus[field_slot] = (i16)(g_fuse_hand_atk + g_fuse_field_atk);
 	s->def_bonus[field_slot] = (i16)(g_fuse_hand_def + g_fuse_field_def);
 	s->monster_played = TRUE;
-	// Seat the kept equips on the support row under the summoned monster.  The
-	// bonuses they grant are already in atk_bonus/def_bonus above, so this only
-	// gives them somewhere to stand -- and somewhere to be destroyed from.
-	for(i = 0; i < g_fuse_equip_n; ++i)
-	{
-		u8 zone = Msx2_FirstFreeEquipSlot(owner);
-		if(zone == MSX2_SLOT_NONE)
-			break;
-		s->equip_field[zone] = g_fuse_equip[i];
-		s->equip_target[zone] = (i8)field_slot;
-	}
 	Msx2_RecordAction(MSX2_ACTION_FUSION, owner, current, hand_slots[0],
 	                  field_slot, defense);
 	return TRUE;
