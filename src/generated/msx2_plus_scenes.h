@@ -15,10 +15,17 @@
 // EDGED one pixel at a time: a pixel that shares its group
 // with the backdrop keeps the chroma bits already in VRAM,
 // which is what gives a cut-out a per-pixel silhouette in a
-// mode whose hue is four pixels wide.  The fringe table sits
-// between the run table and the pixels.
+// mode whose hue is four pixels wide.  A row is a count and
+// then that many (x, ink) pairs, and the ink is finished --
+// YJK brightness or a YAE palette pixel, whichever the baker
+// found closer to the intended composite colour.  The table
+// is a function of the backdrop, so there is one per talk
+// scene, indexed by stage, between the runs and the pixels.
 #define MSX2_PORTRAIT_FRINGE_OFF   1024
-#define MSX2_PORTRAIT_FRINGE_MAX   20
-#define MSX2_PORTRAIT_PIXELS_OFF   3072
+#define MSX2_PORTRAIT_FRINGE_STRIDE 2048
+#define MSX2_PORTRAIT_FRINGE_STAGES 4
+#define MSX2_PORTRAIT_FRINGE_MAX   26
+#define MSX2_PORTRAIT_FRINGE_BYTES 2
+#define MSX2_PORTRAIT_PIXELS_OFF   9216
 
 #endif

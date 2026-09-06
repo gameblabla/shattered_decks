@@ -72,7 +72,11 @@ void Msx2_PokeAtLine(u8 x, u16 line);
 // chroma a group of four pixels shares, so this is how a shape whose edge
 // falls inside a group is drawn without stealing the hue of the picture
 // behind it; `line` is absolute, page included, as Msx2_PokeAtLine takes it.
-void Msx2_MergeRow(const u8* rec, u8 n, u16 line);
+// `xoff` is added to every column as the row is walked, so a caller whose
+// records are relative to a sprite's own left edge -- the story busts, which
+// stand at two different x -- hands the cartridge bytes straight over instead
+// of copying them into a second buffer to fix up.
+void Msx2_MergeRow(const u8* rec, u8 n, u16 line, u8 xoff);
 
 // One interface line from the cartridge string table, by id (MSX2_S_*).  The
 // buffer is shared, so use the pointer before asking for the next one.

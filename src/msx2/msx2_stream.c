@@ -398,7 +398,7 @@ void Msx2_PokeAtLine(u8 x, u16 line)
 //  belongs to the three pixels beside it.  Anything that draws a shape whose
 //  edge does not land on a group boundary -- a cut-out bust, and only that so
 //  far -- has to read the byte back, keep those three bits and change nothing
-//  but the brightness.  That is the whole of this routine, and it is what
+//  but the brightness or YAE palette ink. That is this routine's job, and it
 //  gives a figure a per-pixel silhouette in a mode whose hue is four pixels
 //  wide.
 //
@@ -412,38 +412,61 @@ void Msx2_PokeAtLine(u8 x, u16 line)
 
 static const u8* g_merge_rec;
 static u8 g_merge_n;
+static u8 g_merge_x;
+static u8 g_merge_hw;
 
 // `rec` is `n` (column, value) pairs; each value is a whole byte whose low
 // three bits are zero.  All of them land on one VRAM line.
-void Msx2_MergeRow(const u8* rec, u8 n, u16 line)
+//
+// R#14 IS WRITTEN ONCE, NOT NINE HUNDRED TIMES.
+// A VRAM address is R#14 (A16-A14) and two bytes through 0x99 (A13-A0), and
+// this routine used to send all three for the read and all three again for the
+// write of every pixel.  A16-A14 are the page and the top two bits of the line
+// -- they cannot change inside one line -- so they are sent before the loop and
+// only the two column bytes are sent per access.  With the write form of the
+// address high byte folded once instead of ORed per pixel, a merged pixel is
+// about 240 T-states instead of 335, which on a bust's edge is a sixth of the
+// whole redraw.
+//
+// The one thing that WOULD change A16-A14 is the VDP's own auto-increment
+// carrying out of A13, i.e. an access at column 255.  No caller has one: the
+// story busts are 124 wide and stand at 0 or 128.  A record whose column is
+// 255 would leave the rest of its row pointing 16 KB further on.
+void Msx2_MergeRow(const u8* rec, u8 n, u16 line, u8 xoff)
 {
 	VDP_CommandWait();
 
 	g_merge_rec = rec;
 	g_merge_n = n;
+	g_merge_x = xoff;
 	g_blit_r14 = (u8)(line >> 6);
 	g_blit_hi = (u8)(line & 0x3F);          // bit 6 clear: a READ address
+	g_merge_hw = (u8)(g_blit_hi | 0x40);    // ... and the same line for writing
 
 	__asm
 		di
 		ld		a, (_g_merge_n)
 		or		a
 		jr		z, merge_done
-		ld		hl, (_g_merge_rec)
-		ld		b, a
-	merge_px:
-		ld		e, (hl)						// column
-		inc		hl
-		ld		d, (hl)						// the Y bits, low three clear
-		inc		hl
-		push	hl
 
-		ld		a, (_g_blit_r14)			// point at it for reading
+		ld		a, (_g_blit_r14)			// the line's bank, once for the row
 		out		(#0x99), a
 		ld		a, #(14 | 0x80)
 		out		(#0x99), a
-		ld		a, e
-		out		(#0x99), a
+
+		ld		hl, (_g_merge_rec)
+		ld		a, (_g_merge_n)
+		ld		b, a
+	merge_px:
+		ld		a, (_g_merge_x)				// the shape's own left edge
+		add		a, (hl)						// ... plus the record's column
+		ld		e, a						// kept for the write half
+		inc		hl
+		ld		d, (hl)						// Y or YAE ink, low three clear
+		inc		hl
+		push	hl
+
+		out		(#0x99), a					// point at it for reading
 		ld		a, (_g_blit_hi)
 		out		(#0x99), a
 		ex		(sp), hl					// the VDP's read latency, spent
@@ -453,14 +476,9 @@ void Msx2_MergeRow(const u8* rec, u8 n, u16 line)
 		or		d
 		ld		c, a
 
-		ld		a, (_g_blit_r14)			// and again for writing
+		ld		a, e						// and again for writing
 		out		(#0x99), a
-		ld		a, #(14 | 0x80)
-		out		(#0x99), a
-		ld		a, e
-		out		(#0x99), a
-		ld		a, (_g_blit_hi)
-		or		#0x40
+		ld		a, (_g_merge_hw)
 		out		(#0x99), a
 		ld		a, c
 		out		(#0x98), a

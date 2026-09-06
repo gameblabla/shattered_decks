@@ -33,6 +33,7 @@ import os
 import re
 import sys
 
+import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -82,7 +83,7 @@ MUSIC_PUBLIC_ASSETS = [
 # names them.  The prefix is what gen_msx_audio.py put in front of the asset
 # ids of that set; the PSG set is unprefixed.  A set that has no recording for
 # a public track gets a zero segment count, which msx2_audio.c reads as "play
-# the PSG one instead" -- there is no FM rendition of the title theme.
+# the PSG one instead".  The title has native recordings in all three sets.
 MUSIC_CHIP_TABLES = [
     ("PSG", ""),
     ("OPLL", "opll_"),
@@ -583,7 +584,36 @@ def portrait_trim(path):
     return img.crop(bbox) if bbox else img
 
 
-def portrait(base, size):
+def portrait_resize(img, size, premul):
+    """ImageOps.contain, optionally done in premultiplied alpha.
+
+    A cut-out's transparent pixels still carry a colour, and in this art it is
+    black; a plain RGBA resample mixes it into every edge pixel, so the outer
+    ring of the figure comes out darker than the figure is.  A paletted build
+    hides that behind its own one-pixel outline, but SCREEN 10 blends the same
+    ring against the sky and it reads as a dark halo (tools/msx2/gen_msx_plus.py
+    composites the edge for exactly this reason).  Multiplying by alpha before
+    the filter and dividing it back out afterwards is the fix, and it is opt-in
+    only so the MSX2 cartridge keeps the bytes it shipped with.
+    """
+    if not premul:
+        return ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
+    a = np.asarray(img.getchannel("A"), dtype=np.float64) / 255.0
+    rgb = np.asarray(img.convert("RGB"), dtype=np.float64) * a[..., None]
+    pre = Image.merge("RGBA", tuple(
+        Image.fromarray(rgb[..., i].round().clip(0, 255).astype(np.uint8), "L")
+        for i in range(3)) + (img.getchannel("A"),))
+    out = ImageOps.contain(pre, size, method=Image.Resampling.LANCZOS)
+    oa = np.asarray(out.getchannel("A"), dtype=np.float64) / 255.0
+    orgb = np.asarray(out.convert("RGB"), dtype=np.float64)
+    orgb = np.where(oa[..., None] > 1.0 / 255.0, orgb / np.maximum(oa, 1e-6)[..., None],
+                    orgb)
+    return Image.merge("RGBA", tuple(
+        Image.fromarray(orgb[..., i].round().clip(0, 255).astype(np.uint8), "L")
+        for i in range(3)) + (out.getchannel("A"),))
+
+
+def portrait(base, size, premul=False):
     """A story bust, trimmed and fitted the way gen_assets.py fits them for
     every other target: upper body, pinned to the bottom of its area.
 
@@ -612,7 +642,7 @@ def portrait(base, size):
     # is a 124-square the bust is fitted into by height, so those 5% came
     # straight off the character -- Anpu and Rahotep lost both elbows.
     img = img.crop((0, 0, w, keep))
-    art = ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
+    art = portrait_resize(img, size, premul)
     out = Image.new("RGBA", size, (0, 0, 0, 0))
     out.alpha_composite(art, ((size[0] - art.width) // 2, size[1] - art.height))
     return out
@@ -770,7 +800,20 @@ def glyph_rows(ch):
     return data[idx:idx + 8]
 
 
-def stamp(buf, width, x, y, mask_rows, color, scale, cols=6):
+# KEEP_CHROMA IS FOR SCREEN 10, AND ONLY FOR SCREEN 10.
+#
+# A GRAPHIC 7 byte is a colour and a stamp simply overwrites it.  A SCREEN 10
+# byte is not: its low three bits are a share of a hue four pixels wide, and
+# they belong to the group, not to the pixel.  So a word stamped into a YJK
+# picture in palette ink -- the logo, the copyright line, the prompt -- used to
+# zero those bits wherever a glyph or its outline fell, and the picture pixels
+# in the same group of four lost their hue with it.  That is the fringe of
+# wrong colour that followed every letter on the plus title screen.
+#
+# With this set, a stamp changes only what a YAE pixel actually owns (bits 7..3)
+# and ORs the group's chroma back in, which is exactly what stamp_yae does for
+# the panels and what Msx2_MergeRow does for a bust's edge at runtime.
+def stamp(buf, width, x, y, mask_rows, color, scale, cols=6, keep_chroma=False):
     for ry, bits in enumerate(mask_rows):
         for rx in range(cols):
             if not (bits & (0x80 >> rx)):
@@ -780,7 +823,9 @@ def stamp(buf, width, x, y, mask_rows, color, scale, cols=6):
                     px = x + rx * scale + dx
                     py = y + ry * scale + dy
                     if 0 <= px < width and 0 <= py * width + px < len(buf):
-                        buf[py * width + px] = color
+                        at = py * width + px
+                        buf[at] = (color | (buf[at] & 7)) if keep_chroma \
+                            else color
 
 
 def outline_rows(rows):
@@ -810,7 +855,7 @@ def outline_rows(rows):
     return out
 
 
-def stamp_big(buf, width, y, text, fg, outline):
+def stamp_big(buf, width, y, text, fg, outline, keep_chroma=False):
     """Double size with an outline all round, centred -- the logo.
 
     The outline is the 1x dilation stamped at 2x, which puts a two-pixel band
@@ -824,12 +869,14 @@ def stamp_big(buf, width, y, text, fg, outline):
             rows = list(glyph_rows(ch))
             if pas == 0:
                 stamp(buf, width, x0 + i * 12 - 2, y - 2, outline_rows(rows),
-                      outline, 2, cols=8)
+                      outline, 2, cols=8, keep_chroma=keep_chroma)
             else:
-                stamp(buf, width, x0 + i * 12, y, rows, fg, 2)
+                stamp(buf, width, x0 + i * 12, y, rows, fg, 2,
+                      keep_chroma=keep_chroma)
 
 
-def stamp_outline(buf, width, y, text, fg, outline, x0=None):
+def stamp_outline(buf, width, y, text, fg, outline, x0=None,
+                  keep_chroma=False):
     """Normal size with a one-pixel outline all round, centred by default."""
     if x0 is None:
         x0 = (width - len(text) * 6) // 2
@@ -838,9 +885,10 @@ def stamp_outline(buf, width, y, text, fg, outline, x0=None):
             rows = list(glyph_rows(ch))
             if pas == 0:
                 stamp(buf, width, x0 + i * 6 - 1, y - 1, outline_rows(rows),
-                      outline, 1, cols=8)
+                      outline, 1, cols=8, keep_chroma=keep_chroma)
             else:
-                stamp(buf, width, x0 + i * 6, y, rows, fg, 1)
+                stamp(buf, width, x0 + i * 6, y, rows, fg, 1,
+                      keep_chroma=keep_chroma)
 
 
 def title_words(data):

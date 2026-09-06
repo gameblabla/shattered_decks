@@ -72,6 +72,12 @@ DITHER = 0.9
 # See bust_blob: the MSX2 build's 0.45 is too dark for YJK.
 PLUS_PORTRAIT_DIM = 0.62
 
+# Where the busts stand in the plus build -- msx2_plus.h moves them onto chroma
+# group boundaries, and the edge composite has to look at the same pixels the
+# runtime will write.
+MSX2_PORTRAIT_LEFT_X = 0
+MSX2_PORTRAIT_RIGHT_X = 128
+
 # Eight palette entries are the interface's (msx2_yjk.UI_PALETTE) and eight are
 # fitted to each picture, because YJK's weak end is the dark end and a scene's
 # own shadows are the colours worth spending them on.
@@ -123,6 +129,7 @@ def scene_blob(data, palette):
 def bake_scenes(dither, quiet):
     """Every full-screen picture, re-encoded, plus the title's prompt strip."""
     out = {}
+    raw = {}
     strip = None
     for name, build in scenes.SCENES:
         if name not in YJK_SCENES:
@@ -151,26 +158,35 @@ def bake_scenes(dither, quiet):
             # The words are stamped into the picture exactly as the MSX2 build
             # stamps them, but in palette ink -- and the prompt strip is cut out
             # of the result the same way, so the blink is still one command.
+            #
+            # keep_chroma, on every one of them.  These words sit straight on
+            # the painting, so most of their glyphs share a group of four with
+            # sky: overwriting the whole byte took the low three bits with it
+            # and dragged the hue out of the picture pixels beside every letter.
+            # The letter itself is a palette pixel and never wanted them.
             scenes.stamp_big(data, WIDTH, scenes.TITLE_LOGO_Y1, "SHATTERED",
-                             YAE_GOLD, YAE_BLACK)
+                             YAE_GOLD, YAE_BLACK, keep_chroma=True)
             scenes.stamp_big(data, WIDTH, scenes.TITLE_LOGO_Y2, "DECKS",
-                             YAE_WHITE, YAE_BLACK)
+                             YAE_WHITE, YAE_BLACK, keep_chroma=True)
             scenes.stamp_outline(data, WIDTH, scenes.TITLE_COPY_Y,
-                                 "(C) 2026 GAMEBLABLA", YAE_WHITE, YAE_BLACK)
+                                 "(C) 2026 GAMEBLABLA", YAE_WHITE, YAE_BLACK,
+                                 keep_chroma=True)
             strip = bytearray(data[scenes.TITLE_STRIP_Y * WIDTH:
                                    (scenes.TITLE_STRIP_Y + scenes.TITLE_STRIP_H)
                                    * WIDTH])
             scenes.stamp_outline(strip, WIDTH,
                                  scenes.TITLE_PROMPT_Y - scenes.TITLE_STRIP_Y,
-                                 scenes.TITLE_PROMPT, YAE_WHITE, YAE_BLACK)
+                                 scenes.TITLE_PROMPT, YAE_WHITE, YAE_BLACK,
+                                 keep_chroma=True)
 
         out[name] = scene_blob(data, palette)
+        raw[name] = bytes(data)
         if not quiet:
             print("%-13s %d bytes YJK+YAE" % (name, len(out[name])))
     if strip is None:
         raise SystemExit("no TITLE scene: the prompt strip has nowhere to come from")
     out["title_prompt"] = bytes(strip)
-    return out
+    return out, raw
 
 
 # ── The story busts ──────────────────────────────────────────────────────────
@@ -262,23 +278,82 @@ def bust_runs(alpha, y, w):
     return [(a, min(b, 252)) for a, b in runs]
 
 
-# The fringe record a row may hold.  Seventeen is the worst row in the shipped
-# art (a spray of hair strands, each of them its own partial group); twenty is
-# what the runtime's RAM record is sized for, and going past it is an error
-# rather than a silently thinner figure.
-FRINGE_MAX = 20
-FRINGE_BYTES = 2048      # the whole table, between the runs and the pixels
+# THE EDGE IS COMPOSITED AGAINST THE PICTURE IT STANDS ON.
+#
+# A fringe pixel keeps the chroma bits already in VRAM -- it has to; the other
+# three pixels of its group are backdrop and the hue is theirs -- so all the
+# YJK fallback gets to choose is its BRIGHTNESS. Writing the figure's brightness
+# there is what drew the dark navy rim: the outer ring of this art is a long
+# way from opaque, its colour is half the transparent ground, and hanging that
+# on the sky's hue is a shadow the drawing never had.
+#
+# So the pixel is composited here instead: alpha over the backdrop the bust
+# will actually stand on, then the best Y for the result GIVEN THE GROUP'S
+# CHROMA, which is known because this tool baked that picture a moment ago.
+# Keeping hue still cannot reproduce every outline colour, so the scene's
+# sixteen palette entries are tried as well and the closer of the two encodings
+# wins.  Msx2_MergeRow preserves all three chroma bits either way.
+#
+# THAT CHOICE IS MADE HERE, NOT ON THE Z80.  It used to be: a record carried
+# the YJK fallback, the intended RGB555, the fallback's error and a nominated
+# palette index, and Msx2_StoryBlitBust weighed them per pixel.  Every input to
+# that comparison is known at bake time -- the palette is the backdrop's, and
+# the table is already per backdrop -- so the whole of it collapses into the
+# one byte the blitter actually writes.  A record is now (x, ink), which is a
+# third of the ROM to read and none of the arithmetic: the fringe went from
+# roughly half the cost of a bust redraw to a rounding error on it.
+#
+# The table is a function of the backdrop, so a bust carries one per talk scene
+# (there are four) and the runtime picks by stage.
+STAGE_COUNT = 4          # TALK_0..TALK_3; a bust may stand on any of them
+FRINGE_STRIDE = 2048     # a count per row, then (x, ink) per fringe pixel
+FRINGE_BYTES = 2         # ... which is what one of those records costs
+FRINGE_MAX = 26          # the worst row, and what the runtime's RAM record holds
+FRINGE_OFF = scenes.PORTRAIT_INDEX_BYTES
+PIXELS_OFF = FRINGE_OFF + STAGE_COUNT * FRINGE_STRIDE
+
+# A pixel this opaque is worth compositing.  It is far below BUST_SOLID on
+# purpose: these pixels are not "drawn" in the paletted sense, they are the
+# skirt of anti-aliasing the alpha channel has, and now that the edge is a
+# blend rather than an overwrite there is no reason to throw it away.  Lower
+# than this and a bust grows a haze a group wide out of hair that is barely
+# there.
+EDGE_ALPHA = 40
+
+
+def stage_backdrop(data):
+    """Decode the real backdrop, including palette pixels in the painting.
+
+    The fitted encoder uses YAE throughout the art, not only in UI panels.
+    Interpreting a palette index as Y would blend the edge against a fictitious
+    background colour. Its low three bits still contribute to the group's J/K.
+    """
+    a = np.frombuffer(bytes(data[:WIDTH * HEIGHT]),
+                      dtype=np.uint8).reshape(HEIGHT, WIDTH).astype(np.int32)
+    y = (a >> 3).astype(np.float64)
+    lo = (a & 7).reshape(HEIGHT, WIDTH // 4, 4)
+    k = (lo[:, :, 0] | (lo[:, :, 1] << 3)).astype(np.int32)
+    j = (lo[:, :, 2] | (lo[:, :, 3] << 3)).astype(np.int32)
+    k = np.where(k > 31, k - 64, k).astype(np.float64)
+    j = np.where(j > 31, j - 64, j).astype(np.float64)
+    jj = np.repeat(j, 4, axis=1)
+    kk = np.repeat(k, 4, axis=1)
+    pal3 = np.array(yjk.palette_from_bytes(data[WIDTH * HEIGHT:]), dtype=np.int32)
+    pal5 = (pal3 << 2) | (pal3 >> 1)
+    rgb = np.floor(yjk.yjk_to_rgb(y, jj, kk))
+    rgb = np.where(((a & 8) != 0)[..., None], pal5[a >> 4], rgb)
+    return rgb, jj, kk, pal5
 
 
 def bust_fringe(alpha, y, w, runs):
-    """The solid pixels of one row that no whole-group run covers.
+    """The columns of one row that no whole-group run covers.
 
-    These are the edge of the figure: one to three pixels sharing a chroma
-    group with the backdrop behind them.  Each is emitted as (column, Y byte)
-    and the runtime merges it into VRAM -- its own brightness, the BACKDROP's
-    hue, because the hue is not its to change.  At the silhouette that is the
-    dark outline of the drawing, which carries almost no colour of its own, so
-    borrowing the sky's costs nothing and buys a per-pixel edge.
+    These are the edge of the figure: pixels sharing a chroma group with the
+    backdrop behind them, plus the anti-aliased skirt outside the silhouette
+    proper (EDGE_ALPHA).  Which columns they are does not depend on the
+    backdrop -- only the byte written into them does -- so every stage's table
+    has the same shape and the runtime's cursor does not care which one it is
+    walking.
     """
     apx = alpha.load()
     covered = bytearray(w)
@@ -286,19 +361,51 @@ def bust_fringe(alpha, y, w, runs):
         for x in range(start, min(start + length, w)):
             covered[x] = 1
     return [x for x in range(w)
-            if not covered[x] and apx[x, y] >= BUST_SOLID]
+            if not covered[x] and apx[x, y] >= EDGE_ALPHA]
 
 
-def bust_blob(bust, dim, dither):
-    """One bust, YJK: a run table, a fringe table, then the packed pixels.
+def bust_edge_bytes(bust, dim, x0, y0, backdrop):
+    """The finished edge byte for every pixel of one bust over one backdrop.
 
-    The MSX2 layout with one table inserted -- the runs and the pixels mean
-    exactly what they mean in the paletted build, and the fringe between them
-    is the edge this mode cannot blit (see bust_runs).
+    Composite first (alpha over the picture), then ask _best_y what brightness
+    comes closest to that colour through the chroma the group already carries,
+    and separately which of the scene's sixteen palette entries comes closest
+    to it outright.  Whichever is nearer the intended colour is the byte, YJK
+    or YAE; the low three bits are left at zero either way, because they are
+    the group's and Msx2_MergeRow ORs them back in from VRAM.
+    """
+    bg5, jj, kk, pal5 = backdrop
+    h, w = bust.size[1], bust.size[0]
+    a = (np.asarray(bust.getchannel("A"), dtype=np.float64) / 255.0)[..., None]
+    fig = np.asarray(bust.convert("RGB"), dtype=np.float64)
+    if dim:
+        fig = fig * PLUS_PORTRAIT_DIM
+    fig5 = yjk.to5(fig)
+    win = (slice(y0, y0 + h), slice(x0, x0 + w))
+    comp = a * fig5 + (1.0 - a) * bg5[win]
+    ybits = yjk._best_y(comp, jj[win], kk[win], even=True)
+    target = np.clip(np.rint(comp), 0, 31).astype(np.int32)
+    decoded = np.floor(yjk.yjk_to_rgb(ybits, jj[win], kk[win])).astype(np.int32)
+    delta = np.abs(target - decoded)
+    error = delta[..., 0] + 2 * delta[..., 1] + delta[..., 2]
+    palette_error = (np.abs(target[..., None, :] - pal5) * [1, 2, 1]).sum(axis=-1)
+    candidate = palette_error.argmin(axis=-1)
+    best = np.take_along_axis(palette_error, candidate[..., None], axis=-1)[..., 0]
+    yjk_byte = ybits.astype(np.int32) << 3
+    yae_byte = (candidate.astype(np.int32) << 4) | 8
+    return np.where(best < error, yae_byte, yjk_byte).astype(np.uint8)
 
-    PURE YJK, NO YAE.  The palette belongs to whatever scene the bust is
-    standing on and its top half changes with every screen; a bust that borrowed
-    an entry would change colour when the backdrop did.
+
+def bust_blob(bust, dim, dither, x0, y0, backdrops):
+    """One bust, YJK: a run table, a fringe table per backdrop, then the pixels.
+
+    The MSX2 layout with the fringe tables inserted -- the runs and the pixels
+    mean exactly what they mean in the paletted build, and the fringe is the
+    edge this mode cannot blit (see bust_runs), composited against each picture
+    the figure can stand on (see bust_edge_bytes).
+
+    Interiors are pure YJK. Edges can use YAE because the runtime chooses from
+    the palette of the actual backdrop, rather than baking a fixed index.
 
     THE MASK GOES THROUGH THE ENCODER.  It is not an optimisation: the cut-out
     ground is black, a group of four shares one hue, and an encoder that cannot
@@ -321,9 +428,10 @@ def bust_blob(bust, dim, dither):
     a = np.asarray(alpha, dtype=np.int32)
     quant, _pal = yjk.encode(rgb, dither=dither, allow_yae=False,
                              mask=a >= BUST_CHROMA, solid=a >= BUST_SOLID)
+    edges = [bust_edge_bytes(bust, dim, x0, y0, b) for b in backdrops]
 
     index = bytearray()
-    fringe = bytearray()
+    fringe = [bytearray() for _ in backdrops]
     pixels = bytearray()
     for y in range(h):
         runs = bust_runs(alpha, y, w)[:scenes.PORTRAIT_MAX_RUNS]
@@ -335,40 +443,50 @@ def bust_blob(bust, dim, dither):
                                 y * w + runs[i][0] + runs[i][1]]
             else:
                 index += b"\x00\x00"
-        edge = bust_fringe(alpha, y, w, runs)
+        # A row the text box eats is never blitted; the runtime still steps the
+        # cursor over its record, so it gets an empty one.
+        edge = [] if y0 + y >= scenes.TALK_BOX_Y else bust_fringe(alpha, y, w, runs)
         if len(edge) > FRINGE_MAX:
             sys.exit("row %d has %d fringe pixels, past %d"
                      % (y, len(edge), FRINGE_MAX))
-        # A count and then (column, Y byte) pairs, row after row: the runtime
-        # walks the rows in order anyway, so the record costs no padding.
-        fringe.append(len(edge))
-        for x in edge:
-            # The Y bits and nothing else.  Bit 3 is the YAE flag and a YJK Y
-            # is even, so masking to 0xF8 keeps the brightness and leaves the
-            # low three bits -- the group's share of the chroma -- to VRAM.
-            fringe += bytes((x, quant[y * w + x] & 0xF8))
+        # The byte to write, already decided (see bust_edge_bytes).
+        for t, table in enumerate(fringe):
+            table.append(len(edge))
+            ink = edges[t]
+            for x in edge:
+                table += bytes((x, int(ink[y, x])))
     if len(index) > scenes.PORTRAIT_INDEX_BYTES:
         sys.exit("portrait run table is %d bytes, past %d"
                  % (len(index), scenes.PORTRAIT_INDEX_BYTES))
-    if len(fringe) > FRINGE_BYTES:
-        sys.exit("portrait fringe table is %d bytes, past %d"
-                 % (len(fringe), FRINGE_BYTES))
-    body = index + bytes(scenes.PORTRAIT_INDEX_BYTES - len(index)) \
-         + fringe + bytes(FRINGE_BYTES - len(fringe)) + pixels
+    body = index + bytes(scenes.PORTRAIT_INDEX_BYTES - len(index))
+    for table in fringe:
+        if len(table) > FRINGE_STRIDE:
+            sys.exit("portrait fringe table is %d bytes, past %d"
+                     % (len(table), FRINGE_STRIDE))
+        body += table + bytes(FRINGE_STRIDE - len(table))
+    body += pixels
     if len(body) > scenes.PORTRAIT_STRIDE:
         sys.exit("portrait is %d bytes, past the %d stride"
                  % (len(body), scenes.PORTRAIT_STRIDE))
     return body + bytes(scenes.PORTRAIT_STRIDE - len(body))
 
 
-def bake_portraits(dither, quiet):
+def bake_portraits(dither, quiet, raw):
+    backdrops = [stage_backdrop(raw["TALK_%d" % s]) for s in range(STAGE_COUNT)]
     blob = bytearray()
     size = (scenes.PORTRAIT_W, scenes.PORTRAIT_H)
     names = ["serena"] + ["opponent_%d" % d for d in range(scenes.STORY_DUELS)]
-    for name in names:
-        bust = scenes.portrait(name, size)
+    for i, name in enumerate(names):
+        # Serena stands on the left of every scene and an opponent on the
+        # right; the composite has to be done where the figure actually is.
+        x0 = MSX2_PORTRAIT_LEFT_X if i == 0 else MSX2_PORTRAIT_RIGHT_X
+        y0 = scenes.PORTRAIT_LEFT_Y if i == 0 else scenes.PORTRAIT_RIGHT_Y
+        # The premultiplied resample: without it the outer ring of the figure
+        # carries the transparent ground's black, which the composite would
+        # then dutifully blend into the sky (gen_msx_scenes.portrait_resize).
+        bust = scenes.portrait(name, size, premul=True)
         for dim in (False, True):
-            blob += bust_blob(bust, dim, dither)
+            blob += bust_blob(bust, dim, dither, x0, y0, backdrops)
     if not quiet:
         print("PORTRAITS     %d bytes YJK" % len(blob))
     return bytes(blob)
@@ -418,7 +536,8 @@ def main():
     os.makedirs(PLUS_DIR, exist_ok=True)
 
     written = {}
-    for name, blob in bake_scenes(dither, quiet).items():
+    baked, raw = bake_scenes(dither, quiet)
+    for name, blob in baked.items():
         path = os.path.join(PLUS_DIR, name.lower() + ".bin")
         with open(path, "wb") as f:
             f.write(blob)
@@ -429,7 +548,7 @@ def main():
                        (WIDTH, HEIGHT)).save(
                 os.path.join(PLUS_DIR, name.lower() + ".png"))
 
-    blob = bake_portraits(dither, quiet)
+    blob = bake_portraits(dither, quiet, baked)
     with open(os.path.join(PLUS_DIR, "portraits.bin"), "wb") as f:
         f.write(blob)
     written["portraits.bin"] = os.path.join(PLUS_DIR, "portraits.bin")
@@ -479,13 +598,18 @@ def main():
                 "// EDGED one pixel at a time: a pixel that shares its group\n"
                 "// with the backdrop keeps the chroma bits already in VRAM,\n"
                 "// which is what gives a cut-out a per-pixel silhouette in a\n"
-                "// mode whose hue is four pixels wide.  The fringe table sits\n"
-                "// between the run table and the pixels.\n")
-        f.write("#define MSX2_PORTRAIT_FRINGE_OFF   %d\n"
-                % scenes.PORTRAIT_INDEX_BYTES)
+                "// mode whose hue is four pixels wide.  A row is a count and\n"
+                "// then that many (x, ink) pairs, and the ink is finished --\n"
+                "// YJK brightness or a YAE palette pixel, whichever the baker\n"
+                "// found closer to the intended composite colour.  The table\n"
+                "// is a function of the backdrop, so there is one per talk\n"
+                "// scene, indexed by stage, between the runs and the pixels.\n")
+        f.write("#define MSX2_PORTRAIT_FRINGE_OFF   %d\n" % FRINGE_OFF)
+        f.write("#define MSX2_PORTRAIT_FRINGE_STRIDE %d\n" % FRINGE_STRIDE)
+        f.write("#define MSX2_PORTRAIT_FRINGE_STAGES %d\n" % STAGE_COUNT)
         f.write("#define MSX2_PORTRAIT_FRINGE_MAX   %d\n" % FRINGE_MAX)
-        f.write("#define MSX2_PORTRAIT_PIXELS_OFF   %d\n"
-                % (scenes.PORTRAIT_INDEX_BYTES + FRINGE_BYTES))
+        f.write("#define MSX2_PORTRAIT_FRINGE_BYTES %d\n" % FRINGE_BYTES)
+        f.write("#define MSX2_PORTRAIT_PIXELS_OFF   %d\n" % PIXELS_OFF)
         f.write("\n#endif\n")
 
     if not quiet:

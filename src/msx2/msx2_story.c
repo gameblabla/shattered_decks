@@ -533,20 +533,74 @@ static void Msx2_StoryBeginLine(void)
 // One bust, from its baked run table.  A row is a handful of opaque runs, and a
 // transparent pixel costs nothing at all -- not a VRAM write, not an address
 // re-set -- which is what makes a 124-wide figure affordable (§1.2).
+#ifdef MSX2_PORTRAIT_FRINGE_OFF
+// WHICH BACKDROP THE FIGURES ARE STANDING ON.
+// Edge pixels keep the chroma already in VRAM, so the byte written over one is
+// a function of the picture behind it and the baker holds one table per talk
+// scene.  This says which of them to read; it is a static rather than an
+// argument so that the MSX2 cartridge, which has no such table, carries no
+// such parameter.
+//
+// The byte itself is finished in the table -- YJK brightness or a YAE palette
+// pixel, whichever the baker measured as closer to the intended composite
+// (tools/msx2/gen_msx_plus.py, bust_edge_bytes).  It used to be decided here,
+// out of a six-byte record carrying the fallback, the target RGB555, the
+// fallback's error and a nominated palette index, against a copy of the
+// scene's palette read back at every redraw.  All of that is bake-time
+// knowledge, and paying for it per pixel per page cost more than the figure's
+// whole interior did: nineteen kilobytes of table read out of the cartridge
+// per bust per page, plus a weighted colour distance in C on each of some six
+// hundred edge pixels.  Two bytes a record, and none of the arithmetic.
+static u8 g_bust_stage;
+#endif
+
+// A ROM READ COSTS FAR MORE THAN THE BYTES IT MOVES.
+// Msx2_RomRead is a call, two window-normalising loops, a seam check, a bank
+// switch to the cartridge and another back; the `ldir` in the middle of it is
+// the cheap part.  This blitter used to make three of them a row -- the run
+// record, the fringe count, the fringe record -- 124 rows a figure, twice a
+// figure, on both pages, for an average of about fourteen bytes each.  The
+// calls cost more than everything else in a row put together.
+//
+// So both tables are read in blocks instead.  The run records are fixed-width
+// and a block is sixteen rows of them; the fringe stream is variable-length, so
+// a window slides along it and is refilled whenever less than a whole row's
+// worst case is left.  Two hundred bytes of RAM turns roughly a thousand reads
+// per speaker change into about sixty.
+#define BUST_INDEX_ROWS   16     // must be a power of two: the row masks it
+#define BUST_INDEX_BYTES  (BUST_INDEX_ROWS * MSX2_PORTRAIT_ROW_STRIDE)
+static u8 g_bust_index[BUST_INDEX_BYTES];
+
+#ifdef MSX2_PORTRAIT_FRINGE_OFF
+// The count byte plus the widest row any bust has, which is what must be in
+// hand before a row can be walked.
+#define BUST_FRINGE_ROW   (1 + MSX2_PORTRAIT_FRINGE_MAX * MSX2_PORTRAIT_FRINGE_BYTES)
+#define BUST_FRINGE_BUF   192
+static u8 g_bust_fringe[BUST_FRINGE_BUF];
+#endif
+
 static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 {
 	u16 seg = MSX2_PORTRAIT_SEG(chr, lit);
 	u16 pix = MSX2_PORTRAIT_PIXELS_OFF;    // the pixels follow the tables
-	u8  rec[MSX2_PORTRAIT_ROW_STRIDE];
+	// The row cursor is lifted out of the loop: this runs 124 times a figure
+	// and four times a speaker change, and a multiply per row is worth more
+	// than it looks at that count.
+	const u8* rec = g_bust_index;
 	u8  row, k;
 #ifdef MSX2_PORTRAIT_FRINGE_OFF
+	// The draw page, likewise: it was a call per fringe row.
+	u16 line = (u16)((u16)Msx2_VideoGetDrawPage() << 8) + y;
 	// The edge of the figure, one pixel at a time (msx2_stream.c): a bust is
 	// blitted as whole chroma groups here, and every solid pixel that shares
-	// its group with the backdrop is in this table instead.  The records are
-	// variable-length and the rows are walked in order, so the cursor carries
-	// from row to row exactly as the pixel cursor does.
-	u16 fringe = MSX2_PORTRAIT_FRINGE_OFF;
-	u8  edge[1 + MSX2_PORTRAIT_FRINGE_MAX * 2];
+	// its group with the backdrop is in this table instead.  A row is a count
+	// and then that many (x, ink) pairs, and the rows are walked in order --
+	// which is what lets a window slide along the stream instead of seeking.
+	u16 fringe = (u16)(MSX2_PORTRAIT_FRINGE_OFF
+	                   + (u16)g_bust_stage * MSX2_PORTRAIT_FRINGE_STRIDE);
+	u8  held = 0;                          // bytes of the window not yet walked
+	u8  fp = 0;                            // ... and where they start in it
+	u8  edge_n;
 #endif
 
 	for(row = 0; row < MSX2_PORTRAIT_H; ++row)
@@ -555,9 +609,14 @@ static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 		// last rows fall inside the text box.  They are clipped here rather
 		// than by moving the figure: the run table still has to be walked to
 		// keep the pixel cursor in step, only the blit is skipped.
-		bool visible = ((u8)(y + row) < MSX2_TALK_BOX_Y);
-		Msx2_RomRead(seg, (u16)((u16)row * MSX2_PORTRAIT_ROW_STRIDE), rec,
-		             MSX2_PORTRAIT_ROW_STRIDE);
+		u8 sy = (u8)(y + row);
+		bool visible = (sy < MSX2_TALK_BOX_Y);
+		if(!(row & (BUST_INDEX_ROWS - 1)))
+		{
+			Msx2_RomRead(seg, (u16)((u16)row * MSX2_PORTRAIT_ROW_STRIDE),
+			             g_bust_index, BUST_INDEX_BYTES);
+			rec = g_bust_index;
+		}
 		for(k = 0; k < rec[0]; ++k)
 		{
 			u8  rx = rec[1 + k * 2];
@@ -572,33 +631,44 @@ static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 			head = ((u16)rn > (0x4000u - o)) ? (u8)(0x4000u - o) : rn;
 			if(visible)
 			{
-				Msx2_StreamRect(s, o, (u8)(x + rx), (u8)(y + row), head, 1);
+				Msx2_StreamRect(s, o, (u8)(x + rx), sy, head, 1);
 				if(head != rn)
 					Msx2_StreamRect((u16)(s + 1), 0, (u8)(x + rx + head),
-					                (u8)(y + row), (u8)(rn - head), 1);
+					                sy, (u8)(rn - head), 1);
 			}
 			pix = (u16)(pix + rn);
 		}
 #ifdef MSX2_PORTRAIT_FRINGE_OFF
-		// The whole record in one read: it is bounded, and the fringe table
-		// is small enough that it never leaves the bust's first segment.
-		Msx2_RomRead(seg, fringe, edge, sizeof(edge));
-		if(edge[0])
+		// Top the window up if this row could outrun it.  The tail that is
+		// left keeps its place at the front; the read that follows it may run
+		// past the end of the table and into whatever is next, which is never
+		// walked and so never matters.
+		if(held < BUST_FRINGE_ROW)
+		{
+			for(k = 0; k < held; ++k)
+				g_bust_fringe[k] = g_bust_fringe[(u8)(fp + k)];
+			Msx2_RomRead(seg, fringe, g_bust_fringe + held,
+			             (u8)(BUST_FRINGE_BUF - held));
+			fringe = (u16)(fringe + (BUST_FRINGE_BUF - held));
+			held = BUST_FRINGE_BUF;
+			fp = 0;
+		}
+		edge_n = g_bust_fringe[fp++];
+		--held;
+		if(edge_n)
 		{
 			if(visible)
-			{
-				for(k = 0; k < edge[0]; ++k)
-					edge[1 + k * 2] = (u8)(edge[1 + k * 2] + x);
-				Msx2_MergeRow(edge + 1, edge[0],
-				              (u16)(((u16)Msx2_VideoGetDrawPage() << 8)
-				                    + (u8)(y + row)));
-			}
-			fringe = (u16)(fringe + 1 + (u16)edge[0] * 2);
+				// The columns are the figure's own, so the blitter adds x as
+				// it walks rather than a second pass over the record doing it.
+				Msx2_MergeRow(g_bust_fringe + fp, edge_n, line, x);
+			edge_n = (u8)(edge_n * MSX2_PORTRAIT_FRINGE_BYTES);
+			fp = (u8)(fp + edge_n);
+			held = (u8)(held - edge_n);
 		}
-		else
-		{
-			++fringe;
-		}
+#endif
+		rec += MSX2_PORTRAIT_ROW_STRIDE;
+#ifdef MSX2_PORTRAIT_FRINGE_OFF
+		++line;
 #endif
 	}
 }
@@ -608,6 +678,9 @@ static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 // pixels the previous pair covered and nothing behind them has to be repaired.
 static void Msx2_StoryBusts(u8 speaker)
 {
+#ifdef MSX2_PORTRAIT_FRINGE_OFF
+	g_bust_stage = g_msx2_stage_for_duel[g_duel_index];
+#endif
 	Msx2_StoryBlitBust(0, MSX2_PORTRAIT_LEFT_X, MSX2_PORTRAIT_LEFT_Y,
 	                   speaker != 1);
 	Msx2_StoryBlitBust((u8)(1 + g_duel_index), MSX2_PORTRAIT_RIGHT_X,
@@ -639,8 +712,15 @@ static void Msx2_StoryShowShot(u8 shot)
 		Msx2_StreamSceneBlanked(segment, page);
 		Msx2_VideoScenePalette(segment);
 		if(g_narr_which == NARR_INTRO)
+		{
+			// The opening narration stands Serena on stage 0's picture, which
+			// is the segment streamed just above.
+#ifdef MSX2_PORTRAIT_FRINGE_OFF
+			g_bust_stage = 0;
+#endif
 			Msx2_StoryBlitBust(0, MSX2_PORTRAIT_LEFT_X, MSX2_PORTRAIT_LEFT_Y,
-		                   TRUE);
+			                   TRUE);
+		}
 		Msx2_VideoCopyPage(page, show);
 		Msx2_VideoShowPage(page);
 		Msx2_VideoDisplayRestore();

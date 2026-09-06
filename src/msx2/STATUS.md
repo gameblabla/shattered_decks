@@ -10,6 +10,90 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 
 ## Where it stands
 
+### MSX2+ portrait edge follow-up — 2026-09-06
+
+The brightness-only edge merge could not reproduce a portrait colour through
+the sand's shared YJK hue. `Msx2_StoryEdgeInk()` now compares a YAE palette
+candidate against the YJK fallback in C, using weighted RGB distance. It emits
+palette ink only when closer to the intended alpha composite; `Msx2_MergeRow()`
+keeps the existing three chroma bits for either encoding, preserving neighboring
+background pixels. The candidate search is baked to keep Z80 redraws short.
+
+The baker also now decodes YAE pixels in the backdrop correctly. Fitted palette
+pixels occur throughout the sand painting, not just in the text panel; treating
+their palette index as brightness had produced incorrect edge composites.
+
+Each edge record was six bytes: x, fallback Y, RGB555 low/high, fallback error,
+and candidate index. (Two, since the pass above.) The tables plus the opaque
+body fit the existing 32 KB portrait slot; `Msx2_RomRead()` handles records
+across the segment seam. No portrait segment allocation changes.
+
+`python3 tools/msx2/check_portrait_edges.py` checks all 48
+character/lighting/stage combinations: 29,856 edges, 15,094 improved palette
+choices, weighted error 340,193 -> 185,326 (45.5% lower). It also checks chroma
+preservation and asset bounds. This metric describes the tested edge colours,
+not whole-image quality or a physical-hardware measurement. (The selector it
+checked in C moved into the baker in the pass above; the numbers are the same
+because the decision is.)
+
+The final shipping MSX2+ ROM builds and packs. Real openMSX (`C-BIOS_MSX2+`)
+captures in `artifacts/msx2plus_edge_verified/` show the opening and both speaker
+states; 3,334 captured edge bytes match the C selector exactly. Reproduce the
+comparison with `python3 tools/msx2/check_portrait_edges.py
+artifacts/msx2plus_edge_verified`. The ordinary MSX2 story bank also compiles
+with MSX2_PLUS undefined; a full baseline ROM/soak was not rerun in this pass.
+The ready-to-run plus cartridge is `src/msx2/out/waifu_msx2p.rom`.
+
+### MSX2+ portrait redraw speed, and title words off the YJK layer — 2026-09-06
+
+A speaker change on the MSX2+ story screen took **1.61 s**; it now takes
+**0.72 s**, measured the same way both times (an openMSX breakpoint on
+`Msx2_MergeRow`, timing the burst of calls a change makes:
+`BURST 24.4288 26.0374` against `BURST 24.4212 25.1410`). Nothing about the
+result changed -- the 3,334-byte capture comparison the previous pass shipped
+still matches byte for byte, now over 5,392 bytes and six frames.
+
+Where it went, from ablation builds of the same ROM:
+
+* **The edge choice is baked.** A fringe record was six bytes -- YJK fallback,
+  target RGB555, the fallback's weighted error, a nominated palette index --
+  and `Msx2_StoryEdgeInk()` weighed them on the Z80 against a copy of the
+  scene palette read back on every redraw. Every input to that is known when
+  `gen_msx_plus.py` runs, so it decides there and a record is now `(x, ink)`:
+  a third of the ROM to read and none of the arithmetic. The tables fell from
+  4,942 to 1,730 bytes and the pixel offset from 21,504 to 9,216.
+* **A row's tables are read in blocks.** `Msx2_RomRead()` is a call, two
+  normalising loops, a seam check and two bank switches around a short `ldir`;
+  the blitter made three of them per row for an average of fourteen bytes. The
+  run records now arrive sixteen rows at a time and the fringe stream through a
+  sliding 192-byte window -- about a thousand reads per speaker change become
+  sixty, for 304 bytes of RAM.
+* **`Msx2_MergeRow()` writes R#14 once per row**, not twice per pixel, and
+  holds both forms of the address high byte ready; a merged pixel is about 240
+  T-states instead of 335. It also adds the figure's x as it walks, so the
+  cartridge bytes go straight to it instead of through a fix-up buffer.
+
+What is left is mostly not reducible: of the 0.72 s, about 0.27 s is the
+`outi`/`nop`/`jr nz` interior blit, which is paced by the VDP's ~29 T-state
+GRAPHIC 7 access interval and not by the CPU. That is also why a Turbo R is
+not much faster here.
+
+`tools/msx2/check_portrait_edges.py` no longer host-compiles the C selector
+(there is none); it recomputes the baker's decision from the source art and the
+shipped backdrops and checks the table against it. Its capture comparison also
+locates each figure by matching rather than by frame number, which is what
+broke when the redraw got faster and the scene moved along.
+
+**The title words are no longer fringed.** `SHATTERED DECKS`, the copyright
+line and the `PUSH SPACE` prompt were already stamped as YAE palette pixels,
+but the stamp overwrote the whole byte -- including the low three bits, which
+are the group of four's shared YJK chroma and belong to the picture, not to the
+letter. Every glyph therefore dragged the hue out of the sky or sand beside it.
+`gen_msx_scenes.stamp*` take `keep_chroma` now and the plus title passes it,
+which is what `stamp_yae` already did for the panels and what `Msx2_MergeRow`
+does for a bust's edge at runtime. 1,880 bytes of the title change; the MSX2
+cartridge, where a byte really is a colour, is untouched.
+
 | Milestone | State |
 |---|---|
 | M1a — rules fit in RAM and a duel can be played blind | **done** (see below) |
@@ -20,6 +104,175 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 | M5 — story presentation | **done**: opening, sanctum map, dialogue, and ending, with both speakers composited over the shipped painting |
 | M6 — full duel loop | **done**: person-playable placement, fusion, support, attacks, turn handoff, results, and the real shared-renderer board |
 | M7 — story completion and continue codes | **implemented**: eight-letter name entry, five-duel frontier, rewards, a tabbed deck editor, 16-symbol password save/load, floppy save/load where a drive answers, and ending transition |
+
+### `MSX2PLUS_specificissues.txt` pass — 2026-09-05
+
+Three reports, all about the MSX2+ (SCREEN 10) cartridge.
+
+**The cartridge did not build at all.** Segment 2 -- the duel screen -- had ONE
+byte free in the shipping MSX2 link, and the plus build adds two
+`Msx2_VideoModeG7()` calls to it, so `MSXhex` failed with "Data overwrite at
+offset 00008000h". The attack cut-in (`msx2_battle_fx.c`, 528 bytes) has moved
+out of the duel bank into the modal one, where the fusion cut-in already lives:
+it reaches nothing but `_CODE` -- sprites, the video layer, `g_duel`, the string
+table -- which is what makes the move legal (`msx2_bank.h`). It is reached
+through ONE trampoline rather than five, because a trampoline is `_CODE` and
+`_CODE` had two hundred bytes left; `msx2_battle_fx.h` turns the five entry
+points into one `(op, x, y, value)` call and the bank side takes it apart again.
+Segment 2 went from 16,383 bytes to 15,923 for 41 bytes of `_CODE`.
+
+**The busts.** Two passes, because the first one traded a fringe for holes.
+`tools/msx2/gen_msx_plus.py` encoded a bust with no idea which of its pixels
+were real. The portrait art is cut out against black, so a pixel at
+40% alpha carries almost no colour -- and in YJK a pixel is never written alone,
+it hands its group of four a hue, so one black rim pixel blackened four. The
+figures stood inside a chewed black outline with square notches in it.
+
+`msx2_yjk.encode()` now takes the mask: the group chroma is fitted to the pixels
+that exist, the real colours are spread outward before encoding, and the
+dithering error is neither taken from nor pushed into a pixel nothing will draw
+-- which is what the GRB332 bust path always did. The listening speaker is
+dimmed to 0.62 rather than 0.45, because YJK's weak end is the dark end and 0.45
+came out as a silhouette.
+
+Raising the opacity threshold to 176 fixed the fringe and put HOLES in the
+figures instead: this art's antialiased hair is a long way from opaque, and
+every strand below the bar stopped being blitted. There are two thresholds now,
+because they are two questions. **Is this pixel part of the figure** is the MSX2
+build's question and keeps its answer, 96. **Does this pixel get a vote on the
+hue its group shares** is the one YJK adds, and that bar is 176.
+
+The other half of the holes was the rounding, and BOTH answers to it were
+wrong. A rectangle blit has to cover whole chroma groups. Rounded INWARD, every
+partial group at the end of a run was left to the backdrop and the silhouette
+lost up to three pixels a side, per row, with any run too short to survive
+dropped entirely. Rounded OUTWARD it WROTE those three pixels instead, and what
+they carry is what `spread()` pushed out there -- which at the edge of this art
+is its own black outline, one rim pixel smeared into a four-pixel block. That is
+the black halo the second report was about, and it is why the figure was chewed
+where the first one said it was thin.
+
+So a run covers only the groups the figure fills COMPLETELY, and the pixels left
+over are not the blitter's problem at all. `gen_msx_plus.py` emits them as a
+second table -- a count and (column, Y byte) pairs, row after row, between the
+run table and the pixels -- and `Msx2_MergeRow()` (`msx2_stream.c`) writes them
+one at a time: it reads the byte back out of VRAM, keeps the low three bits, and
+changes nothing but the brightness. Those three bits are the hue the group
+shares with the backdrop, and leaving them alone is the only way a cut-out gets
+a per-pixel edge in a mode whose colour is four pixels wide. The worst row in
+the shipped art needs twenty of them and the whole figure about eight hundred:
+one VRAM read and one write each, once per speaker change, on top of a blit that
+is otherwise the same rectangle copy the paletted build does.
+
+That left a third report, and it was right: a dark navy rim all round both
+figures. Only the BRIGHTNESS of a merged pixel is the bust's to choose, and the
+brightness being written was the figure's own -- which at the edge of this art
+is half the transparent ground it was cut out of, because a plain RGBA resample
+mixes that black into every partial pixel. Hanging a colour like that on the
+sky's hue is a shadow the drawing never had.
+
+So the edge is now COMPOSITED, at bake time, against the picture it stands on:
+alpha over the backdrop, then the best Y for the result given the chroma that
+group already carries -- and the baker knows both, because it encoded that
+picture a moment earlier. `gen_msx_scenes.portrait(premul=True)` resamples the
+art in premultiplied alpha first so the figure's own colour is its own colour
+(the MSX2 cartridge does not ask for it and its bytes are unchanged), and the
+skirt of pixels below the 96 threshold, which used to be thrown away, is merged
+too at 40: it is anti-aliasing, and a blend has somewhere to put it. The edge
+stops being a cut-out.
+
+The table is therefore a function of the backdrop, so each bust carries one per
+talk scene -- four of them, 2 KB each, in padding the 32 KB stride already had
+-- and `msx2_story.c` picks by stage (`g_bust_stage`, a static rather than an
+argument so the MSX2 build carries no parameter it has no table for).
+
+**Interface drawn as YJK.** Two inks on SCREEN 10 screens were still GRAPHIC 7
+bytes, and a GRAPHIC 7 byte there is a YJK pixel that takes its hue from the
+painting under it:
+
+* `MSX2_PLATE_COLOR` (0x24, bit 3 clear) -- the plate under every speaker's name
+  and under every row of the sanctum road. It comes from the generated scene
+  header rather than `msx2_video.h`, so it was the one ink `msx2_plus.h` had not
+  overridden. It is now `MSX2_YAE(0)`: entries 8..15 are fitted to each picture,
+  so an interface colour may only ever name one of 0..7.
+* `msx2_title.c` drew the refused menu row in a literal `MSX2_RGB(3, 3, 1)`.
+
+And the fringing the report described down the sides of the title's menu box was
+a third thing again, in the fill itself. A YAE pixel's low three bits are still
+read as part of its group's J or K, and a byte-mode fill writes them as zero, so
+a panel whose left or right edge lands inside a group of four dragged the colour
+out of the picture pixels beside it. `Msx2_Fill()` on a SCREEN 10 screen is two
+logical commands now -- `dest = (dest AND 7) OR ink` -- which is the same thing
+`gen_msx_plus.py` does when it stamps a box into a baked picture. The duel is
+GRAPHIC 7 in both cartridges and keeps the one byte-mode fill.
+
+And one more of the same class that the report did not name: **sprites**. In
+GRAPHIC 7 the sprite plane reads the chip's own fixed sixteen colours, and in
+SCREEN 10 it reads the PALETTE REGISTERS instead (openMSX picks `palBg` for
+every mode but GRAPHIC7). The sanctum road's selector is drawn in fixed-table
+indices 2/10/8, two of which are in the fitted half of the palette, so the gem
+took a different colour on every backdrop. `Msx2_SpriteGem()` now has a second
+tint table for the YJK screens, out of the interface's own eight entries.
+
+Verified on `C-BIOS_MSX2+` through `./msx2.sh trace`, which decodes a dump as
+YJK when R#25 says so: title, menu, opening narration, both talk scenes, the
+sanctum road and the duel. The talk box is 100% YAE pixels (0x18) at every row.
+
+**The turbo R.** It works: the port switches to the R800 and spends it.
+
+* The main ROM's version byte is read at boot (`msx2_audio_probe.c`, the one
+  place in the port where the BIOS is in page 0) into `g_msx2_msxver`.
+* `Msx2_CpuFast()` (`msx2_bank.c`) calls CHGCPU with A=0x81 -- the R800 with
+  external memory still read as ROM, and the machine's LED lit -- from `_CODE`,
+  with the BIOS briefly over segment 2.
+* **And puts the interrupt vector back, which is the whole trick.** CHGCPU
+  reinitialises the machine's interrupt system, and this port does not use the
+  machine's: crt0 runs interrupt mode 2 off a RAM vector table at 0xC000 with
+  the ISR at 0xC101, because the ROM's own 0x0038 is the duel bank. Coming back
+  in mode 1 sent the next V-blank into whatever byte the duel screen has at
+  0x0038 -- the machine died inside the first cartridge read after the switch,
+  found at PC=0x00CC on a stack that was not ours. `ld i,a` / `im 2` after the
+  call is what makes the R800 usable at all.
+* The turn strip is baked with NINE poses instead of five (`src/main.c`). The
+  even ones are byte for byte the old five -- `2k/8` and `k/4` are the same
+  point on the path -- so a Z80 steps by two and plays exactly the move it
+  always played, and an R800 steps by one and gets the in-betweens.
+* `Msx2_ArenaDrawStep()` draws every line of a moving board rather than the
+  pose's baked stride when the R800 is running. Both of these ask
+  `MSX2_TURBO_R()`, which is `g_msx2_r800` -- whether the fast processor is
+  RUNNING, not which machine this is -- so a turbo R that never got switched
+  draws what an MSX2 draws instead of taking four times as long over a nicer
+  picture.
+
+Measured: the same 90 s soak, same seed. On an MSX2 the run is at frame 881,
+duel two turn 1, 55 steps in. On openMSX's FS-A1GT (`MSX2_MACHINE=turbor`) it
+is at frame 940, turn 2, 98 steps -- with the full-resolution camera move and
+the nine-pose turn both on. The MSX2+ cartridge was captured on the same
+machine and its story screens are intact, so SCREEN 10 and the R800 are happy
+together.
+
+**Room, which is why three things moved.** Every fix above cost code in areas
+that had none:
+
+* the attack cut-in left the duel bank for the modal one (above);
+* `Msx2_QuadOutline`, `Msx2_QuadOutlineXor` and `Msx2_FrameRectXor` left `_CODE`
+  for the duel bank (`msx2_lines.c`) -- only `msx2_board.c` calls them --
+  because the chroma-preserving fill needed forty bytes of `_CODE` and there
+  were none. `Msx2_LineOp()` stays in `_CODE` and is public now, which is the
+  half a bank is allowed to call.
+
+Final: `_CODE` ends at 0xBF41 with 191 bytes free in the plus build (0xBE84,
+380 free in the MSX2 one), segment 2 holds 16,238 of 16,384 bytes, and both
+cartridges pack with 3.8 MB of tail padding.
+
+### Reproducing the turbo R runs
+
+`MSX2_MACHINE=turbor ./msx2.sh run|trace|verify` -- openMSX's FS-A1GT, which
+needs `fs-a1gt_firmware.rom` and `fs-a1gt_kanjifont.rom` in
+`~/.openMSX/share/systemroms`. A machine assembled from a bare `MSXTR.ROM` +
+`FMBIOS.ROM` pair does NOT boot this cartridge (or anything else): 32 KB of
+main ROM with no sub ROM is not an MSX2+ boot, and the failure looks exactly
+like a ROM that hangs. Use the FS-A1GT.
 
 ### `msx2_bugs.txt` pass — 2026-09-05
 
@@ -530,14 +783,16 @@ machine does differently -- a real BIOS in an expanded slot 0, or a real disk
 interface answering the `Msx2_DiskFind()` probe -- is not visible here, and the
 probe is the one thing that screen does which the deck editor does not.
 
-Music is now banked PSG lVGM. `tools/msx2/gen_msx_audio.py` validates the
-AY-only VGM sources in `msx_music/`, runs `vgm_cmp -justtmr`, checks timed AY
-register events and rendered PCM, then invokes MSXzip with `--simplify
---split 16K`. All seven current optimizer candidates were rejected because
-`vgm2wav` rendered their alternate long-wait encodings differently; the
+Music is now banked lVGM for PSG, MSX-MUSIC/OPLL, and MSX-AUDIO. The title has
+a native recording for each chip, and the boot probe selects the best detected
+set. `tools/msx2/gen_msx_audio.py` validates the VGM sources in `msx_music/`,
+runs `vgm_cmp -justtmr`, checks timed register events and rendered PCM, then
+invokes MSXzip with `--simplify --split 16K`. All current optimizer candidates
+were rejected because `vgm2wav` rendered their alternate long-wait encodings
+differently; the
 original recordings are therefore intentionally retained as the final lVGM
 inputs. The resident player maps one 16 KB segment per V-blank tick, handles
-segment and loop markers, applies the PSG buffer, and restores the code bank.
+segment and loop markers, writes the selected chip, and restores the code bank.
 Its notification path calls the fixed-code handler directly from the ISR; it
 does not use SDCC's indirect callback trampoline while the 0x8000 window is
 banked. Duel entry also queues the new track only after both board pages have
@@ -814,7 +1069,7 @@ crash into a number instead of a black screen.
 | `waifu_msx2_s2_b0.c` | page-0 bank, segment 2: the duel screen |
 | `waifu_msx2_s3_b0.c` | page-0 bank, segment 3: the modal screens |
 | `waifu_msx2_s4_b0.c` | page-0 bank, segment 4: the story screens |
-| `msx2_audio.c/.h`, `msx2_lvgm.c`, `msx2_psg.c` | resident V-blank PSG lVGM playback, bank seam, and probe counters |
+| `msx2_audio.c/.h`, `msx2_lvgm.c`, `msx2_psg.c` | resident V-blank multi-chip lVGM playback, bank seam, and probe counters |
 | `msx2_libc.c` | `time()`/`clock()` for the shared deck builder |
 | `compat/waifu_assets.h` | shim so `src/game/deck.c` compiles without the 5.3 MB asset header |
 | `project_config.js`, `msxgl_config.h` | MSXgl build configuration |
@@ -884,8 +1139,8 @@ into whole 16 KB NEO segments and pushed at the VDP through the 0x8000 window
    ROM, so the read and the write have never executed.  The password path
    remains the guaranteed persistence mechanism.
 
-4. **Physical sound remains unverified.** The shipping build now plays the
-   seven PSG lVGM tracks in real openMSX, and `Msx2_SfxPlay()` now synthesizes
+4. **Physical sound remains unverified.** The shipping build now contains
+   PSG, OPLL, and MSX-AUDIO lVGM tracks, and `Msx2_SfxPlay()` now synthesizes
    nine short PSG cues on channel C: selection, confirmation, card placement,
    destruction, draw, turn hand-off, laser, direct hit, and loss.  The effect
    temporarily borrows channel C, then restores the music register state; no
@@ -985,10 +1240,11 @@ one is 4.
 
 **Busts.** A bust is blitted over a picture, and a YJK pixel cannot be written
 alone -- three of its neighbours share its hue.  Every opaque run is therefore
-rounded INWARD to a chroma group, so the silhouette loses up to three pixels of
-its antialiased edge and the backdrop shows through them.  The alternative was a
-three-pixel fringe of the character's own colour all the way round.  Both bust
-positions are pinned to multiples of four for the same reason.
+rounded INWARD to a chroma group, and the pixels left over are merged one at a
+time, keeping the hue already in VRAM and carrying a brightness baked from the
+figure COMPOSITED over that backdrop -- one edge table per talk scene, chosen at
+runtime by stage.  Both bust positions are pinned to multiples of four so a run
+aligned inside the rectangle is aligned on the screen.
 
 **The converter.** `tools/msx2/msx2_yjk.py` encodes and decodes YJK/YJK+YAE with
 optional Floyd-Steinberg (`--dither 0.9`, what the assets are baked with), an
