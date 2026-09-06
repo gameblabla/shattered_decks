@@ -18,6 +18,12 @@
 // 32 to 95, is read into RAM once at boot instead.
 u8 g_msx2_font[MSX2_FONT_BYTES];
 
+// The machine, as its own main ROM reports it (MSXVER_*): 1 on an MSX2, 2 on
+// an MSX2+, 3 on a turbo R.  Written once at boot by msx2_audio_probe.c, which
+// is the only place the BIOS can be reached from.  Zero until then, which
+// reads as "the slowest machine this cartridge runs on" everywhere it is used.
+u8 g_msx2_msxver;
+
 void Msx2_VideoLoadFont(void)
 {
 	Msx2_RomReadLong(MSX2_TEXT_SEGMENT, MSX2_FONT_OFFSET, g_msx2_font,
@@ -115,14 +121,22 @@ void Msx2_VideoInit(void)
 	VDP_SetColor(MSX2_BLACK);
 	VDP_EnableVBlank(TRUE);
 
+	// THE WHOLE 128 KB, ONCE, BEFORE ANYTHING ELSE ASSUMES ITS CONTENTS.
+	// A hard reset (or a flash cart with no power-on VRAM clear) can leave
+	// VRAM full of whatever the last ROM left there, so one HMMV across the
+	// full 512 lines (both pages back to back) zeroes all of it up front --
+	// including rows 240..255, which is page 0's sprite tables and page 1's
+	// font mask (both written later in boot) and which the per-transition
+	// Msx2_ClearPage deliberately never touches, so this is the only place
+	// they start out clean.
+	VDP_CommandWait();
+	VDP_CommandHMMV(0, 0, MSX2_SCREEN_W, 512, MSX2_BLACK);
+
 	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
 
 	// Both pages start black, so a flip can never reveal boot garbage.
 	g_flip_pending = FALSE;
-	g_draw_page = MSX2_PAGE_1;
-	Msx2_ClearPage(MSX2_BLACK);
 	g_draw_page = MSX2_PAGE_0;
-	Msx2_ClearPage(MSX2_BLACK);
 	Msx2_VideoShowPage(MSX2_PAGE_0);
 
 	// The command fields that never vary: nothing a string draws is ever
@@ -202,8 +216,46 @@ static u16 Msx2_PageY(u8 y)
 	return (u16)y + (g_draw_page ? 256u : 0u);
 }
 
+// A FILL ON A SCREEN 10 SCREEN KEEPS EACH PIXEL'S CHROMA.
+//
+// A YAE pixel is an exact palette colour and owes its neighbours nothing --
+// except that its low three bits are still read as part of its group's J or K.
+// A byte-mode fill writes those bits as zero, so a panel whose left or right
+// edge lands inside a group of four dragged the colour out of the picture
+// pixels beside it: a coloured fringe down both sides of the title's menu box
+// and of every plate in the story, which is what the interface was moved onto
+// the palette to avoid in the first place.
+//
+// The fix is the same one gen_msx_plus.py uses when it stamps a box into a
+// baked picture -- keep the low bits -- said to the command engine instead:
+//
+//     dest = (dest AND 7) OR ink
+//
+// which is two logical fills where a GRAPHIC 7 screen needs one byte-mode one.
+// They are twice the work over four times the area, and a panel is a few
+// thousand pixels once per screen, so nothing that matters pays for it.  The
+// duel is GRAPHIC 7 in both cartridges and takes the fast path untouched.
+#ifdef MSX2_PLUS
+// One logical fill.  Out of line and written once: VDP_CommandLMMV is an
+// inline of a dozen sixteen-bit stores, and _CODE has two hundred bytes.
+static void Msx2_FillOp(u8 x, u16 line, u16 w, u8 h, u8 color, u8 op)
+{
+	VDP_CommandWait();
+	VDP_CommandLMMV(x, line, w, h, color, op);
+}
+#endif
+
 void Msx2_Fill(u8 x, u8 y, u16 w, u8 h, u8 color)
 {
+#ifdef MSX2_PLUS
+	if(g_yjk)
+	{
+		u16 line = Msx2_PageY(y);
+		Msx2_FillOp(x, line, w, h, 0x07, VDP_OP_AND);
+		Msx2_FillOp(x, line, w, h, color, VDP_OP_OR);
+		return;
+	}
+#endif
 	VDP_CommandWait();
 	VDP_CommandHMMV(x, Msx2_PageY(y), w, h, color);
 }
@@ -229,19 +281,6 @@ void Msx2_FrameRect(u8 x, u8 y, u16 w, u8 h, u8 color)
 	Msx2_Fill((u8)(x + w - 1), y, 1, h, color);
 }
 
-void Msx2_FrameRectXor(u8 x, u8 y, u16 w, u8 h, u8 color)
-{
-	Msx2_LineXor(x, y, (u8)(x + w - 1), y, color);
-	Msx2_LineXor(x, (u8)(y + h - 1), (u8)(x + w - 1),
-	             (u8)(y + h - 1), color);
-	if(h > 2)
-	{
-		Msx2_LineXor(x, (u8)(y + 1), x, (u8)(y + h - 2), color);
-		Msx2_LineXor((u8)(x + w - 1), (u8)(y + 1),
-		             (u8)(x + w - 1), (u8)(y + h - 2), color);
-	}
-}
-
 // Rows 0..239, not all 256.  The offscreen stashes a scene bakes below the
 // visible 212 have to travel with the picture, so the copy cannot stop at 212 --
 // but rows 240..250 of page 0 are the sprite pattern, colour and attribute
@@ -257,7 +296,7 @@ void Msx2_VideoCopyPage(u8 src, u8 dst)
 // One line through the VDP's LINE command.  The direction and major-axis bits
 // have to be worked out here because the command takes a length along the major
 // axis and a delta along the minor one, not two endpoints.
-static void Msx2_LineOp(u8 x1, u8 y1, u8 x2, u8 y2, u8 color, u8 op)
+void Msx2_LineOp(u8 x1, u8 y1, u8 x2, u8 y2, u8 color, u8 op)
 {
 	u16 sy = Msx2_PageY(y1);
 	u16 dx, dy, nx, ny;
@@ -284,27 +323,6 @@ void Msx2_Line(u8 x1, u8 y1, u8 x2, u8 y2, u8 color)
 void Msx2_LineXor(u8 x1, u8 y1, u8 x2, u8 y2, u8 color)
 {
 	Msx2_LineOp(x1, y1, x2, y2, color, VDP_OP_XOR);
-}
-
-static void Msx2_QuadOutlineOp(const u8* quad, u8 color, u8 op)
-{
-	u8 i;
-	for(i = 0; i < 4; ++i)
-	{
-		u8 j = (u8)((i + 1) & 3);
-		Msx2_LineOp(quad[i * 2], quad[i * 2 + 1],
-		            quad[j * 2], quad[j * 2 + 1], color, op);
-	}
-}
-
-void Msx2_QuadOutline(const u8* quad, u8 color)
-{
-	Msx2_QuadOutlineOp(quad, color, VDP_OP_IMP);
-}
-
-void Msx2_QuadOutlineXor(const u8* quad, u8 color)
-{
-	Msx2_QuadOutlineOp(quad, color, VDP_OP_XOR);
 }
 
 void Msx2_CopyRect(u8 sx, u8 sy, u8 dx, u8 dy, u16 w, u8 h)
