@@ -14,6 +14,14 @@
 
 #define ST_TRAP_CLOBBER "d1", "d2", "a0", "a1", "a2", "cc", "memory"
 
+/* EVERY OPERAND BELOW IS CONSTRAINED TO A REGISTER, AND THAT IS LOAD BEARING.
+ * A "g" operand lets the compiler hand the asm a stack-relative memory
+ * reference -- and these blocks push arguments before they read the later
+ * ones, so by then %sp has moved and the operand names a different address.
+ * It costs nothing when the compiler happens to pick a register and produces a
+ * GEMDOS call with garbage arguments when it does not, which is what made
+ * Fopen() hang the boot on some builds and return an error on others. */
+
 /* GEMDOS Malloc(). -1 asks for the size of the largest free block. */
 static inline void *st_malloc(int32_t size)
 {
@@ -23,7 +31,7 @@ static inline void *st_malloc(int32_t size)
         "move.w #0x48,-(%%sp)\n\t"
         "trap #1\n\t"
         "addq.l #6,%%sp"
-        : "=r"(ret) : "g"(size) : ST_TRAP_CLOBBER);
+        : "=r"(ret) : "r"(size) : ST_TRAP_CLOBBER);
     return (void *)ret;
 }
 
@@ -35,7 +43,7 @@ static inline int32_t st_mfree(void *p)
         "move.w #0x49,-(%%sp)\n\t"
         "trap #1\n\t"
         "addq.l #6,%%sp"
-        : "=r"(ret) : "g"(p) : ST_TRAP_CLOBBER);
+        : "=r"(ret) : "r"(p) : ST_TRAP_CLOBBER);
     return ret;
 }
 
@@ -48,7 +56,7 @@ static inline int16_t st_fopen(const char *name, int16_t mode)
         "move.w #0x3d,-(%%sp)\n\t"
         "trap #1\n\t"
         "lea 8(%%sp),%%sp"
-        : "=r"(ret) : "g"(name), "g"(mode) : ST_TRAP_CLOBBER);
+        : "=r"(ret) : "r"(name), "d"(mode) : ST_TRAP_CLOBBER);
     return (int16_t)ret;
 }
 
@@ -62,7 +70,7 @@ static inline int32_t st_fread(int16_t handle, int32_t count, void *buf)
         "move.w #0x3f,-(%%sp)\n\t"
         "trap #1\n\t"
         "lea 12(%%sp),%%sp"
-        : "=r"(ret) : "g"(handle), "g"(count), "g"(buf) : ST_TRAP_CLOBBER);
+        : "=r"(ret) : "d"(handle), "r"(count), "r"(buf) : ST_TRAP_CLOBBER);
     return ret;
 }
 
@@ -76,7 +84,7 @@ static inline int32_t st_fseek(int32_t offset, int16_t handle, int16_t mode)
         "move.w #0x42,-(%%sp)\n\t"
         "trap #1\n\t"
         "lea 10(%%sp),%%sp"
-        : "=r"(ret) : "g"(offset), "g"(handle), "g"(mode) : ST_TRAP_CLOBBER);
+        : "=r"(ret) : "r"(offset), "d"(handle), "d"(mode) : ST_TRAP_CLOBBER);
     return ret;
 }
 
@@ -88,7 +96,7 @@ static inline int16_t st_fclose(int16_t handle)
         "move.w #0x3e,-(%%sp)\n\t"
         "trap #1\n\t"
         "addq.l #4,%%sp"
-        : "=r"(ret) : "g"(handle) : ST_TRAP_CLOBBER);
+        : "=r"(ret) : "d"(handle) : ST_TRAP_CLOBBER);
     return (int16_t)ret;
 }
 
@@ -101,7 +109,7 @@ static inline int16_t st_fcreate(const char *name, int16_t attr)
         "move.w #0x3c,-(%%sp)\n\t"
         "trap #1\n\t"
         "lea 8(%%sp),%%sp"
-        : "=r"(ret) : "g"(name), "g"(attr) : ST_TRAP_CLOBBER);
+        : "=r"(ret) : "r"(name), "d"(attr) : ST_TRAP_CLOBBER);
     return (int16_t)ret;
 }
 
@@ -115,7 +123,7 @@ static inline int32_t st_fwrite(int16_t handle, int32_t count, const void *buf)
         "move.w #0x40,-(%%sp)\n\t"
         "trap #1\n\t"
         "lea 12(%%sp),%%sp"
-        : "=r"(ret) : "g"(handle), "g"(count), "g"(buf) : ST_TRAP_CLOBBER);
+        : "=r"(ret) : "d"(handle), "r"(count), "r"(buf) : ST_TRAP_CLOBBER);
     return ret;
 }
 
@@ -129,7 +137,7 @@ static inline void st_setscreen(void *log, void *phys, int16_t rez)
         "move.w #5,-(%%sp)\n\t"
         "trap #14\n\t"
         "lea 12(%%sp),%%sp"
-        : : "g"(log), "g"(phys), "g"(rez) : "d0", ST_TRAP_CLOBBER);
+        : : "r"(log), "r"(phys), "d"(rez) : "d0", ST_TRAP_CLOBBER);
 }
 
 /* XBIOS Vsync(). */
@@ -151,7 +159,7 @@ static inline int16_t st_blitmode(int16_t mode)
         "move.w #64,-(%%sp)\n\t"
         "trap #14\n\t"
         "addq.l #4,%%sp"
-        : "=r"(ret) : "g"(mode) : ST_TRAP_CLOBBER);
+        : "=r"(ret) : "d"(mode) : ST_TRAP_CLOBBER);
     return (int16_t)ret;
 }
 

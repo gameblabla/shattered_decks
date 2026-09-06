@@ -12,6 +12,20 @@ make -f Makefile.atarist verify       # build, boot headless, read the probe
 
 The output is a self-booting 720 KB FAT12 floppy: TOS runs `AUTO\WAIFU.PRG`.
 
+## Audio
+
+`tools/atarist/gen_atarist_audio.py` converts `msx_music/*.vgm` -- the same
+AY-3-8910 recordings the MSX2 port plays -- into 50 Hz register-delta streams,
+rescaling every period register from the MSX PSG's 1.7897 MHz to the ST's
+2 MHz (otherwise the whole soundtrack plays a tone and a half sharp).  117 KB
+for the seven tracks; the floppy carries them in `MUS\` and `atarist_disk.c`
+loads one at a time into a 32 KB buffer.
+
+Verified by recording: the MCP `record` tool writes Matroska with PCM audio,
+and a Goertzel sweep over the result shows the dominant pitch moving from
+second to second -- a still RMS level alone would not tell a tune from a stuck
+drone.
+
 ## Verification
 
 `AtariST/hatari-headless-mcp` + `AtariST/etos512us.img`.  The MCP server has no
@@ -36,7 +50,7 @@ python3 tools/atarist/verify.py --image build/atarist/waifu.st --machine st
 python3 tools/atarist/verify.py --image ... --script "START:2,0:30,A:2"
 ```
 
-## Boot hazards already paid for
+## Hardware hazards already paid for
 
 * **Supervisor mode must be entered as the first line of the port.**  Reading a
   TOS system variable (the cookie jar pointer at `$5a0`) from user mode is a bus
@@ -48,6 +62,16 @@ python3 tools/atarist/verify.py --image ... --script "START:2,0:30,A:2"
   drains the MIDI ACIA too.
 * **Timer B is stopped and reloaded from the VBL**, not left free running: an
   MFP timer reloads on expiry, so a free-running split walks up the screen.
+* **YM register 7's top two bits are the I/O port directions, not the mixer.**
+  Port A carries the floppy drive select lines, so writing a plain `0x3f`
+  "everything muted" turns port A into an input and the next `Fread` never
+  returns.  `ym_write()` forces `0xc0` on, and register 14 -- port A itself --
+  is never written from a music stream.
+* **Every GEMDOS wrapper constrains its operands to registers.**  A `"g"`
+  operand may be a stack-relative memory reference, and the wrappers push
+  arguments before reading the later ones, so `%sp` has already moved: the call
+  gets garbage.  It hung the boot on one build and returned an error on the
+  next, from the same source.
 
 ## Where it stands
 
@@ -59,7 +83,8 @@ python3 tools/atarist/verify.py --image ... --script "START:2,0:30,A:2"
 | chunky->planar, doubling + 1:1 | done, verified (doubling path on screen) |
 | IKBD keyboard + joystick, scripted queue | done |
 | probe + headless harness | done |
-| YM2149 stream player | player written, converter not yet |
+| YM2149 music: converter, floppy streams, player | done, verified (recorded and analysed) |
+| GEMDOS disk layer | done |
 | 3D board rasteriser (textured ground, textured card quads, flat rim) | done, verified |
 | planar 2D layer (rects, 8x8 text, masked blits) | done, verified |
 | duel presentation over `msx2_duel.c` | done, playable, verified |

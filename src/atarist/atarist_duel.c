@@ -26,6 +26,8 @@
 #include "atarist_input.h"
 #include "atarist_probe.h"
 #include "atarist_os.h"
+#include "atarist_audio.h"
+#include "atarist_disk.h"
 
 #include "msxgl.h"
 #include "msx2_duel.h"
@@ -564,6 +566,11 @@ void Atarist_DuelEnter(uint32_t seed, uint8_t story_index)
         g_ground_valid[0] = g_ground_valid[1] = 0;
     }
     Msx2_DuelInit(seed, story_index);
+    /* Loading the track reads the floppy, which is why it happens here and not
+     * per frame: GEMDOS is still resident and a Fread costs whole frames. */
+    Atarist_MusicLoadTrack(story_index == MSX2_STORY_FINAL_DUEL
+                               ? ATARIST_MUSIC_FINAL_BOSS
+                               : ATARIST_MUSIC_BATTLE);
     Atarist_ApplyArenaPalette();
     Atarist_ApplyCardPalette();
     Atarist_SetSplitEnabled(1);

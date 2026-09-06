@@ -19,6 +19,7 @@
 #include "atarist_probe.h"
 #include "atarist_scene.h"
 #include "atarist_assets.h"
+#include "atarist_disk.h"
 
 /* Boot bring-up in the order the probe stages name, so a machine that dies
  * early still reports where. */
@@ -42,6 +43,7 @@ static int Atarist_Boot(void)
     Atarist_InputInit();
     ATARIST_STAGE(ATARIST_STAGE_AUDIO);
     Atarist_AudioInit();
+    Atarist_DiskInit();
     ATARIST_STAGE(ATARIST_STAGE_ASSETS);
     if (!Atarist_AssetsInit()) {
         g_atarist_probe.status = ATARIST_PROBE_NOMEM;

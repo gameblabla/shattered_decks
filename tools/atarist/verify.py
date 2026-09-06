@@ -100,10 +100,10 @@ def describe(p):
     stage = STAGES[p["stage"]] if p["stage"] < len(STAGES) else p["stage"]
     status = STATUS[p["status"]] if p["status"] < len(STATUS) else p["status"]
     return ("probe @ 0x%06x  stage=%s status=%s frame=%d vbl=%d "
-            "frame_vbls=%d worst=%d scene=%d mark=%d ste=%d blitter=%d ram=%dK"
+            "frame_vbls=%d worst=%d scene=%d mark=%d spare=%d ste=%d blitter=%d ram=%dK"
             % (p["_addr"], stage, status, p["frame"], p["vbl"],
                p["frame_vbls"], p["worst_vbls"], p["scene"], p["mark"],
-               p["is_ste"], p["has_blitter"], p["machine_ram_kb"]))
+               p["spare"], p["is_ste"], p["has_blitter"], p["machine_ram_kb"]))
 
 
 def main():

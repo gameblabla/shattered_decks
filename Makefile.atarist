@@ -72,7 +72,7 @@ OBJS := $(patsubst %.c,$(OBJ)/%.o,$(notdir $(C_SRC))) \
 vpath %.c $(PROJ_DIR)
 vpath %.S $(PROJ_DIR)
 
-.PHONY: all st ste disk verify clean check-sdk
+.PHONY: all st ste disk data verify clean check-sdk
 
 all: $(DISK)
 
@@ -107,12 +107,24 @@ $(PRG): check-sdk $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $@ $(LDFLAGS) -lgcc
 	@$(SIZE) $@ || true
 
+# Floppy payload.  The soundtrack is converted from the same AY VGM files the
+# MSX2 port plays; see tools/atarist/gen_atarist_audio.py for the retune.
+MUSIC_SRC := $(wildcard msx_music/*.vgm)
+MUSIC_STAMP := $(BUILD)/data/.music
+
+$(MUSIC_STAMP): tools/atarist/gen_atarist_audio.py $(MUSIC_SRC)
+	@mkdir -p $(BUILD)/data/MUS
+	python3 tools/atarist/gen_atarist_audio.py --out $(BUILD)/data/MUS
+	@touch $@
+
+data: $(MUSIC_STAMP)
+
 # The floppy: a plain 720 KB FAT12 image with the program in AUTO\, which is
 # what makes it self-booting under TOS/EmuTOS.
-$(DISK): $(PRG) $(wildcard $(BUILD)/data/*)
+$(DISK): $(PRG) $(MUSIC_STAMP)
 	@mkdir -p $(BUILD)/disk/AUTO
 	cp $(PRG) $(BUILD)/disk/AUTO/WAIFU.PRG
-	@if [ -d $(BUILD)/data ]; then cp -r $(BUILD)/data/. $(BUILD)/disk/; fi
+	@if [ -d $(BUILD)/data ]; then cp -r $(BUILD)/data/. $(BUILD)/disk/; rm -f $(BUILD)/disk/.music; fi
 	rm -f $@
 	truncate -s 737280 $@
 	mkfs.msdos -I $@ >/dev/null

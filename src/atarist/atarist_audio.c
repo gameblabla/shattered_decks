@@ -18,9 +18,21 @@ static uint8_t        g_playing;
 
 /* Register 7 is the mixer: bits 0-2 mute the tone channels, 3-5 the noise.
  * 0x3f is "everything off", which is what silence has to mean -- clearing the
- * volumes alone leaves an envelope running. */
+ * volumes alone leaves an envelope running.
+ *
+ * THE TOP TWO BITS OF REGISTER 7 ARE NOT THE MIXER.  On an ST they are the
+ * YM's I/O port directions, and port A is not a spare port: its low bits are
+ * the floppy drive select and side select lines, and its upper ones the RS232
+ * and printer handshakes.  Clearing bit 6 turns port A into an input, the
+ * drive select lines float, and the next Fread never completes -- which is
+ * exactly how loading the first music track froze the boot.  The recordings
+ * come from an MSX, where those bits mean the MSX's own ports, so they are
+ * forced here rather than trusted from the stream. */
+#define YM_MIXER_PORT_DIR 0xc0
+
 static void ym_write(uint8_t reg, uint8_t val)
 {
+    if (reg == 7) val = (uint8_t)((val & 0x3f) | YM_MIXER_PORT_DIR);
     ST_YM_SELECT = reg;
     ST_YM_WRITE = val;
 }
@@ -30,7 +42,7 @@ static void ym_silence(void)
     ym_write(8, 0);
     ym_write(9, 0);
     ym_write(10, 0);
-    ym_write(7, 0x3f);
+    ym_write(7, 0x3f);        /* the port-direction bits are added by ym_write */
 }
 
 void Atarist_AudioInit(void)
@@ -112,7 +124,9 @@ void Atarist_AudioTick(void)
     while (count--) {
         uint8_t reg = *p++;
         uint8_t val = *p++;
-        ym_write(reg, val);
+        /* Register 14 is port A itself -- the floppy's drive select.  A music
+         * stream must never reach it, whatever the recording contains. */
+        if (reg < 14) ym_write(reg, val);
     }
     g_play = p;
 }

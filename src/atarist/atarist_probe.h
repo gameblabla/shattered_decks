@@ -85,6 +85,9 @@ typedef struct AtaristProbe {
      * judging whether the renderer fits its budget.  `spare` keeps the script
      * array on a four-byte boundary. */
     uint16_t worst_vbls;
+    /* The last Atarist_DiskLoad() result: the handle when an open failed, the
+     * byte count when a read succeeded.  It also keeps the script array on a
+     * four-byte boundary. */
     uint16_t spare;
     uint32_t script[ATARIST_PROBE_SCRIPT];
 
