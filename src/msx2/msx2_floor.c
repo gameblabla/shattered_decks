@@ -33,6 +33,10 @@
 //  index-half mnemonics, and every real Z80 (and openMSX) implements them.
 // ─────────────────────────────────────────────────────────────────────────────
 #include "msx2_floor_data.h"
+#ifdef MSX2_ASCII16X
+#include "msx2_stream.h"
+#include "msx2_mapper.h"
+#endif
 
 // The NEO mapper, as msx2_stream.c uses it: the row records are read straight
 // out of the cartridge window rather than through Msx2_RomRead, whose offset
@@ -625,6 +629,14 @@ static void Msx2_FloorRow(void) __naked
 // in one segment, so no offset can straddle one.
 static void Msx2_FloorFetch(void) __naked
 {
+	#ifdef MSX2_ASCII16X
+	// This routine is compiled into the scene page, so it cannot keep
+	// executing after mapping that page to the span records.  The resident
+	// reader owns the window transaction and returns with the caller's scene
+	// segment restored.
+	Msx2_RomRead(g_fp_seg, (u16)(g_fp_src - MSX2_MAPPER_WINDOW),
+	             g_floor_row, g_fp_len);
+	#else
     __asm
         .globl _g_bank2
         di
@@ -642,6 +654,7 @@ static void Msx2_FloorFetch(void) __naked
         ei
         ret
     __endasm;
+	#endif
 }
 
 static void Msx2_FloorBand(u8 allow_delta, u8 stride);

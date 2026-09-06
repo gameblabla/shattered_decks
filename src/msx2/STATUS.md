@@ -1,10 +1,35 @@
 # MSX2 port — status
 
-Target: MSX2 (Z80A 3.58 MHz, V9938, 128 KB VRAM), NEO-16 mapper cartridge,
-built with MSXgl + SDCC. Design: `MSX2_PORT_PLAN.md` at the repository root.
+Target: MSX2 (Z80A 3.58 MHz, V9938, 128 KB VRAM), with NEO-16 as the default
+mapper and ASCII16-X as an independent build. Built with MSXgl + SDCC. Design:
+`MSX2_PORT_PLAN.md` at the repository root; ASCII16-X details:
+`src/msx2/ASCII16X_PLAN.md`.
 
 This port is **a fork, not a branch of the shared frontend**. It never compiles
 `src/main.c`, and no MSX code exists outside `src/msx2/` and `tools/msx2/`.
+
+---
+
+### ASCII16-X mapper build — 2026-09-06
+
+`make -f Makefile.msx2 MAPPER=ascii16x` builds the SCREEN 8 cartridge, and
+`make -f Makefile.msx2 plus MAPPER=ascii16x` builds the MSX2+ SCREEN 10
+variant. Each mapper/presentation/test mode has its own object tree, map and
+ROM name; the four shipping names are `waifu_msx2.rom`, `waifu_msx2p.rom`,
+`waifu_msx2_ascii16x.rom` and `waifu_msx2p_ascii16x.rom`.
+
+ASCII16-X keeps the fixed image below 0x8000, maps page-2 scene and rules banks
+with address-encoded writes, and restores the caller's segment after every
+borrow. The IM 2 handler remains in page-3 RAM. The packer validates resident
+areas, bank-call contracts, crt0 data prefixes, asset ranges and padded ROM
+capacity. The final plus image leaves 12 bytes in the fixed segment after all
+linker areas are accounted for.
+
+Real openMSX boots both ASCII16-X presentation variants with the explicit
+`ASCII16-X` romtype; the plus variant defaults to `C-BIOS_MSX2+` in `msx2.sh`.
+The ASCII16-X plus path has been run through title streaming and duel entry,
+including the SCREEN 10 floor path. The remaining long hardware matrix is
+listed in `ASCII16X_PLAN.md`.
 
 ---
 

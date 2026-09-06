@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  msx2_video_bank.c — the font mask bake, in a page-0 bank
+//  msx2_video_bank.c — cold video helpers in a page-0 bank
 //
 //  It runs once, at boot, and _CODE is full: sixty-four glyphs' worth of bit
 //  expansion has no business holding resident address space for the rest of the
@@ -11,6 +11,33 @@
 #include "msx2_stream.h"
 
 static u8 g_font_row[MSX2_FONT_W_PX];
+
+#if defined(MSX2_ASCII16X) && defined(MSX2_PLUS)
+
+// SCREEN 10 fills need two logical VDP commands to preserve the YJK chroma
+// bits.  This path is used by menus and story composition, so it belongs with
+// the modal screen code; the fixed Msx2_Fill entry only performs the bank turn.
+static void Msx2_FillOp_In(u8 x, u16 line, u16 w, u8 h, u8 color, u8 op)
+{
+	VDP_CommandWait();
+	VDP_CommandLMMV(x, line, w, h, color, op);
+}
+
+void Msx2_Fill_In(u8 x, u8 y, u16 w, u8 h, u8 color)
+{
+	u16 line = (u16)y + (Msx2_VideoGetDrawPage() ? 256u : 0u);
+
+	if(Msx2_VideoIsYjk())
+	{
+		Msx2_FillOp_In(x, line, w, h, 0x07, VDP_OP_AND);
+		Msx2_FillOp_In(x, line, w, h, color, VDP_OP_OR);
+		return;
+	}
+	VDP_CommandWait();
+	VDP_CommandHMMV(x, line, w, h, color);
+}
+
+#endif
 
 void Msx2_VideoBakeFont_In(void)
 {

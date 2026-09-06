@@ -13,6 +13,8 @@
 //  is why the disk layer is in _CODE (msx2_disk.c) and not here.
 // ─────────────────────────────────────────────────────────────────────────────
 
+#ifndef MSX2_ASCII16X
+
 // The attack cut-in: the blade, the burst, the burn and the damage figure.
 // It is here for room rather than because it is modal -- segment 2 is full --
 // and it qualifies because it calls nothing outside _CODE and its own bank.
@@ -22,3 +24,5 @@
 #include "msx2_video_bank.c"
 #include "msx2_probe_bank.c"
 #include "msx2_entropy_bank.c"
+
+#endif

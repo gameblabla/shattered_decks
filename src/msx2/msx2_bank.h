@@ -29,16 +29,27 @@
 #pragma once
 
 #include "msxgl.h"
+#include "msx2_mapper.h"
 
+#ifdef MSX2_ASCII16X
+#define MSX2_BANK0_DUEL   3   // the duel screen      (waifu_msx2_s3_b1.c)
+#define MSX2_BANK0_MODAL  4   // modal screens        (waifu_msx2_s4_b1.c)
+#define MSX2_BANK0_STORY  5   // the story screens    (waifu_msx2_s5_b1.c)
+#else
 #define MSX2_BANK0_DUEL   2   // the duel screen      (waifu_msx2_s2_b0.c)
 #define MSX2_BANK0_MODAL  3   // modal screens        (waifu_msx2_s3_b0.c)
 #define MSX2_BANK0_STORY  4   // the story screens    (waifu_msx2_s4_b0.c)
+#endif
 
 // A bank in the OTHER window.  Segment 5 is linked at 0x8000 and holds code
 // that runs once at boot (waifu_msx2_s5_b2.c); it is mapped through the same
 // Msx2_Bank2Enter/Leave pair the streamer and the music use, so nothing in it
 // may be reachable from the ISR.
-#define MSX2_BANK2_BOOT   5
+#ifdef MSX2_ASCII16X
+#define MSX2_BANK2_BOOT   6   // waifu_msx2_s6_b1.c
+#else
+#define MSX2_BANK2_BOOT   5   // waifu_msx2_s5_b2.c
+#endif
 
 void Msx2_VideoBakeFont_In(void);
 

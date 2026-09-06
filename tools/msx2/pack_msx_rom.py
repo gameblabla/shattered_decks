@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""Write the baked scene binaries into the built NEO cartridge image.
+"""Pack generated MSX2 assets into a checked NEO-16 or ASCII16-X image.
 
-MSXgl links code into segments 0-2 and pads the rest of the cartridge; the
-picture data is not part of the link at all (it could never fit in the 32 KB the
-Z80 addresses), so it is placed here, at the exact segments
-tools/msx2/gen_msx_scenes.py assigned and src/generated/msx2_scenes.h names.
-
-The pass also enforces the one invariant the streamer depends on: the routine
-that swaps the 0x8000 window must itself live *below* 0x8000, because while the
-window holds picture data none of the code up there exists.  A link that drifts
-past that line is a crash on the first stream, so it fails the build instead.
-It also rejects either resident code area crossing its physical 16/32 KB bank
-boundary; SDCC can otherwise emit an apparently successful, wrapped image.
+MSXgl links the executable code into mapper segments, while the large scene,
+card, music and floor files are placed here after linking.  The two mapper
+formats use the same 16 KiB physical layout for those files; only the way the
+CPU selects the page-2 window and the resident-code ceiling differs.
 
 Usage:
     tools/msx2/pack_msx_rom.py src/msx2/out/waifu_msx2.rom
@@ -24,59 +17,73 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ASSET_DIR = os.path.join(ROOT, "src", "msx2", "assets")
 MANIFEST = os.path.join(ASSET_DIR, "manifest.txt")
+PLUS_MANIFEST = os.path.join(ASSET_DIR, "plus", "manifest_plus.txt")
 SEGMENT_BYTES = 16 * 1024
 WINDOW = 0x8000
-CODE_END = 0xC000
-SEG2_END = 0x4000
-# Segments 3 and 4 are the other page-0 code banks (waifu_msx2_s3_b0.c, the
-# modal screens, and waifu_msx2_s4_b0.c, the story).  All three are mapped at
-# the same address as segment 2, so they share its ceiling.
-SEG3_END = 0x4000
-SEG4_END = 0x4000
-# Segment 5 is the boot bank (waifu_msx2_s5_b2.c).  It is linked at 0x8000, in
-# the streaming window rather than at page 0, so its ceiling is the top of that
-# window and not 0x4000.
-SEG5_END = 0xC000
 
-# Symbols that must be resident while the streaming window is swapped out.
-# They live in the page-0 code bank (src/msx2/waifu_msx2_s2_b0.c), which the
-# mapper never switches; this check is what notices if one ever stops.
+# These are CPU-address ceilings of linked areas.  NEO-16 has a fixed page-0
+# half at 0x0000-0x3FFF and a fixed page-2 half at 0x8000-0xBFFF.  ASCII16-X
+# mirrors its page-2 window into page 0, so the resident image must fit below
+# 0x8000.
+NEO_LIMITS = {
+    "_CODE": 0xC000, "_HOME": 0xC000, "_RODATA": 0xC000,
+    "_INITIALIZER": 0xC000, "_GSINIT": 0xC000, "_GSFINAL": 0xC000,
+    "_SEG2": 0x4000, "_SEG3": 0x8000, "_SEG4": 0x8000, "_SEG5": 0xC000,
+}
+ASCII16X_LIMITS = {
+    "_CODE": 0x8000, "_HOME": 0x8000, "_RODATA": 0x8000,
+    "_INITIALIZER": 0x8000, "_GSINIT": 0x8000, "_GSFINAL": 0x8000,
+    "_SEG3": 0xC000, "_SEG4": 0xC000, "_SEG5": 0xC000,
+    "_SEG6": 0xC000, "_SEG7": 0xC000,
+}
+
 RESIDENT_SYMBOLS = [
     "_Msx2_StreamChunk", "_Msx2_StreamSetVramChunk", "_Msx2_StreamScene",
     "_Msx2_BlitRow", "_Msx2_StreamRect", "_Msx2_RomRead",
     "_Msx2_AudioTick", "_Msx2_LvgmNotify", "_Msx2_Bank2Enter",
     "_Msx2_Bank2Leave", "_LVGM_Play", "_LVGM_Stop", "_LVGM_Decode",
     "_LVGM_DecodePSG", "_PSG_Apply", "_PSG_Mute",
+    "_Msx2_ClearActionEvent", "_Msx2_IsMonster", "_Msx2_IsSupport",
+    "_Msx2_SupportKind", "_Msx2_LiveMonsterCount", "_Msx2_FirstLiveSlot",
+    "_Msx2_FirstFreeSlot", "_Msx2_FirstFreeEquipSlot",
+    "_Msx2_FirstTurnAttackLocked",
 ]
 
+BOOT_BANK_ASM = {
+    "neo16": "waifu_msx2_s5_b2.asm",
+    "ascii16x": "waifu_msx2_ascii_s6_b1.asm",
+}
+ISR_WINDOW_ASM = "msx2_lvgm.asm"
+CRT0_MODULES = ("crt0",)
 
-PLUS_MANIFEST = os.path.join(ASSET_DIR, "plus", "manifest_plus.txt")
+
+def mapper_name():
+    mapper = os.environ.get("MSX2_MAPPER", "neo16").lower()
+    if mapper not in ("neo16", "ascii16x"):
+        sys.exit("MSX2_MAPPER must be neo16 or ascii16x")
+    return mapper
+
+
+def read_manifest(path):
+    entries = []
+    with open(path) as handle:
+        for raw in handle:
+            line = raw.split("#", 1)[0].strip()
+            if line:
+                name, segment, binary = line.split()
+                entries.append((name, int(segment), binary))
+    return entries
 
 
 def assets():
-    """(name, first segment, binary) triples, in segment order.
-
-    With MSX2_PLUS set, the SCREEN 10 set is laid over the GRAPHIC 7 one: an
-    entry of the same name REPLACES the MSX2 binary at the same segment (the
-    encodings are the same size, which is the whole point), and any name the
-    MSX2 manifest does not have is a plus-only asset appended after it.
-    """
-    out = []
-    for raw in (open(MANIFEST).readlines() +
-                open(os.path.join(ASSET_DIR, "floor_manifest.txt")).readlines()):
-        line = raw.split("#", 1)[0].strip()
-        if not line:
-            continue
-        name, seg, binary = line.split()
-        out.append((name, int(seg), binary))
+    """Return (name, first segment, binary) triples in segment order."""
+    out = read_manifest(MANIFEST) + read_manifest(
+        os.path.join(ASSET_DIR, "floor_manifest.txt"))
     if os.environ.get("MSX2_PLUS"):
-        by_name = {name: i for i, (name, _s, _b) in enumerate(out)}
-        for raw in open(PLUS_MANIFEST):
-            line = raw.split("#", 1)[0].strip()
-            if not line:
-                continue
-            name, seg, binary = line.split()
-            entry = (name, int(seg), binary)
+        replacements = {name: (name, segment, binary)
+                        for name, segment, binary in read_manifest(PLUS_MANIFEST)}
+        by_name = {name: index for index, (name, _s, _b) in enumerate(out)}
+        for name, entry in replacements.items():
             if name in by_name:
                 out[by_name[name]] = entry
             else:
@@ -84,47 +91,73 @@ def assets():
     return sorted(out, key=lambda entry: entry[1])
 
 
-def check_resident(mapfile):
-    """Every streamer symbol must sit below 0x8000 in the Z80's address space.
+def map_areas(mapfile):
+    areas = {}
+    pattern = re.compile(r"^(\S+)\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=")
+    with open(mapfile) as handle:
+        for line in handle:
+            match = pattern.match(line)
+            if match:
+                areas[match.group(1)] = (int(match.group(2), 16),
+                                         int(match.group(3), 16))
+    return areas
 
-    Banked symbols are printed by the linker as SSSSAAAA -- the segment number
-    above the address it is linked at -- so only the low 16 bits are the
-    address the CPU will see."""
-    if not os.path.exists(mapfile):
-        return []
-    addresses = {}
-    for line in open(mapfile):
-        for addr, name in re.findall(r"([0-9A-F]{4,8})\s+(_[A-Za-z0-9_]+)", line):
-            addresses.setdefault(name, int(addr, 16) & 0xFFFF)
+
+def map_symbols(mapfile):
+    symbols = {}
+    with open(mapfile) as handle:
+        for line in handle:
+            for address, name in re.findall(r"([0-9A-F]{8})\s+(_[A-Za-z0-9_]+)",
+                                            line):
+                symbols.setdefault(name, int(address, 16) & 0xFFFF)
+    return symbols
+
+
+def check_resident(mapfile):
+    """Return resident symbols that are not below the switched window."""
+    symbols = map_symbols(mapfile)
+    return [(name, symbols[name]) for name in RESIDENT_SYMBOLS
+            if name in symbols and symbols[name] >= WINDOW]
+
+
+def check_code_banks(mapfile, mapper):
+    """Return linked areas that cross the CPU bank they are mapped into."""
+    limits = ASCII16X_LIMITS if mapper == "ascii16x" else NEO_LIMITS
+    areas = map_areas(mapfile)
     bad = []
-    for name in RESIDENT_SYMBOLS:
-        at = addresses.get(name)
-        if at is not None and at >= WINDOW:
-            bad.append((name, at))
+    for name, limit in limits.items():
+        if name not in areas:
+            continue
+        start, size = areas[name]
+        end = (start & 0xFFFF) + size
+        if end > limit:
+            bad.append((name, end, limit))
     return bad
 
 
-# The boot bank (waifu_msx2_s5_b2.c) is the one code bank that is mapped into
-# the 0x8000 STREAMING window rather than at page 0, so while it runs the upper
-# half of _CODE does not exist.  It may therefore call nothing but itself -- and
-# that includes the calls SDCC makes on your behalf, ___sdcc_enter_ix for a
-# stack frame and ___memcpy for a struct assignment, both of which link into
-# _CODE near 0xBA00.  Either one silently executes bank bytes instead, which
-# resets the machine on the third instruction; this check is what turns that
-# into a build failure.
-BOOT_BANK_ASM = "waifu_msx2_s5_b2.asm"
+def calls_outside_bank(mapfile, asm_name, allow_window=False):
+    """Return calls from an active bank to code that cannot be present.
 
-# msx2_lvgm.c is the other file that runs with something else mapped over the
-# upper half of _CODE: every one of its functions is called from the V-blank
-# handler with the current music segment in the 0x8000 window.  The SDCC
-# library helpers it might call live at about 0xBB00, so a stack frame
-# (___sdcc_enter_ix) or a struct copy (___memcpy) in there is a call into the
-# recording.  That cost a session to find once; it is a build failure now.
-ISR_WINDOW_ASM = "msx2_lvgm.asm"
+    The boot bank has a strict self-contained contract.  The ASCII16-X rules
+    bank may call the fixed resident image and itself, so its external calls
+    are checked against the map instead of being rejected.
+    """
+    asmfile = os.path.join(os.path.dirname(mapfile), asm_name)
+    if not os.path.exists(asmfile):
+        return []
+    text = open(asmfile).read()
+    defined = set(re.findall(r"^(_[A-Za-z0-9_]+)::?", text, re.M))
+    called = set(re.findall(r"^\s+(?:call|jp)\s+(_[A-Za-z0-9_]+)", text, re.M))
+    external = sorted(called - defined)
+    if allow_window:
+        symbols = map_symbols(mapfile)
+        return [(name, symbols.get(name)) for name in external
+                if name in symbols and symbols[name] >= WINDOW]
+    return [(name, None) for name in external]
 
 
 def check_isr_window(mapfile):
-    """Return the SDCC helpers the window-swapped ISR code calls."""
+    """Return SDCC helpers called by lVGM code while the window is swapped."""
     asmfile = os.path.join(os.path.dirname(mapfile), ISR_WINDOW_ASM)
     if not os.path.exists(asmfile):
         return []
@@ -133,101 +166,93 @@ def check_isr_window(mapfile):
                                  text, re.M)))
 
 
-def check_boot_bank(mapfile):
-    """Return the symbols the boot bank calls but does not define."""
-    asmfile = os.path.join(os.path.dirname(mapfile), BOOT_BANK_ASM)
-    if not os.path.exists(asmfile):
-        return []
-    text = open(asmfile).read()
-    defined = set(re.findall(r"^(_[A-Za-z0-9_]+)::?", text, re.M))
-    called = set(re.findall(r"^\s+(?:call|jp)\s+(_[A-Za-z0-9_]+)", text, re.M))
-    return sorted(called - defined)
-
-
-# main() wipes _DATA above the bytes crt0 has already filled in, because SDCC
-# puts uninitialised statics there and MSXgl's ROM crt0 never clears them.  The
-# size of that reserved prefix is a constant in msx2_main.c, so the link has to
-# be checked against it: a game variable that lands inside the prefix would keep
-# its boot garbage, and a crt0 that grew past it would have its own state wiped.
-CRT0_DATA_BYTES = 15
-CRT0_MODULES = ("crt0",)
-
-
-def check_data_prefix(mapfile):
-    """Return (name, address) for any non-crt0 _DATA symbol below the prefix,
-    and the crt0 symbols that sit at or above it."""
-    if not os.path.exists(mapfile):
-        return [], []
+def check_data_prefix(mapfile, mapper):
+    """Return _DATA symbols that disagree with the crt0 reserved prefix."""
+    crt0_bytes = 11 if mapper == "ascii16x" else 15
     in_data = False
     start = None
     intruders = []
     overrun = []
-    for line in open(mapfile):
-        head = re.match(r"^(\S+)\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=", line)
-        if head:
-            in_data = head.group(1) == "_DATA"
-            if in_data:
-                start = int(head.group(2), 16)
-            continue
-        if not in_data or start is None:
-            continue
-        row = re.match(r"^\s+([0-9A-F]{8})\s+(_\S+)\s+(\S+)\s*$", line)
-        if not row:
-            continue
-        at, name, module = int(row.group(1), 16), row.group(2), row.group(3)
-        if module in CRT0_MODULES:
-            if at >= start + CRT0_DATA_BYTES:
-                overrun.append((name, at))
-        elif at < start + CRT0_DATA_BYTES:
-            intruders.append((name, at))
-    return intruders, overrun
+    row_pattern = re.compile(r"^\s+([0-9A-F]{8})\s+(_\S+)\s+(\S+)\s*$")
+    with open(mapfile) as handle:
+        for line in handle:
+            head = re.match(r"^(\S+)\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=", line)
+            if head:
+                in_data = head.group(1) == "_DATA"
+                start = int(head.group(2), 16) if in_data else None
+                continue
+            if not in_data or start is None:
+                continue
+            row = row_pattern.match(line)
+            if not row:
+                continue
+            at, name, module = int(row.group(1), 16), row.group(2), row.group(3)
+            if module in CRT0_MODULES:
+                if at >= start + crt0_bytes:
+                    overrun.append((name, at))
+            elif at < start + crt0_bytes:
+                intruders.append((name, at))
+    return intruders, overrun, crt0_bytes
 
 
-def check_code_banks(mapfile):
-    """Return linker areas whose low-16-bit end crosses their mapped bank."""
-    if not os.path.exists(mapfile):
-        return []
-    # SDCC appends these resident ROM areas after _CODE. Counting _CODE
-    # alone can report space left while _INITIALIZER already overlaps bank 2.
-    limits = {name: CODE_END for name in
-              ("_CODE", "_HOME", "_RODATA", "_INITIALIZER", "_GSINIT", "_GSFINAL")}
-    limits.update({"_SEG2": SEG2_END, "_SEG3": SEG3_END, "_SEG4": SEG4_END,
-                   "_SEG5": SEG5_END})
-    found = {}
-    pattern = re.compile(r"^\s*(" + "|".join(limits) + r")\s+([0-9A-F]{8})\s+([0-9A-F]{8})\s+=")
-    for line in open(mapfile):
-        match = pattern.match(line)
-        if match:
-            found[match.group(1)] = (int(match.group(2), 16),
-                                     int(match.group(3), 16))
-    bad = []
-    for name, limit in limits.items():
-        if name in found:
-            start, size = found[name]
-            end = (start & 0xFFFF) + size
-            if end > limit:
-                bad.append((name, end, limit))
-    return bad
+def check_assets(rom, mapper):
+    """Validate asset ranges and return the files ready to write."""
+    entries = assets()
+    capacity = len(rom) // SEGMENT_BYTES
+    max_segment = 0x0FFF if mapper == "ascii16x" else 0xFFFF
+    placed = []
+    previous_end = -1
+    for name, segment, binary in entries:
+        binpath = os.path.join(ASSET_DIR, binary)
+        if not os.path.exists(binpath):
+            sys.exit("%s is missing: run tools/msx2/gen_msx_scenes.py" % binpath)
+        if segment > max_segment:
+            sys.exit("%s uses segment %d, beyond the %s mapper range"
+                     % (name, segment, mapper))
+        data = open(binpath, "rb").read()
+        start = segment * SEGMENT_BYTES
+        end = start + len(data)
+        if segment >= capacity or end > len(rom):
+            sys.exit("%s does not fit: ROM is %d KB, needs %d KB -- raise ROM_SIZE_KB"
+                     % (name, len(rom) // 1024, (end + 1023) // 1024))
+        if start < previous_end:
+            sys.exit("asset %s overlaps an earlier manifest entry" % name)
+        previous_end = end
+        placed.append((name, segment, binary, data, start, end))
+    return placed
 
 
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
+    mapper = mapper_name()
     rompath = sys.argv[1]
     rom = bytearray(open(rompath, "rb").read())
     mapfile = os.path.splitext(rompath)[0] + ".map"
 
-    intruders, overrun = check_data_prefix(mapfile)
+    if len(rom) % SEGMENT_BYTES:
+        sys.exit("ROM size must be a multiple of 16 KiB")
+    requested_kb = int(os.environ.get("MSX2_ROM_SIZE_KB", len(rom) // 1024))
+    if len(rom) != requested_kb * 1024:
+        sys.exit("ROM is %d KB but MSX2_ROM_SIZE_KB is %d KB"
+                 % (len(rom) // 1024, requested_kb))
+    signature = b"ASCII16X" if mapper == "ascii16x" else b"ROM_NE16"
+    if bytes(rom[0:2]) != b"AB" or bytes(rom[0x10:0x18]) != signature:
+        sys.exit("ROM header does not identify the requested %s mapper" % mapper)
+    if not os.path.exists(mapfile):
+        sys.exit("missing link map: %s" % mapfile)
+
+    intruders, overrun, crt0_bytes = check_data_prefix(mapfile, mapper)
     if intruders or overrun:
         for name, at in intruders:
             print("%s is at 0x%04X, inside the _DATA prefix main() does not wipe"
                   % (name, at), file=sys.stderr)
         for name, at in overrun:
             print("crt0's %s is at 0x%04X, past the %d-byte prefix main() keeps"
-                  % (name, at, CRT0_DATA_BYTES), file=sys.stderr)
+                  % (name, at, crt0_bytes), file=sys.stderr)
         sys.exit("MSX2_CRT0_DATA_BYTES in msx2_main.c no longer matches the link")
 
-    overflow = check_code_banks(mapfile)
+    overflow = check_code_banks(mapfile, mapper)
     if overflow:
         for name, end, limit in overflow:
             print("%s ends at 0x%04X, past its 0x%04X bank boundary"
@@ -237,66 +262,62 @@ def main():
     bad = check_resident(mapfile)
     if bad:
         for name, at in bad:
-            print("%s is linked at 0x%04X, inside the streaming window" % (name, at),
-                  file=sys.stderr)
-        sys.exit("the streamer must be linked below 0x%04X -- reorder ProjModules "
-                 "or move code out of bank 2" % WINDOW)
+            print("%s is linked at 0x%04X, inside the streaming window"
+                  % (name, at), file=sys.stderr)
+        sys.exit("the streamer must be linked below 0x%04X" % WINDOW)
 
-    escapes = check_boot_bank(mapfile)
+    boot_asm = BOOT_BANK_ASM[mapper]
+    escapes = calls_outside_bank(mapfile, boot_asm)
     if escapes:
-        for name in escapes:
+        for name, _at in escapes:
             print("the boot bank calls %s, which is not in the boot bank" % name,
                   file=sys.stderr)
-        sys.exit("code in waifu_msx2_s5_b2.c may only call itself: it runs with "
-                 "the 0x8000 half of _CODE swapped out")
+        sys.exit("code in %s may only call itself while its window is active"
+                 % boot_asm)
+
+    if mapper == "ascii16x":
+        rules_asm = "waifu_msx2_ascii_s7_b1.asm"
+        escapes = calls_outside_bank(mapfile, rules_asm, allow_window=True)
+        if escapes:
+            for name, at in escapes:
+                print("the ASCII16-X rules bank calls %s at 0x%04X, outside its"
+                      " bank and the fixed resident image" % (name, at),
+                      file=sys.stderr)
+            sys.exit("ASCII16-X rules bank has an unsafe cross-bank call")
 
     helpers = check_isr_window(mapfile)
     if helpers:
         for name in helpers:
             print("%s calls %s, an SDCC helper linked above 0x%04X"
                   % (ISR_WINDOW_ASM, name, WINDOW), file=sys.stderr)
-        sys.exit("the lVGM decoder runs with the music segment over 0x%04X and "
-                 "may not call a helper that lives there: give the function "
-                 "file-static locals so SDCC builds no stack frame" % WINDOW)
+        sys.exit("the lVGM decoder may not call a helper above 0x%04X"
+                 % WINDOW)
 
-    placed = 0
+    placed = check_assets(rom, mapper)
     total = 0
-    for name, segment, binary in assets():
-        binpath = os.path.join(ASSET_DIR, binary)
-        if not os.path.exists(binpath):
-            sys.exit("%s is missing: run tools/msx2/gen_msx_scenes.py" % binpath)
-        data = open(binpath, "rb").read()
-        at = segment * SEGMENT_BYTES
-        if at + len(data) > len(rom):
-            sys.exit("%s does not fit: ROM is %d KB, needs %d KB -- raise ROM_SIZE_KB"
-                     % (name, len(rom) // 1024,
-                        (at + len(data) + 1023) // 1024))
-        # Refuse to land on anything the linker emitted.
-        occupied = rom[at:at + len(data)]
-        if any(b not in (0x00, 0xFF) for b in occupied):
+    for name, segment, _binary, data, start, end in placed:
+        # The manifest starts at segment 8 in both layouts.  Still inspect the
+        # exact range so a future manifest cannot hide a linker overlap behind
+        # an all-zero or all-FF hole.
+        occupied = rom[start:end]
+        if any(byte not in (0x00, 0xFF) for byte in occupied):
             sys.exit("segment %d is not empty: %s would overwrite the link"
                      % (segment, name))
-        rom[at:at + len(data)] = data
-        placed += 1
+        rom[start:end] = data
         total += len(data)
-        print("packed %-13s %6d bytes at segment %2d (0x%06X)"
-              % (name, len(data), segment, at))
+        print("packed %-18s %7d bytes at segment %3d (0x%06X)"
+              % (name, len(data), segment, start))
 
     open(rompath, "wb").write(bytes(rom))
-    # The image is padded to a whole cartridge size, so "used" is where the last
-    # asset ends, not how many bytes carry data.  Print both, and the next
-    # power-of-two boundary down, so an image that has grown a spare megabyte of
-    # padding is visible in the build log rather than only in `ls -l`.
-    end = max(seg * SEGMENT_BYTES + os.path.getsize(os.path.join(ASSET_DIR, b))
-              for _, seg, b in assets())
-    fits = 1024
-    while fits * 1024 < end:
-        fits *= 2
+    last_end = max(end for _name, _segment, _binary, _data, _start, end in placed)
+    power = 1024
+    while power * 1024 < last_end:
+        power *= 2
     print("%s: %d assets packed, %d KB of data, last byte at %d KB"
-          % (os.path.relpath(rompath, ROOT), placed, total // 1024,
-             (end + 1023) // 1024))
-    print("cartridge %d KB, smallest that fits %d KB, %d KB of tail padding"
-          % (len(rom) // 1024, fits, (len(rom) - end) // 1024))
+          % (os.path.relpath(rompath, ROOT), len(placed), total // 1024,
+             (last_end + 1023) // 1024))
+    print("%s cartridge %d KB, smallest that fits %d KB, %d KB of tail padding"
+          % (mapper, len(rom) // 1024, power, (len(rom) - last_end) // 1024))
 
 
 if __name__ == "__main__":

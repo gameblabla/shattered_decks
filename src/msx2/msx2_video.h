@@ -162,6 +162,11 @@ void Msx2_VideoCopyPage(u8 src, u8 dst);
 // Flat fill via the VDP's HMMV command: the command engine does the work, the
 // Z80 only writes the command registers.
 void Msx2_Fill(u8 x, u8 y, u16 w, u8 h, u8 color);
+#if defined(MSX2_ASCII16X) && defined(MSX2_PLUS)
+// The plus fill is in the modal ASCII16-X bank with the other cold video
+// helpers; the fixed entry keeps the public call site mapper-agnostic.
+void Msx2_Fill_In(u8 x, u8 y, u16 w, u8 h, u8 color);
+#endif
 void Msx2_ClearPage(u8 color);
 
 // A 1-pixel outline, drawn as four fills.

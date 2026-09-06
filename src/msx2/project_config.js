@@ -15,6 +15,7 @@
 CompileOpt = `-I${ToolsDir}sdcc/include`
            + ` -I./compat -I../game -I../generated`
            + ` --opt-code-size`
+           + (process.env.MSX2_MAPPER === "ascii16x" ? ` -DMSX2_ASCII16X` : ``)
            // The blind soak needs the player's turn played by the AI; see
            // MSX2_DEBUG_AUTOPLAY in msx2_board.c.  Driven from the environment
            // so `make -f Makefile.msx2 soak` is the only thing that knows.
@@ -28,7 +29,16 @@ CompileOpt = `-I${ToolsDir}sdcc/include`
            + (process.env.MSX2_TEST_SEED ? ` -DMSX2_TEST_SEED=${process.env.MSX2_TEST_SEED}u` : ``)
            + (process.env.MSX2_TEST_FIXTURE ? ` -DMSX2_TEST_FIXTURE=${process.env.MSX2_TEST_FIXTURE}` : ``);
 
-ProjName = "waifu_msx2";
+const MSX2_ASCII16X = process.env.MSX2_MAPPER === "ascii16x";
+
+// Keep the segment wrapper stem stable while giving each mapper its own
+// incremental object tree and ROM name.
+ProjName = process.env.MSX2_OUTPUT_NAME || "waifu_msx2";
+ProjSegments = MSX2_ASCII16X ? "waifu_msx2_ascii" : "waifu_msx2";
+if (process.env.MSX2_OUT_DIR)
+	OutDir = process.env.MSX2_OUT_DIR;
+if (!OutDir.endsWith("/"))
+	OutDir += "/";
 
 //-- Every module compiled into the ROM.  src/main.c is deliberately absent:
 //   this port never compiles it (MSX2_PORT_PLAN.md §1.1).
@@ -56,24 +66,33 @@ ProjModules = [
 	// msx2_battle_fx is NOT here: it is #included into waifu_msx2_s2_b0.c,
 	// because the duel screen is its only caller and _CODE had run out.
 	"msx2_raster",
-	"msx2_duel",
-	"msx2_cards",
 	"msx2_probe",
 	"msx2_regression",
 ];
 
-//-- Shared, platform-neutral game logic, compiled unmodified.
-AddSources = [
-	"../game/deck.c",
-	"../game/ai.c",
-	"msx2_libc.c",
-];
+if (MSX2_ASCII16X)
+	AddSources = [ "msx2_libc.c" ];
+else
+	AddSources = [ "../game/deck.c", "../game/ai.c", "msx2_libc.c" ];
+
+if (MSX2_ASCII16X)
+	ProjModules.splice(1, 0, "msx2_mapper");
+else
+	ProjModules.splice(12, 0, "msx2_duel", "msx2_cards");
+
+// ASCII16-X uses the explicit page-3 IM 2 path.  Page 0 remains the machine's
+// BIOS/RAM page; all cartridge scene code uses the 0x8000 window and the fixed
+// trampolines in msx2_bank.c.  This keeps the SDK's page-0 copy source from
+// colliding with the initialized-data payload in the fixed cartridge image.
 
 LibModules = [ "system", "bios", "vdp", "input", "memory" ];
 
-//-- "2P" for the MSX2+ cartridge: it is what puts MSX_VERSION at MSX_2P, and
-//   that is what compiles VDP_MODE_SCREEN10 and R#25 into MSXgl at all.
-Machine = process.env.MSX2_PLUS ? "2P" : "2";
+//-- The NEO-16 plus build uses MSXgl's normal MSX2+ surface.  ASCII16-X has
+//   its own small R#25/YJK path, so it is compiled as an MSX2 application and
+//   avoids pulling unused MSX2+ VDP helpers into its 32 KB resident image.
+Machine = process.env.MSX2_PLUS
+        ? (MSX2_ASCII16X ? "2" : "2P")
+        : "2";
 
 //-- The interrupt handler goes into RAM page 3 rather than into cartridge
 //   segment 2 at 0x0038.  That is what makes page 0 a SWITCHABLE code window:
@@ -89,7 +108,7 @@ InstallRAMISR = "RAMISR_PAGE3";
 //   MSX2_ROM_SIZE_KB overrides it from Makefile.msx2, which carries the note on
 //   what pushed the image past 4 MB and why 4 MB is out of reach without a
 //   smaller FM encoding or fewer assets.
-Target = "ROM_NEO16";
+Target = MSX2_ASCII16X ? "ROM_ASCII16X" : "ROM_NEO16";
 ROMSize = Number(process.env.MSX2_ROM_SIZE_KB || 8192);
 
 CheckVersion = true;

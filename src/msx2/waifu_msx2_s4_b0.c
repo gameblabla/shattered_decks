@@ -18,6 +18,10 @@
 //  _CODE that the disk layer and the sprite selector needed instead.
 // ─────────────────────────────────────────────────────────────────────────────
 
+#ifndef MSX2_ASCII16X
+
 #include "msx2_story_utils.c"
 #include "msx2_story_load.c"
 #include "msx2_story.c"
+
+#endif

@@ -6,12 +6,14 @@
 #include "msx2_sprite.h"
 #include "msx2_video.h"
 #include "msx2_scenes.h"
+#include "msx2_mapper.h"
 #ifdef MSX2_DEBUG_REGRESSION
 #include "msx2_probe.h"
 #endif
 
 // NEO-16 maps three 16 KB banks; writing a 16-bit segment number to the bank's
-// magic address switches it.  Bank 2 is 0x8000-0xBFFF -- the streaming window.
+// magic address switches it.  ASCII16-X uses the same CPU window, but the high
+// segment nibble is carried by the mapper write address.
 #define MSX2_NEO_BANK2_REG   0x7000
 #define MSX2_NEO_WINDOW      0x8000
 #define MSX2_NEO_SEGMENT_SZ  0x4000
@@ -26,6 +28,10 @@
 // crash rather than a wrong pixel.
 static u16 g_chunk_bytes;
 static u16 g_chunk_segment;
+#ifdef MSX2_ASCII16X
+static u16 g_stream_restore;
+extern u16 g_bank2;
+#endif
 
 // Point the VDP's write pointer at a 16 KB-aligned VRAM address.
 // R#14 carries A16-A14, so for an aligned address the other twelve bits are 0.
@@ -69,6 +75,73 @@ static void Msx2_StreamSetVramChunk(u8 r14)
 // window it opens is one page long instead of one chunk.
 static void Msx2_StreamChunk(void)
 {
+	#ifdef MSX2_ASCII16X
+	g_stream_restore = g_bank2;
+	__asm
+		di
+		ld		de, (_g_chunk_segment)
+		ld		a, d
+		and		#0x0F
+		or		#0x70
+		ld		h, a
+		ld		l, e
+		ld		a, e
+		ld		(hl), a
+		ld		(_g_bank2), de
+
+		ld		hl, #MSX2_NEO_WINDOW
+		ld		de, (_g_chunk_bytes)
+		ld		c, #0x98
+		ld		a, d
+	stream_page_ascii:
+		or		a
+		jr		z, stream_done_ascii
+		ld		b, #0
+		otir
+		dec		a
+		jr		z, stream_done_ascii
+
+		// Let the ISR run with the caller's page-2 code visible.  The current
+		// segment is restored from the shadow captured before the asset map.
+		push	af
+		push	hl
+		ld		de, (_g_stream_restore)
+		ld		a, d
+		and		#0x0F
+		or		#0x70
+		ld		h, a
+		ld		l, e
+		ld		a, e
+		ld		(hl), a
+		ld		(_g_bank2), de
+		ei
+		nop
+		di
+		ld		de, (_g_chunk_segment)
+		ld		a, d
+		and		#0x0F
+		or		#0x70
+		ld		h, a
+		ld		l, e
+		ld		a, e
+		ld		(hl), a
+		ld		(_g_bank2), de
+		pop		hl
+		pop		af
+		jr		stream_page_ascii
+	stream_done_ascii:
+		ld		de, (_g_stream_restore)
+		ld		a, d
+		and		#0x0F
+		or		#0x70
+		ld		h, a
+		ld		l, e
+		ld		a, e
+		ld		(hl), a
+		ld		(_g_bank2), de
+	__endasm;
+	__asm ei __endasm;
+	#else
 	__asm
 		di
 		ld		hl, (_g_chunk_segment)
@@ -110,6 +183,7 @@ static void Msx2_StreamChunk(void)
 		ld		(_g_bank2), hl				// keep the ISR's shadow coherent
 	__endasm;
 	__asm ei __endasm;
+	#endif
 }
 
 void Msx2_StreamSceneBlanked(u16 segment, u8 page)
@@ -202,6 +276,48 @@ static u8* g_blit_dst;
 // tearing, not as an error.
 static void Msx2_BlitRow(void)
 {
+	#ifdef MSX2_ASCII16X
+	g_stream_restore = g_bank2;
+	__asm
+		di
+		ld		de, (_g_blit_segment)
+		ld		a, d
+		and		#0x0F
+		or		#0x70
+		ld		h, a
+		ld		l, e
+		ld		a, e
+		ld		(hl), a
+
+		ld		a, (_g_blit_r14)
+		out		(#0x99), a
+		ld		a, #(14 | 0x80)
+		out		(#0x99), a
+		ld		a, (_g_blit_lo)
+		out		(#0x99), a
+		ld		a, (_g_blit_hi)
+		out		(#0x99), a
+
+		ld		hl, (_g_blit_src)
+		ld		a, (_g_blit_len)
+		ld		b, a
+		ld		c, #0x98
+		blit_px_ascii:
+		outi
+		nop
+		jr		nz, blit_px_ascii
+
+		ld		de, (_g_stream_restore)
+		ld		a, d
+		and		#0x0F
+		or		#0x70
+		ld		h, a
+		ld		l, e
+		ld		a, e
+		ld		(hl), a
+	__endasm;
+	__asm ei __endasm;
+	#else
 	__asm
 		di
 		ld		hl, (_g_blit_segment)
@@ -230,6 +346,7 @@ static void Msx2_BlitRow(void)
 		ld		(_g_bank2), hl				// keep the ISR's shadow coherent
 	__endasm;
 	__asm ei __endasm;
+	#endif
 }
 
 void Msx2_StreamRect(u16 segment, u16 offset, u8 x, u8 y, u8 w, u8 h)
@@ -561,6 +678,39 @@ void Msx2_RomRead(u16 segment, u16 offset, u8* dst, u8 len)
 	g_blit_src = (u16)(MSX2_NEO_WINDOW + offset);
 	g_blit_dst = dst;
 	g_blit_len = len;
+	#ifdef MSX2_ASCII16X
+	g_stream_restore = g_bank2;
+	#endif
+	#ifdef MSX2_ASCII16X
+	__asm
+		di
+		ld		de, (_g_blit_segment)
+		ld		a, d
+		and		#0x0F
+		or		#0x70
+		ld		h, a
+		ld		l, e
+		ld		a, e
+		ld		(hl), a
+
+		ld		hl, (_g_blit_src)
+		ld		de, (_g_blit_dst)
+		ld		a, (_g_blit_len)
+		ld		c, a
+		ld		b, #0
+		ldir
+
+		ld		de, (_g_stream_restore)
+		ld		a, d
+		and		#0x0F
+		or		#0x70
+		ld		h, a
+		ld		l, e
+		ld		a, e
+		ld		(hl), a
+	__endasm;
+	__asm ei __endasm;
+	#else
 	__asm
 		di
 		ld		hl, (_g_blit_segment)
@@ -578,4 +728,5 @@ void Msx2_RomRead(u16 segment, u16 offset, u8* dst, u8 len)
 		ld		(_g_bank2), hl				// keep the ISR's shadow coherent
 	__endasm;
 	__asm ei __endasm;
+	#endif
 }

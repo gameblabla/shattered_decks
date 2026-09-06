@@ -1,10 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  Makefile.msx2 — MSX2 / NEO-16 cartridge target
+#  Makefile.msx2 — MSX2 cartridge target (NEO-16 or ASCII16-X)
 #
 #  Wraps MSXgl's node build.  MSXGL_PATH points at the engine tree (vendored,
 #  not committed), so nothing here depends on where the SDK happens to live.
 #
-#      make -f Makefile.msx2                 # regenerate tables, build the ROM
+#      make -f Makefile.msx2                 # regenerate tables, build NEO-16
+#      make -f Makefile.msx2 MAPPER=ascii16x # build ASCII16-X
 #      make -f Makefile.msx2 verify          # build, then run it headless
 #      make -f Makefile.msx2 ROM_SIZE_KB=16384
 #
@@ -17,10 +18,25 @@ MSXGL_PATH   ?= MSXgl-main
 PROJ_DIR     := src/msx2
 BUILD_JS     := $(abspath $(MSXGL_PATH))/engine/script/js/build.js
 OUT_DIR      := $(PROJ_DIR)/out
-ROM          := $(OUT_DIR)/waifu_msx2.rom
-MAP          := $(OUT_DIR)/waifu_msx2.map
-AUTOPLAY_TAG := $(if $(MSX2_PLUS),plus,$(if $(MSX2_REGRESSION),regression,$(if $(MSX2_STORY_AUTOPLAY),story-soak,$(if $(MSX2_AUTOPLAY),soak,shipping))))
-VARIANT_STAMP := $(OUT_DIR)/.variant-$(AUTOPLAY_TAG)
+MAPPER       ?= neo16
+ROM_SIZE_KB  ?= 8192
+
+ifeq ($(MAPPER),neo16)
+MAPPER_SUFFIX :=
+else ifeq ($(MAPPER),ascii16x)
+MAPPER_SUFFIX := _ascii16x
+else
+$(error MAPPER must be neo16 or ascii16x, got '$(MAPPER)')
+endif
+
+AUTOPLAY_TAG := $(if $(MSX2_STORY_AUTOPLAY),story-soak,$(if $(MSX2_AUTOPLAY),soak,$(if $(MSX2_REGRESSION),regression,$(if $(MSX2_PLUS),plus,shipping))))
+BUILD_TAG    = $(MAPPER)-$(AUTOPLAY_TAG)-$(ROM_SIZE_KB)kb
+BUILD_DIR    := $(OUT_DIR)/build/$(BUILD_TAG)
+PROJECT_NAME := waifu_msx2$(if $(MSX2_PLUS),p,)$(MAPPER_SUFFIX)
+ROM          := $(OUT_DIR)/$(PROJECT_NAME).rom
+MAP          := $(OUT_DIR)/$(PROJECT_NAME).map
+BUILD_ROM    := $(BUILD_DIR)/$(PROJECT_NAME).rom
+BUILD_MAP    := $(BUILD_DIR)/$(PROJECT_NAME).map
 
 # NEO-16 spans 1 MB to 64 MB in powers of two.  The cartridge is the smallest
 # of those the baked assets fit in: the last asset segment is 256, so the image
@@ -39,8 +55,6 @@ VARIANT_STAMP := $(OUT_DIR)/.variant-$(AUTOPLAY_TAG)
 # The next boundary DOWN, 4 MB, therefore needs either a smaller FM encoding or
 # fewer assets.  It is NOT reachable by tighter placement: the assets hold
 # 3,574 KB of real bytes inside 4,105 KB of segment-aligned strides.
-ROM_SIZE_KB  ?= 8192
-
 # Headless verification (see msx2.sh for the full flow).
 OPENMSX      := $(MSXGL_PATH)/openmsx-headless-21.0-capture-neo1.2-planarfix-linux-x86_64/openmsx
 MSX2_BIOS    := $(MSXGL_PATH)/msx2.rom
@@ -112,43 +126,38 @@ src/generated/msx2_scenes.h $(SCENE_BINS) &: tools/msx2/gen_msx_scenes.py \
 
 rom: $(ROM)
 
-# MSXgl's incremental builder does not track changed -D flags.  Keep the build
-# variant in the dependency graph so a plain shipping build after `make soak`
-# cannot silently reuse the autoplay cartridge (and vice versa).
-$(VARIANT_STAMP):
-	@mkdir -p $(OUT_DIR)
-	@rm -f $(OUT_DIR)/.variant-*
-	@touch $@
-
 $(ROM): $(FLOOR_OUTPUTS) $(SOURCES) $(GENERATED) $(SCENE_BINS) $(MUSIC_BINS) $(AUDIO_META) \
-        tools/msx2/pack_msx_rom.py $(VARIANT_STAMP) | check-sdk
-	cd $(PROJ_DIR) && MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) MSX2_AUTOPLAY=$(MSX2_AUTOPLAY) \
+        tools/msx2/pack_msx_rom.py | check-sdk
+	@mkdir -p "$(BUILD_DIR)"
+	cd $(PROJ_DIR) && MSX2_OUT_DIR=$(abspath $(BUILD_DIR))/ \
+	    MSX2_OUTPUT_NAME=$(PROJECT_NAME) MSX2_MAPPER=$(MAPPER) \
+	    MSX2_ROM_SIZE_KB=$(ROM_SIZE_KB) MSX2_AUTOPLAY=$(MSX2_AUTOPLAY) \
 	    MSX2_STORY_AUTOPLAY=$(MSX2_STORY_AUTOPLAY) MSX2_REGRESSION=$(MSX2_REGRESSION) \
 	    MSX2_PLUS=$(MSX2_PLUS) \
 	    MSX2_TEST_SEED=$(MSX2_TEST_SEED) MSX2_TEST_FIXTURE=$(MSX2_TEST_FIXTURE) \
 	    node $(BUILD_JS)
-	MSX2_PLUS=$(MSX2_PLUS) python3 tools/msx2/pack_msx_rom.py $(ROM)
+	MSX2_MAPPER=$(MAPPER) MSX2_PLUS=$(MSX2_PLUS) python3 tools/msx2/pack_msx_rom.py $(BUILD_ROM)
+	cp $(BUILD_ROM) $(ROM)
+	cp $(BUILD_MAP) $(MAP)
 	@ls -l $(ROM)
 
 verify: rom
-	./msx2.sh verify --frames $(FRAMES)
+	MSX2_MAPPER=$(MAPPER) MSX2_PLUS=$(MSX2_PLUS) ./msx2.sh verify --frames $(FRAMES)
 
 # The soak ROM.  Identical to the shipping one except that the player's turn is
 # played by the AI, so a headless run finishes whole duels with no input --
 # which is the only way the M1a evidence survives now that the duel is a screen
-# a human drives.  The object tree is dropped first because MSXgl's incremental
-# compile does not know about a changed -D.
+# a human drives.  Its separate BUILD_TAG keeps MSXgl's generated objects away
+# from the shipping build.
 soak:
-	rm -rf $(OUT_DIR)
-	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1 \
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MAPPER=$(MAPPER) MSX2_AUTOPLAY=1 \
 		MSX2_TEST_SEED=$(or $(MSX2_TEST_SEED),0x534F414B)
 
 # Story progression soak.  Full AI duels belong to `soak`; this variant crosses
 # the real story fight boundary as a win so rewards, passwords, five-duel
 # progression and the ending are deterministic without synthetic input.
 story-soak:
-	rm -rf $(OUT_DIR)
-	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_AUTOPLAY=1 MSX2_STORY_AUTOPLAY=1 \
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MAPPER=$(MAPPER) MSX2_AUTOPLAY=1 MSX2_STORY_AUTOPLAY=1 \
 		MSX2_TEST_SEED=$(or $(MSX2_TEST_SEED),0x53544F52)
 
 # The regression ROM keeps the same real input path as shipping, but exposes
@@ -156,8 +165,7 @@ story-soak:
 # separate variant because MSXgl does not notice changed -D flags in its
 # incremental object tree.
 regression:
-	rm -rf $(OUT_DIR)
-	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_REGRESSION=1 \
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MAPPER=$(MAPPER) MSX2_REGRESSION=1 \
 		MSX2_TEST_SEED=$(or $(MSX2_TEST_SEED),0x1234ABCD) \
 		MSX2_TEST_FIXTURE=$(or $(MSX2_TEST_FIXTURE),0)
 
@@ -173,7 +181,7 @@ regression:
 # difference, and one ROM cannot hold both encodings of all of them.  The only
 # asset it adds rather than replaces is the YJK copy of the 40x48 thumbnails
 # the story's own screens draw, which is why it needs the next ROM size up.
-PLUS_ROM     := $(OUT_DIR)/waifu_msx2p.rom
+PLUS_ROM     := $(OUT_DIR)/waifu_msx2p$(MAPPER_SUFFIX).rom
 PLUS_ASSETS  := $(PROJ_DIR)/assets/plus/manifest_plus.txt
 
 plus-assets: $(PLUS_ASSETS)
@@ -191,9 +199,7 @@ $(PLUS_ASSETS): tools/msx2/gen_msx_plus.py tools/msx2/msx2_yjk.py \
 	python3 tools/msx2/gen_msx_plus.py
 
 plus: $(PLUS_ASSETS)
-	rm -rf $(OUT_DIR)
-	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MSX2_PLUS=1 ROM_SIZE_KB=8192
-	cp $(ROM) $(PLUS_ROM)
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) rom MAPPER=$(MAPPER) MSX2_PLUS=1 ROM_SIZE_KB=$(ROM_SIZE_KB)
 	@ls -l $(PLUS_ROM)
 
 clean:

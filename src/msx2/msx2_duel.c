@@ -17,6 +17,29 @@
 //      duel plays out with no input at all (see Msx2_DuelStep).
 // ─────────────────────────────────────────────────────────────────────────────
 
+#ifdef MSX2_ASCII16X
+// The rules stay in the ASCII16-X rules page-2 image.  Scene banks call the
+// public names below through the fixed trampolines in msx2_bank.c; the suffix
+// keeps the implementation symbols distinct from those trampolines.
+#define Msx2_CardAtk                Msx2_CardAtk_In
+#define Msx2_CardDef                Msx2_CardDef_In
+#define Msx2_FusionResult           Msx2_FusionResult_In
+#define Msx2_FusionChainResult      Msx2_FusionChainResult_In
+#define Msx2_FieldAtk               Msx2_FieldAtk_In
+#define Msx2_FieldDef               Msx2_FieldDef_In
+#define Msx2_Attack                 Msx2_Attack_In
+#define Msx2_PlaceMonster           Msx2_PlaceMonster_In
+#define Msx2_FusionPreview          Msx2_FusionPreview_In
+#define Msx2_PlaceFusion            Msx2_PlaceFusion_In
+#define Msx2_FusionSucceeded        Msx2_FusionSucceeded_In
+#define Msx2_PlaySupport            Msx2_PlaySupport_In
+#define Msx2_ChangePosition         Msx2_ChangePosition_In
+#define Msx2_DuelInit               Msx2_DuelInit_In
+#define Msx2_DuelSetPlayerDeck      Msx2_DuelSetPlayerDeck_In
+#define Msx2_EndTurn                Msx2_EndTurn_In
+#define Msx2_DuelStep               Msx2_DuelStep_In
+#endif
+
 #include "msx2_duel.h"
 #include "msx2_cards.h"
 #include "ai.h"
@@ -38,6 +61,7 @@ static void Msx2_RecordAction(u8 action, u8 owner, u8 card, u8 hand_slot,
 	g_duel.last_action_defense = defense ? TRUE : FALSE;
 }
 
+#ifndef MSX2_ASCII16X
 void Msx2_ClearActionEvent(void)
 {
 	g_duel.last_action = MSX2_ACTION_NONE;
@@ -63,6 +87,7 @@ u8 Msx2_SupportKind(u8 card)
 		return MSX2_SUP_EQUIP;
 	return (u8)((card - MSX2_CARD_COUNT) % MSX2_SUPPORT_VARIANTS);
 }
+#endif
 
 static bool Msx2_IsEquipSupport(u8 card)
 {
@@ -229,6 +254,7 @@ i16 Msx2_FieldDef(u8 owner, u8 slot)
 	       g_duel.side[owner].def_bonus[slot];
 }
 
+#ifndef MSX2_ASCII16X
 u8 Msx2_LiveMonsterCount(u8 owner)
 {
 	u8 i, n = 0;
@@ -271,6 +297,7 @@ bool Msx2_FirstTurnAttackLocked(void)
 {
 	return (g_duel.turn_owner == MSX2_OWNER_PLAYER) && (g_duel.turns <= 1);
 }
+#endif
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Slot bookkeeping

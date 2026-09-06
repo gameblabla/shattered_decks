@@ -53,6 +53,17 @@ static u8 g_text_bg;
 #ifdef MSX2_PLUS
 #include "msx2_plus_scenes.h"
 
+// ASCII16-X still runs on a V9958, but compiling the complete MSXgl MSX2+
+// feature surface costs more fixed space than this cartridge has.  Its only
+// plus register use is YJK/YAE, so keep that narrow operation here and let the
+// SDK compile as MSX2.  NEO-16 keeps the SDK's native helper unchanged.
+#ifdef MSX2_ASCII16X
+#define MSX2_VDP_SET_YJK(mode) \
+	VDP_RegWriteBakMask(25, (u8)~0x18, (mode))
+#else
+#define MSX2_VDP_SET_YJK(mode) VDP_SetYJK(mode)
+#endif
+
 // SCREEN 10 IS GRAPHIC 7 WITH TWO BITS OF R#25 SET.
 // Everything else about the mode -- the 256-byte line, the two pages, the
 // command engine, the sprite plane and its FIXED colour table -- is unchanged,
@@ -66,7 +77,7 @@ void Msx2_VideoModeYjk(void)
 	if(!g_yjk)
 	{
 		g_yjk = TRUE;
-		VDP_SetYJK(VDP_YJK_YAE);
+		MSX2_VDP_SET_YJK(0x18);
 	}
 }
 
@@ -75,7 +86,7 @@ void Msx2_VideoModeG7(void)
 	if(g_yjk)
 	{
 		g_yjk = FALSE;
-		VDP_SetYJK(VDP_YJK_OFF);
+		MSX2_VDP_SET_YJK(0);
 	}
 }
 
@@ -263,7 +274,7 @@ static u16 Msx2_PageY(u8 y)
 // They are twice the work over four times the area, and a panel is a few
 // thousand pixels once per screen, so nothing that matters pays for it.  The
 // duel is GRAPHIC 7 in both cartridges and takes the fast path untouched.
-#ifdef MSX2_PLUS
+#if defined(MSX2_PLUS) && !defined(MSX2_ASCII16X)
 // One logical fill.  Out of line and written once: VDP_CommandLMMV is an
 // inline of a dozen sixteen-bit stores, and _CODE has two hundred bytes.
 static void Msx2_FillOp(u8 x, u16 line, u16 w, u8 h, u8 color, u8 op)
@@ -273,9 +284,10 @@ static void Msx2_FillOp(u8 x, u16 line, u16 w, u8 h, u8 color, u8 op)
 }
 #endif
 
+#if !defined(MSX2_ASCII16X) || !defined(MSX2_PLUS)
 void Msx2_Fill(u8 x, u8 y, u16 w, u8 h, u8 color)
 {
-#ifdef MSX2_PLUS
+#if defined(MSX2_PLUS) && !defined(MSX2_ASCII16X)
 	if(g_yjk)
 	{
 		u16 line = Msx2_PageY(y);
@@ -287,6 +299,7 @@ void Msx2_Fill(u8 x, u8 y, u16 w, u8 h, u8 color)
 	VDP_CommandWait();
 	VDP_CommandHMMV(x, Msx2_PageY(y), w, h, color);
 }
+#endif
 
 void Msx2_ClearPage(u8 color)
 {

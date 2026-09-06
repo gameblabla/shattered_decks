@@ -1,6 +1,6 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-#  msx2.sh — build and headlessly verify the MSX2 / NEO-16 cartridge
+#  msx2.sh — build and headlessly verify the MSX2 cartridge
 #
 #  Mirrors fmtowns.sh for the MSX2 target.
 #
@@ -17,7 +17,7 @@
 #  for NEO/VDP analysis and now for deterministic keyboard injection, but the
 #  compiled C game remains on real openMSX until that CPU defect is fixed.
 #
-#  So: real openMSX (20.0-rc1+, which knows the NEO-16 mapper), driven with a
+#  So: real openMSX (20.0-rc1+, which knows the NEO-16 and ASCII16-X mappers), driven with a
 #  Tcl script, no window, RAM dumped at the end.  The project command layer in
 #  openmsx/ is used for mapper regression, ROM analysis, and bundled scripted
 #  input injection;
@@ -47,7 +47,17 @@ OPENMSX_TOOL="${OPENMSX_TOOL:-$PWD/openmsx/openmsx}"
 OPENMSX="${OPENMSX:-/usr/local/bin/openmsx}"
 MSXGL_PATH="${MSXGL_PATH:-MSXgl-main}"
 MSX2_BIOS="${MSX2_BIOS:-$MSXGL_PATH/msx2.rom}"
-MACHINE="${MSX2_MACHINE:-C-BIOS_MSX2}"
+if [ -n "${MSX2_PLUS:-}" ]; then
+	MACHINE="${MSX2_MACHINE:-C-BIOS_MSX2+}"
+else
+	MACHINE="${MSX2_MACHINE:-C-BIOS_MSX2}"
+fi
+MSX2_MAPPER="${MSX2_MAPPER:-neo16}"
+case "$MSX2_MAPPER" in
+	neo16)     ROMTYPE="NEO-16";   MAPPER_SUFFIX="" ;;
+	ascii16x)  ROMTYPE="ASCII16-X"; MAPPER_SUFFIX="_ascii16x" ;;
+	*) echo "msx2.sh: MSX2_MAPPER must be neo16 or ascii16x" >&2; exit 2 ;;
+esac
 # Extra hardware to plug in, as openMSX extension names separated by spaces.
 # The sound-chip probe is the reason this exists: MSX2_EXT=fmpac exercises the
 # MSX-MUSIC path and MSX2_EXT=audio the MSX-AUDIO one, neither of which the
@@ -55,11 +65,15 @@ MACHINE="${MSX2_MACHINE:-C-BIOS_MSX2}"
 EXTENSIONS=""
 for ext in ${MSX2_EXT:-}; do EXTENSIONS="$EXTENSIONS -ext $ext"; done
 OUT_DIR="src/msx2/out"
-ROM="$OUT_DIR/waifu_msx2.rom"
-MAP="$OUT_DIR/waifu_msx2.map"
-RAM="$OUT_DIR/waifu_msx2.ram"
-SHOT="$OUT_DIR/waifu_msx2.png"
-VRAM="$OUT_DIR/waifu_msx2.vram"
+PLUS_SUFFIX=""
+[ -n "${MSX2_PLUS:-}" ] && PLUS_SUFFIX="p"
+ROM_STEM="waifu_msx2${PLUS_SUFFIX}${MAPPER_SUFFIX}"
+ROM="$OUT_DIR/$ROM_STEM.rom"
+MAP="$OUT_DIR/$ROM_STEM.map"
+RAM="$OUT_DIR/$ROM_STEM.ram"
+SHOT="$OUT_DIR/$ROM_STEM.png"
+VRAM="$OUT_DIR/$ROM_STEM.vram"
+PALETTE="$OUT_DIR/$ROM_STEM.pal"
 SHOT_PAGE=0
 
 CMD="${1:-verify}"
@@ -133,14 +147,26 @@ emit_key_script() {
 	done
 }
 
-do_build() { make -f Makefile.msx2 rom || die "build failed"; }
+do_build() {
+	make -f Makefile.msx2 rom MAPPER="$MSX2_MAPPER" MSX2_PLUS="${MSX2_PLUS:-}" || die "build failed"
+}
 
 # The blind probe only means anything on a ROM that plays itself: the shipping
 # build waits for a hand on the joystick, so a `verify` against it would sit on
 # turn 1 for the whole run and report a hang that is really an empty chair.
 # `make soak` is the same ROM with the player's turn handed to the COM's AI.
-do_soak_build() { make -f Makefile.msx2 soak || die "soak build failed"; }
-do_mapper_test() { need_tool; "$OPENMSX_TOOL" neo-test || die "NEO mapper regression failed"; }
+do_soak_build() {
+	make -f Makefile.msx2 soak MAPPER="$MSX2_MAPPER" MSX2_PLUS="${MSX2_PLUS:-}" || die "soak build failed"
+}
+do_mapper_test() {
+	if [ "$MSX2_MAPPER" = "ascii16x" ]; then
+		# The bundled command layer has a NEO-specific high-bank test.  The
+		# real openMSX run below exercises ASCII16-X while it boots, streams
+		# assets and enters scene and rules banks.
+		return 0
+	fi
+	need_tool; "$OPENMSX_TOOL" neo-test || die "NEO mapper regression failed"
+}
 
 # Only the original build/run/shot commands consume these wrapper options.
 # Analysis and input commands receive their arguments unchanged by the
@@ -186,6 +212,10 @@ case "$CMD" in
 		done
 		[ -n "$TRACE_TIMES" ] || die "usage: ./msx2.sh trace --times '6.0 7.0' [--out dir]"
 		TRACE_OUT="${TRACE_OUT:-$OUT_DIR/trace}"
+		case "$TRACE_OUT" in
+			/*) ;;
+			*) TRACE_OUT="$PWD/$TRACE_OUT" ;;
+		esac
 		mkdir -p "$TRACE_OUT"
 		TRACE_SCRIPT="$TRACE_OUT/trace.tcl"
 		TRACE_INDEX=0
@@ -228,7 +258,7 @@ EOF
 		# shellcheck disable=SC2059
 		printf '%b' "$TRACE_TCL" > "$TRACE_SCRIPT"
 		SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" $EXTENSIONS \
-			-cart "$ROM" -romtype NEO-16 -script "$TRACE_SCRIPT" 2>&1 | head -20
+			-cart "$ROM" -romtype "$ROMTYPE" -script "$TRACE_SCRIPT" 2>&1 | head -20
 		python3 - "$TRACE_OUT" "$TRACE_TIMES" <<'PY'
 import json, sys
 from pathlib import Path
@@ -288,7 +318,7 @@ after time $SECONDS_RUN {
 }
 EOF
 	SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" $EXTENSIONS \
-		-cart "$ROM" -romtype NEO-16 -script "$script" 2>&1 |
+		-cart "$ROM" -romtype "$ROMTYPE" -script "$script" 2>&1 |
 		grep -vE "^$" | head -20
 	[ -f "$RAM" ] || die "no RAM dump written -- the emulator never reached the timer"
 }
@@ -332,7 +362,7 @@ case "$CMD" in
 			exit $?
 		fi
 		need_rom
-		COV_FILE="${1:-$OUT_DIR/waifu_msx2.cov}"
+		COV_FILE="${1:-$OUT_DIR/$ROM_STEM.cov}"
 		[ $# -eq 0 ] || shift
 		COV_FRAMES="${1:-600}"
 		[ $# -eq 0 ] || shift
@@ -382,6 +412,8 @@ case "$CMD" in
 		# way the other consoles do: dump VRAM, decode it here.  No display
 		# server, and it can show the hidden page as well as the visible one.
 		local_script="$OUT_DIR/shot.tcl"
+		SHOT_MODE=""
+		[ -n "${MSX2_PLUS:-}" ] && SHOT_MODE="--yjk --palette $PALETTE"
 		mkdir -p "$OUT_DIR"
 		cat > "$local_script" <<EOF
 set renderer none
@@ -392,14 +424,20 @@ after time $SECONDS_RUN {
     fconfigure \$f -translation binary
     puts -nonewline \$f [debug read_block {physical VRAM} 0 131072]
     close \$f
+    if {"$SHOT_MODE" ne ""} {
+        set f [open "$PWD/$PALETTE" w]
+        fconfigure \$f -translation binary
+        puts -nonewline \$f [debug read_block {VDP palette} 0 32]
+        close \$f
+    }
     exit 0
 }
 EOF
-		rm -f "$VRAM" "$SHOT"
+		rm -f "$VRAM" "$SHOT" "$PALETTE"
 		SDL_VIDEODRIVER=dummy "$OPENMSX" -machine "$MACHINE" $EXTENSIONS \
-			-cart "$ROM" -romtype NEO-16 -script "$local_script" 2>&1 | head -10
+			-cart "$ROM" -romtype "$ROMTYPE" -script "$local_script" 2>&1 | head -10
 		[ -f "$VRAM" ] || die "no VRAM dump written -- the emulator never reached the timer"
-		python3 tools/msx2/vram_png.py "$VRAM" "$SHOT" --page "$SHOT_PAGE" --scale 2 --sprites
+		python3 tools/msx2/vram_png.py "$VRAM" "$SHOT" --page "$SHOT_PAGE" --scale 2 --sprites $SHOT_MODE
 		;;
 
 	ram)

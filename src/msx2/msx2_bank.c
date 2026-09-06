@@ -11,20 +11,66 @@
 #include "msx2_title.h"
 #include "msx2_audio.h"
 #include "msx2_battle_fx.h"
+#include "msx2_duel_bank.h"
+#include "msx2_cards.h"
 
+#ifdef MSX2_ASCII16X
+#include "msx2_scenes.h"
+#include "../generated/msx2_scene_geometry.h"
+#endif
+
+#ifndef MSX2_ASCII16X
 // NEO-16's page-0 bank register.  Writing a 16-bit segment number to it maps
 // that segment at 0x0000; the address itself is ROM, so the write only ever
 // reaches the mapper.
 #define MSX2_NEO_BANK0_REG  0x5000
 #define MSX2_NEO_BANK2_REG  0x7000
+#endif
 #define MSX2_BANK2_CODE     1
 
 // The mapper is write-only, so the current segment is tracked here.  It starts
 // at segment 2 because that is what crt0 maps at boot.
+#ifndef MSX2_ASCII16X
 static u16 g_bank0 = MSX2_BANK0_DUEL;
+#endif
 // The streamer restores bank 2 in inline assembly while interrupts are still
 // disabled; it updates this shadow directly before re-enabling them.
 u16 g_bank2 = MSX2_BANK2_CODE;
+
+#ifdef MSX2_ASCII16X
+
+static u16 g_bank0 = MSX2_MAPPER_CODE_SEGMENT;
+
+u16 Msx2_Bank0Enter(u16 segment)
+{
+	u16 previous = g_bank0;
+	if(segment > MSX2_MAPPER_MAX_SEGMENT)
+		return previous;
+	__asm di __endasm;
+	g_bank0 = segment;
+	g_bank2 = segment;
+	Msx2_MapperSetPage2(segment);
+	__asm ei __endasm;
+	return previous;
+}
+
+void Msx2_Bank0Leave(u16 segment)
+{
+	if(segment > MSX2_MAPPER_MAX_SEGMENT)
+		return;
+	__asm di __endasm;
+	g_bank0 = segment;
+	g_bank2 = segment;
+	Msx2_MapperSetPage2(segment);
+	__asm ei __endasm;
+}
+
+u16 Msx2_Bank0Current(void)
+{
+	return g_bank0;
+}
+
+#else
 
 u16 Msx2_Bank0Enter(u16 segment)
 {
@@ -50,6 +96,8 @@ u16 Msx2_Bank0Current(void)
 {
 	return g_bank0;
 }
+
+#endif
 
 // The boot bank, through the 0x8000 window.  This trampoline is in _CODE and
 // so is every byte of the return path, which is the whole requirement: the
@@ -89,16 +137,303 @@ u8 Msx2_AudioSetup(struct Msx2MusicAsset* table, Msx2SfxStep* steps, u8* first)
 u16 Msx2_Bank2Enter(u16 segment)
 {
 	u16 previous = g_bank2;
+	#ifdef MSX2_ASCII16X
+	if(segment > MSX2_MAPPER_MAX_SEGMENT)
+		return previous;
+	#endif
 	g_bank2 = segment;
+	#ifdef MSX2_ASCII16X
+	Msx2_MapperSetPage2(segment);
+	#else
 	*(u16*)MSX2_NEO_BANK2_REG = segment;
+	#endif
 	return previous;
 }
 
 void Msx2_Bank2Leave(u16 segment)
 {
+	#ifdef MSX2_ASCII16X
+	if(segment > MSX2_MAPPER_MAX_SEGMENT)
+		return;
+	#endif
 	g_bank2 = segment;
+	#ifdef MSX2_ASCII16X
+	Msx2_MapperSetPage2(segment);
+	#else
 	*(u16*)MSX2_NEO_BANK2_REG = segment;
+	#endif
 }
+
+#ifdef MSX2_ASCII16X
+
+// The ASCII16-X rules image is a separate page-2 bank.  These wrappers map it
+// for one call and restore the scene that called them.  No scene code retains
+// a pointer into this image while page 2 is borrowed.
+#define MSX2_DUEL_BACK() Msx2_Bank2Enter(MSX2_MAPPER_RULES_SEGMENT)
+#define MSX2_DUEL_RESTORE(back) Msx2_Bank2Leave(back)
+
+// The story picker and probe run in other page-2 banks but use these three
+// deck operations.  Their implementations stay with the rules bank so the
+// rules path has no cross-bank calls; these small entries preserve the same
+// caller-bank contract for the two cold callers.
+void waifu_deck_rng_seed(WaifuDeckRng* rng, u32 seed)
+{
+	u16 back = MSX2_DUEL_BACK();
+	waifu_deck_rng_seed_In(rng, seed);
+	MSX2_DUEL_RESTORE(back);
+}
+
+int waifu_deck_remaining(const WaifuDeck* deck)
+{
+	int value;
+	u16 back = MSX2_DUEL_BACK();
+	value = waifu_deck_remaining_In(deck);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+void waifu_deck_build_random(WaifuDeck* deck, WaifuDeckRng* rng,
+                             int strength_bias)
+{
+	u16 back = MSX2_DUEL_BACK();
+	waifu_deck_build_random_In(deck, rng, strength_bias);
+	MSX2_DUEL_RESTORE(back);
+}
+
+// These queries touch only the RAM duel state and card-id ranges.  Keeping
+// them resident avoids a mapper turn for every cursor test in the board scene;
+// queries that read the card tables or execute rules remain trampolines below.
+void Msx2_ClearActionEvent(void)
+{
+	g_duel.last_action = MSX2_ACTION_NONE;
+}
+
+bool Msx2_IsMonster(u8 card)
+{
+	return card < MSX2_CARD_COUNT;
+}
+
+bool Msx2_IsSupport(u8 card)
+{
+	return (card >= MSX2_CARD_COUNT) && (card < MSX2_TOTAL_CARDS);
+}
+
+u8 Msx2_SupportKind(u8 card)
+{
+	u8 kind;
+	if(card < MSX2_CARD_COUNT)
+		return MSX2_SUP_EQUIP;
+	kind = (u8)(card - MSX2_CARD_COUNT);
+	while(kind >= MSX2_SUPPORT_VARIANTS)
+		kind = (u8)(kind - MSX2_SUPPORT_VARIANTS);
+	return kind;
+}
+
+u16 Msx2_CardAtk(u8 card)
+{
+	u16 value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_CardAtk_In(card);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+u16 Msx2_CardDef(u8 card)
+{
+	u16 value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_CardDef_In(card);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+u8 Msx2_FusionResult(u8 a, u8 b)
+{
+	u8 value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_FusionResult_In(a, b);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+u8 Msx2_FusionChainResult(const u8* cards, u8 count)
+{
+	u8 value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_FusionChainResult_In(cards, count);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+i16 Msx2_FieldAtk(u8 owner, u8 slot)
+{
+	i16 value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_FieldAtk_In(owner, slot);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+i16 Msx2_FieldDef(u8 owner, u8 slot)
+{
+	i16 value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_FieldDef_In(owner, slot);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+u8 Msx2_LiveMonsterCount(u8 owner)
+{
+	u8 i, count = 0;
+	for(i = 0; i < MSX2_FIELD; ++i)
+		if(Msx2_IsMonster(g_duel.side[owner].field[i]))
+			++count;
+	return count;
+}
+
+u8 Msx2_FirstLiveSlot(u8 owner)
+{
+	u8 i;
+	for(i = 0; i < MSX2_FIELD; ++i)
+		if(Msx2_IsMonster(g_duel.side[owner].field[i]))
+			return i;
+	return MSX2_SLOT_NONE;
+}
+
+u8 Msx2_FirstFreeSlot(u8 owner)
+{
+	u8 i;
+	for(i = 0; i < MSX2_FIELD; ++i)
+		if(!Msx2_IsMonster(g_duel.side[owner].field[i]))
+			return i;
+	return MSX2_SLOT_NONE;
+}
+
+u8 Msx2_FirstFreeEquipSlot(u8 owner)
+{
+	u8 i;
+	for(i = 0; i < MSX2_FIELD; ++i)
+		if(g_duel.side[owner].equip_field[i] == MSX2_CARD_NONE)
+			return i;
+	return MSX2_SLOT_NONE;
+}
+
+bool Msx2_FirstTurnAttackLocked(void)
+{
+	return (g_duel.turn_owner == MSX2_OWNER_PLAYER) && (g_duel.turns <= 1);
+}
+
+bool Msx2_Attack(u8 owner, u8 attacker_slot, u8 defender_slot)
+{
+	bool value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_Attack_In(owner, attacker_slot, defender_slot);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+bool Msx2_PlaceMonster(u8 owner, u8 hand_slot, u8 field_slot, bool defense)
+{
+	bool value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_PlaceMonster_In(owner, hand_slot, field_slot, defense);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+u8 Msx2_FusionPreview(u8 owner, const u8* hand_slots, u8 count, u8 field_slot)
+{
+	u8 value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_FusionPreview_In(owner, hand_slots, count, field_slot);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+bool Msx2_PlaceFusion(u8 owner, const u8* hand_slots, u8 count, u8 field_slot,
+                      bool defense)
+{
+	bool value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_PlaceFusion_In(owner, hand_slots, count, field_slot, defense);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+bool Msx2_FusionSucceeded(void)
+{
+	bool value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_FusionSucceeded_In();
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+bool Msx2_PlaySupport(u8 owner, u8 hand_slot, u8 target_slot)
+{
+	bool value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_PlaySupport_In(owner, hand_slot, target_slot);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+bool Msx2_ChangePosition(u8 owner, u8 field_slot)
+{
+	bool value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_ChangePosition_In(owner, field_slot);
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+void Msx2_DuelInit(u32 seed, u8 story_duel_index)
+{
+	u16 back = MSX2_DUEL_BACK();
+	Msx2_DuelInit_In(seed, story_duel_index);
+	MSX2_DUEL_RESTORE(back);
+}
+
+void Msx2_DuelSetPlayerDeck(const u8* cards, u8 count)
+{
+	u16 back = MSX2_DUEL_BACK();
+	Msx2_DuelSetPlayerDeck_In(cards, count);
+	MSX2_DUEL_RESTORE(back);
+}
+
+void Msx2_EndTurn(void)
+{
+	u16 back = MSX2_DUEL_BACK();
+	Msx2_EndTurn_In();
+	MSX2_DUEL_RESTORE(back);
+}
+
+bool Msx2_DuelStep(void)
+{
+	bool value;
+	u16 back = MSX2_DUEL_BACK();
+	value = Msx2_DuelStep_In();
+	MSX2_DUEL_RESTORE(back);
+	return value;
+}
+
+#undef MSX2_DUEL_RESTORE
+#undef MSX2_DUEL_BACK
+
+#ifdef MSX2_PLUS
+// The SCREEN 10 fill has a larger command path than the resident GRAPHIC 7
+// fill.  Keep that cold path beside the modal screens, where the ASCII16-X
+// bank has room, while preserving one public entry for every caller.
+void Msx2_Fill(u8 x, u8 y, u16 w, u8 h, u8 color)
+{
+	u16 back = Msx2_Bank0Enter(MSX2_BANK0_MODAL);
+	Msx2_Fill_In(x, y, w, h, color);
+	Msx2_Bank0Leave(back);
+}
+#endif
+
+#endif
 
 // ── The trampolines ─────────────────────────────────────────────────────────
 // One per entry point into a banked screen.  They are the public names:

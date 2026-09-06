@@ -30,6 +30,8 @@
 #include "msx2_board.h"
 #include "msx2_story.h"
 #include "msx2_regression.h"
+#include "msx2_mapper.h"
+#include "msx2_bank.h"
 
 // A duel the SOAK has not resolved within this many frames is not a long duel,
 // it is a bug, and the watchdog turns what would be a silent hang into a status
@@ -50,7 +52,11 @@
 // mapper's segment shadow) and are already live by the time main() runs, so the
 // wipe starts above them.  `tools/msx2/pack_msx_rom.py` fails the build if the
 // link ever puts a game variable inside that reserved prefix.
+#ifdef MSX2_ASCII16X
+#define MSX2_CRT0_DATA_BYTES  11
+#else
 #define MSX2_CRT0_DATA_BYTES  15
+#endif
 
 // `s__DATA` and `l__DATA` are the linker's own area symbols, so they are named
 // without the C underscore and can only be reached from assembly.  One LDIR is
@@ -60,9 +66,9 @@ static void Msx2_ClearStaticRam(void)
 {
 __asm
 	di
-	ld	hl, #(s__DATA + 15)
-	ld	de, #(s__DATA + 16)
-	ld	bc, #(l__DATA - 16)
+	ld	hl, #(s__DATA + MSX2_CRT0_DATA_BYTES)
+	ld	de, #(s__DATA + MSX2_CRT0_DATA_BYTES + 1)
+	ld	bc, #(l__DATA - MSX2_CRT0_DATA_BYTES - 1)
 	ld	(hl), #0x00
 	ldir
 	ei

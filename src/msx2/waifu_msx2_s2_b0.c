@@ -31,6 +31,8 @@
 //  ordinary .c files and are written as such; this file is the placement.
 // ─────────────────────────────────────────────────────────────────────────────
 
+#ifndef MSX2_ASCII16X
+
 // The arena span compositor and texture sampler live beside their duel caller.
 #include "msx2_arena.c"
 
@@ -43,3 +45,5 @@
 // duel screen can gain a feature in -- and the MSX2+ cartridge, which adds two
 // mode calls to it, did not link at all.  msx2_battle_fx.h has the rest.
 #include "msx2_board.c"
+
+#endif

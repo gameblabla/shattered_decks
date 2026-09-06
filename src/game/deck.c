@@ -79,6 +79,7 @@ static int deck_append_limited(WaifuDeck *deck, int card, int max_copies)
     return 1;
 }
 
+#ifndef MSX2_ASCII16X
 uint32_t waifu_deck_runtime_seed(uint32_t salt)
 {
 #if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOSTORY)
@@ -123,6 +124,7 @@ uint32_t waifu_deck_runtime_seed(uint32_t salt)
     return s;
 #endif
 }
+#endif
 
 void waifu_deck_rng_seed(WaifuDeckRng *rng, uint32_t seed)
 {
@@ -224,6 +226,7 @@ void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bi
     waifu_deck_shuffle(deck, rng);
 }
 
+#ifndef MSX2_ASCII16X
 void waifu_deck_build_from_list(WaifuDeck *deck, const int *cards, int count, WaifuDeckRng *rng, int shuffle)
 {
     waifu_deck_clear(deck);
@@ -234,6 +237,7 @@ void waifu_deck_build_from_list(WaifuDeck *deck, const int *cards, int count, Wa
     }
     if (shuffle && rng) waifu_deck_shuffle(deck, rng);
 }
+#endif
 
 static int opponent_story_card_at(int duel, int pos)
 {

@@ -16,4 +16,8 @@
 //  Callers come in through the trampoline in msx2_bank.c, never directly.
 // ─────────────────────────────────────────────────────────────────────────────
 
+#ifndef MSX2_ASCII16X
+
 #include "msx2_audio_probe.c"
+
+#endif
