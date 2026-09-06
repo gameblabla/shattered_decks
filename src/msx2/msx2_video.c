@@ -119,7 +119,14 @@ void Msx2_VideoInit(void)
 {
 	VDP_SetMode(VDP_MODE_GRAPHIC7);
 	VDP_SetColor(MSX2_BLACK);
-	VDP_EnableVBlank(TRUE);
+
+	// VBlank on, display off, in the one register write: VDP_SetMode's own
+	// default settings just turned the display back on, and the sweep below
+	// takes long enough at 512 lines that it was visible as a wipe over
+	// whatever the BIOS left on screen. Both bits live in R#1, so one masked
+	// write does what VDP_EnableVBlank(TRUE) + VDP_EnableDisplay(FALSE) would
+	// have cost as two calls.
+	VDP_RegWriteBakMask(1, (u8)~R01_BL, R01_IE0);
 
 	// THE WHOLE 128 KB, ONCE, BEFORE ANYTHING ELSE ASSUMES ITS CONTENTS.
 	// A hard reset (or a flash cart with no power-on VRAM clear) can leave
@@ -128,15 +135,14 @@ void Msx2_VideoInit(void)
 	// including rows 240..255, which is page 0's sprite tables and page 1's
 	// font mask (both written later in boot) and which the per-transition
 	// Msx2_ClearPage deliberately never touches, so this is the only place
-	// they start out clean.
-	VDP_CommandWait();
+	// they start out clean. (VDP_CommandHMMV's own VDP_CommandSetupR36
+	// already waits for the engine to be free, so no separate wait here.)
 	VDP_CommandHMMV(0, 0, MSX2_SCREEN_W, 512, MSX2_BLACK);
 
 	Msx2_TextColor(MSX2_WHITE, MSX2_BLACK);
 
 	// Both pages start black, so a flip can never reveal boot garbage.
-	g_flip_pending = FALSE;
-	g_draw_page = MSX2_PAGE_0;
+	// (Msx2_VideoShowPage sets g_draw_page and g_flip_pending itself.)
 	Msx2_VideoShowPage(MSX2_PAGE_0);
 
 	// The command fields that never vary: nothing a string draws is ever
@@ -152,6 +158,9 @@ void Msx2_VideoInit(void)
 	// After the clears, because the mask lives above the lines they touch and
 	// before anything prints, because every string is a copy out of it.
 	Msx2_VideoBakeFont();
+
+	// Everything the screen can show is clean now.
+	VDP_EnableDisplay(TRUE);
 }
 
 void Msx2_VideoShowPage(u8 page)
