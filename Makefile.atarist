@@ -1,0 +1,129 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Makefile.atarist — Atari ST / STE target
+#
+#      make -f Makefile.atarist              # ST build  -> build/atarist/waifu.st
+#      make -f Makefile.atarist ste          # STE build -> build/atarist/waifuste.st
+#      make -f Makefile.atarist verify       # build, then boot it headless
+#
+#  The output is a self-booting 720 KB FAT12 floppy image: TOS runs
+#  AUTO\WAIFU.PRG at boot, so there is no desktop and no file selector.
+#
+#  The build links -nostdlib with its own crt0 (src/atarist/crt0.S).  MiNTlib's
+#  startup pulls in a quarter of a megabyte of stdio and heap on a machine that
+#  has half of one; libgcc is still linked, for the 32-bit divides GCC cannot
+#  open-code on a 68000.
+#
+#  See ATARIST_PORT_PLAN.md for the design and src/atarist/STATUS.md for where
+#  the port stands.
+# ─────────────────────────────────────────────────────────────────────────────
+
+.DEFAULT_GOAL := all
+
+TOOLCHAIN ?= /home/anonymous/gnu-tools/m68000/bin
+CC        := $(TOOLCHAIN)/m68k-atari-mint-gcc
+OBJCOPY   := $(TOOLCHAIN)/m68k-atari-mint-objcopy
+NM        := $(TOOLCHAIN)/m68k-atari-mint-nm
+SIZE      := $(TOOLCHAIN)/m68k-atari-mint-size
+
+PROJ_DIR  := src/atarist
+BUILD     := build/atarist
+OBJ       := $(BUILD)/obj
+
+# STE=1 assumes 1 MB, a Blitter and DMA sound; the plain build must survive a
+# 512 KB STF with none of them.
+ifeq ($(STE),1)
+  TARGET_TAG := ste
+  MACHINE_DEF := -DATARIST_STE=1
+  DISK := $(BUILD)/waifuste.st
+else
+  TARGET_TAG := st
+  MACHINE_DEF :=
+  DISK := $(BUILD)/waifu.st
+endif
+
+PRG := $(BUILD)/WAIFU_$(TARGET_TAG).PRG
+
+# -ffixed-a5 keeps a5 out of GCC's hands: the interrupt handlers and the
+# hand-written rasteriser inner loops assume the compiler is not holding a live
+# value there across a call they make.
+CFLAGS := -m68000 -O2 -fomit-frame-pointer -std=c99 -nostdlib \
+          -Wall -Wextra -Wno-unused-parameter \
+          -fno-builtin-time -fno-builtin-clock \
+          $(MACHINE_DEF)
+ASFLAGS := -m68000 -Wa,--register-prefix-optional
+LDFLAGS := -Wl,-e,_start -Wl,--gc-sections
+
+INCLUDES := -I$(PROJ_DIR) -I$(PROJ_DIR)/compat -Isrc/game -Isrc/engine \
+            -Isrc/generated -Isrc/msx2
+
+# Target-owned sources.
+C_SRC := $(wildcard $(PROJ_DIR)/*.c)
+S_SRC := $(wildcard $(PROJ_DIR)/*.S)
+
+# Shared, render-free game core.  msx2_duel.c is the rules model both forks
+# use; it needs nothing from MSXgl but its integer typedefs, which
+# src/atarist/compat/msxgl.h supplies.
+SHARED_SRC := src/msx2/msx2_duel.c src/game/ai.c src/game/deck.c
+
+OBJS := $(patsubst %.c,$(OBJ)/%.o,$(notdir $(C_SRC))) \
+        $(patsubst %.S,$(OBJ)/%.o,$(notdir $(S_SRC))) \
+        $(patsubst %.c,$(OBJ)/shared_%.o,$(notdir $(SHARED_SRC)))
+
+vpath %.c $(PROJ_DIR)
+vpath %.S $(PROJ_DIR)
+
+.PHONY: all st ste disk verify clean check-sdk
+
+all: $(DISK)
+
+st:
+	$(MAKE) -f Makefile.atarist STE=
+
+ste:
+	$(MAKE) -f Makefile.atarist STE=1
+
+check-sdk:
+	@test -x $(CC) || { echo "m68k-atari-mint-gcc not found at $(CC)"; exit 1; }
+
+$(OBJ):
+	@mkdir -p $(OBJ)
+
+$(OBJ)/%.o: %.c | $(OBJ)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(OBJ)/%.o: %.S | $(OBJ)
+	$(CC) $(ASFLAGS) $(INCLUDES) -c $< -o $@
+
+$(OBJ)/shared_msx2_duel.o: src/msx2/msx2_duel.c | $(OBJ)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(OBJ)/shared_ai.o: src/game/ai.c | $(OBJ)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(OBJ)/shared_deck.o: src/game/deck.c | $(OBJ)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(PRG): check-sdk $(OBJS)
+	$(CC) $(CFLAGS) $(OBJS) -o $@ $(LDFLAGS) -lgcc
+	@$(SIZE) $@ || true
+
+# The floppy: a plain 720 KB FAT12 image with the program in AUTO\, which is
+# what makes it self-booting under TOS/EmuTOS.
+$(DISK): $(PRG) $(wildcard $(BUILD)/data/*)
+	@mkdir -p $(BUILD)/disk/AUTO
+	cp $(PRG) $(BUILD)/disk/AUTO/WAIFU.PRG
+	@if [ -d $(BUILD)/data ]; then cp -r $(BUILD)/data/. $(BUILD)/disk/; fi
+	rm -f $@
+	truncate -s 737280 $@
+	mkfs.msdos -I $@ >/dev/null
+	mcopy -i $@ -s $(BUILD)/disk/* ::
+	@echo "floppy: $@"
+
+disk: $(DISK)
+
+verify: $(DISK)
+	python3 tools/atarist/verify.py --image $(DISK) \
+	    --machine $(if $(filter 1,$(STE)),ste,st)
+
+clean:
+	rm -rf $(BUILD)

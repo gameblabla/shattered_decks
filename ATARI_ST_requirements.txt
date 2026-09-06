@@ -1,0 +1,82 @@
+I want an Atari ST/e port for this game, similarly done like the MSX2/+ (in separate folder except for the C core game rules maybe etc...).
+Use C + inline 68000 assembly.
+
+For standard ST
+- Main field has its own 16 colors palette
+then raster split below to allow different 16 colors for the cards
+
+- Music routines
+For now, use the AY VGM files (that MSX version also use, in msx_music).
+
+But for titlescreen and overworld, we can study a MOD player also
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/StandardST_MODplayer for standard ST
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/STE_FullScreen_MOD_Play for STE
+
+Atari STE may have enough CPU time left for MOD player ingame too instead.
+
+Other
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/Other/
+has routines related to Jagpad, lz4w (a very fast decompressor), examples on how to use dma sound,
+stsprite kernel for using the Atari STE (and some f variants) blitter chips.
+
+Ingame, we want to be using 320x200 16 colors with raster splits always for performance.
+However for static screens, fullscreen variants are worth studying :
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/Fullscreen_Attempt/
+
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/mpp/ (upstream repo)
+
+Mode 2 can also teach you about the raster splits for ingame.
+
+Basically,
+titlescreen, story portraits, menu, deck editor...
+Thees can use 416x276 resolution with many colors onscreen.
+The rest is 320x200 and trying to display as many colorsas realistically possible without destroying the CPU for 3D rasterizer. (on STE, you would use the blitter for this)
+
+Now the 3D engine :
+It needs to be in real time.
+For Atari ST, it needs to run on standard 512kb unit at standard 8Mhz 68000 (with optional Blitter use, you need to detect Blitter presence).
+Atari STE build however, can assume 1MB RAM configurations and require Blitter and DMA sound.
+
+You are allowed to reduce the internal resolution for when 3D board moves :
+this is what FM TOWNS and MSX2/2+/TurboR do to maintain speed.
+
+You may need to leverage a C2P.
+However, this is critical, the cards themselves (thumbnails and also 2D battle animations)
+need to take full advantage of 320x200 screen resolution.
+
+References :
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/motuspublic-master/
+(for an actual 3D rasterizer)
+
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/Dread-source-drop-master
+This is a bit different but it has other tricks to achieve "perceived" higher horizontal resolution by processing the data structure of graphics + C2P scaler properties,
+among other things.
+
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/STWOLF_adaptive_17.79FPS_512K_checkpoint
+Another ST project that's very WIP but has a fast C2P also. (note that it only reaches 17.79 fps when its resolution gets halved, when it does not, it's more like 10 FPS).
+
+See if you can use Blitter for it.
+Also, texture mapping for 3D board tiles is a requirement for this project but the sides can remain flat filled polygons instead.
+The cards must also be texture mapped (for obvious reasons) but you are allowed to take shortcuts like on MSX2 to display them faster than a generic routine would be able to.
+
+2D card images :
+See if you can manage to use the "more than 48 colors per scanline" trick to display colorful images.
+STE version should also leverage its higher color palette.
+You may need a custom converter for this.
+
+FOr further reference, use emulator as "ground of truth" :
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/hatari-src/
+
+
+For testing :
+Use the headless mcp hatari executable with etos512us.img
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/hatari-headless-mcp
+
+README for it :
+/home/anonymous/Documents/DEV/Anime_card/waifu_card_game/AtariST/MCP_HEADLESS_README.md
+
+Create a plan first and then execute.
+
+
+
+Final project should be a self bootable floppy disk image.
