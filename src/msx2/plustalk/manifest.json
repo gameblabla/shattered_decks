@@ -1,0 +1,11 @@
+{
+  "frames": [
+    {
+      "time": 26.0,
+      "vram": "src/msx2/plustalk/frame_26_0.vram",
+      "sat": "src/msx2/plustalk/frame_26_0.sat",
+      "ram": "src/msx2/plustalk/frame_26_0.ram",
+      "png": "src/msx2/plustalk/frame_26_0.png"
+    }
+  ]
+}

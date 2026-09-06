@@ -2672,16 +2672,23 @@ void Msx2_BoardStepCameraMove(void)
 	}
 	else if(g_move_pose < MSX2_MOVE_TURN_POSES)
 	{
+		// TWICE AS MANY POSES ON A TURBO R, OUT OF ONE BAKED STRIP.
+		// The strip holds MSX2_MOVE_TURN_POSES samples of the orbit and the
+		// even-numbered ones are exactly the five a Z80 used to get -- the
+		// bake places them at the same fractions of the path -- so a Z80 takes
+		// every second pose and sees precisely the move it always saw, while an
+		// R800 walks all of them and the table turns instead of stepping.
+		u8 step = MSX2_TURBO_R() ? 1 : 2;
 		u8 pose = g_move_forward ? g_move_pose
 		          : (u8)(MSX2_MOVE_TURN_POSES - 1 - g_move_pose);
 		Msx2_VideoDrawPage(page);
 		Msx2_ArenaPose(MSX2_MESH_POSE_TURN(pose));
-		if(g_move_pose + 1 == MSX2_MOVE_TURN_POSES)
+		if(g_move_pose + step >= MSX2_MOVE_TURN_POSES)
 			Msx2_ArenaDraw();
 		else
 			Msx2_ArenaDrawStep();
 		Msx2_BoardDrawPoseCards();
-		++g_move_pose;
+		g_move_pose = (u8)(g_move_pose + step);
 		Msx2_VideoFlipRequest();
 		return;
 	}

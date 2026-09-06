@@ -70,6 +70,24 @@ void Msx2_VideoScenePalette(u16 segment);
 #define Msx2_VideoScenePalette(s)  ((void)(s))
 #endif
 
+// ── WHICH MACHINE THIS IS ────────────────────────────────────────────────────
+//
+// The main ROM's version byte (MSXVER_1/2/2P/TR), read at boot in
+// msx2_audio_probe.c -- the one place in the port where the BIOS is in page 0.
+// A turbo R is an R800 at twice the clock with single-cycle memory: it is the
+// one machine that can afford to draw every line of a moving board, and the
+// only thing in the port that is allowed to vary with it.
+extern u8 g_msx2_msxver;
+
+// WHETHER THE R800 IS ACTUALLY RUNNING, which is not the same question as
+// which machine this is: a turbo R boots as a Z80, and Msx2_CpuFast() sets
+// this only once the switch has been made and survived.  Everything that
+// spends the faster processor asks THIS, so a machine still running its Z80
+// draws exactly what an MSX2 draws instead of taking four times as long over
+// a nicer picture.
+extern u8 g_msx2_r800;
+#define MSX2_TURBO_R()   (g_msx2_r800 != 0)
+
 // Pull the bitmap font out of the cartridge into RAM.  Call it once, before
 // anything prints; the glyphs are cartridge data, not a C array (msx2_video.c).
 void Msx2_VideoLoadFont(void);
@@ -152,6 +170,9 @@ void Msx2_FrameRect(u8 x, u8 y, u16 w, u8 h, u8 color);
 // A single pixel line in the current draw page.  Effects use this for the
 // short-lived beam and impact rays; the retained board itself only needs the
 // quad helper below.
+// One line, with an explicit VDP logical operation.  Public because the quad
+// outlines that use it are in the duel bank (msx2_lines.c).
+void Msx2_LineOp(u8 x1, u8 y1, u8 x2, u8 y2, u8 color, u8 op);
 void Msx2_Line(u8 x1, u8 y1, u8 x2, u8 y2, u8 color);
 void Msx2_LineXor(u8 x1, u8 y1, u8 x2, u8 y2, u8 color);
 

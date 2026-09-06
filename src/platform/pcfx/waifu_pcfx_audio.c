@@ -636,7 +636,9 @@ void waifu_pcfx_adpcm_sample_play(int effect)
 
     start = WAIFU_PCFX_SFX_ADPCM_KRAM_BASE_WORD + m->start_word;
     end = start + m->word_count - 1u;
-    volume = m->volume ? m->volume : 63u;
+    //volume = m->volume ? m->volume : 63u;
+	volume = 63u;
+	// Gameblabla : temporary fix so that volume sounds high enough to be heard against background music
 
     waifu_pcfx_adpcm_mute();
     adpcm_set_control(ADPCM_RATE_16000, 1, 1, 1, 0);

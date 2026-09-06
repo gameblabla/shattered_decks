@@ -41,6 +41,14 @@
 #undef  MSX2_ORANGE
 #undef  MSX2_FLAME
 #undef  MSX2_PANEL_COLOR
+// The speaker's name plate and the sanctum list's plate.  It is the one ink in
+// the story that does not come from msx2_video.h: gen_msx_scenes.py bakes the
+// figure it uses into the pictures and emits it as a GRAPHIC 7 byte, and a
+// GRAPHIC 7 byte on a SCREEN 10 screen is a YJK pixel -- 0x24 has bit 3 clear,
+// so the plate was drawn as brightness-plus-borrowed-hue and took the colour of
+// whatever painting its four-pixel groups fell in.  That is the plate under
+// every speaker's name and under every row of the sanctum road.
+#undef  MSX2_PLATE_COLOR
 
 #define MSX2_BLACK      MSX2_YAE(0)
 #define MSX2_PANEL_COLOR MSX2_YAE(1)
@@ -51,6 +59,15 @@
 #define MSX2_RED        MSX2_YAE(6)
 #define MSX2_WHITE      MSX2_YAE(7)
 #define MSX2_DEEP_BLUE  MSX2_YAE(1)
+// The plate is black rather than the near-black olive the MSX2 build uses:
+// entries 8..15 are fitted to each picture (tools/msx2/msx2_yjk.py), so an
+// interface colour may only ever name one of 0..7, and black under gold is
+// what that half of the palette has.
+#define MSX2_PLATE_COLOR MSX2_YAE(0)
+// ORANGE and FLAME belong to the attack cut-in, which is GRAPHIC 7 in both
+// cartridges; they are named here only so that this header can be included
+// without an ink going missing.  They are the one pair that points into the
+// fitted half, and nothing in a SCREEN 10 screen may use them.
 #define MSX2_ORANGE     MSX2_YAE(11)
 #define MSX2_FLAME      MSX2_YAE(13)
 

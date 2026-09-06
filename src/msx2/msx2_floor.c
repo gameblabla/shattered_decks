@@ -895,7 +895,10 @@ static void Msx2_FloorBand(u8 allow_delta, u8 stride)
         // they take the coarsest rows whatever the pose asked for.
         if(allow_delta)
         {
-            stride = 3;
+            // ... and the coarsest of all on a Z80.  A turbo R keeps its
+            // lines here too: the two frames are the fastest part of the
+            // motion, not the most expensive one.
+            stride = MSX2_TURBO_R() ? 1 : 3;
             // The baked backdrop follows the exact rows, not the repeated
             // silhouette.  Clear the initial page so narrower repeated rows
             // cannot leave pixels from the previous pose outside the arena.

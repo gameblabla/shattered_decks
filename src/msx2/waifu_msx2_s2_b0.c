@@ -34,10 +34,12 @@
 // The arena span compositor and texture sampler live beside their duel caller.
 #include "msx2_arena.c"
 
-// The battle cut-in's blade, burst, burn and damage figure.  It lives in this
-// bank rather than in _CODE for room: msx2_board.c is its only caller, a call
-// inside a bank is an ordinary CALL, and _CODE was thirty bytes over the line
-// the day the PSG effects went in.  It reaches the sprite layer and the video
-// layer, both of which are in _CODE, which is what a bank is allowed to do.
-#include "msx2_battle_fx.c"
+// The LINE command and the duel's selection furniture; msx2_lines.c says why
+// they are not in _CODE with the rest of the video layer.
+#include "msx2_lines.c"
+
+// The battle cut-in used to be here; it is in the modal bank now
+// (waifu_msx2_s3_b0.c).  This bank had one byte free, which is not a budget the
+// duel screen can gain a feature in -- and the MSX2+ cartridge, which adds two
+// mode calls to it, did not link at all.  msx2_battle_fx.h has the rest.
 #include "msx2_board.c"

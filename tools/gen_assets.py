@@ -264,7 +264,19 @@ def draw_card_back():
     # navy ground before the console palette pass.
     fitted = fitted.point([max(0, min(255, int((v - 28) * 2.2)))
                            for v in range(256)] * 3)
-    return fitted.filter(ImageFilter.SHARPEN)
+    fitted = fitted.filter(ImageFilter.SHARPEN)
+    # The hand and placement fast path displays this as 38x50 and samples
+    # source rows 0..52.  The painting's lower frame is concentrated on row
+    # 53, so it disappears there even though the full 38x54 image looks framed.
+    # Reinforce the same one-pixel card rim on the reduced asset and duplicate
+    # it on row 52; this also keeps the frame readable after field projection.
+    frame = BASE_COLORS['CARD_GOLD']
+    edge = ImageDraw.Draw(fitted)
+    edge.line((1, 0, CARD_W - 2, 0), fill=frame)
+    edge.line((1, CARD_H - 2, CARD_W - 2, CARD_H - 2), fill=frame)
+    edge.line((1, 0, 1, CARD_H - 1), fill=frame)
+    edge.line((CARD_W - 2, 0, CARD_W - 2, CARD_H - 1), fill=frame)
+    return fitted
 
 BOARD_TILE_SRC = ['sandstone_1.png', 'sandstone_2.png']
 # Colours kept per 32x32 board tile before the master-palette pass.  The sources

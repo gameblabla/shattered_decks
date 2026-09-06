@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Waifu Card Game (MSX2+) running in WebMSX with MoonSound/OPL4 enabled">
+    <title>Waifu Card Game - MSX2+</title>
+    <style>
+      html, body {
+        min-height: 100%;
+        margin: 0;
+        background: #111;
+        color: #eee;
+        font-family: system-ui, sans-serif;
+      }
+      main {
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        gap: 1rem;
+        padding: 1rem;
+        box-sizing: border-box;
+      }
+      #wmsx-screen { box-shadow: 0 0 32px #000; }
+      a { color: #9cf; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="wmsx-screen"></div>
+      <p>MSX2+ build - MoonSound/OPL4 forced on via WMSX.PRESETS. See <a href="index.html">MSX2 version</a>.</p>
+    </main>
+
+    <script src="wmsx.js"></script>
+    <script>
+      // See index.html for why MoonSound must come from the "OPL4" preset
+      // and not a manually-inserted cartridge.
+      WMSX.MACHINE = "MSX2PE";
+      WMSX.PRESETS = "OPL4";
+      WMSX.CARTRIDGE1_URL = "../out/waifu_msx2p.rom";
+      WMSX.CARTRIDGE1_FORMAT = "Neo16";
+      WMSX.SCREEN_FULLSCREEN_MODE = 2;
+      WMSX.AUTO_POWER_ON_DELAY = 500;
+    </script>
+  </body>
+</html>

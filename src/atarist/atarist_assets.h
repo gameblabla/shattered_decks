@@ -7,13 +7,16 @@
  *  card's own painting (src/generated/atarist_art.h).
  *
  *  Two palettes, one per half of the raster split, and both are cut the same
- *  way.  Entries 0..7 are the structure of that half -- for ARENA the
- *  checkerboard tiles, the groove between them, the slab's rim; for CARD the
- *  panel, the HUD inks.  Entries 8..13 plus black and white are an EIGHT-STEP
- *  GREY RAMP, at the same indices in both, and the card paintings are dithered
- *  into nothing else.  That is why a card reads identically in the hand and on
- *  the 3D board even though the two halves share no palette, and why the board
- *  half still has all eight of its colours for the board.
+ *  way.  EIGHT entries are that half's structure -- for ARENA the two tile
+ *  stones, the groove between them and the slab's rim, plus the gold a card
+ *  frame and the cursor share; for CARD the panel, the HUD inks and the
+ *  frame's stone.  Two are black and white.  The SIX at 8..13 are fitted to
+ *  the card paintings by the converter, and a card is then dithered against
+ *  ALL SIXTEEN, so a painting has the structural ten behind its own six.
+ *
+ *  A card face is the PC build's own card front: the frame template with the
+ *  painting inside its window, so a card on the board is a card object rather
+ *  than a picture with a rim drawn round it.
  *
  *  Textures are stored with every byte already multiplied by four -- the chunky
  *  buffer's convention, see atarist_c2p.S -- so the rasteriser's inner loop is
@@ -36,10 +39,9 @@
 #define ARENA_RIM_SIDE   5    /* the slab's front face */
 #define ARENA_RIM_TOP    6    /* the lit edge along the top of that face */
 #define ARENA_SLOT       7    /* a card's rim, and the cursor tint */
-/* 8..13 are the six greys of the card ramp; with ARENA_BLACK and ARENA_WHITE
- * they are the eight levels a painting is dithered into.  Nothing but the card
- * art uses them, and the CARD palette holds the same ramp at the same
- * indices. */
+/* 8..13 are the six entries the converter fits to the paintings.  Nothing but
+ * the card art uses them, and the two halves fit their own six, because the
+ * ten they are fitted around differ. */
 #define ARENA_WHITE     14
 #define ARENA_HILIGHT   15
 
@@ -51,9 +53,9 @@
 #define CARD_GOLD        4
 #define CARD_RED         5
 #define CARD_GREEN       6
-/* 7 is spare; 8..13 are the six greys of the card ramp, which with CARD_BLACK
- * and CARD_WHITE are the eight levels a painting is dithered into -- the same
- * indices the ARENA palette puts them at. */
+#define CARD_FRAME_STONE 7    /* the card frame's stone, the dark tile's tone */
+/* 8..13 are the six entries fitted to the paintings, at the same indices the
+ * ARENA palette puts its own six at. */
 #define CARD_WHITE      14
 #define CARD_YELLOW     15
 /* The two the HUD used to spend its own entries on.  A panel tone is what they

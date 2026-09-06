@@ -5,8 +5,8 @@
 #include <stdint.h>
 
 #define WAIFU_PCFX_SFX_ADPCM_RATE 16000
-#define WAIFU_PCFX_SFX_ADPCM_BANK_BYTES 40960u
-#define WAIFU_PCFX_SFX_ADPCM_BANK_WORDS 20480u
+#define WAIFU_PCFX_SFX_ADPCM_BANK_BYTES 53248u
+#define WAIFU_PCFX_SFX_ADPCM_BANK_WORDS 26624u
 #define WAIFU_PCFX_SFX_ADPCM_KRAM_BASE_WORD 0x20000u
 #define WAIFU_PCFX_SFX_ADPCM_META_COUNT 10u
 
@@ -18,15 +18,15 @@ typedef struct WaifuPcfxSfxAdpcmMeta {
 
 static const WaifuPcfxSfxAdpcmMeta waifu_pcfx_sfx_adpcm_meta[] = {
     /* 0: SELECT */ { 0u, 189u, 44u },
-    /* 1: CONFIRM */ { 256u, 2177u, 54u },
-    /* 2: CONFIRM_ALT */ { 2560u, 701u, 48u },
-    /* 3: CARD_PLACED */ { 3328u, 1858u, 54u },
-    /* 4: CARD_DESTROYED */ { 5376u, 3816u, 58u },
-    /* 5: TURN_PASSED */ { 9216u, 5952u, 50u },
+    /* 1: CONFIRM */ { 256u, 2287u, 54u },
+    /* 2: CONFIRM_ALT */ { 2560u, 2214u, 48u },
+    /* 3: CARD_PLACED */ { 4864u, 1858u, 54u },
+    /* 4: CARD_DESTROYED */ { 6912u, 3816u, 58u },
+    /* 5: TURN_PASSED */ { 10752u, 5952u, 50u },
     /* 6: YOU_LOST */ { 0u, 0u, 0u },
-    /* 7: LASER_SHOOT */ { 15360u, 1072u, 56u },
-    /* 8: DIRECT_HIT */ { 16640u, 1072u, 56u },
-    /* 9: CARD_DRAWN */ { 17920u, 1858u, 54u },
+    /* 7: LASER_SHOOT */ { 16896u, 3703u, 56u },
+    /* 8: DIRECT_HIT */ { 20736u, 3703u, 56u },
+    /* 9: CARD_DRAWN */ { 24576u, 1858u, 54u },
 };
 
 #endif /* WAIFU_PCFX_SFX_ADPCM_H */

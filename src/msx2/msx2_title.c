@@ -114,7 +114,11 @@ static void Msx2_TitleMenuRow(u8 row)
 	u8 fg;
 
 	if(!Msx2_TitleRowEnabled(row))
-		fg = MSX2_RGB(3, 3, 1);                 // dim: present but refused
+		// dim: present but refused.  A NAMED ink, not a GRB332 byte: this
+		// screen is SCREEN 10 in the MSX2+ cartridge, where the names are
+		// palette pixels (msx2_plus.h) and a raw colour byte is a YJK one --
+		// it would take its hue from the painting behind the menu.
+		fg = MSX2_DARK_SAND;
 	else if(row == g_cursor)
 		fg = MSX2_GOLD;
 	else

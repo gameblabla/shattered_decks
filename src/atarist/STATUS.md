@@ -51,55 +51,91 @@ more.
 | `DAT/HAND.CRD` | the same 79 faces, 32x24 planar, CARD palette | 30,336 |
 | `DAT/TITLE.SCR` | the title painting, 320x200 planar + 25 palettes | 33,262 |
 
-**Eight colours to the board, eight greys to the cards.**  Both sixteen-colour
-sets (`src/generated/atarist_art.h`) are cut the same way: entries 0..7 are the
-structural colours of that half of the screen -- the checkerboard's two tiles
-and their grain, the groove, the slab's rim, the slot gold; or the HUD's panel,
-gold, red and green -- and entries 8..13 plus black and white are an eight-step
-GREY RAMP that the card paintings are dithered into, at the same indices in
-both palettes, so one dithered picture reads identically in the hand and on the
-3D board.
+**Eight to structure, two to black and white, six fitted to the paintings.**
+Both sixteen-colour sets (`src/generated/atarist_art.h`) are cut the same way:
 
-The six greys are the ST's own levels.  Three bits a channel is eight greys
-(0, 36, 73, 109, 145, 182, 218, 255), so black + these six + white is an
-exactly even eight-step ramp on the hardware with no two steps sharing a
-bucket.
+* **EIGHT structural entries.**  On the board half, the two tile stones (three
+  tones each, less one shared) and the gold that is both a card frame's rule
+  and the cursor tint; on the card half, the panel, the HUD's gold, red, green
+  and yellow, and the card frame's stone.
+* **Black and white**, which both halves need and neither can fit.
+* **SIX FITTED**, at indices 8..13, by k-means over the paintings with the
+  other ten pinned as fixed centres, so a free entry only goes where the ten
+  serve a painting worst.
 
-Colour on the cards was tried twice and lost twice, and the reasons are worth
-keeping:
+and a card is then dithered against **all sixteen**.  That is the strategy: the
+six carry the hues nothing else in the palette has, and the dither borrows the
+tile browns, the frame gold, the panel blues, black and white for everything
+else -- so a monster has ten colours of support behind its own six.
 
-* **Fitted colour entries.**  Five (arena) or seven (card) k-means centres over
-  every thumbnail is the average of seventy-eight paintings, so every card came
-  back the same washed blue-grey and no card had its own colour anyway.
+Two earlier cuts are recorded so they are not re-planned:
+
+* **An eight-step grey ramp at 8..13.**  Exactly even on the hardware (three
+  bits a channel is 0, 36, 73, 109, 145, 182, 218, 255), and it spends no entry
+  on hue at all, so every card came back a grey blob.
 * **A palette per scanline, split five ways.**  The shifter really will reload
-  sixteen entries every line, which would give each of the five hand slots
-  three private colours per row -- but a monster drawn in three colours a line
-  is noise, and the row-to-row palette drift streaks it.  Eight greys spend no
-  entry on hue and every entry on tone.
+  sixteen entries every line, which gives each of the five hand slots three
+  private colours per row -- but a monster drawn in three colours a line is
+  noise, and the row-to-row palette drift streaks it.
+
+**The board is two photographs, and a card is the PC's own card front.**
+`sandstone_1.png` IS the light tile and `sandstone_2.png` IS the dark one, each
+resampled to sixteen texels and dithered into its own stone's tones; a card
+face is `monster_card_front_template.png` (or the spell/trap template for a
+support) with the painting fitted into the window
+`card_front_template_pixel_monster_original_res.txt` names, scaled to whatever
+size the ST shows a card at.  On the board that is 32x32 stretched over a
+0.70 x 0.90 quad, which is the template's own aspect; in the hand it is the art
+window plus its gold rule, because the hand slot is landscape and the ATK/DEF
+numbers are drawn under it in the HUD font.
 
 The conversion rules that survived:
 
-* **Equalise, do not stretch.**  These paintings are dark; a contrast stretch
-  leaves most pixels inside the bottom step of the ramp and a card comes back a
-  black rectangle with a white face in it.
-* **Low-pass before dithering** (1.0 px, harder than the colour path's 0.7).
-  What an eight-level dither carries is broad tonal massing; detail finer than
-  that only becomes speckle that hides it.
-* **FULL-strength error diffusion.**  The damping the old scattered palette
-  needed is exactly wrong for a ramp: the error one level cannot hold is
-  precisely what the next one can, and full diffusion is what turns eight
-  levels into continuous tone.  The ground keeps its damped dither, because
-  sand tones are not a ramp.
-* **Sigils and the card back skip both.**  They are drawn, not photographed --
-  a few flat tones on a flat field -- and equalising plus blurring turned all
-  six supports into the same grey blob.  Equip and guard also had to be given
-  different SHAPES, having been told apart by tint alone.
-* **Spread the sand terciles.**  Sandstone is a low-contrast photograph and its
-  three levels come back within a few units of each other, which makes the
-  board a flat wash with no texture in it.
-* **The tile grain hash must MIX.**  `(x*7 + y*13 + x*y) % 7` is linear in x
-  for a fixed y: whole columns of a tile satisfied it at once and the board
-  came out as plaid.
+* **Stretch, do not equalise, and do not lift.**  With six fitted colours and
+  ten structural ones the dark end of a painting has somewhere to go.
+  Equalisation is what the grey ramp needed; here it flattens tonal massing.  A
+  brightness lift on top of an autocontrast bleached the whole sheet to
+  white-on-blue.
+* **Saturation up, contrast slightly down.**  Hue is what this palette can
+  reproduce and what a sixteen-colour dither under-serves; contrast is what it
+  exaggerates by itself.
+* **Low-pass (0.5 px) before dithering**, and prepare the ART, not the
+  composite: blurring the composited card softens the frame's gold rules into
+  brown smears, and those rules are the only thing that says "card" at
+  twenty-four pixels across.
+* **Diffusion at 0.75**, between the ground's damped 0.35 and the ramp's 1.0.
+  Sixteen fitted entries are dense in luminance and sparse in hue, so full
+  diffusion overshoots into the saturated ones and speckles a grey robe with
+  red and green confetti.
+* **Sigils skip the blur.**  They are drawn, not photographed, and rounding
+  their shapes off turned all six supports into the same blob.  Equip and guard
+  differ by SHAPE, not tint.
+* **Crop in on the face.**  The content box is pulled in again -- a quarter off
+  each side, a third off the bottom -- and the fit is anchored to the top of
+  what is left.  A whole full-body painting in twenty-four pixels spends most
+  of them on a torso the dither cannot hold, and the cards came back as
+  seventy-eight dark columns.
+* **The card back is WARMED into the board's browns.**  The painting is a navy
+  field with a gold compass, and a face-down card lies among the tiles: navy on
+  sandstone reads as a hole in the board.  Its channels are scaled, and it must
+  skip the flat-art preparation entirely -- a per-channel autocontrast
+  NEUTRALISES a single-hue picture and puts the navy straight back.
+* **Crop a slab photograph to its inner field** (14% a side) before resampling.
+  Both are a stone inside a bevelled border, and at sixteen texels that border
+  is two texels on every side: the board came out a wall of picture frames.
+* **Tone from a BOX average, grain from a point sample, mixed 0.30.**  A mean
+  over eighty source pixels a texel is a perfectly smooth stone and the tiles
+  came back flat; a point sample of the same photograph is a real stone pixel,
+  so the two together are the slab's tone with the slab's own speckle, and
+  neither is invented noise.
+* **A tile may only reach for its own stone.**  The dark tile allowed the light
+  stone's tones (the brighter half of the palette, which the dither wants) came
+  back as the same tile, and the checkerboard disappeared.
+* **Separate the tones under `st3`.**  Three bits a channel is coarse: two
+  tones of one photograph forty units apart land in the same bucket, which
+  costs an entry and flattens the tile.  Terciles are also read with
+  `contrast=False`, since a per-channel stretch neutralises a one-hue stone and
+  the first run came back pink.
 
 The same painting is converted twice, once per palette, because the board half
 and the hand half of the screen do not share one.
@@ -180,7 +216,7 @@ python3 tools/atarist/verify.py --image ... --script "START:2,0:30,A:2"
 | 3D board rasteriser (textured slab, flat-lying card quads, rim) | done, verified |
 | planar 2D layer (rects, 8x8 text, masked blits) | done, verified |
 | duel presentation over `msx2_duel.c` | done, playable, verified |
-| card art from real sources, eight-grey ramp | done, verified (on screen) |
+| card art in the PC card frame, 6 fitted colours + all 16 | done, verified (on screen) |
 | title screen + menu, scene flow title<->duel | done, verified (real painting, 25 splits) |
 | multi-palette raster split list (25-band title picture) | done, verified |
 | Blitter block copy, used for the ground cache | done, verified on both builds |

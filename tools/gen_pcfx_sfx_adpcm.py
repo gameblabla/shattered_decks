@@ -3,12 +3,19 @@
 
 The PC-FX ADPCM decoder used by KING/SoundBox consumes 4-bit nibbles from
 16-bit KRAM halfwords in nibble order 0,4,8,12.  This encoder is deliberately
-simple and deterministic: it resamples each unsigned 8-bit mono WAV to 16 kHz,
-then greedily chooses the nibble that minimizes predictor error using the same
-step table/index deltas as pcfxemu's SoundBox_ADPCMUpdate().
+simple and deterministic: it resamples each WAV to 16 kHz, then greedily
+chooses the nibble that minimizes predictor error using the same step
+table/index deltas as pcfxemu's SoundBox_ADPCMUpdate().
+
+Accepted source format: uncompressed PCM WAV, 8- or 16-bit, mono or stereo,
+any sample rate (the classic unsigned 8-bit mono 44100 Hz assets keep their
+exact legacy encoding path).  Stereo is downmixed to mono by averaging
+channels before resampling, matching tools/gen_sound_assets.py.
 """
 from __future__ import annotations
+import math
 import os
+import struct
 import wave
 from pathlib import Path
 
@@ -19,6 +26,19 @@ OUT_H = ROOT / "src" / "generated" / "pcfx_sfx_adpcm.h"
 
 SRC_RATE = 44100
 DST_RATE = 16000
+SILENCE_TAIL = DST_RATE // 100  # appended zeros; excluded from loudness stats
+
+# Loudness: the legacy 8-bit masters were mastered hot (old Confirm RMS
+# ~3400 in s14 units) while newer 16-bit recordings peak near full scale but
+# carry ~6 dB less RMS (high crest factor).  A bare peak-normalize would only
+# buy +1..3 dB on those, so quiet SFX get a bounded makeup gain through a
+# soft-knee limiter that asymptotically approaches the rails: the ADPCM
+# predictor range is never exceeded, so nothing clips on the ADPCM side.
+TARGET_RMS = 3400.0  # matches the legacy hot masters (old Confirm RMS)
+GAIN_CAP = 2.0  # +6 dB max: covers the measured deficit, won't blast 8-bit hiss
+LIMIT_KNEE = 8600.0
+LIMIT_RAIL = float(0x2fff)  # 12287, matches the resampler clamp
+CEIL_PEAK = 12000  # at/above this the file already uses the full swing
 ALIGN_WORDS = 256
 ALIGN_BYTES = ALIGN_WORDS * 2
 # RAINBOW stills and the 8bpp/16M frame surfaces also live in KING KRAM page 1.
@@ -61,22 +81,49 @@ def find_sound_file(name: str) -> Path:
     raise FileNotFoundError(name)
 
 
-def read_u8_mono_wav(path: Path) -> bytes:
+def read_wav_mono(path: Path) -> tuple[list[int], int, int]:
+    """Decode a PCM WAV to mono samples.
+
+    Returns (mono, src_rate, sampwidth) where mono holds unsigned 8-bit
+    values (0..255) for 8-bit sources or signed 16-bit values
+    (-32768..32767) for 16-bit sources.  Stereo is downmixed by averaging
+    channels (sum // channels), matching tools/gen_sound_assets.py.
+    """
     with wave.open(str(path), "rb") as w:
-        if w.getnchannels() != 1 or w.getsampwidth() != 1 or w.getframerate() != SRC_RATE:
-            raise SystemExit(f"{path}: expected unsigned 8-bit mono {SRC_RATE} Hz WAV")
-        return w.readframes(w.getnframes())
+        channels = w.getnchannels()
+        sampwidth = w.getsampwidth()
+        rate = w.getframerate()
+        comptype = w.getcomptype()
+        nframes = w.getnframes()
+        if comptype != "NONE" or channels not in (1, 2) or sampwidth not in (1, 2) or rate <= 0:
+            raise SystemExit(
+                f"{path}: expected uncompressed 8/16-bit mono/stereo WAV "
+                f"(got channels={channels} width={sampwidth} rate={rate} comptype={comptype})"
+            )
+        raw = w.readframes(nframes)
+    if sampwidth == 1:
+        if channels == 1:
+            mono = list(raw)
+        else:
+            mono = [(raw[i] + raw[i + 1]) // 2 for i in range(0, len(raw) - 1, 2)]
+        return mono, rate, 1
+    count = len(raw) // 2
+    samples = list(struct.unpack("<%dh" % count, raw[: count * 2])) if count else []
+    if channels == 1:
+        return samples, rate, 2
+    return [(samples[i] + samples[i + 1]) // 2 for i in range(0, len(samples) - 1, 2)], rate, 2
 
 
-def resample_u8_to_s14(src: bytes, dst_rate: int = DST_RATE) -> list[int]:
+def resample_u8_to_s14(src: bytes | list[int], src_rate: int = SRC_RATE,
+                       dst_rate: int = DST_RATE) -> list[int]:
     # Linear interpolation.  Output matches the PC-FX ADPCM predictor range
     # (-0x4000..0x3fff) but stays below hard rails to reduce clicks.
     if not src:
         return []
-    out_len = max(1, int(round(len(src) * dst_rate / SRC_RATE)))
+    out_len = max(1, int(round(len(src) * dst_rate / src_rate)))
     out: list[int] = []
     for i in range(out_len):
-        pos_num = i * SRC_RATE
+        pos_num = i * src_rate
         ip = pos_num // dst_rate
         frac = pos_num % dst_rate
         if ip >= len(src) - 1:
@@ -89,6 +136,72 @@ def resample_u8_to_s14(src: bytes, dst_rate: int = DST_RATE) -> list[int]:
         out.append(clamp((int(sample) - 128) * 96, -0x3000, 0x2fff))
     # Add a tiny silence tail so one-shot playback ends cleanly.
     out.extend([0] * (dst_rate // 100))
+    return out
+
+
+def resample_s16_to_s14(src: list[int], src_rate: int = SRC_RATE,
+                        dst_rate: int = DST_RATE) -> list[int]:
+    # Linear interpolation in the signed 16-bit domain, then scale to about
+    # +/-0x3000 (s16 * 96 / 256 == s16 * 0.375).  Rounds to nearest so full
+    # scale +/-32768 lands on the +/-0x3000 rails instead of clipping by a
+    # floor-division bias for negative values.
+    if not src:
+        return []
+    out_len = max(1, int(round(len(src) * dst_rate / src_rate)))
+    out: list[int] = []
+    for i in range(out_len):
+        pos_num = i * src_rate
+        ip = pos_num // dst_rate
+        frac = pos_num % dst_rate
+        if ip >= len(src) - 1:
+            interp = src[-1]
+        else:
+            a = src[ip]
+            b = src[ip + 1]
+            interp = (a * (dst_rate - frac) + b * frac + dst_rate // 2) // dst_rate
+        out.append(clamp(int(round(interp * 96 / 256)), -0x3000, 0x2fff))
+    out.extend([0] * (dst_rate // 100))
+    return out
+
+
+def read_and_resample(path: Path) -> list[int]:
+    mono, src_rate, sampwidth = read_wav_mono(path)
+    if sampwidth == 1:
+        return resample_u8_to_s14(mono, src_rate)
+    return resample_s16_to_s14(mono, src_rate)
+
+
+def apply_makeup_limit(samples: list[int]) -> list[int]:
+    """Bounded makeup gain + soft-knee limiter (no ADPCM-side clipping).
+
+    Returns the input unchanged (bit-identical) when the SFX already uses
+    the full swing or already meets the target loudness; otherwise applies
+    up to GAIN_CAP through a limiter that keeps every sample within the
+    resampler rails.  Stats are measured on the body, excluding the
+    appended silence tail (gain leaves those zeros at zero anyway).
+    """
+    if not samples:
+        return samples
+    body = samples[:-SILENCE_TAIL] if len(samples) > SILENCE_TAIL else samples
+    peak = max(abs(v) for v in body) if body else 0
+    if peak >= CEIL_PEAK:
+        return samples  # already mastered to the ceiling; more gain = distortion
+    rms = (sum(v * v for v in body) / len(body)) ** 0.5 if body else 0.0
+    if rms <= 0:
+        return samples
+    gain = min(TARGET_RMS / rms, GAIN_CAP)
+    if gain <= 1.0:
+        return samples
+    span = LIMIT_RAIL - LIMIT_KNEE
+    out: list[int] = []
+    for v in samples:
+        x = v * gain
+        ax = abs(x)
+        if ax <= LIMIT_KNEE:
+            y = x
+        else:
+            y = math.copysign(LIMIT_KNEE + span * math.tanh((ax - LIMIT_KNEE) / span), x)
+        out.append(clamp(int(round(y)), -0x3000, 0x2fff))
     return out
 
 
@@ -141,8 +254,8 @@ def main() -> int:
         while len(bank) % ALIGN_BYTES:
             bank.append(0)
         start_word = len(bank) // 2
-        src = read_u8_mono_wav(find_sound_file(filename))
-        adpcm = encode_adpcm(resample_u8_to_s14(src))
+        samples = apply_makeup_limit(read_and_resample(find_sound_file(filename)))
+        adpcm = encode_adpcm(samples)
         bank.extend(adpcm)
         word_count = len(adpcm) // 2
         metas.append((name, enum_index, start_word, word_count, volume))

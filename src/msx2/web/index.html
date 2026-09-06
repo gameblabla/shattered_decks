@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Waifu Card Game (MSX2) running in WebMSX with MoonSound/OPL4 enabled">
+    <title>Waifu Card Game - MSX2</title>
+    <style>
+      html, body {
+        min-height: 100%;
+        margin: 0;
+        background: #111;
+        color: #eee;
+        font-family: system-ui, sans-serif;
+      }
+      main {
+        display: grid;
+        min-height: 100vh;
+        place-items: center;
+        gap: 1rem;
+        padding: 1rem;
+        box-sizing: border-box;
+      }
+      #wmsx-screen { box-shadow: 0 0 32px #000; }
+      a { color: #9cf; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="wmsx-screen"></div>
+      <p>MSX2 build - MoonSound/OPL4 forced on via WMSX.PRESETS. See <a href="index_plus.html">MSX2+ version</a>.</p>
+    </main>
+
+    <script src="wmsx.js"></script>
+    <script>
+      // Do NOT insert MoonSound manually via the cartridge slot UI -- WebMSX
+      // already embeds the exact YRW801 wave ROM (sha1 32760893...) that
+      // openMSX needs a systemroms/yrw801.rom file for. The "OPL4" preset
+      // below plugs it into expansion slot 4-1 at boot, which is what the
+      // "OPL4 Wave" checkbox in the UI does too -- loading a second, manual
+      // copy into a cartridge slot only conflicts with it.
+      // The cartridge itself requires MSX2+ hardware (it uses YJK/YAE SCREEN
+      // 10 modes), regardless of which mapper build ("msx2" vs "msx2p") is
+      // loaded -- boot it on a plain MSX2E machine and it refuses to start
+      // ("Error: A MSX2+ is required!"). Use the MSX2+ machine here too.
+      WMSX.MACHINE = "MSX2PE";
+      WMSX.PRESETS = "OPL4";
+      WMSX.CARTRIDGE1_URL = "../out/waifu_msx2.rom";
+      WMSX.CARTRIDGE1_FORMAT = "Neo16";
+      WMSX.SCREEN_FULLSCREEN_MODE = 2;
+      WMSX.AUTO_POWER_ON_DELAY = 500;
+    </script>
+  </body>
+</html>

@@ -1,8 +1,20 @@
-// Generic full-screen battle-cut-in primitives.  They live in the ordinary
-// resident code area rather than the nearly-full page-0 bank; all cartridge
-// reads have completed before these VDP-only routines run.
+// Generic full-screen battle-cut-in primitives.  They live in the MODAL page-0
+// bank (waifu_msx2_s3_b0.c), reached through the single trampoline in
+// msx2_bank.c: the duel bank they used to share with their caller had one byte
+// left in it.  Nothing here reaches the duel bank -- sprites, the video layer,
+// the rules state and the string table are all _CODE -- which is what makes the
+// move legal (msx2_bank.h).  All cartridge reads have completed before these
+// VDP-only routines run.
 
 #include "msx2_battle_fx.h"
+
+// Inside the bank the five are ordinary functions again, not the macros the
+// header hands every other caller.
+#undef Msx2_BattleFxSlash
+#undef Msx2_BattleFxDamageCount
+#undef Msx2_BattleFxBurst
+#undef Msx2_BattleFxResult
+#undef Msx2_BattleFxBurnCard
 #include "msx2_video.h"
 #include "msx2_duel.h"
 #include "msx2_scenes.h"
@@ -17,7 +29,7 @@
 // absolute table, so an animated explosion costs one attribute write a frame --
 // which is the whole reason the sprite layer exists.  Three of them, a frame
 // apart and in three colours, read as one blast rather than three.
-void Msx2_BattleFxBurst(u8 x, u8 y, u8 step)
+static void Msx2_BattleFxBurst(u8 x, u8 y, u8 step)
 {
 	if(step >= MSX2_SPR_BURST_N)
 	{
@@ -36,7 +48,7 @@ void Msx2_BattleFxBurst(u8 x, u8 y, u8 step)
 		              (u8)(MSX2_SPR_BURST0 + step - 2), MSX2_SPR_RED);
 }
 
-void Msx2_BattleFxResult(bool trap)
+static void Msx2_BattleFxResult(bool trap)
 {
 	Msx2_Fill(0, 181, MSX2_SCREEN_W, 31, MSX2_BLACK);
 	Msx2_TextColor(trap ? MSX2_RED : MSX2_GOLD, MSX2_BLACK);
@@ -51,7 +63,7 @@ void Msx2_BattleFxResult(bool trap)
 		Msx2_TextCenter(190, Msx2_UiText(MSX2_S_NO_BATTLE_DAMAGE));
 }
 
-void Msx2_BattleFxBurnCard(u8 x, u8 h, u8 step)
+static void Msx2_BattleFxBurnCard(u8 x, u8 h, u8 step)
 {
 	(void)h;
 	// The wipe is a sprite overlay, so its edge is immediate and costs only
@@ -76,7 +88,7 @@ void Msx2_BattleFxBurnCard(u8 x, u8 h, u8 step)
 // middle out, stroke B crosses it, and both then withdraw from the ends inwards
 // while the sprite explosion takes the crossing point -- so the blade is gone by
 // the time the burst is at its widest, rather than sitting under it.
-void Msx2_BattleFxSlash(u8 x, u8 step)
+static void Msx2_BattleFxSlash(u8 x, u8 step)
 {
 	u8 a, b, core;
 
@@ -112,7 +124,7 @@ void Msx2_BattleFxSlash(u8 x, u8 step)
 #define MSX2_BATTLE_DMG_W  110
 #define MSX2_BATTLE_DMG_Y  160
 
-void Msx2_BattleFxDamageCount(u8 x, i16 value)
+static void Msx2_BattleFxDamageCount(u8 x, i16 value)
 {
 	// Six pixels a glyph, and one more glyph for the minus sign.
 	u8 digits = 1;
@@ -126,4 +138,19 @@ void Msx2_BattleFxDamageCount(u8 x, i16 value)
 	          MSX2_BATTLE_DMG_W, 10, MSX2_BLACK);
 	Msx2_TextColor(MSX2_GOLD, MSX2_BLACK);
 	Msx2_NumAt((u8)(x - (w >> 1)), (u8)(MSX2_BATTLE_DMG_Y + 1), (i16)(-value));
+}
+
+// The bank-side dispatcher.  msx2_battle_fx.h turns the five entry points into
+// one call so that _CODE pays for one trampoline instead of five; this is where
+// it comes apart again.
+void Msx2_BattleFx_In(u8 op, u8 x, u8 y, i16 value)
+{
+	switch(op)
+	{
+	case MSX2_FX_SLASH:  Msx2_BattleFxSlash(x, (u8)value); break;
+	case MSX2_FX_BURST:  Msx2_BattleFxBurst(x, y, (u8)value); break;
+	case MSX2_FX_DAMAGE: Msx2_BattleFxDamageCount(x, value); break;
+	case MSX2_FX_RESULT: Msx2_BattleFxResult(value != 0); break;
+	default:             Msx2_BattleFxBurnCard(x, y, (u8)value); break;
+	}
 }

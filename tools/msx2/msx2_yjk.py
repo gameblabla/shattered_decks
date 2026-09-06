@@ -189,7 +189,7 @@ def _encode_plain(src, screen12):
 
 # ── Encoding ─────────────────────────────────────────────────────────────────
 
-def _group_chroma(rgb5, y):
+def _group_chroma(rgb5, y, mask=None):
     """J and K for every group of four pixels, as the least-squares fit.
 
     With Y already chosen per pixel, R = Y + J and G = Y + K are linear in J
@@ -197,12 +197,60 @@ def _group_chroma(rgb5, y):
     mean of the per-pixel residuals.  (B depends on both and is left to the Y
     pass to absorb; weighting it in moves every hue towards blue for no visible
     gain -- the eye is reading R and G here.)
+
+    A `mask` (True where the pixel is really drawn) restricts the mean to the
+    pixels that exist.  A cut-out bust is the case: three quarters of a boundary
+    group can be the transparent ground, and the ground in this project's
+    portrait art is BLACK, so an unmasked mean hands the whole group the hue of
+    nothing at all -- which is the black fringe four pixels wide that YJK puts
+    round a silhouette a paletted mode only ever put one pixel of.
     """
     h, w, _ = rgb5.shape
     groups = w // 4
-    j = (rgb5[..., 0] - y).reshape(h, groups, 4).mean(axis=2)
-    k = (rgb5[..., 1] - y).reshape(h, groups, 4).mean(axis=2)
+    dj = (rgb5[..., 0] - y).reshape(h, groups, 4)
+    dk = (rgb5[..., 1] - y).reshape(h, groups, 4)
+    if mask is None:
+        j = dj.mean(axis=2)
+        k = dk.mean(axis=2)
+    else:
+        m = mask.reshape(h, groups, 4).astype(np.float64)
+        n = m.sum(axis=2)
+        safe = np.maximum(n, 1.0)
+        j = np.where(n > 0, (dj * m).sum(axis=2) / safe, dj.mean(axis=2))
+        k = np.where(n > 0, (dk * m).sum(axis=2) / safe, dk.mean(axis=2))
     return np.clip(np.round(j), -32, 31), np.clip(np.round(k), -32, 31)
+
+
+def spread(rgb8, mask):
+    """The opaque colours pushed outward over everything the mask excludes.
+
+    Y is per pixel and a transparent one is never blitted, so its brightness
+    does not matter -- but its COLOUR still reaches the picture through the
+    group chroma and through the dithering carry, and in the source art it is
+    black.  Growing the figure outward a few pixels before encoding is what
+    makes a boundary group fit the figure rather than the hole beside it."""
+    out = rgb8.copy()
+    known = mask.copy()
+    for _ in range(6):
+        if known.all():
+            break
+        for axis, shift in ((1, 1), (1, -1), (0, 1), (0, -1)):
+            src = np.roll(out, shift, axis=axis)
+            have = np.roll(known, shift, axis=axis)
+            if axis == 1:
+                if shift > 0:
+                    have[:, 0] = False
+                else:
+                    have[:, -1] = False
+            else:
+                if shift > 0:
+                    have[0, :] = False
+                else:
+                    have[-1, :] = False
+            take = have & ~known
+            out[take] = src[take]
+            known = known | take
+    return out
 
 
 def _best_y(rgb5, j, k, even):
@@ -222,7 +270,7 @@ def _best_y(rgb5, j, k, even):
 
 
 def encode(img, dither=0.0, palette=None, allow_yae=False, yae_gain=1.0,
-           screen12=False, fit_yae=0):
+           screen12=False, fit_yae=0, mask=None, solid=None):
     """One picture -> (bytes, palette).
 
     `dither` is the fraction of each pixel's residual error carried into its
@@ -230,6 +278,14 @@ def encode(img, dither=0.0, palette=None, allow_yae=False, yae_gain=1.0,
     residual an encoder cannot spend is large and structured -- diffusing it is
     worth more here than it is in a paletted mode, and 0.9 is what this port
     bakes with.
+
+    `mask` is a cut-out's own opacity, True where a pixel's colour is worth
+    fitting to: it keeps the transparent ground out of the group chroma and out
+    of the dither carry (see _group_chroma).  `solid` is the wider mask of
+    pixels whose colour is real at all, and it is what spread() grows outward
+    from -- a bust is BLITTED past `mask`, out to whole chroma groups, so the
+    pixels between the two have to carry something, and the nearest real pixel
+    is the right something.  `solid` defaults to `mask`.
 
     `allow_yae` lets a pixel escape into the 16-colour palette when that is
     closer than anything its group's chroma can reach.  It is OFF for this
@@ -243,6 +299,10 @@ def encode(img, dither=0.0, palette=None, allow_yae=False, yae_gain=1.0,
     h, w, _ = rgb8.shape
     if w % 4:
         raise ValueError("width must be a multiple of four (chroma groups)")
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        rgb8 = spread(rgb8, np.asarray(solid, dtype=bool)
+                            if solid is not None else mask)
     src = to5(rgb8)
     pal5 = palette_rgb5(palette or UI_PALETTE)
     even = not screen12
@@ -260,7 +320,8 @@ def encode(img, dither=0.0, palette=None, allow_yae=False, yae_gain=1.0,
         # Two passes: a provisional Y to fit the chroma to, then the Y that
         # chroma actually wants.  One pass is visibly worse on skin.
         y_prov = np.clip(rgb_to_y(rowv), 0, MAX5)
-        j, k = _group_chroma(rowv, y_prov)
+        j, k = _group_chroma(rowv, y_prov,
+                             None if mask is None else mask[y0:y0 + 1])
         jj = np.repeat(j, 4, axis=1)
         kk = np.repeat(k, 4, axis=1)
         yv = _best_y(rowv, jj, kk, even)
@@ -294,6 +355,10 @@ def encode(img, dither=0.0, palette=None, allow_yae=False, yae_gain=1.0,
 
         if dither > 0.0:
             err = (row - got) * dither
+            if mask is not None:
+                # Error is neither taken from nor pushed into a pixel nothing
+                # will draw, exactly as the GRB332 bust path does it.
+                err = err * mask[y0][:, None]
             # 7/16 right, 3/16 down-left, 5/16 down, 1/16 down-right.
             nxt = carry[y0 + 1]
             here = carry[y0]

@@ -60,6 +60,14 @@ FINE_BYTES = 32 * 32
 MIP_BASE = 0
 FINE_BASE = 2 * MIP_BYTES
 
+# The floor tiles are the one 3-D surface worth dithering: sandstone is a
+# grade, GRB332's two blue bits poster-paint it into slabs, and the texture is
+# 32x32 texels magnified over the board, so the pattern reads as stone grain
+# rather than the crawling error the module rule warns about.  0.3 is a third
+# of the bust strength -- enough to break the bands, quiet enough that the
+# tiles still read as flat lit.
+TEXTURE_DITHER = 0.30
+
 # What one command costs, in pixels the same command could have painted.
 COMMAND_PIXELS = 360
 MAX_RECTS = 24
@@ -279,7 +287,7 @@ def main():
     for size in (16,32):
         for i in (1,2):
             with Image.open(ROOT/f'assets/source/textures/sandstone_{i}.png') as im:
-                textures += grb.quantize(im.convert('RGB'),(size,size))
+                textures += grb.dither(im.convert('RGB'),(size,size),TEXTURE_DITHER)
     assert len(textures) == FINE_BASE + 2*FINE_BYTES
     (ASSETS/'floor_textures.bin').write_bytes(textures)
     mesh = (ASSETS/'board_mesh.bin').read_bytes()

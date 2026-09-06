@@ -23289,13 +23289,21 @@ static Camera msx2_com_camera(void)
    qualifies because the port repaints every card the moment the move lands --
    the cards are gone for the swing and back before the COM acts, which reads
    as the table turning rather than as a defect.  It is also why the strip is
-   short: five poses, about two seconds. */
+   short.
+
+   NINE POSES, AND A Z80 SEES FIVE OF THEM.  The strip is sampled at nine even
+   fractions of the orbit, so poses 0, 2, 4, 6 and 8 are BYTE FOR BYTE the five
+   this move was baked with before -- 2k/8 and k/4 are the same t.  The MSX2
+   cartridge steps by two and plays exactly the move it always played; the
+   turbo R steps by one and gets the in-betweens, which is the difference
+   between a table that steps round and one that turns
+   (src/msx2/msx2_board.c). */
 static const struct { const char *name; int kind; int poses; } g_msx2_moves[] = {
     /* Sixteen samples of the exact shared opening path.  This is still sparse
        beside the live 56-frame PC-FX render, but it is the practical 8-bit
        cartridge version: each 29 KB pose takes several V-blanks to stream. */
     { "OPENING",  MSX2_MOVE_OPENING, 16 },
-    { "TURN",     MSX2_MOVE_TURN,     5 },
+    { "TURN",     MSX2_MOVE_TURN,     9 },
 };
 #define MSX2_MOVE_COUNT ((int)(sizeof g_msx2_moves / sizeof g_msx2_moves[0]))
 

@@ -51,7 +51,14 @@ void Msx2_ArenaDraw(void)
 // last silhouette can be trusted to say which black is already black.
 void Msx2_ArenaDrawStep(void)
 {
-    Msx2_FloorBand(1, g_floor_stride);
+    // EVERY LINE OF IT ON A TURBO R.
+    // The stride baked into a pose (gen_msx_floor.py) is how many screen rows
+    // one drawn row stands for while the camera moves: two or three on a Z80,
+    // because the span walk, the row fetch and the sampler set-up are what a
+    // moving frame is made of.  An R800 does that work in a fraction of the
+    // time, so on a turbo R the board swings at the same resolution it rests
+    // at, which is what the mode was traded away for in the first place.
+    Msx2_FloorBand(1, MSX2_TURBO_R() ? 1 : g_floor_stride);
 }
 
 void Msx2_ArenaMoveStart(void)
