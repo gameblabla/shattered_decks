@@ -371,12 +371,41 @@ static const u8 g_gem_tint[2][MSX2_GEM_PLANES] =
 	{ MSX2_SPR_TEAL_DK, MSX2_SPR_TEAL, MSX2_SPR_TEAL_HI },
 };
 
+#ifdef MSX2_PLUS
+// THE SAME GEM, NAMED OUT OF THE PALETTE.
+// GRAPHIC 7 is the one mode whose sprites come from the chip's own fixed
+// sixteen colours; in SCREEN 10 the plane reads the PALETTE REGISTERS instead
+// (openMSX picks palBg for every mode but GRAPHIC7, and the V9958 does the
+// same).  Entries 8..15 of that palette are fitted to whichever painting is on
+// the screen (tools/msx2/msx2_yjk.py), so the fixed-table indices above name
+// nothing stable there: the sanctum road's selector took a different colour on
+// every backdrop.  These are the same three bands out of the interface's own
+// half of the palette, which every SCREEN 10 picture carries unchanged.
+// THE SHADOW BAND MAY NOT BE THE PANEL'S OWN NAVY.
+// Entry 1 is what every list panel is filled with, and the selector always
+// stands ON a panel -- so a shadow band painted in 1 was the panel again and
+// the gem lost the whole of its lit-from-the-left half.  Entry 4, dark sand,
+// is the only other dark ink the interface's half of the palette owns, and it
+// reads against navy at 2x magnification.
+static const u8 g_gem_tint_yjk[2][MSX2_GEM_PLANES] =
+{
+	{ 4, 6, 2 },        // shadow dark sand, red, gold highlight
+	{ 4, 5, 7 },        // shadow dark sand, teal, white highlight
+};
+#endif
+
 void Msx2_SpriteGem(u8 x, u8 y, u8 frame, u8 color)
 {
 	// One sprite a shade, all at the same place: the planes are disjoint masks
 	// of one solid, so what the viewer sees is a single shaded gem and not
 	// three sprites on top of each other.
-	const u8* tint = g_gem_tint[(color == MSX2_SPR_TEAL) ? 1 : 0];
+	u8 which = (u8)((color == MSX2_SPR_TEAL) ? 1 : 0);
+#ifdef MSX2_PLUS
+	const u8* tint = Msx2_VideoIsYjk() ? g_gem_tint_yjk[which]
+	                                   : g_gem_tint[which];
+#else
+	const u8* tint = g_gem_tint[which];
+#endif
 	u8 slot = (u8)(MSX2_SPR_GEM0 +
 	               (frame & (MSX2_GEM_FRAMES - 1)) * MSX2_GEM_PLANES);
 	u8 p;
