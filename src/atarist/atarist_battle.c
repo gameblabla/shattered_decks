@@ -116,10 +116,20 @@ static uint8_t  g_atk_dies, g_def_dies;
  * on the linker's choice for a byte array, and the 48-byte palette is a whole
  * number of words, so the image starts aligned too. */
 #define BIG_PAL_WORDS  (ATARIST_ART_BIG_PAL / 2)
-static uint16_t g_rec[2][ATARIST_ART_BIG_RECORD / 2];
+/* Plus the depacker's slack: a record arrives PACKED and is depacked in place
+ * inside this very buffer, whose tail the packed bytes are read into. */
+#define BIG_REC_WORDS  ((ATARIST_ART_BIG_RECORD + ATARIST_ZX0_SLACK + 1) / 2)
+static uint16_t g_rec[2][BIG_REC_WORDS];
 static uint16_t g_pal[2][16];
 static AtaristImage g_img[2];
 static int16_t g_file = -1;         /* DAT/BIG.CRD, held open */
+
+/* DAT/BIG.CRD's index, read once when the file is opened.  The records are
+ * packed one by one, so they are no longer a fixed stride and a face is an
+ * offset lookup instead of a multiply; the extra entry is the end of the last
+ * record, which is what gives every record a length. */
+static uint32_t g_big_off[ATARIST_ART_BIG_FACES + 1];
+static uint8_t  g_big_index;        /* the index is resident and valid */
 
 /* ── Loading ─────────────────────────────────────────────────────────────── */
 
@@ -132,18 +142,43 @@ static int16_t g_file = -1;         /* DAT/BIG.CRD, held open */
  * the FAT chain, and this file is read from 300 KB in.  Four opens a battle --
  * a palette and an image for each card -- stalled the game for five seconds;
  * one open and two reads is a quarter of that. */
+/* The index off the front of DAT/BIG.CRD.  Read ONCE, with the open: it is
+ * under 300 bytes and every battle after the first would otherwise pay a seek
+ * to the start of a file it is about to seek 200 KB into. */
+static int load_big_index(int16_t handle)
+{
+    uint8_t hdr[ATARIST_ART_BIG_INDEX];
+    int i;
+
+    if (Atarist_DiskReadAt(handle, 0, hdr, sizeof hdr) != (int32_t)sizeof hdr)
+        return 0;
+    if (hdr[0] != 'Z' || hdr[1] != 'X' || hdr[2] != 'R' || hdr[3] != '1')
+        return 0;
+    if (((int)hdr[4] << 8 | hdr[5]) != ATARIST_ART_BIG_FACES) return 0;
+    for (i = 0; i <= ATARIST_ART_BIG_FACES; ++i) {
+        const uint8_t *p = hdr + 8 + i * 4;
+        g_big_off[i] = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                       ((uint32_t)p[2] << 8) | p[3];
+    }
+    return 1;
+}
+
 static int load_face(int16_t handle, int slot, int face)
 {
-    int32_t off = (int32_t)face * ATARIST_ART_BIG_RECORD;
     const uint8_t *rgb = (const uint8_t *)g_rec[slot];
+    int32_t off, avail;
     int i;
 
     g_have[slot] = 0;
     /* Monsters only -- see ATARIST_ART_BIG_FACES.  A support or a card back
      * reaching this is a bug in the caller, not a missing record. */
     if (face < 0 || face >= ATARIST_ART_BIG_FACES) return 0;
-    if (Atarist_DiskReadAt(handle, off, g_rec[slot],
-                           ATARIST_ART_BIG_RECORD) != ATARIST_ART_BIG_RECORD)
+    if (!g_big_index) return 0;
+    off = (int32_t)g_big_off[face];
+    avail = (int32_t)(g_big_off[face + 1] - g_big_off[face]);
+    if (Atarist_DiskReadPackedAt(handle, off, avail, g_rec[slot],
+                                 (int32_t)sizeof g_rec[slot]) !=
+        ATARIST_ART_BIG_RECORD)
         return 0;
 
     for (i = 0; i < 16; ++i)
@@ -345,8 +380,11 @@ int Atarist_BattleBegin(void)
          * battle.  TOS stays resident for the life of the program and closes
          * it at exit; nothing else touches this file. */
         int ok;
-        if (g_file < 0) g_file = Atarist_DiskOpen("DAT\\BIG.CRD");
-        if (g_file < 0) return 0;
+        if (g_file < 0) {
+            g_file = Atarist_DiskOpen("DAT\\BIG.CRD");
+            if (g_file >= 0) g_big_index = (uint8_t)load_big_index(g_file);
+        }
+        if (g_file < 0 || !g_big_index) return 0;
         ok = load_face(g_file, SIDE_ATK,
                        Atarist_CardFaceForCard(g_atk_card, 1));
         if (ok && !g_direct && !g_trap)

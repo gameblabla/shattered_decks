@@ -112,7 +112,7 @@ $(PRG): check-sdk $(ART_STAMP) $(OBJS)
 MUSIC_SRC := $(wildcard msx_music/*.vgm)
 MUSIC_STAMP := $(BUILD)/data/.music
 
-$(MUSIC_STAMP): tools/atarist/gen_atarist_audio.py $(MUSIC_SRC)
+$(MUSIC_STAMP): tools/atarist/gen_atarist_audio.py tools/atarist/zx0pack.py $(MUSIC_SRC)
 	@mkdir -p $(BUILD)/data/MUS
 	python3 tools/atarist/gen_atarist_audio.py --out $(BUILD)/data/MUS
 	@touch $@
@@ -122,6 +122,7 @@ $(MUSIC_STAMP): tools/atarist/gen_atarist_audio.py $(MUSIC_SRC)
 # src/generated/atarist_art.h -- the two palettes it FITTED to the paintings --
 # so the conversion has to run before anything that includes it compiles.
 ART_SRC := tools/atarist/gen_atarist_assets.py \
+           tools/atarist/zx0pack.py \
            assets/source/cards/card_data.txt \
            assets/source/title/title_320x200_atarist.png \
            assets/source/textures/sandstone_1.png \

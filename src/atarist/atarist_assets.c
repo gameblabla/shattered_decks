@@ -65,9 +65,15 @@ static int load_art(void)
     /* One allocation for all three files: three Malloc()s of this size on a
      * TPA that already carries two screens and a music buffer is three chances
      * to fail on a 512 KB machine, and the sizes are fixed anyway. */
+    /* Plus the depacker's slack.  Each file is read PACKED into the tail of
+     * its own region and depacked over itself, so the read runs a little past
+     * the region's end -- into the next region, which is loaded afterwards
+     * and overwrites it.  Only the last one needs room of its own, so the
+     * slack is added once, at the end. */
     block = (uint8_t *)st_malloc(ARENA_BYTES +
                                  (int32_t)ATARIST_ART_FACES * FIELD_BYTES +
-                                 (int32_t)ATARIST_ART_FACES * HAND_BYTES);
+                                 (int32_t)ATARIST_ART_FACES * HAND_BYTES +
+                                 ATARIST_ZX0_SLACK);
     if (!block) {
         g_atarist_probe.status = ATARIST_PROBE_NOMEM;
         ATARIST_MARK(20);
@@ -81,16 +87,19 @@ static int load_art(void)
      * nineteen seconds reading: 21 before the first file, 24 when all three
      * are in.  A run that comes back NOFILE says which read failed. */
     ATARIST_MARK(21);
-    if (Atarist_DiskLoad("DAT\\ARENA.TEX", g_arena_tex, ARENA_BYTES) != ARENA_BYTES)
+    if (Atarist_DiskLoadPacked("DAT\\ARENA.TEX", g_arena_tex,
+                               ARENA_BYTES + ATARIST_ZX0_SLACK) != ARENA_BYTES)
         return 0;
     ATARIST_MARK(22);
-    if (Atarist_DiskLoad("DAT\\FIELD.CRD", g_field,
-                         (int32_t)ATARIST_ART_FACES * FIELD_BYTES) !=
+    if (Atarist_DiskLoadPacked("DAT\\FIELD.CRD", g_field,
+                               (int32_t)ATARIST_ART_FACES * FIELD_BYTES +
+                               ATARIST_ZX0_SLACK) !=
         (int32_t)ATARIST_ART_FACES * FIELD_BYTES)
         return 0;
     ATARIST_MARK(23);
-    if (Atarist_DiskLoad("DAT\\HAND.CRD", g_hand,
-                         (int32_t)ATARIST_ART_FACES * HAND_BYTES) !=
+    if (Atarist_DiskLoadPacked("DAT\\HAND.CRD", g_hand,
+                               (int32_t)ATARIST_ART_FACES * HAND_BYTES +
+                               ATARIST_ZX0_SLACK) !=
         (int32_t)ATARIST_ART_FACES * HAND_BYTES)
         return 0;
     ATARIST_MARK(24);

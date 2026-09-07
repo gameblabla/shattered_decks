@@ -21,13 +21,17 @@
 #define ATARIST_ART_ARENA_W    128
 #define ATARIST_ART_BIG_W      96
 #define ATARIST_ART_BIG_H      96
-/* One DAT/BIG.CRD record: sixteen RGB triples, then the
- * planar image.  Fixed size, so a face is one Fseek. */
+/* One DAT/BIG.CRD record, UNPACKED: sixteen RGB triples,
+ * then the planar image.  The records are ZX0 packed one by
+ * one behind an offset index, so a face is an index lookup,
+ * one Fseek and one depack -- see atarist_battle.c. */
 #define ATARIST_ART_BIG_PAL    48
 #define ATARIST_ART_BIG_BYTES  4608
 #define ATARIST_ART_BIG_RECORD 4656
 /* Monsters only: nothing else can attack or be attacked. */
 #define ATARIST_ART_BIG_FACES  72
+/* Bytes of index in front of DAT/BIG.CRD's first record. */
+#define ATARIST_ART_BIG_INDEX  300
 #define ATARIST_ART_TITLE_BAND 8
 
 static const uint8_t g_atarist_arena_rgb[16][3] = {

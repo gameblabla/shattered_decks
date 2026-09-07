@@ -44,12 +44,40 @@ Every picture in the port comes off the floppy, converted from `assets/source/`
 by `tools/atarist/gen_atarist_assets.py`.  Nothing is drawn procedurally any
 more.
 
-| file | what | bytes |
-|---|---|---|
-| `DAT/ARENA.TEX` | 128x128 chunky board slab: a sandstone checkerboard | 16,384 |
-| `DAT/FIELD.CRD` | 79 card faces, 32x32 chunky, ARENA palette | 80,896 |
-| `DAT/HAND.CRD` | the same 79 faces, 32x24 planar, CARD palette | 30,336 |
-| `DAT/BIG.CRD` | 72 battle cards, 96x96 planar + a palette each | 335,232 |
+| file | what | raw | on the floppy |
+|---|---|---|---|
+| `DAT/ARENA.TEX` | 128x128 chunky board slab: a sandstone checkerboard | 16,384 | 875 |
+| `DAT/FIELD.CRD` | 79 card faces, 32x32 chunky, ARENA palette | 80,896 | 18,365 |
+| `DAT/HAND.CRD` | the same 79 faces, 32x24 planar, CARD palette | 30,336 | 23,059 |
+| `DAT/BIG.CRD` | 72 battle cards, 96x96 planar + a palette each | 335,232 | 301,605 |
+| `DAT/TITLE.SCR` | the title painting, 25 bands of 16 colours | 33,262 | 19,173 |
+| `MUS/*.YMS` | the seven YM streams | 115,248 | 27,844 |
+
+### Everything on the floppy is ZX0 packed
+
+`tools/atarist/zx0pack.py` packs and `src/atarist/atarist_unzx0.S` (Marty and
+Hodges' 68000 depacker) unpacks; the whole payload went from 611 KB to 391 KB,
+which is what left 257 KB free on a 720 KB disk instead of about 36 KB.  Three things
+about it are load-bearing:
+
+* **The depacker wants `zx0`, not `zx0 -c`.**  It reads the current (v2)
+  stream; classic v1 output walks off the end of the buffer.  Settled by
+  transliterating the assembly into Python, and every blob the build writes is
+  still round-tripped through that transliteration, so a stream the hardware
+  could not depack fails the build instead of the boot.
+* **Depacking is IN PLACE**, because a 512 KB machine has no room for a scratch
+  buffer beside a 79 KB card sheet.  The packed bytes are read into the TAIL of
+  the destination and the writer overtakes the reader; how far the writer may
+  run ahead is measured per blob by the packer and stored in its header, so a
+  caller only leaves `ATARIST_ZX0_SLACK` (256) bytes past the unpacked size.
+  The worst blob in the set needs 4.
+* **`BIG.CRD` is packed RECORD BY RECORD, behind an offset index.**  It cannot
+  be packed as a file: the game seeks to one card out of seventy-two and the
+  machine cannot hold the other seventy-one.  Per-record packing only buys 10%
+  — a dithered planar portrait is close to noise, and there is no shared
+  dictionary across records — but it keeps the single seek-and-read the loader
+  always did.  One record does not compress at all and is stored raw; the
+  loader takes either, which is the path that codes for it.
 
 `BIG.CRD` is streamed, not resident: the two cards an attack needs are read
 when the animation starts.  That read is the duel's worst frame, and getting it
@@ -113,10 +141,13 @@ The conversion rules that survived:
   composite: blurring the composited card softens the frame's gold rules into
   brown smears, and those rules are the only thing that says "card" at
   twenty-four pixels across.
-* **Diffusion at 0.75**, between the ground's damped 0.35 and the ramp's 1.0.
+* **Diffusion at 0.75** for a card, against the tiles' 0.60 and the ramp's 1.0.
   Sixteen fitted entries are dense in luminance and sparse in hue, so full
   diffusion overshoots into the saturated ones and speckles a grey robe with
-  red and green confetti.
+  red and green confetti.  A TILE takes more (`TILE_DIFFUSION`) because its
+  three tones are one stone's own terciles and therefore a real ramp, so the
+  error always has somewhere near to go; at 0.35 the slab posterised into three
+  flat bands with grain only along their seams.
 * **Sigils skip the blur.**  They are drawn, not photographed, and rounding
   their shapes off turned all six supports into the same blob.  Equip and guard
   differ by SHAPE, not tint.

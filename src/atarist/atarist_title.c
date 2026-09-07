@@ -44,6 +44,9 @@
 #define TITLE_MAX_BANDS (ATARIST_MAX_SPLITS - 1)
 #define TITLE_FILE_MAX (TITLE_HDR + TITLE_MAX_BANDS * TITLE_BAND_RGB + \
                         ATARIST_SCREEN_BYTES)
+/* The file is ZX0 packed and depacked in place, so the buffer carries the
+ * depacker's slack past the picture -- see ATARIST_ZX0_SLACK. */
+#define TITLE_BUFFER (TITLE_FILE_MAX + ATARIST_ZX0_SLACK)
 
 /* The fallback gradient, for a floppy with no DAT\TITLE.SCR on it. */
 #define FALLBACK_BANDS 12
@@ -97,10 +100,10 @@ static int title_load(void)
 
     if (g_picture) return 1;
     if (!g_file) {
-        g_file = (uint8_t *)st_malloc(TITLE_FILE_MAX);
+        g_file = (uint8_t *)st_malloc(TITLE_BUFFER);
         if (!g_file) return 0;
     }
-    got = Atarist_DiskLoad("DAT\\TITLE.SCR", g_file, TITLE_FILE_MAX);
+    got = Atarist_DiskLoadPacked("DAT\\TITLE.SCR", g_file, TITLE_BUFFER);
     if (got < (int32_t)(TITLE_HDR + ATARIST_SCREEN_BYTES)) return 0;
     if (be32(g_file) != TITLE_MAGIC) return 0;
 

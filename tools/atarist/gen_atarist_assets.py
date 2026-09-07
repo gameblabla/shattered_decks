@@ -26,6 +26,14 @@ Outputs (--out, default build/atarist/data):
 
   src/generated/atarist_art.h   the two palettes and the sizes above
 
+EVERY FILE ABOVE IS ZX0 PACKED (tools/atarist/zx0pack.py) and depacked IN
+PLACE on the ST by src/atarist/atarist_unzx0.S.  The art is 160 KB raw against
+a 720 KB floppy that also carries 33 KB of music and a 100 KB program, and it
+is the card sheets that grow every time a card is added.  BIG.CRD is packed
+RECORD BY RECORD behind an offset index instead of whole, because a battle
+seeks to one card out of seventy-two and a machine with 512 KB cannot hold the
+other seventy-one.
+
 Chunky bytes are stored ALREADY MULTIPLIED BY FOUR, which is the convention
 the C2P and the rasteriser share (see atarist_c2p.S); the loader is then a
 plain read with no fix-up pass over 80 KB on an 8 MHz machine.
@@ -47,6 +55,9 @@ import sys
 import numpy as np
 from PIL import (Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter,
                  ImageOps)
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import zx0pack
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CARD_DIR = os.path.join(ROOT, "assets", "source", "cards")
@@ -140,6 +151,9 @@ CARD_FIXED = {
 ARENA_TEX_W = 128
 TEXELS_PER_UNIT = 16         # must equal ATARIST_TEXELS_PER_UNIT
 TILE_INSET = 0.14            # how much of a slab photograph is its border
+# How much of a tile's dither error is carried into its neighbours.  Higher
+# than anything else here on purpose -- see `tile_cell`.
+TILE_DIFFUSION = 0.60
 BOARD_COLS, BOARD_ROWS = 5, 4   # must equal ATARIST_COLS / ATARIST_ROWS
 FIELD_W = FIELD_H = 32       # 3D board card texture
 HAND_W, HAND_H = 32, 24      # hand card art window
@@ -782,10 +796,15 @@ def tile_cell(path, pal, allow, t, contrast=1.35, scale=1.0):
     # because separation cannot help a distribution that misses the palette.
     if scale != 1.0:
         img = ImageEnhance.Brightness(img).enhance(scale)
-    # DAMPED diffusion, as everywhere else that a scattered palette is the
-    # target: four tile tones are not a ramp, and a large error carried into a
-    # neighbour with no near colour to absorb it reads as noise, not shading.
-    return dither(img, pal, allow=allow, strength=0.35)
+    # A TILE IS DITHERED HARDER THAN THE REST OF THE BOARD.  Everywhere else a
+    # scattered palette wants damped diffusion -- a large error carried into a
+    # neighbour with no near colour to absorb it reads as noise -- but a tile's
+    # three tones ARE a ramp, they are one stone's own terciles, so the error
+    # always has somewhere near to go.  At 0.35 the slab posterised into three
+    # flat bands with the grain only at their seams; at 0.6 the bands break up
+    # into the stone's own speckle, which is what a sandstone should look like
+    # under a camera that is eight texels away from it.
+    return dither(img, pal, allow=allow, strength=TILE_DIFFUSION)
 
 
 def build_arena_texture(pal, light, dark):
@@ -860,12 +879,54 @@ def build_title(quiet):
 
 # ── Emit ─────────────────────────────────────────────────────────────────────
 
-def write(path, data, quiet, what):
+def write(path, data, quiet, what, pack=True):
+    """Emit one floppy file, ZX0 packed unless told otherwise.
+
+    `pack` is the whole-file case: the ST loads the packed bytes into the tail
+    of the buffer the file was going to fill anyway and depacks over them, so
+    packing costs nothing but the depack.  A file read in PIECES cannot go
+    through here -- see `pack_records`."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    raw = len(data)
+    if pack:
+        data = zx0pack.pack(bytes(data))
     with open(path, "wb") as f:
         f.write(data)
     if not quiet:
-        print("%-8s %-28s %6d bytes" % (what, os.path.relpath(path, ROOT), len(data)))
+        note = "" if len(data) == raw else "  (%d raw, %d%%)" % (
+            raw, round(100.0 * len(data) / raw))
+        print("%-8s %-28s %6d bytes%s"
+              % (what, os.path.relpath(path, ROOT), len(data), note))
+    return len(data)
+
+
+def pack_records(records):
+    """Variable-length records behind an offset index.
+
+    DAT/BIG.CRD is 328 KB of battle portraits and the game wants ONE of them
+    at a time, so it cannot be packed as a file -- the ST would have to hold
+    all seventy-two to reach the one it seeks to.  Each record is packed on its
+    own instead and the index says where each one landed, which keeps the
+    single seek-and-read the loader always did and still buys the ratio.
+
+    The layout is the magic, the count, a pad word, and then count+1 offsets
+    from the start of the file, so a record's length is the difference between
+    two of them.  `src/atarist/atarist_battle.c` reads the index once when it
+    opens the file and keeps it."""
+    packed = [zx0pack.pack(r) for r in records]
+    head = 8 + (len(packed) + 1) * 4
+    offs, at = [], head
+    for blob in packed:
+        offs.append(at)
+        at += len(blob)
+    offs.append(at)
+    out = bytearray(struct.pack(">4sHH", b"ZXR1", len(packed), 0))
+    for o in offs:
+        out += struct.pack(">I", o)
+    for blob in packed:
+        out += blob
+    assert len(out) == at
+    return bytes(out), head
 
 
 def pal_c(name, pal, slots):
@@ -1069,8 +1130,8 @@ def main():
                            ("GROOVE", "TILE_DARK", "RIM_SIDE")],
                           TEXELS_PER_UNIT, contrast=1.45, scale=DARK_TILE_SHADE)
     ground = build_arena_texture(arena_pal, tile_light, tile_dark)
-    write(os.path.join(dat, "ARENA.TEX"), (ground << 2).astype(np.uint8).tobytes(),
-          quiet, "GROUND")
+    n_arena = write(os.path.join(dat, "ARENA.TEX"),
+                    (ground << 2).astype(np.uint8).tobytes(), quiet, "GROUND")
     preview(ground, arena_pal).resize((256, 256), Image.Resampling.NEAREST).save(
         os.path.join(prev, "arena_tex.png"))
 
@@ -1090,7 +1151,7 @@ def main():
     # entries fitted to these paintings are dense enough that the error one
     # pixel cannot hold is genuinely what its neighbour can, and damping it
     # only posterises the result.
-    big = bytearray()
+    big = []
     sheet_b = Image.new("RGB", (BIG_W * 6, BIG_H * ((len(cards) + 5) // 6)))
     for i, (tag, src) in enumerate(faces):
         fi = field_indices(tag, src, arena_pal, arena_frame_allow)
@@ -1101,19 +1162,27 @@ def main():
         hand += to_planar(hi)
         sheet_h.paste(preview(hi, card_pal), ((i % 10) * HAND_W, (i // 10) * HAND_H))
 
-        # The battle card, with its own sixteen.  Fixed-size records, so the
-        # loader is one Fseek and one Fread rather than an index table.
+        # The battle card, with its own sixteen.  A record is its palette and
+        # then its image, and it is PACKED ON ITS OWN behind the index
+        # `pack_records` writes: fixed-size records would have been one Fseek
+        # each, but a fixed size is also 328 KB of floppy for art that packs
+        # to a third of that, and the index costs one read at open.
         if tag.startswith("m:"):
             bi, bpal = big_card(tag, src)
+            rec = bytearray()
             for c in bpal:
-                big += bytes(c)
-            big += to_planar(bi)
+                rec += bytes(c)
+            rec += to_planar(bi)
+            assert len(rec) == BIG_RECORD
+            big.append(bytes(rec))
             sheet_b.paste(preview(bi, bpal),
                           ((i % 6) * BIG_W, (i // 6) * BIG_H))
-    write(os.path.join(dat, "FIELD.CRD"), bytes(field), quiet, "FIELD")
-    write(os.path.join(dat, "HAND.CRD"), bytes(hand), quiet, "HAND")
-    assert len(big) == len(cards) * BIG_RECORD
-    write(os.path.join(dat, "BIG.CRD"), bytes(big), quiet, "BIG")
+    n_field = write(os.path.join(dat, "FIELD.CRD"), bytes(field), quiet, "FIELD")
+    n_hand = write(os.path.join(dat, "HAND.CRD"), bytes(hand), quiet, "HAND")
+    assert len(big) == len(cards)
+    big_blob, big_hdr = pack_records(big)
+    n_big = write(os.path.join(dat, "BIG.CRD"), big_blob, quiet, "BIG",
+                  pack=False)
     sheet_f.save(os.path.join(prev, "field_cards.png"))
     sheet_h.save(os.path.join(prev, "hand_cards.png"))
     sheet_b.save(os.path.join(prev, "big_cards.png"))
@@ -1128,7 +1197,7 @@ def main():
         for c in pal:
             blob += bytes(c)
     blob += to_planar(tidx)
-    write(os.path.join(dat, "TITLE.SCR"), bytes(blob), quiet, "TITLE")
+    n_title = write(os.path.join(dat, "TITLE.SCR"), bytes(blob), quiet, "TITLE")
     tprev = Image.new("RGB", (TITLE_W, TITLE_H))
     for b, pal in enumerate(tpals):
         y0 = b * TITLE_BAND_ROWS
@@ -1162,13 +1231,17 @@ def main():
         f.write("#define ATARIST_ART_ARENA_W    %d\n" % ARENA_TEX_W)
         f.write("#define ATARIST_ART_BIG_W      %d\n" % BIG_W)
         f.write("#define ATARIST_ART_BIG_H      %d\n" % BIG_H)
-        f.write("/* One DAT/BIG.CRD record: sixteen RGB triples, then the\n"
-                " * planar image.  Fixed size, so a face is one Fseek. */\n")
+        f.write("/* One DAT/BIG.CRD record, UNPACKED: sixteen RGB triples,\n"
+                " * then the planar image.  The records are ZX0 packed one by\n"
+                " * one behind an offset index, so a face is an index lookup,\n"
+                " * one Fseek and one depack -- see atarist_battle.c. */\n")
         f.write("#define ATARIST_ART_BIG_PAL    %d\n" % BIG_PAL_BYTES)
         f.write("#define ATARIST_ART_BIG_BYTES  %d\n" % BIG_PLANE_BYTES)
         f.write("#define ATARIST_ART_BIG_RECORD %d\n" % BIG_RECORD)
         f.write("/* Monsters only: nothing else can attack or be attacked. */\n")
         f.write("#define ATARIST_ART_BIG_FACES  %d\n" % len(cards))
+        f.write("/* Bytes of index in front of DAT/BIG.CRD's first record. */\n")
+        f.write("#define ATARIST_ART_BIG_INDEX  %d\n" % big_hdr)
         f.write("#define ATARIST_ART_TITLE_BAND %d\n\n" % TITLE_BAND_ROWS)
         f.write(pal_c("g_atarist_arena_rgb", arena_pal, ARENA_SLOTS))
         f.write("\n\n")
@@ -1176,9 +1249,12 @@ def main():
         f.write("\n\n#endif /* WAIFU_ATARIST_ART_H */\n")
     if not quiet:
         print("HEADER   %-28s" % os.path.relpath(HEADER, ROOT))
-        print("total on floppy: %d bytes" %
-              (len(field) + len(hand) + len(big) + len(blob) +
-               ARENA_TEX_W * ARENA_TEX_W))
+        raw = (len(field) + len(hand) + len(cards) * BIG_RECORD + len(blob) +
+               ARENA_TEX_W * ARENA_TEX_W)
+        on_disk = n_arena + n_field + n_hand + n_big + n_title
+        print("total on floppy: %d bytes packed, %d raw -- ZX0 saves %d (%d%%)"
+              % (on_disk, raw, raw - on_disk,
+                 round(100.0 * (raw - on_disk) / raw)))
 
 
 if __name__ == "__main__":

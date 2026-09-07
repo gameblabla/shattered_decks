@@ -40,6 +40,9 @@ import os
 import struct
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import zx0pack
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SOURCE_DIR = os.path.join(ROOT, "msx_music")
 DEFAULT_OUT = os.path.join(ROOT, "build", "atarist", "data", "MUS")
@@ -227,6 +230,7 @@ def main():
 
     os.makedirs(a.out, exist_ok=True)
     total = 0
+    total_raw = 0
     for src, name in TRACKS:
         path = os.path.join(a.source, src)
         if not os.path.exists(path):
@@ -237,16 +241,23 @@ def main():
             print("skip %-14s (no register writes)" % src)
             continue
         blob = encode(frames, loop_frame)
+        # ZX0, like the art.  A stream is loaded WHOLE into the resident music
+        # buffer and depacked in place there, so the only thing packing costs
+        # is a depack on a track change -- and the VBL player is stopped across
+        # that anyway, because it reads the very bytes being overwritten.
+        raw = len(blob)
+        blob = zx0pack.pack(blob)
         with open(os.path.join(a.out, name), "wb") as f:
             f.write(blob)
         total += len(blob)
+        total_raw += raw
         writes = sum(1 for i, st in enumerate(frames)
                      if i and st != frames[i - 1])
         print("%-14s -> %-12s %5d frames (%5.1fs) loop@%-5d %6d bytes, "
               "%d frames change something"
               % (src, name, len(frames), len(frames) / float(FRAME_HZ),
                  loop_frame, len(blob), writes))
-    print("total %d bytes" % total)
+    print("total %d bytes packed, %d raw" % (total, total_raw))
     return 0
 
 
