@@ -1,8 +1,10 @@
 #include "deck.h"
 
 #include <stdint.h>
+#if !defined(WAIFU_SNES)
 #include <stdlib.h>
 #include <time.h>
+#endif
 
 #include "deck_pools.h"
 
@@ -66,8 +68,9 @@ static const int waifu_deck_random_rare_pool[] = {
 static int deck_card_copy_count(const WaifuDeck *deck, int card)
 {
     int n = 0;
+    int i;
     if (!deck) return 0;
-    for (int i = 0; i < deck->count; ++i) if (deck->cards[i] == card) ++n;
+    for (i = 0; i < deck->count; ++i) if (deck->cards[i] == card) ++n;
     return n;
 }
 
@@ -79,7 +82,10 @@ static int deck_append_limited(WaifuDeck *deck, int card, int max_copies)
     return 1;
 }
 
-#ifndef MSX2_ASCII16X
+/* 816-tcc has neither <time.h> nor <stdlib.h>'s getenv, and a cartridge has no
+ * clock to mix in anyway: the SNES fork seeds from the frame counter and the
+ * first pad read instead (snesEntropySeed in src/snes/snes_input.c). */
+#if !defined(MSX2_ASCII16X) && !defined(WAIFU_SNES)
 uint32_t waifu_deck_runtime_seed(uint32_t salt)
 {
 #if defined(WAIFU_DEBUG_AUTODUEL) || defined(WAIFU_DEBUG_AUTOBOARD) || defined(WAIFU_DEBUG_AUTOSTORY)
@@ -148,8 +154,9 @@ uint32_t waifu_deck_rng_next(WaifuDeckRng *rng)
 
 void waifu_deck_clear(WaifuDeck *deck)
 {
+    int i;
     if (!deck) return;
-    for (int i = 0; i < WAIFU_DECK_SIZE; ++i) deck->cards[i] = WAIFU_DECK_NONE;
+    for (i = 0; i < WAIFU_DECK_SIZE; ++i) deck->cards[i] = WAIFU_DECK_NONE;
     deck->count = 0;
     deck->pos = 0;
 }
@@ -170,8 +177,9 @@ int waifu_deck_draw(WaifuDeck *deck)
 
 void waifu_deck_shuffle(WaifuDeck *deck, WaifuDeckRng *rng)
 {
+    int i;
     if (!deck || !rng) return;
-    for (int i = deck->count - 1; i > 0; --i) {
+    for (i = deck->count - 1; i > 0; --i) {
         int j = (int)(waifu_deck_rng_next(rng) % (uint32_t)(i + 1));
         int tmp = deck->cards[i];
         deck->cards[i] = deck->cards[j];
@@ -183,10 +191,11 @@ void waifu_deck_shuffle(WaifuDeck *deck, WaifuDeckRng *rng)
 void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bias)
 {
     int guard = 0;
+    int i, ci;
 
     waifu_deck_clear(deck);
     if (!rng) return;
-    for (int i = 0; i < 3; ++i) {
+    for (i = 0; i < 3; ++i) {
         (void)deck_append_limited(deck, WAIFU_SUPPORT_THUNDER_CARD_ID, 3);
     }
 
@@ -217,9 +226,9 @@ void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bi
         if (deck_card_is_restricted(card)) continue;
         (void)deck_append_limited(deck, card, 4);
     }
-    for (int card = 0; deck->count < WAIFU_DECK_SIZE && card < WAIFU_CARD_COUNT; ++card) {
-        if (deck_card_is_restricted(card)) continue;
-        while (deck->count < WAIFU_DECK_SIZE && deck_append_limited(deck, card, 4)) {
+    for (ci = 0; deck->count < WAIFU_DECK_SIZE && ci < WAIFU_CARD_COUNT; ++ci) {
+        if (deck_card_is_restricted(ci)) continue;
+        while (deck->count < WAIFU_DECK_SIZE && deck_append_limited(deck, ci, 4)) {
             ;
         }
     }
@@ -229,10 +238,11 @@ void waifu_deck_build_random(WaifuDeck *deck, WaifuDeckRng *rng, int strength_bi
 #ifndef MSX2_ASCII16X
 void waifu_deck_build_from_list(WaifuDeck *deck, const int *cards, int count, WaifuDeckRng *rng, int shuffle)
 {
+    int i;
     waifu_deck_clear(deck);
     if (!deck || !cards) return;
     if (count > WAIFU_DECK_SIZE) count = WAIFU_DECK_SIZE;
-    for (int i = 0; i < count; ++i) {
+    for (i = 0; i < count; ++i) {
         if (deck_card_is_valid(cards[i])) deck->cards[deck->count++] = cards[i];
     }
     if (shuffle && rng) waifu_deck_shuffle(deck, rng);
@@ -255,8 +265,9 @@ static int opponent_story_card_at(int duel, int pos)
 
 void waifu_deck_build_opponent_story(WaifuDeck *deck, int duel_index, WaifuDeckRng *rng, int shuffle)
 {
+    int i;
     waifu_deck_clear(deck);
-    for (int i = 0; i < WAIFU_DECK_SIZE; ++i) {
+    for (i = 0; i < WAIFU_DECK_SIZE; ++i) {
         int card = opponent_story_card_at(duel_index, i);
         /* The final boss (and only the final boss) fields 3 Mecha Ultimate
          * Dragons; this is the sole place that card exists in the game. */
@@ -269,7 +280,7 @@ void waifu_deck_build_opponent_story(WaifuDeck *deck, int duel_index, WaifuDeckR
     if (duel_index >= 4 && deck->count >= 5) {
         int opening_has_thunder = 0;
         int thunder_pos = -1;
-        for (int i = 0; i < deck->count; ++i) {
+        for (i = 0; i < deck->count; ++i) {
             if (deck->cards[i] != WAIFU_SUPPORT_THUNDER_CARD_ID) continue;
             if (i < 5) opening_has_thunder = 1;
             else if (thunder_pos < 0) thunder_pos = i;
@@ -286,10 +297,11 @@ void waifu_deck_build_opponent_story(WaifuDeck *deck, int duel_index, WaifuDeckR
 void waifu_deck_build_headless_battle(WaifuDeck *deck, const int opening[5], int seed)
 {
     WaifuDeckRng rng;
+    int i;
     waifu_deck_clear(deck);
     if (!opening) return;
-    for (int i = 0; i < 5 && deck->count < WAIFU_DECK_SIZE; ++i) deck->cards[deck->count++] = opening[i];
-    for (int i = 0; i < 3 && deck->count < WAIFU_DECK_SIZE; ++i) {
+    for (i = 0; i < 5 && deck->count < WAIFU_DECK_SIZE; ++i) deck->cards[deck->count++] = opening[i];
+    for (i = 0; i < 3 && deck->count < WAIFU_DECK_SIZE; ++i) {
         deck->cards[deck->count++] = WAIFU_SUPPORT_THUNDER_CARD_ID;
     }
     waifu_deck_rng_seed(&rng, (uint32_t)(seed ? seed : 17));

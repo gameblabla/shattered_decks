@@ -111,3 +111,4 @@ src/msx2/lib/
 # by tools/msx2/gen_msx_scenes.py.
 src/msx2/assets/
 *.tar.gz
+build/snes/

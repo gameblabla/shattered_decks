@@ -1,0 +1,158 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Makefile.snes — Super Nintendo target (4 MB HiROM / FastROM, no chips)
+#
+#      make -f Makefile.snes            # -> build/snes/waifusnes.sfc
+#      make -f Makefile.snes verify     # build, then run the snesfaust harness
+#
+#  Laid out as a fork the way Makefile.msx2 and Makefile.atarist are:
+#  everything target specific is in src/snes/ and tools/snes/, and src/main.c
+#  is never compiled here.  See SNES_PORT_PLAN.md.
+#
+#  This deliberately does NOT include pvsneslib's devkitsnes/snes_rules.  That
+#  file wildcards $(SRC)/*.c and drops every intermediate next to the source,
+#  which for this repository would sweep in src/main.c, src/msx2/ and
+#  src/atarist/ and scatter .ps/.asm/.obj through the tree.  The three tool
+#  invocations it wraps (816-tcc -> 816-opt -> wla-65816 -> wlalink) are short
+#  enough to spell out, and spelling them out is what lets the object tree live
+#  under build/snes/ and the bank layout be checked.
+# ─────────────────────────────────────────────────────────────────────────────
+
+.DEFAULT_GOAL := all
+
+PVSNESLIB_HOME ?= $(CURDIR)/SNES/pvsneslib
+SNESFAUST      ?= $(CURDIR)/SNES/snesfaust/snesfaust-mednafen
+
+CC      := $(PVSNESLIB_HOME)/devkitsnes/bin/816-tcc
+AS      := $(PVSNESLIB_HOME)/devkitsnes/bin/wla-65816
+LD      := $(PVSNESLIB_HOME)/devkitsnes/bin/wlalink
+OPT     := $(PVSNESLIB_HOME)/devkitsnes/tools/816-opt
+LIBDIR  := $(PVSNESLIB_HOME)/pvsneslib/lib/HiROM_FastROM
+
+PROJ_DIR := src/snes
+BUILD    := build/snes
+OBJ      := $(BUILD)/obj
+ROM      := $(BUILD)/waifusnes.sfc
+
+# ── Cartridge shape (SNES_PORT_PLAN.md §1.1) ─────────────────────────────────
+# 4 MB is the largest chipless ROM that is FastROM everywhere: ExHiROM's upper
+# 4 MB lands in banks $40-$7D, which are SlowROM on every SNES.
+ROMTITLE      := SHATTERED DECKS
+CARTRIDGETYPE := 02
+ROMSIZE       := 0C
+SRAMSIZE      := 03
+COUNTRY       := 01
+LICENSEECODE  := 00
+VERSION       := 00
+ROMBANKS      := 64
+
+HDR := $(OBJ)/hdr.asm
+
+# ── Sources ──────────────────────────────────────────────────────────────────
+# The fork.
+SNES_C   := $(sort $(wildcard $(PROJ_DIR)/*.c))
+SNES_ASM := $(sort $(wildcard $(PROJ_DIR)/*.asm))
+# Compiled in unchanged: the render-free duel rules and the shared AI/decks.
+SHARED_C := src/msx2/msx2_duel.c src/game/ai.c src/game/deck.c
+
+CFILES := $(SNES_C) $(SHARED_C)
+
+# compat/ is first so src/msx2/msx2_duel.c finds the msxgl.h shim, and
+# src/game/*.c the waifu_assets.h one, without either file being edited.
+CFLAGS := -I$(PROJ_DIR)/compat -I$(PROJ_DIR) -Isrc/game -Isrc/generated \
+          -I$(PVSNESLIB_HOME)/pvsneslib/include \
+          -I$(PVSNESLIB_HOME)/devkitsnes/include \
+          -DWAIFU_SNES=1
+# -H HiROM, -F FastROM: they pick the calling/addressing model, so they must
+# agree with LIBDIR or the link silently mixes two ABIs.
+CFLAGS += -H -F
+
+ASFLAGS := -d -s -x -I $(OBJ)
+
+OBJS := $(patsubst %.c,$(OBJ)/%.obj,$(notdir $(CFILES))) \
+        $(patsubst %.asm,$(OBJ)/%.obj,$(notdir $(SNES_ASM)))
+
+# Two source trees feed one flat object dir, so tell make where to look.
+vpath %.c $(PROJ_DIR) src/msx2 src/game
+vpath %.asm $(PROJ_DIR)
+
+.PHONY: all rom verify clean check-sdk banks
+
+all: rom
+
+check-sdk:
+	@test -x "$(CC)" || { \
+	  echo "pvsneslib is not built.  Run:"; \
+	  echo "    cd SNES/pvsneslib && git submodule update --init --depth 1"; \
+	  echo "    make -j all && PVSNESLIB_HOME=\$$PWD make -C pvsneslib"; \
+	  exit 1; }
+	@test -d "$(LIBDIR)" || { echo "missing $(LIBDIR)"; exit 1; }
+
+rom: check-sdk $(ROM)
+
+# ── The header ───────────────────────────────────────────────────────────────
+# Generated from pvsneslib's template with our cartridge shape substituted in,
+# which is what snes_rules does; every object .include's it, so it is also the
+# memory map every section is placed against.
+$(HDR): $(PVSNESLIB_HOME)/devkitsnes/include/hdr.asm.in Makefile.snes
+	@mkdir -p $(dir $@)
+	@sed -e 's/@HIROMDEF@/.DEFINE HIROM 1/' \
+	     -e 's/@FASTROMDEF@/.DEFINE FASTROM 1/' \
+	     -e 's/@ROMTITLE@/$(ROMTITLE)/' \
+	     -e 's/@CARTRIDGETYPE@/$(CARTRIDGETYPE)/' \
+	     -e 's/@ROMSIZE@/$(ROMSIZE)/' \
+	     -e 's/@SRAMSIZE@/$(SRAMSIZE)/' \
+	     -e 's/@COUNTRY@/$(COUNTRY)/' \
+	     -e 's/@LICENSEECODE@/$(LICENSEECODE)/' \
+	     -e 's/@VERSION@/$(VERSION)/' \
+	     -e 's/@ROMBANKS@/$(ROMBANKS)/' \
+	     -e 's/@ROMBANKSIZE@/10000/' \
+	     -e 's/@ROMMODE@/HIROM/' \
+	     -e 's/@ROMSPEED@/FASTROM/' \
+	     $< > $@
+
+# ── Compile ──────────────────────────────────────────────────────────────────
+# 816-tcc emits WLA assembly (.ps), 816-opt peepholes it, wla-65816 assembles.
+$(OBJ)/%.ps: %.c $(HDR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Wall -c $< -o $@
+
+$(OBJ)/%.asm: $(OBJ)/%.ps
+	$(OPT) -i $< -o $@
+
+$(OBJ)/%.obj: $(OBJ)/%.asm
+	$(AS) $(ASFLAGS) -o $@ $<
+
+# Hand-written 65816 assembles straight; it lives in src/snes/ so the object
+# rule above would try to find it in $(OBJ), hence its own pair of rules.
+$(OBJ)/%.obj: $(PROJ_DIR)/%.asm $(HDR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -o $@ $<
+
+.PRECIOUS: $(OBJ)/%.ps $(OBJ)/%.asm
+
+# ── Link ─────────────────────────────────────────────────────────────────────
+$(ROM): $(OBJS)
+	@mkdir -p $(dir $@)
+	@echo "[objects]" > $(BUILD)/linkfile
+	@for o in $(OBJS); do echo "$(CURDIR)/$$o" >> $(BUILD)/linkfile; done
+	@for o in $$(ls $(LIBDIR)); do echo "$(LIBDIR)/$$o" >> $(BUILD)/linkfile; done
+	$(LD) -d -s -v -A -c -L $(LIBDIR) $(BUILD)/linkfile $@
+	@$(MAKE) -s -f Makefile.snes banks
+
+# The 4 MB ceiling is a build check, not a comment: a HiROM cartridge has no
+# bank $100, so a section that spills past $FF is a corrupt ROM and not a
+# bigger one.
+banks:
+	@sz=$$(stat -c %s $(ROM)); \
+	 if [ "$$sz" -gt 4194304 ]; then \
+	   echo "SNES: ROM is $$sz bytes, past the 4 MB HiROM ceiling"; exit 1; fi; \
+	 mode=$$(od -An -tx1 -j 65493 -N1 $(ROM) | tr -d ' '); \
+	 if [ "$$mode" != "31" ]; then \
+	   echo "SNES: map mode byte is \$$$$mode, expected \$$31 (HiROM+FastROM)"; exit 1; fi; \
+	 echo "SNES: $(ROM)  $$sz bytes, map mode \$$$$mode (HiROM + FastROM)"
+
+verify: rom
+	python3 tools/snes/verify.py
+
+clean:
+	rm -rf $(BUILD)
