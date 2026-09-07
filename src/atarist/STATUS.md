@@ -48,9 +48,9 @@ more.
 |---|---|---|---|
 | `DAT/ARENA.TEX` | 128x128 chunky board slab: a sandstone checkerboard | 16,384 | 875 |
 | `DAT/FIELD.CRD` | 79 card faces, 32x32 chunky, ARENA palette | 80,896 | 18,365 |
-| `DAT/HAND.CRD` | the same 79 faces, 32x24 planar, CARD palette | 30,336 | 23,059 |
+| `DAT/HAND.CRD` | the same 79 faces as WHOLE card fronts, 32x44 planar, CARD palette | 55,616 | 27,661 |
 | `DAT/BIG.CRD` | 72 battle cards, 96x96 planar + a palette each | 335,232 | 301,605 |
-| `DAT/TITLE.SCR` | the title painting, 25 bands of 16 colours | 33,262 | 19,173 |
+| `DAT/TITLE.SCR` | the title painting with the logo baked in, 25 bands of 16 colours | 33,262 | 19,203 |
 | `MUS/*.YMS` | the seven YM streams | 115,248 | 27,844 |
 
 ### Everything on the floppy is ZX0 packed
@@ -371,3 +371,42 @@ make -f Makefile.atarist EXTRA_CFLAGS=-DATARIST_BOARD_STILL_FULLRES=0
 
 Hatari's own profiler is not usable here: the MCP `debug` tool pauses and
 resumes the emulator per command, and `profile stats` reports no activity.
+
+## The hand is a row of cards, and the card half is brown
+
+`DAT/HAND.CRD` used to be a card's ART WINDOW plus the frame's inner gold rule
+-- a band cut out of the composited index array -- and the duel screen drew a
+filled panel and a one-pixel outline round each one.  That box is what made the
+hand read as five text fields.  It is the WHOLE card front now, 32x44, the same
+object the board's cards wear, and the duel screen draws no box: the card, its
+two figures in the column beside it, and a yellow repaint of the front's own
+outer keyline for the selection.  25 KB more in RAM, 12 KB more on the floppy.
+
+The CARD palette's four structural tones went with it.  They were a cold
+blue-grey panel ramp that only the boxes needed; they are now four browns cut
+from the same two sandstone photographs the board is, so the card half and the
+board half are one picture.  `CARD_PANEL_DARK` is shaded well below the darkest
+tile because it is the band a card front sits ON.
+
+## Escape is not a quit key any more
+
+It dropped straight to the desktop from anywhere.  On an ST keyboard Escape is
+directly above Tab -- the end-turn key -- so a mis-hit mid-duel looked exactly
+like the game crashing out.  `Atarist_SceneStep` returns the quit request now
+and only the title screen raises it; in a duel Escape is "back", and in the
+hand it gives the duel up and returns to the title.
+
+Space is CONFIRM in every duel state (it used to mean "battle phase" in the
+hand and "cancel" in a sub-state), and B opens the battle phase.
+
+## Photographing the battle animation
+
+The bracketed `--run-seconds` sweep in the memory notes does not work any more:
+the duel seeds itself from the vblank counter, so two runs are two different
+games and a bracket compares nothing.  Drive ONE run instead and screenshot it
+repeatedly -- `Hatari.screenshot()` pauses the emulator, so each shot must be
+followed by `emu continue` -- with the animation built at
+`EXTRA_CFLAGS=-DATARIST_BATTLE_TIME_SCALE=48`.  **`touch` the source first**:
+the makefile does not depend on `EXTRA_CFLAGS`, so a rebuild that only changes
+a `-D` silently keeps the old object and the animation still runs at shipping
+speed.

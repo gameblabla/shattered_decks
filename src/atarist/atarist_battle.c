@@ -41,12 +41,14 @@
 /* The panel: 128 wide, so it is 16-aligned and centres exactly at x = 96.
  * The art sits 16 in from its left edge, which keeps that aligned too. */
 #define PANEL_W    128
-#define PANEL_H    140
+#define PANEL_H    148
 #define PANEL_X    96                       /* (320 - 128) / 2 */
 #define PANEL_Y    22
 #define ART_DX     16
 #define ART_DY     14
-#define STAT_DY    (ART_DY + BIG_H + 6)     /* the ATK/DEF row inside the panel */
+#define SHELF_DY   (ART_DY + BIG_H + 2)     /* the rule under the painting */
+#define STAT_DY    (ART_DY + BIG_H + 6)     /* the first of two stat rows */
+#define STAT_PITCH 13                       /* ATK over DEF */
 #define TITLE_Y    6                        /* the banner above the panel */
 #define MSG_Y      176                      /* the verdict under it */
 
@@ -220,35 +222,73 @@ static void blit_card(int slot, int x, int y)
     Atarist_BlitImageRect(img, sx, 0, w, BIG_H, x, y);
 }
 
-static void draw_number_pair(int x, int y, const char *label, int32_t value)
+/* One stat row: a label on the left, its figure right-aligned on the right.
+ *
+ * THE ROW BEING FOUGHT WITH IS PRINTED IN REVERSE.  A card shows both of its
+ * figures, but only one of them is the one this clash is decided on -- the
+ * attacker's ATK, and whichever of the defender's two its position puts
+ * forward -- and in a palette of black and white there is no second ink to say
+ * which.  A white bar with black figures on it is the one contrast this screen
+ * has, and it costs a fill.  This is also the only place the animation ever
+ * said anything about DEF: it used to print a single line, so a defending
+ * monster's ATK and an attacking one's DEF were simply never shown. */
+static void draw_stat_row(int px, int y, const char *label, int32_t value,
+                          int live)
 {
-    Atarist_DrawText(x, y, label, INK, PAPER);
-    Atarist_DrawNumber(x + 96, y, value, INK, PAPER);
+    if (live) {
+        Atarist_FillRect(px + 4, y - 2, PANEL_W - 8, STAT_PITCH, INK);
+        Atarist_DrawText(px + 10, y, label, PAPER, PAPER);
+        Atarist_DrawNumber(px + PANEL_W - 10, y, value, PAPER, PAPER);
+    } else {
+        Atarist_DrawText(px + 10, y, label, INK, PAPER);
+        Atarist_DrawNumber(px + PANEL_W - 10, y, value, INK, PAPER);
+    }
 }
 
 /* The card, its frame and its figures, at panel x `px`.
  *
- * THE FRAME IS TWO RULES IN BLACK AND WHITE AND NOTHING ELSE.  There is no
- * gold in this palette and there must not be: reserving an entry for a frame
- * would take it off the painting, which is the one thing on screen.  A white
- * keyline on a black panel is what a card reads as at this size anyway. */
+ * THE FRAME IS RULES IN BLACK AND WHITE AND NOTHING ELSE.  There is no gold in
+ * this palette and there must not be: reserving an entry for a frame would
+ * take it off the painting, which is the one thing on screen.  What the frame
+ * can have instead is STRUCTURE -- a double keyline round the panel, a rule
+ * round the painting and a shelf under it dividing the picture from the
+ * figures -- and that is what makes it read as a card object rather than as a
+ * picture with a box drawn round it. */
 static void draw_card(int slot, int px, int py)
 {
     int ay = py + ART_DY;
+    int y0 = py + STAT_DY;
 
     Atarist_FillRect(px, py, PANEL_W, PANEL_H, PAPER);
     Atarist_FrameRect(px, py, PANEL_W, PANEL_H, INK);
+    Atarist_FrameRect(px + 3, py + 3, PANEL_W - 6, PANEL_H - 6, INK);
     blit_card(slot, px + ART_DX, ay);
-    Atarist_FrameRect(px + ART_DX - 1, ay - 1, BIG_W + 2, BIG_H + 2, INK);
+    Atarist_FrameRect(px + ART_DX - 2, ay - 2, BIG_W + 4, BIG_H + 4, INK);
+    Atarist_HLine(px + 6, py + SHELF_DY, PANEL_W - 12, INK);
 
-    if (slot == SIDE_ATK)
-        draw_number_pair(px + 8, py + STAT_DY, "ATK", g_atk_value);
-    else if (g_direct)
-        draw_number_pair(px + 8, py + STAT_DY, "DMG", g_damage);
-    else
-        draw_number_pair(px + 8, py + STAT_DY,
-                         g_duel.last_battle.defender_passive ? "DEF" : "ATK",
-                         g_def_value);
+    if (slot == SIDE_ATK) {
+        /* The attacker fights with its ATK, and g_atk_value is the value the
+         * rules actually used -- equips included -- not the card's own. */
+        draw_stat_row(px, y0, "ATK", g_atk_value, 1);
+        draw_stat_row(px, y0 + STAT_PITCH, "DEF", Msx2_CardDef(g_atk_card), 0);
+        return;
+    }
+    if (g_direct) {
+        draw_stat_row(px, y0, "DMG", g_damage, 1);
+        return;
+    }
+    {
+        /* A defending monster is fought on its DEF and an attacking one on its
+         * ATK; whichever it is, g_def_value is the value the rules used and the
+         * other figure is the card's own. */
+        int passive = g_duel.last_battle.defender_passive ? 1 : 0;
+        draw_stat_row(px, y0, "ATK",
+                      passive ? Msx2_CardAtk(g_def_card) : g_def_value,
+                      !passive);
+        draw_stat_row(px, y0 + STAT_PITCH, "DEF",
+                      passive ? g_def_value : Msx2_CardDef(g_def_card),
+                      passive);
+    }
 }
 
 static const char *banner(void)
