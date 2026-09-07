@@ -1,0 +1,290 @@
+# Shattered Decks — Windows (x86_64) build file, cross-compiled with MinGW-w64.
+#
+# Produces a single self-contained shattered_decks.exe: SDL3, FFmpeg, libpng,
+# libwebp, FreeType and zlib are all linked statically, so the shipped .exe
+# needs no DLLs beside it. It plays exactly like the Linux SDL3 build — same
+# game core, same SDL_GPU renderer, same animated title screen — only the
+# video decode back-ends differ: on Windows the title clip can go through
+# NVDEC, D3D11VA or DXVA2, and falls back to multithreaded software decoding.
+#
+#   make -f Makefile.win64            # build shattered_decks.exe (builds deps once)
+#   make -f Makefile.win64 deps       # just build SDL3 + FFmpeg for Windows
+#   make -f Makefile.win64 dist       # .exe + assets/ staged in dist/win64
+#   make -f Makefile.win64 toolchain-check
+#   make -f Makefile.win64 clean      # objects + exe (keeps the built deps)
+#   make -f Makefile.win64 distclean-deps   # force a dependency rebuild
+#
+# Requirements: the mingw-w64 GCC toolchain (x86_64-w64-mingw32-gcc), cmake,
+# pkg-config, nasm (FFmpeg's x86 assembly), and the mingw-w64 builds of
+# libpng / libwebp / freetype / zlib in the cross sysroot. SDL3 and FFmpeg are
+# built here from the SDL3-*.tar.gz and ffmpeg-*.tar.xz tarballs beside this
+# makefile; both are stamped, so a second build only relinks.
+
+CROSS ?= x86_64-w64-mingw32-
+CC := $(CROSS)gcc
+STRIP := $(CROSS)strip
+WINDRES := $(CROSS)windres
+PKG_CONFIG ?= pkg-config
+RM = rm -rf
+NPROC := $(shell nproc)
+
+WIN64_TARGET ?= shattered_decks.exe
+
+OBJDIR := build/win64
+
+# The cross sysroot holding the mingw-w64 libpng/libwebp/freetype/zlib, and
+# (after `deps`) our own SDL3 + FFmpeg.
+MINGW_SYSROOT ?= /usr/x86_64-w64-mingw32
+DEPS_DIR := build/deps-win64
+DEPS_PREFIX := $(abspath $(DEPS_DIR)/prefix)
+
+# The distro's mingw-w64 .pc files are MSYS2 originals: they hardcode the
+# /mingw64 prefix that only exists inside MSYS2, so used as-is they hand the
+# compiler include paths that do not exist here. $(PC_FIXED) holds rewritten
+# copies pointing at the real cross sysroot; it replaces the sysroot's own
+# pkgconfig directory in the search path. The same pass renames brotli's
+# libraries, which ship here only under their -static names.
+PC_FIXED := $(abspath $(DEPS_DIR)/pkgconfig)
+PC_STAMP := $(DEPS_DIR)/.pc-fixed
+
+# pkg-config must see ONLY the cross paths: PKG_CONFIG_LIBDIR replaces the
+# host's default search path rather than adding to it, so a host .pc can never
+# leak a Linux -L into the link line.
+PKG_LIBDIR := $(DEPS_PREFIX)/lib/pkgconfig:$(DEPS_PREFIX)/lib64/pkgconfig:$(PC_FIXED)
+XPKG := env PKG_CONFIG_LIBDIR=$(PKG_LIBDIR) PKG_CONFIG_SYSROOT_DIR= $(PKG_CONFIG) --static
+
+# ---- dependencies ----------------------------------------------------------
+
+SDL3_TARBALL ?= $(wildcard SDL3-*.tar.gz)
+FFMPEG_TARBALL ?= $(wildcard ffmpeg-*.tar.xz)
+SDL3_SRCDIR := $(DEPS_DIR)/src/$(basename $(basename $(notdir $(SDL3_TARBALL))))
+FFMPEG_SRCDIR := $(DEPS_DIR)/src/$(basename $(basename $(notdir $(FFMPEG_TARBALL))))
+
+SDL3_STAMP := $(DEPS_DIR)/.sdl3-built
+FFMPEG_STAMP := $(DEPS_DIR)/.ffmpeg-built
+NVHEADERS := $(DEPS_PREFIX)/include/ffnvcodec/nvEncodeAPI.h
+
+# FFmpeg, cut to what the title clip needs, with all three Windows decode
+# routes compiled in:
+#   * software  — always present, multithreaded (h264/hevc/vp9/mpeg4);
+#   * NVDEC     — via the nv-codec-headers stubs; the driver is dlopen()ed at
+#                 run time, so no CUDA toolkit is needed to build this;
+#   * DXVA2 / D3D11VA — the Direct3D hardware accelerators every Windows GPU
+#                 driver exposes; they need only the mingw-w64 DirectX headers.
+# The frontend tries CUDA, then D3D11VA, then DXVA2, then software.
+FFMPEG_CONFIGURE_FLAGS ?= \
+  --disable-shared --enable-static \
+  --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
+  --disable-network --disable-encoders --disable-muxers \
+  --disable-bsfs --disable-devices --disable-filters \
+  --disable-everything \
+  --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=mpeg4 \
+  --enable-decoder=vp9 --enable-decoder=h264_cuvid --enable-decoder=hevc_cuvid \
+  --enable-parser=h264 --enable-parser=hevc --enable-parser=mpeg4video \
+  --enable-parser=vp9 \
+  --enable-demuxer=mov --enable-demuxer=matroska \
+  --enable-protocol=file --enable-swscale \
+  --enable-ffnvcodec --enable-cuvid --enable-nvdec \
+  --enable-dxva2 --enable-d3d11va \
+  --enable-hwaccel=h264_nvdec --enable-hwaccel=hevc_nvdec \
+  --enable-hwaccel=vp9_nvdec \
+  --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 \
+  --enable-hwaccel=vp9_dxva2 \
+  --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 \
+  --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 \
+  --enable-hwaccel=vp9_d3d11va --enable-hwaccel=vp9_d3d11va2
+
+.PHONY: all deps deps-sdl3 deps-ffmpeg dist toolchain-check clean clean-build \
+  distclean-deps pkgconfig-fix
+
+# The dependency rules come first in this file, so name the real default.
+.DEFAULT_GOAL := all
+
+deps-sdl3: $(SDL3_STAMP)
+deps-ffmpeg: $(FFMPEG_STAMP)
+deps: pkgconfig-fix deps-sdl3 deps-ffmpeg
+pkgconfig-fix: $(PC_STAMP)
+
+$(PC_STAMP):
+	@mkdir -p $(PC_FIXED)
+	@for f in $(MINGW_SYSROOT)/lib/pkgconfig/*.pc $(MINGW_SYSROOT)/share/pkgconfig/*.pc; do \
+	  test -f "$$f" || continue; \
+	  sed -e 's|/mingw64|$(MINGW_SYSROOT)|g' \
+	      -e 's#-lbrotli\(common\|dec\|enc\)\b#-lbrotli\1-static#g' \
+	      "$$f" > $(PC_FIXED)/$$(basename $$f); \
+	done
+	@echo "rewrote $$(ls $(PC_FIXED) | wc -l) mingw .pc files into $(PC_FIXED)"
+	@touch $@
+
+$(SDL3_STAMP): $(PC_STAMP)
+	@test -n "$(SDL3_TARBALL)" || { echo "no SDL3-*.tar.gz here"; exit 1; }
+	@mkdir -p $(DEPS_DIR)/src
+	tar -xf $(SDL3_TARBALL) -C $(DEPS_DIR)/src
+	cmake -S $(SDL3_SRCDIR) -B $(DEPS_DIR)/build-sdl3 \
+	  -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_BUILD_TYPE=Release \
+	  -DCMAKE_C_COMPILER=$(CC) -DCMAKE_CXX_COMPILER=$(CROSS)g++ \
+	  -DCMAKE_RC_COMPILER=$(WINDRES) \
+	  -DCMAKE_FIND_ROOT_PATH=$(MINGW_SYSROOT) \
+	  -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+	  -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+	  -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+	  -DCMAKE_INSTALL_PREFIX=$(DEPS_PREFIX) \
+	  -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+	cmake --build $(DEPS_DIR)/build-sdl3 -j$(NPROC)
+	cmake --install $(DEPS_DIR)/build-sdl3
+	@touch $@
+
+# nv-codec-headers: the NVDEC stubs FFmpeg configures against. Cloned only if
+# absent, so a built dependency tree never touches the network again.
+$(NVHEADERS):
+	@mkdir -p $(DEPS_DIR)/src
+	@test -d $(DEPS_DIR)/src/nv-codec-headers || \
+	  git clone --depth 1 https://github.com/FFmpeg/nv-codec-headers.git \
+	    $(DEPS_DIR)/src/nv-codec-headers
+	$(MAKE) -C $(DEPS_DIR)/src/nv-codec-headers PREFIX=$(DEPS_PREFIX) install
+
+$(FFMPEG_STAMP): $(NVHEADERS) $(PC_STAMP)
+	@test -n "$(FFMPEG_TARBALL)" || { echo "no ffmpeg-*.tar.xz here"; exit 1; }
+	@mkdir -p $(DEPS_DIR)/src
+	tar -xf $(FFMPEG_TARBALL) -C $(DEPS_DIR)/src
+	cd $(FFMPEG_SRCDIR) && \
+	  PKG_CONFIG_LIBDIR=$(PKG_LIBDIR) ./configure --prefix=$(DEPS_PREFIX) \
+	    --enable-cross-compile --cross-prefix=$(CROSS) \
+	    --target-os=mingw32 --arch=x86_64 \
+	    --pkg-config=$(PKG_CONFIG) --pkg-config-flags=--static \
+	    --extra-cflags="-I$(DEPS_PREFIX)/include" \
+	    --extra-ldflags="-L$(DEPS_PREFIX)/lib" \
+	    $(FFMPEG_CONFIGURE_FLAGS) && \
+	  $(MAKE) -j$(NPROC) && $(MAKE) install
+	@touch $@
+
+# ---- flags -----------------------------------------------------------------
+
+INCLUDES := -Isrc/engine -Isrc/generated -Isrc/record -Isrc/game -Isrc/platform/sdl3
+
+# Identical to the Linux SDL3 build: the hardware-3D seam, with the CPU pixel
+# caches compiled out (they cache software framebuffer content that does not
+# exist on this path).
+DEFINES := -DPLATFORM=5 -DBY16=1 -DHARDWARE_DIV=1 \
+  -DWAIFU_FM_NO_HEADLESS_MAIN -DWAIFU_PLATFORM_HW3D=1 \
+  -DWAIFU_BG_CACHE_DISABLE -DWAIFU_BATTLE_BASE_CACHE_DISABLE \
+  -DWAIFU_SDL3_FFMPEG=1
+
+WARNINGS ?= -Wall -Wextra -Wno-unused-parameter
+OPT ?= -O2
+CFLAGS ?= $(OPT) -std=c99 $(WARNINGS)
+
+# Static libpng/webp/freetype/zlib need their -DXXX_STATIC / -static flags;
+# pkg-config --static supplies both halves of that.
+DEP_CFLAGS = $(shell $(XPKG) --cflags sdl3 libpng libwebp freetype2 zlib libavformat libavcodec libavutil libswscale 2>/dev/null)
+DEP_LIBS = $(shell $(XPKG) --libs sdl3 libavformat libavcodec libavutil libswscale libpng libwebp freetype2 zlib 2>/dev/null)
+
+ALL_CFLAGS = $(CFLAGS) $(DEFINES) $(INCLUDES) $(DEP_CFLAGS) $(EXTRA_CFLAGS)
+
+# -static drags in libgcc/winpthread/libstdc++ so no MinGW runtime DLL is
+# needed either; the FFmpeg hwaccels want the Direct3D and DXGI import libs.
+LDFLAGS ?= -static
+WIN_LIBS := -lole32 -loleaut32 -luuid -ld3d11 -ldxgi -ld3d9 -lbcrypt \
+  -lwinmm -lversion -limm32 -lsetupapi -lgdi32 -luser32 -lshell32 -ladvapi32 \
+  -lmfplat -lmfuuid -lstrmiids -lpsapi -lws2_32 -lcfgmgr32
+# FreeType and HarfBuzz call into each other, so the static archives have to be
+# resolved as a group rather than in one pass.
+LIBS = -Wl,--start-group $(DEP_LIBS) -Wl,--end-group $(WIN_LIBS) -lm
+
+# ---- sources ---------------------------------------------------------------
+
+WIN64_PLATFORM_SRCS := \
+  src/platform/sdl3/sdl3_main.c \
+  src/platform/sdl3/sdl3_video.c \
+  src/platform/sdl3/sdl3_audio.c \
+  src/platform/sdl3/sdl3_scene3d.c \
+  src/platform/sdl3/sdl3_image_load.c \
+  src/platform/sdl3/sdl3_hires.c \
+  src/platform/sdl3/sdl3_text.c \
+  src/platform/sdl3/sdl3_settings.c \
+  src/platform/sdl3/sdl3_input.c \
+  src/platform/sdl3/sdl3_overlay.c \
+  src/platform/sdl3/sdl3_menu.c \
+  src/platform/sdl3/sdl3_mouse.c \
+  src/platform/sdl3/sdl3_fire.c \
+  src/platform/sdl3/sdl3_video_ffmpeg.c
+
+WIN64_CORE_SRCS := \
+  src/main.c \
+  src/game/ai.c \
+  src/game/deck.c \
+  src/game/palette.c \
+  src/game/sounds.c \
+  src/game/assets.c \
+  src/engine/renderer3d.c \
+  src/engine/renderer3d_generic.c \
+  src/engine/common.c \
+  src/engine/bmp_writer.c \
+  src/platform/host_storage.c \
+  src/platform/host_assets.c
+
+WIN64_SRCS := $(WIN64_PLATFORM_SRCS) $(WIN64_CORE_SRCS)
+WIN64_OBJS := $(patsubst %.c,$(OBJDIR)/%.o,$(WIN64_SRCS))
+WIN64_DEPS := $(WIN64_OBJS:.o=.d)
+
+GENERATED := \
+  src/generated/sdl3_shaders.h \
+  src/generated/sdl3_card_paths.h \
+  src/generated/waifu_assets.h \
+  src/generated/deck_pools.h \
+  src/generated/title_asset.h \
+  src/generated/sound_assets.h
+
+# ---- rules -----------------------------------------------------------------
+
+all: $(WIN64_TARGET)
+
+# The dependency stamps are order-only: once SDL3 and FFmpeg are built, an
+# ordinary source edit relinks without re-checking the trees.
+$(WIN64_TARGET): $(WIN64_OBJS)
+	$(CC) $(LDFLAGS) $(WIN64_OBJS) $(LIBS) -o $@
+	$(STRIP) $@
+
+$(OBJDIR)/%.o: %.c $(GENERATED) | $(PC_STAMP) $(SDL3_STAMP) $(FFMPEG_STAMP)
+	@mkdir -p $(dir $@)
+	$(CC) $(ALL_CFLAGS) -MMD -MP -c $< -o $@
+
+# A directory ready to zip: the executable beside the assets it loads at run
+# time (hi-res card art, the title clip, the TTF).
+DIST_DIR ?= dist/win64
+dist: $(WIN64_TARGET)
+	@mkdir -p $(DIST_DIR)
+	cp $(WIN64_TARGET) $(DIST_DIR)/
+	@mkdir -p $(DIST_DIR)/assets
+	cp -r assets/source $(DIST_DIR)/assets/
+	@echo "staged $(DIST_DIR)"
+
+toolchain-check:
+	@ok=1; \
+	for t in $(CC) $(STRIP) cmake nasm $(PKG_CONFIG); do \
+	  command -v $$t >/dev/null 2>&1 \
+	    && echo "  ok      $$t" || { echo "  MISSING $$t"; ok=0; }; \
+	done; \
+	for p in libpng libwebp freetype2 zlib; do \
+	  if $(XPKG) --exists $$p; then \
+	    echo "  ok      $$p $$($(XPKG) --modversion $$p) (mingw sysroot)"; \
+	  else \
+	    echo "  MISSING $$p for $(CROSS)"; ok=0; \
+	  fi; \
+	done; \
+	test -n "$(SDL3_TARBALL)" && echo "  ok      $(SDL3_TARBALL)" \
+	  || { echo "  MISSING SDL3-*.tar.gz"; ok=1; }; \
+	test -n "$(FFMPEG_TARBALL)" && echo "  ok      $(FFMPEG_TARBALL)" \
+	  || { echo "  MISSING ffmpeg-*.tar.xz"; ok=1; }; \
+	test $$ok -eq 1 || { echo "install the missing pieces and re-run"; exit 1; }
+
+clean-build:
+	$(RM) $(OBJDIR)
+
+clean: clean-build
+	$(RM) $(WIN64_TARGET) $(DIST_DIR)
+
+distclean-deps:
+	$(RM) $(DEPS_DIR)
+
+-include $(WIN64_DEPS)

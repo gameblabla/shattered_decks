@@ -99,6 +99,8 @@ pi-session-*.html
 .cdout.txt
 /waifu_fm_sdl12
 /shattered_decks
+/shattered_decks.exe
+/dist/
 tools/pcfxtools/pcfx-cdlink
 
 # MSX2 build output

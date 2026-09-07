@@ -70,18 +70,31 @@ static enum AVPixelFormat pick_format(AVCodecContext *ctx, const enum AVPixelFor
     return fmts[0];
 }
 
-/* Attach an NVDEC/CUDA device to `dec` if this decoder supports one and the
-   machine has a usable CUDA device. Returns 1 when hardware decoding is armed. */
-static int try_nvdec(AVCodecContext *dec, const AVCodec *codec)
+/* The hardware decoders this build will try, in order of preference.
+   NVDEC (CUDA) first everywhere; on Windows, DXVA2 and D3D11VA follow, so a
+   machine with any modern GPU driver decodes the title clip on the GPU and
+   only falls back to the multithreaded software decoder when none answers. */
+static const enum AVHWDeviceType g_hw_pref[] = {
+    AV_HWDEVICE_TYPE_CUDA,
+#ifdef _WIN32
+    AV_HWDEVICE_TYPE_D3D11VA,
+    AV_HWDEVICE_TYPE_DXVA2,
+#endif
+    AV_HWDEVICE_TYPE_NONE
+};
+
+/* Attach hardware device `type` to `dec` if this codec offers it and the
+   machine has a usable device. Returns 1 when hardware decoding is armed. */
+static int try_hwdevice(AVCodecContext *dec, const AVCodec *codec,
+                        enum AVHWDeviceType type)
 {
     int i;
     for (i = 0;; ++i) {
         const AVCodecHWConfig *cfg = avcodec_get_hw_config(codec, i);
         if (!cfg) return 0;
         if (!(cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) continue;
-        if (cfg->device_type != AV_HWDEVICE_TYPE_CUDA) continue;
-        if (av_hwdevice_ctx_create(&g_tv.hw_device, AV_HWDEVICE_TYPE_CUDA,
-                                   NULL, NULL, 0) < 0)
+        if (cfg->device_type != type) continue;
+        if (av_hwdevice_ctx_create(&g_tv.hw_device, type, NULL, NULL, 0) < 0)
             return 0;
         g_tv.hw_pix_fmt = cfg->pix_fmt;
         dec->hw_device_ctx = av_buffer_ref(g_tv.hw_device);
@@ -124,23 +137,31 @@ int waifu_sdl3_titlevid_open(const char *path)
     if (tv->stream < 0 || !codec) goto fail;
     st = tv->fmt->streams[tv->stream];
 
-    tv->dec = avcodec_alloc_context3(codec);
-    if (!tv->dec) goto fail;
-    if (avcodec_parameters_to_context(tv->dec, st->codecpar) < 0) goto fail;
-    tv->dec->thread_count = 0;   /* software fallback decodes on all cores */
-    try_nvdec(tv->dec, codec);
-    if (avcodec_open2(tv->dec, codec, NULL) < 0) {
-        /* A hardware device that refuses the stream must not cost us the
-           title: drop it and reopen the same decoder in software. */
-        if (!tv->hw_device) goto fail;
-        avcodec_free_context(&tv->dec);
-        av_buffer_unref(&tv->hw_device);
-        tv->hw_pix_fmt = AV_PIX_FMT_NONE;
-        tv->dec = avcodec_alloc_context3(codec);
-        if (!tv->dec) goto fail;
-        if (avcodec_parameters_to_context(tv->dec, st->codecpar) < 0) goto fail;
-        tv->dec->thread_count = 0;
-        if (avcodec_open2(tv->dec, codec, NULL) < 0) goto fail;
+    /* Try each hardware device in turn, then software. A device that opens
+       but refuses this stream must not cost us the title, so every failed
+       attempt tears the context down and the next candidate starts clean. */
+    {
+        int cand;
+        int opened = 0;
+        for (cand = 0; !opened; ++cand) {
+            enum AVHWDeviceType type = g_hw_pref[cand];
+
+            tv->dec = avcodec_alloc_context3(codec);
+            if (!tv->dec) goto fail;
+            if (avcodec_parameters_to_context(tv->dec, st->codecpar) < 0) goto fail;
+            tv->dec->thread_count = 0;   /* software decode uses all cores */
+            if (type != AV_HWDEVICE_TYPE_NONE &&
+                !try_hwdevice(tv->dec, codec, type)) {
+                /* No such device here; skip it without a decoder open. */
+                avcodec_free_context(&tv->dec);
+                continue;
+            }
+            if (avcodec_open2(tv->dec, codec, NULL) == 0) { opened = 1; break; }
+            avcodec_free_context(&tv->dec);
+            av_buffer_unref(&tv->hw_device);
+            tv->hw_pix_fmt = AV_PIX_FMT_NONE;
+            if (type == AV_HWDEVICE_TYPE_NONE) goto fail;   /* software failed too */
+        }
     }
 
     tv->pkt = av_packet_alloc();
