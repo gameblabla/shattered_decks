@@ -28,6 +28,7 @@
 #include "sdl3_mouse.h"
 #include "sdl3_card_paths.h"
 #include "sdl3_text.h"
+#include "sdl3_video_ffmpeg.h"
 
 /* The offscreen canvas tracks the drawable so the renderer is both resolution-
    agnostic (HD/4K) and widescreen-aware:
@@ -125,6 +126,18 @@ struct WaifuSdl3Video {
     SDL_GPUTexture *title_tex;
     SDL_GPUTexture *ending_tex;
     unsigned char title_tried, ending_tried;
+
+    /* The animated title (PC): one streaming texture the FFmpeg decoder
+       refreshes in place, plus the transfer buffer it is uploaded through.
+       title_vid_off latches once the clip is known to be unusable, which is
+       what drops the title back to the still image. */
+    SDL_GPUTexture *title_vid_tex;
+    SDL_GPUTransferBuffer *title_vid_tbuf;
+    int title_vid_w, title_vid_h;
+    unsigned char title_vid_off;
+    /* Set once the clip has been advanced for this present, so the draw-time
+       lookup inside the render pass never starts a second upload. */
+    unsigned char title_vid_lock;
 
     SDL_GPUGraphicsPipeline *pl_scene;
     SDL_GPUGraphicsPipeline *pl_env;
@@ -825,6 +838,76 @@ static SDL_GPUTexture *hires_ensure(WaifuSdl3Video *v, int card_id, int kind)
     return *slot;
 }
 
+/* Advance the looping title clip and hand back the texture holding its current
+   frame, or NULL when there is no video (the still image then stands in).
+   The texture is single-level: it is re-uploaded every few frames, so a mip
+   chain would cost a full regeneration per frame for a full-canvas draw. */
+static SDL_GPUTexture *title_video_ensure(WaifuSdl3Video *v)
+{
+    const uint8_t *rgba = NULL;
+    int w = 0, h = 0, got;
+
+    if (v->title_vid_off) return NULL;
+    if (v->title_vid_lock) return v->title_vid_tex;
+    got = waifu_sdl3_titlevid_poll(&rgba, &w, &h);
+    if (got < 0) { v->title_vid_off = 1; return NULL; }
+    if (got == 0 || !rgba) return v->title_vid_tex;
+
+    if (!v->title_vid_tex || v->title_vid_w != w || v->title_vid_h != h) {
+        SDL_GPUTextureCreateInfo ti;
+        SDL_GPUTransferBufferCreateInfo tbi;
+        if (v->title_vid_tex) SDL_ReleaseGPUTexture(v->dev, v->title_vid_tex);
+        if (v->title_vid_tbuf) SDL_ReleaseGPUTransferBuffer(v->dev, v->title_vid_tbuf);
+        v->title_vid_tex = NULL;
+        v->title_vid_tbuf = NULL;
+        SDL_zero(ti);
+        ti.type = SDL_GPU_TEXTURETYPE_2D;
+        ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        ti.width = (Uint32)w;
+        ti.height = (Uint32)h;
+        ti.layer_count_or_depth = 1;
+        ti.num_levels = 1;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        v->title_vid_tex = SDL_CreateGPUTexture(v->dev, &ti);
+        SDL_zero(tbi);
+        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        tbi.size = (Uint32)(w * h * 4);
+        v->title_vid_tbuf = SDL_CreateGPUTransferBuffer(v->dev, &tbi);
+        if (!v->title_vid_tex || !v->title_vid_tbuf) { v->title_vid_off = 1; return NULL; }
+        v->title_vid_w = w;
+        v->title_vid_h = h;
+    }
+
+    {
+        /* Cycling both the staging buffer and the texture keeps this upload
+           clear of the frames still in flight, so no fence wait is needed. */
+        void *map = SDL_MapGPUTransferBuffer(v->dev, v->title_vid_tbuf, true);
+        SDL_GPUCommandBuffer *cmd;
+        SDL_GPUCopyPass *cp;
+        SDL_GPUTextureTransferInfo src;
+        SDL_GPUTextureRegion dst;
+        if (!map) return v->title_vid_tex;
+        memcpy(map, rgba, (size_t)w * (size_t)h * 4);
+        SDL_UnmapGPUTransferBuffer(v->dev, v->title_vid_tbuf);
+        cmd = SDL_AcquireGPUCommandBuffer(v->dev);
+        if (!cmd) return v->title_vid_tex;
+        cp = SDL_BeginGPUCopyPass(cmd);
+        SDL_zero(src);
+        src.transfer_buffer = v->title_vid_tbuf;
+        src.pixels_per_row = (Uint32)w;
+        src.rows_per_layer = (Uint32)h;
+        SDL_zero(dst);
+        dst.texture = v->title_vid_tex;
+        dst.w = (Uint32)w;
+        dst.h = (Uint32)h;
+        dst.d = 1;
+        SDL_UploadToGPUTexture(cp, &src, &dst, true);
+        SDL_EndGPUCopyPass(cp);
+        SDL_SubmitGPUCommandBuffer(cmd);
+    }
+    return v->title_vid_tex;
+}
+
 /* Decode + upload the 16:9 title (kind 1) / ending (kind 2) on first use. */
 static SDL_GPUTexture *fullimage_ensure(WaifuSdl3Video *v, int kind)
 {
@@ -833,7 +916,13 @@ static SDL_GPUTexture *fullimage_ensure(WaifuSdl3Video *v, int kind)
     uint8_t *rgba;
     int w = 0, h = 0;
     if (kind == 2) { slot = &v->ending_tex; tried = &v->ending_tried; }
-    else           { slot = &v->title_tex;  tried = &v->title_tried; }
+    else {
+        /* The desktop title is an animated clip; the still photograph is only
+           the fallback for a build or machine without it. */
+        SDL_GPUTexture *vid = title_video_ensure(v);
+        if (vid) return vid;
+        slot = &v->title_tex;  tried = &v->title_tried;
+    }
     if (*slot) return *slot;
     if (*tried) return NULL;
     *tried = 1;
@@ -1096,6 +1185,7 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
        command buffer and wait on a fence; doing that mid-render-pass raced the
        present and produced frame-timing-dependent output. Loading here leaves
        the render pass with cached, ready textures only. */
+    v->title_vid_lock = 0;
     if (frame->has_content) {
         int hi;
         for (hi = 0; hi < frame->hires_draw_count; ++hi)
@@ -1103,6 +1193,7 @@ int waifu_sdl3_video_present(WaifuSdl3Video *v, int fade_q8)
         if (frame->full_image) fullimage_ensure(v, frame->full_image);
         if (frame->ui_glyph_vert_count > 0) glyph_ensure(v);
     }
+    v->title_vid_lock = 1;
     if (ov->active && ov->glyph_count > 0) glyph_ensure(v);
 
     cmd = SDL_AcquireGPUCommandBuffer(v->dev);
@@ -1751,6 +1842,9 @@ void waifu_sdl3_video_destroy(WaifuSdl3Video *v)
                 if (v->board_tile_tex[bt]) SDL_ReleaseGPUTexture(v->dev, v->board_tile_tex[bt]);
         }
         if (v->title_tex) SDL_ReleaseGPUTexture(v->dev, v->title_tex);
+        if (v->title_vid_tex) SDL_ReleaseGPUTexture(v->dev, v->title_vid_tex);
+        if (v->title_vid_tbuf) SDL_ReleaseGPUTransferBuffer(v->dev, v->title_vid_tbuf);
+        waifu_sdl3_titlevid_close();
         if (v->ending_tex) SDL_ReleaseGPUTexture(v->dev, v->ending_tex);
         if (v->glyph_tex) SDL_ReleaseGPUTexture(v->dev, v->glyph_tex);
         if (v->sampler) SDL_ReleaseGPUSampler(v->dev, v->sampler);
