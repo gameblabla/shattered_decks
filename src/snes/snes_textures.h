@@ -10,12 +10,7 @@
 #define SNES_FLOOR_H 64
 #define SNES_FLOOR_PATTERN_H 64
 
-/* The backdrop band, same 256-wide shape so the same span walker reads it. */
-#define SNES_HORIZON_W 256
-#define SNES_HORIZON_H 64
-
 /* 256 bytes a row, so the span walker's u wraps in one byte with no mask. */
 extern const u8 snes_floor_tex[];
-extern const u8 snes_horizon_tex[];
 
 #endif

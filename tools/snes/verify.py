@@ -308,14 +308,21 @@ def check_still_resolution():
     size = texel_size(px, w, board_row(1), 2)
     if size != 2:
         raise Failure("still band texel is %d screen pixels wide, expected 2" % size)
-    hud = texel_size(px, w, 200, 2)
-    if hud != 2:
-        raise Failure("HUD band texel is %d screen pixels wide, expected 2" % hud)
-    return "still band is exactly 2x2"
+    hud = texel_size(px, w, HUD_LP_Y + 3, 1)
+    if hud != 1:
+        raise Failure("the HUD's letters are %d screen pixels a stroke -- they "
+                      "are being drawn into the bitmap, not by the sprite layer"
+                      % hud)
+    return "still band is exactly 2x2 over a 1:1 sprite HUD"
 
 
 def check_moving_resolution():
     """The board halves itself while something is moving, and the HUD does not.
+
+    THE HUD NOT CHANGING IS THE POINT.  It is sprites, so it is drawn at the
+    screen's own resolution whatever the bitmap under it is doing; when it was
+    bitmap texels this check had to prove a per-band HDMA scale was keeping it
+    readable, and now it proves the band scale cannot reach it at all.
 
     THE RESOLUTION IS NOT A TOGGLE ANY MORE: the duel picks it, dropping the
     board to 64x40 while a card is in the air or the rules are changing the
@@ -329,13 +336,14 @@ def check_moving_resolution():
                       "card is being held")
     w, h, px = read_ppm(ppm)
     board = texel_size(px, w, board_row(0), 4)
-    hud = texel_size(px, w, 200, 2)
+    hud = texel_size(px, w, HUD_LP_Y + 3, 1)
     if board != 4:
         raise Failure("moving band texel is %d screen pixels wide, expected 4" % board)
-    if hud != 2:
-        raise Failure("HUD band texel is %d screen pixels wide, expected 2 -- the "
-                      "per-band HDMA scale is not being applied" % hud)
-    return "moving band 4x4 over a 2x2 HUD band"
+    if hud != 1:
+        raise Failure("the HUD's letters are %d screen pixels a stroke while the "
+                      "board is moving -- the sprite layer does not scale with "
+                      "the bitmap and must not appear to" % hud)
+    return "moving band 4x4 under a HUD that does not move with it"
 
 
 def band_colours(px, w, y0, y1):
@@ -355,15 +363,20 @@ def check_floor_is_textured():
     more than a texture-free renderer could produce."""
     ppm, _ = run_still()
     w, h, px = read_ppm(ppm)
-    cols = band_colours(px, w, 100, 155)
+    cols = band_colours(px, w, 90, 125)
     if len(cols) < 12:
         raise Failure("the board band shows %d colours -- the floor is not "
                       "textured" % len(cols))
-    sky = band_colours(px, w, 0, 30)
-    if len(sky) < 3:
-        raise Failure("the sky band shows %d colours -- the backdrop picture is "
-                      "not being drawn" % len(sky))
-    return "%d colours on the floor, %d in the backdrop" % (len(cols), len(sky))
+    # EVERYTHING THE SLAB DOES NOT COVER IS BLACK.  There is no backdrop
+    # picture and no horizon band; the board is the only textured object on the
+    # screen.  So the rows above its far edge are one colour and that colour is
+    # black -- a check a painted sky would fail, which is the point.
+    sky = band_colours(px, w, 0, 40)
+    if sky != {b"\x00\x00\x00"}:
+        raise Failure("the rows above the board show %d colours (%s) -- the "
+                      "surround is not black"
+                      % (len(sky), sorted(c.hex() for c in sky)[:4]))
+    return "%d colours on the floor, black everywhere else" % len(cols)
 
 
 def check_board_is_a_slab():
@@ -378,31 +391,144 @@ def check_board_is_a_slab():
     "not the backdrop colour" is no longer the extent of the slab."""
     ppm, _ = run_no_cards()
     w, h, px = read_ppm(ppm)
-    # The surround is one flat colour, and the left edge of line 60 is outside
-    # the slab: the far end of the board is the narrow one, and the backdrop
-    # picture stops at the painted horizon well above it.
-    bg = px[(60 * w + 2) * 3:(60 * w + 2) * 3 + 3]
-    # Its EXTENT, not the count of non-surround pixels: the grooves between
-    # tiles quantise into the same dark brown as the surround, so counting
-    # would measure the texture rather than the slab.
+    black = b"\x00\x00\x00"
     widths = []
-    for y in (50, 58, 66):
+    for y in (60, 80, 100):
         xs = [x for x in range(w)
-              if px[(y * w + x) * 3:(y * w + x) * 3 + 3] != bg]
+              if px[(y * w + x) * 3:(y * w + x) * 3 + 3] != black]
         widths.append(xs[-1] - xs[0] + 1 if xs else 0)
     if not (widths[0] < widths[1] <= widths[2]):
         raise Failure("board widths down the screen are %s -- the slab is not "
                       "in perspective" % widths)
-    if widths[2] < w // 2:
-        raise Failure("the board is only %d pixels wide by line 66" % widths[2])
-    # Below the slab's near edge there is no board at all: this is the half of
-    # the bounds check the widening test cannot see.
+    # THE WHOLE SLAB FITS ACROSS THE SCREEN.  Its near edge is the widest part
+    # of it and the focal length is fixed at half the viewport, so a camera
+    # standing closer than the slab's own half width runs the near row off both
+    # sides -- which is what "the graphics are not close to the other ports"
+    # looked like.  So the widest row must be wide, and must NOT touch either
+    # edge of the screen.
     near = [x for x in range(w)
-            if px[(156 * w + x) * 3:(156 * w + x) * 3 + 3] != bg]
-    if near:
+            if px[(120 * w + x) * 3:(120 * w + x) * 3 + 3] != black]
+    if not near:
+        raise Failure("there is no board on line 120 at all")
+    if near[0] == 0 or near[-1] == w - 1:
+        raise Failure("the slab reaches x %d..%d on line 120 -- it is running "
+                      "off the side of the screen" % (near[0], near[-1]))
+    if len(near) < w * 3 // 4:
+        raise Failure("the board is only %d pixels wide at its near edge -- it "
+                      "does not fill the screen" % len(near))
+    # Below the slab's near edge and its front wall there is no board at all:
+    # this is the half of the bounds check the widening test cannot see.
+    below = [x for x in range(w)
+             if px[(156 * w + x) * 3:(156 * w + x) * 3 + 3] != black]
+    if below:
         raise Failure("%d pixels of board below its near edge on line 156 -- the "
-                      "slab is not bounded" % len(near))
-    return "slab widens %d -> %d -> %d pixels, and ends at its near edge" % tuple(widths)
+                      "slab is not bounded" % len(below))
+    return "slab widens %d -> %d -> %d pixels, inside the screen, and ends" % tuple(widths)
+
+
+def check_board_is_five_by_four():
+    """FIVE COLUMNS ACROSS, AND NO GROOVE DOWN THE MIDDLE OF A SLOT.
+
+    (The four ROWS are counted by check_top_view, which identifies all twenty
+    slots pixel for pixel; down the perspective board a row boundary and the
+    checkerboard's own change of material are the same kind of dark step, so
+    the columns are what a screenshot row can settle.)
+
+    The floor texture repeats every world unit and a slot centre is at a whole
+    world x, so a texture that is not offset half a cell puts a groove exactly
+    where a card goes: the slab reads as four columns with a half tile at each
+    end and the middle card sits on the seam between two of them.  That is what
+    it did.
+
+    Counting grooves alone does not catch it -- misaligned, the five interior
+    grooves land on the five slot centres, which is about as many runs as four
+    grooves plus two rims.  WHERE they are is what tells the two apart, and the
+    decisive place is the screen's own centre line: the middle column's middle
+    is either stone or it is a groove.  So this asserts the centre is stone,
+    that there are four grooves inside the slab, and that they sit either side
+    of the centre in pairs."""
+    ppm, _ = run_no_cards()
+    w, h, px = read_ppm(ppm)
+    black = b"\x00\x00\x00"
+
+    def profile(y):
+        row = [px[(y * w + x) * 3:(y * w + x) * 3 + 3] for x in range(w)]
+        lit = [x for x, c in enumerate(row) if c != black]
+        if len(lit) < w // 2:
+            return None
+        x0, x1 = lit[0], lit[-1]
+        lum = [sum(row[x]) for x in range(x0, x1 + 1)]
+        lo, hi = min(lum), max(lum)
+        thr = lo + (hi - lo) * 0.4
+        runs, start = [], None
+        for i, v in enumerate(lum):
+            if v < thr and start is None:
+                start = i
+            elif v >= thr and start is not None:
+                runs.append((x0 + start, x0 + i - 1))
+                start = None
+        if start is not None:
+            runs.append((x0 + start, x1))
+        # A groove is two texels of darkened stone and the sandstone in it is
+        # noisy, so a bright texel can split one groove into two runs.  Runs
+        # within a few pixels of each other are one groove.
+        merged = []
+        for a, b in runs:
+            if merged and a - merged[-1][1] <= 4:
+                merged[-1] = (merged[-1][0], b)
+            else:
+                merged.append((a, b))
+        return x0, x1, merged
+
+    def brightest(a, b):
+        """The row of a band least affected by a groove ACROSS the board.
+
+        The rows between board rows are grooves too, and a screenshot row that
+        lands on one is dark from side to side -- thresholding it finds the
+        texture's noise rather than the column grid.  So each band contributes
+        the row with the most light in it, which is a row through the middle of
+        a board row."""
+        best = None
+        for y in range(a, b):
+            row = [px[(y * w + x) * 3:(y * w + x) * 3 + 3] for x in range(w)]
+            lit = [sum(c) for c in row if c != black]
+            if len(lit) < w // 2:
+                continue
+            m = sum(lit) / float(len(lit))
+            if best is None or m > best[0]:
+                best = (m, y)
+        if best is None:
+            raise Failure("no slab anywhere in lines %d..%d" % (a, b))
+        return best[1]
+
+    report = []
+    for y in (brightest(78, 92), brightest(95, 110), brightest(112, 128)):
+        got = profile(y)
+        if got is None:
+            raise Failure("no slab across line %d" % y)
+        x0, x1, runs = got
+        mid = (x0 + x1) // 2
+        for a, b in runs:
+            if a - 1 <= mid <= b + 1:
+                raise Failure("line %d has a groove at x %d..%d, straddling the "
+                              "board's centre line at %d -- the floor texture "
+                              "is half a tile out and the middle slot is a seam"
+                              % (y, a, b, mid))
+        # The rims are grooves too, and at the slab's edge they merge with the
+        # black surround, so what is counted is the ones strictly inside.
+        inner = [r for r in runs if r[0] > x0 + 3 and r[1] < x1 - 3]
+        if len(inner) != 4:
+            raise Failure("line %d has %d grooves inside the slab (%s) -- five "
+                          "columns need exactly four"
+                          % (y, len(inner), inner))
+        left = [r for r in inner if r[1] < mid]
+        if len(left) != 2:
+            raise Failure("line %d has %d of its four grooves left of centre -- "
+                          "the columns are not symmetric about the middle slot"
+                          % (y, len(left)))
+        report.append(len(inner))
+
+    return "four grooves inside the slab on every row, none on its centre line"
 
 
 def check_render_cost():
@@ -461,7 +587,11 @@ SUPPORT_FIRST = 72             # ids 72..77 are the six support variants
 ROW_Z = [1.5, 0.5, -0.5, -1.5]  # far to near, matching snesSlotCentre
 CARD_UNITS = 0.8               # a card covers four fifths of its tile
 STILL_W, STILL_H = 128, 80
-CAM_Z, CAM_HEIGHT = -3.0, 1.0
+# Mirroring snes_duel.c: the camera stands 2.75 units in front of the slab's
+# near edge, which is what fits its 5-unit width across a viewport whose focal
+# length is fixed at half its own width.
+CAM_Z, CAM_HEIGHT = -4.75, 2.75
+HORIZON_DIV = 32.0
 
 _FACES = None
 _WEIGHT = None
@@ -521,7 +651,7 @@ def slot_samples(px, w, h, row, col, ox, oy, lo=3, hi=13):
     (ox, oy) so the caller can search for the alignment the renderer's own
     rounding produced."""
     cx, cz = col - 2, ROW_Z[row]
-    focal, horizon = STILL_W / 2.0, STILL_H / 8.0
+    focal, horizon = STILL_W / 2.0, STILL_H / HORIZON_DIV
     out = []
     for v in range(lo, hi):
         for u in range(lo, hi):
@@ -715,40 +845,138 @@ def check_quad_card():
 
 # ── The duel itself ──────────────────────────────────────────────────────────
 
-FONT = os.path.join(ROOT, "src", "snes", "assets", "snes_font.bin")
-HUD_LP_ROW = 80                 # framebuffer rows, mirroring snes_duel.c
-HUD_MSG_ROW = 89
+# ── The sprite layer ─────────────────────────────────────────────────────────
+#
+# Everything below reads the OBJ layer back off the screenshot, and it can do
+# so EXACTLY: a sprite is drawn at the screen's own resolution, so one sprite
+# pixel is one screenshot pixel and one CGRAM entry, and the comparison is an
+# equality rather than a nearest match.  That is not true of anything in the
+# Mode 7 bitmap, and it is the reason the HUD moved onto sprites.
+
+SPR_FONT = os.path.join(ROOT, "src", "snes", "assets", "snes_spr_font.bin")
+SPR_PAL = os.path.join(ROOT, "src", "snes", "assets", "snes_spr_pal.bin")
+SPR_CARDS = os.path.join(ROOT, "src", "snes", "assets", "snes_spr_cards.bin")
+SPR_GROUP = os.path.join(ROOT, "src", "snes", "assets", "snes_spr_group.bin")
+GLYPH_FIRST = 32
+GLYPH_COUNT = 64
+
+# Screen coordinates, mirroring snes_duel.c.
+HUD_LP_Y, HUD_MSG_Y = 162, 172
+HAND_Y, HAND_X0, HAND_PITCH = 186, 8, 48
+TOP_CELL, TOP_X0, TOP_Y0 = 48, 8, 16
+TOP_LP_Y, TOP_MSG_Y = 4, 212
+
+_SPR = {}
 
 
-def read_hud_line(px, w, fb_row):
-    """Read a line of HUD text back off the screen, glyph by glyph.
+def spr_asset(path, name):
+    if name not in _SPR:
+        if not os.path.exists(path):
+            raise Failure("no %s -- run: python3 tools/snes/gen_snes_obj.py"
+                          % os.path.relpath(path, ROOT))
+        with open(path, "rb") as fh:
+            _SPR[name] = fh.read()
+    return _SPR[name]
 
-    The HUD band is framebuffer rows 80..111 shown at 2x2 from line 160, and
-    the text is the shared 1bpp font drawn in white over its own shadow -- so a
-    glyph cell can be sampled into eight bytes and matched against the same font
-    table the game draws from.  This is how the harness reads life points: not
-    "there are bright pixels in the band" but the actual number."""
-    if not os.path.exists(FONT):
-        raise Failure("no font at %s -- run: python3 tools/snes/gen_snes_font.py"
-                      % os.path.relpath(FONT, ROOT))
-    with open(FONT, "rb") as fh:
-        font = fh.read()
+
+def untile4(blob, off):
+    """One 8x8 tile of 4bpp back to sixty-four palette indices."""
+    px = [0] * 64
+    for k, lo in enumerate((0, 2)):
+        for y in range(8):
+            p0, p1 = blob[off + k * 16 + y * 2], blob[off + k * 16 + y * 2 + 1]
+            for x in range(8):
+                px[y * 8 + x] |= (((p0 >> (7 - x)) & 1) |
+                                  (((p1 >> (7 - x)) & 1) << 1)) << lo
+    return px
+
+
+def obj_colour(pal, index):
+    """A CGRAM entry as the five bits a channel the PPU actually holds."""
+    blob = spr_asset(SPR_PAL, "pal")
+    w = blob[(pal * 16 + index) * 2] | (blob[(pal * 16 + index) * 2 + 1] << 8)
+    return (w & 31, (w >> 5) & 31, (w >> 10) & 31)
+
+
+def screen5(px, w, x, y):
+    i = (y * w + x) * 3
+    return (px[i] >> 3, px[i + 1] >> 3, px[i + 2] >> 3)
+
+
+def read_sprite_line(px, w, h, x0, y0, cols):
+    """A line of HUD text, decoded glyph by glyph out of the sprite font.
+
+    The glyph tiles in ROM are matched against the screen an ink pixel at a
+    time: a sprite is 1:1 with the screen, so a letter either IS the tile the
+    game says it drew or it is not.  This is how the harness reads life points
+    -- not "there are bright pixels there" but the actual number."""
+    font = spr_asset(SPR_FONT, "font")
+    ink = obj_colour(7, 1)
     out = ""
-    for col in range(16):
-        bits = []
+    for col in range(cols):
+        seen = []
         for v in range(8):
             row = 0
             for u in range(8):
-                x = 2 * (col * 8 + u)
-                y = 160 + 2 * (fb_row - HUD_LP_ROW + v)
-                i = (y * w + x) * 3
-                if px[i] > 200 and px[i + 1] > 200 and px[i + 2] > 150:
+                x, y = x0 + col * 8 + u, y0 + v
+                if 0 <= x < w and 0 <= y < h and screen5(px, w, x, y) == ink:
                     row |= 0x80 >> u
-            bits.append(row)
-        best = min((sum(bin(font[ch * 8 + i] ^ bits[i]).count("1")
-                        for i in range(8)), ch) for ch in range(32, 127))
-        out += chr(best[1]) if best[0] <= 6 else "?"
+            seen.append(row)
+        if not any(seen):
+            out += " "
+            continue
+        best = None
+        for g in range(GLYPH_COUNT):
+            tile = untile4(font, g * 32)
+            bits = []
+            for v in range(8):
+                row = 0
+                for u in range(8):
+                    if tile[v * 8 + u] == 1:
+                        row |= 0x80 >> u
+                bits.append(row)
+            d = sum(bin(bits[i] ^ seen[i]).count("1") for i in range(8))
+            if best is None or d < best[0]:
+                best = (d, g)
+        out += chr(GLYPH_FIRST + best[1]) if best[0] <= 4 else "?"
     return out.rstrip()
+
+
+def card_sprite_pixels(face):
+    """One card sprite as 32x32 five-bit colours, straight out of the ROM."""
+    cards = spr_asset(SPR_CARDS, "cards")
+    group = spr_asset(SPR_GROUP, "group")
+    pal = group[face]
+    out = [None] * (32 * 32)
+    for t in range(16):
+        tile = untile4(cards, face * 512 + t * 32)
+        tx, ty = (t % 4) * 8, (t // 4) * 8
+        for y in range(8):
+            for x in range(8):
+                out[(ty + y) * 32 + tx + x] = obj_colour(pal, tile[y * 8 + x])
+    return out
+
+
+def identify_card_sprite(px, w, h, x0, y0):
+    """Which face a 32x32 sprite on screen is, and how exactly.
+
+    Returns (face, matching pixels) for the best face.  A sprite is pixel exact,
+    so the right answer matches all 1024 and the wrong one does not come close;
+    there is no scoring model here and none is needed."""
+    group = spr_asset(SPR_GROUP, "group")
+    obs = []
+    for y in range(32):
+        for x in range(32):
+            if not (0 <= x0 + x < w and 0 <= y0 + y < h):
+                return None
+            obs.append(screen5(px, w, x0 + x, y0 + y))
+    best = None
+    for face in range(len(group)):
+        want = card_sprite_pixels(face)
+        n = sum(1 for a, b in zip(obs, want) if a == b)
+        if best is None or n > best[1]:
+            best = (face, n)
+    return best
 
 
 def check_hud_text():
@@ -760,15 +988,17 @@ def check_hud_text():
     ppm, wram = run_still()
     stamp = read_stamp(wram)
     w, h, px = read_ppm(ppm)
-    lp = read_hud_line(px, w, HUD_LP_ROW)
-    prompt = read_hud_line(px, w, HUD_MSG_ROW)
-    expect = "YOU%04d COM%04d" % (stamp["lp_player"], stamp["lp_com"])
-    if lp != expect:
-        raise Failure("the life-point line reads %r, but the rules say %r"
-                      % (lp, expect))
+    you = read_sprite_line(px, w, h, 8, HUD_LP_Y, 9)
+    com = read_sprite_line(px, w, h, 152, HUD_LP_Y, 9)
+    prompt = read_sprite_line(px, w, h, 8, HUD_MSG_Y, 18)
+    expect_you = "YOU %04d" % stamp["lp_player"]
+    expect_com = "COM %04d" % stamp["lp_com"]
+    if you != expect_you or com != expect_com:
+        raise Failure("the life-point line reads %r / %r, but the rules say "
+                      "%r / %r" % (you, com, expect_you, expect_com))
     if UI[stamp["ui"]] == "HAND" and not prompt.startswith("A:PLAY"):
         raise Failure("the prompt reads %r while the UI is in HAND" % prompt)
-    return "%r / %r" % (lp, prompt)
+    return "%r %r / %r" % (you, com, prompt)
 
 
 def check_duel_flow():
@@ -836,13 +1066,114 @@ def check_duel_plays_out():
         raise Failure("the duel is decided but the screen is in %s"
                       % UI[stamp["ui"]])
     w, h, px = read_ppm(ppm)
-    msg = read_hud_line(px, w, HUD_MSG_ROW)
+    msg = read_sprite_line(px, w, h, 8, HUD_MSG_Y, 16)
     expect = "YOU WIN  A:AGAIN" if won else "YOU LOSE A:AGAIN"
     if msg != expect:
         raise Failure("the duel was %s but the band reads %r"
                       % ("won" if won else "lost", msg))
     return "%s on turn %d, %d fields, band reads %r" % (
         "won" if won else "lost", stamp["duel_turn"], 9000, msg)
+
+
+def run_top(capture=None):
+    """The fixture board, then UP into the tactical top view."""
+    return run("topview", [press("R", 200), press("UP", 600)], 1400,
+               capture=capture)
+
+
+def check_top_view():
+    """UP walks up into the tactical top view, and it is a REAL board.
+
+    Mode 3 at the full 256x224 with the twenty field slots as 32x32 sprites, no
+    hand, and the HUD still up.  Every card on it is identified pixel for pixel
+    against the sprite sheet -- a sprite is 1:1 with the screen, so a card that
+    is really there matches all 1024 of its pixels and there is nothing to
+    argue about."""
+    ppm, wram = run_top()
+    stamp = read_stamp(wram)
+    w, h, px = read_ppm(ppm)
+
+    found, exact = [], []
+    for row in range(4):
+        for col in range(5):
+            got = identify_card_sprite(px, w, h,
+                                       TOP_X0 + col * TOP_CELL + 8,
+                                       TOP_Y0 + row * TOP_CELL + 8)
+            if got and got[1] >= 1024 * 0.98:
+                found.append((row, col, got[0]))
+                exact.append(got[1])
+    if len(found) < 18:
+        raise Failure("only %d of the twenty slots hold a card sprite that "
+                      "matches the sheet -- the top view is not showing the "
+                      "field" % len(found))
+    if len(set(r for r, _, _ in found)) != 4 or len(set(c for _, c, _ in found)) != 5:
+        raise Failure("the identified cards cover rows %s and columns %s -- the "
+                      "top view is not a five by four table"
+                      % (sorted(set(r for r, _, _ in found)),
+                         sorted(set(c for _, c, _ in found))))
+    if len(set(f for _, _, f in found)) < 4:
+        raise Failure("the top view shows %d distinct faces -- it is drawing "
+                      "one card everywhere" % len(set(f for _, _, f in found)))
+    # Rows 0 and 3 are the two support rows, 1 and 2 the monster rows: the same
+    # far-to-near order the perspective board uses, so walking up does not
+    # rearrange the board under the player.
+    # The two support rows are the ones the fixture fills deterministically
+    # (equip_field is set from the support ids, not dealt), so they are what can
+    # be asserted face by face.  The monster rows come off the shuffled deck and
+    # a deck holds supports as well, so what they hold is the rules' business.
+    sup = [f for r, _, f in found if r in (0, 3)]
+    if any(f < SUPPORT_FIRST or f >= CARD_BACK for f in sup):
+        raise Failure("the support rows hold %s, which are not support faces"
+                      % sup)
+
+    # THE HAND IS NOT VISIBLE.  It is not on the board, and the top view is the
+    # board from above; the rows the hand occupies in the other view are the
+    # table's own bottom edge and nothing else.
+    hand_band = set()
+    for y in range(TOP_Y0 + 4 * TOP_CELL + 2, min(h, TOP_MSG_Y - 2)):
+        for x in range(0, w, 2):
+            i = (y * w + x) * 3
+            hand_band.add(px[i:i + 3])
+    if len(hand_band) > 1:
+        raise Failure("%d colours between the table's near edge and the prompt "
+                      "-- something is drawn where the hand used to be"
+                      % len(hand_band))
+
+    you = read_sprite_line(px, w, h, 8, TOP_LP_Y, 9)
+    if you != "YOU %04d" % stamp["lp_player"]:
+        raise Failure("the top view's life-point line reads %r" % you)
+    return "%d of 20 slots identified exactly, %d distinct faces, %r" % (
+        len(found), len(set(f for _, _, f in found)), you)
+
+
+def check_top_view_switch_is_seamless():
+    """THE MODE CHANGE SHOWS NO BLACK FRAME, and that is the whole design.
+
+    Both pictures are resident -- the bitmap owns VRAM words $0000-$3FFF, the
+    sprites $4000-$5FFF and the top view $6000-$73FF -- and one CGRAM serves
+    both, so changing view rewrites nothing and needs no force-blank window.
+    This captures every field across the UP press and demands that not one of
+    them is blank.  A force-blanked switch, or one that reloaded VRAM, would
+    put at least one black or half-drawn field in here."""
+    run_top(capture=(600, 700, 1))
+    frames = sorted(os.listdir(os.path.join(OUT, "topview.frames")))
+    if len(frames) < 40:
+        raise Failure("captured %d fields across the switch, need at least 40"
+                      % len(frames))
+    lit = []
+    for name in frames:
+        w, h, px = read_ppm(os.path.join(OUT, "topview.frames", name))
+        n = sum(1 for i in range(0, len(px), 3 * 8)
+                if px[i:i + 3] != b"\x00\x00\x00")
+        lit.append(n)
+    worst = min(lit)
+    typical = sorted(lit)[len(lit) // 2]
+    if worst < typical // 3:
+        raise Failure("a field across the switch has %d lit samples against a "
+                      "typical %d -- the mode change is blanking the screen"
+                      % (worst, typical))
+    return "%d fields across the switch, quietest %d lit samples against %d" % (
+        len(frames), worst, typical)
 
 
 CHECKS = [
@@ -852,11 +1183,14 @@ CHECKS = [
     ("moving resolution", check_moving_resolution),
     ("floor texture", check_floor_is_textured),
     ("board shape", check_board_is_a_slab),
+    ("five by four", check_board_is_five_by_four),
     ("cards on board", check_cards_on_board),
     ("face-down card", check_face_down_card),
     ("empty slot", check_empty_slot_is_floor),
     ("quad card", check_quad_card),
     ("hud text", check_hud_text),
+    ("top view", check_top_view),
+    ("top view switch", check_top_view_switch_is_seamless),
     ("duel flow", check_duel_flow),
     ("duel plays out", check_duel_plays_out),
     ("render cost", check_render_cost),

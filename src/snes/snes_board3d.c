@@ -97,16 +97,18 @@ static s16 edge_step(s16 dx, s16 focal, u16 hf)
     return (dx < 0) ? (s16)(-(s16)q) : (s16)q;
 }
 
-/* One row of the backdrop.  Same walker as the floor, reading the desert
- * painting instead of the sandstone: the sky has constant v down a screen row
- * too, so it costs the same two adds a texel. */
-static void sky_row(u16 row_base, u8 w, u16 v, u16 u, u16 du)
-{
-    snesSpanHorizon(row_base, w,
-                    (u16)((((v >> 8) & (SNES_HORIZON_H - 1)) << 8)
-                          | ((u >> 8) & 0xFF)),
-                    (u16)(u & 0xFF), du);
-}
+/* THERE IS NO BACKDROP PICTURE.  Everything the slab does not cover is flat
+ * black, and that is the whole of the arena's surround: the board is the only
+ * textured thing on the screen.  A painted sky cost a second span walker, a
+ * second 16 KB texture bank and the top eighth of every frame, to put a band
+ * of quantised desert behind a board the player is looking down at -- and in
+ * two bits of blue it read as banding, not as sky. */
+
+/* The slab's front wall, in direct colour: the sandstone in shadow.  It is a
+ * flat tone rather than a sampled texture because it is four to seven rows
+ * tall and a texture read over that is detail nobody sees at the cost of the
+ * whole wall's pixels going through the span walker. */
+#define SNES_SLAB_WALL   ((u8)((3) | (2 << 3) | (0 << 6)))
 
 /* ── The floor ───────────────────────────────────────────────────────────── */
 
@@ -116,7 +118,22 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
      * plane equation, and the camera's own position in texels does not depend
      * on the row. */
     const u16 hf = (u16)snesQMul(cam->height, cam->focal);
-    const u16 u_camera = (u16)(cam->x << 5);     /* SNES_FLOOR_TEXELS_PER_UNIT */
+    /* HALF A TILE, AND THAT HALF IS THE BOARD'S FIVE COLUMNS.
+     *
+     * A slot centre is at an INTEGER world x (snesSlotCentre: col - 2) while
+     * the checkerboard's cells break at integer x too, so without this the
+     * grid line runs straight down the middle of every slot: the slab's
+     * -2.5..2.5 shows as four whole tiles with a half tile at each end, and
+     * the centre card sits on the seam between two of them.  Shifting the
+     * texture half a cell puts a cell boundary at every x.5 instead, which is
+     * exactly the slab's own edges -- five whole tiles across, twenty on the
+     * board.  The rows already line up: they are centred on the half-integers
+     * z = +-0.5, +-1.5 inside a slab that runs -2..2. */
+    /* u IS Q8.8 TEXELS, so half a cell is 16 << 8 and not 16.  Sixteen alone
+     * is a sixteenth of a texel, which moves the grid by nothing and leaves
+     * the seam exactly where it was. */
+    const u16 u_camera = (u16)((cam->x << 5)
+                               + ((SNES_FLOOR_TEXELS_PER_UNIT / 2) << 8));
     const u16 v_camera = (u16)(cam->z << 5);
     const s16 d_near = SNES_BOARD_Z_NEAR - cam->z;
     const s16 d_far  = SNES_BOARD_Z_FAR  - cam->z;
@@ -134,20 +151,6 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
     const s16 step_l = edge_step(-SNES_BOARD_HALF_X - cam->x, cam->focal, hf);
     const s16 step_r = edge_step( SNES_BOARD_HALF_X - cam->x, cam->focal, hf);
 
-    /* THE BACKDROP RUNS DOWN TO THE SLAB'S FAR EDGE, not to the horizon line.
-     * Rows between the two are ground the board does not cover, and a flat
-     * fill there reads as a hole cut in the picture; the desert painting the
-     * other ports use is what is actually behind the arena, so it is stretched
-     * over exactly that band and its own horizon lands where the board's far
-     * edge does.  rows_below at the far edge is hf / d_far -- the same plane
-     * equation the loop uses, solved the other way round. */
-    const u16 sky_rows = (u16)cam->horizon
-                       + ((d_far > 0) ? (snesUQDiv(hf, (u16)d_far) >> 8) : 0);
-    const u16 sky_dv = (sky_rows > 0) ? snesUQDiv(SNES_HORIZON_H, sky_rows) : 0;
-    const u16 sky_du = snesUQDiv(SNES_HORIZON_W, (u16)vp->w);
-    const u16 sky_u  = (u16)(cam->x << 3);   /* a quarter of the floor's pan */
-    u16 sky_v = 0;
-
     /* An edge stops accumulating once it reaches the side of the viewport.
      * The accumulators are Q8.8 in a SIGNED word, so they wrap about 127
      * pixels off centre -- which a slab edge passes well before the bottom of
@@ -157,6 +160,10 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
     const s16 edge_limit = (s16)((u16)half_w << 8);
     u16 row_base = vp->origin;
     s16 acc_l = 0, acc_r = 0;
+    /* The slab's front wall: how many rows of it are left, and the near edge's
+     * x range, which is the wall's. */
+    u8  wall = (u8)((vp->h >> 4) + 2);
+    s16 wall_x0 = 0, wall_x1 = 0;
     u8  l_off = 0, r_off = 0;
     u8  y;
 
@@ -166,8 +173,7 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
         s16 x0, x1;
 
         if (rows_below <= 0) {
-            sky_row(row_base, vp->w, sky_v, sky_u, sky_du);
-            sky_v += sky_dv;
+            snesSpanFill(row_base, vp->w, backdrop);
             continue;
         }
         if (rows_below >= SNES_RECIP_ROWS) {
@@ -188,12 +194,30 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
          * step is constant along it. */
         depth = snesDepthAtRow(hf, (u8)rows_below);
         if ((s16)depth > d_far) {          /* still behind the slab's far edge */
-            sky_row(row_base, vp->w, sky_v, sky_u, sky_du);
-            sky_v += sky_dv;
+            snesSpanFill(row_base, vp->w, backdrop);
             continue;
         }
-        if ((s16)depth < d_near) {         /* in front of it: the near surround */
-            snesSpanFill(row_base, vp->w, backdrop);
+        if ((s16)depth < d_near) {
+            /* PAST THE NEAR EDGE IS THE SLAB'S OWN FRONT WALL, not backdrop.
+             *
+             * The board the other ports show is a slab with thickness, and the
+             * band of stone under its near rim is most of what says it is an
+             * object standing on the ground rather than a rug painted on it.
+             * The wall's world-space sides are vertical, and a vertical edge
+             * over a handful of screen rows is within a pixel of the near
+             * edge's own x range -- so it costs one fill a row and no geometry
+             * at all. */
+            if (wall) {
+                --wall;
+                if (wall_x0 > 0) snesSpanFill(row_base, (u16)wall_x0, backdrop);
+                snesSpanFill(row_base + (u16)wall_x0,
+                             (u16)(wall_x1 - wall_x0), SNES_SLAB_WALL);
+                if (wall_x1 < (s16)vp->w)
+                    snesSpanFill(row_base + (u16)wall_x1,
+                                 (u16)((s16)vp->w - wall_x1), backdrop);
+            } else {
+                snesSpanFill(row_base, vp->w, backdrop);
+            }
             continue;
         }
         du = depth >> du_shift;
@@ -210,6 +234,8 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
         if (x1 < (s16)vp->w) snesSpanFill(row_base + (u16)x1,
                                           (u16)((s16)vp->w - x1), backdrop);
 
+        wall_x0 = x0;
+        wall_x1 = x1;
         v = v_camera + (u16)(depth << 5);
         u = u_camera + snesMulLo(du, (u16)(s16)(x0 - (s16)half_w));
         /* (v << 8) | u_int is the texture index the span walker keeps in X.

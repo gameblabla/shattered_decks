@@ -8,43 +8,61 @@
  *  (src/atarist/atarist_duel.c), because a second, differently-shaped UI over
  *  the same rules is two things to keep correct instead of one.
  *
- *  What is on screen: the textured slab with the twenty slots' cards on it, a
- *  cursor marker under the slot in question, the card the player is holding in
- *  the air over its target through the convex-quad path, and the HUD band --
- *  life points, the phase prompt, and the five cards in hand, all of them
- *  drawn into the chunky framebuffer rather than onto a layer, because Mode 7
- *  has exactly one layer and the board is using it.
+ *  TWO VIEWS OF ONE BOARD, and the player moves between them with UP and DOWN.
  *
- *  The two resolutions are what the whole video model exists for: the board
- *  drops to 64x40 texels while something is moving and returns to 128x80 when
- *  it settles, and the PPU does the doubling, so a moving board costs a quarter
- *  of the pixels and nothing extra to display.
+ *  The board view is the textured slab in perspective: twenty slots with their
+ *  cards lying on them, a marker under the slot in question, and the card being
+ *  played held in the air over its target through the convex-quad path.  Its
+ *  two resolutions are what the whole video model exists for -- 64x40 texels
+ *  while something is moving, 128x80 once it settles, with the PPU doing the
+ *  doubling -- so a moving board costs a quarter of the pixels and nothing
+ *  extra to display.
+ *
+ *  The top view is the same board as a flat table: Mode 3, the full 256x224,
+ *  no software rendering at all and therefore sixty fields a second.  It is
+ *  the view the other ports call the tactical top view, and the player walks
+ *  up into it the same way -- UP -- and back down with DOWN.
+ *
+ *  NOTHING IN THE HUD IS DRAWN INTO THE BITMAP any more.  Life points, the
+ *  prompt, the hand and both cursors are sprites, which is what lets them stay
+ *  on screen at the console's own resolution across a mode change that rewrites
+ *  no VRAM at all.  See snes_obj.h.
  * ───────────────────────────────────────────────────────────────────────────── */
 #include <snes.h>
 #include "snes_duel.h"
 #include "snes_video.h"
 #include "snes_board3d.h"
-#include "snes_textures.h"
 #include "snes_cards.h"
-#include "snes_text.h"
+#include "snes_obj.h"
 #include "snes_stamp.h"
 #include "msx2_duel.h"
 
 /* The arena camera.  One unit is one slot pitch; the board runs z = -2..2, so
  * a camera one unit up and three back looks along the slab with its far edge
  * near the horizon. */
-#define CAM_HEIGHT   ((s16)256)         /* 1.0 */
-#define CAM_Z        ((s16)(-3 * 256))
+/* WHERE THE CAMERA STANDS IS FIXED BY THE FOCAL LENGTH, not by taste.
+ *
+ * The focal length has to be half the viewport width -- that is what makes the
+ * floor's texture step a shift instead of a divide (see set_viewport) -- so the
+ * slab's half width of 2.5 units fills the half screen exactly when the near
+ * edge is 2.5 units away, and overflows it at anything closer.  At three back
+ * the near row ran off both sides of the screen and the far row was a fifth of
+ * its depth, which is one huge row of cards with three squashed ones behind
+ * it.  Standing 2.75 units in front of the near edge fits the whole slab
+ * across with a few pixels to spare and brings the near/far depth ratio to
+ * 2.4, which is the trapezoid the FM TOWNS, PC-FX and Atari ST boards show:
+ * four rows the player can count.  The height then follows from wanting the
+ * near edge just above the bottom of the board band. */
+#define CAM_HEIGHT   ((s16)704)         /* 2.75 */
+#define CAM_Z        ((s16)(-1216))     /* 2.75 in front of the near edge */
 
-/* The surround: the texel the board floats on where the slab does not reach.
- * Direct colour is BBGGGRRR, so this is a dark warm brown -- the arena's
- * shadowed ground, not a debug colour. */
-#define BACKDROP     SNES_DC(1, 1, 0)
-#define INK          SNES_DC(7, 7, 3)
-#define SHADOW       SNES_DC(0, 0, 0)
+/* The surround: BLACK, everywhere the slab does not reach.  The board is the
+ * only textured object on the screen -- no painted ground, no sky band -- and
+ * a black surround is also what makes the sprite layer over it read as a HUD
+ * rather than as clutter on a picture. */
+#define BACKDROP     SNES_DC(0, 0, 0)
 #define MARK_YOU     SNES_DC(7, 6, 1)   /* the cursor: hot gold */
 #define MARK_COM     SNES_DC(7, 2, 1)   /* what the opponent is acting on */
-#define HAND_SEL     SNES_DC(7, 7, 2)
 
 /* The card the player is holding hovers over the slot it is going into. */
 /* The lift and the lean, and their sum is the constraint: the camera is ONE
@@ -54,12 +72,21 @@
 #define HELD_LIFT    ((s16)32)          /* 0.125 world units above the board */
 #define HELD_TILT    ((s16)64)          /* the far edge, 0.25 units higher */
 
-/* The HUD band's three rows: life points, the prompt, and the hand. */
-#define HUD_LP_Y     (SNES_HUD_ROW + 0)
-#define HUD_MSG_Y    (SNES_HUD_ROW + 9)
-#define HUD_HAND_Y   (SNES_HUD_ROW + 18)
-#define HAND_PITCH   24                 /* five 16-texel cards across 128 */
-#define HAND_X0      4
+/* The sprite HUD, in SCREEN pixels.  The bitmap's HUD band under the board is
+ * flat black and is uploaded exactly once; everything below is drawn over it
+ * by the PPU. */
+#define HUD_LP_Y     162
+#define HUD_MSG_Y    172
+#define HAND_Y       186
+#define HAND_PITCH   48                 /* five 32-pixel cards across 256 */
+#define HAND_X0      8
+
+/* The top view's table, from tools/snes/gen_snes_obj.py: a 5x4 grid of
+ * SNES_TOP_CELL cells with a 32x32 card centred in each. */
+#define TOP_CARD_X(col)  (SNES_TOP_X0 + (col) * SNES_TOP_CELL + (SNES_TOP_CELL - 32) / 2)
+#define TOP_CARD_Y(row)  (SNES_TOP_Y0 + (row) * SNES_TOP_CELL + (SNES_TOP_CELL - 32) / 2)
+#define TOP_LP_Y     4
+#define TOP_MSG_Y    212
 
 enum SnesDuelUi {
     UI_HAND = 0,        /* choosing a card in hand */
@@ -87,7 +114,11 @@ static u8  chosen = 0;          /* the hand slot being played, or the attacker *
 static u8  com_delay = 0;
 static u8  motion = 0;          /* frames of "something is changing" left */
 static u8  lift_phase = 0;
-static u8  board_dirty = 0, hud_dirty = 0;
+static u8  board_dirty = 0;
+/* UP walks the camera up into the tactical top view and DOWN walks it back
+ * down, in every state the player owns -- the same gesture the PC, FM TOWNS
+ * and PC-FX builds use. */
+static u8  top_view = 0;
 static const char *message = 0;
 static u8  message_timer = 0;
 
@@ -129,9 +160,14 @@ static void set_viewport(void)
      * unit over a focal length of w/2 is exactly 2 texels a pixel at w = 128
      * and 1 at w = 64.  See snesDrawFloor. */
     cam.focal  = (s16)((u16)vp.w << 7);
-    /* An eighth of the band is sky.  Lower would bury the board's far edge in
-     * the backdrop; higher wastes rows on ground beyond the slab. */
-    cam.horizon = (s16)(vp.h >> 3);
+    /* The horizon sits a thirty-second of the band down, which puts the
+     * SLAB'S FRONT WALL clear of the bottom of the board band with black
+     * under it.  That black is what makes the wall read as the near face of a
+     * slab standing on nothing rather than as more floor: at an eighth the
+     * board ran to the last row of the band and the wall touched the HUD.  It
+     * is the same proportion in both resolutions, so the two frame the board
+     * identically and switching between them does not shift it. */
+    cam.horizon = (s16)(vp.h >> 5);
 }
 
 static void touch_board(u8 frames)
@@ -144,7 +180,6 @@ static void say(const char *msg)
 {
     message = msg;
     message_timer = 60;
-    hud_dirty = 1;
 }
 
 /* ── The board ───────────────────────────────────────────────────────────── */
@@ -289,84 +324,80 @@ static const char *prompt_text(void)
     }
 }
 
-/* The five cards in hand, drawn into the band as 16-texel faces.
- *
- * They are framebuffer texels and not sprites, and the trade is deliberate: a
- * sprite hand needs a second conversion of every card into 4bpp tiles, ten
- * kilobytes of OBJ VRAM and an upload whenever the hand changes, to show the
- * same picture the card sheet already holds.  Here a hand card is sixteen
- * calls to the span walker the board already uses, the band is uploaded only
- * when it is dirty, and the sprite budget stays free for what actually needs
- * to move independently of the bitmap. */
-static void draw_hand(void)
-{
-    const Msx2Side *s = &g_duel.side[MSX2_OWNER_PLAYER];
-    u8 i, y;
+/* ── The sprite layer ────────────────────────────────────────────────────── */
 
-    for (i = 0; i < MSX2_HAND; ++i) {
-        const u8 x = (u8)(HAND_X0 + i * HAND_PITCH);
-        const u8 card = s->hand[i];
-        const u8 selected = (ui == UI_HAND) ? (cursor == i)
-                                            : (chosen == i && ui != UI_ATTACKER
-                                               && ui != UI_DEFENDER
-                                               && ui != UI_COM);
-        if (card == MSX2_CARD_NONE) continue;
-        for (y = 0; y < SNES_CARD_TEXELS; ++y)
-            snesSpanCard((u16)((HUD_HAND_Y + y) * SNES_FB_STRIDE + x),
-                         SNES_CARD_TEXELS,
-                         (u16)(snesCardPage(face_of(card, 1)) | (y << 4)),
-                         0, 256);
-        if (selected || s->used[i]) {
-            /* A frame around the card: bright for the one under the cursor,
-             * dark for one already spent this turn. */
-            const u8 c = selected ? HAND_SEL : SHADOW;
-            const u16 top = (u16)((HUD_HAND_Y - 1) * SNES_FB_STRIDE + x - 1);
-            const u16 bot = (u16)((HUD_HAND_Y + SNES_CARD_TEXELS)
-                                  * SNES_FB_STRIDE + x - 1);
-            snesSpanFill(top, SNES_CARD_TEXELS + 2, c);
-            snesSpanFill(bot, SNES_CARD_TEXELS + 2, c);
-            for (y = 0; y < SNES_CARD_TEXELS; ++y) {
-                snesSpanFill((u16)((HUD_HAND_Y + y) * SNES_FB_STRIDE + x - 1),
-                             1, c);
-                snesSpanFill((u16)((HUD_HAND_Y + y) * SNES_FB_STRIDE + x
-                                   + SNES_CARD_TEXELS), 1, c);
+/* THE WHOLE HUD IS REBUILT EVERY FRAME, in either view.
+ *
+ * A sprite list is a hundred and thirty bytes of OAM shadow and a few dozen
+ * stores; a board render is four thousand scanlines.  Rebuilding costs nothing
+ * measurable next to that, and a list that is never patched cannot keep a
+ * sprite belonging to a screen the player has left -- which is the failure the
+ * top view would otherwise produce on every entry, since the two views share
+ * the same twenty card sprites. */
+static void build_objects(void)
+{
+    const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+    const char *line = message ? message : prompt_text();
+    u8 row, col, i;
+
+    snesObjBegin();
+
+    if (top_view) {
+        u8 crow = 0;
+        const u8 cslot = cursor_board_slot(&crow);
+
+        /* The field, far row first, exactly the order the perspective board
+         * draws it in -- so walking up and back down does not reorder a thing
+         * the player was looking at. */
+        for (row = 0; row < SNES_ROWS; ++row) {
+            const u8 owner = (row <= SNES_ROW_COM_MONSTER) ? MSX2_OWNER_COM
+                                                           : MSX2_OWNER_PLAYER;
+            const u8 support = (row == SNES_ROW_COM_SUPPORT ||
+                                row == SNES_ROW_YOU_SUPPORT);
+            const Msx2Side *sd = &g_duel.side[owner];
+            for (col = 0; col < SNES_COLS; ++col) {
+                const u8 card = support ? sd->equip_field[col] : sd->field[col];
+                const u8 face = face_of(card, support ? 1 : sd->faceup[col]);
+                if (face == SNES_CARD_NONE_FACE) continue;
+                snesObjCard(TOP_CARD_X(col), TOP_CARD_Y(row),
+                            (u8)(row * SNES_COLS + col), face);
             }
         }
+        if (cslot != MSX2_SLOT_NONE && cslot < SNES_COLS)
+            snesObjBox(SNES_TOP_X0 + cslot * SNES_TOP_CELL,
+                       SNES_TOP_Y0 + crow * SNES_TOP_CELL,
+                       SNES_TOP_CELL, SNES_TOP_CELL);
+
+        snesObjText(8, TOP_LP_Y, "YOU");
+        snesObjNum(40, TOP_LP_Y, (u16)you->lp, 4);
+        snesObjText(152, TOP_LP_Y, "COM");
+        snesObjNum(184, TOP_LP_Y, (u16)g_duel.side[MSX2_OWNER_COM].lp, 4);
+        snesObjText(8, TOP_MSG_Y, line);
+    } else {
+        /* THE HAND IS NOT DRAWN IN THE TOP VIEW, because the top view is the
+         * board seen from above and the hand is not on the board.  Here it is
+         * five 32x32 sprites -- the card art at the console's own resolution,
+         * which is twice what the bitmap band could show it at. */
+        for (i = 0; i < MSX2_HAND; ++i) {
+            const s16 x = (s16)(HAND_X0 + i * HAND_PITCH);
+            const u8 card = you->hand[i];
+            const u8 selected = (ui == UI_HAND)
+                              ? (cursor == i)
+                              : (chosen == i && ui != UI_ATTACKER &&
+                                 ui != UI_DEFENDER && ui != UI_COM);
+            if (card == MSX2_CARD_NONE) continue;
+            snesObjCard(x, HAND_Y, i, face_of(card, 1));
+            if (selected) snesObjBox(x - 4, HAND_Y - 4, 40, 40);
+        }
+
+        snesObjText(8, HUD_LP_Y, "YOU");
+        snesObjNum(40, HUD_LP_Y, (u16)you->lp, 4);
+        snesObjText(152, HUD_LP_Y, "COM");
+        snesObjNum(184, HUD_LP_Y, (u16)g_duel.side[MSX2_OWNER_COM].lp, 4);
+        snesObjText(8, HUD_MSG_Y, line);
     }
-}
 
-static void draw_hud(void)
-{
-    u16 y;
-
-    /* The panel under the board: the same arena sandstone as the ground,
-     * sampled 1:1 from a different part of the texture so it does not read as
-     * more floor. */
-    for (y = 0; y < SNES_HUD_H; ++y) {
-        const u16 v = (y + SNES_FLOOR_TEXELS_PER_UNIT)
-                      & (SNES_FLOOR_PATTERN_H - 1);
-        snesSpanFloor((u16)((SNES_HUD_ROW + y) * SNES_FB_STRIDE), SNES_HUD_W,
-                      (u16)((v << 8) | 0), 0, 256);
-    }
-
-    /* Sixteen glyphs is the whole line, so the two sides are laid out to fit
-     * it exactly: three letters and four digits each, with a glyph of air
-     * between them and one at the end. */
-    snesTextAt(0, HUD_LP_Y, "YOU", INK, SHADOW);
-    snesTextNum(24, HUD_LP_Y, (u16)g_duel.side[MSX2_OWNER_PLAYER].lp, 4,
-                INK, SHADOW);
-    snesTextAt(64, HUD_LP_Y, "COM", INK, SHADOW);
-    snesTextNum(88, HUD_LP_Y, (u16)g_duel.side[MSX2_OWNER_COM].lp, 4,
-                INK, SHADOW);
-    /* One ink for every line of the band.  A dimmer prompt looked better and
-     * cost more than it was worth: the harness reads this text back off the
-     * screen and matches it against the font, and a second ink means a second
-     * threshold between "letter" and "sandstone" -- which the sandstone wins. */
-    snesTextAt(0, HUD_MSG_Y, message ? message : prompt_text(), INK, SHADOW);
-    draw_hand();
-
-    snesVideoHudDirty();
-    hud_dirty = 0;
+    snesObjEnd();
 }
 
 /* ── The measurement fixture ─────────────────────────────────────────────── */
@@ -402,7 +433,6 @@ static void fixture_board(void)
         com->equip_field[col] = (u8)(WAIFU_SUPPORT_EQUIP_CARD_ID + col);
     }
     touch_board(2);
-    hud_dirty = 1;
 }
 
 /* ── The player's turn ───────────────────────────────────────────────────── */
@@ -415,7 +445,6 @@ static void move_cursor(u8 count, u8 board)
     if (down & KEY_LEFT)  { cursor = (u8)((cursor + count - 1) % count); moved = 1; }
     if (down & KEY_RIGHT) { cursor = (u8)((cursor + 1) % count); moved = 1; }
     if (!moved) return;
-    hud_dirty = 1;
     if (board) touch_board(4);
 }
 
@@ -425,7 +454,6 @@ static void begin_battle_phase(void)
     ui = UI_ATTACKER;
     cursor = 0;
     touch_board(8);
-    hud_dirty = 1;
 }
 
 static void end_player_turn(void)
@@ -434,7 +462,6 @@ static void end_player_turn(void)
     ui = UI_COM;
     com_delay = 12;
     touch_board(8);
-    hud_dirty = 1;
 }
 
 static void place_chosen(u8 defense)
@@ -451,7 +478,6 @@ static void place_chosen(u8 defense)
     ui = UI_HAND;
     cursor = chosen;
     touch_board(20);
-    hud_dirty = 1;
 }
 
 static void step_player(void)
@@ -484,7 +510,6 @@ static void step_player(void)
                 if (cursor == MSX2_SLOT_NONE) cursor = 0;
                 touch_board(8);
             }
-            hud_dirty = 1;
         }
         if (down & KEY_X) begin_battle_phase();
         if (down & KEY_START) end_player_turn();
@@ -498,7 +523,6 @@ static void step_player(void)
             ui = UI_HAND;
             cursor = chosen;
             touch_board(8);
-            hud_dirty = 1;
         }
         break;
 
@@ -509,7 +533,6 @@ static void step_player(void)
             ui = UI_HAND;
             cursor = chosen;
             touch_board(8);
-            hud_dirty = 1;
         }
         break;
 
@@ -528,7 +551,6 @@ static void step_player(void)
                 cursor = Msx2_FirstLiveSlot(MSX2_OWNER_COM);
                 if (cursor == MSX2_SLOT_NONE) cursor = 0;
                 touch_board(8);
-                hud_dirty = 1;
             }
         }
         if (down & KEY_X) {
@@ -552,13 +574,11 @@ static void step_player(void)
             ui = UI_ATTACKER;
             cursor = chosen;
             touch_board(24);
-            hud_dirty = 1;
         }
         if (down & KEY_B) {
             ui = UI_ATTACKER;
             cursor = chosen;
             touch_board(8);
-            hud_dirty = 1;
         }
         break;
     }
@@ -585,11 +605,16 @@ void snesDuelEnter(void)
     message = NULL;
     message_timer = 0;
 
+    top_view = 0;
+    snesVideoSetView(SNES_VIEW_BOARD);
     snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, 0, 0);
     snesVideoSetBoardRes(SNES_RES_STILL);
     set_viewport();
     snesVideoClear(BACKDROP);
-    draw_hud();
+    /* The bitmap's HUD band is flat black now and nothing draws into it ever
+     * again -- the HUD is sprites -- so it is uploaded exactly once, here. */
+    snesVideoHudDirty();
+    build_objects();
     render();
 }
 
@@ -609,17 +634,26 @@ void snesDuelFrame(void)
     }
     if (down & KEY_Y) {
         force_moving ^= 1;
-        /* The panel does not move with the band, but clearing the buffer wipes
-         * it, so it is redrawn and re-uploaded with the change. */
         snesVideoClear(BACKDROP);
-        hud_dirty = 1;
+        snesVideoHudDirty();
         touch_board(2);
+    }
+
+    /* UP walks up into the tactical top view, DOWN walks back down.  Neither
+     * costs a redraw: the perspective board stays in the bitmap untouched
+     * while the top view is up, so coming back down puts the frame the player
+     * left straight back on screen. */
+    if ((down & KEY_UP) && !top_view) {
+        top_view = 1;
+        snesVideoSetView(SNES_VIEW_TOP);
+    } else if ((down & KEY_DOWN) && top_view) {
+        top_view = 0;
+        snesVideoSetView(SNES_VIEW_BOARD);
     }
 
     if (message_timer) {
         if (--message_timer == 0) {
             message = NULL;
-            hud_dirty = 1;
         }
     }
 
@@ -630,7 +664,6 @@ void snesDuelFrame(void)
          * which way it went. */
         message = 0;
         message_timer = 0;
-        hud_dirty = 1;
         touch_board(8);
     }
 
@@ -648,7 +681,6 @@ void snesDuelFrame(void)
             ui = (g_duel.phase == MSX2_PHASE_MAIN) ? UI_HAND : UI_ATTACKER;
             cursor = 0;
             touch_board(12);
-            hud_dirty = 1;
         }
         step_player();
     } else {
@@ -660,7 +692,6 @@ void snesDuelFrame(void)
             Msx2_DuelStep();
             Msx2_ClearActionEvent();
             touch_board(12);
-            hud_dirty = 1;
         }
     }
 
@@ -677,6 +708,16 @@ void snesDuelFrame(void)
      * flux, the full board once it is worth looking at.  A still frame also
      * takes three vblanks to upload and a redraw restarts that upload, so the
      * settled board is only redrawn once the last one is entirely on screen. */
+    /* THE TOP VIEW RENDERS NOTHING.  Its table is a resident tilemap and its
+     * cards are sprites, so while it is up there is no board to draw, no
+     * resolution to pick and no bitmap to upload -- the duel runs at sixty
+     * fields a second and the vblank goes to the card sprites instead. */
+    if (top_view) {
+        build_objects();
+        motion = 0;
+        goto stamp;
+    }
+
     if (motion || force_moving) {
         if (motion) --motion;
         lift_phase += 8;
@@ -693,10 +734,11 @@ void snesDuelFrame(void)
         board_dirty = 1;
     }
 
-    if (hud_dirty) draw_hud();
     if (board_dirty && (res == SNES_RES_MOVING || snesVideoPresentDone()))
         render();
+    build_objects();
 
+stamp:
     g_stamp.duel_turn = g_duel.turns;
     g_stamp.lp_player = (u16)g_duel.side[MSX2_OWNER_PLAYER].lp;
     g_stamp.lp_com = (u16)g_duel.side[MSX2_OWNER_COM].lp;

@@ -1,16 +1,23 @@
 /* ─────────────────────────────────────────────────────────────────────────────
  *  snes_video.h — the two display models, and the switch between them.
  *
- *  DUEL  — Mode 7 driven as a 128x128 chunky bitmap in DIRECT COLOUR, so all
- *          256 CGRAM entries stay free for the hand-card and HUD sprites and
- *          the texel byte is itself a BBGGGRRR colour.  See snes_fb.asm for
- *          why a Mode 7 tilemap is a chunky framebuffer.
- *  SCENE — Mode 3: BG1 at 8bpp from CGRAM, BG2 at 4bpp for text.  Real
- *          pictures, no software rendering.
+ *  BOARD — Mode 7 driven as a 128x128 chunky bitmap in DIRECT COLOUR, so the
+ *          texel byte is itself a BBGGGRRR colour and CGRAM is left entirely
+ *          to the sprite layer.  See snes_fb.asm for why a Mode 7 tilemap is
+ *          a chunky framebuffer.
+ *  TOP   — Mode 3: the overhead table as an 8bpp BG1 at the full 256x224,
+ *          with the field's cards on it as sprites.  No software rendering at
+ *          all, so it also runs at sixty fields a second.
  *
- *  A mode change is always done under force blank ($2100 = $8F), which is the
- *  only safe window for a bulk VRAM/CGRAM rewrite.  Nothing writes PPU
- *  registers during active display except HDMA -- see SNES_PORT_PLAN.md §11.
+ *  THE SWITCH BETWEEN THEM IS THREE REGISTER WRITES AND NO FORCE BLANK.  Both
+ *  pictures are resident: the bitmap owns VRAM words $0000-$3FFF, the sprites
+ *  $4000-$5FFF and the top view $6000-$73FF, and one CGRAM serves both (Mode 7
+ *  direct colour reads none of it).  So changing view rewrites no VRAM and no
+ *  CGRAM, needs no blanking window, and shows no black frame in between --
+ *  which is the whole reason the top view's assets are preloaded at boot
+ *  rather than swapped in.  The three writes still happen in vblank, because
+ *  nothing but HDMA writes a PPU register during active display; see
+ *  SNES_PORT_PLAN.md §11.
  * ───────────────────────────────────────────────────────────────────────────── */
 #ifndef WAIFU_SNES_VIDEO_H
 #define WAIFU_SNES_VIDEO_H
@@ -55,6 +62,7 @@
 #define SNES_HUD_ROW      SNES_STILL_H       /* rows 80..111, always */
 
 enum SnesBoardRes { SNES_RES_MOVING = 0, SNES_RES_STILL = 1 };
+enum SnesView     { SNES_VIEW_BOARD = 0, SNES_VIEW_TOP = 1 };
 
 /* The Mode 7 matrix scale for each band, in the PPU's 8.8 format.
  *
@@ -74,8 +82,6 @@ extern u8 snes_fb[];             /* snes_fb.asm, bank $7F */
  * orders off what the same loop costs in hand-written 65816. */
 void snesSpanFloor(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
                    u16 u_step);
-void snesSpanHorizon(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
-                     u16 u_step);
 void snesSpanFill(u16 fb_index, u16 count, u8 colour);
 /* A resting card: the floor's walk over the card sheet, where the texture
  * index is `page << 8 | (v << 4) | u`. */
@@ -93,6 +99,11 @@ void snesFbWriteChars(void);
 void snesVideoInitDuel(void);           /* Mode 7 + direct colour, force blank */
 void snesVideoSetBoardRes(u8 res);      /* enum SnesBoardRes; rebuilds the HDMA table */
 u8   snesVideoBoardRes(void);
+/* Ask for the other view.  It is applied by the next snesVideoPresent, which
+ * runs in vblank; asking twice in a frame is free and asking for the view that
+ * is already up does nothing. */
+void snesVideoSetView(u8 view);         /* enum SnesView */
+u8   snesVideoView(void);
 /* Hand the presenter a finished frame.  The still frame is 14336 bytes, which
  * is more than one NTSC vblank of DMA, so it is uploaded over three vblanks
  * top-down; the moving frame is 3584 and always goes up in one.  Call once a

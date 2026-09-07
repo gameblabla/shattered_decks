@@ -64,15 +64,15 @@ src/snes/                     the fork (C + .asm)
   snes_raster.asm             the texture mapper (floor DDA + quad spans)
   snes_m7fb.c/.asm            Mode-7 chunky framebuffer + DMA presenter
   snes_scene.c                Mode 3 full-screen scenes (title/story/ending)
-  snes_sprites.c              hand cards, cursor, HUD sprites
-  snes_text.c                 chunky text into the Mode-7 buffer
+  snes_obj.c                  the sprite layer: HUD, hand, top-view cards
   snes_story.c                VN flow + typewriter
   snes_deck.c                 deck editor
   snes_audio.c                snesmod driver glue
   snes_save.c                 SRAM
 tools/snes/
   gen_snes_scenes.py          Mode 3 8bpp scenes from assets/source
-  gen_snes_cards.py           card face textures + hand-card sprites
+  gen_snes_cards.py           card face textures (Mode 7 direct colour)
+  gen_snes_obj.py             card sprites + OBJ palettes + HUD font + top view
   gen_snes_textures.py        arena floor texture + palette
   gen_snes_music.py           VGM -> IT -> smconv soundbank
   gen_snes_sfx.py             sounds/*.wav -> BRR
@@ -181,14 +181,70 @@ arena and card textures can be converted with a proven pipeline.  Blue is only
 
 ```
 lines   0..159   3D board, software texture mapped   (texels 0..79 of the buffer)
-lines 160..223   hand / HUD band, chunky-filled + sprites over it
+lines 160..223   flat black in the bitmap, HUD SPRITES over it
 ```
 
 The 3D viewport is 128x80 texels still / 64x40 moving, which is what makes the
-frame rate land where section 4 says it does.  HUD text is plotted straight
-into the chunky buffer as 5x7-texel glyphs (10x14 screen pixels, 25 columns) so
-it costs no sprite slots; hand cards, the slot cursor and the LP digits are
-sprites on top.
+frame rate land where section 4 says it does.
+
+**Nothing in the HUD is in the bitmap.**  Life points, the phase prompt, the
+hand and both cursors are sprites, and the reason is resolution: the board band
+shows one texel on 2x2 screen pixels and 4x4 while the camera moves, so a
+letter drawn into it is a letter at half the console's resolution and a hand
+card is sixteen texels stretched over thirty-two pixels.  The band under the
+board is therefore filled black once, uploaded once and never touched again.
+See section 3.3.
+
+**Everything the slab does not cover is black.**  There is no backdrop picture
+and no horizon band: the board is the only textured object on the screen, which
+is what the FM TOWNS, PC-FX and Atari ST duel views show, and what two bits of
+blue can actually hold.  What the slab does have is a front WALL under its near
+rim — a flat band of shadowed stone, four to seven rows tall — because that is
+most of what says the board is an object standing on the ground.
+
+**Where the camera stands is fixed by the focal length.**  The focal length has
+to be half the viewport width (that is what makes the floor's texture step a
+shift instead of a divide), so the slab's 2.5-unit half width fills the half
+screen exactly when the near edge is 2.5 units away and overflows it at
+anything closer.  The camera stands 2.75 units in front of the near edge and
+2.75 up: the whole slab fits across with pixels to spare and the near/far depth
+ratio is 2.4, which is four board rows the player can count.
+
+**The floor texture is offset half a cell.**  Slot centres are at whole world
+x, the checkerboard breaks at whole world x, so without the offset the grid
+line runs down the middle of every slot: four whole tiles with a half at each
+end, and the middle card sitting on a seam.  u is Q8.8 texels, so half a cell
+is `16 << 8` — sixteen alone moves the grid by a sixteenth of a texel and
+changes nothing visible.  `check_board_is_five_by_four` in the harness exists
+because that second mistake looked exactly like the fix.
+
+### 3.1.1 The top view — Mode 3, and no black frame
+
+UP walks the camera up into the tactical top view the other ports have and DOWN
+walks it back down.  It is Mode 3: the 5x4 table as an 8bpp BG1 at the full
+256x224, the twenty field slots as 32x32 sprites, no hand (the hand is not on
+the board), and the same HUD sprites still up.  There is no software rendering
+in it at all, so it runs at sixty fields a second.
+
+**The switch is three register writes and no force blank.**  Both pictures are
+resident and one CGRAM serves both:
+
+```
+VRAM words $0000-$3FFF   the Mode 7 bitmap (tilemap in low bytes, chars in high)
+           $4000-$5FFF   OBJ: 20 card sprites of 32x32, then font + cursor tiles
+           $6000-$6FFF   the top view's 8bpp background characters
+           $7000-$73FF   the top view's tilemap
+CGRAM      0..127        the top view's background palette
+           128..255      eight OBJ palettes
+```
+
+Mode 7 direct colour reads no CGRAM, and Mode 7 ignores `BG1SC`/`BG12NBA`, so
+those are armed once at boot and the change is `$2105` (the mode), `$2130`
+(direct colour off — it applies to any 256-colour BG and Mode 3's BG1 is one)
+and `$420C` (the Mode 7 matrix HDMA off).  Nothing is rewritten, so nothing has
+to be blanked, so no field between the two views is black.  The perspective
+board stays in the bitmap untouched while the top view is up and is back on
+screen the instant the player walks down.
 
 ### 3.2 Title, story, ending — Mode 3
 
@@ -214,22 +270,43 @@ slivers per scanline.  Budget for the duel:
 
 | what | sprites | VRAM |
 |---|---|---|
-| opponent hand backs (one shared card back) | 5 | 768 B |
-| slot cursor + card-select frame | 4 | 512 B |
-| LP digits, phase icons | ~12 | 1 KB |
+| card faces, 32x32 — the hand in the board view, the field in the top view | 20 | 10 KB |
+| HUD font, ASCII 32..95, 8x8 with its shadow baked in | ~40 | 2 KB |
+| cursor corner brackets | 4 | 128 B |
 
-**The hand is NOT sprites, and that changed at M4.**  It was budgeted here as
-five 32x48 OBJ cards, and what it costs in that form is a second conversion of
-every face into 4bpp tiles, ten kilobytes of OBJ VRAM, and an upload whenever
-the hand changes — to show the picture the card sheet already holds.  Drawn
-into the HUD band instead, a hand card is sixteen calls to the span walker the
-board already uses, the band is uploaded only when it is dirty, and the sprite
-budget stays free for the things that actually have to move independently of
-the bitmap.  The band is 128x32 texels: two lines of text and a row of five
-16-texel faces, which the PPU shows at 2x2 as 32x32 pixel cards.
+**The hand IS sprites, and that changed after M4.**  M4 drew it into the HUD
+band on the argument that a sprite hand costs a second conversion of every face
+into 4bpp tiles and ten kilobytes of OBJ VRAM.  It does, and the argument was
+still wrong: the band is chunky texels shown at 2x2, so it was showing 16x16
+card art where the console can show 32x32, and the same ten kilobytes buys the
+top view's twenty field cards as well — one card-sprite system, two views.
 
-Under 8 KB, so one OBJ name table is enough.  The hand row occupies lines
-160..223 only, so the per-line sprite limits are never contended by the board.
+A card sprite's tiles are FOUR ROWS OF FOUR, because a 32x32 sprite at name `n`
+covers `n..n+3` on each of four rows of the sixteen-wide name table.  Four
+cards therefore share a 64-name group and a face is uploaded as four 128-byte
+chunks 512 bytes apart, never as one 512-byte block.
+
+Fifteen colours is what an OBJ palette is, and seven palettes have to carry
+seventy-nine faces, so the faces are clustered by colour and each cluster gets
+one.  Within a palette **the frame is quantised and the painting is dithered**
+— four fixed entries for the card template, eleven fitted to that cluster's art
+— which is the same split `gen_atarist_assets.py` makes: fit all fifteen to the
+whole card and the frame, one or two pixels wide at this size, loses every
+entry to the painting and the card stops having an edge.
+
+**The vblank window is shared and the sprite layer is paid first.**  NTSC
+vblank carries something under 6 KB of DMA in total.  OAM is 544 bytes whenever
+the list changed and a card face is 512, so the bitmap's still upload is 24
+rows — 3072 bytes — and the worst frame is about 4.1 KB.  Two further rules,
+both learned by breaking them:
+
+* Overspend and the rows past the end of the window are simply not written: a
+  black board under a framebuffer that is perfectly correct in WRAM, which
+  reads as a renderer bug and is not one.
+* **CPU time in vblank is part of the budget.**  Scanning twenty slots for the
+  next card to upload is a 816-tcc loop that costs more of the window than the
+  512-byte transfer it is looking for.  The scan happens with the rest of the
+  frame's work; the vblank routine does one comparison and four DMAs.
 
 ---
 
@@ -393,9 +470,12 @@ None of that is M3 work: what M3 owes is the number, and the number is above.
 
 ## 5. Memory map
 
-**VRAM (64 KB)** — duel: `$0000-$3FFF` words = Mode 7 bitmap (both halves),
-`$4000-$5FFF` words = OBJ tiles, rest spare.  Mode 3 scenes: BG1 chars
-`$0000`, BG1 map `$7000`, BG2 chars `$6000`, BG2 map `$7800`, OBJ `$7C00`.
+**VRAM (64 KB)** — `$0000-$3FFF` words = Mode 7 bitmap (both halves),
+`$4000-$5FFF` = OBJ tiles, `$6000-$6FFF` = the top view's 8bpp BG characters,
+`$7000-$73FF` = its tilemap.  All four are resident together, which is what
+makes the duel's two views a three-register change; see section 3.1.1.  The
+full-screen Mode 3 scenes of M5 have no 3D under them and take the bitmap's
+half of VRAM back.
 
 **WRAM (128 KB)**
 
@@ -414,10 +494,10 @@ None of that is M3 work: what M3 owes is the number, and the number is above.
 | `$C0-$C1` | code (816-tcc output + asm), rules, AI |
 | `$C2` | reciprocal / trig / span LUTs (16 KB + 1 KB) |
 | `$C6` | arena floor texture, 256x64 direct colour (16 KB) |
-| `$C7` | arena horizon band, 256x64 direct colour (16 KB) |
 | `$C8` | card faces: 72 monsters + 6 supports + the back, 16x16 direct colour, one 256-byte PAGE each (20,224 B) |
 | `$C7-$CE` | Mode 3 scene images (title, 8 story backdrops, ending, battle art), LZSS packed |
-| `$CF-$D2` | hand-card sprite tiles + palettes |
+| `$CA` | OBJ font + palettes + face/palette map, top-view BG tiles and tilemap (9.3 KB) |
+| `$CB` | card faces as 32x32 4bpp sprites, 512 B each (39.5 KB) |
 | `$D3-$D6` | soundbank (module + BRR samples) |
 | `$D7-$FF` | headroom: uncompressed high-quality scene art, extra card art |
 
@@ -439,7 +519,6 @@ card" ever reaches a commit.  Sources already in the tree:
 |---|---|---|
 | `assets/source/cards/*.png|webp` (87 files) | 79 board faces + hand-card sprites + battle close-ups | `gen_snes_cards.py`: 16x16 direct-colour page per face, through the ST generator's own crop/frame rules; sprites and close-ups still to come |
 | `assets/source/textures/*.png` | arena floor, card frame | `gen_snes_textures.py` |
-| `assets/source/bg/{desert,sky,stone,ember}.png` | arena horizon band, field variants | `gen_snes_textures.py` |
 | `assets/source/title/*.png` | Mode 3 title painting | `gen_snes_scenes.py` |
 | `assets/source/story_portraits/*` (23) | VN portraits | `gen_snes_scenes.py` |
 | `assets/source/ending/ending256x240.png` | ending picture | `gen_snes_scenes.py` |
@@ -562,6 +641,7 @@ SRAM, and a perf capture of the duel board in both resolutions.
 | **M2** | Q8.8 math, LUTs, **floor mapper** with the real arena texture | textured ground under a moving camera; **measured** ms/frame in `wram.bin` |
 | **M3** | quad rasteriser + real card textures on the board | **done** — five slots per side show the right cards, identified out of a screenshot against the card sheet; the set monster shows the back; a card in the air goes through the two-chain convex-quad path |
 | **M4** | rules integration, hand, cursor, HUD text — playable duel | **done** — a duel is played through the UI (card chosen, carried, set; battle phase; attacks; turn passed) and a demo duel plays itself to a decided result with the band reading the outcome; the HUD's text is decoded back off the screenshot and checked against the rules |
+| **M4.5** | the sprite HUD, the Mode 3 top view, and the board's framing | **done** — the HUD's letters measure one screen pixel a stroke in both board resolutions (so they cannot be bitmap); the bare slab shows four grooves and no seam on its centre line (five columns); the top view identifies all twenty field slots pixel for pixel against the sprite sheet; and no field across the mode change is blank |
 | **M5** | Mode 3 title / story / ending with real art and typewriter text | scripted story chapter captures |
 | **M6** | audio: module playback + SFX | SPC upload asserted, ARAM state advances |
 | **M7** | deck editor + SRAM saves | save/load round trip across a reset |

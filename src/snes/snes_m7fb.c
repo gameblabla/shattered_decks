@@ -25,6 +25,8 @@ static u8 hdma_a[10];
 static u8 hdma_d[10];
 
 static u8 board_res = SNES_RES_STILL;
+static u8 view = SNES_VIEW_BOARD;
+static u8 view_pending = SNES_VIEW_BOARD;
 static u8 present_row = 0;          /* next framebuffer row to upload */
 static u8 present_done = 0;
 /* The HUD band is uploaded ON REQUEST, not with every board frame.  It is
@@ -34,10 +36,16 @@ static u8 present_done = 0;
 static u8 hud_pending = 0;
 
 /* Rows per vblank for the still upload.  NTSC vblank is 38 lines, about
- * 51,800 master cycles, and a DMA moves roughly one byte per 8; 38 rows of 128
- * bytes is 4864 bytes, which leaves room for the OAM upload and the register
- * writes that share the window.  Three passes cover 112 rows. */
-#define STILL_ROWS_PER_VBL  38
+ * 51,800 master cycles, and a DMA moves roughly one byte per 8, so the window
+ * carries something under 6 KB in total and the whole of it is shared.
+ *
+ * THE SPRITE LAYER IS PAID FIRST AND THE BOARD GETS WHAT IS LEFT.  OAM is 544
+ * bytes whenever the list changed and a card face is 512, so 24 rows -- 3072
+ * bytes -- keeps the worst frame at about 4.1 KB and leaves room for the C
+ * that drives all three.  Overspend and the rows past the end of the window
+ * are simply not written: a black board under a framebuffer that is perfectly
+ * correct in WRAM, which reads as a renderer bug and is not one. */
+#define STILL_ROWS_PER_VBL  24
 
 static void hdma_entry(u8 *t, u16 lines, u16 value)
 {
@@ -122,6 +130,13 @@ void snesVideoInitDuel(void)
     setMode(BG_MODE7, 0);
     REG_TM = 0x11;                     /* BG1 + OBJ on the main screen */
 
+    /* The top view's background, set once and then left alone: Mode 7 ignores
+     * both of these, so they can be armed here and the view change never has
+     * to touch them.  BG1 characters at word $6000 (BG12NBA counts in 4096
+     * words) and its tilemap at $7000 (BG1SC counts in 1024). */
+    REG_BG1SC   = 0x70;                /* $7000, 32x32 entries */
+    REG_BG12NBA = 0x06;                /* $6000 */
+
     /* Direct colour: the 8-bit texel IS the colour, BBGGGRRR, and CGRAM is
      * left entirely to the sprites. */
     REG_CGWSEL = CM_DIRCOLOR;
@@ -131,6 +146,38 @@ void snesVideoInitDuel(void)
     snesVideoClear(0);
     present_row = 0;
     present_done = 0;
+}
+
+void snesVideoSetView(u8 v)
+{
+    view_pending = v;
+}
+
+u8 snesVideoView(void) { return view; }
+
+/* The whole mode change, and there is nothing else to it.
+ *
+ * $2105 picks the mode; $2130 takes direct colour off, because it applies to
+ * ANY 256-colour background and Mode 3's BG1 is one -- left on, the top view's
+ * table comes out as the raw palette indices read as BBGGGRRR; and $420C stops
+ * the two HDMA channels that rewrite the Mode 7 matrix every scanline, which
+ * in Mode 3 would be a hundred and sixty pointless writes a field.
+ *
+ * BG1SC, BG12NBA, TM and the scroll registers do NOT change: Mode 7 ignores
+ * the first two, TM is BG1 + OBJ either way, and both scrolls are zero.  So
+ * this runs inside vblank with room to spare and never blanks the screen. */
+static void apply_view(void)
+{
+    if (view_pending == SNES_VIEW_TOP) {
+        REG_HDMAEN = 0;
+        REG_BGMODE = 0x03;
+        REG_CGWSEL = 0x00;
+    } else {
+        REG_BGMODE = BG_MODE7;
+        REG_CGWSEL = CM_DIRCOLOR;
+        REG_HDMAEN = 0x60;
+    }
+    view = view_pending;
 }
 
 void snesVideoSetBoardRes(u8 res)
@@ -178,6 +225,16 @@ void snesVideoHudDirty(void)
 u8 snesVideoPresent(void)
 {
     u16 rows, width, total;
+
+    if (view != view_pending) apply_view();
+
+    /* THE TOP VIEW DOES NOT PRESENT THE BITMAP.  Its picture is a resident
+     * tilemap and its cards are sprites, so the bitmap in VRAM is simply the
+     * board the player walked up from -- still there, untouched, and back on
+     * screen the instant they walk down again.  The vblank goes to the card
+     * sprites instead, which is why entering the top view fills with cards in
+     * a handful of fields. */
+    if (view == SNES_VIEW_TOP) return 1;
 
     if (present_done) {
         /* The board is up; a requested HUD refresh gets the next vblank to

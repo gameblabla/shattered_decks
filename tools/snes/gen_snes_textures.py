@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""The arena floor texture and the horizon band, in Mode 7 direct colour.
+"""The arena floor texture, in Mode 7 direct colour.
+
+Everything the slab does not cover is BLACK -- there is no backdrop picture and
+no horizon band.  The board is the only textured object on the screen, which is
+what the other ports' duel views look like and what a two-bit blue channel can
+actually hold.
 
 Everything here is converted from assets/source/; nothing is drawn
 procedurally beyond the groove that separates one board tile from the next,
@@ -35,7 +40,6 @@ TEXELS_PER_UNIT = 32
 TEX_W = 256
 TEX_H = 64
 PATTERN_H = 64          # two board rows; the vertical period of the checker
-HORIZON_H = 64          # the backdrop band, stretched over the sky above the board
 
 # The groove between tiles.  Two texels at the tile edge, darkened rather than
 # recoloured, so the board reads as cut stone instead of as a grid drawn on a
@@ -74,13 +78,6 @@ def build_floor():
     return full
 
 
-def build_horizon():
-    """The band the board floats over: the desert sky, one texel row per
-    screen band row, taken from the arena backdrop the other ports use."""
-    with Image.open(os.path.join(SRC, "bg", "desert.png")) as im:
-        return im.convert("RGB").resize((TEX_W, HORIZON_H), Image.LANCZOS)
-
-
 def emit(name, bank, blobs):
     """One .asm per bank, so a section that outgrows its 64 KB is a link
     error rather than a silent wrap into the next bank's contents."""
@@ -108,9 +105,7 @@ def emit(name, bank, blobs):
 def main():
     os.makedirs(ASSETS, exist_ok=True)
     floor = build_floor()
-    horizon = build_horizon()
     floor_bytes = snes_dc.quantize(floor, (TEX_W, TEX_H))
-    horizon_bytes = snes_dc.quantize(horizon, (TEX_W, HORIZON_H))
     assert len(floor_bytes) == TEX_W * TEX_H
 
     # A preview, because a texture that is wrong in the cube is not visible in
@@ -119,7 +114,6 @@ def main():
                           floor_bytes, (TEX_W, TEX_H))
 
     emit("snes_floor", 6, [("snes_floor_tex", floor_bytes)])
-    emit("snes_horizon", 7, [("snes_horizon_tex", horizon_bytes)])
 
     header = os.path.join(ROOT, "src", "snes", "snes_textures.h")
     with open(header, "w") as fh:
@@ -135,16 +129,11 @@ def main():
 #define SNES_FLOOR_H %d
 #define SNES_FLOOR_PATTERN_H %d
 
-/* The backdrop band, same 256-wide shape so the same span walker reads it. */
-#define SNES_HORIZON_W %d
-#define SNES_HORIZON_H %d
-
 /* 256 bytes a row, so the span walker's u wraps in one byte with no mask. */
 extern const u8 snes_floor_tex[];
-extern const u8 snes_horizon_tex[];
 
 #endif
-""" % (TEXELS_PER_UNIT, TEX_W, TEX_H, PATTERN_H, TEX_W, HORIZON_H))
+""" % (TEXELS_PER_UNIT, TEX_W, TEX_H, PATTERN_H))
     print("%s written" % os.path.relpath(header, ROOT))
 
 

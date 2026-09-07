@@ -12,6 +12,7 @@
 #include "snes_scene.h"
 #include "snes_stamp.h"
 #include "snes_duel.h"
+#include "snes_obj.h"
 
 static u8  cur_scene = SNES_SCENE_BOOT;
 static u16 scene_frames = 0;   /* explicit: see snes_duel.c on .bss */
@@ -30,11 +31,13 @@ void snesSceneSet(u8 scene)
     switch (scene) {
     case SNES_SCENE_DUEL:
         snesVideoInitDuel();
+        snesObjInit();
         snesDuelEnter();
         setScreenOn();
         break;
     default:
         snesVideoInitDuel();
+        snesObjInit();
         setScreenOn();
         break;
     }
@@ -71,6 +74,11 @@ int main(void)
         snesStampCommit();
 
         WaitForVBlank();
+        /* OAM and the card tiles FIRST, then whatever the bitmap's staged
+         * upload wants from what is left of the window: the sprite layer is
+         * the HUD, and a HUD that arrives a vblank late while the board
+         * finishes is the wrong way round. */
+        snesObjVblank();
         snesVideoPresent();
     }
     return 0;
