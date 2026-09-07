@@ -14,7 +14,7 @@
 #include "snes_duel.h"
 
 static u8  cur_scene = SNES_SCENE_BOOT;
-static u16 scene_frames;
+static u16 scene_frames = 0;   /* explicit: see snes_duel.c on .bss */
 
 u8  snesSceneCurrent(void) { return cur_scene; }
 u16 snesSceneFrames(void)  { return scene_frames; }

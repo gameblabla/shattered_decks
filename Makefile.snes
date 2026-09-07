@@ -53,9 +53,18 @@ SNES_C   := $(sort $(wildcard $(PROJ_DIR)/*.c))
 SNES_ASM := $(sort $(wildcard $(PROJ_DIR)/*.asm)) \
             $(sort $(wildcard $(PROJ_DIR)/assets/*.asm))
 # Compiled in unchanged: the render-free duel rules and the shared AI/decks.
-SHARED_C := src/msx2/msx2_duel.c src/game/ai.c src/game/deck.c
+SHARED_C := src/msx2/msx2_duel.c src/msx2/msx2_cards.c \
+            src/game/ai.c src/game/deck.c
 
 CFILES := $(SNES_C) $(SHARED_C)
+
+# EVERY OBJECT DEPENDS ON EVERY HEADER, and the bluntness is deliberate.  There
+# is no dependency generation here, and the first time a header changed without
+# one -- a word added to the frame stamp -- half the build kept the old struct
+# and wrote its checksum over the new field, which reads exactly like a crash.
+# Forty source files rebuild in a couple of seconds; that trade is not close.
+HEADERS := $(wildcard $(PROJ_DIR)/*.h) $(wildcard $(PROJ_DIR)/compat/*.h) \
+           $(wildcard src/msx2/*.h) $(wildcard src/game/*.h)
 
 # compat/ is first so src/msx2/msx2_duel.c finds the msxgl.h shim, and
 # src/game/*.c the waifu_assets.h one, without either file being edited.
@@ -115,7 +124,7 @@ $(HDR): $(PVSNESLIB_HOME)/devkitsnes/include/hdr.asm.in Makefile.snes
 
 # ── Compile ──────────────────────────────────────────────────────────────────
 # 816-tcc emits WLA assembly (.ps), 816-opt peepholes it, wla-65816 assembles.
-$(OBJ)/%.ps: %.c $(HDR)
+$(OBJ)/%.ps: %.c $(HDR) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wall -c $< -o $@
 

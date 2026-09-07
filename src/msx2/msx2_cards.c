@@ -8,7 +8,11 @@
 // translation unit that defines them instead of duplicating them in every file
 // that includes msx2_scenes.h.  ASCII16-X keeps these scene tables beside the
 // board bank; its rules bank only needs the card-stat columns below.
-#ifndef MSX2_ASCII16X
+// The SNES fork compiles this file for the card-stat columns alone: it shares
+// the rules model but has its own scene machine and its own art, so the MSX2's
+// retained-view tables would drag a generated header of MSX2 screen data into a
+// build that has no screen to put it on.
+#if !defined(MSX2_ASCII16X) && !defined(WAIFU_SNES)
 #include "msx2_scenes.h"
 #include "msx2_scene_geometry.h"
 #endif

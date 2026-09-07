@@ -214,10 +214,19 @@ slivers per scanline.  Budget for the duel:
 
 | what | sprites | VRAM |
 |---|---|---|
-| 5 hand cards, 32x48 each (32x32 + 32x16) | 10 | 3840 B |
 | opponent hand backs (one shared card back) | 5 | 768 B |
 | slot cursor + card-select frame | 4 | 512 B |
 | LP digits, phase icons | ~12 | 1 KB |
+
+**The hand is NOT sprites, and that changed at M4.**  It was budgeted here as
+five 32x48 OBJ cards, and what it costs in that form is a second conversion of
+every face into 4bpp tiles, ten kilobytes of OBJ VRAM, and an upload whenever
+the hand changes — to show the picture the card sheet already holds.  Drawn
+into the HUD band instead, a hand card is sixteen calls to the span walker the
+board already uses, the band is uploaded only when it is dirty, and the sprite
+budget stays free for the things that actually have to move independently of
+the bitmap.  The band is 128x32 texels: two lines of text and a row of five
+16-texel faces, which the PPU shows at 2x2 as 32x32 pixel cards.
 
 Under 8 KB, so one OBJ name table is enough.  The hand row occupies lines
 160..223 only, so the per-line sprite limits are never contended by the board.
@@ -471,9 +480,19 @@ the owner.
 
 ## 8. Input, saves, flow
 
-* **Input** — pvsneslib `padsCurrent()`.  D-pad moves the slot cursor, A
-  confirms, B cancels, X opens the card detail, Y toggles the still/moving
-  board, L/R page the hand, Start = phase advance, Select = menu.
+* **Input** — pvsneslib `padsCurrent()`.  In the duel: left/right move the
+  cursor, A confirms, B goes back, X is the second action of whatever state the
+  screen is in (defence position, direct attack, the battle phase itself), START
+  ends the turn.
+* **The harness's four switches**, all of them in `src/snes/snes_duel.c` and all
+  of them real behaviour rather than debug hooks: **R** fills the board from the
+  two decks (the fixture every measurement and every card identification runs
+  against — a fixed BOARD, not fixed art), **SELECT** draws that board with no
+  cards on it (the ablation behind every card-cost number in section 4.4), **L**
+  hands the player's side to the rules as well (the demo, and the soak duel the
+  verifier plays to a result), **Y** pins the board to the moving resolution so
+  it can be measured.  A game frame is many fields, so a scripted press has to
+  be HELD for longer than the slowest frame or the poll never sees it down.
 * **Saves** — 8 KB SRAM at `$70:0000` (HiROM), a checksummed record holding
   story progress (`g_story_progress` frontier vs. selected foe, the distinction
   the PC-FX port established), the four deck slots the MSX2 continue-code format
@@ -542,7 +561,7 @@ SRAM, and a perf capture of the duel board in both resolutions.
 | **M1** | Mode 7 chunky framebuffer harness: 256 solid tiles, DMA presenter, still/moving scale switch | a scripted run shows a test image at both scales, pixel-exact 2x2 and 4x4 |
 | **M2** | Q8.8 math, LUTs, **floor mapper** with the real arena texture | textured ground under a moving camera; **measured** ms/frame in `wram.bin` |
 | **M3** | quad rasteriser + real card textures on the board | **done** — five slots per side show the right cards, identified out of a screenshot against the card sheet; the set monster shows the back; a card in the air goes through the two-chain convex-quad path |
-| **M4** | rules integration, hand sprites, cursor, HUD text — playable duel | scripted duel plays to a win, verified frame by frame |
+| **M4** | rules integration, hand, cursor, HUD text — playable duel | **done** — a duel is played through the UI (card chosen, carried, set; battle phase; attacks; turn passed) and a demo duel plays itself to a decided result with the band reading the outcome; the HUD's text is decoded back off the screenshot and checked against the rules |
 | **M5** | Mode 3 title / story / ending with real art and typewriter text | scripted story chapter captures |
 | **M6** | audio: module playback + SFX | SPC upload asserted, ARAM state advances |
 | **M7** | deck editor + SRAM saves | save/load round trip across a reset |
@@ -567,4 +586,16 @@ SRAM, and a perf capture of the duel board in both resolutions.
   reading the code.
 * **Rebuild before capturing.**  The MSX2 port repeatedly photographed a stale
   ROM; `verify.py` refuses to run if the ROM is older than any source it
-  depends on.
+  depends on.  For the same reason the demo/soak mode is a RUNTIME switch and
+  not a second ROM: a soak build that looks like the real one is how that
+  mistake happens.
+* **An uninitialised static is not zero.**  A probe in the frame stamp read 255
+  out of a fresh boot: 816-tcc's `.bss` lands in a RAM section pvsneslib's crt0
+  clear does not actually cover, while anything with an initialiser is copied
+  from the ROM image and is exact.  Every static in this port is initialised
+  explicitly.  What found it was a duel that played itself with no input, which
+  reads as a rules bug and is not one.
+* **The Makefile rebuilds every object when any header changes.**  There is no
+  dependency generation; the first time a header changed without this, half the
+  build kept the old frame-stamp struct and wrote its checksum over the new
+  field, which reads exactly like a crash.

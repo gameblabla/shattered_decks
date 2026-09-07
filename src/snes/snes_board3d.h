@@ -107,6 +107,11 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop);
 void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
                      const u8 *faces);
 
+/* The cursor's slot, and the slot the COM is acting on: a flat fill over the
+ * whole tile, so a card resting in it leaves the marker as a rim. */
+void snesDrawSlotMarker(const SnesViewport *vp, const SnesCamera *cam,
+                        u8 row, u8 col, u8 colour);
+
 /* A screen-space vertex for the general quad path: position in Q8.8 viewport
  * pixels, texture coordinates in Q8.8 texels. */
 typedef struct SnesVert {

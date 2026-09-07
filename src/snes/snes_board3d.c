@@ -398,6 +398,72 @@ void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
     }
 }
 
+
+/* A flat marker lying on a whole slot: the cursor, and the slot the COM is
+ * acting on.
+ *
+ * It is a FILL, not a texture, and that is the same trade every other port
+ * makes -- a marker that cost a texture fetch a pixel would be paid on every
+ * frame the cursor moves, which is exactly the frames that must stay cheap.
+ * It covers the whole tile against a card's four fifths, so a card sitting in
+ * the slot leaves the marker showing as a rim around it. */
+void snesDrawSlotMarker(const SnesViewport *vp, const SnesCamera *cam,
+                        u8 row, u8 col, u8 colour)
+{
+    const u16 hf = (u16)snesQMul(cam->height, cam->focal);
+    const u8  half_w = vp->w >> 1;
+    const s16 edge_limit = (s16)((u16)half_w << 8);
+    const s16 half = (s16)128;                   /* half a world unit */
+    s16 cx, cz, d_near, d_far, step_l, step_r, acc_l, acc_r;
+    u16 r_top, r_bot, rows_below, row_base;
+    u8  l_off = 0, r_off = 0;
+    s16 y, y_end;
+
+    snesSlotCentre(row, col, &cx, &cz);
+    d_far  = (s16)(cz + half - cam->z);
+    d_near = (s16)(cz - half - cam->z);
+    if (d_near < 32) return;
+
+    r_top = (u16)(snesUQDiv(hf, (u16)d_far) >> 8);
+    r_bot = (u16)(snesUQDiv(hf, (u16)d_near) >> 8);
+    if (r_top >= SNES_RECIP_ROWS) return;
+    if (r_bot >= SNES_RECIP_ROWS) r_bot = SNES_RECIP_ROWS - 1;
+
+    step_l = edge_step((s16)(cx - half - cam->x), cam->focal, hf);
+    step_r = edge_step((s16)(cx + half - cam->x), cam->focal, hf);
+    acc_l = edge_seed(step_l, r_top, &l_off, edge_limit);
+    acc_r = edge_seed(step_r, r_top, &r_off, edge_limit);
+
+    y = (s16)(cam->horizon + (s16)r_top);
+    y_end = (s16)(cam->horizon + (s16)r_bot + 1);
+    if (y_end > (s16)vp->h) y_end = (s16)vp->h;
+    if (y < 0) return;
+    row_base = (u16)(vp->origin + snesMulLo((u16)y, (u16)vp->stride));
+
+    for (rows_below = r_top; y < y_end; ++y, ++rows_below, row_base += vp->stride) {
+        u16 depth;
+        s16 x0, x1;
+
+        if (!l_off) {
+            acc_l += step_l;
+            if (acc_l >= edge_limit || acc_l <= -edge_limit) l_off = 1;
+        }
+        if (!r_off) {
+            acc_r += step_r;
+            if (acc_r >= edge_limit || acc_r <= -edge_limit) r_off = 1;
+        }
+        depth = snesDepthAtRow(hf, (u8)rows_below);
+        if ((s16)depth > d_far || (s16)depth < d_near) continue;
+
+        x0 = (s16)half_w + (acc_l >> 8);
+        x1 = (s16)half_w + (acc_r >> 8);
+        if (x0 < 0) x0 = 0;
+        if (x1 > (s16)vp->w) x1 = (s16)vp->w;
+        if (x1 <= x0) continue;
+        snesSpanFill(row_base + (u16)x0, (u16)(x1 - x0), colour);
+    }
+}
+
 /* ── The general convex-quad affine mapper ───────────────────────────────── */
 
 u8 snesCardQuad(const SnesCamera *cam, const SnesViewport *vp,

@@ -35,7 +35,11 @@ OUT = os.path.join(ROOT, "build", "snes", "verify")
 
 # The frame stamp, mirroring src/snes/snes_stamp.h.
 STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "board_res",
-                "duel_turn", "lp_player", "lp_com", "duel_result", "checksum"]
+                "duel_turn", "lp_player", "lp_com", "duel_result", "ui",
+                "cursor", "field_cards", "phase", "turn_owner", "checksum"]
+
+# enum SnesDuelUi, mirroring src/snes/snes_duel.c.
+UI = ["HAND", "PLACE", "EQUIP_TARGET", "ATTACKER", "DEFENDER", "COM", "RESULT"]
 STAMP_MAGIC = 0x5744
 
 # SNES serial pad bits, the order snesfaust's script rows use.
@@ -227,37 +231,72 @@ def board_row(res):
 
 # A RUN IS MEASURED IN EMULATOR FIELDS, AND A GAME FRAME IS MANY OF THEM.
 # A board with twenty cards on it takes about twenty fields to draw (see the
-# render-cost check), so a scripted run has to be long enough for the scene to
-# reach a settled board, and a button has to be HELD for longer than one game
-# frame or the poll that reads it never happens while it is down.
+# render-cost check), so a button has to be HELD for longer than one game frame
+# or the poll that reads it never happens while it is down.  Sixty fields is
+# comfortably longer than the slowest frame the port produces.
 RUN_FRAMES = 1200
-HOLD = 80
+HOLD = 60
+
+# The harness's four switches in the duel, all of them documented in
+# src/snes/snes_duel.c: R fills the board from the decks (the measurement and
+# identification fixture), SELECT draws it without cards (the ablation), L hands
+# the player's side to the rules (the demo, and the soak run), Y toggles the
+# board resolution.
+
+
+def press(button, at):
+    return (at, at + HOLD, PAD[button])
 
 
 def run_still(capture=None):
     return run("still", [(0, RUN_FRAMES + 200, 0)], RUN_FRAMES, capture=capture)
 
 
-def run_no_cards(capture=None):
-    """The same still board with the cards NOT DRAWN.
+def run_fixture(capture=None):
+    """The full-board fixture: five monsters and five supports a side, one of
+    them set face down.  Every id in it came off the duel's own shuffled deck --
+    it is a fixed BOARD, not fixed art."""
+    return run("fixture", [press("R", 200)], RUN_FRAMES, capture=capture)
 
-    SELECT toggles them off in src/snes/snes_duel.c, and that switch exists for
-    this: the port's rule is that a performance claim comes from a measurement
-    or an ablation, and this is the ablation that says what the cards cost.  It
-    is also the only way to measure the slab's own shape, since twenty cards
-    cover almost all of it."""
-    return run("nocards", [(0, 199, 0), (200, 200 + HOLD, PAD["SELECT"]),
-                           (201 + HOLD, RUN_FRAMES + 200, 0)],
+
+def run_no_cards(capture=None):
+    """The fixture board with the cards NOT DRAWN.
+
+    The port's rule is that a performance claim comes from a measurement or an
+    ablation; this is the ablation that says what the cards cost.  It is also
+    the only way to measure the slab's own shape, since twenty cards cover
+    almost all of it."""
+    return run("nocards", [press("R", 200), press("SELECT", 400)],
+               RUN_FRAMES, capture=capture)
+
+
+def run_hold(capture=None):
+    """A card picked up and carried: A chooses the first hand card, and the UI
+    stays in PLACE with it hovering over the slot until it is put down."""
+    return run("hold", [press("A", 200), press("RIGHT", 400), press("RIGHT", 500)],
                RUN_FRAMES, capture=capture)
 
 
 def run_moving(capture=None):
     # Y toggles the board resolution.  The press has to land after the scene
-    # machine is running, and the frames after it are what the camera sways
-    # through.
-    return run("moving", [(0, 199, 0), (200, 200 + HOLD, PAD["Y"]),
-                          (201 + HOLD, RUN_FRAMES + 200, 0)],
-               RUN_FRAMES, capture=capture)
+    # machine is running.
+    return run("moving", [press("Y", 200)], RUN_FRAMES, capture=capture)
+
+
+def run_demo(frames=9000):
+    """L hands the player's side to the rules as well, so the duel plays itself
+    to a result with no further input -- the port's soak run."""
+    return run("demo", [press("L", 60)], frames)
+
+
+def run_flow(name, buttons):
+    """A scripted turn through the duel UI, one button at a time."""
+    script = []
+    at = 200
+    for b in buttons:
+        script.append(press(b, at))
+        at += HOLD * 2
+    return run(name, script, at + 400)
 
 
 def check_still_resolution():
@@ -276,12 +315,18 @@ def check_still_resolution():
 
 
 def check_moving_resolution():
-    # The HUD band must stay at 2x2 while the board halves, which is what the
-    # per-band HDMA table buys.
-    ppm, wram = run_moving()
+    """The board halves itself while something is moving, and the HUD does not.
+
+    THE RESOLUTION IS NOT A TOGGLE ANY MORE: the duel picks it, dropping the
+    board to 64x40 while a card is in the air or the rules are changing the
+    picture and returning to 128x80 once it settles.  So this holds a card --
+    which is the state that keeps the board in motion -- and measures the two
+    bands, which is what the per-band HDMA table buys."""
+    ppm, wram = run_hold()
     stamp = read_stamp(wram)
     if stamp["board_res"] != 0:
-        raise Failure("Y did not switch the board to the moving resolution")
+        raise Failure("the board is still at the resting resolution while a "
+                      "card is being held")
     w, h, px = read_ppm(ppm)
     board = texel_size(px, w, board_row(0), 4)
     hud = texel_size(px, w, 200, 2)
@@ -360,34 +405,21 @@ def check_board_is_a_slab():
     return "slab widens %d -> %d -> %d pixels, and ends at its near edge" % tuple(widths)
 
 
-def check_camera_moves():
-    """The moving resolution exists for a camera that moves, so prove it does:
-    two frames a few apart must differ."""
-    ppm, wram = run_moving(capture=(200, 240, 20))
-    frames = sorted(os.listdir(os.path.join(OUT, "moving.frames")))
-    if len(frames) < 2:
-        raise Failure("captured %d frames, need at least 2" % len(frames))
-    a = read_ppm(os.path.join(OUT, "moving.frames", frames[0]))
-    b = read_ppm(os.path.join(OUT, "moving.frames", frames[-1]))
-    diff = sum(1 for i in range(0, len(a[2]), 3) if a[2][i:i+3] != b[2][i:i+3])
-    if diff < 1000:
-        raise Failure("only %d pixels differ between two frames -- the camera is "
-                      "not moving" % diff)
-    return "%d pixels differ across %d frames of sway" % (diff, len(frames))
-
-
 def check_render_cost():
     """The measurement that replaces section 4.4's estimates.
 
     render_lines is scanlines of wall clock for one board, taken from the V
     counter and the vblank count (src/snes/snes_duel.c), so 262 of them is one
     NTSC field."""
-    _, wram = run_still()
+    _, wram = run_fixture()
     still = read_stamp(wram)["render_lines"]
-    _, wram = run_moving()
-    moving = read_stamp(wram)["render_lines"]
     _, wram = run_no_cards()
     floor_only = read_stamp(wram)["render_lines"]
+    # The moving board is measured on the same fixture: R fills it, Y drops the
+    # resolution, and the number is the one an animating frame pays.
+    _, wram = run("fixture_moving", [press("R", 200), press("Y", 400)],
+                  RUN_FRAMES)
+    moving = read_stamp(wram)["render_lines"]
     if still == 0 or moving == 0:
         raise Failure("no render timing was recorded (still %d, moving %d)"
                       % (still, moving))
@@ -508,10 +540,17 @@ def slot_samples(px, w, h, row, col, ox, oy, lo=3, hi=13):
 def identify_slot(px, w, h, row, col):
     """Which face is lying in a slot, and how decisively.
 
-    Returns (face id, its score, the runner-up's score) or None when the slot
-    is clipped by the side of the viewport.  The alignment is searched over a
-    couple of pixels: the projection here and the renderer's Q8.8 arithmetic
-    round differently, and a card is only about twenty pixels across."""
+    Returns (face id, weighted score, the runner-up's score, exactly matching
+    texels, samples) or None when the slot is clipped by the side of the
+    viewport.  The alignment is searched over a couple of pixels: the projection
+    here and the renderer's Q8.8 arithmetic round differently, and a card is
+    only about twenty pixels across.
+
+    BARE FLOOR ALSO HAS A BEST MATCH, and it beats its own runner-up about two
+    to one -- sandstone is brown and so is half the card sheet -- so the ratio
+    alone says nothing.  What separates them is the count of texels that match
+    EXACTLY: a card that is really there matches a third of them and an empty
+    slot a tenth, which is why `decisive` below wants both."""
     faces, weight = card_faces()
     best = None
     for ox in (-2, -1, 0, 1, 2):
@@ -520,35 +559,45 @@ def identify_slot(px, w, h, row, col):
             if len(s) < 60:
                 continue
             scored = sorted(((sum(weight.get(b, 0.0) for i, b in s if f[i] == b),
-                              fi) for fi, f in enumerate(faces)), reverse=True)
+                              sum(1 for i, b in s if f[i] == b), fi)
+                             for fi, f in enumerate(faces)), reverse=True)
             if best is None or scored[0][0] > best[0]:
-                best = (scored[0][0], scored[0][1], scored[1][0])
+                best = (scored[0][0], scored[0][2], scored[1][0], scored[0][1],
+                        len(s))
     if best is None:
         return None
-    return best[1], best[0], best[2]
+    return best[1], best[0], best[2], best[3], best[4]
+
+
+def decisive(got):
+    """Whether an identification is a card at all, rather than the best of
+    seventy-nine bad matches against a patch of ground."""
+    if got is None:
+        return False
+    _face, score, second, strict, n = got
+    return score >= second * 1.5 and strict * 4 >= n
 
 
 def check_cards_on_board():
-    """Five slots a side, showing the cards the rules put there.
+    """Five slots a side, showing the cards the fixture put there.
 
     The near monster row and the near support row are identified card by card
     against the sheet: a support row must hold support faces, a monster row must
     not, and the identifications must differ from one another -- one card drawn
     five times would pass a "there is something on the board" test."""
-    ppm, _ = run_still()
+    ppm, wram = run_fixture()
+    stamp = read_stamp(wram)
+    if stamp["field_cards"] != 5:
+        raise Failure("the fixture put %d monsters on the player's row, not 5"
+                      % stamp["field_cards"])
     w, h, px = read_ppm(ppm)
     found = []
     for row in (2, 3):
         for col in range(5):
-            if row == 2 and col == 2:
-                continue                       # the held card's slot is empty
             got = identify_slot(px, w, h, row, col)
-            if got is None:
-                continue                       # clipped by the viewport's side
-            face, score, second = got
-            if score < second * 1.5:
-                continue                       # not a decisive identification
-            found.append((row, col, face))
+            if not decisive(got):
+                continue
+            found.append((row, col, got[0]))
     if len(found) < 4:
         raise Failure("only %d of the near rows' slots identify as a card face "
                       "-- the board is not showing the sheet's cards"
@@ -572,40 +621,73 @@ def check_cards_on_board():
 def check_face_down_card():
     """A SET MONSTER SHOWS THE BACK, and the back is a face like any other.
 
-    The fixture sets the player's fourth monster, and the back is the id past
-    the last card, so this also proves the renderer needs no special case for
-    it: same sheet, same page, same walker."""
-    ppm, _ = run_still()
+    The rules set every monster a side plays (msx2_duel.c: "A PLACED MONSTER IS
+    SET, WHOEVER PLAYS IT"), the fixture sets the player's fourth, and the back
+    is the id past the last card -- so this also proves the renderer needs no
+    special case for it: same sheet, same page, same walker."""
+    ppm, _ = run_fixture()
     w, h, px = read_ppm(ppm)
     got = identify_slot(px, w, h, 2, 3)
     if got is None:
         raise Failure("the set monster's slot is off screen")
-    face, score, second = got
+    face, score, second, strict, n = got
     if face != CARD_BACK:
         raise Failure("the set monster shows face %d, expected the back (%d)"
                       % (face, CARD_BACK))
-    if score < second * 1.5:
-        raise Failure("the back scored %.0f against a runner-up's %.0f -- not a "
-                      "decisive identification" % (score, second))
-    return "the set monster shows the back, %.0f against %.0f" % (score, second)
+    if not decisive(got):
+        raise Failure("the back scored %.0f against a runner-up's %.0f on %d of "
+                      "%d exact texels -- not a decisive identification"
+                      % (score, second, strict, n))
+    return "the set monster shows the back, %d of %d texels exactly" % (strict, n)
+
+
+def check_empty_slot_is_floor():
+    """The negative of the check above, and the reason it is here is that the
+    identifier will name a face for a patch of ground if it is only asked which
+    face fits best.  A slot the rules left empty must not identify as a card."""
+    ppm, wram = run_flow("empty", ["A", "A"])          # place one monster
+    stamp = read_stamp(wram)
+    if stamp["field_cards"] != 1:
+        raise Failure("the scripted placement put %d monsters on the board, "
+                      "expected 1" % stamp["field_cards"])
+    w, h, px = read_ppm(ppm)
+    placed = identify_slot(px, w, h, 2, 0)
+    if not decisive(placed) or placed[0] != CARD_BACK:
+        raise Failure("the placed monster's slot identifies as %s -- a monster "
+                      "the player has just set should show the back"
+                      % (placed and placed[0]))
+    for col in (1, 2, 3, 4):
+        got = identify_slot(px, w, h, 2, col)
+        if decisive(got):
+            raise Failure("empty slot %d identifies as face %d on %d of %d "
+                          "texels -- bare ground is being read as a card"
+                          % (col, got[0], got[3], got[4]))
+    return "one card at slot 0 (the back), four slots of bare ground"
 
 
 def check_quad_card():
-    """The convex-quad path: a card in the air over an empty slot.
+    """The convex-quad path: a card in the air over the slot it is going into.
 
     The held card leans back and bobs, so it is a DIFFERENT quad every game
     frame -- two frames apart it must have moved, and it must have moved in its
     own part of the screen and nowhere else.  A trapezoid walk, or a chain that
     only turns on one side, would still draw something; what it would not do is
-    leave the twenty resting cards untouched while it does it."""
-    run_still(capture=(RUN_FRAMES - 150, RUN_FRAMES - 1, 3))
-    frames = sorted(os.listdir(os.path.join(OUT, "still.frames")))
+    leave the rest of the board untouched while it does it."""
+    _, wram = run_hold(capture=(RUN_FRAMES - 200, RUN_FRAMES - 1, 3))
+    stamp = read_stamp(wram)
+    if UI[stamp["ui"]] != "PLACE":
+        raise Failure("the UI is in %s, not PLACE -- nothing is being held"
+                      % UI[stamp["ui"]])
+    if stamp["cursor"] != 2:
+        raise Failure("the cursor is on slot %d, expected 2 after two RIGHTs"
+                      % stamp["cursor"])
+    frames = sorted(os.listdir(os.path.join(OUT, "hold.frames")))
     if len(frames) < 8:
         raise Failure("captured %d frames, need at least 8" % len(frames))
     best = None
     for i in range(len(frames) - 1):
-        a = read_ppm(os.path.join(OUT, "still.frames", frames[i]))
-        b = read_ppm(os.path.join(OUT, "still.frames", frames[i + 1]))
+        a = read_ppm(os.path.join(OUT, "hold.frames", frames[i]))
+        b = read_ppm(os.path.join(OUT, "hold.frames", frames[i + 1]))
         w = a[0]
         moved = [(x, y) for y in range(0, 160) for x in range(0, w, 2)
                  if a[2][(y * w + x) * 3:(y * w + x) * 3 + 3]
@@ -618,8 +700,8 @@ def check_quad_card():
                       "not being redrawn through the quad path" % len(moved))
     xs = [x for x, y in moved]
     ys = [y for x, y in moved]
-    # The held card hovers over the player's middle monster slot, so every
-    # pixel it moves is in the middle of the board and above that slot.
+    # The cursor is on the middle slot of the player's own row, so the card is
+    # in the middle of the board and above that slot.
     if min(xs) < w // 4 or max(xs) > w - w // 4:
         raise Failure("the moving pixels span x %d..%d, wider than the held "
                       "card's slot -- the quad is not where it should be"
@@ -631,6 +713,138 @@ def check_quad_card():
         len(moved), min(xs), max(xs), min(ys), max(ys))
 
 
+# ── The duel itself ──────────────────────────────────────────────────────────
+
+FONT = os.path.join(ROOT, "src", "snes", "assets", "snes_font.bin")
+HUD_LP_ROW = 80                 # framebuffer rows, mirroring snes_duel.c
+HUD_MSG_ROW = 89
+
+
+def read_hud_line(px, w, fb_row):
+    """Read a line of HUD text back off the screen, glyph by glyph.
+
+    The HUD band is framebuffer rows 80..111 shown at 2x2 from line 160, and
+    the text is the shared 1bpp font drawn in white over its own shadow -- so a
+    glyph cell can be sampled into eight bytes and matched against the same font
+    table the game draws from.  This is how the harness reads life points: not
+    "there are bright pixels in the band" but the actual number."""
+    if not os.path.exists(FONT):
+        raise Failure("no font at %s -- run: python3 tools/snes/gen_snes_font.py"
+                      % os.path.relpath(FONT, ROOT))
+    with open(FONT, "rb") as fh:
+        font = fh.read()
+    out = ""
+    for col in range(16):
+        bits = []
+        for v in range(8):
+            row = 0
+            for u in range(8):
+                x = 2 * (col * 8 + u)
+                y = 160 + 2 * (fb_row - HUD_LP_ROW + v)
+                i = (y * w + x) * 3
+                if px[i] > 200 and px[i + 1] > 200 and px[i + 2] > 150:
+                    row |= 0x80 >> u
+            bits.append(row)
+        best = min((sum(bin(font[ch * 8 + i] ^ bits[i]).count("1")
+                        for i in range(8)), ch) for ch in range(32, 127))
+        out += chr(best[1]) if best[0] <= 6 else "?"
+    return out.rstrip()
+
+
+def check_hud_text():
+    """The band says what the rules say.
+
+    Both lines are decoded off the screenshot and checked against the frame
+    stamp, so a HUD that draws stale or wrong numbers fails here rather than
+    looking plausible."""
+    ppm, wram = run_still()
+    stamp = read_stamp(wram)
+    w, h, px = read_ppm(ppm)
+    lp = read_hud_line(px, w, HUD_LP_ROW)
+    prompt = read_hud_line(px, w, HUD_MSG_ROW)
+    expect = "YOU%04d COM%04d" % (stamp["lp_player"], stamp["lp_com"])
+    if lp != expect:
+        raise Failure("the life-point line reads %r, but the rules say %r"
+                      % (lp, expect))
+    if UI[stamp["ui"]] == "HAND" and not prompt.startswith("A:PLAY"):
+        raise Failure("the prompt reads %r while the UI is in HAND" % prompt)
+    return "%r / %r" % (lp, prompt)
+
+
+def check_duel_flow():
+    """A turn played through the UI, one button at a time.
+
+    Each step is its own scripted run, because the frame stamp is dumped once at
+    the end: the sequence of runs IS the trace.  What it proves is that the
+    rules and the screen are the same machine -- a card leaves the hand, lands
+    on the board, the battle phase opens and the turn passes to the opponent."""
+    steps = [
+        (["A"], "PLACE", None),
+        (["A", "A"], "HAND", 1),
+        (["A", "A", "X"], "ATTACKER", 1),
+        # By the end of this run the opponent has taken its own turn, so what
+        # the board holds is the rules' business and not this step's.
+        (["A", "A", "X", "START"], None, None),
+    ]
+    trace = []
+    for buttons, ui_name, cards in steps:
+        _, wram = run_flow("flow", buttons)
+        stamp = read_stamp(wram)
+        if ui_name and UI[stamp["ui"]] != ui_name:
+            raise Failure("after %s the UI is in %s, expected %s"
+                          % ("+".join(buttons), UI[stamp["ui"]], ui_name))
+        if cards is not None and stamp["field_cards"] != cards:
+            raise Failure("after %s the player has %d monsters on the board, "
+                          "expected %d" % ("+".join(buttons),
+                                           stamp["field_cards"], cards))
+        trace.append("%s->%s" % ("+".join(buttons), ui_name or UI[stamp["ui"]]))
+    # START ends the player's turn; by the end of the run the opponent has had
+    # its own and handed the turn back, so what is asserted is that the turn
+    # COUNTER moved rather than who is holding it at the final frame.
+    _, wram = run_flow("flow", ["A", "A", "X", "START"])
+    stamp = read_stamp(wram)
+    if stamp["duel_turn"] < 2:
+        raise Failure("START did not pass the turn: still on turn %d"
+                      % stamp["duel_turn"])
+    trace.append("turn %d" % stamp["duel_turn"])
+    return ", ".join(trace)
+
+
+def check_duel_plays_out():
+    """A whole duel, to a result.
+
+    L hands the player's side to the rules as well, so the duel plays itself:
+    the AI on both sides, the same rules model the MSX2 and Atari ST ports use,
+    and the SNES presentation showing every step of it.  What is asserted is
+    that it ENDS -- a decisive result, the loser on zero life points, and the
+    screen saying which way it went."""
+    ppm, wram = run_demo()
+    stamp = read_stamp(wram)
+    if stamp["duel_result"] == 0:
+        raise Failure("the demo duel is still running after %d fields: turn %d, "
+                      "you %d, com %d" % (9000, stamp["duel_turn"],
+                                          stamp["lp_player"], stamp["lp_com"]))
+    won = stamp["duel_result"] == 1
+    loser_lp = stamp["lp_com"] if won else stamp["lp_player"]
+    if loser_lp != 0:
+        raise Failure("the duel is decided but the loser has %d life points"
+                      % loser_lp)
+    if stamp["duel_turn"] < 4:
+        raise Failure("the duel ended on turn %d, which is not a duel"
+                      % stamp["duel_turn"])
+    if UI[stamp["ui"]] != "RESULT":
+        raise Failure("the duel is decided but the screen is in %s"
+                      % UI[stamp["ui"]])
+    w, h, px = read_ppm(ppm)
+    msg = read_hud_line(px, w, HUD_MSG_ROW)
+    expect = "YOU WIN  A:AGAIN" if won else "YOU LOSE A:AGAIN"
+    if msg != expect:
+        raise Failure("the duel was %s but the band reads %r"
+                      % ("won" if won else "lost", msg))
+    return "%s on turn %d, %d fields, band reads %r" % (
+        "won" if won else "lost", stamp["duel_turn"], 9000, msg)
+
+
 CHECKS = [
     ("cartridge", check_cartridge),
     ("boot", check_boot),
@@ -640,8 +854,11 @@ CHECKS = [
     ("board shape", check_board_is_a_slab),
     ("cards on board", check_cards_on_board),
     ("face-down card", check_face_down_card),
+    ("empty slot", check_empty_slot_is_floor),
     ("quad card", check_quad_card),
-    ("camera motion", check_camera_moves),
+    ("hud text", check_hud_text),
+    ("duel flow", check_duel_flow),
+    ("duel plays out", check_duel_plays_out),
     ("render cost", check_render_cost),
 ]
 

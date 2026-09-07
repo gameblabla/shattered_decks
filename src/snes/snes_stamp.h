@@ -27,6 +27,11 @@ typedef struct SnesStamp {
     u16 lp_player;
     u16 lp_com;
     u16 duel_result;    /* 0 running, 1 player won, 0xFFFF player lost */
+    u16 ui;             /* enum SnesDuelUi: which question the screen is asking */
+    u16 cursor;         /* the hand or field slot the cursor is on */
+    u16 field_cards;    /* monsters standing on the player's own row */
+    u16 phase;          /* enum Msx2Phase */
+    u16 turn_owner;     /* 0 the player, 1 the COM */
     u16 checksum;       /* sum of the words above, so a torn dump is detectable */
 } SnesStamp;
 

@@ -61,6 +61,8 @@ rs_du             dw
 rs_dv             dw
 rs_page           dw          ; the face's page, already in the high byte
 rs_tmp            dw
+rs_bits           dw          ; the glyph row the text blitter is shifting
+rs_ink            dw
 .ENDS
 
 .BASE $C0
@@ -432,6 +434,81 @@ _sq_loop:
     pld
     plb
 _sq_out:
+    plp
+    rtl
+
+;-----------------------------------------------------------------------------
+; void snesTextGlyph(u16 fb_index, u16 ch, u16 ink, u16 stride)
+;
+; One 8x8 glyph from the shared 1bpp font, drawn into the chunky framebuffer.
+;
+; ONE BIT PER PIXEL IS THE POINT.  A set bit stores the ink colour and a clear
+; bit stores NOTHING, so the glyph is transparent and the caller can draw it
+; twice -- once offset by a pixel in a dark colour, once in its own -- which is
+; what keeps HUD text legible over the arena's sandstone without a panel behind
+; it.  Sixty-four bytes of expanded glyph per character would also have to be
+; generated, stored and then read past on every clear pixel.
+;
+; The row loop is unrolled eight ways because the shift, the branch and the
+; index bump are the whole cost: at eight rows a glyph and two passes a
+; character, a sixteen-character line is drawn about two thousand times a duel.
+;-----------------------------------------------------------------------------
+snesTextGlyph:
+    php
+    rep #$30
+
+    lda 7,s
+    and #$007F                  ; the font holds 128 glyphs
+    asl a
+    asl a
+    asl a                       ; * 8 bytes a glyph
+    tax
+    lda 9,s
+    sta.l rs_ink
+    lda 5,s
+    tay
+
+    phb
+    phd
+    lda #rs_ufrac
+    tad
+    pea $7F7F
+    plb
+    plb                         ; DB = $7F, the framebuffer's bank
+
+    lda #8
+    sta.b <rs_end               ; rows remaining, borrowing the span's slot
+
+_tg_row:
+    sep #$20
+.ACCU 8
+    lda.l snes_font,x
+    sta.b <rs_bits
+    lda.b <rs_ink
+
+.REPT 8
+    asl.b <rs_bits
+    bcc +
+    sta.w snes_fb,y
++   iny
+.ENDR
+
+    rep #$20
+.ACCU 16
+    inx                         ; the next glyph row
+    tya
+    clc
+    ; The stride is at 14,s and not 11,s: phb and phd put three more bytes on
+    ; the stack after 816-tcc's arguments.
+    adc 14,s                    ; ...and the next framebuffer row
+    sec
+    sbc #8
+    tay
+    dec.b <rs_end
+    bne _tg_row
+
+    pld
+    plb
     plp
     rtl
 

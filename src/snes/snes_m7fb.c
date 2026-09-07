@@ -25,13 +25,13 @@ static u8 hdma_a[10];
 static u8 hdma_d[10];
 
 static u8 board_res = SNES_RES_STILL;
-static u8 present_row;          /* next framebuffer row to upload */
-static u8 present_done;
+static u8 present_row = 0;          /* next framebuffer row to upload */
+static u8 present_done = 0;
 /* The HUD band is uploaded ON REQUEST, not with every board frame.  It is
  * static between the events that change it, and at 4096 bytes it is two
  * thirds of a vblank's DMA budget -- paying that on every frame of a moving
  * board is what left the band showing the previous resolution's picture. */
-static u8 hud_pending;
+static u8 hud_pending = 0;
 
 /* Rows per vblank for the still upload.  NTSC vblank is 38 lines, about
  * 51,800 master cycles, and a DMA moves roughly one byte per 8; 38 rows of 128
