@@ -45,7 +45,17 @@ static u8 next_card = SNES_OBJ_CARDS;
 
 #define FONT_TILE      320u
 #define CORNER_TILE    (FONT_TILE + SNES_SPR_GLYPH_COUNT)
+#define BAR_TILE       (CORNER_TILE + SNES_SPR_CORNER_COUNT)
+#define PLATE_TILE     (BAR_TILE + SNES_SPR_BAR_COUNT)
+#define FONT_SHEET     (SNES_SPR_GLYPH_COUNT + SNES_SPR_CORNER_COUNT \
+                        + SNES_SPR_BAR_COUNT + SNES_SPR_PLATE_COUNT)
 #define FONT_WORD      (0x4000u + (FONT_TILE * 32u) / 2u)
+
+/* The life panel, in pixels from its left edge. */
+#define LIFE_PLATE_W   24               /* three cells: the label sits on it */
+#define LIFE_BAR_X     28
+#define LIFE_BAR_W     32               /* four cells of gauge */
+#define LIFE_NUM_X     64
 
 #define TOP_TILES_WORD 0x6000u
 #define TOP_MAP_WORD   0x7000u
@@ -63,8 +73,7 @@ void snesObjInit(void)
      * The base field counts in 8192-word units, so $4000 is 2. */
     REG_OBSEL = 0x20 | 0x02;
 
-    dmaCopyVram((u8 *)snes_spr_font, FONT_WORD,
-                (SNES_SPR_GLYPH_COUNT + SNES_SPR_CORNER_COUNT) * 32);
+    dmaCopyVram((u8 *)snes_spr_font, FONT_WORD, FONT_SHEET * 32);
 
     /* The top view, preloaded into the VRAM neither the bitmap nor the sprites
      * use.  This is the whole trick: the Mode 3 picture is already in VRAM
@@ -153,6 +162,39 @@ void snesObjBox(s16 x, s16 y, u8 w, u8 h)
     snesObjSprite(x, y + (s16)h - 8, CORNER_TILE + 2, SNES_SPR_HUD_PAL, 0);
     snesObjSprite(x + (s16)w - 8, y + (s16)h - 8, CORNER_TILE + 3,
                   SNES_SPR_HUD_PAL, 0);
+}
+
+/* THE LABEL IS EMITTED BEFORE THE PLATE IT SITS ON, and that ordering is the
+ * whole of the drawing here: every sprite in this port is priority 3, so what
+ * decides which of two overlapping ones is seen is the OAM index, and a lower
+ * index wins.  Text first, then the plate under it, then the gauge -- which
+ * overlaps nothing and could go anywhere. */
+void snesObjLifePanel(s16 x, s16 y, u8 side, u16 lp, u16 lp_max)
+{
+    const u16 base = (u16)(BAR_TILE + (side ? SNES_SPR_BAR_STEPS : 0));
+    u16 px;
+    u8  i;
+
+    snesObjText(x + 2, y, side ? "COM" : "YOU");
+    snesObjNum(x + LIFE_NUM_X, y, lp, 4);
+
+    for (i = 0; i < LIFE_PLATE_W / 8; ++i)
+        snesObjSprite(x + (s16)i * 8, y,
+                      (u16)(PLATE_TILE + (side ? 1 : 0)), SNES_SPR_HUD_PAL, 0);
+
+    /* Both sides are scaled down by eight first: the bar is thirty-two pixels
+     * and the starting life is eight thousand, so the honest product overflows
+     * sixteen bits and the shift costs nothing a byte of accuracy could buy --
+     * one pixel of this gauge is two hundred and fifty life points. */
+    if (lp_max < 8) lp_max = 8;
+    if (lp > lp_max) lp = lp_max;
+    px = (u16)(((u16)(lp >> 3) * LIFE_BAR_W) / (u16)(lp_max >> 3));
+    for (i = 0; i < LIFE_BAR_W / 8; ++i) {
+        u16 w = (px > (u16)i * 8) ? (px - (u16)i * 8) : 0;
+        if (w > 8) w = 8;
+        snesObjSprite(x + LIFE_BAR_X + (s16)i * 8, y, (u16)(base + w),
+                      SNES_SPR_HUD_PAL, 0);
+    }
 }
 
 void snesObjCard(s16 x, s16 y, u8 slot, u8 face)

@@ -36,6 +36,7 @@
 #include "snes_obj.h"
 #include "snes_stamp.h"
 #include "msx2_duel.h"
+#include "msx2_cards.h"
 
 /* The arena camera.  One unit is one slot pitch; the board runs z = -2..2, so
  * a camera one unit up and three back looks along the slab with its far edge
@@ -74,19 +75,48 @@
 
 /* The sprite HUD, in SCREEN pixels.  The bitmap's HUD band under the board is
  * flat black and is uploaded exactly once; everything below is drawn over it
- * by the PPU. */
-#define HUD_LP_Y     162
-#define HUD_MSG_Y    172
-#define HAND_Y       186
+ * by the PPU.
+ *
+ * THE LIFE POINTS ARE AT THE TOP OF THE SCREEN AND THE HAND IS ABOVE THE TEXT
+ * THAT DESCRIBES IT, which is the arrangement every other port uses and the
+ * one this port had backwards.  Two things follow from it:
+ *
+ *   * The LP panels are the same red/blue pair the PC and PC-FX builds draw
+ *     (src/main.c's draw_lp_label), eight pixels in from the top corners, and
+ *     they are drawn in EITHER view -- they are the one part of the HUD that
+ *     does not move when the player walks up into the top view.
+ *   * The band under the board reads downwards the way a card does: the hand,
+ *     then the name of the card the cursor is on, then its ATK and DEF.  The
+ *     button legend that used to occupy the name row now falls back into the
+ *     stat row whenever the focused card has no stats to show, so nothing was
+ *     lost by giving the name a line of its own. */
+#define LP_Y         8
+#define LP_YOU_X     8
+#define LP_COM_X     (256 - 8 - SNES_OBJ_LIFE_W)
+
+#define HAND_Y       162
 #define HAND_PITCH   48                 /* five 32-pixel cards across 256 */
 #define HAND_X0      8
+#define NAME_Y       198
+#define STAT_Y       208
+#define STAT_ATK_X   8
+#define STAT_DEF_X   96
+#define STAT_NUM_DX  32                 /* "ATK" is three cells wide plus one */
 
 /* The top view's table, from tools/snes/gen_snes_obj.py: a 5x4 grid of
  * SNES_TOP_CELL cells with a 32x32 card centred in each. */
 #define TOP_CARD_X(col)  (SNES_TOP_X0 + (col) * SNES_TOP_CELL + (SNES_TOP_CELL - 32) / 2)
 #define TOP_CARD_Y(row)  (SNES_TOP_Y0 + (row) * SNES_TOP_CELL + (SNES_TOP_CELL - 32) / 2)
-#define TOP_LP_Y     4
+/* The top view has one free row, under the table's near edge, so the name and
+ * the stats share it. */
 #define TOP_MSG_Y    212
+/* Both stats have to fit beside the name on that one row: a label is three
+ * cells and a number four, so a stat with its gap is eight cells and the pair
+ * is the right-hand half of the screen exactly.  Everything here stays on the
+ * eight-pixel grid, which is also what lets the harness read the row back as
+ * columns rather than as pixels. */
+#define TOP_STAT_X   120
+#define TOP_STAT_GAP 72
 
 enum SnesDuelUi {
     UI_HAND = 0,        /* choosing a card in hand */
@@ -324,6 +354,76 @@ static const char *prompt_text(void)
     }
 }
 
+/* ── What the cursor is on ───────────────────────────────────────────────── */
+
+/* THE NAME ROW DESCRIBES ONE CARD AND THE STATE DECIDES WHICH.
+ *
+ * In hand it is the card under the cursor; once one is picked up it stays the
+ * card being played, because that is the thing the player is still deciding
+ * about; in the battle phase it is whichever monster the cursor is over, on
+ * either side of the board.
+ *
+ * The answer is a FACE id and not a card id, so a set monster names itself
+ * "FACE DOWN" for free -- the face sheet's last page is the card back and the
+ * name table is indexed by the same id, so the two cannot disagree.  The real
+ * card id comes back separately, and only when the player is entitled to see
+ * it, which is what gates the stat row. */
+static u8 focus_card(u8 *face)
+{
+    const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+    const Msx2Side *com = &g_duel.side[MSX2_OWNER_COM];
+    u8 card;
+
+    *face = SNES_CARD_NONE_FACE;
+    switch (ui) {
+    case UI_HAND:
+        card = you->hand[cursor];
+        break;
+    case UI_PLACE:
+    case UI_EQUIP_TARGET:
+        card = you->hand[chosen];
+        break;
+    case UI_ATTACKER:
+        card = you->field[cursor];
+        if (card != MSX2_CARD_NONE && !you->faceup[cursor]) {
+            *face = SNES_CARD_BACK;
+            return MSX2_CARD_NONE;
+        }
+        break;
+    case UI_DEFENDER:
+        card = com->field[cursor];
+        if (card != MSX2_CARD_NONE && !com->faceup[cursor]) {
+            *face = SNES_CARD_BACK;
+            return MSX2_CARD_NONE;
+        }
+        break;
+    default:
+        return MSX2_CARD_NONE;
+    }
+    if (card == MSX2_CARD_NONE) return MSX2_CARD_NONE;
+    *face = card;
+    return card;
+}
+
+/* The ATK and DEF the row prints: the card's own while it is in hand, the
+ * SLOT's once it is on the board, so an equipped monster reads the number the
+ * battle will actually use rather than the one printed on the card. */
+static u8 focus_stats(u8 card, u16 *atk, u16 *def)
+{
+    if (card == MSX2_CARD_NONE || !Msx2_IsMonster(card)) return 0;
+    if (ui == UI_ATTACKER) {
+        *atk = (u16)Msx2_FieldAtk(MSX2_OWNER_PLAYER, cursor);
+        *def = (u16)Msx2_FieldDef(MSX2_OWNER_PLAYER, cursor);
+    } else if (ui == UI_DEFENDER) {
+        *atk = (u16)Msx2_FieldAtk(MSX2_OWNER_COM, cursor);
+        *def = (u16)Msx2_FieldDef(MSX2_OWNER_COM, cursor);
+    } else {
+        *atk = Msx2_CardAtk(card);
+        *def = Msx2_CardDef(card);
+    }
+    return 1;
+}
+
 /* ── The sprite layer ────────────────────────────────────────────────────── */
 
 /* THE WHOLE HUD IS REBUILT EVERY FRAME, in either view.
@@ -333,18 +433,48 @@ static const char *prompt_text(void)
  * measurable next to that, and a list that is never patched cannot keep a
  * sprite belonging to a screen the player has left -- which is the failure the
  * top view would otherwise produce on every entry, since the two views share
- * the same twenty card sprites. */
+ * the same twenty card sprites.
+ *
+ * IT IS BUILT FROM THE FRONT BACKWARDS.  Every sprite in this port is priority
+ * 3, so between two that overlap the one with the LOWER OAM index is the one
+ * seen: the text goes in first, then the plates it sits on, then the cursor,
+ * and the cards last of all. */
 static void build_objects(void)
 {
     const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
-    const char *line = message ? message : prompt_text();
     u8 row, col, i;
+    u8 face = SNES_CARD_NONE_FACE;
+    const u8 card = focus_card(&face);
+    u16 atk = 0, def = 0;
+    const u8 has_stats = focus_stats(card, &atk, &def);
+    /* A message pre-empts the name, because it is the thing that just
+     * happened; the name is back the moment it expires. */
+    const char *name = message ? message
+                     : (face != SNES_CARD_NONE_FACE) ? snesCardName(face)
+                     : prompt_text();
 
     snesObjBegin();
 
     if (top_view) {
         u8 crow = 0;
         const u8 cslot = cursor_board_slot(&crow);
+
+        snesObjText(8, TOP_MSG_Y, name);
+        if (has_stats) {
+            snesObjText(TOP_STAT_X, TOP_MSG_Y, "ATK");
+            snesObjNum(TOP_STAT_X + STAT_NUM_DX, TOP_MSG_Y, atk, 4);
+            snesObjText(TOP_STAT_X + TOP_STAT_GAP, TOP_MSG_Y, "DEF");
+            snesObjNum(TOP_STAT_X + TOP_STAT_GAP + STAT_NUM_DX, TOP_MSG_Y,
+                       def, 4);
+        }
+        snesObjLifePanel(LP_YOU_X, LP_Y, 0, (u16)you->lp, MSX2_START_LP);
+        snesObjLifePanel(LP_COM_X, LP_Y, 1,
+                         (u16)g_duel.side[MSX2_OWNER_COM].lp, MSX2_START_LP);
+
+        if (cslot != MSX2_SLOT_NONE && cslot < SNES_COLS)
+            snesObjBox(SNES_TOP_X0 + cslot * SNES_TOP_CELL,
+                       SNES_TOP_Y0 + crow * SNES_TOP_CELL,
+                       SNES_TOP_CELL, SNES_TOP_CELL);
 
         /* The field, far row first, exactly the order the perspective board
          * draws it in -- so walking up and back down does not reorder a thing
@@ -356,45 +486,48 @@ static void build_objects(void)
                                 row == SNES_ROW_YOU_SUPPORT);
             const Msx2Side *sd = &g_duel.side[owner];
             for (col = 0; col < SNES_COLS; ++col) {
-                const u8 card = support ? sd->equip_field[col] : sd->field[col];
-                const u8 face = face_of(card, support ? 1 : sd->faceup[col]);
-                if (face == SNES_CARD_NONE_FACE) continue;
+                const u8 c = support ? sd->equip_field[col] : sd->field[col];
+                const u8 f = face_of(c, support ? 1 : sd->faceup[col]);
+                if (f == SNES_CARD_NONE_FACE) continue;
                 snesObjCard(TOP_CARD_X(col), TOP_CARD_Y(row),
-                            (u8)(row * SNES_COLS + col), face);
+                            (u8)(row * SNES_COLS + col), f);
             }
         }
-        if (cslot != MSX2_SLOT_NONE && cslot < SNES_COLS)
-            snesObjBox(SNES_TOP_X0 + cslot * SNES_TOP_CELL,
-                       SNES_TOP_Y0 + crow * SNES_TOP_CELL,
-                       SNES_TOP_CELL, SNES_TOP_CELL);
-
-        snesObjText(8, TOP_LP_Y, "YOU");
-        snesObjNum(40, TOP_LP_Y, (u16)you->lp, 4);
-        snesObjText(152, TOP_LP_Y, "COM");
-        snesObjNum(184, TOP_LP_Y, (u16)g_duel.side[MSX2_OWNER_COM].lp, 4);
-        snesObjText(8, TOP_MSG_Y, line);
     } else {
+        /* The name of the card the cursor is on, and under it what that card
+         * is worth in a fight.  When there are no stats to show -- a support
+         * card, a set monster, the opponent's turn -- the stat row carries the
+         * button legend instead, so the row is never empty and the legend is
+         * never sitting in the name's place. */
+        snesObjText(8, NAME_Y, name);
+        if (has_stats) {
+            snesObjText(STAT_ATK_X, STAT_Y, "ATK");
+            snesObjNum(STAT_ATK_X + STAT_NUM_DX, STAT_Y, atk, 4);
+            snesObjText(STAT_DEF_X, STAT_Y, "DEF");
+            snesObjNum(STAT_DEF_X + STAT_NUM_DX, STAT_Y, def, 4);
+        } else {
+            snesObjText(STAT_ATK_X, STAT_Y, prompt_text());
+        }
+        snesObjLifePanel(LP_YOU_X, LP_Y, 0, (u16)you->lp, MSX2_START_LP);
+        snesObjLifePanel(LP_COM_X, LP_Y, 1,
+                         (u16)g_duel.side[MSX2_OWNER_COM].lp, MSX2_START_LP);
+
         /* THE HAND IS NOT DRAWN IN THE TOP VIEW, because the top view is the
          * board seen from above and the hand is not on the board.  Here it is
          * five 32x32 sprites -- the card art at the console's own resolution,
-         * which is twice what the bitmap band could show it at. */
+         * which is twice what the bitmap band could show it at -- sitting at
+         * the TOP of the band, with the words that describe it underneath. */
         for (i = 0; i < MSX2_HAND; ++i) {
             const s16 x = (s16)(HAND_X0 + i * HAND_PITCH);
-            const u8 card = you->hand[i];
+            const u8 hcard = you->hand[i];
             const u8 selected = (ui == UI_HAND)
                               ? (cursor == i)
                               : (chosen == i && ui != UI_ATTACKER &&
                                  ui != UI_DEFENDER && ui != UI_COM);
-            if (card == MSX2_CARD_NONE) continue;
-            snesObjCard(x, HAND_Y, i, face_of(card, 1));
+            if (hcard == MSX2_CARD_NONE) continue;
             if (selected) snesObjBox(x - 4, HAND_Y - 4, 40, 40);
+            snesObjCard(x, HAND_Y, i, face_of(hcard, 1));
         }
-
-        snesObjText(8, HUD_LP_Y, "YOU");
-        snesObjNum(40, HUD_LP_Y, (u16)you->lp, 4);
-        snesObjText(152, HUD_LP_Y, "COM");
-        snesObjNum(184, HUD_LP_Y, (u16)g_duel.side[MSX2_OWNER_COM].lp, 4);
-        snesObjText(8, HUD_MSG_Y, line);
     }
 
     snesObjEnd();

@@ -14,6 +14,11 @@
 #define SNES_SPR_GLYPH_FIRST  32
 #define SNES_SPR_GLYPH_COUNT  64
 #define SNES_SPR_CORNER_COUNT 4
+/* The life bar's tiles follow the corners: BAR_STEPS fill states in the
+ * player's colour, the same again in the opponent's, then the two plates. */
+#define SNES_SPR_BAR_STEPS    9
+#define SNES_SPR_BAR_COUNT    18
+#define SNES_SPR_PLATE_COUNT  2
 #define SNES_SPR_HUD_PAL      7
 #define SNES_SPR_INK          1
 #define SNES_SPR_GOLD         3

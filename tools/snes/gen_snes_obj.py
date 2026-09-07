@@ -70,6 +70,11 @@ GLYPH_FIRST = 32
 GLYPH_COUNT = 64
 # ...and four more tiles after them: the cursor's corner brackets.
 CORNER_COUNT = 4
+# ...and then the life-bar furniture: nine fill states of the bar in each of the
+# two sides' colours, then the two label plates.  See `bar_tiles`.
+BAR_STEPS = 9                   # 0..8 columns of the tile filled
+BAR_COUNT = BAR_STEPS * 2
+PLATE_COUNT = 2
 SNES_SPR_GOLD = 3
 
 
@@ -340,6 +345,8 @@ def build_font():
                     px[y * 8 + x] = 1
         blob += tile4(px)
     blob += corner_tiles()
+    blob += bar_tiles()
+    blob += plate_tiles()
     return bytes(blob)
 
 
@@ -368,6 +375,50 @@ def corner_tiles():
     return bytes(out)
 
 
+def bar_tiles():
+    """The life bar, as nine fill states per side.
+
+    A LIFE BAR ON THIS MACHINE IS A ROW OF SPRITES AND NOTHING ELSE -- there is
+    no rectangle to fill, because the board is a Mode 7 bitmap the HUD is not
+    allowed to touch and the top view is a preloaded tilemap that is never
+    rewritten.  So the bar is four 8x8 sprites and its length is chosen a tile
+    at a time: whole tiles up to the fill, one partial tile at the boundary,
+    empty tiles after it.  Nine states a tile is one screen pixel of
+    granularity, which over a 32-pixel bar is 250 life points -- finer than the
+    digits beside it change.
+
+    The bar carries its own frame (top and bottom rules in the shadow colour)
+    so it reads as a gauge over the board's sandstone as well as over black."""
+    out = bytearray()
+    for fill_colour in (PLATE_RED_INK, PLATE_BLUE_INK):
+        for w in range(BAR_STEPS):
+            px = [0] * 64
+            for y in range(6):
+                for x in range(8):
+                    if y == 0 or y == 5:
+                        px[y * 8 + x] = 2            # the frame's rule
+                    else:
+                        px[y * 8 + x] = fill_colour if x < w else BAR_EMPTY
+            out += tile4(px)
+    return bytes(out)
+
+
+def plate_tiles():
+    """The two label plates: a solid cell the side's name is drawn over.
+
+    Red is the player and blue the opponent, which is the colour pairing every
+    other port's LP panel uses (src/main.c's draw_lp_label), so a player who
+    has seen the PC or PC-FX build reads this one without being taught."""
+    out = bytearray()
+    for colour in (PLATE_RED, PLATE_BLUE):
+        px = [colour] * 64
+        for x in range(8):
+            px[x] = 2                                # a dark rule top...
+            px[56 + x] = 2                           # ...and bottom
+        out += tile4(px)
+    return bytes(out)
+
+
 # The HUD palette.  Index 1 is the ink every line is drawn in, 2 the shadow the
 # glyphs carry, and 3..5 are what a line is recoloured to when it means
 # something: the player's own numbers, the opponent's, and a warning.
@@ -378,7 +429,15 @@ HUD_PALETTE = [
     (255, 128, 112),   # 4 red  -- the opponent's side
     (144, 232, 144),   # 5 green
     (168, 200, 255),   # 6 blue
-] + [(0, 0, 0)] * 9
+    (176, 32, 40),     # 7 the player's plate and the ink of their bar
+    (40, 64, 184),     # 8 the opponent's
+    (28, 28, 44),      # 9 the empty part of a bar
+] + [(0, 0, 0)] * 6
+
+# ...named, because the bar and plate tiles are generated against them.
+PLATE_RED, PLATE_BLUE = 7, 8
+PLATE_RED_INK, PLATE_BLUE_INK = 4, 6
+BAR_EMPTY = 9
 
 
 # ── The top view ─────────────────────────────────────────────────────────────
@@ -529,6 +588,11 @@ def main():
 #define SNES_SPR_GLYPH_FIRST  %d
 #define SNES_SPR_GLYPH_COUNT  %d
 #define SNES_SPR_CORNER_COUNT %d
+/* The life bar's tiles follow the corners: BAR_STEPS fill states in the
+ * player's colour, the same again in the opponent's, then the two plates. */
+#define SNES_SPR_BAR_STEPS    %d
+#define SNES_SPR_BAR_COUNT    %d
+#define SNES_SPR_PLATE_COUNT  %d
 #define SNES_SPR_HUD_PAL      7
 #define SNES_SPR_INK          1
 #define SNES_SPR_GOLD         3
@@ -550,7 +614,8 @@ extern const u8 snes_top_map[];
 
 #endif
 """ % (SPR, SPR * SPR // 2, (SPR // 8) * 32, GLYPH_FIRST, GLYPH_COUNT,
-       CORNER_COUNT, TOP_CELL, TOP_X0, TOP_Y0, len(top_tiles)))
+       CORNER_COUNT, BAR_STEPS, BAR_COUNT, PLATE_COUNT,
+       TOP_CELL, TOP_X0, TOP_Y0, len(top_tiles)))
     print("%s written" % os.path.relpath(header, ROOT))
     print("top view: %d tiles, %d bytes; %d card sprites"
           % (len(top_tiles) // 64, len(top_tiles), len(groups)))

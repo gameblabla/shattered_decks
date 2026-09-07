@@ -20,6 +20,7 @@ Run it with no arguments for the standard regression set.
 """
 
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -308,7 +309,7 @@ def check_still_resolution():
     size = texel_size(px, w, board_row(1), 2)
     if size != 2:
         raise Failure("still band texel is %d screen pixels wide, expected 2" % size)
-    hud = texel_size(px, w, HUD_LP_Y + 3, 1)
+    hud = texel_size(px, w, NAME_Y + 3, 1)
     if hud != 1:
         raise Failure("the HUD's letters are %d screen pixels a stroke -- they "
                       "are being drawn into the bitmap, not by the sprite layer"
@@ -336,7 +337,7 @@ def check_moving_resolution():
                       "card is being held")
     w, h, px = read_ppm(ppm)
     board = texel_size(px, w, board_row(0), 4)
-    hud = texel_size(px, w, HUD_LP_Y + 3, 1)
+    hud = texel_size(px, w, NAME_Y + 3, 1)
     if board != 4:
         raise Failure("moving band texel is %d screen pixels wide, expected 4" % board)
     if hud != 1:
@@ -371,7 +372,8 @@ def check_floor_is_textured():
     # picture and no horizon band; the board is the only textured object on the
     # screen.  So the rows above its far edge are one colour and that colour is
     # black -- a check a painted sky would fail, which is the point.
-    sky = band_colours(px, w, 0, 40)
+    # ...below the life panels, which are sprites and are meant to be there.
+    sky = band_colours(px, w, LP_Y + 8, 40)
     if sky != {b"\x00\x00\x00"}:
         raise Failure("the rows above the board show %d colours (%s) -- the "
                       "surround is not black"
@@ -860,11 +862,18 @@ SPR_GROUP = os.path.join(ROOT, "src", "snes", "assets", "snes_spr_group.bin")
 GLYPH_FIRST = 32
 GLYPH_COUNT = 64
 
-# Screen coordinates, mirroring snes_duel.c.
-HUD_LP_Y, HUD_MSG_Y = 162, 172
-HAND_Y, HAND_X0, HAND_PITCH = 186, 8, 48
+# Screen coordinates, mirroring snes_duel.c.  The life panels are at the TOP of
+# the screen in both views and the band under the board reads downwards -- the
+# hand, then the focused card's name, then its stats.
+LP_Y, LP_YOU_X, LP_COM_X = 8, 8, 152
+LP_LABEL_DX, LP_BAR_DX, LP_BAR_W, LP_NUM_DX = 2, 28, 32, 64
+LP_MAX = 8000
+HAND_Y, HAND_X0, HAND_PITCH = 162, 8, 48
+NAME_Y, STAT_Y, STAT_ATK_X, STAT_DEF_X, STAT_NUM_DX = 198, 208, 8, 96, 32
 TOP_CELL, TOP_X0, TOP_Y0 = 48, 8, 16
-TOP_LP_Y, TOP_MSG_Y = 4, 212
+TOP_MSG_Y, TOP_STAT_X, TOP_STAT_GAP = 212, 120, 72
+CARD_NAMES = os.path.join(ROOT, "src", "snes", "assets", "snes_card_names.bin")
+NAME_LEN = 16
 
 _SPR = {}
 
@@ -979,26 +988,71 @@ def identify_card_sprite(px, w, h, x0, y0):
     return best
 
 
+def card_name(face):
+    """What the ROM says a face is called, which is what the HUD must print."""
+    blob = spr_asset(CARD_NAMES, "names")
+    return blob[face * NAME_LEN:(face + 1) * NAME_LEN].split(b"\0")[0].decode()
+
+
+def read_life_panel(px, w, h, x, side):
+    """One life panel off the screen: its label, its number, and how much of
+    its gauge is filled.
+
+    The gauge is read as a COUNT OF LIT PIXELS in the side's own colour, which
+    is the only thing a bar can be checked against -- not "there is something
+    there" but a length that has to agree with the life points the rules hold.
+    A tile of the bar carries its fill in colour 4 (the player) or 6 (the
+    opponent) against colour 9, so the two sides cannot be confused for each
+    other either."""
+    label = read_sprite_line(px, w, h, x + LP_LABEL_DX, LP_Y, 3)
+    number = read_sprite_line(px, w, h, x + LP_NUM_DX, LP_Y, 4)
+    ink = obj_colour(7, 6 if side else 4)
+    filled = 0
+    for u in range(LP_BAR_W):
+        if screen5(px, w, x + LP_BAR_DX + u, LP_Y + 2) == ink:
+            filled += 1
+    return label, number, filled
+
+
 def check_hud_text():
     """The band says what the rules say.
 
-    Both lines are decoded off the screenshot and checked against the frame
-    stamp, so a HUD that draws stale or wrong numbers fails here rather than
-    looking plausible."""
+    The life panels are decoded off the screenshot -- label, digits AND the
+    length of the gauge -- and checked against the frame stamp, so a HUD that
+    draws stale or wrong numbers fails here rather than looking plausible.  The
+    name row is checked against the ROM's own name table: it either IS a card
+    the game could be showing, or the message the last action left."""
     ppm, wram = run_still()
     stamp = read_stamp(wram)
     w, h, px = read_ppm(ppm)
-    you = read_sprite_line(px, w, h, 8, HUD_LP_Y, 9)
-    com = read_sprite_line(px, w, h, 152, HUD_LP_Y, 9)
-    prompt = read_sprite_line(px, w, h, 8, HUD_MSG_Y, 18)
-    expect_you = "YOU %04d" % stamp["lp_player"]
-    expect_com = "COM %04d" % stamp["lp_com"]
-    if you != expect_you or com != expect_com:
-        raise Failure("the life-point line reads %r / %r, but the rules say "
-                      "%r / %r" % (you, com, expect_you, expect_com))
-    if UI[stamp["ui"]] == "HAND" and not prompt.startswith("A:PLAY"):
-        raise Failure("the prompt reads %r while the UI is in HAND" % prompt)
-    return "%r %r / %r" % (you, com, prompt)
+
+    for x, side, lp, who in ((LP_YOU_X, 0, stamp["lp_player"], "YOU"),
+                             (LP_COM_X, 1, stamp["lp_com"], "COM")):
+        label, number, filled = read_life_panel(px, w, h, x, side)
+        if label != who:
+            raise Failure("the %s panel is labelled %r" % (who, label))
+        if number != "%04d" % lp:
+            raise Failure("the %s panel reads %r, but the rules say %d"
+                          % (who, number, lp))
+        want = min(LP_BAR_W, lp * LP_BAR_W // LP_MAX)
+        if abs(filled - want) > 1:
+            raise Failure("the %s gauge is %d pixels long for %d life points, "
+                          "where %d is the length that means %d"
+                          % (who, filled, lp, want, lp))
+
+    name = read_sprite_line(px, w, h, 8, NAME_Y, 15)
+    stat = read_sprite_line(px, w, h, STAT_ATK_X, STAT_Y, 20)
+    names = set(card_name(f) for f in range(CARD_BACK + 1))
+    if UI[stamp["ui"]] == "HAND":
+        if name not in names:
+            raise Failure("the name row reads %r, which is not a card in the "
+                          "ROM's name table" % name)
+        if not (stat.startswith("ATK") or stat.startswith("A:PLAY")):
+            raise Failure("the stat row reads %r while the UI is in HAND" % stat)
+        if stat.startswith("ATK") and not stat[4:8].isdigit():
+            raise Failure("the stat row reads %r -- ATK has no number" % stat)
+    return "%r / %r, name %r, stats %r" % (
+        "YOU %d" % stamp["lp_player"], "COM %d" % stamp["lp_com"], name, stat)
 
 
 def check_duel_flow():
@@ -1066,7 +1120,7 @@ def check_duel_plays_out():
         raise Failure("the duel is decided but the screen is in %s"
                       % UI[stamp["ui"]])
     w, h, px = read_ppm(ppm)
-    msg = read_sprite_line(px, w, h, 8, HUD_MSG_Y, 16)
+    msg = read_sprite_line(px, w, h, 8, NAME_Y, 16)
     expect = "YOU WIN  A:AGAIN" if won else "YOU LOSE A:AGAIN"
     if msg != expect:
         raise Failure("the duel was %s but the band reads %r"
@@ -1130,7 +1184,7 @@ def check_top_view():
     # board from above; the rows the hand occupies in the other view are the
     # table's own bottom edge and nothing else.
     hand_band = set()
-    for y in range(TOP_Y0 + 4 * TOP_CELL + 2, min(h, TOP_MSG_Y - 2)):
+    for y in range(TOP_Y0 + 4 * TOP_CELL + 1, min(h, TOP_MSG_Y - 1)):
         for x in range(0, w, 2):
             i = (y * w + x) * 3
             hand_band.add(px[i:i + 3])
@@ -1139,9 +1193,25 @@ def check_top_view():
                       "-- something is drawn where the hand used to be"
                       % len(hand_band))
 
-    you = read_sprite_line(px, w, h, 8, TOP_LP_Y, 9)
-    if you != "YOU %04d" % stamp["lp_player"]:
-        raise Failure("the top view's life-point line reads %r" % you)
+    # The life panels do not move when the player walks up: they are at the top
+    # of the screen in both views, which is the point of putting them there.
+    label, number, filled = read_life_panel(px, w, h, LP_YOU_X, 0)
+    if label != "YOU" or number != "%04d" % stamp["lp_player"]:
+        raise Failure("the top view's life panel reads %r %r" % (label, number))
+    you = "%s %s" % (label, number)
+
+    # The name and the two stats share the top view's one free row, so they are
+    # also the one place in the HUD where two fields can be laid out into each
+    # other.  Reading the whole row back is what catches that: "ATK 2100EF 1750"
+    # is a screenshot that looks nearly right and is not.
+    row = read_sprite_line(px, w, h, 0, TOP_MSG_Y, 32)
+    if "ATK" in row and not re.search(r"ATK\s+\d{4}\s+DEF\s+\d{4}\s*$", row):
+        raise Failure("the top view's stat row reads %r -- the two fields are "
+                      "laid out into each other" % row)
+    if row[:TOP_STAT_X // 8].strip() and \
+       len(row[:TOP_STAT_X // 8].rstrip()) * 8 > TOP_STAT_X:
+        raise Failure("the top view's name %r runs into the stats"
+                      % row[:TOP_STAT_X // 8])
     return "%d of 20 slots identified exactly, %d distinct faces, %r" % (
         len(found), len(set(f for _, _, f in found)), you)
 

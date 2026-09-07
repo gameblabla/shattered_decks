@@ -15,6 +15,13 @@
 /* The high half of the span walker's texture index: the face's page. */
 #define snesCardPage(face)    ((u16)((u16)(face) << 8))
 
+/* The name the HUD prints, sixteen bytes a face and NUL padded, indexed by the
+ * same card id the sheet is.  A fixed stride rather than a pointer table: the
+ * name is read every frame and a shift beats a far indirection here. */
+#define SNES_CARD_NAME_LEN    16
+#define snesCardName(face)    (&snes_card_names[(u16)(face) * SNES_CARD_NAME_LEN])
+
 extern const u8 snes_card_tex[];
+extern const char snes_card_names[];
 
 #endif

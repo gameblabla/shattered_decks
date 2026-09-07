@@ -6,4 +6,7 @@
 snes_card_tex:
     .INCBIN "snes_card_tex.bin"
 
+snes_card_names:
+    .INCBIN "snes_card_names.bin"
+
 .ENDS

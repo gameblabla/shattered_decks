@@ -53,6 +53,12 @@ void snesObjText(s16 x, s16 y, const char *s);
 void snesObjNum(s16 x, s16 y, u16 value, u8 digits);
 /* The four corner brackets of a w x h box -- the cursor, in either view. */
 void snesObjBox(s16 x, s16 y, u8 w, u8 h);
+/* One side's life panel: a coloured label plate, a gauge and the number, all
+ * of it sprites.  `side` is 0 for the player (red) and 1 for the opponent
+ * (blue), which is the pairing the PC and PC-FX builds' LP panels use.  The
+ * panel is SNES_OBJ_LIFE_W wide and one 8-pixel row tall. */
+#define SNES_OBJ_LIFE_W   96
+void snesObjLifePanel(s16 x, s16 y, u8 side, u16 lp, u16 lp_max);
 /* A 32x32 card face in OBJ card slot `slot`.  The face's tiles are uploaded by
  * snesObjVblank over the following vblanks; until they are there the sprite is
  * not emitted, because a card drawn out of tiles that still hold the previous
