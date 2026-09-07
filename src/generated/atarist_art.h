@@ -17,7 +17,7 @@
 #define ATARIST_ART_FIELD_W    32
 #define ATARIST_ART_FIELD_H    32
 #define ATARIST_ART_HAND_W     32
-#define ATARIST_ART_HAND_H     24
+#define ATARIST_ART_HAND_H     44
 #define ATARIST_ART_ARENA_W    128
 #define ATARIST_ART_BIG_W      96
 #define ATARIST_ART_BIG_H      96
@@ -55,19 +55,19 @@ static const uint8_t g_atarist_arena_rgb[16][3] = {
 
 static const uint8_t g_atarist_card_rgb[16][3] = {
     {  0,   0,   0},   /*  0 BLACK */
-    { 24,  24,  40},   /*  1 PANEL_DARK */
-    { 72,  72, 104},   /*  2 PANEL_MID */
-    {152, 152, 176},   /*  3 PANEL_LIGHT */
+    { 38,  27,  11},   /*  1 PANEL_DARK */
+    { 99,  68,  30},   /*  2 PANEL_MID */
+    {204, 156,  74},   /*  3 PANEL_LIGHT */
     {224, 176,  56},   /*  4 GOLD */
     {208,  64,  64},   /*  5 RED */
     { 72, 176,  88},   /*  6 GREEN */
-    { 99,  68,  30},   /*  7 FRAME_STONE */
-    { 54,  51,  58},   /*  8 art */
-    { 38,  37, 129},   /*  9 art */
-    {111,  97,  97},   /* 10 art */
-    {119,  57, 171},   /* 11 art */
-    {143, 133, 129},   /* 12 art */
-    { 71, 131, 208},   /* 13 art */
+    {133, 102,  59},   /*  7 FRAME_STONE */
+    { 36,  36,  51},   /*  8 art */
+    { 62,  56,  90},   /*  9 art */
+    {107,  96, 113},   /* 10 art */
+    { 71,  85, 188},   /* 11 art */
+    {149, 142, 153},   /* 12 art */
+    {187, 187, 200},   /* 13 art */
     {248, 248, 248},   /* 14 WHITE */
     {248, 232,  96},   /* 15 YELLOW */
 };

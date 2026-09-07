@@ -80,8 +80,8 @@
  * per edge group per scanline.  The first version of this layout used a
  * 63-pixel pitch starting at x=5 and the hand alone cost eight vblanks. */
 #define HAND_Y        118
-#define HAND_CARD_W    64
-#define HAND_CARD_H    44
+#define HAND_CARD_W   ATARIST_ART_HAND_W    /* the card front itself, 32 */
+#define HAND_CARD_H   ATARIST_ART_HAND_H    /* 44: the whole front */
 #define HAND_PITCH     64
 #define HAND_X0         0
 #define HUD_Y         166
@@ -384,54 +384,65 @@ static void render_board(int moving)
 
 /* ── The card half ───────────────────────────────────────────────────────── */
 
-/* The art window: 16-pixel aligned inside the card, which is what keeps the
- * blit whole-word (see STATUS.md -- a misaligned blit is a read-modify-write
- * per group per row).  ART_H + one stat row is exactly the card's height. */
-#define HAND_ART_X      16
-#define HAND_ART_Y       2
-#define HAND_ATK_Y      27
-#define HAND_DEF_Y      35
+/* A HAND SLOT IS A CARD, NOT A BOX WITH A PICTURE IN IT.  It used to be a
+ * filled panel with a one-pixel outline and the card's art window pasted in the
+ * middle, which is what made the row read as five text fields; the converter
+ * now bakes the WHOLE card front -- the PC template's stone, its gold rules and
+ * its keyline, with the painting in its window -- so the slot draws the card
+ * and nothing else.  The stone and beige it is drawn in are the same two
+ * sandstone photographs the board is cut from, which is what "the same palette
+ * as the board" means here.
+ *
+ * The card is 32 wide in a 64-wide slot; the other half is the stat column,
+ * which is exactly four digits at eight pixels.  Both x's stay on a 16-pixel
+ * boundary, so the blit is whole-word (STATUS.md: a misaligned one is a
+ * read-modify-write per group per row). */
+#define HAND_STAT_R     64      /* right edge of the stat column, from x */
+#define HAND_ATK_Y      14
+#define HAND_DEF_Y      26
 
 static void draw_hand_card(int i, u8 card, int selected, int used)
 {
     int x = HAND_X0 + i * HAND_PITCH;
-    uint8_t frame = selected ? CARD_YELLOW : CARD_SILVER;
-    uint8_t ink = used ? CARD_PANEL_LIGHT : CARD_WHITE;
+    uint8_t ink = used ? CARD_PANEL_MID : CARD_WHITE;
     const AtaristImage *art;
 
-    Atarist_FillRect(x, HAND_Y, HAND_CARD_W, HAND_CARD_H,
-                     used ? CARD_PANEL_DARK : CARD_PANEL_MID);
-    Atarist_FrameRect(x, HAND_Y, HAND_CARD_W, HAND_CARD_H, frame);
-    if (selected)
-        Atarist_FrameRect(x + 1, HAND_Y + 1, HAND_CARD_W - 2, HAND_CARD_H - 2,
-                          CARD_YELLOW);
     if (card == MSX2_CARD_NONE) return;
 
-    /* The card's own painting, converted for the CARD palette.  The board
-     * shows the same picture converted for the ARENA one, so a card reads the
-     * same in hand as on the field. */
     art = Atarist_CardHandImage(Atarist_CardFaceForCard(card, 1));
     if (art)
-        Atarist_BlitImage(art, x + HAND_ART_X, HAND_Y + HAND_ART_Y);
-    else
-        Atarist_FillRect(x + HAND_ART_X, HAND_Y + HAND_ART_Y,
-                         ATARIST_ART_HAND_W, ATARIST_ART_HAND_H,
-                         Msx2_IsSupport(card) ? CARD_GOLD : CARD_PANEL_LIGHT);
+        Atarist_BlitImage(art, x, HAND_Y);
+    else {
+        Atarist_FillRect(x, HAND_Y, HAND_CARD_W, HAND_CARD_H,
+                         Msx2_IsSupport(card) ? CARD_GOLD : CARD_FRAME_STONE);
+        Atarist_FrameRect(x, HAND_Y, HAND_CARD_W, HAND_CARD_H, CARD_BLACK);
+    }
 
-    /* Two stat rows under the art, right aligned.  Side by side they fit --
-     * four digits at eight pixels is exactly half the card each -- but a
-     * 2300 and a 2100 printed adjacent read as one eight-digit number, which
-     * is what the first build of this layout actually looked like. */
+    /* The selection replaces the card's own outer keyline rather than adding a
+     * ring outside it: a front already ends in a one-pixel black border, so
+     * repainting that border yellow reads as "this one" without putting a box
+     * back on the screen or costing the card a pixel of its frame. */
+    if (selected) {
+        Atarist_FrameRect(x, HAND_Y, HAND_CARD_W, HAND_CARD_H, CARD_YELLOW);
+        Atarist_FrameRect(x + 1, HAND_Y + 1, HAND_CARD_W - 2,
+                          HAND_CARD_H - 2, CARD_YELLOW);
+    }
+
+    /* Two stat rows beside the card, right aligned in the stat column.  Side
+     * by side they would fit, but a 2300 and a 2100 printed adjacent read as
+     * one eight-digit number -- which is what the first build looked like. */
     if (Msx2_IsSupport(card)) {
-        Atarist_DrawText(x + 8, HAND_Y + HAND_ATK_Y, "SUP", CARD_GOLD,
-                         CARD_BLACK);
-        Atarist_DrawNumber(x + 56, HAND_Y + HAND_DEF_Y, Msx2_SupportKind(card),
-                           CARD_YELLOW, CARD_BLACK);
+        Atarist_DrawText(x + HAND_STAT_R - 24, HAND_Y + HAND_ATK_Y, "SUP",
+                         used ? CARD_PANEL_MID : CARD_GOLD, CARD_BLACK);
+        Atarist_DrawNumber(x + HAND_STAT_R, HAND_Y + HAND_DEF_Y,
+                           Msx2_SupportKind(card),
+                           used ? CARD_PANEL_MID : CARD_YELLOW, CARD_BLACK);
     } else {
-        Atarist_DrawNumber(x + 56, HAND_Y + HAND_ATK_Y, Msx2_CardAtk(card),
-                           ink, CARD_BLACK);
-        Atarist_DrawNumber(x + 56, HAND_Y + HAND_DEF_Y, Msx2_CardDef(card),
-                           used ? CARD_PANEL_LIGHT : CARD_GREEN, CARD_BLACK);
+        Atarist_DrawNumber(x + HAND_STAT_R, HAND_Y + HAND_ATK_Y,
+                           Msx2_CardAtk(card), ink, CARD_BLACK);
+        Atarist_DrawNumber(x + HAND_STAT_R, HAND_Y + HAND_DEF_Y,
+                           Msx2_CardDef(card),
+                           used ? CARD_PANEL_MID : CARD_GREEN, CARD_BLACK);
     }
 }
 

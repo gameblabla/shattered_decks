@@ -133,16 +133,20 @@ ARENA_FIXED = {
     "WHITE": (248, 248, 248),
     "HILIGHT": (248, 232, 96),
 }
+# THE CARD HALF IS BROWN, NOT BLUE-GREY.  Its four structural tones used to be
+# a cold panel ramp left over from when the hand was a row of boxes with an art
+# window in each; the hand shows whole card fronts now, and a card front is
+# stone, beige and gold.  Four blues spent on a panel nothing draws any more
+# were four tones the frames themselves needed.  All four are filled in from
+# the tile photographs in `main`, like the arena's.
 CARD_FIXED = {
     "BLACK": (0, 0, 0),
-    "PANEL_DARK": (24, 24, 40),
-    "PANEL_MID": (72, 72, 104),
-    "PANEL_LIGHT": (152, 152, 176),
+    "PANEL_DARK": (32, 22, 12),
+    "PANEL_MID": (99, 68, 30),
+    "PANEL_LIGHT": (204, 156, 74),
     "GOLD": (224, 176, 56),
     "RED": (208, 64, 64),
     "GREEN": (72, 176, 88),
-    # The card frame's stone, so a hand card's frame is the same object the
-    # board's cards wear.  Filled in from the tile photographs in `main`.
     "FRAME_STONE": (117, 84, 46),
     "WHITE": (248, 248, 248),
     "YELLOW": (248, 232, 96),
@@ -156,7 +160,7 @@ TILE_INSET = 0.14            # how much of a slab photograph is its border
 TILE_DIFFUSION = 0.60
 BOARD_COLS, BOARD_ROWS = 5, 4   # must equal ATARIST_COLS / ATARIST_ROWS
 FIELD_W = FIELD_H = 32       # 3D board card texture
-HAND_W, HAND_H = 32, 24      # hand card art window
+HAND_W, HAND_H = 32, 44      # hand card: the WHOLE card front
 TITLE_W, TITLE_H = 320, 200
 TITLE_BAND_ROWS = 8          # 25 bands, one palette each
 TITLE_LOGO_Y = 10            # the baked SHATTERED / DECKS logo, top centre
@@ -653,28 +657,25 @@ def field_indices(tag, src, pal, frame_allow, art_allow=None):
 
 
 def hand_indices(tag, src, pal, frame_allow, art_allow=None):
-    """The hand's window: the card's art window plus the frame's inner gold
-    rule, as indices.
+    """A WHOLE CARD FRONT for the hand, as indices.
 
-    The card is built at whatever height makes that band exactly HAND_H rows
-    tall and then the band is CUT OUT OF THE INDEX ARRAY.  The earlier version
-    rendered a whole card, cropped it as RGB and resampled the crop -- which
-    resamples a dithered picture, i.e. blends dither noise into new colours and
-    then quantises those, and it is why the hand row looked muddier than the
-    board did.  Nothing here resamples an index."""
+    The hand used to show only the card's art window -- the painting plus the
+    frame's inner gold rule, a band cut out of the index array -- and the duel
+    screen drew a filled box and a one-pixel outline round it.  That box is
+    what made the hand row read as a list of text fields instead of a row of
+    cards.  The whole front is the same object the board's cards wear and the
+    same one the MSX2 and PC-FX ports show, so the hand is now a card and the
+    duel screen draws no box at all.
+
+    Nothing here resamples an index: the frame is quantised, the painting is
+    dithered, and the composite happens in index space (framed_card_indices)."""
     if tag == "back":
         return dither(card_back_art((HAND_W, HAND_H)), pal, allow=art_allow,
                       strength=ART_DIFFUSION)
-    _, fy0, _, fy1 = frame_windows()[0]
-    m = 0.045                                        # keep the gold rule
-    top, bot = max(0.0, fy0 - m), min(1.0, fy1 + m)
-    tall = int(round(HAND_H / (bot - top)))
-    idx = framed_card_indices(
+    return framed_card_indices(
         face_art(tag, src, (HAND_W * 4, HAND_H * 4)),
-        (HAND_W, tall), pal, frame_allow, face_kind(tag),
+        (HAND_W, HAND_H), pal, frame_allow, face_kind(tag),
         flat=not tag.startswith("m:"), art_allow=art_allow)
-    y0 = min(tall - HAND_H, max(0, int(round(top * tall))))
-    return idx[y0:y0 + HAND_H]
 
 
 # ── The big battle card ──────────────────────────────────────────────────────
@@ -1168,9 +1169,15 @@ def main():
     arena_fixed["GROOVE"] = hi[0]
     arena_fixed["TILE_DARK"] = hi[1]
     arena_fixed["RIM_SIDE"] = hi[2]
-    # The hand's frame stone: the dark slab's mid tone, so a card in hand wears
-    # the same stone the board's cards do.
-    card_fixed["FRAME_STONE"] = hi[1]
+    # The card half's four browns, from the same two stones the board is cut
+    # from, so a card in hand wears the stone the board's cards wear.
+    # PANEL_DARK is the band the hand row sits on and is shaded well below the
+    # darkest tile: it has to sit UNDER a card front without competing with the
+    # frame's own dark stone.
+    card_fixed["PANEL_DARK"] = shade(hi[0], 0.45)
+    card_fixed["PANEL_MID"] = hi[1]
+    card_fixed["FRAME_STONE"] = hi[2]
+    card_fixed["PANEL_LIGHT"] = lo[1]
     if not quiet:
         for name in ("TILE_LIGHT", "TILE_LIGHT2", "TILE_DARK", "GROOVE",
                      "RIM_SIDE", "RIM_TOP"):
