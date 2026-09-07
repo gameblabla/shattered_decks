@@ -58,6 +58,11 @@ void snesCameraSet(SnesCamera *cam, s16 x, s16 z, s16 height, s16 focal,
                    s16 horizon);
 /* Project a point on the board plane to viewport coordinates.  Returns 0 when
  * it falls at or behind the near plane. */
+/* The same, in Q8.8 viewport pixels: what the quad rasteriser needs, since a
+ * card's corners land between pixels and rounding them first is what makes an
+ * edge crawl a pixel a frame. */
+u8   snesProjectQ(const SnesCamera *cam, const SnesViewport *vp,
+                  s16 wx, s16 wz, s16 wy, s16 *out_x, s16 *out_y);
 u8   snesProject(const SnesCamera *cam, const SnesViewport *vp,
                  s16 wx, s16 wz, s16 wy, s16 *out_x, s16 *out_y);
 /* World position of the centre of a board slot, in Q8.8. */
@@ -72,5 +77,57 @@ void snesSlotCentre(u8 row, u8 col, s16 *wx, s16 *wz);
  * along a scanline, so the two screen columns where the slab's side edges fall
  * are linear in the row index. */
 void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop);
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+
+/* A CARD IS FOUR FIFTHS OF A BOARD TILE, and the fraction is arithmetic rather
+ * than taste.  The face is sixteen texels, so four fifths of a one-unit tile
+ * puts twenty texels on a world unit against the floor's thirty-two, and
+ * 20/32 is 5/8: the card's texture step is the floor's own step shifted twice
+ * and added, with no multiply and no divide in the row at all.  A card that
+ * covered its whole tile would need neither either, but then every slot
+ * touches its neighbour and the board reads as a carpet of cards rather than
+ * as a board with cards on it. */
+#define SNES_CARD_HALF   ((s16)102)      /* 0.4 world units, Q8.8 */
+
+/* ONE BOARD ROW AT A TIME, not one card at a time.
+ *
+ * Five slots in a row sit at the same depth, so they share the row's depth,
+ * its texture step and its v -- everything the plane equation produces -- and
+ * only their screen edges and their starting u differ.  Drawing them together
+ * is what makes a full board affordable: the per-row setup is 816-tcc's most
+ * expensive code (measured, SNES_PORT_PLAN.md 4.4) and doing it once for a
+ * board row instead of once per card cuts it by five.
+ *
+ * `faces` is five face ids, SNES_CARD_NONE_FACE for an empty slot.  Rows are
+ * drawn far to near, which is the whole hidden-surface algorithm here: there
+ * is no z buffer.
+ */
+#define SNES_CARD_NONE_FACE  0xFFu
+void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
+                     const u8 *faces);
+
+/* A screen-space vertex for the general quad path: position in Q8.8 viewport
+ * pixels, texture coordinates in Q8.8 texels. */
+typedef struct SnesVert {
+    s16 x, y;
+    s16 u, v;
+} SnesVert;
+
+/* The convex-quad affine mapper -- a card that is NOT lying flat.
+ *
+ * TWO EDGE CHAINS, NOT A TRAPEZOID.  A card in the air is a convex quad whose
+ * left and right chains each turn at their own vertex; assuming a trapezoid is
+ * exactly what put a card off the board rim on the MSX2 port, so the chains
+ * here are walked independently from the topmost vertex to the bottommost one.
+ * Vertices must be given in order around the quad. */
+void snesTexQuad(const SnesViewport *vp, const SnesVert *quad, u8 face);
+
+/* The quad of a card lifted `lift` world units above its slot and leaning back
+ * by `tilt` -- the far edge raised, so the picture turns towards the player --
+ * ready for snesTexQuad.  Returns 0 when any corner is at or behind the near
+ * plane. */
+u8 snesCardQuad(const SnesCamera *cam, const SnesViewport *vp,
+                u8 row, u8 col, s16 lift, s16 tilt, SnesVert *quad);
 
 #endif /* WAIFU_SNES_BOARD3D_H */

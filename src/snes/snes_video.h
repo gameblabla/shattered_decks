@@ -77,6 +77,13 @@ void snesSpanFloor(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
 void snesSpanHorizon(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
                      u16 u_step);
 void snesSpanFill(u16 fb_index, u16 count, u8 colour);
+/* A resting card: the floor's walk over the card sheet, where the texture
+ * index is `page << 8 | (v << 4) | u`. */
+void snesSpanCard(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
+                  u16 u_step);
+/* A card in the air: the general affine walk, u and v both stepping. */
+void snesSpanCardQuad(u16 fb_index, u16 count, u16 u, u16 v, u16 du, u16 dv,
+                      u16 page);
 
 /* snes_fb.asm */
 void snesFbPresentRows(u16 first_row, u16 rows, u16 width);
@@ -91,6 +98,7 @@ u8   snesVideoBoardRes(void);
  * top-down; the moving frame is 3584 and always goes up in one.  Call once a
  * frame; it returns non-zero once the frame is fully on screen. */
 u8   snesVideoPresent(void);
+u8   snesVideoPresentDone(void);        /* is the last frame fully uploaded? */
 void snesVideoPresentRestart(void);     /* a new frame is ready: start again at the top */
 void snesVideoPresentHud(void);         /* the HUD band only, one vblank */
 /* Ask for one HUD-band upload.  The band is static between the events that

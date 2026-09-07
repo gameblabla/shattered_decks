@@ -281,35 +281,73 @@ ROM** precisely so this loop can index a row with an 8-bit `Y` and read at
 FastROM speed; WRAM would be 8 cycles per access instead of 6.  The loop is
 unrolled 8x with the increments in direct page.
 
-**(B) The general affine quad mapper — animating cards only.**
+**(B) The general affine quad mapper — cards in the air.**
 
-Cards that lift, tilt and fly during a play or a battle are not axis aligned, so
-both u and v vary along a span.  These use two edge chains (the MSX2 port's
-lesson: a card is a *convex quad*, not a trapezoid — assuming a trapezoid is
-what put a card off the board rim), perspective-correct endpoints per span
-(u/w, v/w, 1/w interpolated down the edges, one reciprocal lookup per span) and
-an affine walk between them.  Their textures are 16x16 so the composite index
-is `(v.int << 4) | u.int` and can be formed with one `and`/`ora` pair.  These
-quads are rendered only in the **moving** (64x40) resolution, which is when they
-occur anyway.
+A card that lifts, tilts and flies during a play or a battle is not axis
+aligned, so both u and v vary along a span.  These use two edge chains (the
+MSX2 port's lesson: a card is a *convex quad*, not a trapezoid — assuming a
+trapezoid is what put a card off the board rim), an affine gradient solved once
+from three vertices, and a span walker that assembles the texture index from
+two Q8.8 accumulators on every texel.  It costs about twice a floor texel and
+runs only while a card is in the air.
+
+**A face is 16x16 texels, and that is the rasteriser's constraint.**  The
+walker keeps its index as `page << 8 | (v << 4) | u`, so the eight-bit add that
+steps u stays inside the card's own 256-byte page — the same trick the floor's
+256-byte row plays.  One face is one page, the sheet is an array of pages, and
+a card id indexes it directly (`tools/snes/gen_snes_cards.py`, 79 faces =
+20,224 bytes in bank `$C8`).
+
+Two things about the solve are arithmetic, not taste:
+
+* **The edge vectors are taken in sixteenths of a pixel.**  A card is forty
+  pixels across, 10240 in Q8.8, and the cross product of two of those is four
+  hundred thousand — the Atari ST `fxdiv` overflow wearing different clothes,
+  and it comes back as a card painted in one flat colour because every gradient
+  divides by a wrapped determinant.  Numerators and determinant are scaled
+  alike, so the ratios are untouched.
+* **A card covers four fifths of its tile.**  Sixteen texels over 0.8 of a
+  one-unit tile is twenty texels a world unit against the floor's thirty-two,
+  and 20/32 is 5/8: a *resting* card's texture step is the floor's own step
+  shifted twice and added, and its v is the row's depth shifted — no multiply
+  and no divide in the row.  A card covering the whole tile would be free in
+  the same way, but then every slot touches its neighbour and the board reads
+  as a carpet of cards.
+
+**Resting cards go through (A), five at a time.**  Five slots of a board row
+sit at the same depth, so they share the row's depth, texture step and v; the
+row carries the left and right edges of the CENTRE card plus the slot pitch,
+all three linear in the row index, and a column then costs one add rather than
+a pair of edges of its own.  It walks outwards from the middle because an edge
+accumulator latches at the side of the viewport, and a chain seeded on a
+latched value is a chain built on a clamp — which put the whole near row in the
+wrong place until it was seeded on the centre column, the one card the camera's
+sway can never push off screen.
 
 Painter's order, no z-buffer: floor, far support row, far monster row, near
 monster row, near support row, then any animating card.
 
-### 4.4 Frame budget — **measured at M2**
+### 4.4 Frame budget — **measured at M2, re-measured with cards at M3**
 
 The estimates this section used to carry have been replaced by measurements off
 the frame stamp (`render_lines` in `src/snes/snes_duel.c`, taken from the V
 counter plus the vblank count, read out of `wram.bin` by `tools/snes/verify.py`
 and printed by its `render cost` check).  One NTSC field is 262 scanlines.
 
-| mode | viewport | render | fields | fps |
+| board | viewport | render | fields | fps |
 |---|---|---|---|---|
-| moving | 64 x 40 | 851 lines | 3.2 | **18.5** |
-| still | 128 x 80 | 2488 lines | 9.5 | 6.3 |
+| moving, floor only | 64 x 40 | 842 lines | 3.2 | 18.6 |
+| moving, 21 cards | 64 x 40 | 2860 lines | 10.9 | **5.5** |
+| still, floor only | 128 x 80 | 2226 lines | 8.5 | 7.1 |
+| still, 21 cards | 128 x 80 | 5547 lines | 21.2 | 2.8 |
 
-Attributed by ablation — the same run with the three span calls compiled out,
-which leaves only the per-row C setup:
+The floor-only rows are an **ablation, not an estimate**: SELECT compiles
+nothing out but draws no cards (`show_cards` in `src/snes/snes_duel.c`), and
+`verify.py` drives it.  That is also how the slab's own shape is measured, since
+twenty cards cover almost all of it.
+
+Attributed by ablation at M2, for the floor alone — the same run with the three
+span calls compiled out, which leaves only the per-row C setup:
 
 | | still | moving |
 |---|---|---|
@@ -325,17 +363,24 @@ The second number is the surprise, and it sets the order of the M8 levers.
 **816-tcc's code is roughly a hundred CPU cycles per framebuffer byte** — a
 measured 12.3 million master cycles for a 16384-byte `for` loop of `fb[i] = c`,
 which is why `snesVideoClear` now calls the span filler instead (593 lines, a
-15x difference for the same 16 KB).  The same cost shows up as the per-row
-geometry, and at 40 rows it is nearly two fifths of a moving frame.  So the
-levers, in order:
+15x difference for the same 16 KB).
 
-1. move the per-row setup into `snes_raster.asm` — up to 39% of a moving frame;
+**M3 sharpens that finding rather than adding a new one.**  The cards are 59%
+of a still frame and 71% of a moving one, for about 7000 and 1750 texels — 647
+and 1573 master cycles a texel, against the floor walker's 250.  The texels are
+not what costs: a moving frame makes about 200 per-column span calls, so at
+816-tcc's call cost a card's *span call* is several times the price of the eight
+texels it draws.  So the levers, in order:
+
+1. move the per-row geometry AND the per-column walk into `snes_raster.asm`, so
+   a board row is one call rather than fifty — the biggest single lever in the
+   port, worth most of that 59%/71%;
 2. unroll the span walker and hoist its loop control (~17% of the walk);
 3. then, and only then, the geometric levers this section already listed:
-   a shorter 3D viewport, skipping floor texels a card will cover, a 32x32
+   a shorter 3D viewport, skipping the floor texels a card will cover, a 32x32
    floor texture, dropping the still mode to 128x64.
 
-None of that is M2 work: what M2 owes is the number, and the number is above.
+None of that is M3 work: what M3 owes is the number, and the number is above.
 
 ## 5. Memory map
 
@@ -359,8 +404,9 @@ None of that is M2 work: what M2 owes is the number, and the number is above.
 |---|---|
 | `$C0-$C1` | code (816-tcc output + asm), rules, AI |
 | `$C2` | reciprocal / trig / span LUTs (16 KB + 1 KB) |
-| `$C3-$C5` | card field textures: 72 monsters + 6 supports, 32x32 direct-colour, 256-byte-aligned rows (~81 KB) |
-| `$C6` | arena floor textures, card frames, chunky font |
+| `$C6` | arena floor texture, 256x64 direct colour (16 KB) |
+| `$C7` | arena horizon band, 256x64 direct colour (16 KB) |
+| `$C8` | card faces: 72 monsters + 6 supports + the back, 16x16 direct colour, one 256-byte PAGE each (20,224 B) |
 | `$C7-$CE` | Mode 3 scene images (title, 8 story backdrops, ending, battle art), LZSS packed |
 | `$CF-$D2` | hand-card sprite tiles + palettes |
 | `$D3-$D6` | soundbank (module + BRR samples) |
@@ -382,7 +428,7 @@ card" ever reaches a commit.  Sources already in the tree:
 
 | source | used for | pipeline |
 |---|---|---|
-| `assets/source/cards/*.png|webp` (87 files) | 78 field-card textures + hand-card sprites + battle close-ups | `gen_snes_cards.py`: 32x32 direct-colour texture, 32x48 4bpp sprite, 8bpp Mode 3 close-up |
+| `assets/source/cards/*.png|webp` (87 files) | 79 board faces + hand-card sprites + battle close-ups | `gen_snes_cards.py`: 16x16 direct-colour page per face, through the ST generator's own crop/frame rules; sprites and close-ups still to come |
 | `assets/source/textures/*.png` | arena floor, card frame | `gen_snes_textures.py` |
 | `assets/source/bg/{desert,sky,stone,ember}.png` | arena horizon band, field variants | `gen_snes_textures.py` |
 | `assets/source/title/*.png` | Mode 3 title painting | `gen_snes_scenes.py` |
@@ -454,9 +500,19 @@ snesfaust-mednafen script rom.sfc inputs.txt FRAMES last.ppm wram.bin \
   from a script.  (This is the SNES equivalent of the FM TOWNS event log; there
   is no "cannot inject input" caveat here.)
 * **Frames** land as PPM in `frame_dir`; `tools/snes/verify.py` asserts on them
-  — the board is not a flat colour, the cursor moved between frames, the card at
-  a slot matches the expected texture's mean colour.  A black screenshot is not
-  proof of anything.
+  — the board is not a flat colour, the slab is in perspective, the camera moved
+  between frames.  A black screenshot is not proof of anything.
+* **Cards are identified, not merely counted.**  `verify.py` projects a card's
+  own texels through the same camera model the renderer uses, reads them out of
+  the screenshot, and matches them against `snes_card_tex.bin` — so "the right
+  card is in that slot" is an assertion rather than an impression.  Matches are
+  weighted by how RARE the colour is across the sheet: half of every face is the
+  frame's near-black navy, and unweighted, a flat support sigil matches a
+  monster's dark corners better than the monster does.
+* **SELECT is an ablation switch, not a debug key.**  It draws the board with no
+  cards on it, which is what attributes the render cost between floor and cards
+  and what lets the slab's shape be measured at all — a card's dark frame
+  quantises into the same byte as the surround.
 * **WRAM dump** is the frame-stamp channel: the game writes a scene id, a frame
   counter and the last render duration (measured off an IRQ-driven counter) into
   a known WRAM address, and `verify.py` reads them out of `wram.bin`.  That is
@@ -467,6 +523,10 @@ snesfaust-mednafen script rom.sfc inputs.txt FRAMES last.ppm wram.bin \
   actually taken and to find dead banks.
 * `record-snesfaust-video.sh` makes an MP4 from a scripted run for reviewing
   animation.
+
+`verify.py` empties a capture's frame directory before every run.  It did not,
+once, and a fixed flicker went on being "reproduced" out of the previous run's
+leftover frames for an hour.
 
 Regression targets: boot to title, menu navigation, a scripted full duel to a
 win, a story chapter with dialogue, deck editor save/load round trip through
@@ -481,7 +541,7 @@ SRAM, and a perf capture of the duel board in both resolutions.
 | **M0** | toolchain built, `Makefile.snes`, HiROM/FastROM 4 MB ROM boots | `snap` shows the title colour on frame 60; `header` reports HiROM/FastROM/32 Mbit |
 | **M1** | Mode 7 chunky framebuffer harness: 256 solid tiles, DMA presenter, still/moving scale switch | a scripted run shows a test image at both scales, pixel-exact 2x2 and 4x4 |
 | **M2** | Q8.8 math, LUTs, **floor mapper** with the real arena texture | textured ground under a moving camera; **measured** ms/frame in `wram.bin` |
-| **M3** | quad rasteriser + real card textures on the board | five slots per side show the right cards; convex-quad edges verified against the MSX2 rim bug |
+| **M3** | quad rasteriser + real card textures on the board | **done** — five slots per side show the right cards, identified out of a screenshot against the card sheet; the set monster shows the back; a card in the air goes through the two-chain convex-quad path |
 | **M4** | rules integration, hand sprites, cursor, HUD text — playable duel | scripted duel plays to a win, verified frame by frame |
 | **M5** | Mode 3 title / story / ending with real art and typewriter text | scripted story chapter captures |
 | **M6** | audio: module playback + SFX | SPC upload asserted, ARAM state advances |

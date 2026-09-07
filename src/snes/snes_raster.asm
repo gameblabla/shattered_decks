@@ -53,6 +53,14 @@ rs_duint          db
 rs_pad2           db
 rs_end            dw          ; the framebuffer index one past the span
 rs_colour         dw
+; The affine quad walker's own accumulators.  It steps u AND v, so it cannot
+; use the one-byte trick the two constant-v walkers share.
+rs_u              dw
+rs_v              dw
+rs_du             dw
+rs_dv             dw
+rs_page           dw          ; the face's page, already in the high byte
+rs_tmp            dw
 .ENDS
 
 .BASE $C0
@@ -260,6 +268,170 @@ _fl_tail:
 _fl_pop:
     plb
 _fl_out:
+    plp
+    rtl
+
+;-----------------------------------------------------------------------------
+; void snesSpanCard(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
+;                   u16 u_step)
+;
+; A RESTING CARD IS THE FLOOR WITH A DIFFERENT TEXTURE.  A card lies flat on
+; the board and the camera never rolls, so a screen row of a card is a texture
+; row of constant v exactly as the ground is, and it walks with the same two
+; adds a texel -- no quad, no perspective divide, no edge chains.
+;
+; tex_index is `page << 8 | (v << 4) | u`: the high byte selects the face's
+; 256-byte page in the card sheet and the low byte is the texel inside it.  The
+; eight-bit `adc` therefore steps u within the card's own page, and C is
+; responsible for handing over a span whose u stays inside its sixteen texels
+; (snesDrawCardFlat) -- a carry out of the low nibble would step v, which is
+; what the span's own clipping is there to make impossible.
+;-----------------------------------------------------------------------------
+snesSpanCard:
+    php
+    rep #$30
+
+    lda 7,s
+    beq _sc_out
+    clc
+    adc 5,s
+    sta.l rs_end
+    lda 11,s
+    and #$00FF
+    sta.l rs_ufrac
+    lda 13,s
+    and #$00FF
+    sta.l rs_dufrac
+    lda 13,s
+    xba
+    and #$00FF
+    sta.l rs_duint
+
+    lda 5,s
+    tay
+    lda 9,s
+    tax
+
+    phb
+    phd
+    lda #rs_ufrac
+    tad
+    pea $7F7F
+    plb
+    plb
+
+    txa
+    xba
+    sep #$20
+.ACCU 8
+    xba                         ; A8 = the texel byte, B = the page
+
+_sc_loop:
+    lda.b <rs_ufrac
+    clc
+    adc.b <rs_dufrac
+    sta.b <rs_ufrac
+    txa
+    adc.b <rs_duint
+    tax
+    lda.l snes_card_tex,x
+    sta.w snes_fb,y
+    iny
+    cpy.b <rs_end
+    bne _sc_loop
+
+    rep #$20
+.ACCU 16
+    pld
+    plb
+_sc_out:
+    plp
+    rtl
+
+;-----------------------------------------------------------------------------
+; void snesSpanCardQuad(u16 fb_index, u16 count, u16 u, u16 v, u16 du, u16 dv,
+;                       u16 page)
+;
+; THE GENERAL AFFINE WALKER, for a card that is NOT lying flat: one that lifts
+; off its slot, tilts and flies during a play or a battle.  Both u and v vary
+; along the span, so the one-byte trick the three constant-v walkers share is
+; not available and the index has to be assembled from two Q8.8 accumulators on
+; every texel.
+;
+; u and v are Q8.8 texels; the integer parts are masked to four bits, so the
+; texture wraps inside the face's page and a span clipped a fraction wide of
+; the quad cannot walk into the next card's picture.  page is already shifted
+; into the high byte.
+;
+; It costs about twice a floor texel, and that is the right trade: it runs only
+; while a card is in the air, which is the moving resolution, which is a
+; quarter of the pixels.
+;-----------------------------------------------------------------------------
+snesSpanCardQuad:
+    php
+    rep #$30
+
+    lda 7,s
+    beq _sq_out
+    clc
+    adc 5,s
+    sta.l rs_end
+    lda 9,s
+    sta.l rs_u
+    lda 11,s
+    sta.l rs_v
+    lda 13,s
+    sta.l rs_du
+    lda 15,s
+    sta.l rs_dv
+    lda 17,s
+    sta.l rs_page
+
+    lda 5,s
+    tay
+
+    phb
+    phd
+    lda #rs_ufrac
+    tad
+    pea $7F7F
+    plb
+    plb
+
+_sq_loop:
+    lda.b <rs_u
+    clc
+    adc.b <rs_du
+    sta.b <rs_u
+    xba                         ; the integer part into the low byte
+    and #$000F
+    ora.b <rs_page
+    sta.b <rs_tmp
+    lda.b <rs_v
+    clc
+    adc.b <rs_dv
+    sta.b <rs_v
+    xba
+    asl a
+    asl a
+    asl a
+    asl a
+    and #$00F0                  ; v.int << 4
+    ora.b <rs_tmp
+    tax
+    sep #$20
+.ACCU 8
+    lda.l snes_card_tex,x
+    sta.w snes_fb,y
+    rep #$20
+.ACCU 16
+    iny
+    cpy.b <rs_end
+    bne _sq_loop
+
+    pld
+    plb
+_sq_out:
     plp
     rtl
 

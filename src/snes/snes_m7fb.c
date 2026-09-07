@@ -143,6 +143,19 @@ void snesVideoSetBoardRes(u8 res)
 
 u8 snesVideoBoardRes(void) { return board_res; }
 
+/* Whether the frame in the buffer is entirely on screen.
+ *
+ * A still frame takes three vblanks to upload and every render restarts that
+ * upload at the top, so a scene that redraws on every game frame would show
+ * only the first thirty-eight rows -- for ever.  Presentation asks this before
+ * it animates in the still resolution.
+ *
+ * A pending HUD band counts as not done, and that is not pedantry: the board's
+ * last pass sets present_done and leaves the HUD for the vblank after it, so a
+ * caller that redrew on present_done alone restarted the upload in between and
+ * the panel never reached the screen at all. */
+u8 snesVideoPresentDone(void) { return present_done && !hud_pending; }
+
 void snesVideoPresentRestart(void)
 {
     present_row = 0;

@@ -59,7 +59,7 @@ CFILES := $(SNES_C) $(SHARED_C)
 
 # compat/ is first so src/msx2/msx2_duel.c finds the msxgl.h shim, and
 # src/game/*.c the waifu_assets.h one, without either file being edited.
-CFLAGS := -I$(PROJ_DIR)/compat -I$(PROJ_DIR) -Isrc/game -Isrc/generated \
+CFLAGS := -I$(PROJ_DIR)/compat -I$(PROJ_DIR) -Isrc/game -Isrc/msx2 -Isrc/generated \
           -I$(PVSNESLIB_HOME)/pvsneslib/include \
           -I$(PVSNESLIB_HOME)/devkitsnes/include \
           -DWAIFU_SNES=1
