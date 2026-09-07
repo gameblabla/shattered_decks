@@ -48,11 +48,13 @@ typedef struct {
     int sws_src_fmt, sws_src_w, sws_src_h;
 
     double time_base;
+    double frame_dur;                /* nominal seconds per frame */
     double loop_base;                /* seconds added to this pass's timestamps */
     double last_t;                   /* display time of the newest decoded frame */
     int64_t start_us;                /* playback clock origin */
     int started;
     int opened;
+    int draining;                    /* flushed the demuxer, emptying the decoder */
     int failed;
     int have_rgba;
 } TitleVid;
@@ -171,6 +173,8 @@ int waifu_sdl3_titlevid_open(const char *path)
 
     tv->time_base = av_q2d(st->time_base);
     if (tv->time_base <= 0.0) tv->time_base = 1.0 / 1000.0;
+    tv->frame_dur = av_q2d(st->avg_frame_rate) > 0.0
+                        ? 1.0 / av_q2d(st->avg_frame_rate) : 1.0 / 30.0;
     tv->opened = 1;
     return 1;
 
@@ -183,7 +187,8 @@ fail:
 /* Rewind to the first frame and shift the clock so the clip plays again. */
 static void tv_restart(TitleVid *tv)
 {
-    tv->loop_base = tv->last_t > 0.0 ? tv->last_t + 1.0 / 30.0 : 0.0;
+    tv->loop_base = tv->last_t > 0.0 ? tv->last_t + tv->frame_dur : 0.0;
+    tv->draining = 0;
     av_seek_frame(tv->fmt, tv->stream, 0, AVSEEK_FLAG_BACKWARD);
     avcodec_flush_buffers(tv->dec);
 }
@@ -222,19 +227,28 @@ static AVFrame *tv_decode_next(TitleVid *tv, double *out_t)
         }
         if (r != AVERROR(EAGAIN) && r != AVERROR_EOF) return NULL;
 
-        if (r == AVERROR_EOF) {
+        /* AVERROR_EOF only arrives once the drain packet has yielded every
+           buffered frame, so the clip's tail is displayed before the rewind. */
+        if (r == AVERROR_EOF || tv->draining) {
+            /* Draining answers with frames until EOF; anything else means the
+               decoder is done with this pass, so loop rather than spin. */
             if (++loops > 1) return NULL;
             tv_restart(tv);
+            continue;
         }
 
         /* Feed the decoder until it has something. */
         for (;;) {
-            int rd = av_read_frame(tv->fmt, tv->pkt);
+            int rd;
+            if (tv->draining) break;    /* nothing left to send; drain in flight */
+            rd = av_read_frame(tv->fmt, tv->pkt);
             if (rd < 0) {
-                if (++loops > 1) return NULL;
-                avcodec_send_packet(tv->dec, NULL);   /* drain, then rewind */
-                tv_restart(tv);
-                continue;
+                /* End of file: hand the decoder its drain packet and keep
+                   receiving. Flushing here would discard the frames still
+                   queued behind the reorder and frame-thread delay. */
+                tv->draining = 1;
+                avcodec_send_packet(tv->dec, NULL);
+                break;
             }
             if (tv->pkt->stream_index != tv->stream) { av_packet_unref(tv->pkt); continue; }
             r = avcodec_send_packet(tv->dec, tv->pkt);
