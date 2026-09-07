@@ -64,6 +64,7 @@
 #define PLATE_H     (MENU_ITEMS * MENU_PITCH + 12)
 
 static uint8_t  g_choice;
+static uint8_t  g_quit;        /* Escape: the only way out of the game */
 static uint8_t  g_cursor;
 static uint8_t  g_redraw;      /* whole screen, both buffers */
 static uint8_t  g_blink;       /* just the menu plate */
@@ -225,6 +226,7 @@ static void title_draw(void)
 void Atarist_TitleEnter(void)
 {
     g_choice = ATARIST_TITLE_NONE;
+    g_quit = 0;
     g_cursor = 0;
     g_anim = 0;
     g_redraw = 2;
@@ -259,6 +261,7 @@ void Atarist_TitleStep(int vblanks)
     }
     if (g_atarist_input.pressed & (ATARIST_BTN_A | ATARIST_BTN_START))
         g_choice = (uint8_t)(ATARIST_TITLE_FREE_BATTLE + g_cursor);
+    if (g_atarist_input.pressed & ATARIST_BTN_QUIT) g_quit = 1;
 
     /* Both counters run to two, because the screen is double buffered and a
      * single repaint leaves the other buffer one present behind. */
@@ -274,3 +277,4 @@ void Atarist_TitleStep(int vblanks)
 }
 
 int Atarist_TitleChoice(void) { return g_choice; }
+int Atarist_TitleQuit(void)   { return g_quit; }

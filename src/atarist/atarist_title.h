@@ -22,5 +22,7 @@ void Atarist_TitleStep(int vblanks);
 /* What the player picked, or ATARIST_TITLE_NONE while they are still choosing.
  * Reading it does not clear it; re-entering the screen does. */
 int  Atarist_TitleChoice(void);
+/* Escape on the title screen, which is the ONLY place that leaves the game. */
+int  Atarist_TitleQuit(void);
 
 #endif /* WAIFU_ATARIST_TITLE_H */

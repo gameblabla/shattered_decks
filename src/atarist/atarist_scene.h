@@ -17,7 +17,14 @@ enum AtaristScene {
 
 void Atarist_SceneInit(void);
 /* Advance and draw one frame.  `vblanks` is how long the previous frame took,
- * so animation clocks run on real time rather than on frame count. */
-void Atarist_SceneStep(int vblanks);
+ * so animation clocks run on real time rather than on frame count.
+ *
+ * Returns non-zero when the player has asked to leave the game.  QUITTING IS
+ * THE TITLE SCREEN'S DECISION, NOT THE LOOP'S: Escape used to drop straight
+ * back to the desktop from anywhere, and on an ST keyboard Escape is the key
+ * directly above Tab -- the end-turn key -- so a mis-hit in the middle of a
+ * duel looked exactly like the game crashing out to the desktop.  Escape is
+ * now "back" inside a duel and only quits from the title. */
+int  Atarist_SceneStep(int vblanks);
 
 #endif /* WAIFU_ATARIST_SCENE_H */

@@ -133,12 +133,13 @@ void Atarist_SceneInit(void)
 #endif
 }
 
-void Atarist_SceneStep(int vblanks)
+int Atarist_SceneStep(int vblanks)
 {
     g_anim = (uint16_t)(g_anim + vblanks);
     switch (g_scene) {
     case ATARIST_SCENE_TITLE:
         Atarist_TitleStep(vblanks);
+        if (Atarist_TitleQuit()) return 1;
         switch (Atarist_TitleChoice()) {
         case ATARIST_TITLE_FREE_BATTLE:
             enter_duel(MSX2_STORY_NONE);
@@ -153,6 +154,10 @@ void Atarist_SceneStep(int vblanks)
 
     case ATARIST_SCENE_DUEL:
         Atarist_DuelStep(vblanks);
+        if (Atarist_DuelAbandoned()) {
+            enter_title();
+            break;
+        }
         if (Atarist_DuelFinished()) {
             if (Atarist_DuelResult() > 0) {
                 ++g_atarist_probe.wins_player;
@@ -176,4 +181,5 @@ void Atarist_SceneStep(int vblanks)
         break;
     }
     g_atarist_probe.scene = g_scene;
+    return 0;
 }

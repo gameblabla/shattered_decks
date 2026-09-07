@@ -105,6 +105,7 @@ static uint8_t  g_chosen_hand;
 static uint8_t  g_motion;        /* frames of "something is changing" left */
 static uint8_t  g_com_delay;
 static uint8_t  g_finished;
+static uint8_t  g_abandoned;     /* Escape out of the duel's top state */
 static uint16_t g_msg_timer;
 static const char *g_msg;
 /* Set while the attack animation owns the screen, so the frame it hands the
@@ -150,6 +151,17 @@ static void duel_touch(int frames)
     if (frames > 255) frames = 255;
     if (g_motion < frames) g_motion = (uint8_t)frames;
     g_redraw = ATARIST_BUFFERS;
+    g_hud_redraw = ATARIST_BUFFERS;
+}
+
+/* THE CARD HALF CHANGED AND THE BOARD DID NOT.  Walking the cursor along the
+ * hand moves a yellow frame around in the bottom eighty rows; the board above
+ * it is the identical picture.  Touching the whole screen for that re-rendered
+ * the 3D view -- at HALF resolution, because g_motion made the camera "moving"
+ * -- on every single step, so scrolling the hand made the board visibly
+ * coarsen and settle for no reason at all.  A hand step is a HUD repaint. */
+static void duel_touch_hud(void)
+{
     g_hud_redraw = ATARIST_BUFFERS;
 }
 
@@ -426,11 +438,11 @@ static void draw_hand_card(int i, u8 card, int selected, int used)
 static const char *prompt_text(void)
 {
     switch (g_ui) {
-    case UI_HAND:         return "A:PLAY  SPACE:BATTLE  TAB:END";
-    case UI_PLACE:        return "A:ATTACK POS   B:DEFENCE POS";
-    case UI_EQUIP_TARGET: return "PICK A MONSTER TO EQUIP";
-    case UI_ATTACKER:     return "PICK AN ATTACKER  TAB:END TURN";
-    case UI_DEFENDER:     return "PICK A TARGET  B:DIRECT";
+    case UI_HAND:         return "SPACE:PLAY  B:BATTLE  TAB:END";
+    case UI_PLACE:        return "SPACE:ATTACK POS  B:DEFENCE POS";
+    case UI_EQUIP_TARGET: return "PICK A MONSTER  SPACE:EQUIP";
+    case UI_ATTACKER:     return "SPACE:ATTACKER  B:TURN  TAB:END";
+    case UI_DEFENDER:     return "SPACE:TARGET  B:DIRECT  ESC:BACK";
     case UI_COM:          return "OPPONENT THINKING";
     default:              return "";
     }
@@ -483,16 +495,32 @@ static void draw_hud(void)
 
 /* ── Input ───────────────────────────────────────────────────────────────── */
 
-static void move_cursor(int count)
+/* ONE CONFIRM KEY, AND IT IS THE SAME ONE IN EVERY STATE.  Space used to mean
+ * "go to the battle phase" in the hand and "cancel" once a slot was being
+ * picked, so pressing it twice -- select a card, then press it again to put
+ * the card down, which is what the rest of the screen trains you to do --
+ * highlighted a field slot and then did nothing at all.  A and Space are now
+ * both CONFIRM everywhere, Escape is BACK everywhere, and the battle phase
+ * moved to B, which had nothing to do in the hand. */
+#define DUEL_CONFIRM  (ATARIST_BTN_A | ATARIST_BTN_START)
+#define DUEL_CANCEL   (ATARIST_BTN_QUIT)
+
+/* `board` says whether the cursor this state moves is drawn ON the board (a
+ * slot marker) or only in the card half (the hand's frame). */
+static void move_cursor(int count, int board)
 {
+    int moved = 0;
     if (Atarist_InputRepeat(ATARIST_BTN_LEFT, 12)) {
         g_cursor = (uint8_t)((g_cursor + count - 1) % count);
-        duel_touch(4);
+        moved = 1;
     }
     if (Atarist_InputRepeat(ATARIST_BTN_RIGHT, 12)) {
         g_cursor = (uint8_t)((g_cursor + 1) % count);
-        duel_touch(4);
+        moved = 1;
     }
+    if (!moved) return;
+    if (board) duel_touch(4);
+    else       duel_touch_hud();
 }
 
 /* Hand an attack that has already been resolved to the animation.  Both call
@@ -542,8 +570,8 @@ static void step_player(void)
 
     switch (g_ui) {
     case UI_HAND:
-        move_cursor(MSX2_HAND);
-        if (g_atarist_input.pressed & ATARIST_BTN_A) {
+        move_cursor(MSX2_HAND, 0);
+        if (g_atarist_input.pressed & DUEL_CONFIRM) {
             u8 card = you->hand[g_cursor];
             if (card == MSX2_CARD_NONE || you->used[g_cursor]) {
                 duel_say("NOTHING THERE");
@@ -566,15 +594,21 @@ static void step_player(void)
                 duel_touch(8);
             }
         }
-        if (g_atarist_input.pressed & ATARIST_BTN_START) begin_battle_phase();
+        if (g_atarist_input.pressed & ATARIST_BTN_B) begin_battle_phase();
         if (g_atarist_input.pressed & ATARIST_BTN_TAB) end_player_turn();
+        /* Escape in the hand -- the duel's top-level state, where it cancels
+         * nothing -- gives the duel up and goes back to the title.  It is
+         * deliberately not accepted from a sub-state: there Escape means
+         * "back", and losing a duel by holding a back key one step too long is
+         * the accident this whole route exists to stop. */
+        if (g_atarist_input.pressed & DUEL_CANCEL) g_abandoned = 1;
         break;
 
     case UI_PLACE:
-        move_cursor(MSX2_FIELD);
-        if (g_atarist_input.pressed & ATARIST_BTN_A) place_chosen(0);
+        move_cursor(MSX2_FIELD, 1);
+        if (g_atarist_input.pressed & DUEL_CONFIRM) place_chosen(0);
         else if (g_atarist_input.pressed & ATARIST_BTN_B) place_chosen(1);
-        else if (g_atarist_input.pressed & ATARIST_BTN_START) {
+        else if (g_atarist_input.pressed & DUEL_CANCEL) {
             g_ui = UI_HAND;
             g_cursor = g_chosen_hand;
             duel_touch(8);
@@ -582,9 +616,9 @@ static void step_player(void)
         break;
 
     case UI_EQUIP_TARGET:
-        move_cursor(MSX2_FIELD);
-        if (g_atarist_input.pressed & ATARIST_BTN_A) place_chosen(0);
-        else if (g_atarist_input.pressed & ATARIST_BTN_START) {
+        move_cursor(MSX2_FIELD, 1);
+        if (g_atarist_input.pressed & DUEL_CONFIRM) place_chosen(0);
+        else if (g_atarist_input.pressed & DUEL_CANCEL) {
             g_ui = UI_HAND;
             g_cursor = g_chosen_hand;
             duel_touch(8);
@@ -592,8 +626,8 @@ static void step_player(void)
         break;
 
     case UI_ATTACKER:
-        move_cursor(MSX2_FIELD);
-        if (g_atarist_input.pressed & ATARIST_BTN_A) {
+        move_cursor(MSX2_FIELD, 1);
+        if (g_atarist_input.pressed & DUEL_CONFIRM) {
             if (!Msx2_IsMonster(you->field[g_cursor])) {
                 duel_say("NO MONSTER THERE");
             } else if (you->attacked[g_cursor]) {
@@ -620,8 +654,8 @@ static void step_player(void)
     case UI_DEFENDER: {
         int direct = (Msx2_LiveMonsterCount(MSX2_OWNER_COM) == 0) ||
                      (g_atarist_input.pressed & ATARIST_BTN_B) != 0;
-        move_cursor(MSX2_FIELD);
-        if ((g_atarist_input.pressed & ATARIST_BTN_A) || direct) {
+        move_cursor(MSX2_FIELD, 1);
+        if ((g_atarist_input.pressed & DUEL_CONFIRM) || direct) {
             u8 target = direct ? MSX2_SLOT_NONE : g_cursor;
             if (!Msx2_Attack(MSX2_OWNER_PLAYER, g_chosen_hand, target))
                 duel_say("THAT ATTACK IS ILLEGAL");
@@ -632,7 +666,7 @@ static void step_player(void)
             g_cursor = g_chosen_hand;
             duel_touch(24);
         }
-        if (g_atarist_input.pressed & ATARIST_BTN_START) {
+        if (g_atarist_input.pressed & DUEL_CANCEL) {
             g_ui = UI_ATTACKER;
             g_cursor = g_chosen_hand;
             duel_touch(8);
@@ -675,6 +709,7 @@ void Atarist_DuelEnter(uint32_t seed, uint8_t story_index)
     g_chosen_hand = 0;
     g_com_delay = 4;
     g_finished = 0;
+    g_abandoned = 0;
     g_battle_return = 0;
     g_msg = NULL;
     g_msg_timer = 0;
@@ -721,7 +756,9 @@ void Atarist_DuelStep(int vblanks)
     }
 
     if (g_ui == UI_RESULT) {
-        if (g_atarist_input.pressed & (ATARIST_BTN_START | ATARIST_BTN_A))
+        if (g_atarist_input.pressed & DUEL_CONFIRM)
+            g_finished = 1;
+        if (g_atarist_input.pressed & DUEL_CANCEL)
             g_finished = 1;
     } else if (g_duel.turn_owner == MSX2_OWNER_PLAYER &&
                (g_duel.phase == MSX2_PHASE_MAIN ||
@@ -772,5 +809,6 @@ void Atarist_DuelStep(int vblanks)
     g_atarist_probe.menu_cursor = g_cursor;
 }
 
-int Atarist_DuelFinished(void) { return g_finished; }
+int Atarist_DuelFinished(void)  { return g_finished; }
+int Atarist_DuelAbandoned(void) { return g_abandoned; }
 int Atarist_DuelResult(void)   { return g_duel.result; }

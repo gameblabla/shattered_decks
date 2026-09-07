@@ -21,6 +21,9 @@ void Atarist_DuelEnter(uint32_t seed, uint8_t story_index);
 void Atarist_DuelStep(int vblanks);
 /* Non-zero once the duel has finished and its result screen has been shown. */
 int  Atarist_DuelFinished(void);
+/* The player pressed Escape out of the duel's top-level state: give up the
+ * duel and go back to the title, rather than quitting to the desktop. */
+int  Atarist_DuelAbandoned(void);
 /* 1 = the player won, -1 = lost, 0 = still running. */
 int  Atarist_DuelResult(void);
 
