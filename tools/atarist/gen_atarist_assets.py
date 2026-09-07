@@ -159,6 +159,7 @@ FIELD_W = FIELD_H = 32       # 3D board card texture
 HAND_W, HAND_H = 32, 24      # hand card art window
 TITLE_W, TITLE_H = 320, 200
 TITLE_BAND_ROWS = 8          # 25 bands, one palette each
+TITLE_LOGO_Y = 10            # the baked SHATTERED / DECKS logo, top centre
 SUPPORT_VARIANTS = 6
 # How much of a card's dither error is carried into its neighbours.  Not the
 # 1.0 the grey ramp wanted (a ramp's neighbour can always absorb the error) and
@@ -845,6 +846,62 @@ def build_arena_texture(pal, light, dark):
 
 # ── Title ────────────────────────────────────────────────────────────────────
 
+# The 8x8 menu font the other ports bake their logo with, so the ST's title
+# says the same thing in the same letterforms.
+def _menu_font():
+    import re as _re
+    text = open(os.path.join(ROOT, "src", "engine", "font_menudata.h")).read()
+    return [int(x, 16) for x in _re.findall(r"0x([0-9A-Fa-f]{2})", text)]
+
+
+def bake_title_logo(img):
+    """Paint SHATTERED / DECKS across the top of the title painting.
+
+    IT IS BAKED INTO THE RGB, BEFORE THE BANDS ARE CUT.  Drawing it at run
+    time would cost the two bands it lands in a palette entry apiece and it
+    would have to be one of the three colours that are pinned in every band;
+    baked, the k-means sees the letters as part of the picture and fits gold
+    and its outline for those bands as a matter of course, which is why the
+    logo can carry a soft shadow at all.
+    """
+    font = _menu_font()
+    px = img.load()
+    GOLD = (250, 208, 96)
+    WHITE = (246, 246, 238)
+    DARK = (18, 12, 8)
+
+    def cell(x, y, s, rgb):
+        for yy in range(y, min(TITLE_H, y + s)):
+            if yy < 0:
+                continue
+            for xx in range(max(0, x), min(TITLE_W, x + s)):
+                px[xx, yy] = rgb
+
+    def stamp(x, y, msg, s, rgb, dx, dy):
+        for i, ch in enumerate(msg):
+            code = ord(ch) & 0x7f
+            for row_y in range(8):
+                bits = font[code * 8 + row_y]
+                for bx in range(8):
+                    if bits & (1 << (7 - bx)):
+                        cell(x + (i * 8 + bx) * s + dx, y + row_y * s + dy,
+                             s, rgb)
+
+    def line(y, msg, s, rgb):
+        x = (TITLE_W - len(msg) * 8 * s) // 2
+        # A ring of dark first, then the drop shadow, then the face: eight
+        # pixels of letterform over a photograph needs the outline more than
+        # it needs the colour.
+        for dx, dy in ((-s, 0), (s, 0), (0, -s), (0, s),
+                       (-s, -s), (s, -s), (-s, s), (s, s)):
+            stamp(x, y, msg, s, DARK, dx, dy)
+        stamp(x, y, msg, s, (34, 22, 14), 2 * s, 2 * s)
+        stamp(x, y, msg, s, rgb, 0, 0)
+
+    line(TITLE_LOGO_Y, "SHATTERED", 2, GOLD)
+    line(TITLE_LOGO_Y + 22, "DECKS", 2, WHITE)
+
+
 def build_title(quiet):
     """The title painting, one palette per 8-row band.
 
@@ -855,6 +912,7 @@ def build_title(quiet):
     src = Image.open(TITLE_SRC).convert("RGB")
     if src.size != (TITLE_W, TITLE_H):
         src = src.resize((TITLE_W, TITLE_H), Image.Resampling.LANCZOS)
+    bake_title_logo(src)
     bands = TITLE_H // TITLE_BAND_ROWS
     idx = np.zeros((TITLE_H, TITLE_W), dtype=np.uint8)
     pals = []
@@ -870,7 +928,14 @@ def build_title(quiet):
         pal += [tuple(int(max(0, min(255, round(v)))) for v in cen[o]) for o in order]
         pal.append((248, 232, 96))
         pal.append((248, 248, 248))
-        idx[y0:y0 + TITLE_BAND_ROWS] = dither(strip, pal)
+        # THE MENU HIGHLIGHT IS NOT AVAILABLE TO THE PICTURE.  Entry 14 is
+        # pinned to the menu's gold in every band so text can be drawn over
+        # any of them; leaving it in the dither's reach let a band of blue sky
+        # diffuse its error into it and lay orange streaks across the sky --
+        # the same failure the card art hits when the HUD's red and green are
+        # left in (see the module docstring).
+        idx[y0:y0 + TITLE_BAND_ROWS] = dither(
+            strip, pal, allow=[i for i in range(16) if i != 14])
         pals.append(pal)
     if not quiet:
         print("TITLE    %d bands x 16 colours" % bands)

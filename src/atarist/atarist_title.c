@@ -56,18 +56,27 @@
 #define MENU_PITCH   16
 
 /* The menu plate, in pixels.  Kept on 16-pixel boundaries so restoring it is
- * whole words out of the picture, which is what lets the blinking caret
- * repaint 40 rows instead of the whole screen. */
+ * whole words out of the picture, which is what lets a cursor move repaint 44
+ * rows instead of the whole screen. */
 #define PLATE_X      64
 #define PLATE_Y     (MENU_Y - 8)
 #define PLATE_W     192
 #define PLATE_H     (MENU_ITEMS * MENU_PITCH + 12)
 
+/* The key legend gets a plate of its own.  Without one the two lines sat
+ * straight on the painting, which is busy and light exactly there, and white
+ * eight-pixel text with a one-pixel shadow does not survive that.  It never
+ * changes, so it is painted with the backdrop and never restored. */
+#define HELP_X       32
+#define HELP_Y      168
+#define HELP_W      256
+#define HELP_H       28
+
 static uint8_t  g_choice;
 static uint8_t  g_quit;        /* Escape: the only way out of the game */
 static uint8_t  g_cursor;
 static uint8_t  g_redraw;      /* whole screen, both buffers */
-static uint8_t  g_blink;       /* just the menu plate */
+static uint8_t  g_plate;       /* just the menu plate, both buffers */
 static uint16_t g_anim;
 
 static uint8_t *g_file;             /* the loaded TITLE.SCR, or null */
@@ -172,9 +181,9 @@ static void paint_backdrop(void)
 
 /* ── The screen ──────────────────────────────────────────────────────────── */
 
-/* One horizontal band of the picture, back into the buffer.  The caret blinks
- * twice a second and the picture is 32,000 bytes; repainting all of it for a
- * one-glyph change is a vblank and a half of copying, every time. */
+/* One horizontal band of the picture, back into the buffer.  The picture is
+ * 32,000 bytes; repainting all of it to move a one-glyph caret is a vblank and
+ * a half of copying. */
 static void restore_plate(void)
 {
     int row;
@@ -206,21 +215,31 @@ static void draw_menu(void)
         int y = MENU_Y + i * MENU_PITCH;
         uint8_t c = (i == g_cursor) ? T_HILITE : T_WHITE;
         Atarist_DrawTextCentred(160, y, g_menu[i], c, T_BLACK);
-        if (i == g_cursor) {
-            /* The caret blinks off the frame clock, so it keeps time even when
-             * a frame runs long. */
-            if ((g_anim >> 4) & 1)
-                Atarist_DrawText(72, y, ">", T_HILITE, T_BLACK);
-        }
+        /* THE CARET DOES NOT BLINK.  It used to flip twice a second, and each
+         * flip repainted the plate into both buffers -- so the menu box
+         * flickered continuously, and walking the cursor through it landed in
+         * the middle of that.  The highlighted row is already coloured
+         * differently; a steady caret says the same thing and costs nothing. */
+        if (i == g_cursor)
+            Atarist_DrawText(72, y, ">", T_HILITE, T_BLACK);
     }
+}
+
+static void draw_help(void)
+{
+    Atarist_FillRect(HELP_X, HELP_Y, HELP_W, HELP_H, T_BLACK);
+    Atarist_FrameRect(HELP_X, HELP_Y, HELP_W, HELP_H, T_HILITE);
+    Atarist_DrawTextCentred(160, HELP_Y + 4, "CURSOR KEYS   SPACE SELECTS",
+                            T_WHITE, T_BLACK);
+    Atarist_DrawTextCentred(160, HELP_Y + 16, "ESC QUITS TO DESKTOP",
+                            T_WHITE, T_BLACK);
 }
 
 static void title_draw(void)
 {
     paint_backdrop();
     draw_menu();
-    Atarist_DrawTextCentred(160, 176, "CURSOR KEYS  RETURN", T_WHITE, T_BLACK);
-    Atarist_DrawTextCentred(160, 188, "ESC QUITS TO DESKTOP", T_WHITE, T_BLACK);
+    draw_help();
 }
 
 void Atarist_TitleEnter(void)
@@ -230,7 +249,7 @@ void Atarist_TitleEnter(void)
     g_cursor = 0;
     g_anim = 0;
     g_redraw = 2;
-    g_blink = 0;
+    g_plate = 0;
     if (!title_load()) {
         g_picture = 0;
         fallback_palettes();
@@ -243,21 +262,16 @@ void Atarist_TitleEnter(void)
 
 void Atarist_TitleStep(int vblanks)
 {
-    uint16_t before = g_anim;
-
     g_anim = (uint16_t)(g_anim + vblanks);
-    /* The caret is the only thing that changes on its own, so the screen is
-     * repainted when it flips and not otherwise -- the same rule the duel
-     * board follows, for the same reason. */
-    if (((before >> 4) & 1) != ((g_anim >> 4) & 1)) g_blink = 2;
-
+    /* NOTHING ON THIS SCREEN CHANGES BY ITSELF, so nothing is repainted until
+     * the player moves the cursor -- and then only the menu plate. */
     if (Atarist_InputRepeat(ATARIST_BTN_UP, 14)) {
         g_cursor = (uint8_t)((g_cursor + MENU_ITEMS - 1) % MENU_ITEMS);
-        g_blink = 2;
+        g_plate = 2;
     }
     if (Atarist_InputRepeat(ATARIST_BTN_DOWN, 14)) {
         g_cursor = (uint8_t)((g_cursor + 1) % MENU_ITEMS);
-        g_blink = 2;
+        g_plate = 2;
     }
     if (g_atarist_input.pressed & (ATARIST_BTN_A | ATARIST_BTN_START))
         g_choice = (uint8_t)(ATARIST_TITLE_FREE_BATTLE + g_cursor);
@@ -268,10 +282,10 @@ void Atarist_TitleStep(int vblanks)
     if (g_redraw) {
         title_draw();
         --g_redraw;
-    } else if (g_blink) {
+    } else if (g_plate) {
         if (g_picture) restore_plate();
         draw_menu();
-        --g_blink;
+        --g_plate;
     }
     g_atarist_probe.menu_cursor = g_cursor;
 }
