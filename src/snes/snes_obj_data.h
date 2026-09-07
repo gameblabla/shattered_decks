@@ -19,7 +19,14 @@
 #define SNES_SPR_BAR_STEPS    9
 #define SNES_SPR_BAR_COUNT    18
 #define SNES_SPR_PLATE_COUNT  2
+/* The stat row's sword and shield, last in the sheet. */
+#define SNES_SPR_ICON_COUNT   2
+#define SNES_SPR_ICON_ATK     0
+#define SNES_SPR_ICON_DEF     1
 #define SNES_SPR_HUD_PAL      7
+/* How many OBJ palettes the cards share, and therefore how many slots can be
+ * given a palette of their own -- see snes_spr_cards_hi. */
+#define SNES_SPR_CARD_PALS    7
 #define SNES_SPR_INK          1
 #define SNES_SPR_GOLD         3
 #define SNES_SPR_RED          4
@@ -31,6 +38,13 @@
 #define SNES_TOP_TILE_BYTES   4672
 
 extern const u8 snes_spr_cards[];
+/* The same faces fitted one palette EACH, for the five hand slots: the board
+ * view shows five cards and there are seven card palettes, so a hand card need
+ * not share eleven entries with ten other paintings the way the top view's
+ * twenty must.  snes_spr_face_pal[face] is the palette that sheet was cut
+ * against and is uploaded to the slot's OBJ palette with its tiles. */
+extern const u8 snes_spr_cards_hi[];
+extern const u8 snes_spr_face_pal[];
 extern const u8 snes_spr_font[];
 extern const u8 snes_spr_pal[];
 extern const u8 snes_spr_group[];     /* the OBJ palette each face was fitted to */

@@ -97,11 +97,15 @@
 #define HAND_Y       162
 #define HAND_PITCH   48                 /* five 32-pixel cards across 256 */
 #define HAND_X0      8
-#define NAME_Y       198
-#define STAT_Y       208
+/* The name and the stats sit ONE PIXEL LOWER than the plate they are on, which
+ * is what stops the ascenders touching the gradient's top highlight. */
+#define NAME_Y       199
+#define STAT_Y       209
 #define STAT_ATK_X   8
-#define STAT_DEF_X   96
-#define STAT_NUM_DX  32                 /* "ATK" is three cells wide plus one */
+#define STAT_DEF_X   72
+/* A sword and a shield, not the words ATK and DEF: the label is one cell wide
+ * instead of three, and the gap after it is the second. */
+#define STAT_NUM_DX  16
 
 /* The top view's table, from tools/snes/gen_snes_obj.py: a 5x4 grid of
  * SNES_TOP_CELL cells with a 32x32 card centred in each. */
@@ -109,12 +113,12 @@
 #define TOP_CARD_Y(row)  (SNES_TOP_Y0 + (row) * SNES_TOP_CELL + (SNES_TOP_CELL - 32) / 2)
 /* The top view has one free row, under the table's near edge, so the name and
  * the stats share it. */
-#define TOP_MSG_Y    212
-/* Both stats have to fit beside the name on that one row: a label is three
- * cells and a number four, so a stat with its gap is eight cells and the pair
- * is the right-hand half of the screen exactly.  Everything here stays on the
- * eight-pixel grid, which is also what lets the harness read the row back as
- * columns rather than as pixels. */
+#define TOP_MSG_Y    213
+/* Both stats have to fit beside the name on that one row: an icon and its gap
+ * are two cells and a number four, so a stat is six and the pair is the
+ * right-hand half of the screen with a cell to spare.  Everything here stays on
+ * the eight-pixel grid, which is also what lets the harness read the row back
+ * as columns rather than as pixels. */
 #define TOP_STAT_X   120
 #define TOP_STAT_GAP 72
 
@@ -339,6 +343,54 @@ static void render(void)
 
 /* ── The HUD band ────────────────────────────────────────────────────────── */
 
+/* THE BAND'S TEXT ROWS SIT ON A BLUE PLATE AND THE REST OF IT STAYS BLACK.
+ *
+ * The hand is card art and wants black around it; the two rows of words under
+ * it are white letters on black, which over a black surround is a caption
+ * floating in nothing.  A gradient behind them is the cheapest thing that makes
+ * them read as a panel, and it costs one span a row, once, because the bitmap's
+ * HUD band is uploaded only when it is dirtied.
+ *
+ * The arithmetic is the band's, from snes_video.h: the band always samples at
+ * 2x2 out of framebuffer rows 80..111, so a row is two screen lines and rows
+ * 99..111 are lines 197..222.  Line 223 CANNOT be reached and painting row 112
+ * does not reach it either -- the band is thirty-two rows and the presenter
+ * uploads exactly those, so a row past 111 sits in WRAM and never goes to
+ * VRAM.  The last line of the screen stays black; it is inside every set's
+ * overscan and is not worth a taller band to own.
+ *
+ * Direct colour has THREE bits of red and green and only TWO of blue, so a blue
+ * ramp cannot be made out of blue: the darkening happens in the other two
+ * channels while blue holds near its top, which is also why the first row is
+ * lighter than the second -- a highlight rule along the top edge is a step the
+ * cube can afford where a smooth fade at the top is not. */
+#define BAND_Y0      99
+#define BAND_ROWS    13
+
+static const u8 band_ramp[BAND_ROWS] = {
+    SNES_DC(2, 4, 3),   /* the top rule, a shade brighter than the plate */
+    SNES_DC(1, 3, 3),
+    SNES_DC(1, 3, 3),
+    SNES_DC(1, 2, 3),
+    SNES_DC(1, 2, 3),
+    SNES_DC(0, 2, 3),
+    SNES_DC(0, 2, 2),
+    SNES_DC(0, 1, 2),
+    SNES_DC(0, 1, 2),
+    SNES_DC(0, 1, 2),
+    SNES_DC(0, 0, 2),
+    SNES_DC(0, 0, 1),
+    SNES_DC(0, 0, 1),
+};
+
+static void paint_hud_band(void)
+{
+    u8 r;
+    for (r = 0; r < BAND_ROWS; ++r)
+        snesSpanFill((u16)((u16)(BAND_Y0 + r) * SNES_FB_STRIDE),
+                     SNES_HUD_W, band_ramp[r]);
+}
+
 static const char *prompt_text(void)
 {
     switch (ui) {
@@ -461,9 +513,10 @@ static void build_objects(void)
 
         snesObjText(8, TOP_MSG_Y, name);
         if (has_stats) {
-            snesObjText(TOP_STAT_X, TOP_MSG_Y, "ATK");
+            snesObjIcon(TOP_STAT_X, TOP_MSG_Y, SNES_SPR_ICON_ATK);
             snesObjNum(TOP_STAT_X + STAT_NUM_DX, TOP_MSG_Y, atk, 4);
-            snesObjText(TOP_STAT_X + TOP_STAT_GAP, TOP_MSG_Y, "DEF");
+            snesObjIcon(TOP_STAT_X + TOP_STAT_GAP, TOP_MSG_Y,
+                        SNES_SPR_ICON_DEF);
             snesObjNum(TOP_STAT_X + TOP_STAT_GAP + STAT_NUM_DX, TOP_MSG_Y,
                        def, 4);
         }
@@ -501,9 +554,9 @@ static void build_objects(void)
          * never sitting in the name's place. */
         snesObjText(8, NAME_Y, name);
         if (has_stats) {
-            snesObjText(STAT_ATK_X, STAT_Y, "ATK");
+            snesObjIcon(STAT_ATK_X, STAT_Y, SNES_SPR_ICON_ATK);
             snesObjNum(STAT_ATK_X + STAT_NUM_DX, STAT_Y, atk, 4);
-            snesObjText(STAT_DEF_X, STAT_Y, "DEF");
+            snesObjIcon(STAT_DEF_X, STAT_Y, SNES_SPR_ICON_DEF);
             snesObjNum(STAT_DEF_X + STAT_NUM_DX, STAT_Y, def, 4);
         } else {
             snesObjText(STAT_ATK_X, STAT_Y, prompt_text());
@@ -517,6 +570,13 @@ static void build_objects(void)
          * five 32x32 sprites -- the card art at the console's own resolution,
          * which is twice what the bitmap band could show it at -- sitting at
          * the TOP of the band, with the words that describe it underneath. */
+        /* THE HAND IS THE ONE PLACE A CARD GETS A PALETTE TO ITSELF.  Five
+         * cards against seven card palettes is a slot each, so a hand card is
+         * quantised against nothing but its own painting instead of sharing
+         * fifteen entries with the ten faces nearest it in colour -- which is
+         * what made the cards read as posterised.  The top view cannot have it:
+         * it shows twenty at once. */
+        snesObjCardHiRes(1);
         for (i = 0; i < MSX2_HAND; ++i) {
             const s16 x = (s16)(HAND_X0 + i * HAND_PITCH);
             const u8 hcard = you->hand[i];
@@ -744,8 +804,10 @@ void snesDuelEnter(void)
     snesVideoSetBoardRes(SNES_RES_STILL);
     set_viewport();
     snesVideoClear(BACKDROP);
-    /* The bitmap's HUD band is flat black now and nothing draws into it ever
-     * again -- the HUD is sprites -- so it is uploaded exactly once, here. */
+    /* Nothing draws into the bitmap's HUD band per frame any more -- the HUD is
+     * sprites -- so the plate under the two text rows is painted and the band
+     * uploaded exactly once, here. */
+    paint_hud_band();
     snesVideoHudDirty();
     build_objects();
     render();
@@ -768,7 +830,8 @@ void snesDuelFrame(void)
     if (down & KEY_Y) {
         force_moving ^= 1;
         snesVideoClear(BACKDROP);
-        snesVideoHudDirty();
+        paint_hud_band();
+    snesVideoHudDirty();
         touch_board(2);
     }
 

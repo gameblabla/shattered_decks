@@ -75,6 +75,10 @@ CORNER_COUNT = 4
 BAR_STEPS = 9                   # 0..8 columns of the tile filled
 BAR_COUNT = BAR_STEPS * 2
 PLATE_COUNT = 2
+# ...and last, the two stat icons.  A SWORD AND A SHIELD REPLACE THE WORDS "ATK"
+# AND "DEF": three letters and a space is half of the eight columns the stat row
+# has, the icons say the same thing in one, and neither needs to be read.
+ICON_COUNT = 2
 SNES_SPR_GOLD = 3
 
 
@@ -293,23 +297,42 @@ def build_cards():
         raw = pal.getpalette()[:ART_COLOURS * 3]
         art_pals.append([tuple(raw[i * 3:i * 3 + 3]) for i in range(ART_COLOURS)])
 
+    # THE SAME FACES A SECOND TIME, EACH AGAINST A PALETTE OF ITS OWN.  A
+    # cluster palette has to cover eleven paintings at once, which is what made
+    # the cards read as posterised; a hand card does not have to share, because
+    # the board view shows five of them and the machine has seven card
+    # palettes.  So every face is also fitted alone, and snes_obj.c uploads
+    # that face's fifteen colours into the slot's palette with its tiles.  The
+    # clustered sheet stays, because the TOP VIEW shows twenty cards at once
+    # and there is no arrangement of seven palettes that gives each its own.
+    face_pals = []
+    for img in arts:
+        pal = img.quantize(colors=ART_COLOURS,
+                           method=Image.Quantize.MAXCOVERAGE)
+        raw = pal.getpalette()[:ART_COLOURS * 3]
+        face_pals.append([tuple(raw[i * 3:i * 3 + 3])
+                          for i in range(ART_COLOURS)])
+
     x0, y0, x1, y1 = ga.art_window((SPR, SPR))
     blob = bytearray()
+    hi_blob = bytearray()
     for i, (tag, _) in enumerate(fs):
-        ref = ref_palette(art_pals[groups[i]])
-        art = [v + ART_FIRST
-               for v in arts[i].quantize(palette=ref,
-                                         dither=Image.FLOYDSTEINBERG).getdata()]
-        if frames[i] is None:
-            data = art
-        else:
-            data = [fmap(px) + FRAME_FIRST for px in frames[i].getdata()]
-            for y in range(y1 - y0):
-                for x in range(x1 - x0):
-                    data[(y0 + y) * SPR + x0 + x] = art[y * (x1 - x0) + x]
-        for block in cut_tiles(data, SPR, 0, 0, 4, 4):
-            blob += tile4(block)
-    return bytes(blob), bytes(groups), [fpal + p for p in art_pals]
+        for out, palette in ((blob, art_pals[groups[i]]), (hi_blob, face_pals[i])):
+            ref = ref_palette(palette)
+            art = [v + ART_FIRST
+                   for v in arts[i].quantize(palette=ref,
+                                             dither=Image.FLOYDSTEINBERG).getdata()]
+            if frames[i] is None:
+                data = art
+            else:
+                data = [fmap(px) + FRAME_FIRST for px in frames[i].getdata()]
+                for y in range(y1 - y0):
+                    for x in range(x1 - x0):
+                        data[(y0 + y) * SPR + x0 + x] = art[y * (x1 - x0) + x]
+            for block in cut_tiles(data, SPR, 0, 0, 4, 4):
+                out += tile4(block)
+    return (bytes(blob), bytes(hi_blob), bytes(groups),
+            [fpal + p for p in art_pals], [fpal + p for p in face_pals])
 
 
 # ── The HUD font ─────────────────────────────────────────────────────────────
@@ -347,7 +370,60 @@ def build_font():
     blob += corner_tiles()
     blob += bar_tiles()
     blob += plate_tiles()
+    blob += icon_tiles()
     return bytes(blob)
+
+
+ICON_ART = [
+    # The sword: a five-row blade, a crossguard low down, a grip and a pommel.
+    # It is drawn straight up rather than on the diagonal because a diagonal
+    # blade at this size is a staircase and reads as a scratch -- and the blade
+    # is two pixels wide, not four, because a four-wide blade over a crossguard
+    # halfway up the tile stops reading as a sword and starts reading as a
+    # figure with its arms out.
+    ("...##...",
+     "...##...",
+     "...##...",
+     "...##...",
+     "...##...",
+     ".######.",
+     "...##...",
+     "..####.."),
+    # The shield: a heater, squared at the shoulders and drawn to a point.  It
+    # is symmetric, which at eight pixels matters more than the shape is worth:
+    # a shield leaning one way reads as a flag.
+    (".######.",
+     ".######.",
+     ".######.",
+     ".######.",
+     ".######.",
+     "..####..",
+     "..####..",
+     "...##..."),
+]
+
+
+def icon_tiles():
+    """The sword and the shield the stat row prints instead of ATK and DEF.
+
+    They carry the same baked drop shadow the glyphs do, for the same reason --
+    the row sits over the band's blue gradient and over black, and a shadow in
+    the tile is what lets one drawing serve both -- and they are inked in the
+    two colours every other port gives the pair: attack red, defence blue."""
+    out = bytearray()
+    for kind, rows in enumerate(ICON_ART):
+        ink = ICON_INK[kind]
+        px = [0] * 64
+        for y in range(8):
+            for x in range(8):
+                if rows[y][x] == "#" and y + 1 < 8 and x + 1 < 8:
+                    px[(y + 1) * 8 + x + 1] = 2
+        for y in range(8):
+            for x in range(8):
+                if rows[y][x] == "#":
+                    px[y * 8 + x] = ink
+        out += tile4(px)
+    return bytes(out)
 
 
 def corner_tiles():
@@ -438,6 +514,9 @@ HUD_PALETTE = [
 PLATE_RED, PLATE_BLUE = 7, 8
 PLATE_RED_INK, PLATE_BLUE_INK = 4, 6
 BAR_EMPTY = 9
+# The sword takes the red the opponent's numbers are drawn in and the shield the
+# blue, so the stat row is coloured the way the life panels are.
+ICON_INK = (4, 6)
 
 
 # ── The top view ─────────────────────────────────────────────────────────────
@@ -547,7 +626,7 @@ def emit(name, bank, blobs):
 def main():
     os.makedirs(ASSETS, exist_ok=True)
 
-    cards, groups, card_pals = build_cards()
+    cards, cards_hi, groups, card_pals, face_pals = build_cards()
     font = build_font()
     top_tiles, top_map, top_pal = build_top()
 
@@ -555,6 +634,9 @@ def main():
     for c in range(CARD_PALETTES):
         obj_pal += palette_bytes([(0, 0, 0)] + card_pals[c], 16)
     obj_pal += palette_bytes([(0, 0, 0)] + HUD_PALETTE, 16)
+    face_pal = bytearray()
+    for p in face_pals:
+        face_pal += palette_bytes([(0, 0, 0)] + p, 16)
     bg_pal = palette_bytes(top_pal, 128)
 
     # NOT "snes_obj": the Makefile names an object after its source's basename
@@ -564,11 +646,13 @@ def main():
         ("snes_spr_font", font),
         ("snes_spr_pal", bytes(obj_pal)),
         ("snes_spr_group", groups),
+        ("snes_spr_face_pal", bytes(face_pal)),
         ("snes_bg_pal", bg_pal),
         ("snes_top_tiles", top_tiles),
         ("snes_top_map", top_map),
     ])
     emit("snes_sprcards", BANK + 1, [("snes_spr_cards", cards)])
+    emit("snes_sprcardshi", BANK + 2, [("snes_spr_cards_hi", cards_hi)])
 
     header = os.path.join(ROOT, "src", "snes", "snes_obj_data.h")
     with open(header, "w") as fh:
@@ -593,7 +677,14 @@ def main():
 #define SNES_SPR_BAR_STEPS    %d
 #define SNES_SPR_BAR_COUNT    %d
 #define SNES_SPR_PLATE_COUNT  %d
+/* The stat row's sword and shield, last in the sheet. */
+#define SNES_SPR_ICON_COUNT   %d
+#define SNES_SPR_ICON_ATK     0
+#define SNES_SPR_ICON_DEF     1
 #define SNES_SPR_HUD_PAL      7
+/* How many OBJ palettes the cards share, and therefore how many slots can be
+ * given a palette of their own -- see snes_spr_cards_hi. */
+#define SNES_SPR_CARD_PALS    %d
 #define SNES_SPR_INK          1
 #define SNES_SPR_GOLD         3
 #define SNES_SPR_RED          4
@@ -605,6 +696,13 @@ def main():
 #define SNES_TOP_TILE_BYTES   %d
 
 extern const u8 snes_spr_cards[];
+/* The same faces fitted one palette EACH, for the five hand slots: the board
+ * view shows five cards and there are seven card palettes, so a hand card need
+ * not share eleven entries with ten other paintings the way the top view's
+ * twenty must.  snes_spr_face_pal[face] is the palette that sheet was cut
+ * against and is uploaded to the slot's OBJ palette with its tiles. */
+extern const u8 snes_spr_cards_hi[];
+extern const u8 snes_spr_face_pal[];
 extern const u8 snes_spr_font[];
 extern const u8 snes_spr_pal[];
 extern const u8 snes_spr_group[];     /* the OBJ palette each face was fitted to */
@@ -614,8 +712,8 @@ extern const u8 snes_top_map[];
 
 #endif
 """ % (SPR, SPR * SPR // 2, (SPR // 8) * 32, GLYPH_FIRST, GLYPH_COUNT,
-       CORNER_COUNT, BAR_STEPS, BAR_COUNT, PLATE_COUNT,
-       TOP_CELL, TOP_X0, TOP_Y0, len(top_tiles)))
+       CORNER_COUNT, BAR_STEPS, BAR_COUNT, PLATE_COUNT, ICON_COUNT,
+       CARD_PALETTES, TOP_CELL, TOP_X0, TOP_Y0, len(top_tiles)))
     print("%s written" % os.path.relpath(header, ROOT))
     print("top view: %d tiles, %d bytes; %d card sprites"
           % (len(top_tiles) // 64, len(top_tiles), len(groups)))

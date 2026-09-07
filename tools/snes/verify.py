@@ -869,9 +869,24 @@ LP_Y, LP_YOU_X, LP_COM_X = 8, 8, 152
 LP_LABEL_DX, LP_BAR_DX, LP_BAR_W, LP_NUM_DX = 2, 28, 32, 64
 LP_MAX = 8000
 HAND_Y, HAND_X0, HAND_PITCH = 162, 8, 48
-NAME_Y, STAT_Y, STAT_ATK_X, STAT_DEF_X, STAT_NUM_DX = 198, 208, 8, 96, 32
+NAME_Y, STAT_Y, STAT_ATK_X, STAT_DEF_X, STAT_NUM_DX = 199, 209, 8, 72, 16
 TOP_CELL, TOP_X0, TOP_Y0 = 48, 8, 16
-TOP_MSG_Y, TOP_STAT_X, TOP_STAT_GAP = 212, 120, 72
+TOP_MSG_Y, TOP_STAT_X, TOP_STAT_GAP = 213, 120, 72
+# The plate under the two text rows, from snes_duel.c's band_ramp: the bitmap's
+# HUD band samples 2x2, so its thirteen rows are screen lines 197..222 and the
+# gradient runs bright at the top to near-black at the bottom.  Line 223 is not
+# in it -- the band owns framebuffer rows 80..111 and nothing past 111 is ever
+# uploaded -- so the last line of the screen is black by construction.
+BAND_TOP, BAND_BOTTOM = 197, 222
+SPR_CARDS_HI = os.path.join(ROOT, "src", "snes", "assets",
+                            "snes_spr_cards_hi.bin")
+SPR_FACE_PAL = os.path.join(ROOT, "src", "snes", "assets",
+                            "snes_spr_face_pal.bin")
+# The tiles the stat row prints instead of the words ATK and DEF, and where they
+# are in the font sheet: the glyphs, the four cursor corners, the eighteen bar
+# states, the two plates, then these.
+ICON_TILE = GLYPH_COUNT + 4 + 18 + 2
+ICON_NAMES = ("sword", "shield")
 CARD_NAMES = os.path.join(ROOT, "src", "snes", "assets", "snes_card_names.bin")
 NAME_LEN = 16
 
@@ -951,22 +966,69 @@ def read_sprite_line(px, w, h, x0, y0, cols):
     return out.rstrip()
 
 
-def card_sprite_pixels(face):
-    """One card sprite as 32x32 five-bit colours, straight out of the ROM."""
-    cards = spr_asset(SPR_CARDS, "cards")
-    group = spr_asset(SPR_GROUP, "group")
-    pal = group[face]
+def read_icon(px, w, h, x, y):
+    """Which stat icon is at (x, y), matched against the ROM's own tiles.
+
+    The icons carry the same baked shadow the glyphs do and are inked in two
+    different colours, so this compares the WHOLE tile -- every pixel, ink,
+    shadow and transparent -- rather than looking for lit pixels.  A transparent
+    pixel is whatever the band's gradient is under it, which is not a colour
+    this can predict, so those pixels are the ones it skips."""
+    font = spr_asset(SPR_FONT, "font")
+    best = None
+    for kind, name in enumerate(ICON_NAMES):
+        tile = untile4(font, (ICON_TILE + kind) * 32)
+        hit = miss = 0
+        for v in range(8):
+            for u in range(8):
+                index = tile[v * 8 + u]
+                if index == 0:
+                    continue
+                sx, sy = x + u, y + v
+                if not (0 <= sx < w and 0 <= sy < h):
+                    return None
+                if screen5(px, w, sx, sy) == obj_colour(7, index):
+                    hit += 1
+                else:
+                    miss += 1
+        if best is None or hit - miss > best[1]:
+            best = (name, hit - miss, hit, hit + miss)
+    if best[2] < best[3] * 0.9:
+        return None
+    return best[0]
+
+
+def face_colour(face, index):
+    """An entry of the palette snes_spr_cards_hi's `face` was cut against."""
+    blob = spr_asset(SPR_FACE_PAL, "facepal")
+    w = blob[(face * 16 + index) * 2] | (blob[(face * 16 + index) * 2 + 1] << 8)
+    return (w & 31, (w >> 5) & 31, (w >> 10) & 31)
+
+
+def card_sprite_pixels(face, hi=False):
+    """One card sprite as 32x32 five-bit colours, straight out of the ROM.
+
+    `hi` reads the per-face sheet instead of the clustered one: that is what
+    the five hand slots draw from, with the face's own fifteen colours uploaded
+    into the slot's OBJ palette beside its tiles."""
+    if hi:
+        cards = spr_asset(SPR_CARDS_HI, "cardshi")
+        colour = lambda i: face_colour(face, i)
+    else:
+        cards = spr_asset(SPR_CARDS, "cards")
+        pal = spr_asset(SPR_GROUP, "group")[face]
+        colour = lambda i: obj_colour(pal, i)
     out = [None] * (32 * 32)
     for t in range(16):
         tile = untile4(cards, face * 512 + t * 32)
         tx, ty = (t % 4) * 8, (t // 4) * 8
         for y in range(8):
             for x in range(8):
-                out[(ty + y) * 32 + tx + x] = obj_colour(pal, tile[y * 8 + x])
+                out[(ty + y) * 32 + tx + x] = colour(tile[y * 8 + x])
     return out
 
 
-def identify_card_sprite(px, w, h, x0, y0):
+def identify_card_sprite(px, w, h, x0, y0, hi=False):
     """Which face a 32x32 sprite on screen is, and how exactly.
 
     Returns (face, matching pixels) for the best face.  A sprite is pixel exact,
@@ -981,7 +1043,7 @@ def identify_card_sprite(px, w, h, x0, y0):
             obs.append(screen5(px, w, x0 + x, y0 + y))
     best = None
     for face in range(len(group)):
-        want = card_sprite_pixels(face)
+        want = card_sprite_pixels(face, hi)
         n = sum(1 for a, b in zip(obs, want) if a == b)
         if best is None or n > best[1]:
             best = (face, n)
@@ -1043,16 +1105,93 @@ def check_hud_text():
     name = read_sprite_line(px, w, h, 8, NAME_Y, 15)
     stat = read_sprite_line(px, w, h, STAT_ATK_X, STAT_Y, 20)
     names = set(card_name(f) for f in range(CARD_BACK + 1))
+    icons = (read_icon(px, w, h, STAT_ATK_X, STAT_Y),
+             read_icon(px, w, h, STAT_DEF_X, STAT_Y))
     if UI[stamp["ui"]] == "HAND":
         if name not in names:
             raise Failure("the name row reads %r, which is not a card in the "
                           "ROM's name table" % name)
-        if not (stat.startswith("ATK") or stat.startswith("A:PLAY")):
-            raise Failure("the stat row reads %r while the UI is in HAND" % stat)
-        if stat.startswith("ATK") and not stat[4:8].isdigit():
-            raise Failure("the stat row reads %r -- ATK has no number" % stat)
-    return "%r / %r, name %r, stats %r" % (
-        "YOU %d" % stamp["lp_player"], "COM %d" % stamp["lp_com"], name, stat)
+        # THE STAT ROW IS AN ICON AND A NUMBER, NOT A WORD.  The row either
+        # carries the sword and the shield with a four-digit number after each,
+        # or it is the button legend, which is what it falls back to when the
+        # focused card has no stats to show.
+        if icons == ("sword", "shield"):
+            for kind, x in (("attack", STAT_ATK_X), ("defence", STAT_DEF_X)):
+                digits = read_sprite_line(px, w, h, x + STAT_NUM_DX, STAT_Y, 4)
+                if not digits.isdigit() or len(digits) != 4:
+                    raise Failure("the %s icon is followed by %r, not four "
+                                  "digits" % (kind, digits))
+        elif not stat.startswith("A:PLAY"):
+            raise Failure("the stat row shows icons %r and reads %r while the "
+                          "UI is in HAND" % (icons, stat))
+
+    # The plate the two rows sit on: a blue gradient painted into the bitmap's
+    # HUD band once.  It is checked as a RAMP and not as "there is blue there" --
+    # every line at least as blue as the one below it, the top brighter than the
+    # bottom, and blue the dominant channel throughout -- because a band drawn
+    # with the ramp upside down or with the rows in the wrong place still passes
+    # any check that only counts colours.
+    lines = [screen5(px, w, w - 3, y) for y in range(BAND_TOP, BAND_BOTTOM + 1)]
+    for y, (r, g, b) in zip(range(BAND_TOP, BAND_BOTTOM + 1), lines):
+        if b <= r or b <= g:
+            raise Failure("line %d of the HUD plate is (%d,%d,%d), which is not "
+                          "blue" % (y, r, g, b))
+    for i in range(1, len(lines)):
+        if sum(lines[i]) > sum(lines[i - 1]):
+            raise Failure("the HUD plate brightens from line %d to %d -- the "
+                          "gradient is not a ramp"
+                          % (BAND_TOP + i - 1, BAND_TOP + i))
+    if sum(lines[0]) <= sum(lines[-1]):
+        raise Failure("the HUD plate is flat: %s to %s"
+                      % (lines[0], lines[-1]))
+    if screen5(px, w, w - 3, BAND_TOP - 1) != (0, 0, 0):
+        raise Failure("line %d, above the plate, is not black -- the gradient "
+                      "has grown into the hand" % (BAND_TOP - 1))
+    return "%r / %r, name %r, icons %s, stats %r, plate %s..%s" % (
+        "YOU %d" % stamp["lp_player"], "COM %d" % stamp["lp_com"], name,
+        "/".join(str(i) for i in icons), stat, lines[0], lines[-1])
+
+
+def check_hand_is_per_face():
+    """THE HAND DRAWS FROM THE PER-FACE SHEET AND THE TOP VIEW DOES NOT.
+
+    Every hand card is identified twice -- once against the clustered sheet the
+    top view uses, once against the sheet whose faces were each fitted a palette
+    of their own -- and the per-face one has to win.  That is the only assertion
+    that can tell the two apart: they are the same paintings, so a card matched
+    loosely matches both, and the whole point of the change is which fifteen
+    colours it was quantised through.
+
+    It also catches the failure the change could actually produce on hardware --
+    tiles from one sheet on screen against the other's palette -- because a
+    mismatched pair matches NEITHER sheet exactly."""
+    ppm, wram = run_still()
+    stamp = read_stamp(wram)
+    w, h, px = read_ppm(ppm)
+    if UI[stamp["ui"]] != "HAND":
+        raise Failure("the UI is in %s, so there is no hand to read"
+                      % UI[stamp["ui"]])
+
+    wins, seen = 0, []
+    for i in range(5):
+        x = HAND_X0 + i * HAND_PITCH
+        hi = identify_card_sprite(px, w, h, x, HAND_Y, hi=True)
+        lo = identify_card_sprite(px, w, h, x, HAND_Y, hi=False)
+        if hi is None or lo is None:
+            continue
+        if hi[1] < 1024 * 0.98:
+            raise Failure("hand card %d matches its best per-face sprite in "
+                          "only %d of 1024 pixels -- the sheet and the palette "
+                          "on screen do not agree" % (i, hi[1]))
+        if hi[1] <= lo[1]:
+            raise Failure("hand card %d matches the CLUSTERED sheet at least as "
+                          "well (%d) as the per-face one (%d) -- the hand is "
+                          "not using snes_spr_cards_hi" % (i, lo[1], hi[1]))
+        wins += 1
+        seen.append(card_name(hi[0]))
+    if wins < 5:
+        raise Failure("only %d of the five hand cards could be identified" % wins)
+    return "5 hand cards exact against the per-face sheet: %s" % ", ".join(seen)
 
 
 def check_duel_flow():
@@ -1205,9 +1344,13 @@ def check_top_view():
     # other.  Reading the whole row back is what catches that: "ATK 2100EF 1750"
     # is a screenshot that looks nearly right and is not.
     row = read_sprite_line(px, w, h, 0, TOP_MSG_Y, 32)
-    if "ATK" in row and not re.search(r"ATK\s+\d{4}\s+DEF\s+\d{4}\s*$", row):
-        raise Failure("the top view's stat row reads %r -- the two fields are "
-                      "laid out into each other" % row)
+    icons = (read_icon(px, w, h, TOP_STAT_X, TOP_MSG_Y),
+             read_icon(px, w, h, TOP_STAT_X + TOP_STAT_GAP, TOP_MSG_Y))
+    if icons == ("sword", "shield"):
+        tail = row[TOP_STAT_X // 8:]
+        if not re.search(r"^\s+\d{4}\s+\d{4}\s*$", tail):
+            raise Failure("the top view's stats read %r after the icons -- the "
+                          "two fields are laid out into each other" % tail)
     if row[:TOP_STAT_X // 8].strip() and \
        len(row[:TOP_STAT_X // 8].rstrip()) * 8 > TOP_STAT_X:
         raise Failure("the top view's name %r runs into the stats"
@@ -1259,6 +1402,7 @@ CHECKS = [
     ("empty slot", check_empty_slot_is_floor),
     ("quad card", check_quad_card),
     ("hud text", check_hud_text),
+    ("hand per-face art", check_hand_is_per_face),
     ("top view", check_top_view),
     ("top view switch", check_top_view_switch_is_seamless),
     ("duel flow", check_duel_flow),

@@ -12,6 +12,9 @@ snes_spr_pal:
 snes_spr_group:
     .INCBIN "snes_spr_group.bin"
 
+snes_spr_face_pal:
+    .INCBIN "snes_spr_face_pal.bin"
+
 snes_bg_pal:
     .INCBIN "snes_bg_pal.bin"
 

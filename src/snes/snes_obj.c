@@ -24,6 +24,14 @@ static u8 oam_dirty = 1;
  * 4 KB of board is the whole DMA budget twice over. */
 static u8 card_have[SNES_OBJ_CARDS];
 static u8 card_want[SNES_OBJ_CARDS];
+/* ...and out of WHICH SHEET, which is part of what a slot holds and not a
+ * property of the frame: a slot switching between the clustered sheet and the
+ * per-face one has to re-upload its tiles and its palette even though the face
+ * did not change.  That is what makes walking into the top view and back put
+ * the right art up rather than the right art in the wrong colours. */
+static u8 card_have_hi[SNES_OBJ_CARDS];
+static u8 card_want_hi[SNES_OBJ_CARDS];
+static u8 card_hi_mode = 0;
 
 /* WHICH SLOT GOES UP NEXT IS DECIDED OUTSIDE VBLANK, and that is not tidiness.
  *
@@ -47,8 +55,10 @@ static u8 next_card = SNES_OBJ_CARDS;
 #define CORNER_TILE    (FONT_TILE + SNES_SPR_GLYPH_COUNT)
 #define BAR_TILE       (CORNER_TILE + SNES_SPR_CORNER_COUNT)
 #define PLATE_TILE     (BAR_TILE + SNES_SPR_BAR_COUNT)
+#define ICON_TILE      (PLATE_TILE + SNES_SPR_PLATE_COUNT)
 #define FONT_SHEET     (SNES_SPR_GLYPH_COUNT + SNES_SPR_CORNER_COUNT \
-                        + SNES_SPR_BAR_COUNT + SNES_SPR_PLATE_COUNT)
+                        + SNES_SPR_BAR_COUNT + SNES_SPR_PLATE_COUNT \
+                        + SNES_SPR_ICON_COUNT)
 #define FONT_WORD      (0x4000u + (FONT_TILE * 32u) / 2u)
 
 /* The life panel, in pixels from its left edge. */
@@ -85,6 +95,8 @@ void snesObjInit(void)
     for (i = 0; i < SNES_OBJ_CARDS; ++i) {
         card_have[i] = SNES_OBJ_NO_FACE;
         card_want[i] = SNES_OBJ_NO_FACE;
+        card_have_hi[i] = 0;
+        card_want_hi[i] = 0;
     }
     for (i = 0; i < 128 * 4; i += 4) {
         oam_shadow[i + 0] = 0;
@@ -103,6 +115,12 @@ void snesObjInit(void)
 void snesObjBegin(void)
 {
     obj_n = 0;
+    card_hi_mode = 0;
+}
+
+void snesObjCardHiRes(u8 on)
+{
+    card_hi_mode = on;
 }
 
 void snesObjSprite(s16 x, s16 y, u16 tile, u8 pal, u8 big)
@@ -155,6 +173,11 @@ void snesObjNum(s16 x, s16 y, u16 value, u8 digits)
     }
 }
 
+void snesObjIcon(s16 x, s16 y, u8 kind)
+{
+    snesObjSprite(x, y, (u16)(ICON_TILE + kind), SNES_SPR_HUD_PAL, 0);
+}
+
 void snesObjBox(s16 x, s16 y, u8 w, u8 h)
 {
     snesObjSprite(x, y, CORNER_TILE + 0, SNES_SPR_HUD_PAL, 0);
@@ -199,10 +222,19 @@ void snesObjLifePanel(s16 x, s16 y, u8 side, u16 lp, u16 lp_max)
 
 void snesObjCard(s16 x, s16 y, u8 slot, u8 face)
 {
+    /* A slot outside the card palettes cannot own one, so it falls back to the
+     * clustered sheet however the caller asked -- there is no arrangement that
+     * gives the top view's slot 12 a palette of its own. */
+    const u8 hi = (u8)(card_hi_mode && slot < SNES_SPR_CARD_PALS);
+
     if (slot >= SNES_OBJ_CARDS || face == SNES_OBJ_NO_FACE) return;
     card_want[slot] = face;
-    if (card_have[slot] != face) return;      /* still on its way up */
-    snesObjSprite(x, y, CARD_TILE(slot), snes_spr_group[face], 1);
+    card_want_hi[slot] = hi;
+    /* Still on its way up -- and a slot whose SHEET changed is as much on its
+     * way up as one whose face did, because its palette is going with it. */
+    if (card_have[slot] != face || card_have_hi[slot] != hi) return;
+    snesObjSprite(x, y, CARD_TILE(slot),
+                  hi ? slot : snes_spr_group[face], 1);
 }
 
 void snesObjEnd(void)
@@ -217,7 +249,8 @@ void snesObjEnd(void)
 
     next_card = SNES_OBJ_CARDS;
     for (i = 0; i < SNES_OBJ_CARDS; ++i) {
-        if (card_have[i] == card_want[i]) continue;
+        if (card_have[i] == card_want[i] &&
+            card_have_hi[i] == card_want_hi[i]) continue;
         next_card = i;
         break;
     }
@@ -227,27 +260,55 @@ u8 snesObjCardsReady(void)
 {
     u8 i;
     for (i = 0; i < SNES_OBJ_CARDS; ++i)
-        if (card_have[i] != card_want[i]) return 0;
+        if (card_have[i] != card_want[i] ||
+            card_have_hi[i] != card_want_hi[i]) return 0;
     return 1;
 }
 
 /* ── The vblank pump ─────────────────────────────────────────────────────── */
 
+/* A slot's tiles, and -- when they came out of the per-face sheet -- the
+ * fifteen colours they were cut against.
+ *
+ * THE PALETTE GOES UP WITH THE TILES AND IN THE SAME VBLANK, because the two
+ * are one picture: land the tiles a field before their palette and the card is
+ * on screen for that field drawn through the previous face's colours, which is
+ * a flash of confetti exactly where the player is looking.  Thirty-two bytes
+ * of CGRAM next to five hundred and twelve of VRAM is not a budget question.
+ *
+ * Going the other way -- a slot leaving the per-face sheet, which is what
+ * walking up into the top view does to all five hand slots -- the clustered
+ * palette has to be put BACK, or the top view draws its twenty cards through
+ * five hand cards' palettes. */
 static void upload_card(u8 slot)
 {
     const u8 face = card_want[slot];
+    const u8 hi = card_want_hi[slot];
     u16 src;
     u8  r;
 
     if (face == SNES_OBJ_NO_FACE) {
         card_have[slot] = face;
+        card_have_hi[slot] = hi;
         return;
     }
     src = (u16)((u16)face * SNES_SPR_CARD_BYTES);
-    for (r = 0; r < 4; ++r)
-        dmaCopyVram((u8 *)&snes_spr_cards[src + (u16)r * SNES_SPR_CARD_ROW],
-                    CARD_WORD(slot, r), SNES_SPR_CARD_ROW);
+    if (hi) {
+        for (r = 0; r < 4; ++r)
+            dmaCopyVram((u8 *)&snes_spr_cards_hi[src + (u16)r * SNES_SPR_CARD_ROW],
+                        CARD_WORD(slot, r), SNES_SPR_CARD_ROW);
+        dmaCopyCGram((u8 *)&snes_spr_face_pal[(u16)face * 32],
+                     (u16)(128 + (u16)slot * 16), 32);
+    } else {
+        for (r = 0; r < 4; ++r)
+            dmaCopyVram((u8 *)&snes_spr_cards[src + (u16)r * SNES_SPR_CARD_ROW],
+                        CARD_WORD(slot, r), SNES_SPR_CARD_ROW);
+        if (card_have_hi[slot] && slot < SNES_SPR_CARD_PALS)
+            dmaCopyCGram((u8 *)&snes_spr_pal[(u16)slot * 32],
+                         (u16)(128 + (u16)slot * 16), 32);
+    }
     card_have[slot] = face;
+    card_have_hi[slot] = hi;
 }
 
 void snesObjVblank(void)

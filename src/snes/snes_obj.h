@@ -51,6 +51,9 @@ void snesObjBegin(void);
 void snesObjSprite(s16 x, s16 y, u16 tile, u8 pal, u8 big);
 void snesObjText(s16 x, s16 y, const char *s);
 void snesObjNum(s16 x, s16 y, u16 value, u8 digits);
+/* SNES_SPR_ICON_ATK or SNES_SPR_ICON_DEF: the sword and the shield the stat
+ * row prints where it used to spell ATK and DEF. */
+void snesObjIcon(s16 x, s16 y, u8 kind);
 /* The four corner brackets of a w x h box -- the cursor, in either view. */
 void snesObjBox(s16 x, s16 y, u8 w, u8 h);
 /* One side's life panel: a coloured label plate, a gauge and the number, all
@@ -64,6 +67,19 @@ void snesObjLifePanel(s16 x, s16 y, u8 side, u16 lp, u16 lp_max);
  * not emitted, because a card drawn out of tiles that still hold the previous
  * face is worse than a card that arrives a frame late. */
 void snesObjCard(s16 x, s16 y, u8 slot, u8 face);
+/* WHICH SHEET THE NEXT snesObjCard CALLS DRAW FROM, and it is a palette
+ * decision as much as a tile one.
+ *
+ * Off (the default) is the clustered sheet: a face shares its fifteen colours
+ * with the ten or so nearest it in colour, which is the only thing that works
+ * when the top view puts twenty cards on screen against seven OBJ palettes.
+ *
+ * On is the per-face sheet: the slot's OBJ palette is loaded with THAT FACE'S
+ * OWN fifteen colours as its tiles go up, so the card is quantised against
+ * nothing but itself.  A slot may only ask for it if its index is also a valid
+ * card palette (slot < SNES_SPR_CARD_PALS), because the slot IS the palette --
+ * which the five hand slots are and the top view's twenty are not. */
+void snesObjCardHiRes(u8 on);
 void snesObjEnd(void);
 
 /* Called once a vblank, before the framebuffer's own upload asks for what is
