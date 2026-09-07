@@ -50,7 +50,8 @@ HDR := $(OBJ)/hdr.asm
 # ── Sources ──────────────────────────────────────────────────────────────────
 # The fork.
 SNES_C   := $(sort $(wildcard $(PROJ_DIR)/*.c))
-SNES_ASM := $(sort $(wildcard $(PROJ_DIR)/*.asm))
+SNES_ASM := $(sort $(wildcard $(PROJ_DIR)/*.asm)) \
+            $(sort $(wildcard $(PROJ_DIR)/assets/*.asm))
 # Compiled in unchanged: the render-free duel rules and the shared AI/decks.
 SHARED_C := src/msx2/msx2_duel.c src/game/ai.c src/game/deck.c
 
@@ -66,14 +67,16 @@ CFLAGS := -I$(PROJ_DIR)/compat -I$(PROJ_DIR) -Isrc/game -Isrc/generated \
 # agree with LIBDIR or the link silently mixes two ABIs.
 CFLAGS += -H -F
 
-ASFLAGS := -d -s -x -I $(OBJ)
+# assets/ is on the include path because the generated .asm there .INCBINs a
+# .bin next to itself, and wla-dx resolves an INCBIN against its include dirs.
+ASFLAGS := -d -s -x -I $(OBJ) -I $(PROJ_DIR)/assets
 
 OBJS := $(patsubst %.c,$(OBJ)/%.obj,$(notdir $(CFILES))) \
         $(patsubst %.asm,$(OBJ)/%.obj,$(notdir $(SNES_ASM)))
 
 # Two source trees feed one flat object dir, so tell make where to look.
 vpath %.c $(PROJ_DIR) src/msx2 src/game
-vpath %.asm $(PROJ_DIR)
+vpath %.asm $(PROJ_DIR) $(PROJ_DIR)/assets
 
 .PHONY: all rom verify clean check-sdk banks
 
@@ -125,6 +128,10 @@ $(OBJ)/%.obj: $(OBJ)/%.asm
 # Hand-written 65816 assembles straight; it lives in src/snes/ so the object
 # rule above would try to find it in $(OBJ), hence its own pair of rules.
 $(OBJ)/%.obj: $(PROJ_DIR)/%.asm $(HDR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -o $@ $<
+
+$(OBJ)/%.obj: $(PROJ_DIR)/assets/%.asm $(HDR)
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -o $@ $<
 

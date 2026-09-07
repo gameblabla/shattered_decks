@@ -39,13 +39,20 @@
 #define SNES_MOVING_W     64
 #define SNES_MOVING_H     40
 
-/* The HUD band is always 2x2, so it is always 128 texels wide and 32 tall.
- * It lives directly under whichever board band is in use, which is why the
- * moving board is capped at row 40. */
+/* The HUD band is always 2x2 and ALWAYS reads framebuffer rows 80..111, in
+ * both board resolutions.
+ *
+ * That fixed row is not a convenience, it is what lets the vertical offset
+ * stay zero for the whole screen.  With D = 4.0 the band's source row is
+ * line/2, so lines 160..223 land on rows 80..111 with M7VOFS = 0; parking the
+ * panel under the moving board instead (rows 40..71) needs a per-band VOFS,
+ * and a VOFS written by HDMA does NOT take effect per band -- the board came
+ * out shifted twenty texel rows down the screen, which is the whole frame
+ * being drawn with the HUD band's offset.  Rows 40..79 simply go unused while
+ * the board is moving: framebuffer space, not time. */
 #define SNES_HUD_W        128
 #define SNES_HUD_H        32
-#define SNES_HUD_ROW      SNES_MOVING_H      /* moving: rows 40..71 */
-#define SNES_HUD_ROW_STILL SNES_STILL_H      /* still:  rows 80..111 */
+#define SNES_HUD_ROW      SNES_STILL_H       /* rows 80..111, always */
 
 enum SnesBoardRes { SNES_RES_MOVING = 0, SNES_RES_STILL = 1 };
 
@@ -60,6 +67,16 @@ enum SnesBoardRes { SNES_RES_MOVING = 0, SNES_RES_STILL = 1 };
 #define SNES_M7_SCALE_MOVING  0x0200
 
 extern u8 snes_fb[];             /* snes_fb.asm, bank $7F */
+
+/* snes_raster.asm -- the span walkers.  Every pixel that reaches the
+ * framebuffer is written by one of these three: C loops over the framebuffer
+ * cost about a hundred CPU cycles a byte on 816-tcc (measured), which is two
+ * orders off what the same loop costs in hand-written 65816. */
+void snesSpanFloor(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
+                   u16 u_step);
+void snesSpanHorizon(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
+                     u16 u_step);
+void snesSpanFill(u16 fb_index, u16 count, u8 colour);
 
 /* snes_fb.asm */
 void snesFbPresentRows(u16 first_row, u16 rows, u16 width);
@@ -76,6 +93,9 @@ u8   snesVideoBoardRes(void);
 u8   snesVideoPresent(void);
 void snesVideoPresentRestart(void);     /* a new frame is ready: start again at the top */
 void snesVideoPresentHud(void);         /* the HUD band only, one vblank */
+/* Ask for one HUD-band upload.  The band is static between the events that
+ * change it, so it does not ride along with every board frame. */
+void snesVideoHudDirty(void);
 void snesVideoClear(u8 colour);
 
 /* Direct colour is BBGGGRRR: blue only has two bits.  Everything the Mode 7

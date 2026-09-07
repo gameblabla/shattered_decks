@@ -142,6 +142,15 @@ adaptive-internal-resolution trick the FM TOWNS, MSX2 and Atari ST ports all
 use — except here **the doubling is free**, done by the PPU rather than by a
 pixel-doubling copy.  Rendering a moving board costs a quarter of the pixels.
 
+The switch is per *band*, not per frame: two HDMA channels rewrite `M7A` and
+`M7D` at line 160 so the board can be at 4x4 while the HUD strip under it stays
+at 2x2.  **`M7VOFS` is not one of them.**  A vertical offset written by HDMA
+does not take effect band by band — writing the HUD band's offset shifted the
+whole frame, and the board came out twenty texel rows down the screen — so the
+HUD strip instead reads framebuffer rows 80..111 in *both* resolutions, which
+is where `D = 4.0` maps lines 160..223 with no offset at all.  Rows 40..79 go
+unused while the board is moving; that is framebuffer space, not time.
+
 **Upload budget.**  NTSC vblank is 38 lines ≈ 51,800 master cycles ≈ 6.4 KB of
 DMA.  So:
 
@@ -267,7 +276,7 @@ loop:
     inx
 ```
 
-~26 CPU cycles a texel.  Textures live **uncompressed and 256-byte aligned in
+~36 CPU cycles a texel, measured (section 4.4).  Textures live **uncompressed and 256-byte aligned in
 ROM** precisely so this loop can index a row with an 8-bit `Y` and read at
 FastROM speed; WRAM would be 8 cycles per access instead of 6.  The loop is
 unrolled 8x with the increments in direct page.
@@ -287,30 +296,46 @@ occur anyway.
 Painter's order, no z-buffer: floor, far support row, far monster row, near
 monster row, near support row, then any animating card.
 
-### 4.4 Frame budget
+### 4.4 Frame budget — **measured at M2**
 
-Framebuffer stores are the floor: WRAM is 8 master cycles per access on every
-SNES, so ~26 CPU cycles/texel ≈ 170 master cycles.  One 60 Hz frame is 357,954
-master cycles.
+The estimates this section used to carry have been replaced by measurements off
+the frame stamp (`render_lines` in `src/snes/snes_duel.c`, taken from the V
+counter plus the vblank count, read out of `wram.bin` by `tools/snes/verify.py`
+and printed by its `render cost` check).  One NTSC field is 262 scanlines.
 
-| mode | texels | overdraw | master cycles | frames | fps |
-|---|---|---|---|---|---|
-| moving 64x40 | 2560 | 1.6x | ~700 k | 2 | **~28** |
-| still 128x80 | 10240 | 1.6x | ~2.8 M | 8 | **~7** |
+| mode | viewport | render | fields | fps |
+|---|---|---|---|---|
+| moving | 64 x 40 | 851 lines | 3.2 | **18.5** |
+| still | 128 x 80 | 2488 lines | 9.5 | 6.3 |
 
-Plus DMA (14 KB still = 115 k cycles), sprite/OAM work, rules and AI.  The still
-frame is produced once when the board settles, so its cost is paid once, not
-every frame; interaction always happens in the moving mode.  These numbers are
-*estimates to be replaced by measurement at milestone M2* — the whole point of
-doing the floor mapper first is to get a real number before the rest is built on
-it.
+Attributed by ablation — the same run with the three span calls compiled out,
+which leaves only the per-row C setup:
 
-Levers held in reserve, in the order they would be spent: shrink the 3D viewport
-height; skip floor texels that a card will overwrite; a 32x32 (not 64x64) floor
-texture so the row pointer never crosses a bank; unrolling the span walker
-further; dropping the still mode to 128x64.
+| | still | moving |
+|---|---|---|
+| per-row setup (C) | 626 lines, 25% | 334 lines, 39% |
+| span walking (asm) | 1862 lines, 75% | 517 lines, 61% |
 
----
+That works out at **~250 master cycles a texel** in the span walker, against
+the 170 this section originally guessed: the estimate counted the load and the
+store and forgot the `clc`/`adc`/`txa`/`tax`/`iny`/`cpy`/`bne` around them, and
+the walk is about 36 CPU cycles a texel, not 26.
+
+The second number is the surprise, and it sets the order of the M8 levers.
+**816-tcc's code is roughly a hundred CPU cycles per framebuffer byte** — a
+measured 12.3 million master cycles for a 16384-byte `for` loop of `fb[i] = c`,
+which is why `snesVideoClear` now calls the span filler instead (593 lines, a
+15x difference for the same 16 KB).  The same cost shows up as the per-row
+geometry, and at 40 rows it is nearly two fifths of a moving frame.  So the
+levers, in order:
+
+1. move the per-row setup into `snes_raster.asm` — up to 39% of a moving frame;
+2. unroll the span walker and hoist its loop control (~17% of the walk);
+3. then, and only then, the geometric levers this section already listed:
+   a shorter 3D viewport, skipping floor texels a card will cover, a 32x32
+   floor texture, dropping the still mode to 128x64.
+
+None of that is M2 work: what M2 owes is the number, and the number is above.
 
 ## 5. Memory map
 

@@ -23,11 +23,15 @@
  * 160-line board band needs two entries. */
 static u8 hdma_a[10];
 static u8 hdma_d[10];
-static u8 hdma_vofs[10];
 
 static u8 board_res = SNES_RES_STILL;
 static u8 present_row;          /* next framebuffer row to upload */
 static u8 present_done;
+/* The HUD band is uploaded ON REQUEST, not with every board frame.  It is
+ * static between the events that change it, and at 4096 bytes it is two
+ * thirds of a vblank's DMA budget -- paying that on every frame of a moving
+ * board is what left the band showing the previous resolution's picture. */
+static u8 hud_pending;
 
 /* Rows per vblank for the still upload.  NTSC vblank is 38 lines, about
  * 51,800 master cycles, and a DMA moves roughly one byte per 8; 38 rows of 128
@@ -44,23 +48,18 @@ static void hdma_entry(u8 *t, u16 lines, u16 value)
 
 /* Build the two-band table for the current resolution.
  *
- * Board band, lines 0..159: scale S (0.5 still, 0.25 moving), source row 0 at
- * screen line 0, so VOFS = 0.
- * HUD band, lines 160..223: always 0.5, and it must start at the first
- * framebuffer row the board does not use.  y = 0.5 * (line + VOFS) = row, so
- * VOFS = 2*row - 160. */
+ * Board band, lines 0..159: scale S (4.0 still, 2.0 moving), source row 0 at
+ * screen line 0.
+ * HUD band, lines 160..223: always 4.0, which maps those lines onto rows
+ * 80..111 on its own.  M7VOFS stays zero for the whole screen -- see
+ * SNES_HUD_ROW: a per-band VOFS written by HDMA applies to the entire frame,
+ * not to its band, and shifts the board off the top of the screen. */
 static void build_hdma(void)
 {
-    u16 scale, vofs, hud_row;
+    u16 scale;
 
-    if (board_res == SNES_RES_STILL) {
-        scale = SNES_M7_SCALE_STILL;
-        hud_row = SNES_HUD_ROW_STILL;
-    } else {
-        scale = SNES_M7_SCALE_MOVING;
-        hud_row = SNES_HUD_ROW;
-    }
-    vofs = (u16)((hud_row << 1) - SNES_BOARD_LINES);
+    scale = (board_res == SNES_RES_STILL) ? SNES_M7_SCALE_STILL
+                                          : SNES_M7_SCALE_MOVING;
 
     /* The board band is 160 lines and an HDMA line count tops out at 127. */
     hdma_entry(&hdma_a[0], 127, scale);
@@ -73,10 +72,6 @@ static void build_hdma(void)
     hdma_entry(&hdma_d[6], SNES_HUD_LINES, SNES_M7_SCALE_STILL);
     hdma_d[9] = 0;
 
-    hdma_entry(&hdma_vofs[0], 127, 0);
-    hdma_entry(&hdma_vofs[3], SNES_BOARD_LINES - 127, 0);
-    hdma_entry(&hdma_vofs[6], SNES_HUD_LINES, vofs);
-    hdma_vofs[9] = 0;
 }
 
 static void arm_hdma(void)
@@ -85,8 +80,8 @@ static void arm_hdma(void)
 
     REG_HDMAEN = 0;
 
-    /* Channel 5: M7A ($211B).  Channel 6: M7D ($211E).  Channel 7: M7VOFS
-     * ($210E).  All three are write-twice registers, hence transfer mode 2. */
+    /* Channel 5: M7A ($211B).  Channel 6: M7D ($211E).  Both are write-twice
+     * registers, hence transfer mode 2. */
     *(vuint8 *)0x4350 = 0x02;  *(vuint8 *)0x4351 = 0x1B;
     *(vuint16 *)0x4352 = (u16)(u16)&hdma_a[0];
     *(vuint8 *)0x4354 = 0x7E;
@@ -95,11 +90,7 @@ static void arm_hdma(void)
     *(vuint16 *)0x4362 = (u16)(u16)&hdma_d[0];
     *(vuint8 *)0x4364 = 0x7E;
 
-    *(vuint8 *)0x4370 = 0x02;  *(vuint8 *)0x4371 = 0x0E;
-    *(vuint16 *)0x4372 = (u16)(u16)&hdma_vofs[0];
-    *(vuint8 *)0x4374 = 0x7E;
-
-    REG_HDMAEN = 0xE0;         /* channels 5, 6, 7 */
+    REG_HDMAEN = 0x60;         /* channels 5 and 6 */
 }
 
 void snesVideoInitDuel(void)
@@ -158,6 +149,11 @@ void snesVideoPresentRestart(void)
     present_done = 0;
 }
 
+void snesVideoHudDirty(void)
+{
+    hud_pending = 1;
+}
+
 /* One vblank's worth of upload.  Returns non-zero once the whole frame is on
  * screen.
  *
@@ -170,26 +166,27 @@ u8 snesVideoPresent(void)
 {
     u16 rows, width, total;
 
-    if (present_done) return 1;
+    if (present_done) {
+        /* The board is up; a requested HUD refresh gets the next vblank to
+         * itself rather than sharing one with 2560 bytes of board. */
+        if (hud_pending) {
+            snesVideoPresentHud();
+            hud_pending = 0;
+        }
+        return 1;
+    }
 
     if (board_res == SNES_RES_STILL) {
-        /* Board rows 0..79 and HUD rows 80..111 are contiguous and full
-         * stride, so the whole 14336-byte frame is three block DMAs. */
-        total = SNES_STILL_H + SNES_HUD_H;
+        /* Board rows 0..79, full stride: 10240 bytes over three vblanks. */
+        total = SNES_STILL_H;
         width = SNES_FB_STRIDE;
         rows = STILL_ROWS_PER_VBL;
-    } else if (present_row < SNES_MOVING_H) {
+    } else {
         /* The moving board is 64 texels inside a 128 stride, so it is a
-         * windowed upload: 40 short rows, 2560 bytes.  The HUD band under it
-         * is full stride and 4096 bytes; the two together are past one
-         * vblank's budget, so the HUD goes up on the next one. */
+         * windowed upload: 40 short rows, 2560 bytes, one vblank. */
         total = SNES_MOVING_H;
         width = SNES_MOVING_W;
         rows = SNES_MOVING_H;
-    } else {
-        snesVideoPresentHud();
-        present_done = 1;
-        return 1;
     }
 
     if (present_row + rows > total) rows = (u8)(total - present_row);
@@ -197,8 +194,8 @@ u8 snesVideoPresent(void)
     present_row += (u8)rows;
 
     if (present_row >= total) {
-        if (board_res == SNES_RES_STILL) { present_done = 1; return 1; }
-        return 0;                    /* one more pass for the HUD band */
+        present_done = 1;
+        return hud_pending ? 0 : 1;  /* one more pass if the HUD changed */
     }
     return 0;
 }
@@ -210,6 +207,8 @@ void snesVideoPresentHud(void)
 
 void snesVideoClear(u8 colour)
 {
-    u16 i;
-    for (i = 0; i < SNES_FB_STRIDE * SNES_FB_ROWS; ++i) snes_fb[i] = colour;
+    /* One span, not a C loop: the same 16384 bytes cost 12.3 million master
+     * cycles through 816-tcc's indexed store (measured, 9056 scanlines) and
+     * about a hundred thousand through the span filler's 16-bit stores. */
+    snesSpanFill(0, SNES_FB_STRIDE * SNES_FB_ROWS, colour);
 }
