@@ -24,6 +24,54 @@
 static u8 hdma_a[10];
 static u8 hdma_d[10];
 
+/* ── The HUD plate ───────────────────────────────────────────────────────── */
+
+/* THE BLUE PLATE UNDER THE TEXT ROWS IS THE BACKDROP, TINTED PER SCANLINE.
+ *
+ * It used to be painted into the bitmap, and the bitmap is the one surface on
+ * this screen that cannot hold a gradient: direct colour is BBGGGRRR, so blue
+ * has FOUR levels and the band samples 2x2, so a "ramp" was three blues over
+ * thirteen fat two-line steps.  It banded visibly.
+ *
+ * So the plate is not drawn at all any more.  The bitmap's HUD rows are left
+ * transparent, which shows CGRAM 0 -- and colour math adds the FIXED COLOUR to
+ * the backdrop, at five bits a channel, from a register HDMA rewrites every
+ * scanline.  That is one line per line and 32768 colours to choose from
+ * instead of two-line steps out of a 256-entry cube, for a 63-byte table and a
+ * third HDMA channel.  Nothing is drawn, so it also gives the band's thirteen
+ * span fills back.
+ *
+ * $2132 is COLDATA, written as %BGRiiiii: the top three bits say WHICH
+ * channels take the five-bit intensity, so a colour needs two writes and the
+ * channel is transfer mode 2 (two bytes into one write-twice register), the
+ * same shape as the two matrix channels.  Red and green are set TOGETHER by
+ * the first byte -- they are equal all the way down the plate, which is what
+ * makes it a blue that pales rather than a blue that turns cyan -- and blue by
+ * the second.
+ *
+ * The text on the plate is sprites and colour math is enabled for the backdrop
+ * ONLY ($2131 = $20), so the words, the icons and the hand above them are
+ * untouched by it; and outside the plate's lines the fixed colour is black, so
+ * adding it to the backdrop is what the rest of the screen already was. */
+#define GRAD_LINES   26                 /* screen lines 197..222 */
+#define GRAD_LEAD    197                /* black above it */
+#define GRAD_TAIL    8                  /* black under it, line 223 included */
+#define COL_BLACK    0xE0               /* R, G and B all to intensity zero */
+#define COL_RG       0x60               /* this byte sets red and green */
+#define COL_B        0x80               /* this byte sets blue */
+
+/* The rule along the top edge, then the ramp under it.  The rule is a separate
+ * colour and not the ramp's first step because an edge is what makes the plate
+ * read as a panel rather than as a fog the words are sinking into. */
+#define GRAD_RULE_RG   13
+#define GRAD_RULE_B    31
+#define GRAD_TOP_RG    7
+#define GRAD_TOP_B     27
+#define GRAD_BOT_B     9
+
+/* 3 + 3 for the lead, 1 + 2*26 for the ramp, 3 for the tail, 1 terminator. */
+static u8 hdma_col[63];
+
 static u8 board_res = SNES_RES_STILL;
 static u8 view = SNES_VIEW_BOARD;
 static u8 view_pending = SNES_VIEW_BOARD;
@@ -46,6 +94,43 @@ static u8 hud_pending = 0;
  * are simply not written: a black board under a framebuffer that is perfectly
  * correct in WRAM, which reads as a renderer bug and is not one. */
 #define STILL_ROWS_PER_VBL  24
+
+/* Fill the plate's table once.  The ramp is walked in 8.8 rather than divided
+ * per line: 816-tcc has no divide worth spending here, and both steps happen
+ * to be exact enough that the ends land on the values above. */
+static void build_gradient(void)
+{
+    u16 rg = (u16)GRAD_TOP_RG << 8;
+    u16 b  = (u16)GRAD_TOP_B << 8;
+    /* Over the twenty-four intervals between the ramp's twenty-five lines. */
+    const u16 rg_step = (u16)(((u16)GRAD_TOP_RG << 8) / (GRAD_LINES - 2));
+    const u16 b_step  = (u16)((((u16)(GRAD_TOP_B - GRAD_BOT_B)) << 8)
+                              / (GRAD_LINES - 2));
+    u8 *t = hdma_col;
+    u8 i;
+
+    /* Lines 0..196: black.  A line count tops out at 127. */
+    *t++ = 127;         *t++ = COL_BLACK; *t++ = COL_BLACK;
+    *t++ = GRAD_LEAD - 127; *t++ = COL_BLACK; *t++ = COL_BLACK;
+
+    /* Lines 197..222, a line at a time: the repeat flag says the entry carries
+     * its own data for each of the lines it counts. */
+    *t++ = (u8)(0x80 | GRAD_LINES);
+    *t++ = (u8)(COL_RG | GRAD_RULE_RG);
+    *t++ = (u8)(COL_B  | GRAD_RULE_B);
+    for (i = 1; i < GRAD_LINES; ++i) {
+        *t++ = (u8)(COL_RG | (rg >> 8));
+        *t++ = (u8)(COL_B  | (b >> 8));
+        rg = (rg > rg_step) ? (u16)(rg - rg_step) : 0;
+        b -= b_step;
+    }
+
+    /* Line 223 and the lines past the visible screen.  Without this the
+     * register simply keeps the ramp's last colour, and the bottom line of the
+     * screen -- which the band's rows cannot reach -- comes out dark blue. */
+    *t++ = GRAD_TAIL;   *t++ = COL_BLACK; *t++ = COL_BLACK;
+    *t   = 0;
+}
 
 static void hdma_entry(u8 *t, u16 lines, u16 value)
 {
@@ -98,7 +183,13 @@ static void arm_hdma(void)
     *(vuint16 *)0x4362 = (u16)(u16)&hdma_d[0];
     *(vuint8 *)0x4364 = 0x7E;
 
-    REG_HDMAEN = 0x60;         /* channels 5 and 6 */
+    /* Channel 4: COLDATA ($2132), also write-twice, also mode 2. */
+    build_gradient();
+    *(vuint8 *)0x4340 = 0x02;  *(vuint8 *)0x4341 = 0x32;
+    *(vuint16 *)0x4342 = (u16)(u16)&hdma_col[0];
+    *(vuint8 *)0x4344 = 0x7E;
+
+    REG_HDMAEN = 0x70;         /* channels 4, 5 and 6 */
 }
 
 void snesVideoInitDuel(void)
@@ -140,7 +231,10 @@ void snesVideoInitDuel(void)
     /* Direct colour: the 8-bit texel IS the colour, BBGGGRRR, and CGRAM is
      * left entirely to the sprites. */
     REG_CGWSEL = CM_DIRCOLOR;
-    REG_CGADSUB = 0x00;
+    /* Colour math on the BACKDROP alone, adding the fixed colour: that is the
+     * whole of the HUD plate.  Neither half-intensity nor subtract; the
+     * backdrop is black, so the fixed colour arrives unmodified. */
+    REG_CGADSUB = 0x20;
 
     arm_hdma();
     snesVideoClear(0);
@@ -175,7 +269,7 @@ static void apply_view(void)
     } else {
         REG_BGMODE = BG_MODE7;
         REG_CGWSEL = CM_DIRCOLOR;
-        REG_HDMAEN = 0x60;
+        REG_HDMAEN = 0x70;
     }
     view = view_pending;
 }

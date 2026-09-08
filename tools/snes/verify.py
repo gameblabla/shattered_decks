@@ -872,11 +872,12 @@ HAND_Y, HAND_X0, HAND_PITCH = 162, 8, 48
 NAME_Y, STAT_Y, STAT_ATK_X, STAT_DEF_X, STAT_NUM_DX = 199, 209, 8, 72, 16
 TOP_CELL, TOP_X0, TOP_Y0 = 48, 8, 16
 TOP_MSG_Y, TOP_STAT_X, TOP_STAT_GAP = 213, 120, 72
-# The plate under the two text rows, from snes_duel.c's band_ramp: the bitmap's
-# HUD band samples 2x2, so its thirteen rows are screen lines 197..222 and the
-# gradient runs bright at the top to near-black at the bottom.  Line 223 is not
-# in it -- the band owns framebuffer rows 80..111 and nothing past 111 is ever
-# uploaded -- so the last line of the screen is black by construction.
+# The plate under the two text rows, from snes_m7fb.c's gradient table.  It is
+# not in the bitmap at all: the bitmap's HUD rows are transparent and the plate
+# is the backdrop with a fixed colour added to it, HDMA'd into $2132 a scanline
+# at a time.  So it is twenty-six SINGLE lines, 197..222, out of the full
+# fifteen-bit colour space -- line 197 a bright rule, then a smooth ramp -- and
+# both the line above it and line 223 are black because the table says so.
 BAND_TOP, BAND_BOTTOM = 197, 222
 SPR_CARDS_HI = os.path.join(ROOT, "src", "snes", "assets",
                             "snes_spr_cards_hi.bin")
@@ -1125,12 +1126,11 @@ def check_hud_text():
             raise Failure("the stat row shows icons %r and reads %r while the "
                           "UI is in HAND" % (icons, stat))
 
-    # The plate the two rows sit on: a blue gradient painted into the bitmap's
-    # HUD band once.  It is checked as a RAMP and not as "there is blue there" --
-    # every line at least as blue as the one below it, the top brighter than the
-    # bottom, and blue the dominant channel throughout -- because a band drawn
-    # with the ramp upside down or with the rows in the wrong place still passes
-    # any check that only counts colours.
+    # The plate the two rows sit on.  It is checked as a RAMP and not as "there
+    # is blue there" -- every line at least as blue as the one below it, the top
+    # brighter than the bottom, and blue the dominant channel throughout --
+    # because a plate with the ramp upside down or in the wrong place still
+    # passes any check that only counts colours.
     lines = [screen5(px, w, w - 3, y) for y in range(BAND_TOP, BAND_BOTTOM + 1)]
     for y, (r, g, b) in zip(range(BAND_TOP, BAND_BOTTOM + 1), lines):
         if b <= r or b <= g:
@@ -1147,9 +1147,33 @@ def check_hud_text():
     if screen5(px, w, w - 3, BAND_TOP - 1) != (0, 0, 0):
         raise Failure("line %d, above the plate, is not black -- the gradient "
                       "has grown into the hand" % (BAND_TOP - 1))
-    return "%r / %r, name %r, icons %s, stats %r, plate %s..%s" % (
+    if screen5(px, w, w - 3, 223) != (0, 0, 0):
+        raise Failure("line 223, under the plate, is not black -- the HDMA "
+                      "table stops before the last line and the register keeps "
+                      "the ramp's final colour")
+
+    # AND IT IS SMOOTH, which is the only thing that separates the backdrop
+    # gradient from the painted one it replaced.  The bitmap plate could hold
+    # three blues in two-line steps; a per-scanline fixed colour holds
+    # twenty-odd in single lines.  Both of these fail on a plate that has gone
+    # back into the bitmap even though it is still a correct ramp: the step
+    # bound catches the four-level blue axis, the level count catches the
+    # 2x2 sampling that doubles every step.
+    ramp = lines[1:]
+    steps = [ramp[i - 1][2] - ramp[i][2] for i in range(1, len(ramp))]
+    if max(steps) > 2:
+        raise Failure("the HUD plate steps %d levels of blue in one line -- "
+                      "that is a banded gradient, not a smooth one" % max(steps))
+    levels = len(set(b for _, _, b in ramp))
+    if levels < 16:
+        raise Failure("the HUD plate's ramp shows %d distinct blues over %d "
+                      "lines -- it is quantised, not smooth"
+                      % (levels, len(ramp)))
+    return "%r / %r, name %r, icons %s, stats %r, plate %s..%s, %d blues, "\
+           "max step %d" % (
         "YOU %d" % stamp["lp_player"], "COM %d" % stamp["lp_com"], name,
-        "/".join(str(i) for i in icons), stat, lines[0], lines[-1])
+        "/".join(str(i) for i in icons), stat, lines[0], lines[-1],
+        levels, max(steps))
 
 
 def check_hand_is_per_face():

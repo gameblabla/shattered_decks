@@ -98,7 +98,7 @@
 #define HAND_PITCH   48                 /* five 32-pixel cards across 256 */
 #define HAND_X0      8
 /* The name and the stats sit ONE PIXEL LOWER than the plate they are on, which
- * is what stops the ascenders touching the gradient's top highlight. */
+ * is what stops the ascenders touching the gradient's top rule at line 197. */
 #define NAME_Y       199
 #define STAT_Y       209
 #define STAT_ATK_X   8
@@ -343,53 +343,16 @@ static void render(void)
 
 /* ── The HUD band ────────────────────────────────────────────────────────── */
 
-/* THE BAND'S TEXT ROWS SIT ON A BLUE PLATE AND THE REST OF IT STAYS BLACK.
+/* THE BAND IS BLACK BITMAP AND NOTHING ELSE.
  *
- * The hand is card art and wants black around it; the two rows of words under
- * it are white letters on black, which over a black surround is a caption
- * floating in nothing.  A gradient behind them is the cheapest thing that makes
- * them read as a panel, and it costs one span a row, once, because the bitmap's
- * HUD band is uploaded only when it is dirtied.
+ * The hand and the two rows of words under it are sprites, and the blue plate
+ * they sit on is the backdrop tinted per scanline by an HDMA channel -- see
+ * snes_m7fb.c.  So nothing is painted into the bitmap's HUD rows at all: they
+ * are left transparent, which is exactly what lets the plate under them be a
+ * five-bit-a-channel gradient instead of the four blues direct colour has.
  *
- * The arithmetic is the band's, from snes_video.h: the band always samples at
- * 2x2 out of framebuffer rows 80..111, so a row is two screen lines and rows
- * 99..111 are lines 197..222.  Line 223 CANNOT be reached and painting row 112
- * does not reach it either -- the band is thirty-two rows and the presenter
- * uploads exactly those, so a row past 111 sits in WRAM and never goes to
- * VRAM.  The last line of the screen stays black; it is inside every set's
- * overscan and is not worth a taller band to own.
- *
- * Direct colour has THREE bits of red and green and only TWO of blue, so a blue
- * ramp cannot be made out of blue: the darkening happens in the other two
- * channels while blue holds near its top, which is also why the first row is
- * lighter than the second -- a highlight rule along the top edge is a step the
- * cube can afford where a smooth fade at the top is not. */
-#define BAND_Y0      99
-#define BAND_ROWS    13
-
-static const u8 band_ramp[BAND_ROWS] = {
-    SNES_DC(2, 4, 3),   /* the top rule, a shade brighter than the plate */
-    SNES_DC(1, 3, 3),
-    SNES_DC(1, 3, 3),
-    SNES_DC(1, 2, 3),
-    SNES_DC(1, 2, 3),
-    SNES_DC(0, 2, 3),
-    SNES_DC(0, 2, 2),
-    SNES_DC(0, 1, 2),
-    SNES_DC(0, 1, 2),
-    SNES_DC(0, 1, 2),
-    SNES_DC(0, 0, 2),
-    SNES_DC(0, 0, 1),
-    SNES_DC(0, 0, 1),
-};
-
-static void paint_hud_band(void)
-{
-    u8 r;
-    for (r = 0; r < BAND_ROWS; ++r)
-        snesSpanFill((u16)((u16)(BAND_Y0 + r) * SNES_FB_STRIDE),
-                     SNES_HUD_W, band_ramp[r]);
-}
+ * The band is still UPLOADED, once, because transparent means the bitmap has
+ * to actually hold zeroes in VRAM and the clear only puts them in WRAM. */
 
 static const char *prompt_text(void)
 {
@@ -804,10 +767,9 @@ void snesDuelEnter(void)
     snesVideoSetBoardRes(SNES_RES_STILL);
     set_viewport();
     snesVideoClear(BACKDROP);
-    /* Nothing draws into the bitmap's HUD band per frame any more -- the HUD is
-     * sprites -- so the plate under the two text rows is painted and the band
-     * uploaded exactly once, here. */
-    paint_hud_band();
+    /* Nothing draws into the bitmap's HUD band at all -- the HUD is sprites
+     * and the plate under them is the HDMA'd backdrop -- so the band goes up
+     * as zeroes exactly once, here. */
     snesVideoHudDirty();
     build_objects();
     render();
@@ -830,8 +792,7 @@ void snesDuelFrame(void)
     if (down & KEY_Y) {
         force_moving ^= 1;
         snesVideoClear(BACKDROP);
-        paint_hud_band();
-    snesVideoHudDirty();
+        snesVideoHudDirty();
         touch_board(2);
     }
 
