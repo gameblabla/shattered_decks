@@ -138,10 +138,10 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
     const s16 d_near = SNES_BOARD_Z_NEAR - cam->z;
     const s16 d_far  = SNES_BOARD_Z_FAR  - cam->z;
     const u8  half_w = vp->w >> 1;
-    /* du = depth * texels_per_unit / focal, and both are powers of two chosen
-     * so the ratio is a shift: 32 texels a unit over a focal length of half
-     * the viewport width. */
-    const u8  du_shift = (vp->w >= 128) ? 1 : 0;
+    /* du = depth * texels_per_unit / focal, and the ratio is the viewport's
+     * own du_k -- one multiply a scanline, because the bend's focal length is
+     * not a power of two.  See SnesViewport. */
+    const u16 du_k = vp->du_k;
 
     /* BOTH SLAB EDGES ARE LINEAR IN THE ROW INDEX, and that is the whole
      * reason the board's bounds are free.  The projected x of a fixed world x
@@ -220,7 +220,7 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
             }
             continue;
         }
-        du = depth >> du_shift;
+        du = (u16)snesQMul((s16)depth, (s16)du_k);
 
         x0 = (s16)half_w + (acc_l >> 8);
         x1 = (s16)half_w + (acc_r >> 8);
@@ -310,7 +310,10 @@ void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
     const u16 hf = (u16)snesQMul(cam->height, cam->focal);
     const u8  half_w = vp->w >> 1;
     const s16 edge_limit = (s16)((u16)half_w << 8);
-    const u8  du_shift = (vp->w >= 128) ? 1 : 0;
+    /* Two thirds of the floor's rate across the card, because sixteen texels
+     * cover three quarters of a unit there against the floor's thirty-two over
+     * a whole one.  Taken once for the row, not once a scanline. */
+    const s16 du_k = (s16)snesQMul((s16)vp->du_k, SNES_CARD_U_NUM);
     s16 cx, cz, d_near, d_far;
     s16 step_l, step_r, step_pitch, acc_l, acc_r, acc_pitch;
     u16 r_top, r_bot, rows_below, row_base;
@@ -324,8 +327,8 @@ void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
     /* The CENTRE column, because that is the card the row's edge accumulators
      * describe and the one the column walk starts from. */
     snesSlotCentre(row, SNES_COLS / 2, &cx, &cz);
-    d_far  = (s16)(cz + SNES_CARD_HALF - cam->z);
-    d_near = (s16)(cz - SNES_CARD_HALF - cam->z);
+    d_far  = (s16)(cz + SNES_CARD_HALF_Z - cam->z);
+    d_near = (s16)(cz - SNES_CARD_HALF_Z - cam->z);
     if (d_near < 32) return;                     /* at or behind the near plane */
 
     /* The rows this board row covers are the plane equation solved the other
@@ -356,8 +359,8 @@ void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
      * stops at the first column past the viewport, which is also what keeps
      * the running total inside a signed word.
      */
-    step_l = edge_step((s16)(cx - SNES_CARD_HALF - cam->x), cam->focal, hf);
-    step_r = edge_step((s16)(cx + SNES_CARD_HALF - cam->x), cam->focal, hf);
+    step_l = edge_step((s16)(cx - SNES_CARD_HALF_X - cam->x), cam->focal, hf);
+    step_r = edge_step((s16)(cx + SNES_CARD_HALF_X - cam->x), cam->focal, hf);
     step_pitch = edge_step((s16)256, cam->focal, hf);
     acc_l = edge_seed(step_l, r_top, &l_off, edge_limit);
     acc_r = edge_seed(step_r, r_top, &r_off, edge_limit);
@@ -393,12 +396,12 @@ void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
          * stops that disagreement sampling past the card. */
         if ((s16)depth > d_far || (s16)depth < d_near) continue;
 
-        /* Twenty texels a world unit against the floor's thirty-two: 5/8 of
-         * the floor's own step, as two shifts and an add. */
-        du = depth >> du_shift;
-        du = (u16)((du >> 1) + (du >> 3));
+        /* Across: two thirds of the floor's rate, folded into du_k above.
+         * Down: the card is exactly one unit deep and sixteen texels tall, so
+         * v is the depth into the card shifted four, with nothing to scale. */
+        du = (u16)snesQMul((s16)depth, du_k);
         v = (u16)(d_far - (s16)depth);
-        v = (u16)(((u16)v << 4) + ((u16)v << 2));
+        v = (u16)((u16)v << 4);
         if (v > 0x0FFF) v = 0x0FFF;
         tex_v = (u16)((v >> 4) & 0x00F0);
 
@@ -510,8 +513,8 @@ u8 snesCardQuad(const SnesCamera *cam, const SnesViewport *vp,
          * towards the player and is a genuine convex quad on screen rather
          * than a trapezoid -- which is the case the two edge chains exist for
          * and the one a trapezoid walk gets wrong. */
-        if (!snesProjectQ(cam, vp, (s16)(cx + sx[i] * SNES_CARD_HALF),
-                          (s16)(cz + sz[i] * SNES_CARD_HALF),
+        if (!snesProjectQ(cam, vp, (s16)(cx + sx[i] * SNES_CARD_HALF_X),
+                          (s16)(cz + sz[i] * SNES_CARD_HALF_Z),
                           (s16)(lift + ((sz[i] > 0) ? tilt : 0)), &ox, &oy))
             return 0;
         quad[i].x = ox;

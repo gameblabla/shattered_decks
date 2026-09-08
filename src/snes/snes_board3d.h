@@ -52,6 +52,17 @@ typedef struct SnesViewport {
     u16 origin;      /* byte offset into snes_fb of pixel (0,0) */
     u8  w, h;
     u8  stride;
+    /* TEXELS PER PIXEL PER UNIT OF DEPTH, Q8.8 -- the floor's texture step
+     * divided by the depth it was taken at, which is 32/focal and therefore a
+     * property of the camera rather than of the row.
+     *
+     * It used to be a shift, because the two resting resolutions pick a focal
+     * length of half their own width and 32/(w/2) is a power of two.  The bend
+     * cannot: flattening the board is a DOLLY -- the camera walks back and
+     * lengthens the lens together -- so its focal length passes through every
+     * value in between, and a shift cannot express those.  One multiply a
+     * scanline buys the whole camera move; nothing per pixel changes. */
+    u16 du_k;
 } SnesViewport;
 
 void snesCameraSet(SnesCamera *cam, s16 x, s16 z, s16 height, s16 focal,
@@ -80,15 +91,22 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop);
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 
-/* A CARD IS FOUR FIFTHS OF A BOARD TILE, and the fraction is arithmetic rather
- * than taste.  The face is sixteen texels, so four fifths of a one-unit tile
- * puts twenty texels on a world unit against the floor's thirty-two, and
- * 20/32 is 5/8: the card's texture step is the floor's own step shifted twice
- * and added, with no multiply and no divide in the row at all.  A card that
- * covered its whole tile would need neither either, but then every slot
- * touches its neighbour and the board reads as a carpet of cards rather than
- * as a board with cards on it. */
-#define SNES_CARD_HALF   ((s16)102)      /* 0.4 world units, Q8.8 */
+/* A CARD IS A CARD SHAPE, NOT A TILE.  It is as DEEP as the slot it lies in
+ * and three quarters as WIDE, which from the duel camera reads as the 3:4
+ * portrait every other port paints -- the square 0.8x0.8 this used to be made
+ * the board a carpet of tiles with pictures in them.  Front to back the card
+ * meets its neighbours, and that is what the rows are drawn far to near for;
+ * across, the quarter unit left over is the groove the slot's own texture
+ * shows through, so five cards on a row are still five things.
+ *
+ * The face is sixteen texels either way, so the two extents also set the two
+ * texture rates: 16 texels over one unit down the card, and 16 over three
+ * quarters of a unit across it -- 21 1/3 to the unit against the floor's
+ * thirty-two, which is two thirds of the floor's own step. */
+#define SNES_CARD_HALF_X ((s16)96)       /* 0.375 world units: 3/4 of a tile */
+#define SNES_CARD_HALF_Z ((s16)128)      /* 0.5: the tile's whole depth */
+/* Two thirds, in Q8.8: the card's texture step as a fraction of the floor's. */
+#define SNES_CARD_U_NUM  ((s16)171)
 
 /* ONE BOARD ROW AT A TIME, not one card at a time.
  *

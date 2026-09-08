@@ -46,6 +46,23 @@
 #define SNES_MOVING_W     64
 #define SNES_MOVING_H     40
 
+/* THE BEND IS A THIRD RESOLUTION AND IT OWNS THE WHOLE SCREEN.
+ *
+ * Walking up into the tactical view is a camera move -- the lens lengthens
+ * while the camera backs off, so the board flattens instead of cutting -- and
+ * it has to arrive on the SAME rectangle Mode 3's table stands on, which runs
+ * from line 16 to line 208.  The board band cannot reach that: it stops at
+ * 159 and the HUD band owns what is under it.  So for the length of the bend
+ * there is no band split at all -- one scale for all 224 lines -- and 32x28
+ * texels at 8x8 screen pixels each is exactly that screen.
+ *
+ * A quarter of the moving frame's pixels is what pays for it: the camera is
+ * moving on every one of these frames and none of them is looked at for more
+ * than a field, which is the same bargain the moving resolution already makes,
+ * taken one step further. */
+#define SNES_BEND_W       32
+#define SNES_BEND_H       28
+
 /* The HUD band is always 2x2 and ALWAYS reads framebuffer rows 80..111, in
  * both board resolutions.
  *
@@ -61,7 +78,7 @@
 #define SNES_HUD_H        32
 #define SNES_HUD_ROW      SNES_STILL_H       /* rows 80..111, always */
 
-enum SnesBoardRes { SNES_RES_MOVING = 0, SNES_RES_STILL = 1 };
+enum SnesBoardRes { SNES_RES_MOVING = 0, SNES_RES_STILL = 1, SNES_RES_BEND = 2 };
 enum SnesView     { SNES_VIEW_BOARD = 0, SNES_VIEW_TOP = 1 };
 
 /* The Mode 7 matrix scale for each band, in the PPU's 8.8 format.
@@ -73,6 +90,7 @@ enum SnesView     { SNES_VIEW_BOARD = 0, SNES_VIEW_TOP = 1 };
  * Both are powers of two, so neither shimmers. */
 #define SNES_M7_SCALE_STILL   0x0400
 #define SNES_M7_SCALE_MOVING  0x0200
+#define SNES_M7_SCALE_BEND    0x0800
 
 extern u8 snes_fb[];             /* snes_fb.asm, bank $7F */
 
