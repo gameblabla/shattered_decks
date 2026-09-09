@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Generate the static Mode 3 panel behind the SNES deck editor.
+
+The editor's words and card faces remain live OBJ data.  This asset only gives
+that UI the same dark framed gallery/panel treatment as the PC-FX and FM TOWNS
+editor, without spending CPU time painting a background every frame.
+"""
+
+import os
+
+from PIL import Image, ImageDraw
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ASSETS = os.path.join(ROOT, "src", "snes", "assets")
+WIDTH, HEIGHT = 256, 224
+
+
+def tile8(indices):
+    out = bytearray()
+    for low_plane in (0, 2, 4, 6):
+        for y in range(8):
+            p0 = p1 = 0
+            for x in range(8):
+                value = (indices[y * 8 + x] >> low_plane) & 3
+                p0 |= (value & 1) << (7 - x)
+                p1 |= ((value >> 1) & 1) << (7 - x)
+            out += bytes((p0, p1))
+    return bytes(out)
+
+
+def snes_colour(rgb):
+    r, g, b = (v >> 3 for v in rgb)
+    return (b << 10) | (g << 5) | r
+
+
+def build_image():
+    # BG2 uses the first 16 entries for its outlined live font, just as the
+    # other Mode 3 scenes do.  Keep the background's palette after that block
+    # so OBJ palettes can still occupy CGRAM 128..255.
+    text_colours = [
+        (0, 0, 0), (255, 255, 255), (0, 0, 0), (255, 224, 136),
+        (196, 56, 48), (112, 192, 255), (255, 160, 96), (176, 224, 176),
+        (64, 48, 40), (255, 240, 192), (88, 64, 48), (208, 208, 208),
+        (144, 112, 80), (224, 128, 88), (112, 144, 176), (255, 255, 255),
+    ]
+    # Index 16 is the outside black/navy field.  The small fixed palette is
+    # deliberately close to the reference editor's purple-black and gold UI.
+    background_colours = [
+        (7, 4, 18),       # outside
+        (16, 9, 32),      # panel
+        (38, 22, 48),     # separator
+        (84, 43, 28),     # header
+        (190, 139, 43),   # gold rule
+        (124, 111, 155),  # pale rule
+        (27, 16, 38),     # gallery recess
+        (10, 6, 22),      # deep panel
+    ]
+    colours = text_colours + background_colours
+    image = Image.new("P", (WIDTH, HEIGHT), 0)
+    image.putpalette([v for colour in colours for v in colour] + [0] * (768 - len(colours) * 3))
+    draw = ImageDraw.Draw(image)
+
+    # The 4-pixel outer frame and the 8-pixel header/panel bands line up with
+    # the authored 256x224 console layout.  OBJ cards sit over the recess.
+    bg = lambda n: 16 + n
+    draw.rectangle((4, 4, 251, 219), fill=bg(1))
+    draw.rectangle((5, 5, 250, 218), outline=bg(5))
+    draw.rectangle((8, 8, 247, 215), fill=bg(7))
+    draw.rectangle((8, 8, 247, 23), fill=bg(3))
+    draw.rectangle((8, 24, 247, 31), fill=bg(2))
+    draw.rectangle((8, 32, 247, 43), fill=bg(6))
+    draw.rectangle((8, 44, 247, 179), fill=bg(6))
+    draw.rectangle((8, 184, 247, 207), fill=bg(1))
+    draw.rectangle((8, 208, 247, 215), fill=bg(2))
+
+    # Fine rules make the six-column gallery read as one editor pane while
+    # leaving each 32x32 card face visually dominant.
+    draw.line((8, 43, 247, 43), fill=bg(4))
+    draw.line((8, 180, 247, 180), fill=bg(4))
+    draw.line((8, 183, 247, 183), fill=bg(5))
+    draw.line((8, 207, 247, 207), fill=bg(5))
+    for x in (13, 53, 93, 133, 173, 213, 245):
+        draw.line((x, 45, x, 178), fill=bg(2))
+    for y in (47, 92, 137, 178):
+        draw.line((10, y, 245, y), fill=bg(2))
+
+    return image, colours
+
+
+def build():
+    os.makedirs(ASSETS, exist_ok=True)
+    image, colours = build_image()
+    pixels = list(image.getdata())
+    tiles = bytearray()
+    tile_ids = {}
+    tilemap = bytearray()
+
+    for ty in range(28):
+        for tx in range(32):
+            block = []
+            for y in range(8):
+                block += pixels[(ty * 8 + y) * WIDTH + tx * 8:
+                                (ty * 8 + y) * WIDTH + tx * 8 + 8]
+            encoded = tile8(block)
+            index = tile_ids.get(encoded)
+            if index is None:
+                index = len(tile_ids)
+                tile_ids[encoded] = index
+                tiles += encoded
+            tilemap += bytes((index & 0xFF, index >> 8))
+    for _ in range(4 * 32):
+        tilemap += bytes((0, 0))
+
+    pal = bytearray()
+    for i in range(256):
+        word = snes_colour(colours[i] if i < len(colours) else (0, 0, 0))
+        pal += bytes((word & 0xFF, word >> 8))
+
+    with open(os.path.join(ASSETS, "snes_deck_tiles.bin"), "wb") as fh:
+        fh.write(tiles)
+    with open(os.path.join(ASSETS, "snes_deck_pal.bin"), "wb") as fh:
+        fh.write(pal)
+    with open(os.path.join(ASSETS, "snes_deck_map.bin"), "wb") as fh:
+        fh.write(tilemap)
+    preview = image.convert("RGB")
+    preview.save(os.path.join(ASSETS, "deck_preview.png"))
+
+    # The source basename is part of Makefile.snes's flat object name.  Keep
+    # this asset object distinct from src/snes/snes_deck.c.
+    with open(os.path.join(ASSETS, "snes_deckassets.asm"), "w") as fh:
+        fh.write("""; Generated by tools/snes/gen_snes_deck.py.
+.include "hdr.asm"
+.BASE $C0
+.SECTION "snes_deckassets" BANK 15 SLOT 0 ORG $0000 FORCE
+snes_deck_tiles:
+    .INCBIN "snes_deck_tiles.bin"
+snes_deck_pal:
+    .INCBIN "snes_deck_pal.bin"
+snes_deck_map:
+    .INCBIN "snes_deck_map.bin"
+.ENDS
+""")
+    with open(os.path.join(ROOT, "src", "snes", "snes_deck_data.h"), "w") as fh:
+        fh.write("""/* Generated by tools/snes/gen_snes_deck.py; do not edit. */
+#ifndef WAIFU_SNES_DECK_DATA_H
+#define WAIFU_SNES_DECK_DATA_H
+
+#include "snes_types.h"
+
+#define SNES_DECK_TILE_BYTES %d
+#define SNES_DECK_PAL_BYTES  512
+#define SNES_DECK_MAP_BYTES  2048
+
+extern const u8 snes_deck_tiles[];
+extern const u8 snes_deck_pal[];
+extern const u8 snes_deck_map[];
+
+#endif /* WAIFU_SNES_DECK_DATA_H */
+""" % len(tiles))
+    print("deck: %d unique tiles, %d bytes" % (len(tile_ids), len(tiles)))
+
+
+if __name__ == "__main__":
+    build()

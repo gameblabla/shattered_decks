@@ -31,4 +31,17 @@ u8   snesSceneCurrent(void);
 u16  snesSceneFrames(void);
 void snesSceneRun(void);
 
+/* Mode 3 scenes.  A frame returns SNES_SCENE_COUNT when it stays put; the
+ * main loop applies another scene at the next VBlank when it returns a state. */
+void snesTitleInit(void);
+u8   snesTitleFrame(void);
+void snesStoryInit(void);
+u8   snesStoryFrame(void);
+void snesEndingInit(void);
+u8   snesEndingFrame(void);
+void snesSceneVblank(void);
+void snesDeckInit(void);
+u8   snesDeckFrame(void);
+void snesDeckVblank(void);
+
 #endif /* WAIFU_SNES_SCENE_H */

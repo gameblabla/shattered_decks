@@ -14,8 +14,30 @@ void snesStampInit(void)
 void snesStampCommit(void)
 {
     u16 sum = 0;
-    u16 i;
-    const u16 *w = (const u16 *)&g_stamp;
-    for (i = 0; i < (sizeof(SnesStamp) / 2) - 1; ++i) sum += w[i];
+    /* Spell the record out instead of walking it through a u16 pointer.  The
+     * 816-tcc backend has to switch accumulator widths for byte pointers, and
+     * an earlier compact loop could leave the duel's phase out of the sum
+     * when the record grew.  These fields are the on-disk verifier contract;
+     * keeping them explicit makes a stamp failure loud rather than letting a
+     * stale checksum masquerade as a stalled game. */
+    sum += g_stamp.magic;
+    sum += g_stamp.scene;
+    sum += g_stamp.frames;
+    sum += g_stamp.render_lines;
+    sum += g_stamp.board_res;
+    sum += g_stamp.duel_turn;
+    sum += g_stamp.lp_player;
+    sum += g_stamp.lp_com;
+    sum += g_stamp.duel_result;
+    sum += g_stamp.ui;
+    sum += g_stamp.cursor;
+    sum += g_stamp.field_cards;
+    sum += g_stamp.phase;
+    sum += g_stamp.turn_owner;
+    sum += g_stamp.deck_slot;
+    sum += g_stamp.deck_count;
+    sum += g_stamp.deck_head;
+    sum += g_stamp.storage_count;
+    sum += g_stamp.save_valid;
     g_stamp.checksum = sum;
 }

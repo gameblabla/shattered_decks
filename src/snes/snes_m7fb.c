@@ -24,6 +24,19 @@
 static u8 hdma_a[10];
 static u8 hdma_d[10];
 
+/* The Mode 3 scenes use the same fixed-colour HDMA idea as the duel, but the
+ * dialogue window owns the whole bottom eighty scanlines rather than only the
+ * duel's text rows.  It gets its own table so the board's backdrop remains
+ * black above line 197. */
+#define SCENE_GRAD_LEAD       144
+#define SCENE_GRAD_LINES       80
+#define SCENE_GRAD_TOP_RG       5
+#define SCENE_GRAD_TOP_B       27
+#define SCENE_GRAD_BOT_RG       1
+#define SCENE_GRAD_BOT_B         9
+#define SCENE_GRAD_TABLE_BYTES (6 + 1 + (SCENE_GRAD_LINES * 2) + 1)
+static u8 hdma_scene_col[SCENE_GRAD_TABLE_BYTES];
+
 /* ── The HUD plate ───────────────────────────────────────────────────────── */
 
 /* THE BLUE PLATE UNDER THE TEXT ROWS IS THE BACKDROP, TINTED PER SCANLINE.
@@ -192,6 +205,55 @@ static void arm_hdma(void)
     REG_HDMAEN = 0x70;         /* channels 4, 5 and 6 */
 }
 
+static void build_scene_gradient(void)
+{
+    u16 rg = (u16)SCENE_GRAD_TOP_RG << 8;
+    u16 b  = (u16)SCENE_GRAD_TOP_B << 8;
+    const u16 rg_step = (u16)((((u16)(SCENE_GRAD_TOP_RG -
+                                      SCENE_GRAD_BOT_RG)) << 8) /
+                              (SCENE_GRAD_LINES - 1));
+    const u16 b_step = (u16)((((u16)(SCENE_GRAD_TOP_B -
+                                     SCENE_GRAD_BOT_B)) << 8) /
+                             (SCENE_GRAD_LINES - 1));
+    u8 *t = hdma_scene_col;
+    u8 i;
+
+    /* Leave the painted scene untouched above the dialogue window. */
+    *t++ = 127;                   *t++ = COL_BLACK; *t++ = COL_BLACK;
+    *t++ = SCENE_GRAD_LEAD - 127; *t++ = COL_BLACK; *t++ = COL_BLACK;
+
+    /* One fixed-colour pair per scanline gives the same smooth ramp as the
+     * duel, without the Mode 7 framebuffer's four-level blue limitation. */
+    *t++ = (u8)(0x80 | SCENE_GRAD_LINES);
+    *t++ = (u8)(COL_RG | (rg >> 8));
+    *t++ = (u8)(COL_B  | (b >> 8));
+    for (i = 1; i < SCENE_GRAD_LINES; ++i) {
+        rg = (rg > rg_step) ? (u16)(rg - rg_step) : 0;
+        b  = (b > b_step) ? (u16)(b - b_step) : 0;
+        *t++ = (u8)(COL_RG | (rg >> 8));
+        *t++ = (u8)(COL_B  | (b >> 8));
+    }
+    *t = 0;
+}
+
+static void arm_scene_hdma(void)
+{
+    build_scene_gradient();
+    REG_HDMAEN = 0;
+
+    /* Channel 4: COLDATA ($2132), two bytes per scanline. */
+    *(vuint8 *)0x4340 = 0x02;
+    *(vuint8 *)0x4341 = 0x32;
+    *(vuint16 *)0x4342 = (u16)(u16)&hdma_scene_col[0];
+    *(vuint8 *)0x4344 = 0x7E;
+
+    /* Both scene assets leave the dialogue-box area transparent in BG1, so the
+     * backdrop is the panel and BG2 supplies its border and text. */
+    REG_CGWSEL = 0;
+    REG_CGADSUB = 0x20;
+    REG_HDMAEN = 0x10;           /* channel 4 only */
+}
+
 void snesVideoInitDuel(void)
 {
     setScreenOff();                    /* force blank: $2100 = $8F */
@@ -220,9 +282,11 @@ void snesVideoInitDuel(void)
 
     setMode(BG_MODE7, 0);
     REG_TM = 0x11;                     /* BG1 + OBJ on the main screen */
+    REG_TMW = 0;
+    REG_W12SEL = 0;
 
     /* The top view's background, set once and then left alone: Mode 7 ignores
-     * both of these, so they can be armed here and the view change never has
+     * both of these, so they are resident before the view change and never has
      * to touch them.  BG1 characters at word $6000 (BG12NBA counts in 4096
      * words) and its tilemap at $7000 (BG1SC counts in 1024). */
     REG_BG1SC   = 0x70;                /* $7000, 32x32 entries */
@@ -236,10 +300,23 @@ void snesVideoInitDuel(void)
      * backdrop is black, so the fixed colour arrives unmodified. */
     REG_CGADSUB = 0x20;
 
-    arm_hdma();
     snesVideoClear(0);
     present_row = 0;
     present_done = 0;
+}
+
+void snesVideoRestartHdma(void)
+{
+    REG_TMW = 0;
+    REG_W12SEL = 0;
+    REG_COLDATA = COL_BLACK;
+    arm_hdma();
+}
+
+void snesVideoRestartSceneHdma(void)
+{
+    REG_COLDATA = COL_BLACK;
+    arm_scene_hdma();
 }
 
 void snesVideoSetView(u8 v)

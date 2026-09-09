@@ -35,6 +35,7 @@
 #include "snes_cards.h"
 #include "snes_obj.h"
 #include "snes_stamp.h"
+#include "snes_deck.h"
 #include "msx2_duel.h"
 #include "msx2_cards.h"
 
@@ -194,6 +195,13 @@ static void set_viewport(void)
      * unit over a focal length of w/2 is exactly 2 texels a pixel at w = 128
      * and 1 at w = 64.  See snesDrawFloor. */
     cam.focal  = (s16)((u16)vp.w << 7);
+    /* `du_k` is 32 / focal in Q8.8.  The focal length is deliberately one of
+     * the two power-of-two values above, so spell the result as constants and
+     * keep the renderer free of a 32-bit divide.  Leaving this field unset
+     * makes the board's texture walk depend on the uninitialised viewport
+     * storage, which looks like a bad card mapper rather than a missing
+     * viewport setup. */
+    vp.du_k = (vp.w >= SNES_STILL_W) ? 128 : 256;
     /* The horizon sits a thirty-second of the band down, which puts the
      * SLAB'S FRONT WALL clear of the bottom of the board band with black
      * under it.  That black is what makes the wall read as the near face of a
@@ -558,6 +566,22 @@ static void build_objects(void)
 
 /* ── The measurement fixture ─────────────────────────────────────────────── */
 
+/* The random deck contains support cards as well as monsters.  A fixture field
+ * is still a real rules field, so consume cards until the next monster rather
+ * than writing a support id into the monster row (which makes the renderer and
+ * the screenshot harness disagree about what the row means). */
+static u8 fixture_draw_monster(WaifuDeck *deck)
+{
+    u8 tries = 0;
+    int card;
+
+    while (tries++ < WAIFU_DECK_SIZE) {
+        card = waifu_deck_draw(deck);
+        if (card >= 0 && Msx2_IsMonster((u8)card)) return (u8)card;
+    }
+    return MSX2_CARD_NONE;
+}
+
 /* R fills the board from the two decks: five monsters a side, the support rows
  * holding real support cards, one monster set face down.
  *
@@ -575,10 +599,8 @@ static void fixture_board(void)
     u8 col;
 
     for (col = 0; col < MSX2_FIELD; ++col) {
-        const int a = waifu_deck_draw(&you->deck);
-        const int b = waifu_deck_draw(&com->deck);
-        you->field[col] = (a >= 0) ? (u8)a : MSX2_CARD_NONE;
-        com->field[col] = (b >= 0) ? (u8)b : MSX2_CARD_NONE;
+        you->field[col] = fixture_draw_monster(&you->deck);
+        com->field[col] = fixture_draw_monster(&com->deck);
         /* One monster is SET, and it proves the back face is a face like any
          * other: same sheet, same page, same walker.  It is in the player's own
          * near row because that is where a card is large enough on screen for
@@ -748,7 +770,17 @@ static void step_player(void)
 
 void snesDuelEnter(void)
 {
-    Msx2_DuelInit(0x51E5u, MSX2_STORY_NONE);
+    /* The editor's active slot is the player's actual deck.  The rules model
+     * accepts overrides on a story duel, so use the first story opponent for
+     * this standalone SNES battle while the presentation remains a free duel. */
+    u8 saved_deck[WAIFU_DECK_SIZE];
+    if (snesDeckGetCurrent(saved_deck)) {
+        Msx2_DuelSetPlayerDeck(saved_deck, WAIFU_DECK_SIZE);
+        Msx2_DuelInit(0x51E5u, 0);
+    } else {
+        Msx2_DuelSetPlayerDeck(0, 0);
+        Msx2_DuelInit(0x51E5u, MSX2_STORY_NONE);
+    }
 
     /* TURN_START runs first for either side, and the rules own it; the UI
      * joins in when the player's own main phase begins. */

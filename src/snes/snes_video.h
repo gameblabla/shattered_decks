@@ -115,6 +115,8 @@ void snesFbWriteChars(void);
 
 /* snes_m7fb.c */
 void snesVideoInitDuel(void);           /* Mode 7 + direct colour, force blank */
+void snesVideoRestartHdma(void);         /* re-prime after a scene boundary */
+void snesVideoRestartSceneHdma(void);    /* Mode 3 dialogue-window gradient */
 void snesVideoSetBoardRes(u8 res);      /* enum SnesBoardRes; rebuilds the HDMA table */
 u8   snesVideoBoardRes(void);
 /* Ask for the other view.  It is applied by the next snesVideoPresent, which

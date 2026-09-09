@@ -572,11 +572,17 @@ the owner.
   verifier plays to a result), **Y** pins the board to the moving resolution so
   it can be measured.  A game frame is many fields, so a scripted press has to
   be HELD for longer than the slowest frame or the poll never sees it down.
-* **Saves** — 8 KB SRAM at `$70:0000` (HiROM), a checksummed record holding
+* **Saves** — 8 KB SRAM at `$30:6000` (the HiROM SRAM window), a checksummed record holding
   story progress (`g_story_progress` frontier vs. selected foe, the distinction
-  the PC-FX port established), the four deck slots the MSX2 continue-code format
-  already caps at, and settings.  `snes_save.c` writes it under NMI-disabled
-  guard and re-checksums.
+  the PC-FX port established), four deck slots, and settings.  Each slot keeps
+  both the 40-card DECK list and the 64-card STORAGE list, matching the PC-FX /
+  FM TOWNS editor rather than flattening the collection into a library.  The
+  current editor is a Mode 3 gallery with the reference six-column grid:
+  **X** switches DECK/STORAGE, arrows move the cursor (including three-row
+  scrolling), **A** moves a card between lists, **B** opens CARD CHECK, and
+  **START** proceeds only at 40 cards.  **Y** saves, SELECT changes slot, R
+  restores the deterministic first-run collection, and L returns to the title.
+  The active saved deck is passed to the rules model when a duel starts.
 * **Scenes** — title -> menu (story / free duel / deck / options) -> story map ->
   VN dialogue -> duel -> battle close-ups -> victory/defeat -> ending.  Same
   state machine as the MSX2 fork, with a Mode 3/Mode 7 switch at each boundary.
@@ -642,9 +648,9 @@ SRAM, and a perf capture of the duel board in both resolutions.
 | **M3** | quad rasteriser + real card textures on the board | **done** — five slots per side show the right cards, identified out of a screenshot against the card sheet; the set monster shows the back; a card in the air goes through the two-chain convex-quad path |
 | **M4** | rules integration, hand, cursor, HUD text — playable duel | **done** — a duel is played through the UI (card chosen, carried, set; battle phase; attacks; turn passed) and a demo duel plays itself to a decided result with the band reading the outcome; the HUD's text is decoded back off the screenshot and checked against the rules |
 | **M4.5** | the sprite HUD, the Mode 3 top view, and the board's framing | **done** — the HUD's letters measure one screen pixel a stroke in both board resolutions (so they cannot be bitmap); the bare slab shows four grooves and no seam on its centre line (five columns); the top view identifies all twenty field slots pixel for pixel against the sprite sheet; and no field across the mode change is blank |
-| **M5** | Mode 3 title / story / ending with real art and typewriter text | scripted story chapter captures |
+| **M5** | Mode 3 title / story / ending with real art and typewriter text | **done** — title, story portrait window, and ending painting are generated as real 8bpp scene assets; BG2 typewriter text is VBlank-updated; `verify.py` captures all three paths, including A-button title start |
 | **M6** | audio: module playback + SFX | SPC upload asserted, ARAM state advances |
-| **M7** | deck editor + SRAM saves | save/load round trip across a reset |
+| **M7** | deck editor + SRAM saves | **done** — reference DECK/STORAGE six-column editor, CARD CHECK preview, 40-card gate, and four-slot checksummed SRAM round trip survive a fresh emulator process; the active deck feeds the duel rules |
 | **M8** | perf and polish pass | ablation-measured improvements only, no speculative rewrites |
 
 ---

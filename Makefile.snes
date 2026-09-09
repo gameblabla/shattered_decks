@@ -49,9 +49,17 @@ HDR := $(OBJ)/hdr.asm
 
 # ── Sources ──────────────────────────────────────────────────────────────────
 # The fork.
+SNES_DECK_GEN := tools/snes/gen_snes_deck.py
+SNES_DECK_OUTPUTS := $(PROJ_DIR)/snes_deck_data.h \
+                     $(PROJ_DIR)/assets/snes_deckassets.asm \
+                     $(PROJ_DIR)/assets/snes_deck_tiles.bin \
+                     $(PROJ_DIR)/assets/snes_deck_pal.bin \
+                     $(PROJ_DIR)/assets/snes_deck_map.bin \
+                     $(PROJ_DIR)/assets/deck_preview.png
 SNES_C   := $(sort $(wildcard $(PROJ_DIR)/*.c))
 SNES_ASM := $(sort $(wildcard $(PROJ_DIR)/*.asm)) \
-            $(sort $(wildcard $(PROJ_DIR)/assets/*.asm))
+            $(sort $(wildcard $(PROJ_DIR)/assets/*.asm)) \
+            $(PROJ_DIR)/assets/snes_deckassets.asm
 # Compiled in unchanged: the render-free duel rules and the shared AI/decks.
 SHARED_C := src/msx2/msx2_duel.c src/msx2/msx2_cards.c \
             src/game/ai.c src/game/deck.c
@@ -65,6 +73,7 @@ CFILES := $(SNES_C) $(SHARED_C)
 # Forty source files rebuild in a couple of seconds; that trade is not close.
 HEADERS := $(wildcard $(PROJ_DIR)/*.h) $(wildcard $(PROJ_DIR)/compat/*.h) \
            $(wildcard src/msx2/*.h) $(wildcard src/game/*.h)
+HEADERS += $(PROJ_DIR)/snes_deck_data.h
 
 # compat/ is first so src/msx2/msx2_duel.c finds the msxgl.h shim, and
 # src/game/*.c the waifu_assets.h one, without either file being edited.
@@ -86,6 +95,13 @@ OBJS := $(patsubst %.c,$(OBJ)/%.obj,$(notdir $(CFILES))) \
 # Two source trees feed one flat object dir, so tell make where to look.
 vpath %.c $(PROJ_DIR) src/msx2 src/game
 vpath %.asm $(PROJ_DIR) $(PROJ_DIR)/assets
+
+# The deck panel is generated rather than checked in as raw blobs (the repo's
+# global *.bin ignore is intentional for console build products).  A grouped
+# target keeps one Pillow invocation from racing itself when both the C object
+# and the asset object are missing in a clean checkout.
+$(SNES_DECK_OUTPUTS) &: $(SNES_DECK_GEN)
+	python3 $(SNES_DECK_GEN)
 
 .PHONY: all rom verify clean check-sdk banks
 

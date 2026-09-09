@@ -166,8 +166,10 @@ _fbdone:
 ; void snesFbWriteChars(void)
 ;
 ; Writes the Mode 7 character half once, under force blank: the high byte of
-; word W becomes W >> 6, which makes tile n a solid block of colour n.  16384
-; word writes, so this is a boot-time cost and never a per-frame one.
+; word W becomes W >> 6, which makes tile n a solid block of colour n.  It
+; clears the low byte at the same time, because a previous Mode 3 scene may
+; have left tile data in the otherwise-unused rows below the HUD.  16384 word
+; writes, so this is a scene-load cost and never a per-frame one.
 ;
 ; It cannot be a DMA from a table: the table would be 16 KB of ROM to say
 ; something a six-instruction loop already says.
@@ -192,6 +194,10 @@ _chr_outer:
 .ACCU 8
     ldx #64                     ; 64 bytes of this tile
 _chr_inner:
+    pha
+    lda #$00
+    sta.l $2118                    ; clear the Mode 7 tilemap byte
+    pla
     sta.l $2119
     dex
     bne _chr_inner

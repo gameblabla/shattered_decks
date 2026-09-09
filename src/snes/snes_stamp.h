@@ -32,6 +32,11 @@ typedef struct SnesStamp {
     u16 field_cards;    /* monsters standing on the player's own row */
     u16 phase;          /* enum Msx2Phase */
     u16 turn_owner;     /* 0 the player, 1 the COM */
+    u16 deck_slot;      /* active editor/save slot */
+    u16 deck_count;     /* cards currently in the editor deck */
+    u16 deck_head;      /* first card, used by the SRAM round-trip check */
+    u16 storage_count;  /* cards currently in editor STORAGE */
+    u16 save_valid;     /* checksummed SRAM record loaded successfully */
     u16 checksum;       /* sum of the words above, so a torn dump is detectable */
 } SnesStamp;
 

@@ -37,7 +37,9 @@ OUT = os.path.join(ROOT, "build", "snes", "verify")
 # The frame stamp, mirroring src/snes/snes_stamp.h.
 STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "board_res",
                 "duel_turn", "lp_player", "lp_com", "duel_result", "ui",
-                "cursor", "field_cards", "phase", "turn_owner", "checksum"]
+                "cursor", "field_cards", "phase", "turn_owner", "deck_slot",
+                "deck_count", "deck_head", "storage_count", "save_valid",
+                "checksum"]
 
 # enum SnesDuelUi, mirroring src/snes/snes_duel.c.
 UI = ["HAND", "PLACE", "EQUIP_TARGET", "ATTACKER", "DEFENDER", "COM", "RESULT"]
@@ -103,6 +105,10 @@ def rom_header():
 def run(name, script, frames, capture=None):
     """One scripted run.  `script` is a list of (start, end, pad_mask) rows."""
     os.makedirs(OUT, exist_ok=True)
+    # Keep the regression's battery state separate from the owner's emulator
+    # saves.  Multiple runs in this file intentionally share this directory so
+    # the deck check can prove persistence across two emulator processes.
+    os.makedirs(os.path.join(OUT, "sav"), exist_ok=True)
     in_path = os.path.join(OUT, name + ".in.txt")
     with open(in_path, "w") as fh:
         for start, end, mask in script:
@@ -122,7 +128,7 @@ def run(name, script, frames, capture=None):
         argv += [cov, "0", os.path.join(OUT, name + ".ppu"),
                  os.path.join(OUT, name + ".ppu.txt"), frame_dir,
                  str(capture[0]), str(capture[1]), str(capture[2])]
-    proc = subprocess.run(argv, capture_output=True, text=True)
+    proc = subprocess.run(argv, capture_output=True, text=True, cwd=OUT)
     if proc.returncode != 0:
         raise Failure("%s: emulator exited %d\n%s" % (name, proc.returncode,
                                                       proc.stderr[-2000:]))
@@ -147,7 +153,7 @@ def read_stamp(path):
         wram = fh.read()
     n = len(STAMP_FIELDS)
     # 816-tcc does not word-align statics, so scan every byte offset.
-    for off in range(0, len(wram) - n * 2):
+    for off in range(0, len(wram) - n * 2 + 1):
         if wram[off] | (wram[off + 1] << 8) != STAMP_MAGIC:
             continue
         words = struct.unpack_from("<%dH" % n, wram, off)
@@ -201,6 +207,143 @@ def check_cartridge():
         raise Failure("cartridge type is $%02X, expected $02 (ROM+RAM+battery)"
                       % h["cartridge_type"])
     return "4 MB HiROM/FastROM, 8 KB SRAM, no enhancement chip"
+
+
+def check_title():
+    """The boot scene must show the painted title before the duel timeout."""
+    ppm, wram = run("title", [(0, 40, 0)], 20)
+    stamp = read_stamp(wram)
+    if stamp["scene"] != SCENES.index("TITLE"):
+        raise Failure("title capture reached scene %s after only %d frames" %
+                      (SCENES[stamp["scene"]], stamp["frames"]))
+    w, h, px = read_ppm(ppm)
+    if (w, h) != (256, 224):
+        raise Failure("title is %dx%d, expected the 256x224 visible area" %
+                      (w, h))
+    visible = sum(1 for i in range(0, len(px), 3)
+                  if px[i:i + 3] != b"\x00\x00\x00")
+    if visible < w * h * 3 // 4:
+        raise Failure("title has only %d/%d non-black pixels -- artwork is not "
+                      "visible" % (visible, w * h))
+    return "scene TITLE, painted 256x224 art (%d%% non-black)" % (
+        visible * 100 // (w * h))
+
+
+def check_title_input():
+    """A/START must leave the title without waiting for the timeout."""
+    # A valid editor deck is now fed straight into the rules model; allow the
+    # initial card/deck setup to finish before reading the stamp.
+    _, wram = run("title_input", [(10, 70, PAD["A"])], 120)
+    stamp = read_stamp(wram)
+    if stamp["scene"] != SCENES.index("DUEL"):
+        raise Failure("A-button title start ended in scene %s" %
+                      SCENES[stamp["scene"]])
+    return "A enters DUEL at frame %d" % stamp["frames"]
+
+
+def check_deck_editor():
+    """The reference DECK/STORAGE editor must move and persist both lists.
+
+    The first run moves the default deck's first card (0) to STORAGE, moves
+    the first stored support card back, and saves.  The second run is a fresh
+    emulator process; its stamp proves that the complete 40/40 deck and
+    four-card STORAGE list survived.  Restore the default afterward so later
+    duel checks
+    start from the same known collection.
+    """
+    change = [
+        (10, 70, PAD["Y"]),          # title -> deck editor
+        (120, 180, PAD["R"]),        # deterministic default deck
+        (240, 300, PAD["A"]),        # DECK -> STORAGE; head becomes 7
+        (360, 420, PAD["X"]),        # DECK tab -> STORAGE tab
+        (480, 540, PAD["A"]),        # STORAGE -> DECK
+        (600, 660, PAD["Y"]),        # write SRAM
+    ]
+    ppm, wram = run("deck_save", change, 1080)
+    stamp = read_stamp(wram)
+    if stamp["scene"] != SCENES.index("DECK"):
+        raise Failure("save run ended in scene %s" % SCENES[stamp["scene"]])
+    if (not stamp["save_valid"] or stamp["deck_count"] != 40 or
+            stamp["storage_count"] != 4):
+        raise Failure("save run reports valid=%d deck=%d storage=%d, expected "
+                      "1/40/4" % (stamp["save_valid"], stamp["deck_count"],
+                                   stamp["storage_count"]))
+    if stamp["deck_head"] != 7:
+        raise Failure("save run head is %d, expected changed card 7" %
+                      stamp["deck_head"])
+    w, h, px = read_ppm(ppm)
+    visible = sum(1 for i in range(0, len(px), 3)
+                  if px[i:i + 3] != b"\x00\x00\x00")
+    if visible < 1000:
+        raise Failure("deck editor has only %d non-black pixels" % visible)
+
+    load_ppm, wram = run("deck_load", [(10, 70, PAD["Y"])], 180)
+    loaded = read_stamp(wram)
+    if loaded["scene"] != SCENES.index("DECK"):
+        raise Failure("fresh process ended in scene %s" %
+                      SCENES[loaded["scene"]])
+    if (loaded["save_valid"] != 1 or loaded["deck_count"] != 40 or
+            loaded["storage_count"] != 4 or loaded["deck_head"] != 7):
+        raise Failure("fresh process loaded valid=%d deck=%d storage=%d head=%d, "
+                      "expected 1/40/4/7" %
+                      (loaded["save_valid"], loaded["deck_count"],
+                       loaded["storage_count"], loaded["deck_head"]))
+
+    check_ppm, wram = run("deck_check", [
+        (10, 70, PAD["Y"]),
+        (120, 180, PAD["B"]),
+    ], 260)
+    checked = read_stamp(wram)
+    if checked["scene"] != SCENES.index("DECK"):
+        raise Failure("CARD CHECK left scene %s" % SCENES[checked["scene"]])
+    _, _, editor_px = read_ppm(load_ppm)
+    _, _, check_px = read_ppm(check_ppm)
+    if sum(a != b for a, b in zip(editor_px, check_px)) < 1000:
+        raise Failure("CARD CHECK capture is indistinguishable from the gallery")
+
+    _, wram = run("deck_gate", [
+        (10, 70, PAD["Y"]),
+        (120, 180, PAD["A"]),
+        (240, 300, PAD["START"]),
+    ], 260)
+    gated = read_stamp(wram)
+    if gated["scene"] != SCENES.index("DECK"):
+        raise Failure("incomplete deck escaped to scene %s" % SCENES[gated["scene"]])
+
+    run("deck_restore", [
+        (10, 70, PAD["Y"]),
+        (120, 180, PAD["R"]),
+        (240, 300, PAD["Y"]),
+    ], 360)
+    return "DECK/STORAGE editor + four-slot SRAM round trip survived emulator reset"
+
+
+def check_story_scene():
+    """B opens the real-art story window and starts its typewriter."""
+    ppm, wram = run("story", [(10, 70, PAD["B"])], 120)
+    stamp = read_stamp(wram)
+    if stamp["scene"] != SCENES.index("STORY_TALK"):
+        raise Failure("story entry ended in scene %s" % SCENES[stamp["scene"]])
+    w, h, px = read_ppm(ppm)
+    bottom = sum(1 for y in range(144, h) for x in range(w)
+                 if px[(y * w + x) * 3:(y * w + x + 1) * 3] != b"\x00\x00\x00")
+    if bottom < 40:
+        raise Failure("story text window has only %d lit pixels" % bottom)
+    return "STORY_TALK, real portrait window, typewriter active"
+
+
+def check_ending_scene():
+    """X opens the real ending painting and its narration layer."""
+    ppm, wram = run("ending", [(10, 70, PAD["X"])], 120)
+    stamp = read_stamp(wram)
+    if stamp["scene"] != SCENES.index("ENDING"):
+        raise Failure("ending entry ended in scene %s" % SCENES[stamp["scene"]])
+    w, h, px = read_ppm(ppm)
+    bottom = sum(1 for y in range(200, h) for x in range(w)
+                 if px[(y * w + x) * 3:(y * w + x + 1) * 3] != b"\x00\x00\x00")
+    if bottom < w * 20:
+        raise Failure("ending narration layer has only %d lit pixels" % bottom)
+    return "ENDING, real 256x224 painting with narration"
 
 
 def check_boot():
@@ -287,7 +430,10 @@ def run_moving(capture=None):
 def run_demo(frames=9000):
     """L hands the player's side to the rules as well, so the duel plays itself
     to a result with no further input -- the port's soak run."""
-    return run("demo", [press("L", 60)], frames)
+    # The title scene now owns the first few dozen game frames; start the demo
+    # after the normal unattended title timeout, just like the other duel
+    # fixtures start after boot has settled.
+    return run("demo", [press("L", 200)], frames)
 
 
 def run_flow(name, buttons):
@@ -1415,6 +1561,11 @@ def check_top_view_switch_is_seamless():
 
 CHECKS = [
     ("cartridge", check_cartridge),
+    ("title art", check_title),
+    ("title input", check_title_input),
+    ("deck editor + SRAM", check_deck_editor),
+    ("story scene", check_story_scene),
+    ("ending scene", check_ending_scene),
     ("boot", check_boot),
     ("still resolution", check_still_resolution),
     ("moving resolution", check_moving_resolution),
