@@ -104,7 +104,7 @@ static void deck_text_build_editor(void)
         deck_text_line(24, 1, "SUPPORT CARD");
     }
     if (deck_status) deck_text_line(25, 1, deck_status);
-    deck_text_line(26, 1, "A MOVE  B CHECK  X SWAP  Y SAVE");
+    deck_text_line(26, 1, "A MOVE  B CHECK  X SWAP Y SAVE");
     deck_text_dirty = 1;
 }
 
