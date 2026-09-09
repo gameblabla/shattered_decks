@@ -45,10 +45,9 @@ typedef struct SnesCamera {
     u8 yaw, pitch;   /* 256 angles per turn; pitch 64 looks straight down */
 } SnesCamera;
 
-/* The render target: a rectangle of the chunky framebuffer.  Three shapes are
- * used -- 64x40 while ordinary board motion is active, 32x28 for the
- * hand-to-top camera lift, and 128x80 when it rests.  Every routine here works
- * in whichever is current, so all three paths share one renderer. */
+/* The render target: a 128x80 rectangle of the chunky framebuffer for every
+ * 3D board state.  Motion changes the update cadence and camera pose while
+ * keeping the source texel size fixed. */
 typedef struct SnesViewport {
     u16 origin;      /* byte offset into snes_fb of pixel (0,0) */
     u8  w, h;

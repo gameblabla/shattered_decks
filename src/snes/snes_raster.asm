@@ -302,8 +302,8 @@ _sc_out:
 ; into the high byte.
 ;
 ; It costs about twice a floor texel, and that is the right trade: it runs only
-; while a card is in the air, which is the moving resolution, which is a
-; quarter of the pixels.
+; while a card is in the air, which is the moving board cadence.  The source
+; remains full detail; the presenter paces complete board updates instead.
 ;-----------------------------------------------------------------------------
 snesSpanCardQuad:
     php

@@ -128,40 +128,38 @@ so the *whole bitmap costs exactly half of VRAM* and words `$4000..$7FFF`
 in mode 0 to `$2118` streams one framebuffer byte per VRAM word — a straight
 `memcpy` from WRAM to the tilemap's low bytes.
 
-**Scale, and free adaptive resolution.**  With `M7B = M7C = 0`, `M7X/M7Y = 0`,
+**Scale, and fixed-detail motion.**  With `M7B = M7C = 0`, `M7X/M7Y = 0`,
 `M7HOFS/M7VOFS = 0`, the matrix is a pure scale and each screen pixel samples
 source `x = A * screen_x`:
 
 | mode | `M7A = M7D` | buffer | screen px per texel | bytes to DMA |
 |---|---|---|---|---|
-| **still** | `$0400` (4.0) | 128 x 112 | 2 x 2 | 14336 |
-| **moving** | `$0200` (2.0) | 64 x 56 | 4 x 4 | 3584 |
+| **every 3D board state** | `$0400` (4.0) | 128 x 80 | 2 x 2 | 10240 |
+| **HUD refresh** | `$0400` (4.0) | 128 x 32 | 2 x 2 | 4096 |
 
-Both are exact powers of two, so there is no resampling shimmer.  This is the
-adaptive-internal-resolution trick the FM TOWNS, MSX2 and Atari ST ports all
-use — except here **the doubling is free**, done by the PPU rather than by a
-pixel-doubling copy.  Rendering a moving board costs a quarter of the pixels.
+The board stays at the exact power-of-two 2x2 scale during motion, so movement
+does not introduce a coarse 4x4 picture or resampling shimmer.  The software
+renderer admits at most one complete motion update every twelve NTSC fields;
+a card-heavy frame takes longer to render and upload, but keeps the same
+128x80 source and fixed-detail cadence while the PPU performs the pixel
+doubling for free.
 
 The switch is per *band*, not per frame: two HDMA channels rewrite `M7A` and
-`M7D` at line 160 so the board can be at 4x4 while the HUD strip under it stays
-at 2x2.  **`M7VOFS` is not one of them.**  A vertical offset written by HDMA
-does not take effect band by band — writing the HUD band's offset shifted the
-whole frame, and the board came out twenty texel rows down the screen — so the
-HUD strip instead reads framebuffer rows 80..111 in *both* resolutions, which
-is where `D = 4.0` maps lines 160..223 with no offset at all.  Rows 40..79 go
-unused while the board is moving; that is framebuffer space, not time.
+`M7D` at line 160 so the board and HUD both stay at 2x2.  **`M7VOFS` is not one
+of them.**  A vertical offset written by HDMA does not take effect band by band
+— writing the HUD band's offset shifted the whole frame — so the HUD strip
+reads framebuffer rows 80..111, where `D = 4.0` maps lines 160..223 with no
+offset at all.
 
 **Upload budget.**  NTSC vblank is 38 lines ≈ 51,800 master cycles ≈ 6.4 KB of
 DMA.  So:
 
-* moving (3584 B, 56 row-DMAs of 64 bytes) — **one vblank**, no tearing;
-* still (14336 B) — **three vblanks**, uploaded top-down.  The still frame is
-  only produced when the board is otherwise idle, so a 3-step progressive
-  refresh of an unchanging image is invisible.
+* every board update (10240 B) — **five bounded vblanks**, uploaded top-down;
+* the HUD (4096 B) — one separate vblank when its sprites change.
 
 Mode 7 has no second tilemap base — there is no page flip — so this staged
-upload *is* the double-buffering story, and it is why the moving case is sized
-to fit a single vblank.
+upload *is* the double-buffering story.  Motion waits between complete uploads
+instead of changing the board's texel size.
 
 **Colour.**  Two options, chosen per scene:
 
@@ -184,12 +182,12 @@ lines   0..159   3D board, software texture mapped   (texels 0..79 of the buffer
 lines 160..223   flat black in the bitmap, HUD SPRITES over it
 ```
 
-The 3D viewport is 128x80 texels still / 64x40 moving, which is what makes the
-frame rate land where section 4 says it does.
+The 3D viewport is always 128x80 texels.  The board band stays at 2x2 screen
+pixels per texel during motion; only the cadence changes.
 
 **Nothing in the HUD is in the bitmap.**  Life points, the phase prompt, the
 hand and both cursors are sprites, and the reason is resolution: the board band
-shows one texel on 2x2 screen pixels and 4x4 while the camera moves, so a
+shows one texel on 2x2 screen pixels throughout, so a
 letter drawn into it is a letter at half the console's resolution and a hand
 card is sixteen texels stretched over thirty-two pixels.  The band under the
 board is therefore filled black once, uploaded once and never touched again.
@@ -296,8 +294,9 @@ entry to the painting and the card stops having an edge.
 
 **The vblank window is shared and the sprite layer is paid first.**  NTSC
 vblank carries something under 6 KB of DMA in total.  OAM is 544 bytes whenever
-the list changed and a card face is 512, so the bitmap's still upload is 24
-rows — 3072 bytes — and the worst frame is about 4.1 KB.  Two further rules,
+the list changed and a card face is 512, so the bitmap's still upload is 16
+rows — 2048 bytes — leaving room for OAM plus one card row during a camera
+handoff.  Two further rules,
 both learned by breaking them:
 
 * Overspend and the rows past the end of the window are simply not written: a
@@ -306,7 +305,7 @@ both learned by breaking them:
 * **CPU time in vblank is part of the budget.**  Scanning twenty slots for the
   next card to upload is a 816-tcc loop that costs more of the window than the
   512-byte transfer it is looking for.  The scan happens with the rest of the
-  frame's work; the vblank routine does one comparison and four DMAs.
+  frame's work; the vblank routine does one comparison and four card-row DMAs.
 
 ---
 
@@ -422,10 +421,10 @@ and printed by its `render cost` check).  One NTSC field is 262 scanlines.
 
 | board | viewport | render | fields | fps |
 |---|---|---|---|---|
-| moving, floor only | 64 x 40 | 842 lines | 3.2 | 18.6 |
-| moving, 21 cards | 64 x 40 | 2860 lines | 10.9 | **5.5** |
-| still, floor only | 128 x 80 | 2226 lines | 8.5 | 7.1 |
-| still, 21 cards | 128 x 80 | 5547 lines | 21.2 | 2.8 |
+| moving, floor only | 128 x 80 | 1528 lines | 5.8 | 10.4 |
+| moving, 21 cards | 128 x 80 | 4128 lines | 15.8 | 3.8 |
+| still, floor only | 128 x 80 | 1528 lines | 5.8 | 10.4 |
+| still, 21 cards | 128 x 80 | 4128 lines | 15.8 | 3.8 |
 
 The floor-only rows are an **ablation, not an estimate**: SELECT compiles
 nothing out but draws no cards (`show_cards` in `src/snes/snes_duel.c`), and
@@ -569,8 +568,8 @@ the owner.
   against — a fixed BOARD, not fixed art), **SELECT** draws that board with no
   cards on it (the ablation behind every card-cost number in section 4.4), **L**
   hands the player's side to the rules as well (the demo, and the soak duel the
-  verifier plays to a result), **Y** pins the board to the moving resolution so
-  it can be measured.  A game frame is many fields, so a scripted press has to
+  verifier plays to a result), **Y** pins the board to the moving cadence so it
+  can be measured.  A game frame is many fields, so a scripted press has to
   be HELD for longer than the slowest frame or the poll never sees it down.
 * **Saves** — 8 KB SRAM at `$30:6000` (the HiROM SRAM window), a checksummed record holding
   story progress (`g_story_progress` frontier vs. selected foe, the distinction
@@ -634,7 +633,7 @@ leftover frames for an hour.
 
 Regression targets: boot to title, menu navigation, a scripted full duel to a
 win, a story chapter with dialogue, deck editor save/load round trip through
-SRAM, and a perf capture of the duel board in both resolutions.
+SRAM, and a perf capture of the duel board at rest and during motion.
 
 ---
 
@@ -643,11 +642,11 @@ SRAM, and a perf capture of the duel board in both resolutions.
 | # | deliverable | done when |
 |---|---|---|
 | **M0** | toolchain built, `Makefile.snes`, HiROM/FastROM 4 MB ROM boots | `snap` shows the title colour on frame 60; `header` reports HiROM/FastROM/32 Mbit |
-| **M1** | Mode 7 chunky framebuffer harness: 256 solid tiles, DMA presenter, still/moving scale switch | a scripted run shows a test image at both scales, pixel-exact 2x2 and 4x4 |
+| **M1** | Mode 7 chunky framebuffer harness: 256 solid tiles, DMA presenter, fixed-detail motion cadence | a scripted run shows the 128x80 board at rest and during motion with pixel-exact 2x2 texels |
 | **M2** | Q8.8 math, LUTs, **floor mapper** with the real arena texture | textured ground under a moving camera; **measured** ms/frame in `wram.bin` |
 | **M3** | quad rasteriser + real card textures on the board | **done** — five slots per side show the right cards, identified out of a screenshot against the card sheet; the set monster shows the back; a card in the air goes through the two-chain convex-quad path |
 | **M4** | rules integration, hand, cursor, HUD text — playable duel | **done** — a duel is played through the UI (card chosen, carried, set; battle phase; attacks; turn passed) and a demo duel plays itself to a decided result with the band reading the outcome; the HUD's text is decoded back off the screenshot and checked against the rules |
-| **M4.5** | the sprite HUD, the Mode 3 top view, and the board's framing | **done** — the HUD's letters measure one screen pixel a stroke in both board resolutions (so they cannot be bitmap); the bare slab shows four grooves and no seam on its centre line (five columns); the top view identifies all twenty field slots pixel for pixel against the sprite sheet; and no field across the mode change is blank |
+| **M4.5** | the sprite HUD, the Mode 3 top view, and the board's framing | **done** — the HUD's letters measure one screen pixel a stroke across every 3D board state (so they cannot be bitmap); the bare slab shows four grooves and no seam on its centre line (five columns); the top view identifies all twenty field slots pixel for pixel against the sprite sheet; and no field across the mode change is blank |
 | **M5** | Mode 3 title / story / ending with real art and typewriter text | **done** — title, story portrait window, and ending painting are generated as real 8bpp scene assets; BG2 typewriter text is VBlank-updated; `verify.py` captures all three paths, including A-button title start |
 | **M6** | audio: module playback + SFX | SPC upload asserted, ARAM state advances |
 | **M7** | deck editor + SRAM saves | **done** — reference DECK/STORAGE six-column editor, CARD CHECK preview, 40-card gate, and four-slot checksummed SRAM round trip survive a fresh emulator process; the active deck feeds the duel rules |

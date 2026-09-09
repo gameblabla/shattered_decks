@@ -448,9 +448,10 @@ def run_flow(name, buttons):
     for b in buttons:
         script.append(press(b, at))
         at += HOLD * 2
-    # Allow the final input to settle on a complete frame.  Audio scene loads
-    # and the board upload both temporarily span more than one emulator field.
-    return run(name, script, at + 1080)
+    # Allow the final input to settle on a complete frame.  Full-detail board
+    # renders and their staged uploads can span many emulator fields, and a
+    # turn hand-off may also animate the camera before the stamp is committed.
+    return run(name, script, at + 2200)
 
 
 def check_still_resolution():
@@ -471,33 +472,32 @@ def check_still_resolution():
 
 
 def check_moving_resolution():
-    """The board halves itself while something is moving, and the HUD does not.
+    """The board keeps its full texel detail while something is moving.
 
     THE HUD NOT CHANGING IS THE POINT.  It is sprites, so it is drawn at the
     screen's own resolution whatever the bitmap under it is doing; when it was
     bitmap texels this check had to prove a per-band HDMA scale was keeping it
     readable, and now it proves the band scale cannot reach it at all.
 
-    THE RESOLUTION IS NOT A TOGGLE ANY MORE: the duel picks it, dropping the
-    board to 64x40 while a card is in the air or the rules are changing the
-    picture and returning to 128x80 once it settles.  So this holds a card --
-    which is the state that keeps the board in motion -- and measures the two
-    bands, which is what the per-band HDMA table buys."""
+    The board remains 128x80 and therefore keeps 2x2 screen pixels per board
+    texel.  Motion is paced separately, so this holds a card and measures the
+    board and native-resolution sprite HUD without accepting a coarse fallback.
+    """
     ppm, wram = run_hold()
     stamp = read_stamp(wram)
     if stamp["board_res"] != 0:
         raise Failure("the board is still at the resting resolution while a "
                       "card is being held")
     w, h, px = read_ppm(ppm)
-    board = texel_size(px, w, board_row(0), 4)
+    board = texel_size(px, w, board_row(0), 2)
     hud = texel_size(px, w, NAME_Y + 3, 1)
-    if board != 4:
-        raise Failure("moving band texel is %d screen pixels wide, expected 4" % board)
+    if board != 2:
+        raise Failure("moving band texel is %d screen pixels wide, expected 2" % board)
     if hud != 1:
         raise Failure("the HUD's letters are %d screen pixels a stroke while the "
                       "board is moving -- the sprite layer does not scale with "
                       "the bitmap and must not appear to" % hud)
-    return "moving band 4x4 under a HUD that does not move with it"
+    return "moving board stays 2x2 at 128x80 under a 1:1 sprite HUD"
 
 
 def band_colours(px, w, y0, y1):
@@ -696,8 +696,8 @@ def check_render_cost():
     still = read_stamp(wram)["render_lines"]
     _, wram = run_no_cards()
     floor_only = read_stamp(wram)["render_lines"]
-    # The moving board is measured on the same fixture: R fills it, Y drops the
-    # resolution, and the number is the one an animating frame pays.
+    # The moving board is measured on the same fixture: R fills it, Y pins the
+    # fixed motion cadence, and the number is the one an animating frame pays.
     _, wram = run("fixture_moving", [press("R", DUEL_READY),
                                       press("Y", DUEL_READY + 200)],
                   RUN_FRAMES)
@@ -705,19 +705,14 @@ def check_render_cost():
     if still == 0 or moving == 0:
         raise Failure("no render timing was recorded (still %d, moving %d)"
                       % (still, moving))
-    if moving >= still:
-        raise Failure("the moving board (%d lines) is not cheaper than the still "
-                      "one (%d) -- the resolution switch is not doing anything"
-                      % (moving, still))
     if floor_only >= still:
         raise Failure("the ablated board (%d lines) is not cheaper than the "
                       "full one (%d) -- SELECT did not turn the cards off"
                       % (floor_only, still))
-    return ("still %d lines (%.1f fields, %.1f fps), moving %d lines "
-            "(%.1f fields, %.1f fps); ablated: floor %d, so the cards are "
-            "%d lines (%d%%)"
-            % (still, still / 262.0, 60.0 / (still / 262.0),
-               moving, moving / 262.0, 60.0 / (moving / 262.0),
+    return ("still %d lines (%.1f fields), moving %d lines (%.1f fields); "
+            "ablated: floor %d, so the cards are %d lines (%d%%)"
+            % (still, still / 262.0,
+               moving, moving / 262.0,
                floor_only, still - floor_only,
                100 * (still - floor_only) // still))
 

@@ -2,8 +2,8 @@
  *  snes_obj.h — the sprite layer: the HUD, the hand, and the top view's cards.
  *
  *  THE HUD IS SPRITES AND NOT BITMAP, and the reason is resolution.  The duel
- *  board is a Mode 7 chunky bitmap sampled at 2x2 screen pixels a texel (4x4
- *  while the camera moves), so a letter drawn into it is a letter at half the
+ *  board is a Mode 7 chunky bitmap sampled at 2x2 screen pixels a texel in
+ *  every 3D state, so a letter drawn into it is a letter at half the
  *  console's resolution and a card in hand is sixteen texels stretched across
  *  thirty-two pixels.  The OBJ layer is drawn by the PPU at the screen's own
  *  resolution, over whichever background mode is up, and this machine allows

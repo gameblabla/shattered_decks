@@ -13,8 +13,9 @@
  *  BLANK.  Both pictures are resident: the bitmap owns VRAM words $0000-$3FFF,
  *  the sprites $4000-$5FFF and the top view $6000-$73FF, and one CGRAM serves
  *  both (Mode 7 direct colour reads none of it).  The duel renders the short
- *  hand-to-top camera lift in the moving resolution; only its endpoint changes
- *  modes, so the top view still needs no asset upload or black loading frame.
+ *  hand-to-top camera lift in the same 128x80 board surface; only its endpoint
+ *  changes modes, so the top view still needs no asset upload or black loading
+ *  frame.
  *  The three endpoint writes happen in vblank, because nothing but HDMA writes
  *  a PPU register during active display; see SNES_PORT_PLAN.md §11.
  * ───────────────────────────────────────────────────────────────────────────── */
@@ -30,29 +31,27 @@
 /* The 3D viewport, and the HUD band under it.  Both are measured in TEXELS;
  * the PPU turns them into screen pixels at the band's scale.
  *
- * Still: the whole screen samples at 0.5, so 256x224 screen pixels are
- * 128x112 texels, the board taking rows 0..79 and the HUD rows 80..111.
- * Moving: the board band samples at 0.25 -- 64x40 texels over the same 160
- * lines -- while the HUD band keeps 0.5 so its text does not quadruple in
- * size when the camera starts moving.  That per-band scale is the whole
- * reason the presenter drives M7A/M7D/M7VOFS from an HDMA table rather than
- * writing them once a frame. */
+ * Every 3D board frame uses 128x80 texels.  Motion admits at most one
+ * complete board update every twelve vblanks; the software renderer and staged
+ * VRAM upload may take longer on a card-heavy frame, but never lower the
+ * source resolution.  The HUD is always sprites at the screen's own
+ * resolution. */
 #define SNES_BOARD_LINES  160
 #define SNES_HUD_LINES    (224 - SNES_BOARD_LINES)
 
 #define SNES_STILL_W      128
 #define SNES_STILL_H      80
-#define SNES_MOVING_W     64
-#define SNES_MOVING_H     40
+#define SNES_MOVING_W     SNES_STILL_W
+#define SNES_MOVING_H     SNES_STILL_H
+#define SNES_MOTION_FIELDS 12       /* minimum interval: 60.1 Hz / 12 */
 
-/* Camera motion uses the whole display, including the area below line 160.
- * 32x28 at 8x8 fits one vblank including per-row DMA setup and OAM.  The old
- * 64x56 window overran that budget and left stale fragments in VRAM. */
-#define SNES_BEND_W       32
-#define SNES_BEND_H       28
+/* Camera motion remains in the same 128x80 board surface.  The HUD stays
+ * outside that surface and remains readable while the camera turns or lifts. */
+#define SNES_BEND_W       SNES_STILL_W
+#define SNES_BEND_H       SNES_STILL_H
 
 /* The HUD band is always 2x2 and ALWAYS reads framebuffer rows 80..111, in
- * the two ordinary board resolutions. Camera motion has no bitmap HUD band.
+ * every 3D board state, including camera motion.
  *
  * That fixed row is not a convenience, it is what lets the vertical offset
  * stay zero for the whole screen.  With D = 4.0 the band's source row is
@@ -74,11 +73,10 @@ enum SnesView     { SNES_VIEW_BOARD = 0, SNES_VIEW_TOP = 1 };
  * These look eight times too big and are not.  Mode 7 samples a 1024x1024
  * space of PIXELS and a tilemap entry covers 8x8 of them, so an A of 4.0
  * advances the source by four pixels a screen pixel -- half a tilemap entry --
- * and one chunky texel lands on exactly 2x2 screen pixels.  2.0 gives 4x4.
- * Both are powers of two, so neither shimmers. */
+ * and one chunky texel lands on exactly 2x2 screen pixels.  The moving and
+ * bend enums use this same scale; they select cadence and camera state rather
+ * than a lower-resolution picture. */
 #define SNES_M7_SCALE_STILL   0x0400
-#define SNES_M7_SCALE_MOVING  0x0200
-#define SNES_M7_SCALE_BEND    0x0100
 
 extern u8 snes_fb[];             /* snes_fb.asm, bank $7F */
 void snesSpanFloorQuad(u16 index, u16 count, u16 u, u16 v, u16 du, u16 dv);
@@ -117,8 +115,8 @@ u8   snesVideoBoardRes(void);
 void snesVideoSetView(u8 view);         /* enum SnesView */
 u8   snesVideoView(void);
 /* Hand the presenter a finished frame.  The still frame is 14336 bytes, which
- * is more than one NTSC vblank of DMA, so it is uploaded over three vblanks
- * top-down; the moving frame is 3584 and always goes up in one.  Call once a
+ * is more than one NTSC vblank of DMA, so it is uploaded over five bounded
+ * vblanks top-down, leaving room for OAM and one card-row DMA.  Call once a
  * frame; it returns non-zero once the frame is fully on screen. */
 u8   snesVideoPresent(void);
 u8   snesVideoPresentDone(void);        /* is the last frame fully uploaded? */

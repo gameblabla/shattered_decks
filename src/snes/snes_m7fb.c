@@ -7,9 +7,9 @@
  *
  *  Why HDMA at all.  With B = C = 0 and the centre at the origin the Mode 7
  *  matrix is a pure scale: source x = A * screen_x, source y = D * screen_y +
- *  VOFS.  One A for the whole screen would mean that when the board drops to
- *  the 64x40 moving resolution the HUD text under it quadruples in size and
- *  stops fitting.  Three HDMA channels -- A, D and VOFS, two entries each --
+ *  VOFS.  A different board scale would make the HUD text under it change
+ *  size and stop fitting.  Three HDMA channels -- A, D and VOFS, two entries
+ *  each --
  *  buy a different scale per band for the cost of a 12-byte table, and HDMA
  *  writes during active display are the one form of mid-frame PPU write the
  *  hardware is built for.
@@ -116,12 +116,13 @@ static u8 hud_pending = 0;
  * carries something under 6 KB in total and the whole of it is shared.
  *
  * THE SPRITE LAYER IS PAID FIRST AND THE BOARD GETS WHAT IS LEFT.  OAM is 544
- * bytes whenever the list changed and a card face is 512, so 24 rows -- 3072
- * bytes -- keeps the worst frame at about 4.1 KB and leaves room for the C
- * that drives all three.  Overspend and the rows past the end of the window
- * are simply not written: a black board under a framebuffer that is perfectly
- * correct in WRAM, which reads as a renderer bug and is not one. */
-#define STILL_ROWS_PER_VBL  24
+ * bytes whenever the list changed and a card face is 512.  Sixteen rows --
+ * 2048 bytes -- leaves room for OAM plus one card row even during a camera
+ * handoff, when both the object list and the board can become dirty together.
+ * Overspend and the rows past the end of the window are simply not written: a
+ * black board under a framebuffer that is perfectly correct in WRAM, which
+ * reads as a renderer bug and is not one. */
+#define STILL_ROWS_PER_VBL  16
 
 /* Fill the plate's table once.  The ramp is walked in 8.8 rather than divided
  * per line: 816-tcc has no divide worth spending here, and both steps happen
@@ -169,33 +170,17 @@ static void hdma_entry(u8 *t, u16 lines, u16 value)
 
 /* Build the two-band table for the current resolution.
  *
- * Board band, lines 0..159: scale S (4.0 still, 2.0 moving), source row 0 at
- * screen line 0.
+ * Board band, lines 0..159: scale 4.0 for every 3D board state, source row 0
+ * at screen line 0.  Motion has its own update cadence, not a coarser source
+ * rectangle.
  * HUD band, lines 160..223: always 4.0, which maps those lines onto rows
  * 80..111 on its own.  M7VOFS stays zero for the whole screen -- see
  * SNES_HUD_ROW: a per-band VOFS written by HDMA applies to the entire frame,
  * not to its band, and shifts the board off the top of the screen.
- *
- * The bend is the one exception: its 32x28 source covers the entire display
- * at 8x8, so all 224 scanlines use one scale while the camera is interpolated
- * between the hand and top-view endpoints. */
+ * Camera motion uses the same board band and leaves the HUD at the same scale. */
 static void build_hdma(void)
 {
-    u16 scale;
-
-    if (board_res == SNES_RES_BEND) {
-        hdma_entry(&hdma_a[0], 127, SNES_M7_SCALE_BEND);
-        hdma_entry(&hdma_a[3], 224 - 127, SNES_M7_SCALE_BEND);
-        hdma_a[6] = 0;
-
-        hdma_entry(&hdma_d[0], 127, SNES_M7_SCALE_BEND);
-        hdma_entry(&hdma_d[3], 224 - 127, SNES_M7_SCALE_BEND);
-        hdma_d[6] = 0;
-        return;
-    }
-
-    scale = (board_res == SNES_RES_STILL) ? SNES_M7_SCALE_STILL
-                                          : SNES_M7_SCALE_MOVING;
+    const u16 scale = SNES_M7_SCALE_STILL;
 
     /* The board band is 160 lines and an HDMA line count tops out at 127. */
     hdma_entry(&hdma_a[0], 127, scale);
@@ -437,9 +422,16 @@ static void apply_view(void)
         REG_BGMODE = 0x03;
         REG_CGWSEL = 0x00;
     } else {
+        /* Disabling HDMA for the resident top view leaves the channels at
+         * whatever table position the last board field reached.  Enabling
+         * $420C again does not rewind those tables on every SNES/clone, so a
+         * return to Mode 7 can leave the matrix stuck at the camera's last
+         * transition scale.  Re-prime the three channels while we are already
+         * in vblank; this changes no VRAM and keeps the handoff unblanked. */
+        REG_COLDATA = COL_BLACK;
+        arm_hdma();
         REG_BGMODE = BG_MODE7;
         REG_CGWSEL = CM_DIRCOLOR;
-        REG_HDMAEN = 0x70;
     }
     view = view_pending;
 }
@@ -455,7 +447,7 @@ u8 snesVideoBoardRes(void) { return board_res; }
 
 /* Whether the frame in the buffer is entirely on screen.
  *
- * A still frame takes three vblanks to upload and every render restarts that
+ * A full board frame takes several vblanks to upload and every render restarts that
  * upload at the top, so a scene that redraws on every game frame would show
  * only the first thirty-eight rows -- for ever.  Presentation asks this before
  * it animates in the still resolution.
@@ -481,9 +473,9 @@ void snesVideoHudDirty(void)
  * screen.
  *
  * Mode 7 has no second tilemap base, so there is no page flip: this staged
- * upload IS the double-buffering story, and it is why the moving frame is
- * sized to fit a single vblank.  A still frame is only produced when the board
- * has settled, so refreshing an unchanging image over three vblanks is
+ * upload IS the double-buffering story.  Every board state uses the full
+ * 128x80 source and the motion path waits between complete uploads, so
+ * refreshing an unchanging image over those vblanks is
  * invisible. */
 u8 snesVideoPresent(void)
 {
@@ -521,26 +513,13 @@ u8 snesVideoPresent(void)
         return 1;
     }
 
-    if (board_res == SNES_RES_STILL) {
-        /* Board rows 0..79, full stride: 10240 bytes over three vblanks. */
-        total = SNES_STILL_H;
-        width = SNES_FB_STRIDE;
-        rows = STILL_ROWS_PER_VBL;
-    } else if (board_res == SNES_RES_BEND) {
-        /* The bend is 32x28 texels over the whole screen: 896 bytes, one
-         * vblank, which is what makes a live camera affordable here. */
-        total = SNES_BEND_H;
-        width = SNES_BEND_W;
-        rows = SNES_BEND_H;
-    } else {
-        /* The moving board is 64 texels inside a 128 stride, so it is a
-         * windowed upload: 40 short rows, 2560 bytes, one vblank. */
-        total = SNES_MOVING_H;
-        width = SNES_MOVING_W;
-        /* Windowed DMA pays a register setup per row.  Forty rows plus OAM
-         * can overrun vblank even though the byte count alone fits. */
-        rows = 20;
-    }
+    /* Every 3D state presents the same 128x80 board.  Five bounded passes keep
+     * each vblank inside the DMA budget even when OAM and one card row are
+     * queued beside it; the duel schedules motion renders at a fixed minimum
+     * interval instead of shrinking the source image. */
+    total = SNES_STILL_H;
+    width = SNES_FB_STRIDE;
+    rows = STILL_ROWS_PER_VBL;
 
     if (present_row + rows > total) rows = (u8)(total - present_row);
     snesFbPresentRows(present_row, rows, width);

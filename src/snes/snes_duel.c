@@ -13,16 +13,15 @@
  *  The board view is the textured slab in perspective: twenty slots with their
  *  cards lying on them, a marker under the slot in question, and the card being
  *  played held in the air over its target through the convex-quad path.  Its
- *  three working rectangles are what the whole video model exists for --
- *  64x40 texels while ordinary board motion is active, 32x28 during camera motion,
- *  and 128x80 once the board settles, with the PPU doing the doubling.  The
- *  lift's full-screen rectangle lets the live camera use one scale through
- *  the HUD boundary without uploading more than one field can carry.
+ *  128x80 board rectangle is used at rest and during motion.  Motion has
+ *  a twelve-vblank minimum interval, which keeps the full-detail picture
+ *  stable while the presenter uploads it in chunks.  Card-heavy frames can
+ *  take longer than that renderer/upload floor without changing resolution.
  *
  *  The top view is the same board as a flat table: Mode 3, the full 256x224,
  *  no software rendering at all and therefore sixty fields a second.  It is
  *  the view the other ports call the tactical top view.  UP first runs a short
- *  live camera lift through the moving resolution, with the hand sliding out
+ *  live camera lift through the fixed-detail board surface, with the hand sliding out
  *  of the way, and DOWN plays the same path in reverse.
  *
  *  NOTHING IN THE HUD IS DRAWN INTO THE BITMAP any more.  Life points, the
@@ -128,11 +127,11 @@
 
 #define VIEW_ANIM_FRAMES       8
 #define VIEW_HAND_OFFSET       80
-/* At 90 degrees of pitch, a 16-pixel focal length and 2 2/3 units of height
- * project one slot to six texels / 48 screen pixels, matching the top table. */
+/* At 90 degrees of pitch, this focal length keeps the camera lift in the same
+ * 128x80 board surface as the ordinary perspective view. */
 #define VIEW_TOP_Z              ((s16)0)
 #define VIEW_TOP_HEIGHT        ((s16)683)
-#define VIEW_TRANSITION_FOCAL  ((s16)4096) /* 16 viewport pixels, Q8.8 */
+#define VIEW_TRANSITION_FOCAL  ((s16)((u16)SNES_STILL_W << 7))
 
 enum SnesDuelUi {
     UI_HAND = 0,        /* choosing a card in hand */
@@ -181,6 +180,7 @@ static u8 turn_target = 0;
 static u8 turn_top = 0;
 static u8 texture_faces[20];
 static u8 texture_w = 0, texture_h = 0;
+static u16 motion_next_vblank = 0;
 #define TURN_FRAMES 16
 static const char *message = 0;
 static u8  message_timer = 0;
@@ -200,10 +200,9 @@ static u8  show_cards = 1;
  * looks like the real one is exactly how that happens. */
 static u8  autoplay = 0;
 
-/* Y pins the board to the moving resolution.  The duel picks the resolution
- * itself -- moving while something is changing, still once it settles -- so a
- * plain toggle would be undone by the next frame; what this is for is holding
- * the cheap resolution still enough to MEASURE it. */
+/* Y pins the board to the moving cadence.  The source stays 128x80; this
+ * switch keeps the five-updates-per-second path active long enough to inspect
+ * it in the harness. */
 static u8  force_moving = 0;
 
 static void render(void);
@@ -211,23 +210,14 @@ static void build_objects(void);
 
 static void set_viewport(void)
 {
-    if (snesVideoBoardRes() == SNES_RES_STILL) {
-        vp.w = SNES_STILL_W;
-        vp.h = SNES_STILL_H;
-    } else if (snesVideoBoardRes() == SNES_RES_BEND) {
-        vp.w = SNES_BEND_W;
-        vp.h = SNES_BEND_H;
-    } else {
-        vp.w = SNES_MOVING_W;
-        vp.h = SNES_MOVING_H;
-    }
+    vp.w = SNES_STILL_W;
+    vp.h = SNES_STILL_H;
     vp.origin = 0;
     vp.stride = SNES_FB_STRIDE;
 
     /* The focal length is half the viewport width, which is what makes the
      * floor's texture step a shift rather than a divide: 32 texels a world
-     * unit over a focal length of w/2 is exactly 2 texels a pixel at w = 128
-     * and 1 at w = 64.  See snesDrawFloor. */
+     * unit over a focal length of w/2 is exactly 2 texels per pixel here. */
     cam.focal  = (s16)((u16)vp.w << 7);
     /* `du_k` is 32 / focal in Q8.8.  The focal length is deliberately one of
      * the two power-of-two values above, so spell the result as constants and
@@ -235,7 +225,7 @@ static void set_viewport(void)
      * makes the board's texture walk depend on the uninitialised viewport
      * storage, which looks like a bad card mapper rather than a missing
      * viewport setup. */
-    vp.du_k = (vp.w >= SNES_STILL_W) ? 128 : 256;
+    vp.du_k = 128;
     /* The horizon sits a thirty-second of the band down, which puts the
      * SLAB'S FRONT WALL clear of the bottom of the board band with black
      * under it.  That black is what makes the wall read as the near face of a
@@ -279,14 +269,29 @@ static void set_view_transition_camera(u8 frame, u8 to_top)
     cam.horizon = 0;
     if (snesProjectQ(&cam, &vp, 0, 0, 0, &centre_x, &centre_y))
         cam.horizon = (view_lerp(2432, 3584, t) - centre_y) >> 8;
-    /* 32 floor texels per world unit / 16 viewport pixels, in Q8.8. */
-    vp.du_k = 512;
+    /* 32 floor texels per world unit / 64 viewport pixels, in Q8.8. */
+    vp.du_k = 128;
+}
+
+static u8 motion_frame_due(void)
+{
+    return (s16)(snes_vblank_count - motion_next_vblank) >= 0;
+}
+
+static void schedule_motion_frame(void)
+{
+    /* Keep an absolute 12-field phase.  A full board render can take longer
+     * than one 12-field slot; advancing from the previous deadline lets the
+     * next complete upload start as soon as it is ready instead of adding an
+     * avoidable second wait after every render. */
+    motion_next_vblank = (u16)(motion_next_vblank + SNES_MOTION_FIELDS);
 }
 
 static void begin_view_transition(u8 to_top)
 {
     view_motion = to_top ? VIEW_TO_TOP : VIEW_TO_HAND;
     view_anim_frame = 0;
+    motion_next_vblank = snes_vblank_count;
     if (!to_top) {
         /* The top table remains visible until snesVideoPresent applies the
          * pending Mode 7 switch; the object list is already the first frame
@@ -312,6 +317,11 @@ static void finish_view_transition(u8 to_top)
         view_motion = VIEW_BOARD_REST;
         snesVideoSetView(SNES_VIEW_BOARD);
         snesVideoSetBoardRes(SNES_RES_STILL);
+        /* The top view may have stayed resident while the rules advanced.  On
+         * the way back, choose the board-facing yaw from the current owner so
+         * the perspective endpoint is the same camera the duel would use if
+         * the player had never opened the table view. */
+        board_yaw = g_duel.turn_owner ? 128 : 0;
         snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, 0, 0);
         cam.yaw = board_yaw;
         set_viewport();
@@ -331,10 +341,15 @@ static void step_view_transition(void)
         }
         return;
     }
+    if (!motion_frame_due()) {
+        build_objects();
+        return;
+    }
     set_view_transition_camera(view_anim_frame, to_top);
     board_dirty = 1;
     render();
     build_objects();
+    schedule_motion_frame();
     if (view_anim_frame >= VIEW_ANIM_FRAMES && !to_top)
         finish_view_transition(0);
     else ++view_anim_frame;
@@ -988,6 +1003,7 @@ void snesDuelEnter(void)
     view_anim_frame = 0;
     board_yaw = turn_frame = turn_from = turn_target = turn_top = 0;
     texture_w = texture_h = 0;
+    motion_next_vblank = snes_vblank_count;
     snesVideoSetView(SNES_VIEW_BOARD);
     snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, 0, 0);
     snesVideoSetBoardRes(SNES_RES_STILL);
@@ -1064,8 +1080,13 @@ void snesDuelFrame(void)
         snesVideoSetBoardRes(SNES_RES_BEND);
         set_viewport();
         turn_frame = 1;
+        motion_next_vblank = snes_vblank_count;
     }
     if (turn_frame) {
+        if (!motion_frame_due()) {
+            build_objects();
+            goto stamp;
+        }
         u16 t = view_anim_ease((u8)((turn_frame + 1) >> 1));
         board_yaw = (u8)view_lerp(turn_from, turn_target, t);
         if (turn_top) set_view_transition_camera(VIEW_ANIM_FRAMES, 1);
@@ -1077,6 +1098,7 @@ void snesDuelFrame(void)
         }
         render();
         build_objects();
+        schedule_motion_frame();
         if (++turn_frame > TURN_FRAMES) {
             turn_frame = 0;
             board_yaw = turn_target;
@@ -1120,17 +1142,13 @@ void snesDuelFrame(void)
 
     /* A CARD IN THE AIR IS SOMETHING CHANGING.  While the player is choosing
      * where to put a card, the card hovers over the slot and bobs, so the board
-     * stays in the moving resolution and keeps being redrawn -- which is what
-     * the moving resolution is for, and what makes the difference between a
-     * card that is being held and one that has been dropped visible at all. */
+     * stays on the fixed five-update cadence and keeps being redrawn. */
     if (ui == UI_PLACE || ui == UI_EQUIP_TARGET) touch_board(2);
 
-    /* THE BOARD DROPS TO THE MOVING RESOLUTION WHILE SOMETHING IS CHANGING and
-     * returns to the still one when it settles.  That is what the two
-     * resolutions are for: a quarter of the pixels while the picture is in
-     * flux, the full board once it is worth looking at.  A still frame also
-     * takes three vblanks to upload and a redraw restarts that upload, so the
-     * settled board is only redrawn once the last one is entirely on screen. */
+    /* The board keeps its 128x80 source while something is changing.  A
+     * movement frame is admitted only every twelve vblanks; the upload and
+     * renderer therefore have a constant visual cadence instead of changing
+     * the board's texel size. */
     /* THE TOP VIEW RENDERS NOTHING.  Its table is a resident tilemap and its
      * cards are sprites, so while it is up there is no board to draw, no
      * resolution to pick and no bitmap to upload -- the duel runs at sixty
@@ -1143,14 +1161,17 @@ void snesDuelFrame(void)
 
     if (motion || force_moving) {
         if (motion) --motion;
-        lift_phase += 8;
         if (res != SNES_RES_MOVING) {
             snesVideoSetBoardRes(SNES_RES_MOVING);
             set_viewport();
             res = SNES_RES_MOVING;
             resized = 1;
+            motion_next_vblank = snes_vblank_count;
         }
-        board_dirty = 1;
+        if (motion_frame_due()) {
+            lift_phase += 8;
+            board_dirty = 1;
+        }
     } else if (res != SNES_RES_STILL && snesVideoPresentDone()) {
         snesVideoSetBoardRes(SNES_RES_STILL);
         set_viewport();
@@ -1159,8 +1180,10 @@ void snesDuelFrame(void)
         board_dirty = 1;
     }
 
-    if (board_dirty && (resized || snesVideoPresentDone()))
+    if (board_dirty && (resized || snesVideoPresentDone())) {
         render();
+        if (res == SNES_RES_MOVING) schedule_motion_frame();
+    }
     build_objects();
 
 stamp:
