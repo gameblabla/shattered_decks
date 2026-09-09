@@ -63,6 +63,16 @@ rs_page           dw          ; the face's page, already in the high byte
 rs_tmp            dw
 rs_bits           dw          ; the glyph row the text blitter is shifting
 rs_ink            dw
+rs_dst            dw
+rs_width          dw
+rs_height         dw
+rs_row            dw
+rs_col            dw
+rs_flip           dw
+.ENDS
+
+.RAMSECTION "snes_board_texture_ram" BANK $7F SLOT 3 ALIGN 256 KEEP
+snes_board_texture dsb 32768
 .ENDS
 
 .BASE $C0
@@ -360,6 +370,215 @@ _sq_loop:
     pld
     plb
 _sq_out:
+    plp
+    rtl
+
+; Camera floor: signed Q8.8 u/v increments, wrapping the 256x64 texture.
+snesSpanFloorQuad:
+    php
+    rep #$30
+    lda 7,s
+    beq _fq_out
+    clc
+    adc 5,s
+    sta.l rs_end
+    lda 9,s
+    sta.l rs_u
+    lda 11,s
+    sta.l rs_v
+    lda 13,s
+    sta.l rs_du
+    lda 15,s
+    sta.l rs_dv
+    lda 5,s
+    tay
+    phb
+    phd
+    lda #rs_ufrac
+    tad
+    pea $7F7F
+    plb
+    plb
+_fq_loop:
+    lda.b <rs_u
+    clc
+    adc.b <rs_du
+    sta.b <rs_u
+    xba
+    and #$00FF
+    sta.b <rs_tmp
+    lda.b <rs_v
+    clc
+    adc.b <rs_dv
+    sta.b <rs_v
+    and #$7F00
+    ora.b <rs_tmp
+    tax
+    sep #$20
+.ACCU 8
+    lda.l snes_board_texture,x
+    sta.w snes_fb,y
+    rep #$20
+.ACCU 16
+    iny
+    cpy.b <rs_end
+    bne _fq_loop
+    pld
+    plb
+_fq_out:
+    plp
+    rtl
+
+; A world-space board image, shared by every camera pose.  The second half
+; repeats the 64-row floor pattern; card stamps then cover their own slots.
+snesBoardTextureClear:
+    php
+    rep #$30
+    ldx #0
+_bt_clear:
+    lda.l snes_floor_tex,x
+    sta.l snes_board_texture,x
+    sta.l snes_board_texture+16384,x
+    inx
+    inx
+    cpx #16384
+    bne _bt_clear
+    plp
+    rtl
+
+; centre = (world texture v << 8) | u; face is a 16x16 ROM image.
+; Stamp dimensions vary towards the native top view's 32/48 cell coverage.
+snesBoardTextureCard:
+    php
+    rep #$30
+    lda 7,s
+    xba
+    and #$FF00
+    sta.l rs_page
+    lda 9,s
+    sta.l rs_flip
+    lda 11,s
+    sta.l rs_width
+    lsr a
+    sta.l rs_tmp
+    lda 5,s
+    sec
+    sbc.l rs_tmp
+    and #$00FF
+    sta.l rs_dst
+    lda 13,s
+    sta.l rs_height
+    lsr a
+    xba
+    sta.l rs_tmp
+    lda 5,s
+    sec
+    sbc.l rs_tmp
+    and #$7F00
+    ora.l rs_dst
+    sta.l rs_dst
+
+    lda #4096
+    sta.l $4204
+    sep #$20
+.ACCU 8
+    lda.l rs_width
+    sta.l $4206
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    rep #$20
+.ACCU 16
+    lda.l $4214
+    sta.l rs_du
+    lda #4096
+    sta.l $4204
+    sep #$20
+.ACCU 8
+    lda.l rs_height
+    sta.l $4206
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    rep #$20
+.ACCU 16
+    lda.l $4214
+    sta.l rs_dv
+    lda #0
+    sta.l rs_v
+    lda.l rs_flip
+    bne _bt_setup
+    lda #4095
+    sta.l rs_v
+    lda.l rs_dv
+    eor #$FFFF
+    inc a
+    sta.l rs_dv
+_bt_setup:
+    phb
+    phd
+    lda #rs_ufrac
+    tad
+    pea $7F7F
+    plb
+    plb
+_bt_row:
+    lda.b <rs_v
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    and #$00F0
+    ora.b <rs_page
+    sta.b <rs_tmp
+    lda #0
+    sta.b <rs_u
+    lda.b <rs_width
+    sta.b <rs_col
+    lda.b <rs_dst
+    tay
+_bt_pixel:
+    lda.b <rs_u
+    xba
+    and #$000F
+    ora.b <rs_tmp
+    tax
+    sep #$20
+.ACCU 8
+    lda.l snes_card_tex,x
+    sta.w snes_board_texture,y
+    rep #$20
+.ACCU 16
+    iny
+    lda.b <rs_u
+    clc
+    adc.b <rs_du
+    sta.b <rs_u
+    dec.b <rs_col
+    bne _bt_pixel
+    lda.b <rs_v
+    clc
+    adc.b <rs_dv
+    sta.b <rs_v
+    lda.b <rs_dst
+    clc
+    adc #256
+    and #$7FFF
+    sta.b <rs_dst
+    dec.b <rs_height
+    bne _bt_row
+    pld
+    plb
     plp
     rtl
 

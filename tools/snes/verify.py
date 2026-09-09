@@ -1183,7 +1183,7 @@ def card_sprite_pixels(face, hi=False):
     return out
 
 
-def identify_card_sprite(px, w, h, x0, y0, hi=False):
+def identify_card_sprite(px, w, h, x0, y0, hi=False, vflip=False):
     """Which face a 32x32 sprite on screen is, and how exactly.
 
     Returns (face, matching pixels) for the best face.  A sprite is pixel exact,
@@ -1195,7 +1195,7 @@ def identify_card_sprite(px, w, h, x0, y0, hi=False):
         for x in range(32):
             if not (0 <= x0 + x < w and 0 <= y0 + y < h):
                 return None
-            obs.append(screen5(px, w, x0 + x, y0 + y))
+            obs.append(screen5(px, w, x0 + x, y0 + (31 - y if vflip else y)))
     best = None
     for face in range(len(group)):
         want = card_sprite_pixels(face, hi)
@@ -1449,7 +1449,7 @@ def check_duel_plays_out():
 def run_top(capture=None):
     """The fixture board, then UP into the tactical top view."""
     return run("topview", [press("R", DUEL_READY),
-                            press("UP", DUEL_READY + 400)], 3000,
+                            press("UP", DUEL_READY + 400)], 3800,
                capture=capture)
 
 
@@ -1470,7 +1470,8 @@ def check_top_view():
         for col in range(5):
             got = identify_card_sprite(px, w, h,
                                        TOP_X0 + col * TOP_CELL + 8,
-                                       TOP_Y0 + row * TOP_CELL + 8)
+                                       TOP_Y0 + row * TOP_CELL + 8,
+                                       vflip=row < 2)
             if got and got[1] >= 1024 * 0.98:
                 found.append((row, col, got[0]))
                 exact.append(got[1])
@@ -1539,7 +1540,7 @@ def check_top_view():
 
 
 def check_top_view_switch_is_seamless():
-    """THE MODE CHANGE SHOWS NO BLACK FRAME, and that is the whole design.
+    """THE HAND-TO-TOP CAMERA LIFT stays lit and visibly changes pose.
 
     Both pictures are resident -- the bitmap owns VRAM words $0000-$3FFF, the
     sprites $4000-$5FFF and the top view $6000-$73FF -- and one CGRAM serves
@@ -1547,7 +1548,9 @@ def check_top_view_switch_is_seamless():
     This captures every field across the UP press and demands that not one of
     them is blank.  A force-blanked switch, or one that reloaded VRAM, would
     put at least one black or half-drawn field in here."""
-    run_top(capture=(600, 700, 1))
+    # run_top presses UP at DUEL_READY + 400; capture the lift itself rather
+    # than an unrelated settled-board interval before the input.
+    run_top(capture=(DUEL_READY + 300, DUEL_READY + 1000, 1))
     frames = sorted(os.listdir(os.path.join(OUT, "topview.frames")))
     if len(frames) < 40:
         raise Failure("captured %d fields across the switch, need at least 40"
@@ -1564,8 +1567,52 @@ def check_top_view_switch_is_seamless():
         raise Failure("a field across the switch has %d lit samples against a "
                       "typical %d -- the mode change is blanking the screen"
                       % (worst, typical))
+    unique = set()
+    for name in frames:
+        w, h, px = read_ppm(os.path.join(OUT, "topview.frames", name))
+        unique.add((w, h, px))
+    if len(unique) < 8:
+        raise Failure("the captured UP interval has only %d unique frames -- "
+                      "the camera lift is not animating" % len(unique))
+    # The first native top frame must already contain the complete field.
+    # Previously Mode 3 appeared first and its cards loaded one by one.
+    _, _, final = read_ppm(os.path.join(OUT, "topview.ppm"))
+    anchors = [(TOP_X0 + 4, TOP_Y0 + 4),
+               (TOP_X0 + TOP_CELL + 4, TOP_Y0 + 4),
+               (TOP_X0 + 4, TOP_Y0 + 3 * TOP_CELL + 4)]
+    def at(data, x, y):
+        return data[(y * 256 + x) * 3:(y * 256 + x + 1) * 3]
+    for name in frames:
+        _, _, data = read_ppm(os.path.join(OUT, "topview.frames", name))
+        if not all(at(data, x, y) == at(final, x, y) for x, y in anchors):
+            continue
+        for row in range(4):
+            for col in range(5):
+                x, y = TOP_X0 + col * TOP_CELL + 8, TOP_Y0 + row * TOP_CELL + 8
+                for dy in range(32):
+                    start = ((y + dy) * 256 + x) * 3
+                    if data[start:start + 96] != final[start:start + 96]:
+                        raise Failure("first native top frame %s has an incomplete card at %d,%d"
+                                      % (name, row, col))
+        break
+    else:
+        raise Failure("the camera capture never reached the native top table")
     return "%d fields across the switch, quietest %d lit samples against %d" % (
         len(frames), worst, typical)
+
+
+def check_camera_round_trip():
+    before, _ = run_fixture()
+    _, _, reference = read_ppm(before)
+    after, wram = run("camera_roundtrip", [press("R", DUEL_READY),
+        press("UP", DUEL_READY + 400), press("DOWN", DUEL_READY + 1700)], 5000)
+    stamp = read_stamp(wram)
+    _, _, pixels = read_ppm(after)
+    if stamp["board_res"] != 1 or UI[stamp["ui"]] != "HAND":
+        raise Failure("UP/DOWN did not return to the resting hand view")
+    if pixels[24 * 256 * 3:160 * 256 * 3] != reference[24 * 256 * 3:160 * 256 * 3]:
+        raise Failure("the board changed geometry or lost cards during UP/DOWN")
+    return "UP/DOWN restores the original board pixels exactly"
 
 
 CHECKS = [
@@ -1589,6 +1636,7 @@ CHECKS = [
     ("hand per-face art", check_hand_is_per_face),
     ("top view", check_top_view),
     ("top view switch", check_top_view_switch_is_seamless),
+    ("camera round trip", check_camera_round_trip),
     ("duel flow", check_duel_flow),
     ("duel plays out", check_duel_plays_out),
     ("render cost", check_render_cost),

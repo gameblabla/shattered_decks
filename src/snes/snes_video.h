@@ -9,15 +9,14 @@
  *          with the field's cards on it as sprites.  No software rendering at
  *          all, so it also runs at sixty fields a second.
  *
- *  THE SWITCH BETWEEN THEM IS THREE REGISTER WRITES AND NO FORCE BLANK.  Both
- *  pictures are resident: the bitmap owns VRAM words $0000-$3FFF, the sprites
- *  $4000-$5FFF and the top view $6000-$73FF, and one CGRAM serves both (Mode 7
- *  direct colour reads none of it).  So changing view rewrites no VRAM and no
- *  CGRAM, needs no blanking window, and shows no black frame in between --
- *  which is the whole reason the top view's assets are preloaded at boot
- *  rather than swapped in.  The three writes still happen in vblank, because
- *  nothing but HDMA writes a PPU register during active display; see
- *  SNES_PORT_PLAN.md §11.
+ *  THE RESTING SWITCH BETWEEN THEM IS THREE REGISTER WRITES AND NO FORCE
+ *  BLANK.  Both pictures are resident: the bitmap owns VRAM words $0000-$3FFF,
+ *  the sprites $4000-$5FFF and the top view $6000-$73FF, and one CGRAM serves
+ *  both (Mode 7 direct colour reads none of it).  The duel renders the short
+ *  hand-to-top camera lift in the moving resolution; only its endpoint changes
+ *  modes, so the top view still needs no asset upload or black loading frame.
+ *  The three endpoint writes happen in vblank, because nothing but HDMA writes
+ *  a PPU register during active display; see SNES_PORT_PLAN.md §11.
  * ───────────────────────────────────────────────────────────────────────────── */
 #ifndef WAIFU_SNES_VIDEO_H
 #define WAIFU_SNES_VIDEO_H
@@ -46,25 +45,14 @@
 #define SNES_MOVING_W     64
 #define SNES_MOVING_H     40
 
-/* THE BEND IS A THIRD RESOLUTION AND IT OWNS THE WHOLE SCREEN.
- *
- * Walking up into the tactical view is a camera move -- the lens lengthens
- * while the camera backs off, so the board flattens instead of cutting -- and
- * it has to arrive on the SAME rectangle Mode 3's table stands on, which runs
- * from line 16 to line 208.  The board band cannot reach that: it stops at
- * 159 and the HUD band owns what is under it.  So for the length of the bend
- * there is no band split at all -- one scale for all 224 lines -- and 32x28
- * texels at 8x8 screen pixels each is exactly that screen.
- *
- * A quarter of the moving frame's pixels is what pays for it: the camera is
- * moving on every one of these frames and none of them is looked at for more
- * than a field, which is the same bargain the moving resolution already makes,
- * taken one step further. */
+/* Camera motion uses the whole display, including the area below line 160.
+ * 32x28 at 8x8 fits one vblank including per-row DMA setup and OAM.  The old
+ * 64x56 window overran that budget and left stale fragments in VRAM. */
 #define SNES_BEND_W       32
 #define SNES_BEND_H       28
 
 /* The HUD band is always 2x2 and ALWAYS reads framebuffer rows 80..111, in
- * both board resolutions.
+ * the two ordinary board resolutions. Camera motion has no bitmap HUD band.
  *
  * That fixed row is not a convenience, it is what lets the vertical offset
  * stay zero for the whole screen.  With D = 4.0 the band's source row is
@@ -86,13 +74,16 @@ enum SnesView     { SNES_VIEW_BOARD = 0, SNES_VIEW_TOP = 1 };
  * These look eight times too big and are not.  Mode 7 samples a 1024x1024
  * space of PIXELS and a tilemap entry covers 8x8 of them, so an A of 4.0
  * advances the source by four pixels a screen pixel -- half a tilemap entry --
- * and one chunky texel lands on exactly 2x2 screen pixels.  8.0 gives 4x4.
+ * and one chunky texel lands on exactly 2x2 screen pixels.  2.0 gives 4x4.
  * Both are powers of two, so neither shimmers. */
 #define SNES_M7_SCALE_STILL   0x0400
 #define SNES_M7_SCALE_MOVING  0x0200
-#define SNES_M7_SCALE_BEND    0x0800
+#define SNES_M7_SCALE_BEND    0x0100
 
 extern u8 snes_fb[];             /* snes_fb.asm, bank $7F */
+void snesSpanFloorQuad(u16 index, u16 count, u16 u, u16 v, u16 du, u16 dv);
+void snesBoardTextureClear(void);
+void snesBoardTextureCard(u16 centre, u16 face, u16 flip, u16 width, u16 height);
 
 /* snes_raster.asm -- the span walkers.  Every pixel that reaches the
  * framebuffer is written by one of these three: C loops over the framebuffer

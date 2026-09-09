@@ -23,6 +23,7 @@ void snesCameraSet(SnesCamera *cam, s16 x, s16 z, s16 height, s16 focal,
     cam->height = height;
     cam->focal = focal;
     cam->horizon = horizon;
+    cam->yaw = cam->pitch = 0;
 }
 
 /* a / b as Q8.8, with BOTH signs taken off first and the result's sign put
@@ -47,8 +48,19 @@ u8 snesProjectQ(const SnesCamera *cam, const SnesViewport *vp,
 {
     /* Camera space: +z away from the viewer, so the board's far edge is at a
      * larger z than the camera and depth = wz - cam->z. */
-    s16 depth = wz - cam->z;
+    s16 depth;
     s16 rx, ry;
+    s16 x = wx, z = wz, h = cam->height - wy;
+    if (cam->yaw) {
+        x = snesQMul(wx, snesCos(cam->yaw)) - snesQMul(wz, snesSin(cam->yaw));
+        z = snesQMul(wx, snesSin(cam->yaw)) + snesQMul(wz, snesCos(cam->yaw));
+    }
+    depth = z - cam->z;
+    if (cam->pitch) {
+        s16 d = depth;
+        depth = snesQMul(d, snesCos(cam->pitch)) + snesQMul(h, snesSin(cam->pitch));
+        h = snesQMul(h, snesCos(cam->pitch)) - snesQMul(d, snesSin(cam->pitch));
+    }
     if (depth < 32) return 0;                    /* at or behind the near plane */
 
     /* The ratio is taken FIRST and scaled by the focal length second.  The
@@ -56,8 +68,8 @@ u8 snesProjectQ(const SnesCamera *cam, const SnesViewport *vp,
      * not fit: a 2.5-unit offset times a 64-pixel focal length is 40960 in
      * Q8.8, past the top of a signed word, and that overflow is exactly the
      * Atari ST fxdiv bug wearing different clothes. */
-    rx = signed_qdiv((s16)(wx - cam->x), depth);
-    ry = signed_qdiv((s16)(cam->height - wy), depth);
+    rx = signed_qdiv((s16)(x - cam->x), depth);
+    ry = signed_qdiv(h, depth);
     *out_x = (s16)((u16)((u16)(vp->w >> 1) << 8) + (u16)snesQMul(rx, cam->focal));
     *out_y = (s16)((u16)((u16)cam->horizon << 8) + (u16)snesQMul(ry, cam->focal));
     return 1;
@@ -404,6 +416,7 @@ void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
         v = (u16)((u16)v << 4);
         if (v > 0x0FFF) v = 0x0FFF;
         tex_v = (u16)((v >> 4) & 0x00F0);
+        if (row <= SNES_ROW_COM_MONSTER) tex_v ^= 0x00F0;
 
         /* Outwards from the centre: right first, then left. */
         l = acc_l;
@@ -519,8 +532,10 @@ u8 snesCardQuad(const SnesCamera *cam, const SnesViewport *vp,
             return 0;
         quad[i].x = ox;
         quad[i].y = oy;
-        quad[i].u = (i == 1 || i == 2) ? (s16)(SNES_CARD_TEXELS << 8) : 0;
-        quad[i].v = (i >= 2) ? (s16)(SNES_CARD_TEXELS << 8) : 0;
+        quad[i].u = (i == 1 || i == 2) ? (s16)((SNES_CARD_TEXELS << 8) - 1) : 0;
+        quad[i].v = (i >= 2) ? (s16)((SNES_CARD_TEXELS << 8) - 1) : 0;
+        if (row <= SNES_ROW_COM_MONSTER)
+            quad[i].v = (s16)((SNES_CARD_TEXELS << 8) - 1 - quad[i].v);
     }
     return 1;
 }
@@ -538,7 +553,8 @@ static void edge_init(EdgeWalk *e, const SnesVert *a, const SnesVert *b)
     e->y_end = (s16)(b->y >> 8);
 }
 
-void snesTexQuad(const SnesViewport *vp, const SnesVert *q, u8 face)
+static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
+                         const SnesCamera *cam)
 {
     const u16 page = snesCardPage(face);
     /* The affine gradient is a property of the whole polygon, so it is solved
@@ -562,6 +578,12 @@ void snesTexQuad(const SnesViewport *vp, const SnesVert *q, u8 face)
     s16 y, y_bottom;
     u8 top = 0, bottom = 0, li, ri, i;
     EdgeWalk left, right;
+    s16 cp = 0, sp = 0, cy = 0, sn = 0;
+
+    if (cam) {
+        cp = snesCos(cam->pitch); sp = snesSin(cam->pitch);
+        cy = snesCos(cam->yaw); sn = snesSin(cam->yaw);
+    }
 
     if (!den) return;
     dudx = signed_qdiv((s16)(snesQMul(au, by) - snesQMul(bu, ay)), den);
@@ -606,6 +628,37 @@ void snesTexQuad(const SnesViewport *vp, const SnesVert *q, u8 face)
         if (x1 > (s16)vp->w) x1 = (s16)vp->w;
         if (x1 <= x0) continue;
 
+        if (cam) {
+            /* Inverse camera ray / horizontal plane intersection.  Pitch
+             * changes depth per row; yaw rotates the two texture increments.
+             * Depth remains constant across a scanline (there is no roll). */
+            s16 sy = (y - cam->horizon) * (vp->w == 32 ? 16 : vp->w == 64 ? 8 : 4);
+            s16 denom = sp + snesQMul(sy, cp);
+            s16 depth, z, x, step, wx, wz, du, dv;
+            if (denom <= 0) continue;
+            depth = signed_qdiv(cam->height, denom);
+            z = cam->z + snesQMul(depth, cp - snesQMul(sy, sp));
+            step = depth >> (vp->w == 32 ? 4 : vp->w == 64 ? 5 : 6);
+            x = cam->x + (s16)snesMulLo((u16)step, (u16)(x0 - (vp->w >> 1)));
+            if (!cam->yaw) {
+                wx = x; wz = z; du = step * 32; dv = 0;
+            } else {
+                wx = snesQMul(x, cy) + snesQMul(z, sn);
+                wz = snesQMul(z, cy) - snesQMul(x, sn);
+                du = snesQMul(step, cy) * 32;
+                dv = -snesQMul(step, sn) * 32;
+            }
+            u = (u16)(wx * 32 + 4096);
+            v = (u16)(wz * 32);
+            snesSpanFloorQuad((u16)(vp->origin + (u16)y * vp->stride + x0),
+                              (u16)(x1 - x0), u - du, v - dv, du, dv);
+            continue;
+        }
+        if (face == SNES_CARD_NONE_FACE) {
+            snesSpanFill((u16)(vp->origin + (u16)y * vp->stride + x0),
+                          (u16)(x1 - x0), SNES_SLAB_WALL);
+            continue;
+        }
         dx = (s16)(((s16)x0 << 8) - q[0].x);
         dy = (s16)(((s16)y << 8) - q[0].y);
         u = (u16)(q[0].u + snesQMul(dudx, dx) + snesQMul(dudy, dy));
@@ -617,4 +670,34 @@ void snesTexQuad(const SnesViewport *vp, const SnesVert *q, u8 face)
                          (u16)(x1 - x0), (u16)(u - dudx), (u16)(v - dvdx),
                          (u16)dudx, (u16)dvdx, page);
     }
+}
+
+void snesTexQuad(const SnesViewport *vp, const SnesVert *q, u8 face)
+{
+    texture_quad(vp, q, face, 0);
+}
+
+void snesDrawCameraFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
+{
+    static const s16 xs[4] = { -640, 640, 640, -640 };
+    static const s16 zs[4] = { 512, 512, -512, -512 };
+    SnesVert q[4], wall[4];
+    u8 i, j;
+    for (i = 0; i < vp->h; ++i)
+        snesSpanFill(vp->origin + (u16)i * vp->stride, vp->w, backdrop);
+    for (i = 0; i < 4; ++i) {
+        if (!snesProjectQ(cam, vp, xs[i], zs[i], 0, &q[i].x, &q[i].y)) return;
+        q[i].u = (i == 1 || i == 2) ? 4095 : 0;
+        q[i].v = (i >= 2) ? 4095 : 0;
+    }
+    /* Draw all four walls before the top; the top occludes the far walls. */
+    for (i = 0; i < 4; ++i) {
+        j = (i + 1) & 3;
+        wall[0] = q[i]; wall[1] = q[j];
+        wall[2] = q[j]; wall[3] = q[i];
+        snesProjectQ(cam, vp, xs[j], zs[j], -64, &wall[2].x, &wall[2].y);
+        snesProjectQ(cam, vp, xs[i], zs[i], -64, &wall[3].x, &wall[3].y);
+        texture_quad(vp, wall, SNES_CARD_NONE_FACE, 0);
+    }
+    texture_quad(vp, q, 0, cam);
 }

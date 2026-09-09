@@ -13,15 +13,17 @@
  *  The board view is the textured slab in perspective: twenty slots with their
  *  cards lying on them, a marker under the slot in question, and the card being
  *  played held in the air over its target through the convex-quad path.  Its
- *  two resolutions are what the whole video model exists for -- 64x40 texels
- *  while something is moving, 128x80 once it settles, with the PPU doing the
- *  doubling -- so a moving board costs a quarter of the pixels and nothing
- *  extra to display.
+ *  three working rectangles are what the whole video model exists for --
+ *  64x40 texels while ordinary board motion is active, 32x28 during camera motion,
+ *  and 128x80 once the board settles, with the PPU doing the doubling.  The
+ *  lift's full-screen rectangle lets the live camera use one scale through
+ *  the HUD boundary without uploading more than one field can carry.
  *
  *  The top view is the same board as a flat table: Mode 3, the full 256x224,
  *  no software rendering at all and therefore sixty fields a second.  It is
- *  the view the other ports call the tactical top view, and the player walks
- *  up into it the same way -- UP -- and back down with DOWN.
+ *  the view the other ports call the tactical top view.  UP first runs a short
+ *  live camera lift through the moving resolution, with the hand sliding out
+ *  of the way, and DOWN plays the same path in reverse.
  *
  *  NOTHING IN THE HUD IS DRAWN INTO THE BITMAP any more.  Life points, the
  *  prompt, the hand and both cursors are sprites, which is what lets them stay
@@ -124,6 +126,14 @@
 #define TOP_STAT_X   120
 #define TOP_STAT_GAP 72
 
+#define VIEW_ANIM_FRAMES       8
+#define VIEW_HAND_OFFSET       80
+/* At 90 degrees of pitch, a 16-pixel focal length and 2 2/3 units of height
+ * project one slot to six texels / 48 screen pixels, matching the top table. */
+#define VIEW_TOP_Z              ((s16)0)
+#define VIEW_TOP_HEIGHT        ((s16)683)
+#define VIEW_TRANSITION_FOCAL  ((s16)4096) /* 16 viewport pixels, Q8.8 */
+
 enum SnesDuelUi {
     UI_HAND = 0,        /* choosing a card in hand */
     UI_PLACE,           /* choosing where a monster goes */
@@ -132,6 +142,13 @@ enum SnesDuelUi {
     UI_DEFENDER,        /* choosing what it attacks */
     UI_COM,             /* the opponent is acting */
     UI_RESULT
+};
+
+enum SnesViewMotion {
+    VIEW_BOARD_REST = 0,
+    VIEW_TO_TOP,
+    VIEW_TOP_REST,
+    VIEW_TO_HAND
 };
 
 static SnesCamera   cam;
@@ -155,6 +172,16 @@ static u8  board_dirty = 0;
  * down, in every state the player owns -- the same gesture the PC, FM TOWNS
  * and PC-FX builds use. */
 static u8  top_view = 0;
+static u8  view_motion = VIEW_BOARD_REST;
+static u8  view_anim_frame = 0;
+static u8 board_yaw = 0;
+static u8 turn_frame = 0;
+static u8 turn_from = 0;
+static u8 turn_target = 0;
+static u8 turn_top = 0;
+static u8 texture_faces[20];
+static u8 texture_w = 0, texture_h = 0;
+#define TURN_FRAMES 16
 static const char *message = 0;
 static u8  message_timer = 0;
 
@@ -179,11 +206,17 @@ static u8  autoplay = 0;
  * the cheap resolution still enough to MEASURE it. */
 static u8  force_moving = 0;
 
+static void render(void);
+static void build_objects(void);
+
 static void set_viewport(void)
 {
     if (snesVideoBoardRes() == SNES_RES_STILL) {
         vp.w = SNES_STILL_W;
         vp.h = SNES_STILL_H;
+    } else if (snesVideoBoardRes() == SNES_RES_BEND) {
+        vp.w = SNES_BEND_W;
+        vp.h = SNES_BEND_H;
     } else {
         vp.w = SNES_MOVING_W;
         vp.h = SNES_MOVING_H;
@@ -211,6 +244,100 @@ static void set_viewport(void)
      * is the same proportion in both resolutions, so the two frame the board
      * identically and switching between them does not shift it. */
     cam.horizon = (s16)(vp.h >> 5);
+}
+
+/* Q8.8 smoothstep, using the SNES multiplier instead of a 32-bit product.
+ * The eased value is shared by the camera and hand so the two settle together
+ * at the exact frame the PPU switches to the resident top table. */
+static u16 view_anim_ease(u8 frame)
+{
+    u16 t;
+    u16 t2;
+    if (frame >= VIEW_ANIM_FRAMES) return SNES_ONE;
+    t = snesUQDiv(frame, VIEW_ANIM_FRAMES);
+    t2 = (u16)snesQMul((s16)t, (s16)t);
+    return (u16)snesQMul((s16)t2, (s16)(3 * SNES_ONE - 2 * t));
+}
+
+static s16 view_lerp(s16 a, s16 b, u16 t)
+{
+    return (s16)(a + snesQMul((s16)(b - a), (s16)t));
+}
+
+static void set_view_transition_camera(u8 frame, u8 to_top)
+{
+    u16 t = view_anim_ease(frame);
+    s16 centre_x, centre_y;
+    if (!to_top) t = (u16)(SNES_ONE - t);
+    snesCameraSet(&cam, 0,
+                  view_lerp(CAM_Z, VIEW_TOP_Z, t),
+                  view_lerp(CAM_HEIGHT, VIEW_TOP_HEIGHT, t),
+                  VIEW_TRANSITION_FOCAL, view_lerp(0, 14, t));
+    cam.pitch = (u8)(t >> 2);
+    cam.yaw = board_yaw;
+    /* Keep the board centre in the play area as the eye moves over it. */
+    cam.horizon = 0;
+    if (snesProjectQ(&cam, &vp, 0, 0, 0, &centre_x, &centre_y))
+        cam.horizon = (view_lerp(2432, 3584, t) - centre_y) >> 8;
+    /* 32 floor texels per world unit / 16 viewport pixels, in Q8.8. */
+    vp.du_k = 512;
+}
+
+static void begin_view_transition(u8 to_top)
+{
+    view_motion = to_top ? VIEW_TO_TOP : VIEW_TO_HAND;
+    view_anim_frame = 0;
+    if (!to_top) {
+        /* The top table remains visible until snesVideoPresent applies the
+         * pending Mode 7 switch; the object list is already the first frame
+         * of the hand's entrance. */
+        top_view = 0;
+        snesVideoSetView(SNES_VIEW_BOARD);
+    }
+    snesVideoSetBoardRes(SNES_RES_BEND);
+    set_viewport();
+    set_view_transition_camera(0, to_top);
+    board_dirty = 1;
+}
+
+static void finish_view_transition(u8 to_top)
+{
+    if (to_top) {
+        top_view = 1;
+        view_motion = VIEW_TOP_REST;
+        snesVideoSetView(SNES_VIEW_TOP);
+        snesVideoSetBoardRes(SNES_RES_STILL);
+    } else {
+        top_view = 0;
+        view_motion = VIEW_BOARD_REST;
+        snesVideoSetView(SNES_VIEW_BOARD);
+        snesVideoSetBoardRes(SNES_RES_STILL);
+        snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, 0, 0);
+        cam.yaw = board_yaw;
+        set_viewport();
+        render();
+    }
+    view_anim_frame = 0;
+}
+
+static void step_view_transition(void)
+{
+    const u8 to_top = (view_motion == VIEW_TO_TOP);
+    if (view_anim_frame > VIEW_ANIM_FRAMES) {
+        build_objects();
+        if (snesObjCardsReady()) {
+            finish_view_transition(to_top);
+            build_objects();
+        }
+        return;
+    }
+    set_view_transition_camera(view_anim_frame, to_top);
+    board_dirty = 1;
+    render();
+    build_objects();
+    if (view_anim_frame >= VIEW_ANIM_FRAMES && !to_top)
+        finish_view_transition(0);
+    else ++view_anim_frame;
 }
 
 static void touch_board(u8 frames)
@@ -332,15 +459,44 @@ static void render(void)
     u8 row = 0;
     const u8 slot = cursor_board_slot(&row);
 
-    snesDrawFloor(&vp, &cam, BACKDROP);
+    if (cam.pitch || cam.yaw) {
+        u8 r, c;
+        u8 width = 24 - (cam.pitch * 3 >> 6);
+        u8 height = 32 - (cam.pitch * 11 >> 6);
+        u8 changed = width != texture_w || height != texture_h;
+        for (r = 0; r < 4; ++r) {
+            const Msx2Side *s = &g_duel.side[r < 2 ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER];
+            u8 support = (r == 0 || r == 3);
+            for (c = 0; c < 5; ++c) {
+                u8 face = show_cards ? face_of(support ? s->equip_field[c] : s->field[c],
+                                  support ? 1 : s->faceup[c]) : SNES_CARD_NONE_FACE;
+                if (texture_faces[r * 5 + c] != face) changed = 1;
+                texture_faces[r * 5 + c] = face;
+            }
+        }
+        if (changed) {
+            texture_w = width; texture_h = height;
+            snesBoardTextureClear();
+            for (r = 0; r < 4; ++r) for (c = 0; c < 5; ++c) {
+                u8 face = texture_faces[r * 5 + c];
+                if (face != SNES_CARD_NONE_FACE)
+                    snesBoardTextureCard((u16)(((48 - (s16)r * 32) & 127) * 256 |
+                                              ((16 + ((s16)c - 2) * 32) & 255)),
+                                          face, r < 2,
+                                          width, height);
+            }
+        }
+        snesDrawCameraFloor(&vp, &cam, BACKDROP);
+    }
+    else snesDrawFloor(&vp, &cam, BACKDROP);
     /* The marker goes down BEFORE the cards: it covers a whole tile and a card
      * four fifths of one, so what is left of it is a rim around the card,
      * which is what makes "this slot" readable when the slot is occupied. */
-    if (slot != MSX2_SLOT_NONE && slot < SNES_COLS)
+    if (!cam.pitch && !cam.yaw && slot != MSX2_SLOT_NONE && slot < SNES_COLS)
         snesDrawSlotMarker(&vp, &cam, row, slot,
                            (ui == UI_DEFENDER) ? MARK_COM : MARK_YOU);
     if (show_cards) {
-        draw_board_cards();
+        if (!cam.pitch && !cam.yaw) draw_board_cards();
         draw_held_card();
     }
 
@@ -471,6 +627,16 @@ static void build_objects(void)
     const u8 card = focus_card(&face);
     u16 atk = 0, def = 0;
     const u8 has_stats = focus_stats(card, &atk, &def);
+    s16 hand_y = HAND_Y;
+    if (view_motion == VIEW_TO_TOP) {
+        hand_y = (s16)(HAND_Y +
+                       (s16)(((u16)VIEW_HAND_OFFSET *
+                              view_anim_ease(view_anim_frame)) >> 8));
+    } else if (view_motion == VIEW_TO_HAND) {
+        hand_y = (s16)(HAND_Y +
+                       (s16)(((u16)VIEW_HAND_OFFSET *
+                              (SNES_ONE - view_anim_ease(view_anim_frame))) >> 8));
+    }
     /* A message pre-empts the name, because it is the thing that just
      * happened; the name is back the moment it expires. */
     const char *name = message ? message
@@ -497,8 +663,8 @@ static void build_objects(void)
                          (u16)g_duel.side[MSX2_OWNER_COM].lp, MSX2_START_LP);
 
         if (cslot != MSX2_SLOT_NONE && cslot < SNES_COLS)
-            snesObjBox(SNES_TOP_X0 + cslot * SNES_TOP_CELL,
-                       SNES_TOP_Y0 + crow * SNES_TOP_CELL,
+            snesObjBox(SNES_TOP_X0 + (board_yaw ? 4 - cslot : cslot) * SNES_TOP_CELL,
+                       SNES_TOP_Y0 + (board_yaw ? 3 - crow : crow) * SNES_TOP_CELL,
                        SNES_TOP_CELL, SNES_TOP_CELL);
 
         /* The field, far row first, exactly the order the perspective board
@@ -514,8 +680,10 @@ static void build_objects(void)
                 const u8 c = support ? sd->equip_field[col] : sd->field[col];
                 const u8 f = face_of(c, support ? 1 : sd->faceup[col]);
                 if (f == SNES_CARD_NONE_FACE) continue;
-                snesObjCard(TOP_CARD_X(col), TOP_CARD_Y(row),
-                            (u8)(row * SNES_COLS + col), f);
+                snesObjCardFlip(TOP_CARD_X(board_yaw ? 4 - col : col),
+                            TOP_CARD_Y(board_yaw ? 3 - row : row),
+                            (u8)(row * SNES_COLS + col), f,
+                            (u8)((row < 2 ? 0x80 : 0) ^ (board_yaw ? 0xC0 : 0)));
             }
         }
     } else {
@@ -556,12 +724,24 @@ static void build_objects(void)
                               ? (cursor == i)
                               : (chosen == i && ui != UI_ATTACKER &&
                                  ui != UI_DEFENDER && ui != UI_COM);
-            if (hcard == MSX2_CARD_NONE) continue;
-            if (selected) snesObjBox(x - 4, HAND_Y - 4, 40, 40);
-            snesObjCard(x, HAND_Y, i, face_of(hcard, 1));
+            if (hcard == MSX2_CARD_NONE || hand_y >= 224) continue;
+            if (selected) snesObjBox(x - 4, hand_y - 4, 40, 40);
+            snesObjCard(x, hand_y, i, face_of(hcard, 1));
         }
     }
 
+    /* Prepare the resident top sprites while the final software board stays
+     * visible.  Switch modes only after every tile and palette is ready. */
+    if (view_motion == VIEW_TO_TOP && hand_y >= 224) {
+        for (row = 0; row < 4; ++row) {
+            const Msx2Side *s = &g_duel.side[row < 2 ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER];
+            const u8 support = row == 0 || row == 3;
+            for (col = 0; col < 5; ++col)
+                snesObjQueueCard(row * 5 + col,
+                    face_of(support ? s->equip_field[col] : s->field[col],
+                            support ? 1 : s->faceup[col]), 0);
+        }
+    }
     snesObjEnd();
 }
 
@@ -804,6 +984,10 @@ void snesDuelEnter(void)
     message_timer = 0;
 
     top_view = 0;
+    view_motion = VIEW_BOARD_REST;
+    view_anim_frame = 0;
+    board_yaw = turn_frame = turn_from = turn_target = turn_top = 0;
+    texture_w = texture_h = 0;
     snesVideoSetView(SNES_VIEW_BOARD);
     snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, 0, 0);
     snesVideoSetBoardRes(SNES_RES_STILL);
@@ -821,6 +1005,7 @@ void snesDuelFrame(void)
 {
     const u16 down = padsDown(0);
     u8 res = snesVideoBoardRes();
+    u8 resized = 0;
 
     if (down & KEY_R) fixture_board();
     if (down & KEY_L) {
@@ -838,17 +1023,13 @@ void snesDuelFrame(void)
         touch_board(2);
     }
 
-    /* UP walks up into the tactical top view, DOWN walks back down.  Neither
-     * costs a redraw: the perspective board stays in the bitmap untouched
-     * while the top view is up, so coming back down puts the frame the player
-     * left straight back on screen. */
-    if ((down & KEY_UP) && !top_view) {
-        top_view = 1;
-        snesVideoSetView(SNES_VIEW_TOP);
-    } else if ((down & KEY_DOWN) && top_view) {
-        top_view = 0;
-        snesVideoSetView(SNES_VIEW_BOARD);
-    }
+    /* UP walks up into the tactical top view and DOWN walks back down.  The
+     * endpoint pictures remain resident, but the bend state below renders a
+     * live interpolated camera and moves the hand with it. */
+    if (view_motion == VIEW_BOARD_REST && (down & KEY_UP))
+        begin_view_transition(1);
+    else if (view_motion == VIEW_TOP_REST && (down & KEY_DOWN))
+        begin_view_transition(0);
 
     if (message_timer) {
         if (--message_timer == 0) {
@@ -866,6 +1047,47 @@ void snesDuelFrame(void)
         message = 0;
         message_timer = 0;
         touch_board(8);
+    }
+
+    if (view_motion == VIEW_TO_TOP || view_motion == VIEW_TO_HAND) {
+        step_view_transition();
+        goto stamp;
+    }
+
+    /* Finish the camera move before allowing the next side to act. */
+    if (!turn_frame && board_yaw != (g_duel.turn_owner ? 128 : 0)) {
+        turn_from = board_yaw;
+        turn_target = g_duel.turn_owner ? 128 : 0;
+        turn_top = top_view;
+        top_view = 0;
+        snesVideoSetView(SNES_VIEW_BOARD);
+        snesVideoSetBoardRes(SNES_RES_BEND);
+        set_viewport();
+        turn_frame = 1;
+    }
+    if (turn_frame) {
+        u16 t = view_anim_ease((u8)((turn_frame + 1) >> 1));
+        board_yaw = (u8)view_lerp(turn_from, turn_target, t);
+        if (turn_top) set_view_transition_camera(VIEW_ANIM_FRAMES, 1);
+        else {
+            snesCameraSet(&cam, 0,
+                          CAM_Z - snesQMul(256, snesSin(board_yaw)),
+                          CAM_HEIGHT, (s16)((u16)vp.w << 7), vp.h >> 5);
+            cam.yaw = board_yaw;
+        }
+        render();
+        build_objects();
+        if (++turn_frame > TURN_FRAMES) {
+            turn_frame = 0;
+            board_yaw = turn_target;
+            if (turn_top) {
+                top_view = 1;
+                snesVideoSetView(SNES_VIEW_TOP);
+                build_objects();
+            }
+            touch_board(2);
+        }
+        goto stamp;
     }
 
     if (ui == UI_RESULT) {
@@ -926,16 +1148,18 @@ void snesDuelFrame(void)
             snesVideoSetBoardRes(SNES_RES_MOVING);
             set_viewport();
             res = SNES_RES_MOVING;
+            resized = 1;
         }
         board_dirty = 1;
     } else if (res != SNES_RES_STILL && snesVideoPresentDone()) {
         snesVideoSetBoardRes(SNES_RES_STILL);
         set_viewport();
         res = SNES_RES_STILL;
+        resized = 1;
         board_dirty = 1;
     }
 
-    if (board_dirty && (res == SNES_RES_MOVING || snesVideoPresentDone()))
+    if (board_dirty && (resized || snesVideoPresentDone()))
         render();
     build_objects();
 

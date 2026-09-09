@@ -100,6 +100,7 @@ static u8 hdma_deck_col[DECK_GRAD_TABLE_BYTES];
 static u8 hdma_col[63];
 
 static u8 board_res = SNES_RES_STILL;
+static u8 board_res_applied = SNES_RES_STILL;
 static u8 view = SNES_VIEW_BOARD;
 static u8 view_pending = SNES_VIEW_BOARD;
 static u8 present_row = 0;          /* next framebuffer row to upload */
@@ -173,10 +174,25 @@ static void hdma_entry(u8 *t, u16 lines, u16 value)
  * HUD band, lines 160..223: always 4.0, which maps those lines onto rows
  * 80..111 on its own.  M7VOFS stays zero for the whole screen -- see
  * SNES_HUD_ROW: a per-band VOFS written by HDMA applies to the entire frame,
- * not to its band, and shifts the board off the top of the screen. */
+ * not to its band, and shifts the board off the top of the screen.
+ *
+ * The bend is the one exception: its 32x28 source covers the entire display
+ * at 8x8, so all 224 scanlines use one scale while the camera is interpolated
+ * between the hand and top-view endpoints. */
 static void build_hdma(void)
 {
     u16 scale;
+
+    if (board_res == SNES_RES_BEND) {
+        hdma_entry(&hdma_a[0], 127, SNES_M7_SCALE_BEND);
+        hdma_entry(&hdma_a[3], 224 - 127, SNES_M7_SCALE_BEND);
+        hdma_a[6] = 0;
+
+        hdma_entry(&hdma_d[0], 127, SNES_M7_SCALE_BEND);
+        hdma_entry(&hdma_d[3], 224 - 127, SNES_M7_SCALE_BEND);
+        hdma_d[6] = 0;
+        return;
+    }
 
     scale = (board_res == SNES_RES_STILL) ? SNES_M7_SCALE_STILL
                                           : SNES_M7_SCALE_MOVING;
@@ -370,6 +386,8 @@ void snesVideoInitDuel(void)
     REG_CGADSUB = 0x20;
 
     snesVideoClear(0);
+    board_res = SNES_RES_STILL;
+    board_res_applied = SNES_RES_STILL;
     present_row = 0;
     present_done = 0;
 }
@@ -380,6 +398,7 @@ void snesVideoRestartHdma(void)
     REG_W12SEL = 0;
     REG_COLDATA = COL_BLACK;
     arm_hdma();
+    board_res_applied = board_res;
 }
 
 void snesVideoRestartSceneHdma(void)
@@ -429,7 +448,6 @@ void snesVideoSetBoardRes(u8 res)
 {
     if (res == board_res) return;
     board_res = res;
-    arm_hdma();
     snesVideoPresentRestart();
 }
 
@@ -481,6 +499,18 @@ u8 snesVideoPresent(void)
      * a handful of fields. */
     if (view == SNES_VIEW_TOP) return 1;
 
+    /* A live board changes its source rectangle and its HDMA scale together.
+     * Keep the old scale on screen until this vblank, then rewrite the table
+     * before the first row is uploaded.  Do not tear down and re-enable HDMA
+     * here: the old framebuffer is still visible during the preceding field,
+     * and restarting the channels at this boundary can expose a half-reloaded
+     * matrix for one field.  The table itself is safe to replace in vblank and
+     * the already-armed channels pick it up on the next active display. */
+    if (board_res_applied != board_res) {
+        build_hdma();
+        board_res_applied = board_res;
+    }
+
     if (present_done) {
         /* The board is up; a requested HUD refresh gets the next vblank to
          * itself rather than sharing one with 2560 bytes of board. */
@@ -496,12 +526,20 @@ u8 snesVideoPresent(void)
         total = SNES_STILL_H;
         width = SNES_FB_STRIDE;
         rows = STILL_ROWS_PER_VBL;
+    } else if (board_res == SNES_RES_BEND) {
+        /* The bend is 32x28 texels over the whole screen: 896 bytes, one
+         * vblank, which is what makes a live camera affordable here. */
+        total = SNES_BEND_H;
+        width = SNES_BEND_W;
+        rows = SNES_BEND_H;
     } else {
         /* The moving board is 64 texels inside a 128 stride, so it is a
          * windowed upload: 40 short rows, 2560 bytes, one vblank. */
         total = SNES_MOVING_H;
         width = SNES_MOVING_W;
-        rows = SNES_MOVING_H;
+        /* Windowed DMA pays a register setup per row.  Forty rows plus OAM
+         * can overrun vblank even though the byte count alone fits. */
+        rows = 20;
     }
 
     if (present_row + rows > total) rows = (u8)(total - present_row);

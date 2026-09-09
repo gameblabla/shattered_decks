@@ -229,19 +229,32 @@ void snesObjLifePanel(s16 x, s16 y, u8 side, u16 lp, u16 lp_max)
 
 void snesObjCard(s16 x, s16 y, u8 slot, u8 face)
 {
+    snesObjCardFlip(x, y, slot, face, 0);
+}
+
+void snesObjQueueCard(u8 slot, u8 face, u8 hi)
+{
+    if (slot >= SNES_OBJ_CARDS) return;
+    card_want[slot] = face;
+    card_want_hi[slot] = hi;
+}
+
+void snesObjCardFlip(s16 x, s16 y, u8 slot, u8 face, u8 flip)
+{
     /* A slot outside the card palettes cannot own one, so it falls back to the
      * clustered sheet however the caller asked -- there is no arrangement that
      * gives the top view's slot 12 a palette of its own. */
     const u8 hi = (u8)(card_hi_mode && slot < SNES_SPR_CARD_PALS);
 
     if (slot >= SNES_OBJ_CARDS || face == SNES_OBJ_NO_FACE) return;
-    card_want[slot] = face;
-    card_want_hi[slot] = hi;
+    snesObjQueueCard(slot, face, hi);
     /* Still on its way up -- and a slot whose SHEET changed is as much on its
      * way up as one whose face did, because its palette is going with it. */
     if (card_have[slot] != face || card_have_hi[slot] != hi) return;
+    if (obj_n >= 128) return;
     snesObjSprite(x, y, CARD_TILE(slot),
                   hi ? slot : snes_spr_group[face], 1);
+    oam_shadow[((u16)(obj_n - 1) << 2) + 3] |= flip & 0xC0;
 }
 
 void snesObjEnd(void)
@@ -338,11 +351,12 @@ static void upload_card_row(u8 slot, u8 row)
 
 void snesObjVblank(void)
 {
+    u8 budget = snesVideoPresentDone() ? 4 : 1;
     if (oam_dirty) {
         dmaCopyOAram(oam_shadow, 0, sizeof(oam_shadow));
         oam_dirty = 0;
     }
-    if (next_card < SNES_OBJ_CARDS) {
+    while (budget-- && next_card < SNES_OBJ_CARDS) {
         upload_card_row(next_card, next_card_row);
         if (next_card_row == 3) {
             next_card = SNES_OBJ_CARDS;

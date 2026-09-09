@@ -67,6 +67,8 @@ void snesObjLifePanel(s16 x, s16 y, u8 side, u16 lp, u16 lp_max);
  * not emitted, because a card drawn out of tiles that still hold the previous
  * face is worse than a card that arrives a frame late. */
 void snesObjCard(s16 x, s16 y, u8 slot, u8 face);
+void snesObjCardFlip(s16 x, s16 y, u8 slot, u8 face, u8 flip);
+void snesObjQueueCard(u8 slot, u8 face, u8 hi);
 /* WHICH SHEET THE NEXT snesObjCard CALLS DRAW FROM, and it is a palette
  * decision as much as a tile one.
  *

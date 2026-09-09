@@ -27,7 +27,8 @@
 
 ;-----------------------------------------------------------------------------
 ; The framebuffer.  128x128 bytes in bank $7F, which SLOT 3 maps whole; the
-; displayed window is 128x112 (still) or the left 64x56 (moving).
+; displayed window is 128x112 (still), the left 64x40 (moving), or the left
+; 32x28 (full-screen camera motion).
 ;
 ; ALIGN 256 is not cosmetic: the rasteriser addresses a row as a 16-bit base
 ; plus an 8-bit X, so a row must never straddle a page boundary in a way the

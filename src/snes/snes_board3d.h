@@ -42,26 +42,18 @@ typedef struct SnesCamera {
     s16 height;      /* above the board plane, Q8.8 */
     s16 focal;       /* Q8.8, in viewport pixels */
     s16 horizon;     /* the screen row of the horizon, in viewport pixels */
+    u8 yaw, pitch;   /* 256 angles per turn; pitch 64 looks straight down */
 } SnesCamera;
 
-/* The render target: a rectangle of the chunky framebuffer.  Two shapes are
- * used -- 64x40 while the camera moves and 128x80 when it rests -- and every
- * routine here works in whichever is current, so the two paths share one
- * renderer. */
+/* The render target: a rectangle of the chunky framebuffer.  Three shapes are
+ * used -- 64x40 while ordinary board motion is active, 32x28 for the
+ * hand-to-top camera lift, and 128x80 when it rests.  Every routine here works
+ * in whichever is current, so all three paths share one renderer. */
 typedef struct SnesViewport {
     u16 origin;      /* byte offset into snes_fb of pixel (0,0) */
     u8  w, h;
     u8  stride;
-    /* TEXELS PER PIXEL PER UNIT OF DEPTH, Q8.8 -- the floor's texture step
-     * divided by the depth it was taken at, which is 32/focal and therefore a
-     * property of the camera rather than of the row.
-     *
-     * It used to be a shift, because the two resting resolutions pick a focal
-     * length of half their own width and 32/(w/2) is a power of two.  The bend
-     * cannot: flattening the board is a DOLLY -- the camera walks back and
-     * lengthens the lens together -- so its focal length passes through every
-     * value in between, and a shift cannot express those.  One multiply a
-     * scanline buys the whole camera move; nothing per pixel changes. */
+    /* 32/focal, Q8.8, for the axis-aligned floor/card span fast path. */
     u16 du_k;
 } SnesViewport;
 
@@ -88,6 +80,7 @@ void snesSlotCentre(u8 row, u8 col, s16 *wx, s16 *wz);
  * along a scanline, so the two screen columns where the slab's side edges fall
  * are linear in the row index. */
 void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop);
+void snesDrawCameraFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop);
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 
