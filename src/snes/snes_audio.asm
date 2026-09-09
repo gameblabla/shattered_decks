@@ -27,13 +27,19 @@ snes_audio_dest      ds 2
 .BASE $C0
 .SECTION "snes_audio_runtime" SUPERFREE
 .DEFINE SNES_AUDIO_SFX_COUNT 4
+; The generated player starts at $0200.  Upload through $E7FF, which covers
+; the resident player, music, samples, and reload metadata while never
+; touching the SPC I/O register window at $00F0-$00FF.
+.DEFINE SNES_AUDIO_BOOT_START $0200
+.DEFINE SNES_AUDIO_BOOT_BYTES $E600
 
 ; -----------------------------------------------------------------------------
 ; void snesAudioLoadSnapshot(const u8 *snapshot)
 ;
-; Loads the 64K SPC RAM image through the standard Nintendo IPL protocol.  The
-; snapshot header, DSP bytes and trailing XRAM are intentionally not sent:
-; the generated player starts at $0200 and initializes the DSP itself.
+; Loads the boot payload through the standard Nintendo IPL protocol.  The SPC
+; snapshot header, zero-page state, DSP registers, and trailing unused RAM are
+; intentionally not sent: the generated player starts at $0200 and
+; initializes its own state and DSP.
 ; -----------------------------------------------------------------------------
 snesAudioLoadSnapshot:
     php
@@ -50,6 +56,8 @@ snesAudioLoadSnapshot:
 
     rep #$20
     lda 8,s
+    clc
+    adc #SNES_AUDIO_BOOT_START
     sta.b <snes_audio_src
     sep #$20
     lda 10,s
@@ -66,9 +74,16 @@ snes_audio_boot_ready:
     ldx $2140
     cpx #$BBAA
     bne snes_audio_boot_ready
-    stx $2141
-    ldx #$0000
-    stx $2142
+    ; Do not use 16-bit writes for the APU ports.  The ports are independent
+    ; byte mailboxes, and the accurate SNES core (like hardware) can observe
+    ; the two halves of a word store independently.  Port 1 is the non-zero
+    ; transfer command; ports 2/3 are the destination address.
+    sep #$20
+    lda #$01
+    sta.l $2141
+    stz $2142
+    lda #$02
+    sta.l $2143
     sep #$20
     lda #$CC
     sta.l $2140
@@ -80,14 +95,22 @@ snes_audio_boot_cc:
     ; sent immediately; subsequent bytes wait for the IPL echo before reading
     ; the next ROM byte.  Y wraps after exactly 65536 bytes.
     ldy #$0000
+    ldx #SNES_AUDIO_BOOT_BYTES
     lda.b [<snes_audio_src],y
     xba
     lda #$00
 snes_audio_boot_send:
-    rep #$20
-    sta.l $2140
     sep #$20
+    ; B holds the byte and A holds the current acknowledge token.  The SPC
+    ; samples port 1 when it sees the new port-0 token, so publish the payload
+    ; first and the token second.  A 16-bit store at $2140 is not equivalent:
+    ; it can expose the token before the payload on an accurate APU model.
+    xba
+    sta.l $2141
+    xba
+    sta.l $2140
     iny
+    dex
     beq snes_audio_boot_done
     xba
     lda.b [<snes_audio_src],y

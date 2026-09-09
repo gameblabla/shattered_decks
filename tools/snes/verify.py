@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Headless verification for the SNES port.
 
-`SNES/snesfaust/snesfaust-mednafen script` is a fully headless SNES-Faust: it
-takes an input script, runs N frames, and drops the last frame as a PPM, a WRAM
-dump and optionally a directory of frames.  This is the harness that turns that
-into assertions.
+`SNES/snes-mednafen-1.32.1-accurate-headless-linux-x86_64 script` is the
+accurate headless Mednafen build: it takes an input script, runs N frames, and
+drops the last frame as a PPM, a WRAM dump and optionally a directory of
+frames.  This is the harness that turns that into assertions.
 
 Two rules this file exists to enforce, both learned the expensive way on the
 other ports:
@@ -31,7 +31,8 @@ import snes_dc
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ROM = os.path.join(ROOT, "build", "snes", "waifusnes.sfc")
-FAUST = os.path.join(ROOT, "SNES", "snesfaust", "snesfaust-mednafen")
+MEDNAFEN = os.path.join(
+    ROOT, "SNES", "snes-mednafen-1.32.1-accurate-headless-linux-x86_64")
 OUT = os.path.join(ROOT, "build", "snes", "verify")
 
 # The frame stamp, mirroring src/snes/snes_stamp.h.
@@ -45,7 +46,7 @@ STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "board_res",
 UI = ["HAND", "PLACE", "EQUIP_TARGET", "ATTACKER", "DEFENDER", "COM", "RESULT"]
 STAMP_MAGIC = 0x5744
 
-# SNES serial pad bits, the order snesfaust's script rows use.
+# SNES serial pad bits, the order the headless emulator's script rows use.
 PAD = {"B": 0x8000, "Y": 0x4000, "SELECT": 0x2000, "START": 0x1000,
        "UP": 0x0800, "DOWN": 0x0400, "LEFT": 0x0200, "RIGHT": 0x0100,
        "A": 0x0080, "X": 0x0040, "L": 0x0020, "R": 0x0010}
@@ -86,7 +87,7 @@ def check_rom_fresh():
 def rom_header():
     """Decode the cartridge shape out of the ROM itself.
 
-    snesfaust's own `header` command mislabels $31 as SlowROM, so the map-mode
+    The emulator's own `header` command mislabels $31 as SlowROM, so the map-mode
     byte is decoded here instead of trusted from its output."""
     with open(ROM, "rb") as fh:
         data = fh.read()
@@ -115,7 +116,7 @@ def run(name, script, frames, capture=None):
             fh.write("%d %d %d 0\n" % (start, end, mask))
     ppm = os.path.join(OUT, name + ".ppm")
     wram = os.path.join(OUT, name + ".wram.bin")
-    argv = [FAUST, "script", ROM, in_path, str(frames), ppm, wram]
+    argv = [MEDNAFEN, "script", ROM, in_path, str(frames), ppm, wram]
     if capture:
         frame_dir = os.path.join(OUT, name + ".frames")
         # EMPTIED FIRST.  A capture that writes fewer frames than the last one
@@ -212,8 +213,10 @@ def check_cartridge():
 def check_title():
     """The boot scene must show the painted title before the duel timeout."""
     # The title music is loaded through the SPC IPL before the first game
-    # frame; give that half-second startup room to finish.
-    ppm, wram = run("title", [(0, 130, 0)], 130)
+    # frame.  The title auto-enters the duel after 30 scene frames, so capture
+    # while the title is still active rather than mistaking the transition's
+    # force-blank frame for a boot failure.
+    ppm, wram = run("title", [(0, 100, 0)], 100)
     stamp = read_stamp(wram)
     if stamp["scene"] != SCENES.index("TITLE"):
         raise Failure("title capture reached scene %s after only %d frames" %
