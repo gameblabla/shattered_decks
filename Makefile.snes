@@ -53,6 +53,14 @@ SNES_C   := $(sort $(wildcard $(PROJ_DIR)/*.c))
 SNES_ASM := $(sort $(wildcard $(PROJ_DIR)/*.asm)) \
             $(filter-out $(PROJ_DIR)/assets/snes_deckassets.asm, \
                 $(sort $(wildcard $(PROJ_DIR)/assets/*.asm)))
+# The C and hand-written assembly halves share the audio stem.  Keep the
+# source name readable, but give its object a distinct basename because this
+# Makefile deliberately flattens objects from multiple source directories.
+SNES_AUDIO_ASM := $(PROJ_DIR)/snes_audio.asm
+SNES_AUDIO_ASSETS_ASM := $(PROJ_DIR)/assets/snes_audio.asm
+SNES_ASM := $(filter-out $(SNES_AUDIO_ASM) $(SNES_AUDIO_ASSETS_ASM),$(SNES_ASM))
+SNES_AUDIO_OBJ := $(OBJ)/snes_audio_hw.obj
+SNES_AUDIO_ASSETS_OBJ := $(OBJ)/snes_audio_assets.obj
 # Compiled in unchanged: the render-free duel rules and the shared AI/decks.
 SHARED_C := src/msx2/msx2_duel.c src/msx2/msx2_cards.c \
             src/game/ai.c src/game/deck.c
@@ -81,7 +89,8 @@ CFLAGS += -H -F
 ASFLAGS := -d -s -x -I $(OBJ) -I $(PROJ_DIR)/assets
 
 OBJS := $(patsubst %.c,$(OBJ)/%.obj,$(notdir $(CFILES))) \
-        $(patsubst %.asm,$(OBJ)/%.obj,$(notdir $(SNES_ASM)))
+        $(patsubst %.asm,$(OBJ)/%.obj,$(notdir $(SNES_ASM))) \
+        $(SNES_AUDIO_OBJ) $(SNES_AUDIO_ASSETS_OBJ)
 
 # Two source trees feed one flat object dir, so tell make where to look.
 vpath %.c $(PROJ_DIR) src/msx2 src/game
@@ -141,6 +150,14 @@ $(OBJ)/%.obj: $(PROJ_DIR)/%.asm $(HDR)
 	$(AS) $(ASFLAGS) -o $@ $<
 
 $(OBJ)/%.obj: $(PROJ_DIR)/assets/%.asm $(HDR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -o $@ $<
+
+$(SNES_AUDIO_OBJ): $(SNES_AUDIO_ASM) $(HDR)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -o $@ $<
+
+$(SNES_AUDIO_ASSETS_OBJ): $(SNES_AUDIO_ASSETS_ASM) $(HDR)
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -o $@ $<
 

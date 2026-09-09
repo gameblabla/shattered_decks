@@ -17,6 +17,7 @@
 #include "snes_scene_data.h"
 #include "msx2_cards.h"
 #include "msx2_duel.h"
+#include "snes_audio.h"
 
 #define DECK_COUNT          SNES_SAVE_DECK_SIZE
 #define STORAGE_COUNT       SNES_SAVE_STORAGE_SIZE
@@ -480,26 +481,58 @@ u8 snesDeckFrame(void)
         return SNES_SCENE_COUNT;
     }
 
-    if (down & KEY_L) return SNES_SCENE_TITLE;
+    if (down & KEY_L) {
+        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+        return SNES_SCENE_TITLE;
+    }
     if (down & KEY_START) {
-        if (deck_count == DECK_COUNT) return SNES_SCENE_DUEL;
+        if (deck_count == DECK_COUNT) {
+            snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+            return SNES_SCENE_DUEL;
+        }
         deck_say("DECK MUST BE 40");
     }
-    if (down & KEY_SELECT) deck_change_slot();
+    if (down & KEY_SELECT) {
+        deck_change_slot();
+        snesAudioSfx(SNES_SFX_SELECT);
+    }
     if (down & KEY_R) {
         deck_default();
         deck_say("DEFAULT DECK");
+        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
     }
-    if (down & KEY_Y) deck_save_current();
-    if (down & KEY_X) deck_editor_switch_tab();
-    if (down & KEY_LEFT) deck_editor_move_cursor(-1, 0);
-    if (down & KEY_RIGHT) deck_editor_move_cursor(1, 0);
-    if (down & KEY_UP) deck_editor_move_cursor(0, -1);
-    if (down & KEY_DOWN) deck_editor_move_cursor(0, 1);
-    if (down & KEY_A) deck_editor_move_selected_card();
+    if (down & KEY_Y) {
+        deck_save_current();
+        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+    }
+    if (down & KEY_X) {
+        deck_editor_switch_tab();
+        snesAudioSfx(SNES_SFX_SELECT);
+    }
+    if (down & KEY_LEFT) {
+        deck_editor_move_cursor(-1, 0);
+        snesAudioSfx(SNES_SFX_SELECT);
+    }
+    if (down & KEY_RIGHT) {
+        deck_editor_move_cursor(1, 0);
+        snesAudioSfx(SNES_SFX_SELECT);
+    }
+    if (down & KEY_UP) {
+        deck_editor_move_cursor(0, -1);
+        snesAudioSfx(SNES_SFX_SELECT);
+    }
+    if (down & KEY_DOWN) {
+        deck_editor_move_cursor(0, 1);
+        snesAudioSfx(SNES_SFX_SELECT);
+    }
+    if (down & KEY_A) {
+        deck_editor_move_selected_card();
+        snesAudioSfx(SNES_SFX_CARD_PLACED);
+    }
     if ((down & KEY_B) && deck_editor_active_count()) {
         preview_card = deck_selected_card();
         preview_active = 1;
+        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
     }
 
     deck_draw_editor();

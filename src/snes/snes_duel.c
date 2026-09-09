@@ -36,6 +36,7 @@
 #include "snes_obj.h"
 #include "snes_stamp.h"
 #include "snes_deck.h"
+#include "snes_audio.h"
 #include "msx2_duel.h"
 #include "msx2_cards.h"
 
@@ -623,6 +624,7 @@ static void move_cursor(u8 count, u8 board)
     if (down & KEY_LEFT)  { cursor = (u8)((cursor + count - 1) % count); moved = 1; }
     if (down & KEY_RIGHT) { cursor = (u8)((cursor + 1) % count); moved = 1; }
     if (!moved) return;
+    snesAudioSfx(SNES_SFX_SELECT);
     if (board) touch_board(4);
 }
 
@@ -645,13 +647,19 @@ static void end_player_turn(void)
 static void place_chosen(u8 defense)
 {
     const u8 card = g_duel.side[MSX2_OWNER_PLAYER].hand[chosen];
+    u8 placed = 0;
     if (Msx2_IsSupport(card)) {
-        if (!Msx2_PlaySupport(MSX2_OWNER_PLAYER, chosen, cursor))
+        if (Msx2_PlaySupport(MSX2_OWNER_PLAYER, chosen, cursor))
+            placed = 1;
+        else
             say("CANNOT PLAY IT");
-    } else if (!Msx2_PlaceMonster(MSX2_OWNER_PLAYER, chosen, cursor,
-                                  defense ? TRUE : FALSE)) {
+    } else if (Msx2_PlaceMonster(MSX2_OWNER_PLAYER, chosen, cursor,
+                                 defense ? TRUE : FALSE)) {
+        placed = 1;
+    } else {
         say("CANNOT PLACE IT");
     }
+    if (placed) snesAudioSfx(SNES_SFX_CARD_PLACED);
     Msx2_ClearActionEvent();
     ui = UI_HAND;
     cursor = chosen;
@@ -748,6 +756,8 @@ static void step_player(void)
             const u8 target = direct ? MSX2_SLOT_NONE : cursor;
             if (!Msx2_Attack(MSX2_OWNER_PLAYER, chosen, target))
                 say("ILLEGAL ATTACK");
+            else
+                snesAudioSfx(SNES_SFX_LASER);
             Msx2_ClearActionEvent();
             ui = UI_ATTACKER;
             cursor = chosen;
@@ -848,6 +858,8 @@ void snesDuelFrame(void)
 
     if (g_duel.result != 0 && ui != UI_RESULT) {
         ui = UI_RESULT;
+        snesAudioPlay((g_duel.result > 0) ? SNES_AUDIO_VICTORY
+                                          : SNES_AUDIO_FAIL);
         /* The outcome is the PROMPT, not a message: a message expires, and the
          * one line that must still be readable a minute after the duel ended is
          * which way it went. */

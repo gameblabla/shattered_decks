@@ -211,7 +211,9 @@ def check_cartridge():
 
 def check_title():
     """The boot scene must show the painted title before the duel timeout."""
-    ppm, wram = run("title", [(0, 40, 0)], 20)
+    # The title music is loaded through the SPC IPL before the first game
+    # frame; give that half-second startup room to finish.
+    ppm, wram = run("title", [(0, 130, 0)], 130)
     stamp = read_stamp(wram)
     if stamp["scene"] != SCENES.index("TITLE"):
         raise Failure("title capture reached scene %s after only %d frames" %
@@ -233,7 +235,7 @@ def check_title_input():
     """A/START must leave the title without waiting for the timeout."""
     # A valid editor deck is now fed straight into the rules model; allow the
     # initial card/deck setup to finish before reading the stamp.
-    _, wram = run("title_input", [(10, 70, PAD["A"])], 120)
+    _, wram = run("title_input", [(100, 160, PAD["A"])], 2500)
     stamp = read_stamp(wram)
     if stamp["scene"] != SCENES.index("DUEL"):
         raise Failure("A-button title start ended in scene %s" %
@@ -252,14 +254,14 @@ def check_deck_editor():
     start from the same known collection.
     """
     change = [
-        (10, 70, PAD["Y"]),          # title -> deck editor
-        (120, 180, PAD["R"]),        # deterministic default deck
-        (240, 300, PAD["A"]),        # DECK -> STORAGE; head becomes 7
-        (360, 420, PAD["X"]),        # DECK tab -> STORAGE tab
-        (480, 540, PAD["A"]),        # STORAGE -> DECK
-        (600, 660, PAD["Y"]),        # write SRAM
+        (100, 160, PAD["Y"]),        # title -> deck editor
+        (2200, 2260, PAD["R"]),      # deterministic default deck
+        (2400, 2460, PAD["A"]),      # DECK -> STORAGE; head becomes 7
+        (2600, 2660, PAD["X"]),      # DECK tab -> STORAGE tab
+        (2800, 2860, PAD["A"]),      # STORAGE -> DECK
+        (3000, 3060, PAD["Y"]),      # write SRAM
     ]
-    ppm, wram = run("deck_save", change, 1080)
+    ppm, wram = run("deck_save", change, 3300)
     stamp = read_stamp(wram)
     if stamp["scene"] != SCENES.index("DECK"):
         raise Failure("save run ended in scene %s" % SCENES[stamp["scene"]])
@@ -277,7 +279,7 @@ def check_deck_editor():
     if visible < 1000:
         raise Failure("deck editor has only %d non-black pixels" % visible)
 
-    load_ppm, wram = run("deck_load", [(10, 70, PAD["Y"])], 180)
+    load_ppm, wram = run("deck_load", [(100, 160, PAD["Y"])], 2500)
     loaded = read_stamp(wram)
     if loaded["scene"] != SCENES.index("DECK"):
         raise Failure("fresh process ended in scene %s" %
@@ -290,9 +292,9 @@ def check_deck_editor():
                        loaded["storage_count"], loaded["deck_head"]))
 
     check_ppm, wram = run("deck_check", [
-        (10, 70, PAD["Y"]),
-        (120, 180, PAD["B"]),
-    ], 260)
+        (100, 160, PAD["Y"]),
+        (2300, 2360, PAD["B"]),
+    ], 2600)
     checked = read_stamp(wram)
     if checked["scene"] != SCENES.index("DECK"):
         raise Failure("CARD CHECK left scene %s" % SCENES[checked["scene"]])
@@ -302,25 +304,25 @@ def check_deck_editor():
         raise Failure("CARD CHECK capture is indistinguishable from the gallery")
 
     _, wram = run("deck_gate", [
-        (10, 70, PAD["Y"]),
-        (120, 180, PAD["A"]),
-        (240, 300, PAD["START"]),
-    ], 260)
+        (100, 160, PAD["Y"]),
+        (2300, 2360, PAD["A"]),
+        (2500, 2560, PAD["START"]),
+    ], 2800)
     gated = read_stamp(wram)
     if gated["scene"] != SCENES.index("DECK"):
         raise Failure("incomplete deck escaped to scene %s" % SCENES[gated["scene"]])
 
     run("deck_restore", [
-        (10, 70, PAD["Y"]),
-        (120, 180, PAD["R"]),
-        (240, 300, PAD["Y"]),
-    ], 360)
+        (100, 160, PAD["Y"]),
+        (2300, 2360, PAD["R"]),
+        (2500, 2560, PAD["Y"]),
+    ], 2800)
     return "DECK/STORAGE editor + four-slot SRAM round trip survived emulator reset"
 
 
 def check_story_scene():
     """B opens the real-art story window and starts its typewriter."""
-    ppm, wram = run("story", [(10, 70, PAD["B"])], 120)
+    ppm, wram = run("story", [(100, 160, PAD["B"])], 2500)
     stamp = read_stamp(wram)
     if stamp["scene"] != SCENES.index("STORY_TALK"):
         raise Failure("story entry ended in scene %s" % SCENES[stamp["scene"]])
@@ -334,7 +336,7 @@ def check_story_scene():
 
 def check_ending_scene():
     """X opens the real ending painting and its narration layer."""
-    ppm, wram = run("ending", [(10, 70, PAD["X"])], 120)
+    ppm, wram = run("ending", [(100, 160, PAD["X"])], 2500)
     stamp = read_stamp(wram)
     if stamp["scene"] != SCENES.index("ENDING"):
         raise Failure("ending entry ended in scene %s" % SCENES[stamp["scene"]])
@@ -378,8 +380,9 @@ def board_row(res):
 # render-cost check), so a button has to be HELD for longer than one game frame
 # or the poll that reads it never happens while it is down.  Sixty fields is
 # comfortably longer than the slowest frame the port produces.
-RUN_FRAMES = 1200
+RUN_FRAMES = 2800
 HOLD = 60
+DUEL_READY = 2200
 
 # The harness's four switches in the duel, all of them documented in
 # src/snes/snes_duel.c: R fills the board from the decks (the measurement and
@@ -400,7 +403,7 @@ def run_fixture(capture=None):
     """The full-board fixture: five monsters and five supports a side, one of
     them set face down.  Every id in it came off the duel's own shuffled deck --
     it is a fixed BOARD, not fixed art."""
-    return run("fixture", [press("R", 200)], RUN_FRAMES, capture=capture)
+    return run("fixture", [press("R", DUEL_READY)], RUN_FRAMES, capture=capture)
 
 
 def run_no_cards(capture=None):
@@ -410,40 +413,44 @@ def run_no_cards(capture=None):
     ablation; this is the ablation that says what the cards cost.  It is also
     the only way to measure the slab's own shape, since twenty cards cover
     almost all of it."""
-    return run("nocards", [press("R", 200), press("SELECT", 400)],
+    return run("nocards", [press("R", DUEL_READY), press("SELECT", DUEL_READY + 200)],
                RUN_FRAMES, capture=capture)
 
 
 def run_hold(capture=None):
     """A card picked up and carried: A chooses the first hand card, and the UI
     stays in PLACE with it hovering over the slot until it is put down."""
-    return run("hold", [press("A", 200), press("RIGHT", 400), press("RIGHT", 500)],
+    return run("hold", [press("A", DUEL_READY),
+                         press("RIGHT", DUEL_READY + 200),
+                         press("RIGHT", DUEL_READY + 300)],
                RUN_FRAMES, capture=capture)
 
 
 def run_moving(capture=None):
     # Y toggles the board resolution.  The press has to land after the scene
     # machine is running.
-    return run("moving", [press("Y", 200)], RUN_FRAMES, capture=capture)
+    return run("moving", [press("Y", DUEL_READY)], RUN_FRAMES, capture=capture)
 
 
-def run_demo(frames=9000):
+def run_demo(frames=14000):
     """L hands the player's side to the rules as well, so the duel plays itself
     to a result with no further input -- the port's soak run."""
     # The title scene now owns the first few dozen game frames; start the demo
     # after the normal unattended title timeout, just like the other duel
     # fixtures start after boot has settled.
-    return run("demo", [press("L", 200)], frames)
+    return run("demo", [press("L", DUEL_READY)], frames)
 
 
 def run_flow(name, buttons):
     """A scripted turn through the duel UI, one button at a time."""
     script = []
-    at = 200
+    at = DUEL_READY
     for b in buttons:
         script.append(press(b, at))
         at += HOLD * 2
-    return run(name, script, at + 400)
+    # Allow the final input to settle on a complete frame.  Audio scene loads
+    # and the board upload both temporarily span more than one emulator field.
+    return run(name, script, at + 1080)
 
 
 def check_still_resolution():
@@ -691,7 +698,8 @@ def check_render_cost():
     floor_only = read_stamp(wram)["render_lines"]
     # The moving board is measured on the same fixture: R fills it, Y drops the
     # resolution, and the number is the one an animating frame pays.
-    _, wram = run("fixture_moving", [press("R", 200), press("Y", 400)],
+    _, wram = run("fixture_moving", [press("R", DUEL_READY),
+                                      press("Y", DUEL_READY + 200)],
                   RUN_FRAMES)
     moving = read_stamp(wram)["render_lines"]
     if still == 0 or moving == 0:
@@ -1415,7 +1423,7 @@ def check_duel_plays_out():
     stamp = read_stamp(wram)
     if stamp["duel_result"] == 0:
         raise Failure("the demo duel is still running after %d fields: turn %d, "
-                      "you %d, com %d" % (9000, stamp["duel_turn"],
+                      "you %d, com %d" % (14000, stamp["duel_turn"],
                                           stamp["lp_player"], stamp["lp_com"]))
     won = stamp["duel_result"] == 1
     loser_lp = stamp["lp_com"] if won else stamp["lp_player"]
@@ -1435,12 +1443,13 @@ def check_duel_plays_out():
         raise Failure("the duel was %s but the band reads %r"
                       % ("won" if won else "lost", msg))
     return "%s on turn %d, %d fields, band reads %r" % (
-        "won" if won else "lost", stamp["duel_turn"], 9000, msg)
+        "won" if won else "lost", stamp["duel_turn"], 14000, msg)
 
 
 def run_top(capture=None):
     """The fixture board, then UP into the tactical top view."""
-    return run("topview", [press("R", 200), press("UP", 600)], 1400,
+    return run("topview", [press("R", DUEL_READY),
+                            press("UP", DUEL_READY + 400)], 3000,
                capture=capture)
 
 

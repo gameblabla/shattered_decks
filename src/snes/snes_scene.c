@@ -12,6 +12,7 @@
 #include "snes_title.h"
 #include "snes_scene_data.h"
 #include "snes_obj_data.h"
+#include "snes_audio.h"
 
 #define SCENE_MAP_WORD       0x7400u
 #define SCENE_BG1_MAP_WORD   0x7000u
@@ -222,6 +223,7 @@ u8 snesStoryFrame(void)
         else if ((snesSceneFrames() & 1) == 0) ++story_reveal;
         draw_dialogue("SERENA", story_lines[story_line], story_reveal, 0);
     } else if (down & (KEY_A | KEY_START)) {
+        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
         ++story_line;
         if (story_line >= sizeof(story_lines) / sizeof(story_lines[0]))
             return SNES_SCENE_DUEL;
@@ -254,6 +256,7 @@ u8 snesEndingFrame(void)
         draw_dialogue("SERENA", ending_lines[ending_line], ending_reveal,
                       ENDING_FONT_TILE);
     } else if (down & (KEY_A | KEY_START)) {
+        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
         ++ending_line;
         if (ending_line >= sizeof(ending_lines) / sizeof(ending_lines[0]))
             return SNES_SCENE_TITLE;

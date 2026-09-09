@@ -14,6 +14,7 @@
 #include "snes_duel.h"
 #include "snes_obj.h"
 #include "snes_deck.h"
+#include "snes_audio.h"
 
 static u8  cur_scene = SNES_SCENE_BOOT;
 static u16 scene_frames = 0;   /* explicit: see snes_duel.c on .bss */
@@ -25,8 +26,34 @@ u16 snesSceneFrames(void)  { return scene_frames; }
 
 void snesSceneSet(u8 scene)
 {
+    u8 initial_title = (cur_scene == SNES_SCENE_BOOT &&
+                        scene == SNES_SCENE_TITLE);
     cur_scene = scene;
     scene_frames = 0;
+
+    /* Music is a scene resource just like the bitmap.  Keep the display in
+     * force blank while the SPC stream replaces the resident song data. */
+    if (scene != SNES_SCENE_TITLE) setScreenOff();
+    /* The title is already resident from snesAudioInit(); avoid re-streaming
+     * it during the first scene setup, while still restoring it on a later
+     * return from the game. */
+    if (!initial_title) {
+        switch (scene) {
+        case SNES_SCENE_DUEL:
+            snesAudioPlay(SNES_AUDIO_ALTBATTLE);
+            break;
+        case SNES_SCENE_STORY_TALK:
+        case SNES_SCENE_DECK:
+            snesAudioPlay(SNES_AUDIO_OVERWORLD);
+            break;
+        case SNES_SCENE_ENDING:
+            snesAudioPlay(SNES_AUDIO_VICTORY);
+            break;
+        default:
+            snesAudioPlay(SNES_AUDIO_TITLEALT);
+            break;
+        }
+    }
 
     /* Every boundary is a mode change, and a mode change is a bulk VRAM and
      * CGRAM rewrite, so it happens under force blank -- never during active
@@ -98,6 +125,7 @@ void snesSceneRun(void)
 int main(void)
 {
     consoleInit();
+    snesAudioInit();
     snesStampInit();
 
     snesSceneSet(SNES_SCENE_TITLE);
