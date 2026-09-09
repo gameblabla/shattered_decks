@@ -49,7 +49,6 @@ DP_RELOAD_ADDR_LO = 0x63
 DP_RELOAD_ADDR_HI = 0x64
 DP_RELOAD_RX_TOKEN = 0x65
 DP_RELOAD_COUNT = 0x66
-DP_RELOAD_HANDLED = 0x67
 
 RELOAD_BLOCK = 0xFF
 RELOAD_RESTART = 0xFE
@@ -100,36 +99,39 @@ def _build_reload_runtime(original_labels, original_length):
     runtime_address = PROGRAM_ADDRESS + original_length
     code = midi2spc.Code(runtime_address)
 
-    # tick_done originally calls poll_sfx.  Redirect that existing CALL to
-    # this wrapper so no existing instruction has to move.  Reload runs first
-    # because its FF/FE commands are outside the SFX slot range; ordinary SFX
-    # commands then go through the converter's original handler.
-    code.label("audio_tick_wrapper")
-    code.call("reload_poll")
-    _load_a_dp(code, DP_RELOAD_HANDLED)
-    _cmp_imm(code, 0)
-    code.branch(0xD0, "audio_tick_sync")  # BNE: reload consumed the tick
-    _call_abs(code, poll_sfx)
-    code.label("audio_tick_sync")
-    _load_a_dp(code, 0xF4)
-    _store_a_dp(code, DP_RELOAD_TOKEN)
-    code.emit(0x6F)                   # RET
+    # Snapshot players restore direct page from the SPC file; the cartridge
+    # IPL upload starts at $0200 instead. Recreate the required state both on
+    # boot and restart, without clearing the CPU's incoming command latch.
+    code.label("cartridge_entry")
+    _imm_dp(code, DP_RELOAD_TOKEN, 0)
+    code.label("cartridge_restart")
+    code.emit(0x20)                   # CLRP: direct page is $0000
+    code.emit(0xCD, 0xFF, 0xBD)       # reset stack (discard reload calls)
+    _imm_dp(code, 0x20, midi2spc.EVENT_ADDRESS & 0xFF)
+    _imm_dp(code, 0x21, midi2spc.EVENT_ADDRESS >> 8)
+    for n in range(8):
+        _imm_dp(code, midi2spc.DP_MASK_TABLE + n, 1 << n)
+    # Replay the first MOV dp,#0 displaced by the entry JMP.
+    _imm_dp(code, midi2spc.DP_DELAY_LO, 0)
+    code.emit(0x5F, (PROGRAM_ADDRESS + 3) & 0xFF,
+              (PROGRAM_ADDRESS + 3) >> 8)
 
-    code.label("reload_poll")
-    _imm_dp(code, DP_RELOAD_HANDLED, 0)
+    code.label("audio_tick_wrapper")
     _load_a_dp(code, 0xF4)
-    code.emit(0x64, DP_RELOAD_TOKEN)  # CMP A,token
+    code.emit(0x64, DP_RELOAD_TOKEN)
     code.branch(0xF0, "reload_poll_done")
+    # Save the accepted token BEFORE any acknowledgement. Reading F4 again
+    # after acknowledging can consume the CPU's next command without handling it.
+    _store_a_dp(code, DP_RELOAD_TOKEN)
     _load_a_dp(code, 0xF5)
     _cmp_imm(code, RELOAD_BLOCK)
     code.branch(0xF0, "reload_block")
-    _load_a_dp(code, 0xF5)
     _cmp_imm(code, RELOAD_RESTART)
     code.branch(0xF0, "reload_restart")
+    _call_abs(code, poll_sfx)
     code.emit(0x6F)
 
     code.label("reload_block")
-    _imm_dp(code, DP_RELOAD_HANDLED, 1)
     _load_a_dp(code, 0xF4)
     _store_a_dp(code, DP_RELOAD_TOKEN)
     _store_a_dp(code, DP_RELOAD_RX_TOKEN)
@@ -139,23 +141,33 @@ def _build_reload_runtime(original_labels, original_length):
     _store_a_dp(code, DP_RELOAD_ADDR_HI)
     _imm_dp(code, 0xF1, 0)            # stop timer while ARAM is replaced
     _imm_dp(code, 0xF2, 0x5C)         # S-DSP KOFF
-    _imm_dp(code, 0xF3, 0)
+    _imm_dp(code, 0xF3, 0xFF)        # key off all voices
+    _imm_dp(code, 0xF2, 0x6C)
+    _imm_dp(code, 0xF3, 0x60)        # mute and disable echo writes
     _load_a_dp(code, DP_RELOAD_TOKEN)
     _store_a_dp(code, 0xF4)           # command acknowledgement
     _imm_dp(code, DP_RELOAD_COUNT, 0)
     code.call("reload_receive")
-    _imm_dp(code, 0xF1, 1)
-    code.emit(0x6F)
+    # Stay here with the timer stopped until ALL blocks have arrived. Never
+    # interpret a sequence or play BRR samples while they are being replaced.
+    code.label("reload_next_command")
+    _load_a_dp(code, 0xF4)
+    code.emit(0x64, DP_RELOAD_RX_TOKEN)
+    code.branch(0xF0, "reload_next_command")
+    _store_a_dp(code, DP_RELOAD_TOKEN)
+    _load_a_dp(code, 0xF5)
+    _cmp_imm(code, RELOAD_BLOCK)
+    code.branch(0xF0, "reload_block")
+    _cmp_imm(code, RELOAD_RESTART)
+    code.branch(0xD0, "reload_next_command")
 
     code.label("reload_restart")
-    _imm_dp(code, DP_RELOAD_HANDLED, 1)
     _load_a_dp(code, 0xF4)
     _store_a_dp(code, DP_RELOAD_TOKEN)
     _store_a_dp(code, 0xF4)
     # The reload call stack is intentionally discarded before entry restarts
     # the player.  This also makes repeated scene changes safe indefinitely.
-    code.emit(0xCD, 0xFF, 0xBD)       # MOV X,#$FF / MOV SP,X
-    code.emit(0x5F, PROGRAM_ADDRESS & 0xFF, PROGRAM_ADDRESS >> 8)
+    code.jump("cartridge_restart")
 
     code.label("reload_poll_done")
     code.emit(0x6F)
@@ -206,7 +218,7 @@ def _build_reload_runtime(original_labels, original_length):
         raise ValueError(
             f"reload runtime ends at ${runtime_address + len(runtime):04X}, "
             f"past the pitch table at ${PITCH_LOW_TABLE:04X}")
-    return runtime, runtime_address
+    return runtime, runtime_address, code.labels
 
 
 def _render_with_labels(*args, **kwargs):
@@ -242,13 +254,19 @@ def _patch_runtime(output_path, captured):
     if ram[PROGRAM_ADDRESS + tick_offset] != 0x3F:
         raise ValueError("MIDI2SPC tick hook no longer has its expected CALL")
 
-    runtime, runtime_address = _build_reload_runtime(labels, original_length)
-    wrapper_offset = runtime_address - PROGRAM_ADDRESS
+    runtime, runtime_address, reload_labels = _build_reload_runtime(labels, original_length)
+    wrapper_address = reload_labels["audio_tick_wrapper"]
+    wrapper_offset = wrapper_address - PROGRAM_ADDRESS
     ram[runtime_address:runtime_address + len(runtime)] = runtime
     # The original tick hook is CALL poll_sfx; redirect its operand to the
     # wrapper.  Its three-byte footprint is unchanged.
-    ram[PROGRAM_ADDRESS + tick_offset + 1] = runtime_address & 0xFF
-    ram[PROGRAM_ADDRESS + tick_offset + 2] = runtime_address >> 8
+    ram[PROGRAM_ADDRESS + tick_offset + 1] = wrapper_address & 0xFF
+    ram[PROGRAM_ADDRESS + tick_offset + 2] = wrapper_address >> 8
+    if ram[PROGRAM_ADDRESS:PROGRAM_ADDRESS + 3] != bytes(
+            (0x8F, 0, midi2spc.DP_DELAY_LO)):
+        raise ValueError("MIDI2SPC entry no longer starts with MOV delay,#0")
+    ram[PROGRAM_ADDRESS:PROGRAM_ADDRESS + 3] = bytes(
+        (0x5F, runtime_address & 0xFF, runtime_address >> 8))
 
     data[SPC_HEADER_SIZE:SPC_HEADER_SIZE + SPC_RAM_SIZE] = ram
     output_path.write_bytes(data)

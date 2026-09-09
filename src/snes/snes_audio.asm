@@ -5,10 +5,10 @@
 ; the existing MIDI2SPC SFX ports and additionally accepts:
 ;
 ;   F5=$FF, F6/F7=destination, F4=token: receive 256 bytes in 3-byte groups
-;   F5=$FE, F4=token: acknowledge and restart at SPC $0200
+;   F5=$FE, F4=token: acknowledge and restart the resident sequencer
 ;
 ; Every transfer is synchronous and NMI-safe.  Audio scene changes happen
-; between frame work, and the NMI enable value is restored before returning.
+; between frame work; restore the game's NMI/auto-joypad configuration on return.
 ; ─────────────────────────────────────────────────────────────────────────────
 .include "hdr.asm"
 
@@ -64,11 +64,10 @@ snesAudioLoadSnapshot:
     sta.b <snes_audio_src_bank
     stz.b <snes_audio_token
 
-    lda.l $4200
-    pha
+    ; $4200 is write-only. The game uses NMI + automatic joypad reads.
     stz $4200
 
-    ; Wait for the SPC IPL ready word ($BBAA), then select ARAM $0000.
+    ; Wait for the SPC IPL ready word ($BBAA), then select ARAM $0200.
     rep #$20
 snes_audio_boot_ready:
     ldx $2140
@@ -93,7 +92,7 @@ snes_audio_boot_cc:
 
     ; A is the transfer token and B is the current byte.  The first byte is
     ; sent immediately; subsequent bytes wait for the IPL echo before reading
-    ; the next ROM byte.  Y wraps after exactly 65536 bytes.
+    ; the next ROM byte. X counts the bytes through ARAM $E7FF.
     ldy #$0000
     ldx #SNES_AUDIO_BOOT_BYTES
     lda.b [<snes_audio_src],y
@@ -136,10 +135,13 @@ snes_audio_boot_final_wait:
 snes_audio_boot_start_wait:
     cmp.l $2140
     bne snes_audio_boot_start_wait
+    ; Keep runtime tokens distinct from the IPL's final acknowledgement.
+    ; Restarting at token 1 would accept that stale echo as the first block
+    ; header ACK and publish data before the SPC has received its destination.
+    sta.b <snes_audio_token
     stz $2140
 
-    pla
-    ora #$80
+    lda #$81
     sta.l $4200
     pld
     plb
@@ -173,8 +175,7 @@ snesAudioStreamBlock:
     sta.b <snes_audio_dest
     sep #$20
 
-    lda.l $4200
-    pha
+    ; $4200 is write-only. The game uses NMI + automatic joypad reads.
     stz $4200
 
     ; Command header: destination is written before the token, so the SPC
@@ -222,8 +223,7 @@ snes_audio_block_last_wait:
     cmp.l $2140
     bne snes_audio_block_last_wait
 
-    pla
-    ora #$80
+    lda #$81
     sta.l $4200
     pld
     plb
@@ -246,8 +246,7 @@ snesAudioRestart:
     pha
     plb
 
-    lda.l $4200
-    pha
+    ; $4200 is write-only. The game uses NMI + automatic joypad reads.
     stz $4200
     lda #$FE
     sta.l $2141
@@ -257,8 +256,7 @@ snes_audio_restart_wait:
     cmp.l $2140
     bne snes_audio_restart_wait
 
-    pla
-    ora #$80
+    lda #$81
     sta.l $4200
     pld
     plb
@@ -290,6 +288,9 @@ snesAudioPlaySfx:
     sta.l $2143
     jsr snes_audio_next_token
     sta.l $2140
+snes_audio_sfx_wait:
+    cmp.l $2140
+    bne snes_audio_sfx_wait
 
 snes_audio_sfx_out:
     pld

@@ -1,0 +1,38 @@
+--- a/src/drivers_libxxx/main.cpp
++++ b/src/drivers_libxxx/main.cpp
+@@ -224,0 +225,2 @@
++    int16 samples[8192];
++    std::ofstream audio;
+@@ -237,3 +239,5 @@
+-        espec.SoundRate = 0;
+-        espec.SoundBuf = nullptr;
+-        espec.SoundBufMaxSize = 0;
++        const char* audioPath = std::getenv("SNES_AUDIO_PCM");
++        if(audioPath) audio.open(audioPath, std::ios::binary);
++        espec.SoundRate = 48000;
++        espec.SoundBuf = samples;
++        espec.SoundBufMaxSize = 4096;
+@@ -241,0 +246,10 @@
++    }
++
++    ~FrameRunner()
++    {
++        const char* ramPath = std::getenv("SNES_AUDIO_ARAM");
++        if(ramPath) {
++            std::ofstream ram(ramPath, std::ios::binary);
++            for(unsigned i = 0; i < 65536; ++i)
++                ram.put(MDFN_IEN_SNES::PeekAPURAM(i));
++        }
+@@ -248,0 +263 @@
++        if(audio) audio.write(reinterpret_cast<const char*>(samples), espec.SoundBufSize * 4);
+--- a/src/snes/headless_api.h
++++ b/src/snes/headless_api.h
+@@ -53,0 +54 @@
++uint8_t PeekAPURAM(uint32_t addr);
+--- a/src/snes/interface.cpp
++++ b/src/snes/interface.cpp
+@@ -1517,0 +1518,4 @@
++
++namespace MDFN_IEN_SNES {
++uint8_t PeekAPURAM(uint32_t addr) { return bSNES_v059::memory::apuram[addr & 0xFFFF]; }
++}

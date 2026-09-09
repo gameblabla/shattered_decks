@@ -65,6 +65,13 @@ SNES_AUDIO_ASSETS_OBJ := $(OBJ)/snes_audio_assets.obj
 SHARED_C := src/msx2/msx2_duel.c src/msx2/msx2_cards.c \
             src/game/ai.c src/game/deck.c
 
+# A small cartridge exercising the real CPU/SPC driver independently of menus.
+ifeq ($(SNES_AUDIO_PROBE),1)
+SNES_C := tools/snes/audio_probe.c $(PROJ_DIR)/snes_audio_driver.c
+SNES_ASM :=
+SHARED_C :=
+endif
+
 CFILES := $(SNES_C) $(SHARED_C)
 
 # EVERY OBJECT DEPENDS ON EVERY HEADER, and the bluntness is deliberate.  There
@@ -93,7 +100,7 @@ OBJS := $(patsubst %.c,$(OBJ)/%.obj,$(notdir $(CFILES))) \
         $(SNES_AUDIO_OBJ) $(SNES_AUDIO_ASSETS_OBJ)
 
 # Two source trees feed one flat object dir, so tell make where to look.
-vpath %.c $(PROJ_DIR) src/msx2 src/game
+vpath %.c $(PROJ_DIR) src/msx2 src/game tools/snes
 vpath %.asm $(PROJ_DIR) $(PROJ_DIR)/assets
 
 .PHONY: all rom verify clean check-sdk banks
@@ -157,7 +164,12 @@ $(SNES_AUDIO_OBJ): $(SNES_AUDIO_ASM) $(HDR)
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -o $@ $<
 
-$(SNES_AUDIO_ASSETS_OBJ): $(SNES_AUDIO_ASSETS_ASM) $(HDR)
+SNES_AUDIO_SNAPSHOTS := $(addprefix $(PROJ_DIR)/assets/audio/,titlealt.spc overworld.spc altbattle.spc victory.spc fail.spc)
+.PHONY: audio-assets
+audio-assets:
+	python3 tools/snes/gen_snes_audio.py
+
+$(SNES_AUDIO_ASSETS_OBJ): $(SNES_AUDIO_ASSETS_ASM) $(HDR) $(SNES_AUDIO_SNAPSHOTS)
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -o $@ $<
 
