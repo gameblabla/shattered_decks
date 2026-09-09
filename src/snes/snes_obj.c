@@ -19,9 +19,9 @@ static u8 oam_dirty = 1;
 /* ── Card tiles ──────────────────────────────────────────────────────────── */
 
 /* What each OBJ card slot HOLDS and what it has been ASKED for.  A slot whose
- * two disagree is queued; snesObjVblank drains the queue a couple of faces at
- * a time, because 512 bytes a card against a vblank that also carries up to
- * 4 KB of board is the whole DMA budget twice over. */
+ * two disagree is queued; snesObjVblank drains one 128-byte card row at a
+ * time, because a whole 512-byte face beside OAM can run into active display
+ * and leave the final tile word stale. */
 static u8 card_have[SNES_OBJ_CARDS];
 static u8 card_want[SNES_OBJ_CARDS];
 /* ...and out of WHICH SHEET, which is part of what a slot holds and not a
@@ -41,8 +41,11 @@ static u8 card_hi_mode = 0;
  * looking for, and the rows it steals from the board simply never reach VRAM
  * -- a black board under a correct framebuffer.  So the scan happens in
  * snesObjEnd, with the rest of the frame's work, and the vblank routine does
- * one comparison and four DMAs. */
+ * one comparison and one row DMA. */
 static u8 next_card = SNES_OBJ_CARDS;
+static u8 next_card_row = 0;
+static u8 next_card_face = SNES_OBJ_NO_FACE;
+static u8 next_card_hi = 0;
 
 /* Where slot `k`'s tiles start in the OBJ name table.  Four 32x32 sprites fit
  * across the sixteen-wide table, so a slot is a column of one 64-name group. */
@@ -108,6 +111,10 @@ void snesObjInit(void)
     obj_n = 0;
     obj_prev = 128;                     /* hide everything on the first frame */
     oam_dirty = 1;
+    next_card = SNES_OBJ_CARDS;
+    next_card_row = 0;
+    next_card_face = SNES_OBJ_NO_FACE;
+    next_card_hi = 0;
 }
 
 /* ── Building a frame's list ─────────────────────────────────────────────── */
@@ -247,11 +254,29 @@ void snesObjEnd(void)
     obj_prev = obj_n;
     oam_dirty = 1;
 
+    /* Keep a partially uploaded face ahead of later slots.  If the editor
+     * changes the requested face while its rows are in flight, restart that
+     * slot from row zero so no rows from two faces can be mixed. */
+    if (next_card < SNES_OBJ_CARDS &&
+        (card_have[next_card] != card_want[next_card] ||
+         card_have_hi[next_card] != card_want_hi[next_card])) {
+        if (next_card_face != card_want[next_card] ||
+            next_card_hi != card_want_hi[next_card]) {
+            next_card_face = card_want[next_card];
+            next_card_hi = card_want_hi[next_card];
+            next_card_row = 0;
+        }
+        return;
+    }
+
     next_card = SNES_OBJ_CARDS;
     for (i = 0; i < SNES_OBJ_CARDS; ++i) {
         if (card_have[i] == card_want[i] &&
             card_have_hi[i] == card_want_hi[i]) continue;
         next_card = i;
+        next_card_row = 0;
+        next_card_face = card_want[i];
+        next_card_hi = card_want_hi[i];
         break;
     }
 }
@@ -280,35 +305,35 @@ u8 snesObjCardsReady(void)
  * walking up into the top view does to all five hand slots -- the clustered
  * palette has to be put BACK, or the top view draws its twenty cards through
  * five hand cards' palettes. */
-static void upload_card(u8 slot)
+static void upload_card_row(u8 slot, u8 row)
 {
     const u8 face = card_want[slot];
     const u8 hi = card_want_hi[slot];
-    u16 src;
-    u8  r;
+    const u16 src = (u16)((u16)face * SNES_SPR_CARD_BYTES);
 
     if (face == SNES_OBJ_NO_FACE) {
         card_have[slot] = face;
         card_have_hi[slot] = hi;
         return;
     }
-    src = (u16)((u16)face * SNES_SPR_CARD_BYTES);
     if (hi) {
-        for (r = 0; r < 4; ++r)
-            dmaCopyVram((u8 *)&snes_spr_cards_hi[src + (u16)r * SNES_SPR_CARD_ROW],
-                        CARD_WORD(slot, r), SNES_SPR_CARD_ROW);
-        dmaCopyCGram((u8 *)&snes_spr_face_pal[(u16)face * 32],
-                     (u16)(128 + (u16)slot * 16), 32);
+        dmaCopyVram((u8 *)&snes_spr_cards_hi[src + (u16)row * SNES_SPR_CARD_ROW],
+                    CARD_WORD(slot, row), SNES_SPR_CARD_ROW);
     } else {
-        for (r = 0; r < 4; ++r)
-            dmaCopyVram((u8 *)&snes_spr_cards[src + (u16)r * SNES_SPR_CARD_ROW],
-                        CARD_WORD(slot, r), SNES_SPR_CARD_ROW);
-        if (card_have_hi[slot] && slot < SNES_SPR_CARD_PALS)
+        dmaCopyVram((u8 *)&snes_spr_cards[src + (u16)row * SNES_SPR_CARD_ROW],
+                    CARD_WORD(slot, row), SNES_SPR_CARD_ROW);
+    }
+    if (row == 3) {
+        if (hi) {
+            dmaCopyCGram((u8 *)&snes_spr_face_pal[(u16)face * 32],
+                         (u16)(128 + (u16)slot * 16), 32);
+        } else if (card_have_hi[slot] && slot < SNES_SPR_CARD_PALS) {
             dmaCopyCGram((u8 *)&snes_spr_pal[(u16)slot * 32],
                          (u16)(128 + (u16)slot * 16), 32);
+        }
+        card_have[slot] = face;
+        card_have_hi[slot] = hi;
     }
-    card_have[slot] = face;
-    card_have_hi[slot] = hi;
 }
 
 void snesObjVblank(void)
@@ -318,7 +343,12 @@ void snesObjVblank(void)
         oam_dirty = 0;
     }
     if (next_card < SNES_OBJ_CARDS) {
-        upload_card(next_card);
-        next_card = SNES_OBJ_CARDS;
+        upload_card_row(next_card, next_card_row);
+        if (next_card_row == 3) {
+            next_card = SNES_OBJ_CARDS;
+            next_card_row = 0;
+        } else {
+            ++next_card_row;
+        }
     }
 }

@@ -5,7 +5,7 @@
  *  DECK and STORAGE are two tabs over one six-column gallery.  A moves the
  *  highlighted card between them, B checks it, and START only leaves for a
  *  duel when the deck really contains forty cards.  The card art is the same
- *  OBJ sheet the duel uses; the panel behind it is a resident Mode 3 screen.
+ *  OBJ sheet the duel uses; the background is a full-screen purple HDMA gradient.
  * ───────────────────────────────────────────────────────────────────────────── */
 #include <snes.h>
 
@@ -17,7 +17,6 @@
 #include "snes_scene_data.h"
 #include "msx2_cards.h"
 #include "msx2_duel.h"
-#include "snes_deck_data.h"
 
 #define DECK_COUNT          SNES_SAVE_DECK_SIZE
 #define STORAGE_COUNT       SNES_SAVE_STORAGE_SIZE
@@ -453,22 +452,14 @@ void snesDeckInit(void)
     REG_TMW = 0;
     REG_W12SEL = 0;
     snesObjInit();
-    dmaCopyCGram((u8 *)snes_deck_pal, 0, 256);
     dmaCopyVram((u8 *)snes_scene_font, 0x6000, SNES_SCENE_FONT_BYTES);
-    dmaCopyVram((u8 *)snes_deck_tiles, 0, SNES_DECK_TILE_BYTES);
-    dmaCopyVram((u8 *)snes_deck_map, 0x7000, SNES_DECK_MAP_BYTES);
-    dmaCopyVram((u8 *)deck_text_map, 0x7400, SNES_DECK_MAP_BYTES);
-    REG_BG1SC = 0x70;
     REG_BG2SC = 0x74;
     REG_BG12NBA = 0x60;
-    REG_BG1HOFS = 0;
-    REG_BG1HOFS = 0;
-    REG_BG1VOFS = 0;
-    REG_BG1VOFS = 0;
     setMode(BG_MODE3, 0);
-    REG_TM = BG1_ENABLE | BG2_ENABLE | OBJ_ENABLE;
+    REG_TM = BG2_ENABLE | OBJ_ENABLE;
     REG_TS = 0;
     deck_text_dirty = 0;
+    dmaCopyVram((u8 *)deck_text_map, 0x7400, SNES_SCENE_MAP_BYTES);
     deck_draw_editor();
 }
 
@@ -518,7 +509,7 @@ u8 snesDeckFrame(void)
 void snesDeckVblank(void)
 {
     if (deck_text_dirty) {
-        dmaCopyVram((u8 *)deck_text_map, 0x7400, SNES_DECK_MAP_BYTES);
+        dmaCopyVram((u8 *)deck_text_map, 0x7400, SNES_SCENE_MAP_BYTES);
         deck_text_dirty = 0;
     }
     snesObjVblank();

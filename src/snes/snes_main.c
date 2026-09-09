@@ -133,6 +133,8 @@ int main(void)
             else if (cur_scene == SNES_SCENE_STORY_TALK ||
                      cur_scene == SNES_SCENE_ENDING)
                 snesVideoRestartSceneHdma();
+            else if (cur_scene == SNES_SCENE_DECK)
+                snesVideoRestartDeckHdma();
             setScreenOn();
             screen_on_pending = 0;
         }
