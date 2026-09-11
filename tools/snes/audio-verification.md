@@ -7,10 +7,10 @@ otherwise the first block can mistake that stale echo for its own acknowledgemen
 
 During replacement the SPC stops its timer, keys off voices, mutes the DSP, and
 receives blocks without returning to the sequencer. Only the restart command
-resets the sequence pointer and resumes playback. Commands are remembered before
-acknowledgement, and SFX calls wait for acceptance before another call can reuse
-the payload ports. The CPU restores the game's NMI/auto-joypad setting explicitly:
-$4200 is write-only.
+resets the sequence pointer, applies the requested looping/finite playback mode,
+and resumes playback. Commands are remembered before acknowledgement, and SFX
+calls wait for acceptance before another call can reuse the payload ports. The
+CPU restores the game's NMI/auto-joypad setting explicitly: $4200 is write-only.
 
 Regenerate the snapshots and build the game:
 
@@ -38,7 +38,9 @@ overworld, duplicate requests, invalid IDs, consecutive SFX immediately after
 restart, command-token wraparound, and reuse of the resident SFX bank. Each stage
 must advance its WRAM stamp, retain the correct resident code, match the selected
 music and directory byte for byte in SPC RAM, preserve SFX samples, and produce
-non-silent PCM. Captures and WAV files go to `build/snes/audio-probe/verify/`.
+non-silent PCM. The live direct-page state must also show looping mode for scene
+music and finite mode for the victory/failure cues. Captures and WAV files go to
+`build/snes/audio-probe/verify/`.
 
 The patch also supports capturing a normal game run: set `SNES_AUDIO_PCM` to the
 output filename for raw stereo 48 kHz signed 16-bit little-endian PCM and

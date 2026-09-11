@@ -22,9 +22,11 @@ TRACK_IDS = (0, 2, 1, 3, 4, 0, 2, 1)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--emulator', type=Path, required=True)
+    parser.add_argument('--build', type=Path, default=ROOT / 'build/snes/audio-probe',
+                        help='audio probe build directory')
     args = parser.parse_args()
     emulator = args.emulator.resolve()
-    build = ROOT / 'build/snes/audio-probe'
+    build = args.build.resolve()
     out = build / 'verify'
     out.mkdir(parents=True, exist_ok=True)
     symbols = (build / 'waifusnes.sym').read_text()
@@ -63,6 +65,10 @@ def main():
         assert aram[0x200:0xC10] == snapshot[0x200:0xC10], 'resident code corrupted'
         assert aram[0xC10:end] == snapshot[0xC10:end], 'wrong music in SPC RAM'
         assert aram[0xE700:0xE800] == snapshot[0xE700:0xE800], 'wrong DSP directory'
+        finite = int(track in ('victory', 'fail'))
+        assert aram[0x67] == finite, (
+            'wrong end mode for %s: got %d expected %d' %
+            (track, aram[0x67], finite))
         if phase:
             sfx = (ROOT / 'src/snes/assets/audio/altbattle.spc').read_bytes()[256:]
             assert aram[0xB400:0xE700] == sfx[0xB400:0xE700], 'SFX bank corrupted'

@@ -5,7 +5,7 @@
 ; the existing MIDI2SPC SFX ports and additionally accepts:
 ;
 ;   F5=$FF, F6/F7=destination, F4=token: receive 256 bytes in 3-byte groups
-;   F5=$FE, F4=token: acknowledge and restart the resident sequencer
+;   F5=$FE, F6=finite mode, F4=token: restart resident sequencer
 ;
 ; Every transfer is synchronous and NMI-safe.  Audio scene changes happen
 ; between frame work; restore the game's NMI/auto-joypad configuration on return.
@@ -248,6 +248,8 @@ snesAudioRestart:
 
     ; $4200 is write-only. The game uses NMI + automatic joypad reads.
     stz $4200
+    lda 8,s
+    sta.l $2142
     lda #$FE
     sta.l $2141
     jsr snes_audio_next_token

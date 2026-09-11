@@ -12,7 +12,7 @@ extern const u8 snes_audio_fail[];
 
 extern void snesAudioLoadSnapshot(const u8 *snapshot);
 extern void snesAudioStreamBlock(const u8 *snapshot, u16 destination);
-extern void snesAudioRestart(void);
+extern void snesAudioRestart(u8 finite);
 extern void snesAudioPlaySfx(u8 slot);
 
 static u8 current_track = 0xFF;
@@ -73,7 +73,8 @@ void snesAudioPlay(u8 track)
         sfx_loaded = 1;
     }
     snesAudioStreamBlock(snapshot + 0xE700, 0xE700);
-    snesAudioRestart();
+    snesAudioRestart((u8)(track == SNES_AUDIO_VICTORY ||
+                         track == SNES_AUDIO_FAIL));
     current_track = track;
 }
 

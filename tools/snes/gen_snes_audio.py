@@ -49,6 +49,8 @@ DP_RELOAD_ADDR_LO = 0x63
 DP_RELOAD_ADDR_HI = 0x64
 DP_RELOAD_RX_TOKEN = 0x65
 DP_RELOAD_COUNT = 0x66
+DP_FINITE = 0x67
+DP_FINITE_PENDING = 0x68
 
 RELOAD_BLOCK = 0xFF
 RELOAD_RESTART = 0xFE
@@ -60,6 +62,8 @@ SFX_SAMPLES = (
     REPO / "sounds" / "Select.wav",
 )
 
+# All snapshots carry the same loop-capable resident player. Result cues select
+# finite playback at runtime through the restart mode byte.
 TRACKS = (
     ("titlealt", "TitleAlt.midi", "full", True),
     ("overworld", "Overworld.midi", "56k", False),
@@ -104,6 +108,8 @@ def _build_reload_runtime(original_labels, original_length):
     # boot and restart, without clearing the CPU's incoming command latch.
     code.label("cartridge_entry")
     _imm_dp(code, DP_RELOAD_TOKEN, 0)
+    _imm_dp(code, DP_FINITE, 0)
+    _imm_dp(code, DP_FINITE_PENDING, 0)
     code.label("cartridge_restart")
     code.emit(0x20)                   # CLRP: direct page is $0000
     code.emit(0xCD, 0xFF, 0xBD)       # reset stack (discard reload calls)
@@ -113,6 +119,8 @@ def _build_reload_runtime(original_labels, original_length):
         _imm_dp(code, midi2spc.DP_MASK_TABLE + n, 1 << n)
     # Replay the first MOV dp,#0 displaced by the entry JMP.
     _imm_dp(code, midi2spc.DP_DELAY_LO, 0)
+    _load_a_dp(code, DP_FINITE_PENDING)
+    _store_a_dp(code, DP_FINITE)
     code.emit(0x5F, (PROGRAM_ADDRESS + 3) & 0xFF,
               (PROGRAM_ADDRESS + 3) >> 8)
 
@@ -162,6 +170,8 @@ def _build_reload_runtime(original_labels, original_length):
     code.branch(0xD0, "reload_next_command")
 
     code.label("reload_restart")
+    _load_a_dp(code, 0xF6)
+    _store_a_dp(code, DP_FINITE_PENDING)
     _load_a_dp(code, 0xF4)
     _store_a_dp(code, DP_RELOAD_TOKEN)
     _store_a_dp(code, 0xF4)
@@ -258,6 +268,30 @@ def _patch_runtime(output_path, captured):
     wrapper_address = reload_labels["audio_tick_wrapper"]
     wrapper_offset = wrapper_address - PROGRAM_ADDRESS
     ram[runtime_address:runtime_address + len(runtime)] = runtime
+    # The SPC snapshot initializes finite mode to zero on cold boot. Restarts
+    # enter below cartridge_entry, so remove its redundant initializer and let
+    # the mode received in F6 survive. Address the known runtime instruction
+    # directly instead of searching for a byte string that might match player
+    # code by accident.
+    finite_pos = reload_labels["cartridge_entry"] - PROGRAM_ADDRESS + 3
+    finite_init = bytes((0x8F, 0x00, DP_FINITE))
+    if ram[PROGRAM_ADDRESS + finite_pos:PROGRAM_ADDRESS + finite_pos + 3] != finite_init:
+        raise ValueError("reload runtime lost the finite-mode initializer")
+    finite_pos += PROGRAM_ADDRESS
+    ram[finite_pos:finite_pos + 3] = bytes((0x00, 0x00, 0x00))
+    # This local converter revision names zero as looping and nonzero as finite,
+    # but its two conditional branches were emitted backwards. Correct the
+    # generated resident player while retaining assertions against converter
+    # drift. This makes standalone SPC playback and cartridge restarts use the
+    # same end-of-song semantics.
+    for label, target in (("finish", "finish_loop"),
+                          ("event_end", "event_loop")):
+        start = labels[label]
+        stop = labels[target]
+        branch = ram.find(bytes((0xE4, DP_FINITE, 0xD0)), start, stop)
+        if branch < 0:
+            raise ValueError(f"MIDI2SPC lost the {label} finite-mode branch")
+        ram[branch + 2] = 0xF0       # BEQ: zero selects the loop path
     # The original tick hook is CALL poll_sfx; redirect its operand to the
     # wrapper.  Its three-byte footprint is unchanged.
     ram[PROGRAM_ADDRESS + tick_offset + 1] = wrapper_address & 0xFF
@@ -354,8 +388,10 @@ def build(output_dir):
     for name, midi_name, budget, strip_sfx in TRACKS:
         midi_path = REPO / "snes_music" / "midi" / midi_name
         output_path = output_dir / f"{name}.spc"
+        track_options = dict(common)
+        track_options["loop"] = True
         stats, captured = _render_with_labels(
-            midi_path, output_path, aram_budget=budget, **common)
+            midi_path, output_path, aram_budget=budget, **track_options)
         runtime_address, runtime_size, _ = _patch_runtime(output_path, captured)
         if strip_sfx:
             _strip_title_sfx(output_path, stats)
