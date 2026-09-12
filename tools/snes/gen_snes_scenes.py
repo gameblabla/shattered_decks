@@ -298,28 +298,17 @@ def write_story_backgrounds():
     return sizes
 
 
-# The portrait sources go by several spellings in the source tree and are
-# being reorganised; take the first of each speaker's candidates that exists.
-PORTRAIT_CANDIDATES = [
-    ["Serena.png", "serena.png", "pc_hires_serena.png", "pc_hires_serana.png",
-     "serena_highres.png"],
-] + [
-    ["pc_hires_opponent_%d.png" % i, "pc_hires_opponent_%d.png.png" % i,
-     "opponent_%d_hires.png" % i, "opponent_%d_highres.png" % i,
-     "opponent_%d.png" % i]
-    for i in range(5)
+# SNES uses the hand-pixelled character set in story order: Serena, the first
+# opponent, then opponents 1 through 4.  Keep these explicit so adding a newer
+# PC portrait at the top level cannot silently change the cartridge artwork.
+PORTRAITS = [
+    "pixelart/serna_portrait_160px_pixelart.png",
+    "pixelart/first_guy_opponent_pixelart.png",
+    "pixelart/opponent_1_pixelart.png",
+    "pixelart/opponent_2_pixel_art.png",
+    "pixelart/opponent_3_pixel_art.png",
+    "pixelart/opponent_4_pixelart.png",
 ]
-
-
-def portrait_file(candidates):
-    for name in candidates:
-        if os.path.exists(os.path.join(ROOT, "assets", "source",
-                                       "story_portraits", name)):
-            return name
-    raise SystemExit("no story portrait among %s" % candidates)
-
-
-PORTRAITS = [portrait_file(c) for c in PORTRAIT_CANDIDATES]
 
 
 def portrait_asset(filename, first):

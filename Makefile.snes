@@ -194,7 +194,7 @@ SNES_SCENE_INPUTS := tools/snes/gen_snes_scenes.py \
 	tools/snes/gen_snes_dialogue.py src/main.c \
 	src/engine/font_menudata.h assets/source/title/title256.png \
 	$(wildcard assets/source/bg/*.png) \
-	$(wildcard assets/source/story_portraits/*.png) \
+	$(wildcard assets/source/story_portraits/pixelart/*.png) \
 	assets/source/ending/ending256x240.png
 SNES_SCENE_STAMP := $(BUILD)/scene-assets.stamp
 
