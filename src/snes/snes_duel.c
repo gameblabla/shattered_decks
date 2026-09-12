@@ -8,7 +8,7 @@
  *  (src/atarist/atarist_duel.c), because a second, differently-shaped UI over
  *  the same rules is two things to keep correct instead of one.
  *
- *  TWO VIEWS OF ONE BOARD, and the player moves between them with UP and DOWN.
+ *  TWO VIEWS OF ONE BOARD: UP opens inspection and B returns to the hand.
  *
  *  The board view is the textured slab in perspective: twenty slots with their
  *  cards lying on them, a marker under the slot in question, and the card being
@@ -20,9 +20,8 @@
  *
  *  The top view is the same board as a flat table: Mode 3, the full 256x224,
  *  no software rendering at all and therefore sixty fields a second.  It is
- *  the view the other ports call the tactical top view.  UP first runs a short
- *  live camera lift through the fixed-detail board surface, with the hand sliding out
- *  of the way, and DOWN plays the same path in reverse.
+ *  the view the other ports call the tactical top view.  UP zooms the resident 128x80 board while the hand slides out
+ *  of the way; B plays the same path in reverse.
  *
  *  NOTHING IN THE HUD IS DRAWN INTO THE BITMAP any more.  Life points, the
  *  prompt, the hand and both cursors are sprites, which is what lets them stay
@@ -31,6 +30,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 #include <snes.h>
 #include "snes_duel.h"
+#include "snes_cardart.h"
 #include "snes_video.h"
 #include "snes_board3d.h"
 #include "snes_cards.h"
@@ -38,6 +38,8 @@
 #include "snes_stamp.h"
 #include "snes_deck.h"
 #include "snes_audio.h"
+#include "snes_save.h"
+#include "snes_scene.h"
 #include "msx2_duel.h"
 #include "msx2_cards.h"
 
@@ -125,13 +127,22 @@
 #define TOP_STAT_X   120
 #define TOP_STAT_GAP 72
 
-#define VIEW_ANIM_FRAMES       8
+/* THE CAMERA MOVE IS TWENTY FIELDS AND NOT EIGHT RENDERS.
+ *
+ * It used to render eight live poses of the board through the general quad
+ * path, each one re-baking the twenty-card board texture, and each one waiting
+ * out the twelve-field motion interval on top of the thirteen fields the
+ * render itself cost: the lift took the better part of seven seconds and spent
+ * most of it looking identical.  Nothing is rendered here now.  The board
+ * bitmap already in VRAM is the picture; the move is the board band's Mode 7
+ * scale walked from 4.0 to SNES_M7_SCALE_TOP, one value a FIELD, with the hand
+ * sliding off the bottom over the same curve.  See snes_video.h.
+ *
+ * Twenty fields is also about what the top view's twenty card sprites need to
+ * reach VRAM at four 128-byte rows a vblank, so the two finish together and
+ * the mode change happens with the table already complete. */
+#define VIEW_ANIM_FRAMES       20
 #define VIEW_HAND_OFFSET       80
-/* At 90 degrees of pitch, this focal length keeps the camera lift in the same
- * 128x80 board surface as the ordinary perspective view. */
-#define VIEW_TOP_Z              ((s16)0)
-#define VIEW_TOP_HEIGHT        ((s16)683)
-#define VIEW_TRANSITION_FOCAL  ((s16)((u16)SNES_STILL_W << 7))
 
 enum SnesDuelUi {
     UI_HAND = 0,        /* choosing a card in hand */
@@ -140,7 +151,10 @@ enum SnesDuelUi {
     UI_ATTACKER,        /* choosing which of your monsters attacks */
     UI_DEFENDER,        /* choosing what it attacks */
     UI_COM,             /* the opponent is acting */
-    UI_RESULT
+    UI_RESULT,
+    UI_FUSE_TARGET,     /* where the chosen fusion chain lands */
+    UI_CHECK,           /* one card over a Mode 3 presentation */
+    UI_BATTLE_ART       /* two independently moving Mode 3 cards */
 };
 
 enum SnesViewMotion {
@@ -177,8 +191,53 @@ static u8 board_yaw = 0;
 static u8 turn_frame = 0;
 static u8 turn_from = 0;
 static u8 turn_target = 0;
-static u8 turn_top = 0;
 static u8 texture_faces[20];
+/* THE TOP VIEW HAS A CURSOR OF ITS OWN, and it is a board position rather than
+ * whatever the hand happened to be pointing at.  The table shows twenty slots
+ * and every other port lets the player walk over all of them and read what is
+ * lying there; carrying the hand's cursor up there instead left the marker
+ * stuck on a hand slot the view does not even draw.  It is an INSPECTION
+ * cursor: it names the card under it in the row below the table and A opens
+ * the card check, but it does not play anything. */
+static u8 top_row = SNES_ROW_YOU_MONSTER;
+static u8 top_col = 0;
+/* The selected hand card's small up-and-down, which is a per-FIELD thing and
+ * therefore not the board's lift_phase: the board only advances on the twelve
+ * field motion cadence and a bob that moves five times a second is a twitch. */
+static u8 bob_phase = 0;
+/* THE FUSION CHAIN, in the order the player chose it.  DOWN on the hand row
+ * puts the card under the cursor into it and takes it out again; A with a
+ * chain waiting carries it to the field row, which picks the slot it lands in.
+ * That is the MSX2 build's gesture, and the rules model underneath is the same
+ * one (Msx2_PlaceFusion). */
+static u8 queue[MSX2_HAND];
+static u8 queue_n = 0;
+/* A card being put down FLIES THERE.  The hand sprite walks from its slot to
+ * the projected centre of the board slot it is going into and the rules are
+ * told only when it arrives, so the card is never in two places and never in
+ * neither.  Sprites only: no board frame is rendered during the flight, so it
+ * runs at sixty fields a second. */
+#define FLY_FRAMES  14
+static u8  fly_frame = 0;
+static u8  fly_def = 0;
+static u8 fly_landing = 0;
+static u8 fly_face = SNES_CARD_NONE_FACE;
+static s16 fly_x0 = 0, fly_y0 = 0, fly_x1 = 0, fly_y1 = 0;
+/* The card check: one card, enlarged into the board bitmap, over black. */
+static u8  check_face = SNES_CARD_NONE_FACE;
+static u8 check_return_ui = UI_HAND;
+static u8 check_return_top = 0;
+static u8  check_has_stats = 0;
+static u16 check_atk = 0, check_def = 0;
+static u8 mode3_active = 0;
+static u8 battle_frame = 0;
+static u8 battle_left_face = SNES_CARD_NONE_FACE;
+static u8 battle_right_face = SNES_CARD_NONE_FACE;
+static u16 battle_left_atk = 0, battle_left_def = 0;
+static u16 battle_right_atk = 0, battle_right_def = 0;
+static u8 battle_return_ui = UI_COM;
+/* How far into its entrance the result banner is. */
+static u8  over_step = 0;
 static u8 texture_w = 0, texture_h = 0;
 static u16 motion_next_vblank = 0;
 #define TURN_FRAMES 16
@@ -204,9 +263,17 @@ static u8  autoplay = 0;
  * switch keeps the five-updates-per-second path active long enough to inspect
  * it in the harness. */
 static u8  force_moving = 0;
+static u8 configured_story = MSX2_STORY_NONE;
+static u8 configured_story_mode = 0;
 
 static void render(void);
 static void build_objects(void);
+static u8   face_of(u8 card, u8 faceup);
+static u8   focus_card(u8 *face);
+static u8   focus_stats(u8 card, u16 *atk, u16 *def);
+static void say(const char *msg);
+
+u8 snesDuelMode3Active(void) { return mode3_active; }
 
 static void set_viewport(void)
 {
@@ -239,38 +306,24 @@ static void set_viewport(void)
 /* Q8.8 smoothstep, using the SNES multiplier instead of a 32-bit product.
  * The eased value is shared by the camera and hand so the two settle together
  * at the exact frame the PPU switches to the resident top table. */
-static u16 view_anim_ease(u8 frame)
+static u16 ease_frac(u8 frame, u8 total)
 {
     u16 t;
     u16 t2;
-    if (frame >= VIEW_ANIM_FRAMES) return SNES_ONE;
-    t = snesUQDiv(frame, VIEW_ANIM_FRAMES);
+    if (frame >= total) return SNES_ONE;
+    t = snesUQDiv(frame, total);
     t2 = (u16)snesQMul((s16)t, (s16)t);
     return (u16)snesQMul((s16)t2, (s16)(3 * SNES_ONE - 2 * t));
+}
+
+static u16 view_anim_ease(u8 frame)
+{
+    return ease_frac(frame, VIEW_ANIM_FRAMES);
 }
 
 static s16 view_lerp(s16 a, s16 b, u16 t)
 {
     return (s16)(a + snesQMul((s16)(b - a), (s16)t));
-}
-
-static void set_view_transition_camera(u8 frame, u8 to_top)
-{
-    u16 t = view_anim_ease(frame);
-    s16 centre_x, centre_y;
-    if (!to_top) t = (u16)(SNES_ONE - t);
-    snesCameraSet(&cam, 0,
-                  view_lerp(CAM_Z, VIEW_TOP_Z, t),
-                  view_lerp(CAM_HEIGHT, VIEW_TOP_HEIGHT, t),
-                  VIEW_TRANSITION_FOCAL, view_lerp(0, 14, t));
-    cam.pitch = (u8)(t >> 2);
-    cam.yaw = board_yaw;
-    /* Keep the board centre in the play area as the eye moves over it. */
-    cam.horizon = 0;
-    if (snesProjectQ(&cam, &vp, 0, 0, 0, &centre_x, &centre_y))
-        cam.horizon = (view_lerp(2432, 3584, t) - centre_y) >> 8;
-    /* 32 floor texels per world unit / 64 viewport pixels, in Q8.8. */
-    vp.du_k = 128;
 }
 
 static u8 motion_frame_due(void)
@@ -287,22 +340,46 @@ static void schedule_motion_frame(void)
     motion_next_vblank = (u16)(motion_next_vblank + SNES_MOTION_FIELDS);
 }
 
+/* Queue the top view's twenty card sprites.  `hand_gone` says whether the five
+ * hand slots are free yet: they are OBJ slots 0..4 and the top table's first
+ * row as well, so asking for the table's cards there while the hand is still
+ * sliding would take the hand off the screen a card at a time.  The other
+ * fifteen have nothing to wait for and start immediately, which is what gets
+ * the whole table into VRAM inside the twenty fields the move takes. */
+static void queue_top_cards(u8 hand_gone)
+{
+    u8 row, col;
+    for (row = 0; row < SNES_ROWS; ++row) {
+        const Msx2Side *s = &g_duel.side[row < 2 ? MSX2_OWNER_COM
+                                                 : MSX2_OWNER_PLAYER];
+        const u8 support = (row == SNES_ROW_COM_SUPPORT ||
+                            row == SNES_ROW_YOU_SUPPORT);
+        for (col = 0; col < SNES_COLS; ++col) {
+            const u8 slot = (u8)(row * SNES_COLS + col);
+            if (slot < SNES_SPR_CARD_PALS && !hand_gone) continue;
+            snesObjQueueCard(slot,
+                face_of(support ? s->equip_field[col] : s->field[col],
+                        support ? 1 : s->faceup[col]), 0);
+        }
+    }
+}
+
 static void begin_view_transition(u8 to_top)
 {
     view_motion = to_top ? VIEW_TO_TOP : VIEW_TO_HAND;
     view_anim_frame = 0;
-    motion_next_vblank = snes_vblank_count;
-    if (!to_top) {
-        /* The top table remains visible until snesVideoPresent applies the
-         * pending Mode 7 switch; the object list is already the first frame
-         * of the hand's entrance. */
+    if (to_top) {
+        /* Start the fifteen slots the hand does not own now; the board is not
+         * rendered again from here, so the whole vblank is theirs. */
+        queue_top_cards(0);
+    } else {
+        /* Mode 7 comes back on the next vblank with the board bitmap exactly
+         * as the player left it and the zoom still at the top of the lift, so
+         * there is nothing to render and nothing to upload. */
         top_view = 0;
+        snesVideoSetBoardZoom(SNES_M7_SCALE_TOP);
         snesVideoSetView(SNES_VIEW_BOARD);
     }
-    snesVideoSetBoardRes(SNES_RES_BEND);
-    set_viewport();
-    set_view_transition_camera(0, to_top);
-    board_dirty = 1;
 }
 
 static void finish_view_transition(u8 to_top)
@@ -311,48 +388,39 @@ static void finish_view_transition(u8 to_top)
         top_view = 1;
         view_motion = VIEW_TOP_REST;
         snesVideoSetView(SNES_VIEW_TOP);
-        snesVideoSetBoardRes(SNES_RES_STILL);
     } else {
         top_view = 0;
         view_motion = VIEW_BOARD_REST;
         snesVideoSetView(SNES_VIEW_BOARD);
-        snesVideoSetBoardRes(SNES_RES_STILL);
-        /* The top view may have stayed resident while the rules advanced.  On
-         * the way back, choose the board-facing yaw from the current owner so
-         * the perspective endpoint is the same camera the duel would use if
-         * the player had never opened the table view. */
-        board_yaw = g_duel.turn_owner ? 128 : 0;
-        snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, 0, 0);
-        cam.yaw = board_yaw;
-        set_viewport();
-        render();
+        snesVideoSetBoardZoom(SNES_M7_SCALE_STILL);
     }
     view_anim_frame = 0;
 }
 
+/* One FIELD of the move.  Nothing is rendered and nothing is uploaded: the
+ * board band's scale and the hand's y are both read off the same eased curve,
+ * so the picture pushes in while the hand leaves, and the mode changes only
+ * once every card the table needs is actually in VRAM. */
 static void step_view_transition(void)
 {
     const u8 to_top = (view_motion == VIEW_TO_TOP);
-    if (view_anim_frame > VIEW_ANIM_FRAMES) {
-        build_objects();
-        if (snesObjCardsReady()) {
-            finish_view_transition(to_top);
-            build_objects();
-        }
-        return;
-    }
-    if (!motion_frame_due()) {
-        build_objects();
-        return;
-    }
-    set_view_transition_camera(view_anim_frame, to_top);
-    board_dirty = 1;
-    render();
+    u16 t;
+
+    if (view_anim_frame < VIEW_ANIM_FRAMES) ++view_anim_frame;
+    t = view_anim_ease(view_anim_frame);
+    if (!to_top) t = (u16)(SNES_ONE - t);
+    snesVideoSetBoardZoom((u16)view_lerp((s16)SNES_M7_SCALE_STILL,
+                                         (s16)SNES_M7_SCALE_TOP, t));
     build_objects();
-    schedule_motion_frame();
-    if (view_anim_frame >= VIEW_ANIM_FRAMES && !to_top)
-        finish_view_transition(0);
-    else ++view_anim_frame;
+    if (view_anim_frame < VIEW_ANIM_FRAMES) return;
+    if (to_top) {
+        /* The hand is off the screen by now, so its five slots are free for
+         * the table's first row. */
+        queue_top_cards(1);
+        if (!snesObjCardsReady()) return;
+    }
+    finish_view_transition(to_top);
+    build_objects();
 }
 
 static void touch_board(u8 frames)
@@ -390,6 +458,7 @@ static u8 cursor_board_slot(u8 *row)
 {
     switch (ui) {
     case UI_PLACE:
+    case UI_FUSE_TARGET:
     case UI_ATTACKER:
         *row = monster_row(MSX2_OWNER_PLAYER);
         return cursor;
@@ -407,7 +476,8 @@ static u8 cursor_board_slot(u8 *row)
 /* The slot the held card is going into, if the player is holding one. */
 static u8 held_slot(u8 *row)
 {
-    if (ui != UI_PLACE && ui != UI_EQUIP_TARGET) return MSX2_SLOT_NONE;
+    if (ui != UI_PLACE && ui != UI_EQUIP_TARGET && ui != UI_FUSE_TARGET)
+        return MSX2_SLOT_NONE;
     return cursor_board_slot(row);
 }
 
@@ -447,7 +517,7 @@ static void draw_held_card(void)
     SnesVert q[4];
     s16 lift;
 
-    if (slot == MSX2_SLOT_NONE || slot >= SNES_COLS) return;
+    if (slot == MSX2_SLOT_NONE || slot >= SNES_COLS || ui == UI_FUSE_TARGET) return;
     card = s->hand[chosen];
     if (card == MSX2_CARD_NONE) return;
 
@@ -512,13 +582,134 @@ static void render(void)
                            (ui == UI_DEFENDER) ? MARK_COM : MARK_YOU);
     if (show_cards) {
         if (!cam.pitch && !cam.yaw) draw_board_cards();
-        draw_held_card();
+        if (!fly_frame) draw_held_card();
     }
 
     g_stamp.render_lines = (u16)((snes_vblank_count - vbl0) * 262
                                  + snesVCounter() - line0);
     snesVideoPresentRestart();
     board_dirty = 0;
+}
+
+/* ── The card check ──────────────────────────────────────────────────────── */
+
+/* B checks the hovered hand card; A checks the top-view card. The enlarged
+ * face has its own Mode 3 OBJ sheet. Closing restores the previous cursor
+ * and UI, repainting the board when its bitmap becomes visible. */
+
+static void enter_mode3_art(void)
+{
+    /* The card presentation is BG1 8bpp art and BG2 text: see snes_cardart.h.
+     * Nothing the sprite layer holds is touched, so the top view and the
+     * hand's card cache are exactly where they were when this closes. */
+    snesCardArtEnter(ui == UI_CHECK);
+    if (ui == UI_CHECK) {
+        snesCardArtCheck(check_face, check_has_stats, check_atk, check_def);
+    } else {
+        snesCardArtClear();
+        snesCardArtTextClear();
+        if (battle_left_face != SNES_CARD_NONE_FACE) {
+            snesCardArtLoad(0, battle_left_face);
+            snesCardArtPlace(0, SNES_CARDART_COL_L, battle_left_face);
+            snesCardArtStats(SNES_CARDART_COL_L, battle_left_face,
+                             battle_left_atk, battle_left_def);
+        }
+        if (battle_right_face != SNES_CARD_NONE_FACE) {
+            snesCardArtLoad(1, battle_right_face);
+            snesCardArtPlace(1, SNES_CARDART_COL_R, battle_right_face);
+            snesCardArtStats(SNES_CARDART_COL_R, battle_right_face,
+                             battle_right_atk, battle_right_def);
+        }
+        snesCardArtReveal(0);
+    }
+    snesCardArtVblank();
+    mode3_active = 1;
+    setScreenOn();
+}
+
+static void leave_mode3_art(void)
+{
+    setScreenOff();
+    mode3_active = 0;
+    snesVideoInitDuel();
+    snesObjInit();
+    snesVideoSetBoardZoom(SNES_M7_SCALE_STILL);
+    snesVideoSetView(top_view ? SNES_VIEW_TOP : SNES_VIEW_BOARD);
+    render();
+    snesVideoRestartHdma();
+    setScreenOn();
+}
+
+static void begin_check(void)
+{
+    u8 face = SNES_CARD_NONE_FACE;
+    const u8 card = focus_card(&face);
+
+    if (face == SNES_CARD_NONE_FACE || face == SNES_CARD_BACK) {
+        say("NOTHING TO CHECK");
+        return;
+    }
+    check_return_ui = ui;
+    check_return_top = top_view;
+    check_face = face;
+    check_has_stats = focus_stats(card, &check_atk, &check_def);
+    snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+    top_view = 0;
+    view_motion = VIEW_BOARD_REST;
+    snesVideoSetView(SNES_VIEW_BOARD);
+    snesVideoSetBoardZoom(SNES_M7_SCALE_STILL);
+    ui = UI_CHECK;
+    message = NULL;
+    message_timer = 0;
+    enter_mode3_art();
+}
+
+static void end_check(void)
+{
+    ui = check_return_ui;
+    top_view = check_return_top;
+    view_motion = top_view ? VIEW_TOP_REST : VIEW_BOARD_REST;
+    snesVideoSetView(top_view ? SNES_VIEW_TOP : SNES_VIEW_BOARD);
+    check_face = SNES_CARD_NONE_FACE;
+    check_has_stats = 0;
+    mode3_active = 0;
+    battle_frame = 0;
+    touch_board(4);
+    leave_mode3_art();
+}
+
+static void begin_battle_art(u8 return_ui)
+{
+    battle_left_face = face_of(g_duel.last_attacker_card, 1);
+    battle_right_face = face_of(g_duel.last_defender_card, 1);
+    /* The figures the battle was fought with: the attacker's ATK as the
+     * rules used it, and the defender's ATK or DEF according to its stance,
+     * so the plate shows what actually decided the clash. */
+    battle_left_atk = (u16)g_duel.last_battle.attacker_atk;
+    battle_left_def = (battle_left_face < SNES_CARD_BACK)
+                    ? Msx2_CardDef(battle_left_face) : 0;
+    if (g_duel.last_battle.defender_passive) {
+        battle_right_atk = (battle_right_face < SNES_CARD_BACK)
+                         ? Msx2_CardAtk(battle_right_face) : 0;
+        battle_right_def = (u16)g_duel.last_battle.defender_value;
+    } else {
+        battle_right_atk = (u16)g_duel.last_battle.defender_value;
+        battle_right_def = (battle_right_face < SNES_CARD_BACK)
+                         ? Msx2_CardDef(battle_right_face) : 0;
+    }
+    battle_return_ui = return_ui;
+    battle_frame = 0;
+    ui = UI_BATTLE_ART;
+    enter_mode3_art();
+}
+
+static void end_battle_art(void)
+{
+    ui = battle_return_ui;
+    battle_left_face = battle_right_face = SNES_CARD_NONE_FACE;
+    Msx2_ClearActionEvent();
+    touch_board(24);
+    leave_mode3_art();
 }
 
 /* ── The HUD band ────────────────────────────────────────────────────────── */
@@ -537,9 +728,14 @@ static void render(void)
 static const char *prompt_text(void)
 {
     switch (ui) {
-    case UI_RESULT:       return (g_duel.result > 0) ? "YOU WIN  A:AGAIN"
-                                                     : "YOU LOSE A:AGAIN";
-    case UI_HAND:         return "A:PLAY  X:FIGHT";
+    /* THE RESULT SAYS NOTHING HERE.  It is a banner of sixteen-pixel letters
+     * that flies in from off the left edge -- see build_objects -- and the row
+     * under the board printing the same words in eight-pixel ones beside a
+     * button legend was the banner competing with itself. */
+    case UI_RESULT:       return "";
+    case UI_CHECK:        return "B:BACK";
+    case UI_HAND:         return "A:PLAY X:FIGHT DN:FUSE";
+    case UI_FUSE_TARGET:  return "A:FUSE  B:BACK";
     case UI_PLACE:        return "A:ATK  X:DEF  B:X";
     case UI_EQUIP_TARGET: return "A:EQUIP  B:BACK";
     case UI_ATTACKER:     return "A:PICK  ST:END";
@@ -570,6 +766,27 @@ static u8 focus_card(u8 *face)
     u8 card;
 
     *face = SNES_CARD_NONE_FACE;
+    /* THE TOP VIEW NAMES WHAT ITS OWN CURSOR IS ON, whatever the duel state
+     * underneath happens to be: the table is an inspection screen and the row
+     * under it is the label for the slot the player walked to. */
+    if (top_view) {
+        const u8 support = (top_row == SNES_ROW_COM_SUPPORT ||
+                            top_row == SNES_ROW_YOU_SUPPORT);
+        const Msx2Side *sd = &g_duel.side[(top_row <= SNES_ROW_COM_MONSTER)
+                                          ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER];
+        card = support ? sd->equip_field[top_col] : sd->field[top_col];
+        if (card == MSX2_CARD_NONE) return MSX2_CARD_NONE;
+        if (!support && !sd->faceup[top_col]) {
+            *face = SNES_CARD_BACK;
+            return MSX2_CARD_NONE;
+        }
+        *face = card;
+        return card;
+    }
+    if (ui == UI_CHECK) {
+        *face = check_face;
+        return MSX2_CARD_NONE;
+    }
     switch (ui) {
     case UI_HAND:
         card = you->hand[cursor];
@@ -606,7 +823,12 @@ static u8 focus_card(u8 *face)
 static u8 focus_stats(u8 card, u16 *atk, u16 *def)
 {
     if (card == MSX2_CARD_NONE || !Msx2_IsMonster(card)) return 0;
-    if (ui == UI_ATTACKER) {
+    if (top_view) {
+        const u8 owner = (top_row <= SNES_ROW_COM_MONSTER) ? MSX2_OWNER_COM
+                                                           : MSX2_OWNER_PLAYER;
+        *atk = (u16)Msx2_FieldAtk(owner, top_col);
+        *def = (u16)Msx2_FieldDef(owner, top_col);
+    } else if (ui == UI_ATTACKER) {
         *atk = (u16)Msx2_FieldAtk(MSX2_OWNER_PLAYER, cursor);
         *def = (u16)Msx2_FieldDef(MSX2_OWNER_PLAYER, cursor);
     } else if (ui == UI_DEFENDER) {
@@ -634,6 +856,73 @@ static u8 focus_stats(u8 card, u16 *atk, u16 *def)
  * 3, so between two that overlap the one with the LOWER OAM index is the one
  * seen: the text goes in first, then the plates it sits on, then the cursor,
  * and the cards last of all. */
+/* Where in the fusion chain a hand slot sits, 1-based, or 0 for not in it. */
+static u8 queue_order(u8 hand_slot)
+{
+    u8 i;
+    for (i = 0; i < queue_n; ++i)
+        if (queue[i] == hand_slot) return (u8)(i + 1);
+    return 0;
+}
+
+static void queue_toggle(u8 hand_slot)
+{
+    u8 order = queue_order(hand_slot);
+    u8 i;
+
+    if (order != 0) {
+        /* Taking a card out closes the gap, so what is left is still the
+         * order the player chose it in. */
+        for (i = (u8)(order - 1); i + 1 < queue_n; ++i) queue[i] = queue[i + 1];
+        --queue_n;
+    } else if (queue_n < MSX2_HAND &&
+               g_duel.side[MSX2_OWNER_PLAYER].hand[hand_slot] != MSX2_CARD_NONE) {
+        queue[queue_n++] = hand_slot;
+    }
+}
+
+/* THE RESULT BANNER, and it is the MSX2 build's: the word starts wholly off
+ * the left edge and eases to the middle of the screen along the REMAINING
+ * distance, so it arrives slowing down instead of stopping dead, and then it
+ * stays.  Two divisions rather than one product: the distance is about two
+ * hundred and the step count thirty, and 200 * 30 * 30 does not fit in the
+ * sixteen bits everything in this port is done in. */
+#define OVER_SLIDE_FRAMES  30
+#define OVER_HOLD_FRAMES   70
+/* Under the life panels and above the board's far edge: the banner may not
+ * cover the board it is announcing. */
+#define OVER_Y             28
+
+static void build_result_banner(void)
+{
+    const u8 won = (g_duel.result > 0);
+    const char *word = won ? "YOU WIN" : "YOU LOSE";
+    const s16 span = (s16)((won ? 7 : 8) * SNES_OBJ_BIG_PITCH);
+    const s16 home = (s16)((256 - span) >> 1);
+    s16 x = home;
+
+    if (over_step < OVER_SLIDE_FRAMES) {
+        const s16 rem = (s16)(OVER_SLIDE_FRAMES - over_step);
+        x = (s16)(home - ((((home + span) * rem) / OVER_SLIDE_FRAMES) * rem)
+                          / OVER_SLIDE_FRAMES);
+    }
+    snesObjBigText(x, OVER_Y, word,
+                   won ? SNES_SPR_BIG_SET_GOLD : SNES_SPR_BIG_SET_RED);
+}
+
+/* THE WHOLE HUD IS REBUILT EVERY FRAME, in either view.
+ *
+ * A sprite list is a hundred and thirty bytes of OAM shadow and a few dozen
+ * stores; a board render is four thousand scanlines.  Rebuilding costs nothing
+ * measurable next to that, and a list that is never patched cannot keep a
+ * sprite belonging to a screen the player has left -- which is the failure the
+ * top view would otherwise produce on every entry, since the two views share
+ * the same twenty card sprites.
+ *
+ * IT IS BUILT FROM THE FRONT BACKWARDS.  Every sprite in this port is priority
+ * 3, so between two that overlap the one with the LOWER OAM index is the one
+ * seen: the banner and the text go in first, then the plates they sit on, then
+ * the cursor, and the cards last of all. */
 static void build_objects(void)
 {
     const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
@@ -641,8 +930,16 @@ static void build_objects(void)
     u8 face = SNES_CARD_NONE_FACE;
     const u8 card = focus_card(&face);
     u16 atk = 0, def = 0;
-    const u8 has_stats = focus_stats(card, &atk, &def);
+    u8 has_stats;
     s16 hand_y = HAND_Y;
+
+    if (ui == UI_CHECK) {
+        atk = check_atk;
+        def = check_def;
+        has_stats = check_has_stats;
+    } else {
+        has_stats = focus_stats(card, &atk, &def);
+    }
     if (view_motion == VIEW_TO_TOP) {
         hand_y = (s16)(HAND_Y +
                        (s16)(((u16)VIEW_HAND_OFFSET *
@@ -660,10 +957,23 @@ static void build_objects(void)
 
     snesObjBegin();
 
-    if (top_view) {
-        u8 crow = 0;
-        const u8 cslot = cursor_board_slot(&crow);
+    /* Card inspection and attacks are 2D Mode 3 scenes.  They deliberately
+     * use the normal OBJ card cache, so no Mode 7 framebuffer is sampled or
+     * rewritten while the presentation is visible. */
+    if (mode3_active) {
+        /* Card inspection and attacks are BG1/BG2 pictures (snes_cardart.c);
+         * the sprite list is simply empty while one is up. */
+        if (ui == UI_BATTLE_ART) {
+            const u8 f = battle_frame > 24 ? 24 : battle_frame;
+            snesCardArtReveal(f >= 24 ? 255 : (u8)(f * 5));
+        }
+        snesObjEnd();
+        return;
+    }
 
+    if (ui == UI_RESULT) build_result_banner();
+
+    if (top_view) {
         snesObjText(8, TOP_MSG_Y, name);
         if (has_stats) {
             snesObjIcon(TOP_STAT_X, TOP_MSG_Y, SNES_SPR_ICON_ATK);
@@ -677,10 +987,12 @@ static void build_objects(void)
         snesObjLifePanel(LP_COM_X, LP_Y, 1,
                          (u16)g_duel.side[MSX2_OWNER_COM].lp, MSX2_START_LP);
 
-        if (cslot != MSX2_SLOT_NONE && cslot < SNES_COLS)
-            snesObjBox(SNES_TOP_X0 + (board_yaw ? 4 - cslot : cslot) * SNES_TOP_CELL,
-                       SNES_TOP_Y0 + (board_yaw ? 3 - crow : crow) * SNES_TOP_CELL,
-                       SNES_TOP_CELL, SNES_TOP_CELL);
+        /* THE TABLE'S OWN CURSOR, in the red the PC-FX and FM TOWNS builds
+         * draw it in, and it stands on a SLOT rather than on a card: an empty
+         * slot is a thing the player is entitled to point at. */
+        snesObjBoxRed(SNES_TOP_X0 + (board_yaw ? 4 - top_col : top_col) * SNES_TOP_CELL,
+                      SNES_TOP_Y0 + (board_yaw ? 3 - top_row : top_row) * SNES_TOP_CELL,
+                      SNES_TOP_CELL, SNES_TOP_CELL);
 
         /* The field, far row first, exactly the order the perspective board
          * draws it in -- so walking up and back down does not reorder a thing
@@ -724,38 +1036,53 @@ static void build_objects(void)
          * board seen from above and the hand is not on the board.  Here it is
          * five 32x32 sprites -- the card art at the console's own resolution,
          * which is twice what the bitmap band could show it at -- sitting at
-         * the TOP of the band, with the words that describe it underneath. */
-        /* THE HAND IS THE ONE PLACE A CARD GETS A PALETTE TO ITSELF.  Five
+         * the TOP of the band, with the words that describe it underneath.
+         *
+         * THE HAND IS THE ONE PLACE A CARD GETS A PALETTE TO ITSELF.  Five
          * cards against seven card palettes is a slot each, so a hand card is
          * quantised against nothing but its own painting instead of sharing
-         * fifteen entries with the ten faces nearest it in colour -- which is
-         * what made the cards read as posterised.  The top view cannot have it:
-         * it shows twenty at once. */
+         * fifteen entries with the ten faces nearest it in colour.  That is
+         * also what makes the DIMMING below free: the card the player is not
+         * on keeps its tiles and swaps thirty-two bytes of palette for the
+         * greyed, darkened copy of its own colours, so the hand reads as one
+         * lit card among four without a second sheet or a second upload. */
         snesObjCardHiRes(1);
-        for (i = 0; i < MSX2_HAND; ++i) {
-            const s16 x = (s16)(HAND_X0 + i * HAND_PITCH);
+        for (i = 0; ui != UI_CHECK && i < MSX2_HAND; ++i) {
+            s16 x = (s16)(HAND_X0 + i * HAND_PITCH);
+            s16 y = hand_y;
             const u8 hcard = you->hand[i];
+            const u8 queued = (u8)(queue_order(i) != 0);
             const u8 selected = (ui == UI_HAND)
                               ? (cursor == i)
                               : (chosen == i && ui != UI_ATTACKER &&
                                  ui != UI_DEFENDER && ui != UI_COM);
-            if (hcard == MSX2_CARD_NONE || hand_y >= 224) continue;
-            if (selected) snesObjBox(x - 4, hand_y - 4, 40, 40);
-            snesObjCard(x, hand_y, i, face_of(hcard, 1));
+            if (hcard == MSX2_CARD_NONE) continue;
+            if (fly_frame && i == chosen) {
+                /* Mid-flight: the same eased curve the camera move uses, so a
+                 * card leaves the hand quickly and settles onto its slot. */
+                const u16 t = ease_frac(fly_frame, FLY_FRAMES);
+                x = view_lerp(fly_x0, fly_x1, t);
+                y = view_lerp(fly_y0, fly_y1, t);
+            } else if (hand_y >= 224) {
+                continue;
+            } else if (selected) {
+                /* A SMALL UP AND DOWN, once a field.  It is the same beat the
+                 * PC build gives the selected card and it is what says which
+                 * of the five the buttons are about. */
+                y = (s16)(y - (snesSin(bob_phase) >> 6));
+            }
+            snesObjCardGrey((u8)(!selected && !queued));
+            if (queued) snesObjBox(x - 4, y - 4, 40, 40);
+            else if (selected) snesObjBox(x - 4, y - 4, 40, 40);
+            snesObjCard(x, y, i, face_of(hcard, 1));
+            snesObjCardGrey(0);
         }
     }
 
-    /* Prepare the resident top sprites while the final software board stays
-     * visible.  Switch modes only after every tile and palette is ready. */
-    if (view_motion == VIEW_TO_TOP && hand_y >= 224) {
-        for (row = 0; row < 4; ++row) {
-            const Msx2Side *s = &g_duel.side[row < 2 ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER];
-            const u8 support = row == 0 || row == 3;
-            for (col = 0; col < 5; ++col)
-                snesObjQueueCard(row * 5 + col,
-                    face_of(support ? s->equip_field[col] : s->field[col],
-                            support ? 1 : s->faceup[col]), 0);
-        }
+    if (fly_landing) {
+        snesObjCardHiRes(1);
+        snesObjCardGrey(0);
+        snesObjCard(fly_x1, fly_y1, chosen, fly_face);
     }
     snesObjEnd();
 }
@@ -825,6 +1152,7 @@ static void move_cursor(u8 count, u8 board)
 
 static void begin_battle_phase(void)
 {
+    queue_n = 0;
     g_duel.phase = MSX2_PHASE_BATTLE;
     ui = UI_ATTACKER;
     cursor = 0;
@@ -833,17 +1161,57 @@ static void begin_battle_phase(void)
 
 static void end_player_turn(void)
 {
+    queue_n = 0;
     Msx2_EndTurn();
     ui = UI_COM;
     com_delay = 12;
     touch_board(8);
 }
 
+/* THE CARD FLIES TO THE SLOT BEFORE THE RULES HEAR ABOUT IT.
+ *
+ * The hand sprite walks from its position in the hand to the projected centre
+ * of the board slot it is going into, and place_chosen is called on arrival --
+ * so the card is on screen the whole way and the board is redrawn once, with
+ * the card already lying on it.  It is the MSX2 build's landing, minus its
+ * bend: the flight is sprites and costs no render at all, which is what lets
+ * it run at sixty fields a second on this machine.  */
+static void begin_place_flight(u8 defense)
+{
+    u8 row = 0;
+    const u8 slot = held_slot(&row);
+    s16 wx, wz, sx, sy;
+
+    fly_def = defense;
+    fly_face = face_of(g_duel.side[MSX2_OWNER_PLAYER].hand[chosen], 1);
+    fly_x0 = (s16)(HAND_X0 + chosen * HAND_PITCH);
+    fly_y0 = HAND_Y;
+    fly_x1 = fly_x0;
+    fly_y1 = fly_y0;
+    if (slot != MSX2_SLOT_NONE && slot < SNES_COLS) {
+        snesSlotCentre(row, slot, &wx, &wz);
+        /* The projection is in VIEWPORT pixels and the viewport is half the
+         * screen's width, so the sprite's screen position is twice it, less
+         * half a card to centre the 32x32 sprite on the slot. */
+        if (snesProject(&cam, &vp, wx, wz, 0, &sx, &sy)) {
+            fly_x1 = (s16)((sx << 1) - 16);
+            fly_y1 = (s16)((sy << 1) - 16);
+        }
+    }
+    fly_frame = 1;
+    render();
+}
+
 static void place_chosen(u8 defense)
 {
     const u8 card = g_duel.side[MSX2_OWNER_PLAYER].hand[chosen];
     u8 placed = 0;
-    if (Msx2_IsSupport(card)) {
+    if (ui == UI_FUSE_TARGET) {
+        placed = Msx2_PlaceFusion(MSX2_OWNER_PLAYER, queue, queue_n, cursor,
+                                  defense ? TRUE : FALSE);
+        if (placed) queue_n = 0;
+        else say("THEY DO NOT FUSE");
+    } else if (Msx2_IsSupport(card)) {
         if (Msx2_PlaySupport(MSX2_OWNER_PLAYER, chosen, cursor))
             placed = 1;
         else
@@ -869,8 +1237,30 @@ static void step_player(void)
     switch (ui) {
     case UI_HAND:
         move_cursor(MSX2_HAND, 0);
+        /* DOWN IS THE FUSION CHAIN.  The hand row is the bottom of the board
+         * view, so down means nothing else there, and it is the gesture the
+         * MSX2 build uses for the same thing over the same rules model. */
+        if (down & KEY_DOWN) {
+            if (you->hand[cursor] == MSX2_CARD_NONE) {
+                say("NO CARD THERE");
+            } else {
+                queue_toggle(cursor);
+                snesAudioSfx(SNES_SFX_SELECT);
+            }
+        }
         if (down & KEY_A) {
             const u8 card = you->hand[cursor];
+            /* A WAITING CHAIN OWNS A ON THE HAND ROW.  Without this the
+             * ordinary single-card path played the hovered card on its own and
+             * left the rest of the chain sitting in the hand, which reads
+             * exactly like the button ignoring the selection. */
+            if (queue_n != 0) {
+                ui = UI_FUSE_TARGET;
+                cursor = Msx2_FirstFreeSlot(MSX2_OWNER_PLAYER);
+                if (cursor == MSX2_SLOT_NONE) cursor = 0;
+                touch_board(8);
+                break;
+            }
             if (card == MSX2_CARD_NONE || you->used[cursor]) {
                 say("NOTHING THERE");
             } else if (Msx2_IsSupport(card)) {
@@ -896,10 +1286,30 @@ static void step_player(void)
         if (down & KEY_START) end_player_turn();
         break;
 
+    case UI_FUSE_TARGET:
+        move_cursor(MSX2_FIELD, 1);
+        if (down & KEY_A) {
+            const u8 preview = Msx2_FusionPreview(MSX2_OWNER_PLAYER, queue,
+                                                 queue_n, cursor);
+            if (preview == MSX2_FUSE_OK) {
+                chosen = queue[0];
+                begin_place_flight(0);
+            } else {
+                say(preview == MSX2_FUSE_SPENT ? "ONE MONSTER A TURN"
+                                              : "THEY DO NOT FUSE");
+            }
+        } else if (down & KEY_B) {
+            queue_n = 0;
+            ui = UI_HAND;
+            cursor = 0;
+            touch_board(8);
+        }
+        break;
+
     case UI_PLACE:
         move_cursor(MSX2_FIELD, 1);
-        if (down & KEY_A) place_chosen(0);
-        else if (down & KEY_X) place_chosen(1);
+        if (down & KEY_A) begin_place_flight(0);
+        else if (down & KEY_X) begin_place_flight(1);
         else if (down & KEY_B) {
             ui = UI_HAND;
             cursor = chosen;
@@ -909,7 +1319,7 @@ static void step_player(void)
 
     case UI_EQUIP_TARGET:
         move_cursor(MSX2_FIELD, 1);
-        if (down & KEY_A) place_chosen(0);
+        if (down & KEY_A) begin_place_flight(0);
         else if (down & KEY_B) {
             ui = UI_HAND;
             cursor = chosen;
@@ -949,14 +1359,14 @@ static void step_player(void)
         move_cursor(MSX2_FIELD, 1);
         if ((down & KEY_A) || direct) {
             const u8 target = direct ? MSX2_SLOT_NONE : cursor;
-            if (!Msx2_Attack(MSX2_OWNER_PLAYER, chosen, target))
+            if (!Msx2_Attack(MSX2_OWNER_PLAYER, chosen, target)) {
                 say("ILLEGAL ATTACK");
-            else
+            } else {
                 snesAudioSfx(SNES_SFX_LASER);
-            Msx2_ClearActionEvent();
-            ui = UI_ATTACKER;
-            cursor = chosen;
-            touch_board(24);
+                cursor = chosen;
+                begin_battle_art(UI_ATTACKER);
+                return;
+            }
         }
         if (down & KEY_B) {
             ui = UI_ATTACKER;
@@ -973,18 +1383,29 @@ static void step_player(void)
 
 /* ── Entry points ────────────────────────────────────────────────────────── */
 
+void snesDuelConfigure(u8 story_duel, u8 story_mode)
+{
+    configured_story = story_duel;
+    configured_story_mode = story_mode;
+}
+
 void snesDuelEnter(void)
 {
     /* The editor's active slot is the player's actual deck.  The rules model
      * accepts overrides on a story duel, so use the first story opponent for
      * this standalone SNES battle while the presentation remains a free duel. */
     u8 saved_deck[WAIFU_DECK_SIZE];
-    if (snesDeckGetCurrent(saved_deck)) {
+    snesAudioPlay(SNES_AUDIO_ALTBATTLE);
+    autoplay = 0;
+    show_cards = 1;
+    force_moving = 0;
+    if (configured_story_mode && snesDeckGetCurrent(saved_deck)) {
         Msx2_DuelSetPlayerDeck(saved_deck, WAIFU_DECK_SIZE);
-        Msx2_DuelInit(0x51E5u, 0);
+        Msx2_DuelInit(0x51E5u, configured_story);
     } else {
         Msx2_DuelSetPlayerDeck(0, 0);
-        Msx2_DuelInit(0x51E5u, MSX2_STORY_NONE);
+        Msx2_DuelInit(0x51E5u, configured_story_mode ? configured_story
+                                                     : MSX2_STORY_NONE);
     }
 
     /* TURN_START runs first for either side, and the rules own it; the UI
@@ -1001,9 +1422,19 @@ void snesDuelEnter(void)
     top_view = 0;
     view_motion = VIEW_BOARD_REST;
     view_anim_frame = 0;
-    board_yaw = turn_frame = turn_from = turn_target = turn_top = 0;
+    board_yaw = turn_frame = turn_from = turn_target = 0;
+    top_row = SNES_ROW_YOU_MONSTER;
+    top_col = 0;
+    bob_phase = 0;
+    queue_n = 0;
+    fly_frame = 0;
+    fly_landing = 0;
+    over_step = 0;
+    check_face = SNES_CARD_NONE_FACE;
+    check_has_stats = 0;
     texture_w = texture_h = 0;
     motion_next_vblank = snes_vblank_count;
+    snesVideoSetBoardZoom(SNES_M7_SCALE_STILL);
     snesVideoSetView(SNES_VIEW_BOARD);
     snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, 0, 0);
     snesVideoSetBoardRes(SNES_RES_STILL);
@@ -1017,7 +1448,7 @@ void snesDuelEnter(void)
     render();
 }
 
-void snesDuelFrame(void)
+u8 snesDuelFrame(void)
 {
     const u16 down = padsDown(0);
     u8 res = snesVideoBoardRes();
@@ -1039,13 +1470,79 @@ void snesDuelFrame(void)
         touch_board(2);
     }
 
-    /* UP walks up into the tactical top view and DOWN walks back down.  The
-     * endpoint pictures remain resident, but the bend state below renders a
-     * live interpolated camera and moves the hand with it. */
-    if (view_motion == VIEW_BOARD_REST && (down & KEY_UP))
+    ++bob_phase;
+    if (ui == UI_BATTLE_ART) {
+        if (battle_frame < 90) ++battle_frame;
+        if (battle_frame >= 90 || (battle_frame > 24 &&
+            (down & (KEY_A | KEY_B | KEY_START))))
+            end_battle_art();
+        build_objects();
+        goto stamp;
+    }
+    if (view_motion == VIEW_BOARD_REST && ui == UI_HAND && !fly_landing && (down & KEY_B)) {
+        begin_check();
+        if (ui == UI_CHECK) {
+            build_objects();
+            goto stamp;
+        }
+    }
+
+    /* Inspection pauses the duel and restores the previous UI on close.
+     * Consume the closing press here so it cannot also play a card. */
+    if (ui == UI_CHECK) {
+        if (down & (KEY_B | KEY_A | KEY_START)) end_check();
+        build_objects();
+        goto stamp;
+    }
+
+    /* UP walks up into the tactical top view.  In the top view the d-pad is
+     * the TABLE'S OWN CURSOR -- twenty slots the player can walk over and read
+     * -- so B is what walks back down; DOWN there would otherwise cost the
+     * cursor a whole axis of the board. */
+    if (view_motion == VIEW_BOARD_REST && (down & KEY_UP) && !fly_frame && !fly_landing &&
+        !turn_frame && ui != UI_COM && ui != UI_RESULT)
         begin_view_transition(1);
-    else if (view_motion == VIEW_TOP_REST && (down & KEY_DOWN))
-        begin_view_transition(0);
+    else if (view_motion == VIEW_TOP_REST) {
+        u8 moved = 0;
+        if (down & KEY_LEFT)  { top_col = (u8)((top_col + SNES_COLS - 1) % SNES_COLS); moved = 1; }
+        if (down & KEY_RIGHT) { top_col = (u8)((top_col + 1) % SNES_COLS); moved = 1; }
+        if (down & KEY_UP)    { top_row = (u8)((top_row + SNES_ROWS - 1) % SNES_ROWS); moved = 1; }
+        if (down & KEY_DOWN)  { top_row = (u8)((top_row + 1) % SNES_ROWS); moved = 1; }
+        if (moved) snesAudioSfx(SNES_SFX_SELECT);
+        if (down & KEY_A) {
+            begin_check();
+            if (ui == UI_CHECK) {
+                build_objects();
+                goto stamp;
+            }
+        }
+        if (down & KEY_B) {
+            /* Card check and rule changes may have replaced the saved bitmap. */
+            if (board_dirty) render();
+            begin_view_transition(0);
+        }
+        build_objects();
+        goto stamp;
+    }
+
+    if (fly_landing) {
+        if (snesVideoPresentDone()) fly_landing = 0;
+        build_objects();
+        goto stamp;
+    }
+
+    /* A card on its way to the board.  Sprites only: no rules step, no render
+     * and no rendering decision until it lands. */
+    if (fly_frame) {
+        if (++fly_frame > FLY_FRAMES) {
+            fly_frame = 0;
+            place_chosen(fly_def);
+            render();
+            fly_landing = 1;
+        }
+        build_objects();
+        goto stamp;
+    }
 
     if (message_timer) {
         if (--message_timer == 0) {
@@ -1055,6 +1552,8 @@ void snesDuelFrame(void)
 
     if (g_duel.result != 0 && ui != UI_RESULT) {
         ui = UI_RESULT;
+        over_step = 0;
+        queue_n = 0;
         snesAudioPlay((g_duel.result > 0) ? SNES_AUDIO_VICTORY
                                           : SNES_AUDIO_FAIL);
         /* The outcome is the PROMPT, not a message: a message expires, and the
@@ -1062,7 +1561,8 @@ void snesDuelFrame(void)
          * which way it went. */
         message = 0;
         message_timer = 0;
-        touch_board(8);
+        motion = 0;
+        touch_board(0);
     }
 
     if (view_motion == VIEW_TO_TOP || view_motion == VIEW_TO_HAND) {
@@ -1070,52 +1570,71 @@ void snesDuelFrame(void)
         goto stamp;
     }
 
-    /* Finish the camera move before allowing the next side to act. */
-    if (!turn_frame && board_yaw != (g_duel.turn_owner ? 128 : 0)) {
-        turn_from = board_yaw;
-        turn_target = g_duel.turn_owner ? 128 : 0;
-        turn_top = top_view;
-        top_view = 0;
-        snesVideoSetView(SNES_VIEW_BOARD);
-        snesVideoSetBoardRes(SNES_RES_BEND);
-        set_viewport();
-        turn_frame = 1;
-        motion_next_vblank = snes_vblank_count;
+    /* Finish the camera move before allowing the next side to act.
+     *
+     * IN THE TOP VIEW THERE IS NOTHING TO TURN.  The table is a resident
+     * tilemap with the field on it as sprites, so a hand-off up there is the
+     * sprites changing sides -- which build_objects already does off board_yaw
+     * -- and dropping the player out of the view to animate a bitmap they
+     * cannot see was the whole of what made passing the turn look broken. */
+    if (ui != UI_RESULT && !turn_frame && board_yaw != (g_duel.turn_owner ? 128 : 0)) {
+        if (top_view || view_motion != VIEW_BOARD_REST) {
+            board_yaw = g_duel.turn_owner ? 128 : 0;
+            touch_board(2);
+        } else {
+            turn_from = board_yaw;
+            turn_target = g_duel.turn_owner ? 128 : 0;
+            snesVideoSetView(SNES_VIEW_BOARD);
+            snesVideoSetBoardRes(SNES_RES_BEND);
+            set_viewport();
+            turn_frame = 1;
+            motion_next_vblank = snes_vblank_count;
+        }
     }
     if (turn_frame) {
         if (!motion_frame_due()) {
             build_objects();
             goto stamp;
         }
-        u16 t = view_anim_ease((u8)((turn_frame + 1) >> 1));
+        u16 t = ease_frac((u8)((turn_frame + 1) >> 1), (TURN_FRAMES + 1) >> 1);
         board_yaw = (u8)view_lerp(turn_from, turn_target, t);
-        if (turn_top) set_view_transition_camera(VIEW_ANIM_FRAMES, 1);
-        else {
-            snesCameraSet(&cam, 0,
-                          CAM_Z - snesQMul(256, snesSin(board_yaw)),
-                          CAM_HEIGHT, (s16)((u16)vp.w << 7), vp.h >> 5);
-            cam.yaw = board_yaw;
-        }
+        snesCameraSet(&cam, 0,
+                      CAM_Z - snesQMul(256, snesSin(board_yaw)),
+                      CAM_HEIGHT, (s16)((u16)vp.w << 7), vp.h >> 5);
+        cam.yaw = board_yaw;
         render();
         build_objects();
         schedule_motion_frame();
         if (++turn_frame > TURN_FRAMES) {
             turn_frame = 0;
             board_yaw = turn_target;
-            if (turn_top) {
-                top_view = 1;
-                snesVideoSetView(SNES_VIEW_TOP);
-                build_objects();
-            }
             touch_board(2);
         }
         goto stamp;
     }
 
     if (ui == UI_RESULT) {
-        /* The duel is over and there is no title screen to go back to yet, so
-         * A starts another one.  M5 gives this an exit. */
-        if (down & (KEY_A | KEY_B)) snesDuelEnter();
+        /* The banner has to ARRIVE and be readable before a button is worth
+         * anything.  Without the hold, a held A -- or the soak's permanently
+         * held one -- ends the duel on the frame the banner is created and the
+         * screen this whole path exists for is never on screen at all. */
+        if (over_step <= OVER_SLIDE_FRAMES + OVER_HOLD_FRAMES) ++over_step;
+        else if (down & (KEY_A | KEY_B | KEY_START)) {
+            if (configured_story_mode && g_duel.result > 0) {
+                const u8 next = (u8)(configured_story + 1);
+                /* Story can begin directly from a fresh cartridge.  The
+                 * default deck is resident in the editor model, but SRAM is
+                 * still uninitialised until the player visits the editor;
+                 * materialise it before recording story progress. */
+                if (!snesSaveIsValid()) snesDeckSaveCurrent();
+                snesSaveStoryProgressStore(next);
+                if (next >= MSX2_STORY_MAX_DUELS)
+                    return SNES_SCENE_ENDING;
+                snesStoryBegin(next);
+                return SNES_SCENE_STORY_TALK;
+            }
+            return SNES_SCENE_TITLE;
+        }
     } else if (!autoplay && g_duel.turn_owner == MSX2_OWNER_PLAYER &&
                (g_duel.phase == MSX2_PHASE_MAIN ||
                 g_duel.phase == MSX2_PHASE_BATTLE)) {
@@ -1135,8 +1654,12 @@ void snesDuelFrame(void)
         } else {
             com_delay = 6;
             Msx2_DuelStep();
-            Msx2_ClearActionEvent();
-            touch_board(12);
+            if (g_duel.last_action == MSX2_ACTION_ATTACK)
+                begin_battle_art(UI_COM);
+            else {
+                Msx2_ClearActionEvent();
+                touch_board(12);
+            }
         }
     }
 
@@ -1205,4 +1728,5 @@ stamp:
         g_stamp.phase = g_duel.phase;
         g_stamp.turn_owner = g_duel.turn_owner;
     }
+    return SNES_SCENE_COUNT;
 }

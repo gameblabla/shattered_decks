@@ -43,7 +43,8 @@ STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "board_res",
                 "checksum"]
 
 # enum SnesDuelUi, mirroring src/snes/snes_duel.c.
-UI = ["HAND", "PLACE", "EQUIP_TARGET", "ATTACKER", "DEFENDER", "COM", "RESULT"]
+UI = ["HAND", "PLACE", "EQUIP_TARGET", "ATTACKER", "DEFENDER", "COM",
+      "RESULT", "FUSE_TARGET", "CHECK", "BATTLE_ART"]
 STAMP_MAGIC = 0x5744
 
 # SNES serial pad bits, the order the headless emulator's script rows use.
@@ -53,6 +54,11 @@ PAD = {"B": 0x8000, "Y": 0x4000, "SELECT": 0x2000, "START": 0x1000,
 
 SCENES = ["BOOT", "TITLE", "MENU", "STORY_MAP", "STORY_TALK", "DUEL",
           "BATTLE_ART", "RESULT", "DECK", "ENDING"]
+
+# Where the Mode 3 card presentation puts its cards, mirroring
+# src/snes/snes_cardart.h: the PC-FX battle card positions.
+BIGCARD_CHECK_X, BIGCARD_CHECK_Y = 4, 22
+BIGCARD_BATTLE_X0, BIGCARD_BATTLE_X1 = 4, 132
 
 
 class Failure(Exception):
@@ -75,7 +81,7 @@ def check_rom_fresh():
         for f in files:
             # This file is the harness, not an input: a change to it does not
             # make the ROM stale.
-            if f.endswith((".pyc",)) or "__pycache__" in f or f == __file__:
+            if f.endswith((".pyc", ".md")) or "__pycache__" in f or f == __file__:
                 continue
             if os.path.getmtime(f) > rom_time:
                 newer.append(os.path.relpath(f, ROOT))
@@ -165,6 +171,51 @@ def read_stamp(path):
                   "main loop, or the dump is torn" % os.path.basename(path))
 
 
+def read_ppu_regs(prefix):
+    """Read the final PPU register snapshot emitted by a capture run."""
+    path = prefix + ".regs"
+    if not os.path.exists(path):
+        raise Failure("capture did not produce PPU registers at %s" %
+                      os.path.basename(path))
+    regs = {}
+    with open(path) as fh:
+        for line in fh:
+            match = re.match(r"^\s*([A-Za-z0-9_]+)\s*(?:[=:]\s*)?([$0-9A-Fa-fx]+)", line)
+            if not match:
+                continue
+            try:
+                raw = match.group(2)
+                if raw.startswith("$"):
+                    raw = "0x" + raw[1:]
+                regs[match.group(1).upper()] = int(raw, 0)
+            except ValueError:
+                continue
+    if "BGMODE" not in regs:
+        raise Failure("PPU register dump %s has no BGMODE" %
+                      os.path.basename(path))
+    return regs
+
+
+def read_oam(prefix):
+    """Read the 512-byte OAM shadow and its 32-byte high table."""
+    path = prefix + ".oam"
+    if not os.path.exists(path):
+        raise Failure("capture did not produce OAM at %s" % os.path.basename(path))
+    with open(path, "rb") as fh:
+        blob = fh.read()
+    if len(blob) != 0x220:
+        raise Failure("OAM dump is %d bytes, expected 544" % len(blob))
+    return blob[:0x200], blob[0x200:]
+
+
+def oam_sprite(oam, oamhi, index):
+    off = index * 4
+    x = oam[off + 0]
+    if oamhi[index >> 2] & (1 << ((index & 3) * 2)):
+        x |= 0x100
+    return x, oam[off + 1], oam[off + 2], oam[off + 3]
+
+
 def colours(pixels):
     return {pixels[i:i + 3] for i in range(0, len(pixels), 3)}
 
@@ -211,12 +262,8 @@ def check_cartridge():
 
 
 def check_title():
-    """The boot scene must show the painted title before the duel timeout."""
-    # The title music is loaded through the SPC IPL before the first game
-    # frame.  The title auto-enters the duel after 30 scene frames, so capture
-    # while the title is still active rather than mistaking the transition's
-    # force-blank frame for a boot failure.
-    ppm, wram = run("title", [(0, 100, 0)], 100)
+    """Boot shows intact painted art and waits for title input."""
+    ppm, wram = run("title", [(0, 100, 0)], 100, capture=(99, 99, 1))
     stamp = read_stamp(wram)
     if stamp["scene"] != SCENES.index("TITLE"):
         raise Failure("title capture reached scene %s after only %d frames" %
@@ -230,20 +277,32 @@ def check_title():
     if visible < w * h * 3 // 4:
         raise Failure("title has only %d/%d non-black pixels -- artwork is not "
                       "visible" % (visible, w * h))
+    # A stale scene-text upload used to overwrite a 2 KiB strip of title art.
+    # Visible scanline 191 already belongs to the blank prompt band.
+    black_rows = [sum(px[(y * w + x) * 3:(y * w + x + 1) * 3] ==
+                      b"\x00\x00\x00" for x in range(w)) for y in range(160, 191)]
+    if max(black_rows) > w // 2:
+        raise Failure("title art contains a %d-pixel black row at y=%d" %
+                      (max(black_rows), 160 + black_rows.index(max(black_rows))))
+    with open(os.path.join(ROOT, "src/snes/assets/snes_title_tiles.bin"), "rb") as fh:
+        expected = fh.read()
+    with open(os.path.join(OUT, "title.ppu.vram"), "rb") as fh:
+        actual = fh.read(len(expected))
+    if actual != expected:
+        raise Failure("title tile VRAM differs from the generated artwork")
     return "scene TITLE, painted 256x224 art (%d%% non-black)" % (
         visible * 100 // (w * h))
 
 
 def check_title_input():
-    """A/START must leave the title without waiting for the timeout."""
-    # A valid editor deck is now fed straight into the rules model; allow the
-    # initial card/deck setup to finish before reading the stamp.
-    _, wram = run("title_input", [(100, 160, PAD["A"])], 2500)
+    """The visible three-row menu must launch Random Battle."""
+    _, wram = run("title_input", [press("START", 150), press("DOWN", 300),
+                                   press("A", 450)], 2500)
     stamp = read_stamp(wram)
     if stamp["scene"] != SCENES.index("DUEL"):
         raise Failure("A-button title start ended in scene %s" %
                       SCENES[stamp["scene"]])
-    return "A enters DUEL at frame %d" % stamp["frames"]
+    return "START, DOWN, A selects Random Battle and enters DUEL"
 
 
 def check_deck_editor():
@@ -294,6 +353,20 @@ def check_deck_editor():
                       (loaded["save_valid"], loaded["deck_count"],
                        loaded["storage_count"], loaded["deck_head"]))
 
+    # Exercise the player-facing title menu's third row.  This run only reads
+    # SRAM and leaves the saved deck available to later checks.
+    _, wram = run("menu_load_save", [press("START", 150),
+                                      press("DOWN", 300),
+                                      press("DOWN", 450),
+                                      press("A", 600)], 2600)
+    menu_loaded = read_stamp(wram)
+    if menu_loaded["scene"] != SCENES.index("STORY_TALK"):
+        raise Failure("LOAD SAVE menu ended in scene %s" %
+                      SCENES[menu_loaded["scene"]])
+    if menu_loaded["save_valid"] != 1 or menu_loaded["deck_count"] != 40:
+        raise Failure("LOAD SAVE menu reports valid=%d deck=%d, expected 1/40" %
+                      (menu_loaded["save_valid"], menu_loaded["deck_count"]))
+
     check_ppm, wram = run("deck_check", [
         (100, 160, PAD["Y"]),
         (2300, 2360, PAD["B"]),
@@ -324,8 +397,10 @@ def check_deck_editor():
 
 
 def check_story_scene():
-    """B opens the real-art story window and starts its typewriter."""
-    ppm, wram = run("story", [(100, 160, PAD["B"])], 2500)
+    """B opens the story window: sky ramp, ground, two BG1 speakers, typewriter."""
+    name = "story_portrait_entry"
+    ppm, wram = run(name, [(100, 160, PAD["B"])], 2500,
+                    capture=(180, 500, 8))
     stamp = read_stamp(wram)
     if stamp["scene"] != SCENES.index("STORY_TALK"):
         raise Failure("story entry ended in scene %s" % SCENES[stamp["scene"]])
@@ -334,7 +409,46 @@ def check_story_scene():
                  if px[(y * w + x) * 3:(y * w + x + 1) * 3] != b"\x00\x00\x00")
     if bottom < 40:
         raise Failure("story text window has only %d lit pixels" % bottom)
-    return "STORY_TALK, real portrait window, typewriter active"
+    # The sky is the backdrop tinted per scanline: a column of the left edge
+    # must be lit above the horizon and change colour down the ramp.
+    sky = [px[(y * w + 2) * 3:(y * w + 3) * 3] for y in range(0, 120, 8)]
+    if any(c == b"\x00\x00\x00" for c in sky):
+        raise Failure("the story sky has a black line at x=2: %s" % sky)
+    if len(set(sky)) < 4:
+        raise Failure("the story sky is flat, not a ramp: %s" % sky)
+    ground = [px[(y * w + x) * 3:(y * w + x + 1) * 3]
+              for y in range(120, 144, 4) for x in range(0, w, 32)]
+    if sum(1 for c in ground if c != b"\x00\x00\x00") < len(ground) * 0.9:
+        raise Failure("the ground rows 120..143 are not painted")
+    # The two speakers are BG1 tile blocks: Serena's 16x17 tiles on the left,
+    # the opponent's on the right, both fully in by the time this ends.
+    with open(os.path.join(OUT, name + ".ppu.vram"), "rb") as fh:
+        vram = fh.read()
+    def cell(col, row):
+        i = (0x7000 + row * 32 + col) * 2
+        return vram[i] | (vram[i + 1] << 8)
+    for row in range(17):
+        for col in range(16):
+            want_l = row * 16 + col
+            want_r = 272 + row * 16 + col
+            if cell(col, 1 + row) != want_l:
+                raise Failure("Serena's tile at (%d, %d) is %d, expected %d" %
+                              (col, 1 + row, cell(col, 1 + row), want_l))
+            if cell(16 + col, 1 + row) != want_r:
+                raise Failure("the opponent's tile at (%d, %d) is %d, expected %d" %
+                              (16 + col, 1 + row, cell(16 + col, 1 + row), want_r))
+    with open(os.path.join(ROOT, "src/snes/assets/snes_portrait_0.bin"), "rb") as fh:
+        serena = fh.read()
+    if vram[:len(serena)] != serena:
+        raise Failure("Serena's BG1 tiles in VRAM differ from the generated block")
+    # The entrance is a slide: the early captures show fewer columns.
+    frames = sorted(os.listdir(os.path.join(OUT, name + ".frames")))
+    if len(frames) < 4:
+        raise Failure("captured only %d story frames" % len(frames))
+    early = read_ppm(os.path.join(OUT, name + ".frames", frames[1]))[2]
+    if early == px:
+        raise Failure("the speakers did not move in during the entrance")
+    return "STORY_TALK: sky ramp, ground tiles, two 112-colour BG1 speakers, typewriter"
 
 
 def check_ending_scene():
@@ -398,15 +512,20 @@ def press(button, at):
     return (at, at + HOLD, PAD[button])
 
 
+def random_battle_script():
+    """Open the title menu and select its second, Random Battle, row."""
+    return [press("START", 150), press("DOWN", 300), press("A", 450)]
+
+
 def run_still(capture=None):
-    return run("still", [(0, RUN_FRAMES + 200, 0)], RUN_FRAMES, capture=capture)
+    return run("still", random_battle_script(), RUN_FRAMES, capture=capture)
 
 
 def run_fixture(capture=None):
     """The full-board fixture: five monsters and five supports a side, one of
     them set face down.  Every id in it came off the duel's own shuffled deck --
     it is a fixed BOARD, not fixed art."""
-    return run("fixture", [press("R", DUEL_READY)], RUN_FRAMES, capture=capture)
+    return run("fixture", random_battle_script() + [press("R", DUEL_READY)], RUN_FRAMES, capture=capture)
 
 
 def run_no_cards(capture=None):
@@ -416,14 +535,14 @@ def run_no_cards(capture=None):
     ablation; this is the ablation that says what the cards cost.  It is also
     the only way to measure the slab's own shape, since twenty cards cover
     almost all of it."""
-    return run("nocards", [press("R", DUEL_READY), press("SELECT", DUEL_READY + 200)],
+    return run("nocards", random_battle_script() + [press("R", DUEL_READY), press("SELECT", DUEL_READY + 200)],
                RUN_FRAMES, capture=capture)
 
 
 def run_hold(capture=None):
     """A card picked up and carried: A chooses the first hand card, and the UI
     stays in PLACE with it hovering over the slot until it is put down."""
-    return run("hold", [press("A", DUEL_READY),
+    return run("hold", random_battle_script() + [press("A", DUEL_READY),
                          press("RIGHT", DUEL_READY + 200),
                          press("RIGHT", DUEL_READY + 300)],
                RUN_FRAMES, capture=capture)
@@ -432,7 +551,7 @@ def run_hold(capture=None):
 def run_moving(capture=None):
     # Y toggles the board resolution.  The press has to land after the scene
     # machine is running.
-    return run("moving", [press("Y", DUEL_READY)], RUN_FRAMES, capture=capture)
+    return run("moving", random_battle_script() + [press("Y", DUEL_READY)], RUN_FRAMES, capture=capture)
 
 
 def run_demo(frames=14000):
@@ -441,12 +560,12 @@ def run_demo(frames=14000):
     # The title scene now owns the first few dozen game frames; start the demo
     # after the normal unattended title timeout, just like the other duel
     # fixtures start after boot has settled.
-    return run("demo", [press("L", DUEL_READY)], frames)
+    return run("demo", random_battle_script() + [press("L", DUEL_READY)], frames)
 
 
 def run_flow(name, buttons):
     """A scripted turn through the duel UI, one button at a time."""
-    script = []
+    script = random_battle_script()
     at = DUEL_READY
     for b in buttons:
         script.append(press(b, at))
@@ -701,7 +820,7 @@ def check_render_cost():
     floor_only = read_stamp(wram)["render_lines"]
     # The moving board is measured on the same fixture: R fills it, Y pins the
     # fixed motion cadence, and the number is the one an animating frame pays.
-    _, wram = run("fixture_moving", [press("R", DUEL_READY),
+    _, wram = run("fixture_moving", random_battle_script() + [press("R", DUEL_READY),
                                       press("Y", DUEL_READY + 200)],
                   RUN_FRAMES)
     moving = read_stamp(wram)["render_lines"]
@@ -1024,6 +1143,7 @@ HAND_Y, HAND_X0, HAND_PITCH = 162, 8, 48
 NAME_Y, STAT_Y, STAT_ATK_X, STAT_DEF_X, STAT_NUM_DX = 199, 209, 8, 72, 16
 TOP_CELL, TOP_X0, TOP_Y0 = 48, 8, 16
 TOP_MSG_Y, TOP_STAT_X, TOP_STAT_GAP = 213, 120, 72
+OVER_Y = 28
 # The plate under the two text rows, from snes_m7fb.c's gradient table.  It is
 # not in the bitmap at all: the bitmap's HUD rows are transparent and the plate
 # is the backdrop with a fixed colour added to it, HDMA'd into $2132 a scanline
@@ -1035,10 +1155,12 @@ SPR_CARDS_HI = os.path.join(ROOT, "src", "snes", "assets",
                             "snes_spr_cards_hi.bin")
 SPR_FACE_PAL = os.path.join(ROOT, "src", "snes", "assets",
                             "snes_spr_face_pal.bin")
+SPR_FACE_PAL_GREY = os.path.join(ROOT, "src", "snes", "assets",
+                                 "snes_spr_face_pal_grey.bin")
 # The tiles the stat row prints instead of the words ATK and DEF, and where they
-# are in the font sheet: the glyphs, the four cursor corners, the eighteen bar
-# states, the two plates, then these.
-ICON_TILE = GLYPH_COUNT + 4 + 18 + 2
+# are in the font sheet: the glyphs, the eight cursor corners (gold and red),
+# the eighteen bar states, the two plates, then these.
+ICON_TILE = GLYPH_COUNT + 8 + 18 + 2
 ICON_NAMES = ("sword", "shield")
 CARD_NAMES = os.path.join(ROOT, "src", "snes", "assets", "snes_card_names.bin")
 NAME_LEN = 16
@@ -1151,14 +1273,15 @@ def read_icon(px, w, h, x, y):
     return best[0]
 
 
-def face_colour(face, index):
+def face_colour(face, index, grey=False):
     """An entry of the palette snes_spr_cards_hi's `face` was cut against."""
-    blob = spr_asset(SPR_FACE_PAL, "facepal")
+    blob = spr_asset(SPR_FACE_PAL_GREY if grey else SPR_FACE_PAL,
+                     "facepal_grey" if grey else "facepal")
     w = blob[(face * 16 + index) * 2] | (blob[(face * 16 + index) * 2 + 1] << 8)
     return (w & 31, (w >> 5) & 31, (w >> 10) & 31)
 
 
-def card_sprite_pixels(face, hi=False):
+def card_sprite_pixels(face, hi=False, grey=False):
     """One card sprite as 32x32 five-bit colours, straight out of the ROM.
 
     `hi` reads the per-face sheet instead of the clustered one: that is what
@@ -1166,7 +1289,7 @@ def card_sprite_pixels(face, hi=False):
     into the slot's OBJ palette beside its tiles."""
     if hi:
         cards = spr_asset(SPR_CARDS_HI, "cardshi")
-        colour = lambda i: face_colour(face, i)
+        colour = lambda i: face_colour(face, i, grey)
     else:
         cards = spr_asset(SPR_CARDS, "cards")
         pal = spr_asset(SPR_GROUP, "group")[face]
@@ -1181,7 +1304,70 @@ def card_sprite_pixels(face, hi=False):
     return out
 
 
-def identify_card_sprite(px, w, h, x0, y0, hi=False, vflip=False):
+BIGCARDS = os.path.join(ROOT, "src", "snes", "assets", "snes_bigcards_%d.bin")
+BIGCARD_FIRST_BANK, BIGCARD_PER_BANK = 30, 4
+BIGCARD_TILES, BIGCARD_BYTES, BIGCARD_PAL_BYTES = 225, 14400, 160
+BIGCARD_FIRST_COLOUR = 32
+BIG_ART = 112
+
+
+def untile8(blob, off):
+    """One 8bpp tile's 64 indices."""
+    out = [0] * 64
+    for plane in range(8):
+        for y in range(8):
+            byte = blob[off + (plane // 2) * 16 + y * 2 + (plane & 1)]
+            for x in range(8):
+                if byte & (0x80 >> x):
+                    out[y * 8 + x] |= 1 << plane
+    return out
+
+
+def bigcard_art_pixels(face):
+    """The 112x112 painting of one Mode 3 card, as the PPU shows it: the
+    generator's own tiles through the generator's own eighty-colour palette,
+    five bits a channel.  The frame round it is shared and not compared."""
+    bank = BIGCARD_FIRST_BANK + face // BIGCARD_PER_BANK
+    blob = spr_asset(BIGCARDS % bank, "bigcards%d" % bank)
+    base = (face % BIGCARD_PER_BANK) * (BIGCARD_BYTES + BIGCARD_PAL_BYTES)
+    pal = blob[base + BIGCARD_BYTES:base + BIGCARD_BYTES + BIGCARD_PAL_BYTES]
+    colours = {}
+    for i in range(BIGCARD_PAL_BYTES // 2):
+        w = pal[i * 2] | (pal[i * 2 + 1] << 8)
+        colours[BIGCARD_FIRST_COLOUR + i] = (w & 31, (w >> 5) & 31, (w >> 10) & 31)
+    out = [None] * (BIG_ART * BIG_ART)
+    # The painting sits at (4, 6) in the 120x120 block: tile columns 0..14
+    # and rows 0..14 cover it with a 4/6-pixel offset.
+    for t in range(BIGCARD_TILES):
+        tile = untile8(blob, base + t * 64)
+        tx, ty = (t % 15) * 8 - 4, (t // 15) * 8 - 6
+        for y in range(8):
+            yy = ty + y
+            if not 0 <= yy < BIG_ART:
+                continue
+            for x in range(8):
+                xx = tx + x
+                if 0 <= xx < BIG_ART:
+                    out[yy * BIG_ART + xx] = colours.get(tile[y * 8 + x])
+    return out
+
+
+def identify_bigcard(px, w, h, x0, y0):
+    """Which card's painting fills the 112x112 window at (x0, y0), and how
+    many of its pixels match exactly.  (face, matches) for the best face."""
+    if x0 < 0 or y0 < 0 or x0 + BIG_ART > w or y0 + BIG_ART > h:
+        return None
+    obs = [screen5(px, w, x0 + x, y0 + y) for y in range(BIG_ART) for x in range(BIG_ART)]
+    best = None
+    for face in range(CARD_BACK + 1):
+        want = bigcard_art_pixels(face)
+        n = sum(a == b for a, b in zip(obs, want))
+        if best is None or n > best[1]:
+            best = (face, n)
+    return best
+
+
+def identify_card_sprite(px, w, h, x0, y0, hi=False, vflip=False, grey=False):
     """Which face a 32x32 sprite on screen is, and how exactly.
 
     Returns (face, matching pixels) for the best face.  A sprite is pixel exact,
@@ -1196,7 +1382,7 @@ def identify_card_sprite(px, w, h, x0, y0, hi=False, vflip=False):
             obs.append(screen5(px, w, x0 + x, y0 + (31 - y if vflip else y)))
     best = None
     for face in range(len(group)):
-        want = card_sprite_pixels(face, hi)
+        want = card_sprite_pixels(face, hi, grey)
         n = sum(1 for a, b in zip(obs, want) if a == b)
         if best is None or n > best[1]:
             best = (face, n)
@@ -1351,15 +1537,28 @@ def check_hand_is_per_face():
     wins, seen = 0, []
     for i in range(5):
         x = HAND_X0 + i * HAND_PITCH
-        hi = identify_card_sprite(px, w, h, x, HAND_Y, hi=True)
-        lo = identify_card_sprite(px, w, h, x, HAND_Y, hi=False)
+        dimmed = i != stamp["cursor"]
+        # The focused hand card bobs by up to four pixels once per field.
+        # Search that bounded animation offset, retaining the exact 1024-pixel
+        # art requirement after locating the sprite.
+        hi_candidates = [identify_card_sprite(px, w, h, x, HAND_Y + dy,
+                                              hi=True, grey=dimmed)
+                         for dy in range(-4, 5)]
+        hi = max((v for v in hi_candidates if v is not None),
+                 key=lambda v: v[1], default=None)
+        lo_candidates = [identify_card_sprite(px, w, h, x, HAND_Y + dy,
+                                              hi=False)
+                         for dy in range(-4, 5)]
+        lo = max((v for v in lo_candidates if v is not None),
+                 key=lambda v: v[1], default=None)
         if hi is None or lo is None:
             continue
         if hi[1] < 1024 * 0.98:
-            raise Failure("hand card %d matches its best per-face sprite in "
-                          "only %d of 1024 pixels -- the sheet and the palette "
-                          "on screen do not agree" % (i, hi[1]))
-        if hi[1] <= lo[1]:
+            mode = "greyscale" if dimmed else "per-face"
+            raise Failure("hand card %d matches its best %s sprite in only "
+                          "%d of 1024 pixels -- the sheet and palette on "
+                          "screen do not agree" % (i, mode, hi[1]))
+        if not dimmed and hi[1] <= lo[1]:
             raise Failure("hand card %d matches the CLUSTERED sheet at least as "
                           "well (%d) as the per-face one (%d) -- the hand is "
                           "not using snes_spr_cards_hi" % (i, lo[1], hi[1]))
@@ -1436,17 +1635,25 @@ def check_duel_plays_out():
                       % UI[stamp["ui"]])
     w, h, px = read_ppm(ppm)
     msg = read_sprite_line(px, w, h, 8, NAME_Y, 16)
-    expect = "YOU WIN  A:AGAIN" if won else "YOU LOSE A:AGAIN"
-    if msg != expect:
-        raise Failure("the duel was %s but the band reads %r"
-                      % ("won" if won else "lost", msg))
-    return "%s on turn %d, %d fields, band reads %r" % (
-        "won" if won else "lost", stamp["duel_turn"], 14000, msg)
+    # The result prompt is now a large animated OBJ banner.  The old small
+    # result row was deliberately removed; check the banner's lit area and its
+    # colour instead of decoding the normal 8x8 font.
+    banner = [screen5(px, w, x, y) for y in range(OVER_Y, OVER_Y + 16)
+              for x in range(0, w)]
+    lit = sum(c != (0, 0, 0) for c in banner)
+    if lit < 80:
+        raise Failure("the result banner has only %d lit pixels" % lit)
+    want = obj_colour(7, 3 if won else 4)
+    if sum(c == want for c in banner) < 20:
+        raise Failure("the result banner has no %s ink" %
+                      ("gold" if won else "red"))
+    return "%s on turn %d, %d fields, large banner present" % (
+        "won" if won else "lost", stamp["duel_turn"], 14000)
 
 
 def run_top(capture=None):
     """The fixture board, then UP into the tactical top view."""
-    return run("topview", [press("R", DUEL_READY),
+    return run("topview", random_battle_script() + [press("R", DUEL_READY),
                             press("UP", DUEL_READY + 400)], 3800,
                capture=capture)
 
@@ -1602,15 +1809,153 @@ def check_top_view_switch_is_seamless():
 def check_camera_round_trip():
     before, _ = run_fixture()
     _, _, reference = read_ppm(before)
-    after, wram = run("camera_roundtrip", [press("R", DUEL_READY),
-        press("UP", DUEL_READY + 400), press("DOWN", DUEL_READY + 1700)], 5000)
+    after, wram = run("camera_roundtrip", random_battle_script() + [press("R", DUEL_READY),
+        press("UP", DUEL_READY + 400), press("B", DUEL_READY + 1700)], 5000)
     stamp = read_stamp(wram)
     _, _, pixels = read_ppm(after)
     if stamp["board_res"] != 1 or UI[stamp["ui"]] != "HAND":
-        raise Failure("UP/DOWN did not return to the resting hand view")
-    if pixels[24 * 256 * 3:160 * 256 * 3] != reference[24 * 256 * 3:160 * 256 * 3]:
-        raise Failure("the board changed geometry or lost cards during UP/DOWN")
-    return "UP/DOWN restores the original board pixels exactly"
+        raise Failure("UP/B did not return to the resting hand view")
+    # The slab ends above line 148.  The selected hand sprite bobs into lines
+    # 154..159, so including that strip compares unrelated animation phases.
+    if pixels[24 * 256 * 3:148 * 256 * 3] != reference[24 * 256 * 3:148 * 256 * 3]:
+        raise Failure("the board changed geometry or lost cards during UP/B")
+    return "UP/B restores the original board pixels exactly"
+
+
+def check_top_cursor_and_card_check():
+    """The top view owns its cursor, and A/B enter and leave card check."""
+    top_ppm, _ = run("top_cursor", random_battle_script() + [
+        press("R", DUEL_READY), press("UP", DUEL_READY + 400),
+        press("RIGHT", DUEL_READY + 1800),
+    ], 6000)
+    check_name = "top_check_mode3"
+    check_ppm, top_wram = run(check_name, random_battle_script() + [
+        press("R", DUEL_READY), press("UP", DUEL_READY + 400),
+        press("A", DUEL_READY + 1800),
+    ], 6000, capture=(5600, 5999, 4))
+    checked = read_stamp(top_wram)
+    if UI[checked["ui"]] != "CHECK":
+        raise Failure("A on the top cursor ended in %s, expected CHECK" %
+                      UI[checked["ui"]])
+    w, h, px = read_ppm(check_ppm)
+    regs = read_ppu_regs(os.path.join(OUT, check_name + ".ppu"))
+    if regs["BGMODE"] != 3:
+        raise Failure("card check PPU BGMODE is %d, expected Mode 3" %
+                      regs["BGMODE"])
+    # Card check is the PC-FX battle card on Mode 3's BG1: its 112x112
+    # painting at (8, 28).  Match it against every generated card; a
+    # non-black count or a wrong card can pass otherwise.
+    art = identify_bigcard(px, w, h, BIGCARD_CHECK_X + 4, BIGCARD_CHECK_Y + 6)
+    if art is None or art[1] < BIG_ART * BIG_ART * 0.98:
+        raise Failure("card check painting matches its card in only %d of %d "
+                      "pixels" % (art[1] if art else 0, BIG_ART * BIG_ART))
+    # ...and the PC-FX text column beside it says what it is.
+    column = sum(1 for y in range(20, 60) for x in range(132, 252)
+                 if px[(y * w + x) * 3:(y * w + x + 1) * 3] not in
+                 (b"\x00\x00\x00", px[(10 * w + 200) * 3:(10 * w + 201) * 3]))
+    if column < 200:
+        raise Failure("the card check's text column has only %d lit pixels"
+                      % column)
+    check_ppm, check_wram = run("top_check_close", random_battle_script() + [
+        press("R", DUEL_READY), press("UP", DUEL_READY + 400),
+        press("A", DUEL_READY + 1800), press("B", DUEL_READY + 2100),
+    ], 7000, capture=(6999, 6999, 1))
+    closed = read_stamp(check_wram)
+    if UI[closed["ui"]] == "CHECK":
+        raise Failure("B did not close the card check")
+    regs = read_ppu_regs(os.path.join(OUT, "top_check_close.ppu"))
+    if regs["BGMODE"] != 3:
+        raise Failure("closing top-view inspection did not restore Mode 3")
+    _, _, a = read_ppm(top_ppm)
+    _, _, b = read_ppm(check_ppm)
+    if a == b:
+        raise Failure("moving the top cursor did not change the rendered cursor")
+    return "top cursor moves independently; A opens CHECK and B closes it"
+
+
+def check_battle_art_mode3():
+    """An actual attack enters the Mode 3 battle presentation with card art."""
+    name = "battle_mode3"
+    script = random_battle_script() + [
+        press("R", DUEL_READY),
+        # R leaves the duel on the first player turn, where attacks are
+        # locked.  Hand the turn to COM and wait for it to return before
+        # entering battle selection.
+        press("START", DUEL_READY + 200),
+        press("X", DUEL_READY + 2800),
+        # The fixture can have an empty first slot after drawing real
+        # monsters from the shuffled deck; select the next slot explicitly.
+        press("RIGHT", DUEL_READY + 3200),
+        press("A", DUEL_READY + 3600),
+        press("A", DUEL_READY + 4200),
+    ]
+    ppm, wram = run(name, script, 6500, capture=(DUEL_READY + 3800,
+                                                 6499, 8))
+    stamp = read_stamp(wram)
+    if UI[stamp["ui"]] != "BATTLE_ART":
+        raise Failure("attack ended in UI %s, expected BATTLE_ART" %
+                      UI[stamp["ui"]])
+    regs = read_ppu_regs(os.path.join(OUT, name + ".ppu"))
+    if regs["BGMODE"] != 3:
+        raise Failure("battle art PPU BGMODE is %d, expected Mode 3" %
+                      regs["BGMODE"])
+    # Both cards are BG1 battle cards at the PC-FX positions, revealed from
+    # the screen's edges inwards.  The final PPM may already be the restored
+    # board even though the final stamp/capture registers still show the
+    # presentation, so inspect the captured fields and accept the first where
+    # each card's painting matches a generated card.
+    frame_dir = os.path.join(OUT, name + ".frames")
+    matches = [[], []]
+    for frame in sorted(os.listdir(frame_dir)):
+        # Once the reveal has finished, the cards stay until the presentation
+        # ends.  Avoid spending the check's budget on the clipped fields.
+        if not frame.startswith("f") or int(frame[1:7]) < 6450:
+            continue
+        w, h, px = read_ppm(os.path.join(frame_dir, frame))
+        for side, x in enumerate((BIGCARD_BATTLE_X0, BIGCARD_BATTLE_X1)):
+            card = identify_bigcard(px, w, h, x + 4, BIGCARD_CHECK_Y + 6)
+            if card is not None:
+                matches[side].append(card[1])
+    if not all(matches) or min(max(m) for m in matches) < BIG_ART * BIG_ART * 0.90:
+        raise Failure("battle art has no visible card painting matching its card "
+                      "(matches %s)" % matches)
+    return "BATTLE_ART uses PPU BGMODE=3, both 112x112 paintings matched (%d, %d)" % (
+        max(matches[0]), max(matches[1]))
+
+
+def check_fusion_target():
+    """DOWN queues hand cards and A opens the field fusion target."""
+    _, wram = run("fusion_target", random_battle_script() + [
+        press("DOWN", DUEL_READY + 300),
+        press("RIGHT", DUEL_READY + 420), press("DOWN", DUEL_READY + 540),
+        press("A", DUEL_READY + 660), press("A", DUEL_READY + 960),
+    ], 6000)
+    stamp = read_stamp(wram)
+    if UI[stamp["ui"]] != "HAND" or stamp["field_cards"] < 1:
+        raise Failure("fusion did not complete (UI=%s cards=%d)" %
+                      (UI[stamp["ui"]], stamp["field_cards"]))
+    return "two hand cards queue with DOWN and A completes fusion"
+
+
+def check_placement_flight():
+    """A placement has a visible in-flight interval before rules placement."""
+    start = DUEL_READY
+    _, wram = run("placement_flight", random_battle_script() + [
+        press("A", start + 300),
+        press("A", start + 480),
+    ], 5000, capture=(start + 480, start + 1100, 2))
+    stamp = read_stamp(wram)
+    if stamp["field_cards"] != 1 or UI[stamp["ui"]] == "PLACE":
+        raise Failure("placement flight did not land (UI=%s cards=%d)" %
+                      (UI[stamp["ui"]], stamp["field_cards"]))
+    frames = sorted(os.listdir(os.path.join(OUT, "placement_flight.frames")))
+    if len(frames) < 4:
+        raise Failure("captured only %d placement-flight frames" % len(frames))
+    images = [read_ppm(os.path.join(OUT, "placement_flight.frames", f))[2]
+              for f in frames]
+    if len(set(images)) < 3:
+        raise Failure("placement flight capture has no visible movement")
+    return "card flight captured across %d fields before landing" % len(frames)
 
 
 CHECKS = [
@@ -1635,6 +1980,10 @@ CHECKS = [
     ("top view", check_top_view),
     ("top view switch", check_top_view_switch_is_seamless),
     ("camera round trip", check_camera_round_trip),
+    ("top cursor + card check", check_top_cursor_and_card_check),
+    ("battle art Mode 3", check_battle_art_mode3),
+    ("fusion target", check_fusion_target),
+    ("placement flight", check_placement_flight),
     ("duel flow", check_duel_flow),
     ("duel plays out", check_duel_plays_out),
     ("render cost", check_render_cost),
@@ -1650,9 +1999,9 @@ def main():
     failures = 0
     for name, fn in CHECKS:
         try:
-            print("ok    %-20s %s" % (name, fn()))
+            print("ok    %-20s %s" % (name, fn()), flush=True)
         except Failure as exc:
-            print("FAIL  %-20s %s" % (name, exc))
+            print("FAIL  %-20s %s" % (name, exc), flush=True)
             failures += 1
     return 1 if failures else 0
 

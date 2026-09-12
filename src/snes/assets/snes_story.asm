@@ -2,10 +2,36 @@
 .include "hdr.asm"
 .BASE $C0
 .SECTION "snes_story" BANK 7 SLOT 0 ORG $0000 FORCE
-snes_story_tiles:
-    .INCBIN "snes_story_tiles.bin"
-snes_story_pal:
-    .INCBIN "snes_story_pal.bin"
-snes_story_map:
-    .INCBIN "snes_story_map.bin"
+snes_story_desert_sky:
+    .INCBIN "snes_story_desert_sky.bin"
+snes_story_desert_tiles:
+    .INCBIN "snes_story_desert_tiles.bin"
+snes_story_desert_map:
+    .INCBIN "snes_story_desert_map.bin"
+snes_story_desert_pal:
+    .INCBIN "snes_story_desert_pal.bin"
+snes_story_stone_sky:
+    .INCBIN "snes_story_stone_sky.bin"
+snes_story_stone_tiles:
+    .INCBIN "snes_story_stone_tiles.bin"
+snes_story_stone_map:
+    .INCBIN "snes_story_stone_map.bin"
+snes_story_stone_pal:
+    .INCBIN "snes_story_stone_pal.bin"
+snes_story_ember_sky:
+    .INCBIN "snes_story_ember_sky.bin"
+snes_story_ember_tiles:
+    .INCBIN "snes_story_ember_tiles.bin"
+snes_story_ember_map:
+    .INCBIN "snes_story_ember_map.bin"
+snes_story_ember_pal:
+    .INCBIN "snes_story_ember_pal.bin"
+snes_story_sky_sky:
+    .INCBIN "snes_story_sky_sky.bin"
+snes_story_sky_tiles:
+    .INCBIN "snes_story_sky_tiles.bin"
+snes_story_sky_map:
+    .INCBIN "snes_story_sky_map.bin"
+snes_story_sky_pal:
+    .INCBIN "snes_story_sky_pal.bin"
 .ENDS

@@ -13,6 +13,8 @@ void snesDeckVblank(void);
 /* Copy the active editor deck for the rules model.  This also lazily loads a
  * valid SRAM deck, or creates the deterministic first-run deck. */
 u8   snesDeckGetCurrent(u8 *dst);
+/* Materialize the lazily-created first-run deck in SRAM. */
+u8   snesDeckSaveCurrent(void);
 u8   snesDeckSaveValid(void);
 u8   snesDeckActiveSlot(void);
 u8   snesDeckCount(void);

@@ -18,6 +18,8 @@
 #include "msx2_cards.h"
 #include "msx2_duel.h"
 #include "snes_audio.h"
+#include "snes_cardart.h"
+#include "snes_video.h"
 
 #define DECK_COUNT          SNES_SAVE_DECK_SIZE
 #define STORAGE_COUNT       SNES_SAVE_STORAGE_SIZE
@@ -105,23 +107,6 @@ static void deck_text_build_editor(void)
     }
     if (deck_status) deck_text_line(25, 1, deck_status);
     deck_text_line(26, 1, "A MOVE  B CHECK  X SWAP Y SAVE");
-    deck_text_dirty = 1;
-}
-
-static void deck_text_build_preview(void)
-{
-    deck_text_clear();
-    deck_text_line(1, 11, "CARD CHECK");
-    deck_text_line(11, 9, snesCardName(preview_card));
-    if (Msx2_IsMonster(preview_card)) {
-        deck_text_line(13, 9, "ATK");
-        deck_text_num(13, 13, Msx2_CardAtk(preview_card), 4);
-        deck_text_line(13, 20, "DEF");
-        deck_text_num(13, 24, Msx2_CardDef(preview_card), 4);
-    } else {
-        deck_text_line(13, 9, "SUPPORT CARD");
-    }
-    deck_text_line(23, 10, "B BACK");
     deck_text_dirty = 1;
 }
 
@@ -334,6 +319,13 @@ static void deck_save_current(void)
     else deck_say("SAVE FAILED");
 }
 
+u8 snesDeckSaveCurrent(void)
+{
+    deck_ensure();
+    return snesSaveStoreDeck(active_slot, deck_cards, deck_count,
+                             storage_cards, storage_count);
+}
+
 static void deck_change_slot(void)
 {
     u8 loaded;
@@ -388,16 +380,18 @@ static void deck_draw_editor(void)
     snesObjEnd();
 }
 
+/* The card check is the same Mode 3 picture the duel shows: the PC-FX
+ * battle card on the left and its text column on the right, on BG1 and BG2.
+ * Entering it takes over the whole display; leaving it rebuilds the editor's
+ * own screen, which is what deck_screen_enter is for. */
 static void deck_draw_preview(void)
 {
-    const u8 selected = preview_card;
-
-    deck_text_build_preview();
+    snesCardArtEnter(1);
+    snesCardArtCheck(preview_card, 0, 0, 0);
+    snesCardArtVblank();
     snesObjBegin();
-    snesObjCardHiRes(1);
-    snesObjCard(112, 40, 0, selected);
-    snesObjBox(108, 36, 40, 40);
     snesObjEnd();
+    setScreenOn();
 }
 
 u8 snesDeckGetCurrent(u8 *dst)
@@ -439,13 +433,11 @@ u8 snesDeckHead(void)
     return deck_count ? deck_cards[0] : 0;
 }
 
-void snesDeckInit(void)
+/* The editor's own display: BG2 text over the purple backdrop ramp, cards
+ * and cursor on sprites.  Entered from the title and again on the way back
+ * from the card check, which replaces every one of these registers. */
+static void deck_screen_enter(void)
 {
-    deck_ensure();
-    preview_active = 0;
-    deck_status = 0;
-    deck_status_timer = 0;
-
     setScreenOff();
     REG_HDMAEN = 0;
     REG_CGWSEL = 0;
@@ -456,11 +448,22 @@ void snesDeckInit(void)
     dmaCopyVram((u8 *)snes_scene_font, 0x6000, SNES_SCENE_FONT_BYTES);
     REG_BG2SC = 0x74;
     REG_BG12NBA = 0x60;
+    REG_BG2HOFS = 0; REG_BG2HOFS = 0;
+    REG_BG2VOFS = 0; REG_BG2VOFS = 0;
     setMode(BG_MODE3, 0);
     REG_TM = BG2_ENABLE | OBJ_ENABLE;
     REG_TS = 0;
     deck_text_dirty = 0;
     dmaCopyVram((u8 *)deck_text_map, 0x7400, SNES_SCENE_MAP_BYTES);
+}
+
+void snesDeckInit(void)
+{
+    deck_ensure();
+    preview_active = 0;
+    deck_status = 0;
+    deck_status_timer = 0;
+    deck_screen_enter();
     deck_draw_editor();
 }
 
@@ -474,9 +477,10 @@ u8 snesDeckFrame(void)
     if (preview_active) {
         if (down & (KEY_A | KEY_B | KEY_START | KEY_L)) {
             preview_active = 0;
+            deck_screen_enter();
             deck_draw_editor();
-        } else {
-            deck_draw_preview();
+            snesVideoRestartDeckHdma();
+            setScreenOn();
         }
         return SNES_SCENE_COUNT;
     }
@@ -533,6 +537,8 @@ u8 snesDeckFrame(void)
         preview_card = deck_selected_card();
         preview_active = 1;
         snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+        deck_draw_preview();
+        return SNES_SCENE_COUNT;
     }
 
     deck_draw_editor();
@@ -541,6 +547,10 @@ u8 snesDeckFrame(void)
 
 void snesDeckVblank(void)
 {
+    if (preview_active) {
+        snesCardArtVblank();
+        return;
+    }
     if (deck_text_dirty) {
         dmaCopyVram((u8 *)deck_text_map, 0x7400, SNES_SCENE_MAP_BYTES);
         deck_text_dirty = 0;

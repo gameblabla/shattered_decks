@@ -31,6 +31,11 @@ static u8 card_want[SNES_OBJ_CARDS];
  * the right art up rather than the right art in the wrong colours. */
 static u8 card_have_hi[SNES_OBJ_CARDS];
 static u8 card_want_hi[SNES_OBJ_CARDS];
+/* Grey is a palette selection, not a tile sheet.  Keep it separate from the
+ * residency key so moving the hand cursor does not make an unchanged card
+ * disappear while its four tile rows are uploaded again. */
+static u8 card_have_grey[SNES_OBJ_CARDS];
+static u8 card_want_grey[SNES_OBJ_CARDS];
 static u8 card_hi_mode = 0;
 
 /* WHICH SLOT GOES UP NEXT IS DECIDED OUTSIDE VBLANK, and that is not tidiness.
@@ -46,6 +51,8 @@ static u8 next_card = SNES_OBJ_CARDS;
 static u8 next_card_row = 0;
 static u8 next_card_face = SNES_OBJ_NO_FACE;
 static u8 next_card_hi = 0;
+/* Selected by snesObjEnd, so VBlank does no card-array scan. */
+static u8 next_palette = SNES_OBJ_CARDS;
 
 /* Where slot `k`'s tiles start in the OBJ name table.  Four 32x32 sprites fit
  * across the sixteen-wide table, so a slot is a column of one 64-name group. */
@@ -59,9 +66,13 @@ static u8 next_card_hi = 0;
 #define BAR_TILE       (CORNER_TILE + SNES_SPR_CORNER_COUNT)
 #define PLATE_TILE     (BAR_TILE + SNES_SPR_BAR_COUNT)
 #define ICON_TILE      (PLATE_TILE + SNES_SPR_PLATE_COUNT)
+/* The banner's big letters are LAST in the sheet, so their base is every
+ * count before them added up -- which is also why the generator asserts the
+ * whole sheet against what the twenty card sprites leave of the OBJ region. */
+#define BIG_TILE       (ICON_TILE + SNES_SPR_ICON_COUNT)
 #define FONT_SHEET     (SNES_SPR_GLYPH_COUNT + SNES_SPR_CORNER_COUNT \
                         + SNES_SPR_BAR_COUNT + SNES_SPR_PLATE_COUNT \
-                        + SNES_SPR_ICON_COUNT)
+                        + SNES_SPR_ICON_COUNT + SNES_SPR_BIG_TILES)
 #define FONT_WORD      (0x4000u + (FONT_TILE * 32u) / 2u)
 
 /* The life panel, in pixels from its left edge. */
@@ -100,6 +111,8 @@ void snesObjInit(void)
         card_want[i] = SNES_OBJ_NO_FACE;
         card_have_hi[i] = 0;
         card_want_hi[i] = 0;
+        card_have_grey[i] = 0;
+        card_want_grey[i] = 0;
     }
     for (i = 0; i < 128 * 4; i += 4) {
         oam_shadow[i + 0] = 0;
@@ -115,6 +128,7 @@ void snesObjInit(void)
     next_card_row = 0;
     next_card_face = SNES_OBJ_NO_FACE;
     next_card_hi = 0;
+    next_palette = SNES_OBJ_CARDS;
 }
 
 /* ── Building a frame's list ─────────────────────────────────────────────── */
@@ -125,9 +139,22 @@ void snesObjBegin(void)
     card_hi_mode = 0;
 }
 
+/* The two card-sheet modes are BITS of one value, because both of them are
+ * part of what a slot HOLDS: a slot that changes either has to re-upload, and
+ * snesObjEnd compares the whole value. */
+#define CARD_MODE_HI    1
+#define CARD_MODE_GREY  2
+
 void snesObjCardHiRes(u8 on)
 {
-    card_hi_mode = on;
+    card_hi_mode = (u8)(on ? (card_hi_mode | CARD_MODE_HI)
+                           : (card_hi_mode & ~CARD_MODE_HI));
+}
+
+void snesObjCardGrey(u8 on)
+{
+    card_hi_mode = (u8)(on ? (card_hi_mode | CARD_MODE_GREY)
+                           : (card_hi_mode & ~CARD_MODE_GREY));
 }
 
 void snesObjSprite(s16 x, s16 y, u16 tile, u8 pal, u8 big)
@@ -185,13 +212,49 @@ void snesObjIcon(s16 x, s16 y, u8 kind)
     snesObjSprite(x, y, (u16)(ICON_TILE + kind), SNES_SPR_HUD_PAL, 0);
 }
 
+static void obj_box(s16 x, s16 y, u8 w, u8 h, u16 base)
+{
+    snesObjSprite(x, y, base + 0, SNES_SPR_HUD_PAL, 0);
+    snesObjSprite(x + (s16)w - 8, y, base + 1, SNES_SPR_HUD_PAL, 0);
+    snesObjSprite(x, y + (s16)h - 8, base + 2, SNES_SPR_HUD_PAL, 0);
+    snesObjSprite(x + (s16)w - 8, y + (s16)h - 8, base + 3,
+                  SNES_SPR_HUD_PAL, 0);
+}
+
 void snesObjBox(s16 x, s16 y, u8 w, u8 h)
 {
-    snesObjSprite(x, y, CORNER_TILE + 0, SNES_SPR_HUD_PAL, 0);
-    snesObjSprite(x + (s16)w - 8, y, CORNER_TILE + 1, SNES_SPR_HUD_PAL, 0);
-    snesObjSprite(x, y + (s16)h - 8, CORNER_TILE + 2, SNES_SPR_HUD_PAL, 0);
-    snesObjSprite(x + (s16)w - 8, y + (s16)h - 8, CORNER_TILE + 3,
-                  SNES_SPR_HUD_PAL, 0);
+    obj_box(x, y, w, h, CORNER_TILE + SNES_SPR_CORNER_GOLD);
+}
+
+void snesObjBoxRed(s16 x, s16 y, u8 w, u8 h)
+{
+    obj_box(x, y, w, h, CORNER_TILE + SNES_SPR_CORNER_RED);
+}
+
+/* A BIG LETTER IS FOUR SMALL SPRITES, not one 16x16 one: OBSEL gives this
+ * screen 8x8 and 32x32, and the 32x32 half is spent on the cards.  Four 8x8
+ * sprites cost two slivers a scanline per letter, so a seven-letter banner is
+ * fourteen of the thirty-four a line allows -- and it shares no line with the
+ * hand or the top table. */
+void snesObjBigText(s16 x, s16 y, const char *s, u8 set)
+{
+    u8 c, g;
+    u16 base;
+    while ((c = (u8)*s++) != 0) {
+        if (c >= SNES_SPR_GLYPH_FIRST &&
+            c < SNES_SPR_GLYPH_FIRST + SNES_SPR_GLYPH_COUNT) {
+            g = snes_spr_big_index[c - SNES_SPR_GLYPH_FIRST];
+            if (g != 0xFF) {
+                base = (u16)(BIG_TILE +
+                             (((u16)set * SNES_SPR_BIG_GLYPHS + g) << 2));
+                snesObjSprite(x,     y,     base + 0, SNES_SPR_HUD_PAL, 0);
+                snesObjSprite(x + 8, y,     base + 1, SNES_SPR_HUD_PAL, 0);
+                snesObjSprite(x,     y + 8, base + 2, SNES_SPR_HUD_PAL, 0);
+                snesObjSprite(x + 8, y + 8, base + 3, SNES_SPR_HUD_PAL, 0);
+            }
+        }
+        x += SNES_OBJ_BIG_PITCH;
+    }
 }
 
 /* THE LABEL IS EMITTED BEFORE THE PLATE IT SITS ON, and that ordering is the
@@ -244,16 +307,20 @@ void snesObjCardFlip(s16 x, s16 y, u8 slot, u8 face, u8 flip)
     /* A slot outside the card palettes cannot own one, so it falls back to the
      * clustered sheet however the caller asked -- there is no arrangement that
      * gives the top view's slot 12 a palette of its own. */
-    const u8 hi = (u8)(card_hi_mode && slot < SNES_SPR_CARD_PALS);
+    const u8 hi = (u8)((card_hi_mode & CARD_MODE_HI) &&
+                       slot < SNES_SPR_CARD_PALS ? CARD_MODE_HI : 0);
+    const u8 grey = (u8)((hi && (card_hi_mode & CARD_MODE_GREY)) ? 1 : 0);
 
     if (slot >= SNES_OBJ_CARDS || face == SNES_OBJ_NO_FACE) return;
-    snesObjQueueCard(slot, face, hi);
+    card_want[slot] = face;
+    card_want_hi[slot] = hi;
+    card_want_grey[slot] = grey;
     /* Still on its way up -- and a slot whose SHEET changed is as much on its
      * way up as one whose face did, because its palette is going with it. */
     if (card_have[slot] != face || card_have_hi[slot] != hi) return;
     if (obj_n >= 128) return;
     snesObjSprite(x, y, CARD_TILE(slot),
-                  hi ? slot : snes_spr_group[face], 1);
+                  (hi & CARD_MODE_HI) ? slot : snes_spr_group[face], 1);
     oam_shadow[((u16)(obj_n - 1) << 2) + 3] |= flip & 0xC0;
 }
 
@@ -292,6 +359,19 @@ void snesObjEnd(void)
         next_card_hi = card_want_hi[i];
         break;
     }
+
+    /* Grey is a palette-only transition.  Pick one resident hand slot here,
+     * outside VBlank, and let the VBlank pump apply only that queued 32-byte
+     * CGRAM update.  Scanning all slots during VBlank steals time from the
+     * framebuffer DMA and can leave its final rows stale. */
+    next_palette = SNES_OBJ_CARDS;
+    for (i = 0; i < SNES_SPR_CARD_PALS && i < SNES_OBJ_CARDS; ++i) {
+        if (card_have[i] == SNES_OBJ_NO_FACE || !card_have_hi[i] ||
+            card_have[i] != card_want[i] ||
+            card_have_grey[i] == card_want_grey[i]) continue;
+        next_palette = i;
+        break;
+    }
 }
 
 u8 snesObjCardsReady(void)
@@ -325,11 +405,17 @@ static void upload_card_row(u8 slot, u8 row)
     const u16 src = (u16)((u16)face * SNES_SPR_CARD_BYTES);
 
     if (face == SNES_OBJ_NO_FACE) {
+        /* An empty top slot still releases its hand palette: another field
+         * card can use that clustered palette even though this slot is empty. */
+        if (card_have_hi[slot] && !hi && slot < SNES_SPR_CARD_PALS)
+            dmaCopyCGram((u8 *)&snes_spr_pal[(u16)slot * 32],
+                         (u16)(128 + (u16)slot * 16), 32);
         card_have[slot] = face;
         card_have_hi[slot] = hi;
+        card_have_grey[slot] = 0;
         return;
     }
-    if (hi) {
+    if (hi & CARD_MODE_HI) {
         dmaCopyVram((u8 *)&snes_spr_cards_hi[src + (u16)row * SNES_SPR_CARD_ROW],
                     CARD_WORD(slot, row), SNES_SPR_CARD_ROW);
     } else {
@@ -337,8 +423,13 @@ static void upload_card_row(u8 slot, u8 row)
                     CARD_WORD(slot, row), SNES_SPR_CARD_ROW);
     }
     if (row == 3) {
-        if (hi) {
-            dmaCopyCGram((u8 *)&snes_spr_face_pal[(u16)face * 32],
+        if (hi & CARD_MODE_HI) {
+            /* The grey sheet is the SAME tiles through a greyed, darkened copy
+             * of this face's own fifteen colours, so a card dimming or lighting
+             * up is thirty-two bytes of CGRAM. */
+            const u8 *pal = card_want_grey[slot] ? snes_spr_face_pal_grey
+                                                  : snes_spr_face_pal;
+            dmaCopyCGram((u8 *)&pal[(u16)face * 32],
                          (u16)(128 + (u16)slot * 16), 32);
         } else if (card_have_hi[slot] && slot < SNES_SPR_CARD_PALS) {
             dmaCopyCGram((u8 *)&snes_spr_pal[(u16)slot * 32],
@@ -346,17 +437,22 @@ static void upload_card_row(u8 slot, u8 row)
         }
         card_have[slot] = face;
         card_have_hi[slot] = hi;
+        card_have_grey[slot] = (u8)(hi ? card_want_grey[slot] : 0);
     }
 }
 
 void snesObjVblank(void)
 {
     u8 budget = snesVideoPresentDone() ? 4 : 1;
+    u8 palette_done = 0;
     if (oam_dirty) {
         dmaCopyOAram(oam_shadow, 0, sizeof(oam_shadow));
         oam_dirty = 0;
     }
     while (budget-- && next_card < SNES_OBJ_CARDS) {
+        if (next_card_row == 3 &&
+            (card_want_hi[next_card] & CARD_MODE_HI))
+            palette_done = 1;
         upload_card_row(next_card, next_card_row);
         if (next_card_row == 3) {
             next_card = SNES_OBJ_CARDS;
@@ -365,4 +461,19 @@ void snesObjVblank(void)
             ++next_card_row;
         }
     }
+
+    /* Apply at most one queued grey palette per VBlank.  The validity checks
+     * cover a slot that was reused between snesObjEnd and this VBlank. */
+    if (!palette_done && next_palette < SNES_OBJ_CARDS &&
+        card_have[next_palette] != SNES_OBJ_NO_FACE &&
+        card_have_hi[next_palette] &&
+        card_have[next_palette] == card_want[next_palette] &&
+        card_have_grey[next_palette] != card_want_grey[next_palette]) {
+        const u8 *pal = card_want_grey[next_palette]
+                      ? snes_spr_face_pal_grey : snes_spr_face_pal;
+        dmaCopyCGram((u8 *)&pal[(u16)card_have[next_palette] * 32],
+                     (u16)(128 + (u16)next_palette * 16), 32);
+        card_have_grey[next_palette] = card_want_grey[next_palette];
+    }
+    next_palette = SNES_OBJ_CARDS;
 }

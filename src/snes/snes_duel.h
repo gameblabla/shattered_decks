@@ -10,6 +10,8 @@
 #include "snes_types.h"
 
 void snesDuelEnter(void);
-void snesDuelFrame(void);
+u8   snesDuelFrame(void);
+void snesDuelConfigure(u8 story_duel, u8 story_mode);
+u8   snesDuelMode3Active(void);
 
 #endif /* WAIFU_SNES_DUEL_H */

@@ -54,8 +54,17 @@ void snesObjNum(s16 x, s16 y, u16 value, u8 digits);
 /* SNES_SPR_ICON_ATK or SNES_SPR_ICON_DEF: the sword and the shield the stat
  * row prints where it used to spell ATK and DEF. */
 void snesObjIcon(s16 x, s16 y, u8 kind);
-/* The four corner brackets of a w x h box -- the cursor, in either view. */
+/* The four corner brackets of a w x h box -- the cursor, in either view.
+ * snesObjBox is the gold one the hand uses; snesObjBoxRed is the board cursor
+ * the top view puts round the slot being inspected, which is the colour the
+ * PC-FX and FM TOWNS builds draw that same marker in. */
 void snesObjBox(s16 x, s16 y, u8 w, u8 h);
+void snesObjBoxRed(s16 x, s16 y, u8 w, u8 h);
+/* The result banner: 16x16 letters, four 8x8 sprites each, at a 16-pixel
+ * pitch.  `set` is SNES_SPR_BIG_SET_GOLD or SNES_SPR_BIG_SET_RED.  Only the
+ * characters the two banners use exist in the sheet; anything else is a gap. */
+void snesObjBigText(s16 x, s16 y, const char *s, u8 set);
+#define SNES_OBJ_BIG_PITCH  16
 /* One side's life panel: a coloured label plate, a gauge and the number, all
  * of it sprites.  `side` is 0 for the player (red) and 1 for the opponent
  * (blue), which is the pairing the PC and PC-FX builds' LP panels use.  The
@@ -82,6 +91,14 @@ void snesObjQueueCard(u8 slot, u8 face, u8 hi);
  * card palette (slot < SNES_SPR_CARD_PALS), because the slot IS the palette --
  * which the five hand slots are and the top view's twenty are not. */
 void snesObjCardHiRes(u8 on);
+/* GREY IS A PALETTE, NOT A SECOND SHEET.  A hand card that is not the one
+ * under the cursor is drawn through the same tiles with `snes_spr_face_pal`
+ * swapped for `snes_spr_face_pal_grey` -- the face's own fifteen colours taken
+ * to luma and darkened -- so the hand reads as one lit card among four dimmed
+ * ones for thirty-two bytes of CGRAM instead of five hundred and twelve bytes
+ * of VRAM a card.  It only applies on top of snesObjCardHiRes: a slot sharing
+ * a clustered palette has no palette of its own to grey. */
+void snesObjCardGrey(u8 on);
 void snesObjEnd(void);
 
 /* Called once a vblank, before the framebuffer's own upload asks for what is

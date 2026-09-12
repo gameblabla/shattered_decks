@@ -4,4 +4,6 @@
 .SECTION "snes_sceneassets" BANK 14 SLOT 0 ORG $0000 FORCE
 snes_scene_font:
     .INCBIN "snes_scene_font.bin"
+snes_scene_text_pal:
+    .INCBIN "snes_scene_text_pal.bin"
 .ENDS

@@ -1,15 +1,31 @@
 #!/usr/bin/env python3
-"""Build the first Mode 3 scene assets for the SNES fork.
+"""The Mode 3 scenes: title, story dialogue, ending.
 
-The title is a 256x224, 8bpp background: the source painting is cropped to
-the SNES visible area, lightly lettered, quantised to one CGRAM palette, and
-then encoded as SNES planar tiles plus a 32x32 tile map.  The asset is kept in
-its own bank so entering the duel can restore the existing Mode 7 layout
-without making the title compete with the board or OBJ assets.
+The title is the whole 256x224 painting as an 8bpp BG1 -- no strip is given
+up to a black prompt bar.  "PRESS START" is baked into the painting as a
+second set of tiles for the two rows it covers, and the attract blink is a
+swap between the two 32x32 maps; the menu that replaces it is BG2 text over a
+colour-math window, so it needs no tiles at all.
+
+The story dialogue used to be a 32 KB picture of the desert.  It is now three
+things that cost a fraction of that:
+
+  * the SKY is CGRAM entry 0 rewritten by HDMA every scanline -- a ramp of
+    real 15-bit colours from the top of the painting to its horizon, the same
+    way the duel's HUD plate is a tinted backdrop rather than pixels;
+  * the GROUND is the painting's three tile rows under the horizon, as 4bpp
+    BG2 tiles in BG2 palette 1 (the starry sky is six star tiles scattered by
+    a seeded shuffle instead);
+  * the two SPEAKERS are 8bpp BG1 tiles, a hundred and twelve colours each,
+    where the OBJ portraits they replace had fifteen.
+
+Which painting a dialogue gets follows src/main.c's story_scene_kind():
+progress 0 and 1 stand in the desert, 2 in the temple, 3 at the volcano and
+4 in the void.
 """
 
 import os
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SOURCE = os.path.join(ROOT, "assets", "source", "title", "title256.png")
@@ -21,11 +37,23 @@ PREVIEW = os.path.join(ASSETS, "title_preview.png")
 
 WIDTH, HEIGHT = 256, 224
 TILES_X, TILES_Y = WIDTH // 8, HEIGHT // 8
+TITLE_ART_ROWS = TILES_Y
+TITLE_PROMPT_MAX_TILES = 28      # what the bank has left after the painting
 PALETTE_ENTRIES = 256
 BANK = 9                         # $C9; $C8 cards, $CA OBJ assets
-STORY_BANK = 7                   # $C7; 256x144 art leaves font VRAM free
+STORY_BANK = 7                   # $C7; the four backgrounds and their skies
 ENDING_BANK = 13                 # $CD; full-screen ending art
 SCENE_FONT_BANK = 14             # $CE; outlined dialogue font and frame tiles
+PORTRAIT_BANK = 24               # $D8..$DD; one 8bpp BG1 sheet per portrait
+PORTRAIT_W, PORTRAIT_H = 128, 136   # sixteen by seventeen tiles: lines 8..143
+PORTRAIT_COLOURS = 112
+PORTRAIT_FIRST = (32, 144)       # Serena's entries, then the opponent's
+GROUND_FIRST = 16                # BG2 palette 1
+GROUND_COLOURS = 15
+SKY_LINES = 120                  # the HDMA ramp; the ground starts on line 120
+GROUND_ROWS = 3                  # tile rows 15..17, lines 120..143
+SCENE_ROWS = 18                  # the picture above the dialogue window
+STORY_KINDS = ("desert", "stone", "ember", "sky")
 SCENE_FONT_GLYPH_FIRST = 32
 SCENE_FONT_GLYPH_COUNT = 64
 SCENE_BORDER_TILE = SCENE_FONT_GLYPH_COUNT
@@ -105,33 +133,257 @@ def title_art():
 
     draw = ImageDraw.Draw(image)
     logo = "SHATTERED DECKS"
-    prompt = "PRESS A TO DUEL"
 
     # A restrained drop shadow keeps the lettering readable without putting a
     # flat opaque panel over the painting.
     logo_font = font(20)
-    prompt_font = font(12)
-    draw.text((9, 9), logo, font=logo_font, fill=(18, 11, 8),
+    logo_box = draw.textbbox((0, 0), logo, font=logo_font, stroke_width=2)
+    logo_x = (WIDTH - (logo_box[2] - logo_box[0])) // 2
+    draw.text((logo_x + 2, 9), logo, font=logo_font, fill=(18, 11, 8),
               stroke_width=2, stroke_fill=(18, 11, 8))
-    draw.text((7, 7), logo, font=logo_font, fill=(255, 224, 136),
-              stroke_width=1, stroke_fill=(78, 34, 18))
-    draw.text((10, 198), prompt, font=prompt_font, fill=(15, 12, 10),
-              stroke_width=2, stroke_fill=(15, 12, 10))
-    draw.text((8, 196), prompt, font=prompt_font, fill=(255, 238, 187),
+    draw.text((logo_x, 7), logo, font=logo_font, fill=(255, 224, 136),
               stroke_width=1, stroke_fill=(78, 34, 18))
     return image
 
 
-def story_art():
-    """A real desert backdrop with Serena's shipped portrait over it."""
-    with Image.open(os.path.join(ROOT, "assets", "source", "bg", "desert.png")) as source:
-        image = source.convert("RGB").crop((0, 0, 256, 144)).convert("RGBA")
-    with Image.open(os.path.join(ROOT, "assets", "source", "story_portraits",
-                                 "serena.png")) as source:
-        portrait = source.convert("RGBA").resize((115, 144), Image.Resampling.LANCZOS)
-    # Serena is the player-side portrait; reserve the right side for opponents.
-    image.alpha_composite(portrait, (0, 0))
-    return image.convert("RGB")
+PROMPT_ROW = 24                  # the prompt's two tile rows: lines 192..207
+
+
+def title_prompt(image):
+    """The same painting with PRESS START lettered over its lower rows.
+
+    Only the tiles that differ from the plain painting are kept, so the text
+    is drawn in the same lettering as the logo yet costs a couple of dozen
+    tiles rather than a second picture."""
+    out = image.copy()
+    draw = ImageDraw.Draw(out)
+    text = "PRESS START"
+    f = font(11)
+    box = draw.textbbox((0, 0), text, font=f, stroke_width=1)
+    x = (WIDTH - (box[2] - box[0])) // 2
+    y = PROMPT_ROW * 8 + 3
+    draw.text((x + 1, y + 1), text, font=f, fill=(18, 11, 8),
+              stroke_width=1, stroke_fill=(18, 11, 8))
+    draw.text((x, y), text, font=f, fill=(255, 240, 200),
+              stroke_width=1, stroke_fill=(78, 34, 18))
+    return out
+
+
+# ── The story backgrounds ────────────────────────────────────────────────────
+
+def bg_source(kind):
+    return Image.open(os.path.join(ROOT, "assets", "source", "bg",
+                                   kind + ".png")).convert("RGB")
+
+
+# Each sky's ramp, top to horizon.  The paintings themselves are a flat
+# field of one colour dithered into the ground over the last thirty lines, so
+# these are chosen from them rather than measured: the desert deepens the
+# painting's blue at the zenith and runs to cyan at the horizon, the volcano's
+# violet lightens towards the glow, the temple's night blue lifts to the grey
+# above the stone, and the void is black.
+SKY_RAMPS = {
+    "desert": ((0, 72, 224), (88, 196, 255)),
+    "ember": ((112, 0, 208), (208, 120, 236)),
+    "stone": ((8, 20, 64), (96, 104, 136)),
+    "sky": ((0, 0, 0), (0, 0, 0)),
+}
+
+
+def sky_ramp(kind):
+    """One BGR555 word per scanline of sky, lines 0..119."""
+    top, bottom = SKY_RAMPS[kind]
+    ramp = []
+    for y in range(SKY_LINES):
+        t = y / float(SKY_LINES - 1)
+        c = tuple(int(round(top[i] + (bottom[i] - top[i]) * t)) for i in range(3))
+        ramp.append(snes_colour(c))
+    return ramp
+
+
+def ground_tiles(kind):
+    """The tile rows under the horizon as 4bpp BG2 tiles: (tiles, map, pal).
+
+    Tile 0 is always blank.  The map is SCENE_ROWS rows of 32 cells, BG2
+    palette 1, and for the void it is star tiles scattered over every row."""
+    tiles = [tile4([0] * 64)]
+    cells = [0] * (SCENE_ROWS * 32)
+    if kind == "sky":
+        img = bg_source(kind)
+        # Six star tiles: the brightest 8x8 blocks of the painting, each a
+        # star at a different offset in its cell.
+        blocks = []
+        for ty in range(img.height // 8):
+            for tx in range(TILES_X):
+                b = img.crop((tx * 8, ty * 8, tx * 8 + 8, ty * 8 + 8))
+                lum = sum(sum(p) for p in b.getdata())
+                if lum:
+                    blocks.append((lum, tx, ty, b))
+        blocks.sort(key=lambda b: -b[0])
+        colours = [(0, 0, 0), (255, 255, 255), (176, 176, 208), (96, 96, 128)]
+        picked = []
+        for lum, tx, ty, b in blocks:
+            key = tuple(1 if sum(p) > 96 else 0 for p in b.getdata())
+            if key in [k for k, _ in picked]:
+                continue
+            px = []
+            for p in b.getdata():
+                v = sum(p) // 3
+                px.append(0 if v < 32 else 3 if v < 96 else 2 if v < 192 else 1)
+            picked.append((key, px))
+            if len(picked) == 6:
+                break
+        for _, px in picked:
+            tiles.append(tile4(px))
+        import random
+        rng = random.Random(0x5744)
+        for i in range(SCENE_ROWS * 32):
+            if rng.random() < 0.22:
+                cells[i] = rng.randrange(1, len(tiles))
+        pal = colours + [(0, 0, 0)] * (16 - len(colours))
+        return b"".join(tiles), cells, pal
+    img = bg_source(kind).crop((0, SKY_LINES, WIDTH, SKY_LINES + GROUND_ROWS * 8))
+    indexed = img.quantize(colors=GROUND_COLOURS, method=Image.Quantize.MEDIANCUT,
+                           dither=Image.Dither.FLOYDSTEINBERG)
+    raw = indexed.getpalette()[:GROUND_COLOURS * 3]
+    colours = [tuple(raw[i:i + 3]) for i in range(0, len(raw), 3)]
+    colours += [(0, 0, 0)] * (GROUND_COLOURS - len(colours))
+    data = [v + 1 for v in indexed.getdata()]
+    for ty in range(GROUND_ROWS):
+        for tx in range(TILES_X):
+            block = []
+            for y in range(8):
+                row = (ty * 8 + y) * WIDTH + tx * 8
+                block += data[row:row + 8]
+            t = tile4(block)
+            if t not in tiles:
+                tiles.append(t)
+            cells[(SCENE_ROWS - GROUND_ROWS + ty) * 32 + tx] = tiles.index(t)
+    return b"".join(tiles), cells, [(0, 0, 0)] + colours
+
+
+def write_story_backgrounds():
+    """Bank $C7: for each kind, the sky ramp, the ground tiles, its map and
+    palette, behind a small directory the runtime indexes by kind."""
+    blobs = []
+    directory = bytearray()
+    sizes = {}
+    for kind in STORY_KINDS:
+        ramp = sky_ramp(kind)
+        sky = bytearray()
+        for word in ramp:
+            sky += bytes((word & 0xFF, word >> 8))
+        tiles, cells, pal = ground_tiles(kind)
+        cell_map = bytearray()
+        for c in cells:
+            cell_map += bytes((c, 0x04))     # BG2 palette 1, low priority
+        blobs.append(("snes_story_%s_sky" % kind, bytes(sky)))
+        blobs.append(("snes_story_%s_tiles" % kind, tiles))
+        blobs.append(("snes_story_%s_map" % kind, bytes(cell_map)))
+        blobs.append(("snes_story_%s_pal" % kind, palette_bytes(pal)))
+        sizes[kind] = len(tiles)
+    asm = ['; Generated by tools/snes/gen_snes_scenes.py.',
+           '.include "hdr.asm"', '.BASE $C0',
+           '.SECTION "snes_story" BANK %d SLOT 0 ORG $0000 FORCE' % STORY_BANK]
+    total = 0
+    for label, blob in blobs:
+        with open(os.path.join(ASSETS, label + ".bin"), "wb") as fh:
+            fh.write(blob)
+        asm += ['%s:' % label, '    .INCBIN "%s.bin"' % label]
+        total += len(blob)
+    asm += ['.ENDS', '']
+    assert total <= 0x10000, "story backgrounds are %d bytes" % total
+    with open(os.path.join(ASSETS, "snes_story.asm"), "w") as fh:
+        fh.write("\n".join(asm))
+    return sizes
+
+
+# The portrait sources go by several spellings in the source tree and are
+# being reorganised; take the first of each speaker's candidates that exists.
+PORTRAIT_CANDIDATES = [
+    ["Serena.png", "serena.png", "pc_hires_serena.png", "pc_hires_serana.png",
+     "serena_highres.png"],
+] + [
+    ["pc_hires_opponent_%d.png" % i, "pc_hires_opponent_%d.png.png" % i,
+     "opponent_%d_hires.png" % i, "opponent_%d_highres.png" % i,
+     "opponent_%d.png" % i]
+    for i in range(5)
+]
+
+
+def portrait_file(candidates):
+    for name in candidates:
+        if os.path.exists(os.path.join(ROOT, "assets", "source",
+                                       "story_portraits", name)):
+            return name
+    raise SystemExit("no story portrait among %s" % candidates)
+
+
+PORTRAITS = [portrait_file(c) for c in PORTRAIT_CANDIDATES]
+
+
+def portrait_asset(filename, first):
+    """One speaker as a 16x17 block of 8bpp BG1 tiles and its 112 colours.
+
+    The upper body -- the same 0.80 of the figure's height the shared
+    fit_story_portrait keeps -- fitted into 128x136 and stood on the ground
+    line.  Index 0 is transparent: the sky ramp and the ground show through
+    round the figure.  `first` is the CGRAM entry the block's colours start
+    at, baked into the tiles: Serena only ever stands on the left and reads
+    entries 32..143, an opponent on the right reads 144..255."""
+    path = os.path.join(ROOT, "assets", "source", "story_portraits", filename)
+    with Image.open(path) as source:
+        rgba = source.convert("RGBA")
+        rgba = rgba.crop(rgba.getbbox())
+        keep = max(2, min(rgba.height, int(round(rgba.height * 0.80))))
+        rgba = rgba.crop((0, 0, rgba.width, keep))
+        rgba = ImageOps.contain(rgba, (PORTRAIT_W - 8, PORTRAIT_H),
+                                Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (PORTRAIT_W, PORTRAIT_H), (0, 0, 0, 0))
+        canvas.alpha_composite(rgba, ((PORTRAIT_W - rgba.width) // 2,
+                                      PORTRAIT_H - rgba.height))
+    rgb = Image.new("RGB", canvas.size, (0, 0, 0))
+    rgb.paste(canvas.convert("RGB"), mask=canvas.getchannel("A"))
+    indexed = rgb.quantize(colors=PORTRAIT_COLOURS - 1,
+                           method=Image.Quantize.MEDIANCUT,
+                           dither=Image.Dither.FLOYDSTEINBERG)
+    raw = indexed.getpalette()[:(PORTRAIT_COLOURS - 1) * 3]
+    colours = [tuple(raw[i:i + 3]) for i in range(0, len(raw), 3)]
+    colours += [(0, 0, 0)] * (PORTRAIT_COLOURS - 1 - len(colours))
+    alpha = list(canvas.getchannel("A").getdata())
+    values = [0 if a < 48 else (v + first + 1)
+              for v, a in zip(indexed.getdata(), alpha)]
+    tiles = bytearray()
+    for ty in range(PORTRAIT_H // 8):
+        for tx in range(PORTRAIT_W // 8):
+            block = []
+            for y in range(8):
+                row = (ty * 8 + y) * PORTRAIT_W + tx * 8
+                block += values[row:row + 8]
+            tiles += tile8(block)
+    # Entry `first` itself is the figure's black outline colour, so nothing
+    # in the block ever reads as the transparent index.
+    return bytes(tiles), palette_bytes([(0, 0, 0)] + colours)
+
+
+def write_portraits():
+    asm = ['; Generated by tools/snes/gen_snes_scenes.py.',
+           '.include "hdr.asm"', '.BASE $C0']
+    for i, filename in enumerate(PORTRAITS):
+        tiles, pal = portrait_asset(filename, PORTRAIT_FIRST[0 if i == 0 else 1])
+        with open(os.path.join(ASSETS, "snes_portrait_%d.bin" % i), "wb") as fh:
+            fh.write(tiles)
+        with open(os.path.join(ASSETS, "snes_portrait_%d_pal.bin" % i), "wb") as fh:
+            fh.write(pal)
+        asm += ['.SECTION "snes_portrait_%d" BANK %d SLOT 0 ORG $0000 FORCE' %
+                (i, PORTRAIT_BANK + i),
+                'snes_portrait_%d:' % i,
+                '    .INCBIN "snes_portrait_%d.bin"' % i,
+                'snes_portrait_%d_pal:' % i,
+                '    .INCBIN "snes_portrait_%d_pal.bin"' % i,
+                '.ENDS']
+    with open(os.path.join(ASSETS, "snes_portraits.asm"), "w") as fh:
+        fh.write("\n".join(asm) + "\n")
 
 
 def scene_font_rows():
@@ -214,6 +466,8 @@ def write_scene_font_asset():
     data = scene_font()
     with open(os.path.join(ASSETS, "snes_scene_font.bin"), "wb") as fh:
         fh.write(data)
+    with open(os.path.join(ASSETS, "snes_scene_text_pal.bin"), "wb") as fh:
+        fh.write(palette_bytes(TEXT_PALETTE))
     with open(os.path.join(ASSETS, "snes_sceneassets.asm"), "w") as fh:
         fh.write("""; Generated by tools/snes/gen_snes_scenes.py.
 .include "hdr.asm"
@@ -221,21 +475,24 @@ def write_scene_font_asset():
 .SECTION "snes_sceneassets" BANK %d SLOT 0 ORG $0000 FORCE
 snes_scene_font:
     .INCBIN "snes_scene_font.bin"
+snes_scene_text_pal:
+    .INCBIN "snes_scene_text_pal.bin"
 .ENDS
 """ % SCENE_FONT_BANK)
     return len(data)
 
 
-def save_scene_asset(name, image, bank, blank_tile=False):
+def save_scene_asset(name, image, bank, blank_tile=False, art_colors=240):
     """Quantise and write one BG1 8bpp scene plus its 32x32 map."""
     width, height = image.size
     assert width == 256 and height % 8 == 0
-    indexed = image.quantize(colors=240, method=Image.Quantize.MEDIANCUT,
+    indexed = image.quantize(colors=art_colors, method=Image.Quantize.MEDIANCUT,
                              dither=Image.Dither.NONE)
-    raw = indexed.getpalette()[:240 * 3]
+    raw = indexed.getpalette()[:art_colors * 3]
     art_colours = [tuple(raw[i:i + 3]) for i in range(0, len(raw), 3)]
-    art_colours += [(0, 0, 0)] * (240 - len(art_colours))
+    art_colours += [(0, 0, 0)] * (art_colors - len(art_colours))
     colours = TEXT_PALETTE + art_colours
+    colours += [(0, 0, 0)] * (256 - len(colours))
     indices = [value + 16 for value in indexed.getdata()]
 
     tiles = bytearray()
@@ -306,55 +563,118 @@ def write_scene_header(scene_font_bytes, story_sizes, ending_sizes):
 #include "snes_types.h"
 
 #define SNES_SCENE_FONT_BYTES %d
+#define SNES_SCENE_GLYPH_BYTES %d
 #define SNES_SCENE_BORDER_TILE %d
 #define SNES_SCENE_BORDER_COUNT %d
-#define SNES_STORY_TILE_BYTES %d
 #define SNES_ENDING_TILE_BYTES %d
 #define SNES_SCENE_PAL_BYTES 512
 #define SNES_SCENE_MAP_BYTES 2048
 
+/* The story dialogue's picture: see the generator's docstring. */
+#define SNES_STORY_KINDS        %d
+#define SNES_STORY_SKY_LINES    %d
+#define SNES_STORY_SKY_BYTES    %d
+#define SNES_STORY_SCENE_ROWS   %d
+#define SNES_STORY_MAP_BYTES    %d
+#define SNES_STORY_GROUND_PAL   %d
+#define SNES_STORY_GROUND_TILES_MAX %d
+#define SNES_PORTRAIT_W         %d
+#define SNES_PORTRAIT_H         %d
+#define SNES_PORTRAIT_COLS      %d
+#define SNES_PORTRAIT_ROWS      %d
+#define SNES_PORTRAIT_TILES     %d
+#define SNES_PORTRAIT_BYTES     %d
+#define SNES_PORTRAIT_COLOURS   %d
+#define SNES_PORTRAIT_PAL_BYTES %d
+#define SNES_PORTRAIT_FIRST_L   %d
+#define SNES_PORTRAIT_FIRST_R   %d
+
 extern const u8 snes_scene_font[];
-extern const u8 snes_story_tiles[];
-extern const u8 snes_story_pal[];
-extern const u8 snes_story_map[];
+extern const u8 snes_scene_text_pal[];      /* BG2 palette 0: 16 entries */
 extern const u8 snes_ending_tiles[];
 extern const u8 snes_ending_pal[];
 extern const u8 snes_ending_map[];
-
-#endif /* WAIFU_SNES_SCENE_DATA_H */
-""" % (scene_font_bytes, SCENE_BORDER_TILE, SCENE_BORDER_COUNT,
-       story_sizes[0], ending_sizes[0]))
+""" % (scene_font_bytes, SCENE_FONT_GLYPH_COUNT * 32, SCENE_BORDER_TILE,
+       SCENE_BORDER_COUNT, ending_sizes[0],
+       len(STORY_KINDS), SKY_LINES, SKY_LINES * 2, SCENE_ROWS, SCENE_ROWS * 64,
+       GROUND_FIRST, max(story_sizes.values()) // 32,
+       PORTRAIT_W, PORTRAIT_H, PORTRAIT_W // 8, PORTRAIT_H // 8,
+       (PORTRAIT_W // 8) * (PORTRAIT_H // 8),
+       (PORTRAIT_W // 8) * (PORTRAIT_H // 8) * 64,
+       PORTRAIT_COLOURS, PORTRAIT_COLOURS * 2,
+       PORTRAIT_FIRST[0], PORTRAIT_FIRST[1]))
+        for kind in STORY_KINDS:
+            for part in ("sky", "tiles", "map", "pal"):
+                fh.write("extern const u8 snes_story_%s_%s[];\n" % (kind, part))
+        for i in range(len(PORTRAITS)):
+            fh.write("extern const u8 snes_portrait_%d[];\n"
+                     "extern const u8 snes_portrait_%d_pal[];\n" % (i, i))
+        fh.write("""
+/* The ground tile blobs differ in length; the runtime uploads this many. */
+""")
+        for kind in STORY_KINDS:
+            fh.write("#define SNES_STORY_%s_TILE_BYTES %d\n"
+                     % (kind.upper(), story_sizes[kind]))
+        fh.write("\n#endif /* WAIFU_SNES_SCENE_DATA_H */\n")
 
 
 def build():
     os.makedirs(ASSETS, exist_ok=True)
     scene_font_bytes = write_scene_font_asset()
     image = title_art()
-    indexed = image.quantize(colors=PALETTE_ENTRIES,
+    prompt = title_prompt(image)
+    # Mode 3 BG2 owns palette 0 for the menu.  Keep those sixteen entries
+    # stable and fit the painting into 16..255, just like the story scenes do,
+    # so runtime text never inherits arbitrary colours from the art.  Both
+    # versions of the painting are quantised against ONE palette, fitted to
+    # the plain one: the prompt's tiles must share it.
+    indexed = image.quantize(colors=PALETTE_ENTRIES - 16,
                              method=Image.Quantize.MEDIANCUT,
                              dither=Image.Dither.NONE)
-    raw = indexed.getpalette()[:PALETTE_ENTRIES * 3]
+    raw = indexed.getpalette()[:(PALETTE_ENTRIES - 16) * 3]
     colours = [tuple(raw[i:i + 3]) for i in range(0, len(raw), 3)]
+    colours = TEXT_PALETTE + colours
     colours += [(0, 0, 0)] * (PALETTE_ENTRIES - len(colours))
-    indices = list(indexed.getdata())
+    # Both pictures through the SAME nearest-colour mapping, or every cell of
+    # the prompt rows differs from the plain painting by a stray index.
+    indices = [v + 16 for v in
+               image.quantize(palette=indexed, dither=Image.Dither.NONE).getdata()]
+    prompt_indices = [v + 16 for v in
+                      prompt.quantize(palette=indexed, dither=Image.Dither.NONE).getdata()]
+
+    def art_tile(src, tx, ty):
+        block = []
+        for y in range(8):
+            row = (ty * 8 + y) * WIDTH + tx * 8
+            block += src[row:row + 8]
+        return tile8(block)
 
     tiles = bytearray()
-    for ty in range(TILES_Y):
+    for ty in range(TITLE_ART_ROWS):
         for tx in range(TILES_X):
-            block = []
-            for y in range(8):
-                row = (ty * 8 + y) * WIDTH + tx * 8
-                block += indices[row:row + 8]
-            tiles += tile8(block)
-
-    # The visible area occupies 28 of the 32 rows in a standard 32x32 map.
-    # The four off-screen rows are harmless zero tiles and make the map base
-    # and addressing identical to the duel's other Mode 3 background.
+            tiles += art_tile(indices, tx, ty)
     tilemap = bytearray()
     for ty in range(32):
         for tx in range(32):
-            tile = ty * TILES_X + tx if ty < TILES_Y else 0
+            tile = ty * TILES_X + tx if ty < TITLE_ART_ROWS else 0
             tilemap += bytes((tile & 0xFF, tile >> 8))
+
+    # The prompt: only the cells whose tile changed get a new tile, appended
+    # after the painting; the second map points those cells at them.
+    prompt_map = bytearray(tilemap)
+    extra = 0
+    for ty in range(PROMPT_ROW, PROMPT_ROW + 2):
+        for tx in range(TILES_X):
+            t = art_tile(prompt_indices, tx, ty)
+            if t == tiles[(ty * TILES_X + tx) * 64:(ty * TILES_X + tx + 1) * 64]:
+                continue
+            index = TITLE_ART_ROWS * TILES_X + extra
+            tiles += t
+            extra += 1
+            cell = (ty * 32 + tx) * 2
+            prompt_map[cell] = index & 0xFF
+            prompt_map[cell + 1] = index >> 8
+    assert extra <= TITLE_PROMPT_MAX_TILES, "PRESS START needs %d tiles" % extra
 
     with open(os.path.join(ASSETS, "snes_title_tiles.bin"), "wb") as fh:
         fh.write(tiles)
@@ -362,6 +682,8 @@ def build():
         fh.write(palette_bytes(colours))
     with open(os.path.join(ASSETS, "snes_title_map.bin"), "wb") as fh:
         fh.write(tilemap)
+    with open(os.path.join(ASSETS, "snes_title_prompt_map.bin"), "wb") as fh:
+        fh.write(prompt_map)
 
     # Preview with the same 5-bit colour precision the PPU will display.
     ppu_palette = []
@@ -370,7 +692,7 @@ def build():
         r, g, b = word & 31, (word >> 5) & 31, (word >> 10) & 31
         ppu_palette += [(r << 3) | (r >> 2), (g << 3) | (g >> 2),
                         (b << 3) | (b >> 2)]
-    preview = Image.frombytes("P", (WIDTH, HEIGHT), bytes(indices))
+    preview = Image.frombytes("P", (WIDTH, HEIGHT), bytes(prompt_indices))
     preview.putpalette(ppu_palette + [0] * (768 - len(ppu_palette)))
     preview.convert("RGB").save(PREVIEW)
 
@@ -385,8 +707,11 @@ snes_title_pal:
     .INCBIN "snes_title_pal.bin"
 snes_title_map:
     .INCBIN "snes_title_map.bin"
+snes_title_prompt_map:
+    .INCBIN "snes_title_prompt_map.bin"
 .ENDS
 """ % BANK)
+    assert len(tiles) + 512 + 4096 <= 0x10000, "the title bank overflows"
 
     with open(HEADER, "w") as fh:
         fh.write("""/* Generated by tools/snes/gen_snes_scenes.py. */
@@ -395,19 +720,21 @@ snes_title_map:
 
 #include "snes_types.h"
 
-#define SNES_TITLE_TILE_BYTES 57344
+#define SNES_TITLE_TILE_BYTES %d
 #define SNES_TITLE_PAL_BYTES 512
 #define SNES_TITLE_MAP_BYTES 2048
 
 extern const u8 snes_title_tiles[];
 extern const u8 snes_title_pal[];
 extern const u8 snes_title_map[];
+/* The same map with PRESS START's cells pointing at their lettered tiles. */
+extern const u8 snes_title_prompt_map[];
 
 #endif /* WAIFU_SNES_TITLE_H */
-""")
+""" % len(tiles))
 
-    story_sizes = save_scene_asset("story", story_art(), STORY_BANK,
-                                  blank_tile=True)
+    write_portraits()
+    story_sizes = write_story_backgrounds()
     with Image.open(os.path.join(ROOT, "assets", "source", "ending",
                                  "ending256x240.png")) as source:
         # Like the story backdrop, the ending gives the dialogue window the
@@ -418,10 +745,11 @@ extern const u8 snes_title_map[];
                                    blank_tile=True)
     write_scene_header(scene_font_bytes, story_sizes, ending_sizes)
 
-    print("title: %d tiles, %d-byte map, bank %d" %
-          (TILES_X * TILES_Y, len(tilemap), BANK))
-    print("story: %d bytes, ending: %d bytes" %
-          (story_sizes[0], ending_sizes[0]))
+    print("title: %d tiles (%d for the prompt), bank %d" %
+          (len(tiles) // 64, extra, BANK))
+    print("story grounds: %s; ending: %d bytes" %
+          (", ".join("%s %d" % (k, v // 32) for k, v in story_sizes.items()),
+           ending_sizes[0]))
 
 
 if __name__ == "__main__":

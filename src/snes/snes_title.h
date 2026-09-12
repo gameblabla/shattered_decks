@@ -4,12 +4,14 @@
 
 #include "snes_types.h"
 
-#define SNES_TITLE_TILE_BYTES 57344
+#define SNES_TITLE_TILE_BYTES 58880
 #define SNES_TITLE_PAL_BYTES 512
 #define SNES_TITLE_MAP_BYTES 2048
 
 extern const u8 snes_title_tiles[];
 extern const u8 snes_title_pal[];
 extern const u8 snes_title_map[];
+/* The same map with PRESS START's cells pointing at their lettered tiles. */
+extern const u8 snes_title_prompt_map[];
 
 #endif /* WAIFU_SNES_TITLE_H */

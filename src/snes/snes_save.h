@@ -25,5 +25,7 @@ u8   snesSaveLoadDeck(u8 slot, u8 *dst, u8 *count);
 u8   snesSaveLoadStorage(u8 slot, u8 *dst, u8 *count);
 u8   snesSaveStoreDeck(u8 slot, const u8 *deck, u8 deck_count,
                        const u8 *storage, u8 storage_count);
+u8   snesSaveStoryProgress(void);
+void snesSaveStoryProgressStore(u8 progress);
 
 #endif /* WAIFU_SNES_SAVE_H */

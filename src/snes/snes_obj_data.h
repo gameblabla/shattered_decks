@@ -13,16 +13,24 @@
 /* The HUD glyphs: ASCII 32..95, shadowed, OBJ palette 7. */
 #define SNES_SPR_GLYPH_FIRST  32
 #define SNES_SPR_GLYPH_COUNT  64
-#define SNES_SPR_CORNER_COUNT 4
+#define SNES_SPR_CORNER_COUNT 8
+#define SNES_SPR_CORNER_GOLD  0
+#define SNES_SPR_CORNER_RED   4
 /* The life bar's tiles follow the corners: BAR_STEPS fill states in the
  * player's colour, the same again in the opponent's, then the two plates. */
 #define SNES_SPR_BAR_STEPS    9
 #define SNES_SPR_BAR_COUNT    18
 #define SNES_SPR_PLATE_COUNT  2
-/* The stat row's sword and shield, last in the sheet. */
+/* The stat row's sword and shield. */
 #define SNES_SPR_ICON_COUNT   2
 #define SNES_SPR_ICON_ATK     0
 #define SNES_SPR_ICON_DEF     1
+/* The result banner's big letters: 16x16, as four 8x8 tiles (TL,TR,BL,BR).
+ * Two colour sets, gold then red.  Last in the sheet. */
+#define SNES_SPR_BIG_GLYPHS   9
+#define SNES_SPR_BIG_TILES    (SNES_SPR_BIG_GLYPHS * 8)   /* both sets */
+#define SNES_SPR_BIG_SET_GOLD 0
+#define SNES_SPR_BIG_SET_RED  1
 #define SNES_SPR_HUD_PAL      7
 /* How many OBJ palettes the cards share, and therefore how many slots can be
  * given a palette of their own -- see snes_spr_cards_hi. */
@@ -45,6 +53,13 @@ extern const u8 snes_spr_cards[];
  * against and is uploaded to the slot's OBJ palette with its tiles. */
 extern const u8 snes_spr_cards_hi[];
 extern const u8 snes_spr_face_pal[];
+/* snes_spr_face_pal, greyscaled and darkened: swap a hand slot's OBJ palette
+ * to this to grey the card out (e.g. it cannot be played) without touching
+ * its tiles -- 32 bytes of CGRAM instead of 512 bytes of VRAM. */
+extern const u8 snes_spr_face_pal_grey[];
+/* snes_spr_big_index[ascii - 32]: which SNES_SPR_BIG_GLYPHS glyph a character
+ * draws, or 0xFF if the banner never uses it. */
+extern const u8 snes_spr_big_index[];
 extern const u8 snes_spr_font[];
 extern const u8 snes_spr_pal[];
 extern const u8 snes_spr_group[];     /* the OBJ palette each face was fitted to */

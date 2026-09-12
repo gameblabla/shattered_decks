@@ -5,19 +5,70 @@
 #include "snes_types.h"
 
 #define SNES_SCENE_FONT_BYTES 2304
+#define SNES_SCENE_GLYPH_BYTES 2048
 #define SNES_SCENE_BORDER_TILE 64
 #define SNES_SCENE_BORDER_COUNT 8
-#define SNES_STORY_TILE_BYTES 36928
 #define SNES_ENDING_TILE_BYTES 36928
 #define SNES_SCENE_PAL_BYTES 512
 #define SNES_SCENE_MAP_BYTES 2048
 
+/* The story dialogue's picture: see the generator's docstring. */
+#define SNES_STORY_KINDS        4
+#define SNES_STORY_SKY_LINES    120
+#define SNES_STORY_SKY_BYTES    240
+#define SNES_STORY_SCENE_ROWS   18
+#define SNES_STORY_MAP_BYTES    1152
+#define SNES_STORY_GROUND_PAL   16
+#define SNES_STORY_GROUND_TILES_MAX 97
+#define SNES_PORTRAIT_W         128
+#define SNES_PORTRAIT_H         136
+#define SNES_PORTRAIT_COLS      16
+#define SNES_PORTRAIT_ROWS      17
+#define SNES_PORTRAIT_TILES     272
+#define SNES_PORTRAIT_BYTES     17408
+#define SNES_PORTRAIT_COLOURS   112
+#define SNES_PORTRAIT_PAL_BYTES 224
+#define SNES_PORTRAIT_FIRST_L   32
+#define SNES_PORTRAIT_FIRST_R   144
+
 extern const u8 snes_scene_font[];
-extern const u8 snes_story_tiles[];
-extern const u8 snes_story_pal[];
-extern const u8 snes_story_map[];
+extern const u8 snes_scene_text_pal[];      /* BG2 palette 0: 16 entries */
 extern const u8 snes_ending_tiles[];
 extern const u8 snes_ending_pal[];
 extern const u8 snes_ending_map[];
+extern const u8 snes_story_desert_sky[];
+extern const u8 snes_story_desert_tiles[];
+extern const u8 snes_story_desert_map[];
+extern const u8 snes_story_desert_pal[];
+extern const u8 snes_story_stone_sky[];
+extern const u8 snes_story_stone_tiles[];
+extern const u8 snes_story_stone_map[];
+extern const u8 snes_story_stone_pal[];
+extern const u8 snes_story_ember_sky[];
+extern const u8 snes_story_ember_tiles[];
+extern const u8 snes_story_ember_map[];
+extern const u8 snes_story_ember_pal[];
+extern const u8 snes_story_sky_sky[];
+extern const u8 snes_story_sky_tiles[];
+extern const u8 snes_story_sky_map[];
+extern const u8 snes_story_sky_pal[];
+extern const u8 snes_portrait_0[];
+extern const u8 snes_portrait_0_pal[];
+extern const u8 snes_portrait_1[];
+extern const u8 snes_portrait_1_pal[];
+extern const u8 snes_portrait_2[];
+extern const u8 snes_portrait_2_pal[];
+extern const u8 snes_portrait_3[];
+extern const u8 snes_portrait_3_pal[];
+extern const u8 snes_portrait_4[];
+extern const u8 snes_portrait_4_pal[];
+extern const u8 snes_portrait_5[];
+extern const u8 snes_portrait_5_pal[];
+
+/* The ground tile blobs differ in length; the runtime uploads this many. */
+#define SNES_STORY_DESERT_TILE_BYTES 3104
+#define SNES_STORY_STONE_TILE_BYTES 3104
+#define SNES_STORY_EMBER_TILE_BYTES 3104
+#define SNES_STORY_SKY_TILE_BYTES 224
 
 #endif /* WAIFU_SNES_SCENE_DATA_H */

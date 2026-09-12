@@ -68,8 +68,10 @@ TOP_BG_COLOURS = 120            # CGRAM 0..127, and index 0 is reserved black
 # ports' menu font draws once lower case is folded away.
 GLYPH_FIRST = 32
 GLYPH_COUNT = 64
-# ...and four more tiles after them: the cursor's corner brackets.
-CORNER_COUNT = 4
+# ...and eight more tiles after them: the cursor's corner brackets, gold then
+# red (the same four corners redrawn in SNES_SPR_RED, for whichever HUD state
+# wants the cursor to read as a warning instead of a selection).
+CORNER_COUNT = 8
 # ...and then the life-bar furniture: nine fill states of the bar in each of the
 # two sides' colours, then the two label plates.  See `bar_tiles`.
 BAR_STEPS = 9                   # 0..8 columns of the tile filled
@@ -80,6 +82,16 @@ PLATE_COUNT = 2
 # has, the icons say the same thing in one, and neither needs to be read.
 ICON_COUNT = 2
 SNES_SPR_GOLD = 3
+SNES_SPR_RED = 4
+
+# ── The result banner's big letters ─────────────────────────────────────────
+# "YOU WIN" / "YOU LOSE", drawn at 2x as four 8x8 tiles (TL,TR,BL,BR) rather
+# than a single 16x16 OBJ, so the same four-sprite-per-glyph draw works
+# whatever OBJ size table the rest of the sheet settled on.
+BIG_TEXT = "YOU WIN YOU LOSE"
+BIG_GLYPHS = sorted(set(BIG_TEXT) - {" "})
+BIG_GLYPH_COUNT = len(BIG_GLYPHS)
+BIG_SET_COLOURS = (SNES_SPR_GOLD, SNES_SPR_RED)
 
 
 # ── SNES pixel formats ───────────────────────────────────────────────────────
@@ -157,22 +169,22 @@ FRAME_COLOURS = 4
 ART_COLOURS = 16 - ART_FIRST
 
 
-def frame_rgb(tag):
+def frame_rgb(tag, size=SPR):
     """The card template a face is framed in, at sprite size.  The back has
     none: it is a picture edge to edge."""
     if tag == "back":
         return None
     kind = ga.face_kind(tag)
     with Image.open(ga.FRAME_SRC[kind]) as im:
-        return im.convert("RGB").resize((SPR, SPR), Image.LANCZOS)
+        return im.convert("RGB").resize((size, size), Image.LANCZOS)
 
 
-def art_rgb(tag, path):
+def art_rgb_size(tag, path, size):
     """The painting that goes inside the frame, at the size of its window."""
     from PIL import ImageOps
     # The back has no frame, so its picture IS the whole card.
-    x0, y0, x1, y1 = ((0, 0, SPR, SPR) if tag == "back"
-                      else ga.art_window((SPR, SPR)))
+    x0, y0, x1, y1 = ((0, 0, size, size) if tag == "back"
+                      else ga.art_window((size, size)))
     src = Image.open(path) if path else None
     art = ga.face_art(tag, src, ((x1 - x0) * 4, (y1 - y0) * 4))
     if src is not None:
@@ -188,6 +200,10 @@ def art_rgb(tag, path):
     img = ImageEnhance.Brightness(img.convert("RGB")).enhance(1.22)
     img = ImageEnhance.Contrast(img).enhance(1.15)
     return ImageEnhance.Color(img).enhance(1.25)
+
+
+def art_rgb(tag, path):
+    return art_rgb_size(tag, path, SPR)
 
 
 def ref_palette(colours):
@@ -371,7 +387,64 @@ def build_font():
     blob += bar_tiles()
     blob += plate_tiles()
     blob += icon_tiles()
+    blob += big_tiles()
     return bytes(blob)
+
+
+def big_tiles():
+    """The result banner's big letters: BIG_GLYPHS at 2x, gold then red.
+
+    A big letter is a nearest upscale of the ordinary 8x8 glyph -- there is no
+    separate hand-drawn big font -- with a 1-pixel black outline wrapped all
+    the way round the upscaled ink, because a flat-coloured letter this size
+    with no outline disappears into whichever board colour is behind it. It is
+    stored as four 8x8 4bpp tiles, top-left/top-right/bottom-left/bottom-right,
+    so the C side draws it as four ordinary OBJ sprites rather than depend on
+    the 16x16 OBJ size (this sheet already committed its OBJ size table to
+    32x32 cards and 8x8 everything else)."""
+    rows = font_rows()
+    out = bytearray()
+    for ink in BIG_SET_COLOURS:
+        for ch in BIG_GLYPHS:
+            src = rows[ord(ch) * 8:ord(ch) * 8 + 8]
+            ink16 = [[0] * 16 for _ in range(16)]
+            for y in range(8):
+                for x in range(8):
+                    if src[y] & (0x80 >> x):
+                        for dy in range(2):
+                            for dx in range(2):
+                                ink16[y * 2 + dy][x * 2 + dx] = 1
+            px16 = [[0] * 16 for _ in range(16)]
+            for y in range(16):
+                for x in range(16):
+                    if not ink16[y][x]:
+                        continue
+                    px16[y][x] = ink
+                    for dy in (-1, 0, 1):
+                        for dx in (-1, 0, 1):
+                            yy, xx = y + dy, x + dx
+                            if (0 <= yy < 16 and 0 <= xx < 16 and
+                                    not ink16[yy][xx]):
+                                px16[yy][xx] = 2   # the outline, black
+            flat = [px16[y][x] for y in range(16) for x in range(16)]
+            for qy in (0, 8):
+                for qx in (0, 8):
+                    block = []
+                    for y in range(8):
+                        row = (qy + y) * 16 + qx
+                        block += flat[row:row + 8]
+                    out += tile4(block)
+    return bytes(out)
+
+
+def big_index():
+    """snes_spr_big_index[ascii - 32]: which BIG_GLYPHS entry a character is,
+    or 0xFF if the banner never uses it.  A lookup rather than a switch,
+    because the C side only knows the ASCII text of the banner it is drawing."""
+    out = bytearray([0xFF] * 64)
+    for i, ch in enumerate(BIG_GLYPHS):
+        out[ord(ch) - 32] = i
+    return bytes(out)
 
 
 ICON_ART = [
@@ -427,27 +500,31 @@ def icon_tiles():
 
 
 def corner_tiles():
-    """Four L-brackets, one per corner, in the HUD palette's gold.
+    """Eight L-brackets: four corners in the HUD palette's gold, then the
+    identical four redrawn in red (SNES_SPR_CORNER_GOLD / _RED in the header).
 
     THE CURSOR IN THE TOP VIEW IS FOUR SPRITES, not a rectangle drawn into
     anything: the top view's background is a preloaded tilemap that is never
     rewritten, which is exactly what makes entering it cost three register
     writes, so nothing may draw into it.  Brackets at the corners of a cell
     also leave the card inside it entirely visible, which a filled marker or a
-    full outline does not."""
+    full outline does not.  The red set lets the same cursor turn into a
+    warning (an illegal target, say) by swapping which four tiles are drawn,
+    with no CGRAM write and no redraw of the geometry."""
     out = bytearray()
-    for corner in range(4):
-        right, bottom = corner & 1, corner >> 1
-        px = [0] * 64
-        for i in range(5):
-            x = 7 - i if right else i
-            y = 7 - i if bottom else i
-            for t in range(2):
-                yy = (7 - t) if bottom else t
-                xx = (7 - t) if right else t
-                px[yy * 8 + x] = SNES_SPR_GOLD
-                px[y * 8 + xx] = SNES_SPR_GOLD
-        out += tile4(px)
+    for ink in (SNES_SPR_GOLD, SNES_SPR_RED):
+        for corner in range(4):
+            right, bottom = corner & 1, corner >> 1
+            px = [0] * 64
+            for i in range(5):
+                x = 7 - i if right else i
+                y = 7 - i if bottom else i
+                for t in range(2):
+                    yy = (7 - t) if bottom else t
+                    xx = (7 - t) if right else t
+                    px[yy * 8 + x] = ink
+                    px[y * 8 + xx] = ink
+            out += tile4(px)
     return bytes(out)
 
 
@@ -598,6 +675,30 @@ def build_top():
     return bytes(tiles), bytes(words), colours
 
 
+# ── Greyed-out hand cards ────────────────────────────────────────────────────
+
+def grey_face_palettes(face_pal_bytes):
+    """snes_spr_face_pal, greyscaled and darkened -- a whole hand card can be
+    dimmed by re-pointing its slot's CGRAM at this instead of at
+    snes_spr_face_pal, which is 32 bytes of DMA instead of 512 bytes of tiles.
+    Entry 0 (the transparent slot) is left exactly as it already was: it is
+    never displayed as a colour, so touching it buys nothing and this way the
+    two blobs' entry 0 always agree by construction."""
+    out = bytearray(len(face_pal_bytes))
+    for i in range(0, len(face_pal_bytes), 2):
+        out[i:i + 2] = face_pal_bytes[i:i + 2]
+    for i in range(2, len(face_pal_bytes), 2):
+        word = face_pal_bytes[i] | (face_pal_bytes[i + 1] << 8)
+        r5, g5, b5 = word & 0x1F, (word >> 5) & 0x1F, (word >> 10) & 0x1F
+        r, g, b = r5 << 3, g5 << 3, b5 << 3
+        luma = 0.299 * r + 0.587 * g + 0.114 * b
+        luma *= 0.55
+        c = snes_colour((int(luma), int(luma), int(luma)))
+        out[i] = c & 0xFF
+        out[i + 1] = c >> 8
+    return bytes(out)
+
+
 # ── Emit ─────────────────────────────────────────────────────────────────────
 
 def emit(name, bank, blobs):
@@ -637,7 +738,9 @@ def main():
     face_pal = bytearray()
     for p in face_pals:
         face_pal += palette_bytes([(0, 0, 0)] + p, 16)
+    face_pal_grey = grey_face_palettes(bytes(face_pal))
     bg_pal = palette_bytes(top_pal, 128)
+    big_idx = big_index()
 
     # NOT "snes_obj": the Makefile names an object after its source's basename
     # and src/snes/snes_obj.c already owns that one, so the two would land on
@@ -647,13 +750,14 @@ def main():
         ("snes_spr_pal", bytes(obj_pal)),
         ("snes_spr_group", groups),
         ("snes_spr_face_pal", bytes(face_pal)),
+        ("snes_spr_face_pal_grey", face_pal_grey),
+        ("snes_spr_big_index", big_idx),
         ("snes_bg_pal", bg_pal),
         ("snes_top_tiles", top_tiles),
         ("snes_top_map", top_map),
     ])
     emit("snes_sprcards", BANK + 1, [("snes_spr_cards", cards)])
     emit("snes_sprcardshi", BANK + 2, [("snes_spr_cards_hi", cards_hi)])
-
     header = os.path.join(ROOT, "src", "snes", "snes_obj_data.h")
     with open(header, "w") as fh:
         fh.write("""/* Generated by tools/snes/gen_snes_obj.py; do not edit. */
@@ -672,15 +776,23 @@ def main():
 #define SNES_SPR_GLYPH_FIRST  %d
 #define SNES_SPR_GLYPH_COUNT  %d
 #define SNES_SPR_CORNER_COUNT %d
+#define SNES_SPR_CORNER_GOLD  0
+#define SNES_SPR_CORNER_RED   4
 /* The life bar's tiles follow the corners: BAR_STEPS fill states in the
  * player's colour, the same again in the opponent's, then the two plates. */
 #define SNES_SPR_BAR_STEPS    %d
 #define SNES_SPR_BAR_COUNT    %d
 #define SNES_SPR_PLATE_COUNT  %d
-/* The stat row's sword and shield, last in the sheet. */
+/* The stat row's sword and shield. */
 #define SNES_SPR_ICON_COUNT   %d
 #define SNES_SPR_ICON_ATK     0
 #define SNES_SPR_ICON_DEF     1
+/* The result banner's big letters: 16x16, as four 8x8 tiles (TL,TR,BL,BR).
+ * Two colour sets, gold then red.  Last in the sheet. */
+#define SNES_SPR_BIG_GLYPHS   %d
+#define SNES_SPR_BIG_TILES    (SNES_SPR_BIG_GLYPHS * 8)   /* both sets */
+#define SNES_SPR_BIG_SET_GOLD 0
+#define SNES_SPR_BIG_SET_RED  1
 #define SNES_SPR_HUD_PAL      7
 /* How many OBJ palettes the cards share, and therefore how many slots can be
  * given a palette of their own -- see snes_spr_cards_hi. */
@@ -703,6 +815,13 @@ extern const u8 snes_spr_cards[];
  * against and is uploaded to the slot's OBJ palette with its tiles. */
 extern const u8 snes_spr_cards_hi[];
 extern const u8 snes_spr_face_pal[];
+/* snes_spr_face_pal, greyscaled and darkened: swap a hand slot's OBJ palette
+ * to this to grey the card out (e.g. it cannot be played) without touching
+ * its tiles -- 32 bytes of CGRAM instead of 512 bytes of VRAM. */
+extern const u8 snes_spr_face_pal_grey[];
+/* snes_spr_big_index[ascii - 32]: which SNES_SPR_BIG_GLYPHS glyph a character
+ * draws, or 0xFF if the banner never uses it. */
+extern const u8 snes_spr_big_index[];
 extern const u8 snes_spr_font[];
 extern const u8 snes_spr_pal[];
 extern const u8 snes_spr_group[];     /* the OBJ palette each face was fitted to */
@@ -711,12 +830,29 @@ extern const u8 snes_top_tiles[];
 extern const u8 snes_top_map[];
 
 #endif
-""" % (SPR, SPR * SPR // 2, (SPR // 8) * 32, GLYPH_FIRST, GLYPH_COUNT,
+""" % (SPR, SPR * SPR // 2, (SPR // 8) * 32,
+       GLYPH_FIRST, GLYPH_COUNT,
        CORNER_COUNT, BAR_STEPS, BAR_COUNT, PLATE_COUNT, ICON_COUNT,
+       BIG_GLYPH_COUNT,
        CARD_PALETTES, TOP_CELL, TOP_X0, TOP_Y0, len(top_tiles)))
     print("%s written" % os.path.relpath(header, ROOT))
     print("top view: %d tiles, %d bytes; %d card sprites"
           % (len(top_tiles) // 64, len(top_tiles), len(groups)))
+
+    # VRAM budget check: the OBJ character region is 16384 bytes.  Only 20 of
+    # the ROM's many card faces are ever resident in VRAM at once (a hand plus
+    # the board), at SNES_SPR_CARD_BYTES each, so that is what the rest of the
+    # sheet -- glyphs, corners, bars, plates, icons, big letters, all of which
+    # ARE always resident -- has to share the remaining 6144 bytes with.
+    OBJ_CHAR_BYTES = 16384
+    RESIDENT_CARDS = 20
+    remaining = OBJ_CHAR_BYTES - RESIDENT_CARDS * (SPR * SPR // 2)
+    print("font+corners+bars+plates+icons+big sheet: %d bytes (limit %d)"
+          % (len(font), remaining))
+    assert len(font) <= remaining, (
+        "OBJ sheet past VRAM: font/extras blob is %d bytes, only %d left "
+        "after %d resident card sprites"
+        % (len(font), remaining, RESIDENT_CARDS))
 
 
 if __name__ == "__main__":

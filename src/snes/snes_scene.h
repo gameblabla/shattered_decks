@@ -40,6 +40,7 @@ u8   snesStoryFrame(void);
 void snesEndingInit(void);
 u8   snesEndingFrame(void);
 void snesSceneVblank(void);
+void snesStoryBegin(u8 progress);
 void snesDeckInit(void);
 u8   snesDeckFrame(void);
 void snesDeckVblank(void);

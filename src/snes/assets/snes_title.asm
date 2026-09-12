@@ -8,4 +8,6 @@ snes_title_pal:
     .INCBIN "snes_title_pal.bin"
 snes_title_map:
     .INCBIN "snes_title_map.bin"
+snes_title_prompt_map:
+    .INCBIN "snes_title_prompt_map.bin"
 .ENDS

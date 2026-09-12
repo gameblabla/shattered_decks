@@ -78,6 +78,32 @@ enum SnesView     { SNES_VIEW_BOARD = 0, SNES_VIEW_TOP = 1 };
  * than a lower-resolution picture. */
 #define SNES_M7_SCALE_STILL   0x0400
 
+/* THE HAND-TO-TOP CAMERA MOVE IS A MATRIX ANIMATION, NOT A RE-RENDER.
+ *
+ * A full software board is about 3400 scanlines -- thirteen fields -- plus
+ * five more to upload, so a "live" camera lift rendered eight poses took the
+ * better part of seven seconds and spent all of it re-baking the board
+ * texture.  The board bitmap already in VRAM is a perfectly good picture of
+ * the board; what the move has to do is get the eye closer to it.  So the
+ * board band's Mode 7 scale is walked instead, one value a FIELD, and nothing
+ * is rendered or uploaded at all.
+ *
+ * It zooms about the centre of the board rectangle, which is what the four
+ * matrix-centre registers below are for: with M7X/M7Y at the board's middle in
+ * Mode 7 pixel space and the two scroll registers cancelling the screen
+ * coordinate of that middle, A = D = 4.0 is EXACTLY the mapping this port
+ * always had -- one chunky texel on 2x2 screen pixels, framebuffer rows 0..79
+ * on screen lines 0..159 -- and any other scale magnifies about the board's
+ * middle instead of about the top-left corner.
+ *
+ * The HUD band keeps 4.0 in the same table, so the panel under the board never
+ * moves while the board pushes in. */
+#define SNES_M7_SCALE_TOP     0x02A0    /* the top of the lift, 1.5x in */
+#define SNES_M7_CENTRE_X      512       /* screen x 128, at 4 pixels a pixel */
+#define SNES_M7_CENTRE_Y      320       /* screen line 80: board rows 0..79 */
+#define SNES_M7_HOFS          (SNES_M7_CENTRE_X - 128)
+#define SNES_M7_VOFS          (SNES_M7_CENTRE_Y - 80)
+
 extern u8 snes_fb[];             /* snes_fb.asm, bank $7F */
 void snesSpanFloorQuad(u16 index, u16 count, u16 u, u16 v, u16 du, u16 dv);
 void snesBoardTextureClear(void);
@@ -106,8 +132,18 @@ void snesFbWriteChars(void);
 void snesVideoInitDuel(void);           /* Mode 7 + direct colour, force blank */
 void snesVideoRestartHdma(void);         /* re-prime after a scene boundary */
 void snesVideoRestartSceneHdma(void);    /* Mode 3 dialogue-window gradient */
+/* The story sky: two HDMA tables tinting the backdrop per line (red/green
+ * pairs and blue), or NULL.  Set before snesVideoRestartSceneHdma. */
+void snesVideoSetSkyTables(u16 rg, u8 rg_bank, u16 b, u8 b_bank);
+/* The title menu's darkened plate: colour math inside an HDMA'd window. */
+void snesVideoTitleMenuPlate(u8 on);
 void snesVideoRestartDeckHdma(void);     /* Mode 3 full-screen purple gradient */
 void snesVideoSetBoardRes(u8 res);      /* enum SnesBoardRes; rebuilds the HDMA table */
+/* The board band's Mode 7 scale.  SNES_M7_SCALE_STILL is the resting board and
+ * anything smaller magnifies it about its own centre; the HUD band is not
+ * touched.  It is applied by the next snesVideoPresent, in vblank. */
+void snesVideoSetBoardZoom(u16 scale);
+u16  snesVideoBoardZoom(void);
 u8   snesVideoBoardRes(void);
 /* Ask for the other view.  It is applied by the next snesVideoPresent, which
  * runs in vblank; asking twice in a frame is free and asking for the view that

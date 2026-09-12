@@ -10,6 +10,7 @@
 
 #include "snes_save.h"
 #include "msx2_cards.h"
+#include "msx2_duel.h"
 
 #define SAVE_MAGIC_LO       0x44u       /* "WD" */
 #define SAVE_MAGIC_HI       0x57u
@@ -204,4 +205,22 @@ u8 snesSaveStoreDeck(u8 slot, const u8 *deck, u8 deck_count,
     save_blob[SAVE_CHECKSUM_OFF + 1] = (u8)(sum >> 8);
     save_write_sram();
     return 1;
+}
+
+u8 snesSaveStoryProgress(void)
+{
+    snesSaveInit();
+    return save_valid ? save_blob[4] : 0;
+}
+
+void snesSaveStoryProgressStore(u8 progress)
+{
+    u16 sum;
+    snesSaveInit();
+    if (!save_valid || progress > MSX2_STORY_MAX_DUELS) return;
+    save_blob[4] = progress;
+    sum = save_checksum();
+    save_blob[SAVE_CHECKSUM_OFF] = (u8)sum;
+    save_blob[SAVE_CHECKSUM_OFF + 1] = (u8)(sum >> 8);
+    save_write_sram();
 }

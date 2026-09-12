@@ -15,6 +15,7 @@
 #include "snes_obj.h"
 #include "snes_deck.h"
 #include "snes_audio.h"
+#include "snes_cardart.h"
 
 static u8  cur_scene = SNES_SCENE_BOOT;
 static u16 scene_frames = 0;   /* explicit: see snes_duel.c on .bss */
@@ -107,7 +108,7 @@ void snesSceneRun(void)
         next = snesStoryFrame();
         break;
     case SNES_SCENE_DUEL:
-        snesDuelFrame();
+        next = snesDuelFrame();
         break;
     case SNES_SCENE_ENDING:
         next = snesEndingFrame();
@@ -172,8 +173,10 @@ int main(void)
              * is the HUD, and a HUD that arrives a vblank late while the board
              * finishes is the wrong way round. */
             snesObjVblank();
-            snesVideoPresent();
-        } else if (cur_scene == SNES_SCENE_STORY_TALK ||
+            if (snesDuelMode3Active()) snesCardArtVblank();
+            else snesVideoPresent();
+        } else if (cur_scene == SNES_SCENE_TITLE ||
+                   cur_scene == SNES_SCENE_STORY_TALK ||
                    cur_scene == SNES_SCENE_ENDING) {
             snesSceneVblank();
         } else if (cur_scene == SNES_SCENE_DECK) {

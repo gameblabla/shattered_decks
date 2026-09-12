@@ -61,6 +61,21 @@ SNES_AUDIO_ASSETS_ASM := $(PROJ_DIR)/assets/snes_audio.asm
 SNES_ASM := $(filter-out $(SNES_AUDIO_ASM) $(SNES_AUDIO_ASSETS_ASM),$(SNES_ASM))
 SNES_AUDIO_OBJ := $(OBJ)/snes_audio_hw.obj
 SNES_AUDIO_ASSETS_OBJ := $(OBJ)/snes_audio_assets.obj
+# These generated sources are explicit because they may not exist yet when
+# make expands the wildcard above.  The stamp recipe emits all three banks,
+# their INCBIN blobs, and snes_obj_data.h in one deterministic generator run.
+SNES_OBJ_ASM := $(PROJ_DIR)/assets/snes_objassets.asm \
+                $(PROJ_DIR)/assets/snes_sprcards.asm \
+                $(PROJ_DIR)/assets/snes_sprcardshi.asm \
+                $(PROJ_DIR)/assets/snes_bigcard_common.asm \
+                $(foreach b,$(shell seq 30 49),$(PROJ_DIR)/assets/snes_bigcards_$(b).asm)
+SNES_ASM := $(sort $(SNES_ASM) $(SNES_OBJ_ASM))
+SNES_SCENE_ASM := $(PROJ_DIR)/assets/snes_title.asm \
+                  $(PROJ_DIR)/assets/snes_story.asm \
+                  $(PROJ_DIR)/assets/snes_ending.asm \
+                  $(PROJ_DIR)/assets/snes_sceneassets.asm \
+                  $(PROJ_DIR)/assets/snes_portraits.asm
+SNES_ASM := $(sort $(SNES_ASM) $(SNES_SCENE_ASM))
 # Compiled in unchanged: the render-free duel rules and the shared AI/decks.
 SHARED_C := src/msx2/msx2_duel.c src/msx2/msx2_cards.c \
             src/game/ai.c src/game/deck.c
@@ -103,7 +118,7 @@ OBJS := $(patsubst %.c,$(OBJ)/%.obj,$(notdir $(CFILES))) \
 vpath %.c $(PROJ_DIR) src/msx2 src/game tools/snes
 vpath %.asm $(PROJ_DIR) $(PROJ_DIR)/assets
 
-.PHONY: all rom verify clean check-sdk banks
+.PHONY: all rom verify clean check-sdk banks obj-assets
 
 all: rom
 
@@ -169,6 +184,42 @@ SNES_AUDIO_SNAPSHOTS := $(addprefix $(PROJ_DIR)/assets/audio/,titlealt.spc overw
 audio-assets:
 	python3 tools/snes/gen_snes_audio.py
 
+SNES_OBJ_INPUTS := tools/snes/gen_snes_obj.py tools/snes/gen_snes_bigcards.py \
+	tools/atarist/gen_atarist_assets.py src/engine/font_menudata.h \
+	src/generated/waifu_assets.h \
+	$(wildcard assets/source/cards/*) \
+	$(wildcard assets/source/textures/*)
+SNES_OBJ_STAMP := $(BUILD)/obj-assets.stamp
+SNES_SCENE_INPUTS := tools/snes/gen_snes_scenes.py \
+	tools/snes/gen_snes_dialogue.py src/main.c \
+	src/engine/font_menudata.h assets/source/title/title256.png \
+	$(wildcard assets/source/bg/*.png) \
+	$(wildcard assets/source/story_portraits/*.png) \
+	assets/source/ending/ending256x240.png
+SNES_SCENE_STAMP := $(BUILD)/scene-assets.stamp
+
+# Generators also write headers consumed by C.  Make these normal prerequisites
+# so a parallel build waits for generation and recompiles after asset changes.
+$(patsubst %.c,$(OBJ)/%.ps,$(notdir $(CFILES))): $(SNES_OBJ_STAMP) $(SNES_SCENE_STAMP)
+
+obj-assets: $(SNES_OBJ_STAMP)
+
+$(SNES_OBJ_STAMP): $(SNES_OBJ_INPUTS)
+	@mkdir -p $(dir $@)
+	python3 tools/snes/gen_snes_obj.py
+	python3 tools/snes/gen_snes_bigcards.py
+	@touch $@
+
+$(SNES_OBJ_ASM): $(SNES_OBJ_STAMP)
+
+$(SNES_SCENE_STAMP): $(SNES_SCENE_INPUTS)
+	@mkdir -p $(dir $@)
+	python3 tools/snes/gen_snes_scenes.py
+	python3 tools/snes/gen_snes_dialogue.py
+	@touch $@
+
+$(SNES_SCENE_ASM): $(SNES_SCENE_STAMP)
+
 $(SNES_AUDIO_ASSETS_OBJ): $(SNES_AUDIO_ASSETS_ASM) $(HDR) $(SNES_AUDIO_SNAPSHOTS)
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -o $@ $<
@@ -197,6 +248,7 @@ banks:
 	 echo "SNES: $(ROM)  $$sz bytes, map mode \$$$$mode (HiROM + FastROM)"
 
 verify: rom
+	python3 tools/snes/test_dialogue.py
 	python3 tools/snes/verify.py
 
 clean:
