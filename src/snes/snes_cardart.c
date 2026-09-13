@@ -7,6 +7,7 @@
 #include "snes_bigcard_data.h"
 #include "snes_scene_data.h"
 #include "snes_cards.h"
+#include "msx2_duel.h"
 #include "msx2_cards.h"
 
 #define BG1_MAP_WORD    0x7400u
@@ -61,6 +62,19 @@ static void vram_fill_high(u16 word, u16 count)
     REG_VMAIN = 0x80;
 }
 
+/* What both card slots share: the frame feet, the blank tile, and the
+ * frame and text colours -- the same frame colours again at 128 for the
+ * slot whose tiles carry bitplane 7.  The battle loads these into its own
+ * Mode 4 layout (snes_battle.c). */
+void snesCardArtLoadCommon(void)
+{
+    dmaCopyVram((u8 *)snes_bigcard_feet, FEET_WORD,
+                SNES_BIGCARD_FEET_TILES * 64u);
+    dmaCopyVram((u8 *)blank_tile, BLANK_TILE * 32u, 64);
+    dmaCopyCGram((u8 *)snes_bigcard_frame_pal, 0, 64);
+    dmaCopyCGram((u8 *)snes_bigcard_frame_pal, 128, 32);
+}
+
 void snesCardArtEnter(u8 navy)
 {
     u16 i;
@@ -81,13 +95,7 @@ void snesCardArtEnter(u8 navy)
     REG_BG2VOFS = (u8)VOFS; REG_BG2VOFS = (u8)(VOFS >> 8);
 
     dmaCopyVram((u8 *)snes_scene_font, FONT_WORD, FONT_BYTES);
-    dmaCopyVram((u8 *)snes_bigcard_feet, FEET_WORD,
-                SNES_BIGCARD_FEET_TILES * 64u);
-    dmaCopyVram((u8 *)blank_tile, BLANK_TILE * 32u, 64);
-    /* The frame and text colours, and the same frame colours again at 128
-     * for the slot whose tiles carry bitplane 7. */
-    dmaCopyCGram((u8 *)snes_bigcard_frame_pal, 0, 64);
-    dmaCopyCGram((u8 *)snes_bigcard_frame_pal, 128, 32);
+    snesCardArtLoadCommon();
     if (navy) {
         /* CGRAM 0 is the backdrop: the card check's panel colour, the PC-FX
          * IDX_UI_DARK (7, 10, 43), as the BGR555 word $1420. */
@@ -150,6 +158,27 @@ void snesCardArtPlace(u8 slot, u8 col, u8 face)
                 (u16)(FEET_TILE +
                       foot[((u16)ty * SNES_BIGCARD_TILES_X + tx) * 2]);
     bg1_dirty = 1;
+}
+
+/* The fifteen map cells of tile row `ty` (0..19) of a card in slot `slot`,
+ * for a map that is not this file's: the battle's 32x64 one. */
+void snesCardArtRowCells(u8 slot, u8 face, u8 ty, u16 *cells)
+{
+    u8 tx, kind;
+    const u16 base = (u16)slot * SNES_BIGCARD_TILES;
+    const u8 *foot;
+    kind = (face < SNES_CARD_FACES) ? snesCardInfoFrame(face)
+                                    : SNES_BIGCARD_KIND_MONSTER;
+    foot = &snes_bigcard_feet_map[(u16)kind * SNES_BIGCARD_TILES_X *
+                                  SNES_BIGCARD_FOOT_ROWS * 2u];
+    for (tx = 0; tx < SNES_BIGCARD_TILES_X; ++tx) {
+        if (ty < SNES_BIGCARD_TOP_ROWS)
+            cells[tx] = (u16)(base + ty * SNES_BIGCARD_TILES_X + tx);
+        else
+            cells[tx] = (u16)(FEET_TILE +
+                              foot[((u16)(ty - SNES_BIGCARD_TOP_ROWS) *
+                                    SNES_BIGCARD_TILES_X + tx) * 2]);
+    }
 }
 
 void snesCardArtClear(void)

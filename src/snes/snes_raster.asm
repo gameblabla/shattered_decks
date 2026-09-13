@@ -19,7 +19,10 @@
 ;    * X and not Y, because absolute-long-indexed -- the one addressing mode
 ;      that reads ROM outside the data bank in a single instruction -- exists
 ;      only with X.  The framebuffer therefore takes Y, and the data bank is
-;      set to $7F so the store is a plain absolute-indexed one.
+;      set to the frame's bank (snesRasterTarget) so the store is a plain
+;      absolute-indexed one: Y is the pixel's absolute offset in that bank,
+;      which is what SnesViewport.origin carries.  The rest frame is in $7E
+;      and the motion frame in $7F.
 ;    * The accumulators sit in a page-aligned block of low RAM and the direct
 ;      page register is pointed at it, which turns each of the three DDA
 ;      accesses from a five-cycle long into a three-cycle direct page one --
@@ -69,6 +72,7 @@ rs_height         dw
 rs_row            dw
 rs_col            dw
 rs_flip           dw
+rs_fbbank         dw          ; the frame the walkers write: $7E or $7F
 .ENDS
 
 .RAMSECTION "snes_board_texture_ram" BANK $7F SLOT 3 ALIGN 256 KEEP
@@ -77,6 +81,30 @@ snes_board_texture dsb 32768
 
 .BASE $C0
 .SECTION "snes_raster_text" SUPERFREE
+
+; DB = the frame's bank.  A 16-bit A on entry and exit.
+.MACRO RS_FRAME_BANK
+    sep #$20
+    lda.l rs_fbbank
+    pha
+    plb
+    rep #$20
+.ENDM
+
+;-----------------------------------------------------------------------------
+; void snesRasterTarget(u16 bank)
+;
+; Which WRAM bank the span walkers store into.  The viewport's origin is an
+; absolute offset in that bank.
+;-----------------------------------------------------------------------------
+snesRasterTarget:
+    php
+    rep #$30
+    lda 5,s
+    and #$00FF
+    sta.l rs_fbbank
+    plp
+    rtl
 
 ;-----------------------------------------------------------------------------
 ; void snesSpanFloor(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
@@ -117,9 +145,7 @@ snesSpanFloor:
     phd
     lda #rs_ufrac
     tad
-    pea $7F7F
-    plb
-    plb                         ; DB = $7F, the framebuffer's bank
+    RS_FRAME_BANK               ; DB = the frame's bank
 
     ; Park v in B, where `tax` picks it up again on every texel.
     txa                         ; A16 = (v << 8) | u
@@ -137,7 +163,7 @@ _sf_loop:
     adc.b <rs_duint
     tax
     lda.l snes_floor_tex,x
-    sta.w snes_fb,y
+    sta.w $0000,y
     iny
     cpy.b <rs_end
     bne _sf_loop
@@ -147,6 +173,76 @@ _sf_loop:
     pld
     plb
 _sf_out:
+    plp
+    rtl
+
+;-----------------------------------------------------------------------------
+; void snesSpanFloorTex(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
+;                       u16 u_step)
+;
+; snesSpanFloor over the WORLD texture (snes_board_texture: the floor with the
+; cards stamped on it, 256 x 128) instead of the ROM checker.  A moving camera
+; with no yaw has a constant v along every row, so the lift and the overhead
+; pose walk at this routine's ~36 cycles a texel rather than the general
+; quad walker's ~57.  Same contract as snesSpanFloor; v is the index's high
+; byte and must already be masked to the texture's 128 rows.
+;-----------------------------------------------------------------------------
+snesSpanFloorTex:
+    php
+    rep #$30
+
+    lda 7,s
+    beq _st_out
+    clc
+    adc 5,s
+    sta.l rs_end
+    lda 11,s
+    and #$00FF
+    sta.l rs_ufrac
+    lda 13,s
+    and #$00FF
+    sta.l rs_dufrac
+    lda 13,s
+    xba
+    and #$00FF
+    sta.l rs_duint
+
+    lda 5,s
+    tay
+    lda 9,s
+    tax
+
+    phb
+    phd
+    lda #rs_ufrac
+    tad
+    RS_FRAME_BANK
+
+    txa
+    xba
+    sep #$20
+.ACCU 8
+    xba
+
+_st_loop:
+    lda.b <rs_ufrac
+    clc
+    adc.b <rs_dufrac
+    sta.b <rs_ufrac
+    txa
+    adc.b <rs_duint
+    tax
+    lda.l snes_board_texture,x
+    sta.w $0000,y
+    iny
+    cpy.b <rs_end
+    bne _st_loop
+
+    rep #$20
+.ACCU 16
+    pld
+    plb
+_st_out:
     plp
     rtl
 
@@ -176,9 +272,7 @@ snesSpanFill:
     tay
 
     phb
-    pea $7F7F
-    plb
-    plb
+    RS_FRAME_BANK
 
     lda.l rs_end
     lsr a
@@ -186,7 +280,7 @@ snesSpanFill:
     tax
     lda.l rs_colour
 _fl_pair:
-    sta.w snes_fb,y
+    sta.w $0000,y
     iny
     iny
     dex
@@ -199,7 +293,7 @@ _fl_tail:
     sep #$20
 .ACCU 8
     lda.l rs_colour
-    sta.w snes_fb,y
+    sta.w $0000,y
     rep #$20
 .ACCU 16
 
@@ -254,9 +348,7 @@ snesSpanCard:
     phd
     lda #rs_ufrac
     tad
-    pea $7F7F
-    plb
-    plb
+    RS_FRAME_BANK               ; DB = the frame's bank
 
     txa
     xba
@@ -273,7 +365,7 @@ _sc_loop:
     adc.b <rs_duint
     tax
     lda.l snes_card_tex,x
-    sta.w snes_fb,y
+    sta.w $0000,y
     iny
     cpy.b <rs_end
     bne _sc_loop
@@ -283,6 +375,97 @@ _sc_loop:
     pld
     plb
 _sc_out:
+    plp
+    rtl
+
+
+;-----------------------------------------------------------------------------
+; void snesSpanCard32(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
+;                     u16 u_step)
+;
+; THE 1:1 RESTING CARD, off the 32x32 sheet.  Same walk as snesSpanCard; the
+; index is `face << 10 | v << 5 | u` and the eight-bit add still steps u
+; inside the row because the caller clips the span to the face's 32 texels.
+; Faces 64.. live in a second sheet (a long-indexed read spans one bank), so
+; there are two copies of the loop; bit 15 of u_frac (whose high byte is
+; otherwise unused) picks the second: the caller passes (face & 63) << 10 in
+; tex_index and $8000 | frac for face >= 64.
+;-----------------------------------------------------------------------------
+snesSpanCard32:
+    php
+    rep #$30
+
+    lda 7,s
+    beq _s3_out
+    clc
+    adc 5,s
+    sta.l rs_end
+    lda 11,s
+    sta.l rs_page               ; bit 15: which sheet
+    and #$00FF
+    sta.l rs_ufrac
+    lda 13,s
+    and #$00FF
+    sta.l rs_dufrac
+    lda 13,s
+    xba
+    and #$00FF
+    sta.l rs_duint
+
+    lda 5,s
+    tay
+    lda 9,s
+    tax
+
+    phb
+    phd
+    lda #rs_ufrac
+    tad
+    RS_FRAME_BANK
+
+    txa
+    xba
+    sep #$20
+.ACCU 8
+    xba                         ; A8 = the texel byte, B = the page
+    lda.b <rs_page+1
+    bmi _s3_hi
+
+_s3_loop:
+    lda.b <rs_ufrac
+    clc
+    adc.b <rs_dufrac
+    sta.b <rs_ufrac
+    txa
+    adc.b <rs_duint
+    tax
+    lda.l snes_card_tex32,x
+    sta.w $0000,y
+    iny
+    cpy.b <rs_end
+    bne _s3_loop
+    bra _s3_done
+
+_s3_hi:
+    lda.b <rs_ufrac
+    clc
+    adc.b <rs_dufrac
+    sta.b <rs_ufrac
+    txa
+    adc.b <rs_duint
+    tax
+    lda.l snes_card_tex32b,x
+    sta.w $0000,y
+    iny
+    cpy.b <rs_end
+    bne _s3_hi
+
+_s3_done:
+    rep #$20
+.ACCU 16
+    pld
+    plb
+_s3_out:
     plp
     rtl
 
@@ -332,9 +515,7 @@ snesSpanCardQuad:
     phd
     lda #rs_ufrac
     tad
-    pea $7F7F
-    plb
-    plb
+    RS_FRAME_BANK               ; DB = the frame's bank
 
 _sq_loop:
     lda.b <rs_u
@@ -360,7 +541,7 @@ _sq_loop:
     sep #$20
 .ACCU 8
     lda.l snes_card_tex,x
-    sta.w snes_fb,y
+    sta.w $0000,y
     rep #$20
 .ACCU 16
     iny
@@ -373,12 +554,23 @@ _sq_out:
     plp
     rtl
 
-; Camera floor: signed Q8.8 u/v increments, wrapping the 256x64 texture.
-snesSpanFloorQuad:
+
+;-----------------------------------------------------------------------------
+; void snesSpanCardQuad32(u16 fb_index, u16 count, u16 u, u16 v, u16 du,
+;                         u16 dv, u16 page, u16 sheet)
+;
+; The affine walker off the 32x32 sheet, for the held card on the 1:1 board.
+; u and v wrap inside the face's 32 texels (v << 5 | u); page is
+; (face & 63) << 10 and sheet is non-zero for faces 64 and up.
+;-----------------------------------------------------------------------------
+snesSpanCardQuad32:
     php
     rep #$30
+
     lda 7,s
-    beq _fq_out
+    bne +
+    jmp _q3_out
++
     clc
     adc 5,s
     sta.l rs_end
@@ -390,42 +582,161 @@ snesSpanFloorQuad:
     sta.l rs_du
     lda 15,s
     sta.l rs_dv
+    lda 17,s
+    sta.l rs_page
+    lda 19,s
+    sta.l rs_flip               ; the sheet
+
     lda 5,s
     tay
+
     phb
     phd
     lda #rs_ufrac
     tad
-    pea $7F7F
-    plb
-    plb
-_fq_loop:
+    RS_FRAME_BANK
+
+    lda.b <rs_flip
+    bne _q3_hi
+_q3_loop:
     lda.b <rs_u
     clc
     adc.b <rs_du
     sta.b <rs_u
-    xba
-    and #$00FF
+    xba                         ; the integer part into the low byte
+    and #$001F
+    ora.b <rs_page
     sta.b <rs_tmp
     lda.b <rs_v
     clc
     adc.b <rs_dv
     sta.b <rs_v
-    and #$7F00
+    xba
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    and #$03E0                  ; v.int << 5
     ora.b <rs_tmp
     tax
     sep #$20
 .ACCU 8
-    lda.l snes_board_texture,x
-    sta.w snes_fb,y
+    lda.l snes_card_tex32,x
+    sta.w $0000,y
     rep #$20
 .ACCU 16
     iny
     cpy.b <rs_end
-    bne _fq_loop
+    bne _q3_loop
+    bra _q3_done
+
+_q3_hi:
+    lda.b <rs_u
+    clc
+    adc.b <rs_du
+    sta.b <rs_u
+    xba
+    and #$001F
+    ora.b <rs_page
+    sta.b <rs_tmp
+    lda.b <rs_v
+    clc
+    adc.b <rs_dv
+    sta.b <rs_v
+    xba
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    and #$03E0
+    ora.b <rs_tmp
+    tax
+    sep #$20
+.ACCU 8
+    lda.l snes_card_tex32b,x
+    sta.w $0000,y
+    rep #$20
+.ACCU 16
+    iny
+    cpy.b <rs_end
+    bne _q3_hi
+
+_q3_done:
     pld
     plb
-_fq_out:
+_q3_out:
+    plp
+    rtl
+
+; Motion mapper. D stays page-aligned at $4300; $4310-$433F are reserved
+; DMA-register scratch (channels 1-3 never run).  The texture pointer wraps
+; at 256 columns / 128 rows, and WMDATA increments the destination for free.
+; A full Q8.8 carry DDA handles increments of either sign, including >1 texel.
+snesSpanFloorQuad:
+    php
+    rep #$30
+    lda 7,s
+    bne +
+    plp
+    rtl
++   tax
+    lda 5,s
+    sta.l $2181
+    sep #$20
+.ACCU 8
+    lda.l rs_fbbank             ; the frame's bank: $7E -> 0, $7F -> 1
+    and #$01
+    sta.l $2183
+    rep #$20
+.ACCU 16
+    phd
+    lda #$4300
+    tcd
+    ; PHP + PHD add three bytes to the caller's stack arguments.
+    lda 11,s
+    sta.b $10                   ; u fraction/integer
+    lda 13,s
+    sta.b $12                   ; v fraction/integer
+    lda 15,s
+    sta.b $14                   ; du
+    lda 17,s
+    sta.b $16                   ; dv
+    ; Pointer base must be page-aligned.  The texture has its own bank's
+    ; lower 32 KB (asserted by the link/verification).
+    sep #$20
+.ACCU 8
+    lda.b $11
+    sta.b $18
+    lda.b $13
+    and #$7F
+    sta.b $19
+    lda #$7F
+    sta.b $1A
+_fq_loop:
+    lda.b $10
+    clc
+    adc.b $14
+    sta.b $10
+    lda.b $18
+    adc.b $15
+    sta.b $18
+    lda.b $12
+    clc
+    adc.b $16
+    sta.b $12
+    lda.b $19
+    adc.b $17
+    and #$7F
+    sta.b $19
+    lda.b [$18]
+    sta.l $2180
+    dex
+    bne _fq_loop
+    rep #$20
+.ACCU 16
+    pld
     plp
     rtl
 

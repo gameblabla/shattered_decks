@@ -7,6 +7,10 @@ followed by one hardware multiply: a FastROM read is six master cycles, so the
 table IS the divider.
 
   snes_recip_row[n] = 65536 / n      the plane equation's 1/rows_below
+  snes_recip_row2[n] = 131072 / n    the same for rows counted in PIXELS on
+                                     the 1:1 board, where a pixel row is
+                                     half a unit row (saturated for n < 3,
+                                     which is inside the far edge anyway)
   snes_sin[a]                        Q8.8 sine over a 256-step turn
 
 The ranges are asserted here rather than clamped at runtime.  That is the point
@@ -39,6 +43,10 @@ def main():
     # and the entry for it must still be the biggest depth in the table.
     assert recip[1] == 0xFFFF and recip[2] < recip[1]
 
+    recip2 = []
+    for n in range(RECIP_ROWS):
+        recip2.append(0xFFFF if n == 0 else min(0xFFFF, 131072 // n))
+
     sin = []
     for a in range(256):
         v = int(round(math.sin(a * math.pi / 128.0) * 256.0))
@@ -64,8 +72,12 @@ def main():
             lines.append("    .dw " + ", ".join("$%04X" % v for v in values[i:i + per_line]))
 
     emit(recip)
+    lines += ["", "snes_recip_row2:"]
+    emit(recip2)
     lines += ["", "snes_sin:"]
     emit(sin)
+    lines += ["", "snes_recip_plane:"]
+    emit([min(32767, 65536 // max(1, n)) for n in range(1024)])
     lines += ["", ".ENDS", ""]
 
     with open(OUT, "w") as fh:

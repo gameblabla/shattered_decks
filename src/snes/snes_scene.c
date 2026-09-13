@@ -373,15 +373,22 @@ static void title_upload(void)
     REG_BG1SC = (u8)(TITLE_MAP_WORD >> 8);
     REG_BG2SC = (u8)(TITLE_TEXT_MAP_WORD >> 8);
     REG_BG12NBA = 0x70;
-    REG_BG1HOFS = 0;
-    REG_BG1HOFS = 0;
-    REG_BG1VOFS = 0;
-    REG_BG1VOFS = 0;
-    REG_BG2HOFS = 0;
-    REG_BG2HOFS = 0;
-    REG_BG2VOFS = 0;
-    REG_BG2VOFS = 0;
     setMode(BG_MODE3, 0);
+    /* THE SCROLLS GO AFTER setMode, which zeroes every BG's scroll itself
+     * (pvsneslib's bgSetScroll).  The PPU shows map line VOFS + 1 on the
+     * first visible scanline, so VOFS 0 put the painting one line up and
+     * visible line 223 on map row 28 -- an unused row of tile zero, which
+     * drew as a flat blue line across the bottom of the title.  The artwork
+     * is exactly 28 tile rows: align it with -1.  BG2's text rows use the
+     * same convention and the same offset. */
+    REG_BG1HOFS = 0;
+    REG_BG1HOFS = 0;
+    REG_BG1VOFS = 0xFF;
+    REG_BG1VOFS = 0x03;
+    REG_BG2HOFS = 0;
+    REG_BG2HOFS = 0;
+    REG_BG2VOFS = 0xFF;
+    REG_BG2VOFS = 0x03;
     REG_TM = BG1_ENABLE | BG2_ENABLE;
     REG_TS = 0;
     snesVideoTitleMenuPlate(0);

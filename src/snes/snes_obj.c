@@ -11,10 +11,13 @@
  * oamSet ORs its attribute byte into whatever the entry already held, so a
  * sprite id reused with a different palette keeps bits of the old one.  A
  * shadow this file owns is written whole and DMA'd whole. */
-static u8 oam_shadow[128 * 4 + 32];
-static u8 obj_n = 0;             /* sprites emitted this frame */
+u8 snes_oam_shadow[128 * 4 + 32];
+u8 snes_obj_n = 0;               /* sprites emitted this frame */
 static u8 obj_prev = 0;          /* ...and last frame, so only those are hidden */
-static u8 oam_dirty = 1;
+u8 snes_oam_dirty = 1;
+#define oam_shadow snes_oam_shadow
+#define obj_n      snes_obj_n
+#define oam_dirty  snes_oam_dirty
 
 /* ── Card tiles ──────────────────────────────────────────────────────────── */
 
@@ -58,7 +61,7 @@ static u8 next_palette = SNES_OBJ_CARDS;
  * across the sixteen-wide table, so a slot is a column of one 64-name group. */
 #define CARD_TILE(k)   (u16)(((u16)((k) >> 2) << 6) + (((k) & 3) << 2))
 /* ...and where row `r` of those tiles starts in VRAM, as a word address. */
-#define CARD_WORD(k, r)  (u16)(0x4000u + ((u16)((k) >> 2) << 10) \
+#define CARD_WORD(k, r)  (u16)(SNES_VRAM_OBJ + ((u16)((k) >> 2) << 10) \
                                + ((u16)(r) << 8) + (((k) & 3) << 6))
 
 #define FONT_TILE      320u
@@ -73,7 +76,7 @@ static u8 next_palette = SNES_OBJ_CARDS;
 #define FONT_SHEET     (SNES_SPR_GLYPH_COUNT + SNES_SPR_CORNER_COUNT \
                         + SNES_SPR_BAR_COUNT + SNES_SPR_PLATE_COUNT \
                         + SNES_SPR_ICON_COUNT + SNES_SPR_BIG_TILES)
-#define FONT_WORD      (0x4000u + (FONT_TILE * 32u) / 2u)
+#define FONT_WORD      (SNES_VRAM_OBJ + (FONT_TILE * 32u) / 2u)
 
 /* The life panel, in pixels from its left edge. */
 #define LIFE_PLATE_W   24               /* three cells: the label sits on it */
@@ -81,30 +84,19 @@ static u8 next_palette = SNES_OBJ_CARDS;
 #define LIFE_BAR_W     32               /* four cells of gauge */
 #define LIFE_NUM_X     64
 
-#define TOP_TILES_WORD 0x6000u
-#define TOP_MAP_WORD   0x7000u
-
 void snesObjInit(void)
 {
     u16 i;
 
-    /* CGRAM, once and for ever: the background half for the top view, the OBJ
-     * half for the sprites.  Neither view rewrites it. */
-    dmaCopyCGram((u8 *)snes_bg_pal, 0, 256);
+    /* CGRAM, once and for ever: the OBJ half for the sprites.  The board is
+     * direct colour and reads none of it, so nothing in the duel rewrites it. */
     dmaCopyCGram((u8 *)snes_spr_pal, 128, 256);
 
-    /* OBSEL: small 8x8 / large 32x32, no name gap, characters at word $4000.
-     * The base field counts in 8192-word units, so $4000 is 2. */
-    REG_OBSEL = 0x20 | 0x02;
+    /* OBSEL: small 8x8 / large 32x32, no name gap, characters at word $6000.
+     * The base field counts in 8192-word units, so $6000 is 3. */
+    REG_OBSEL = 0x20 | (u8)(SNES_VRAM_OBJ >> 13);
 
     dmaCopyVram((u8 *)snes_spr_font, FONT_WORD, FONT_SHEET * 32);
-
-    /* The top view, preloaded into the VRAM neither the bitmap nor the sprites
-     * use.  This is the whole trick: the Mode 3 picture is already in VRAM
-     * before the duel starts, so entering the top view writes three registers
-     * and never blanks the screen. */
-    dmaCopyVram((u8 *)snes_top_tiles, TOP_TILES_WORD, SNES_TOP_TILE_BYTES);
-    dmaCopyVram((u8 *)snes_top_map, TOP_MAP_WORD, 2048);
 
     for (i = 0; i < SNES_OBJ_CARDS; ++i) {
         card_have[i] = SNES_OBJ_NO_FACE;
@@ -157,28 +149,11 @@ void snesObjCardGrey(u8 on)
                            : (card_hi_mode & ~CARD_MODE_GREY));
 }
 
+/* The store itself is snes_oam.asm's snesObjSpriteFlip: priority 3 always,
+ * the ninth bit of x and the size into the high table. */
 void snesObjSprite(s16 x, s16 y, u16 tile, u8 pal, u8 big)
 {
-    u16 i;
-    u8  hi, sh;
-
-    if (obj_n >= 128) return;
-    i = (u16)obj_n << 2;
-    oam_shadow[i + 0] = (u8)x;
-    oam_shadow[i + 1] = (u8)y;
-    oam_shadow[i + 2] = (u8)tile;
-    /* Priority 3: the HUD is over the board in every mode, and in the top view
-     * the cards are over the table. */
-    oam_shadow[i + 3] = (u8)(((tile >> 8) & 1) | ((pal & 7) << 1) | 0x30);
-
-    /* The high table: two bits a sprite, the ninth bit of x and the size. */
-    sh = (u8)((obj_n & 3) << 1);
-    hi = (u8)(((x >> 8) & 1) | (big ? 2 : 0));
-    i = (u16)(128 * 4 + (obj_n >> 2));
-    oam_shadow[i] = (u8)((oam_shadow[i] & ~(3 << sh)) | (hi << sh));
-
-    ++obj_n;
-    oam_dirty = 1;
+    snesObjSpriteFlip(x, y, tile, pal, big, 0);
 }
 
 void snesObjText(s16 x, s16 y, const char *s)
@@ -441,9 +416,23 @@ static void upload_card_row(u8 slot, u8 row)
     }
 }
 
+/* What the next snesObjVblank will put on the bus, in bytes, so the board's
+ * NMI drain can leave that much of the vblank alone (snesFbReserve).  The
+ * two used to share the window by guesswork, and the guess lost: a card
+ * row landing after the window closed is the selected hand card with its
+ * last tile row stale. */
+u16 snesObjVblankBytes(void)
+{
+    u16 bytes = oam_dirty ? 544 : 0;
+    if (next_card < SNES_OBJ_CARDS)
+        bytes += (u16)(4 - next_card_row) * SNES_SPR_CARD_ROW + 32;
+    if (next_palette < SNES_OBJ_CARDS) bytes += 32;
+    return bytes;
+}
+
 void snesObjVblank(void)
 {
-    u8 budget = snesVideoPresentDone() ? 4 : 1;
+    u8 budget = 4;
     u8 palette_done = 0;
     if (oam_dirty) {
         dmaCopyOAram(oam_shadow, 0, sizeof(oam_shadow));

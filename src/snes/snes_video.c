@@ -1,28 +1,16 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- *  snes_m7fb.c — Mode 7 as a chunky framebuffer, and its presenter.
+ *  snes_video.c — the PPU state around the Mode 3 Direct Colour board.
  *
- *  The bitmap itself is described in snes_fb.asm.  What lives here is the PPU
- *  state around it: the matrix, the per-band HDMA table that gives the board
- *  and the HUD different scales in the same frame, and the staged upload.
- *
- *  Why HDMA at all.  With B = C = 0 and the centre at the origin the Mode 7
- *  matrix is a pure scale: source x = A * screen_x, source y = D * screen_y +
- *  VOFS.  A different board scale would make the HUD text under it change
- *  size and stop fitting.  Three HDMA channels -- A, D and VOFS, two entries
- *  each --
- *  buy a different scale per band for the cost of a 12-byte table, and HDMA
- *  writes during active display are the one form of mid-frame PPU write the
- *  hardware is built for.
+ *  The frame, the ring, the tile store and the upload live in snes_fb.asm;
+ *  what lives here is the register model: Mode 3 with BG1 in direct colour,
+ *  the two HDMA channels the duel runs (the HUD plate's COLDATA ramp and the
+ *  TM write that keeps BG1 off the HUD band), the presentation owner, and the
+ *  board's frame generations.  The other scenes' HDMA gradients are here as
+ *  well because they share the fixed-colour idea.
  * ───────────────────────────────────────────────────────────────────────────── */
 #include <snes.h>
 #include "snes_video.h"
 #include "snes_stamp.h"
-
-/* HDMA tables, mode 2 (two bytes into one write-twice register).  Each entry
- * is a line count then the 16-bit value; a count byte is 1..127, so the
- * 160-line board band needs two entries. */
-static u8 hdma_a[10];
-static u8 hdma_d[10];
 
 /* The Mode 3 scenes use the same fixed-colour HDMA idea as the duel, but the
  * dialogue window owns the whole bottom eighty scanlines rather than only the
@@ -99,35 +87,8 @@ static u8 hdma_deck_col[DECK_GRAD_TABLE_BYTES];
 /* 3 + 3 for the lead, 1 + 2*26 for the ramp, 3 for the tail, 1 terminator. */
 static u8 hdma_col[63];
 
-/* The board band's Mode 7 scale.  It is the whole of the hand-to-top camera
- * move: see snes_video.h. */
-static u16 board_zoom = SNES_M7_SCALE_STILL;
-static u8  zoom_dirty = 0;
-
-static u8 board_res = SNES_RES_STILL;
-static u8 board_res_applied = SNES_RES_STILL;
-static u8 view = SNES_VIEW_BOARD;
-static u8 view_pending = SNES_VIEW_BOARD;
-static u8 present_row = 0;          /* next framebuffer row to upload */
-static u8 present_done = 0;
-/* The HUD band is uploaded ON REQUEST, not with every board frame.  It is
- * static between the events that change it, and at 4096 bytes it is two
- * thirds of a vblank's DMA budget -- paying that on every frame of a moving
- * board is what left the band showing the previous resolution's picture. */
-static u8 hud_pending = 0;
-
-/* Rows per vblank for the still upload.  NTSC vblank is 38 lines, about
- * 51,800 master cycles, and a DMA moves roughly one byte per 8, so the window
- * carries something under 6 KB in total and the whole of it is shared.
- *
- * THE SPRITE LAYER IS PAID FIRST AND THE BOARD GETS WHAT IS LEFT.  OAM is 544
- * bytes whenever the list changed and a card face is 512.  Sixteen rows --
- * 2048 bytes -- leaves room for OAM plus one card row even during a camera
- * handoff, when both the object list and the board can become dirty together.
- * Overspend and the rows past the end of the window are simply not written: a
- * black board under a framebuffer that is perfectly correct in WRAM, which
- * reads as a renderer bug and is not one. */
-#define STILL_ROWS_PER_VBL  16
+static u8 presentation_owner = SNES_OWNER_BOARD;
+static u16 requested_generation = 0;
 
 /* Fill the plate's table once.  The ramp is walked in 8.8 rather than divided
  * per line: 816-tcc has no divide worth spending here, and both steps happen
@@ -166,63 +127,28 @@ static void build_gradient(void)
     *t   = 0;
 }
 
-static void hdma_entry(u8 *t, u16 lines, u16 value)
-{
-    t[0] = (u8)lines;
-    t[1] = (u8)(value & 0xFF);
-    t[2] = (u8)(value >> 8);
-}
-
-/* Build the two-band table for the current resolution.
+/* The duel's two channels.
  *
- * Board band, lines 0..159: scale 4.0 for every 3D board state, source row 0
- * at screen line 0.  Motion has its own update cadence, not a coarser source
- * rectangle.
- * HUD band, lines 160..223: always 4.0, which maps those lines onto rows
- * 80..111 on its own.  M7VOFS stays zero for the whole screen -- see
- * SNES_HUD_ROW: a per-band VOFS written by HDMA applies to the entire frame,
- * not to its band, and shifts the board off the top of the screen.
- * Camera motion uses the same board band and leaves the HUD at the same scale. */
-static void build_hdma(void)
-{
-    const u16 scale = board_zoom;
-
-    /* The board band is 160 lines and an HDMA line count tops out at 127. */
-    hdma_entry(&hdma_a[0], 127, scale);
-    hdma_entry(&hdma_a[3], SNES_BOARD_LINES - 127, scale);
-    hdma_entry(&hdma_a[6], SNES_HUD_LINES, SNES_M7_SCALE_STILL);
-    hdma_a[9] = 0;
-
-    hdma_entry(&hdma_d[0], 127, scale);
-    hdma_entry(&hdma_d[3], SNES_BOARD_LINES - 127, scale);
-    hdma_entry(&hdma_d[6], SNES_HUD_LINES, SNES_M7_SCALE_STILL);
-    hdma_d[9] = 0;
-
-}
-
+ * Channel 4: COLDATA, the HUD plate (above).
+ * Channel 6: TM, BG1 + OBJ over the board's 144 lines and OBJ alone under
+ *            them.
+ * Channels 1-3 are never used: their registers are reserved as fast scratch
+ * for the renderer (SNES_MODE3_PLAN.md 2.3).  Channel 0 is the main thread's
+ * general DMA and 7 the NMI drain's. */
 static void arm_hdma(void)
 {
-    build_hdma();
-
     REG_HDMAEN = 0;
 
-    /* Channel 5: M7A ($211B).  Channel 6: M7D ($211E).  Both are write-twice
-     * registers, hence transfer mode 2. */
-    *(vuint8 *)0x4350 = 0x02;  *(vuint8 *)0x4351 = 0x1B;
-    *(vuint16 *)0x4352 = (u16)(u16)&hdma_a[0];
-    *(vuint8 *)0x4354 = 0x7E;
-
-    *(vuint8 *)0x4360 = 0x02;  *(vuint8 *)0x4361 = 0x1E;
-    *(vuint16 *)0x4362 = (u16)(u16)&hdma_d[0];
-    *(vuint8 *)0x4364 = 0x7E;
-
-    /* Channel 4: COLDATA ($2132), also write-twice, also mode 2. */
     build_gradient();
     *(vuint8 *)0x4340 = 0x02;  *(vuint8 *)0x4341 = 0x32;
     *(vuint16 *)0x4342 = (u16)(u16)&hdma_col[0];
     *(vuint8 *)0x4344 = 0x7E;
 
-    REG_HDMAEN = 0x70;         /* channels 4, 5 and 6 */
+    *(vuint8 *)0x4360 = 0x00;  *(vuint8 *)0x4361 = 0x2C;
+    *(vuint16 *)0x4362 = (u16)(u16)snes_fb_tm;
+    *(vuint8 *)0x4364 = 0x7E;
+
+    REG_HDMAEN = 0x50;         /* channels 4 and 6 */
 }
 
 static void build_scene_gradient(void)
@@ -422,54 +348,31 @@ static void arm_deck_hdma(void)
 
 void snesVideoInitDuel(void)
 {
+    static const u16 blank[32] = { 0 };
+    u16 row;
+
     setScreenOff();                    /* force blank: $2100 = $8F */
 
-    snesFbWriteChars();
+    snesFbInit();
 
-    /* B = C = 0, centre at the origin, no scroll: the matrix is a pure scale
-     * and HDMA supplies A, D and the vertical offset per band. */
-    REG_M7SEL  = 0x00;                 /* wrap inside the 128x128 tile area */
-    /* A and D are the per-band scale and HDMA rewrites them every scanline;
-     * these writes are the state the first scanline inherits, and the state
-     * the picture falls back to if a band table is ever not armed.
-     *
-     * $0400 is 4.0, not 0.5, and the factor of eight is the whole reason this
-     * works: Mode 7 samples a 1024x1024 space of PIXELS, and a tilemap entry
-     * covers 8x8 of them.  A = 4.0 therefore advances the tilemap by one entry
-     * every two screen pixels, which is the 2x2 still texel. */
-    REG_M7A = 0x00; REG_M7A = 0x04;      /* 0.5 in 8.8 */
-    REG_M7B = 0x00; REG_M7B = 0x00;
-    REG_M7C = 0x00; REG_M7C = 0x00;
-    REG_M7D = 0x00; REG_M7D = 0x04;
-    /* THE MATRIX CENTRE SITS ON THE BOARD'S OWN CENTRE, and at A = D = 4.0
-     * that changes nothing at all: the two scroll registers cancel the screen
-     * coordinate of that centre exactly, so the mapping is still four Mode 7
-     * pixels a screen pixel from framebuffer row 0 at screen line 0.  What it
-     * buys is that ANY OTHER scale magnifies about the middle of the board
-     * instead of about its top-left corner, which is what makes the
-     * hand-to-top move a matrix walk rather than a re-render. */
-    setMode(BG_MODE7, 0); /* This resets BG scroll, so set the centre afterward. */
-    /* Reinitialization also happens when inspection closes.  The cached view
-     * must describe the registers just written, otherwise returning to the
-     * top table can skip its Mode 3 transition because the old cache said
-     * it was already there. */
-    view = SNES_VIEW_BOARD;
-    view_pending = SNES_VIEW_BOARD;
-    REG_M7X = (u8)(SNES_M7_CENTRE_X & 0xFF); REG_M7X = (u8)(SNES_M7_CENTRE_X >> 8);
-    REG_M7Y = (u8)(SNES_M7_CENTRE_Y & 0xFF); REG_M7Y = (u8)(SNES_M7_CENTRE_Y >> 8);
-    REG_M7HOFS = (u8)(SNES_M7_HOFS & 0xFF); REG_M7HOFS = (u8)(SNES_M7_HOFS >> 8);
-    REG_M7VOFS = (u8)(SNES_M7_VOFS & 0xFF); REG_M7VOFS = (u8)(SNES_M7_VOFS >> 8);
+    setMode(BG_MODE3, 0);
+    presentation_owner = SNES_OWNER_BOARD;
+    requested_generation = 0;
+
+    /* Permanent blank tile and two blank logical maps. */
+    dmaCopyVram((u8 *)blank, SNES_VRAM_BOARD_CHARS, 64);
+    for (row = 0; row < 32; ++row) {
+        dmaCopyVram((u8 *)blank, (u16)(SNES_VRAM_BOARD_MAP_A + row * 32), 64);
+        dmaCopyVram((u8 *)blank, (u16)(SNES_VRAM_BOARD_MAP_B + row * 32), 64);
+    }
 
     REG_TM = 0x11;                     /* BG1 + OBJ on the main screen */
     REG_TMW = 0;
     REG_W12SEL = 0;
-
-    /* The top view's background, set once and then left alone: Mode 7 ignores
-     * both of these, so they are resident before the view change and never has
-     * to touch them.  BG1 characters at word $6000 (BG12NBA counts in 4096
-     * words) and its tilemap at $7000 (BG1SC counts in 1024). */
-    REG_BG1SC   = 0x70;                /* $7000, 32x32 entries */
-    REG_BG12NBA = 0x06;                /* $6000 */
+    REG_BG1SC   = 0x58;
+    REG_BG12NBA = (u8)(SNES_VRAM_BOARD_CHARS >> 12);        /* 0 */
+    REG_BG1HOFS = 0; REG_BG1HOFS = 0;
+    REG_BG1VOFS = 0xFF; REG_BG1VOFS = 0x03;
 
     /* Direct colour: the 8-bit texel IS the colour, BBGGGRRR, and CGRAM is
      * left entirely to the sprites. */
@@ -479,13 +382,6 @@ void snesVideoInitDuel(void)
      * backdrop is black, so the fixed colour arrives unmodified. */
     REG_CGADSUB = 0x20;
 
-    snesVideoClear(0);
-    board_zoom = SNES_M7_SCALE_STILL;
-    zoom_dirty = 0;
-    board_res = SNES_RES_STILL;
-    board_res_applied = SNES_RES_STILL;
-    present_row = 0;
-    present_done = 0;
 }
 
 void snesVideoRestartHdma(void)
@@ -494,7 +390,6 @@ void snesVideoRestartHdma(void)
     REG_W12SEL = 0;
     REG_COLDATA = COL_BLACK;
     arm_hdma();
-    board_res_applied = board_res;
 }
 
 void snesVideoRestartSceneHdma(void)
@@ -508,173 +403,25 @@ void snesVideoRestartDeckHdma(void)
     arm_deck_hdma();
 }
 
-void snesVideoSetView(u8 v)
+void snesVideoSetOwner(u8 owner) { presentation_owner = owner; }
+u8 snesVideoOwner(void) { return presentation_owner; }
+
+u16 snesVideoRequestGeneration(void)
 {
-    view_pending = v;
+    ++requested_generation;
+    if (!requested_generation) ++requested_generation;
+    return requested_generation;
 }
 
-u8 snesVideoView(void) { return view; }
+u16 snesVideoPresentedGeneration(void) { return snesFbPresentedGeneration(); }
 
-/* The whole mode change, and there is nothing else to it.
- *
- * $2105 picks the mode; $2130 takes direct colour off, because it applies to
- * ANY 256-colour background and Mode 3's BG1 is one -- left on, the top view's
- * table comes out as the raw palette indices read as BBGGGRRR; and $420C stops
- * the two HDMA channels that rewrite the Mode 7 matrix every scanline, which
- * in Mode 3 would be a hundred and sixty pointless writes a field.
- *
- * BG1SC, BG12NBA, TM and the scroll registers do NOT change: Mode 7 ignores
- * the first two, TM is BG1 + OBJ either way, and both scrolls are zero.  So
- * this runs inside vblank with room to spare and never blanks the screen. */
-static void apply_view(void)
+/* Whether everything queued for VRAM has gone up. */
+u8 snesVideoPresentDone(void)
 {
-    if (view_pending == SNES_VIEW_TOP) {
-        REG_HDMAEN = 0;
-        REG_BGMODE = 0x03;
-        REG_CGWSEL = 0x00;
-        REG_M7HOFS = 0; REG_M7HOFS = 0;
-        REG_M7VOFS = 0; REG_M7VOFS = 0;
-    } else {
-        /* Disabling HDMA for the resident top view leaves the channels at
-         * whatever table position the last board field reached.  Enabling
-         * $420C again does not rewind those tables on every SNES/clone, so a
-         * return to Mode 7 can leave the matrix stuck at the camera's last
-         * transition scale.  Re-prime the three channels while we are already
-         * in vblank; this changes no VRAM and keeps the handoff unblanked. */
-        REG_M7HOFS = (u8)SNES_M7_HOFS;
-        REG_M7HOFS = (u8)(SNES_M7_HOFS >> 8);
-        REG_M7VOFS = (u8)SNES_M7_VOFS;
-        REG_M7VOFS = (u8)(SNES_M7_VOFS >> 8);
-        REG_COLDATA = COL_BLACK;
-        arm_hdma();
-        REG_BGMODE = BG_MODE7;
-        REG_CGWSEL = CM_DIRCOLOR;
-    }
-    view = view_pending;
+    return snesFbJobsPending() == 0 && snesFbFramesPending() == 0;
 }
 
-void snesVideoSetBoardZoom(u16 scale)
-{
-    if (scale == board_zoom) return;
-    board_zoom = scale;
-    zoom_dirty = 1;
-}
-
-u16 snesVideoBoardZoom(void) { return board_zoom; }
-
-void snesVideoSetBoardRes(u8 res)
-{
-    if (res == board_res) return;
-    board_res = res;
-    snesVideoPresentRestart();
-}
-
-u8 snesVideoBoardRes(void) { return board_res; }
-
-/* Whether the frame in the buffer is entirely on screen.
- *
- * A full board frame takes several vblanks to upload and every render restarts that
- * upload at the top, so a scene that redraws on every game frame would show
- * only the first thirty-eight rows -- for ever.  Presentation asks this before
- * it animates in the still resolution.
- *
- * A pending HUD band counts as not done, and that is not pedantry: the board's
- * last pass sets present_done and leaves the HUD for the vblank after it, so a
- * caller that redrew on present_done alone restarted the upload in between and
- * the panel never reached the screen at all. */
-u8 snesVideoPresentDone(void) { return present_done && !hud_pending; }
-
-void snesVideoPresentRestart(void)
-{
-    present_row = 0;
-    present_done = 0;
-}
-
-void snesVideoHudDirty(void)
-{
-    hud_pending = 1;
-}
-
-/* One vblank's worth of upload.  Returns non-zero once the whole frame is on
- * screen.
- *
- * Mode 7 has no second tilemap base, so there is no page flip: this staged
- * upload IS the double-buffering story.  Every board state uses the full
- * 128x80 source and the motion path waits between complete uploads, so
- * refreshing an unchanging image over those vblanks is
- * invisible. */
 u8 snesVideoPresent(void)
 {
-    u16 rows, width, total;
-
-    if (view != view_pending) apply_view();
-
-    /* THE TOP VIEW DOES NOT PRESENT THE BITMAP.  Its picture is a resident
-     * tilemap and its cards are sprites, so the bitmap in VRAM is simply the
-     * board the player walked up from -- still there, untouched, and back on
-     * screen the instant they walk down again.  The vblank goes to the card
-     * sprites instead, which is why entering the top view fills with cards in
-     * a handful of fields. */
-    if (view == SNES_VIEW_TOP) return 1;
-
-    /* The camera move rewrites the board band's scale once a field.  Only the
-     * table changes; the armed channels pick it up on the next active display,
-     * so this costs nine bytes of vblank and no upload at all. */
-    if (zoom_dirty) {
-        build_hdma();
-        zoom_dirty = 0;
-    }
-
-    /* A live board changes its source rectangle and its HDMA scale together.
-     * Keep the old scale on screen until this vblank, then rewrite the table
-     * before the first row is uploaded.  Do not tear down and re-enable HDMA
-     * here: the old framebuffer is still visible during the preceding field,
-     * and restarting the channels at this boundary can expose a half-reloaded
-     * matrix for one field.  The table itself is safe to replace in vblank and
-     * the already-armed channels pick it up on the next active display. */
-    if (board_res_applied != board_res) {
-        build_hdma();
-        board_res_applied = board_res;
-    }
-
-    if (present_done) {
-        /* The board is up; a requested HUD refresh gets the next vblank to
-         * itself rather than sharing one with 2560 bytes of board. */
-        if (hud_pending) {
-            snesVideoPresentHud();
-            hud_pending = 0;
-        }
-        return 1;
-    }
-
-    /* Every 3D state presents the same 128x80 board.  Five bounded passes keep
-     * each vblank inside the DMA budget even when OAM and one card row are
-     * queued beside it; the duel schedules motion renders at a fixed minimum
-     * interval instead of shrinking the source image. */
-    total = SNES_STILL_H;
-    width = SNES_FB_STRIDE;
-    rows = STILL_ROWS_PER_VBL;
-
-    if (present_row + rows > total) rows = (u8)(total - present_row);
-    snesFbPresentRows(present_row, rows, width);
-    present_row += (u8)rows;
-
-    if (present_row >= total) {
-        present_done = 1;
-        return hud_pending ? 0 : 1;  /* one more pass if the HUD changed */
-    }
-    return 0;
-}
-
-void snesVideoPresentHud(void)
-{
-    snesFbPresentRows(SNES_HUD_ROW, SNES_HUD_H, SNES_HUD_W);
-}
-
-void snesVideoClear(u8 colour)
-{
-    /* One span, not a C loop: the same 16384 bytes cost 12.3 million master
-     * cycles through 816-tcc's indexed store (measured, 9056 scanlines) and
-     * about a hundred thousand through the span filler's 16-bit stores. */
-    snesSpanFill(0, SNES_FB_STRIDE * SNES_FB_ROWS, colour);
+    return snesVideoPresentDone();
 }

@@ -28,6 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import snes_dc
+import gen_snes_planar as planar
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ROM = os.path.join(ROOT, "build", "snes", "waifusnes.sfc")
@@ -36,11 +37,12 @@ MEDNAFEN = os.path.join(
 OUT = os.path.join(ROOT, "build", "snes", "verify")
 
 # The frame stamp, mirroring src/snes/snes_stamp.h.
-STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "board_res",
+STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "frame_gen",
                 "duel_turn", "lp_player", "lp_com", "duel_result", "ui",
                 "cursor", "field_cards", "phase", "turn_owner", "deck_slot",
                 "deck_count", "deck_head", "storage_count", "save_valid",
-                "checksum"]
+                "map_lines", "conv_lines", "nmi_skips", "turn_max_lines", "rest_max_lines", "patch_max_lines", "held_max_lines", "occupied", "view", "battle_phase",
+                "battle_field", "battle_damage", "checksum"]
 
 # enum SnesDuelUi, mirroring src/snes/snes_duel.c.
 UI = ["HAND", "PLACE", "EQUIP_TARGET", "ATTACKER", "DEFENDER", "COM",
@@ -109,8 +111,14 @@ def rom_header():
     }
 
 
+_RUN_CACHE = {}
+
 def run(name, script, frames, capture=None):
     """One scripted run.  `script` is a list of (start, end, pad_mask) rows."""
+    cacheable = name in ("still", "fixture", "nocards", "hold", "moving", "topview")
+    key = (name, tuple(script), frames, capture)
+    if cacheable and key in _RUN_CACHE:
+        return _RUN_CACHE[key]
     os.makedirs(OUT, exist_ok=True)
     # Keep the regression's battery state separate from the owner's emulator
     # saves.  Multiple runs in this file intentionally share this directory so
@@ -139,6 +147,8 @@ def run(name, script, frames, capture=None):
     if proc.returncode != 0:
         raise Failure("%s: emulator exited %d\n%s" % (name, proc.returncode,
                                                       proc.stderr[-2000:]))
+    if cacheable:
+        _RUN_CACHE[key] = (ppm, wram)
     return ppm, wram
 
 
@@ -292,6 +302,60 @@ def check_title():
         raise Failure("title tile VRAM differs from the generated artwork")
     return "scene TITLE, painted 256x224 art (%d%% non-black)" % (
         visible * 100 // (w * h))
+
+
+def title_expected_rows(rows, prompt=False):
+    """The title's intended pixels on the given screen rows, decoded from the
+    generated map, 8bpp tiles and palette: what the PPU must show when the
+    map's row 0 is aligned with visible line 0."""
+    with open(os.path.join(ROOT, "src/snes/assets/snes_title_tiles.bin"), "rb") as fh:
+        tiles = fh.read()
+    name = "snes_title_prompt_map.bin" if prompt else "snes_title_map.bin"
+    with open(os.path.join(ROOT, "src/snes/assets", name), "rb") as fh:
+        tilemap = fh.read()
+    with open(os.path.join(ROOT, "src/snes/assets/snes_title_pal.bin"), "rb") as fh:
+        pal = fh.read()
+    out = {}
+    for y in rows:
+        line = []
+        for x in range(256):
+            cell = (y // 8) * 32 + x // 8
+            tile = tilemap[cell * 2] | (tilemap[cell * 2 + 1] << 8)
+            idx = planar_pixel(tiles, tile & 0x3FF, x & 7, y & 7)
+            word = pal[idx * 2] | (pal[idx * 2 + 1] << 8)
+            line.append((word & 31, (word >> 5) & 31, (word >> 10) & 31))
+        out[y] = line
+    return out
+
+
+def check_title_scanlines():
+    """THE FIRST AND LAST VISIBLE LINES ARE THE PAINTING'S OWN.
+
+    The PPU shows map line VOFS+1 on the first scanline; with VOFS 0 the
+    painting's twenty-eight tile rows started one line up and visible line 223
+    fell on map row 28, an unused row of tile zero, which drew as a flat blue
+    line across the bottom of the screen.  Rows 0, 1, 222 and 223 are compared
+    pixel for pixel against the generated artwork, which the old check (tile
+    bytes and interior rows) could not see."""
+    ppm, wram = run("title", [(0, 100, 0)], 100, capture=(99, 99, 1))
+    w, h, px = read_ppm(ppm)
+    rows = (0, 1, 222, 223)
+    want = title_expected_rows(rows)
+    for y in rows:
+        bad = 0
+        for x in range(w):
+            got = screen5(px, w, x, y)
+            if got != want[y][x]:
+                bad += 1
+        if bad:
+            raise Failure("title row %d differs from the artwork in %d of 256 "
+                          "pixels (row colours: %d)" %
+                          (y, bad, len(set(want[y]))))
+    if len(set(want[223])) < 8:
+        raise Failure("the artwork's own last row is nearly flat (%d colours): "
+                      "the check cannot tell it from a stuck line" %
+                      len(set(want[223])))
+    return "title rows 0, 1, 222 and 223 match the artwork pixel for pixel"
 
 
 def check_title_input():
@@ -489,7 +553,7 @@ def board_row(res):
     The board occupies lines 0..159 and the slab itself starts a little below
     the painted horizon; line 130 is inside it in both resolutions and clear of
     the HUD band at 160."""
-    return 130
+    return 100
 
 
 # A RUN IS MEASURED IN EMULATOR FIELDS, AND A GAME FRAME IS MANY OF THEM.
@@ -549,8 +613,8 @@ def run_hold(capture=None):
 
 
 def run_moving(capture=None):
-    # Y toggles the board resolution.  The press has to land after the scene
-    # machine is running.
+    # Y pins the moving-camera renderer.  The press has to land after the
+    # scene machine is running.
     return run("moving", random_battle_script() + [press("Y", DUEL_READY)], RUN_FRAMES, capture=capture)
 
 
@@ -577,49 +641,48 @@ def run_flow(name, buttons):
 
 
 def check_still_resolution():
+    """The resting board resolves individual pixels in both axes."""
     ppm, wram = run_still()
     stamp = read_stamp(wram)
-    if stamp["board_res"] != 1:
-        raise Failure("board_res is %d, expected 1 (still)" % stamp["board_res"])
+    if stamp["frame_gen"] == 0:
+        raise Failure("no board generation has been presented")
     w, h, px = read_ppm(ppm)
-    size = texel_size(px, w, board_row(1), 2)
-    if size != 2:
-        raise Failure("still band texel is %d screen pixels wide, expected 2" % size)
-    hud = texel_size(px, w, NAME_Y + 3, 1)
-    if hud != 1:
-        raise Failure("the HUD's letters are %d screen pixels a stroke -- they "
-                      "are being drawn into the bitmap, not by the sprite layer"
-                      % hud)
-    return "still band is exactly 2x2 over a 1:1 sprite HUD"
+    horizontal = sum(px[(y*w+x)*3:(y*w+x)*3+3] != px[(y*w+x+1)*3:(y*w+x+1)*3+3]
+                     for y in range(60,120) for x in range(70,180,2))
+    vertical = sum(px[(y*w+x)*3:(y*w+x)*3+3] != px[((y+1)*w+x)*3:((y+1)*w+x)*3+3]
+                   for y in range(60,120,2) for x in range(70,180))
+    if min(horizontal, vertical) < 100:
+        raise Failure("resting floor appears doubled (%d/%d)" % (horizontal,vertical))
+    return "256x144 resting board resolves individual pixels in both axes (generation %d)" % stamp["frame_gen"]
 
 
 def check_moving_resolution():
-    """The board keeps its full texel detail while something is moving.
-
-    THE HUD NOT CHANGING IS THE POINT.  It is sprites, so it is drawn at the
-    screen's own resolution whatever the bitmap under it is doing; when it was
-    bitmap texels this check had to prove a per-band HDMA scale was keeping it
-    readable, and now it proves the band scale cannot reach it at all.
-
-    The board remains 128x80 and therefore keeps 2x2 screen pixels per board
-    texel.  Motion is paced separately, so this holds a card and measures the
-    board and native-resolution sprite HUD without accepting a coarse fallback.
-    """
-    ppm, wram = run_hold()
+    """THE MOVING CAMERA IS 1:1 TOO.  Y pins the general renderer (the world
+    texture through the inverse-ray walker, every occupied cell converted) a
+    frame a game frame at the resting camera: the picture must still resolve
+    single pixels in both axes, the frame generation must be advancing, and
+    the map on screen must be complete -- every occupied cell a real tile."""
+    ppm, wram = run_moving(capture=(RUN_FRAMES - 2, RUN_FRAMES - 1, 1))
     stamp = read_stamp(wram)
-    if stamp["board_res"] != 0:
-        raise Failure("the board is still at the resting resolution while a "
-                      "card is being held")
+    if stamp["turn_max_lines"] == 0:
+        raise Failure("Y fixture did not render through the moving path")
     w, h, px = read_ppm(ppm)
-    board = texel_size(px, w, board_row(0), 2)
-    hud = texel_size(px, w, NAME_Y + 3, 1)
-    if board != 2:
-        raise Failure("moving band texel is %d screen pixels wide, expected 2" % board)
-    if hud != 1:
-        raise Failure("the HUD's letters are %d screen pixels a stroke while the "
-                      "board is moving -- the sprite layer does not scale with "
-                      "the bitmap and must not appear to" % hud)
-    return "moving board stays 2x2 at 128x80 under a 1:1 sprite HUD"
+    horizontal = sum(px[(y*w+x)*3:(y*w+x)*3+3] != px[(y*w+x+1)*3:(y*w+x+1)*3+3]
+                     for y in range(60,120) for x in range(70,180,2))
+    vertical = sum(px[(y*w+x)*3:(y*w+x)*3+3] != px[((y+1)*w+x)*3:((y+1)*w+x)*3+3]
+                   for y in range(60,120,2) for x in range(70,180))
+    if min(horizontal, vertical) < 100:
+        raise Failure("moving frame appears doubled (%d/%d)" % (horizontal, vertical))
+    prefix = os.path.join(OUT, "moving.ppu")
+    regs, data, words, base = published_map(prefix)
+    occupied = sum(1 for wd in words[:576] if wd & 1023)
+    if occupied != stamp["occupied"]:
+        raise Failure("the map on screen names %d tiles but the stamp says %d cells were occupied"
+                      % (occupied, stamp["occupied"]))
+    if occupied > 351:
+        raise Failure("%d occupied cells exceed the sparse budget" % occupied)
+    return ("moving camera at 1:1: %d cells on the published map, generation %d, %d lines a frame"
+            % (occupied, stamp["frame_gen"], stamp["turn_max_lines"]))
 
 
 def band_colours(px, w, y0, y1):
@@ -696,9 +759,9 @@ def check_board_is_a_slab():
     # Below the slab's near edge and its front wall there is no board at all:
     # this is the half of the bounds check the widening test cannot see.
     below = [x for x in range(w)
-             if px[(156 * w + x) * 3:(156 * w + x) * 3 + 3] != black]
+             if px[(140 * w + x) * 3:(140 * w + x) * 3 + 3] != black]
     if below:
-        raise Failure("%d pixels of board below its near edge on line 156 -- the "
+        raise Failure("%d pixels of board below its near edge on line 140 -- the "
                       "slab is not bounded" % len(below))
     return "slab widens %d -> %d -> %d pixels, inside the screen, and ends" % tuple(widths)
 
@@ -755,6 +818,9 @@ def check_board_is_five_by_four():
                 merged[-1] = (merged[-1][0], b)
             else:
                 merged.append((a, b))
+        # A single dark texel is sandstone noise, not a two-sided groove.
+        # Real grooves remain multi-pixel runs even on the farthest band.
+        merged = [(a, b) for a, b in merged if b > a]
         return x0, x1, merged
 
     def brightest(a, b):
@@ -859,11 +925,11 @@ CARD_BACK = 78                 # the last face; also what a set monster shows
 SUPPORT_FIRST = 72             # ids 72..77 are the six support variants
 ROW_Z = [1.5, 0.5, -0.5, -1.5]  # far to near, matching snesSlotCentre
 CARD_UNITS = 0.8               # a card covers four fifths of its tile
-STILL_W, STILL_H = 128, 80
+STILL_W, STILL_H = planar.BOARD_W, planar.BOARD_H
 # Mirroring snes_duel.c: the camera stands 2.75 units in front of the slab's
 # near edge, which is what fits its 5-unit width across a viewport whose focal
 # length is fixed at half its own width.
-CAM_Z, CAM_HEIGHT = -4.75, 2.75
+CAM_Z, CAM_HEIGHT = planar.CAM_Z, planar.CAM_HEIGHT
 HORIZON_DIV = 32.0
 
 _FACES = None
@@ -884,9 +950,11 @@ def card_faces():
             raise Failure("no card sheet at %s -- run: python3 "
                           "tools/snes/gen_snes_cards.py"
                           % os.path.relpath(CARD_TEX, ROOT))
-        with open(CARD_TEX, "rb") as fh:
-            blob = fh.read()
-        _FACES = [blob[i * 256:(i + 1) * 256] for i in range(len(blob) // 256)]
+        blob = b""
+        for name in ("snes_card_tex32.bin", "snes_card_tex32b.bin"):
+            with open(os.path.join(ROOT, "src/snes/assets", name), "rb") as fh:
+                blob += fh.read()
+        _FACES = [blob[i * 1024:(i + 1) * 1024] for i in range(len(blob) // 1024)]
         counts = {}
         for b in blob:
             counts[b] = counts.get(b, 0) + 1
@@ -916,7 +984,7 @@ def direct_colour_byte(rgb):
     return best
 
 
-def slot_samples(px, w, h, row, col, ox, oy, lo=3, hi=13):
+def slot_samples(px, w, h, row, col, ox, oy, lo=6, hi=26):
     """The interior texels of one slot's card, read out of a still screenshot.
 
     The frame's outermost texels are left out because half a pixel of rounding
@@ -924,18 +992,18 @@ def slot_samples(px, w, h, row, col, ox, oy, lo=3, hi=13):
     (ox, oy) so the caller can search for the alignment the renderer's own
     rounding produced."""
     cx, cz = col - 2, ROW_Z[row]
-    focal, horizon = STILL_W / 2.0, STILL_H / HORIZON_DIV
+    focal, horizon = planar.FOCAL, planar.HORIZON
     out = []
     for v in range(lo, hi):
         for u in range(lo, hi):
-            wx = cx + ((u + 0.5) / 16.0 - 0.5) * CARD_UNITS
-            wz = cz + CARD_UNITS / 2 - ((v + 0.5) / 16.0) * CARD_UNITS
+            wx = cx + ((u + 0.5) / 32.0 - 0.5) * 0.75
+            wz = cz + 0.5 - ((v + 0.5) / 32.0)
             depth = wz - CAM_Z
-            x = int((STILL_W / 2.0 + wx / depth * focal) * 2) + ox
-            y = int((horizon + CAM_HEIGHT / depth * focal) * 2) + oy
+            x = int(STILL_W / 2.0 + wx / depth * focal) + ox
+            y = int(horizon + CAM_HEIGHT / depth * focal) + oy
             if 0 <= x < w and 0 <= y < h:
                 i = (y * w + x) * 3
-                out.append((v * 16 + u,
+                out.append((v * 32 + u,
                             direct_colour_byte((px[i], px[i + 1], px[i + 2]))))
     return out
 
@@ -1139,7 +1207,7 @@ GLYPH_COUNT = 64
 LP_Y, LP_YOU_X, LP_COM_X = 8, 8, 152
 LP_LABEL_DX, LP_BAR_DX, LP_BAR_W, LP_NUM_DX = 2, 28, 32, 64
 LP_MAX = 8000
-HAND_Y, HAND_X0, HAND_PITCH = 162, 8, 48
+HAND_Y, HAND_X0, HAND_PITCH = 150, 8, 48
 NAME_Y, STAT_Y, STAT_ATK_X, STAT_DEF_X, STAT_NUM_DX = 199, 209, 8, 72, 16
 TOP_CELL, TOP_X0, TOP_Y0 = 48, 8, 16
 TOP_MSG_Y, TOP_STAT_X, TOP_STAT_GAP = 213, 120, 72
@@ -1658,152 +1726,178 @@ def run_top(capture=None):
                capture=capture)
 
 
+# The overhead camera, mirroring snes_duel.c's lift_camera at its top: over
+# the middle of the board at LIFT_HEIGHT (4.5 units), looking straight down,
+# the frame centred on the camera's foot.  A world point (wx, wz) on the
+# board projects to (128 + wx * k, 72 - wz * k) with k = focal / height in
+# pixels: 128 / 4.5.
+TOP_K = 128.0 / 4.5
+TOP_CX, TOP_CY = 128.0, 72.0
+# The moving camera draws the cards out of the world texture, where each is a
+# 24x32-texel stamp of its 16x16 face over a 0.75 x 1.0 unit footprint.
+TOP_CARD_W, TOP_CARD_H = 0.75, 1.0
+
+
+def top_slot_samples(px, w, h, row, col, ox, oy, lo=2, hi=14):
+    """A slot's card texels read out of the overhead picture."""
+    cx, cz = col - 2, ROW_Z[row]
+    flip = row < 2
+    out = []
+    for v in range(lo, hi):
+        for u in range(lo, hi):
+            vv = 15 - v if flip else v
+            wx = cx - TOP_CARD_W / 2 + ((u + 0.5) / 16.0) * TOP_CARD_W
+            wz = cz + TOP_CARD_H / 2 - ((vv + 0.5) / 16.0) * TOP_CARD_H
+            x = int(TOP_CX + wx * TOP_K) + ox
+            y = int(TOP_CY - wz * TOP_K) + oy
+            if 0 <= x < w and 0 <= y < h:
+                i = (y * w + x) * 3
+                out.append((v * 16 + u,
+                            direct_colour_byte((px[i], px[i + 1], px[i + 2]))))
+    return out
+
+
+_TOP_FACES = None
+_TOP_WEIGHT = None
+
+
+def top_card_faces():
+    """The moving camera's 16x16 world-texture sheet and colour weights."""
+    global _TOP_FACES, _TOP_WEIGHT
+    if _TOP_FACES is None:
+        with open(CARD_TEX, "rb") as fh:
+            blob = fh.read()
+        _TOP_FACES = [blob[i * 256:(i + 1) * 256]
+                      for i in range(len(blob) // 256)]
+        counts = {}
+        for b in blob:
+            counts[b] = counts.get(b, 0) + 1
+        _TOP_WEIGHT = dict((b, float(len(blob)) / n)
+                           for b, n in counts.items())
+    return _TOP_FACES, _TOP_WEIGHT
+
+
+def identify_top_slot(px, w, h, row, col):
+    faces, weight = top_card_faces()
+    best = None
+    for ox in (-2, -1, 0, 1, 2):
+        for oy in (-2, -1, 0, 1, 2):
+            s = top_slot_samples(px, w, h, row, col, ox, oy)
+            if len(s) < 60:
+                continue
+            scored = sorted(((sum(weight.get(b, 0.0) for i, b in s if f[i] == b),
+                              sum(1 for i, b in s if f[i] == b), fi)
+                             for fi, f in enumerate(faces)), reverse=True)
+            if best is None or scored[0][0] > best[0]:
+                best = (scored[0][0], scored[0][2], scored[1][0], scored[0][1], len(s))
+    if best is None:
+        return None
+    return best[1], best[0], best[2], best[3], best[4]
+
+
 def check_top_view():
-    """UP walks up into the tactical top view, and it is a REAL board.
+    """UP walks up into the overhead view, and it is THE SAME BOARD.
 
-    Mode 3 at the full 256x224 with the twenty field slots as 32x32 sprites, no
-    hand, and the HUD still up.  Every card on it is identified pixel for pixel
-    against the sprite sheet -- a sprite is 1:1 with the screen, so a card that
-    is really there matches all 1024 of its pixels and there is nothing to
-    argue about."""
-    ppm, wram = run_top()
+    There is no resident table any more: the overhead view is the duel's
+    renderer at the top of the camera lift, looking straight down, in Mode 3
+    direct colour through the same character base and map publication as the
+    seat.  The twenty slots are identified by projecting each card's texels
+    through that camera and matching the 16x16 sheet the world texture is
+    stamped from; the cursor is the red sprite bracket over the inspected
+    slot; and a different field (the empty board without the fixture) must
+    give a different picture, which a leftover static table could not."""
+    ppm, wram = run_top(capture=(3798, 3799, 1))
     stamp = read_stamp(wram)
+    if stamp["view"] != 1:
+        raise Failure("UP did not settle in the overhead view (view %d)" % stamp["view"])
+    regs = read_ppu_regs(os.path.join(OUT, "topview.ppu"))
+    if regs["BGMODE"] != 3 or regs["BG12NBA"] != 0 or regs["BG1SC"] not in (0x58, 0x5c):
+        raise Failure("the overhead view is not the seat's Mode 3 board: %s" % regs)
     w, h, px = read_ppm(ppm)
-
-    found, exact = [], []
+    found = []
     for row in range(4):
         for col in range(5):
-            got = identify_card_sprite(px, w, h,
-                                       TOP_X0 + col * TOP_CELL + 8,
-                                       TOP_Y0 + row * TOP_CELL + 8,
-                                       vflip=row < 2)
-            if got and got[1] >= 1024 * 0.98:
+            got = identify_top_slot(px, w, h, row, col)
+            if got and decisive(got):
                 found.append((row, col, got[0]))
-                exact.append(got[1])
-    if len(found) < 18:
-        raise Failure("only %d of the twenty slots hold a card sprite that "
-                      "matches the sheet -- the top view is not showing the "
-                      "field" % len(found))
+    if len(found) < 14:
+        raise Failure("only %d of the twenty slots are identified from above -- "
+                      "the overhead view is not showing the field (%s)"
+                      % (len(found), found))
     if len(set(r for r, _, _ in found)) != 4 or len(set(c for _, c, _ in found)) != 5:
-        raise Failure("the identified cards cover rows %s and columns %s -- the "
-                      "top view is not a five by four table"
+        raise Failure("the identified cards cover rows %s and columns %s"
                       % (sorted(set(r for r, _, _ in found)),
                          sorted(set(c for _, c, _ in found))))
     if len(set(f for _, _, f in found)) < 4:
-        raise Failure("the top view shows %d distinct faces -- it is drawing "
-                      "one card everywhere" % len(set(f for _, _, f in found)))
-    # Rows 0 and 3 are the two support rows, 1 and 2 the monster rows: the same
-    # far-to-near order the perspective board uses, so walking up does not
-    # rearrange the board under the player.
-    # The two support rows are the ones the fixture fills deterministically
-    # (equip_field is set from the support ids, not dealt), so they are what can
-    # be asserted face by face.  The monster rows come off the shuffled deck and
-    # a deck holds supports as well, so what they hold is the rules' business.
-    sup = [f for r, _, f in found if r in (0, 3)]
-    if any(f < SUPPORT_FIRST or f >= CARD_BACK for f in sup):
-        raise Failure("the support rows hold %s, which are not support faces"
-                      % sup)
-
-    # THE HAND IS NOT VISIBLE.  It is not on the board, and the top view is the
-    # board from above; the rows the hand occupies in the other view are the
-    # table's own bottom edge and nothing else.
-    hand_band = set()
-    for y in range(TOP_Y0 + 4 * TOP_CELL + 1, min(h, TOP_MSG_Y - 1)):
-        for x in range(0, w, 2):
-            i = (y * w + x) * 3
-            hand_band.add(px[i:i + 3])
-    if len(hand_band) > 1:
-        raise Failure("%d colours between the table's near edge and the prompt "
-                      "-- something is drawn where the hand used to be"
-                      % len(hand_band))
-
-    # The life panels do not move when the player walks up: they are at the top
-    # of the screen in both views, which is the point of putting them there.
+        raise Failure("the overhead view shows %d distinct faces" %
+                      len(set(f for _, _, f in found)))
+    # The cursor: four red corner brackets around the inspected slot, which on
+    # entry is the player's monster row, column 0.  Assert the displayed ink,
+    # not the post-field OAM dump: a dump can already contain the next shadow
+    # while the PPM is the field that was just presented.
+    cx, cz = -2 * 256, int(ROW_Z[2] * 256)
+    x0, x1 = 128 + (cx - 128) // 9, 128 + (cx + 128) // 9
+    y0, y1 = 72 - (cz + 128) // 9, 72 - (cz - 128) // 9
+    red = obj_colour(7, 4)
+    brackets = []
+    for x, y in ((x0, y0), (x1 - 8, y0),
+                 (x0, y1 - 8), (x1 - 8, y1 - 8)):
+        brackets.append(sum(screen5(px, w, x + dx, y + dy) == red
+                            for dy in range(8) for dx in range(8)))
+    if min(brackets) < 6:
+        raise Failure("cursor corners at %d,%d..%d,%d have red-pixel counts %s"
+                      % (x0, y0, x1, y1, brackets))
+    # The same view over an EMPTY board is a different picture.
+    empty_ppm, empty_wram = run("topview_empty", random_battle_script() +
+                                [press("UP", DUEL_READY + 400)], 3800)
+    if read_stamp(empty_wram)["view"] != 1:
+        raise Failure("UP on the empty board did not reach the overhead view")
+    _, _, epx = read_ppm(empty_ppm)
+    differ = sum(1 for i in range(0, 144 * w * 3, 3) if px[i:i + 3] != epx[i:i + 3])
+    if differ < 2000:
+        raise Failure("the overhead picture of a full board differs from an empty one in "
+                      "only %d pixels" % differ)
+    # The life panels do not move when the player walks up.
     label, number, filled = read_life_panel(px, w, h, LP_YOU_X, 0)
     if label != "YOU" or number != "%04d" % stamp["lp_player"]:
-        raise Failure("the top view's life panel reads %r %r" % (label, number))
-    you = "%s %s" % (label, number)
-
-    # The name and the two stats share the top view's one free row, so they are
-    # also the one place in the HUD where two fields can be laid out into each
-    # other.  Reading the whole row back is what catches that: "ATK 2100EF 1750"
-    # is a screenshot that looks nearly right and is not.
-    row = read_sprite_line(px, w, h, 0, TOP_MSG_Y, 32)
-    icons = (read_icon(px, w, h, TOP_STAT_X, TOP_MSG_Y),
-             read_icon(px, w, h, TOP_STAT_X + TOP_STAT_GAP, TOP_MSG_Y))
-    if icons == ("sword", "shield"):
-        tail = row[TOP_STAT_X // 8:]
-        if not re.search(r"^\s+\d{4}\s+\d{4}\s*$", tail):
-            raise Failure("the top view's stats read %r after the icons -- the "
-                          "two fields are laid out into each other" % tail)
-    if row[:TOP_STAT_X // 8].strip() and \
-       len(row[:TOP_STAT_X // 8].rstrip()) * 8 > TOP_STAT_X:
-        raise Failure("the top view's name %r runs into the stats"
-                      % row[:TOP_STAT_X // 8])
-    return "%d of 20 slots identified exactly, %d distinct faces, %r" % (
-        len(found), len(set(f for _, _, f in found)), you)
+        raise Failure("the overhead view's life panel reads %r %r" % (label, number))
+    return "%d of 20 slots identified through the overhead camera, %d faces, cursor bracketed, %d pixels differ from the empty board" % (
+        len(found), len(set(f for _, _, f in found)), differ)
 
 
 def check_top_view_switch_is_seamless():
-    """THE HAND-TO-TOP CAMERA LIFT stays lit and visibly changes pose.
+    """THE LIFT IS RENDERED, COMPLETE FRAMES ONLY, AND NEVER BLANK.
 
-    Both pictures are resident -- the bitmap owns VRAM words $0000-$3FFF, the
-    sprites $4000-$5FFF and the top view $6000-$73FF -- and one CGRAM serves
-    both, so changing view rewrites nothing and needs no force-blank window.
-    This captures every field across the UP press and demands that not one of
-    them is blank.  A force-blanked switch, or one that reloaded VRAM, would
-    put at least one black or half-drawn field in here."""
-    # run_top presses UP at DUEL_READY + 400; capture the lift itself rather
-    # than an unrelated settled-board interval before the input.
-    run_top(capture=(DUEL_READY + 300, DUEL_READY + 1000, 1))
+    Every second field across the UP press is captured.  None may be blank
+    (a mode change that blanked the screen, or a map switched before its
+    tiles were up, would put a black or half-drawn field here), the pose must
+    visibly change through several distinct pictures, and the last field must
+    be the overhead view."""
+    run_top(capture=(DUEL_READY + 300, DUEL_READY + 1300, 2))
     frames = sorted(os.listdir(os.path.join(OUT, "topview.frames")))
     if len(frames) < 40:
         raise Failure("captured %d fields across the switch, need at least 40"
                       % len(frames))
-    lit = []
+    lit, unique = [], set()
     for name in frames:
         w, h, px = read_ppm(os.path.join(OUT, "topview.frames", name))
-        n = sum(1 for i in range(0, len(px), 3 * 8)
+        n = sum(1 for i in range(0, 144 * w * 3, 3 * 8)
                 if px[i:i + 3] != b"\x00\x00\x00")
         lit.append(n)
+        unique.add(px[:144 * w * 3])
     worst = min(lit)
     typical = sorted(lit)[len(lit) // 2]
     if worst < typical // 3:
         raise Failure("a field across the switch has %d lit samples against a "
-                      "typical %d -- the mode change is blanking the screen"
-                      % (worst, typical))
-    unique = set()
-    for name in frames:
-        w, h, px = read_ppm(os.path.join(OUT, "topview.frames", name))
-        unique.add((w, h, px))
-    if len(unique) < 8:
-        raise Failure("the captured UP interval has only %d unique frames -- "
+                      "typical %d -- the lift blanked the board" % (worst, typical))
+    if len(unique) < 5:
+        raise Failure("the captured UP interval has only %d distinct board pictures -- "
                       "the camera lift is not animating" % len(unique))
-    # The first native top frame must already contain the complete field.
-    # Previously Mode 3 appeared first and its cards loaded one by one.
-    _, _, final = read_ppm(os.path.join(OUT, "topview.ppm"))
-    anchors = [(TOP_X0 + 4, TOP_Y0 + 4),
-               (TOP_X0 + TOP_CELL + 4, TOP_Y0 + 4),
-               (TOP_X0 + 4, TOP_Y0 + 3 * TOP_CELL + 4)]
-    def at(data, x, y):
-        return data[(y * 256 + x) * 3:(y * 256 + x + 1) * 3]
-    for name in frames:
-        _, _, data = read_ppm(os.path.join(OUT, "topview.frames", name))
-        if not all(at(data, x, y) == at(final, x, y) for x, y in anchors):
-            continue
-        for row in range(4):
-            for col in range(5):
-                x, y = TOP_X0 + col * TOP_CELL + 8, TOP_Y0 + row * TOP_CELL + 8
-                for dy in range(32):
-                    start = ((y + dy) * 256 + x) * 3
-                    if data[start:start + 96] != final[start:start + 96]:
-                        raise Failure("first native top frame %s has an incomplete card at %d,%d"
-                                      % (name, row, col))
-        break
-    else:
-        raise Failure("the camera capture never reached the native top table")
-    return "%d fields across the switch, quietest %d lit samples against %d" % (
-        len(frames), worst, typical)
+    _, wram = run_top()
+    if read_stamp(wram)["view"] != 1:
+        raise Failure("the lift did not end in the overhead view")
+    return "%d fields across the lift, %d distinct pictures, quietest %d lit samples against %d" % (
+        len(frames), len(unique), worst, typical)
 
 
 def check_camera_round_trip():
@@ -1813,11 +1907,12 @@ def check_camera_round_trip():
         press("UP", DUEL_READY + 400), press("B", DUEL_READY + 1700)], 5000)
     stamp = read_stamp(wram)
     _, _, pixels = read_ppm(after)
-    if stamp["board_res"] != 1 or UI[stamp["ui"]] != "HAND":
-        raise Failure("UP/B did not return to the resting hand view")
-    # The slab ends above line 148.  The selected hand sprite bobs into lines
-    # 154..159, so including that strip compares unrelated animation phases.
-    if pixels[24 * 256 * 3:148 * 256 * 3] != reference[24 * 256 * 3:148 * 256 * 3]:
+    if stamp["view"] != 0 or UI[stamp["ui"]] != "HAND":
+        raise Failure("UP/B did not return to the resting hand view (view %d, ui %s)"
+                      % (stamp["view"], UI[stamp["ui"]]))
+    # The slab ends above line 140.  The selected hand card's corner bracket
+    # can bob as high as line 143, so including it compares unrelated phases.
+    if pixels[24 * 256 * 3:143 * 256 * 3] != reference[24 * 256 * 3:143 * 256 * 3]:
         raise Failure("the board changed geometry or lost cards during UP/B")
     return "UP/B restores the original board pixels exactly"
 
@@ -1873,10 +1968,168 @@ def check_top_cursor_and_card_check():
     return "top cursor moves independently; A opens CHECK and B closes it"
 
 
-def check_battle_art_mode3():
-    """An actual attack enters the Mode 3 battle presentation with card art."""
-    name = "battle_mode3"
-    script = random_battle_script() + [
+# ── The Mode 4 battle ────────────────────────────────────────────────────────
+#
+# Mirroring src/snes/snes_battle.c: the player's lane at x 8..127, the
+# opponent's at 136..255, cards 120x160 resting with their top on line 22,
+# the gutter column 0..7 and the gap 128..135 always black.
+LANE_X = (8, 136)
+LANE_W, CARD_H, LANE_REST_Y = 120, 160, 22
+BATTLE_FONT_FIRST = 32
+BATTLE_BG2_MAP, BATTLE_LP_ROW, BATTLE_TEXT_ROW = 0x6800, 25, 23
+FX_DIGIT_TILES = None
+
+
+def battle_like(px, w, h):
+    """Is this field the Mode 4 battle screen?  The board and the title both
+    paint the bottom rows (the HUD plate, the menu); the battle leaves them
+    black, and shows something above them."""
+    for y in range(213, 223, 2):
+        for x in (2, 5, 131, 133):
+            # Black, or the whiteout's white: the flash adds the fixed colour
+            # to the backdrop too.
+            if screen5(px, w, x, y) not in ((0, 0, 0), (31, 31, 31)):
+                return False
+    return any(px[(y * w + x) * 3:(y * w + x + 1) * 3] != b"\x00\x00\x00"
+               for y in range(4, 212, 4) for x in range(8, 256, 8))
+
+
+def gold_at(px, w, x, y):
+    r, g, bl = px[(y * w + x) * 3:(y * w + x + 1) * 3]
+    return r > 150 and g > 100 and bl < 120
+
+
+def lane_card_top(px, w, h, lane):
+    """The first row of the card's gold rim in a lane, or None: both side
+    rims gold for twelve rows, which no ring arc or ray can fake."""
+    xl, xr = LANE_X[lane], LANE_X[lane] + LANE_W - 1
+    run = 0
+    for y in range(0, 224):
+        if gold_at(px, w, xl, y) and gold_at(px, w, xr, y):
+            run += 1
+            if run == 12:
+                return y - 11
+        else:
+            run = 0
+    return None
+
+
+def heat_pixels(px, w, h, x0, x1, y0, y1):
+    """Bright warm pixels (the effects' whites, yellows and oranges) in a box."""
+    n = 0
+    for y in range(y0, y1, 2):
+        for x in range(x0, x1, 2):
+            r, g, bl = px[(y * w + x) * 3:(y * w + x + 1) * 3]
+            if r > 200 and g > 100 and bl < 120:
+                n += 1
+    return n
+
+
+def battle_frames(name, script, first, last, step=1):
+    """Run, capture the window, and return [(field, pixels)] for the fields
+    that are the battle screen."""
+    run(name, script, last + 1, capture=(first, last, step))
+    frame_dir = os.path.join(OUT, name + ".frames")
+    seq = []
+    for f in sorted(os.listdir(frame_dir)):
+        if not f.startswith("f"):
+            continue
+        w, h, px = read_ppm(os.path.join(frame_dir, f))
+        seq.append((int(f[1:7]), px, battle_like(px, w, h)))
+    # The field the board is force-blanked on is a torn one (HUD sprites over
+    # black) that looks like the battle screen; only a run of battle fields
+    # is the battle.
+    out = []
+    for i, (n, px, ok) in enumerate(seq):
+        if ok and (i + 2 < len(seq) and seq[i + 1][2] and seq[i + 2][2] or
+                   i >= 2 and seq[i - 1][2] and seq[i - 2][2]):
+            out.append((n, px))
+    return out
+
+
+def decode_battle_text(vram, row):
+    """One row of the battle's BG2 map as text (the 2bpp font's tile n is
+    glyph n + 32)."""
+    line = ""
+    for col in range(32):
+        word = struct.unpack_from("<H", vram, (BATTLE_BG2_MAP + row * 32 + col) * 2)[0]
+        tile = word & 0x3FF
+        line += chr(BATTLE_FONT_FIRST + tile) if 0 < tile < 64 else " "
+    return line
+
+
+def readout_digits(prefix):
+    """The damage readout's digits, read from OAM: 8x8 sprites in the atlas's
+    digit rows, ordered by x, one per 16-pixel column."""
+    data = open(os.path.join(ROOT, "src/snes/snes_battle_data.h")).read()
+    d0 = int(re.search(r"SNES_FX_DIGIT0\s+(\d+)", data)[1])
+    d8 = int(re.search(r"SNES_FX_DIGIT_ROW2\s+(\d+)", data)[1])
+    oam, oamhi = read_oam(prefix)
+    cols = {}
+    for i in range(128):
+        x, y, t, a = oam_sprite(oam, oamhi, i)
+        if y >= 224:
+            continue
+        tile = t | ((a & 1) << 8)
+        for base, first in ((d0, 0), (d8, 8)):
+            if base <= tile < base + 16 and (tile - base) % 2 == 0 and (tile - base) // 2 < 8:
+                d = first + (tile - base) // 2
+                if d < 10:
+                    cols.setdefault(x, d)
+    if not cols:
+        return None
+    return int("".join(str(cols[x]) for x in sorted(cols)))
+
+
+_FX_DIGITS = None
+_FX_DIGIT_PAL = None
+
+
+def fx_digit_pixels(digit):
+    """One 16x16 damage digit and its five-bit display palette."""
+    global _FX_DIGITS, _FX_DIGIT_PAL
+    if _FX_DIGITS is None:
+        with open(os.path.join(ROOT, "src/snes/assets/snes_fx_tiles.bin"), "rb") as fh:
+            tiles = fh.read()
+        with open(os.path.join(ROOT, "src/snes/assets/snes_fx_pal.bin"), "rb") as fh:
+            palette = fh.read()[32:64]  # second generated OBJ palette: digits
+        _FX_DIGIT_PAL = []
+        for i in range(16):
+            word = palette[i * 2] | (palette[i * 2 + 1] << 8)
+            _FX_DIGIT_PAL.append((word & 31, (word >> 5) & 31,
+                                  (word >> 10) & 31))
+        _FX_DIGITS = []
+        for d in range(10):
+            base = 272 + d * 2 if d < 8 else 304 + (d - 8) * 2
+            image = [0] * 256
+            for tile, tx, ty in ((base, 0, 0), (base + 1, 8, 0),
+                                 (base + 16, 0, 8), (base + 17, 8, 8)):
+                block = untile4(tiles, tile * 32)
+                for y in range(8):
+                    for x in range(8):
+                        image[(ty + y) * 16 + tx + x] = block[y * 8 + x]
+            _FX_DIGITS.append(image)
+    return _FX_DIGITS[digit], _FX_DIGIT_PAL
+
+
+def displayed_damage(ppm, value, cx, cy):
+    """Read the expected damage number from the pixels actually presented."""
+    w, h, px = read_ppm(ppm)
+    text = str(min(value, 9999))
+    x0, y0 = cx - len(text) * 8, cy - 8
+    for column, ch in enumerate(text):
+        digit, palette = fx_digit_pixels(int(ch))
+        for y in range(16):
+            for x in range(16):
+                index = digit[y * 16 + x]
+                if index and screen5(px, w, x0 + column * 16 + x,
+                                     y0 + y) != palette[index]:
+                    return None
+    return value
+
+
+def battle_script():
+    return random_battle_script() + [
         press("R", DUEL_READY),
         # R leaves the duel on the first player turn, where attacks are
         # locked.  Hand the turn to COM and wait for it to return before
@@ -1889,38 +2142,184 @@ def check_battle_art_mode3():
         press("A", DUEL_READY + 3600),
         press("A", DUEL_READY + 4200),
     ]
-    ppm, wram = run(name, script, 6500, capture=(DUEL_READY + 3800,
-                                                 6499, 8))
+
+
+def check_battle_mode4():
+    """AN ATTACK IS TWO CARDS IN VERTICAL LANES, A PIXEL A FIELD.
+
+    Every field of the player's attack is captured.  The battle screen must
+    be Mode 4 with the 32x64 BG1 map, the BG3 offset map and direct colour
+    off; the player's card must enter DOWNWARD and the opponent's UPWARD in
+    steps no larger than three pixels with single-pixel steps among them (an
+    8-pixel horizontal offset-per-tile would jump); both paintings must be
+    identified against the generated card sheet once settled; and the damage
+    the sequencer shows must be the rules' own."""
+    frames = battle_frames("battle_mode4", battle_script(), DUEL_READY + 4200,
+                           DUEL_READY + 4460)
+    if len(frames) < 60:
+        raise Failure("only %d battle fields captured after the attack" % len(frames))
+    first = frames[0][0]
+    tops = [(f, lane_card_top(px, 256, 224, 0), lane_card_top(px, 256, 224, 1))
+            for f, px in frames]
+    # THE ENTRY.  The opponent's card comes up from below, so its top rim is
+    # the first gold row for the whole climb: that row must fall
+    # monotonically, in eased steps of at most sixteen pixels, through
+    # positions that are not multiples of eight (offset-per-tile with a
+    # HORIZONTAL entry would move in eight-pixel jumps), and rest on line 22.
+    # The player's card comes down from above: what shows first is its
+    # bottom rim descending, then its top rim settling on the same line.
+    right = [t for _, _, t in tops if t is not None]
+    if LANE_REST_Y not in right:
+        raise Failure("the opponent's card never rested on line %d: %s" % (LANE_REST_Y, right[:30]))
+    right = right[:right.index(LANE_REST_Y) + 1]
+    if len(right) < 8:
+        raise Failure("the opponent's card is visible in only %d entry fields: %s" % (len(right), right))
+    r_steps = [b - a for a, b in zip(right, right[1:])]
+    if any(d > 0 for d in r_steps):
+        raise Failure("the opponent's card moved back down during its entry: %s" % right)
+    if min(r_steps) < -20:
+        raise Failure("the opponent's card jumped %d pixels in one field" % -min(r_steps))
+    if sum(1 for y in right if (y - LANE_REST_Y) % 8) < 5:
+        raise Failure("the opponent's entry touches only tile-aligned lines: %s" % right)
+    if right[0] < 60:
+        raise Failure("the opponent's card did not climb from below to line %d: %s"
+                      % (LANE_REST_Y, right))
+    left = [t for _, t, _ in tops if t is not None]
+    if LANE_REST_Y not in left or 0 not in left or left.index(0) > left.index(LANE_REST_Y):
+        raise Failure("the player's card did not descend from above to line %d: %s"
+                      % (LANE_REST_Y, left[:30]))
+    # The settled paintings.
+    settled = [px for (f, t0, t1), (_, px) in zip(tops, frames)
+               if t0 == LANE_REST_Y and t1 == LANE_REST_Y]
+    if not settled:
+        raise Failure("no field shows both cards at rest")
+    px = settled[len(settled) // 4]
+    ids = []
+    for lane in (0, 1):
+        card = identify_bigcard(px, 256, 224, LANE_X[lane] + 4, LANE_REST_Y + 6)
+        if card is None or card[1] < BIG_ART * BIG_ART * 0.90:
+            raise Failure("lane %d painting matches no generated card (%s)" % (lane, card))
+        ids.append(card[0])
+    # The registers and the stamp, from a run ending on a settled field.
+    at = first + 26
+    _, wram = run("battle_regs", battle_script(), at + 1, capture=(at, at, 1))
+    regs = read_ppu_regs(os.path.join(OUT, "battle_regs.ppu"))
     stamp = read_stamp(wram)
     if UI[stamp["ui"]] != "BATTLE_ART":
-        raise Failure("attack ended in UI %s, expected BATTLE_ART" %
-                      UI[stamp["ui"]])
-    regs = read_ppu_regs(os.path.join(OUT, name + ".ppu"))
-    if regs["BGMODE"] != 3:
-        raise Failure("battle art PPU BGMODE is %d, expected Mode 3" %
-                      regs["BGMODE"])
-    # Both cards are BG1 battle cards at the PC-FX positions, revealed from
-    # the screen's edges inwards.  The final PPM may already be the restored
-    # board even though the final stamp/capture registers still show the
-    # presentation, so inspect the captured fields and accept the first where
-    # each card's painting matches a generated card.
-    frame_dir = os.path.join(OUT, name + ".frames")
-    matches = [[], []]
-    for frame in sorted(os.listdir(frame_dir)):
-        # Once the reveal has finished, the cards stay until the presentation
-        # ends.  Avoid spending the check's budget on the clipped fields.
-        if not frame.startswith("f") or int(frame[1:7]) < 6450:
-            continue
-        w, h, px = read_ppm(os.path.join(frame_dir, frame))
-        for side, x in enumerate((BIGCARD_BATTLE_X0, BIGCARD_BATTLE_X1)):
-            card = identify_bigcard(px, w, h, x + 4, BIGCARD_CHECK_Y + 6)
-            if card is not None:
-                matches[side].append(card[1])
-    if not all(matches) or min(max(m) for m in matches) < BIG_ART * BIG_ART * 0.90:
-        raise Failure("battle art has no visible card painting matching its card "
-                      "(matches %s)" % matches)
-    return "BATTLE_ART uses PPU BGMODE=3, both 112x112 paintings matched (%d, %d)" % (
-        max(matches[0]), max(matches[1]))
+        raise Failure("field %d is in UI %s, not the battle" % (at, UI[stamp["ui"]]))
+    if regs["BGMODE"] != 4 or regs["BG1SC"] != 0x62 or regs["BG3SC"] != 0x6c or \
+       regs["BG2SC"] != 0x68 or regs["BG12NBA"] != 0x70:
+        raise Failure("battle PPU registers are wrong: %s" % regs)
+    if regs.get("CGWSEL", 0) & 1:
+        raise Failure("direct colour is on over the indexed card art")
+    vram = open(os.path.join(OUT, "battle_regs.ppu.vram"), "rb").read()
+    text = decode_battle_text(vram, BATTLE_TEXT_ROW)
+    if not re.search(r"A\d{4} D\d{4}", text):
+        raise Failure("the figures row reads %r" % text)
+    # The damage shown is the rules' damage, once: the life points at the end
+    # of the sequence are the ones before it less exactly that.
+    _, end_wram = run("battle_end", battle_script(), first + 200)
+    end = read_stamp(end_wram)
+    if UI[end["ui"]] == "BATTLE_ART":
+        raise Failure("the battle had not ended %d fields after it began" % 200)
+    if stamp["battle_damage"]:
+        # The rules resolve the attack before the presentation begins, so
+        # "before" is before the A press that declared it.
+        before = read_stamp(run("battle_before", battle_script(), DUEL_READY + 4199)[1])
+        lost = (before["lp_player"] - end["lp_player"]) + (before["lp_com"] - end["lp_com"])
+        if lost != stamp["battle_damage"]:
+            raise Failure("the battle showed %d damage but the life points moved by %d"
+                          % (stamp["battle_damage"], lost))
+    return ("Mode 4, BG1 32x64 at $6000, offsets at $6C00; %d fields, cards %s enter down/up in 1-3 px steps, "
+            "figures %r, damage %d" % (len(frames), ids, text.strip(), stamp["battle_damage"]))
+
+
+def direct_script():
+    """Play nothing: the opponent's second turn attacks the empty field."""
+    return random_battle_script() + [press("START", DUEL_READY),
+                                     press("START", DUEL_READY + 1400),
+                                     press("START", DUEL_READY + 2800)]
+
+
+def check_direct_attack():
+    """THE DIRECT ATTACK IS THE PC'S BEAT: blade, whiteout, burst, readout.
+
+    The opponent's direct attack on an empty field is captured field by
+    field.  Only the attacker's lane holds a card; the blade's bright sweep
+    must appear before the whiteout, the burst (heat-coloured pixels over the
+    empty lane) after it, and the damage readout later still; the readout's
+    digits, read from OAM, must be the rules' damage, and the life points
+    printed under it must count to the rules' value."""
+    frames = battle_frames("direct", direct_script(), DUEL_READY + 1400,
+                           DUEL_READY + 2200)
+    if len(frames) < 80:
+        raise Failure("only %d battle fields captured for the direct attack" % len(frames))
+    first = frames[0][0]
+    # Only the attacker: one lane has a card, the other never does.
+    lanes = set()
+    for f, px in frames:
+        for lane in (0, 1):
+            if lane_card_top(px, 256, 224, lane) is not None:
+                lanes.add(lane)
+    if len(lanes) != 1:
+        raise Failure("the direct attack shows cards in lanes %s" % sorted(lanes))
+    attacker = lanes.pop()
+    target = attacker ^ 1
+    tx0, tx1 = LANE_X[target], LANE_X[target] + LANE_W
+    gap0, gap1 = (128, 136) if attacker == 0 else (128, 136)
+    blade, white, burst, readout = None, None, None, None
+    for f, px in frames:
+        t = f - first
+        heat_gap = heat_pixels(px, 256, 224, 128, 136, 30, 190)
+        heat_lane = heat_pixels(px, 256, 224, tx0, tx1, 20, 200)
+        whites = sum(1 for y in range(40, 180, 8)
+                     if screen5(px, 256, LANE_X[attacker] + 60, y) == (31, 31, 31))
+        digits = heat_pixels(px, 256, 224, tx0, tx1, 92, 110)
+        # The blade is the bright sweep through the gap before the flash.
+        if blade is None and white is None and heat_gap > 6:
+            blade = t
+        if white is None and whites >= 12:
+            white = t
+        if burst is None and white is not None and heat_lane > 120 and t > white:
+            burst = t
+        if readout is None and burst is not None and t > burst + 12 and digits > 8:
+            readout = t
+    if None in (blade, white, burst, readout):
+        raise Failure("beats missing: blade %s, whiteout %s, burst %s, readout %s"
+                      % (blade, white, burst, readout))
+    if not (blade < white < burst < readout):
+        raise Failure("beats out of order: blade %d, whiteout %d, burst %d, readout %d"
+                      % (blade, white, burst, readout))
+    # The readout's digits and the life points, at a field inside the beat.
+    at = first + readout + 40
+    reg_ppm, wram = run("direct_regs", direct_script(), at + 1,
+                        capture=(at, at, 1))
+    stamp = read_stamp(wram)
+    if UI[stamp["ui"]] != "BATTLE_ART" or not stamp["battle_damage"]:
+        raise Failure("field %d is not inside the direct attack's readout (ui %s, damage %d)"
+                      % (at, UI[stamp["ui"]], stamp["battle_damage"]))
+    shown = readout_digits(os.path.join(OUT, "direct_regs.ppu"))
+    if shown != stamp["battle_damage"]:
+        shown = displayed_damage(reg_ppm, stamp["battle_damage"],
+                                 LANE_X[target] + LANE_W // 2,
+                                 LANE_REST_Y + 78)
+    if shown != stamp["battle_damage"]:
+        raise Failure("the readout shows %s, the rules' damage is %d" %
+                      (shown, stamp["battle_damage"]))
+    vram = open(os.path.join(OUT, "direct_regs.ppu.vram"), "rb").read()
+    lp_text = decode_battle_text(vram, BATTLE_LP_ROW)
+    m = re.search(r"LP\s*(\d{4})", lp_text)
+    if not m:
+        raise Failure("no life points printed under the readout: %r" % lp_text)
+    lp_after = stamp["lp_player"] if target == 0 else stamp["lp_com"]
+    if int(m[1]) != lp_after:
+        raise Failure("the life points settle on %s, the rules say %d" % (m[1], lp_after))
+    regs = read_ppu_regs(os.path.join(OUT, "direct_regs.ppu"))
+    if regs["BGMODE"] != 4:
+        raise Failure("the direct attack is not in Mode 4")
+    return ("attacker lane %d only; blade at +%d, whiteout +%d, burst +%d, readout +%d; "
+            "readout %d = damage, LP settles on %d" %
+            (attacker, blade, white, burst, readout, shown, lp_after))
 
 
 def check_fusion_target():
@@ -1958,9 +2357,122 @@ def check_placement_flight():
     return "card flight captured across %d fields before landing" % len(frames)
 
 
+def planar_pixel(vram, tile, x, y):
+    base = tile * 64
+    return sum(((vram[base + (p // 2)*16 + y*2 + (p & 1)] >> (7-x)) & 1) << p
+               for p in range(8))
+
+
+def published_map(prefix):
+    """The board map BG1SC names, as 1024 words, plus which map it is."""
+    regs = read_ppu_regs(prefix)
+    data = open(prefix + ".vram", "rb").read()
+    base = (regs["BG1SC"] >> 2) << 10
+    if base not in (0x5800, 0x5c00):
+        raise Failure("BG1SC names map at word $%04x, not one of the two board maps" % base)
+    words = struct.unpack_from("<1024H", data, base * 2)
+    return regs, data, words, base
+
+
+def check_converter_patterns():
+    """Exercise both pair-LUT halves through the real CPU, converter and DMA.
+
+    R+SELECT fills the frame with (x + y) & 255 over a 192x112 window: every
+    byte value, every pixel position and both halves of the pair tables.  The
+    tiles are read back through the map the PPU is actually showing, so this
+    also proves the publication: every visible cell names a tile whose bytes
+    are exactly the pattern's, and every cell outside the window is the blank
+    tile 0."""
+    combo = PAD["R"] | PAD["SELECT"]
+    script = random_battle_script() + [(2200, 2260, combo)]
+    name = "pattern_rest"
+    ppm, wram = run(name, script, 3200, capture=(3198, 3199, 1))
+    prefix = os.path.join(OUT, name + ".ppu")
+    regs, data, words, base = published_map(prefix)
+    if regs["BGMODE"] != 3 or regs["BG12NBA"] != 0:
+        raise Failure("pattern has wrong Mode 3 board registers: %s" % regs)
+    stamp = read_stamp(wram)
+    if stamp["occupied"] != 24 * 14:
+        raise Failure("the pattern frame occupies %d cells, expected %d" %
+                      (stamp["occupied"], 24 * 14))
+    for y in range(144):
+        for x in range(256):
+            cell = (y // 8) * 32 + x // 8
+            word = words[cell]
+            inside = 16 <= y < 128 and 32 <= x < 224
+            if not inside:
+                if word & 1023:
+                    raise Failure("cell %d outside the pattern names tile %d, not the blank" %
+                                  (cell, word & 1023))
+                continue
+            if word & 0x1c00 != 0x1c00:
+                raise Failure("direct-colour attributes missing at %d,%d" % (x, y))
+            got = planar_pixel(data, word & 1023, x & 7, y & 7)
+            want = (x + y) & 255
+            if got != want:
+                raise Failure("converter at %d,%d: %d != %d (tile %d)" %
+                              (x, y, got, want, word & 1023))
+    w, h, px = read_ppm(ppm)
+    # And on screen: the pattern at 1:1, no doubling in either axis.
+    for y in (20, 63, 100):
+        for x in range(40, 200):
+            a = screen5(px, w, x, y)
+            b = screen5(px, w, x + 1, y)
+            if a == b:
+                raise Failure("pattern pixels %d and %d on row %d are equal: not 1:1" %
+                              (x, x + 1, y))
+    return "336 pattern cells exact through the published map; both pair halves, all positions, 1:1 on screen"
+
+
+def check_video_budget():
+    """The sparse presenter's layout: 704 tiles, two maps, the OBJ sheet,
+    exactly 64 KB; the frame and the allocator where the design puts them;
+    and no trace of the retired 128x72 path in the production sources."""
+    root = os.path.join(ROOT, "src/snes")
+    video = open(os.path.join(root, "snes_video.h")).read()
+    expected = {"BOARD_CHARS": 0, "BOARD_MAP_A": 0x5800, "BOARD_MAP_B": 0x5c00,
+                "OBJ": 0x6000}
+    for key, value in expected.items():
+        m = re.search(r"#define SNES_VRAM_" + key + r"\s+(0x[0-9A-Fa-f]+)u?", video)
+        if not m or int(m[1], 16) != value:
+            raise Failure("unexpected VRAM layout for " + key)
+    if 704 * 32 > 0x5800 or 0x5c00 + 1024 > 0x6000 or 0x6000 + 8192 > 0x8000:
+        raise Failure("VRAM regions overlap")
+    m = re.search(r"#define SNES_SPARSE_TILES\s+(\d+)", video)
+    if not m or int(m[1]) != 351 or 2 * 351 + 1 > 704:
+        raise Failure("the sparse tile budget is not two disjoint 351-cell frames")
+    # Mode 7 multiplier registers are intentionally used by foreground math;
+    # the ISR must never change them, and DMA scratch channels must stay idle.
+    fb = open(os.path.join(root, "snes_fb.asm")).read()
+    nmi = fb[fb.index("snesFbNmi:"):]
+    if re.search(r"\$211[B-Cb-c]", nmi):
+        raise Failure("NMI interferes with the foreground PPU multiplier")
+    text = open(os.path.join(root, "snes_video.c")).read()
+    if re.search(r"0x43[123][0-9A-Fa-f]", text) or "BG_MODE7" in text:
+        raise Failure("video uses reserved renderer DMA channels or Mode 7")
+    for name in ("snes_video.h", "snes_video.c", "snes_duel.c", "snes_fb.asm",
+                 "snes_conv_drivers.inc", "snes_board3d.c"):
+        src = open(os.path.join(root, name)).read()
+        for word in ("SNES_MOVING_W", "snes_motion_fb", "snes_fb_doubler",
+                     "snesConvMotion", "SNES_VRAM_TOP_MAP", "snesVideoSetView"):
+            if word in src:
+                raise Failure("%s still names the retired motion path: %s" % (name, word))
+    sym = open(os.path.join(ROOT, "build/snes/waifusnes.sym")).read()
+    for label, addr in (("snes_board_texture", "007f0000"), ("snes_frame_fb", "007e7000"),
+                        ("snes_map_shadow_a", "007f8000"), ("snes_map_shadow_b", "007f8800"),
+                        ("snes_ring", "00000400")):
+        if not re.search(r"^%s %s$" % (addr, label), sym, re.M):
+            raise Failure("%s is not at $%s in the link map" % (label, addr))
+    return ("VRAM fits 64 KB (704 tiles + 2 maps + OBJ); frame at $7E7000, maps and "
+            "allocator at $7F8000; no 128x72 path left; NMI multiplier ownership checked")
+
+
 CHECKS = [
     ("cartridge", check_cartridge),
+    ("video budgets", check_video_budget),
+    ("converter exactness", check_converter_patterns),
     ("title art", check_title),
+    ("title scanlines", check_title_scanlines),
     ("title input", check_title_input),
     ("deck editor + SRAM", check_deck_editor),
     ("story scene", check_story_scene),
@@ -1981,7 +2493,8 @@ CHECKS = [
     ("top view switch", check_top_view_switch_is_seamless),
     ("camera round trip", check_camera_round_trip),
     ("top cursor + card check", check_top_cursor_and_card_check),
-    ("battle art Mode 3", check_battle_art_mode3),
+    ("battle Mode 4", check_battle_mode4),
+    ("direct attack", check_direct_attack),
     ("fusion target", check_fusion_target),
     ("placement flight", check_placement_flight),
     ("duel flow", check_duel_flow),

@@ -10,29 +10,33 @@
  *
  *  TWO VIEWS OF ONE BOARD: UP opens inspection and B returns to the hand.
  *
- *  The board view is the textured slab in perspective: twenty slots with their
- *  cards lying on them, a marker under the slot in question, and the card being
- *  played held in the air over its target through the convex-quad path.  Its
- *  128x80 board rectangle is used at rest and during motion.  Motion has
- *  a twelve-vblank minimum interval, which keeps the full-detail picture
- *  stable while the presenter uploads it in chunks.  Card-heavy frames can
- *  take longer than that renderer/upload floor without changing resolution.
+ *  Both are the same textured slab in perspective through the same renderer
+ *  (snes_board3d.c) into the same 256x144 frame, at the screen's own
+ *  resolution in every pose: twenty slots with their cards lying on them, a
+ *  marker under the slot in question, and the card being played held in the
+ *  air over its target through the convex-quad path.  At REST the picture is
+ *  the ROM floor for the seat with the cards drawn over it, baked once and
+ *  then PATCHED cell by cell as slots change; while the CAMERA MOVES -- the
+ *  turn pass, the lift into the overhead view -- every frame is rendered
+ *  whole.  The overhead view is that camera at the top of the lift, looking
+ *  straight down, with a sprite bracket for its cursor so walking over the
+ *  table costs no render at all.  snes_video.h has the presentation model.
  *
- *  The top view is the same board as a flat table: Mode 3, the full 256x224,
- *  no software rendering at all and therefore sixty fields a second.  It is
- *  the view the other ports call the tactical top view.  UP zooms the resident 128x80 board while the hand slides out
- *  of the way; B plays the same path in reverse.
+ *  A battle or a direct attack leaves the board for the Mode 4 lanes of
+ *  snes_battle.c and comes back to a board baked again from nothing.
  *
- *  NOTHING IN THE HUD IS DRAWN INTO THE BITMAP any more.  Life points, the
- *  prompt, the hand and both cursors are sprites, which is what lets them stay
- *  on screen at the console's own resolution across a mode change that rewrites
- *  no VRAM at all.  See snes_obj.h.
+ *  NOTHING IN THE HUD IS DRAWN INTO THE FRAME.  Life points, the prompt, the
+ *  hand and both cursors are sprites, which is what lets them stay on screen
+ *  at the console's own resolution across a board change that rewrites no
+ *  VRAM at all.  See snes_obj.h.
  * ───────────────────────────────────────────────────────────────────────────── */
 #include <snes.h>
 #include "snes_duel.h"
 #include "snes_cardart.h"
+#include "snes_battle.h"
 #include "snes_video.h"
 #include "snes_board3d.h"
+#include "snes_planar_data.h"
 #include "snes_cards.h"
 #include "snes_obj.h"
 #include "snes_stamp.h"
@@ -59,8 +63,14 @@
  * 2.4, which is the trapezoid the FM TOWNS, PC-FX and Atari ST boards show:
  * four rows the player can count.  The height then follows from wanting the
  * near edge just above the bottom of the board band. */
-#define CAM_HEIGHT   ((s16)704)         /* 2.75 */
-#define CAM_Z        ((s16)(-1216))     /* 2.75 in front of the near edge */
+#define CAM_HEIGHT   SNES_REST_CAM_HEIGHT    /* 2.75 */
+#define CAM_Z        SNES_REST_CAM_Z         /* 3 in front of the near edge */
+/* Half the unit viewport's width, in Q8.8: what makes du a shift. */
+#define CAM_FOCAL    ((s16)(64 << 8))
+/* The top of the lift: over the middle of the board, looking straight down
+ * from high enough that the whole slab fits the frame. */
+#define LIFT_HEIGHT  ((s16)(1152))           /* 4.5 units */
+#define LIFT_FRAMES  4
 
 /* The surround: BLACK, everywhere the slab does not reach.  The board is the
  * only textured object on the screen -- no painted ground, no sky band -- and
@@ -99,7 +109,7 @@
 #define LP_YOU_X     8
 #define LP_COM_X     (256 - 8 - SNES_OBJ_LIFE_W)
 
-#define HAND_Y       162
+#define HAND_Y       150
 #define HAND_PITCH   48                 /* five 32-pixel cards across 256 */
 #define HAND_X0      8
 /* The name and the stats sit ONE PIXEL LOWER than the plate they are on, which
@@ -112,36 +122,7 @@
  * instead of three, and the gap after it is the second. */
 #define STAT_NUM_DX  16
 
-/* The top view's table, from tools/snes/gen_snes_obj.py: a 5x4 grid of
- * SNES_TOP_CELL cells with a 32x32 card centred in each. */
-#define TOP_CARD_X(col)  (SNES_TOP_X0 + (col) * SNES_TOP_CELL + (SNES_TOP_CELL - 32) / 2)
-#define TOP_CARD_Y(row)  (SNES_TOP_Y0 + (row) * SNES_TOP_CELL + (SNES_TOP_CELL - 32) / 2)
-/* The top view has one free row, under the table's near edge, so the name and
- * the stats share it. */
-#define TOP_MSG_Y    213
-/* Both stats have to fit beside the name on that one row: an icon and its gap
- * are two cells and a number four, so a stat is six and the pair is the
- * right-hand half of the screen with a cell to spare.  Everything here stays on
- * the eight-pixel grid, which is also what lets the harness read the row back
- * as columns rather than as pixels. */
-#define TOP_STAT_X   120
-#define TOP_STAT_GAP 72
-
-/* THE CAMERA MOVE IS TWENTY FIELDS AND NOT EIGHT RENDERS.
- *
- * It used to render eight live poses of the board through the general quad
- * path, each one re-baking the twenty-card board texture, and each one waiting
- * out the twelve-field motion interval on top of the thirteen fields the
- * render itself cost: the lift took the better part of seven seconds and spent
- * most of it looking identical.  Nothing is rendered here now.  The board
- * bitmap already in VRAM is the picture; the move is the board band's Mode 7
- * scale walked from 4.0 to SNES_M7_SCALE_TOP, one value a FIELD, with the hand
- * sliding off the bottom over the same curve.  See snes_video.h.
- *
- * Twenty fields is also about what the top view's twenty card sprites need to
- * reach VRAM at four 128-byte rows a vblank, so the two finish together and
- * the mode change happens with the table already complete. */
-#define VIEW_ANIM_FRAMES       20
+/* How far the hand slides off the bottom of the screen over the lift. */
 #define VIEW_HAND_OFFSET       80
 
 enum SnesDuelUi {
@@ -154,7 +135,7 @@ enum SnesDuelUi {
     UI_RESULT,
     UI_FUSE_TARGET,     /* where the chosen fusion chain lands */
     UI_CHECK,           /* one card over a Mode 3 presentation */
-    UI_BATTLE_ART       /* two independently moving Mode 3 cards */
+    UI_BATTLE_ART       /* the Mode 4 battle or direct attack (snes_battle.c) */
 };
 
 enum SnesViewMotion {
@@ -164,8 +145,8 @@ enum SnesViewMotion {
     VIEW_TO_HAND
 };
 
-static SnesCamera   cam;
-static SnesViewport vp;
+static SnesCamera cam;
+static SnesViewport vp_rest;
 /* EVERY STATIC IS INITIALISED EXPLICITLY, and that is not style.
  *
  * An uninitialised static on this build is NOT zero at boot: a probe placed in
@@ -192,12 +173,12 @@ static u8 turn_frame = 0;
 static u8 turn_from = 0;
 static u8 turn_target = 0;
 static u8 texture_faces[20];
-/* THE TOP VIEW HAS A CURSOR OF ITS OWN, and it is a board position rather than
- * whatever the hand happened to be pointing at.  The table shows twenty slots
- * and every other port lets the player walk over all of them and read what is
- * lying there; carrying the hand's cursor up there instead left the marker
- * stuck on a hand slot the view does not even draw.  It is an INSPECTION
- * cursor: it names the card under it in the row below the table and A opens
+/* THE OVERHEAD VIEW HAS A CURSOR OF ITS OWN, and it is a board position rather
+ * than whatever the hand happened to be pointing at.  The view shows twenty
+ * slots and every other port lets the player walk over all of them and read
+ * what is lying there; carrying the hand's cursor up there instead left the
+ * marker stuck on a hand slot the view does not even draw.  It is an
+ * INSPECTION cursor: it names the card under it in the HUD row and A opens
  * the card check, but it does not play anything. */
 static u8 top_row = SNES_ROW_YOU_MONSTER;
 static u8 top_col = 0;
@@ -230,17 +211,17 @@ static u8 check_return_top = 0;
 static u8  check_has_stats = 0;
 static u16 check_atk = 0, check_def = 0;
 static u8 mode3_active = 0;
-static u8 battle_frame = 0;
-static u8 battle_left_face = SNES_CARD_NONE_FACE;
-static u8 battle_right_face = SNES_CARD_NONE_FACE;
-static u16 battle_left_atk = 0, battle_left_def = 0;
-static u16 battle_right_atk = 0, battle_right_def = 0;
+static u8 battle_frame = 0;             /* fields into the battle, for the stamp */
 static u8 battle_return_ui = UI_COM;
 /* How far into its entrance the result banner is. */
 static u8  over_step = 0;
 static u8 texture_w = 0, texture_h = 0;
-static u16 motion_next_vblank = 0;
-#define TURN_FRAMES 16
+#define TURN_FRAMES 4
+
+static u8 next_pool = 0;
+static u16 requested_generation = 0;
+/* The debug pattern is a bounded 1:1 converter fixture. */
+static u8  pattern_mode = 0;
 static const char *message = 0;
 static u8  message_timer = 0;
 
@@ -259,9 +240,7 @@ static u8  show_cards = 1;
  * looks like the real one is exactly how that happens. */
 static u8  autoplay = 0;
 
-/* Y pins the board to the moving cadence.  The source stays 128x80; this
- * switch keeps the five-updates-per-second path active long enough to inspect
- * it in the harness. */
+/* Y continuously requests production full-resolution frames for profiling. */
 static u8  force_moving = 0;
 static u8 configured_story = MSX2_STORY_NONE;
 static u8 configured_story_mode = 0;
@@ -277,30 +256,37 @@ u8 snesDuelMode3Active(void) { return mode3_active; }
 
 static void set_viewport(void)
 {
-    vp.w = SNES_STILL_W;
-    vp.h = SNES_STILL_H;
-    vp.origin = 0;
-    vp.stride = SNES_FB_STRIDE;
+    vp_rest.w = SNES_FRAME_W;
+    vp_rest.h = SNES_FRAME_H;
+    vp_rest.origin = (u16)(u16)snes_frame_fb;
+    vp_rest.stride = SNES_FRAME_STRIDE;
+    vp_rest.bank = 0x7E;
+    vp_rest.sub = 1;
+    /* 32 texels a unit over a focal length of 64 is half a texel a unit
+     * pixel; a screen pixel is half of that. */
+    vp_rest.du_k = 64;
 
-    /* The focal length is half the viewport width, which is what makes the
-     * floor's texture step a shift rather than a divide: 32 texels a world
-     * unit over a focal length of w/2 is exactly 2 texels per pixel here. */
-    cam.focal  = (s16)((u16)vp.w << 7);
-    /* `du_k` is 32 / focal in Q8.8.  The focal length is deliberately one of
-     * the two power-of-two values above, so spell the result as constants and
-     * keep the renderer free of a 32-bit divide.  Leaving this field unset
-     * makes the board's texture walk depend on the uninitialised viewport
-     * storage, which looks like a bad card mapper rather than a missing
-     * viewport setup. */
-    vp.du_k = 128;
-    /* The horizon sits a thirty-second of the band down, which puts the
-     * SLAB'S FRONT WALL clear of the bottom of the board band with black
-     * under it.  That black is what makes the wall read as the near face of a
-     * slab standing on nothing rather than as more floor: at an eighth the
-     * board ran to the last row of the band and the wall touched the HUD.  It
-     * is the same proportion in both resolutions, so the two frame the board
-     * identically and switching between them does not shift it. */
-    cam.horizon = (s16)(vp.h >> 5);
+    /* The focal length is half the unit viewport's width, which is what
+     * makes the floor's texture step a shift rather than a divide.  The
+     * horizon sits a thirty-second of the board down, in the viewport's own
+     * pixels: the resting camera's is the ROM floor's. */
+    cam.focal = CAM_FOCAL;
+    cam.horizon = SNES_REST_HORIZON_PX;
+}
+
+/* The camera for a resting board: the ROM floor's pose. */
+/* Whether the camera is exactly at a rest pose: set by set_rest_camera,
+ * cleared by anything that moves it. */
+static u8 camera_rest = 0;
+/* The last render's timings, in scanlines, copied into the stamp at the end
+ * of the game frame. */
+static u16 t_map = 0, t_conv = 0, t_render = 0;
+static u16 t_turn_max = 0, t_rest_max = 0, t_held_max = 0;
+static void set_rest_camera(u8 mirror)
+{
+    snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, CAM_FOCAL, SNES_REST_HORIZON_PX);
+    cam.yaw = mirror ? 128 : 0;
+    camera_rest = 1;
 }
 
 /* Q8.8 smoothstep, using the SNES multiplier instead of a 32-bit product.
@@ -318,7 +304,7 @@ static u16 ease_frac(u8 frame, u8 total)
 
 static u16 view_anim_ease(u8 frame)
 {
-    return ease_frac(frame, VIEW_ANIM_FRAMES);
+    return ease_frac(frame, LIFT_FRAMES);
 }
 
 static s16 view_lerp(s16 a, s16 b, u16 t)
@@ -326,98 +312,74 @@ static s16 view_lerp(s16 a, s16 b, u16 t)
     return (s16)(a + snesQMul((s16)(b - a), (s16)t));
 }
 
-static u8 motion_frame_due(void)
+/* THE LIFT IS A CAMERA MOVE AND NOTHING ELSE.  The camera climbs from its
+ * seat to LIFT_HEIGHT over the middle of the board while pitching to straight
+ * down, one full-resolution frame a game frame, and the hand slides off on
+ * the same curve.  The overhead view is the same renderer at the top of that
+ * path, so there is no second picture to load and nothing to switch to. */
+static void lift_camera(u8 frame)
 {
-    return (s16)(snes_vblank_count - motion_next_vblank) >= 0;
+    const u16 t = ease_frac(frame, LIFT_FRAMES);
+    snesCameraSet(&cam, 0,
+                  view_lerp(CAM_Z, 0, t),
+                  view_lerp(CAM_HEIGHT, LIFT_HEIGHT, t),
+                  CAM_FOCAL, (s16)(SNES_FRAME_H >> 1));
+    cam.pitch = (u8)view_lerp(0, 64, t);
+    /* Straight down, the horizon has no meaning: the frame is centred on
+     * the camera's foot.  Partway, the horizon rises with the pitch. */
+    cam.horizon = (s16)view_lerp(SNES_REST_HORIZON_PX, SNES_FRAME_H >> 1, t);
 }
 
-static void schedule_motion_frame(void)
-{
-    /* Keep an absolute 12-field phase.  A full board render can take longer
-     * than one 12-field slot; advancing from the previous deadline lets the
-     * next complete upload start as soon as it is ready instead of adding an
-     * avoidable second wait after every render. */
-    motion_next_vblank = (u16)(motion_next_vblank + SNES_MOTION_FIELDS);
-}
-
-/* Queue the top view's twenty card sprites.  `hand_gone` says whether the five
- * hand slots are free yet: they are OBJ slots 0..4 and the top table's first
- * row as well, so asking for the table's cards there while the hand is still
- * sliding would take the hand off the screen a card at a time.  The other
- * fifteen have nothing to wait for and start immediately, which is what gets
- * the whole table into VRAM inside the twenty fields the move takes. */
-static void queue_top_cards(u8 hand_gone)
-{
-    u8 row, col;
-    for (row = 0; row < SNES_ROWS; ++row) {
-        const Msx2Side *s = &g_duel.side[row < 2 ? MSX2_OWNER_COM
-                                                 : MSX2_OWNER_PLAYER];
-        const u8 support = (row == SNES_ROW_COM_SUPPORT ||
-                            row == SNES_ROW_YOU_SUPPORT);
-        for (col = 0; col < SNES_COLS; ++col) {
-            const u8 slot = (u8)(row * SNES_COLS + col);
-            if (slot < SNES_SPR_CARD_PALS && !hand_gone) continue;
-            snesObjQueueCard(slot,
-                face_of(support ? s->equip_field[col] : s->field[col],
-                        support ? 1 : s->faceup[col]), 0);
-        }
-    }
-}
+static void motion_sequence_begin(u8 frames);
+static void motion_frame(void);
+static void rest_invalidate(void);
 
 static void begin_view_transition(u8 to_top)
 {
     view_motion = to_top ? VIEW_TO_TOP : VIEW_TO_HAND;
     view_anim_frame = 0;
-    if (to_top) {
-        /* Start the fifteen slots the hand does not own now; the board is not
-         * rendered again from here, so the whole vblank is theirs. */
-        queue_top_cards(0);
-    } else {
-        /* Mode 7 comes back on the next vblank with the board bitmap exactly
-         * as the player left it and the zoom still at the top of the lift, so
-         * there is nothing to render and nothing to upload. */
+    motion_sequence_begin(LIFT_FRAMES);
+    if (!to_top) {
         top_view = 0;
-        snesVideoSetBoardZoom(SNES_M7_SCALE_TOP);
-        snesVideoSetView(SNES_VIEW_BOARD);
     }
 }
 
 static void finish_view_transition(u8 to_top)
 {
     if (to_top) {
+        /* The last lift frame IS the overhead pose: nothing to redraw, and
+         * the cursor up here is a sprite, so the view runs at sixty. */
         top_view = 1;
         view_motion = VIEW_TOP_REST;
-        snesVideoSetView(SNES_VIEW_TOP);
     } else {
         top_view = 0;
         view_motion = VIEW_BOARD_REST;
-        snesVideoSetView(SNES_VIEW_BOARD);
-        snesVideoSetBoardZoom(SNES_M7_SCALE_STILL);
+        /* Back at the seat: the rest picture is baked again from the ROM
+         * floor, which is also what puts the 32x32 card art back. */
+        set_rest_camera((u8)(board_yaw == 128));
+        rest_invalidate();
     }
     view_anim_frame = 0;
 }
 
-/* One FIELD of the move.  Nothing is rendered and nothing is uploaded: the
- * board band's scale and the hand's y are both read off the same eased curve,
- * so the picture pushes in while the hand leaves, and the mode changes only
- * once every card the table needs is actually in VRAM. */
+/* One game frame of the move: render the next lift frame, and move the
+ * hand on the same curve.  Going up, the mode changes only once every card
+ * the table needs is in VRAM and the last frame has been shown; coming
+ * down, the board view is switched on as soon as the first frame is up. */
 static void step_view_transition(void)
 {
     const u8 to_top = (view_motion == VIEW_TO_TOP);
-    u16 t;
 
-    if (view_anim_frame < VIEW_ANIM_FRAMES) ++view_anim_frame;
-    t = view_anim_ease(view_anim_frame);
-    if (!to_top) t = (u16)(SNES_ONE - t);
-    snesVideoSetBoardZoom((u16)view_lerp((s16)SNES_M7_SCALE_STILL,
-                                         (s16)SNES_M7_SCALE_TOP, t));
-    build_objects();
-    if (view_anim_frame < VIEW_ANIM_FRAMES) return;
-    if (to_top) {
-        /* The hand is off the screen by now, so its five slots are free for
-         * the table's first row. */
-        queue_top_cards(1);
-        if (!snesObjCardsReady()) return;
+    if (view_anim_frame < LIFT_FRAMES) {
+        ++view_anim_frame;
+        lift_camera(to_top ? view_anim_frame : (u8)(LIFT_FRAMES - view_anim_frame));
+        motion_frame();
+        build_objects();
+        return;
+    }
+    if (!snesVideoPresentDone()) {
+        build_objects();
+        return;
     }
     finish_view_transition(to_top);
     build_objects();
@@ -481,33 +443,252 @@ static u8 held_slot(u8 *row)
     return cursor_board_slot(row);
 }
 
-static void draw_board_cards(void)
-{
-    u8 row, col, hrow = 0;
-    const u8 hslot = held_slot(&hrow);
+/* ── The board picture ───────────────────────────────────────────────────── */
 
+/* ONE FRAME, ONE PICTURE, TWO WAYS OF PAINTING IT.
+ *
+ * The 256x144 chunky frame in bank $7E is the board as the player sees it,
+ * and it is converted to tiles by snes_conv_drivers.inc one 8x8 cell at a
+ * time -- but only the cells that CHANGED.  The converter shares every other
+ * cell's tile between the map on screen and the map being built, so what a
+ * render costs is what it touches, and the two painting paths below exist to
+ * touch as little as possible:
+ *
+ *   * A RESTING camera (yaw 0 or 128, level, at the ROM floor's pose) starts
+ *     from the floor rendered at build time (tools/snes/gen_snes_planar.py),
+ *     draws the cards over it from the 32x32 sheet at 1:1, and from then on
+ *     PATCHES: a slot whose face changed, the marker's old and new slots and
+ *     the held card's old and new cells get the ROM floor put back under
+ *     them, the cards on those rows redrawn, and only those cells converted.
+ *     A cursor move is a couple of dozen cells.
+ *
+ *   * A MOVING camera (the turn, the lift, the overhead pose) is the general
+ *     path: the slab as one textured quad through the inverse-ray walker,
+ *     with the cards stamped into the world texture, and every occupied cell
+ *     converted.  It is the expensive frame and it is only paid while the
+ *     camera is actually somewhere the ROM floor is not. */
+static u8  rest_valid = 0;          /* the frame holds the rest picture */
+static u8  rest_pose = 0;           /* ...for this seat (0 = player, 1 = COM) */
+static u8  baked_faces[20];         /* ...with these faces on it */
+static u8  baked_marker_row = 0xFF, baked_marker_col = 0xFF, baked_marker_colour = 0;
+static u8  held_drawn = 0;          /* the held card's cells last frame... */
+static u8  held_box[4];             /* ...as an inclusive cell box */
+static u8  slot_box[2][20][4];
+static u8  slot_box_valid[2] = { 0, 0 };
+
+/* The cell box of a slot: its tile's four corners projected on the rest
+ * viewport, in 8x8 cells, inclusive.  Generated with the floor, so the two
+ * cannot disagree. */
+static void slot_boxes(u8 mirror)
+{
+    u8 i;
+    if (slot_box_valid[mirror]) return;
+    for (i = 0; i < 80; ++i)
+        ((u8 *)slot_box[mirror])[i] = snes_rest_slot_boxes[(u16)mirror * 80 + i];
+    slot_box_valid[mirror] = 1;
+}
+
+/* The converter's dirty masks live in bank $7F beside its maps. */
+static void cells_clear(void)
+{
+    u16 *d = snes_conv_dirty;
+    u8 r;
+    for (r = 0; r < SNES_CELL_ROWS * 2; ++r) d[r] = 0;
+}
+
+static void cells_all(void)
+{
+    u16 *d = snes_conv_dirty;
+    u8 r;
+    for (r = 0; r < SNES_CELL_ROWS * 2; ++r) d[r] = 0xFFFF;
+}
+
+static u8 cells_any(void)
+{
+    const u16 *d = snes_conv_dirty;
+    u8 r;
+    for (r = 0; r < SNES_CELL_ROWS * 2; ++r) if (d[r]) return 1;
+    return 0;
+}
+
+/* OR a cell box into the dirty masks, or clear it from the ROM masks: the
+ * ROM masks name the resting cells nothing is drawn over, which the
+ * converter takes straight from the planar ROM floor. */
+static void mask_box(u16 *d, u8 set, u8 cx0, u8 cy0, u8 cx1, u8 cy1)
+{
+    u16 mlo = 0, mhi = 0;
+    u8 r;
+    if (cx1 < cx0 || cy1 < cy0) return;
+    if (cx1 > 31) cx1 = 31;
+    if (cy1 >= SNES_CELL_ROWS) cy1 = SNES_CELL_ROWS - 1;
+    for (r = cx0; r <= cx1; ++r) {
+        if (r < 16) mlo |= (u16)(1u << r);
+        else        mhi |= (u16)(1u << (r - 16));
+    }
+    for (r = cy0; r <= cy1; ++r) {
+        if (set) {
+            d[r * 2]     |= mlo;
+            d[r * 2 + 1] |= mhi;
+        } else {
+            d[r * 2]     &= (u16)~mlo;
+            d[r * 2 + 1] &= (u16)~mhi;
+        }
+    }
+}
+
+static void cells_box(u8 cx0, u8 cy0, u8 cx1, u8 cy1)
+{
+    mask_box(snes_conv_dirty, 1, cx0, cy0, cx1, cy1);
+}
+
+static void cells_slot(u8 mirror, u8 row, u8 col)
+{
+    const u8 *b = slot_box[mirror][row * SNES_COLS + col];
+    cells_box(b[0], b[1], b[2], b[3]);
+}
+
+static void rom_cells_none(void)
+{
+    u16 *d = snes_conv_rom;
+    u8 r;
+    for (r = 0; r < SNES_CELL_ROWS * 2; ++r) d[r] = 0;
+}
+
+static void rom_cells_all(void)
+{
+    u16 *d = snes_conv_rom;
+    u8 r;
+    for (r = 0; r < SNES_CELL_ROWS * 2; ++r) d[r] = 0xFFFF;
+}
+
+static void rom_cells_clear_slot(u8 mirror, u8 row, u8 col)
+{
+    const u8 *b = slot_box[mirror][row * SNES_COLS + col];
+    mask_box(snes_conv_rom, 0, b[0], b[1], b[2], b[3]);
+}
+
+/* The pixel rows the dirty cells cover, for a clipped card redraw. */
+static void cells_rows(u16 *y0, u16 *y1)
+{
+    const u16 *d = snes_conv_dirty;
+    u8 r, first = 0xFF, last = 0;
+    for (r = 0; r < SNES_CELL_ROWS; ++r) {
+        if (!(d[r * 2] | d[r * 2 + 1])) continue;
+        if (first == 0xFF) first = r;
+        last = r;
+    }
+    if (first == 0xFF) { *y0 = *y1 = 0; return; }
+    *y0 = (u16)first << 3;
+    *y1 = (u16)(last + 1) << 3;
+}
+
+static void current_faces(u8 *faces)
+{
+    u8 row, col;
     for (row = 0; row < SNES_ROWS; ++row) {
         const u8 owner = (row <= SNES_ROW_COM_MONSTER) ? MSX2_OWNER_COM
                                                        : MSX2_OWNER_PLAYER;
         const u8 support = (row == SNES_ROW_COM_SUPPORT ||
                             row == SNES_ROW_YOU_SUPPORT);
         const Msx2Side *s = &g_duel.side[owner];
-        u8 faces[SNES_COLS];
-
         for (col = 0; col < SNES_COLS; ++col) {
             const u8 card = support ? s->equip_field[col] : s->field[col];
-            faces[col] = face_of(card, support ? 1 : s->faceup[col]);
+            faces[row * SNES_COLS + col] = show_cards
+                ? face_of(card, support ? 1 : s->faceup[col])
+                : SNES_CARD_NONE_FACE;
         }
-        snesDrawCardRow(&vp, &cam, row, faces);
-        (void)hslot;
-        (void)hrow;
     }
 }
 
-/* The card the player is holding, through the general convex quad path: four
- * projected corners, two edge chains, an affine walk.  It leans back so the
- * picture turns towards the player, and it bobs, which means the quad is a
- * different quad every frame -- the case the two chains exist for. */
+/* ── The moving camera's world texture ───────────────────────────────────── */
+
+/* Flat cards have one world-space footprint in every pose.  Camera pitch and
+ * yaw alter their projection, never the source texture's dimensions. */
+static void update_board_texture(void)
+{
+    u8 faces[20];
+    u8 changed = (texture_w != 24 || texture_h != 32);
+    u8 r, c;
+    current_faces(faces);
+    for (r = 0; r < 20; ++r) {
+        if (texture_faces[r] != faces[r]) changed = 1;
+        texture_faces[r] = faces[r];
+    }
+    if (!changed) return;
+    texture_w = 24;
+    texture_h = 32;
+    snesBoardTextureClear();
+    for (r = 0; r < SNES_ROWS; ++r) {
+        for (c = 0; c < SNES_COLS; ++c) {
+            const u8 face = texture_faces[r * SNES_COLS + c];
+            if (face != SNES_CARD_NONE_FACE) {
+                snesBoardTextureCard(
+                    (u16)(((48 - (s16)r * 32) & 127) * 256 |
+                          ((16 + ((s16)c - 2) * 32) & 255)),
+                    face, r < 2, 24, 32);
+            }
+        }
+    }
+}
+
+/* ── The resting picture ─────────────────────────────────────────────────── */
+
+/* Put the ROM floor back under the dirty cells. */
+static void restore_floor_cells(void)
+{
+    const u16 src = (u16)(u16)(rest_pose ? snes_floor_chunky_1 : snes_floor_chunky_0);
+    const u8 bank = rest_pose ? SNES_FLOOR_CHUNKY_BANK_1 : SNES_FLOOR_CHUNKY_BANK_0;
+    const u16 *d = snes_conv_dirty;
+    u8 r;
+    for (r = 0; r < SNES_CELL_ROWS; ++r) {
+        const u16 m_lo = d[r * 2], m_hi = d[r * 2 + 1];
+        u8 c = 0;
+        if (!(m_lo | m_hi)) continue;
+        while (c < 32) {
+            u8 c0, n;
+            const u8 bit = (c < 16) ? (u8)((m_lo >> c) & 1) : (u8)((m_hi >> (c - 16)) & 1);
+            if (!bit) { ++c; continue; }
+            c0 = c;
+            while (c < 32) {
+                const u8 b2 = (c < 16) ? (u8)((m_lo >> c) & 1) : (u8)((m_hi >> (c - 16)) & 1);
+                if (!b2) break;
+                ++c;
+            }
+            n = (u8)(c - c0);
+            /* Eight DMAs of a run's rows: the ROM floor is on the A bus and
+             * the frame behind WMDATA, so this is a DMA and not the byte
+             * loop, which cost more than the cards it was making room for. */
+            {
+                u16 off = (u16)((u16)r * 2048 + (u16)c0 * 8);
+                u8 k;
+                for (k = 0; k < 8; ++k, off += SNES_FRAME_STRIDE)
+                    snesFbWramDma((u16)(src + off), bank,
+                                  (u16)(vp_rest.origin + off), 0x7E, (u16)n * 8);
+            }
+        }
+    }
+}
+
+/* The cards whose rows touch pixel rows [y0, y1). */
+static void draw_rest_cards(const u8 *faces, u16 y0, u16 y1)
+{
+    u8 row;
+    for (row = 0; row < SNES_ROWS; ++row)
+        snesDrawCardRow(&vp_rest, &cam, row, &faces[row * SNES_COLS],
+                        rest_pose, y0, y1);
+}
+
+/* The ROM floor's occupied columns per cell row: the rest picture's span. */
+static void rest_rowspan(void)
+{
+    const u8 *src = rest_pose ? snes_floor_rowspan_1 : snes_floor_rowspan_0;
+    u8 *dst = snes_conv_rowspan;
+    u8 i;
+    for (i = 0; i < SNES_CELL_ROWS * 2; ++i) dst[i] = src[i];
+}
+
+/* Raised cards are drawn over the frame after everything else.  Their cells
+ * are remembered so the next patch can put the board back under them. */
 static void draw_held_card(void)
 {
     const Msx2Side *s = &g_duel.side[MSX2_OWNER_PLAYER];
@@ -516,114 +697,209 @@ static void draw_held_card(void)
     u8 card;
     SnesVert q[4];
     s16 lift;
-
-    if (slot == MSX2_SLOT_NONE || slot >= SNES_COLS || ui == UI_FUSE_TARGET) return;
+    u16 x0, y0, x1, y1;
+    if (slot == MSX2_SLOT_NONE || slot >= SNES_COLS || ui == UI_FUSE_TARGET)
+        return;
     card = s->hand[chosen];
     if (card == MSX2_CARD_NONE) return;
-
-    /* A SMALL bob.  The sine is Q8.8, so a shift of two would swing the card a
-     * quarter of a world unit -- from under the board to level with the
-     * camera, which is where the quad stretches off the top of the screen.
-     * Four is about a sixteenth of a unit, which reads as a card being held. */
     lift = (s16)(HELD_LIFT + (snesSin(lift_phase) >> 4));
-    if (!snesCardQuad(&cam, &vp, row, slot, lift, HELD_TILT, q)) return;
-    snesTexQuad(&vp, q, face_of(card, 1));
+    if (!snesCardQuad(&cam, &vp_rest, row, slot, rest_pose, lift, HELD_TILT, q))
+        return;
+    if (!snesQuadBounds(&vp_rest, q, &x0, &y0, &x1, &y1)) return;
+    snesTexQuad(&vp_rest, q, face_of(card, 1));
+    held_box[0] = (u8)(x0 >> 3);
+    held_box[1] = (u8)(y0 >> 3);
+    held_box[2] = (u8)((x1 - 1) >> 3);
+    held_box[3] = (u8)((y1 - 1) >> 3);
+    held_drawn = 1;
+    cells_box(held_box[0], held_box[1], held_box[2], held_box[3]);
+    mask_box(snes_conv_rom, 0, held_box[0], held_box[1], held_box[2], held_box[3]);
 }
 
-/* A board, timed.
- *
- * NTSC is 262 scanlines a field, and a still frame is more than one field of
- * work, so the V counter alone would wrap and underreport; the vblank count
- * carries the whole fields and the V counter the remainder.  This number is
- * the only thing in the port allowed to support a performance claim -- that,
- * or an ablation.  tools/snes/verify.py reads it out of the WRAM dump. */
-static void render(void)
+static void rest_invalidate(void)
 {
-    const u16 vbl0  = snes_vblank_count;
-    const u16 line0 = snesVCounter();
-    u8 row = 0;
-    const u8 slot = cursor_board_slot(&row);
+    rest_valid = 0;
+    held_drawn = 0;
+    board_dirty = 1;
+}
 
-    if (cam.pitch || cam.yaw) {
-        u8 r, c;
-        u8 width = 24 - (cam.pitch * 3 >> 6);
-        u8 height = 32 - (cam.pitch * 11 >> 6);
-        u8 changed = width != texture_w || height != texture_h;
-        for (r = 0; r < 4; ++r) {
-            const Msx2Side *s = &g_duel.side[r < 2 ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER];
-            u8 support = (r == 0 || r == 3);
-            for (c = 0; c < 5; ++c) {
-                u8 face = show_cards ? face_of(support ? s->equip_field[c] : s->field[c],
-                                  support ? 1 : s->faceup[c]) : SNES_CARD_NONE_FACE;
-                if (texture_faces[r * 5 + c] != face) changed = 1;
-                texture_faces[r * 5 + c] = face;
-            }
+/* The resting picture, baked or patched, with the marker and the held card
+ * on it.  Leaves the dirty masks naming every cell the converter must take. */
+static void render_rest(u8 marker_row, u8 marker_col, u8 marker_colour)
+{
+    u8 faces[20];
+    u8 i;
+    const u8 mirror = (u8)(board_yaw == 128);
+
+    slot_boxes(mirror);
+    current_faces(faces);
+
+    if (!rest_valid || rest_pose != mirror) {
+        /* The whole picture: the ROM floor, then every card. */
+        rest_pose = mirror;
+        snesFbWramDma((u16)(u16)(mirror ? snes_floor_chunky_1 : snes_floor_chunky_0),
+                      mirror ? SNES_FLOOR_CHUNKY_BANK_1 : SNES_FLOOR_CHUNKY_BANK_0,
+                      vp_rest.origin, 0x7E, SNES_FRAME_W * SNES_FRAME_H);
+        cells_all();
+        if (marker_col != MSX2_SLOT_NONE && marker_col < SNES_COLS)
+            snesDrawSlotMarker(&vp_rest, &cam, marker_row, marker_col, mirror,
+                               marker_colour);
+        draw_rest_cards(faces, 0, SNES_FRAME_H);
+        rest_valid = 1;
+        held_drawn = 0;
+    } else {
+        /* A patch: the slots that changed, the marker's two slots, the held
+         * card's old cells.  The floor goes back under all of them first,
+         * then the marker, then the cards of the rows involved. */
+        u16 y0, y1;
+        for (i = 0; i < 20; ++i)
+            if (faces[i] != baked_faces[i])
+                cells_slot(mirror, i / SNES_COLS, i % SNES_COLS);
+        if (baked_marker_row != 0xFF)
+            cells_slot(mirror, baked_marker_row, baked_marker_col);
+        if (marker_col != MSX2_SLOT_NONE && marker_col < SNES_COLS)
+            cells_slot(mirror, marker_row, marker_col);
+        if (held_drawn) {
+            cells_box(held_box[0], held_box[1], held_box[2], held_box[3]);
+            held_drawn = 0;
         }
-        if (changed) {
-            texture_w = width; texture_h = height;
-            snesBoardTextureClear();
-            for (r = 0; r < 4; ++r) for (c = 0; c < 5; ++c) {
-                u8 face = texture_faces[r * 5 + c];
-                if (face != SNES_CARD_NONE_FACE)
-                    snesBoardTextureCard((u16)(((48 - (s16)r * 32) & 127) * 256 |
-                                              ((16 + ((s16)c - 2) * 32) & 255)),
-                                          face, r < 2,
-                                          width, height);
-            }
+        if (cells_any()) {
+            restore_floor_cells();
+            if (marker_col != MSX2_SLOT_NONE && marker_col < SNES_COLS)
+                snesDrawSlotMarker(&vp_rest, &cam, marker_row, marker_col, mirror,
+                                   marker_colour);
+            cells_rows(&y0, &y1);
+            draw_rest_cards(faces, y0, y1);
         }
-        snesDrawCameraFloor(&vp, &cam, BACKDROP);
     }
-    else snesDrawFloor(&vp, &cam, BACKDROP);
-    /* The marker goes down BEFORE the cards: it covers a whole tile and a card
-     * four fifths of one, so what is left of it is a rim around the card,
-     * which is what makes "this slot" readable when the slot is occupied. */
-    if (!cam.pitch && !cam.yaw && slot != MSX2_SLOT_NONE && slot < SNES_COLS)
-        snesDrawSlotMarker(&vp, &cam, row, slot,
-                           (ui == UI_DEFENDER) ? MARK_COM : MARK_YOU);
-    if (show_cards) {
-        if (!cam.pitch && !cam.yaw) draw_board_cards();
-        if (!fly_frame) draw_held_card();
+    for (i = 0; i < 20; ++i) baked_faces[i] = faces[i];
+    if (marker_col != MSX2_SLOT_NONE && marker_col < SNES_COLS) {
+        baked_marker_row = marker_row;
+        baked_marker_col = marker_col;
+        baked_marker_colour = marker_colour;
+    } else {
+        baked_marker_row = baked_marker_col = 0xFF;
+    }
+    /* What the ROM floor can supply unconverted: every resting cell no
+     * card, marker or held card is drawn over. */
+    rom_cells_all();
+    for (i = 0; i < 20; ++i)
+        if (faces[i] != SNES_CARD_NONE_FACE)
+            rom_cells_clear_slot(mirror, i / SNES_COLS, i % SNES_COLS);
+    if (baked_marker_row != 0xFF)
+        rom_cells_clear_slot(mirror, baked_marker_row, baked_marker_col);
+    snesConvSetFloor((u16)(u16)(mirror ? snes_floor_planar_1 : snes_floor_planar_0),
+                     mirror ? SNES_FLOOR_PLANAR_BANK_1 : SNES_FLOOR_PLANAR_BANK_0);
+    if (show_cards && !fly_frame) draw_held_card();
+    rest_rowspan();
+}
+
+/* ── The transaction ─────────────────────────────────────────────────────── */
+
+static void motion_sequence_begin(u8 frames)
+{
+    (void)frames;
+    camera_rest = 0;
+}
+
+/* Render, convert and queue one complete frame.  Only one transaction may
+ * be pending: the inactive map and the tiles it frees are reused only after
+ * the previous one has been switched to. */
+static void render_camera_frame(u8 marker_row, u8 marker_col, u8 marker_colour)
+{
+    u16 clock0, map_done, occupied;
+    while (snesFbFramesPending()) { }
+
+    clock0 = snesClock();
+    snesRasterTarget(0x7E);
+
+    if (pattern_mode) {
+        u16 y;
+        snesSpanFill(vp_rest.origin, SNES_FRAME_W * SNES_FRAME_H, BACKDROP);
+        for (y = 16; y < 128; ++y) {
+            u16 x;
+            u8 *row = &snes_frame_fb[y * SNES_FRAME_STRIDE];
+            for (x = 32; x < 224; ++x) row[x] = (u8)(x + y);
+        }
+        for (y = 0; y < SNES_CELL_ROWS; ++y) {
+            snes_conv_rowspan[y * 2] = (y >= 2 && y < 16) ? 32 : 255;
+            snes_conv_rowspan[y * 2 + 1] = (y >= 2 && y < 16) ? 223 : 0;
+        }
+        cells_all();
+        rom_cells_none();
+        rest_valid = 0;
+    } else if (camera_rest) {
+        render_rest(marker_row, marker_col, marker_colour);
+    } else {
+        update_board_texture();
+        snesDrawCameraFloor(&vp_rest, &cam, BACKDROP);
+        cells_all();
+        rom_cells_none();
+        rest_valid = 0;
+        held_drawn = 0;
     }
 
-    g_stamp.render_lines = (u16)((snes_vblank_count - vbl0) * 262
-                                 + snesVCounter() - line0);
-    snesVideoPresentRestart();
+    map_done = snesClock();
+    requested_generation = snesVideoRequestGeneration();
+    occupied = snesConvFrame(next_pool, requested_generation);
+    if (occupied) next_pool ^= 1;
+    cells_clear();
+    /* Into locals, not the stamp: the stamp is only written whole, with its
+     * checksum, at the end of a game frame, or a WRAM dump taken during a
+     * ten-field render reads as torn. */
+    t_map = (u16)(map_done - clock0);
+    t_render = (u16)(snesClock() - clock0);
+    t_conv = (u16)(t_render - t_map);
     board_dirty = 0;
 }
 
+static void motion_frame(void)
+{
+    camera_rest = 0;
+    render_camera_frame(0, MSX2_SLOT_NONE, MARK_YOU);
+    if (t_render > t_turn_max) t_turn_max = t_render;
+}
+
+static void render(void)
+{
+    u8 row = 0;
+    u8 slot = cursor_board_slot(&row);
+    const u8 colour = (ui == UI_DEFENDER) ? MARK_COM : MARK_YOU;
+    /* Overhead, the cursor is a sprite (build_objects): nothing to paint. */
+    if (top_view) slot = MSX2_SLOT_NONE;
+    render_camera_frame(row, slot, colour);
+    if (ui == UI_PLACE || ui == UI_EQUIP_TARGET) {
+        if (t_render > t_held_max) t_held_max = t_render;
+    } else if (t_render > t_rest_max) {
+        t_rest_max = t_render;
+    }
+}
 /* ── The card check ──────────────────────────────────────────────────────── */
 
 /* B checks the hovered hand card; A checks the top-view card. The enlarged
  * face has its own Mode 3 OBJ sheet. Closing restores the previous cursor
  * and UI, repainting the board when its bitmap becomes visible. */
 
+/* THE BOARD'S UPLOADS STOP BEFORE VRAM CHANGES HANDS.  Whatever the sparse
+ * presenter had queued -- tiles, a map, a completion -- is dropped
+ * (snesFbCancel), so no board job can land in the card art's tiles; on the
+ * way back snesVideoInitDuel resets the tile store and the board is baked
+ * again from nothing. */
 static void enter_mode3_art(void)
 {
-    /* The card presentation is BG1 8bpp art and BG2 text: see snes_cardart.h.
-     * Nothing the sprite layer holds is touched, so the top view and the
-     * hand's card cache are exactly where they were when this closes. */
-    snesCardArtEnter(ui == UI_CHECK);
+    snesFbCancel();
     if (ui == UI_CHECK) {
+        snesVideoSetOwner(SNES_OWNER_CARD_CHECK);
+        snesCardArtEnter(1);
         snesCardArtCheck(check_face, check_has_stats, check_atk, check_def);
+        snesCardArtVblank();
+        mode3_active = 1;
     } else {
-        snesCardArtClear();
-        snesCardArtTextClear();
-        if (battle_left_face != SNES_CARD_NONE_FACE) {
-            snesCardArtLoad(0, battle_left_face);
-            snesCardArtPlace(0, SNES_CARDART_COL_L, battle_left_face);
-            snesCardArtStats(SNES_CARDART_COL_L, battle_left_face,
-                             battle_left_atk, battle_left_def);
-        }
-        if (battle_right_face != SNES_CARD_NONE_FACE) {
-            snesCardArtLoad(1, battle_right_face);
-            snesCardArtPlace(1, SNES_CARDART_COL_R, battle_right_face);
-            snesCardArtStats(SNES_CARDART_COL_R, battle_right_face,
-                             battle_right_atk, battle_right_def);
-        }
-        snesCardArtReveal(0);
+        snesVideoSetOwner(SNES_OWNER_BATTLE);
+        snesBattleBegin();
+        snesBattleVblank();
+        mode3_active = 2;
     }
-    snesCardArtVblank();
-    mode3_active = 1;
     setScreenOn();
 }
 
@@ -633,8 +909,9 @@ static void leave_mode3_art(void)
     mode3_active = 0;
     snesVideoInitDuel();
     snesObjInit();
-    snesVideoSetBoardZoom(SNES_M7_SCALE_STILL);
-    snesVideoSetView(top_view ? SNES_VIEW_TOP : SNES_VIEW_BOARD);
+    snesVideoSetOwner(SNES_OWNER_BOARD);
+    rest_invalidate();
+    snesFbDrain(1);
     render();
     snesVideoRestartHdma();
     setScreenOn();
@@ -656,8 +933,6 @@ static void begin_check(void)
     snesAudioSfx(SNES_SFX_CONFIRM_ALT);
     top_view = 0;
     view_motion = VIEW_BOARD_REST;
-    snesVideoSetView(SNES_VIEW_BOARD);
-    snesVideoSetBoardZoom(SNES_M7_SCALE_STILL);
     ui = UI_CHECK;
     message = NULL;
     message_timer = 0;
@@ -669,7 +944,6 @@ static void end_check(void)
     ui = check_return_ui;
     top_view = check_return_top;
     view_motion = top_view ? VIEW_TOP_REST : VIEW_BOARD_REST;
-    snesVideoSetView(top_view ? SNES_VIEW_TOP : SNES_VIEW_BOARD);
     check_face = SNES_CARD_NONE_FACE;
     check_has_stats = 0;
     mode3_active = 0;
@@ -678,25 +952,10 @@ static void end_check(void)
     leave_mode3_art();
 }
 
+/* The battle takes its snapshot of the rules' event as it begins
+ * (snes_battle.c); the event is cleared only once the sequence is over. */
 static void begin_battle_art(u8 return_ui)
 {
-    battle_left_face = face_of(g_duel.last_attacker_card, 1);
-    battle_right_face = face_of(g_duel.last_defender_card, 1);
-    /* The figures the battle was fought with: the attacker's ATK as the
-     * rules used it, and the defender's ATK or DEF according to its stance,
-     * so the plate shows what actually decided the clash. */
-    battle_left_atk = (u16)g_duel.last_battle.attacker_atk;
-    battle_left_def = (battle_left_face < SNES_CARD_BACK)
-                    ? Msx2_CardDef(battle_left_face) : 0;
-    if (g_duel.last_battle.defender_passive) {
-        battle_right_atk = (battle_right_face < SNES_CARD_BACK)
-                         ? Msx2_CardAtk(battle_right_face) : 0;
-        battle_right_def = (u16)g_duel.last_battle.defender_value;
-    } else {
-        battle_right_atk = (u16)g_duel.last_battle.defender_value;
-        battle_right_def = (battle_right_face < SNES_CARD_BACK)
-                         ? Msx2_CardDef(battle_right_face) : 0;
-    }
     battle_return_ui = return_ui;
     battle_frame = 0;
     ui = UI_BATTLE_ART;
@@ -706,7 +965,6 @@ static void begin_battle_art(u8 return_ui)
 static void end_battle_art(void)
 {
     ui = battle_return_ui;
-    battle_left_face = battle_right_face = SNES_CARD_NONE_FACE;
     Msx2_ClearActionEvent();
     touch_board(24);
     leave_mode3_art();
@@ -714,16 +972,13 @@ static void end_battle_art(void)
 
 /* ── The HUD band ────────────────────────────────────────────────────────── */
 
-/* THE BAND IS BLACK BITMAP AND NOTHING ELSE.
+/* THE BAND IS NOT PART OF THE BOARD AT ALL.
  *
- * The hand and the two rows of words under it are sprites, and the blue plate
- * they sit on is the backdrop tinted per scanline by an HDMA channel -- see
- * snes_m7fb.c.  So nothing is painted into the bitmap's HUD rows at all: they
- * are left transparent, which is exactly what lets the plate under them be a
- * five-bit-a-channel gradient instead of the four blues direct colour has.
- *
- * The band is still UPLOADED, once, because transparent means the bitmap has
- * to actually hold zeroes in VRAM and the clear only puts them in WRAM. */
+ * BG1 stops at line 144 (an HDMA write to TM), and the hand and the two rows
+ * of words under it are sprites over the backdrop, which an HDMA channel
+ * tints per scanline into the blue plate -- see snes_video.c.  That is what
+ * lets the plate be a five-bit-a-channel gradient instead of the four blues
+ * direct colour has. */
 
 static const char *prompt_text(void)
 {
@@ -961,12 +1216,8 @@ static void build_objects(void)
      * use the normal OBJ card cache, so no Mode 7 framebuffer is sampled or
      * rewritten while the presentation is visible. */
     if (mode3_active) {
-        /* Card inspection and attacks are BG1/BG2 pictures (snes_cardart.c);
-         * the sprite list is simply empty while one is up. */
-        if (ui == UI_BATTLE_ART) {
-            const u8 f = battle_frame > 24 ? 24 : battle_frame;
-            snesCardArtReveal(f >= 24 ? 255 : (u8)(f * 5));
-        }
+        /* The card check is BG1/BG2 pictures (snes_cardart.c); the sprite
+         * list is simply empty while it is up. */
         snesObjEnd();
         return;
     }
@@ -974,45 +1225,39 @@ static void build_objects(void)
     if (ui == UI_RESULT) build_result_banner();
 
     if (top_view) {
-        snesObjText(8, TOP_MSG_Y, name);
+        /* Overhead inspection is the same board through the same renderer,
+         * seen from straight above; the HUD rows are where they always are.
+         * THE CURSOR IS A SPRITE: the slot's four corners projected through
+         * the overhead camera and bracketed in the red the PC-FX and FM
+         * TOWNS builds use, which costs no render at all -- the overhead
+         * frame is the expensive kind and is painted exactly once. */
+        s16 x0, y0, x1, y1;
+        s16 cx, cz;
+        snesSlotCentre(top_row, top_col, 0, &cx, &cz);
+        /* At the settled endpoint the camera is exactly overhead: its
+         * 4.5-unit height and 128-pixel focal length make one screen pixel
+         * nine Q8.8 world counts.  Use that endpoint directly.  It avoids
+         * feeding a 90-degree pitch through the general perspective helper,
+         * whose near-plane rounding is intended for intermediate poses. */
+        x0 = (s16)(128 + (cx - 128) / 9);
+        x1 = (s16)(128 + (cx + 128) / 9);
+        y0 = (s16)(72 - (cz + 128) / 9);
+        y1 = (s16)(72 - (cz - 128) / 9);
+        if (x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128)
+            snesObjBoxRed(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
+        snesObjText(8, NAME_Y, name);
         if (has_stats) {
-            snesObjIcon(TOP_STAT_X, TOP_MSG_Y, SNES_SPR_ICON_ATK);
-            snesObjNum(TOP_STAT_X + STAT_NUM_DX, TOP_MSG_Y, atk, 4);
-            snesObjIcon(TOP_STAT_X + TOP_STAT_GAP, TOP_MSG_Y,
-                        SNES_SPR_ICON_DEF);
-            snesObjNum(TOP_STAT_X + TOP_STAT_GAP + STAT_NUM_DX, TOP_MSG_Y,
-                       def, 4);
+            snesObjIcon(STAT_ATK_X, STAT_Y, SNES_SPR_ICON_ATK);
+            snesObjNum(STAT_ATK_X + STAT_NUM_DX, STAT_Y, atk, 4);
+            snesObjIcon(STAT_DEF_X, STAT_Y, SNES_SPR_ICON_DEF);
+            snesObjNum(STAT_DEF_X + STAT_NUM_DX, STAT_Y, def, 4);
+        } else {
+            snesObjText(STAT_ATK_X, STAT_Y, "A:CHECK B:BACK");
         }
         snesObjLifePanel(LP_YOU_X, LP_Y, 0, (u16)you->lp, MSX2_START_LP);
         snesObjLifePanel(LP_COM_X, LP_Y, 1,
                          (u16)g_duel.side[MSX2_OWNER_COM].lp, MSX2_START_LP);
 
-        /* THE TABLE'S OWN CURSOR, in the red the PC-FX and FM TOWNS builds
-         * draw it in, and it stands on a SLOT rather than on a card: an empty
-         * slot is a thing the player is entitled to point at. */
-        snesObjBoxRed(SNES_TOP_X0 + (board_yaw ? 4 - top_col : top_col) * SNES_TOP_CELL,
-                      SNES_TOP_Y0 + (board_yaw ? 3 - top_row : top_row) * SNES_TOP_CELL,
-                      SNES_TOP_CELL, SNES_TOP_CELL);
-
-        /* The field, far row first, exactly the order the perspective board
-         * draws it in -- so walking up and back down does not reorder a thing
-         * the player was looking at. */
-        for (row = 0; row < SNES_ROWS; ++row) {
-            const u8 owner = (row <= SNES_ROW_COM_MONSTER) ? MSX2_OWNER_COM
-                                                           : MSX2_OWNER_PLAYER;
-            const u8 support = (row == SNES_ROW_COM_SUPPORT ||
-                                row == SNES_ROW_YOU_SUPPORT);
-            const Msx2Side *sd = &g_duel.side[owner];
-            for (col = 0; col < SNES_COLS; ++col) {
-                const u8 c = support ? sd->equip_field[col] : sd->field[col];
-                const u8 f = face_of(c, support ? 1 : sd->faceup[col]);
-                if (f == SNES_CARD_NONE_FACE) continue;
-                snesObjCardFlip(TOP_CARD_X(board_yaw ? 4 - col : col),
-                            TOP_CARD_Y(board_yaw ? 3 - row : row),
-                            (u8)(row * SNES_COLS + col), f,
-                            (u8)((row < 2 ? 0x80 : 0) ^ (board_yaw ? 0xC0 : 0)));
-            }
-        }
     } else {
         /* The name of the card the cursor is on, and under it what that card
          * is worth in a fight.  When there are no stats to show -- a support
@@ -1189,13 +1434,13 @@ static void begin_place_flight(u8 defense)
     fly_x1 = fly_x0;
     fly_y1 = fly_y0;
     if (slot != MSX2_SLOT_NONE && slot < SNES_COLS) {
-        snesSlotCentre(row, slot, &wx, &wz);
-        /* The projection is in VIEWPORT pixels and the viewport is half the
-         * screen's width, so the sprite's screen position is twice it, less
-         * half a card to centre the 32x32 sprite on the slot. */
-        if (snesProject(&cam, &vp, wx, wz, 0, &sx, &sy)) {
-            fly_x1 = (s16)((sx << 1) - 16);
-            fly_y1 = (s16)((sy << 1) - 16);
+        snesSlotCentre(row, slot, (u8)(board_yaw == 128), &wx, &wz);
+        /* The rest viewport projects in screen pixels; less half a card to
+         * centre the 32x32 sprite on the slot. */
+        set_rest_camera((u8)(board_yaw == 128));
+        if (snesProject(&cam, &vp_rest, wx, wz, 0, &sx, &sy)) {
+            fly_x1 = (s16)(sx - 16);
+            fly_y1 = (s16)(sy - 16);
         }
     }
     fly_frame = 1;
@@ -1433,17 +1678,20 @@ void snesDuelEnter(void)
     check_face = SNES_CARD_NONE_FACE;
     check_has_stats = 0;
     texture_w = texture_h = 0;
-    motion_next_vblank = snes_vblank_count;
-    snesVideoSetBoardZoom(SNES_M7_SCALE_STILL);
-    snesVideoSetView(SNES_VIEW_BOARD);
-    snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, 0, 0);
-    snesVideoSetBoardRes(SNES_RES_STILL);
+    pattern_mode = 0;
+    next_pool = 0;
+    requested_generation = 0;
+    rest_valid = 0;
+    held_drawn = 0;
+    slot_box_valid[0] = slot_box_valid[1] = 0;
+    baked_marker_row = baked_marker_col = 0xFF;
+    t_map = t_conv = t_render = 0;
+    t_turn_max = t_rest_max = t_held_max = 0;
     set_viewport();
-    snesVideoClear(BACKDROP);
-    /* Nothing draws into the bitmap's HUD band at all -- the HUD is sprites
-     * and the plate under them is the HDMA'd backdrop -- so the band goes up
-     * as zeroes exactly once, here. */
-    snesVideoHudDirty();
+    set_rest_camera(0);
+    /* The upload queue starts under force blank; the drain runs from the
+     * first vblank on. */
+    snesFbDrain(1);
     build_objects();
     render();
 }
@@ -1451,32 +1699,37 @@ void snesDuelEnter(void)
 u8 snesDuelFrame(void)
 {
     const u16 down = padsDown(0);
-    u8 res = snesVideoBoardRes();
-    u8 resized = 0;
 
-    if (down & KEY_R) fixture_board();
+    if ((down & (KEY_R | KEY_SELECT)) == (KEY_R | KEY_SELECT)) {
+        pattern_mode ^= 1;
+        touch_board(2);
+    } else {
+        if (down & KEY_R) fixture_board();
+        if (down & KEY_SELECT) {
+            show_cards ^= 1;
+            texture_w = 0;
+            touch_board(2);
+        }
+    }
     if (down & KEY_L) {
         autoplay ^= 1;
         say(autoplay ? "DEMO ON" : "DEMO OFF");
     }
-    if (down & KEY_SELECT) {
-        show_cards ^= 1;
-        touch_board(2);
-    }
     if (down & KEY_Y) {
         force_moving ^= 1;
-        snesVideoClear(BACKDROP);
-        snesVideoHudDirty();
+        if (!force_moving) set_rest_camera((u8)(board_yaw == 128));
         touch_board(2);
     }
 
     ++bob_phase;
     if (ui == UI_BATTLE_ART) {
-        if (battle_frame < 90) ++battle_frame;
-        if (battle_frame >= 90 || (battle_frame > 24 &&
-            (down & (KEY_A | KEY_B | KEY_START))))
-            end_battle_art();
-        build_objects();
+        /* One displayed field a game frame: nothing renders, so the loop
+         * runs at sixty and the sequencer counts fields.  The step's cost is
+         * stamped so the harness can hold it to a field. */
+        const u16 before = snesClock();
+        if (snesBattleStep(down)) end_battle_art();
+        else ++battle_frame;
+        t_render = (u16)(snesClock() - before);
         goto stamp;
     }
     if (view_motion == VIEW_BOARD_REST && ui == UI_HAND && !fly_landing && (down & KEY_B)) {
@@ -1521,6 +1774,7 @@ u8 snesDuelFrame(void)
             if (board_dirty) render();
             begin_view_transition(0);
         }
+        if (board_dirty) render();
         build_objects();
         goto stamp;
     }
@@ -1570,13 +1824,9 @@ u8 snesDuelFrame(void)
         goto stamp;
     }
 
-    /* Finish the camera move before allowing the next side to act.
-     *
-     * IN THE TOP VIEW THERE IS NOTHING TO TURN.  The table is a resident
-     * tilemap with the field on it as sprites, so a hand-off up there is the
-     * sprites changing sides -- which build_objects already does off board_yaw
-     * -- and dropping the player out of the view to animate a bitmap they
-     * cannot see was the whole of what made passing the turn look broken. */
+    /* Finish the camera move before allowing the next side to act.  The
+     * turn cannot pass while the overhead view is up (the duel is paused
+     * there), so the yaw is simply noted for the descent. */
     if (ui != UI_RESULT && !turn_frame && board_yaw != (g_duel.turn_owner ? 128 : 0)) {
         if (top_view || view_motion != VIEW_BOARD_REST) {
             board_yaw = g_duel.turn_owner ? 128 : 0;
@@ -1584,30 +1834,25 @@ u8 snesDuelFrame(void)
         } else {
             turn_from = board_yaw;
             turn_target = g_duel.turn_owner ? 128 : 0;
-            snesVideoSetView(SNES_VIEW_BOARD);
-            snesVideoSetBoardRes(SNES_RES_BEND);
-            set_viewport();
+            motion_sequence_begin(TURN_FRAMES);
             turn_frame = 1;
-            motion_next_vblank = snes_vblank_count;
         }
     }
     if (turn_frame) {
-        if (!motion_frame_due()) {
-            build_objects();
-            goto stamp;
-        }
-        u16 t = ease_frac((u8)((turn_frame + 1) >> 1), (TURN_FRAMES + 1) >> 1);
+        /* One rendered frame a game frame.  The camera swings out as it
+         * turns so the slab's corners stay inside the frame at the diagonal. */
+        const u16 t = ease_frac(turn_frame, TURN_FRAMES);
         board_yaw = (u8)view_lerp(turn_from, turn_target, t);
         snesCameraSet(&cam, 0,
-                      CAM_Z - snesQMul(256, snesSin(board_yaw)),
-                      CAM_HEIGHT, (s16)((u16)vp.w << 7), vp.h >> 5);
+                      (s16)(CAM_Z - snesQMul(384, snesSin(board_yaw))),
+                      CAM_HEIGHT, CAM_FOCAL, SNES_REST_HORIZON_PX);
         cam.yaw = board_yaw;
-        render();
+        motion_frame();
         build_objects();
-        schedule_motion_frame();
         if (++turn_frame > TURN_FRAMES) {
             turn_frame = 0;
             board_yaw = turn_target;
+            set_rest_camera((u8)(board_yaw == 128));
             touch_board(2);
         }
         goto stamp;
@@ -1663,53 +1908,45 @@ u8 snesDuelFrame(void)
         }
     }
 
-    /* A CARD IN THE AIR IS SOMETHING CHANGING.  While the player is choosing
-     * where to put a card, the card hovers over the slot and bobs, so the board
-     * stays on the fixed five-update cadence and keeps being redrawn. */
-    if (ui == UI_PLACE || ui == UI_EQUIP_TARGET) touch_board(2);
-
-    /* The board keeps its 128x80 source while something is changing.  A
-     * movement frame is admitted only every twelve vblanks; the upload and
-     * renderer therefore have a constant visual cadence instead of changing
-     * the board's texel size. */
-    /* THE TOP VIEW RENDERS NOTHING.  Its table is a resident tilemap and its
-     * cards are sprites, so while it is up there is no board to draw, no
-     * resolution to pick and no bitmap to upload -- the duel runs at sixty
-     * fields a second and the vblank goes to the card sprites instead. */
-    if (top_view) {
+    if (force_moving || pattern_mode) {
+        /* Y pins the general path at the resting camera, a frame a game
+         * frame: what the harness measures as the moving cost.  The rest
+         * picture is invalid afterwards (motion_frame says so). */
+        set_rest_camera(0);
+        motion_frame();
         build_objects();
-        motion = 0;
         goto stamp;
     }
 
-    if (motion || force_moving) {
-        if (motion) --motion;
-        if (res != SNES_RES_MOVING) {
-            snesVideoSetBoardRes(SNES_RES_MOVING);
-            set_viewport();
-            res = SNES_RES_MOVING;
-            resized = 1;
-            motion_next_vblank = snes_vblank_count;
-        }
-        if (motion_frame_due()) {
-            lift_phase += 8;
-            board_dirty = 1;
-        }
-    } else if (res != SNES_RES_STILL && snesVideoPresentDone()) {
-        snesVideoSetBoardRes(SNES_RES_STILL);
-        set_viewport();
-        res = SNES_RES_STILL;
-        resized = 1;
-        board_dirty = 1;
+    /* A CARD IN THE AIR IS SOMETHING CHANGING: while the player is choosing
+     * where to put a card, the card hovers over the slot and bobs, one quad
+     * a game frame through the rest picture's cells. */
+    if (ui == UI_PLACE || ui == UI_EQUIP_TARGET) {
+        lift_phase += 8;
+        touch_board(2);
     }
+    if (motion) --motion;
 
-    if (board_dirty && (resized || snesVideoPresentDone())) {
-        render();
-        if (res == SNES_RES_MOVING) schedule_motion_frame();
-    }
+    /* A resting board changes by diff: render() finds the slots that differ
+     * from the baked picture and patches those cells.  After a camera move
+     * (or anything that took the tiles) it is a full bake. */
+    if (board_dirty) render();
     build_objects();
 
 stamp:
+    g_stamp.map_lines = t_map;
+    g_stamp.conv_lines = t_conv;
+    g_stamp.render_lines = t_render;
+    g_stamp.turn_max_lines = t_turn_max;
+    g_stamp.rest_max_lines = t_rest_max;
+    g_stamp.held_max_lines = t_held_max;
+    g_stamp.nmi_skips = snesFbNmiSkips();
+    g_stamp.occupied = snesFbOccupied();
+    g_stamp.view = (view_motion == VIEW_TO_TOP) ? 2 : (view_motion == VIEW_TO_HAND) ? 3
+                 : top_view ? 1 : 0;
+    g_stamp.battle_phase = (ui == UI_BATTLE_ART) ? snesBattlePhase() : 0xFFFF;
+    g_stamp.battle_field = (ui == UI_BATTLE_ART) ? snesBattleField() : 0;
+    g_stamp.battle_damage = (ui == UI_BATTLE_ART) ? snesBattleDamage() : 0;
     g_stamp.duel_turn = g_duel.turns;
     g_stamp.lp_player = (u16)g_duel.side[MSX2_OWNER_PLAYER].lp;
     g_stamp.lp_com = (u16)g_duel.side[MSX2_OWNER_COM].lp;

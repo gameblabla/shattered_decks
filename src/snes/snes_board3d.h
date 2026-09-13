@@ -13,6 +13,14 @@
  *  closed form per screen row -- depth = height * focal / (row - horizon) --
  *  so a row costs one reciprocal lookup and two multiplies and then two adds a
  *  pixel.  That is what makes a textured board affordable.
+ *
+ *  UNITS AND PIXELS.  All geometry is in a 128x72 "unit" viewport with a
+ *  focal length of 64 -- half its width, which is what makes the floor's
+ *  texture step a shift.  The motion frame IS that viewport (SnesViewport.sub
+ *  = 0).  The resting board is the same viewport at two pixels a unit (sub =
+ *  1, 256x144): rows are walked in pixels with the half-unit reciprocal table
+ *  and every unit quantity is shifted when it becomes a pixel.  Q8.8 could
+ *  not hold a 256-wide viewport's own focal length or its row count.
  * ───────────────────────────────────────────────────────────────────────────── */
 #ifndef WAIFU_SNES_BOARD3D_H
 #define WAIFU_SNES_BOARD3D_H
@@ -40,44 +48,43 @@
 typedef struct SnesCamera {
     s16 x, z;        /* world position, Q8.8 */
     s16 height;      /* above the board plane, Q8.8 */
-    s16 focal;       /* Q8.8, in viewport pixels */
-    s16 horizon;     /* the screen row of the horizon, in viewport pixels */
+    s16 focal;       /* Q8.8, in unit-viewport pixels: always 64.0 */
+    s16 horizon;     /* the horizon's row, in the viewport's PIXELS */
     u8 yaw, pitch;   /* 256 angles per turn; pitch 64 looks straight down */
 } SnesCamera;
 
-/* The render target: a 128x80 rectangle of the chunky framebuffer for every
- * 3D board state.  Motion changes the update cadence and camera pose while
- * keeping the source texel size fixed. */
+/* The render target.  `origin` is an absolute byte offset in `bank` of pixel
+ * (0,0); w/h/stride are in pixels; `sub` is the pixels-per-unit shift (0 for
+ * the 128x72 motion frame, 1 for the 256x144 rest frame). */
 typedef struct SnesViewport {
-    u16 origin;      /* byte offset into snes_fb of pixel (0,0) */
-    u8  w, h;
-    u8  stride;
-    /* 32/focal, Q8.8, for the axis-aligned floor/card span fast path. */
+    u16 origin;
+    u16 w, h;
+    u16 stride;
+    u8  bank;
+    u8  sub;
+    /* 32/focal, Q8.8, per PIXEL: the floor's texture step at unit depth. */
     u16 du_k;
 } SnesViewport;
 
 void snesCameraSet(SnesCamera *cam, s16 x, s16 z, s16 height, s16 focal,
                    s16 horizon);
-/* Project a point on the board plane to viewport coordinates.  Returns 0 when
- * it falls at or behind the near plane. */
-/* The same, in Q8.8 viewport pixels: what the quad rasteriser needs, since a
- * card's corners land between pixels and rounding them first is what makes an
- * edge crawl a pixel a frame. */
+/* Project a point on the board plane.  Returns 0 when it falls at or behind
+ * the near plane.  The Q form is in Q8.8 UNITS from the viewport's top-left
+ * (what the quad rasteriser needs, since a card's corners land between
+ * pixels); the plain form is whole PIXELS. */
 u8   snesProjectQ(const SnesCamera *cam, const SnesViewport *vp,
                   s16 wx, s16 wz, s16 wy, s16 *out_x, s16 *out_y);
 u8   snesProject(const SnesCamera *cam, const SnesViewport *vp,
                  s16 wx, s16 wz, s16 wy, s16 *out_x, s16 *out_y);
-/* World position of the centre of a board slot, in Q8.8. */
-void snesSlotCentre(u8 row, u8 col, s16 *wx, s16 *wz);
+/* World position of the centre of a board slot, in Q8.8.  `mirror` is the
+ * yaw-128 board: the table seen from the other side, so every slot's world
+ * position is negated. */
+void snesSlotCentre(u8 row, u8 col, u8 mirror, s16 *wx, s16 *wz);
 
-/* Texture the slab and fill everything around it with `backdrop`.  The board
- * is FINITE -- five columns by four rows of checkerboard over a backdrop --
- * because that is what the MSX2, PC-FX and Atari ST boards are; an unbounded
- * plane with a grid painted on it reads as a road, not as a duel field.
- *
- * The bounds cost two adds a row and nothing per pixel: depth is constant
- * along a scanline, so the two screen columns where the slab's side edges fall
- * are linear in the row index. */
+/* Texture the slab and fill everything around it with `backdrop`.  Axis
+ * aligned (yaw 0) only; the camera-motion frames go through
+ * snesDrawCameraFloor, which handles yaw and pitch and records, per motion
+ * tile row, the texel columns it touched in snes_conv_rowspan. */
 void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop);
 void snesDrawCameraFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop);
 
@@ -85,64 +92,53 @@ void snesDrawCameraFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backd
 
 /* A CARD IS A CARD SHAPE, NOT A TILE.  It is as DEEP as the slot it lies in
  * and three quarters as WIDE, which from the duel camera reads as the 3:4
- * portrait every other port paints -- the square 0.8x0.8 this used to be made
- * the board a carpet of tiles with pictures in them.  Front to back the card
- * meets its neighbours, and that is what the rows are drawn far to near for;
- * across, the quarter unit left over is the groove the slot's own texture
- * shows through, so five cards on a row are still five things.
- *
- * The face is sixteen texels either way, so the two extents also set the two
- * texture rates: 16 texels over one unit down the card, and 16 over three
- * quarters of a unit across it -- 21 1/3 to the unit against the floor's
- * thirty-two, which is two thirds of the floor's own step. */
+ * portrait every other port paints.  Front to back the card meets its
+ * neighbours; across, the quarter unit left over is the groove the slot's
+ * own texture shows through, so five cards on a row are still five things. */
 #define SNES_CARD_HALF_X ((s16)96)       /* 0.375 world units: 3/4 of a tile */
 #define SNES_CARD_HALF_Z ((s16)128)      /* 0.5: the tile's whole depth */
-/* Two thirds, in Q8.8: the card's texture step as a fraction of the floor's. */
-#define SNES_CARD_U_NUM  ((s16)171)
+/* The card's texture step as a fraction of the floor's (32 texels a unit):
+ * 16 texels over three quarters of a unit is two thirds, 32 is four thirds. */
+#define SNES_CARD_U_NUM    ((s16)171)
+#define SNES_CARD32_U_NUM  ((s16)341)
 
-/* ONE BOARD ROW AT A TIME, not one card at a time.
- *
- * Five slots in a row sit at the same depth, so they share the row's depth,
- * its texture step and its v -- everything the plane equation produces -- and
- * only their screen edges and their starting u differ.  Drawing them together
- * is what makes a full board affordable: the per-row setup is 816-tcc's most
- * expensive code (measured, SNES_PORT_PLAN.md 4.4) and doing it once for a
- * board row instead of once per card cuts it by five.
- *
+/* ONE BOARD ROW AT A TIME, not one card at a time: five slots in a row share
+ * the row's depth, texture step and v, and only their screen edges differ.
  * `faces` is five face ids, SNES_CARD_NONE_FACE for an empty slot.  Rows are
- * drawn far to near, which is the whole hidden-surface algorithm here: there
- * is no z buffer.
- */
+ * drawn far to near, which is the whole hidden-surface algorithm here.
+ * Only pixel rows in [clip_y0, clip_y1) are drawn: a slot rebake redraws the
+ * rows its dirty cells cover and nothing else.  On the rest viewport (sub 1)
+ * the 32x32 sheet is used, on the motion viewport the 16x16 one. */
 #define SNES_CARD_NONE_FACE  0xFFu
 void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
-                     const u8 *faces);
+                     const u8 *faces, u8 mirror, u16 clip_y0, u16 clip_y1);
 
 /* The cursor's slot, and the slot the COM is acting on: a flat fill over the
  * whole tile, so a card resting in it leaves the marker as a rim. */
 void snesDrawSlotMarker(const SnesViewport *vp, const SnesCamera *cam,
-                        u8 row, u8 col, u8 colour);
+                        u8 row, u8 col, u8 mirror, u8 colour);
 
-/* A screen-space vertex for the general quad path: position in Q8.8 viewport
- * pixels, texture coordinates in Q8.8 texels. */
+/* A screen-space vertex for the general quad path: position in Q8.8 units
+ * from the viewport's top-left, texture coordinates in Q8.8 texels. */
 typedef struct SnesVert {
     s16 x, y;
     s16 u, v;
 } SnesVert;
 
-/* The convex-quad affine mapper -- a card that is NOT lying flat.
- *
- * TWO EDGE CHAINS, NOT A TRAPEZOID.  A card in the air is a convex quad whose
- * left and right chains each turn at their own vertex; assuming a trapezoid is
- * exactly what put a card off the board rim on the MSX2 port, so the chains
- * here are walked independently from the topmost vertex to the bottommost one.
- * Vertices must be given in order around the quad. */
+/* The convex-quad affine mapper -- a card that is NOT lying flat.  Two edge
+ * chains walked independently from the topmost vertex to the bottommost one;
+ * vertices in order around the quad. */
 void snesTexQuad(const SnesViewport *vp, const SnesVert *quad, u8 face);
 
 /* The quad of a card lifted `lift` world units above its slot and leaning back
- * by `tilt` -- the far edge raised, so the picture turns towards the player --
- * ready for snesTexQuad.  Returns 0 when any corner is at or behind the near
- * plane. */
+ * by `tilt`, ready for snesTexQuad.  Returns 0 when any corner is at or
+ * behind the near plane. */
 u8 snesCardQuad(const SnesCamera *cam, const SnesViewport *vp,
-                u8 row, u8 col, s16 lift, s16 tilt, SnesVert *quad);
+                u8 row, u8 col, u8 mirror, s16 lift, s16 tilt, SnesVert *quad);
+
+/* The pixel bounding box of a quad on its viewport, clamped to it.  Returns 0
+ * if it is entirely outside. */
+u8 snesQuadBounds(const SnesViewport *vp, const SnesVert *quad,
+                  u16 *x0, u16 *y0, u16 *x1, u16 *y1);
 
 #endif /* WAIFU_SNES_BOARD3D_H */

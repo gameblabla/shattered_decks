@@ -24,7 +24,7 @@ void snesStampCommit(void)
     sum += g_stamp.scene;
     sum += g_stamp.frames;
     sum += g_stamp.render_lines;
-    sum += g_stamp.board_res;
+    sum += g_stamp.frame_gen;
     sum += g_stamp.duel_turn;
     sum += g_stamp.lp_player;
     sum += g_stamp.lp_com;
@@ -39,5 +39,17 @@ void snesStampCommit(void)
     sum += g_stamp.deck_head;
     sum += g_stamp.storage_count;
     sum += g_stamp.save_valid;
+    sum += g_stamp.map_lines;
+    sum += g_stamp.conv_lines;
+    sum += g_stamp.nmi_skips;
+    sum += g_stamp.turn_max_lines;
+    sum += g_stamp.rest_max_lines;
+    sum += g_stamp.patch_max_lines;
+    sum += g_stamp.held_max_lines;
+    sum += g_stamp.occupied;
+    sum += g_stamp.view;
+    sum += g_stamp.battle_phase;
+    sum += g_stamp.battle_field;
+    sum += g_stamp.battle_damage;
     g_stamp.checksum = sum;
 }

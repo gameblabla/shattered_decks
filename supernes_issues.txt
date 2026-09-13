@@ -1,0 +1,13 @@
+- Titlescreen has last scanline bug that is entirely blue instead of game graphics (the very last scanline for it is buggy)
+- selected card sprite has glitches on its card
+- Change the existing top view separate mode 3 to instead be "ingame" with the 3D rasterizer and 3D cards on field etc...
+
+- The 3D renderer suffers from many graphical glitches, when moving around among others.
+(the half resolution trick when its moving around, doesn't work, so drop it. At this point, it may be preferable to just have it display at full resolution always and make that path as fast as possible).
+
+
+- 2D battle animation is very buggy, very slow (its nothing like PCFX or even PC/SDL3 or MSX2, it's very slow). It should use tiles + offset by tile (so basically Mode 4) but instead of going from left to right, in horizontal movement,
+they instead scroll down and up (for player's and opponent's respectively) to take advantage of the fact that SNES offset by tile feature scrolls more smoothly for vertical scrolling
+tiles but not horizontally (where its in 8px chunks that looks ugly).
+
+- The Direct attack should look more like PC/SDL3 version instead of PC-FX/FMT in terms of how elaborate it looks (you are allowed to make it as fancy as possible)

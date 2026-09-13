@@ -24,4 +24,13 @@
 extern const u8 snes_card_tex[];
 extern const char snes_card_names[];
 
+/* The 1:1 resting sheet: 32x32 texels a face, one kilobyte, indexed
+ * (v << 5) | u inside the page.  Faces below SNES_CARD32_SPLIT are in
+ * snes_card_tex32, the rest in snes_card_tex32b (a long-indexed read spans one
+ * bank); snesSpanCard32 picks the sheet from the face. */
+#define SNES_CARD32_TEXELS    32
+#define SNES_CARD32_SPLIT     64
+extern const u8 snes_card_tex32[];
+extern const u8 snes_card_tex32b[];
+
 #endif

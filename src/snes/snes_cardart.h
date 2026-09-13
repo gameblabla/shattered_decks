@@ -35,12 +35,17 @@
  * `navy` paints the backdrop the card check's panel colour; otherwise black.
  * The caller turns the screen back on. */
 void snesCardArtEnter(u8 navy);
+void snesCardArtLoadCommon(void);
 /* Load one face's tiles and palette into card slot 0 or 1. */
 void snesCardArtLoad(u8 slot, u8 face);
 /* Put slot `slot` on the BG1 map at tile column `col`, with the frame foot
  * for `face`'s kind under it. */
 void snesCardArtPlace(u8 slot, u8 col, u8 face);
 void snesCardArtClear(void);
+/* The fifteen cells of one tile row (0..19) of a card in `slot`, for the
+ * battle's own map. */
+void snesCardArtRowCells(u8 slot, u8 face, u8 ty, u16 *cells);
+#define SNES_CARDART_BLANK_TILE 511u
 /* BG2 text.  Rows and columns are map cells; see the scroll above. */
 void snesCardArtText(u8 col, u8 row, const char *s, u8 pal);
 void snesCardArtNum(u8 col, u8 row, u16 value, u8 digits, u8 pal);

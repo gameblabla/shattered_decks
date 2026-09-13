@@ -217,72 +217,54 @@ snesMulLo:
 snesQMul:
     php
     rep #$30
-
     lda 5,s
     sta.l mth_ma
+    eor 7,s
+    sta.l mth_sgn
+    ; Signed 16 x signed 8, twice.  M7A is a write-twice register: a
+    ; 16-bit store would write M7B instead of its high byte.
+    sep #$20
+.ACCU 8
+    lda 5,s
+    sta.l $211B
+    lda 6,s
+    sta.l $211B
     lda 7,s
-    sta.l mth_mb
-    lda #0
-    sta.l mth_sgn                 ; sign accumulator
-
-    lda.l mth_ma
-    bpl +
-    eor #$FFFF
-    inc a
-    sta.l mth_ma
-    lda #1
-    sta.l mth_sgn
-+
-    lda.l mth_mb
-    bpl +
-    eor #$FFFF
-    inc a
-    sta.l mth_mb
-    lda.l mth_sgn
-    eor #1
-    sta.l mth_sgn
-+
-    ; (a*b) >> 8 = (low16 >> 8) | (high16 << 8)
-    lda.l mth_mb
-    pha
-    lda.l mth_ma
-    pha
-    jsl snesMulLo
-    pla
-    pla
-    lda.b tcc__r0
-    xba
-    and #$00FF
+    sta.l $211C
+    lda.l $2134
+    sta.l mth_mb                ; fractional byte, for truncation toward zero
+    rep #$20
+.ACCU 16
+    lda.l $2135
     sta.l mth_acc
-
-    lda.l mth_mb
-    pha
-    lda.l mth_ma
-    pha
-    jsl snesMulHi
-    pla
-    pla
-    lda.b tcc__r0
-    xba
-    and #$FF00
+    ; The low byte of b is unsigned in the partial-product expansion.
+    lda 7,s
+    and #$0080
+    beq +
+    lda.l mth_acc
+    clc
+    adc.l mth_ma
+    sta.l mth_acc
++   sep #$20
+.ACCU 8
+    lda 8,s
+    sta.l $211C
+    rep #$20
+.ACCU 16
+    lda.l $2134
     clc
     adc.l mth_acc
-
-    ; The sign is put back last.  LDX has no absolute-long addressing mode --
-    ; only A does -- so the product is parked in Y while mth_sgn is read.
-    tay
+    sta.l mth_acc
     lda.l mth_sgn
+    bpl +
+    lda.l mth_mb
+    and #$00FF
     beq +
-    tya
-    eor #$FFFF
+    lda.l mth_acc
     inc a
+    sta.l mth_acc
++   lda.l mth_acc
     sta.b tcc__r0
-    plp
-    rtl
-+
-    tya
-    sta.b tcc__r0
-
     plp
     rtl
 
@@ -379,6 +361,49 @@ snesVCounter:
     sta.b tcc__r0+1
     rep #$20
 .ACCU 16
+    plp
+    rtl
+
+; Monotonic scanline timestamp modulo 65536.  The library field count
+; increments at NMI, not at scanline zero: phase the V counter at line 225.
+; Retry if NMI interrupted the latch/read pair (it also latches the counters).
+snesClock:
+    php
+    rep #$30
+_ck_retry:
+    lda.l snes_vblank_count
+    pha
+    jsl snesVCounter
+    lda.l snes_vblank_count
+    cmp 1,s
+    beq +
+    pla
+    bra _ck_retry
++   pla
+    ; A * 262 = A * 256 + A * 4 + A * 2 (modulo 16 bits).
+    sta.l mth_acc
+    asl a
+    sta.l mth_ma
+    asl a
+    clc
+    adc.l mth_ma
+    sta.l mth_ma
+    lda.l mth_acc
+    xba
+    and #$FF00
+    clc
+    adc.l mth_ma
+    sta.l mth_ma
+    lda.b tcc__r0
+    cmp #225
+    bcc +
+    sec
+    sbc #262
++   clc
+    adc #37
+    clc
+    adc.l mth_ma
+    sta.b tcc__r0
     plp
     rtl
 

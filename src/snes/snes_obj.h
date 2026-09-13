@@ -1,29 +1,24 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- *  snes_obj.h — the sprite layer: the HUD, the hand, and the top view's cards.
+ *  snes_obj.h — the sprite layer: the HUD, the hand, and the overhead cursor.
  *
- *  THE HUD IS SPRITES AND NOT BITMAP, and the reason is resolution.  The duel
- *  board is a Mode 7 chunky bitmap sampled at 2x2 screen pixels a texel in
- *  every 3D state, so a letter drawn into it is a letter at half the
- *  console's resolution and a card in hand is sixteen texels stretched across
- *  thirty-two pixels.  The OBJ layer is drawn by the PPU at the screen's own
- *  resolution, over whichever background mode is up, and this machine allows
- *  thirty-two sprites and thirty-four 8x8 slivers on a scanline -- five 32x32
- *  cards across a row is twenty of those slivers, so the budget is not close.
+ *  THE HUD IS SPRITES AND NOT BOARD, and the reason is resolution.  The duel
+ *  board is a software-rendered picture, and a letter drawn into it would
+ *  cost a render every time it changed; the OBJ layer is drawn by the PPU at
+ *  the screen's own resolution over whichever background is up, and this
+ *  machine allows thirty-two sprites and thirty-four 8x8 slivers on a
+ *  scanline -- five 32x32 cards across a row is twenty of those slivers, so
+ *  the budget is not close.
  *
- *  VRAM, and why nothing here is ever rewritten in bulk:
+ *  VRAM, and why nothing here is ever rewritten in bulk (snes_video.h has
+ *  the whole map):
  *
- *      words $0000-$3FFF   the Mode 7 bitmap (tilemap in the low bytes,
- *                          characters in the high ones -- see snes_fb.asm)
- *      words $4000-$5FFF   OBJ characters: 20 card sprites of 32x32, then the
- *                          HUD font and the cursor's corner brackets
- *      words $6000-$6FFF   the top view's 8bpp background characters
- *      words $7000-$73FF   the top view's tilemap
+ *      words $0000-$5FFF   the Mode 3 direct-colour board's tiles and maps
+ *      words $6000-$7FFF   OBJ characters: 20 card sprite slots of 32x32,
+ *                          then the HUD font and the cursor's corner brackets
  *
- *  CGRAM 0..127 is the top view's background palette and 128..255 the eight
- *  OBJ palettes; Mode 7 direct colour reads no CGRAM at all, so both views
- *  share one CGRAM and A MODE CHANGE TOUCHES NO COLOUR AND NO VRAM.  That is
- *  what lets the duel walk up into the top view in three register writes,
- *  inside one vblank, with no force blank and therefore no black frame.
+ *  CGRAM 128..255 is the eight OBJ palettes; the board's direct colour reads
+ *  no CGRAM at all.  The battle (snes_battle.c) takes VRAM and CGRAM for its
+ *  own layout and snesObjInit puts all of this back afterwards.
  *
  *  A card sprite's tiles are FOUR ROWS OF FOUR, because a 32x32 sprite at name
  *  n covers n..n+3 on each of four rows of the sixteen-wide name table.  Four
@@ -36,8 +31,8 @@
 #include "snes_types.h"
 #include "snes_obj_data.h"
 
-/* Twenty card sprites: the whole field in the top view, or the five in hand
- * in the board view, which reuses the first five slots. */
+/* Twenty card sprite slots; the hand uses the first five, and those five
+ * are also the ones with an OBJ palette of their own. */
 #define SNES_OBJ_CARDS       20
 #define SNES_OBJ_NO_FACE     0xFFu
 
@@ -49,6 +44,7 @@ void snesObjInit(void);
  * the player left. */
 void snesObjBegin(void);
 void snesObjSprite(s16 x, s16 y, u16 tile, u8 pal, u8 big);
+void snesObjSpriteFlip(s16 x, s16 y, u16 tile, u8 pal, u8 big, u8 flip);
 void snesObjText(s16 x, s16 y, const char *s);
 void snesObjNum(s16 x, s16 y, u16 value, u8 digits);
 /* SNES_SPR_ICON_ATK or SNES_SPR_ICON_DEF: the sword and the shield the stat
@@ -104,6 +100,7 @@ void snesObjEnd(void);
 /* Called once a vblank, before the framebuffer's own upload asks for what is
  * left: pushes OAM and at most a couple of card faces. */
 void snesObjVblank(void);
+u16  snesObjVblankBytes(void);
 /* Whether every card asked for is actually in VRAM. */
 u8   snesObjCardsReady(void);
 

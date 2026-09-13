@@ -16,6 +16,7 @@
 #include "snes_deck.h"
 #include "snes_audio.h"
 #include "snes_cardart.h"
+#include "snes_battle.h"
 
 static u8  cur_scene = SNES_SCENE_BOOT;
 static u16 scene_frames = 0;   /* explicit: see snes_duel.c on .bss */
@@ -126,6 +127,9 @@ void snesSceneRun(void)
 int main(void)
 {
     consoleInit();
+    /* The board's upload runs inside the NMI (snes_fb.asm); it does nothing
+     * until a duel enables the drain. */
+    nmiSet(snesFbNmi);
     snesAudioInit();
     snesStampInit();
 
@@ -137,7 +141,7 @@ int main(void)
 
         g_stamp.scene = cur_scene;
         g_stamp.frames = scene_frames;
-        g_stamp.board_res = snesVideoBoardRes();
+        g_stamp.frame_gen = snesVideoPresentedGeneration();
         g_stamp.deck_slot = snesDeckActiveSlot();
         g_stamp.deck_count = snesDeckCount();
         g_stamp.deck_head = snesDeckHead();
@@ -145,13 +149,21 @@ int main(void)
         g_stamp.save_valid = snesDeckSaveValid();
         snesStampCommit();
 
+        /* The sprite layer's share of the coming vblank, reserved out of
+         * the board drain's allowance before the NMI runs. */
+        snesFbReserve(cur_scene == SNES_SCENE_DUEL ? snesObjVblankBytes() : 0);
         WaitForVBlank();
         if (scene_pending != SNES_SCENE_BOOT) {
             u8 next = scene_pending;
             scene_pending = SNES_SCENE_BOOT;
             /* Scene changes that upload a complete screen happen at this
-             * boundary, never halfway through the title's active display. */
+             * boundary, never halfway through the title's active display.
+             * A scene set is many fields long (the duel bakes its board),
+             * so the vblank work below waits for the NEXT vblank: run here
+             * it landed in active display with the screen just turned on,
+             * and the first hand card's tiles were dropped on the floor. */
             snesSceneSet(next);
+            continue;
         }
         if (screen_on_pending) {
             /* Re-prime the table at the actual frame boundary.  This is
@@ -168,13 +180,15 @@ int main(void)
             screen_on_pending = 0;
         }
         if (cur_scene == SNES_SCENE_DUEL) {
-            /* OAM and the card tiles FIRST, then whatever the bitmap's staged
-             * upload wants from what is left of the window: the sprite layer
-             * is the HUD, and a HUD that arrives a vblank late while the board
-             * finishes is the wrong way round. */
+            /* The board's tiles went up inside the NMI (snes_fb.asm), which
+             * left the reserved share of the window for this: OAM and the
+             * card rows, then the card presentation's maps if one is up. */
             snesObjVblank();
-            if (snesDuelMode3Active()) snesCardArtVblank();
-            else snesVideoPresent();
+            switch (snesDuelMode3Active()) {
+            case 1:  snesCardArtVblank(); break;
+            case 2:  snesBattleVblank(); break;
+            default: snesVideoPresent(); break;
+            }
         } else if (cur_scene == SNES_SCENE_TITLE ||
                    cur_scene == SNES_SCENE_STORY_TALK ||
                    cur_scene == SNES_SCENE_ENDING) {
