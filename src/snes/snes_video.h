@@ -93,6 +93,10 @@ void snesConvRows(u16 row0, u16 row1);
 void snesConvCells(u16 row, u16 col0, u16 col1);
 void snesConvEnd(void);
 void snesConvSetFloor(u16 src, u16 bank);
+/* The frame to convert: 0 the 256x144 picture at 1:1, 1 the 128x72 motion
+ * frame at the top of the same buffer (stride 128), converted doubled -- a
+ * cell is four texels by four lines, each texel a 2x2 block of pixels. */
+void snesConvSetHalf(u16 on);
 
 void snesRasterTarget(u16 bank);
 void snesSpanFloor(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
@@ -115,7 +119,7 @@ void snesSpanFloorQuad(u16 index, u16 count, u16 u, u16 v, u16 du, u16 dv);
  * [y0, y1), in as many calls as the caller likes. */
 void snesFloorRowsSetup(s16 half, s16 dhalf, s16 denom16, s16 dstep,
                         s16 a16, s16 astep, s16 height, s16 camz,
-                        u16 ubase, u16 origin);
+                        u16 ubase, u16 origin, u16 sub);
 void snesFloorRowsPitch(u16 y0, u16 y1);
 void snesBoardTextureClear(void);
 void snesBoardTextureCard(u16 centre, u16 face, u16 flip, u16 width, u16 height);

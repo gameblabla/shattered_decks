@@ -16,6 +16,9 @@
 snesConvFrameTileTab:
     .dw snesConvFrameTile0, snesConvFrameTile1
     .dw snesConvFrameTile2, snesConvFrameTile3
+snesConvHalfTileTab:
+    .dw snesConvHalfTile0, snesConvHalfTile1
+    .dw snesConvHalfTile2, snesConvHalfTile3
 
 snesConvFrameTile0:
     lda.w snes_frame_fb + 0,y
@@ -6813,6 +6816,1321 @@ _cf3_r7_p3_h1:
 _cf3_r7_p3_back:
     rts
 
+snesConvHalfTile0:
+    lda.w snes_frame_fb + 0,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $00
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $10
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $20
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $30
+    lda.w snes_frame_fb + 1,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $00
+    sta.b $00
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $10
+    sta.b $10
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $20
+    sta.b $20
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $30
+    sta.b $30
+    lda.w snes_frame_fb + 2,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $00
+    sta.b $00
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $10
+    sta.b $10
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $20
+    sta.b $20
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $30
+    sta.b $30
+    lda.w snes_frame_fb + 3,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $00
+    sta.b $00
+    sta.b $02
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $10
+    sta.b $10
+    sta.b $12
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $20
+    sta.b $20
+    sta.b $22
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $30
+    sta.b $30
+    sta.b $32
+    lda.w snes_frame_fb + 128,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $04
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $14
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $24
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $34
+    lda.w snes_frame_fb + 129,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $04
+    sta.b $04
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $14
+    sta.b $14
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $24
+    sta.b $24
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $34
+    sta.b $34
+    lda.w snes_frame_fb + 130,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $04
+    sta.b $04
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $14
+    sta.b $14
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $24
+    sta.b $24
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $34
+    sta.b $34
+    lda.w snes_frame_fb + 131,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $04
+    sta.b $04
+    sta.b $06
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $14
+    sta.b $14
+    sta.b $16
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $24
+    sta.b $24
+    sta.b $26
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $34
+    sta.b $34
+    sta.b $36
+    lda.w snes_frame_fb + 256,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $08
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $18
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $28
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $38
+    lda.w snes_frame_fb + 257,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $08
+    sta.b $08
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $18
+    sta.b $18
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $28
+    sta.b $28
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $38
+    sta.b $38
+    lda.w snes_frame_fb + 258,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $08
+    sta.b $08
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $18
+    sta.b $18
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $28
+    sta.b $28
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $38
+    sta.b $38
+    lda.w snes_frame_fb + 259,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $08
+    sta.b $08
+    sta.b $0A
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $18
+    sta.b $18
+    sta.b $1A
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $28
+    sta.b $28
+    sta.b $2A
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $38
+    sta.b $38
+    sta.b $3A
+    lda.w snes_frame_fb + 384,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $0C
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $1C
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $2C
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $3C
+    lda.w snes_frame_fb + 385,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $0C
+    sta.b $0C
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $1C
+    sta.b $1C
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $2C
+    sta.b $2C
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $3C
+    sta.b $3C
+    lda.w snes_frame_fb + 386,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $0C
+    sta.b $0C
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $1C
+    sta.b $1C
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $2C
+    sta.b $2C
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $3C
+    sta.b $3C
+    lda.w snes_frame_fb + 387,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $0C
+    sta.b $0C
+    sta.b $0E
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $1C
+    sta.b $1C
+    sta.b $1E
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $2C
+    sta.b $2C
+    sta.b $2E
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $3C
+    sta.b $3C
+    sta.b $3E
+    rts
+
+snesConvHalfTile1:
+    lda.w snes_frame_fb + 0,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $40
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $50
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $60
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $70
+    lda.w snes_frame_fb + 1,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $40
+    sta.b $40
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $50
+    sta.b $50
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $60
+    sta.b $60
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $70
+    sta.b $70
+    lda.w snes_frame_fb + 2,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $40
+    sta.b $40
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $50
+    sta.b $50
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $60
+    sta.b $60
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $70
+    sta.b $70
+    lda.w snes_frame_fb + 3,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $40
+    sta.b $40
+    sta.b $42
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $50
+    sta.b $50
+    sta.b $52
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $60
+    sta.b $60
+    sta.b $62
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $70
+    sta.b $70
+    sta.b $72
+    lda.w snes_frame_fb + 128,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $44
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $54
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $64
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $74
+    lda.w snes_frame_fb + 129,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $44
+    sta.b $44
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $54
+    sta.b $54
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $64
+    sta.b $64
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $74
+    sta.b $74
+    lda.w snes_frame_fb + 130,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $44
+    sta.b $44
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $54
+    sta.b $54
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $64
+    sta.b $64
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $74
+    sta.b $74
+    lda.w snes_frame_fb + 131,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $44
+    sta.b $44
+    sta.b $46
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $54
+    sta.b $54
+    sta.b $56
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $64
+    sta.b $64
+    sta.b $66
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $74
+    sta.b $74
+    sta.b $76
+    lda.w snes_frame_fb + 256,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $48
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $58
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $68
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $78
+    lda.w snes_frame_fb + 257,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $48
+    sta.b $48
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $58
+    sta.b $58
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $68
+    sta.b $68
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $78
+    sta.b $78
+    lda.w snes_frame_fb + 258,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $48
+    sta.b $48
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $58
+    sta.b $58
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $68
+    sta.b $68
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $78
+    sta.b $78
+    lda.w snes_frame_fb + 259,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $48
+    sta.b $48
+    sta.b $4A
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $58
+    sta.b $58
+    sta.b $5A
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $68
+    sta.b $68
+    sta.b $6A
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $78
+    sta.b $78
+    sta.b $7A
+    lda.w snes_frame_fb + 384,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $4C
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $5C
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $6C
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $7C
+    lda.w snes_frame_fb + 385,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $4C
+    sta.b $4C
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $5C
+    sta.b $5C
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $6C
+    sta.b $6C
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $7C
+    sta.b $7C
+    lda.w snes_frame_fb + 386,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $4C
+    sta.b $4C
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $5C
+    sta.b $5C
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $6C
+    sta.b $6C
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $7C
+    sta.b $7C
+    lda.w snes_frame_fb + 387,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $4C
+    sta.b $4C
+    sta.b $4E
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $5C
+    sta.b $5C
+    sta.b $5E
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $6C
+    sta.b $6C
+    sta.b $6E
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $7C
+    sta.b $7C
+    sta.b $7E
+    rts
+
+snesConvHalfTile2:
+    lda.w snes_frame_fb + 0,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $80
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $90
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $A0
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $B0
+    lda.w snes_frame_fb + 1,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $80
+    sta.b $80
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $90
+    sta.b $90
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $A0
+    sta.b $A0
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $B0
+    sta.b $B0
+    lda.w snes_frame_fb + 2,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $80
+    sta.b $80
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $90
+    sta.b $90
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $A0
+    sta.b $A0
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $B0
+    sta.b $B0
+    lda.w snes_frame_fb + 3,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $80
+    sta.b $80
+    sta.b $82
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $90
+    sta.b $90
+    sta.b $92
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $A0
+    sta.b $A0
+    sta.b $A2
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $B0
+    sta.b $B0
+    sta.b $B2
+    lda.w snes_frame_fb + 128,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $84
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $94
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $A4
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $B4
+    lda.w snes_frame_fb + 129,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $84
+    sta.b $84
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $94
+    sta.b $94
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $A4
+    sta.b $A4
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $B4
+    sta.b $B4
+    lda.w snes_frame_fb + 130,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $84
+    sta.b $84
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $94
+    sta.b $94
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $A4
+    sta.b $A4
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $B4
+    sta.b $B4
+    lda.w snes_frame_fb + 131,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $84
+    sta.b $84
+    sta.b $86
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $94
+    sta.b $94
+    sta.b $96
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $A4
+    sta.b $A4
+    sta.b $A6
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $B4
+    sta.b $B4
+    sta.b $B6
+    lda.w snes_frame_fb + 256,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $88
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $98
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $A8
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $B8
+    lda.w snes_frame_fb + 257,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $88
+    sta.b $88
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $98
+    sta.b $98
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $A8
+    sta.b $A8
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $B8
+    sta.b $B8
+    lda.w snes_frame_fb + 258,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $88
+    sta.b $88
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $98
+    sta.b $98
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $A8
+    sta.b $A8
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $B8
+    sta.b $B8
+    lda.w snes_frame_fb + 259,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $88
+    sta.b $88
+    sta.b $8A
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $98
+    sta.b $98
+    sta.b $9A
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $A8
+    sta.b $A8
+    sta.b $AA
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $B8
+    sta.b $B8
+    sta.b $BA
+    lda.w snes_frame_fb + 384,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $8C
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $9C
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $AC
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $BC
+    lda.w snes_frame_fb + 385,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $8C
+    sta.b $8C
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $9C
+    sta.b $9C
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $AC
+    sta.b $AC
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $BC
+    sta.b $BC
+    lda.w snes_frame_fb + 386,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $8C
+    sta.b $8C
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $9C
+    sta.b $9C
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $AC
+    sta.b $AC
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $BC
+    sta.b $BC
+    lda.w snes_frame_fb + 387,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $8C
+    sta.b $8C
+    sta.b $8E
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $9C
+    sta.b $9C
+    sta.b $9E
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $AC
+    sta.b $AC
+    sta.b $AE
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $BC
+    sta.b $BC
+    sta.b $BE
+    rts
+
+snesConvHalfTile3:
+    lda.w snes_frame_fb + 0,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $C0
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $D0
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $E0
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $F0
+    lda.w snes_frame_fb + 1,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $C0
+    sta.b $C0
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $D0
+    sta.b $D0
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $E0
+    sta.b $E0
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $F0
+    sta.b $F0
+    lda.w snes_frame_fb + 2,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $C0
+    sta.b $C0
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $D0
+    sta.b $D0
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $E0
+    sta.b $E0
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $F0
+    sta.b $F0
+    lda.w snes_frame_fb + 3,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $C0
+    sta.b $C0
+    sta.b $C2
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $D0
+    sta.b $D0
+    sta.b $D2
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $E0
+    sta.b $E0
+    sta.b $E2
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $F0
+    sta.b $F0
+    sta.b $F2
+    lda.w snes_frame_fb + 128,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $C4
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $D4
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $E4
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $F4
+    lda.w snes_frame_fb + 129,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $C4
+    sta.b $C4
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $D4
+    sta.b $D4
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $E4
+    sta.b $E4
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $F4
+    sta.b $F4
+    lda.w snes_frame_fb + 130,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $C4
+    sta.b $C4
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $D4
+    sta.b $D4
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $E4
+    sta.b $E4
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $F4
+    sta.b $F4
+    lda.w snes_frame_fb + 131,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $C4
+    sta.b $C4
+    sta.b $C6
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $D4
+    sta.b $D4
+    sta.b $D6
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $E4
+    sta.b $E4
+    sta.b $E6
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $F4
+    sta.b $F4
+    sta.b $F6
+    lda.w snes_frame_fb + 256,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $C8
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $D8
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $E8
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $F8
+    lda.w snes_frame_fb + 257,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $C8
+    sta.b $C8
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $D8
+    sta.b $D8
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $E8
+    sta.b $E8
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $F8
+    sta.b $F8
+    lda.w snes_frame_fb + 258,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $C8
+    sta.b $C8
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $D8
+    sta.b $D8
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $E8
+    sta.b $E8
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $F8
+    sta.b $F8
+    lda.w snes_frame_fb + 259,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $C8
+    sta.b $C8
+    sta.b $CA
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $D8
+    sta.b $D8
+    sta.b $DA
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $E8
+    sta.b $E8
+    sta.b $EA
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $F8
+    sta.b $F8
+    sta.b $FA
+    lda.w snes_frame_fb + 384,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c0,x
+    sta.b $CC
+    lda.l snes_dbllut_p1_c0,x
+    sta.b $DC
+    lda.l snes_dbllut_p2_c0,x
+    sta.b $EC
+    lda.l snes_dbllut_p3_c0,x
+    sta.b $FC
+    lda.w snes_frame_fb + 385,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c1,x
+    ora.b $CC
+    sta.b $CC
+    lda.l snes_dbllut_p1_c1,x
+    ora.b $DC
+    sta.b $DC
+    lda.l snes_dbllut_p2_c1,x
+    ora.b $EC
+    sta.b $EC
+    lda.l snes_dbllut_p3_c1,x
+    ora.b $FC
+    sta.b $FC
+    lda.w snes_frame_fb + 386,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c2,x
+    ora.b $CC
+    sta.b $CC
+    lda.l snes_dbllut_p1_c2,x
+    ora.b $DC
+    sta.b $DC
+    lda.l snes_dbllut_p2_c2,x
+    ora.b $EC
+    sta.b $EC
+    lda.l snes_dbllut_p3_c2,x
+    ora.b $FC
+    sta.b $FC
+    lda.w snes_frame_fb + 387,y
+    and #$00FF
+    asl a
+    tax
+    lda.l snes_dbllut_p0_c3,x
+    ora.b $CC
+    sta.b $CC
+    sta.b $CE
+    lda.l snes_dbllut_p1_c3,x
+    ora.b $DC
+    sta.b $DC
+    sta.b $DE
+    lda.l snes_dbllut_p2_c3,x
+    ora.b $EC
+    sta.b $EC
+    sta.b $EE
+    lda.l snes_dbllut_p3_c3,x
+    ora.b $FC
+    sta.b $FC
+    sta.b $FE
+    rts
+
 .INCLUDE "snes_conv_drivers.inc"
+
+.ENDS
+
+
+.BASE $C0
+.SECTION "snes_dbllut" SUPERFREE
+
+snes_dbllut_p0_c0:
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
+snes_dbllut_p0_c1:
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
+snes_dbllut_p0_c2:
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
+snes_dbllut_p0_c3:
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
+snes_dbllut_p1_c0:
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
+snes_dbllut_p1_c1:
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
+snes_dbllut_p1_c2:
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
+snes_dbllut_p1_c3:
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
+snes_dbllut_p2_c0:
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
+    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
+    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
+    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
+    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
+    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
+    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
+    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
+    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
+snes_dbllut_p2_c1:
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
+    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
+    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
+    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
+    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
+    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
+    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
+    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
+    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
+snes_dbllut_p2_c2:
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
+    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
+    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
+    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
+    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
+    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
+    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
+    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
+    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
+snes_dbllut_p2_c3:
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
+    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
+    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
+    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
+    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
+    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
+    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
+    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
+    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
+snes_dbllut_p3_c0:
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
+    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
+    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
+    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
+    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
+    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
+    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
+    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
+    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
+    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
+snes_dbllut_p3_c1:
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
+    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
+    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
+    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
+    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
+    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
+    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
+    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
+    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
+    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
+    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
+    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
+snes_dbllut_p3_c2:
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
+    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
+    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
+    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
+    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
+    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
+    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
+    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
+    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
+    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
+snes_dbllut_p3_c3:
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
+    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
+    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
+    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
+    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
+    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
+    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
+    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
+    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
+    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
+    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
+    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
+    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
 
 .ENDS

@@ -564,9 +564,10 @@ static void edge_init(EdgeWalk *e, const SnesVert *a, const SnesVert *b,
 
 /* Per motion tile row, the texel columns the mapper touched.  The converter
  * skips the cells outside; a row it never touched stays min 255 / max 0. */
-static void span_note(u16 y, s16 x0, s16 x1)
+static void span_note(u16 y, s16 x0, s16 x1, u8 sub)
 {
-    u8 *e = &snes_conv_rowspan[(y >> 3) << 1];
+    /* A cell is eight lines of the 1:1 frame, four of the motion frame. */
+    u8 *e = &snes_conv_rowspan[(sub ? (y >> 3) : (y >> 2)) << 1];
     if ((u8)x0 < e[0]) e[0] = (u8)x0;
     if ((u8)(x1 - 1) > e[1]) e[1] = (u8)(x1 - 1);
 }
@@ -594,8 +595,10 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
     if (cam) {
         cp = snesCos(cam->pitch); sp = snesSin(cam->pitch);
         cy = snesCos(cam->yaw); sn = snesSin(cam->yaw);
-        denom_step = (s16)(cp >> 3);
-        a_step = (s16)(-(sp >> 3));
+        /* Per PIXEL row: on the 1:1 viewport that is half a unit row, on
+         * the 128x72 motion frame a whole one. */
+        denom_step = sub ? (s16)(cp >> 3) : (s16)(cp >> 2);
+        a_step = sub ? (s16)(-(sp >> 3)) : (s16)(-(sp >> 2));
     }
 
     if (face != SNES_CARD_NONE_FACE) {
@@ -618,7 +621,10 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
     edge_init(&right, &q[top], &q[(top + 1) & 3], sub, y);
 
     if (cam) {
-        const s16 sy0 = (s16)((y - cam->horizon) << 1);
+        /* sy in quarter unit rows: a pixel row is half a unit row at 1:1
+         * and a whole one on the motion frame. */
+        const s16 sy0 = sub ? (s16)((y - cam->horizon) << 1)
+                            : (s16)((y - cam->horizon) << 2);
         denom16 = (s16)((s16)(sp + snesQMul(sy0, cp)) << 4);
         a16 = (s16)((s16)(cp - snesQMul(sy0, sp)) << 4);
         if (!cam->yaw) {
@@ -634,7 +640,8 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
             const s16 y_top = y;
             s16 y0 = y < 0 ? 0 : y;
             s16 y1 = y_bottom > (s16)vp->h ? (s16)vp->h : y_bottom;
-            s16 sy1 = (s16)((y0 - cam->horizon) << 1);
+            s16 sy1 = sub ? (s16)((y0 - cam->horizon) << 1)
+                          : (s16)((y0 - cam->horizon) << 2);
             s16 half_top = (s16)((s16)(q[1].x - q[0].x) >> 1);
             s16 half_bot = (s16)((s16)(q[2].x - q[3].x) >> 1);
             s16 rows = (s16)(y_bottom - y_top);
@@ -654,7 +661,7 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
                                (s16)((s16)(sp + snesQMul(sy1, cp)) << 4), denom_step,
                                (s16)((s16)(cp - snesQMul(sy1, sp)) << 4), a_step,
                                cam->height, cam->z,
-                               (u16)((cam->x << 5) + 4096), vp->origin);
+                               (u16)((cam->x << 5) + 4096), vp->origin, sub);
             if (y1 > y0) {
                 floor_pending = 1;
                 floor_pending_y0 = (u16)y0;
@@ -733,7 +740,7 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
              * screen -- the "cards sliding off their slots" of a moving
              * board.  The row's origin is built from the same rounded step,
              * so the walk and the origin agree. */
-            dtex = (s16)((depth + 2) >> 2);
+            dtex = sub ? (s16)((depth + 2) >> 2) : (s16)((depth + 1) >> 1);
             if (!cam->yaw) {
                 du = dtex;
                 dv = 0;
@@ -754,8 +761,9 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
             tv = (u16)(tv + snesMulLo((u16)dv, (u16)(x0 - (vp->w >> 1))) + (u16)half_du);
             u = tu;
             v = tv;
-            span_note((u16)y, x0, x1);
-            row_index = (u16)(vp->origin + ((u16)y << 8) + (u16)x0);
+            span_note((u16)y, x0, x1, sub);
+            row_index = (u16)(vp->origin + (sub ? ((u16)y << 8) : ((u16)y << 7))
+                              + (u16)x0);
             if (!cam->yaw) {
                 /* No yaw: v is constant along the row, so this is the
                  * constant-v walker over the world texture, pre-stepped
@@ -770,7 +778,7 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
             continue;
         }
         if (face == SNES_CARD_NONE_FACE) {
-            span_note((u16)y, x0, x1);
+            span_note((u16)y, x0, x1, sub);
             snesSpanFill((u16)(vp->origin + snesMulLo((u16)y, (u16)vp->stride) + x0),
                          (u16)(x1 - x0), SNES_SLAB_WALL);
             continue;
@@ -820,7 +828,7 @@ u8 snesDrawCameraFloorBegin(const SnesViewport *vp, const SnesCamera *cam,
     }
     floor_pending = 0;
     if (clear)
-        snesFbWramFill(vp->origin, vp->bank, (u16)(SNES_FRAME_W * SNES_FRAME_H), backdrop);
+        snesFbWramFill(vp->origin, vp->bank, (u16)(vp->stride * vp->h), backdrop);
     for (i = 0; i < 4; ++i) {
         if (!snesProjectQ(cam, vp, xs[i], zs[i], 0, &q[i].x, &q[i].y)) return 0;
         q[i].u = (i == 1 || i == 2) ? 4095 : 0;

@@ -666,22 +666,30 @@ def check_still_resolution():
 
 
 def check_moving_resolution():
-    """THE MOVING CAMERA IS 1:1 TOO.  Y pins the general renderer (the world
-    texture through the inverse-ray walker, every occupied cell converted) a
-    frame a game frame at the resting camera: the picture must still resolve
-    single pixels in both axes, the frame generation must be advancing, and
-    the map on screen must be complete -- every occupied cell a real tile."""
+    """THE MOVING CAMERA IS 128x72, SHOWN DOUBLED.  Y pins the general
+    renderer (the world texture through the inverse-ray walker into the
+    motion frame, every occupied cell converted with each texel a 2x2 block
+    of pixels) a frame a game frame at the resting camera: every even-aligned
+    pixel pair must be identical in both axes and the picture must still
+    change between the pairs, the frame generation must be advancing, and the
+    map on screen must be complete -- every occupied cell a real tile.  The
+    resting board is checked at 1:1 separately (check_still_resolution)."""
     ppm, wram = run_moving(capture=(RUN_FRAMES - 2, RUN_FRAMES - 1, 1))
     stamp = read_stamp(wram)
     if stamp["turn_max_lines"] == 0:
         raise Failure("Y fixture did not render through the moving path")
     w, h, px = read_ppm(ppm)
-    horizontal = sum(px[(y*w+x)*3:(y*w+x)*3+3] != px[(y*w+x+1)*3:(y*w+x+1)*3+3]
-                     for y in range(60,120) for x in range(70,180,2))
-    vertical = sum(px[(y*w+x)*3:(y*w+x)*3+3] != px[((y+1)*w+x)*3:((y+1)*w+x)*3+3]
-                   for y in range(60,120,2) for x in range(70,180))
-    if min(horizontal, vertical) < 100:
-        raise Failure("moving frame appears doubled (%d/%d)" % (horizontal, vertical))
+    def pix(x, y):
+        return px[(y * w + x) * 3:(y * w + x) * 3 + 3]
+    pair_h = sum(pix(x, y) != pix(x + 1, y) for y in range(60, 120) for x in range(70, 180, 2))
+    pair_v = sum(pix(x, y) != pix(x, y + 1) for y in range(60, 120, 2) for x in range(70, 180))
+    odd_h = sum(pix(x, y) != pix(x + 1, y) for y in range(60, 120) for x in range(71, 179, 2))
+    odd_v = sum(pix(x, y) != pix(x, y + 1) for y in range(61, 119, 2) for x in range(70, 180))
+    if pair_h or pair_v:
+        raise Failure("the motion frame is not doubled: %d/%d even-aligned pixel "
+                      "pairs differ across/down" % (pair_h, pair_v))
+    if min(odd_h, odd_v) < 100:
+        raise Failure("the motion frame is flat (%d/%d texel edges)" % (odd_h, odd_v))
     prefix = os.path.join(OUT, "moving.ppu")
     regs, data, words, base = published_map(prefix)
     occupied = sum(1 for wd in words[:576] if wd & 1023)
@@ -690,7 +698,7 @@ def check_moving_resolution():
                       % (occupied, stamp["occupied"]))
     if occupied > 351:
         raise Failure("%d occupied cells exceed the sparse budget" % occupied)
-    return ("moving camera at 1:1: %d cells on the published map, generation %d, %d lines a frame"
+    return ("moving camera at 128x72 doubled: %d cells on the published map, generation %d, %d lines a frame"
             % (occupied, stamp["frame_gen"], stamp["turn_max_lines"]))
 
 
@@ -2087,8 +2095,8 @@ def check_camera_round_trip():
         raise Failure("UP/B did not return to the resting hand view (view %d, ui %s)"
                       % (stamp["view"], UI[stamp["ui"]]))
     # The slab ends above line 140.  The selected hand card's corner bracket
-    # can bob as high as line 143, so including it compares unrelated phases.
-    if pixels[24 * 256 * 3:143 * 256 * 3] != reference[24 * 256 * 3:143 * 256 * 3]:
+    # bobs as high as line 140, so including it compares unrelated phases.
+    if pixels[24 * 256 * 3:140 * 256 * 3] != reference[24 * 256 * 3:140 * 256 * 3]:
         raise Failure("the board changed geometry or lost cards during UP/B")
     return "UP/B restores the original board pixels exactly"
 

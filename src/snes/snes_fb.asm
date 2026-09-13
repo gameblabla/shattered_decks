@@ -91,6 +91,11 @@ cv_rom dw
 cv_rom_hi dw
 cv_rom_src dw
 cv_rom_bank dw
+cv_half dw                  ; the frame is the 128x72 motion frame, shown doubled
+cv_whole dw                 ; every cell is dirty: the map was emptied in Begin
+cv_span_lo dw               ; the row's span, in cells, for the whole-frame loop
+cv_span_hi dw
+cv_partial dw               ; snesConvCells: one row's columns, then return
 .ENDS
 
 .BASE $C0
@@ -680,6 +685,18 @@ snesConvSetFloor:
     lda 7,s
     and #$00FF
     sta.l cv_rom_bank
+    plp
+    rtl
+
+; void snesConvSetHalf(u16 on): the frame to convert is the 128x72 motion
+; frame at the top of the buffer (stride 128, a cell four texels by four
+; lines), converted doubled; 0 is the 256x144 picture at 1:1.
+snesConvSetHalf:
+    php
+    rep #$30
+    lda 5,s
+    and #$0001
+    sta.l cv_half
     plp
     rtl
 

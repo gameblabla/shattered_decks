@@ -168,6 +168,18 @@ enum SnesViewMotion {
 
 static SnesCamera cam;
 static SnesViewport vp_rest;
+/* THE MOVING CAMERA RENDERS AT 128x72.  The motion frame is the top 9 KB of
+ * the same buffer at half the stride, walked at a quarter of the texels and
+ * converted at half the cost a cell (each texel a 2x2 block of pixels: the
+ * converter looks a texel up as a pixel pair and stores each row twice, so
+ * a cell is four texels by four lines).  It is the unit viewport itself,
+ * sub 0; the camera is the same one with its horizon in the frame's own
+ * pixels (cam_move).  (Doubling the lines by an HDMA on BG1VOFS instead,
+ * for half the cells, was tried and withdrawn: BG1's scroll registers share
+ * the PPU multiplier's write-twice latch, and an HDMA write landing between
+ * the two halves of a product corrupted a row of the next render.) */
+static SnesViewport vp_move;
+static SnesCamera cam_move;
 /* EVERY STATIC IS INITIALISED EXPLICITLY, and that is not style.
  *
  * An uninitialised static on this build is NOT zero at boot: a probe placed in
@@ -311,6 +323,14 @@ static void set_viewport(void)
      * pixel; a screen pixel is half of that. */
     vp_rest.du_k = 64;
 
+    vp_move.w = SNES_FRAME_W / 2;
+    vp_move.h = SNES_FRAME_H / 2;
+    vp_move.origin = (u16)(u16)snes_frame_fb;
+    vp_move.stride = SNES_FRAME_STRIDE / 2;
+    vp_move.bank = 0x7E;
+    vp_move.sub = 0;
+    vp_move.du_k = 128;
+
     /* The focal length is half the unit viewport's width, which is what
      * makes the floor's texture step a shift rather than a divide.  The
      * horizon sits a thirty-second of the board down, in the viewport's own
@@ -334,10 +354,18 @@ static void set_rest_camera(u8 mirror)
     camera_rest = 1;
 }
 
+/* The camera as the motion frame sees it: the same pose, the horizon in
+ * that frame's pixels (the camera's is in the 256x144 picture's). */
+static void sync_cam_move(void)
+{
+    cam_move = cam;
+    cam_move.horizon = (s16)(cam.horizon >> 1);
+}
+
 /* Q8.8 smoothstep, using the SNES multiplier instead of a 32-bit product.
  * The eased value is shared by the camera and hand so the two settle together
  * at the exact frame the PPU switches to the resident top table. */
-static void job_begin(void);
+static void job_begin(u8 half);
 static u8   job_step(void);
 static u8   job_slice(void);
 static u8   job_active(void);
@@ -402,10 +430,20 @@ static void motion_sequence_begin(u8 frames);
 static void motion_frame(void);
 static void rest_invalidate(void);
 
+/* THE OVERHEAD VIEW ARRIVES TWICE.  The lift's last pose is the camera at
+ * the top, rendered like the ones before it as a 128x72 motion frame, so
+ * the board stops moving as soon as it gets there; the same picture is
+ * then rendered again at 1:1 (the sharpening job, view_sharp) and switched
+ * to when it is ready, forty-odd fields later.  The top view's cursor is
+ * live from the first arrival: the d-pad moves it over the doubled picture
+ * as well, only A and B wait for the sharp one. */
+static u8 view_sharp = 0;       /* 0 not yet, 1 the 1:1 job is running/done */
+
 static void begin_view_transition(u8 to_top)
 {
     view_motion = to_top ? VIEW_TO_TOP : VIEW_TO_HAND;
     view_anim_frame = 0;
+    view_sharp = 0;
     motion_sequence_begin(LIFT_FRAMES);
     if (!to_top) {
         top_view = 0;
@@ -451,7 +489,9 @@ static void step_view_transition(void)
         if (!job_active()) {
             ++view_anim_frame;
             lift_camera(to_top ? view_anim_frame : (u8)(LIFT_FRAMES - view_anim_frame));
-            job_begin();
+            /* Every pose on the way is a 128x72 motion frame, the top of
+             * the lift included: the sharp overhead picture follows. */
+            job_begin(1);
             build_objects();
         }
         /* One bounded renderer slice per game loop.  The completed map stays
@@ -463,8 +503,19 @@ static void step_view_transition(void)
         slide_hand();
         return;
     }
-    if (!snesVideoPresentDone()) {
+    if (to_top && !view_sharp) {
+        /* The camera is at the top and its doubled picture is on its way
+         * up or shown: the cursor is live from here, and the 1:1 picture
+         * is rendered behind it. */
+        view_sharp = 1;
+        top_view = 1;
+        job_begin(0);
         build_objects();
+        job_slice();
+        return;
+    }
+    if (!snesVideoPresentDone()) {
+        slide_hand();
         return;
     }
     finish_view_transition(to_top);
@@ -943,7 +994,8 @@ static void render_camera_frame(u8 marker_row, u8 marker_col, u8 marker_colour)
         render_rest(marker_row, marker_col, marker_colour);
     } else {
         update_board_texture();
-        snesDrawCameraFloor(&vp_rest, &cam, BACKDROP);
+        sync_cam_move();
+        snesDrawCameraFloor(&vp_move, &cam_move, BACKDROP);
         cells_all();
         rom_cells_none();
         rest_valid = 0;
@@ -952,6 +1004,7 @@ static void render_camera_frame(u8 marker_row, u8 marker_col, u8 marker_colour)
 
     map_done = snesClock();
     requested_generation = snesVideoRequestGeneration();
+    snesConvSetHalf((u16)(!pattern_mode && !camera_rest));
     occupied = snesConvFrame(next_pool, requested_generation);
     if (occupied) next_pool ^= 1;
     cells_clear();
@@ -1002,10 +1055,12 @@ enum SnesCamJob {
  * tried: the field-boundary wait and the sprite rebuild a step cost more
  * than the rendering, and the lift took a thousand fields.) */
 #define JOB_ROWS_PER_STEP   2
+#define JOB_HALF_ROWS_PER_STEP 4    /* a motion-frame row is a quarter the texels */
 #define JOB_CELLS_PER_STEP  8
 #define JOB_CARDS_PER_STEP  3
 
 static u8  job_phase = JOB_IDLE;
+static u8  job_half = 0;        /* the pose is a 128x72 motion frame */
 static u16 job_y = 0, job_y1 = 0;
 static u8  job_row = 0, job_col = 0;
 static u8  job_card = 0;
@@ -1023,14 +1078,21 @@ static u16 job_progress(void)
     return snesUQDiv(job_steps, job_steps_total);
 }
 
-static void job_begin(void)
+/* `half`: render the pose as a 128x72 motion frame (a camera on its way);
+ * otherwise at 1:1 (the overhead view itself, where the camera comes to
+ * rest -- "128x72 only while the camera moves"). */
+static void job_begin(u8 half)
 {
     camera_rest = 0;
+    job_half = half;
     job_phase = JOB_WAIT;
     job_steps = 0;
     /* Floor rows, converter cells, and the two ends. */
-    job_steps_total = (u16)(SNES_FRAME_H / JOB_ROWS_PER_STEP +
-                            SNES_CELL_ROWS * (SNES_CELL_COLS / JOB_CELLS_PER_STEP) + 3);
+    job_steps_total = half
+        ? (u16)(SNES_FRAME_H / 2 / JOB_HALF_ROWS_PER_STEP +
+                SNES_CELL_ROWS * (SNES_CELL_COLS / (2 * JOB_CELLS_PER_STEP)) + 3)
+        : (u16)(SNES_FRAME_H / JOB_ROWS_PER_STEP +
+                SNES_CELL_ROWS * (SNES_CELL_COLS / JOB_CELLS_PER_STEP) + 3);
 }
 
 /* One step: returns 1 while the frame is still on its way. */
@@ -1052,13 +1114,19 @@ static u8 job_step(void)
         return 1;
     case JOB_CLEAR:
         ++job_steps;
-        snesFbWramFill(vp_rest.origin, vp_rest.bank,
-                       (u16)(SNES_FRAME_W * SNES_FRAME_H), BACKDROP);
+        if (job_half)
+            snesFbWramFill(vp_move.origin, vp_move.bank,
+                           (u16)(vp_move.stride * vp_move.h), BACKDROP);
+        else
+            snesFbWramFill(vp_rest.origin, vp_rest.bank,
+                           (u16)(SNES_FRAME_W * SNES_FRAME_H), BACKDROP);
         job_phase = JOB_MAP_BEGIN;
         return 1;
     case JOB_MAP_BEGIN:
         ++job_steps;
-        if (snesDrawCameraFloorBegin(&vp_rest, &cam, BACKDROP, 0, &job_y, &job_y1))
+        sync_cam_move();
+        if (job_half ? snesDrawCameraFloorBegin(&vp_move, &cam_move, BACKDROP, 0, &job_y, &job_y1)
+                     : snesDrawCameraFloorBegin(&vp_rest, &cam, BACKDROP, 0, &job_y, &job_y1))
             job_phase = JOB_MAP_ROWS;
         else
             job_phase = JOB_CONV_BEGIN;
@@ -1066,7 +1134,11 @@ static u8 job_step(void)
     case JOB_MAP_ROWS:
         ++job_steps;
         n = (u16)(job_y1 - job_y);
-        if (n > JOB_ROWS_PER_STEP) n = JOB_ROWS_PER_STEP;
+        if (job_half) {
+            if (n > JOB_HALF_ROWS_PER_STEP) n = JOB_HALF_ROWS_PER_STEP;
+        } else if (n > JOB_ROWS_PER_STEP) {
+            n = JOB_ROWS_PER_STEP;
+        }
         snesFloorRowsPitch(job_y, (u16)(job_y + n));
         job_y = (u16)(job_y + n);
         if (job_y >= job_y1) job_phase = JOB_CONV_BEGIN;
@@ -1079,6 +1151,7 @@ static u8 job_step(void)
         held_drawn = 0;
         job_map0 = snesClock();
         requested_generation = snesVideoRequestGeneration();
+        snesConvSetHalf(job_half);
         if (!snesConvBegin(next_pool, requested_generation)) {
             /* Over the cell budget: the frame is refused (the stamp counts
              * it) and the previous picture stays up. */
@@ -1093,8 +1166,14 @@ static u8 job_step(void)
         return 1;
     case JOB_CONV_ROWS:
         ++job_steps;
-        snesConvCells(job_row, job_col, (u16)(job_col + JOB_CELLS_PER_STEP));
-        job_col = (u8)(job_col + JOB_CELLS_PER_STEP);
+        if (job_half) {
+            /* A motion frame's cells are half the work: twice as many a step. */
+            snesConvCells(job_row, job_col, (u16)(job_col + 2 * JOB_CELLS_PER_STEP));
+            job_col = (u8)(job_col + 2 * JOB_CELLS_PER_STEP);
+        } else {
+            snesConvCells(job_row, job_col, (u16)(job_col + JOB_CELLS_PER_STEP));
+            job_col = (u8)(job_col + JOB_CELLS_PER_STEP);
+        }
         if (job_col >= SNES_CELL_COLS) {
             job_col = 0;
             if (++job_row >= SNES_CELL_ROWS) job_phase = JOB_CONV_END;
@@ -1508,7 +1587,13 @@ static void slide_hand(void)
     const s16 y = hand_row_y();
     u8 i;
     snesObjTouch();
-    snes_fb_oam_pending = 1;
+    /* The NMI's own copy of the shadow is for the slices, when the main
+     * loop is not waiting for vblank and snesObjVblank does not run.  When
+     * it IS waiting (a pose waiting on the previous one's upload), the
+     * library's copy, this one and snesObjVblank's would be three OAM DMAs
+     * in one vblank: the NMI drain then found the V counter past its
+     * deadline every field, nothing went up, and the wait never ended. */
+    if (snesDuelBusy()) snes_fb_oam_pending = 1;
     for (i = 0; i < MSX2_HAND; ++i) {
         s16 cy = y;
         if (hand_oam[i] == 0xFF) continue;
@@ -2282,13 +2367,21 @@ u8 snesDuelFrame(void)
         !turn_frame && ui != UI_COM && ui != UI_RESULT) {
         snesAudioSfx(SNES_SFX_SELECT);
         begin_view_transition(1);
-    } else if (view_motion == VIEW_TOP_REST) {
+    } else if (view_motion == VIEW_TOP_REST ||
+               (view_motion == VIEW_TO_TOP && top_view)) {
         u8 moved = 0;
         if (down & KEY_LEFT)  { top_col = (u8)((top_col + SNES_COLS - 1) % SNES_COLS); moved = 1; }
         if (down & KEY_RIGHT) { top_col = (u8)((top_col + 1) % SNES_COLS); moved = 1; }
         if (down & KEY_UP)    { top_row = (u8)((top_row + SNES_ROWS - 1) % SNES_ROWS); moved = 1; }
         if (down & KEY_DOWN)  { top_row = (u8)((top_row + 1) % SNES_ROWS); moved = 1; }
         if (moved) snesAudioSfx(SNES_SFX_SELECT);
+        if (view_motion == VIEW_TO_TOP) {
+            /* The sharp picture is still on its way: the cursor moves over
+             * the doubled one, A and B wait. */
+            step_view_transition();
+            build_objects();
+            goto stamp;
+        }
         if (down & KEY_A) {
             press_sfx(down);
             begin_check();
@@ -2333,14 +2426,21 @@ u8 snesDuelFrame(void)
         }
     }
 
+    /* THE BOARD IS BAKED BEFORE A PRESENTATION PLAYS OVER IT.  Both the
+     * draw cadence and the opponent's turn are sprites over the board, and
+     * each skips the render below; after a turn swing the board is the
+     * other seat's still to be baked, and left dirty it stayed the last
+     * swing pose -- the wrong seat -- for the whole of the draws. */
     if (!turn_frame && board_yaw == (g_duel.turn_owner ? 128 : 0) &&
         step_draw_presentation()) {
+        if (board_dirty) render();
         build_objects();
         goto stamp;
     }
 
     if (!turn_frame && board_yaw == (g_duel.turn_owner ? 128 : 0) &&
         step_com_presentation()) {
+        if (board_dirty) render();
         build_objects();
         goto stamp;
     }

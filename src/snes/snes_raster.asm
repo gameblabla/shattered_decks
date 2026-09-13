@@ -104,6 +104,9 @@ fr_x1             dw
 fr_tu             dw
 fr_tv             dw
 fr_tmp2           dw
+fr_sub            dw            ; 1: the 256x144 frame, 0: the 128x72 motion frame
+fr_halfw          dw            ; half the viewport's width in pixels (128 / 64)
+fr_w              dw            ; the viewport's width (256 / 128)
 .ENDS
 
 .BASE $C0
@@ -856,10 +859,30 @@ _fq_loop:
 
 ; void snesFloorRowsSetup(s16 half, s16 dhalf, s16 denom16, s16 dstep,
 ;                         s16 a16, s16 astep, s16 height, s16 camz,
-;                         u16 ubase, u16 origin)
+;                         u16 ubase, u16 origin, u16 sub)
+;
+; `sub` is the viewport's pixels-per-unit shift: 1 for the 256x144 frame, 0
+; for the 128x72 motion frame, where a pixel row is a whole unit row (the
+; caller steps the camera terms accordingly), a pixel is depth/64 units
+; across -- half a texel step at unit depth -- a row is 128 bytes and a
+; converter cell four rows.
 snesFloorRowsSetup:
     php
     rep #$30
+    lda 25,s
+    and #$0001
+    sta.l fr_sub
+    bne +
+    lda #64
+    sta.l fr_halfw
+    lda #128
+    sta.l fr_w
+    bra ++
++   lda #128
+    sta.l fr_halfw
+    lda #256
+    sta.l fr_w
+++
     lda 5,s
     sta.l fr_half
     lda 7,s
@@ -911,9 +934,13 @@ snesFloorRowsSetup:
 snesFloorRowsPitch:
     php
     rep #$30
-    lda 5,s
+    phb
+    pea $0000
+    plb
+    plb                         ; DB = 0: the fr_* words by ldx.w (no long form)
+    lda 6,s
     sta.l fr_y
-    lda 7,s
+    lda 8,s
     sta.l fr_yend
 _fr_row:
     lda.l fr_y
@@ -959,13 +986,17 @@ _fr_row:
     ; Above the horizon, or too far below it for the table: nothing.
     lda.l fr_denom
     cmp #3
-    bcc _fr_skip
+    bcc _fr_skip0
     cmp #1024
-    bcs _fr_skip
+    bcs _fr_skip0
     ; The row's span: 128 -/+ half, in pixels, clipped to the viewport.
     lda.l fr_tmp2
-    beq _fr_skip
-    bmi _fr_skip
+    beq _fr_skip0
+    bmi _fr_skip0
+    bra +
+_fr_skip0:
+    jmp _fr_next
++
     cmp #$8000
     ror a
     lsr a
@@ -973,31 +1004,37 @@ _fr_row:
     lsr a
     lsr a
     lsr a
-    lsr a                       ; half >> 7: Q8.8 units to pixels
-    sta.l fr_tmp2
-    lda #128
+    lsr a                       ; half >> 7: Q8.8 units to pixels at 1:1
+    ldx.w fr_sub
+    bne +
+    lsr a                       ; ...>> 8 on the motion frame
++   sta.l fr_tmp2
+    lda.l fr_halfw
     sec
     sbc.l fr_tmp2
     bpl +
     lda #0
 +   sta.l fr_x0
-    lda #128
+    lda.l fr_halfw
     clc
     adc.l fr_tmp2
-    cmp #257
+    cmp.l fr_w
     bcc +
-    lda #256
+    beq +
+    lda.l fr_w
 +   sta.l fr_x1
     cmp.l fr_x0
     bcc _fr_skip
     beq _fr_skip
-    ; Note the span for the converter: per 8-row band, the first and last
-    ; pixel columns touched.
+    ; Note the span for the converter: per cell row (eight lines at 1:1,
+    ; four on the motion frame), the first and last pixel columns touched.
     lda.l fr_y
     lsr a
     lsr a
+    ldx.w fr_sub
+    beq +
     lsr a
-    asl a
++   asl a
     tax
     sep #$20
 .ACCU 8
@@ -1052,11 +1089,13 @@ _fr_map:
     asl a
     and #$7F00
     sta.l fr_tv
-    ; dtex = (depth + 2) >> 2
+    ; dtex = (depth + 2) >> 2 at 1:1, (depth + 1) >> 1 on the motion frame
     lda.l fr_depth
-    inc a
+    ldx.w fr_sub
+    beq +
     inc a
     lsr a
++   inc a
     lsr a
     sta.l fr_dtex
     ; tu = ubase + dtex * (x0 - 128) + dtex / 2, through the 16x8 signed
@@ -1069,7 +1108,7 @@ _fr_map:
     sta.l $211B
     lda.l fr_x0
     sec
-    sbc #128
+    sbc.l fr_halfw
     sta.l $211C
     rep #$20
 .ACCU 16
@@ -1103,8 +1142,11 @@ _fr_map:
     pha
     lda.l fr_y
     xba
-    and #$FF00
-    clc
+    and #$FF00                  ; y * 256
+    ldx.w fr_sub
+    bne +
+    lsr a                       ; y * 128 on the motion frame
++   clc
     adc.l fr_x0
     clc
     adc.l fr_origin
@@ -1120,6 +1162,7 @@ _fr_next:
     sta.l fr_y
     jmp _fr_row
 _fr_done:
+    plb
     plp
     rtl
 

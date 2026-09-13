@@ -33,6 +33,21 @@
 ;  full frame is cell order, so runs stay long.
 ;-----------------------------------------------------------------------------
 
+; A >>= 1 unless the frame is the doubled one: pixel columns to cells are
+; three shifts at 1:1 and two doubled, and the row's bytes the other way.
+; Long-addressed, for the entries where DB is the caller's (ldx has no long
+; form).  Clobbers X.
+.MACRO CV_CELL_LSR
+    tax
+    lda.l cv_half
+    bne +
+    txa
+    lsr a
+    bra ++
++   txa
+++
+.ENDM
+
 ;-----------------------------------------------------------------------------
 ; Push the pending run as a job.  Clobbers A, X, Y.
 ;-----------------------------------------------------------------------------
@@ -219,6 +234,25 @@ _rom_extend:
     rts
 
 ;-----------------------------------------------------------------------------
+; A = cell row -> the row's first chunky byte: row * 2048 at 1:1 (eight
+; 256-byte lines), row * 512 in the doubled motion frame (four 128-byte
+; lines, each shown twice).  Clobbers X.
+;-----------------------------------------------------------------------------
+cv_row_origin:
+    xba
+    asl a
+    and #$FE00                  ; row * 512: four 128-byte lines, doubled
+    tax
+    lda.l cv_half
+    bne +
+    txa
+    asl a
+    asl a                       ; row * 2048 at 1:1: eight 256-byte lines
+    rts
++   txa
+    rts
+
+;-----------------------------------------------------------------------------
 ; The tile allocator.  Reference counts are bytes in snes_tile_ref; the free
 ; queue is 704 words in snes_tile_free, head/tail/count in bank $7E.
 ;-----------------------------------------------------------------------------
@@ -356,14 +390,14 @@ _cf_count_row:
     beq _cf_count_next
     lsr a
     lsr a
-    lsr a
+    CV_CELL_LSR                 ; eight pixels a cell at 1:1, four doubled
     sta.l cv_mask_lo
     lda.l cv_tmp
     xba
     and #$00FF
     lsr a
     lsr a
-    lsr a
+    CV_CELL_LSR
     sec
     sbc.l cv_mask_lo
     inc a
@@ -405,6 +439,8 @@ _cf_map_ready:
     ; A CAMERA FRAME SKIPS IT: with every cell dirty, the column loop
     ; releases each cell's old tile and names a new one (or the blank) for
     ; all 576, which is everything the copy would have done and undone.
+    lda #0
+    sta.l cv_whole
     ldx #0
 _cf_all_dirty:
     lda.l snes_conv_dirty,x
@@ -414,6 +450,34 @@ _cf_all_dirty:
     inx
     cpx #18*4
     bne _cf_all_dirty
+    ; A WHOLE FRAME EMPTIES THE MAP FIRST.  Every entry of the map being
+    ; built is released and zeroed here in one tight pass, and the row loop
+    ; then walks only each row's span (_cw_row), allocating and converting
+    ; without a mask, a release or a blank store per cell: the column loop
+    ; below was doing forty instructions for each of the 400-odd cells a
+    ; camera frame leaves blank.
+    lda #1
+    sta.l cv_whole
+    lda.l cv_shadow
+    sta.l cv_y
+_cf_empty:
+    lda.l cv_y
+    tax
+    lda.l $7F0000,x
+    beq +
+    jsr cv_tile_release
+    lda.l cv_y
+    tax
+    lda #0
+    sta.l $7F0000,x
++   lda.l cv_y
+    inc a
+    inc a
+    sta.l cv_y
+    sec
+    sbc.l cv_shadow
+    cmp #576*2
+    bne _cf_empty
     bra _cf_copy_done
 _cf_copy_needed:
     lda #0
@@ -479,12 +543,8 @@ snesConvRows:
     sta.l cv_row_end
     lda 5,s
     sta.l cv_row
-    ; The cell row's first chunky byte: row * 2048.
-    xba
-    asl a
-    asl a
-    asl a
-    and #$F800
+    ; The cell row's first chunky byte: row * 2048 (512 doubled).
+    jsr cv_row_origin
     sta.l cv_y
     lda.l cv_row
     cmp.l cv_row_end
@@ -496,6 +556,11 @@ snesConvRows:
     pea $7E7E
     plb
     plb
+    lda #0
+    sta.l cv_partial
+    lda.l cv_whole
+    beq _cf_row
+    jmp _cw_row
 _cf_row:
     lda.l cv_row
     asl a
@@ -526,15 +591,19 @@ _cf_row:
     bra _cf_col_start
 +   lsr a
     lsr a
+    ldx.w cv_half
+    bne +
     lsr a
-    sta.l cv_mask_lo            ; first occupied cell column
++   sta.l cv_mask_lo            ; first occupied cell column
     lda.l cv_tmp
     xba
     and #$00FF
     lsr a
     lsr a
+    ldx.w cv_half
+    bne +
     lsr a
-    sta.l cv_mask_hi            ; last occupied cell column
++   sta.l cv_mask_hi            ; last occupied cell column
 _cf_col_start:
     lda #0
     sta.l cv_col
@@ -621,15 +690,21 @@ _cf_col:
     lda.l cv_col
     asl a
     asl a
-    asl a
-    clc
+    ldx.w cv_half
+    bne +
+    asl a                       ; eight texels a cell at 1:1, four doubled
++   clc
     adc.l cv_y
     phy
     tay
     lda.l cv_tmp
     tax
+    lda.l cv_half
+    bne +
     jsr (snesConvFrameTileTab,x)
-    ply
+    bra ++
++   jsr (snesConvHalfTileTab,x)
+++  ply
     lda #0
     tcd
     jsr cv_ring_commit
@@ -657,13 +732,12 @@ _cf_row_next:
     plp
     rtl
 +
-    lda.l cv_y
-    clc
-    adc #2048
-    sta.l cv_y
     lda.l cv_row
     inc a
     sta.l cv_row
+    jsr cv_row_origin           ; the next row's first chunky byte
+    sta.l cv_y
+    lda.l cv_row
     cmp.l cv_row_end
     beq +
     jmp _cf_row
@@ -686,11 +760,7 @@ snesConvCells:
     inc a
     sta.l cv_row_end
     lda 5,s
-    xba
-    asl a
-    asl a
-    asl a
-    and #$F800
+    jsr cv_row_origin
     sta.l cv_y
     lda 9,s
     sta.l cv_col_end
@@ -705,6 +775,12 @@ snesConvCells:
     pea $7E7E
     plb
     plb
+    lda #1
+    sta.l cv_partial
+    lda.l cv_whole
+    beq +
+    jmp _cw_cells
++
     lda.l cv_row
     asl a
     asl a
@@ -731,15 +807,19 @@ snesConvCells:
     bra _cc_shift
 +   lsr a
     lsr a
+    ldx.w cv_half
+    bne +
     lsr a
-    sta.l cv_mask_lo
++   sta.l cv_mask_lo
     lda.l cv_tmp
     xba
     and #$00FF
     lsr a
     lsr a
+    ldx.w cv_half
+    bne +
     lsr a
-    sta.l cv_mask_hi
++   sta.l cv_mask_hi
 _cc_shift:
     ; Shift the masks to col0, swapping in the high words at column 16
     ; exactly as the column loop does.
@@ -767,6 +847,172 @@ _cc_shift_loop:
     bra _cc_shift_loop
 _cc_go:
     jmp _cf_col
+
+;-----------------------------------------------------------------------------
+; THE WHOLE-FRAME ROW LOOP (cv_whole): the map is empty, every cell in the
+; row's span gets a fresh tile -- the ROM floor's by DMA where the ROM mask
+; says so, converted otherwise -- and nothing else is touched.  Enters with
+; DB = $7E, D pushed, cv_row/cv_row_end (and, from snesConvCells, cv_col/
+; cv_col_end for one row) set.
+;-----------------------------------------------------------------------------
+_cw_row:
+    lda #0
+    sta.l cv_col
+    lda #32
+    sta.l cv_col_end
+_cw_cells:
+    ; The row's span in cells; an empty row has none.
+    lda.l cv_row
+    asl a
+    tax
+    lda.l snes_conv_rowspan,x
+    sta.l cv_tmp
+    and #$00FF
+    cmp #$00FF
+    bne +
+    jmp _cw_row_done
++   lsr a
+    lsr a
+    ldx.w cv_half
+    bne +
+    lsr a
++   sta.l cv_span_lo
+    lda.l cv_tmp
+    xba
+    and #$00FF
+    lsr a
+    lsr a
+    ldx.w cv_half
+    bne +
+    lsr a
++   sta.l cv_span_hi
+    ; Clip [cv_col, cv_col_end) to [span_lo, span_hi].
+    lda.l cv_col
+    cmp.l cv_span_lo
+    bcs +
+    lda.l cv_span_lo
+    sta.l cv_col
++   lda.l cv_span_hi
+    inc a
+    cmp.l cv_col_end
+    bcs +
+    sta.l cv_col_end
++   lda.l cv_row
+    asl a
+    asl a
+    tax
+    lda.l snes_conv_rom,x
+    sta.l cv_rom
+    lda.l snes_conv_rom+2,x
+    sta.l cv_rom_hi
+_cw_col:
+    lda.l cv_col
+    cmp.l cv_col_end
+    bcc +
+    jmp _cw_row_done
++
+    ; The cell's map entry.
+    lda.l cv_row
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    clc
+    adc.l cv_col
+    asl a
+    clc
+    adc.l cv_shadow
+    sta.l cv_entry
+    jsr cv_tile_alloc
+    sta.l cv_tile
+    beq _cw_next                ; no tile left (outside the bound): blank
+    ora #FB_MAP_ATTR
+    pha
+    lda.l cv_entry
+    tax
+    pla
+    sta.l $7F0000,x
+    ; From the ROM floor?
+    lda.l cv_col
+    and #$000F
+    asl a
+    tax
+    lda.l cv_col
+    cmp #16
+    bcs +
+    lda.l cv_rom
+    bra ++
++   lda.l cv_rom_hi
+++  and.l snes_conv_bit16,x
+    beq +
+    lda.l cv_row
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    clc
+    adc.l cv_col
+    jsr cv_rom_commit
+    bra _cw_next
++   jsr cv_ring_reserve
+    tya
+    and #$FF00
+    tcd
+    lda.l cv_col
+    asl a
+    asl a
+    ldx.w cv_half
+    bne +
+    asl a
++   clc
+    adc.l cv_y
+    phy
+    tay
+    lda.l cv_tmp
+    tax
+    lda.l cv_half
+    bne +
+    jsr (snesConvFrameTileTab,x)
+    bra ++
++   jsr (snesConvHalfTileTab,x)
+++  ply
+    lda #0
+    tcd
+    jsr cv_ring_commit
+_cw_next:
+    lda.l cv_col
+    inc a
+    sta.l cv_col
+    jmp _cw_col
+_cw_row_done:
+    lda.l cv_partial
+    beq +
+    ; A partial row (snesConvCells): done after its columns.
+    jsr cv_flush_run
+    pld
+    plb
+    plp
+    rtl
++   lda.l cv_row
+    inc a
+    sta.l cv_row
+    jsr cv_row_origin
+    sta.l cv_y
+    lda.l cv_row
+    cmp.l cv_row_end
+    beq +
+    jmp _cw_row
++   jsr cv_flush_run
+    pld
+    plb
+    plp
+    rtl
+
+snes_conv_bit16:
+    .dw $0001, $0002, $0004, $0008, $0010, $0020, $0040, $0080
+    .dw $0100, $0200, $0400, $0800, $1000, $2000, $4000, $8000
 
 ; void snesConvEnd(void)
 ;
