@@ -1,26 +1,59 @@
 # SNES board renderer
 
-The duel board uses a 128x128 chunky framebuffer in bank `$7F`, displayed by
-Mode 7 in direct colour. The visible board is 128x80 texels at rest and during
-motion; each texel is shown as a 2x2 screen pixel. The lower 64 screen lines
-read rows 80..111 of the same surface. The HUD itself is a 1:1 OBJ layer, so
-life points, labels, hand cards, card names, stats, cursors, and result banners
-remain full screen resolution. The backdrop gradient supplies the HUD plate.
+The duel board is a 256x144 chunky direct-colour frame in WRAM (`$7E7000`,
+one byte a pixel, BBGGGRRR) shown at 1:1 through Mode 3 BG1 in direct colour.
+It is not uploaded whole: the sparse presenter (`snes_fb.asm`,
+`snes_conv_drivers.inc`, the generated `snes_conv_gen.asm`) converts the
+occupied 8x8 cells into 8bpp planar tiles, allocates them out of a 702-tile
+store shared copy-on-write between two logical maps, and switches the PPU to
+the new map in one vblank once every tile it names is resident.  A frame's
+span -- the cells between the first and last occupied column of each 8-row
+band -- may not exceed 351 cells; a frame over that is refused, counted in the
+stamp's `dropped` word, and the previous picture stays up.  The lower 80
+screen lines are a black band the OBJ HUD sits on: life points, labels, hand
+cards, card names, stats, cursors and result banners are all sprites at full
+screen resolution.
 
-The software renderer fills floor spans and card spans into the framebuffer.
-Resting cards use a perspective texture walk; cards in flight use an affine
-quad walk. Floor and card textures are cached in the board surface and are
-re-rendered when the board, cards, or camera pose changes. The renderer then
-uploads bounded row ranges over several vblanks, with OAM and HUD updates kept
-in their own DMA work. A new frame waits for its previous upload to finish.
+Two painting paths feed the same frame (`snes_duel.c`, `snes_board3d.c`):
 
-The hand-to-top transition is a 20-field matrix zoom around the board centre.
-It changes the Mode 7 scale while the hand moves offscreen and does not bake a
-new board pose for every animation field. Once the top card tiles are resident,
-the presenter switches during vblank to Mode 3. Top view is a full 256x224
-8bpp BG1 table with up to twenty field cards on sprites; opponent cards use
-vertically flipped artwork. Returning to the board re-primes the Mode 7 HDMA
-tables before restoring the hand view.
+* **Resting camera** (yaw 0 or 128, level, at the ROM floor's pose): the floor
+  is copied from a pre-rendered chunky image in ROM, cards are drawn over it
+  off the 32x32 sheets with a per-row perspective walk, and from then on the
+  picture is PATCHED -- the slot that changed, the cursor's old and new slots,
+  the held card's cells -- and only those cells are converted.  A resting
+  cell that nothing covers is DMA'd from the planar ROM floor without
+  conversion at all.
+* **Moving camera** (the lift to the overhead view, the turn between seats):
+  the twenty cards are stamped from the same 32x32 sheets into a 256x128
+  world-space texture in bank `$7F` (kept warm in the first idle frame after
+  the board changes), the slab is one textured quad through the inverse-ray
+  mapper, and every occupied cell is converted.  Without yaw the slab is a
+  trapezoid symmetric about the middle of the frame, and the whole per-row
+  job -- edges, plane terms, the texel step in texels (`depth / 4`, rounded
+  once) and the constant-v walk -- is `snesFloorRowsPitch` in
+  `snes_raster.asm`; a yawed camera goes through the C mapper.  The frame is
+  cleared by a fixed-source DMA from a ROM byte ramp: WRAM cannot be DMA'd
+  to WRAM, and the earlier WRAM-sourced fill was silently ignored, which is
+  where the fragments of the previous pose at a moving board's edges came
+  from.
+
+The lift is four rendered poses on an eased path from the seat to 4.1 units
+over the middle of the board looking straight down (`LIFT_HEIGHT`,
+`LIFT_HORIZON`, with a half-sine bump of 0.8 units in the middle so no
+intermediate pose is over the cell budget).  The overhead board is 160x128
+pixels, 340 cells, 1:1 with its 32-texel-a-unit world texture.  A pose is
+about fifty fields of mapping and conversion (measured in the emulator: 20
+fields of walking, 30 of conversion for 340 cells); it is rendered in small
+steps (`job_run`), and between the steps the hand's sprites are moved in
+place and uploaded by the NMI, so the hand glides continuously while the
+board arrives four times.  The overhead view's red cursor is a sprite
+bracket projected through the same camera.
+
+The card being played is not drawn in the hand while its slot is being
+chosen: it hovers over the board as the held card (an affine quad off the
+32x32 sheet), the flight on A starts from where it hovers, and B puts it
+back.  A fusion chain's cards leave the hand the same way while the target is
+chosen.
 
 In board view, LEFT/RIGHT move across the hand and A begins placement. In the
 placement view, A places face-up, X places face-down, and B cancels. DOWN on a

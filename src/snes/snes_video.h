@@ -58,6 +58,8 @@ extern u8 snes_conv_rowspan[];      /* 18 x {first x, last x}, 255 = empty */
 extern u16 snes_conv_dirty[];       /* 18 x {lo, hi}: cells to reconvert */
 extern u16 snes_conv_rom[];         /* 18 x {lo, hi}: cells the ROM floor supplies */
 extern u8 snes_fb_tm[];
+/* Set to have the next NMI copy snes_oam_shadow to OAM (snes_fb.asm). */
+extern u16 snes_fb_oam_pending;
 
 void snesFbInit(void);
 void snesFbDrain(u16 on);
@@ -69,6 +71,9 @@ u16  snesFbPresentedGeneration(void);
 u16  snesFbOccupied(void);
 u16  snesFbPeakOccupied(void);
 u16  snesFbNmiSkips(void);
+/* Frames the converter refused because their span was over the cell budget.
+ * Each one is a rendered picture that was never shown. */
+u16  snesFbOverflows(void);
 void snesFbJobPush(u16 src, u16 bank, u16 dst_word, u16 bytes, u16 kind);
 void snesFbRectCopy(u16 src, u16 src_bank, u16 dst, u16 dst_bank,
                     u16 w, u16 h, u16 src_stride, u16 dst_stride);
@@ -82,6 +87,11 @@ void snesFbNmi(void);
 #define SNES_JOB_COMMIT_B  3
 
 u16 snesConvFrame(u16 pool, u16 generation);
+/* The same in three steps, for a frame converted a few rows a field. */
+u16 snesConvBegin(u16 pool, u16 generation);
+void snesConvRows(u16 row0, u16 row1);
+void snesConvCells(u16 row, u16 col0, u16 col1);
+void snesConvEnd(void);
 void snesConvSetFloor(u16 src, u16 bank);
 
 void snesRasterTarget(u16 bank);
@@ -99,6 +109,14 @@ void snesSpanCardQuad(u16 fb_index, u16 count, u16 u, u16 v, u16 du, u16 dv,
 void snesSpanCardQuad32(u16 fb_index, u16 count, u16 u, u16 v, u16 du, u16 dv,
                         u16 page, u16 sheet);
 void snesSpanFloorQuad(u16 index, u16 count, u16 u, u16 v, u16 du, u16 dv);
+/* The pitch-only floor mapper (snes_raster.asm): Setup takes the slab's
+ * half width on the first row and its step (the trapezoid's edges), the
+ * camera's row terms and the frame; Pitch maps and walks every row in
+ * [y0, y1), in as many calls as the caller likes. */
+void snesFloorRowsSetup(s16 half, s16 dhalf, s16 denom16, s16 dstep,
+                        s16 a16, s16 astep, s16 height, s16 camz,
+                        u16 ubase, u16 origin);
+void snesFloorRowsPitch(u16 y0, u16 y1);
 void snesBoardTextureClear(void);
 void snesBoardTextureCard(u16 centre, u16 face, u16 flip, u16 width, u16 height);
 

@@ -73,10 +73,37 @@ rs_row            dw
 rs_col            dw
 rs_flip           dw
 rs_fbbank         dw          ; the frame the walkers write: $7E or $7F
+rs_sheet          dw          ; the stamp's 32x32 sheet: 0 = tex32, else tex32b
 .ENDS
 
 .RAMSECTION "snes_board_texture_ram" BANK $7F SLOT 3 ALIGN 256 KEEP
 snes_board_texture dsb 32768
+.ENDS
+
+; The pitch-only floor mapper's inputs (snesFloorRowsPitch).  Low RAM, so C
+; reaches them through the $7E mirror as plain globals.
+.RAMSECTION "snes_floor_rows_ram" BANK 0 SLOT 1
+fr_half           dw            ; the slab's half width on the row, Q8.8 units
+fr_dhalf          dw            ; ...and its change per row
+fr_denom16        dw            ; sin(pitch) + sy*cos(pitch), Q4.12
+fr_dstep          dw            ; ...its step per row
+fr_a16            dw            ; cos(pitch) - sy*sin(pitch), Q4.12
+fr_astep          dw
+fr_height         dw            ; the camera's height, Q8.8
+fr_camz           dw            ; the camera's z, Q8.8
+fr_ubase          dw            ; (cam.x << 5) + half a cell, Q8.8 texels
+fr_origin         dw            ; the viewport's byte origin
+fr_y              dw
+fr_yend           dw
+fr_denom          dw
+fr_a              dw
+fr_depth          dw
+fr_dtex           dw
+fr_x0             dw
+fr_x1             dw
+fr_tu             dw
+fr_tv             dw
+fr_tmp2           dw
 .ENDS
 
 .BASE $C0
@@ -740,6 +767,275 @@ _fq_loop:
     plp
     rtl
 
+; void snesFloorRowsSetup(s16 half, s16 dhalf, s16 denom16, s16 dstep,
+;                         s16 a16, s16 astep, s16 height, s16 camz,
+;                         u16 ubase, u16 origin)
+snesFloorRowsSetup:
+    php
+    rep #$30
+    lda 5,s
+    sta.l fr_half
+    lda 7,s
+    sta.l fr_dhalf
+    lda 9,s
+    sta.l fr_denom16
+    lda 11,s
+    sta.l fr_dstep
+    lda 13,s
+    sta.l fr_a16
+    lda 15,s
+    sta.l fr_astep
+    lda 17,s
+    sta.l fr_height
+    lda 19,s
+    sta.l fr_camz
+    lda 21,s
+    sta.l fr_ubase
+    lda 23,s
+    sta.l fr_origin
+    plp
+    rtl
+
+; void snesFloorRowsPitch(u16 y0, u16 y1)
+;
+; THE FLOOR OF A PITCHING CAMERA, ROW BY ROW, with no C between the rows.
+; The camera never yaws on the lift, so every screen row is one texture row
+; of the world image at constant v and a constant step in u, and the whole
+; of the per-row work is: two Q4.12 accumulators stepped, one reciprocal
+; lookup, two Q8.8 products, one 16x8 product for the row's origin, and the
+; walker.  C did exactly this and spent two thousand cycles a row doing it
+; through the stack; this is a few hundred.
+;
+; The slab seen without yaw is a trapezoid symmetric about the middle of
+; the viewport (the camera is always over x = 0), so its edges are one half
+; width per row, stepped: x0 = 128 - half, x1 = 128 + half, clipped, and
+; the converter's row spans are noted from the same numbers.
+;
+; Per row y in [y0, y1):
+;   half += dhalf;  skip unless half > 0
+;   denom = denom16 >> 4;  skip unless 2 < denom < 1024
+;   x0, x1 from half;  skip unless x1 > x0
+;   depth = height * recip_plane[denom]           (Q8.8)
+;   z = camz + depth * a                          (Q8.8)
+;   dtex = (depth + 2) >> 2                       (texels a pixel, Q8.8)
+;   tu = ubase + dtex * (x0 - 128) + dtex / 2     (the first pixel's centre)
+;   tv = z << 5
+;   walk x1 - x0 texels from (tv, tu) stepping dtex
+snesFloorRowsPitch:
+    php
+    rep #$30
+    lda 5,s
+    sta.l fr_y
+    lda 7,s
+    sta.l fr_yend
+_fr_row:
+    lda.l fr_y
+    cmp.l fr_yend
+    bcc +
+    jmp _fr_done
++
+    ; The half width for this row, then the step for the next.
+    lda.l fr_half
+    sta.l fr_tmp2
+    clc
+    adc.l fr_dhalf
+    sta.l fr_half
+    ; The camera terms for this row, then the step for the next.
+    lda.l fr_denom16
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    sta.l fr_denom
+    lda.l fr_a16
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    sta.l fr_a
+    lda.l fr_denom16
+    clc
+    adc.l fr_dstep
+    sta.l fr_denom16
+    lda.l fr_a16
+    clc
+    adc.l fr_astep
+    sta.l fr_a16
+    ; Above the horizon, or too far below it for the table: nothing.
+    lda.l fr_denom
+    cmp #3
+    bcc _fr_skip
+    cmp #1024
+    bcs _fr_skip
+    ; The row's span: 128 -/+ half, in pixels, clipped to the viewport.
+    lda.l fr_tmp2
+    beq _fr_skip
+    bmi _fr_skip
+    cmp #$8000
+    ror a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a                       ; half >> 7: Q8.8 units to pixels
+    sta.l fr_tmp2
+    lda #128
+    sec
+    sbc.l fr_tmp2
+    bpl +
+    lda #0
++   sta.l fr_x0
+    lda #128
+    clc
+    adc.l fr_tmp2
+    cmp #257
+    bcc +
+    lda #256
++   sta.l fr_x1
+    cmp.l fr_x0
+    bcc _fr_skip
+    beq _fr_skip
+    ; Note the span for the converter: per 8-row band, the first and last
+    ; pixel columns touched.
+    lda.l fr_y
+    lsr a
+    lsr a
+    lsr a
+    asl a
+    tax
+    sep #$20
+.ACCU 8
+    lda.l fr_x0
+    cmp.l snes_conv_rowspan,x
+    bcs +
+    sta.l snes_conv_rowspan,x
++   lda.l fr_x1
+    dec a
+    cmp.l snes_conv_rowspan+1,x
+    bcc +
+    sta.l snes_conv_rowspan+1,x
++   rep #$20
+.ACCU 16
+    bra _fr_map
+_fr_skip:
+    jmp _fr_next
+_fr_map:
+    ; depth = height * recip[denom]
+    lda.l fr_denom
+    asl a
+    tax
+    lda.l snes_recip_plane,x
+    pha
+    lda.l fr_height
+    pha
+    jsl snesQMul
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    sta.l fr_depth
+    ; z = camz + depth * a
+    lda.l fr_a
+    pha
+    lda.l fr_depth
+    pha
+    jsl snesQMul
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    clc
+    adc.l fr_camz
+    ; tv = z << 5, kept to the texture's 128 rows
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    and #$7F00
+    sta.l fr_tv
+    ; dtex = (depth + 2) >> 2
+    lda.l fr_depth
+    inc a
+    inc a
+    lsr a
+    lsr a
+    sta.l fr_dtex
+    ; tu = ubase + dtex * (x0 - 128) + dtex / 2, through the 16x8 signed
+    ; multiplier: dtex is a positive word, x0 - 128 a signed byte.
+    sep #$20
+.ACCU 8
+    lda.l fr_dtex
+    sta.l $211B
+    lda.l fr_dtex+1
+    sta.l $211B
+    lda.l fr_x0
+    sec
+    sbc #128
+    sta.l $211C
+    rep #$20
+.ACCU 16
+    lda.l $2134
+    clc
+    adc.l fr_ubase
+    sta.l fr_tu
+    lda.l fr_dtex
+    lsr a
+    clc
+    adc.l fr_tu
+    ; The walker steps before it reads: hand it the texel before the first.
+    sec
+    sbc.l fr_dtex
+    sta.l fr_tu
+    ; snesSpanFloorTex(origin + y * 256 + x0, x1 - x0,
+    ;                  tv | (tu >> 8), tu & 255, dtex)
+    lda.l fr_dtex
+    pha
+    lda.l fr_tu
+    and #$00FF
+    pha
+    lda.l fr_tu
+    xba
+    and #$00FF
+    ora.l fr_tv
+    pha
+    lda.l fr_x1
+    sec
+    sbc.l fr_x0
+    pha
+    lda.l fr_y
+    xba
+    and #$FF00
+    clc
+    adc.l fr_x0
+    clc
+    adc.l fr_origin
+    pha
+    jsl snesSpanFloorTex
+    tsa
+    clc
+    adc #10
+    tas
+_fr_next:
+    lda.l fr_y
+    inc a
+    sta.l fr_y
+    jmp _fr_row
+_fr_done:
+    plp
+    rtl
+
 ; A world-space board image, shared by every camera pose.  The second half
 ; repeats the 64-row floor pattern; card stamps then cover their own slots.
 snesBoardTextureClear:
@@ -757,15 +1053,22 @@ _bt_clear:
     plp
     rtl
 
-; centre = (world texture v << 8) | u; face is a 16x16 ROM image.
-; Stamp dimensions vary towards the native top view's 32/48 cell coverage.
+; centre = (world texture v << 8) | u; face is a 32x32 ROM image off the
+; same two 1:1 sheets the resting board draws from, so a card looks the same
+; from every camera pose.  width x height is the stamp's footprint in world
+; texels; the face is resampled to it.
 snesBoardTextureCard:
     php
     rep #$30
     lda 7,s
+    and #$003F                  ; (face & 63) << 10: the page in its sheet
     xba
-    and #$FF00
+    asl a
+    asl a
     sta.l rs_page
+    lda 7,s
+    and #$0040                  ; faces from 64 up are on the second sheet
+    sta.l rs_sheet
     lda 9,s
     sta.l rs_flip
     lda 11,s
@@ -844,12 +1147,11 @@ _bt_setup:
     plb
     plb
 _bt_row:
+    ; v is Q4.12 over the face: texel row = v >> 7, and a row is 32 bytes.
     lda.b <rs_v
     lsr a
     lsr a
-    lsr a
-    lsr a
-    and #$00F0
+    and #$03E0
     ora.b <rs_page
     sta.b <rs_tmp
     lda #0
@@ -858,15 +1160,18 @@ _bt_row:
     sta.b <rs_col
     lda.b <rs_dst
     tay
+    lda.b <rs_sheet
+    bne _bt_pixel_hi
 _bt_pixel:
     lda.b <rs_u
+    asl a                       ; texel column = u >> 7
     xba
-    and #$000F
+    and #$001F
     ora.b <rs_tmp
     tax
     sep #$20
 .ACCU 8
-    lda.l snes_card_tex,x
+    lda.l snes_card_tex32,x
     sta.w snes_board_texture,y
     rep #$20
 .ACCU 16
@@ -877,6 +1182,28 @@ _bt_pixel:
     sta.b <rs_u
     dec.b <rs_col
     bne _bt_pixel
+    bra _bt_row_done
+_bt_pixel_hi:
+    lda.b <rs_u
+    asl a
+    xba
+    and #$001F
+    ora.b <rs_tmp
+    tax
+    sep #$20
+.ACCU 8
+    lda.l snes_card_tex32b,x
+    sta.w snes_board_texture,y
+    rep #$20
+.ACCU 16
+    iny
+    lda.b <rs_u
+    clc
+    adc.b <rs_du
+    sta.b <rs_u
+    dec.b <rs_col
+    bne _bt_pixel_hi
+_bt_row_done:
     lda.b <rs_v
     clc
     adc.b <rs_dv

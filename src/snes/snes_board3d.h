@@ -87,6 +87,14 @@ void snesSlotCentre(u8 row, u8 col, u8 mirror, s16 *wx, s16 *wz);
  * tile row, the texel columns it touched in snes_conv_rowspan. */
 void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop);
 void snesDrawCameraFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop);
+/* The same in two halves, for a frame painted a few rows a display field:
+ * Begin clears, draws the walls and walks the slab's edges; when it returns
+ * 1 the rows [y0, y1) are still to be mapped -- in any number of calls to
+ * snesFloorRowsPitch(y, y + n).  (A yawed camera is mapped inside Begin and
+ * returns 0.)  `clear` 0 means the caller has already filled the frame with
+ * the backdrop. */
+u8   snesDrawCameraFloorBegin(const SnesViewport *vp, const SnesCamera *cam,
+                              u8 backdrop, u8 clear, u16 *y0, u16 *y1);
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 

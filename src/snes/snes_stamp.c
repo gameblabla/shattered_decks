@@ -44,7 +44,7 @@ void snesStampCommit(void)
     sum += g_stamp.nmi_skips;
     sum += g_stamp.turn_max_lines;
     sum += g_stamp.rest_max_lines;
-    sum += g_stamp.patch_max_lines;
+    sum += g_stamp.dropped;
     sum += g_stamp.held_max_lines;
     sum += g_stamp.occupied;
     sum += g_stamp.view;

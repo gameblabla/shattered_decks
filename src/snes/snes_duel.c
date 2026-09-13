@@ -68,8 +68,22 @@
 /* Half the unit viewport's width, in Q8.8: what makes du a shift. */
 #define CAM_FOCAL    ((s16)(64 << 8))
 /* The top of the lift: over the middle of the board, looking straight down
- * from high enough that the whole slab fits the frame. */
-#define LIFT_HEIGHT  ((s16)(1152))           /* 4.5 units */
+ * from JUST high enough that the whole slab fits the frame.  At 3.9 units a
+ * screen pixel is 1/32.8 of a unit, so the slab's four rows span 131 of the
+ * viewport's 144 lines and its five columns 164 of 256 -- the board fills the
+ * overhead view the way the MSX2 and PC-FX tactical views do, instead of
+ * sitting in the middle of it as a minimap.  The camera's foot is centred a
+ * few lines below the middle so the front wall's bottom edge is the last
+ * line of the frame and the far row clears the life panels. */
+#define LIFT_HEIGHT  ((s16)(1050))           /* 4.1 units */
+#define LIFT_HORIZON ((s16)76)
+/* THE LIFT SWOOPS.  Partway up, the camera is closer to the near edge than
+ * either endpoint and looking along the board, so the slab and its front
+ * wall spread over more 8x8 cells than the converter's 351-cell budget --
+ * a frame over budget is not shown at all.  Climbing an extra 0.8 units in
+ * the middle of the move (a half sine over the lift) keeps every pose
+ * inside the budget, and reads as the camera rising before it looks down. */
+#define LIFT_BUMP    ((s16)205)             /* 0.8 units */
 #define LIFT_FRAMES  4
 
 /* The surround: BLACK, everywhere the slab does not reach.  The board is the
@@ -247,6 +261,7 @@ static u8 configured_story_mode = 0;
 
 static void render(void);
 static void build_objects(void);
+static void slide_hand(void);
 static u8   face_of(u8 card, u8 faceup);
 static u8   focus_card(u8 *face);
 static u8   focus_stats(u8 card, u16 *atk, u16 *def);
@@ -292,6 +307,11 @@ static void set_rest_camera(u8 mirror)
 /* Q8.8 smoothstep, using the SNES multiplier instead of a 32-bit product.
  * The eased value is shared by the camera and hand so the two settle together
  * at the exact frame the PPU switches to the resident top table. */
+static void job_begin(void);
+static u8   job_run(void);
+static u8   job_active(void);
+static u16  job_progress(void);
+
 static u16 ease_frac(u8 frame, u8 total)
 {
     u16 t;
@@ -302,9 +322,20 @@ static u16 ease_frac(u8 frame, u8 total)
     return (u16)snesQMul((s16)t2, (s16)(3 * SNES_ONE - 2 * t));
 }
 
+/* The lift's progress for the sprite layer, Q8.8 eased: the poses done plus
+ * the fraction of the one on its way, so the hand slides continuously while
+ * the board arrives four times. */
 static u16 view_anim_ease(u8 frame)
 {
-    return ease_frac(frame, LIFT_FRAMES);
+    u16 t;
+    if (frame >= LIFT_FRAMES) return SNES_ONE;
+    /* (frame - 1 + progress) / LIFT_FRAMES, then smoothstepped. */
+    t = (u16)(((u16)(frame ? frame - 1 : 0) << 8) + job_progress());
+    t >>= 2;                    /* / LIFT_FRAMES, which is four */
+    {
+        const u16 t2 = (u16)snesQMul((s16)t, (s16)t);
+        return (u16)snesQMul((s16)t2, (s16)(3 * SNES_ONE - 2 * t));
+    }
 }
 
 static s16 view_lerp(s16 a, s16 b, u16 t)
@@ -320,14 +351,17 @@ static s16 view_lerp(s16 a, s16 b, u16 t)
 static void lift_camera(u8 frame)
 {
     const u16 t = ease_frac(frame, LIFT_FRAMES);
+    /* sin(pi * t): t is Q8.8 over one lift, and 256 counts of snesSin's
+     * angle are a whole turn, so half a turn is t / 2. */
+    const s16 bump = snesQMul(LIFT_BUMP, snesSin((u8)(t >> 1)));
     snesCameraSet(&cam, 0,
                   view_lerp(CAM_Z, 0, t),
-                  view_lerp(CAM_HEIGHT, LIFT_HEIGHT, t),
-                  CAM_FOCAL, (s16)(SNES_FRAME_H >> 1));
+                  (s16)(view_lerp(CAM_HEIGHT, LIFT_HEIGHT, t) + bump),
+                  CAM_FOCAL, LIFT_HORIZON);
     cam.pitch = (u8)view_lerp(0, 64, t);
     /* Straight down, the horizon has no meaning: the frame is centred on
      * the camera's foot.  Partway, the horizon rises with the pitch. */
-    cam.horizon = (s16)view_lerp(SNES_REST_HORIZON_PX, SNES_FRAME_H >> 1, t);
+    cam.horizon = (s16)view_lerp(SNES_REST_HORIZON_PX, LIFT_HORIZON, t);
 }
 
 static void motion_sequence_begin(u8 frames);
@@ -373,7 +407,8 @@ static void step_view_transition(void)
     if (view_anim_frame < LIFT_FRAMES) {
         ++view_anim_frame;
         lift_camera(to_top ? view_anim_frame : (u8)(LIFT_FRAMES - view_anim_frame));
-        motion_frame();
+        job_begin();
+        job_run();
         build_objects();
         return;
     }
@@ -385,9 +420,11 @@ static void step_view_transition(void)
     build_objects();
 }
 
+static u8 texture_check = 1;    /* the world texture may be stale */
 static void touch_board(u8 frames)
 {
     board_dirty = 1;
+    texture_check = 1;
     if (frames > motion) motion = frames;
 }
 
@@ -604,31 +641,42 @@ static void current_faces(u8 *faces)
 
 /* Flat cards have one world-space footprint in every pose.  Camera pitch and
  * yaw alter their projection, never the source texture's dimensions. */
-static void update_board_texture(void)
+/* Whether the world texture matches the field.  When it does not, the floor
+ * is put back under every slot and the caller stamps the cards -- all at
+ * once (update_board_texture) or a few a field (the camera job). */
+static u8 texture_stale(void)
 {
     u8 faces[20];
     u8 changed = (texture_w != 24 || texture_h != 32);
-    u8 r, c;
+    u8 r;
     current_faces(faces);
     for (r = 0; r < 20; ++r) {
         if (texture_faces[r] != faces[r]) changed = 1;
         texture_faces[r] = faces[r];
     }
-    if (!changed) return;
+    if (!changed) return 0;
     texture_w = 24;
     texture_h = 32;
     snesBoardTextureClear();
-    for (r = 0; r < SNES_ROWS; ++r) {
-        for (c = 0; c < SNES_COLS; ++c) {
-            const u8 face = texture_faces[r * SNES_COLS + c];
-            if (face != SNES_CARD_NONE_FACE) {
-                snesBoardTextureCard(
-                    (u16)(((48 - (s16)r * 32) & 127) * 256 |
-                          ((16 + ((s16)c - 2) * 32) & 255)),
-                    face, r < 2, 24, 32);
-            }
-        }
-    }
+    return 1;
+}
+
+static void texture_stamp(u8 slot)
+{
+    const u8 r = (u8)(slot / SNES_COLS), c = (u8)(slot % SNES_COLS);
+    const u8 face = texture_faces[slot];
+    if (face != SNES_CARD_NONE_FACE)
+        snesBoardTextureCard(
+            (u16)(((48 - (s16)r * 32) & 127) * 256 |
+                  ((16 + ((s16)c - 2) * 32) & 255)),
+            face, r < 2, 24, 32);
+}
+
+static void update_board_texture(void)
+{
+    u8 i;
+    if (!texture_stale()) return;
+    for (i = 0; i < 20; ++i) texture_stamp(i);
 }
 
 /* ── The resting picture ─────────────────────────────────────────────────── */
@@ -790,8 +838,20 @@ static void render_rest(u8 marker_row, u8 marker_col, u8 marker_colour)
         rom_cells_clear_slot(mirror, baked_marker_row, baked_marker_col);
     snesConvSetFloor((u16)(u16)(mirror ? snes_floor_planar_1 : snes_floor_planar_0),
                      mirror ? SNES_FLOOR_PLANAR_BANK_1 : SNES_FLOOR_PLANAR_BANK_0);
-    if (show_cards && !fly_frame) draw_held_card();
     rest_rowspan();
+    if (show_cards && !fly_frame) draw_held_card();
+    /* The held card stands above its slot, so its cells can reach outside
+     * the flat floor's spans; a cell outside the row's span is one the
+     * converter leaves blank. */
+    if (held_drawn) {
+        u8 r;
+        for (r = held_box[1]; r <= held_box[3]; ++r) {
+            u8 *e = &snes_conv_rowspan[(u16)r << 1];
+            const u8 x0 = (u8)(held_box[0] << 3), x1 = (u8)((held_box[2] << 3) | 7);
+            if (x0 < e[0]) e[0] = x0;
+            if (x1 > e[1]) e[1] = x1;
+        }
+    }
 }
 
 /* ── The transaction ─────────────────────────────────────────────────────── */
@@ -858,6 +918,160 @@ static void motion_frame(void)
     camera_rest = 0;
     render_camera_frame(0, MSX2_SLOT_NONE, MARK_YOU);
     if (t_render > t_turn_max) t_turn_max = t_render;
+}
+
+/* ── The resumable camera frame ──────────────────────────────────────────── */
+
+/* A LIFT FRAME IS PAINTED A FEW ROWS A DISPLAY FIELD.  A moving frame is
+ * forty-odd fields of mapping and conversion, and painted in one call it
+ * froze the sprite layer for all of them: the hand jumped four times on its
+ * way off the screen and nothing answered the pad.  Here the same work is a
+ * small state machine stepped once a game frame -- the texture, the floor's
+ * rows, the converter's cell rows, the map -- with each step sized to fit
+ * inside a field, so the main loop's vblank service (OAM, the drain) runs
+ * between every two.  The picture the PPU shows is the previous complete
+ * generation until the new map is switched to, as before. */
+enum SnesCamJob {
+    JOB_IDLE = 0,
+    JOB_WAIT,           /* the previous transaction has not been shown */
+    JOB_TEXTURE,        /* stamping cards into the world texture */
+    JOB_CLEAR,          /* the backdrop fill */
+    JOB_MAP_BEGIN,      /* walls, edges */
+    JOB_MAP_ROWS,       /* the floor, JOB_ROWS_PER_STEP rows a step */
+    JOB_CONV_BEGIN,     /* count the span, copy the map */
+    JOB_CONV_ROWS,      /* one cell row a step */
+    JOB_CONV_END        /* queue the map */
+};
+/* THE STEPS ARE SMALL AND THE HAND MOVES BETWEEN THEM.  Two floor rows are
+ * a quarter of a field of the walker and eight cells a third of one of the
+ * converter; job_run takes every step of a frame in a row -- a frame is
+ * still one game frame -- but slides the hand's sprites in place after
+ * each and has the NMI upload them, so the hand glides at the field rate
+ * while the board arrives four times.  (Spreading the steps over game
+ * frames was tried first: the field-boundary waits and the sprite rebuild
+ * a frame cost more than the rendering.) */
+#define JOB_ROWS_PER_STEP   4
+#define JOB_CELLS_PER_STEP  16
+#define JOB_CARDS_PER_STEP  3
+
+static u8  job_phase = JOB_IDLE;
+static u16 job_y = 0, job_y1 = 0;
+static u8  job_row = 0, job_col = 0;
+static u8  job_card = 0;
+static u16 job_clock0 = 0, job_map0 = 0;
+static u16 job_steps = 0, job_steps_total = 1;
+
+static u8 job_active(void) { return job_phase != JOB_IDLE; }
+
+/* How far through the current frame the job is, Q8.8: what the sprite
+ * layer animates by while the board is on its way. */
+static u16 job_progress(void)
+{
+    if (!job_active()) return SNES_ONE;
+    if (job_steps >= job_steps_total) return SNES_ONE;
+    return snesUQDiv(job_steps, job_steps_total);
+}
+
+static void job_begin(void)
+{
+    camera_rest = 0;
+    job_phase = JOB_WAIT;
+    job_steps = 0;
+    /* Floor rows, converter cells, and the two ends. */
+    job_steps_total = (u16)(SNES_FRAME_H / JOB_ROWS_PER_STEP +
+                            SNES_CELL_ROWS * (SNES_CELL_COLS / JOB_CELLS_PER_STEP) + 3);
+}
+
+static u8 job_step(void);
+
+/* The whole frame, step by step, the hand sliding between the steps. */
+static u8 job_run(void)
+{
+    while (job_step()) slide_hand();
+    return 0;
+}
+
+/* One step: returns 1 while the frame is still on its way. */
+static u8 job_step(void)
+{
+    u16 n;
+    switch (job_phase) {
+    case JOB_WAIT:
+        if (snesFbFramesPending()) return 1;
+        job_clock0 = snesClock();
+        snesRasterTarget(0x7E);
+        job_card = 0;
+        job_phase = texture_stale() ? JOB_TEXTURE : JOB_CLEAR;
+        return 1;
+    case JOB_TEXTURE:
+        for (n = 0; n < JOB_CARDS_PER_STEP && job_card < 20; ++n, ++job_card)
+            texture_stamp(job_card);
+        if (job_card >= 20) job_phase = JOB_CLEAR;
+        return 1;
+    case JOB_CLEAR:
+        ++job_steps;
+        snesFbWramFill(vp_rest.origin, vp_rest.bank,
+                       (u16)(SNES_FRAME_W * SNES_FRAME_H), BACKDROP);
+        job_phase = JOB_MAP_BEGIN;
+        return 1;
+    case JOB_MAP_BEGIN:
+        ++job_steps;
+        if (snesDrawCameraFloorBegin(&vp_rest, &cam, BACKDROP, 0, &job_y, &job_y1))
+            job_phase = JOB_MAP_ROWS;
+        else
+            job_phase = JOB_CONV_BEGIN;
+        return 1;
+    case JOB_MAP_ROWS:
+        ++job_steps;
+        n = (u16)(job_y1 - job_y);
+        if (n > JOB_ROWS_PER_STEP) n = JOB_ROWS_PER_STEP;
+        snesFloorRowsPitch(job_y, (u16)(job_y + n));
+        job_y = (u16)(job_y + n);
+        if (job_y >= job_y1) job_phase = JOB_CONV_BEGIN;
+        return 1;
+    case JOB_CONV_BEGIN:
+        ++job_steps;
+        cells_all();
+        rom_cells_none();
+        rest_valid = 0;
+        held_drawn = 0;
+        job_map0 = snesClock();
+        requested_generation = snesVideoRequestGeneration();
+        if (!snesConvBegin(next_pool, requested_generation)) {
+            /* Over the cell budget: the frame is refused (the stamp counts
+             * it) and the previous picture stays up. */
+            cells_clear();
+            job_phase = JOB_IDLE;
+            board_dirty = 0;
+            return 0;
+        }
+        job_row = 0;
+        job_col = 0;
+        job_phase = JOB_CONV_ROWS;
+        return 1;
+    case JOB_CONV_ROWS:
+        ++job_steps;
+        snesConvCells(job_row, job_col, (u16)(job_col + JOB_CELLS_PER_STEP));
+        job_col = (u8)(job_col + JOB_CELLS_PER_STEP);
+        if (job_col >= SNES_CELL_COLS) {
+            job_col = 0;
+            if (++job_row >= SNES_CELL_ROWS) job_phase = JOB_CONV_END;
+        }
+        return 1;
+    case JOB_CONV_END:
+        snesConvEnd();
+        next_pool ^= 1;
+        cells_clear();
+        t_map = (u16)(job_map0 - job_clock0);
+        t_render = (u16)(snesClock() - job_clock0);
+        t_conv = (u16)(t_render - t_map);
+        if (t_render > t_turn_max) t_turn_max = t_render;
+        board_dirty = 0;
+        job_phase = JOB_IDLE;
+        return 0;
+    default:
+        return 0;
+    }
 }
 
 static void render(void)
@@ -1178,6 +1392,48 @@ static void build_result_banner(void)
  * 3, so between two that overlap the one with the LOWER OAM index is the one
  * seen: the banner and the text go in first, then the plates they sit on, then
  * the cursor, and the cards last of all. */
+/* The hand's sprites, by OAM index, so the lift can move them without a
+ * rebuild: the card, its selection box (four corners, or 0xFF), and whether
+ * it bobs. */
+static u8 hand_oam[MSX2_HAND] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+static u8 hand_oam_box[MSX2_HAND] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+static u8 hand_oam_bob[MSX2_HAND] = { 0, 0, 0, 0, 0 };
+
+/* Where the hand sits this frame: at rest, or on its way off the bottom of
+ * the screen during the lift and back during the descent. */
+static s16 hand_row_y(void)
+{
+    if (view_motion == VIEW_TO_TOP)
+        return (s16)(HAND_Y + (s16)(((u16)VIEW_HAND_OFFSET *
+                                     view_anim_ease(view_anim_frame)) >> 8));
+    if (view_motion == VIEW_TO_HAND)
+        return (s16)(HAND_Y + (s16)(((u16)VIEW_HAND_OFFSET *
+                                     (SNES_ONE - view_anim_ease(view_anim_frame))) >> 8));
+    return HAND_Y;
+}
+
+/* Slide the hand's sprites to this frame's row, in place. */
+static void slide_hand(void)
+{
+    const s16 y = hand_row_y();
+    u8 i;
+    snesObjTouch();
+    snes_fb_oam_pending = 1;
+    for (i = 0; i < MSX2_HAND; ++i) {
+        s16 cy = y;
+        if (hand_oam[i] == 0xFF) continue;
+        if (hand_oam_bob[i]) cy = (s16)(cy - (snesSin(bob_phase) >> 6));
+        snesObjPatchY(hand_oam[i], cy, 1);
+        if (hand_oam_box[i] != 0xFF) {
+            const u8 b = hand_oam_box[i];
+            snesObjPatchY(b, (s16)(cy - 4), 0);
+            snesObjPatchY((u8)(b + 1), (s16)(cy - 4), 0);
+            snesObjPatchY((u8)(b + 2), (s16)(cy + 28), 0);
+            snesObjPatchY((u8)(b + 3), (s16)(cy + 28), 0);
+        }
+    }
+}
+
 static void build_objects(void)
 {
     const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
@@ -1195,15 +1451,7 @@ static void build_objects(void)
     } else {
         has_stats = focus_stats(card, &atk, &def);
     }
-    if (view_motion == VIEW_TO_TOP) {
-        hand_y = (s16)(HAND_Y +
-                       (s16)(((u16)VIEW_HAND_OFFSET *
-                              view_anim_ease(view_anim_frame)) >> 8));
-    } else if (view_motion == VIEW_TO_HAND) {
-        hand_y = (s16)(HAND_Y +
-                       (s16)(((u16)VIEW_HAND_OFFSET *
-                              (SNES_ONE - view_anim_ease(view_anim_frame))) >> 8));
-    }
+    hand_y = hand_row_y();
     /* A message pre-empts the name, because it is the thing that just
      * happened; the name is back the moment it expires. */
     const char *name = message ? message
@@ -1234,16 +1482,13 @@ static void build_objects(void)
         s16 x0, y0, x1, y1;
         s16 cx, cz;
         snesSlotCentre(top_row, top_col, 0, &cx, &cz);
-        /* At the settled endpoint the camera is exactly overhead: its
-         * 4.5-unit height and 128-pixel focal length make one screen pixel
-         * nine Q8.8 world counts.  Use that endpoint directly.  It avoids
-         * feeding a 90-degree pitch through the general perspective helper,
-         * whose near-plane rounding is intended for intermediate poses. */
-        x0 = (s16)(128 + (cx - 128) / 9);
-        x1 = (s16)(128 + (cx + 128) / 9);
-        y0 = (s16)(72 - (cz + 128) / 9);
-        y1 = (s16)(72 - (cz - 128) / 9);
-        if (x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128)
+        /* The slot's far-left and near-right corners through THE SAME CAMERA
+         * THE BOARD WAS RENDERED WITH -- the lift's top pose, which is where
+         * `cam` rests for as long as the overhead view is up -- so the
+         * bracket lands on the slot wherever the overhead pose is put. */
+        if (snesProject(&cam, &vp_rest, (s16)(cx - 128), (s16)(cz + 128), 0, &x0, &y0) &&
+            snesProject(&cam, &vp_rest, (s16)(cx + 128), (s16)(cz - 128), 0, &x1, &y1) &&
+            x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128)
             snesObjBoxRed(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
         snesObjText(8, NAME_Y, name);
         if (has_stats) {
@@ -1292,6 +1537,7 @@ static void build_objects(void)
          * greyed, darkened copy of its own colours, so the hand reads as one
          * lit card among four without a second sheet or a second upload. */
         snesObjCardHiRes(1);
+        for (i = 0; i < MSX2_HAND; ++i) hand_oam[i] = hand_oam_box[i] = 0xFF;
         for (i = 0; ui != UI_CHECK && i < MSX2_HAND; ++i) {
             s16 x = (s16)(HAND_X0 + i * HAND_PITCH);
             s16 y = hand_y;
@@ -1302,6 +1548,18 @@ static void build_objects(void)
                               : (chosen == i && ui != UI_ATTACKER &&
                                  ui != UI_DEFENDER && ui != UI_COM);
             if (hcard == MSX2_CARD_NONE) continue;
+            /* A CARD BEING PLAYED IS NOT IN THE HAND ANY MORE.  While the
+             * player is choosing its slot it hovers over the board as the
+             * held card (draw_held_card), and a fusion chain's cards are
+             * spoken for the moment their target is being chosen; the hand
+             * sprite would be a second copy.  B puts the card back, and the
+             * same rule -- decided from the UI state alone -- shows it
+             * again.  The flight sprite is the exception: it IS the card,
+             * on its way down. */
+            if (!fly_frame &&
+                ((i == chosen && (ui == UI_PLACE || ui == UI_EQUIP_TARGET)) ||
+                 (queued && ui == UI_FUSE_TARGET)))
+                continue;
             if (fly_frame && i == chosen) {
                 /* Mid-flight: the same eased curve the camera move uses, so a
                  * card leaves the hand quickly and settles onto its slot. */
@@ -1317,9 +1575,15 @@ static void build_objects(void)
                 y = (s16)(y - (snesSin(bob_phase) >> 6));
             }
             snesObjCardGrey((u8)(!selected && !queued));
-            if (queued) snesObjBox(x - 4, y - 4, 40, 40);
-            else if (selected) snesObjBox(x - 4, y - 4, 40, 40);
+            hand_oam_box[i] = 0xFF;
+            hand_oam_bob[i] = selected;
+            if (queued || selected) {
+                hand_oam_box[i] = snesObjCount();
+                snesObjBox(x - 4, y - 4, 40, 40);
+            }
+            hand_oam[i] = snesObjCount();
             snesObjCard(x, y, i, face_of(hcard, 1));
+            if (snesObjCount() == hand_oam[i]) hand_oam[i] = 0xFF;
             snesObjCardGrey(0);
         }
     }
@@ -1441,6 +1705,18 @@ static void begin_place_flight(u8 defense)
         if (snesProject(&cam, &vp_rest, wx, wz, 0, &sx, &sy)) {
             fly_x1 = (s16)(sx - 16);
             fly_y1 = (s16)(sy - 16);
+        }
+        /* The hand sprite has been hidden since the slot choice began, and
+         * the card the player sees is the one hovering over the slot; the
+         * flight therefore starts from where that hovering card is -- a
+         * fusion chain's cards, which do not hover, still come up from the
+         * hand.  A card that took off from the hand again would pop back
+         * into a row it had already left. */
+        if (ui != UI_FUSE_TARGET &&
+            snesProject(&cam, &vp_rest, wx, wz, (s16)(HELD_LIFT + HELD_TILT / 2),
+                        &sx, &sy)) {
+            fly_x0 = (s16)(sx - 16);
+            fly_y0 = (s16)(sy - 16);
         }
     }
     fly_frame = 1;
@@ -1931,6 +2207,15 @@ u8 snesDuelFrame(void)
      * from the baked picture and patches those cells.  After a camera move
      * (or anything that took the tiles) it is a full bake. */
     if (board_dirty) render();
+    /* THE MOVING CAMERA'S WORLD TEXTURE IS KEPT WARM.  Stamping twenty cards
+     * into it is a dozen fields, and paying that on the first frame of a
+     * lift was most of the wait before anything moved; done here, in the
+     * first idle frame after the board settled, the lift's first pose costs
+     * no more than its others. */
+    else if (texture_check) {
+        texture_check = 0;
+        update_board_texture();
+    }
     build_objects();
 
 stamp:
@@ -1942,6 +2227,7 @@ stamp:
     g_stamp.held_max_lines = t_held_max;
     g_stamp.nmi_skips = snesFbNmiSkips();
     g_stamp.occupied = snesFbOccupied();
+    g_stamp.dropped = snesFbOverflows();
     g_stamp.view = (view_motion == VIEW_TO_TOP) ? 2 : (view_motion == VIEW_TO_HAND) ? 3
                  : top_view ? 1 : 0;
     g_stamp.battle_phase = (ui == UI_BATTLE_ART) ? snesBattlePhase() : 0xFFFF;

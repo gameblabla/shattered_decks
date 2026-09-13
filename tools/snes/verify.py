@@ -41,7 +41,7 @@ STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "frame_gen",
                 "duel_turn", "lp_player", "lp_com", "duel_result", "ui",
                 "cursor", "field_cards", "phase", "turn_owner", "deck_slot",
                 "deck_count", "deck_head", "storage_count", "save_valid",
-                "map_lines", "conv_lines", "nmi_skips", "turn_max_lines", "rest_max_lines", "patch_max_lines", "held_max_lines", "occupied", "view", "battle_phase",
+                "map_lines", "conv_lines", "nmi_skips", "turn_max_lines", "rest_max_lines", "dropped", "held_max_lines", "occupied", "view", "battle_phase",
                 "battle_field", "battle_damage", "checksum"]
 
 # enum SnesDuelUi, mirroring src/snes/snes_duel.c.
@@ -1637,6 +1637,51 @@ def check_hand_is_per_face():
     return "5 hand cards exact against the per-face sheet: %s" % ", ".join(seen)
 
 
+def hand_sprite_present(px, w, h, slot):
+    """Whether ANY card sprite is drawn at hand slot `slot`: the best per-face
+    match over the bob range, against the sheet, has to be nearly exact."""
+    x = HAND_X0 + slot * HAND_PITCH
+    best = 0
+    for dy in range(-4, 5):
+        for grey in (False, True):
+            got = identify_card_sprite(px, w, h, x, HAND_Y + dy, hi=True, grey=grey)
+            if got is not None and got[1] > best:
+                best = got[1]
+    return best >= 1024 * 0.9
+
+
+def check_chosen_card_leaves_the_hand():
+    """THE CARD BEING PLAYED IS NOT DRAWN IN THE HAND WHILE ITS SLOT IS CHOSEN.
+
+    A on the first hand card enters PLACE: the card hovers over the board as
+    the held card and its hand sprite must be gone.  B cancels: the same card
+    is back in its slot, selected.  Both are read from the screen, not the
+    stamp, and the other four hand cards must be present throughout."""
+    ppm, wram = run_hold()
+    stamp = read_stamp(wram)
+    if UI[stamp["ui"]] != "PLACE":
+        raise Failure("A did not enter PLACE (ui %s)" % UI[stamp["ui"]])
+    w, h, px = read_ppm(ppm)
+    if hand_sprite_present(px, w, h, 0):
+        raise Failure("the chosen hand card is still drawn in the hand while its "
+                      "slot is being chosen")
+    others = [hand_sprite_present(px, w, h, i) for i in range(1, 5)]
+    if not all(others):
+        raise Failure("the other hand cards are not all drawn during PLACE: %s" % others)
+    ppm, wram = run("hold_cancel", random_battle_script() + [press("A", DUEL_READY),
+                    press("RIGHT", DUEL_READY + 200), press("B", DUEL_READY + 400)],
+                    RUN_FRAMES)
+    stamp = read_stamp(wram)
+    if UI[stamp["ui"]] != "HAND" or stamp["cursor"] != 0:
+        raise Failure("B did not put the card back (ui %s, cursor %d)"
+                      % (UI[stamp["ui"]], stamp["cursor"]))
+    w, h, px = read_ppm(ppm)
+    present = [hand_sprite_present(px, w, h, i) for i in range(5)]
+    if not all(present):
+        raise Failure("after cancelling, hand cards present: %s" % present)
+    return "chosen card hidden in PLACE, all five back after B"
+
+
 def check_duel_flow():
     """A turn played through the UI, one button at a time.
 
@@ -1727,58 +1772,43 @@ def run_top(capture=None):
 
 
 # The overhead camera, mirroring snes_duel.c's lift_camera at its top: over
-# the middle of the board at LIFT_HEIGHT (4.5 units), looking straight down,
-# the frame centred on the camera's foot.  A world point (wx, wz) on the
-# board projects to (128 + wx * k, 72 - wz * k) with k = focal / height in
-# pixels: 128 / 4.5.
-TOP_K = 128.0 / 4.5
-TOP_CX, TOP_CY = 128.0, 72.0
+# the middle of the board at LIFT_HEIGHT (4.1 units), looking straight down,
+# the frame centred on the camera's foot at LIFT_HORIZON.  A world point
+# (wx, wz) on the board projects to (128 + wx * k, 76 - wz * k) with k =
+# focal / height in pixels: 128 / 4.1.
+TOP_HEIGHT = 1050 / 256.0
+TOP_K = 128.0 / TOP_HEIGHT
+TOP_CX, TOP_CY = 128.0, 76.0
 # The moving camera draws the cards out of the world texture, where each is a
-# 24x32-texel stamp of its 16x16 face over a 0.75 x 1.0 unit footprint.
+# 24x32-texel stamp of its 32x32 face over a 0.75 x 1.0 unit footprint.
 TOP_CARD_W, TOP_CARD_H = 0.75, 1.0
 
 
-def top_slot_samples(px, w, h, row, col, ox, oy, lo=2, hi=14):
-    """A slot's card texels read out of the overhead picture."""
+def top_slot_samples(px, w, h, row, col, ox, oy, lo=4, hi=28):
+    """A slot's card texels read out of the overhead picture.
+
+    The overhead cards come off the same 32x32 sheets as the resting board
+    (stamped into the world texture at 24x32 texels, three quarters of a unit
+    by one), so the identification is against those sheets too."""
     cx, cz = col - 2, ROW_Z[row]
     flip = row < 2
     out = []
     for v in range(lo, hi):
         for u in range(lo, hi):
-            vv = 15 - v if flip else v
-            wx = cx - TOP_CARD_W / 2 + ((u + 0.5) / 16.0) * TOP_CARD_W
-            wz = cz + TOP_CARD_H / 2 - ((vv + 0.5) / 16.0) * TOP_CARD_H
+            vv = 31 - v if flip else v
+            wx = cx - TOP_CARD_W / 2 + ((u + 0.5) / 32.0) * TOP_CARD_W
+            wz = cz + TOP_CARD_H / 2 - ((vv + 0.5) / 32.0) * TOP_CARD_H
             x = int(TOP_CX + wx * TOP_K) + ox
             y = int(TOP_CY - wz * TOP_K) + oy
             if 0 <= x < w and 0 <= y < h:
                 i = (y * w + x) * 3
-                out.append((v * 16 + u,
+                out.append((v * 32 + u,
                             direct_colour_byte((px[i], px[i + 1], px[i + 2]))))
     return out
 
 
-_TOP_FACES = None
-_TOP_WEIGHT = None
-
-
-def top_card_faces():
-    """The moving camera's 16x16 world-texture sheet and colour weights."""
-    global _TOP_FACES, _TOP_WEIGHT
-    if _TOP_FACES is None:
-        with open(CARD_TEX, "rb") as fh:
-            blob = fh.read()
-        _TOP_FACES = [blob[i * 256:(i + 1) * 256]
-                      for i in range(len(blob) // 256)]
-        counts = {}
-        for b in blob:
-            counts[b] = counts.get(b, 0) + 1
-        _TOP_WEIGHT = dict((b, float(len(blob)) / n)
-                           for b, n in counts.items())
-    return _TOP_FACES, _TOP_WEIGHT
-
-
 def identify_top_slot(px, w, h, row, col):
-    faces, weight = top_card_faces()
+    faces, weight = card_faces()
     best = None
     for ox in (-2, -1, 0, 1, 2):
         for oy in (-2, -1, 0, 1, 2):
@@ -1802,7 +1832,7 @@ def check_top_view():
     renderer at the top of the camera lift, looking straight down, in Mode 3
     direct colour through the same character base and map publication as the
     seat.  The twenty slots are identified by projecting each card's texels
-    through that camera and matching the 16x16 sheet the world texture is
+    through that camera and matching the 32x32 sheets the world texture is
     stamped from; the cursor is the red sprite bracket over the inspected
     slot; and a different field (the empty board without the fixture) must
     give a different picture, which a leftover static table could not."""
@@ -1835,9 +1865,9 @@ def check_top_view():
     # entry is the player's monster row, column 0.  Assert the displayed ink,
     # not the post-field OAM dump: a dump can already contain the next shadow
     # while the PPM is the field that was just presented.
-    cx, cz = -2 * 256, int(ROW_Z[2] * 256)
-    x0, x1 = 128 + (cx - 128) // 9, 128 + (cx + 128) // 9
-    y0, y1 = 72 - (cz + 128) // 9, 72 - (cz - 128) // 9
+    cx, cz = -2, ROW_Z[2]
+    x0, x1 = int(TOP_CX + (cx - 0.5) * TOP_K), int(TOP_CX + (cx + 0.5) * TOP_K)
+    y0, y1 = int(TOP_CY - (cz + 0.5) * TOP_K), int(TOP_CY - (cz - 0.5) * TOP_K)
     red = obj_colour(7, 4)
     brackets = []
     for x, y in ((x0, y0), (x1 - 8, y0),
@@ -1894,10 +1924,21 @@ def check_top_view_switch_is_seamless():
         raise Failure("the captured UP interval has only %d distinct board pictures -- "
                       "the camera lift is not animating" % len(unique))
     _, wram = run_top()
-    if read_stamp(wram)["view"] != 1:
+    stamp = read_stamp(wram)
+    if stamp["view"] != 1:
         raise Failure("the lift did not end in the overhead view")
-    return "%d fields across the lift, %d distinct pictures, quietest %d lit samples against %d" % (
-        len(frames), len(unique), worst, typical)
+    # EVERY RENDERED POSE WAS SHOWN.  A pose whose span is over the converter's
+    # 351-cell budget is refused and never reaches the screen; the lift's
+    # trajectory is chosen so that none is, and the overhead pose fills the
+    # frame as far as that budget allows.
+    if stamp["dropped"]:
+        raise Failure("the converter refused %d frames during the lift: a pose is "
+                      "over the 351-cell budget" % stamp["dropped"])
+    if stamp["occupied"] < 300:
+        raise Failure("the overhead board occupies only %d cells -- it is not "
+                      "filling the view" % stamp["occupied"])
+    return "%d fields across the lift, %d distinct pictures, quietest %d lit samples against %d, no frame dropped, overhead occupies %d cells" % (
+        len(frames), len(unique), worst, typical, stamp["occupied"])
 
 
 def check_camera_round_trip():
@@ -2489,6 +2530,7 @@ CHECKS = [
     ("quad card", check_quad_card),
     ("hud text", check_hud_text),
     ("hand per-face art", check_hand_is_per_face),
+    ("chosen card leaves hand", check_chosen_card_leaves_the_hand),
     ("top view", check_top_view),
     ("top view switch", check_top_view_switch_is_seamless),
     ("camera round trip", check_camera_round_trip),

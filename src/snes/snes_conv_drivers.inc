@@ -300,8 +300,41 @@ _alloc_none:
 ; and its completion job.  Returns the occupied cell count, or zero when the
 ; frame's span exceeds the 351-cell budget -- in which case nothing is
 ; queued and no map or reference count has changed.
+;
+; IT IS THREE CALLS, so a camera frame can be converted a few cell rows a
+; display field with the sprite layer serviced in between (snes_duel.c's
+; resumable camera job): snesConvBegin counts the span and copies the map,
+; snesConvRows(r0, r1) converts the dirty cells of rows [r0, r1) and flushes
+; their run, snesConvEnd queues the map and the completion marker.
+; snesConvFrame itself is the three in a row.
 ;-----------------------------------------------------------------------------
 snesConvFrame:
+    php
+    rep #$30
+    lda 7,s
+    pha
+    lda 7,s
+    pha
+    jsl snesConvBegin
+    pla
+    pla
+    lda.b tcc__r0
+    bne +
+    plp
+    rtl
++   pea 18
+    pea 0
+    jsl snesConvRows
+    pla
+    pla
+    jsl snesConvEnd
+    lda.l cv_occupied
+    sta.b tcc__r0
+    plp
+    rtl
+
+; u16 snesConvBegin(u16 pool, u16 generation)
+snesConvBegin:
     php
     rep #$30
     lda 5,s
@@ -369,6 +402,20 @@ _cf_map_ready:
 
     ; ── Step 1: the new map starts as a copy of the shown one ──────────────
     ; Only the 576 board cells; rows 18..31 of both maps are blank for ever.
+    ; A CAMERA FRAME SKIPS IT: with every cell dirty, the column loop
+    ; releases each cell's old tile and names a new one (or the blank) for
+    ; all 576, which is everything the copy would have done and undone.
+    ldx #0
+_cf_all_dirty:
+    lda.l snes_conv_dirty,x
+    cmp #$FFFF
+    bne _cf_copy_needed
+    inx
+    inx
+    cpx #18*4
+    bne _cf_all_dirty
+    bra _cf_copy_done
+_cf_copy_needed:
     lda #0
     sta.l cv_y                  ; byte index of the cell in a map
 _cf_copy:
@@ -412,13 +459,39 @@ _cf_copy_next:
     sta.l cv_y
     cmp #576*2
     bne _cf_copy
-
-    ; ── Step 2: the dirty cells ────────────────────────────────────────────
+_cf_copy_done:
     lda #0
     sta.l cv_run_bytes
+    lda.l cv_occupied
+    sta.b tcc__r0
+    plp
+    rtl
+
+; void snesConvRows(u16 row0, u16 row1)
+;
+; ── Step 2: the dirty cells of rows [row0, row1) ─────────────────────────
+snesConvRows:
+    php
+    rep #$30
+    lda #32
+    sta.l cv_col_end            ; whole rows (see _cf_row_next)
+    lda 7,s
+    sta.l cv_row_end
+    lda 5,s
     sta.l cv_row
-    sta.l cv_y                  ; the cell row's first chunky byte
-    phb
+    ; The cell row's first chunky byte: row * 2048.
+    xba
+    asl a
+    asl a
+    asl a
+    and #$F800
+    sta.l cv_y
+    lda.l cv_row
+    cmp.l cv_row_end
+    bcc +
+    plp
+    rtl
++   phb
     phd
     pea $7E7E
     plb
@@ -465,6 +538,8 @@ _cf_row:
 _cf_col_start:
     lda #0
     sta.l cv_col
+    lda #32
+    sta.l cv_col_end
 _cf_col:
     lda.l cv_col
     cmp #16
@@ -568,10 +643,20 @@ _cf_col_next:
     lda.l cv_col
     inc a
     sta.l cv_col
-    cmp #32
+    cmp.l cv_col_end
     beq _cf_row_next
     jmp _cf_col
 _cf_row_next:
+    lda.l cv_col_end
+    cmp #32
+    beq +
+    ; A partial row (snesConvCells): done after its columns.
+    jsr cv_flush_run
+    pld
+    plb
+    plp
+    rtl
++
     lda.l cv_y
     clc
     adc #2048
@@ -579,14 +664,116 @@ _cf_row_next:
     lda.l cv_row
     inc a
     sta.l cv_row
-    cmp #18
+    cmp.l cv_row_end
     beq +
     jmp _cf_row
 +   jsr cv_flush_run
     pld
     plb
+    plp
+    rtl
 
-    ; ── Step 3: the map, then the zero-byte completion marker ──────────────
+; void snesConvCells(u16 row, u16 col0, u16 col1)
+;
+; The dirty cells of ONE row, columns [col0, col1), for a converter step
+; that has to fit in a fraction of a display field: the row's masks are
+; pre-shifted to col0 the way the column loop would have shifted them.
+snesConvCells:
+    php
+    rep #$30
+    lda 5,s
+    sta.l cv_row
+    inc a
+    sta.l cv_row_end
+    lda 5,s
+    xba
+    asl a
+    asl a
+    asl a
+    and #$F800
+    sta.l cv_y
+    lda 9,s
+    sta.l cv_col_end
+    lda 7,s
+    sta.l cv_col
+    cmp.l cv_col_end
+    bcc +
+    plp
+    rtl
++   phb
+    phd
+    pea $7E7E
+    plb
+    plb
+    lda.l cv_row
+    asl a
+    asl a
+    tax
+    lda.l snes_conv_dirty,x
+    sta.l cv_bits
+    lda.l snes_conv_dirty+2,x
+    sta.l cv_bits_hi
+    lda.l snes_conv_rom,x
+    sta.l cv_rom
+    lda.l snes_conv_rom+2,x
+    sta.l cv_rom_hi
+    lda.l cv_row
+    asl a
+    tax
+    lda.l snes_conv_rowspan,x
+    sta.l cv_tmp
+    and #$00FF
+    cmp #$00FF
+    bne +
+    lda #$FFFF
+    sta.l cv_mask_lo
+    sta.l cv_mask_hi
+    bra _cc_shift
++   lsr a
+    lsr a
+    lsr a
+    sta.l cv_mask_lo
+    lda.l cv_tmp
+    xba
+    and #$00FF
+    lsr a
+    lsr a
+    lsr a
+    sta.l cv_mask_hi
+_cc_shift:
+    ; Shift the masks to col0, swapping in the high words at column 16
+    ; exactly as the column loop does.
+    lda #0
+    sta.l cv_tmp
+_cc_shift_loop:
+    lda.l cv_tmp
+    cmp.l cv_col
+    beq _cc_go
+    cmp #16
+    bne +
+    lda.l cv_bits_hi
+    sta.l cv_bits
+    lda.l cv_rom_hi
+    sta.l cv_rom
++   lda.l cv_rom
+    lsr a
+    sta.l cv_rom
+    lda.l cv_bits
+    lsr a
+    sta.l cv_bits
+    lda.l cv_tmp
+    inc a
+    sta.l cv_tmp
+    bra _cc_shift_loop
+_cc_go:
+    jmp _cf_col
+
+; void snesConvEnd(void)
+;
+; ── Step 3: the map, then the zero-byte completion marker ──────────────
+snesConvEnd:
+    php
+    rep #$30
     lda #2048
     sta.l jp_bytes
     lda.l cv_pool
@@ -617,11 +804,13 @@ _cf_queued:
     lda.l frames_queued
     inc a
     sta.l frames_queued
-    lda.l cv_occupied
-    sta.b tcc__r0
     plp
     rtl
 _cf_overflow:
+    ; NOT SILENT: the frame is dropped, and the stamp says so.
+    lda.l fb_overflows
+    inc a
+    sta.l fb_overflows
     lda #0
     sta.l fb_occupied
     sta.b tcc__r0

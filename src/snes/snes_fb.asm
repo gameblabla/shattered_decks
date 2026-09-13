@@ -48,6 +48,7 @@ frames_shown dw
 fb_presented_generation dw
 fb_occupied dw
 fb_peak_occupied dw
+fb_overflows dw             ; frames the converter refused: over the cell budget
 fb_nmi_skips dw
 nm_budget dw
 nm_n dw
@@ -55,13 +56,13 @@ nm_tmp dw
 fb_drain_enable dw
 fb_epoch dw
 fb_reserve dw
+snes_fb_oam_pending dw      ; the sprite shadow wants uploading from the NMI
 fb_free_head dw
 fb_free_tail dw
 fb_free_count dw
 fb_jobs dsb FB_JOBS * 8
 snes_fb_tm dsb 7
 wd_piece_bytes dw
-wf_value dw
 
 ; Converter shared state.
 cv_run_src dw
@@ -72,6 +73,8 @@ cv_run_kind dw
 cv_tile dw
 cv_col dw
 cv_row dw
+cv_row_end dw
+cv_col_end dw
 cv_shadow dw
 cv_y dw
 cv_mask_lo dw
@@ -106,6 +109,7 @@ snesFbInit:
     sta.l fb_presented_generation
     sta.l fb_occupied
     sta.l fb_peak_occupied
+    sta.l fb_overflows
     sta.l fb_nmi_skips
     sta.l fb_drain_enable
     sta.l cv_run_bytes
@@ -222,6 +226,12 @@ snesFbPeakOccupied:
 snesFbNmiSkips:
     rep #$30
     lda.l fb_nmi_skips
+    sta.b tcc__r0
+    rtl
+
+snesFbOverflows:
+    rep #$30
+    lda.l fb_overflows
     sta.b tcc__r0
     rtl
 
@@ -391,6 +401,14 @@ _wd_done:
 ; A DMA memset through WMDATA: one fixed source byte, `bytes` times.  Eight
 ; master cycles a byte, which is what makes clearing the 36 KB frame cost a
 ; fifth of a field rather than the four and a half the 16-bit store loop did.
+;
+; THE SOURCE BYTE LIVES IN ROM.  A general DMA cannot move WRAM to WRAM: the
+; A bus is busy with the source and the B bus write through $2180 lands in
+; WRAM as well, so the hardware (and both emulator cores) drop the transfer
+; and the frame is never cleared -- every camera frame was painted over the
+; last one, which is where the fragments of the previous pose at the edge of
+; a moving board came from.  The source is therefore a 256-byte ROM ramp
+; indexed by the fill value.
 snesFbWramFill:
     php
     rep #$30
@@ -403,17 +421,18 @@ snesFbWramFill:
     sep #$20
 .ACCU 8
     sta.l $2183
-    lda 11,s
-    sta.l wf_value
     lda #$08                    ; fixed A-bus address, CPU -> PPU, 1 byte
     sta.l $4300
     lda #$80                    ; $2180
     sta.l $4301
-    lda #$7E
+    lda #:snes_fb_fill_ramp
     sta.l $4304
     rep #$20
 .ACCU 16
-    lda #wf_value
+    lda 11,s
+    and #$00FF
+    clc
+    adc #snes_fb_fill_ramp
     sta.l $4302
     lda 9,s
     sta.l cv_tmp
@@ -451,7 +470,46 @@ _wf_done:
 ; The main thread names, in fb_reserve, the bytes IT will DMA after
 ; WaitForVBlank returns (OAM, card rows, palettes); the drain leaves that much
 ; of the window alone so the two never add up to more than one vblank.
+; The fill ramp: byte i holds i, so `ramp + value` is a ROM byte equal to
+; the value.
+snes_fb_fill_ramp:
+.REPT 256 INDEX i
+    .db i
+.ENDR
+
 snesFbNmi:
+    ; THE SPRITE SHADOW GOES UP FROM HERE WHEN THE MAIN THREAD CANNOT: a
+    ; camera frame is many fields of rendering, and the hand slides through
+    ; it by patching snes_oam_shadow between row batches.  pvsneslib's own
+    ; OAM copy runs only while the main loop waits, so this is the copy that
+    ; reaches the PPU in the meantime.  544 bytes on channel 7, first thing,
+    ; inside the reserve the main thread names for its OAM.
+    lda.l snes_fb_oam_pending
+    beq +
+    lda #0
+    sta.l snes_fb_oam_pending
+    sta.l $2102
+    sep #$20
+.ACCU 8
+    lda #$00
+    sta.l $4370                 ; CPU -> PPU, one register, auto increment
+    lda #$04
+    sta.l $4371                 ; $2104 OAMDATA
+    lda #:snes_oam_shadow
+    sta.l $4374
+    rep #$20
+.ACCU 16
+    lda #snes_oam_shadow
+    sta.l $4372
+    lda #544
+    sta.l $4375
+    sep #$20
+.ACCU 8
+    lda #$80
+    sta.l $420B
+    rep #$20
+.ACCU 16
++
     lda.l fb_drain_enable
     beq _nm_idle
     lda.l job_w

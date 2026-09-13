@@ -3,6 +3,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 #include <snes.h>
 #include "snes_obj.h"
+#include "snes_math.h"
 #include "snes_video.h"
 
 /* ── The OAM shadow ──────────────────────────────────────────────────────── */
@@ -156,6 +157,27 @@ void snesObjSprite(s16 x, s16 y, u16 tile, u8 pal, u8 big)
     snesObjSpriteFlip(x, y, tile, pal, big, 0);
 }
 
+u8 snesObjCount(void)
+{
+    return obj_n;
+}
+
+void snesObjTouch(void)
+{
+    oam_dirty = 1;
+}
+
+void snesObjPatchY(u8 index, s16 y, u8 big)
+{
+    /* OBJ y is eight bits over a 256-line space and a sprite wraps round
+     * it: a 32-pixel card at 226 shows its last row on line 1.  Anything at
+     * or past the bottom is parked where nothing of it is seen. */
+    if (index >= 128) return;
+    if (y >= 224 || y < -31) y = big ? 224 : 240;
+    oam_shadow[((u16)index << 2) + 1] = (u8)y;
+    oam_dirty = 1;
+}
+
 void snesObjText(s16 x, s16 y, const char *s)
 {
     u8 c;
@@ -171,14 +193,21 @@ void snesObjText(s16 x, s16 y, const char *s)
 void snesObjNum(s16 x, s16 y, u16 value, u8 digits)
 {
     /* Right to left, so the field is fixed width and the two sides' numbers
-     * line up under each other. */
-    s16 px = x + ((s16)digits - 1) * 8;
-    u8  i;
-    for (i = 0; i < digits; ++i) {
-        snesObjSprite(px, y, (u16)(FONT_TILE + '0' - SNES_SPR_GLYPH_FIRST
-                                   + (value % 10)), SNES_SPR_HUD_PAL, 0);
-        value /= 10;
-        px -= 8;
+     * line up under each other.  THE DIGITS ARE PEELED BY SUBTRACTION: 816-tcc's
+     * `/ 10` and `% 10` are a sixteen-step software divide each, and four
+     * numbers of four digits a frame made the two of them a tenth of the
+     * frame's whole CPU time. */
+    static const u16 pow10[4] = { 1000, 100, 10, 1 };
+    s16 px = x;
+    u8  i, first = (u8)(4 - digits);
+    if (digits > 4) { first = 0; px += ((s16)digits - 4) * 8; }
+    for (i = first; i < 4; ++i) {
+        const u16 p = pow10[i];
+        u8 d = 0;
+        while (value >= p) { value -= p; ++d; }
+        snesObjSprite(px, y, (u16)(FONT_TILE + '0' - SNES_SPR_GLYPH_FIRST + d),
+                      SNES_SPR_HUD_PAL, 0);
+        px += 8;
     }
 }
 
@@ -256,7 +285,12 @@ void snesObjLifePanel(s16 x, s16 y, u8 side, u16 lp, u16 lp_max)
      * one pixel of this gauge is two hundred and fifty life points. */
     if (lp_max < 8) lp_max = 8;
     if (lp > lp_max) lp = lp_max;
-    px = (u16)(((u16)(lp >> 3) * LIFE_BAR_W) / (u16)(lp_max >> 3));
+    /* lp * 32 / lp_max: for the 8000 the duel starts on that is lp / 250,
+     * taken through the multiplier as lp * 263 >> 16 (exact for every
+     * multiple of 250, a pixel high for a handful of values just under one);
+     * 816-tcc's divide was a per-frame cost. */
+    if (lp_max == 8000) px = snesMulHi(lp, 263);
+    else px = (u16)(((u16)(lp >> 3) * LIFE_BAR_W) / (u16)(lp_max >> 3));
     for (i = 0; i < LIFE_BAR_W / 8; ++i) {
         u16 w = (px > (u16)i * 8) ? (px - (u16)i * 8) : 0;
         if (w > 8) w = 8;

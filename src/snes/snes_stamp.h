@@ -42,7 +42,7 @@ typedef struct SnesStamp {
     u16 nmi_skips;      /* vblanks the upload drain arrived too late for */
     u16 turn_max_lines; /* the slowest camera-motion frame so far */
     u16 rest_max_lines; /* ...resting render (bake or patch) */
-    u16 patch_max_lines;/* unused; kept so the record's shape is stable */
+    u16 dropped;        /* frames the converter refused (over the cell budget) */
     u16 held_max_lines; /* ...render with a held card */
     u16 occupied;       /* cells the last converted frame occupied */
     u16 view;           /* 0 the seat, 1 overhead, 2 lifting, 3 descending */

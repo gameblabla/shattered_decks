@@ -55,6 +55,16 @@ void snesObjIcon(s16 x, s16 y, u8 kind);
  * the top view puts round the slot being inspected, which is the colour the
  * PC-FX and FM TOWNS builds draw that same marker in. */
 void snesObjBox(s16 x, s16 y, u8 w, u8 h);
+/* The index the next sprite will take, and a sprite's y rewritten in place
+ * after snesObjEnd: what lets the hand slide every field while a board frame
+ * is on its way without rebuilding the whole list (a rebuild is more than a
+ * field of 816-tcc). */
+u8   snesObjCount(void);
+void snesObjPatchY(u8 index, s16 y, u8 big);
+/* Mark the list for upload.  pvsneslib's NMI copies ITS OWN (empty) OAM
+ * buffer over the hardware whenever the main loop is waiting on it, so a
+ * game frame that does not rebuild the list must still re-upload it. */
+void snesObjTouch(void);
 void snesObjBoxRed(s16 x, s16 y, u8 w, u8 h);
 /* The result banner: 16x16 letters, four 8x8 sprites each, at a 16-pixel
  * pitch.  `set` is SNES_SPR_BIG_SET_GOLD or SNES_SPR_BIG_SET_RED.  Only the
