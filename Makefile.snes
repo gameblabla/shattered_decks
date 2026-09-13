@@ -51,8 +51,7 @@ HDR := $(OBJ)/hdr.asm
 # The fork.
 SNES_C   := $(sort $(wildcard $(PROJ_DIR)/*.c))
 SNES_ASM := $(sort $(wildcard $(PROJ_DIR)/*.asm)) \
-            $(filter-out $(PROJ_DIR)/assets/snes_deckassets.asm, \
-                $(sort $(wildcard $(PROJ_DIR)/assets/*.asm)))
+            $(sort $(wildcard $(PROJ_DIR)/assets/*.asm))
 # The C and hand-written assembly halves share the audio stem.  Keep the
 # source name readable, but give its object a distinct basename because this
 # Makefile deliberately flattens objects from multiple source directories.
@@ -78,6 +77,10 @@ SNES_SCENE_ASM := $(PROJ_DIR)/assets/snes_title.asm \
 SNES_ASM := $(sort $(SNES_ASM) $(SNES_SCENE_ASM))
 SNES_FX_ASM := $(PROJ_DIR)/assets/snes_battlefx.asm
 SNES_ASM := $(sort $(SNES_ASM) $(SNES_FX_ASM))
+SNES_DECK_ASM := $(PROJ_DIR)/assets/snes_deckui.asm \
+                 $(PROJ_DIR)/assets/snes_deckicons_4.asm \
+                 $(PROJ_DIR)/assets/snes_deckicons_5.asm
+SNES_ASM := $(sort $(SNES_ASM) $(SNES_DECK_ASM))
 SNES_PLANAR_ASM := $(foreach p,0 1,$(PROJ_DIR)/assets/snes_floor_chunky_$(p).asm $(PROJ_DIR)/assets/snes_floor_planar_$(p).asm) \
  $(foreach p,0 1 2 3,$(foreach h,0 1,$(PROJ_DIR)/assets/snes_pairlut_p$(p)_h$(h).asm)) \
  $(PROJ_DIR)/assets/snes_texlut.asm
@@ -238,8 +241,20 @@ SNES_SCENE_STAMP := $(BUILD)/scene-assets.stamp
 # Generators also write headers consumed by C.  Make these normal prerequisites
 # so a parallel build waits for generation and recompiles after asset changes.
 ifneq ($(SNES_AUDIO_PROBE),1)
-$(patsubst %.c,$(OBJ)/%.ps,$(notdir $(CFILES))): $(SNES_OBJ_STAMP) $(SNES_SCENE_STAMP) $(BUILD)/planar-assets.stamp $(BUILD)/card-assets.stamp $(BUILD)/fx-assets.stamp
+$(patsubst %.c,$(OBJ)/%.ps,$(notdir $(CFILES))): $(SNES_OBJ_STAMP) $(SNES_SCENE_STAMP) $(BUILD)/planar-assets.stamp $(BUILD)/card-assets.stamp $(BUILD)/fx-assets.stamp $(BUILD)/deck-assets.stamp
 endif
+
+# The deck editor's baked panel and the PC-FX mini card icons in direct
+# colour, and snes_deck_data.h.
+SNES_DECK_INPUTS := tools/snes/gen_snes_deck.py tools/snes/gen_snes_bigcards.py \
+	src/generated/waifu_assets.h assets/generated/card_faces.bin \
+	assets/generated/support_face.bin
+$(BUILD)/deck-assets.stamp: $(SNES_DECK_INPUTS)
+	@mkdir -p $(dir $@)
+	python3 tools/snes/gen_snes_deck.py
+	@touch $@
+$(SNES_DECK_ASM) $(PROJ_DIR)/snes_deck_data.h: $(BUILD)/deck-assets.stamp
+$(patsubst $(PROJ_DIR)/assets/%.asm,$(OBJ)/%.obj,$(SNES_DECK_ASM)): $(BUILD)/deck-assets.stamp
 
 # The battle's effects atlas, palettes and 2bpp font, and snes_battle_data.h.
 $(BUILD)/fx-assets.stamp: tools/snes/gen_snes_battle_fx.py tools/snes/gen_snes_scenes.py src/engine/font_menudata.h

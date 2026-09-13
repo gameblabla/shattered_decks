@@ -378,6 +378,32 @@ def check_title_input():
     return "START, DOWN, A selects Random Battle and enters DUEL"
 
 
+def check_deck_gallery(w, h, px, cards):
+    """The PC-FX gallery on the SNES editor: a navy panel and `cards` icons.
+
+    The previous check only counted non-black pixels, and passed a screen of
+    garbage tiles.  This one reads the panel between the counters and the
+    first card row, which must be the card check's navy, and every icon cell
+    at the PC-FX positions (x 14 + 40 col, y 59 + 40 row, 26x34), which must
+    hold a many-coloured picture and not the panel."""
+    def at(x, y):
+        i = (y * w + x) * 3
+        return px[i], px[i + 1], px[i + 2]
+    navy = at(128, 53)
+    if not (navy[2] > navy[0] and navy[2] > navy[1] and max(navy) < 96):
+        raise Failure("deck editor panel is %r, expected the card check's navy" % (navy,))
+    for slot in range(18):
+        x0 = 14 + (slot % 6) * 40
+        y0 = 59 + (slot // 6) * 40
+        colours = set(at(x0 + x, y0 + y) for y in range(34) for x in range(26))
+        if slot < cards:
+            if len(colours) < 8 or navy in colours and len(colours) < 12:
+                raise Failure("gallery slot %d shows %d colours, not a card" %
+                              (slot, len(colours)))
+        elif colours != {navy}:
+            raise Failure("empty gallery slot %d is not bare panel" % slot)
+
+
 def check_deck_editor():
     """The reference DECK/STORAGE editor must move and persist both lists.
 
@@ -413,9 +439,13 @@ def check_deck_editor():
                   if px[i:i + 3] != b"\x00\x00\x00")
     if visible < 1000:
         raise Failure("deck editor has only %d non-black pixels" % visible)
+    # The save run ends on the STORAGE tab: four cards, fourteen bare cells.
+    check_deck_gallery(w, h, px, 4)
 
     load_ppm, wram = run("deck_load", [(100, 160, PAD["Y"])], 2500)
     loaded = read_stamp(wram)
+    w, h, px = read_ppm(load_ppm)
+    check_deck_gallery(w, h, px, 18)        # the DECK tab, forty cards
     if loaded["scene"] != SCENES.index("DECK"):
         raise Failure("fresh process ended in scene %s" %
                       SCENES[loaded["scene"]])

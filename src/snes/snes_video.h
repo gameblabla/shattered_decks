@@ -129,7 +129,6 @@ void snesVideoRestartHdma(void);
 void snesVideoRestartSceneHdma(void);
 void snesVideoSetSkyTables(u16 rg, u8 rg_bank, u16 b, u8 b_bank);
 void snesVideoTitleMenuPlate(u8 on);
-void snesVideoRestartDeckHdma(void);
 void snesVideoSetOwner(u8 owner);
 u8   snesVideoOwner(void);
 u16  snesVideoRequestGeneration(void);

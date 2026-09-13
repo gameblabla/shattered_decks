@@ -25,19 +25,6 @@
 #define SCENE_GRAD_TABLE_BYTES (6 + 1 + (SCENE_GRAD_LINES * 2) + 1)
 static u8 hdma_scene_col[SCENE_GRAD_TABLE_BYTES];
 
-/* The deck editor has no painted panel behind its text.  Its backdrop is a
- * purple ramp written once per scanline, so the screen stays a clean field of
- * colour while BG2 carries the labels and OBJ carries the cards and cursor. */
-#define DECK_GRAD_LINES       224
-#define DECK_GRAD_TOP_R        18
-#define DECK_GRAD_TOP_B        28
-#define DECK_GRAD_BOT_R         3
-#define DECK_GRAD_BOT_B         8
-#define DECK_GRAD_TABLE_BYTES (4 + (DECK_GRAD_LINES * 3))
-#define DECK_COL_R             0x20
-#define DECK_COL_B             0x80
-static u8 hdma_deck_col[DECK_GRAD_TABLE_BYTES];
-
 /* ── The HUD plate ───────────────────────────────────────────────────────── */
 
 /* THE BLUE PLATE UNDER THE TEXT ROWS IS THE BACKDROP, TINTED PER SCANLINE.
@@ -291,61 +278,6 @@ void snesVideoTitleMenuPlate(u8 on)
     REG_HDMAEN = 0x10;
 }
 
-static void build_deck_gradient(void)
-{
-    u16 r = (u16)DECK_GRAD_TOP_R << 8;
-    u16 b = (u16)DECK_GRAD_TOP_B << 8;
-    const u16 r_step = (u16)((((u16)(DECK_GRAD_TOP_R - DECK_GRAD_BOT_R)) << 8) /
-                             (DECK_GRAD_LINES - 1));
-    const u16 b_step = (u16)((((u16)(DECK_GRAD_TOP_B - DECK_GRAD_BOT_B)) << 8) /
-                             (DECK_GRAD_LINES - 1));
-    u8 *t = hdma_deck_col;
-    u16 i;
-
-    /* Establish green explicitly on the first (non-visible) line.  The deck
-     * can be entered from any scene, so the table must not depend on the
-     * previous scene's fixed-colour state. */
-    *t++ = 0x81;
-    *t++ = COL_G;
-    *t++ = COL_G;
-
-    /* One line and two COLDATA bytes per entry: red and blue only, so green
-     * is never introduced into the visible backdrop. */
-    for (i = 0; i < DECK_GRAD_LINES; ++i) {
-        *t++ = 0x81;
-        *t++ = (u8)(DECK_COL_R | (r >> 8));
-        *t++ = (u8)(DECK_COL_B | (b >> 8));
-        if (i + 2 == DECK_GRAD_LINES) {
-            r = (u16)DECK_GRAD_BOT_R << 8;
-            b = (u16)DECK_GRAD_BOT_B << 8;
-        } else {
-            r = (r > r_step) ? (u16)(r - r_step) : 0;
-            b = (b > b_step) ? (u16)(b - b_step) : 0;
-        }
-    }
-    *t = 0;
-}
-
-static void arm_deck_hdma(void)
-{
-    build_deck_gradient();
-    REG_HDMAEN = 0;
-
-    /* Channel 4: COLDATA ($2132), two bytes per scanline. */
-    *(vuint8 *)0x4340 = 0x02;
-    *(vuint8 *)0x4341 = 0x32;
-    *(vuint16 *)0x4342 = (u16)(u16)&hdma_deck_col[0];
-    *(vuint8 *)0x4344 = 0x7E;
-
-    REG_CGWSEL = 0;
-    REG_CGADSUB = 0x20;           /* fixed colour on the backdrop only */
-    REG_COLDATA = COL_BLACK;
-    REG_COLDATA = COL_G;          /* explicitly clear green before the ramp */
-    REG_COLDATA = (u8)(DECK_COL_R | DECK_GRAD_TOP_R);
-    REG_COLDATA = (u8)(DECK_COL_B | DECK_GRAD_TOP_B);
-    REG_HDMAEN = 0x10;
-}
-
 void snesVideoInitDuel(void)
 {
     static const u16 blank[32] = { 0 };
@@ -396,11 +328,6 @@ void snesVideoRestartSceneHdma(void)
 {
     REG_COLDATA = COL_BLACK;
     arm_scene_hdma();
-}
-
-void snesVideoRestartDeckHdma(void)
-{
-    arm_deck_hdma();
 }
 
 void snesVideoSetOwner(u8 owner) { presentation_owner = owner; }

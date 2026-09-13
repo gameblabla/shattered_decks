@@ -4,12 +4,49 @@
 
 #include "snes_types.h"
 
-#define SNES_DECK_TILE_BYTES 1920
-#define SNES_DECK_PAL_BYTES  512
-#define SNES_DECK_MAP_BYTES  2048
+/* The static picture: a pool of 8bpp direct-colour tiles (0 is the
+ * blank), a 32x28 map with the DECK tab active, and the two-row
+ * strip for either tab state. */
+#define SNES_DECK_STATIC_TILES   42
+#define SNES_DECK_STATIC_BYTES   2688
+#define SNES_DECK_MAP_ROWS       28
+#define SNES_DECK_MAP_BYTES      1792
+#define SNES_DECK_TAB_ROW0       3
+#define SNES_DECK_TAB_ROWS       2
+#define SNES_DECK_TAB_STRIP_BYTES 128
+#define SNES_DECK_BG1_PAL_BITS   0x1000u
+#define SNES_DECK_NAVY_BGR555    0x1420u
+/* The icon blocks: 40x40 cells of 25 tiles, forty a bank. */
+#define SNES_DECK_ICON_BASE_TILE 128
+#define SNES_DECK_ICON_TILES     25
+#define SNES_DECK_ICON_BYTES     1600
+#define SNES_DECK_ICON_SIDE      40
+#define SNES_DECK_ICONS          78
+#define SNES_DECK_ICONS_PER_BANK 40
+#define SNES_DECK_ICON_BANK0     0xC4
+#define SNES_DECK_CURSOR_BYTE    0x07u
+#define SNES_DECK_CURSOR_X0      3
+#define SNES_DECK_CURSOR_X1      34
+/* The gallery: block (0, 0) at (8, 56), one block per 40 px. */
+#define SNES_DECK_GRID_COLS      6
+#define SNES_DECK_GRID_ROWS      3
+#define SNES_DECK_GRID_COL0      1
+#define SNES_DECK_GRID_ROW0      7
+/* BG2 text palettes 0..3: white, gold, dim, red. */
+#define SNES_DECK_TEXT_PALS      4
+#define SNES_DECK_TEXT_PAL_BYTES 128
 
-extern const u8 snes_deck_tiles[];
-extern const u8 snes_deck_pal[];
-extern const u8 snes_deck_map[];
+extern const u8 snes_deck_bg1_tiles[];
+extern const u8 snes_deck_bg1_map[];
+extern const u8 snes_deck_bg1_tabs[];
+extern const u8 snes_deck_text_pal[];
+extern const u8 snes_deckicons_4[];
+extern const u8 snes_deckicons_5[];
+
+#define SNES_DECK_ICON_BANK_SWITCH(bank, offset, EXPR) \
+    switch (bank) { \
+    case 0: EXPR(snes_deckicons_4, offset); break; \
+    case 1: EXPR(snes_deckicons_5, offset); break; \
+    default: break; }
 
 #endif /* WAIFU_SNES_DECK_DATA_H */

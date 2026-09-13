@@ -9,6 +9,9 @@
 void snesDeckInit(void);
 u8   snesDeckFrame(void);
 void snesDeckVblank(void);
+/* Bytes the editor's own vblank DMAs will take: reserved out of the NMI
+ * drain's budget (snesFbReserve). */
+u16  snesDeckVblankBytes(void);
 
 /* Copy the active editor deck for the rules model.  This also lazily loads a
  * valid SRAM deck, or creates the deterministic first-run deck. */
