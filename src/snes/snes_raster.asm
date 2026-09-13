@@ -219,7 +219,62 @@ snesSpanFloorTex:
     rep #$30
 
     lda 7,s
-    beq _st_out
+    bne +
+    plp
+    rtl
++   ; ONE TEXEL A PIXEL IS A BLOCK MOVE.  The overhead pose is at 4.0 units,
+    ; where 32 texels a unit meet 32 pixels a unit, so every row of it is a
+    ; run of consecutive texels: MVN at seven cycles a byte instead of the
+    ; walk's thirty-six.  The row must stay inside one texture row, the
+    ; step must be exactly 1.0 and the frame must be in $7E, the bank the
+    ; opcode names.
+    lda 13,s
+    cmp #$0100
+    bne _st_walk
+    lda.l rs_fbbank
+    and #$00FF
+    cmp #$007E
+    bne _st_walk
+    ; The board straddles the texture's u wrap (its columns are stamped at
+    ; texels 192..255 and 0..95), so a row is at most two moves: up to the
+    ; end of the texture row, then from its start.
+    lda 9,s                     ; the texel BEFORE the first, as the walker
+    inc a                       ; expects: the first is the next one
+    sta.l rs_end                ; borrowed: the source index
+    and #$00FF
+    eor #$FFFF
+    sec
+    adc #256                    ; texels left in the texture row
+    cmp 7,s
+    bcc +
+    lda 7,s                     ; the whole span fits before the wrap
++   sta.l rs_ufrac              ; borrowed: the first move's length
+    lda.l rs_end
+    tax                         ; source: snes_board_texture + index
+    lda 5,s
+    tay                         ; destination: the frame row
+    lda.l rs_ufrac
+    dec a                       ; MVN moves A + 1 bytes
+    phb
+    mvn $7F, $7E                ; WLA order: source bank, destination bank
+    plb
+    lda 7,s
+    sec
+    sbc.l rs_ufrac
+    beq +                       ; nothing wrapped
+    dec a
+    pha
+    lda.l rs_end
+    and #$FF00
+    tax                         ; the texture row's first texel; Y carried on
+    pla
+    phb
+    mvn $7F, $7E
+    plb
++   plp
+    rtl
+_st_walk:
+    lda 7,s
     clc
     adc 5,s
     sta.l rs_end
@@ -587,7 +642,7 @@ _sq_out:
 ;                         u16 dv, u16 page, u16 sheet)
 ;
 ; The affine walker off the 32x32 sheet, for the held card on the 1:1 board.
-; u and v wrap inside the face's 32 texels (v << 5 | u); page is
+; u and v are clamped inside the face's 32 texels (v << 5 | u); page is
 ; (face & 63) << 10 and sheet is non-zero for faces 64 and up.
 ;-----------------------------------------------------------------------------
 snesSpanCardQuad32:
@@ -630,6 +685,14 @@ _q3_loop:
     clc
     adc.b <rs_du
     sta.b <rs_u
+    bpl +
+    lda #$0000
+    sta.b <rs_u
++   cmp #$2000
+    bcc +
+    lda #$1FFF
+    sta.b <rs_u
++
     xba                         ; the integer part into the low byte
     and #$001F
     ora.b <rs_page
@@ -638,6 +701,14 @@ _q3_loop:
     clc
     adc.b <rs_dv
     sta.b <rs_v
+    bpl +
+    lda #$0000
+    sta.b <rs_v
++   cmp #$2000
+    bcc +
+    lda #$1FFF
+    sta.b <rs_v
++
     xba
     asl a
     asl a
@@ -663,6 +734,14 @@ _q3_hi:
     clc
     adc.b <rs_du
     sta.b <rs_u
+    bpl +
+    lda #$0000
+    sta.b <rs_u
++   cmp #$2000
+    bcc +
+    lda #$1FFF
+    sta.b <rs_u
++
     xba
     and #$001F
     ora.b <rs_page
@@ -671,6 +750,14 @@ _q3_hi:
     clc
     adc.b <rs_dv
     sta.b <rs_v
+    bpl +
+    lda #$0000
+    sta.b <rs_v
++   cmp #$2000
+    bcc +
+    lda #$1FFF
+    sta.b <rs_v
++
     xba
     asl a
     asl a

@@ -106,6 +106,10 @@ CFILES := $(SNES_C) $(SHARED_C)
 # Forty source files rebuild in a couple of seconds; that trade is not close.
 HEADERS := $(wildcard $(PROJ_DIR)/*.h) $(wildcard $(PROJ_DIR)/compat/*.h) \
            $(wildcard src/msx2/*.h) $(wildcard src/game/*.h)
+ifeq ($(SNES_AUDIO_PROBE),1)
+HEADERS := $(PROJ_DIR)/snes_audio.h $(PROJ_DIR)/snes_audio_layout.h \
+           $(PROJ_DIR)/snes_types.h
+endif
 # compat/ is first so src/msx2/msx2_duel.c finds the msxgl.h shim, and
 # src/game/*.c the waifu_assets.h one, without either file being edited.
 CFLAGS := -I$(PROJ_DIR)/compat -I$(PROJ_DIR) -Isrc/game -Isrc/msx2 -Isrc/generated \
@@ -128,7 +132,7 @@ OBJS := $(patsubst %.c,$(OBJ)/%.obj,$(notdir $(CFILES))) \
 vpath %.c $(PROJ_DIR) src/msx2 src/game tools/snes
 vpath %.asm $(PROJ_DIR) $(PROJ_DIR)/assets
 
-.PHONY: all rom verify clean check-sdk banks obj-assets
+.PHONY: all rom verify clean check-sdk banks obj-assets audio-assets
 
 all: rom
 
@@ -192,14 +196,30 @@ $(OBJ)/snes_fb.obj: $(PROJ_DIR)/snes_fb.inc
 $(PROJ_DIR)/snes_conv_gen.asm: tools/snes/gen_snes_conv.py
 	python3 tools/snes/gen_snes_conv.py
 
-$(SNES_AUDIO_OBJ): $(SNES_AUDIO_ASM) $(HDR)
+$(SNES_AUDIO_OBJ): $(SNES_AUDIO_ASM) $(HDR) $(PROJ_DIR)/snes_audio_layout.inc
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) -o $@ $<
 
 SNES_AUDIO_SNAPSHOTS := $(addprefix $(PROJ_DIR)/assets/audio/,titlealt.spc overworld.spc altbattle.spc victory.spc fail.spc)
-.PHONY: audio-assets
-audio-assets:
+SNES_AUDIO_LAYOUTS := $(PROJ_DIR)/snes_audio_layout.h $(PROJ_DIR)/snes_audio_layout.inc
+SNES_AUDIO_INPUTS := tools/snes/gen_snes_audio.py tools/snes/snes_sfx_brr2.py \
+	tools/gen_sound_assets.py src/game/sounds.h \
+	snes_music/midi/TitleAlt.midi snes_music/midi/Overworld.midi \
+	snes_music/midi/AltBattle.midi snes_music/midi/Victory.midi \
+	snes_music/midi/Fail.midi \
+	$(wildcard sounds/new/*.wav) sounds/Select.wav \
+	$(wildcard snes_music/MIDI2SPC_v23_altbattle_decrackle_release/source/c_transcriber/tools/*.py) \
+	snes_music/MMX\ Revised/MMX1.sf2 snes_music/MMX_spc
+SNES_AUDIO_STAMP := $(BUILD)/audio-assets.stamp
+
+audio-assets: $(SNES_AUDIO_STAMP)
+
+$(SNES_AUDIO_STAMP): $(SNES_AUDIO_INPUTS)
+	@mkdir -p $(dir $@)
 	python3 tools/snes/gen_snes_audio.py
+	@touch $@
+
+$(SNES_AUDIO_SNAPSHOTS) $(SNES_AUDIO_LAYOUTS): $(SNES_AUDIO_STAMP)
 
 SNES_OBJ_INPUTS := tools/snes/gen_snes_obj.py tools/snes/gen_snes_bigcards.py \
 	tools/atarist/gen_atarist_assets.py src/engine/font_menudata.h \
@@ -217,7 +237,9 @@ SNES_SCENE_STAMP := $(BUILD)/scene-assets.stamp
 
 # Generators also write headers consumed by C.  Make these normal prerequisites
 # so a parallel build waits for generation and recompiles after asset changes.
+ifneq ($(SNES_AUDIO_PROBE),1)
 $(patsubst %.c,$(OBJ)/%.ps,$(notdir $(CFILES))): $(SNES_OBJ_STAMP) $(SNES_SCENE_STAMP) $(BUILD)/planar-assets.stamp $(BUILD)/card-assets.stamp $(BUILD)/fx-assets.stamp
+endif
 
 # The battle's effects atlas, palettes and 2bpp font, and snes_battle_data.h.
 $(BUILD)/fx-assets.stamp: tools/snes/gen_snes_battle_fx.py tools/snes/gen_snes_scenes.py src/engine/font_menudata.h
@@ -244,6 +266,7 @@ $(SNES_SCENE_STAMP): $(SNES_SCENE_INPUTS)
 	@touch $@
 
 $(SNES_SCENE_ASM): $(SNES_SCENE_STAMP)
+$(patsubst $(PROJ_DIR)/assets/%.asm,$(OBJ)/%.obj,$(SNES_SCENE_ASM)): $(SNES_SCENE_STAMP)
 
 $(SNES_AUDIO_ASSETS_OBJ): $(SNES_AUDIO_ASSETS_ASM) $(HDR) $(SNES_AUDIO_SNAPSHOTS)
 	@mkdir -p $(dir $@)

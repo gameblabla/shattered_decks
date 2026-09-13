@@ -531,22 +531,34 @@ u8 snesQuadBounds(const SnesViewport *vp, const SnesVert *q,
 
 typedef struct EdgeWalk {
     s16 x, dx;
+    s16 u, du;
+    s16 v, dv;
     s16 y_end;
 } EdgeWalk;
 
-/* Edges are stepped per PIXEL row: dx is per unit row shifted by sub. */
-static void edge_init(EdgeWalk *e, const SnesVert *a, const SnesVert *b, u8 sub)
+/* Edges are sampled at the pixel centre of scanline y. */
+static void edge_init(EdgeWalk *e, const SnesVert *a, const SnesVert *b,
+                      u8 sub, s16 y)
 {
     const s16 dy = (s16)(b->y - a->y);
-    s16 slope = 0;
-    e->x = a->x;
+    const s16 sample_y = (s16)((y << (sub ? 7 : 8)) + (sub ? 64 : 128));
+    s16 slope = 0, uslope = 0, vslope = 0;
     /* The quotient goes through a local before it is shifted.  816-tcc
      * shifts a call's result with `cmp #$8000 / ror` while A still holds the
      * stack pointer from the argument clean-up, so the sign of a shifted
      * RETURN VALUE is whatever bit 15 of S happens to be: an edge sloping
      * left came back as a huge positive step on every other row. */
-    if (dy > 0) slope = signed_qdiv((s16)(b->x - a->x), dy);
+    if (dy > 0) {
+        slope = signed_qdiv((s16)(b->x - a->x), dy);
+        uslope = signed_qdiv((s16)(b->u - a->u), dy);
+        vslope = signed_qdiv((s16)(b->v - a->v), dy);
+    }
+    e->x = (s16)(a->x + snesQMul(slope, (s16)(sample_y - a->y)));
+    e->u = (s16)(a->u + snesQMul(uslope, (s16)(sample_y - a->y)));
+    e->v = (s16)(a->v + snesQMul(vslope, (s16)(sample_y - a->y)));
     e->dx = PER_PX(slope, sub);
+    e->du = PER_PX(uslope, sub);
+    e->dv = PER_PX(vslope, sub);
     e->y_end = UNIT_TO_PX(b->y, sub);
 }
 
@@ -568,7 +580,7 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
                          const SnesCamera *cam)
 {
     const u8 sub = vp->sub;
-    s16 dudx, dvdx, dudy, dvdy, dudx_px, dvdx_px;
+    s16 dudy, dvdy, dudx_px, dvdx_px;
     s16 y, y_bottom;
     u8 top = 0, bottom = 0, li, ri, i;
     EdgeWalk left, right;
@@ -584,24 +596,6 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
         cy = snesCos(cam->yaw); sn = snesSin(cam->yaw);
         denom_step = (s16)(cp >> 3);
         a_step = (s16)(-(sp >> 3));
-    }
-
-    if (!cam && face != SNES_CARD_NONE_FACE) {
-        /* THE EDGE VECTORS ARE TAKEN IN SIXTEENTHS OF A PIXEL, NOT IN Q8.8, and
-         * that shift is what keeps the whole solve inside sixteen bits. */
-        const s16 ax = (s16)((q[1].x - q[0].x) >> 4), ay = (s16)((q[1].y - q[0].y) >> 4);
-        const s16 bx = (s16)((q[2].x - q[0].x) >> 4), by = (s16)((q[2].y - q[0].y) >> 4);
-        const s16 au = (s16)((q[1].u - q[0].u) >> 4), av = (s16)((q[1].v - q[0].v) >> 4);
-        const s16 bu = (s16)((q[2].u - q[0].u) >> 4), bv = (s16)((q[2].v - q[0].v) >> 4);
-        const s16 den = (s16)(snesQMul(ax, by) - snesQMul(bx, ay));
-        if (!den) return;
-        dudx = signed_qdiv((s16)(snesQMul(au, by) - snesQMul(bu, ay)), den);
-        dvdx = signed_qdiv((s16)(snesQMul(av, by) - snesQMul(bv, ay)), den);
-        dudy = signed_qdiv((s16)(snesQMul(ax, bu) - snesQMul(bx, au)), den);
-        dvdy = signed_qdiv((s16)(snesQMul(ax, bv) - snesQMul(bx, av)), den);
-        dudx_px = PER_PX(dudx, sub);
-        dvdx_px = PER_PX(dvdx, sub);
-
     }
 
     if (face != SNES_CARD_NONE_FACE) {
@@ -620,8 +614,8 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
 
     /* TWO CHAINS WALKED INDEPENDENTLY, each turning at its own vertex. */
     li = ri = top;
-    edge_init(&left, &q[top], &q[(top + 3) & 3], sub);
-    edge_init(&right, &q[top], &q[(top + 1) & 3], sub);
+    edge_init(&left, &q[top], &q[(top + 3) & 3], sub, y);
+    edge_init(&right, &q[top], &q[(top + 1) & 3], sub, y);
 
     if (cam) {
         const s16 sy0 = (s16)((y - cam->horizon) << 1);
@@ -676,7 +670,7 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
      * row), so nothing here `continue`s past the step.  The camera terms
      * are stepped at the START, before anything can `continue`. */
     for (; y < y_bottom; ++y) {
-        s16 lx, rx;
+        s16 lx, rx, lu, lv, ru, rv;
         s16 x0, x1, dx, dy;
         u16 u, v;
         s16 denom = (s16)(denom16 >> 4), a = (s16)(a16 >> 4);
@@ -685,21 +679,32 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
 
         while (y >= left.y_end && li != bottom) {
             li = (u8)((li + 3) & 3);
-            edge_init(&left, &q[li], &q[(li + 3) & 3], sub);
+            edge_init(&left, &q[li], &q[(li + 3) & 3], sub, y);
         }
         while (y >= right.y_end && ri != bottom) {
             ri = (u8)((ri + 1) & 3);
-            edge_init(&right, &q[ri], &q[(ri + 1) & 3], sub);
+            edge_init(&right, &q[ri], &q[(ri + 1) & 3], sub, y);
         }
         lx = left.x;
         rx = right.x;
+        lu = left.u; lv = left.v;
+        ru = right.u; rv = right.v;
         left.x = (s16)(lx + left.dx);
         right.x = (s16)(rx + right.dx);
+        left.u = (s16)(left.u + left.du);
+        left.v = (s16)(left.v + left.dv);
+        right.u = (s16)(right.u + right.du);
+        right.v = (s16)(right.v + right.dv);
         if (y < 0 || y >= (s16)vp->h) continue;
 
         x0 = (s16)UNIT_TO_PX(lx, sub);
         x1 = (s16)UNIT_TO_PX(rx, sub);
-        if (x1 < x0) { const s16 t = x0; x0 = x1; x1 = t; }
+        if (x1 < x0) {
+            s16 t = x0; x0 = x1; x1 = t;
+            t = lx; lx = rx; rx = t;
+            t = lu; lu = ru; ru = t;
+            t = lv; lv = rv; rv = t;
+        }
         if (x0 < 0) x0 = 0;
         if (x1 > (s16)vp->w) x1 = (s16)vp->w;
         if (x1 <= x0) continue;
@@ -770,10 +775,17 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
                          (u16)(x1 - x0), SNES_SLAB_WALL);
             continue;
         }
-        dx = (s16)((sub ? (s16)(x0 << 7) : (s16)(x0 << 8)) - q[0].x);
-        dy = (s16)((sub ? (s16)(y << 7) : (s16)(y << 8)) - q[0].y);
-        u = (u16)(q[0].u + snesQMul(dudx, dx) + snesQMul(dudy, dy));
-        v = (u16)(q[0].v + snesQMul(dvdx, dx) + snesQMul(dvdy, dy));
+        /* Interpolate between both walked edges.  This uses all four UV
+         * corners, unlike the former three-corner affine plane. */
+        dx = (s16)(rx - lx);
+        if (!dx) continue;
+        dudy = signed_qdiv((s16)(ru - lu), dx);
+        dvdy = signed_qdiv((s16)(rv - lv), dx);
+        dudx_px = PER_PX(dudy, sub);
+        dvdx_px = PER_PX(dvdy, sub);
+        dy = (s16)(((x0 << (sub ? 7 : 8)) + (sub ? 64 : 128)) - lx);
+        u = (u16)(lu + snesQMul(dudy, dy));
+        v = (u16)(lv + snesQMul(dvdy, dy));
         /* Pre-stepped for the same reason the flat card is: the walker adds
          * before it reads. */
         if (sub)

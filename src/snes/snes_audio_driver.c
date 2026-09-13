@@ -16,7 +16,6 @@ extern void snesAudioRestart(u8 finite);
 extern void snesAudioPlaySfx(u8 slot);
 
 static u8 current_track = 0xFF;
-static u8 sfx_loaded;
 
 static const u8 *track_snapshot(u8 track)
 {
@@ -31,11 +30,10 @@ static const u8 *track_snapshot(u8 track)
 
 void snesAudioInit(void)
 {
-    /* Boot uploads the resident code and title data. The title profile has
-     * no SFX payload, so it leaves the maximum ARAM room for its music. */
+    /* Boot uploads the resident code, the title music and the SFX bank
+     * every image carries at the same address above its music. */
     snesAudioLoadSnapshot(snes_audio_titlealt);
     current_track = SNES_AUDIO_TITLEALT;
-    sfx_loaded = 0;
 }
 
 static u16 track_music_end(u8 track)
@@ -58,21 +56,16 @@ void snesAudioPlay(u8 track)
     if (track == current_track) return;
     snapshot = track_snapshot(track);
 
-    /* The converter's common player and direct-page state remain resident.
-     * Stream only the new song's music region.  The generated non-title
-     * snapshots share one fixed direct-SFX bank, so it is uploaded once on
-     * the first transition away from the title and retained thereafter. */
+    /* The converter's common player, its direct-page state and the SFX
+     * region stay resident.  Stream only the new song's music region and
+     * the DSP directory page that describes its samples. */
     for (destination = SNES_AUDIO_MUSIC_START;
          destination < track_music_end(track);
-         destination += 0x0100)
+         destination += SNES_AUDIO_RELOAD_BYTES)
         snesAudioStreamBlock(snapshot + destination, destination);
-    if (!sfx_loaded && track != SNES_AUDIO_TITLEALT) {
-        for (destination = SNES_AUDIO_SFX_ADDRESS;
-             destination < 0xE700; destination += 0x0100)
-            snesAudioStreamBlock(snapshot + destination, destination);
-        sfx_loaded = 1;
-    }
     snesAudioStreamBlock(snapshot + 0xE700, 0xE700);
+    snesAudioStreamBlock(snapshot + 0xE700 + SNES_AUDIO_RELOAD_BYTES,
+                         0xE700 + SNES_AUDIO_RELOAD_BYTES);
     snesAudioRestart((u8)(track == SNES_AUDIO_VICTORY ||
                          track == SNES_AUDIO_FAIL));
     current_track = track;
@@ -80,8 +73,6 @@ void snesAudioPlay(u8 track)
 
 void snesAudioSfx(u8 effect)
 {
-    /* The 64K title deliberately has no SFX directory entries. */
-    if (current_track == SNES_AUDIO_TITLEALT) return;
     if (effect >= SNES_SFX_COUNT) return;
     snesAudioPlaySfx(effect);
 }

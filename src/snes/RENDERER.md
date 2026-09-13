@@ -37,17 +37,44 @@ Two painting paths feed the same frame (`snes_duel.c`, `snes_board3d.c`):
   where the fragments of the previous pose at a moving board's edges came
   from.
 
-The lift is four rendered poses on an eased path from the seat to 4.1 units
-over the middle of the board looking straight down (`LIFT_HEIGHT`,
+The lift is three rendered poses on an eased path from the seat to exactly
+4.0 units over the middle of the board looking straight down (`LIFT_HEIGHT`,
 `LIFT_HORIZON`, with a half-sine bump of 0.8 units in the middle so no
-intermediate pose is over the cell budget).  The overhead board is 160x128
-pixels, 340 cells, 1:1 with its 32-texel-a-unit world texture.  A pose is
-about fifty fields of mapping and conversion (measured in the emulator: 20
-fields of walking, 30 of conversion for 340 cells); it is rendered in small
-steps (`job_run`), and between the steps the hand's sprites are moved in
-place and uploaded by the NMI, so the hand glides continuously while the
-board arrives four times.  The overhead view's red cursor is a sprite
-bracket projected through the same camera.
+intermediate pose is over the cell budget).  At 4.0 units the focal length
+of 128 makes a unit 32 pixels, the world texture's 32 texels: the overhead
+board is the texture itself, 160x128 pixels in sixteen whole 8-line bands
+of twenty cells (320 of 351), and its floor rows are MVN block moves
+(`snesSpanFloorTex` takes that path when the step is exactly one texel a
+pixel) instead of the 36-cycle-a-texel walk.  A perspective pose is about
+fifty fields of mapping and conversion (measured in the emulator: 20 fields
+of walking, 30 of conversion for 300-odd cells), the overhead one about
+forty; the poses are the lift's duration, so there are three, and the
+descent renders one fewer because its last pose would be the rest camera
+through the moving path, baked again from the ROM floor a moment later.
+
+A pose is rendered in small steps, and a game loop takes a measured SLICE
+of them (`job_slice`: steps until three and a half fields have gone by),
+sliding the hand's sprites in place every other field for the NMI to
+upload, before handing the loop back for the pad, the sprite layer and the
+audio queue -- and while a pose is in progress the main loop does not wait
+for vblank (`snesDuelBusy`), since a slice ending just after one would idle
+most of a field.  The hand therefore glides continuously while the board
+arrives three times.  Measured: about 140 fields from the UP press to the
+overhead view over a full board; one step a game loop, with a vblank wait
+and a sprite rebuild each, was over a thousand.  The overhead view's red
+cursor is a sprite bracket projected through the same camera.
+
+The opponent's turn is presented, not just applied (`snes_duel.c`,
+`COM_PRESENT_*`): the rules act once (`Msx2_DuelStep`), the hand as it was
+before that action is kept as a snapshot, and the frontend then shows it
+along the lower edge as card backs -- the PC's convention, the active
+duelist's hand is always at the bottom -- with the red cursor visiting a
+slot every four fields before settling on the chosen one, the chosen back
+flying to its slot (projected from WORLD coordinates: `snesProject` applies
+the camera's yaw itself), the placed cue, and the board rendered with the
+card once it has landed.  Draws, the opponent's and the player's, arrive
+one card every six fields with the draw cue (`note_draws`, `hand_visible`).
+No face, name or number of the opponent's hand reaches the HUD.
 
 The card being played is not drawn in the hand while its slot is being
 chosen: it hovers over the board as the held card (an affine quad off the
@@ -65,8 +92,8 @@ deck editor from the title attract screen.
 
 Victory and failure use one-shot result audio and a large multi-sprite banner.
 
-The card check and the battle cut-in are Mode 3 pictures, not sprites
-(`snes_cardart.c`).  Each card is the PC-FX 120x160 battle card -- the
+The card check is a Mode 3 picture and the battle cut-in a Mode 4 one, not
+sprites (`snes_cardart.c`, `snes_battle.c`).  Each card is the PC-FX 120x160 battle card -- the
 112x112 painting inside the gold-rimmed frame of `draw_big_battle_card_stats`
 -- baked by `tools/snes/gen_snes_bigcards.py` as 225 8bpp BG1 tiles with
 eighty colours of its own; the frame's foot (the ATK/DEF plate) is a shared
@@ -75,8 +102,12 @@ set at upload time (eight fixed-source DMAs into the odd bytes of the last
 plane pair), so slot 0 reads entries 32..111 and slot 1 reads 160..239.  The
 words are BG2 text.  The check screen is the PC-FX layout: card on the left,
 CARD CHECK / name / stars / attribute and tribe / LORE / ATK and DEF on the
-right.  The battle reveals both cards from the screen's edges inwards with two
-inverted, AND-combined BG1 windows.
+right.  The battle (`snes_battle.c`) is Mode 4 so BG1 can be offset per
+tile column: the two cards enter by scrolling vertically -- the player's up,
+the opponent's down -- which offset-per-tile does smoothly, where horizontal
+motion would step in eight-pixel chunks; the direct attack has its own
+effects timeline.  Its sound cues fire on crossing their field of the
+timeline, independently of which pose branch a late step lands in.
 
 The title, story dialogue and ending are separate Mode 3 scenes
 (`snes_scene.c`).  The title is the whole painting on BG1 with PRESS START
@@ -93,5 +124,6 @@ reinitialize the video state and do not depend on a black intermediate frame.
 Build and regression: `make -f Makefile.snes verify`. The harness checks the
 cartridge header, title and input path, SRAM, story and ending scenes, board
 geometry and resolution, card orientation, top-view transition, card check,
-fusion, placement flight, duel flow, and render cost. Emulator timing is a
+fusion, placement flight, duel flow, the opponent's turn presentation, and
+render cost. Emulator timing is a
 regression measure; it is not a physical hardware timing claim.

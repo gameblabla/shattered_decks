@@ -431,7 +431,7 @@ u8 snesTitleFrame(void)
         if (down & (KEY_START | KEY_A)) {
             title_phase = TITLE_MENU;
             title_cursor = 0;
-            snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+            snesAudioSfx(SNES_SFX_CONFIRM);
             title_draw_menu();
         }
         /* Non-menu verification/service shortcuts retained from the port's
@@ -458,8 +458,10 @@ u8 snesTitleFrame(void)
     if (down & KEY_B) {
         title_phase = TITLE_ATTRACT;
         title_blink = 1;
+        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
         title_draw_attract();
     } else if (down & (KEY_A | KEY_START)) {
+        snesAudioSfx(SNES_SFX_CONFIRM);
         if (title_cursor == 0) {
             snesStoryBegin(0);
             return SNES_SCENE_STORY_TALK;
@@ -480,7 +482,6 @@ u8 snesTitleFrame(void)
         draw_text_line(27, 7, 18, "NO SRAM SAVE FOUND", 255,
                        TITLE_FONT_TILE);
         title_dirty = 1;
-        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
     }
     return SCENE_NONE;
 }
@@ -695,7 +696,7 @@ u8 snesStoryFrame(void)
             dialogue_reveal(story_reveal, 0);
         }
     } else if (down & (KEY_A | KEY_START)) {
-        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+        snesAudioSfx(SNES_SFX_CONFIRM);
         if (story_page_extract(line, (u8)(story_page + 1)) != 0) {
             ++story_page;
         } else {
@@ -746,7 +747,7 @@ u8 snesEndingFrame(void)
             dialogue_reveal(ending_reveal, ENDING_FONT_TILE);
         }
     } else if (down & (KEY_A | KEY_START)) {
-        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+        snesAudioSfx(SNES_SFX_CONFIRM);
         ++ending_line;
         if (ending_line >= sizeof(ending_lines) / sizeof(ending_lines[0]))
             return SNES_SCENE_TITLE;

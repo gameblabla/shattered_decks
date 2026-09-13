@@ -299,15 +299,16 @@ def write_story_backgrounds():
 
 
 # SNES uses the hand-pixelled character set in story order: Serena, the first
-# opponent, then opponents 1 through 4.  Keep these explicit so adding a newer
+# opponent, then opponents 1 through 4.  The current files are numbered in
+# that presentation order.  Keep these explicit so adding a newer
 # PC portrait at the top level cannot silently change the cartridge artwork.
 PORTRAIT_CROPS = [
     ("pixelart/serna_portrait_160px_pixelart.png", 16, 0),
-    ("pixelart/first_guy_opponent_pixelart.png", 0, 0),
     ("pixelart/opponent_1_pixelart.png", 0, 0),
-    ("pixelart/opponent_2_pixel_art.png", 0, 0),
-    ("pixelart/opponent_3_pixel_art.png", 0, 0),
+    ("pixelart/opponent_2_pixelart.png", 0, 0),
+    ("pixelart/opponent_3_pixelart.png", 0, 0),
     ("pixelart/opponent_4_pixelart.png", 0, 0),
+    ("pixelart/opponent_5_pixelart.png", 0, 0),
 ]
 
 

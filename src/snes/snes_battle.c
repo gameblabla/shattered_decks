@@ -95,7 +95,7 @@ static u16 field = 0;                   /* displayed fields since the sequence b
 static u16 field0 = 0;                  /* snes_vblank_count at the first step */
 static u16 field_skip = 0;              /* fields the skip took off the counter */
 static s16 lane_y[2];
-static u8  cue_blade = 0, cue_hit = 0;
+static u8  cue_blade = 0, cue_hit = 0, cue_burn = 0;
 static u16 offset_row[32];
 static u8  offset_dirty = 0;
 static u16 bg2_map[1024];
@@ -375,7 +375,7 @@ void snesBattleBegin(void)
     field = 0;
     field0 = (u16)(snes_vblank_count + 1);
     field_skip = 0;
-    cue_blade = cue_hit = 0;
+    cue_blade = cue_hit = cue_burn = 0;
     cool = 0;
     cool_shown = 0xFF;
     cm_mode = cm_level = cm_lane = 0;
@@ -660,7 +660,7 @@ static void step_direct(void)
             put_text(col, TEXT_ROW, "TRAP!", PAL_GOLD);
             put_text((u8)(col - 1), (u8)(TEXT_ROW + 1), "ATTACK LOST", PAL_WHITE);
             cue_hit = 1;
-            snesAudioSfx(SNES_SFX_CARD_PLACED);
+            snesAudioSfx(SNES_SFX_CARD_DESTROYED);
         }
         if (field >= D_CONTACT && field < D_CONTACT + 6)
             core_sprite(128, (s16)(REST_Y + 78), (u8)(field < D_CONTACT + 2 ? 15 : 9));
@@ -677,12 +677,23 @@ static void step_direct(void)
     /* Cues fire on CROSSING their field, so a late step neither loses nor
      * repeats one. */
     if (field >= D_FX_START && !cue_blade) { cue_blade = 1; snesAudioSfx(SNES_SFX_LASER); }
-    if (field >= D_CONTACT && !cue_hit) { cue_hit = 1; snesAudioSfx(SNES_SFX_CARD_PLACED); }
+    if (field >= D_CONTACT && !cue_hit) { cue_hit = 1; snesAudioSfx(SNES_SFX_DIRECT_HIT); }
 }
 
 static void step_battle(void)
 {
     const u8 a = attacker_lane, d = (u8)(a ^ 1);
+    /* These are timeline crossings, independent of which pose branch is
+     * current.  A delayed foreground step can skip a whole branch. */
+    if (field >= B_STRIKE_HIT && !cue_hit) {
+        cue_hit = 1;
+        snesAudioSfx(SNES_SFX_LASER);
+    }
+    if (field >= B_STRIKE_END && !cue_burn &&
+        (destroy_lane[0] || destroy_lane[1])) {
+        cue_burn = 1;
+        snesAudioSfx(SNES_SFX_CARD_DESTROYED);
+    }
     if (field < B_ENTER_END) {
         phase = PHASE_ENTER;
         lane_enter(0, field, B_ENTER_END);
@@ -714,7 +725,7 @@ static void step_battle(void)
             if (g < 5) core_sprite(128, (s16)(REST_Y + 78), (u8)(g < 2 ? 15 : 11));
             if (g < 8) spark_sprites(128, (s16)(REST_Y + 78), g);
         }
-        if (field >= B_STRIKE_HIT && !cue_hit) { cue_hit = 1; snesAudioSfx(SNES_SFX_CARD_PLACED); }
+        /* The PC's cues: the blow itself, then the burn if a card dies. */
     } else if (field < B_RESULT_END) {
         const u16 f = (u16)(field - B_STRIKE_END);
         phase = PHASE_RESULT;

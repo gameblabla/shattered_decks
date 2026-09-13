@@ -1,0 +1,181 @@
+{
+  "aram_bytes": 65536,
+  "dsp_directory": {
+    "address": 59136,
+    "bytes": 256
+  },
+  "format": 1,
+  "music_start": 3088,
+  "reload_block_bytes": 144,
+  "resident_player_start": 512,
+  "rings": [
+    {
+      "address": 38064,
+      "bytes": 216
+    },
+    {
+      "address": 38280,
+      "bytes": 216
+    }
+  ],
+  "sfx_bank": {
+    "address": 38496,
+    "bytes": 20640
+  },
+  "sfx_codec": "2-bit residual, 5 bytes per 16 samples",
+  "sfx_sample_rate": 12800,
+  "sfx_voices": 2,
+  "slots": [
+    {
+      "blocks": 384,
+      "cap_seconds": null,
+      "name": "SELECT",
+      "packed_offset": 0,
+      "slot": 0,
+      "source": "random-ui.wav"
+    },
+    {
+      "blocks": 296,
+      "cap_seconds": null,
+      "name": "CONFIRM",
+      "packed_offset": 1920,
+      "slot": 1,
+      "source": "random-ui(1).wav"
+    },
+    {
+      "blocks": 136,
+      "cap_seconds": null,
+      "name": "CONFIRM_ALT",
+      "packed_offset": 3400,
+      "slot": 2,
+      "source": "random-ui(2).wav"
+    },
+    {
+      "blocks": 616,
+      "cap_seconds": null,
+      "name": "CARD_PLACED",
+      "packed_offset": 4080,
+      "slot": 3,
+      "source": "mech-stomp.wav"
+    },
+    {
+      "blocks": 800,
+      "cap_seconds": 1.0,
+      "name": "CARD_DESTROYED",
+      "packed_offset": 7160,
+      "slot": 4,
+      "source": "explosion(1).wav"
+    },
+    {
+      "blocks": 800,
+      "cap_seconds": 1.0,
+      "name": "TURN_PASSED",
+      "packed_offset": 11160,
+      "slot": 5,
+      "source": "random-magic.wav"
+    },
+    {
+      "blocks": 0,
+      "cap_seconds": null,
+      "name": "YOU_LOST",
+      "packed_offset": 0,
+      "slot": 6,
+      "source": null
+    },
+    {
+      "blocks": 432,
+      "cap_seconds": null,
+      "name": "LASER_SHOOT",
+      "packed_offset": 15160,
+      "slot": 7,
+      "source": "random-impact.wav"
+    },
+    {
+      "blocks": 448,
+      "cap_seconds": null,
+      "name": "DIRECT_HIT",
+      "packed_offset": 17320,
+      "slot": 8,
+      "source": "multi-hit-rush-3-overkill.wav"
+    },
+    {
+      "blocks": 216,
+      "cap_seconds": null,
+      "name": "CARD_DRAWN",
+      "packed_offset": 19560,
+      "slot": 9,
+      "source": "coin-pickup.wav"
+    }
+  ],
+  "tracks": [
+    {
+      "free_before_sfx": 25,
+      "music_bytes": 34951,
+      "music_codec": "direct",
+      "music_end": 38039,
+      "music_paging_codecs": "",
+      "music_paging_packed_bytes": 0,
+      "music_start": 3088,
+      "runtime_address": 1883,
+      "runtime_bytes": 1003,
+      "sample_quality_tier": "perceptual-mixed",
+      "track": "titlealt"
+    },
+    {
+      "free_before_sfx": 12706,
+      "music_bytes": 22270,
+      "music_codec": "direct",
+      "music_end": 25358,
+      "music_paging_codecs": "",
+      "music_paging_packed_bytes": 0,
+      "music_start": 3088,
+      "runtime_address": 1883,
+      "runtime_bytes": 1003,
+      "sample_quality_tier": "exact",
+      "track": "overworld"
+    },
+    {
+      "free_before_sfx": 120,
+      "music_bytes": 34856,
+      "music_codec": "direct",
+      "music_end": 37944,
+      "music_paging_codecs": "",
+      "music_paging_packed_bytes": 0,
+      "music_start": 3088,
+      "runtime_address": 1883,
+      "runtime_bytes": 1003,
+      "sample_quality_tier": "perceptual-mixed",
+      "track": "altbattle"
+    },
+    {
+      "free_before_sfx": 16947,
+      "music_bytes": 18029,
+      "music_codec": "direct",
+      "music_end": 21117,
+      "music_paging_codecs": "",
+      "music_paging_packed_bytes": 0,
+      "music_start": 3088,
+      "runtime_address": 1883,
+      "runtime_bytes": 1003,
+      "sample_quality_tier": "exact",
+      "track": "victory"
+    },
+    {
+      "free_before_sfx": 26200,
+      "music_bytes": 8776,
+      "music_codec": "direct",
+      "music_end": 11864,
+      "music_paging_codecs": "",
+      "music_paging_packed_bytes": 0,
+      "music_start": 3088,
+      "runtime_address": 1883,
+      "runtime_bytes": 1003,
+      "sample_quality_tier": "exact",
+      "track": "fail"
+    }
+  ],
+  "upper_free": {
+    "address": 59392,
+    "bytes": 6144
+  }
+}

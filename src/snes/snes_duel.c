@@ -68,15 +68,17 @@
 /* Half the unit viewport's width, in Q8.8: what makes du a shift. */
 #define CAM_FOCAL    ((s16)(64 << 8))
 /* The top of the lift: over the middle of the board, looking straight down
- * from JUST high enough that the whole slab fits the frame.  At 3.9 units a
- * screen pixel is 1/32.8 of a unit, so the slab's four rows span 131 of the
- * viewport's 144 lines and its five columns 164 of 256 -- the board fills the
- * overhead view the way the MSX2 and PC-FX tactical views do, instead of
- * sitting in the middle of it as a minimap.  The camera's foot is centred a
- * few lines below the middle so the front wall's bottom edge is the last
- * line of the frame and the far row clears the life panels. */
-#define LIFT_HEIGHT  ((s16)(1050))           /* 4.1 units */
-#define LIFT_HORIZON ((s16)76)
+ * from EXACTLY 4.0 units.  There the focal length of 128 makes a unit 32
+ * pixels, which is the world texture's 32 texels a unit: the overhead pose
+ * is the texture itself, one texel a pixel, so its floor rows are block
+ * moves (snesSpanFloorTex) and no texel is resampled.  The slab's five
+ * columns are 160 of the 256 pixels and its four rows 128 of the 144 lines
+ * -- the board fills the overhead view the way the MSX2 and PC-FX tactical
+ * views do, instead of sitting in the middle of it as a minimap.  The
+ * camera's foot is on line 72 so the slab's 128 lines are 8..136: sixteen
+ * whole 8-line bands of twenty cells, 320 of the converter's 351. */
+#define LIFT_HEIGHT  ((s16)(1024))           /* 4.0 units */
+#define LIFT_HORIZON ((s16)72)
 /* THE LIFT SWOOPS.  Partway up, the camera is closer to the near edge than
  * either endpoint and looking along the board, so the slab and its front
  * wall spread over more 8x8 cells than the converter's 351-cell budget --
@@ -84,7 +86,12 @@
  * the middle of the move (a half sine over the lift) keeps every pose
  * inside the budget, and reads as the camera rising before it looks down. */
 #define LIFT_BUMP    ((s16)205)             /* 0.8 units */
-#define LIFT_FRAMES  4
+/* THREE POSES, NOT FOUR.  A perspective pose is fifty-odd fields of walk
+ * and conversion whatever its angle, so the poses ARE the lift's duration:
+ * two on the way (at the eased thirds of the move) and the 1:1 overhead
+ * itself, about 150 fields, against 210 with a fourth.  The hand slides
+ * continuously between them either way. */
+#define LIFT_FRAMES  3
 
 /* The surround: BLACK, everywhere the slab does not reach.  The board is the
  * only textured object on the screen -- no painted ground, no sky band -- and
@@ -173,6 +180,28 @@ static u8  ui = UI_COM;
 static u8  cursor = 0;          /* hand slot or field slot, per state */
 static u8  chosen = 0;          /* the hand slot being played, or the attacker */
 static u8  com_delay = 0;
+enum SnesComPresentation {
+    COM_PRESENT_IDLE = 0, COM_PRESENT_SELECT, COM_PRESENT_FLY, COM_PRESENT_LAND
+};
+/* The PC's COM select (src/main.c IB_COM_SELECT / IB_COM_EQUIP_SELECT):
+ * the red cursor visits a hand slot every four frames and settles on the
+ * chosen one for the last quarter, then the card flies to its slot. */
+#define COM_SELECT_FIELDS 24
+#define COM_SELECT_SETTLE 18
+#define COM_FLY_FIELDS    14
+#define DRAW_FIELDS        6
+static u8 com_present = COM_PRESENT_IDLE;
+static u8 com_present_field = 0;
+static u8 com_cursor = 0;       /* the hand slot the sweeping cursor is on */
+static u8 com_hand[MSX2_HAND];
+static u8 com_hand_slot = MSX2_SLOT_NONE;
+static u8 com_field_slot = MSX2_SLOT_NONE;
+static u8 com_card = MSX2_CARD_NONE;
+static u8 com_defense = 0;
+static u8 com_action = MSX2_ACTION_NONE;
+static u8 hand_visible[2] = { 0, 0 };
+static u8 draw_pending[2] = { 0, 0 };
+static u8 draw_field = 0;
 static u8  motion = 0;          /* frames of "something is changing" left */
 static u8  lift_phase = 0;
 static u8  board_dirty = 0;
@@ -266,6 +295,7 @@ static u8   face_of(u8 card, u8 faceup);
 static u8   focus_card(u8 *face);
 static u8   focus_stats(u8 card, u16 *atk, u16 *def);
 static void say(const char *msg);
+static void note_draws(u8 owner, const u8 *before);
 
 u8 snesDuelMode3Active(void) { return mode3_active; }
 
@@ -308,7 +338,8 @@ static void set_rest_camera(u8 mirror)
  * The eased value is shared by the camera and hand so the two settle together
  * at the exact frame the PPU switches to the resident top table. */
 static void job_begin(void);
-static u8   job_run(void);
+static u8   job_step(void);
+static u8   job_slice(void);
 static u8   job_active(void);
 static u16  job_progress(void);
 
@@ -328,10 +359,13 @@ static u16 ease_frac(u8 frame, u8 total)
 static u16 view_anim_ease(u8 frame)
 {
     u16 t;
-    if (frame >= LIFT_FRAMES) return SNES_ONE;
-    /* (frame - 1 + progress) / LIFT_FRAMES, then smoothstepped. */
+    /* The descent renders one pose fewer (see step_view_transition), so
+     * the hand's move is spread over the poses that ARE rendered. */
+    const u8 poses = (view_motion == VIEW_TO_HAND) ? LIFT_FRAMES - 1 : LIFT_FRAMES;
+    if (frame >= poses) return SNES_ONE;
+    /* (frame - 1 + progress) / poses, then smoothstepped. */
     t = (u16)(((u16)(frame ? frame - 1 : 0) << 8) + job_progress());
-    t >>= 2;                    /* / LIFT_FRAMES, which is four */
+    t = (u16)(snesMulLo(t, (u16)(SNES_ONE / poses)) >> 8);
     {
         const u16 t2 = (u16)snesQMul((s16)t, (s16)t);
         return (u16)snesQMul((s16)t2, (s16)(3 * SNES_ONE - 2 * t));
@@ -404,12 +438,29 @@ static void step_view_transition(void)
 {
     const u8 to_top = (view_motion == VIEW_TO_TOP);
 
-    if (view_anim_frame < LIFT_FRAMES) {
-        ++view_anim_frame;
-        lift_camera(to_top ? view_anim_frame : (u8)(LIFT_FRAMES - view_anim_frame));
-        job_begin();
-        job_run();
-        build_objects();
+    /* The last pose's job is begun with view_anim_frame already at
+     * LIFT_FRAMES, so it is the JOB that says whether there is still
+     * rendering to do; a pose left in progress here is the overhead view
+     * never arriving. */
+    /* THE DESCENT STOPS ONE POSE SHORT.  Its last pose would be the rest
+     * camera through the moving renderer, fifty fields for a picture that
+     * finish_view_transition bakes again from the ROM floor the moment it
+     * is done; the poses on the way down are the lift's, in reverse. */
+    const u8 poses = to_top ? LIFT_FRAMES : (u8)(LIFT_FRAMES - 1);
+    if (view_anim_frame < poses || job_active()) {
+        if (!job_active()) {
+            ++view_anim_frame;
+            lift_camera(to_top ? view_anim_frame : (u8)(LIFT_FRAMES - view_anim_frame));
+            job_begin();
+            build_objects();
+        }
+        /* One bounded renderer slice per game loop.  The completed map stays
+         * visible while this generation is built, and the main loop's pad,
+         * OAM and audio service runs between every slice; the hand's
+         * sprites slide between the slice's steps (slide_hand), so they
+         * move at the field rate without a sprite rebuild a step. */
+        job_slice();
+        slide_hand();
         return;
     }
     if (!snesVideoPresentDone()) {
@@ -944,14 +995,14 @@ enum SnesCamJob {
 };
 /* THE STEPS ARE SMALL AND THE HAND MOVES BETWEEN THEM.  Two floor rows are
  * a quarter of a field of the walker and eight cells a third of one of the
- * converter; job_run takes every step of a frame in a row -- a frame is
- * still one game frame -- but slides the hand's sprites in place after
- * each and has the NMI upload them, so the hand glides at the field rate
- * while the board arrives four times.  (Spreading the steps over game
- * frames was tried first: the field-boundary waits and the sprite rebuild
- * a frame cost more than the rendering.) */
-#define JOB_ROWS_PER_STEP   4
-#define JOB_CELLS_PER_STEP  16
+ * converter; job_slice takes steps until a couple of fields have gone by,
+ * sliding the hand's sprites in place after each and having the NMI upload
+ * them, so the hand glides at the field rate while the board arrives four
+ * times, and the pad is read between slices.  (One step a game frame was
+ * tried: the field-boundary wait and the sprite rebuild a step cost more
+ * than the rendering, and the lift took a thousand fields.) */
+#define JOB_ROWS_PER_STEP   2
+#define JOB_CELLS_PER_STEP  8
 #define JOB_CARDS_PER_STEP  3
 
 static u8  job_phase = JOB_IDLE;
@@ -980,15 +1031,6 @@ static void job_begin(void)
     /* Floor rows, converter cells, and the two ends. */
     job_steps_total = (u16)(SNES_FRAME_H / JOB_ROWS_PER_STEP +
                             SNES_CELL_ROWS * (SNES_CELL_COLS / JOB_CELLS_PER_STEP) + 3);
-}
-
-static u8 job_step(void);
-
-/* The whole frame, step by step, the hand sliding between the steps. */
-static u8 job_run(void)
-{
-    while (job_step()) slide_hand();
-    return 0;
 }
 
 /* One step: returns 1 while the frame is still on its way. */
@@ -1074,6 +1116,53 @@ static u8 job_step(void)
     }
 }
 
+/* A SLICE IS A MEASURED ALLOWANCE OF STEPS, NOT ONE STEP.  A step is a
+ * quarter to half a field, and one step a game loop -- each loop being a
+ * vblank wait plus the sprite layer -- made a pose two hundred fields.  The
+ * slice takes steps until JOB_SLICE_LINES (three and a half fields) of the
+ * stopwatch have gone by, sliding the hand between them, then hands the
+ * loop back for the pad, the OAM and the audio queue.  What is lost is the
+ * tail of the last step past the vblank and the wait for the next one,
+ * about a fifth of a field a slice; measured, a pose that is 50 fields of
+ * work synchronously is 60 this way, against 85 with a two-field slice. */
+#define JOB_SLICE_LINES 900
+static u8 job_slice(void)
+{
+    const u16 t0 = snesClock();
+    u16 slid = snes_vblank_count;
+    for (;;) {
+        u16 now;
+        /* The previous pose is still on its way up: that is the main
+         * loop's vblank service (snesVideoPresent), not something to spin
+         * on here. */
+        if (job_phase == JOB_WAIT && snesFbFramesPending()) return 1;
+        if (!job_step()) break;
+        now = snesClock();
+        /* The hand's row moves under half a pixel a field, and the slide
+         * is a tenth of a step (the eased progress divides twice): sliding
+         * after every step was a sixth of the whole lift, once a field a
+         * tenth.  Every other field is not visible. */
+        if ((u16)(snes_vblank_count - slid) >= 2) {
+            slid = snes_vblank_count;
+            slide_hand();
+        }
+        if ((u16)(now - t0) >= JOB_SLICE_LINES) return 1;
+    }
+    return 0;
+}
+
+/* THE MAIN LOOP DOES NOT WAIT FOR VBLANK WHILE A POSE IS BEING RENDERED.
+ * The wait is there to pace a scene, and a slice that ends just after a
+ * vblank would idle most of a field for nothing; the NMI uploads the
+ * hand's slid sprites on its own (snes_fb_oam_pending).  The loop waits
+ * again when the pose is waiting for the previous one to be shown, since
+ * that is vblank work. */
+u8 snesDuelBusy(void)
+{
+    return (u8)((view_motion == VIEW_TO_TOP || view_motion == VIEW_TO_HAND) &&
+                job_active() && job_phase != JOB_WAIT);
+}
+
 static void render(void)
 {
     u8 row = 0;
@@ -1127,6 +1216,8 @@ static void leave_mode3_art(void)
     rest_invalidate();
     snesFbDrain(1);
     render();
+    build_objects();
+    while (!snesVideoPresentDone()) WaitForVBlank();
     snesVideoRestartHdma();
     setScreenOn();
 }
@@ -1144,7 +1235,6 @@ static void begin_check(void)
     check_return_top = top_view;
     check_face = face;
     check_has_stats = focus_stats(card, &check_atk, &check_def);
-    snesAudioSfx(SNES_SFX_CONFIRM_ALT);
     top_view = 0;
     view_motion = VIEW_BOARD_REST;
     ui = UI_CHECK;
@@ -1437,6 +1527,16 @@ static void slide_hand(void)
 static void build_objects(void)
 {
     const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+    const u8 hand_owner = (ui == UI_COM) ? g_duel.turn_owner : MSX2_OWNER_PLAYER;
+    /* Constant indices only: 816-tcc's `&g_duel.side[hand_owner]` came out
+     * as the player's side whatever hand_owner held, and the opponent's row
+     * showed five backs after it had played one. */
+    const Msx2Side *hand_side = (hand_owner == MSX2_OWNER_COM)
+                              ? &g_duel.side[MSX2_OWNER_COM]
+                              : &g_duel.side[MSX2_OWNER_PLAYER];
+    /* The opponent's hand as it was BEFORE its action while that action is
+     * being presented, the live hand otherwise. */
+    u8 shown_hand[MSX2_HAND];
     u8 row, col, i;
     u8 face = SNES_CARD_NONE_FACE;
     const u8 card = focus_card(&face);
@@ -1452,6 +1552,12 @@ static void build_objects(void)
         has_stats = focus_stats(card, &atk, &def);
     }
     hand_y = hand_row_y();
+    for (i = 0; i < MSX2_HAND; ++i) {
+        if (hand_owner == MSX2_OWNER_COM && com_present != COM_PRESENT_IDLE)
+            shown_hand[i] = com_hand[i];
+        else
+            shown_hand[i] = hand_side->hand[i];
+    }
     /* A message pre-empts the name, because it is the thing that just
      * happened; the name is back the moment it expires. */
     const char *name = message ? message
@@ -1541,13 +1647,22 @@ static void build_objects(void)
         for (i = 0; ui != UI_CHECK && i < MSX2_HAND; ++i) {
             s16 x = (s16)(HAND_X0 + i * HAND_PITCH);
             s16 y = hand_y;
-            const u8 hcard = you->hand[i];
-            const u8 queued = (u8)(queue_order(i) != 0);
-            const u8 selected = (ui == UI_HAND)
+            const u8 hcard = shown_hand[i];
+            const u8 queued = (u8)(hand_owner == MSX2_OWNER_PLAYER &&
+                                   queue_order(i) != 0);
+            const u8 selected = (hand_owner == MSX2_OWNER_COM)
+                              ? (com_present != COM_PRESENT_IDLE &&
+                                 com_cursor == i)
+                              : (ui == UI_HAND)
                               ? (cursor == i)
                               : (chosen == i && ui != UI_ATTACKER &&
                                  ui != UI_DEFENDER && ui != UI_COM);
+            /* TWO TESTS, NOT ONE `||`: 816-tcc compiled the pair with the
+             * first operand's true branch jumping INTO the body (its .ps
+             * says "ERROR no jump found to patch"), so an emptied slot was
+             * drawn as whatever the sheet still held. */
             if (hcard == MSX2_CARD_NONE) continue;
+            if (!(hand_visible[hand_owner] & (1u << i))) continue;
             /* A CARD BEING PLAYED IS NOT IN THE HAND ANY MORE.  While the
              * player is choosing its slot it hovers over the board as the
              * held card (draw_held_card), and a fusion chain's cards are
@@ -1556,7 +1671,22 @@ static void build_objects(void)
              * same rule -- decided from the UI state alone -- shows it
              * again.  The flight sprite is the exception: it IS the card,
              * on its way down. */
-            if (!fly_frame &&
+            if (hand_owner == MSX2_OWNER_COM && com_present == COM_PRESENT_FLY &&
+                i == com_hand_slot) {
+                const u16 t = ease_frac(com_present_field, COM_FLY_FIELDS);
+                s16 wx, wz, sx, sy;
+                const u8 com_row = (com_action == MSX2_ACTION_PLACE ||
+                                    com_action == MSX2_ACTION_FUSION)
+                                 ? SNES_ROW_COM_MONSTER : SNES_ROW_COM_SUPPORT;
+                /* WORLD coordinates: snesProject applies the camera's yaw
+                 * itself, so a mirrored slot centre would be turned twice
+                 * and the card would fly to the opposite column. */
+                snesSlotCentre(com_row, com_field_slot, 0, &wx, &wz);
+                if (snesProject(&cam, &vp_rest, wx, wz, 0, &sx, &sy)) {
+                    x = view_lerp(x, (s16)(sx - 16), t);
+                    y = view_lerp(y, (s16)(sy - 16), t);
+                }
+            } else if (!fly_frame && hand_owner == MSX2_OWNER_PLAYER &&
                 ((i == chosen && (ui == UI_PLACE || ui == UI_EQUIP_TARGET)) ||
                  (queued && ui == UI_FUSE_TARGET)))
                 continue;
@@ -1574,15 +1704,24 @@ static void build_objects(void)
                  * of the five the buttons are about. */
                 y = (s16)(y - (snesSin(bob_phase) >> 6));
             }
-            snesObjCardGrey((u8)(!selected && !queued));
+            /* The opponent's backs are all alike; only the cursor says
+             * which one it is thinking about, as on the PC. */
+            snesObjCardGrey((u8)(hand_owner == MSX2_OWNER_PLAYER &&
+                                 !selected && !queued));
             hand_oam_box[i] = 0xFF;
             hand_oam_bob[i] = selected;
             if (queued || selected) {
                 hand_oam_box[i] = snesObjCount();
-                snesObjBox(x - 4, y - 4, 40, 40);
+                /* The opponent's cursor is the PC's red one
+                 * (draw_red_cursor); the player's stays gold. */
+                if (hand_owner == MSX2_OWNER_COM)
+                    snesObjBoxRed(x - 4, y - 4, 40, 40);
+                else
+                    snesObjBox(x - 4, y - 4, 40, 40);
             }
             hand_oam[i] = snesObjCount();
-            snesObjCard(x, y, i, face_of(hcard, 1));
+            snesObjCard(x, y, i, hand_owner == MSX2_OWNER_COM
+                                  ? SNES_CARD_BACK : face_of(hcard, 1));
             if (snesObjCount() == hand_oam[i]) hand_oam[i] = 0xFF;
             snesObjCardGrey(0);
         }
@@ -1698,7 +1837,9 @@ static void begin_place_flight(u8 defense)
     fly_x1 = fly_x0;
     fly_y1 = fly_y0;
     if (slot != MSX2_SLOT_NONE && slot < SNES_COLS) {
-        snesSlotCentre(row, slot, (u8)(board_yaw == 128), &wx, &wz);
+        /* World coordinates: the camera's yaw does the mirroring inside
+         * snesProject (the COM presentation's flight is the same). */
+        snesSlotCentre(row, slot, 0, &wx, &wz);
         /* The rest viewport projects in screen pixels; less half a card to
          * centre the 32x32 sprite on the slot. */
         set_rest_camera((u8)(board_yaw == 128));
@@ -1725,8 +1866,12 @@ static void begin_place_flight(u8 defense)
 
 static void place_chosen(u8 defense)
 {
+    u8 hand_before[MSX2_HAND];
+    u8 hi;
     const u8 card = g_duel.side[MSX2_OWNER_PLAYER].hand[chosen];
     u8 placed = 0;
+    for (hi = 0; hi < MSX2_HAND; ++hi)
+        hand_before[hi] = g_duel.side[MSX2_OWNER_PLAYER].hand[hi];
     if (ui == UI_FUSE_TARGET) {
         placed = Msx2_PlaceFusion(MSX2_OWNER_PLAYER, queue, queue_n, cursor,
                                   defense ? TRUE : FALSE);
@@ -1744,10 +1889,100 @@ static void place_chosen(u8 defense)
         say("CANNOT PLACE IT");
     }
     if (placed) snesAudioSfx(SNES_SFX_CARD_PLACED);
+    note_draws(MSX2_OWNER_PLAYER, hand_before);
+    if (placed) hand_visible[MSX2_OWNER_PLAYER] &= (u8)~(1u << chosen);
     Msx2_ClearActionEvent();
     ui = UI_HAND;
     cursor = chosen;
     touch_board(20);
+}
+
+static void note_draws(u8 owner, const u8 *before)
+{
+    u8 i;
+    for (i = 0; i < MSX2_HAND; ++i) {
+        if (g_duel.side[owner].hand[i] == MSX2_CARD_NONE)
+            hand_visible[owner] &= (u8)~(1u << i);
+        if (before[i] == MSX2_CARD_NONE &&
+            g_duel.side[owner].hand[i] != MSX2_CARD_NONE) {
+            hand_visible[owner] &= (u8)~(1u << i);
+            draw_pending[owner] |= (u8)(1u << i);
+        }
+    }
+}
+
+static u8 step_draw_presentation(void)
+{
+    const u8 owner = (ui == UI_COM) ? g_duel.turn_owner : MSX2_OWNER_PLAYER;
+    u8 i;
+    if (!draw_pending[owner]) return 0;
+    if (++draw_field < DRAW_FIELDS) return 1;
+    draw_field = 0;
+    for (i = 0; i < MSX2_HAND; ++i) {
+        if (draw_pending[owner] & (1u << i)) {
+            draw_pending[owner] &= (u8)~(1u << i);
+            hand_visible[owner] |= (u8)(1u << i);
+            snesAudioSfx(SNES_SFX_CARD_DRAWN);
+            break;
+        }
+    }
+    return 1;
+}
+
+static void begin_com_presentation(const u8 *before)
+{
+    u8 i;
+    for (i = 0; i < MSX2_HAND; ++i) com_hand[i] = before[i];
+    com_hand_slot = g_duel.last_action_hand_slot;
+    com_field_slot = g_duel.last_action_field_slot;
+    com_card = g_duel.last_action_card;
+    com_defense = g_duel.last_action_defense;
+    com_action = g_duel.last_action;
+    com_present_field = 0;
+    com_cursor = 0;
+    com_present = COM_PRESENT_SELECT;
+    /* The rules have already taken the card out of the hand and note_draws
+     * hid the empty slot; the presentation shows the BEFORE hand, so the
+     * chosen back stays until its flight has landed. */
+    if (com_hand_slot < MSX2_HAND)
+        hand_visible[MSX2_OWNER_COM] |= (u8)(1u << com_hand_slot);
+}
+
+static u8 step_com_presentation(void)
+{
+    if (com_present == COM_PRESENT_IDLE) return 0;
+    if (com_present == COM_PRESENT_SELECT) {
+        if (++com_present_field >= COM_SELECT_FIELDS) {
+            com_present_field = 1;
+            com_present = COM_PRESENT_FLY;
+        } else if (com_present_field < COM_SELECT_SETTLE) {
+            com_cursor = (u8)((com_present_field >> 2) % MSX2_HAND);
+        } else {
+            com_cursor = com_hand_slot;
+        }
+    } else if (com_present == COM_PRESENT_FLY) {
+        if (++com_present_field > COM_FLY_FIELDS) {
+            hand_visible[MSX2_OWNER_COM] &= (u8)~(1u << com_hand_slot);
+            snesAudioSfx(SNES_SFX_CARD_PLACED);
+            Msx2_ClearActionEvent();
+            touch_board(12);
+            render();
+            com_present = COM_PRESENT_LAND;
+        }
+    } else if (snesVideoPresentDone()) {
+        com_present = COM_PRESENT_IDLE;
+        com_hand_slot = com_field_slot = MSX2_SLOT_NONE;
+    }
+    return 1;
+}
+
+/* The PC's per-frame UI pass (src/main.c): A confirms, B and START are the
+ * alternate; the cursor sound is move_cursor's.  Every player-driven state
+ * goes through here, so the individual actions never sound their own press. */
+static void press_sfx(u16 down)
+{
+    if (down & KEY_A) snesAudioSfx(SNES_SFX_CONFIRM);
+    if (down & (KEY_B | KEY_START)) snesAudioSfx(SNES_SFX_CONFIRM_ALT);
 }
 
 static void step_player(void)
@@ -1755,6 +1990,7 @@ static void step_player(void)
     const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
     const u16 down = padsDown(0);
 
+    press_sfx(down);
     switch (ui) {
     case UI_HAND:
         move_cursor(MSX2_HAND, 0);
@@ -1883,7 +2119,6 @@ static void step_player(void)
             if (!Msx2_Attack(MSX2_OWNER_PLAYER, chosen, target)) {
                 say("ILLEGAL ATTACK");
             } else {
-                snesAudioSfx(SNES_SFX_LASER);
                 cursor = chosen;
                 begin_battle_art(UI_ATTACKER);
                 return;
@@ -1935,6 +2170,20 @@ void snesDuelEnter(void)
     cursor = 0;
     chosen = 0;
     com_delay = 4;
+    com_present = COM_PRESENT_IDLE;
+    com_present_field = 0;
+    com_hand_slot = com_field_slot = MSX2_SLOT_NONE;
+    com_action = MSX2_ACTION_NONE;
+    hand_visible[MSX2_OWNER_PLAYER] = hand_visible[MSX2_OWNER_COM] = 0;
+    draw_pending[MSX2_OWNER_PLAYER] = draw_pending[MSX2_OWNER_COM] = 0;
+    draw_field = 0;
+    {
+        u8 owner, i;
+        for (owner = 0; owner < 2; ++owner)
+            for (i = 0; i < MSX2_HAND; ++i)
+                if (g_duel.side[owner].hand[i] != MSX2_CARD_NONE)
+                    draw_pending[owner] |= (u8)(1u << i);
+    }
     motion = 30;
     lift_phase = 0;
     message = NULL;
@@ -2009,6 +2258,7 @@ u8 snesDuelFrame(void)
         goto stamp;
     }
     if (view_motion == VIEW_BOARD_REST && ui == UI_HAND && !fly_landing && (down & KEY_B)) {
+        press_sfx(down);
         begin_check();
         if (ui == UI_CHECK) {
             build_objects();
@@ -2019,7 +2269,7 @@ u8 snesDuelFrame(void)
     /* Inspection pauses the duel and restores the previous UI on close.
      * Consume the closing press here so it cannot also play a card. */
     if (ui == UI_CHECK) {
-        if (down & (KEY_B | KEY_A | KEY_START)) end_check();
+        if (down & (KEY_B | KEY_A | KEY_START)) { press_sfx(down); end_check(); }
         build_objects();
         goto stamp;
     }
@@ -2029,9 +2279,10 @@ u8 snesDuelFrame(void)
      * -- so B is what walks back down; DOWN there would otherwise cost the
      * cursor a whole axis of the board. */
     if (view_motion == VIEW_BOARD_REST && (down & KEY_UP) && !fly_frame && !fly_landing &&
-        !turn_frame && ui != UI_COM && ui != UI_RESULT)
+        !turn_frame && ui != UI_COM && ui != UI_RESULT) {
+        snesAudioSfx(SNES_SFX_SELECT);
         begin_view_transition(1);
-    else if (view_motion == VIEW_TOP_REST) {
+    } else if (view_motion == VIEW_TOP_REST) {
         u8 moved = 0;
         if (down & KEY_LEFT)  { top_col = (u8)((top_col + SNES_COLS - 1) % SNES_COLS); moved = 1; }
         if (down & KEY_RIGHT) { top_col = (u8)((top_col + 1) % SNES_COLS); moved = 1; }
@@ -2039,6 +2290,7 @@ u8 snesDuelFrame(void)
         if (down & KEY_DOWN)  { top_row = (u8)((top_row + 1) % SNES_ROWS); moved = 1; }
         if (moved) snesAudioSfx(SNES_SFX_SELECT);
         if (down & KEY_A) {
+            press_sfx(down);
             begin_check();
             if (ui == UI_CHECK) {
                 build_objects();
@@ -2046,6 +2298,7 @@ u8 snesDuelFrame(void)
             }
         }
         if (down & KEY_B) {
+            press_sfx(down);
             /* Card check and rule changes may have replaced the saved bitmap. */
             if (board_dirty) render();
             begin_view_transition(0);
@@ -2078,6 +2331,18 @@ u8 snesDuelFrame(void)
         if (--message_timer == 0) {
             message = NULL;
         }
+    }
+
+    if (!turn_frame && board_yaw == (g_duel.turn_owner ? 128 : 0) &&
+        step_draw_presentation()) {
+        build_objects();
+        goto stamp;
+    }
+
+    if (!turn_frame && board_yaw == (g_duel.turn_owner ? 128 : 0) &&
+        step_com_presentation()) {
+        build_objects();
+        goto stamp;
     }
 
     if (g_duel.result != 0 && ui != UI_RESULT) {
@@ -2113,19 +2378,26 @@ u8 snesDuelFrame(void)
             motion_sequence_begin(TURN_FRAMES);
             turn_frame = 1;
         }
+        snesAudioSfx(SNES_SFX_TURN_PASSED);
     }
     if (turn_frame) {
         /* One rendered frame a game frame.  The camera swings out as it
-         * turns so the slab's corners stay inside the frame at the diagonal. */
-        const u16 t = ease_frac(turn_frame, TURN_FRAMES);
-        board_yaw = (u8)view_lerp(turn_from, turn_target, t);
-        snesCameraSet(&cam, 0,
-                      (s16)(CAM_Z - snesQMul(384, snesSin(board_yaw))),
-                      CAM_HEIGHT, CAM_FOCAL, SNES_REST_HORIZON_PX);
-        cam.yaw = board_yaw;
-        motion_frame();
-        build_objects();
-        if (++turn_frame > TURN_FRAMES) {
+         * turns so the slab's corners stay inside the frame at the diagonal.
+         * THE LAST POSE OF THE SWING IS THE OTHER SEAT'S REST PICTURE, baked
+         * from the ROM floor by the touch below; rendering it through the
+         * yawed mapper first was fifty fields for a picture replaced at
+         * once, so the swing stops one pose short. */
+        if (turn_frame < TURN_FRAMES) {
+            const u16 t = ease_frac(turn_frame, TURN_FRAMES);
+            board_yaw = (u8)view_lerp(turn_from, turn_target, t);
+            snesCameraSet(&cam, 0,
+                          (s16)(CAM_Z - snesQMul(384, snesSin(board_yaw))),
+                          CAM_HEIGHT, CAM_FOCAL, SNES_REST_HORIZON_PX);
+            cam.yaw = board_yaw;
+            motion_frame();
+            build_objects();
+        }
+        if (++turn_frame >= TURN_FRAMES) {
             turn_frame = 0;
             board_yaw = turn_target;
             set_rest_camera((u8)(board_yaw == 128));
@@ -2141,6 +2413,7 @@ u8 snesDuelFrame(void)
          * screen this whole path exists for is never on screen at all. */
         if (over_step <= OVER_SLIDE_FRAMES + OVER_HOLD_FRAMES) ++over_step;
         else if (down & (KEY_A | KEY_B | KEY_START)) {
+            press_sfx(down);
             if (configured_story_mode && g_duel.result > 0) {
                 const u8 next = (u8)(configured_story + 1);
                 /* Story can begin directly from a fresh cartridge.  The
@@ -2173,10 +2446,23 @@ u8 snesDuelFrame(void)
         if (com_delay) {
             --com_delay;
         } else {
+            u8 hand_before[MSX2_HAND];
+            u8 hi;
+            const u8 step_owner = g_duel.turn_owner;
             com_delay = 6;
+            for (hi = 0; hi < MSX2_HAND; ++hi)
+                hand_before[hi] = g_duel.side[g_duel.turn_owner].hand[hi];
             Msx2_DuelStep();
+            note_draws(step_owner, hand_before);
             if (g_duel.last_action == MSX2_ACTION_ATTACK)
                 begin_battle_art(UI_COM);
+            else if (g_duel.last_action_owner == MSX2_OWNER_COM &&
+                     (g_duel.last_action == MSX2_ACTION_PLACE ||
+                      g_duel.last_action == MSX2_ACTION_FUSION ||
+                      g_duel.last_action == MSX2_ACTION_EQUIP ||
+                      g_duel.last_action == MSX2_ACTION_SUPPORT)) {
+                begin_com_presentation(hand_before);
+            }
             else {
                 Msx2_ClearActionEvent();
                 touch_board(12);

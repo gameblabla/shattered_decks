@@ -152,6 +152,9 @@ int main(void)
         /* The sprite layer's share of the coming vblank, reserved out of
          * the board drain's allowance before the NMI runs. */
         snesFbReserve(cur_scene == SNES_SCENE_DUEL ? snesObjVblankBytes() : 0);
+        /* A camera pose in progress runs straight on: the pad is read
+         * again after the next slice and the NMI does the uploads. */
+        if (cur_scene == SNES_SCENE_DUEL && snesDuelBusy()) continue;
         WaitForVBlank();
         if (scene_pending != SNES_SCENE_BOOT) {
             u8 next = scene_pending;

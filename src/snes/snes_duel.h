@@ -13,5 +13,7 @@ void snesDuelEnter(void);
 u8   snesDuelFrame(void);
 void snesDuelConfigure(u8 story_duel, u8 story_mode);
 u8   snesDuelMode3Active(void);
+/* Mid-pose: the main loop skips its vblank wait and vblank work. */
+u8   snesDuelBusy(void);
 
 #endif /* WAIFU_SNES_DUEL_H */

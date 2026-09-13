@@ -19,6 +19,7 @@ other ports:
 Run it with no arguments for the standard regression set.
 """
 
+import argparse
 import os
 import re
 import shutil
@@ -35,6 +36,7 @@ ROM = os.path.join(ROOT, "build", "snes", "waifusnes.sfc")
 MEDNAFEN = os.path.join(
     ROOT, "SNES", "snes-mednafen-1.32.1-accurate-headless-linux-x86_64")
 OUT = os.path.join(ROOT, "build", "snes", "verify")
+TIMEOUT = 120
 
 # The frame stamp, mirroring src/snes/snes_stamp.h.
 STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "frame_gen",
@@ -116,7 +118,10 @@ _RUN_CACHE = {}
 def run(name, script, frames, capture=None):
     """One scripted run.  `script` is a list of (start, end, pad_mask) rows."""
     cacheable = name in ("still", "fixture", "nocards", "hold", "moving", "topview")
-    key = (name, tuple(script), frames, capture)
+    identity = (os.path.realpath(ROM), os.path.getsize(ROM),
+                os.stat(ROM).st_mtime_ns, os.path.realpath(MEDNAFEN),
+                os.path.getsize(MEDNAFEN), os.stat(MEDNAFEN).st_mtime_ns)
+    key = (identity, name, tuple(script), frames, capture)
     if cacheable and key in _RUN_CACHE:
         return _RUN_CACHE[key]
     os.makedirs(OUT, exist_ok=True)
@@ -143,7 +148,11 @@ def run(name, script, frames, capture=None):
         argv += [cov, "0", os.path.join(OUT, name + ".ppu"),
                  os.path.join(OUT, name + ".ppu.txt"), frame_dir,
                  str(capture[0]), str(capture[1]), str(capture[2])]
-    proc = subprocess.run(argv, capture_output=True, text=True, cwd=OUT)
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, cwd=OUT,
+                              timeout=TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise Failure("%s: emulator timed out after %ss" % (name, TIMEOUT)) from exc
     if proc.returncode != 0:
         raise Failure("%s: emulator exited %d\n%s" % (name, proc.returncode,
                                                       proc.stderr[-2000:]))
@@ -1682,6 +1691,132 @@ def check_chosen_card_leaves_the_hand():
     return "chosen card hidden in PLACE, all five back after B"
 
 
+def back_sprite_match(px, w, h, x0, y0, want=None):
+    """How many of a card BACK's 1024 pixels are on screen at (x0, y0).
+
+    Matched against the one face rather than the whole sheet, so a frame's
+    worth of positions can be scanned: the first row rejects most of them."""
+    if want is None:
+        want = card_sprite_pixels(CARD_BACK, hi=True)
+    if not (0 <= x0 and x0 + 32 <= w and 0 <= y0 and y0 + 32 <= h):
+        return 0
+    row0 = sum(1 for x in range(32) if screen5(px, w, x0 + x, y0) == want[x])
+    if row0 < 20:
+        return row0
+    return sum(1 for y in range(32) for x in range(32)
+               if screen5(px, w, x0 + x, y0 + y) == want[y * 32 + x])
+
+
+def hand_backs(px, w, h, want):
+    """Which hand slots hold a card back this frame (any bob or slide)."""
+    out = set()
+    for slot in range(5):
+        x = HAND_X0 + slot * HAND_PITCH
+        for dy in range(-4, 5):
+            if back_sprite_match(px, w, h, x, HAND_Y + dy, want) >= 1024 * 0.9:
+                out.add(slot)
+                break
+    return out
+
+
+def hand_cursor_slot(px, w, h):
+    """The hand slot the red selection bracket is around, if any."""
+    red = obj_colour(7, 4)
+    for slot in range(5):
+        x = HAND_X0 + slot * HAND_PITCH
+        for dy in range(-4, 5):
+            y = HAND_Y + dy
+            n = sum(1 for yy in range(y - 4, y + 4) for xx in range(x - 4, x + 4)
+                    if 0 <= xx < w and 0 <= yy < h and screen5(px, w, xx, yy) == red)
+            if n >= 6:
+                return slot
+    return None
+
+
+def check_com_turn_presentation():
+    """THE OPPONENT'S TURN IS PRESENTED, NOT JUST APPLIED.
+
+    START hands the first turn over with nothing played.  Across the COM turn
+    the lower edge shows the opponent's hand as CARD BACKS (never a face), the
+    red cursor visits more than one of them before settling, and the chosen
+    back LEAVES the row and is seen on its way to the board while the others
+    stay.  Read from a capture of every other field, then from the stamp of a
+    run that stops in the middle of the turn."""
+    name = "com_turn"
+    start, end, step = DUEL_READY + 100, DUEL_READY + 1500, 2
+    run(name, random_battle_script() + [press("START", DUEL_READY)],
+        DUEL_READY + 1600, capture=(start, end, step))
+    frames = sorted(os.listdir(os.path.join(OUT, name + ".frames")))
+    if len(frames) < 100:
+        raise Failure("captured only %d fields of the COM turn" % len(frames))
+    want = card_sprite_pixels(CARD_BACK, hi=True)
+    group = spr_asset(SPR_GROUP, "group")
+    seen_backs, cursor_slots, departures, flights = [], set(), 0, 0
+    departure_field = 0
+    faces_shown = 0
+    prev = set()
+    most = 0
+    for fname in frames:
+        w, h, px = read_ppm(os.path.join(OUT, name + ".frames", fname))
+        backs = hand_backs(px, w, h, want)
+        most = max(most, len(backs))
+        seen_backs.append(backs)
+        if backs:
+            slot = hand_cursor_slot(px, w, h)
+            if slot is not None:
+                cursor_slots.add(slot)
+            # No face of any card in the opponent's hand row: a back is a
+            # back, and the rest of the row is a back or nothing.
+            for slot in range(5):
+                if slot in backs:
+                    continue
+                got = identify_card_sprite(px, w, h, HAND_X0 + slot * HAND_PITCH,
+                                           HAND_Y, hi=True)
+                if got is not None and got[0] != CARD_BACK and got[1] >= 1024 * 0.9:
+                    faces_shown += 1
+        # A slot's back gone while the rest stayed is a departure; the card
+        # is then somewhere between the row and the board.
+        if prev and len(backs) == len(prev) - 1 and backs < prev:
+            departures += 1
+            departure_field = int(fname[1:7])
+            gone = (prev - backs).pop()
+            x0 = HAND_X0 + gone * HAND_PITCH
+            found = False
+            for y in range(40, HAND_Y - 2, 2):
+                for x in range(max(0, x0 - 160), min(w - 32, x0 + 160)):
+                    if back_sprite_match(px, w, h, x, y, want) >= 1024 * 0.8:
+                        found = True
+                        break
+                if found:
+                    break
+            if found:
+                flights += 1
+        prev = backs
+    if most < 3:
+        raise Failure("at most %d card backs were ever drawn in the opponent's "
+                      "hand row" % most)
+    if faces_shown:
+        raise Failure("a card FACE was drawn in the opponent's hand row in %d "
+                      "captured fields" % faces_shown)
+    if len(cursor_slots) < 2:
+        raise Failure("the cursor sat on hand slots %s during the opponent's turn "
+                      "-- it does not sweep" % sorted(cursor_slots))
+    if not departures:
+        raise Failure("no card back ever left the opponent's hand row")
+    if not flights:
+        raise Failure("a back left the row but was never seen on its way to the "
+                      "board")
+    # The rules' side of it, read mid-flight: it IS the opponent's turn.
+    _, wram = run(name + "_mid", random_battle_script() + [press("START", DUEL_READY)],
+                  departure_field + 6)
+    stamp = read_stamp(wram)
+    if UI[stamp["ui"]] != "COM" or stamp["turn_owner"] != 1:
+        raise Failure("mid-turn the UI is %s with turn owner %d, expected the "
+                      "opponent's turn" % (UI[stamp["ui"]], stamp["turn_owner"]))
+    return "%d backs in the row, cursor on slots %s, %d departure(s), %d in flight, no face shown" % (
+        most, sorted(cursor_slots), departures, flights)
+
+
 def check_duel_flow():
     """A turn played through the UI, one button at a time.
 
@@ -1772,13 +1907,13 @@ def run_top(capture=None):
 
 
 # The overhead camera, mirroring snes_duel.c's lift_camera at its top: over
-# the middle of the board at LIFT_HEIGHT (4.1 units), looking straight down,
+# the middle of the board at LIFT_HEIGHT (4.0 units), looking straight down,
 # the frame centred on the camera's foot at LIFT_HORIZON.  A world point
-# (wx, wz) on the board projects to (128 + wx * k, 76 - wz * k) with k =
-# focal / height in pixels: 128 / 4.1.
-TOP_HEIGHT = 1050 / 256.0
+# (wx, wz) on the board projects to (128 + wx * k, 72 - wz * k) with k =
+# focal / height in pixels: 128 / 4.0 = 32, one texel a pixel.
+TOP_HEIGHT = 1024 / 256.0
 TOP_K = 128.0 / TOP_HEIGHT
-TOP_CX, TOP_CY = 128.0, 76.0
+TOP_CX, TOP_CY = 128.0, 72.0
 # The moving camera draws the cards out of the world texture, where each is a
 # 24x32-texel stamp of its 32x32 face over a 0.75 x 1.0 unit footprint.
 TOP_CARD_W, TOP_CARD_H = 0.75, 1.0
@@ -2540,12 +2675,34 @@ CHECKS = [
     ("fusion target", check_fusion_target),
     ("placement flight", check_placement_flight),
     ("duel flow", check_duel_flow),
+    ("COM turn presentation", check_com_turn_presentation),
     ("duel plays out", check_duel_plays_out),
     ("render cost", check_render_cost),
 ]
 
 
 def main():
+    global ROM, MEDNAFEN, OUT, TIMEOUT
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--rom", default=ROM, help="candidate ROM")
+    parser.add_argument("--emulator", default=MEDNAFEN, help="headless emulator")
+    parser.add_argument("--output", default=OUT, help="verification output directory")
+    parser.add_argument("--timeout", type=int, default=TIMEOUT,
+                        help="per-emulator-run timeout in seconds")
+    parser.add_argument("--checks", help="comma-separated check names")
+    args = parser.parse_args()
+    ROM = os.path.abspath(args.rom)
+    MEDNAFEN = os.path.abspath(args.emulator)
+    OUT = os.path.abspath(args.output)
+    TIMEOUT = args.timeout
+    selected = None
+    if args.checks:
+        selected = {name.strip() for name in args.checks.split(",") if name.strip()}
+        known = {name for name, _fn in CHECKS}
+        unknown = selected - known
+        if not selected or unknown:
+            parser.error("unknown or empty --checks selection: %s" %
+                         ", ".join(sorted(unknown or {"<empty>"})))
     try:
         check_rom_fresh()
     except Failure as exc:
@@ -2553,6 +2710,8 @@ def main():
         return 1
     failures = 0
     for name, fn in CHECKS:
+        if selected is not None and name not in selected:
+            continue
         try:
             print("ok    %-20s %s" % (name, fn()), flush=True)
         except Failure as exc:
