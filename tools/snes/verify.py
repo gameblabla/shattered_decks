@@ -2520,25 +2520,44 @@ def check_fusion_target():
     return "two hand cards queue with DOWN and A completes fusion"
 
 
-def check_placement_flight():
-    """A placement has a visible in-flight interval before rules placement."""
+def check_placement_lowering():
+    """A placement lowers the held card onto its slot IN THE BITMAP: several
+    distinct board pictures before the rules place it, every one of them
+    changing only inside the board -- a sprite flying up from the hand row
+    would change pixels below the board's 144 lines."""
     start = DUEL_READY
-    _, wram = run("placement_flight", random_battle_script() + [
+    _, wram = run("placement_lowering", random_battle_script() + [
         press("A", start + 300),
         press("A", start + 480),
     ], 5000, capture=(start + 480, start + 1100, 2))
     stamp = read_stamp(wram)
     if stamp["field_cards"] != 1 or UI[stamp["ui"]] == "PLACE":
-        raise Failure("placement flight did not land (UI=%s cards=%d)" %
+        raise Failure("placement did not land (UI=%s cards=%d)" %
                       (UI[stamp["ui"]], stamp["field_cards"]))
-    frames = sorted(os.listdir(os.path.join(OUT, "placement_flight.frames")))
+    frames = sorted(os.listdir(os.path.join(OUT, "placement_lowering.frames")))
     if len(frames) < 4:
-        raise Failure("captured only %d placement-flight frames" % len(frames))
-    images = [read_ppm(os.path.join(OUT, "placement_flight.frames", f))[2]
-              for f in frames]
+        raise Failure("captured only %d placement frames" % len(frames))
+    pics = [read_ppm(os.path.join(OUT, "placement_lowering.frames", f))
+            for f in frames]
+    images = [p[2] for p in pics]
     if len(set(images)) < 3:
-        raise Failure("placement flight capture has no visible movement")
-    return "card flight captured across %d fields before landing" % len(frames)
+        raise Failure("placement capture has no visible movement")
+    w = pics[0][0]
+    below = 0
+    for a, b in zip(images, images[1:]):
+        if a == b:
+            continue
+        # The hand row and the text under it: 144..224.  A HUD change there
+        # (the name line, the hand card leaving) is at most a few hundred
+        # pixels; a 32x32 card sprite in flight is a thousand a frame.
+        below += sum(1 for y in range(144, 224) for x in range(0, w, 2)
+                     if a[(y * w + x) * 3:(y * w + x) * 3 + 3]
+                     != b[(y * w + x) * 3:(y * w + x) * 3 + 3])
+    if below > 600:
+        raise Failure("%d pixels change under the board during the placement "
+                      "-- a sprite is flying, not the 3D card lowering" % below)
+    return ("%d distinct board pictures across %d fields, %d pixels changed "
+            "under the board" % (len(set(images)), len(frames), below))
 
 
 def planar_pixel(vram, tile, x, y):
@@ -2681,7 +2700,7 @@ CHECKS = [
     ("battle Mode 4", check_battle_mode4),
     ("direct attack", check_direct_attack),
     ("fusion target", check_fusion_target),
-    ("placement flight", check_placement_flight),
+    ("placement lowering", check_placement_lowering),
     ("duel flow", check_duel_flow),
     ("COM turn presentation", check_com_turn_presentation),
     ("duel plays out", check_duel_plays_out),

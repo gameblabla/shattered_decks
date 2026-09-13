@@ -110,6 +110,8 @@ void snesObjEnd(void);
 /* Called once a vblank, before the framebuffer's own upload asks for what is
  * left: pushes OAM and at most a couple of card faces. */
 void snesObjVblank(void);
+/* Every queued card at once -- force blank only (leave_mode3_art). */
+void snesObjFlushBlank(void);
 u16  snesObjVblankBytes(void);
 /* Whether every card asked for is actually in VRAM. */
 u8   snesObjCardsReady(void);

@@ -450,6 +450,25 @@ static void upload_card_row(u8 slot, u8 row)
     }
 }
 
+/* Every queued card, now.  Only legal under force blank (the screen is off
+ * between a Mode 4 scene and the board), where a VRAM transfer is not
+ * bound to a vblank window: the hand comes back complete with the board
+ * instead of a card a field over a bake that is starving the window. */
+void snesObjFlushBlank(void)
+{
+    u8 i, r;
+    for (i = 0; i < SNES_OBJ_CARDS; ++i) {
+        if (card_have[i] == card_want[i] &&
+            card_have_hi[i] == card_want_hi[i]) continue;
+        for (r = 0; r < 4; ++r) upload_card_row(i, r);
+    }
+    next_card = SNES_OBJ_CARDS;
+    next_card_row = 0;
+    next_palette = SNES_OBJ_CARDS;
+    dmaCopyOAram(oam_shadow, 0, sizeof(oam_shadow));
+    oam_dirty = 0;
+}
+
 /* What the next snesObjVblank will put on the bus, in bytes, so the board's
  * NMI drain can leave that much of the vblank alone (snesFbReserve).  The
  * two used to share the window by guesswork, and the guess lost: a card
@@ -468,6 +487,7 @@ void snesObjVblank(void)
 {
     u8 budget = 4;
     u8 palette_done = 0;
+    const u8 slot = next_card;
     if (oam_dirty) {
         dmaCopyOAram(oam_shadow, 0, sizeof(oam_shadow));
         oam_dirty = 0;
@@ -483,6 +503,25 @@ void snesObjVblank(void)
         } else {
             ++next_card_row;
         }
+    }
+    /* THE UPLOAD IS CHECKED AGAINST THE WINDOW IT WENT UP IN.  The board's
+     * drain, the library's own OAM copy and this share one vblank by a byte
+     * budget, and a budget is a plan: when the window closed under a card's
+     * rows -- the first frames after a battle, with the board baking from
+     * nothing, were where it did -- the PPU dropped the rest of the DMA and
+     * the slot showed whatever its tiles held before, which after a Mode 4
+     * battle is that scene's map.  Marked resident it stayed that way for
+     * as long as the card was in the hand.  So if vblank is over when the
+     * transfers are done, nothing here is trusted: the OAM goes again and
+     * the slot is put back on the queue from row zero. */
+    if (!(REG_HVBJOY & 0x80)) {
+        oam_dirty = 1;
+        if (slot < SNES_OBJ_CARDS && next_card == SNES_OBJ_CARDS) {
+            card_have[slot] = SNES_OBJ_NO_FACE;
+            card_have_hi[slot] = 0;
+            card_have_grey[slot] = 0;
+        }
+        return;
     }
 
     /* Apply at most one queued grey palette per VBlank.  The validity checks

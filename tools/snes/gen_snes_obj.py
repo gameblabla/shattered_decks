@@ -191,6 +191,16 @@ def art_rgb_size(tag, path, size):
         src.close()
     win = ImageOps.fit(art.convert("RGB"), (x1 - x0, y1 - y0),
                        method=Image.LANCZOS, centering=(0.5, 0.5))
+    if tag == "back":
+        # THE BACK SKIPS THE FLAT-ART PREPARATION.  card_back_art warms the
+        # navy cover into the board's browns by scaling its channels, and the
+        # per-channel autocontrast art_prep applies to drawn art neutralises
+        # exactly that: the hand's backs came out grey-blue beside the brown
+        # ones lying on the field.  The lift is the board sheet's
+        # (gen_snes_cards.py face_bytes), so the two backs read as one card.
+        img = ImageEnhance.Brightness(win).enhance(1.35)
+        img = ImageEnhance.Contrast(img).enhance(1.2)
+        return ImageEnhance.Color(img).enhance(1.35)
     img = ga.art_prep(win, flat=not tag.startswith("m:"))
     # THE SAME LIFT THE BOARD SHEET GETS, and for the same reason: these are
     # gallery-lit paintings seen on a sunlit board, so their own midtones

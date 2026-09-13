@@ -248,17 +248,17 @@ static u8 bob_phase = 0;
  * one (Msx2_PlaceFusion). */
 static u8 queue[MSX2_HAND];
 static u8 queue_n = 0;
-/* A card being put down FLIES THERE.  The hand sprite walks from its slot to
- * the projected centre of the board slot it is going into and the rules are
- * told only when it arrives, so the card is never in two places and never in
- * neither.  Sprites only: no board frame is rendered during the flight, so it
- * runs at sixty fields a second. */
-#define FLY_FRAMES  14
-static u8  fly_frame = 0;
-static u8  fly_def = 0;
-static u8 fly_landing = 0;
-static u8 fly_face = SNES_CARD_NONE_FACE;
-static s16 fly_x0 = 0, fly_y0 = 0, fly_x1 = 0, fly_y1 = 0;
+/* A card being put down IS LOWERED ONTO ITS SLOT.  The card the player has
+ * been holding over the slot (draw_held_card, the convex-quad path through
+ * the rest picture's cells) comes down from its hover and levels out, one
+ * patched frame a game frame, and the rules are told when it is flat; the
+ * next patch then bakes it as a face on the board.  It is the same card
+ * from the same texture the whole way, so there is no sprite to land and
+ * nothing to hand over -- the flight this replaces put a 32x32 sprite over
+ * the board and held it there until the bake was presented. */
+#define LOWER_FRAMES  6
+static u8  lower_frame = 0;
+static u8  lower_def = 0;
 /* The card check: one card, enlarged into the board bitmap, over black. */
 static u8  check_face = SNES_CARD_NONE_FACE;
 static u8 check_return_ui = UI_HAND;
@@ -308,6 +308,7 @@ static u8   focus_card(u8 *face);
 static u8   focus_stats(u8 card, u16 *atk, u16 *def);
 static void say(const char *msg);
 static void note_draws(u8 owner, const u8 *before);
+static void place_chosen(u8 defense);
 
 u8 snesDuelMode3Active(void) { return mode3_active; }
 
@@ -846,14 +847,23 @@ static void draw_held_card(void)
     const u8 slot = held_slot(&row);
     u8 card;
     SnesVert q[4];
-    s16 lift;
+    s16 lift, tilt;
     u16 x0, y0, x1, y1;
     if (slot == MSX2_SLOT_NONE || slot >= SNES_COLS || ui == UI_FUSE_TARGET)
         return;
     card = s->hand[chosen];
     if (card == MSX2_CARD_NONE) return;
-    lift = (s16)(HELD_LIFT + (snesSin(lift_phase) >> 4));
-    if (!snesCardQuad(&cam, &vp_rest, row, slot, rest_pose, lift, HELD_TILT, q))
+    if (lower_frame) {
+        /* On its way down: the hover and the lean both ease out to nothing
+         * over the same curve the camera moves on. */
+        const u16 t = ease_frac(lower_frame, LOWER_FRAMES);
+        lift = view_lerp(HELD_LIFT, 0, t);
+        tilt = view_lerp(HELD_TILT, 0, t);
+    } else {
+        lift = (s16)(HELD_LIFT + (snesSin(lift_phase) >> 4));
+        tilt = HELD_TILT;
+    }
+    if (!snesCardQuad(&cam, &vp_rest, row, slot, rest_pose, lift, tilt, q))
         return;
     if (!snesQuadBounds(&vp_rest, q, &x0, &y0, &x1, &y1)) return;
     snesTexQuad(&vp_rest, q, face_of(card, 1));
@@ -941,7 +951,7 @@ static void render_rest(u8 marker_row, u8 marker_col, u8 marker_colour)
     snesConvSetFloor((u16)(u16)(mirror ? snes_floor_planar_1 : snes_floor_planar_0),
                      mirror ? SNES_FLOOR_PLANAR_BANK_1 : SNES_FLOOR_PLANAR_BANK_0);
     rest_rowspan();
-    if (show_cards && !fly_frame) draw_held_card();
+    if (show_cards) draw_held_card();
     /* The held card stands above its slot, so its cells can reach outside
      * the flat floor's spans; a cell outside the row's span is one the
      * converter leaves blank. */
@@ -1296,6 +1306,9 @@ static void leave_mode3_art(void)
     snesFbDrain(1);
     render();
     build_objects();
+    /* The hand's tiles go up here, under force blank, and not a card a
+     * vblank over the bake that follows (snesObjFlushBlank). */
+    snesObjFlushBlank();
     while (!snesVideoPresentDone()) WaitForVBlank();
     snesVideoRestartHdma();
     setScreenOn();
@@ -1771,17 +1784,11 @@ static void build_objects(void)
                     x = view_lerp(x, (s16)(sx - 16), t);
                     y = view_lerp(y, (s16)(sy - 16), t);
                 }
-            } else if (!fly_frame && hand_owner == MSX2_OWNER_PLAYER &&
+            } else if (hand_owner == MSX2_OWNER_PLAYER &&
                 ((i == chosen && (ui == UI_PLACE || ui == UI_EQUIP_TARGET)) ||
                  (queued && ui == UI_FUSE_TARGET)))
                 continue;
-            if (fly_frame && i == chosen) {
-                /* Mid-flight: the same eased curve the camera move uses, so a
-                 * card leaves the hand quickly and settles onto its slot. */
-                const u16 t = ease_frac(fly_frame, FLY_FRAMES);
-                x = view_lerp(fly_x0, fly_x1, t);
-                y = view_lerp(fly_y0, fly_y1, t);
-            } else if (hand_y >= 224) {
+            if (hand_y >= 224) {
                 continue;
             } else if (selected) {
                 /* A SMALL UP AND DOWN, once a field.  It is the same beat the
@@ -1810,12 +1817,6 @@ static void build_objects(void)
             if (snesObjCount() == hand_oam[i]) hand_oam[i] = 0xFF;
             snesObjCardGrey(0);
         }
-    }
-
-    if (fly_landing) {
-        snesObjCardHiRes(1);
-        snesObjCardGrey(0);
-        snesObjCard(fly_x1, fly_y1, chosen, fly_face);
     }
     snesObjEnd();
 }
@@ -1901,52 +1902,21 @@ static void end_player_turn(void)
     touch_board(8);
 }
 
-/* THE CARD FLIES TO THE SLOT BEFORE THE RULES HEAR ABOUT IT.
- *
- * The hand sprite walks from its position in the hand to the projected centre
- * of the board slot it is going into, and place_chosen is called on arrival --
- * so the card is on screen the whole way and the board is redrawn once, with
- * the card already lying on it.  It is the MSX2 build's landing, minus its
- * bend: the flight is sprites and costs no render at all, which is what lets
- * it run at sixty fields a second on this machine.  */
-static void begin_place_flight(u8 defense)
+/* THE CARD IS LOWERED BEFORE THE RULES HEAR ABOUT IT.  A hovering card
+ * (PLACE, EQUIP_TARGET) starts its descent here and place_chosen is called
+ * when it is flat on the slot; a fusion chain's cards do not hover, so the
+ * fusion is placed at once and the bake shows its result. */
+static void begin_place_lower(u8 defense)
 {
-    u8 row = 0;
-    const u8 slot = held_slot(&row);
-    s16 wx, wz, sx, sy;
-
-    fly_def = defense;
-    fly_face = face_of(g_duel.side[MSX2_OWNER_PLAYER].hand[chosen], 1);
-    fly_x0 = (s16)(HAND_X0 + chosen * HAND_PITCH);
-    fly_y0 = HAND_Y;
-    fly_x1 = fly_x0;
-    fly_y1 = fly_y0;
-    if (slot != MSX2_SLOT_NONE && slot < SNES_COLS) {
-        /* World coordinates: the camera's yaw does the mirroring inside
-         * snesProject (the COM presentation's flight is the same). */
-        snesSlotCentre(row, slot, 0, &wx, &wz);
-        /* The rest viewport projects in screen pixels; less half a card to
-         * centre the 32x32 sprite on the slot. */
-        set_rest_camera((u8)(board_yaw == 128));
-        if (snesProject(&cam, &vp_rest, wx, wz, 0, &sx, &sy)) {
-            fly_x1 = (s16)(sx - 16);
-            fly_y1 = (s16)(sy - 16);
-        }
-        /* The hand sprite has been hidden since the slot choice began, and
-         * the card the player sees is the one hovering over the slot; the
-         * flight therefore starts from where that hovering card is -- a
-         * fusion chain's cards, which do not hover, still come up from the
-         * hand.  A card that took off from the hand again would pop back
-         * into a row it had already left. */
-        if (ui != UI_FUSE_TARGET &&
-            snesProject(&cam, &vp_rest, wx, wz, (s16)(HELD_LIFT + HELD_TILT / 2),
-                        &sx, &sy)) {
-            fly_x0 = (s16)(sx - 16);
-            fly_y0 = (s16)(sy - 16);
-        }
+    if (ui == UI_FUSE_TARGET) {
+        place_chosen(defense);
+        return;
     }
-    fly_frame = 1;
-    render();
+    /* The first lowered pose is this frame's render, at the end of
+     * snesDuelFrame; the frame loop steps the rest. */
+    lower_def = defense;
+    lower_frame = 1;
+    touch_board(2);
 }
 
 static void place_chosen(u8 defense)
@@ -2135,7 +2105,7 @@ static void step_player(void)
                                                  queue_n, cursor);
             if (preview == MSX2_FUSE_OK) {
                 chosen = queue[0];
-                begin_place_flight(0);
+                begin_place_lower(0);
             } else {
                 say(preview == MSX2_FUSE_SPENT ? "ONE MONSTER A TURN"
                                               : "THEY DO NOT FUSE");
@@ -2150,8 +2120,8 @@ static void step_player(void)
 
     case UI_PLACE:
         move_cursor(MSX2_FIELD, 1);
-        if (down & KEY_A) begin_place_flight(0);
-        else if (down & KEY_X) begin_place_flight(1);
+        if (down & KEY_A) begin_place_lower(0);
+        else if (down & KEY_X) begin_place_lower(1);
         else if (down & KEY_B) {
             ui = UI_HAND;
             cursor = chosen;
@@ -2161,7 +2131,7 @@ static void step_player(void)
 
     case UI_EQUIP_TARGET:
         move_cursor(MSX2_FIELD, 1);
-        if (down & KEY_A) begin_place_flight(0);
+        if (down & KEY_A) begin_place_lower(0);
         else if (down & KEY_B) {
             ui = UI_HAND;
             cursor = chosen;
@@ -2282,8 +2252,7 @@ void snesDuelEnter(void)
     top_col = 0;
     bob_phase = 0;
     queue_n = 0;
-    fly_frame = 0;
-    fly_landing = 0;
+    lower_frame = 0;
     over_step = 0;
     check_face = SNES_CARD_NONE_FACE;
     check_has_stats = 0;
@@ -2342,7 +2311,7 @@ u8 snesDuelFrame(void)
         t_render = (u16)(snesClock() - before);
         goto stamp;
     }
-    if (view_motion == VIEW_BOARD_REST && ui == UI_HAND && !fly_landing && (down & KEY_B)) {
+    if (view_motion == VIEW_BOARD_REST && ui == UI_HAND && (down & KEY_B)) {
         press_sfx(down);
         begin_check();
         if (ui == UI_CHECK) {
@@ -2363,7 +2332,7 @@ u8 snesDuelFrame(void)
      * the TABLE'S OWN CURSOR -- twenty slots the player can walk over and read
      * -- so B is what walks back down; DOWN there would otherwise cost the
      * cursor a whole axis of the board. */
-    if (view_motion == VIEW_BOARD_REST && (down & KEY_UP) && !fly_frame && !fly_landing &&
+    if (view_motion == VIEW_BOARD_REST && (down & KEY_UP) && !lower_frame &&
         !turn_frame && ui != UI_COM && ui != UI_RESULT) {
         snesAudioSfx(SNES_SFX_SELECT);
         begin_view_transition(1);
@@ -2401,20 +2370,19 @@ u8 snesDuelFrame(void)
         goto stamp;
     }
 
-    if (fly_landing) {
-        if (snesVideoPresentDone()) fly_landing = 0;
-        build_objects();
-        goto stamp;
-    }
-
-    /* A card on its way to the board.  Sprites only: no rules step, no render
-     * and no rendering decision until it lands. */
-    if (fly_frame) {
-        if (++fly_frame > FLY_FRAMES) {
-            fly_frame = 0;
-            place_chosen(fly_def);
+    /* A card on its way down to the board: one lowered pose a game frame
+     * through the held-card patch, no input and no rules step until it is
+     * flat.  The flat pose itself is not drawn as a held card -- that frame
+     * is the placement, and the bake that follows shows the card lying on
+     * the slot as a face of the board. */
+    if (lower_frame) {
+        if (++lower_frame >= LOWER_FRAMES) {
+            lower_frame = 0;
+            place_chosen(lower_def);
             render();
-            fly_landing = 1;
+        } else {
+            touch_board(2);
+            render();
         }
         build_objects();
         goto stamp;

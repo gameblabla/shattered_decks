@@ -276,7 +276,10 @@ snesAudioPlaySfx:
     cmp #SNES_AUDIO_SFX_COUNT
     bcs snes_audio_sfx_out
     sta.l $2141
-    lda #$7F
+    ; THREE QUARTERS, NOT FULL.  The bank is peak-normalised (snes_sfx_brr2),
+    ; and at $7F a confirm blip sat over the music; $60 is about -2.5 dB,
+    ; enough to take the edge off without the effects going quiet.
+    lda #$60
     sta.l $2142
     sta.l $2143
     jsr snes_audio_next_token
