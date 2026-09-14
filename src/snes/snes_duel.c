@@ -249,6 +249,8 @@ static u8 texture_faces[20];
  * the card check, but it does not play anything. */
 static u8 top_row = SNES_ROW_YOU_MONSTER;
 static u8 top_col = 0;
+/* The BG1 scroll offset on the register now; see top_scroll_step. */
+static s16 top_scroll_cur = -88 + SNES_ROW_YOU_MONSTER * 32;
 /* THE OVERHEAD VIEW IS ALSO WHERE THE PLAYER ATTACKS FROM, the way the PC
  * and PC-FX builds do it (IB_PLAYER_TOP in src/main.c): A on one of the
  * player's own standing monsters picks it as the attacker, the cursor jumps
@@ -423,6 +425,7 @@ static void place_chosen(u8 defense);
 static void begin_effect_art(u8 return_ui, u8 card, u8 owner);
 static void begin_fusion_art(u8 return_ui, u8 result, u8 success);
 static void snapshot_effect(u8 card, u8 owner);
+static void top_scroll_snap(void);
 static void snapshot_effect_saved(u8 card, u8 owner, const u8 *cards,
                                   const u8 *faceup);
 
@@ -439,8 +442,7 @@ void snesDuelVblank(void)
     if (!dirty) return;
     fade_dirty = 0;
     if (dirty & 2)
-        snesVideoBoardViewport(top_view,
-            top_view ? (s16)(-88 + (s16)top_row * 32) : 0);
+        snesVideoBoardViewport(top_view, top_view ? top_scroll_cur : 0);
     if (dirty & 4) {
         REG_TM = fusion_tm;
         REG_CGADD = 0;
@@ -596,7 +598,7 @@ static void finish_view_transition(u8 to_top)
         /* The last lift frame IS the overhead pose: nothing to redraw, and
          * the cursor up here is a sprite, so the view runs at sixty. */
         top_view = 1;
-        fade_dirty |= 2;
+        top_scroll_snap();
         view_motion = VIEW_TOP_REST;
     } else {
         top_view = 0;
@@ -651,7 +653,7 @@ static void step_view_transition(void)
          * is rendered behind it. */
         view_sharp = 1;
         top_view = 1;
-        fade_dirty |= 2;
+        top_scroll_snap();
         job_begin(0);
         build_objects();
         job_slice();
@@ -1841,7 +1843,7 @@ static void end_check(void)
 {
     ui = check_return_ui;
     top_view = check_return_top;
-    fade_dirty |= 2;
+    top_scroll_snap();
     view_motion = top_view ? VIEW_TOP_REST : VIEW_BOARD_REST;
     check_face = SNES_CARD_NONE_FACE;
     check_has_stats = 0;
@@ -2074,7 +2076,7 @@ static void end_battle_art(void)
 {
     ui = battle_return_ui;
     top_view = battle_return_top;
-    fade_dirty |= 2;
+    top_scroll_snap();
     view_motion = top_view ? VIEW_TOP_REST : VIEW_BOARD_REST;
     Msx2_ClearActionEvent();
     touch_board(24);
@@ -2300,6 +2302,43 @@ static s16 top_scroll_y(void)
     return (s16)(-88 + (s16)top_row * 32);
 }
 
+/* THE OVERHEAD SCROLL SLIDES.  The picture is one tilemap and the cursor's
+ * row only moves BG1's vertical scroll register (snesVideoBoardViewport),
+ * so following the cursor costs nothing -- but snapping the whole board
+ * thirty-two lines a press read as a cut.  `top_scroll_cur` is the offset
+ * on the register now; every game frame up here it walks a quarter of the
+ * way to the row's offset (never under two lines, and the last two snap),
+ * about ten fields a row, and the vblank writes THAT rather than the row's
+ * value.  The bracket sprite subtracts the same number, so it stays on its
+ * slot for the whole of the slide. */
+static void top_scroll_snap(void)
+{
+    top_scroll_cur = top_scroll_y();
+    fade_dirty |= 2;
+}
+
+static void top_scroll_step(void)
+{
+    const s16 target = top_scroll_y();
+    u16 dist, step;
+    if (top_scroll_cur == target) return;
+    /* Magnitudes only: 816-tcc's signed shifts are not to be trusted. */
+    if (target > top_scroll_cur) {
+        dist = (u16)(target - top_scroll_cur);
+        step = dist >> 2;
+        if (step < 2) step = 2;
+        if (step >= dist || dist <= 2) top_scroll_cur = target;
+        else top_scroll_cur = (s16)(top_scroll_cur + (s16)step);
+    } else {
+        dist = (u16)(top_scroll_cur - target);
+        step = dist >> 2;
+        if (step < 2) step = 2;
+        if (step >= dist || dist <= 2) top_scroll_cur = target;
+        else top_scroll_cur = (s16)(top_scroll_cur - (s16)step);
+    }
+    fade_dirty |= 2;
+}
+
 /* Where the hand sits this frame: at rest, or on its way off the bottom of
  * the screen during the lift and back during the descent. */
 static s16 hand_row_y(void)
@@ -2417,8 +2456,8 @@ static void build_objects(void)
         if (snesProject(&cam, &vp_rest, (s16)(cx - 128), (s16)(cz + 128), 0, &x0, &y0) &&
             snesProject(&cam, &vp_rest, (s16)(cx + 128), (s16)(cz - 128), 0, &x1, &y1) &&
             x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128) {
-            y0 = (s16)(y0 - top_scroll_y());
-            y1 = (s16)(y1 - top_scroll_y());
+            y0 = (s16)(y0 - top_scroll_cur);
+            y1 = (s16)(y1 - top_scroll_cur);
             if (y1 <= SNES_PLATE_Y)
                 snesObjBoxRed(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
         }
@@ -2429,8 +2468,8 @@ static void build_objects(void)
             if (snesProject(&cam, &vp_rest, (s16)(cx - 128), (s16)(cz + 128), 0, &x0, &y0) &&
                 snesProject(&cam, &vp_rest, (s16)(cx + 128), (s16)(cz - 128), 0, &x1, &y1) &&
                 x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128) {
-                y0 = (s16)(y0 - top_scroll_y());
-                y1 = (s16)(y1 - top_scroll_y());
+                y0 = (s16)(y0 - top_scroll_cur);
+                y1 = (s16)(y1 - top_scroll_cur);
                 if (y1 <= SNES_PLATE_Y)
                     snesObjBox(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
             }
@@ -3155,6 +3194,7 @@ void snesDuelEnter(void)
     board_yaw = turn_frame = turn_from = turn_target = 0;
     top_row = SNES_ROW_YOU_MONSTER;
     top_col = 0;
+    top_scroll_cur = top_scroll_y();
     top_attacker = MSX2_SLOT_NONE;
     battle_return_top = 0;
     intro_fade = INTRO_FADE_FIELDS;
@@ -3346,6 +3386,7 @@ u8 snesDuelFrame(void)
             }
         }
         if (moved) snesAudioSfx(SNES_SFX_SELECT);
+        top_scroll_step();
         if (view_motion == VIEW_TO_TOP) {
             /* The sharp picture is still on its way: the cursor moves over
              * the doubled one, A and B wait. */
