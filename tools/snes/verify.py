@@ -2980,19 +2980,25 @@ def check_placement_lowering():
     if len(set(images)) < 3:
         raise Failure("placement capture has no visible movement")
     w = pics[0][0]
-    below = 0
+    below = busy = 0
     for a, b in zip(images, images[1:]):
         if a == b:
             continue
         # The hand row and the text under it: 144..224.  A HUD change there
-        # (the name line, the hand card leaving) is at most a few hundred
-        # pixels; a 32x32 card sprite in flight is a thousand a frame.
-        below += sum(1 for y in range(144, 224) for x in range(0, w, 2)
-                     if a[(y * w + x) * 3:(y * w + x) * 3 + 3]
-                     != b[(y * w + x) * 3:(y * w + x) * 3 + 3])
-    if below > 600:
-        raise Failure("%d pixels change under the board during the placement "
-                      "-- a sprite is flying, not the 3D card lowering" % below)
+        # (the name line, the hand card leaving, the selected card's bob once
+        # the cursor has walked on to the next card) is at most a few hundred
+        # pixels a frame; a 32x32 card sprite in flight is a thousand a frame,
+        # frame after frame.
+        n = sum(1 for y in range(144, 224) for x in range(0, w, 2)
+                if a[(y * w + x) * 3:(y * w + x) * 3 + 3]
+                != b[(y * w + x) * 3:(y * w + x) * 3 + 3])
+        below += n
+        if n > 600:
+            busy += 1
+    if busy > 2:
+        raise Failure("%d frames change over 600 pixels under the board during "
+                      "the placement -- a sprite is flying, not the 3D card "
+                      "lowering" % busy)
     return ("%d distinct board pictures across %d fields, %d pixels changed "
             "under the board" % (len(set(images)), len(frames), below))
 

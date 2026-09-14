@@ -2751,6 +2751,34 @@ static void move_cursor(u8 count, u8 board)
     if (board) touch_board(4);
 }
 
+/* THE HAND CURSOR ONLY RESTS ON CARDS.  Left and right step over empty
+ * slots (wrapping), and a cursor left on a slot that has just been emptied
+ * is walked to the next card; with an empty hand it stays where it is. */
+static u8 hand_next(u8 from, u8 step)
+{
+    const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+    u8 i, slot = from;
+    for (i = 0; i < MSX2_HAND; ++i) {
+        slot = (u8)((slot + step) % MSX2_HAND);
+        if (you->hand[slot] != MSX2_CARD_NONE) return slot;
+    }
+    return from;
+}
+
+static void move_hand_cursor(void)
+{
+    const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+    const u16 down = padsDown(0);
+    u8 moved = 0;
+
+    if (you->hand[cursor] == MSX2_CARD_NONE)
+        cursor = hand_next(cursor, 1);
+    if (down & KEY_LEFT)  { cursor = hand_next(cursor, MSX2_HAND - 1); moved = 1; }
+    if (down & KEY_RIGHT) { cursor = hand_next(cursor, 1); moved = 1; }
+    if (!moved) return;
+    snesAudioSfx(SNES_SFX_SELECT);
+}
+
 static void begin_battle_phase(void)
 {
     queue_n = 0;
@@ -2965,7 +2993,7 @@ static void step_player(void)
     press_sfx(down);
     switch (ui) {
     case UI_HAND:
-        move_cursor(MSX2_HAND, 0);
+        move_hand_cursor();
         /* DOWN IS THE FUSION CHAIN.  The hand row is the bottom of the board
          * view, so down means nothing else there, and it is the gesture the
          * MSX2 build uses for the same thing over the same rules model. */
