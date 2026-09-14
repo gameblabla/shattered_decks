@@ -43,6 +43,12 @@
 #define SCENE_PANEL_W         32
 #define SCENE_PANEL_TEXT_X    1
 #define SCENE_PANEL_TEXT_W    30
+/* Four prose rows right under the speaker, one blank tile row between
+ * them: rows 20, 22, 24 and 26 of a panel whose border sits on row 27.  The
+ * panel cannot start higher -- the ground's last row is 17. */
+#define SCENE_PANEL_LINES     4
+#define SCENE_PANEL_LINE_STEP 2
+#define SCENE_PANEL_TEXT_Y    2
 
 /* The story's VRAM: two speakers, a blank, the font and the ground, the maps.
  * BG1 characters at $0000, BG2's at $6000 -- the same BG12NBA the ending
@@ -98,7 +104,7 @@ static u8 story_reveal;
  * every frame: at ~100 cycles a far byte on this compiler, that and a full
  * window redraw made a dialogue frame five vblanks long. */
 static u8 page_length;
-static char story_page_text[96];
+static char story_page_text[SCENE_PANEL_LINES * SCENE_PANEL_TEXT_W + 1];
 static u8 story_progress;
 static u8 ending_line;
 static u8 ending_reveal;
@@ -147,7 +153,7 @@ static u8 text_length(const char *s)
     return n;
 }
 
-/* The canonical prose is longer than the three-line SNES window.  Select one
+/* The canonical prose is longer than the four-line SNES window.  Select one
  * word-wrapped page at a time; no words are discarded and the speaker remains
  * unchanged until the complete sentence has been shown. */
 static u8 story_page_extract(const char *line, u8 page)
@@ -156,7 +162,7 @@ static u8 story_page_extract(const char *line, u8 page)
     u8 current = 0;
     while (line[pos]) {
         u8 row, used = 0;
-        for (row = 0; row < 3 && line[pos]; ++row) {
+        for (row = 0; row < SCENE_PANEL_LINES && line[pos]; ++row) {
             u8 n = 0, cut, i;
             while (n < SCENE_PANEL_TEXT_W && line[pos + n]) ++n;
             cut = n;
@@ -172,7 +178,7 @@ static u8 story_page_extract(const char *line, u8 page)
             pos = (u16)(pos + cut);
             while (line[pos] == ' ') ++pos;
             used = (u8)(used + cut);
-            if (line[pos] && row < 2) {
+            if (line[pos] && row < SCENE_PANEL_LINES - 1) {
                 while (used < (u8)((row + 1) * SCENE_PANEL_TEXT_W)) {
                     if (current == page) story_page_text[used] = ' ';
                     ++used;
@@ -286,12 +292,13 @@ static void draw_dialogue(const char *speaker, const char *line,
     u8 offset = 0;
     u8 row;
     const u8 length = text_length(line);
-    clear_text_rows(18, 14);
+    clear_text_rows(SCENE_PANEL_Y, (u8)(32 - SCENE_PANEL_Y));
     draw_dialog_panel(tile_base);
     draw_text_line(SCENE_PANEL_Y + 1, SCENE_PANEL_TEXT_X,
                    SCENE_PANEL_TEXT_W, speaker, 255, tile_base);
-    for (row = 0; row < 3 && offset < length; ++row) {
-        draw_text_line((u8)(SCENE_PANEL_Y + 3 + row), SCENE_PANEL_TEXT_X,
+    for (row = 0; row < SCENE_PANEL_LINES && offset < length; ++row) {
+        draw_text_line((u8)(SCENE_PANEL_Y + SCENE_PANEL_TEXT_Y +
+                            row * SCENE_PANEL_LINE_STEP), SCENE_PANEL_TEXT_X,
                        SCENE_PANEL_TEXT_W, line + offset,
                        reveal > offset ? (u8)(reveal - offset) : 0,
                        tile_base);
@@ -308,7 +315,8 @@ static void dialogue_reveal(u8 reveal, u8 tile_base)
         const u8 i = (u8)(reveal - 1);
         const u8 c = (u8)story_page_text[i];
         if (c >= FONT_FIRST && c < FONT_FIRST + FONT_COUNT && c != ' ')
-            scene_text_map[(u16)(SCENE_PANEL_Y + 3 + i / SCENE_PANEL_TEXT_W) * 32
+            scene_text_map[(u16)(SCENE_PANEL_Y + SCENE_PANEL_TEXT_Y +
+                                 (i / SCENE_PANEL_TEXT_W) * SCENE_PANEL_LINE_STEP) * 32
                            + SCENE_PANEL_TEXT_X + i % SCENE_PANEL_TEXT_W] =
                 (u16)(SCENE_TEXT_PRIORITY + tile_base + c - FONT_FIRST);
     }
