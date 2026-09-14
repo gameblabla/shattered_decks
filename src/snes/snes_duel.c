@@ -142,6 +142,8 @@
 /* A sword and a shield, not the words ATK and DEF: the label is one cell wide
  * instead of three, and the gap after it is the second. */
 #define STAT_NUM_DX  16
+/* The top view's third column: the monster's state (USED, DEFENCE). */
+#define STAT_POS_X   136
 
 /* How far the hand slides off the bottom of the screen over the lift. */
 #define VIEW_HAND_OFFSET       80
@@ -1445,9 +1447,9 @@ static const char *prompt_text(void)
     case UI_CHECK:        return "B:BACK";
     case UI_HAND:         return "A:PLAY X:FIGHT DN:FUSE";
     case UI_FUSE_TARGET:  return "A:FUSE  B:BACK";
-    case UI_PLACE:        return "A:ATK  X:DEF  B:X";
+    case UI_PLACE:        return "A:ATK  X/L/R:DEF  B:X";
     case UI_EQUIP_TARGET: return "A:EQUIP  B:BACK";
-    case UI_ATTACKER:     return "A:PICK  ST:END";
+    case UI_ATTACKER:     return "A:PICK L/R:DEF ST:END";
     case UI_DEFENDER:     return "A:HIT  X:DIRECT";
     case UI_COM:          return "OPPONENT'S TURN";
     default:              return "A:CONTINUE";      /* not reached */
@@ -1679,6 +1681,38 @@ static void slide_hand(void)
     }
 }
 
+/* A SHIELD OVER EVERY MONSTER IN DEFENCE POSITION.  The board's card faces
+ * are baked upright whichever way the card is turned (the row rasteriser
+ * knows one orientation), so the position is shown the way the stat row
+ * shows a card's DEF: the same shield icon on the side's life-panel plate,
+ * over the slot's centre projected through the camera the board was
+ * rendered with.  Drawn
+ * in either view, on both sides of the table, never during the swing to the
+ * other seat, where the picture on the screen is not this camera's. */
+static void build_position_marks(void)
+{
+    u8 owner;
+    if (turn_frame) return;
+    if (!top_view && view_motion != VIEW_BOARD_REST) return;
+    for (owner = 0; owner <= MSX2_OWNER_COM; ++owner) {
+        const Msx2Side *sd = &g_duel.side[owner];
+        const u8 row = (owner == MSX2_OWNER_COM) ? SNES_ROW_COM_MONSTER
+                                                 : SNES_ROW_YOU_MONSTER;
+        u8 col;
+        for (col = 0; col < SNES_COLS; ++col) {
+            s16 cx, cz, x, y;
+            /* Two tests, not one `||` before a continue (816-tcc jumps
+             * into the body -- see the hand loop below). */
+            if (!Msx2_IsMonster(sd->field[col])) continue;
+            if (!sd->defense[col]) continue;
+            snesSlotCentre(row, col, 0, &cx, &cz);
+            if (snesProject(&cam, &vp_rest, cx, cz, 0, &x, &y) &&
+                x >= 4 && x < 252 && y >= 4 && y < SNES_FRAME_H - 4)
+                snesObjPlateIcon((s16)(x - 4), (s16)(y - 4), owner, SNES_SPR_ICON_DEF);
+        }
+    }
+}
+
 static void build_objects(void)
 {
     const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
@@ -1770,13 +1804,22 @@ static void build_objects(void)
             snesObjNum(STAT_ATK_X + STAT_NUM_DX, STAT_Y, atk, 4);
             snesObjIcon(STAT_DEF_X, STAT_Y, SNES_SPR_ICON_DEF);
             snesObjNum(STAT_DEF_X + STAT_NUM_DX, STAT_Y, def, 4);
+            /* After the numbers, the monster's state on the table: the
+             * words the PC's bottom panel prints beside the same card. */
+            if (top_row == SNES_ROW_YOU_MONSTER || top_row == SNES_ROW_COM_MONSTER) {
+                const Msx2Side *sd = &g_duel.side[(top_row == SNES_ROW_COM_MONSTER)
+                                                  ? MSX2_OWNER_COM : MSX2_OWNER_PLAYER];
+                if (sd->attacked[top_col]) snesObjText(STAT_POS_X, STAT_Y, "USED");
+                else if (sd->defense[top_col]) snesObjText(STAT_POS_X, STAT_Y, "DEFENCE");
+            }
         } else {
             snesObjText(STAT_ATK_X, STAT_Y, top_attacker != MSX2_SLOT_NONE
-                                            ? "PICK A TARGET" : "A:CHECK B:BACK");
+                                            ? "PICK A TARGET" : "B:CHECK L/R:DEF DN:BACK");
         }
         snesObjLifePanel(LP_YOU_X, LP_Y, 0, (u16)you->lp, MSX2_START_LP);
         snesObjLifePanel(LP_COM_X, LP_Y, 1,
                          (u16)g_duel.side[MSX2_OWNER_COM].lp, MSX2_START_LP);
+        build_position_marks();
 
     } else {
         /* The name of the card the cursor is on, and under it what that card
@@ -1799,6 +1842,7 @@ static void build_objects(void)
         snesObjLifePanel(LP_YOU_X, LP_Y, 0, (u16)you->lp, MSX2_START_LP);
         snesObjLifePanel(LP_COM_X, LP_Y, 1,
                          (u16)g_duel.side[MSX2_OWNER_COM].lp, MSX2_START_LP);
+        if (ui != UI_RESULT) build_position_marks();
 
         /* THE HAND IS NOT DRAWN IN THE TOP VIEW, because the top view is the
          * board seen from above and the hand is not on the board.  Here it is
@@ -2257,7 +2301,7 @@ static void step_player(void)
     case UI_PLACE:
         move_cursor(MSX2_FIELD, 1);
         if (down & KEY_A) begin_place_lower(0);
-        else if (down & KEY_X) begin_place_lower(1);
+        else if (down & (KEY_X | KEY_L | KEY_R)) begin_place_lower(1);
         else if (down & KEY_B) {
             ui = UI_HAND;
             cursor = chosen;
@@ -2294,11 +2338,15 @@ static void step_player(void)
                 touch_board(8);
             }
         }
-        if (down & KEY_X) {
+        if (down & (KEY_X | KEY_L | KEY_R)) {
             /* Position switch: the one main-phase action still legal in
              * battle, and the rules model exposes it as its own call. */
-            if (Msx2_ChangePosition(MSX2_OWNER_PLAYER, cursor)) touch_board(12);
-            else say("CANNOT TURN IT");
+            if (Msx2_ChangePosition(MSX2_OWNER_PLAYER, cursor)) {
+                say(you->defense[cursor] ? "DEFENCE POSITION" : "ATTACK POSITION");
+                touch_board(12);
+            } else {
+                say("CANNOT TURN IT");
+            }
         }
         if (down & KEY_START) end_player_turn();
         break;
@@ -2426,20 +2474,27 @@ u8 snesDuelFrame(void)
     /* THE HARNESS SWITCHES ARE A DEBUG BUILD'S (make DEBUG=1): the fixture
      * board, the card ablation, the self-playing demo and the pinned moving
      * camera.  A retail cartridge answers none of them. */
-    if ((down & (KEY_R | KEY_SELECT)) == (KEY_R | KEY_SELECT)) {
-        pattern_mode ^= 1;
-        touch_board(2);
-    } else {
-        if (down & KEY_R) fixture_board();
-        if (down & KEY_SELECT) {
-            show_cards ^= 1;
-            texture_w = 0;
+    /* L AND R ARE THE POSITION SWITCH EVERYWHERE THE CURSOR IS ON A
+     * MONSTER (the top view, the battle phase, a card being placed), so
+     * the two harness switches only answer from the hand row at rest --
+     * where verify.py has always pressed them and where the game gives
+     * the shoulder buttons nothing to do. */
+    if (!top_view && (ui == UI_HAND || ui == UI_COM)) {
+        if ((down & (KEY_R | KEY_SELECT)) == (KEY_R | KEY_SELECT)) {
+            pattern_mode ^= 1;
             touch_board(2);
+        } else {
+            if (down & KEY_R) fixture_board();
+            if (down & KEY_SELECT) {
+                show_cards ^= 1;
+                texture_w = 0;
+                touch_board(2);
+            }
         }
-    }
-    if (down & KEY_L) {
-        autoplay ^= 1;
-        say(autoplay ? "DEMO ON" : "DEMO OFF");
+        if (down & KEY_L) {
+            autoplay ^= 1;
+            say(autoplay ? "DEMO ON" : "DEMO OFF");
+        }
     }
     if (down & KEY_Y) {
         force_moving ^= 1;
@@ -2513,8 +2568,22 @@ u8 snesDuelFrame(void)
         u8 moved = 0;
         if (down & KEY_LEFT)  { top_col = (u8)((top_col + SNES_COLS - 1) % SNES_COLS); moved = 1; }
         if (down & KEY_RIGHT) { top_col = (u8)((top_col + 1) % SNES_COLS); moved = 1; }
-        if (down & KEY_UP)    { top_row = (u8)((top_row + SNES_ROWS - 1) % SNES_ROWS); moved = 1; }
-        if (down & KEY_DOWN)  { top_row = (u8)((top_row + 1) % SNES_ROWS); moved = 1; }
+        /* THE ROWS DO NOT WRAP: the table is read top to bottom the way the
+         * PC-FX and FM TOWNS builds read it, and DOWN past the player's own
+         * support row is the way back down to the hand (a target being
+         * picked is put down first, the way B does it). */
+        if ((down & KEY_UP) && top_row > 0) { --top_row; moved = 1; }
+        if (down & KEY_DOWN) {
+            if (top_row + 1 < SNES_ROWS) { ++top_row; moved = 1; }
+            else if (view_motion == VIEW_TOP_REST) {
+                snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+                top_attacker = MSX2_SLOT_NONE;
+                if (board_dirty) render();
+                begin_view_transition(0);
+                build_objects();
+                goto stamp;
+            }
+        }
         if (moved) snesAudioSfx(SNES_SFX_SELECT);
         if (view_motion == VIEW_TO_TOP) {
             /* The sharp picture is still on its way: the cursor moves over
@@ -2567,12 +2636,21 @@ u8 snesDuelFrame(void)
                     top_col = Msx2_FirstLiveSlot(MSX2_OWNER_COM);
                     if (top_col == MSX2_SLOT_NONE) top_col = 0;
                 }
+            }
+        }
+        /* THE SHOULDER BUTTONS TURN THE PLAYER'S OWN MONSTER: attack
+         * position to defence and back, the PC's Tab.  The rules refuse a
+         * monster that has already attacked this turn. */
+        if ((down & (KEY_L | KEY_R)) && ui == UI_HAND && top_attacker == MSX2_SLOT_NONE) {
+            const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+            if (top_row != SNES_ROW_YOU_MONSTER ||
+                !Msx2_IsMonster(you->field[top_col])) {
+                say("NO MONSTER THERE");
+            } else if (Msx2_ChangePosition(MSX2_OWNER_PLAYER, top_col)) {
+                snesAudioSfx(SNES_SFX_CONFIRM);
+                say(you->defense[top_col] ? "DEFENCE POSITION" : "ATTACK POSITION");
             } else {
-                begin_check();
-                if (ui == UI_CHECK) {
-                    build_objects();
-                    goto stamp;
-                }
+                say("CANNOT TURN IT");
             }
         }
         if ((down & KEY_START) && (ui == UI_HAND || ui == UI_ATTACKER)) {
@@ -2592,9 +2670,14 @@ u8 snesDuelFrame(void)
                 top_col = top_attacker;
                 top_attacker = MSX2_SLOT_NONE;
             } else {
-                /* Card check and rule changes may have replaced the saved bitmap. */
-                if (board_dirty) render();
-                begin_view_transition(0);
+                /* B CHECKS THE CARD UNDER THE CURSOR, either side of the
+                 * table, the same button that checks a card in the hand;
+                 * the way back down is DOWN off the bottom row. */
+                begin_check();
+                if (ui == UI_CHECK) {
+                    build_objects();
+                    goto stamp;
+                }
             }
         }
         if (board_dirty) render();

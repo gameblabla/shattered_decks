@@ -50,6 +50,9 @@ void snesObjNum(s16 x, s16 y, u16 value, u8 digits);
 /* SNES_SPR_ICON_ATK or SNES_SPR_ICON_DEF: the sword and the shield the stat
  * row prints where it used to spell ATK and DEF. */
 void snesObjIcon(s16 x, s16 y, u8 kind);
+/* The same icon on one side's 8x8 life-panel plate (0 red, 1 blue): the
+ * board's defence-position marker, legible over a card's painting. */
+void snesObjPlateIcon(s16 x, s16 y, u8 side, u8 kind);
 /* The four corner brackets of a w x h box -- the cursor, in either view.
  * snesObjBox is the gold one the hand uses; snesObjBoxRed is the board cursor
  * the top view puts round the slot being inspected, which is the colour the

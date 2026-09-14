@@ -179,6 +179,16 @@ void snesObjIcon(s16 x, s16 y, u8 kind)
     snesObjSprite(x, y, (u16)(ICON_TILE + kind), SNES_SPR_HUD_PAL, 0);
 }
 
+/* THE ICON IS EMITTED BEFORE THE PLATE IT SITS ON (a lower OAM index is in
+ * front): the shield over a board card would otherwise be light lines over
+ * a painting, and on the board the player's red plate and the opponent's
+ * blue one are the same two the life panels sit on. */
+void snesObjPlateIcon(s16 x, s16 y, u8 side, u8 kind)
+{
+    snesObjSprite(x, y, (u16)(ICON_TILE + kind), SNES_SPR_HUD_PAL, 0);
+    snesObjSprite(x, y, (u16)(PLATE_TILE + side), SNES_SPR_HUD_PAL, 0);
+}
+
 static void obj_box(s16 x, s16 y, u8 w, u8 h, u16 base)
 {
     snesObjSprite(x, y, base + 0, SNES_SPR_HUD_PAL, 0);

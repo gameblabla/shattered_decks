@@ -2219,17 +2219,21 @@ def check_camera_round_trip():
     before, _ = run_fixture()
     _, _, reference = read_ppm(before)
     after, wram = run("camera_roundtrip", random_battle_script() + [press("R", DUEL_READY),
-        press("UP", DUEL_READY + 400), press("B", DUEL_READY + 1700)], 5000)
+        press("UP", DUEL_READY + 400), press("DOWN", DUEL_READY + 1700),
+        press("DOWN", DUEL_READY + 1900)], 5000)
     stamp = read_stamp(wram)
     _, _, pixels = read_ppm(after)
+    # The top cursor starts on the player's monster row: one DOWN to the
+    # support row, a second off the bottom is the way back down (B is the
+    # card check up there, as in the hand).
     if stamp["view"] != 0 or UI[stamp["ui"]] != "HAND":
-        raise Failure("UP/B did not return to the resting hand view (view %d, ui %s)"
+        raise Failure("UP/DOWN/DOWN did not return to the resting hand view (view %d, ui %s)"
                       % (stamp["view"], UI[stamp["ui"]]))
     # The slab ends above line 140.  The selected hand card's corner bracket
     # bobs as high as line 140, so including it compares unrelated phases.
     if pixels[24 * 256 * 3:140 * 256 * 3] != reference[24 * 256 * 3:140 * 256 * 3]:
-        raise Failure("the board changed geometry or lost cards during UP/B")
-    return "UP/B restores the original board pixels exactly"
+        raise Failure("the board changed geometry or lost cards during UP/DOWN/DOWN")
+    return "UP/DOWN/DOWN restores the original board pixels exactly"
 
 
 def check_top_cursor_and_card_check():
@@ -2238,17 +2242,17 @@ def check_top_cursor_and_card_check():
         press("R", DUEL_READY), press("UP", DUEL_READY + 400),
         press("RIGHT", DUEL_READY + 1800),
     ], 6000)
-    # A ON THE PLAYER'S OWN MONSTER PICKS IT AS THE ATTACKER (the PC-FX
-    # gesture); the cursor is walked up to the opponent's row first, where
-    # A is the card check.
+    # B IS THE CARD CHECK ON EITHER SIDE OF THE TABLE (A on the player's own
+    # monster picks it as the attacker, the PC-FX gesture); the cursor is
+    # walked up to the opponent's row first, so the check is of their card.
     check_name = "top_check_mode3"
     check_ppm, top_wram = run(check_name, random_battle_script() + [
         press("R", DUEL_READY), press("UP", DUEL_READY + 400),
-        press("UP", DUEL_READY + 1500), press("A", DUEL_READY + 1800),
+        press("UP", DUEL_READY + 1500), press("B", DUEL_READY + 1800),
     ], 6000, capture=(5600, 5999, 4))
     checked = read_stamp(top_wram)
     if UI[checked["ui"]] != "CHECK":
-        raise Failure("A on the top cursor ended in %s, expected CHECK" %
+        raise Failure("B on the top cursor ended in %s, expected CHECK" %
                       UI[checked["ui"]])
     w, h, px = read_ppm(check_ppm)
     regs = read_ppu_regs(os.path.join(OUT, check_name + ".ppu"))
@@ -2271,7 +2275,7 @@ def check_top_cursor_and_card_check():
                       % column)
     check_ppm, check_wram = run("top_check_close", random_battle_script() + [
         press("R", DUEL_READY), press("UP", DUEL_READY + 400),
-        press("UP", DUEL_READY + 1500), press("A", DUEL_READY + 1800),
+        press("UP", DUEL_READY + 1500), press("B", DUEL_READY + 1800),
         press("B", DUEL_READY + 2100),
     ], 7000, capture=(6999, 6999, 1))
     closed = read_stamp(check_wram)
@@ -2284,7 +2288,7 @@ def check_top_cursor_and_card_check():
     _, _, b = read_ppm(check_ppm)
     if a == b:
         raise Failure("moving the top cursor did not change the rendered cursor")
-    return "top cursor moves independently; A opens CHECK and B closes it"
+    return "top cursor moves independently; B opens CHECK and B closes it"
 
 
 # ── The Mode 4 battle ────────────────────────────────────────────────────────
