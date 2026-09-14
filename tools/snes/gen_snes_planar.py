@@ -7,13 +7,20 @@ the software renderer's chunky frame has to be transposed into the PPU's
 planar tile format before it can be shown.  That transpose is a table lookup,
 and this file generates the table and the pictures it starts from:
 
-  * the PAIR LUT -- 4 plane pairs x 2 halves x 64 KB = 512 KB.  Two chunky
-    texels (t1 << 8 | t0) index one word per plane pair whose bytes carry
-    t0's bit in column 0 and t1's in column 1 (bits 7 and 6); the converter
-    (tools/snes/gen_snes_conv.py) shifts the pair into columns 2p, 2p+1 with
-    2p `lsr`s, which cannot carry between the bytes because the low six bits
-    of each are zero.  The 17-bit word offset is split on its top bit into
-    two 64 KB halves, which is what the converter's `asl / bcs` does.
+  * the PAIR LUT -- 5 x 64 KB.  Two chunky texels (t1 << 8 | t0) index one
+    word per plane pair whose bytes carry t0's bit in column 0 and t1's in
+    column 1 (bits 7 and 6); the converter (tools/snes/gen_snes_conv.py)
+    shifts the pair into columns 2p, 2p+1 with 2p `lsr`s, which cannot carry
+    between the bytes because the low six bits of each are zero.  The 17-bit
+    word offset is split on its top bit -- t1's bit 7, plane 7 -- which is
+    what the converter's `asl / bcc` does; only plane pair 3 reads that
+    bit, so only it has a second half (the other pairs' "h1" tables were
+    byte-for-byte copies of their h0 ones: three banks given back).
+  * the DOUBLED PAIR LUT -- 4 x 64 KB, one per plane pair, for the 128x72
+    motion frame shown 2x2: the same pair index, t0's bit in columns 0 AND
+    1 (bits 7, 6) and t1's in 2 and 3 (bits 5, 4), so a doubled tile row is
+    two lookups a plane instead of four, the second shifted down a nibble.
+    Only the h0 half: the converter ORs t1's plane-7 bit in from the carry.
   * the TEXEL LUT -- 8 pixel positions x 4 plane pairs x 256 words = 16 KB,
     one texel to one pixel: the same transpose a texel at a time, kept for
     the harness's reference encoder.
@@ -23,9 +30,6 @@ and this file generates the table and the pictures it starts from:
     DMAs straight to VRAM for any resting cell no card, marker or held card
     touches; plus the occupied columns of each 8-row band, the resting
     frame's cell span.
-
-The 128x72 motion path's doubled-pair LUT is gone: the board is 1:1 in every
-pose now.
 
 Everything is emitted one .asm per bank so a blob that outgrows its bank is a
 link error rather than a silent overlap.
@@ -46,7 +50,9 @@ ASSETS = os.path.join(ROOT, "src", "snes", "assets")
 # ── Banks ────────────────────────────────────────────────────────────────────
 # Free at the time of writing (SNES_MODE3_PLAN.md 4): $03-$05, $10-$12,
 # $33-$3F.  The texel LUT sits above the upper 32x32 card sheet.
-PAIRLUT_BANKS = list(range(51, 59))       # $33-$3A
+PAIRLUT_BANKS = {("p0", "h0"): 51, ("p1", "h0"): 52, ("p2", "h0"): 53,
+                 ("p3", "h0"): 54, ("p3", "h1"): 55}       # $33-$37
+DBL2LUT_BANKS = [56, 57, 58, 18]          # $38-$3A and the free $12
 TEXLUT_BANK = 60                          # $3C
 TEXLUT_ORG = 0x4000
 FLOOR_BANKS = {("chunky", 0): 61, ("chunky", 1): 62,
@@ -108,12 +114,27 @@ def pair_lut(plane_pair, half):
 
 
 def emit_pair_luts():
-    i = 0
+    for (pk, hh), bank in sorted(PAIRLUT_BANKS.items(), key=lambda kv: kv[1]):
+        label = "snes_pairlut_%s_%s" % (pk, hh)
+        emit_bank(label, bank, [(label, pair_lut(int(pk[1]), int(hh[1])))])
     for k in range(4):
-        for h in range(2):
-            label = "snes_pairlut_p%d_h%d" % (k, h)
-            emit_bank(label, PAIRLUT_BANKS[i], [(label, pair_lut(k, h))])
-            i += 1
+        label = "snes_dbl2lut_p%d" % k
+        emit_bank(label, DBL2LUT_BANKS[k], [(label, dbl2_lut(k))])
+
+
+def dbl2_lut(plane_pair):
+    """32768 words, the h0 half's index: t0's bit doubled into columns 0-1
+    (bits 7, 6) and t1's into columns 2-3 (bits 5, 4), per plane byte.  t1's
+    bit 7 is the lost index bit and reads as 0 here; the doubled converter
+    ORs it in ($30 in the high byte of plane pair 3) from the carry."""
+    idx = np.arange(32768, dtype=np.uint32)
+    t0 = idx & 0xFF
+    t1 = (idx >> 8) & 0x7F
+    k = plane_pair
+    lo = (((t0 >> (2 * k)) & 1) * 0xC0) | (((t1 >> (2 * k)) & 1) * 0x30)
+    hi = (((t0 >> (2 * k + 1)) & 1) * 0xC0) | (((t1 >> (2 * k + 1)) & 1) * 0x30)
+    words = (lo | (hi << 8)).astype("<u2")
+    return words.tobytes()
 
 
 # ── The rest texel LUT ───────────────────────────────────────────────────────

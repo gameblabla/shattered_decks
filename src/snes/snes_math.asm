@@ -12,26 +12,25 @@
 ;  of these multiplies; see snes_math.h.
 ;-----------------------------------------------------------------------------
 .include "hdr.asm"
+.include "snes_fastdp.inc"
 
 .ACCU 16
 .INDEX 16
 .16BIT
 
-.BASE $00
-.RAMSECTION "snes_math_vars" BANK $7E SLOT 2
-mth_a             dw
-mth_b             dw
-mth_p             dw
-mth_q             dw
-; snesQMul's own two words.  It CALLS the leaf multipliers, and they use
-; mth_a..mth_q as scratch, so anything it needs to survive a call has to live
-; somewhere they do not touch.  Sharing them is what made qmul(1.0, 64.0)
-; come back as -64.0: the sign flag was overwritten by the second product.
-mth_sgn           dw
-mth_acc           dw
-mth_ma            dw
-mth_mb            dw
-.ENDS
+; The operands and partial products live on the fast direct page
+; (snes_fastdp.inc) for the call: forty-odd accesses a product at six cycles
+; instead of eight.  snesQMul has words of its own because it once called
+; the leaf multipliers, which use FD_M_A..FD_M_Q as scratch; sharing them is
+; what made qmul(1.0, 64.0) come back as -64.0.
+.DEFINE FD_M_A      $11
+.DEFINE FD_M_B      $13
+.DEFINE FD_M_P      $15
+.DEFINE FD_M_Q      $17
+.DEFINE FD_M_SGN    $19
+.DEFINE FD_M_ACC    $21
+.DEFINE FD_M_MA     $23
+.DEFINE FD_M_MB     $25
 
 .BASE $C0
 .SECTION "snes_math_text" SUPERFREE
@@ -48,17 +47,20 @@ mth_mb            dw
 snesMulHi:
     php
     rep #$30
-    lda 5,s
-    sta.l mth_a
+    phd
+    lda #FASTDP
+    tcd
     lda 7,s
-    sta.l mth_b
+    sta.b <FD_M_A
+    lda 9,s
+    sta.b <FD_M_B
 
     sep #$20
 .ACCU 8
     ; al * bl -> mth_p, of which only the high byte survives into the column
-    lda.l mth_a
+    lda.b <FD_M_A
     sta.l $4202
-    lda.l mth_b
+    lda.b <FD_M_B
     sta.l $4203
     nop                         ; the product needs eight cycles to settle
     nop
@@ -69,13 +71,13 @@ snesMulHi:
     lda.l $4216
     xba
     and #$00FF                  ; (al*bl) >> 8
-    sta.l mth_p
+    sta.b <FD_M_P
 
     sep #$20
 .ACCU 8
-    lda.l mth_a                 ; al * bh
+    lda.b <FD_M_A                 ; al * bh
     sta.l $4202
-    lda.l mth_b+1
+    lda.b <FD_M_B+1
     sta.l $4203
     nop
     nop
@@ -85,14 +87,14 @@ snesMulHi:
 .ACCU 16
     lda.l $4216
     clc
-    adc.l mth_p
-    sta.l mth_p                 ; cannot carry: 255 + 65025 < 65536
+    adc.b <FD_M_P
+    sta.b <FD_M_P                 ; cannot carry: 255 + 65025 < 65536
 
     sep #$20
 .ACCU 8
-    lda.l mth_a+1               ; ah * bl
+    lda.b <FD_M_A+1               ; ah * bl
     sta.l $4202
-    lda.l mth_b
+    lda.b <FD_M_B
     sta.l $4203
     nop
     nop
@@ -102,18 +104,18 @@ snesMulHi:
 .ACCU 16
     lda.l $4216
     clc
-    adc.l mth_p                 ; this one CAN carry out of sixteen bits
-    sta.l mth_p
+    adc.b <FD_M_P                 ; this one CAN carry out of sixteen bits
+    sta.b <FD_M_P
     lda #0
     rol a                       ; keep the carry as bit 0
     xba                         ; ...worth 256 in the high word
-    sta.l mth_q
+    sta.b <FD_M_Q
 
     sep #$20
 .ACCU 8
-    lda.l mth_a+1               ; ah * bh
+    lda.b <FD_M_A+1               ; ah * bh
     sta.l $4202
-    lda.l mth_b+1
+    lda.b <FD_M_B+1
     sta.l $4203
     nop
     nop
@@ -123,14 +125,15 @@ snesMulHi:
 .ACCU 16
     lda.l $4216
     clc
-    adc.l mth_q
-    sta.l mth_q
+    adc.b <FD_M_Q
+    sta.b <FD_M_Q
 
-    lda.l mth_p                 ; + the middle column's own high byte
+    lda.b <FD_M_P                 ; + the middle column's own high byte
     xba
     and #$00FF
     clc
-    adc.l mth_q
+    adc.b <FD_M_Q
+    pld
     sta.b tcc__r0               ; 816-tcc returns in tcc__r0
 
     plp
@@ -145,16 +148,19 @@ snesMulHi:
 snesMulLo:
     php
     rep #$30
-    lda 5,s
-    sta.l mth_a
+    phd
+    lda #FASTDP
+    tcd
     lda 7,s
-    sta.l mth_b
+    sta.b <FD_M_A
+    lda 9,s
+    sta.b <FD_M_B
 
     sep #$20
 .ACCU 8
-    lda.l mth_a
+    lda.b <FD_M_A
     sta.l $4202
-    lda.l mth_b
+    lda.b <FD_M_B
     sta.l $4203
     nop
     nop
@@ -163,13 +169,13 @@ snesMulLo:
     rep #$20
 .ACCU 16
     lda.l $4216
-    sta.l mth_p                 ; al * bl
+    sta.b <FD_M_P                 ; al * bl
 
     sep #$20
 .ACCU 8
-    lda.l mth_a
+    lda.b <FD_M_A
     sta.l $4202
-    lda.l mth_b+1
+    lda.b <FD_M_B+1
     sta.l $4203
     nop
     nop
@@ -181,14 +187,14 @@ snesMulLo:
     rep #$20
 .ACCU 16
     clc
-    adc.l mth_p
-    sta.l mth_p
+    adc.b <FD_M_P
+    sta.b <FD_M_P
 
     sep #$20
 .ACCU 8
-    lda.l mth_a+1
+    lda.b <FD_M_A+1
     sta.l $4202
-    lda.l mth_b
+    lda.b <FD_M_B
     sta.l $4203
     nop
     nop
@@ -200,7 +206,8 @@ snesMulLo:
     rep #$20
 .ACCU 16
     clc
-    adc.l mth_p
+    adc.b <FD_M_P
+    pld
     sta.b tcc__r0
 
     plp
@@ -217,53 +224,57 @@ snesMulLo:
 snesQMul:
     php
     rep #$30
-    lda 5,s
-    sta.l mth_ma
-    eor 7,s
-    sta.l mth_sgn
+    phd
+    lda #FASTDP
+    tcd
+    lda 7,s
+    sta.b <FD_M_MA
+    eor 9,s
+    sta.b <FD_M_SGN
     ; Signed 16 x signed 8, twice.  M7A is a write-twice register: a
     ; 16-bit store would write M7B instead of its high byte.
     sep #$20
 .ACCU 8
-    lda 5,s
-    sta.l $211B
-    lda 6,s
-    sta.l $211B
     lda 7,s
+    sta.l $211B
+    lda 8,s
+    sta.l $211B
+    lda 9,s
     sta.l $211C
     lda.l $2134
-    sta.l mth_mb                ; fractional byte, for truncation toward zero
+    sta.b <FD_M_MB                ; fractional byte, for truncation toward zero
     rep #$20
 .ACCU 16
     lda.l $2135
-    sta.l mth_acc
+    sta.b <FD_M_ACC
     ; The low byte of b is unsigned in the partial-product expansion.
-    lda 7,s
+    lda 9,s
     and #$0080
     beq +
-    lda.l mth_acc
+    lda.b <FD_M_ACC
     clc
-    adc.l mth_ma
-    sta.l mth_acc
+    adc.b <FD_M_MA
+    sta.b <FD_M_ACC
 +   sep #$20
 .ACCU 8
-    lda 8,s
+    lda 10,s
     sta.l $211C
     rep #$20
 .ACCU 16
     lda.l $2134
     clc
-    adc.l mth_acc
-    sta.l mth_acc
-    lda.l mth_sgn
+    adc.b <FD_M_ACC
+    sta.b <FD_M_ACC
+    lda.b <FD_M_SGN
     bpl +
-    lda.l mth_mb
+    lda.b <FD_M_MB
     and #$00FF
     beq +
-    lda.l mth_acc
+    lda.b <FD_M_ACC
     inc a
-    sta.l mth_acc
-+   lda.l mth_acc
+    sta.b <FD_M_ACC
++   lda.b <FD_M_ACC
+    pld
     sta.b tcc__r0
     plp
     rtl
@@ -282,55 +293,53 @@ snesQMul:
 snesUQDiv:
     php
     rep #$30
+    phd
+    lda #FASTDP
+    tcd
 
-    lda 7,s
-    sta.w mth_b
+    lda 9,s
+    sta.b <FD_M_B
     beq _dv_sat                 ; divide by zero saturates rather than hangs
-    lda 5,s
-    sta.w mth_a
+    lda 7,s
+    sta.b <FD_M_A
     ; (a << 8) / b overflows sixteen bits exactly when a >= b * 256, which is
     ; (a >> 8) >= b.  Checking it here keeps the loop free of a per-step
     ; saturation test.
     xba
     and #$00FF
-    cmp.w mth_b
+    cmp.b <FD_M_B
     bcs _dv_sat
 
-    stz.w mth_p                 ; remainder
-    stz.w mth_q                 ; quotient
+    stz.b <FD_M_Q                 ; quotient
+    lda #0                        ; the remainder stays in A
 
     ; The numerator is a << 8: bits 23..8 are `a` and bits 7..0 are zero, so
     ; shifting `a` left twenty-four times feeds the loop first `a` and then the
     ; eight zeros, in order.
     ldx #24
 _dv_loop:
-    asl.w mth_a
-    rol.w mth_p                 ; remainder <<= 1; its 17th bit is the carry
-    bcs _dv_sub                 ; a set 17th bit is always >= the divisor
-    lda.w mth_p
-    cmp.w mth_b
-    bcc _dv_zero
+    asl.b <FD_M_A
+    rol a                         ; remainder <<= 1; its 17th bit is the carry
+    bcs _dv_sub                   ; a set 17th bit is always >= the divisor
+    cmp.b <FD_M_B
+    bcc _dv_shift                 ; C clear: a zero quotient bit
 _dv_sub:
-    lda.w mth_p
-    sec
-    sbc.w mth_b
-    sta.w mth_p
-    sec
-    bra _dv_shift
-_dv_zero:
-    clc
+    sbc.b <FD_M_B                 ; C is set on both ways in
+    sec                           ; (a 17-bit remainder may borrow in 16)
 _dv_shift:
-    rol.w mth_q
+    rol.b <FD_M_Q
     dex
     bne _dv_loop
 
-    lda.w mth_q
+    lda.b <FD_M_Q
+    pld
     sta.b tcc__r0
     plp
     rtl
 
 _dv_sat:
     lda #$FFFF
+    pld
     sta.b tcc__r0
     plp
     rtl
@@ -380,20 +389,22 @@ _ck_retry:
     pla
     bra _ck_retry
 +   pla
-    ; A * 262 = A * 256 + A * 4 + A * 2 (modulo 16 bits).
-    sta.l mth_acc
+    ; A * 262 = A * 256 + A * 4 + A * 2 (modulo 16 bits), in registers.
+    tax                         ; X = fields
     asl a
-    sta.l mth_ma
+    tay                         ; Y = fields * 2
     asl a
+    sta.l snes_clock_tmp        ; fields * 4
+    tya
     clc
-    adc.l mth_ma
-    sta.l mth_ma
-    lda.l mth_acc
+    adc.l snes_clock_tmp
+    sta.l snes_clock_tmp        ; fields * 6
+    txa
     xba
     and #$FF00
     clc
-    adc.l mth_ma
-    sta.l mth_ma
+    adc.l snes_clock_tmp
+    sta.l snes_clock_tmp        ; fields * 262
     lda.b tcc__r0
     cmp #225
     bcc +
@@ -402,9 +413,14 @@ _ck_retry:
 +   clc
     adc #37
     clc
-    adc.l mth_ma
+    adc.l snes_clock_tmp
     sta.b tcc__r0
     plp
     rtl
 
+.ENDS
+
+.BASE $00
+.RAMSECTION "snes_math_vars" BANK $7E SLOT 2
+snes_clock_tmp    dw
 .ENDS

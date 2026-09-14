@@ -3,6 +3,7 @@
 ; the register contract and why there are four copies of each.
 .include "hdr.asm"
 .include "snes_fb.inc"
+.include "snes_fastdp.inc"
 
 .ACCU 16
 .INDEX 16
@@ -24,30 +25,32 @@ snesConvFrameTile0:
     lda.w snes_frame_fb + 0,y
     asl a
     tax
-    bcs _cf0_r0_p0_h1
+    bcc _cf0_r0_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r0_p0_j
+_cf0_r0_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r0_p0_j:
+    sta.b $30
     lda.l snes_pairlut_p0_h0,x
     sta.b $00
     lda.l snes_pairlut_p1_h0,x
     sta.b $10
     lda.l snes_pairlut_p2_h0,x
     sta.b $20
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $30
-    bra _cf0_r0_p0_back
-_cf0_r0_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $00
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $10
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $20
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $30
-_cf0_r0_p0_back:
     lda.w snes_frame_fb + 2,y
     asl a
     tax
-    bcs _cf0_r0_p1_h1
+    bcc _cf0_r0_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r0_p1_j
+_cf0_r0_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r0_p1_j:
+    lsr a
+    lsr a
+    ora.b $30
+    sta.b $30
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -63,38 +66,21 @@ _cf0_r0_p0_back:
     lsr a
     ora.b $20
     sta.b $20
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $30
-    sta.b $30
-    bra _cf0_r0_p1_back
-_cf0_r0_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $00
-    sta.b $00
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $10
-    sta.b $10
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $20
-    sta.b $20
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $30
-    sta.b $30
-_cf0_r0_p1_back:
     lda.w snes_frame_fb + 4,y
     asl a
     tax
-    bcs _cf0_r0_p2_h1
+    bcc _cf0_r0_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r0_p2_j
+_cf0_r0_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r0_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $30
+    sta.b $30
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -116,48 +102,23 @@ _cf0_r0_p1_back:
     lsr a
     ora.b $20
     sta.b $20
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $30
-    sta.b $30
-    bra _cf0_r0_p2_back
-_cf0_r0_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $00
-    sta.b $00
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $10
-    sta.b $10
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $20
-    sta.b $20
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $30
-    sta.b $30
-_cf0_r0_p2_back:
     lda.w snes_frame_fb + 6,y
     asl a
     tax
-    bcs _cf0_r0_p3_h1
+    bcc _cf0_r0_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r0_p3_j
+_cf0_r0_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r0_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $30
+    sta.b $30
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -185,81 +146,35 @@ _cf0_r0_p2_back:
     lsr a
     ora.b $20
     sta.b $20
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $30
-    sta.b $30
-    bra _cf0_r0_p3_back
-_cf0_r0_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $00
-    sta.b $00
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $10
-    sta.b $10
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $20
-    sta.b $20
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $30
-    sta.b $30
-_cf0_r0_p3_back:
     lda.w snes_frame_fb + 256,y
     asl a
     tax
-    bcs _cf0_r1_p0_h1
+    bcc _cf0_r1_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r1_p0_j
+_cf0_r1_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r1_p0_j:
+    sta.b $32
     lda.l snes_pairlut_p0_h0,x
     sta.b $02
     lda.l snes_pairlut_p1_h0,x
     sta.b $12
     lda.l snes_pairlut_p2_h0,x
     sta.b $22
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $32
-    bra _cf0_r1_p0_back
-_cf0_r1_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $02
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $12
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $22
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $32
-_cf0_r1_p0_back:
     lda.w snes_frame_fb + 258,y
     asl a
     tax
-    bcs _cf0_r1_p1_h1
+    bcc _cf0_r1_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r1_p1_j
+_cf0_r1_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r1_p1_j:
+    lsr a
+    lsr a
+    ora.b $32
+    sta.b $32
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -275,38 +190,21 @@ _cf0_r1_p0_back:
     lsr a
     ora.b $22
     sta.b $22
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $32
-    sta.b $32
-    bra _cf0_r1_p1_back
-_cf0_r1_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $02
-    sta.b $02
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $12
-    sta.b $12
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $22
-    sta.b $22
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $32
-    sta.b $32
-_cf0_r1_p1_back:
     lda.w snes_frame_fb + 260,y
     asl a
     tax
-    bcs _cf0_r1_p2_h1
+    bcc _cf0_r1_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r1_p2_j
+_cf0_r1_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r1_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $32
+    sta.b $32
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -328,48 +226,23 @@ _cf0_r1_p1_back:
     lsr a
     ora.b $22
     sta.b $22
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $32
-    sta.b $32
-    bra _cf0_r1_p2_back
-_cf0_r1_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $02
-    sta.b $02
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $12
-    sta.b $12
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $22
-    sta.b $22
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $32
-    sta.b $32
-_cf0_r1_p2_back:
     lda.w snes_frame_fb + 262,y
     asl a
     tax
-    bcs _cf0_r1_p3_h1
+    bcc _cf0_r1_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r1_p3_j
+_cf0_r1_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r1_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $32
+    sta.b $32
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -397,81 +270,35 @@ _cf0_r1_p2_back:
     lsr a
     ora.b $22
     sta.b $22
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $32
-    sta.b $32
-    bra _cf0_r1_p3_back
-_cf0_r1_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $02
-    sta.b $02
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $12
-    sta.b $12
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $22
-    sta.b $22
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $32
-    sta.b $32
-_cf0_r1_p3_back:
     lda.w snes_frame_fb + 512,y
     asl a
     tax
-    bcs _cf0_r2_p0_h1
+    bcc _cf0_r2_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r2_p0_j
+_cf0_r2_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r2_p0_j:
+    sta.b $34
     lda.l snes_pairlut_p0_h0,x
     sta.b $04
     lda.l snes_pairlut_p1_h0,x
     sta.b $14
     lda.l snes_pairlut_p2_h0,x
     sta.b $24
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $34
-    bra _cf0_r2_p0_back
-_cf0_r2_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $04
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $14
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $24
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $34
-_cf0_r2_p0_back:
     lda.w snes_frame_fb + 514,y
     asl a
     tax
-    bcs _cf0_r2_p1_h1
+    bcc _cf0_r2_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r2_p1_j
+_cf0_r2_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r2_p1_j:
+    lsr a
+    lsr a
+    ora.b $34
+    sta.b $34
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -487,38 +314,21 @@ _cf0_r2_p0_back:
     lsr a
     ora.b $24
     sta.b $24
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $34
-    sta.b $34
-    bra _cf0_r2_p1_back
-_cf0_r2_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $04
-    sta.b $04
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $14
-    sta.b $14
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $24
-    sta.b $24
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $34
-    sta.b $34
-_cf0_r2_p1_back:
     lda.w snes_frame_fb + 516,y
     asl a
     tax
-    bcs _cf0_r2_p2_h1
+    bcc _cf0_r2_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r2_p2_j
+_cf0_r2_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r2_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $34
+    sta.b $34
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -540,48 +350,23 @@ _cf0_r2_p1_back:
     lsr a
     ora.b $24
     sta.b $24
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $34
-    sta.b $34
-    bra _cf0_r2_p2_back
-_cf0_r2_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $04
-    sta.b $04
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $14
-    sta.b $14
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $24
-    sta.b $24
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $34
-    sta.b $34
-_cf0_r2_p2_back:
     lda.w snes_frame_fb + 518,y
     asl a
     tax
-    bcs _cf0_r2_p3_h1
+    bcc _cf0_r2_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r2_p3_j
+_cf0_r2_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r2_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $34
+    sta.b $34
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -609,81 +394,35 @@ _cf0_r2_p2_back:
     lsr a
     ora.b $24
     sta.b $24
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $34
-    sta.b $34
-    bra _cf0_r2_p3_back
-_cf0_r2_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $04
-    sta.b $04
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $14
-    sta.b $14
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $24
-    sta.b $24
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $34
-    sta.b $34
-_cf0_r2_p3_back:
     lda.w snes_frame_fb + 768,y
     asl a
     tax
-    bcs _cf0_r3_p0_h1
+    bcc _cf0_r3_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r3_p0_j
+_cf0_r3_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r3_p0_j:
+    sta.b $36
     lda.l snes_pairlut_p0_h0,x
     sta.b $06
     lda.l snes_pairlut_p1_h0,x
     sta.b $16
     lda.l snes_pairlut_p2_h0,x
     sta.b $26
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $36
-    bra _cf0_r3_p0_back
-_cf0_r3_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $06
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $16
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $26
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $36
-_cf0_r3_p0_back:
     lda.w snes_frame_fb + 770,y
     asl a
     tax
-    bcs _cf0_r3_p1_h1
+    bcc _cf0_r3_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r3_p1_j
+_cf0_r3_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r3_p1_j:
+    lsr a
+    lsr a
+    ora.b $36
+    sta.b $36
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -699,38 +438,21 @@ _cf0_r3_p0_back:
     lsr a
     ora.b $26
     sta.b $26
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $36
-    sta.b $36
-    bra _cf0_r3_p1_back
-_cf0_r3_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $06
-    sta.b $06
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $16
-    sta.b $16
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $26
-    sta.b $26
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $36
-    sta.b $36
-_cf0_r3_p1_back:
     lda.w snes_frame_fb + 772,y
     asl a
     tax
-    bcs _cf0_r3_p2_h1
+    bcc _cf0_r3_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r3_p2_j
+_cf0_r3_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r3_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $36
+    sta.b $36
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -752,48 +474,23 @@ _cf0_r3_p1_back:
     lsr a
     ora.b $26
     sta.b $26
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $36
-    sta.b $36
-    bra _cf0_r3_p2_back
-_cf0_r3_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $06
-    sta.b $06
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $16
-    sta.b $16
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $26
-    sta.b $26
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $36
-    sta.b $36
-_cf0_r3_p2_back:
     lda.w snes_frame_fb + 774,y
     asl a
     tax
-    bcs _cf0_r3_p3_h1
+    bcc _cf0_r3_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r3_p3_j
+_cf0_r3_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r3_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $36
+    sta.b $36
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -821,81 +518,35 @@ _cf0_r3_p2_back:
     lsr a
     ora.b $26
     sta.b $26
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $36
-    sta.b $36
-    bra _cf0_r3_p3_back
-_cf0_r3_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $06
-    sta.b $06
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $16
-    sta.b $16
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $26
-    sta.b $26
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $36
-    sta.b $36
-_cf0_r3_p3_back:
     lda.w snes_frame_fb + 1024,y
     asl a
     tax
-    bcs _cf0_r4_p0_h1
+    bcc _cf0_r4_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r4_p0_j
+_cf0_r4_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r4_p0_j:
+    sta.b $38
     lda.l snes_pairlut_p0_h0,x
     sta.b $08
     lda.l snes_pairlut_p1_h0,x
     sta.b $18
     lda.l snes_pairlut_p2_h0,x
     sta.b $28
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $38
-    bra _cf0_r4_p0_back
-_cf0_r4_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $08
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $18
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $28
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $38
-_cf0_r4_p0_back:
     lda.w snes_frame_fb + 1026,y
     asl a
     tax
-    bcs _cf0_r4_p1_h1
+    bcc _cf0_r4_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r4_p1_j
+_cf0_r4_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r4_p1_j:
+    lsr a
+    lsr a
+    ora.b $38
+    sta.b $38
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -911,38 +562,21 @@ _cf0_r4_p0_back:
     lsr a
     ora.b $28
     sta.b $28
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $38
-    sta.b $38
-    bra _cf0_r4_p1_back
-_cf0_r4_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $08
-    sta.b $08
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $18
-    sta.b $18
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $28
-    sta.b $28
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $38
-    sta.b $38
-_cf0_r4_p1_back:
     lda.w snes_frame_fb + 1028,y
     asl a
     tax
-    bcs _cf0_r4_p2_h1
+    bcc _cf0_r4_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r4_p2_j
+_cf0_r4_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r4_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $38
+    sta.b $38
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -964,48 +598,23 @@ _cf0_r4_p1_back:
     lsr a
     ora.b $28
     sta.b $28
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $38
-    sta.b $38
-    bra _cf0_r4_p2_back
-_cf0_r4_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $08
-    sta.b $08
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $18
-    sta.b $18
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $28
-    sta.b $28
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $38
-    sta.b $38
-_cf0_r4_p2_back:
     lda.w snes_frame_fb + 1030,y
     asl a
     tax
-    bcs _cf0_r4_p3_h1
+    bcc _cf0_r4_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r4_p3_j
+_cf0_r4_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r4_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $38
+    sta.b $38
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1033,81 +642,35 @@ _cf0_r4_p2_back:
     lsr a
     ora.b $28
     sta.b $28
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $38
-    sta.b $38
-    bra _cf0_r4_p3_back
-_cf0_r4_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $08
-    sta.b $08
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $18
-    sta.b $18
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $28
-    sta.b $28
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $38
-    sta.b $38
-_cf0_r4_p3_back:
     lda.w snes_frame_fb + 1280,y
     asl a
     tax
-    bcs _cf0_r5_p0_h1
+    bcc _cf0_r5_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r5_p0_j
+_cf0_r5_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r5_p0_j:
+    sta.b $3A
     lda.l snes_pairlut_p0_h0,x
     sta.b $0A
     lda.l snes_pairlut_p1_h0,x
     sta.b $1A
     lda.l snes_pairlut_p2_h0,x
     sta.b $2A
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $3A
-    bra _cf0_r5_p0_back
-_cf0_r5_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $0A
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $1A
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $2A
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $3A
-_cf0_r5_p0_back:
     lda.w snes_frame_fb + 1282,y
     asl a
     tax
-    bcs _cf0_r5_p1_h1
+    bcc _cf0_r5_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r5_p1_j
+_cf0_r5_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r5_p1_j:
+    lsr a
+    lsr a
+    ora.b $3A
+    sta.b $3A
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1123,38 +686,21 @@ _cf0_r5_p0_back:
     lsr a
     ora.b $2A
     sta.b $2A
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $3A
-    sta.b $3A
-    bra _cf0_r5_p1_back
-_cf0_r5_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $0A
-    sta.b $0A
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $1A
-    sta.b $1A
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $2A
-    sta.b $2A
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $3A
-    sta.b $3A
-_cf0_r5_p1_back:
     lda.w snes_frame_fb + 1284,y
     asl a
     tax
-    bcs _cf0_r5_p2_h1
+    bcc _cf0_r5_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r5_p2_j
+_cf0_r5_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r5_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $3A
+    sta.b $3A
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1176,48 +722,23 @@ _cf0_r5_p1_back:
     lsr a
     ora.b $2A
     sta.b $2A
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3A
-    sta.b $3A
-    bra _cf0_r5_p2_back
-_cf0_r5_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $0A
-    sta.b $0A
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $1A
-    sta.b $1A
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $2A
-    sta.b $2A
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3A
-    sta.b $3A
-_cf0_r5_p2_back:
     lda.w snes_frame_fb + 1286,y
     asl a
     tax
-    bcs _cf0_r5_p3_h1
+    bcc _cf0_r5_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r5_p3_j
+_cf0_r5_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r5_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $3A
+    sta.b $3A
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1245,81 +766,35 @@ _cf0_r5_p2_back:
     lsr a
     ora.b $2A
     sta.b $2A
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3A
-    sta.b $3A
-    bra _cf0_r5_p3_back
-_cf0_r5_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $0A
-    sta.b $0A
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $1A
-    sta.b $1A
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $2A
-    sta.b $2A
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3A
-    sta.b $3A
-_cf0_r5_p3_back:
     lda.w snes_frame_fb + 1536,y
     asl a
     tax
-    bcs _cf0_r6_p0_h1
+    bcc _cf0_r6_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r6_p0_j
+_cf0_r6_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r6_p0_j:
+    sta.b $3C
     lda.l snes_pairlut_p0_h0,x
     sta.b $0C
     lda.l snes_pairlut_p1_h0,x
     sta.b $1C
     lda.l snes_pairlut_p2_h0,x
     sta.b $2C
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $3C
-    bra _cf0_r6_p0_back
-_cf0_r6_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $0C
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $1C
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $2C
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $3C
-_cf0_r6_p0_back:
     lda.w snes_frame_fb + 1538,y
     asl a
     tax
-    bcs _cf0_r6_p1_h1
+    bcc _cf0_r6_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r6_p1_j
+_cf0_r6_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r6_p1_j:
+    lsr a
+    lsr a
+    ora.b $3C
+    sta.b $3C
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1335,38 +810,21 @@ _cf0_r6_p0_back:
     lsr a
     ora.b $2C
     sta.b $2C
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $3C
-    sta.b $3C
-    bra _cf0_r6_p1_back
-_cf0_r6_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $0C
-    sta.b $0C
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $1C
-    sta.b $1C
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $2C
-    sta.b $2C
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $3C
-    sta.b $3C
-_cf0_r6_p1_back:
     lda.w snes_frame_fb + 1540,y
     asl a
     tax
-    bcs _cf0_r6_p2_h1
+    bcc _cf0_r6_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r6_p2_j
+_cf0_r6_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r6_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $3C
+    sta.b $3C
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1388,48 +846,23 @@ _cf0_r6_p1_back:
     lsr a
     ora.b $2C
     sta.b $2C
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3C
-    sta.b $3C
-    bra _cf0_r6_p2_back
-_cf0_r6_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $0C
-    sta.b $0C
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $1C
-    sta.b $1C
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $2C
-    sta.b $2C
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3C
-    sta.b $3C
-_cf0_r6_p2_back:
     lda.w snes_frame_fb + 1542,y
     asl a
     tax
-    bcs _cf0_r6_p3_h1
+    bcc _cf0_r6_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r6_p3_j
+_cf0_r6_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r6_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $3C
+    sta.b $3C
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1457,81 +890,35 @@ _cf0_r6_p2_back:
     lsr a
     ora.b $2C
     sta.b $2C
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3C
-    sta.b $3C
-    bra _cf0_r6_p3_back
-_cf0_r6_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $0C
-    sta.b $0C
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $1C
-    sta.b $1C
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $2C
-    sta.b $2C
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3C
-    sta.b $3C
-_cf0_r6_p3_back:
     lda.w snes_frame_fb + 1792,y
     asl a
     tax
-    bcs _cf0_r7_p0_h1
+    bcc _cf0_r7_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r7_p0_j
+_cf0_r7_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r7_p0_j:
+    sta.b $3E
     lda.l snes_pairlut_p0_h0,x
     sta.b $0E
     lda.l snes_pairlut_p1_h0,x
     sta.b $1E
     lda.l snes_pairlut_p2_h0,x
     sta.b $2E
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $3E
-    bra _cf0_r7_p0_back
-_cf0_r7_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $0E
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $1E
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $2E
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $3E
-_cf0_r7_p0_back:
     lda.w snes_frame_fb + 1794,y
     asl a
     tax
-    bcs _cf0_r7_p1_h1
+    bcc _cf0_r7_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r7_p1_j
+_cf0_r7_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r7_p1_j:
+    lsr a
+    lsr a
+    ora.b $3E
+    sta.b $3E
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1547,38 +934,21 @@ _cf0_r7_p0_back:
     lsr a
     ora.b $2E
     sta.b $2E
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $3E
-    sta.b $3E
-    bra _cf0_r7_p1_back
-_cf0_r7_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $0E
-    sta.b $0E
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $1E
-    sta.b $1E
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $2E
-    sta.b $2E
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $3E
-    sta.b $3E
-_cf0_r7_p1_back:
     lda.w snes_frame_fb + 1796,y
     asl a
     tax
-    bcs _cf0_r7_p2_h1
+    bcc _cf0_r7_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r7_p2_j
+_cf0_r7_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r7_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $3E
+    sta.b $3E
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1600,48 +970,23 @@ _cf0_r7_p1_back:
     lsr a
     ora.b $2E
     sta.b $2E
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3E
-    sta.b $3E
-    bra _cf0_r7_p2_back
-_cf0_r7_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $0E
-    sta.b $0E
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $1E
-    sta.b $1E
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $2E
-    sta.b $2E
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3E
-    sta.b $3E
-_cf0_r7_p2_back:
     lda.w snes_frame_fb + 1798,y
     asl a
     tax
-    bcs _cf0_r7_p3_h1
+    bcc _cf0_r7_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf0_r7_p3_j
+_cf0_r7_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf0_r7_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $3E
+    sta.b $3E
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1669,84 +1014,38 @@ _cf0_r7_p2_back:
     lsr a
     ora.b $2E
     sta.b $2E
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3E
-    sta.b $3E
-    bra _cf0_r7_p3_back
-_cf0_r7_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $0E
-    sta.b $0E
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $1E
-    sta.b $1E
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $2E
-    sta.b $2E
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $3E
-    sta.b $3E
-_cf0_r7_p3_back:
     rts
 
 snesConvFrameTile1:
     lda.w snes_frame_fb + 0,y
     asl a
     tax
-    bcs _cf1_r0_p0_h1
+    bcc _cf1_r0_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r0_p0_j
+_cf1_r0_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r0_p0_j:
+    sta.b $70
     lda.l snes_pairlut_p0_h0,x
     sta.b $40
     lda.l snes_pairlut_p1_h0,x
     sta.b $50
     lda.l snes_pairlut_p2_h0,x
     sta.b $60
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $70
-    bra _cf1_r0_p0_back
-_cf1_r0_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $40
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $50
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $60
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $70
-_cf1_r0_p0_back:
     lda.w snes_frame_fb + 2,y
     asl a
     tax
-    bcs _cf1_r0_p1_h1
+    bcc _cf1_r0_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r0_p1_j
+_cf1_r0_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r0_p1_j:
+    lsr a
+    lsr a
+    ora.b $70
+    sta.b $70
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1762,38 +1061,21 @@ _cf1_r0_p0_back:
     lsr a
     ora.b $60
     sta.b $60
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $70
-    sta.b $70
-    bra _cf1_r0_p1_back
-_cf1_r0_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $40
-    sta.b $40
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $50
-    sta.b $50
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $60
-    sta.b $60
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $70
-    sta.b $70
-_cf1_r0_p1_back:
     lda.w snes_frame_fb + 4,y
     asl a
     tax
-    bcs _cf1_r0_p2_h1
+    bcc _cf1_r0_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r0_p2_j
+_cf1_r0_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r0_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $70
+    sta.b $70
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1815,48 +1097,23 @@ _cf1_r0_p1_back:
     lsr a
     ora.b $60
     sta.b $60
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $70
-    sta.b $70
-    bra _cf1_r0_p2_back
-_cf1_r0_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $40
-    sta.b $40
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $50
-    sta.b $50
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $60
-    sta.b $60
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $70
-    sta.b $70
-_cf1_r0_p2_back:
     lda.w snes_frame_fb + 6,y
     asl a
     tax
-    bcs _cf1_r0_p3_h1
+    bcc _cf1_r0_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r0_p3_j
+_cf1_r0_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r0_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $70
+    sta.b $70
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1884,81 +1141,35 @@ _cf1_r0_p2_back:
     lsr a
     ora.b $60
     sta.b $60
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $70
-    sta.b $70
-    bra _cf1_r0_p3_back
-_cf1_r0_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $40
-    sta.b $40
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $50
-    sta.b $50
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $60
-    sta.b $60
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $70
-    sta.b $70
-_cf1_r0_p3_back:
     lda.w snes_frame_fb + 256,y
     asl a
     tax
-    bcs _cf1_r1_p0_h1
+    bcc _cf1_r1_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r1_p0_j
+_cf1_r1_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r1_p0_j:
+    sta.b $72
     lda.l snes_pairlut_p0_h0,x
     sta.b $42
     lda.l snes_pairlut_p1_h0,x
     sta.b $52
     lda.l snes_pairlut_p2_h0,x
     sta.b $62
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $72
-    bra _cf1_r1_p0_back
-_cf1_r1_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $42
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $52
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $62
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $72
-_cf1_r1_p0_back:
     lda.w snes_frame_fb + 258,y
     asl a
     tax
-    bcs _cf1_r1_p1_h1
+    bcc _cf1_r1_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r1_p1_j
+_cf1_r1_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r1_p1_j:
+    lsr a
+    lsr a
+    ora.b $72
+    sta.b $72
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -1974,38 +1185,21 @@ _cf1_r1_p0_back:
     lsr a
     ora.b $62
     sta.b $62
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $72
-    sta.b $72
-    bra _cf1_r1_p1_back
-_cf1_r1_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $42
-    sta.b $42
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $52
-    sta.b $52
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $62
-    sta.b $62
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $72
-    sta.b $72
-_cf1_r1_p1_back:
     lda.w snes_frame_fb + 260,y
     asl a
     tax
-    bcs _cf1_r1_p2_h1
+    bcc _cf1_r1_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r1_p2_j
+_cf1_r1_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r1_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $72
+    sta.b $72
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2027,48 +1221,23 @@ _cf1_r1_p1_back:
     lsr a
     ora.b $62
     sta.b $62
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $72
-    sta.b $72
-    bra _cf1_r1_p2_back
-_cf1_r1_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $42
-    sta.b $42
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $52
-    sta.b $52
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $62
-    sta.b $62
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $72
-    sta.b $72
-_cf1_r1_p2_back:
     lda.w snes_frame_fb + 262,y
     asl a
     tax
-    bcs _cf1_r1_p3_h1
+    bcc _cf1_r1_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r1_p3_j
+_cf1_r1_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r1_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $72
+    sta.b $72
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2096,81 +1265,35 @@ _cf1_r1_p2_back:
     lsr a
     ora.b $62
     sta.b $62
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $72
-    sta.b $72
-    bra _cf1_r1_p3_back
-_cf1_r1_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $42
-    sta.b $42
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $52
-    sta.b $52
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $62
-    sta.b $62
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $72
-    sta.b $72
-_cf1_r1_p3_back:
     lda.w snes_frame_fb + 512,y
     asl a
     tax
-    bcs _cf1_r2_p0_h1
+    bcc _cf1_r2_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r2_p0_j
+_cf1_r2_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r2_p0_j:
+    sta.b $74
     lda.l snes_pairlut_p0_h0,x
     sta.b $44
     lda.l snes_pairlut_p1_h0,x
     sta.b $54
     lda.l snes_pairlut_p2_h0,x
     sta.b $64
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $74
-    bra _cf1_r2_p0_back
-_cf1_r2_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $44
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $54
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $64
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $74
-_cf1_r2_p0_back:
     lda.w snes_frame_fb + 514,y
     asl a
     tax
-    bcs _cf1_r2_p1_h1
+    bcc _cf1_r2_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r2_p1_j
+_cf1_r2_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r2_p1_j:
+    lsr a
+    lsr a
+    ora.b $74
+    sta.b $74
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2186,38 +1309,21 @@ _cf1_r2_p0_back:
     lsr a
     ora.b $64
     sta.b $64
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $74
-    sta.b $74
-    bra _cf1_r2_p1_back
-_cf1_r2_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $44
-    sta.b $44
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $54
-    sta.b $54
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $64
-    sta.b $64
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $74
-    sta.b $74
-_cf1_r2_p1_back:
     lda.w snes_frame_fb + 516,y
     asl a
     tax
-    bcs _cf1_r2_p2_h1
+    bcc _cf1_r2_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r2_p2_j
+_cf1_r2_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r2_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $74
+    sta.b $74
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2239,48 +1345,23 @@ _cf1_r2_p1_back:
     lsr a
     ora.b $64
     sta.b $64
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $74
-    sta.b $74
-    bra _cf1_r2_p2_back
-_cf1_r2_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $44
-    sta.b $44
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $54
-    sta.b $54
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $64
-    sta.b $64
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $74
-    sta.b $74
-_cf1_r2_p2_back:
     lda.w snes_frame_fb + 518,y
     asl a
     tax
-    bcs _cf1_r2_p3_h1
+    bcc _cf1_r2_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r2_p3_j
+_cf1_r2_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r2_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $74
+    sta.b $74
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2308,81 +1389,35 @@ _cf1_r2_p2_back:
     lsr a
     ora.b $64
     sta.b $64
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $74
-    sta.b $74
-    bra _cf1_r2_p3_back
-_cf1_r2_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $44
-    sta.b $44
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $54
-    sta.b $54
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $64
-    sta.b $64
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $74
-    sta.b $74
-_cf1_r2_p3_back:
     lda.w snes_frame_fb + 768,y
     asl a
     tax
-    bcs _cf1_r3_p0_h1
+    bcc _cf1_r3_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r3_p0_j
+_cf1_r3_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r3_p0_j:
+    sta.b $76
     lda.l snes_pairlut_p0_h0,x
     sta.b $46
     lda.l snes_pairlut_p1_h0,x
     sta.b $56
     lda.l snes_pairlut_p2_h0,x
     sta.b $66
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $76
-    bra _cf1_r3_p0_back
-_cf1_r3_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $46
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $56
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $66
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $76
-_cf1_r3_p0_back:
     lda.w snes_frame_fb + 770,y
     asl a
     tax
-    bcs _cf1_r3_p1_h1
+    bcc _cf1_r3_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r3_p1_j
+_cf1_r3_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r3_p1_j:
+    lsr a
+    lsr a
+    ora.b $76
+    sta.b $76
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2398,38 +1433,21 @@ _cf1_r3_p0_back:
     lsr a
     ora.b $66
     sta.b $66
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $76
-    sta.b $76
-    bra _cf1_r3_p1_back
-_cf1_r3_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $46
-    sta.b $46
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $56
-    sta.b $56
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $66
-    sta.b $66
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $76
-    sta.b $76
-_cf1_r3_p1_back:
     lda.w snes_frame_fb + 772,y
     asl a
     tax
-    bcs _cf1_r3_p2_h1
+    bcc _cf1_r3_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r3_p2_j
+_cf1_r3_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r3_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $76
+    sta.b $76
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2451,48 +1469,23 @@ _cf1_r3_p1_back:
     lsr a
     ora.b $66
     sta.b $66
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $76
-    sta.b $76
-    bra _cf1_r3_p2_back
-_cf1_r3_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $46
-    sta.b $46
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $56
-    sta.b $56
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $66
-    sta.b $66
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $76
-    sta.b $76
-_cf1_r3_p2_back:
     lda.w snes_frame_fb + 774,y
     asl a
     tax
-    bcs _cf1_r3_p3_h1
+    bcc _cf1_r3_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r3_p3_j
+_cf1_r3_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r3_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $76
+    sta.b $76
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2520,81 +1513,35 @@ _cf1_r3_p2_back:
     lsr a
     ora.b $66
     sta.b $66
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $76
-    sta.b $76
-    bra _cf1_r3_p3_back
-_cf1_r3_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $46
-    sta.b $46
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $56
-    sta.b $56
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $66
-    sta.b $66
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $76
-    sta.b $76
-_cf1_r3_p3_back:
     lda.w snes_frame_fb + 1024,y
     asl a
     tax
-    bcs _cf1_r4_p0_h1
+    bcc _cf1_r4_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r4_p0_j
+_cf1_r4_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r4_p0_j:
+    sta.b $78
     lda.l snes_pairlut_p0_h0,x
     sta.b $48
     lda.l snes_pairlut_p1_h0,x
     sta.b $58
     lda.l snes_pairlut_p2_h0,x
     sta.b $68
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $78
-    bra _cf1_r4_p0_back
-_cf1_r4_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $48
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $58
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $68
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $78
-_cf1_r4_p0_back:
     lda.w snes_frame_fb + 1026,y
     asl a
     tax
-    bcs _cf1_r4_p1_h1
+    bcc _cf1_r4_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r4_p1_j
+_cf1_r4_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r4_p1_j:
+    lsr a
+    lsr a
+    ora.b $78
+    sta.b $78
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2610,38 +1557,21 @@ _cf1_r4_p0_back:
     lsr a
     ora.b $68
     sta.b $68
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $78
-    sta.b $78
-    bra _cf1_r4_p1_back
-_cf1_r4_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $48
-    sta.b $48
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $58
-    sta.b $58
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $68
-    sta.b $68
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $78
-    sta.b $78
-_cf1_r4_p1_back:
     lda.w snes_frame_fb + 1028,y
     asl a
     tax
-    bcs _cf1_r4_p2_h1
+    bcc _cf1_r4_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r4_p2_j
+_cf1_r4_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r4_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $78
+    sta.b $78
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2663,48 +1593,23 @@ _cf1_r4_p1_back:
     lsr a
     ora.b $68
     sta.b $68
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $78
-    sta.b $78
-    bra _cf1_r4_p2_back
-_cf1_r4_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $48
-    sta.b $48
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $58
-    sta.b $58
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $68
-    sta.b $68
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $78
-    sta.b $78
-_cf1_r4_p2_back:
     lda.w snes_frame_fb + 1030,y
     asl a
     tax
-    bcs _cf1_r4_p3_h1
+    bcc _cf1_r4_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r4_p3_j
+_cf1_r4_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r4_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $78
+    sta.b $78
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2732,81 +1637,35 @@ _cf1_r4_p2_back:
     lsr a
     ora.b $68
     sta.b $68
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $78
-    sta.b $78
-    bra _cf1_r4_p3_back
-_cf1_r4_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $48
-    sta.b $48
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $58
-    sta.b $58
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $68
-    sta.b $68
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $78
-    sta.b $78
-_cf1_r4_p3_back:
     lda.w snes_frame_fb + 1280,y
     asl a
     tax
-    bcs _cf1_r5_p0_h1
+    bcc _cf1_r5_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r5_p0_j
+_cf1_r5_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r5_p0_j:
+    sta.b $7A
     lda.l snes_pairlut_p0_h0,x
     sta.b $4A
     lda.l snes_pairlut_p1_h0,x
     sta.b $5A
     lda.l snes_pairlut_p2_h0,x
     sta.b $6A
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $7A
-    bra _cf1_r5_p0_back
-_cf1_r5_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $4A
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $5A
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $6A
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $7A
-_cf1_r5_p0_back:
     lda.w snes_frame_fb + 1282,y
     asl a
     tax
-    bcs _cf1_r5_p1_h1
+    bcc _cf1_r5_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r5_p1_j
+_cf1_r5_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r5_p1_j:
+    lsr a
+    lsr a
+    ora.b $7A
+    sta.b $7A
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2822,38 +1681,21 @@ _cf1_r5_p0_back:
     lsr a
     ora.b $6A
     sta.b $6A
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $7A
-    sta.b $7A
-    bra _cf1_r5_p1_back
-_cf1_r5_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $4A
-    sta.b $4A
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $5A
-    sta.b $5A
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $6A
-    sta.b $6A
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $7A
-    sta.b $7A
-_cf1_r5_p1_back:
     lda.w snes_frame_fb + 1284,y
     asl a
     tax
-    bcs _cf1_r5_p2_h1
+    bcc _cf1_r5_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r5_p2_j
+_cf1_r5_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r5_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $7A
+    sta.b $7A
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2875,48 +1717,23 @@ _cf1_r5_p1_back:
     lsr a
     ora.b $6A
     sta.b $6A
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7A
-    sta.b $7A
-    bra _cf1_r5_p2_back
-_cf1_r5_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $4A
-    sta.b $4A
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $5A
-    sta.b $5A
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $6A
-    sta.b $6A
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7A
-    sta.b $7A
-_cf1_r5_p2_back:
     lda.w snes_frame_fb + 1286,y
     asl a
     tax
-    bcs _cf1_r5_p3_h1
+    bcc _cf1_r5_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r5_p3_j
+_cf1_r5_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r5_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $7A
+    sta.b $7A
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -2944,81 +1761,35 @@ _cf1_r5_p2_back:
     lsr a
     ora.b $6A
     sta.b $6A
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7A
-    sta.b $7A
-    bra _cf1_r5_p3_back
-_cf1_r5_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $4A
-    sta.b $4A
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $5A
-    sta.b $5A
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $6A
-    sta.b $6A
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7A
-    sta.b $7A
-_cf1_r5_p3_back:
     lda.w snes_frame_fb + 1536,y
     asl a
     tax
-    bcs _cf1_r6_p0_h1
+    bcc _cf1_r6_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r6_p0_j
+_cf1_r6_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r6_p0_j:
+    sta.b $7C
     lda.l snes_pairlut_p0_h0,x
     sta.b $4C
     lda.l snes_pairlut_p1_h0,x
     sta.b $5C
     lda.l snes_pairlut_p2_h0,x
     sta.b $6C
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $7C
-    bra _cf1_r6_p0_back
-_cf1_r6_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $4C
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $5C
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $6C
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $7C
-_cf1_r6_p0_back:
     lda.w snes_frame_fb + 1538,y
     asl a
     tax
-    bcs _cf1_r6_p1_h1
+    bcc _cf1_r6_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r6_p1_j
+_cf1_r6_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r6_p1_j:
+    lsr a
+    lsr a
+    ora.b $7C
+    sta.b $7C
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3034,38 +1805,21 @@ _cf1_r6_p0_back:
     lsr a
     ora.b $6C
     sta.b $6C
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $7C
-    sta.b $7C
-    bra _cf1_r6_p1_back
-_cf1_r6_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $4C
-    sta.b $4C
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $5C
-    sta.b $5C
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $6C
-    sta.b $6C
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $7C
-    sta.b $7C
-_cf1_r6_p1_back:
     lda.w snes_frame_fb + 1540,y
     asl a
     tax
-    bcs _cf1_r6_p2_h1
+    bcc _cf1_r6_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r6_p2_j
+_cf1_r6_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r6_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $7C
+    sta.b $7C
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3087,48 +1841,23 @@ _cf1_r6_p1_back:
     lsr a
     ora.b $6C
     sta.b $6C
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7C
-    sta.b $7C
-    bra _cf1_r6_p2_back
-_cf1_r6_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $4C
-    sta.b $4C
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $5C
-    sta.b $5C
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $6C
-    sta.b $6C
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7C
-    sta.b $7C
-_cf1_r6_p2_back:
     lda.w snes_frame_fb + 1542,y
     asl a
     tax
-    bcs _cf1_r6_p3_h1
+    bcc _cf1_r6_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r6_p3_j
+_cf1_r6_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r6_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $7C
+    sta.b $7C
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3156,81 +1885,35 @@ _cf1_r6_p2_back:
     lsr a
     ora.b $6C
     sta.b $6C
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7C
-    sta.b $7C
-    bra _cf1_r6_p3_back
-_cf1_r6_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $4C
-    sta.b $4C
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $5C
-    sta.b $5C
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $6C
-    sta.b $6C
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7C
-    sta.b $7C
-_cf1_r6_p3_back:
     lda.w snes_frame_fb + 1792,y
     asl a
     tax
-    bcs _cf1_r7_p0_h1
+    bcc _cf1_r7_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r7_p0_j
+_cf1_r7_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r7_p0_j:
+    sta.b $7E
     lda.l snes_pairlut_p0_h0,x
     sta.b $4E
     lda.l snes_pairlut_p1_h0,x
     sta.b $5E
     lda.l snes_pairlut_p2_h0,x
     sta.b $6E
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $7E
-    bra _cf1_r7_p0_back
-_cf1_r7_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $4E
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $5E
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $6E
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $7E
-_cf1_r7_p0_back:
     lda.w snes_frame_fb + 1794,y
     asl a
     tax
-    bcs _cf1_r7_p1_h1
+    bcc _cf1_r7_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r7_p1_j
+_cf1_r7_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r7_p1_j:
+    lsr a
+    lsr a
+    ora.b $7E
+    sta.b $7E
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3246,38 +1929,21 @@ _cf1_r7_p0_back:
     lsr a
     ora.b $6E
     sta.b $6E
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $7E
-    sta.b $7E
-    bra _cf1_r7_p1_back
-_cf1_r7_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $4E
-    sta.b $4E
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $5E
-    sta.b $5E
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $6E
-    sta.b $6E
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $7E
-    sta.b $7E
-_cf1_r7_p1_back:
     lda.w snes_frame_fb + 1796,y
     asl a
     tax
-    bcs _cf1_r7_p2_h1
+    bcc _cf1_r7_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r7_p2_j
+_cf1_r7_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r7_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $7E
+    sta.b $7E
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3299,48 +1965,23 @@ _cf1_r7_p1_back:
     lsr a
     ora.b $6E
     sta.b $6E
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7E
-    sta.b $7E
-    bra _cf1_r7_p2_back
-_cf1_r7_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $4E
-    sta.b $4E
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $5E
-    sta.b $5E
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $6E
-    sta.b $6E
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7E
-    sta.b $7E
-_cf1_r7_p2_back:
     lda.w snes_frame_fb + 1798,y
     asl a
     tax
-    bcs _cf1_r7_p3_h1
+    bcc _cf1_r7_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf1_r7_p3_j
+_cf1_r7_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf1_r7_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $7E
+    sta.b $7E
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3368,84 +2009,38 @@ _cf1_r7_p2_back:
     lsr a
     ora.b $6E
     sta.b $6E
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7E
-    sta.b $7E
-    bra _cf1_r7_p3_back
-_cf1_r7_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $4E
-    sta.b $4E
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $5E
-    sta.b $5E
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $6E
-    sta.b $6E
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $7E
-    sta.b $7E
-_cf1_r7_p3_back:
     rts
 
 snesConvFrameTile2:
     lda.w snes_frame_fb + 0,y
     asl a
     tax
-    bcs _cf2_r0_p0_h1
+    bcc _cf2_r0_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r0_p0_j
+_cf2_r0_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r0_p0_j:
+    sta.b $B0
     lda.l snes_pairlut_p0_h0,x
     sta.b $80
     lda.l snes_pairlut_p1_h0,x
     sta.b $90
     lda.l snes_pairlut_p2_h0,x
     sta.b $A0
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $B0
-    bra _cf2_r0_p0_back
-_cf2_r0_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $80
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $90
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $A0
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $B0
-_cf2_r0_p0_back:
     lda.w snes_frame_fb + 2,y
     asl a
     tax
-    bcs _cf2_r0_p1_h1
+    bcc _cf2_r0_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r0_p1_j
+_cf2_r0_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r0_p1_j:
+    lsr a
+    lsr a
+    ora.b $B0
+    sta.b $B0
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3461,38 +2056,21 @@ _cf2_r0_p0_back:
     lsr a
     ora.b $A0
     sta.b $A0
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $B0
-    sta.b $B0
-    bra _cf2_r0_p1_back
-_cf2_r0_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $80
-    sta.b $80
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $90
-    sta.b $90
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $A0
-    sta.b $A0
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $B0
-    sta.b $B0
-_cf2_r0_p1_back:
     lda.w snes_frame_fb + 4,y
     asl a
     tax
-    bcs _cf2_r0_p2_h1
+    bcc _cf2_r0_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r0_p2_j
+_cf2_r0_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r0_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B0
+    sta.b $B0
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3514,48 +2092,23 @@ _cf2_r0_p1_back:
     lsr a
     ora.b $A0
     sta.b $A0
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B0
-    sta.b $B0
-    bra _cf2_r0_p2_back
-_cf2_r0_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $80
-    sta.b $80
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $90
-    sta.b $90
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A0
-    sta.b $A0
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B0
-    sta.b $B0
-_cf2_r0_p2_back:
     lda.w snes_frame_fb + 6,y
     asl a
     tax
-    bcs _cf2_r0_p3_h1
+    bcc _cf2_r0_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r0_p3_j
+_cf2_r0_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r0_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B0
+    sta.b $B0
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3583,81 +2136,35 @@ _cf2_r0_p2_back:
     lsr a
     ora.b $A0
     sta.b $A0
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B0
-    sta.b $B0
-    bra _cf2_r0_p3_back
-_cf2_r0_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $80
-    sta.b $80
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $90
-    sta.b $90
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A0
-    sta.b $A0
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B0
-    sta.b $B0
-_cf2_r0_p3_back:
     lda.w snes_frame_fb + 256,y
     asl a
     tax
-    bcs _cf2_r1_p0_h1
+    bcc _cf2_r1_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r1_p0_j
+_cf2_r1_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r1_p0_j:
+    sta.b $B2
     lda.l snes_pairlut_p0_h0,x
     sta.b $82
     lda.l snes_pairlut_p1_h0,x
     sta.b $92
     lda.l snes_pairlut_p2_h0,x
     sta.b $A2
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $B2
-    bra _cf2_r1_p0_back
-_cf2_r1_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $82
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $92
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $A2
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $B2
-_cf2_r1_p0_back:
     lda.w snes_frame_fb + 258,y
     asl a
     tax
-    bcs _cf2_r1_p1_h1
+    bcc _cf2_r1_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r1_p1_j
+_cf2_r1_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r1_p1_j:
+    lsr a
+    lsr a
+    ora.b $B2
+    sta.b $B2
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3673,38 +2180,21 @@ _cf2_r1_p0_back:
     lsr a
     ora.b $A2
     sta.b $A2
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $B2
-    sta.b $B2
-    bra _cf2_r1_p1_back
-_cf2_r1_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $82
-    sta.b $82
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $92
-    sta.b $92
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $A2
-    sta.b $A2
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $B2
-    sta.b $B2
-_cf2_r1_p1_back:
     lda.w snes_frame_fb + 260,y
     asl a
     tax
-    bcs _cf2_r1_p2_h1
+    bcc _cf2_r1_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r1_p2_j
+_cf2_r1_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r1_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B2
+    sta.b $B2
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3726,48 +2216,23 @@ _cf2_r1_p1_back:
     lsr a
     ora.b $A2
     sta.b $A2
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B2
-    sta.b $B2
-    bra _cf2_r1_p2_back
-_cf2_r1_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $82
-    sta.b $82
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $92
-    sta.b $92
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A2
-    sta.b $A2
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B2
-    sta.b $B2
-_cf2_r1_p2_back:
     lda.w snes_frame_fb + 262,y
     asl a
     tax
-    bcs _cf2_r1_p3_h1
+    bcc _cf2_r1_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r1_p3_j
+_cf2_r1_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r1_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B2
+    sta.b $B2
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3795,81 +2260,35 @@ _cf2_r1_p2_back:
     lsr a
     ora.b $A2
     sta.b $A2
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B2
-    sta.b $B2
-    bra _cf2_r1_p3_back
-_cf2_r1_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $82
-    sta.b $82
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $92
-    sta.b $92
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A2
-    sta.b $A2
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B2
-    sta.b $B2
-_cf2_r1_p3_back:
     lda.w snes_frame_fb + 512,y
     asl a
     tax
-    bcs _cf2_r2_p0_h1
+    bcc _cf2_r2_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r2_p0_j
+_cf2_r2_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r2_p0_j:
+    sta.b $B4
     lda.l snes_pairlut_p0_h0,x
     sta.b $84
     lda.l snes_pairlut_p1_h0,x
     sta.b $94
     lda.l snes_pairlut_p2_h0,x
     sta.b $A4
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $B4
-    bra _cf2_r2_p0_back
-_cf2_r2_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $84
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $94
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $A4
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $B4
-_cf2_r2_p0_back:
     lda.w snes_frame_fb + 514,y
     asl a
     tax
-    bcs _cf2_r2_p1_h1
+    bcc _cf2_r2_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r2_p1_j
+_cf2_r2_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r2_p1_j:
+    lsr a
+    lsr a
+    ora.b $B4
+    sta.b $B4
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3885,38 +2304,21 @@ _cf2_r2_p0_back:
     lsr a
     ora.b $A4
     sta.b $A4
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $B4
-    sta.b $B4
-    bra _cf2_r2_p1_back
-_cf2_r2_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $84
-    sta.b $84
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $94
-    sta.b $94
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $A4
-    sta.b $A4
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $B4
-    sta.b $B4
-_cf2_r2_p1_back:
     lda.w snes_frame_fb + 516,y
     asl a
     tax
-    bcs _cf2_r2_p2_h1
+    bcc _cf2_r2_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r2_p2_j
+_cf2_r2_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r2_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B4
+    sta.b $B4
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -3938,48 +2340,23 @@ _cf2_r2_p1_back:
     lsr a
     ora.b $A4
     sta.b $A4
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B4
-    sta.b $B4
-    bra _cf2_r2_p2_back
-_cf2_r2_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $84
-    sta.b $84
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $94
-    sta.b $94
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A4
-    sta.b $A4
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B4
-    sta.b $B4
-_cf2_r2_p2_back:
     lda.w snes_frame_fb + 518,y
     asl a
     tax
-    bcs _cf2_r2_p3_h1
+    bcc _cf2_r2_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r2_p3_j
+_cf2_r2_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r2_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B4
+    sta.b $B4
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4007,81 +2384,35 @@ _cf2_r2_p2_back:
     lsr a
     ora.b $A4
     sta.b $A4
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B4
-    sta.b $B4
-    bra _cf2_r2_p3_back
-_cf2_r2_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $84
-    sta.b $84
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $94
-    sta.b $94
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A4
-    sta.b $A4
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B4
-    sta.b $B4
-_cf2_r2_p3_back:
     lda.w snes_frame_fb + 768,y
     asl a
     tax
-    bcs _cf2_r3_p0_h1
+    bcc _cf2_r3_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r3_p0_j
+_cf2_r3_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r3_p0_j:
+    sta.b $B6
     lda.l snes_pairlut_p0_h0,x
     sta.b $86
     lda.l snes_pairlut_p1_h0,x
     sta.b $96
     lda.l snes_pairlut_p2_h0,x
     sta.b $A6
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $B6
-    bra _cf2_r3_p0_back
-_cf2_r3_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $86
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $96
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $A6
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $B6
-_cf2_r3_p0_back:
     lda.w snes_frame_fb + 770,y
     asl a
     tax
-    bcs _cf2_r3_p1_h1
+    bcc _cf2_r3_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r3_p1_j
+_cf2_r3_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r3_p1_j:
+    lsr a
+    lsr a
+    ora.b $B6
+    sta.b $B6
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4097,38 +2428,21 @@ _cf2_r3_p0_back:
     lsr a
     ora.b $A6
     sta.b $A6
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $B6
-    sta.b $B6
-    bra _cf2_r3_p1_back
-_cf2_r3_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $86
-    sta.b $86
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $96
-    sta.b $96
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $A6
-    sta.b $A6
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $B6
-    sta.b $B6
-_cf2_r3_p1_back:
     lda.w snes_frame_fb + 772,y
     asl a
     tax
-    bcs _cf2_r3_p2_h1
+    bcc _cf2_r3_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r3_p2_j
+_cf2_r3_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r3_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B6
+    sta.b $B6
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4150,48 +2464,23 @@ _cf2_r3_p1_back:
     lsr a
     ora.b $A6
     sta.b $A6
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B6
-    sta.b $B6
-    bra _cf2_r3_p2_back
-_cf2_r3_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $86
-    sta.b $86
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $96
-    sta.b $96
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A6
-    sta.b $A6
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B6
-    sta.b $B6
-_cf2_r3_p2_back:
     lda.w snes_frame_fb + 774,y
     asl a
     tax
-    bcs _cf2_r3_p3_h1
+    bcc _cf2_r3_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r3_p3_j
+_cf2_r3_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r3_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B6
+    sta.b $B6
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4219,81 +2508,35 @@ _cf2_r3_p2_back:
     lsr a
     ora.b $A6
     sta.b $A6
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B6
-    sta.b $B6
-    bra _cf2_r3_p3_back
-_cf2_r3_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $86
-    sta.b $86
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $96
-    sta.b $96
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A6
-    sta.b $A6
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B6
-    sta.b $B6
-_cf2_r3_p3_back:
     lda.w snes_frame_fb + 1024,y
     asl a
     tax
-    bcs _cf2_r4_p0_h1
+    bcc _cf2_r4_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r4_p0_j
+_cf2_r4_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r4_p0_j:
+    sta.b $B8
     lda.l snes_pairlut_p0_h0,x
     sta.b $88
     lda.l snes_pairlut_p1_h0,x
     sta.b $98
     lda.l snes_pairlut_p2_h0,x
     sta.b $A8
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $B8
-    bra _cf2_r4_p0_back
-_cf2_r4_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $88
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $98
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $A8
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $B8
-_cf2_r4_p0_back:
     lda.w snes_frame_fb + 1026,y
     asl a
     tax
-    bcs _cf2_r4_p1_h1
+    bcc _cf2_r4_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r4_p1_j
+_cf2_r4_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r4_p1_j:
+    lsr a
+    lsr a
+    ora.b $B8
+    sta.b $B8
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4309,38 +2552,21 @@ _cf2_r4_p0_back:
     lsr a
     ora.b $A8
     sta.b $A8
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $B8
-    sta.b $B8
-    bra _cf2_r4_p1_back
-_cf2_r4_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $88
-    sta.b $88
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $98
-    sta.b $98
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $A8
-    sta.b $A8
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $B8
-    sta.b $B8
-_cf2_r4_p1_back:
     lda.w snes_frame_fb + 1028,y
     asl a
     tax
-    bcs _cf2_r4_p2_h1
+    bcc _cf2_r4_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r4_p2_j
+_cf2_r4_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r4_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B8
+    sta.b $B8
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4362,48 +2588,23 @@ _cf2_r4_p1_back:
     lsr a
     ora.b $A8
     sta.b $A8
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B8
-    sta.b $B8
-    bra _cf2_r4_p2_back
-_cf2_r4_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $88
-    sta.b $88
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $98
-    sta.b $98
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A8
-    sta.b $A8
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B8
-    sta.b $B8
-_cf2_r4_p2_back:
     lda.w snes_frame_fb + 1030,y
     asl a
     tax
-    bcs _cf2_r4_p3_h1
+    bcc _cf2_r4_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r4_p3_j
+_cf2_r4_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r4_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $B8
+    sta.b $B8
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4431,81 +2632,35 @@ _cf2_r4_p2_back:
     lsr a
     ora.b $A8
     sta.b $A8
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B8
-    sta.b $B8
-    bra _cf2_r4_p3_back
-_cf2_r4_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $88
-    sta.b $88
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $98
-    sta.b $98
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $A8
-    sta.b $A8
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $B8
-    sta.b $B8
-_cf2_r4_p3_back:
     lda.w snes_frame_fb + 1280,y
     asl a
     tax
-    bcs _cf2_r5_p0_h1
+    bcc _cf2_r5_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r5_p0_j
+_cf2_r5_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r5_p0_j:
+    sta.b $BA
     lda.l snes_pairlut_p0_h0,x
     sta.b $8A
     lda.l snes_pairlut_p1_h0,x
     sta.b $9A
     lda.l snes_pairlut_p2_h0,x
     sta.b $AA
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $BA
-    bra _cf2_r5_p0_back
-_cf2_r5_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $8A
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $9A
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $AA
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $BA
-_cf2_r5_p0_back:
     lda.w snes_frame_fb + 1282,y
     asl a
     tax
-    bcs _cf2_r5_p1_h1
+    bcc _cf2_r5_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r5_p1_j
+_cf2_r5_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r5_p1_j:
+    lsr a
+    lsr a
+    ora.b $BA
+    sta.b $BA
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4521,38 +2676,21 @@ _cf2_r5_p0_back:
     lsr a
     ora.b $AA
     sta.b $AA
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $BA
-    sta.b $BA
-    bra _cf2_r5_p1_back
-_cf2_r5_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $8A
-    sta.b $8A
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $9A
-    sta.b $9A
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $AA
-    sta.b $AA
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $BA
-    sta.b $BA
-_cf2_r5_p1_back:
     lda.w snes_frame_fb + 1284,y
     asl a
     tax
-    bcs _cf2_r5_p2_h1
+    bcc _cf2_r5_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r5_p2_j
+_cf2_r5_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r5_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $BA
+    sta.b $BA
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4574,48 +2712,23 @@ _cf2_r5_p1_back:
     lsr a
     ora.b $AA
     sta.b $AA
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BA
-    sta.b $BA
-    bra _cf2_r5_p2_back
-_cf2_r5_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $8A
-    sta.b $8A
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $9A
-    sta.b $9A
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $AA
-    sta.b $AA
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BA
-    sta.b $BA
-_cf2_r5_p2_back:
     lda.w snes_frame_fb + 1286,y
     asl a
     tax
-    bcs _cf2_r5_p3_h1
+    bcc _cf2_r5_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r5_p3_j
+_cf2_r5_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r5_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $BA
+    sta.b $BA
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4643,81 +2756,35 @@ _cf2_r5_p2_back:
     lsr a
     ora.b $AA
     sta.b $AA
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BA
-    sta.b $BA
-    bra _cf2_r5_p3_back
-_cf2_r5_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $8A
-    sta.b $8A
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $9A
-    sta.b $9A
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $AA
-    sta.b $AA
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BA
-    sta.b $BA
-_cf2_r5_p3_back:
     lda.w snes_frame_fb + 1536,y
     asl a
     tax
-    bcs _cf2_r6_p0_h1
+    bcc _cf2_r6_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r6_p0_j
+_cf2_r6_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r6_p0_j:
+    sta.b $BC
     lda.l snes_pairlut_p0_h0,x
     sta.b $8C
     lda.l snes_pairlut_p1_h0,x
     sta.b $9C
     lda.l snes_pairlut_p2_h0,x
     sta.b $AC
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $BC
-    bra _cf2_r6_p0_back
-_cf2_r6_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $8C
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $9C
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $AC
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $BC
-_cf2_r6_p0_back:
     lda.w snes_frame_fb + 1538,y
     asl a
     tax
-    bcs _cf2_r6_p1_h1
+    bcc _cf2_r6_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r6_p1_j
+_cf2_r6_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r6_p1_j:
+    lsr a
+    lsr a
+    ora.b $BC
+    sta.b $BC
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4733,38 +2800,21 @@ _cf2_r6_p0_back:
     lsr a
     ora.b $AC
     sta.b $AC
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $BC
-    sta.b $BC
-    bra _cf2_r6_p1_back
-_cf2_r6_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $8C
-    sta.b $8C
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $9C
-    sta.b $9C
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $AC
-    sta.b $AC
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $BC
-    sta.b $BC
-_cf2_r6_p1_back:
     lda.w snes_frame_fb + 1540,y
     asl a
     tax
-    bcs _cf2_r6_p2_h1
+    bcc _cf2_r6_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r6_p2_j
+_cf2_r6_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r6_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $BC
+    sta.b $BC
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4786,48 +2836,23 @@ _cf2_r6_p1_back:
     lsr a
     ora.b $AC
     sta.b $AC
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BC
-    sta.b $BC
-    bra _cf2_r6_p2_back
-_cf2_r6_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $8C
-    sta.b $8C
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $9C
-    sta.b $9C
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $AC
-    sta.b $AC
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BC
-    sta.b $BC
-_cf2_r6_p2_back:
     lda.w snes_frame_fb + 1542,y
     asl a
     tax
-    bcs _cf2_r6_p3_h1
+    bcc _cf2_r6_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r6_p3_j
+_cf2_r6_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r6_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $BC
+    sta.b $BC
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4855,81 +2880,35 @@ _cf2_r6_p2_back:
     lsr a
     ora.b $AC
     sta.b $AC
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BC
-    sta.b $BC
-    bra _cf2_r6_p3_back
-_cf2_r6_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $8C
-    sta.b $8C
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $9C
-    sta.b $9C
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $AC
-    sta.b $AC
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BC
-    sta.b $BC
-_cf2_r6_p3_back:
     lda.w snes_frame_fb + 1792,y
     asl a
     tax
-    bcs _cf2_r7_p0_h1
+    bcc _cf2_r7_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r7_p0_j
+_cf2_r7_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r7_p0_j:
+    sta.b $BE
     lda.l snes_pairlut_p0_h0,x
     sta.b $8E
     lda.l snes_pairlut_p1_h0,x
     sta.b $9E
     lda.l snes_pairlut_p2_h0,x
     sta.b $AE
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $BE
-    bra _cf2_r7_p0_back
-_cf2_r7_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $8E
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $9E
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $AE
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $BE
-_cf2_r7_p0_back:
     lda.w snes_frame_fb + 1794,y
     asl a
     tax
-    bcs _cf2_r7_p1_h1
+    bcc _cf2_r7_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r7_p1_j
+_cf2_r7_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r7_p1_j:
+    lsr a
+    lsr a
+    ora.b $BE
+    sta.b $BE
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4945,38 +2924,21 @@ _cf2_r7_p0_back:
     lsr a
     ora.b $AE
     sta.b $AE
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $BE
-    sta.b $BE
-    bra _cf2_r7_p1_back
-_cf2_r7_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $8E
-    sta.b $8E
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $9E
-    sta.b $9E
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $AE
-    sta.b $AE
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $BE
-    sta.b $BE
-_cf2_r7_p1_back:
     lda.w snes_frame_fb + 1796,y
     asl a
     tax
-    bcs _cf2_r7_p2_h1
+    bcc _cf2_r7_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r7_p2_j
+_cf2_r7_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r7_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $BE
+    sta.b $BE
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -4998,48 +2960,23 @@ _cf2_r7_p1_back:
     lsr a
     ora.b $AE
     sta.b $AE
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BE
-    sta.b $BE
-    bra _cf2_r7_p2_back
-_cf2_r7_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $8E
-    sta.b $8E
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $9E
-    sta.b $9E
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $AE
-    sta.b $AE
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BE
-    sta.b $BE
-_cf2_r7_p2_back:
     lda.w snes_frame_fb + 1798,y
     asl a
     tax
-    bcs _cf2_r7_p3_h1
+    bcc _cf2_r7_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf2_r7_p3_j
+_cf2_r7_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf2_r7_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $BE
+    sta.b $BE
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5067,84 +3004,38 @@ _cf2_r7_p2_back:
     lsr a
     ora.b $AE
     sta.b $AE
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BE
-    sta.b $BE
-    bra _cf2_r7_p3_back
-_cf2_r7_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $8E
-    sta.b $8E
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $9E
-    sta.b $9E
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $AE
-    sta.b $AE
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $BE
-    sta.b $BE
-_cf2_r7_p3_back:
     rts
 
 snesConvFrameTile3:
     lda.w snes_frame_fb + 0,y
     asl a
     tax
-    bcs _cf3_r0_p0_h1
+    bcc _cf3_r0_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r0_p0_j
+_cf3_r0_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r0_p0_j:
+    sta.b $F0
     lda.l snes_pairlut_p0_h0,x
     sta.b $C0
     lda.l snes_pairlut_p1_h0,x
     sta.b $D0
     lda.l snes_pairlut_p2_h0,x
     sta.b $E0
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $F0
-    bra _cf3_r0_p0_back
-_cf3_r0_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $C0
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $D0
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $E0
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $F0
-_cf3_r0_p0_back:
     lda.w snes_frame_fb + 2,y
     asl a
     tax
-    bcs _cf3_r0_p1_h1
+    bcc _cf3_r0_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r0_p1_j
+_cf3_r0_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r0_p1_j:
+    lsr a
+    lsr a
+    ora.b $F0
+    sta.b $F0
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5160,38 +3051,21 @@ _cf3_r0_p0_back:
     lsr a
     ora.b $E0
     sta.b $E0
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $F0
-    sta.b $F0
-    bra _cf3_r0_p1_back
-_cf3_r0_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $C0
-    sta.b $C0
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $D0
-    sta.b $D0
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $E0
-    sta.b $E0
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $F0
-    sta.b $F0
-_cf3_r0_p1_back:
     lda.w snes_frame_fb + 4,y
     asl a
     tax
-    bcs _cf3_r0_p2_h1
+    bcc _cf3_r0_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r0_p2_j
+_cf3_r0_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r0_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F0
+    sta.b $F0
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5213,48 +3087,23 @@ _cf3_r0_p1_back:
     lsr a
     ora.b $E0
     sta.b $E0
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F0
-    sta.b $F0
-    bra _cf3_r0_p2_back
-_cf3_r0_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C0
-    sta.b $C0
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D0
-    sta.b $D0
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E0
-    sta.b $E0
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F0
-    sta.b $F0
-_cf3_r0_p2_back:
     lda.w snes_frame_fb + 6,y
     asl a
     tax
-    bcs _cf3_r0_p3_h1
+    bcc _cf3_r0_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r0_p3_j
+_cf3_r0_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r0_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F0
+    sta.b $F0
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5282,81 +3131,35 @@ _cf3_r0_p2_back:
     lsr a
     ora.b $E0
     sta.b $E0
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F0
-    sta.b $F0
-    bra _cf3_r0_p3_back
-_cf3_r0_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C0
-    sta.b $C0
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D0
-    sta.b $D0
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E0
-    sta.b $E0
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F0
-    sta.b $F0
-_cf3_r0_p3_back:
     lda.w snes_frame_fb + 256,y
     asl a
     tax
-    bcs _cf3_r1_p0_h1
+    bcc _cf3_r1_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r1_p0_j
+_cf3_r1_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r1_p0_j:
+    sta.b $F2
     lda.l snes_pairlut_p0_h0,x
     sta.b $C2
     lda.l snes_pairlut_p1_h0,x
     sta.b $D2
     lda.l snes_pairlut_p2_h0,x
     sta.b $E2
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $F2
-    bra _cf3_r1_p0_back
-_cf3_r1_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $C2
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $D2
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $E2
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $F2
-_cf3_r1_p0_back:
     lda.w snes_frame_fb + 258,y
     asl a
     tax
-    bcs _cf3_r1_p1_h1
+    bcc _cf3_r1_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r1_p1_j
+_cf3_r1_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r1_p1_j:
+    lsr a
+    lsr a
+    ora.b $F2
+    sta.b $F2
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5372,38 +3175,21 @@ _cf3_r1_p0_back:
     lsr a
     ora.b $E2
     sta.b $E2
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $F2
-    sta.b $F2
-    bra _cf3_r1_p1_back
-_cf3_r1_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $C2
-    sta.b $C2
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $D2
-    sta.b $D2
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $E2
-    sta.b $E2
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $F2
-    sta.b $F2
-_cf3_r1_p1_back:
     lda.w snes_frame_fb + 260,y
     asl a
     tax
-    bcs _cf3_r1_p2_h1
+    bcc _cf3_r1_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r1_p2_j
+_cf3_r1_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r1_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F2
+    sta.b $F2
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5425,48 +3211,23 @@ _cf3_r1_p1_back:
     lsr a
     ora.b $E2
     sta.b $E2
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F2
-    sta.b $F2
-    bra _cf3_r1_p2_back
-_cf3_r1_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C2
-    sta.b $C2
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D2
-    sta.b $D2
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E2
-    sta.b $E2
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F2
-    sta.b $F2
-_cf3_r1_p2_back:
     lda.w snes_frame_fb + 262,y
     asl a
     tax
-    bcs _cf3_r1_p3_h1
+    bcc _cf3_r1_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r1_p3_j
+_cf3_r1_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r1_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F2
+    sta.b $F2
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5494,81 +3255,35 @@ _cf3_r1_p2_back:
     lsr a
     ora.b $E2
     sta.b $E2
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F2
-    sta.b $F2
-    bra _cf3_r1_p3_back
-_cf3_r1_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C2
-    sta.b $C2
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D2
-    sta.b $D2
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E2
-    sta.b $E2
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F2
-    sta.b $F2
-_cf3_r1_p3_back:
     lda.w snes_frame_fb + 512,y
     asl a
     tax
-    bcs _cf3_r2_p0_h1
+    bcc _cf3_r2_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r2_p0_j
+_cf3_r2_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r2_p0_j:
+    sta.b $F4
     lda.l snes_pairlut_p0_h0,x
     sta.b $C4
     lda.l snes_pairlut_p1_h0,x
     sta.b $D4
     lda.l snes_pairlut_p2_h0,x
     sta.b $E4
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $F4
-    bra _cf3_r2_p0_back
-_cf3_r2_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $C4
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $D4
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $E4
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $F4
-_cf3_r2_p0_back:
     lda.w snes_frame_fb + 514,y
     asl a
     tax
-    bcs _cf3_r2_p1_h1
+    bcc _cf3_r2_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r2_p1_j
+_cf3_r2_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r2_p1_j:
+    lsr a
+    lsr a
+    ora.b $F4
+    sta.b $F4
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5584,38 +3299,21 @@ _cf3_r2_p0_back:
     lsr a
     ora.b $E4
     sta.b $E4
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $F4
-    sta.b $F4
-    bra _cf3_r2_p1_back
-_cf3_r2_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $C4
-    sta.b $C4
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $D4
-    sta.b $D4
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $E4
-    sta.b $E4
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $F4
-    sta.b $F4
-_cf3_r2_p1_back:
     lda.w snes_frame_fb + 516,y
     asl a
     tax
-    bcs _cf3_r2_p2_h1
+    bcc _cf3_r2_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r2_p2_j
+_cf3_r2_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r2_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F4
+    sta.b $F4
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5637,48 +3335,23 @@ _cf3_r2_p1_back:
     lsr a
     ora.b $E4
     sta.b $E4
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F4
-    sta.b $F4
-    bra _cf3_r2_p2_back
-_cf3_r2_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C4
-    sta.b $C4
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D4
-    sta.b $D4
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E4
-    sta.b $E4
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F4
-    sta.b $F4
-_cf3_r2_p2_back:
     lda.w snes_frame_fb + 518,y
     asl a
     tax
-    bcs _cf3_r2_p3_h1
+    bcc _cf3_r2_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r2_p3_j
+_cf3_r2_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r2_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F4
+    sta.b $F4
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5706,81 +3379,35 @@ _cf3_r2_p2_back:
     lsr a
     ora.b $E4
     sta.b $E4
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F4
-    sta.b $F4
-    bra _cf3_r2_p3_back
-_cf3_r2_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C4
-    sta.b $C4
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D4
-    sta.b $D4
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E4
-    sta.b $E4
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F4
-    sta.b $F4
-_cf3_r2_p3_back:
     lda.w snes_frame_fb + 768,y
     asl a
     tax
-    bcs _cf3_r3_p0_h1
+    bcc _cf3_r3_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r3_p0_j
+_cf3_r3_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r3_p0_j:
+    sta.b $F6
     lda.l snes_pairlut_p0_h0,x
     sta.b $C6
     lda.l snes_pairlut_p1_h0,x
     sta.b $D6
     lda.l snes_pairlut_p2_h0,x
     sta.b $E6
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $F6
-    bra _cf3_r3_p0_back
-_cf3_r3_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $C6
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $D6
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $E6
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $F6
-_cf3_r3_p0_back:
     lda.w snes_frame_fb + 770,y
     asl a
     tax
-    bcs _cf3_r3_p1_h1
+    bcc _cf3_r3_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r3_p1_j
+_cf3_r3_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r3_p1_j:
+    lsr a
+    lsr a
+    ora.b $F6
+    sta.b $F6
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5796,38 +3423,21 @@ _cf3_r3_p0_back:
     lsr a
     ora.b $E6
     sta.b $E6
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $F6
-    sta.b $F6
-    bra _cf3_r3_p1_back
-_cf3_r3_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $C6
-    sta.b $C6
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $D6
-    sta.b $D6
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $E6
-    sta.b $E6
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $F6
-    sta.b $F6
-_cf3_r3_p1_back:
     lda.w snes_frame_fb + 772,y
     asl a
     tax
-    bcs _cf3_r3_p2_h1
+    bcc _cf3_r3_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r3_p2_j
+_cf3_r3_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r3_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F6
+    sta.b $F6
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5849,48 +3459,23 @@ _cf3_r3_p1_back:
     lsr a
     ora.b $E6
     sta.b $E6
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F6
-    sta.b $F6
-    bra _cf3_r3_p2_back
-_cf3_r3_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C6
-    sta.b $C6
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D6
-    sta.b $D6
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E6
-    sta.b $E6
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F6
-    sta.b $F6
-_cf3_r3_p2_back:
     lda.w snes_frame_fb + 774,y
     asl a
     tax
-    bcs _cf3_r3_p3_h1
+    bcc _cf3_r3_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r3_p3_j
+_cf3_r3_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r3_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F6
+    sta.b $F6
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -5918,81 +3503,35 @@ _cf3_r3_p2_back:
     lsr a
     ora.b $E6
     sta.b $E6
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F6
-    sta.b $F6
-    bra _cf3_r3_p3_back
-_cf3_r3_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C6
-    sta.b $C6
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D6
-    sta.b $D6
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E6
-    sta.b $E6
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F6
-    sta.b $F6
-_cf3_r3_p3_back:
     lda.w snes_frame_fb + 1024,y
     asl a
     tax
-    bcs _cf3_r4_p0_h1
+    bcc _cf3_r4_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r4_p0_j
+_cf3_r4_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r4_p0_j:
+    sta.b $F8
     lda.l snes_pairlut_p0_h0,x
     sta.b $C8
     lda.l snes_pairlut_p1_h0,x
     sta.b $D8
     lda.l snes_pairlut_p2_h0,x
     sta.b $E8
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $F8
-    bra _cf3_r4_p0_back
-_cf3_r4_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $C8
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $D8
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $E8
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $F8
-_cf3_r4_p0_back:
     lda.w snes_frame_fb + 1026,y
     asl a
     tax
-    bcs _cf3_r4_p1_h1
+    bcc _cf3_r4_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r4_p1_j
+_cf3_r4_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r4_p1_j:
+    lsr a
+    lsr a
+    ora.b $F8
+    sta.b $F8
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6008,38 +3547,21 @@ _cf3_r4_p0_back:
     lsr a
     ora.b $E8
     sta.b $E8
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $F8
-    sta.b $F8
-    bra _cf3_r4_p1_back
-_cf3_r4_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $C8
-    sta.b $C8
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $D8
-    sta.b $D8
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $E8
-    sta.b $E8
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $F8
-    sta.b $F8
-_cf3_r4_p1_back:
     lda.w snes_frame_fb + 1028,y
     asl a
     tax
-    bcs _cf3_r4_p2_h1
+    bcc _cf3_r4_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r4_p2_j
+_cf3_r4_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r4_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F8
+    sta.b $F8
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6061,48 +3583,23 @@ _cf3_r4_p1_back:
     lsr a
     ora.b $E8
     sta.b $E8
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F8
-    sta.b $F8
-    bra _cf3_r4_p2_back
-_cf3_r4_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C8
-    sta.b $C8
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D8
-    sta.b $D8
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E8
-    sta.b $E8
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F8
-    sta.b $F8
-_cf3_r4_p2_back:
     lda.w snes_frame_fb + 1030,y
     asl a
     tax
-    bcs _cf3_r4_p3_h1
+    bcc _cf3_r4_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r4_p3_j
+_cf3_r4_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r4_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $F8
+    sta.b $F8
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6130,81 +3627,35 @@ _cf3_r4_p2_back:
     lsr a
     ora.b $E8
     sta.b $E8
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F8
-    sta.b $F8
-    bra _cf3_r4_p3_back
-_cf3_r4_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $C8
-    sta.b $C8
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $D8
-    sta.b $D8
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $E8
-    sta.b $E8
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $F8
-    sta.b $F8
-_cf3_r4_p3_back:
     lda.w snes_frame_fb + 1280,y
     asl a
     tax
-    bcs _cf3_r5_p0_h1
+    bcc _cf3_r5_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r5_p0_j
+_cf3_r5_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r5_p0_j:
+    sta.b $FA
     lda.l snes_pairlut_p0_h0,x
     sta.b $CA
     lda.l snes_pairlut_p1_h0,x
     sta.b $DA
     lda.l snes_pairlut_p2_h0,x
     sta.b $EA
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $FA
-    bra _cf3_r5_p0_back
-_cf3_r5_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $CA
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $DA
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $EA
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $FA
-_cf3_r5_p0_back:
     lda.w snes_frame_fb + 1282,y
     asl a
     tax
-    bcs _cf3_r5_p1_h1
+    bcc _cf3_r5_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r5_p1_j
+_cf3_r5_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r5_p1_j:
+    lsr a
+    lsr a
+    ora.b $FA
+    sta.b $FA
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6220,38 +3671,21 @@ _cf3_r5_p0_back:
     lsr a
     ora.b $EA
     sta.b $EA
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $FA
-    sta.b $FA
-    bra _cf3_r5_p1_back
-_cf3_r5_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $CA
-    sta.b $CA
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $DA
-    sta.b $DA
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $EA
-    sta.b $EA
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $FA
-    sta.b $FA
-_cf3_r5_p1_back:
     lda.w snes_frame_fb + 1284,y
     asl a
     tax
-    bcs _cf3_r5_p2_h1
+    bcc _cf3_r5_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r5_p2_j
+_cf3_r5_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r5_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $FA
+    sta.b $FA
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6273,48 +3707,23 @@ _cf3_r5_p1_back:
     lsr a
     ora.b $EA
     sta.b $EA
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FA
-    sta.b $FA
-    bra _cf3_r5_p2_back
-_cf3_r5_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $CA
-    sta.b $CA
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $DA
-    sta.b $DA
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $EA
-    sta.b $EA
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FA
-    sta.b $FA
-_cf3_r5_p2_back:
     lda.w snes_frame_fb + 1286,y
     asl a
     tax
-    bcs _cf3_r5_p3_h1
+    bcc _cf3_r5_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r5_p3_j
+_cf3_r5_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r5_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $FA
+    sta.b $FA
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6342,81 +3751,35 @@ _cf3_r5_p2_back:
     lsr a
     ora.b $EA
     sta.b $EA
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FA
-    sta.b $FA
-    bra _cf3_r5_p3_back
-_cf3_r5_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $CA
-    sta.b $CA
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $DA
-    sta.b $DA
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $EA
-    sta.b $EA
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FA
-    sta.b $FA
-_cf3_r5_p3_back:
     lda.w snes_frame_fb + 1536,y
     asl a
     tax
-    bcs _cf3_r6_p0_h1
+    bcc _cf3_r6_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r6_p0_j
+_cf3_r6_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r6_p0_j:
+    sta.b $FC
     lda.l snes_pairlut_p0_h0,x
     sta.b $CC
     lda.l snes_pairlut_p1_h0,x
     sta.b $DC
     lda.l snes_pairlut_p2_h0,x
     sta.b $EC
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $FC
-    bra _cf3_r6_p0_back
-_cf3_r6_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $CC
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $DC
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $EC
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $FC
-_cf3_r6_p0_back:
     lda.w snes_frame_fb + 1538,y
     asl a
     tax
-    bcs _cf3_r6_p1_h1
+    bcc _cf3_r6_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r6_p1_j
+_cf3_r6_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r6_p1_j:
+    lsr a
+    lsr a
+    ora.b $FC
+    sta.b $FC
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6432,38 +3795,21 @@ _cf3_r6_p0_back:
     lsr a
     ora.b $EC
     sta.b $EC
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $FC
-    sta.b $FC
-    bra _cf3_r6_p1_back
-_cf3_r6_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $CC
-    sta.b $CC
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $DC
-    sta.b $DC
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $EC
-    sta.b $EC
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $FC
-    sta.b $FC
-_cf3_r6_p1_back:
     lda.w snes_frame_fb + 1540,y
     asl a
     tax
-    bcs _cf3_r6_p2_h1
+    bcc _cf3_r6_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r6_p2_j
+_cf3_r6_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r6_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $FC
+    sta.b $FC
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6485,48 +3831,23 @@ _cf3_r6_p1_back:
     lsr a
     ora.b $EC
     sta.b $EC
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FC
-    sta.b $FC
-    bra _cf3_r6_p2_back
-_cf3_r6_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $CC
-    sta.b $CC
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $DC
-    sta.b $DC
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $EC
-    sta.b $EC
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FC
-    sta.b $FC
-_cf3_r6_p2_back:
     lda.w snes_frame_fb + 1542,y
     asl a
     tax
-    bcs _cf3_r6_p3_h1
+    bcc _cf3_r6_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r6_p3_j
+_cf3_r6_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r6_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $FC
+    sta.b $FC
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6554,81 +3875,35 @@ _cf3_r6_p2_back:
     lsr a
     ora.b $EC
     sta.b $EC
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FC
-    sta.b $FC
-    bra _cf3_r6_p3_back
-_cf3_r6_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $CC
-    sta.b $CC
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $DC
-    sta.b $DC
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $EC
-    sta.b $EC
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FC
-    sta.b $FC
-_cf3_r6_p3_back:
     lda.w snes_frame_fb + 1792,y
     asl a
     tax
-    bcs _cf3_r7_p0_h1
+    bcc _cf3_r7_p0_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r7_p0_j
+_cf3_r7_p0_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r7_p0_j:
+    sta.b $FE
     lda.l snes_pairlut_p0_h0,x
     sta.b $CE
     lda.l snes_pairlut_p1_h0,x
     sta.b $DE
     lda.l snes_pairlut_p2_h0,x
     sta.b $EE
-    lda.l snes_pairlut_p3_h0,x
-    sta.b $FE
-    bra _cf3_r7_p0_back
-_cf3_r7_p0_h1:
-    lda.l snes_pairlut_p0_h1,x
-    sta.b $CE
-    lda.l snes_pairlut_p1_h1,x
-    sta.b $DE
-    lda.l snes_pairlut_p2_h1,x
-    sta.b $EE
-    lda.l snes_pairlut_p3_h1,x
-    sta.b $FE
-_cf3_r7_p0_back:
     lda.w snes_frame_fb + 1794,y
     asl a
     tax
-    bcs _cf3_r7_p1_h1
+    bcc _cf3_r7_p1_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r7_p1_j
+_cf3_r7_p1_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r7_p1_j:
+    lsr a
+    lsr a
+    ora.b $FE
+    sta.b $FE
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6644,38 +3919,21 @@ _cf3_r7_p0_back:
     lsr a
     ora.b $EE
     sta.b $EE
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    ora.b $FE
-    sta.b $FE
-    bra _cf3_r7_p1_back
-_cf3_r7_p1_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    ora.b $CE
-    sta.b $CE
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    ora.b $DE
-    sta.b $DE
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    ora.b $EE
-    sta.b $EE
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    ora.b $FE
-    sta.b $FE
-_cf3_r7_p1_back:
     lda.w snes_frame_fb + 1796,y
     asl a
     tax
-    bcs _cf3_r7_p2_h1
+    bcc _cf3_r7_p2_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r7_p2_j
+_cf3_r7_p2_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r7_p2_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $FE
+    sta.b $FE
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6697,48 +3955,23 @@ _cf3_r7_p1_back:
     lsr a
     ora.b $EE
     sta.b $EE
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FE
-    sta.b $FE
-    bra _cf3_r7_p2_back
-_cf3_r7_p2_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $CE
-    sta.b $CE
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $DE
-    sta.b $DE
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $EE
-    sta.b $EE
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FE
-    sta.b $FE
-_cf3_r7_p2_back:
     lda.w snes_frame_fb + 1798,y
     asl a
     tax
-    bcs _cf3_r7_p3_h1
+    bcc _cf3_r7_p3_h0
+    lda.l snes_pairlut_p3_h1,x
+    bra _cf3_r7_p3_j
+_cf3_r7_p3_h0:
+    lda.l snes_pairlut_p3_h0,x
+_cf3_r7_p3_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $FE
+    sta.b $FE
     lda.l snes_pairlut_p0_h0,x
     lsr a
     lsr a
@@ -6766,1371 +3999,1012 @@ _cf3_r7_p2_back:
     lsr a
     ora.b $EE
     sta.b $EE
-    lda.l snes_pairlut_p3_h0,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FE
-    sta.b $FE
-    bra _cf3_r7_p3_back
-_cf3_r7_p3_h1:
-    lda.l snes_pairlut_p0_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $CE
-    sta.b $CE
-    lda.l snes_pairlut_p1_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $DE
-    sta.b $DE
-    lda.l snes_pairlut_p2_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $EE
-    sta.b $EE
-    lda.l snes_pairlut_p3_h1,x
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    lsr a
-    ora.b $FE
-    sta.b $FE
-_cf3_r7_p3_back:
     rts
 
 snesConvHalfTile0:
     lda.w snes_frame_fb + 0,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $00
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $10
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $20
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch0_r0_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch0_r0_p0_j
+_ch0_r0_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch0_r0_p0_j:
     sta.b $30
-    lda.w snes_frame_fb + 1,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $00
-    sta.b $00
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $10
-    sta.b $10
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $20
-    sta.b $20
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $30
-    sta.b $30
-    lda.w snes_frame_fb + 2,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $00
-    sta.b $00
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $10
-    sta.b $10
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $20
-    sta.b $20
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $30
-    sta.b $30
-    lda.w snes_frame_fb + 3,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $00
+    sta.b $32
+    lda.l snes_dbl2lut_p0,x
     sta.b $00
     sta.b $02
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $10
+    lda.l snes_dbl2lut_p1,x
     sta.b $10
     sta.b $12
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $20
+    lda.l snes_dbl2lut_p2,x
     sta.b $20
     sta.b $22
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 2,y
+    asl a
+    tax
+    bcc _ch0_r0_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch0_r0_p1_j
+_ch0_r0_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch0_r0_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $30
     sta.b $30
     sta.b $32
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $00
+    sta.b $00
+    sta.b $02
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $10
+    sta.b $10
+    sta.b $12
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $20
+    sta.b $20
+    sta.b $22
     lda.w snes_frame_fb + 128,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $04
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $14
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $24
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch0_r1_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch0_r1_p0_j
+_ch0_r1_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch0_r1_p0_j:
     sta.b $34
-    lda.w snes_frame_fb + 129,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $04
-    sta.b $04
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $14
-    sta.b $14
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $24
-    sta.b $24
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $34
-    sta.b $34
-    lda.w snes_frame_fb + 130,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $04
-    sta.b $04
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $14
-    sta.b $14
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $24
-    sta.b $24
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $34
-    sta.b $34
-    lda.w snes_frame_fb + 131,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $04
+    sta.b $36
+    lda.l snes_dbl2lut_p0,x
     sta.b $04
     sta.b $06
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $14
+    lda.l snes_dbl2lut_p1,x
     sta.b $14
     sta.b $16
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $24
+    lda.l snes_dbl2lut_p2,x
     sta.b $24
     sta.b $26
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 130,y
+    asl a
+    tax
+    bcc _ch0_r1_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch0_r1_p1_j
+_ch0_r1_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch0_r1_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $34
     sta.b $34
     sta.b $36
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $04
+    sta.b $04
+    sta.b $06
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $14
+    sta.b $14
+    sta.b $16
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $24
+    sta.b $24
+    sta.b $26
     lda.w snes_frame_fb + 256,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $08
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $18
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $28
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch0_r2_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch0_r2_p0_j
+_ch0_r2_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch0_r2_p0_j:
     sta.b $38
-    lda.w snes_frame_fb + 257,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $08
-    sta.b $08
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $18
-    sta.b $18
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $28
-    sta.b $28
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $38
-    sta.b $38
-    lda.w snes_frame_fb + 258,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $08
-    sta.b $08
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $18
-    sta.b $18
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $28
-    sta.b $28
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $38
-    sta.b $38
-    lda.w snes_frame_fb + 259,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $08
+    sta.b $3A
+    lda.l snes_dbl2lut_p0,x
     sta.b $08
     sta.b $0A
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $18
+    lda.l snes_dbl2lut_p1,x
     sta.b $18
     sta.b $1A
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $28
+    lda.l snes_dbl2lut_p2,x
     sta.b $28
     sta.b $2A
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 258,y
+    asl a
+    tax
+    bcc _ch0_r2_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch0_r2_p1_j
+_ch0_r2_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch0_r2_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $38
     sta.b $38
     sta.b $3A
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $08
+    sta.b $08
+    sta.b $0A
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $18
+    sta.b $18
+    sta.b $1A
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $28
+    sta.b $28
+    sta.b $2A
     lda.w snes_frame_fb + 384,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $0C
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $1C
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $2C
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch0_r3_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch0_r3_p0_j
+_ch0_r3_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch0_r3_p0_j:
     sta.b $3C
-    lda.w snes_frame_fb + 385,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $0C
-    sta.b $0C
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $1C
-    sta.b $1C
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $2C
-    sta.b $2C
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $3C
-    sta.b $3C
-    lda.w snes_frame_fb + 386,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $0C
-    sta.b $0C
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $1C
-    sta.b $1C
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $2C
-    sta.b $2C
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $3C
-    sta.b $3C
-    lda.w snes_frame_fb + 387,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $0C
+    sta.b $3E
+    lda.l snes_dbl2lut_p0,x
     sta.b $0C
     sta.b $0E
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $1C
+    lda.l snes_dbl2lut_p1,x
     sta.b $1C
     sta.b $1E
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $2C
+    lda.l snes_dbl2lut_p2,x
     sta.b $2C
     sta.b $2E
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 386,y
+    asl a
+    tax
+    bcc _ch0_r3_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch0_r3_p1_j
+_ch0_r3_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch0_r3_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $3C
     sta.b $3C
     sta.b $3E
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $0C
+    sta.b $0C
+    sta.b $0E
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $1C
+    sta.b $1C
+    sta.b $1E
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $2C
+    sta.b $2C
+    sta.b $2E
     rts
 
 snesConvHalfTile1:
     lda.w snes_frame_fb + 0,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $40
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $50
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $60
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch1_r0_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch1_r0_p0_j
+_ch1_r0_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch1_r0_p0_j:
     sta.b $70
-    lda.w snes_frame_fb + 1,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $40
-    sta.b $40
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $50
-    sta.b $50
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $60
-    sta.b $60
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $70
-    sta.b $70
-    lda.w snes_frame_fb + 2,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $40
-    sta.b $40
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $50
-    sta.b $50
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $60
-    sta.b $60
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $70
-    sta.b $70
-    lda.w snes_frame_fb + 3,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $40
+    sta.b $72
+    lda.l snes_dbl2lut_p0,x
     sta.b $40
     sta.b $42
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $50
+    lda.l snes_dbl2lut_p1,x
     sta.b $50
     sta.b $52
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $60
+    lda.l snes_dbl2lut_p2,x
     sta.b $60
     sta.b $62
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 2,y
+    asl a
+    tax
+    bcc _ch1_r0_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch1_r0_p1_j
+_ch1_r0_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch1_r0_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $70
     sta.b $70
     sta.b $72
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $40
+    sta.b $40
+    sta.b $42
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $50
+    sta.b $50
+    sta.b $52
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $60
+    sta.b $60
+    sta.b $62
     lda.w snes_frame_fb + 128,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $44
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $54
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $64
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch1_r1_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch1_r1_p0_j
+_ch1_r1_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch1_r1_p0_j:
     sta.b $74
-    lda.w snes_frame_fb + 129,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $44
-    sta.b $44
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $54
-    sta.b $54
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $64
-    sta.b $64
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $74
-    sta.b $74
-    lda.w snes_frame_fb + 130,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $44
-    sta.b $44
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $54
-    sta.b $54
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $64
-    sta.b $64
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $74
-    sta.b $74
-    lda.w snes_frame_fb + 131,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $44
+    sta.b $76
+    lda.l snes_dbl2lut_p0,x
     sta.b $44
     sta.b $46
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $54
+    lda.l snes_dbl2lut_p1,x
     sta.b $54
     sta.b $56
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $64
+    lda.l snes_dbl2lut_p2,x
     sta.b $64
     sta.b $66
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 130,y
+    asl a
+    tax
+    bcc _ch1_r1_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch1_r1_p1_j
+_ch1_r1_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch1_r1_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $74
     sta.b $74
     sta.b $76
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $44
+    sta.b $44
+    sta.b $46
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $54
+    sta.b $54
+    sta.b $56
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $64
+    sta.b $64
+    sta.b $66
     lda.w snes_frame_fb + 256,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $48
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $58
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $68
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch1_r2_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch1_r2_p0_j
+_ch1_r2_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch1_r2_p0_j:
     sta.b $78
-    lda.w snes_frame_fb + 257,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $48
-    sta.b $48
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $58
-    sta.b $58
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $68
-    sta.b $68
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $78
-    sta.b $78
-    lda.w snes_frame_fb + 258,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $48
-    sta.b $48
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $58
-    sta.b $58
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $68
-    sta.b $68
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $78
-    sta.b $78
-    lda.w snes_frame_fb + 259,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $48
+    sta.b $7A
+    lda.l snes_dbl2lut_p0,x
     sta.b $48
     sta.b $4A
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $58
+    lda.l snes_dbl2lut_p1,x
     sta.b $58
     sta.b $5A
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $68
+    lda.l snes_dbl2lut_p2,x
     sta.b $68
     sta.b $6A
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 258,y
+    asl a
+    tax
+    bcc _ch1_r2_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch1_r2_p1_j
+_ch1_r2_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch1_r2_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $78
     sta.b $78
     sta.b $7A
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $48
+    sta.b $48
+    sta.b $4A
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $58
+    sta.b $58
+    sta.b $5A
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $68
+    sta.b $68
+    sta.b $6A
     lda.w snes_frame_fb + 384,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $4C
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $5C
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $6C
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch1_r3_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch1_r3_p0_j
+_ch1_r3_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch1_r3_p0_j:
     sta.b $7C
-    lda.w snes_frame_fb + 385,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $4C
-    sta.b $4C
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $5C
-    sta.b $5C
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $6C
-    sta.b $6C
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $7C
-    sta.b $7C
-    lda.w snes_frame_fb + 386,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $4C
-    sta.b $4C
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $5C
-    sta.b $5C
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $6C
-    sta.b $6C
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $7C
-    sta.b $7C
-    lda.w snes_frame_fb + 387,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $4C
+    sta.b $7E
+    lda.l snes_dbl2lut_p0,x
     sta.b $4C
     sta.b $4E
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $5C
+    lda.l snes_dbl2lut_p1,x
     sta.b $5C
     sta.b $5E
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $6C
+    lda.l snes_dbl2lut_p2,x
     sta.b $6C
     sta.b $6E
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 386,y
+    asl a
+    tax
+    bcc _ch1_r3_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch1_r3_p1_j
+_ch1_r3_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch1_r3_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $7C
     sta.b $7C
     sta.b $7E
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $4C
+    sta.b $4C
+    sta.b $4E
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $5C
+    sta.b $5C
+    sta.b $5E
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $6C
+    sta.b $6C
+    sta.b $6E
     rts
 
 snesConvHalfTile2:
     lda.w snes_frame_fb + 0,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $80
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $90
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $A0
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch2_r0_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch2_r0_p0_j
+_ch2_r0_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch2_r0_p0_j:
     sta.b $B0
-    lda.w snes_frame_fb + 1,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $80
-    sta.b $80
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $90
-    sta.b $90
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $A0
-    sta.b $A0
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $B0
-    sta.b $B0
-    lda.w snes_frame_fb + 2,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $80
-    sta.b $80
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $90
-    sta.b $90
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $A0
-    sta.b $A0
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $B0
-    sta.b $B0
-    lda.w snes_frame_fb + 3,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $80
+    sta.b $B2
+    lda.l snes_dbl2lut_p0,x
     sta.b $80
     sta.b $82
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $90
+    lda.l snes_dbl2lut_p1,x
     sta.b $90
     sta.b $92
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $A0
+    lda.l snes_dbl2lut_p2,x
     sta.b $A0
     sta.b $A2
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 2,y
+    asl a
+    tax
+    bcc _ch2_r0_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch2_r0_p1_j
+_ch2_r0_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch2_r0_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $B0
     sta.b $B0
     sta.b $B2
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $80
+    sta.b $80
+    sta.b $82
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $90
+    sta.b $90
+    sta.b $92
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $A0
+    sta.b $A0
+    sta.b $A2
     lda.w snes_frame_fb + 128,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $84
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $94
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $A4
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch2_r1_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch2_r1_p0_j
+_ch2_r1_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch2_r1_p0_j:
     sta.b $B4
-    lda.w snes_frame_fb + 129,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $84
-    sta.b $84
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $94
-    sta.b $94
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $A4
-    sta.b $A4
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $B4
-    sta.b $B4
-    lda.w snes_frame_fb + 130,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $84
-    sta.b $84
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $94
-    sta.b $94
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $A4
-    sta.b $A4
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $B4
-    sta.b $B4
-    lda.w snes_frame_fb + 131,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $84
+    sta.b $B6
+    lda.l snes_dbl2lut_p0,x
     sta.b $84
     sta.b $86
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $94
+    lda.l snes_dbl2lut_p1,x
     sta.b $94
     sta.b $96
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $A4
+    lda.l snes_dbl2lut_p2,x
     sta.b $A4
     sta.b $A6
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 130,y
+    asl a
+    tax
+    bcc _ch2_r1_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch2_r1_p1_j
+_ch2_r1_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch2_r1_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $B4
     sta.b $B4
     sta.b $B6
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $84
+    sta.b $84
+    sta.b $86
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $94
+    sta.b $94
+    sta.b $96
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $A4
+    sta.b $A4
+    sta.b $A6
     lda.w snes_frame_fb + 256,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $88
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $98
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $A8
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch2_r2_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch2_r2_p0_j
+_ch2_r2_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch2_r2_p0_j:
     sta.b $B8
-    lda.w snes_frame_fb + 257,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $88
-    sta.b $88
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $98
-    sta.b $98
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $A8
-    sta.b $A8
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $B8
-    sta.b $B8
-    lda.w snes_frame_fb + 258,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $88
-    sta.b $88
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $98
-    sta.b $98
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $A8
-    sta.b $A8
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $B8
-    sta.b $B8
-    lda.w snes_frame_fb + 259,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $88
+    sta.b $BA
+    lda.l snes_dbl2lut_p0,x
     sta.b $88
     sta.b $8A
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $98
+    lda.l snes_dbl2lut_p1,x
     sta.b $98
     sta.b $9A
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $A8
+    lda.l snes_dbl2lut_p2,x
     sta.b $A8
     sta.b $AA
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 258,y
+    asl a
+    tax
+    bcc _ch2_r2_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch2_r2_p1_j
+_ch2_r2_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch2_r2_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $B8
     sta.b $B8
     sta.b $BA
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $88
+    sta.b $88
+    sta.b $8A
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $98
+    sta.b $98
+    sta.b $9A
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $A8
+    sta.b $A8
+    sta.b $AA
     lda.w snes_frame_fb + 384,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $8C
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $9C
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $AC
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch2_r3_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch2_r3_p0_j
+_ch2_r3_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch2_r3_p0_j:
     sta.b $BC
-    lda.w snes_frame_fb + 385,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $8C
-    sta.b $8C
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $9C
-    sta.b $9C
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $AC
-    sta.b $AC
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $BC
-    sta.b $BC
-    lda.w snes_frame_fb + 386,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $8C
-    sta.b $8C
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $9C
-    sta.b $9C
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $AC
-    sta.b $AC
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $BC
-    sta.b $BC
-    lda.w snes_frame_fb + 387,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $8C
+    sta.b $BE
+    lda.l snes_dbl2lut_p0,x
     sta.b $8C
     sta.b $8E
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $9C
+    lda.l snes_dbl2lut_p1,x
     sta.b $9C
     sta.b $9E
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $AC
+    lda.l snes_dbl2lut_p2,x
     sta.b $AC
     sta.b $AE
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 386,y
+    asl a
+    tax
+    bcc _ch2_r3_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch2_r3_p1_j
+_ch2_r3_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch2_r3_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $BC
     sta.b $BC
     sta.b $BE
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $8C
+    sta.b $8C
+    sta.b $8E
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $9C
+    sta.b $9C
+    sta.b $9E
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $AC
+    sta.b $AC
+    sta.b $AE
     rts
 
 snesConvHalfTile3:
     lda.w snes_frame_fb + 0,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $C0
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $D0
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $E0
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch3_r0_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch3_r0_p0_j
+_ch3_r0_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch3_r0_p0_j:
     sta.b $F0
-    lda.w snes_frame_fb + 1,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $C0
-    sta.b $C0
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $D0
-    sta.b $D0
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $E0
-    sta.b $E0
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $F0
-    sta.b $F0
-    lda.w snes_frame_fb + 2,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $C0
-    sta.b $C0
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $D0
-    sta.b $D0
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $E0
-    sta.b $E0
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $F0
-    sta.b $F0
-    lda.w snes_frame_fb + 3,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $C0
+    sta.b $F2
+    lda.l snes_dbl2lut_p0,x
     sta.b $C0
     sta.b $C2
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $D0
+    lda.l snes_dbl2lut_p1,x
     sta.b $D0
     sta.b $D2
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $E0
+    lda.l snes_dbl2lut_p2,x
     sta.b $E0
     sta.b $E2
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 2,y
+    asl a
+    tax
+    bcc _ch3_r0_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch3_r0_p1_j
+_ch3_r0_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch3_r0_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $F0
     sta.b $F0
     sta.b $F2
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $C0
+    sta.b $C0
+    sta.b $C2
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $D0
+    sta.b $D0
+    sta.b $D2
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $E0
+    sta.b $E0
+    sta.b $E2
     lda.w snes_frame_fb + 128,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $C4
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $D4
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $E4
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch3_r1_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch3_r1_p0_j
+_ch3_r1_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch3_r1_p0_j:
     sta.b $F4
-    lda.w snes_frame_fb + 129,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $C4
-    sta.b $C4
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $D4
-    sta.b $D4
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $E4
-    sta.b $E4
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $F4
-    sta.b $F4
-    lda.w snes_frame_fb + 130,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $C4
-    sta.b $C4
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $D4
-    sta.b $D4
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $E4
-    sta.b $E4
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $F4
-    sta.b $F4
-    lda.w snes_frame_fb + 131,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $C4
+    sta.b $F6
+    lda.l snes_dbl2lut_p0,x
     sta.b $C4
     sta.b $C6
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $D4
+    lda.l snes_dbl2lut_p1,x
     sta.b $D4
     sta.b $D6
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $E4
+    lda.l snes_dbl2lut_p2,x
     sta.b $E4
     sta.b $E6
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 130,y
+    asl a
+    tax
+    bcc _ch3_r1_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch3_r1_p1_j
+_ch3_r1_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch3_r1_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $F4
     sta.b $F4
     sta.b $F6
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $C4
+    sta.b $C4
+    sta.b $C6
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $D4
+    sta.b $D4
+    sta.b $D6
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $E4
+    sta.b $E4
+    sta.b $E6
     lda.w snes_frame_fb + 256,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $C8
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $D8
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $E8
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch3_r2_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch3_r2_p0_j
+_ch3_r2_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch3_r2_p0_j:
     sta.b $F8
-    lda.w snes_frame_fb + 257,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $C8
-    sta.b $C8
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $D8
-    sta.b $D8
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $E8
-    sta.b $E8
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $F8
-    sta.b $F8
-    lda.w snes_frame_fb + 258,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $C8
-    sta.b $C8
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $D8
-    sta.b $D8
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $E8
-    sta.b $E8
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $F8
-    sta.b $F8
-    lda.w snes_frame_fb + 259,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $C8
+    sta.b $FA
+    lda.l snes_dbl2lut_p0,x
     sta.b $C8
     sta.b $CA
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $D8
+    lda.l snes_dbl2lut_p1,x
     sta.b $D8
     sta.b $DA
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $E8
+    lda.l snes_dbl2lut_p2,x
     sta.b $E8
     sta.b $EA
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 258,y
+    asl a
+    tax
+    bcc _ch3_r2_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch3_r2_p1_j
+_ch3_r2_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch3_r2_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $F8
     sta.b $F8
     sta.b $FA
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $C8
+    sta.b $C8
+    sta.b $CA
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $D8
+    sta.b $D8
+    sta.b $DA
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $E8
+    sta.b $E8
+    sta.b $EA
     lda.w snes_frame_fb + 384,y
-    and #$00FF
     asl a
     tax
-    lda.l snes_dbllut_p0_c0,x
-    sta.b $CC
-    lda.l snes_dbllut_p1_c0,x
-    sta.b $DC
-    lda.l snes_dbllut_p2_c0,x
-    sta.b $EC
-    lda.l snes_dbllut_p3_c0,x
+    bcc _ch3_r3_p0_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch3_r3_p0_j
+_ch3_r3_p0_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch3_r3_p0_j:
     sta.b $FC
-    lda.w snes_frame_fb + 385,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c1,x
-    ora.b $CC
-    sta.b $CC
-    lda.l snes_dbllut_p1_c1,x
-    ora.b $DC
-    sta.b $DC
-    lda.l snes_dbllut_p2_c1,x
-    ora.b $EC
-    sta.b $EC
-    lda.l snes_dbllut_p3_c1,x
-    ora.b $FC
-    sta.b $FC
-    lda.w snes_frame_fb + 386,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c2,x
-    ora.b $CC
-    sta.b $CC
-    lda.l snes_dbllut_p1_c2,x
-    ora.b $DC
-    sta.b $DC
-    lda.l snes_dbllut_p2_c2,x
-    ora.b $EC
-    sta.b $EC
-    lda.l snes_dbllut_p3_c2,x
-    ora.b $FC
-    sta.b $FC
-    lda.w snes_frame_fb + 387,y
-    and #$00FF
-    asl a
-    tax
-    lda.l snes_dbllut_p0_c3,x
-    ora.b $CC
+    sta.b $FE
+    lda.l snes_dbl2lut_p0,x
     sta.b $CC
     sta.b $CE
-    lda.l snes_dbllut_p1_c3,x
-    ora.b $DC
+    lda.l snes_dbl2lut_p1,x
     sta.b $DC
     sta.b $DE
-    lda.l snes_dbllut_p2_c3,x
-    ora.b $EC
+    lda.l snes_dbl2lut_p2,x
     sta.b $EC
     sta.b $EE
-    lda.l snes_dbllut_p3_c3,x
+    lda.w snes_frame_fb + 386,y
+    asl a
+    tax
+    bcc _ch3_r3_p1_h0
+    lda.l snes_dbl2lut_p3,x
+    ora #$3000
+    bra _ch3_r3_p1_j
+_ch3_r3_p1_h0:
+    lda.l snes_dbl2lut_p3,x
+_ch3_r3_p1_j:
+    lsr a
+    lsr a
+    lsr a
+    lsr a
     ora.b $FC
     sta.b $FC
     sta.b $FE
+    lda.l snes_dbl2lut_p0,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $CC
+    sta.b $CC
+    sta.b $CE
+    lda.l snes_dbl2lut_p1,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $DC
+    sta.b $DC
+    sta.b $DE
+    lda.l snes_dbl2lut_p2,x
+    lsr a
+    lsr a
+    lsr a
+    lsr a
+    ora.b $EC
+    sta.b $EC
+    sta.b $EE
     rts
 
 .INCLUDE "snes_conv_drivers.inc"
-
-.ENDS
-
-
-.BASE $C0
-.SECTION "snes_dbllut" SUPERFREE
-
-snes_dbllut_p0_c0:
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-    .dw $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0, $0000, $00C0, $C000, $C0C0
-snes_dbllut_p0_c1:
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-    .dw $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030, $0000, $0030, $3000, $3030
-snes_dbllut_p0_c2:
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-    .dw $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C, $0000, $000C, $0C00, $0C0C
-snes_dbllut_p0_c3:
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-    .dw $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303, $0000, $0003, $0300, $0303
-snes_dbllut_p1_c0:
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $00C0, $00C0, $00C0, $00C0, $C000, $C000, $C000, $C000, $C0C0, $C0C0, $C0C0, $C0C0
-snes_dbllut_p1_c1:
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0030, $0030, $0030, $0030, $3000, $3000, $3000, $3000, $3030, $3030, $3030, $3030
-snes_dbllut_p1_c2:
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $000C, $000C, $000C, $000C, $0C00, $0C00, $0C00, $0C00, $0C0C, $0C0C, $0C0C, $0C0C
-snes_dbllut_p1_c3:
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0003, $0003, $0003, $0003, $0300, $0300, $0300, $0300, $0303, $0303, $0303, $0303
-snes_dbllut_p2_c0:
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
-    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
-    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
-    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
-    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
-    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
-    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
-    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
-    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
-snes_dbllut_p2_c1:
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
-    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
-    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
-    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
-    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
-    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
-    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
-    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
-    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
-snes_dbllut_p2_c2:
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
-    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
-    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
-    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
-    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
-    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
-    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
-    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
-    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
-snes_dbllut_p2_c3:
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
-    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
-    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
-    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
-    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
-    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
-    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
-    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
-    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
-snes_dbllut_p3_c0:
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
-    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
-    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
-    .dw $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0, $00C0
-    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
-    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
-    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
-    .dw $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000, $C000
-    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
-    .dw $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0, $C0C0
-snes_dbllut_p3_c1:
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
-    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
-    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
-    .dw $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030, $0030
-    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
-    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
-    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
-    .dw $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000, $3000
-    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
-    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
-    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
-    .dw $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030, $3030
-snes_dbllut_p3_c2:
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
-    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
-    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
-    .dw $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C, $000C
-    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
-    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
-    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
-    .dw $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00, $0C00
-    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
-    .dw $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C, $0C0C
-snes_dbllut_p3_c3:
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000, $0000
-    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
-    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
-    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
-    .dw $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003, $0003
-    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
-    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
-    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
-    .dw $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300, $0300
-    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
-    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
-    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
-    .dw $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303, $0303
 
 .ENDS

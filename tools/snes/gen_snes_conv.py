@@ -13,7 +13,7 @@ that page (0..3, 64 bytes each) picks one of four copies with its offsets
 pre-added.
 
 Each tile row is four texel pairs, each looked up once per plane pair in the
-512 KB pair LUT (tools/snes/gen_snes_planar.py) and shifted into place.  The
+pair LUT (tools/snes/gen_snes_planar.py) and shifted into place.  The
 texel-at-a-time form through the 16 KB texel LUT that preceded it cost 60
 cycles a texel, and the converter was the largest single cost of every frame.
 
@@ -39,12 +39,14 @@ def frame_tile(phase):
     """One 8-row 1:1 tile for ring-slot phase `phase`, from the frame.
 
     A tile row is four texel PAIRS.  Each pair loads as one word (t1 << 8 |
-    t0); `asl` turns it into a word offset and moves t1's top bit into C,
-    which picks the 64 KB half of each plane-pair table (the 17-bit index
-    split).  The table word has t0 in column 0 and t1 in column 1 of both
-    bytes, so pair p is that word shifted right 2p -- the low six bits of
-    each byte are zero, so nothing crosses between the planes.  Four lookups
-    a pair instead of four a texel: about 34 cycles a texel."""
+    t0); `asl` turns it into a word offset and moves t1's top bit into C.
+    That bit is plane 7 of the odd texel and nothing else reads it, so it
+    picks the 64 KB half of plane pair 3's table only (the 17-bit index
+    split) and the other three pairs read a single table each.  The table
+    word has t0 in column 0 and t1 in column 1 of both bytes, so pair p is
+    that word shifted right 2p -- the low six bits of each byte are zero,
+    so nothing crosses between the planes.  Four lookups a pair instead of
+    four a texel: about 34 cycles a texel."""
     base = phase * 64
     o = ["snesConvFrameTile%d:" % phase]
     for r in range(8):
@@ -55,22 +57,25 @@ def frame_tile(phase):
             o.append("    lda.w %s,y" % src)
             o.append("    asl a")
             o.append("    tax")
-            # Both halves inline: a texel with blue >= 2 has its top bit
-            # set, so the halves are about equally likely and a branch
-            # around costs less than an out-of-line jump.
-            o.append("    bcs %s_h1" % lab)
-            for h in (0, 1):
-                if h == 1:
-                    o.append("%s_h1:" % lab)
-                for k in range(4):
-                    o.append("    lda.l snes_pairlut_p%d_h%d,x" % (k, h))
-                    o += ["    lsr a"] * (2 * pair)
-                    if pair:
-                        o.append("    ora.b $%02X" % off[k])
-                    o.append("    sta.b $%02X" % off[k])
-                if h == 0:
-                    o.append("    bra %s_back" % lab)
-            o.append("%s_back:" % lab)
+            # Plane pair 3 first, while C still says which half.  A texel
+            # with blue >= 2 has its top bit set, so the halves are about
+            # equally likely and the branch costs the same either way.
+            o.append("    bcc %s_h0" % lab)
+            o.append("    lda.l snes_pairlut_p3_h1,x")
+            o.append("    bra %s_j" % lab)
+            o.append("%s_h0:" % lab)
+            o.append("    lda.l snes_pairlut_p3_h0,x")
+            o.append("%s_j:" % lab)
+            o += ["    lsr a"] * (2 * pair)
+            if pair:
+                o.append("    ora.b $%02X" % off[3])
+            o.append("    sta.b $%02X" % off[3])
+            for k in range(3):
+                o.append("    lda.l snes_pairlut_p%d_h0,x" % k)
+                o += ["    lsr a"] * (2 * pair)
+                if pair:
+                    o.append("    ora.b $%02X" % off[k])
+                o.append("    sta.b $%02X" % off[k])
     o.append("    rts")
     return o
 
@@ -79,51 +84,42 @@ def half_tile(phase):
     """One tile of the DOUBLED motion frame for ring-slot phase `phase`.
 
     The motion frame is 128x72 and every texel of it is a 2x2 block of
-    screen pixels, so a tile is four source rows of four texels: a texel's
-    bit lands in two adjacent columns of the plane byte, and each plane row
-    is stored twice.  The texel byte alone is the index (`and #$FF`, then a
-    word offset) into a 256-entry table that already has the pair at the
-    right columns for that texel position -- one table per plane pair and
-    position, 8 KB in all -- so there is nothing to shift.  Four lookups a
-    texel, about 68 cycles a texel or 17 a screen pixel: half the 1:1
-    converter's, for a frame with the same number of cells."""
+    screen pixels, so a tile is four source rows of four texels, each row
+    stored twice.  A row is two texel PAIRS, loaded and indexed exactly as
+    the 1:1 tile's (asl, C = the odd texel's plane-7 bit), through the
+    doubled pair LUT (tools/snes/gen_snes_planar.py): t0 in columns 0-1,
+    t1 in 2-3.  The second pair is the same word shifted down a nibble --
+    the nibbles do not touch, both bytes' low four bits being zero -- and
+    t1's plane-7 bit, which the 15-bit index cannot carry, is ORed in as
+    $3000 before the shift.  Two lookups a plane a row instead of four:
+    about 40 cycles a texel, against 68 a texel at a time."""
     base = phase * 64
     o = ["snesConvHalfTile%d:" % phase]
     for r in range(4):
         # Tile rows 2r and 2r + 1, both from source row r.
         off = [base + k * 16 + r * 4 for k in range(4)]
-        for pos in range(4):
-            src = "snes_frame_fb + %d" % (r * HALF_STRIDE + pos)
+        for pos in range(2):
+            src = "snes_frame_fb + %d" % (r * HALF_STRIDE + pos * 2)
+            lab = "_ch%d_r%d_p%d" % (phase, r, pos)
             o.append("    lda.w %s,y" % src)
-            o.append("    and #$00FF")
             o.append("    asl a")
             o.append("    tax")
-            for k in range(4):
-                o.append("    lda.l snes_dbllut_p%d_c%d,x" % (k, pos))
+            o.append("    bcc %s_h0" % lab)
+            o.append("    lda.l snes_dbl2lut_p3,x")
+            o.append("    ora #$3000")
+            o.append("    bra %s_j" % lab)
+            o.append("%s_h0:" % lab)
+            o.append("    lda.l snes_dbl2lut_p3,x")
+            o.append("%s_j:" % lab)
+            for k in (3, 0, 1, 2):
+                if k != 3:
+                    o.append("    lda.l snes_dbl2lut_p%d,x" % k)
                 if pos:
+                    o += ["    lsr a"] * 4
                     o.append("    ora.b $%02X" % off[k])
                 o.append("    sta.b $%02X" % off[k])
-                if pos == 3:
-                    o.append("    sta.b $%02X" % (off[k] + 2))
+                o.append("    sta.b $%02X" % (off[k] + 2))
     o.append("    rts")
-    return o
-
-
-def dbl_luts():
-    """[plane pair][texel position][texel] words: the texel's two planes at
-    columns 2*pos and 2*pos+1 (bits 7-2*pos and 6-2*pos), low byte the even
-    plane, high byte the odd one; the other six bits are zero."""
-    o = []
-    for k in range(4):
-        for pos in range(4):
-            o.append("snes_dbllut_p%d_c%d:" % (k, pos))
-            words = []
-            for t in range(256):
-                lo = (((t >> (2 * k)) & 1) * 0xC0) >> (2 * pos)
-                hi = (((t >> (2 * k + 1)) & 1) * 0xC0) >> (2 * pos)
-                words.append(lo | (hi << 8))
-            for i in range(0, 256, 16):
-                o.append("    .dw " + ", ".join("$%04X" % w for w in words[i:i + 16]))
     return o
 
 
@@ -134,6 +130,7 @@ def main():
         "; the register contract and why there are four copies of each.",
         '.include "hdr.asm"',
         '.include "snes_fb.inc"',
+        '.include "snes_fastdp.inc"',
         "",
         ".ACCU 16",
         ".INDEX 16",
@@ -157,9 +154,6 @@ def main():
     for p in range(4):
         lines += half_tile(p) + [""]
     lines += ['.INCLUDE "snes_conv_drivers.inc"', "", ".ENDS", ""]
-    lines += ["", ".BASE $C0", '.SECTION "snes_dbllut" SUPERFREE', ""]
-    lines += dbl_luts()
-    lines += ["", ".ENDS", ""]
     with open(OUT, "w") as fh:
         fh.write("\n".join(lines))
     print("%s: %d lines" % (os.path.relpath(OUT, ROOT), len(lines)))

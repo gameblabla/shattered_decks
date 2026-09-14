@@ -4,7 +4,10 @@
 ;  Included at the end of the generated snes_conv_gen.asm so the jsr (table,x)
 ;  dispatch into the four phase copies of the tile converter stays inside one
 ;  bank.  The ring, the jobs, the two map shadows, the tile allocator and
-;  every cv_* word are declared in snes_fb.asm.
+;  every persistent cv_* word are declared in snes_fb.asm; the words a call
+;  churns -- the cell, its tile and map entry, the run being booked -- are
+;  on the fast direct page (snes_fastdp.inc, D = FASTDP for the call), six
+;  cycles an access instead of WRAM's eight.
 ;
 ;  ONE TRANSACTION = ONE NEW LOGICAL MAP.  The board is 18 rows of 32 cells;
 ;  a cell is either the permanent blank tile 0 or one of 702 physical 8bpp
@@ -52,7 +55,7 @@
 ; Push the pending run as a job.  Clobbers A, X, Y.
 ;-----------------------------------------------------------------------------
 cv_flush_run:
-    lda.l cv_run_bytes
+    lda.b <FD_CV_RUN_BYTES
     beq _cfr_none
     sta.l jp_bytes
     lda.l cv_run_bank
@@ -60,12 +63,12 @@ cv_flush_run:
     and #$FF00
     ora.l cv_run_kind
     tax
-    lda.l cv_run_dst
+    lda.b <FD_CV_RUN_DST
     tay
-    lda.l cv_run_src
+    lda.b <FD_CV_RUN_SRC
     jsl snesFbJobPushRaw
     lda #0
-    sta.l cv_run_bytes
+    sta.b <FD_CV_RUN_BYTES
 _cfr_none:
     rts
 
@@ -100,7 +103,7 @@ _rr_room:
     lsr a
     lsr a
     lsr a
-    sta.l cv_tmp
+    sta.b <FD_CV_TMP
     rts
 
 ;-----------------------------------------------------------------------------
@@ -109,30 +112,30 @@ _rr_room:
 ; it if the slot was the ring's last.
 ;-----------------------------------------------------------------------------
 cv_ring_commit:
-    lda.l cv_run_bytes
+    lda.b <FD_CV_RUN_BYTES
     beq _crc_start
     lda.l cv_run_kind
     cmp #1
     bne _crc_break              ; a ROM run is pending: it cannot continue
-    lda.l cv_run_src
+    lda.b <FD_CV_RUN_SRC
     clc
-    adc.l cv_run_bytes
-    sta.l cv_tmp
+    adc.b <FD_CV_RUN_BYTES
+    sta.b <FD_CV_TMP
     tya
-    cmp.l cv_tmp
+    cmp.b <FD_CV_TMP
     bne _crc_break
-    lda.l cv_run_bytes
+    lda.b <FD_CV_RUN_BYTES
     lsr a
     clc
-    adc.l cv_run_dst
-    sta.l cv_tmp
-    lda.l cv_tile
+    adc.b <FD_CV_RUN_DST
+    sta.b <FD_CV_TMP
+    lda.b <FD_CV_TILE
     asl a
     asl a
     asl a
     asl a
     asl a
-    cmp.l cv_tmp
+    cmp.b <FD_CV_TMP
     beq _crc_extend
 _crc_break:
     phy
@@ -140,25 +143,25 @@ _crc_break:
     ply
 _crc_start:
     tya
-    sta.l cv_run_src
+    sta.b <FD_CV_RUN_SRC
     lda #$007E
     sta.l cv_run_bank
     lda #1
     sta.l cv_run_kind
-    lda.l cv_tile
+    lda.b <FD_CV_TILE
     asl a
     asl a
     asl a
     asl a
     asl a
-    sta.l cv_run_dst
+    sta.b <FD_CV_RUN_DST
     lda #0
-    sta.l cv_run_bytes
+    sta.b <FD_CV_RUN_BYTES
 _crc_extend:
-    lda.l cv_run_bytes
+    lda.b <FD_CV_RUN_BYTES
     clc
     adc #64
-    sta.l cv_run_bytes
+    sta.b <FD_CV_RUN_BYTES
     lda.l ring_wrote
     clc
     adc #64
@@ -183,54 +186,54 @@ cv_rom_commit:
     asl a
     clc
     adc.l cv_rom_src
-    sta.l cv_entry              ; the tile's ROM address (cv_entry is free here)
-    lda.l cv_run_bytes
+    sta.b <FD_CV_ENTRY              ; the tile's ROM address (cv_entry is free here)
+    lda.b <FD_CV_RUN_BYTES
     beq _rom_start
     lda.l cv_run_kind
     bne _rom_break
     lda.l cv_run_bank
     cmp.l cv_rom_bank
     bne _rom_break
-    lda.l cv_run_src
+    lda.b <FD_CV_RUN_SRC
     clc
-    adc.l cv_run_bytes
-    cmp.l cv_entry
+    adc.b <FD_CV_RUN_BYTES
+    cmp.b <FD_CV_ENTRY
     bne _rom_break
-    lda.l cv_run_bytes
+    lda.b <FD_CV_RUN_BYTES
     lsr a
     clc
-    adc.l cv_run_dst
-    sta.l cv_tmp
-    lda.l cv_tile
+    adc.b <FD_CV_RUN_DST
+    sta.b <FD_CV_TMP
+    lda.b <FD_CV_TILE
     asl a
     asl a
     asl a
     asl a
     asl a
-    cmp.l cv_tmp
+    cmp.b <FD_CV_TMP
     beq _rom_extend
 _rom_break:
     jsr cv_flush_run
 _rom_start:
-    lda.l cv_entry
-    sta.l cv_run_src
+    lda.b <FD_CV_ENTRY
+    sta.b <FD_CV_RUN_SRC
     lda.l cv_rom_bank
     sta.l cv_run_bank
     lda #0
     sta.l cv_run_kind
-    sta.l cv_run_bytes
-    lda.l cv_tile
+    sta.b <FD_CV_RUN_BYTES
+    lda.b <FD_CV_TILE
     asl a
     asl a
     asl a
     asl a
     asl a
-    sta.l cv_run_dst
+    sta.b <FD_CV_RUN_DST
 _rom_extend:
-    lda.l cv_run_bytes
+    lda.b <FD_CV_RUN_BYTES
     clc
     adc #64
-    sta.l cv_run_bytes
+    sta.b <FD_CV_RUN_BYTES
     rts
 
 ;-----------------------------------------------------------------------------
@@ -371,20 +374,23 @@ snesConvFrame:
 snesConvBegin:
     php
     rep #$30
-    lda 5,s
+    phd
+    lda #FASTDP
+    tcd                         ; the per-call words on the fast direct page
+    lda 7,s
     and #1
     sta.l cv_pool
-    lda 7,s
+    lda 9,s
     sta.l cv_generation
     lda #0
     sta.l cv_occupied
-    sta.l cv_row
+    sta.b <FD_CV_ROW
 _cf_count_row:
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     tax
     lda.l snes_conv_rowspan,x
-    sta.l cv_tmp
+    sta.b <FD_CV_TMP
     and #$00FF
     cmp #$00FF
     beq _cf_count_next
@@ -392,7 +398,7 @@ _cf_count_row:
     lsr a
     CV_CELL_LSR                 ; eight pixels a cell at 1:1, four doubled
     sta.l cv_mask_lo
-    lda.l cv_tmp
+    lda.b <FD_CV_TMP
     xba
     and #$00FF
     lsr a
@@ -405,14 +411,15 @@ _cf_count_row:
     adc.l cv_occupied
     sta.l cv_occupied
 _cf_count_next:
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     inc a
-    sta.l cv_row
+    sta.b <FD_CV_ROW
     cmp #18
     bne _cf_count_row
     lda.l cv_occupied
     cmp #FB_POOL_TILES+1
     bcc +
+    pld
     jmp _cf_overflow
 +   sta.l fb_occupied
     cmp.l fb_peak_occupied
@@ -459,47 +466,45 @@ _cf_all_dirty:
     lda #1
     sta.l cv_whole
     lda.l cv_shadow
-    sta.l cv_y
-_cf_empty:
-    lda.l cv_y
+    clc
+    adc #576*2
+    sta.b <FD_CV_Y              ; one past the last entry
+    lda.l cv_shadow
     tax
+_cf_empty:
     lda.l $7F0000,x
     beq +
+    phx
     jsr cv_tile_release
-    lda.l cv_y
-    tax
+    plx
     lda #0
     sta.l $7F0000,x
-+   lda.l cv_y
-    inc a
-    inc a
-    sta.l cv_y
-    sec
-    sbc.l cv_shadow
-    cmp #576*2
++   inx
+    inx
+    cpx.b <FD_CV_Y
     bne _cf_empty
     bra _cf_copy_done
 _cf_copy_needed:
     lda #0
-    sta.l cv_y                  ; byte index of the cell in a map
+    sta.b <FD_CV_Y                  ; byte index of the cell in a map
 _cf_copy:
-    lda.l cv_y
+    lda.b <FD_CV_Y
     clc
     adc.l cv_shadow
     tax
     lda.l $7F0000,x
-    sta.l cv_tmp                ; what the new map held
-    lda.l cv_y
+    sta.b <FD_CV_TMP                ; what the new map held
+    lda.b <FD_CV_Y
     clc
     adc.l cv_other
     tax
     lda.l $7F0000,x
-    sta.l cv_col                ; what the shown map holds
-    cmp.l cv_tmp
+    sta.b <FD_CV_COL                ; what the shown map holds
+    cmp.b <FD_CV_TMP
     beq _cf_copy_next
-    lda.l cv_tmp
+    lda.b <FD_CV_TMP
     jsr cv_tile_release
-    lda.l cv_col
+    lda.b <FD_CV_COL
     and #$03FF
     beq +
     tax
@@ -510,23 +515,22 @@ _cf_copy:
     sta.l snes_tile_ref,x
     rep #$20
 .ACCU 16
-+   lda.l cv_y
++   lda.b <FD_CV_Y
     clc
     adc.l cv_shadow
     tax
-    lda.l cv_col
+    lda.b <FD_CV_COL
     sta.l $7F0000,x
 _cf_copy_next:
-    lda.l cv_y
+    lda.b <FD_CV_Y
     inc a
     inc a
-    sta.l cv_y
+    sta.b <FD_CV_Y
     cmp #576*2
     bne _cf_copy
 _cf_copy_done:
-    lda #0
-    sta.l cv_run_bytes
     lda.l cv_occupied
+    pld
     sta.b tcc__r0
     plp
     rtl
@@ -537,32 +541,38 @@ _cf_copy_done:
 snesConvRows:
     php
     rep #$30
-    lda #32
-    sta.l cv_col_end            ; whole rows (see _cf_row_next)
-    lda 7,s
-    sta.l cv_row_end
-    lda 5,s
-    sta.l cv_row
-    ; The cell row's first chunky byte: row * 2048 (512 doubled).
-    jsr cv_row_origin
-    sta.l cv_y
-    lda.l cv_row
-    cmp.l cv_row_end
-    bcc +
-    plp
-    rtl
-+   phb
+    phb
     phd
+    lda #FASTDP
+    tcd                         ; the per-call words on the fast direct page
     pea $7E7E
     plb
     plb
+    lda #32
+    sta.b <FD_CV_COL_END        ; whole rows (see _cf_row_next)
+    lda 10,s
+    sta.l cv_row_end
+    lda 8,s
+    sta.b <FD_CV_ROW
+    ; The cell row's first chunky byte: row * 2048 (512 doubled).
+    jsr cv_row_origin
+    sta.b <FD_CV_Y
     lda #0
+    sta.b <FD_CV_RUN_BYTES      ; no run pending: every call flushes its own
     sta.l cv_partial
+    lda.b <FD_CV_ROW
+    cmp.l cv_row_end
+    bcc +
+    pld
+    plb
+    plp
+    rtl
++
     lda.l cv_whole
     beq _cf_row
     jmp _cw_row
 _cf_row:
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     asl a
     tax
@@ -577,11 +587,11 @@ _cf_row:
     sta.l cv_rom
     lda.l snes_conv_rom+2,x
     sta.l cv_rom_hi
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     tax
     lda.l snes_conv_rowspan,x
-    sta.l cv_tmp
+    sta.b <FD_CV_TMP
     and #$00FF
     cmp #$00FF
     bne +
@@ -595,7 +605,7 @@ _cf_row:
     bne +
     lsr a
 +   sta.l cv_mask_lo            ; first occupied cell column
-    lda.l cv_tmp
+    lda.b <FD_CV_TMP
     xba
     and #$00FF
     lsr a
@@ -606,11 +616,11 @@ _cf_row:
 +   sta.l cv_mask_hi            ; last occupied cell column
 _cf_col_start:
     lda #0
-    sta.l cv_col
+    sta.b <FD_CV_COL
     lda #32
-    sta.l cv_col_end
+    sta.b <FD_CV_COL_END
 _cf_col:
-    lda.l cv_col
+    lda.b <FD_CV_COL
     cmp #16
     bne +
     lda.l cv_bits_hi            ; the second words of the masks
@@ -630,99 +640,100 @@ _cf_col:
 +   plp
     rol a                       ; A bit 0 = ROM
     and #$0001
-    sta.l cv_tmp
+    sta.b <FD_CV_TMP
     ; The cell's map entry: release what the new map named there.
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     asl a
     asl a
     asl a
     asl a
     clc
-    adc.l cv_col
+    adc.b <FD_CV_COL
     asl a
     clc
     adc.l cv_shadow
-    sta.l cv_entry
+    sta.b <FD_CV_ENTRY
     tax
     lda.l $7F0000,x
     jsr cv_tile_release
     ; In the row's span?  Otherwise it is the blank tile.
-    lda.l cv_col
+    lda.b <FD_CV_COL
     cmp.l cv_mask_lo
     bcc _cf_blank
     cmp.l cv_mask_hi
     beq +
     bcs _cf_blank
-+   lda.l cv_tmp
++   lda.b <FD_CV_TMP
     pha                         ; the ROM flag, across the allocation
     jsr cv_tile_alloc
-    sta.l cv_tile
+    sta.b <FD_CV_TILE
     bne +
     ; No tile left (cannot happen inside the bound): show it blank.
     pla
     bra _cf_blank
 +   ora #FB_MAP_ATTR
     pha
-    lda.l cv_entry
+    lda.b <FD_CV_ENTRY
     tax
     pla
     sta.l $7F0000,x
     pla
     beq +
     ; The ROM floor's own tile: a DMA from ROM, no conversion at all.
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     asl a
     asl a
     asl a
     asl a
     clc
-    adc.l cv_col
+    adc.b <FD_CV_COL
     jsr cv_rom_commit
     jmp _cf_col_next
 +
     ; Convert the cell into a ring slot and book it for tile cv_tile.
-    jsr cv_ring_reserve
+    jsr cv_ring_reserve         ; Y = the slot, FD_CV_TMP = its phase * 2
+    phy                         ; the slot, for the commit
     tya
     and #$FF00
-    tcd
-    lda.l cv_col
+    pha                         ; the slot's page: the tile routine's D
+    lda.b <FD_CV_COL
     asl a
     asl a
     ldx.w cv_half
     bne +
     asl a                       ; eight texels a cell at 1:1, four doubled
 +   clc
-    adc.l cv_y
-    phy
-    tay
-    lda.l cv_tmp
-    tax
+    adc.b <FD_CV_Y
+    ldx.b <FD_CV_TMP
+    tay                         ; Y = the cell's first chunky byte
+    pld                         ; D = the ring page (the fast page is gone
+                                ; until the tile is done)
     lda.l cv_half
     bne +
     jsr (snesConvFrameTileTab,x)
     bra ++
 +   jsr (snesConvHalfTileTab,x)
-++  ply
-    lda #0
+++  lda #FASTDP
     tcd
+    ply
     jsr cv_ring_commit
     bra _cf_col_next
 _cf_blank:
-    lda.l cv_entry
+    lda.b <FD_CV_ENTRY
     tax
     lda #0
     sta.l $7F0000,x
 _cf_col_next:
-    lda.l cv_col
+    lda.b <FD_CV_COL
     inc a
-    sta.l cv_col
-    cmp.l cv_col_end
+    sta.b <FD_CV_COL
+    cmp.b <FD_CV_COL_END
     beq _cf_row_next
     jmp _cf_col
 _cf_row_next:
-    lda.l cv_col_end
+    lda.b <FD_CV_COL_END
     cmp #32
     beq +
     ; A partial row (snesConvCells): done after its columns.
@@ -732,12 +743,12 @@ _cf_row_next:
     plp
     rtl
 +
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     inc a
-    sta.l cv_row
+    sta.b <FD_CV_ROW
     jsr cv_row_origin           ; the next row's first chunky byte
-    sta.l cv_y
-    lda.l cv_row
+    sta.b <FD_CV_Y
+    lda.b <FD_CV_ROW
     cmp.l cv_row_end
     beq +
     jmp _cf_row
@@ -755,33 +766,41 @@ _cf_row_next:
 snesConvCells:
     php
     rep #$30
-    lda 5,s
-    sta.l cv_row
-    inc a
-    sta.l cv_row_end
-    lda 5,s
-    jsr cv_row_origin
-    sta.l cv_y
-    lda 9,s
-    sta.l cv_col_end
-    lda 7,s
-    sta.l cv_col
-    cmp.l cv_col_end
-    bcc +
-    plp
-    rtl
-+   phb
+    phb
     phd
+    lda #FASTDP
+    tcd
     pea $7E7E
     plb
     plb
+    lda 8,s
+    sta.b <FD_CV_ROW
+    inc a
+    sta.l cv_row_end
+    lda 8,s
+    jsr cv_row_origin
+    sta.b <FD_CV_Y
+    lda 12,s
+    sta.b <FD_CV_COL_END
+    lda 10,s
+    sta.b <FD_CV_COL
+    lda #0
+    sta.b <FD_CV_RUN_BYTES
     lda #1
     sta.l cv_partial
+    lda.b <FD_CV_COL
+    cmp.b <FD_CV_COL_END
+    bcc +
+    pld
+    plb
+    plp
+    rtl
++
     lda.l cv_whole
     beq +
     jmp _cw_cells
 +
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     asl a
     tax
@@ -793,11 +812,11 @@ snesConvCells:
     sta.l cv_rom
     lda.l snes_conv_rom+2,x
     sta.l cv_rom_hi
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     tax
     lda.l snes_conv_rowspan,x
-    sta.l cv_tmp
+    sta.b <FD_CV_TMP
     and #$00FF
     cmp #$00FF
     bne +
@@ -811,7 +830,7 @@ snesConvCells:
     bne +
     lsr a
 +   sta.l cv_mask_lo
-    lda.l cv_tmp
+    lda.b <FD_CV_TMP
     xba
     and #$00FF
     lsr a
@@ -824,10 +843,10 @@ _cc_shift:
     ; Shift the masks to col0, swapping in the high words at column 16
     ; exactly as the column loop does.
     lda #0
-    sta.l cv_tmp
+    sta.b <FD_CV_TMP
 _cc_shift_loop:
-    lda.l cv_tmp
-    cmp.l cv_col
+    lda.b <FD_CV_TMP
+    cmp.b <FD_CV_COL
     beq _cc_go
     cmp #16
     bne +
@@ -841,9 +860,9 @@ _cc_shift_loop:
     lda.l cv_bits
     lsr a
     sta.l cv_bits
-    lda.l cv_tmp
+    lda.b <FD_CV_TMP
     inc a
-    sta.l cv_tmp
+    sta.b <FD_CV_TMP
     bra _cc_shift_loop
 _cc_go:
     jmp _cf_col
@@ -857,16 +876,16 @@ _cc_go:
 ;-----------------------------------------------------------------------------
 _cw_row:
     lda #0
-    sta.l cv_col
+    sta.b <FD_CV_COL
     lda #32
-    sta.l cv_col_end
+    sta.b <FD_CV_COL_END
 _cw_cells:
     ; The row's span in cells; an empty row has none.
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     tax
     lda.l snes_conv_rowspan,x
-    sta.l cv_tmp
+    sta.b <FD_CV_TMP
     and #$00FF
     cmp #$00FF
     bne +
@@ -877,7 +896,7 @@ _cw_cells:
     bne +
     lsr a
 +   sta.l cv_span_lo
-    lda.l cv_tmp
+    lda.b <FD_CV_TMP
     xba
     and #$00FF
     lsr a
@@ -887,17 +906,17 @@ _cw_cells:
     lsr a
 +   sta.l cv_span_hi
     ; Clip [cv_col, cv_col_end) to [span_lo, span_hi].
-    lda.l cv_col
+    lda.b <FD_CV_COL
     cmp.l cv_span_lo
     bcs +
     lda.l cv_span_lo
-    sta.l cv_col
+    sta.b <FD_CV_COL
 +   lda.l cv_span_hi
     inc a
-    cmp.l cv_col_end
+    cmp.b <FD_CV_COL_END
     bcs +
-    sta.l cv_col_end
-+   lda.l cv_row
+    sta.b <FD_CV_COL_END
++   lda.b <FD_CV_ROW
     asl a
     asl a
     tax
@@ -906,39 +925,39 @@ _cw_cells:
     lda.l snes_conv_rom+2,x
     sta.l cv_rom_hi
 _cw_col:
-    lda.l cv_col
-    cmp.l cv_col_end
+    lda.b <FD_CV_COL
+    cmp.b <FD_CV_COL_END
     bcc +
     jmp _cw_row_done
 +
     ; The cell's map entry.
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     asl a
     asl a
     asl a
     asl a
     clc
-    adc.l cv_col
+    adc.b <FD_CV_COL
     asl a
     clc
     adc.l cv_shadow
-    sta.l cv_entry
+    sta.b <FD_CV_ENTRY
     jsr cv_tile_alloc
-    sta.l cv_tile
+    sta.b <FD_CV_TILE
     beq _cw_next                ; no tile left (outside the bound): blank
     ora #FB_MAP_ATTR
     pha
-    lda.l cv_entry
+    lda.b <FD_CV_ENTRY
     tax
     pla
     sta.l $7F0000,x
     ; From the ROM floor?
-    lda.l cv_col
+    lda.b <FD_CV_COL
     and #$000F
     asl a
     tax
-    lda.l cv_col
+    lda.b <FD_CV_COL
     cmp #16
     bcs +
     lda.l cv_rom
@@ -946,45 +965,45 @@ _cw_col:
 +   lda.l cv_rom_hi
 ++  and.l snes_conv_bit16,x
     beq +
-    lda.l cv_row
+    lda.b <FD_CV_ROW
     asl a
     asl a
     asl a
     asl a
     asl a
     clc
-    adc.l cv_col
+    adc.b <FD_CV_COL
     jsr cv_rom_commit
     bra _cw_next
-+   jsr cv_ring_reserve
++   jsr cv_ring_reserve         ; Y = the slot, FD_CV_TMP = its phase * 2
+    phy
     tya
     and #$FF00
-    tcd
-    lda.l cv_col
+    pha
+    lda.b <FD_CV_COL
     asl a
     asl a
     ldx.w cv_half
     bne +
     asl a
 +   clc
-    adc.l cv_y
-    phy
+    adc.b <FD_CV_Y
+    ldx.b <FD_CV_TMP
     tay
-    lda.l cv_tmp
-    tax
+    pld                         ; D = the ring page for the tile routine
     lda.l cv_half
     bne +
     jsr (snesConvFrameTileTab,x)
     bra ++
 +   jsr (snesConvHalfTileTab,x)
-++  ply
-    lda #0
+++  lda #FASTDP
     tcd
+    ply
     jsr cv_ring_commit
 _cw_next:
-    lda.l cv_col
+    lda.b <FD_CV_COL
     inc a
-    sta.l cv_col
+    sta.b <FD_CV_COL
     jmp _cw_col
 _cw_row_done:
     lda.l cv_partial
@@ -995,12 +1014,12 @@ _cw_row_done:
     plb
     plp
     rtl
-+   lda.l cv_row
++   lda.b <FD_CV_ROW
     inc a
-    sta.l cv_row
+    sta.b <FD_CV_ROW
     jsr cv_row_origin
-    sta.l cv_y
-    lda.l cv_row
+    sta.b <FD_CV_Y
+    lda.b <FD_CV_ROW
     cmp.l cv_row_end
     beq +
     jmp _cw_row

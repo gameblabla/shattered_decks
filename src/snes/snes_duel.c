@@ -1560,19 +1560,6 @@ static u8 focus_stats(u8 card, u16 *atk, u16 *def)
 
 /* ── The sprite layer ────────────────────────────────────────────────────── */
 
-/* THE WHOLE HUD IS REBUILT EVERY FRAME, in either view.
- *
- * A sprite list is a hundred and thirty bytes of OAM shadow and a few dozen
- * stores; a board render is four thousand scanlines.  Rebuilding costs nothing
- * measurable next to that, and a list that is never patched cannot keep a
- * sprite belonging to a screen the player has left -- which is the failure the
- * top view would otherwise produce on every entry, since the two views share
- * the same twenty card sprites.
- *
- * IT IS BUILT FROM THE FRONT BACKWARDS.  Every sprite in this port is priority
- * 3, so between two that overlap the one with the LOWER OAM index is the one
- * seen: the text goes in first, then the plates it sits on, then the cursor,
- * and the cards last of all. */
 /* Where in the fusion chain a hand slot sits, 1-based, or 0 for not in it. */
 static u8 queue_order(u8 hand_slot)
 {
@@ -1629,12 +1616,16 @@ static void build_result_banner(void)
 
 /* THE WHOLE HUD IS REBUILT EVERY FRAME, in either view.
  *
- * A sprite list is a hundred and thirty bytes of OAM shadow and a few dozen
- * stores; a board render is four thousand scanlines.  Rebuilding costs nothing
- * measurable next to that, and a list that is never patched cannot keep a
- * sprite belonging to a screen the player has left -- which is the failure the
- * top view would otherwise produce on every entry, since the two views share
- * the same twenty card sprites.
+ * A list that is never patched cannot keep a sprite belonging to a screen
+ * the player has left -- which is the failure the top view would otherwise
+ * produce on every entry, since the two views share the same twenty card
+ * sprites.  It is NOT free, though: measured with the cycle profiler
+ * (tools/snes/prof.py), a hundred sprites through 816-tcc were 1.3 fields
+ * a frame -- a resting board ran at thirty frames a second for its HUD
+ * alone -- so everything per sprite (the store, text, digits, the life
+ * panel, the card, snesObjEnd's scans) is snes_oam.asm's, on the fast
+ * direct page, and this function is the part that is still C: a rest
+ * frame is now three quarters of a field.
  *
  * IT IS BUILT FROM THE FRONT BACKWARDS.  Every sprite in this port is priority
  * 3, so between two that overlap the one with the LOWER OAM index is the one

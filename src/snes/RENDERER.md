@@ -45,12 +45,25 @@ of 128 makes a unit 32 pixels, the world texture's 32 texels: the overhead
 board is the texture itself, 160x128 pixels in sixteen whole 8-line bands
 of twenty cells (320 of 351), and its floor rows are MVN block moves
 (`snesSpanFloorTex` takes that path when the step is exactly one texel a
-pixel) instead of the 36-cycle-a-texel walk.  A perspective pose is about
-fifty fields of mapping and conversion (measured in the emulator: 20 fields
-of walking, 30 of conversion for 300-odd cells), the overhead one about
-forty; the poses are the lift's duration, so there are three, and the
-descent renders one fewer because its last pose would be the rest camera
-through the moving path, baked again from the ROM floor a moment later.
+pixel) instead of the ~30-cycle-a-texel walk.  A perspective pose is about
+forty fields of mapping and conversion, the overhead one about thirty; the
+poses are the lift's duration, so there are three, and the descent renders
+one fewer because its last pose would be the rest camera through the moving
+path, baked again from the ROM floor a moment later.
+
+**Every hot loop runs on the "3.5 MHz RAM"** (`snes_fastdp.inc`).  All of
+WRAM is an eight-cycle access, but DMA channels 1-3 never move anything, and
+their thirty-six register bytes at $4310-$433B are read/write latches at six
+cycles: with D = $4300 they are the direct page of the span walkers, the
+motion mapper, the sprite store, the fixed-point math and the converter
+driver, one call at a time (leaf scratch only -- nothing survives a call
+there).  The walkers also write the frame through WMDATA ($2180, a six-cycle
+port with its own address counter) instead of an indexed WRAM store, so the
+constant-v walk has no slow access left in it; the world image is cleared by
+ROM-to-WMDATA DMA and the card stamps are the same walk.  What the cycle
+profiler (`tools/snes/prof.py`, on the patched headless core) still shows
+as WRAM-bound is the converter's tile routines, whose output must be the
+ring slot itself.
 
 A pose is rendered in small steps, and a game loop takes a measured SLICE
 of them (`job_slice`: steps until three and a half fields have gone by),

@@ -1,0 +1,94 @@
+Master-cycle profiler for the accurate headless SNES core (SNES/snes-headless).
+
+Apply on top of SNES_ACCURATE_HEADLESS_PORT.patch (the tree under SNES/ is not
+in git), then ./build-snes-headless.sh.  SNES_PROFILE=start:end:path on
+`snes-mednafen script ...` then writes "PC count cycles" lines: the master
+cycles from each instruction's fetch to the next one's, which is what
+separates an eight-cycle WRAM access from a six-cycle ROM or DMA-register one
+-- the instruction counts alone could not.  tools/snes/prof.py maps the lines
+through the .sym file and sums them per routine.
+
+diff -ru a/src/drivers_libxxx/main.cpp b/src/drivers_libxxx/main.cpp
+--- a/src/drivers_libxxx/main.cpp	2026-09-14 09:27:59.171195837 +0200
++++ b/src/drivers_libxxx/main.cpp	2026-09-14 09:27:59.171281397 +0200
+@@ -421,15 +421,31 @@
+ // writes "PC count" lines sorted by count.  Instruction counts, not cycles,
+ // but the 65816's instructions are close enough to uniform that a hot loop
+ // shows up as itself.
++// Each PC also accumulates the MASTER CYCLES spent from its fetch to the
++// next instruction's, so slow (WRAM, 8-cycle) and fast (ROM/B-bus/$43xx,
++// 6-cycle) memory traffic shows up as itself: "PC count cycles" lines.
++// DMA time the CPU is stalled for lands on the instruction that started it.
+ struct ProfileContext
+ {
+     std::unordered_map<uint32_t, uint64_t> hits;
++    std::unordered_map<uint32_t, uint64_t> cycles;
+     uint64_t steps = 0;
++    uint64_t total_cycles = 0;
++    uint32_t prev_pc = 0xFFFFFFFFU;
++    uint64_t prev_ts = 0;
+ };
+ 
+ void profileHook(uint32 pc, uint8, void* opaque)
+ {
+     auto* ctx = static_cast<ProfileContext*>(opaque);
++    const uint64_t ts = MDFN_IEN_SNES::CPU_GetClocks();
++    if(ctx->prev_pc != 0xFFFFFFFFU && ts >= ctx->prev_ts)
++    {
++        ctx->cycles[ctx->prev_pc] += ts - ctx->prev_ts;
++        ctx->total_cycles += ts - ctx->prev_ts;
++    }
++    ctx->prev_pc = pc & 0xFFFFFFU;
++    ctx->prev_ts = ts;
+     ctx->hits[pc & 0xFFFFFFU]++;
+     ctx->steps++;
+ }
+@@ -733,10 +749,11 @@
+                 for(const auto& kv : profile.hits) sorted.emplace_back(kv.second, kv.first);
+                 std::sort(sorted.begin(), sorted.end(), std::greater<>());
+                 std::ofstream out(profilePath);
+-                out << "# steps=" << profile.steps << " fields=" << (profileEnd - profileStart + 1) << "\n";
++                out << "# steps=" << profile.steps << " cycles=" << profile.total_cycles << " fields=" << (profileEnd - profileStart + 1) << "\n";
+                 for(const auto& e : sorted)
+                     out << std::uppercase << std::hex << std::setw(6) << std::setfill('0') << e.second
+-                        << std::dec << std::setfill(' ') << " " << e.first << "\n";
++                        << std::dec << std::setfill(' ') << " " << e.first
++                        << " " << profile.cycles[e.second] << "\n";
+             }
+         }
+         while(spanIndex < spans.size() && f > spans[spanIndex].end) ++spanIndex;
+diff -ru a/src/snes/headless_api.h b/src/snes/headless_api.h
+--- a/src/snes/headless_api.h	2026-09-14 09:27:59.170977396 +0200
++++ b/src/snes/headless_api.h	2026-09-14 09:27:59.171025246 +0200
+@@ -10,6 +10,9 @@
+ void CPU_SetInstructionHook(CPU_InstructionHookFunc hook, void* opaque);
+ void CPU_InvokeInstructionHook(uint32_t pc, uint8_t p);
+ void CPU_Exit(void);
++// Master clocks the S-CPU has consumed since power-on: the profiler's stopwatch.
++extern uint64_t headless_cpu_clocks;
++static inline uint64_t CPU_GetClocks(void) { return headless_cpu_clocks; }
+ 
+ enum
+ {
+diff -ru a/src/snes/src/cpu/scpu/scpu.cpp b/src/snes/src/cpu/scpu/scpu.cpp
+--- a/src/snes/src/cpu/scpu/scpu.cpp	2026-09-14 09:27:59.170836651 +0200
++++ b/src/snes/src/cpu/scpu/scpu.cpp	2026-09-14 09:27:59.170893658 +0200
+@@ -2,6 +2,7 @@
+ #include "../../../headless_api.h"
+ 
+ #define SCPU_CPP
++namespace MDFN_IEN_SNES { uint64_t headless_cpu_clocks = 0; }
+ namespace bSNES_v059 {
+ 
+ #if defined(DEBUGGER)
+diff -ru a/src/snes/src/cpu/scpu/timing/timing.cpp b/src/snes/src/cpu/scpu/timing/timing.cpp
+--- a/src/snes/src/cpu/scpu/timing/timing.cpp	2026-09-14 09:27:59.170625665 +0200
++++ b/src/snes/src/cpu/scpu/timing/timing.cpp	2026-09-14 09:27:59.170741843 +0200
+@@ -9,6 +9,7 @@
+ }
+ 
+ void sCPU::add_clocks(unsigned clocks) {
++  MDFN_IEN_SNES::headless_cpu_clocks += clocks;
+   event.tick(clocks);
+   unsigned ticks = clocks >> 1;
+   while(ticks--) {

@@ -1,6 +1,7 @@
 ; Sparse, transaction-based Mode 3 framebuffer uploader.
 .include "hdr.asm"
 .include "snes_fb.inc"
+.include "snes_fastdp.inc"
 
 .ACCU 16
 .INDEX 16
