@@ -428,7 +428,14 @@ u8 snesCardQuad(const SnesCamera *cam, const SnesViewport *vp,
     s16 cx, cz;
     u8 i;
 
-    snesSlotCentre(row, col, mirror, &cx, &cz);
+    /* THE MIRROR IS APPLIED ONCE.  The row walker and the marker project
+     * with the camera's yaw ignored, so snesSlotCentre negates the slot for
+     * them; snesProjectQ honours cam->yaw, and the mirrored rest camera
+     * already carries the half turn.  Negating here as well put the
+     * opponent-seat picture of a defence card back on its unmirrored
+     * screen spot -- cells the converter never took -- and the card was
+     * simply not there for the whole of the opponent's turn. */
+    snesSlotCentre(row, col, (u8)(mirror && !cam->yaw), &cx, &cz);
     for (i = 0; i < 4; ++i) {
         s16 ox, oy;
         const u8 k = (u8)((i + turn) & 3);
