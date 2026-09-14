@@ -60,6 +60,7 @@ CARD_COLOURS = 80
 CARD_FIRST = 32
 CARD_PAL_BYTES = CARD_COLOURS * 2
 CARD_RECORD = CARD_BYTES + CARD_PAL_BYTES
+BACK_FEET_BYTES = TILES_X * BOTTOM_ROWS * 64   # the back's own bottom rows
 CARDS_PER_BANK = 4
 FIRST_BANK = 30                 # $DE..; the OBJ sheets end at $CC
 COMMON_BANK = 50                # the frame feet and the card info table
@@ -238,7 +239,34 @@ def big_art(tag, path):
     return ga.face_art(tag, None, (ART, ART)).convert("RGB")
 
 
+def back_record():
+    """THE BACK IS ITS OWN FRAME, so it is not put inside the gold one: the
+    cover painting is fitted to the whole 120x160 and quantised as one
+    picture.  Its top fifteen tile rows are a record like any other; its
+    bottom five -- the seventy-five tiles the shared feet cannot hold in
+    its colours -- follow the palette in the same bank slot, and the runtime
+    puts them at their own VRAM tiles (snes_cardart.c BACK_FEET_TILE)."""
+    art = ga.card_back_art((CARD_W, CARD_H))
+    indexed = art.quantize(colors=CARD_COLOURS, method=Image.Quantize.MEDIANCUT,
+                           dither=Image.Dither.FLOYDSTEINBERG)
+    raw = indexed.getpalette()[:CARD_COLOURS * 3]
+    colours = [tuple(raw[i:i + 3]) for i in range(0, len(raw), 3)]
+    colours += [(0, 0, 0)] * (CARD_COLOURS - len(colours))
+    frame = [v + CARD_FIRST for v in indexed.getdata()]
+    tiles = bytearray()
+    for block in cut_tiles(frame, CARD_W, 0, 0, TILES_X, TOP_H // 8):
+        tiles += tile8(block)
+    assert len(tiles) == CARD_BYTES
+    feet = bytearray()
+    for block in cut_tiles(frame, CARD_W, 0, TOP_H, TILES_X, BOTTOM_ROWS):
+        feet += tile8(block)
+    assert len(feet) == BACK_FEET_BYTES
+    return bytes(tiles) + palette_bytes(colours) + bytes(feet), frame, colours
+
+
 def card_record(tag, path):
+    if tag == "back":
+        return back_record()
     art = big_art(tag, path)
     indexed = art.quantize(colors=CARD_COLOURS, method=Image.Quantize.MEDIANCUT,
                            dither=Image.Dither.FLOYDSTEINBERG)
@@ -407,6 +435,8 @@ def main():
                  "#define SNES_BIGCARD_FIRST_BANK %d\n"
                  "#define SNES_BIGCARD_BANKS      %d\n"
                  "#define SNES_BIGCARD_FEET_TILES %d\n"
+                 "/* The back's own bottom rows, after its record's palette. */\n"
+                 "#define SNES_BIGCARD_BACK_FEET_BYTES %d\n"
                  "#define SNES_BIGCARD_KIND_MONSTER 0\n"
                  "#define SNES_BIGCARD_KIND_SPELL   1\n"
                  "#define SNES_BIGCARD_KIND_TRAP    2\n"
@@ -423,7 +453,7 @@ def main():
                  % (CARD_W, CARD_H, TILES_X, TOP_H // 8, BOTTOM_ROWS, TOP_TILES,
                     CARD_BYTES, CARD_COLOURS, CARD_FIRST, CARD_PAL_BYTES,
                     CARD_RECORD, CARDS_PER_BANK, FIRST_BANK, banks,
-                    len(feet_tiles) // 64,
+                    len(feet_tiles) // 64, BACK_FEET_BYTES,
                     INFO_NAME_LEN, INFO_KIND_LEN, INFO_DESC_LEN, INFO_RECORD))
         for b in range(banks):
             fh.write("extern const u8 snes_bigcards_%d[];\n" % (FIRST_BANK + b))

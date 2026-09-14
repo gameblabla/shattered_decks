@@ -3166,6 +3166,26 @@ void snesDuelEnter(void)
     over_step = 0;
     check_face = SNES_CARD_NONE_FACE;
     check_has_stats = 0;
+    /* THE MODE 3 PRESENTATION STATE IS RESET HERE, NOT ONLY ON ITS WAY OUT.
+     * A duel decided inside the battle scene leaves through result_scene
+     * with mode3_active still 2 (the verdict is shown there, snes_battle.c),
+     * and the next duel -- a story duel after a random one -- then began
+     * with build_objects emitting an empty list and vblank routed to
+     * snesBattleVblank: no hand, no HUD text, until the COM's first attack
+     * went through end_battle_art and cleared it. */
+    mode3_active = 0;
+    battle_frame = 0;
+    effect_frame = 0;
+    effect_fx = 0;
+    effect_card = MSX2_CARD_NONE;
+    effect_victim_n = 0;
+    effect_victim_shown = MSX2_SLOT_NONE;
+    fusion_frame = 0;
+    fusion_result = MSX2_CARD_NONE;
+    fusion_success = 0;
+    fusion_mat_n = 0;
+    fusion_tm = 0x11;
+    fusion_backdrop = 0;
     texture_w = texture_h = 0;
     pattern_mode = 0;
     next_pool = 0;

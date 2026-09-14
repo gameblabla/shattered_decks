@@ -21,6 +21,8 @@
 #define SNES_BIGCARD_FIRST_BANK 30
 #define SNES_BIGCARD_BANKS      20
 #define SNES_BIGCARD_FEET_TILES 23
+/* The back's own bottom rows, after its record's palette. */
+#define SNES_BIGCARD_BACK_FEET_BYTES 4800
 #define SNES_BIGCARD_KIND_MONSTER 0
 #define SNES_BIGCARD_KIND_SPELL   1
 #define SNES_BIGCARD_KIND_TRAP    2

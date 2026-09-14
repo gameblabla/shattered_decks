@@ -19,6 +19,17 @@
 #define FONT_COUNT      64u
 #define FEET_TILE       (SNES_BIGCARD_TILES * 2u)
 #define FEET_WORD       (FEET_TILE * 32u)
+/* THE BACK'S OWN BOTTOM ROWS.  The cover painting carries its frame, so it
+ * is baked edge to edge and its feet are seventy-five tiles in ITS colours,
+ * not the shared frame's -- and those do not fit under BLANK_TILE.  They
+ * go to the words above the card sheet: $5800 is past the burst atlas the
+ * Thunder beat loads at $4000 (snes_battle.c FX_OBJ_WORD, 12 KB) and below
+ * the duel's OBJ sheet at $6000, which no Mode 3 screen samples.  Only the
+ * victim beat can show a back (the check refuses one, a defender is
+ * flipped before its battle), so the battle's layout never meets them. */
+#define BACK_FEET_WORD  0x5800u
+#define BACK_FEET_TILE  (BACK_FEET_WORD / 32u)
+#define BACK_FEET_TILES (SNES_BIGCARD_TILES_X * SNES_BIGCARD_FOOT_ROWS)
 #define TEXT_PRIORITY   0x2000u
 /* An empty BG2 cell is the space glyph: BG2's character base is $7000, and
  * tile 0 there is the duel's top-view map, not a blank. */
@@ -128,6 +139,9 @@ void snesCardArtEnter(u8 navy)
         dmaCopyVram((u8 *)&sym[off], dest, SNES_BIGCARD_BYTES); \
         dmaCopyCGram((u8 *)&sym[(off) + SNES_BIGCARD_BYTES], SLOT_PAL(slot), \
                      SNES_BIGCARD_PAL_BYTES); \
+        if (face == SNES_CARD_BACK) \
+            dmaCopyVram((u8 *)&sym[(off) + SNES_BIGCARD_RECORD], \
+                        BACK_FEET_WORD, SNES_BIGCARD_BACK_FEET_BYTES); \
     } while (0)
 
 void snesCardArtLoad(u8 slot, u8 face)
@@ -145,18 +159,34 @@ void snesCardArtLoad(u8 slot, u8 face)
          * each tile's last plane pair (bytes 49, 51, .. 63). */
         for (r = 0; r < 8; ++r)
             vram_fill_high((u16)(dest + 24u + r), SNES_BIGCARD_TILES);
+        /* ...and the back's feet with them: they are read through the
+         * slot that loaded the back last. */
+        if (face == SNES_CARD_BACK)
+            for (r = 0; r < 8; ++r)
+                vram_fill_high((u16)(BACK_FEET_WORD + 24u + r), BACK_FEET_TILES);
     }
 }
 
-void snesCardArtPlace(u8 slot, u8 col, u8 face)
+/* The map cell of foot tile (tx, ty) of a card in slot `slot`: the shared
+ * frame foot of its kind, or the back's own. */
+static u16 foot_cell(u8 slot, u8 face, u8 ty, u8 tx)
 {
-    u8 tx, ty, kind;
-    u16 base = (u16)slot * SNES_BIGCARD_TILES;
+    u8 kind;
     const u8 *foot;
+    (void)slot;
+    if (face == SNES_CARD_BACK)
+        return (u16)(BACK_FEET_TILE + (u16)ty * SNES_BIGCARD_TILES_X + tx);
     kind = (face < SNES_CARD_FACES) ? snesCardInfoFrame(face)
                                     : SNES_BIGCARD_KIND_MONSTER;
     foot = &snes_bigcard_feet_map[(u16)kind * SNES_BIGCARD_TILES_X *
                                   SNES_BIGCARD_FOOT_ROWS * 2u];
+    return (u16)(FEET_TILE + foot[((u16)ty * SNES_BIGCARD_TILES_X + tx) * 2]);
+}
+
+void snesCardArtPlace(u8 slot, u8 col, u8 face)
+{
+    u8 tx, ty;
+    u16 base = (u16)slot * SNES_BIGCARD_TILES;
     for (ty = 0; ty < SNES_BIGCARD_TOP_ROWS; ++ty)
         for (tx = 0; tx < SNES_BIGCARD_TILES_X; ++tx)
             bg1_map[(u16)ty * 32 + col + tx] =
@@ -164,8 +194,7 @@ void snesCardArtPlace(u8 slot, u8 col, u8 face)
     for (ty = 0; ty < SNES_BIGCARD_FOOT_ROWS; ++ty)
         for (tx = 0; tx < SNES_BIGCARD_TILES_X; ++tx)
             bg1_map[(u16)(SNES_BIGCARD_TOP_ROWS + ty) * 32 + col + tx] =
-                (u16)(FEET_TILE +
-                      foot[((u16)ty * SNES_BIGCARD_TILES_X + tx) * 2]);
+                foot_cell(slot, face, ty, tx);
     bg1_dirty = 1;
 }
 
@@ -173,20 +202,14 @@ void snesCardArtPlace(u8 slot, u8 col, u8 face)
  * for a map that is not this file's: the battle's 32x64 one. */
 void snesCardArtRowCells(u8 slot, u8 face, u8 ty, u16 *cells)
 {
-    u8 tx, kind;
+    u8 tx;
     const u16 base = (u16)slot * SNES_BIGCARD_TILES;
-    const u8 *foot;
-    kind = (face < SNES_CARD_FACES) ? snesCardInfoFrame(face)
-                                    : SNES_BIGCARD_KIND_MONSTER;
-    foot = &snes_bigcard_feet_map[(u16)kind * SNES_BIGCARD_TILES_X *
-                                  SNES_BIGCARD_FOOT_ROWS * 2u];
     for (tx = 0; tx < SNES_BIGCARD_TILES_X; ++tx) {
         if (ty < SNES_BIGCARD_TOP_ROWS)
             cells[tx] = (u16)(base + ty * SNES_BIGCARD_TILES_X + tx);
         else
-            cells[tx] = (u16)(FEET_TILE +
-                              foot[((u16)(ty - SNES_BIGCARD_TOP_ROWS) *
-                                    SNES_BIGCARD_TILES_X + tx) * 2]);
+            cells[tx] = foot_cell(slot, face,
+                                  (u8)(ty - SNES_BIGCARD_TOP_ROWS), tx);
     }
 }
 
