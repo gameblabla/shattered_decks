@@ -24,8 +24,9 @@
  *      $5C00-$5FFF   BG1 map B, 32x32
  *      $6000-$7FFF   OBJ characters (OBSEL name base 3)
  *  In the chair view the HUD band under line 144 hides BG1 by an HDMA write
- *  to TM.  The tactical overhead view disables that clip and scrolls the
- *  same tile map vertically, exposing the board through all 224 lines.
+ *  to TM.  The tactical overhead view moves that clip down to the HUD
+ *  plate's top line (197) and scrolls the same tile map vertically, so the
+ *  board may use the band's lines but never the plate's.
  * ───────────────────────────────────────────────────────────────────────────── */
 #ifndef WAIFU_SNES_VIDEO_H
 #define WAIFU_SNES_VIDEO_H
@@ -37,6 +38,10 @@
 #define SNES_FRAME_STRIDE     256
 #define SNES_BOARD_LINES      144
 #define SNES_HUD_LINES        (224 - SNES_BOARD_LINES)
+/* The first line of the HUD plate's gradient (snes_video.c GRAD_LEAD): BG1
+ * is clipped above it in either view and no sprite but the plate's own
+ * words may cross it. */
+#define SNES_PLATE_Y          197
 #define SNES_CELL_COLS        32
 #define SNES_CELL_ROWS        18
 #define SNES_FRAME_CELLS      (SNES_CELL_COLS * SNES_CELL_ROWS)
@@ -139,9 +144,9 @@ void snesBoardTextureCard(u16 centre, u16 face, u16 flip, u16 width, u16 height)
 
 void snesVideoInitDuel(void);
 void snesVideoRestartHdma(void);
-/* The overhead board uses the full 224-line main screen and follows its row
- * with BG1 tile scrolling.  Call from vblank; `scroll_y` is source minus
- * screen pixels (the normal chair view is zero). */
+/* The overhead board uses the main screen down to the HUD plate and follows
+ * its row with BG1 tile scrolling.  Call from vblank; `scroll_y` is source
+ * minus screen pixels (the normal chair view is zero). */
 void snesVideoBoardViewport(u8 overhead, s16 scroll_y);
 void snesVideoRestartSceneHdma(void);
 void snesVideoSetSkyTables(u16 rg, u8 rg_bank, u16 b, u8 b_bank);

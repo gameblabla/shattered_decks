@@ -139,10 +139,15 @@ typedef struct SnesVert {
 void snesTexQuad(const SnesViewport *vp, const SnesVert *quad, u8 face);
 
 /* The quad of a card lifted `lift` world units above its slot and leaning back
- * by `tilt`, ready for snesTexQuad.  Returns 0 when any corner is at or
- * behind the near plane. */
+ * by `tilt`, ready for snesTexQuad; `defense` turns it a quarter on its
+ * slot (a unit across, three quarters deep, the painting's top towards its
+ * owner's right).  Returns 0 when any corner is at or behind the near
+ * plane.  This is also how a resting card in defence is drawn: the row
+ * rasteriser knows one footprint and one orientation, so a turned card is
+ * this quad over its slot after the row's upright cards. */
 u8 snesCardQuad(const SnesCamera *cam, const SnesViewport *vp,
-                u8 row, u8 col, u8 mirror, s16 lift, s16 tilt, SnesVert *quad);
+                u8 row, u8 col, u8 mirror, s16 lift, s16 tilt, u8 defense,
+                SnesVert *quad);
 
 /* The pixel bounding box of a quad on its viewport, clamped to it.  Returns 0
  * if it is entirely outside. */

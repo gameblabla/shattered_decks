@@ -2127,7 +2127,9 @@ def check_top_view():
     regs = read_ppu_regs(os.path.join(OUT, "topview.ppu"))
     if regs["BGMODE"] != 3 or regs["BG12NBA"] != 0 or regs["BG1SC"] not in (0x58, 0x5c):
         raise Failure("the overhead view is not the seat's Mode 3 board: %s" % regs)
-    if regs.get("TM") != 0x11 or regs.get("BG1VOFS") != 999:
+    # TM ends the field at OBJ alone: the plate's clip (snes_video.c
+    # hdma_tm_top) keeps BG1 off the HUD plate in this view too.
+    if regs.get("TM") not in (0x10, 0x11) or regs.get("BG1VOFS") != 999:
         raise Failure("the overhead view is not full-height/tracked (TM=%s VOFS=%s)" %
                       (regs.get("TM"), regs.get("BG1VOFS")))
     w, h, px = read_ppm(ppm)
@@ -2233,6 +2235,111 @@ def check_top_view_switch_is_seamless():
         len(frames), len(unique), worst, typical, stamp["occupied"])
 
 
+def top_slot_extent(px, w, h, row, col, dy):
+    """The lit (non-floor) extent of a slot's card in the overhead picture,
+    as (width, height) in pixels: the widest and tallest run of card texels
+    inside the slot's unit tile.  The floor is what identify_top_slot's
+    sheets never contain: the tile's own browns; a card's frame is the
+    sheets' navy and its painting anything.  Sampled per column and row."""
+    cx, cz = col - 2, ROW_Z[row]
+    x0 = int(TOP_CX + (cx - 0.5) * TOP_K)
+    y0 = int(TOP_CY - (cz + 0.5) * TOP_K) + dy
+    colhits = [0] * 32
+    rowhits = [0] * 32
+    for yy in range(32):
+        for xx in range(32):
+            x, y = x0 + xx, y0 + yy
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            i = (y * w + x) * 3
+            r, g, b = px[i], px[i + 1], px[i + 2]
+            # The floor's browns/tans have red well above blue; a card's
+            # navy frame does not, and its painting is read as card too.
+            if not (r > b + 40 and g > b):
+                colhits[xx] += 1
+                rowhits[yy] += 1
+    # A row or column is the card's when most of it is (the tile's own dark
+    # grooves are a line, not a run).
+    cols = [i for i, n in enumerate(colhits) if n >= 16]
+    rows = [i for i, n in enumerate(rowhits) if n >= 16]
+    if not cols or not rows:
+        return 0, 0
+    return max(cols) - min(cols) + 1, max(rows) - min(rows) + 1
+
+
+def check_defence_card_turned():
+    """L in the top view turns the monster under the cursor: it lies a
+    quarter turned on its slot (wider than deep) where the same card was
+    upright before, in the overhead picture AND on the seat's board."""
+    at = DUEL_READY + 400 + 400
+    _, wram = run("defence_turn", random_battle_script() + [
+        press("R", DUEL_READY), press("UP", DUEL_READY + 400),
+        press("L", at), press("DOWN", at + 450), press("DOWN", at + 600)],
+        at + 2200, capture=(at + 300, at + 300, 1))
+    stamp = read_stamp(wram)
+    if stamp["view"] != 0 or UI[stamp["ui"]] != "HAND":
+        raise Failure("the turn flow did not come back down to the hand (view %d, ui %s)"
+                      % (stamp["view"], UI[stamp["ui"]]))
+    frame = os.path.join(OUT, "defence_turn.frames", "f%06d.ppm" % (at + 300))
+    w, h, px = read_ppm(frame)
+    # The cursor starts on the player's monster row (row 2, the scroll
+    # TOP_CY already assumes), so slot (2, 0) is the turned one and (2, 1)
+    # its upright neighbour.
+    tw, th = top_slot_extent(px, w, h, 2, 0, 0)
+    uw, uh = top_slot_extent(px, w, h, 2, 1, 0)
+    if not (tw > th and uw < uh and tw >= 28 and uh >= 28):
+        raise Failure("the turned card is not lying across its slot in the "
+                      "overhead view (turned %dx%d, upright %dx%d)" % (tw, th, uw, uh))
+    # Back at the seat the same slot differs from the fixture's upright bake.
+    before, _ = run_fixture()
+    _, _, reference = read_ppm(before)
+    after = os.path.join(OUT, "defence_turn.ppm")
+    _, _, pixels = read_ppm(after)
+    # The player's monster row lies on lines ~72..96 at the seat.
+    changed = sum(1 for y in range(66, 100) for x in range(40, 96)
+                  if pixels[(y * w + x) * 3:(y * w + x) * 3 + 3]
+                  != reference[(y * w + x) * 3:(y * w + x) * 3 + 3])
+    same = sum(1 for y in range(66, 100) for x in range(150, 232)
+               if pixels[(y * w + x) * 3:(y * w + x) * 3 + 3]
+               != reference[(y * w + x) * 3:(y * w + x) * 3 + 3])
+    if changed < 200 or same > 100:
+        raise Failure("the seat's board does not show the turned card in slot 0 "
+                      "alone (%d pixels changed there, %d in slots 3-4)" % (changed, same))
+    return ("overhead: turned %dx%d beside upright %dx%d; seat: %d pixels changed"
+            % (tw, th, uw, uh, changed))
+
+
+def check_top_view_keeps_off_the_plate():
+    """Scrolled to the far row, the overhead board is pushed down 88 lines;
+    the HUD plate's lines stay the plate: gradient and words, no board."""
+    at = DUEL_READY + 400 + 400
+    ppm, wram = run("top_plate", random_battle_script() + [
+        press("R", DUEL_READY), press("UP", DUEL_READY + 400),
+        press("UP", at), press("UP", at + 120)], at + 600)
+    stamp = read_stamp(wram)
+    if stamp["view"] != 1:
+        raise Failure("UP twice did not stay in the overhead view (view %d)" % stamp["view"])
+    w, h, px = read_ppm(ppm)
+    # Board rows under the far row are on lines 160..196 when the far row
+    # is selected; lines 200..220 on the right, past the stat row's legend,
+    # must be the plate's blue alone.
+    board = sum(1 for y in range(160, 196) for x in range(60, 200)
+                if screen5(px, w, x, y) != (0, 0, 0))
+    plate = 0
+    for y in range(200, 221, 4):
+        for x in range(200, 250, 6):
+            r, g, b = screen5(px, w, x, y)
+            if not (r == g and b > r + 6):
+                plate += 1
+    if board < 2000:
+        raise Failure("the far row selection did not push the board down onto "
+                      "lines 160..196 (%d lit pixels)" % board)
+    if plate:
+        raise Failure("%d samples on the HUD plate are not the plate's gradient: "
+                      "the board is drawn over it" % plate)
+    return "board on lines 160..196 (%d px), plate lines clean" % board
+
+
 def check_camera_round_trip():
     before, _ = run_fixture()
     _, _, reference = read_ppm(before)
@@ -2334,62 +2441,152 @@ def decode_cardart_text(vram, row):
     return line.rstrip()
 
 
+# The Thunder victim (snes_duel.c EFFECT_*): the intro's card and text for
+# EFFECT_CARD_FIELDS, then EFFECT_VICTIM_FIELDS a victim -- the card alone in
+# the middle of the screen (snes_cardart.h SNES_CARDART_VICTIM_X), the burst's
+# sprites from EFFECT_BOOM_AT, the top-down wipe from EFFECT_WIPE_AT.
+EFFECT_CARD_FIELDS = 72
+EFFECT_VICTIM_FIELDS = 56
+EFFECT_BOOM_AT = 14
+EFFECT_WIPE_AT = 24
+BIGCARD_VICTIM_X = 68
+
+
 def check_support_cutin():
-    """Thunder names itself, then shows every snapshotted victim."""
+    """Thunder names itself, then takes every snapshotted victim one at a
+    time: the card alone in the middle, a sprite burst over it, and a wipe
+    that erases it from the top down."""
     start = DUEL_READY + 400
+    # The chord is seen once it has been held; the intro's first field is
+    # found in the capture by the support painting rather than assumed.
     ppm, wram = run("support_cutin", random_battle_script() +
-                    [press_chord(("SELECT", "X"), start)], start + 173,
-                    capture=(start + 60, start + 172, 112))
+                    [press_chord(("SELECT", "X"), start)], start + 300,
+                    capture=(start + 60, start + 300, 2))
     stamp = read_stamp(wram)
     if UI[stamp["ui"]] != "EFFECT_ART":
         raise Failure("Thunder fixture ended in %s, expected EFFECT_ART" %
                       UI[stamp["ui"]])
-    intro = os.path.join(OUT, "support_cutin.frames", "f%06d.ppm" %
-                         (start + 60))
-    iw, ih, ipx = read_ppm(intro)
-    art = identify_bigcard(ipx, iw, ih, BIGCARD_CHECK_X + 4,
-                           BIGCARD_CHECK_Y + 6)
+    frame_dir = os.path.join(OUT, "support_cutin.frames")
+    frames = sorted(os.listdir(frame_dir))
+    # The intro: Thunder's own card on the left with its text.
+    iw, ih, ipx = read_ppm(os.path.join(frame_dir, frames[0]))
+    art = identify_bigcard(ipx, iw, ih, BIGCARD_CHECK_X + 4, BIGCARD_CHECK_Y + 6)
     if not art or art[0] != SUPPORT_FIRST + 4 or art[1] < BIG_ART * BIG_ART * 0.98:
-        raise Failure("support cut-in did not show Thunder exactly: %s" %
-                      (art,))
-    w, h, px = read_ppm(ppm)
-    victim = identify_bigcard(px, w, h, BIGCARD_CHECK_X + 4,
-                              BIGCARD_CHECK_Y + 6)
-    if not victim or victim[0] >= SUPPORT_FIRST or victim[1] < BIG_ART * BIG_ART * 0.98:
-        raise Failure("Thunder victim screen is not a full-resolution monster: %s" %
-                      (victim,))
+        raise Failure("support cut-in did not show Thunder exactly: %s" % (art,))
+    # The first victim: the first field with a whole monster in the middle.
+    victim_at = None
+    for name in frames:
+        vw, vh, vpx = read_ppm(os.path.join(frame_dir, name))
+        victim = identify_bigcard(vpx, vw, vh, BIGCARD_VICTIM_X + 4,
+                                  BIGCARD_CHECK_Y + 6)
+        if victim and victim[0] < SUPPORT_FIRST and victim[1] >= BIG_ART * BIG_ART * 0.98:
+            victim_at = int(name[1:7])
+            break
+    if victim_at is None:
+        raise Failure("no Thunder victim appeared whole in the middle of the screen")
+    # The burst: sprites appear over the card after EFFECT_BOOM_AT.
+    boom_at = victim_at + EFFECT_BOOM_AT + 4
+    bw, bh, bpx = read_ppm(os.path.join(frame_dir, "f%06d.ppm" % boom_at))
+    burst = sum(1 for y in range(60, 140) for x in range(100, 156)
+                if bpx[(y * bw + x) * 3:(y * bw + x) * 3 + 3]
+                != vpx[(y * vw + x) * 3:(y * vw + x) * 3 + 3])
+    if burst < 300:
+        raise Failure("no burst over the victim %d fields after its cue "
+                      "(%d pixels changed)" % (EFFECT_BOOM_AT + 6, burst))
+    # The wipe: halfway through, the card's top half is gone and its bottom
+    # half is still there.
+    wipe_at = victim_at + EFFECT_WIPE_AT + 12
+    ww, wh, wpx = read_ppm(os.path.join(frame_dir, "f%06d.ppm" % wipe_at))
+    # (The burst's rays still cross the top band: a whole card there is
+    # over four thousand lit pixels, a few hundred is the burst.)
+    top = sum(1 for y in range(24, 60) for x in range(70, 186)
+              if wpx[(y * ww + x) * 3:(y * ww + x) * 3 + 3] != b"\x00\x00\x00")
+    bottom = sum(1 for y in range(150, 180) for x in range(70, 186)
+                 if wpx[(y * ww + x) * 3:(y * ww + x) * 3 + 3] != b"\x00\x00\x00")
+    if top > 1200 or bottom < 1500:
+        raise Failure("the victim is not wiped from the top down (top %d, "
+                      "bottom %d lit pixels)" % (top, bottom))
     vram = open(os.path.join(OUT, "support_cutin.ppu.vram"), "rb").read()
-    if "THUNDER" not in decode_cardart_text(vram, 0) or \
-       "DESTROYED" not in decode_cardart_text(vram, 8):
-        raise Failure("Thunder victim text is missing: %r / %r" %
-                      (decode_cardart_text(vram, 0),
-                       decode_cardart_text(vram, 8)))
-    return "Thunder support art, effect text, and victim %d shown at 120x160" % victim[0]
+    if "THUNDER" not in decode_cardart_text(vram, 30):
+        raise Failure("the victim screen's title is missing: %r" %
+                      decode_cardart_text(vram, 30))
+    return ("Thunder card, then victim %d centred, burst (%d px) and wiped "
+            "top-down (%d/%d)" % (victim[0], burst, top, bottom))
+
+
+# The fusion screen (snes_duel.c FUSION_*): the materials glide from the hand
+# to a row while sparks circle for FUSION_MERGE_END fields, the flash runs
+# FUSION_FLASH_BEGIN..FUSION_FLASH_END, the result then sits at (112, 82).
+FUSION_MERGE_END = 48
+FUSION_FLASH_BEGIN = 52
+FUSION_FLASH_END = 64
+FUSION_REVEAL_END = 78
+FUSION_ROW_Y = 83
+
+
+# Direct colour through the board's map attribute: the panel's navy
+# SNES_DC(0, 0, 1) and its white rule SNES_DC(7, 7, 3) as the PPU shows them.
+FUSION_NAVY = (2, 2, 12)
+FUSION_RULE = (30, 30, 28)
+
+
+def fusion_screen_like(px, w, h):
+    """The fusion screen's navy panel with its white rule: line 24 is the
+    panel's top edge, white from x 16 to 239."""
+    return all(screen5(px, w, x, 24) == FUSION_RULE for x in (40, 128, 200)) and \
+        all(screen5(px, w, x, 100) == FUSION_NAVY for x in (24, 230))
 
 
 def check_fusion_cutin():
-    """A legal two-card recipe merges through a flash into its large result."""
+    """A legal two-card recipe: the materials come to a row in the middle of
+    the panel, the screen flashes, and the result appears as a hand-sized
+    sprite under FUSION SUCCESS -- the PC-FX presentation, not a card art."""
     start = DUEL_READY + 400
     ppm, wram = run("fusion_cutin", random_battle_script() +
-                    [press_chord(("SELECT", "A"), start)], start + 121,
-                    capture=(start + 120, start + 120, 1))
+                    [press_chord(("SELECT", "A"), start)], start + 260,
+                    capture=(start + 30, start + 260, 2))
+    frame_dir = os.path.join(OUT, "fusion_cutin.frames")
+    frames = sorted(os.listdir(frame_dir))
+    first = None
+    for name in frames:
+        w, h, px = read_ppm(os.path.join(frame_dir, name))
+        if fusion_screen_like(px, w, h):
+            first = int(name[1:7])
+            break
+    if first is None:
+        raise Failure("the fusion screen (navy panel, white rule) never appeared")
+    # The flash: whole white or gold fields.  The screen's first field is
+    # a few ahead of the sequence's own count (the board is patched behind
+    # it first), so the beats are placed off the flash rather than assumed.
+    def flash_field(f):
+        fw, fh, fpx = read_ppm(os.path.join(frame_dir, "f%06d.ppm" % f))
+        return all(screen5(fpx, fw, x, y) in ((31, 31, 31), (31, 23, 0))
+                   for x in (2, 128, 253) for y in (2, 100, 220))
+    flashes = [f for f in range(first, first + FUSION_FLASH_END + 40, 2)
+               if os.path.exists(os.path.join(frame_dir, "f%06d.ppm" % f)) and flash_field(f)]
+    if not flashes:
+        raise Failure("the fusion never flashed the whole screen white or gold")
+    # The merge: the two materials on the row just before the flash.
+    w, h, px = read_ppm(os.path.join(frame_dir, "f%06d.ppm" % (flashes[0] - 4)))
+    lit = sum(1 for y in range(FUSION_ROW_Y, FUSION_ROW_Y + 32) for x in range(64, 192)
+              if screen5(px, w, x, y) != FUSION_NAVY)
+    if lit < 1200:
+        raise Failure("the materials are not on the row at the end of the merge "
+                      "(%d lit pixels)" % lit)
+    # The result: one card sprite at the middle once the reveal has settled.
+    w, h, px = read_ppm(os.path.join(frame_dir, "f%06d.ppm" % (flashes[-1] + 30)))
+    result = sum(1 for y in range(82, 114) for x in range(112, 144)
+                 if screen5(px, w, x, y) != FUSION_NAVY)
+    beside = sum(1 for y in range(82, 114) for x in list(range(40, 100)) + list(range(156, 216))
+                 if screen5(px, w, x, y) != FUSION_NAVY)
+    if result < 600 or beside > 40:
+        raise Failure("the fusion result is not a lone card sprite in the middle "
+                      "(%d lit in it, %d beside)" % (result, beside))
     stamp = read_stamp(wram)
-    if UI[stamp["ui"]] != "FUSION_ART":
-        raise Failure("Fusion fixture ended in %s, expected FUSION_ART" %
-                      UI[stamp["ui"]])
-    w, h, px = read_ppm(ppm)
-    result = identify_bigcard(px, w, h, BIGCARD_CHECK_X + 4,
-                              BIGCARD_CHECK_Y + 6)
-    if not result or result[0] >= SUPPORT_FIRST or result[1] < BIG_ART * BIG_ART * 0.98:
-        raise Failure("Fusion result is not a full-resolution monster: %s" %
-                      (result,))
-    vram = open(os.path.join(OUT, "fusion_cutin.ppu.vram"), "rb").read()
-    if "FUSION RESULT" not in decode_cardart_text(vram, 0) or \
-       "FUSION SUMMON" not in decode_cardart_text(vram, 8):
-        raise Failure("Fusion result text is missing: %r / %r" %
-                      (decode_cardart_text(vram, 0),
-                       decode_cardart_text(vram, 8)))
-    return "two materials flash into full-resolution fusion result %d" % result[0]
+    if stamp["field_cards"] < 1:
+        raise Failure("the fusion left no card on the field")
+    return ("two materials on the row (%d px), flash, result sprite (%d px), "
+            "card on the field" % (lit, result))
 
 
 # ── The Mode 4 battle ────────────────────────────────────────────────────────
@@ -2938,6 +3135,8 @@ CHECKS = [
     ("top view switch", check_top_view_switch_is_seamless),
     ("camera round trip", check_camera_round_trip),
     ("top cursor + card check", check_top_cursor_and_card_check),
+    ("defence card turned", check_defence_card_turned),
+    ("top view off the plate", check_top_view_keeps_off_the_plate),
     ("support cut-in", check_support_cutin),
     ("fusion cut-in", check_fusion_cutin),
     ("battle Mode 4", check_battle_mode4),

@@ -68,6 +68,8 @@ u8 snes_next_card_face = SNES_OBJ_NO_FACE;
 u8 snes_next_card_hi = 0;
 /* Selected by snesObjEnd, so VBlank does no card-array scan. */
 u8 snes_next_palette = SNES_OBJ_CARDS;
+/* Card uploads the vblank check refused (snesObjVblank); for the stamp. */
+u8 snes_obj_drops = 0;
 #define next_card      snes_next_card
 #define next_card_row  snes_next_card_row
 #define next_card_face snes_next_card_face
@@ -333,6 +335,16 @@ void snesObjFlushBlank(void)
     oam_dirty = 0;
 }
 
+/* HOW MANY CARD ROWS A VBLANK TAKES, and it is two, not the four of a whole
+ * card.  The DMA of a row is a fraction of a line; the 816-tcc around it
+ * (upload_card_row's address arithmetic and the library call) is five
+ * more, measured with the V counter: the NMI hands the window back at
+ * line ~231, the OAM copy ends at 235, and four rows ran to line 259 and
+ * the palette past 262 -- so the check in snesObjVblank refused the card
+ * on nearly every field and the hand arrived by retries, or on a screen
+ * with no drain at all (the fusion) never.  Two rows end by 247. */
+#define OBJ_ROWS_PER_VBLANK 2
+
 /* What the next snesObjVblank will put on the bus, in bytes, so the board's
  * NMI drain can leave that much of the vblank alone (snesFbReserve).  The
  * two used to share the window by guesswork, and the guess lost: a card
@@ -342,14 +354,14 @@ u16 snesObjVblankBytes(void)
 {
     u16 bytes = oam_dirty ? 544 : 0;
     if (next_card < SNES_OBJ_CARDS)
-        bytes += (u16)(4 - next_card_row) * SNES_SPR_CARD_ROW + 32;
+        bytes += (u16)OBJ_ROWS_PER_VBLANK * SNES_SPR_CARD_ROW + 32;
     if (next_palette < SNES_OBJ_CARDS) bytes += 32;
     return bytes;
 }
 
 void snesObjVblank(void)
 {
-    u8 budget = 4;
+    u8 budget = OBJ_ROWS_PER_VBLANK;
     u8 palette_done = 0;
     const u8 slot = next_card;
     if (oam_dirty) {
@@ -379,6 +391,7 @@ void snesObjVblank(void)
      * transfers are done, nothing here is trusted: the OAM goes again and
      * the slot is put back on the queue from row zero. */
     if (!(REG_HVBJOY & 0x80)) {
+        ++snes_obj_drops;
         oam_dirty = 1;
         if (slot < SNES_OBJ_CARDS && next_card == SNES_OBJ_CARDS) {
             card_have[slot] = SNES_OBJ_NO_FACE;

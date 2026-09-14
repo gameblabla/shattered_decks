@@ -55,7 +55,7 @@ static u8 hdma_scene_col[SCENE_GRAD_TABLE_BYTES];
  * untouched by it; and outside the plate's lines the fixed colour is black, so
  * adding it to the backdrop is what the rest of the screen already was. */
 #define GRAD_LINES   26                 /* screen lines 197..222 */
-#define GRAD_LEAD    197                /* black above it */
+#define GRAD_LEAD    SNES_PLATE_Y       /* black above it */
 #define GRAD_TAIL    8                  /* black under it, line 223 included */
 #define COL_BLACK    0xE0               /* R, G and B all to intensity zero */
 #define COL_RG       0x60               /* this byte sets red and green */
@@ -78,6 +78,15 @@ static u8 presentation_owner = SNES_OWNER_BOARD;
 static u16 requested_generation = 0;
 static u8 board_overhead = 0;
 static s16 board_scroll_y = 0;
+
+/* THE OVERHEAD VIEW IS CLIPPED TOO, AT THE PLATE.  The chair view's TM table
+ * (snes_fb_tm, snes_fb.asm) takes BG1 off the screen under line 144; the
+ * scrolled overhead board may use those lines, but not the HUD plate's: with
+ * the cursor on the far row the picture is pushed 88 lines down and its
+ * near rows were painted straight over the gradient and under the words.
+ * So the overhead view swaps channel 6 to this table -- BG1 + OBJ down to
+ * line GRAD_LEAD, OBJ alone over the plate -- rather than disabling it. */
+static u8 hdma_tm_top[7];
 
 /* Fill the plate's table once.  The ramp is walked in 8.8 rather than divided
  * per line: 816-tcc has no divide worth spending here, and both steps happen
@@ -124,23 +133,37 @@ static void build_gradient(void)
  * Channels 1-3 are never used: their registers are reserved as fast scratch
  * for the renderer (SNES_MODE3_PLAN.md 2.3).  Channel 0 is the main thread's
  * general DMA and 7 the NMI drain's. */
+static void build_tm_top(void)
+{
+    u8 *t = hdma_tm_top;
+    *t++ = 127;                  *t++ = 0x11;
+    *t++ = GRAD_LEAD - 127;      *t++ = 0x11;
+    *t++ = 224 - GRAD_LEAD;      *t++ = 0x10;
+    *t   = 0;
+}
+
+/* Channel 6's table for the view: the chair clip or the overhead one. */
+static void arm_tm_table(void)
+{
+    u16 table = (u16)(u16)snes_fb_tm;
+    if (board_overhead) table = (u16)(u16)&hdma_tm_top[0];
+    *(vuint8 *)0x4360 = 0x00;  *(vuint8 *)0x4361 = 0x2C;
+    *(vuint16 *)0x4362 = table;
+    *(vuint8 *)0x4364 = 0x7E;
+}
+
 static void arm_hdma(void)
 {
     REG_HDMAEN = 0;
 
     build_gradient();
+    build_tm_top();
     *(vuint8 *)0x4340 = 0x02;  *(vuint8 *)0x4341 = 0x32;
     *(vuint16 *)0x4342 = (u16)(u16)&hdma_col[0];
     *(vuint8 *)0x4344 = 0x7E;
 
-    *(vuint8 *)0x4360 = 0x00;  *(vuint8 *)0x4361 = 0x2C;
-    *(vuint16 *)0x4362 = (u16)(u16)snes_fb_tm;
-    *(vuint8 *)0x4364 = 0x7E;
-
-    /* Overhead owns the whole screen: channel 6 must not cut BG1 off at the
-     * chair view's line 144.  The colour channel remains for the compact info
-     * plate at the bottom. */
-    REG_HDMAEN = board_overhead ? 0x10 : 0x50;
+    arm_tm_table();
+    REG_HDMAEN = 0x50;
 }
 
 static void build_scene_gradient(void)
@@ -338,14 +361,11 @@ void snesVideoBoardViewport(u8 overhead, s16 scroll_y)
     overhead = overhead ? 1 : 0;
     if (overhead != board_overhead) {
         board_overhead = overhead;
-        /* Channel 6 finishes every chair-view field with OBJ alone in TM.
-         * Disabling that channel does not rewind the register, so explicitly
-         * restore BG1 before the first full-height overhead field.  Its table
-         * registers and the colour channel are already armed; rebuilding the
-         * gradient here would spend most of the scarce vblank window. */
-        REG_HDMAEN = 0;
-        REG_TM = BG1_ENABLE | OBJ_ENABLE;
-        REG_HDMAEN = board_overhead ? 0x10 : 0x50;
+        /* The channel's start address is re-read at the top of every frame,
+         * so swapping the table here (vblank) takes effect on the next
+         * field whole; the colour channel and the gradient are untouched,
+         * rebuilding them would spend most of the scarce vblank window. */
+        arm_tm_table();
     }
     board_scroll_y = overhead ? scroll_y : 0;
     /* At $3ff the PPU's one-line BG latch makes source row zero appear on

@@ -148,6 +148,13 @@
 
 /* How far the hand slides off the bottom of the screen over the lift. */
 #define VIEW_HAND_OFFSET       80
+/* THE HAND NEVER CROSSES THE PLATE.  The plate's gradient is the backdrop
+ * under lines 197.., and a sprite is always in front of the backdrop, so a
+ * hand card sliding down into the top view would be drawn over the words
+ * and the ramp; a card whose 32 rows would reach the plate's rule is not
+ * shown at all (build_objects), and one already on screen is parked off it
+ * (slide_hand) the field it gets there. */
+#define HAND_Y_LAST            (SNES_PLATE_Y - 32)
 
 enum SnesDuelUi {
     UI_HAND = 0,        /* choosing a card in hand */
@@ -307,9 +314,18 @@ static u8 battle_return_ui = UI_COM;
  * before the call and remain presentation data until this sequence ends. */
 #define EFFECT_REVEAL_FIELDS 20
 #define EFFECT_CARD_FIELDS   72
-#define EFFECT_VICTIM_FIELDS 52
+/* THUNDER'S VICTIMS, ONE AT A TIME, THE PC-FX WAY: the card alone in the
+ * middle of the screen, then the burst (the direct attack's sprites,
+ * snesBattleFxBurst) with the destruction cue and a two-field white flash,
+ * and the card wiped off the screen from the top down while the burst
+ * dies; then the next.  Fifty-six fields a victim. */
+#define EFFECT_VICTIM_FIELDS 56
+#define EFFECT_BOOM_AT       14         /* the burst, the cue, the flash */
+#define EFFECT_WIPE_AT       24
+#define EFFECT_WIPE_FIELDS   24         /* 160 lines of card in 24 fields */
 #define EFFECT_TAIL_FIELDS   16
 static u16 effect_frame = 0;
+static u8 effect_fx = 0;                /* the burst atlas is loaded */
 static u8 effect_card = MSX2_CARD_NONE;
 static u8 effect_owner = MSX2_OWNER_PLAYER;
 static u8 effect_return_ui = UI_HAND;
@@ -320,16 +336,49 @@ static u8 effect_victim[MSX2_FIELD] = {
 static u8 effect_victim_n = 0;
 static u8 effect_victim_shown = MSX2_SLOT_NONE;
 
-#define FUSION_FLASH_BEGIN 48
-#define FUSION_RESULT_AT   64
-#define FUSION_FLASH_END   84
-#define FUSION_END_FIELDS  144
+/* THE FUSION IS THE PC-FX'S SCREEN (src/main.c draw_player_fusion_anim, the
+ * console path): black with navy stripes and a panel, the word FUSION over
+ * it, the materials gliding out of the hand into a row across the middle
+ * while sparks circle them, a white-and-gold flash, and the card that came
+ * of it under FUSION SUCCESS -- or FUSION FAILED, and the last material
+ * placed, which is what the rules do with a chain that does not fuse.
+ *
+ * It is NOT a card-art scene.  The board's own Mode 3 stays up: BG1 is
+ * given ten direct-colour tiles and a map for the stripes and the panel
+ * (the sparse presenter is idle, its store is rebuilt on the way out) and
+ * the cards are the hand's OBJ sprites, resident with their own palettes
+ * in the slots they came from; the field card fused onto and the result
+ * are queued into two more.  The flash is the backdrop: CGRAM 0 white or
+ * gold with every layer off, written in vblank (snesDuelVblank). */
+#define FUSION_MERGE_END   48
+#define FUSION_FLASH_BEGIN 52
+#define FUSION_FLASH_END   64
+#define FUSION_REVEAL_END  78
+#define FUSION_SKIP_FROM   96
+#define FUSION_END_FIELDS  170
+#define FUSION_ROW_Y       83           /* the materials' row: centre 99 */
+#define FUSION_RESULT_Y0   72
+#define FUSION_RESULT_Y1   82
+#define FUSION_PITCH       34
+#define FUSION_TITLE_Y     39
+#define FUSION_VERDICT_Y   166
+#define FUSION_NOTE_Y      181
+#define FUSION_FIELD_SLOT  5            /* OBJ slot of the field material */
+#define FUSION_RESULT_SLOT 6
+#define FUSION_MAX_MATS    (MSX2_HAND + 1)
 static u16 fusion_frame = 0;
-static u8 fusion_material = MSX2_CARD_NONE;
 static u8 fusion_result = MSX2_CARD_NONE;
-static u8 fusion_count = 0;
 static u8 fusion_success = 0;
 static u8 fusion_return_ui = UI_HAND;
+static u8 fusion_mat_n = 0;
+static u8 fusion_mat_slot[FUSION_MAX_MATS] = { 0, 0, 0, 0, 0, 0 };
+static u8 fusion_mat_face[FUSION_MAX_MATS] = {
+    SNES_CARD_NONE_FACE, SNES_CARD_NONE_FACE, SNES_CARD_NONE_FACE,
+    SNES_CARD_NONE_FACE, SNES_CARD_NONE_FACE, SNES_CARD_NONE_FACE
+};
+/* The flash, for vblank: TM and the backdrop colour to write. */
+static u8  fusion_tm = 0x11;
+static u16 fusion_backdrop = 0;
 /* How far into its entrance the result banner is. */
 static u8  over_step = 0;
 static u8 texture_w = 0, texture_h = 0;
@@ -372,8 +421,7 @@ static void say(const char *msg);
 static void note_draws(u8 owner, const u8 *before);
 static void place_chosen(u8 defense);
 static void begin_effect_art(u8 return_ui, u8 card, u8 owner);
-static void begin_fusion_art(u8 return_ui, u8 material, u8 result,
-                             u8 count, u8 success);
+static void begin_fusion_art(u8 return_ui, u8 result, u8 success);
 static void snapshot_effect(u8 card, u8 owner);
 static void snapshot_effect_saved(u8 card, u8 owner, const u8 *cards,
                                   const u8 *faceup);
@@ -387,11 +435,18 @@ u8 snesDuelBrightness(void) { return fade_level; }
 void snesDuelVblank(void)
 {
     const u8 dirty = fade_dirty;
+    if (effect_fx) snesBattleFxVblank();
     if (!dirty) return;
     fade_dirty = 0;
     if (dirty & 2)
         snesVideoBoardViewport(top_view,
             top_view ? (s16)(-88 + (s16)top_row * 32) : 0);
+    if (dirty & 4) {
+        REG_TM = fusion_tm;
+        REG_CGADD = 0;
+        *(vuint8 *)0x2122 = (u8)fusion_backdrop;
+        *(vuint8 *)0x2122 = (u8)(fusion_backdrop >> 8);
+    }
     if (dirty & 1) REG_INIDISP = fade_level;
 }
 
@@ -818,6 +873,15 @@ static void cells_rows(u16 *y0, u16 *y1)
     *y1 = (u16)(last + 1) << 3;
 }
 
+/* A CARD IN DEFENCE IS A DIFFERENT FACE TO THE BOARD.  Bit 7 of an entry in
+ * the twenty-slot face arrays says the card lies turned a quarter on its
+ * slot (the PC's rotated defence card), so a position change is a slot
+ * that differs from the baked picture and the world texture like any other
+ * change, and is repainted the same way.  The bit is stripped before a
+ * face reaches a sheet. */
+#define FACE_DEF        0x80u
+#define FACE_ID(f)      ((u8)((f) & 0x7Fu))
+
 static void current_faces(u8 *faces)
 {
     u8 row, col;
@@ -826,12 +890,17 @@ static void current_faces(u8 *faces)
                                                        : MSX2_OWNER_PLAYER;
         const u8 support = (row == SNES_ROW_COM_SUPPORT ||
                             row == SNES_ROW_YOU_SUPPORT);
-        const Msx2Side *s = &g_duel.side[owner];
+        const Msx2Side *s = (owner == MSX2_OWNER_COM)
+                          ? &g_duel.side[MSX2_OWNER_COM]
+                          : &g_duel.side[MSX2_OWNER_PLAYER];
         for (col = 0; col < SNES_COLS; ++col) {
             const u8 card = support ? s->equip_field[col] : s->field[col];
-            faces[row * SNES_COLS + col] = show_cards
+            u8 face = show_cards
                 ? face_of(card, support ? 1 : s->faceup[col])
                 : SNES_CARD_NONE_FACE;
+            if (face != SNES_CARD_NONE_FACE && !support && s->defense[col])
+                face |= FACE_DEF;
+            faces[row * SNES_COLS + col] = face;
         }
     }
 }
@@ -860,15 +929,62 @@ static u8 texture_stale(void)
     return 1;
 }
 
+/* A TURNED CARD'S STAMP IS WALKED DOWN THE FACE'S COLUMNS.  The asm stamp
+ * (snesBoardTextureCard) is a constant-v walk along a face's rows; a card
+ * lying a quarter turned needs each world row read down a column of the
+ * 32x32 face instead, so it is stamped here, through WMDATA like the asm,
+ * 32 texels across and 24 deep over the same slot centre.  The painting's
+ * top points to its owner's right: for the player's card (v runs 31..0
+ * across, u down the stamp), for the opponent's the same seen from the
+ * other side.  Seven hundred texels of 816-tcc is a third of a field, paid
+ * once per turned card each time the board's texture is rebuilt. */
+static void texture_stamp_turned(u16 centre, u8 face, u8 flip)
+{
+    const u16 page = (u16)((u16)(face & 63) << 10);
+    u16 dst = (u16)((centre - (12 * 256) - 16) & 0x7FFF);
+    u8 j;
+    for (j = 0; j < 24; ++j) {
+        /* u = j * 32 / 24, rounded down: (j * 43) >> 5 is exact over 0..23. */
+        u8 u = (u8)(((u16)j * 43u) >> 5);
+        u8 i;
+        u16 idx;
+        if (flip) u = (u8)(31 - u);
+        idx = (u16)(page | u);
+        *(vuint8 *)0x2181 = (u8)dst;
+        *(vuint8 *)0x2182 = (u8)(dst >> 8);
+        *(vuint8 *)0x2183 = 0x01;
+        /* The sheet by name in each loop, not through a pointer: a pointer
+         * variable does not carry its bank on this compiler. */
+        if (flip) {
+            if (face < SNES_CARD32_SPLIT)
+                for (i = 0; i < 32; ++i)
+                    *(vuint8 *)0x2180 = snes_card_tex32[(u16)(idx | ((u16)i << 5))];
+            else
+                for (i = 0; i < 32; ++i)
+                    *(vuint8 *)0x2180 = snes_card_tex32b[(u16)(idx | ((u16)i << 5))];
+        } else {
+            if (face < SNES_CARD32_SPLIT)
+                for (i = 0; i < 32; ++i)
+                    *(vuint8 *)0x2180 = snes_card_tex32[(u16)(idx | ((u16)(31 - i) << 5))];
+            else
+                for (i = 0; i < 32; ++i)
+                    *(vuint8 *)0x2180 = snes_card_tex32b[(u16)(idx | ((u16)(31 - i) << 5))];
+        }
+        dst = (u16)((dst + 256) & 0x7FFF);
+    }
+}
+
 static void texture_stamp(u8 slot)
 {
     const u8 r = (u8)(slot / SNES_COLS), c = (u8)(slot % SNES_COLS);
     const u8 face = texture_faces[slot];
-    if (face != SNES_CARD_NONE_FACE)
-        snesBoardTextureCard(
-            (u16)(((48 - (s16)r * 32) & 127) * 256 |
-                  ((16 + ((s16)c - 2) * 32) & 255)),
-            face, r < 2, 24, 32);
+    const u16 centre = (u16)(((48 - (s16)r * 32) & 127) * 256 |
+                             ((16 + ((s16)c - 2) * 32) & 255));
+    if (face == SNES_CARD_NONE_FACE) return;
+    if (face & FACE_DEF)
+        texture_stamp_turned(centre, FACE_ID(face), r < 2);
+    else
+        snesBoardTextureCard(centre, face, r < 2, 24, 32);
 }
 
 static void update_board_texture(void)
@@ -916,13 +1032,39 @@ static void restore_floor_cells(void)
     }
 }
 
-/* The cards whose rows touch pixel rows [y0, y1). */
+/* The cards whose rows touch pixel rows [y0, y1).  The upright cards of a
+ * row go through the row rasteriser; a card in defence is taken out of its
+ * row and drawn after it as the turned quad over its slot (snesCardQuad),
+ * whole -- the quad path has no row clip, and repainting a card's own cells
+ * with the same texels is harmless where they are not being converted. */
 static void draw_rest_cards(const u8 *faces, u16 y0, u16 y1)
 {
-    u8 row;
-    for (row = 0; row < SNES_ROWS; ++row)
-        snesDrawCardRow(&vp_rest, &cam, row, &faces[row * SNES_COLS],
-                        rest_pose, y0, y1);
+    u8 row, col;
+    for (row = 0; row < SNES_ROWS; ++row) {
+        u8 upright[SNES_COLS];
+        u8 turned = 0;
+        for (col = 0; col < SNES_COLS; ++col) {
+            const u8 f = faces[row * SNES_COLS + col];
+            if (f != SNES_CARD_NONE_FACE && (f & FACE_DEF)) {
+                upright[col] = SNES_CARD_NONE_FACE;
+                turned |= (u8)(1u << col);
+            } else {
+                upright[col] = f;
+            }
+        }
+        snesDrawCardRow(&vp_rest, &cam, row, upright, rest_pose, y0, y1);
+        if (!turned) continue;
+        for (col = 0; col < SNES_COLS; ++col) {
+            SnesVert q[4];
+            u16 bx0, by0, bx1, by1;
+            if (!(turned & (1u << col))) continue;
+            if (!snesCardQuad(&cam, &vp_rest, row, col, rest_pose, 0, 0, 1, q))
+                continue;
+            if (!snesQuadBounds(&vp_rest, q, &bx0, &by0, &bx1, &by1)) continue;
+            if (by1 <= y0 || by0 >= y1) continue;
+            snesTexQuad(&vp_rest, q, FACE_ID(faces[row * SNES_COLS + col]));
+        }
+    }
 }
 
 /* The ROM floor's occupied columns per cell row: the rest picture's span. */
@@ -959,7 +1101,8 @@ static void draw_held_card(void)
         lift = (s16)(HELD_LIFT + (snesSin(lift_phase) >> 4));
         tilt = HELD_TILT;
     }
-    if (!snesCardQuad(&cam, &vp_rest, row, slot, rest_pose, lift, tilt, q))
+    if (!snesCardQuad(&cam, &vp_rest, row, slot, rest_pose, lift, tilt,
+                      (u8)(lower_frame && lower_def), q))
         return;
     if (!snesQuadBounds(&vp_rest, q, &x0, &y0, &x1, &y1)) return;
     snesTexQuad(&vp_rest, q, face_of(card, 1));
@@ -1187,6 +1330,20 @@ static u16 job_progress(void)
 /* `half`: render the pose as a 128x72 motion frame (a camera on its way);
  * otherwise at 1:1 (the overhead view itself, where the camera comes to
  * rest -- "128x72 only while the camera moves"). */
+/* THE OVERHEAD PICTURE IS PAINTED AGAIN WHEN A CARD ON IT TURNS.  A monster
+ * put into defence up here lies turned on the board (the world texture is
+ * restamped by the job's texture step), and the 1:1 picture is the only
+ * thing that shows it: this runs the sharpening job over again, the way
+ * the lift's last step does, with the cursor live and the old picture on
+ * screen until the new map is switched to. */
+static void top_view_repaint(void)
+{
+    view_motion = VIEW_TO_TOP;
+    view_sharp = 1;
+    view_anim_frame = LIFT_FRAMES;
+    job_begin(0);
+}
+
 static void job_begin(u8 half)
 {
     camera_rest = 0;
@@ -1390,17 +1547,246 @@ static void enter_mode3_art(void)
     } else {
         snesVideoSetOwner(SNES_OWNER_CARD_CHECK);
         snesCardArtEnter(0);
-        if (ui == UI_EFFECT_ART)
+        if (ui == UI_EFFECT_ART) {
             snesCardArtEffect(effect_card, effect_owner);
-        else
-            snesCardArtFusionBegin(fusion_material, fusion_result,
-                                   fusion_count, fusion_success);
+            /* The burst's atlas goes to the OBJ words the card art leaves
+             * alone ($4000), under this force blank; snesObjInit puts the
+             * duel's sheet base back on the way out. */
+            if (effect_victim_n) {
+                snesBattleFxLoad();
+                effect_fx = 1;
+                REG_TM = BG1_ENABLE | BG2_ENABLE | OBJ_ENABLE;
+            }
+        }
         snesCardArtReveal(0);
         snesCardArtFlash(0);
         snesCardArtVblank();
         mode3_active = 1;
     }
     setScreenOn();
+}
+
+/* ── The fusion screen ───────────────────────────────────────────────────── */
+
+/* Direct colour, BBGGGRRR, with the board's map attribute (palette 7 adds
+ * the low bit of every channel, so nought is a dark grey and the navy a
+ * real navy). */
+#define FUSION_NAVY   SNES_DC(0, 0, 1)
+#define FUSION_WHITE  SNES_DC(7, 7, 3)
+#define FUSION_LIGHT  SNES_DC(4, 5, 3)
+#define FUSION_DIM    SNES_DC(2, 2, 1)
+#define FUSION_TILE_NAVY   1
+#define FUSION_TILE_PANEL  2            /* eight of them: see below */
+#define FUSION_PANEL_ROW0  3            /* map rows 3..25, columns 2..29 */
+#define FUSION_PANEL_ROW1  25
+#define FUSION_PANEL_COL0  2
+#define FUSION_PANEL_COL1  29
+/* THE SCREEN'S TILES AND MAP ROWS ARE BUILT ONCE, AT THE DUEL'S ENTRY, under
+ * the opening fade: 816-tcc takes a few fields over them, and built at the
+ * fusion's own entry that was forty fields of black between the press and
+ * the screen.  Nine 8bpp tiles (the navy, four edges, four corners) and the
+ * six kinds of map row the screen has, DMA'd in at the scene's entry. */
+/* (Initialised, so they are copied from the ROM image into bank $7F with
+ * the other initialised statics: an uninitialised array goes to the .bss
+ * in $7E, which the frame buffer leaves no room in.) */
+static u8  fusion_tiles[9][64] = { { 0 } };
+static u16 fusion_rows[6][32] = { { 0 } };
+enum { FROW_BLANK = 0, FROW_STRIPE, FROW_TOP, FROW_MID_EVEN, FROW_MID_ODD, FROW_BOTTOM };
+
+/* A whole 8bpp planar tile of one colour: plane pair p of row y is bytes
+ * 16p + 2y (plane 2p) and 16p + 2y + 1 (plane 2p + 1). */
+static void fusion_tile_solid(u8 *t, u8 c)
+{
+    u8 p, y;
+    for (p = 0; p < 8; ++p) {
+        const u8 v = (u8)((c & (1u << p)) ? 0xFF : 0x00);
+        u8 *b = &t[((p >> 1) << 4) + (p & 1)];
+        for (y = 0; y < 8; ++y) b[y << 1] = v;
+    }
+}
+
+static void fusion_tile_px(u8 *t, u8 x, u8 y, u8 c)
+{
+    const u8 m = (u8)(0x80u >> x);
+    u8 p;
+    for (p = 0; p < 8; ++p) {
+        u8 *b = &t[((p >> 1) << 4) + (y << 1) + (p & 1)];
+        if (c & (1u << p)) *b |= m; else *b &= (u8)~m;
+    }
+}
+
+/* The PC's draw_panel_rect: a white line, a light one, a dim one, then the
+ * fill.  `edges` says which of the tile's sides are the panel's (bit 0
+ * top, 1 bottom, 2 left, 3 right); the lines are laid dim first so the
+ * nearest edge wins a corner's pixel. */
+static void fusion_panel_tile(u8 *t, u8 edges)
+{
+    static const u8 line[3] = { FUSION_DIM, FUSION_LIGHT, FUSION_WHITE };
+    u8 k, i;
+    fusion_tile_solid(t, FUSION_NAVY);
+    for (k = 0; k < 3; ++k) {
+        const u8 d = (u8)(2 - k), c = line[k];
+        for (i = 0; i < 8; ++i) {
+            if (edges & 1) fusion_tile_px(t, i, d, c);
+            if (edges & 2) fusion_tile_px(t, i, (u8)(7 - d), c);
+            if (edges & 4) fusion_tile_px(t, d, i, c);
+            if (edges & 8) fusion_tile_px(t, (u8)(7 - d), i, c);
+        }
+    }
+}
+
+static void fusion_scene_build(void)
+{
+    static const u8 panel_edges[8] = { 5, 1, 9, 4, 8, 6, 2, 10 };
+    u8 i, c;
+    fusion_tile_solid(fusion_tiles[0], FUSION_NAVY);
+    for (i = 0; i < 8; ++i) fusion_panel_tile(fusion_tiles[1 + i], panel_edges[i]);
+    /* Odd rows are the stripes (the PC's fill_rows from line 8, every
+     * sixteen); even rows show the backdrop.  The panel's rows replace
+     * their middle: corners and edges round the navy inside. */
+    for (c = 0; c < 32; ++c) {
+        const u8 in = (u8)(c >= FUSION_PANEL_COL0 && c <= FUSION_PANEL_COL1);
+        const u8 left = (u8)(c == FUSION_PANEL_COL0), right = (u8)(c == FUSION_PANEL_COL1);
+        u16 stripe = (u16)(FUSION_TILE_NAVY | SNES_MAP_ATTR);
+        u16 top = stripe, mid = 0, bot = stripe;
+        if (in) {
+            u8 t = FUSION_TILE_PANEL + 1, b = FUSION_TILE_PANEL + 6, m = FUSION_TILE_NAVY;
+            if (left)  { t = FUSION_TILE_PANEL + 0; b = FUSION_TILE_PANEL + 5; m = FUSION_TILE_PANEL + 3; }
+            if (right) { t = FUSION_TILE_PANEL + 2; b = FUSION_TILE_PANEL + 7; m = FUSION_TILE_PANEL + 4; }
+            top = (u16)(t | SNES_MAP_ATTR);
+            bot = (u16)(b | SNES_MAP_ATTR);
+            mid = (u16)(m | SNES_MAP_ATTR);
+        }
+        fusion_rows[FROW_BLANK][c] = 0;
+        fusion_rows[FROW_STRIPE][c] = stripe;
+        fusion_rows[FROW_TOP][c] = top;
+        fusion_rows[FROW_MID_EVEN][c] = in ? mid : 0;
+        fusion_rows[FROW_MID_ODD][c] = in ? mid : stripe;
+        fusion_rows[FROW_BOTTOM][c] = bot;
+    }
+}
+
+/* The screen, under force blank: the tiles, the map, the registers, and
+ * the two extra card sprites queued for their vblank uploads. */
+static void fusion_scene_enter(void)
+{
+    u8 i, r;
+
+    setScreenOff();
+    REG_HDMAEN = 0;
+    REG_COLDATA = 0xE0;
+    fusion_tm = BG1_ENABLE | OBJ_ENABLE;
+    fusion_backdrop = 0;
+    REG_TM = fusion_tm;
+    REG_CGADD = 0;
+    *(vuint8 *)0x2122 = 0;
+    *(vuint8 *)0x2122 = 0;
+
+    for (i = 0; i < 9; ++i)
+        dmaCopyVram(fusion_tiles[i], (u16)((FUSION_TILE_NAVY + i) * 32u), 64);
+    for (r = 0; r < 32; ++r) {
+        u8 kind = FROW_BLANK;
+        if (r == FUSION_PANEL_ROW0) kind = FROW_TOP;
+        else if (r == FUSION_PANEL_ROW1) kind = FROW_BOTTOM;
+        else if (r > FUSION_PANEL_ROW0 && r < FUSION_PANEL_ROW1)
+            kind = (r & 1) ? FROW_MID_ODD : FROW_MID_EVEN;
+        else if ((r & 1) && r < 28) kind = FROW_STRIPE;
+        dmaCopyVram((u8 *)fusion_rows[kind], (u16)(SNES_VRAM_BOARD_MAP_A + r * 32), 64);
+    }
+    REG_BG1SC = (u8)(SNES_VRAM_BOARD_MAP_A >> 8);
+    REG_BG1HOFS = 0; REG_BG1HOFS = 0;
+    REG_BG1VOFS = 0xFF; REG_BG1VOFS = 0x03;
+
+    for (i = 0; i < fusion_mat_n; ++i)
+        if (fusion_mat_slot[i] == MSX2_SLOT_NONE)
+            snesObjQueueCard(FUSION_FIELD_SLOT, fusion_mat_face[i], 1);
+    snesObjQueueCard(FUSION_RESULT_SLOT, face_of(fusion_result, 1), 1);
+    snesObjBegin();
+    snesObjEnd();
+    mode3_active = 3;
+}
+
+static void fusion_text_centred(s16 y, const char *text)
+{
+    u8 n = 0;
+    const char *t = text;
+    while (*t++) ++n;
+    snesObjText((s16)(128 - (s16)n * 4), y, text);
+}
+
+/* One field of the screen: the sprite list for this frame and, for the
+ * flash, the backdrop and TM for the coming vblank. */
+static void fusion_field(void)
+{
+    const u16 f = fusion_frame;
+    const u8 n = fusion_mat_n ? fusion_mat_n : 1;
+    const s16 first_x = (s16)(128 - ((s16)(n - 1) * FUSION_PITCH) / 2 - 16);
+    u8 i;
+
+    snesObjBegin();
+    snesObjCardHiRes(1);
+    snesObjCardGrey(0);
+    if (f < FUSION_FLASH_BEGIN) {
+        const u16 t = ease_frac((u8)(f < FUSION_MERGE_END ? f : FUSION_MERGE_END),
+                                FUSION_MERGE_END);
+        fusion_text_centred(FUSION_TITLE_Y, "FUSION");
+        for (i = 0; i < fusion_mat_n; ++i) {
+            const u8 slot = fusion_mat_slot[i];
+            const s16 sx = (s16)(HAND_X0 + (slot == MSX2_SLOT_NONE ? i : slot) * HAND_PITCH);
+            const s16 x = view_lerp(sx, (s16)(first_x + (s16)i * FUSION_PITCH), t);
+            const s16 y = view_lerp(HAND_Y, FUSION_ROW_Y, t);
+            snesObjCard(x, y, slot == MSX2_SLOT_NONE ? FUSION_FIELD_SLOT : slot,
+                        fusion_mat_face[i]);
+        }
+        /* Eighteen sparks circling the row, the PC's two ellipses: 0.08
+         * radians a step is about three of the 256 angles. */
+        for (i = 0; i < 18; ++i) {
+            const u8 ax = (u8)((f * 5 + (u16)i * 29) * 3);
+            const u8 ay = (u8)((f * 7 + (u16)i * 31) * 3);
+            const s16 px = (s16)(128 + (snesSin(ax) >> 3));
+            const s16 py = (s16)(99 + (snesCos(ay) >> 4));
+            u16 tile = 320 + '*' - 32;          /* the HUD font's star... */
+            if (i & 1) tile = 320 + '.' - 32;   /* ...and its full stop */
+            snesObjSprite((s16)(px - 4), (s16)(py - 4), tile, SNES_SPR_HUD_PAL, 0);
+        }
+        if (f == FUSION_FLASH_BEGIN - 1) {
+            /* The next field is the flash: everything off, the backdrop
+             * white. */
+            fusion_tm = 0;
+            fusion_backdrop = 0x7FFF;
+            fade_dirty |= 4;
+        }
+    } else if (f < FUSION_FLASH_END) {
+        /* White and gold, two fields each (the PC's f & 2). */
+        const u16 colour = (f & 2) ? 0x7FFF : 0x02FF;   /* gold: r 31 g 23 b 0 */
+        if (colour != fusion_backdrop) {
+            fusion_backdrop = colour;
+            fusion_tm = 0;
+            fade_dirty |= 4;
+        }
+        if (f == FUSION_FLASH_END - 1) {
+            fusion_tm = BG1_ENABLE | OBJ_ENABLE;
+            fusion_backdrop = 0;
+            fade_dirty |= 4;
+            snesAudioSfx(SNES_SFX_CARD_PLACED);
+        }
+    } else {
+        const u16 t = ease_frac((u8)(f - FUSION_FLASH_END < FUSION_REVEAL_END - FUSION_FLASH_END
+                                     ? f - FUSION_FLASH_END
+                                     : FUSION_REVEAL_END - FUSION_FLASH_END),
+                                FUSION_REVEAL_END - FUSION_FLASH_END);
+        const s16 ry = view_lerp(FUSION_RESULT_Y0, FUSION_RESULT_Y1, t);
+        fusion_text_centred(FUSION_TITLE_Y, "FUSION");
+        if (fusion_success) {
+            fusion_text_centred(FUSION_VERDICT_Y, "FUSION SUCCESS");
+        } else {
+            fusion_text_centred(FUSION_VERDICT_Y, "FUSION FAILED");
+            fusion_text_centred(FUSION_NOTE_Y, "LAST CARD PLACED");
+        }
+        if ((f & 4) == 0) snesObjBox((s16)(112 - 4), (s16)(ry - 4), 40, 40);
+        snesObjCard(112, ry, FUSION_RESULT_SLOT, face_of(fusion_result, 1));
+    }
+    snesObjEnd();
 }
 
 static void leave_mode3_art(void)
@@ -1466,8 +1852,9 @@ static void end_check(void)
     effect_victim_n = 0;
     effect_victim_shown = MSX2_SLOT_NONE;
     fusion_frame = 0;
-    fusion_material = fusion_result = MSX2_CARD_NONE;
-    fusion_count = fusion_success = 0;
+    fusion_result = MSX2_CARD_NONE;
+    fusion_success = 0;
+    fusion_mat_n = 0;
     fusion_return_ui = UI_HAND;
     mode3_active = 0;
     battle_frame = 0;
@@ -1525,17 +1912,38 @@ static void begin_effect_art(u8 return_ui, u8 card, u8 owner)
 
 static void effect_show_victim(u8 index)
 {
-    /* A large face is 14 KB.  Swap it under force blank at the black fade
-     * between targets; the map and palette are complete before display is
-     * restored, so no half-card can be scanned out. */
+    /* A large face is 14 KB.  Swap it under force blank between targets;
+     * the map and palette are complete before display is restored, so no
+     * half-card can be scanned out.  The previous victim's wipe has taken
+     * its card off the screen already, so the black field is a beat. */
     setScreenOff();
     snesCardArtFlash(0);
-    snesCardArtDestroyed(effect_victim[index], index, effect_victim_n);
-    snesCardArtReveal(0);
+    snesCardArtVictim(effect_victim[index], "THUNDER");
     snesCardArtVblank();
     setScreenOn();
     effect_victim_shown = index;
-    snesAudioSfx(SNES_SFX_CARD_DESTROYED);
+}
+
+/* One field of a victim's beat: the burst's sprites and the wipe's edge. */
+static void effect_victim_field(u8 beat)
+{
+    snesObjBegin();
+    if (beat == EFFECT_BOOM_AT) {
+        snesAudioSfx(SNES_SFX_CARD_DESTROYED);
+        snesCardArtFlash(31);
+    } else if (beat == EFFECT_BOOM_AT + 2) {
+        snesCardArtFlash(0);
+    }
+    if (beat >= EFFECT_BOOM_AT)
+        snesBattleFxBurst(SNES_CARDART_VICTIM_X + 60, SNES_CARDART_Y0 + 78,
+                          (u16)(beat - EFFECT_BOOM_AT));
+    if (beat >= EFFECT_WIPE_AT && beat < EFFECT_WIPE_AT + EFFECT_WIPE_FIELDS) {
+        /* The edge walks the card's 160 lines from its top at 22 in 24
+         * fields: 160 / 24 is six and two thirds a field, (f * 20) / 3. */
+        const u16 f = (u16)(beat - EFFECT_WIPE_AT + 1);
+        snesCardArtWipe((u8)(SNES_CARDART_Y0 + (f * 20u) / 3u));
+    }
+    snesObjEnd();
 }
 
 static void end_effect_art(void)
@@ -1545,6 +1953,7 @@ static void end_effect_art(void)
     effect_frame = 0;
     effect_victim_n = 0;
     effect_victim_shown = MSX2_SLOT_NONE;
+    effect_fx = 0;
     Msx2_ClearActionEvent();
     touch_board(20);
     leave_mode3_art();
@@ -1575,13 +1984,7 @@ static void step_effect_art(u16 down)
         const u8 victim = (u8)(local / EFFECT_VICTIM_FIELDS);
         const u8 beat = (u8)(local % EFFECT_VICTIM_FIELDS);
         if (victim != effect_victim_shown) effect_show_victim(victim);
-        if (beat < EFFECT_REVEAL_FIELDS)
-            snesCardArtReveal((u8)(((u16)beat * 120u) / EFFECT_REVEAL_FIELDS));
-        else if (beat == EFFECT_REVEAL_FIELDS)
-            snesCardArtReveal(255);
-        else if (beat >= EFFECT_VICTIM_FIELDS - EFFECT_TAIL_FIELDS)
-            snesCardArtReveal((u8)(((u16)(EFFECT_VICTIM_FIELDS - beat) * 120u)
-                                   / EFFECT_TAIL_FIELDS));
+        effect_victim_field(beat);
         return;
     }
     if (local >= (u16)effect_victim_n * EFFECT_VICTIM_FIELDS +
@@ -1589,13 +1992,33 @@ static void step_effect_art(u16 down)
         end_effect_art();
 }
 
-static void begin_fusion_art(u8 return_ui, u8 material, u8 result,
-                             u8 count, u8 success)
+/* The materials are copied out BEFORE the rules fold them (place_chosen),
+ * since Msx2_PlaceFusion is atomic and the hand is empty of them after. */
+static void fusion_take_materials(void)
+{
+    const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+    u8 i;
+    fusion_mat_n = 0;
+    for (i = 0; i < queue_n && i < MSX2_HAND; ++i) {
+        const u8 slot = queue[i];
+        if (slot >= MSX2_HAND || you->hand[slot] == MSX2_CARD_NONE) continue;
+        fusion_mat_slot[fusion_mat_n] = slot;
+        fusion_mat_face[fusion_mat_n] = face_of(you->hand[slot], 1);
+        ++fusion_mat_n;
+    }
+    if (cursor < MSX2_FIELD && Msx2_IsMonster(you->field[cursor]) &&
+        fusion_mat_n < FUSION_MAX_MATS) {
+        fusion_mat_slot[fusion_mat_n] = MSX2_SLOT_NONE;
+        fusion_mat_face[fusion_mat_n] = face_of(you->field[cursor],
+                                                you->faceup[cursor]);
+        ++fusion_mat_n;
+    }
+}
+
+static void begin_fusion_art(u8 return_ui, u8 result, u8 success)
 {
     fusion_return_ui = return_ui;
-    fusion_material = material;
     fusion_result = result;
-    fusion_count = count;
     fusion_success = success;
     fusion_frame = 0;
     battle_frame = 0;
@@ -1604,15 +2027,20 @@ static void begin_fusion_art(u8 return_ui, u8 material, u8 result,
     ui = UI_FUSION_ART;
     message = NULL;
     message_timer = 0;
-    enter_mode3_art();
+    snesFbCancel();
+    fusion_scene_enter();
+    setScreenOn();
 }
 
 static void end_fusion_art(void)
 {
     ui = fusion_return_ui;
     fusion_frame = 0;
-    fusion_material = fusion_result = MSX2_CARD_NONE;
-    fusion_count = fusion_success = 0;
+    fusion_result = MSX2_CARD_NONE;
+    fusion_success = 0;
+    fusion_mat_n = 0;
+    fusion_tm = 0x11;
+    fusion_backdrop = 0;
     Msx2_ClearActionEvent();
     touch_board(20);
     leave_mode3_art();
@@ -1620,36 +2048,13 @@ static void end_fusion_art(void)
 
 static void step_fusion_art(u16 down)
 {
-    if ((down & (KEY_B | KEY_START)) && fusion_frame >= FUSION_FLASH_END) {
+    if ((down & (KEY_A | KEY_B | KEY_START)) && fusion_frame >= FUSION_SKIP_FROM) {
         snesAudioSfx(SNES_SFX_CONFIRM_ALT);
         end_fusion_art();
         return;
     }
+    fusion_field();
     ++fusion_frame;
-    if (fusion_frame < EFFECT_REVEAL_FIELDS) {
-        snesCardArtReveal((u8)((fusion_frame * 120u) / EFFECT_REVEAL_FIELDS));
-    } else if (fusion_frame == EFFECT_REVEAL_FIELDS) {
-        snesCardArtReveal(255);
-    }
-    if (fusion_frame >= FUSION_FLASH_BEGIN && fusion_frame < FUSION_RESULT_AT) {
-        snesCardArtFlash((u8)(((fusion_frame - FUSION_FLASH_BEGIN) * 31u) /
-                              (FUSION_RESULT_AT - FUSION_FLASH_BEGIN)));
-    } else if (fusion_frame == FUSION_RESULT_AT) {
-        snesCardArtFusionResult(fusion_result, fusion_count, fusion_success);
-        snesCardArtReveal(0);
-        snesCardArtFlash(31);
-        snesAudioSfx(SNES_SFX_CARD_PLACED);
-    } else if (fusion_frame < FUSION_FLASH_END &&
-               fusion_frame > FUSION_RESULT_AT) {
-        const u8 left = (u8)(FUSION_FLASH_END - fusion_frame);
-        snesCardArtFlash((u8)(((u16)left * 31u) /
-                              (FUSION_FLASH_END - FUSION_RESULT_AT)));
-        snesCardArtReveal((u8)(((u16)(fusion_frame - FUSION_RESULT_AT) * 120u) /
-                               (FUSION_FLASH_END - FUSION_RESULT_AT)));
-    } else if (fusion_frame == FUSION_FLASH_END) {
-        snesCardArtFlash(0);
-        snesCardArtReveal(255);
-    }
     if (fusion_frame >= FUSION_END_FIELDS) end_fusion_art();
 }
 
@@ -1925,6 +2330,7 @@ static void slide_hand(void)
         s16 cy = y;
         if (hand_oam[i] == 0xFF) continue;
         if (hand_oam_bob[i]) cy = (s16)(cy - (snesSin(bob_phase) >> 6));
+        if (cy > HAND_Y_LAST) cy = 240;
         snesObjPatchY(hand_oam[i], cy, 1);
         if (hand_oam_box[i] != 0xFF) {
             const u8 b = hand_oam_box[i];
@@ -1932,42 +2338,6 @@ static void slide_hand(void)
             snesObjPatchY((u8)(b + 1), (s16)(cy - 4), 0);
             snesObjPatchY((u8)(b + 2), (s16)(cy + 28), 0);
             snesObjPatchY((u8)(b + 3), (s16)(cy + 28), 0);
-        }
-    }
-}
-
-/* A SHIELD OVER EVERY MONSTER IN DEFENCE POSITION.  The board's card faces
- * are baked upright whichever way the card is turned (the row rasteriser
- * knows one orientation), so the position is shown the way the stat row
- * shows a card's DEF: the same shield icon on the side's life-panel plate,
- * over the slot's centre projected through the camera the board was
- * rendered with.  Drawn
- * in either view, on both sides of the table, never during the swing to the
- * other seat, where the picture on the screen is not this camera's. */
-static void build_position_marks(void)
-{
-    u8 owner;
-    if (turn_frame) return;
-    if (!top_view && view_motion != VIEW_BOARD_REST) return;
-    for (owner = 0; owner <= MSX2_OWNER_COM; ++owner) {
-        const Msx2Side *sd = &g_duel.side[owner];
-        const u8 row = (owner == MSX2_OWNER_COM) ? SNES_ROW_COM_MONSTER
-                                                 : SNES_ROW_YOU_MONSTER;
-        u8 col;
-        for (col = 0; col < SNES_COLS; ++col) {
-            s16 cx, cz, x, y;
-            /* Two tests, not one `||` before a continue (816-tcc jumps
-             * into the body -- see the hand loop below). */
-            if (!Msx2_IsMonster(sd->field[col])) continue;
-            if (!sd->defense[col]) continue;
-            snesSlotCentre(row, col, 0, &cx, &cz);
-            if (snesProject(&cam, &vp_rest, cx, cz, 0, &x, &y) &&
-                x >= 4 && x < 252) {
-                if (top_view) y = (s16)(y - top_scroll_y());
-                if (y >= 4 && y < 220)
-                    snesObjPlateIcon((s16)(x - 4), (s16)(y - 4), owner,
-                                     SNES_SPR_ICON_DEF);
-            }
         }
     }
 }
@@ -2049,7 +2419,8 @@ static void build_objects(void)
             x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128) {
             y0 = (s16)(y0 - top_scroll_y());
             y1 = (s16)(y1 - top_scroll_y());
-            snesObjBoxRed(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
+            if (y1 <= SNES_PLATE_Y)
+                snesObjBoxRed(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
         }
         /* The attacker already picked keeps the hand's gold bracket while
          * the red one walks the opponent's row for its target. */
@@ -2060,7 +2431,8 @@ static void build_objects(void)
                 x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128) {
                 y0 = (s16)(y0 - top_scroll_y());
                 y1 = (s16)(y1 - top_scroll_y());
-                snesObjBox(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
+                if (y1 <= SNES_PLATE_Y)
+                    snesObjBox(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
             }
         }
         snesObjText(8, NAME_Y, name);
@@ -2084,7 +2456,6 @@ static void build_objects(void)
         snesObjLifePanel(LP_YOU_X, LP_Y, 0, (u16)you->lp, MSX2_START_LP);
         snesObjLifePanel(LP_COM_X, LP_Y, 1,
                          (u16)g_duel.side[MSX2_OWNER_COM].lp, MSX2_START_LP);
-        build_position_marks();
 
     } else {
         /* The name of the card the cursor is on, and under it what that card
@@ -2107,7 +2478,6 @@ static void build_objects(void)
         snesObjLifePanel(LP_YOU_X, LP_Y, 0, (u16)you->lp, MSX2_START_LP);
         snesObjLifePanel(LP_COM_X, LP_Y, 1,
                          (u16)g_duel.side[MSX2_OWNER_COM].lp, MSX2_START_LP);
-        if (ui != UI_RESULT) build_position_marks();
 
         /* THE HAND IS NOT DRAWN IN THE TOP VIEW, because the top view is the
          * board seen from above and the hand is not on the board.  Here it is
@@ -2171,7 +2541,7 @@ static void build_objects(void)
                 ((i == chosen && (ui == UI_PLACE || ui == UI_EQUIP_TARGET)) ||
                  (queued && ui == UI_FUSE_TARGET)))
                 continue;
-            if (hand_y >= 224) {
+            if (hand_y > HAND_Y_LAST) {
                 continue;
             } else if (selected) {
                 /* A SMALL UP AND DOWN, once a field.  It is the same beat the
@@ -2386,14 +2756,10 @@ static void place_chosen(u8 defense)
     u8 redrawn = 0;
     u8 show_effect = 0;
     u8 show_fusion = 0;
-    u8 fuse_material = MSX2_CARD_NONE;
-    u8 fuse_n = 0;
     for (hi = 0; hi < MSX2_HAND; ++hi)
         hand_before[hi] = g_duel.side[MSX2_OWNER_PLAYER].hand[hi];
     if (ui == UI_FUSE_TARGET) {
-        fuse_n = queue_n;
-        if (queue_n && queue[0] < MSX2_HAND)
-            fuse_material = g_duel.side[MSX2_OWNER_PLAYER].hand[queue[0]];
+        fusion_take_materials();
         placed = Msx2_PlaceFusion(MSX2_OWNER_PLAYER, queue, queue_n, cursor,
                                   defense ? TRUE : FALSE);
         if (placed) { show_fusion = 1; queue_n = 0; }
@@ -2427,8 +2793,8 @@ static void place_chosen(u8 defense)
     cursor = chosen;
     touch_board(20);
     if (show_fusion) {
-        begin_fusion_art(UI_HAND, fuse_material, g_duel.last_action_card,
-                         fuse_n, (u8)Msx2_FusionSucceeded());
+        begin_fusion_art(UI_HAND, g_duel.last_action_card,
+                         (u8)Msx2_FusionSucceeded());
     } else if (show_effect) {
         begin_effect_art(UI_HAND, card, MSX2_OWNER_PLAYER);
     } else {
@@ -2748,6 +3114,7 @@ void snesDuelEnter(void)
     autoplay = 0;
     show_cards = 1;
     force_moving = 0;
+    fusion_scene_build();
     if (configured_story_mode && snesDeckGetCurrent(saved_deck)) {
         Msx2_DuelSetPlayerDeck(saved_deck, WAIFU_DECK_SIZE);
         Msx2_DuelInit(0x51E5u, configured_story);
@@ -3024,6 +3391,9 @@ u8 snesDuelFrame(void)
             } else if (Msx2_ChangePosition(MSX2_OWNER_PLAYER, top_col)) {
                 snesAudioSfx(SNES_SFX_CONFIRM);
                 say(you->defense[top_col] ? "DEFENCE POSITION" : "ATTACK POSITION");
+                top_view_repaint();
+                build_objects();
+                goto stamp;
             } else {
                 say("CANNOT TURN IT");
             }

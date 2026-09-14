@@ -55,6 +55,14 @@
 #define B_RESULT_END    68
 #define B_EXIT_END      84
 #define B_SKIP_FROM     44
+/* THE VERDICT WAITS FOR THE DESTRUCTION TO BE HEARD.  The card-destroyed
+ * sample is a second long (tools/snes/gen_snes_audio.py caps it at 1.0 s)
+ * and fires at B_STRIKE_END; loading the victory or failure song restarts
+ * the SPC player, which keys every voice off.  So a blow that decided the
+ * duel holds its result pose past the sample's end before the banner and
+ * its music arrive, and the skip is refused for it: skipping to the
+ * verdict would be skipping the sound. */
+#define B_VERDICT_AT    (B_STRIKE_END + 66)
 
 /* The direct attack: the PC's 20-field entry, 32-field lunge with contact
  * at 62% of it, and a 72-field FX beat opening 115/1000 of itself before
@@ -558,6 +566,52 @@ static void spark_sprites(s16 cx, s16 cy, u16 t)
     }
 }
 
+/* ── The burst, for other scenes ─────────────────────────────────────────── */
+
+/* THUNDER BORROWS THE DIRECT ATTACK'S BURST (snes_duel.c's effect scene):
+ * the same atlas at the same OBJ base, the same palette, the same ring,
+ * rays, core and sparks, over a Mode 3 card instead of a Mode 4 lane.  The
+ * loads are for force blank; the cooling bands go up in the caller's
+ * vblank through snesBattleFxVblank. */
+void snesBattleFxLoad(void)
+{
+    dmaCopyVram((u8 *)snes_fx_tiles, FX_OBJ_WORD, SNES_FX_TILE_BYTES);
+    dmaCopyCGram((u8 *)snes_fx_pal, (u16)(128 + SNES_FX_BURST_PAL * 16), 32);
+    REG_OBSEL = (u8)(0x20 | (FX_OBJ_WORD >> 13));
+    cool = 0;
+    cool_shown = 0xFF;
+}
+
+/* The burst's field t of SNES_FX_FIELDS at (cx, cy), between snesObjBegin
+ * and snesObjEnd: the rays while it is young, the ring once it has grown,
+ * the core, and the sparks over its first thirty-six fields; the palette
+ * cools past three quarters. */
+void snesBattleFxBurst(s16 cx, s16 cy, u16 t)
+{
+    s16 ring;
+    u8 core;
+    if (t >= SNES_FX_FIELDS) return;
+    ring = (s16)snes_fx_ring_r[t];
+    core = snes_fx_core_r[t];
+    if (t < 60) ray_sprites(cx, cy, (s16)((ring + (ring << 2)) >> 3));
+    if (ring > 8) ring_sprites(cx, cy, ring);
+    core_sprite(cx, cy, core);
+    if (t < 44) spark_sprites(cx, cy, (u16)(t < 8 ? 0 : t - 8));
+    cool = (t >= 62) ? 2 : (t >= 52) ? 1 : 0;
+}
+
+void snesBattleFxVblank(void)
+{
+    if (cool != cool_shown) {
+        u16 bands[SNES_FX_HEAT_BANDS];
+        u8 i;
+        for (i = 0; i < SNES_FX_HEAT_BANDS; ++i) bands[i] = snes_fx_heat_ramp[cool + i];
+        dmaCopyCGram((u8 *)bands, (u16)(128 + SNES_FX_BURST_PAL * 16 + SNES_FX_HEAT_FIRST),
+                     SNES_FX_HEAT_BANDS * 2);
+        cool_shown = cool;
+    }
+}
+
 /* ── The direct attack's beat ────────────────────────────────────────────── */
 
 /* Where the blow lands: the empty lane's middle, at the card's height. */
@@ -764,6 +818,8 @@ static void step_direct(void)
 static void step_battle(void)
 {
     const u8 a = attacker_lane, d = (u8)(a ^ 1);
+    u16 result_end = B_RESULT_END;
+    if (decided) result_end = B_VERDICT_AT;
     /* These are timeline crossings, independent of which pose branch is
      * current.  A delayed foreground step can skip a whole branch. */
     if (field >= B_STRIKE_HIT && !cue_hit) {
@@ -807,7 +863,7 @@ static void step_battle(void)
             if (g < 8) spark_sprites(128, (s16)(REST_Y + 78), g);
         }
         /* The PC's cues: the blow itself, then the burn if a card dies. */
-    } else if (field < B_RESULT_END) {
+    } else if (field < result_end) {
         const u16 f = (u16)(field - B_STRIKE_END);
         phase = PHASE_RESULT;
         lane_y[0] = lane_y[1] = REST_Y;
@@ -868,7 +924,7 @@ u8 snesBattleStep(u16 down)
             return 2;
         return 0;
     }
-    if (down & (KEY_A | KEY_B | KEY_START)) {
+    if ((down & (KEY_A | KEY_B | KEY_START)) && !decided) {
         const u16 skip_from = direct ? D_SKIP_FROM : B_SKIP_FROM;
         const u16 exit_at = direct ? D_FX_END : B_RESULT_END;
         if (field >= skip_from && field < exit_at) {
@@ -911,14 +967,7 @@ void snesBattleVblank(void)
             dmaCopyVram((u8 *)&bg2_map[(u16)row * 32], (u16)(BG2_MAP_WORD + row * 32), 64);
         }
     }
-    if (cool != cool_shown) {
-        u16 bands[SNES_FX_HEAT_BANDS];
-        u8 i;
-        for (i = 0; i < SNES_FX_HEAT_BANDS; ++i) bands[i] = snes_fx_heat_ramp[cool + i];
-        dmaCopyCGram((u8 *)bands, (u16)(128 + SNES_FX_BURST_PAL * 16 + SNES_FX_HEAT_FIRST),
-                     SNES_FX_HEAT_BANDS * 2);
-        cool_shown = cool;
-    }
+    snesBattleFxVblank();
     if (cm_dirty) {
         cm_dirty = 0;
         switch (cm_mode) {

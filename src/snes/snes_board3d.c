@@ -403,7 +403,8 @@ void snesDrawSlotMarker(const SnesViewport *vp, const SnesCamera *cam,
 /* ── The general convex-quad affine mapper ───────────────────────────────── */
 
 u8 snesCardQuad(const SnesCamera *cam, const SnesViewport *vp,
-                u8 row, u8 col, u8 mirror, s16 lift, s16 tilt, SnesVert *quad)
+                u8 row, u8 col, u8 mirror, s16 lift, s16 tilt, u8 defense,
+                SnesVert *quad)
 {
     /* Vertex 0 is the far-left corner and the texture's top-left, so a
      * painting's top points away from the camera, the way it does on every
@@ -411,26 +412,39 @@ u8 snesCardQuad(const SnesCamera *cam, const SnesViewport *vp,
     static const s8 sx[4] = { -1, 1, 1, -1 };
     static const s8 sz[4] = {  1, 1, -1, -1 };
     const s16 texels = vp->sub ? SNES_CARD32_TEXELS : SNES_CARD_TEXELS;
+    const s16 tmax = (s16)((texels << 8) - 1);
     const u8 flip = (u8)((row <= SNES_ROW_COM_MONSTER) ^ mirror);
+    /* A CARD IN DEFENCE LIES TURNED A QUARTER: its footprint's half extents
+     * swap (a unit across, three quarters deep, so the painting keeps its
+     * shape), and the texture's corners walk one vertex round the quad --
+     * the painting's top to the far-right corner as its owner sees it, the
+     * PC's draw_board_card_state rotation.  From this seat that is three
+     * steps for the player's card and one for the opponent's, and the turn
+     * already says which way the opponent's painting faces, so the upright
+     * card's flip of v is not applied on top of it. */
+    const s16 hx = defense ? SNES_CARD_HALF_Z : SNES_CARD_HALF_X;
+    const s16 hz = defense ? SNES_CARD_HALF_X : SNES_CARD_HALF_Z;
+    const u8 turn = defense ? (flip ? 1 : 3) : 0;
     s16 cx, cz;
     u8 i;
 
     snesSlotCentre(row, col, mirror, &cx, &cz);
     for (i = 0; i < 4; ++i) {
         s16 ox, oy;
+        const u8 k = (u8)((i + turn) & 3);
         /* The FAR edge stands higher than the near one, so the card leans back
          * towards the player and is a genuine convex quad on screen rather
          * than a trapezoid. */
-        if (!snesProjectQ(cam, vp, (s16)(cx + sx[i] * SNES_CARD_HALF_X),
-                          (s16)(cz + sz[i] * SNES_CARD_HALF_Z),
+        if (!snesProjectQ(cam, vp, (s16)(cx + sx[i] * hx),
+                          (s16)(cz + sz[i] * hz),
                           (s16)(lift + ((sz[i] > 0) ? tilt : 0)), &ox, &oy))
             return 0;
         quad[i].x = ox;
         quad[i].y = oy;
-        quad[i].u = (i == 1 || i == 2) ? (s16)((texels << 8) - 1) : 0;
-        quad[i].v = (i >= 2) ? (s16)((texels << 8) - 1) : 0;
-        if (flip)
-            quad[i].v = (s16)((texels << 8) - 1 - quad[i].v);
+        quad[i].u = (k == 1 || k == 2) ? tmax : 0;
+        quad[i].v = (k >= 2) ? tmax : 0;
+        if (flip && !defense)
+            quad[i].v = (s16)(tmax - quad[i].v);
     }
     return 1;
 }

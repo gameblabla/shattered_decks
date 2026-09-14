@@ -42,6 +42,11 @@ static u8  reveal_pending = 0;
 static u8  reveal_value = 255;
 static u8  flash_pending = 0;
 static u8  flash_value = 0;
+static u8  wipe_pending = 0;
+static u8  wipe_value = 0;
+/* Window 1's edges per line for the wipe: at most two 127-line runs of a
+ * full-width window, two of an empty one, and the end mark. */
+static u8  hdma_wipe[16];
 static u8  plane7_byte = 0xFF;
 static const u8 blank_tile[64] = { 0 };
 
@@ -352,69 +357,25 @@ void snesCardArtEffect(u8 face, u8 by_com)
                     snesCardInfoDesc(face), SNES_CARDART_PAL_WHITE);
 }
 
-void snesCardArtDestroyed(u8 face, u8 index, u8 total)
+/* THUNDER'S VICTIM IS THE CARD ALONE, IN THE MIDDLE OF THE SCREEN -- the
+ * 112x112 painting in its frame, as the PC-FX shows each card the bolt
+ * takes -- with the bolt's name over it.  The burst that follows is
+ * sprites (snes_battle.c's) and the card then wipes off the screen from
+ * the top down through snesCardArtWipe; the words are BG2, which the wipe
+ * leaves alone.  Row 30 is eight lines above the card's top (the map is
+ * scrolled by 22, so its last rows are the first lines of the screen). */
+void snesCardArtVictim(u8 face, const char *title)
 {
-    const u8 tx = SNES_CARDART_TEXT_COL;
+    u8 col = 0;
+    const char *t = title;
     snesCardArtClear();
     snesCardArtTextClear();
+    snesCardArtWipe(0);
     if (face >= SNES_CARD_FACES) return;
     snesCardArtLoad(0, face);
-    snesCardArtPlace(0, SNES_CARDART_COL_L, face);
-    snesCardArtText(tx, 0, "THUNDER", SNES_CARDART_PAL_GOLD);
-    snesCardArtWrap(tx, 2, SNES_CARDART_TEXT_W, 4, snesCardInfoName(face),
-                    SNES_CARDART_PAL_WHITE);
-    snesCardArtText(tx, 8, "DESTROYED", SNES_CARDART_PAL_GOLD);
-    snesCardArtText(tx, 10, "TARGET", SNES_CARDART_PAL_WHITE);
-    snesCardArtNum((u8)(tx + 7), 10, (u16)(index + 1), 1,
-                   SNES_CARDART_PAL_GOLD);
-    snesCardArtText((u8)(tx + 9), 10, "OF", SNES_CARDART_PAL_WHITE);
-    snesCardArtNum((u8)(tx + 12), 10, total, 1, SNES_CARDART_PAL_GOLD);
-}
-
-void snesCardArtFusionBegin(u8 material, u8 result, u8 count, u8 success)
-{
-    snesCardArtClear();
-    snesCardArtTextClear();
-    if (material >= SNES_CARD_FACES || result >= SNES_CARD_FACES) return;
-    /* Slot 1 is loaded now, under the entry's force blank.  The reveal later
-     * changes only two maps, never streams fourteen kilobytes during display. */
-    snesCardArtLoad(0, material);
-    snesCardArtLoad(1, result);
-    snesCardArtPlace(0, SNES_CARDART_COL_L, material);
-    snesCardArtText(SNES_CARDART_TEXT_COL, 0, "FUSION",
-                    SNES_CARDART_PAL_GOLD);
-    snesCardArtWrap(SNES_CARDART_TEXT_COL, 2, SNES_CARDART_TEXT_W, 4,
-                    snesCardInfoName(material), SNES_CARDART_PAL_WHITE);
-    snesCardArtText(SNES_CARDART_TEXT_COL, 8, "MATERIALS",
-                    SNES_CARDART_PAL_WHITE);
-    snesCardArtNum((u8)(SNES_CARDART_TEXT_COL + 10), 8, count, 1,
-                   SNES_CARDART_PAL_GOLD);
-    snesCardArtText(SNES_CARDART_TEXT_COL, 11,
-                    success ? "RECIPE FOUND" : "NO RECIPE",
-                    SNES_CARDART_PAL_GOLD);
-}
-
-void snesCardArtFusionResult(u8 result, u8 count, u8 success)
-{
-    snesCardArtClear();
-    snesCardArtTextClear();
-    if (result >= SNES_CARD_FACES) return;
-    /* The result was preloaded into slot 1 by FusionBegin. */
-    snesCardArtPlace(1, SNES_CARDART_COL_L, result);
-    snesCardArtText(SNES_CARDART_TEXT_COL, 0, "FUSION RESULT",
-                    SNES_CARDART_PAL_GOLD);
-    snesCardArtWrap(SNES_CARDART_TEXT_COL, 2, SNES_CARDART_TEXT_W, 4,
-                    snesCardInfoName(result), SNES_CARDART_PAL_WHITE);
-    snesCardArtText(SNES_CARDART_TEXT_COL, 8,
-                    success ? "FUSION SUMMON" : "FUSION FAILED",
-                    success ? SNES_CARDART_PAL_GOLD : SNES_CARDART_PAL_WHITE);
-    snesCardArtText(SNES_CARDART_TEXT_COL, 11, "MATERIALS",
-                    SNES_CARDART_PAL_WHITE);
-    snesCardArtNum((u8)(SNES_CARDART_TEXT_COL + 10), 11, count, 1,
-                   SNES_CARDART_PAL_GOLD);
-    if (result < MSX2_TOTAL_CARDS && Msx2_IsMonster(result))
-        snesCardArtStats(SNES_CARDART_COL_L, result,
-                         Msx2_CardAtk(result), Msx2_CardDef(result));
+    snesCardArtPlace(0, SNES_CARDART_VICTIM_COL, face);
+    while (*t++) ++col;
+    snesCardArtText((u8)((32 - col) >> 1), 30, title, SNES_CARDART_PAL_GOLD);
 }
 
 void snesCardArtReveal(u8 reveal)
@@ -427,6 +388,43 @@ void snesCardArtFlash(u8 level)
 {
     flash_value = level > 31 ? 31 : level;
     flash_pending = 1;
+}
+
+void snesCardArtWipe(u8 lines)
+{
+    wipe_value = lines;
+    wipe_pending = 1;
+}
+
+/* Window 1 covers the whole width of every line above the edge and nothing
+ * below it, by an HDMA on WH0/WH1 (mode 1: two registers, one byte each).
+ * BG1 is masked inside the window, so the card is gone above the edge and
+ * whole below it; a line count is at most 127, so a run may take two. */
+static void arm_wipe(void)
+{
+    u8 *t = hdma_wipe;
+    const u8 *src = hdma_wipe;
+    u8 left = wipe_value;
+    u8 rest = (u8)(224 - wipe_value);
+    while (left) {
+        const u8 n = left > 127 ? 127 : left;
+        *t++ = n; *t++ = 0; *t++ = 255;
+        left = (u8)(left - n);
+    }
+    while (rest) {
+        const u8 n = rest > 127 ? 127 : rest;
+        *t++ = n; *t++ = 255; *t++ = 0;
+        rest = (u8)(rest - n);
+    }
+    *t = 0;
+    REG_HDMAEN = 0;
+    *(vuint8 *)0x4340 = 0x01;
+    *(vuint8 *)0x4341 = 0x26;
+    *(vuint16 *)0x4342 = (u16)src;
+    *(vuint8 *)0x4344 = ((const u8 *)&src)[2];
+    REG_W12SEL = 0x02;
+    REG_TMW = 0x01;
+    REG_HDMAEN = 0x10;
 }
 
 void snesCardArtVblank(void)
@@ -457,6 +455,16 @@ void snesCardArtVblank(void)
             REG_WH1 = (u8)(SNES_CARDART_X0 + r);
             *(vuint8 *)0x2128 = (u8)(251 - r);
             *(vuint8 *)0x2129 = 251;
+        }
+    }
+    if (wipe_pending) {
+        wipe_pending = 0;
+        if (!wipe_value) {
+            REG_HDMAEN = 0;
+            REG_TMW = 0;
+            REG_W12SEL = 0;
+        } else {
+            arm_wipe();
         }
     }
     if (flash_pending) {

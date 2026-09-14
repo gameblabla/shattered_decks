@@ -55,6 +55,14 @@ u8   snesBattleStep(u16 down);
  * snesObjVblank as always. */
 void snesBattleVblank(void);
 
+/* The direct attack's burst on its own, for the Thunder scene (snes_duel.c):
+ * Load puts the atlas, its palette and the OBJ base up under force blank,
+ * Burst emits field t of SNES_FX_FIELDS (snes_battle_data.h) at (cx, cy)
+ * into the open sprite list, and FxVblank carries the cooling palette. */
+void snesBattleFxLoad(void);
+void snesBattleFxBurst(s16 cx, s16 cy, u16 t);
+void snesBattleFxVblank(void);
+
 /* For the frame stamp: the current phase and the displayed field. */
 u8   snesBattlePhase(void);
 u16  snesBattleField(void);

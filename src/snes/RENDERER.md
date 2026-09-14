@@ -12,9 +12,11 @@ band -- may not exceed 351 cells; a frame over that is refused, counted in the
 stamp's `dropped` word, and the previous picture stays up.  At the chair the
 lower 80 screen lines are a black band the OBJ HUD sits on: life points,
 labels, hand cards, card names, stats, cursors and result banners are all
-sprites at full screen resolution.  The overhead view disables that BG1 clip
-and tile-scrolls the same 144-line picture so the selected field row remains
-near screen centre; no redraw or map swap is needed when its cursor moves.
+sprites at full screen resolution.  The overhead view moves that BG1 clip
+down to the plate's top line (197) and tile-scrolls the same 144-line picture
+so the selected field row remains near screen centre; no redraw or map swap is
+needed when its cursor moves, and neither the board nor a hand card is ever
+drawn over the plate (a hand card whose rows would reach it is not shown).
 
 Two painting paths feed the same frame (`snes_duel.c`, `snes_board3d.c`):
 
@@ -28,7 +30,12 @@ Two painting paths feed the same frame (`snes_duel.c`, `snes_board3d.c`):
   on the picture is PATCHED -- the slot that changed, the cursor's old and new slots,
   the held card's cells -- and only those cells are converted.  A resting
   cell that nothing covers is DMA'd from the planar ROM floor without
-  conversion at all.
+  conversion at all.  A monster in DEFENCE lies turned a quarter on its slot
+  (bit 7 of its entry in the face arrays, `FACE_DEF`): it is taken out of
+  its row and drawn after it as the convex quad of `snesCardQuad` with the
+  footprint's extents swapped and the texture corners walked one vertex
+  round, the PC's rotated defence card; in the world texture it is a column
+  walk of the face (`texture_stamp_turned`).
 * **Moving camera** (the lift to the overhead view, the turn between seats):
   the twenty cards are stamped from the same 32x32 sheets into a 256x128
   world-space texture in bank `$7F` (kept warm in the first idle frame after
@@ -111,9 +118,8 @@ deck editor from the title attract screen.
 
 Victory and failure use one-shot result audio and a large multi-sprite banner.
 
-Card checks, support effects and fusion reveals are Mode 3 pictures, and the
-battle cut-in is a Mode 4 one, not sprites (`snes_cardart.c`,
-`snes_battle.c`).  Each card is the PC-FX 120x160 battle card -- the
+Card checks and support effects are Mode 3 pictures, and the battle cut-in
+is a Mode 4 one, not sprites (`snes_cardart.c`, `snes_battle.c`).  Each card is the PC-FX 120x160 battle card -- the
 112x112 painting inside the gold-rimmed frame of `draw_big_battle_card_stats`
 -- baked by `tools/snes/gen_snes_bigcards.py` as 225 8bpp BG1 tiles with
 eighty colours of its own; the frame's foot (the ATK/DEF plate) is a shared
@@ -123,14 +129,32 @@ plane pair), so slot 0 reads entries 32..111 and slot 1 reads 160..239.  The
 words are BG2 text.  The check screen is the PC-FX layout: card on the left,
 CARD CHECK / name / stars / attribute and tribe / LORE / ATK and DEF on the
 right.  Support effects use the same layout for their rule text; Thunder then
-shows every destroyed victim.  Fusion preloads material and result slots,
-crossfades them with fixed-colour flashes, and performs no live art DMA during
-the reveal.  The battle (`snes_battle.c`) is Mode 4 so BG1 can be offset per
+takes every destroyed victim one at a time the PC-FX way: the card alone in
+the middle of the screen, the direct attack's sprite burst over it with the
+destruction cue and a white flash, and a wipe from the top down (window 1's
+edges by HDMA, `snesCardArtWipe`) while the burst dies.  The FUSION is not a
+card-art scene at all but the PC-FX's own screen over the board's Mode 3
+layer (`fusion_scene_enter`): ten direct-colour tiles and a map for the navy
+stripes and panel (built once at the duel's entry), the materials gliding
+out of the hand as the hand's own resident OBJ sprites into a row while
+sparks circle, a white-and-gold backdrop flash with every layer off, and the
+card that came of it under FUSION SUCCESS or FUSION FAILED / LAST CARD
+PLACED.  The battle (`snes_battle.c`) is Mode 4 so BG1 can be offset per
 tile column: the two cards enter by scrolling vertically -- the player's up,
 the opponent's down -- which offset-per-tile does smoothly, where horizontal
 motion would step in eight-pixel chunks; the direct attack has its own
 effects timeline.  Its sound cues fire on crossing their field of the
-timeline, independently of which pose branch a late step lands in.
+timeline, independently of which pose branch a late step lands in.  A blow
+that decides the duel holds its result pose until the destruction sample has
+played out (`B_VERDICT_AT`) before the verdict and its music arrive -- the
+song's load restarts the SPC player, which keys every voice off -- and the
+skip is refused for it.
+
+The OBJ card pump (`snesObjVblank`) takes TWO rows a vblank, not a card:
+the 816-tcc round each 128-byte DMA is five lines, the NMI hands the window
+back at line ~231 and the OAM copy ends at 235, so four rows ran past the
+end of vblank and the check refused nearly every card (they arrived by
+retries, and on a screen with no drain to share the window with, never).
 
 The title, story dialogue and ending are separate Mode 3 scenes
 (`snes_scene.c`).  The title is the whole painting on BG1 with PRESS START
@@ -146,7 +170,8 @@ reinitialize the video state and do not depend on a black intermediate frame.
 
 Build and regression: `make -f Makefile.snes verify`. The harness checks the
 cartridge header, title and input path, SRAM, story and ending scenes, board
-geometry and resolution, card orientation, top-view transition, card check,
-fusion, placement flight, duel flow, the opponent's turn presentation, and
-render cost. Emulator timing is a
+geometry and resolution, card orientation, top-view transition, the overhead
+board's clip at the plate, a turned defence card in both views, card check,
+Thunder's victims, the fusion screen, placement lowering, duel flow, the
+opponent's turn presentation, and render cost. Emulator timing is a
 regression measure; it is not a physical hardware timing claim.
