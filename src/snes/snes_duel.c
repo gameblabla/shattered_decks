@@ -8,7 +8,8 @@
  *  (src/atarist/atarist_duel.c), because a second, differently-shaped UI over
  *  the same rules is two things to keep correct instead of one.
  *
- *  TWO VIEWS OF ONE BOARD: UP opens inspection and B returns to the hand.
+ *  TWO VIEWS OF ONE BOARD: UP opens inspection and DOWN past its near row
+ *  returns to the hand; B checks the card under its cursor.
  *
  *  Both are the same textured slab in perspective through the same renderer
  *  (snes_board3d.c) into the same 256x144 frame, at the screen's own
@@ -158,7 +159,9 @@ enum SnesDuelUi {
     UI_RESULT,
     UI_FUSE_TARGET,     /* where the chosen fusion chain lands */
     UI_CHECK,           /* one card over a Mode 3 presentation */
-    UI_BATTLE_ART       /* the Mode 4 battle or direct attack (snes_battle.c) */
+    UI_BATTLE_ART,      /* the Mode 4 battle or direct attack (snes_battle.c) */
+    UI_EFFECT_ART,      /* a support card, then Thunder's captured victims */
+    UI_FUSION_ART       /* material merge, flash, and the fusion result */
 };
 
 enum SnesViewMotion {
@@ -264,6 +267,9 @@ static u8 battle_return_top = 0;
 #define INTRO_FADE_FIELDS 32
 static u8 intro_fade = 0;       /* fields of the fade left */
 static u8 fade_level = 15;      /* what INIDISP should hold */
+/* Bit 0 uploads brightness; bit 1 applies the tactical BG viewport.  Sharing
+ * the old one-byte vblank gate is important: chair frames retain the exact
+ * fast return that leaves enough blanking time for an OBJ card row. */
 static u8 fade_dirty = 0;
 /* The selected hand card's small up-and-down, which is a per-FIELD thing and
  * therefore not the board's lift_phase: the board only advances on the twelve
@@ -296,6 +302,34 @@ static u16 check_atk = 0, check_def = 0;
 static u8 mode3_active = 0;
 static u8 battle_frame = 0;             /* fields into the battle, for the stamp */
 static u8 battle_return_ui = UI_COM;
+/* Full-screen support and Fusion beats.  Rules actions are atomic, so the
+ * faces Thunder is about to erase and Fusion is about to consume are copied
+ * before the call and remain presentation data until this sequence ends. */
+#define EFFECT_REVEAL_FIELDS 20
+#define EFFECT_CARD_FIELDS   72
+#define EFFECT_VICTIM_FIELDS 52
+#define EFFECT_TAIL_FIELDS   16
+static u16 effect_frame = 0;
+static u8 effect_card = MSX2_CARD_NONE;
+static u8 effect_owner = MSX2_OWNER_PLAYER;
+static u8 effect_return_ui = UI_HAND;
+static u8 effect_victim[MSX2_FIELD] = {
+    MSX2_CARD_NONE, MSX2_CARD_NONE, MSX2_CARD_NONE, MSX2_CARD_NONE,
+    MSX2_CARD_NONE
+};
+static u8 effect_victim_n = 0;
+static u8 effect_victim_shown = MSX2_SLOT_NONE;
+
+#define FUSION_FLASH_BEGIN 48
+#define FUSION_RESULT_AT   64
+#define FUSION_FLASH_END   84
+#define FUSION_END_FIELDS  144
+static u16 fusion_frame = 0;
+static u8 fusion_material = MSX2_CARD_NONE;
+static u8 fusion_result = MSX2_CARD_NONE;
+static u8 fusion_count = 0;
+static u8 fusion_success = 0;
+static u8 fusion_return_ui = UI_HAND;
 /* How far into its entrance the result banner is. */
 static u8  over_step = 0;
 static u8 texture_w = 0, texture_h = 0;
@@ -337,6 +371,12 @@ static u8   focus_stats(u8 card, u16 *atk, u16 *def);
 static void say(const char *msg);
 static void note_draws(u8 owner, const u8 *before);
 static void place_chosen(u8 defense);
+static void begin_effect_art(u8 return_ui, u8 card, u8 owner);
+static void begin_fusion_art(u8 return_ui, u8 material, u8 result,
+                             u8 count, u8 success);
+static void snapshot_effect(u8 card, u8 owner);
+static void snapshot_effect_saved(u8 card, u8 owner, const u8 *cards,
+                                  const u8 *faceup);
 
 u8 snesDuelMode3Active(void) { return mode3_active; }
 
@@ -346,9 +386,13 @@ u8 snesDuelMode3Active(void) { return mode3_active; }
 u8 snesDuelBrightness(void) { return fade_level; }
 void snesDuelVblank(void)
 {
-    if (!fade_dirty) return;
+    const u8 dirty = fade_dirty;
+    if (!dirty) return;
     fade_dirty = 0;
-    REG_INIDISP = fade_level;
+    if (dirty & 2)
+        snesVideoBoardViewport(top_view,
+            top_view ? (s16)(-88 + (s16)top_row * 32) : 0);
+    if (dirty & 1) REG_INIDISP = fade_level;
 }
 
 static void set_viewport(void)
@@ -487,6 +531,7 @@ static void begin_view_transition(u8 to_top)
     motion_sequence_begin(LIFT_FRAMES);
     if (!to_top) {
         top_view = 0;
+        fade_dirty |= 2;
     }
 }
 
@@ -496,9 +541,11 @@ static void finish_view_transition(u8 to_top)
         /* The last lift frame IS the overhead pose: nothing to redraw, and
          * the cursor up here is a sprite, so the view runs at sixty. */
         top_view = 1;
+        fade_dirty |= 2;
         view_motion = VIEW_TOP_REST;
     } else {
         top_view = 0;
+        fade_dirty |= 2;
         view_motion = VIEW_BOARD_REST;
         /* Back at the seat: the rest picture is baked again from the ROM
          * floor, which is also what puts the 32x32 card art back. */
@@ -549,6 +596,7 @@ static void step_view_transition(void)
          * is rendered behind it. */
         view_sharp = 1;
         top_view = 1;
+        fade_dirty |= 2;
         job_begin(0);
         build_objects();
         job_slice();
@@ -1334,11 +1382,23 @@ static void enter_mode3_art(void)
         snesCardArtCheck(check_face, check_has_stats, check_atk, check_def);
         snesCardArtVblank();
         mode3_active = 1;
-    } else {
+    } else if (ui == UI_BATTLE_ART) {
         snesVideoSetOwner(SNES_OWNER_BATTLE);
         snesBattleBegin();
         snesBattleVblank();
         mode3_active = 2;
+    } else {
+        snesVideoSetOwner(SNES_OWNER_CARD_CHECK);
+        snesCardArtEnter(0);
+        if (ui == UI_EFFECT_ART)
+            snesCardArtEffect(effect_card, effect_owner);
+        else
+            snesCardArtFusionBegin(fusion_material, fusion_result,
+                                   fusion_count, fusion_success);
+        snesCardArtReveal(0);
+        snesCardArtFlash(0);
+        snesCardArtVblank();
+        mode3_active = 1;
     }
     setScreenOn();
 }
@@ -1395,13 +1455,202 @@ static void end_check(void)
 {
     ui = check_return_ui;
     top_view = check_return_top;
+    fade_dirty |= 2;
     view_motion = top_view ? VIEW_TOP_REST : VIEW_BOARD_REST;
     check_face = SNES_CARD_NONE_FACE;
     check_has_stats = 0;
+    effect_frame = 0;
+    effect_card = MSX2_CARD_NONE;
+    effect_owner = MSX2_OWNER_PLAYER;
+    effect_return_ui = UI_HAND;
+    effect_victim_n = 0;
+    effect_victim_shown = MSX2_SLOT_NONE;
+    fusion_frame = 0;
+    fusion_material = fusion_result = MSX2_CARD_NONE;
+    fusion_count = fusion_success = 0;
+    fusion_return_ui = UI_HAND;
     mode3_active = 0;
     battle_frame = 0;
     touch_board(4);
     leave_mode3_art();
+}
+
+static void snapshot_effect(u8 card, u8 owner)
+{
+    u8 i;
+    const u8 other = owner ? MSX2_OWNER_PLAYER : MSX2_OWNER_COM;
+    const Msx2Side *victims = &g_duel.side[other];
+    effect_victim_n = 0;
+    effect_victim_shown = MSX2_SLOT_NONE;
+    for (i = 0; i < MSX2_FIELD; ++i) effect_victim[i] = MSX2_CARD_NONE;
+    if (!Msx2_IsSupport(card) ||
+        Msx2_SupportKind(card) != MSX2_SUP_THUNDER) return;
+    for (i = 0; i < MSX2_FIELD; ++i) {
+        if (!Msx2_IsMonster(victims->field[i])) continue;
+        effect_victim[effect_victim_n++] = face_of(victims->field[i],
+                                                    victims->faceup[i]);
+    }
+}
+
+static void snapshot_effect_saved(u8 card, u8 owner, const u8 *cards,
+                                  const u8 *faceup)
+{
+    u8 i;
+    (void)owner;
+    effect_victim_n = 0;
+    effect_victim_shown = MSX2_SLOT_NONE;
+    for (i = 0; i < MSX2_FIELD; ++i) effect_victim[i] = MSX2_CARD_NONE;
+    if (!Msx2_IsSupport(card) ||
+        Msx2_SupportKind(card) != MSX2_SUP_THUNDER) return;
+    for (i = 0; i < MSX2_FIELD; ++i) {
+        if (!Msx2_IsMonster(cards[i])) continue;
+        effect_victim[effect_victim_n++] = face_of(cards[i], faceup[i]);
+    }
+}
+
+static void begin_effect_art(u8 return_ui, u8 card, u8 owner)
+{
+    effect_return_ui = return_ui;
+    effect_card = card;
+    effect_owner = owner;
+    effect_frame = 0;
+    battle_frame = 0;
+    top_view = 0;
+    view_motion = VIEW_BOARD_REST;
+    ui = UI_EFFECT_ART;
+    message = NULL;
+    message_timer = 0;
+    enter_mode3_art();
+}
+
+static void effect_show_victim(u8 index)
+{
+    /* A large face is 14 KB.  Swap it under force blank at the black fade
+     * between targets; the map and palette are complete before display is
+     * restored, so no half-card can be scanned out. */
+    setScreenOff();
+    snesCardArtFlash(0);
+    snesCardArtDestroyed(effect_victim[index], index, effect_victim_n);
+    snesCardArtReveal(0);
+    snesCardArtVblank();
+    setScreenOn();
+    effect_victim_shown = index;
+    snesAudioSfx(SNES_SFX_CARD_DESTROYED);
+}
+
+static void end_effect_art(void)
+{
+    ui = effect_return_ui;
+    effect_card = MSX2_CARD_NONE;
+    effect_frame = 0;
+    effect_victim_n = 0;
+    effect_victim_shown = MSX2_SLOT_NONE;
+    Msx2_ClearActionEvent();
+    touch_board(20);
+    leave_mode3_art();
+}
+
+static void step_effect_art(u16 down)
+{
+    u16 local;
+    if ((down & (KEY_B | KEY_START)) && effect_frame >= EFFECT_REVEAL_FIELDS) {
+        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+        end_effect_art();
+        return;
+    }
+    ++effect_frame;
+    if (effect_frame < EFFECT_REVEAL_FIELDS) {
+        snesCardArtReveal((u8)((effect_frame * 120u) / EFFECT_REVEAL_FIELDS));
+        return;
+    }
+    if (effect_frame == EFFECT_REVEAL_FIELDS)
+        snesCardArtReveal(255);
+    if (!effect_victim_n) {
+        if (effect_frame >= EFFECT_CARD_FIELDS) end_effect_art();
+        return;
+    }
+    if (effect_frame < EFFECT_CARD_FIELDS) return;
+    local = (u16)(effect_frame - EFFECT_CARD_FIELDS);
+    if ((u8)(local / EFFECT_VICTIM_FIELDS) < effect_victim_n) {
+        const u8 victim = (u8)(local / EFFECT_VICTIM_FIELDS);
+        const u8 beat = (u8)(local % EFFECT_VICTIM_FIELDS);
+        if (victim != effect_victim_shown) effect_show_victim(victim);
+        if (beat < EFFECT_REVEAL_FIELDS)
+            snesCardArtReveal((u8)(((u16)beat * 120u) / EFFECT_REVEAL_FIELDS));
+        else if (beat == EFFECT_REVEAL_FIELDS)
+            snesCardArtReveal(255);
+        else if (beat >= EFFECT_VICTIM_FIELDS - EFFECT_TAIL_FIELDS)
+            snesCardArtReveal((u8)(((u16)(EFFECT_VICTIM_FIELDS - beat) * 120u)
+                                   / EFFECT_TAIL_FIELDS));
+        return;
+    }
+    if (local >= (u16)effect_victim_n * EFFECT_VICTIM_FIELDS +
+                 EFFECT_TAIL_FIELDS)
+        end_effect_art();
+}
+
+static void begin_fusion_art(u8 return_ui, u8 material, u8 result,
+                             u8 count, u8 success)
+{
+    fusion_return_ui = return_ui;
+    fusion_material = material;
+    fusion_result = result;
+    fusion_count = count;
+    fusion_success = success;
+    fusion_frame = 0;
+    battle_frame = 0;
+    top_view = 0;
+    view_motion = VIEW_BOARD_REST;
+    ui = UI_FUSION_ART;
+    message = NULL;
+    message_timer = 0;
+    enter_mode3_art();
+}
+
+static void end_fusion_art(void)
+{
+    ui = fusion_return_ui;
+    fusion_frame = 0;
+    fusion_material = fusion_result = MSX2_CARD_NONE;
+    fusion_count = fusion_success = 0;
+    Msx2_ClearActionEvent();
+    touch_board(20);
+    leave_mode3_art();
+}
+
+static void step_fusion_art(u16 down)
+{
+    if ((down & (KEY_B | KEY_START)) && fusion_frame >= FUSION_FLASH_END) {
+        snesAudioSfx(SNES_SFX_CONFIRM_ALT);
+        end_fusion_art();
+        return;
+    }
+    ++fusion_frame;
+    if (fusion_frame < EFFECT_REVEAL_FIELDS) {
+        snesCardArtReveal((u8)((fusion_frame * 120u) / EFFECT_REVEAL_FIELDS));
+    } else if (fusion_frame == EFFECT_REVEAL_FIELDS) {
+        snesCardArtReveal(255);
+    }
+    if (fusion_frame >= FUSION_FLASH_BEGIN && fusion_frame < FUSION_RESULT_AT) {
+        snesCardArtFlash((u8)(((fusion_frame - FUSION_FLASH_BEGIN) * 31u) /
+                              (FUSION_RESULT_AT - FUSION_FLASH_BEGIN)));
+    } else if (fusion_frame == FUSION_RESULT_AT) {
+        snesCardArtFusionResult(fusion_result, fusion_count, fusion_success);
+        snesCardArtReveal(0);
+        snesCardArtFlash(31);
+        snesAudioSfx(SNES_SFX_CARD_PLACED);
+    } else if (fusion_frame < FUSION_FLASH_END &&
+               fusion_frame > FUSION_RESULT_AT) {
+        const u8 left = (u8)(FUSION_FLASH_END - fusion_frame);
+        snesCardArtFlash((u8)(((u16)left * 31u) /
+                              (FUSION_FLASH_END - FUSION_RESULT_AT)));
+        snesCardArtReveal((u8)(((u16)(fusion_frame - FUSION_RESULT_AT) * 120u) /
+                               (FUSION_FLASH_END - FUSION_RESULT_AT)));
+    } else if (fusion_frame == FUSION_FLASH_END) {
+        snesCardArtFlash(0);
+        snesCardArtReveal(255);
+    }
+    if (fusion_frame >= FUSION_END_FIELDS) end_fusion_art();
 }
 
 /* The battle takes its snapshot of the rules' event as it begins
@@ -1420,6 +1669,7 @@ static void end_battle_art(void)
 {
     ui = battle_return_ui;
     top_view = battle_return_top;
+    fade_dirty |= 2;
     view_motion = top_view ? VIEW_TOP_REST : VIEW_BOARD_REST;
     Msx2_ClearActionEvent();
     touch_board(24);
@@ -1430,11 +1680,11 @@ static void end_battle_art(void)
 
 /* THE BAND IS NOT PART OF THE BOARD AT ALL.
  *
- * BG1 stops at line 144 (an HDMA write to TM), and the hand and the two rows
- * of words under it are sprites over the backdrop, which an HDMA channel
- * tints per scanline into the blue plate -- see snes_video.c.  That is what
- * lets the plate be a five-bit-a-channel gradient instead of the four blues
- * direct colour has. */
+ * In the chair view BG1 stops at line 144 (an HDMA write to TM), and the hand
+ * and the two rows of words under it are sprites over the backdrop, which an
+ * HDMA channel tints per scanline into the blue plate -- see snes_video.c.
+ * The overhead view removes only the BG1 clip so its scrolled board can use
+ * the whole screen; the sprite HUD and colour gradient remain. */
 
 static const char *prompt_text(void)
 {
@@ -1640,6 +1890,11 @@ static u8 hand_oam[MSX2_HAND] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 static u8 hand_oam_box[MSX2_HAND] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 static u8 hand_oam_bob[MSX2_HAND] = { 0, 0, 0, 0, 0 };
 
+static s16 top_scroll_y(void)
+{
+    return (s16)(-88 + (s16)top_row * 32);
+}
+
 /* Where the hand sits this frame: at rest, or on its way off the bottom of
  * the screen during the lift and back during the descent. */
 static s16 hand_row_y(void)
@@ -1707,8 +1962,12 @@ static void build_position_marks(void)
             if (!sd->defense[col]) continue;
             snesSlotCentre(row, col, 0, &cx, &cz);
             if (snesProject(&cam, &vp_rest, cx, cz, 0, &x, &y) &&
-                x >= 4 && x < 252 && y >= 4 && y < SNES_FRAME_H - 4)
-                snesObjPlateIcon((s16)(x - 4), (s16)(y - 4), owner, SNES_SPR_ICON_DEF);
+                x >= 4 && x < 252) {
+                if (top_view) y = (s16)(y - top_scroll_y());
+                if (y >= 4 && y < 220)
+                    snesObjPlateIcon((s16)(x - 4), (s16)(y - 4), owner,
+                                     SNES_SPR_ICON_DEF);
+            }
         }
     }
 }
@@ -1787,16 +2046,22 @@ static void build_objects(void)
          * bracket lands on the slot wherever the overhead pose is put. */
         if (snesProject(&cam, &vp_rest, (s16)(cx - 128), (s16)(cz + 128), 0, &x0, &y0) &&
             snesProject(&cam, &vp_rest, (s16)(cx + 128), (s16)(cz - 128), 0, &x1, &y1) &&
-            x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128)
+            x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128) {
+            y0 = (s16)(y0 - top_scroll_y());
+            y1 = (s16)(y1 - top_scroll_y());
             snesObjBoxRed(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
+        }
         /* The attacker already picked keeps the hand's gold bracket while
          * the red one walks the opponent's row for its target. */
         if (top_attacker != MSX2_SLOT_NONE) {
             snesSlotCentre(SNES_ROW_YOU_MONSTER, top_attacker, 0, &cx, &cz);
             if (snesProject(&cam, &vp_rest, (s16)(cx - 128), (s16)(cz + 128), 0, &x0, &y0) &&
                 snesProject(&cam, &vp_rest, (s16)(cx + 128), (s16)(cz - 128), 0, &x1, &y1) &&
-                x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128)
+                x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128) {
+                y0 = (s16)(y0 - top_scroll_y());
+                y1 = (s16)(y1 - top_scroll_y());
                 snesObjBox(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
+            }
         }
         snesObjText(8, NAME_Y, name);
         if (has_stats) {
@@ -1992,6 +2257,52 @@ static void fixture_board(void)
     }
     touch_board(2);
 }
+
+/* Deterministic entrances for the full-screen presentation checks.  They are
+ * chords, not retail controls, and construct legal rules actions before using
+ * the exact same begin/step/end paths as play. */
+static void fixture_thunder_art(void)
+{
+    Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+    const u8 card = (u8)(WAIFU_SUPPORT_EQUIP_CARD_ID + MSX2_SUP_THUNDER);
+    fixture_board();
+    you->hand[0] = card;
+    you->used[0] = 0;
+    chosen = cursor = 0;
+    hand_visible[MSX2_OWNER_PLAYER] |= 1;
+    snapshot_effect(card, MSX2_OWNER_PLAYER);
+    if (Msx2_PlaySupport(MSX2_OWNER_PLAYER, 0, MSX2_SLOT_NONE)) {
+        hand_visible[MSX2_OWNER_PLAYER] &= (u8)~1u;
+        begin_effect_art(UI_HAND, card, MSX2_OWNER_PLAYER);
+    }
+}
+
+static void fixture_fusion_art(void)
+{
+    Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+    u8 a, b;
+    for (a = 0; a < MSX2_TOTAL_CARDS; ++a) {
+        if (!Msx2_IsMonster(a)) continue;
+        for (b = 0; b < MSX2_TOTAL_CARDS; ++b)
+            if (Msx2_IsMonster(b) &&
+                Msx2_FusionResult(a, b) != MSX2_CARD_NONE)
+                goto found;
+    }
+found:
+    you->field[0] = MSX2_CARD_NONE;
+    you->equip_field[0] = MSX2_CARD_NONE;
+    you->hand[0] = a;
+    you->hand[1] = b;
+    you->used[0] = you->used[1] = 0;
+    you->monster_played = 0;
+    queue[0] = 0;
+    queue[1] = 1;
+    queue_n = 2;
+    chosen = 0;
+    cursor = 0;
+    ui = UI_FUSE_TARGET;
+    place_chosen(0);
+}
 #endif
 
 /* ── The duel's end ──────────────────────────────────────────────────────── */
@@ -2073,16 +2384,25 @@ static void place_chosen(u8 defense)
     const u8 card = g_duel.side[MSX2_OWNER_PLAYER].hand[chosen];
     u8 placed = 0;
     u8 redrawn = 0;
+    u8 show_effect = 0;
+    u8 show_fusion = 0;
+    u8 fuse_material = MSX2_CARD_NONE;
+    u8 fuse_n = 0;
     for (hi = 0; hi < MSX2_HAND; ++hi)
         hand_before[hi] = g_duel.side[MSX2_OWNER_PLAYER].hand[hi];
     if (ui == UI_FUSE_TARGET) {
+        fuse_n = queue_n;
+        if (queue_n && queue[0] < MSX2_HAND)
+            fuse_material = g_duel.side[MSX2_OWNER_PLAYER].hand[queue[0]];
         placed = Msx2_PlaceFusion(MSX2_OWNER_PLAYER, queue, queue_n, cursor,
                                   defense ? TRUE : FALSE);
-        if (placed) queue_n = 0;
+        if (placed) { show_fusion = 1; queue_n = 0; }
         else say("THEY DO NOT FUSE");
     } else if (Msx2_IsSupport(card)) {
+        snapshot_effect(card, MSX2_OWNER_PLAYER);
         if (Msx2_PlaySupport(MSX2_OWNER_PLAYER, chosen, cursor)) {
             placed = 1;
+            show_effect = 1;
             /* A DRAW SUPPORT LEAVES A NEW CARD IN ITS OWN SLOT (Msx2_PlaySupport
              * puts the drawn card where the support was).  note_draws only
              * sees a slot go from empty to full, so the slot is put through
@@ -2104,10 +2424,17 @@ static void place_chosen(u8 defense)
     note_draws(MSX2_OWNER_PLAYER, hand_before);
     if (placed) hand_visible[MSX2_OWNER_PLAYER] &= (u8)~(1u << chosen);
     if (redrawn) draw_pending[MSX2_OWNER_PLAYER] |= (u8)(1u << chosen);
-    Msx2_ClearActionEvent();
-    ui = UI_HAND;
     cursor = chosen;
     touch_board(20);
+    if (show_fusion) {
+        begin_fusion_art(UI_HAND, fuse_material, g_duel.last_action_card,
+                         fuse_n, (u8)Msx2_FusionSucceeded());
+    } else if (show_effect) {
+        begin_effect_art(UI_HAND, card, MSX2_OWNER_PLAYER);
+    } else {
+        Msx2_ClearActionEvent();
+        ui = UI_HAND;
+    }
 }
 
 static void note_draws(u8 owner, const u8 *before)
@@ -2159,8 +2486,27 @@ static void begin_com_presentation(const u8 *before)
      * chosen back stays until its flight has landed. */
     if (com_hand_slot < MSX2_HAND)
         hand_visible[MSX2_OWNER_COM] |= (u8)(1u << com_hand_slot);
-    if (com_card != MSX2_CARD_NONE)
+    if (com_card != MSX2_CARD_NONE && com_action != MSX2_ACTION_SUPPORT)
         snesObjQueueCard(COM_FLY_SLOT, face_of(com_card, 1), 1);
+}
+
+/* Ancient Draw replaces itself before the shared rules recorder is reached,
+ * so recover that one support action from the before/after hand.  Keeping it
+ * frontend-local avoids changing shared rules solely for a presentation. */
+static void begin_com_draw_effect(const u8 *before, u8 slot, u8 card)
+{
+    u8 i;
+    for (i = 0; i < MSX2_HAND; ++i) com_hand[i] = before[i];
+    com_hand_slot = slot;
+    com_field_slot = MSX2_SLOT_NONE;
+    com_card = card;
+    com_defense = 0;
+    com_action = MSX2_ACTION_SUPPORT;
+    com_present_field = 0;
+    com_cursor = 0;
+    com_present = COM_PRESENT_SELECT;
+    hand_visible[MSX2_OWNER_COM] |= (u8)(1u << slot);
+    draw_pending[MSX2_OWNER_COM] |= (u8)(1u << slot);
 }
 
 static u8 step_com_presentation(void)
@@ -2168,6 +2514,12 @@ static u8 step_com_presentation(void)
     if (com_present == COM_PRESENT_IDLE) return 0;
     if (com_present == COM_PRESENT_SELECT) {
         if (++com_present_field >= COM_SELECT_FIELDS) {
+            if (com_action == MSX2_ACTION_SUPPORT) {
+                hand_visible[MSX2_OWNER_COM] &= (u8)~(1u << com_hand_slot);
+                com_present = COM_PRESENT_IDLE;
+                begin_effect_art(UI_COM, com_card, MSX2_OWNER_COM);
+                return 1;
+            }
             com_present_field = 1;
             com_present = COM_PRESENT_FLY;
         } else if (com_present_field < COM_SELECT_SETTLE) {
@@ -2480,7 +2832,13 @@ u8 snesDuelFrame(void)
      * where verify.py has always pressed them and where the game gives
      * the shoulder buttons nothing to do. */
     if (!top_view && (ui == UI_HAND || ui == UI_COM)) {
-        if ((down & (KEY_R | KEY_SELECT)) == (KEY_R | KEY_SELECT)) {
+        if (ui == UI_HAND &&
+            (down & (KEY_SELECT | KEY_X)) == (KEY_SELECT | KEY_X)) {
+            fixture_thunder_art();
+        } else if (ui == UI_HAND &&
+                   (down & (KEY_SELECT | KEY_A)) == (KEY_SELECT | KEY_A)) {
+            fixture_fusion_art();
+        } else if ((down & (KEY_R | KEY_SELECT)) == (KEY_R | KEY_SELECT)) {
             pattern_mode ^= 1;
             touch_board(2);
         } else {
@@ -2535,6 +2893,14 @@ u8 snesDuelFrame(void)
         else ++battle_frame;
         goto stamp;
     }
+    if (ui == UI_EFFECT_ART) {
+        step_effect_art(down);
+        goto stamp;
+    }
+    if (ui == UI_FUSION_ART) {
+        step_fusion_art(down);
+        goto stamp;
+    }
     if (view_motion == VIEW_BOARD_REST && ui == UI_HAND && (down & KEY_B)) {
         press_sfx(down);
         begin_check();
@@ -2572,9 +2938,17 @@ u8 snesDuelFrame(void)
          * PC-FX and FM TOWNS builds read it, and DOWN past the player's own
          * support row is the way back down to the hand (a target being
          * picked is put down first, the way B does it). */
-        if ((down & KEY_UP) && top_row > 0) { --top_row; moved = 1; }
+        if ((down & KEY_UP) && top_row > 0) {
+            --top_row;
+            moved = 1;
+            fade_dirty |= 2;
+        }
         if (down & KEY_DOWN) {
-            if (top_row + 1 < SNES_ROWS) { ++top_row; moved = 1; }
+            if (top_row + 1 < SNES_ROWS) {
+                ++top_row;
+                moved = 1;
+                fade_dirty |= 2;
+            }
             else if (view_motion == VIEW_TOP_REST) {
                 snesAudioSfx(SNES_SFX_CONFIRM_ALT);
                 top_attacker = MSX2_SLOT_NONE;
@@ -2633,6 +3007,7 @@ u8 snesDuelFrame(void)
                 } else {
                     top_attacker = top_col;
                     top_row = SNES_ROW_COM_MONSTER;
+                    fade_dirty |= 2;
                     top_col = Msx2_FirstLiveSlot(MSX2_OWNER_COM);
                     if (top_col == MSX2_SLOT_NONE) top_col = 0;
                 }
@@ -2667,6 +3042,7 @@ u8 snesDuelFrame(void)
             if (top_attacker != MSX2_SLOT_NONE) {
                 /* B puts the attacker down: the cursor goes back to it. */
                 top_row = SNES_ROW_YOU_MONSTER;
+                fade_dirty |= 2;
                 top_col = top_attacker;
                 top_attacker = MSX2_SLOT_NONE;
             } else {
@@ -2817,12 +3193,33 @@ u8 snesDuelFrame(void)
             --com_delay;
         } else {
             u8 hand_before[MSX2_HAND];
+            u8 target_before[MSX2_FIELD];
+            u8 target_face_before[MSX2_FIELD];
+            u8 com_draw_slot = MSX2_SLOT_NONE;
             u8 hi;
             const u8 step_owner = g_duel.turn_owner;
+            const u8 target_owner = step_owner ? MSX2_OWNER_PLAYER
+                                               : MSX2_OWNER_COM;
             com_delay = 6;
             for (hi = 0; hi < MSX2_HAND; ++hi)
                 hand_before[hi] = g_duel.side[g_duel.turn_owner].hand[hi];
+            for (hi = 0; hi < MSX2_FIELD; ++hi) {
+                target_before[hi] = g_duel.side[target_owner].field[hi];
+                target_face_before[hi] = g_duel.side[target_owner].faceup[hi];
+            }
             Msx2_DuelStep();
+            if (step_owner == MSX2_OWNER_COM &&
+                g_duel.last_action == MSX2_ACTION_NONE) {
+                for (hi = 0; hi < MSX2_HAND; ++hi) {
+                    const u8 old = hand_before[hi];
+                    if (Msx2_IsSupport(old) &&
+                        Msx2_SupportKind(old) == MSX2_SUP_DRAW &&
+                        g_duel.side[step_owner].hand[hi] != old) {
+                        com_draw_slot = hi;
+                        break;
+                    }
+                }
+            }
             note_draws(step_owner, hand_before);
             if (g_duel.last_action == MSX2_ACTION_ATTACK)
                 begin_battle_art(UI_COM);
@@ -2831,7 +3228,14 @@ u8 snesDuelFrame(void)
                       g_duel.last_action == MSX2_ACTION_FUSION ||
                       g_duel.last_action == MSX2_ACTION_EQUIP ||
                       g_duel.last_action == MSX2_ACTION_SUPPORT)) {
+                if (g_duel.last_action == MSX2_ACTION_SUPPORT)
+                    snapshot_effect_saved(g_duel.last_action_card, step_owner,
+                                          target_before, target_face_before);
                 begin_com_presentation(hand_before);
+            }
+            else if (com_draw_slot < MSX2_HAND) {
+                begin_com_draw_effect(hand_before, com_draw_slot,
+                                      hand_before[com_draw_slot]);
             }
             else {
                 Msx2_ClearActionEvent();

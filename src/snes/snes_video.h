@@ -23,8 +23,9 @@
  *      $5800-$5BFF   BG1 map A, 32x32
  *      $5C00-$5FFF   BG1 map B, 32x32
  *      $6000-$7FFF   OBJ characters (OBSEL name base 3)
- *  The HUD band under line 144 hides BG1 by an HDMA write to TM, so map rows
- *  18..31 never show.
+ *  In the chair view the HUD band under line 144 hides BG1 by an HDMA write
+ *  to TM.  The tactical overhead view disables that clip and scrolls the
+ *  same tile map vertically, exposing the board through all 224 lines.
  * ───────────────────────────────────────────────────────────────────────────── */
 #ifndef WAIFU_SNES_VIDEO_H
 #define WAIFU_SNES_VIDEO_H
@@ -138,6 +139,10 @@ void snesBoardTextureCard(u16 centre, u16 face, u16 flip, u16 width, u16 height)
 
 void snesVideoInitDuel(void);
 void snesVideoRestartHdma(void);
+/* The overhead board uses the full 224-line main screen and follows its row
+ * with BG1 tile scrolling.  Call from vblank; `scroll_y` is source minus
+ * screen pixels (the normal chair view is zero). */
+void snesVideoBoardViewport(u8 overhead, s16 scroll_y);
 void snesVideoRestartSceneHdma(void);
 void snesVideoSetSkyTables(u16 rg, u8 rg_bank, u16 b, u8 b_bank);
 void snesVideoTitleMenuPlate(u8 on);

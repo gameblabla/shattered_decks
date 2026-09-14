@@ -51,7 +51,8 @@ STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "frame_gen",
 
 # enum SnesDuelUi, mirroring src/snes/snes_duel.c.
 UI = ["HAND", "PLACE", "EQUIP_TARGET", "ATTACKER", "DEFENDER", "COM",
-      "RESULT", "FUSE_TARGET", "CHECK", "BATTLE_ART"]
+      "RESULT", "FUSE_TARGET", "CHECK", "BATTLE_ART", "EFFECT_ART",
+      "FUSION_ART"]
 STAMP_MAGIC = 0x5744
 BATTLE_VERDICT_Y = 94           # snes_battle.c VERDICT_Y
 
@@ -681,15 +682,23 @@ RUN_FRAMES = 2800
 HOLD = 60
 DUEL_READY = 2200
 
-# The harness's four switches in the duel, all of them documented in
+# The harness's switches in the duel, all of them documented in
 # src/snes/snes_duel.c: R fills the board from the decks (the measurement and
 # identification fixture), SELECT draws it without cards (the ablation), L hands
 # the player's side to the rules (the demo, and the soak run), Y toggles the
-# board resolution.
+# board resolution, and SELECT+X / SELECT+A stage deterministic Thunder and
+# fusion presentations.
 
 
 def press(button, at):
     return (at, at + HOLD, PAD[button])
+
+
+def press_chord(buttons, at):
+    mask = 0
+    for button in buttons:
+        mask |= PAD[button]
+    return (at, at + HOLD, mask)
 
 
 def random_battle_script():
@@ -2048,11 +2057,12 @@ def run_top(capture=None):
 # The overhead camera, mirroring snes_duel.c's lift_camera at its top: over
 # the middle of the board at LIFT_HEIGHT (4.0 units), looking straight down,
 # the frame centred on the camera's foot at LIFT_HORIZON.  A world point
-# (wx, wz) on the board projects to (128 + wx * k, 72 - wz * k) with k =
-# focal / height in pixels: 128 / 4.0 = 32, one texel a pixel.
+# (wx, wz) in the bitmap projects around y=72.  On entry row 2 is selected,
+# so the PPU applies the -24-pixel tracking offset and that bitmap centre is
+# displayed at y=96.  Moving between rows changes only BG1VOFS by 32 pixels.
 TOP_HEIGHT = 1024 / 256.0
 TOP_K = 128.0 / TOP_HEIGHT
-TOP_CX, TOP_CY = 128.0, 72.0
+TOP_CX, TOP_CY = 128.0, 96.0
 # The moving camera draws the cards out of the world texture, where each is a
 # 24x32-texel stamp of its 32x32 face over a 0.75 x 1.0 unit footprint.
 TOP_CARD_W, TOP_CARD_H = 0.75, 1.0
@@ -2117,6 +2127,9 @@ def check_top_view():
     regs = read_ppu_regs(os.path.join(OUT, "topview.ppu"))
     if regs["BGMODE"] != 3 or regs["BG12NBA"] != 0 or regs["BG1SC"] not in (0x58, 0x5c):
         raise Failure("the overhead view is not the seat's Mode 3 board: %s" % regs)
+    if regs.get("TM") != 0x11 or regs.get("BG1VOFS") != 999:
+        raise Failure("the overhead view is not full-height/tracked (TM=%s VOFS=%s)" %
+                      (regs.get("TM"), regs.get("BG1VOFS")))
     w, h, px = read_ppm(ppm)
     found = []
     for row in range(4):
@@ -2135,6 +2148,11 @@ def check_top_view():
     if len(set(f for _, _, f in found)) < 4:
         raise Failure("the overhead view shows %d distinct faces" %
                       len(set(f for _, _, f in found)))
+    below_old_clip = sum(px[(y * w + x) * 3:(y * w + x + 1) * 3] != b"\x00\x00\x00"
+                         for y in range(145, 161) for x in range(48, 208))
+    if below_old_clip < 300:
+        raise Failure("the full-height overhead board has only %d lit pixels below "
+                      "the chair view's old line-144 clip" % below_old_clip)
     # The cursor: four red corner brackets around the inspected slot, which on
     # entry is the player's monster row, column 0.  Assert the displayed ink,
     # not the post-field OAM dump: a dump can already contain the next shadow
@@ -2241,7 +2259,13 @@ def check_top_cursor_and_card_check():
     top_ppm, _ = run("top_cursor", random_battle_script() + [
         press("R", DUEL_READY), press("UP", DUEL_READY + 400),
         press("RIGHT", DUEL_READY + 1800),
-    ], 6000)
+        press("UP", DUEL_READY + 2000),
+    ], 6000, capture=(5999, 5999, 1))
+    tracked = read_ppu_regs(os.path.join(OUT, "top_cursor.ppu"))
+    if tracked.get("BG1VOFS") != 967:
+        raise Failure("moving the top cursor up did not tile-scroll the board "
+                      "by one row (BG1VOFS=%s, expected 967)" %
+                      tracked.get("BG1VOFS"))
     # B IS THE CARD CHECK ON EITHER SIDE OF THE TABLE (A on the player's own
     # monster picks it as the attacker, the PC-FX gesture); the cursor is
     # walked up to the opponent's row first, so the check is of their card.
@@ -2289,6 +2313,83 @@ def check_top_cursor_and_card_check():
     if a == b:
         raise Failure("moving the top cursor did not change the rendered cursor")
     return "top cursor moves independently; B opens CHECK and B closes it"
+
+
+# The card-art screen shares the check layout: BG1 map $7400 and text map
+# $7800, whose font starts at tile 192 for ASCII 32.
+CARDART_BG2_MAP = 0x7800
+CARDART_FONT_TILE = 192
+
+
+def decode_cardart_text(vram, row):
+    line = ""
+    for col in range(32):
+        word = struct.unpack_from("<H", vram,
+                                  (CARDART_BG2_MAP + row * 32 + col) * 2)[0]
+        tile = word & 0x3FF
+        if CARDART_FONT_TILE <= tile < CARDART_FONT_TILE + 64:
+            line += chr(32 + tile - CARDART_FONT_TILE)
+        else:
+            line += " "
+    return line.rstrip()
+
+
+def check_support_cutin():
+    """Thunder names itself, then shows every snapshotted victim."""
+    start = DUEL_READY + 400
+    ppm, wram = run("support_cutin", random_battle_script() +
+                    [press_chord(("SELECT", "X"), start)], start + 173,
+                    capture=(start + 60, start + 172, 112))
+    stamp = read_stamp(wram)
+    if UI[stamp["ui"]] != "EFFECT_ART":
+        raise Failure("Thunder fixture ended in %s, expected EFFECT_ART" %
+                      UI[stamp["ui"]])
+    intro = os.path.join(OUT, "support_cutin.frames", "f%06d.ppm" %
+                         (start + 60))
+    iw, ih, ipx = read_ppm(intro)
+    art = identify_bigcard(ipx, iw, ih, BIGCARD_CHECK_X + 4,
+                           BIGCARD_CHECK_Y + 6)
+    if not art or art[0] != SUPPORT_FIRST + 4 or art[1] < BIG_ART * BIG_ART * 0.98:
+        raise Failure("support cut-in did not show Thunder exactly: %s" %
+                      (art,))
+    w, h, px = read_ppm(ppm)
+    victim = identify_bigcard(px, w, h, BIGCARD_CHECK_X + 4,
+                              BIGCARD_CHECK_Y + 6)
+    if not victim or victim[0] >= SUPPORT_FIRST or victim[1] < BIG_ART * BIG_ART * 0.98:
+        raise Failure("Thunder victim screen is not a full-resolution monster: %s" %
+                      (victim,))
+    vram = open(os.path.join(OUT, "support_cutin.ppu.vram"), "rb").read()
+    if "THUNDER" not in decode_cardart_text(vram, 0) or \
+       "DESTROYED" not in decode_cardart_text(vram, 8):
+        raise Failure("Thunder victim text is missing: %r / %r" %
+                      (decode_cardart_text(vram, 0),
+                       decode_cardart_text(vram, 8)))
+    return "Thunder support art, effect text, and victim %d shown at 120x160" % victim[0]
+
+
+def check_fusion_cutin():
+    """A legal two-card recipe merges through a flash into its large result."""
+    start = DUEL_READY + 400
+    ppm, wram = run("fusion_cutin", random_battle_script() +
+                    [press_chord(("SELECT", "A"), start)], start + 121,
+                    capture=(start + 120, start + 120, 1))
+    stamp = read_stamp(wram)
+    if UI[stamp["ui"]] != "FUSION_ART":
+        raise Failure("Fusion fixture ended in %s, expected FUSION_ART" %
+                      UI[stamp["ui"]])
+    w, h, px = read_ppm(ppm)
+    result = identify_bigcard(px, w, h, BIGCARD_CHECK_X + 4,
+                              BIGCARD_CHECK_Y + 6)
+    if not result or result[0] >= SUPPORT_FIRST or result[1] < BIG_ART * BIG_ART * 0.98:
+        raise Failure("Fusion result is not a full-resolution monster: %s" %
+                      (result,))
+    vram = open(os.path.join(OUT, "fusion_cutin.ppu.vram"), "rb").read()
+    if "FUSION RESULT" not in decode_cardart_text(vram, 0) or \
+       "FUSION SUMMON" not in decode_cardart_text(vram, 8):
+        raise Failure("Fusion result text is missing: %r / %r" %
+                      (decode_cardart_text(vram, 0),
+                       decode_cardart_text(vram, 8)))
+    return "two materials flash into full-resolution fusion result %d" % result[0]
 
 
 # ── The Mode 4 battle ────────────────────────────────────────────────────────
@@ -2837,6 +2938,8 @@ CHECKS = [
     ("top view switch", check_top_view_switch_is_seamless),
     ("camera round trip", check_camera_round_trip),
     ("top cursor + card check", check_top_cursor_and_card_check),
+    ("support cut-in", check_support_cutin),
+    ("fusion cut-in", check_fusion_cutin),
     ("battle Mode 4", check_battle_mode4),
     ("direct attack", check_direct_attack),
     ("fusion target", check_fusion_target),

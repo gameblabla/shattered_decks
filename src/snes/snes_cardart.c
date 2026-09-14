@@ -40,6 +40,8 @@ static u8  bg1_dirty = 0;
 static u8  bg2_dirty = 0;
 static u8  reveal_pending = 0;
 static u8  reveal_value = 255;
+static u8  flash_pending = 0;
+static u8  flash_value = 0;
 static u8  plane7_byte = 0xFF;
 static const u8 blank_tile[64] = { 0 };
 
@@ -111,6 +113,8 @@ void snesCardArtEnter(u8 navy)
     bg2_dirty = 0;
     reveal_value = 255;
     reveal_pending = 0;
+    flash_value = 0;
+    flash_pending = 0;
     REG_TM = BG1_ENABLE | BG2_ENABLE;
 }
 
@@ -323,10 +327,106 @@ void snesCardArtCheck(u8 face, u8 has_stats, u16 atk, u16 def)
     snesCardArtText(tx, 24, "B: BACK", SNES_CARDART_PAL_WHITE);
 }
 
+/* A SUPPORT CUT-IN USES THE CARD-CHECK COMPOSITION, WITHOUT THE INSPECTION
+ * LEGEND.  That makes the cause precede the already-committed rules effect,
+ * and gives the opponent's supports the same readable explanation as the
+ * player's instead of sending an unplaceable flight toward slot $FF. */
+void snesCardArtEffect(u8 face, u8 by_com)
+{
+    const u8 tx = SNES_CARDART_TEXT_COL;
+    u8 row = 0;
+    snesCardArtClear();
+    snesCardArtTextClear();
+    if (face >= SNES_CARD_FACES) return;
+    snesCardArtLoad(0, face);
+    snesCardArtPlace(0, SNES_CARDART_COL_L, face);
+    snesCardArtText(tx, row, by_com ? "OPPONENT USED" : "SUPPORT USED",
+                    SNES_CARDART_PAL_GOLD);
+    row += 2;
+    row = (u8)(row + snesCardArtWrap(tx, row, SNES_CARDART_TEXT_W, 3,
+                                     snesCardInfoName(face),
+                                     SNES_CARDART_PAL_WHITE));
+    ++row;
+    snesCardArtText(tx, row++, "EFFECT", SNES_CARDART_PAL_GOLD);
+    snesCardArtWrap(tx, row, SNES_CARDART_TEXT_W, 12,
+                    snesCardInfoDesc(face), SNES_CARDART_PAL_WHITE);
+}
+
+void snesCardArtDestroyed(u8 face, u8 index, u8 total)
+{
+    const u8 tx = SNES_CARDART_TEXT_COL;
+    snesCardArtClear();
+    snesCardArtTextClear();
+    if (face >= SNES_CARD_FACES) return;
+    snesCardArtLoad(0, face);
+    snesCardArtPlace(0, SNES_CARDART_COL_L, face);
+    snesCardArtText(tx, 0, "THUNDER", SNES_CARDART_PAL_GOLD);
+    snesCardArtWrap(tx, 2, SNES_CARDART_TEXT_W, 4, snesCardInfoName(face),
+                    SNES_CARDART_PAL_WHITE);
+    snesCardArtText(tx, 8, "DESTROYED", SNES_CARDART_PAL_GOLD);
+    snesCardArtText(tx, 10, "TARGET", SNES_CARDART_PAL_WHITE);
+    snesCardArtNum((u8)(tx + 7), 10, (u16)(index + 1), 1,
+                   SNES_CARDART_PAL_GOLD);
+    snesCardArtText((u8)(tx + 9), 10, "OF", SNES_CARDART_PAL_WHITE);
+    snesCardArtNum((u8)(tx + 12), 10, total, 1, SNES_CARDART_PAL_GOLD);
+}
+
+void snesCardArtFusionBegin(u8 material, u8 result, u8 count, u8 success)
+{
+    snesCardArtClear();
+    snesCardArtTextClear();
+    if (material >= SNES_CARD_FACES || result >= SNES_CARD_FACES) return;
+    /* Slot 1 is loaded now, under the entry's force blank.  The reveal later
+     * changes only two maps, never streams fourteen kilobytes during display. */
+    snesCardArtLoad(0, material);
+    snesCardArtLoad(1, result);
+    snesCardArtPlace(0, SNES_CARDART_COL_L, material);
+    snesCardArtText(SNES_CARDART_TEXT_COL, 0, "FUSION",
+                    SNES_CARDART_PAL_GOLD);
+    snesCardArtWrap(SNES_CARDART_TEXT_COL, 2, SNES_CARDART_TEXT_W, 4,
+                    snesCardInfoName(material), SNES_CARDART_PAL_WHITE);
+    snesCardArtText(SNES_CARDART_TEXT_COL, 8, "MATERIALS",
+                    SNES_CARDART_PAL_WHITE);
+    snesCardArtNum((u8)(SNES_CARDART_TEXT_COL + 10), 8, count, 1,
+                   SNES_CARDART_PAL_GOLD);
+    snesCardArtText(SNES_CARDART_TEXT_COL, 11,
+                    success ? "RECIPE FOUND" : "NO RECIPE",
+                    SNES_CARDART_PAL_GOLD);
+}
+
+void snesCardArtFusionResult(u8 result, u8 count, u8 success)
+{
+    snesCardArtClear();
+    snesCardArtTextClear();
+    if (result >= SNES_CARD_FACES) return;
+    /* The result was preloaded into slot 1 by FusionBegin. */
+    snesCardArtPlace(1, SNES_CARDART_COL_L, result);
+    snesCardArtText(SNES_CARDART_TEXT_COL, 0, "FUSION RESULT",
+                    SNES_CARDART_PAL_GOLD);
+    snesCardArtWrap(SNES_CARDART_TEXT_COL, 2, SNES_CARDART_TEXT_W, 4,
+                    snesCardInfoName(result), SNES_CARDART_PAL_WHITE);
+    snesCardArtText(SNES_CARDART_TEXT_COL, 8,
+                    success ? "FUSION SUMMON" : "FUSION FAILED",
+                    success ? SNES_CARDART_PAL_GOLD : SNES_CARDART_PAL_WHITE);
+    snesCardArtText(SNES_CARDART_TEXT_COL, 11, "MATERIALS",
+                    SNES_CARDART_PAL_WHITE);
+    snesCardArtNum((u8)(SNES_CARDART_TEXT_COL + 10), 11, count, 1,
+                   SNES_CARDART_PAL_GOLD);
+    if (result < MSX2_TOTAL_CARDS && Msx2_IsMonster(result))
+        snesCardArtStats(SNES_CARDART_COL_L, result,
+                         Msx2_CardAtk(result), Msx2_CardDef(result));
+}
+
 void snesCardArtReveal(u8 reveal)
 {
     reveal_value = reveal;
     reveal_pending = 1;
+}
+
+void snesCardArtFlash(u8 level)
+{
+    flash_value = level > 31 ? 31 : level;
+    flash_pending = 1;
 }
 
 void snesCardArtVblank(void)
@@ -357,6 +457,17 @@ void snesCardArtVblank(void)
             REG_WH1 = (u8)(SNES_CARDART_X0 + r);
             *(vuint8 *)0x2128 = (u8)(251 - r);
             *(vuint8 *)0x2129 = 251;
+        }
+    }
+    if (flash_pending) {
+        flash_pending = 0;
+        if (!flash_value) {
+            REG_CGADSUB = 0;
+        } else {
+            REG_COLDATA = (u8)(0x20 | flash_value);
+            REG_COLDATA = (u8)(0x40 | flash_value);
+            REG_COLDATA = (u8)(0x80 | flash_value);
+            REG_CGADSUB = 0x63; /* BG1, BG2 and backdrop + fixed colour. */
         }
     }
 }

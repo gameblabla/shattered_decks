@@ -9,10 +9,12 @@ store shared copy-on-write between two logical maps, and switches the PPU to
 the new map in one vblank once every tile it names is resident.  A frame's
 span -- the cells between the first and last occupied column of each 8-row
 band -- may not exceed 351 cells; a frame over that is refused, counted in the
-stamp's `dropped` word, and the previous picture stays up.  The lower 80
-screen lines are a black band the OBJ HUD sits on: life points, labels, hand
-cards, card names, stats, cursors and result banners are all sprites at full
-screen resolution.
+stamp's `dropped` word, and the previous picture stays up.  At the chair the
+lower 80 screen lines are a black band the OBJ HUD sits on: life points,
+labels, hand cards, card names, stats, cursors and result banners are all
+sprites at full screen resolution.  The overhead view disables that BG1 clip
+and tile-scrolls the same 144-line picture so the selected field row remains
+near screen centre; no redraw or map swap is needed when its cursor moves.
 
 Two painting paths feed the same frame (`snes_duel.c`, `snes_board3d.c`):
 
@@ -109,8 +111,9 @@ deck editor from the title attract screen.
 
 Victory and failure use one-shot result audio and a large multi-sprite banner.
 
-The card check is a Mode 3 picture and the battle cut-in a Mode 4 one, not
-sprites (`snes_cardart.c`, `snes_battle.c`).  Each card is the PC-FX 120x160 battle card -- the
+Card checks, support effects and fusion reveals are Mode 3 pictures, and the
+battle cut-in is a Mode 4 one, not sprites (`snes_cardart.c`,
+`snes_battle.c`).  Each card is the PC-FX 120x160 battle card -- the
 112x112 painting inside the gold-rimmed frame of `draw_big_battle_card_stats`
 -- baked by `tools/snes/gen_snes_bigcards.py` as 225 8bpp BG1 tiles with
 eighty colours of its own; the frame's foot (the ATK/DEF plate) is a shared
@@ -119,7 +122,10 @@ set at upload time (eight fixed-source DMAs into the odd bytes of the last
 plane pair), so slot 0 reads entries 32..111 and slot 1 reads 160..239.  The
 words are BG2 text.  The check screen is the PC-FX layout: card on the left,
 CARD CHECK / name / stars / attribute and tribe / LORE / ATK and DEF on the
-right.  The battle (`snes_battle.c`) is Mode 4 so BG1 can be offset per
+right.  Support effects use the same layout for their rule text; Thunder then
+shows every destroyed victim.  Fusion preloads material and result slots,
+crossfades them with fixed-colour flashes, and performs no live art DMA during
+the reveal.  The battle (`snes_battle.c`) is Mode 4 so BG1 can be offset per
 tile column: the two cards enter by scrolling vertically -- the player's up,
 the opponent's down -- which offset-per-tile does smoothly, where horizontal
 motion would step in eight-pixel chunks; the direct attack has its own

@@ -76,6 +76,8 @@ static u8 hdma_col[63];
 
 static u8 presentation_owner = SNES_OWNER_BOARD;
 static u16 requested_generation = 0;
+static u8 board_overhead = 0;
+static s16 board_scroll_y = 0;
 
 /* Fill the plate's table once.  The ramp is walked in 8.8 rather than divided
  * per line: 816-tcc has no divide worth spending here, and both steps happen
@@ -135,7 +137,10 @@ static void arm_hdma(void)
     *(vuint16 *)0x4362 = (u16)(u16)snes_fb_tm;
     *(vuint8 *)0x4364 = 0x7E;
 
-    REG_HDMAEN = 0x50;         /* channels 4 and 6 */
+    /* Overhead owns the whole screen: channel 6 must not cut BG1 off at the
+     * chair view's line 144.  The colour channel remains for the compact info
+     * plate at the bottom. */
+    REG_HDMAEN = board_overhead ? 0x10 : 0x50;
 }
 
 static void build_scene_gradient(void)
@@ -290,6 +295,8 @@ void snesVideoInitDuel(void)
     setMode(BG_MODE3, 0);
     presentation_owner = SNES_OWNER_BOARD;
     requested_generation = 0;
+    board_overhead = 0;
+    board_scroll_y = 0;
 
     /* Permanent blank tile and two blank logical maps. */
     dmaCopyVram((u8 *)blank, SNES_VRAM_BOARD_CHARS, 64);
@@ -322,6 +329,31 @@ void snesVideoRestartHdma(void)
     REG_W12SEL = 0;
     REG_COLDATA = COL_BLACK;
     arm_hdma();
+}
+
+void snesVideoBoardViewport(u8 overhead, s16 scroll_y)
+{
+    u16 vofs;
+    if (presentation_owner != SNES_OWNER_BOARD) return;
+    overhead = overhead ? 1 : 0;
+    if (overhead != board_overhead) {
+        board_overhead = overhead;
+        /* Channel 6 finishes every chair-view field with OBJ alone in TM.
+         * Disabling that channel does not rewind the register, so explicitly
+         * restore BG1 before the first full-height overhead field.  Its table
+         * registers and the colour channel are already armed; rebuilding the
+         * gradient here would spend most of the scarce vblank window. */
+        REG_HDMAEN = 0;
+        REG_TM = BG1_ENABLE | OBJ_ENABLE;
+        REG_HDMAEN = board_overhead ? 0x10 : 0x50;
+    }
+    board_scroll_y = overhead ? scroll_y : 0;
+    /* At $3ff the PPU's one-line BG latch makes source row zero appear on
+     * screen row zero.  Adding the signed tracking offset moves the existing
+     * tilemap; no bitmap cell or map entry changes when the cursor moves. */
+    vofs = (u16)(0x03FFu + board_scroll_y) & 0x03FFu;
+    REG_BG1VOFS = (u8)vofs;
+    REG_BG1VOFS = (u8)(vofs >> 8);
 }
 
 void snesVideoRestartSceneHdma(void)

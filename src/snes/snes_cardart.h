@@ -58,9 +58,19 @@ void snesCardArtStats(u8 col, u8 face, u16 atk, u16 def);
 /* The whole card check screen: the card on the left, the PC-FX text column
  * on the right.  `has_stats` prints the slot's own ATK/DEF, else the card's. */
 void snesCardArtCheck(u8 face, u8 has_stats, u16 atk, u16 def);
+/* Full-screen duel beats built from the same large-card stage.  Effect shows
+ * a support card and its rules text; Destroyed gives one Thunder victim its
+ * own reveal; FusionBegin preloads the material/result pair and FusionResult
+ * swaps the map to the already-resident result without another art DMA. */
+void snesCardArtEffect(u8 face, u8 by_com);
+void snesCardArtDestroyed(u8 face, u8 index, u8 total);
+void snesCardArtFusionBegin(u8 material, u8 result, u8 count, u8 success);
+void snesCardArtFusionResult(u8 result, u8 count, u8 success);
 /* The battle reveal: BG1 shown only inside two windows that open from the
  * screen's edges inwards.  `reveal` is 0..120 pixels; 255 turns masking off. */
 void snesCardArtReveal(u8 reveal);
+/* Add a white fixed-colour wash to both backgrounds.  Zero disables it. */
+void snesCardArtFlash(u8 level);
 /* Vblank: DMAs whatever map changed and applies the pending window. */
 void snesCardArtVblank(void);
 
