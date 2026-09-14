@@ -88,6 +88,49 @@ fr_halfw          dw            ; half the viewport's width in pixels (128 / 64)
 fr_w              dw            ; the viewport's width (256 / 128)
 .ENDS
 
+
+; The resting card rows' inputs (snesCardRows): snesDrawCardRow's per-row
+; setup, handed over as plain bank-0 globals the way snesFloorRowsPitch's
+; are.  C fills the first block; the rest is the loop's own.
+.RAMSECTION "snes_card_rows_ram" BANK 0 SLOT 1
+cr_y              dw            ; the first pixel row, and one past the last
+cr_yend           dw
+cr_rows           dw            ; ...its rows below the horizon
+cr_base           dw            ; ...its byte offset in the frame, and a row
+cr_stride         dw
+cr_acc_l          dw            ; the centre card's edges and the slot pitch,
+cr_acc_r          dw            ; Q8.8 units, seeded for the row before cr_y
+cr_acc_p          dw
+cr_step_l         dw            ; ...and their steps per row
+cr_step_r         dw
+cr_step_p         dw
+cr_l_off          dw            ; 1 once an accumulator has latched
+cr_r_off          dw
+cr_p_off          dw
+cr_limit          dw            ; the side of the viewport in Q8.8 units
+cr_hf             dw            ; height * focal, Q8.8
+cr_du_k           dw            ; the card's texel step per pixel at unit depth
+cr_d_far          dw            ; the row's far and near edges from the camera
+cr_d_near         dw
+cr_clip_y0        dw            ; rows above this are stepped but not drawn
+cr_sub            dw            ; 1: the 256x144 frame, 0: the 128x72 one
+cr_halfw          dw
+cr_w              dw
+cr_flip           dw            ; the mask that turns a face to the far side
+cr_faces          dsb 6         ; the five faces in COLUMN order (mirror applied)
+cr_depth          dw
+cr_du             dw
+cr_texv           dw
+cr_l              dw            ; the card being spanned
+cr_r              dw
+cr_face           dw
+cr_xl             dw
+cr_x0             dw
+cr_x1             dw
+cr_u              dw
+cr_tmp            dw
+.ENDS
+
 .BASE $C0
 .SECTION "snes_raster_text" SUPERFREE
 
@@ -1168,5 +1211,411 @@ _bt_row_done:
     plb
     plp
     rtl
+
+;-----------------------------------------------------------------------------
+; void snesCardRows(void)
+;
+; THE RESTING CARDS, ROW BY ROW, with no C between the rows or the spans.
+; snesDrawCardRow keeps the per-row-of-slots setup -- two divides and three
+; edge slopes -- and hands the cr_* words over; from there every screen row
+; is: three edge accumulators stepped and latched, one reciprocal lookup,
+; one Q8.8 product for the depth and one for the texel step, the card's v
+; from the depth, and then up to five spans walked outwards from the
+; centre column, each of them a clip to the viewport, at most one product
+; (a card cut by the side of the frame), and the constant-v walker.  The C
+; this replaces was ~4,500 master cycles a span and ~2,500 a row on top,
+; four times the walker's own cost over a full board.
+;
+; Signed comparisons are (a - b) with the sign corrected by V, so an edge
+; sitting exactly at the limit compares the way the C did.
+;-----------------------------------------------------------------------------
+
+; A >>= N arithmetic.
+.MACRO CR_SAR ARGS N
+.REPT N
+    cmp #$8000
+    ror a
+.ENDR
+.ENDM
+
+; A = a signed 16-bit difference already in A; leaves N (and Z) describing
+; the true sign, overflow included.
+.MACRO CR_FIXSIGN
+    bvc +
+    eor #$8000
++
+.ENDM
+
+snesCardRows:
+    php
+    rep #$30
+    phb
+    pea $0000
+    plb
+    plb                         ; DB = 0: the cr_* words by absolute address
+_cr_row:
+    lda.w cr_y
+    cmp.w cr_yend
+    bcc +
+    jmp _cr_done
++
+    ; The left edge: stepped until it latches at the side of the viewport.
+    lda.w cr_l_off
+    bne _cr_l_done
+    lda.w cr_acc_l
+    clc
+    adc.w cr_step_l
+    sta.w cr_acc_l
+    sec
+    sbc.w cr_limit
+    CR_FIXSIGN
+    bpl _cr_l_latch             ; acc >= limit
+    lda.w cr_acc_l
+    clc
+    adc.w cr_limit
+    CR_FIXSIGN
+    beq _cr_l_latch             ; acc <= -limit
+    bpl _cr_l_done
+_cr_l_latch:
+    lda #1
+    sta.w cr_l_off
+_cr_l_done:
+    ; The right edge, the same.
+    lda.w cr_r_off
+    bne _cr_r_done
+    lda.w cr_acc_r
+    clc
+    adc.w cr_step_r
+    sta.w cr_acc_r
+    sec
+    sbc.w cr_limit
+    CR_FIXSIGN
+    bpl _cr_r_latch
+    lda.w cr_acc_r
+    clc
+    adc.w cr_limit
+    CR_FIXSIGN
+    beq _cr_r_latch
+    bpl _cr_r_done
+_cr_r_latch:
+    lda #1
+    sta.w cr_r_off
+_cr_r_done:
+    ; The pitch only grows, so it latches on one side.
+    lda.w cr_p_off
+    bne _cr_p_done
+    lda.w cr_acc_p
+    clc
+    adc.w cr_step_p
+    sta.w cr_acc_p
+    sec
+    sbc.w cr_limit
+    CR_FIXSIGN
+    bmi _cr_p_done
+    lda #1
+    sta.w cr_p_off
+_cr_p_done:
+    ; Rows above the patch are stepped but not drawn.
+    lda.w cr_y
+    cmp.w cr_clip_y0
+    bcs +
+    jmp _cr_next
++
+    ; depth = hf * recip[rows_below], the table for the frame's row pitch.
+    lda.w cr_rows
+    asl a
+    tax
+    lda.w cr_sub
+    beq +
+    lda.l snes_recip_row2,x
+    bra ++
++   lda.l snes_recip_row,x
+++  pha
+    lda.w cr_hf
+    pha
+    jsl snesMulHi
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    sta.w cr_depth
+    ; Only the rows between the slot's far and near edges carry the card.
+    ; Both edges are positive, so a depth past a signed word (a row right
+    ; under the horizon) fails the far test exactly as the C's signed one.
+    cmp.w cr_d_far
+    beq +
+    bcs _cr_skip
++   cmp.w cr_d_near
+    bcs +
+_cr_skip:
+    jmp _cr_next
++
+    ; du = depth * du_k, Q8.8
+    lda.w cr_du_k
+    pha
+    lda.w cr_depth
+    pha
+    jsl snesQMul
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    sta.w cr_du
+    ; v: the card is one unit deep and 32 (or 16) texels tall, so the row
+    ; of texels is the depth into the card, Q8.8, taken down to a byte.
+    lda.w cr_d_far
+    sec
+    sbc.w cr_depth
+    cmp #256
+    bcc +
+    lda #255
++   ldx.w cr_sub
+    beq +
+    and #$00F8                  ; (v << 5 >> 3) & $03E0 on the 32x32 sheet
+    asl a
+    asl a
+    bra ++
++   and #$00F0                  ; (v << 4 >> 4) & $00F0 on the 16x16
+++  eor.w cr_flip
+    sta.w cr_texv
+
+    ; Outwards from the centre: right first, then left.
+    lda.w cr_acc_l
+    sta.w cr_l
+    lda.w cr_acc_r
+    sta.w cr_r
+    ldx #2
+_cr_right:
+    lda.w cr_l
+    sec
+    sbc.w cr_limit
+    CR_FIXSIGN
+    bpl _cr_right_done          ; l >= limit: off the side
+    jsr _cr_span
+    lda.w cr_limit
+    sec
+    sbc.w cr_acc_p
+    sta.w cr_tmp
+    lda.w cr_l
+    sec
+    sbc.w cr_tmp
+    CR_FIXSIGN
+    beq +
+    bpl _cr_right_done          ; l > limit - pitch: the next would wrap
++   lda.w cr_l
+    clc
+    adc.w cr_acc_p
+    sta.w cr_l
+    lda.w cr_r
+    clc
+    adc.w cr_acc_p
+    sta.w cr_r
+    inx
+    cpx #5
+    bcc _cr_right
+_cr_right_done:
+    lda.w cr_acc_l
+    sec
+    sbc.w cr_acc_p
+    sta.w cr_l
+    lda.w cr_acc_r
+    sec
+    sbc.w cr_acc_p
+    sta.w cr_r
+    ldx #1
+_cr_left:
+    lda.w cr_r
+    clc
+    adc.w cr_limit
+    CR_FIXSIGN
+    bmi _cr_left_done           ; r <= -limit
+    beq _cr_left_done
+    jsr _cr_span
+    lda.w cr_acc_p
+    sec
+    sbc.w cr_limit
+    sta.w cr_tmp
+    lda.w cr_r
+    sec
+    sbc.w cr_tmp
+    CR_FIXSIGN
+    bmi _cr_left_done           ; r < pitch - limit
+    lda.w cr_l
+    sec
+    sbc.w cr_acc_p
+    sta.w cr_l
+    lda.w cr_r
+    sec
+    sbc.w cr_acc_p
+    sta.w cr_r
+    dex
+    bpl _cr_left
+_cr_left_done:
+_cr_next:
+    inc.w cr_y
+    inc.w cr_rows
+    lda.w cr_base
+    clc
+    adc.w cr_stride
+    sta.w cr_base
+    jmp _cr_row
+_cr_done:
+    plb
+    plp
+    rtl
+
+; One card's span on the row: column X of cr_faces between the Q8.8 edges
+; cr_l and cr_r.  The row has already produced the depth, the texel step
+; and v.  Preserves X.
+_cr_span:
+    lda.w cr_faces,x
+    and #$00FF
+    cmp #$00FF
+    bne +
+    rts                         ; an empty slot
++   sta.w cr_face
+    phx
+    ; The edges in pixels: half_w + (edge >> 7) at 1:1, >> 8 on the motion
+    ; frame.
+    lda.w cr_l
+    ldx.w cr_sub
+    beq +
+    CR_SAR 7
+    bra ++
++   CR_SAR 8
+++  clc
+    adc.w cr_halfw
+    sta.w cr_xl
+    bpl +
+    lda #0
++   sta.w cr_x0
+    lda.w cr_r
+    ldx.w cr_sub
+    beq +
+    CR_SAR 7
+    bra ++
++   CR_SAR 8
+++  clc
+    adc.w cr_halfw
+    cmp.w cr_w
+    bcc +
+    lda.w cr_w
++   sta.w cr_x1
+    cmp.w cr_x0
+    beq +
+    bcs ++
++   jmp _cs_done                ; nothing of it inside the viewport
+++
+    ; A span that starts on the card's own left edge starts at texel zero;
+    ; one cut by the side of the viewport pays a product for where it
+    ; starts.  Either way the walker steps before it reads, so it is
+    ; handed the texel BEFORE the first: without that a card loses its
+    ; left keyline column.
+    lda.w cr_xl
+    bpl _cs_u_zero
+    eor #$FFFF
+    inc a                       ; x0 - xl, x0 being 0
+    pha
+    lda.w cr_du
+    pha
+    jsl snesMulLo
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    bmi _cs_u_zero              ; past the card: clamp to its first texel
+    cmp.w cr_du
+    bcc _cs_u_zero
+    sbc.w cr_du                 ; C is set
+    bra _cs_u
+_cs_u_zero:
+    lda #0
+_cs_u:
+    ldx.w cr_sub
+    beq _cs_16
+    ; The 32x32 sheets: the face's 1 KB page in one of two sheets.
+    cmp #$2000
+    bcc +
+    lda #$1FFF
++   sta.w cr_u
+    ; snesSpanCard32(base + x0, x1 - x0,
+    ;                ((face & 63) << 10) | texv | (u >> 8),
+    ;                (u & 255) | (face >= 64 ? $8000 : 0), du)
+    lda.w cr_du
+    pha
+    lda.w cr_u
+    and #$00FF
+    ldx.w cr_face
+    cpx #64
+    bcc +
+    ora #$8000
++   pha
+    lda.w cr_face
+    and #$003F
+    xba
+    asl a
+    asl a                       ; (face & 63) << 10
+    ora.w cr_texv
+    sta.w cr_tmp
+    lda.w cr_u
+    xba
+    and #$00FF                  ; u >> 8, at most $1F
+    ora.w cr_tmp
+    pha
+    lda.w cr_x1
+    sec
+    sbc.w cr_x0
+    pha
+    lda.w cr_base
+    clc
+    adc.w cr_x0
+    pha
+    jsl snesSpanCard32
+    tsa
+    clc
+    adc #10
+    tas
+    bra _cs_done
+_cs_16:
+    ; The 16x16 sheet: the face's 256-byte page.
+    cmp #$1000
+    bcc +
+    lda #$0FFF
++   sta.w cr_u
+    ; snesSpanCard(base + x0, x1 - x0, (face << 8) | texv | (u >> 8),
+    ;              u & 255, du)
+    lda.w cr_du
+    pha
+    lda.w cr_u
+    and #$00FF
+    pha
+    lda.w cr_face
+    xba                         ; face << 8 (the high byte was clear)
+    ora.w cr_texv
+    sta.w cr_tmp
+    lda.w cr_u
+    xba
+    and #$00FF                  ; u >> 8, at most $F
+    ora.w cr_tmp
+    pha
+    lda.w cr_x1
+    sec
+    sbc.w cr_x0
+    pha
+    lda.w cr_base
+    clc
+    adc.w cr_x0
+    pha
+    jsl snesSpanCard
+    tsa
+    clc
+    adc #10
+    tas
+_cs_done:
+    plx
+    rts
 
 .ENDS

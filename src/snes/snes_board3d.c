@@ -248,45 +248,6 @@ static s16 edge_seed(s16 step, u16 rows, u8 *latched, s16 limit)
     return (step < 0) ? (s16)(-(s16)lo) : (s16)lo;
 }
 
-/* One card's span on one screen row: the row has already produced the depth,
- * the texture step and v, and the column walk produces the two edges.  The
- * rest viewport draws off the 32x32 sheet, the motion one off the 16x16. */
-static void card_span(u16 row_base, const SnesViewport *vp, u8 face, u16 half_w,
-                      s16 l, s16 r, u16 du, u16 tex_v)
-{
-    const u8 sub = vp->sub;
-    s16 xl, x0, x1;
-    u16 u;
-
-    if (face == SNES_CARD_NONE_FACE) return;
-    xl = (s16)half_w + UNIT_TO_PX(l, sub);
-    x0 = xl;
-    x1 = (s16)half_w + UNIT_TO_PX(r, sub);
-    if (x0 < 0) x0 = 0;
-    if (x1 > (s16)vp->w) x1 = (s16)vp->w;
-    if (x1 <= x0) return;
-
-    /* A span that starts on the card's own left edge starts at texel zero, so
-     * only a card clipped by the side of the viewport pays a multiply. */
-    u = (x0 > xl) ? snesMulLo(du, (u16)(s16)(x0 - xl)) : 0;
-    /* The walker steps before it reads, so it is handed the texel BEFORE the
-     * first one; without this a card loses its left keyline column. */
-    u = (u >= 0x8000u || u < du) ? 0 : (u16)(u - du);
-    if (vp->sub) {
-        if (u > 0x1FFF) u = 0x1FFF;
-        snesSpanCard32(row_base + (u16)x0, (u16)(x1 - x0),
-                       (u16)((u16)((face & (SNES_CARD32_SPLIT - 1)) << 10)
-                             | tex_v | ((u >> 8) & 0x001F)),
-                       (u16)((u & 0xFF) | ((face >= SNES_CARD32_SPLIT) ? 0x8000u : 0)),
-                       du);
-    } else {
-        if (u > 0x0FFF) u = 0x0FFF;
-        snesSpanCard(row_base + (u16)x0, (u16)(x1 - x0),
-                     (u16)(snesCardPage(face) | tex_v | ((u >> 8) & 0x000F)),
-                     (u16)(u & 0xFF), du);
-    }
-}
-
 void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
                      const u8 *faces, u8 mirror, u16 clip_y0, u16 clip_y1)
 {
@@ -302,7 +263,7 @@ void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
     const u8 flip = (u8)((row <= SNES_ROW_COM_MONSTER) ^ mirror);
     s16 cx, cz, d_near, d_far;
     s16 step_l, step_r, step_pitch, acc_l, acc_r, acc_pitch;
-    u16 r_top, r_bot, rows_below, row_base;
+    u16 r_top, r_bot;
     s16 y, y_end;
     u8  l_off = 0, r_off = 0, p_off = 0, col, any = 0;
 
@@ -342,69 +303,39 @@ void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
     y_end = (s16)(cam->horizon + (s16)r_bot + 1);
     if (y_end > (s16)clip_y1) y_end = (s16)clip_y1;
     if (y < 0) return;
-    row_base = (u16)(vp->origin + snesMulLo((u16)y, (u16)vp->stride));
 
-    for (rows_below = r_top; y < y_end; ++y, ++rows_below, row_base += vp->stride) {
-        u16 depth, du, v, tex_v;
-        s16 l, r;
-        s8  col_i;
-
-        if (!l_off) {
-            acc_l += step_l;
-            if (acc_l >= edge_limit || acc_l <= -edge_limit) l_off = 1;
-        }
-        if (!r_off) {
-            acc_r += step_r;
-            if (acc_r >= edge_limit || acc_r <= -edge_limit) r_off = 1;
-        }
-        if (!p_off) {
-            acc_pitch += step_pitch;
-            if (acc_pitch >= edge_limit) p_off = 1;
-        }
-        if ((u16)y < clip_y0) continue;
-
-        depth = snesDepthAtRowSub(hf, (u8)rows_below, sub);
-        if ((s16)depth > d_far || (s16)depth < d_near) continue;
-
-        du = (u16)snesQMul((s16)depth, du_k);
-        /* Down: the card is exactly one unit deep and 16 (or 32) texels
-         * tall, so v is the depth into the card shifted. */
-        v = (u16)(d_far - (s16)depth);
-        if (sub) {
-            v = (u16)((u16)v << 5);
-            if (v > 0x1FFF) v = 0x1FFF;
-            tex_v = (u16)((v >> 3) & 0x03E0);
-            if (flip) tex_v ^= 0x03E0;
-        } else {
-            v = (u16)((u16)v << 4);
-            if (v > 0x0FFF) v = 0x0FFF;
-            tex_v = (u16)((v >> 4) & 0x00F0);
-            if (flip) tex_v ^= 0x00F0;
-        }
-
-        /* Outwards from the centre: right first, then left.  On the mirrored
-         * board column c sits where 4 - c does. */
-        l = acc_l;
-        r = acc_r;
-        for (col_i = SNES_COLS / 2; col_i < SNES_COLS; ++col_i) {
-            if (l >= edge_limit) break;
-            card_span(row_base, vp, faces[mirror ? 4 - col_i : col_i], half_w,
-                      l, r, du, tex_v);
-            if (l > (s16)(edge_limit - acc_pitch)) break;
-            l += acc_pitch;
-            r += acc_pitch;
-        }
-        l = (s16)(acc_l - acc_pitch);
-        r = (s16)(acc_r - acc_pitch);
-        for (col_i = SNES_COLS / 2 - 1; col_i >= 0; --col_i) {
-            if (r <= -edge_limit) break;
-            card_span(row_base, vp, faces[mirror ? 4 - col_i : col_i], half_w,
-                      l, r, du, tex_v);
-            if (r < (s16)(acc_pitch - edge_limit)) break;
-            l -= acc_pitch;
-            r -= acc_pitch;
-        }
-    }
+    /* FROM HERE IT IS ASSEMBLY (snesCardRows, snes_raster.asm): the rows,
+     * the depth, the texel step and the five spans.  816-tcc spent four
+     * times the walker's own cost stepping these through the stack. */
+    cr_y = (u16)y;
+    cr_yend = (u16)y_end;
+    cr_rows = r_top;
+    cr_base = (u16)(vp->origin + snesMulLo((u16)y, (u16)vp->stride));
+    cr_stride = vp->stride;
+    cr_acc_l = acc_l;
+    cr_acc_r = acc_r;
+    cr_acc_p = acc_pitch;
+    cr_step_l = step_l;
+    cr_step_r = step_r;
+    cr_step_p = step_pitch;
+    cr_l_off = l_off;
+    cr_r_off = r_off;
+    cr_p_off = p_off;
+    cr_limit = edge_limit;
+    cr_hf = hf;
+    cr_du_k = du_k;
+    cr_d_far = d_far;
+    cr_d_near = d_near;
+    cr_clip_y0 = clip_y0;
+    cr_sub = sub;
+    cr_halfw = half_w;
+    cr_w = vp->w;
+    cr_flip = flip ? (u16)(sub ? 0x03E0 : 0x00F0) : 0;
+    /* In COLUMN order: on the mirrored board column c sits where 4 - c
+     * does. */
+    for (col = 0; col < SNES_COLS; ++col)
+        cr_faces[col] = faces[mirror ? 4 - col : col];
+    snesCardRows();
 }
 
 

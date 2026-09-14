@@ -18,8 +18,12 @@ Two painting paths feed the same frame (`snes_duel.c`, `snes_board3d.c`):
 
 * **Resting camera** (yaw 0 or 128, level, at the ROM floor's pose): the floor
   is copied from a pre-rendered chunky image in ROM, cards are drawn over it
-  off the 32x32 sheets with a per-row perspective walk, and from then on the
-  picture is PATCHED -- the slot that changed, the cursor's old and new slots,
+  off the 32x32 sheets with a per-row perspective walk (`snesDrawCardRow`
+  does a slot row's setup -- two divides, three edge slopes -- and
+  `snesCardRows` in `snes_raster.asm` steps the pixel rows and their five
+  spans: the C that did that cost four times the walker it was calling, and
+  moving it took a full-board bake from 11236 to 8878 lines), and from then
+  on the picture is PATCHED -- the slot that changed, the cursor's old and new slots,
   the held card's cells -- and only those cells are converted.  A resting
   cell that nothing covers is DMA'd from the planar ROM floor without
   conversion at all.

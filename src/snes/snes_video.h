@@ -121,6 +121,18 @@ void snesFloorRowsSetup(s16 half, s16 dhalf, s16 denom16, s16 dstep,
                         s16 a16, s16 astep, s16 height, s16 camz,
                         u16 ubase, u16 origin, u16 sub);
 void snesFloorRowsPitch(u16 y0, u16 y1);
+/* The resting card rows (snes_raster.asm): snesDrawCardRow fills these
+ * bank-0 words with its per-row-of-slots setup and snesCardRows walks the
+ * pixel rows and the five spans.  See the cr_* block in the asm. */
+extern u16 cr_y, cr_yend, cr_rows, cr_base, cr_stride;
+extern s16 cr_acc_l, cr_acc_r, cr_acc_p, cr_step_l, cr_step_r, cr_step_p;
+extern u16 cr_l_off, cr_r_off, cr_p_off;
+extern s16 cr_limit;
+extern u16 cr_hf;
+extern s16 cr_du_k, cr_d_far, cr_d_near;
+extern u16 cr_clip_y0, cr_sub, cr_halfw, cr_w, cr_flip;
+extern u8  cr_faces[6];
+void snesCardRows(void);
 void snesBoardTextureClear(void);
 void snesBoardTextureCard(u16 centre, u16 face, u16 flip, u16 width, u16 height);
 
