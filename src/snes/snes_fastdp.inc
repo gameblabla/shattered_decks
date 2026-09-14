@@ -22,6 +22,9 @@
 ; THE WHOLE PAGE IS LEAF SCRATCH.  Nothing that lives across a call may be
 ; put here: the span walkers, the motion mapper, the sprite store and the
 ; converter driver each own it for the duration of one call and never nest.
+; (The walkers' bounded-run dispatcher also uses the CPU multiplier and
+; divider, $4202-$4206 / $4214-$4216: nothing that could be in flight
+; during a walker -- the NMI included -- touches them.)
 ; The NMI touches none of it (pvsneslib's handler sets its own D, and the
 ; drain only names channel 7's registers).
 .DEFINE FASTDP          $4300
@@ -46,6 +49,8 @@
 .DEFINE FD_BT_V         $31     ; the stamp's Q4.12 row over the face and its
 .DEFINE FD_BT_DV        $33     ; step (channel 3's: FD_V would overlap the
                                 ; walk's FD_DUINT byte)
+.DEFINE FD_BT_ENTRY     $35     ; the row run's entry - 1 (0: the walk) and
+.DEFINE FD_BT_RUN       $37     ; its length, width - 1
 .DEFINE FD_MAP_U        $11     ; the motion mapper: u, v, du, dv, then the
 .DEFINE FD_MAP_V        $13     ; 24-bit texture pointer
 .DEFINE FD_MAP_DU       $15
@@ -65,3 +70,10 @@
 .DEFINE FD_CV_RUN_SRC   $35
 .DEFINE FD_CV_RUN_DST   $37
 .DEFINE FD_CV_COL_END   $39
+
+; Channel 3 again: the bounded run's dispatcher (snes_raster.asm, RS_RUN),
+; live only inside a walker -- the converter never runs inside one, and the
+; stamp, which has its own run, does not use them.
+.DEFINE FD_RUN_CNT      $35     ; word: texels still to walk
+.DEFINE FD_RUN_N        $37     ; word: the piece being walked
+.DEFINE FD_RUN_TMP      $39     ; word: X parked across the entry lookup

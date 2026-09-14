@@ -141,6 +141,17 @@ extern u8  cr_faces[6];
 void snesCardRows(void);
 void snesBoardTextureClear(void);
 void snesBoardTextureCard(u16 centre, u16 face, u16 flip, u16 width, u16 height);
+/* THE WORLD TEXTURE'S u ORIGIN: the texel under world x = 0, the board's
+ * centre column.  The texture is 256 texels round and the board five units
+ * (160 texels) wide, so with the centre at 144 the board lies on texels
+ * 64..223 and no row of it crosses the u wrap -- every constant-v span over
+ * it is one bounded run (snes_raster.asm, RS_RUN) and every overhead row
+ * one block move.  At the old 16 the board straddled the wrap (192..255
+ * and 0..95) and every row through it was two pieces.  The move from 16
+ * is 128, a whole number of the cleared ground's 64-texel checker, so the
+ * pattern under the board is the same picture; and a row's first u, which
+ * rounds a texel or two under the slab's edge, stays well above zero. */
+#define SNES_WORLD_U_CENTRE 144
 
 void snesVideoInitDuel(void);
 void snesVideoRestartHdma(void);

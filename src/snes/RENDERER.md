@@ -78,6 +78,32 @@ profiler (`tools/snes/prof.py`, on the patched headless core) still shows
 as WRAM-bound is the converter's tile routines, whose output must be the
 ring slot itself.
 
+**A constant-v span is a BOUNDED RUN where it can be proved one**
+(`snes_raster.asm`, `RS_RUN`; the 2026-09-14 performance pass,
+`SNES_PERFORMANCE_v2.md`).  The walk keeps B for the index's high byte and
+rebuilds X with `tax` after every eight-bit add, which costs a load and a
+store of the fraction every texel.  Over a piece of the span that cannot
+cross its texture row, X holds the whole index and the FRACTION lives in B
+(`xba; clc; adc; xba; bcc +; inx; +`), and the whole texels of du are baked
+into the addresses of a 128-body unrolled block (`lda.l TEX-(127-i)*k,x`)
+entered n bodies from its end -- no loop, and k = 0..3 cost the same:
+about 150 master cycles a texel against the walk's 189 (measured on the
+world texture, k = 1..2).  A dispatcher proves each piece: a cheap
+`index.low + count*(k+1) <= 255`, else the exact end through the CPU
+multiplier; a k = 0 span that wraps is cut at the wrap through the CPU
+divider and the wrap step walked, a k >= 1 span that wraps is walked whole.
+So that the board's rows never wrap, the world texture's u origin is
+`SNES_WORLD_U_CENTRE` = 144 (`snes_video.h`): the board lies on texels
+64..223 and an overhead row is one block move.  The card stamps
+(`snesBoardTextureCard`) have a 32-body block of their own with a fixed
+entry per stamp.  The converters fold the four pair lookups in reverse
+(`T3; >>2 | T2; >>2 | T1; >>2 | T0`, six shifts a plane pair instead of
+twelve) and the half converter stores each duplicate row once.  Measured
+per sampled texel (same texels, same pictures): the fixture bake 234 -> 196
+master cycles of sampling, the motion frames 202 -> 182; full-tile
+conversion -12.6%, half -16%; the whole bake 8876 -> 8323 lines, a motion
+frame 3184 -> 3005.
+
 A pose is rendered in small steps, and a game loop takes a measured SLICE
 of them (`job_slice`: steps until three and a half fields have gone by),
 sliding the hand's sprites in place every other field for the NMI to

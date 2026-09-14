@@ -207,14 +207,6 @@ snesRasterTarget:
 .ACCU 16
     lda 12,s
     tax                         ; X = the texel index
-    lda 10,s
-    lsr a
-    tay                         ; Y = pairs, C = an odd texel first
-    txa
-    xba
-    sep #$20
-.ACCU 8
-    xba                         ; A8 = u, B = v: the loop's invariant
 .ENDM
 
 ; One texel: step the Q8.8 u, reassemble the index, read, stream out.
@@ -230,9 +222,518 @@ snesRasterTarget:
     sta.w $2180
 .ENDM
 
-; The whole walk over texture TEX.
+; ── The bounded run ──────────────────────────────────────────────────────
+;
+; THE FRACTION MOVES INTO B.  The walk above keeps B for the index's high
+; byte because `tax` rebuilds X after every eight-bit add, and so pays a
+; load and a store of the fraction on every texel.  Over a piece of the
+; span that provably stays inside its texture row, X can hold the WHOLE
+; index instead: the fraction lives in B, is stepped with `xba; adc; xba`
+; (XBA keeps C), and its carry is an `inx`:
+;
+;     xba / clc / adc.b <FD_DUFRAC / xba / bcc + / inx / + lda.l TEX-o,x / sta.w $2180
+;
+; Twenty-two CPU cycles a texel (plus one on a carry) against the walk's
+; twenty-seven, and no fraction traffic at all.
+;
+; THE WHOLE TEXELS OF du ARE IN THE ADDRESS.  The block is RS_RUN_LEN
+; copies of the body, entered 15 bytes a texel from its end; there is no
+; loop, and a longer piece is simply entered twice.  Body i reads
+; TEX - (LEN-1 - i) * k, so a step's k whole texels are the difference
+; between one body's baked offset and the next's, and X only ever moves
+; for a carry.  The entry adds n * k to X so that the last body reads the
+; last texel exactly and X leaves the block as the true index.  A k of
+; 0..3 costs the same.  (128 bodies: four k by five textures of 256 would
+; not fit the code's bank.)
+;
+; THE DISPATCHER PROVES THE PIECE.  The walk's texel sequence is u_i =
+; u_0 + i*du with u wrapping inside its 256-texel row (the floor's, or a
+; card page's).  A piece can take the block only while no step carries out
+; of the low byte:
+;
+;   * index.low + count*(k+1) <= 255 proves the whole rest of the span
+;     fits (a step moves at most k+1 texels): no arithmetic.
+;   * Otherwise the exact end (index.low << 8 | frac) + count*f + count*k*256
+;     is formed with the CPU multiplier; no carry out of sixteen bits is
+;     the same proof.
+;   * A k = 0 span that does wrap is cut: the texels left in the row are
+;     rem = $FFFF - u, the safe count rem / f through the CPU divider, at
+;     most count; the wrap step itself is walked (eight-bit add, tax) and
+;     the rest dispatched again.  A k >= 1 span that wraps is walked whole:
+;     the run saves that class a tenth a texel, which two pieces and a
+;     wrap step would spend.
+;
+; Steps of four or more whole texels, negative steps and spans shorter than
+; RS_RUN_MIN keep the walk.  The block sees the same NMI as the walk:
+; pvsneslib's handler saves the 16-bit A (so both XBA halves), X, Y, D, DB.
+;
+; Entered with A8, X16, D = FASTDP, DB = 0, WMADD at the span's first byte,
+; X = the texel BEFORE the first, FD_UFRAC/FD_DUFRAC/FD_DUINT, du < $0400,
+; and FD_RUN_CNT > 0 the texels to walk.  Leaves A8; X, Y and B clobbered.
+.DEFINE RS_RUN_MIN  24
+.DEFINE RS_RUN_BODY 15          ; bytes: one texel of the block
+.DEFINE RS_RUN_LEN  128         ; texels: the longest piece
+
+; The 256-body block over TEX with K whole texels a step baked in.
+.MACRO RS_RUN_BLOCK ARGS TEX, K
+.REPT RS_RUN_LEN INDEX i
+    xba
+    clc
+    adc.b <FD_DUFRAC
+    xba
+    bcc +
+    inx
++   lda.l TEX-(RS_RUN_LEN-1-i)*K,x
+    sta.w $2180
+.ENDR
+.ENDM
+
+; The piece (FD_RUN_N, 1..256, already off the count) is entered: the
+; stack = its entry - 1 (RTS adds one) from the instance's table, X moved
+; on by n * K, B = the fraction.  X is parked in a fast word rather than
+; on the (WRAM) stack while the table is read.
+.MACRO RS_RUN_ENTER ARGS K, ATAB
+.ACCU 16
+    lda.b <FD_RUN_N
+    asl a
+    stx.b <FD_RUN_TMP
+    tax
+    lda.l ATAB,x
+    pha
+.IF K == 0
+    ldx.b <FD_RUN_TMP
+.ELSE
+    lda.b <FD_RUN_N
+.IF K == 2
+    asl a
+.ENDIF
+.IF K == 3
+    sta.b <FD_RUN_N
+    asl a
+    clc
+    adc.b <FD_RUN_N
+.ENDIF
+    clc
+    adc.b <FD_RUN_TMP
+    tax
+.ENDIF
+    sep #$20
+.ACCU 8
+    lda.b <FD_UFRAC
+    xba                         ; B = the fraction
+    rts                         ; into the block
+.ENDM
+
+.MACRO RS_RUN ARGS TEX
+.ACCU 8
+_rn_loop\@:
+    lda.b <FD_DUINT
+    beq +
+    cmp #2
+    bcs ++
+    jmp _rn_k1\@
+++  beq +++
+    jmp _rn_k3\@
++++ jmp _rn_k2\@
+    ; k = 0.  The cheap test first: index.low + count <= 255 means no
+    ; step can carry out of the row.
++   rep #$20
+.ACCU 16
+    txa
+    and #$00FF
+    clc
+    adc.b <FD_RUN_CNT
+    cmp #$0100
+    bcc _rn_fit0\@
+    ; The exact test: (index.low << 8 | frac) + count * f overflowing
+    ; sixteen bits is the wrap.  count * f from the CPU multiplier, the
+    ; current u assembled while it works; a count of 256 (only a full
+    ; rest row) goes straight to the divider.
+    lda.b <FD_RUN_CNT
+    xba
+    and #$00FF
+    bne _rn_div0\@
+    sep #$20
+.ACCU 8
+    lda.b <FD_RUN_CNT
+    sta.w $4202
+    lda.b <FD_DUFRAC
+    sta.w $4203                 ; eight cycles to the product
+    rep #$20
+.ACCU 16
+    txa
+    xba
+    and #$FF00
+    sep #$20
+.ACCU 8
+    ora.b <FD_UFRAC
+    rep #$20
+.ACCU 16
+    clc
+    adc.w $4216
+    bcs _rn_div0\@
+_rn_fit0\@:
+    lda.b <FD_RUN_CNT           ; the rest of the span, a block at a time
+    cmp #RS_RUN_LEN+1
+    bcc +
+    lda #RS_RUN_LEN
++   sta.b <FD_RUN_N
+    bra _rn_go0\@
+_rn_div0\@:
+    ; It wraps: the texels left in the row are rem = $FFFF - u, and the
+    ; safe count rem / f from the divider, at most count.  Zero means the
+    ; next step is the wrap itself.
+    txa
+    xba
+    and #$FF00
+    sep #$20
+.ACCU 8
+    ora.b <FD_UFRAC
+    rep #$20
+.ACCU 16
+    eor #$FFFF
+    sta.w $4204
+    sep #$20
+.ACCU 8
+    lda.b <FD_DUFRAC
+    sta.w $4206                 ; sixteen cycles to the quotient
+    rep #$20
+.ACCU 16
+    lda.b <FD_RUN_CNT
+    nop
+    nop
+    nop
+    nop
+    cmp.w $4214                 ; (3 + 4 + 8 + 3 cycles to the read)
+    bcc +                       ; the count is the smaller
+    lda.w $4214
++   cmp #RS_RUN_LEN+1
+    bcc +
+    lda #RS_RUN_LEN             ; ...and a block at a time
++   sta.b <FD_RUN_N
+    bne _rn_go0\@
+    ; A piece of zero: the next step wraps the row.  Fall into _rn_one.
+
+_rn_one\@:
+    ; One texel the walk's way: the eight-bit u wraps inside its row.
+    sep #$20
+.ACCU 8
+    lda.b <FD_UFRAC
+    clc
+    adc.b <FD_DUFRAC
+    sta.b <FD_UFRAC
+    rep #$20
+.ACCU 16
+    txa
+    sep #$20
+.ACCU 8
+    adc.b <FD_DUINT             ; A8 = index.low stepped, B = its high byte
+    tax
+    lda.l TEX,x
+    sta.w $2180
+    rep #$20
+.ACCU 16
+    dec.b <FD_RUN_CNT
+    beq _rn_exit\@
+    sep #$20
+.ACCU 8
+    jmp _rn_loop\@
+
+_rn_piece\@:
+.ACCU 8
+    xba
+    sta.b <FD_UFRAC             ; the fraction back out of B
+    rep #$20
+.ACCU 16
+    lda.b <FD_RUN_CNT
+    beq _rn_exit\@
+    sep #$20
+.ACCU 8
+    jmp _rn_loop\@              ; the next block, or the wrap
+_rn_exit\@:
+    sep #$20
+.ACCU 8
+    jmp _rn_done\@
+
+_rn_go0\@:
+.ACCU 16
+    lda.b <FD_RUN_CNT
+    sec
+    sbc.b <FD_RUN_N
+    sta.b <FD_RUN_CNT
+    RS_RUN_ENTER 0, _rn_tab0\@
+_rn_b0\@:
+    RS_RUN_BLOCK TEX, 0
+    jmp _rn_piece\@
+
+_rn_k1\@:
+    ; k = 1: a step moves 1 or 2 texels.  The same two tests; a span
+    ; that wraps is WALKED WHOLE instead of cut.
+    rep #$20
+.ACCU 16
+    txa
+    and #$00FF
+    clc
+    adc.b <FD_RUN_CNT
+    adc.b <FD_RUN_CNT
+    cmp #$0100
+    bcc _rn_fit1\@
+    lda.b <FD_RUN_CNT
+    xba
+    and #$00FF
+    bne _rn_w1\@
+    sep #$20
+.ACCU 8
+    lda.b <FD_RUN_CNT
+    sta.w $4202
+    lda.b <FD_DUFRAC
+    sta.w $4203
+    rep #$20
+.ACCU 16
+    txa
+    xba
+    and #$FF00
+    sep #$20
+.ACCU 8
+    ora.b <FD_UFRAC
+    rep #$20
+.ACCU 16
+    clc
+    adc.w $4216                 ; + count * f
+    bcs _rn_w1\@
+    sta.b <FD_RUN_TMP
+    lda.b <FD_RUN_CNT
+    xba                         ; count << 8 (count is under 256 here)
+    clc
+    adc.b <FD_RUN_TMP           ; + count whole texels
+    bcc _rn_fit1\@
+_rn_w1\@:
+    jmp _rn_walk\@
+_rn_fit1\@:
+    lda.b <FD_RUN_CNT
+    cmp #RS_RUN_LEN+1
+    bcc +
+    lda #RS_RUN_LEN
++   sta.b <FD_RUN_N
+    lda.b <FD_RUN_CNT
+    sec
+    sbc.b <FD_RUN_N
+    sta.b <FD_RUN_CNT
+    RS_RUN_ENTER 1, _rn_tab1\@
+_rn_b1\@:
+    RS_RUN_BLOCK TEX, 1
+    jmp _rn_piece\@
+
+_rn_k2\@:
+    ; k = 2: a step moves 2 or 3 texels.  The same two tests; a span
+    ; that wraps is WALKED WHOLE instead of cut.
+    rep #$20
+.ACCU 16
+    txa
+    and #$00FF
+    clc
+    adc.b <FD_RUN_CNT
+    adc.b <FD_RUN_CNT
+    adc.b <FD_RUN_CNT
+    cmp #$0100
+    bcc _rn_fit2\@
+    lda.b <FD_RUN_CNT
+    xba
+    and #$00FF
+    bne _rn_w2\@
+    sep #$20
+.ACCU 8
+    lda.b <FD_RUN_CNT
+    sta.w $4202
+    lda.b <FD_DUFRAC
+    sta.w $4203
+    rep #$20
+.ACCU 16
+    txa
+    xba
+    and #$FF00
+    sep #$20
+.ACCU 8
+    ora.b <FD_UFRAC
+    rep #$20
+.ACCU 16
+    clc
+    adc.w $4216                 ; + count * f
+    bcs _rn_w2\@
+    sta.b <FD_RUN_TMP
+    lda.b <FD_RUN_CNT
+    xba                         ; count << 8 (count is under 256 here)
+    clc
+    adc.b <FD_RUN_TMP           ; + count whole texels
+    bcs _rn_w2\@
+    sta.b <FD_RUN_TMP
+    lda.b <FD_RUN_CNT
+    xba                         ; count << 8 (count is under 256 here)
+    clc
+    adc.b <FD_RUN_TMP           ; + count whole texels
+    bcc _rn_fit2\@
+_rn_w2\@:
+    jmp _rn_walk\@
+_rn_fit2\@:
+    lda.b <FD_RUN_CNT
+    cmp #RS_RUN_LEN+1
+    bcc +
+    lda #RS_RUN_LEN
++   sta.b <FD_RUN_N
+    lda.b <FD_RUN_CNT
+    sec
+    sbc.b <FD_RUN_N
+    sta.b <FD_RUN_CNT
+    RS_RUN_ENTER 2, _rn_tab2\@
+_rn_b2\@:
+    RS_RUN_BLOCK TEX, 2
+    jmp _rn_piece\@
+
+_rn_k3\@:
+    ; k = 3: a step moves 3 or 4 texels.  The same two tests; a span
+    ; that wraps is WALKED WHOLE instead of cut.
+    rep #$20
+.ACCU 16
+    txa
+    and #$00FF
+    clc
+    adc.b <FD_RUN_CNT
+    adc.b <FD_RUN_CNT
+    adc.b <FD_RUN_CNT
+    adc.b <FD_RUN_CNT
+    cmp #$0100
+    bcc _rn_fit3\@
+    lda.b <FD_RUN_CNT
+    xba
+    and #$00FF
+    bne _rn_w3\@
+    sep #$20
+.ACCU 8
+    lda.b <FD_RUN_CNT
+    sta.w $4202
+    lda.b <FD_DUFRAC
+    sta.w $4203
+    rep #$20
+.ACCU 16
+    txa
+    xba
+    and #$FF00
+    sep #$20
+.ACCU 8
+    ora.b <FD_UFRAC
+    rep #$20
+.ACCU 16
+    clc
+    adc.w $4216                 ; + count * f
+    bcs _rn_w3\@
+    sta.b <FD_RUN_TMP
+    lda.b <FD_RUN_CNT
+    xba                         ; count << 8 (count is under 256 here)
+    clc
+    adc.b <FD_RUN_TMP           ; + count whole texels
+    bcs _rn_w3\@
+    sta.b <FD_RUN_TMP
+    lda.b <FD_RUN_CNT
+    xba                         ; count << 8 (count is under 256 here)
+    clc
+    adc.b <FD_RUN_TMP           ; + count whole texels
+    bcs _rn_w3\@
+    sta.b <FD_RUN_TMP
+    lda.b <FD_RUN_CNT
+    xba                         ; count << 8 (count is under 256 here)
+    clc
+    adc.b <FD_RUN_TMP           ; + count whole texels
+    bcc _rn_fit3\@
+_rn_w3\@:
+    jmp _rn_walk\@
+_rn_fit3\@:
+    lda.b <FD_RUN_CNT
+    cmp #RS_RUN_LEN+1
+    bcc +
+    lda #RS_RUN_LEN
++   sta.b <FD_RUN_N
+    lda.b <FD_RUN_CNT
+    sec
+    sbc.b <FD_RUN_N
+    sta.b <FD_RUN_CNT
+    RS_RUN_ENTER 3, _rn_tab3\@
+_rn_b3\@:
+    RS_RUN_BLOCK TEX, 3
+    jmp _rn_piece\@
+
+_rn_walk\@:
+    ; The rest of the span the walk's way (RS_WALK's loop), from the
+    ; dispatcher's state.
+.ACCU 16
+    lda.b <FD_RUN_CNT
+    lsr a
+    tay                         ; Y = pairs, C = an odd texel first
+    txa
+    xba
+    sep #$20
+.ACCU 8
+    xba                         ; A8 = u, B = v
+    bcc _rn_wpair\@
+    RS_WALK_TEXEL TEX
+    cpy #0
+    beq _rn_wdone\@
+_rn_wpair\@:
+    RS_WALK_TEXEL TEX
+    RS_WALK_TEXEL TEX
+    dey
+    bne _rn_wpair\@
+_rn_wdone\@:
+    jmp _rn_done\@
+; This instance's entry addresses by piece length n: the last n bodies of
+; each block, minus one for the RTS.
+_rn_tab0\@:
+.REPT RS_RUN_LEN+1 INDEX n
+    .dw _rn_b0\@ + (RS_RUN_LEN - n) * RS_RUN_BODY - 1
+.ENDR
+_rn_tab1\@:
+.REPT RS_RUN_LEN+1 INDEX n
+    .dw _rn_b1\@ + (RS_RUN_LEN - n) * RS_RUN_BODY - 1
+.ENDR
+_rn_tab2\@:
+.REPT RS_RUN_LEN+1 INDEX n
+    .dw _rn_b2\@ + (RS_RUN_LEN - n) * RS_RUN_BODY - 1
+.ENDR
+_rn_tab3\@:
+.REPT RS_RUN_LEN+1 INDEX n
+    .dw _rn_b3\@ + (RS_RUN_LEN - n) * RS_RUN_BODY - 1
+.ENDR
+_rn_done\@:
+.ACCU 8
+.ENDM
+
+; The whole walk over texture TEX: the bounded run where it pays, the
+; two-texel walk otherwise.
 .MACRO RS_WALK ARGS TEX
     RS_WALK_SETUP
+    lda 16,s                    ; du: up to three whole texels, not negative
+    cmp #$0400
+    bcs _rw_far\@
+    lda 10,s
+    cmp #RS_RUN_MIN
+    bcs _rw_run\@
+_rw_far\@:
+    jmp _rw_generic\@
+_rw_run\@:
+    sta.b <FD_RUN_CNT
+    sep #$20
+.ACCU 8
+    RS_RUN TEX
+    jmp _rw_done\@
+_rw_generic\@:
+.ACCU 16
+    lda 10,s
+    lsr a
+    tay                         ; Y = pairs, C = an odd texel first
+    txa
+    xba
+    sep #$20
+.ACCU 8
+    xba                         ; A8 = u, B = v: the loop's invariant
     bcc _rw_pair\@
     RS_WALK_TEXEL TEX
     cpy #0
@@ -283,8 +784,9 @@ snesSpanFloor:
     php
     rep #$30
     lda 7,s
-    beq _sf_out                 ; empty spans are common at the board's edges
-    phb
+    bne +
+    jmp _sf_out                 ; empty spans are common at the board's edges
++   phb
     phd
     RS_WALK snes_floor_tex
     pld
@@ -433,8 +935,9 @@ snesSpanCard:
     php
     rep #$30
     lda 7,s
-    beq _sc_out
-    phb
+    bne +
+    jmp _sc_out
++   phb
     phd
     RS_WALK snes_card_tex
     pld
@@ -453,8 +956,9 @@ snesSpanCard32:
 +   phb
     phd
     lda 14,s                    ; bit 15: which sheet
-    bmi _s3_hi
-    RS_WALK snes_card_tex32
+    bpl +
+    jmp _s3_hi
++   RS_WALK snes_card_tex32
     jmp _s3_done
 _s3_hi:
     RS_WALK snes_card_tex32b
@@ -1145,13 +1649,52 @@ snesBoardTextureCard:
     lda #0
     sta.b <FD_BT_V
     lda 12,s                    ; flip
-    bne _bt_row
+    bne +
     lda #4095
     sta.b <FD_BT_V
     lda.b <FD_BT_DV
     eor #$FFFF
     inc a
     sta.b <FD_BT_DV
++   sep #$20
+.ACCU 8
+    lda.b <FD_DU+1
+    sta.b <FD_DUINT
+    lda.b <FD_DU
+    sta.b <FD_DUFRAC
+    rep #$20
+.ACCU 16
+    ; A ROW OF THE STAMP IS ONE BOUNDED RUN, entered the same way every
+    ; row.  u_i = i*du for i < width and (width-1)*floor(8192/width) is
+    ; under 8192, so u never reaches texel 32 and the low byte never wraps:
+    ; no dispatcher.  The run is a 32-body block of the RS_RUN kind with
+    ; k = 1 baked in, entered (width-1) bodies from its end; the entry is
+    ; fixed for the stamp.  Texel 0 itself is emitted straight from the
+    ; row start and the run steps the other width-1 from u = 0.  An entry
+    ; of zero means the walk instead: two whole texels a step (a footprint
+    ; under seventeen), or a footprint of one.
+    stz.b <FD_BT_ENTRY
+    lda.b <FD_DU
+    cmp #$0200
+    bcs _bt_row
+    lda.b <FD_BT_WIDTH
+    dec a
+    beq _bt_row
+    sta.b <FD_BT_RUN            ; width - 1: the run's length, X's advance
+    asl a
+    asl a
+    asl a
+    asl a                       ; * 16
+    sec
+    sbc.b <FD_BT_RUN            ; * 15: bytes of block before the entry
+    eor #$FFFF
+    sec
+    adc #_bt_blk_lo+32*RS_RUN_BODY-1
+    ldy.b <FD_BT_SHEET
+    beq +
+    clc
+    adc #_bt_blk_hi-_bt_blk_lo
++   sta.b <FD_BT_ENTRY
 _bt_row:
     ; v is Q4.12 over the face: texel row = v >> 7, and a row is 32 bytes.
     lda.b <FD_BT_V
@@ -1163,6 +1706,56 @@ _bt_row:
     lda.b <FD_BT_DST
     sta.w $2181                 ; the row's first world texel
     ldy.b <FD_BT_WIDTH
+    lda.b <FD_BT_ENTRY
+    bne +
+    jmp _bt_walk
++   pha
+    sep #$20
+.ACCU 8
+    lda.b <FD_BT_SHEET
+    bne +
+    lda.l snes_card_tex32,x     ; texel 0 as it is
+    sta.w $2180
+    bra ++
++   lda.l snes_card_tex32b,x
+    sta.w $2180
+++  rep #$20
+.ACCU 16
+    txa
+    clc
+    adc.b <FD_BT_RUN            ; X on by the run's whole texels
+    tax
+    sep #$20
+.ACCU 8
+    lda #0
+    xba                         ; B = the fraction, 0
+    rts                         ; into the sheet's block
+_bt_blk_lo:
+.REPT 32 INDEX i
+    xba
+    clc
+    adc.b <FD_DUFRAC
+    xba
+    bcc +
+    inx
++   lda.l snes_card_tex32-(31-i),x
+    sta.w $2180
+.ENDR
+    jmp _bt_row_done
+_bt_blk_hi:
+.REPT 32 INDEX i
+    xba
+    clc
+    adc.b <FD_DUFRAC
+    xba
+    bcc +
+    inx
++   lda.l snes_card_tex32b-(31-i),x
+    sta.w $2180
+.ENDR
+    jmp _bt_row_done
+_bt_walk:
+.ACCU 16
     ; The walker steps before it reads: start one du before texel 0.  The
     ; low byte alone is stepped, so the borrow stays out of the page.
     txa
@@ -1173,12 +1766,8 @@ _bt_row:
     sta.b <FD_QTMP
     lda #0
     sec
-    sbc.b <FD_DU
+    sbc.b <FD_DUFRAC
     sta.b <FD_UFRAC
-    lda.b <FD_DU+1
-    sta.b <FD_DUINT
-    lda.b <FD_DU
-    sta.b <FD_DUFRAC
     lda.b <FD_QTMP
     sbc.b <FD_DUINT             ; C from the fraction's borrow
     tax
@@ -1206,8 +1795,9 @@ _bt_row_done:
     and #$7FFF
     sta.b <FD_BT_DST
     dec.b <FD_BT_HEIGHT
-    bne _bt_row
-    pld
+    beq +
+    jmp _bt_row
++   pld
     plb
     plp
     rtl

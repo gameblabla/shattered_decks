@@ -613,7 +613,7 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
                                (s16)((s16)(sp + snesQMul(sy1, cp)) << 4), denom_step,
                                (s16)((s16)(cp - snesQMul(sy1, sp)) << 4), a_step,
                                cam->height, cam->z,
-                               (u16)((cam->x << 5) + 4096), vp->origin, sub);
+                               (u16)((cam->x << 5) + (SNES_WORLD_U_CENTRE << 8)), vp->origin, sub);
             if (y1 > y0) {
                 floor_pending = 1;
                 floor_pending_y0 = (u16)y0;
@@ -696,12 +696,12 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
             if (!cam->yaw) {
                 du = dtex;
                 dv = 0;
-                tu = (u16)((cam->x << 5) + 4096);
+                tu = (u16)((cam->x << 5) + (SNES_WORLD_U_CENTRE << 8));
                 tv = (u16)(z << 5);
             } else {
                 du = snesQMul(dtex, cy);
                 dv = (s16)(-snesQMul(dtex, sn));
-                tu = (u16)((s16)((snesQMul(cam->x, cy) + snesQMul(z, sn)) << 5) + 4096);
+                tu = (u16)((s16)((snesQMul(cam->x, cy) + snesQMul(z, sn)) << 5) + (SNES_WORLD_U_CENTRE << 8));
                 tv = (u16)((s16)(snesQMul(z, cy) - snesQMul(cam->x, sn)) << 5);
             }
             /* From the middle of the row to the first pixel's CENTRE: the

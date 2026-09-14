@@ -981,7 +981,7 @@ static void texture_stamp(u8 slot)
     const u8 r = (u8)(slot / SNES_COLS), c = (u8)(slot % SNES_COLS);
     const u8 face = texture_faces[slot];
     const u16 centre = (u16)(((48 - (s16)r * 32) & 127) * 256 |
-                             ((16 + ((s16)c - 2) * 32) & 255));
+                             ((SNES_WORLD_U_CENTRE + ((s16)c - 2) * 32) & 255));
     if (face == SNES_CARD_NONE_FACE) return;
     if (face & FACE_DEF)
         texture_stamp_turned(centre, FACE_ID(face), r < 2);

@@ -46,14 +46,27 @@ def frame_tile(phase):
     word has t0 in column 0 and t1 in column 1 of both bytes, so pair p is
     that word shifted right 2p -- the low six bits of each byte are zero,
     so nothing crosses between the planes.  Four lookups a pair instead of
-    four a texel: about 34 cycles a texel."""
+    four a texel: about 34 cycles a texel.
+
+    THE PAIRS ARE FOLDED IN REVERSE.  The row word is
+        T0 | (T1 >> 2) | (T2 >> 4) | (T3 >> 6)
+    and shifting each lookup into place costs 0 + 2 + 4 + 6 = 12 `lsr` a
+    plane pair.  Built from pair 3 down as
+        acc = T3; acc = (acc >> 2) | T2; acc = (acc >> 2) | T1; acc = (acc >> 2) | T0
+    it is the same word (each byte's low six bits are zero, so a shifted
+    partial never reaches the other byte) for 2 + 2 + 2 = 6.  The accumulator
+    stays in the ring word; a later pair is `lda dp; lsr; lsr; ora long,x;
+    sta dp`, the old `lda long,x; lsr...; ora dp; sta dp` with the shifts
+    halved.  Pair 3's half-table branch must be taken BEFORE the shifts, which
+    clobber C, so both arms shift."""
     base = phase * 64
     o = ["snesConvFrameTile%d:" % phase]
     for r in range(8):
         off = [base + k * 16 + r * 2 for k in range(4)]
-        for pair in range(4):
+        for pair in (3, 2, 1, 0):
             src = "snes_frame_fb + %d" % (r * FRAME_STRIDE + pair * 2)
             lab = "_cf%d_r%d_p%d" % (phase, r, pair)
+            first = pair == 3
             o.append("    lda.w %s,y" % src)
             o.append("    asl a")
             o.append("    tax")
@@ -61,20 +74,32 @@ def frame_tile(phase):
             # with blue >= 2 has its top bit set, so the halves are about
             # equally likely and the branch costs the same either way.
             o.append("    bcc %s_h0" % lab)
-            o.append("    lda.l snes_pairlut_p3_h1,x")
+            if first:
+                o.append("    lda.l snes_pairlut_p3_h1,x")
+            else:
+                o.append("    lda.b $%02X" % off[3])
+                o.append("    lsr a")
+                o.append("    lsr a")
+                o.append("    ora.l snes_pairlut_p3_h1,x")
             o.append("    bra %s_j" % lab)
             o.append("%s_h0:" % lab)
-            o.append("    lda.l snes_pairlut_p3_h0,x")
+            if first:
+                o.append("    lda.l snes_pairlut_p3_h0,x")
+            else:
+                o.append("    lda.b $%02X" % off[3])
+                o.append("    lsr a")
+                o.append("    lsr a")
+                o.append("    ora.l snes_pairlut_p3_h0,x")
             o.append("%s_j:" % lab)
-            o += ["    lsr a"] * (2 * pair)
-            if pair:
-                o.append("    ora.b $%02X" % off[3])
             o.append("    sta.b $%02X" % off[3])
             for k in range(3):
-                o.append("    lda.l snes_pairlut_p%d_h0,x" % k)
-                o += ["    lsr a"] * (2 * pair)
-                if pair:
-                    o.append("    ora.b $%02X" % off[k])
+                if first:
+                    o.append("    lda.l snes_pairlut_p%d_h0,x" % k)
+                else:
+                    o.append("    lda.b $%02X" % off[k])
+                    o.append("    lsr a")
+                    o.append("    lsr a")
+                    o.append("    ora.l snes_pairlut_p%d_h0,x" % k)
                 o.append("    sta.b $%02X" % off[k])
     o.append("    rts")
     return o
@@ -118,7 +143,13 @@ def half_tile(phase):
                     o += ["    lsr a"] * 4
                     o.append("    ora.b $%02X" % off[k])
                 o.append("    sta.b $%02X" % off[k])
-                o.append("    sta.b $%02X" % (off[k] + 2))
+                # The duplicate row is written ONCE, from the finished
+                # word: only the first row is read back to fold the second
+                # pair in, so the first pair's copy was a wasted store
+                # (four a row, sixteen a tile).  Safe because the slot is
+                # published to the NMI only after the whole tile is built.
+                if pos:
+                    o.append("    sta.b $%02X" % (off[k] + 2))
     o.append("    rts")
     return o
 
