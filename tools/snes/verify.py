@@ -32,7 +32,10 @@ import snes_dc
 import gen_snes_planar as planar
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ROM = os.path.join(ROOT, "build", "snes", "waifusnes.sfc")
+# THE DEBUG ROM (make -f Makefile.snes DEBUG=1): the retail one answers none
+# of the pad switches the runs below are driven by.
+ROM = os.path.join(ROOT, "build", "snes", "waifusnes_debug.sfc")
+RETAIL_ROM = os.path.join(ROOT, "build", "snes", "waifusnes.sfc")
 MEDNAFEN = os.path.join(
     ROOT, "SNES", "snes-mednafen-1.32.1-accurate-headless-linux-x86_64")
 OUT = os.path.join(ROOT, "build", "snes", "verify")
@@ -50,6 +53,7 @@ STAMP_FIELDS = ["magic", "scene", "frames", "render_lines", "frame_gen",
 UI = ["HAND", "PLACE", "EQUIP_TARGET", "ATTACKER", "DEFENDER", "COM",
       "RESULT", "FUSE_TARGET", "CHECK", "BATTLE_ART"]
 STAMP_MAGIC = 0x5744
+BATTLE_VERDICT_Y = 94           # snes_battle.c VERDICT_Y
 
 # SNES serial pad bits, the order the headless emulator's script rows use.
 PAD = {"B": 0x8000, "Y": 0x4000, "SELECT": 0x2000, "START": 0x1000,
@@ -71,7 +75,7 @@ class Failure(Exception):
 
 def check_rom_fresh():
     if not os.path.exists(ROM):
-        raise Failure("no ROM at %s -- run: make -f Makefile.snes" % ROM)
+        raise Failure("no ROM at %s -- run: make -f Makefile.snes DEBUG=1" % ROM)
     rom_time = os.path.getmtime(ROM)
     newer = []
     for base in ("src/snes", "src/msx2/msx2_duel.c", "src/game", "Makefile.snes",
@@ -94,12 +98,12 @@ def check_rom_fresh():
                       "before capturing" % (len(newer), ", ".join(sorted(newer)[:3])))
 
 
-def rom_header():
+def rom_header(rom=None):
     """Decode the cartridge shape out of the ROM itself.
 
     The emulator's own `header` command mislabels $31 as SlowROM, so the map-mode
     byte is decoded here instead of trusted from its output."""
-    with open(ROM, "rb") as fh:
+    with open(rom or ROM, "rb") as fh:
         data = fh.read()
     mode = data[0xFFD5]
     return {
@@ -144,9 +148,11 @@ def run(name, script, frames, capture=None):
         # already been fixed went on being reproduced for an hour.
         shutil.rmtree(frame_dir, ignore_errors=True)
         os.makedirs(frame_dir, exist_ok=True)
-        cov = os.path.join(OUT, name + ".cov")
-        argv += [cov, "0", os.path.join(OUT, name + ".ppu"),
-                 os.path.join(OUT, name + ".ppu.txt"), frame_dir,
+        # NO COVERAGE AND NO VRAM TRACE WITH A CAPTURE.  Nothing here reads
+        # either, and coverage stops the emulator at a hundred million
+        # instructions -- about 8,500 fields -- which silently cut every
+        # longer captured run short at whatever turn that was.
+        argv += ["-", "0", os.path.join(OUT, name + ".ppu"), "-", frame_dir,
                  str(capture[0]), str(capture[1]), str(capture[2])]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, cwd=OUT,
@@ -264,8 +270,8 @@ def texel_size(pixels, w, y, expected):
 
 # ── Checks ───────────────────────────────────────────────────────────────────
 
-def check_cartridge():
-    h = rom_header()
+def check_cartridge(rom=None):
+    h = rom_header(rom)
     if h["size"] != 4 * 1024 * 1024:
         raise Failure("ROM is %d bytes, expected 4 MB" % h["size"])
     if not (h["hirom"] and h["fastrom"]):
@@ -278,6 +284,31 @@ def check_cartridge():
         raise Failure("cartridge type is $%02X, expected $02 (ROM+RAM+battery)"
                       % h["cartridge_type"])
     return "4 MB HiROM/FastROM, 8 KB SRAM, no enhancement chip"
+
+
+def check_retail_rom():
+    """The retail ROM has the same shape and none of the harness's switches.
+
+    Every other check here drives the DEBUG ROM.  This one runs the retail
+    build once, pressing the title's deck shortcut (Y): the debug ROM leaves
+    for the editor on it, the retail one must stay on the title."""
+    global ROM
+    if not os.path.exists(RETAIL_ROM):
+        raise Failure("no retail ROM at %s -- run: make -f Makefile.snes" % RETAIL_ROM)
+    if os.path.getmtime(RETAIL_ROM) < os.path.getmtime(ROM) - 600:
+        raise Failure("the retail ROM is much older than the debug one -- rebuild both")
+    shape = check_cartridge(RETAIL_ROM)
+    debug_rom = ROM
+    ROM = RETAIL_ROM
+    try:
+        _, wram = run("retail_title_y", [(100, 160, PAD["Y"])], 600)
+    finally:
+        ROM = debug_rom
+    stamp = read_stamp(wram)
+    if stamp["scene"] != SCENES.index("TITLE"):
+        raise Failure("the retail ROM answered the title's Y shortcut: scene %s"
+                      % SCENES[stamp["scene"]])
+    return "retail: %s; the title ignores the harness's Y" % shape
 
 
 def check_title():
@@ -519,38 +550,84 @@ def check_story_scene():
         raise Failure("the story sky has a black line at x=2: %s" % sky)
     if len(set(sky)) < 4:
         raise Failure("the story sky is flat, not a ramp: %s" % sky)
-    ground = [px[(y * w + x) * 3:(y * w + x + 1) * 3]
+    # The ground is read off the FIRST capture: once both speakers are in
+    # they stand across the whole width of it (Serena is 160 wide).
+    frames = sorted(os.listdir(os.path.join(OUT, name + ".frames")))
+    if len(frames) < 4:
+        raise Failure("captured only %d story frames" % len(frames))
+    first = read_ppm(os.path.join(OUT, name + ".frames", frames[0]))[2]
+    ground = [first[(y * w + x) * 3:(y * w + x + 1) * 3]
               for y in range(120, 144, 4) for x in range(0, w, 32)]
     if sum(1 for c in ground if c != b"\x00\x00\x00") < len(ground) * 0.9:
         raise Failure("the ground rows 120..143 are not painted")
-    # The two speakers are BG1 tile blocks: Serena's 16x17 tiles on the left,
-    # the opponent's on the right, both fully in by the time this ends.
+    # The two speakers are BG1 tile blocks: Serena's 20x17 tiles on the left,
+    # the opponent's 16x17 on the right, both fully in by the time this ends;
+    # the four columns they share hold the composited tiles (Serena in
+    # front), which follow the blank tile after both blocks.
     with open(os.path.join(OUT, name + ".ppu.vram"), "rb") as fh:
         vram = fh.read()
     def cell(col, row):
         i = (0x7000 + row * 32 + col) * 2
         return vram[i] | (vram[i + 1] << 8)
+    L_COLS, R_COLS, OVER = 20, 16, 4
+    L_TILES, R_TILES = L_COLS * 17, R_COLS * 17
+    OVER_TILE = L_TILES + R_TILES + 1
     for row in range(17):
-        for col in range(16):
-            want_l = row * 16 + col
-            want_r = 272 + row * 16 + col
-            if cell(col, 1 + row) != want_l:
-                raise Failure("Serena's tile at (%d, %d) is %d, expected %d" %
-                              (col, 1 + row, cell(col, 1 + row), want_l))
-            if cell(16 + col, 1 + row) != want_r:
-                raise Failure("the opponent's tile at (%d, %d) is %d, expected %d" %
-                              (16 + col, 1 + row, cell(16 + col, 1 + row), want_r))
+        for col in range(32):
+            if col < R_COLS:
+                want = row * L_COLS + col
+                who = "Serena's"
+            elif col < L_COLS:
+                want = OVER_TILE + row * OVER + (col - R_COLS)
+                who = "the shared"
+            else:
+                want = L_TILES + row * R_COLS + (col - R_COLS)
+                who = "the opponent's"
+            if cell(col, 1 + row) != want:
+                raise Failure("%s tile at (%d, %d) is %d, expected %d" %
+                              (who, col, 1 + row, cell(col, 1 + row), want))
     with open(os.path.join(ROOT, "src/snes/assets/snes_portrait_0.bin"), "rb") as fh:
         serena = fh.read()
+    if len(serena) != L_TILES * 64:
+        raise Failure("Serena's block is %d bytes, not 20x17 tiles" % len(serena))
     if vram[:len(serena)] != serena:
         raise Failure("Serena's BG1 tiles in VRAM differ from the generated block")
-    # The entrance is a slide: the early captures show fewer columns.
-    frames = sorted(os.listdir(os.path.join(OUT, name + ".frames")))
-    if len(frames) < 4:
-        raise Failure("captured only %d story frames" % len(frames))
+    with open(os.path.join(ROOT, "src/snes/assets/snes_portrait_1_over.bin"), "rb") as fh:
+        over = fh.read()
+    if vram[OVER_TILE * 64:OVER_TILE * 64 + len(over)] != over:
+        raise Failure("the shared columns' tiles in VRAM differ from the generated block")
+    # The composite is Serena where she has a pixel and the opponent where
+    # she has none: her hair's right edge is what the block exists for.
+    with open(os.path.join(ROOT, "src/snes/assets/snes_portrait_1.bin"), "rb") as fh:
+        opp = fh.read()
+    from_serena = from_opp = 0
+    for row in range(17):
+        for k in range(OVER):
+            o = (row * OVER + k) * 64
+            s_tile = serena[(row * L_COLS + R_COLS + k) * 64:(row * L_COLS + R_COLS + k + 1) * 64]
+            o_tile = opp[(row * R_COLS + k) * 64:(row * R_COLS + k + 1) * 64]
+            for sv, ov, cv in zip(untile8(s_tile, 0), untile8(o_tile, 0),
+                                  untile8(over, o)):
+                if sv and cv == sv: from_serena += 1
+                elif not sv and cv == ov: from_opp += 1
+                else: raise Failure("a shared tile pixel is neither speaker's")
+    if not from_serena or not from_opp:
+        raise Failure("the shared columns show only one speaker (%d/%d)" %
+                      (from_serena, from_opp))
+    # The entrance is a slide: the early captures show fewer columns, and
+    # THE WORDS WAIT FOR IT -- no dialogue text is typed while the speakers
+    # are still walking in (rows 21..23 of the window stay blank).
     early = read_ppm(os.path.join(OUT, name + ".frames", frames[1]))[2]
     if early == px:
         raise Failure("the speakers did not move in during the entrance")
+    for f in frames[:2]:
+        fpx = read_ppm(os.path.join(OUT, name + ".frames", f))[2]
+        typed = sum(1 for y in range(170, 194) for x in range(16, 240)
+                    if fpx[(y * w + x) * 3:(y * w + x + 1) * 3] not in
+                    (b"\x00\x00\x00", fpx[(y * w + 8) * 3:(y * w + 9) * 3]))
+        if typed > 40:
+            raise Failure("dialogue text (%d lit pixels) was typed before the "
+                          "speakers had walked in (%s)" % (typed, f))
     return "STORY_TALK: sky ramp, ground tiles, two 112-colour BG1 speakers, typewriter"
 
 
@@ -1778,8 +1855,10 @@ def check_com_turn_presentation():
     the lower edge shows the opponent's hand as CARD BACKS (never a face), the
     red cursor visits more than one of them before settling, and the chosen
     back LEAVES the row and is seen on its way to the board while the others
-    stay.  Read from a capture of every other field, then from the stamp of a
-    run that stops in the middle of the turn."""
+    stay.  THE CARD FLIES FACE UP (COM_FLY_SLOT in snes_duel.c) and the name
+    row names it as it goes, so the flight is matched against the face the
+    HUD announces.  Read from a capture of every other field, then from the
+    stamp of a run that stops in the middle of the turn."""
     name = "com_turn"
     start, end, step = DUEL_READY + 100, DUEL_READY + 1500, 2
     run(name, random_battle_script() + [press("START", DUEL_READY)],
@@ -1789,12 +1868,14 @@ def check_com_turn_presentation():
         raise Failure("captured only %d fields of the COM turn" % len(frames))
     want = card_sprite_pixels(CARD_BACK, hi=True)
     group = spr_asset(SPR_GROUP, "group")
+    names = dict((card_name(f), f) for f in range(CARD_BACK))
     seen_backs, cursor_slots, departures, flights = [], set(), 0, 0
+    flown_name = ""
     departure_field = 0
     faces_shown = 0
     prev = set()
     most = 0
-    for fname in frames:
+    for fi, fname in enumerate(frames):
         w, h, px = read_ppm(os.path.join(OUT, name + ".frames", fname))
         backs = hand_backs(px, w, h, want)
         most = max(most, len(backs))
@@ -1820,10 +1901,21 @@ def check_com_turn_presentation():
             gone = (prev - backs).pop()
             x0 = HAND_X0 + gone * HAND_PITCH
             found = False
-            for y in range(40, HAND_Y - 2, 2):
-                for x in range(max(0, x0 - 160), min(w - 32, x0 + 160)):
-                    if back_sprite_match(px, w, h, x, y, want) >= 1024 * 0.8:
-                        found = True
+            flown_name = read_sprite_line(px, w, h, 8, NAME_Y, NAME_LEN).strip()
+            wants = [want]
+            if flown_name in names:
+                wants.insert(0, card_sprite_pixels(names[flown_name], hi=True))
+            # The face replaces the back in the row on the departure field
+            # itself; the flight is in the fields after it.
+            for later in frames[fi:fi + 8]:
+                _, _, lpx = read_ppm(os.path.join(OUT, name + ".frames", later))
+                for y in range(40, HAND_Y - 2, 2):
+                    for x in range(max(0, x0 - 160), min(w - 32, x0 + 160)):
+                        if any(back_sprite_match(lpx, w, h, x, y, wt) >= 1024 * 0.8
+                               for wt in wants):
+                            found = True
+                            break
+                    if found:
                         break
                 if found:
                     break
@@ -1843,7 +1935,7 @@ def check_com_turn_presentation():
         raise Failure("no card back ever left the opponent's hand row")
     if not flights:
         raise Failure("a back left the row but was never seen on its way to the "
-                      "board")
+                      "board (the name row said %r)" % flown_name)
     # The rules' side of it, read mid-flight: it IS the opponent's turn.
     _, wram = run(name + "_mid", random_battle_script() + [press("START", DUEL_READY)],
                   departure_field + 6)
@@ -1851,8 +1943,8 @@ def check_com_turn_presentation():
     if UI[stamp["ui"]] != "COM" or stamp["turn_owner"] != 1:
         raise Failure("mid-turn the UI is %s with turn owner %d, expected the "
                       "opponent's turn" % (UI[stamp["ui"]], stamp["turn_owner"]))
-    return "%d backs in the row, cursor on slots %s, %d departure(s), %d in flight, no face shown" % (
-        most, sorted(cursor_slots), departures, flights)
+    return "%d backs in the row, cursor on slots %s, %d departure(s), %d in flight (%s), no face in the row" % (
+        most, sorted(cursor_slots), departures, flights, flown_name or "a back")
 
 
 def check_duel_flow():
@@ -1916,25 +2008,34 @@ def check_duel_plays_out():
     if stamp["duel_turn"] < 4:
         raise Failure("the duel ended on turn %d, which is not a duel"
                       % stamp["duel_turn"])
-    if UI[stamp["ui"]] != "RESULT":
+    # THE VERDICT IS GIVEN OVER THE BATTLE'S CARDS (snes_battle.c): a blow
+    # that empties a life bar ends on the Mode 4 scene, its cards still up,
+    # with the big banner slid in across their middle, and the duel waits
+    # there for a press.  Only a deck-out (no blow) uses the board's banner.
+    w, h, px = read_ppm(ppm)
+    if UI[stamp["ui"]] == "BATTLE_ART":
+        band_y = BATTLE_VERDICT_Y
+        # The card art is still on the screen: the lanes are not black.
+        lane = [screen5(px, w, x, y) for y in range(40, 80, 4)
+                for x in list(range(8, 128, 8)) + list(range(136, 256, 8))]
+        if sum(c != (0, 0, 0) for c in lane) < len(lane) // 3:
+            raise Failure("the verdict is up but the battle's cards are gone")
+    elif UI[stamp["ui"]] == "RESULT":
+        band_y = OVER_Y
+    else:
         raise Failure("the duel is decided but the screen is in %s"
                       % UI[stamp["ui"]])
-    w, h, px = read_ppm(ppm)
-    msg = read_sprite_line(px, w, h, 8, NAME_Y, 16)
-    # The result prompt is now a large animated OBJ banner.  The old small
-    # result row was deliberately removed; check the banner's lit area and its
-    # colour instead of decoding the normal 8x8 font.
-    banner = [screen5(px, w, x, y) for y in range(OVER_Y, OVER_Y + 16)
+    # The result prompt is a large animated OBJ banner: check the banner's
+    # lit area and its colour instead of decoding the normal 8x8 font.
+    banner = [screen5(px, w, x, y) for y in range(band_y, band_y + 16)
               for x in range(0, w)]
-    lit = sum(c != (0, 0, 0) for c in banner)
-    if lit < 80:
-        raise Failure("the result banner has only %d lit pixels" % lit)
     want = obj_colour(7, 3 if won else 4)
     if sum(c == want for c in banner) < 20:
-        raise Failure("the result banner has no %s ink" %
-                      ("gold" if won else "red"))
-    return "%s on turn %d, %d fields, large banner present" % (
-        "won" if won else "lost", stamp["duel_turn"], 14000)
+        raise Failure("the result banner has no %s ink at y=%d" %
+                      ("gold" if won else "red", band_y))
+    return "%s on turn %d, %d fields, large banner over the %s" % (
+        "won" if won else "lost", stamp["duel_turn"], 14000,
+        "battle" if UI[stamp["ui"]] == "BATTLE_ART" else "board")
 
 
 def run_top(capture=None):
@@ -2137,10 +2238,13 @@ def check_top_cursor_and_card_check():
         press("R", DUEL_READY), press("UP", DUEL_READY + 400),
         press("RIGHT", DUEL_READY + 1800),
     ], 6000)
+    # A ON THE PLAYER'S OWN MONSTER PICKS IT AS THE ATTACKER (the PC-FX
+    # gesture); the cursor is walked up to the opponent's row first, where
+    # A is the card check.
     check_name = "top_check_mode3"
     check_ppm, top_wram = run(check_name, random_battle_script() + [
         press("R", DUEL_READY), press("UP", DUEL_READY + 400),
-        press("A", DUEL_READY + 1800),
+        press("UP", DUEL_READY + 1500), press("A", DUEL_READY + 1800),
     ], 6000, capture=(5600, 5999, 4))
     checked = read_stamp(top_wram)
     if UI[checked["ui"]] != "CHECK":
@@ -2167,7 +2271,8 @@ def check_top_cursor_and_card_check():
                       % column)
     check_ppm, check_wram = run("top_check_close", random_battle_script() + [
         press("R", DUEL_READY), press("UP", DUEL_READY + 400),
-        press("A", DUEL_READY + 1800), press("B", DUEL_READY + 2100),
+        press("UP", DUEL_READY + 1500), press("A", DUEL_READY + 1800),
+        press("B", DUEL_READY + 2100),
     ], 7000, capture=(6999, 6999, 1))
     closed = read_stamp(check_wram)
     if UI[closed["ui"]] == "CHECK":
@@ -2702,6 +2807,7 @@ def check_video_budget():
 
 CHECKS = [
     ("cartridge", check_cartridge),
+    ("retail rom", check_retail_rom),
     ("video budgets", check_video_budget),
     ("converter exactness", check_converter_patterns),
     ("title art", check_title),

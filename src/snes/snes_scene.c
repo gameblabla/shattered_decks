@@ -48,16 +48,27 @@
  * BG1 characters at $0000, BG2's at $6000 -- the same BG12NBA the ending
  * uses, so only the map bases differ between the two. */
 #define STORY_PORTRAIT_L_WORD 0x0000u
-#define STORY_PORTRAIT_R_WORD (SNES_PORTRAIT_TILES * 32u)
-#define STORY_BLANK_TILE      (SNES_PORTRAIT_TILES * 2u)
+#define STORY_PORTRAIT_R_WORD (SNES_PORTRAIT_L_TILES * 32u)
+#define STORY_BLANK_TILE      (SNES_PORTRAIT_L_TILES + SNES_PORTRAIT_TILES)
 #define STORY_BLANK_WORD      (STORY_BLANK_TILE * 32u)
+/* The columns the two blocks share once both are in, composited per
+ * opponent by the generator (Serena in front); after the blank. */
+#define STORY_OVER_TILE       (STORY_BLANK_TILE + 1u)
+#define STORY_OVER_WORD       (STORY_OVER_TILE * 32u)
 #define STORY_FONT_WORD       0x6000u
 #define STORY_GROUND_TILE     (SNES_SCENE_BORDER_TILE + SNES_SCENE_BORDER_COUNT)
 #define STORY_GROUND_WORD     (STORY_FONT_WORD + STORY_GROUND_TILE * 16u)
 #define STORY_MAP_WORD        0x7000u
 #define STORY_TEXT_MAP_WORD   0x7400u
 #define STORY_PORTRAIT_ROW    1              /* lines 8..143 */
-#define STORY_SLIDE_FRAMES    24
+/* THE ENTRANCE.  Both figures walk in a column every one and a half frames;
+ * Serena has twenty columns to cover and the opponent sixteen, so he sets
+ * off six frames after her and they are both in place on the last frame.
+ * Only on that frame do their blocks share columns 16..19 (the composited
+ * tiles); on the one frame before it they touch, and Serena, who stands in
+ * front, is the one drawn. */
+#define STORY_SLIDE_FRAMES    30
+#define STORY_SLIDE_R_DELAY   6
 /* The sky tables: one repeat entry of SNES_STORY_SKY_LINES lines -- two
  * COLDATA bytes a line for red and green, one for blue -- then the
  * terminator, so the dialogue plate's own ramp owns the lines below. */
@@ -286,14 +297,11 @@ static void draw_dialogue(const char *speaker, const char *line,
                        tile_base);
         offset = (u8)(offset + SCENE_PANEL_TEXT_W);
     }
-    if (reveal >= length)
-        draw_text_line(SCENE_PANEL_Y + 8, SCENE_PANEL_TEXT_X,
-                       SCENE_PANEL_TEXT_W, "A: NEXT", 255, tile_base);
     scene_text_dirty = 1;
 }
 
 /* One more character of the page: the typewriter's per-frame work is one
- * cell of the map, plus the prompt once the page is complete. */
+ * cell of the map. */
 static void dialogue_reveal(u8 reveal, u8 tile_base)
 {
     if (reveal && reveal <= page_length) {
@@ -304,9 +312,6 @@ static void dialogue_reveal(u8 reveal, u8 tile_base)
                            + SCENE_PANEL_TEXT_X + i % SCENE_PANEL_TEXT_W] =
                 (u16)(SCENE_TEXT_PRIORITY + tile_base + c - FONT_FIRST);
     }
-    if (reveal >= page_length)
-        draw_text_line(SCENE_PANEL_Y + 8, SCENE_PANEL_TEXT_X,
-                       SCENE_PANEL_TEXT_W, "A: NEXT", 255, tile_base);
     scene_text_dirty = 1;
 }
 
@@ -434,15 +439,17 @@ u8 snesTitleFrame(void)
             snesAudioSfx(SNES_SFX_CONFIRM);
             title_draw_menu();
         }
-        /* Non-menu verification/service shortcuts retained from the port's
-         * bring-up harness.  They do not appear in or alter the three-option
-         * player-facing menu. */
+#if defined(SNES_DEBUG)
+        /* The harness's shortcuts into the other scenes (make DEBUG=1).
+         * They do not appear in or alter the three-option player-facing
+         * menu, and a retail cartridge does not have them. */
         if (down & KEY_Y) return SNES_SCENE_DECK;
         if (down & KEY_B) {
             snesStoryBegin(0);
             return SNES_SCENE_STORY_TALK;
         }
         if (down & KEY_X) return SNES_SCENE_ENDING;
+#endif
         return SCENE_NONE;
     }
 
@@ -554,28 +561,37 @@ static void story_ground_map(void)
     scene_text_dirty = 1;
 }
 
-/* Both speakers on the BG1 map, `cols` columns of each in from the edge.
- * Serena stands on the left and walks in from x = -128; the opponent walks
- * in from x = 256 on the right.  Everything else is the blank tile. */
-static void story_place_portraits(u8 cols)
+/* Both speakers on the BG1 map, `cols_l` columns of Serena in from the left
+ * edge and `cols_r` of the opponent in from the right.  Serena walks in from
+ * x = -160 and the opponent from x = 256.  Everything else is the blank
+ * tile.  The opponent is placed first so that, where the two blocks meet
+ * short of their final columns, Serena's tile is the one on the map. */
+static void story_place_portraits(u8 cols_l, u8 cols_r)
 {
     u8 row, col;
+    if (cols_l > SNES_PORTRAIT_L_COLS) cols_l = SNES_PORTRAIT_L_COLS;
+    if (cols_r > SNES_PORTRAIT_COLS) cols_r = SNES_PORTRAIT_COLS;
     for (row = 0; row < SNES_PORTRAIT_ROWS; ++row) {
         const u16 map_row = (u16)(STORY_PORTRAIT_ROW + row) * 32;
         /* Only the rows the figures stand on are rewritten; the rest of the
          * map was blanked once when the scene was set up. */
         for (col = 0; col < 32; ++col) story_bg1_map[map_row + col] = STORY_BLANK_TILE;
-        for (col = 0; col < cols && col < SNES_PORTRAIT_COLS; ++col) {
-            /* The leftmost visible column of Serena is her column
-             * (16 - cols); the opponent's rightmost visible column is his
-             * (cols - 1). */
-            const u8 lcol = (u8)(SNES_PORTRAIT_COLS - cols + col);
-            story_bg1_map[map_row + col] =
-                (u16)(row * SNES_PORTRAIT_COLS + lcol);
+        /* The opponent's rightmost visible column is his (cols_r - 1). */
+        for (col = 0; col < cols_r; ++col)
             story_bg1_map[map_row + 31 - col] =
-                (u16)(SNES_PORTRAIT_TILES + row * SNES_PORTRAIT_COLS +
-                      (cols - 1 - col));
+                (u16)(SNES_PORTRAIT_L_TILES + row * SNES_PORTRAIT_COLS +
+                      (cols_r - 1 - col));
+        /* The leftmost visible column of Serena is her column
+         * (20 - cols_l). */
+        for (col = 0; col < cols_l; ++col) {
+            const u8 lcol = (u8)(SNES_PORTRAIT_L_COLS - cols_l + col);
+            story_bg1_map[map_row + col] =
+                (u16)(row * SNES_PORTRAIT_L_COLS + lcol);
         }
+        if (cols_l == SNES_PORTRAIT_L_COLS && cols_r == SNES_PORTRAIT_COLS)
+            for (col = 0; col < SNES_PORTRAIT_OVER_COLS; ++col)
+                story_bg1_map[map_row + SNES_PORTRAIT_COLS + col] =
+                    (u16)(STORY_OVER_TILE + row * SNES_PORTRAIT_OVER_COLS + col);
     }
     story_bg1_dirty = 1;
 }
@@ -583,16 +599,27 @@ static void story_place_portraits(u8 cols)
 static void story_update_portraits(void)
 {
     u8 frame = story_portrait_frame;
+    u8 cols_l, cols_r;
     if (frame > STORY_SLIDE_FRAMES) frame = STORY_SLIDE_FRAMES;
-    story_place_portraits((u8)(((u16)frame * SNES_PORTRAIT_COLS) /
-                               STORY_SLIDE_FRAMES));
+    cols_l = (u8)(((u16)frame * 2) / 3);
+    cols_r = (frame > STORY_SLIDE_R_DELAY)
+           ? (u8)(((u16)(frame - STORY_SLIDE_R_DELAY) * 2) / 3) : 0;
+    story_place_portraits(cols_l, cols_r);
 }
 
-#define STORY_UPLOAD_PORTRAIT(n, word, cg) \
+#define STORY_UPLOAD_PORTRAIT(n, word, cg, bytes) \
     do { \
-        dmaCopyVram((u8 *)snes_portrait_##n, word, SNES_PORTRAIT_BYTES); \
+        dmaCopyVram((u8 *)snes_portrait_##n, word, bytes); \
         dmaCopyCGram((u8 *)snes_portrait_##n##_pal, cg, \
                      SNES_PORTRAIT_PAL_BYTES); \
+    } while (0)
+/* An opponent, and the shared columns composited against him. */
+#define STORY_UPLOAD_OPPONENT(n) \
+    do { \
+        STORY_UPLOAD_PORTRAIT(n, STORY_PORTRAIT_R_WORD, SNES_PORTRAIT_FIRST_R, \
+                              SNES_PORTRAIT_BYTES); \
+        dmaCopyVram((u8 *)snes_portrait_##n##_over, STORY_OVER_WORD, \
+                    SNES_PORTRAIT_OVER_BYTES); \
     } while (0)
 
 void snesStoryInit(void)
@@ -621,14 +648,15 @@ void snesStoryInit(void)
      * sections start at offset zero in different banks; storing one in a
      * temporary pointer lets this 816 compiler retain the offset but lose the
      * bank, which made the opponent redraw Serena through palette 1. */
-    STORY_UPLOAD_PORTRAIT(0, STORY_PORTRAIT_L_WORD, SNES_PORTRAIT_FIRST_L);
+    STORY_UPLOAD_PORTRAIT(0, STORY_PORTRAIT_L_WORD, SNES_PORTRAIT_FIRST_L,
+                          SNES_PORTRAIT_L_BYTES);
     switch (story_progress) {
     default:
-    case 0: STORY_UPLOAD_PORTRAIT(1, STORY_PORTRAIT_R_WORD, SNES_PORTRAIT_FIRST_R); break;
-    case 1: STORY_UPLOAD_PORTRAIT(2, STORY_PORTRAIT_R_WORD, SNES_PORTRAIT_FIRST_R); break;
-    case 2: STORY_UPLOAD_PORTRAIT(3, STORY_PORTRAIT_R_WORD, SNES_PORTRAIT_FIRST_R); break;
-    case 3: STORY_UPLOAD_PORTRAIT(4, STORY_PORTRAIT_R_WORD, SNES_PORTRAIT_FIRST_R); break;
-    case 4: STORY_UPLOAD_PORTRAIT(5, STORY_PORTRAIT_R_WORD, SNES_PORTRAIT_FIRST_R); break;
+    case 0: STORY_UPLOAD_OPPONENT(1); break;
+    case 1: STORY_UPLOAD_OPPONENT(2); break;
+    case 2: STORY_UPLOAD_OPPONENT(3); break;
+    case 3: STORY_UPLOAD_OPPONENT(4); break;
+    case 4: STORY_UPLOAD_OPPONENT(5); break;
     }
     dmaCopyVram((u8 *)blank, STORY_BLANK_WORD, 64);
     dmaCopyVram((u8 *)snes_scene_font, STORY_FONT_WORD, SNES_SCENE_FONT_BYTES);
@@ -680,9 +708,13 @@ u8 snesStoryFrame(void)
     const u16 down = padsDown(0);
     const char *line = story_lines[story_progress][story_line];
 
+    /* THE WORDS WAIT FOR THE SPEAKERS.  Nothing is revealed, and no press
+     * skips ahead, until both figures have walked in: the entrance is the
+     * scene's establishing shot, and text typing over it was noise. */
     if (story_portrait_frame <= STORY_SLIDE_FRAMES) {
         ++story_portrait_frame;
         story_update_portraits();
+        return SCENE_NONE;
     }
 
     if (story_reveal < page_length) {

@@ -10,6 +10,7 @@
 #include "snes_cards.h"
 #include "snes_board3d.h"
 #include "snes_obj.h"
+#include "snes_obj_data.h"
 #include "snes_audio.h"
 #include "snes_math.h"
 #include "msx2_duel.h"
@@ -69,9 +70,25 @@
 #define D_EXIT_END      (D_FX_END + 16)                                 /* 119 */
 #define D_SKIP_FROM     (D_FX_START + D_FX_TEXT + 12)
 
+/* THE VERDICT IS GIVEN HERE, NOT ON THE BOARD.  A blow that ends the duel
+ * keeps its cards on the screen (the loser's dark, the winner's whole) and
+ * the banner the board would have shown slides in over them instead; the
+ * duel never goes back to the table.  The letters are the HUD sheet's big
+ * glyphs, copied in after the effects atlas (which the digits and the burst
+ * already fill to tile BIG_OBJ_TILE), drawn in OBJ palette 7 -- the
+ * digits' palette during the beat, so the HUD's own is put back for them. */
+#define BIG_OBJ_TILE    (SNES_FX_TILE_BYTES / 32)
+#define BIG_SHEET_OFF   ((SNES_SPR_GLYPH_COUNT + SNES_SPR_CORNER_COUNT + \
+                          SNES_SPR_BAR_COUNT + SNES_SPR_PLATE_COUNT + \
+                          SNES_SPR_ICON_COUNT) * 32u)
+#define BIG_OBJ_WORD    (FX_OBJ_WORD + BIG_OBJ_TILE * 16u)
+#define VERDICT_Y       94                  /* across the middle of the cards */
+#define VERDICT_SLIDE   30
+#define VERDICT_HOLD    70
+
 enum BattlePhase {
     PHASE_ENTER = 0, PHASE_HOLD, PHASE_STRIKE, PHASE_RESULT, PHASE_EXIT,
-    PHASE_DONE, PHASE_LUNGE, PHASE_FX
+    PHASE_DONE, PHASE_LUNGE, PHASE_FX, PHASE_VERDICT
 };
 
 /* ── The snapshot ────────────────────────────────────────────────────────── */
@@ -110,6 +127,11 @@ static u8  cm_dirty = 0;
 static u16 lp_shown = 0;
 static u8  lp_lane = 0;
 static u8  lp_visible = 0;
+/* The duel was decided by this blow (snapshot): the sequence ends on the
+ * verdict instead of the exit, and verdict_step counts its fields. */
+static u8  decided = 0;
+static u16 verdict_step = 0;
+static u8  pal_restore = 0;
 
 u8  snesBattlePhase(void)   { return phase; }
 u16 snesBattleField(void)   { return field; }
@@ -221,6 +243,7 @@ static void snapshot(void)
      * calculated: the attacker alone, repelled, no damage and no readout.
      * The rules' last_battle is stale in that case and is not read. */
     blocked = (u8)(g_duel.last_trap_fired != 0);
+    decided = (u8)(g_duel.result != 0);
     direct = (u8)(blocked || bc->outcome == MSX2_BATTLE_DIRECT ||
                   g_duel.last_defender_card == MSX2_CARD_NONE);
     lane_face[attacker_lane] = face_of(g_duel.last_attacker_card);
@@ -337,6 +360,9 @@ void snesBattleBegin(void)
     dmaCopyCGram((u8 *)&snes_fx_pal[32], (u16)(128 + SNES_FX_DIGIT_PAL * 16), 32);
     REG_OBSEL = (u8)(0x20 | (FX_OBJ_WORD >> 13));
     dmaCopyVram((u8 *)snes_battle_font, FONT_WORD, SNES_FX_FONT_BYTES);
+    if (decided)
+        dmaCopyVram((u8 *)&snes_spr_font[BIG_SHEET_OFF], BIG_OBJ_WORD,
+                    SNES_SPR_BIG_TILES * 32);
 
     /* The card sheets, feet, frame palettes and the blank tile, as the card
      * check loads them. */
@@ -382,6 +408,8 @@ void snesBattleBegin(void)
     cm_dirty = 1;
     lp_visible = 0;
     lp_shown = lp_before;
+    verdict_step = 0;
+    pal_restore = 0;
 
     REG_OBSEL = (u8)(0x20 | (FX_OBJ_WORD >> 13));
     REG_TM = BG1_ENABLE | BG2_ENABLE | OBJ_ENABLE;
@@ -617,6 +645,54 @@ static void direct_fx(u16 t)
 
 /* ── The step ────────────────────────────────────────────────────────────── */
 
+/* The big letters, as snesObjBigText draws them but from the atlas's tail. */
+static void big_text(s16 x, s16 y, const char *s, u8 set)
+{
+    u8 c, g;
+    u16 base;
+    while ((c = (u8)*s++) != 0) {
+        if (c >= SNES_SPR_GLYPH_FIRST &&
+            c < SNES_SPR_GLYPH_FIRST + SNES_SPR_GLYPH_COUNT) {
+            g = snes_spr_big_index[c - SNES_SPR_GLYPH_FIRST];
+            if (g != 0xFF) {
+                base = (u16)(BIG_OBJ_TILE +
+                             (((u16)set * SNES_SPR_BIG_GLYPHS + g) << 2));
+                sprite8(x,     y,     base + 0, SNES_SPR_HUD_PAL);
+                sprite8(x + 8, y,     base + 1, SNES_SPR_HUD_PAL);
+                sprite8(x,     y + 8, base + 2, SNES_SPR_HUD_PAL);
+                sprite8(x + 8, y + 8, base + 3, SNES_SPR_HUD_PAL);
+            }
+        }
+        x += SNES_OBJ_BIG_PITCH;
+    }
+}
+
+/* The verdict: the cards stay where the beat left them and the banner
+ * slides in from the left, the board's own entrance, then holds until a
+ * press (snesBattleStep). */
+static void step_verdict(void)
+{
+    const u8 won = (g_duel.result > 0);
+    const char *word = won ? "YOU WIN" : "YOU LOSE";
+    const s16 span = (s16)((won ? 7 : 8) * SNES_OBJ_BIG_PITCH);
+    const s16 home = (s16)((256 - span) >> 1);
+    s16 x = home;
+    if (phase != PHASE_VERDICT) {
+        phase = PHASE_VERDICT;
+        verdict_step = 0;
+        pal_restore = 1;
+        snesAudioPlay(won ? SNES_AUDIO_VICTORY : SNES_AUDIO_FAIL);
+    } else if (verdict_step <= VERDICT_SLIDE + VERDICT_HOLD) {
+        ++verdict_step;
+    }
+    if (verdict_step < VERDICT_SLIDE) {
+        const s16 rem = (s16)(VERDICT_SLIDE - verdict_step);
+        x = (s16)(home - ((((home + span) * rem) / VERDICT_SLIDE) * rem)
+                          / VERDICT_SLIDE);
+    }
+    big_text(x, VERDICT_Y, word, won ? SNES_SPR_BIG_SET_GOLD : SNES_SPR_BIG_SET_RED);
+}
+
 static void step_direct(void)
 {
     const u8 a = attacker_lane;
@@ -641,6 +717,11 @@ static void step_direct(void)
     } else if (field < D_FX_END) {
         phase = PHASE_FX;
         lane_y[a] = REST_Y;
+    } else if (decided) {
+        lane_y[a] = REST_Y;
+        set_colour_math(0, 0, 0);
+        step_verdict();
+        return;
     } else if (field < D_EXIT_END) {
         phase = PHASE_EXIT;
         set_colour_math(0, 0, 0);
@@ -748,6 +829,11 @@ static void step_battle(void)
                 lane_lp(lp_lane, lp_shown);
             }
         }
+    } else if (decided) {
+        /* The loser's card keeps its fade; the readout stays at nought. */
+        lane_y[0] = lane_y[1] = REST_Y;
+        step_verdict();
+        return;
     } else if (field < B_EXIT_END) {
         const u16 f = (u16)(field - B_RESULT_END);
         phase = PHASE_EXIT;
@@ -774,6 +860,14 @@ u8 snesBattleStep(u16 down)
     snesObjEnd();
     write_offsets();
     if (phase == PHASE_DONE) return 1;
+    if (phase == PHASE_VERDICT) {
+        /* The banner has to arrive and be readable before a press counts,
+         * as on the board (snes_duel.c's OVER_HOLD_FRAMES). */
+        if (verdict_step > VERDICT_SLIDE + VERDICT_HOLD &&
+            (down & (KEY_A | KEY_B | KEY_START)))
+            return 2;
+        return 0;
+    }
     if (down & (KEY_A | KEY_B | KEY_START)) {
         const u16 skip_from = direct ? D_SKIP_FROM : B_SKIP_FROM;
         const u16 exit_at = direct ? D_FX_END : B_RESULT_END;
@@ -793,6 +887,10 @@ u8 snesBattleStep(u16 down)
 
 void snesBattleVblank(void)
 {
+    if (pal_restore) {
+        pal_restore = 0;
+        dmaCopyCGram((u8 *)&snes_spr_pal[SNES_SPR_HUD_PAL * 32], 128 + SNES_SPR_HUD_PAL * 16, 32);
+    }
     if (offset_dirty) {
         dmaCopyVram((u8 *)offset_row, BG3_MAP_WORD, 64);
         dmaCopyVram((u8 *)offset_row, (u16)(BG3_MAP_WORD + 32), 64);

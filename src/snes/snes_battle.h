@@ -46,7 +46,9 @@
 void snesBattleBegin(void);
 /* One displayed field.  `down` is the pad's new presses; A, B or START
  * after the minimum readable interval skips to the end.  Returns 1 once
- * the sequence is over and the board may be restored. */
+ * the sequence is over and the board may be restored; 2 when the blow
+ * decided the duel and the player has dismissed the verdict shown over
+ * the cards -- the board is not restored, the duel is over. */
 u8   snesBattleStep(u16 down);
 /* The vblank work: the offset row, the text map when it changed, the
  * cooling palette, the colour-math flash.  OAM goes up through

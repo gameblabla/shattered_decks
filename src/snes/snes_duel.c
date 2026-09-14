@@ -237,6 +237,32 @@ static u8 texture_faces[20];
  * the card check, but it does not play anything. */
 static u8 top_row = SNES_ROW_YOU_MONSTER;
 static u8 top_col = 0;
+/* THE OVERHEAD VIEW IS ALSO WHERE THE PLAYER ATTACKS FROM, the way the PC
+ * and PC-FX builds do it (IB_PLAYER_TOP in src/main.c): A on one of the
+ * player's own standing monsters picks it as the attacker, the cursor jumps
+ * to the opponent's row, and A on a monster there declares the attack; B
+ * puts the attacker down again.  With no monster to attack the pick IS the
+ * direct attack.  The hand row's X:FIGHT path is the other way in. */
+static u8 top_attacker = MSX2_SLOT_NONE;
+static u8 battle_return_top = 0;
+/* The opponent's card flies FACE UP, out of an OBJ slot of its own: the
+ * hand's slot holds the back the row is drawn with, and swapping its tiles
+ * for the face would leave the card invisible for the four vblanks of the
+ * upload.  Slot 5 is the first the hand does not use, and it has a palette
+ * of its own (SNES_SPR_CARD_PALS is seven), so the face is queued at the
+ * start of the opponent's select sweep and is resident when the flight
+ * begins. */
+#define COM_FLY_SLOT 5
+/* THE DUEL OPENS FROM BLACK.  The other builds swing the camera round the
+ * empty board while the palette comes up; a moving pose is fifty fields
+ * here, so the board is baked at rest and the master brightness is walked
+ * up over half a second instead, and the hands are dealt (the draw
+ * cadence) once it is fully lit.  The level is applied in vblank
+ * (snesDuelVblank), never mid-frame. */
+#define INTRO_FADE_FIELDS 32
+static u8 intro_fade = 0;       /* fields of the fade left */
+static u8 fade_level = 15;      /* what INIDISP should hold */
+static u8 fade_dirty = 0;
 /* The selected hand card's small up-and-down, which is a per-FIELD thing and
  * therefore not the board's lift_phase: the board only advances on the twelve
  * field motion cadence and a bob that moves five times a second is a twitch. */
@@ -311,6 +337,17 @@ static void note_draws(u8 owner, const u8 *before);
 static void place_chosen(u8 defense);
 
 u8 snesDuelMode3Active(void) { return mode3_active; }
+
+/* The master brightness, applied in vblank.  The scene machine turns the
+ * screen on at this level (snes_main.c) so the fade starts from black rather
+ * than after a field of full brightness. */
+u8 snesDuelBrightness(void) { return fade_level; }
+void snesDuelVblank(void)
+{
+    if (!fade_dirty) return;
+    fade_dirty = 0;
+    REG_INIDISP = fade_level;
+}
 
 static void set_viewport(void)
 {
@@ -565,7 +602,10 @@ static u8 cursor_board_slot(u8 *row)
         *row = monster_row(MSX2_OWNER_PLAYER);
         return cursor;
     case UI_EQUIP_TARGET:
-        *row = SNES_ROW_YOU_SUPPORT;
+        /* The cursor picks the MONSTER the equip goes on, as the PC and
+         * PC-FX do it; the card itself hovers over the support zone the
+         * rules will give it (held_slot). */
+        *row = monster_row(MSX2_OWNER_PLAYER);
         return cursor;
     case UI_DEFENDER:
         *row = monster_row(MSX2_OWNER_COM);
@@ -580,6 +620,12 @@ static u8 held_slot(u8 *row)
 {
     if (ui != UI_PLACE && ui != UI_EQUIP_TARGET && ui != UI_FUSE_TARGET)
         return MSX2_SLOT_NONE;
+    if (ui == UI_EQUIP_TARGET) {
+        /* The zone is the rules' choice (Msx2_PlaySupport takes the first
+         * free one), so the card hovers over -- and comes down on -- that. */
+        *row = SNES_ROW_YOU_SUPPORT;
+        return Msx2_FirstFreeEquipSlot(MSX2_OWNER_PLAYER);
+    }
     return cursor_board_slot(row);
 }
 
@@ -1304,7 +1350,15 @@ static void leave_mode3_art(void)
     snesVideoSetOwner(SNES_OWNER_BOARD);
     rest_invalidate();
     snesFbDrain(1);
-    render();
+    if (top_view) {
+        /* The overhead pose at 1:1, whole, under force blank: the view a
+         * check or an attack was opened from is the one it returns to,
+         * not a doubled motion frame of it. */
+        job_begin(0);
+        while (job_step()) { }
+    } else {
+        render();
+    }
     build_objects();
     /* The hand's tiles go up here, under force blank, and not a card a
      * vblank over the bake that follows (snesObjFlushBlank). */
@@ -1353,14 +1407,18 @@ static void end_check(void)
 static void begin_battle_art(u8 return_ui)
 {
     battle_return_ui = return_ui;
+    battle_return_top = top_view;
     battle_frame = 0;
     ui = UI_BATTLE_ART;
+    top_attacker = MSX2_SLOT_NONE;
     enter_mode3_art();
 }
 
 static void end_battle_art(void)
 {
     ui = battle_return_ui;
+    top_view = battle_return_top;
+    view_motion = top_view ? VIEW_TOP_REST : VIEW_BOARD_REST;
     Msx2_ClearActionEvent();
     touch_board(24);
     leave_mode3_art();
@@ -1437,6 +1495,14 @@ static u8 focus_card(u8 *face)
     if (ui == UI_CHECK) {
         *face = check_face;
         return MSX2_CARD_NONE;
+    }
+    /* THE OPPONENT'S CARD IS NAMED AS IT FLIES, as the PC's is (its
+     * draw_flying_card shows the face): from the moment it leaves the hand
+     * until it has landed, the name row and the stat row are its. */
+    if (ui == UI_COM && com_present >= COM_PRESENT_FLY &&
+        com_card != MSX2_CARD_NONE) {
+        *face = face_of(com_card, 1);
+        return com_card;
     }
     switch (ui) {
     case UI_HAND:
@@ -1649,6 +1715,9 @@ static void build_objects(void)
     } else {
         has_stats = focus_stats(card, &atk, &def);
     }
+    /* A sword and a shield both at nought describe nothing: the row shows
+     * the prompt instead. */
+    if (has_stats && atk == 0 && def == 0) has_stats = 0;
     hand_y = hand_row_y();
     for (i = 0; i < MSX2_HAND; ++i) {
         if (hand_owner == MSX2_OWNER_COM && com_present != COM_PRESENT_IDLE)
@@ -1659,6 +1728,7 @@ static void build_objects(void)
     /* A message pre-empts the name, because it is the thing that just
      * happened; the name is back the moment it expires. */
     const char *name = message ? message
+                     : (top_view && top_attacker != MSX2_SLOT_NONE) ? "A:HIT  B:CANCEL"
                      : (face != SNES_CARD_NONE_FACE) ? snesCardName(face)
                      : prompt_text();
 
@@ -1694,6 +1764,15 @@ static void build_objects(void)
             snesProject(&cam, &vp_rest, (s16)(cx + 128), (s16)(cz - 128), 0, &x1, &y1) &&
             x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128)
             snesObjBoxRed(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
+        /* The attacker already picked keeps the hand's gold bracket while
+         * the red one walks the opponent's row for its target. */
+        if (top_attacker != MSX2_SLOT_NONE) {
+            snesSlotCentre(SNES_ROW_YOU_MONSTER, top_attacker, 0, &cx, &cz);
+            if (snesProject(&cam, &vp_rest, (s16)(cx - 128), (s16)(cz + 128), 0, &x0, &y0) &&
+                snesProject(&cam, &vp_rest, (s16)(cx + 128), (s16)(cz - 128), 0, &x1, &y1) &&
+                x1 > x0 && y1 > y0 && x1 - x0 < 128 && y1 - y0 < 128)
+                snesObjBox(x0, y0, (u8)(x1 - x0), (u8)(y1 - y0));
+        }
         snesObjText(8, NAME_Y, name);
         if (has_stats) {
             snesObjIcon(STAT_ATK_X, STAT_Y, SNES_SPR_ICON_ATK);
@@ -1701,7 +1780,8 @@ static void build_objects(void)
             snesObjIcon(STAT_DEF_X, STAT_Y, SNES_SPR_ICON_DEF);
             snesObjNum(STAT_DEF_X + STAT_NUM_DX, STAT_Y, def, 4);
         } else {
-            snesObjText(STAT_ATK_X, STAT_Y, "A:CHECK B:BACK");
+            snesObjText(STAT_ATK_X, STAT_Y, top_attacker != MSX2_SLOT_NONE
+                                            ? "PICK A TARGET" : "A:CHECK B:BACK");
         }
         snesObjLifePanel(LP_YOU_X, LP_Y, 0, (u16)you->lp, MSX2_START_LP);
         snesObjLifePanel(LP_COM_X, LP_Y, 1,
@@ -1719,7 +1799,10 @@ static void build_objects(void)
             snesObjNum(STAT_ATK_X + STAT_NUM_DX, STAT_Y, atk, 4);
             snesObjIcon(STAT_DEF_X, STAT_Y, SNES_SPR_ICON_DEF);
             snesObjNum(STAT_DEF_X + STAT_NUM_DX, STAT_Y, def, 4);
-        } else {
+        } else if (name != prompt_text()) {
+            /* (With no card under the cursor the name row IS the legend,
+             * and "OPPONENT'S TURN" printed twice, one under the other,
+             * was what that looked like.) */
             snesObjText(STAT_ATK_X, STAT_Y, prompt_text());
         }
         snesObjLifePanel(LP_YOU_X, LP_Y, 0, (u16)you->lp, MSX2_START_LP);
@@ -1812,8 +1895,12 @@ static void build_objects(void)
                     snesObjBox(x - 4, y - 4, 40, 40);
             }
             hand_oam[i] = snesObjCount();
-            snesObjCard(x, y, i, hand_owner == MSX2_OWNER_COM
-                                  ? SNES_CARD_BACK : face_of(hcard, 1));
+            if (hand_owner == MSX2_OWNER_COM && com_present == COM_PRESENT_FLY &&
+                i == com_hand_slot)
+                snesObjCard(x, y, COM_FLY_SLOT, face_of(com_card, 1));
+            else
+                snesObjCard(x, y, i, hand_owner == MSX2_OWNER_COM
+                                      ? SNES_CARD_BACK : face_of(hcard, 1));
             if (snesObjCount() == hand_oam[i]) hand_oam[i] = 0xFF;
             snesObjCardGrey(0);
         }
@@ -1823,6 +1910,7 @@ static void build_objects(void)
 
 /* ── The measurement fixture ─────────────────────────────────────────────── */
 
+#if defined(SNES_DEBUG)
 /* The random deck contains support cards as well as monsters.  A fixture field
  * is still a real rules field, so consume cards until the next monster rather
  * than writing a support id into the monster row (which makes the renderer and
@@ -1868,6 +1956,30 @@ static void fixture_board(void)
         com->equip_field[col] = (u8)(WAIFU_SUPPORT_EQUIP_CARD_ID + col);
     }
     touch_board(2);
+}
+#endif
+
+/* ── The duel's end ──────────────────────────────────────────────────────── */
+
+/* Where the duel goes once its verdict is dismissed: a won story duel
+ * records its progress and opens the next talk (or the ending); anything
+ * else is the title. */
+static u8 result_scene(void)
+{
+    if (configured_story_mode && g_duel.result > 0) {
+        const u8 next = (u8)(configured_story + 1);
+        /* Story can begin directly from a fresh cartridge.  The default
+         * deck is resident in the editor model, but SRAM is still
+         * uninitialised until the player visits the editor; materialise it
+         * before recording story progress. */
+        if (!snesSaveIsValid()) snesDeckSaveCurrent();
+        snesSaveStoryProgressStore(next);
+        if (next >= MSX2_STORY_MAX_DUELS)
+            return SNES_SCENE_ENDING;
+        snesStoryBegin(next);
+        return SNES_SCENE_STORY_TALK;
+    }
+    return SNES_SCENE_TITLE;
 }
 
 /* ── The player's turn ───────────────────────────────────────────────────── */
@@ -1925,6 +2037,7 @@ static void place_chosen(u8 defense)
     u8 hi;
     const u8 card = g_duel.side[MSX2_OWNER_PLAYER].hand[chosen];
     u8 placed = 0;
+    u8 redrawn = 0;
     for (hi = 0; hi < MSX2_HAND; ++hi)
         hand_before[hi] = g_duel.side[MSX2_OWNER_PLAYER].hand[hi];
     if (ui == UI_FUSE_TARGET) {
@@ -1933,10 +2046,19 @@ static void place_chosen(u8 defense)
         if (placed) queue_n = 0;
         else say("THEY DO NOT FUSE");
     } else if (Msx2_IsSupport(card)) {
-        if (Msx2_PlaySupport(MSX2_OWNER_PLAYER, chosen, cursor))
+        if (Msx2_PlaySupport(MSX2_OWNER_PLAYER, chosen, cursor)) {
             placed = 1;
-        else
+            /* A DRAW SUPPORT LEAVES A NEW CARD IN ITS OWN SLOT (Msx2_PlaySupport
+             * puts the drawn card where the support was).  note_draws only
+             * sees a slot go from empty to full, so the slot is put through
+             * the draw cadence here: hidden with the support, then dealt
+             * with the draw sound like any other new card.  Without this
+             * the slot was hidden and never shown again. */
+            if (g_duel.side[MSX2_OWNER_PLAYER].hand[chosen] != MSX2_CARD_NONE)
+                redrawn = 1;
+        } else {
             say("CANNOT PLAY IT");
+        }
     } else if (Msx2_PlaceMonster(MSX2_OWNER_PLAYER, chosen, cursor,
                                  defense ? TRUE : FALSE)) {
         placed = 1;
@@ -1946,6 +2068,7 @@ static void place_chosen(u8 defense)
     if (placed) snesAudioSfx(SNES_SFX_CARD_PLACED);
     note_draws(MSX2_OWNER_PLAYER, hand_before);
     if (placed) hand_visible[MSX2_OWNER_PLAYER] &= (u8)~(1u << chosen);
+    if (redrawn) draw_pending[MSX2_OWNER_PLAYER] |= (u8)(1u << chosen);
     Msx2_ClearActionEvent();
     ui = UI_HAND;
     cursor = chosen;
@@ -2001,6 +2124,8 @@ static void begin_com_presentation(const u8 *before)
      * chosen back stays until its flight has landed. */
     if (com_hand_slot < MSX2_HAND)
         hand_visible[MSX2_OWNER_COM] |= (u8)(1u << com_hand_slot);
+    if (com_card != MSX2_CARD_NONE)
+        snesObjQueueCard(COM_FLY_SLOT, face_of(com_card, 1), 1);
 }
 
 static u8 step_com_presentation(void)
@@ -2055,6 +2180,10 @@ static void step_player(void)
         if (down & KEY_DOWN) {
             if (you->hand[cursor] == MSX2_CARD_NONE) {
                 say("NO CARD THERE");
+            } else if (you->monster_played) {
+                /* A fusion is the turn's one summon too (Msx2_PlaceFusion
+                 * refuses it, MSX2_FUSE_SPENT); the chain is not opened. */
+                say("ONE MONSTER A TURN");
             } else {
                 queue_toggle(cursor);
                 snesAudioSfx(SNES_SFX_SELECT);
@@ -2079,13 +2208,29 @@ static void step_player(void)
                 const u8 kind = Msx2_SupportKind(card);
                 chosen = cursor;
                 if (kind == MSX2_SUP_EQUIP || kind == MSX2_SUP_GUARD) {
-                    ui = UI_EQUIP_TARGET;
-                    cursor = 0;
-                    touch_board(8);
+                    /* Refused in the hand when it cannot land anywhere,
+                     * rather than after the pick and the descent. */
+                    if (Msx2_LiveMonsterCount(MSX2_OWNER_PLAYER) == 0) {
+                        say("NO MONSTER TO EQUIP");
+                    } else if (Msx2_FirstFreeEquipSlot(MSX2_OWNER_PLAYER) == MSX2_SLOT_NONE) {
+                        say("NO ROOM FOR IT");
+                    } else {
+                        ui = UI_EQUIP_TARGET;
+                        cursor = Msx2_FirstLiveSlot(MSX2_OWNER_PLAYER);
+                        if (cursor == MSX2_SLOT_NONE) cursor = 0;
+                        touch_board(8);
+                    }
                 } else {
                     cursor = MSX2_SLOT_NONE;
                     place_chosen(0);
                 }
+            } else if (you->monster_played) {
+                /* THE SECOND MONSTER IS REFUSED IN THE HAND, not on the
+                 * board: the PC greys the hand out (player_can_place_monster)
+                 * and the rules refuse the placement either way, so picking
+                 * the card up, carrying it to a slot and being told there
+                 * was the same answer with three more presses in it. */
+                say("ONE MONSTER A TURN");
             } else {
                 chosen = cursor;
                 ui = UI_PLACE;
@@ -2131,8 +2276,10 @@ static void step_player(void)
 
     case UI_EQUIP_TARGET:
         move_cursor(MSX2_FIELD, 1);
-        if (down & KEY_A) begin_place_lower(0);
-        else if (down & KEY_B) {
+        if (down & KEY_A) {
+            if (Msx2_IsMonster(you->field[cursor])) begin_place_lower(0);
+            else say("NO MONSTER THERE");
+        } else if (down & KEY_B) {
             ui = UI_HAND;
             cursor = chosen;
             touch_board(8);
@@ -2250,6 +2397,11 @@ void snesDuelEnter(void)
     board_yaw = turn_frame = turn_from = turn_target = 0;
     top_row = SNES_ROW_YOU_MONSTER;
     top_col = 0;
+    top_attacker = MSX2_SLOT_NONE;
+    battle_return_top = 0;
+    intro_fade = INTRO_FADE_FIELDS;
+    fade_level = 0;
+    fade_dirty = 1;
     bob_phase = 0;
     queue_n = 0;
     lower_frame = 0;
@@ -2279,6 +2431,10 @@ u8 snesDuelFrame(void)
 {
     const u16 down = padsDown(0);
 
+#if defined(SNES_DEBUG)
+    /* THE HARNESS SWITCHES ARE A DEBUG BUILD'S (make DEBUG=1): the fixture
+     * board, the card ablation, the self-playing demo and the pinned moving
+     * camera.  A retail cartridge answers none of them. */
     if ((down & (KEY_R | KEY_SELECT)) == (KEY_R | KEY_SELECT)) {
         pattern_mode ^= 1;
         touch_board(2);
@@ -2299,6 +2455,24 @@ u8 snesDuelFrame(void)
         if (!force_moving) set_rest_camera((u8)(board_yaw == 128));
         touch_board(2);
     }
+#endif
+
+    /* The opening fade: the board is already baked underneath it, and
+     * nothing else -- no deal, no input -- happens until it is lit. */
+    if (intro_fade) {
+        u8 level;
+        --intro_fade;
+        level = (u8)(15 - (intro_fade * 15) / INTRO_FADE_FIELDS);
+        if (level != fade_level) {
+            fade_level = level;
+            fade_dirty = 1;
+        }
+        if (intro_fade) {
+            if (board_dirty) render();
+            build_objects();
+            goto stamp;
+        }
+    }
 
     ++bob_phase;
     if (ui == UI_BATTLE_ART) {
@@ -2306,9 +2480,13 @@ u8 snesDuelFrame(void)
          * runs at sixty and the sequencer counts fields.  The step's cost is
          * stamped so the harness can hold it to a field. */
         const u16 before = snesClock();
-        if (snesBattleStep(down)) end_battle_art();
-        else ++battle_frame;
+        const u8 over = snesBattleStep(down);
         t_render = (u16)(snesClock() - before);
+        /* A blow that decided the duel shows the verdict over its cards
+         * (snes_battle.c) and the duel leaves from there. */
+        if (over == 2) return result_scene();
+        if (over) end_battle_art();
+        else ++battle_frame;
         goto stamp;
     }
     if (view_motion == VIEW_BOARD_REST && ui == UI_HAND && (down & KEY_B)) {
@@ -2336,8 +2514,11 @@ u8 snesDuelFrame(void)
         !turn_frame && ui != UI_COM && ui != UI_RESULT) {
         snesAudioSfx(SNES_SFX_SELECT);
         begin_view_transition(1);
-    } else if (view_motion == VIEW_TOP_REST ||
-               (view_motion == VIEW_TO_TOP && top_view)) {
+    } else if (g_duel.result == 0 &&
+               (view_motion == VIEW_TOP_REST ||
+                (view_motion == VIEW_TO_TOP && top_view))) {
+        /* (A duel decided by an attack declared up here falls through to
+         * the result banner below, over the overhead picture.) */
         u8 moved = 0;
         if (down & KEY_LEFT)  { top_col = (u8)((top_col + SNES_COLS - 1) % SNES_COLS); moved = 1; }
         if (down & KEY_RIGHT) { top_col = (u8)((top_col + 1) % SNES_COLS); moved = 1; }
@@ -2352,18 +2533,78 @@ u8 snesDuelFrame(void)
             goto stamp;
         }
         if (down & KEY_A) {
+            const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
+            const Msx2Side *com = &g_duel.side[MSX2_OWNER_COM];
             press_sfx(down);
-            begin_check();
-            if (ui == UI_CHECK) {
-                build_objects();
-                goto stamp;
+            if (top_attacker != MSX2_SLOT_NONE) {
+                /* The target.  The rules say whether the attack is legal
+                 * (defence position, already attacked, the opening turn). */
+                if (top_row != SNES_ROW_COM_MONSTER ||
+                    !Msx2_IsMonster(com->field[top_col])) {
+                    say("PICK A TARGET");
+                } else if (!Msx2_Attack(MSX2_OWNER_PLAYER, top_attacker, top_col)) {
+                    say("ILLEGAL ATTACK");
+                } else {
+                    chosen = top_attacker;
+                    cursor = top_attacker;
+                    begin_battle_art(ui == UI_ATTACKER ? UI_ATTACKER : UI_HAND);
+                    goto stamp;
+                }
+            } else if (top_row == SNES_ROW_YOU_MONSTER &&
+                       Msx2_IsMonster(you->field[top_col]) &&
+                       (ui == UI_HAND || ui == UI_ATTACKER)) {
+                /* One of the player's own monsters: pick it as the attacker,
+                 * the PC's gesture, and A on anything else still checks it. */
+                if (you->attacked[top_col]) {
+                    say("ALREADY ATTACKED");
+                } else if (you->defense[top_col]) {
+                    say("IN DEFENCE");
+                } else if (Msx2_FirstTurnAttackLocked()) {
+                    say("NOT ON TURN ONE");
+                } else if (Msx2_LiveMonsterCount(MSX2_OWNER_COM) == 0) {
+                    /* Nothing to attack: the pick is the direct attack. */
+                    if (Msx2_Attack(MSX2_OWNER_PLAYER, top_col, MSX2_SLOT_NONE)) {
+                        chosen = top_col;
+                        cursor = top_col;
+                        begin_battle_art(ui == UI_ATTACKER ? UI_ATTACKER : UI_HAND);
+                        goto stamp;
+                    }
+                    say("ILLEGAL ATTACK");
+                } else {
+                    top_attacker = top_col;
+                    top_row = SNES_ROW_COM_MONSTER;
+                    top_col = Msx2_FirstLiveSlot(MSX2_OWNER_COM);
+                    if (top_col == MSX2_SLOT_NONE) top_col = 0;
+                }
+            } else {
+                begin_check();
+                if (ui == UI_CHECK) {
+                    build_objects();
+                    goto stamp;
+                }
             }
         }
-        if (down & KEY_B) {
+        if ((down & KEY_START) && (ui == UI_HAND || ui == UI_ATTACKER)) {
+            /* The turn passes from up here too: the attacker is put down,
+             * the camera walks back to the seat, and the swing to the
+             * opponent's side follows from there. */
             press_sfx(down);
-            /* Card check and rule changes may have replaced the saved bitmap. */
+            top_attacker = MSX2_SLOT_NONE;
+            end_player_turn();
             if (board_dirty) render();
             begin_view_transition(0);
+        } else if (down & KEY_B) {
+            press_sfx(down);
+            if (top_attacker != MSX2_SLOT_NONE) {
+                /* B puts the attacker down: the cursor goes back to it. */
+                top_row = SNES_ROW_YOU_MONSTER;
+                top_col = top_attacker;
+                top_attacker = MSX2_SLOT_NONE;
+            } else {
+                /* Card check and rule changes may have replaced the saved bitmap. */
+                if (board_dirty) render();
+                begin_view_transition(0);
+            }
         }
         if (board_dirty) render();
         build_objects();
@@ -2482,20 +2723,7 @@ u8 snesDuelFrame(void)
         if (over_step <= OVER_SLIDE_FRAMES + OVER_HOLD_FRAMES) ++over_step;
         else if (down & (KEY_A | KEY_B | KEY_START)) {
             press_sfx(down);
-            if (configured_story_mode && g_duel.result > 0) {
-                const u8 next = (u8)(configured_story + 1);
-                /* Story can begin directly from a fresh cartridge.  The
-                 * default deck is resident in the editor model, but SRAM is
-                 * still uninitialised until the player visits the editor;
-                 * materialise it before recording story progress. */
-                if (!snesSaveIsValid()) snesDeckSaveCurrent();
-                snesSaveStoryProgressStore(next);
-                if (next >= MSX2_STORY_MAX_DUELS)
-                    return SNES_SCENE_ENDING;
-                snesStoryBegin(next);
-                return SNES_SCENE_STORY_TALK;
-            }
-            return SNES_SCENE_TITLE;
+            return result_scene();
         }
     } else if (!autoplay && g_duel.turn_owner == MSX2_OWNER_PLAYER &&
                (g_duel.phase == MSX2_PHASE_MAIN ||

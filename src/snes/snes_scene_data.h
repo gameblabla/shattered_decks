@@ -30,6 +30,14 @@
 #define SNES_PORTRAIT_PAL_BYTES 224
 #define SNES_PORTRAIT_FIRST_L   32
 #define SNES_PORTRAIT_FIRST_R   144
+/* Serena's block is wider (see the generator): its columns, tiles and bytes,
+ * and the composited tiles for the columns the two blocks share. */
+#define SNES_PORTRAIT_L_COLS    20
+#define SNES_PORTRAIT_L_TILES   340
+#define SNES_PORTRAIT_L_BYTES   21760
+#define SNES_PORTRAIT_OVER_COLS 4
+#define SNES_PORTRAIT_OVER_TILES 68
+#define SNES_PORTRAIT_OVER_BYTES 4352
 
 extern const u8 snes_scene_font[];
 extern const u8 snes_scene_text_pal[];      /* BG2 palette 0: 16 entries */
@@ -56,14 +64,19 @@ extern const u8 snes_portrait_0[];
 extern const u8 snes_portrait_0_pal[];
 extern const u8 snes_portrait_1[];
 extern const u8 snes_portrait_1_pal[];
+extern const u8 snes_portrait_1_over[];
 extern const u8 snes_portrait_2[];
 extern const u8 snes_portrait_2_pal[];
+extern const u8 snes_portrait_2_over[];
 extern const u8 snes_portrait_3[];
 extern const u8 snes_portrait_3_pal[];
+extern const u8 snes_portrait_3_over[];
 extern const u8 snes_portrait_4[];
 extern const u8 snes_portrait_4_pal[];
+extern const u8 snes_portrait_4_over[];
 extern const u8 snes_portrait_5[];
 extern const u8 snes_portrait_5_pal[];
+extern const u8 snes_portrait_5_over[];
 
 /* The ground tile blobs differ in length; the runtime uploads this many. */
 #define SNES_STORY_DESERT_TILE_BYTES 3104

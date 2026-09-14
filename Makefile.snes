@@ -1,8 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  Makefile.snes — Super Nintendo target (4 MB HiROM / FastROM, no chips)
 #
-#      make -f Makefile.snes            # -> build/snes/waifusnes.sfc
-#      make -f Makefile.snes verify     # build, then run the snesfaust harness
+#      make -f Makefile.snes            # -> build/snes/waifusnes.sfc (retail)
+#      make -f Makefile.snes DEBUG=1    # -> build/snes/waifusnes_debug.sfc
+#      make -f Makefile.snes verify     # build both, then run the harness
+#
+#  THE RETAIL ROM HAS NO SWITCHES.  The harness drives the duel through four
+#  pad shortcuts (R fixture board, SELECT no cards, L demo, Y pinned camera)
+#  and the title through three (Y deck, B story, X ending); a cartridge that
+#  answered them would be a cartridge that plays itself on a pressed
+#  shoulder.  DEBUG=1 compiles them in (-DSNES_DEBUG) into a ROM of its own
+#  name, built from its own object tree, and tools/snes/verify.py runs THAT
+#  one -- the retail ROM gets the header and freshness checks only.
 #
 #  Laid out as a fork the way Makefile.msx2 and Makefile.atarist are:
 #  everything target specific is in src/snes/ and tools/snes/, and src/main.c
@@ -30,8 +39,14 @@ LIBDIR  := $(PVSNESLIB_HOME)/pvsneslib/lib/HiROM_FastROM
 
 PROJ_DIR := src/snes
 BUILD    := build/snes
+DEBUG    ?= 0
+ifeq ($(DEBUG),1)
+OBJ      := $(BUILD)/obj_debug
+ROM      := $(BUILD)/waifusnes_debug.sfc
+else
 OBJ      := $(BUILD)/obj
 ROM      := $(BUILD)/waifusnes.sfc
+endif
 
 # ── Cartridge shape (SNES_PORT_PLAN.md §1.1) ─────────────────────────────────
 # 4 MB is the largest chipless ROM that is FastROM everywhere: ExHiROM's upper
@@ -122,6 +137,9 @@ CFLAGS := -I$(PROJ_DIR)/compat -I$(PROJ_DIR) -Isrc/game -Isrc/msx2 -Isrc/generat
 # -H HiROM, -F FastROM: they pick the calling/addressing model, so they must
 # agree with LIBDIR or the link silently mixes two ABIs.
 CFLAGS += -H -F
+ifeq ($(DEBUG),1)
+CFLAGS += -DSNES_DEBUG=1
+endif
 
 # assets/ is on the include path because the generated .asm there .INCBINs a
 # .bin next to itself, and wla-dx resolves an INCBIN against its include dirs.
@@ -292,10 +310,10 @@ $(SNES_AUDIO_ASSETS_OBJ): $(SNES_AUDIO_ASSETS_ASM) $(HDR) $(SNES_AUDIO_SNAPSHOTS
 # ── Link ─────────────────────────────────────────────────────────────────────
 $(ROM): $(OBJS)
 	@mkdir -p $(dir $@)
-	@echo "[objects]" > $(BUILD)/linkfile
-	@for o in $(OBJS); do echo "$(CURDIR)/$$o" >> $(BUILD)/linkfile; done
-	@for o in $$(ls $(LIBDIR)); do echo "$(LIBDIR)/$$o" >> $(BUILD)/linkfile; done
-	$(LD) -d -s -v -A -c -L $(LIBDIR) $(BUILD)/linkfile $@
+	@echo "[objects]" > $(OBJ)/linkfile
+	@for o in $(OBJS); do echo "$(CURDIR)/$$o" >> $(OBJ)/linkfile; done
+	@for o in $$(ls $(LIBDIR)); do echo "$(LIBDIR)/$$o" >> $(OBJ)/linkfile; done
+	$(LD) -d -s -v -A -c -L $(LIBDIR) $(OBJ)/linkfile $@
 	@$(MAKE) -s -f Makefile.snes banks
 
 # The 4 MB ceiling is a build check, not a comment: a HiROM cartridge has no
@@ -310,7 +328,10 @@ banks:
 	   echo "SNES: map mode byte is \$$$$mode, expected \$$31 (HiROM+FastROM)"; exit 1; fi; \
 	 echo "SNES: $(ROM)  $$sz bytes, map mode \$$$$mode (HiROM + FastROM)"
 
+# The harness needs the debug ROM's switches; the retail ROM is built too so
+# a change that only compiles with SNES_DEBUG is caught here.
 verify: rom
+	$(MAKE) -f Makefile.snes DEBUG=1 rom
 	python3 tools/snes/test_dialogue.py
 	python3 tools/snes/verify.py
 

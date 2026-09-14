@@ -12,28 +12,38 @@ snes_portrait_1:
     .INCBIN "snes_portrait_1.bin"
 snes_portrait_1_pal:
     .INCBIN "snes_portrait_1_pal.bin"
+snes_portrait_1_over:
+    .INCBIN "snes_portrait_1_over.bin"
 .ENDS
 .SECTION "snes_portrait_2" BANK 26 SLOT 0 ORG $0000 FORCE
 snes_portrait_2:
     .INCBIN "snes_portrait_2.bin"
 snes_portrait_2_pal:
     .INCBIN "snes_portrait_2_pal.bin"
+snes_portrait_2_over:
+    .INCBIN "snes_portrait_2_over.bin"
 .ENDS
 .SECTION "snes_portrait_3" BANK 27 SLOT 0 ORG $0000 FORCE
 snes_portrait_3:
     .INCBIN "snes_portrait_3.bin"
 snes_portrait_3_pal:
     .INCBIN "snes_portrait_3_pal.bin"
+snes_portrait_3_over:
+    .INCBIN "snes_portrait_3_over.bin"
 .ENDS
 .SECTION "snes_portrait_4" BANK 28 SLOT 0 ORG $0000 FORCE
 snes_portrait_4:
     .INCBIN "snes_portrait_4.bin"
 snes_portrait_4_pal:
     .INCBIN "snes_portrait_4_pal.bin"
+snes_portrait_4_over:
+    .INCBIN "snes_portrait_4_over.bin"
 .ENDS
 .SECTION "snes_portrait_5" BANK 29 SLOT 0 ORG $0000 FORCE
 snes_portrait_5:
     .INCBIN "snes_portrait_5.bin"
 snes_portrait_5_pal:
     .INCBIN "snes_portrait_5_pal.bin"
+snes_portrait_5_over:
+    .INCBIN "snes_portrait_5_over.bin"
 .ENDS

@@ -178,13 +178,20 @@ int main(void)
             else if (cur_scene == SNES_SCENE_STORY_TALK ||
                      cur_scene == SNES_SCENE_ENDING)
                 snesVideoRestartSceneHdma();
-            setScreenOn();
+            /* The duel opens from black (snes_duel.c's intro fade): the
+             * screen comes on at ITS level, here in vblank, rather than
+             * through setScreenOn's full brightness. */
+            if (cur_scene == SNES_SCENE_DUEL && snesDuelBrightness() < 15)
+                REG_INIDISP = snesDuelBrightness();
+            else
+                setScreenOn();
             screen_on_pending = 0;
         }
         if (cur_scene == SNES_SCENE_DUEL) {
             /* The board's tiles went up inside the NMI (snes_fb.asm), which
              * left the reserved share of the window for this: OAM and the
              * card rows, then the card presentation's maps if one is up. */
+            snesDuelVblank();
             snesObjVblank();
             switch (snesDuelMode3Active()) {
             case 1:  snesCardArtVblank(); break;

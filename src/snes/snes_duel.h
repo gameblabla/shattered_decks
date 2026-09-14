@@ -13,6 +13,9 @@ void snesDuelEnter(void);
 u8   snesDuelFrame(void);
 void snesDuelConfigure(u8 story_duel, u8 story_mode);
 u8   snesDuelMode3Active(void);
+/* The opening fade's master brightness (0..15) and its vblank write. */
+u8   snesDuelBrightness(void);
+void snesDuelVblank(void);
 /* Mid-pose: the main loop skips its vblank wait and vblank work. */
 u8   snesDuelBusy(void);
 
