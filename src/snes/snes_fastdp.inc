@@ -59,7 +59,15 @@
 ; (The sprite store's own FD_OAM_* / FD_TXT_* / FD_NUM_* bytes are declared
 ; in snes_oam.asm: channel 1 for the entry, channel 2 for the emitters.)
 
-; Channels 2-3: the converter driver's per-call words (snes_conv_drivers.inc).
+; Channels 2-3: the converter driver's per-call words (snes_conv_drivers.inc),
+; and channel 1 for the whole-frame loop's (no walker runs inside the
+; converter, so the walkers' words are free while it does).
+.DEFINE FD_CV_ROM_LO    $11     ; the row's ROM-floor mask, shifted a bit a
+.DEFINE FD_CV_ROM_HI    $13     ; column
+.DEFINE FD_CV_FREE_HEAD $15     ; the free queue's head (Begin: its tail)
+.DEFINE FD_CV_FREE_TAIL $15
+.DEFINE FD_CV_FREE_CNT  $17     ; ...and count, for the row
+.DEFINE FD_CV_NEXT      $19     ; the tile id that continues the pending run
 .DEFINE FD_CV_COL       $21
 .DEFINE FD_CV_ROW       $23
 .DEFINE FD_CV_TILE      $25

@@ -21,6 +21,26 @@ snesConvHalfTileTab:
     .dw snesConvHalfTile0, snesConvHalfTile1
     .dw snesConvHalfTile2, snesConvHalfTile3
 
+; The same, spaced 64 bytes apart: the whole-frame loop indexes them
+; with the slot's own phase bits (slot & $C0), no shifting.
+snesConvFrameTileTab64:
+    .dw snesConvFrameTile0
+    .dsb 62, 0
+    .dw snesConvFrameTile1
+    .dsb 62, 0
+    .dw snesConvFrameTile2
+    .dsb 62, 0
+    .dw snesConvFrameTile3
+
+snesConvHalfTileTab64:
+    .dw snesConvHalfTile0
+    .dsb 62, 0
+    .dw snesConvHalfTile1
+    .dsb 62, 0
+    .dw snesConvHalfTile2
+    .dsb 62, 0
+    .dw snesConvHalfTile3
+
 snesConvFrameTile0:
     lda.w snes_frame_fb + 6,y
     asl a

@@ -179,7 +179,16 @@ def main():
         "    .dw snesConvHalfTile0, snesConvHalfTile1",
         "    .dw snesConvHalfTile2, snesConvHalfTile3",
         "",
+        "; The same, spaced 64 bytes apart: the whole-frame loop indexes them",
+        "; with the slot's own phase bits (slot & $C0), no shifting.",
     ]
+    for kind in ("Frame", "Half"):
+        lines.append("snesConv%sTileTab64:" % kind)
+        for p in range(4):
+            lines.append("    .dw snesConv%sTile%d" % (kind, p))
+            if p < 3:
+                lines.append("    .dsb 62, 0")
+        lines.append("")
     for p in range(4):
         lines += frame_tile(p) + [""]
     for p in range(4):

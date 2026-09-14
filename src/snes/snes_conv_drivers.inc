@@ -215,6 +215,9 @@ cv_rom_commit:
 _rom_break:
     jsr cv_flush_run
 _rom_start:
+    lda #0
+    sta.b <FD_CV_NEXT           ; (the whole-frame loop: no tile continues
+                                ; a ROM run)
     lda.b <FD_CV_ENTRY
     sta.b <FD_CV_RUN_SRC
     lda.l cv_rom_bank
@@ -457,32 +460,74 @@ _cf_all_dirty:
     inx
     cpx #18*4
     bne _cf_all_dirty
-    ; A WHOLE FRAME EMPTIES THE MAP FIRST.  Every entry of the map being
+;    ; A WHOLE FRAME EMPTIES THE MAP FIRST.  Every entry of the map being
     ; built is released and zeroed here in one tight pass, and the row loop
     ; then walks only each row's span (_cw_row), allocating and converting
     ; without a mask, a release or a blank store per cell: the column loop
     ; below was doing forty instructions for each of the 400-odd cells a
     ; camera frame leaves blank.
+    ;
+    ; The release is inline -- cv_tile_release through a jsr with X saved
+    ; round it was thirty-five instructions an entry -- with the queue's
+    ; tail and count on the fast page for the pass and DB = $7F so the map
+    ; reads as `lda abs,y` and X is free for the reference and the queue.
     lda #1
     sta.l cv_whole
+    lda.l fb_free_tail
+    sta.b <FD_CV_FREE_TAIL
+    lda.l fb_free_count
+    sta.b <FD_CV_FREE_CNT
     lda.l cv_shadow
     clc
     adc #576*2
     sta.b <FD_CV_Y              ; one past the last entry
+    phb
+    pea $7F7F
+    plb
+    plb
     lda.l cv_shadow
-    tax
+    tay
 _cf_empty:
-    lda.l $7F0000,x
-    beq +
-    phx
-    jsr cv_tile_release
-    plx
-    lda #0
-    sta.l $7F0000,x
-+   inx
+    lda.w $0000,y
+    and #$03FF
+    beq _cf_empty_next
+    tax
+    sep #$20
+.ACCU 8
+    lda.l snes_tile_ref,x
+    beq _cf_empty_zero          ; already free: a bug elsewhere, but harmless
+    dec a
+    sta.l snes_tile_ref,x
+    bne _cf_empty_zero
+    rep #$20
+.ACCU 16
+    txa
+    ldx.b <FD_CV_FREE_TAIL
+    sta.l snes_tile_free,x
     inx
-    cpx.b <FD_CV_Y
+    inx
+    cpx #FB_FREE_BYTES
+    bne +
+    ldx #0
++   stx.b <FD_CV_FREE_TAIL
+    inc.b <FD_CV_FREE_CNT
+    bra _cf_empty_clear
+_cf_empty_zero:
+    rep #$20
+.ACCU 16
+_cf_empty_clear:
+    lda #0
+    sta.w $0000,y
+_cf_empty_next:
+    iny
+    iny
+    cpy.b <FD_CV_Y
     bne _cf_empty
+    plb
+    lda.b <FD_CV_FREE_TAIL
+    sta.l fb_free_tail
+    lda.b <FD_CV_FREE_CNT
+    sta.l fb_free_count
     bra _cf_copy_done
 _cf_copy_needed:
     lda #0
@@ -873,7 +918,210 @@ _cc_go:
 ; says so, converted otherwise -- and nothing else is touched.  Enters with
 ; DB = $7E, D pushed, cv_row/cv_row_end (and, from snesConvCells, cv_col/
 ; cv_col_end for one row) set.
+;
+; ONE STRAIGHT LINE A CELL.  The allocator, the ring reservation and the
+; run commit used to be the shared subroutines below, each recomputing the
+; cell's map entry, chunky offset and cell index from the row and column
+; and reaching the allocator's and ring's state through long WRAM stores:
+; about 170 instructions a converted tile, more than the tile conversion
+; itself.  Here the per-cell terms are RUNNING COUNTERS on the fast page
+; (the map entry pointer, the chunky offset, the cell index, the ROM mask
+; shifted a bit a column), the free queue's head and the ring's write index
+; are cached there for the row and written back at its end, and the run
+; continues when the fresh tile is THE ONE THE RUN EXPECTS (FD_CV_NEXT,
+; kept as a tile id: ring slots are handed out in order, so a run whose
+; tile ids are consecutive is contiguous at both ends; a ROM run in between
+; sets the expected id to 0, which no tile has).  About sixty instructions.
+;
+; The state the general path (_cf_col) and the subroutines keep in WRAM --
+; fb_free_head/count, ring_wrote -- is loaded at each row's start and stored
+; at its end, so the two paths never see each other's copy stale: the ISR
+; reads none of it (the NMI only ever advances ring_freed and the jobs).
 ;-----------------------------------------------------------------------------
+
+; The column loop, once for the 1:1 frame (SHIFT 3: eight texels a cell,
+; snesConvFrameTileTab64) and once for the doubled one (SHIFT 2, four).
+; Fast-page words for the row: FD_CV_COL becomes the cell count, FD_CV_Y
+; the running chunky offset, FD_CV_ENTRY the running map entry, FD_CV_TMP
+; the cell's ring slot across its tile routine.
+.MACRO CW_LOOP ARGS SHIFT, TAB
+    ; The row's running terms from its clipped first column.
+    lda.b <FD_CV_COL_END
+    sec
+    sbc.b <FD_CV_COL
+    beq _cw_empty\@
+    bcs +
+_cw_empty\@:
+    jmp _cw_row_done            ; nothing of the span in [col, col_end)
++   tay                         ; the cell count, parked
+    lda.b <FD_CV_ROW
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    clc
+    adc.b <FD_CV_COL
+    asl a
+    clc
+    adc.l cv_shadow
+    sta.b <FD_CV_ENTRY          ; the first cell's map entry
+    lda.b <FD_CV_COL
+    .REPT SHIFT
+    asl a
+    .ENDR
+    clc
+    adc.b <FD_CV_Y
+    sta.b <FD_CV_Y              ; ...and its first chunky byte
+    ; The ROM mask, shifted so its low bit is this column's.
+    lda.b <FD_CV_ROW
+    asl a
+    asl a
+    tax
+    lda.l snes_conv_rom,x
+    sta.b <FD_CV_ROM_LO
+    lda.l snes_conv_rom+2,x
+    sta.b <FD_CV_ROM_HI
+    ldx.b <FD_CV_COL
+    beq ++
+-   lsr.b <FD_CV_ROM_HI
+    ror.b <FD_CV_ROM_LO
+    dex
+    bne -
+++  sty.b <FD_CV_COL            ; cells to go
+    lda.l fb_free_head
+    sta.b <FD_CV_FREE_HEAD
+    lda.l fb_free_count
+    sta.b <FD_CV_FREE_CNT
+_cw_col\@:
+    ; A tile off the free queue, with a reference of one.
+    lda.b <FD_CV_FREE_CNT
+    bne +
+    jmp _cw_none\@              ; none left (outside the bound): blank
++   dec a
+    sta.b <FD_CV_FREE_CNT
+    ldx.b <FD_CV_FREE_HEAD
+    lda.l snes_tile_free,x
+    sta.b <FD_CV_TILE
+    inx
+    inx
+    cpx #FB_FREE_BYTES
+    bne +
+    ldx #0
++   stx.b <FD_CV_FREE_HEAD
+    tax
+    sep #$20
+.ACCU 8
+    lda #1
+    sta.l snes_tile_ref,x
+    rep #$20
+.ACCU 16
+    txa
+    ora #FB_MAP_ATTR
+    ldx.b <FD_CV_ENTRY
+    sta.l $7F0000,x
+    ; From the ROM floor?
+    lsr.b <FD_CV_ROM_HI
+    ror.b <FD_CV_ROM_LO
+    bcc +
+    lda.b <FD_CV_ENTRY
+    pha                         ; (cv_rom_commit's scratch)
+    sec
+    sbc.l cv_shadow
+    lsr a                       ; the cell index
+    jsr cv_rom_commit
+    pla
+    sta.b <FD_CV_ENTRY
+    jmp _cw_next\@
++   ; A ring slot: wait for one if the ring is full (flushing the pending
+    ; run first, or the ISR could never free the slots it holds).
+    lda.l ring_wrote
+    sec
+    sbc.l ring_freed
+    cmp #FB_RING_SIZE - 64 + 1
+    bcc _cw_room\@
+    jsr cv_flush_run
+-   lda.l ring_wrote
+    sec
+    sbc.l ring_freed
+    cmp #FB_RING_SIZE - 64 + 1
+    bcs -
+_cw_room\@:
+    lda.l ring_wrote
+    and #FB_RING_MASK
+    clc
+    adc #snes_ring
+    sta.b <FD_CV_TMP            ; the slot
+    and #$00C0
+    tax                         ; its phase, as the 64-byte-spaced table's
+                                ; index
+    ldy.b <FD_CV_Y
+    lda.b <FD_CV_TMP
+    and #$FF00
+    pha
+    pld                         ; D = the ring page for the tile routine
+    jsr (TAB,x)
+    lda #FASTDP
+    tcd
+    ; Book it: the run continues when this is the tile it expects.
+    lda.b <FD_CV_RUN_BYTES
+    beq _cw_start\@
+    lda.b <FD_CV_TILE
+    cmp.b <FD_CV_NEXT
+    beq _cw_extend\@
+    jsr cv_flush_run
+_cw_start\@:
+    lda.b <FD_CV_TMP
+    sta.b <FD_CV_RUN_SRC
+    lda #$007E
+    sta.l cv_run_bank
+    lda #1
+    sta.l cv_run_kind
+    lda.b <FD_CV_TILE
+    sta.b <FD_CV_NEXT           ; (+1 below)
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    sta.b <FD_CV_RUN_DST
+    lda #0
+    sta.b <FD_CV_RUN_BYTES
+_cw_extend\@:
+    lda.b <FD_CV_RUN_BYTES
+    clc
+    adc #64
+    sta.b <FD_CV_RUN_BYTES
+    inc.b <FD_CV_NEXT
+    lda.l ring_wrote
+    clc
+    adc #64
+    sta.l ring_wrote
+    and #FB_RING_MASK
+    bne _cw_next\@
+    jsr cv_flush_run            ; a run never crosses the ring's end
+    bra _cw_next\@
+_cw_none\@:
+    lda #0
+    ldx.b <FD_CV_ENTRY
+    sta.l $7F0000,x
+_cw_next\@:
+    inc.b <FD_CV_ENTRY
+    inc.b <FD_CV_ENTRY
+    lda.b <FD_CV_Y
+    clc
+    adc #1 << SHIFT
+    sta.b <FD_CV_Y
+    dec.b <FD_CV_COL
+    beq +
+    jmp _cw_col\@
++   lda.b <FD_CV_FREE_HEAD
+    sta.l fb_free_head
+    lda.b <FD_CV_FREE_CNT
+    sta.l fb_free_count
+    jmp _cw_row_done
+.ENDM
+
 _cw_row:
     lda #0
     sta.b <FD_CV_COL
@@ -916,95 +1164,12 @@ _cw_cells:
     cmp.b <FD_CV_COL_END
     bcs +
     sta.b <FD_CV_COL_END
-+   lda.b <FD_CV_ROW
-    asl a
-    asl a
-    tax
-    lda.l snes_conv_rom,x
-    sta.l cv_rom
-    lda.l snes_conv_rom+2,x
-    sta.l cv_rom_hi
-_cw_col:
-    lda.b <FD_CV_COL
-    cmp.b <FD_CV_COL_END
-    bcc +
-    jmp _cw_row_done
-+
-    ; The cell's map entry.
-    lda.b <FD_CV_ROW
-    asl a
-    asl a
-    asl a
-    asl a
-    asl a
-    clc
-    adc.b <FD_CV_COL
-    asl a
-    clc
-    adc.l cv_shadow
-    sta.b <FD_CV_ENTRY
-    jsr cv_tile_alloc
-    sta.b <FD_CV_TILE
-    beq _cw_next                ; no tile left (outside the bound): blank
-    ora #FB_MAP_ATTR
-    pha
-    lda.b <FD_CV_ENTRY
-    tax
-    pla
-    sta.l $7F0000,x
-    ; From the ROM floor?
-    lda.b <FD_CV_COL
-    and #$000F
-    asl a
-    tax
-    lda.b <FD_CV_COL
-    cmp #16
-    bcs +
-    lda.l cv_rom
-    bra ++
-+   lda.l cv_rom_hi
-++  and.l snes_conv_bit16,x
++   lda.l cv_half
     beq +
-    lda.b <FD_CV_ROW
-    asl a
-    asl a
-    asl a
-    asl a
-    asl a
-    clc
-    adc.b <FD_CV_COL
-    jsr cv_rom_commit
-    bra _cw_next
-+   jsr cv_ring_reserve         ; Y = the slot, FD_CV_TMP = its phase * 2
-    phy
-    tya
-    and #$FF00
-    pha
-    lda.b <FD_CV_COL
-    asl a
-    asl a
-    ldx.w cv_half
-    bne +
-    asl a
-+   clc
-    adc.b <FD_CV_Y
-    ldx.b <FD_CV_TMP
-    tay
-    pld                         ; D = the ring page for the tile routine
-    lda.l cv_half
-    bne +
-    jsr (snesConvFrameTileTab,x)
-    bra ++
-+   jsr (snesConvHalfTileTab,x)
-++  lda #FASTDP
-    tcd
-    ply
-    jsr cv_ring_commit
-_cw_next:
-    lda.b <FD_CV_COL
-    inc a
-    sta.b <FD_CV_COL
-    jmp _cw_col
+    jmp _cw_half
++   CW_LOOP 3, snesConvFrameTileTab64
+_cw_half:
+    CW_LOOP 2, snesConvHalfTileTab64
 _cw_row_done:
     lda.l cv_partial
     beq +
