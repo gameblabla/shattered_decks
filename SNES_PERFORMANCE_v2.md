@@ -78,6 +78,31 @@ End to end (`verify.py` render cost): still bake 8876 -> 8323 lines, a
 motion frame 3184 -> 3005.  The motion frame remains bound by the ring wait
 on the NMI drain (`_rr_wait`), which is section 8's territory.
 
+**Second batch (2026-09-15), from the recomputed profile.**  The per-frame
+profile after the first batch (categorised by symbol, divided by SAMPLED
+work, not by the fixed window) put a pinned motion frame at 12.5 fields:
+converter bookkeeping 21%, tile conversion 21%, sampling 17%, C setup 14%,
+ring wait 9%, math 6%.  The bookkeeping -- not in the plan's text, but the
+largest measured item -- was the shared allocator / reservation / commit
+subroutines of the whole-frame path, ~170 instructions a tile; it is now
+one fused loop (`CW_LOOP`, section 6's spirit): 4715 -> 2857 master a
+converted tile (motion), 5174 -> 3530 (lift).  Then 6.4's larger layout
+change in a cheaper form: the doubled tile's second pair reads a
+pre-shifted copy of its LUT (four banks, found by packing the portraits
+two a bank and the deck UI above the scene font), 4590 -> 3680 a half
+tile.  Then 7.2 as far as it is exact: `snesUQDiv` skips the eight (or
+sixteen, a < b) steps whose quotient bits the saturation test already
+proved zero, unrolled (host-checked bit for bit on two million cases); the
+yawed floor rows hoist two invariant products; `du * (x0 - 64)` is one
+PPU 16x8 product (`snesMul16x8`) instead of three CPU partials; `y *
+stride` is a shift.  Math -25% (motion), -20% (lift).  Pinned motion frame
+12.5 -> 11.1 fields; `verify.py` moving 3005 -> 2649 lines after the loop
+alone, 2454 (9.4 fields) after all three, the still bake unchanged (it is
+the diff path); all checks pass.  Not done from 7.2: the
+`snesMulHi/Lo` NOP scheduling (0.5% of a frame) and a PPU unsigned
+product (`snesQMul`'s stack-scratch rewrite modelled as a wash: the D
+switch it would save costs what stack-relative scratch adds).
+
 Left for later phases: 5.2 immediate-operand kernels, 5.3's MVN/copy
 comparisons and the turned-card stamp, 7 (calling contracts, scheduled
 arithmetic, fixed-camera descriptors), 8, 9, and the differential harness

@@ -214,6 +214,31 @@ snesMulLo:
     rtl
 
 ;-----------------------------------------------------------------------------
+; u16 snesMul16x8(u16 a, s16 k)  -- the low 16 bits of a * k, k in -128..127
+;
+; snesMulLo for a small signed multiplier: the PPU's signed 16 x 8 product
+; in one go instead of three CPU partial products.  Its low sixteen bits
+; are the plain product's whatever the operands' signs, which is all the
+; callers keep (a texture step times a pixel offset from the row's middle).
+; No fast-page words: the operands are read off the stack and the result
+; comes straight from the port.
+;-----------------------------------------------------------------------------
+snesMul16x8:
+    sep #$20
+.ACCU 8
+    lda 4,s
+    sta.l $211B
+    lda 5,s
+    sta.l $211B
+    lda 6,s
+    sta.l $211C
+    rep #$20
+.ACCU 16
+    lda.l $2134
+    sta.b tcc__r0
+    rtl
+
+;-----------------------------------------------------------------------------
 ; s16 snesQMul(s16 a, s16 b)    -- (a * b) >> 8, Q8.8
 ;
 ; The hardware multiplier is unsigned, so the signs are taken off the operands
@@ -287,9 +312,31 @@ snesQMul:
 ; corners, a few dozen calls a frame.  Nothing per row and nothing per pixel
 ; reaches it -- those go through snes_recip_row instead.
 ;
-; Plain restoring division, twenty-four steps for a twenty-four bit numerator.
-; The remainder needs seventeen bits, which is the carry flag plus a word.
-;-----------------------------------------------------------------------------
+; Restoring division over a twenty-four bit numerator, with the steps that
+; cannot produce a quotient bit LEFT OUT.  The numerator is a << 8, so a
+; step-by-step divide would shift `a` in a bit at a time and then eight
+; zeros; but the saturation test above has proved (a >> 8) < b, so the
+; first eight steps -- the ones that shift a's high byte in -- all compare
+; a partial remainder below b and yield zero bits.  They are skipped by
+; STARTING with the remainder a >> 8 and the low byte still to come:
+; sixteen steps.  When a < b the same holds for all of a's sixteen bits,
+; and the divide starts with the remainder a and only the eight zero steps.
+; Bit for bit the same quotient as the full twenty-four; a third or two
+; thirds of the time.  The steps are unrolled; the remainder needs
+; seventeen bits, which is the carry flag plus a word.
+.MACRO DV_STEP
+    asl.b <FD_M_A
+    rol a                       ; remainder <<= 1; its 17th bit is the carry
+    bcs _dv_sub\@              ; a set 17th bit is always >= the divisor
+    cmp.b <FD_M_B
+    bcc _dv_shift\@            ; C clear: a zero quotient bit
+_dv_sub\@:
+    sbc.b <FD_M_B               ; C is set on both ways in
+    sec                         ; (a 17-bit remainder may borrow in 16)
+_dv_shift\@:
+    rol.b <FD_M_Q
+.ENDM
+
 snesUQDiv:
     php
     rep #$30
@@ -299,8 +346,9 @@ snesUQDiv:
 
     lda 9,s
     sta.b <FD_M_B
-    beq _dv_sat                 ; divide by zero saturates rather than hangs
-    lda 7,s
+    bne +
+    jmp _dv_sat                 ; divide by zero saturates rather than hangs
++   lda 7,s
     sta.b <FD_M_A
     ; (a << 8) / b overflows sixteen bits exactly when a >= b * 256, which is
     ; (a >> 8) >= b.  Checking it here keeps the loop free of a per-step
@@ -308,28 +356,50 @@ snesUQDiv:
     xba
     and #$00FF
     cmp.b <FD_M_B
-    bcs _dv_sat
-
+    bcc +
+    jmp _dv_sat
++
     stz.b <FD_M_Q                 ; quotient
-    lda #0                        ; the remainder stays in A
-
-    ; The numerator is a << 8: bits 23..8 are `a` and bits 7..0 are zero, so
-    ; shifting `a` left twenty-four times feeds the loop first `a` and then the
-    ; eight zeros, in order.
-    ldx #24
-_dv_loop:
-    asl.b <FD_M_A
-    rol a                         ; remainder <<= 1; its 17th bit is the carry
-    bcs _dv_sub                   ; a set 17th bit is always >= the divisor
+    lda.b <FD_M_A
     cmp.b <FD_M_B
-    bcc _dv_shift                 ; C clear: a zero quotient bit
-_dv_sub:
-    sbc.b <FD_M_B                 ; C is set on both ways in
-    sec                           ; (a 17-bit remainder may borrow in 16)
-_dv_shift:
-    rol.b <FD_M_Q
-    dex
-    bne _dv_loop
+    bcs +
+    jmp _dv_small
++
+    ; a >= b: the remainder starts as a's high byte, and a's low byte is
+    ; shifted in over the next eight steps.  The bits shifted out of FD_M_A
+    ; must be exactly a << 8 -- the low byte in the high position -- so the
+    ; word is turned round and the zeros follow on their own.
+    xba
+    and #$00FF
+    pha
+    lda.b <FD_M_A
+    xba
+    and #$FF00
+    sta.b <FD_M_A
+    pla
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    bra _dv_tail
+_dv_small:
+    ; a < b: the whole of a is the remainder and the eight zero bits are
+    ; what is left to divide.
+    lda.b <FD_M_A
+    stz.b <FD_M_A
+_dv_tail:
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
+    DV_STEP
 
     lda.b <FD_M_Q
     pld

@@ -99,6 +99,7 @@ SNES_ASM := $(sort $(SNES_ASM) $(SNES_DECK_ASM))
 SNES_PLANAR_ASM := $(foreach p,0 1,$(PROJ_DIR)/assets/snes_floor_chunky_$(p).asm $(PROJ_DIR)/assets/snes_floor_planar_$(p).asm) \
  $(foreach t,p0_h0 p1_h0 p2_h0 p3_h0 p3_h1,$(PROJ_DIR)/assets/snes_pairlut_$(t).asm) \
  $(foreach p,0 1 2 3,$(PROJ_DIR)/assets/snes_dbl2lut_p$(p).asm) \
+ $(foreach p,0 1 2 3,$(PROJ_DIR)/assets/snes_dbl2lut4_p$(p).asm) \
  $(PROJ_DIR)/assets/snes_texlut.asm
 SNES_RENDER_ASM := $(SNES_PLANAR_ASM) $(PROJ_DIR)/snes_conv_gen.asm \
  $(PROJ_DIR)/snes_tables.asm $(PROJ_DIR)/assets/snes_cards.asm \

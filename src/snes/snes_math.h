@@ -26,6 +26,7 @@
 u16 snesMulHi(u16 a, u16 b);        /* the high 16 bits of an unsigned product */
 s16 snesQMul(s16 a, s16 b);         /* (a * b) >> 8, Q8.8 */
 u16 snesMulLo(u16 a, u16 b);        /* the low 16 bits, i.e. plain 16-bit * */
+u16 snesMul16x8(u16 a, s16 k);      /* the same, k in -128..127: one PPU product */
 /* (a << 8) / b, saturating.  The ONLY division in the port, and confined to
  * per-frame and per-polygon setup -- the floor's two edge slopes, a card's
  * projected corners.  Nothing per row or per pixel reaches it. */

@@ -104,6 +104,30 @@ master cycles of sampling, the motion frames 202 -> 182; full-tile
 conversion -12.6%, half -16%; the whole bake 8876 -> 8323 lines, a motion
 frame 3184 -> 3005.
 
+**The camera frames' converter books a tile in one straight line**
+(`snes_conv_drivers.inc`, `CW_LOOP`; the same pass, second batch).  The
+whole-frame path -- every cell dirty, the map emptied first -- used to
+spend more on the allocator, the ring reservation and the run commit
+(shared subroutines, each recomputing the cell's map entry, chunky offset
+and index and reaching their state through long WRAM stores: ~170
+instructions) than on the tile conversion itself.  Now the per-cell terms
+are running counters on the fast page, the free queue's head and count are
+cached for the row, the ROM mask is shifted a bit a column, and a run
+continues when the fresh tile id is the one it expects (`FD_CV_NEXT`; a
+ROM run in between zeroes it): ~70 instructions, 4715 -> 2857 master cycles
+a converted tile.  The doubled tile routine reads a row's second pair from
+the SAME LUT PRE-SHIFTED A NIBBLE (`snes_dbl2lut4_*`, banks $D1 and
+$DB-$DD, freed by packing the portraits two a bank and the deck UI above
+the scene font): the sixteen `lsr` a tile row were a third of its time,
+4590 -> 3680 cycles a half tile.  `snesUQDiv` starts at the ninth restoring
+step (the saturation test has already proved the first eight quotient bits
+zero) or the seventeenth when a < b, unrolled -- the same quotient bit for
+bit, checked on two million cases; the yawed floor rows hoist the camera's
+two invariant products and take `du * (x0 - 64)` as one PPU 16x8 product
+(`snesMul16x8`); `y * stride` is a shift.  A motion frame 3005 -> 2649
+lines after the loop, 2454 after the LUT and the arithmetic (12.5 -> 11.1
+fields a frame in the pinned profile window).
+
 A pose is rendered in small steps, and a game loop takes a measured SLICE
 of them (`job_slice`: steps until three and a half fields have gone by),
 sliding the hand's sprites in place every other field for the NMI to

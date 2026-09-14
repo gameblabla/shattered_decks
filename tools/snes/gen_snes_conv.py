@@ -113,11 +113,12 @@ def half_tile(phase):
     stored twice.  A row is two texel PAIRS, loaded and indexed exactly as
     the 1:1 tile's (asl, C = the odd texel's plane-7 bit), through the
     doubled pair LUT (tools/snes/gen_snes_planar.py): t0 in columns 0-1,
-    t1 in 2-3.  The second pair is the same word shifted down a nibble --
-    the nibbles do not touch, both bytes' low four bits being zero -- and
-    t1's plane-7 bit, which the 15-bit index cannot carry, is ORed in as
-    $3000 before the shift.  Two lookups a plane a row instead of four:
-    about 40 cycles a texel, against 68 a texel at a time."""
+    t1 in 2-3.  The second pair reads THE SAME TABLE PRE-SHIFTED A NIBBLE
+    (snes_dbl2lut4_*: t0 in columns 4-5, t1 in 6-7), and t1's plane-7 bit,
+    which the 15-bit index cannot carry, is ORed in as $3000 (first pair)
+    or $0300 (second) from the carry.  Two lookups a plane a row and no
+    shifting at all: the sixteen `lsr` a row the converter did itself were
+    a third of the tile."""
     base = phase * 64
     o = ["snesConvHalfTile%d:" % phase]
     for r in range(4):
@@ -126,21 +127,21 @@ def half_tile(phase):
         for pos in range(2):
             src = "snes_frame_fb + %d" % (r * HALF_STRIDE + pos * 2)
             lab = "_ch%d_r%d_p%d" % (phase, r, pos)
+            lut = "snes_dbl2lut4_p%d" if pos else "snes_dbl2lut_p%d"
             o.append("    lda.w %s,y" % src)
             o.append("    asl a")
             o.append("    tax")
             o.append("    bcc %s_h0" % lab)
-            o.append("    lda.l snes_dbl2lut_p3,x")
-            o.append("    ora #$3000")
+            o.append("    lda.l %s,x" % (lut % 3))
+            o.append("    ora #$%04X" % (0x0300 if pos else 0x3000))
             o.append("    bra %s_j" % lab)
             o.append("%s_h0:" % lab)
-            o.append("    lda.l snes_dbl2lut_p3,x")
+            o.append("    lda.l %s,x" % (lut % 3))
             o.append("%s_j:" % lab)
             for k in (3, 0, 1, 2):
                 if k != 3:
-                    o.append("    lda.l snes_dbl2lut_p%d,x" % k)
+                    o.append("    lda.l %s,x" % (lut % k))
                 if pos:
-                    o += ["    lsr a"] * 4
                     o.append("    ora.b $%02X" % off[k])
                 o.append("    sta.b $%02X" % off[k])
                 # The duplicate row is written ONCE, from the finished

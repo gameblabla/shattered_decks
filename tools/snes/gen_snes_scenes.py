@@ -44,7 +44,9 @@ BANK = 9                         # $C9; $C8 cards, $CA OBJ assets
 STORY_BANK = 7                   # $C7; the four backgrounds and their skies
 ENDING_BANK = 13                 # $CD; full-screen ending art
 SCENE_FONT_BANK = 14             # $CE; outlined dialogue font and frame tiles
-PORTRAIT_BANK = 24               # $D8..$DD; one 8bpp BG1 sheet per portrait
+PORTRAIT_BANK = 24               # $D8..$DA; one 8bpp BG1 sheet per portrait,
+                                 # two a bank (22 KB each): $DB-$DD hold the
+                                 # converter's shifted doubled LUTs
 PORTRAIT_W, PORTRAIT_H = 128, 136   # sixteen by seventeen tiles: lines 8..143
 # SERENA IS WIDER THAN HER HALF OF THE SCREEN.  Her pixel art is 160 wide and
 # a 128-column crop took sixteen pixels off each side -- the right side being
@@ -391,8 +393,8 @@ def write_portraits():
             fh.write(tiles)
         with open(os.path.join(ASSETS, "snes_portrait_%d_pal.bin" % i), "wb") as fh:
             fh.write(pal)
-        asm += ['.SECTION "snes_portrait_%d" BANK %d SLOT 0 ORG $0000 FORCE' %
-                (i, PORTRAIT_BANK + i),
+        asm += ['.SECTION "snes_portrait_%d" BANK %d SLOT 0 ORG $%04X FORCE' %
+                (i, PORTRAIT_BANK + i // 2, (i % 2) * 0x8000),
                 'snes_portrait_%d:' % i,
                 '    .INCBIN "snes_portrait_%d.bin"' % i,
                 'snes_portrait_%d_pal:' % i,

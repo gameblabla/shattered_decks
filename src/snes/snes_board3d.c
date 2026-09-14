@@ -58,6 +58,10 @@ static s16 signed_qdiv(s16 a, s16 b)
  * a loop, and because sub is only ever 0 or 1. */
 #define UNIT_TO_PX(v, sub)   ((sub) ? (s16)((v) >> 7) : (s16)((v) >> 8))
 #define PER_PX(v, sub)       ((sub) ? (s16)((v) >> 1) : (s16)(v))
+/* Pixel row y's first byte in the frame: the stride is 256 at 1:1 and 128
+ * on the motion frame, so this is a shift, not the three-product
+ * snesMulLo it used to be on every row. */
+#define ROW_BYTES(y, sub)    ((sub) ? (u16)((u16)(y) << 8) : (u16)((u16)(y) << 7))
 
 u8 snesProjectQ(const SnesCamera *cam, const SnesViewport *vp,
                 s16 wx, s16 wz, s16 wy, s16 *out_x, s16 *out_y)
@@ -222,7 +226,7 @@ void snesDrawFloor(const SnesViewport *vp, const SnesCamera *cam, u8 backdrop)
         wall_x0 = x0;
         wall_x1 = x1;
         v = v_camera + (u16)(depth << 5);
-        u = u_camera + snesMulLo(du, (u16)(s16)(x0 - (s16)half_w));
+        u = u_camera + snesMul16x8(du, (s16)(x0 - (s16)half_w));
         snesSpanFloor(row_base + (u16)x0, (u16)(x1 - x0),
                       (u16)((((v >> 8) & (SNES_FLOOR_PATTERN_H - 1)) << 8)
                             | ((u >> 8) & 0xFF)),
@@ -310,7 +314,7 @@ void snesDrawCardRow(const SnesViewport *vp, const SnesCamera *cam, u8 row,
     cr_y = (u16)y;
     cr_yend = (u16)y_end;
     cr_rows = r_top;
-    cr_base = (u16)(vp->origin + snesMulLo((u16)y, (u16)vp->stride));
+    cr_base = (u16)(vp->origin + ROW_BYTES(y, sub));
     cr_stride = vp->stride;
     cr_acc_l = acc_l;
     cr_acc_r = acc_r;
@@ -374,7 +378,7 @@ void snesDrawSlotMarker(const SnesViewport *vp, const SnesCamera *cam,
     y_end = (s16)(cam->horizon + (s16)r_bot + 1);
     if (y_end > (s16)vp->h) y_end = (s16)vp->h;
     if (y < 0) return;
-    row_base = (u16)(vp->origin + snesMulLo((u16)y, (u16)vp->stride));
+    row_base = (u16)(vp->origin + ROW_BYTES(y, sub));
 
     for (rows_below = r_top; y < y_end; ++y, ++rows_below, row_base += vp->stride) {
         u16 depth;
@@ -538,6 +542,7 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
     u8 top = 0, bottom = 0, li, ri, i;
     EdgeWalk left, right;
     s16 cp = 0, sp = 0, cy = 0, sn = 0;
+    s16 eye_cy = 0, eye_sn = 0;
     /* The two per-row camera terms, Q4.12, stepped rather than recomputed:
      * denom = sin(pitch) + sy * cos(pitch) and a = cos(pitch) - sy *
      * sin(pitch), both linear in the row, and sy advances by two a row. */
@@ -547,6 +552,10 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
     if (cam) {
         cp = snesCos(cam->pitch); sp = snesSin(cam->pitch);
         cy = snesCos(cam->yaw); sn = snesSin(cam->yaw);
+        if (cam->yaw) {
+            eye_cy = snesQMul(cam->x, cy);
+            eye_sn = snesQMul(cam->x, sn);
+        }
         /* Per PIXEL row: on the 1:1 viewport that is half a unit row, on
          * the 128x72 motion frame a whole one. */
         denom_step = sub ? (s16)(cp >> 3) : (s16)(cp >> 2);
@@ -699,18 +708,21 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
                 tu = (u16)((cam->x << 5) + (SNES_WORLD_U_CENTRE << 8));
                 tv = (u16)(z << 5);
             } else {
+                /* (cam->x's two products are the same on every row:
+                 * eye_cy and eye_sn, taken once above the loop.) */
                 du = snesQMul(dtex, cy);
                 dv = (s16)(-snesQMul(dtex, sn));
-                tu = (u16)((s16)((snesQMul(cam->x, cy) + snesQMul(z, sn)) << 5) + (SNES_WORLD_U_CENTRE << 8));
-                tv = (u16)((s16)(snesQMul(z, cy) - snesQMul(cam->x, sn)) << 5);
+                tu = (u16)((s16)((eye_cy + snesQMul(z, sn)) << 5) + (SNES_WORLD_U_CENTRE << 8));
+                tv = (u16)((s16)(snesQMul(z, cy) - eye_sn) << 5);
             }
             /* From the middle of the row to the first pixel's CENTRE: the
              * half step is the same pixel-centre convention the ROM floor
-             * is generated with. */
+             * is generated with.  The offset is at most 127 pixels (x0 is
+             * inside the viewport), one PPU product each. */
             half_du = (s16)(du >> 1);
-            tu = (u16)(tu + snesMulLo((u16)du, (u16)(x0 - (vp->w >> 1))) + (u16)half_du);
+            tu = (u16)(tu + snesMul16x8((u16)du, (s16)(x0 - (vp->w >> 1))) + (u16)half_du);
             half_du = (s16)(dv >> 1);
-            tv = (u16)(tv + snesMulLo((u16)dv, (u16)(x0 - (vp->w >> 1))) + (u16)half_du);
+            tv = (u16)(tv + snesMul16x8((u16)dv, (s16)(x0 - (vp->w >> 1))) + (u16)half_du);
             u = tu;
             v = tv;
             span_note((u16)y, x0, x1, sub);
@@ -731,7 +743,7 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
         }
         if (face == SNES_CARD_NONE_FACE) {
             span_note((u16)y, x0, x1, sub);
-            snesSpanFill((u16)(vp->origin + snesMulLo((u16)y, (u16)vp->stride) + x0),
+            snesSpanFill((u16)(vp->origin + ROW_BYTES(y, sub) + x0),
                          (u16)(x1 - x0), SNES_SLAB_WALL);
             continue;
         }
@@ -749,12 +761,12 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
         /* Pre-stepped for the same reason the flat card is: the walker adds
          * before it reads. */
         if (sub)
-            snesSpanCardQuad32((u16)(vp->origin + snesMulLo((u16)y, (u16)vp->stride)
+            snesSpanCardQuad32((u16)(vp->origin + ROW_BYTES(y, sub)
                                      + (u16)x0),
                                (u16)(x1 - x0), (u16)(u - dudx_px), (u16)(v - dvdx_px),
                                (u16)dudx_px, (u16)dvdx_px, page, sheet);
         else
-            snesSpanCardQuad((u16)(vp->origin + snesMulLo((u16)y, (u16)vp->stride)
+            snesSpanCardQuad((u16)(vp->origin + ROW_BYTES(y, sub)
                                    + (u16)x0),
                              (u16)(x1 - x0), (u16)(u - dudx_px), (u16)(v - dvdx_px),
                              (u16)dudx_px, (u16)dvdx_px, page);

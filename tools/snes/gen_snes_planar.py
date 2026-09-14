@@ -53,6 +53,10 @@ ASSETS = os.path.join(ROOT, "src", "snes", "assets")
 PAIRLUT_BANKS = {("p0", "h0"): 51, ("p1", "h0"): 52, ("p2", "h0"): 53,
                  ("p3", "h0"): 54, ("p3", "h1"): 55}       # $33-$37
 DBL2LUT_BANKS = [56, 57, 58, 18]          # $38-$3A and the free $12
+# The same, pre-shifted a nibble for a row's second pair: $D1 (the deck UI
+# moved in above the scene font) and $DB-$DD (the portraits packed two a
+# bank).
+DBL2LUT4_BANKS = [17, 27, 28, 29]
 TEXLUT_BANK = 60                          # $3C
 TEXLUT_ORG = 0x4000
 FLOOR_BANKS = {("chunky", 0): 61, ("chunky", 1): 62,
@@ -120,20 +124,28 @@ def emit_pair_luts():
     for k in range(4):
         label = "snes_dbl2lut_p%d" % k
         emit_bank(label, DBL2LUT_BANKS[k], [(label, dbl2_lut(k))])
+    for k in range(4):
+        label = "snes_dbl2lut4_p%d" % k
+        emit_bank(label, DBL2LUT4_BANKS[k], [(label, dbl2_lut(k, 4))])
 
 
-def dbl2_lut(plane_pair):
+def dbl2_lut(plane_pair, shift=0):
     """32768 words, the h0 half's index: t0's bit doubled into columns 0-1
     (bits 7, 6) and t1's into columns 2-3 (bits 5, 4), per plane byte.  t1's
     bit 7 is the lost index bit and reads as 0 here; the doubled converter
-    ORs it in ($30 in the high byte of plane pair 3) from the carry."""
+    ORs it in ($30 in the high byte of plane pair 3) from the carry.
+
+    `shift` = 4 is the same table for a row's SECOND pair, columns 4-7: the
+    word the converter used to shift down a nibble itself, sixteen `lsr`
+    a tile row (a third of the doubled tile's time).  The lost bit is then
+    $03 in the high byte."""
     idx = np.arange(32768, dtype=np.uint32)
     t0 = idx & 0xFF
     t1 = (idx >> 8) & 0x7F
     k = plane_pair
     lo = (((t0 >> (2 * k)) & 1) * 0xC0) | (((t1 >> (2 * k)) & 1) * 0x30)
     hi = (((t0 >> (2 * k + 1)) & 1) * 0xC0) | (((t1 >> (2 * k + 1)) & 1) * 0x30)
-    words = (lo | (hi << 8)).astype("<u2")
+    words = ((lo | (hi << 8)) >> shift).astype("<u2")
     return words.tobytes()
 
 
