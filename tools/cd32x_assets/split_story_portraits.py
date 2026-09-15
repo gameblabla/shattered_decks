@@ -3,7 +3,7 @@
 
 The supervisor loads a named file through the Sega CD BIOS into a single 128 KiB
 1M-mode Word RAM bank, then slides the requested record to the transfer window.
-The whole portrait plane (six 26624-byte records = 156 KiB) does NOT fit in that
+The whole portrait plane does NOT fit in that
 128 KiB bank, so loading it whole overran the bank and hung/crashed the first
 opponent's plaza load.  Mirror the big-art atlas: split the plane into small
 chunk files that each fit the bank comfortably and read only the chunk holding
@@ -17,11 +17,13 @@ PORTRAITS_PER_CHUNK must match CD32X_STORY_PORTRAIT_CHUNK in
 src/platform/cd32x/cd32x_boot_main.c.  The prefix ("SPX"/"SPM") + two-digit chunk
 index keeps the names inside ISO9660 8.3.
 """
+import re
 import sys
 from pathlib import Path
 
 SECTOR = 2048
 PORTRAITS_PER_CHUNK = 2
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main(argv):
@@ -45,14 +47,17 @@ def main(argv):
 
 
 def _stride(total):
-    # WAIFU_STORY_PORTRAIT_CD_STRIDE for the shipped 124x200 portraits is 26624
-    # (13 sectors).  Keep this in sync with the generated header if the portrait
-    # resolution changes; assert the plane divides evenly by it.
-    stride = 26624
+    # Keep the splitter tied to the generated asset contract.  This avoids a
+    # second hard-coded portrait resolution whenever the story cell changes.
+    header = (ROOT / "src" / "generated" / "waifu_assets.h").read_text()
+    match = re.search(r"#define WAIFU_STORY_PORTRAIT_CD_STRIDE (\d+)", header)
+    if not match:
+        raise SystemExit("generated portrait stride is missing from waifu_assets.h")
+    stride = int(match.group(1))
     if total % stride != 0:
         raise SystemExit(
             f"portrait plane size {total} is not a multiple of stride {stride}; "
-            "update split_story_portraits.py to match the generated stride")
+            "regenerate the portrait assets and header")
     return stride
 
 

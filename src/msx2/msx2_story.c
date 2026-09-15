@@ -524,11 +524,9 @@ static void Msx2_StoryBeginLine(void)
 //
 // The backdrop is one of the shipped paintings with the text box baked into it,
 // and it is streamed ONCE per scene.  Both speakers stand on it at the same
-// time -- Serena on the left, the opponent on the right, the six-pixel stagger
-// the other targets use -- and the inactive one is dimmed rather than removed.
-// A speaker change is therefore two rect overwrites and nothing else: no
-// stream, no flip, no page divergence, and two characters on screen where the
-// flattened composite this replaces could only ever show one.
+// time -- Serena on the left and the opponent on the right, with the same
+// native 128x128 upper-cell presentation as the other console targets.  The
+// inactive speaker remains dimmed, but uses the exact same mask and placement.
 
 // One bust, from its baked run table.  A row is a handful of opaque runs, and a
 // transparent pixel costs nothing at all -- not a VRAM write, not an address
@@ -605,10 +603,10 @@ static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 
 	for(row = 0; row < MSX2_PORTRAIT_H; ++row)
 	{
-		// The right-hand bust stands six pixels lower than the left one, so its
-		// last rows fall inside the text box.  They are clipped here rather
-		// than by moving the figure: the run table still has to be walked to
-		// keep the pixel cursor in step, only the blit is skipped.
+		// Both native busts share one upper edge.  Rows that reach the dialogue
+		// panel are clipped here rather than by moving the figure: the run table
+		// still has to be walked to keep the pixel cursor in step, only the blit
+		// is skipped.
 		u8 sy = (u8)(y + row);
 		bool visible = (sy < MSX2_TALK_BOX_Y);
 		if(!(row & (BUST_INDEX_ROWS - 1)))
@@ -673,9 +671,9 @@ static void Msx2_StoryBlitBust(u8 chr, u8 x, u8 y, bool lit)
 	}
 }
 
-// Both busts, with `speaker` lit and the other dimmed.  The two brightness
-// variants are cut from the same alpha mask, so this covers byte for byte the
-// pixels the previous pair covered and nothing behind them has to be repaired.
+// Both busts use the same native portrait cell and mask.  The active speaker
+// is lit and the inactive speaker is dimmed, so a speaker change never changes
+// the portrait shape or placement underneath the text.
 static void Msx2_StoryBusts(u8 speaker)
 {
 #ifdef MSX2_PORTRAIT_FRINGE_OFF

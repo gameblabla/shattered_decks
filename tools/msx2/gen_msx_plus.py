@@ -71,6 +71,9 @@ DITHER = 0.9
 
 # See bust_blob: the MSX2 build's 0.45 is too dark for YJK.
 PLUS_PORTRAIT_DIM = 0.62
+# YJK scene backgrounds still use DITHER, but the story busts retain their
+# native pixel clusters without diffusion.
+PLUS_PORTRAIT_DITHER = 0.0
 
 # Where the busts stand in the plus build -- msx2_plus.h moves them onto chroma
 # group boundaries, and the edge composite has to look at the same pixels the
@@ -481,12 +484,11 @@ def bake_portraits(dither, quiet, raw):
         # right; the composite has to be done where the figure actually is.
         x0 = MSX2_PORTRAIT_LEFT_X if i == 0 else MSX2_PORTRAIT_RIGHT_X
         y0 = scenes.PORTRAIT_LEFT_Y if i == 0 else scenes.PORTRAIT_RIGHT_Y
-        # The premultiplied resample: without it the outer ring of the figure
-        # carries the transparent ground's black, which the composite would
-        # then dutifully blend into the sky (gen_msx_scenes.portrait_resize).
+        # The portrait is a native pixel-art crop; edge bytes are composited
+        # against each backdrop below, so no filtered transparent fringe exists.
         bust = scenes.portrait(name, size, premul=True)
         for dim in (False, True):
-            blob += bust_blob(bust, dim, dither, x0, y0, backdrops)
+            blob += bust_blob(bust, dim, PLUS_PORTRAIT_DITHER, x0, y0, backdrops)
     if not quiet:
         print("PORTRAITS     %d bytes YJK" % len(blob))
     return bytes(blob)

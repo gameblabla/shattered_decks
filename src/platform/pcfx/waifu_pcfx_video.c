@@ -1864,15 +1864,15 @@ static void pcfx_rgb_pair_to_yuv16m_words(uint8_t r0, uint8_t g0, uint8_t b0,
 
 /* Story portraits use the same paired-HuC6270 256-colour sprite contract as
  * doom-pcfx: VDC0 carries the high nibble, VDC1 carries the low nibble and its
- * palette-bank bit 3 arms the combine.  A 124x200 portrait occupies an 8x4
- * grid of 16x64 cells; two active portraits exactly consume the 64-entry SAT.
+ * palette-bank bit 3 arms the combine.  A 128x128 portrait occupies an 8x2
+ * grid of 16x64 cells; two active portraits exactly consume the 32-entry SAT.
  * Pattern storage is deliberately above the 64x32 BAT/font area and below the
  * SAT source at 0xff00. */
 #define WAIFU_PCFX_STORY_SPR_MAX       2
 #define WAIFU_PCFX_STORY_CELL_W        16
 #define WAIFU_PCFX_STORY_CELL_H        64
 #define WAIFU_PCFX_STORY_COLS          8
-#define WAIFU_PCFX_STORY_ROWS          4
+#define WAIFU_PCFX_STORY_ROWS          2
 #define WAIFU_PCFX_STORY_CELLS         (WAIFU_PCFX_STORY_COLS * WAIFU_PCFX_STORY_ROWS)
 #define WAIFU_PCFX_STORY_NO_STRIDE     8
 #define WAIFU_PCFX_STORY_SLOT0_NO      0x080

@@ -17,13 +17,25 @@ DECK_POOLS_OUT = ROOT/'src/generated/deck_pools.h'
 CARD_W, CARD_H = 38, 54
 BIG_W, BIG_H = 112, 112
 TILE = 32
-PORTRAIT_W, PORTRAIT_H = 124, 200
+# Story dialogue uses the native pixel-art cell.  The source sprites are
+# already drawn at the intended pixel scale, so do not fit or filter them.
+PORTRAIT_W, PORTRAIT_H = 128, 128
 CD_SECTOR = 2048
 PORTRAIT_BYTES = PORTRAIT_W * PORTRAIT_H
 PORTRAIT_CD_STRIDE = ((PORTRAIT_BYTES + CD_SECTOR - 1) // CD_SECTOR) * CD_SECTOR
 PORTRAIT_DIR = ROOT/'assets/source/story_portraits'
 TEXTURE_DIR = ROOT/'assets/source/textures'
-STORY_PORTRAITS = ['serena.png','opponent_0.png','opponent_1.png','opponent_2.png','opponent_3.png','opponent_4.png']
+# Keep the generated portrait ids stable for the game, while taking the story
+# art from the deliberately numbered pixel-art set.  The source set starts at
+# opponent_1, whereas the game ids start at opponent_0.
+STORY_PORTRAITS = [
+    'pixelart/serna_portrait_160px_pixelart.png',
+    'pixelart/opponent_1_pixelart.png',
+    'pixelart/opponent_2_pixelart.png',
+    'pixelart/opponent_3_pixelart.png',
+    'pixelart/opponent_4_pixelart.png',
+    'pixelart/opponent_5_pixelart.png',
+]
 
 def card_macro(asset_id):
     s = re.sub(r'[^A-Za-z0-9]+', '_', asset_id).upper()
@@ -125,31 +137,26 @@ def card_thumb_crop(img, size):
     return ImageOps.fit(prepared_card_source(img), size, method=Image.Resampling.BILINEAR, centering=(0.5,0.36))
 
 
-def fit_story_portrait(img, size=(PORTRAIT_W, PORTRAIT_H)):
+def fit_story_portrait(img, size=(PORTRAIT_W, PORTRAIT_H), preserve_right=False):
+    """Take the native upper pixel-art cell with a top-left origin.
+
+    Serena is right-anchored so her right side is never lost; opponents are
+    left-anchored so their left side is never lost.  No resampling or
+    transparent-margin trimming is performed.
+    """
     img = img.convert('RGBA')
-    bbox = img.getbbox()
-    if bbox:
-        img = img.crop(bbox)
     w, h = img.size
-    # For dialogue scenes, emphasize the upper body and hands instead of the
-    # full standing figure so the visible portion above the bottom text box is
-    # expressive once the portrait is pinned to the screen bottom.
-    top = int(h * 0.01)
-    bottom = max(top + 1, int(h * 0.80))
-    left = int(w * 0.05)
-    right = max(left + 1, int(w * 0.95))
-    img = img.crop((left, top, right, bottom))
-    bg = Image.new('RGBA', size, (0,0,0,0))
-    art = ImageOps.contain(img, (int(size[0] * 1.02), int(size[1] * 1.02)), method=Image.Resampling.BILINEAR)
-    x = (size[0] - art.width) // 2
-    y = size[1] - art.height
-    bg.alpha_composite(art, (x, y))
-    return bg
+    if w < size[0] or h < size[1]:
+        raise ValueError("story portrait source %dx%d is smaller than %dx%d" %
+                         (w, h, size[0], size[1]))
+    x = w - size[0] if preserve_right else 0
+    return img.crop((x, 0, x + size[0], size[1]))
 
 def load_story_portraits_rgba():
     portraits = []
-    for fn in STORY_PORTRAITS:
-        portraits.append(fit_story_portrait(Image.open(PORTRAIT_DIR / fn)))
+    for i, fn in enumerate(STORY_PORTRAITS):
+        portraits.append(fit_story_portrait(Image.open(PORTRAIT_DIR / fn),
+                                            preserve_right=i == 0))
     return portraits
 
 def draw_card_face(card_id, name, tribe, attr, atk, deff):
@@ -485,6 +492,23 @@ def nearest_nonzero_idx_in_palette(palette, rgb):
             best=i; bd=d
     return best
 
+def nearest_portrait_idx_in_palette(palette, rgb):
+    """Find a visible portrait colour that is safe for PC-FX sprite keys.
+
+    PC-FX uses the low nibble of a sprite pixel as transparency.  The shared
+    dialogue palette is also consumed by CD32X, where index 0 is the colour
+    key, so opaque portrait pixels must avoid both forms of transparency.
+    """
+    best=1; bd=10**9
+    for i in range(1, 256):
+        if (i & 0x0f) == 0:
+            continue
+        pr,pg,pb=palette[i*3:i*3+3]
+        d=(pr-rgb[0])**2+(pg-rgb[1])**2+(pb-rgb[2])**2
+        if d<bd:
+            best=i; bd=d
+    return best
+
 def apply_base_colors(pal_img, palette, idx_map):
     for name,rgb in BASE_COLORS.items():
         i = idx_map[name] * 3
@@ -527,7 +551,22 @@ def qbytes_card_art(im):
     return bytes(data)
 
 def qbytes_dialogue(im):
-    return qbytes_with_palette(im, dialogue_pal_img)
+    rgba = im.convert('RGBA')
+    rgb = rgba.convert('RGB')
+    data = bytearray(qbytes_with_palette(rgb, dialogue_pal_img))
+    alpha = list(rgba.getchannel('A').getdata())
+    rgb_data = list(rgb.getdata())
+    for i, value in enumerate(data):
+        # Both CD32X and the PC-FX hardware path need a genuinely transparent
+        # pixel here.  Do not let quantization turn transparent source pixels
+        # into visible palette colours.
+        if alpha[i] < 16:
+            data[i] = 0
+        elif (value & 0x0f) == 0:
+            # Keep opaque pixels visible on PC-FX without the runtime green
+            # fallback, while preserving the nearest dialogue-palette colour.
+            data[i] = nearest_portrait_idx_in_palette(dialogue_palette, rgb_data[i])
+    return bytes(data)
 
 q_cards=[qbytes_card_art(im) for im in card_faces_rgb]
 q_big_cards=[qbytes_card_art(im) for im in big_card_rgb]
@@ -553,8 +592,16 @@ for _i in tex_reserved_indices:
     dialogue_palette[_i*3:_i*3+3] = palette[_i*3:_i*3+3]
 dialogue_pal_img.putpalette(dialogue_palette)
 
-q_story_portraits=[qbytes_dialogue(im.convert('RGB')) for im in story_portraits_rgba]
+q_story_portraits=[qbytes_dialogue(im) for im in story_portraits_rgba]
 q_story_portrait_masks=[bytes([255 if px[3] >= 16 else 0 for px in im.getdata()]) for im in story_portraits_rgba]
+
+for portrait_i, (pixels, mask) in enumerate(zip(q_story_portraits, q_story_portrait_masks)):
+    for pixel_i, (value, visible) in enumerate(zip(pixels, mask)):
+        if visible:
+            if value == 0 or (value & 0x0f) == 0:
+                raise RuntimeError(f'story portrait {portrait_i} has unsafe opaque pixel {pixel_i}')
+        elif value != 0:
+            raise RuntimeError(f'story portrait {portrait_i} has nonzero transparent pixel {pixel_i}')
 
 # write header
 OUT.parent.mkdir(parents=True, exist_ok=True)

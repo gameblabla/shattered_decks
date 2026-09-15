@@ -147,20 +147,23 @@ TALK_PLATE_RGB = (28, 22, 40)
 # blitted at runtime from baked run-length skip lists, so a transparent pixel
 # costs one VRAM address re-set and an opaque one costs an OUTI -- which is what
 # makes two figures cheaper than the single flattened composite this replaces.
-PORTRAIT_W = 124
-PORTRAIT_H = TALK_BOX_Y - 16     # everything above the text box
+PORTRAIT_W = 128
+PORTRAIT_H = TALK_BOX_Y - 12     # everything above the text box
 PORTRAIT_LEFT_X = 2
 PORTRAIT_RIGHT_X = WIDTH - PORTRAIT_W - 2
-PORTRAIT_LEFT_Y = 16
-PORTRAIT_RIGHT_Y = 22            # the six-pixel stagger the other targets use
+# Keep the upper 128px of the native pixel-art bust above the dialogue panel.
+# This is a placement value only: portrait() crops the source directly and
+# never rescales it.
+PORTRAIT_LEFT_Y = 12
+PORTRAIT_RIGHT_Y = 12
 # The inactive speaker is dimmed rather than removed.  Both variants are cut
 # from the SAME alpha mask, so they cover byte for byte the same pixels and a
 # speaker change is a pure overwrite with no background repair at all.
 PORTRAIT_DIM = 0.45
-# How much of the quantisation error a bust carries into its neighbours.  Full
-# strength is as loud as the banding it replaces; 0.9 keeps the grades and
-# quiets the pattern in the flat areas.
-PORTRAIT_DITHER = 0.9
+# A small amount of error diffusion is useful in the MSX2's 3-bit channels,
+# but the portrait is already pixel art.  Keep it subtle rather than turning
+# the deliberate pixel clusters into a noisy stipple.
+PORTRAIT_DITHER = 0.15
 PORTRAIT_STRIDE = 32768          # two whole segments per baked bust
 PORTRAIT_CHARS = 1 + STORY_DUELS # Serena, then one opponent per duel
 
@@ -550,103 +553,42 @@ def stage_painting(stage):
     return img.crop((0, top, WIDTH, top + HEIGHT))
 
 
-# The busts have two sets of source art: the 180x240 files the console assets
-# were built from, and a high-resolution re-render of the same character.  The
-# PC frontend already prefers the big one (tools/gen_sdl3_hires_paths.py); at
-# 124 pixels the difference is still worth having, because everything here is a
-# downscale and a downscale of the small file is a downscale of a downscale.
-# The suffixes in the tree are inconsistent, so every spelling is tried in
-# preference order and the small file is the last resort.
-PORTRAIT_BASES = ["serena"] + ["opponent_%d" % d for d in range(5)]
-PORTRAIT_PREFIXES = ["pc_hires_", ""]
-PORTRAIT_SUFFIXES = ["_hires", "_highres", ""]
-PORTRAIT_ALIASES = {"serena": ["serena", "serana"]}
-PORTRAIT_EXTS = [".png", ".png.png"]
+# The shared targets and the MSX2 fork must show the same story characters.
+# The pixel-art source names are one-based for opponents; the game portrait
+# ids are zero-based, so keep the translation explicit here rather than relying
+# on the old root-level high-resolution fallback search.
+PORTRAIT_PIXELART = {
+    "serena": "pixelart/serna_portrait_160px_pixelart.png",
+    "opponent_0": "pixelart/opponent_1_pixelart.png",
+    "opponent_1": "pixelart/opponent_2_pixelart.png",
+    "opponent_2": "pixelart/opponent_3_pixelart.png",
+    "opponent_3": "pixelart/opponent_4_pixelart.png",
+    "opponent_4": "pixelart/opponent_5_pixelart.png",
+}
 
 
 def portrait_source(base):
-    """The best available art for one bust, and the small file it is framed
-    like.  '.png.png' is a real filename in the tree, hence the extension
-    list."""
-    for prefix in PORTRAIT_PREFIXES:
-        for name in PORTRAIT_ALIASES.get(base, [base]):
-            for suffix in PORTRAIT_SUFFIXES:
-                for ext in PORTRAIT_EXTS:
-                    path = os.path.join(PORTRAIT_DIR, prefix + name + suffix + ext)
-                    if os.path.exists(path):
-                        return path
-    sys.exit("no source art for portrait %s" % base)
-
-
-def portrait_trim(path):
-    """The figure, with its transparent margin taken off."""
-    img = Image.open(path).convert("RGBA")
-    bbox = img.getbbox()
-    return img.crop(bbox) if bbox else img
-
-
-def portrait_resize(img, size, premul):
-    """ImageOps.contain, optionally done in premultiplied alpha.
-
-    A cut-out's transparent pixels still carry a colour, and in this art it is
-    black; a plain RGBA resample mixes it into every edge pixel, so the outer
-    ring of the figure comes out darker than the figure is.  A paletted build
-    hides that behind its own one-pixel outline, but SCREEN 10 blends the same
-    ring against the sky and it reads as a dark halo (tools/msx2/gen_msx_plus.py
-    composites the edge for exactly this reason).  Multiplying by alpha before
-    the filter and dividing it back out afterwards is the fix, and it is opt-in
-    only so the MSX2 cartridge keeps the bytes it shipped with.
-    """
-    if not premul:
-        return ImageOps.contain(img, size, method=Image.Resampling.LANCZOS)
-    a = np.asarray(img.getchannel("A"), dtype=np.float64) / 255.0
-    rgb = np.asarray(img.convert("RGB"), dtype=np.float64) * a[..., None]
-    pre = Image.merge("RGBA", tuple(
-        Image.fromarray(rgb[..., i].round().clip(0, 255).astype(np.uint8), "L")
-        for i in range(3)) + (img.getchannel("A"),))
-    out = ImageOps.contain(pre, size, method=Image.Resampling.LANCZOS)
-    oa = np.asarray(out.getchannel("A"), dtype=np.float64) / 255.0
-    orgb = np.asarray(out.convert("RGB"), dtype=np.float64)
-    orgb = np.where(oa[..., None] > 1.0 / 255.0, orgb / np.maximum(oa, 1e-6)[..., None],
-                    orgb)
-    return Image.merge("RGBA", tuple(
-        Image.fromarray(orgb[..., i].round().clip(0, 255).astype(np.uint8), "L")
-        for i in range(3)) + (out.getchannel("A"),))
+    """Return the canonical pixel-art source for one game portrait id."""
+    rel = PORTRAIT_PIXELART.get(base)
+    path = os.path.join(PORTRAIT_DIR, rel) if rel else ""
+    if path and os.path.exists(path):
+        return path
+    sys.exit("no pixel-art source for portrait %s" % base)
 
 
 def portrait(base, size, premul=False):
-    """A story bust, trimmed and fitted the way gen_assets.py fits them for
-    every other target: upper body, pinned to the bottom of its area.
+    """Return the native upper pixel-art cell with a top-left origin.
 
-    ONLY THE UPPER PORTION, AND THE SAME UPPER PORTION AS BEFORE.  The small
-    files are already framed at the chest; the high-resolution re-renders are
-    not -- most of them are full figures down to the knees or the floor -- so a
-    fixed fraction of the height would put a doll in the 124-square instead of
-    a bust.  The small file is therefore the reference: the big art is cut from
-    the top to the SHAPE the little one already has, so swapping the source
-    changes the sharpness and nothing about the framing."""
-    ref = portrait_trim(os.path.join(PORTRAIT_DIR, base + ".png"))
-    rw, rh = ref.size
-    # The reference's own bust crop, and the proportion it stands in.
-    shape = rw / float(max(2, int(rh * 0.80) - int(rh * 0.01)))
-
-    img = portrait_trim(portrait_source(base))
+    Serena keeps the right edge of her source; opponents keep the left edge.
+    The fixed 128x128 crop is intentional and must not be resized.
+    """
+    img = Image.open(portrait_source(base)).convert("RGBA")
     w, h = img.size
-    # FROM THE VERY TOP OF THE FIGURE.  There used to be a 1% top trim here,
-    # which on a 200-row source was the two rows of stray alpha it was meant
-    # for and on a 1409-row re-render is fourteen -- exactly the tip of
-    # Serena's ahoge, cut off flat against the top of the square.  The trim is
-    # a fraction and the thing it removes is not, so it goes.
-    keep = max(2, min(h, int(round(w / shape))))
-    # No side trim.  gen_assets.py takes 5% off each edge for the framebuffer
-    # targets, whose portrait area is much wider than the figure; here the area
-    # is a 124-square the bust is fitted into by height, so those 5% came
-    # straight off the character -- Anpu and Rahotep lost both elbows.
-    img = img.crop((0, 0, w, keep))
-    art = portrait_resize(img, size, premul)
-    out = Image.new("RGBA", size, (0, 0, 0, 0))
-    out.alpha_composite(art, ((size[0] - art.width) // 2, size[1] - art.height))
-    return out
+    if w < size[0] or h < size[1]:
+        sys.exit("portrait %s source is %dx%d, need at least %dx%d" %
+                 (base, w, h, size[0], size[1]))
+    x = w - size[0] if base == "serena" else 0
+    return img.crop((x, 0, x + size[0], size[1]))
 
 
 PORTRAIT_MAX_RUNS = 3            # opaque runs per row the index can hold

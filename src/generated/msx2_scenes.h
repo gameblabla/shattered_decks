@@ -163,12 +163,12 @@ static const unsigned char g_msx2_stage_for_duel[MSX2_STORY_DUELS] =
 #define MSX2_PORTRAIT_SEGMENT   193
 #define MSX2_PORTRAIT_SEGS      2
 #define MSX2_PORTRAIT_CHARS     6
-#define MSX2_PORTRAIT_W         124
-#define MSX2_PORTRAIT_H         124
+#define MSX2_PORTRAIT_W         128
+#define MSX2_PORTRAIT_H         128
 #define MSX2_PORTRAIT_LEFT_X    2
-#define MSX2_PORTRAIT_LEFT_Y    16
-#define MSX2_PORTRAIT_RIGHT_X   130
-#define MSX2_PORTRAIT_RIGHT_Y   22
+#define MSX2_PORTRAIT_LEFT_Y    12
+#define MSX2_PORTRAIT_RIGHT_X   126
+#define MSX2_PORTRAIT_RIGHT_Y   12
 #define MSX2_PORTRAIT_MAX_RUNS  3
 #define MSX2_PORTRAIT_ROW_STRIDE 7
 #define MSX2_PORTRAIT_INDEX_BYTES 1024
@@ -351,19 +351,19 @@ typedef struct Msx2MusicAsset {
 	{ 221, 1, 1 }   /* OVERWORLD */, \
 	{ 221, 1, 1 }   /* DECK_EDITOR */, \
 	{ 222, 2, 1 }   /* BATTLE */, \
-	{ 224, 2, 1 }   /* BOSS */, \
-	{ 226, 1, 1 }   /* FINAL_BOSS */, \
-	{ 227, 1, 0 }   /* RESULT */, \
-	{ 228, 1, 0 }   /* LOST */ \
+	{ 224, 1, 1 }   /* BOSS */, \
+	{ 225, 1, 1 }   /* FINAL_BOSS */, \
+	{ 226, 1, 0 }   /* RESULT */, \
+	{ 227, 1, 0 }   /* LOST */ \
 }
 #define MSX2_MUSIC_TABLE_OPLL \
 { \
 	{ 0, 0, 0 }   /* NONE */, \
-	{ 229, 2, 1 }   /* TITLE */, \
-	{ 231, 1, 1 }   /* OPENING */, \
-	{ 231, 1, 1 }   /* OVERWORLD */, \
-	{ 231, 1, 1 }   /* DECK_EDITOR */, \
-	{ 232, 1, 1 }   /* BATTLE */, \
+	{ 228, 2, 1 }   /* TITLE */, \
+	{ 230, 1, 1 }   /* OPENING */, \
+	{ 230, 1, 1 }   /* OVERWORLD */, \
+	{ 230, 1, 1 }   /* DECK_EDITOR */, \
+	{ 231, 2, 1 }   /* BATTLE */, \
 	{ 233, 2, 1 }   /* BOSS */, \
 	{ 235, 2, 1 }   /* FINAL_BOSS */, \
 	{ 237, 1, 0 }   /* RESULT */, \
@@ -372,11 +372,11 @@ typedef struct Msx2MusicAsset {
 #define MSX2_MUSIC_TABLE_MSXAUDIO \
 { \
 	{ 0, 0, 0 }   /* NONE */, \
-	{ 239, 3, 1 }   /* TITLE */, \
-	{ 242, 1, 1 }   /* OPENING */, \
-	{ 242, 1, 1 }   /* OVERWORLD */, \
-	{ 242, 1, 1 }   /* DECK_EDITOR */, \
-	{ 243, 1, 1 }   /* BATTLE */, \
+	{ 239, 2, 1 }   /* TITLE */, \
+	{ 241, 1, 1 }   /* OPENING */, \
+	{ 241, 1, 1 }   /* OVERWORLD */, \
+	{ 241, 1, 1 }   /* DECK_EDITOR */, \
+	{ 242, 2, 1 }   /* BATTLE */, \
 	{ 244, 2, 1 }   /* BOSS */, \
 	{ 246, 2, 1 }   /* FINAL_BOSS */, \
 	{ 248, 1, 0 }   /* RESULT */, \

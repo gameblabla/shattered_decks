@@ -292,6 +292,11 @@ static int g_turn_capture_geom_ok[WAIFU_FMTOWNS_TURN_CARD_GEOMETRY_SLOTS];
 #define WAIFU_DIRECT_DAMAGE_HOLD_FRAMES 38
 #endif
 
+/* Story portraits are one native 128x128 cell on every console port.  Keep a
+   single baseline so the FM TOWNS framing is reproduced exactly by PC-FX and
+   CD32X as well.  The 52px gap is 16px higher than the previous FM layout. */
+#define WAIFU_STORY_PORTRAIT_BOTTOM_GAP 52
+
 #if defined(WAIFU_PLATFORM_HW3D)
 /* PC/SDL3 only: the direct attack ends in one authored 1.2 s impact beat
    (draw_direct_attack_fx) instead of the console slash overlay, so its lunge
@@ -509,6 +514,7 @@ static int g_battle_late_frame = -1;
 static int g_force_deckout_demo = 0;
 static int g_force_lp_loss_demo = 0;
 static int g_story_name_to_intro = 0;
+static volatile uint8_t g_dialog_panel_rounded = 0;
 
 /* Local integer abs so the common game code does not depend on <stdlib.h>. */
 static int i_abs(int v)
@@ -3010,20 +3016,25 @@ static void rect_fill(int x, int y, int w, int h, uint8_t c)
 
 static void rect_outline(int x, int y, int w, int h, uint8_t c)
 {
-    hline(x, x+w-1, y, c); hline(x, x+w-1, y+h-1, c);
+    int inset = g_dialog_panel_rounded ? 2 : 0;
+    hline(x+inset, x+w-1-inset, y, c);
+    hline(x+inset, x+w-1-inset, y+h-1, c);
 #if defined(WAIFU_PLATFORM_HW3D)
-    for (int yy = y; yy < y+h; ++yy) { put_px(x, yy, c); put_px(x+w-1, yy, c); }
+    for (int yy = y+inset; yy < y+h-inset; ++yy) {
+        put_px(x+inset, yy, c);
+        put_px(x+w-1-inset, yy, c);
+    }
 #else
     /* Hoist the clip and the address arithmetic out of the two vertical
        edges.  put_px re-tested both bounds and recomputed y*WIDTH+x for every
        one of the 2h pixels; draw_panel_rect alone runs three of these down a
        180-pixel-tall panel, and card frames and the HUD outline something on
-       every frame.  Same pixels: x is in range for the write exactly when it
-       passes put_px's clip, since g_ui_clip_w is never below WAIFU_FM_WIDTH. */
+       every frame.  The dialog flag moves the columns inward and shortens
+       them to match the inset horizontal rails. */
     {
-        int y0 = y < 0 ? 0 : y;
-        int y1 = y + h > WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT : y + h;
-        int xl = x, xr = x + w - 1;
+        int y0 = y + inset < 0 ? 0 : y + inset;
+        int y1 = y + h - inset > WAIFU_FM_HEIGHT ? WAIFU_FM_HEIGHT : y + h - inset;
+        int xl = x + inset, xr = x + w - 1 - inset;
         int okl = (unsigned)xl < (unsigned)WAIFU_FM_WIDTH;
         int okr = (unsigned)xr < (unsigned)WAIFU_FM_WIDTH;
         uint8_t *p = framebuffer + (int32_t)y0 * WAIFU_FM_WIDTH;
@@ -3720,7 +3731,9 @@ static void draw_story_dialog_box(int scene, int line, const char *speaker, cons
 
     ui_hud_begin();
     if (!chrome_valid) {
+        g_dialog_panel_rounded = 1;
         draw_panel_rect(0, box_y, box_w, 66, IDX_UI_DARK);
+        g_dialog_panel_rounded = 0;
         draw_text_small(10, box_y + 10, speaker, speaker_color, IDX_BLACK);
         if (subhead && *subhead) {
             if (ex > 0) {
@@ -10903,6 +10916,27 @@ enum {
     STORY_PORTRAIT_OPP4
 };
 
+/* These silhouettes have a few transparent columns at their source edge.
+ * Move the affected native cells toward the centre so the visible art reaches
+ * the intended maximum position. OPP1/OPP3 correspond to displayed story
+ * opponents 2 and 4; FM TOWNS keeps Serena at the framebuffer edge because
+ * its software blitter has no sprite-plane compensation. */
+static int story_portrait_x_nudge(int portrait_id)
+{
+    if (portrait_id == STORY_PORTRAIT_SERENA) {
+#if defined(WAIFU_FM_FMTOWNS)
+        /* FM TOWNS software-blits the native cell directly.  Its Serena source
+           has a transparent left fringe, so the shared +8px centering nudge
+           leaves a visible gap on this 256px framebuffer. */
+        return 0;
+#else
+        return 8;
+#endif
+    }
+    return (portrait_id == STORY_PORTRAIT_OPP1 ||
+            portrait_id == STORY_PORTRAIT_OPP3) ? 8 : 0;
+}
+
 static const StoryOpponentInfo g_story_opponents[STORY_MAX_DUELS] = {
     {"KASEM",   "SUN EXILE",          STORY_PORTRAIT_OPP0, 0},
     {"ANPU",    "JACKAL WARDEN",      STORY_PORTRAIT_OPP1, 0},
@@ -10917,7 +10951,7 @@ static const StoryDialogueLine g_story_duel0_dialogue[] = {
     {STORY_SPK_SERENA,   "Then maybe it remembers why these cards keep calling my name. Ever since the market, the deck feels alive."},
     {STORY_SPK_OPPONENT, "Alive? No. Bound. The dynasties pressed vows into crystal, then shattered them into a thousand dueling shards."},
     {STORY_SPK_SERENA,   "And people just play with relics from a dead kingdom?"},
-    {STORY_SPK_OPPONENT, "Most do. I don't. Your deck carries the Twilight Seal -- the chain that closed the Gate Beneath the Sands."},
+    {STORY_SPK_OPPONENT, "Most do. I don't. Your deck carries the Twilight Seal : the chain that closed the Gate Beneath the Sands."},
     {STORY_SPK_SERENA,   "That sounds a little too important for a girl who bought her first cards out of a roadside crate."},
     {STORY_SPK_OPPONENT, "Fate likes crude disguises. Defeat me, Serena, and I will believe the desert truly chose you."},
     {STORY_SPK_SERENA,   "Then watch closely, Kasem. If the sands chose me, they'll have to answer for it in a duel."},
@@ -10965,7 +10999,7 @@ static const StoryDialogueLine g_story_duel3_dialogue[] = {
 static const StoryDialogueLine g_story_duel4_dialogue[] = {
     {STORY_SPK_OPPONENT, "Serena of the broken deck, I have watched your path through dust, fire, mirage. You reach the White Threshold."},
     {STORY_SPK_SERENA,   "You're Isyra... the oracle the others kept circling around without naming."},
-    {STORY_SPK_OPPONENT, "Names hold power here. Mine was hidden -- I guarded the seal's last clear reading. Kings feared prophecy more than swords."},
+    {STORY_SPK_OPPONENT, "Names hold power here. Mine was hidden. I guarded the seal's last clear reading. Kings feared prophecy more than swords."},
     {STORY_SPK_SERENA,   "Then tell me plainly. Why me? Why the dreams, the demon voice, the pull in these cards?"},
     {STORY_SPK_OPPONENT, "When the empire broke, seven keepers divided the Twilight Seal. Your shard answered not to bloodline, but to recognition."},
     {STORY_SPK_SERENA,   "So I wasn't chosen by birth. I was chosen because I heard it answer."},
@@ -17868,8 +17902,11 @@ static void draw_story_intro_screen(int f)
         for (int i = 0; i < 24; ++i) put_px(116 + tx + ((i * 17 + f) & 23), 38 + ((i * 11) & 31), IDX_DIM);
     }
     /* px==10 lands at the true screen-left edge inside the HUD bracket. */
-    px = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 10, 10, f);
-    draw_story_portrait(STORY_PORTRAIT_SERENA, px, WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20);
+    px = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 10,
+                       10 + story_portrait_x_nudge(STORY_PORTRAIT_SERENA), f);
+    draw_story_portrait(STORY_PORTRAIT_SERENA, px,
+                        WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H -
+                        WAIFU_STORY_PORTRAIT_BOTTOM_GAP);
     draw_story_dialog_box(STORY_TW_INTRO, line, g_story_name, "THE SHARDS WHISPER", story_intro_lines[line], IDX_GOLD_HI, f);
     ui_hud_end();
     if (f >= 0 && f < 24) apply_black_dither_fade(q8_ratio(f, 24));
@@ -18350,7 +18387,9 @@ static void draw_story_fire_screen(int f)
         ui_hud_begin();
         draw_oldschool_fire(f);
         if (!panel_valid) {
+            g_dialog_panel_rounded = 1;
             draw_panel_rect(8, FIRE_PANEL_Y0, box_w - 16, FIRE_PANEL_H, IDX_UI_DARK);
+            g_dialog_panel_rounded = 0;
             draw_text_small(18, WAIFU_UI_BOTTOM_Y(183), "DEMON", IDX_RED, IDX_BLACK);
             s_fire_body_valid = 0;
         }
@@ -18402,7 +18441,9 @@ static void draw_story_fire_screen(int f)
     draw_oldschool_fire(f);
 #endif
 #if !defined(WAIFU_MEASURE_FIRE_NOPANEL)
+    g_dialog_panel_rounded = 1;
     draw_panel_rect(8, WAIFU_UI_BOTTOM_Y(172), WAIFU_FM_WIDTH + ex - 16, 57, IDX_UI_DARK);
+    g_dialog_panel_rounded = 0;
     draw_text_small(18, WAIFU_UI_BOTTOM_Y(183), "DEMON", IDX_RED, IDX_BLACK);
     draw_wrapped_text_small_box(18, WAIFU_UI_BOTTOM_Y(198), WAIFU_FM_WIDTH + ex - 38, 3, 10, fire_shown, IDX_WHITE, IDX_BLACK);
 #endif
@@ -19781,13 +19822,15 @@ static void draw_story_plaza_scene_content(int anim_frame)
            They must still be submitted every frame: story_layers_begin() resets
            the VDC request list before drawing, and omitting these requests made
            the next vblank publish an empty SAT as soon as the cache settled. */
-        serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2,
+        serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14,
+                                 2 + story_portrait_x_nudge(STORY_PORTRAIT_SERENA),
                                  WAIFU_PLAZA_CACHE_SETTLE_FRAME);
         opp_x = story_slide_x(WAIFU_FM_WIDTH + ex + 14,
-                              WAIFU_FM_WIDTH + ex - WAIFU_STORY_PORTRAIT_W - 2,
+                              WAIFU_FM_WIDTH + ex - WAIFU_STORY_PORTRAIT_W - 2 +
+                              story_portrait_x_nudge(opp->portrait_id),
                               WAIFU_PLAZA_CACHE_SETTLE_FRAME);
-        serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20;
-        opp_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 14;
+        serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - WAIFU_STORY_PORTRAIT_BOTTOM_GAP;
+        opp_y = serena_y;
         draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
         draw_story_portrait(opp->portrait_id, opp_x, opp_y);
 #else
@@ -19815,12 +19858,17 @@ static void draw_story_plaza_scene_content(int anim_frame)
 
         /* Widescreen: Serena hugs the true left edge, the opponent the true right
            edge (both slide in from just off their respective screen edges). */
-        serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14, 2, anim_frame);
-        opp_x = story_slide_x(WAIFU_FM_WIDTH + ex + 14, WAIFU_FM_WIDTH + ex - WAIFU_STORY_PORTRAIT_W - 2, anim_frame);
-        /* Raise portraits so their hands and upper torsos read more naturally,
-           while leaving the textbox directly over their lower bodies. */
-        serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 20;
-        opp_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - 14;
+        serena_x = story_slide_x(-WAIFU_STORY_PORTRAIT_W - 14,
+                                 2 + story_portrait_x_nudge(STORY_PORTRAIT_SERENA),
+                                 anim_frame);
+        opp_x = story_slide_x(WAIFU_FM_WIDTH + ex + 14,
+                              WAIFU_FM_WIDTH + ex - WAIFU_STORY_PORTRAIT_W - 2 +
+                              story_portrait_x_nudge(opp->portrait_id),
+                              anim_frame);
+        /* Both native portrait cells share one top edge, so the opponent never
+           reads as lower than Serena when their silhouettes differ. */
+        serena_y = WAIFU_FM_HEIGHT - WAIFU_STORY_PORTRAIT_H - WAIFU_STORY_PORTRAIT_BOTTOM_GAP;
+        opp_y = serena_y;
         draw_story_portrait(STORY_PORTRAIT_SERENA, serena_x, serena_y);
         draw_story_portrait(opp->portrait_id, opp_x, opp_y);
         ui_hud_end();
