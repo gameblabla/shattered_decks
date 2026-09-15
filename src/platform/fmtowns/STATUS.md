@@ -1283,27 +1283,31 @@ number to these wins.
 
 ### Runtime camera fidelity by CPU class
 
-The retained-camera density now follows the CPU-class byte already read from
-machine-ID port `0x30`.  The same binary selects tier 0 for 386SX-class
-Marty/UX machines, tier 1 for 386DX-class machines, and tier 2 for
-486/Pentium-class machines.  Only visual keyframe density changes: gameplay and
-animation durations remain on the same 60 Hz logic timeline.
+The renderer tier is detected once during `waifu_fm_init()` and stored in the
+core; render loops never repeat the PIT-timed 386DX speed probe.  The same binary
+selects tier 0 for 386SX-class Marty/UX machines, tier 1 for ordinary 386DX
+machines, and tier 2 for fast/cache-equipped 386DX plus 486/Pentium machines.
+Gameplay and animation durations remain on the same 60 Hz logic timeline.
 
-| tier | hand/top anchors | turn anchors | opening anchors |
+| tier | moving board width | hand/top views | turn views |
 | --- | ---: | ---: | ---: |
-| 386SX | 3 | 7 | 5 |
-| 386DX | 4 | 9 | 7 |
-| 486/Pentium | 5 | 15 | 9 |
+| 386SX | 64 | 3 retained anchors | 5 retained anchors |
+| 386DX | 128 | continuous | 9 retained anchors |
+| fast 386DX / 486 / Pentium | 256 | continuous | continuous |
+
+Held turn anchors retain the complete board/cards/HUD frame, so they do no
+drawing at all; changed anchors seek the XOR board cache from the currently
+decoded pose instead of restarting at pose zero.  Under the calibrated 16 MHz
+386SX model, the looping turn profile improved from 9.1-11.0 fps (58-79 ms
+step) to 16.9-17.4 fps (24-26 ms step on sampled retained frames).  The looping
+hand/top profile improved from 8.3-9.3 fps (72-88 ms step) to 13.5-15.4 fps
+(20-23 ms step).  A repeat after moving tier detection entirely out of the hot
+path measured 14.5-14.9 fps and 20.6-20.9 ms step.  These are emulator comparison figures, not physical-hardware
+measurements; anchor-change worst cases remain substantially slower.
 
 `WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER` exists only as a measurement override.
-Forced tier 0 remains byte-identical to the saved Marty references for all 300
-turn frames and all 240 hand/top frames.  The damage-verifier turn scene reports
-32/42/67 board renders over the same 300-frame run at tiers 0/1/2; all three
-tiers complete without undeclared framebuffer damage.  Tier-2 turn and lift
-contact sheets were inspected for ordered cameras, correct endpoints, field
-cards, hands, and HUD composition.
 
-The normal FM Towns image still links with 7936 bytes below the BSS/stack
+The normal FM Towns image still links with 7168 bytes below the BSS/stack
 ceiling.  The common story regression suite passes, PC-FX passes a fresh
 three-pass build and accurate-backend title capture, and CD32X passes at 125696
 bytes (5376 bytes below its staging limit) with a fresh `32xcd` title capture.

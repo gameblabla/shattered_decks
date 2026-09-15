@@ -836,6 +836,7 @@ static void fb_damage_force_overlay_history(void)
 #define UI_TAG_STORY_DIALOGUE 2
 #define UI_TAG_FIRE_PANEL     4
 #define UI_TAG_BATTLE_TOP     8
+#define UI_TAG_FMTOWNS_TURN  16
 
 static int ui_retained(int tag)
 {
@@ -926,6 +927,7 @@ static void fb_damage_verify(void)
 #define UI_TAG_STORY_DIALOGUE 2
 #define UI_TAG_FIRE_PANEL     4
 #define UI_TAG_BATTLE_TOP     8
+#define UI_TAG_FMTOWNS_TURN  16
 #define ui_retained(tag)               (0)
 #define ui_retain(tag)                 do { (void)(tag); } while (0)
 #define fb_retain_overlay()             do { } while (0)
@@ -1252,6 +1254,7 @@ static int g_board_bg_cache_valid = 0;
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
 static int g_fmtowns_turn_board_pose = -1;
 static int g_fmtowns_turn_board_loaded_pose = -1;
+static int g_fmtowns_turn_board_changed = 1;
 static int g_fmtowns_turn_overlay_tracking = 0;
 /* The moving-board renderer has three runtime widths: the cacheless 386SX
    gets 64x120, ordinary 386DX machines get 128x120, and fast/cache-equipped
@@ -1259,12 +1262,13 @@ static int g_fmtowns_turn_overlay_tracking = 0;
    static board cameras use their normal composites on every tier. */
 static int g_fmtowns_motion_internal_width = 64;
 static int g_fmtowns_motion_lowres_enabled = 1;
+static int g_fmtowns_performance_tier = 0;
 /* Set for the field-card pass that follows a board render. Static endpoint
    boards keep native card samples; only moving-board frames get the card LOD
    as well. */
 static int g_fmtowns_field_cards_lowres = 0;
 
-static int fmtowns_performance_tier(void)
+static int fmtowns_detect_performance_tier(void)
 {
 #if defined(WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER)
     return WAIFU_FMTOWNS_FORCE_PERFORMANCE_TIER;
@@ -1278,7 +1282,9 @@ static void fmtowns_select_motion_renderer(void)
     /* Tier 0 is 386SX/Marty/UX, tier 1 is ordinary 386DX, and tier 2 is
        fast/cache-equipped 386DX or 486/Pentium. Unknown values stay on the
        safest 386SX-sized path. */
-    int tier = fmtowns_performance_tier();
+    int tier = fmtowns_detect_performance_tier();
+    if (tier < 0 || tier > 2) tier = 0;
+    g_fmtowns_performance_tier = tier;
     if (tier <= 0) {
         g_fmtowns_motion_internal_width = 64;
         g_fmtowns_motion_lowres_enabled = 1;
@@ -1289,6 +1295,16 @@ static void fmtowns_select_motion_renderer(void)
         g_fmtowns_motion_internal_width = WAIFU_FM_WIDTH;
         g_fmtowns_motion_lowres_enabled = 0;
     }
+}
+
+static int fmtowns_quantize_motion_pose(int pose, int duration, int anchors)
+{
+    int anchor;
+    if (duration <= 0 || anchors <= 1) return pose;
+    if (pose <= 0) return 0;
+    if (pose >= duration) return duration;
+    anchor = (pose * (anchors - 1) + duration / 2) / duration;
+    return (anchor * duration + (anchors - 1) / 2) / (anchors - 1);
 }
 
 typedef struct FmtownsTurnOverlayRect {
@@ -1310,7 +1326,7 @@ static void fmtowns_turn_record_overlay_rect(int x0, int y0, int x1, int y1);
 
 static int fmtowns_turn_damage_suppressed(void)
 {
-    return g_fmtowns_turn_board_pose >= 0;
+    return g_fmtowns_turn_board_pose >= 0 && g_fmtowns_turn_board_changed;
 }
 
 static int fmtowns_field_cards_use_lowres(void)
@@ -5956,9 +5972,13 @@ static void fmtowns_turn_restore_previous_overlays(const uint8_t *logical)
     int i;
     const FmtownsTurnOverlayRect *rects =
         g_fmtowns_turn_overlay_rects[g_fmtowns_turn_overlay_active];
-    for (i = 0; i < g_fmtowns_turn_overlay_counts[g_fmtowns_turn_overlay_active]; ++i)
+    for (i = 0; i < g_fmtowns_turn_overlay_counts[g_fmtowns_turn_overlay_active]; ++i) {
         fmtowns_turn_expand_rect(logical, rects[i].x0, rects[i].y0,
                                  rects[i].x1, rects[i].y1);
+        fb_damage_rect(rects[i].x0, rects[i].y0,
+                       rects[i].x1 - rects[i].x0 + 1,
+                       rects[i].y1 - rects[i].y0 + 1);
+    }
 }
 
 static int fmtowns_turn_apply_delta(int from_pose, int update_frame)
@@ -6101,6 +6121,7 @@ static int fmtowns_turn_board_cache_decode(int pose)
         if (!fmtowns_turn_decode_keyframe()) return 0;
         fmtowns_turn_expand_all(fmtowns_turn_board_cache_scratch());
         g_fmtowns_turn_board_loaded_pose = 0;
+        if (pose == 0) return 1;
     }
     if (pose == g_fmtowns_turn_board_loaded_pose + 1) {
         fmtowns_turn_restore_previous_overlays(fmtowns_turn_board_cache_scratch());
@@ -6111,6 +6132,23 @@ static int fmtowns_turn_board_cache_decode(int pose)
     if (pose == g_fmtowns_turn_board_loaded_pose - 1) {
         fmtowns_turn_restore_previous_overlays(fmtowns_turn_board_cache_scratch());
         if (!fmtowns_turn_apply_delta(pose, 1)) return 0;
+        g_fmtowns_turn_board_loaded_pose = pose;
+        return 1;
+    }
+    /* A slow frame can advance several authored poses at once.  The previous
+       path restarted from pose zero for every such jump, repeatedly decoding
+       the keyframe and all earlier deltas.  XOR deltas are reversible, so seek
+       from the image already in scratch in either direction and expand once. */
+    if (g_fmtowns_turn_board_loaded_pose >= 0) {
+        fmtowns_turn_restore_previous_overlays(fmtowns_turn_board_cache_scratch());
+        if (pose > g_fmtowns_turn_board_loaded_pose) {
+            for (int p = g_fmtowns_turn_board_loaded_pose; p < pose; ++p)
+                if (!fmtowns_turn_apply_delta(p, 0)) return 0;
+        } else {
+            for (int p = g_fmtowns_turn_board_loaded_pose - 1; p >= pose; --p)
+                if (!fmtowns_turn_apply_delta(p, 0)) return 0;
+        }
+        fmtowns_turn_expand_all(fmtowns_turn_board_cache_scratch());
         g_fmtowns_turn_board_loaded_pose = pose;
         return 1;
     }
@@ -6129,11 +6167,17 @@ static void render_board(Camera cam)
     unsigned long long fixed_pose_t0 = g_fixed_pose_bench_active ? profile_now_us() : 0;
 #endif
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
-    if (g_fmtowns_turn_board_pose >= 0 &&
-        fmtowns_turn_board_cache_decode(g_fmtowns_turn_board_pose)) {
-        fb_damage_all();
-        g_frame_present_dense = 1;
-        return;
+    if (g_fmtowns_turn_board_pose >= 0) {
+        int previous_pose = g_fmtowns_turn_board_loaded_pose;
+        if (fmtowns_turn_board_cache_decode(g_fmtowns_turn_board_pose)) {
+            g_fmtowns_turn_board_changed =
+                previous_pose != g_fmtowns_turn_board_loaded_pose;
+            if (g_fmtowns_turn_board_changed) {
+                fb_damage_all();
+                g_frame_present_dense = 1;
+            }
+            return;
+        }
     }
 #endif
     /* Every 3D field frame must start from a clean black framebuffer.
@@ -14105,6 +14149,12 @@ static WaifuBattleBaseCache *battle_base_cache_for_camera(Camera cam)
 #elif defined(WAIFU_FM_FMTOWNS)
     if (g_b_fmtowns_work_cache_owner == FMTOWNS_WORK_CACHE_CUTIN)
         return NULL;
+    /* Tier-0 hand/top motion is snapped to the two endpoint caches plus this
+       one reusable midpoint.  Recognizing the exact half-way camera here is
+       what turns the visual quantization into a real render-time saving. */
+    if (g_fmtowns_performance_tier <= 0 &&
+        camera_equal(cam, player_handtop_transition_camera(1, 2, 1)))
+        return &g_b_fmtowns_work_cache;
     if (camera_equal(cam, placement_camera()) ||
         camera_equal(cam, enemy_placement_camera()))
         return &g_b_fmtowns_work_cache;
@@ -14520,16 +14570,28 @@ static void draw_interactive_turn_base(int frame, int dur, int to_enemy)
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
     if (g_fmtowns_motion_lowres_enabled) {
         int pose = to_enemy ? frame : dur - frame;
+        int tier = g_fmtowns_performance_tier;
+        int anchors = tier <= 0 ? 5 : 9;
+        pose = fmtowns_quantize_motion_pose(pose, dur, anchors);
+        if (g_fmtowns_turn_board_loaded_pose == pose &&
+            ui_retained(UI_TAG_FMTOWNS_TURN)) {
+            /* Board, field cards and HUD are identical while an anchor is
+               held.  Preserve the complete frame instead of redrawing six
+               projected cards just to reproduce the same bytes. */
+            fb_retain_overlay();
+            return;
+        }
         Camera cam = interactive_turn_camera(pose, dur, 1);
         g_fmtowns_turn_overlay_tracking = 1;
         g_fmtowns_turn_board_pose = pose;
         draw_interactive_base(cam);
         g_fmtowns_turn_board_pose = -1;
-        /* A turn pose is a complete moving board frame.  Reassert the dense
-           presentation contract after the live card/HUD overlays too: an
-           endpoint may otherwise restore a retained static composite and leave
-           only its small overlay footprint marked for presentation. */
-        g_frame_present_dense = 1;
+        ui_retain(UI_TAG_FMTOWNS_TURN);
+        /* A newly selected anchor changes the whole board.  Frames that hold
+           an anchor restore and redraw only the prior/current live overlays,
+           so preserve their sparse damage instead of forcing a full VRAM
+           upload. */
+        if (g_fmtowns_turn_board_changed) g_frame_present_dense = 1;
     } else {
         /* Faster TOWNS models retain the same timing and camera path, but draw
            every moving board at the native 256x240 resolution. */
@@ -14601,6 +14663,13 @@ static void draw_player_handtop_transition_shared(int frame, int dur, int to_top
                                                   int hand_yoff, int draw_hand,
                                                   int draw_hud)
 {
+#if defined(WAIFU_FM_FMTOWNS)
+    /* The Marty/UX tier has one reusable intermediate-camera cache in addition
+       to the retained hand and top endpoints.  Snap only that tier to those
+       three views; the animation clock and sliding hand remain continuous. */
+    if (g_fmtowns_performance_tier <= 0)
+        frame = fmtowns_quantize_motion_pose(frame, dur, 3);
+#endif
     Camera cam = player_handtop_transition_camera(frame, dur, to_top);
     if (draw_hud) draw_interactive_base(cam);
     else draw_interactive_field_base_no_hud(cam);
