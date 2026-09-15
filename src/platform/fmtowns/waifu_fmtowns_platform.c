@@ -16,6 +16,7 @@
 #include <string.h>
 #include "io.h"
 #include "machine.h"
+#include "fmtowns_video.h"
 
 /* ---- Storage: the machine's battery-backed CMOS RAM -------------------
  *
@@ -186,7 +187,21 @@ int waifu_platform_performance_tier(void)
 {
     int cpu_class = fmt_machine_cpu_class();
     if (cpu_class == FMT_MACHINE_ID_CPU_80486) return 2;
-    if (cpu_class == FMT_MACHINE_ID_CPU_80386DX) return 1;
+    if (cpu_class == FMT_MACHINE_ID_CPU_80386DX) {
+#if defined(__i386__)
+        /* Machine ID reports the CPU family, not an upgrade's clock/cache.
+         * A short PIT-timed 386 loop separates the 15/20 MHz DX machines
+         * from the 40 MHz/cache-equipped class without a second build. */
+        uint16_t start = fmtowns_clock_ticks();
+        uint16_t end;
+        uint32_t loops = 65536u;
+        __asm__ volatile ("1:\n\tdecl %[loops]\n\tjnz 1b"
+                          : [loops] "+c" (loops) :: "cc");
+        end = fmtowns_clock_ticks();
+        if ((uint16_t)(start - end) <= 3600u) return 2;
+#endif
+        return 1;
+    }
     return 0; /* 386SX-class Marty/UX, plus any unknown value as a safe default. */
 }
 

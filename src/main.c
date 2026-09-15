@@ -1253,10 +1253,11 @@ static int g_board_bg_cache_valid = 0;
 static int g_fmtowns_turn_board_pose = -1;
 static int g_fmtowns_turn_board_loaded_pose = -1;
 static int g_fmtowns_turn_overlay_tracking = 0;
-/* Marty/386SX uses the blockier renderer for every moving board camera.
-   Wider-bus 386DX and 486-class TOWNS machines retain the native-resolution
-   moving renderer. Exact static board cameras use their normal composites on
-   every tier. */
+/* The moving-board renderer has three runtime widths: the cacheless 386SX
+   gets 64x120, ordinary 386DX machines get 128x120, and fast/cache-equipped
+   386DX plus 486-class TOWNS machines keep the native 256x240 path. Exact
+   static board cameras use their normal composites on every tier. */
+static int g_fmtowns_motion_internal_width = 64;
 static int g_fmtowns_motion_lowres_enabled = 1;
 /* Set for the field-card pass that follows a board render. Static endpoint
    boards keep native card samples; only moving-board frames get the card LOD
@@ -1274,10 +1275,20 @@ static int fmtowns_performance_tier(void)
 
 static void fmtowns_select_motion_renderer(void)
 {
-    /* Tier 0 is 386SX/Marty/UX.  Known wider-bus tiers get the
-         full-resolution moving board; unknown/invalid values stay safe. */
+    /* Tier 0 is 386SX/Marty/UX, tier 1 is ordinary 386DX, and tier 2 is
+       fast/cache-equipped 386DX or 486/Pentium. Unknown values stay on the
+       safest 386SX-sized path. */
     int tier = fmtowns_performance_tier();
-    g_fmtowns_motion_lowres_enabled = tier != 1 && tier != 2;
+    if (tier <= 0) {
+        g_fmtowns_motion_internal_width = 64;
+        g_fmtowns_motion_lowres_enabled = 1;
+    } else if (tier == 1) {
+        g_fmtowns_motion_internal_width = 128;
+        g_fmtowns_motion_lowres_enabled = 1;
+    } else {
+        g_fmtowns_motion_internal_width = WAIFU_FM_WIDTH;
+        g_fmtowns_motion_lowres_enabled = 0;
+    }
 }
 
 typedef struct FmtownsTurnOverlayRect {
@@ -5884,9 +5895,26 @@ static void fmtowns_turn_expand_sample(const uint8_t *logical, unsigned sample)
 {
     unsigned x = sample % WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH;
     unsigned y = sample / WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH;
+    unsigned out_x;
     uint16_t pair = (uint16_t)logical[sample] |
                     ((uint16_t)logical[sample] << 8);
-    uint8_t *d0 = framebuffer + (y * 2u) * WAIFU_FM_WIDTH + x * 2u;
+
+    /* The checked-in cache is kept at 128 columns so the same deltas can
+       serve the 386DX path.  A 386SX display consumes every other cached
+       column and expands it four-wide, giving the requested 64x120 surface. */
+    if (g_fmtowns_motion_internal_width == 64) {
+        if (x & 1u) return;
+        out_x = (x >> 1) * 4u;
+    } else {
+        out_x = x * 2u;
+    }
+    uint8_t *d0 = framebuffer + (y * 2u) * WAIFU_FM_WIDTH + out_x;
+    if (g_fmtowns_motion_internal_width == 64) {
+        uint32_t quad = (uint32_t)pair | ((uint32_t)pair << 16);
+        *(uint32_t *)(void *)d0 = quad;
+        *(uint32_t *)(void *)(d0 + WAIFU_FM_WIDTH) = quad;
+        return;
+    }
     *(uint16_t *)(void *)d0 = pair;
     *(uint16_t *)(void *)(d0 + WAIFU_FM_WIDTH) = pair;
 }
@@ -5894,20 +5922,25 @@ static void fmtowns_turn_expand_sample(const uint8_t *logical, unsigned sample)
 static void fmtowns_turn_expand_rect(const uint8_t *logical,
                                       int x0, int y0, int x1, int y1)
 {
-    int bx0 = x0 >> 1;
     int by0 = y0 >> 1;
-    int bx1 = (x1 + 1) >> 1;
     int by1 = (y1 + 1) >> 1;
-    if (bx0 < 0) bx0 = 0;
     if (by0 < 0) by0 = 0;
-    if (bx1 > WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH)
-        bx1 = WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH;
     if (by1 > WAIFU_FMTOWNS_TURN_BOARD_CACHE_HEIGHT)
         by1 = WAIFU_FMTOWNS_TURN_BOARD_CACHE_HEIGHT;
     for (int y = by0; y < by1; ++y) {
-        unsigned sample = (unsigned)y * WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH + (unsigned)bx0;
-        for (int x = bx0; x < bx1; ++x, ++sample)
-            fmtowns_turn_expand_sample(logical, sample);
+        for (int x = 0; x < WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH; ++x) {
+            int out_x;
+            if (g_fmtowns_motion_internal_width == 64) {
+                if (x & 1) continue;
+                out_x = (x >> 1) * 4;
+            } else {
+                out_x = x * 2;
+            }
+            if (out_x > x1 || out_x + (g_fmtowns_motion_internal_width == 64 ? 4 : 2) <= x0)
+                continue;
+            fmtowns_turn_expand_sample(logical,
+                (unsigned)y * WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH + (unsigned)x);
+        }
     }
 }
 
@@ -6233,15 +6266,24 @@ static void render_board(Camera cam)
 }
 
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
-#define FMTOWNS_MOTION_WIDTH  WAIFU_FMTOWNS_TURN_BOARD_CACHE_WIDTH
 #define FMTOWNS_MOTION_HEIGHT WAIFU_FMTOWNS_TURN_BOARD_CACHE_HEIGHT
+
+static int fmtowns_motion_width(void)
+{
+    return g_fmtowns_motion_internal_width;
+}
+
+static int fmtowns_motion_scale_x(void)
+{
+    return WAIFU_FM_WIDTH / fmtowns_motion_width();
+}
 
 static void fmtowns_motion_renderer_prepare(uint8_t *logical)
 {
     if (!g_fmtowns_motion_renderer_ready) {
         CfxRenderer3DConfig cfg = {
             logical,
-            (DEFAULT_INT)FMTOWNS_MOTION_WIDTH,
+            (DEFAULT_INT)fmtowns_motion_width(),
             (DEFAULT_INT)FMTOWNS_MOTION_HEIGHT
         };
         cfx_renderer3d_init(&g_fmtowns_motion_renderer, &cfg);
@@ -6258,7 +6300,7 @@ static void fmtowns_motion_renderer_prepare(uint8_t *logical)
 static ScreenPt fmtowns_motion_point(ScreenPt p)
 {
     if (p.ok) {
-        p.x /= WAIFU_FMTOWNS_TURN_BOARD_CACHE_SCALE;
+        p.x /= fmtowns_motion_scale_x();
         p.y /= WAIFU_FMTOWNS_TURN_BOARD_CACHE_SCALE;
     }
     return p;
@@ -6288,16 +6330,16 @@ static void fmtowns_motion_draw_quad(ScreenPt pa, ScreenPt pb,
     pb = fmtowns_motion_point(pb);
     pc = fmtowns_motion_point(pc);
     pd = fmtowns_motion_point(pd);
-    p0.x = (DEFAULT_INT)fmtowns_motion_clamp(pa.x, FMTOWNS_MOTION_WIDTH);
+    p0.x = (DEFAULT_INT)fmtowns_motion_clamp(pa.x, fmtowns_motion_width());
     p0.y = (DEFAULT_INT)fmtowns_motion_clamp(pa.y, FMTOWNS_MOTION_HEIGHT);
     p0.u = 0; p0.v = 0;
-    p1.x = (DEFAULT_INT)fmtowns_motion_clamp(pb.x, FMTOWNS_MOTION_WIDTH);
+    p1.x = (DEFAULT_INT)fmtowns_motion_clamp(pb.x, fmtowns_motion_width());
     p1.y = (DEFAULT_INT)fmtowns_motion_clamp(pb.y, FMTOWNS_MOTION_HEIGHT);
     p1.u = uvmax; p1.v = 0;
-    p2.x = (DEFAULT_INT)fmtowns_motion_clamp(pc.x, FMTOWNS_MOTION_WIDTH);
+    p2.x = (DEFAULT_INT)fmtowns_motion_clamp(pc.x, fmtowns_motion_width());
     p2.y = (DEFAULT_INT)fmtowns_motion_clamp(pc.y, FMTOWNS_MOTION_HEIGHT);
     p2.u = uvmax; p2.v = uvmax;
-    p3.x = (DEFAULT_INT)fmtowns_motion_clamp(pd.x, FMTOWNS_MOTION_WIDTH);
+    p3.x = (DEFAULT_INT)fmtowns_motion_clamp(pd.x, fmtowns_motion_width());
     p3.y = (DEFAULT_INT)fmtowns_motion_clamp(pd.y, FMTOWNS_MOTION_HEIGHT);
     p3.u = 0; p3.v = uvmax;
     cfx_renderer3d_draw_quad_fast_affine(&g_fmtowns_motion_renderer,
@@ -6318,16 +6360,16 @@ static void fmtowns_motion_draw_wall(ScreenPt pa, ScreenPt pb,
     /* Keep the same small off-screen apron as the native wall path, scaled to
        the logical surface.  The renderer clips the actual spans, while the
        wall edge keeps its slope at the viewport boundary. */
-    p0.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pa.x, FMTOWNS_MOTION_WIDTH, 32);
+    p0.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pa.x, fmtowns_motion_width(), 32);
     p0.y = (DEFAULT_INT)fmtowns_motion_clamp_apron(pa.y, FMTOWNS_MOTION_HEIGHT, 8);
     p0.u = 0; p0.v = 0;
-    p1.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pb.x, FMTOWNS_MOTION_WIDTH, 32);
+    p1.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pb.x, fmtowns_motion_width(), 32);
     p1.y = (DEFAULT_INT)fmtowns_motion_clamp_apron(pb.y, FMTOWNS_MOTION_HEIGHT, 8);
     p1.u = uvmax; p1.v = 0;
-    p2.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pc.x, FMTOWNS_MOTION_WIDTH, 32);
+    p2.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pc.x, fmtowns_motion_width(), 32);
     p2.y = (DEFAULT_INT)fmtowns_motion_clamp_apron(pc.y, FMTOWNS_MOTION_HEIGHT, 8);
     p2.u = uvmax; p2.v = uvmax;
-    p3.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pd.x, FMTOWNS_MOTION_WIDTH, 32);
+    p3.x = (DEFAULT_INT)fmtowns_motion_clamp_apron(pd.x, fmtowns_motion_width(), 32);
     p3.y = (DEFAULT_INT)fmtowns_motion_clamp_apron(pd.y, FMTOWNS_MOTION_HEIGHT, 8);
     p3.u = 0; p3.v = uvmax;
     cfx_renderer3d_draw_quad_fast_affine(&g_fmtowns_motion_renderer,
@@ -6371,7 +6413,7 @@ static int fmtowns_motion_mesh_point(ScreenPt p, CfxBoardPoint *out)
 {
     if (!p.ok) return 0;
     p = fmtowns_motion_point(p);
-    out->x = (int16_t)fmtowns_motion_clamp(p.x, FMTOWNS_MOTION_WIDTH);
+    out->x = (int16_t)fmtowns_motion_clamp(p.x, fmtowns_motion_width());
     out->y = (int16_t)fmtowns_motion_clamp(p.y, FMTOWNS_MOTION_HEIGHT);
     return 1;
 }
@@ -6399,6 +6441,24 @@ static void fmtowns_motion_draw_top(const BoardProjected *bp)
     }
 }
 
+static void fmtowns_motion_expand_all(const uint8_t *logical)
+{
+    int width = fmtowns_motion_width();
+    int scale_x = WAIFU_FM_WIDTH / width;
+    for (int y = 0; y < FMTOWNS_MOTION_HEIGHT; ++y) {
+        uint8_t *row0 = framebuffer + (y * 2) * WAIFU_FM_WIDTH;
+        uint8_t *row1 = row0 + WAIFU_FM_WIDTH;
+        for (int x = 0; x < width; ++x) {
+            uint8_t color = logical[y * width + x];
+            int out_x = x * scale_x;
+            for (int dx = 0; dx < scale_x; ++dx) {
+                row0[out_x + dx] = color;
+                row1[out_x + dx] = color;
+            }
+        }
+    }
+}
+
 static void render_board_lowres(Camera cam)
 {
     uint8_t *logical;
@@ -6407,14 +6467,14 @@ static void render_board_lowres(Camera cam)
     fmtowns_motion_scratch_claim();
     logical = fmtowns_turn_board_cache_scratch();
     fmtowns_motion_renderer_prepare(logical);
-    fill_u8_fast(logical,
-                 WAIFU_FMTOWNS_TURN_BOARD_CACHE_FRAME_BYTES, IDX_BLACK);
+    fill_u8_fast(logical, fmtowns_motion_width() * FMTOWNS_MOTION_HEIGHT,
+                 IDX_BLACK);
     build_board_projected(cam, &bp);
     fmtowns_motion_draw_sides(cam, &bp);
     fmtowns_motion_draw_top(&bp);
     /* No grid rules here either -- the cell art carries its own border, and at
        this LOD a drawn wireframe was the coarsest thing on screen. */
-    fmtowns_turn_expand_all(logical);
+    fmtowns_motion_expand_all(logical);
     fb_damage_all();
     g_frame_present_dense = 1;
 }
@@ -10711,10 +10771,11 @@ static int g_b_fmtowns_prelude_late_frame;
 #if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
 static void fmtowns_motion_scratch_claim(void)
 {
-    /* The 60 KiB FM work slot is also the logical 128x120 moving-board
-       framebuffer.  Invalidate any retained camera/cut-in image before using
-       it, and force the next turn pose to start from its compressed keyframe
-       rather than interpreting this unrelated board as turn-cache data. */
+    /* The 60 KiB FM work slot is also the logical moving-board framebuffer
+       (64x120 on 386SX, 128x120 on ordinary 386DX).  Invalidate any retained
+       camera/cut-in image before using it, and force the next turn pose to
+       start from its compressed keyframe rather than interpreting this
+       unrelated board as turn-cache data. */
     g_b_fmtowns_work_cache.valid = 0;
     g_b_fmtowns_work_cache_owner = FMTOWNS_WORK_CACHE_NONE;
     g_b_fmtowns_place_static_baked = 0;
