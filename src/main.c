@@ -11965,6 +11965,26 @@ static void set_battle_phase(WaifuBattlePhase phase)
     g_b_phase_first_frame = 1;
     g_b_result_pose_frame = 0;
     if (phase != prev) {
+#if defined(WAIFU_FMTOWNS_TURN_BOARD_CACHE)
+        if ((phase == IB_TURN_TO_COM || phase == IB_TURN_TO_PLAYER) &&
+            prev != IB_TURN_TO_COM && prev != IB_TURN_TO_PLAYER) {
+            /* Entering a turn sweep from a static view. The framebuffer holds
+               that static composite, not the previous turn board, and the
+               shared 60 KiB work slot may have been reused for placement or
+               cut-in images since the last turn. The same-pose sparse restore
+               and the held-anchor early retain both assume the previous frame
+               was the same turn pose; on entry they would operate on the wrong
+               base and leave stale static pixels (or cut-in bytes) baked into
+               the moving board. Force the next turn decode to start from its
+               keyframe and expand fully. */
+            g_fmtowns_turn_board_loaded_pose = -1;
+            g_fmtowns_turn_overlay_counts[0] = 0;
+            g_fmtowns_turn_overlay_counts[1] = 0;
+            g_fmtowns_turn_overlay_active = 0;
+            if (ui_retained(UI_TAG_FMTOWNS_TURN))
+                ui_retain(0);
+        }
+#endif
 #if defined(WAIFU_FM_FMTOWNS) && !defined(WAIFU_BATTLE_BASE_CACHE_DISABLE)
         if (prev == IB_PLAYER_BATTLE || prev == IB_COM_BATTLE)
             fmtowns_cutin_leave();
@@ -14574,10 +14594,14 @@ static void draw_interactive_turn_base(int frame, int dur, int to_enemy)
         int anchors = tier <= 0 ? 5 : 9;
         pose = fmtowns_quantize_motion_pose(pose, dur, anchors);
         if (g_fmtowns_turn_board_loaded_pose == pose &&
-            ui_retained(UI_TAG_FMTOWNS_TURN)) {
+            ui_retained(UI_TAG_FMTOWNS_TURN) &&
+            !(g_b_phase == IB_TURN_TO_PLAYER && frame >= dur / 2)) {
             /* Board, field cards and HUD are identical while an anchor is
                held.  Preserve the complete frame instead of redrawing six
-               projected cards just to reproduce the same bytes. */
+               projected cards just to reproduce the same bytes.  The second
+               half of TURN_TO_PLAYER is not static: its bottom info bar slides
+               upward outside this helper, so that path must restore the prior
+               overlay and redraw it at the new position. */
             fb_retain_overlay();
             return;
         }

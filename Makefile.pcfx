@@ -79,7 +79,7 @@ SFX_SOURCE_FILES := $(shell find sounds assets/sounds -type f 2>/dev/null | LC_A
 # the build resolution from src/engine/cfx_screen_config.h and selects the
 # matching per-resolution source PNG. Depend on the config + whatever source art
 # exists so a resolution change (or art edit) retriggers regeneration.
-TITLE_SOURCE_FILES := src/engine/cfx_screen_config.h $(wildcard assets/source/title/*.png assets/source/ending/*.png)
+TITLE_SOURCE_FILES := src/engine/cfx_screen_config.h $(shell find assets/source/title assets/source/ending -type f -name '*.png' 2>/dev/null | LC_ALL=C sort | sed 's/\\/\\\\/g; s/ /\\ /g')
 RAINBOW_SOURCE_FILES := assets/source/bg/desert.png assets/source/bg/stone.png assets/source/bg/ember.png assets/source/bg/sky.png
 
 ASSET_GEN_FILES := \
