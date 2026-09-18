@@ -11047,71 +11047,71 @@ static const StoryOpponentInfo g_story_opponents[STORY_MAX_DUELS] = {
     {"ANPU",    "JACKAL WARDEN",      STORY_PORTRAIT_OPP1, 0},
     {"RAHOTEP", "WAR-SAINT",          STORY_PORTRAIT_OPP2, 0},
     {"NADIRA",  "VEIL DANCER",        STORY_PORTRAIT_OPP3, 0},
-    {"ISYRA",   "ORACLE",             STORY_PORTRAIT_OPP4, 1},
+    {"PYRA",    "FURY ORACLE",          STORY_PORTRAIT_OPP4, 1},
 };
 
 static const StoryDialogueLine g_story_duel0_dialogue[] = {
     {STORY_SPK_SERENA,   "So the desert road really was waiting for me. I felt the heat before I even opened my eyes."},
-    {STORY_SPK_OPPONENT, "You stand on the Shifting Expanse, girl. Every grain here remembers the fall of the Sun Court."},
+    {STORY_SPK_OPPONENT, "Stop, girl. This is the Shifting Expanse. The Sun Court died on this sand."},
     {STORY_SPK_SERENA,   "Then maybe it remembers why these cards keep calling my name. Ever since the market, the deck feels alive."},
-    {STORY_SPK_OPPONENT, "Alive? No. Bound. The dynasties pressed vows into crystal, then shattered them into a thousand dueling shards."},
+    {STORY_SPK_OPPONENT, "Not alive. Bound. The old kings sealed their vows in crystal, then broke it into card shards."},
     {STORY_SPK_SERENA,   "And people just play with relics from a dead kingdom?"},
-    {STORY_SPK_OPPONENT, "Most do. I don't. Your deck carries the Twilight Seal : the chain that closed the Gate Beneath the Sands."},
+    {STORY_SPK_OPPONENT, "Most do. I don't. Your deck holds the Twilight Seal. It shut the Gate Beneath the Sands."},
     {STORY_SPK_SERENA,   "That sounds a little too important for a girl who bought her first cards out of a roadside crate."},
-    {STORY_SPK_OPPONENT, "Fate likes crude disguises. Defeat me, Serena, and I will believe the desert truly chose you."},
+    {STORY_SPK_OPPONENT, "Fate works like that. Beat me, Serena, and I'll believe the desert chose you."},
     {STORY_SPK_SERENA,   "Then watch closely, Kasem. If the sands chose me, they'll have to answer for it in a duel."},
 };
 
 static const StoryDialogueLine g_story_duel1_dialogue[] = {
-    {STORY_SPK_OPPONENT, "No farther. Beyond this ridge stands the Jackal Gate, where the caravan dead surrender their names."},
+    {STORY_SPK_OPPONENT, "Stop. Past this ridge is the Jackal Gate. Dead travelers give up their names there."},
     {STORY_SPK_SERENA,   "You make that sound like a warning. Usually that means I should keep walking."},
-    {STORY_SPK_OPPONENT, "I am Anpu, Ninth Procession warden. My order judges by memory, oath, courage. Your steps rang all three."},
+    {STORY_SPK_OPPONENT, "I am Anpu, warden of the Ninth Procession. We judge memory, oath, and courage. You passed all three."},
     {STORY_SPK_SERENA,   "I've barely started and already priests in masks are judging me. Wonderful."},
-    {STORY_SPK_OPPONENT, "This mask predates me. The jackal lords wore it escorting souls through the underways beneath the dunes."},
+    {STORY_SPK_OPPONENT, "This mask is older than me. The jackal lords wore it to guide souls through the tunnels under the dunes."},
     {STORY_SPK_SERENA,   "Underways? More tunnels? More ruins? This whole land feels stacked on top of old secrets."},
-    {STORY_SPK_OPPONENT, "The Expanse is only the skin. Below sleep the Hall of Embers, the Mirror Wells, and the Hollow Throne where the seal was forged."},
+    {STORY_SPK_OPPONENT, "The desert is just the surface. Below are the Hall of Embers, the Mirror Wells, and the Hollow Throne where they made the seal."},
     {STORY_SPK_SERENA,   "And you think my deck is tied to all of that."},
-    {STORY_SPK_OPPONENT, "I think your victory or failure will wake what the sealed kings feared. Show me the measure of your spirit."},
+    {STORY_SPK_OPPONENT, "Win or lose, you'll wake what the sealed kings feared. Show me your spirit."},
     {STORY_SPK_SERENA,   "All right, Anpu. We can skip the scales and let the cards do the judging."},
 };
 
 static const StoryDialogueLine g_story_duel2_dialogue[] = {
-    {STORY_SPK_OPPONENT, "Steel your heart. I am Rahotep, last war-saint of the auric host. I kneel to no weak claimant."},
+    {STORY_SPK_OPPONENT, "Brace yourself. I am Rahotep, last war-saint of the gold army. I kneel to no one weak."},
     {STORY_SPK_SERENA,   "Good. I'd be worried if you surrendered before I even drew a hand."},
-    {STORY_SPK_OPPONENT, "Boldness is not strength. When the gold banners flew, I led the phalanxes that held the King's Engine at Dawn Bastion."},
+    {STORY_SPK_OPPONENT, "Talk is not strength. When the gold banners flew, I held the King's Engine at Dawn Bastion."},
     {STORY_SPK_SERENA,   "I've heard three different ruins called the king's last bastion already."},
-    {STORY_SPK_OPPONENT, "Because there were many. The empire fell to betrayal, revolt, and void-lit fire from below."},
+    {STORY_SPK_OPPONENT, "There were many. The empire fell to betrayal, revolt, and fire from below."},
     {STORY_SPK_SERENA,   "That fire again... the same one from my dreams."},
-    {STORY_SPK_OPPONENT, "Your dreams are brushing the old catastrophe. The seal cracked when the court tried to turn dueling rites into a weapon."},
+    {STORY_SPK_OPPONENT, "Your dreams touch the old disaster. The seal broke when the court turned dueling rites into a weapon."},
     {STORY_SPK_SERENA,   "So every duel I'm fighting is another piece of that history turning back toward me."},
-    {STORY_SPK_OPPONENT, "Exactly. If you cannot break my formation, you cannot survive what waits beyond the temple line."},
+    {STORY_SPK_OPPONENT, "Right. If you can't break my line, you won't survive what's past the temples."},
     {STORY_SPK_SERENA,   "Then let's test that armor, Rahotep. I didn't come this far to bow before a ghost in gold."},
 };
 
 static const StoryDialogueLine g_story_duel3_dialogue[] = {
-    {STORY_SPK_OPPONENT, "Careful where you stare, little pilgrim. In the Mirage Courts, desire is another kind of trap."},
+    {STORY_SPK_OPPONENT, "Watch your eyes, little pilgrim. In the Mirage Courts, wanting things is a trap too."},
     {STORY_SPK_SERENA,   "If you're trying to distract me before the duel, I should tell you it's working a little."},
-    {STORY_SPK_OPPONENT, "Ha. Honesty. I like that. I am Nadira, keeper of the Veiled Oasis, and trader in secrets too shameful to voice."},
+    {STORY_SPK_OPPONENT, "Ha. Honest. I like that. I am Nadira, keeper of the Veiled Oasis. I trade in secrets people won't say."},
     {STORY_SPK_SERENA,   "Then you've probably made a fortune off this desert."},
-    {STORY_SPK_OPPONENT, "On the contrary, I collect debts. Travelers kneel at my pool to ask what they lost. The water always takes something."},
+    {STORY_SPK_OPPONENT, "Wrong. I collect debts. Travelers drink from my pool to find what they lost. The water always keeps something."},
     {STORY_SPK_SERENA,   "Memories?"},
-    {STORY_SPK_OPPONENT, "Names. Promises. Once in a while, a future. The queens used this oasis to glimpse who would carry the seal."},
+    {STORY_SPK_OPPONENT, "Names. Promises. Sometimes futures. The queens used my oasis to find who would carry the seal."},
     {STORY_SPK_SERENA,   "And what did the water show you about me?"},
-    {STORY_SPK_OPPONENT, "That you arrive carrying two shadows: the girl you were, and the sovereign you may become if the Void Crown notices you first."},
+    {STORY_SPK_OPPONENT, "Two shadows follow you: the girl you were, and the queen you may become if the Void Crown finds you first."},
     {STORY_SPK_SERENA,   "That is exactly the kind of prophecy I hate. Let's settle for cards, Nadira."},
 };
 
 static const StoryDialogueLine g_story_duel4_dialogue[] = {
-    {STORY_SPK_OPPONENT, "Serena of the broken deck, I have watched your path through dust, fire, mirage. You reach the White Threshold."},
-    {STORY_SPK_SERENA,   "You're Isyra... the oracle the others kept circling around without naming."},
-    {STORY_SPK_OPPONENT, "Names hold power here. Mine was hidden. I guarded the seal's last clear reading. Kings feared prophecy more than swords."},
+    {STORY_SPK_OPPONENT, "You dragged yourself through dust and fire to MY door. I'm already sick of waiting."},
+    {STORY_SPK_SERENA,   "You're Pyra... the fury oracle the others kept circling around without naming."},
+    {STORY_SPK_OPPONENT, "Louder! I am PYRA! No more quiet prophecies while kings ignore my warnings!"},
     {STORY_SPK_SERENA,   "Then tell me plainly. Why me? Why the dreams, the demon voice, the pull in these cards?"},
-    {STORY_SPK_OPPONENT, "When the empire broke, seven keepers divided the Twilight Seal. Your shard answered not to bloodline, but to recognition."},
+    {STORY_SPK_OPPONENT, "Your shard screamed when the seal broke! Seven keepers split it, and yours answered with fire!"},
     {STORY_SPK_SERENA,   "So I wasn't chosen by birth. I was chosen because I heard it answer."},
-    {STORY_SPK_OPPONENT, "Yes. The abyss beneath the old courts has begun to answer back. If it claims the seal first, every ruin will open at once."},
+    {STORY_SPK_OPPONENT, "The abyss answers back now! If it takes the seal, every ruin opens. So quit staring and FIGHT!"},
     {STORY_SPK_SERENA,   "Then this duel isn't just a test. It's a key."},
-    {STORY_SPK_OPPONENT, "Precisely. Beat me and I yield the route to the sanctum beyond waking. Lose, and return to the surface with fragments."},
-    {STORY_SPK_SERENA,   "I didn't cross the Expanse for fragments. Show me the truth, Isyra. I'll win it myself."},
+    {STORY_SPK_OPPONENT, "Beat me and I'll give you the road to the sanctum. Lose, and crawl home with ashes!"},
+    {STORY_SPK_SERENA,   "I didn't cross the Expanse for ashes. Bring your fire, Pyra. I'll win the truth myself."},
 };
 
 static const StoryDialogueLine *story_dialogue_for_duel(int duel, int *count)
@@ -19333,10 +19333,10 @@ static void draw_map_pyramid_3d(int f)
         int32_t depth;
     } PyramidFace;
     PyramidFace faces[4] = {
-        {a, b, 1, 0, 0},
-        {b, c, 1, 1, 0},
-        {c, d, 1, 0, 0},
-        {d, a, 1, 1, 0}
+        {a, b, WAIFU_TEX_TILE_PYRAMID, 0, 0},
+        {b, c, WAIFU_TEX_TILE_PYRAMID, 1, 0},
+        {c, d, WAIFU_TEX_TILE_PYRAMID, 0, 0},
+        {d, a, WAIFU_TEX_TILE_PYRAMID, 1, 0}
     };
     /* Desert world-map floor: repeat one sand tile across the whole ground. */
     draw_floor_tiled(cam, -Q8_FRAC(7,100), 2, 2, Q8_FRAC(176,100));
@@ -20789,6 +20789,24 @@ void waifu_fm_step(const WaifuFmInput *input)
 #else
     if (!suppress_ui_sfx && press_a) waifu_sound_play(WAIFU_SOUND_CONFIRM);
     if (!suppress_ui_sfx && ((press_start && start_press_plays_ui_sound()) || press_b || press_tab)) waifu_sound_play(WAIFU_SOUND_CONFIRM_ALT);
+#endif
+#ifdef CD32X_DEBUG_BOOT_SCENE
+    /* THROWAWAY map-pin hack (never commit): after the first 400 steps, drag
+       every non-loading state back to the desert story map, so leaked
+       BIOS-window STARTs cannot walk the game away before the capture frame.
+       Loading is exempt so the boot asset flow still completes. */
+    {
+        static int cd32x_boot_scene_steps = 0;
+        if (++cd32x_boot_scene_steps > 400 &&
+            g_i_state != WAIFU_I_LOADING_ASSETS &&
+            g_i_state != WAIFU_I_STORY_MAP) {
+            g_story_progress = 0;
+            g_story_duel_index = 0;
+            g_story_map_cursor = 1;
+            g_i_state = WAIFU_I_STORY_MAP;
+            g_i_frame = -1;
+        }
+    }
 #endif
 
     switch (g_i_state) {

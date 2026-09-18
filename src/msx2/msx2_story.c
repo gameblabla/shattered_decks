@@ -490,16 +490,11 @@ static void Msx2_StoryDressLine(void)
 	const c8* who;
 
 	Msx2_Fill(BOX_X, (u8)BOX_Y, (u16)BOX_W, (u8)BOX_H, MSX2_PANEL_COLOR);
-	if(g_phase == PH_NARRATE)
-		Msx2_FrameRect(0, MSX2_TALK_BOX_Y, (u16)MSX2_SCREEN_W,
-		               (u8)(MSX2_SCREEN_H - MSX2_TALK_BOX_Y), MSX2_GOLD);
 
 	who = Msx2_StorySpeakerName();
 	if(who[0] != 0)
 	{
 		Msx2_Fill(PLATE_X, (u8)PLATE_Y, (u16)PLATE_W, PLATE_H, MSX2_PLATE_COLOR);
-		Msx2_FrameRect((u8)(PLATE_X - 1), (u8)(PLATE_Y - 1), (u16)(PLATE_W + 2),
-		               (u8)(PLATE_H + 2), MSX2_GOLD);
 		Msx2_TextColor(MSX2_GOLD, MSX2_PLATE_COLOR);
 		Msx2_TextAt(MSX2_TALK_NAME_X, MSX2_TALK_NAME_Y, who);
 	}
