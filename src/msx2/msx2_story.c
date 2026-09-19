@@ -792,6 +792,7 @@ static void Msx2_StoryEnterTalk(void)
 	g_line_count = g_msx2_dialogue_count[g_duel_index];
 	g_shot = 0xFF;                       // nothing is up yet, so force a stream
 	Msx2_MusicPlay(MSX2_MUSIC_OPENING);
+	Msx2_VideoWipe();
 	// The scene is built once, here, whoever speaks first -- including a
 	// narrator line, which changes no portrait and so would never build it.
 	Msx2_StoryShowShot(0);
@@ -823,6 +824,7 @@ static void Msx2_StoryEnterNarration(u8 which)
 	g_line = 0;
 	g_line_count = (which == NARR_INTRO) ? MSX2_INTRO_COUNT : MSX2_ENDING_COUNT;
 	Msx2_MusicPlay((which == NARR_INTRO) ? MSX2_MUSIC_OPENING : MSX2_MUSIC_RESULT);
+	Msx2_VideoWipe();
 	Msx2_StoryShowShot(0);
 	Msx2_InputFlush();
 	Msx2_StoryLoadNarrLine();
@@ -1332,6 +1334,7 @@ static void Msx2_StoryEnterMap(void)
 	g_map_dirty = ALL_PAGES;
 
 	Msx2_MusicPlay(MSX2_MUSIC_OVERWORLD);
+	Msx2_VideoWipe();
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
 	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStageForProgress(g_progress)), MSX2_PAGE_1);
 	Msx2_StoryMapPaint();
@@ -2143,6 +2146,7 @@ static void Msx2_StoryRewardPaint(void)
 static void Msx2_StoryEnterReward(void)
 {
 	g_phase = PH_REWARD;
+	Msx2_VideoWipe();
 	Msx2_VideoDrawPage(MSX2_PAGE_1);
 	Msx2_StreamScene(MSX2_MAP_SEGMENT(Msx2_StoryStageForProgress(g_progress)), MSX2_PAGE_1);
 	Msx2_StoryRewardPaint();

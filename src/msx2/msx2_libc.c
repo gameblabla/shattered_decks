@@ -20,8 +20,9 @@ extern volatile u16 g_msx2_ticks;
 unsigned long time(unsigned long* t)
 {
 	unsigned long now = (unsigned long)g_msx2_ticks;
-	if(t)
-		*t = now;
+	// deck.c is the only MSX2 caller and passes NULL; there is no hosted
+	// caller that needs the optional result pointer in this bare-metal shim.
+	(void)t;
 	return now;
 }
 

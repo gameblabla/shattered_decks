@@ -10,6 +10,27 @@ This port is **a fork, not a branch of the shared frontend**. It never compiles
 
 ---
 
+### `_CODE` reclaimed from MSXgl dead code — 2026-09-19
+
+Adding the scene wipe (`Msx2_VideoWipe`, nine call sites) pushed the plus
+fixed image 40 bytes past 0xC000 (`MSXhex: Data overwrite at offset 00008000h`).
+SDCC links whole objects, so every function in an MSXgl module is in `_CODE`
+whether the game calls it or not; ~2.3 KB of it was never referenced.  The
+fix is in `msxgl_config.h`: `VDP_USE_SPRITE`, `BIOS_USE_VDP`, `BIOS_USE_PSG`,
+`INPUT_USE_MOUSE`, `INPUT_USE_DETECT`, `PSG_USE_EXTRA` and `PSG_USE_RESUME`
+are FALSE.  The game builds its own sprite tables, so the only thing the
+sprite module did for it was program R#5/R#6/R#11 inside `VDP_SetModeGraphic7`;
+`Msx2_SpriteInit` now writes those three registers itself (`INPUT_USE_KEYBOARD`
+must stay TRUE: `bios.h` needs its `KEY_ROW`/`KEY_IDX`).  Result: the plus
+fixed image ends at 0xBB56 with 1,194 bytes free; all four cartridges build,
+and openMSX shots of the plus title, story talk screen and duel (selector gem
+sprite present) match the MSX2 build.
+
+Note for `./msx2.sh shot` with `MSX2_PLUS=1`: it always decodes the dump as
+YJK, so the GRAPHIC 7 duel comes out as noise -- re-run `tools/msx2/vram_png.py`
+on the `.vram` without `--yjk` for the duel.  Only `trace` reads R#25.
+
+
 ### ASCII16-X mapper build — 2026-09-06
 
 `make -f Makefile.msx2 MAPPER=ascii16x` builds the SCREEN 8 cartridge, and

@@ -183,6 +183,7 @@ static void Msx2_SceneTitle(void)
 	if(choice == MSX2_TITLE_STORY)
 	{
 		g_in_story = TRUE;
+		Msx2_VideoWipe();
 		Msx2_StoryBegin();
 		g_stat_scene = MSX2_SCENE_STORY;
 		g_stat_menu_cursor = 0xFF;
@@ -191,6 +192,7 @@ static void Msx2_SceneTitle(void)
 	if(choice == MSX2_TITLE_LOAD)
 	{
 		g_in_story = TRUE;
+		Msx2_VideoWipe();
 		Msx2_StoryBeginLoad();
 		g_stat_scene = MSX2_SCENE_STORY;
 		g_stat_menu_cursor = 0xFF;
@@ -198,6 +200,7 @@ static void Msx2_SceneTitle(void)
 	}
 
 	g_in_story = FALSE;
+	Msx2_VideoWipe();
 	Msx2_DealDuel(MSX2_STORY_NONE);
 }
 
@@ -216,12 +219,14 @@ static void Msx2_SceneStory(void)
 		++g_stat_duels;
 		Msx2_StoryDuelDone(TRUE);
 #else
+		Msx2_VideoWipe();
 		Msx2_DealDuel(Msx2_StoryDuelIndex());
 #endif
 	}
 	else if(want == MSX2_STORY_QUIT)
 	{
 		g_in_story = FALSE;
+		Msx2_VideoWipe();
 		Msx2_TitleEnter();
 		g_stat_scene = MSX2_SCENE_TITLE;
 		MSX2_STAGE(MSX2_STAGE_TITLE);

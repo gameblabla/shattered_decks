@@ -58,8 +58,8 @@
 
 // MAIN-Bios module setting
 #define BIOS_USE_MAINROM			TRUE	// Allow use of Main-ROM routines
-#define BIOS_USE_VDP				TRUE	// Give access to Main-ROM routines related to VDP
-#define BIOS_USE_PSG				TRUE	// Give access to Main-ROM routines related to PSG
+#define BIOS_USE_VDP				FALSE	// Give access to Main-ROM routines related to VDP
+#define BIOS_USE_PSG				FALSE	// Give access to Main-ROM routines related to PSG
 #define BIOS_USE_SUBROM				FALSE	// Allow use of Sub-ROM routines (MSX2/2+/turbo R)
 #define BIOS_USE_DISKROM			FALSE	// Allow use of Disk-ROM routines
 
@@ -95,7 +95,7 @@
 #define VDP_USE_MODE_G7				TRUE	// MSX2/2+	Screen 8, 10, 11 & 12
 
 #define VDP_USE_VRAM16K				FALSE	// Use 16K VRAM access functions on MSX2
-#define VDP_USE_SPRITE				TRUE	// Use sprite handling functions
+#define VDP_USE_SPRITE				FALSE	// Use sprite handling functions
 #define VDP_USE_COMMAND				TRUE	// Use VDP commands wrapper functions
 #define VDP_USE_CUSTOM_CMD			FALSE	// Use custom VDP commands through data buffer
 #define VDP_AUTO_INIT				TRUE	// Call VDP_Initialize() at the first call to VDP_SetMode()
@@ -158,8 +158,8 @@
 // Input module setting
 #define INPUT_USE_JOYSTICK			TRUE	// Add functions to handle joystick using I/O port
 #define INPUT_USE_KEYBOARD			TRUE	// Add functions to handle keyboard using I/O port
-#define INPUT_USE_MOUSE				TRUE	// Add support for Mouse handling functions
-#define INPUT_USE_DETECT			TRUE	// Add feature to detect device plugged in General purpose ports
+#define INPUT_USE_MOUSE				FALSE	// Add support for Mouse handling functions
+#define INPUT_USE_DETECT			FALSE	// Add feature to detect device plugged in General purpose ports
 #define INPUT_USE_ISR_PROTECTION	TRUE	// Disable interruptions while access PSG registers (needed if you use BIOS or access PSG in your own ISR)
 #define INPUT_JOY_UPDATE			FALSE	// Add function to update all joystick states at once
 #define INPUT_HOLD_SIGNAL			FALSE	// Determines whether functions that modify signals should keep the state of those they don't need to modify (which slows functions down a bit) 
@@ -435,8 +435,8 @@
 // - PSG_INDIRECT ................. Function set a buffer (Apply() function must be call once a frame)
 #define PSG_ACCESS					PSG_INDIRECT
 #define PSG_USE_NOTES				FALSE	// Add notes table to convert note to tone
-#define PSG_USE_EXTRA				TRUE	// Add helper functions to handle PSG settings
-#define PSG_USE_RESUME				TRUE	// Add function to allow playback pause and resume
+#define PSG_USE_EXTRA				FALSE	// Add helper functions to handle PSG settings
+#define PSG_USE_RESUME				FALSE	// Add function to allow playback pause and resume
 
 // MSX-Music options
 #define MSXAUDIO_USE_RESUME			TRUE	// Add function to allow playback pause and resume

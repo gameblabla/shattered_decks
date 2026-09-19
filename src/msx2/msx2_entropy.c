@@ -30,8 +30,3 @@ u32 Msx2_EntropyNextSeed(void)
 	Msx2_Bank0Leave(back);
 	return seed;
 }
-
-u8 Msx2_EntropyFlags(void)
-{
-	return g_msx2_entropy_flags;
-}

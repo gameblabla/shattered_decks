@@ -72,23 +72,22 @@ static u8 g_text_bg;
 // baked in the other encoding.
 static bool g_yjk;
 
-void Msx2_VideoModeYjk(void)
+static void Msx2_VideoSetYjk(bool enable)
 {
-	if(!g_yjk)
+	if(enable && !g_yjk)
 	{
 		g_yjk = TRUE;
 		MSX2_VDP_SET_YJK(0x18);
 	}
-}
-
-void Msx2_VideoModeG7(void)
-{
-	if(g_yjk)
+	else if(!enable && g_yjk)
 	{
 		g_yjk = FALSE;
 		MSX2_VDP_SET_YJK(0);
 	}
 }
+
+void Msx2_VideoModeYjk(void) { Msx2_VideoSetYjk(TRUE); }
+void Msx2_VideoModeG7(void)  { Msx2_VideoSetYjk(FALSE); }
 
 bool Msx2_VideoIsYjk(void)
 {
@@ -312,6 +311,17 @@ void Msx2_ClearPage(u8 color)
 	VDP_CommandWait();
 	VDP_CommandHMMV(0, g_draw_page ? 256u : 0u, MSX2_SCREEN_W,
 	                MSX2_SPRITE_VRAM_ROW, color);
+}
+
+void Msx2_VideoWipe(void)
+{
+	// A full-screen wipe between scenes: both pages go black so the flip
+	// shows nothing until the next scene streams in.
+	Msx2_VideoDrawPage(MSX2_PAGE_0);
+	Msx2_ClearPage(MSX2_BLACK);
+	Msx2_VideoDrawPage(MSX2_PAGE_1);
+	Msx2_ClearPage(MSX2_BLACK);
+	Msx2_VideoShowPage(MSX2_PAGE_0);
 }
 
 void Msx2_FrameRect(u8 x, u8 y, u16 w, u8 h, u8 color)

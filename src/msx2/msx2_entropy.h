@@ -17,7 +17,6 @@ enum Msx2EntropySource
 void Msx2_EntropyInit(void);
 void Msx2_EntropyMixInput(u8 held, u8 pressed, c8 typed);
 u32  Msx2_EntropyNextSeed(void);
-u8   Msx2_EntropyFlags(void);
 
 // Implementations execute from the modal page-0 bank so RTC collection does
 // not consume the fixed 32 KB streaming/code window.

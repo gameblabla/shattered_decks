@@ -169,6 +169,10 @@ void Msx2_Fill_In(u8 x, u8 y, u16 w, u8 h, u8 color);
 #endif
 void Msx2_ClearPage(u8 color);
 
+// Fill both pages with black and show page 0.  Called at scene transitions to
+// provide a clean wipe between screens.
+void Msx2_VideoWipe(void);
+
 // A 1-pixel outline, drawn as four fills.
 void Msx2_FrameRect(u8 x, u8 y, u16 w, u8 h, u8 color);
 

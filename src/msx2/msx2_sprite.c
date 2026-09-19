@@ -52,9 +52,24 @@ void Msx2_SpriteInit(void)
 	VDP_SetPaletteEntry(MSX2_SPR_TEAL_HI, 0x4607);
 	VDP_SetPaletteEntry(MSX2_SPR_ORANGE,  0x7003);
 
+	// THE TABLES, by hand.
+	// MSXgl's sprite module is compiled out (VDP_USE_SPRITE is FALSE in
+	// msxgl_config.h): it cost a kilobyte of _CODE for one register write
+	// this file used, since the game assembles every attribute, colour and
+	// pattern byte itself and writes it with VDP_WriteVRAM.  So the three
+	// registers VDP_SetModeGraphic7 used to program are written here, once,
+	// after Msx2_VideoInit has set the mode; nothing else writes them.
+	// R#5/R#11 hold the attribute table (SPR_ATR_ADDR >> 7, low three bits
+	// set as sprite mode 2 requires, and >> 15); R#6 the pattern table
+	// (SPR_PAT_ADDR >> 11).  The colour table is fixed by the chip at the
+	// attribute table minus 0x200 -- which is SPR_COL_ADDR.
+	VDP_RegWrite(5,  (u8)(SPR_ATR_ADDR >> 7) | 0x07);
+	VDP_RegWrite(11, (u8)(SPR_ATR_ADDR >> 15));
+	VDP_RegWrite(6,  (u8)(SPR_PAT_ADDR >> 11));
+
 	// 16x16, magnified to 32x32: an explosion or a letter has to read at the
 	// same size the 88x120 cut-in cards do.
-	VDP_SetSpriteFlag(VDP_SPRITE_SIZE_16 | VDP_SPRITE_SCALE_2);
+	VDP_RegWriteBakMask(1, (u8)~(R01_ST | R01_MAG), R01_ST | R01_MAG);
 	VDP_EnableSprite(TRUE);
 
 	// THE COMMAND ENGINE FIRST.
