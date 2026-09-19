@@ -186,8 +186,32 @@ static void cd32x_cram_flush_vblank(void)
 
 static void cd32x_wait_fb_flip(WaifuCd32xVideo *video)
 {
+    /* Request the flip first so the VDP latches it at the next vertical
+       blank with no added latency (same as before). */
     MARS_VDP_FBCTL = (uint16_t)(video->current_fb ^ 1u);
-    while ((MARS_VDP_FBCTL & MARS_VDP_FS) == video->current_fb) {
+    /* Structural 60 Hz throttle: at most one flip per vblank period.  Waiting
+       only for the FS latch lets several flips land inside a single vblank on
+       light frames (or on emulators that latch immediately rather than at the
+       raster boundary), so battle cut-ins and other cheap phases run faster
+       than wall clock while heavy 3D frames stay correct.  The raster VBLK
+       flag is correct on hardware and on every emulator, so gate the flip on
+       its transitions instead: leaving any in-progress vblank, then entering
+       the next one.  On targets that already latch at the boundary this ends
+       at exactly the same vblank as the bare latch wait, so timing there is
+       unchanged. */
+    while (MARS_VDP_FBCTL & MARS_VDP_VBLK) {
+    }
+    while ((MARS_VDP_FBCTL & MARS_VDP_VBLK) == 0) {
+    }
+    {
+        /* The transition wait above already lands on the vblank that honours
+           the request; confirm the latch with a generous bound so a wedged
+           VDP degrades (one repeated frame, self-heals below) instead of
+           hanging the SH-2 forever. */
+        uint32_t guard = 0;
+        uint16_t want = (uint16_t)(video->current_fb ^ 1u);
+        while ((MARS_VDP_FBCTL & MARS_VDP_FS) != want && ++guard < 0x01000000u) {
+        }
     }
     video->current_fb ^= 1u;
     /* Still inside the vblank that performed the flip: this is the one window

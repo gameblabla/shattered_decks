@@ -144,13 +144,18 @@ static int cd32x_request_blob_raw(int blob, void *dst, size_t bytes)
         /* Bounded waits so a stalled supervisor (e.g. a CD read that never
            completes) degrades to a clean failure instead of freezing the whole
            SH-2.  The initial window is generous because the supervisor may be
-           seeking/reading sectors before it starts streaming. */
+           seeking/reading sectors before it starts streaming, but it must stay
+           on the order of seconds: on a real CD-R drive an outer-track seek +
+           spin-up costs seconds (instant in BlastEm, which is why an overlong
+           bound only ever shows up on hardware, as a perceived crash), and
+           every asset consumer retries a failed read on a later frame instead
+           of caching the failure. */
         uint32_t guard = 0;
         for (;;) {
             uint16_t state = MARS_SYS_COMM0;
             if (state == CD32X_COMM_XFER_WORD) break;
             if (state == 0u && MARS_SYS_COMM4 == CD32X_CD_STATUS_ERROR) return 0;
-            if (++guard >= 0x08000000u) { MARS_SYS_COMM0 = 0; return 0; }
+            if (++guard >= 0x02000000u) { MARS_SYS_COMM0 = 0; return 0; }
         }
     }
 
@@ -159,7 +164,7 @@ static int cd32x_request_blob_raw(int blob, void *dst, size_t bytes)
         for (size_t i = 0; i < word_count; ++i) {
             uint32_t guard = 0;
             while (MARS_SYS_COMM0 != CD32X_COMM_XFER_WORD) {
-                if (++guard >= 0x02000000u) { MARS_SYS_COMM0 = 0; return 0; }
+                if (++guard >= 0x00800000u) { MARS_SYS_COMM0 = 0; return 0; }
             }
             out16[i] = MARS_SYS_COMM2;
             MARS_SYS_COMM0 = CD32X_COMM_READY;
@@ -169,7 +174,7 @@ static int cd32x_request_blob_raw(int blob, void *dst, size_t bytes)
             uint16_t value;
             uint32_t guard = 0;
             while (MARS_SYS_COMM0 != CD32X_COMM_XFER_WORD) {
-                if (++guard >= 0x02000000u) { MARS_SYS_COMM0 = 0; return 0; }
+                if (++guard >= 0x00800000u) { MARS_SYS_COMM0 = 0; return 0; }
             }
             value = MARS_SYS_COMM2;
             out[written++] = (uint8_t)(value >> 8);
@@ -185,7 +190,7 @@ static int cd32x_request_blob_raw(int blob, void *dst, size_t bytes)
     {
         uint32_t guard = 0;
         while (MARS_SYS_COMM0 != CD32X_COMM_XFER_DONE) {
-            if (++guard >= 0x02000000u) { MARS_SYS_COMM0 = 0; return 0; }
+            if (++guard >= 0x00800000u) { MARS_SYS_COMM0 = 0; return 0; }
         }
     }
     MARS_SYS_COMM0 = 0;

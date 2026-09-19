@@ -304,3 +304,74 @@ Every code change shifts boot timing, so the same `-b <frame>` lands on a
 different game state between builds. Don't compare fixed frame numbers across
 builds; instead drive to a known UI state (or use the auto-battle shortcut) and
 compare **adjacent** frames within one build to detect the flash.
+
+---
+
+## Issue 6 (2026-09-16) — story-loss "partial crash" on real hardware, clean in emulator
+
+Report (`CD32X_issues_tofix.txt`): after losing a duel (2/2 runs, burned CD-R),
+music suggestive of the boot/opening tune kept playing while the desert map
+showed the pyramid + desert over ~2/3 of the screen and black over the last
+third with no panels/text. BlastEm (and other emulators tried) shows nothing
+wrong: title, desert map, and battle all render fully.
+
+Analysis (no emulator repro possible, so reasoned from the Sega CD BIOS manual,
+the Sega CD technical bulletins, and BlastEm CDD behavior notes):
+- The loss trajectory is TALLY (DUEL DEFEAT) → story map, switching CD-DA
+  PLAY1 track 8 (FAIL, the last disc track) → PLAYR track 3 (OVERWORLD, the
+  longest seek) in quick succession with CDC_STOP spin-downs. Real CD-R seeks
+  take seconds; BlastEm seeks instantly and never reports busy/not-ready, so
+  any seek-timing defect is emulator-invisible by construction.
+- Two real defects found on that trajectory (both no-ops when healthy, so
+  headless captures stay identical):
+  1. `cd32x_before_cd_read` treated only CDBSTAT STOP as "non-looping jingle
+     finished". MSCPLAY1 ends *paused* (BIOS manual), and the end state varies
+     by BIOS revision, so a finished victory/fail jingle stayed "playing" and
+     the deferred resume restarted it over the next scene's music after the
+     next CD read. Now also clears on PAUSE (`cd32x_boot_main.c`).
+  2. `cd32x_request_blob_raw` SH-2 guards (~47 s initial / ~8 s per word) turned
+     any real-drive stall into a perceived hard crash. Staged loads retry and
+     the battle LRU re-reads on miss (both non-sticky), so failing fast
+     degrades gracefully. Guards are now ~12 s / ~3 s
+     (`waifu_cd32x_cdrom.c`).
+- Eliminated by audit (do not re-chase without new hardware evidence): palette
+  RAM (per reporter, unrelated — and the map's panels/text are unconditional
+  CPU stores that cannot fail selectively while the 3D scene draws), 32X line
+  table (no partial writer exists; both pages initialized), dual-SH2 job
+  protocol (uncached mailbox, master always waits — verified race-free),
+  Main-CPU exception vectors (every handler arg audited mapped/aligned/bounded;
+  no loss-specific Main trigger exists — a win issues a strict superset of the
+  same commands), stale-disc CUE (TRACK08_FAIL.WAV present and referenced).
+- To discriminate what remains, the next hardware run needs: a photo of the
+  broken screen (are panels/text truly absent, or too dark to see? static or
+  flickering?), the Sega CD model/BIOS version, and whether buttons still
+  advance the game. If panels are truly absent while the 3D scene draws, the
+  frame is unreachable from the current SH-2 code and the capture will show
+  which layer (MD BIOS vs stale 32X page) is actually on screen.
+
+### Issue 6 update (2026-09-19) — likely mechanism: BIOS-busy read after a CD-DA seek
+
+The boot block's `read_cd` (disassembled from `US_BOOT.BIN` @0x1376) is
+`CDCSTOP → ROMREADN → loop{CDCSTAT bcs} → CDCREAD → CDCTRN → CDCACK` with **no
+CDBCHK** anywhere. CDBCHK stays busy after MSCPLAYR until the drive has spun
+up and the seek has *started*. A ROMREADN handed to a busy BIOS is not
+executed, so `read_cd` spins on CDCSTAT forever: the Sub-CPU is wedged inside
+the read, every later SH-2 request times out, SET_BG/SET_FADE stop being
+served, and the CD-DA that was requested keeps playing by itself. That matches
+the report exactly: track 3 (the opening/overworld tune) audible, the map's 3D
+scene drawn, the rest never arriving, game unresponsive.
+
+Why only the loss path, and only on hardware: FAIL (track 8) is the last disc
+track, so MSCPLAY1 runs into the lead-out and the drive STOPs. The map then
+asks for track 3 (spin-up + full inward seek, seconds) and streams its assets
+in the same frame. Victory (track 7) ends *paused* at the start of track 8 and
+the reward screen adds a delay before the map, so its window is far smaller.
+BlastEm seeks in zero time — the busy window never exists there.
+
+Fix: `cd32x_bios_cdb_chk()` (`cd32x_cdda.s`) + `cd32x_wait_bios_ready()`
+(`cd32x_boot_main.c`, bounded by 600 vblank ticks) gates every data read,
+directory walk and `set_cwd` in the supervisor. Emulator-neutral (CDBCHK is
+never busy there; verified title + battle-mode captures unchanged).
+
+Optional extra hardening if hardware still misbehaves: append a short silent
+audio track after FAIL so no MSCPLAY1 ever reaches the lead-out.

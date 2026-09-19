@@ -21,6 +21,7 @@ extern void cd32x_bios_cdda_init(void);
 extern int cd32x_bios_cdda_play(int track, int loop);
 extern void cd32x_bios_cdda_stop(void);
 extern int cd32x_bios_cdda_status(void);
+extern int cd32x_bios_cdb_chk(void);
 
 #define CD32X_COMM_READY        0x0001
 #define CD32X_CD_CMD_READ_BLOB  0xCD01
@@ -100,7 +101,7 @@ static const Cd32xBlobInfo g_cd32x_blobs[] = {
     { WAIFU_ASSET_BLOB_SUPPORT_FACE,        "SUPPORT_FACE.BIN",          1026 },
     { WAIFU_ASSET_BLOB_SUPPORT_BIG_ART,     "SUPPORT_BIG_ART.BIN",       6272 },
     { WAIFU_ASSET_BLOB_SUPPORT_BIG_ART_CD,  "SUPPORT_BIG_ART_CD.BIN",    7168 },
-    { WAIFU_ASSET_BLOB_TEX_ATLAS,           "TEX_ATLAS.BIN",             4608 }
+    { WAIFU_ASSET_BLOB_TEX_ATLAS,           "TEX_ATLAS.BIN",             5120 }
 };
 
 static const Cd32xBlobInfo *cd32x_blob_info(int blob)
@@ -131,11 +132,36 @@ static void cd32x_invalidate_face_atlas(void)
     g_face_chunk_head_dirty = 0;
 }
 
+/* Wait until the Sega CD BIOS will accept a new command (CDBCHK carry clear).
+   Every CD read here ends in the prebuilt boot block's read_cd, which issues
+   CDCSTOP + ROMREADN and then spins on CDCSTAT until a sector arrives -- it
+   never checks CDBCHK.  When that read follows a CD-DA MSCPLAYR that is still
+   busy (the BIOS stays busy until the drive has spun up and the seek has
+   STARTED), the ROMREADN is lost and read_cd never returns: the Sub-CPU is
+   wedged, every later SH-2 request times out, the MD sky/fades stop being
+   served, and whatever CD-DA was requested keeps playing on its own.  That is
+   the "partial crash" seen on real hardware after losing a duel: the FAIL
+   jingle is the last track on the disc, so MSCPLAY1 runs into the lead-out and
+   the drive stops; the story map then asks for track 3 (spin-up + full seek
+   inward, seconds) and immediately streams its assets.  BlastEm seeks in zero
+   time, so the busy window never exists there and the race is invisible.
+   Bounded by the Main-CPU vblank tick so a dead drive degrades to a failed
+   read instead of a hang. */
+#define CD32X_BIOS_READY_TIMEOUT_FRAMES 600u
+static void cd32x_wait_bios_ready(void)
+{
+    unsigned int deadline = GET_TICKS + CD32X_BIOS_READY_TIMEOUT_FRAMES;
+    while (!cd32x_bios_cdb_chk()) {
+        if ((int)(GET_TICKS - deadline) >= 0) break;
+    }
+}
+
 static int g_cd32x_cwd = -1;
 
 static int cd32x_set_asset_cwd(void)
 {
     if (g_cd32x_cwd == 0) return 0;
+    cd32x_wait_bios_ready();
     if (set_cwd("/ASSETS") < 0) return -1;
     g_cd32x_cwd = 0;
     return 0;
@@ -144,6 +170,7 @@ static int cd32x_set_asset_cwd(void)
 static int cd32x_set_music_cwd(void)
 {
     if (g_cd32x_cwd == 1) return 0;
+    cd32x_wait_bios_ready();
     if (set_cwd("/MUSIC") < 0) return -1;
     g_cd32x_cwd = 1;
     return 0;
@@ -490,9 +517,17 @@ static void cd32x_before_cd_read(void)
     /* A non-looping jingle (victory/fail) that already finished on its own
        must NOT be resurrected by the post-read resume.  Sample the BIOS
        status now, while it still reflects CD-DA -- after the read it reports
-       the data access instead.  High status byte 0x00 == STOP. */
+       the data access instead.  High status byte 0x00 == STOP, 0x05 == PAUSED.
+       MSCPLAY1 ends paused, not stopped (Sega CD BIOS manual: "plays the music
+       of the designated song number once"), and the exact end state varies by
+       BIOS revision, so a paused non-looping track counts as finished too.
+       BlastEm never exposes this window (instant seeks, lenient status), but
+       on a real CD-R drive the jingle can sit paused for seconds while the
+       player reads the results screen, and the next portrait/card read would
+       otherwise restart the finished jingle over the new scene's music. */
     if (g_cd32x_cdda_playing && !g_cd32x_cdda_loop) {
-        if (((cd32x_bios_cdda_status() >> 8) & 0xFF) == 0) {
+        unsigned st = (unsigned)((cd32x_bios_cdda_status() >> 8) & 0xFF);
+        if (st == 0 || st == 5) {
             g_cd32x_cdda_playing = 0;
             g_cd32x_cdda_resume_pending = 0;
         }
@@ -501,6 +536,8 @@ static void cd32x_before_cd_read(void)
        portrait read.  The INT2 pump continues normal vblank refills, but this
        gives blocking reads the largest possible buffered-audio cushion. */
     cd32x_music_prime_for_cd_read();
+    /* Last: the read that follows must not be handed to a busy BIOS. */
+    cd32x_wait_bios_ready();
 }
 
 static void cd32x_card_face_chunk_filename(char *out, int chunk_id)
@@ -803,6 +840,7 @@ static int cd32x_start_music(int theme_id)
     cd32x_clear_music_stream();
     cd32x_music_pcm_filename(filename, stem);
     if (cd32x_set_music_cwd() < 0) return -1;
+    cd32x_wait_bios_ready();          /* find_dir_entry reads the directory */
     if (find_dir_entry(filename) < 0) return -1;
     g_cd32x_pcm_music_lba = global_vars->DENTRY_OFFSET;
     g_cd32x_pcm_music_bytes = (uint32_t)global_vars->DENTRY_LENGTH;

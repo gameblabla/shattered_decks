@@ -107,6 +107,23 @@ cd32x_bios_cdda_status:
         move.w  CDSTAT.w,d0
         rts
 
+| int cd32x_bios_cdb_chk(void);
+| 1 = the BIOS will accept a new command, 0 = still executing the previous one
+| (CDBCHK carry set).  The supervisor gates every data read on this: the boot
+| block's read_cd issues CDCSTOP/ROMREADN with no CDBCHK of its own, and a
+| ROMREADN handed to a BIOS still busy starting an MSCPLAYR seek is lost, after
+| which read_cd spins on CDCSTAT forever (hardware only; emulator seeks are
+| instant so the busy window never exists there).
+        .global cd32x_bios_cdb_chk
+cd32x_bios_cdb_chk:
+        movem.l d2-d7/a2-a6,-(sp)
+        move.w  #BIOS_CDB_CHK,d0
+        jsr     CDBIOS.w
+        movem.l (sp)+,d2-d7/a2-a6      | movem leaves the CCR alone
+        scc     d0                      | 0xFF when carry clear (ready)
+        andi.l  #1,d0
+        rts
+
 | void cd32x_bios_cdda_stop(void);
         .global cd32x_bios_cdda_stop
 cd32x_bios_cdda_stop:
