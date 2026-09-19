@@ -64,8 +64,20 @@ extern u8 snes_conv_rowspan[];      /* 18 x {first x, last x}, 255 = empty */
 extern u16 snes_conv_dirty[];       /* 18 x {lo, hi}: cells to reconvert */
 extern u16 snes_conv_rom[];         /* 18 x {lo, hi}: cells the ROM floor supplies */
 extern u8 snes_fb_tm[];
+extern u8 snes_fb_dbl_tables[];     /* 2 x DBL_TABLE_BYTES, bank $7F */
+/* The motion frame's line-doubling HDMA, switched by the NMI with the map
+ * (snes_fb.asm): the 1:1 scroll it restores, the table it arms, the HDMAEN
+ * it keeps, and whether the shown map is doubled. */
+extern u16 snes_fb_vofs, snes_fb_dbl_table, snes_fb_dbl_bank, snes_fb_hdmaen,
+           snes_fb_dbl_on;
 /* Set to have the next NMI copy snes_oam_shadow to OAM (snes_fb.asm). */
 extern u16 snes_fb_oam_pending;
+/* The game frame's pressed edges, latched by the NMI every field and
+ * handed over by snesPadPoll at the top of the main loop.  Scenes read this
+ * instead of pvsneslib's padsDown, which only sees fields that waited. */
+extern u16 snes_pad_down;
+void snesPadInit(void);
+void snesPadPoll(void);
 
 void snesFbInit(void);
 void snesFbDrain(u16 on);
@@ -99,10 +111,14 @@ void snesConvRows(u16 row0, u16 row1);
 void snesConvCells(u16 row, u16 col0, u16 col1);
 void snesConvEnd(void);
 void snesConvSetFloor(u16 src, u16 bank);
+void snesConvForgetPools(void);
 /* The frame to convert: 0 the 256x144 picture at 1:1, 1 the 128x72 motion
  * frame at the top of the same buffer (stride 128), converted doubled -- a
  * cell is four texels by four lines, each texel a 2x2 block of pixels. */
 void snesConvSetHalf(u16 on);
+/* Every word of the dirty (or ROM) masks set to v (snes_fb.asm). */
+void snesConvDirtyFill(u16 v);
+void snesConvRomFill(u16 v);
 
 void snesRasterTarget(u16 bank);
 void snesSpanFloor(u16 fb_index, u16 count, u16 tex_index, u16 u_frac,
@@ -127,6 +143,12 @@ void snesFloorRowsSetup(s16 half, s16 dhalf, s16 denom16, s16 dstep,
                         s16 a16, s16 astep, s16 height, s16 camz,
                         u16 ubase, u16 origin, u16 sub);
 void snesFloorRowsPitch(u16 y0, u16 y1);
+/* The yawed camera's floor (snes_raster.asm): Setup takes the frame's
+ * terms, then texture_quad's edge walk hands each clipped row here with its
+ * two camera terms; the row's mapping and walk are all in assembly. */
+void snesFloorYawSetup(s16 cy, s16 sn, s16 eye_cy, s16 eye_sn,
+                       s16 height, s16 camz, u16 origin, u16 sub);
+void snesFloorRowYaw(s16 y, s16 x0, s16 x1, s16 denom, s16 a);
 /* The resting card rows (snes_raster.asm): snesDrawCardRow fills these
  * bank-0 words with its per-row-of-slots setup and snesCardRows walks the
  * pixel rows and the five spans.  See the cr_* block in the asm. */
@@ -151,7 +173,7 @@ void snesBoardTextureCard(u16 centre, u16 face, u16 flip, u16 width, u16 height)
  * is 128, a whole number of the cleared ground's 64-texel checker, so the
  * pattern under the board is the same picture; and a row's first u, which
  * rounds a texel or two under the slab's edge, stays well above zero. */
-#define SNES_WORLD_U_CENTRE 144
+#define SNES_WORLD_U_CENTRE 144         /* = snes_raster.asm FR_U_CENTRE */
 
 void snesVideoInitDuel(void);
 void snesVideoRestartHdma(void);
@@ -159,8 +181,12 @@ void snesVideoRestartHdma(void);
  * its row with BG1 tile scrolling.  Call from vblank; `scroll_y` is source
  * minus screen pixels (the normal chair view is zero). */
 void snesVideoBoardViewport(u8 overhead, s16 scroll_y);
+/* Foreground, before the vblank that applies a scroll: builds the doubled
+ * picture's HDMA table for it (a few hundred stores, too many for vblank). */
+void snesVideoBoardScrollPrepare(s16 scroll_y);
 void snesVideoRestartSceneHdma(void);
 void snesVideoSetSkyTables(u16 rg, u8 rg_bank, u16 b, u8 b_bank);
+void snesVideoRearmNameHdma(void);
 void snesVideoTitleMenuPlate(u8 on);
 void snesVideoSetOwner(u8 owner);
 u8   snesVideoOwner(void);

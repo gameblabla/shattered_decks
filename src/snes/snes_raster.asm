@@ -86,6 +86,14 @@ fr_tmp2           dw
 fr_sub            dw            ; 1: the 256x144 frame, 0: the 128x72 motion frame
 fr_halfw          dw            ; half the viewport's width in pixels (128 / 64)
 fr_w              dw            ; the viewport's width (256 / 128)
+; The yawed camera's terms (snesFloorYawSetup / snesFloorRowYaw).
+fr_cy             dw            ; cos(yaw), sin(yaw), Q8.8
+fr_sn             dw
+fr_eyecy          dw            ; cam.x * cos(yaw), cam.x * sin(yaw)
+fr_eyesn          dw
+fr_z              dw
+fr_du             dw
+fr_dv             dw
 .ENDS
 
 
@@ -271,6 +279,9 @@ snesRasterTarget:
 ; X = the texel BEFORE the first, FD_UFRAC/FD_DUFRAC/FD_DUINT, du < $0400,
 ; and FD_RUN_CNT > 0 the texels to walk.  Leaves A8; X, Y and B clobbered.
 .DEFINE RS_RUN_MIN  24
+; The world texture's u origin, snes_video.h's SNES_WORLD_U_CENTRE (the
+; C passes it to the pitch mapper in ubase; the yaw mapper adds it here).
+.DEFINE FR_U_CENTRE 144
 .DEFINE RS_RUN_BODY 15          ; bytes: one texel of the block
 .DEFINE RS_RUN_LEN  128         ; texels: the longest piece
 
@@ -1371,15 +1382,13 @@ _fr_skip0:
     cmp.l fr_x0
     bcc _fr_skip
     beq _fr_skip
-    ; Note the span for the converter: per cell row (eight lines at 1:1,
-    ; four on the motion frame), the first and last pixel columns touched.
+    ; Note the span for the converter: per cell row (eight lines of either
+    ; frame), the first and last pixel columns touched.
     lda.l fr_y
     lsr a
     lsr a
-    ldx.w fr_sub
-    beq +
     lsr a
-+   asl a
+    asl a
     tax
     sep #$20
 .ACCU 8
@@ -1443,21 +1452,53 @@ _fr_map:
 +   inc a
     lsr a
     sta.l fr_dtex
-    ; tu = ubase + dtex * (x0 - 128) + dtex / 2, through the 16x8 signed
-    ; multiplier: dtex is a positive word, x0 - 128 a signed byte.
+    ; tu = ubase + dtex * (x0 - 128) + dtex / 2: dtex is a positive word,
+    ; x0 - 128 a signed byte, and the low sixteen bits of their product
+    ; are two CPU partials with the byte taken unsigned, less dtex * 256
+    ; when it is negative (snesMul16x8's arithmetic; not the PPU
+    ; multiplier -- its latch is BG1VOFS's, which the motion frame's
+    ; doubling HDMA writes every other line).
     sep #$20
 .ACCU 8
-    lda.l fr_dtex
-    sta.l $211B
-    lda.l fr_dtex+1
-    sta.l $211B
     lda.l fr_x0
     sec
     sbc.l fr_halfw
-    sta.l $211C
-    rep #$20
+    xba                         ; B = the offset
+    lda.l fr_dtex
+    sta.l $4202
+    xba
+    sta.l $4203                 ; dtex.lo * offset   (cycles from the write)
+    xba                         ;                     3
+    lda.l fr_dtex+1             ;                     5
+    xba                         ; A = offset, B = hi  3
+    rep #$20                    ;                     3
 .ACCU 16
-    lda.l $2134
+    tax                         ;                     2
+    lda.l $4216                 ; the low partial, read at 16 + 6
+    sta.l fr_tu
+    txa
+    sep #$20
+.ACCU 8
+    xba
+    sta.l $4202                 ; dtex.hi
+    xba
+    sta.l $4203                 ; dtex.hi * offset
+    cmp #$80                    ; C = the offset is negative   2
+    rep #$20                    ;                              3
+.ACCU 16
+    bcc +
+    lda.l fr_dtex
+    xba
+    and #$FF00
+    eor #$FFFF
+    sec
+    adc.l fr_tu                 ; less dtex.lo * 256
+    sta.l fr_tu
++   lda.l $4216                 ; read at 8 + 6 at the soonest
+    xba
+    and #$FF00
+    clc
+    adc.l fr_tu
     clc
     adc.l fr_ubase
     sta.l fr_tu
@@ -1507,6 +1548,288 @@ _fr_next:
     sta.l fr_y
     jmp _fr_row
 _fr_done:
+    plb
+    plp
+    rtl
+
+; void snesFloorYawSetup(s16 cy, s16 sn, s16 eye_cy, s16 eye_sn,
+;                        s16 height, s16 camz, u16 origin, u16 sub)
+;
+; The per-frame terms of a yawed camera's floor rows: the yaw's cosine and
+; sine, the camera's x through both, its height and z, the frame.
+snesFloorYawSetup:
+    php
+    rep #$30
+    lda 19,s
+    and #$0001
+    sta.l fr_sub
+    bne +
+    lda #64
+    sta.l fr_halfw
+    bra ++
++   lda #128
+    sta.l fr_halfw
+++
+    lda 5,s
+    sta.l fr_cy
+    lda 7,s
+    sta.l fr_sn
+    lda 9,s
+    sta.l fr_eyecy
+    lda 11,s
+    sta.l fr_eyesn
+    lda 13,s
+    sta.l fr_height
+    lda 15,s
+    sta.l fr_camz
+    lda 17,s
+    sta.l fr_origin
+    plp
+    rtl
+
+; void snesFloorRowYaw(s16 y, s16 x0, s16 x1, s16 denom, s16 a)
+;
+; ONE ROW OF A YAWED CAMERA'S FLOOR: the turn animation's frames.  The C
+; row loop (snes_board3d.c texture_quad) walks the projected slab's two
+; edge chains and clips the row to the viewport, and hands the row here
+; with its two camera terms; everything from the camera maths to the
+; walker was four hundred instructions of 816-tcc a row, through the stack
+; and six calls, and a turn frame's mapping was twelve fields.
+;
+;   depth = height * recip_plane[denom]              (Q8.8)
+;   z     = camz + depth * a
+;   dtex  = (depth + 2) >> 2 at 1:1, (depth + 1) >> 1 on the motion frame
+;   du    = dtex * cos(yaw),  dv = -(dtex * sin(yaw))    (texels a pixel)
+;   tu    = ((eye_cy + z * sin(yaw)) << 5) + U_CENTRE   (the row's middle)
+;   tv    = (z * cos(yaw) - eye_sn) << 5
+;   tu   += du * (x0 - halfw) + du / 2,  tv likewise    (the first pixel)
+;   note the span; walk x1 - x0 texels from (tu - du, tv - dv)
+;
+; Every product and shift is the C's: the frames are byte for byte what
+; texture_quad's loop produced.
+snesFloorRowYaw:
+    php
+    rep #$30
+    phb
+    pea $0000
+    plb
+    plb
+    lda 12,s                    ; denom: nothing above the horizon or past
+    cmp #3                      ; the reciprocal table
+    bcc +
+    cmp #1024
+    bcc ++
++   jmp _fy_out
+++  sta.l fr_denom
+    lda 14,s
+    sta.l fr_a
+    lda 6,s
+    sta.l fr_y
+    lda 8,s
+    sta.l fr_x0
+    lda 10,s
+    sta.l fr_x1
+    ; depth = height * recip[denom]
+    lda.l fr_denom
+    asl a
+    tax
+    lda.l snes_recip_plane,x
+    pha
+    lda.l fr_height
+    pha
+    jsl snesQMul
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    sta.l fr_depth
+    ; z = camz + depth * a
+    lda.l fr_a
+    pha
+    lda.l fr_depth
+    pha
+    jsl snesQMul
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    clc
+    adc.l fr_camz
+    sta.l fr_z
+    ; dtex
+    lda.l fr_depth
+    ldx.w fr_sub
+    beq +
+    inc a
+    inc a
+    lsr a
+    lsr a
+    bra ++
++   inc a
+    lsr a
+++  sta.l fr_dtex
+    ; du = dtex * cy
+    lda.l fr_cy
+    pha
+    lda.l fr_dtex
+    pha
+    jsl snesQMul
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    sta.l fr_du
+    ; dv = -(dtex * sn)
+    lda.l fr_sn
+    pha
+    lda.l fr_dtex
+    pha
+    jsl snesQMul
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    eor #$FFFF
+    inc a
+    sta.l fr_dv
+    ; tu = ((eye_cy + z * sn) << 5) + U_CENTRE
+    lda.l fr_sn
+    pha
+    lda.l fr_z
+    pha
+    jsl snesQMul
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    clc
+    adc.l fr_eyecy
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    clc
+    adc #FR_U_CENTRE << 8
+    sta.l fr_tu
+    ; tv = (z * cy - eye_sn) << 5
+    lda.l fr_cy
+    pha
+    lda.l fr_z
+    pha
+    jsl snesQMul
+    tsa
+    clc
+    adc #4
+    tas
+    lda.b tcc__r0
+    sec
+    sbc.l fr_eyesn
+    asl a
+    asl a
+    asl a
+    asl a
+    asl a
+    sta.l fr_tv
+    ; The offset from the row's middle to the first pixel's centre, in
+    ; steps: du * (x0 - halfw) + du / 2, and the same for dv.
+    lda.l fr_x0
+    sec
+    sbc.l fr_halfw
+    sta.l fr_tmp2
+    pha
+    lda.l fr_du
+    pha
+    jsl snesMul16x8
+    tsa
+    clc
+    adc #4
+    tas
+    lda.l fr_du
+    cmp #$8000
+    ror a                       ; du >> 1, arithmetic
+    clc
+    adc.b tcc__r0
+    clc
+    adc.l fr_tu
+    sec
+    sbc.l fr_du                 ; the walker steps before it reads
+    sta.l fr_tu
+    lda.l fr_tmp2
+    pha
+    lda.l fr_dv
+    pha
+    jsl snesMul16x8
+    tsa
+    clc
+    adc #4
+    tas
+    lda.l fr_dv
+    cmp #$8000
+    ror a
+    clc
+    adc.b tcc__r0
+    clc
+    adc.l fr_tv
+    sec
+    sbc.l fr_dv
+    sta.l fr_tv
+    ; Note the span for the converter: per cell row (eight lines), the
+    ; first and last pixel columns touched.
+    lda.l fr_y
+    lsr a
+    lsr a
+    lsr a
+    asl a
+    tax
+    sep #$20
+.ACCU 8
+    lda.l fr_x0
+    cmp.l snes_conv_rowspan,x
+    bcs +
+    sta.l snes_conv_rowspan,x
++   lda.l fr_x1
+    dec a
+    cmp.l snes_conv_rowspan+1,x
+    bcc +
+    sta.l snes_conv_rowspan+1,x
++   rep #$20
+.ACCU 16
+    ; snesSpanFloorQuad(origin + y * stride + x0, x1 - x0, tu, tv, du, dv)
+    lda.l fr_dv
+    pha
+    lda.l fr_du
+    pha
+    lda.l fr_tv
+    pha
+    lda.l fr_tu
+    pha
+    lda.l fr_x1
+    sec
+    sbc.l fr_x0
+    pha
+    lda.l fr_y
+    xba
+    and #$FF00                  ; y * 256
+    ldx.w fr_sub
+    bne +
+    lsr a                       ; y * 128 on the motion frame
++   clc
+    adc.l fr_x0
+    clc
+    adc.l fr_origin
+    pha
+    jsl snesSpanFloorQuad
+    tsa
+    clc
+    adc #12
+    tas
+_fy_out:
     plb
     plp
     rtl

@@ -1894,9 +1894,13 @@ def check_com_turn_presentation():
             if slot is not None:
                 cursor_slots.add(slot)
             # No face of any card in the opponent's hand row: a back is a
-            # back, and the rest of the row is a back or nothing.
+            # back, and the rest of the row is a back or nothing.  The
+            # departure field is the exception: the chosen card turns face
+            # up where it sat before its flight (see below).
             for slot in range(5):
                 if slot in backs:
+                    continue
+                if prev and len(backs) == len(prev) - 1 and backs < prev:
                     continue
                 got = identify_card_sprite(px, w, h, HAND_X0 + slot * HAND_PITCH,
                                            HAND_Y, hi=True)

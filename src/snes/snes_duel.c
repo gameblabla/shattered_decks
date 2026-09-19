@@ -183,13 +183,15 @@ static SnesViewport vp_rest;
 /* THE MOVING CAMERA RENDERS AT 128x72.  The motion frame is the top 9 KB of
  * the same buffer at half the stride, walked at a quarter of the texels and
  * converted at half the cost a cell (each texel a 2x2 block of pixels: the
- * converter looks a texel up as a pixel pair and stores each row twice, so
- * a cell is four texels by four lines).  It is the unit viewport itself,
- * sub 0; the camera is the same one with its horizon in the frame's own
- * pixels (cam_move).  (Doubling the lines by an HDMA on BG1VOFS instead,
- * for half the cells, was tried and withdrawn: BG1's scroll registers share
- * the PPU multiplier's write-twice latch, and an HDMA write landing between
- * the two halves of a product corrupted a row of the next render.) */
+ * converter looks a texel up as a pixel pair; the LINES are doubled by an
+ * HDMA on BG1VOFS, so a cell is four texels by eight lines and the frame
+ * is nine cell rows).  It is the unit viewport itself, sub 0; the camera
+ * is the same one with its horizon in the frame's own pixels (cam_move).
+ * (The HDMA doubling was tried once before and withdrawn: BG1's scroll
+ * registers share the PPU multiplier's write-twice latch, and an HDMA
+ * write landing between the two halves of a product corrupted a row of
+ * the next render.  Every product is the CPU multiplier's now, which is
+ * what makes it safe -- snes_math.asm.) */
 static SnesViewport vp_move;
 static SnesCamera cam_move;
 /* EVERY STATIC IS INITIALISED EXPLICITLY, and that is not style.
@@ -213,7 +215,7 @@ enum SnesComPresentation {
 #define COM_SELECT_FIELDS 24
 #define COM_SELECT_SETTLE 18
 #define COM_FLY_FIELDS    14
-#define DRAW_FIELDS        6
+#define DRAW_FIELDS        8
 static u8 com_present = COM_PRESENT_IDLE;
 static u8 com_present_field = 0;
 static u8 com_cursor = 0;       /* the hand slot the sweeping cursor is on */
@@ -421,6 +423,7 @@ static u8   focus_card(u8 *face);
 static u8   focus_stats(u8 card, u16 *atk, u16 *def);
 static void say(const char *msg);
 static void note_draws(u8 owner, const u8 *before);
+static void deal_com_hand(void);
 static void place_chosen(u8 defense);
 static void begin_effect_art(u8 return_ui, u8 card, u8 owner);
 static void begin_fusion_art(u8 return_ui, u8 result, u8 success);
@@ -493,6 +496,10 @@ static void set_rest_camera(u8 mirror)
     snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, CAM_FOCAL, SNES_REST_HORIZON_PX);
     cam.yaw = mirror ? 128 : 0;
     camera_rest = 1;
+    /* The rest picture after a camera move is baked over a map the poses
+     * left with cells outside their records: the next whole frame empties
+     * every cell (snes_fb.asm). */
+    snesConvForgetPools();
 }
 
 /* The camera as the motion frame sees it: the same pose, the horizon in
@@ -586,6 +593,13 @@ static void begin_view_transition(u8 to_top)
     view_anim_frame = 0;
     view_sharp = 0;
     motion_sequence_begin(LIFT_FRAMES);
+    if (to_top) {
+        /* The table opens on the player's own side: the first monster of
+         * theirs, never wherever the cursor was left last time. */
+        top_row = SNES_ROW_YOU_MONSTER;
+        top_col = Msx2_FirstLiveSlot(MSX2_OWNER_PLAYER);
+        if (top_col == MSX2_SLOT_NONE) top_col = 0;
+    }
     if (!to_top) {
         top_view = 0;
         fade_dirty |= 2;
@@ -782,19 +796,8 @@ static void slot_boxes(u8 mirror)
 }
 
 /* The converter's dirty masks live in bank $7F beside its maps. */
-static void cells_clear(void)
-{
-    u16 *d = snes_conv_dirty;
-    u8 r;
-    for (r = 0; r < SNES_CELL_ROWS * 2; ++r) d[r] = 0;
-}
-
-static void cells_all(void)
-{
-    u16 *d = snes_conv_dirty;
-    u8 r;
-    for (r = 0; r < SNES_CELL_ROWS * 2; ++r) d[r] = 0xFFFF;
-}
+static void cells_clear(void) { snesConvDirtyFill(0); }
+static void cells_all(void)   { snesConvDirtyFill(0xFFFF); }
 
 static u8 cells_any(void)
 {
@@ -840,19 +843,8 @@ static void cells_slot(u8 mirror, u8 row, u8 col)
     cells_box(b[0], b[1], b[2], b[3]);
 }
 
-static void rom_cells_none(void)
-{
-    u16 *d = snes_conv_rom;
-    u8 r;
-    for (r = 0; r < SNES_CELL_ROWS * 2; ++r) d[r] = 0;
-}
-
-static void rom_cells_all(void)
-{
-    u16 *d = snes_conv_rom;
-    u8 r;
-    for (r = 0; r < SNES_CELL_ROWS * 2; ++r) d[r] = 0xFFFF;
-}
+static void rom_cells_none(void) { snesConvRomFill(0); }
+static void rom_cells_all(void)  { snesConvRomFill(0xFFFF); }
 
 static void rom_cells_clear_slot(u8 mirror, u8 row, u8 col)
 {
@@ -884,27 +876,39 @@ static void cells_rows(u16 *y0, u16 *y1)
 #define FACE_DEF        0x80u
 #define FACE_ID(f)      ((u8)((f) & 0x7Fu))
 
+/* WRITTEN FOR 816-tcc, NOT FOR A READER: a side chosen through a pointer
+ * and byte-sized loop counters made the twenty slots four thousand
+ * instructions (a quarter of a field, every camera frame).  The side is
+ * named by a constant index so each array is one absolute-indexed load,
+ * the counters are words, and face_of is inlined. */
+#define FACES_MONSTER_ROW(row, S)                                          \
+    for (col = 0; col < SNES_COLS; ++col) {                                   \
+        u16 face = show_cards ? g_duel.side[S].field[col] : MSX2_CARD_NONE;\
+        if (face == MSX2_CARD_NONE) {                                         \
+            face = SNES_CARD_NONE_FACE;                                       \
+        } else {                                                              \
+            if (!g_duel.side[S].faceup[col] || face >= SNES_CARD_BACK)     \
+                face = SNES_CARD_BACK;                                        \
+            if (g_duel.side[S].defense[col]) face |= FACE_DEF;             \
+        }                                                                     \
+        faces[(row) * SNES_COLS + col] = (u8)face;                            \
+    }
+#define FACES_SUPPORT_ROW(row, S)                                          \
+    for (col = 0; col < SNES_COLS; ++col) {                                   \
+        u16 face = show_cards ? g_duel.side[S].equip_field[col]            \
+                              : MSX2_CARD_NONE;                               \
+        if (face == MSX2_CARD_NONE) face = SNES_CARD_NONE_FACE;               \
+        else if (face >= SNES_CARD_BACK) face = SNES_CARD_BACK;               \
+        faces[(row) * SNES_COLS + col] = (u8)face;                            \
+    }
+
 static void current_faces(u8 *faces)
 {
-    u8 row, col;
-    for (row = 0; row < SNES_ROWS; ++row) {
-        const u8 owner = (row <= SNES_ROW_COM_MONSTER) ? MSX2_OWNER_COM
-                                                       : MSX2_OWNER_PLAYER;
-        const u8 support = (row == SNES_ROW_COM_SUPPORT ||
-                            row == SNES_ROW_YOU_SUPPORT);
-        const Msx2Side *s = (owner == MSX2_OWNER_COM)
-                          ? &g_duel.side[MSX2_OWNER_COM]
-                          : &g_duel.side[MSX2_OWNER_PLAYER];
-        for (col = 0; col < SNES_COLS; ++col) {
-            const u8 card = support ? s->equip_field[col] : s->field[col];
-            u8 face = show_cards
-                ? face_of(card, support ? 1 : s->faceup[col])
-                : SNES_CARD_NONE_FACE;
-            if (face != SNES_CARD_NONE_FACE && !support && s->defense[col])
-                face |= FACE_DEF;
-            faces[row * SNES_COLS + col] = face;
-        }
-    }
+    u16 col;
+    FACES_SUPPORT_ROW(SNES_ROW_COM_SUPPORT, MSX2_OWNER_COM)
+    FACES_MONSTER_ROW(SNES_ROW_COM_MONSTER, MSX2_OWNER_COM)
+    FACES_MONSTER_ROW(SNES_ROW_YOU_MONSTER, MSX2_OWNER_PLAYER)
+    FACES_SUPPORT_ROW(SNES_ROW_YOU_SUPPORT, MSX2_OWNER_PLAYER)
 }
 
 /* ── The moving camera's world texture ───────────────────────────────────── */
@@ -917,11 +921,11 @@ static void current_faces(u8 *faces)
 static u8 texture_stale(void)
 {
     u8 faces[20];
-    u8 changed = (texture_w != 24 || texture_h != 32);
-    u8 r;
+    u16 changed = (texture_w != 24 || texture_h != 32);
+    u16 r;
     current_faces(faces);
     for (r = 0; r < 20; ++r) {
-        if (texture_faces[r] != faces[r]) changed = 1;
+        changed |= (u16)(texture_faces[r] ^ faces[r]);
         texture_faces[r] = faces[r];
     }
     if (!changed) return 0;
@@ -1355,7 +1359,7 @@ static void job_begin(u8 half)
     /* Floor rows, converter cells, and the two ends. */
     job_steps_total = half
         ? (u16)(SNES_FRAME_H / 2 / JOB_HALF_ROWS_PER_STEP +
-                SNES_CELL_ROWS * (SNES_CELL_COLS / (2 * JOB_CELLS_PER_STEP)) + 3)
+                (SNES_CELL_ROWS / 2) * (SNES_CELL_COLS / JOB_CELLS_PER_STEP) + 3)
         : (u16)(SNES_FRAME_H / JOB_ROWS_PER_STEP +
                 SNES_CELL_ROWS * (SNES_CELL_COLS / JOB_CELLS_PER_STEP) + 3);
 }
@@ -1431,17 +1435,14 @@ static u8 job_step(void)
         return 1;
     case JOB_CONV_ROWS:
         ++job_steps;
-        if (job_half) {
-            /* A motion frame's cells are half the work: twice as many a step. */
-            snesConvCells(job_row, job_col, (u16)(job_col + 2 * JOB_CELLS_PER_STEP));
-            job_col = (u8)(job_col + 2 * JOB_CELLS_PER_STEP);
-        } else {
-            snesConvCells(job_row, job_col, (u16)(job_col + JOB_CELLS_PER_STEP));
-            job_col = (u8)(job_col + JOB_CELLS_PER_STEP);
-        }
+        /* A motion frame's cell is a whole tile too (eight source rows;
+         * the PPU doubles the lines), and it has nine rows of them. */
+        snesConvCells(job_row, job_col, (u16)(job_col + JOB_CELLS_PER_STEP));
+        job_col = (u8)(job_col + JOB_CELLS_PER_STEP);
         if (job_col >= SNES_CELL_COLS) {
             job_col = 0;
-            if (++job_row >= SNES_CELL_ROWS) job_phase = JOB_CONV_END;
+            if (++job_row >= (job_half ? SNES_CELL_ROWS / 2 : SNES_CELL_ROWS))
+                job_phase = JOB_CONV_END;
         }
         return 1;
     case JOB_CONV_END:
@@ -2068,6 +2069,11 @@ static void begin_battle_art(u8 return_ui)
     battle_return_top = top_view;
     battle_frame = 0;
     ui = UI_BATTLE_ART;
+    /* Back from the blow the cursor sits on the monster that struck. */
+    if (top_attacker != MSX2_SLOT_NONE) {
+        top_row = SNES_ROW_YOU_MONSTER;
+        top_col = top_attacker;
+    }
     top_attacker = MSX2_SLOT_NONE;
     enter_mode3_art();
 }
@@ -2741,7 +2747,7 @@ static u8 result_scene(void)
 
 static void move_cursor(u8 count, u8 board)
 {
-    const u16 down = padsDown(0);
+    const u16 down = snes_pad_down;
     u8 moved = 0;
 
     if (down & KEY_LEFT)  { cursor = (u8)((cursor + count - 1) % count); moved = 1; }
@@ -2768,7 +2774,7 @@ static u8 hand_next(u8 from, u8 step)
 static void move_hand_cursor(void)
 {
     const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
-    const u16 down = padsDown(0);
+    const u16 down = snes_pad_down;
     u8 moved = 0;
 
     if (you->hand[cursor] == MSX2_CARD_NONE)
@@ -2793,6 +2799,7 @@ static void end_player_turn(void)
     queue_n = 0;
     Msx2_EndTurn();
     ui = UI_COM;
+    deal_com_hand();
     com_delay = 12;
     touch_board(8);
 }
@@ -2882,6 +2889,22 @@ static void note_draws(u8 owner, const u8 *before)
             draw_pending[owner] |= (u8)(1u << i);
         }
     }
+}
+
+/* THE OPPONENT'S HAND IS DEALT IN FRONT OF THE PLAYER EVERY TURN.  The
+ * MSX2 and PC-FX builds put the COM's backs down one at a time as its turn
+ * opens, whatever it played last turn; here the hand is simply hidden again
+ * and every occupied slot queued for the draw cadence, and the turn's own
+ * replacements (note_draws) join the queue behind them. */
+static void deal_com_hand(void)
+{
+    u8 i;
+    hand_visible[MSX2_OWNER_COM] = 0;
+    draw_pending[MSX2_OWNER_COM] = 0;
+    for (i = 0; i < MSX2_HAND; ++i)
+        if (g_duel.side[MSX2_OWNER_COM].hand[i] != MSX2_CARD_NONE)
+            draw_pending[MSX2_OWNER_COM] |= (u8)(1u << i);
+    draw_field = 0;
 }
 
 static u8 step_draw_presentation(void)
@@ -2988,7 +3011,7 @@ static void press_sfx(u16 down)
 static void step_player(void)
 {
     const Msx2Side *you = &g_duel.side[MSX2_OWNER_PLAYER];
-    const u16 down = padsDown(0);
+    const u16 down = snes_pad_down;
 
     press_sfx(down);
     switch (ui) {
@@ -3275,7 +3298,7 @@ void snesDuelEnter(void)
 
 u8 snesDuelFrame(void)
 {
-    const u16 down = padsDown(0);
+    const u16 down = snes_pad_down;
 
 #if defined(SNES_DEBUG)
     /* THE HARNESS SWITCHES ARE A DEBUG BUILD'S (make DEBUG=1): the fixture
@@ -3738,6 +3761,10 @@ u8 snesDuelFrame(void)
     build_objects();
 
 stamp:
+    /* The vblank's scroll write needs the doubled picture's table built
+     * for it, here in the foreground (snes_video.c). */
+    if (fade_dirty & 2)
+        snesVideoBoardScrollPrepare(top_view ? top_scroll_cur : 0);
     g_stamp.map_lines = t_map;
     g_stamp.conv_lines = t_conv;
     g_stamp.render_lines = t_render;

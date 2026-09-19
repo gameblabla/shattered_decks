@@ -137,7 +137,7 @@ static const char *const title_rows[TITLE_ROWS] = {
 };
 
 static const char *const opponent_names[MSX2_STORY_MAX_DUELS] = {
-    "KASEM", "ANPU", "RAHOTEP", "NADIRA", "ISYRA"
+    "KASEM", "ANPU", "RAHOTEP", "NADIRA", "PYRA"
 };
 
 #include "snes_dialogue_data.h"
@@ -434,7 +434,7 @@ void snesStoryBegin(u8 progress)
 
 u8 snesTitleFrame(void)
 {
-    const u16 down = padsDown(0);
+    const u16 down = snes_pad_down;
     if (title_phase == TITLE_ATTRACT) {
         u8 blink = (u8)(((snesSceneFrames() / 24) & 1) == 0);
         if (blink != title_blink) {
@@ -713,7 +713,7 @@ void snesStoryInit(void)
 
 u8 snesStoryFrame(void)
 {
-    const u16 down = padsDown(0);
+    const u16 down = snes_pad_down;
     const char *line = story_lines[story_progress][story_line];
 
     /* THE WORDS WAIT FOR THE SPEAKERS.  Nothing is revealed, and no press
@@ -775,7 +775,7 @@ void snesEndingInit(void)
 
 u8 snesEndingFrame(void)
 {
-    const u16 down = padsDown(0);
+    const u16 down = snes_pad_down;
 
     if (ending_reveal < page_length) {
         if (down & (KEY_A | KEY_START)) {
@@ -824,8 +824,12 @@ void snesSceneVblank(void)
         dmaCopyVram((u8 *)story_bg1_map, STORY_MAP_WORD, SNES_SCENE_MAP_BYTES);
         story_bg1_dirty = 0;
     }
-    if (!scene_text_dirty) return;
-    dmaCopyVram((u8 *)scene_text_map, scene_text_word,
-                SNES_SCENE_MAP_BYTES);
-    scene_text_dirty = 0;
+    if (scene_text_dirty) {
+        dmaCopyVram((u8 *)scene_text_map, scene_text_word,
+                    SNES_SCENE_MAP_BYTES);
+        scene_text_dirty = 0;
+    }
+    /* The uploads above ran on channel 0, which is also the name lift's
+     * HDMA: give it its table back before the frame starts. */
+    snesVideoRearmNameHdma();
 }

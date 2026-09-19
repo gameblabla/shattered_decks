@@ -38,6 +38,12 @@ snes_tile_ref     dsb 704         ; references per physical tile (both maps)
 snes_tile_free    dsb FB_FREE_BYTES   ; the free-tile queue
 .ENDS
 
+; The two line-doubling HDMA tables (snes_video.c): 73 entries of a line
+; count and two BG1VOFS bytes, and a terminator, each.
+.RAMSECTION "snes_fb_dbl_ram" BANK $7F SLOT 3
+snes_fb_dbl_tables dsb 2 * 220
+.ENDS
+
 .RAMSECTION "snes_fb_vars" BANK $7E SLOT 2
 ring_wrote dw
 job_w dw
@@ -58,12 +64,30 @@ fb_drain_enable dw
 fb_epoch dw
 fb_reserve dw
 snes_fb_oam_pending dw      ; the sprite shadow wants uploading from the NMI
+; THE PAD IS LATCHED EVERY FIELD, NOT ONLY WHEN THE MAIN LOOP WAITS.
+; pvsneslib scans the joypad only in a field where WaitForVBlank was
+; called, and its "down" word survives one field.  A duel frame is many
+; fields, and a camera pose runs on without waiting, so a press could land
+; on no field at all.  The pad is read here at the end of every NMI, after
+; the auto-joypad finished, and what was down accumulates until the main
+; loop polls it (snesPadPoll).
+snes_pad_raw dw             ; the last field's state
+snes_pad_held dw            ; every button seen down since the last poll
+snes_pad_prev dw            ; the previous poll's held word
+snes_pad_down dw            ; the game frame's pressed edges
 fb_free_head dw
 fb_free_tail dw
 fb_free_count dw
 fb_jobs dsb FB_JOBS * 8
 snes_fb_tm dsb 7
 wd_piece_bytes dw
+; The motion frame's line doubling: an HDMA on BG1VOFS (channel 5) that
+; the NMI switches on with a doubled map and off with a 1:1 one.
+snes_fb_vofs dw             ; BG1VOFS for a 1:1 map (the overhead scroll)
+snes_fb_dbl_table dw        ; the doubling table (snes_video.c)...
+snes_fb_dbl_bank dw         ; ...and its bank
+snes_fb_hdmaen dw           ; the HDMAEN the scene armed, channel 5 included
+snes_fb_dbl_on dw           ; the shown map is doubled
 
 ; Converter shared state.
 cv_run_src dw
@@ -97,6 +121,12 @@ cv_whole dw                 ; every cell is dirty: the map was emptied in Begin
 cv_span_lo dw               ; the row's span, in cells, for the whole-frame loop
 cv_span_hi dw
 cv_partial dw               ; snesConvCells: one row's columns, then return
+; What the whole-frame loop put in each map: per pool, whether the map was
+; last built whole and left untouched since, and the cell span [first, end)
+; it filled on each of the 18 rows (bytes).  The release pass at the start
+; of the next whole frame walks only those spans instead of all 576 cells.
+cv_pool_whole dsb 4         ; word per pool
+cv_pool_spans dsb 2 * 36
 .ENDS
 
 .BASE $C0
@@ -120,8 +150,14 @@ snesFbInit:
     sta.l fb_drain_enable
     sta.l cv_run_bytes
     sta.l fb_reserve
+    sta.l cv_pool_whole
+    sta.l cv_pool_whole+2
+    sta.l snes_fb_dbl_on
+    sta.l snes_fb_hdmaen
     inc a
     sta.l fb_epoch
+    lda #$03FF
+    sta.l snes_fb_vofs
     ; Both logical maps blank, no dirty cells, no tile referenced.
     ldx #0
     lda #0
@@ -484,6 +520,59 @@ snes_fb_fill_ramp:
 .ENDR
 
 snesFbNmi:
+    jsl snesFbNmiBody
+    ; Read the pad after the drain: the auto-joypad read finishes ~3 lines
+    ; into vblank and is over by now, so the wait below almost never spins.
+    sep #$20
+.ACCU 8
+-   lda.l $4212
+    lsr a
+    bcs -
+    rep #$20
+.ACCU 16
+    lda.l $4218
+    bit #$000F
+    beq +
+    lda #0
++   sta.l snes_pad_raw
+    ora.l snes_pad_held
+    sta.l snes_pad_held
+    rtl
+
+; void snesPadInit(void): nothing held yet -- WRAM is not zero at power on.
+snesPadInit:
+    php
+    rep #$20
+    lda #0
+    sta.l snes_pad_raw
+    sta.l snes_pad_held
+    sta.l snes_pad_prev
+    sta.l snes_pad_down
+    plp
+    rtl
+
+; void snesPadPoll(void): the buttons seen down on any field since the last
+; poll are this game frame's state; an edge is one that the previous poll
+; did not have.  A press shorter than a game frame is still a press.
+snesPadPoll:
+    php
+    rep #$20
+.ACCU 16
+    sei
+    lda.l snes_pad_held
+    tay
+    eor #$FFFF
+    ora.l snes_pad_prev
+    eor #$FFFF                  ; held & ~prev
+    sta.l snes_pad_down
+    tya
+    sta.l snes_pad_prev
+    lda.l snes_pad_raw          ; still-held buttons stay held
+    sta.l snes_pad_held
+    plp
+    rtl
+
+snesFbNmiBody:
     ; THE SPRITE SHADOW GOES UP FROM HERE WHEN THE MAIN THREAD CANNOT: a
     ; camera frame is many fields of rendering, and the hand slides through
     ; it by patching snes_oam_shadow between row batches.  pvsneslib's own
@@ -628,11 +717,14 @@ _nm_job:
     sec
     sbc.l nm_n
     sta.l nm_budget
-    beq _nm_out
-    jmp _nm_job
+    bne +
+    jmp _nm_out
++   jmp _nm_job
 _nm_commit:
     ; Completion jobs are queued after the complete map.  Switch the map and
     ; publish the generation in this same vblank; nothing is left to wait for.
+    pha                         ; the kind: 2 or 3 the map, bit 2 doubled
+    and #$0003
     cmp #2
     bne _nm_commit_b
     sep #$20
@@ -641,7 +733,7 @@ _nm_commit:
     sta.l $2107
     rep #$20
 .ACCU 16
-    bra _nm_publish
+    bra _nm_double
 _nm_commit_b:
     sep #$20
 .ACCU 8
@@ -649,6 +741,52 @@ _nm_commit_b:
     sta.l $2107
     rep #$20
 .ACCU 16
+_nm_double:
+    ; THE LINE DOUBLING GOES WITH THE MAP.  A doubled map (the 128x72 motion
+    ; frame, nine cell rows) is shown through channel 5, an HDMA that holds
+    ; BG1VOFS back a line every other line so each tile row is on the
+    ; screen twice; a 1:1 map takes the channel away and puts the scroll
+    ; register back.  Both in this vblank, with the map, so neither picture
+    ; is ever shown through the other's scroll.  (No foreground code
+    ; touches the PPU multiplier: it shares BG1VOFS's write-twice latch,
+    ; and an HDMA write between the two halves of M7A corrupted products.)
+    pla
+    and #$0004
+    beq _nm_flat
+    lda.l snes_fb_dbl_table
+    sta.l $4352
+    sep #$20
+.ACCU 8
+    lda #$02                    ; two bytes into one write-twice register
+    sta.l $4350
+    lda #$0E                    ; BG1VOFS
+    sta.l $4351
+    lda.l snes_fb_dbl_bank
+    sta.l $4354
+    lda.l snes_fb_hdmaen
+    ora #$20
+    sta.l snes_fb_hdmaen
+    sta.l $420C
+    rep #$20
+.ACCU 16
+    lda #1
+    sta.l snes_fb_dbl_on
+    bra _nm_publish
+_nm_flat:
+    sep #$20
+.ACCU 8
+    lda.l snes_fb_hdmaen
+    and #$DF
+    sta.l snes_fb_hdmaen
+    sta.l $420C
+    lda.l snes_fb_vofs
+    sta.l $210E
+    lda.l snes_fb_vofs+1
+    sta.l $210E
+    rep #$20
+.ACCU 16
+    lda #0
+    sta.l snes_fb_dbl_on
 _nm_publish:
     lda.l fb_jobs + JOB_SRC,x
     sta.l fb_presented_generation
@@ -676,6 +814,20 @@ nm_advance:
     sta.l job_r
     rts
 
+; void snesConvForgetPools(void): the next whole frame in either pool
+; releases all 576 of its cells rather than the spans its last whole frame
+; recorded.  A camera move's poses leave a map whose entries and record
+; disagree (the descent's rest picture kept the overhead's top rows), and
+; one full pass at the move's end is cheaper than the wrong cells.
+snesConvForgetPools:
+    php
+    rep #$20
+    lda #0
+    sta.l cv_pool_whole
+    sta.l cv_pool_whole+2
+    plp
+    rtl
+
 ; void snesConvSetFloor(u16 src, u16 bank): the planar ROM floor the
 ; converter takes ROM-masked cells from, tile `cell` at src + cell * 64.
 snesConvSetFloor:
@@ -690,14 +842,39 @@ snesConvSetFloor:
     rtl
 
 ; void snesConvSetHalf(u16 on): the frame to convert is the 128x72 motion
-; frame at the top of the buffer (stride 128, a cell four texels by four
-; lines), converted doubled; 0 is the 256x144 picture at 1:1.
+; frame at the top of the buffer (stride 128, a cell four texels by eight
+; lines), converted with the texels doubled and shown with the lines
+; doubled; 0 is the 256x144 picture at 1:1.
 snesConvSetHalf:
     php
     rep #$30
     lda 5,s
     and #$0001
     sta.l cv_half
+    plp
+    rtl
+
+; void snesConvDirtyFill(u16 v), snesConvRomFill(u16 v): every word of the
+; dirty masks (or the ROM masks) set to v.  Thirty-six unrolled stores; the
+; C loops these replace were 1,400 instructions each, three times a camera
+; frame.
+.MACRO CV_FILL36 ARGS BASE
+    .REPT 36 INDEX I
+    sta.l BASE + I * 2
+    .ENDR
+.ENDM
+snesConvDirtyFill:
+    php
+    rep #$30
+    lda 5,s
+    CV_FILL36 snes_conv_dirty
+    plp
+    rtl
+snesConvRomFill:
+    php
+    rep #$30
+    lda 5,s
+    CV_FILL36 snes_conv_rom
     plp
     rtl
 

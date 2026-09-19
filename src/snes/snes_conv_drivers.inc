@@ -9,9 +9,10 @@
 ;  on the fast direct page (snes_fastdp.inc, D = FASTDP for the call), six
 ;  cycles an access instead of WRAM's eight.
 ;
-;  ONE TRANSACTION = ONE NEW LOGICAL MAP.  The board is 18 rows of 32 cells;
-;  a cell is either the permanent blank tile 0 or one of 702 physical 8bpp
-;  tiles.  Two logical maps exist (A at VRAM $5800, B at $5C00): one is on
+;  ONE TRANSACTION = ONE NEW LOGICAL MAP.  The board is 18 rows of 32 cells
+;  (the doubled motion frame fills the first 9: its cells are eight rows of
+;  four texels, and the PPU shows each row twice); a cell is either the
+;  permanent blank tile 0 or one of 702 physical 8bpp tiles.  Two logical maps exist (A at VRAM $5800, B at $5C00): one is on
 ;  screen, the other is rebuilt here and switched to in a single vblank once
 ;  every tile it names has reached VRAM.  Cells the caller did not mark dirty
 ;  KEEP THE TILE THE SHOWN MAP USES -- copy-on-write, with a reference count
@@ -247,12 +248,12 @@ _rom_extend:
 cv_row_origin:
     xba
     asl a
-    and #$FE00                  ; row * 512: four 128-byte lines, doubled
+    asl a
+    and #$FC00                  ; row * 1024: eight 128-byte lines, doubled
     tax
     lda.l cv_half
     bne +
     txa
-    asl a
     asl a                       ; row * 2048 at 1:1: eight 256-byte lines
     rts
 +   txa
@@ -455,8 +456,9 @@ _cf_map_ready:
 _cf_all_dirty:
     lda.l snes_conv_dirty,x
     cmp #$FFFF
-    bne _cf_copy_needed
-    inx
+    beq +
+    jmp _cf_copy_needed
++   inx
     inx
     cpx #18*4
     bne _cf_all_dirty
@@ -477,16 +479,87 @@ _cf_all_dirty:
     sta.b <FD_CV_FREE_TAIL
     lda.l fb_free_count
     sta.b <FD_CV_FREE_CNT
-    lda.l cv_shadow
-    clc
-    adc #576*2
-    sta.b <FD_CV_Y              ; one past the last entry
     phb
     pea $7F7F
     plb
     plb
+    ; A map the whole-frame loop built and nothing touched since holds
+    ; tiles only inside the spans it recorded (cv_pool_spans): walk those,
+    ; a row at a time, rather than the 576 cells -- three quarters of a
+    ; motion frame's are blank, and the empty test alone was a tenth of
+    ; the bookkeeping.  It stays flagged whole: the loop below fills it
+    ; whole again.  (A row's recorded span may be stale after a cancelled
+    ; frame; its entries are then zero, which the release skips.)
+    lda.l cv_pool
+    asl a
+    tax
+    lda.l cv_pool_whole,x
+    beq _cf_empty_all
+    lda #0
+    ldx.w cv_pool
+    beq +
+    lda #36
++   sta.b <FD_CV_ROW            ; the pool's spans, as a byte index
+    lda #0
+    sta.b <FD_CV_COL            ; the row
+    lda.l cv_shadow
+    sta.b <FD_CV_ENTRY          ; the row's first entry
+_cf_empty_row:
+    ldx.b <FD_CV_ROW
+    lda.l cv_pool_spans,x       ; first cell (low byte), end (high byte)
+    inx
+    inx
+    stx.b <FD_CV_ROW
+    sta.b <FD_CV_TMP
+    and #$00FF
+    asl a
+    clc
+    adc.b <FD_CV_ENTRY
+    tay                         ; the span's first entry...
+    lda.b <FD_CV_TMP
+    xba
+    and #$00FF
+    asl a
+    clc
+    adc.b <FD_CV_ENTRY
+    sta.b <FD_CV_Y              ; ...and one past its last
+    cpy.b <FD_CV_Y
+    beq +
+    jsr cv_empty_entries
++   lda.b <FD_CV_ENTRY
+    clc
+    adc #64
+    sta.b <FD_CV_ENTRY
+    lda.b <FD_CV_COL
+    inc a
+    sta.b <FD_CV_COL
+    cmp #18
+    bne _cf_empty_row
+    bra _cf_empty_done
+_cf_empty_all:
+    lda.l cv_shadow
+    clc
+    adc #576*2
+    sta.b <FD_CV_Y              ; one past the last entry
     lda.l cv_shadow
     tay
+    jsr cv_empty_entries
+_cf_empty_done:
+    plb
+    lda.b <FD_CV_FREE_TAIL
+    sta.l fb_free_tail
+    lda.b <FD_CV_FREE_CNT
+    sta.l fb_free_count
+    lda.l cv_pool
+    asl a
+    tax
+    lda #1
+    sta.l cv_pool_whole,x
+    jmp _cf_copy_done
+
+; Release and zero the map entries from Y to FD_CV_Y (DB = $7F, the free
+; queue's tail and count on the fast page).
+cv_empty_entries:
 _cf_empty:
     lda.w $0000,y
     and #$03FF
@@ -523,14 +596,15 @@ _cf_empty_next:
     iny
     cpy.b <FD_CV_Y
     bne _cf_empty
-    plb
-    lda.b <FD_CV_FREE_TAIL
-    sta.l fb_free_tail
-    lda.b <FD_CV_FREE_CNT
-    sta.l fb_free_count
-    bra _cf_copy_done
+    rts
 _cf_copy_needed:
+    ; The copy path releases and names tiles cell by cell: the pool is no
+    ; longer a whole-frame map.
+    lda.l cv_pool
+    asl a
+    tax
     lda #0
+    sta.l cv_pool_whole,x
     sta.b <FD_CV_Y                  ; byte index of the cell in a map
 _cf_copy:
     lda.b <FD_CV_Y
@@ -599,7 +673,7 @@ snesConvRows:
     sta.l cv_row_end
     lda 8,s
     sta.b <FD_CV_ROW
-    ; The cell row's first chunky byte: row * 2048 (512 doubled).
+    ; The cell row's first chunky byte: row * 2048 (1024 doubled).
     jsr cv_row_origin
     sta.b <FD_CV_Y
     lda #0
@@ -1098,8 +1172,11 @@ _cw_extend\@:
     adc #64
     sta.l ring_wrote
     and #FB_RING_MASK
-    bne _cw_next\@
-    jsr cv_flush_run            ; a run never crosses the ring's end
+    beq +                       ; a run never crosses the ring's end...
+    lda.b <FD_CV_RUN_BYTES
+    cmp #FB_RUN_MAX_BYTES
+    bcc _cw_next\@              ; ...and is booked at FB_RUN_MAX_BYTES so
++   jsr cv_flush_run            ; the NMI drains the frame as it is made
     bra _cw_next\@
 _cw_none\@:
     lda #0
@@ -1122,13 +1199,40 @@ _cw_next\@:
     jmp _cw_row_done
 .ENDM
 
+; cv_pool_spans[pool][row] = {span_lo, span_hi + 1}, or {0, 0}.  Clobbers X.
+cv_record_span_empty:
+    lda #0
+    bra +
+cv_record_span:
+    lda.l cv_span_hi
+    inc a
+    xba
+    and #$FF00
+    ora.l cv_span_lo
++   ldx.b <FD_CV_ROW
+    pha
+    lda.l cv_pool
+    beq ++
+    txa
+    clc
+    adc #18
+    tax
+++  txa
+    asl a
+    tax
+    pla
+    sta.l cv_pool_spans,x
+    rts
+
 _cw_row:
     lda #0
     sta.b <FD_CV_COL
     lda #32
     sta.b <FD_CV_COL_END
 _cw_cells:
-    ; The row's span in cells; an empty row has none.
+    ; The row's span in cells; an empty row has none.  Either way it is
+    ; recorded for the pool (cv_pool_spans: first cell, end cell), so the
+    ; next whole frame in this pool releases only what this one filled.
     lda.b <FD_CV_ROW
     asl a
     tax
@@ -1137,6 +1241,7 @@ _cw_cells:
     and #$00FF
     cmp #$00FF
     bne +
+    jsr cv_record_span_empty
     jmp _cw_row_done
 +   lsr a
     lsr a
@@ -1153,6 +1258,7 @@ _cw_cells:
     bne +
     lsr a
 +   sta.l cv_span_hi
+    jsr cv_record_span
     ; Clip [cv_col, cv_col_end) to [span_lo, span_hi].
     lda.b <FD_CV_COL
     cmp.l cv_span_lo
@@ -1215,10 +1321,7 @@ snesConvEnd:
     lda #0
     sta.l jp_bytes
     ldx #3
-    ldy #0
-    lda.l cv_generation
-    jsl snesFbJobPushRaw
-    bra _cf_queued
+    bra _cf_queue_commit
 _cf_queue_a:
     ldx #$7F00
     ldy #FB_MAP_A_WORD
@@ -1227,7 +1330,16 @@ _cf_queue_a:
     lda #0
     sta.l jp_bytes
     ldx #2
-    ldy #0
+_cf_queue_commit:
+    ; The commit names the map (kind 2 or 3) and, in bit 2, whether it is
+    ; the motion frame's: the NMI switches the line-doubling HDMA with the
+    ; map, in the same vblank (snes_fb.asm _nm_commit).
+    lda.l cv_half
+    beq +
+    txa
+    ora #4
+    tax
++   ldy #0
     lda.l cv_generation
     jsl snesFbJobPushRaw
 _cf_queued:

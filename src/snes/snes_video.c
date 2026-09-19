@@ -24,6 +24,23 @@
 #define SCENE_GRAD_BOT_B         9
 #define SCENE_GRAD_TABLE_BYTES (6 + 1 + (SCENE_GRAD_LINES * 2) + 1)
 static u8 hdma_scene_col[SCENE_GRAD_TABLE_BYTES];
+/* THE SPEAKER'S NAME SITS TWO LINES HIGHER THAN ITS TILE ROW.  The name
+ * and the prose share BG2, and the map has no half rows, so the gap under
+ * the name is bought with BG2VOFS.  With VOFS 0 the PPU shows map line
+ * y + 1 on screen line y: the name's glyph (map 152..158) is on screen
+ * lines 151..157 and the prose's from 159.  +2 over screen lines 149..156
+ * puts the glyph on 149..155 and map 159, the row's blank line, on 156;
+ * +1 shows that same blank line on 157, 158 shows it at 0, and the prose
+ * is untouched.  Mode 2 writes the pair of bytes to one register, and a
+ * run is at most 127 lines. */
+static const u8 hdma_scene_name_vofs[] = {
+    0x7F, 0, 0,
+    0x16, 0, 0,
+    0x08, 2, 0,
+    0x01, 1, 0,
+    0x42, 0, 0,
+    0
+};
 
 /* ── The HUD plate ───────────────────────────────────────────────────────── */
 
@@ -87,6 +104,67 @@ static s16 board_scroll_y = 0;
  * So the overhead view swaps channel 6 to this table -- BG1 + OBJ down to
  * line GRAD_LEAD, OBJ alone over the plate -- rather than disabling it. */
 static u8 hdma_tm_top[7];
+
+/* ── The motion frame's line doubling ────────────────────────────────────── */
+
+/* THE 128x72 MOTION FRAME IS SHOWN WITH ITS LINES DOUBLED BY THE PPU.  Its
+ * tiles are eight source rows, one tile row each (nine cell rows for the
+ * board's 144 lines), and channel 5 writes BG1VOFS every other line so that
+ * screen line y shows source line y / 2: the register is the rest value
+ * for line 0 and one less for every pair of lines after it.  The converter
+ * used to store every row twice into four-row tiles -- twice the tiles,
+ * twice the bytes to drain -- and the NMI switches this channel on with a
+ * doubled map and off with a 1:1 one, in the same vblank (snes_fb.asm).
+ *
+ * The overhead scroll is folded into the values, so the table depends on
+ * it; there are two, the inactive one is built in the foreground when the
+ * scroll changes (snesVideoBoardScrollPrepare) and the vblank hands the
+ * channel the new one.  An entry a line pair, 2 data bytes each into the
+ * write-twice register (mode 2); line 0 and line 143 stand alone.
+ *
+ * NOTHING IN THE FOREGROUND MAY USE THE PPU MULTIPLIER while this can be
+ * on: M7A/M7B and BG1VOFS share one write-twice latch, and an HDMA write
+ * landing between the two halves of M7A corrupted a row of the next render
+ * when this was first tried.  Every product is the CPU's (snes_math.asm). */
+#define DBL_TABLE_BYTES 220             /* 3 + 71 * 3 + 3 + 1, snes_fb.asm */
+#define hdma_dbl(i) (&snes_fb_dbl_tables[(i) ? DBL_TABLE_BYTES : 0])
+static u8  dbl_active = 0;              /* the table the channel reads */
+static s16 dbl_scroll = 0;              /* the scroll the active one holds */
+static s16 dbl_prepared = 0;            /* ...and the inactive one */
+
+static void build_double_table(u8 *t, s16 scroll)
+{
+    u16 v = (u16)(0x03FFu + scroll) & 0x03FFu;
+    u8 k;
+    *t++ = 1; *t++ = (u8)v; *t++ = (u8)(v >> 8);
+    for (k = 0; k < 71; ++k) {
+        v = (u16)(v - 1) & 0x03FFu;
+        *t++ = 2; *t++ = (u8)v; *t++ = (u8)(v >> 8);
+    }
+    v = (u16)(v - 1) & 0x03FFu;
+    *t++ = 1; *t++ = (u8)v; *t++ = (u8)(v >> 8);
+    *t = 0;
+}
+
+static void arm_double_channel(void)
+{
+    /* The bank from the pointer itself: a file's statics are not
+     * guaranteed $7E (snes_cardart.c's land in $7F). */
+    const u8 *t = hdma_dbl(dbl_active);
+    snes_fb_dbl_table = (u16)t;
+    snes_fb_dbl_bank = ((const u8 *)&t)[2];
+    *(vuint8 *)0x4350 = 0x02;  *(vuint8 *)0x4351 = 0x0E;
+    *(vuint16 *)0x4352 = snes_fb_dbl_table;
+    *(vuint8 *)0x4354 = (u8)snes_fb_dbl_bank;
+}
+
+/* Foreground: have the inactive table ready for this scroll. */
+void snesVideoBoardScrollPrepare(s16 scroll_y)
+{
+    if (scroll_y == dbl_scroll || scroll_y == dbl_prepared) return;
+    build_double_table(hdma_dbl(dbl_active ^ 1), scroll_y);
+    dbl_prepared = scroll_y;
+}
 
 /* Fill the plate's table once.  The ramp is walked in 8.8 rather than divided
  * per line: 816-tcc has no divide worth spending here, and both steps happen
@@ -163,7 +241,11 @@ static void arm_hdma(void)
     *(vuint8 *)0x4344 = 0x7E;
 
     arm_tm_table();
-    REG_HDMAEN = 0x50;
+    /* Channel 5 goes with the map on the screen: the NMI's flag says
+     * whether that map is a doubled one. */
+    arm_double_channel();
+    snes_fb_hdmaen = (u16)(0x50 | (snes_fb_dbl_on ? 0x20 : 0));
+    REG_HDMAEN = (u8)snes_fb_hdmaen;
 }
 
 static void build_scene_gradient(void)
@@ -220,6 +302,19 @@ void snesVideoSetSkyTables(u16 rg, u8 rg_bank, u16 b, u8 b_bank)
     scene_sky_b_bank = b_bank;
 }
 
+/* Channel 0 carries the name lift (below) AND every general DMA the scene
+ * makes in vblank (pvsneslib's dmaCopy* are channel 0): those rewrite its
+ * mode, register and table address, so the scene re-arms it after its
+ * uploads, before the HDMA restarts at the top of the next frame. */
+void snesVideoRearmNameHdma(void)
+{
+    const u8 *nv = hdma_scene_name_vofs;    /* bank byte read out of the pointer */
+    *(vuint8 *)0x4300 = 0x02;
+    *(vuint8 *)0x4301 = 0x10;
+    *(vuint16 *)0x4302 = (u16)nv;
+    *(vuint8 *)0x4304 = ((const u8 *)&nv)[2];
+}
+
 static void arm_scene_hdma(void)
 {
     u8 channels = 0x10;
@@ -231,6 +326,10 @@ static void arm_scene_hdma(void)
     *(vuint8 *)0x4341 = 0x32;
     *(vuint16 *)0x4342 = (u16)(u16)&hdma_scene_col[0];
     *(vuint8 *)0x4344 = 0x7E;
+
+    /* Channel 0: BG2VOFS ($2110), the speaker's name lifted two lines. */
+    snesVideoRearmNameHdma();
+    channels |= 0x01;
 
     if (scene_sky_rg && scene_sky_b) {
         /* Channels 5 and 6: the sky's red/green pair and its blue.  The
@@ -320,6 +419,12 @@ void snesVideoInitDuel(void)
     requested_generation = 0;
     board_overhead = 0;
     board_scroll_y = 0;
+    build_double_table(hdma_dbl(0), 0);
+    build_double_table(hdma_dbl(1), 0);
+    dbl_active = 0;
+    dbl_scroll = 0;
+    dbl_prepared = 0;
+    arm_double_channel();
 
     /* Permanent blank tile and two blank logical maps. */
     dmaCopyVram((u8 *)blank, SNES_VRAM_BOARD_CHARS, 64);
@@ -372,6 +477,16 @@ void snesVideoBoardViewport(u8 overhead, s16 scroll_y)
      * screen row zero.  Adding the signed tracking offset moves the existing
      * tilemap; no bitmap cell or map entry changes when the cursor moves. */
     vofs = (u16)(0x03FFu + board_scroll_y) & 0x03FFu;
+    snes_fb_vofs = vofs;
+    /* A doubled picture takes the scroll through its HDMA table instead:
+     * the prepared one, if the foreground built it for this scroll (else
+     * the picture keeps the old offset until it has). */
+    if (board_scroll_y != dbl_scroll && board_scroll_y == dbl_prepared) {
+        dbl_active ^= 1;
+        dbl_scroll = board_scroll_y;
+        arm_double_channel();
+    }
+    if (snes_fb_dbl_on) return;
     REG_BG1VOFS = (u8)vofs;
     REG_BG1VOFS = (u8)(vofs >> 8);
 }

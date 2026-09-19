@@ -1,6 +1,12 @@
 ; Constants shared by the sparse converter and NMI uploader.
 .DEFINE FB_RING_SIZE       4096
 .DEFINE FB_RING_MASK       (FB_RING_SIZE - 1)
+; A run of converted tiles is booked as a job once it is this long, so the
+; NMI can start draining a frame while it is still being converted: the
+; whole-frame loop's runs are otherwise as long as the frame (its tile ids
+; are consecutive), the ring filled before any job existed, and the
+; converter then waited for the next vblank once a frame (half a field).
+.DEFINE FB_RUN_MAX_BYTES   1024
 .DEFINE FB_JOBS            32
 .DEFINE FB_BUDGET          3584   ; the whole vblank's transfer allowance, in
                                   ; bytes; the main thread's own DMAs (OAM,

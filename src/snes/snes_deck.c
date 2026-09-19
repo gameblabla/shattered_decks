@@ -781,7 +781,7 @@ void snesDeckInit(void)
 
 u8 snesDeckFrame(void)
 {
-    const u16 down = padsDown(0);
+    const u16 down = snes_pad_down;
 
     deck_ensure();
     if (deck_flash) {

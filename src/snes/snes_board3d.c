@@ -522,8 +522,10 @@ static void edge_init(EdgeWalk *e, const SnesVert *a, const SnesVert *b,
  * skips the cells outside; a row it never touched stays min 255 / max 0. */
 static void span_note(u16 y, s16 x0, s16 x1, u8 sub)
 {
-    /* A cell is eight lines of the 1:1 frame, four of the motion frame. */
-    u8 *e = &snes_conv_rowspan[(sub ? (y >> 3) : (y >> 2)) << 1];
+    /* A cell is eight lines of either frame (the motion frame's are
+     * doubled by the PPU, not by the converter). */
+    u8 *e = &snes_conv_rowspan[(y >> 3) << 1];
+    (void)sub;
     if ((u8)x0 < e[0]) e[0] = (u8)x0;
     if ((u8)(x1 - 1) > e[1]) e[1] = (u8)(x1 - 1);
 }
@@ -555,6 +557,8 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
         if (cam->yaw) {
             eye_cy = snesQMul(cam->x, cy);
             eye_sn = snesQMul(cam->x, sn);
+            snesFloorYawSetup(cy, sn, eye_cy, eye_sn, cam->height, cam->z,
+                              vp->origin, sub);
         }
         /* Per PIXEL row: on the 1:1 viewport that is half a unit row, on
          * the 128x72 motion frame a whole one. */
@@ -678,67 +682,13 @@ static void texture_quad(const SnesViewport *vp, const SnesVert *q, u8 face,
         if (x1 <= x0) continue;
 
         if (cam) {
-            /* Inverse camera ray / horizontal plane intersection.  The
-             * pixel viewport has two pixels per projection unit, so a pixel
-             * row is half a unit row: sy is in quarter unit rows, the scale
-             * the reciprocal table and the pitch terms are in.
-             *
-             * EVERY PRODUCT HERE IS A SHIFT OR THE PPU MULTIPLIER.  816-tcc
-             * turns `a * 32` and `y * stride` into a 16-step software
-             * multiply of three hundred cycles each; five of those a row was
-             * more than the row's pixels cost. */
-            s16 depth, z, dtex, du, dv, half_du;
-            u16 row_index, tu, tv;
-            if (denom <= 2 || denom >= 1024) continue;
-            depth = snesQMul(cam->height, snes_recip_plane[denom]);
-            z = (s16)(cam->z + snesQMul(depth, a));
-            /* THE TEXTURE STEP IS TAKEN IN TEXELS, NOT IN WORLD UNITS.  A
-             * pixel is depth/128 world units across and a unit is 32
-             * texels, so the step is depth/4 texels: rounded ONCE, here.
-             * Rounding it to whole world Q8.8 counts first (depth >> 7, then
-             * << 5) threw away up to a tenth of the step, and a tenth of a
-             * texel a pixel is twenty texels of drift by the far side of the
-             * screen -- the "cards sliding off their slots" of a moving
-             * board.  The row's origin is built from the same rounded step,
-             * so the walk and the origin agree. */
-            dtex = sub ? (s16)((depth + 2) >> 2) : (s16)((depth + 1) >> 1);
-            if (!cam->yaw) {
-                du = dtex;
-                dv = 0;
-                tu = (u16)((cam->x << 5) + (SNES_WORLD_U_CENTRE << 8));
-                tv = (u16)(z << 5);
-            } else {
-                /* (cam->x's two products are the same on every row:
-                 * eye_cy and eye_sn, taken once above the loop.) */
-                du = snesQMul(dtex, cy);
-                dv = (s16)(-snesQMul(dtex, sn));
-                tu = (u16)((s16)((eye_cy + snesQMul(z, sn)) << 5) + (SNES_WORLD_U_CENTRE << 8));
-                tv = (u16)((s16)(snesQMul(z, cy) - eye_sn) << 5);
-            }
-            /* From the middle of the row to the first pixel's CENTRE: the
-             * half step is the same pixel-centre convention the ROM floor
-             * is generated with.  The offset is at most 127 pixels (x0 is
-             * inside the viewport), one PPU product each. */
-            half_du = (s16)(du >> 1);
-            tu = (u16)(tu + snesMul16x8((u16)du, (s16)(x0 - (vp->w >> 1))) + (u16)half_du);
-            half_du = (s16)(dv >> 1);
-            tv = (u16)(tv + snesMul16x8((u16)dv, (s16)(x0 - (vp->w >> 1))) + (u16)half_du);
-            u = tu;
-            v = tv;
-            span_note((u16)y, x0, x1, sub);
-            row_index = (u16)(vp->origin + (sub ? ((u16)y << 8) : ((u16)y << 7))
-                              + (u16)x0);
-            if (!cam->yaw) {
-                /* No yaw: v is constant along the row, so this is the
-                 * constant-v walker over the world texture, pre-stepped
-                 * the way the flat card spans are. */
-                u = (u16)(u - du);
-                snesSpanFloorTex(row_index, (u16)(x1 - x0),
-                                 (u16)((v & 0x7F00) | ((u >> 8) & 0xFF)),
-                                 (u16)(u & 0xFF), du);
-                continue;
-            }
-            snesSpanFloorQuad(row_index, (u16)(x1 - x0), u - du, v - dv, du, dv);
+            /* THE YAWED FLOOR ROW IS MAPPED IN ASSEMBLY (snesFloorRowYaw):
+             * the inverse camera ray / horizontal plane intersection, the
+             * row's texture origin and steps, the span note and the walk.
+             * This loop only walks the slab's projected edges and clips.
+             * (The pitch-only camera never reaches here: its rows are
+             * snesFloorRowsPitch's, edges included.) */
+            snesFloorRowYaw(y, x0, x1, denom, a);
             continue;
         }
         if (face == SNES_CARD_NONE_FACE) {

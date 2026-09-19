@@ -216,35 +216,73 @@ snesMulLo:
 ;-----------------------------------------------------------------------------
 ; u16 snesMul16x8(u16 a, s16 k)  -- the low 16 bits of a * k, k in -128..127
 ;
-; snesMulLo for a small signed multiplier: the PPU's signed 16 x 8 product
-; in one go instead of three CPU partial products.  Its low sixteen bits
-; are the plain product's whatever the operands' signs, which is all the
-; callers keep (a texture step times a pixel offset from the row's middle).
-; No fast-page words: the operands are read off the stack and the result
-; comes straight from the port.
+; snesMulLo for a small signed multiplier.  Two CPU partial products, al*k
+; and ah*k with k taken unsigned, and when k is negative the product is
+; short of a*256 -- of which only al*256 survives in sixteen bits.  Its low
+; sixteen bits are the plain product's whatever the operands' signs, which
+; is all the callers keep (a texture step times a pixel offset from the
+; row's middle).  No fast-page words: the operands are read off the stack
+; and the partials are held in X and the caller's tcc__r0.
+;
+; NOT THE PPU MULTIPLIER.  M7A/M7B share the write-twice latch of BG1's
+; scroll registers, and the motion frame's doubling is an HDMA on BG1VOFS
+; (snes_video.c): an HDMA write landing between the two halves of M7A
+; corrupted the product.  Every foreground product is a CPU one for that
+; reason -- snesQMul and the floor rows' too.
 ;-----------------------------------------------------------------------------
 snesMul16x8:
     sep #$20
 .ACCU 8
     lda 4,s
-    sta.l $211B
-    lda 5,s
-    sta.l $211B
+    sta.l $4202
     lda 6,s
-    sta.l $211C
-    rep #$20
+    sta.l $4203                 ; al * k             (cycles from the write)
+    lda 5,s                     ; ah                  4
+    xba                         ;                     3
+    lda 6,s                     ; A = k, B = ah       4
+    rep #$20                    ;                     3
 .ACCU 16
-    lda.l $2134
+    tax                         ;                     2
+    lda.l $4216                 ; al * k, read at 16 + 6
+    sta.b tcc__r0
+    txa
+    sep #$20
+.ACCU 8
+    xba
+    sta.l $4202                 ; ah
+    xba
+    sta.l $4203                 ; ah * k
+    cmp #$80                    ; C = k < 0           2
+    rep #$20                    ;                     3
+.ACCU 16
+    bcc +
+    ; k negative: the unsigned partials are a * (k + 256) -- take al*256
+    ; off (ah*256*256 is beyond the word).
+    lda 4,s
+    xba
+    and #$FF00
+    eor #$FFFF
+    sec
+    adc.b tcc__r0
+    sta.b tcc__r0
++   lda.l $4216                 ; ah * k, read at 8 + 6 at the soonest
+    xba
+    and #$FF00
+    clc
+    adc.b tcc__r0
     sta.b tcc__r0
     rtl
 
 ;-----------------------------------------------------------------------------
-; s16 snesQMul(s16 a, s16 b)    -- (a * b) >> 8, Q8.8
+; s16 snesQMul(s16 a, s16 b)    -- (a * b) >> 8, Q8.8, truncated toward zero
 ;
-; The hardware multiplier is unsigned, so the signs are taken off the operands
-; and put back on the result.  |a| and |b| are bounded by the board being five
-; units across, so the unsigned product cannot reach the top of 32 bits and the
-; shift is a straight recombination of the two halves.
+; The CPU multiplier is unsigned, so the signs are taken off the operands
+; and put back on the result: |a| * |b| is four eight-bit partials, of
+; which bits 8..23 are the truncated magnitude,
+;     (al*bl >> 8) + al*bh + ah*bl + (ah*bh << 8)
+; and negating that is exactly truncation toward zero.  Each partial's
+; operands are written while the previous one settles (eight cycles from
+; the write of $4203 to the read of $4216, counted in the margins).
 ;-----------------------------------------------------------------------------
 snesQMul:
     php
@@ -253,53 +291,70 @@ snesQMul:
     lda #FASTDP
     tcd
     lda 7,s
-    sta.b <FD_M_MA
     eor 9,s
     sta.b <FD_M_SGN
-    ; Signed 16 x signed 8, twice.  M7A is a write-twice register: a
-    ; 16-bit store would write M7B instead of its high byte.
+    lda 7,s
+    bpl +
+    eor #$FFFF
+    inc a
++   sta.b <FD_M_A               ; |a|
+    lda 9,s
+    bpl +
+    eor #$FFFF
+    inc a
++   sta.b <FD_M_B               ; |b|
     sep #$20
 .ACCU 8
-    lda 7,s
-    sta.l $211B
-    lda 8,s
-    sta.l $211B
-    lda 9,s
-    sta.l $211C
-    lda.l $2134
-    sta.b <FD_M_MB                ; fractional byte, for truncation toward zero
-    rep #$20
+    lda.b <FD_M_A               ; al
+    sta.l $4202
+    lda.b <FD_M_B               ; bl
+    sta.l $4203                 ; al * bl            (cycles from the write)
+    lda.b <FD_M_B+1             ; bh                  3
+    xba                         ; B = bh              3
+    stz.b <FD_M_ACC+1           ;                     3
+    nop                         ;                     2
+    lda.l $4217                 ; (al * bl) >> 8      read at 11 + 5
+    sta.b <FD_M_ACC
+    xba                         ; A = bh
+    sta.l $4203                 ; al * bh
+    rep #$20                    ;                     3
 .ACCU 16
-    lda.l $2135
+    lda.b <FD_M_ACC             ;                     4
+    clc                         ;                     2
+    nop                         ;                     2
+    adc.l $4216                 ;                     read at 11 + 6
     sta.b <FD_M_ACC
-    ; The low byte of b is unsigned in the partial-product expansion.
-    lda 9,s
-    and #$0080
-    beq +
-    lda.b <FD_M_ACC
-    clc
-    adc.b <FD_M_MA
-    sta.b <FD_M_ACC
-+   sep #$20
+    sep #$20
 .ACCU 8
-    lda 10,s
-    sta.l $211C
-    rep #$20
+    lda.b <FD_M_A+1             ; ah
+    sta.l $4202
+    lda.b <FD_M_B               ; bl
+    sta.l $4203                 ; ah * bl
+    rep #$20                    ;                     3
 .ACCU 16
-    lda.l $2134
+    lda.b <FD_M_ACC             ;                     4
+    clc                         ;                     2
+    nop                         ;                     2
+    adc.l $4216                 ;                     read at 11 + 6
+    sta.b <FD_M_ACC
+    sep #$20
+.ACCU 8
+    lda.b <FD_M_B+1             ; bh
+    sta.l $4203                 ; ah * bh
+    rep #$20                    ;                     3
+.ACCU 16
+    lda.b <FD_M_SGN             ;                     4
+    php                         ;                     3
+    lda.l $4216                 ;                     read at 10 + 6
+    xba
+    and #$FF00
     clc
     adc.b <FD_M_ACC
-    sta.b <FD_M_ACC
-    lda.b <FD_M_SGN
+    plp
     bpl +
-    lda.b <FD_M_MB
-    and #$00FF
-    beq +
-    lda.b <FD_M_ACC
+    eor #$FFFF
     inc a
-    sta.b <FD_M_ACC
-+   lda.b <FD_M_ACC
-    pld
++   pld
     sta.b tcc__r0
     plp
     rtl

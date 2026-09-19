@@ -129,6 +129,7 @@ int main(void)
     consoleInit();
     /* The board's upload runs inside the NMI (snes_fb.asm); it does nothing
      * until a duel enables the drain. */
+    snesPadInit();
     nmiSet(snesFbNmi);
     snesAudioInit();
     snesStampInit();
@@ -136,7 +137,10 @@ int main(void)
     snesSceneSet(SNES_SCENE_TITLE);
 
     while (1) {
-        padsCurrent(0);
+        /* A camera pose's slices run without a wait and answer nothing;
+         * the pad is polled once per frame that can act on it, so a press
+         * that lands during a pose is delivered to the settled frame. */
+        if (!(cur_scene == SNES_SCENE_DUEL && snesDuelBusy())) snesPadPoll();
         snesSceneRun();
 
         g_stamp.scene = cur_scene;

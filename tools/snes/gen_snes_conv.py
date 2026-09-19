@@ -30,8 +30,9 @@ OUT = os.path.join(ROOT, "src", "snes", "snes_conv_gen.asm")
 
 FRAME_STRIDE = 256
 # The moving camera's 128x72 frame (the top of the same buffer at half the
-# stride), shown doubled: each texel is a 2x2 block of screen pixels, so a
-# cell of it is four rows of four texels.
+# stride), shown doubled: each texel is a 2x2 block of screen pixels.  A
+# cell of it is eight rows of four texels; the rows are doubled by the PPU
+# (an HDMA on BG1VOFS), the texels by the converter.
 HALF_STRIDE = 128
 
 
@@ -109,21 +110,25 @@ def half_tile(phase):
     """One tile of the DOUBLED motion frame for ring-slot phase `phase`.
 
     The motion frame is 128x72 and every texel of it is a 2x2 block of
-    screen pixels, so a tile is four source rows of four texels, each row
-    stored twice.  A row is two texel PAIRS, loaded and indexed exactly as
-    the 1:1 tile's (asl, C = the odd texel's plane-7 bit), through the
-    doubled pair LUT (tools/snes/gen_snes_planar.py): t0 in columns 0-1,
-    t1 in 2-3.  The second pair reads THE SAME TABLE PRE-SHIFTED A NIBBLE
-    (snes_dbl2lut4_*: t0 in columns 4-5, t1 in 6-7), and t1's plane-7 bit,
-    which the 15-bit index cannot carry, is ORed in as $3000 (first pair)
-    or $0300 (second) from the carry.  Two lookups a plane a row and no
-    shifting at all: the sixteen `lsr` a row the converter did itself were
-    a third of the tile."""
+    screen pixels.  The horizontal doubling is the converter's: a row is
+    two texel PAIRS, loaded and indexed exactly as the 1:1 tile's (asl,
+    C = the odd texel's plane-7 bit), through the doubled pair LUT
+    (tools/snes/gen_snes_planar.py): t0 in columns 0-1, t1 in 2-3.  The
+    second pair reads THE SAME TABLE PRE-SHIFTED A NIBBLE (snes_dbl2lut4_*:
+    t0 in columns 4-5, t1 in 6-7), and t1's plane-7 bit, which the 15-bit
+    index cannot carry, is ORed in as $3000 (first pair) or $0300 (second)
+    from the carry.  Two lookups a plane a row and no shifting at all.
+
+    THE VERTICAL DOUBLING IS THE PPU'S.  A tile is EIGHT source rows, one
+    tile row each, and the screen shows each tile row twice through an
+    HDMA on BG1VOFS that holds the scroll back a line every other line
+    (snes_video.c).  The converter used to store each row twice into a
+    four-row tile: twice the tiles, twice the ring bytes to drain, and
+    sixteen duplicate stores a tile."""
     base = phase * 64
     o = ["snesConvHalfTile%d:" % phase]
-    for r in range(4):
-        # Tile rows 2r and 2r + 1, both from source row r.
-        off = [base + k * 16 + r * 4 for k in range(4)]
+    for r in range(8):
+        off = [base + k * 16 + r * 2 for k in range(4)]
         for pos in range(2):
             src = "snes_frame_fb + %d" % (r * HALF_STRIDE + pos * 2)
             lab = "_ch%d_r%d_p%d" % (phase, r, pos)
@@ -144,13 +149,6 @@ def half_tile(phase):
                 if pos:
                     o.append("    ora.b $%02X" % off[k])
                 o.append("    sta.b $%02X" % off[k])
-                # The duplicate row is written ONCE, from the finished
-                # word: only the first row is read back to fold the second
-                # pair in, so the first pair's copy was a wasted store
-                # (four a row, sixteen a tile).  Safe because the slot is
-                # published to the NMI only after the whole tile is built.
-                if pos:
-                    o.append("    sta.b $%02X" % (off[k] + 2))
     o.append("    rts")
     return o
 
