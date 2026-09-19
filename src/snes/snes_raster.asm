@@ -1287,66 +1287,153 @@ snesFloorRowsSetup:
 ;   tu = ubase + dtex * (x0 - 128) + dtex / 2     (the first pixel's centre)
 ;   tv = z << 5
 ;   walk x1 - x0 texels from (tv, tu) stepping dtex
+; THE ROW'S STATE IS ON THE FAST PAGE.  The first version kept every term
+; in fr_* and read each with a long load -- four bytes of FastROM fetch
+; and two slow WRAM bytes, forty master cycles an access, a hundred-odd
+; accesses a row -- and called snesQMul twice a row through the stack.
+; Here what changes a row lives in DMA-register words (snes_fastdp.inc):
+; what the walker call must not clobber on channel 2, the row's scratch
+; on channels 1 and 3 (the walker owns those inside the call, and nothing
+; of the row's is needed after it).  The two Q8.8 products are the CPU
+; multiplier's partials inline (FR_UMUL), the sign of `a` handled around
+; it.  The frame's constants stay in fr_* and are read `.w` under DB = 0.
+;
+; Persistent across the walker (channel 2):
+.DEFINE FD_FR_HALF      $21     ; the slab's half width on the row, Q8.8
+.DEFINE FD_FR_DENOM16   $23     ; sin(pitch) + sy*cos(pitch), Q4.12
+.DEFINE FD_FR_A16       $25     ; cos(pitch) - sy*sin(pitch), Q4.12
+.DEFINE FD_FR_Y         $27
+.DEFINE FD_FR_HEIGHT    $29     ; the camera's height, Q8.8 (a constant, parked)
+; The row's scratch (channel 1 -- the walker's own words -- and channel 3):
+.DEFINE FD_FR_TMP       $11     ; the row's half width, then recip[denom]
+.DEFINE FD_FR_X0        $13
+.DEFINE FD_FR_X1        $15
+.DEFINE FD_FR_DEPTH     $17
+.DEFINE FD_FR_DTEX      $19
+.DEFINE FD_FR_TU        $31
+.DEFINE FD_FR_TV        $33
+.DEFINE FD_FR_DENOM     $35
+.DEFINE FD_FR_A         $37     ; |a|, the sign in FD_FR_SGN
+.DEFINE FD_FR_SGN       $39
+
+; R = (A * B) >> 8, A and B unsigned Q8.8 fast words (R distinct from
+; both): the four CPU partials, each started and then left alone for its
+; eight cycles while the next operand is fetched -- snesQMul's schedule
+; without its stack frame and sign work.  Enters and leaves A16.
+.MACRO FR_UMUL ARGS A, B, R
+    sep #$20
+.ACCU 8
+    lda.b <A
+    sta.w $4202
+    lda.b <B
+    sta.w $4203                 ; al * bl            (cycles from the write)
+    lda.b <B+1                  ; bh                  3
+    xba                         ; B = bh              3
+    stz.b <R+1                  ;                     3
+    nop                         ;                     2
+    lda.w $4217                 ; (al * bl) >> 8      read at 11 + 4
+    sta.b <R
+    xba                         ; A = bh
+    sta.w $4203                 ; al * bh
+    rep #$20                    ;                     3
+.ACCU 16
+    lda.b <R                    ;                     4
+    clc                         ;                     2
+    nop                         ;                     2
+    adc.w $4216                 ; read at 11 + 4
+    sta.b <R
+    sep #$20
+.ACCU 8
+    lda.b <A+1                  ; ah
+    sta.w $4202
+    lda.b <B                    ; bl
+    sta.w $4203                 ; ah * bl
+    rep #$20                    ;                     3
+.ACCU 16
+    lda.b <R                    ;                     4
+    clc                         ;                     2
+    nop                         ;                     2
+    adc.w $4216                 ; read at 11 + 4
+    sta.b <R
+    sep #$20
+.ACCU 8
+    lda.b <B+1                  ; bh
+    sta.w $4203                 ; ah * bh
+    rep #$20                    ;                     3
+.ACCU 16
+    nop                         ;                     2
+    nop                         ;                     2
+    nop                         ;                     2
+    lda.w $4216                 ; read at 9 + 4
+    xba
+    and #$FF00
+    clc
+    adc.b <R
+    sta.b <R
+.ENDM
+
 snesFloorRowsPitch:
     php
     rep #$30
     phb
+    phd
     pea $0000
     plb
-    plb                         ; DB = 0: the fr_* words by ldx.w (no long form)
-    lda 6,s
-    sta.l fr_y
+    plb                         ; DB = 0: the fr_* constants by .w
+    lda #FASTDP
+    tcd
     lda 8,s
-    sta.l fr_yend
+    sta.b <FD_FR_Y
+    lda 10,s
+    sta.w fr_yend
+    lda.w fr_half
+    sta.b <FD_FR_HALF
+    lda.w fr_denom16
+    sta.b <FD_FR_DENOM16
+    lda.w fr_a16
+    sta.b <FD_FR_A16
+    lda.w fr_height
+    sta.b <FD_FR_HEIGHT
 _fr_row:
-    lda.l fr_y
-    cmp.l fr_yend
+    lda.b <FD_FR_Y
+    cmp.w fr_yend
     bcc +
     jmp _fr_done
 +
     ; The half width for this row, then the step for the next.
-    lda.l fr_half
-    sta.l fr_tmp2
+    lda.b <FD_FR_HALF
+    sta.b <FD_FR_TMP
     clc
-    adc.l fr_dhalf
-    sta.l fr_half
+    adc.w fr_dhalf
+    sta.b <FD_FR_HALF
     ; The camera terms for this row, then the step for the next.
-    lda.l fr_denom16
-    cmp #$8000
-    ror a
-    cmp #$8000
-    ror a
-    cmp #$8000
-    ror a
-    cmp #$8000
-    ror a
-    sta.l fr_denom
-    lda.l fr_a16
-    cmp #$8000
-    ror a
-    cmp #$8000
-    ror a
-    cmp #$8000
-    ror a
-    cmp #$8000
-    ror a
-    sta.l fr_a
-    lda.l fr_denom16
+    lda.b <FD_FR_DENOM16
+    sta.b <FD_FR_DENOM
     clc
-    adc.l fr_dstep
-    sta.l fr_denom16
-    lda.l fr_a16
+    adc.w fr_dstep
+    sta.b <FD_FR_DENOM16
+    lda.b <FD_FR_A16
+    sta.b <FD_FR_A
     clc
-    adc.l fr_astep
-    sta.l fr_a16
+    adc.w fr_astep
+    sta.b <FD_FR_A16
+    lda.b <FD_FR_DENOM
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    sta.b <FD_FR_DENOM
     ; Above the horizon, or too far below it for the table: nothing.
-    lda.l fr_denom
     cmp #3
     bcc _fr_skip0
     cmp #1024
     bcs _fr_skip0
     ; The row's span: 128 -/+ half, in pixels, clipped to the viewport.
-    lda.l fr_tmp2
+    lda.b <FD_FR_TMP
     beq _fr_skip0
     bmi _fr_skip0
     bra +
@@ -1364,27 +1451,27 @@ _fr_skip0:
     ldx.w fr_sub
     bne +
     lsr a                       ; ...>> 8 on the motion frame
-+   sta.l fr_tmp2
-    lda.l fr_halfw
++   sta.b <FD_FR_TMP
+    lda.w fr_halfw
     sec
-    sbc.l fr_tmp2
+    sbc.b <FD_FR_TMP
     bpl +
     lda #0
-+   sta.l fr_x0
-    lda.l fr_halfw
++   sta.b <FD_FR_X0
+    lda.w fr_halfw
     clc
-    adc.l fr_tmp2
-    cmp.l fr_w
+    adc.b <FD_FR_TMP
+    cmp.w fr_w
     bcc +
     beq +
-    lda.l fr_w
-+   sta.l fr_x1
-    cmp.l fr_x0
+    lda.w fr_w
++   sta.b <FD_FR_X1
+    cmp.b <FD_FR_X0
     bcc _fr_skip
     beq _fr_skip
     ; Note the span for the converter: per cell row (eight lines of either
     ; frame), the first and last pixel columns touched.
-    lda.l fr_y
+    lda.b <FD_FR_Y
     lsr a
     lsr a
     lsr a
@@ -1392,11 +1479,11 @@ _fr_skip0:
     tax
     sep #$20
 .ACCU 8
-    lda.l fr_x0
+    lda.b <FD_FR_X0
     cmp.l snes_conv_rowspan,x
     bcs +
     sta.l snes_conv_rowspan,x
-+   lda.l fr_x1
++   lda.b <FD_FR_X1
     dec a
     cmp.l snes_conv_rowspan+1,x
     bcc +
@@ -1407,34 +1494,39 @@ _fr_skip0:
 _fr_skip:
     jmp _fr_next
 _fr_map:
-    ; depth = height * recip[denom]
-    lda.l fr_denom
+    ; depth = height * recip[denom]: both positive.
+    lda.b <FD_FR_DENOM
     asl a
     tax
     lda.l snes_recip_plane,x
-    pha
-    lda.l fr_height
-    pha
-    jsl snesQMul
-    tsa
+    sta.b <FD_FR_TMP
+    FR_UMUL FD_FR_HEIGHT, FD_FR_TMP, FD_FR_DEPTH
+    ; z = camz + depth * a: a is Q4.12 >> 4, signed; the product of its
+    ; magnitude, negated back.
+    lda.b <FD_FR_A
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    cmp #$8000
+    ror a
+    sta.b <FD_FR_SGN
+    bpl +
+    eor #$FFFF
+    inc a
++   sta.b <FD_FR_A
+    FR_UMUL FD_FR_DEPTH, FD_FR_A, FD_FR_TU
+    lda.b <FD_FR_SGN
+    bpl +
+    lda.b <FD_FR_TU
+    eor #$FFFF
+    inc a
+    sta.b <FD_FR_TU
++   lda.b <FD_FR_TU
     clc
-    adc #4
-    tas
-    lda.b tcc__r0
-    sta.l fr_depth
-    ; z = camz + depth * a
-    lda.l fr_a
-    pha
-    lda.l fr_depth
-    pha
-    jsl snesQMul
-    tsa
-    clc
-    adc #4
-    tas
-    lda.b tcc__r0
-    clc
-    adc.l fr_camz
+    adc.w fr_camz
     ; tv = z << 5, kept to the texture's 128 rows
     asl a
     asl a
@@ -1442,16 +1534,16 @@ _fr_map:
     asl a
     asl a
     and #$7F00
-    sta.l fr_tv
+    sta.b <FD_FR_TV
     ; dtex = (depth + 2) >> 2 at 1:1, (depth + 1) >> 1 on the motion frame
-    lda.l fr_depth
+    lda.b <FD_FR_DEPTH
     ldx.w fr_sub
     beq +
     inc a
     lsr a
 +   inc a
     lsr a
-    sta.l fr_dtex
+    sta.b <FD_FR_DTEX
     ; tu = ubase + dtex * (x0 - 128) + dtex / 2: dtex is a positive word,
     ; x0 - 128 a signed byte, and the low sixteen bits of their product
     ; are two CPU partials with the byte taken unsigned, less dtex * 256
@@ -1460,82 +1552,86 @@ _fr_map:
     ; doubling HDMA writes every other line).
     sep #$20
 .ACCU 8
-    lda.l fr_x0
+    lda.b <FD_FR_X0
     sec
-    sbc.l fr_halfw
+    sbc.w fr_halfw
     xba                         ; B = the offset
-    lda.l fr_dtex
-    sta.l $4202
+    lda.b <FD_FR_DTEX
+    sta.w $4202
     xba
-    sta.l $4203                 ; dtex.lo * offset   (cycles from the write)
+    sta.w $4203                 ; dtex.lo * offset   (cycles from the write)
     xba                         ;                     3
-    lda.l fr_dtex+1             ;                     5
+    lda.b <FD_FR_DTEX+1         ;                     3
     xba                         ; A = offset, B = hi  3
     rep #$20                    ;                     3
 .ACCU 16
     tax                         ;                     2
-    lda.l $4216                 ; the low partial, read at 16 + 6
-    sta.l fr_tu
+    nop                         ;                     2
+    lda.w $4216                 ; the low partial, read at 16 + 4
+    sta.b <FD_FR_TU
     txa
     sep #$20
 .ACCU 8
     xba
-    sta.l $4202                 ; dtex.hi
+    sta.w $4202                 ; dtex.hi
     xba
-    sta.l $4203                 ; dtex.hi * offset
+    sta.w $4203                 ; dtex.hi * offset
     cmp #$80                    ; C = the offset is negative   2
     rep #$20                    ;                              3
 .ACCU 16
     bcc +
-    lda.l fr_dtex
+    lda.b <FD_FR_DTEX
     xba
     and #$FF00
     eor #$FFFF
     sec
-    adc.l fr_tu                 ; less dtex.lo * 256
-    sta.l fr_tu
-+   lda.l $4216                 ; read at 8 + 6 at the soonest
+    adc.b <FD_FR_TU             ; less dtex.lo * 256
+    sta.b <FD_FR_TU
+    bra ++
++   nop                         ; the other arm is longer than eight cycles
+    nop
+++  lda.w $4216                 ; read at 9 + 4 at the soonest
     xba
     and #$FF00
     clc
-    adc.l fr_tu
+    adc.b <FD_FR_TU
     clc
-    adc.l fr_ubase
-    sta.l fr_tu
-    lda.l fr_dtex
+    adc.w fr_ubase
+    sta.b <FD_FR_TU
+    lda.b <FD_FR_DTEX
     lsr a
     clc
-    adc.l fr_tu
+    adc.b <FD_FR_TU
     ; The walker steps before it reads: hand it the texel before the first.
     sec
-    sbc.l fr_dtex
-    sta.l fr_tu
+    sbc.b <FD_FR_DTEX
+    sta.b <FD_FR_TU
     ; snesSpanFloorTex(origin + y * 256 + x0, x1 - x0,
     ;                  tv | (tu >> 8), tu & 255, dtex)
-    lda.l fr_dtex
+    lda.b <FD_FR_DTEX
     pha
-    lda.l fr_tu
+    lda.b <FD_FR_TU
     and #$00FF
     pha
-    lda.l fr_tu
+    lda.b <FD_FR_TU
     xba
     and #$00FF
-    ora.l fr_tv
+    ora.b <FD_FR_TV
     pha
-    lda.l fr_x1
+    lda.b <FD_FR_X1
     sec
-    sbc.l fr_x0
+    sbc.b <FD_FR_X0
     pha
-    lda.l fr_y
+    lda.b <FD_FR_Y
     xba
     and #$FF00                  ; y * 256
     ldx.w fr_sub
     bne +
     lsr a                       ; y * 128 on the motion frame
 +   clc
-    adc.l fr_x0
+    adc.b <FD_FR_X0
     clc
-    adc.l fr_origin
+    adc.w fr_origin
     pha
     jsl snesSpanFloorTex
     tsa
@@ -1543,11 +1639,18 @@ _fr_map:
     adc #10
     tas
 _fr_next:
-    lda.l fr_y
-    inc a
-    sta.l fr_y
+    inc.b <FD_FR_Y
     jmp _fr_row
 _fr_done:
+    ; The stepped terms back for the caller's next call (the job's rows
+    ; come a few at a time).
+    lda.b <FD_FR_HALF
+    sta.w fr_half
+    lda.b <FD_FR_DENOM16
+    sta.w fr_denom16
+    lda.b <FD_FR_A16
+    sta.w fr_a16
+    pld
     plb
     plp
     rtl

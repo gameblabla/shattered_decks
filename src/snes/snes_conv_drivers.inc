@@ -495,8 +495,11 @@ _cf_all_dirty:
     tax
     lda.l cv_pool_whole,x
     beq _cf_empty_all
-    lda #0
-    ldx.w cv_pool
+    ; LONG: DB is $7F here for the map, and a `.w` read of cv_pool took
+    ; $7F:cv_pool -- garbage, so pool 0 was emptied along pool 1's spans
+    ; and kept the previous pose's slab corners (the wedges at the bottom
+    ; of the top view).
+    lda.l cv_pool
     beq +
     lda #36
 +   sta.b <FD_CV_ROW            ; the pool's spans, as a byte index

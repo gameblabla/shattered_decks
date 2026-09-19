@@ -120,30 +120,29 @@ static u8 hdma_tm_top[7];
  * it; there are two, the inactive one is built in the foreground when the
  * scroll changes (snesVideoBoardScrollPrepare) and the vblank hands the
  * channel the new one.  An entry a line pair, 2 data bytes each into the
- * write-twice register (mode 2); line 0 and line 143 stand alone.
+ * write-twice register (mode 2); line 0 and line 159 stand alone.
  *
  * NOTHING IN THE FOREGROUND MAY USE THE PPU MULTIPLIER while this can be
  * on: M7A/M7B and BG1VOFS share one write-twice latch, and an HDMA write
  * landing between the two halves of M7A corrupted a row of the next render
  * when this was first tried.  Every product is the CPU's (snes_math.asm). */
-#define DBL_TABLE_BYTES 220             /* 3 + 71 * 3 + 3 + 1, snes_fb.asm */
+/* The table runs the overhead window's 160 lines, not the picture's 144:
+ * past its end the channel leaves BG1VOFS where it stopped and the strip
+ * under the doubled picture showed its last rows again at 1:1 (the
+ * overhead pose's bottom card row, squashed, under the cut one).  The
+ * doubled map's rows past its nine are blank, so the strip is black. */
+#define DBL_TABLE_LINES 160
+#define DBL_TABLE_PAIRS ((DBL_TABLE_LINES - 2) / 2)     /* 79 */
+#define DBL_TABLE_BYTES (3 + DBL_TABLE_PAIRS * 3 + 3 + 1)   /* 244, snes_fb.asm */
 #define hdma_dbl(i) (&snes_fb_dbl_tables[(i) ? DBL_TABLE_BYTES : 0])
 static u8  dbl_active = 0;              /* the table the channel reads */
 static s16 dbl_scroll = 0;              /* the scroll the active one holds */
 static s16 dbl_prepared = 0;            /* ...and the inactive one */
 
+/* In assembly (snes_fb.asm): the C loop cost a quarter of a field. */
 static void build_double_table(u8 *t, s16 scroll)
 {
-    u16 v = (u16)(0x03FFu + scroll) & 0x03FFu;
-    u8 k;
-    *t++ = 1; *t++ = (u8)v; *t++ = (u8)(v >> 8);
-    for (k = 0; k < 71; ++k) {
-        v = (u16)(v - 1) & 0x03FFu;
-        *t++ = 2; *t++ = (u8)v; *t++ = (u8)(v >> 8);
-    }
-    v = (u16)(v - 1) & 0x03FFu;
-    *t++ = 1; *t++ = (u8)v; *t++ = (u8)(v >> 8);
-    *t = 0;
+    snesFbDblTable((u16)t, (u16)scroll);
 }
 
 static void arm_double_channel(void)
@@ -156,6 +155,34 @@ static void arm_double_channel(void)
     *(vuint8 *)0x4350 = 0x02;  *(vuint8 *)0x4351 = 0x0E;
     *(vuint16 *)0x4352 = snes_fb_dbl_table;
     *(vuint8 *)0x4354 = (u8)snes_fb_dbl_bank;
+}
+
+/* Foreground: the NEXT doubled map the NMI commits is shown with this
+ * scroll.  The table is built and made the active one in the words the
+ * NMI arms channel 5 from at the commit (snes_fb.asm _nm_double), and the
+ * channel's own registers are left alone, so the doubled picture on
+ * screen keeps its scroll until the map that wants the new one is up.
+ * The lift's last pose is the overhead view and arrives on its own
+ * scroll this way; snapping the scroll a game frame later showed that
+ * pose unscrolled for a field whenever the NMI got to its map first. */
+void snesVideoBoardScrollPending(s16 scroll_y)
+{
+    const u8 *t;
+    /* ...and a 1:1 map (the sharp overhead picture) takes the register
+     * value the NMI restores with it (_nm_flat).  The main loop's vblank
+     * service does not run while a pose renders, so the write it would
+     * have made could come a field after the map. */
+    board_scroll_y = scroll_y;
+    snes_fb_vofs = (u16)(0x03FFu + scroll_y) & 0x03FFu;
+    if (scroll_y != dbl_scroll) {
+        build_double_table(hdma_dbl(dbl_active ^ 1), scroll_y);
+        dbl_active ^= 1;
+        dbl_scroll = scroll_y;
+    }
+    dbl_prepared = scroll_y;
+    t = hdma_dbl(dbl_active);
+    snes_fb_dbl_table = (u16)t;
+    snes_fb_dbl_bank = ((const u8 *)&t)[2];
 }
 
 /* Foreground: have the inactive table ready for this scroll. */

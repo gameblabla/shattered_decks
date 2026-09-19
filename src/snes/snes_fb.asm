@@ -38,10 +38,10 @@ snes_tile_ref     dsb 704         ; references per physical tile (both maps)
 snes_tile_free    dsb FB_FREE_BYTES   ; the free-tile queue
 .ENDS
 
-; The two line-doubling HDMA tables (snes_video.c): 73 entries of a line
-; count and two BG1VOFS bytes, and a terminator, each.
+; The two line-doubling HDMA tables (snes_video.c): 81 entries of a line
+; count and two BG1VOFS bytes, and a terminator, each (160 lines).
 .RAMSECTION "snes_fb_dbl_ram" BANK $7F SLOT 3
-snes_fb_dbl_tables dsb 2 * 220
+snes_fb_dbl_tables dsb 2 * 244
 .ENDS
 
 .RAMSECTION "snes_fb_vars" BANK $7E SLOT 2
@@ -88,6 +88,7 @@ snes_fb_dbl_table dw        ; the doubling table (snes_video.c)...
 snes_fb_dbl_bank dw         ; ...and its bank
 snes_fb_hdmaen dw           ; the HDMAEN the scene armed, channel 5 included
 snes_fb_dbl_on dw           ; the shown map is doubled
+snes_fb_dbl_left dw         ; snesFbDblTable's pair count
 
 ; Converter shared state.
 cv_run_src dw
@@ -814,17 +815,70 @@ nm_advance:
     sta.l job_r
     rts
 
-; void snesConvForgetPools(void): the next whole frame in either pool
-; releases all 576 of its cells rather than the spans its last whole frame
-; recorded.  A camera move's poses leave a map whose entries and record
-; disagree (the descent's rest picture kept the overhead's top rows), and
-; one full pass at the move's end is cheaper than the wrong cells.
-snesConvForgetPools:
+; void snesFbDblTable(u16 table, u16 scroll): one line-doubling HDMA table
+; (snes_video.c's layout) at `table` in bank $7F: line 0 at v = $3FF +
+; scroll, then a pair of lines at each v - 1 for the rest of the 160-line
+; window, and the terminator.  The C loop was a quarter of a field a call.
+snesFbDblTable:
     php
+    rep #$30
+    lda 7,s
+    clc
+    adc #$03FF
+    and #$03FF
+    tay                         ; Y = v
+    lda 5,s
+    tax
+    sep #$20
+.ACCU 8
+    lda #1
+    sta.l $7F0000,x             ; line 0 stands alone
     rep #$20
+.ACCU 16
+    tya
+    sta.l $7F0001,x
+    inx
+    inx
+    inx
+    lda #(160 - 2) / 2
+    sta.l snes_fb_dbl_left
+-   dey
+    tya
+    and #$03FF
+    tay
+    sep #$20
+.ACCU 8
+    lda #2
+    sta.l $7F0000,x
+    rep #$20
+.ACCU 16
+    tya
+    sta.l $7F0001,x
+    inx
+    inx
+    inx
+    lda.l snes_fb_dbl_left
+    dec a
+    sta.l snes_fb_dbl_left
+    bne -
+    dey
+    tya
+    and #$03FF
+    tay
+    sep #$20
+.ACCU 8
+    lda #1
+    sta.l $7F0000,x             ; the last line alone
+    rep #$20
+.ACCU 16
+    tya
+    sta.l $7F0001,x
+    sep #$20
+.ACCU 8
     lda #0
-    sta.l cv_pool_whole
-    sta.l cv_pool_whole+2
+    sta.l $7F0003,x             ; terminator
+    rep #$20
+.ACCU 16
     plp
     rtl
 

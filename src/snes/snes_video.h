@@ -64,7 +64,7 @@ extern u8 snes_conv_rowspan[];      /* 18 x {first x, last x}, 255 = empty */
 extern u16 snes_conv_dirty[];       /* 18 x {lo, hi}: cells to reconvert */
 extern u16 snes_conv_rom[];         /* 18 x {lo, hi}: cells the ROM floor supplies */
 extern u8 snes_fb_tm[];
-extern u8 snes_fb_dbl_tables[];     /* 2 x DBL_TABLE_BYTES, bank $7F */
+extern u8 snes_fb_dbl_tables[];     /* 2 x DBL_TABLE_BYTES (244), bank $7F */
 /* The motion frame's line-doubling HDMA, switched by the NMI with the map
  * (snes_fb.asm): the 1:1 scroll it restores, the table it arms, the HDMAEN
  * it keeps, and whether the shown map is doubled. */
@@ -76,6 +76,8 @@ extern u16 snes_fb_oam_pending;
  * handed over by snesPadPoll at the top of the main loop.  Scenes read this
  * instead of pvsneslib's padsDown, which only sees fields that waited. */
 extern u16 snes_pad_down;
+/* One 160-line doubling table (snes_video.c's layout) at `table` in bank $7F. */
+void snesFbDblTable(u16 table, u16 scroll);
 void snesPadInit(void);
 void snesPadPoll(void);
 
@@ -111,7 +113,6 @@ void snesConvRows(u16 row0, u16 row1);
 void snesConvCells(u16 row, u16 col0, u16 col1);
 void snesConvEnd(void);
 void snesConvSetFloor(u16 src, u16 bank);
-void snesConvForgetPools(void);
 /* The frame to convert: 0 the 256x144 picture at 1:1, 1 the 128x72 motion
  * frame at the top of the same buffer (stride 128), converted doubled -- a
  * cell is four texels by four lines, each texel a 2x2 block of pixels. */
@@ -184,6 +185,8 @@ void snesVideoBoardViewport(u8 overhead, s16 scroll_y);
 /* Foreground, before the vblank that applies a scroll: builds the doubled
  * picture's HDMA table for it (a few hundred stores, too many for vblank). */
 void snesVideoBoardScrollPrepare(s16 scroll_y);
+/* Foreground: the next doubled map the NMI commits carries this scroll. */
+void snesVideoBoardScrollPending(s16 scroll_y);
 void snesVideoRestartSceneHdma(void);
 void snesVideoSetSkyTables(u16 rg, u8 rg_bank, u16 b, u8 b_bank);
 void snesVideoRearmNameHdma(void);

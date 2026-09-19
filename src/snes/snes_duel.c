@@ -87,12 +87,14 @@
  * the middle of the move (a half sine over the lift) keeps every pose
  * inside the budget, and reads as the camera rising before it looks down. */
 #define LIFT_BUMP    ((s16)205)             /* 0.8 units */
-/* THREE POSES, NOT FOUR.  A perspective pose is fifty-odd fields of walk
- * and conversion whatever its angle, so the poses ARE the lift's duration:
- * two on the way (at the eased thirds of the move) and the 1:1 overhead
- * itself, about 150 fields, against 210 with a fourth.  The hand slides
- * continuously between them either way. */
-#define LIFT_FRAMES  3
+/* FOUR POSES.  A pose is a 128x72 motion frame and the poses ARE the
+ * lift's duration: they were fifty-odd fields each when this was three,
+ * and are twelve to thirteen now (the fast-page row mapper, the bigger
+ * job steps, the asm scroll tables), so a fourth buys a smoother climb
+ * for a fifth of a second -- three on the way at the eased quarters of
+ * the move and the overhead itself, then the 1:1 picture behind it.  The
+ * hand slides continuously between them either way. */
+#define LIFT_FRAMES  4
 
 /* The surround: BLACK, everywhere the slab does not reach.  The board is the
  * only textured object on the screen -- no painted ground, no sky band -- and
@@ -429,6 +431,7 @@ static void begin_effect_art(u8 return_ui, u8 card, u8 owner);
 static void begin_fusion_art(u8 return_ui, u8 result, u8 success);
 static void snapshot_effect(u8 card, u8 owner);
 static void top_scroll_snap(void);
+static s16 top_scroll_y(void);
 static void snapshot_effect_saved(u8 card, u8 owner, const u8 *cards,
                                   const u8 *faceup);
 
@@ -496,10 +499,6 @@ static void set_rest_camera(u8 mirror)
     snesCameraSet(&cam, 0, CAM_Z, CAM_HEIGHT, CAM_FOCAL, SNES_REST_HORIZON_PX);
     cam.yaw = mirror ? 128 : 0;
     camera_rest = 1;
-    /* The rest picture after a camera move is baked over a map the poses
-     * left with cells outside their records: the next whole frame empties
-     * every cell (snes_fb.asm). */
-    snesConvForgetPools();
 }
 
 /* The camera as the motion frame sees it: the same pose, the horizon in
@@ -513,6 +512,11 @@ static void sync_cam_move(void)
 /* Q8.8 smoothstep, using the SNES multiplier instead of a 32-bit product.
  * The eased value is shared by the camera and hand so the two settle together
  * at the exact frame the PPU switches to the resident top table. */
+/* A scroll the frame's doubled map is to arrive with (the lift's last
+ * pose): handed to the video layer once the previous map is up, so it is
+ * not that map that gets it. */
+static s16 job_scroll = 0;
+static u8  job_scroll_pending = 0;
 static void job_begin(u8 half);
 static u8   job_step(void);
 static u8   job_slice(void);
@@ -602,7 +606,12 @@ static void begin_view_transition(u8 to_top)
     }
     if (!to_top) {
         top_view = 0;
-        fade_dirty |= 2;
+        /* The seat's scroll goes with the first pose down, not with the
+         * next vblank: written then, it moved the 1:1 overhead picture up
+         * over the HUD for the dozen fields that pose took to render.
+         * The viewport (its window) follows at finish_view_transition. */
+        job_scroll = 0;
+        job_scroll_pending = 1;
     }
 }
 
@@ -647,6 +656,13 @@ static void step_view_transition(void)
         if (!job_active()) {
             ++view_anim_frame;
             lift_camera(to_top ? view_anim_frame : (u8)(LIFT_FRAMES - view_anim_frame));
+            /* The last pose up IS the overhead view: its map goes up with
+             * the cursor row's scroll, not a game frame after it. */
+            if (to_top && view_anim_frame == LIFT_FRAMES) {
+                top_scroll_cur = top_scroll_y();
+                job_scroll = top_scroll_cur;
+                job_scroll_pending = 1;
+            }
             /* Every pose on the way is a 128x72 motion frame, the top of
              * the lift included: the sharp overhead picture follows. */
             job_begin(1);
@@ -662,15 +678,25 @@ static void step_view_transition(void)
         return;
     }
     if (to_top && !view_sharp) {
-        /* The camera is at the top and its doubled picture is on its way
-         * up or shown: the cursor is live from here, and the 1:1 picture
-         * is rendered behind it. */
+        /* The camera is at the top: once its doubled picture is shown
+         * the cursor is live, and the 1:1 picture is rendered behind it.
+         * (Not before it is shown: the bracket and the overhead HUD went
+         * up a field ahead of the picture when the NMI's commit lagged.) */
+        if (!snesVideoPresentDone()) {
+            slide_hand();
+            return;
+        }
         view_sharp = 1;
         top_view = 1;
         top_scroll_snap();
+        job_scroll = top_scroll_cur;
+        job_scroll_pending = 1;
         job_begin(0);
         build_objects();
-        job_slice();
+        /* No slice this frame: the job is waiting, so the main loop's
+         * vblank service runs once (the overhead viewport, the scroll)
+         * before the render shuts it out for forty fields -- or the
+         * finished map could reach the screen a field ahead of them. */
         return;
     }
     if (!snesVideoPresentDone()) {
@@ -1309,9 +1335,13 @@ enum SnesCamJob {
  * times, and the pad is read between slices.  (One step a game frame was
  * tried: the field-boundary wait and the sprite rebuild a step cost more
  * than the rendering, and the lift took a thousand fields.) */
+/* A step is sized for the hand to slide at the field rate: a motion
+ * frame's eight rows or sixteen cells are each about half a field, and
+ * the step's own overhead (the switch, the clock, the slide) was a fifth
+ * of a pose at half these sizes. */
 #define JOB_ROWS_PER_STEP   2
-#define JOB_HALF_ROWS_PER_STEP 4    /* a motion-frame row is a quarter the texels */
-#define JOB_CELLS_PER_STEP  8
+#define JOB_HALF_ROWS_PER_STEP 8    /* a motion-frame row is a quarter the texels */
+#define JOB_CELLS_PER_STEP  16
 #define JOB_CARDS_PER_STEP  3
 
 static u8  job_phase = JOB_IDLE;
@@ -1371,6 +1401,10 @@ static u8 job_step(void)
     switch (job_phase) {
     case JOB_WAIT:
         if (snesFbFramesPending()) return 1;
+        if (job_scroll_pending) {
+            job_scroll_pending = 0;
+            snesVideoBoardScrollPending(job_scroll);
+        }
         job_clock0 = snesClock();
         snesRasterTarget(0x7E);
         job_card = 0;
