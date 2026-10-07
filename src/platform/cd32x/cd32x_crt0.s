@@ -78,14 +78,14 @@ master_vbr:
         .long   master_err      /* TRAPA #61 */
         .long   master_err      /* TRAPA #62 */
         .long   master_err      /* TRAPA #63 */
-        .long   master_lvl1     /* Level 1 IRQ */
-        .long   master_lvl2_3   /* Level 2 & 3 IRQ's */
-        .long   master_lvl4_5   /* Level 4 & 5 IRQ's */
-        .long   master_pwm      /* PWM interupt */
-        .long   master_cmd      /* Command interupt */
-        .long   master_hbi      /* H Blank interupt */
-        .long   master_vbi      /* V Blank interupt */
-        .long   master_rst      /* Reset Button */
+        .long   master_irq      /* Level 1 IRQ */
+        .long   master_irq      /* Level 2 & 3 IRQ's */
+        .long   master_irq      /* Level 4 & 5 IRQ's */
+        .long   master_irq      /* PWM interupt */
+        .long   master_irq      /* Command interupt */
+        .long   master_irq      /* H Blank interupt */
+        .long   master_irq      /* V Blank interupt */
+        .long   master_irq      /* Reset Button */
 
 !-----------------------------------------------------------------------
 ! Slave Vector Base Table
@@ -165,6 +165,9 @@ master_start:
         mov.w   r0,@-r1                 /* VRES INT clear */
         mov.w   r0,@r1
 
+        bsr     init_irq_frt
+        nop
+
         mov.l   _master_stk,r15
         ! purge cache and turn it off
         mov.l   _master_cctl,r0
@@ -198,8 +201,8 @@ master_start:
         mov     #0x80,r0
         mov.l   _master_adapter,r1
         mov.b   r0,@r1                  /* set FM */
-        mov     #0x00,r0
-        mov.b   r0,@(1,r1)              /* set int enables */
+        mov     #0x08,r0
+        mov.b   r0,@(1,r1)              /* Master VBI enabled */
         mov     #0x20,r0
         ldc     r0,sr                   /* allow ints */
 
@@ -248,136 +251,98 @@ master_err:
         nop
 
 !-----------------------------------------------------------------------
-! Master Level 1 IRQ handler
+! Master external IRQ dispatch and vblank clock
+! Sega Technical Information attachment 1 and d32xr/crt0.s: dispatch from
+! SR rather than the supplied vector, and toggle FRT TOCR around IRQ clear.
+! This handles the incorrect-vector/interrupt-level quirk of early 32X ASICs.
+! Only VBI is enabled; retain acknowledgement for the other external sources.
 !-----------------------------------------------------------------------
 
-master_lvl1:
-        rte
-        nop
-
-!-----------------------------------------------------------------------
-! Master Level 2/3 IRQ handler
-!-----------------------------------------------------------------------
-
-master_lvl2_3:
-        rte
-        nop
-
-!-----------------------------------------------------------------------
-! Master Level 4/5 IRQ handler
-!-----------------------------------------------------------------------
-
-master_lvl4_5:
-        rte
-        nop
-
-!-----------------------------------------------------------------------
-! Master V Blank IRQ handler
-!-----------------------------------------------------------------------
-
-master_vbi:
+master_irq:
         mov.l   r0,@-r15
         mov.l   r1,@-r15
+        mov.l   r2,@-r15
+        stc     sr,r2
+        mov.w   irq_mask,r0
+        ldc     r0,sr                   /* mask during FRT correction */
+        mov.l   irq_tocr,r1
+        mov     #0xE0,r0
+        mov.b   r0,@r1
+        mov.b   @r1,r0                  /* complete the peripheral write */
 
-        mov.l   mvi_mars_adapter,r1
-        mov.w   r0,@(0x16,r1)           /* clear V IRQ */
-        nop
-        nop
-        nop
-        nop
+        mov     r2,r0
+        shlr2   r0
+        shlr2   r0
+        and     #0x0E,r0                /* actual external level, even pair */
+        mov     r0,r2
+        mov     #0xE2,r0
+        mov.b   r0,@r1
+        mov.b   @r1,r0
 
-        ! handle V IRQ
-
+        mov     r2,r0
+        cmp/eq  #14,r0
+        bt      master_irq_reset
+        mov     #6,r1
+        cmp/hs  r1,r2
+        bf      master_irq_done         /* internal IRQs are not enabled */
+        mov     #0x22,r0
+        sub     r2,r0                   /* level 6..12 => clear offset 1C..16 */
+        mov.l   irq_adapter,r1
+        add     r0,r1
+        mov.w   r0,@r1                 /* acknowledge the actual source */
+        mov     r2,r0
+        cmp/eq  #12,r0
+        bf      master_irq_done
+        mov.l   irq_clock,r1
+        mov.l   @r1,r0
+        add     #1,r0
+        mov.l   r0,@r1                  /* exactly one tick per VBI */
+master_irq_done:
+        mov.l   @r15+,r2
         mov.l   @r15+,r1
         mov.l   @r15+,r0
         rte
         nop
-
-        .align  2
-
-mvi_mars_adapter:
-        .long   0x20004000
-
-!-----------------------------------------------------------------------
-! Master H Blank IRQ handler
-!-----------------------------------------------------------------------
-
-master_hbi:
-        mov.l   r0,@-r15
-        mov.l   r1,@-r15
-
-        mov.l   mhi_mars_adapter,r1
-        mov.w   r0,@(0x18,r1)           /* clear H IRQ */
-        nop
-        nop
-        nop
-        nop
-
-        ! handle H IRQ
-
+master_irq_reset:
+        mov.l   @r15+,r2
         mov.l   @r15+,r1
         mov.l   @r15+,r0
-        rte
+        bra     master_rst
         nop
 
         .align  2
-
-mhi_mars_adapter:
+irq_tocr:
+        .long   0xFFFFFE17
+irq_adapter:
         .long   0x20004000
+irq_clock:
+        .long   _waifu_cd32x_vblank_clock + 0x20000000
+irq_mask:
+        .word   0x00F0
 
-!-----------------------------------------------------------------------
-! Master Command IRQ handler
-!-----------------------------------------------------------------------
-
-master_cmd:
-        mov.l   r0,@-r15
-        mov.l   r1,@-r15
-
-        mov.l   mci_mars_adapter,r1
-        mov.w   r0,@(0x1A,r1)           /* clear CMD IRQ */
-        nop
-        nop
-        nop
-        nop
-
-        ! handle CMD IRQ
-
-        mov.l   @r15+,r1
-        mov.l   @r15+,r0
-        rte
-        nop
-
+! FRT must be initialized on both SH-2s even if external IRQs are disabled.
+! OCRA=1, clear-on-match, Fs/8; timer interrupts remain disabled.
+init_irq_frt:
+        mov.l   irq_frt,r1
+        mov     #0,r0
+        mov.b   r0,@r1                  /* TIER */
+        mov     #0xE2,r0
+        mov.b   r0,@(7,r1)              /* TOCR: OCRA, output high */
+        mov     #0,r0
+        mov.b   r0,@(4,r1)
+        mov     #1,r0
+        mov.b   r0,@(5,r1)              /* OCRA=1 */
+        mov     #0,r0
+        mov.b   r0,@(6,r1)              /* TCR: Fs/8 */
+        mov     #1,r0
+        mov.b   r0,@(1,r1)              /* TCSR: clear FRC on match */
+        mov     #0,r0
+        mov.b   r0,@(3,r1)
+        rts
+        mov.b   r0,@(2,r1)              /* FRC=0 */
         .align  2
-
-mci_mars_adapter:
-        .long   0x20004000
-
-!-----------------------------------------------------------------------
-! Master PWM IRQ handler
-!-----------------------------------------------------------------------
-
-master_pwm:
-        mov.l   r0,@-r15
-        mov.l   r1,@-r15
-
-        mov.l   mpi_mars_adapter,r1
-        mov.w   r0,@(0x1C,r1)           /* clear PWM IRQ */
-        nop
-        nop
-        nop
-        nop
-
-        ! handle PWM IRQ
-
-        mov.l   @r15+,r1
-        mov.l   @r15+,r0
-        rte
-        nop
-
-        .align  2
-
-mpi_mars_adapter:
-        .long   0x20004000
+irq_frt:
+        .long   0xFFFFFE10
 
 !-----------------------------------------------------------------------
 ! Master RESET IRQ handler
@@ -427,6 +392,9 @@ slave_start:
         mov.w   r0,@r1
         mov.w   r0,@-r1                 /* VRES INT clear */
         mov.w   r0,@r1
+
+        bsr     init_irq_frt
+        nop
 
         mov.l   _slave_stk,r15
         ! wait for Master SH2 and 68000 to finish init

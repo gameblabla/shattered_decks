@@ -15,43 +15,32 @@ int main(void)
     WaifuCd32xInput *input = waifu_cd32x_input_create();
     WaifuCd32xAudio *audio = waifu_cd32x_audio_create();
     WaifuFmMusicTrack last_music = WAIFU_FM_MUSIC_NONE;
+    uint32_t last_tick;
+    unsigned pal_remainder = 0;
 
     (void)cdrom;
     waifu_fm_init();
     waifu_fm_reset_interactive();
+    last_tick = waifu_cd32x_video_vblank_count();
 
     for (;;) {
         WaifuFmInput in;
         WaifuFmMusicTrack music;
-        /* Structural 60 Hz cap driven by the MD vblank tick (COMM12): never
-           advance game time faster than wall clock, even when the 32X side
-           renders a cheap phase (battle cut-ins, fades) in less than one
-           vblank.  Without this the SH-2 loop can flip several times per MD
-           tick and each fast frame still reports >=1 vblank (the video probe
-           coerces 0->1), so battle animations run at multiples of real speed.
-           Heavy frames (deck editor, 3D maps) already span several ticks, so
-           this wait falls straight through there and the delta below keeps
-           wall-clock pacing via the usual 1..8 clamp.  Bounded so a dead MD
-           degrades to full-speed stepping instead of hanging the SH-2. */
-        {
-            static uint16_t last_tick = 0;
-            static int first = 1;
-            uint32_t guard = 0;
-            uint16_t now;
-            int delta;
-            if (first) {
-                last_tick = MARS_SYS_COMM12;
-                first = 0;
-            }
-            while (MARS_SYS_COMM12 == last_tick && ++guard < 0x00800000u) {
-            }
-            now = MARS_SYS_COMM12;
-            delta = (int)(uint16_t)(now - last_tick);
-            if (delta < 1) delta = 1;
-            if (delta > 8) delta = 8;
-            last_tick = now;
-            waifu_fm_set_frame_vblanks(delta);
+        uint32_t now = waifu_cd32x_video_vblank_count();
+        uint32_t elapsed = now - last_tick;
+
+        /* One clock for game time, independent of framebuffer latching and
+           MD mailbox activity. Zero elapsed time means no game step is due. */
+        if (elapsed == 0) continue;
+        last_tick = now;
+        if (elapsed > 8) elapsed = 8; /* discard long loading stalls */
+        if ((MARS_VDP_DISPMODE & MARS_NTSC_FORMAT) == 0) {
+            /* PAL's 50 vblanks still advance the authored 60 Hz timeline. */
+            unsigned ticks = elapsed * 6u + pal_remainder;
+            elapsed = ticks / 5u;
+            pal_remainder = ticks % 5u;
         }
+        waifu_fm_set_frame_vblanks((int)elapsed);
         waifu_cd32x_input_poll(input, &in);
         waifu_fm_step(&in);
 

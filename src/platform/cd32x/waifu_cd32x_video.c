@@ -40,18 +40,14 @@ struct WaifuCd32xVideo {
     WaifuFmPaletteId current_palette_id;
     int current_fade_q8;
     int current_md_fade_q8;
-    /* Frame-pacing probe: a single last-frame vblank delta (1 == 60 fps,
-       2 == 30 fps).  Originally debug-overlay-only; now always compiled
-       because the game core consumes it via waifu_fm_set_frame_vblanks() to
-       advance battle animations by real hardware time.  Still just ~8 bytes
-       of state and a COMM12 read per flip.  The previous 32-entry ring-buffer
-       average was ~100 bytes of debug-only code that pushed the autobattle
-       debug build past the 128 KiB BlastEm SH2 staging limit and broke
-       boot. */
+    /* Display interval for the debug overlay, measured by the SH-2 VBI. */
     uint32_t last_flip_vblank;
     uint8_t last_frame_vblanks;
 };
 
+/* The IRQ writes and foreground reads use the uncached SDRAM alias so an
+   interrupt cannot leave the foreground polling a stale cached clock. */
+volatile uint32_t waifu_cd32x_vblank_clock;
 static WaifuCd32xVideo g_video;
 static int g_cd32x_overlay_kind = -1;
 static int g_cd32x_overlay_base_pages_remaining = 0;
@@ -124,9 +120,9 @@ static void cd32x_auto_fill_back_words(uint16_t start_word, int words, uint16_t 
     cd32x_wait_fill_done();
 }
 
-static uint32_t cd32x_vblank_count(void)
+uint32_t waifu_cd32x_video_vblank_count(void)
 {
-    return (uint32_t)MARS_SYS_COMM12;
+    return *(volatile uint32_t *)((uintptr_t)&waifu_cd32x_vblank_clock | 0x20000000u);
 }
 
 static void cd32x_record_frame_pacing(WaifuCd32xVideo *video)
@@ -134,7 +130,7 @@ static void cd32x_record_frame_pacing(WaifuCd32xVideo *video)
     uint32_t now;
     uint32_t delta;
     if (!video) return;
-    now = cd32x_vblank_count();
+    now = waifu_cd32x_video_vblank_count();
     delta = video->last_flip_vblank ? (now - video->last_flip_vblank) : 1u;
     if (delta == 0u) delta = 1u;
     if (delta > 255u) delta = 255u;
@@ -186,37 +182,13 @@ static void cd32x_cram_flush_vblank(void)
 
 static void cd32x_wait_fb_flip(WaifuCd32xVideo *video)
 {
-    /* Request the flip first so the VDP latches it at the next vertical
-       blank with no added latency (same as before). */
-    MARS_VDP_FBCTL = (uint16_t)(video->current_fb ^ 1u);
-    /* Structural 60 Hz throttle: at most one flip per vblank period.  Waiting
-       only for the FS latch lets several flips land inside a single vblank on
-       light frames (or on emulators that latch immediately rather than at the
-       raster boundary), so battle cut-ins and other cheap phases run faster
-       than wall clock while heavy 3D frames stay correct.  The raster VBLK
-       flag is correct on hardware and on every emulator, so gate the flip on
-       its transitions instead: leaving any in-progress vblank, then entering
-       the next one.  On targets that already latch at the boundary this ends
-       at exactly the same vblank as the bare latch wait, so timing there is
-       unchanged. */
-    while (MARS_VDP_FBCTL & MARS_VDP_VBLK) {
+    /* Sega's FS acknowledgement protocol, also used by d32xr/marshw.c.
+       The scheduler owns game pacing; an FS latch is not a clock tick. */
+    video->current_fb ^= MARS_VDP_FS;
+    MARS_VDP_FBCTL = video->current_fb;
+    while ((MARS_VDP_FBCTL & MARS_VDP_FS) != video->current_fb) {
     }
-    while ((MARS_VDP_FBCTL & MARS_VDP_VBLK) == 0) {
-    }
-    {
-        /* The transition wait above already lands on the vblank that honours
-           the request; confirm the latch with a generous bound so a wedged
-           VDP degrades (one repeated frame, self-heals below) instead of
-           hanging the SH-2 forever. */
-        uint32_t guard = 0;
-        uint16_t want = (uint16_t)(video->current_fb ^ 1u);
-        while ((MARS_VDP_FBCTL & MARS_VDP_FS) != want && ++guard < 0x01000000u) {
-        }
-    }
-    video->current_fb ^= 1u;
-    /* Still inside the vblank that performed the flip: this is the one window
-       where CRAM is safe to touch, and it keeps the new palette in step with
-       the page it belongs to. */
+    /* The palette flush checks VBLK independently of FS acknowledgement. */
     cd32x_cram_flush_vblank();
     cd32x_record_frame_pacing(video);
 }
