@@ -1482,15 +1482,36 @@ vblank_int:
         move.w  d0,0xA12018
         tst.b   d7
         beq.b   0f
-        move.w  d0,0xA15128
+        move.w  d0,0xA15128             /* COMM8 = pad1 current */
+        /* Edge latch for slow SH-2 frames (deck editor): OR press edges since
+           the previous SH-2 poll into COMM10 so a tap that presses and
+           releases between two SH-2 polls (6 fps deck editor) is still seen.
+           COMM10 previously carried pad2, which the 1-player game never
+           reads; it now carries the sticky player1 edge latch (buttons only,
+           0x0FFF).  The SH-2 clears COMM10 after each poll; the read-OR-write
+           here is intentionally simple (a concurrent SH-2 clear can only
+           resurrect bits on a narrow race, degrading to one repeated edge). */
+        move.w  d0,d1
+        andi.w  #0x0FFF,d1              /* current buttons */
+        move.w  pad1_prev,d0
+        andi.w  #0x0FFF,d0              /* previous buttons */
+        eori.w  #0x0FFF,d0              /* ~prev */
+        and.w   d0,d1                   /* edges = cur & ~prev */
+        move.w  0xA1512A,d0             /* current latch */
+        or.w    d1,d0
+        move.w  d0,0xA1512A             /* COMM10 = sticky latch */
+        move.w  0xA15128,d0
+        move.w  d0,pad1_prev            /* prev = pad1 current (full word) */
 0:
         pea     1.w
         bsr.w   get_pad
         addq.l  #4,sp
-        move.w  d0,0xA1201A
+        move.w  d0,0xA1201A             /* pad2 kept on the 68K side only;
+                                          COMM10 is the edge latch now */
         tst.b   d7
         beq.b   1f
-        move.w  d0,0xA1512A
+        /* (no COMM10 write here: see latch above) */
+        nop
 1:
         move.l  0xA1201C,d0
         addq.l  #1,d0
@@ -1527,6 +1548,11 @@ iso_pvd_magic:
 
         .global switch_flag
 switch_flag:
+        .word   0
+
+        .align  2
+| Previous pad1 word for edge-latch computation (vblank handler above).
+pad1_prev:
         .word   0
 
         .align  4

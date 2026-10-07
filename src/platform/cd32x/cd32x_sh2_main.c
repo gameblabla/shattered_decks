@@ -1,5 +1,6 @@
 #include "game_api.h"
 #include "assets.h"
+#include "cd32x_32x.h"
 #include "waifu_cd32x_audio.h"
 #include "waifu_cd32x_cdrom.h"
 #include "waifu_cd32x_input.h"
@@ -22,13 +23,36 @@ int main(void)
     for (;;) {
         WaifuFmInput in;
         WaifuFmMusicTrack music;
-
+        /* Structural 60 Hz cap driven by the MD vblank tick (COMM12): never
+           advance game time faster than wall clock, even when the 32X side
+           renders a cheap phase (battle cut-ins, fades) in less than one
+           vblank.  Without this the SH-2 loop can flip several times per MD
+           tick and each fast frame still reports >=1 vblank (the video probe
+           coerces 0->1), so battle animations run at multiples of real speed.
+           Heavy frames (deck editor, 3D maps) already span several ticks, so
+           this wait falls straight through there and the delta below keeps
+           wall-clock pacing via the usual 1..8 clamp.  Bounded so a dead MD
+           degrades to full-speed stepping instead of hanging the SH-2. */
+        {
+            static uint16_t last_tick = 0;
+            static int first = 1;
+            uint32_t guard = 0;
+            uint16_t now;
+            int delta;
+            if (first) {
+                last_tick = MARS_SYS_COMM12;
+                first = 0;
+            }
+            while (MARS_SYS_COMM12 == last_tick && ++guard < 0x00800000u) {
+            }
+            now = MARS_SYS_COMM12;
+            delta = (int)(uint16_t)(now - last_tick);
+            if (delta < 1) delta = 1;
+            if (delta > 8) delta = 8;
+            last_tick = now;
+            waifu_fm_set_frame_vblanks(delta);
+        }
         waifu_cd32x_input_poll(input, &in);
-        /* Tie battle animation pacing to the hardware vblank counter: report
-           how many vblanks the previous frame really took so equip/fusion
-           animations advance in wall-clock time even when a frame renders
-           slower than 60 Hz. */
-        waifu_fm_set_frame_vblanks(waifu_cd32x_video_last_frame_vblanks(video));
         waifu_fm_step(&in);
 
 #if defined(CD32X_DEBUG_AUTOBATTLE) || defined(WAIFU_CD32X_DEBUG_FPS)
